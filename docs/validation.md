@@ -15,8 +15,8 @@ All pending target tests below are `TODO: verify on target SDK/client`.
 | HOST-08 | Real C/OpenCL C → paired boundary bundle | PASS on Linux: make example; native original/recovered Host oracle; source mutation; 12 rejection cases; validation/2026-10-30-c-boundary-report.json |
 | HOST-09 | Prebuilt SDK install and CPU parallelism | PASS on Linux: fresh official archive → configure/build; 9 installer tests and 5 CPU/build-command tests; validation/2026-10-30-prebuilt-sdk.json |
 | HOST-10 | UdonHL → LLVM → native Host + fragment execution | PASS on Linux: 16 bitwise readbacks, 8 runtime and 4 native-lowering rejections; validation/2026-10-30-native-fragment.json |
-| HOST-11 | OpenCL Host C + linked C runtime + native fragment execution | PASS on Linux: square/x+x, original/lowered Host differential, API contracts and six adapter rejections; validation/2026-10-30-opencl-host.json |
-| HOST-WIN-01 | Windows x64 MSVC configure/build/CTest | PASS: VS 2026/windows-2025 configure/build and 13/13 CTests, including 16 D3D11/WARP fragment draw/readbacks. See validation/2026-10-30-windows-ci.json |
+| HOST-11 | OpenCL Host C + linked C runtime + native fragment execution | PASS on Linux and Windows CI: square/x+x, original/lowered Host differential, API contracts and six adapter rejections; validation/2026-10-30-opencl-host.json |
+| HOST-WIN-01 | Windows x64 MSVC configure/build/CTest | PASS: VS 2026/windows-2025 configure/build and 14/14 CTests, including OpenCL Host API and D3D11/WARP fragment draw/readbacks. See validation/2026-10-30-windows-ci.json |
 | P0-SDK-01 | Public Program Asset generation and behaviour binding | Pending: Unity + installed Worlds SDK unavailable |
 | P0-VM-01 | Nine actual VM opcodes and COPY stack order | Pending SDK VM golden output |
 | P0-ABI-01 | Two behaviours, exported slots, CustomEvent sync/callback/reentrancy | Pending SDK VM + PC client |
@@ -29,7 +29,7 @@ All pending target tests below are `TODO: verify on target SDK/client`.
 
 Environment: Linux x86_64 host. No Unity/VRChat Worlds SDK installation located
 under the examined user/opt directories. No PC VRChat client tests executed.
-Windows CI configure/build and all 13 CTests passed in run 41059537479,
+Windows CI configure/build and all 14 CTests passed in run 41064059775,
 including native UdonHL Host binaries linked to the D3D11/WARP fragment runtime.
 The earlier VS 2022 link failure and its fix are recorded below.
 
@@ -152,5 +152,7 @@ The new native call adapter preserves native LLVM pointer/memory/CFG and ABI
 attributes while exposing calls as udonhl.call. It is not production high-level
 memory recovery or proof of the final Udon ILP32 ABI. The standalone Device
 bundle stage is native-device-prototype and Unity readiness remains false.
-Windows execution of the new OpenCL API flow requires the next CI result;
-the earlier native fragment-only WARP success remains recorded separately.
+The new OpenCL API flow passed Windows D3D11/WARP and Linux Lavapipe in
+[CI run 41064059775](https://github.com/lemolatoon/udoncl/actions/runs/41064059775).
+Both jobs passed all 14 CTests. The earlier native fragment-only WARP success
+remains recorded separately.

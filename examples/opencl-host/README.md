@@ -98,7 +98,7 @@ This is an explicit **native-only call adapter**. It retains actual native
 pointer, memory, CFG, function/call attributes and target layout semantics rather
 than pretending to recover them into the final Udon ILP32 memory model. Direct
 nonvariadic C calls go through `udonhl.call`; indirect/function-pointer, variadic,
-tail and operand-bundle calls are rejected. Native lowering restores the saved
+tail and operand-bundle calls are rejected; recursive call graphs are also rejected. Native lowering restores the saved
 LLVM ABI attributes. This route does not implement comprehensive memory raising,
 OpenCL API ops, Udon byte memory, continuations or Udon assembly. OpenCL functions
 remain ordinary C calls and live in the linked C runtime.

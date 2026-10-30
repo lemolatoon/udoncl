@@ -50,5 +50,18 @@
     },
     "console_encoding_fix": "ASCII test summaries avoid cp1252 UnicodeEncodeError",
     "separate_linux_cache_warning": "Linux job passed, but saving the installed SDK cache failed: zstd write error, no space left on device. Windows SDK cache restore succeeded. Cache disk-space handling remains separate follow-up work."
+  },
+  "opencl_host_run": {
+    "url": "https://github.com/lemolatoon/udoncl/actions/runs/41064059775/job/124090727987",
+    "head_sha": "790628a90933b8acd695e2d4f74d66fec0b06395",
+    "runner": "windows-2025",
+    "ctest": "14/14 passed",
+    "opencl_api": "Khronos OpenCL 1.2 declarations with linked C AOT runtime",
+    "native_host_execution_cases": 16,
+    "native_host_runtime_contract_draws": 2,
+    "original_host_differential_cases": 16,
+    "original_host_runtime_contract_draws": 2,
+    "lowering_rejections": 6,
+    "renderer": "D3D11 WARP"
   }
 }

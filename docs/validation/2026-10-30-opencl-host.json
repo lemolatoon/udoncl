@@ -35,5 +35,13 @@
     "result": "passed; no diagnostics or leaks",
     "backend": "CPU stub used only for targeted C runtime memory/lifetime checks"
   },
-  "windows": "pending new OpenCL flow CI run"
+  "windows": "passed on windows-2025 / D3D11 WARP",
+  "ci": {
+    "run": "https://github.com/lemolatoon/udoncl/actions/runs/41064059775",
+    "head_sha": "790628a90933b8acd695e2d4f74d66fec0b06395",
+    "linux": "14/14 passed",
+    "windows": "14/14 passed",
+    "windows_job": "https://github.com/lemolatoon/udoncl/actions/runs/41064059775/job/124090727987",
+    "linux_job": "https://github.com/lemolatoon/udoncl/actions/runs/41064059775/job/124090727288"
+  }
 }

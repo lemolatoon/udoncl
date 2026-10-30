@@ -107,13 +107,14 @@ local alternative and is not run by CI.
 Current components:
 
 - Four separate TableGen dialect libraries; 17 of the closed catalog of 57 operations are defined.
+- A C OpenCL 1.2 AOT API subset and native Host Runtime linked to the fragment renderer.
 - `vrc-opt`: MLIR parser/printer with operation verification, rejects unknown ops by default.
 - `VRCLLVMToHighLevelMLIR`: independent import/metadata, local-memory and scalar/CFG recovery library for host/device development.
 - `vrc-translate --import-llvm input.ll`: LLVM dialect import with preserved frontend metadata and optional JSON sidecar.
 - `vrc-raise-llvm-memory` / `vrc-raise-llvm-to-scalar` MLIR Passes and the `vrc-recover-high-level` pipeline: proven fixed local arrays, scalar/CFG conversion and upstream SCF structuring.
 
 The other 40 operations, complete verifiers/lowerings, assembly emitter, executable
-host ABI, OpenCL runtime and Unity integration remain pending. A small paired
+Udon host ABI, complete OpenCL runtime coverage and Unity integration remain pending. A small paired
 Host/Device lowering prototype now emits ShaderLab/HLSL and a shared manifest.
 See [docs/validation.md](docs/validation.md) for gates and evidence.
 

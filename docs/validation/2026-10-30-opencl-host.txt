@@ -64,3 +64,19 @@ input=-0.5 expected=0x3fa00000 actual=0x3fa00000
 input=1.25 expected=0x40240000 actual=0x40240000
 input=17 expected=0x43910000 actual=0x43910000
 passed=8 OpenCL Host executions and fragment readbacks
+
+CI run https://github.com/lemolatoon/udoncl/actions/runs/41064059775 (source 790628a):
+build (ubuntu-24.04)	Run ctest --preset udoncl	2026-10-30T13:36:52.9271227Z 10/14 Test #10: c-boundary-example .................   Passed    0.91 sec
+build (ubuntu-24.04)	Run ctest --preset udoncl	2026-10-30T13:36:53.1782776Z 11/14 Test #11: prebuilt-sdk-installer .............   Passed    0.25 sec
+build (ubuntu-24.04)	Run ctest --preset udoncl	2026-10-30T13:36:53.6313919Z 12/14 Test #12: build-parallelism ..................   Passed    0.43 sec
+build (ubuntu-24.04)	Run ctest --preset udoncl	2026-10-30T13:37:00.0925135Z 13/14 Test #13: native-fragment-execution ..........   Passed    6.46 sec
+build (ubuntu-24.04)	Run ctest --preset udoncl	2026-10-30T13:37:04.2342895Z 14/14 Test #14: opencl-host-execution ..............   Passed    4.14 sec
+build (ubuntu-24.04)	Run ctest --preset udoncl	2026-10-30T13:37:04.2343646Z 100% tests passed, 0 tests failed out of 14
+build (ubuntu-24.04)	Run ctest --preset udoncl	2026-10-30T13:37:04.2344699Z Total Test time (real) =  13.79 sec
+build (windows-2025)	Run ctest --preset udoncl	2026-10-30T13:34:36.2488907Z 10/14 Test #10: c-boundary-example .................   Passed    1.55 sec
+build (windows-2025)	Run ctest --preset udoncl	2026-10-30T13:34:36.8751885Z 11/14 Test #11: prebuilt-sdk-installer .............   Passed    0.63 sec
+build (windows-2025)	Run ctest --preset udoncl	2026-10-30T13:34:37.1981233Z 12/14 Test #12: build-parallelism ..................   Passed    0.32 sec
+build (windows-2025)	Run ctest --preset udoncl	2026-10-30T13:34:43.7902214Z 13/14 Test #13: native-fragment-execution ..........   Passed    6.59 sec
+build (windows-2025)	Run ctest --preset udoncl	2026-10-30T13:34:51.9847407Z 14/14 Test #14: opencl-host-execution ..............   Passed    8.11 sec
+build (windows-2025)	Run ctest --preset udoncl	2026-10-30T13:34:51.9850449Z 100% tests passed out of 14
+build (windows-2025)	Run ctest --preset udoncl	2026-10-30T13:34:51.9851219Z Total Test time (real) =  20.89 sec
