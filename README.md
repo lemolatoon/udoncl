@@ -62,6 +62,14 @@ For example, this Linux host needs `--query-driver=/usr/bin/c++` to discover GCC
 15 headers instead of an incomplete GCC 16 installation. On Windows, launch the
 editor from the Developer PowerShell so clangd inherits the MSVC include paths.
 
+CI caches the installed LLVM/MLIR SDK (`.deps/llvm23`) separately for each OS
+image and architecture. The cache key includes `cmake/llvm-lock.json` and
+`scripts/build_llvm.py`; ordinary source changes reuse it and skip the LLVM
+build. A cache miss builds the SDK once and saves it immediately, before this
+project's configure/build/tests, so a later test failure does not discard it.
+The first run, a dependency/key change, or cache eviction requires rebuilding.
+The LLVM source tree and temporary build tree are not cached.
+
 Current components:
 
 - Four separate TableGen dialect libraries; only the nine `udonasm` operations are registered.
