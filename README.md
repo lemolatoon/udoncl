@@ -14,9 +14,9 @@ and run these commands from **x64 Native Tools / Developer PowerShell**.
 
 ```text
 python scripts/build_llvm.py --jobs 2
-cmake --preset llvm23
-cmake --build --preset llvm23
-ctest --preset llvm23
+cmake --preset udoncl
+cmake --build --preset udoncl
+ctest --preset udoncl
 ```
 
 The dependency build installs into `.deps/llvm23`. Once installed, subsequent
@@ -24,9 +24,9 @@ builds only need the last three commands above. CMake automatically prefers this
 repository-local SDK, including when configuring without presets:
 
 ```text
-cmake -S . -B build/llvm23 -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build/llvm23 --parallel 2
-ctest --test-dir build/llvm23 --output-on-failure
+cmake -S . -B build/udoncl -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build/udoncl --parallel 2
+ctest --test-dir build/udoncl --output-on-failure
 ```
 
 Discovery order is an explicit `VRC_LLVM_ROOT`, then `.deps/llvm23`, then system
@@ -38,13 +38,13 @@ back to system packages. Configure output prints both selected package paths.
 To use another complete 23.1.4 installation explicitly:
 
 ```text
-cmake --preset llvm23 -DVRC_LLVM_ROOT="path/to/llvm"
-cmake --build --preset llvm23
-ctest --preset llvm23
+cmake --preset udoncl -DVRC_LLVM_ROOT="path/to/llvm"
+cmake --build --preset udoncl
+ctest --preset udoncl
 ```
 
 To return to automatic repository-local discovery, configure with
-`-DVRC_LLVM_ROOT:PATH=`. Use `cmake --fresh --preset llvm23` to clear all cached
+`-DVRC_LLVM_ROOT:PATH=`. Use `cmake --fresh --preset udoncl` to clear all cached
 settings when changing compilers or toolchains (then supply any desired root).
 `CMAKE_PREFIX_PATH` alone does not override an available repository-local SDK.
 LLVM and MLIR must come from the same build, architecture and C++ runtime.
@@ -52,7 +52,7 @@ No system-wide installation is required by the build script. On Windows, use the
 DLL MSVC runtime (`/MD`) for both LLVM and this project. Paths with spaces are
 supported. Windows execution remains unverified until Windows CI logs exist.
 
-CMake emits `build/llvm23/compile_commands.json` for clangd. The checked-in
+CMake emits `build/udoncl/compile_commands.json` for clangd. The checked-in
 `.clangd` points to that directory on all hosts. Run configure and build once
 so TableGen-generated headers also exist. With a custom build directory, set
 clangd's `--compile-commands-dir` to that directory. If clangd selects a different

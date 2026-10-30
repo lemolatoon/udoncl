@@ -28,6 +28,6 @@ jobs:
       - name: Build pinned LLVM and MLIR
         if: steps.llvm.outputs.cache-hit != 'true'
         run: python scripts/build_llvm.py --jobs 2
-      - run: cmake --preset llvm23
-      - run: cmake --build --preset llvm23
-      - run: ctest --preset llvm23
+      - run: cmake --preset udoncl
+      - run: cmake --build --preset udoncl
+      - run: ctest --preset udoncl

@@ -1,2 +1,2 @@
 CompileFlags:
-  CompilationDatabase: build/llvm23
+  CompilationDatabase: build/udoncl

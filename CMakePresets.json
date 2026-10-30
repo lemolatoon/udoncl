@@ -2,10 +2,10 @@
   "version": 6,
   "configurePresets": [
     {
-      "name": "llvm23",
-      "displayName": "LLVM/MLIR 23.1.4 (Ninja; Linux/macOS/Windows)",
+      "name": "udoncl",
+      "displayName": "udoncl (Ninja; Linux/macOS/Windows)",
       "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/llvm23",
+      "binaryDir": "${sourceDir}/build/udoncl",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_PREFIX_PATH": "${sourceDir}/.deps/llvm23",
@@ -15,15 +15,15 @@
   ],
   "buildPresets": [
     {
-      "name": "llvm23",
-      "configurePreset": "llvm23",
+      "name": "udoncl",
+      "configurePreset": "udoncl",
       "jobs": 2
     }
   ],
   "testPresets": [
     {
-      "name": "llvm23",
-      "configurePreset": "llvm23",
+      "name": "udoncl",
+      "configurePreset": "udoncl",
       "output": {
         "outputOnFailure": true
       },
