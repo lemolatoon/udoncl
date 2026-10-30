@@ -131,3 +131,8 @@ readbacks, 8 invalid runtime request cases and 4 native-lowering rejection cases
 The final test summaries use ASCII so Windows' default cp1252 console encoding
 cannot turn a completed test into a UnicodeEncodeError. Linux passed in the
 same workflow run. Neither result claims Unity/VRChat execution.
+
+The same successful workflow reported a separate Linux SDK cache-save warning:
+`zstd` could not write the cache archive because the runner ran out of disk
+space. The Linux build/tests still passed and the Windows SDK cache restored
+successfully. Reducing Linux cache-pack disk usage remains follow-up work.

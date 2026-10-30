@@ -48,6 +48,7 @@
       "native_lowering_rejections": 4,
       "test_seconds": 10.99
     },
-    "console_encoding_fix": "ASCII test summaries avoid cp1252 UnicodeEncodeError"
+    "console_encoding_fix": "ASCII test summaries avoid cp1252 UnicodeEncodeError",
+    "separate_linux_cache_warning": "Linux job passed, but saving the installed SDK cache failed: zstd write error, no space left on device. Windows SDK cache restore succeeded. Cache disk-space handling remains separate follow-up work."
   }
 }
