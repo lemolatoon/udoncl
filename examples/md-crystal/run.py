@@ -51,7 +51,7 @@ def main():
     text = (source/'device.cl').read_text(encoding='utf-8')
     (output/'device_source.h').write_text('#define UDONCL_DEVICE_SOURCE '+json.dumps(text)+'\n', encoding='utf-8')
     (output/'Bindings.h').write_text('inline const char *deviceSource() { return '+json.dumps(text)+'; }\n', encoding='utf-8')
-    fragments, objects = [], []
+    fragments, objects, bindings = [], [], []
     for name, identifier, defines in [('md_drift', 10, ['-DMD_DRIFT=1']), ('md_kick', 11, [])]:
         ir = output/(name+'.ll')
         run([clang, '-target', 'spir-unknown-unknown', '-x', 'cl', '-cl-std=CL1.2', '-cl-kernel-arg-info', *defines,
@@ -75,10 +75,19 @@ def main():
         kernel = manifest['device']['kernels'][0]
         if kernel['args'][0]['access'] != 'read' or kernel['args'][1]['access'] != 'write' or kernel['target_texture']['width'] != 256:
             raise RuntimeError('gather manifest does not match native bindings')
+        bindings.append([kernel['id'], kernel['target_texture']['width'],
+                         kernel['descriptor']['scalar_payload_bytes']//4, kernel['name']])
         fragments.append(bundle/f'kernels/kernel_{identifier}.hlsl')
         obj = output/(name+ext)
         run([clang, *flags, '-x', 'c', '-std=c11', '-ffp-contract=off', *defines, '-c', source/'device.cl', '-o', obj])
         objects.append(obj)
+    binding_code = []
+    for record, path_name in zip(bindings, ['drift', 'kick']):
+        binding_code.append('{'+', '.join(json.dumps(value) for value in record)+', '+path_name+'}')
+    (output/'Bindings.h').write_text(
+        'inline const char *deviceSource() { return '+json.dumps(text)+'; }\n'+
+        'inline std::vector<native_opencl::GatherBinding> manifestBindings(const std::string &drift, const std::string &kick) { return {'+
+        ', '.join(binding_code)+'}; }\n', encoding='utf-8')
     host_ir = output/'host.ll'
     run([clang, *flags, '-x', 'c', '-std=c11', '-O0', '-Xclang', '-disable-O0-optnone', '-fomit-frame-pointer',
          '-I', root/'third_party/OpenCL-Headers', '-I', output, '-S', '-emit-llvm', source/'host.c', '-o', host_ir])

@@ -185,6 +185,8 @@ Linux `ctest --preset udoncl`: **15/15 passed**, including the MD test:
   incorrect NDRange, undersized and stale allocations.
 - Native interactive protocol steps and reset pass. Chromium interaction
   heats to step 1372, pauses, and resets to step 0, with no JavaScript errors.
+  Two simultaneous touch points and their release pass too. `make md-view`
+  serves the page and returns updated native state through `/step`.
 
 [Recorded results](validation/2026-10-30-md-crystal.json) and
 [interactive screenshot](validation/2026-10-30-md-crystal.png).

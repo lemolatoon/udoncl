@@ -70,10 +70,8 @@ int main(int argc, char **argv) {
     if (argc != 4 && argc != 5)
       throw std::runtime_error(
           "usage: md-crystal drift-shader kick-shader vertex-shader");
-    native_opencl::Session session(
-        deviceSource(),
-        {{10, 256, 10, "md_drift", argv[1]}, {11, 256, 10, "md_kick", argv[2]}},
-        argv[3]);
+    native_opencl::Session session(deviceSource(),
+                                   manifestBindings(argv[1], argv[2]), argv[3]);
     constexpr float a = 1.122462f, bx = 8 * a, by = 8 * a * 0.8660254f,
                     dt = 0.001f;
     std::array<float, 256> state{}, oracle{}, temp{}, actual{};
