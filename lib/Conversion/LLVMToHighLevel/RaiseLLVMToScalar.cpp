@@ -104,6 +104,18 @@ LogicalResult checkFunction(LLVM::LLVMFuncOp function) {
             string.getValue() == "mustprogress")
           continue;
       }
+      if (auto pair = dyn_cast<ArrayAttr>(attr)) {
+        // These frontend tuning attributes do not change the accepted scalar
+        // operations. Stack-protector enablement itself is not accepted.
+        if (pair.size() == 2 && isa<StringAttr>(pair[0]) &&
+            isa<StringAttr>(pair[1])) {
+          auto key = cast<StringAttr>(pair[0]).getValue();
+          auto value = cast<StringAttr>(pair[1]).getValue();
+          if ((key == "no-trapping-math" && value == "true") ||
+              key == "stack-protector-buffer-size")
+            continue;
+        }
+      }
       return reject(function,
                     "target/passthrough function attributes are not proven");
     }
@@ -132,6 +144,28 @@ LogicalResult checkOperation(Operation *op) {
   for (StringRef name : {"isExact", "nonNeg", "isDisjoint", "samesign"})
     if (op->hasAttr(name))
       return reject(op, "poison-generating flag has no implemented mapping");
+  if (auto call = dyn_cast<LLVM::CallOp>(op)) {
+    if (!call.getCallee() || call.getCConv() != LLVM::cconv::CConv::C ||
+        call.getTailCallKind() != LLVM::TailCallKind::None ||
+        !call.getOpBundleSizes().empty() || call.getVarCalleeType())
+      return reject(op, "only direct nonvariadic C calls without tail/bundle "
+                        "semantics are proven");
+    if (failed(checkArgumentAttrs(op, call.getArgAttrsAttr())) ||
+        failed(checkArgumentAttrs(op, call.getResAttrsAttr())))
+      return failure();
+    for (NamedAttribute attr : op->getAttrs()) {
+      auto name = attr.getName().getValue();
+      if (!llvm::StringSwitch<bool>(name)
+               .Cases({"callee", "CConv", "TailCallKind", "fastmathFlags"},
+                      true)
+               .Cases({"arg_attrs", "res_attrs", "operandSegmentSizes",
+                       "op_bundle_sizes"},
+                      true)
+               .Default(false))
+        return reject(op, "unproven instruction attribute on scalar call");
+    }
+    return success();
+  }
   for (NamedAttribute attr : op->getAttrs()) {
     auto name = attr.getName().getValue();
     if (name.starts_with("vrc."))
@@ -208,6 +242,16 @@ struct ScalarPattern : ConversionPattern {
     return success();
   }
   StringRef target;
+};
+struct CallPattern : OpConversionPattern<LLVM::CallOp> {
+  using OpConversionPattern::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(LLVM::CallOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.replaceOpWithNewOp<func::CallOp>(
+        op, *op.getCallee(), op.getResultTypes(), adaptor.getOperands());
+    return success();
+  }
 };
 struct ConstantPattern : OpConversionPattern<LLVM::ConstantOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -288,7 +332,7 @@ struct RaiseLLVMToScalarPass
     target.addIllegalDialect<LLVM::LLVMDialect>();
     RewritePatternSet patterns(&getContext());
     patterns.add<FunctionPattern, ConstantPattern, ComparePattern,
-                 BranchPattern, CondBranchPattern, ReturnPattern>(
+                 BranchPattern, CondBranchPattern, ReturnPattern, CallPattern>(
         &getContext());
     for (auto source :
          {"llvm.add", "llvm.sub", "llvm.mul", "llvm.and", "llvm.or", "llvm.xor",

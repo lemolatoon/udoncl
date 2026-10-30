@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "export": "add",
+  "export_id": 1,
+  "request": "request_square",
+  "intrinsic": "__vrc_dispatch",
+  "kernel": "square",
+  "kernel_id": 7,
+  "global_size": [1, 1, 1],
+  "local_size": [1, 1, 1],
+  "global_offset": [0, 0, 0]
+}

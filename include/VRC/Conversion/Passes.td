@@ -16,4 +16,12 @@ def LowerDeviceSingleInvocationPass : Pass<"vrc-lower-device-single-invocation",
 def VerifyHostDeviceBoundaryPass : Pass<"vrc-verify-host-device", "mlir::ModuleOp"> {
   let summary = "Verify kernel ids, descriptors, resource order and launch ABI across host/device";
 }
+def RaiseLLVMBoundaryDevicePass : Pass<"vrc-raise-llvm-boundary-device", "mlir::ModuleOp"> {
+  let summary = "Recover the selected single-invocation OpenCL output pointer as a bounded memref";
+  let dependentDialects = ["mlir::func::FuncDialect", "mlir::arith::ArithDialect", "mlir::memref::MemRefDialect"];
+}
+def LinkCBoundaryPass : Pass<"vrc-link-c-boundary", "mlir::ModuleOp"> {
+  let summary = "Recover explicit uint32 Host handle roles and link recovered C/OpenCL modules";
+  let dependentDialects = ["::vrc::vrc::VRCDialect", "mlir::gpu::GPUDialect"];
+}
 #endif

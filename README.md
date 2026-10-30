@@ -135,3 +135,31 @@ The bundle includes `host-device.mlir`, `manifest.json` and `kernels/*.shader` /
 `*.hlsl`. Reusing identical output is allowed; differing existing output is refused.
 This example does not yet emit Udon assembly or execute a GPU request. See
 [docs/boundary.md](docs/boundary.md) for the supported pattern and next steps.
+
+C / OpenCL C end-to-end example (after installing the pinned LLVM SDK above):
+
+```text
+make example
+```
+
+The Makefile configures and builds the project, then runs
+`examples/c-boundary/run.py`. It compiles `host.c` and `device.cl` with the Clang
+from the configured LLVM SDK, imports the actual LLVM IR, runs recovery Passes,
+and emits a paired boundary bundle. No hand-written MLIR is substituted.
+Use `make test` to build and run all CTests; `make` alone builds the project.
+To choose another output directory, use
+`make example EXAMPLE_OUTPUT=build/my-c-example`.
+
+Without Make (including Developer PowerShell on Windows), run:
+
+```text
+cmake --preset udoncl
+cmake --build --preset udoncl
+python examples/c-boundary/run.py
+```
+
+The script handles `.exe` automatically. With Make on Windows, set
+`PYTHON=python` if `python3` is unavailable. The LLVM IR files are written to
+`build/c-boundary/host.ll` and `device.ll`; the bundle is under
+`build/c-boundary/bundle/`. See [examples/c-boundary/README.md](examples/c-boundary/README.md)
+for the source contract, intermediate IR and current limitations.

@@ -63,3 +63,11 @@ A single manifest connects kernel identity, argument order, scalar payload,
 resource bindings and launch dimensions. Its request checker proves structural
 consistency only; it is not a live runtime handle table or GPU executor.
 Assets remain marked ready_for_unity=false until assembly/SDK/runtime gates pass.
+
+The source boundary example compiles real C/OpenCL C to LLVM and runs registered
+MLIR recovery Passes. A versioned AOT config supplies symbol roles and launch
+bounds; it does not supply a replacement kernel body. OpenCL metadata and a
+single direct f32 store prove the bounded output memref. Host uint32 handles
+become opaque IR types only after proving a direct descriptor/resource forwarding
+function with no arithmetic or additional handle callers. The temporary SPIR
+Host layout is explicitly a compiler probe, not the final ILP32 TargetInfo.

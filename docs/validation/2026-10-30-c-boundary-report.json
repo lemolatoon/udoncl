@@ -1,0 +1,9 @@
+{
+  "c_to_bundle": "passed",
+  "native_host_oracle": "original and raised passed",
+  "source_mutation_changes_shader": true,
+  "replayed_mlir_pipeline": "passed",
+  "rejections": 12,
+  "shader_validation": "2 generated HLSL fragments compiled; SPIR-V is only a test artifact",
+  "gpu_execution": "not executed"
+}

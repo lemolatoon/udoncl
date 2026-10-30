@@ -86,7 +86,7 @@ negative = [
     ('llvm.func fastcc @abi() { llvm.return }', 'calling convention'),
     ('llvm.func @attrs(%a: i32 {llvm.signext}) { llvm.return }', 'ABI argument/result'),
     ('llvm.func @target(%a: i32) attributes {passthrough = [["target-cpu", "x86-64"]]} { llvm.return }', 'target/passthrough'),
-    ('llvm.func @callee() llvm.func @caller() { llvm.call @callee() : () -> () llvm.return }', 'unproven instruction attribute'),
+    ('llvm.func @callee() llvm.func @caller() { llvm.call @callee() {unproven = true} : () -> () llvm.return }', 'unproven instruction attribute'),
     ('llvm.func @vector(%a: vector<4xi32>) { llvm.return }', 'memory/provenance'),
     ('llvm.func @unknown(%a: i32) -> i32 { %r = llvm.add %a, %a {unproven = true} : i32 llvm.return %r : i32 }', 'unproven instruction attribute'),
 ]

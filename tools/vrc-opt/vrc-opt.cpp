@@ -1,3 +1,4 @@
+#include "VRC/Conversion/BoundaryFrontend/Frontend.h"
 #include "VRC/Conversion/LLVMToHighLevel/Passes.h"
 #include "VRC/Conversion/Passes.h"
 #include "VRC/Dialect/UdonAsm/UdonAsmDialect.h"
@@ -15,6 +16,7 @@
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
 int main(int argc, char **argv) {
+  vrc::registerCBoundaryRecoveryPipeline();
   vrc::registerVRCRecoveryPasses();
   vrc::registerHighLevelRecoveryPipeline();
   vrc::registerVRCBoundaryPasses();

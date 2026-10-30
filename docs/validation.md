@@ -12,6 +12,7 @@ All pending target tests below are `TODO: verify on target SDK/client`.
 | HOST-05 | MLIR raising Pass and SCF pipeline | PASS: native differential oracle, source locations, 14 rejections + embedded expected diagnostics |
 | HOST-06 | Fixed local memory → memref Pass | PASS: array loops/aliases, native oracle, 29 rejection cases and expected diagnostics |
 | HOST-07 | Paired Host/Device lowering and boundary bundle | PASS on Linux: 56 rejection cases, deterministic assets, two standalone fragment shaders validated; see validation/2026-10-30-boundary-report.json |
+| HOST-08 | Real C/OpenCL C → paired boundary bundle | PASS on Linux: make example; native original/recovered Host oracle; source mutation; 12 rejection cases; validation/2026-10-30-c-boundary-report.json |
 | HOST-WIN-01 | Windows x64 MSVC configure/build/CTest | CI workflow provided, not executed here |
 | P0-SDK-01 | Public Program Asset generation and behaviour binding | Pending: Unity + installed Worlds SDK unavailable |
 | P0-VM-01 | Nine actual VM opcodes and COPY stack order | Pending SDK VM golden output |
@@ -65,8 +66,17 @@ OpenCL GPU-memory recovery remain pending; this does not complete P1 or G0/G2.
 
 Boundary compiler evidence is recorded in
 [validation/2026-10-30-boundary-report.json](validation/2026-10-30-boundary-report.json).
-The complete CTest suite passes 9/9 on Linux. Optional `glslangValidator` and
+The complete CTest suite now passes 10/10 on Linux, including the real C/OpenCL C example. Optional `glslangValidator` and
 `spirv-val` validate two standalone generated HLSL fragment shaders; SPIR-V is
 only a test artifact, not the compiler output route. Linux CI installs these
 validators. ShaderLab import, Unity compilation, byte fidelity on render targets,
 actual buffer handles, queue/fence/readback and Udon execution remain unverified.
+
+The source example is invoked with `make example`; `make test` configures,
+builds and runs CTest. Its LLVM input uses a temporary SPIR32 layout and explicit
+Host C calling convention. The final Host C11 TargetInfo remains a pending gate.
+[Source example evidence](validation/2026-10-30-c-boundary-report.json) includes
+native Host differential execution, replay through the registered MLIR pipeline,
+changed C producing changed HLSL, and 12 source/config rejection cases. Two
+source-generated fragment shaders were also compiled with glslang and validated
+with spirv-val. This is compiler validation, not SDK/client execution.

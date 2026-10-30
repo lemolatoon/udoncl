@@ -1,8 +1,10 @@
 # Small Host/Device boundary prototype
 
 The example in `examples/host-device-boundary/` implements both compiler paths
-against one shared contract. Input is prepared high-level MLIR; connecting
-OpenCL builtin/pointer raising to this GPU representation remains pending.
+against one shared contract. That original example uses prepared high-level MLIR. The
+[real C/OpenCL C example](../examples/c-boundary/README.md) now connects the
+restricted direct-output-pointer pattern through LLVM import and recovery.
+General OpenCL builtin/pointer raising remains pending.
 
 The Host exports scalar `add(i32, i32) -> i32` and calls a private helper through
 `udonhl.call`. A separate internal request function passes a buffer and typed

@@ -1,3 +1,4 @@
+#include "VRC/Conversion/BoundaryFrontend/Frontend.h"
 #include "VRC/ABI/Manifest/Boundary.h"
 #include "VRC/Conversion/Passes.h"
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
@@ -25,15 +26,23 @@ namespace {
 cl::opt<bool> emitBundle(
     "emit-boundary-bundle",
     cl::desc("Compile the initial Host/Device boundary MLIR pattern"));
+cl::opt<bool> emitLLVMBundle(
+    "emit-llvm-boundary-bundle",
+    cl::desc(
+        "Recover paired C/OpenCL LLVM IR using the input JSON ABI contract"));
+cl::opt<std::string> hostLLVM("host-llvm", cl::desc("Host LLVM IR from C"));
+cl::opt<std::string> deviceLLVM("device-llvm",
+                                cl::desc("Device LLVM IR from OpenCL C"));
 cl::opt<bool> checkRequest(
     "check-boundary-request",
     cl::desc(
         "Validate a request against a prototype manifest; no GPU dispatch"));
 cl::opt<std::string>
     requestFilename("request", cl::desc("JSON dispatch descriptor request"));
-cl::opt<std::string> inputFilename(cl::Positional,
-                                   cl::desc("<boundary MLIR or manifest.json>"),
-                                   cl::Required);
+cl::opt<std::string>
+    inputFilename(cl::Positional,
+                  cl::desc("<boundary MLIR, config.json or manifest.json>"),
+                  cl::Required);
 cl::opt<std::string> outputDirectory("o",
                                      cl::desc("New output bundle directory"));
 
@@ -114,7 +123,7 @@ int main(int argc, char **argv) {
   cl::ParseCommandLineOptions(
       argc, argv,
       "udoncl boundary prototype compiler (no Udon program emission yet)\n");
-  if (bool(emitBundle) == bool(checkRequest)) {
+  if (int(emitBundle) + int(emitLLVMBundle) + int(checkRequest) != 1) {
     errs() << "select exactly one boundary mode\n";
     return 1;
   }
@@ -154,7 +163,40 @@ int main(int argc, char **argv) {
                   ::vrc::vrcgpu::VRCGPUDialect, arith::ArithDialect,
                   func::FuncDialect, gpu::GPUDialect, memref::MemRefDialect>();
   MLIRContext context(registry);
-  auto module = parseSourceFile<ModuleOp>(inputFilename, &context);
+  OwningOpRef<ModuleOp> module;
+  std::map<std::string, std::string> files;
+  if (emitLLVMBundle) {
+    auto input = MemoryBuffer::getFile(inputFilename);
+    if (!input || hostLLVM.empty() || deviceLLVM.empty()) {
+      errs() << "LLVM bundle mode requires a JSON config, --host-llvm and "
+                "--device-llvm\n";
+      return 1;
+    }
+    auto config = json::parse((*input)->getBuffer());
+    if (!config) {
+      errs() << toString(config.takeError()) << "\n";
+      return 1;
+    }
+    if (!config->getAsObject()) {
+      errs() << "config must be a JSON object\n";
+      return 1;
+    }
+    module = ::vrc::importCBoundary(hostLLVM, deviceLLVM,
+                                    *config->getAsObject(), context);
+    if (!module || failed(verify(*module)))
+      return 1;
+    raw_string_ostream imported(files["frontend.imported.mlir"]);
+    module->print(imported);
+    imported << "\n";
+    PassManager recovery(&context);
+    ::vrc::buildCBoundaryRecoveryPipeline(recovery);
+    if (failed(recovery.run(*module)))
+      return 1;
+    raw_string_ostream recovered(files["frontend.recovered.mlir"]);
+    module->print(recovered);
+    recovered << "\n";
+  } else
+    module = parseSourceFile<ModuleOp>(inputFilename, &context);
   if (!module || failed(verify(*module)))
     return 1;
   PassManager manager(&context);
@@ -164,7 +206,6 @@ int main(int argc, char **argv) {
   manager.addPass(::vrc::createVerifyHostDeviceBoundaryPass());
   if (failed(manager.run(*module)) || failed(verify(*module)))
     return 1;
-  std::map<std::string, std::string> files;
   for (auto kernel : module->getOps<::vrc::vrcgpu::KernelOp>()) {
     std::string shader, hlsl;
     raw_string_ostream shaderOut(shader), hlslOut(hlsl);

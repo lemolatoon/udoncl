@@ -54,3 +54,9 @@ add_test(NAME host-device-boundary-diagnostics
   COMMAND vrc-opt --split-input-file --verify-diagnostics
     "${CMAKE_CURRENT_SOURCE_DIR}/boundary/invalid.mlir"
 )
+add_test(NAME c-boundary-example
+  COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/boundary/c_example.py"
+    $<TARGET_FILE:vrccl> $<TARGET_FILE:vrc-translate> $<TARGET_FILE:vrc-opt>
+    "${VRC_TEST_MLIR_OPT}" "${VRC_TEST_MLIR_TRANSLATE}" "${VRC_TEST_CLANG}"
+    "${PROJECT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/tests/c-boundary"
+)
