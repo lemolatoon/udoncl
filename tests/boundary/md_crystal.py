@@ -41,7 +41,7 @@ for name in ['md_drift', 'md_kick']:
     assert kernel['args'][0]['required_bytes'] == kernel['args'][1]['required_bytes'] == 1024
 
 commands = json.loads((output/'commands.json').read_text())
-compile_device = next(item['argv'] for item in commands if '-target' in item['argv'])
+compile_device = next(item['argv'] for item in commands if '-DMD_DRIFT=1' in item['argv'] and '-emit-llvm' in item['argv'])
 compiler = build/'tools/vrccl'/('vrccl'+suffix)
 source = (root/'examples/md-crystal/device.cl').read_text()
 variants = [

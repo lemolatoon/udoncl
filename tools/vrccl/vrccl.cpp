@@ -204,9 +204,10 @@ int main(int argc, char **argv) {
     PassManager recovery(&context);
     if (emitNativeDevice) {
       recovery.addNestedPass<ModuleOp>(createMem2Reg());
-      if (gatherProfile)
+      if (gatherProfile) {
+        recovery.addNestedPass<ModuleOp>(createCanonicalizerPass());
         recovery.addNestedPass<ModuleOp>(::vrc::createRaiseGatherDevicePass());
-      else
+      } else
         recovery.addNestedPass<ModuleOp>(
             ::vrc::createRaiseLLVMBoundaryDevicePass());
       recovery.addNestedPass<ModuleOp>(::vrc::createRaiseLLVMToScalarPass());

@@ -51,8 +51,16 @@ def main():
     text = (source/'device.cl').read_text(encoding='utf-8')
     (output/'device_source.h').write_text('#define UDONCL_DEVICE_SOURCE '+json.dumps(text)+'\n', encoding='utf-8')
     (output/'Bindings.h').write_text('inline const char *deviceSource() { return '+json.dumps(text)+'; }\n', encoding='utf-8')
+    # Verify the unselected source submitted by Host is a valid program with
+    # both kernels; the AOT selections below only specialize each entry point.
+    program_ir = output/'program.ll'
+    run([clang, '-target', 'spir-unknown-unknown', '-x', 'cl', '-cl-std=CL1.2',
+         '-S', '-emit-llvm', source/'device.cl', '-o', program_ir])
+    program_text = program_ir.read_text()
+    if any('spir_kernel void @'+name+'(' not in program_text for name in ['md_drift', 'md_kick']):
+        raise RuntimeError('the Host program source must contain both OpenCL entry points')
     fragments, objects, bindings = [], [], []
-    for name, identifier, defines in [('md_drift', 10, ['-DMD_DRIFT=1']), ('md_kick', 11, [])]:
+    for name, identifier, defines in [('md_drift', 10, ['-DMD_DRIFT=1']), ('md_kick', 11, ['-DMD_KICK=1'])]:
         ir = output/(name+'.ll')
         run([clang, '-target', 'spir-unknown-unknown', '-x', 'cl', '-cl-std=CL1.2', '-cl-kernel-arg-info', *defines,
              '-O0', '-Xclang', '-disable-O0-optnone', '-fomit-frame-pointer', '-ffp-contract=off', '-S', '-emit-llvm', source/'device.cl', '-o', ir])

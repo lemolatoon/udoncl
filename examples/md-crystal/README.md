@@ -26,7 +26,8 @@ LinuxはLavapipe、WindowsはD3D11 WARPで実際にFragment Shaderを実行し�
 熱力学的温度の厳密な局所測定ではありません。
 
 `host.c`は通常のOpenCL 1.2 APIでバッファ作成、引数設定、NDRange、readbackを
-行います。HostはLLVM → native ABIを保持するUdonHL call adapter → LLVM →
+行います。`device.cl`は通常のビルドでは両kernelを定義します。AOT側だけが
+`MD_DRIFT` / `MD_KICK`で各entryを個別に選択します。HostはLLVM → native ABIを保持するUdonHL call adapter → LLVM →
 native objectの経路です。これは完全なILP32 Host memory raisingではありません。
 nativeバイナリにはC製OpenCL subset runtimeと描画runtimeをリンクします。
 

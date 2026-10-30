@@ -38,15 +38,10 @@ INLINE float heater(float x, float y, float hx, float hy, float radius) {
   float w = 1.0f - (dx * dx + dy * dy) / (radius * radius);
   return w > 0.0f ? w : 0.0f;
 }
-#ifdef MD_DRIFT
-#define ENTRY md_drift
-#else
-#define ENTRY md_kick
-#endif
-__kernel void ENTRY(__global const float *state, __global float *out, float dt,
-                    float box_x, float box_y, float hand0_x, float hand0_y,
-                    float hand1_x, float hand1_y, float radius, float amplitude,
-                    uint step) {
+INLINE void md_update(__global const float *state, __global float *out,
+                      float dt, float box_x, float box_y, float hand0_x,
+                      float hand0_y, float hand1_x, float hand1_y, float radius,
+                      float amplitude, uint step, uint do_drift) {
   uint word = (uint)get_global_id(0);
   uint i = word >> 2, lane = word & 3u, base = i * 4u;
   float x = state[base], y = state[base + 1u];
@@ -73,27 +68,48 @@ __kernel void ENTRY(__global const float *state, __global float *out, float dt,
   }
   vx += 0.5f * dt * fx;
   vy += 0.5f * dt * fy;
-#ifdef MD_DRIFT
-  x += dt * vx;
-  y += dt * vy;
-  x -= box_x * floor(x / box_x);
-  y -= box_y * floor(y / box_y);
-#else
-  // Paired, zero-net-momentum random impulses provide a localized external
-  // heater. Both members of each pair must be inside the heat footprint.
-  uint partner = (i ^ 1u) * 4u;
-  float px = state[partner], py = state[partner + 1u];
-  float w0 = heater(x, y, hand0_x, hand0_y, radius),
-        w1 = heater(x, y, hand1_x, hand1_y, radius);
-  float p0 = heater(px, py, hand0_x, hand0_y, radius),
-        p1 = heater(px, py, hand1_x, hand1_y, radius);
-  float w = w0 > w1 ? w0 : w1, p = p0 > p1 ? p0 : p1;
-  float weight = w < p ? w : p;
-  float sign = (i & 1u) ? -1.0f : 1.0f;
-  uint seed = (i >> 1) * 747796405u + step * 2891336453u;
-  vx += sign * amplitude * weight * noise(seed);
-  vy += sign * amplitude * weight * noise(seed + 277803737u);
-#endif
+  if (do_drift) {
+    x += dt * vx;
+    y += dt * vy;
+    x -= box_x * floor(x / box_x);
+    y -= box_y * floor(y / box_y);
+  } else {
+    // Paired, zero-net-momentum random impulses provide a localized external
+    // heater. Both members of each pair must be inside the heat footprint.
+    uint partner = (i ^ 1u) * 4u;
+    float px = state[partner], py = state[partner + 1u];
+    float w0 = heater(x, y, hand0_x, hand0_y, radius),
+          w1 = heater(x, y, hand1_x, hand1_y, radius);
+    float p0 = heater(px, py, hand0_x, hand0_y, radius),
+          p1 = heater(px, py, hand1_x, hand1_y, radius);
+    float w = w0 > w1 ? w0 : w1, p = p0 > p1 ? p0 : p1;
+    float weight = w < p ? w : p;
+    float sign = (i & 1u) ? -1.0f : 1.0f;
+    uint seed = (i >> 1) * 747796405u + step * 2891336453u;
+    vx += sign * amplitude * weight * noise(seed);
+    vy += sign * amplitude * weight * noise(seed + 277803737u);
+  }
   float value = lane == 0u ? x : lane == 1u ? y : lane == 2u ? vx : vy;
   out[word] = value;
 }
+
+// Without build-time selection this is one valid OpenCL program containing
+// both entry points. AOT compilation selects each independently.
+#ifndef MD_KICK
+__kernel void md_drift(__global const float *state, __global float *out,
+                       float dt, float box_x, float box_y, float hand0_x,
+                       float hand0_y, float hand1_x, float hand1_y,
+                       float radius, float amplitude, uint step) {
+  md_update(state, out, dt, box_x, box_y, hand0_x, hand0_y, hand1_x, hand1_y,
+            radius, amplitude, step, 1u);
+}
+#endif
+#ifndef MD_DRIFT
+__kernel void md_kick(__global const float *state, __global float *out,
+                      float dt, float box_x, float box_y, float hand0_x,
+                      float hand0_y, float hand1_x, float hand1_y, float radius,
+                      float amplitude, uint step) {
+  md_update(state, out, dt, box_x, box_y, hand0_x, hand0_y, hand1_x, hand1_y,
+            radius, amplitude, step, 0u);
+}
+#endif
