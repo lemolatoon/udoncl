@@ -35,3 +35,13 @@ add_test(NAME llvm-recovery-diagnostics
   COMMAND vrc-opt --vrc-raise-llvm-to-scalar --split-input-file --verify-diagnostics
     "${CMAKE_CURRENT_SOURCE_DIR}/recovery/invalid.mlir"
 )
+add_test(NAME llvm-memory-recovery
+  COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/recovery/memory.py"
+    $<TARGET_FILE:vrc-translate> $<TARGET_FILE:vrc-opt>
+    "${VRC_TEST_MLIR_OPT}" "${VRC_TEST_MLIR_TRANSLATE}" "${VRC_TEST_CLANG}"
+    "${PROJECT_BINARY_DIR}/tests/memory"
+)
+add_test(NAME llvm-memory-diagnostics
+  COMMAND vrc-opt --vrc-raise-llvm-memory --split-input-file --verify-diagnostics
+    "${CMAKE_CURRENT_SOURCE_DIR}/recovery/memory-invalid.mlir"
+)

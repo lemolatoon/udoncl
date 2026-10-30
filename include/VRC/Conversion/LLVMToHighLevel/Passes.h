@@ -8,7 +8,7 @@ namespace vrc {
 #define GEN_PASS_REGISTRATION
 #include "VRC/Conversion/LLVMToHighLevel/Passes.h.inc"
 
-// Includes scalar conversion followed by upstream CFG-to-SCF structuring.
+// Promotes locals, recovers proven memory/scalars, then structures CFG as SCF.
 void registerHighLevelRecoveryPipeline();
 } // namespace vrc
 

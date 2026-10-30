@@ -2,6 +2,7 @@ add_mlir_library(VRCLLVMToHighLevelMLIR DISABLE_INSTALL
   Import.cpp
   FrontendMetadata.cpp
   RaiseLLVMToScalar.cpp
+  RaiseLLVMMemory.cpp
   DEPENDS VRCRecoveryPassIncGen
   LINK_LIBS PUBLIC
     MLIRArithDialect
@@ -11,6 +12,7 @@ add_mlir_library(VRCLLVMToHighLevelMLIR DISABLE_INSTALL
     MLIRFuncDialect
     MLIRLLVMDialect
     MLIRLLVMIRToLLVMTranslation
+    MLIRMemRefDialect
     MLIRPass
     MLIRSCFDialect
     MLIRTargetLLVMIRImport

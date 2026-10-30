@@ -1,0 +1,47 @@
+Fixed local-memory recovery validation, 2026-10-30 UTC
+Linux x86_64; GCC 15.2.0; pinned Clang/LLVM/MLIR 23.1.4 official SDK
+Windows / Unity SDK VM / GPU / final ILP32 host ABI: not executed
+
+$ cmake --build --preset udoncl
+[1/4] Building CXX object lib/Conversion/LLVMToHighLevel/CMakeFiles/obj.VRCLLVMToHighLevelMLIR.dir/RaiseLLVMMemory.cpp.o
+[2/4] Linking CXX static library lib/Conversion/LLVMToHighLevel/libVRCLLVMToHighLevelMLIR.a
+[3/4] Linking CXX executable tools/vrc-translate/vrc-translate
+[4/4] Linking CXX executable tools/vrc-opt/vrc-opt
+
+$ ctest --preset udoncl
+Test project /home/khishida/workspace/udoncl/build/udoncl
+    Start 1: dialect-roundtrip
+1/7 Test #1: dialect-roundtrip ................   Passed    0.07 sec
+    Start 2: llvm-import
+2/7 Test #2: llvm-import ......................   Passed    0.06 sec
+    Start 3: opencl-frontend-metadata
+3/7 Test #3: opencl-frontend-metadata .........   Passed    0.23 sec
+    Start 4: llvm-high-level-recovery
+4/7 Test #4: llvm-high-level-recovery .........   Passed    0.26 sec
+    Start 5: llvm-recovery-diagnostics
+5/7 Test #5: llvm-recovery-diagnostics ........   Passed    0.01 sec
+    Start 6: llvm-memory-recovery
+6/7 Test #6: llvm-memory-recovery .............   Passed    0.47 sec
+    Start 7: llvm-memory-diagnostics
+7/7 Test #7: llvm-memory-diagnostics ..........   Passed    0.01 sec
+
+100% tests passed, 0 tests failed out of 7
+
+Total Test time (real) =   1.12 sec
+
+README array-loop import/raising example executed successfully.
+Standalone vrc-raise-llvm-memory reparses/verifies without unrealized pointer casts.
+Full pipeline: mem2reg -> proven local memory -> scalar -> upstream CFG-to-SCF.
+Original LLVM and re-lowered native executables: 1309 independent C oracle checks each.
+29 rejection cases; selected unsafe cases also rejected by the full pipeline.
+9 embedded expected-error diagnostic cases passed.
+32-bit pointers, 64-bit pointers, and 64-bit pointers with 32-bit indices: conversion verified.
+Source locations and explicit allocation/access alignments preserved.
+Aggregate a:128 does not pad these arrays; accepted and verified.
+Padded scalar strides and conflicting/unrepresentable layouts rejected.
+Captured raw source layout retained as vrc.llvm_data_layout and queried with LLVM DataLayout.
+CMake compile database: 10 translation units.
+clang-format 23.1.4 --dry-run --Werror passed; Python memory.py compiles.
+
+Per-command stderr and IR artifacts are retained in build/udoncl/tests/memory.
+Machine-readable summary: docs/validation/2026-10-30-memory-report.json.

@@ -8,6 +8,7 @@
 mlir::OwningOpRef<mlir::ModuleOp>
 vrc::importLLVM(std::unique_ptr<llvm::Module> module,
                 mlir::MLIRContext &context, std::string *sidecar) {
+  std::string sourceLayout = module->getDataLayoutStr();
   std::string source;
   llvm::raw_string_ostream stream(source);
   module->print(stream, nullptr);
@@ -24,8 +25,11 @@ vrc::importLLVM(std::unique_ptr<llvm::Module> module,
   mlir::registerLLVMDialectImport(registry);
   context.appendDialectRegistry(registry);
   auto imported = mlir::translateLLVMIRToModule(std::move(module), &context);
-  if (imported)
+  if (imported) {
+    (*imported)->setAttr("vrc.llvm_data_layout",
+                         mlir::StringAttr::get(&context, sourceLayout));
     (*imported)->setAttr("vrc.frontend",
                          mlir::StringAttr::get(&context, summary));
+  }
   return imported;
 }

@@ -4,6 +4,7 @@
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/Passes.h"
@@ -283,7 +284,7 @@ struct RaiseLLVMToScalarPass
     ConversionTarget target(getContext());
     target.addLegalOp<ModuleOp>();
     target.addLegalDialect<func::FuncDialect, arith::ArithDialect,
-                           cf::ControlFlowDialect>();
+                           cf::ControlFlowDialect, memref::MemRefDialect>();
     target.addIllegalDialect<LLVM::LLVMDialect>();
     RewritePatternSet patterns(&getContext());
     patterns.add<FunctionPattern, ConstantPattern, ComparePattern,
@@ -304,9 +305,10 @@ struct RaiseLLVMToScalarPass
 void registerHighLevelRecoveryPipeline() {
   PassPipelineRegistration<>(
       "vrc-recover-high-level",
-      "Raise scalar LLVM and structure the recovered CFG",
+      "Recover proven LLVM memory/scalars and structure the recovered CFG",
       [](OpPassManager &manager) {
         manager.addPass(mlir::createMem2Reg());
+        manager.addPass(createRaiseLLVMMemoryPass());
         manager.addPass(createRaiseLLVMToScalarPass());
         manager.addPass(mlir::createLiftControlFlowToSCFPass());
       });

@@ -74,9 +74,9 @@ Current components:
 
 - Four separate TableGen dialect libraries; only the nine `udonasm` operations are registered.
 - `vrc-opt`: MLIR parser/printer with operation verification, rejects unknown ops by default.
-- `VRCLLVMToHighLevelMLIR`: independent import/metadata and scalar/CFG recovery library for host/device development.
+- `VRCLLVMToHighLevelMLIR`: independent import/metadata, local-memory and scalar/CFG recovery library for host/device development.
 - `vrc-translate --import-llvm input.ll`: LLVM dialect import with preserved frontend metadata and optional JSON sidecar.
-- `vrc-raise-llvm-to-scalar` MLIR Pass and `vrc-recover-high-level` pipeline: scalar/CFG conversion and upstream memory promotion / SCF structuring.
+- `vrc-raise-llvm-memory` / `vrc-raise-llvm-to-scalar` MLIR Passes and the `vrc-recover-high-level` pipeline: proven fixed local arrays, scalar/CFG conversion and upstream SCF structuring.
 
 The other 48 operations, full verifiers/lowerings, assembly emitter, host ABI,
 OpenCL runtime, generated shaders and Unity integration are not implemented.
@@ -91,13 +91,30 @@ build/udoncl/tools/vrc-opt/vrc-opt --pass-pipeline="builtin.module(vrc-recover-h
 
 The raising Pass is defined in TableGen and uses MLIR dialect conversion;
 `--vrc-raise-llvm-to-scalar` runs just scalar/CFG conversion. The composed pipeline
-first runs upstream mem2reg, then scalar raising, then upstream CFG-to-SCF.
+first runs upstream mem2reg, then proven local-memory recovery, scalar raising,
+then upstream CFG-to-SCF.
 Unsupported memory, pointers, calling conventions, instructions and semantic
-flags fail explicitly. This is the first recovery stage; general memref, affine,
-OpenCL builtin, local-memory and barrier/dependence recovery remain pending.
+flags fail explicitly. General memory/alias, affine, OpenCL builtin, GPU local
+memory and barrier/dependence recovery remain pending.
 See [docs/recovery.md](docs/recovery.md) for scope, sidecar schema and P0 findings.
 
 `ctest --preset udoncl` also runs the Clang OpenCL import matrix and native
 recovery differential tests. It uses tools from the selected SDK, never system
 Clang/opt from PATH. IR, sidecars, command logs and the OpenCL report are retained
 in `build/udoncl/tests/opencl`; recovery artifacts are in `build/udoncl/tests/recovery`.
+
+Try fixed-array recovery (initialization, update and sum):
+
+```text
+build/udoncl/tools/vrc-translate/vrc-translate --import-llvm tests/recovery/array-loop.ll -o build/array.llvm.mlir
+build/udoncl/tools/vrc-opt/vrc-opt --pass-pipeline="builtin.module(vrc-recover-high-level)" --verify-each build/array.llvm.mlir -o build/array.high.mlir
+```
+
+`build/array.high.mlir` contains `memref.alloca`, `memref.load/store` and
+`scf.while`. For just the memory conversion, use `--vrc-raise-llvm-memory`
+instead of the pipeline. That Pass leaves scalar LLVM operations for the next
+stage. Memory recovery currently requires fixed-size, homogeneous, nonescaping
+entry-block allocations with proven bounds, alignment and initialization.
+Unsupported pointer/alias, volatile/atomic and byte reinterpretation cases fail.
+Memory test IR, native executables, diagnostics and reports are saved under
+`build/udoncl/tests/memory`.

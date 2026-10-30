@@ -2,7 +2,7 @@
 
 The independent `VRCLLVMToHighLevelMLIR` library owns import metadata capture
 and raising. The design remains comprehensive high-level recovery as specified
-in PLAN.md §4. This implementation is the first supported stage, with explicit
+in PLAN.md §4. This implementation supports scalar/CFG and proven fixed local memory, with explicit
 errors for unimplemented semantics; it is not the completed recovery pipeline.
 
 ## P0 OpenCL findings (Clang/LLVM/MLIR 23.1.4)
@@ -55,7 +55,11 @@ for identical output. The source hash ties summaries to the captured module. Gen
 operands outside strings/integers are retained textually; the complete canonical
 IR is the fallback source. No inference of array bounds, aliasing, buffer sizes,
 barrier uniformity or helper ownership is claimed from these records alone.
-The current Pass does not consume the sidecar as proof of memory legality.
+The sidecar is not treated as proof of aliasing, bounds or initialization. The
+importer also retains the original layout as `vrc.llvm_data_layout` on the MLIR
+module so recovery can query LLVM DataLayout directly, including rules that are
+not represented in DLTI. Contradictory source/MLIR pointer layouts, padded scalar
+strides and conflicting explicit LLVM layouts are diagnosed.
 
 ## MLIR Pass conventions and scope
 
@@ -88,12 +92,14 @@ structuring transform, not silently accepted from unsupported LLVM input.
 `vrc-recover-high-level` is a registered Pass pipeline:
 
 1. Upstream `mem2reg` promotes local storage proven promotable by memory-slot interfaces.
-2. `vrc-raise-llvm-to-scalar` converts to `func` / `arith` / `cf`.
-3. Upstream `lift-cf-to-scf` reconstructs structured control flow.
+2. `vrc-raise-llvm-memory` recovers proven local storage as `memref`.
+3. `vrc-raise-llvm-to-scalar` converts the remaining supported LLVM operations to `func` / `arith` / `cf`.
+4. Upstream `lift-cf-to-scf` reconstructs structured control flow.
 
-General globals/GEP/alias/byte-memory/aggregate recovery to memref, induction and
-affine analysis, OpenCL builtins to GPU, local-size specialization and barrier
-legality remain required future stages. Unpromotable LLVM memory is rejected.
+Globals, pointer arguments, general alias/byte-memory/struct recovery, general
+induction and affine analysis, OpenCL builtins to GPU, local-size specialization
+and barrier legality remain required future stages. Memory that cannot be
+promoted or proven by local-memory recovery is rejected.
 
 ## Verification
 
@@ -113,3 +119,65 @@ Upstream references used for the implementation:
 - https://mlir.llvm.org/docs/DialectConversion/
 - https://mlir.llvm.org/docs/Dialects/ArithOps/
 - LLVM 23.1.4 installed `ControlFlowToSCF.h`, `Passes.td`, LLVM/Arith ODS and interfaces.
+
+## Fixed local memory recovery
+
+`vrc-raise-llvm-memory` is a TableGen-defined module Pass in the same independent
+library. It analyses the entire input before rewriting, then uses a value-aware
+`TypeConverter`, conversion patterns and `applyPartialConversion`: alloca, GEP,
+load and store are illegal in its output, while other LLVM operations remain for
+the scalar Pass. Two opaque pointers from different allocations may become
+memrefs of different shape and element type. There is no unrealized pointer-cast
+fallback. Later scalar conversion still requires full LLVM-operation elimination.
+
+Supported storage is a positive fixed count of homogeneous i8/i16/i32/i64/f32/f64
+scalars or nested arrays, allocated in the function entry block in AS0. The
+allocation must belong to the module being transformed; nested module layout
+scopes are rejected. LLVM and MLIR strides are checked against the recovered
+leaf type. Allocation byte sizes are capped at INT32_MAX as an implementation
+limit, and pointer/index layouts must be supported 32/64-bit layouts. This cap
+is not a measured Udon heap or GPU allocation limit.
+
+GEPs preserve object-relative offsets and provenance. The Pass deliberately
+flattens nested arrays to `memref<NxT>`: LLVM permits some indices to cross an
+inner-array boundary while staying in the same allocation. Each intermediate
+GEP offset must be proven within `[0,N]`; load/store must be within `[0,N)`.
+One-past pointers are accepted only as intermediates; escaping them or
+reading/writing through them is rejected. The supported GEP flags are none and
+inbounds. Type reinterpretation and padded layouts require future raw-memory
+recovery rather than silently changing stride or element type.
+
+Dynamic bounds are proven for constants, nonnegative constant bit masks,
+widening integer casts and simple guarded induction variables. A counted-loop
+proof requires two incoming unconditional edges, a nonnegative static start,
+an `iv + 1` backedge, a constant `iv < bound` signed/unsigned header comparison,
+and a true-edge body dominating the use and backedge. The true destination
+must have a unique predecessor. Unit steps cannot wrap in the supported range.
+No annotation or nearby comparison is accepted without those CFG checks.
+Other induction forms and arbitrary runtime bounds remain unsupported.
+
+Every loaded element must be definitely initialized by either a dominating store
+to the same symbolic offset, dominating constant stores covering all elements,
+or a complete `[0,N)` initialization loop. That loop's store must dominate the
+backedge, and its unique false exit must dominate the later load. Partial loops,
+conditional/skipped initialization and bypassed guards are rejected.
+
+Allocation alignment and offset divisibility prove each access's required
+alignment. Recovered load/store operations carry an explicit alignment, including
+when the LLVM operation used its default. User-visible pointers, calls with local
+pointers, pointer phi/select merges, ptrtoint, volatile/atomic access, lifetime
+intrinsics, memcpy and unmodelled access attributes are rejected. Supporting
+these cases later still requires the complete C byte-memory model.
+
+`llvm-memory-recovery` checks counted-loop initialization/update/sum, widened
+indices, masked indices, multiple allocation types, chained GEP aliases, a
+one-past-and-back address, and legal cross-subarray addressing. Both original
+LLVM and re-lowered recovery execute against an independent C oracle (1,309
+checks each). Conversion is additionally verified for 32-bit pointers,
+64-bit pointers with 32-bit indices and aggregate alignment. Twenty-nine
+negative cases and split-input expected diagnostics test proof failures and
+layout consistency. GPU memory, general alias analysis and the final C ABI
+remain unvalidated. Artifacts are under `build/udoncl/tests/memory`.
+
+Additional upstream references: https://llvm.org/docs/GetElementPtr.html and
+https://mlir.llvm.org/docs/Dialects/MemRef/ .

@@ -42,3 +42,13 @@ semantics. A registered pipeline composes upstream mem2reg, scalar raising and
 upstream CFG-to-SCF. Broader memory, affine, GPU and barrier recovery remain part
 of the agreed design. The importer captures frontend metadata before translation;
 its schema v1 sidecar includes canonical LLVM IR and a SHA256 source fingerprint.
+
+Fixed local-memory recovery uses a separate TableGen MLIR module Pass. It traces
+alloca/GEP provenance, checks LLVM/DataLayout stride against homogeneous memref
+storage and proves bounds, alignment, nonescape and definite initialization.
+Nested arrays flatten to one dimension so LLVM cross-subarray GEP semantics are
+preserved. Only structurally proven constant/masked/counted-loop offsets are
+accepted. Unsupported byte aliasing, pointer API/escape and volatile/atomic
+semantics remain diagnostics, not a change to the agreed C memory model.
+The original LLVM layout is retained as vrc.llvm_data_layout; LLVM layout queries
+and consistency checks supplement DLTI. This does not claim the final host ABI.

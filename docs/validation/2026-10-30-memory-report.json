@@ -1,0 +1,165 @@
+{
+  "llvm_version": "23.1.4",
+  "host_execution": "linux",
+  "native_differential": "original and recovered executables passed the independent C oracle",
+  "oracle_checks_per_executable": 1309,
+  "fixtures": [
+    "array-loop.ll",
+    "array-aliases.ll"
+  ],
+  "layout_conversion": [
+    "32-bit pointer",
+    "64-bit pointer",
+    "64-bit pointer with 32-bit index",
+    "aggregate alignment"
+  ],
+  "source_locations": "preserved",
+  "unsupported_cases": [
+    {
+      "name": "dynamic-allocation",
+      "diagnostic": "positive static constant",
+      "returncode": 1
+    },
+    {
+      "name": "zero-allocation",
+      "diagnostic": "positive static constant",
+      "returncode": 1
+    },
+    {
+      "name": "struct-storage",
+      "diagnostic": "homogeneous scalar/array",
+      "returncode": 1
+    },
+    {
+      "name": "odd-width",
+      "diagnostic": "homogeneous scalar/array",
+      "returncode": 1
+    },
+    {
+      "name": "nonentry-alloca",
+      "diagnostic": "entry-block allocas",
+      "returncode": 1
+    },
+    {
+      "name": "address-space",
+      "diagnostic": "address-space-zero",
+      "returncode": 1
+    },
+    {
+      "name": "inalloca",
+      "diagnostic": "address-space-zero",
+      "returncode": 1
+    },
+    {
+      "name": "unknown-index",
+      "diagnostic": "index bounds",
+      "returncode": 1
+    },
+    {
+      "name": "out-of-bounds",
+      "diagnostic": "outside the allocation",
+      "returncode": 1
+    },
+    {
+      "name": "one-past-dereference",
+      "diagnostic": "load/store bounds",
+      "returncode": 1
+    },
+    {
+      "name": "mixed-load",
+      "diagnostic": "mixed access types",
+      "returncode": 1
+    },
+    {
+      "name": "mixed-gep",
+      "diagnostic": "reinterpretation",
+      "returncode": 1
+    },
+    {
+      "name": "volatile",
+      "diagnostic": "volatile and atomic",
+      "returncode": 1
+    },
+    {
+      "name": "atomic",
+      "diagnostic": "volatile and atomic",
+      "returncode": 1
+    },
+    {
+      "name": "alignment",
+      "diagnostic": "access alignment",
+      "returncode": 1
+    },
+    {
+      "name": "escape",
+      "diagnostic": "escapes",
+      "returncode": 1
+    },
+    {
+      "name": "ptrtoint",
+      "diagnostic": "escapes",
+      "returncode": 1
+    },
+    {
+      "name": "pointer-select",
+      "diagnostic": "pointer provenance",
+      "returncode": 1
+    },
+    {
+      "name": "uninitialized",
+      "diagnostic": "definite initialization",
+      "returncode": 1
+    },
+    {
+      "name": "partially-initialized",
+      "diagnostic": "definite initialization",
+      "returncode": 1
+    },
+    {
+      "name": "nuw-gep",
+      "diagnostic": "GEP no-wrap flags",
+      "returncode": 1
+    },
+    {
+      "name": "nonzero-stack-space",
+      "diagnostic": "default stack memory space",
+      "returncode": 1
+    },
+    {
+      "name": "padded-scalar",
+      "diagnostic": "padding",
+      "returncode": 1
+    },
+    {
+      "name": "padded-nested-array",
+      "diagnostic": "padding",
+      "returncode": 1
+    },
+    {
+      "name": "index-width",
+      "diagnostic": "pointer index width",
+      "returncode": 1
+    },
+    {
+      "name": "incomplete-init-loop",
+      "diagnostic": "definite initialization",
+      "returncode": 1
+    },
+    {
+      "name": "nonunit-induction",
+      "diagnostic": "index bounds",
+      "returncode": 1
+    },
+    {
+      "name": "skipped-init-store",
+      "diagnostic": "definite initialization",
+      "returncode": 1
+    },
+    {
+      "name": "bypassed-guard",
+      "diagnostic": "index bounds",
+      "returncode": 1
+    }
+  ],
+  "sdk_vm_gpu_final_host_abi": "not tested"
+}
