@@ -10,8 +10,11 @@ macOS and Windows x64; the initial generated world targets VRChat PC (Windows).
 
 Prerequisites: CMake 3.30+, Ninja, Python 3.12+, and a C++17 compiler.
 Git is required when building LLVM from source.
-For Windows, install Visual Studio 2022 with Desktop development with C++,
-and run these commands from **x64 Native Tools / Developer PowerShell**.
+For the prebuilt Windows SDK, install **Visual Studio 2026** with Desktop
+development with C++, and run these commands from its **x64 Native Tools /
+Developer PowerShell**. The locked SDK uses newer MSVC STL symbols unavailable
+in Visual Studio 2022; a VS 2022 source build must use an SDK built with that
+toolset instead.
 
 ```text
 python -m pip install -r scripts/requirements-llvm.txt

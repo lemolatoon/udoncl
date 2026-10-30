@@ -8,7 +8,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, windows-2022]
+        # The locked community SDK is built/tested with VS 2026 on windows-2025.
+        # Older MSVC STL libraries cannot satisfy its __std_* references.
+        os: [ubuntu-24.04, windows-2025]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
     steps:
@@ -20,6 +22,7 @@ jobs:
         if: runner.os == 'Windows'
         with:
           arch: x64
+          vsversion: '18.0'
       - name: Restore pinned LLVM and MLIR
         uses: actions/cache/restore@v4
         id: llvm

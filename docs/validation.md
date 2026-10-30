@@ -14,7 +14,7 @@ All pending target tests below are `TODO: verify on target SDK/client`.
 | HOST-07 | Paired Host/Device lowering and boundary bundle | PASS on Linux: 56 rejection cases, deterministic assets, two standalone fragment shaders validated; see validation/2026-10-30-boundary-report.json |
 | HOST-08 | Real C/OpenCL C → paired boundary bundle | PASS on Linux: make example; native original/recovered Host oracle; source mutation; 12 rejection cases; validation/2026-10-30-c-boundary-report.json |
 | HOST-09 | Prebuilt SDK install and CPU parallelism | PASS on Linux: fresh official archive → configure/build; 9 installer tests and 5 CPU/build-command tests; validation/2026-10-30-prebuilt-sdk.json |
-| HOST-WIN-01 | Windows x64 MSVC configure/build/CTest | CI workflow provided, not executed here |
+| HOST-WIN-01 | Windows x64 MSVC configure/build/CTest | Archive install/configure PASS in CI; VS 2022 link failed with newer SDK STL symbols. Workflow now selects matching VS 2026/windows-2025; rerun pending. See validation/2026-10-30-windows-ci.json |
 | P0-SDK-01 | Public Program Asset generation and behaviour binding | Pending: Unity + installed Worlds SDK unavailable |
 | P0-VM-01 | Nine actual VM opcodes and COPY stack order | Pending SDK VM golden output |
 | P0-ABI-01 | Two behaviours, exported slots, CustomEvent sync/callback/reentrancy | Pending SDK VM + PC client |
@@ -27,7 +27,8 @@ All pending target tests below are `TODO: verify on target SDK/client`.
 
 Environment: Linux x86_64 host. No Unity/VRChat Worlds SDK installation located
 under the examined user/opt directories. No PC VRChat client tests executed.
-Windows CI is configured but has no execution result in this workspace.
+Windows CI archive installation and configure passed in run 41055911752.
+Its VS 2022 link failure is recorded below; a native Windows pass is not yet claimed.
 
 P0/G0 must be validated before claiming GPU/SDK functionality. P1 remains
 partial: 17/57 operations have ODS definitions. The boundary prototype includes
@@ -90,3 +91,14 @@ were checked. PE/library metadata confirmed the selected SDK's Release `/MD`
 runtime and assertion-free ABI; Windows binaries were not executed here.
 Windows native configure/build/CTest still awaits the CI run. Both matrix jobs
 now install archives on cache misses, without compiling LLVM from source.
+
+Windows CI run [41055911752](https://github.com/lemolatoon/udoncl/actions/runs/41055911752/job/124063257866)
+failed linking `vrc-opt`: `__std_rotate`, `__std_min_element_8i` and related MSVC
+STL helpers required by the prebuilt LLVM/MLIR libraries were absent from the
+runner's MSVC 14.44/VS 2022 standard library. The SDK's pinned
+[release workflow](https://github.com/munich-quantum-software/portable-mlir-toolchain/blob/2026.10.28/.github/workflows/build-portable-mlir-toolchain.yml)
+builds and tests Windows x64 on `windows-2025`. That image uses
+[Visual Studio 2026](https://github.blog/changelog/2026-05-14-github-actions-upcoming-image-migrations/).
+The project now uses the same runner and explicitly selects VS 18.0. No
+compatibility stubs or changes to LLVM libraries were introduced. Native Windows
+validation of this runner change requires the next CI run.

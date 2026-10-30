@@ -1,0 +1,27 @@
+{
+  "failed_run": "https://github.com/lemolatoon/udoncl/actions/runs/41055911752/job/124063257866",
+  "head_sha": "f3c42e77eb436837e632869de1731dc32e5e794f",
+  "archive_install": "passed",
+  "cmake_configure": "passed",
+  "build": "failed at vrc-opt link",
+  "runner": "windows-2022",
+  "compiler": "MSVC 14.44.35207 / Visual Studio 2022",
+  "missing_symbols": [
+    "__std_min_element_8i",
+    "__std_max_element_8i",
+    "__std_rotate",
+    "__std_max_element_1u",
+    "__std_max_element_8u",
+    "__std_max_element_4u",
+    "__std_find_last_not_ch_pos_1",
+    "__std_find_not_ch_1"
+  ],
+  "cause": "The locked Windows SDK was built against a newer MSVC STL than the consumer runner provided.",
+  "upstream_build_workflow": "https://github.com/munich-quantum-software/portable-mlir-toolchain/blob/2026.10.28/.github/workflows/build-portable-mlir-toolchain.yml",
+  "fix": {
+    "runner": "windows-2025",
+    "visual_studio_version": "18.0",
+    "llvm_source_build": "not added"
+  },
+  "native_windows_rerun": "pending; no Windows runtime execution available locally"
+}
