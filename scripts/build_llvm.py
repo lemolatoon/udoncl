@@ -7,6 +7,7 @@ import argparse
 import json
 from pathlib import Path
 import subprocess
+from build import available_cpu_count
 
 ROOT = Path(__file__).resolve().parents[1]
 LOCK = json.loads((ROOT / 'cmake/llvm-lock.json').read_text())
@@ -16,7 +17,8 @@ def run(*args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--jobs', type=int, default=2)
+    parser.add_argument('--jobs', type=int, default=available_cpu_count(),
+                        help='Parallel jobs (default: available CPU count)')
     parser.add_argument('--configure-only', action='store_true')
     args = parser.parse_args()
     if args.jobs < 1:

@@ -8,24 +8,40 @@ LLVM, MLIR and Clang are pinned together to **23.1.4** (commit recorded in
 [cmake/llvm-lock.json](cmake/llvm-lock.json)). Compiler development targets Linux,
 macOS and Windows x64; the initial generated world targets VRChat PC (Windows).
 
-Prerequisites: CMake 3.30+, Ninja, Python 3, Git, and a C++17 compiler.
+Prerequisites: CMake 3.30+, Ninja, Python 3.12+, and a C++17 compiler.
+Git is required when building LLVM from source.
 For Windows, install Visual Studio 2022 with Desktop development with C++,
 and run these commands from **x64 Native Tools / Developer PowerShell**.
 
 ```text
-python scripts/build_llvm.py --jobs 2
+python -m pip install -r scripts/requirements-llvm.txt
+python scripts/install_llvm.py
 cmake --preset udoncl
-cmake --build --preset udoncl
+python scripts/build.py
 ctest --preset udoncl
 ```
 
-The dependency build installs into `.deps/llvm23`. Once installed, subsequent
-builds only need the last three commands above. CMake automatically prefers this
-repository-local SDK, including when configuring without presets:
+The prebuilt installer verifies pinned SHA256 checksums and installs into
+`.deps/llvm23`; it never builds LLVM. Linux uses the official LLVM SDK archive.
+Windows uses the community [Portable MLIR Toolchain](https://github.com/munich-quantum-software/portable-mlir-toolchain/releases/tag/2026.10.28)
+Release/noassert SDK and supplements it with only `clang.exe` and Clang resource
+files from the official LLVM archive. All LLVM/MLIR headers, libraries and CMake
+packages come from the same SDK; official LLVM link libraries are not overlaid.
+Download URLs and checksums are recorded in `cmake/llvm-lock.json`.
+
+On Ubuntu, install the SDK's system libraries before configuring:
+
+```text
+sudo apt-get install zlib1g-dev libzstd-dev libxml2-dev
+```
+
+Once installed, subsequent builds only need the last three commands above.
+CMake automatically prefers this repository-local SDK, including when
+configuring without presets:
 
 ```text
 cmake -S . -B build/udoncl -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build/udoncl --parallel 2
+python scripts/build.py --build-dir build/udoncl
 ctest --test-dir build/udoncl --output-on-failure
 ```
 
@@ -39,7 +55,7 @@ To use another complete 23.1.4 installation explicitly:
 
 ```text
 cmake --preset udoncl -DVRC_LLVM_ROOT="path/to/llvm"
-cmake --build --preset udoncl
+python scripts/build.py
 ctest --preset udoncl
 ```
 
@@ -48,7 +64,7 @@ To return to automatic repository-local discovery, configure with
 settings when changing compilers or toolchains (then supply any desired root).
 `CMAKE_PREFIX_PATH` alone does not override an available repository-local SDK.
 LLVM and MLIR must come from the same build, architecture and C++ runtime.
-No system-wide installation is required by the build script. On Windows, use the
+No system-wide LLVM installation is required. On Windows, use the
 DLL MSVC runtime (`/MD`) for both LLVM and this project. Paths with spaces are
 supported. Windows execution remains unverified until Windows CI logs exist.
 
@@ -62,13 +78,28 @@ For example, this Linux host needs `--query-driver=/usr/bin/c++` to discover GCC
 15 headers instead of an incomplete GCC 16 installation. On Windows, launch the
 editor from the Developer PowerShell so clangd inherits the MSVC include paths.
 
-CI caches the installed LLVM/MLIR SDK (`.deps/llvm23`) separately for each OS
-image and architecture. The cache key includes `cmake/llvm-lock.json` and
-`scripts/build_llvm.py`; ordinary source changes reuse it and skip the LLVM
-build. A cache miss builds the SDK once and saves it immediately, before this
-project's configure/build/tests, so a later test failure does not discard it.
-The first run, a dependency/key change, or cache eviction requires rebuilding.
-The LLVM source tree and temporary build tree are not cached.
+`scripts/build.py` selects the number of CPUs available to the process and passes
+it to CMake's `--parallel`, including on Windows. CI and Makefile targets use the
+same entry point. The LLVM source builder also defaults to that CPU count. The
+CMake build preset has no fixed job limit; direct Ninja builds use its native
+automatic parallelism.
+
+CI caches the verified, installed LLVM/MLIR SDK (`.deps/llvm23`) separately for
+each OS image and architecture. The key includes the archive lock, installer and
+extraction dependency. A cache miss downloads and extracts the locked archives;
+CI never falls back to compiling LLVM. Verified SDKs are saved before project
+configure/build/tests, so a later project failure does not discard them. Downloaded
+archives are removed after installation to save runner disk space. Cache hits
+validate required SDK components and the install receipt before configuring.
+
+Existing SDK directories are never overwritten. A manually installed SDK such as
+an older checkout can be checked with `python scripts/install_llvm.py --check`;
+to install separately, use `--prefix path/to/new-sdk` and pass that path as
+`VRC_LLVM_ROOT`. Repeating an installer-managed installation reuses its receipt.
+For macOS, unsupported prebuilt hosts, or a source SDK with assertions, run
+`python scripts/build_llvm.py` instead of the two installer commands.
+That source build checks out the commit recorded in the lock; it is an explicit
+local alternative and is not run by CI.
 
 Current components:
 
@@ -154,7 +185,7 @@ Without Make (including Developer PowerShell on Windows), run:
 
 ```text
 cmake --preset udoncl
-cmake --build --preset udoncl
+python scripts/build.py
 python examples/c-boundary/run.py
 ```
 

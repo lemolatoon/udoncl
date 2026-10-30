@@ -25,23 +25,28 @@ jobs:
         id: llvm
         with:
           path: .deps/llvm23
-          key: llvm-sdk-v2-${{ matrix.os }}-${{ runner.arch }}-${{ hashFiles('cmake/llvm-lock.json', 'scripts/build_llvm.py') }}
-      - name: Build pinned LLVM and MLIR
+          key: llvm-sdk-archive-v3-${{ matrix.os }}-${{ runner.arch }}-${{ hashFiles('cmake/llvm-lock.json', 'scripts/install_llvm.py', 'scripts/requirements-llvm.txt') }}
+      - name: Install archive extraction dependency
         if: steps.llvm.outputs.cache-hit != 'true'
-        run: python scripts/build_llvm.py --jobs 2
+        run: python -m pip install -r scripts/requirements-llvm.txt
+      - name: Install pinned prebuilt LLVM and MLIR
+        if: steps.llvm.outputs.cache-hit != 'true'
+        run: python scripts/install_llvm.py --discard-downloads
+      - name: Validate restored or installed SDK
+        run: python scripts/install_llvm.py --check
       # Save before project configure/build/tests, so their failures do not
-      # discard a successfully built SDK. Never save an incomplete LLVM build.
+      # discard a verified SDK. Cache misses download archives; never build LLVM.
       - name: Save pinned LLVM and MLIR
         if: steps.llvm.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: .deps/llvm23
           key: ${{ steps.llvm.outputs.cache-primary-key }}
-      - name: Install standalone HLSL test validator
+      - name: Install Linux SDK libraries and shader validator
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends glslang-tools
+          sudo apt-get install -y --no-install-recommends zlib1g-dev libzstd-dev libxml2-dev glslang-tools
       - run: cmake --preset udoncl
-      - run: cmake --build --preset udoncl
+      - run: python scripts/build.py
       - run: ctest --preset udoncl

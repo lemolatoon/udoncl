@@ -16,8 +16,7 @@
   "buildPresets": [
     {
       "name": "udoncl",
-      "configurePreset": "udoncl",
-      "jobs": 2
+      "configurePreset": "udoncl"
     }
   ],
   "testPresets": [

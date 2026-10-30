@@ -13,7 +13,7 @@ an alias. Output can be changed with `EXAMPLE_OUTPUT=build/another-example`.
 Differing existing bundle content is refused, so use a fresh output directory
 after changing the source. Identical output can be reused.
 
-Without Make, run `cmake --preset udoncl`, `cmake --build --preset udoncl`, then
+Without Make, run `cmake --preset udoncl`, `python scripts/build.py`, then
 `python examples/c-boundary/run.py`. On Windows use Developer PowerShell; the
 script handles `.exe`. With Make, `PYTHON=python` selects the Python command.
 For a custom build, pass `--build-dir path/to/build` to the script. It locates

@@ -1,0 +1,2 @@
+# Used only to unpack checksum-verified prebuilt SDK archives (Python 3.12+).
+zstandard==0.25.0

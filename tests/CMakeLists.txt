@@ -1,4 +1,4 @@
-find_package(Python3 REQUIRED COMPONENTS Interpreter)
+find_package(Python3 3.12 REQUIRED COMPONENTS Interpreter)
 add_test(NAME dialect-roundtrip
   COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/dialects/check.py"
     $<TARGET_FILE:vrc-opt>
@@ -59,4 +59,10 @@ add_test(NAME c-boundary-example
     $<TARGET_FILE:vrccl> $<TARGET_FILE:vrc-translate> $<TARGET_FILE:vrc-opt>
     "${VRC_TEST_MLIR_OPT}" "${VRC_TEST_MLIR_TRANSLATE}" "${VRC_TEST_CLANG}"
     "${PROJECT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/tests/c-boundary"
+)
+add_test(NAME prebuilt-sdk-installer
+  COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/build/install_llvm.py"
+)
+add_test(NAME build-parallelism
+  COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/build/parallel.py"
 )

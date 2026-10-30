@@ -1,0 +1,37 @@
+{
+  "date": "2026-10-30",
+  "llvm_version": "23.1.4",
+  "archives": {
+    "linux_x64_archive": {
+      "url": "https://github.com/llvm/llvm-project/releases/download/llvmorg-23.1.4/LLVM-23.1.4-Linux-X64.tar.zst",
+      "sha256": "efdd1dbd089b99bfcfcde7b8eb1236163f2e88df5a981cca4f783ec9cb5e0378"
+    },
+    "windows_x64_archive": {
+      "provider": "munich-quantum-software/portable-mlir-toolchain (community build, Release without assertions)",
+      "url": "https://github.com/munich-quantum-software/portable-mlir-toolchain/releases/download/2026.10.28/llvm-mlir_llvmorg-23.1.4_x86_64-pc-windows-msvc_noassert.tar.zst",
+      "sha256": "83d46bbc26da3269de7c027bdf086171f860e1b054ffd8a59da6081ba7d78d79"
+    },
+    "windows_x64_clang_archive": {
+      "url": "https://github.com/llvm/llvm-project/releases/download/llvmorg-23.1.4/clang%2Bllvm-23.1.4-x86_64-pc-windows-msvc.tar.zst",
+      "sha256": "1a3f2f998e230b5791cc4e2bfe11a1f7c07fe42c96ff44f227c9db0bedfaf091"
+    }
+  },
+  "linux": {
+    "fresh_install": "passed",
+    "cmake_configure": "passed",
+    "full_project_build": "passed",
+    "ctest": "12/12 passed",
+    "sdk_receipt_reuse": "passed"
+  },
+  "windows": {
+    "download_sha256_and_extraction": "passed on Linux",
+    "llvm_mlir_components": "present",
+    "official_clang_and_resource_overlay": "present",
+    "llvm_library_runtime": "MD_DynamicRelease; _ITERATOR_DEBUG_LEVEL=0; LLVM_ENABLE_ABI_BREAKING_CHECKS=0",
+    "native_execution": "not run; awaits Windows CI"
+  },
+  "installer_tests": 9,
+  "cpu_and_build_command_tests": 5,
+  "build_parallelism": "available CPU count; 128 jobs detected in this environment",
+  "ci_llvm_source_build": "removed; no fallback"
+}

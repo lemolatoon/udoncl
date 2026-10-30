@@ -10,7 +10,7 @@ configure:
 	cmake --preset $(PRESET)
 
 build: configure
-	cmake --build --preset $(PRESET)
+	$(PYTHON) scripts/build.py --preset "$(PRESET)"
 
 test: build
 	ctest --preset $(PRESET)

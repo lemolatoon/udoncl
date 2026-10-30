@@ -71,3 +71,17 @@ single direct f32 store prove the bounded output memref. Host uint32 handles
 become opaque IR types only after proving a direct descriptor/resource forwarding
 function with no arithmetic or additional handle callers. The temporary SPIR
 Host layout is explicitly a compiler probe, not the final ILP32 TargetInfo.
+
+Normal CI installs pinned binary archives instead of building LLVM on cache
+misses. Linux retains the official 23.1.4 distribution already used locally.
+Windows uses Portable MLIR Toolchain's 2026.10.28 Release/noassert LLVM+MLIR SDK;
+only the executable and resource files of official Clang are added. The matching
+SDK headers/libraries/CMake packages are kept together. URLs and SHA256 are
+locked locally; upstream setup scripts or moving manifests are not executed.
+Receipts and required SDK components are validated on cache restore. Source
+builds remain an explicit local option, with no CI source-build fallback.
+
+Build parallelism follows the CPUs available to the process rather than a fixed
+two-job limit. CI and Make use the portable Python CMake build entry point; the
+optional LLVM source build uses the same CPU detection by default. Ninja's
+native automatic parallelism applies when invoking the build preset directly.
