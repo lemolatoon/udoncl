@@ -65,4 +65,4 @@ assert 'call i32 @__vrc_native_test_dispatch' in llvm
     'native_lowering_rejections':4, 'source_mutation_verified':True,
     'execution_platform':sys.platform,
     'unity_vrchat_execution':'not executed'}, indent=2) + '\n', encoding='utf-8')
-print('16 native Host dispatches → real fragment draws/readbacks; 8 runtime and 4 lowering rejections passed')
+print('16 native Host dispatches -> real fragment draws/readbacks; 8 runtime and 4 lowering rejections passed')

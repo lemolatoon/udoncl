@@ -128,4 +128,4 @@ assert not (output / 'must-not-exist').exists()
 (output / 'report.json').write_text(json.dumps({'c_to_bundle': 'passed', 'native_host_oracle': 'original and raised passed',
     'source_mutation_changes_shader': True, 'replayed_mlir_pipeline': 'passed', 'rejections': rejected,
     'shader_validation': shader_validation, 'gpu_execution': 'not executed'}, indent=2))
-print('C/OpenCL C → LLVM → MLIR → paired boundary bundle, native Host oracle and 12 rejection cases passed')
+print('C/OpenCL C -> LLVM -> MLIR -> paired boundary bundle, native Host oracle and 12 rejection cases passed')
