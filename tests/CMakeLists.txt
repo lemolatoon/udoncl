@@ -76,4 +76,8 @@ if(VRC_ENABLE_NATIVE_FRAGMENT_TESTS)
     COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/boundary/native_fragment.py"
       "${PROJECT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/tests/native-fragment")
   set_tests_properties(native-fragment-execution PROPERTIES TIMEOUT 600)
+  add_test(NAME opencl-host-execution
+    COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/boundary/opencl_host.py"
+      "${PROJECT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/tests/opencl-host")
+  set_tests_properties(opencl-host-execution PROPERTIES TIMEOUT 600)
 endif()

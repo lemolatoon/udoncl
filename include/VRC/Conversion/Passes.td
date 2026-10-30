@@ -28,4 +28,16 @@ def LowerHostToNativeTestPass : Pass<"vrc-lower-host-to-native-test", "mlir::Mod
   let summary = "Lower the verified UdonHL Host boundary to native func calls for testing only";
   let dependentDialects = ["mlir::func::FuncDialect", "mlir::arith::ArithDialect"];
 }
+def RaiseNativeHostCallsPass : Pass<"vrc-raise-native-host-calls", "mlir::ModuleOp"> {
+  let summary = "Expose native C calls as UdonHL while retaining native LLVM memory and ABI semantics";
+  let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "mlir::func::FuncDialect"];
+}
+def LowerNativeHostCallsPass : Pass<"vrc-lower-native-host-calls", "mlir::ModuleOp"> {
+  let summary = "Restore native LLVM function/call ABI from the native-only UdonHL adapter";
+  let dependentDialects = ["mlir::LLVM::LLVMDialect"];
+}
+def PrepareNativeDevicePass : Pass<"vrc-prepare-native-device", "mlir::ModuleOp"> {
+  let summary = "Wrap the single recovered Device kernel for a native-only shader bundle";
+  let dependentDialects = ["mlir::gpu::GPUDialect"];
+}
 #endif

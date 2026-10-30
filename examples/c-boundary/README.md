@@ -3,13 +3,12 @@
 From the repository root, after installing `.deps/llvm23`:
 
 ```text
-make example
+make example-c-boundary
 ```
 
 This configures/builds with the `udoncl` CMake preset and runs `run.py`. The
 Makefile delegates build settings to CMake; it does not maintain a second build
-system. `make test` runs the complete CTest suite. `make example-c-boundary` is
-an alias. Output can be changed with `EXAMPLE_OUTPUT=build/another-example`.
+system. `make test` runs the complete CTest suite. `make example` now runs the ordinary OpenCL Host API example. Output can be changed with `BOUNDARY_OUTPUT=build/another-example`.
 Differing existing bundle content is refused, so use a fresh output directory
 after changing the source. Identical output can be reused.
 

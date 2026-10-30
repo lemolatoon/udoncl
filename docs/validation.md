@@ -15,6 +15,7 @@ All pending target tests below are `TODO: verify on target SDK/client`.
 | HOST-08 | Real C/OpenCL C → paired boundary bundle | PASS on Linux: make example; native original/recovered Host oracle; source mutation; 12 rejection cases; validation/2026-10-30-c-boundary-report.json |
 | HOST-09 | Prebuilt SDK install and CPU parallelism | PASS on Linux: fresh official archive → configure/build; 9 installer tests and 5 CPU/build-command tests; validation/2026-10-30-prebuilt-sdk.json |
 | HOST-10 | UdonHL → LLVM → native Host + fragment execution | PASS on Linux: 16 bitwise readbacks, 8 runtime and 4 native-lowering rejections; validation/2026-10-30-native-fragment.json |
+| HOST-11 | OpenCL Host C + linked C runtime + native fragment execution | PASS on Linux: square/x+x, original/lowered Host differential, API contracts and six adapter rejections; validation/2026-10-30-opencl-host.json |
 | HOST-WIN-01 | Windows x64 MSVC configure/build/CTest | PASS: VS 2026/windows-2025 configure/build and 13/13 CTests, including 16 D3D11/WARP fragment draw/readbacks. See validation/2026-10-30-windows-ci.json |
 | P0-SDK-01 | Public Program Asset generation and behaviour binding | Pending: Unity + installed Worlds SDK unavailable |
 | P0-VM-01 | Nine actual VM opcodes and COPY stack order | Pending SDK VM golden output |
@@ -70,7 +71,7 @@ OpenCL GPU-memory recovery remain pending; this does not complete P1 or G0/G2.
 
 Boundary compiler evidence is recorded in
 [validation/2026-10-30-boundary-report.json](validation/2026-10-30-boundary-report.json).
-The complete CTest suite now passes 13/13 on Linux with native fragment tests enabled, including the real C/OpenCL C example and SDK/build helpers. Optional `glslangValidator` and
+The complete CTest suite now passes 14/14 on Linux with native fragment tests enabled, including the real C/OpenCL C example and SDK/build helpers. Optional `glslangValidator` and
 `spirv-val` validate two standalone generated HLSL fragment shaders; SPIR-V is
 only a test artifact, not the compiler output route. Linux CI installs these
 validators. ShaderLab import, Unity compilation, byte fidelity on render targets,
@@ -136,3 +137,20 @@ The same successful workflow reported a separate Linux SDK cache-save warning:
 `zstd` could not write the cache archive because the runner ran out of disk
 space. The Linux build/tests still passed and the Windows SDK cache restored
 successfully. Reducing Linux cache-pack disk usage remains follow-up work.
+
+The OpenCL Host API example uses vendored Khronos declarations and a linked C
+runtime, with no vendor OpenCL implementation. It validates 16 lowered-Host
+executions plus two runtime contract draws, repeats these with the original
+Host objects, and compares f32 results bitwise after the Host's +1 computation.
+The runtime contract checks cover source/argument copies, context/event isolation,
+NDRange validation, errors, partial transfers, allocation generations, parent
+lifetimes and zero live objects after cleanup. A targeted C runtime test using
+a CPU backend stub also passed AddressSanitizer/UndefinedBehaviorSanitizer and
+leak detection; actual rendering is validated separately by the integration test.
+
+The new native call adapter preserves native LLVM pointer/memory/CFG and ABI
+attributes while exposing calls as udonhl.call. It is not production high-level
+memory recovery or proof of the final Udon ILP32 ABI. The standalone Device
+bundle stage is native-device-prototype and Unity readiness remains false.
+Windows execution of the new OpenCL API flow requires the next CI result;
+the earlier native fragment-only WARP success remains recorded separately.

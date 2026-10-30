@@ -3,10 +3,12 @@
 PYTHON ?= python3
 PRESET ?= udoncl
 BUILD_DIR ?= build/$(PRESET)
-EXAMPLE_OUTPUT ?= build/c-boundary
+EXAMPLE_OUTPUT ?= build/opencl-host
+BOUNDARY_OUTPUT ?= build/c-boundary
 NATIVE_OUTPUT ?= build/native-fragment
+OPENCL_OUTPUT ?= $(EXAMPLE_OUTPUT)
 
-.PHONY: configure build test example example-c-boundary example-native-fragment
+.PHONY: configure build test example example-c-boundary example-native-fragment example-opencl
 configure:
 	cmake --preset $(PRESET)
 
@@ -16,10 +18,13 @@ build: configure
 test: build
 	ctest --preset $(PRESET)
 
-example: build
-	$(PYTHON) examples/c-boundary/run.py --build-dir "$(BUILD_DIR)" --output "$(EXAMPLE_OUTPUT)"
+example: example-opencl
 
-example-c-boundary: example
+example-c-boundary: build
+	$(PYTHON) examples/c-boundary/run.py --build-dir "$(BUILD_DIR)" --output "$(BOUNDARY_OUTPUT)"
 
 example-native-fragment: build
 	$(PYTHON) examples/native-fragment/run.py --build-dir "$(BUILD_DIR)" --output "$(NATIVE_OUTPUT)"
+
+example-opencl: build
+	$(PYTHON) examples/opencl-host/run.py --build-dir "$(BUILD_DIR)" --output "$(OPENCL_OUTPUT)"

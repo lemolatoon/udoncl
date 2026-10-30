@@ -95,3 +95,17 @@ and synchronous completion/readback. Linux uses software Vulkan/Lavapipe and
 Windows uses Direct3D11/WARP. Shader SPIR-V is only a Linux native-test artifact;
 production Device output remains direct HLSL/ShaderLab. The original boundary
 bundle and Unity readiness state are preserved.
+
+The user-facing Host example now uses Khronos OpenCL 1.2 declarations and ordinary
+OpenCL API calls. A C API implementation owns objects, copied source/arguments,
+queue/event/error semantics and allocation generations. The native executable
+links that C runtime together with a separate AOT binding and fragment renderer;
+OpenCL APIs are not custom MLIR operations. The standalone Device bundle does
+not require a fabricated Host export. Its stage is native-device-prototype.
+
+Native OpenCL Host calls use an explicit reversible MLIR adapter: native-target
+LLVM functions/calls become func.func/udonhl.call, with original LLVM ABI
+attributes retained and restored on lowering. Native LLVM pointer/memory/CFG
+semantics are preserved throughout. This is not comprehensive high-level memory
+recovery or the final ILP32 Udon ABI. Production raising remains a separate
+required implementation; the native adapter cannot be used as proof of it.

@@ -170,10 +170,10 @@ The bundle includes `host-device.mlir`, `manifest.json` and `kernels/*.shader` /
 This example does not yet emit Udon assembly or execute a GPU request. See
 [docs/boundary.md](docs/boundary.md) for the supported pattern and next steps.
 
-C / OpenCL C end-to-end example (after installing the pinned LLVM SDK above):
+Original compiler-boundary probe (after installing the pinned LLVM SDK above):
 
 ```text
-make example
+make example-c-boundary
 ```
 
 The Makefile configures and builds the project, then runs
@@ -182,7 +182,7 @@ from the configured LLVM SDK, imports the actual LLVM IR, runs recovery Passes,
 and emits a paired boundary bundle. No hand-written MLIR is substituted.
 Use `make test` to build and run all CTests; `make` alone builds the project.
 To choose another output directory, use
-`make example EXAMPLE_OUTPUT=build/my-c-example`.
+`make example-c-boundary BOUNDARY_OUTPUT=build/my-c-example`.
 
 Without Make (including Developer PowerShell on Windows), run:
 
@@ -214,3 +214,22 @@ f32 bit patterns against a C oracle. See
 [examples/native-fragment/README.md](examples/native-fragment/README.md) for
 bindings, intermediate artifacts, Windows commands and scope. Enable the same
 CTest flow with `-DVRC_ENABLE_NATIVE_FRAGMENT_TESTS=ON`; CI enables it explicitly.
+
+Ordinary OpenCL Host API example:
+
+```text
+make example
+# equivalent: make example-opencl
+```
+
+`examples/opencl-host/host.c` uses the Khronos OpenCL 1.2 declarations to create a
+context/queue/program/kernel/buffer, copy kernel arguments, enqueue an NDRange,
+read the result and release objects. The generated Host computes `result + 1`
+after readback. Native linking includes `VRCNativeOpenCLRuntime`: a C OpenCL API
+implementation plus the binding to the fragment renderer. No system OpenCL
+loader or vendor OpenCL driver is used. Linux requires the Vulkan/Lavapipe test
+dependencies listed above; Windows uses WARP.
+
+Outputs are under `build/opencl-host`; use `EXAMPLE_OUTPUT=build/another-opencl`
+to choose a fresh directory. See [examples/opencl-host/README.md](examples/opencl-host/README.md)
+for supported APIs, native ABI preservation and the AOT subset's limits.

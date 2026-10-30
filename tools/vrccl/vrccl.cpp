@@ -1,6 +1,8 @@
 #include "VRC/Conversion/BoundaryFrontend/Frontend.h"
 #include "VRC/ABI/Manifest/Boundary.h"
 #include "VRC/Conversion/Passes.h"
+#include "VRC/Conversion/LLVMToHighLevel/Passes.h"
+#include "mlir/Transforms/Passes.h"
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
 #include "VRC/Dialect/VRC/VRCDialect.h"
 #include "VRC/Dialect/VRCGPU/VRCGPUDialect.h"
@@ -30,6 +32,10 @@ cl::opt<bool> emitLLVMBundle(
     "emit-llvm-boundary-bundle",
     cl::desc(
         "Recover paired C/OpenCL LLVM IR using the input JSON ABI contract"));
+cl::opt<bool> emitNativeDevice(
+    "emit-native-device-bundle",
+    cl::desc(
+        "Compile a standalone Device bundle for the native OpenCL runtime"));
 cl::opt<std::string> hostLLVM("host-llvm", cl::desc("Host LLVM IR from C"));
 cl::opt<std::string> deviceLLVM("device-llvm",
                                 cl::desc("Device LLVM IR from OpenCL C"));
@@ -123,7 +129,9 @@ int main(int argc, char **argv) {
   cl::ParseCommandLineOptions(
       argc, argv,
       "udoncl boundary prototype compiler (no Udon program emission yet)\n");
-  if (int(emitBundle) + int(emitLLVMBundle) + int(checkRequest) != 1) {
+  if (int(emitBundle) + int(emitLLVMBundle) + int(checkRequest) +
+          int(emitNativeDevice) !=
+      1) {
     errs() << "select exactly one boundary mode\n";
     return 1;
   }
@@ -165,9 +173,10 @@ int main(int argc, char **argv) {
   MLIRContext context(registry);
   OwningOpRef<ModuleOp> module;
   std::map<std::string, std::string> files;
-  if (emitLLVMBundle) {
+  if (emitLLVMBundle || emitNativeDevice) {
     auto input = MemoryBuffer::getFile(inputFilename);
-    if (!input || hostLLVM.empty() || deviceLLVM.empty()) {
+    if (!input || (!emitNativeDevice && hostLLVM.empty()) ||
+        deviceLLVM.empty()) {
       errs() << "LLVM bundle mode requires a JSON config, --host-llvm and "
                 "--device-llvm\n";
       return 1;
@@ -181,15 +190,24 @@ int main(int argc, char **argv) {
       errs() << "config must be a JSON object\n";
       return 1;
     }
-    module = ::vrc::importCBoundary(hostLLVM, deviceLLVM,
-                                    *config->getAsObject(), context);
+    module = ::vrc::importCBoundary(
+        emitNativeDevice ? StringRef() : StringRef(hostLLVM), deviceLLVM,
+        *config->getAsObject(), context);
     if (!module || failed(verify(*module)))
       return 1;
     raw_string_ostream imported(files["frontend.imported.mlir"]);
     module->print(imported);
     imported << "\n";
     PassManager recovery(&context);
-    ::vrc::buildCBoundaryRecoveryPipeline(recovery);
+    if (emitNativeDevice) {
+      recovery.addNestedPass<ModuleOp>(createMem2Reg());
+      recovery.addNestedPass<ModuleOp>(
+          ::vrc::createRaiseLLVMBoundaryDevicePass());
+      recovery.addNestedPass<ModuleOp>(::vrc::createRaiseLLVMToScalarPass());
+      recovery.addNestedPass<ModuleOp>(createCanonicalizerPass());
+      recovery.addPass(::vrc::createPrepareNativeDevicePass());
+    } else
+      ::vrc::buildCBoundaryRecoveryPipeline(recovery);
     if (failed(recovery.run(*module)))
       return 1;
     raw_string_ostream recovered(files["frontend.recovered.mlir"]);
@@ -200,10 +218,13 @@ int main(int argc, char **argv) {
   if (!module || failed(verify(*module)))
     return 1;
   PassManager manager(&context);
-  manager.addPass(::vrc::createLowerHostToUdonHLPass());
-  manager.addPass(::vrc::createSubstituteRuntimeIntrinsicsPass());
+  if (!emitNativeDevice) {
+    manager.addPass(::vrc::createLowerHostToUdonHLPass());
+    manager.addPass(::vrc::createSubstituteRuntimeIntrinsicsPass());
+  }
   manager.addPass(::vrc::createLowerDeviceSingleInvocationPass());
-  manager.addPass(::vrc::createVerifyHostDeviceBoundaryPass());
+  if (!emitNativeDevice)
+    manager.addPass(::vrc::createVerifyHostDeviceBoundaryPass());
   if (failed(manager.run(*module)) || failed(verify(*module)))
     return 1;
   for (auto kernel : module->getOps<::vrc::vrcgpu::KernelOp>()) {
@@ -222,9 +243,11 @@ int main(int argc, char **argv) {
   module->print(irOut);
   irOut << "\n";
   files["host-device.mlir"] = ir;
+  auto manifest = ::vrc::buildBoundaryManifest(*module);
+  if (emitNativeDevice)
+    manifest["artifact_stage"] = "native-device-prototype";
   files["manifest.json"] =
-      formatv("{0:2}\n", json::Value(::vrc::buildBoundaryManifest(*module)))
-          .str();
+      formatv("{0:2}\n", json::Value(std::move(manifest))).str();
   if (!publish(files))
     return 1;
   outs() << "Boundary prototype emitted to " << outputDirectory

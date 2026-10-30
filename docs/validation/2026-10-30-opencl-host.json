@@ -1,0 +1,39 @@
+{
+  "cases": [
+    {
+      "host_api": "OpenCL 1.2 AOT subset",
+      "host_calls": "native LLVM -> func/UdonHL calls -> LLVM IR -> native object",
+      "memory_abi": "native LLVM pointer/memory semantics retained; production ILP32 recovery is separate",
+      "runtime": "linked C OpenCL implementation + native fragment binding",
+      "executions": 8,
+      "original_host_differential": true,
+      "runtime_contract_tests": true,
+      "stdout": "renderer=Vulkan llvmpipe (LLVM 21.1.8, 256 bits) (software)\ninput=2.5 expected=0x40e80000 actual=0x40e80000\ninput=-3 expected=0x41200000 actual=0x41200000\ninput=0 expected=0x3f800000 actual=0x3f800000\ninput=-0 expected=0x3f800000 actual=0x3f800000\ninput=0.5 expected=0x3fa00000 actual=0x3fa00000\ninput=-0.5 expected=0x3fa00000 actual=0x3fa00000\ninput=1.25 expected=0x40240000 actual=0x40240000\ninput=17 expected=0x43910000 actual=0x43910000\npassed=8 OpenCL Host executions and fragment readbacks\nruntime_contract_tests=passed draws=9\n",
+      "result": "Device result + 1 computed by generated Host C"
+    },
+    {
+      "host_api": "OpenCL 1.2 AOT subset",
+      "host_calls": "native LLVM -> func/UdonHL calls -> LLVM IR -> native object",
+      "memory_abi": "native LLVM pointer/memory semantics retained; production ILP32 recovery is separate",
+      "runtime": "linked C OpenCL implementation + native fragment binding",
+      "executions": 8,
+      "original_host_differential": true,
+      "runtime_contract_tests": true,
+      "stdout": "renderer=Vulkan llvmpipe (LLVM 21.1.8, 256 bits) (software)\ninput=2.5 expected=0x40c00000 actual=0x40c00000\ninput=-3 expected=0xc0a00000 actual=0xc0a00000\ninput=0 expected=0x3f800000 actual=0x3f800000\ninput=-0 expected=0x3f800000 actual=0x3f800000\ninput=0.5 expected=0x40000000 actual=0x40000000\ninput=-0.5 expected=0x0 actual=0x0\ninput=1.25 expected=0x40600000 actual=0x40600000\ninput=17 expected=0x420c0000 actual=0x420c0000\npassed=8 OpenCL Host executions and fragment readbacks\nruntime_contract_tests=passed draws=9\n",
+      "result": "Device result + 1 computed by generated Host C"
+    }
+  ],
+  "native_host_execution_cases": 16,
+  "native_host_runtime_contract_draws": 2,
+  "original_host_differential_cases": 16,
+  "original_host_runtime_contract_draws": 2,
+  "lowering_rejections": 6,
+  "runtime_contract_tests": "error codes, argument/source copies, NDRange, context/event isolation, partial transfers, lifetimes and cleanup",
+  "execution_platform": "linux",
+  "production_ilp32_memory_recovery": "not implemented by the native-only call adapter",
+  "asan_ubsan": {
+    "result": "passed; no diagnostics or leaks",
+    "backend": "CPU stub used only for targeted C runtime memory/lifetime checks"
+  },
+  "windows": "pending new OpenCL flow CI run"
+}

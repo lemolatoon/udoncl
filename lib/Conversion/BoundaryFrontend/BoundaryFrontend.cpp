@@ -18,6 +18,7 @@ using namespace mlir;
 namespace vrc {
 #define GEN_PASS_DEF_RAISELLVMBOUNDARYDEVICEPASS
 #define GEN_PASS_DEF_LINKCBOUNDARYPASS
+#define GEN_PASS_DEF_PREPARENATIVEDEVICEPASS
 #include "VRC/Conversion/Passes.h.inc"
 namespace {
 namespace runtime = ::vrc::vrc;
@@ -250,6 +251,50 @@ struct RaiseLLVMBoundaryDevicePass
       rewriter.eraseOp(op);
   }
 };
+struct PrepareNativeDevicePass
+    : impl::PrepareNativeDevicePassBase<PrepareNativeDevicePass> {
+  void runOnOperation() override {
+    auto root = getOperation();
+    auto device = root.lookupSymbol<ModuleOp>("device");
+    auto config = root->getAttrOfType<DictionaryAttr>("vrc.c_boundary");
+    if (!device || !validContract(config)) {
+      fail(root, "missing native Device contract");
+      signalPassFailure();
+      return;
+    }
+    auto kernel = device.lookupSymbol<func::FuncOp>(
+        config.getAs<StringAttr>("kernel").getValue());
+    if (!kernel || kernel.isExternal() ||
+        kernel.getBody().getBlocks().size() != 1 ||
+        std::distance(device.getBody()->begin(), device.getBody()->end()) !=
+            1) {
+      fail(root, "native Device bundle requires one recovered kernel");
+      signalPassFailure();
+      return;
+    }
+    OpBuilder builder(root.getBodyRegion());
+    auto gpuModule =
+        gpu::GPUModuleOp::create(builder, kernel.getLoc(), "device_gpu");
+    builder.setInsertionPointToStart(gpuModule.getBody());
+    auto gpuKernel = gpu::GPUFuncOp::create(
+        builder, kernel.getLoc(), kernel.getName(), kernel.getFunctionType());
+    gpuKernel->setAttr(gpu::GPUDialect::getKernelFuncAttrName(),
+                       builder.getUnitAttr());
+    gpuKernel->setAttr("vrc.kernel_id", config.get("kernel_id"));
+    gpuKernel->setAttr("known_block_size",
+                       builder.getDenseI32ArrayAttr({1, 1, 1}));
+    gpuKernel->setAttr("known_grid_size",
+                       builder.getDenseI32ArrayAttr({1, 1, 1}));
+    gpuKernel.getBody().takeBody(kernel.getBody());
+    auto ret =
+        cast<func::ReturnOp>(gpuKernel.getBody().front().getTerminator());
+    builder.setInsertionPoint(ret);
+    gpu::ReturnOp::create(builder, ret.getLoc());
+    ret.erase();
+    root->setAttr("vrc.device_frontend", device->getAttr("vrc.frontend"));
+    device.erase();
+  }
+};
 struct LinkCBoundaryPass : impl::LinkCBoundaryPassBase<LinkCBoundaryPass> {
   void runOnOperation() override {
     auto module = getOperation();
@@ -401,6 +446,8 @@ OwningOpRef<ModuleOp> importCBoundary(llvm::StringRef hostFile,
   NamedAttrList attrs;
   for (StringRef key : {"export", "request", "intrinsic", "kernel"}) {
     auto value = config.getString(key);
+    if (!value && hostFile.empty() && key != "kernel")
+      value = "unused_native_device";
     if (!value || value->empty()) {
       fail(root, "missing configured C symbol");
       return {};
@@ -409,6 +456,8 @@ OwningOpRef<ModuleOp> importCBoundary(llvm::StringRef hostFile,
   }
   for (StringRef key : {"export_id", "kernel_id"}) {
     auto value = config.getInteger(key);
+    if (!value && hostFile.empty() && key == "export_id")
+      value = 1;
     if (!value || *value <= 0 || *value > INT32_MAX) {
       fail(root, "invalid configured ABI id");
       return {};
@@ -424,6 +473,8 @@ OwningOpRef<ModuleOp> importCBoundary(llvm::StringRef hostFile,
   root->setAttr("vrc.c_boundary", attrs.getDictionary(&context));
   for (auto entry : {std::make_pair(hostFile, StringRef("host")),
                      std::make_pair(deviceFile, StringRef("device"))}) {
+    if (entry.first.empty())
+      continue;
     llvm::LLVMContext llvmContext;
     llvm::SMDiagnostic diagnostic;
     auto input = llvm::parseIRFile(entry.first, diagnostic, llvmContext);

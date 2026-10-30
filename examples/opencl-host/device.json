@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "kernel": "square",
+  "kernel_id": 7,
+  "global_size": [1, 1, 1],
+  "local_size": [1, 1, 1],
+  "global_offset": [0, 0, 0]
+}

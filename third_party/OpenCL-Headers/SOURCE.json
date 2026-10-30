@@ -1,0 +1,10 @@
+{
+  "repository": "https://github.com/KhronosGroup/OpenCL-Headers",
+  "commit": "82f60316cc142e7b21dc1d8983b26de18858fbd9",
+  "files": {
+    "CL/cl.h": "a5558d666fa0ab4a0a337b89fe72d82591e088d5e8a5532c63c6988a6258ecca",
+    "CL/cl_platform.h": "4525bf75d1745114f384a88b49e7912b0d6b45f384e4d2e6f88ae96811a32bf0",
+    "CL/cl_version.h": "1e571dd68566330dd066cf778e07909a3cabeb2b969c5578c60f14baba7df1af",
+    "LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+  }
+}

@@ -66,3 +66,9 @@ then implement the smallest runtime descriptor/upload/dispatch/readback path.
 Keep one output buffer and one invocation until SDK tests demonstrate the
 boundary, including buffer generation and completion identity. General Device
 proofs and wider launches follow that working path.
+
+An ordinary [OpenCL Host C example](../examples/opencl-host/README.md) is now the
+default `make example`. It links a C OpenCL API runtime to the native renderer.
+The original boundary probe and its restricted production-shaped lowering remain
+available separately; the native OpenCL call adapter preserves native LLVM memory
+semantics and does not complete the pending Udon byte-memory recovery.

@@ -115,3 +115,7 @@ This is a synchronous, serialized native validation adapter with one buffer and
 one descriptor. It does not implement the OpenCL queue API, suspension, Udon
 assembly, Unity ShaderLab import, VRChat readback behavior, or the full target
 runtime. Those gates remain separate, and `ready_for_unity` remains false.
+
+For ordinary OpenCL Host API usage, run `make example` and see
+[the OpenCL Host example](../opencl-host/README.md). This native-fragment example
+remains a lower-level internal dispatch probe.
