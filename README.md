@@ -197,3 +197,20 @@ The script handles `.exe` automatically. With Make on Windows, set
 `build/c-boundary/host.ll` and `device.ll`; the bundle is under
 `build/c-boundary/bundle/`. See [examples/c-boundary/README.md](examples/c-boundary/README.md)
 for the source contract, intermediate IR and current limitations.
+
+Native Host + Fragment Shader execution:
+
+```text
+# Ubuntu graphics dependencies (Windows uses the Windows SDK / WARP):
+sudo apt-get install libvulkan-dev mesa-vulkan-drivers glslang-tools
+make example-native-fragment
+```
+
+This compiles the Host through `udonhl → func/arith → LLVM dialect → LLVM IR →
+native object`, then links it with the independent `VRCNativeFragmentRuntime`
+library. Generated Host dispatch calls execute the generated Device fragment
+shader on Lavapipe (Linux) or WARP (Windows), read back RGBA8 bytes and compare
+f32 bit patterns against a C oracle. See
+[examples/native-fragment/README.md](examples/native-fragment/README.md) for
+bindings, intermediate artifacts, Windows commands and scope. Enable the same
+CTest flow with `-DVRC_ENABLE_NATIVE_FRAGMENT_TESTS=ON`; CI enables it explicitly.

@@ -24,4 +24,8 @@ def LinkCBoundaryPass : Pass<"vrc-link-c-boundary", "mlir::ModuleOp"> {
   let summary = "Recover explicit uint32 Host handle roles and link recovered C/OpenCL modules";
   let dependentDialects = ["::vrc::vrc::VRCDialect", "mlir::gpu::GPUDialect"];
 }
+def LowerHostToNativeTestPass : Pass<"vrc-lower-host-to-native-test", "mlir::ModuleOp"> {
+  let summary = "Lower the verified UdonHL Host boundary to native func calls for testing only";
+  let dependentDialects = ["mlir::func::FuncDialect", "mlir::arith::ArithDialect"];
+}
 #endif

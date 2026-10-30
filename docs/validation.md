@@ -14,6 +14,7 @@ All pending target tests below are `TODO: verify on target SDK/client`.
 | HOST-07 | Paired Host/Device lowering and boundary bundle | PASS on Linux: 56 rejection cases, deterministic assets, two standalone fragment shaders validated; see validation/2026-10-30-boundary-report.json |
 | HOST-08 | Real C/OpenCL C → paired boundary bundle | PASS on Linux: make example; native original/recovered Host oracle; source mutation; 12 rejection cases; validation/2026-10-30-c-boundary-report.json |
 | HOST-09 | Prebuilt SDK install and CPU parallelism | PASS on Linux: fresh official archive → configure/build; 9 installer tests and 5 CPU/build-command tests; validation/2026-10-30-prebuilt-sdk.json |
+| HOST-10 | UdonHL → LLVM → native Host + fragment execution | PASS on Linux: 16 bitwise readbacks, 8 runtime and 4 native-lowering rejections; validation/2026-10-30-native-fragment.json |
 | HOST-WIN-01 | Windows x64 MSVC configure/build/CTest | Archive install/configure PASS in CI; VS 2022 link failed with newer SDK STL symbols. Workflow now selects matching VS 2026/windows-2025; rerun pending. See validation/2026-10-30-windows-ci.json |
 | P0-SDK-01 | Public Program Asset generation and behaviour binding | Pending: Unity + installed Worlds SDK unavailable |
 | P0-VM-01 | Nine actual VM opcodes and COPY stack order | Pending SDK VM golden output |
@@ -68,7 +69,7 @@ OpenCL GPU-memory recovery remain pending; this does not complete P1 or G0/G2.
 
 Boundary compiler evidence is recorded in
 [validation/2026-10-30-boundary-report.json](validation/2026-10-30-boundary-report.json).
-The complete CTest suite now passes 12/12 on Linux, including the real C/OpenCL C example and SDK/build helpers. Optional `glslangValidator` and
+The complete CTest suite now passes 13/13 on Linux with native fragment tests enabled, including the real C/OpenCL C example and SDK/build helpers. Optional `glslangValidator` and
 `spirv-val` validate two standalone generated HLSL fragment shaders; SPIR-V is
 only a test artifact, not the compiler output route. Linux CI installs these
 validators. ShaderLab import, Unity compilation, byte fidelity on render targets,
@@ -108,3 +109,15 @@ confirmed the runner contains VS 2026 version 18.11, but the explicit `18.0`
 selection failed: `msvc-dev-cmd@v1` constructs an upper version bound of `18.9`.
 Omitting that input uses the action's `vswhere -latest` discovery and avoids
 excluding newer VS 2026 minor releases.
+
+Native fragment validation executes the generated Host object after UdonHL →
+func/arith → LLVM dialect → LLVM IR lowering and links it to the independent
+`VRCNativeFragmentRuntime` static library. Linux Lavapipe renders the generated
+Device fragment shader into 1x1 RGBA8_UNorm, then explicit image/buffer barriers,
+a fence and host readback recover the f32 bits. Square and x+x source variants
+match an independent native C oracle for 16 draws, including signed-zero checks.
+Runtime and native-lowering rejection cases are exercised separately. An additional
+square run with Khronos validation and synchronization validation enabled emitted
+no VUID, synchronization-hazard or validation-error diagnostics. Windows D3D11/WARP
+implementation is included; execution status is recorded separately in CI evidence.
+This does not pass Unity/VRChat SDK gates or implement asynchronous suspension.

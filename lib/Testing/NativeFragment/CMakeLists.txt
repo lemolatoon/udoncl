@@ -1,0 +1,15 @@
+# Standalone native test adapter. No dependency on LLVM, MLIR, or Udon VM.
+add_library(VRCNativeFragmentRuntime STATIC Runtime.cpp)
+target_compile_features(VRCNativeFragmentRuntime PUBLIC cxx_std_17)
+set_target_properties(VRCNativeFragmentRuntime PROPERTIES CXX_EXTENSIONS OFF)
+target_include_directories(VRCNativeFragmentRuntime PUBLIC
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../../include>")
+if(WIN32)
+  target_sources(VRCNativeFragmentRuntime PRIVATE D3D11Renderer.cpp)
+  target_compile_definitions(VRCNativeFragmentRuntime PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+  target_link_libraries(VRCNativeFragmentRuntime PRIVATE d3d11 d3dcompiler dxgi)
+else()
+  find_package(Vulkan REQUIRED)
+  target_sources(VRCNativeFragmentRuntime PRIVATE VulkanRenderer.cpp)
+  target_link_libraries(VRCNativeFragmentRuntime PRIVATE Vulkan::Vulkan)
+endif()

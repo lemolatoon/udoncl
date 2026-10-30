@@ -1,0 +1,52 @@
+Native Host and Fragment execution, 2026-10-30 UTC
+Linux x86_64; compiler LLVM/MLIR/Clang23.1.4; software Vulkan driver uses its independent Mesa LLVM dependency
+
+Test project /home/khishida/workspace/udoncl/build/udoncl
+      Start  1: dialect-roundtrip
+ 1/13 Test  #1: dialect-roundtrip ..................   Passed    0.06 sec
+      Start  2: llvm-import
+ 2/13 Test  #2: llvm-import ........................   Passed    0.05 sec
+      Start  3: opencl-frontend-metadata
+ 3/13 Test  #3: opencl-frontend-metadata ...........   Passed    0.23 sec
+      Start  4: llvm-high-level-recovery
+ 4/13 Test  #4: llvm-high-level-recovery ...........   Passed    0.26 sec
+      Start  5: llvm-recovery-diagnostics
+ 5/13 Test  #5: llvm-recovery-diagnostics ..........   Passed    0.01 sec
+      Start  6: llvm-memory-recovery
+ 6/13 Test  #6: llvm-memory-recovery ...............   Passed    0.43 sec
+      Start  7: llvm-memory-diagnostics
+ 7/13 Test  #7: llvm-memory-diagnostics ............   Passed    0.01 sec
+      Start  8: host-device-boundary
+ 8/13 Test  #8: host-device-boundary ...............   Passed    0.36 sec
+      Start  9: host-device-boundary-diagnostics
+ 9/13 Test  #9: host-device-boundary-diagnostics ...   Passed    0.00 sec
+      Start 10: c-boundary-example
+10/13 Test #10: c-boundary-example .................   Passed    1.04 sec
+      Start 11: prebuilt-sdk-installer
+11/13 Test #11: prebuilt-sdk-installer .............   Passed    0.11 sec
+      Start 12: build-parallelism
+12/13 Test #12: build-parallelism ..................   Passed    0.08 sec
+      Start 13: native-fragment-execution
+13/13 Test #13: native-fragment-execution ..........   Passed    2.37 sec
+
+100% tests passed, 0 tests failed out of 13
+
+Total Test time (real) =   5.03 sec
+
+Additional square execution with Khronos and synchronization validation (0 validation diagnostics):
+Validation Warning: [ VALIDATION-SETTINGS ] | MessageID = 0x7f1922d7
+vkCreateInstance(): Application is using deprecated "enables" (VK_LAYER_ENABLES) layer settings.
+Deprecated settings and new settings cannot be mixed, and deprecated ones take precedence. Consider only using the new settings:
+  Deprecated: VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT | New: "validate_sync" (VK_LAYER_VALIDATE_SYNC=1)
+
+
+renderer=Vulkan llvmpipe (LLVM 21.1.8, 256 bits) (software)
+input=2.5 expected=0x40c80000 actual=0x40c80000
+input=-3 expected=0x41100000 actual=0x41100000
+input=0 expected=0x0 actual=0x0
+input=-0 expected=0x0 actual=0x0
+input=0.5 expected=0x3e800000 actual=0x3e800000
+input=-0.5 expected=0x3e800000 actual=0x3e800000
+input=1.25 expected=0x3fc80000 actual=0x3fc80000
+input=17 expected=0x43908000 actual=0x43908000
+passed=8 native UdonHL dispatches and fragment readbacks

@@ -66,3 +66,14 @@ add_test(NAME prebuilt-sdk-installer
 add_test(NAME build-parallelism
   COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/build/parallel.py"
 )
+
+if(VRC_ENABLE_NATIVE_FRAGMENT_TESTS)
+  if(NOT WIN32)
+    find_package(Vulkan REQUIRED)
+    find_program(VRC_GLSLANG_VALIDATOR glslangValidator REQUIRED)
+  endif()
+  add_test(NAME native-fragment-execution
+    COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/boundary/native_fragment.py"
+      "${PROJECT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/tests/native-fragment")
+  set_tests_properties(native-fragment-execution PROPERTIES TIMEOUT 600)
+endif()

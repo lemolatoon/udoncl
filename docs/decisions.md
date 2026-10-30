@@ -85,3 +85,13 @@ Build parallelism follows the CPUs available to the process rather than a fixed
 two-job limit. CI and Make use the portable Python CMake build entry point; the
 optional LLVM source build uses the same CPU detection by default. Ninja's
 native automatic parallelism applies when invoking the build preset directly.
+
+Native Host testing goes back through the MLIR LLVM dialect and LLVM IR before
+native object generation. It is an explicit testing backend, not Udon lowering.
+A separate static graphics runtime library implements the generated Host's
+external C dispatch ABI. Binding values derive from the shared Manifest; the
+library owns handle/generation checks, scalar copies, actual fragment rendering
+and synchronous completion/readback. Linux uses software Vulkan/Lavapipe and
+Windows uses Direct3D11/WARP. Shader SPIR-V is only a Linux native-test artifact;
+production Device output remains direct HLSL/ShaderLab. The original boundary
+bundle and Unity readiness state are preserved.

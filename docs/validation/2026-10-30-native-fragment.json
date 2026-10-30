@@ -1,0 +1,34 @@
+{
+  "cases": [
+    {
+      "host_backend": "UdonHL -> func/arith -> LLVM -> native object",
+      "renderer": "renderer=Vulkan llvmpipe (LLVM 21.1.8, 256 bits) (software)",
+      "fragment_draw_readbacks": 8,
+      "bitwise_oracle": "same Device source compiled independently as C",
+      "runtime_rejections": 4,
+      "stdout": "renderer=Vulkan llvmpipe (LLVM 21.1.8, 256 bits) (software)\ninput=2.5 expected=0x40c80000 actual=0x40c80000\ninput=-3 expected=0x41100000 actual=0x41100000\ninput=0 expected=0x0 actual=0x0\ninput=-0 expected=0x0 actual=0x0\ninput=0.5 expected=0x3e800000 actual=0x3e800000\ninput=-0.5 expected=0x3e800000 actual=0x3e800000\ninput=1.25 expected=0x3fc80000 actual=0x3fc80000\ninput=17 expected=0x43908000 actual=0x43908000\npassed=8 native UdonHL dispatches and fragment readbacks\n",
+      "unity_vrchat_execution": "not executed; this is a native test adapter"
+    },
+    {
+      "host_backend": "UdonHL -> func/arith -> LLVM -> native object",
+      "renderer": "renderer=Vulkan llvmpipe (LLVM 21.1.8, 256 bits) (software)",
+      "fragment_draw_readbacks": 8,
+      "bitwise_oracle": "same Device source compiled independently as C",
+      "runtime_rejections": 4,
+      "stdout": "renderer=Vulkan llvmpipe (LLVM 21.1.8, 256 bits) (software)\ninput=2.5 expected=0x40a00000 actual=0x40a00000\ninput=-3 expected=0xc0c00000 actual=0xc0c00000\ninput=0 expected=0x0 actual=0x0\ninput=-0 expected=0x80000000 actual=0x80000000\ninput=0.5 expected=0x3f800000 actual=0x3f800000\ninput=-0.5 expected=0xbf800000 actual=0xbf800000\ninput=1.25 expected=0x40200000 actual=0x40200000\ninput=17 expected=0x42080000 actual=0x42080000\npassed=8 native UdonHL dispatches and fragment readbacks\n",
+      "unity_vrchat_execution": "not executed; this is a native test adapter"
+    }
+  ],
+  "total_fragment_draw_readbacks": 16,
+  "runtime_rejections": 8,
+  "native_lowering_rejections": 4,
+  "source_mutation_verified": true,
+  "windows_native_execution": "covered when run on Windows CI",
+  "unity_vrchat_execution": "not executed",
+  "validation_layers": {
+    "square_draws": 8,
+    "layers": "VK_LAYER_KHRONOS_validation; synchronization validation enabled",
+    "diagnostic_count": 0
+  },
+  "windows_execution": "not yet run for native fragment code; CI pending"
+}
