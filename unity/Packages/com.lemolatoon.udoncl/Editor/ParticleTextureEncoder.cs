@@ -65,7 +65,9 @@ namespace Lemolatoon.Udoncl.Editor
                 int cell = i / 4, b = i % 4;
                 int xCell = cell % 2, yCell = (cell / 2) % 2, zCell = cell / 4;
                 float x = (xCell + basis[b, 0]) * lattice;
-                float y = (yCell + basis[b, 1]) * lattice;
+                // Translate the periodic FCC cell away from the reflective
+                // floor so liquid gravity starts from the container centre.
+                float y = (yCell + basis[b, 1] + 0.25f) * lattice;
                 float z = (zCell + basis[b, 2]) * lattice;
                 float vx = 0.012f * (float)Math.Sin(i);
                 float vy = 0.012f * (float)Math.Cos(i);

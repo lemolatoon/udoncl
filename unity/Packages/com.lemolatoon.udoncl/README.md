@@ -25,4 +25,7 @@ view-dependent parallax rather than a 2D particle plane. The Udon host executes 
 generated fragment kernels every `_update`; interaction heats the whole finite
 32-particle 3D sample (the native browser oracle also offers a localized heater),
 and the amplitude decays while the kernel's Langevin term cools the system back
-toward the crystal. Drop the prefab into a World SDK scene to run it.
+toward the crystal. Above the liquid threshold, gravity and an inelastic
+reflective Y boundary make the cohesive LJ particles flow downward and pool;
+gravity switches off as the sample refreezes. Drop the prefab into a World SDK
+scene to run it.

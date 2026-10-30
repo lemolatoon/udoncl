@@ -26,7 +26,7 @@ State initialState(float &box) {
   box=2*lattice; const float basis[4][3]={{0,0,0},{0,.5f,.5f},{.5f,0,.5f},{.5f,.5f,0}};
   unsigned i=0; double momentum[3]{};
   for(unsigned iz=0;iz<2;++iz)for(unsigned iy=0;iy<2;++iy)for(unsigned ix=0;ix<2;++ix)for(auto &b:basis){
-    state[stride*i]=(ix+b[0])*lattice; state[stride*i+1]=(iy+b[1])*lattice; state[stride*i+2]=(iz+b[2])*lattice;
+    state[stride*i]=(ix+b[0])*lattice; state[stride*i+1]=(iy+b[1]+.25f)*lattice; state[stride*i+2]=(iz+b[2])*lattice;
     state[stride*i+4]=.012f*std::sin(float(i)); state[stride*i+5]=.012f*std::cos(float(i)); state[stride*i+6]=.012f*std::sin(float(i)*1.618f);
     for(unsigned a=0;a<3;++a)momentum[a]+=state[stride*i+4+a]; ++i;
   }
@@ -43,6 +43,7 @@ double energy(const State&s,double box){
 }
 std::array<double,3> momentum(const State&s){std::array<double,3>p{};for(unsigned i=0;i<particles;++i)for(unsigned a=0;a<3;++a)p[a]+=s[stride*i+4+a];return p;}
 double temperature(const State&s){double k=0;for(unsigned i=0;i<particles;++i)for(unsigned a=0;a<3;++a)k+=.5*double(s[stride*i+4+a])*s[stride*i+4+a];return 2*k/(3*particles-3);}
+double meanY(const State&s){double y=0;for(unsigned i=0;i<particles;++i)y+=s[stride*i+1];return y/particles;}
 double associatedLegendre6(unsigned m,double x){
   double pmm=1; if(m){double root=std::sqrt(std::max(0.0,1-x*x)),factor=1;for(unsigned k=1;k<=m;++k){pmm*=-factor*root;factor+=2;}}
   if(m==6)return pmm; double pm1=x*(2*m+1)*pmm;if(m==5)return pm1;
@@ -78,11 +79,11 @@ int main(int argc,char**argv){try{
   for(unsigned chunk=0;chunk<10;++chunk){step(30,-100,-100,-100,-100,-100,-100,1.7f,0,0);check(md_read(actual.data()));maxEDrift=std::max(maxEDrift,std::abs(energy(actual,box)-e0)/std::abs(e0));auto p=momentum(actual);double pd=0;for(unsigned a=0;a<3;++a)pd+=(p[a]-p0[a])*(p[a]-p0[a]);maxPDrift=std::max(maxPDrift,std::sqrt(pd));}
   if(maxEDrift>3e-4||maxPDrift>2e-3){std::cerr<<"energy_drift="<<maxEDrift<<" momentum_drift="<<maxPDrift<<"\n";throw std::runtime_error("NVE conservation failed");}
   double control=localKinetic(actual,box/2,box/2,box/2,true,1.7f);step(800,box/2,box/2,box/2,-100,-100,-100,1.7f,.04f,0);check(md_read(actual.data()));double heated=localKinetic(actual,box/2,box/2,box/2,true,1.7f);if(heated<=control*1.5)throw std::runtime_error("3D heater did not heat crystal");
-  check(md_init(state.data()));check(md_read(actual.data()));double iceT=temperature(actual),iceQ=bondOrder6(actual,box);
-  step(2000,box/2,box/2,box/2,box/2,box/2,box/2,100,.04f,0);check(md_read(actual.data()));double liquidT=temperature(actual),liquidQ=bondOrder6(actual,box);
-  step(6000,-100,-100,-100,-100,-100,-100,1.7f,0,1);check(md_read(actual.data()));double frozenT=temperature(actual),frozenQ=bondOrder6(actual,box);
-  if(std::string(phaseName(iceT,iceQ))!="ice"||std::string(phaseName(liquidT,liquidQ))!="liquid"||std::string(phaseName(frozenT,frozenQ))!="ice"){std::cerr<<"ice="<<iceT<<","<<iceQ<<" liquid="<<liquidT<<","<<liquidQ<<" frozen="<<frozenT<<","<<frozenQ<<"\n";throw std::runtime_error("3D ice-liquid-refreeze cycle failed");}
+  check(md_init(state.data()));check(md_read(actual.data()));double iceT=temperature(actual),iceQ=bondOrder6(actual,box),iceY=meanY(actual);
+  step(2000,box/2,box/2,box/2,box/2,box/2,box/2,100,.04f,0);check(md_read(actual.data()));double liquidT=temperature(actual),liquidQ=bondOrder6(actual,box),liquidY=meanY(actual);
+  step(6000,-100,-100,-100,-100,-100,-100,1.7f,0,1);check(md_read(actual.data()));double frozenT=temperature(actual),frozenQ=bondOrder6(actual,box),frozenY=meanY(actual);
+  if(std::string(phaseName(iceT,iceQ))!="ice"||std::string(phaseName(liquidT,liquidQ))!="liquid"||std::string(phaseName(frozenT,frozenQ))!="ice"||iceY-liquidY<.2){std::cerr<<"ice="<<iceT<<","<<iceQ<<" liquid="<<liquidT<<","<<liquidQ<<" frozen="<<frozenT<<","<<frozenQ<<" flow_drop="<<iceY-liquidY<<"\n";throw std::runtime_error("3D ice-liquid-flow-refreeze cycle failed");}
   std::cout<<"NVE_steps=300 relative_energy_drift="<<maxEDrift<<" momentum_drift="<<maxPDrift<<" local_control_KE="<<control<<" local_heated_KE="<<heated<<"\n";
-  std::cout<<"phase_cycle=ice-liquid-ice ice_T="<<iceT<<" ice_Q6="<<iceQ<<" liquid_T="<<liquidT<<" liquid_Q6="<<liquidQ<<" refrozen_T="<<frozenT<<" refrozen_Q6="<<frozenQ<<"\n";
+  std::cout<<"phase_cycle=ice-liquid-flow-ice ice_T="<<iceT<<" ice_Q6="<<iceQ<<" ice_mean_y="<<iceY<<" liquid_T="<<liquidT<<" liquid_Q6="<<liquidQ<<" liquid_mean_y="<<liquidY<<" flow_drop="<<iceY-liquidY<<" refrozen_T="<<frozenT<<" refrozen_Q6="<<frozenQ<<" refrozen_mean_y="<<frozenY<<"\n";
   check(md_close());if(udoncl_cl_live_objects())throw std::runtime_error("OpenCL object leak");std::cout<<"renderer="<<session.deviceName()<<" oracle_steps=40 draws="<<session.drawCount()<<" max_cpu_gpu_error="<<maxError<<"\n";return 0;
 }catch(const std::exception&e){md_close();std::cerr<<e.what()<<"\n";return 1;}}

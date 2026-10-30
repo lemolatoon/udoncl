@@ -13,6 +13,9 @@ LinuxはLavapipe、WindowsはD3D11 WARPで実際にFragment Shaderを実行し�
 マウスを押して結晶に触れると加熱します。タッチ入力は2点まで対応します。
 加熱・計算速度、一時停止、リセットを操作できます。手を離すとゼロ温度の
 Langevin熱浴へ徐々に放熱し、粒子計算を続けながら液体から氷へ戻ります。
+液相では運動温度から連続的に求めた液相率に応じて重力が立ち上がり、
+Y方向の反射容器内を下へ流れて底に溜まります。固相では重力を無効化するため、
+初期結晶の保存則には影響しません。
 表示される運動はnativeバイナリが返す粒子状態です。
 ブラウザは計算を代行しません。マウス・タッチはWorld側の手位置の代わりです。
 
@@ -34,12 +37,15 @@ bond-orientational order `Q6` と平均運動エネルギーを組み合わせ�
 [LAMMPSのLangevin熱浴](https://docs.lammps.org/fix_langevin.html)の
 `F_f = -m v / damp`（目標温度0では確率力が0）と、Steinhardtらの
 [3D bond-orientational order](https://doi.org/10.1103/PhysRevB.28.784)
-を基準にしています。
+を基準にしています。液体の流動はLAMMPSの
+[`fix gravity`](https://docs.lammps.org/fix_gravity.html)と
+[`wall/reflect`](https://docs.lammps.org/fix_wall_reflect.html)に対応する
+下向き加速度と反射境界の最小モデルです。
 
 非interactive検証は、初期結晶を全体加熱してから放熱する決定的なcycleも実行します。
-Windows D3D11 WARPで `Q6 = 0.5745 -> 0.5276 -> 0.5744` と
-`T = 0.00007 -> 0.671 -> 0.00136` を観測し、
-`ice -> liquid -> ice` の三状態を検証しています。局所タッチは同じ加熱項を狭い
+Windows D3D11 WARPで `Q6 = 0.5745 -> 0.5357 -> 0.5744`、
+`T = 0.00007 -> 0.449 -> 0.00093`、平均Y座標の下降量`0.282`を観測し、
+`ice -> liquid/flow -> ice` の三状態を検証しています。局所タッチは同じ加熱項を狭い
 半径で使います。
 
 `host.c`は通常のOpenCL 1.2 APIでバッファ作成、引数設定、NDRange、readbackを
