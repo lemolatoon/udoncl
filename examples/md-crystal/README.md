@@ -18,8 +18,9 @@ Langevin熱浴へ徐々に放熱し、粒子計算を続けながら液体から
 
 ## 計算と境界
 
-64粒子の2次元Lennard–Jones結晶、周期境界、換算単位
-`mass = sigma = epsilon = kB = 1`を使います。カットオフは2.5で、
+32粒子の3次元FCC Lennard–Jones結晶、3軸周期境界、換算単位
+`mass = sigma = epsilon = kB = 1`を使います。2×2×2周期セルの最小像面を
+避けるためカットオフは1.5で、12個の第一近接粒子を含み、
 力とポテンシャルを整合するようforce-shiftします。速度Verlet法を
 `md_drift`と`md_kick`の2つのOpenCL C kernelに分割し、時間刻みは0.001です。
 近い粒子対に反対向きの乱数インパルスを与え、局所的にエネルギーを注入します。
@@ -28,15 +29,16 @@ Langevin熱浴へ徐々に放熱し、粒子計算を続けながら液体から
 
 冷却項は `F_f = -m v / tau` の離散化であり、Langevin熱浴の確率力を
 目標温度0で省いたものです。これは自然冷却を表現する小さなモデルで、実際の
-水の相図を再現するモデルではありません。相表示は2D Lennard–Jones meltingで
-使われる六回対称のbond-orientational order `|Psi6|` と平均運動エネルギーを
-組み合わせます。モデルの根拠は
-[LAMMPS `fix langevin`](https://docs.lammps.org/fix_langevin.html) と、2D LJ meltingで
-`Psi6` を使う [Phys. Rev. B 83, 214108](https://journals.aps.org/prb/abstract/10.1103/PhysRevB.83.214108)
-です。
+水の相図を再現するモデルではありません。相表示は3次元のSteinhardt
+bond-orientational order `Q6` と平均運動エネルギーを組み合わせます。モデル化は
+[LAMMPSのLangevin熱浴](https://docs.lammps.org/fix_langevin.html)の
+`F_f = -m v / damp`（目標温度0では確率力が0）と、Steinhardtらの
+[3D bond-orientational order](https://doi.org/10.1103/PhysRevB.28.784)
+を基準にしています。
 
 非interactive検証は、初期結晶を全体加熱してから放熱する決定的なcycleも実行します。
-Windows D3D11 WARPで `|Psi6| = 1.000 -> 0.173 -> 0.990` を観測し、
+Windows D3D11 WARPで `Q6 = 0.5745 -> 0.5276 -> 0.5744` と
+`T = 0.00007 -> 0.671 -> 0.00136` を観測し、
 `ice -> liquid -> ice` の三状態を検証しています。局所タッチは同じ加熱項を狭い
 半径で使います。
 
@@ -47,8 +49,9 @@ native objectの経路です。これは完全なILP32 Host memory raisingでは
 nativeバイナリにはC製OpenCL subset runtimeと描画runtimeをリンクします。
 
 DeviceはOpenCL C → LLVM → bounded memory recovery → `func/arith/memref/scf/gpu`
-→ `vrcgpu` → HLSLです。入力・出力は別の1024バイトバッファ、
-256×1 RGBA8 UNormテクスチャでfloatの4バイトを保存します。
+→ `vrcgpu` → HLSLです。入力・出力は別の1024バイトバッファです。
+32粒子を`x,y,z,pad,vx,vy,vz,pad`の8語に整列し、256×1 RGBA8 UNorm
+テクスチャで各floatの4バイトを保存します。
 1 invocationが1 scalar wordだけ出力し、入力からのgatherを行います。
 同一入出力、未初期化の入力、範囲外、scatter、barrier、証明できないループは
 この経路では受理しません。Readback・再uploadは毎dispatch行うnative検証用構成です。

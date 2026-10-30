@@ -94,6 +94,15 @@ for expected in [
 ]:
     assert expected in assembly, (expected, assembly)
 
+# Unity's MCP-driven integration test executes this checked-in lowering output
+# on the SDK IUdonVM. Keep it byte-for-token aligned with the compiler while
+# allowing presentation-only blank-line differences.
+fixture = pathlib.Path(__file__).parents[2] / 'unity/Packages/com.lemolatoon.udoncl/Tests/Editor/Fixtures/scalar.uasm'
+normalize = lambda value: '\n'.join(line.rstrip() for line in value.splitlines() if line.strip())
+assert fixture.exists(), fixture
+assert normalize(fixture.read_text(encoding='utf-8')) == normalize(assembly), \
+    'Unity IUdonVM fixture is stale; regenerate it from scalar.uasm'
+
 invalid = source.replace('%sum = arith.addi %a, %b : i32', '%sum = arith.andi %a, %b : i32')
 rejected = subprocess.run(
     [opt, '--vrc-lower-udonhl-to-udonasm'], input=invalid, text=True,

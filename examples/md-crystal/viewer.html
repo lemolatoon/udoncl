@@ -8,22 +8,19 @@ body{margin:0;background:#0b1220;color:#e7eefb;font:16px system-ui,sans-serif}ma
 <p>押しながらなぞると、その場所が加熱されて氷の結晶秩序が崩れます。タッチは2本指まで。手を離すと熱浴へ放熱し、液体から再び氷へ戻ります。</p>
 <canvas id="view" width="1000" height="800"></canvas>
 <div class="controls"><button id="pause">一時停止</button><button id="reset">リセット</button><label>加熱 <input id="heat" type="range" min="0" max="0.12" step="0.005" value="0.04"></label><label>速度 <input id="speed" type="range" min="1" max="40" step="1" value="12"></label><span class="legend">低温 <span class="gradient"></span> 高温</span></div>
-<div id="status">接続中…</div><p>64粒子・2次元 Lennard–Jones 結晶 / 周期境界 / 換算単位。色は近傍と時間で平均した運動エネルギーです。輪郭を越えた粒子は反対側へ戻ります。</p></main>
+<div id="status">接続中…</div><p>32粒子・3次元FCC Lennard–Jones 結晶 / 3軸周期境界 / 換算単位。立方体を回転投影し、色は粒子の運動エネルギーです。</p></main>
 <script>
 const canvas=document.querySelector('#view'),ctx=canvas.getContext('2d'),status=document.querySelector('#status');
-const pointers=new Map(),temperature=new Float64Array(64);let state=null,paused=false,reset=false;
+const pointers=new Map();let state=null,paused=false,reset=false;
 function geometry(){const margin=55,scale=Math.min((canvas.width-2*margin)/state.box[0],(canvas.height-2*margin)/state.box[1]);return {scale,x:(canvas.width-scale*state.box[0])/2,y:(canvas.height-scale*state.box[1])/2};}
 function pointer(e){const r=canvas.getBoundingClientRect(),g=geometry();return [((e.clientX-r.left)*canvas.width/r.width-g.x)/g.scale,((e.clientY-r.top)*canvas.height/r.height-g.y)/g.scale];}
 canvas.onpointerdown=e=>{if(!state||pointers.size>=2)return;canvas.setPointerCapture(e.pointerId);pointers.set(e.pointerId,pointer(e));};
 canvas.onpointermove=e=>{if(pointers.has(e.pointerId))pointers.set(e.pointerId,pointer(e));};
 canvas.onpointerup=canvas.onpointercancel=e=>pointers.delete(e.pointerId);
 document.querySelector('#pause').onclick=()=>{paused=!paused;document.querySelector('#pause').textContent=paused?'再開':'一時停止';};
-document.querySelector('#reset').onclick=()=>{reset=true;temperature.fill(0);};
+document.querySelector('#reset').onclick=()=>{reset=true;};
 function image(x,box){return x-box*Math.round(x/box);}
-function draw(){const s=state.state,g=geometry(),[bx,by]=state.box;ctx.clearRect(0,0,1000,800);ctx.save();ctx.translate(g.x,g.y);ctx.scale(g.scale,g.scale);ctx.lineWidth=1/g.scale;ctx.strokeStyle='#425573';ctx.strokeRect(0,0,bx,by);
-for(let i=0;i<64;i++)for(let j=i+1;j<64;j++){const dx=s[4*j]-s[4*i],dy=s[4*j+1]-s[4*i+1];if(dx*dx+dy*dy<1.6){ctx.strokeStyle='#38516a';ctx.beginPath();ctx.moveTo(s[4*i],s[4*i+1]);ctx.lineTo(s[4*j],s[4*j+1]);ctx.stroke();}}
-let kinetic=0;for(let i=0;i<64;i++){let weighted=0,weight=0;for(let j=0;j<64;j++){let dx=image(s[4*i]-s[4*j],bx),dy=image(s[4*i+1]-s[4*j+1],by),w=Math.max(0,1-(dx*dx+dy*dy)/3);weighted+=w*(s[4*j+2]**2+s[4*j+3]**2)/2;weight+=w;}temperature[i]=.9*temperature[i]+.1*weighted/weight;kinetic+=(s[4*i+2]**2+s[4*i+3]**2)/2;let t=Math.min(1,temperature[i]/.04);ctx.fillStyle=`hsl(${220-220*t} 85% ${62-8*t}%)`;ctx.beginPath();ctx.arc(s[4*i],s[4*i+1],.16,0,2*Math.PI);ctx.fill();}
-for(const [x,y]of pointers.values()){ctx.fillStyle='#ffad4218';ctx.strokeStyle='#ffb55a';ctx.beginPath();ctx.arc(x,y,1.7,0,2*Math.PI);ctx.fill();ctx.stroke();}ctx.restore();const phase={ice:'氷',melting:'融解中',liquid:'液体'}[state.phase]||state.phase;status.textContent=`${phase} · step ${state.frame} · T=${state.temperature.toFixed(4)} · |Ψ6|=${state.bond_order_6.toFixed(3)} · ${paused?'paused':'running'}`;}
-async function tick(){try{if(!state)state=await(await fetch('/state')).json();const hands=[...pointers.values()];while(hands.length<2)hands.push([-100,-100]);const response=await fetch('/step',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reset,steps:paused?0:Number(document.querySelector('#speed').value),hands,amplitude:Number(document.querySelector('#heat').value)})});reset=false;const next=await response.json();if(!response.ok)throw Error(next.error);state=next;draw();setTimeout(tick,16);}catch(e){status.textContent='停止: '+e.message;}}
+function draw(){const s=state.state,box=state.box[0],angle=performance.now()*.00018,c=Math.cos(angle),sn=Math.sin(angle);ctx.clearRect(0,0,1000,800);const points=[];for(let i=0;i<32;i++){let x=s[8*i]/box-.5,y=s[8*i+1]/box-.5,z=s[8*i+2]/box-.5;const rx=c*x+sn*z,rz=-sn*x+c*z,depth=1.5+rz;points.push({x:500+560*rx/depth,y:400-560*y/depth,z:rz,r:15/depth,v:s[8*i+4]**2+s[8*i+5]**2+s[8*i+6]**2});}points.sort((a,b)=>b.z-a.z);for(const p of points){const t=Math.min(1,p.v*3);ctx.fillStyle=`hsl(${205-200*t} 88% ${65-8*t}%)`;ctx.beginPath();ctx.arc(p.x,p.y,p.r,0,2*Math.PI);ctx.fill();}const phase={ice:'氷',melting:'融解中',liquid:'液体'}[state.phase]||state.phase;status.textContent=`${phase} · step ${state.frame} · T=${state.temperature.toFixed(4)} · Q6=${state.bond_order_6.toFixed(3)} · ${paused?'paused':'running'}`;}
+async function tick(){try{if(!state)state=await(await fetch('/state')).json();const hands=[...pointers.values()].map(([x,y])=>[x,y,state.box[2]/2]);while(hands.length<2)hands.push([-100,-100,-100]);const response=await fetch('/step',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reset,steps:paused?0:Number(document.querySelector('#speed').value),hands,amplitude:Number(document.querySelector('#heat').value)})});reset=false;const next=await response.json();if(!response.ok)throw Error(next.error);state=next;draw();setTimeout(tick,16);}catch(e){status.textContent='停止: '+e.message;}}
 tick();
 </script></html>

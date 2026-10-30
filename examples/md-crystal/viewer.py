@@ -55,11 +55,11 @@ def serve(command, env, port):
                     line = 'reset\n'
                 else:
                     count = int(request.get('steps', 8))
-                    hands = request.get('hands', [[-100, -100], [-100, -100]])
+                    hands = request.get('hands', [[-100, -100, -100], [-100, -100, -100]])
                     values = [float(v) for hand in hands for v in hand]
                     amplitude = float(request.get('amplitude', 0.03))
                     import math
-                    if len(values) != 4 or not all(math.isfinite(v) for v in values) or not 0 <= count <= 100 or not 0 <= amplitude <= 0.15:
+                    if len(values) != 6 or not all(math.isfinite(v) for v in values) or not 0 <= count <= 100 or not 0 <= amplitude <= 0.15:
                         raise ValueError('invalid simulation parameters')
                     line = 'step ' + ' '.join(map(str, [count, *values, amplitude])) + '\n'
                 with lock:

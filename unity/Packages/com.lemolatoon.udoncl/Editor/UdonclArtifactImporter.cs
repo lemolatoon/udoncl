@@ -227,7 +227,7 @@ namespace Lemolatoon.Udoncl.Editor
             try
             {
                 BoxCollider collider = root.AddComponent<BoxCollider>();
-                collider.size = new Vector3(8.0f, 6.0f, 0.25f);
+                collider.size = new Vector3(4.0f, 4.0f, 4.0f);
                 collider.isTrigger = true;
 
                 UdonBehaviour behaviour = root.AddComponent<UdonBehaviour>();
@@ -242,17 +242,17 @@ namespace Lemolatoon.Udoncl.Editor
                 SetPublicVariable(behaviour, "kickMaterial", kickMaterial);
                 SetPublicVariable(behaviour, "displayMaterial", displayMaterial);
                 SetPublicVariable(behaviour, "amplitude", 0.0f);
-                SetPublicVariable(behaviour, "frame", 0);
+                SetPublicVariable(behaviour, "frame", 0.0f);
 
                 SerializedObject serializedBehaviour = new SerializedObject(behaviour);
                 serializedBehaviour.FindProperty("serializedProgramAsset").objectReferenceValue =
                     programAsset.SerializedProgramAsset;
                 serializedBehaviour.ApplyModifiedPropertiesWithoutUndo();
 
-                GameObject display = GameObject.CreatePrimitive(PrimitiveType.Quad);
-                display.name = "LJ particle display";
+                GameObject display = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                display.name = "LJ 3D particle volume";
                 display.transform.SetParent(root.transform, false);
-                display.transform.localScale = new Vector3(8.0f, 6.0f, 1.0f);
+                display.transform.localScale = new Vector3(4.0f, 4.0f, 4.0f);
                 Collider displayCollider = display.GetComponent<Collider>();
                 if (displayCollider != null)
                     UnityEngine.Object.DestroyImmediate(displayCollider);
@@ -270,6 +270,9 @@ namespace Lemolatoon.Udoncl.Editor
 
         private static void SetPublicVariable<T>(UdonBehaviour behaviour, string symbol, T value)
         {
+            if (behaviour.publicVariables.TryGetVariableType(symbol, out Type existingType) &&
+                existingType != typeof(T))
+                behaviour.publicVariables.RemoveVariable(symbol);
             if (!behaviour.publicVariables.TrySetVariableValue(symbol, value))
             {
                 behaviour.publicVariables.RemoveVariable(symbol);
