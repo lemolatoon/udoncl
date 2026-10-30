@@ -1,9 +1,9 @@
 #include "VRC/Testing/NativeOpenCL/Runtime.h"
+#include "../NativeFragment/Renderer.h"
 #include "VRC/Runtime/OpenCL/Backend.h"
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
-#include "../NativeFragment/Renderer.h"
 namespace {
 native_opencl::Session *active = nullptr;
 }

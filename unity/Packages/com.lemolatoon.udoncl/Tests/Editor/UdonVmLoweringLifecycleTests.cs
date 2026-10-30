@@ -22,9 +22,17 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         public void SetupLoweredAssemblyAsset()
         {
             UnityEditor.PackageManager.PackageInfo package =
-                UnityEditor.PackageManager.PackageInfo.FindForAssembly(typeof(UdonVmLoweringLifecycleTests).Assembly);
+                UnityEditor.PackageManager.PackageInfo.FindForAssembly(
+                    typeof(UdonVmLoweringLifecycleTests).Assembly
+                );
             Assert.NotNull(package, "Could not resolve the UdonCL package root.");
-            string fixture = Path.Combine(package.resolvedPath, "Tests", "Editor", "Fixtures", "scalar.uasm");
+            string fixture = Path.Combine(
+                package.resolvedPath,
+                "Tests",
+                "Editor",
+                "Fixtures",
+                "scalar.uasm"
+            );
             Assert.That(File.Exists(fixture), "Missing compiler-emitted scalar.uasm fixture.");
             assemblyText = File.ReadAllText(fixture);
             if (Directory.Exists(TemporaryDirectory))
@@ -36,8 +44,15 @@ namespace Lemolatoon.Udoncl.Editor.Tests
 
         [TestCase("VRC_Call_add_1", "VRC_ARG_1_0", 17, "VRC_ARG_1_1", 25, "VRC_RET_1", 42)]
         [TestCase("VRC_Call_sum_to_3", "VRC_ARG_3_0", 5, null, 0, "VRC_RET_3", 10)]
-        public void IntegerLoweringExecutesOnSdkUdonVm(string entry, string arg0, int value0,
-            string arg1, int value1, string resultSymbol, int expected)
+        public void IntegerLoweringExecutesOnSdkUdonVm(
+            string entry,
+            string arg0,
+            int value0,
+            string arg1,
+            int value1,
+            string resultSymbol,
+            int expected
+        )
         {
             IUdonProgram program = LoadProgram();
             IUdonVM vm = CreateVm(program);
@@ -46,11 +61,18 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             if (arg1 != null)
                 heap.SetHeapVariable(program.SymbolTable.GetAddressFromSymbol(arg1), value1);
             Execute(vm, program, entry);
-            Assert.AreEqual(expected, heap.GetHeapVariable<int>(program.SymbolTable.GetAddressFromSymbol(resultSymbol)));
+            Assert.AreEqual(
+                expected,
+                heap.GetHeapVariable<int>(program.SymbolTable.GetAddressFromSymbol(resultSymbol))
+            );
         }
 
         [TestCase(3.5f, -2.0f, -7.0f)]
-        public void FloatMultiplicationLoweringExecutesOnSdkUdonVm(float value, float factor, float expected)
+        public void FloatMultiplicationLoweringExecutesOnSdkUdonVm(
+            float value,
+            float factor,
+            float expected
+        )
         {
             IUdonProgram program = LoadProgram();
             IUdonVM vm = CreateVm(program);
@@ -58,7 +80,11 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             heap.SetHeapVariable(program.SymbolTable.GetAddressFromSymbol("VRC_ARG_2_0"), value);
             heap.SetHeapVariable(program.SymbolTable.GetAddressFromSymbol("VRC_ARG_2_1"), factor);
             Execute(vm, program, "VRC_Call_scale_2");
-            Assert.AreEqual(expected, heap.GetHeapVariable<float>(program.SymbolTable.GetAddressFromSymbol("VRC_RET_2")), 1e-6f);
+            Assert.AreEqual(
+                expected,
+                heap.GetHeapVariable<float>(program.SymbolTable.GetAddressFromSymbol("VRC_RET_2")),
+                1e-6f
+            );
         }
 
         [TestCase(0.02f, 0)]
@@ -68,9 +94,15 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             IUdonProgram program = LoadProgram();
             IUdonVM vm = CreateVm(program);
             IUdonHeap heap = vm.InspectHeap();
-            heap.SetHeapVariable(program.SymbolTable.GetAddressFromSymbol("VRC_ARG_4_0"), temperature);
+            heap.SetHeapVariable(
+                program.SymbolTable.GetAddressFromSymbol("VRC_ARG_4_0"),
+                temperature
+            );
             Execute(vm, program, "VRC_Call_phase_4");
-            Assert.AreEqual(expected, heap.GetHeapVariable<int>(program.SymbolTable.GetAddressFromSymbol("VRC_RET_4")));
+            Assert.AreEqual(
+                expected,
+                heap.GetHeapVariable<int>(program.SymbolTable.GetAddressFromSymbol("VRC_RET_4"))
+            );
         }
 
         [OneTimeTearDown]
@@ -78,13 +110,18 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         {
             if (Directory.Exists(TemporaryDirectory))
                 Directory.Delete(TemporaryDirectory, true);
-            Assert.That(Directory.Exists(TemporaryDirectory), Is.False,
-                "Lowering integration test leaked its staged Library directory.");
+            Assert.That(
+                Directory.Exists(TemporaryDirectory),
+                Is.False,
+                "Lowering integration test leaked its staged Library directory."
+            );
         }
 
         private static IUdonProgram LoadProgram()
         {
-            IUdonProgram program = UdonEditorManager.Instance.Assemble(File.ReadAllText(TemporaryAssembly));
+            IUdonProgram program = UdonEditorManager.Instance.Assemble(
+                File.ReadAllText(TemporaryAssembly)
+            );
             Assert.NotNull(program, "SDK assembler rejected the lowered program.");
             return program;
         }

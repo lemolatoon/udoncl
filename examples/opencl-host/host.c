@@ -1,8 +1,8 @@
 /* Ordinary OpenCL 1.2 Host code. device_source.h is generated from device.cl.
  */
 #define CL_TARGET_OPENCL_VERSION 120
-#include <CL/cl.h>
 #include "device_source.h"
+#include <CL/cl.h>
 
 cl_int run_kernel(float input, float *result) {
   cl_int status;

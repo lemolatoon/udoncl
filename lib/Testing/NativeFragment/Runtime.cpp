@@ -1,9 +1,9 @@
 #include "VRC/Testing/NativeFragment/Runtime.h"
 #include "Renderer.h"
-#include <utility>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 namespace {
 native_test::Runtime *active = nullptr;
 void require(bool condition, const char *message) {

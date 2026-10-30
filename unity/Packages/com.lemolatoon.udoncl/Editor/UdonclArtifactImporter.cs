@@ -27,24 +27,36 @@ namespace Lemolatoon.Udoncl.Editor
                     EnsureFolder("Assets", "udoncl-generated");
                     EnsureFolder(GeneratedRoot, artifacts.ProgramName);
 
-                    transaction.CopyFile(artifacts.ManifestAssetPath, programRoot + "/manifest.json");
+                    transaction.CopyFile(
+                        artifacts.ManifestAssetPath,
+                        programRoot + "/manifest.json"
+                    );
                     string sourceDirectory = programRoot + "/Sources";
                     EnsureFolders(sourceDirectory);
-                    string assemblySourcePath = sourceDirectory + "/" +
-                        Path.GetFileName(artifacts.AssemblyAssetPath) + ".txt";
+                    string assemblySourcePath =
+                        sourceDirectory
+                        + "/"
+                        + Path.GetFileName(artifacts.AssemblyAssetPath)
+                        + ".txt";
                     transaction.CopyFile(artifacts.AssemblyAssetPath, assemblySourcePath);
                     UdonAssemblyProgramAsset programAsset = CreateOrUpdateProgramAsset(
-                        transaction, programRoot, File.ReadAllText(artifacts.AssemblyAssetPath));
+                        transaction,
+                        programRoot,
+                        File.ReadAllText(artifacts.AssemblyAssetPath)
+                    );
 
                     string displayShaderPath = programRoot + "/Shaders/display.shader";
                     EnsureFolders(programRoot + "/Shaders");
                     transaction.CopyFile(artifacts.DisplayShaderAssetPath, displayShaderPath);
 
-                    Dictionary<ValidatedKernel, string> shaderAssetPaths = new Dictionary<ValidatedKernel, string>();
+                    Dictionary<ValidatedKernel, string> shaderAssetPaths =
+                        new Dictionary<ValidatedKernel, string>();
                     foreach (ValidatedKernel kernel in artifacts.Kernels)
                     {
-                        string shaderAssetPath = programRoot + "/Shaders/" + kernel.RelativeShaderPath;
-                        string shaderDirectory = Path.GetDirectoryName(shaderAssetPath).Replace('\\', '/');
+                        string shaderAssetPath =
+                            programRoot + "/Shaders/" + kernel.RelativeShaderPath;
+                        string shaderDirectory = Path.GetDirectoryName(shaderAssetPath)
+                            .Replace('\\', '/');
                         EnsureFolders(shaderDirectory);
                         transaction.CopyFile(kernel.AbsoluteShaderPath, shaderAssetPath);
                         shaderAssetPaths.Add(kernel, shaderAssetPath);
@@ -55,24 +67,63 @@ namespace Lemolatoon.Udoncl.Editor
                     {
                         Shader shader = AssetDatabase.LoadAssetAtPath<Shader>(shaderEntry.Value);
                         if (shader == null)
-                            throw new InvalidDataException("Unity could not import generated shader: " + shaderEntry.Value);
-                        kernelMaterials.Add(shaderEntry.Key.Id,
-                            CreateOrUpdateMaterial(transaction, programRoot, shaderEntry.Key, shader));
+                            throw new InvalidDataException(
+                                "Unity could not import generated shader: " + shaderEntry.Value
+                            );
+                        kernelMaterials.Add(
+                            shaderEntry.Key.Id,
+                            CreateOrUpdateMaterial(
+                                transaction,
+                                programRoot,
+                                shaderEntry.Key,
+                                shader
+                            )
+                        );
                     }
 
                     Shader displayShader = AssetDatabase.LoadAssetAtPath<Shader>(displayShaderPath);
                     if (displayShader == null)
-                        throw new InvalidDataException("Unity could not import display shader: " + displayShaderPath);
-                    Material displayMaterial = CreateOrUpdateDisplayMaterial(transaction, programRoot, displayShader);
-                    Texture2D initialState = CreateOrUpdateParticleTexture(transaction, programRoot);
-                    RenderTexture stateA = CreateOrUpdateRenderTexture(transaction, programRoot, "lj_state_a.asset");
-                    RenderTexture stateB = CreateOrUpdateRenderTexture(transaction, programRoot, "lj_state_b.asset");
-                    if (!kernelMaterials.TryGetValue(10, out Material driftMaterial) ||
-                        !kernelMaterials.TryGetValue(11, out Material kickMaterial))
-                        throw new InvalidDataException("LJ demo requires kernel ids 10 (drift) and 11 (kick).");
+                        throw new InvalidDataException(
+                            "Unity could not import display shader: " + displayShaderPath
+                        );
+                    Material displayMaterial = CreateOrUpdateDisplayMaterial(
+                        transaction,
+                        programRoot,
+                        displayShader
+                    );
+                    Texture2D initialState = CreateOrUpdateParticleTexture(
+                        transaction,
+                        programRoot
+                    );
+                    RenderTexture stateA = CreateOrUpdateRenderTexture(
+                        transaction,
+                        programRoot,
+                        "lj_state_a.asset"
+                    );
+                    RenderTexture stateB = CreateOrUpdateRenderTexture(
+                        transaction,
+                        programRoot,
+                        "lj_state_b.asset"
+                    );
+                    if (
+                        !kernelMaterials.TryGetValue(10, out Material driftMaterial)
+                        || !kernelMaterials.TryGetValue(11, out Material kickMaterial)
+                    )
+                        throw new InvalidDataException(
+                            "LJ demo requires kernel ids 10 (drift) and 11 (kick)."
+                        );
 
-                    CreateOrUpdateDemoPrefab(transaction, programRoot, programAsset, initialState,
-                        stateA, stateB, driftMaterial, kickMaterial, displayMaterial);
+                    CreateOrUpdateDemoPrefab(
+                        transaction,
+                        programRoot,
+                        programAsset,
+                        initialState,
+                        stateA,
+                        stateB,
+                        driftMaterial,
+                        kickMaterial,
+                        displayMaterial
+                    );
 
                     AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
                     transaction.Commit();
@@ -87,7 +138,10 @@ namespace Lemolatoon.Udoncl.Editor
         }
 
         private static UdonAssemblyProgramAsset CreateOrUpdateProgramAsset(
-            AssetImportTransaction transaction, string programRoot, string assembly)
+            AssetImportTransaction transaction,
+            string programRoot,
+            string assembly
+        )
         {
             string programDirectory = programRoot + "/Programs";
             EnsureFolders(programDirectory);
@@ -99,7 +153,9 @@ namespace Lemolatoon.Udoncl.Editor
             if (programAsset == null)
             {
                 if (AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(programPath) != null)
-                    throw new InvalidDataException("An incompatible asset already occupies " + programPath);
+                    throw new InvalidDataException(
+                        "An incompatible asset already occupies " + programPath
+                    );
                 programAsset = ScriptableObject.CreateInstance<UdonAssemblyProgramAsset>();
                 programAsset.name = "host_program";
                 AssetDatabase.CreateAsset(programAsset, programPath);
@@ -108,7 +164,9 @@ namespace Lemolatoon.Udoncl.Editor
             SerializedObject serialized = new SerializedObject(programAsset);
             SerializedProperty source = serialized.FindProperty("udonAssembly");
             if (source == null)
-                throw new InvalidDataException("Worlds SDK Udon Assembly asset has no source field.");
+                throw new InvalidDataException(
+                    "Worlds SDK Udon Assembly asset has no source field."
+                );
             source.stringValue = assembly;
             serialized.ApplyModifiedPropertiesWithoutUndo();
 
@@ -118,27 +176,38 @@ namespace Lemolatoon.Udoncl.Editor
             transaction.Track("Assets/SerializedUdonPrograms/" + guid + ".asset");
 
             programAsset.RefreshProgram();
-            if (!string.IsNullOrEmpty(programAsset.AssemblyError) ||
-                programAsset.SerializedProgramAsset.RetrieveProgram() == null)
-                throw new InvalidDataException("Worlds SDK rejected Udon Assembly: " +
-                    (programAsset.AssemblyError ?? programPath));
+            if (
+                !string.IsNullOrEmpty(programAsset.AssemblyError)
+                || programAsset.SerializedProgramAsset.RetrieveProgram() == null
+            )
+                throw new InvalidDataException(
+                    "Worlds SDK rejected Udon Assembly: "
+                        + (programAsset.AssemblyError ?? programPath)
+                );
             EditorUtility.SetDirty(programAsset);
             return programAsset;
         }
 
-        private static Material CreateOrUpdateMaterial(AssetImportTransaction transaction, string programRoot,
-            ValidatedKernel kernel, Shader shader)
+        private static Material CreateOrUpdateMaterial(
+            AssetImportTransaction transaction,
+            string programRoot,
+            ValidatedKernel kernel,
+            Shader shader
+        )
         {
             string materialDirectory = programRoot + "/Materials";
             EnsureFolders(materialDirectory);
-            string materialPath = materialDirectory + "/kernel_" + kernel.Id + "_" + kernel.Name + ".mat";
+            string materialPath =
+                materialDirectory + "/kernel_" + kernel.Id + "_" + kernel.Name + ".mat";
             transaction.Track(materialPath);
 
             Material material = AssetDatabase.LoadAssetAtPath<Material>(materialPath);
             if (material == null)
             {
                 if (AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(materialPath) != null)
-                    throw new InvalidDataException("An incompatible asset already occupies " + materialPath);
+                    throw new InvalidDataException(
+                        "An incompatible asset already occupies " + materialPath
+                    );
                 material = new Material(shader);
                 material.name = Path.GetFileNameWithoutExtension(materialPath);
                 AssetDatabase.CreateAsset(material, materialPath);
@@ -152,8 +221,11 @@ namespace Lemolatoon.Udoncl.Editor
             return material;
         }
 
-        private static Material CreateOrUpdateDisplayMaterial(AssetImportTransaction transaction,
-            string programRoot, Shader shader)
+        private static Material CreateOrUpdateDisplayMaterial(
+            AssetImportTransaction transaction,
+            string programRoot,
+            Shader shader
+        )
         {
             string materialDirectory = programRoot + "/Materials";
             EnsureFolders(materialDirectory);
@@ -163,7 +235,9 @@ namespace Lemolatoon.Udoncl.Editor
             if (material == null)
             {
                 if (AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(materialPath) != null)
-                    throw new InvalidDataException("An incompatible asset already occupies " + materialPath);
+                    throw new InvalidDataException(
+                        "An incompatible asset already occupies " + materialPath
+                    );
                 material = new Material(shader);
                 AssetDatabase.CreateAsset(material, materialPath);
             }
@@ -176,7 +250,10 @@ namespace Lemolatoon.Udoncl.Editor
             return material;
         }
 
-        private static Texture2D CreateOrUpdateParticleTexture(AssetImportTransaction transaction, string programRoot)
+        private static Texture2D CreateOrUpdateParticleTexture(
+            AssetImportTransaction transaction,
+            string programRoot
+        )
         {
             string textureDirectory = programRoot + "/Textures";
             EnsureFolders(textureDirectory);
@@ -187,42 +264,73 @@ namespace Lemolatoon.Udoncl.Editor
             if (texture == null)
             {
                 if (AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(texturePath) != null)
-                    throw new InvalidDataException("An incompatible asset already occupies " + texturePath);
-                texture = new Texture2D(ParticleTextureEncoder.TextureWidth, ParticleTextureEncoder.TextureHeight,
-                    TextureFormat.RGBA32, false, true);
+                    throw new InvalidDataException(
+                        "An incompatible asset already occupies " + texturePath
+                    );
+                texture = new Texture2D(
+                    ParticleTextureEncoder.TextureWidth,
+                    ParticleTextureEncoder.TextureHeight,
+                    TextureFormat.RGBA32,
+                    false,
+                    true
+                );
                 AssetDatabase.CreateAsset(texture, texturePath);
             }
-            else if (!texture.Reinitialize(ParticleTextureEncoder.TextureWidth, ParticleTextureEncoder.TextureHeight,
-                TextureFormat.RGBA32, false))
+            else if (
+                !texture.Reinitialize(
+                    ParticleTextureEncoder.TextureWidth,
+                    ParticleTextureEncoder.TextureHeight,
+                    TextureFormat.RGBA32,
+                    false
+                )
+            )
             {
-                throw new InvalidOperationException("Could not resize existing particle texture " + texturePath);
+                throw new InvalidOperationException(
+                    "Could not resize existing particle texture " + texturePath
+                );
             }
 
             texture.name = Path.GetFileNameWithoutExtension(texturePath);
             texture.filterMode = FilterMode.Point;
             texture.wrapMode = TextureWrapMode.Clamp;
             texture.anisoLevel = 0;
-            texture.LoadRawTextureData(ParticleTextureEncoder.Encode(ParticleTextureEncoder.CreateLennardJonesInitialState()));
+            texture.LoadRawTextureData(
+                ParticleTextureEncoder.Encode(
+                    ParticleTextureEncoder.CreateLennardJonesInitialState()
+                )
+            );
             texture.Apply(false, false);
             EditorUtility.SetDirty(texture);
             return texture;
         }
 
-        private static RenderTexture CreateOrUpdateRenderTexture(AssetImportTransaction transaction,
-            string programRoot, string fileName)
+        private static RenderTexture CreateOrUpdateRenderTexture(
+            AssetImportTransaction transaction,
+            string programRoot,
+            string fileName
+        )
         {
             string textureDirectory = programRoot + "/RenderTextures";
             EnsureFolders(textureDirectory);
             string renderTexturePath = textureDirectory + "/" + fileName;
             transaction.Track(renderTexturePath);
 
-            RenderTexture renderTexture = AssetDatabase.LoadAssetAtPath<RenderTexture>(renderTexturePath);
+            RenderTexture renderTexture = AssetDatabase.LoadAssetAtPath<RenderTexture>(
+                renderTexturePath
+            );
             if (renderTexture == null)
             {
                 if (AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(renderTexturePath) != null)
-                    throw new InvalidDataException("An incompatible asset already occupies " + renderTexturePath);
-                renderTexture = new RenderTexture(ParticleTextureEncoder.TextureWidth, ParticleTextureEncoder.TextureHeight,
-                    0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+                    throw new InvalidDataException(
+                        "An incompatible asset already occupies " + renderTexturePath
+                    );
+                renderTexture = new RenderTexture(
+                    ParticleTextureEncoder.TextureWidth,
+                    ParticleTextureEncoder.TextureHeight,
+                    0,
+                    RenderTextureFormat.ARGB32,
+                    RenderTextureReadWrite.Linear
+                );
                 AssetDatabase.CreateAsset(renderTexture, renderTexturePath);
             }
             else
@@ -242,16 +350,28 @@ namespace Lemolatoon.Udoncl.Editor
             renderTexture.antiAliasing = 1;
             renderTexture.anisoLevel = 0;
             if (renderTexture.sRGB)
-                throw new InvalidOperationException("Generated RenderTexture unexpectedly uses sRGB: " + renderTexturePath);
+                throw new InvalidOperationException(
+                    "Generated RenderTexture unexpectedly uses sRGB: " + renderTexturePath
+                );
             if (!renderTexture.Create() && !renderTexture.IsCreated())
-                throw new InvalidOperationException("Could not create generated RenderTexture: " + renderTexturePath);
+                throw new InvalidOperationException(
+                    "Could not create generated RenderTexture: " + renderTexturePath
+                );
             EditorUtility.SetDirty(renderTexture);
             return renderTexture;
         }
 
-        private static void CreateOrUpdateDemoPrefab(AssetImportTransaction transaction, string programRoot,
-            UdonAssemblyProgramAsset programAsset, Texture initialState, RenderTexture stateA,
-            RenderTexture stateB, Material driftMaterial, Material kickMaterial, Material displayMaterial)
+        private static void CreateOrUpdateDemoPrefab(
+            AssetImportTransaction transaction,
+            string programRoot,
+            UdonAssemblyProgramAsset programAsset,
+            Texture initialState,
+            RenderTexture stateA,
+            RenderTexture stateB,
+            Material driftMaterial,
+            Material kickMaterial,
+            Material displayMaterial
+        )
         {
             string prefabDirectory = programRoot + "/Prefabs";
             EnsureFolders(prefabDirectory);
@@ -295,7 +415,9 @@ namespace Lemolatoon.Udoncl.Editor
 
                 PrefabUtility.SaveAsPrefabAsset(root, prefabPath, out bool success);
                 if (!success || AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath) == null)
-                    throw new InvalidOperationException("Could not create LJ demo prefab: " + prefabPath);
+                    throw new InvalidOperationException(
+                        "Could not create LJ demo prefab: " + prefabPath
+                    );
             }
             finally
             {
@@ -305,14 +427,18 @@ namespace Lemolatoon.Udoncl.Editor
 
         private static void SetPublicVariable<T>(UdonBehaviour behaviour, string symbol, T value)
         {
-            if (behaviour.publicVariables.TryGetVariableType(symbol, out Type existingType) &&
-                existingType != typeof(T))
+            if (
+                behaviour.publicVariables.TryGetVariableType(symbol, out Type existingType)
+                && existingType != typeof(T)
+            )
                 behaviour.publicVariables.RemoveVariable(symbol);
             if (!behaviour.publicVariables.TrySetVariableValue(symbol, value))
             {
                 behaviour.publicVariables.RemoveVariable(symbol);
                 if (!behaviour.publicVariables.TryAddVariable(new UdonVariable<T>(symbol, value)))
-                    throw new InvalidOperationException("Could not bind Udon public variable: " + symbol);
+                    throw new InvalidOperationException(
+                        "Could not bind Udon public variable: " + symbol
+                    );
             }
         }
 
@@ -335,7 +461,9 @@ namespace Lemolatoon.Udoncl.Editor
             if (!AssetDatabase.IsValidFolder(path))
             {
                 if (!AssetDatabase.IsValidFolder(parent))
-                    throw new DirectoryNotFoundException("Unity asset folder does not exist: " + parent);
+                    throw new DirectoryNotFoundException(
+                        "Unity asset folder does not exist: " + parent
+                    );
                 AssetDatabase.CreateFolder(parent, name);
             }
         }
@@ -346,14 +474,22 @@ namespace Lemolatoon.Udoncl.Editor
         [MenuItem("Tools/udoncl/Import Artifacts...")]
         private static void ImportArtifacts()
         {
-            string directory = EditorUtility.OpenFolderPanel("Select udoncl artifact directory", "", "");
+            string directory = EditorUtility.OpenFolderPanel(
+                "Select udoncl artifact directory",
+                "",
+                ""
+            );
             if (string.IsNullOrEmpty(directory))
                 return;
 
             try
             {
                 string destination = UdonclArtifactImporter.Import(directory);
-                EditorUtility.DisplayDialog("udoncl Import", "Imported assets to " + destination, "OK");
+                EditorUtility.DisplayDialog(
+                    "udoncl Import",
+                    "Imported assets to " + destination,
+                    "OK"
+                );
             }
             catch (Exception exception)
             {

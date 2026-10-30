@@ -1,5 +1,5 @@
-#include "VRC/Testing/NativeFragment/Runtime.h"
 #include "Bindings.h"
+#include "VRC/Testing/NativeFragment/Runtime.h"
 #include <cstring>
 #include <iostream>
 #include <stdexcept>

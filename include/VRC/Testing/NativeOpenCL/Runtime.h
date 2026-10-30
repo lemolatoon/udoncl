@@ -1,8 +1,8 @@
 #ifndef VRC_TESTING_NATIVEOPENCL_RUNTIME_H
 #define VRC_TESTING_NATIVEOPENCL_RUNTIME_H
+#include "VRC/Runtime/OpenCL/Backend.h"
 #include "VRC/Testing/NativeFragment/Runtime.h"
 #include <vector>
-#include "VRC/Runtime/OpenCL/Backend.h"
 namespace native_opencl {
 struct GatherBinding {
   uint32_t id, words, scalarCount;

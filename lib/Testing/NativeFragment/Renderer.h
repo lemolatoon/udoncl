@@ -3,9 +3,9 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
-#include <span>
 // Actual offscreen graphics rendering. This API is only a native test adapter;
 // it is not the Udon/VRChat runtime, a VM, or an interpreter for Device IR.
 class FragmentRenderer {

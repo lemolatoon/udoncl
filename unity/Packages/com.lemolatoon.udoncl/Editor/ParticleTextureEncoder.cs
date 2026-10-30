@@ -33,7 +33,10 @@ namespace Lemolatoon.Udoncl.Editor
         public static byte[] Encode(IList<ParticleState> particles)
         {
             if (particles == null || particles.Count != ParticleCount)
-                throw new ArgumentException("Exactly 32 particle states are required.", "particles");
+                throw new ArgumentException(
+                    "Exactly 32 particle states are required.",
+                    "particles"
+                );
 
             byte[] bytes = new byte[TextureWidth * TextureHeight * 4];
             int offset = 0;
@@ -59,11 +62,20 @@ namespace Lemolatoon.Udoncl.Editor
             float momentumX = 0.0f;
             float momentumY = 0.0f;
             float momentumZ = 0.0f;
-            float[,] basis = { { 0, 0, 0 }, { 0, 0.5f, 0.5f }, { 0.5f, 0, 0.5f }, { 0.5f, 0.5f, 0 } };
+            float[,] basis =
+            {
+                { 0, 0, 0 },
+                { 0, 0.5f, 0.5f },
+                { 0.5f, 0, 0.5f },
+                { 0.5f, 0.5f, 0 },
+            };
             for (int i = 0; i < ParticleCount; i++)
             {
-                int cell = i / 4, b = i % 4;
-                int xCell = cell % 2, yCell = (cell / 2) % 2, zCell = cell / 4;
+                int cell = i / 4,
+                    b = i % 4;
+                int xCell = cell % 2,
+                    yCell = (cell / 2) % 2,
+                    zCell = cell / 4;
                 float x = (xCell + basis[b, 0]) * lattice;
                 // Translate the periodic FCC cell away from the reflective
                 // floor so liquid gravity starts from the container centre.
@@ -91,7 +103,11 @@ namespace Lemolatoon.Udoncl.Editor
             return particles;
         }
 
-        private static void WriteFloat32LittleEndian(byte[] destination, ref int offset, float value)
+        private static void WriteFloat32LittleEndian(
+            byte[] destination,
+            ref int offset,
+            float value
+        )
         {
             if (float.IsNaN(value) || float.IsInfinity(value))
                 throw new ArgumentException("Particle state values must be finite.");

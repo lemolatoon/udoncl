@@ -1,7 +1,7 @@
+#include "device_source.h"
 #include <CL/cl.h>
 #include <stdlib.h>
 #include <string.h>
-#include "device_source.h"
 void UDONCL_ORACLE(float *, float);
 #define EXPECT(value)                                                          \
   do {                                                                         \

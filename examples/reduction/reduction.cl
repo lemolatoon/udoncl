@@ -1,8 +1,7 @@
 // One work-group stage; the runtime must repeat stages to reduce all groups.
 // Requires a power-of-two local size and local_size * sizeof(float) scratch.
-__kernel void sum_reduce(__global const float *input,
-                         __global float *partial, __local float *scratch,
-                         const uint n) {
+__kernel void sum_reduce(__global const float *input, __global float *partial,
+                         __local float *scratch, const uint n) {
   size_t gid = get_global_id(0);
   size_t lid = get_local_id(0);
   scratch[lid] = gid < n ? input[gid] : 0.0f;

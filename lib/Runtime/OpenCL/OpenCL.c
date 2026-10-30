@@ -1,11 +1,11 @@
 /* OpenCL 1.2 AOT subset. Synchronous native execution, one device, in-order
  * queues, selected AOT kernels and bounded buffers. Not an ICD implementation.
  */
-#include <CL/cl.h>
 #include "VRC/Runtime/OpenCL/Backend.h"
+#include <CL/cl.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
-#include <limits.h>
 
 struct _cl_platform_id {
   int tag;

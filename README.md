@@ -88,6 +88,19 @@ same entry point. The LLVM source builder also defaults to that CPU count. The
 CMake build preset has no fixed job limit; direct Ninja builds use its native
 automatic parallelism.
 
+Before every commit, format C/C++/OpenCL C with LLVM style and C# with the
+repository-pinned CSharpier tool:
+
+```text
+python -m pip install -r scripts/requirements-format.txt
+python scripts/format.py
+python scripts/format.py --check
+```
+
+The check mode is non-mutating and runs as a separate CI job. Formatter
+versions are pinned in `scripts/requirements-format.txt` and
+`.config/dotnet-tools.json`; a different `clang-format` version is rejected.
+
 CI caches the verified, installed LLVM/MLIR SDK (`.deps/llvm23`) separately for
 each OS image and architecture. The key includes the archive lock, installer and
 extraction dependency. A cache miss downloads and extracts the locked archives;

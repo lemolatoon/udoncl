@@ -1,11 +1,11 @@
 #include "Renderer.h"
+#include <cstring>
 #include <d3d11.h>
 #include <d3dcompiler.h>
-#include <wrl/client.h>
-#include <cstring>
 #include <fstream>
 #include <iterator>
 #include <stdexcept>
+#include <wrl/client.h>
 using Microsoft::WRL::ComPtr;
 namespace {
 void check(HRESULT result) {

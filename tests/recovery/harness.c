@@ -8,8 +8,10 @@ int main(void) {
   for (int n = -5; n <= 129; ++n) {
     int expected = 0;
     for (int i = 0; i < n; ++i)
-      if ((i & 1) == 0) expected += i;
-    if (sum_even(n) != expected) return 1;
+      if ((i & 1) == 0)
+        expected += i;
+    if (sum_even(n) != expected)
+      return 1;
   }
   unsigned seed = 0x12483655u;
   for (int i = 0; i < 256; ++i) {
@@ -20,15 +22,19 @@ int main(void) {
     unsigned b = seed * 1664525u + 1013904223u;
     unsigned sum = a + b;
     unsigned expected = a < b ? (((sum ^ a) >> 3) & 65535u) : sum;
-    if (scalar_ops(a, b) != expected) return 2;
+    if (scalar_ops(a, b) != expected)
+      return 2;
   }
   for (int a = -8; a <= 8; ++a)
     for (int b = -8; b <= 8; ++b)
       if (float_ops((float)a * 0.5f, (float)b * 0.5f) !=
-          -((float)a * (float)b * 0.25f + 0.5f)) return 3;
+          -((float)a * (float)b * 0.25f + 0.5f))
+        return 3;
   for (int i = 0; i < 100; ++i)
-    if (checked_inc(i) != i + 1) return 4;
+    if (checked_inc(i) != i + 1)
+      return 4;
   for (int i = -100; i <= 100; ++i)
-    if (stack_add(i) != i + 3) return 5;
+    if (stack_add(i) != i + 3)
+      return 5;
   return 0;
 }

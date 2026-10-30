@@ -33,8 +33,7 @@ LogicalResult validate(gpu::GPUFuncOp function) {
   auto output = dyn_cast<MemRefType>(function.getArgument(0).getType());
   if (!output || output.getShape() != ArrayRef<int64_t>({1}) ||
       !output.getElementType().isF32() || !output.getLayout().isIdentity() ||
-      output.getMemorySpace() ||
-      !function.getArgument(1).getType().isF32())
+      output.getMemorySpace() || !function.getArgument(1).getType().isF32())
     return fail(
         "initial Device ABI is (memref<1xf32>, f32) with identity layout");
   auto id = function->getAttrOfType<IntegerAttr>("vrc.kernel_id");

@@ -12,9 +12,9 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/Passes.h"
-#include "llvm/IRReader/IRReader.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/DerivedTypes.h"
+#include "llvm/IRReader/IRReader.h"
 #include "llvm/Support/SourceMgr.h"
 using namespace mlir;
 namespace vrc {

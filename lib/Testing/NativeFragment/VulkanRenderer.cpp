@@ -1,9 +1,9 @@
 #include "Renderer.h"
-#include <vulkan/vulkan.h>
 #include <cstring>
 #include <fstream>
 #include <stdexcept>
 #include <vector>
+#include <vulkan/vulkan.h>
 namespace {
 void check(VkResult value) {
   if (value != VK_SUCCESS)

@@ -18,12 +18,17 @@ namespace Lemolatoon.Udoncl.Editor
 
         private readonly string _backupDirectory;
         private readonly List<BackupRecord> _records = new List<BackupRecord>();
-        private readonly HashSet<string> _trackedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private readonly HashSet<string> _trackedPaths = new HashSet<string>(
+            StringComparer.OrdinalIgnoreCase
+        );
         private bool _completed;
 
         public AssetImportTransaction()
         {
-            _backupDirectory = Path.Combine(Path.GetTempPath(), "udoncl-import-" + Guid.NewGuid().ToString("N"));
+            _backupDirectory = Path.Combine(
+                Path.GetTempPath(),
+                "udoncl-import-" + Guid.NewGuid().ToString("N")
+            );
             Directory.CreateDirectory(_backupDirectory);
         }
 
@@ -40,8 +45,14 @@ namespace Lemolatoon.Udoncl.Editor
             record.AssetPath = assetPath;
             record.HadAsset = File.Exists(absolutePath);
             record.HadMeta = File.Exists(metaPath);
-            record.AssetBackup = Path.Combine(_backupDirectory, _records.Count.ToString("D4") + ".asset");
-            record.MetaBackup = Path.Combine(_backupDirectory, _records.Count.ToString("D4") + ".meta");
+            record.AssetBackup = Path.Combine(
+                _backupDirectory,
+                _records.Count.ToString("D4") + ".asset"
+            );
+            record.MetaBackup = Path.Combine(
+                _backupDirectory,
+                _records.Count.ToString("D4") + ".meta"
+            );
             if (record.HadAsset)
                 File.Copy(absolutePath, record.AssetBackup, true);
             if (record.HadMeta)
@@ -56,7 +67,10 @@ namespace Lemolatoon.Udoncl.Editor
             Directory.CreateDirectory(Path.GetDirectoryName(destinationPath));
             if (!PathsEqual(sourcePath, destinationPath))
                 File.Copy(sourcePath, destinationPath, true);
-            AssetDatabase.ImportAsset(destinationAssetPath, ImportAssetOptions.ForceSynchronousImport | ImportAssetOptions.ForceUpdate);
+            AssetDatabase.ImportAsset(
+                destinationAssetPath,
+                ImportAssetOptions.ForceSynchronousImport | ImportAssetOptions.ForceUpdate
+            );
         }
 
         public void Commit()
@@ -101,7 +115,10 @@ namespace Lemolatoon.Udoncl.Editor
 
                 if (record.HadAsset)
                 {
-                    AssetDatabase.ImportAsset(record.AssetPath, ImportAssetOptions.ForceSynchronousImport | ImportAssetOptions.ForceUpdate);
+                    AssetDatabase.ImportAsset(
+                        record.AssetPath,
+                        ImportAssetOptions.ForceSynchronousImport | ImportAssetOptions.ForceUpdate
+                    );
                 }
             }
 
@@ -119,20 +136,30 @@ namespace Lemolatoon.Udoncl.Editor
 
         private static string ToAbsoluteAssetPath(string assetPath)
         {
-            if (string.IsNullOrWhiteSpace(assetPath) || !assetPath.StartsWith("Assets/", StringComparison.Ordinal))
-                throw new InvalidDataException("Generated assets must be written under Assets/: " + assetPath);
-            string absolutePath = Path.GetFullPath(assetPath.Replace('/', Path.DirectorySeparatorChar));
+            if (
+                string.IsNullOrWhiteSpace(assetPath)
+                || !assetPath.StartsWith("Assets/", StringComparison.Ordinal)
+            )
+                throw new InvalidDataException(
+                    "Generated assets must be written under Assets/: " + assetPath
+                );
+            string absolutePath = Path.GetFullPath(
+                assetPath.Replace('/', Path.DirectorySeparatorChar)
+            );
             string assetsRoot = Path.GetFullPath("Assets") + Path.DirectorySeparatorChar;
             if (!absolutePath.StartsWith(assetsRoot, StringComparison.OrdinalIgnoreCase))
-                throw new InvalidDataException("Generated asset path resolves outside Assets/: " + assetPath);
+                throw new InvalidDataException(
+                    "Generated asset path resolves outside Assets/: " + assetPath
+                );
             return absolutePath;
         }
 
         private static bool PathsEqual(string left, string right)
         {
-            StringComparison comparison = Path.DirectorySeparatorChar == '\\'
-                ? StringComparison.OrdinalIgnoreCase
-                : StringComparison.Ordinal;
+            StringComparison comparison =
+                Path.DirectorySeparatorChar == '\\'
+                    ? StringComparison.OrdinalIgnoreCase
+                    : StringComparison.Ordinal;
             return string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), comparison);
         }
 
