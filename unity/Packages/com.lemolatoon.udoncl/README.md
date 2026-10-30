@@ -12,12 +12,13 @@ On import failure, the importer restores prior file contents and `.meta` files a
 
 ## Udon Assembly and prefab
 
-The package deliberately leaves `.uasm` to the Worlds SDK's public
-`UdonAssemblyProgramAssetImporter`. It calls `RefreshProgram`, checks
-`AssemblyError`, retrieves the serialized program, then binds it to a generated
-`LennardJonesDemo.prefab` through the public `UdonBehaviour` and variable-table
-APIs. It does not register a competing `.uasm` importer and uses no private
-reflection or UdonSharp.
+The package preserves the emitted `.uasm` text under `Sources`, then creates a
+public SDK `UdonAssemblyProgramAsset` outside Unity's scripted-import callback.
+It calls `RefreshProgram`, checks `AssemblyError`, retrieves the serialized
+program, then binds it to a generated `LennardJonesDemo.prefab` through the
+public `UdonBehaviour` and variable-table APIs. Keeping assembly outside the
+SDK `.uasm` callback avoids forbidden nested `CreateAsset`/`SaveAssets` calls
+on Unity 2022.3. It uses no private reflection or UdonSharp.
 
 The prefab contains an interactive 3D volume rendered inside a cube, with real
 view-dependent parallax rather than a 2D particle plane. The Udon host executes the two

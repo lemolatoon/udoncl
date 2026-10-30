@@ -28,18 +28,13 @@ namespace Lemolatoon.Udoncl.Editor
                     EnsureFolder(GeneratedRoot, artifacts.ProgramName);
 
                     transaction.CopyFile(artifacts.ManifestAssetPath, programRoot + "/manifest.json");
-                    string assemblyAssetPath = programRoot + "/" + Path.GetFileName(artifacts.AssemblyAssetPath);
-                    transaction.CopyFile(artifacts.AssemblyAssetPath, assemblyAssetPath);
-
-                    UdonAssemblyProgramAsset programAsset =
-                        AssetDatabase.LoadAssetAtPath<UdonAssemblyProgramAsset>(assemblyAssetPath);
-                    if (programAsset == null)
-                        throw new InvalidDataException("Worlds SDK did not import Udon Assembly: " + assemblyAssetPath);
-                    programAsset.RefreshProgram();
-                    if (!string.IsNullOrEmpty(programAsset.AssemblyError) ||
-                        programAsset.SerializedProgramAsset.RetrieveProgram() == null)
-                        throw new InvalidDataException("Worlds SDK rejected Udon Assembly: " +
-                            (programAsset.AssemblyError ?? assemblyAssetPath));
+                    string sourceDirectory = programRoot + "/Sources";
+                    EnsureFolders(sourceDirectory);
+                    string assemblySourcePath = sourceDirectory + "/" +
+                        Path.GetFileName(artifacts.AssemblyAssetPath) + ".txt";
+                    transaction.CopyFile(artifacts.AssemblyAssetPath, assemblySourcePath);
+                    UdonAssemblyProgramAsset programAsset = CreateOrUpdateProgramAsset(
+                        transaction, programRoot, File.ReadAllText(artifacts.AssemblyAssetPath));
 
                     string displayShaderPath = programRoot + "/Shaders/display.shader";
                     EnsureFolders(programRoot + "/Shaders");
@@ -89,6 +84,46 @@ namespace Lemolatoon.Udoncl.Editor
             }
 
             return programRoot;
+        }
+
+        private static UdonAssemblyProgramAsset CreateOrUpdateProgramAsset(
+            AssetImportTransaction transaction, string programRoot, string assembly)
+        {
+            string programDirectory = programRoot + "/Programs";
+            EnsureFolders(programDirectory);
+            string programPath = programDirectory + "/host_program.asset";
+            transaction.Track(programPath);
+
+            UdonAssemblyProgramAsset programAsset =
+                AssetDatabase.LoadAssetAtPath<UdonAssemblyProgramAsset>(programPath);
+            if (programAsset == null)
+            {
+                if (AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(programPath) != null)
+                    throw new InvalidDataException("An incompatible asset already occupies " + programPath);
+                programAsset = ScriptableObject.CreateInstance<UdonAssemblyProgramAsset>();
+                programAsset.name = "host_program";
+                AssetDatabase.CreateAsset(programAsset, programPath);
+            }
+
+            SerializedObject serialized = new SerializedObject(programAsset);
+            SerializedProperty source = serialized.FindProperty("udonAssembly");
+            if (source == null)
+                throw new InvalidDataException("Worlds SDK Udon Assembly asset has no source field.");
+            source.stringValue = assembly;
+            serialized.ApplyModifiedPropertiesWithoutUndo();
+
+            string guid = AssetDatabase.AssetPathToGUID(programPath);
+            if (string.IsNullOrEmpty(guid))
+                throw new InvalidDataException("Unity did not assign a GUID to " + programPath);
+            transaction.Track("Assets/SerializedUdonPrograms/" + guid + ".asset");
+
+            programAsset.RefreshProgram();
+            if (!string.IsNullOrEmpty(programAsset.AssemblyError) ||
+                programAsset.SerializedProgramAsset.RetrieveProgram() == null)
+                throw new InvalidDataException("Worlds SDK rejected Udon Assembly: " +
+                    (programAsset.AssemblyError ?? programPath));
+            EditorUtility.SetDirty(programAsset);
+            return programAsset;
         }
 
         private static Material CreateOrUpdateMaterial(AssetImportTransaction transaction, string programRoot,

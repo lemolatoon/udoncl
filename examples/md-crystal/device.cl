@@ -69,7 +69,12 @@ INLINE void md_update(__global const float *state, __global float *out,
     vx += sign * amplitude * weight * noise(seed);
     vy += sign * amplitude * weight * noise(seed + 17.17f);
     vz += sign * amplitude * weight * noise(seed + 43.43f);
-    float damping = 1.0f - cooling_rate * dt; damping = damping > 0.0f ? damping : 0.0f;
+    // Contact heating and passive cooling are mutually exclusive thermal
+    // modes.  The Host decays amplitude after release; once it falls below
+    // the dead-band, the zero-temperature bath takes over and recrystallizes.
+    float effective_cooling = amplitude > 0.001f ? 0.0f : cooling_rate;
+    float damping = 1.0f - effective_cooling * dt;
+    damping = damping > 0.0f ? damping : 0.0f;
     vx *= damping; vy *= damping; vz *= damping;
   }
   out[word] = lane == 0u ? x : lane == 1u ? y : lane == 2u ? z
