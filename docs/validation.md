@@ -15,7 +15,7 @@ All pending target tests below are `TODO: verify on target SDK/client`.
 | HOST-08 | Real C/OpenCL C → paired boundary bundle | PASS on Linux: make example; native original/recovered Host oracle; source mutation; 12 rejection cases; validation/2026-10-30-c-boundary-report.json |
 | HOST-09 | Prebuilt SDK install and CPU parallelism | PASS on Linux: fresh official archive → configure/build; 9 installer tests and 5 CPU/build-command tests; validation/2026-10-30-prebuilt-sdk.json |
 | HOST-10 | UdonHL → LLVM → native Host + fragment execution | PASS on Linux: 16 bitwise readbacks, 8 runtime and 4 native-lowering rejections; validation/2026-10-30-native-fragment.json |
-| HOST-WIN-01 | Windows x64 MSVC configure/build/CTest | Archive install/configure PASS in CI; VS 2022 link failed with newer SDK STL symbols. Workflow now selects matching VS 2026/windows-2025; rerun pending. See validation/2026-10-30-windows-ci.json |
+| HOST-WIN-01 | Windows x64 MSVC configure/build/CTest | PASS: VS 2026/windows-2025 configure/build and 13/13 CTests, including 16 D3D11/WARP fragment draw/readbacks. See validation/2026-10-30-windows-ci.json |
 | P0-SDK-01 | Public Program Asset generation and behaviour binding | Pending: Unity + installed Worlds SDK unavailable |
 | P0-VM-01 | Nine actual VM opcodes and COPY stack order | Pending SDK VM golden output |
 | P0-ABI-01 | Two behaviours, exported slots, CustomEvent sync/callback/reentrancy | Pending SDK VM + PC client |
@@ -28,8 +28,9 @@ All pending target tests below are `TODO: verify on target SDK/client`.
 
 Environment: Linux x86_64 host. No Unity/VRChat Worlds SDK installation located
 under the examined user/opt directories. No PC VRChat client tests executed.
-Windows CI archive installation and configure passed in run 41055911752.
-Its VS 2022 link failure is recorded below; a native Windows pass is not yet claimed.
+Windows CI configure/build and all 13 CTests passed in run 41059537479,
+including native UdonHL Host binaries linked to the D3D11/WARP fragment runtime.
+The earlier VS 2022 link failure and its fix are recorded below.
 
 P0/G0 must be validated before claiming GPU/SDK functionality. P1 remains
 partial: 17/57 operations have ODS definitions. The boundary prototype includes
@@ -90,8 +91,8 @@ Windows archives were downloaded, SHA256-verified and extracted on Linux;
 LLVM/MLIR headers, static libraries, CMake packages, tools and Clang resources
 were checked. PE/library metadata confirmed the selected SDK's Release `/MD`
 runtime and assertion-free ABI; Windows binaries were not executed here.
-Windows native configure/build/CTest still awaits the CI run. Both matrix jobs
-now install archives on cache misses, without compiling LLVM from source.
+Windows native configure/build/CTest subsequently passed in run 41059537479.
+Both matrix jobs install archives on cache misses, without compiling LLVM from source.
 
 Windows CI run [41055911752](https://github.com/lemolatoon/udoncl/actions/runs/41055911752/job/124063257866)
 failed linking `vrc-opt`: `__std_rotate`, `__std_min_element_8i` and related MSVC
@@ -102,7 +103,7 @@ builds and tests Windows x64 on `windows-2025`. That image uses
 [Visual Studio 2026](https://github.blog/changelog/2026-05-14-github-actions-upcoming-image-migrations/).
 The project now uses the same runner and its latest installed VS toolset. No
 compatibility stubs or changes to LLVM libraries were introduced. Native Windows
-validation of this runner change requires the next CI run.
+validation of this runner change subsequently passed in run 41059537479.
 
 A follow-up [Windows job](https://github.com/lemolatoon/udoncl/actions/runs/41057266482/job/124067836214)
 confirmed the runner contains VS 2026 version 18.11, but the explicit `18.0`
@@ -118,6 +119,15 @@ a fence and host readback recover the f32 bits. Square and x+x source variants
 match an independent native C oracle for 16 draws, including signed-zero checks.
 Runtime and native-lowering rejection cases are exercised separately. An additional
 square run with Khronos validation and synchronization validation enabled emitted
-no VUID, synchronization-hazard or validation-error diagnostics. Windows D3D11/WARP
-implementation is included; execution status is recorded separately in CI evidence.
+no VUID, synchronization-hazard or validation-error diagnostics. The Windows
+D3D11/WARP runtime also passed 16 fragment draw/readbacks in CI, including the
+source variant and bitwise native C oracle checks.
 This does not pass Unity/VRChat SDK gates or implement asynchronous suspension.
+
+The successful [Windows job](https://github.com/lemolatoon/udoncl/actions/runs/41059537479/job/124075510957)
+uses MSVC 14.51.36231 and passed all 13 CTests, including the C example and
+native-fragment-execution. The latter exercised 16 real D3D11/WARP draws and
+readbacks, 8 invalid runtime request cases and 4 native-lowering rejection cases.
+The final test summaries use ASCII so Windows' default cp1252 console encoding
+cannot turn a completed test into a UnicodeEncodeError. Linux passed in the
+same workflow run. Neither result claims Unity/VRChat execution.

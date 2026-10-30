@@ -23,12 +23,26 @@
   "runtime_rejections": 8,
   "native_lowering_rejections": 4,
   "source_mutation_verified": true,
-  "windows_native_execution": "covered when run on Windows CI",
+  "windows_native_execution": "passed in Windows CI",
   "unity_vrchat_execution": "not executed",
   "validation_layers": {
     "square_draws": 8,
     "layers": "VK_LAYER_KHRONOS_validation; synchronization validation enabled",
     "diagnostic_count": 0
   },
-  "windows_execution": "not yet run for native fragment code; CI pending"
+  "windows_execution": {
+    "run": "https://github.com/lemolatoon/udoncl/actions/runs/41059537479/job/124075510957",
+    "head_sha": "e6e8ff685021c36e7e92c8016f71688ba6484f25",
+    "ctest": "13/13 passed",
+    "renderer": "Direct3D11 WARP (software)",
+    "fragment_draw_readbacks": 16,
+    "source_variants": [
+      "square (x*x)",
+      "twice (x+x)"
+    ],
+    "bitwise_oracle": "same Device source compiled independently as C",
+    "runtime_rejections": 8,
+    "native_lowering_rejections": 4,
+    "unity_vrchat_execution": "not executed"
+  }
 }

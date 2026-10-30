@@ -1,0 +1,15 @@
+Windows CI validation, 2026-10-30 UTC
+https://github.com/lemolatoon/udoncl/actions/runs/41059537479/job/124075510957
+Commit e6e8ff685021c36e7e92c8016f71688ba6484f25
+Windows Server 2025 / Visual Studio 2026 / MSVC 14.51.36231
+
+2026-10-30T13:00:41.7556515Z Building with 2 parallel jobs (available CPU count)
+2026-10-30T13:03:05.0673793Z 10/13 Test #10: c-boundary-example .................   Passed    2.52 sec
+2026-10-30T13:03:08.0766199Z 11/13 Test #11: prebuilt-sdk-installer .............   Passed    3.01 sec
+2026-10-30T13:03:09.2906297Z 12/13 Test #12: build-parallelism ..................   Passed    1.21 sec
+2026-10-30T13:03:20.2854063Z 13/13 Test #13: native-fragment-execution ..........   Passed   10.99 sec
+2026-10-30T13:03:20.2865628Z 100% tests passed out of 13
+2026-10-30T13:03:20.2866729Z Total Test time (real) =  23.63 sec
+
+Native fragment CTest: 16 D3D11/WARP draw/readbacks, 8 runtime rejections,
+4 native-lowering rejections. No Unity/VRChat execution.

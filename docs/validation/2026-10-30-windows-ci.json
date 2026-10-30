@@ -23,12 +23,31 @@
     "visual_studio_version": "latest installed on windows-2025 (VS 2026)",
     "llvm_source_build": "not added"
   },
-  "native_windows_rerun": "pending; no Windows runtime execution available locally",
+  "native_windows_rerun": "passed: Windows CI 13/13 CTests including native fragment rendering",
   "follow_up_run": {
     "url": "https://github.com/lemolatoon/udoncl/actions/runs/41057266482/job/124067836214",
     "result": "VS setup failed before build",
     "installed_vs_version": "18.11.12315.225",
     "cause": "msvc-dev-cmd@v1 numeric version selection 18.0 generates upper bound 18.9, excluding installed 18.11",
     "fix": "omit vsversion input and use vswhere -latest discovery"
+  },
+  "successful_run": {
+    "url": "https://github.com/lemolatoon/udoncl/actions/runs/41059537479/job/124075510957",
+    "head_sha": "e6e8ff685021c36e7e92c8016f71688ba6484f25",
+    "runner": "windows-2025",
+    "compiler": "MSVC 14.51.36231 / Visual Studio 2026 18.11",
+    "archive_cache": "restored; SDK validation passed",
+    "configure": "passed",
+    "build": "passed",
+    "ctest": "13/13 passed",
+    "native_fragment_execution": {
+      "backend": "Direct3D11 WARP software rasterizer",
+      "fragment_draw_readbacks": 16,
+      "native_host_backend": "UdonHL -> func/arith -> LLVM -> native object",
+      "runtime_rejections": 8,
+      "native_lowering_rejections": 4,
+      "test_seconds": 10.99
+    },
+    "console_encoding_fix": "ASCII test summaries avoid cp1252 UnicodeEncodeError"
   }
 }
