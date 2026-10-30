@@ -93,4 +93,8 @@ if(VRC_ENABLE_NATIVE_FRAGMENT_TESTS)
     COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/boundary/md_crystal.py"
       "${PROJECT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/tests/md-crystal")
   set_tests_properties(md-crystal-execution PROPERTIES TIMEOUT 600)
+  add_test(NAME mnist-cnn-device-execution
+    COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/boundary/mnist_cnn_device.py"
+      "${PROJECT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/tests/mnist-cnn-device")
+  set_tests_properties(mnist-cnn-device-execution PROPERTIES TIMEOUT 600)
 endif()

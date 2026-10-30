@@ -2,10 +2,10 @@
 #include "weights.h"
 
 enum {
-  kConvChannels = 8,
+  kConvChannels = 16,
   kConvWidth = 24,
-  kPoolWidth = 6,
-  kPoolStride = 4,
+  kPoolWidth = 3,
+  kPoolStride = 8,
   kFeatures = kPoolWidth * kPoolWidth * kConvChannels,
 };
 
@@ -46,7 +46,7 @@ void mnist_cnn_infer(const float *input, float *logits) {
         }
         int feature_index =
             (pool_y * kPoolWidth + pool_x) * kConvChannels + channel;
-        features[feature_index] = sum * (1.0f / 16.0f);
+        features[feature_index] = sum * (1.0f / 64.0f);
       }
     }
   }

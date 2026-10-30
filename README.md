@@ -101,10 +101,11 @@ The check mode is non-mutating and runs as a separate CI job. Formatter
 versions are pinned in `scripts/requirements-format.txt` and
 `.config/dotnet-tools.json`; a different `clang-format` version is rejected.
 
-The native-first MNIST CNN reference lives in `examples/mnist-cnn`. Its compact
-conv/ReLU/pooling/dense model reaches 96.71% on the MNIST test set, and its C
-call graph is executed both directly and after a native UdonHL round trip by the
-`mnist-cnn-native` CTest.
+The MNIST CNN reference lives in `examples/mnist-cnn`. Its compact
+conv/ReLU/pooling/dense model reaches 95.49% on the MNIST test set. The C oracle
+is executed directly and after a native UdonHL round trip by `mnist-cnn-native`;
+`mnist-cnn-device-execution` compiles the same model from OpenCL C through the
+Device fragment backend and compares real GPU logits and predictions.
 
 CI caches the verified, installed LLVM/MLIR SDK (`.deps/llvm23`) separately for
 each OS image and architecture. The key includes the archive lock, installer and

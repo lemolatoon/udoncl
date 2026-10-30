@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "profile": "gather-f32",
+  "words": 4096,
+  "kernel": "mnist_cnn",
+  "kernel_id": 20,
+  "global_size": [4096, 1, 1],
+  "local_size": [1, 1, 1],
+  "global_offset": [0, 0, 0]
+}

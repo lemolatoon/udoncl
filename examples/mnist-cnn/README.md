@@ -5,15 +5,15 @@ implements a deliberately small, fully connected C call graph:
 
 ```text
 28x28 f32 input
-  -> valid 5x5 convolution, 8 channels
+  -> valid 5x5 convolution, 16 channels
   -> ReLU
-  -> 4x4 average pooling
+  -> 8x8 average pooling
   -> dense 10-class logits
   -> argmax
 ```
 
 The checked-in weights were trained deterministically by
-`scripts/train_mnist_cnn.py` (seed `0x55444f4e`) and reach 96.71% on the 10,000
+`scripts/train_mnist_cnn.py` (seed `0x55444f4e`) and reach 95.49% on the 10,000
 MNIST test images. Ten correctly classified test-set images, one per class, are
 checked in as a compact execution fixture.
 
@@ -22,7 +22,12 @@ the native UdonHL adapter with:
 
 ```text
 python examples/mnist-cnn/run.py --build-dir build/udoncl
+python examples/mnist-cnn/run_device.py --build-dir build/udoncl
 ```
+
+The Device run compiles `device.cl` through LLVM/MLIR, the proven gather
+lowering, `vrcgpu`, and HLSL. It then renders the fragment kernel and checks all
+ten predictions and logits against the independent CPU implementation.
 
 The native adapter intentionally retains LLVM memory operations. Subsequent
 milestones replace typed-array access, scalar loops, and the CNN call graph with

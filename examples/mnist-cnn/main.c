@@ -15,7 +15,7 @@ int main(void) {
       ++correct;
   }
   printf("mnist_fixture_accuracy=%d/10 "
-         "architecture=conv5x5x8-relu-avgpool4x4-dense10\n",
+         "architecture=conv5x5x16-relu-avgpool8x8-dense10\n",
          correct);
   return correct == MNIST_CNN_CLASSES ? 0 : 1;
 }

@@ -1,4 +1,4 @@
-architecture=conv5x5x8-relu-avgpool4x4-dense10
+architecture=conv5x5x16-relu-avgpool8x8-dense10
 epochs=10
 seed=0x55444f4e
-test_accuracy=0.967100
+test_accuracy=0.954900
