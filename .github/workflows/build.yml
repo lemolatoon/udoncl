@@ -22,7 +22,8 @@ jobs:
         if: runner.os == 'Windows'
         with:
           arch: x64
-          vsversion: '18.0'
+          # Use the image's latest VS: this action caps numeric selections at
+          # minor .9, which excludes current VS 2026 versions such as 18.11.
       - name: Restore pinned LLVM and MLIR
         uses: actions/cache/restore@v4
         id: llvm

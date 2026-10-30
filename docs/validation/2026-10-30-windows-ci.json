@@ -20,8 +20,15 @@
   "upstream_build_workflow": "https://github.com/munich-quantum-software/portable-mlir-toolchain/blob/2026.10.28/.github/workflows/build-portable-mlir-toolchain.yml",
   "fix": {
     "runner": "windows-2025",
-    "visual_studio_version": "18.0",
+    "visual_studio_version": "latest installed on windows-2025 (VS 2026)",
     "llvm_source_build": "not added"
   },
-  "native_windows_rerun": "pending; no Windows runtime execution available locally"
+  "native_windows_rerun": "pending; no Windows runtime execution available locally",
+  "follow_up_run": {
+    "url": "https://github.com/lemolatoon/udoncl/actions/runs/41057266482/job/124067836214",
+    "result": "VS setup failed before build",
+    "installed_vs_version": "18.11.12315.225",
+    "cause": "msvc-dev-cmd@v1 numeric version selection 18.0 generates upper bound 18.9, excluding installed 18.11",
+    "fix": "omit vsversion input and use vswhere -latest discovery"
+  }
 }

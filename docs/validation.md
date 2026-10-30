@@ -99,6 +99,12 @@ runner's MSVC 14.44/VS 2022 standard library. The SDK's pinned
 [release workflow](https://github.com/munich-quantum-software/portable-mlir-toolchain/blob/2026.10.28/.github/workflows/build-portable-mlir-toolchain.yml)
 builds and tests Windows x64 on `windows-2025`. That image uses
 [Visual Studio 2026](https://github.blog/changelog/2026-05-14-github-actions-upcoming-image-migrations/).
-The project now uses the same runner and explicitly selects VS 18.0. No
+The project now uses the same runner and its latest installed VS toolset. No
 compatibility stubs or changes to LLVM libraries were introduced. Native Windows
 validation of this runner change requires the next CI run.
+
+A follow-up [Windows job](https://github.com/lemolatoon/udoncl/actions/runs/41057266482/job/124067836214)
+confirmed the runner contains VS 2026 version 18.11, but the explicit `18.0`
+selection failed: `msvc-dev-cmd@v1` constructs an upper version bound of `18.9`.
+Omitting that input uses the action's `vswhere -latest` discovery and avoids
+excluding newer VS 2026 minor releases.
