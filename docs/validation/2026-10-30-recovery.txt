@@ -1,0 +1,55 @@
+LLVM frontend and MLIR recovery validation, 2026-10-30 UTC
+Linux x86_64; GCC 15.2.0; Clang/LLVM/MLIR 23.1.4 (pinned official SDK)
+Windows, Unity/SDK VM, native OpenCL device, GPU and PC client: not executed
+
+$ cmake --build --preset udoncl
+[1/5] Building CXX object lib/Conversion/LLVMToHighLevel/CMakeFiles/obj.VRCLLVMToHighLevelMLIR.dir/FrontendMetadata.cpp.o
+[2/5] Building CXX object lib/Conversion/LLVMToHighLevel/CMakeFiles/obj.VRCLLVMToHighLevelMLIR.dir/RaiseLLVMToScalar.cpp.o
+[3/5] Linking CXX static library lib/Conversion/LLVMToHighLevel/libVRCLLVMToHighLevelMLIR.a
+[4/5] Linking CXX executable tools/vrc-translate/vrc-translate
+[5/5] Linking CXX executable tools/vrc-opt/vrc-opt
+
+
+$ ctest --preset udoncl
+Test project /home/khishida/workspace/udoncl/build/udoncl
+    Start 1: dialect-roundtrip
+1/5 Test #1: dialect-roundtrip ................   Passed    0.11 sec
+    Start 2: llvm-import
+2/5 Test #2: llvm-import ......................   Passed    0.08 sec
+    Start 3: opencl-frontend-metadata
+3/5 Test #3: opencl-frontend-metadata .........   Passed    0.24 sec
+    Start 4: llvm-high-level-recovery
+4/5 Test #4: llvm-high-level-recovery .........   Passed    0.27 sec
+    Start 5: llvm-recovery-diagnostics
+5/5 Test #5: llvm-recovery-diagnostics ........   Passed    0.01 sec
+
+100% tests passed, 0 tests failed out of 5
+
+Total Test time (real) =   0.71 sec
+
+
+OpenCL matrix: 6 successful Clang/import/metadata cases; scalar raising rejects GPU inputs.
+Sidecar captures canonical LLVM IR + SHA256 and metadata; repeat import is deterministic.
+Metadata references use module slot IDs, never process pointer addresses.
+Kernel wrappers/helpers and variant-specific barrier counts: see 2026-10-30-opencl-report.json.
+
+Recovery test: TableGen-defined scalar Pass, composed mem2reg/scalar/CFG-to-SCF pipeline.
+3 fixtures (loop, scalar ops, initialized local stack) raised and lowered with upstream tools.
+Both original and recovered native executables satisfy the C oracle (981 checks each).
+14 unsupported-semantics cases rejected; source locations preserved.
+5 split-input expected-error diagnostic cases passed.
+CLI file output/sidecar, paths containing spaces and write failures checked.
+
+README import and PassManager example commands executed successfully.
+clang-format 23.1.4 --dry-run --Werror passed for changed C++ files.
+Python test scripts compile; git diff --check passed.
+
+Captured OpenCL diagnostics:
+argv: ["/home/khishida/workspace/udoncl/.deps/llvm23/bin/clang", "--version"]
+clang: warning: future releases of the clang compiler will prefer GCC installations containing libstdc++ include directories; '/usr/lib/gcc/x86_64-linux-gnu/15' would be chosen over '/usr/lib/gcc/x86_64-linux-gnu/16' [-Wgcc-install-dir-libstdcxx]
+
+argv: ["/home/khishida/workspace/udoncl/.deps/llvm23/bin/opt", "-S", "-passes=mem2reg", "/home/khishida/workspace/udoncl/build/udoncl/tests/opencl/saxpy-mem2reg.ll", "-o", "/home/khishida/workspace/udoncl/build/udoncl/tests/opencl/saxpy-mem2reg.normalized.ll"]
+/home/khishida/workspace/udoncl/.deps/llvm23/bin/opt: WARNING: failed to create target machine for 'spir-unknown-unknown': unable to get target for 'spir-unknown-unknown', see --version and --triple.
+
+argv: ["/home/khishida/workspace/udoncl/.deps/llvm23/bin/opt", "-S", "-passes=mem2reg", "/home/khishida/workspace/udoncl/build/udoncl/tests/opencl/reduction-mem2reg.ll", "-o", "/home/khishida/workspace/udoncl/build/udoncl/tests/opencl/reduction-mem2reg.normalized.ll"]
+/home/khishida/workspace/udoncl/.deps/llvm23/bin/opt: WARNING: failed to create target machine for 'spir-unknown-unknown': unable to get target for 'spir-unknown-unknown', see --version and --triple.

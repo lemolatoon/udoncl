@@ -7,7 +7,9 @@ All pending target tests below are `TODO: verify on target SDK/client`.
 |---|---|---|
 | HOST-01 | LLVM/MLIR 23.1.4 TableGen + four independent dialect targets | PASS on Linux: validation/2026-10-30-host.txt |
 | HOST-02 | Nine opcode parser/printer and invalid attributes/unknown ops | PASS on Linux: round-trip + 16 rejection cases; not VM semantics |
-| HOST-03 | LLVM import through independent recovery library | PASS scalar LLVM dialect import + verification; raising and metadata sidecar pending |
+| HOST-03 | LLVM import through independent recovery library | PASS scalar LLVM dialect import + verification; metadata sidecar and initial scalar/CFG/SCF raising implemented |
+| HOST-04 | OpenCL Clang → LLVM → MLIR metadata matrix | PASS: 6 cases (SAXPY/Reduction × O0/no-optnone/mem2reg) |
+| HOST-05 | MLIR raising Pass and SCF pipeline | PASS: native differential oracle, source locations, 14 rejections + embedded expected diagnostics |
 | HOST-WIN-01 | Windows x64 MSVC configure/build/CTest | CI workflow provided, not executed here |
 | P0-SDK-01 | Public Program Asset generation and behaviour binding | Pending: Unity + installed Worlds SDK unavailable |
 | P0-VM-01 | Nine actual VM opcodes and COPY stack order | Pending SDK VM golden output |
@@ -39,6 +41,14 @@ Reproduce host verification with README.md commands. Logs under
 
 Actual host execution: [2026-10-30-host.txt](validation/2026-10-30-host.txt).
 CMake 4.2.3, GCC 15.2.0; LLVM/MLIR 23.1.4 official Linux binary SDK.
-CMake emits seven compilation database entries. clangd 23.1.4 reports zero errors
+CMake now emits nine compilation database entries. clangd 23.1.4 reports zero errors
 for UdonAsmDialect.cpp when using `--query-driver=/usr/bin/c++`.
 The importer requires DLTI registered alongside LLVM; this is covered by HOST-03.
+
+2026-10-30 recovery update: [recovery.md](recovery.md) describes the TableGen
+Pass, full conversion legality and preserved metadata. Results:
+[2026-10-30-recovery.txt](validation/2026-10-30-recovery.txt) and
+[OpenCL report](validation/2026-10-30-opencl-report.json).
+CTest has five passing tests on this Linux host. Metadata import is validated;
+OpenCL kernel raising, general memory/alias recovery, GPU execution and SDK gates
+remain incomplete. Initial scalar recovery does not close R6 or complete P1.

@@ -1,0 +1,96 @@
+{
+  "clang": "clang version 23.1.4 (https://github.com/llvm/llvm-project 7a941dfb2877a0b8cf30323fefa85ad019e0b0f5)\nTarget: x86_64-unknown-linux-gnu\nThread model: posix\nInstalledDir: /home/khishida/workspace/udoncl/.deps/llvm23/bin\n",
+  "target": "spir-unknown-unknown",
+  "cases": [
+    {
+      "source": "saxpy",
+      "variant": "O0",
+      "import": "pass",
+      "kernel_arg_metadata_native_import": false,
+      "sidecar_metadata": "pass",
+      "barrier_call_sites": 0,
+      "defined_functions": [
+        "saxpy",
+        "__clang_ocl_kern_imp_saxpy"
+      ],
+      "optnone": true,
+      "has_phi": false,
+      "scalar_raise": "explicitly rejected (GPU/memory recovery pending)"
+    },
+    {
+      "source": "saxpy",
+      "variant": "no-optnone",
+      "import": "pass",
+      "kernel_arg_metadata_native_import": false,
+      "sidecar_metadata": "pass",
+      "barrier_call_sites": 0,
+      "defined_functions": [
+        "saxpy",
+        "__clang_ocl_kern_imp_saxpy"
+      ],
+      "optnone": false,
+      "has_phi": false,
+      "scalar_raise": "explicitly rejected (GPU/memory recovery pending)"
+    },
+    {
+      "source": "saxpy",
+      "variant": "mem2reg",
+      "import": "pass",
+      "kernel_arg_metadata_native_import": false,
+      "sidecar_metadata": "pass",
+      "barrier_call_sites": 0,
+      "defined_functions": [
+        "saxpy",
+        "__clang_ocl_kern_imp_saxpy"
+      ],
+      "optnone": false,
+      "has_phi": false,
+      "scalar_raise": "explicitly rejected (GPU/memory recovery pending)"
+    },
+    {
+      "source": "reduction",
+      "variant": "O0",
+      "import": "pass",
+      "kernel_arg_metadata_native_import": false,
+      "sidecar_metadata": "pass",
+      "barrier_call_sites": 2,
+      "defined_functions": [
+        "sum_reduce",
+        "__clang_ocl_kern_imp_sum_reduce"
+      ],
+      "optnone": true,
+      "has_phi": true,
+      "scalar_raise": "explicitly rejected (GPU/memory recovery pending)"
+    },
+    {
+      "source": "reduction",
+      "variant": "no-optnone",
+      "import": "pass",
+      "kernel_arg_metadata_native_import": false,
+      "sidecar_metadata": "pass",
+      "barrier_call_sites": 4,
+      "defined_functions": [
+        "sum_reduce",
+        "__clang_ocl_kern_imp_sum_reduce"
+      ],
+      "optnone": false,
+      "has_phi": true,
+      "scalar_raise": "explicitly rejected (GPU/memory recovery pending)"
+    },
+    {
+      "source": "reduction",
+      "variant": "mem2reg",
+      "import": "pass",
+      "kernel_arg_metadata_native_import": false,
+      "sidecar_metadata": "pass",
+      "barrier_call_sites": 4,
+      "defined_functions": [
+        "sum_reduce",
+        "__clang_ocl_kern_imp_sum_reduce"
+      ],
+      "optnone": false,
+      "has_phi": true,
+      "scalar_raise": "explicitly rejected (GPU/memory recovery pending)"
+    }
+  ]
+}

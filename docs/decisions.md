@@ -34,3 +34,11 @@ SDK discovery: explicit VRC_LLVM_ROOT overrides auto-discovery; otherwise prefer
 .deps/llvm23 over system packages and stale LLVM_DIR/MLIR_DIR cache entries.
 Both packages must come from the chosen prefix. An incomplete local prefix
 fails configuration instead of mixing local LLVM with system MLIR.
+
+Raising is implemented as MLIR Passes following upstream conventions:
+TableGen Passes.td, generated declarations/base/registration, conversion patterns,
+ConversionTarget and applyFullConversion. The first scalar Pass rejects unsupported
+semantics. A registered pipeline composes upstream mem2reg, scalar raising and
+upstream CFG-to-SCF. Broader memory, affine, GPU and barrier recovery remain part
+of the agreed design. The importer captures frontend metadata before translation;
+its schema v1 sidecar includes canonical LLVM IR and a SHA256 source fingerprint.

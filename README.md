@@ -74,9 +74,30 @@ Current components:
 
 - Four separate TableGen dialect libraries; only the nine `udonasm` operations are registered.
 - `vrc-opt`: MLIR parser/printer with operation verification, rejects unknown ops by default.
-- `VRCLLVMToHighLevelMLIR`: independent LLVM import library shared by future host/device recovery.
-- `vrc-translate --import-llvm input.ll`: LLVM dialect import only; recovery and metadata sidecar are pending.
+- `VRCLLVMToHighLevelMLIR`: independent import/metadata and scalar/CFG recovery library for host/device development.
+- `vrc-translate --import-llvm input.ll`: LLVM dialect import with preserved frontend metadata and optional JSON sidecar.
+- `vrc-raise-llvm-to-scalar` MLIR Pass and `vrc-recover-high-level` pipeline: scalar/CFG conversion and upstream memory promotion / SCF structuring.
 
 The other 48 operations, full verifiers/lowerings, assembly emitter, host ABI,
 OpenCL runtime, generated shaders and Unity integration are not implemented.
 See [docs/validation.md](docs/validation.md) for gates and evidence.
+
+Import and high-level recovery examples (add `.exe` to tool names on Windows):
+
+```text
+build/udoncl/tools/vrc-translate/vrc-translate --import-llvm tests/recovery/loop.ll --metadata-output build/loop.frontend.json -o build/loop.llvm.mlir
+build/udoncl/tools/vrc-opt/vrc-opt --pass-pipeline="builtin.module(vrc-recover-high-level)" --verify-each build/loop.llvm.mlir -o build/loop.high.mlir
+```
+
+The raising Pass is defined in TableGen and uses MLIR dialect conversion;
+`--vrc-raise-llvm-to-scalar` runs just scalar/CFG conversion. The composed pipeline
+first runs upstream mem2reg, then scalar raising, then upstream CFG-to-SCF.
+Unsupported memory, pointers, calling conventions, instructions and semantic
+flags fail explicitly. This is the first recovery stage; general memref, affine,
+OpenCL builtin, local-memory and barrier/dependence recovery remain pending.
+See [docs/recovery.md](docs/recovery.md) for scope, sidecar schema and P0 findings.
+
+`ctest --preset udoncl` also runs the Clang OpenCL import matrix and native
+recovery differential tests. It uses tools from the selected SDK, never system
+Clang/opt from PATH. IR, sidecars, command logs and the OpenCL report are retained
+in `build/udoncl/tests/opencl`; recovery artifacts are in `build/udoncl/tests/recovery`.
