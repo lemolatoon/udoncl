@@ -96,6 +96,52 @@ def main():
         'inline const char *deviceSource() { return '+json.dumps(text)+'; }\n'+
         'inline std::vector<native_opencl::GatherBinding> manifestBindings(const std::string &drift, const std::string &kick) { return {'+
         ', '.join(binding_code)+'}; }\n', encoding='utf-8')
+
+    # Publish the Unity-facing host + two Device kernels as one validated
+    # artifact. The native per-kernel manifests remain evidence for the
+    # compiler boundary; this combined manifest is the Editor import contract.
+    unity_bundle = output/'unity-bundle'
+    with tempfile.TemporaryDirectory(prefix='unity-', dir=output) as staging:
+        staged = Path(staging)/'bundle'
+        (staged/'kernels').mkdir(parents=True)
+        shutil.copy2(source/'host.uasm', staged/'host.uasm')
+        shutil.copy2(source/'display.shader', staged/'display.shader')
+        for identifier, bundle in [(10, output/'md_drift-bundle'),
+                                   (11, output/'md_kick-bundle')]:
+            shutil.copy2(bundle/f'kernels/kernel_{identifier}.shader',
+                         staged/f'kernels/kernel_{identifier}.shader')
+        unity_manifest = {
+            'schema_version': 1,
+            'compiler_version': '0.1.0-dev',
+            'runtime_abi_version': 1,
+            'artifact_stage': 'unity-lj-prototype',
+            'ready_for_unity': True,
+            'sdk_compatibility': {'sdk_version': '3.10.5', 'extern_db_hash': None},
+            'target': {'host_pointer_bits': 32, 'device_pointer_bits': 32,
+                       'endianness': 'little', 'platform': 'VRChat-PC'},
+            'program': {'name': 'md_crystal', 'assembly': 'host.uasm',
+                        'display_shader': 'display.shader'},
+            'exports': [
+                {'id': 1, 'c_symbol': 'md_init', 'udon_event': '_start',
+                 'status_slot': '', 'async': False},
+                {'id': 2, 'c_symbol': 'md_step', 'udon_event': '_update',
+                 'status_slot': '', 'async': False},
+                {'id': 3, 'c_symbol': 'md_heat', 'udon_event': '_interact',
+                 'status_slot': '', 'async': False},
+            ],
+            'device': {'kernels': [
+                {'id': 10, 'name': 'md_drift', 'shader': 'kernels/kernel_10.shader'},
+                {'id': 11, 'name': 'md_kick', 'shader': 'kernels/kernel_11.shader'},
+            ]},
+        }
+        (staged/'manifest.json').write_text(json.dumps(unity_manifest, indent=2),
+                                           encoding='utf-8')
+        if unity_bundle.exists():
+            previous = json.loads((unity_bundle/'manifest.json').read_text())
+            if previous.get('artifact_stage') != 'unity-lj-prototype':
+                raise RuntimeError('refusing to replace a non-example Unity bundle')
+            shutil.rmtree(unity_bundle)
+        staged.rename(unity_bundle)
     host_ir = output/'host.ll'
     run([clang, *flags, '-x', 'c', '-std=c11', '-O0', '-Xclang', '-disable-O0-optnone', '-fomit-frame-pointer',
          '-I', root/'third_party/OpenCL-Headers', '-I', output, '-S', '-emit-llvm', source/'host.c', '-o', host_ir])

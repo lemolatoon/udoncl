@@ -11,8 +11,9 @@ LinuxはLavapipe、WindowsはD3D11 WARPで実際にFragment Shaderを実行し�
 `build/md-crystal/runtime-build/compile_commands.json`を生成します。
 
 マウスを押して結晶に触れると加熱します。タッチ入力は2点まで対応します。
-加熱・計算速度、一時停止、リセットを操作できます。手を離すと加熱だけが止まり、
-粒子計算は継続します。表示される運動はnativeバイナリが返す粒子状態です。
+加熱・計算速度、一時停止、リセットを操作できます。手を離すとゼロ温度の
+Langevin熱浴へ徐々に放熱し、粒子計算を続けながら液体から氷へ戻ります。
+表示される運動はnativeバイナリが返す粒子状態です。
 ブラウザは計算を代行しません。マウス・タッチはWorld側の手位置の代わりです。
 
 ## 計算と境界
@@ -24,6 +25,20 @@ LinuxはLavapipe、WindowsはD3D11 WARPで実際にFragment Shaderを実行し�
 近い粒子対に反対向きの乱数インパルスを与え、局所的にエネルギーを注入します。
 初期重心速度は0です。色は近傍・時間で平均した運動エネルギーの指標で、
 熱力学的温度の厳密な局所測定ではありません。
+
+冷却項は `F_f = -m v / tau` の離散化であり、Langevin熱浴の確率力を
+目標温度0で省いたものです。これは自然冷却を表現する小さなモデルで、実際の
+水の相図を再現するモデルではありません。相表示は2D Lennard–Jones meltingで
+使われる六回対称のbond-orientational order `|Psi6|` と平均運動エネルギーを
+組み合わせます。モデルの根拠は
+[LAMMPS `fix langevin`](https://docs.lammps.org/fix_langevin.html) と、2D LJ meltingで
+`Psi6` を使う [Phys. Rev. B 83, 214108](https://journals.aps.org/prb/abstract/10.1103/PhysRevB.83.214108)
+です。
+
+非interactive検証は、初期結晶を全体加熱してから放熱する決定的なcycleも実行します。
+Windows D3D11 WARPで `|Psi6| = 1.000 -> 0.173 -> 0.990` を観測し、
+`ice -> liquid -> ice` の三状態を検証しています。局所タッチは同じ加熱項を狭い
+半径で使います。
 
 `host.c`は通常のOpenCL 1.2 APIでバッファ作成、引数設定、NDRange、readbackを
 行います。`device.cl`は通常のビルドでは両kernelを定義します。AOT側だけが
@@ -42,5 +57,5 @@ DeviceはOpenCL C → LLVM → bounded memory recovery → `func/arith/memref/sc
 各bundleの`frontend.recovered.mlir`と`host-device.mlir`、生成HLSL、manifest、
 Hostの`host.udonhl.mlir`と`host.native.ll`を確認できます。
 
-これは第1段階のhost-native例です。UdonAssemblyへのlowering、U#・手位置との接続、
-Unity Editor拡張、VRChat実機検証は次段階です。
+これはnative oracleであり、同じHost/Device契約をUdon Assembly、Unity Worldの
+手位置入力と表示へ移すときの比較基準です。

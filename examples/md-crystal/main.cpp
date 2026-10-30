@@ -11,11 +11,11 @@ extern "C" {
 size_t md_cpu_gid;
 int md_init(const float *), md_close(), md_read(float *), md_contract_tests();
 int md_step(unsigned, float, float, float, float, float, float, float, float,
-            float);
+            float, float);
 void md_drift(const float *, float *, float, float, float, float, float, float,
-              float, float, float, unsigned);
+              float, float, float, float, unsigned);
 void md_kick(const float *, float *, float, float, float, float, float, float,
-             float, float, float, unsigned);
+             float, float, float, float, unsigned);
 }
 void check(int status) {
   if (status)
@@ -65,6 +65,38 @@ double kinetic(const std::array<float, 256> &state, float hx, float hy,
   }
   return count ? result / count : 0;
 }
+double meanKinetic(const std::array<float, 256> &state) {
+  double result = 0;
+  for (unsigned i = 0; i < 64; ++i)
+    result += 0.5 * (double(state[4 * i + 2]) * state[4 * i + 2] +
+                     double(state[4 * i + 3]) * state[4 * i + 3]);
+  return result / 64;
+}
+double bondOrder6(const std::array<float, 256> &state, double bx, double by) {
+  double real = 0, imaginary = 0;
+  unsigned bonds = 0;
+  for (unsigned i = 0; i < 64; ++i)
+    for (unsigned j = i + 1; j < 64; ++j) {
+      double dx = double(state[4 * j]) - state[4 * i],
+             dy = double(state[4 * j + 1]) - state[4 * i + 1];
+      dx -= bx * std::round(dx / bx);
+      dy -= by * std::round(dy / by);
+      if (dx * dx + dy * dy >= 1.5 * 1.5)
+        continue;
+      double angle = 6 * std::atan2(dy, dx);
+      real += std::cos(angle);
+      imaginary += std::sin(angle);
+      ++bonds;
+    }
+  return bonds ? std::hypot(real, imaginary) / bonds : 0;
+}
+const char *phaseName(double temperature, double order) {
+  if (temperature < 0.08 && order > 0.72)
+    return "ice";
+  if (temperature > 0.25 || order < 0.45)
+    return "liquid";
+  return "melting";
+}
 int main(int argc, char **argv) {
   try {
     if (argc != 4 && argc != 5)
@@ -90,8 +122,12 @@ int main(int argc, char **argv) {
       unsigned frame = 0;
       auto publish = [&]() {
         check(md_read(actual.data()));
+        double temperature = meanKinetic(actual),
+               order = bondOrder6(actual, bx, by);
         std::cout << "{\"frame\":" << frame << ",\"box\":[" << bx << "," << by
-                  << "],\"state\":[";
+                  << "],\"temperature\":" << temperature
+                  << ",\"bond_order_6\":" << order << ",\"phase\":\""
+                  << phaseName(temperature, order) << "\",\"state\":[";
         for (unsigned i = 0; i < 256; ++i) {
           if (!std::isfinite(actual[i]))
             throw std::runtime_error(
@@ -116,14 +152,23 @@ int main(int argc, char **argv) {
           frame = 0;
         } else if (name == "step") {
           unsigned count;
-          float hx0, hy0, hx1, hy1, amplitude;
+          float hx0, hy0, hx1, hy1, amplitude, radius = 1.7f,
+                                               coolingRate = 1.25f;
           if (!(input >> count >> hx0 >> hy0 >> hx1 >> hy1 >> amplitude) ||
               count > 100 || !std::isfinite(hx0) || !std::isfinite(hy0) ||
               !std::isfinite(hx1) || !std::isfinite(hy1) ||
-              !std::isfinite(amplitude) || amplitude < 0 || amplitude > 0.15f)
+              !std::isfinite(amplitude) || amplitude < 0 || amplitude > 0.5f)
             throw std::runtime_error("invalid simulation command");
-          check(
-              md_step(count, dt, bx, by, hx0, hy0, hx1, hy1, 1.7f, amplitude));
+          if (input >> radius) {
+            if (!(input >> coolingRate))
+              throw std::runtime_error("radius requires cooling rate");
+          }
+          if (!std::isfinite(radius) || radius <= 0 || radius > 100 ||
+              !std::isfinite(coolingRate) || coolingRate < 0 ||
+              coolingRate > 10)
+            throw std::runtime_error("invalid thermal parameters");
+          check(md_step(count, dt, bx, by, hx0, hy0, hx1, hy1, radius,
+                        amplitude, coolingRate));
           frame += count;
         } else
           throw std::runtime_error("unknown simulation command");
@@ -138,7 +183,7 @@ int main(int argc, char **argv) {
     displaced[4 * 27] += 0.05f;
     for (md_cpu_gid = 0; md_cpu_gid < 256; ++md_cpu_gid)
       md_drift(displaced.data(), temp.data(), dt, bx, by, -100, -100, -100,
-               -100, 1.7f, 0, 0);
+               -100, 1.7f, 0, 0, 0);
     for (unsigned axis = 0; axis < 2; ++axis) {
       auto plus = displaced, minus = displaced;
       unsigned coordinate = 4 * 27 + axis;
@@ -159,11 +204,12 @@ int main(int argc, char **argv) {
     for (unsigned step = 0; step < 100; ++step) {
       for (md_cpu_gid = 0; md_cpu_gid < 256; ++md_cpu_gid)
         md_drift(oracle.data(), temp.data(), dt, bx, by, bx / 2, by / 2, -100,
-                 -100, 1.7f, 0.01f, step);
+                 -100, 1.7f, 0.01f, 0, step);
       for (md_cpu_gid = 0; md_cpu_gid < 256; ++md_cpu_gid)
         md_kick(temp.data(), oracle.data(), dt, bx, by, bx / 2, by / 2, -100,
-                -100, 1.7f, 0.01f, step);
-      check(md_step(1, dt, bx, by, bx / 2, by / 2, -100, -100, 1.7f, 0.01f));
+                -100, 1.7f, 0.01f, 0, step);
+      check(md_step(1, dt, bx, by, bx / 2, by / 2, -100, -100, 1.7f,
+                    0.01f, 0));
       check(md_read(actual.data()));
       for (unsigned word = 0; word < 256; ++word) {
         if (!std::isfinite(actual[word]))
@@ -183,7 +229,7 @@ int main(int argc, char **argv) {
            maxMomentumDrift = 0;
     auto p0 = momentum(state);
     for (unsigned chunk = 0; chunk < 20; ++chunk) {
-      check(md_step(50, dt, bx, by, -100, -100, -100, -100, 1.7f, 0));
+      check(md_step(50, dt, bx, by, -100, -100, -100, -100, 1.7f, 0, 0));
       check(md_read(actual.data()));
       maxEnergyDrift = std::max(
           maxEnergyDrift, std::abs(energy(actual, bx, by) - initialEnergy) /
@@ -195,11 +241,12 @@ int main(int argc, char **argv) {
     if (maxEnergyDrift > 1e-4 || maxMomentumDrift > 1e-3)
       throw std::runtime_error("NVE conservation failed");
     auto control = actual;
-    check(md_step(1000, dt, bx, by, -100, -100, -100, -100, 1.7f, 0));
+    check(md_step(1000, dt, bx, by, -100, -100, -100, -100, 1.7f, 0, 0));
     check(md_read(actual.data()));
     auto controlLate = actual;
     check(md_init(state.data()));
-    check(md_step(1000, dt, bx, by, bx / 2, by / 2, -100, -100, 1.7f, 0.04f));
+    check(md_step(1000, dt, bx, by, bx / 2, by / 2, -100, -100, 1.7f,
+                  0.04f, 0));
     check(md_read(actual.data()));
     double heatedEnergy = energy(actual, bx, by);
     double localHeat = kinetic(actual, bx / 2, by / 2, true),
@@ -209,7 +256,7 @@ int main(int argc, char **argv) {
     auto hotMomentum = momentum(actual);
     if (std::hypot(hotMomentum[0] - p0[0], hotMomentum[1] - p0[1]) > 1e-3)
       throw std::runtime_error("heater injected net momentum");
-    check(md_step(1000, dt, bx, by, -100, -100, -100, -100, 1.7f, 0));
+    check(md_step(1000, dt, bx, by, -100, -100, -100, -100, 1.7f, 0, 0));
     check(md_read(actual.data()));
     double farHeated = kinetic(actual, bx / 2, by / 2, false, 2.8f);
     double farControl = kinetic(controlLate, bx / 2, by / 2, false, 2.8f);
@@ -219,6 +266,27 @@ int main(int argc, char **argv) {
                            std::abs(heatedEnergy);
     if (releasedDrift > 1e-4)
       throw std::runtime_error("released heater continued changing energy");
+    // Exercise the complete presentation model independently of the local
+    // heater test: initially ordered solid, distributed heating to a liquid,
+    // then a zero-temperature bath back to the triangular crystal.
+    check(md_init(state.data()));
+    check(md_read(actual.data()));
+    double iceTemperature = meanKinetic(actual),
+           iceOrder = bondOrder6(actual, bx, by);
+    check(md_step(2500, dt, bx, by, bx / 2, by / 2, bx / 2, by / 2, 100,
+                  0.12f, 0));
+    check(md_read(actual.data()));
+    double liquidTemperature = meanKinetic(actual),
+           liquidOrder = bondOrder6(actual, bx, by);
+    check(md_step(5000, dt, bx, by, -100, -100, -100, -100, 1.7f, 0, 1));
+    check(md_read(actual.data()));
+    double refrozenTemperature = meanKinetic(actual),
+           refrozenOrder = bondOrder6(actual, bx, by);
+    if (std::string(phaseName(iceTemperature, iceOrder)) != "ice" ||
+        std::string(phaseName(liquidTemperature, liquidOrder)) != "liquid" ||
+        liquidOrder >= 0.45 ||
+        std::string(phaseName(refrozenTemperature, refrozenOrder)) != "ice")
+      throw std::runtime_error("ice-liquid-refreeze phase cycle failed");
     std::cout << "NVE_steps=1000 relative_energy_drift=" << maxEnergyDrift
               << " momentum_drift=" << maxMomentumDrift
               << " local_heated_KE=" << localHeat
@@ -226,6 +294,12 @@ int main(int argc, char **argv) {
               << " distant_heated_KE=" << farHeated
               << " distant_control_KE=" << farControl
               << " release_energy_drift=" << releasedDrift << "\n";
+    std::cout << "phase_cycle=ice-liquid-ice"
+              << " ice_T=" << iceTemperature << " ice_psi6=" << iceOrder
+              << " liquid_T=" << liquidTemperature
+              << " liquid_psi6=" << liquidOrder
+              << " refrozen_T=" << refrozenTemperature
+              << " refrozen_psi6=" << refrozenOrder << "\n";
     check(md_close());
     if (udoncl_cl_live_objects())
       throw std::runtime_error("OpenCL object leak");

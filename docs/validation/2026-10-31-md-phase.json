@@ -1,0 +1,24 @@
+{
+  "date": "2026-10-31",
+  "platform": "Windows",
+  "renderer": "Direct3D11 WARP (software)",
+  "model": {
+    "potential": "force-shifted 2D Lennard-Jones",
+    "integrator": "velocity Verlet split into md_drift and md_kick",
+    "cooling": "zero-temperature Langevin drag",
+    "phase_observable": "global sixfold bond-orientational order"
+  },
+  "native_fragment_validation": {
+    "draws": 23200,
+    "cpu_oracle_steps": 100,
+    "max_cpu_gpu_error": 0,
+    "nve_relative_energy_drift": 1.62855e-8,
+    "momentum_drift": 2.27681e-7
+  },
+  "phase_cycle": [
+    {"phase": "ice", "temperature": 0.000199935, "psi6": 1.0},
+    {"phase": "liquid", "temperature": 8.66776, "psi6": 0.173106},
+    {"phase": "ice", "temperature": 0.036085, "psi6": 0.989862}
+  ],
+  "unity_udon_execution": "separate verification pending"
+}

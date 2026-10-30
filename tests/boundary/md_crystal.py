@@ -25,7 +25,9 @@ def run(command, error=None):
 
 
 stdout = run([sys.executable, root/'examples/md-crystal/run.py', '--build-dir', build, '--output', output])
-assert 'NVE_steps=1000' in stdout and 'oracle_steps=100' in stdout and 'draws=8200' in stdout
+assert all(marker in stdout for marker in [
+    'NVE_steps=1000', 'phase_cycle=ice-liquid-ice', 'oracle_steps=100',
+    'draws=23200', 'max_cpu_gpu_error=0'])
 udonhl = (output/'host.udonhl.mlir').read_text()
 for api in ['clCreateBuffer', 'clSetKernelArg', 'clEnqueueNDRangeKernel', 'clEnqueueReadBuffer']:
     assert 'udonhl.call @'+api in udonhl
@@ -37,7 +39,7 @@ for name in ['md_drift', 'md_kick']:
     assert manifest['artifact_stage'] == 'native-device-prototype' and manifest['ready_for_unity'] is False
     kernel = manifest['device']['kernels'][0]
     assert kernel['descriptor']['resource_order'] == [0, 1] and kernel['descriptor']['distinct_resources'] is True
-    assert kernel['descriptor']['scalar_payload_bytes'] == 40
+    assert kernel['descriptor']['scalar_payload_bytes'] == 44
     assert kernel['args'][0]['required_bytes'] == kernel['args'][1]['required_bytes'] == 1024
 
 commands = json.loads((output/'commands.json').read_text())
@@ -92,6 +94,8 @@ assert p.returncode == 0, p.stderr
 states = [json.loads(line) for line in p.stdout.splitlines()]
 assert [s['frame'] for s in states] == [0, 8, 0]
 assert states[0]['state'] != states[1]['state'] and states[0]['state'] == states[2]['state']
+assert [s['phase'] for s in states] == ['ice', 'ice', 'ice']
+assert all('temperature' in s and 'bond_order_6' in s for s in states)
 report = dict(stdout=stdout, runtime_rejection_cases=6, rejected_gather_cases=[v[0] for v in variants]+['padded-f32', 'global-pointer64'], interactive_frames=[s['frame'] for s in states])
 (output/'report.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
 print(stdout, end='')

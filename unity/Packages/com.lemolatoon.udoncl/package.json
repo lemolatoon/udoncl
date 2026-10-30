@@ -1,0 +1,10 @@
+{
+  "name": "com.lemolatoon.udoncl",
+  "displayName": "udoncl Unity Importer",
+  "version": "0.1.0",
+  "description": "Transaction-safe Unity Editor import for udoncl Udon Assembly and shader artifacts.",
+  "unity": "2022.3",
+  "vpmDependencies": {
+    "com.vrchat.worlds": ">=3.0.0"
+  }
+}

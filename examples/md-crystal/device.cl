@@ -41,7 +41,8 @@ INLINE float heater(float x, float y, float hx, float hy, float radius) {
 INLINE void md_update(__global const float *state, __global float *out,
                       float dt, float box_x, float box_y, float hand0_x,
                       float hand0_y, float hand1_x, float hand1_y, float radius,
-                      float amplitude, uint step, uint do_drift) {
+                      float amplitude, float cooling_rate, uint step,
+                      uint do_drift) {
   uint word = (uint)get_global_id(0);
   uint i = word >> 2, lane = word & 3u, base = i * 4u;
   float x = state[base], y = state[base + 1u];
@@ -88,6 +89,13 @@ INLINE void md_update(__global const float *state, __global float *out,
     uint seed = (i >> 1) * 747796405u + step * 2891336453u;
     vx += sign * amplitude * weight * noise(seed);
     vy += sign * amplitude * weight * noise(seed + 277803737u);
+    // A zero-temperature Langevin bath: F_f = -m*v/tau with no stochastic
+    // term. It models passive heat loss to the world while preserving the
+    // localized, paired heater as the only energy source.
+    float damping = 1.0f - cooling_rate * dt;
+    damping = damping > 0.0f ? damping : 0.0f;
+    vx *= damping;
+    vy *= damping;
   }
   float value = lane == 0u ? x : lane == 1u ? y : lane == 2u ? vx : vy;
   out[word] = value;
@@ -99,17 +107,18 @@ INLINE void md_update(__global const float *state, __global float *out,
 __kernel void md_drift(__global const float *state, __global float *out,
                        float dt, float box_x, float box_y, float hand0_x,
                        float hand0_y, float hand1_x, float hand1_y,
-                       float radius, float amplitude, uint step) {
+                       float radius, float amplitude, float cooling_rate,
+                       uint step) {
   md_update(state, out, dt, box_x, box_y, hand0_x, hand0_y, hand1_x, hand1_y,
-            radius, amplitude, step, 1u);
+            radius, amplitude, cooling_rate, step, 1u);
 }
 #endif
 #ifndef MD_DRIFT
 __kernel void md_kick(__global const float *state, __global float *out,
                       float dt, float box_x, float box_y, float hand0_x,
                       float hand0_y, float hand1_x, float hand1_y, float radius,
-                      float amplitude, uint step) {
+                      float amplitude, float cooling_rate, uint step) {
   md_update(state, out, dt, box_x, box_y, hand0_x, hand0_y, hand1_x, hand1_y,
-            radius, amplitude, step, 0u);
+            radius, amplitude, cooling_rate, step, 0u);
 }
 #endif

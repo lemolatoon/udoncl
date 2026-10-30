@@ -2,3 +2,4 @@
 /.deps/
 __pycache__/
 /CMakeUserPresets.json
+/.vs/

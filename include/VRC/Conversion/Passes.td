@@ -28,6 +28,10 @@ def LowerHostToNativeTestPass : Pass<"vrc-lower-host-to-native-test", "mlir::Mod
   let summary = "Lower the verified UdonHL Host boundary to native func calls for testing only";
   let dependentDialects = ["mlir::func::FuncDialect", "mlir::arith::ArithDialect"];
 }
+def LowerUdonHLToUdonAsmPass : Pass<"vrc-lower-udonhl-to-udonasm", "mlir::ModuleOp"> {
+  let summary = "Allocate typed Udon heap slots and lower scalar Host SSA to the nine real VM opcodes";
+  let dependentDialects = ["::vrc::udonasm::UdonAsmDialect"];
+}
 def RaiseNativeHostCallsPass : Pass<"vrc-raise-native-host-calls", "mlir::ModuleOp"> {
   let summary = "Expose native C calls as UdonHL while retaining native LLVM memory and ABI semantics";
   let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "mlir::func::FuncDialect"];

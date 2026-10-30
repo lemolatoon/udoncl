@@ -1,0 +1,24 @@
+{
+  "date": "2026-10-31",
+  "unity": "2022.3.22f1",
+  "project": "udoncl-test",
+  "sdk_vm": "VRC.Udon.Common.Interfaces.IUdonVM",
+  "assembly": "build/udoncl/tests/udon-scalar/scalar.uasm",
+  "unity_test_job": "f9d6edf33b524a49bd35407962455a8e",
+  "tests": {
+    "passed": 4,
+    "failed": 0,
+    "cases": [
+      {"event": "VRC_Call_add_1", "inputs": [17, 25], "result": 42},
+      {"event": "VRC_Call_scale_2", "inputs": [3.5, -2.0], "result": -7.0},
+      {"event": "VRC_Call_sum_to_3", "inputs": [5], "result": 10},
+      {"event": "VRC_Call_phase_4", "inputs": [0.02, 0.30], "results": [0, 2]}
+    ]
+  },
+  "regression_caught": {
+    "rejected_extern": "SystemSingle.__op_Multiply__SystemSingle_SystemSingle__SystemSingle",
+    "sdk_exception": "NotSupportedException",
+    "corrected_extern": "SystemSingle.__op_Multiplication__SystemSingle_SystemSingle__SystemSingle"
+  },
+  "scope": "SDK assembler and VM scalar/CFG proof; not yet LJ GPU dispatch"
+}

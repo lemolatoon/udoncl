@@ -69,7 +69,8 @@ settings when changing compilers or toolchains (then supply any desired root).
 LLVM and MLIR must come from the same build, architecture and C++ runtime.
 No system-wide LLVM installation is required. On Windows, use the
 DLL MSVC runtime (`/MD`) for both LLVM and this project. Paths with spaces are
-supported. Windows execution remains unverified until Windows CI logs exist.
+supported. Windows native execution is covered by CI and the local Visual
+Studio 2026 validation recorded in `docs/validation.md`.
 
 CMake emits `build/udoncl/compile_commands.json` for clangd. The checked-in
 `.clangd` points to that directory on all hosts. Run configure and build once
@@ -111,11 +112,16 @@ Current components:
 - `vrc-opt`: MLIR parser/printer with operation verification, rejects unknown ops by default.
 - `VRCLLVMToHighLevelMLIR`: independent import/metadata, local-memory and scalar/CFG recovery library for host/device development.
 - `vrc-translate --import-llvm input.ll`: LLVM dialect import with preserved frontend metadata and optional JSON sidecar.
+- `vrc-lower-udonhl-to-udonasm` and `vrc-translate --emit-udon-assembly`:
+  an incremental scalar/CFG backend for real Udon opcodes and textual `.uasm`.
 - `vrc-raise-llvm-memory` / `vrc-raise-llvm-to-scalar` MLIR Passes and the `vrc-recover-high-level` pipeline: proven fixed local arrays, scalar/CFG conversion and upstream SCF structuring.
 
-The other 37 operations, complete verifiers/lowerings, assembly emitter, executable
-Udon host ABI, complete OpenCL runtime coverage and Unity integration remain pending. A small paired
-Host/Device lowering prototype now emits ShaderLab/HLSL and a shared manifest.
+The other 37 operations, complete verifiers/lowerings, the full executable Udon
+host ABI, complete OpenCL runtime coverage and production Unity integration
+remain pending. The scalar backend's integer, float and CFG golden programs have
+passed the installed SDK assembler and actual `IUdonVM`; memory, calls,
+continuations and GPU dispatch are still incremental work. A small paired
+Host/Device lowering prototype emits ShaderLab/HLSL and a shared manifest.
 See [docs/validation.md](docs/validation.md) for gates and evidence.
 
 Import and high-level recovery examples (add `.exe` to tool names on Windows):
@@ -168,7 +174,8 @@ single-invocation f32 store through `vrcgpu` to a fragment shader. Both sides mu
 agree on kernel ID, argument/resource order and NDRange before assets are emitted.
 The bundle includes `host-device.mlir`, `manifest.json` and `kernels/*.shader` /
 `*.hlsl`. Reusing identical output is allowed; differing existing output is refused.
-This example does not yet emit Udon assembly or execute a GPU request. See
+This prepared boundary example does not yet execute its GPU request from Udon.
+Scalar/CFG `.uasm` emission is tested separately. See
 [docs/boundary.md](docs/boundary.md) for the supported pattern and next steps.
 
 Original compiler-boundary probe (after installing the pinned LLVM SDK above):
@@ -238,7 +245,7 @@ for supported APIs, native ABI preservation and the AOT subset's limits.
 触れて加熱する64粒子MD結晶のhost-native例:
 
 ```sh
-make example-md  # CPU/GPU比較・保存則・局所加熱を検証
+make example-md  # CPU/GPU比較・保存則・局所加熱・氷→液体→再凍結を検証
 make md-view     # ブラウザで触って操作
 ```
 

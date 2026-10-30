@@ -3,6 +3,11 @@ add_test(NAME dialect-roundtrip
   COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/dialects/check.py"
     $<TARGET_FILE:vrc-opt>
 )
+add_test(NAME udon-scalar-codegen
+  COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/codegen/udon.py"
+    $<TARGET_FILE:vrc-opt> $<TARGET_FILE:vrc-translate>
+    "${PROJECT_BINARY_DIR}/tests/udon-scalar"
+)
 add_test(NAME llvm-import
   COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/recovery/check.py"
     $<TARGET_FILE:vrc-translate> $<TARGET_FILE:vrc-opt>

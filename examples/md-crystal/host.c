@@ -64,8 +64,10 @@ int md_init(const float *initial) {
   return CL_SUCCESS;
 }
 int md_step(unsigned steps, float dt, float bx, float by, float hx0, float hy0,
-            float hx1, float hy1, float radius, float amplitude) {
-  float scalars[9] = {dt, bx, by, hx0, hy0, hx1, hy1, radius, amplitude};
+            float hx1, float hy1, float radius, float amplitude,
+            float cooling_rate) {
+  float scalars[10] = {dt,  bx,  by,     hx0,       hy0,
+                       hx1, hy1, radius, amplitude, cooling_rate};
   size_t global = 256, local = 1;
   unsigned iteration, phase, arg;
   for (iteration = 0; iteration < steps; ++iteration) {
@@ -75,9 +77,9 @@ int md_step(unsigned steps, float dt, float bx, float by, float hx0, float hy0,
       cl_mem output = phase ? state : predicted;
       CHECK(clSetKernelArg(kernel, 0, sizeof(input), &input));
       CHECK(clSetKernelArg(kernel, 1, sizeof(output), &output));
-      for (arg = 0; arg < 9; ++arg)
+      for (arg = 0; arg < 10; ++arg)
         CHECK(clSetKernelArg(kernel, arg + 2, sizeof(float), scalars + arg));
-      CHECK(clSetKernelArg(kernel, 11, sizeof(frame), &frame));
+      CHECK(clSetKernelArg(kernel, 12, sizeof(frame), &frame));
       CHECK(clEnqueueNDRangeKernel(queue, kernel, 1, 0, &global, &local, 0, 0,
                                    0));
     }
@@ -98,9 +100,9 @@ int md_contract_tests(void) {
   unsigned arg;
   cl_mem small;
   float unread[256];
-  for (arg = 2; arg < 11; ++arg)
+  for (arg = 2; arg < 12; ++arg)
     CHECK(clSetKernelArg(drift, arg, sizeof(scalar), &scalar));
-  CHECK(clSetKernelArg(drift, 11, sizeof(step), &step));
+  CHECK(clSetKernelArg(drift, 12, sizeof(step), &step));
   CHECK(clSetKernelArg(drift, 0, sizeof(state), &state));
   CHECK(clSetKernelArg(drift, 1, sizeof(state), &state));
   if (clEnqueueNDRangeKernel(queue, drift, 1, 0, &global, &local, 0, 0, 0) !=

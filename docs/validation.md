@@ -45,6 +45,42 @@ Reference lookup (2026-10-30, evidence of documentation only):
 - https://mlir.llvm.org/docs/DefiningDialects/Operations/
 - https://github.com/llvm/llvm-project/releases/tag/llvmorg-23.1.4
 
+## Windows VS 2026 scalar Udon backend bootstrap (2026-10-31)
+
+Local Windows x64 configure and build completed with Visual Studio 2026
+Insiders 18.12 / MSVC 19.52.37025 and the locked LLVM/MLIR 23.1.4 SDK. All
+13 CTests passed. The new `vrc-lower-udonhl-to-udonasm` pass allocates typed
+heap slots and lowers scalar `i32`/`f32` arithmetic, signed integer comparison,
+block arguments, loops and conditional branches to the existing nine-opcode
+UdonAsm dialect. `vrc-translate --emit-udon-assembly` emits data/export
+directives and textual opcode assembly with byte-address relocation.
+
+This remains a compiler bootstrap, not a complete G0/G1 runtime claim. The
+installed SDK assembler and `IUdonVM` execute all four scalar golden tests:
+`17 + 25 = 42`, `3.5 * -2 = -7`, `sum_to(5) = 10`, and the float-comparison
+phase branch (`0.02 -> 0`, `0.30 -> 2`). Unity Test Framework job
+`f9d6edf33b524a49bd35407962455a8e` passed 4/4. The preceding VM run caught and
+corrected the SDK's float extern spelling (`Multiplication`, not `Multiply`). Extern
+signatures are matched to installed SDK sample assembly, but generated Extern
+DB validation remains pending. Unsigned C provenance, normal/recursive calls,
+memory, VRC GPU intrinsics and continuation lowering are deliberately rejected
+until their general contracts are implemented. The LJ Host remains on the
+native backend at this checkpoint. See `validation/2026-10-31-udon-vm.json`.
+
+## LJ ice / liquid / refreeze native oracle (2026-10-31)
+
+The MD example now adds a zero-target-temperature Langevin drag term while
+retaining the old NVE path when its cooling rate is zero. A sixfold
+bond-orientational order measurement (`|Psi6|`) distinguishes loss and recovery
+of the triangular crystal structure. The deterministic Windows D3D11 WARP run
+executed 23,200 real fragment draws and retained exact CPU/GPU trajectory
+agreement (`max_cpu_gpu_error=0`). Its phase cycle measured
+`Psi6 = 1.000 -> 0.173 -> 0.990` and
+`T = 0.000200 -> 8.66776 -> 0.036085`, passing
+`ice -> liquid -> ice`. See
+`validation/2026-10-31-md-phase.json`. This is the native oracle; it does not by
+itself prove Unity/Udon execution.
+
 Reproduce host verification with README.md commands. Logs under
 `docs/validation/` record actual executed commands and results when available.
 

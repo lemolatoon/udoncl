@@ -1,0 +1,254 @@
+.data_start
+    .export initialState
+    .export stateA
+    .export stateB
+    .export driftMaterial
+    .export kickMaterial
+    .export displayMaterial
+    .export amplitude
+    .export frame
+    .export onPlayerTriggerStayPlayer
+
+    initialState: %UnityEngineTexture, null
+    stateA: %UnityEngineRenderTexture, null
+    stateB: %UnityEngineRenderTexture, null
+    driftMaterial: %UnityEngineMaterial, null
+    kickMaterial: %UnityEngineMaterial, null
+    displayMaterial: %UnityEngineMaterial, null
+    amplitude: %SystemSingle, 0.0
+    frame: %SystemInt32, 0
+    onPlayerTriggerStayPlayer: %VRCSDKBaseVRCPlayerApi, null
+
+    __source: %UnityEngineTexture, null
+    __arg2: %SystemString, "_VRC_Arg2"
+    __arg3: %SystemString, "_VRC_Arg3"
+    __arg4: %SystemString, "_VRC_Arg4"
+    __arg5: %SystemString, "_VRC_Arg5"
+    __arg6: %SystemString, "_VRC_Arg6"
+    __arg7: %SystemString, "_VRC_Arg7"
+    __arg8: %SystemString, "_VRC_Arg8"
+    __arg9: %SystemString, "_VRC_Arg9"
+    __arg10: %SystemString, "_VRC_Arg10"
+    __arg11: %SystemString, "_VRC_Arg11"
+    __arg12: %SystemString, "_VRC_Arg12"
+    __inputName: %SystemString, "_VRC_Input"
+    __stateName: %SystemString, "_StateTex"
+    __dt: %SystemSingle, 0.001
+    __boxX: %SystemSingle, 8.979696
+    __boxY: %SystemSingle, 7.776645
+    __handX: %SystemSingle, 4.489848
+    __handY: %SystemSingle, 3.8883225
+    __radius: %SystemSingle, 1.7
+    __cooling: %SystemSingle, 1.25
+    __heat: %SystemSingle, 0.12
+    __decay: %SystemSingle, 0.995
+    __one: %SystemInt32, 1
+    __nextFrame: %SystemInt32, 0
+.data_end
+
+.code_start
+    .export _start
+    _start:
+        PUSH, driftMaterial
+        PUSH, __arg2
+        PUSH, __dt
+        EXTERN, "UnityEngineMaterial.__SetFloat__SystemString_SystemSingle__SystemVoid"
+        PUSH, driftMaterial
+        PUSH, __arg3
+        PUSH, __boxX
+        EXTERN, "UnityEngineMaterial.__SetFloat__SystemString_SystemSingle__SystemVoid"
+        PUSH, driftMaterial
+        PUSH, __arg4
+        PUSH, __boxY
+        EXTERN, "UnityEngineMaterial.__SetFloat__SystemString_SystemSingle__SystemVoid"
+        PUSH, driftMaterial
+        PUSH, __arg5
+        PUSH, __handX
+        EXTERN, "UnityEngineMaterial.__SetFloat__SystemString_SystemSingle__SystemVoid"
+        PUSH, driftMaterial
+        PUSH, __arg6
+        PUSH, __handY
+        EXTERN, "UnityEngineMaterial.__SetFloat__SystemString_SystemSingle__SystemVoid"
+        PUSH, driftMaterial
+        PUSH, __arg7
+        PUSH, __handX
+        EXTERN, "UnityEngineMaterial.__SetFloat__SystemString_SystemSingle__SystemVoid"
+        PUSH, driftMaterial
+        PUSH, __arg8
+        PUSH, __handY
+        EXTERN, "UnityEngineMaterial.__SetFloat__SystemString_SystemSingle__SystemVoid"
+        PUSH, driftMaterial
+        PUSH, __arg9
+        PUSH, __radius
+        EXTERN, "UnityEngineMaterial.__SetFloat__SystemString_SystemSingle__SystemVoid"
+        PUSH, driftMaterial
+        PUSH, __arg11
+        PUSH, __cooling
+        EXTERN, "UnityEngineMaterial.__SetFloat__SystemString_SystemSingle__SystemVoid"
+
+        PUSH, kickMaterial
+        PUSH, __arg2
+        PUSH, __dt
+        EXTERN, "UnityEngineMaterial.__SetFloat__SystemString_SystemSingle__SystemVoid"
+        PUSH, kickMaterial
+        PUSH, __arg3
+        PUSH, __boxX
+        EXTERN, "UnityEngineMaterial.__SetFloat__SystemString_SystemSingle__SystemVoid"
+        PUSH, kickMaterial
+        PUSH, __arg4
+        PUSH, __boxY
+        EXTERN, "UnityEngineMaterial.__SetFloat__SystemString_SystemSingle__SystemVoid"
+        PUSH, kickMaterial
+        PUSH, __arg5
+        PUSH, __handX
+        EXTERN, "UnityEngineMaterial.__SetFloat__SystemString_SystemSingle__SystemVoid"
+        PUSH, kickMaterial
+        PUSH, __arg6
+        PUSH, __handY
+        EXTERN, "UnityEngineMaterial.__SetFloat__SystemString_SystemSingle__SystemVoid"
+        PUSH, kickMaterial
+        PUSH, __arg7
+        PUSH, __handX
+        EXTERN, "UnityEngineMaterial.__SetFloat__SystemString_SystemSingle__SystemVoid"
+        PUSH, kickMaterial
+        PUSH, __arg8
+        PUSH, __handY
+        EXTERN, "UnityEngineMaterial.__SetFloat__SystemString_SystemSingle__SystemVoid"
+        PUSH, kickMaterial
+        PUSH, __arg9
+        PUSH, __radius
+        EXTERN, "UnityEngineMaterial.__SetFloat__SystemString_SystemSingle__SystemVoid"
+        PUSH, kickMaterial
+        PUSH, __arg11
+        PUSH, __cooling
+        EXTERN, "UnityEngineMaterial.__SetFloat__SystemString_SystemSingle__SystemVoid"
+
+        PUSH, initialState
+        PUSH, __source
+        COPY
+        PUSH, driftMaterial
+        PUSH, __inputName
+        PUSH, __source
+        EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
+        PUSH, driftMaterial
+        PUSH, __arg10
+        PUSH, amplitude
+        EXTERN, "UnityEngineMaterial.__SetFloat__SystemString_SystemSingle__SystemVoid"
+        PUSH, driftMaterial
+        PUSH, __arg12
+        PUSH, frame
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, __source
+        PUSH, stateB
+        PUSH, driftMaterial
+        EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"
+
+        PUSH, stateB
+        PUSH, __source
+        COPY
+        PUSH, kickMaterial
+        PUSH, __inputName
+        PUSH, __source
+        EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
+        PUSH, kickMaterial
+        PUSH, __arg10
+        PUSH, amplitude
+        EXTERN, "UnityEngineMaterial.__SetFloat__SystemString_SystemSingle__SystemVoid"
+        PUSH, kickMaterial
+        PUSH, __arg12
+        PUSH, frame
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, __source
+        PUSH, stateA
+        PUSH, kickMaterial
+        EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"
+        PUSH, stateA
+        PUSH, __source
+        COPY
+        PUSH, displayMaterial
+        PUSH, __stateName
+        PUSH, __source
+        EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
+        PUSH, frame
+        PUSH, __one
+        PUSH, __nextFrame
+        EXTERN, "SystemInt32.__op_Addition__SystemInt32_SystemInt32__SystemInt32"
+        PUSH, __nextFrame
+        PUSH, frame
+        COPY
+        JUMP, 0xFFFFFFFC
+
+    .export _update
+    _update:
+        PUSH, amplitude
+        PUSH, __decay
+        PUSH, amplitude
+        EXTERN, "SystemSingle.__op_Multiplication__SystemSingle_SystemSingle__SystemSingle"
+        PUSH, stateA
+        PUSH, __source
+        COPY
+        PUSH, driftMaterial
+        PUSH, __inputName
+        PUSH, __source
+        EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
+        PUSH, driftMaterial
+        PUSH, __arg10
+        PUSH, amplitude
+        EXTERN, "UnityEngineMaterial.__SetFloat__SystemString_SystemSingle__SystemVoid"
+        PUSH, driftMaterial
+        PUSH, __arg12
+        PUSH, frame
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, __source
+        PUSH, stateB
+        PUSH, driftMaterial
+        EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"
+        PUSH, stateB
+        PUSH, __source
+        COPY
+        PUSH, kickMaterial
+        PUSH, __inputName
+        PUSH, __source
+        EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
+        PUSH, kickMaterial
+        PUSH, __arg10
+        PUSH, amplitude
+        EXTERN, "UnityEngineMaterial.__SetFloat__SystemString_SystemSingle__SystemVoid"
+        PUSH, kickMaterial
+        PUSH, __arg12
+        PUSH, frame
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, __source
+        PUSH, stateA
+        PUSH, kickMaterial
+        EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"
+        PUSH, stateA
+        PUSH, __source
+        COPY
+        PUSH, displayMaterial
+        PUSH, __stateName
+        PUSH, __source
+        EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
+        PUSH, frame
+        PUSH, __one
+        PUSH, __nextFrame
+        EXTERN, "SystemInt32.__op_Addition__SystemInt32_SystemInt32__SystemInt32"
+        PUSH, __nextFrame
+        PUSH, frame
+        COPY
+        JUMP, 0xFFFFFFFC
+
+    .export _interact
+    _interact:
+        PUSH, __heat
+        PUSH, amplitude
+        COPY
+        JUMP, 0xFFFFFFFC
+
+    .export _onPlayerTriggerStay
+    _onPlayerTriggerStay:
+        PUSH, __heat
+        PUSH, amplitude
+        COPY
+        JUMP, 0xFFFFFFFC
+.code_end
