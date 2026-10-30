@@ -1,0 +1,40 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "llvm23",
+      "displayName": "LLVM/MLIR 23.1.4 (Ninja; Linux/macOS/Windows)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/llvm23",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_PREFIX_PATH": "${sourceDir}/.deps/llvm23",
+        "BUILD_TESTING": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "llvm23",
+      "configurePreset": "llvm23",
+      "jobs": 2
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "llvm23",
+      "configurePreset": "llvm23",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
+      }
+    }
+  ],
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 30,
+    "patch": 0
+  }
+}

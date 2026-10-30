@@ -1,0 +1,3 @@
+add_mlir_library(VRCLLVMToHighLevelMLIR DISABLE_INSTALL Import.cpp
+  LINK_LIBS PUBLIC MLIRDLTIDialect MLIRTargetLLVMIRImport MLIRLLVMIRToLLVMTranslation MLIRLLVMDialect)
+vrc_configure_target(VRCLLVMToHighLevelMLIR)

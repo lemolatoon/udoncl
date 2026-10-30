@@ -1,0 +1,71 @@
+Host validation, 2026-10-30 UTC
+Linux-7.0.0-14-generic-x86_64-with-glibc2.43
+cmake version 4.2.3
+LLVM/MLIR/Clang: 23.1.4, commit 7a941dfb2877a0b8cf30323fefa85ad019e0b0f5
+Official Linux archive SHA256 verified: efdd1dbd089b99bfcfcde7b8eb1236163f2e88df5a981cca4f783ec9cb5e0378
+
+$ cmake --preset llvm23
+-- Configuring done (0.4s)
+-- Generating done (0.0s)
+-- Build files have been written to: /home/khishida/workspace/udoncl/build/llvm23
+
+
+$ cmake --build --preset llvm23
+[1/25] Building UdonHLDialect.cpp.inc...
+[2/25] Building UdonHLDialect.h.inc...
+[3/25] Building UdonAsmDialect.cpp.inc...
+[4/25] Building UdonAsmDialect.h.inc...
+[5/25] Building UdonAsmOps.cpp.inc...
+[6/25] Building UdonAsmOps.h.inc...
+[7/25] Building UdonAsmOps.md...
+[8/25] Building VRCDialect.cpp.inc...
+[9/25] Building VRCDialect.h.inc...
+[10/25] Building VRCGPUDialect.cpp.inc...
+[11/25] Building VRCGPUDialect.h.inc...
+[12/25] Building CXX object lib/Dialect/UdonHL/CMakeFiles/obj.VRCDialectUdonHL.dir/UdonHLDialect.cpp.o
+[13/25] Building CXX object lib/Dialect/VRC/CMakeFiles/obj.VRCDialectVRC.dir/VRCDialect.cpp.o
+[14/25] Building CXX object lib/Dialect/VRCGPU/CMakeFiles/obj.VRCDialectVRCGPU.dir/VRCGPUDialect.cpp.o
+[15/25] Building CXX object lib/Dialect/UdonAsm/CMakeFiles/obj.VRCDialectUdonAsm.dir/UdonAsmDialect.cpp.o
+[16/25] Linking CXX static library lib/Dialect/UdonHL/libVRCDialectUdonHL.a
+[17/25] Linking CXX static library lib/Dialect/UdonAsm/libVRCDialectUdonAsm.a
+[18/25] Linking CXX static library lib/Dialect/VRC/libVRCDialectVRC.a
+[19/25] Linking CXX static library lib/Dialect/VRCGPU/libVRCDialectVRCGPU.a
+[20/25] Building CXX object lib/Conversion/LLVMToHighLevel/CMakeFiles/obj.VRCLLVMToHighLevelMLIR.dir/Import.cpp.o
+[21/25] Linking CXX static library lib/Conversion/LLVMToHighLevel/libVRCLLVMToHighLevelMLIR.a
+[22/25] Building CXX object tools/vrc-translate/CMakeFiles/vrc-translate.dir/vrc-translate.cpp.o
+[23/25] Linking CXX executable tools/vrc-translate/vrc-translate
+[24/25] Building CXX object tools/vrc-opt/CMakeFiles/vrc-opt.dir/vrc-opt.cpp.o
+[25/25] Linking CXX executable tools/vrc-opt/vrc-opt
+
+
+$ ctest --preset llvm23
+Test project /home/khishida/workspace/udoncl/build/llvm23
+    Start 1: dialect-roundtrip
+1/2 Test #1: dialect-roundtrip ................   Passed    0.06 sec
+    Start 2: llvm-import
+2/2 Test #2: llvm-import ......................   Passed    0.04 sec
+
+100% tests passed, 0 tests failed out of 2
+
+Total Test time (real) =   0.10 sec
+
+compile_commands.json: 7 translation units, C++17 without GNU extensions
+
+$ clangd --query-driver=/usr/bin/c++ --check=lib/Dialect/UdonAsm/UdonAsmDialect.cpp
+I[08:10:37.540] Testing features at each token (may be slow in large files)
+I[08:10:37.591] All checks completed, 0 errors
+
+Windows, SDK VM, Unity and PC VRChat client not executed.
+
+SDK discovery regression checks:
+$ cmake --preset llvm23 -DLLVM_DIR=/usr/lib/llvm-19/lib/cmake/llvm -DMLIR_DIR=/usr/lib/llvm-19/lib/cmake/mlir
+PASS: both selected paths are .deps/llvm23/lib/cmake/{llvm,mlir}; version 23.1.4.
+$ cmake --build --preset llvm23
+PASS: ninja: no work to do.
+$ ctest --preset llvm23
+PASS: 2/2 tests.
+$ cmake -S . -B build/discovery-check -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+PASS: no preset or prefix hints; repository-local LLVM and MLIR selected.
+$ cmake -S . -B build/discovery-invalid -G Ninja -DVRC_LLVM_ROOT=build/missing-sdk
+Expected failure: Missing LLVMConfig.cmake under build/missing-sdk/lib/cmake/llvm.
+No fallback to system SDK for an incomplete explicitly selected prefix.

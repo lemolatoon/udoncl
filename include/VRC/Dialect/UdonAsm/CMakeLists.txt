@@ -1,0 +1,8 @@
+set(LLVM_TARGET_DEFINITIONS UdonAsmDialect.td)
+mlir_tablegen(UdonAsmDialect.h.inc -gen-dialect-decls -dialect=udonasm EXTRA_INCLUDES ${VRC_TABLEGEN_INCLUDES})
+mlir_tablegen(UdonAsmDialect.cpp.inc -gen-dialect-defs -dialect=udonasm EXTRA_INCLUDES ${VRC_TABLEGEN_INCLUDES})
+set(LLVM_TARGET_DEFINITIONS UdonAsmOps.td)
+mlir_tablegen(UdonAsmOps.h.inc -gen-op-decls EXTRA_INCLUDES ${VRC_TABLEGEN_INCLUDES})
+mlir_tablegen(UdonAsmOps.cpp.inc -gen-op-defs EXTRA_INCLUDES ${VRC_TABLEGEN_INCLUDES})
+mlir_tablegen(UdonAsmOps.md -gen-op-doc EXTRA_INCLUDES ${VRC_TABLEGEN_INCLUDES})
+add_public_tablegen_target(VRCUdonAsmIncGen)
