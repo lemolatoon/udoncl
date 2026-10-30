@@ -105,6 +105,25 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             );
         }
 
+        [Test]
+        public void FloatArrayLoadStoreLoweringExecutesOnSdkUdonVm()
+        {
+            IUdonProgram program = LoadProgram();
+            IUdonVM vm = CreateVm(program);
+            IUdonHeap heap = vm.InspectHeap();
+            float[] input = { 1.0f, -2.0f, 3.5f, 2.0f };
+            float[] output = { 0.0f };
+            heap.SetHeapVariable(program.SymbolTable.GetAddressFromSymbol("VRC_ARG_5_0"), input);
+            heap.SetHeapVariable(program.SymbolTable.GetAddressFromSymbol("VRC_ARG_5_1"), output);
+            Execute(vm, program, "VRC_Call_array_sum_5");
+            Assert.AreEqual(
+                4.5f,
+                heap.GetHeapVariable<float>(program.SymbolTable.GetAddressFromSymbol("VRC_RET_5")),
+                1e-6f
+            );
+            Assert.AreEqual(4.5f, output[0], 1e-6f);
+        }
+
         [OneTimeTearDown]
         public void CleanupLoweredAssemblyAsset()
         {

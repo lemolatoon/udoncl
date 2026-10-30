@@ -49,6 +49,26 @@ source = r'''module attributes {vrc.host_stage = "udonhl"} {
     %liquid = arith.constant 2 : i32
     return %liquid : i32
   }
+  func.func @array_sum(%input: memref<4xf32>, %output: memref<1xf32>) -> f32 attributes {
+    vrc.export_id = 5 : i32
+  } {
+    %zero_index = arith.constant 0 : index
+    %zero = arith.constant 0.0 : f32
+    cf.br ^loop(%zero_index, %zero : index, f32)
+  ^loop(%index: index, %sum: f32):
+    %limit = arith.constant 4 : index
+    %condition = arith.cmpi slt, %index, %limit : index
+    cf.cond_br %condition, ^body, ^exit(%sum : f32)
+  ^body:
+    %value = memref.load %input[%index] : memref<4xf32>
+    %next_sum = arith.addf %sum, %value : f32
+    %one = arith.constant 1 : index
+    %next_index = arith.addi %index, %one : index
+    cf.br ^loop(%next_index, %next_sum : index, f32)
+  ^exit(%result: f32):
+    memref.store %result, %output[%zero_index] : memref<1xf32>
+    return %result : f32
+  }
 }
 '''
 
@@ -65,6 +85,8 @@ for expected in [
     'SystemSingle.__op_Multiplication__SystemSingle_SystemSingle__SystemSingle',
     'SystemInt32.__op_LessThan__SystemInt32_SystemInt32__SystemBoolean',
     'SystemSingle.__op_LessThan__SystemSingle_SystemSingle__SystemBoolean',
+    'SystemSingleArray.__Get__SystemInt32__SystemSingle',
+    'SystemSingleArray.__Set__SystemInt32_SystemSingle__SystemVoid',
     'udonasm.jump_if_false',
     'udonasm.jump 4294967292',
 ]:
@@ -89,6 +111,9 @@ for expected in [
     '.export VRC_Call_scale_2',
     '.export VRC_Call_sum_to_3',
     '.export VRC_Call_phase_4',
+    '.export VRC_Call_array_sum_5',
+    'VRC_ARG_5_0: %SystemSingleArray, null',
+    'VRC_ARG_5_1: %SystemSingleArray, null',
     'JUMP, 0xFFFFFFFC',
     '.code_end',
 ]:
@@ -109,4 +134,19 @@ rejected = subprocess.run(
     capture_output=True)
 assert rejected.returncode != 0
 assert 'extern legalization set' in rejected.stderr
+
+for argument_type, diagnostic in [
+    ('memref<2x2xf32>', 'unsupported scalar Udon argument type'),
+    ('memref<4xi32>', 'unsupported scalar Udon argument type'),
+]:
+    unsupported = f'''module {{
+      func.func @bad(%array: {argument_type}) attributes {{vrc.export_id = 99 : i32}} {{
+        return
+      }}
+    }}'''
+    rejected = subprocess.run(
+        [opt, '--vrc-lower-udonhl-to-udonasm'], input=unsupported,
+        text=True, capture_output=True)
+    assert rejected.returncode != 0
+    assert diagnostic in rejected.stderr, rejected.stderr
 print('scalar Udon heap allocation, opcode lowering and .uasm emission passed')

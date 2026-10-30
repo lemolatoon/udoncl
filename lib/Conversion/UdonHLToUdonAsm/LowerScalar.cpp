@@ -3,6 +3,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Builders.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
@@ -33,7 +34,27 @@ static FailureOr<StringRef> udonType(Type type) {
     return StringRef("SystemInt32");
   if (type.isF32())
     return StringRef("SystemSingle");
+  if (type.isIndex())
+    return StringRef("SystemInt32");
+  if (auto memref = dyn_cast<MemRefType>(type)) {
+    if (memref.getRank() != 1 || !memref.getLayout().isIdentity())
+      return failure();
+    if (memref.getElementType().isF32())
+      return StringRef("SystemSingleArray");
+  }
   return failure();
+}
+
+static StringRef arrayLoadExtern(MemRefType type) {
+  if (type.getElementType().isF32())
+    return "SystemSingleArray.__Get__SystemInt32__SystemSingle";
+  return {};
+}
+
+static StringRef arrayStoreExtern(MemRefType type) {
+  if (type.getElementType().isF32())
+    return "SystemSingleArray.__Set__SystemInt32_SystemSingle__SystemVoid";
+  return {};
 }
 
 static std::string sanitize(StringRef value) {
@@ -346,6 +367,44 @@ private:
                             branch.getFalseDest())))
             return failure();
           jumpTo(branch.getLoc(), branch.getFalseDest());
+          continue;
+        }
+        if (auto load = dyn_cast<memref::LoadOp>(operation)) {
+          if (load.getIndices().size() != 1)
+            return load.emitError(
+                "typed Udon array lowering requires one index");
+          auto type = dyn_cast<MemRefType>(load.getMemRefType());
+          StringRef signature = type ? arrayLoadExtern(type) : StringRef();
+          std::string array = valueSlots.lookup(load.getMemRef());
+          std::string index = valueSlots.lookup(load.getIndices().front());
+          std::string result = valueSlots.lookup(load.getResult());
+          if (signature.empty() || array.empty() || index.empty() ||
+              result.empty())
+            return load.emitError(
+                "unsupported typed Udon array load or missing heap slot");
+          emitPush(load.getLoc(), array);
+          emitPush(load.getLoc(), index);
+          emitPush(load.getLoc(), result);
+          emitExtern(load.getLoc(), signature);
+          continue;
+        }
+        if (auto store = dyn_cast<memref::StoreOp>(operation)) {
+          if (store.getIndices().size() != 1)
+            return store.emitError(
+                "typed Udon array lowering requires one index");
+          auto type = dyn_cast<MemRefType>(store.getMemRefType());
+          StringRef signature = type ? arrayStoreExtern(type) : StringRef();
+          std::string array = valueSlots.lookup(store.getMemRef());
+          std::string index = valueSlots.lookup(store.getIndices().front());
+          std::string value = valueSlots.lookup(store.getValueToStore());
+          if (signature.empty() || array.empty() || index.empty() ||
+              value.empty())
+            return store.emitError(
+                "unsupported typed Udon array store or missing heap slot");
+          emitPush(store.getLoc(), array);
+          emitPush(store.getLoc(), index);
+          emitPush(store.getLoc(), value);
+          emitExtern(store.getLoc(), signature);
           continue;
         }
         StringRef signature = binaryExtern(&operation);
