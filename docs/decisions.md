@@ -52,3 +52,14 @@ accepted. Unsupported byte aliasing, pointer API/escape and volatile/atomic
 semantics remain diagnostics, not a change to the agreed C memory model.
 The original LLVM layout is retained as vrc.llvm_data_layout; LLVM layout queries
 and consistency checks supplement DLTI. This does not claim the final host ABI.
+
+The initial paired boundary lowering keeps the planned Host ordering:
+func.call → udonhl.call → substitution of a typed internal dispatch intrinsic
+with vrc.dispatch. C/OpenCL API names are not treated as MLIR operations.
+The Device proof is deliberately restricted to one invocation, one complete
+f32 output store and pure straight-line scalar arithmetic. It lowers to
+vrcgpu resource/pass/version operations and direct ShaderLab/HLSL emission.
+A single manifest connects kernel identity, argument order, scalar payload,
+resource bindings and launch dimensions. Its request checker proves structural
+consistency only; it is not a live runtime handle table or GPU executor.
+Assets remain marked ready_for_unity=false until assembly/SDK/runtime gates pass.

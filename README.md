@@ -72,14 +72,15 @@ The LLVM source tree and temporary build tree are not cached.
 
 Current components:
 
-- Four separate TableGen dialect libraries; only the nine `udonasm` operations are registered.
+- Four separate TableGen dialect libraries; 17 of the closed catalog of 57 operations are defined.
 - `vrc-opt`: MLIR parser/printer with operation verification, rejects unknown ops by default.
 - `VRCLLVMToHighLevelMLIR`: independent import/metadata, local-memory and scalar/CFG recovery library for host/device development.
 - `vrc-translate --import-llvm input.ll`: LLVM dialect import with preserved frontend metadata and optional JSON sidecar.
 - `vrc-raise-llvm-memory` / `vrc-raise-llvm-to-scalar` MLIR Passes and the `vrc-recover-high-level` pipeline: proven fixed local arrays, scalar/CFG conversion and upstream SCF structuring.
 
-The other 48 operations, full verifiers/lowerings, assembly emitter, host ABI,
-OpenCL runtime, generated shaders and Unity integration are not implemented.
+The other 40 operations, complete verifiers/lowerings, assembly emitter, executable
+host ABI, OpenCL runtime and Unity integration remain pending. A small paired
+Host/Device lowering prototype now emits ShaderLab/HLSL and a shared manifest.
 See [docs/validation.md](docs/validation.md) for gates and evidence.
 
 Import and high-level recovery examples (add `.exe` to tool names on Windows):
@@ -118,3 +119,19 @@ entry-block allocations with proven bounds, alignment and initialization.
 Unsupported pointer/alias, volatile/atomic and byte reinterpretation cases fail.
 Memory test IR, native executables, diagnostics and reports are saved under
 `build/udoncl/tests/memory`.
+
+Host/Device boundary example (prepared high-level MLIR input):
+
+```text
+build/udoncl/tools/vrccl/vrccl --emit-boundary-bundle examples/host-device-boundary/probe.mlir -o build/boundary-example
+build/udoncl/tools/vrccl/vrccl --check-boundary-request build/boundary-example/manifest.json --request examples/host-device-boundary/request.json
+```
+
+The Host path lowers `func.call` through `udonhl.call`, then substitutes the
+internal typed dispatch intrinsic with `vrc.dispatch`. The Device path lowers a
+single-invocation f32 store through `vrcgpu` to a fragment shader. Both sides must
+agree on kernel ID, argument/resource order and NDRange before assets are emitted.
+The bundle includes `host-device.mlir`, `manifest.json` and `kernels/*.shader` /
+`*.hlsl`. Reusing identical output is allowed; differing existing output is refused.
+This example does not yet emit Udon assembly or execute a GPU request. See
+[docs/boundary.md](docs/boundary.md) for the supported pattern and next steps.

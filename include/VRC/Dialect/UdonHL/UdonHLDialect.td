@@ -3,6 +3,7 @@
 include "mlir/IR/OpBase.td"
 def UdonHL_Dialect : Dialect {
   let name = "udonhl";
+  let useDefaultAttributePrinterParser = 1;
   let cppNamespace = "::vrc::udonhl";
   let summary = "UdonHL dialect; see PLAN.md for the full contract";
 }

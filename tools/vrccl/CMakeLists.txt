@@ -1,0 +1,5 @@
+add_llvm_executable(vrccl vrccl.cpp)
+llvm_update_compile_flags(vrccl)
+target_link_libraries(vrccl PRIVATE VRCConversionHost VRCConversionVRC VRCConversionDevice VRCManifest VRCTargetHLSL
+  MLIRParser MLIRPass MLIRGPUDialect MLIRMemRefDialect MLIRArithDialect MLIRFuncDialect)
+vrc_configure_target(vrccl)

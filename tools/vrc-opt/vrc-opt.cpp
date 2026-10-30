@@ -1,4 +1,5 @@
 #include "VRC/Conversion/LLVMToHighLevel/Passes.h"
+#include "VRC/Conversion/Passes.h"
 #include "VRC/Dialect/UdonAsm/UdonAsmDialect.h"
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
 #include "VRC/Dialect/VRC/VRCDialect.h"
@@ -7,6 +8,7 @@
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -15,10 +17,11 @@
 int main(int argc, char **argv) {
   vrc::registerVRCRecoveryPasses();
   vrc::registerHighLevelRecoveryPipeline();
+  vrc::registerVRCBoundaryPasses();
   mlir::DialectRegistry registry;
   registry.insert<vrc::udonhl::UdonHLDialect, vrc::udonasm::UdonAsmDialect,
                   vrc::vrc::VRCDialect, vrc::vrcgpu::VRCGPUDialect,
-                  mlir::ub::UBDialect, mlir::DLTIDialect,
+                  mlir::gpu::GPUDialect, mlir::ub::UBDialect, mlir::DLTIDialect,
                   mlir::arith::ArithDialect, mlir::func::FuncDialect,
                   mlir::cf::ControlFlowDialect, mlir::scf::SCFDialect,
                   mlir::memref::MemRefDialect, mlir::LLVM::LLVMDialect>();

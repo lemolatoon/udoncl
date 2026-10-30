@@ -1,0 +1,11 @@
+{
+  "llvm_version": "23.1.4",
+  "host_device_contract": "passed",
+  "pattern": "Host scalar call and typed dispatch + 1-invocation Device f32 output",
+  "rejected_cases": 56,
+  "shader_validation": {
+    "glslang": "Glslang Version: 11:16.2.0\nESSL Version: OpenGL ES GLSL 3.20 glslang Khronos. 16.2.0\nGLSL Version: 4.60 glslang Khronos. 16.2.0\nSPIR-V Version 0x00010600, Revision 1\nGLSL.std.450 Version 100, Revision 1\nKhronos Tool ID 8\nSPIR-V Generator Version 11\nGL_KHR_vulkan_glsl version 100\nARB_GL_gl_spirv version 100",
+    "standalone_hlsl": "2 fragment shaders compiled; SPIR-V is a test artifact only"
+  },
+  "udon_assembly_sdk_client_gpu_execution": "not implemented or not executed"
+}

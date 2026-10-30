@@ -1,0 +1,32 @@
+Host/Device boundary compiler validation, 2026-10-30 UTC
+Linux x86_64; LLVM/MLIR 23.1.4; repository-local .deps/llvm23
+
+cmake --build --preset udoncl: PASS
+ctest --preset udoncl:
+Test project /home/khishida/workspace/udoncl/build/udoncl
+    Start 1: dialect-roundtrip
+1/9 Test #1: dialect-roundtrip ..................   Passed    0.07 sec
+    Start 2: llvm-import
+2/9 Test #2: llvm-import ........................   Passed    0.05 sec
+    Start 3: opencl-frontend-metadata
+3/9 Test #3: opencl-frontend-metadata ...........   Passed    0.23 sec
+    Start 4: llvm-high-level-recovery
+4/9 Test #4: llvm-high-level-recovery ...........   Passed    0.26 sec
+    Start 5: llvm-recovery-diagnostics
+5/9 Test #5: llvm-recovery-diagnostics ..........   Passed    0.01 sec
+    Start 6: llvm-memory-recovery
+6/9 Test #6: llvm-memory-recovery ...............   Passed    0.48 sec
+    Start 7: llvm-memory-diagnostics
+7/9 Test #7: llvm-memory-diagnostics ............   Passed    0.01 sec
+    Start 8: host-device-boundary
+8/9 Test #8: host-device-boundary ...............   Passed    0.40 sec
+    Start 9: host-device-boundary-diagnostics
+9/9 Test #9: host-device-boundary-diagnostics ...   Passed    0.00 sec
+
+100% tests passed, 0 tests failed out of 9
+
+Total Test time (real) =   1.51 sec
+
+compile_commands.json: 16 translation units
+
+No Udon assembly, Unity/SDK import, client GPU execution or Windows execution performed.

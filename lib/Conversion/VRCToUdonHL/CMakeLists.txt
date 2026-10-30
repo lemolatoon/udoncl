@@ -1,0 +1,4 @@
+add_mlir_library(VRCConversionVRC DISABLE_INSTALL RuntimeIntrinsics.cpp
+  DEPENDS VRCBoundaryPassIncGen
+  LINK_LIBS PUBLIC VRCDialectUdonHL VRCDialectVRC MLIRFuncDialect MLIRPass MLIRTransformUtils)
+vrc_configure_target(VRCConversionVRC)
