@@ -34,9 +34,9 @@ including native UdonHL Host binaries linked to the D3D11/WARP fragment runtime.
 The earlier VS 2022 link failure and its fix are recorded below.
 
 P0/G0 must be validated before claiming GPU/SDK functionality. P1 remains
-partial: 17/57 operations have ODS definitions. The boundary prototype includes
+partial: 20/57 operations have ODS definitions. The boundary prototype includes
 callee/resource symbol checks and a restricted lowering. Complete code bounds,
-stack dataflow, Extern DB, effects, other types, the remaining 40 operations and
+stack dataflow, Extern DB, effects, other types, the remaining 37 operations and
 general lowering are pending. No pseudo VM or interpreter was added.
 
 Reference lookup (2026-10-30, evidence of documentation only):
@@ -156,3 +156,37 @@ The new OpenCL API flow passed Windows D3D11/WARP and Linux Lavapipe in
 [CI run 41064059775](https://github.com/lemolatoon/udoncl/actions/runs/41064059775).
 Both jobs passed all 14 CTests. The earlier native fragment-only WARP success
 remains recorded separately.
+
+## MD crystal host-native (stage 1)
+
+`make example-md` compiles ordinary OpenCL Host C through the native UdonHL
+call adapter back to LLVM and links the C API/runtime. Two OpenCL C Device
+kernels recover bounded gathers and counted loops, structure control flow,
+lower through `vrcgpu`, and execute as Fragment Shaders. The kernel state is
+256 float words in a 256×1 byte-preserving RGBA8 texture. Input/output must be
+distinct, initialized where read, and match the selected AOT extent.
+
+Linux `ctest --preset udoncl`: **15/15 passed**, including the MD test:
+
+- Independent double-precision potential derivative checks the kernel force.
+- 100 heated steps / 200 draws agree with the CPU-compiled OpenCL source
+  (maximum observed error 0 on Lavapipe; tolerance 0.002).
+- 1000 unheated steps: maximum relative energy drift 1.62851e-8 and momentum
+  drift 2.21713e-7.
+- After 1000 heated steps, local mean kinetic energy is 0.0125993, compared
+  with 0.0000900968 in the unheated control.
+- After release and a further 1000 steps, the distant region's mean kinetic
+  energy is 0.00214197 versus control 0.000100577; release energy drift is
+  2.32987e-7. This is a finite reduced-unit test, not a material calibration.
+- Seven malformed kernels reject bounds violations, scatter/input writes,
+  barriers, wrong global-id dimension and an unbounded loop without publishing
+  a bundle. Six runtime cases reject aliasing, uninitialized input/readback,
+  incorrect NDRange, undersized and stale allocations.
+- Native interactive protocol steps and reset pass. Chromium interaction
+  heats to step 1372, pauses, and resets to step 0, with no JavaScript errors.
+
+[Recorded results](validation/2026-10-30-md-crystal.json) and
+[interactive screenshot](validation/2026-10-30-md-crystal.png).
+`make md-view` serves only on localhost and displays states read from the
+lowered native binary. UdonAssembly, U#, Editor import and actual avatar hands
+remain stage 2; no Unity/VRChat execution is claimed by this example.

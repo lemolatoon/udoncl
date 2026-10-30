@@ -6,6 +6,9 @@ namespace vrc {
 namespace fragment = ::vrc::vrcgpu;
 LogicalResult emitFragmentHLSL(fragment::KernelOp kernel,
                                llvm::raw_ostream &out) {
+  if (auto profile = kernel->getAttrOfType<StringAttr>("vrc.profile"))
+    if (profile == "gather-f32")
+      return emitGatherFragmentHLSL(kernel, out);
   llvm::DenseMap<Value, std::string> names;
   std::string code;
   llvm::raw_string_ostream body(code);
@@ -69,8 +72,20 @@ LogicalResult emitShaderLab(fragment::KernelOp kernel, llvm::raw_ostream &out) {
   if (failed(emitFragmentHLSL(kernel, shader)))
     return failure();
   out << "Shader \"UdonCL/Kernel_" << kernel.getKernelId()
-      << "\" {\n"
-         "Properties { _VRC_Arg1 (\"Arg1\", Float) = 0 }\n"
+      << "\" {\nProperties {\n";
+  auto profile = kernel->getAttrOfType<StringAttr>("vrc.profile");
+  if (profile && profile == "gather-f32") {
+    out << "_VRC_Input (\"Input state\", 2D) = \"black\" {}\n";
+    for (unsigned i = 2; i < kernel.getArgumentKinds().size(); ++i)
+      out << "_VRC_Arg" << i << " (\"Arg" << i << "\", "
+          << (kernel.getArgumentKinds()[i] ==
+                      StringAttr::get(kernel.getContext(), "f32")
+                  ? "Float"
+                  : "Integer")
+          << ") = 0\n";
+  } else
+    out << "_VRC_Arg1 (\"Arg1\", Float) = 0\n";
+  out << "}\n"
          "SubShader { Pass { Cull Off ZWrite Off ZTest Always Blend Off\n"
          "CGPROGRAM\n#pragma target 5.0\n#pragma vertex vert_img\n#pragma "
          "fragment frag\n"

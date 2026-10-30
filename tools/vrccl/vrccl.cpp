@@ -3,6 +3,7 @@
 #include "VRC/Conversion/Passes.h"
 #include "VRC/Conversion/LLVMToHighLevel/Passes.h"
 #include "mlir/Transforms/Passes.h"
+#include "mlir/Conversion/ControlFlowToSCF/ControlFlowToSCF.h"
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
 #include "VRC/Dialect/VRC/VRCDialect.h"
 #include "VRC/Dialect/VRCGPU/VRCGPUDialect.h"
@@ -173,6 +174,7 @@ int main(int argc, char **argv) {
   MLIRContext context(registry);
   OwningOpRef<ModuleOp> module;
   std::map<std::string, std::string> files;
+  bool gatherProfile = false;
   if (emitLLVMBundle || emitNativeDevice) {
     auto input = MemoryBuffer::getFile(inputFilename);
     if (!input || (!emitNativeDevice && hostLLVM.empty()) ||
@@ -190,6 +192,7 @@ int main(int argc, char **argv) {
       errs() << "config must be a JSON object\n";
       return 1;
     }
+    gatherProfile = config->getAsObject()->getString("profile") == "gather-f32";
     module = ::vrc::importCBoundary(
         emitNativeDevice ? StringRef() : StringRef(hostLLVM), deviceLLVM,
         *config->getAsObject(), context);
@@ -201,10 +204,17 @@ int main(int argc, char **argv) {
     PassManager recovery(&context);
     if (emitNativeDevice) {
       recovery.addNestedPass<ModuleOp>(createMem2Reg());
-      recovery.addNestedPass<ModuleOp>(
-          ::vrc::createRaiseLLVMBoundaryDevicePass());
+      if (gatherProfile)
+        recovery.addNestedPass<ModuleOp>(::vrc::createRaiseGatherDevicePass());
+      else
+        recovery.addNestedPass<ModuleOp>(
+            ::vrc::createRaiseLLVMBoundaryDevicePass());
       recovery.addNestedPass<ModuleOp>(::vrc::createRaiseLLVMToScalarPass());
       recovery.addNestedPass<ModuleOp>(createCanonicalizerPass());
+      if (gatherProfile) {
+        recovery.addNestedPass<ModuleOp>(createLiftControlFlowToSCFPass());
+        recovery.addNestedPass<ModuleOp>(createCanonicalizerPass());
+      }
       recovery.addPass(::vrc::createPrepareNativeDevicePass());
     } else
       ::vrc::buildCBoundaryRecoveryPipeline(recovery);
@@ -222,7 +232,10 @@ int main(int argc, char **argv) {
     manager.addPass(::vrc::createLowerHostToUdonHLPass());
     manager.addPass(::vrc::createSubstituteRuntimeIntrinsicsPass());
   }
-  manager.addPass(::vrc::createLowerDeviceSingleInvocationPass());
+  if (gatherProfile)
+    manager.addPass(::vrc::createLowerGatherDevicePass());
+  else
+    manager.addPass(::vrc::createLowerDeviceSingleInvocationPass());
   if (!emitNativeDevice)
     manager.addPass(::vrc::createVerifyHostDeviceBoundaryPass());
   if (failed(manager.run(*module)) || failed(verify(*module)))

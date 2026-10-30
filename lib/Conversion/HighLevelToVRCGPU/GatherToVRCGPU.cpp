@@ -1,0 +1,202 @@
+#include "VRC/Conversion/Passes.h"
+#include "VRC/Dialect/VRCGPU/VRCGPUDialect.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/IR/IRMapping.h"
+#include "mlir/IR/PatternMatch.h"
+using namespace mlir;
+namespace vrc {
+#define GEN_PASS_DEF_LOWERGATHERDEVICEPASS
+#include "VRC/Conversion/Passes.h.inc"
+namespace {
+namespace fragment = ::vrc::vrcgpu;
+Operation *make(OpBuilder &builder, Location loc, StringRef name,
+                TypeRange results, ValueRange operands,
+                ArrayRef<NamedAttribute> attributes, unsigned regions = 0) {
+  OperationState state(loc, name);
+  state.addTypes(results);
+  state.addOperands(operands);
+  state.addAttributes(attributes);
+  while (regions--)
+    state.addRegion();
+  return builder.create(state);
+}
+struct LowerGatherDevicePass
+    : impl::LowerGatherDevicePassBase<LowerGatherDevicePass> {
+  void runOnOperation() override {
+    auto root = getOperation();
+    IRRewriter b(&getContext());
+    SmallVector<gpu::GPUModuleOp> modules;
+    llvm::SmallDenseSet<int64_t> ids;
+    for (auto module : root.getOps<gpu::GPUModuleOp>()) {
+      modules.push_back(module);
+      for (auto source : module.getOps<gpu::GPUFuncOp>()) {
+        auto words = source->getAttrOfType<IntegerAttr>("vrc.words");
+        if (!source->hasAttr("vrc.gather_proven") || !words ||
+            !source.getBody().hasOneBlock()) {
+          source.emitError("gather lowering requires bounded memory/loop "
+                           "recovery and structured CFG");
+          signalPassFailure();
+          return;
+        }
+        auto id = source->getAttrOfType<IntegerAttr>("vrc.kernel_id");
+        if (!id || id.getInt() <= 0 || !ids.insert(id.getInt()).second) {
+          source.emitError("invalid or duplicate kernel id");
+          signalPassFailure();
+          return;
+        }
+        memref::StoreOp store;
+        for (auto candidate : source.getOps<memref::StoreOp>()) {
+          if (store) {
+            source.emitError("multiple output stores");
+            signalPassFailure();
+            return;
+          }
+          store = candidate;
+        }
+        if (!store || store.getMemref() != source.getArgument(1)) {
+          source.emitError("missing proven output store");
+          signalPassFailure();
+          return;
+        }
+        b.setInsertionPoint(module);
+        auto loc = source.getLoc();
+        SmallVector<Attribute> kinds;
+        for (unsigned i = 0; i < source.getNumArguments(); ++i)
+          kinds.push_back(b.getStringAttr(
+              i < 2                                     ? "buffer"
+              : source.getArgument(i).getType().isF32() ? "f32"
+                                                        : "i32"));
+        auto *kernel = make(
+            b, loc, fragment::KernelOp::getOperationName(), {}, {},
+            {b.getNamedAttr(
+                 "sym_name",
+                 b.getStringAttr(
+                     (module.getName() + "__" + source.getName()).str())),
+             b.getNamedAttr("entry_name", b.getStringAttr(source.getName())),
+             b.getNamedAttr("source_module", b.getStringAttr(module.getName())),
+             b.getNamedAttr("kernel_id", id),
+             b.getNamedAttr("argument_kinds", b.getArrayAttr(kinds)),
+             b.getNamedAttr(
+                 "global_size",
+                 b.getDenseI32ArrayAttr({int32_t(words.getInt()), 1, 1})),
+             b.getNamedAttr("local_size", b.getDenseI32ArrayAttr({1, 1, 1})),
+             b.getNamedAttr("global_offset", b.getDenseI32ArrayAttr({0, 0, 0})),
+             b.getNamedAttr("vrc.profile", b.getStringAttr("gather-f32")),
+             b.getNamedAttr("vrc.words", words),
+             b.getNamedAttr("vrc.gather_proven", b.getUnitAttr())},
+            1);
+        auto *body = new Block;
+        kernel->getRegion(0).push_back(body);
+        b.setInsertionPointToEnd(body);
+        Value inputVersion = body->addArgument(
+            fragment::VersionType::get(&getContext(), 0), loc);
+        for (unsigned i = 0; i < source.getNumArguments(); ++i) {
+          SmallVector<NamedAttribute> attrs{
+              b.getNamedAttr("sym_name",
+                             b.getStringAttr("arg" + std::to_string(i))),
+              b.getNamedAttr("kind", b.getStringAttr(i == 0   ? "texture"
+                                                     : i == 1 ? "target"
+                                                              : "uniform")),
+              b.getNamedAttr("arg_index", b.getI32IntegerAttr(i)),
+              b.getNamedAttr("binding", b.getI32IntegerAttr(i)),
+              b.getNamedAttr(
+                  "value_type",
+                  TypeAttr::get(i < 2 ? b.getF32Type()
+                                      : source.getArgument(i).getType()))};
+          if (i < 2)
+            attrs.push_back(
+                b.getNamedAttr("format", b.getStringAttr("rgba8_unorm")));
+          make(b, loc, fragment::ResourceOp::getOperationName(), {}, {}, attrs);
+        }
+        auto *pass =
+            make(b, loc, fragment::PassOp::getOperationName(),
+                 TypeRange{fragment::VersionType::get(&getContext(), 1)},
+                 ValueRange{inputVersion},
+                 {b.getNamedAttr("output",
+                                 FlatSymbolRefAttr::get(&getContext(), "arg1")),
+                  b.getNamedAttr("pass_id", b.getI32IntegerAttr(0))},
+                 1);
+        auto *block = new Block;
+        pass->getRegion(0).push_back(block);
+        b.setInsertionPointToEnd(block);
+        IRMapping mapping;
+        for (unsigned i = 2; i < source.getNumArguments(); ++i) {
+          auto *uniform = make(
+              b, loc, fragment::UniformLoadOp::getOperationName(),
+              TypeRange{source.getArgument(i).getType()}, {},
+              {b.getNamedAttr("resource",
+                              FlatSymbolRefAttr::get(
+                                  &getContext(), "arg" + std::to_string(i)))});
+          mapping.map(source.getArgument(i), uniform->getResult(0));
+        }
+        auto *coord =
+            make(b, loc, fragment::FragmentCoordOp::getOperationName(),
+                 TypeRange{b.getI32Type(), b.getI32Type()}, {}, {});
+        for (auto &op : source.getBody().front())
+          if (!isa<gpu::ReturnOp, memref::StoreOp>(op))
+            b.clone(op, mapping);
+        SmallVector<gpu::GlobalIdOp> globals;
+        pass->walk([&](gpu::GlobalIdOp op) { globals.push_back(op); });
+        for (auto op : globals) {
+          if (op.getDimension() != gpu::Dimension::x) {
+            op.emitError("only x global id is fragment-legal");
+            signalPassFailure();
+            return;
+          }
+          b.setInsertionPoint(op);
+          b.replaceOpWithNewOp<arith::IndexCastOp>(op, b.getIndexType(),
+                                                   coord->getResult(0));
+        }
+        SmallVector<memref::LoadOp> loads;
+        pass->walk([&](memref::LoadOp op) { loads.push_back(op); });
+        for (auto op : loads) {
+          if (op.getMemref() != source.getArgument(0) ||
+              op.getIndices().size() != 1) {
+            op.emitError("unproven input read");
+            signalPassFailure();
+            return;
+          }
+          b.setInsertionPoint(op);
+          auto x = arith::IndexCastOp::create(b, op.getLoc(), b.getI32Type(),
+                                              op.getIndices()[0]);
+          auto zero = arith::ConstantIntOp::create(b, op.getLoc(), 0, 32);
+          auto *texel = make(
+              b, op.getLoc(), fragment::TextureLoadOp::getOperationName(),
+              TypeRange{VectorType::get({4}, b.getF32Type())},
+              ValueRange{x, zero},
+              {b.getNamedAttr("resource",
+                              FlatSymbolRefAttr::get(&getContext(), "arg0")),
+               b.getNamedAttr("element_count", words)});
+          auto *value =
+              make(b, op.getLoc(), fragment::RawUnpackOp::getOperationName(),
+                   TypeRange{b.getF32Type()}, texel->getResults(),
+                   {b.getNamedAttr("byte_offset", b.getI32IntegerAttr(0)),
+                    b.getNamedAttr("format", b.getStringAttr("rgba8_unorm"))});
+          SmallVector<Value> keys;
+          for (const auto &entry : mapping.getValueMap())
+            if (entry.second == op.getResult())
+              keys.push_back(entry.first);
+          for (auto key : keys)
+            mapping.map(key, value->getResult(0));
+          b.replaceOp(op, value->getResults());
+        }
+        b.setInsertionPointToEnd(block);
+        auto *packed =
+            make(b, store.getLoc(), fragment::RawPackOp::getOperationName(),
+                 TypeRange{VectorType::get({4}, b.getF32Type())},
+                 ValueRange{mapping.lookup(store.getValue())},
+                 {b.getNamedAttr("byte_offset", b.getI32IntegerAttr(0)),
+                  b.getNamedAttr("format", b.getStringAttr("rgba8_unorm"))});
+        make(b, loc, fragment::OutputOp::getOperationName(), {},
+             packed->getResults(), {});
+      }
+    }
+    for (auto module : modules)
+      b.eraseOp(module);
+    root->setAttr("vrc.device_stage", b.getStringAttr("vrcgpu-gather-f32"));
+  }
+};
+} // namespace
+} // namespace vrc

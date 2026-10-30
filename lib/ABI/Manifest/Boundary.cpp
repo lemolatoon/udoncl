@@ -191,6 +191,54 @@ llvm::json::Object buildBoundaryManifest(ModuleOp module) {
                                     {"texture_write_bytes", 4},
                                     {"scratch_bytes", 0}}}});
   }
+  // Gather kernels retain the same byte-preserving texture representation,
+  // with one input word and one output word per pixel.
+  unsigned kernelIndex = 0;
+  for (auto kernel : module.getOps<fragment::KernelOp>()) {
+    auto &entry = *kernels[kernelIndex++].getAsObject();
+    auto profile = kernel->getAttrOfType<StringAttr>("vrc.profile");
+    if (!profile || profile != "gather-f32")
+      continue;
+    int64_t words = kernel->getAttrOfType<IntegerAttr>("vrc.words").getInt();
+    llvm::json::Array args;
+    for (unsigned i = 0; i < 2; ++i)
+      args.push_back(
+          llvm::json::Object{{"index", i},
+                             {"kind", "buffer"},
+                             {"access", i == 0 ? "read" : "write"},
+                             {"resource_index", i},
+                             {"required_bytes", words * 4},
+                             {"alignment", 4},
+                             {"binding", i == 0 ? "_VRC_Input" : "SV_Target"}});
+    for (unsigned i = 2; i < kernel.getArgumentKinds().size(); ++i)
+      args.push_back(llvm::json::Object{
+          {"index", i},
+          {"kind",
+           cast<StringAttr>(kernel.getArgumentKinds()[i]).getValue().str()},
+          {"scalar_payload_offset", (i - 2) * 4},
+          {"byte_size", 4},
+          {"binding", "_VRC_Arg" + std::to_string(i)}});
+    entry["profile"] = "gather-f32";
+    entry["args"] = std::move(args);
+    entry["descriptor"] = llvm::json::Object{
+        {"scalar_payload_bytes", (kernel.getArgumentKinds().size() - 2) * 4},
+        {"byte_order", "little"},
+        {"resource_order", llvm::json::Array{0, 1}},
+        {"distinct_resources", true},
+        {"argument_copy_policy", "required_at_clSetKernelArg"}};
+    (*entry.getObject("target_texture"))["width"] = words;
+    entry["passes"] =
+        llvm::json::Array{llvm::json::Object{{"id", 0},
+                                             {"output_arg", 1},
+                                             {"reads", llvm::json::Array{0}},
+                                             {"writes", llvm::json::Array{1}}}};
+    // Dynamic gather counts depend on control flow; do not invent a static
+    // read cost from the allocation size.
+    entry["cost"] = llvm::json::Object{{"kind", "bounded-dynamic"},
+                                       {"pass_count", 1},
+                                       {"texture_write_bytes", words * 4},
+                                       {"scratch_bytes", 0}};
+  }
   module.walk([&](runtime::DispatchOp dispatch) {
     dispatches.push_back(llvm::json::Object{
         {"function", dispatch->getParentOfType<func::FuncOp>().getName().str()},

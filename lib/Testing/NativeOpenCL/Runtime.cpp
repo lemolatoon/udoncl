@@ -1,6 +1,8 @@
 #include "VRC/Testing/NativeOpenCL/Runtime.h"
 #include "VRC/Runtime/OpenCL/Backend.h"
 #include <cstring>
+#include <stdexcept>
+#include "../NativeFragment/Renderer.h"
 namespace {
 native_opencl::Session *active = nullptr;
 }
@@ -8,8 +10,9 @@ namespace native_opencl {
 Session::Session(native_test::KernelBinding selected, const std::string &text,
                  const std::string &entry, const std::string &fragment,
                  const std::string &vertex)
-    : binding(selected), runtime(selected, fragment, vertex), source(text),
-      kernel(entry) {
+    : binding(selected), runtime(std::make_unique<native_test::Runtime>(
+                             selected, fragment, vertex)),
+      source(text), kernel(entry) {
   active = this;
 }
 Session::~Session() {
@@ -19,18 +22,91 @@ Session::~Session() {
 bool Session::matchesSource(const char *text, size_t length) const {
   return length == source.size() && !std::memcmp(text, source.data(), length);
 }
-bool Session::matchesKernel(const char *name) const { return kernel == name; }
+bool Session::matchesKernel(const char *name) const {
+  if (kernel == name)
+    return true;
+  for (const auto &binding : gatherBindings)
+    if (binding.name == name)
+      return true;
+  return false;
+}
+Session::Session(const std::string &text, std::vector<GatherBinding> kernels,
+                 const std::string &vertex)
+    : source(text), gatherBindings(std::move(kernels)) {
+  if (active || gatherBindings.empty())
+    throw std::runtime_error("native OpenCL session already active or empty");
+  for (const auto &binding : gatherBindings) {
+    if (!binding.id || binding.words < 4 || binding.words > 4096 ||
+        binding.scalarCount > 14)
+      throw std::runtime_error("invalid gather binding");
+    for (const auto &other : gatherBindings)
+      if (&other != &binding &&
+          (other.id == binding.id || other.name == binding.name))
+        throw std::runtime_error("duplicate gather binding");
+    gatherRenderers.push_back(
+        createGatherRenderer(binding.fragment, vertex, binding.words));
+  }
+  active = this;
+}
+std::string Session::deviceName() const {
+  return runtime ? runtime->deviceName()
+                 : gatherRenderers.front()->deviceName();
+}
+uint32_t Session::drawCount() const {
+  return runtime ? runtime->drawCount() : gatherDraws;
+}
+size_t Session::bufferLimit() const {
+  size_t limit = 4;
+  for (const auto &binding : gatherBindings)
+    limit = std::max(limit, size_t(binding.words) * 4);
+  return limit;
+}
+bool Session::gatherProfile(const char *name,
+                            struct udoncl_cl_gather_profile *profile) const {
+  *profile = {};
+  for (const auto &binding : gatherBindings)
+    if (binding.name == name) {
+      *profile = {binding.id, binding.words, binding.scalarCount};
+      return true;
+    }
+  return false;
+}
+int Session::drawGather(uint32_t id, const unsigned char *input, size_t bytes,
+                        const unsigned char *scalars, size_t scalarBytes,
+                        unsigned char *output) noexcept {
+  try {
+    for (size_t i = 0; i < gatherBindings.size(); ++i) {
+      const auto &binding = gatherBindings[i];
+      if (binding.id != id)
+        continue;
+      if (bytes != binding.words * 4 || scalarBytes != binding.scalarCount * 4)
+        return 0;
+      auto result =
+          gatherRenderers[i]->drawWords({input, bytes}, {scalars, scalarBytes});
+      if (result.size() != bytes)
+        return 0;
+      std::memcpy(output, result.data(), bytes);
+      ++gatherDraws;
+      return 1;
+    }
+  } catch (...) {
+    return 0;
+  }
+  return 0;
+}
 int Session::draw(uint32_t buffer, uint32_t generation,
                   const unsigned char bytes[4],
                   unsigned char output[4]) noexcept {
   try {
-    runtime.bindBuffer(buffer, generation, 4);
-    runtime.bindDescriptor(1, generation,
-                           {bytes[0], bytes[1], bytes[2], bytes[3]});
-    auto event = runtime.dispatch(binding.id, 1, buffer);
+    if (!runtime)
+      return 0;
+    runtime->bindBuffer(buffer, generation, 4);
+    runtime->bindDescriptor(1, generation,
+                            {bytes[0], bytes[1], bytes[2], bytes[3]});
+    auto event = runtime->dispatch(binding.id, 1, buffer);
     if (!event)
       return 0;
-    auto word = runtime.completedBits(event);
+    auto word = runtime->completedBits(event);
     for (unsigned i = 0; i < 4; i++)
       output[i] = static_cast<unsigned char>(word >> (8 * i));
     return 1;
@@ -49,4 +125,22 @@ extern "C" int udoncl_cl_draw(uint32_t buffer, uint32_t generation,
                               const unsigned char scalar[4],
                               unsigned char result[4]) {
   return active ? active->draw(buffer, generation, scalar, result) : 0;
+}
+
+extern "C" size_t udoncl_cl_buffer_limit(void) {
+  return active ? active->bufferLimit() : 4;
+}
+extern "C" int
+udoncl_cl_gather_profile(const char *name,
+                         struct udoncl_cl_gather_profile *profile) {
+  *profile = {};
+  return active && active->gatherProfile(name, profile);
+}
+extern "C" int udoncl_cl_draw_gather(uint32_t id, const unsigned char *input,
+                                     size_t bytes, const unsigned char *scalars,
+                                     size_t scalarBytes,
+                                     unsigned char *output) {
+  return active ? active->drawGather(id, input, bytes, scalars, scalarBytes,
+                                     output)
+                : 0;
 }

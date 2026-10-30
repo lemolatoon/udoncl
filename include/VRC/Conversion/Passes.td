@@ -40,4 +40,12 @@ def PrepareNativeDevicePass : Pass<"vrc-prepare-native-device", "mlir::ModuleOp"
   let summary = "Wrap the single recovered Device kernel for a native-only shader bundle";
   let dependentDialects = ["mlir::gpu::GPUDialect"];
 }
+def RaiseGatherDevicePass : Pass<"vrc-raise-gather-device", "mlir::ModuleOp"> {
+  let summary = "Prove fixed global-buffer gather bounds, loop bounds and exclusive scalar output ownership";
+  let dependentDialects = ["mlir::func::FuncDialect", "mlir::memref::MemRefDialect", "mlir::arith::ArithDialect", "mlir::math::MathDialect", "mlir::gpu::GPUDialect"];
+}
+def LowerGatherDevicePass : Pass<"vrc-lower-gather-device", "mlir::ModuleOp"> {
+  let summary = "Lower proven gather kernels with scalar loops to fragment-safe resources and passes";
+  let dependentDialects = ["::vrc::vrcgpu::VRCGPUDialect", "mlir::arith::ArithDialect"];
+}
 #endif

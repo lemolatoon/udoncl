@@ -28,3 +28,11 @@ example-native-fragment: build
 
 example-opencl: build
 	$(PYTHON) examples/opencl-host/run.py --build-dir "$(BUILD_DIR)" --output "$(OPENCL_OUTPUT)"
+
+MD_OUTPUT ?= build/md-crystal
+.PHONY: example-md md-view
+example-md: build
+	$(PYTHON) examples/md-crystal/run.py --build-dir "$(BUILD_DIR)" --output "$(MD_OUTPUT)"
+
+md-view: build
+	$(PYTHON) examples/md-crystal/run.py --build-dir "$(BUILD_DIR)" --output "$(MD_OUTPUT)" --serve

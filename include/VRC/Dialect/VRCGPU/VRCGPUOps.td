@@ -19,7 +19,7 @@ def VRCGPU_ResourceOp : Op<VRCGPU_Dialect, "resource", [Symbol, Pure]> {
 }
 def VRCGPU_PassOp : Op<VRCGPU_Dialect, "pass", [SingleBlock, IsolatedFromAbove]> {
   let summary = "One fragment pass, one output texture and one produced buffer version";
-  let arguments = (ins FlatSymbolRefAttr:$output, I32Attr:$pass_id);
+  let arguments = (ins FlatSymbolRefAttr:$output, I32Attr:$pass_id, Variadic<VRCGPU_VersionType>:$reads);
   let results = (outs VRCGPU_VersionType:$version);
   let regions = (region AnyRegion:$body);
   let hasVerifier = 1;
@@ -27,7 +27,7 @@ def VRCGPU_PassOp : Op<VRCGPU_Dialect, "pass", [SingleBlock, IsolatedFromAbove]>
 def VRCGPU_UniformLoadOp : Op<VRCGPU_Dialect, "uniform_load", [Pure]> {
   let summary = "Load a statically bound f32 uniform";
   let arguments = (ins FlatSymbolRefAttr:$resource);
-  let results = (outs F32:$value);
+  let results = (outs AnyType:$value);
   let hasVerifier = 1;
 }
 def VRCGPU_RawPackOp : Op<VRCGPU_Dialect, "raw_pack", [Pure]> {
@@ -39,4 +39,22 @@ def VRCGPU_RawPackOp : Op<VRCGPU_Dialect, "raw_pack", [Pure]> {
 def VRCGPU_OutputOp : Op<VRCGPU_Dialect, "output", [Terminator, HasParent<"PassOp">]> {
   let summary = "Write the sole render target";
   let arguments = (ins VectorOfLengthAndType<[4], [F32]>:$value);
+}
+
+def VRCGPU_FragmentCoordOp : Op<VRCGPU_Dialect, "fragment_coord", [Pure]> {
+  let summary = "Integer pixel coordinates of the sole output target";
+  let results = (outs I32:$x, I32:$y);
+  let hasVerifier = 1;
+}
+def VRCGPU_TextureLoadOp : Op<VRCGPU_Dialect, "texture_load", [Pure]> {
+  let summary = "Point-load a proven read-only RGBA8 input word";
+  let arguments = (ins FlatSymbolRefAttr:$resource, I32:$x, I32:$y, I32Attr:$element_count);
+  let results = (outs VectorOfLengthAndType<[4], [F32]>:$texel);
+  let hasVerifier = 1;
+}
+def VRCGPU_RawUnpackOp : Op<VRCGPU_Dialect, "raw_unpack", [Pure]> {
+  let summary = "Decode a complete little-endian RGBA8 word as f32";
+  let arguments = (ins VectorOfLengthAndType<[4], [F32]>:$texel, I32Attr:$byte_offset, StrAttr:$format);
+  let results = (outs F32:$value);
+  let hasVerifier = 1;
 }

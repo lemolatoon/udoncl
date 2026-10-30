@@ -1,4 +1,4 @@
 add_mlir_dialect_library(VRCDialectVRCGPU DISABLE_INSTALL VRCGPUDialect.cpp
   DEPENDS VRCVRCGPUIncGen
-  LINK_LIBS PUBLIC MLIRIR MLIRArithDialect)
+  LINK_LIBS PUBLIC MLIRIR MLIRArithDialect MLIRSCFDialect MLIRMathDialect)
 vrc_configure_target(VRCDialectVRCGPU)

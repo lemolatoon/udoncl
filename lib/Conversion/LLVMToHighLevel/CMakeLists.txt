@@ -12,6 +12,8 @@ add_mlir_library(VRCLLVMToHighLevelMLIR DISABLE_INSTALL
     MLIRFuncDialect
     MLIRLLVMDialect
     MLIRLLVMIRToLLVMTranslation
+    MLIRMathDialect
+    MLIRGPUDialect
     MLIRMemRefDialect
     MLIRPass
     MLIRSCFDialect

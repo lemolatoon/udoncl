@@ -5,6 +5,8 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/Passes.h"
@@ -40,6 +42,9 @@ StringRef raisedName(StringRef name) {
       .Case("llvm.fsub", "arith.subf")
       .Case("llvm.fmul", "arith.mulf")
       .Case("llvm.fneg", "arith.negf")
+      .Case("llvm.fdiv", "arith.divf")
+      .Case("llvm.uitofp", "arith.uitofp")
+      .Case("llvm.sitofp", "arith.sitofp")
       .Case("llvm.select", "arith.select")
       .Default("");
 }
@@ -187,7 +192,8 @@ LogicalResult checkOperation(Operation *op) {
     return success();
   }
   if (!raisedName(op->getName().getStringRef()).empty() ||
-      isa<LLVM::ICmpOp, LLVM::BrOp, LLVM::CondBrOp, LLVM::ReturnOp>(op))
+      isa<LLVM::FCmpOp, LLVM::ICmpOp, LLVM::BrOp, LLVM::CondBrOp,
+          LLVM::ReturnOp>(op))
     return success();
   return reject(op, "unsupported semantics; memory, calls, poison and GPU "
                     "recovery are pending");
@@ -277,6 +283,20 @@ struct ComparePattern : OpConversionPattern<LLVM::ICmpOp> {
     return success();
   }
 };
+struct FloatComparePattern : OpConversionPattern<LLVM::FCmpOp> {
+  using OpConversionPattern::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(LLVM::FCmpOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto predicate = arith::symbolizeCmpFPredicate(
+        LLVM::stringifyFCmpPredicate(op.getPredicate()));
+    if (!predicate)
+      return failure();
+    rewriter.replaceOpWithNewOp<arith::CmpFOp>(op, *predicate, adaptor.getLhs(),
+                                               adaptor.getRhs());
+    return success();
+  }
+};
 struct BranchPattern : OpConversionPattern<LLVM::BrOp> {
   using OpConversionPattern::OpConversionPattern;
   LogicalResult
@@ -328,17 +348,19 @@ struct RaiseLLVMToScalarPass
     ConversionTarget target(getContext());
     target.addLegalOp<ModuleOp>();
     target.addLegalDialect<func::FuncDialect, arith::ArithDialect,
-                           cf::ControlFlowDialect, memref::MemRefDialect>();
+                           cf::ControlFlowDialect, memref::MemRefDialect,
+                           math::MathDialect, gpu::GPUDialect>();
     target.addIllegalDialect<LLVM::LLVMDialect>();
     RewritePatternSet patterns(&getContext());
     patterns.add<FunctionPattern, ConstantPattern, ComparePattern,
-                 BranchPattern, CondBranchPattern, ReturnPattern, CallPattern>(
-        &getContext());
+                 FloatComparePattern, BranchPattern, CondBranchPattern,
+                 ReturnPattern, CallPattern>(&getContext());
     for (auto source :
-         {"llvm.add", "llvm.sub", "llvm.mul", "llvm.and", "llvm.or", "llvm.xor",
-          "llvm.shl", "llvm.lshr", "llvm.ashr", "llvm.zext", "llvm.sext",
-          "llvm.trunc", "llvm.fadd", "llvm.fsub", "llvm.fmul", "llvm.fneg",
-          "llvm.select"})
+         {"llvm.add",    "llvm.sub",  "llvm.mul",    "llvm.and",
+          "llvm.or",     "llvm.xor",  "llvm.shl",    "llvm.lshr",
+          "llvm.ashr",   "llvm.zext", "llvm.sext",   "llvm.trunc",
+          "llvm.fadd",   "llvm.fsub", "llvm.fmul",   "llvm.fneg",
+          "llvm.select", "llvm.fdiv", "llvm.uitofp", "llvm.sitofp"})
       patterns.add<ScalarPattern>(source, raisedName(source), &getContext());
     if (failed(applyFullConversion(module, target, std::move(patterns))))
       signalPassFailure();

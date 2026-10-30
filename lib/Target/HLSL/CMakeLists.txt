@@ -1,3 +1,3 @@
-add_mlir_library(VRCTargetHLSL DISABLE_INSTALL Emitter.cpp
-  LINK_LIBS PUBLIC VRCDialectVRCGPU MLIRArithDialect)
+add_mlir_library(VRCTargetHLSL DISABLE_INSTALL Emitter.cpp GatherEmitter.cpp
+  LINK_LIBS PUBLIC VRCDialectVRCGPU MLIRSCFDialect MLIRMathDialect MLIRArithDialect)
 vrc_configure_target(VRCTargetHLSL)

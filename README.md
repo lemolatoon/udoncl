@@ -8,7 +8,7 @@ LLVM, MLIR and Clang are pinned together to **23.1.4** (commit recorded in
 [cmake/llvm-lock.json](cmake/llvm-lock.json)). Compiler development targets Linux,
 macOS and Windows x64; the initial generated world targets VRChat PC (Windows).
 
-Prerequisites: CMake 3.30+, Ninja, Python 3.12+, and a C++17 compiler.
+Prerequisites: CMake 3.30+, Ninja, Python 3.12+, and a C++17 compiler (C++20 for the native renderer examples).
 Git is required when building LLVM from source.
 For the prebuilt Windows SDK, install **Visual Studio 2026** with Desktop
 development with C++, and run these commands from its **x64 Native Tools /
@@ -106,14 +106,14 @@ local alternative and is not run by CI.
 
 Current components:
 
-- Four separate TableGen dialect libraries; 17 of the closed catalog of 57 operations are defined.
+- Four separate TableGen dialect libraries; 20 of the closed catalog of 57 operations are defined.
 - A C OpenCL 1.2 AOT API subset and native Host Runtime linked to the fragment renderer.
 - `vrc-opt`: MLIR parser/printer with operation verification, rejects unknown ops by default.
 - `VRCLLVMToHighLevelMLIR`: independent import/metadata, local-memory and scalar/CFG recovery library for host/device development.
 - `vrc-translate --import-llvm input.ll`: LLVM dialect import with preserved frontend metadata and optional JSON sidecar.
 - `vrc-raise-llvm-memory` / `vrc-raise-llvm-to-scalar` MLIR Passes and the `vrc-recover-high-level` pipeline: proven fixed local arrays, scalar/CFG conversion and upstream SCF structuring.
 
-The other 40 operations, complete verifiers/lowerings, assembly emitter, executable
+The other 37 operations, complete verifiers/lowerings, assembly emitter, executable
 Udon host ABI, complete OpenCL runtime coverage and Unity integration remain pending. A small paired
 Host/Device lowering prototype now emits ShaderLab/HLSL and a shared manifest.
 See [docs/validation.md](docs/validation.md) for gates and evidence.
@@ -234,3 +234,12 @@ dependencies listed above; Windows uses WARP.
 Outputs are under `build/opencl-host`; use `EXAMPLE_OUTPUT=build/another-opencl`
 to choose a fresh directory. See [examples/opencl-host/README.md](examples/opencl-host/README.md)
 for supported APIs, native ABI preservation and the AOT subset's limits.
+
+触れて加熱する64粒子MD結晶のhost-native例:
+
+```sh
+make example-md  # CPU/GPU比較・保存則・局所加熱を検証
+make md-view     # ブラウザで触って操作
+```
+
+計算モデル、Host/Device経路、依存と操作は[MD結晶のREADME](examples/md-crystal/README.md)を参照してください。

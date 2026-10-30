@@ -3,6 +3,8 @@
 #include "VRC/Dialect/VRCGPU/VRCGPUDialect.h"
 #include "llvm/Support/raw_ostream.h"
 namespace vrc {
+mlir::LogicalResult emitGatherFragmentHLSL(::vrc::vrcgpu::KernelOp kernel,
+                                           llvm::raw_ostream &out);
 mlir::LogicalResult emitFragmentHLSL(::vrc::vrcgpu::KernelOp kernel,
                                      llvm::raw_ostream &out);
 mlir::LogicalResult emitShaderLab(::vrc::vrcgpu::KernelOp kernel,

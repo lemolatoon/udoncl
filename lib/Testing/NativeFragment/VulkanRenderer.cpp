@@ -34,7 +34,10 @@ struct State {
   VkShaderModule vertex = VK_NULL_HANDLE, fragment = VK_NULL_HANDLE;
   VkCommandPool commandPool = VK_NULL_HANDLE;
   VkFence fence = VK_NULL_HANDLE;
-  Buffer uniform, readback;
+  Buffer uniform, readback, upload;
+  VkImage input = VK_NULL_HANDLE;
+  VkDeviceMemory inputMemory = VK_NULL_HANDLE;
+  VkImageView inputView = VK_NULL_HANDLE;
   ~State() {
     if (device) {
       vkDeviceWaitIdle(device);
@@ -49,7 +52,10 @@ struct State {
       vkDestroyImageView(device, view, nullptr);
       vkDestroyImage(device, image, nullptr);
       vkFreeMemory(device, imageMemory, nullptr);
-      for (auto resource : {uniform, readback}) {
+      vkDestroyImageView(device, inputView, nullptr);
+      vkDestroyImage(device, input, nullptr);
+      vkFreeMemory(device, inputMemory, nullptr);
+      for (auto resource : {uniform, readback, upload}) {
         vkDestroyBuffer(device, resource.buffer, nullptr);
         vkFreeMemory(device, resource.memory, nullptr);
       }
@@ -69,6 +75,8 @@ class Renderer final : public FragmentRenderer {
   VkDescriptorSet descriptor = VK_NULL_HANDLE;
   VkCommandBuffer command = VK_NULL_HANDLE;
   std::string name;
+  uint32_t width = 1;
+  bool gather = false;
   uint32_t memoryType(uint32_t bits, VkMemoryPropertyFlags flags) {
     VkPhysicalDeviceMemoryProperties properties;
     vkGetPhysicalDeviceMemoryProperties(physical, &properties);
@@ -117,7 +125,11 @@ class Renderer final : public FragmentRenderer {
   }
 
 public:
-  Renderer(const std::string &fragment, const std::string &vertex) {
+  Renderer(const std::string &fragment, const std::string &vertex,
+           uint32_t words = 0)
+      : width(words ? words : 1), gather(words != 0) {
+    if (width > 4096)
+      throw std::runtime_error("gather width exceeds supported profile");
     auto application =
         info<VkApplicationInfo>(VK_STRUCTURE_TYPE_APPLICATION_INFO);
     application.pApplicationName = "udoncl native boundary test";
@@ -166,13 +178,15 @@ public:
     deviceInfo.pQueueCreateInfos = &queueInfo;
     check(vkCreateDevice(physical, &deviceInfo, nullptr, &state.device));
     vkGetDeviceQueue(state.device, family, 0, &queue);
-    makeBuffer(state.uniform, 16, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
-    makeBuffer(state.readback, 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    makeBuffer(state.uniform, 64, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+    makeBuffer(state.readback, width * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    if (gather)
+      makeBuffer(state.upload, width * 4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
     auto imageInfo =
         info<VkImageCreateInfo>(VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO);
     imageInfo.imageType = VK_IMAGE_TYPE_2D;
     imageInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
-    imageInfo.extent = {1, 1, 1};
+    imageInfo.extent = {width, 1, 1};
     imageInfo.mipLevels = imageInfo.arrayLayers = 1;
     imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
     imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
@@ -195,6 +209,20 @@ public:
     viewInfo.format = imageInfo.format;
     viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     check(vkCreateImageView(state.device, &viewInfo, nullptr, &state.view));
+    if (gather) {
+      imageInfo.usage =
+          VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+      check(vkCreateImage(state.device, &imageInfo, nullptr, &state.input));
+      vkGetImageMemoryRequirements(state.device, state.input, &requirements);
+      allocation.allocationSize = requirements.size;
+      allocation.memoryTypeIndex = memoryType(requirements.memoryTypeBits, 0);
+      check(vkAllocateMemory(state.device, &allocation, nullptr,
+                             &state.inputMemory));
+      check(vkBindImageMemory(state.device, state.input, state.inputMemory, 0));
+      viewInfo.image = state.input;
+      check(vkCreateImageView(state.device, &viewInfo, nullptr,
+                              &state.inputView));
+    }
     VkAttachmentDescription attachment{};
     attachment.format = imageInfo.format;
     attachment.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -231,24 +259,30 @@ public:
     framebufferInfo.renderPass = state.renderPass;
     framebufferInfo.attachmentCount = 1;
     framebufferInfo.pAttachments = &state.view;
-    framebufferInfo.width = framebufferInfo.height = framebufferInfo.layers = 1;
+    framebufferInfo.width = width;
+    framebufferInfo.height = framebufferInfo.layers = 1;
     check(vkCreateFramebuffer(state.device, &framebufferInfo, nullptr,
                               &state.framebuffer));
-    VkDescriptorSetLayoutBinding binding{0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                                         1, VK_SHADER_STAGE_FRAGMENT_BIT,
-                                         nullptr};
+    VkDescriptorSetLayoutBinding binding{gather ? 1u : 0u,
+                                         VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
+                                         VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     auto descriptorInfo = info<VkDescriptorSetLayoutCreateInfo>(
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO);
-    descriptorInfo.bindingCount = 1;
-    descriptorInfo.pBindings = &binding;
+    VkDescriptorSetLayoutBinding bindings[2]{
+        binding,
+        {0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
+         nullptr}};
+    descriptorInfo.bindingCount = gather ? 2 : 1;
+    descriptorInfo.pBindings = bindings;
     check(vkCreateDescriptorSetLayout(state.device, &descriptorInfo, nullptr,
                                       &state.descriptorLayout));
-    VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1};
+    VkDescriptorPoolSize poolSizes[2]{{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
+                                      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1}};
     auto poolInfo = info<VkDescriptorPoolCreateInfo>(
         VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO);
     poolInfo.maxSets = 1;
-    poolInfo.poolSizeCount = 1;
-    poolInfo.pPoolSizes = &poolSize;
+    poolInfo.poolSizeCount = gather ? 2 : 1;
+    poolInfo.pPoolSizes = poolSizes;
     check(vkCreateDescriptorPool(state.device, &poolInfo, nullptr,
                                  &state.descriptorPool));
     auto setInfo = info<VkDescriptorSetAllocateInfo>(
@@ -257,15 +291,25 @@ public:
     setInfo.descriptorSetCount = 1;
     setInfo.pSetLayouts = &state.descriptorLayout;
     check(vkAllocateDescriptorSets(state.device, &setInfo, &descriptor));
-    VkDescriptorBufferInfo bufferInfo{state.uniform.buffer, 0, 16};
+    VkDescriptorBufferInfo bufferInfo{state.uniform.buffer, 0, 64};
     auto write =
         info<VkWriteDescriptorSet>(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET);
     write.dstSet = descriptor;
-    write.dstBinding = 0;
+    write.dstBinding = gather ? 1 : 0;
     write.descriptorCount = 1;
     write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     write.pBufferInfo = &bufferInfo;
     vkUpdateDescriptorSets(state.device, 1, &write, 0, nullptr);
+    if (gather) {
+      VkDescriptorImageInfo sampled{};
+      sampled.imageView = state.inputView;
+      sampled.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+      write.dstBinding = 0;
+      write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+      write.pBufferInfo = nullptr;
+      write.pImageInfo = &sampled;
+      vkUpdateDescriptorSets(state.device, 1, &write, 0, nullptr);
+    }
     auto layoutInfo = info<VkPipelineLayoutCreateInfo>(
         VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO);
     layoutInfo.setLayoutCount = 1;
@@ -288,8 +332,8 @@ public:
     auto assembly = info<VkPipelineInputAssemblyStateCreateInfo>(
         VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO);
     assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-    VkViewport viewport{0, 0, 1, 1, 0, 1};
-    VkRect2D scissor{{0, 0}, {1, 1}};
+    VkViewport viewport{0, 0, float(width), 1, 0, 1};
+    VkRect2D scissor{{0, 0}, {width, 1}};
     auto viewportInfo = info<VkPipelineViewportStateCreateInfo>(
         VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO);
     viewportInfo.viewportCount = viewportInfo.scissorCount = 1;
@@ -344,16 +388,61 @@ public:
     return "Vulkan " + name + " (software)";
   }
   std::array<uint8_t, 4> draw(float value) override {
+    auto bytes = drawWords(
+        {},
+        std::span<const uint8_t>(reinterpret_cast<const uint8_t *>(&value), 4));
+    std::array<uint8_t, 4> result;
+    std::memcpy(result.data(), bytes.data(), 4);
+    return result;
+  }
+  std::vector<uint8_t> drawWords(std::span<const uint8_t> input,
+                                 std::span<const uint8_t> scalars) override {
+    if (scalars.size() > 64 ||
+        (gather ? input.size() != width * 4 : !input.empty()))
+      throw std::runtime_error("invalid fragment input/payload size");
     void *mapped;
-    check(vkMapMemory(state.device, state.uniform.memory, 0, 16, 0, &mapped));
-    std::memset(mapped, 0, 16);
-    std::memcpy(mapped, &value, 4);
+    check(vkMapMemory(state.device, state.uniform.memory, 0, 64, 0, &mapped));
+    std::memset(mapped, 0, 64);
+    if (!scalars.empty())
+      std::memcpy(mapped, scalars.data(), scalars.size());
     vkUnmapMemory(state.device, state.uniform.memory);
+    if (gather) {
+      check(vkMapMemory(state.device, state.upload.memory, 0, input.size(), 0,
+                        &mapped));
+      std::memcpy(mapped, input.data(), input.size());
+      vkUnmapMemory(state.device, state.upload.memory);
+    }
     check(vkResetCommandBuffer(command, 0));
     auto begin = info<VkCommandBufferBeginInfo>(
         VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO);
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     check(vkBeginCommandBuffer(command, &begin));
+    if (gather) {
+      auto barrier =
+          info<VkImageMemoryBarrier>(VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER);
+      barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+      barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+      barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+      barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex =
+          VK_QUEUE_FAMILY_IGNORED;
+      barrier.image = state.input;
+      barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+      vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                           VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
+                           nullptr, 1, &barrier);
+      VkBufferImageCopy upload{};
+      upload.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+      upload.imageExtent = {width, 1, 1};
+      vkCmdCopyBufferToImage(command, state.upload.buffer, state.input,
+                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &upload);
+      barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+      barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+      barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+      barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+      vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr,
+                           0, nullptr, 1, &barrier);
+    }
     VkClearValue clear{};
     clear.color.float32[0] = clear.color.float32[2] = clear.color.float32[3] =
         1;
@@ -361,7 +450,7 @@ public:
         info<VkRenderPassBeginInfo>(VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO);
     render.renderPass = state.renderPass;
     render.framebuffer = state.framebuffer;
-    render.renderArea.extent = {1, 1};
+    render.renderArea.extent = {width, 1};
     render.clearValueCount = 1;
     render.pClearValues = &clear;
     vkCmdBeginRenderPass(command, &render, VK_SUBPASS_CONTENTS_INLINE);
@@ -386,7 +475,7 @@ public:
                          nullptr, 1, &imageBarrier);
     VkBufferImageCopy copy{};
     copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    copy.imageExtent = {1, 1, 1};
+    copy.imageExtent = {width, 1, 1};
     vkCmdCopyImageToBuffer(command, state.image,
                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                            state.readback.buffer, 1, &copy);
@@ -397,7 +486,7 @@ public:
     bufferBarrier.srcQueueFamilyIndex = bufferBarrier.dstQueueFamilyIndex =
         VK_QUEUE_FAMILY_IGNORED;
     bufferBarrier.buffer = state.readback.buffer;
-    bufferBarrier.size = 4;
+    bufferBarrier.size = width * 4;
     vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT,
                          VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1,
                          &bufferBarrier, 0, nullptr);
@@ -409,9 +498,10 @@ public:
     check(vkQueueSubmit(queue, 1, &submit, state.fence));
     check(vkWaitForFences(state.device, 1, &state.fence, VK_TRUE,
                           30000000000ull));
-    check(vkMapMemory(state.device, state.readback.memory, 0, 4, 0, &mapped));
-    std::array<uint8_t, 4> result;
-    std::memcpy(result.data(), mapped, 4);
+    check(vkMapMemory(state.device, state.readback.memory, 0, width * 4, 0,
+                      &mapped));
+    std::vector<uint8_t> result(width * 4);
+    std::memcpy(result.data(), mapped, result.size());
     vkUnmapMemory(state.device, state.readback.memory);
     return result;
   }
@@ -420,4 +510,12 @@ public:
 std::unique_ptr<FragmentRenderer>
 createFragmentRenderer(const std::string &shader, const std::string &vertex) {
   return std::make_unique<Renderer>(shader, vertex);
+}
+
+std::unique_ptr<FragmentRenderer>
+createGatherRenderer(const std::string &shader, const std::string &vertex,
+                     uint32_t words) {
+  if (words < 4)
+    throw std::runtime_error("invalid gather width");
+  return std::make_unique<Renderer>(shader, vertex, words);
 }

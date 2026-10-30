@@ -1,0 +1,17 @@
+{
+  "stdout": "NVE_steps=1000 relative_energy_drift=1.62851e-08 momentum_drift=2.21713e-07 local_heated_KE=0.0125993 local_control_KE=9.00968e-05 distant_heated_KE=0.00214197 distant_control_KE=0.000100577 release_energy_drift=2.32987e-07\nrenderer=Vulkan llvmpipe (LLVM 21.1.8, 256 bits) (software) oracle_steps=100 draws=6200 max_cpu_gpu_error=0\n",
+  "rejected_gather_cases": [
+    "output-oob",
+    "input-oob",
+    "scatter",
+    "write-input",
+    "barrier",
+    "wrong-dimension",
+    "unbounded-loop"
+  ],
+  "interactive_frames": [
+    0,
+    8,
+    0
+  ]
+}

@@ -105,7 +105,10 @@ struct RaiseNativeHostCallsPass
       rewriter.replaceOp(call, rewriter.create(state)->getResults());
     }
     SmallVector<LLVM::ReturnOp> returns;
-    module.walk([&](LLVM::ReturnOp ret) { returns.push_back(ret); });
+    module.walk([&](LLVM::ReturnOp ret) {
+      if (ret->getParentOfType<func::FuncOp>())
+        returns.push_back(ret);
+    });
     for (auto ret : returns) {
       rewriter.setInsertionPoint(ret);
       rewriter.replaceOpWithNewOp<func::ReturnOp>(ret, ret.getOperands());

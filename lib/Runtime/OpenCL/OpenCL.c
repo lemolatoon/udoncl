@@ -1,5 +1,5 @@
 /* OpenCL 1.2 AOT subset. Synchronous native execution, one device, in-order
- * queues, one selected kernel and four-byte buffers. Not an ICD implementation.
+ * queues, selected AOT kernels and bounded buffers. Not an ICD implementation.
  */
 #include <CL/cl.h>
 #include "VRC/Runtime/OpenCL/Backend.h"
@@ -36,9 +36,10 @@ struct _cl_program {
 struct _cl_kernel {
   unsigned refs;
   cl_program program;
-  cl_mem buffer;
-  uint32_t buffer_generation;
-  unsigned char scalar[4];
+  cl_mem buffer, input;
+  uint32_t buffer_generation, input_generation;
+  struct udoncl_cl_gather_profile gather;
+  unsigned char scalar[56];
   unsigned args;
   struct _cl_kernel *next;
 };
@@ -47,8 +48,8 @@ struct _cl_mem {
   cl_context context;
   cl_mem_flags flags;
   uint32_t id, generation;
-  unsigned char data[4];
-  unsigned initialized;
+  unsigned char *data, *initialized;
+  size_t size;
   struct _cl_mem *next;
 };
 struct _cl_event {
@@ -231,7 +232,7 @@ CL_API_ENTRY cl_int CL_API_CALL clGetDeviceInfo(cl_device_id d,
     s = 1;
     return info(&s, sizeof(s), size, value, required);
   case CL_DEVICE_MAX_MEM_ALLOC_SIZE:
-    l = 4;
+    l = udoncl_cl_buffer_limit();
     return info(&l, sizeof(l), size, value, required);
   case CL_DEVICE_AVAILABLE:
     u = CL_TRUE;
@@ -337,9 +338,7 @@ CL_API_ENTRY cl_mem CL_API_CALL clCreateBuffer(cl_context c, cl_mem_flags flags,
       flags & (CL_MEM_READ_WRITE | CL_MEM_WRITE_ONLY | CL_MEM_READ_ONLY);
   if (!context_find(c))
     ERROR(CL_INVALID_CONTEXT);
-  if (!size || size > 4)
-    ERROR(CL_INVALID_BUFFER_SIZE);
-  if (size != 4)
+  if (!size || size > udoncl_cl_buffer_limit())
     ERROR(CL_INVALID_BUFFER_SIZE);
   if (flags & ~(CL_MEM_READ_WRITE | CL_MEM_WRITE_ONLY | CL_MEM_READ_ONLY |
                 CL_MEM_COPY_HOST_PTR))
@@ -353,6 +352,15 @@ CL_API_ENTRY cl_mem CL_API_CALL clCreateBuffer(cl_context c, cl_mem_flags flags,
   m = (cl_mem)calloc(1, sizeof(*m));
   if (!m)
     ERROR(CL_OUT_OF_HOST_MEMORY);
+  m->data = (unsigned char *)calloc(size, 1);
+  m->initialized = (unsigned char *)calloc(size, 1);
+  if (!m->data || !m->initialized) {
+    free(m->data);
+    free(m->initialized);
+    free(m);
+    ERROR(CL_OUT_OF_HOST_MEMORY);
+  }
+  m->size = size;
   m->refs = 1;
   m->context = c;
   c->refs++;
@@ -360,8 +368,8 @@ CL_API_ENTRY cl_mem CL_API_CALL clCreateBuffer(cl_context c, cl_mem_flags flags,
   m->id = next_buffer++;
   m->generation = m->id;
   if (host) {
-    memcpy(m->data, host, 4);
-    m->initialized = 15;
+    memcpy(m->data, host, size);
+    memset(m->initialized, 1, size);
   }
   m->next = buffers;
   buffers = m;
@@ -381,6 +389,8 @@ CL_API_ENTRY cl_int CL_API_CALL clReleaseMemObject(cl_mem m) {
   if (!--m->refs) {
     cl_context c = m->context;
     UNLINK(cl_mem, m, buffers);
+    free(m->data);
+    free(m->initialized);
     free(m);
     clReleaseContext(c);
   }
@@ -513,6 +523,12 @@ CL_API_ENTRY cl_kernel CL_API_CALL clCreateKernel(cl_program p,
   k = (cl_kernel)calloc(1, sizeof(*k));
   if (!k)
     ERROR(CL_OUT_OF_HOST_MEMORY);
+  udoncl_cl_gather_profile(name, &k->gather);
+  if (k->gather.id && (k->gather.words < 4 || k->gather.words > 4096 ||
+                       k->gather.scalar_count > 14)) {
+    free(k);
+    ERROR(CL_INVALID_KERNEL_DEFINITION);
+  }
   k->refs = 1;
   k->program = p;
   p->refs++;
@@ -543,21 +559,26 @@ CL_API_ENTRY cl_int CL_API_CALL clSetKernelArg(cl_kernel k, cl_uint index,
                                                size_t size, const void *value) {
   if (!kernel_find(k))
     return CL_INVALID_KERNEL;
-  if (index > 1)
+  if (index >= (k->gather.id ? 2 + k->gather.scalar_count : 2))
     return CL_INVALID_ARG_INDEX;
-  if (size != (index ? 4 : sizeof(cl_mem)))
+  if (size != ((k->gather.id ? index < 2 : index == 0) ? sizeof(cl_mem) : 4))
     return CL_INVALID_ARG_SIZE;
   if (!value)
     return CL_INVALID_ARG_VALUE;
-  if (!index) {
+  if (k->gather.id ? index < 2 : index == 0) {
     cl_mem m;
     memcpy(&m, value, sizeof(m));
     if (m && !buffer_find(m))
       return CL_INVALID_MEM_OBJECT;
-    k->buffer = m;
-    k->buffer_generation = m ? m->generation : 0;
+    if (k->gather.id && index == 0) {
+      k->input = m;
+      k->input_generation = m ? m->generation : 0;
+    } else {
+      k->buffer = m;
+      k->buffer_generation = m ? m->generation : 0;
+    }
   } else
-    memcpy(k->scalar, value, 4);
+    memcpy(k->scalar + (k->gather.id ? (index - 2) * 4 : 0), value, 4);
   k->args |= 1u << index;
   return CL_SUCCESS;
 }
@@ -582,14 +603,14 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueNDRangeKernel(
   if (!global)
     return CL_INVALID_GLOBAL_WORK_SIZE;
   for (i = 0; i < dims; i++) {
-    if (global[i] != 1)
+    if (global[i] != (i == 0 && k->gather.id ? k->gather.words : 1))
       return CL_INVALID_GLOBAL_WORK_SIZE;
     if (offset && offset[i])
       return CL_INVALID_GLOBAL_OFFSET;
     if (local && local[i] != 1)
       return CL_INVALID_WORK_GROUP_SIZE;
   }
-  if (k->args != 3)
+  if (k->args != ((1u << (k->gather.id ? 2 + k->gather.scalar_count : 2)) - 1u))
     return CL_INVALID_KERNEL_ARGS;
   m = buffer_find(k->buffer);
   if (!m || m->generation != k->buffer_generation)
@@ -598,17 +619,38 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueNDRangeKernel(
     return CL_INVALID_CONTEXT;
   if (m->flags & CL_MEM_READ_ONLY)
     return CL_INVALID_OPERATION;
+  if (m->size != (k->gather.id ? k->gather.words * 4 : 4))
+    return CL_INVALID_MEM_OBJECT;
+  if (k->gather.id) {
+    cl_mem input = buffer_find(k->input);
+    size_t byte;
+    if (!input || input->generation != k->input_generation)
+      return CL_INVALID_MEM_OBJECT;
+    if (input->context != q->context)
+      return CL_INVALID_CONTEXT;
+    if (input == m || (input->flags & CL_MEM_WRITE_ONLY))
+      return CL_INVALID_OPERATION;
+    if (input->size != m->size)
+      return CL_INVALID_MEM_OBJECT;
+    for (byte = 0; byte < input->size; ++byte)
+      if (!input->initialized[byte])
+        return CL_INVALID_OPERATION;
+  }
   if (result) {
     event = new_event(q, CL_COMMAND_NDRANGE_KERNEL);
     if (!event)
       return CL_OUT_OF_HOST_MEMORY;
   }
-  if (!udoncl_cl_draw(m->id, m->generation, k->scalar, m->data)) {
+  if (!(k->gather.id
+            ? udoncl_cl_draw_gather(k->gather.id, k->input->data, m->size,
+                                    k->scalar, k->gather.scalar_count * 4,
+                                    m->data)
+            : udoncl_cl_draw(m->id, m->generation, k->scalar, m->data))) {
     if (event)
       clReleaseEvent(event);
     return CL_OUT_OF_RESOURCES;
   }
-  m->initialized = 15;
+  memset(m->initialized, 1, m->size);
   if (result)
     *result = event;
   return CL_SUCCESS;
@@ -625,13 +667,16 @@ static cl_int transfer(cl_command_queue q, cl_mem m, cl_bool blocking,
   if (m->context != q->context)
     return CL_INVALID_CONTEXT;
   if (!ptr || (blocking != CL_FALSE && blocking != CL_TRUE) || !bytes ||
-      offset > 4 || bytes > 4 - offset)
+      offset > m->size || bytes > m->size - offset)
     return CL_INVALID_VALUE;
   if ((status = waits(q->context, count, list)))
     return status;
-  if (!write && (m->initialized & (((1u << bytes) - 1u) << offset)) !=
-                    (((1u << bytes) - 1u) << offset))
-    return CL_INVALID_OPERATION;
+  if (!write) {
+    size_t byte;
+    for (byte = offset; byte < offset + bytes; ++byte)
+      if (!m->initialized[byte])
+        return CL_INVALID_OPERATION;
+  }
   if (result) {
     event =
         new_event(q, write ? CL_COMMAND_WRITE_BUFFER : CL_COMMAND_READ_BUFFER);
@@ -640,7 +685,7 @@ static cl_int transfer(cl_command_queue q, cl_mem m, cl_bool blocking,
   }
   if (write) {
     memcpy(m->data + offset, ptr, bytes);
-    m->initialized |= ((1u << bytes) - 1u) << offset;
+    memset(m->initialized + offset, 1, bytes);
   } else
     memcpy(ptr, m->data + offset, bytes);
   if (result)

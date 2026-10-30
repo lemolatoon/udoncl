@@ -80,4 +80,8 @@ if(VRC_ENABLE_NATIVE_FRAGMENT_TESTS)
     COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/boundary/opencl_host.py"
       "${PROJECT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/tests/opencl-host")
   set_tests_properties(opencl-host-execution PROPERTIES TIMEOUT 600)
+  add_test(NAME md-crystal-execution
+    COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/boundary/md_crystal.py"
+      "${PROJECT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/tests/md-crystal")
+  set_tests_properties(md-crystal-execution PROPERTIES TIMEOUT 600)
 endif()

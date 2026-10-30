@@ -1,6 +1,6 @@
 # Standalone native test adapter. No dependency on LLVM, MLIR, or Udon VM.
 add_library(VRCNativeFragmentRuntime STATIC Runtime.cpp)
-target_compile_features(VRCNativeFragmentRuntime PUBLIC cxx_std_17)
+target_compile_features(VRCNativeFragmentRuntime PUBLIC cxx_std_20)
 set_target_properties(VRCNativeFragmentRuntime PROPERTIES CXX_EXTENSIONS OFF)
 target_include_directories(VRCNativeFragmentRuntime PUBLIC
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../../include>")

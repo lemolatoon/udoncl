@@ -33,7 +33,17 @@ bool profile(const llvm::json::Object &config) {
              return v.getAsInteger() == expected;
            });
   };
-  return config.getInteger("schema_version") == 1 && dims("global_size", 1) &&
+  auto words = config.getInteger("words");
+  bool gather = config.getString("profile") == "gather-f32";
+  auto *global = config.getArray("global_size");
+  bool launch = gather ? words && *words >= 4 && *words <= 4096 &&
+                             ((*words & (*words - 1)) == 0) && global &&
+                             global->size() == 3 &&
+                             (*global)[0].getAsInteger() == words &&
+                             (*global)[1].getAsInteger() == 1 &&
+                             (*global)[2].getAsInteger() == 1
+                       : dims("global_size", 1);
+  return config.getInteger("schema_version") == 1 && launch &&
          dims("local_size", 1) && dims("global_offset", 0);
 }
 bool validContract(DictionaryAttr config) {
@@ -52,6 +62,15 @@ bool validContract(DictionaryAttr config) {
   for (StringRef key : {"global_size", "local_size", "global_offset"}) {
     auto attr = config.getAs<DenseI32ArrayAttr>(key);
     int32_t expected = key == "global_offset" ? 0 : 1;
+    if (key == "global_size" &&
+        config.getAs<StringAttr>("profile") ==
+            StringAttr::get(config.getContext(), "gather-f32")) {
+      auto words = config.getAs<IntegerAttr>("words");
+      if (!words || words.getInt() < 4 || words.getInt() > 4096 || !attr ||
+          attr.asArrayRef() != ArrayRef<int32_t>{int32_t(words.getInt()), 1, 1})
+        return false;
+      continue;
+    }
     if (!attr || attr.size() != 3 ||
         !llvm::all_of(attr.asArrayRef(),
                       [&](int32_t value) { return value == expected; }))
@@ -283,8 +302,13 @@ struct PrepareNativeDevicePass
     gpuKernel->setAttr("vrc.kernel_id", config.get("kernel_id"));
     gpuKernel->setAttr("known_block_size",
                        builder.getDenseI32ArrayAttr({1, 1, 1}));
-    gpuKernel->setAttr("known_grid_size",
-                       builder.getDenseI32ArrayAttr({1, 1, 1}));
+    gpuKernel->setAttr("known_grid_size", config.get("global_size"));
+    if (auto profile = config.getAs<StringAttr>("profile")) {
+      gpuKernel->setAttr("vrc.profile", profile);
+      gpuKernel->setAttr("vrc.words", config.get("words"));
+      if (kernel->hasAttr("vrc.gather_proven"))
+        gpuKernel->setAttr("vrc.gather_proven", builder.getUnitAttr());
+    }
     gpuKernel.getBody().takeBody(kernel.getBody());
     auto ret =
         cast<func::ReturnOp>(gpuKernel.getBody().front().getTerminator());
@@ -413,8 +437,11 @@ struct LinkCBoundaryPass : impl::LinkCBoundaryPassBase<LinkCBoundaryPass> {
     gpuKernel->setAttr("vrc.kernel_id", config.get("kernel_id"));
     gpuKernel->setAttr("known_block_size",
                        builder.getDenseI32ArrayAttr({1, 1, 1}));
-    gpuKernel->setAttr("known_grid_size",
-                       builder.getDenseI32ArrayAttr({1, 1, 1}));
+    gpuKernel->setAttr("known_grid_size", config.get("global_size"));
+    if (auto profile = config.getAs<StringAttr>("profile")) {
+      gpuKernel->setAttr("vrc.profile", profile);
+      gpuKernel->setAttr("vrc.words", config.get("words"));
+    }
     gpuKernel.getBody().takeBody(kernel.getBody());
     auto ret =
         cast<func::ReturnOp>(gpuKernel.getBody().front().getTerminator());
@@ -469,6 +496,11 @@ OwningOpRef<ModuleOp> importCBoundary(llvm::StringRef hostFile,
     for (const auto &v : *config.getArray(key))
       values.push_back(*v.getAsInteger());
     attrs.append(key, builder.getDenseI32ArrayAttr(values));
+  }
+  if (config.getString("profile") == "gather-f32") {
+    attrs.append("profile", builder.getStringAttr("gather-f32"));
+    attrs.append("words",
+                 builder.getI32IntegerAttr(*config.getInteger("words")));
   }
   root->setAttr("vrc.c_boundary", attrs.getDictionary(&context));
   for (auto entry : {std::make_pair(hostFile, StringRef("host")),
