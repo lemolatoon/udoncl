@@ -25,7 +25,7 @@ def run(command, error=None):
 
 
 stdout = run([sys.executable, root/'examples/md-crystal/run.py', '--build-dir', build, '--output', output])
-assert 'NVE_steps=1000' in stdout and 'oracle_steps=100' in stdout and 'draws=6200' in stdout
+assert 'NVE_steps=1000' in stdout and 'oracle_steps=100' in stdout and 'draws=8200' in stdout
 udonhl = (output/'host.udonhl.mlir').read_text()
 for api in ['clCreateBuffer', 'clSetKernelArg', 'clEnqueueNDRangeKernel', 'clEnqueueReadBuffer']:
     assert 'udonhl.call @'+api in udonhl
@@ -66,6 +66,19 @@ for name, old, new, error in variants:
     run([compiler, '--emit-native-device-bundle', output/'md_drift.json', '--device-llvm', ir, '-o', destination], error=error)
     assert not destination.exists(), 'failed proof must not publish a bundle'
 
+# A different allocation stride or global-pointer index width must not be
+# silently interpreted as the native profile's packed f32 array.
+compiler_ir = (output/'md_drift.ll').read_text()
+import re
+for name, layout_suffix in [('padded-f32', '-f32:64'), ('global-pointer64', '-p1:64:64')]:
+    ir = output/(name+'.ll')
+    ir.write_text(re.sub(r'(target datalayout = "[^"]*)"',
+                         lambda match: match.group(1)+layout_suffix+'"', compiler_ir), encoding='utf-8')
+    destination = output/(name+'-rejected')
+    run([compiler, '--emit-native-device-bundle', output/'md_drift.json', '--device-llvm', ir, '-o', destination],
+        error='four-byte f32 and 32-bit global pointer/index layout')
+    assert not destination.exists()
+
 native = [str(output/'runtime-build'/('md-crystal'+suffix))]
 if sys.platform == 'win32':
     native += [str(output/'md_drift-bundle/kernels/kernel_10.hlsl'), str(output/'md_kick-bundle/kernels/kernel_11.hlsl'), str(output/'fullscreen.hlsl')]
@@ -79,7 +92,7 @@ assert p.returncode == 0, p.stderr
 states = [json.loads(line) for line in p.stdout.splitlines()]
 assert [s['frame'] for s in states] == [0, 8, 0]
 assert states[0]['state'] != states[1]['state'] and states[0]['state'] == states[2]['state']
-report = dict(stdout=stdout, rejected_gather_cases=[v[0] for v in variants], interactive_frames=[s['frame'] for s in states])
+report = dict(stdout=stdout, runtime_rejection_cases=6, rejected_gather_cases=[v[0] for v in variants]+['padded-f32', 'global-pointer64'], interactive_frames=[s['frame'] for s in states])
 (output/'report.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
 print(stdout, end='')
-print('gather_rejections=7 interactive_step_reset=passed')
+print('gather_rejections=9 interactive_step_reset=passed')

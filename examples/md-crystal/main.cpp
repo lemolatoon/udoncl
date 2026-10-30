@@ -1,5 +1,6 @@
 #include "VRC/Testing/NativeOpenCL/Runtime.h"
 #include "Bindings.h"
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <iostream>
@@ -196,6 +197,9 @@ int main(int argc, char **argv) {
     if (maxEnergyDrift > 1e-4 || maxMomentumDrift > 1e-3)
       throw std::runtime_error("NVE conservation failed");
     auto control = actual;
+    check(md_step(1000, dt, bx, by, -100, -100, -100, -100, 1.7f, 0));
+    check(md_read(actual.data()));
+    auto controlLate = actual;
     check(md_init(state.data()));
     check(md_step(1000, dt, bx, by, bx / 2, by / 2, -100, -100, 1.7f, 0.04f));
     check(md_read(actual.data()));
@@ -210,7 +214,7 @@ int main(int argc, char **argv) {
     check(md_step(1000, dt, bx, by, -100, -100, -100, -100, 1.7f, 0));
     check(md_read(actual.data()));
     double farHeated = kinetic(actual, bx / 2, by / 2, false, 2.8f);
-    double farControl = kinetic(control, bx / 2, by / 2, false, 2.8f);
+    double farControl = kinetic(controlLate, bx / 2, by / 2, false, 2.8f);
     if (farHeated < farControl * 2)
       throw std::runtime_error("heat did not reach the distant crystal");
     double releasedDrift = std::abs(energy(actual, bx, by) - heatedEnergy) /

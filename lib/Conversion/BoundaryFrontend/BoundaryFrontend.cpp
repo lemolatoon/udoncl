@@ -13,6 +13,8 @@
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/Passes.h"
 #include "llvm/IRReader/IRReader.h"
+#include "llvm/IR/DataLayout.h"
+#include "llvm/IR/DerivedTypes.h"
 #include "llvm/Support/SourceMgr.h"
 using namespace mlir;
 namespace vrc {
@@ -520,6 +522,18 @@ OwningOpRef<ModuleOp> importCBoundary(llvm::StringRef hostFile,
       fail(root, "example requires 32-bit little-endian SPIR input; this is "
                  "not the final Host TargetInfo");
       return {};
+    }
+    if (entry.second == "device" &&
+        config.getString("profile") == "gather-f32") {
+      const auto &layout = input->getDataLayout();
+      if (layout.getPointerSizeInBits(1) != 32 ||
+          layout.getIndexSizeInBits(1) != 32 ||
+          layout.getTypeAllocSize(llvm::Type::getFloatTy(llvmContext))
+                  .getFixedValue() != 4) {
+        fail(root, "gather requires four-byte f32 and 32-bit global "
+                   "pointer/index layout");
+        return {};
+      }
     }
     auto imported = importLLVM(std::move(input), context);
     if (!imported)

@@ -176,10 +176,11 @@ Linux `ctest --preset udoncl`: **15/15 passed**, including the MD test:
 - After 1000 heated steps, local mean kinetic energy is 0.0125993, compared
   with 0.0000900968 in the unheated control.
 - After release and a further 1000 steps, the distant region's mean kinetic
-  energy is 0.00214197 versus control 0.000100577; release energy drift is
+  energy is 0.00214197 versus the same-time control 0.0000298581; release energy drift is
   2.32987e-7. This is a finite reduced-unit test, not a material calibration.
-- Seven malformed kernels reject bounds violations, scatter/input writes,
-  barriers, wrong global-id dimension and an unbounded loop without publishing
+- Nine malformed kernels/IR layouts reject bounds violations, scatter/input writes,
+  barriers, wrong global-id dimension, an unbounded loop, padded f32 storage
+  and a 64-bit global-pointer layout without publishing
   a bundle. Six runtime cases reject aliasing, uninitialized input/readback,
   incorrect NDRange, undersized and stale allocations.
 - Native interactive protocol steps and reset pass. Chromium interaction

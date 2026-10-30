@@ -18,8 +18,7 @@ public:
 };
 std::unique_ptr<FragmentRenderer>
 createFragmentRenderer(const std::string &shader, const std::string &vertex);
-#endif
-
 std::unique_ptr<FragmentRenderer>
 createGatherRenderer(const std::string &shader, const std::string &vertex,
                      uint32_t words);
+#endif

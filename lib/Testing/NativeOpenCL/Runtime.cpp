@@ -1,5 +1,6 @@
 #include "VRC/Testing/NativeOpenCL/Runtime.h"
 #include "VRC/Runtime/OpenCL/Backend.h"
+#include <algorithm>
 #include <cstring>
 #include <stdexcept>
 #include "../NativeFragment/Renderer.h"
