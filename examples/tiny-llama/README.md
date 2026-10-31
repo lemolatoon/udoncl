@@ -14,3 +14,15 @@ Run the original C implementation and its native UdonHL-adapter round trip:
 ```text
 python examples/tiny-llama/run.py --build-dir build/udoncl
 ```
+
+Run the same block as seven ordered Device passes (embedding, QKV with RoPE,
+causal attention, attention projection, SwiGLU, FFN down projection, and the
+language-model head):
+
+```text
+python examples/tiny-llama/run_device.py --build-dir build/udoncl
+```
+
+Each active output is owned by a separate fragment. The native fragment test
+compares all 16 logits for four prompts and eight greedy generation steps
+against the C model.
