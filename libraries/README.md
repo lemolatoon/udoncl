@@ -7,8 +7,9 @@ fragment passes remain implementation details.
 The implementation order is intentionally layered:
 
 1. UdonBLAS Level 1, 2, and 3 primitives, beginning with real Device SGEMM.
-2. UdonDNN tensor descriptors and convolution, activation, pooling,
-   normalization, and softmax primitives built on the same packed-buffer ABI.
+2. UdonDNN generation-checked tensor descriptors and real Device convolution,
+   followed by activation, pooling, normalization, and softmax primitives on
+   the same packed-buffer ABI.
 3. Tiled multi-pass kernels, reductions, and workspace planning that lift the
    first gather profile's fixed-size limits.
 4. Generated UdonSharp wrappers and stable prefabs/material assets in the UPM
