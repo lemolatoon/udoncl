@@ -5,8 +5,10 @@ using UnityEditor;
 using UnityEngine;
 using VRC.Udon;
 using VRC.Udon.Common;
+using VRC.Udon.Common.Interfaces;
 using VRC.Udon.Editor;
 using VRC.Udon.Editor.ProgramSources;
+using VRC.Udon.ProgramSources;
 using SyncType = VRC.SDKBase.Networking.SyncType;
 
 namespace Lemolatoon.Udoncl.Editor
@@ -379,6 +381,7 @@ namespace Lemolatoon.Udoncl.Editor
             }
 
             SerializedObject serialized = new SerializedObject(programAsset);
+            serialized.Update();
             SerializedProperty source = serialized.FindProperty("udonAssembly");
             if (source == null)
                 throw new InvalidDataException(
@@ -386,6 +389,13 @@ namespace Lemolatoon.Udoncl.Editor
                 );
             source.stringValue = assembly;
             serialized.ApplyModifiedPropertiesWithoutUndo();
+            EditorUtility.SetDirty(programAsset);
+            AssetDatabase.SaveAssetIfDirty(programAsset);
+            serialized.Update();
+            if (source.stringValue != assembly)
+                throw new InvalidDataException(
+                    "Worlds SDK did not persist Udon Assembly source: " + programPath
+                );
 
             string guid = AssetDatabase.AssetPathToGUID(programPath);
             if (string.IsNullOrEmpty(guid))
@@ -393,13 +403,35 @@ namespace Lemolatoon.Udoncl.Editor
             transaction.Track("Assets/SerializedUdonPrograms/" + guid + ".asset");
 
             programAsset.RefreshProgram();
-            if (
-                !string.IsNullOrEmpty(programAsset.AssemblyError)
-                || programAsset.SerializedProgramAsset.RetrieveProgram() == null
-            )
+            if (!string.IsNullOrEmpty(programAsset.AssemblyError))
                 throw new InvalidDataException(
                     "Worlds SDK rejected Udon Assembly: "
                         + (programAsset.AssemblyError ?? programPath)
+                );
+
+            // A newly created SDK SerializedUdonProgramAsset can retain the
+            // empty program it deserialized before RefreshProgram stored the
+            // assembled bytes. Persist and synchronously reimport it so the
+            // object referenced by the prefab has a fresh deserialization
+            // cache in this same Editor session.
+            AbstractSerializedUdonProgramAsset serializedProgram =
+                programAsset.SerializedProgramAsset;
+            string serializedProgramPath = AssetDatabase.GetAssetPath(serializedProgram);
+            if (serializedProgram == null || string.IsNullOrEmpty(serializedProgramPath))
+                throw new InvalidDataException(
+                    "Worlds SDK did not create a serialized Udon program for " + programPath
+                );
+            AssetDatabase.SaveAssetIfDirty(serializedProgram);
+            Resources.UnloadAsset(serializedProgram);
+            AssetDatabase.ImportAsset(
+                serializedProgramPath,
+                ImportAssetOptions.ForceSynchronousImport | ImportAssetOptions.ForceUpdate
+            );
+            programAsset = AssetDatabase.LoadAssetAtPath<UdonAssemblyProgramAsset>(programPath);
+            IUdonProgram compiledProgram = programAsset?.SerializedProgramAsset?.RetrieveProgram();
+            if (compiledProgram == null)
+                throw new InvalidDataException(
+                    "Worlds SDK did not persist the assembled Udon program: " + programPath
                 );
             EditorUtility.SetDirty(programAsset);
             return programAsset;

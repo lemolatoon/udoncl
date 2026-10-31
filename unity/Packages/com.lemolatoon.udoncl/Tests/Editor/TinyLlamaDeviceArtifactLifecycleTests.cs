@@ -136,9 +136,20 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         public void RemoveGeneratedUnityAssets()
         {
             RenderTexture.active = null;
+            string programPath = GeneratedRoot + "/Programs/host_program.asset";
+            string programGuid = AssetDatabase.AssetPathToGUID(programPath);
             AssetDatabase.DeleteAsset(GeneratedRoot);
+            string serializedProgramPath = string.IsNullOrEmpty(programGuid)
+                ? null
+                : "Assets/SerializedUdonPrograms/" + programGuid + ".asset";
+            if (serializedProgramPath != null)
+                AssetDatabase.DeleteAsset(serializedProgramPath);
             AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
             Assert.IsNull(AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(GeneratedRoot));
+            if (serializedProgramPath != null)
+                Assert.IsNull(
+                    AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(serializedProgramPath)
+                );
         }
 
         private static Color32[] ReadPixels(RenderTexture source)
