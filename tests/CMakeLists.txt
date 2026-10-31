@@ -110,4 +110,8 @@ if(VRC_ENABLE_NATIVE_FRAGMENT_TESTS)
     COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/boundary/tiny_llama_device.py"
       "${PROJECT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/tests/tiny-llama-device")
   set_tests_properties(tiny-llama-device-execution PROPERTIES TIMEOUT 600)
+  add_test(NAME udonblas-device-execution
+    COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/boundary/udonblas_device.py"
+      "${PROJECT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/tests/udonblas-device")
+  set_tests_properties(udonblas-device-execution PROPERTIES TIMEOUT 600)
 endif()

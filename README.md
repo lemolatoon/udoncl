@@ -261,6 +261,19 @@ Outputs are under `build/opencl-host`; use `EXAMPLE_OUTPUT=build/another-opencl`
 to choose a fresh directory. See [examples/opencl-host/README.md](examples/opencl-host/README.md)
 for supported APIs, native ABI preservation and the AOT subset's limits.
 
+UdonBLAS begins the reusable CUDA-family library layer on top of that runtime.
+Its first public operation is cuBLAS-contract column-major SGEMM:
+
+```text
+python libraries/udonblas/run_device.py --build-dir build/udoncl
+```
+
+The current gather profile assigns one fragment to every output element and
+validates rectangular/transposed/padded matrices against an independent CPU
+reference on the real fragment backend. See
+[libraries/udonblas/README.md](libraries/udonblas/README.md) for the stable API
+and the initial 16×16 profile limits.
+
 触れて加熱する64粒子MD結晶のhost-native例:
 
 ```sh
