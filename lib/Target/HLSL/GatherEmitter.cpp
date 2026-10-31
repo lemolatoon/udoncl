@@ -223,11 +223,15 @@ struct Emitter {
       declare(op->getResult(0), "float(" + get(op->getOperand(0)) + ")");
     else if (isa<arith::SIToFPOp>(op))
       declare(op->getResult(0), "float(asint(" + get(op->getOperand(0)) + "))");
-    else if (isa<math::FloorOp, math::SqrtOp, arith::NegFOp>(op)) {
+    else if (isa<math::FloorOp, math::SqrtOp, math::CosOp, math::SinOp,
+                 math::ExpOp, arith::NegFOp>(op)) {
       auto expression = get(op->getOperand(0));
       declare(op->getResult(0),
               isa<math::FloorOp>(op)  ? "floor(" + expression + ")"
               : isa<math::SqrtOp>(op) ? "sqrt(" + expression + ")"
+              : isa<math::CosOp>(op)  ? "cos(" + expression + ")"
+              : isa<math::SinOp>(op)  ? "sin(" + expression + ")"
+              : isa<math::ExpOp>(op)  ? "exp(" + expression + ")"
                                       : "(-" + expression + ")");
     } else {
       auto name = op->getName().getStringRef();

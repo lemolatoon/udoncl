@@ -250,7 +250,10 @@ struct RaiseGatherDevicePass
     for (auto call : source.getOps<LLVM::CallOp>()) {
       StringRef callee = call.getCallee().value_or("");
       bool id = callee == "_Z13get_global_idj",
-           math = callee == "_Z5floorf" || callee == "_Z4sqrtf";
+           math = llvm::is_contained(ArrayRef<StringRef>{"_Z5floorf",
+                                                         "_Z4sqrtf", "_Z3cosf",
+                                                         "_Z3sinf", "_Z3expf"},
+                                     callee);
       if ((!id && !math) || call.getNumOperands() != 1 ||
           call.getNumResults() != 1 ||
           call.getFastmathFlags() != LLVM::FastmathFlags::none ||
@@ -400,7 +403,9 @@ struct RaiseGatherDevicePass
           bool builtin =
               f && f.isExternal() &&
               llvm::is_contained(ArrayRef<StringRef>{"_Z13get_global_idj",
-                                                     "_Z5floorf", "_Z4sqrtf"},
+                                                     "_Z5floorf", "_Z4sqrtf",
+                                                     "_Z3cosf", "_Z3sinf",
+                                                     "_Z3expf"},
                                  f.getName());
           if (!builtin) {
             fail("unexpected live Device symbol");
@@ -449,8 +454,14 @@ struct RaiseGatherDevicePass
             call, rewriter.getI32Type(), global);
       } else if (callee == "_Z5floorf")
         rewriter.replaceOpWithNewOp<math::FloorOp>(call, call.getOperand(0));
-      else
+      else if (callee == "_Z4sqrtf")
         rewriter.replaceOpWithNewOp<math::SqrtOp>(call, call.getOperand(0));
+      else if (callee == "_Z3cosf")
+        rewriter.replaceOpWithNewOp<math::CosOp>(call, call.getOperand(0));
+      else if (callee == "_Z3sinf")
+        rewriter.replaceOpWithNewOp<math::SinOp>(call, call.getOperand(0));
+      else
+        rewriter.replaceOpWithNewOp<math::ExpOp>(call, call.getOperand(0));
     }
     SmallVector<LLVM::ReturnOp> returns;
     recovered.walk([&](LLVM::ReturnOp r) { returns.push_back(r); });

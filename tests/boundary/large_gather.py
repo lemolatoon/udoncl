@@ -77,6 +77,62 @@ assert [argument["required_bytes"] for argument in kernel["args"][:2]] == [
 hlsl = (bundle / "kernels/kernel_20.hlsl").read_text()
 assert "uint(position.x)" in hlsl and "%" in hlsl and "/" in hlsl
 
+math_source = output / "math.cl"
+math_source.write_text(
+    "__kernel void math_probe(__global const float *input, __global float *output) {\n"
+    "  uint gid = get_global_id(0);\n"
+    "  float value = input[gid];\n"
+    "  output[gid] = cos(value) + sin(value) + exp(value);\n"
+    "}\n",
+    encoding="utf-8",
+)
+math_ir = output / "math.ll"
+run(
+    [
+        clang,
+        "-target",
+        "spir-unknown-unknown",
+        "-x",
+        "cl",
+        "-cl-std=CL1.2",
+        "-cl-kernel-arg-info",
+        "-O0",
+        "-Xclang",
+        "-disable-O0-optnone",
+        "-fomit-frame-pointer",
+        "-ffp-contract=off",
+        "-S",
+        "-emit-llvm",
+        math_source,
+        "-o",
+        math_ir,
+    ]
+)
+math_config = dict(
+    config,
+    words=16,
+    kernel="math_probe",
+    kernel_id=23,
+    global_size=[16, 1, 1],
+)
+config_path.write_text(json.dumps(math_config), encoding="utf-8")
+math_bundle = output / "math-bundle"
+if math_bundle.exists():
+    shutil.rmtree(math_bundle)
+run(
+    [
+        compiler,
+        "--emit-native-device-bundle",
+        config_path,
+        "--device-llvm",
+        math_ir,
+        "-o",
+        math_bundle,
+    ]
+)
+math_hlsl = (math_bundle / "kernels/kernel_23.hlsl").read_text()
+assert all(f"{name}(" in math_hlsl for name in ["cos", "sin", "exp"])
+
 too_large = dict(config, words=16385, global_size=[16385, 1, 1])
 config_path.write_text(json.dumps(too_large), encoding="utf-8")
 run(
