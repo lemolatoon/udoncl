@@ -105,6 +105,20 @@ namespace Lemolatoon.Udoncl.Editor
                         transaction.Commit();
                         return programRoot;
                     }
+                    if (artifacts.ArtifactStage == "unity-tiny-llama-prototype")
+                    {
+                        ImportTinyLlamaDemo(
+                            transaction,
+                            artifacts,
+                            programRoot,
+                            programAsset,
+                            kernelMaterials,
+                            displayMaterial
+                        );
+                        AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+                        transaction.Commit();
+                        return programRoot;
+                    }
                     if (artifacts.ArtifactStage != "unity-lj-prototype")
                         throw new InvalidDataException(
                             "Unsupported Unity artifact stage: " + artifacts.ArtifactStage
@@ -254,6 +268,74 @@ namespace Lemolatoon.Udoncl.Editor
                 convMaterial,
                 poolMaterial,
                 denseMaterial,
+                displayMaterial
+            );
+        }
+
+        private static void ImportTinyLlamaDemo(
+            AssetImportTransaction transaction,
+            ValidatedArtifact artifacts,
+            string programRoot,
+            UdonAssemblyProgramAsset programAsset,
+            IDictionary<int, Material> kernelMaterials,
+            Material displayMaterial
+        )
+        {
+            Material[] passes = new Material[7];
+            for (int index = 0; index < passes.Length; ++index)
+            {
+                if (!kernelMaterials.TryGetValue(30 + index, out Material material))
+                    throw new InvalidDataException(
+                        "Tiny LLaMA demo requires kernel ids 30 through 36."
+                    );
+                passes[index] = material;
+            }
+            ValidatedResource packedResource = FindResource(artifacts, "packed_state", "bytes");
+            ValidatedResource referenceResource = FindResource(
+                artifacts,
+                "reference_logits",
+                "bytes"
+            );
+            Texture2D initialState = CreateOrUpdateByteTexture(
+                transaction,
+                programRoot,
+                "tiny_llama_initial.asset",
+                2048,
+                1,
+                File.ReadAllBytes(packedResource.AbsolutePath)
+            );
+            CreateOrUpdateByteTexture(
+                transaction,
+                programRoot,
+                "tiny_llama_reference_logits.asset",
+                16,
+                1,
+                File.ReadAllBytes(referenceResource.AbsolutePath)
+            );
+            RenderTexture stateA = CreateOrUpdateRgbaRenderTexture(
+                transaction,
+                programRoot,
+                "tiny_llama_state_a.asset",
+                2048,
+                1
+            );
+            RenderTexture stateB = CreateOrUpdateRgbaRenderTexture(
+                transaction,
+                programRoot,
+                "tiny_llama_state_b.asset",
+                2048,
+                1
+            );
+            displayMaterial.SetTexture("_Logits", stateB);
+            EditorUtility.SetDirty(displayMaterial);
+            CreateOrUpdateTinyLlamaPrefab(
+                transaction,
+                programRoot,
+                programAsset,
+                initialState,
+                stateA,
+                stateB,
+                passes,
                 displayMaterial
             );
         }
@@ -742,6 +824,72 @@ namespace Lemolatoon.Udoncl.Editor
                 if (!success || AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath) == null)
                     throw new InvalidOperationException(
                         "Could not create MNIST Device demo prefab: " + prefabPath
+                    );
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        private static void CreateOrUpdateTinyLlamaPrefab(
+            AssetImportTransaction transaction,
+            string programRoot,
+            UdonAssemblyProgramAsset programAsset,
+            Texture initialState,
+            RenderTexture stateA,
+            RenderTexture stateB,
+            IReadOnlyList<Material> passes,
+            Material displayMaterial
+        )
+        {
+            string prefabDirectory = programRoot + "/Prefabs";
+            EnsureFolders(prefabDirectory);
+            string prefabPath = prefabDirectory + "/TinyLlamaDeviceDemo.prefab";
+            transaction.Track(prefabPath);
+            GameObject root = new GameObject("udoncl Tiny LLaMA Device demo");
+            try
+            {
+                root.transform.position = new Vector3(14.0f, 1.5f, 0.0f);
+                UdonBehaviour behaviour = root.AddComponent<UdonBehaviour>();
+                behaviour.programSource = programAsset;
+                behaviour.interactText = "Run Tiny LLaMA";
+                behaviour.proximity = 3.0f;
+                behaviour.SyncMethod = SyncType.None;
+                SetPublicVariable(behaviour, "initialState", initialState);
+                SetPublicVariable(behaviour, "stateA", stateA);
+                SetPublicVariable(behaviour, "stateB", stateB);
+                string[] symbols =
+                {
+                    "embedMaterial",
+                    "qkvMaterial",
+                    "attentionMaterial",
+                    "projectMaterial",
+                    "ffnUpMaterial",
+                    "ffnDownMaterial",
+                    "logitsMaterial",
+                };
+                for (int index = 0; index < symbols.Length; ++index)
+                    SetPublicVariable(behaviour, symbols[index], passes[index]);
+                SetPublicVariable(behaviour, "displayMaterial", displayMaterial);
+                SerializedObject serializedBehaviour = new SerializedObject(behaviour);
+                serializedBehaviour.FindProperty("serializedProgramAsset").objectReferenceValue =
+                    programAsset.SerializedProgramAsset;
+                serializedBehaviour.ApplyModifiedPropertiesWithoutUndo();
+
+                GameObject display = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                display.name = "Tiny LLaMA logits and predicted token";
+                display.transform.SetParent(root.transform, false);
+                display.transform.localScale = new Vector3(4.0f, 2.0f, 0.12f);
+                Collider displayCollider = display.GetComponent<Collider>();
+                if (displayCollider != null)
+                    UnityEngine.Object.DestroyImmediate(displayCollider);
+                display.GetComponent<MeshRenderer>().sharedMaterial = displayMaterial;
+
+                PrefabUtility.SaveAsPrefabAsset(root, prefabPath, out bool success);
+                if (!success || AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath) == null)
+                    throw new InvalidOperationException(
+                        "Could not create Tiny LLaMA Device demo prefab: " + prefabPath
                     );
             }
             finally

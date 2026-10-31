@@ -1,11 +1,13 @@
 """Compile and execute Tiny LLaMA as parallel Device fragment passes."""
 
 import argparse
+import importlib.util
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
+import struct
 import sys
 import tempfile
 
@@ -169,6 +171,105 @@ def main():
         + f"return {{{binding_rows}}}; }}\n",
         encoding="utf-8",
     )
+
+    reference_spec = importlib.util.spec_from_file_location(
+        "tiny_llama_reference", source / "run.py"
+    )
+    reference = importlib.util.module_from_spec(reference_spec)
+    reference_spec.loader.exec_module(reference)
+    weights = reference.make_weights(0x4C4C414D)
+    packed = [0.0] * 2048
+    for position, token in enumerate([1, 5, 9, 3]):
+        packed[position * 16 + token] = 1.0
+    weight_layout = [
+        ("embedding", 512),
+        ("attention_norm", 640),
+        ("wq", 648),
+        ("wk", 712),
+        ("wv", 776),
+        ("wo", 840),
+        ("ffn_norm", 904),
+        ("w1", 912),
+        ("w2", 1040),
+        ("w3", 1168),
+        ("final_norm", 1296),
+        ("output", 1304),
+    ]
+    for name, offset in weight_layout:
+        values = weights[name]
+        packed[offset : offset + len(values)] = values
+    expected_logits = reference.forward(weights, [1, 5, 9, 3])
+
+    unity_bundle = output / "unity-bundle"
+    with tempfile.TemporaryDirectory(prefix="unity-", dir=output) as staging:
+        staged = Path(staging) / "bundle"
+        (staged / "kernels").mkdir(parents=True)
+        shutil.copy2(source / "host.uasm", staged / "host.uasm")
+        shutil.copy2(source / "display.shader", staged / "display.shader")
+        for name, identifier, _ in kernels:
+            shutil.copy2(
+                bundles[identifier] / f"kernels/kernel_{identifier}.shader",
+                staged / f"kernels/kernel_{identifier}.shader",
+            )
+        (staged / "packed_state.bytes").write_bytes(struct.pack("<2048f", *packed))
+        (staged / "reference_logits.bytes").write_bytes(
+            struct.pack("<16f", *expected_logits)
+        )
+        unity_manifest = {
+            "schema_version": 1,
+            "compiler_version": "0.1.0-dev",
+            "runtime_abi_version": 1,
+            "artifact_stage": "unity-tiny-llama-prototype",
+            "ready_for_unity": True,
+            "sdk_compatibility": {"sdk_version": "3.10.5", "extern_db_hash": None},
+            "target": {
+                "host_pointer_bits": 32,
+                "device_pointer_bits": 32,
+                "endianness": "little",
+                "platform": "VRChat-PC",
+            },
+            "program": {
+                "name": "tiny_llama",
+                "assembly": "host.uasm",
+                "display_shader": "display.shader",
+            },
+            "exports": [
+                {
+                    "id": 1,
+                    "c_symbol": "tiny_llama_gpu_predict",
+                    "udon_event": "_interact",
+                    "status_slot": "",
+                    "async": False,
+                }
+            ],
+            "device": {
+                "kernels": [
+                    {
+                        "id": identifier,
+                        "name": name,
+                        "shader": f"kernels/kernel_{identifier}.shader",
+                    }
+                    for name, identifier, _ in kernels
+                ]
+            },
+            "resources": [
+                {"name": "packed_state", "kind": "bytes", "path": "packed_state.bytes"},
+                {
+                    "name": "reference_logits",
+                    "kind": "bytes",
+                    "path": "reference_logits.bytes",
+                },
+            ],
+        }
+        (staged / "manifest.json").write_text(
+            json.dumps(unity_manifest, indent=2), encoding="utf-8"
+        )
+        if unity_bundle.exists():
+            previous = json.loads((unity_bundle / "manifest.json").read_text(encoding="utf-8"))
+            if previous.get("artifact_stage") != "unity-tiny-llama-prototype":
+                raise RuntimeError("refusing to replace a non-example Unity bundle")
+            shutil.rmtree(unity_bundle)
+        staged.rename(unity_bundle)
 
     host_ir = output / "host.ll"
     imported = output / "host.imported.mlir"
