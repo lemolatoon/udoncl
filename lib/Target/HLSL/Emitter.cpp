@@ -81,7 +81,7 @@ LogicalResult emitShaderLab(fragment::KernelOp kernel, llvm::raw_ostream &out) {
           << (kernel.getArgumentKinds()[i] ==
                       StringAttr::get(kernel.getContext(), "f32")
                   ? "Float"
-                  : "Integer")
+                  : "Int")
           << ") = 0\n";
   } else
     out << "_VRC_Arg1 (\"Arg1\", Float) = 0\n";

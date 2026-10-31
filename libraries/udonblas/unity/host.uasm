@@ -1,0 +1,106 @@
+.data_start
+    .export inputState
+    .export outputState
+    .export sgemmMaterial
+    .export displayMaterial
+    .export m
+    .export n
+    .export k
+    .export transa
+    .export transb
+    .export lda
+    .export ldb
+    .export ldc
+    .export alpha
+    .export beta
+
+    inputState: %UnityEngineTexture, null
+    outputState: %UnityEngineRenderTexture, null
+    sgemmMaterial: %UnityEngineMaterial, null
+    displayMaterial: %UnityEngineMaterial, null
+    m: %SystemInt32, null
+    n: %SystemInt32, null
+    k: %SystemInt32, null
+    transa: %SystemInt32, null
+    transb: %SystemInt32, null
+    lda: %SystemInt32, null
+    ldb: %SystemInt32, null
+    ldc: %SystemInt32, null
+    alpha: %SystemSingle, null
+    beta: %SystemSingle, null
+
+    __inputName: %SystemString, "_VRC_Input"
+    __resultName: %SystemString, "_Result"
+    __mName: %SystemString, "_VRC_Arg2"
+    __nName: %SystemString, "_VRC_Arg3"
+    __kName: %SystemString, "_VRC_Arg4"
+    __transaName: %SystemString, "_VRC_Arg5"
+    __transbName: %SystemString, "_VRC_Arg6"
+    __ldaName: %SystemString, "_VRC_Arg7"
+    __ldbName: %SystemString, "_VRC_Arg8"
+    __ldcName: %SystemString, "_VRC_Arg9"
+    __alphaName: %SystemString, "_VRC_Arg10"
+    __betaName: %SystemString, "_VRC_Arg11"
+.data_end
+
+.code_start
+    .export _start
+    _start:
+        JUMP, 0xFFFFFFFC
+
+    .export _run
+    _run:
+        PUSH, sgemmMaterial
+        PUSH, __inputName
+        PUSH, inputState
+        EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
+        PUSH, sgemmMaterial
+        PUSH, __mName
+        PUSH, m
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, sgemmMaterial
+        PUSH, __nName
+        PUSH, n
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, sgemmMaterial
+        PUSH, __kName
+        PUSH, k
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, sgemmMaterial
+        PUSH, __transaName
+        PUSH, transa
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, sgemmMaterial
+        PUSH, __transbName
+        PUSH, transb
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, sgemmMaterial
+        PUSH, __ldaName
+        PUSH, lda
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, sgemmMaterial
+        PUSH, __ldbName
+        PUSH, ldb
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, sgemmMaterial
+        PUSH, __ldcName
+        PUSH, ldc
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, sgemmMaterial
+        PUSH, __alphaName
+        PUSH, alpha
+        EXTERN, "UnityEngineMaterial.__SetFloat__SystemString_SystemSingle__SystemVoid"
+        PUSH, sgemmMaterial
+        PUSH, __betaName
+        PUSH, beta
+        EXTERN, "UnityEngineMaterial.__SetFloat__SystemString_SystemSingle__SystemVoid"
+        PUSH, inputState
+        PUSH, outputState
+        PUSH, sgemmMaterial
+        EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"
+        PUSH, displayMaterial
+        PUSH, __resultName
+        PUSH, outputState
+        EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
+        JUMP, 0xFFFFFFFC
+.code_end

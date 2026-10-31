@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import struct
 import sys
 import tempfile
 
@@ -138,6 +139,9 @@ def main():
     ):
         raise RuntimeError("UdonBLAS SGEMM manifest does not match its packed ABI")
     fragment = bundle / "kernels/kernel_100.hlsl"
+    shaderlab = (bundle / "kernels/kernel_100.shader").read_text(encoding="utf-8")
+    if "_VRC_Arg9 (\"Arg9\", Int)" not in shaderlab or "Integer)" in shaderlab:
+        raise RuntimeError("UdonBLAS integer uniforms are not Unity SetInt-compatible")
     (output / "Bindings.h").write_text(
         "inline const char *deviceSource() { return "
         + json.dumps(device_text)
@@ -147,6 +151,99 @@ def main():
         + '"udonblas_sgemm", fragment}}; }\n',
         encoding="utf-8",
     )
+
+    fixture_m, fixture_n, fixture_k = 4, 5, 3
+    fixture_lda, fixture_ldb, fixture_ldc = 4, 3, 4
+    fixture_alpha, fixture_beta = 0.75, -0.25
+    fixture_a = [((index * 13 + 5) % 19 - 9) * 0.125 for index in range(12)]
+    fixture_b = [((index * 7 + 3) % 17 - 8) * 0.125 for index in range(15)]
+    fixture_c = [((index * 5 + 1) % 11 - 5) * 0.0625 for index in range(20)]
+    fixture_expected = list(fixture_c)
+    for column in range(fixture_n):
+        for row in range(fixture_m):
+            product = sum(
+                fixture_a[row + inner * fixture_lda]
+                * fixture_b[inner + column * fixture_ldb]
+                for inner in range(fixture_k)
+            )
+            index = row + column * fixture_ldc
+            fixture_expected[index] = (
+                fixture_alpha * product + fixture_beta * fixture_expected[index]
+            )
+    fixture_packed = [0.0] * 1024
+    fixture_packed[0 : len(fixture_a)] = fixture_a
+    fixture_packed[256 : 256 + len(fixture_b)] = fixture_b
+    fixture_packed[512 : 512 + len(fixture_c)] = fixture_c
+    unity_bundle = output / "unity-bundle"
+    with tempfile.TemporaryDirectory(prefix="unity-udonblas-", dir=output) as staging:
+        staged = Path(staging) / "bundle"
+        (staged / "kernels").mkdir(parents=True)
+        shutil.copy2(source / "unity/host.uasm", staged / "host.uasm")
+        shutil.copy2(source / "unity/display.shader", staged / "display.shader")
+        shutil.copy2(
+            bundle / "kernels/kernel_100.shader",
+            staged / "kernels/kernel_100.shader",
+        )
+        (staged / "fixture_input.bytes").write_bytes(
+            struct.pack("<1024f", *fixture_packed)
+        )
+        (staged / "fixture_reference.bytes").write_bytes(
+            struct.pack("<20f", *fixture_expected)
+        )
+        unity_manifest = {
+            "schema_version": 1,
+            "compiler_version": "0.1.0-dev",
+            "runtime_abi_version": 1,
+            "artifact_stage": "unity-udonblas-sgemm",
+            "ready_for_unity": True,
+            "sdk_compatibility": {"sdk_version": "3.10.5", "extern_db_hash": None},
+            "target": {
+                "host_pointer_bits": 32,
+                "device_pointer_bits": 32,
+                "endianness": "little",
+                "platform": "VRChat-PC",
+            },
+            "program": {
+                "name": "udonblas_sgemm",
+                "assembly": "host.uasm",
+                "display_shader": "display.shader",
+            },
+            "exports": [
+                {
+                    "id": 1,
+                    "c_symbol": "udonblasSgemm",
+                    "udon_event": "_run",
+                    "status_slot": "",
+                    "async": False,
+                }
+            ],
+            "device": {
+                "kernels": [
+                    {
+                        "id": 100,
+                        "name": "udonblas_sgemm",
+                        "shader": "kernels/kernel_100.shader",
+                    }
+                ]
+            },
+            "resources": [
+                {"name": "fixture_input", "kind": "bytes", "path": "fixture_input.bytes"},
+                {
+                    "name": "fixture_reference",
+                    "kind": "bytes",
+                    "path": "fixture_reference.bytes",
+                },
+            ],
+        }
+        (staged / "manifest.json").write_text(
+            json.dumps(unity_manifest, indent=2), encoding="utf-8"
+        )
+        if unity_bundle.exists():
+            previous = json.loads((unity_bundle / "manifest.json").read_text(encoding="utf-8"))
+            if previous.get("artifact_stage") != "unity-udonblas-sgemm":
+                raise RuntimeError("refusing to replace a non-UdonBLAS Unity bundle")
+            shutil.rmtree(unity_bundle)
+        staged.rename(unity_bundle)
 
     host_ir = output / "host.ll"
     imported = output / "host.imported.mlir"

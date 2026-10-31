@@ -122,6 +122,20 @@ namespace Lemolatoon.Udoncl.Editor
                         transaction.Commit();
                         return programRoot;
                     }
+                    if (artifacts.ArtifactStage == "unity-udonblas-sgemm")
+                    {
+                        ImportUdonBlasSgemm(
+                            transaction,
+                            artifacts,
+                            programRoot,
+                            programAsset,
+                            kernelMaterials,
+                            displayMaterial
+                        );
+                        AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+                        transaction.Commit();
+                        return programRoot;
+                    }
                     if (artifacts.ArtifactStage != "unity-lj-prototype")
                         throw new InvalidDataException(
                             "Unsupported Unity artifact stage: " + artifacts.ArtifactStage
@@ -394,6 +408,59 @@ namespace Lemolatoon.Udoncl.Editor
                 packMaterial,
                 passes,
                 argmaxMaterial,
+                displayMaterial
+            );
+        }
+
+        private static void ImportUdonBlasSgemm(
+            AssetImportTransaction transaction,
+            ValidatedArtifact artifacts,
+            string programRoot,
+            UdonAssemblyProgramAsset programAsset,
+            IDictionary<int, Material> kernelMaterials,
+            Material displayMaterial
+        )
+        {
+            if (!kernelMaterials.TryGetValue(100, out Material sgemmMaterial))
+                throw new InvalidDataException("UdonBLAS SGEMM requires kernel id 100.");
+            ValidatedResource inputResource = FindResource(artifacts, "fixture_input", "bytes");
+            ValidatedResource referenceResource = FindResource(
+                artifacts,
+                "fixture_reference",
+                "bytes"
+            );
+            Texture2D input = CreateOrUpdateByteTexture(
+                transaction,
+                programRoot,
+                "udonblas_sgemm_input.asset",
+                1024,
+                1,
+                File.ReadAllBytes(inputResource.AbsolutePath)
+            );
+            CreateOrUpdateByteTexture(
+                transaction,
+                programRoot,
+                "udonblas_sgemm_reference.asset",
+                20,
+                1,
+                File.ReadAllBytes(referenceResource.AbsolutePath)
+            );
+            RenderTexture output = CreateOrUpdateRgbaRenderTexture(
+                transaction,
+                programRoot,
+                "udonblas_sgemm_output.asset",
+                1024,
+                1
+            );
+            displayMaterial.SetTexture("_Result", output);
+            EditorUtility.SetDirty(displayMaterial);
+            CreateOrUpdateUdonBlasSgemmPrefab(
+                transaction,
+                programRoot,
+                programAsset,
+                input,
+                output,
+                sgemmMaterial,
                 displayMaterial
             );
         }
@@ -989,6 +1056,71 @@ namespace Lemolatoon.Udoncl.Editor
                 if (!success || AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath) == null)
                     throw new InvalidOperationException(
                         "Could not create Tiny LLaMA Device demo prefab: " + prefabPath
+                    );
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        private static void CreateOrUpdateUdonBlasSgemmPrefab(
+            AssetImportTransaction transaction,
+            string programRoot,
+            UdonAssemblyProgramAsset programAsset,
+            Texture inputState,
+            RenderTexture outputState,
+            Material sgemmMaterial,
+            Material displayMaterial
+        )
+        {
+            string prefabDirectory = programRoot + "/Prefabs";
+            EnsureFolders(prefabDirectory);
+            string prefabPath = prefabDirectory + "/UdonBlasSgemm.prefab";
+            transaction.Track(prefabPath);
+            GameObject root = new GameObject("UdonBLAS SGEMM");
+            try
+            {
+                root.transform.position = new Vector3(20.0f, 1.5f, 0.0f);
+                BoxCollider collider = root.AddComponent<BoxCollider>();
+                collider.size = new Vector3(4.0f, 2.0f, 0.4f);
+                UdonBehaviour behaviour = root.AddComponent<UdonBehaviour>();
+                behaviour.programSource = programAsset;
+                behaviour.interactText = "Run UdonBLAS SGEMM";
+                behaviour.proximity = 3.0f;
+                behaviour.SyncMethod = SyncType.None;
+                SetPublicVariable(behaviour, "inputState", inputState);
+                SetPublicVariable(behaviour, "outputState", outputState);
+                SetPublicVariable(behaviour, "sgemmMaterial", sgemmMaterial);
+                SetPublicVariable(behaviour, "displayMaterial", displayMaterial);
+                SetPublicVariable(behaviour, "m", 4);
+                SetPublicVariable(behaviour, "n", 5);
+                SetPublicVariable(behaviour, "k", 3);
+                SetPublicVariable(behaviour, "transa", 0);
+                SetPublicVariable(behaviour, "transb", 0);
+                SetPublicVariable(behaviour, "lda", 4);
+                SetPublicVariable(behaviour, "ldb", 3);
+                SetPublicVariable(behaviour, "ldc", 4);
+                SetPublicVariable(behaviour, "alpha", 0.75f);
+                SetPublicVariable(behaviour, "beta", -0.25f);
+                SerializedObject serializedBehaviour = new SerializedObject(behaviour);
+                serializedBehaviour.FindProperty("serializedProgramAsset").objectReferenceValue =
+                    programAsset.SerializedProgramAsset;
+                serializedBehaviour.ApplyModifiedPropertiesWithoutUndo();
+
+                GameObject display = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                display.name = "UdonBLAS matrix result";
+                display.transform.SetParent(root.transform, false);
+                display.transform.localScale = new Vector3(4.0f, 2.0f, 0.12f);
+                Collider displayCollider = display.GetComponent<Collider>();
+                if (displayCollider != null)
+                    UnityEngine.Object.DestroyImmediate(displayCollider);
+                display.GetComponent<MeshRenderer>().sharedMaterial = displayMaterial;
+
+                PrefabUtility.SaveAsPrefabAsset(root, prefabPath, out bool success);
+                if (!success || AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath) == null)
+                    throw new InvalidOperationException(
+                        "Could not create UdonBLAS SGEMM prefab: " + prefabPath
                     );
             }
             finally

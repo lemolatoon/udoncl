@@ -29,3 +29,14 @@ toward the crystal. Above the liquid threshold, gravity and an inelastic
 reflective Y boundary make the cohesive LJ particles flow downward and pool;
 gravity switches off as the sample refreezes. Drop the prefab into a World SDK
 scene to run it.
+
+## UdonBLAS
+
+The package also imports the `unity-udonblas-sgemm` artifact stage. It creates
+`UdonBlasSgemm.prefab` with public M/N/K, transpose, leading-dimension,
+alpha/beta, input texture, output RenderTexture, and Material bindings. Calling
+its `_run` event executes the generated UdonCL fragment kernel; every output
+matrix element is owned by an independent fragment. The initial reusable
+profile supports matrices up to 16×16 and retains the cuBLAS column-major
+operand contract so tiled multi-pass implementations can lift that limit
+without changing the public C API.
