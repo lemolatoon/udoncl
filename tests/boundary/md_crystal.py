@@ -26,8 +26,8 @@ def run(command, error=None):
 
 stdout = run([sys.executable, root/'examples/md-crystal/run.py', '--build-dir', build, '--output', output])
 assert all(marker in stdout for marker in [
-    'NVE_steps=1000', 'phase_cycle=ice-liquid-ice', 'oracle_steps=100',
-    'draws=23200', 'max_cpu_gpu_error=0'])
+    'NVE_steps=300', 'phase_cycle=ice-liquid-flow-ice', 'oracle_steps=40',
+    'draws=18280', 'max_cpu_gpu_error=0'])
 udonhl = (output/'host.udonhl.mlir').read_text()
 for api in ['clCreateBuffer', 'clSetKernelArg', 'clEnqueueNDRangeKernel', 'clEnqueueReadBuffer']:
     assert 'udonhl.call @'+api in udonhl
@@ -39,7 +39,7 @@ for name in ['md_drift', 'md_kick']:
     assert manifest['artifact_stage'] == 'native-device-prototype' and manifest['ready_for_unity'] is False
     kernel = manifest['device']['kernels'][0]
     assert kernel['descriptor']['resource_order'] == [0, 1] and kernel['descriptor']['distinct_resources'] is True
-    assert kernel['descriptor']['scalar_payload_bytes'] == 44
+    assert kernel['descriptor']['scalar_payload_bytes'] == 56
     assert kernel['args'][0]['required_bytes'] == kernel['args'][1]['required_bytes'] == 1024
 
 commands = json.loads((output/'commands.json').read_text())
@@ -47,11 +47,11 @@ compile_device = next(item['argv'] for item in commands if '-DMD_DRIFT=1' in ite
 compiler = build/'tools/vrccl'/('vrccl'+suffix)
 source = (root/'examples/md-crystal/device.cl').read_text()
 variants = [
-    ('output-oob', 'out[word] = value;', 'out[word + 1u] = value;', 'buffer index bounds'),
+    ('output-oob', 'out[word] =', 'out[word + 1u] =', 'buffer index bounds'),
     ('input-oob', 'state[base]', 'state[base + 256u]', 'buffer index bounds'),
-    ('scatter', 'out[word] = value;', 'out[word & 3u] = value;', 'output[global_id]'),
-    ('write-input', 'out[word] = value;', '((__global float *)state)[word] = value;', 'output[global_id]'),
-    ('barrier', 'out[word] = value;', 'barrier(CLK_GLOBAL_MEM_FENCE); out[word] = value;', 'unsupported builtin'),
+    ('scatter', 'out[word] =', 'out[word & 3u] =', 'output[global_id]'),
+    ('write-input', 'out[word] =', '((__global float *)state)[word] =', 'output[global_id]'),
+    ('barrier', 'out[word] =', 'barrier(CLK_GLOBAL_MEM_FENCE); out[word] =', 'unsupported builtin'),
     ('wrong-dimension', 'get_global_id(0)', 'get_global_id(1)', 'dimension-zero'),
     ('unbounded-loop', '++j)', 'j += 0u)', 'buffer index bounds'),
 ]
@@ -89,7 +89,7 @@ else:
 env = dict(os.environ)
 if sys.platform != 'win32':
     env['VK_DRIVER_FILES'] = env['VK_ICD_FILENAMES'] = str(next(Path('/usr/share/vulkan/icd.d').glob('lvp_icd*.json')))
-p = subprocess.run([*native, '--interactive'], input='step 8 4.5 3.8 -100 -100 0.04\nreset\nquit\n', text=True, capture_output=True, env=env, timeout=60)
+p = subprocess.run([*native, '--interactive'], input='step 8 4.5 3.8 0 -100 -100 -100 0.04\nreset\nquit\n', text=True, capture_output=True, env=env, timeout=60)
 assert p.returncode == 0, p.stderr
 states = [json.loads(line) for line in p.stdout.splitlines()]
 assert [s['frame'] for s in states] == [0, 8, 0]

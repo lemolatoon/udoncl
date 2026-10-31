@@ -1,6 +1,6 @@
-#include "Bindings.h"
 #include "VRC/Runtime/OpenCL/Backend.h"
 #include "VRC/Testing/NativeOpenCL/Runtime.h"
+#include "Bindings.h"
 #include <CL/cl.h>
 #ifdef UDONCL_BUILD_RUNTIME_TESTS
 extern "C" int run_opencl_runtime_tests(void);
