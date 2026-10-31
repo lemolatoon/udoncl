@@ -91,6 +91,24 @@ namespace Lemolatoon.Udoncl.Editor
                         programRoot,
                         displayShader
                     );
+                    if (artifacts.ArtifactStage == "unity-mnist-prototype")
+                    {
+                        ImportMnistDemo(
+                            transaction,
+                            artifacts,
+                            programRoot,
+                            programAsset,
+                            kernelMaterials,
+                            displayMaterial
+                        );
+                        AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+                        transaction.Commit();
+                        return programRoot;
+                    }
+                    if (artifacts.ArtifactStage != "unity-lj-prototype")
+                        throw new InvalidDataException(
+                            "Unsupported Unity artifact stage: " + artifacts.ArtifactStage
+                        );
                     Texture2D initialState = CreateOrUpdateParticleTexture(
                         transaction,
                         programRoot
@@ -135,6 +153,100 @@ namespace Lemolatoon.Udoncl.Editor
             }
 
             return programRoot;
+        }
+
+        private static void ImportMnistDemo(
+            AssetImportTransaction transaction,
+            ValidatedArtifact artifacts,
+            string programRoot,
+            UdonAssemblyProgramAsset programAsset,
+            IDictionary<int, Material> kernelMaterials,
+            Material displayMaterial
+        )
+        {
+            if (
+                !kernelMaterials.TryGetValue(20, out Material convMaterial)
+                || !kernelMaterials.TryGetValue(21, out Material poolMaterial)
+                || !kernelMaterials.TryGetValue(22, out Material denseMaterial)
+            )
+                throw new InvalidDataException("MNIST demo requires kernel ids 20, 21 and 22.");
+            ValidatedResource packShaderResource = FindResource(artifacts, "pack_input", "shader");
+            ValidatedResource weightsResource = FindResource(artifacts, "packed_weights", "bytes");
+            string packShaderPath = programRoot + "/Shaders/pack.shader";
+            transaction.CopyFile(packShaderResource.AbsolutePath, packShaderPath);
+            Shader packShader = AssetDatabase.LoadAssetAtPath<Shader>(packShaderPath);
+            if (packShader == null)
+                throw new InvalidDataException(
+                    "Unity could not import MNIST pack shader: " + packShaderPath
+                );
+            Material packMaterial = CreateOrUpdateNamedMaterial(
+                transaction,
+                programRoot,
+                "mnist_pack.mat",
+                packShader
+            );
+            Texture2D weights = CreateOrUpdateByteTexture(
+                transaction,
+                programRoot,
+                "mnist_weights.asset",
+                10800,
+                1,
+                File.ReadAllBytes(weightsResource.AbsolutePath)
+            );
+            packMaterial.SetTexture("_Weights", weights);
+            EditorUtility.SetDirty(packMaterial);
+
+            RenderTexture drawing = CreateOrUpdateRgbaRenderTexture(
+                transaction,
+                programRoot,
+                "mnist_drawing.asset",
+                28,
+                28
+            );
+            RenderTexture packed = CreateOrUpdateRgbaRenderTexture(
+                transaction,
+                programRoot,
+                "mnist_packed.asset",
+                10800,
+                1
+            );
+            RenderTexture logits = CreateOrUpdateRgbaRenderTexture(
+                transaction,
+                programRoot,
+                "mnist_logits.asset",
+                10800,
+                1
+            );
+            displayMaterial.SetTexture("_MainTex", drawing);
+            displayMaterial.SetTexture("_Logits", logits);
+            EditorUtility.SetDirty(displayMaterial);
+            CreateOrUpdateMnistPrefab(
+                transaction,
+                programRoot,
+                programAsset,
+                drawing,
+                packed,
+                logits,
+                packMaterial,
+                convMaterial,
+                poolMaterial,
+                denseMaterial,
+                displayMaterial
+            );
+        }
+
+        private static ValidatedResource FindResource(
+            ValidatedArtifact artifact,
+            string name,
+            string kind
+        )
+        {
+            foreach (ValidatedResource resource in artifact.Resources)
+                if (resource.Name == name && resource.Kind == kind)
+                    return resource;
+            throw new InvalidDataException(
+                "Artifact is missing required " + kind + " resource '" + name + "'."
+            );
         }
 
         private static UdonAssemblyProgramAsset CreateOrUpdateProgramAsset(
@@ -229,7 +341,7 @@ namespace Lemolatoon.Udoncl.Editor
         {
             string materialDirectory = programRoot + "/Materials";
             EnsureFolders(materialDirectory);
-            string materialPath = materialDirectory + "/lj_display.mat";
+            string materialPath = materialDirectory + "/display.mat";
             transaction.Track(materialPath);
             Material material = AssetDatabase.LoadAssetAtPath<Material>(materialPath);
             if (material == null)
@@ -248,6 +360,126 @@ namespace Lemolatoon.Udoncl.Editor
             material.name = Path.GetFileNameWithoutExtension(materialPath);
             EditorUtility.SetDirty(material);
             return material;
+        }
+
+        private static Material CreateOrUpdateNamedMaterial(
+            AssetImportTransaction transaction,
+            string programRoot,
+            string fileName,
+            Shader shader
+        )
+        {
+            string materialDirectory = programRoot + "/Materials";
+            EnsureFolders(materialDirectory);
+            string materialPath = materialDirectory + "/" + fileName;
+            transaction.Track(materialPath);
+            Material material = AssetDatabase.LoadAssetAtPath<Material>(materialPath);
+            if (material == null)
+            {
+                if (AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(materialPath) != null)
+                    throw new InvalidDataException(
+                        "An incompatible asset already occupies " + materialPath
+                    );
+                material = new Material(shader);
+                AssetDatabase.CreateAsset(material, materialPath);
+            }
+            else
+            {
+                material.shader = shader;
+            }
+            material.name = Path.GetFileNameWithoutExtension(fileName);
+            EditorUtility.SetDirty(material);
+            return material;
+        }
+
+        private static Texture2D CreateOrUpdateByteTexture(
+            AssetImportTransaction transaction,
+            string programRoot,
+            string fileName,
+            int width,
+            int height,
+            byte[] bytes
+        )
+        {
+            if (bytes.Length != width * height * 4)
+                throw new InvalidDataException(
+                    "RGBA32 resource has "
+                        + bytes.Length
+                        + " bytes; expected "
+                        + (width * height * 4)
+                        + "."
+                );
+            string textureDirectory = programRoot + "/Textures";
+            EnsureFolders(textureDirectory);
+            string texturePath = textureDirectory + "/" + fileName;
+            transaction.Track(texturePath);
+            Texture2D texture = AssetDatabase.LoadAssetAtPath<Texture2D>(texturePath);
+            if (texture == null)
+            {
+                texture = new Texture2D(width, height, TextureFormat.RGBA32, false, true);
+                AssetDatabase.CreateAsset(texture, texturePath);
+            }
+            else if (!texture.Reinitialize(width, height, TextureFormat.RGBA32, false))
+            {
+                throw new InvalidOperationException("Could not resize texture " + texturePath);
+            }
+            texture.filterMode = FilterMode.Point;
+            texture.wrapMode = TextureWrapMode.Clamp;
+            texture.anisoLevel = 0;
+            texture.LoadRawTextureData(bytes);
+            texture.Apply(false, false);
+            EditorUtility.SetDirty(texture);
+            return texture;
+        }
+
+        private static RenderTexture CreateOrUpdateRgbaRenderTexture(
+            AssetImportTransaction transaction,
+            string programRoot,
+            string fileName,
+            int width,
+            int height
+        )
+        {
+            string textureDirectory = programRoot + "/RenderTextures";
+            EnsureFolders(textureDirectory);
+            string texturePath = textureDirectory + "/" + fileName;
+            transaction.Track(texturePath);
+            RenderTexture texture = AssetDatabase.LoadAssetAtPath<RenderTexture>(texturePath);
+            if (texture == null)
+            {
+                texture = new RenderTexture(
+                    width,
+                    height,
+                    0,
+                    RenderTextureFormat.ARGB32,
+                    RenderTextureReadWrite.Linear
+                );
+                AssetDatabase.CreateAsset(texture, texturePath);
+            }
+            else
+            {
+                texture.Release();
+                texture.width = width;
+                texture.height = height;
+                texture.depth = 0;
+                texture.format = RenderTextureFormat.ARGB32;
+            }
+            texture.filterMode = FilterMode.Point;
+            texture.wrapMode = TextureWrapMode.Clamp;
+            texture.useMipMap = false;
+            texture.autoGenerateMips = false;
+            texture.antiAliasing = 1;
+            texture.anisoLevel = 0;
+            if (texture.sRGB)
+                throw new InvalidOperationException(
+                    "Generated RenderTexture unexpectedly uses sRGB: " + texturePath
+                );
+            if (!texture.Create() && !texture.IsCreated())
+                throw new InvalidOperationException(
+                    "Could not create generated RenderTexture: " + texturePath
+                );
+            EditorUtility.SetDirty(texture);
+            return texture;
         }
 
         private static Texture2D CreateOrUpdateParticleTexture(
@@ -417,6 +649,64 @@ namespace Lemolatoon.Udoncl.Editor
                 if (!success || AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath) == null)
                     throw new InvalidOperationException(
                         "Could not create LJ demo prefab: " + prefabPath
+                    );
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        private static void CreateOrUpdateMnistPrefab(
+            AssetImportTransaction transaction,
+            string programRoot,
+            UdonAssemblyProgramAsset programAsset,
+            RenderTexture drawing,
+            RenderTexture packed,
+            RenderTexture logits,
+            Material packMaterial,
+            Material convMaterial,
+            Material poolMaterial,
+            Material denseMaterial,
+            Material displayMaterial
+        )
+        {
+            string prefabDirectory = programRoot + "/Prefabs";
+            EnsureFolders(prefabDirectory);
+            string prefabPath = prefabDirectory + "/MnistDeviceDemo.prefab";
+            transaction.Track(prefabPath);
+            GameObject root = new GameObject("udoncl MNIST Device demo");
+            try
+            {
+                root.transform.position = new Vector3(8.0f, 1.5f, 0.0f);
+                UdonBehaviour behaviour = root.AddComponent<UdonBehaviour>();
+                behaviour.programSource = programAsset;
+                behaviour.interactText = "Run MNIST Device inference";
+                behaviour.proximity = 3.0f;
+                behaviour.SyncMethod = SyncType.None;
+                SetPublicVariable<Texture>(behaviour, "drawingTexture", drawing);
+                SetPublicVariable(behaviour, "packedState", packed);
+                SetPublicVariable(behaviour, "logitsState", logits);
+                SetPublicVariable(behaviour, "packMaterial", packMaterial);
+                SetPublicVariable(behaviour, "convMaterial", convMaterial);
+                SetPublicVariable(behaviour, "poolMaterial", poolMaterial);
+                SetPublicVariable(behaviour, "denseMaterial", denseMaterial);
+                SetPublicVariable(behaviour, "displayMaterial", displayMaterial);
+                SerializedObject serializedBehaviour = new SerializedObject(behaviour);
+                serializedBehaviour.FindProperty("serializedProgramAsset").objectReferenceValue =
+                    programAsset.SerializedProgramAsset;
+                serializedBehaviour.ApplyModifiedPropertiesWithoutUndo();
+
+                GameObject board = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                board.name = "3D digit drawing board and prediction";
+                board.transform.SetParent(root.transform, false);
+                board.transform.localScale = new Vector3(4.0f, 4.0f, 0.12f);
+                board.GetComponent<MeshRenderer>().sharedMaterial = displayMaterial;
+
+                PrefabUtility.SaveAsPrefabAsset(root, prefabPath, out bool success);
+                if (!success || AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath) == null)
+                    throw new InvalidOperationException(
+                        "Could not create MNIST Device demo prefab: " + prefabPath
                     );
             }
             finally

@@ -39,6 +39,7 @@ for fixture in ['loop', 'scalar-ops', 'stack']:
         assert 'overflow<nsw, nuw>' in structured
         assert 'arith.cmpi ult' in structured and 'arith.extui' in structured
         assert 'arith.mulf' in structured and 'arith.negf' in structured
+        assert 'arith.divui' in structured and 'arith.remui' in structured
     else:
         assert 'llvm.alloca' not in structured and 'llvm.load' not in structured
         assert 'arith.addi' in structured

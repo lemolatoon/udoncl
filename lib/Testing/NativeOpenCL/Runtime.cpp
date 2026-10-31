@@ -37,7 +37,7 @@ Session::Session(const std::string &text, std::vector<GatherBinding> kernels,
   if (active || gatherBindings.empty())
     throw std::runtime_error("native OpenCL session already active or empty");
   for (const auto &binding : gatherBindings) {
-    if (!binding.id || binding.words < 4 || binding.words > 4096 ||
+    if (!binding.id || binding.words < 4 || binding.words > 16384 ||
         binding.scalarCount > 14)
       throw std::runtime_error("invalid gather binding");
     for (const auto &other : gatherBindings)

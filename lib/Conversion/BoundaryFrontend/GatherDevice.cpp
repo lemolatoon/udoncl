@@ -10,6 +10,7 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/JSON.h"
+#include <algorithm>
 using namespace mlir;
 namespace vrc {
 #define GEN_PASS_DEF_RAISEGATHERDEVICEPASS
@@ -43,7 +44,7 @@ struct Proof {
          cmp.getPredicate() != LLVM::ICmpPredicate::slt))
       return std::nullopt;
     auto bound = constant(cmp.getRhs());
-    if (!bound || *bound < 1 || *bound > 4096 ||
+    if (!bound || *bound < 1 || *bound > 16384 ||
         (at && !dominance.dominates(branch.getTrueDest(), at->getBlock())))
       return std::nullopt;
     int edges = 0;
@@ -103,6 +104,10 @@ struct Proof {
       result = {a->min + b->min, a->max + b->max};
     else if (isa<LLVM::MulOp>(op))
       result = {a->min * b->min, a->max * b->max};
+    else if (isa<LLVM::UDivOp>(op) && b->min == b->max && b->min > 0)
+      result = {a->min / b->min, a->max / b->min};
+    else if (isa<LLVM::URemOp>(op) && b->min == b->max && b->min > 0)
+      result = {0, std::min(a->max, b->min - 1)};
     else if (isa<LLVM::LShrOp>(op) && b->min == b->max && b->max < 31)
       result = {a->min >> b->min, a->max >> b->max};
     else if (isa<LLVM::ShlOp>(op) && b->min == b->max && b->max < 31)
@@ -138,7 +143,7 @@ struct RaiseGatherDevicePass
       module.emitError() << "gather proof: " << message;
       signalPassFailure();
     };
-    if (!wordsAttr || wordsAttr.getInt() < 4 || wordsAttr.getInt() > 4096 ||
+    if (!wordsAttr || wordsAttr.getInt() < 4 || wordsAttr.getInt() > 16384 ||
         !source || source.isExternal() ||
         source.getCConv() != LLVM::cconv::CConv::SPIR_KERNEL ||
         source.getNumArguments() < 2 || source.getNumArguments() > 16 ||

@@ -8,11 +8,14 @@ namespace Lemolatoon.Udoncl.Editor
         public int schema_version;
         public string compiler_version;
         public int runtime_abi_version;
+        public string artifact_stage;
+        public bool ready_for_unity;
         public SdkCompatibility sdk_compatibility;
         public TargetInfo target;
         public ProgramInfo program;
         public ExportInfo[] exports;
         public DeviceInfo device;
+        public ArtifactResourceInfo[] resources;
     }
 
     [Serializable]
@@ -61,5 +64,13 @@ namespace Lemolatoon.Udoncl.Editor
         public int id;
         public string name;
         public string shader;
+    }
+
+    [Serializable]
+    internal sealed class ArtifactResourceInfo
+    {
+        public string name;
+        public string kind;
+        public string path;
     }
 }

@@ -15,24 +15,51 @@ namespace Lemolatoon.Udoncl.Editor
             string manifestAssetPath,
             string assemblyAssetPath,
             string displayShaderAssetPath,
+            string artifactStage,
             string programName,
-            IList<ValidatedKernel> kernels
+            IList<ValidatedKernel> kernels,
+            IList<ValidatedResource> resources
         )
         {
             RootDirectory = root;
             ManifestAssetPath = manifestAssetPath;
             AssemblyAssetPath = assemblyAssetPath;
             DisplayShaderAssetPath = displayShaderAssetPath;
+            ArtifactStage = artifactStage;
             ProgramName = programName;
             Kernels = kernels;
+            Resources = resources;
         }
 
         public string RootDirectory { get; private set; }
         public string ManifestAssetPath { get; private set; }
         public string AssemblyAssetPath { get; private set; }
         public string DisplayShaderAssetPath { get; private set; }
+        public string ArtifactStage { get; private set; }
         public string ProgramName { get; private set; }
         public IList<ValidatedKernel> Kernels { get; private set; }
+        public IList<ValidatedResource> Resources { get; private set; }
+    }
+
+    public sealed class ValidatedResource
+    {
+        internal ValidatedResource(
+            string name,
+            string kind,
+            string relativePath,
+            string absolutePath
+        )
+        {
+            Name = name;
+            Kind = kind;
+            RelativePath = relativePath;
+            AbsolutePath = absolutePath;
+        }
+
+        public string Name { get; private set; }
+        public string Kind { get; private set; }
+        public string RelativePath { get; private set; }
+        public string AbsolutePath { get; private set; }
     }
 
     public sealed class ValidatedKernel
@@ -99,6 +126,10 @@ namespace Lemolatoon.Udoncl.Editor
                 throw new InvalidDataException(
                     "Unsupported runtime_abi_version; this importer supports ABI 1."
                 );
+            if (!manifest.ready_for_unity || !IsSafeIdentifier(manifest.artifact_stage))
+                throw new InvalidDataException(
+                    "Importer requires a ready_for_unity artifact with a safe artifact_stage."
+                );
 
             ValidateSdk(manifest.sdk_compatibility);
             ValidateTarget(manifest.target);
@@ -162,13 +193,56 @@ namespace Lemolatoon.Udoncl.Editor
                 }
             }
 
+            List<ValidatedResource> resources = new List<ValidatedResource>();
+            HashSet<string> resourceNames = new HashSet<string>(StringComparer.Ordinal);
+            if (manifest.resources != null)
+            {
+                foreach (ArtifactResourceInfo resource in manifest.resources)
+                {
+                    if (
+                        resource == null
+                        || !IsSafeIdentifier(resource.name)
+                        || !IsSafeIdentifier(resource.kind)
+                        || !resourceNames.Add(resource.name)
+                    )
+                        throw new InvalidDataException(
+                            "Each resource needs a unique safe name and kind."
+                        );
+                    string extension;
+                    if (resource.kind == "shader")
+                        extension = ".shader";
+                    else if (resource.kind == "bytes")
+                        extension = ".bytes";
+                    else
+                        throw new InvalidDataException(
+                            "Unsupported artifact resource kind: " + resource.kind
+                        );
+                    string relativePath = ValidateRelativeFilePath(resource.path, extension);
+                    string absolutePath = ResolveExistingFile(root, relativePath);
+                    if (new FileInfo(absolutePath).Length == 0)
+                        throw new InvalidDataException(
+                            "Artifact resource is empty: " + relativePath
+                        );
+                    resources.Add(
+                        new ValidatedResource(
+                            resource.name,
+                            resource.kind,
+                            relativePath,
+                            absolutePath
+                        )
+                    );
+                }
+            }
+
             return new ValidatedArtifact(
                 root,
                 manifestPath,
                 assemblyPath,
                 displayShaderPath,
+                manifest.artifact_stage,
                 manifest.program.name,
-                kernels
+                kernels,
+                resources
             );
         }
 

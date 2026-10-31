@@ -1,0 +1,85 @@
+.data_start
+    .export drawingTexture
+    .export packedState
+    .export logitsState
+    .export packMaterial
+    .export convMaterial
+    .export poolMaterial
+    .export denseMaterial
+    .export displayMaterial
+
+    drawingTexture: %UnityEngineTexture, null
+    packedState: %UnityEngineRenderTexture, null
+    logitsState: %UnityEngineRenderTexture, null
+    packMaterial: %UnityEngineMaterial, null
+    convMaterial: %UnityEngineMaterial, null
+    poolMaterial: %UnityEngineMaterial, null
+    denseMaterial: %UnityEngineMaterial, null
+    displayMaterial: %UnityEngineMaterial, null
+
+    __packedInput: %UnityEngineTexture, null
+    __logitsInput: %UnityEngineTexture, null
+    __inputName: %SystemString, "_VRC_Input"
+    __logitsName: %SystemString, "_Logits"
+.data_end
+
+.code_start
+    .export _start
+    _start:
+        JUMP, __dispatch
+
+    .export _interact
+    _interact:
+        JUMP, __dispatch
+
+    .export _update
+    _update:
+        JUMP, __dispatch
+
+    __dispatch:
+        PUSH, drawingTexture
+        PUSH, packedState
+        PUSH, packMaterial
+        EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"
+        PUSH, packedState
+        PUSH, __packedInput
+        COPY
+        PUSH, convMaterial
+        PUSH, __inputName
+        PUSH, __packedInput
+        EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
+        PUSH, __packedInput
+        PUSH, logitsState
+        PUSH, convMaterial
+        EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"
+        PUSH, logitsState
+        PUSH, __packedInput
+        COPY
+        PUSH, poolMaterial
+        PUSH, __inputName
+        PUSH, __packedInput
+        EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
+        PUSH, __packedInput
+        PUSH, packedState
+        PUSH, poolMaterial
+        EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"
+        PUSH, packedState
+        PUSH, __packedInput
+        COPY
+        PUSH, denseMaterial
+        PUSH, __inputName
+        PUSH, __packedInput
+        EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
+        PUSH, __packedInput
+        PUSH, logitsState
+        PUSH, denseMaterial
+        EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"
+        PUSH, logitsState
+        PUSH, __logitsInput
+        COPY
+        PUSH, displayMaterial
+        PUSH, __logitsName
+        PUSH, __logitsInput
+        EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
+        JUMP, 0xFFFFFFFC
+.code_end

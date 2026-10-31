@@ -238,8 +238,10 @@ struct Emitter {
         sign = "-";
       else if (name == "arith.mulf" || name == "arith.muli")
         sign = "*";
-      else if (name == "arith.divf")
+      else if (name == "arith.divf" || name == "arith.divui")
         sign = "/";
+      else if (name == "arith.remui")
+        sign = "%";
       else if (name == "arith.andi")
         sign = "&";
       else if (name == "arith.ori")

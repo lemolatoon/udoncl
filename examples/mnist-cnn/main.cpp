@@ -32,13 +32,13 @@ int prediction(const float *logits) {
 } // namespace
 
 int main(int argc, char **argv) {
-  if (argc != 3) {
-    std::cerr << "usage: mnist-cnn-device fragment vertex\n";
+  if (argc != 5) {
+    std::cerr << "usage: mnist-cnn-device conv pool dense vertex\n";
     return 2;
   }
   try {
-    native_opencl::Session session(deviceSource(), manifestBindings(argv[1]),
-                                   argv[2]);
+    native_opencl::Session session(
+        deviceSource(), manifestBindings(argv[1], argv[2], argv[3]), argv[4]);
     check(mnist_gpu_init());
     float maximumError = 0.0f;
     for (int expected = 0; expected < MNIST_CNN_CLASSES; ++expected) {

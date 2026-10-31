@@ -18,3 +18,9 @@ define i32 @checked_inc(i32 %a) {
   %result = add nsw nuw i32 %a, 1
   ret i32 %result
 }
+define i32 @unsigned_divrem(i32 %a, i32 %b) {
+  %quotient = udiv i32 %a, %b
+  %remainder = urem i32 %a, %b
+  %result = add i32 %quotient, %remainder
+  ret i32 %result
+}

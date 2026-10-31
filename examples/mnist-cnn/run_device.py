@@ -4,10 +4,26 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
+
+
+def read_weight_array(header, name, expected):
+    match = re.search(
+        rf"static const float {name}\[{expected}\] = \{{(.*?)\}};",
+        header,
+        re.DOTALL,
+    )
+    if not match:
+        raise RuntimeError(f"could not find {name}[{expected}] in weights.h")
+    values = [float(token.rstrip("f")) for token in match.group(1).split(",") if token.strip()]
+    if len(values) != expected:
+        raise RuntimeError(f"{name} contains {len(values)} values; expected {expected}")
+    return values
 
 
 def main():
@@ -74,66 +90,168 @@ def main():
         "#define UDONCL_DEVICE_SOURCE " + json.dumps(device_text) + "\n",
         encoding="utf-8",
     )
-    device_ir = output / "device.ll"
-    run(
-        [
-            clang,
-            "-target",
-            "spir-unknown-unknown",
-            "-x",
-            "cl",
-            "-cl-std=CL1.2",
-            "-cl-kernel-arg-info",
-            "-O0",
-            "-Xclang",
-            "-disable-O0-optnone",
-            "-fomit-frame-pointer",
-            "-ffp-contract=off",
-            "-S",
-            "-emit-llvm",
-            source / "device.cl",
-            "-o",
-            device_ir,
-        ]
-    )
-    bundle = output / "device-bundle"
-    with tempfile.TemporaryDirectory(prefix="device-", dir=output) as staging:
-        staged = Path(staging) / "bundle"
+    kernels = [
+        ("mnist_conv", 20, "MNIST_CONV"),
+        ("mnist_pool", 21, "MNIST_POOL"),
+        ("mnist_dense", 22, "MNIST_DENSE"),
+    ]
+    bundles = {}
+    fragments = []
+    for name, identifier, define in kernels:
+        device_ir = output / f"{name}.ll"
         run(
             [
-                compiler,
-                "--emit-native-device-bundle",
-                source / "device.json",
-                "--device-llvm",
-                device_ir,
+                clang,
+                "-target",
+                "spir-unknown-unknown",
+                "-x",
+                "cl",
+                "-cl-std=CL1.2",
+                "-cl-kernel-arg-info",
+                f"-D{define}=1",
+                "-O0",
+                "-Xclang",
+                "-disable-O0-optnone",
+                "-fomit-frame-pointer",
+                "-ffp-contract=off",
+                "-S",
+                "-emit-llvm",
+                source / "device.cl",
                 "-o",
-                staged,
+                device_ir,
             ]
         )
-        if bundle.exists():
-            previous = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
-            if previous.get("artifact_stage") != "native-device-prototype":
-                raise RuntimeError("refusing to replace a non-example bundle")
-            shutil.rmtree(bundle)
-        staged.rename(bundle)
-    manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
-    kernel = manifest["device"]["kernels"][0]
-    if (
-        kernel["name"] != "mnist_cnn"
-        or kernel["global_size"] != [4096, 1, 1]
-        or [argument["required_bytes"] for argument in kernel["args"][:2]]
-        != [16384, 16384]
-    ):
-        raise RuntimeError("MNIST gather manifest does not match its packed ABI")
-    fragment = bundle / "kernels/kernel_20.hlsl"
+        config = output / f"{name}.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "profile": "gather-f32",
+                    "words": 10800,
+                    "kernel": name,
+                    "kernel_id": identifier,
+                    "global_size": [10800, 1, 1],
+                    "local_size": [1, 1, 1],
+                    "global_offset": [0, 0, 0],
+                }
+            ),
+            encoding="utf-8",
+        )
+        bundle = output / f"{name}-bundle"
+        with tempfile.TemporaryDirectory(prefix=name + "-", dir=output) as staging:
+            staged = Path(staging) / "bundle"
+            run(
+                [
+                    compiler,
+                    "--emit-native-device-bundle",
+                    config,
+                    "--device-llvm",
+                    device_ir,
+                    "-o",
+                    staged,
+                ]
+            )
+            if bundle.exists():
+                previous = json.loads(
+                    (bundle / "manifest.json").read_text(encoding="utf-8")
+                )
+                if previous.get("artifact_stage") != "native-device-prototype":
+                    raise RuntimeError("refusing to replace a non-example bundle")
+                shutil.rmtree(bundle)
+            staged.rename(bundle)
+        manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
+        kernel = manifest["device"]["kernels"][0]
+        if (
+            kernel["name"] != name
+            or kernel["global_size"] != [10800, 1, 1]
+            or [argument["required_bytes"] for argument in kernel["args"][:2]]
+            != [43200, 43200]
+        ):
+            raise RuntimeError("MNIST gather manifest does not match its packed ABI")
+        bundles[identifier] = bundle
+        fragments.append(bundle / f"kernels/kernel_{identifier}.hlsl")
     (output / "Bindings.h").write_text(
         "inline const char *deviceSource() { return "
         + json.dumps(device_text)
         + "; }\n"
-        + "inline std::vector<native_opencl::GatherBinding> manifestBindings(const std::string &fragment) { "
-        + 'return {{20, 4096, 0, "mnist_cnn", fragment}}; }\n',
+        + "inline std::vector<native_opencl::GatherBinding> manifestBindings("
+        + "const std::string &conv, const std::string &pool, const std::string &dense) { "
+        + 'return {{20, 10800, 0, "mnist_conv", conv}, '
+        + '{21, 10800, 0, "mnist_pool", pool}, '
+        + '{22, 10800, 0, "mnist_dense", dense}}; }\n',
         encoding="utf-8",
     )
+
+    unity_bundle = output / "unity-bundle"
+    with tempfile.TemporaryDirectory(prefix="unity-", dir=output) as staging:
+        staged = Path(staging) / "bundle"
+        (staged / "kernels").mkdir(parents=True)
+        shutil.copy2(source / "host.uasm", staged / "host.uasm")
+        shutil.copy2(source / "display.shader", staged / "display.shader")
+        shutil.copy2(source / "pack.shader", staged / "pack.shader")
+        for name, identifier, _ in kernels:
+            shutil.copy2(
+                bundles[identifier] / f"kernels/kernel_{identifier}.shader",
+                staged / f"kernels/kernel_{identifier}.shader",
+            )
+        header = (source / "weights.h").read_text(encoding="utf-8")
+        packed = [0.0] * 10800
+        packed[784:1184] = read_weight_array(header, "kMnistConvWeight", 400)
+        packed[1184:1200] = read_weight_array(header, "kMnistConvBias", 16)
+        packed[1200:2640] = read_weight_array(header, "kMnistDenseWeight", 1440)
+        packed[2640:2650] = read_weight_array(header, "kMnistDenseBias", 10)
+        (staged / "weights.bytes").write_bytes(struct.pack("<10800f", *packed))
+        unity_manifest = {
+            "schema_version": 1,
+            "compiler_version": "0.1.0-dev",
+            "runtime_abi_version": 1,
+            "artifact_stage": "unity-mnist-prototype",
+            "ready_for_unity": True,
+            "sdk_compatibility": {"sdk_version": "3.10.5", "extern_db_hash": None},
+            "target": {
+                "host_pointer_bits": 32,
+                "device_pointer_bits": 32,
+                "endianness": "little",
+                "platform": "VRChat-PC",
+            },
+            "program": {
+                "name": "mnist_cnn",
+                "assembly": "host.uasm",
+                "display_shader": "display.shader",
+            },
+            "exports": [
+                {
+                    "id": 1,
+                    "c_symbol": "mnist_gpu_predict",
+                    "udon_event": "_interact",
+                    "status_slot": "",
+                    "async": False,
+                }
+            ],
+            "device": {
+                "kernels": [
+                    {"id": identifier, "name": name, "shader": f"kernels/kernel_{identifier}.shader"}
+                    for name, identifier, _ in kernels
+                ]
+            },
+            "resources": [
+                {"name": "pack_input", "kind": "shader", "path": "pack.shader"},
+                {
+                    "name": "packed_weights",
+                    "kind": "bytes",
+                    "path": "weights.bytes",
+                },
+            ],
+        }
+        (staged / "manifest.json").write_text(
+            json.dumps(unity_manifest, indent=2), encoding="utf-8"
+        )
+        if unity_bundle.exists():
+            previous = json.loads((unity_bundle / "manifest.json").read_text(encoding="utf-8"))
+            if previous.get("artifact_stage") != "unity-mnist-prototype":
+                raise RuntimeError("refusing to replace a non-example Unity bundle")
+            shutil.rmtree(unity_bundle)
+        staged.rename(unity_bundle)
 
     host_ir = output / "host.ll"
     imported = output / "host.imported.mlir"
@@ -194,9 +312,9 @@ def main():
         if not glslang:
             parser.error("install glslang-tools")
         binaries = []
-        for index, (asset, stage, entry) in enumerate(
-            [(fragment, "frag", "frag"), (vertex, "vert", "vert")]
-        ):
+        shader_inputs = [(asset, "frag", "frag") for asset in fragments]
+        shader_inputs.append((vertex, "vert", "vert"))
+        for index, (asset, stage, entry) in enumerate(shader_inputs):
             binary = output / f"shader_{index}.spv"
             run(
                 [
@@ -214,7 +332,7 @@ def main():
                 ]
             )
             binaries.append(binary)
-        fragment, vertex = binaries
+        fragments, vertex = binaries[:-1], binaries[-1]
 
     runtime_build = output / "runtime-build"
     run(
@@ -234,7 +352,7 @@ def main():
     )
     run([sys.executable, root / "scripts/build.py", "--build-dir", runtime_build])
     executable = runtime_build / ("mnist-cnn-device" + suffix)
-    stdout = run([executable, fragment, vertex])
+    stdout = run([executable, *fragments, vertex])
     print(stdout, end="")
 
 

@@ -35,15 +35,15 @@ static bool scalar(Type t) {
 static bool legalArithmetic(Operation *op) {
   return llvm::is_contained(
              ArrayRef<StringRef>{
-                 "arith.constant",     "arith.addf",   "arith.subf",
-                 "arith.mulf",         "arith.divf",   "arith.negf",
-                 "arith.addi",         "arith.subi",   "arith.muli",
-                 "arith.andi",         "arith.ori",    "arith.xori",
-                 "arith.shli",         "arith.shrui",  "arith.shrsi",
-                 "arith.cmpi",         "arith.cmpf",   "arith.select",
-                 "arith.uitofp",       "arith.sitofp", "arith.index_cast",
-                 "arith.index_castui", "arith.trunci", "math.floor",
-                 "math.sqrt"},
+                 "arith.constant", "arith.addf",       "arith.subf",
+                 "arith.mulf",     "arith.divf",       "arith.negf",
+                 "arith.addi",     "arith.subi",       "arith.muli",
+                 "arith.divui",    "arith.remui",      "arith.andi",
+                 "arith.ori",      "arith.xori",       "arith.shli",
+                 "arith.shrui",    "arith.shrsi",      "arith.cmpi",
+                 "arith.cmpf",     "arith.select",     "arith.uitofp",
+                 "arith.sitofp",   "arith.index_cast", "arith.index_castui",
+                 "arith.trunci",   "math.floor",       "math.sqrt"},
              op->getName().getStringRef()) &&
          llvm::all_of(op->getResultTypes(), scalar);
 }
@@ -60,7 +60,7 @@ LogicalResult KernelOp::verify() {
         !isa<VersionType>(getBody().front().getArgument(0).getType()) ||
         cast<VersionType>(getBody().front().getArgument(0).getType())
                 .getBufferId() != 0 ||
-        !words || words.getInt() < 4 || words.getInt() > 4096 ||
+        !words || words.getInt() < 4 || words.getInt() > 16384 ||
         getKernelId() <= 0 || getArgumentKinds().size() < 2 ||
         getArgumentKinds().size() > 16 ||
         getArgumentKinds()[0] != StringAttr::get(getContext(), "buffer") ||

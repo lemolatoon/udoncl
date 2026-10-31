@@ -524,7 +524,7 @@ CL_API_ENTRY cl_kernel CL_API_CALL clCreateKernel(cl_program p,
   if (!k)
     ERROR(CL_OUT_OF_HOST_MEMORY);
   udoncl_cl_gather_profile(name, &k->gather);
-  if (k->gather.id && (k->gather.words < 4 || k->gather.words > 4096 ||
+  if (k->gather.id && (k->gather.words < 4 || k->gather.words > 16384 ||
                        k->gather.scalar_count > 14)) {
     free(k);
     ERROR(CL_INVALID_KERNEL_DEFINITION);

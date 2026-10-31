@@ -2,18 +2,18 @@
 #include "weights.h"
 #include <CL/cl.h>
 
-#define MNIST_WORDS 4096
+#define MNIST_WORDS 10800
 #define MNIST_LOGITS 10
 #define MNIST_CONV_WEIGHT_OFFSET 784
 #define MNIST_CONV_BIAS_OFFSET 1184
 #define MNIST_DENSE_WEIGHT_OFFSET 1200
-#define MNIST_DENSE_BIAS_OFFSET 3504
+#define MNIST_DENSE_BIAS_OFFSET 2640
 
 static cl_context context;
 static cl_command_queue queue;
 static cl_program program;
-static cl_kernel kernel;
-static cl_mem packed_buffer, output_buffer;
+static cl_kernel conv_kernel, pool_kernel, dense_kernel;
+static cl_mem state_a, state_b;
 static float packed[MNIST_WORDS];
 static cl_int status;
 
@@ -25,21 +25,25 @@ static cl_int status;
   } while (0)
 
 int mnist_gpu_close(void) {
-  if (kernel)
-    clReleaseKernel(kernel);
+  if (dense_kernel)
+    clReleaseKernel(dense_kernel);
+  if (pool_kernel)
+    clReleaseKernel(pool_kernel);
+  if (conv_kernel)
+    clReleaseKernel(conv_kernel);
   if (program)
     clReleaseProgram(program);
-  if (output_buffer)
-    clReleaseMemObject(output_buffer);
-  if (packed_buffer)
-    clReleaseMemObject(packed_buffer);
+  if (state_b)
+    clReleaseMemObject(state_b);
+  if (state_a)
+    clReleaseMemObject(state_a);
   if (queue)
     clReleaseCommandQueue(queue);
   if (context)
     clReleaseContext(context);
-  kernel = 0;
+  dense_kernel = pool_kernel = conv_kernel = 0;
   program = 0;
-  output_buffer = packed_buffer = 0;
+  state_b = state_a = 0;
   queue = 0;
   context = 0;
   return CL_SUCCESS;
@@ -56,19 +60,27 @@ int mnist_gpu_init(void) {
   CHECK(status);
   queue = clCreateCommandQueue(context, device, 0, &status);
   CHECK(status);
-  packed_buffer = clCreateBuffer(context, CL_MEM_READ_ONLY,
-                                 MNIST_WORDS * sizeof(float), 0, &status);
+  state_a = clCreateBuffer(context, CL_MEM_READ_WRITE,
+                           MNIST_WORDS * sizeof(float), 0, &status);
   CHECK(status);
-  output_buffer = clCreateBuffer(context, CL_MEM_WRITE_ONLY,
-                                 MNIST_WORDS * sizeof(float), 0, &status);
+  state_b = clCreateBuffer(context, CL_MEM_READ_WRITE,
+                           MNIST_WORDS * sizeof(float), 0, &status);
   CHECK(status);
   program = clCreateProgramWithSource(context, 1, &source, 0, &status);
   CHECK(status);
   CHECK(clBuildProgram(program, 0, 0, "-cl-std=CL1.2", 0, 0));
-  kernel = clCreateKernel(program, "mnist_cnn", &status);
+  conv_kernel = clCreateKernel(program, "mnist_conv", &status);
   CHECK(status);
-  CHECK(clSetKernelArg(kernel, 0, sizeof(packed_buffer), &packed_buffer));
-  CHECK(clSetKernelArg(kernel, 1, sizeof(output_buffer), &output_buffer));
+  pool_kernel = clCreateKernel(program, "mnist_pool", &status);
+  CHECK(status);
+  dense_kernel = clCreateKernel(program, "mnist_dense", &status);
+  CHECK(status);
+  CHECK(clSetKernelArg(conv_kernel, 0, sizeof(state_a), &state_a));
+  CHECK(clSetKernelArg(conv_kernel, 1, sizeof(state_b), &state_b));
+  CHECK(clSetKernelArg(pool_kernel, 0, sizeof(state_b), &state_b));
+  CHECK(clSetKernelArg(pool_kernel, 1, sizeof(state_a), &state_a));
+  CHECK(clSetKernelArg(dense_kernel, 0, sizeof(state_a), &state_a));
+  CHECK(clSetKernelArg(dense_kernel, 1, sizeof(state_b), &state_b));
   return CL_SUCCESS;
 }
 
@@ -87,10 +99,15 @@ int mnist_gpu_predict(const float *image, float *logits) {
     packed[MNIST_DENSE_WEIGHT_OFFSET + index] = kMnistDenseWeight[index];
   for (index = 0; index < MNIST_LOGITS; ++index)
     packed[MNIST_DENSE_BIAS_OFFSET + index] = kMnistDenseBias[index];
-  CHECK(clEnqueueWriteBuffer(queue, packed_buffer, CL_TRUE, 0, sizeof(packed),
-                             packed, 0, 0, 0));
-  CHECK(clEnqueueNDRangeKernel(queue, kernel, 1, 0, &global, &local, 0, 0, 0));
-  CHECK(clEnqueueReadBuffer(queue, output_buffer, CL_TRUE, 0,
+  CHECK(clEnqueueWriteBuffer(queue, state_a, CL_TRUE, 0, sizeof(packed), packed,
+                             0, 0, 0));
+  CHECK(clEnqueueNDRangeKernel(queue, conv_kernel, 1, 0, &global, &local, 0, 0,
+                               0));
+  CHECK(clEnqueueNDRangeKernel(queue, pool_kernel, 1, 0, &global, &local, 0, 0,
+                               0));
+  CHECK(clEnqueueNDRangeKernel(queue, dense_kernel, 1, 0, &global, &local, 0, 0,
+                               0));
+  CHECK(clEnqueueReadBuffer(queue, state_b, CL_TRUE, 0,
                             MNIST_LOGITS * sizeof(float), logits, 0, 0, 0));
   return clFinish(queue);
 }

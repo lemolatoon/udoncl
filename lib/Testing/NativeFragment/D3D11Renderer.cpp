@@ -44,7 +44,7 @@ class Renderer final : public FragmentRenderer {
 public:
   explicit Renderer(const std::string &path, uint32_t words = 0)
       : width(words ? words : 1), gather(words != 0) {
-    if (width > 4096)
+    if (width > 16384)
       throw std::runtime_error("gather width exceeds supported profile");
     D3D_FEATURE_LEVEL requested = D3D_FEATURE_LEVEL_11_0, actual;
     check(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0,

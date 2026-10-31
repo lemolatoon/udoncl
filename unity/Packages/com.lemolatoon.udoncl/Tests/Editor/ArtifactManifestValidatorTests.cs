@@ -44,6 +44,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         {
             ValidatedArtifact artifact = ArtifactManifestValidator.Validate(_directory);
             Assert.AreEqual("lj_demo", artifact.ProgramName);
+            Assert.AreEqual("unity-lj-prototype", artifact.ArtifactStage);
             Assert.AreEqual(1, artifact.Kernels.Count);
             Assert.AreEqual("kernel.shader", artifact.Kernels[0].RelativeShaderPath);
         }
@@ -66,6 +67,20 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             );
         }
 
+        [Test]
+        public void ValidateRejectsUnknownResourceKind()
+        {
+            string manifestPath = Path.Combine(_directory, "manifest.json");
+            string json = File.ReadAllText(manifestPath);
+            json =
+                json.Substring(0, json.Length - 1)
+                + ",\"resources\":[{\"name\":\"weights\",\"kind\":\"executable\",\"path\":\"weights.exe\"}]}";
+            File.WriteAllText(manifestPath, json, new UTF8Encoding(false));
+            Assert.Throws<InvalidDataException>(() =>
+                ArtifactManifestValidator.Validate(_directory)
+            );
+        }
+
         private void WriteManifest(string assemblyPath, string shaderPath, string sdkVersion)
         {
             string json =
@@ -73,6 +88,8 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 + "\"schema_version\":1,"
                 + "\"compiler_version\":\"0.1.0\","
                 + "\"runtime_abi_version\":1,"
+                + "\"artifact_stage\":\"unity-lj-prototype\","
+                + "\"ready_for_unity\":true,"
                 + "\"sdk_compatibility\":{\"sdk_version\":\""
                 + sdkVersion
                 + "\"},"

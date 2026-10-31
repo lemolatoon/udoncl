@@ -128,7 +128,7 @@ public:
   Renderer(const std::string &fragment, const std::string &vertex,
            uint32_t words = 0)
       : width(words ? words : 1), gather(words != 0) {
-    if (width > 4096)
+    if (width > 16384)
       throw std::runtime_error("gather width exceeds supported profile");
     auto application =
         info<VkApplicationInfo>(VK_STRUCTURE_TYPE_APPLICATION_INFO);
