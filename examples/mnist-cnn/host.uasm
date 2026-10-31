@@ -1,85 +1,181 @@
 .data_start
     .export drawingTexture
+    .export drawingScratch
     .export packedState
     .export logitsState
+    .export boardTransform
+    .export brushMaterial
     .export packMaterial
     .export convMaterial
     .export poolMaterial
     .export denseMaterial
     .export displayMaterial
+    .export rightFinger
+    .export onPlayerTriggerStayPlayer
 
-    drawingTexture: %UnityEngineTexture, null
+    drawingTexture: %UnityEngineRenderTexture, null
+    drawingScratch: %UnityEngineRenderTexture, null
     packedState: %UnityEngineRenderTexture, null
     logitsState: %UnityEngineRenderTexture, null
+    boardTransform: %UnityEngineTransform, null
+    brushMaterial: %UnityEngineMaterial, null
     packMaterial: %UnityEngineMaterial, null
     convMaterial: %UnityEngineMaterial, null
     poolMaterial: %UnityEngineMaterial, null
     denseMaterial: %UnityEngineMaterial, null
     displayMaterial: %UnityEngineMaterial, null
+    rightFinger: %UnityEngineHumanBodyBones, null
+    onPlayerTriggerStayPlayer: %VRCSDKBaseVRCPlayerApi, null
 
-    __packedInput: %UnityEngineTexture, null
-    __logitsInput: %UnityEngineTexture, null
+    __oldDrawing: %UnityEngineRenderTexture, null
+    __input: %UnityEngineTexture, null
+    __handWorld: %UnityEngineVector3, null
+    __handLocal: %UnityEngineVector3, null
+    __localX: %SystemSingle, 0.0
+    __localY: %SystemSingle, 0.0
+    __brushX: %SystemSingle, 0.0
+    __brushY: %SystemSingle, 0.0
+    __half: %SystemSingle, 0.5
+    __zero: %SystemSingle, 0.0
+    __one: %SystemSingle, 1.0
     __inputName: %SystemString, "_VRC_Input"
+    __mainName: %SystemString, "_MainTex"
     __logitsName: %SystemString, "_Logits"
+    __brushXName: %SystemString, "_BrushX"
+    __brushYName: %SystemString, "_BrushY"
+    __clearName: %SystemString, "_Clear"
 .data_end
 
 .code_start
     .export _start
     _start:
-        JUMP, __dispatch
+        JUMP, __clear
 
     .export _interact
     _interact:
+        JUMP, __clear
+
+    .export _onPlayerTriggerStay
+    _onPlayerTriggerStay:
+        PUSH, onPlayerTriggerStayPlayer
+        PUSH, rightFinger
+        PUSH, __handWorld
+        EXTERN, "VRCSDKBaseVRCPlayerApi.__GetBonePosition__UnityEngineHumanBodyBones__UnityEngineVector3"
+        PUSH, boardTransform
+        PUSH, __handWorld
+        PUSH, __handLocal
+        EXTERN, "UnityEngineTransform.__InverseTransformPoint__UnityEngineVector3__UnityEngineVector3"
+        PUSH, __handLocal
+        PUSH, __localX
+        EXTERN, "UnityEngineVector3.__get_x__SystemSingle"
+        PUSH, __handLocal
+        PUSH, __localY
+        EXTERN, "UnityEngineVector3.__get_y__SystemSingle"
+        PUSH, __localX
+        PUSH, __half
+        PUSH, __brushX
+        EXTERN, "SystemSingle.__op_Addition__SystemSingle_SystemSingle__SystemSingle"
+        PUSH, __localY
+        PUSH, __half
+        PUSH, __brushY
+        EXTERN, "SystemSingle.__op_Addition__SystemSingle_SystemSingle__SystemSingle"
+        PUSH, brushMaterial
+        PUSH, __brushXName
+        PUSH, __brushX
+        EXTERN, "UnityEngineMaterial.__SetFloat__SystemString_SystemSingle__SystemVoid"
+        PUSH, brushMaterial
+        PUSH, __brushYName
+        PUSH, __brushY
+        EXTERN, "UnityEngineMaterial.__SetFloat__SystemString_SystemSingle__SystemVoid"
+        PUSH, brushMaterial
+        PUSH, __clearName
+        PUSH, __zero
+        EXTERN, "UnityEngineMaterial.__SetFloat__SystemString_SystemSingle__SystemVoid"
+        PUSH, drawingTexture
+        PUSH, drawingScratch
+        PUSH, brushMaterial
+        EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"
+        PUSH, drawingTexture
+        PUSH, __oldDrawing
+        COPY
+        PUSH, drawingScratch
+        PUSH, drawingTexture
+        COPY
+        PUSH, __oldDrawing
+        PUSH, drawingScratch
+        COPY
         JUMP, __dispatch
 
-    .export _update
-    _update:
+    __clear:
+        PUSH, brushMaterial
+        PUSH, __clearName
+        PUSH, __one
+        EXTERN, "UnityEngineMaterial.__SetFloat__SystemString_SystemSingle__SystemVoid"
+        PUSH, drawingTexture
+        PUSH, drawingScratch
+        PUSH, brushMaterial
+        EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"
+        PUSH, drawingScratch
+        PUSH, drawingTexture
+        PUSH, brushMaterial
+        EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"
+        PUSH, brushMaterial
+        PUSH, __clearName
+        PUSH, __zero
+        EXTERN, "UnityEngineMaterial.__SetFloat__SystemString_SystemSingle__SystemVoid"
         JUMP, __dispatch
 
     __dispatch:
+        PUSH, drawingTexture
+        PUSH, __input
+        COPY
+        PUSH, displayMaterial
+        PUSH, __mainName
+        PUSH, __input
+        EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
         PUSH, drawingTexture
         PUSH, packedState
         PUSH, packMaterial
         EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"
         PUSH, packedState
-        PUSH, __packedInput
+        PUSH, __input
         COPY
         PUSH, convMaterial
         PUSH, __inputName
-        PUSH, __packedInput
+        PUSH, __input
         EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
-        PUSH, __packedInput
+        PUSH, __input
         PUSH, logitsState
         PUSH, convMaterial
         EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"
         PUSH, logitsState
-        PUSH, __packedInput
+        PUSH, __input
         COPY
         PUSH, poolMaterial
         PUSH, __inputName
-        PUSH, __packedInput
+        PUSH, __input
         EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
-        PUSH, __packedInput
+        PUSH, __input
         PUSH, packedState
         PUSH, poolMaterial
         EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"
         PUSH, packedState
-        PUSH, __packedInput
+        PUSH, __input
         COPY
         PUSH, denseMaterial
         PUSH, __inputName
-        PUSH, __packedInput
+        PUSH, __input
         EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
-        PUSH, __packedInput
+        PUSH, __input
         PUSH, logitsState
         PUSH, denseMaterial
         EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"
         PUSH, logitsState
-        PUSH, __logitsInput
+        PUSH, __input
         COPY
         PUSH, displayMaterial
         PUSH, __logitsName
-        PUSH, __logitsInput
+        PUSH, __input
         EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
         JUMP, 0xFFFFFFFC
 .code_end

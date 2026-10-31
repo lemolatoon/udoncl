@@ -171,6 +171,7 @@ namespace Lemolatoon.Udoncl.Editor
             )
                 throw new InvalidDataException("MNIST demo requires kernel ids 20, 21 and 22.");
             ValidatedResource packShaderResource = FindResource(artifacts, "pack_input", "shader");
+            ValidatedResource brushShaderResource = FindResource(artifacts, "brush", "shader");
             ValidatedResource weightsResource = FindResource(artifacts, "packed_weights", "bytes");
             string packShaderPath = programRoot + "/Shaders/pack.shader";
             transaction.CopyFile(packShaderResource.AbsolutePath, packShaderPath);
@@ -184,6 +185,19 @@ namespace Lemolatoon.Udoncl.Editor
                 programRoot,
                 "mnist_pack.mat",
                 packShader
+            );
+            string brushShaderPath = programRoot + "/Shaders/brush.shader";
+            transaction.CopyFile(brushShaderResource.AbsolutePath, brushShaderPath);
+            Shader brushShader = AssetDatabase.LoadAssetAtPath<Shader>(brushShaderPath);
+            if (brushShader == null)
+                throw new InvalidDataException(
+                    "Unity could not import MNIST brush shader: " + brushShaderPath
+                );
+            Material brushMaterial = CreateOrUpdateNamedMaterial(
+                transaction,
+                programRoot,
+                "mnist_brush.mat",
+                brushShader
             );
             Texture2D weights = CreateOrUpdateByteTexture(
                 transaction,
@@ -210,6 +224,13 @@ namespace Lemolatoon.Udoncl.Editor
                 10800,
                 1
             );
+            RenderTexture drawingScratch = CreateOrUpdateRgbaRenderTexture(
+                transaction,
+                programRoot,
+                "mnist_drawing_scratch.asset",
+                28,
+                28
+            );
             RenderTexture logits = CreateOrUpdateRgbaRenderTexture(
                 transaction,
                 programRoot,
@@ -225,9 +246,11 @@ namespace Lemolatoon.Udoncl.Editor
                 programRoot,
                 programAsset,
                 drawing,
+                drawingScratch,
                 packed,
                 logits,
                 packMaterial,
+                brushMaterial,
                 convMaterial,
                 poolMaterial,
                 denseMaterial,
@@ -662,9 +685,11 @@ namespace Lemolatoon.Udoncl.Editor
             string programRoot,
             UdonAssemblyProgramAsset programAsset,
             RenderTexture drawing,
+            RenderTexture drawingScratch,
             RenderTexture packed,
             RenderTexture logits,
             Material packMaterial,
+            Material brushMaterial,
             Material convMaterial,
             Material poolMaterial,
             Material denseMaterial,
@@ -679,15 +704,20 @@ namespace Lemolatoon.Udoncl.Editor
             try
             {
                 root.transform.position = new Vector3(8.0f, 1.5f, 0.0f);
+                BoxCollider trigger = root.AddComponent<BoxCollider>();
+                trigger.size = new Vector3(4.4f, 4.4f, 0.6f);
+                trigger.isTrigger = true;
                 UdonBehaviour behaviour = root.AddComponent<UdonBehaviour>();
                 behaviour.programSource = programAsset;
-                behaviour.interactText = "Run MNIST Device inference";
+                behaviour.interactText = "Clear MNIST drawing";
                 behaviour.proximity = 3.0f;
                 behaviour.SyncMethod = SyncType.None;
-                SetPublicVariable<Texture>(behaviour, "drawingTexture", drawing);
+                SetPublicVariable(behaviour, "drawingTexture", drawing);
+                SetPublicVariable(behaviour, "drawingScratch", drawingScratch);
                 SetPublicVariable(behaviour, "packedState", packed);
                 SetPublicVariable(behaviour, "logitsState", logits);
                 SetPublicVariable(behaviour, "packMaterial", packMaterial);
+                SetPublicVariable(behaviour, "brushMaterial", brushMaterial);
                 SetPublicVariable(behaviour, "convMaterial", convMaterial);
                 SetPublicVariable(behaviour, "poolMaterial", poolMaterial);
                 SetPublicVariable(behaviour, "denseMaterial", denseMaterial);
@@ -702,6 +732,11 @@ namespace Lemolatoon.Udoncl.Editor
                 board.transform.SetParent(root.transform, false);
                 board.transform.localScale = new Vector3(4.0f, 4.0f, 0.12f);
                 board.GetComponent<MeshRenderer>().sharedMaterial = displayMaterial;
+                Collider boardCollider = board.GetComponent<Collider>();
+                if (boardCollider != null)
+                    UnityEngine.Object.DestroyImmediate(boardCollider);
+                SetPublicVariable(behaviour, "boardTransform", board.transform);
+                SetPublicVariable(behaviour, "rightFinger", HumanBodyBones.RightIndexDistal);
 
                 PrefabUtility.SaveAsPrefabAsset(root, prefabPath, out bool success);
                 if (!success || AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath) == null)

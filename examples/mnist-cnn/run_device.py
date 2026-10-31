@@ -189,6 +189,7 @@ def main():
         shutil.copy2(source / "host.uasm", staged / "host.uasm")
         shutil.copy2(source / "display.shader", staged / "display.shader")
         shutil.copy2(source / "pack.shader", staged / "pack.shader")
+        shutil.copy2(source / "brush.shader", staged / "brush.shader")
         for name, identifier, _ in kernels:
             shutil.copy2(
                 bundles[identifier] / f"kernels/kernel_{identifier}.shader",
@@ -236,6 +237,7 @@ def main():
             },
             "resources": [
                 {"name": "pack_input", "kind": "shader", "path": "pack.shader"},
+                {"name": "brush", "kind": "shader", "path": "brush.shader"},
                 {
                     "name": "packed_weights",
                     "kind": "bytes",

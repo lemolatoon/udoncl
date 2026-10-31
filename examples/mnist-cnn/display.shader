@@ -25,6 +25,22 @@ float decodeFloat(float4 bytes) {
     uint4 b = uint4(round(bytes * 255.0));
     return asfloat(b.x | (b.y << 8u) | (b.z << 16u) | (b.w << 24u));
 }
+uint digitSegments(uint digit) {
+    if (digit == 0u) return 0x3fu;
+    if (digit == 1u) return 0x06u;
+    if (digit == 2u) return 0x5bu;
+    if (digit == 3u) return 0x4fu;
+    if (digit == 4u) return 0x66u;
+    if (digit == 5u) return 0x6du;
+    if (digit == 6u) return 0x7du;
+    if (digit == 7u) return 0x07u;
+    if (digit == 8u) return 0x7fu;
+    return 0x6fu;
+}
+float box(float2 position2d, float2 center, float2 halfSize) {
+    float2 distance = abs(position2d - center) - halfSize;
+    return 1.0 - step(0.0, max(distance.x, distance.y));
+}
 fixed4 frag(v2f input) : SV_Target {
     uint prediction = 0u;
     float best = decodeFloat(_Logits.Load(int3(0, 0, 0)));
@@ -33,9 +49,17 @@ fixed4 frag(v2f input) : SV_Target {
         if (score > best) { best = score; prediction = digit; }
     }
     float ink = _MainTex.Sample(sampler_MainTex, input.uv).r;
-    float stripe = step(abs(input.uv.y - 0.08), 0.055);
-    float selected = step(abs(input.uv.x - (float(prediction) + 0.5) / 10.0), 0.045);
-    return float4(max(ink, stripe * selected), ink, ink, 1.0);
+    float2 glyphPosition = (input.uv - float2(0.82, 0.74)) / float2(0.13, 0.22);
+    uint segments = digitSegments(prediction);
+    float glyph = 0.0;
+    if (segments & 0x01u) glyph = max(glyph, box(glyphPosition, float2(0, 0.90), float2(0.56, 0.10)));
+    if (segments & 0x02u) glyph = max(glyph, box(glyphPosition, float2(0.66, 0.46), float2(0.10, 0.36)));
+    if (segments & 0x04u) glyph = max(glyph, box(glyphPosition, float2(0.66, -0.46), float2(0.10, 0.36)));
+    if (segments & 0x08u) glyph = max(glyph, box(glyphPosition, float2(0, -0.90), float2(0.56, 0.10)));
+    if (segments & 0x10u) glyph = max(glyph, box(glyphPosition, float2(-0.66, -0.46), float2(0.10, 0.36)));
+    if (segments & 0x20u) glyph = max(glyph, box(glyphPosition, float2(-0.66, 0.46), float2(0.10, 0.36)));
+    if (segments & 0x40u) glyph = max(glyph, box(glyphPosition, float2(0, 0), float2(0.56, 0.10)));
+    return float4(max(ink, glyph), ink * (1.0 - glyph), ink * (1.0 - glyph), 1.0);
 }
 ENDCG
 } }
