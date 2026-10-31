@@ -2,6 +2,8 @@
     .export initialState
     .export stateA
     .export stateB
+    .export argmaxState
+    .export packMaterial
     .export embedMaterial
     .export qkvMaterial
     .export attentionMaterial
@@ -9,11 +11,32 @@
     .export ffnUpMaterial
     .export ffnDownMaterial
     .export logitsMaterial
+    .export argmaxMaterial
     .export displayMaterial
+    .export promptInput
+    .export historyText
+    .export responseWords
+    .export readbackPixels
+    .export readbackFormat
+    .export sharedHistory
+    .export sharedToken0
+    .export sharedToken1
+    .export sharedToken2
+    .export sharedToken3
+    .export sharedTurn
+
+    .sync sharedHistory, none
+    .sync sharedToken0, none
+    .sync sharedToken1, none
+    .sync sharedToken2, none
+    .sync sharedToken3, none
+    .sync sharedTurn, none
 
     initialState: %UnityEngineTexture, null
     stateA: %UnityEngineRenderTexture, null
     stateB: %UnityEngineRenderTexture, null
+    argmaxState: %UnityEngineRenderTexture, null
+    packMaterial: %UnityEngineMaterial, null
     embedMaterial: %UnityEngineMaterial, null
     qkvMaterial: %UnityEngineMaterial, null
     attentionMaterial: %UnityEngineMaterial, null
@@ -21,26 +44,175 @@
     ffnUpMaterial: %UnityEngineMaterial, null
     ffnDownMaterial: %UnityEngineMaterial, null
     logitsMaterial: %UnityEngineMaterial, null
+    argmaxMaterial: %UnityEngineMaterial, null
     displayMaterial: %UnityEngineMaterial, null
+    promptInput: %UnityEngineUIInputField, null
+    historyText: %UnityEngineUIText, null
+    responseWords: %SystemStringArray, null
+    readbackPixels: %UnityEngineColor32Array, null
+    readbackFormat: %UnityEngineTextureFormat, null
 
+    sharedHistory: %SystemString, "Tiny LLaMA Device chat (16-token demo)"
+    sharedToken0: %SystemInt32, 1
+    sharedToken1: %SystemInt32, 5
+    sharedToken2: %SystemInt32, 9
+    sharedToken3: %SystemInt32, 3
+    sharedTurn: %SystemInt32, 0
+
+    onAsyncGpuReadbackCompleteRequest: %VRCSDK3RenderingVRCAsyncGPUReadbackRequest, null
+    __gameObject: %UnityEngineGameObject, this
+    __receiver: %VRCUdonUdonBehaviour, this
     __source: %UnityEngineTexture, null
     __inputName: %SystemString, "_VRC_Input"
     __logitsName: %SystemString, "_Logits"
+    __token0Name: %SystemString, "_Token0"
+    __token1Name: %SystemString, "_Token1"
+    __token2Name: %SystemString, "_Token2"
+    __token3Name: %SystemString, "_Token3"
+    __empty: %SystemString, ""
+    __newline: %SystemString, "\n"
+    __separator: %SystemString, ": "
+    __assistantPrefix: %SystemString, "\nTiny LLaMA Device: "
+    __prompt: %SystemString, null
+    __pendingHistory: %SystemString, null
+    __playerName: %SystemString, null
+    __reply: %SystemString, null
+    __stringTemp: %SystemString, null
+    __localPlayer: %VRCSDKBaseVRCPlayerApi, null
+    __length: %SystemInt32, 0
+    __vocabSize: %SystemInt32, 16
+    __prediction: %SystemInt32, 0
+    __zero: %SystemInt32, 0
+    __one: %SystemInt32, 1
+    __pixel: %UnityEngineColor32, null
+    __red: %SystemByte, null
+    __false: %SystemBoolean, null
+    __true: %SystemBoolean, null
+    __readbackOk: %SystemBoolean, null
+    __waiting: %SystemBoolean, null
+    __runtimeDispatch: %SystemBoolean, null
+    __request: %VRCSDK3RenderingVRCAsyncGPUReadbackRequest, null
 .data_end
 
 .code_start
     .export _start
     _start:
-        JUMP, __dispatch
+        JUMP, __refreshHistory
 
     .export _interact
     _interact:
-        JUMP, __dispatch
+        PUSH, __waiting
+        JUMP_IF_FALSE, __acceptPrompt
+        JUMP, 0xFFFFFFFC
 
-    __dispatch:
+    __acceptPrompt:
+        PUSH, promptInput
+        PUSH, __prompt
+        EXTERN, "UnityEngineUIInputField.__get_text__SystemString"
+        PUSH, __prompt
+        PUSH, __length
+        EXTERN, "SystemString.__get_Length__SystemInt32"
+        PUSH, __length
+        JUMP_IF_FALSE, __end
+        PUSH, __length
+        PUSH, __length
+        PUSH, __true
+        EXTERN, "SystemInt32.__op_Equality__SystemInt32_SystemInt32__SystemBoolean"
+        PUSH, __localPlayer
+        EXTERN, "VRCSDKBaseNetworking.__get_LocalPlayer__VRCSDKBaseVRCPlayerApi"
+        PUSH, __localPlayer
+        PUSH, __gameObject
+        EXTERN, "VRCSDKBaseNetworking.__SetOwner__VRCSDKBaseVRCPlayerApi_UnityEngineGameObject__SystemVoid"
+        PUSH, __localPlayer
+        PUSH, __playerName
+        EXTERN, "VRCSDKBaseVRCPlayerApi.__get_displayName__SystemString"
+
+        PUSH, sharedToken1
+        PUSH, sharedToken0
+        COPY
+        PUSH, sharedToken2
+        PUSH, sharedToken1
+        COPY
+        PUSH, sharedToken3
+        PUSH, sharedToken2
+        COPY
+        PUSH, __length
+        PUSH, __vocabSize
+        PUSH, sharedToken3
+        EXTERN, "SystemInt32.__op_Modulus__SystemInt32_SystemInt32__SystemInt32"
+        PUSH, packMaterial
+        PUSH, __token0Name
+        PUSH, sharedToken0
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, packMaterial
+        PUSH, __token1Name
+        PUSH, sharedToken1
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, packMaterial
+        PUSH, __token2Name
+        PUSH, sharedToken2
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, packMaterial
+        PUSH, __token3Name
+        PUSH, sharedToken3
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, packMaterial
+        PUSH, __inputName
+        PUSH, initialState
+        EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
+        PUSH, initialState
+        PUSH, stateA
+        PUSH, packMaterial
+        EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"
+        PUSH, stateA
+        PUSH, __source
+        COPY
+
+        PUSH, sharedHistory
+        PUSH, __newline
+        PUSH, __stringTemp
+        EXTERN, "SystemString.__op_Addition__SystemString_SystemString__SystemString"
+        PUSH, __stringTemp
+        PUSH, __playerName
+        PUSH, __pendingHistory
+        EXTERN, "SystemString.__op_Addition__SystemString_SystemString__SystemString"
+        PUSH, __pendingHistory
+        PUSH, __separator
+        PUSH, __stringTemp
+        EXTERN, "SystemString.__op_Addition__SystemString_SystemString__SystemString"
+        PUSH, __stringTemp
+        PUSH, __prompt
+        PUSH, __pendingHistory
+        EXTERN, "SystemString.__op_Addition__SystemString_SystemString__SystemString"
+        PUSH, __pendingHistory
+        PUSH, __assistantPrefix
+        PUSH, __stringTemp
+        EXTERN, "SystemString.__op_Addition__SystemString_SystemString__SystemString"
+        PUSH, __stringTemp
+        PUSH, __pendingHistory
+        COPY
+        PUSH, promptInput
+        PUSH, __empty
+        EXTERN, "UnityEngineUIInputField.__set_text__SystemString__SystemVoid"
+        PUSH, __true
+        PUSH, __waiting
+        COPY
+        PUSH, __true
+        PUSH, __runtimeDispatch
+        COPY
+        JUMP, __dispatchDevice
+
+    .export _runDeviceFixture
+    _runDeviceFixture:
         PUSH, initialState
         PUSH, __source
         COPY
+        PUSH, __false
+        PUSH, __runtimeDispatch
+        COPY
+        JUMP, __dispatchDevice
+
+    __dispatchDevice:
         PUSH, embedMaterial
         PUSH, __inputName
         PUSH, __source
@@ -49,7 +221,6 @@
         PUSH, stateB
         PUSH, embedMaterial
         EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"
-
         PUSH, stateB
         PUSH, __source
         COPY
@@ -61,7 +232,6 @@
         PUSH, stateA
         PUSH, qkvMaterial
         EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"
-
         PUSH, stateA
         PUSH, __source
         COPY
@@ -73,7 +243,6 @@
         PUSH, stateB
         PUSH, attentionMaterial
         EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"
-
         PUSH, stateB
         PUSH, __source
         COPY
@@ -85,7 +254,6 @@
         PUSH, stateA
         PUSH, projectMaterial
         EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"
-
         PUSH, stateA
         PUSH, __source
         COPY
@@ -97,7 +265,6 @@
         PUSH, stateB
         PUSH, ffnUpMaterial
         EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"
-
         PUSH, stateB
         PUSH, __source
         COPY
@@ -109,7 +276,6 @@
         PUSH, stateA
         PUSH, ffnDownMaterial
         EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"
-
         PUSH, stateA
         PUSH, __source
         COPY
@@ -121,7 +287,6 @@
         PUSH, stateB
         PUSH, logitsMaterial
         EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"
-
         PUSH, stateB
         PUSH, __source
         COPY
@@ -129,5 +294,91 @@
         PUSH, __logitsName
         PUSH, __source
         EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
+        PUSH, __runtimeDispatch
+        JUMP_IF_FALSE, __end
+        PUSH, argmaxMaterial
+        PUSH, __logitsName
+        PUSH, stateB
+        EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
+        PUSH, stateB
+        PUSH, argmaxState
+        PUSH, argmaxMaterial
+        EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"
+        PUSH, argmaxState
+        PUSH, __zero
+        PUSH, readbackFormat
+        PUSH, __receiver
+        PUSH, __request
+        EXTERN, "VRCSDK3RenderingVRCAsyncGPUReadback.__Request__UnityEngineTexture_SystemInt32_UnityEngineTextureFormat_VRCUdonCommonInterfacesIUdonEventReceiver__VRCSDK3RenderingVRCAsyncGPUReadbackRequest"
+        JUMP, 0xFFFFFFFC
+
+    .export _onAsyncGpuReadbackComplete
+    _onAsyncGpuReadbackComplete:
+        PUSH, onAsyncGpuReadbackCompleteRequest
+        PUSH, readbackPixels
+        PUSH, __zero
+        PUSH, __readbackOk
+        EXTERN, "VRCSDK3RenderingVRCAsyncGPUReadbackRequest.__TryGetData__UnityEngineColor32Array_SystemInt32__SystemBoolean"
+        PUSH, __readbackOk
+        JUMP_IF_FALSE, __readbackFailed
+        PUSH, readbackPixels
+        PUSH, __zero
+        PUSH, __pixel
+        EXTERN, "UnityEngineColor32Array.__Get__SystemInt32__UnityEngineColor32"
+        PUSH, __pixel
+        PUSH, __red
+        EXTERN, "UnityEngineColor32.__get_r__SystemByte"
+        PUSH, __red
+        PUSH, __prediction
+        EXTERN, "SystemConvert.__ToInt32__SystemByte__SystemInt32"
+        PUSH, responseWords
+        PUSH, __prediction
+        PUSH, __reply
+        EXTERN, "SystemStringArray.__Get__SystemInt32__SystemString"
+        PUSH, sharedToken1
+        PUSH, sharedToken0
+        COPY
+        PUSH, sharedToken2
+        PUSH, sharedToken1
+        COPY
+        PUSH, sharedToken3
+        PUSH, sharedToken2
+        COPY
+        PUSH, __prediction
+        PUSH, sharedToken3
+        COPY
+        PUSH, __pendingHistory
+        PUSH, __reply
+        PUSH, sharedHistory
+        EXTERN, "SystemString.__op_Addition__SystemString_SystemString__SystemString"
+        PUSH, sharedTurn
+        PUSH, __one
+        PUSH, sharedTurn
+        EXTERN, "SystemInt32.__op_Addition__SystemInt32_SystemInt32__SystemInt32"
+        PUSH, historyText
+        PUSH, sharedHistory
+        EXTERN, "UnityEngineUIText.__set_text__SystemString__SystemVoid"
+        PUSH, __receiver
+        EXTERN, "VRCUdonCommonInterfacesIUdonEventReceiver.__RequestSerialization__SystemVoid"
+        PUSH, __false
+        PUSH, __waiting
+        COPY
+        JUMP, 0xFFFFFFFC
+
+    __readbackFailed:
+        PUSH, __false
+        PUSH, __waiting
+        COPY
+        JUMP, 0xFFFFFFFC
+
+    .export _onDeserialization
+    _onDeserialization:
+        JUMP, __refreshHistory
+
+    __refreshHistory:
+        PUSH, historyText
+        PUSH, sharedHistory
+        EXTERN, "UnityEngineUIText.__set_text__SystemString__SystemVoid"
+    __end:
         JUMP, 0xFFFFFFFC
 .code_end

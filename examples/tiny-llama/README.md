@@ -26,3 +26,15 @@ python examples/tiny-llama/run_device.py --build-dir build/udoncl
 Each active output is owned by a separate fragment. The native fragment test
 compares all 16 logits for four prompts and eight greedy generation steps
 against the C model.
+
+The generated Unity prefab also contains a world-space chat panel. A player
+types a prompt locally and then interacts with the panel. That client takes
+ownership, maps the prompt into the fixture's 16-token vocabulary, runs the
+seven Device passes, and obtains the Device argmax through
+`VRCAsyncGPUReadback`. Only the completed prompt/response turn and four-token
+context are manually synchronized. Other clients update their history in
+`_onDeserialization`; they do not repeat the inference.
+
+This UI proves the ownership, asynchronous continuation, and shared-history
+shape needed by a larger model. Its replies remain deliberately toy-sized and
+should not be presented as a useful pretrained conversational model.

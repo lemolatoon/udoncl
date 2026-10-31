@@ -3,6 +3,7 @@ using System.IO;
 using NUnit.Framework;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.UI;
 using VRC.Udon;
 using VRC.Udon.Common.Interfaces;
 using VRC.Udon.Editor;
@@ -55,7 +56,41 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             Assert.NotNull(display);
             Assert.That(display.localScale.z, Is.GreaterThan(0.0f));
             Assert.IsNull(display.GetComponent<Collider>());
-            Assert.NotNull(prefab.GetComponent<UdonBehaviour>());
+            UdonBehaviour behaviour = prefab.GetComponent<UdonBehaviour>();
+            Assert.NotNull(behaviour);
+            object syncMethod = typeof(UdonBehaviour)
+                .GetProperty("SyncMethod")
+                ?.GetValue(behaviour);
+            Assert.NotNull(syncMethod);
+            Assert.AreEqual("Manual", syncMethod.ToString());
+            Assert.NotNull(prefab.GetComponent<BoxCollider>());
+            Assert.NotNull(prefab.GetComponentInChildren<Canvas>(true));
+            Assert.NotNull(prefab.GetComponentInChildren<InputField>(true));
+            Assert.NotNull(
+                prefab.transform.Find("Shared world chat/Chat panel/Shared conversation history")
+            );
+            Assert.IsTrue(
+                behaviour.publicVariables.TryGetVariableValue("promptInput", out InputField input)
+            );
+            Assert.NotNull(input);
+            Assert.IsTrue(
+                behaviour.publicVariables.TryGetVariableValue("historyText", out Text history)
+            );
+            Assert.NotNull(history);
+            Assert.IsTrue(
+                behaviour.publicVariables.TryGetVariableValue(
+                    "responseWords",
+                    out string[] responseWords
+                )
+            );
+            Assert.AreEqual(16, responseWords.Length);
+            Assert.IsTrue(
+                behaviour.publicVariables.TryGetVariableValue(
+                    "readbackPixels",
+                    out Color32[] readbackPixels
+                )
+            );
+            Assert.AreEqual(1, readbackPixels.Length);
         }
 
         [Test]
@@ -108,7 +143,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             for (int index = 0; index < symbols.Length; ++index)
                 Set(heap, program, symbols[index], Load<Material>("Materials/" + kernels[index]));
             Set(heap, program, "displayMaterial", Load<Material>("Materials/display.mat"));
-            vm.SetProgramCounter(program.EntryPoints.GetAddressFromSymbol("_start"));
+            vm.SetProgramCounter(program.EntryPoints.GetAddressFromSymbol("_runDeviceFixture"));
             Assert.AreEqual(0u, vm.Interpret(), "SDK IUdonVM rejected the Device dispatch host.");
 
             Texture2D reference = Load<Texture2D>("Textures/tiny_llama_reference_logits.asset");
@@ -130,6 +165,41 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             Assert.That(maximumError, Is.LessThan(0.002f));
             Assert.AreEqual(expectedToken, actualToken);
             Assert.AreEqual(2, actualToken);
+
+            Material argmaxMaterial = Load<Material>("Materials/tiny_llama_argmax.mat");
+            RenderTexture argmax = Load<RenderTexture>("RenderTextures/tiny_llama_argmax.asset");
+            argmaxMaterial.SetTexture("_Logits", stateB);
+            Graphics.Blit(stateB, argmax, argmaxMaterial);
+            Color32 encodedPrediction = ReadPixels(argmax, 1)[0];
+            Assert.AreEqual(actualToken, encodedPrediction.r);
+        }
+
+        [Test]
+        public void HostAssemblyMakesTheInputterOwnerAndRemoteClientsOnlyRefreshHistory()
+        {
+            string sourcePath = Path.GetFullPath(GeneratedRoot + "/Sources/host.uasm.txt");
+            string assembly = File.ReadAllText(sourcePath);
+            StringAssert.Contains(".sync sharedHistory, none", assembly);
+            StringAssert.Contains(".sync sharedToken3, none", assembly);
+            int ownership = assembly.IndexOf(
+                "VRCSDKBaseNetworking.__SetOwner__VRCSDKBaseVRCPlayerApi_UnityEngineGameObject__SystemVoid",
+                StringComparison.Ordinal
+            );
+            int dispatch = assembly.IndexOf("JUMP, __dispatchDevice", StringComparison.Ordinal);
+            Assert.That(ownership, Is.GreaterThanOrEqualTo(0));
+            Assert.That(dispatch, Is.GreaterThan(ownership));
+            StringAssert.Contains("VRCSDK3RenderingVRCAsyncGPUReadback.__Request__", assembly);
+            StringAssert.Contains(
+                "VRCUdonCommonInterfacesIUdonEventReceiver.__RequestSerialization__SystemVoid",
+                assembly
+            );
+            int deserialization = assembly.IndexOf(
+                ".export _onDeserialization",
+                StringComparison.Ordinal
+            );
+            string remotePath = assembly.Substring(deserialization);
+            StringAssert.Contains("JUMP, __refreshHistory", remotePath);
+            StringAssert.DoesNotContain("JUMP, __dispatchDevice", remotePath);
         }
 
         [OneTimeTearDown]
@@ -152,14 +222,14 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 );
         }
 
-        private static Color32[] ReadPixels(RenderTexture source)
+        private static Color32[] ReadPixels(RenderTexture source, int width = 2048)
         {
             RenderTexture previous = RenderTexture.active;
-            Texture2D pixels = new Texture2D(2048, 1, TextureFormat.RGBA32, false, true);
+            Texture2D pixels = new Texture2D(width, 1, TextureFormat.RGBA32, false, true);
             try
             {
                 RenderTexture.active = source;
-                pixels.ReadPixels(new Rect(0, 0, 2048, 1), 0, 0);
+                pixels.ReadPixels(new Rect(0, 0, width, 1), 0, 0);
                 pixels.Apply(false, false);
                 return pixels.GetPixels32();
             }

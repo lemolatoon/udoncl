@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.UI;
 using VRC.Udon;
 using VRC.Udon.Common;
 using VRC.Udon.Common.Interfaces;
@@ -305,6 +306,38 @@ namespace Lemolatoon.Udoncl.Editor
                     );
                 passes[index] = material;
             }
+            ValidatedResource packShaderResource = FindResource(artifacts, "prompt_pack", "shader");
+            ValidatedResource argmaxShaderResource = FindResource(
+                artifacts,
+                "argmax_readback",
+                "shader"
+            );
+            string packShaderPath = programRoot + "/Shaders/prompt-pack.shader";
+            transaction.CopyFile(packShaderResource.AbsolutePath, packShaderPath);
+            Shader packShader = AssetDatabase.LoadAssetAtPath<Shader>(packShaderPath);
+            if (packShader == null)
+                throw new InvalidDataException(
+                    "Unity could not import Tiny LLaMA prompt pack shader: " + packShaderPath
+                );
+            Material packMaterial = CreateOrUpdateNamedMaterial(
+                transaction,
+                programRoot,
+                "tiny_llama_prompt_pack.mat",
+                packShader
+            );
+            string argmaxShaderPath = programRoot + "/Shaders/argmax-readback.shader";
+            transaction.CopyFile(argmaxShaderResource.AbsolutePath, argmaxShaderPath);
+            Shader argmaxShader = AssetDatabase.LoadAssetAtPath<Shader>(argmaxShaderPath);
+            if (argmaxShader == null)
+                throw new InvalidDataException(
+                    "Unity could not import Tiny LLaMA argmax shader: " + argmaxShaderPath
+                );
+            Material argmaxMaterial = CreateOrUpdateNamedMaterial(
+                transaction,
+                programRoot,
+                "tiny_llama_argmax.mat",
+                argmaxShader
+            );
             ValidatedResource packedResource = FindResource(artifacts, "packed_state", "bytes");
             ValidatedResource referenceResource = FindResource(
                 artifacts,
@@ -341,6 +374,13 @@ namespace Lemolatoon.Udoncl.Editor
                 2048,
                 1
             );
+            RenderTexture argmaxState = CreateOrUpdateRgbaRenderTexture(
+                transaction,
+                programRoot,
+                "tiny_llama_argmax.asset",
+                1,
+                1
+            );
             displayMaterial.SetTexture("_Logits", stateB);
             EditorUtility.SetDirty(displayMaterial);
             CreateOrUpdateTinyLlamaPrefab(
@@ -350,7 +390,10 @@ namespace Lemolatoon.Udoncl.Editor
                 initialState,
                 stateA,
                 stateB,
+                argmaxState,
+                packMaterial,
                 passes,
+                argmaxMaterial,
                 displayMaterial
             );
         }
@@ -884,7 +927,10 @@ namespace Lemolatoon.Udoncl.Editor
             Texture initialState,
             RenderTexture stateA,
             RenderTexture stateB,
+            RenderTexture argmaxState,
+            Material packMaterial,
             IReadOnlyList<Material> passes,
+            Material argmaxMaterial,
             Material displayMaterial
         )
         {
@@ -896,14 +942,18 @@ namespace Lemolatoon.Udoncl.Editor
             try
             {
                 root.transform.position = new Vector3(14.0f, 1.5f, 0.0f);
+                BoxCollider collider = root.AddComponent<BoxCollider>();
+                collider.size = new Vector3(4.4f, 2.8f, 0.5f);
                 UdonBehaviour behaviour = root.AddComponent<UdonBehaviour>();
                 behaviour.programSource = programAsset;
-                behaviour.interactText = "Run Tiny LLaMA";
+                behaviour.interactText = "Submit Tiny LLaMA prompt";
                 behaviour.proximity = 3.0f;
-                behaviour.SyncMethod = SyncType.None;
+                behaviour.SyncMethod = SyncType.Manual;
                 SetPublicVariable(behaviour, "initialState", initialState);
                 SetPublicVariable(behaviour, "stateA", stateA);
                 SetPublicVariable(behaviour, "stateB", stateB);
+                SetPublicVariable(behaviour, "argmaxState", argmaxState);
+                SetPublicVariable(behaviour, "packMaterial", packMaterial);
                 string[] symbols =
                 {
                     "embedMaterial",
@@ -916,7 +966,10 @@ namespace Lemolatoon.Udoncl.Editor
                 };
                 for (int index = 0; index < symbols.Length; ++index)
                     SetPublicVariable(behaviour, symbols[index], passes[index]);
+                SetPublicVariable(behaviour, "argmaxMaterial", argmaxMaterial);
                 SetPublicVariable(behaviour, "displayMaterial", displayMaterial);
+                SetPublicVariable(behaviour, "readbackFormat", TextureFormat.RGBA32);
+                CreateTinyLlamaChatUi(root, behaviour);
                 SerializedObject serializedBehaviour = new SerializedObject(behaviour);
                 serializedBehaviour.FindProperty("serializedProgramAsset").objectReferenceValue =
                     programAsset.SerializedProgramAsset;
@@ -926,6 +979,7 @@ namespace Lemolatoon.Udoncl.Editor
                 display.name = "Tiny LLaMA logits and predicted token";
                 display.transform.SetParent(root.transform, false);
                 display.transform.localScale = new Vector3(4.0f, 2.0f, 0.12f);
+                display.transform.localPosition = new Vector3(0.0f, 0.0f, 0.08f);
                 Collider displayCollider = display.GetComponent<Collider>();
                 if (displayCollider != null)
                     UnityEngine.Object.DestroyImmediate(displayCollider);
@@ -941,6 +995,126 @@ namespace Lemolatoon.Udoncl.Editor
             {
                 UnityEngine.Object.DestroyImmediate(root);
             }
+        }
+
+        private static void CreateTinyLlamaChatUi(GameObject root, UdonBehaviour behaviour)
+        {
+            Font font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            GameObject canvasObject = new GameObject("Shared world chat");
+            canvasObject.transform.SetParent(root.transform, false);
+            Canvas canvas = canvasObject.AddComponent<Canvas>();
+            canvas.renderMode = RenderMode.WorldSpace;
+            canvasObject.AddComponent<CanvasScaler>();
+            canvasObject.AddComponent<GraphicRaycaster>();
+            Type uiShapeType = typeof(VRC.SDKBase.VRCPlayerApi).Assembly.GetType(
+                "VRC.SDKBase.VRC_UiShape"
+            );
+            if (uiShapeType == null)
+                throw new InvalidOperationException("The Worlds SDK did not provide VRC_UiShape.");
+            canvasObject.AddComponent(uiShapeType);
+            RectTransform canvasRect = canvas.GetComponent<RectTransform>();
+            canvasRect.sizeDelta = new Vector2(800.0f, 520.0f);
+            canvasRect.localScale = Vector3.one * 0.005f;
+            canvasRect.localPosition = new Vector3(0.0f, 0.0f, -0.1f);
+
+            GameObject panel = CreateUiObject("Chat panel", canvasObject.transform);
+            Image panelImage = panel.AddComponent<Image>();
+            panelImage.color = new Color(0.015f, 0.025f, 0.05f, 0.92f);
+            Stretch(panel.GetComponent<RectTransform>(), 0.0f, 0.0f, 0.0f, 0.0f);
+
+            GameObject historyObject = CreateUiObject(
+                "Shared conversation history",
+                panel.transform
+            );
+            Text history = historyObject.AddComponent<Text>();
+            history.font = font;
+            history.fontSize = 28;
+            history.color = Color.white;
+            history.alignment = TextAnchor.UpperLeft;
+            history.horizontalOverflow = HorizontalWrapMode.Wrap;
+            history.verticalOverflow = VerticalWrapMode.Truncate;
+            Stretch(historyObject.GetComponent<RectTransform>(), 24.0f, 24.0f, 24.0f, 112.0f);
+
+            GameObject inputObject = CreateUiObject("Local prompt input", panel.transform);
+            Image inputBackground = inputObject.AddComponent<Image>();
+            inputBackground.color = new Color(0.1f, 0.14f, 0.22f, 1.0f);
+            RectTransform inputRect = inputObject.GetComponent<RectTransform>();
+            inputRect.anchorMin = new Vector2(0.0f, 0.0f);
+            inputRect.anchorMax = new Vector2(1.0f, 0.0f);
+            inputRect.pivot = new Vector2(0.5f, 0.0f);
+            inputRect.offsetMin = new Vector2(24.0f, 24.0f);
+            inputRect.offsetMax = new Vector2(-24.0f, 92.0f);
+            InputField input = inputObject.AddComponent<InputField>();
+            input.characterLimit = 160;
+            input.lineType = InputField.LineType.SingleLine;
+
+            GameObject textObject = CreateUiObject("Text", inputObject.transform);
+            Text inputText = textObject.AddComponent<Text>();
+            inputText.font = font;
+            inputText.fontSize = 26;
+            inputText.color = Color.white;
+            inputText.alignment = TextAnchor.MiddleLeft;
+            Stretch(textObject.GetComponent<RectTransform>(), 14.0f, 14.0f, 8.0f, 8.0f);
+            input.textComponent = inputText;
+
+            GameObject placeholderObject = CreateUiObject("Placeholder", inputObject.transform);
+            Text placeholder = placeholderObject.AddComponent<Text>();
+            placeholder.font = font;
+            placeholder.fontSize = 24;
+            placeholder.fontStyle = FontStyle.Italic;
+            placeholder.color = new Color(0.7f, 0.75f, 0.82f, 0.7f);
+            placeholder.alignment = TextAnchor.MiddleLeft;
+            placeholder.text = "Type locally, then interact with the panel to submit";
+            Stretch(placeholderObject.GetComponent<RectTransform>(), 14.0f, 14.0f, 8.0f, 8.0f);
+            input.placeholder = placeholder;
+
+            SetPublicVariable(behaviour, "promptInput", input);
+            SetPublicVariable(behaviour, "historyText", history);
+            SetPublicVariable(
+                behaviour,
+                "responseWords",
+                new[]
+                {
+                    "<pad>",
+                    "hello",
+                    "world",
+                    "yes",
+                    "no",
+                    "I",
+                    "you",
+                    "like",
+                    "VRChat",
+                    "GPU",
+                    "water",
+                    "ice",
+                    "tell",
+                    "more",
+                    "thanks",
+                    ".",
+                }
+            );
+            SetPublicVariable(behaviour, "readbackPixels", new Color32[1]);
+        }
+
+        private static GameObject CreateUiObject(string name, Transform parent)
+        {
+            GameObject result = new GameObject(name, typeof(RectTransform));
+            result.transform.SetParent(parent, false);
+            return result;
+        }
+
+        private static void Stretch(
+            RectTransform transform,
+            float left,
+            float right,
+            float bottom,
+            float top
+        )
+        {
+            transform.anchorMin = Vector2.zero;
+            transform.anchorMax = Vector2.one;
+            transform.offsetMin = new Vector2(left, bottom);
+            transform.offsetMax = new Vector2(-right, -top);
         }
 
         private static void SetPublicVariable<T>(UdonBehaviour behaviour, string symbol, T value)

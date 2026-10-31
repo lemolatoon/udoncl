@@ -206,6 +206,8 @@ def main():
         (staged / "kernels").mkdir(parents=True)
         shutil.copy2(source / "host.uasm", staged / "host.uasm")
         shutil.copy2(source / "display.shader", staged / "display.shader")
+        shutil.copy2(source / "prompt-pack.shader", staged / "prompt-pack.shader")
+        shutil.copy2(source / "argmax-readback.shader", staged / "argmax-readback.shader")
         for name, identifier, _ in kernels:
             shutil.copy2(
                 bundles[identifier] / f"kernels/kernel_{identifier}.shader",
@@ -239,7 +241,7 @@ def main():
                     "c_symbol": "tiny_llama_gpu_predict",
                     "udon_event": "_interact",
                     "status_slot": "",
-                    "async": False,
+                    "async": True,
                 }
             ],
             "device": {
@@ -253,6 +255,16 @@ def main():
                 ]
             },
             "resources": [
+                {
+                    "name": "prompt_pack",
+                    "kind": "shader",
+                    "path": "prompt-pack.shader",
+                },
+                {
+                    "name": "argmax_readback",
+                    "kind": "shader",
+                    "path": "argmax-readback.shader",
+                },
                 {"name": "packed_state", "kind": "bytes", "path": "packed_state.bytes"},
                 {
                     "name": "reference_logits",
