@@ -1,3 +1,4 @@
+using System;
 using System.IO;
 using NUnit.Framework;
 using UnityEditor;
@@ -7,6 +8,7 @@ using VRC.Udon;
 using VRC.Udon.Common.Interfaces;
 using VRC.Udon.Editor;
 using VRC.Udon.Editor.ProgramSources;
+using Object = UnityEngine.Object;
 
 namespace Lemolatoon.Udoncl.Editor.Tests
 {
@@ -128,7 +130,8 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 Load<RenderTexture>("mnist_drawing_scratch.asset")
             );
             Set(heap, program, "packedState", Load<RenderTexture>("mnist_packed.asset"));
-            Set(heap, program, "logitsState", Load<RenderTexture>("mnist_logits.asset"));
+            RenderTexture logits = Load<RenderTexture>("mnist_logits.asset");
+            Set(heap, program, "logitsState", logits);
             Set(heap, program, "packMaterial", Load<Material>("../Materials/mnist_pack.mat"));
             Set(heap, program, "brushMaterial", Load<Material>("../Materials/mnist_brush.mat"));
             Set(
@@ -160,15 +163,70 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             Set(heap, program, "rightFinger", HumanBodyBones.RightIndexDistal);
             vm.SetProgramCounter(program.EntryPoints.GetAddressFromSymbol("_start"));
             Assert.AreEqual(0u, vm.Interpret(), "SDK IUdonVM rejected the Device dispatch host.");
+
+            Texture2D reference = AssetDatabase.LoadAssetAtPath<Texture2D>(
+                GeneratedRoot + "/Textures/mnist_reference_blank_logits.asset"
+            );
+            Assert.NotNull(reference);
+            Color32[] expected = reference.GetPixels32();
+            Color32[] actual = ReadPixels(logits);
+            float maximumError = 0.0f;
+            int expectedDigit = 0;
+            int actualDigit = 0;
+            for (int digit = 0; digit < 10; ++digit)
+            {
+                float expectedValue = Decode(expected[digit]);
+                float actualValue = Decode(actual[digit]);
+                maximumError = Mathf.Max(maximumError, Mathf.Abs(expectedValue - actualValue));
+                if (expectedValue > Decode(expected[expectedDigit]))
+                    expectedDigit = digit;
+                if (actualValue > Decode(actual[actualDigit]))
+                    actualDigit = digit;
+            }
+            Assert.That(maximumError, Is.LessThan(0.02f));
+            Assert.AreEqual(expectedDigit, actualDigit);
         }
 
         [OneTimeTearDown]
         public void RemoveGeneratedUnityAssets()
         {
             RenderTexture.active = null;
+            string programPath = GeneratedRoot + "/Programs/host_program.asset";
+            string programGuid = AssetDatabase.AssetPathToGUID(programPath);
             AssetDatabase.DeleteAsset(GeneratedRoot);
+            string serializedProgramPath = string.IsNullOrEmpty(programGuid)
+                ? null
+                : "Assets/SerializedUdonPrograms/" + programGuid + ".asset";
+            if (serializedProgramPath != null)
+                AssetDatabase.DeleteAsset(serializedProgramPath);
             AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
             Assert.IsNull(AssetDatabase.LoadAssetAtPath<Object>(GeneratedRoot));
+            if (serializedProgramPath != null)
+                Assert.IsNull(AssetDatabase.LoadAssetAtPath<Object>(serializedProgramPath));
+        }
+
+        private static Color32[] ReadPixels(RenderTexture source)
+        {
+            RenderTexture previous = RenderTexture.active;
+            Texture2D pixels = new Texture2D(10800, 1, TextureFormat.RGBA32, false, true);
+            try
+            {
+                RenderTexture.active = source;
+                pixels.ReadPixels(new Rect(0, 0, 10800, 1), 0, 0);
+                pixels.Apply(false, false);
+                return pixels.GetPixels32();
+            }
+            finally
+            {
+                RenderTexture.active = previous;
+                Object.DestroyImmediate(pixels);
+            }
+        }
+
+        private static float Decode(Color32 bytes)
+        {
+            int bits = bytes.r | (bytes.g << 8) | (bytes.b << 16) | (bytes.a << 24);
+            return BitConverter.ToSingle(BitConverter.GetBytes(bits), 0);
         }
 
         private static T Load<T>(string path)

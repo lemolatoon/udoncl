@@ -196,12 +196,28 @@ def main():
                 staged / f"kernels/kernel_{identifier}.shader",
             )
         header = (source / "weights.h").read_text(encoding="utf-8")
+        conv_weights = read_weight_array(header, "kMnistConvWeight", 400)
+        conv_bias = read_weight_array(header, "kMnistConvBias", 16)
+        dense_weights = read_weight_array(header, "kMnistDenseWeight", 1440)
+        dense_bias = read_weight_array(header, "kMnistDenseBias", 10)
         packed = [0.0] * 10800
-        packed[784:1184] = read_weight_array(header, "kMnistConvWeight", 400)
-        packed[1184:1200] = read_weight_array(header, "kMnistConvBias", 16)
-        packed[1200:2640] = read_weight_array(header, "kMnistDenseWeight", 1440)
-        packed[2640:2650] = read_weight_array(header, "kMnistDenseBias", 10)
+        packed[784:1184] = conv_weights
+        packed[1184:1200] = conv_bias
+        packed[1200:2640] = dense_weights
+        packed[2640:2650] = dense_bias
         (staged / "weights.bytes").write_bytes(struct.pack("<10800f", *packed))
+        blank_pooled = [max(conv_bias[feature % 16], 0.0) for feature in range(144)]
+        blank_logits = [
+            dense_bias[digit]
+            + sum(
+                dense_weights[digit * 144 + feature] * blank_pooled[feature]
+                for feature in range(144)
+            )
+            for digit in range(10)
+        ]
+        (staged / "reference_blank_logits.bytes").write_bytes(
+            struct.pack("<10f", *blank_logits)
+        )
         unity_manifest = {
             "schema_version": 1,
             "compiler_version": "0.1.0-dev",
@@ -242,6 +258,11 @@ def main():
                     "name": "packed_weights",
                     "kind": "bytes",
                     "path": "weights.bytes",
+                },
+                {
+                    "name": "reference_blank_logits",
+                    "kind": "bytes",
+                    "path": "reference_blank_logits.bytes",
                 },
             ],
         }

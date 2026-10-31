@@ -189,6 +189,11 @@ namespace Lemolatoon.Udoncl.Editor
             ValidatedResource packShaderResource = FindResource(artifacts, "pack_input", "shader");
             ValidatedResource brushShaderResource = FindResource(artifacts, "brush", "shader");
             ValidatedResource weightsResource = FindResource(artifacts, "packed_weights", "bytes");
+            ValidatedResource referenceResource = FindResource(
+                artifacts,
+                "reference_blank_logits",
+                "bytes"
+            );
             string packShaderPath = programRoot + "/Shaders/pack.shader";
             transaction.CopyFile(packShaderResource.AbsolutePath, packShaderPath);
             Shader packShader = AssetDatabase.LoadAssetAtPath<Shader>(packShaderPath);
@@ -222,6 +227,14 @@ namespace Lemolatoon.Udoncl.Editor
                 10800,
                 1,
                 File.ReadAllBytes(weightsResource.AbsolutePath)
+            );
+            CreateOrUpdateByteTexture(
+                transaction,
+                programRoot,
+                "mnist_reference_blank_logits.asset",
+                10,
+                1,
+                File.ReadAllBytes(referenceResource.AbsolutePath)
             );
             packMaterial.SetTexture("_Weights", weights);
             EditorUtility.SetDirty(packMaterial);
