@@ -1,7 +1,8 @@
 # UdonBLAS
 
 UdonBLAS is the BLAS layer built on UdonCL. Its public C API follows the cuBLAS
-column-major operand contract while using 32-bit Udon-safe opaque handles.
+13.0 column-major operand contract while using 32-bit Udon-safe opaque handles.
+The pinned reference is the NVIDIA cuBLAS 13.0 API documentation.
 
 `udonblasSaxpy` is the first Level-1 primitive. One fragment owns each logical
 vector element for `y = alpha * x + y`; non-unit and negative increments are
@@ -18,11 +19,18 @@ one serialized handle per UdonBehaviour instance. These are profile limits,
 not intended API limits; tiled multi-pass kernels will lift them without
 changing the function signature.
 
+`udonblasSgemv` is the first Level-2 primitive and matches the CUDA 13.0
+`cublasSgemv` signature. One fragment owns each output vector element. N, T,
+and real-valued C transpose modes, padded leading dimensions, non-unit positive
+and negative vector increments, and alpha/beta accumulation are supported. The
+initial Device profile accepts matrix dimensions up to 16x16; larger valid
+inputs return `UDONBLAS_STATUS_NOT_SUPPORTED` without changing the API.
+
 Quantized PyTorch operators are not cuBLAS extensions. They are implemented by
 UdonATen using the corresponding ATen/TorchAO packed-weight contracts.
 
-The build emits separate `unity-bundle` and `unity-saxpy-bundle` artifacts.
-Both are accepted by the UPM importer. Their
+The build emits separate `unity-bundle`, `unity-sgemv-bundle`, and
+`unity-saxpy-bundle` artifacts. All are accepted by the UPM importer. Their
 generated shaders, UdonAsm hosts, prefab configurations, and numerical fixtures
 are validated by the SDK IUdonVM lifecycle suite; the SAXPY fixture also covers
 a negative input increment and a non-unit output increment.
@@ -34,6 +42,7 @@ python libraries/udonblas/run_device.py --build-dir build/udoncl
 ```
 
 The validation covers SAXPY with unit, non-unit, negative, and maximum-length
-vectors; rectangular SGEMM matrices, both transpose flags,
+vectors; SGEMV with N/T/C, padded leading dimensions and signed strides;
+rectangular SGEMM matrices, all real transpose modes,
 non-unit alpha/beta, padded leading dimensions, invalid arguments, OpenCL object cleanup,
 and comparison against independent CPU references.

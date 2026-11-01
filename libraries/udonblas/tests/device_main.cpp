@@ -6,12 +6,24 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include "Bindings.h"
 
+using SgemvSignature = udonblasStatus_t (*)(udonblasHandle_t,
+                                            udonblasOperation_t, int, int,
+                                            const float *, const float *, int,
+                                            const float *, int, const float *,
+                                            float *, int);
+static_assert(std::is_same_v<decltype(&udonblasSgemv), SgemvSignature>);
+static_assert(UDONBLAS_OP_N == 0 && UDONBLAS_OP_T == 1 && UDONBLAS_OP_C == 2);
+static_assert(UDONBLAS_STATUS_NOT_SUPPORTED == 15);
+
 extern "C" size_t udonblas_cpu_gid;
 size_t udonblas_cpu_gid;
+extern "C" size_t udonblas_sgemv_cpu_gid;
+size_t udonblas_sgemv_cpu_gid;
 extern "C" size_t udonblas_saxpy_cpu_gid;
 size_t udonblas_saxpy_cpu_gid;
 
@@ -25,6 +37,12 @@ struct Case {
 struct SaxpyCase {
   int n, incx, incy;
   float alpha;
+};
+
+struct GemvCase {
+  udonblasOperation_t trans;
+  int m, n, lda, incx, incy;
+  float alpha, beta;
 };
 
 int storedWords(udonblasOperation_t operation, int rows, int columns,
@@ -62,24 +80,43 @@ void require(udonblasStatus_t actual, udonblasStatus_t expected,
                              std::to_string(expected));
 }
 
+void gemvReference(const GemvCase &test, const std::vector<float> &a,
+                   const std::vector<float> &x, std::vector<float> &y) {
+  int inputLength = test.trans == UDONBLAS_OP_N ? test.n : test.m;
+  int outputLength = test.trans == UDONBLAS_OP_N ? test.m : test.n;
+  int xStart = test.incx < 0 ? (1 - inputLength) * test.incx : 0;
+  int yStart = test.incy < 0 ? (1 - outputLength) * test.incy : 0;
+  for (int row = 0; row < outputLength; ++row) {
+    float sum = 0.0f;
+    for (int inner = 0; inner < inputLength; ++inner) {
+      int matrixIndex = test.trans == UDONBLAS_OP_N ? row + inner * test.lda
+                                                    : inner + row * test.lda;
+      sum += a[matrixIndex] * x[xStart + inner * test.incx];
+    }
+    int yIndex = yStart + row * test.incy;
+    y[yIndex] = test.alpha * sum + test.beta * y[yIndex];
+  }
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
-  if (argc != 4) {
-    std::cerr << "usage: udonblas-device sgemm-fragment saxpy-fragment "
+  if (argc != 5) {
+    std::cerr << "usage: udonblas-device sgemm-fragment sgemv-fragment "
+                 "saxpy-fragment "
                  "vertex\n";
     return 2;
   }
   try {
-    native_opencl::Session session(deviceSource(),
-                                   manifestBindings(argv[1], argv[2]), argv[3]);
+    native_opencl::Session session(
+        deviceSource(), manifestBindings(argv[1], argv[2], argv[3]), argv[4]);
     udonblasHandle_t handle = 0;
     require(udonblasCreate(&handle), UDONBLAS_STATUS_SUCCESS, "udonblasCreate");
     const std::array<Case, 5> cases{{
         {UDONBLAS_OP_N, UDONBLAS_OP_N, 4, 5, 3, 4, 3, 4, 1.0f, 0.0f},
         {UDONBLAS_OP_T, UDONBLAS_OP_N, 5, 3, 4, 4, 4, 5, 0.75f, -0.25f},
         {UDONBLAS_OP_N, UDONBLAS_OP_T, 3, 6, 5, 4, 7, 5, -1.25f, 0.5f},
-        {UDONBLAS_OP_T, UDONBLAS_OP_T, 7, 2, 6, 8, 3, 9, 0.5f, 1.0f},
+        {UDONBLAS_OP_C, UDONBLAS_OP_T, 7, 2, 6, 8, 3, 9, 0.5f, 1.0f},
         {UDONBLAS_OP_N, UDONBLAS_OP_N, 16, 16, 16, 16, 16, 16, 1.0f, 0.125f},
     }};
     float maximumError = 0.0f;
@@ -112,6 +149,45 @@ int main(int argc, char **argv) {
     }
     if (maximumError > 0.0005f)
       throw std::runtime_error("UdonBLAS SGEMM CPU/Device results diverged");
+
+    const std::array<GemvCase, 4> gemvCases{{
+        {UDONBLAS_OP_N, 4, 6, 5, 1, 1, 0.75f, -0.25f},
+        {UDONBLAS_OP_T, 5, 3, 7, 2, 3, -1.25f, 0.5f},
+        {UDONBLAS_OP_C, 3, 5, 4, -2, -3, 0.5f, 1.0f},
+        {UDONBLAS_OP_N, 16, 16, 16, 1, 1, 1.0f, 0.0f},
+    }};
+    float gemvMaximumError = 0.0f;
+    int gemvOutputs = 0;
+    for (size_t caseIndex = 0; caseIndex < gemvCases.size(); ++caseIndex) {
+      const GemvCase &test = gemvCases[caseIndex];
+      int inputLength = test.trans == UDONBLAS_OP_N ? test.n : test.m;
+      int outputLength = test.trans == UDONBLAS_OP_N ? test.m : test.n;
+      int xSpan = 1 + (inputLength - 1) * std::abs(test.incx);
+      int ySpan = 1 + (outputLength - 1) * std::abs(test.incy);
+      std::vector<float> a(test.lda * test.n), x(xSpan), actual(ySpan),
+          expected;
+      for (size_t index = 0; index < a.size(); ++index)
+        a[index] = value(int(index), int(caseIndex) + 53);
+      for (int index = 0; index < xSpan; ++index)
+        x[index] = value(index, int(caseIndex) + 59);
+      for (int index = 0; index < ySpan; ++index)
+        actual[index] = value(index, int(caseIndex) + 61);
+      expected = actual;
+      gemvReference(test, a, x, expected);
+      require(udonblasSgemv(handle, test.trans, test.m, test.n, &test.alpha,
+                            a.data(), test.lda, x.data(), test.incx, &test.beta,
+                            actual.data(), test.incy),
+              UDONBLAS_STATUS_SUCCESS, "udonblasSgemv");
+      int yStart = test.incy < 0 ? (1 - outputLength) * test.incy : 0;
+      for (int element = 0; element < outputLength; ++element) {
+        int index = yStart + element * test.incy;
+        gemvMaximumError = std::max(gemvMaximumError,
+                                    std::abs(actual[index] - expected[index]));
+        ++gemvOutputs;
+      }
+    }
+    if (gemvMaximumError > 0.0005f)
+      throw std::runtime_error("UdonBLAS SGEMV CPU/Device results diverged");
 
     const std::array<SaxpyCase, 4> saxpyCases{{
         {7, 1, 1, 1.25f},
@@ -157,14 +233,23 @@ int main(int argc, char **argv) {
             UDONBLAS_STATUS_NOT_INITIALIZED, "invalid handle");
     require(udonblasSgemm(handle, UDONBLAS_OP_N, UDONBLAS_OP_N, 17, 1, 1, &one,
                           values, 17, values, 1, &one, values, 17),
-            UDONBLAS_STATUS_INVALID_VALUE, "oversized matrix");
+            UDONBLAS_STATUS_NOT_SUPPORTED, "oversized matrix");
     require(udonblasSgemm(handle, udonblasOperation_t(9), UDONBLAS_OP_N, 1, 1,
                           1, &one, values, 1, values, 1, &one, values, 1),
             UDONBLAS_STATUS_INVALID_VALUE, "invalid transpose");
     require(udonblasSaxpy(handle, 1, &one, values, 0, values, 1),
             UDONBLAS_STATUS_INVALID_VALUE, "zero SAXPY increment");
     require(udonblasSaxpy(handle, 129, &one, values, 2, values, 1),
-            UDONBLAS_STATUS_INVALID_VALUE, "oversized SAXPY span");
+            UDONBLAS_STATUS_NOT_SUPPORTED, "oversized SAXPY span");
+    require(udonblasSgemv(handle, udonblasOperation_t(9), 1, 1, &one, values, 1,
+                          values, 1, &one, values, 1),
+            UDONBLAS_STATUS_INVALID_VALUE, "invalid GEMV transpose");
+    require(udonblasSgemv(handle, UDONBLAS_OP_N, 2, 1, &one, values, 1, values,
+                          1, &one, values, 1),
+            UDONBLAS_STATUS_INVALID_VALUE, "invalid GEMV lda");
+    require(udonblasSgemv(handle, UDONBLAS_OP_N, 17, 1, &one, values, 17,
+                          values, 1, &one, values, 1),
+            UDONBLAS_STATUS_NOT_SUPPORTED, "oversized GEMV matrix");
     require(udonblasDestroy(handle), UDONBLAS_STATUS_SUCCESS,
             "udonblasDestroy");
     if (udoncl_cl_live_objects())
@@ -172,6 +257,9 @@ int main(int argc, char **argv) {
     std::cout << "udonblas_sgemm_outputs=" << outputs
               << " cases=" << cases.size()
               << " max_cpu_gpu_error=" << maximumError
+              << " sgemv_outputs=" << gemvOutputs
+              << " sgemv_cases=" << gemvCases.size()
+              << " sgemv_max_cpu_gpu_error=" << gemvMaximumError
               << " saxpy_outputs=" << saxpyOutputs
               << " saxpy_cases=" << saxpyCases.size()
               << " saxpy_max_cpu_gpu_error=" << saxpyMaximumError

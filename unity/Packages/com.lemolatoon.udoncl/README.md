@@ -66,6 +66,11 @@ profile supports matrices up to 16×16 and retains the cuBLAS column-major
 operand contract so tiled multi-pass implementations can lift that limit
 without changing the public C API.
 
+The `unity-udonblas-sgemv` stage creates `UdonBlasSgemv.prefab` for the CUDA
+13.0 `cublasSgemv` contract. Its fixture covers real conjugate-transpose,
+padded column-major storage, negative input and output increments, and
+alpha/beta accumulation. Each output vector element is owned by one fragment.
+
 The `unity-udonblas-saxpy` stage creates `UdonBlasSaxpy.prefab` for the Level-1
 `y = alpha * x + y` primitive. Each logical vector element is independently
 owned by one fragment. The public prefab exposes length, alpha, and both signed

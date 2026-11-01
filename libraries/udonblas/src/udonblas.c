@@ -13,6 +13,7 @@ static cl_context context;
 static cl_command_queue queue;
 static cl_program program;
 static cl_kernel sgemm_kernel;
+static cl_kernel sgemv_kernel;
 static cl_kernel saxpy_kernel;
 static cl_mem input_buffer;
 static cl_mem output_buffer;
@@ -22,6 +23,8 @@ static float result[UDONBLAS_MATRIX_WORDS];
 static void clear_objects(void) {
   if (saxpy_kernel)
     clReleaseKernel(saxpy_kernel);
+  if (sgemv_kernel)
+    clReleaseKernel(sgemv_kernel);
   if (sgemm_kernel)
     clReleaseKernel(sgemm_kernel);
   if (program)
@@ -35,6 +38,7 @@ static void clear_objects(void) {
   if (context)
     clReleaseContext(context);
   sgemm_kernel = 0;
+  sgemv_kernel = 0;
   saxpy_kernel = 0;
   program = 0;
   output_buffer = input_buffer = 0;
@@ -84,6 +88,13 @@ udonblasStatus_t udonblasCreate(udonblasHandle_t *handle) {
       clSetKernelArg(sgemm_kernel, 1, sizeof(output_buffer), &output_buffer) !=
           CL_SUCCESS)
     return execution_failure();
+  sgemv_kernel = clCreateKernel(program, "udonblas_sgemv", &status);
+  if (status != CL_SUCCESS ||
+      clSetKernelArg(sgemv_kernel, 0, sizeof(input_buffer), &input_buffer) !=
+          CL_SUCCESS ||
+      clSetKernelArg(sgemv_kernel, 1, sizeof(output_buffer), &output_buffer) !=
+          CL_SUCCESS)
+    return execution_failure();
   saxpy_kernel = clCreateKernel(program, "udonblas_saxpy", &status);
   if (status != CL_SUCCESS ||
       clSetKernelArg(saxpy_kernel, 0, sizeof(input_buffer), &input_buffer) !=
@@ -104,15 +115,16 @@ udonblasStatus_t udonblasSaxpy(udonblasHandle_t handle, int n,
   cl_int status;
   if (handle != UDONBLAS_HANDLE || !context)
     return UDONBLAS_STATUS_NOT_INITIALIZED;
-  if (n < 0 || n > UDONBLAS_SAXPY_MAX_N || !alpha || !x || !y || incx == 0 ||
-      incy == 0)
+  if (n < 0 || !alpha || !x || !y || incx == 0 || incy == 0)
     return UDONBLAS_STATUS_INVALID_VALUE;
+  if (n > UDONBLAS_SAXPY_MAX_N)
+    return UDONBLAS_STATUS_NOT_SUPPORTED;
   if (n == 0)
     return UDONBLAS_STATUS_SUCCESS;
   x_span64 = 1 + (int64_t)(n - 1) * (incx < 0 ? -(int64_t)incx : incx);
   y_span64 = 1 + (int64_t)(n - 1) * (incy < 0 ? -(int64_t)incy : incy);
   if (x_span64 > UDONBLAS_MATRIX_WORDS || y_span64 > UDONBLAS_MATRIX_WORDS)
-    return UDONBLAS_STATUS_INVALID_VALUE;
+    return UDONBLAS_STATUS_NOT_SUPPORTED;
   x_span = (int)x_span64;
   y_span = (int)y_span64;
   y_start = incy < 0 ? (1 - n) * incy : 0;
@@ -149,6 +161,79 @@ udonblasStatus_t udonblasSaxpy(udonblasHandle_t handle, int n,
   return UDONBLAS_STATUS_SUCCESS;
 }
 
+udonblasStatus_t udonblasSgemv(udonblasHandle_t handle,
+                               udonblasOperation_t trans, int m, int n,
+                               const float *alpha, const float *a, int lda,
+                               const float *x, int incx, const float *beta,
+                               float *y, int incy) {
+  int input_length, output_length, a_words, x_span, y_span, y_start, index;
+  int64_t a_words64, x_span64, y_span64;
+  size_t global = UDONBLAS_WORDS, local = 1;
+  cl_int status;
+  if (handle != UDONBLAS_HANDLE || !context)
+    return UDONBLAS_STATUS_NOT_INITIALIZED;
+  if ((trans != UDONBLAS_OP_N && trans != UDONBLAS_OP_T &&
+       trans != UDONBLAS_OP_C) ||
+      m < 0 || n < 0 || !alpha || !a || !x || !beta || !y ||
+      lda < (m > 1 ? m : 1) || incx == 0 || incy == 0)
+    return UDONBLAS_STATUS_INVALID_VALUE;
+  if (m == 0 || n == 0)
+    return UDONBLAS_STATUS_SUCCESS;
+  if (m > UDONBLAS_SGEMV_MAX_M || n > UDONBLAS_SGEMV_MAX_N)
+    return UDONBLAS_STATUS_NOT_SUPPORTED;
+  input_length = trans == UDONBLAS_OP_N ? n : m;
+  output_length = trans == UDONBLAS_OP_N ? m : n;
+  a_words64 = (int64_t)lda * n;
+  x_span64 =
+      1 + (int64_t)(input_length - 1) * (incx < 0 ? -(int64_t)incx : incx);
+  y_span64 =
+      1 + (int64_t)(output_length - 1) * (incy < 0 ? -(int64_t)incy : incy);
+  if (a_words64 > UDONBLAS_MATRIX_WORDS || x_span64 > UDONBLAS_MATRIX_WORDS ||
+      y_span64 > UDONBLAS_MATRIX_WORDS)
+    return UDONBLAS_STATUS_NOT_SUPPORTED;
+  a_words = (int)a_words64;
+  x_span = (int)x_span64;
+  y_span = (int)y_span64;
+  y_start = incy < 0 ? (1 - output_length) * incy : 0;
+  for (index = 0; index < UDONBLAS_WORDS; ++index)
+    packed[index] = 0.0f;
+  for (index = 0; index < a_words; ++index)
+    packed[UDONBLAS_A_OFFSET + index] = a[index];
+  for (index = 0; index < x_span; ++index)
+    packed[UDONBLAS_B_OFFSET + index] = x[index];
+  for (index = 0; index < y_span; ++index)
+    packed[UDONBLAS_C_OFFSET + index] = y[index];
+
+#define SET_SGEMV_ARGUMENT(slot, value)                                        \
+  do {                                                                         \
+    status = clSetKernelArg(sgemv_kernel, slot, sizeof(value), &(value));      \
+    if (status != CL_SUCCESS)                                                  \
+      return UDONBLAS_STATUS_EXECUTION_FAILED;                                 \
+  } while (0)
+  SET_SGEMV_ARGUMENT(2, trans);
+  SET_SGEMV_ARGUMENT(3, m);
+  SET_SGEMV_ARGUMENT(4, n);
+  SET_SGEMV_ARGUMENT(5, lda);
+  SET_SGEMV_ARGUMENT(6, incx);
+  SET_SGEMV_ARGUMENT(7, incy);
+  SET_SGEMV_ARGUMENT(8, *alpha);
+  SET_SGEMV_ARGUMENT(9, *beta);
+#undef SET_SGEMV_ARGUMENT
+
+  if (clEnqueueWriteBuffer(queue, input_buffer, CL_TRUE, 0, sizeof(packed),
+                           packed, 0, 0, 0) != CL_SUCCESS ||
+      clEnqueueNDRangeKernel(queue, sgemv_kernel, 1, 0, &global, &local, 0, 0,
+                             0) != CL_SUCCESS ||
+      clEnqueueReadBuffer(
+          queue, output_buffer, CL_TRUE, UDONBLAS_RESULT_OFFSET * sizeof(float),
+          output_length * sizeof(float), result, 0, 0, 0) != CL_SUCCESS ||
+      clFinish(queue) != CL_SUCCESS)
+    return UDONBLAS_STATUS_EXECUTION_FAILED;
+  for (index = 0; index < output_length; ++index)
+    y[y_start + index * incy] = result[index];
+  return UDONBLAS_STATUS_SUCCESS;
+}
+
 udonblasStatus_t udonblasDestroy(udonblasHandle_t handle) {
   if (handle != UDONBLAS_HANDLE || !context)
     return UDONBLAS_STATUS_NOT_INITIALIZED;
@@ -175,21 +260,25 @@ udonblasStatus_t udonblasSgemm(udonblasHandle_t handle,
   cl_int status;
   if (handle != UDONBLAS_HANDLE || !context)
     return UDONBLAS_STATUS_NOT_INITIALIZED;
-  if ((transa != UDONBLAS_OP_N && transa != UDONBLAS_OP_T) ||
-      (transb != UDONBLAS_OP_N && transb != UDONBLAS_OP_T) || m < 0 || n < 0 ||
-      k < 0 || m > UDONBLAS_SGEMM_MAX_M || n > UDONBLAS_SGEMM_MAX_N ||
-      k > UDONBLAS_SGEMM_MAX_K || !alpha || !beta || !a || !b || !c ||
+  if ((transa != UDONBLAS_OP_N && transa != UDONBLAS_OP_T &&
+       transa != UDONBLAS_OP_C) ||
+      (transb != UDONBLAS_OP_N && transb != UDONBLAS_OP_T &&
+       transb != UDONBLAS_OP_C) ||
+      m < 0 || n < 0 || k < 0 || !alpha || !beta || !a || !b || !c ||
       lda < (a_rows > 1 ? a_rows : 1) || ldb < (b_rows > 1 ? b_rows : 1) ||
       ldc < (m > 1 ? m : 1))
     return UDONBLAS_STATUS_INVALID_VALUE;
   if (m == 0 || n == 0)
     return UDONBLAS_STATUS_SUCCESS;
+  if (m > UDONBLAS_SGEMM_MAX_M || n > UDONBLAS_SGEMM_MAX_N ||
+      k > UDONBLAS_SGEMM_MAX_K)
+    return UDONBLAS_STATUS_NOT_SUPPORTED;
   a_words = matrix_words(transa, m, k, lda);
   b_words = matrix_words(transb, k, n, ldb);
   c_words = ldc * n;
   if (a_words > UDONBLAS_MATRIX_WORDS || b_words > UDONBLAS_MATRIX_WORDS ||
       c_words > UDONBLAS_MATRIX_WORDS)
-    return UDONBLAS_STATUS_INVALID_VALUE;
+    return UDONBLAS_STATUS_NOT_SUPPORTED;
   for (index = 0; index < UDONBLAS_WORDS; ++index)
     packed[index] = 0.0f;
   for (index = 0; index < a_words; ++index)

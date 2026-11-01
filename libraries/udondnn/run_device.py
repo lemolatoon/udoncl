@@ -95,6 +95,7 @@ def main():
     arena_tile_device = root / "libraries/udonaten/device/arena_tile.cl"
     arena_rms_device = root / "libraries/udonaten/device/arena_rms_norm.cl"
     sgemm_device = root / "libraries/udonblas/device/sgemm.cl"
+    sgemv_device = root / "libraries/udonblas/device/sgemv.cl"
     saxpy_device = root / "libraries/udonblas/device/saxpy.cl"
     convolution_text = convolution_device.read_text(encoding="utf-8")
     activation_text = activation_device.read_text(encoding="utf-8")
@@ -111,6 +112,7 @@ def main():
     arena_tile_text = arena_tile_device.read_text(encoding="utf-8")
     arena_rms_text = arena_rms_device.read_text(encoding="utf-8")
     sgemm_text = sgemm_device.read_text(encoding="utf-8")
+    sgemv_text = sgemv_device.read_text(encoding="utf-8")
     saxpy_text = saxpy_device.read_text(encoding="utf-8")
     device_text = (
         convolution_text
@@ -142,6 +144,8 @@ def main():
         + arena_rms_text
         + "\n"
         + sgemm_text
+        + "\n"
+        + sgemv_text
         + "\n"
         + saxpy_text
     )
@@ -276,6 +280,9 @@ def main():
     )
     sgemm_bundle = emit_device(
         "sgemm", sgemm_device, "udonblas_sgemm", 212, 1024, (32, 32)
+    )
+    sgemv_bundle = emit_device(
+        "sgemv", sgemv_device, "udonblas_sgemv", 213, 1024
     )
     saxpy_bundle = emit_device(
         "saxpy", saxpy_device, "udonblas_saxpy", 214, 1024
@@ -554,6 +561,7 @@ def main():
         raise RuntimeError("UdonATen arena RMSNorm lost its three-input texture ABI")
     blas_bundles = [
         (sgemm_bundle, "udonblas_sgemm", 212, 1024, 10),
+        (sgemv_bundle, "udonblas_sgemv", 213, 1024, 8),
         (saxpy_bundle, "udonblas_saxpy", 214, 1024, 4),
     ]
     blas_fragments = []
@@ -642,7 +650,8 @@ def main():
         + "const std::string &rmsNorm, const std::string &embedding, "
         + "const std::string &int4, const std::string &tile, "
         + "const std::string &atenRmsReduce, const std::string &atenRmsFinalize, "
-        + "const std::string &sgemm, const std::string &saxpy, "
+        + "const std::string &sgemm, const std::string &sgemv, "
+        + "const std::string &saxpy, "
         + "const std::string &arenaPointwise, "
         + "const std::string &arenaTile, const std::string &arenaRmsReduce, "
         + "const std::string &arenaRmsFinalize) { return {"
@@ -659,6 +668,7 @@ def main():
         + '{210, 8192, 2, "udonaten_rms_norm_reduce", atenRmsReduce}, '
         + '{211, 8192, 4, "udonaten_rms_norm_finalize", atenRmsFinalize, 0, 0, 2}, '
         + '{212, 1024, 10, "udonblas_sgemm", sgemm, 32, 32}, '
+        + '{213, 1024, 8, "udonblas_sgemv", sgemv}, '
         + '{214, 1024, 4, "udonblas_saxpy", saxpy}, '
         + '{215, 16384, 2, "udonaten_arena_pointwise", arenaPointwise, 8192, 2, 2}, '
         + '{216, 16384, 9, "udonaten_arena_tile", arenaTile, 8192, 2}, '
@@ -2035,6 +2045,7 @@ def main():
     int4_object = output / ("weight-int4pack-mm-device" + object_suffix)
     tile_object = output / ("tile-device" + object_suffix)
     sgemm_object = output / ("sgemm-device" + object_suffix)
+    sgemv_object = output / ("sgemv-device" + object_suffix)
     saxpy_object = output / ("saxpy-device" + object_suffix)
     arena_pointwise_object = output / ("arena-pointwise-device" + object_suffix)
     arena_tile_object = output / ("arena-tile-device" + object_suffix)
@@ -2257,6 +2268,7 @@ def main():
     )
     for blas_device, blas_object in (
         (sgemm_device, sgemm_object),
+        (sgemv_device, sgemv_object),
         (saxpy_device, saxpy_object),
     ):
         run(
@@ -2372,6 +2384,7 @@ def main():
             "-DUDONATEN_INT4_OBJECT=" + int4_object.as_posix(),
             "-DUDONATEN_TILE_OBJECT=" + tile_object.as_posix(),
             "-DUDONBLAS_SGEMM_OBJECT=" + sgemm_object.as_posix(),
+            "-DUDONBLAS_SGEMV_OBJECT=" + sgemv_object.as_posix(),
             "-DUDONBLAS_SAXPY_OBJECT=" + saxpy_object.as_posix(),
             "-DUDONATEN_ARENA_POINTWISE_OBJECT=" + arena_pointwise_object.as_posix(),
             "-DUDONATEN_ARENA_TILE_OBJECT=" + arena_tile_object.as_posix(),

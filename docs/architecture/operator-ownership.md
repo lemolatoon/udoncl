@@ -6,7 +6,7 @@ cuDNN.
 
 | Operation | PyTorch CUDA owner | Udon public owner | Interface contract |
 | --- | --- | --- | --- |
-| GEMM | cuBLAS-shaped ATen backend call | UdonBLAS | cuBLAS argument and status semantics |
+| GEMM and GEMV | cuBLAS-shaped ATen backend calls | UdonBLAS | CUDA 13.0 cuBLAS argument, layout, enum, and status semantics |
 | Explicit cuDNN convolution, activation, pooling, softmax, batch normalization, and OpTensor calls | cuDNN Legacy API | UdonDNN | matching cuDNN API after the prefix |
 | Add, subtract, multiply, ReLU, sigmoid, tanh | ATen pointwise schemas and TensorIterator CUDA kernels | UdonATen | corresponding ATen tensor argument order, alpha, broadcasting, and unary semantics |
 | Embedding lookup | ATen `embedding(weight, indices, padding_idx, scale_grad_by_freq, sparse)`; implemented through `index_select` | UdonATen | weight and indices first, followed by the three ATen options |
@@ -17,6 +17,8 @@ cuDNN.
 
 Authoritative sources:
 
+- NVIDIA CUDA 13.0 cuBLAS Level-2 and Level-3 APIs:
+  <https://docs.nvidia.com/cuda/archive/13.0.0/cublas/index.html>
 - PyTorch ATen native operator registration and dispatch:
   <https://github.com/pytorch/pytorch/blob/main/aten/src/ATen/native/README.md>
 - ATen pointwise schemas, including `add.Tensor`, `sub.Tensor`, `relu`, `tanh`,
