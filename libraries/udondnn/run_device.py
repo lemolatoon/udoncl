@@ -91,6 +91,9 @@ def main():
     int4_device = root / "libraries/udonaten/device/weight_int4pack_mm.cl"
     tile_device = root / "libraries/udonaten/device/tile.cl"
     aten_rms_device = root / "libraries/udonaten/device/rms_norm.cl"
+    sgemm_device = root / "libraries/udonblas/device/sgemm.cl"
+    q4_device = root / "libraries/udonblas/device/q4_gemv.cl"
+    saxpy_device = root / "libraries/udonblas/device/saxpy.cl"
     convolution_text = convolution_device.read_text(encoding="utf-8")
     activation_text = activation_device.read_text(encoding="utf-8")
     pooling_text = pooling_device.read_text(encoding="utf-8")
@@ -102,6 +105,9 @@ def main():
     int4_text = int4_device.read_text(encoding="utf-8")
     tile_text = tile_device.read_text(encoding="utf-8")
     aten_rms_text = aten_rms_device.read_text(encoding="utf-8")
+    sgemm_text = sgemm_device.read_text(encoding="utf-8")
+    q4_text = q4_device.read_text(encoding="utf-8")
+    saxpy_text = saxpy_device.read_text(encoding="utf-8")
     device_text = (
         convolution_text
         + "\n"
@@ -124,13 +130,24 @@ def main():
         + tile_text
         + "\n"
         + aten_rms_text
+        + "\n"
+        + sgemm_text
+        + "\n"
+        + q4_text
+        + "\n"
+        + saxpy_text
     )
     (output / "udondnn_device_source.h").write_text(
         "#define UDONDNN_DEVICE_SOURCE " + json.dumps(device_text) + "\n",
         encoding="utf-8",
     )
+    (output / "udonblas_device_source.h").write_text(
+        "#define UDONBLAS_DEVICE_SOURCE " + json.dumps(device_text) + "\n",
+        encoding="utf-8",
+    )
 
-    def emit_device(name, device, kernel_name, kernel_id, words):
+    def emit_device(name, device, kernel_name, kernel_id, words, shape=None):
+        global_size = [words, 1, 1] if shape is None else [*shape, 1]
         device_ir = output / f"{name}.ll"
         run(
             [
@@ -162,7 +179,7 @@ def main():
                     "words": words,
                     "kernel": kernel_name,
                     "kernel_id": kernel_id,
-                    "global_size": [words, 1, 1],
+                    "global_size": global_size,
                     "local_size": [1, 1, 1],
                     "global_offset": [0, 0, 0],
                 }
@@ -248,6 +265,15 @@ def main():
         "udonaten_rms_norm_finalize",
         211,
         8192,
+    )
+    sgemm_bundle = emit_device(
+        "sgemm", sgemm_device, "udonblas_sgemm", 212, 1024, (32, 32)
+    )
+    q4_bundle = emit_device(
+        "q4-gemv", q4_device, "udonblas_sgemv_q4", 213, 8192
+    )
+    saxpy_bundle = emit_device(
+        "saxpy", saxpy_device, "udonblas_saxpy", 214, 1024
     )
     manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
     kernel = manifest["device"]["kernels"][0]
@@ -415,6 +441,29 @@ def main():
         encoding="utf-8"
     ):
         raise RuntimeError("UdonATen RMSNorm did not bind its reduction texture")
+    blas_bundles = [
+        (sgemm_bundle, "udonblas_sgemm", 212, 1024, 10),
+        (q4_bundle, "udonblas_sgemv_q4", 213, 8192, 7),
+        (saxpy_bundle, "udonblas_saxpy", 214, 1024, 4),
+    ]
+    blas_fragments = []
+    for blas_bundle, name, identifier, words, scalar_count in blas_bundles:
+        blas_manifest = json.loads(
+            (blas_bundle / "manifest.json").read_text(encoding="utf-8")
+        )
+        blas_kernel = blas_manifest["device"]["kernels"][0]
+        expected_global_size = [32, 32, 1] if name == "udonblas_sgemm" else [words, 1, 1]
+        if (
+            blas_kernel["name"] != name
+            or blas_kernel["global_size"] != expected_global_size
+            or len(blas_kernel["args"]) != scalar_count + 2
+            or [argument["required_bytes"] for argument in blas_kernel["args"][:2]]
+            != [words * 4, words * 4]
+        ):
+            raise RuntimeError(f"{name} manifest does not match its UdonBLAS ABI")
+        blas_fragments.append(
+            blas_bundle / f"kernels/kernel_{identifier}.hlsl"
+        )
     gather_manifest = json.loads(
         (gather_bundle / "manifest.json").read_text(encoding="utf-8")
     )
@@ -477,7 +526,9 @@ def main():
         + "const std::string &batchnorm, const std::string &opTensor, "
         + "const std::string &rmsNorm, const std::string &gather, "
         + "const std::string &int4, const std::string &tile, "
-        + "const std::string &atenRmsReduce, const std::string &atenRmsFinalize) { return {"
+        + "const std::string &atenRmsReduce, const std::string &atenRmsFinalize, "
+        + "const std::string &sgemm, const std::string &q4, "
+        + "const std::string &saxpy) { return {"
         + '{200, 2048, 7, "udondnn_convolution_forward", convolution}, '
         + '{201, 2048, 6, "udondnn_activation_forward", activation}, '
         + '{202, 2048, 7, "udondnn_pooling_forward", pooling}, '
@@ -489,7 +540,10 @@ def main():
         + '{208, 8192, 4, "udonaten_weight_int4pack_mm", int4}, '
         + '{209, 8192, 9, "udonaten_tile", tile}, '
         + '{210, 8192, 2, "udonaten_rms_norm_reduce", atenRmsReduce}, '
-        + '{211, 8192, 4, "udonaten_rms_norm_finalize", atenRmsFinalize, 0, 0, 2}}; }\n',
+        + '{211, 8192, 4, "udonaten_rms_norm_finalize", atenRmsFinalize, 0, 0, 2}, '
+        + '{212, 1024, 10, "udonblas_sgemm", sgemm, 32, 32}, '
+        + '{213, 8192, 7, "udonblas_sgemv_q4", q4}, '
+        + '{214, 1024, 4, "udonblas_saxpy", saxpy}}; }\n',
         encoding="utf-8",
     )
 
@@ -1710,6 +1764,50 @@ def main():
             shutil.rmtree(unity_tile_bundle)
         publish_bundle(staged, unity_tile_bundle)
 
+    rl_model = output / "rl-policy.onnx"
+    run(
+        [
+            sys.executable,
+            root / "examples/reinforcement-learning/generate_onnx.py",
+            "-o",
+            rl_model,
+        ]
+    )
+    sys.path.insert(0, str(root / "runtime/onnx"))
+    from udon_onnx import compile_operators, emit_c_host, parse_model
+
+    rl_plan = compile_operators(parse_model(rl_model.read_bytes()))
+    expected_rl_calls = [
+        "udonblasSgemm",
+        "udonatenAdd",
+        "udonatenTanh",
+        "udonatenSigmoid",
+        "udonatenMul",
+        "udonblasSgemm",
+        "udonatenAdd",
+        "udonatenSub",
+        "udonatenMul",
+        "udondnnSoftmaxForward",
+    ]
+    if (
+        rl_plan["execution_provider"] != "UdonOperatorExecutionProvider"
+        or [call["function"] for call in rl_plan["aot"]["calls"]]
+        != expected_rl_calls
+    ):
+        raise RuntimeError("RL policy did not use the generic ONNX operator provider")
+    (output / "rl-plan.json").write_text(
+        json.dumps(rl_plan, indent=2), encoding="utf-8"
+    )
+    rl_host_text = emit_c_host(rl_plan)
+    rl_host_source = output / "rl-host.c"
+    rl_host_source.write_text(rl_host_text, encoding="utf-8")
+    rl_declarations = rl_host_text.split("int udon_onnx_run", 1)[0]
+    (output / "rl_host.h").write_text(
+        rl_declarations
+        + "int udon_onnx_run(udon_onnx_buffers_t *buffers);\n",
+        encoding="utf-8",
+    )
+
     host_ir = output / "host.ll"
     imported = output / "host.imported.mlir"
     udonhl = output / "host.udonhl.mlir"
@@ -1744,6 +1842,59 @@ def main():
     run([opt, "--vrc-lower-native-host-calls", "--verify-each", udonhl, "-o", lowered])
     run([mlir_translate, "--mlir-to-llvmir", lowered, "-o", native_ir])
     host_object = output / ("host" + object_suffix)
+    blas_host_ir = output / "blas-host.ll"
+    blas_imported = output / "blas-host.imported.mlir"
+    blas_udonhl = output / "blas-host.udonhl.mlir"
+    blas_lowered = output / "blas-host.lowered.mlir"
+    blas_native_ir = output / "blas-host.native.ll"
+    run(
+        [
+            clang,
+            *runtime_flags,
+            "-x",
+            "c",
+            "-std=c11",
+            "-O0",
+            "-Xclang",
+            "-disable-O0-optnone",
+            "-fomit-frame-pointer",
+            "-I",
+            root / "third_party/OpenCL-Headers",
+            "-I",
+            root / "libraries/udonblas/include",
+            "-I",
+            output,
+            "-S",
+            "-emit-llvm",
+            root / "libraries/udonblas/src/udonblas.c",
+            "-o",
+            blas_host_ir,
+        ]
+    )
+    run([translate, "--import-llvm", blas_host_ir, "-o", blas_imported])
+    run(
+        [
+            opt,
+            "--vrc-raise-native-host-calls",
+            "--verify-each",
+            blas_imported,
+            "-o",
+            blas_udonhl,
+        ]
+    )
+    run(
+        [
+            opt,
+            "--vrc-lower-native-host-calls",
+            "--verify-each",
+            blas_udonhl,
+            "-o",
+            blas_lowered,
+        ]
+    )
+    run([mlir_translate, "--mlir-to-llvmir", blas_lowered, "-o", blas_native_ir])
+    blas_host_object = output / ("blas-host" + object_suffix)
+    rl_host_object = output / ("rl-host" + object_suffix)
     udonaten_object = output / ("udonaten" + object_suffix)
     device_object = output / ("convolution-device" + object_suffix)
     activation_object = output / ("activation-device" + object_suffix)
@@ -1755,7 +1906,28 @@ def main():
     gather_object = output / ("gather-device" + object_suffix)
     int4_object = output / ("weight-int4pack-mm-device" + object_suffix)
     tile_object = output / ("tile-device" + object_suffix)
+    sgemm_object = output / ("sgemm-device" + object_suffix)
+    q4_object = output / ("q4-gemv-device" + object_suffix)
+    saxpy_object = output / ("saxpy-device" + object_suffix)
     run([clang, *runtime_flags, "-c", native_ir, "-o", host_object])
+    run([clang, *runtime_flags, "-c", blas_native_ir, "-o", blas_host_object])
+    run(
+        [
+            clang,
+            *runtime_flags,
+            "-std=c11",
+            "-I",
+            source / "include",
+            "-I",
+            root / "libraries/udonaten/include",
+            "-I",
+            root / "libraries/udonblas/include",
+            "-c",
+            rl_host_source,
+            "-o",
+            rl_host_object,
+        ]
+    )
     run(
         [
             clang,
@@ -1911,6 +2083,25 @@ def main():
             tile_object,
         ]
     )
+    for blas_device, blas_object in (
+        (sgemm_device, sgemm_object),
+        (q4_device, q4_object),
+        (saxpy_device, saxpy_object),
+    ):
+        run(
+            [
+                clang,
+                *runtime_flags,
+                "-x",
+                "c",
+                "-std=c11",
+                "-ffp-contract=off",
+                "-c",
+                blas_device,
+                "-o",
+                blas_object,
+            ]
+        )
 
     vertex = output / "fullscreen.hlsl"
     vertex.write_text(
@@ -1936,6 +2127,9 @@ def main():
                 (tile_fragment, "frag", "frag"),
                 (aten_rms_reduce_fragment, "frag", "frag"),
                 (aten_rms_finalize_fragment, "frag", "frag"),
+                (blas_fragments[0], "frag", "frag"),
+                (blas_fragments[1], "frag", "frag"),
+                (blas_fragments[2], "frag", "frag"),
                 (vertex, "vert", "vert"),
             ]
         ):
@@ -1969,6 +2163,7 @@ def main():
             tile_fragment,
             aten_rms_reduce_fragment,
             aten_rms_finalize_fragment,
+            *blas_fragments,
             vertex,
         ) = compiled
 
@@ -1984,6 +2179,8 @@ def main():
             "Ninja",
             "-DCMAKE_BUILD_TYPE=Release",
             "-DUDONDNN_HOST_OBJECT=" + host_object.as_posix(),
+            "-DUDONBLAS_HOST_OBJECT=" + blas_host_object.as_posix(),
+            "-DUDON_ONNX_RL_HOST_OBJECT=" + rl_host_object.as_posix(),
             "-DUDONATEN_OBJECT=" + udonaten_object.as_posix(),
             "-DUDONDNN_DEVICE_OBJECT=" + device_object.as_posix(),
             "-DUDONDNN_ACTIVATION_OBJECT=" + activation_object.as_posix(),
@@ -1995,6 +2192,9 @@ def main():
             "-DUDONDNN_GATHER_OBJECT=" + gather_object.as_posix(),
             "-DUDONATEN_INT4_OBJECT=" + int4_object.as_posix(),
             "-DUDONATEN_TILE_OBJECT=" + tile_object.as_posix(),
+            "-DUDONBLAS_SGEMM_OBJECT=" + sgemm_object.as_posix(),
+            "-DUDONBLAS_Q4_OBJECT=" + q4_object.as_posix(),
+            "-DUDONBLAS_SAXPY_OBJECT=" + saxpy_object.as_posix(),
             "-DUDONDNN_BINDINGS_DIR=" + output.as_posix(),
         ]
     )
@@ -2016,6 +2216,7 @@ def main():
                 tile_fragment,
                 aten_rms_reduce_fragment,
                 aten_rms_finalize_fragment,
+                *blas_fragments,
                 vertex,
             ]
         ),

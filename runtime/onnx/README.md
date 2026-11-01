@@ -37,6 +37,9 @@ ATen-shaped UdonATen entry points. Softmax retains the cuDNN-compatible UdonDNN
 path. The checked-in
 reinforcement-learning actor fixture uses these operators and Gemm entirely
 through `UdonOperatorExecutionProvider`, without a model-specific provider.
+Its generated C Host is compiled and numerically executed on the WARP fragment
+backend as ten ordered public-library calls, rather than being validated only
+as an execution-plan fixture.
 The Tiny Llama fixture also emits a standard-operator, single-token decoder
 through this provider. For sequence length one, causal attention has one
 possible value and therefore reduces exactly to the value projection; the
@@ -73,19 +76,18 @@ operator, not to cuDNN. Rank-2, axis-zero ONNX Gather used for token lookup
 lowers to `udonatenEmbedding`, following ATen's
 `embedding(weight, indices, padding_idx, scale_grad_by_freq, sparse)` argument
 order. Their current Device backend reuses the earlier UdonDNN prototype
-kernels internally and accepts regions of at most 512 float elements; those
-kernels are not part of the public cuDNN-compatibility surface.
+kernel internally for embedding regions and small RMSNorm regions. Larger
+single-region RMSNorm uses the private two-pass UdonATen reduction. None of
+these ATen operators is added to the public cuDNN-compatibility surface.
 Exact-shape Add, Sub, Mul, ReLU, Sigmoid, and Tanh calls are instead expanded
 in the AOT schedule into explicit 512-word Device passes. The public call list
 still contains one ATen-shaped call per ONNX node, while each pass records its
 linear `offset` and `words`; the Llama 8B plan therefore exposes the actual
 14,336-element MLP tiling. Large broadcast pointwise calls are marked
 unsupported in call metadata. The 4,096-element RMSNorm call records its
-8,192-word UdonATen prototype bundle but remains explicitly unsupported: WARP
-rejects the repeated normalized-region scan, and a correct hierarchical
-reduction requires a future multi-input Device ABI. Binding that reduction and
-the remaining mixed calls into one 8B Unity Host is still required for
-end-to-end execution.
+8,192-word UdonATen state and executes as a 64-element partial-reduction pass
+followed by a multi-input finalization pass. Binding the remaining mixed calls
+into one 8B Unity Host is still required for end-to-end execution.
 
 Consumers can construct `ExecutionProviderRegistry`, register one graph
 predicate and compiler callback per provider, and pass it to `compile_model`.
