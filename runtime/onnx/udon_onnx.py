@@ -464,12 +464,23 @@ PROVIDERS = {
     "Reshape": "view",
     "Squeeze": "view",
     "Unsqueeze": "view",
+    "Tile": "udondnnExtTileForward",
     "Gemm": "udonblasSgemm",
     "MatMul": "udonblasSgemm",
 }
 
 
 LLAMA_DOMAIN = "com.lemolatoon.udoncl"
+
+EXTENSION_PROVIDERS = {
+    (LLAMA_DOMAIN, "Q4Gemm"): "udonblasSgemvQ4",
+}
+
+
+def _operator_provider(node: dict) -> str | None:
+    if node["domain"] == "":
+        return PROVIDERS.get(node["op_type"])
+    return EXTENSION_PROVIDERS.get((node["domain"], node["op_type"]))
 
 
 def llama_weight_spec(config: dict, storage_format: str = "q4") -> list[dict]:
@@ -954,7 +965,8 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
     produced = set(shapes)
     for node in graph["nodes"]:
         operation = node["op_type"]
-        if operation not in PROVIDERS:
+        provider = _operator_provider(node)
+        if provider is None:
             raise ValueError(f"unsupported ONNX operator {operation!r}")
         if any(name not in produced for name in node["inputs"]):
             missing = [name for name in node["inputs"] if name not in produced]
@@ -1071,6 +1083,15 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
                 output = list(inputs[0])
                 for axis in normalized:
                     output.insert(axis, 1)
+        elif operation == "Tile":
+            if len(inputs) != 2:
+                raise ValueError("ONNX Tile requires data and repeats inputs")
+            repeats = _initializer_ints(graph, node["inputs"][1])
+            if len(repeats) != len(inputs[0]) or any(repeat <= 0 for repeat in repeats):
+                raise ValueError("Tile repeats must be positive and match the data rank")
+            output = [dimension * repeat for dimension, repeat in zip(inputs[0], repeats)]
+            if len(output) > 4:
+                raise ValueError("Udon Tile output rank must not exceed four")
         elif operation == "Gemm":
             if len(node["inputs"]) not in (2, 3):
                 raise ValueError("ONNX Gemm requires two or three inputs")
@@ -1092,6 +1113,30 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
             if len(inputs) != 2:
                 raise ValueError("ONNX MatMul requires exactly two inputs")
             output = _matmul_shape(inputs[0], inputs[1])
+        elif node["domain"] == LLAMA_DOMAIN and operation == "Q4Gemm":
+            if len(inputs) != 2 or len(inputs[0]) != 2 or inputs[0][0] != 1:
+                raise ValueError("Udon Q4Gemm requires [1,K] activation and packed weight inputs")
+            output_features = attributes.get("output_features", {}).get("i")
+            input_features = attributes.get("input_features", {}).get("i")
+            if (
+                not isinstance(output_features, int)
+                or not isinstance(input_features, int)
+                or output_features <= 0
+                or input_features <= 0
+                or inputs[0][1] != input_features
+            ):
+                raise ValueError("Udon Q4Gemm feature attributes do not match its activation")
+            weight = graph["initializers"].get(node["inputs"][1])
+            expected_bytes = output_features * ((input_features + 31) // 32) * 18
+            if (
+                weight is None
+                or weight["data_type"] != 2
+                or weight["shape"] != [expected_bytes]
+                or weight["data_location"] != 1
+                or weight["external"]["length"] != expected_bytes
+            ):
+                raise ValueError("Udon Q4Gemm weight does not match q4_block32 storage")
+            output = [1, output_features]
         else:
             raise AssertionError(operation)
         if len(node["outputs"]) != 1:
@@ -1105,8 +1150,9 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
         nodes.append(
             {
                 "name": node["name"],
+                "domain": node["domain"],
                 "op_type": operation,
-                "provider": PROVIDERS[operation],
+                "provider": provider,
                 "inputs": node["inputs"],
                 "output": output_name,
                 "shape": output,
@@ -1191,6 +1237,16 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
                 }
                 if tile is not None:
                     device_pass["tile"] = tile
+                if node["domain"] == LLAMA_DOMAIN and node["op_type"] == "Q4Gemm":
+                    output_features = node["attributes"]["output_features"]["i"]
+                    input_features = node["attributes"]["input_features"]["i"]
+                    device_pass["tile_grid"] = {
+                        "m": 64,
+                        "k": 128,
+                        "m_tiles": (output_features + 63) // 64,
+                        "k_tiles": (input_features + 127) // 128,
+                        "accumulation": "beta=0 for first K tile; beta=1 thereafter",
+                    }
                 passes.append(device_pass)
             if node["op_type"] == "Gemm" and len(node["inputs"]) == 3:
                 passes.append(
@@ -1209,6 +1265,30 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
                 )
     calls = []
     for node_index, node in enumerate(nodes):
+        if node["domain"] == LLAMA_DOMAIN and node["op_type"] == "Q4Gemm":
+            output_features = node["attributes"]["output_features"]["i"]
+            input_features = node["attributes"]["input_features"]["i"]
+            calls.append(
+                {
+                    "index": len(calls),
+                    "node_index": node_index,
+                    "kind": "tiled_library",
+                    "function": "udonblasSgemvQ4",
+                    "inputs": node["inputs"],
+                    "output": node["output"],
+                    "output_shape": node["shape"],
+                    "attributes": node["attributes"],
+                    "weight_format": "q4_block32",
+                    "tile_grid": {
+                        "m": 64,
+                        "k": 128,
+                        "m_tiles": (output_features + 63) // 64,
+                        "k_tiles": (input_features + 127) // 128,
+                        "accumulation": "beta=0 for first K tile; beta=1 thereafter",
+                    },
+                }
+            )
+            continue
         if node["op_type"] in ("Gemm", "MatMul"):
             tiles = (
                 _gemm_schedule(node, shapes)
@@ -1305,12 +1385,12 @@ def _compile_operators(model: dict) -> dict:
 
 
 def compile_operators(model: dict) -> dict:
-    """Compile any graph made only from standard operators through the generic path."""
+    """Compile a graph from standard operators and explicit Udon library extensions."""
     nodes = model["graph"]["nodes"]
     unsupported = [
         (node["domain"], node["op_type"])
         for node in nodes
-        if node["domain"] != "" or node["op_type"] not in PROVIDERS
+        if _operator_provider(node) is None
     ]
     if not nodes or unsupported:
         raise ValueError(f"unsupported operators for UdonOperatorExecutionProvider: {unsupported}")
@@ -1357,6 +1437,10 @@ def emit_c_host(plan: dict) -> str:
     """Emit an AOT C host that invokes the public UdonBLAS/UdonDNN APIs."""
     if plan.get("runtime") != "udon-onnx" or "aot" not in plan:
         raise ValueError("execution plan has no standard Udon ONNX AOT schedule")
+    if any(call["kind"] == "tiled_library" for call in plan["aot"]["calls"]):
+        raise ValueError(
+            "Q4 tiled-library calls require the external-weight paging Host emitter"
+        )
     values = plan.get("values") or {}
     value_types = plan.get("value_types") or {name: "float32" for name in values}
     names = _c_identifiers(values)
@@ -1768,7 +1852,7 @@ def _supports_llama(model: dict) -> bool:
 def _supports_operators(model: dict) -> bool:
     nodes = model["graph"]["nodes"]
     return bool(nodes) and not _supports_mnist(model) and all(
-        node["domain"] == "" and node["op_type"] in PROVIDERS for node in nodes
+        _operator_provider(node) is not None for node in nodes
     )
 
 

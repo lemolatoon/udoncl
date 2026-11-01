@@ -133,6 +133,15 @@ def prepare_fixtures(root: Path, build: Path, output: Path):
         ],
         timeout=120,
     )
+    run(
+        [
+            sys.executable,
+            root / "tests/boundary/llama_8b_onnx.py",
+            root,
+            output / "llama-8b-onnx",
+        ],
+        timeout=120,
+    )
     return (lowering / "scalar.uasm").resolve()
 
 

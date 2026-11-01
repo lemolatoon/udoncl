@@ -43,6 +43,13 @@ SiLU expressed as Sigmoid+Mul, and the final vocabulary projection.
 Rank-2 through rank-4 ONNX MatMul, including broadcast batch dimensions used
 by attention, is expanded AOT into one or more tiled `udonblasSgemm` calls per
 output batch matrix.
+The general provider also accepts the explicit
+`com.lemolatoon.udoncl::Q4Gemm` library extension. Llama 3.1 8B's
+embedding-independent single-token decoder expands to 546 operator nodes and
+225 tiled `udonblasSgemvQ4` calls instead of one fused `LlamaDecoder` node.
+Each call records its 64x128 tile grid and K-tile accumulation contract. Host
+emission currently rejects these plans until external-weight paging is wired,
+rather than generating an executable that cannot supply the compact weights.
 Identity, Reshape, Squeeze, and Unsqueeze are compiled as typed zero-copy views.
 Their embedded int32/int64 shape inputs are evaluated at AOT time and retained
 with the correct C ABI type rather than being treated as float buffers.

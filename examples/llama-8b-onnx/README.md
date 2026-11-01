@@ -6,6 +6,24 @@ node and 291 ONNX external-data tensors describing the canonical Llama 3.1 8B
 shape: 32 decoder layers, hidden size 4096, intermediate size 14336, 32 query
 heads, eight KV heads, and vocabulary size 128256.
 
+The generator can additionally emit an embedding-independent, single-token
+decoder graph through the general `UdonOperatorExecutionProvider`:
+
+```text
+python examples/llama-8b-onnx/generate_onnx.py \
+  -o build/llama-8b-onnx/model.onnx \
+  --operator-output build/llama-8b-onnx/operators.onnx \
+  --operator-plan build/llama-8b-onnx/operators-plan.json
+```
+
+That graph has no fused `LlamaDecoder` node. It contains 546 explicit operator
+nodes, including all 225 Q4 projections as `Q4Gemm` library-extension nodes,
+standard RMSNormalization/Add/Sigmoid/Mul/Reshape/Tile nodes, and records the
+64x128 `udonblasSgemvQ4` tile grid for every projection. Its input is the
+post-embedding `[1,4096]` hidden state. It is a resource-complete AOT plan, but
+the C/Udon Host emitter intentionally rejects it until external-weight paging
+can feed those tile grids; the legacy fused plan remains available meanwhile.
+
 ```text
 python examples/llama-8b-onnx/generate_onnx.py \
   -o build/llama-8b-onnx/model.onnx \

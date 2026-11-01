@@ -10,6 +10,8 @@ root, output = (Path(value).resolve() for value in sys.argv[1:])
 output.mkdir(parents=True, exist_ok=True)
 model = output / "llama-8b.onnx"
 plan_path = output / "onnx-plan.json"
+operator_model = output / "llama-8b-operators.onnx"
+operator_plan_path = output / "operator-plan.json"
 result = subprocess.run(
     [
         sys.executable,
@@ -18,6 +20,10 @@ result = subprocess.run(
         model,
         "--plan",
         plan_path,
+        "--operator-output",
+        operator_model,
+        "--operator-plan",
+        operator_plan_path,
     ],
     text=True,
     capture_output=True,
@@ -74,8 +80,47 @@ logits = plan["passes"][-1]["matmuls"][0]
 assert logits["weight"] == "lm_head.weight"
 assert (logits["m_tiles"], logits["k_tiles"]) == (2004, 32)
 
+operator_plan = json.loads(operator_plan_path.read_text(encoding="utf-8"))
+assert operator_plan["execution_provider"] == "UdonOperatorExecutionProvider"
+assert operator_plan["graph"] == "llama_3_1_8b_operator_decoder_single_token"
+assert operator_plan["inputs"] == {"hidden_state": [1, 4096]}
+assert operator_plan["outputs"] == {"logits": [1, 128256]}
+assert len(operator_plan["nodes"]) == 546
+assert len(operator_plan["passes"]) == 482
+assert all(node["op_type"] != "LlamaDecoder" for node in operator_plan["nodes"])
+operator_q4_calls = [
+    call
+    for call in operator_plan["aot"]["calls"]
+    if call["function"] == "udonblasSgemvQ4"
+]
+assert len(operator_q4_calls) == 225
+assert all(call["kind"] == "tiled_library" for call in operator_q4_calls)
+assert all(call["weight_format"] == "q4_block32" for call in operator_q4_calls)
+assert operator_q4_calls[0]["tile_grid"] == {
+    "m": 64,
+    "k": 128,
+    "m_tiles": 64,
+    "k_tiles": 32,
+    "accumulation": "beta=0 for first K tile; beta=1 thereafter",
+}
+assert operator_q4_calls[-1]["tile_grid"]["m_tiles"] == 2004
+assert operator_q4_calls[-1]["tile_grid"]["k_tiles"] == 32
+assert sum(node["op_type"] == "Tile" for node in operator_plan["nodes"]) == 32
+
 sys.path.insert(0, str(root / "runtime/onnx"))
-from udon_onnx import external_tensor_proto, parse_model, validate_external_data  # noqa: E402
+from udon_onnx import (  # noqa: E402
+    emit_c_host,
+    external_tensor_proto,
+    parse_model,
+    validate_external_data,
+)
+
+try:
+    emit_c_host(operator_plan)
+except ValueError as error:
+    assert "external-weight paging" in str(error)
+else:
+    raise AssertionError("8B Q4 operator plan was emitted without a paging Host")
 
 try:
     external_tensor_proto("bad", [1], 2, "../escape.bin", 0, 1)
