@@ -90,8 +90,25 @@ namespace Lemolatoon.Udoncl.Editor
     {
         public int id;
         public string kernel;
+        public string shader;
         public string[] providers;
         public int fragments;
+        public UdonOnnxIntMaterialBinding[] material_int_bindings;
+        public UdonOnnxFloatMaterialBinding[] material_float_bindings;
+    }
+
+    [Serializable]
+    internal sealed class UdonOnnxIntMaterialBinding
+    {
+        public string property;
+        public int value;
+    }
+
+    [Serializable]
+    internal sealed class UdonOnnxFloatMaterialBinding
+    {
+        public string property;
+        public float value;
     }
 
     [Serializable]

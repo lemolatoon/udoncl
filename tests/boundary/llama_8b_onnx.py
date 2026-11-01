@@ -197,6 +197,13 @@ assert texture_arena["max_texture_width"] == 8192
 assert texture_arena["slot_count"] == 5
 assert texture_arena["total_words"] == 177408
 assert texture_arena["total_bytes"] == 709632
+assert operator_plan["passes"][0]["material_int_bindings"] == [
+    {"property": "_VRC_Arg2", "value": 4096},
+    {"property": "_VRC_Arg3", "value": 4096},
+]
+assert operator_plan["passes"][1]["material_float_bindings"] == [
+    {"property": "_VRC_Arg6", "value": 1.0e-5}
+]
 assert [slot["capacity_words"] for slot in texture_arena["slots"]] == [
     128256,
     16384,

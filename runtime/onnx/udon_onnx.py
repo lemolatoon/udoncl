@@ -1918,6 +1918,22 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
     texture_arena = _plan_texture_arena(
         graph, calls, shapes, value_types, scratch_buffers
     )
+    # Unity's JsonUtility intentionally does not deserialize JSON objects into
+    # dictionaries. Keep the object form as the canonical Python contract and
+    # emit an equivalent ordered array for the Unity package importer.
+    for device_pass in passes:
+        device_pass["material_int_bindings"] = [
+            {"property": property_name, "value": value}
+            for property_name, value in sorted(
+                (device_pass.get("material_ints") or {}).items()
+            )
+        ]
+        device_pass["material_float_bindings"] = [
+            {"property": property_name, "value": value}
+            for property_name, value in sorted(
+                (device_pass.get("material_floats") or {}).items()
+            )
+        ]
     return {
         "schema_version": 1,
         "runtime": "udon-onnx",

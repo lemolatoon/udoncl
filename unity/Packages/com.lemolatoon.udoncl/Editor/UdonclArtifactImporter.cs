@@ -66,6 +66,9 @@ namespace Lemolatoon.Udoncl.Editor
                     }
 
                     Dictionary<int, Material> kernelMaterials = new Dictionary<int, Material>();
+                    Dictionary<string, Shader> kernelShaders = new Dictionary<string, Shader>(
+                        StringComparer.Ordinal
+                    );
                     foreach (KeyValuePair<ValidatedKernel, string> shaderEntry in shaderAssetPaths)
                     {
                         Shader shader = AssetDatabase.LoadAssetAtPath<Shader>(shaderEntry.Value);
@@ -82,6 +85,12 @@ namespace Lemolatoon.Udoncl.Editor
                                 shader
                             )
                         );
+                        kernelShaders.Add(shaderEntry.Key.RelativeShaderPath, shader);
+                        string shaderFileName = Path.GetFileName(
+                            shaderEntry.Key.RelativeShaderPath
+                        );
+                        if (!kernelShaders.ContainsKey(shaderFileName))
+                            kernelShaders.Add(shaderFileName, shader);
                     }
 
                     Shader displayShader = AssetDatabase.LoadAssetAtPath<Shader>(displayShaderPath);
@@ -99,7 +108,8 @@ namespace Lemolatoon.Udoncl.Editor
                         artifacts,
                         programRoot,
                         programAsset,
-                        kernelMaterials
+                        kernelMaterials,
+                        kernelShaders
                     );
                     if (artifacts.ArtifactStage == "unity-mnist-prototype")
                     {
@@ -1324,7 +1334,8 @@ namespace Lemolatoon.Udoncl.Editor
             ValidatedArtifact artifact,
             string programRoot,
             UdonAssemblyProgramAsset programAsset,
-            IDictionary<int, Material> kernelMaterials
+            IDictionary<int, Material> kernelMaterials,
+            IDictionary<string, Shader> kernelShaders
         )
         {
             ValidatedResource model = FindOptionalResource(artifact, "onnx_model", "bytes");
@@ -1412,17 +1423,38 @@ namespace Lemolatoon.Udoncl.Editor
             }
             Material[] passMaterials = new Material[executionPlan.passes.Length];
             for (int index = 0; index < executionPlan.passes.Length; ++index)
-                if (
-                    !kernelMaterials.TryGetValue(
-                        executionPlan.passes[index].id,
-                        out passMaterials[index]
-                    )
-                )
-                    throw new InvalidDataException(
-                        "ONNX execution pass references missing kernel id "
-                            + executionPlan.passes[index].id
-                            + "."
+            {
+                UdonOnnxPassInfo pass = executionPlan.passes[index];
+                if (!string.IsNullOrWhiteSpace(pass.shader))
+                {
+                    if (!kernelShaders.TryGetValue(pass.shader, out Shader shader))
+                        throw new InvalidDataException(
+                            "ONNX execution pass references missing shader " + pass.shader + "."
+                        );
+                    Material material = CreateOrUpdateNamedMaterial(
+                        transaction,
+                        programRoot,
+                        "onnx_pass_" + pass.id + "_" + pass.kernel + ".mat",
+                        shader
                     );
+                    foreach (
+                        UdonOnnxIntMaterialBinding binding in pass.material_int_bindings
+                            ?? Array.Empty<UdonOnnxIntMaterialBinding>()
+                    )
+                        material.SetInt(binding.property, binding.value);
+                    foreach (
+                        UdonOnnxFloatMaterialBinding binding in pass.material_float_bindings
+                            ?? Array.Empty<UdonOnnxFloatMaterialBinding>()
+                    )
+                        material.SetFloat(binding.property, binding.value);
+                    EditorUtility.SetDirty(material);
+                    passMaterials[index] = material;
+                }
+                else if (!kernelMaterials.TryGetValue(pass.id, out passMaterials[index]))
+                    throw new InvalidDataException(
+                        "ONNX execution pass references missing kernel id " + pass.id + "."
+                    );
+            }
             string assetPath = modelDirectory + "/UdonOnnxModel.asset";
             transaction.Track(assetPath);
             Lemolatoon.Udoncl.UdonOnnxModelAsset modelAsset =
