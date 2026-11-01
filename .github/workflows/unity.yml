@@ -1,0 +1,56 @@
+name: Unity SDK UdonVM
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  udonasm-lowering:
+    if: >-
+      vars.UNITY_EDITOR_PATH != '' &&
+      vars.UDONCL_UNITY_TEST_PROJECT != '' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: [self-hosted, Windows, X64, unity-2022.3, vrchat-worlds]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Restore pinned LLVM and MLIR
+        uses: actions/cache/restore@v4
+        id: llvm
+        with:
+          path: .deps/llvm23
+          key: unity-llvm-sdk-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('cmake/llvm-lock.json', 'scripts/install_llvm.py', 'scripts/requirements-llvm.txt') }}
+      - name: Install archive extraction dependency
+        if: steps.llvm.outputs.cache-hit != 'true'
+        run: python -m pip install -r scripts/requirements-llvm.txt
+      - name: Install pinned prebuilt LLVM and MLIR
+        if: steps.llvm.outputs.cache-hit != 'true'
+        run: python scripts/install_llvm.py --discard-downloads
+      - name: Validate LLVM and build lowering tools
+        run: |
+          python scripts/install_llvm.py --check
+          cmake --preset udoncl -DVRC_ENABLE_NATIVE_FRAGMENT_TESTS=OFF
+          python scripts/build.py
+      - name: Execute fresh UdonAsm lowering in Unity SDK IUdonVM
+        run: >-
+          python scripts/unity_ci.py
+          --unity "${{ vars.UNITY_EDITOR_PATH }}"
+          --project "${{ vars.UDONCL_UNITY_TEST_PROJECT }}"
+      - name: Upload Unity lowering evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unity-udonvm-lowering-${{ github.run_id }}
+          path: |
+            build/unity-ci/udonvm-lowering-results.xml
+            build/unity-ci/unity.log
+            build/unity-ci/lowering/scalar.udonasm.mlir
+            build/unity-ci/lowering/scalar.uasm
+          if-no-files-found: warn

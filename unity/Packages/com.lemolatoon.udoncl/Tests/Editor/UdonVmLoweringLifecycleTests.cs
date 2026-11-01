@@ -1,3 +1,4 @@
+using System;
 using System.IO;
 using NUnit.Framework;
 using UnityEditor.PackageManager;
@@ -26,13 +27,32 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                     typeof(UdonVmLoweringLifecycleTests).Assembly
                 );
             Assert.NotNull(package, "Could not resolve the UdonCL package root.");
-            string fixture = Path.Combine(
-                package.resolvedPath,
-                "Tests",
-                "Editor",
-                "Fixtures",
-                "scalar.uasm"
-            );
+            string fixture = Environment.GetEnvironmentVariable("UDONCL_LOWERED_UASM");
+            if (string.IsNullOrWhiteSpace(fixture))
+            {
+                string repository = Path.GetFullPath(
+                    Path.Combine(package.resolvedPath, "..", "..", "..")
+                );
+                string generated = Path.Combine(
+                    repository,
+                    "build",
+                    "udoncl",
+                    "tests",
+                    "udon-scalar",
+                    "scalar.uasm"
+                );
+                fixture = File.Exists(generated)
+                    ? generated
+                    : Path.Combine(
+                        package.resolvedPath,
+                        "Tests",
+                        "Editor",
+                        "Fixtures",
+                        "scalar.uasm"
+                    );
+            }
+            else
+                fixture = Path.GetFullPath(fixture);
             Assert.That(File.Exists(fixture), "Missing compiler-emitted scalar.uasm fixture.");
             assemblyText = File.ReadAllText(fixture);
             if (Directory.Exists(TemporaryDirectory))
