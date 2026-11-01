@@ -10,6 +10,8 @@ up to 512 input, filter, and output words, at most eight input channels, and
 filters up to 5x5. It supports padding, independent horizontal and vertical
 stride and dilation, cross-correlation and true convolution, and alpha/beta
 accumulation. These are profile limits rather than permanent API limits.
+Packed Unity material integers remain at or below 24 bits; the convolution
+mode is a separate scalar so Unity cannot round away low configuration bits.
 
 Run the real fragment-backed validation with:
 
@@ -21,3 +23,9 @@ The validation compares five convolution shapes against an independent CPU
 reference and covers descriptor lifetimes, stale descriptor rejection, output
 shape calculation, zero-workspace planning, invalid shapes, and OpenCL object
 cleanup.
+
+The same command emits `unity-bundle`, containing a reusable 3D prefab, host
+Udon assembly, generated convolution shader, packed fixture tensor, and
+reference output. The package lifecycle test imports it, runs `_run` through
+the SDK `IUdonVM`, compares all 48 fixture outputs, and removes every generated
+asset again.

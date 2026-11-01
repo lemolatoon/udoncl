@@ -398,7 +398,8 @@ udondnnStatus_t udondnnConvolutionForward(
   FilterDescriptor *filter_info;
   ConvolutionDescriptor *convolution_info;
   int n, c, h, w, input_words, filter_words, output_words, index;
-  int input_shape, filter_shape, convolution_shape, output_shape;
+  int input_shape, filter_shape, convolution_shape, convolution_mode;
+  int output_shape;
   size_t global = UDONDNN_WORDS, local = 1;
   cl_int cl_status;
   udondnnStatus_t status;
@@ -436,8 +437,8 @@ udondnnStatus_t udondnnConvolutionForward(
                       (convolution_info->stride_h << 8) |
                       (convolution_info->stride_w << 12) |
                       (convolution_info->dilation_h << 16) |
-                      (convolution_info->dilation_w << 20) |
-                      ((int)convolution_info->mode << 24);
+                      (convolution_info->dilation_w << 20);
+  convolution_mode = (int)convolution_info->mode;
   output_shape = pack_shape(n, c, h, w);
 
 #define SET_ARGUMENT(slot, value)                                              \
@@ -450,9 +451,10 @@ udondnnStatus_t udondnnConvolutionForward(
   SET_ARGUMENT(2, input_shape);
   SET_ARGUMENT(3, filter_shape);
   SET_ARGUMENT(4, convolution_shape);
-  SET_ARGUMENT(5, output_shape);
-  SET_ARGUMENT(6, *alpha);
-  SET_ARGUMENT(7, *beta);
+  SET_ARGUMENT(5, convolution_mode);
+  SET_ARGUMENT(6, output_shape);
+  SET_ARGUMENT(7, *alpha);
+  SET_ARGUMENT(8, *beta);
 #undef SET_ARGUMENT
 
   if (clEnqueueWriteBuffer(queue, input_buffer, CL_TRUE, 0, sizeof(packed),

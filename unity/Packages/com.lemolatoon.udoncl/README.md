@@ -40,3 +40,15 @@ matrix element is owned by an independent fragment. The initial reusable
 profile supports matrices up to 16×16 and retains the cuBLAS column-major
 operand contract so tiled multi-pass implementations can lift that limit
 without changing the public C API.
+
+## UdonDNN
+
+The `unity-udondnn-convolution` artifact stage creates
+`UdonDnnConvolution.prefab` with packed NCHW input/filter/output state,
+descriptor-derived shape parameters, alpha/beta accumulation, and the generated
+UdonCL convolution Material. Calling `_run` assigns one output tensor element
+to each fragment. The initial profile supports up to 512 float words per tensor,
+eight input channels, 5×5 filters, padding, independent stride/dilation,
+cross-correlation, and true convolution. Shape/configuration uniforms stay
+within Unity's exactly represented 24-bit integer range; convolution mode is a
+separate scalar.

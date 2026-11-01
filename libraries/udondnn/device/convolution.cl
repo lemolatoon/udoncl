@@ -16,12 +16,10 @@ static inline size_t get_global_id(unsigned dimension) {
 #define UDONDNN_PREVIOUS_OUTPUT_OFFSET 1024u
 #define UDONDNN_RESULT_OFFSET 1536u
 
-__kernel void udondnn_convolution_forward(__global const float *packed,
-                                          __global float *output,
-                                          int input_shape, int filter_shape,
-                                          int convolution_shape,
-                                          int output_shape, float alpha,
-                                          float beta) {
+__kernel void udondnn_convolution_forward(
+    __global const float *packed, __global float *output, int input_shape,
+    int filter_shape, int convolution_shape, int convolution_mode,
+    int output_shape, float alpha, float beta) {
   uint gid = (uint)get_global_id(0);
   float value = packed[gid];
   uint output_n = (uint)output_shape & 15u;
@@ -47,7 +45,7 @@ __kernel void udondnn_convolution_forward(__global const float *packed,
     uint stride_w = ((uint)convolution_shape >> 12u) & 15u;
     uint dilation_h = ((uint)convolution_shape >> 16u) & 15u;
     uint dilation_w = ((uint)convolution_shape >> 20u) & 15u;
-    uint mode = ((uint)convolution_shape >> 24u) & 1u;
+    uint mode = (uint)convolution_mode & 1u;
     float sum = 0.0f;
     for (uint ic = 0; ic < 8u; ++ic)
       for (uint ky = 0; ky < 5u; ++ky)
@@ -59,8 +57,8 @@ __kernel void udondnn_convolution_forward(__global const float *packed,
             uint input_index =
                 ((batch * input_c + ic) * input_h + (uint)iy) * input_w +
                 (uint)ix;
-            uint filter_y = mode == 1u ? ky : filter_h - 1u - ky;
-            uint filter_x = mode == 1u ? kx : filter_w - 1u - kx;
+            uint filter_y = mode * ky + (1u - mode) * (filter_h - 1u - ky);
+            uint filter_x = mode * kx + (1u - mode) * (filter_w - 1u - kx);
             uint filter_index =
                 ((oc * input_c + ic) * filter_h + filter_y) * filter_w +
                 filter_x;

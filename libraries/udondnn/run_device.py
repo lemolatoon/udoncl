@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import struct
 import sys
 import tempfile
 
@@ -136,22 +137,152 @@ def main():
         or kernel["global_size"] != [2048, 1, 1]
         or [argument["required_bytes"] for argument in kernel["args"][:2]]
         != [8192, 8192]
-        or len(kernel["args"]) != 8
+        or len(kernel["args"]) != 9
     ):
         raise RuntimeError("UdonDNN convolution manifest does not match its packed ABI")
     fragment = bundle / "kernels/kernel_200.hlsl"
+    fragment_text = fragment.read_text(encoding="utf-8")
     shaderlab = (bundle / "kernels/kernel_200.shader").read_text(encoding="utf-8")
-    if '_VRC_Arg5 ("Arg5", Int)' not in shaderlab or "Integer)" in shaderlab:
+    if '_VRC_Arg6 ("Arg6", Int)' not in shaderlab or "Integer)" in shaderlab:
         raise RuntimeError("UdonDNN integer uniforms are not Unity SetInt-compatible")
+    if "mode ==" in device_text or "? ky" in device_text or "? kx" in device_text:
+        raise RuntimeError("UdonDNN convolution mode must not lower through select")
+    if "(_VRC_Arg4 >>" not in fragment_text or "(_VRC_Arg5 &" not in fragment_text:
+        raise RuntimeError("UdonDNN generated shader lost packed shape or separate mode")
     (output / "Bindings.h").write_text(
         "inline const char *deviceSource() { return "
         + json.dumps(device_text)
         + "; }\n"
         + "inline std::vector<native_opencl::GatherBinding> manifestBindings("
-        + "const std::string &fragment) { return {{200, 2048, 6, "
+        + "const std::string &fragment) { return {{200, 2048, 7, "
         + '"udondnn_convolution_forward", fragment}}; }\n',
         encoding="utf-8",
     )
+
+    fixture_input_shape = (1, 2, 4, 4)
+    fixture_filter_shape = (3, 2, 3, 3)
+    fixture_output_shape = (1, 3, 4, 4)
+    fixture_alpha, fixture_beta = 0.75, -0.25
+    fixture_input = [
+        ((index + 5) * 18 % 31 - 15) * 0.0625
+        for index in range(1 * 2 * 4 * 4)
+    ]
+    fixture_filter = [
+        ((index + 5) * 84 % 31 - 15) * 0.0625
+        for index in range(3 * 2 * 3 * 3)
+    ]
+    fixture_previous = [
+        ((index + 5) * 150 % 31 - 15) * 0.0625
+        for index in range(1 * 3 * 4 * 4)
+    ]
+    fixture_reference = list(fixture_previous)
+    for output_channel in range(3):
+        for output_y in range(4):
+            for output_x in range(4):
+                product = 0.0
+                for input_channel in range(2):
+                    for kernel_y in range(3):
+                        for kernel_x in range(3):
+                            input_y = output_y + kernel_y - 1
+                            input_x = output_x + kernel_x - 1
+                            if 0 <= input_y < 4 and 0 <= input_x < 4:
+                                input_index = (
+                                    (input_channel * 4 + input_y) * 4 + input_x
+                                )
+                                filter_index = (
+                                    (output_channel * 2 + input_channel) * 3
+                                    + kernel_y
+                                ) * 3 + kernel_x
+                                product += (
+                                    fixture_input[input_index]
+                                    * fixture_filter[filter_index]
+                                )
+                output_index = (output_channel * 4 + output_y) * 4 + output_x
+                fixture_reference[output_index] = (
+                    fixture_alpha * product
+                    + fixture_beta * fixture_previous[output_index]
+                )
+    fixture_packed = [0.0] * 2048
+    fixture_packed[0 : len(fixture_input)] = fixture_input
+    fixture_packed[512 : 512 + len(fixture_filter)] = fixture_filter
+    fixture_packed[1024 : 1024 + len(fixture_previous)] = fixture_previous
+    unity_bundle = output / "unity-bundle"
+    with tempfile.TemporaryDirectory(prefix="unity-udondnn-", dir=output) as staging:
+        staged = Path(staging) / "bundle"
+        (staged / "kernels").mkdir(parents=True)
+        shutil.copy2(source / "unity/host.uasm", staged / "host.uasm")
+        shutil.copy2(source / "unity/display.shader", staged / "display.shader")
+        shutil.copy2(
+            bundle / "kernels/kernel_200.shader",
+            staged / "kernels/kernel_200.shader",
+        )
+        (staged / "fixture_input.bytes").write_bytes(
+            struct.pack("<2048f", *fixture_packed)
+        )
+        (staged / "fixture_reference.bytes").write_bytes(
+            struct.pack("<48f", *fixture_reference)
+        )
+        unity_manifest = {
+            "schema_version": 1,
+            "compiler_version": "0.1.0-dev",
+            "runtime_abi_version": 1,
+            "artifact_stage": "unity-udondnn-convolution",
+            "ready_for_unity": True,
+            "sdk_compatibility": {"sdk_version": "3.10.5", "extern_db_hash": None},
+            "target": {
+                "host_pointer_bits": 32,
+                "device_pointer_bits": 32,
+                "endianness": "little",
+                "platform": "VRChat-PC",
+            },
+            "program": {
+                "name": "udondnn_convolution",
+                "assembly": "host.uasm",
+                "display_shader": "display.shader",
+            },
+            "exports": [
+                {
+                    "id": 1,
+                    "c_symbol": "udondnnConvolutionForward",
+                    "udon_event": "_run",
+                    "status_slot": "",
+                    "async": False,
+                }
+            ],
+            "device": {
+                "kernels": [
+                    {
+                        "id": 200,
+                        "name": "udondnn_convolution_forward",
+                        "shader": "kernels/kernel_200.shader",
+                    }
+                ]
+            },
+            "resources": [
+                {"name": "fixture_input", "kind": "bytes", "path": "fixture_input.bytes"},
+                {
+                    "name": "fixture_reference",
+                    "kind": "bytes",
+                    "path": "fixture_reference.bytes",
+                },
+            ],
+            "fixture": {
+                "input_shape": fixture_input_shape,
+                "filter_shape": fixture_filter_shape,
+                "output_shape": fixture_output_shape,
+            },
+        }
+        (staged / "manifest.json").write_text(
+            json.dumps(unity_manifest, indent=2), encoding="utf-8"
+        )
+        if unity_bundle.exists():
+            previous = json.loads(
+                (unity_bundle / "manifest.json").read_text(encoding="utf-8")
+            )
+            if previous.get("artifact_stage") != "unity-udondnn-convolution":
+                raise RuntimeError("refusing to replace a non-UdonDNN Unity bundle")
+            shutil.rmtree(unity_bundle)
+        staged.rename(unity_bundle)
 
     host_ir = output / "host.ll"
     imported = output / "host.imported.mlir"
