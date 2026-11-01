@@ -53,6 +53,15 @@ typedef enum udondnnPoolingMode_t {
   UDONDNN_POOLING_AVERAGE_COUNT_EXCLUDE_PADDING = 2,
   UDONDNN_POOLING_MAX_DETERMINISTIC = 3
 } udondnnPoolingMode_t;
+typedef enum udondnnSoftmaxAlgorithm_t {
+  UDONDNN_SOFTMAX_FAST = 0,
+  UDONDNN_SOFTMAX_ACCURATE = 1,
+  UDONDNN_SOFTMAX_LOG = 2
+} udondnnSoftmaxAlgorithm_t;
+typedef enum udondnnSoftmaxMode_t {
+  UDONDNN_SOFTMAX_MODE_INSTANCE = 0,
+  UDONDNN_SOFTMAX_MODE_CHANNEL = 1
+} udondnnSoftmaxMode_t;
 
 enum {
   UDONDNN_CONV_MAX_TENSOR_WORDS = 512,
@@ -136,6 +145,13 @@ udondnnStatus_t udondnnPoolingForward(
     const float *alpha, udondnnTensorDescriptor_t input_descriptor,
     const float *input, const float *beta,
     udondnnTensorDescriptor_t output_descriptor, float *output);
+
+udondnnStatus_t udondnnSoftmaxForward(
+    udondnnHandle_t handle, udondnnSoftmaxAlgorithm_t algorithm,
+    udondnnSoftmaxMode_t mode, const float *alpha,
+    udondnnTensorDescriptor_t input_descriptor, const float *input,
+    const float *beta, udondnnTensorDescriptor_t output_descriptor,
+    float *output);
 
 #ifdef __cplusplus
 }

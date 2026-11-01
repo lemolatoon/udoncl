@@ -250,10 +250,10 @@ struct RaiseGatherDevicePass
     for (auto call : source.getOps<LLVM::CallOp>()) {
       StringRef callee = call.getCallee().value_or("");
       bool id = callee == "_Z13get_global_idj",
-           math = llvm::is_contained(ArrayRef<StringRef>{"_Z5floorf",
-                                                         "_Z4sqrtf", "_Z3cosf",
-                                                         "_Z3sinf", "_Z3expf"},
-                                     callee);
+           math = llvm::is_contained(
+               ArrayRef<StringRef>{"_Z5floorf", "_Z4sqrtf", "_Z3cosf",
+                                   "_Z3sinf", "_Z3expf", "_Z3logf"},
+               callee);
       if ((!id && !math) || call.getNumOperands() != 1 ||
           call.getNumResults() != 1 ||
           call.getFastmathFlags() != LLVM::FastmathFlags::none ||
@@ -405,7 +405,7 @@ struct RaiseGatherDevicePass
               llvm::is_contained(ArrayRef<StringRef>{"_Z13get_global_idj",
                                                      "_Z5floorf", "_Z4sqrtf",
                                                      "_Z3cosf", "_Z3sinf",
-                                                     "_Z3expf"},
+                                                     "_Z3expf", "_Z3logf"},
                                  f.getName());
           if (!builtin) {
             fail("unexpected live Device symbol");
@@ -460,6 +460,8 @@ struct RaiseGatherDevicePass
         rewriter.replaceOpWithNewOp<math::CosOp>(call, call.getOperand(0));
       else if (callee == "_Z3sinf")
         rewriter.replaceOpWithNewOp<math::SinOp>(call, call.getOperand(0));
+      else if (callee == "_Z3logf")
+        rewriter.replaceOpWithNewOp<math::LogOp>(call, call.getOperand(0));
       else
         rewriter.replaceOpWithNewOp<math::ExpOp>(call, call.getOperand(0));
     }

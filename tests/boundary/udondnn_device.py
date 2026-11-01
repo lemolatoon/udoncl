@@ -33,5 +33,9 @@ assert "pooling_outputs=41" in result.stdout
 assert "pooling_cases=6" in result.stdout
 pooling_error = re.search(r"pooling_max_error=([0-9.eE+-]+)", result.stdout)
 assert pooling_error and float(pooling_error.group(1)) < 0.0005
-assert "draws=19" in result.stdout
+assert "softmax_outputs=80" in result.stdout
+assert "softmax_cases=6" in result.stdout
+softmax_error = re.search(r"softmax_max_error=([0-9.eE+-]+)", result.stdout)
+assert softmax_error and float(softmax_error.group(1)) < 0.0005
+assert "draws=25" in result.stdout
 print(result.stdout, end="")

@@ -17,6 +17,8 @@ extern "C" size_t udondnn_activation_cpu_gid;
 size_t udondnn_activation_cpu_gid;
 extern "C" size_t udondnn_pooling_cpu_gid;
 size_t udondnn_pooling_cpu_gid;
+extern "C" size_t udondnn_softmax_cpu_gid;
+size_t udondnn_softmax_cpu_gid;
 
 namespace {
 struct Case {
@@ -42,6 +44,14 @@ struct PoolingCase {
   int strideHeight, strideWidth;
   udondnnPoolingMode_t mode;
   udondnnNanPropagation_t nanPropagation;
+  float alpha, beta;
+  bool injectNan;
+};
+
+struct SoftmaxCase {
+  int n, channels, height, width;
+  udondnnSoftmaxAlgorithm_t algorithm;
+  udondnnSoftmaxMode_t mode;
   float alpha, beta;
   bool injectNan;
 };
@@ -202,17 +212,59 @@ void poolingReference(const PoolingCase &test, const std::vector<float> &input,
               test.alpha * pooled + test.beta * output[outputIndex];
         }
 }
+
+void softmaxReference(const SoftmaxCase &test, const std::vector<float> &input,
+                      std::vector<float> &output) {
+  int sampleWords = test.channels * test.height * test.width;
+  int words = test.n * sampleWords;
+  for (int element = 0; element < words; ++element) {
+    int x = element % test.width;
+    int y = (element / test.width) % test.height;
+    int batch = element / sampleWords;
+    float maximum = -std::numeric_limits<float>::max();
+    if (test.mode == UDONDNN_SOFTMAX_MODE_INSTANCE) {
+      for (int candidate = 0; candidate < sampleWords; ++candidate)
+        maximum = std::max(maximum, input[batch * sampleWords + candidate]);
+    } else {
+      for (int channel = 0; channel < test.channels; ++channel) {
+        int candidate =
+            ((batch * test.channels + channel) * test.height + y) * test.width +
+            x;
+        maximum = std::max(maximum, input[candidate]);
+      }
+    }
+    float denominator = 0.0f;
+    if (test.mode == UDONDNN_SOFTMAX_MODE_INSTANCE) {
+      for (int candidate = 0; candidate < sampleWords; ++candidate)
+        denominator +=
+            std::exp(input[batch * sampleWords + candidate] - maximum);
+    } else {
+      for (int channel = 0; channel < test.channels; ++channel) {
+        int candidate =
+            ((batch * test.channels + channel) * test.height + y) * test.width +
+            x;
+        denominator += std::exp(input[candidate] - maximum);
+      }
+    }
+    float normalized = std::exp(input[element] - maximum) / denominator;
+    if (test.algorithm == UDONDNN_SOFTMAX_LOG)
+      normalized = input[element] - maximum - std::log(denominator);
+    output[element] = test.alpha * normalized + test.beta * output[element];
+  }
+}
 } // namespace
 
 int main(int argc, char **argv) {
-  if (argc != 5) {
+  if (argc != 6) {
     std::cerr << "usage: udondnn-device convolution-fragment "
-                 "activation-fragment pooling-fragment vertex\n";
+                 "activation-fragment pooling-fragment softmax-fragment "
+                 "vertex\n";
     return 2;
   }
   try {
     native_opencl::Session session(
-        deviceSource(), manifestBindings(argv[1], argv[2], argv[3]), argv[4]);
+        deviceSource(), manifestBindings(argv[1], argv[2], argv[3], argv[4]),
+        argv[5]);
     udondnnHandle_t handle = 0;
     require(udondnnCreate(&handle), UDONDNN_STATUS_SUCCESS, "udondnnCreate");
     const std::array<Case, 5> cases{{
@@ -483,6 +535,70 @@ int main(int argc, char **argv) {
     if (poolingMaximumError > 0.0005f)
       throw std::runtime_error("UdonDNN pooling CPU/Device results diverged");
 
+    const std::array<SoftmaxCase, 6> softmaxCases{{
+        {1, 3, 2, 2, UDONDNN_SOFTMAX_FAST, UDONDNN_SOFTMAX_MODE_INSTANCE, 1.0f,
+         0.0f, false},
+        {2, 2, 2, 2, UDONDNN_SOFTMAX_ACCURATE, UDONDNN_SOFTMAX_MODE_INSTANCE,
+         0.75f, -0.25f, false},
+        {1, 2, 2, 3, UDONDNN_SOFTMAX_LOG, UDONDNN_SOFTMAX_MODE_INSTANCE, -1.0f,
+         0.5f, false},
+        {1, 4, 2, 2, UDONDNN_SOFTMAX_FAST, UDONDNN_SOFTMAX_MODE_CHANNEL, 1.25f,
+         0.125f, false},
+        {2, 3, 1, 2, UDONDNN_SOFTMAX_ACCURATE, UDONDNN_SOFTMAX_MODE_CHANNEL,
+         0.5f, -0.5f, false},
+        {1, 3, 2, 2, UDONDNN_SOFTMAX_LOG, UDONDNN_SOFTMAX_MODE_CHANNEL, -0.75f,
+         1.0f, true},
+    }};
+    float softmaxMaximumError = 0.0f;
+    int softmaxOutputs = 0;
+    for (size_t caseIndex = 0; caseIndex < softmaxCases.size(); ++caseIndex) {
+      const SoftmaxCase &test = softmaxCases[caseIndex];
+      int words = test.n * test.channels * test.height * test.width;
+      std::vector<float> input(words), actual(words), expected;
+      for (int index = 0; index < words; ++index) {
+        input[index] = value(index, int(caseIndex) + 71) * 8.0f;
+        actual[index] = value(index, int(caseIndex) + 79);
+      }
+      if (test.injectNan)
+        input[7] = std::numeric_limits<float>::quiet_NaN();
+      expected = actual;
+      softmaxReference(test, input, expected);
+
+      udondnnTensorDescriptor_t inputDescriptor = 0, outputDescriptor = 0;
+      require(udondnnCreateTensorDescriptor(&inputDescriptor),
+              UDONDNN_STATUS_SUCCESS, "create softmax input descriptor");
+      require(udondnnCreateTensorDescriptor(&outputDescriptor),
+              UDONDNN_STATUS_SUCCESS, "create softmax output descriptor");
+      require(udondnnSetTensor4dDescriptor(
+                  inputDescriptor, UDONDNN_TENSOR_NCHW, UDONDNN_DATA_FLOAT,
+                  test.n, test.channels, test.height, test.width),
+              UDONDNN_STATUS_SUCCESS, "set softmax input descriptor");
+      require(udondnnSetTensor4dDescriptor(
+                  outputDescriptor, UDONDNN_TENSOR_NCHW, UDONDNN_DATA_FLOAT,
+                  test.n, test.channels, test.height, test.width),
+              UDONDNN_STATUS_SUCCESS, "set softmax output descriptor");
+      require(udondnnSoftmaxForward(handle, test.algorithm, test.mode,
+                                    &test.alpha, inputDescriptor, input.data(),
+                                    &test.beta, outputDescriptor,
+                                    actual.data()),
+              UDONDNN_STATUS_SUCCESS, "udondnnSoftmaxForward");
+      for (int index = 0; index < words; ++index) {
+        if (std::isnan(expected[index]) && std::isnan(actual[index])) {
+          ++softmaxOutputs;
+          continue;
+        }
+        softmaxMaximumError = std::max(
+            softmaxMaximumError, std::abs(actual[index] - expected[index]));
+        ++softmaxOutputs;
+      }
+      require(udondnnDestroyTensorDescriptor(inputDescriptor),
+              UDONDNN_STATUS_SUCCESS, "destroy softmax input descriptor");
+      require(udondnnDestroyTensorDescriptor(outputDescriptor),
+              UDONDNN_STATUS_SUCCESS, "destroy softmax output descriptor");
+    }
+    if (softmaxMaximumError > 0.0005f)
+      throw std::runtime_error("UdonDNN softmax CPU/Device results diverged");
+
     udondnnTensorDescriptor_t stale = 0, replacement = 0;
     require(udondnnCreateTensorDescriptor(&stale), UDONDNN_STATUS_SUCCESS,
             "create stale descriptor");
@@ -547,6 +663,35 @@ int main(int argc, char **argv) {
             UDONDNN_STATUS_BAD_PARAM, "reject invalid pooling mode");
     require(udondnnDestroyPoolingDescriptor(invalidPooling),
             UDONDNN_STATUS_SUCCESS, "destroy invalid pooling descriptor");
+    udondnnTensorDescriptor_t softmaxInput = 0, softmaxOutput = 0;
+    float softmaxInputValues[2] = {0.0f, 1.0f};
+    float softmaxOutputValues[2] = {0.0f, 0.0f};
+    const float one = 1.0f, zero = 0.0f;
+    require(udondnnCreateTensorDescriptor(&softmaxInput),
+            UDONDNN_STATUS_SUCCESS, "create invalid softmax input descriptor");
+    require(udondnnCreateTensorDescriptor(&softmaxOutput),
+            UDONDNN_STATUS_SUCCESS, "create invalid softmax output descriptor");
+    require(udondnnSetTensor4dDescriptor(softmaxInput, UDONDNN_TENSOR_NCHW,
+                                         UDONDNN_DATA_FLOAT, 1, 1, 1, 2),
+            UDONDNN_STATUS_SUCCESS, "set invalid softmax input descriptor");
+    require(udondnnSetTensor4dDescriptor(softmaxOutput, UDONDNN_TENSOR_NCHW,
+                                         UDONDNN_DATA_FLOAT, 1, 1, 1, 2),
+            UDONDNN_STATUS_SUCCESS, "set invalid softmax output descriptor");
+    require(udondnnSoftmaxForward(handle, udondnnSoftmaxAlgorithm_t(99),
+                                  UDONDNN_SOFTMAX_MODE_INSTANCE, &one,
+                                  softmaxInput, softmaxInputValues, &zero,
+                                  softmaxOutput, softmaxOutputValues),
+            UDONDNN_STATUS_BAD_PARAM, "reject invalid softmax algorithm");
+    require(udondnnSoftmaxForward(handle, UDONDNN_SOFTMAX_ACCURATE,
+                                  udondnnSoftmaxMode_t(99), &one, softmaxInput,
+                                  softmaxInputValues, &zero, softmaxOutput,
+                                  softmaxOutputValues),
+            UDONDNN_STATUS_BAD_PARAM, "reject invalid softmax mode");
+    require(udondnnDestroyTensorDescriptor(softmaxInput),
+            UDONDNN_STATUS_SUCCESS, "destroy invalid softmax input descriptor");
+    require(udondnnDestroyTensorDescriptor(softmaxOutput),
+            UDONDNN_STATUS_SUCCESS,
+            "destroy invalid softmax output descriptor");
     require(udondnnDestroy(handle), UDONDNN_STATUS_SUCCESS, "udondnnDestroy");
     if (udoncl_cl_live_objects())
       throw std::runtime_error("OpenCL object leak");
@@ -559,6 +704,9 @@ int main(int argc, char **argv) {
               << " pooling_outputs=" << poolingOutputs
               << " pooling_cases=" << poolingCases.size()
               << " pooling_max_error=" << poolingMaximumError
+              << " softmax_outputs=" << softmaxOutputs
+              << " softmax_cases=" << softmaxCases.size()
+              << " softmax_max_error=" << softmaxMaximumError
               << " renderer=" << session.deviceName()
               << " draws=" << session.drawCount() << "\n";
     return 0;

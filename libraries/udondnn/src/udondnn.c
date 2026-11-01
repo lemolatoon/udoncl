@@ -15,6 +15,9 @@
 #define UDONDNN_POOLING_WORDS 2048
 #define UDONDNN_POOLING_PREVIOUS_OUTPUT_OFFSET 512
 #define UDONDNN_POOLING_RESULT_OFFSET 1024
+#define UDONDNN_SOFTMAX_WORDS 2048
+#define UDONDNN_SOFTMAX_PREVIOUS_OUTPUT_OFFSET 512
+#define UDONDNN_SOFTMAX_RESULT_OFFSET 1024
 #define UDONDNN_HANDLE 1u
 #define UDONDNN_DESCRIPTOR_SLOTS 8
 #define UDONDNN_SLOT_MASK 255u
@@ -70,6 +73,7 @@ static cl_program program;
 static cl_kernel convolution_kernel;
 static cl_kernel activation_kernel;
 static cl_kernel pooling_kernel;
+static cl_kernel softmax_kernel;
 static cl_mem input_buffer;
 static cl_mem output_buffer;
 static float packed[UDONDNN_WORDS];
@@ -143,6 +147,8 @@ static PoolingDescriptor *get_pooling(udondnnPoolingDescriptor_t descriptor) {
 }
 
 static void clear_objects(void) {
+  if (softmax_kernel)
+    clReleaseKernel(softmax_kernel);
   if (pooling_kernel)
     clReleaseKernel(pooling_kernel);
   if (activation_kernel)
@@ -162,6 +168,7 @@ static void clear_objects(void) {
   convolution_kernel = 0;
   activation_kernel = 0;
   pooling_kernel = 0;
+  softmax_kernel = 0;
   program = 0;
   output_buffer = input_buffer = 0;
   queue = 0;
@@ -225,6 +232,13 @@ udondnnStatus_t udondnnCreate(udondnnHandle_t *handle) {
       clSetKernelArg(pooling_kernel, 0, sizeof(input_buffer), &input_buffer) !=
           CL_SUCCESS ||
       clSetKernelArg(pooling_kernel, 1, sizeof(output_buffer),
+                     &output_buffer) != CL_SUCCESS)
+    return execution_failure();
+  softmax_kernel = clCreateKernel(program, "udondnn_softmax_forward", &status);
+  if (status != CL_SUCCESS ||
+      clSetKernelArg(softmax_kernel, 0, sizeof(input_buffer), &input_buffer) !=
+          CL_SUCCESS ||
+      clSetKernelArg(softmax_kernel, 1, sizeof(output_buffer),
                      &output_buffer) != CL_SUCCESS)
     return execution_failure();
   *handle = UDONDNN_HANDLE;
@@ -810,6 +824,68 @@ udondnnStatus_t udondnnPoolingForward(
       clFinish(queue) != CL_SUCCESS)
     return UDONDNN_STATUS_EXECUTION_FAILED;
   for (index = 0; index < output_words; ++index)
+    output[index] = result[index];
+  return UDONDNN_STATUS_SUCCESS;
+}
+
+udondnnStatus_t udondnnSoftmaxForward(
+    udondnnHandle_t handle, udondnnSoftmaxAlgorithm_t algorithm,
+    udondnnSoftmaxMode_t mode, const float *alpha,
+    udondnnTensorDescriptor_t input_descriptor, const float *input,
+    const float *beta, udondnnTensorDescriptor_t output_descriptor,
+    float *output) {
+  TensorDescriptor *input_info, *output_info;
+  int words, index, input_shape, algorithm_value, mode_value;
+  size_t global = UDONDNN_SOFTMAX_WORDS, local = 1;
+  cl_int cl_status;
+  if (handle != UDONDNN_HANDLE || !context)
+    return UDONDNN_STATUS_NOT_INITIALIZED;
+  input_info = get_tensor(input_descriptor);
+  output_info = get_tensor(output_descriptor);
+  if (algorithm < UDONDNN_SOFTMAX_FAST || algorithm > UDONDNN_SOFTMAX_LOG ||
+      mode < UDONDNN_SOFTMAX_MODE_INSTANCE ||
+      mode > UDONDNN_SOFTMAX_MODE_CHANNEL || !input_info ||
+      !input_info->configured || !output_info || !output_info->configured ||
+      !alpha || !input || !beta || !output || input_info->n != output_info->n ||
+      input_info->c != output_info->c || input_info->h != output_info->h ||
+      input_info->w != output_info->w)
+    return UDONDNN_STATUS_BAD_PARAM;
+  words = input_info->n * input_info->c * input_info->h * input_info->w;
+  for (index = 0; index < UDONDNN_WORDS; ++index)
+    packed[index] = 0.0f;
+  for (index = 0; index < words; ++index) {
+    packed[index] = input[index];
+    packed[UDONDNN_SOFTMAX_PREVIOUS_OUTPUT_OFFSET + index] = output[index];
+  }
+  input_shape =
+      pack_shape(input_info->n, input_info->c, input_info->h, input_info->w);
+  algorithm_value = (int)algorithm;
+  mode_value = (int)mode;
+
+#define SET_SOFTMAX_ARGUMENT(slot, value)                                      \
+  do {                                                                         \
+    cl_status = clSetKernelArg(softmax_kernel, slot, sizeof(value), &(value)); \
+    if (cl_status != CL_SUCCESS)                                               \
+      return UDONDNN_STATUS_EXECUTION_FAILED;                                  \
+  } while (0)
+  SET_SOFTMAX_ARGUMENT(2, input_shape);
+  SET_SOFTMAX_ARGUMENT(3, algorithm_value);
+  SET_SOFTMAX_ARGUMENT(4, mode_value);
+  SET_SOFTMAX_ARGUMENT(5, *alpha);
+  SET_SOFTMAX_ARGUMENT(6, *beta);
+#undef SET_SOFTMAX_ARGUMENT
+
+  if (clEnqueueWriteBuffer(queue, input_buffer, CL_TRUE, 0, sizeof(packed),
+                           packed, 0, 0, 0) != CL_SUCCESS ||
+      clEnqueueNDRangeKernel(queue, softmax_kernel, 1, 0, &global, &local, 0, 0,
+                             0) != CL_SUCCESS ||
+      clEnqueueReadBuffer(queue, output_buffer, CL_TRUE,
+                          UDONDNN_SOFTMAX_RESULT_OFFSET * sizeof(float),
+                          words * sizeof(float), result, 0, 0,
+                          0) != CL_SUCCESS ||
+      clFinish(queue) != CL_SUCCESS)
+    return UDONDNN_STATUS_EXECUTION_FAILED;
+  for (index = 0; index < words; ++index)
     output[index] = result[index];
   return UDONDNN_STATUS_SUCCESS;
 }
