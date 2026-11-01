@@ -55,8 +55,9 @@ The existing `udondnnExtGatherForward` name is a provisional backend detail.
 UdonATen may reuse it internally during migration, but ONNX plans and generated
 Host code expose UdonATen contracts. RMSNorm now uses an UdonATen-owned
 Device kernel and is no longer exposed as a UdonDNN extension. Its 4,096-word
-profile remains a non-executable prototype until the Device ABI can bind the
-extra reduction state without a CPU readback. The same rule applies
+single-region profile now executes as an UdonATen-owned two-pass reduction and
+normalization using the multi-input Device ABI, without a CPU readback. The
+same rule applies
 to pointwise Add, Sub, Mul, ReLU, Sigmoid, and Tanh: their public calls are
 UdonATen-shaped even
 while their validated Device implementation privately reuses UdonDNN OpTensor

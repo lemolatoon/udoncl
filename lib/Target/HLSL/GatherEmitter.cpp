@@ -284,7 +284,9 @@ LogicalResult emitGatherFragmentHLSL(fragment::KernelOp kernel,
     if (resource.getKind() == "texture")
       out << "Texture2D<float4> " << textureName(resource.getArgIndex())
           << " : register(t" << textureBinding++ << ");\n";
-  out << "cbuffer Params : register(b1) {\n";
+  // Keep the uniform binding outside the texture register range used by the
+  // multi-input gather profile. D3D has separate namespaces; Vulkan does not.
+  out << "cbuffer Params : register(b13) {\n";
   for (auto resource : kernel.getBody().front().getOps<fragment::ResourceOp>())
     if (resource.getKind() == "uniform")
       out << "  " << (resource.getValueType().isF32() ? "float" : "uint")

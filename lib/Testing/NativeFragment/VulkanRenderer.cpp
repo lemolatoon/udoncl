@@ -35,9 +35,9 @@ struct State {
   VkCommandPool commandPool = VK_NULL_HANDLE;
   VkFence fence = VK_NULL_HANDLE;
   Buffer uniform, readback, upload;
-  VkImage input = VK_NULL_HANDLE;
-  VkDeviceMemory inputMemory = VK_NULL_HANDLE;
-  VkImageView inputView = VK_NULL_HANDLE;
+  std::vector<VkImage> inputs;
+  std::vector<VkDeviceMemory> inputMemories;
+  std::vector<VkImageView> inputViews;
   ~State() {
     if (device) {
       vkDeviceWaitIdle(device);
@@ -52,9 +52,12 @@ struct State {
       vkDestroyImageView(device, view, nullptr);
       vkDestroyImage(device, image, nullptr);
       vkFreeMemory(device, imageMemory, nullptr);
-      vkDestroyImageView(device, inputView, nullptr);
-      vkDestroyImage(device, input, nullptr);
-      vkFreeMemory(device, inputMemory, nullptr);
+      for (auto view : inputViews)
+        vkDestroyImageView(device, view, nullptr);
+      for (auto image : inputs)
+        vkDestroyImage(device, image, nullptr);
+      for (auto memory : inputMemories)
+        vkFreeMemory(device, memory, nullptr);
       for (auto resource : {uniform, readback, upload}) {
         vkDestroyBuffer(device, resource.buffer, nullptr);
         vkFreeMemory(device, resource.memory, nullptr);
@@ -75,7 +78,7 @@ class Renderer final : public FragmentRenderer {
   VkDescriptorSet descriptor = VK_NULL_HANDLE;
   VkCommandBuffer command = VK_NULL_HANDLE;
   std::string name;
-  uint32_t width = 1, height = 1;
+  uint32_t width = 1, height = 1, inputCount = 0;
   bool gather = false;
   uint32_t memoryType(uint32_t bits, VkMemoryPropertyFlags flags) {
     VkPhysicalDeviceMemoryProperties properties;
@@ -126,9 +129,11 @@ class Renderer final : public FragmentRenderer {
 
 public:
   Renderer(const std::string &fragment, const std::string &vertex,
-           uint32_t x = 0, uint32_t y = 1)
-      : width(x ? x : 1), height(y), gather(x != 0) {
-    if (!height || uint64_t(width) * height > 16384)
+           uint32_t x = 0, uint32_t y = 1, uint32_t inputsRequested = 1)
+      : width(x ? x : 1), height(y), inputCount(x ? inputsRequested : 0),
+        gather(x != 0) {
+    if (!height || uint64_t(width) * height > 16384 || inputCount > 13 ||
+        (gather && !inputCount))
       throw std::runtime_error("gather extent exceeds supported profile");
     auto application =
         info<VkApplicationInfo>(VK_STRUCTURE_TYPE_APPLICATION_INFO);
@@ -182,7 +187,7 @@ public:
     makeBuffer(state.readback, width * height * 4,
                VK_BUFFER_USAGE_TRANSFER_DST_BIT);
     if (gather)
-      makeBuffer(state.upload, width * height * 4,
+      makeBuffer(state.upload, width * height * 4 * inputCount,
                  VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
     auto imageInfo =
         info<VkImageCreateInfo>(VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO);
@@ -214,16 +219,24 @@ public:
     if (gather) {
       imageInfo.usage =
           VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-      check(vkCreateImage(state.device, &imageInfo, nullptr, &state.input));
-      vkGetImageMemoryRequirements(state.device, state.input, &requirements);
-      allocation.allocationSize = requirements.size;
-      allocation.memoryTypeIndex = memoryType(requirements.memoryTypeBits, 0);
-      check(vkAllocateMemory(state.device, &allocation, nullptr,
-                             &state.inputMemory));
-      check(vkBindImageMemory(state.device, state.input, state.inputMemory, 0));
-      viewInfo.image = state.input;
-      check(vkCreateImageView(state.device, &viewInfo, nullptr,
-                              &state.inputView));
+      state.inputs.resize(inputCount);
+      state.inputMemories.resize(inputCount);
+      state.inputViews.resize(inputCount);
+      for (uint32_t index = 0; index < inputCount; ++index) {
+        check(vkCreateImage(state.device, &imageInfo, nullptr,
+                            &state.inputs[index]));
+        vkGetImageMemoryRequirements(state.device, state.inputs[index],
+                                     &requirements);
+        allocation.allocationSize = requirements.size;
+        allocation.memoryTypeIndex = memoryType(requirements.memoryTypeBits, 0);
+        check(vkAllocateMemory(state.device, &allocation, nullptr,
+                               &state.inputMemories[index]));
+        check(vkBindImageMemory(state.device, state.inputs[index],
+                                state.inputMemories[index], 0));
+        viewInfo.image = state.inputs[index];
+        check(vkCreateImageView(state.device, &viewInfo, nullptr,
+                                &state.inputViews[index]));
+      }
     }
     VkAttachmentDescription attachment{};
     attachment.format = imageInfo.format;
@@ -266,21 +279,22 @@ public:
     framebufferInfo.layers = 1;
     check(vkCreateFramebuffer(state.device, &framebufferInfo, nullptr,
                               &state.framebuffer));
-    VkDescriptorSetLayoutBinding binding{gather ? 1u : 0u,
+    VkDescriptorSetLayoutBinding binding{gather ? 13u : 0u,
                                          VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
                                          VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     auto descriptorInfo = info<VkDescriptorSetLayoutCreateInfo>(
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO);
-    VkDescriptorSetLayoutBinding bindings[2]{
-        binding,
-        {0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
-         nullptr}};
-    descriptorInfo.bindingCount = gather ? 2 : 1;
-    descriptorInfo.pBindings = bindings;
+    std::vector<VkDescriptorSetLayoutBinding> bindings{binding};
+    for (uint32_t index = 0; index < inputCount; ++index)
+      bindings.push_back({index, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1,
+                          VK_SHADER_STAGE_FRAGMENT_BIT, nullptr});
+    descriptorInfo.bindingCount = uint32_t(bindings.size());
+    descriptorInfo.pBindings = bindings.data();
     check(vkCreateDescriptorSetLayout(state.device, &descriptorInfo, nullptr,
                                       &state.descriptorLayout));
-    VkDescriptorPoolSize poolSizes[2]{{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
-                                      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1}};
+    VkDescriptorPoolSize poolSizes[2]{
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
+        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, inputCount}};
     auto poolInfo = info<VkDescriptorPoolCreateInfo>(
         VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO);
     poolInfo.maxSets = 1;
@@ -298,20 +312,22 @@ public:
     auto write =
         info<VkWriteDescriptorSet>(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET);
     write.dstSet = descriptor;
-    write.dstBinding = gather ? 1 : 0;
+    write.dstBinding = gather ? 13 : 0;
     write.descriptorCount = 1;
     write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     write.pBufferInfo = &bufferInfo;
     vkUpdateDescriptorSets(state.device, 1, &write, 0, nullptr);
     if (gather) {
-      VkDescriptorImageInfo sampled{};
-      sampled.imageView = state.inputView;
-      sampled.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-      write.dstBinding = 0;
-      write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-      write.pBufferInfo = nullptr;
-      write.pImageInfo = &sampled;
-      vkUpdateDescriptorSets(state.device, 1, &write, 0, nullptr);
+      for (uint32_t index = 0; index < inputCount; ++index) {
+        VkDescriptorImageInfo sampled{};
+        sampled.imageView = state.inputViews[index];
+        sampled.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        write.dstBinding = index;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+        write.pBufferInfo = nullptr;
+        write.pImageInfo = &sampled;
+        vkUpdateDescriptorSets(state.device, 1, &write, 0, nullptr);
+      }
     }
     auto layoutInfo = info<VkPipelineLayoutCreateInfo>(
         VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO);
@@ -400,8 +416,9 @@ public:
   }
   std::vector<uint8_t> drawWords(std::span<const uint8_t> input,
                                  std::span<const uint8_t> scalars) override {
+    size_t inputBytes = size_t(width) * height * 4;
     if (scalars.size() > 64 ||
-        (gather ? input.size() != width * height * 4 : !input.empty()))
+        (gather ? input.size() != inputBytes * inputCount : !input.empty()))
       throw std::runtime_error("invalid fragment input/payload size");
     void *mapped;
     check(vkMapMemory(state.device, state.uniform.memory, 0, 64, 0, &mapped));
@@ -421,30 +438,34 @@ public:
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     check(vkBeginCommandBuffer(command, &begin));
     if (gather) {
-      auto barrier =
-          info<VkImageMemoryBarrier>(VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER);
-      barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-      barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-      barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-      barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex =
-          VK_QUEUE_FAMILY_IGNORED;
-      barrier.image = state.input;
-      barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-      vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                           VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
-                           nullptr, 1, &barrier);
-      VkBufferImageCopy upload{};
-      upload.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-      upload.imageExtent = {width, height, 1};
-      vkCmdCopyBufferToImage(command, state.upload.buffer, state.input,
-                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &upload);
-      barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-      barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-      barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-      barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-      vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr,
-                           0, nullptr, 1, &barrier);
+      for (uint32_t index = 0; index < inputCount; ++index) {
+        auto barrier =
+            info<VkImageMemoryBarrier>(VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER);
+        barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex =
+            VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = state.inputs[index];
+        barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
+                             nullptr, 1, &barrier);
+        VkBufferImageCopy upload{};
+        upload.bufferOffset = inputBytes * index;
+        upload.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        upload.imageExtent = {width, height, 1};
+        vkCmdCopyBufferToImage(
+            command, state.upload.buffer, state.inputs[index],
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &upload);
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0,
+                             nullptr, 0, nullptr, 1, &barrier);
+      }
     }
     VkClearValue clear{};
     clear.color.float32[0] = clear.color.float32[2] = clear.color.float32[3] =
@@ -517,8 +538,8 @@ createFragmentRenderer(const std::string &shader, const std::string &vertex) {
 
 std::unique_ptr<FragmentRenderer>
 createGatherRenderer(const std::string &shader, const std::string &vertex,
-                     uint32_t width, uint32_t height) {
-  if (!width || !height || uint64_t(width) * height < 4)
+                     uint32_t width, uint32_t height, uint32_t inputCount) {
+  if (!width || !height || uint64_t(width) * height < 4 || !inputCount)
     throw std::runtime_error("invalid gather extent");
-  return std::make_unique<Renderer>(shader, vertex, width, height);
+  return std::make_unique<Renderer>(shader, vertex, width, height, inputCount);
 }

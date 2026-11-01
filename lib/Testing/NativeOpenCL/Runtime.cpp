@@ -40,15 +40,16 @@ Session::Session(const std::string &text, std::vector<GatherBinding> kernels,
     uint32_t width = binding.width ? binding.width : binding.words;
     uint32_t height = binding.height ? binding.height : 1;
     if (!binding.id || binding.words < 4 || binding.words > 16384 ||
-        binding.scalarCount > 14 || !width || !height ||
+        !binding.inputCount || binding.inputCount > 13 ||
+        binding.scalarCount > 15 - binding.inputCount || !width || !height ||
         uint64_t(width) * height != binding.words)
       throw std::runtime_error("invalid gather binding");
     for (const auto &other : gatherBindings)
       if (&other != &binding &&
           (other.id == binding.id || other.name == binding.name))
         throw std::runtime_error("duplicate gather binding");
-    gatherRenderers.push_back(
-        createGatherRenderer(binding.fragment, vertex, width, height));
+    gatherRenderers.push_back(createGatherRenderer(
+        binding.fragment, vertex, width, height, binding.inputCount));
   }
   active = this;
 }
@@ -72,13 +73,14 @@ bool Session::gatherProfile(const char *name,
     if (binding.name == name) {
       uint32_t width = binding.width ? binding.width : binding.words;
       uint32_t height = binding.height ? binding.height : 1;
-      *profile = {binding.id, binding.words, binding.scalarCount, width,
-                  height};
+      *profile = {binding.id,         binding.words, binding.scalarCount,
+                  binding.inputCount, width,         height};
       return true;
     }
   return false;
 }
-int Session::drawGather(uint32_t id, const unsigned char *input, size_t bytes,
+int Session::drawGather(uint32_t id, const unsigned char *const *inputs,
+                        size_t inputCount, size_t bytes,
                         const unsigned char *scalars, size_t scalarBytes,
                         unsigned char *output) noexcept {
   try {
@@ -86,10 +88,17 @@ int Session::drawGather(uint32_t id, const unsigned char *input, size_t bytes,
       const auto &binding = gatherBindings[i];
       if (binding.id != id)
         continue;
-      if (bytes != binding.words * 4 || scalarBytes != binding.scalarCount * 4)
+      if (inputCount != binding.inputCount || bytes != binding.words * 4 ||
+          scalarBytes != binding.scalarCount * 4)
         return 0;
+      std::vector<uint8_t> packedInputs(bytes * inputCount);
+      for (size_t input = 0; input < inputCount; ++input) {
+        if (!inputs[input])
+          return 0;
+        std::memcpy(packedInputs.data() + bytes * input, inputs[input], bytes);
+      }
       auto result =
-          gatherRenderers[i]->drawWords({input, bytes}, {scalars, scalarBytes});
+          gatherRenderers[i]->drawWords(packedInputs, {scalars, scalarBytes});
       if (result.size() != bytes)
         return 0;
       std::memcpy(output, result.data(), bytes);
@@ -143,11 +152,13 @@ udoncl_cl_gather_profile(const char *name,
   *profile = {};
   return active && active->gatherProfile(name, profile);
 }
-extern "C" int udoncl_cl_draw_gather(uint32_t id, const unsigned char *input,
-                                     size_t bytes, const unsigned char *scalars,
+extern "C" int udoncl_cl_draw_gather(uint32_t id,
+                                     const unsigned char *const *inputs,
+                                     size_t inputCount, size_t bytes,
+                                     const unsigned char *scalars,
                                      size_t scalarBytes,
                                      unsigned char *output) {
-  return active ? active->drawGather(id, input, bytes, scalars, scalarBytes,
-                                     output)
+  return active ? active->drawGather(id, inputs, inputCount, bytes, scalars,
+                                     scalarBytes, output)
                 : 0;
 }

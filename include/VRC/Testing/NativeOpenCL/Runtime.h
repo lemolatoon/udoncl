@@ -7,7 +7,7 @@ namespace native_opencl {
 struct GatherBinding {
   uint32_t id, words, scalarCount;
   std::string name, fragment;
-  uint32_t width = 0, height = 0;
+  uint32_t width = 0, height = 0, inputCount = 1;
 };
 class Session {
 public:
@@ -23,8 +23,8 @@ public:
   uint32_t drawCount() const;
   size_t bufferLimit() const;
   bool gatherProfile(const char *, struct udoncl_cl_gather_profile *) const;
-  int drawGather(uint32_t, const unsigned char *, size_t, const unsigned char *,
-                 size_t, unsigned char *) noexcept;
+  int drawGather(uint32_t, const unsigned char *const *, size_t, size_t,
+                 const unsigned char *, size_t, unsigned char *) noexcept;
   bool matchesSource(const char *, size_t) const;
   bool matchesKernel(const char *) const;
   int draw(uint32_t buffer, uint32_t generation, const unsigned char scalar[4],

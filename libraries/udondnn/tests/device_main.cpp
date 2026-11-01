@@ -352,19 +352,21 @@ void opTensorReference(const OpTensorCase &test, const std::vector<float> &a,
 } // namespace
 
 int main(int argc, char **argv) {
-  if (argc != 12) {
+  if (argc != 14) {
     std::cerr << "usage: udondnn-device convolution-fragment "
                  "activation-fragment pooling-fragment softmax-fragment "
                  "batchnorm-fragment op-tensor-fragment rmsnorm-fragment "
-                 "gather-fragment int4-fragment tile-fragment vertex\n";
+                 "gather-fragment int4-fragment tile-fragment "
+                 "aten-rms-reduce-fragment aten-rms-finalize-fragment vertex\n";
     return 2;
   }
   try {
     native_opencl::Session session(
         deviceSource(),
         manifestBindings(argv[1], argv[2], argv[3], argv[4], argv[5], argv[6],
-                         argv[7], argv[8], argv[9], argv[10]),
-        argv[11]);
+                         argv[7], argv[8], argv[9], argv[10], argv[11],
+                         argv[12]),
+        argv[13]);
     udondnnHandle_t handle = 0;
     require(udondnnCreate(&handle), UDONDNN_STATUS_SUCCESS, "udondnnCreate");
     const std::array<Case, 5> cases{{
@@ -1090,12 +1092,43 @@ int main(int argc, char **argv) {
                 1, 1, rmsLargeWords),
             UDONDNN_STATUS_SUCCESS, "set large RMS output descriptor");
     const int64_t rmsLargeNormalizedShape[1] = {rmsLargeWords};
+    float rmsLargeSquareSum = 0.0f;
+    for (int index = 0; index < rmsLargeWords; ++index)
+      rmsLargeSquareSum += rmsLargeInput[index] * rmsLargeInput[index];
+    float rmsLargeInverse =
+        1.0f / std::sqrt(rmsLargeSquareSum / rmsLargeWords + rmsEpsilon);
     require(udonatenRmsNorm(handle, rmsInputDescriptor, rmsLargeInput.data(),
                             rmsLargeNormalizedShape, 1, rmsScaleDescriptor,
                             rmsLargeScale.data(), &rmsEpsilon,
                             rmsOutputDescriptor, rmsLargeActual.data()),
+            UDONDNN_STATUS_SUCCESS, "large udonatenRmsNorm");
+    for (int index = 0; index < rmsLargeWords; ++index) {
+      float expected =
+          rmsLargeInput[index] * rmsLargeInverse * rmsLargeScale[index];
+      rmsMaximumError =
+          std::max(rmsMaximumError, std::abs(rmsLargeActual[index] - expected));
+    }
+    if (rmsMaximumError > 0.001f)
+      throw std::runtime_error("large UdonATen RMSNorm diverged");
+    const int64_t rmsOversizedShape[1] = {8192};
+    require(udondnnSetTensor4dDescriptor(rmsInputDescriptor,
+                                         UDONDNN_TENSOR_NCHW,
+                                         UDONDNN_DATA_FLOAT, 1, 1, 1, 8192),
+            UDONDNN_STATUS_SUCCESS, "set oversized RMS input descriptor");
+    require(udondnnSetTensor4dDescriptor(rmsScaleDescriptor,
+                                         UDONDNN_TENSOR_NCHW,
+                                         UDONDNN_DATA_FLOAT, 1, 1, 1, 8192),
+            UDONDNN_STATUS_SUCCESS, "set oversized RMS scale descriptor");
+    require(udondnnSetTensor4dDescriptor(rmsOutputDescriptor,
+                                         UDONDNN_TENSOR_NCHW,
+                                         UDONDNN_DATA_FLOAT, 1, 1, 1, 8192),
+            UDONDNN_STATUS_SUCCESS, "set oversized RMS output descriptor");
+    require(udonatenRmsNorm(handle, rmsInputDescriptor, rmsLargeInput.data(),
+                            rmsOversizedShape, 1, rmsScaleDescriptor,
+                            rmsLargeScale.data(), &rmsEpsilon,
+                            rmsOutputDescriptor, rmsLargeActual.data()),
             UDONDNN_STATUS_NOT_SUPPORTED,
-            "reject unbound large udonatenRmsNorm Host path");
+            "report valid oversized RMSNorm as unsupported");
     require(udondnnDestroyTensorDescriptor(rmsInputDescriptor),
             UDONDNN_STATUS_SUCCESS, "destroy RMS input descriptor");
     require(udondnnDestroyTensorDescriptor(rmsScaleDescriptor),
@@ -1528,7 +1561,7 @@ int main(int argc, char **argv) {
               << " optensor_outputs=" << opTensorOutputs
               << " optensor_cases=" << opTensorCases.size()
               << " optensor_max_error=" << opTensorMaximumError
-              << " rmsnorm_outputs=" << rmsActual.size()
+              << " rmsnorm_outputs=" << rmsActual.size() + rmsLargeActual.size()
               << " rmsnorm_max_error=" << rmsMaximumError
               << " gather_outputs=" << gatherActual.size()
               << " gather_max_error=" << gatherMaximumError

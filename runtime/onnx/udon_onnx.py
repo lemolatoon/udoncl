@@ -1349,6 +1349,44 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
         for node_index, node in enumerate(nodes):
             if node["provider"] == "view":
                 continue
+            if (
+                node["provider"] == "udonatenRmsNorm"
+                and math.prod(node["shape"]) > RMS_NORM_TILE_WORDS
+                and math.prod(node["shape"])
+                == math.prod(shapes[node["inputs"][1]])
+                <= 4096
+            ):
+                partials = f"{node['output']}__rms_partials"
+                for phase, kernel, inputs, output in (
+                    (
+                        "reduce",
+                        "udonaten_rms_norm_reduce",
+                        [node["inputs"][0]],
+                        partials,
+                    ),
+                    (
+                        "finalize",
+                        "udonaten_rms_norm_finalize",
+                        [node["inputs"][0], partials],
+                        node["output"],
+                    ),
+                ):
+                    passes.append(
+                        {
+                            "id": 200 + len(passes),
+                            "kernel": kernel,
+                            "providers": [node["provider"]],
+                            "fusion": None,
+                            "call_index": node_index,
+                            "phase": phase,
+                            "inputs": inputs,
+                            "output": output,
+                            "shape": node["shape"],
+                            "fragments": 8192,
+                            "state_words": 8192,
+                        }
+                    )
+                continue
             if node["op_type"] == "Gemm":
                 tiles = _gemm_schedule(node, shapes)
             elif node["op_type"] == "MatMul":
@@ -1379,16 +1417,12 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
                 }
                 if tile is not None:
                     device_pass["tile"] = tile
-                if (
-                    node["provider"] == "udonatenRmsNorm"
-                    and math.prod(node["shape"]) > RMS_NORM_TILE_WORDS
-                ):
+                if node["provider"] == "udonatenRmsNorm" and math.prod(
+                    node["shape"]
+                ) > RMS_NORM_TILE_WORDS:
                     device_pass["supported"] = False
-                    device_pass["prototype_kernel"] = (
-                        "udondnn_ext_rms_normalization_forward"
-                    )
                     device_pass["reason"] = (
-                        "large RMSNorm requires a multi-input Device reduction ABI"
+                        "large multi-row RMSNorm is not implemented"
                     )
                 if (
                     node["domain"] == LLAMA_DOMAIN
@@ -1535,13 +1569,39 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
                 }
         elif node["provider"] == "udonatenRmsNorm":
             if math.prod(node["shape"]) > RMS_NORM_TILE_WORDS:
-                call["device_profile"] = {
-                    "supported": False,
-                    "prototype_state_words": 8192,
-                    "prototype_kernel": "udondnn_ext_rms_normalization_forward",
-                    "reason": "large RMSNorm requires a multi-input Device reduction ABI",
-                }
+                normalized_words = math.prod(shapes[node["inputs"][1]])
+                supported = (
+                    math.prod(node["shape"]) == normalized_words <= 4096
+                )
+                call["device_profile"] = (
+                    {
+                        "supported": True,
+                        "state_words": 8192,
+                        "passes": 2,
+                        "reduction_chunk_words": 64,
+                        "kernels": [
+                            "udonaten_rms_norm_reduce",
+                            "udonaten_rms_norm_finalize",
+                        ],
+                    }
+                    if supported
+                    else {
+                        "supported": False,
+                        "reason": "large multi-row RMSNorm is not implemented",
+                    }
+                )
         calls.append(call)
+    scratch_buffers = [
+        {
+            "name": device_pass["output"],
+            "words": device_pass["state_words"],
+            "data_type": "float32",
+            "lifetime": "until matching RMSNorm finalize pass",
+        }
+        for device_pass in passes
+        if device_pass.get("phase") == "reduce"
+        and device_pass["providers"] == ["udonatenRmsNorm"]
+    ]
     return {
         "schema_version": 1,
         "runtime": "udon-onnx",
@@ -1557,6 +1617,7 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
         },
         "values": shapes,
         "value_types": value_types,
+        "scratch_buffers": scratch_buffers,
         "initializers": {
             name: (
                 {

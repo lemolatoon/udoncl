@@ -38,6 +38,8 @@
 #define UDONATEN_INT4_MAX_N 64
 #define UDONATEN_INT4_MAX_K 128
 #define UDONATEN_TILE_RESULT_OFFSET 4096
+#define UDONATEN_RMS_WORDS 8192
+#define UDONATEN_RMS_WEIGHT_OFFSET 4096
 #define UDONDNN_DESCRIPTOR_MAX_WORDS 16777216
 #define UDONDNN_HANDLE 1u
 #define UDONDNN_DESCRIPTOR_SLOTS 8
@@ -109,16 +111,22 @@ static cl_kernel rms_norm_kernel;
 static cl_kernel gather_kernel;
 static cl_kernel weight_int4pack_mm_kernel;
 static cl_kernel tile_kernel;
+static cl_kernel aten_rms_reduce_kernel;
+static cl_kernel aten_rms_finalize_kernel;
 static cl_mem input_buffer;
 static cl_mem output_buffer;
 static cl_mem batchnorm_input_buffer;
 static cl_mem batchnorm_output_buffer;
 static cl_mem int4_input_buffer;
 static cl_mem int4_output_buffer;
+static cl_mem aten_rms_state_buffer;
+static cl_mem aten_rms_partial_buffer;
+static cl_mem aten_rms_output_buffer;
 static float packed[UDONDNN_WORDS];
 static float batchnorm_packed[UDONDNN_BATCHNORM_WORDS];
 static float result[UDONDNN_REGION_WORDS];
 static float int4_state[UDONATEN_INT4_WORDS];
+static float aten_rms_state[UDONATEN_RMS_WORDS];
 static TensorDescriptor tensors[UDONDNN_DESCRIPTOR_SLOTS];
 static FilterDescriptor filters[UDONDNN_DESCRIPTOR_SLOTS];
 static ConvolutionDescriptor convolutions[UDONDNN_DESCRIPTOR_SLOTS];
@@ -199,6 +207,10 @@ get_op_tensor(udondnnOpTensorDescriptor_t descriptor) {
 }
 
 static void clear_objects(void) {
+  if (aten_rms_finalize_kernel)
+    clReleaseKernel(aten_rms_finalize_kernel);
+  if (aten_rms_reduce_kernel)
+    clReleaseKernel(aten_rms_reduce_kernel);
   if (tile_kernel)
     clReleaseKernel(tile_kernel);
   if (weight_int4pack_mm_kernel)
@@ -233,6 +245,12 @@ static void clear_objects(void) {
     clReleaseMemObject(int4_output_buffer);
   if (int4_input_buffer)
     clReleaseMemObject(int4_input_buffer);
+  if (aten_rms_output_buffer)
+    clReleaseMemObject(aten_rms_output_buffer);
+  if (aten_rms_partial_buffer)
+    clReleaseMemObject(aten_rms_partial_buffer);
+  if (aten_rms_state_buffer)
+    clReleaseMemObject(aten_rms_state_buffer);
   if (queue)
     clReleaseCommandQueue(queue);
   if (context)
@@ -247,10 +265,13 @@ static void clear_objects(void) {
   gather_kernel = 0;
   weight_int4pack_mm_kernel = 0;
   tile_kernel = 0;
+  aten_rms_reduce_kernel = 0;
+  aten_rms_finalize_kernel = 0;
   program = 0;
   output_buffer = input_buffer = 0;
   batchnorm_output_buffer = batchnorm_input_buffer = 0;
   int4_output_buffer = int4_input_buffer = 0;
+  aten_rms_state_buffer = aten_rms_partial_buffer = aten_rms_output_buffer = 0;
   queue = 0;
   context = 0;
 }
@@ -301,6 +322,18 @@ udondnnStatus_t udondnnCreate(udondnnHandle_t *handle) {
     return execution_failure();
   int4_output_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE,
                                       sizeof(int4_state), 0, &status);
+  if (status != CL_SUCCESS)
+    return execution_failure();
+  aten_rms_state_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE,
+                                         sizeof(aten_rms_state), 0, &status);
+  if (status != CL_SUCCESS)
+    return execution_failure();
+  aten_rms_partial_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE,
+                                           sizeof(aten_rms_state), 0, &status);
+  if (status != CL_SUCCESS)
+    return execution_failure();
+  aten_rms_output_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE,
+                                          sizeof(aten_rms_state), 0, &status);
   if (status != CL_SUCCESS)
     return execution_failure();
   program = clCreateProgramWithSource(context, 1, &source, 0, &status);
@@ -382,6 +415,26 @@ udondnnStatus_t udondnnCreate(udondnnHandle_t *handle) {
                      &int4_input_buffer) != CL_SUCCESS ||
       clSetKernelArg(tile_kernel, 1, sizeof(int4_output_buffer),
                      &int4_output_buffer) != CL_SUCCESS)
+    return execution_failure();
+  aten_rms_reduce_kernel =
+      clCreateKernel(program, "udonaten_rms_norm_reduce", &status);
+  if (status != CL_SUCCESS ||
+      clSetKernelArg(aten_rms_reduce_kernel, 0, sizeof(aten_rms_state_buffer),
+                     &aten_rms_state_buffer) != CL_SUCCESS ||
+      clSetKernelArg(aten_rms_reduce_kernel, 1, sizeof(aten_rms_partial_buffer),
+                     &aten_rms_partial_buffer) != CL_SUCCESS)
+    return execution_failure();
+  aten_rms_finalize_kernel =
+      clCreateKernel(program, "udonaten_rms_norm_finalize", &status);
+  if (status != CL_SUCCESS ||
+      clSetKernelArg(aten_rms_finalize_kernel, 0, sizeof(aten_rms_state_buffer),
+                     &aten_rms_state_buffer) != CL_SUCCESS ||
+      clSetKernelArg(aten_rms_finalize_kernel, 1,
+                     sizeof(aten_rms_partial_buffer),
+                     &aten_rms_partial_buffer) != CL_SUCCESS ||
+      clSetKernelArg(aten_rms_finalize_kernel, 2,
+                     sizeof(aten_rms_output_buffer),
+                     &aten_rms_output_buffer) != CL_SUCCESS)
     return execution_failure();
   *handle = UDONDNN_HANDLE;
   return UDONDNN_STATUS_SUCCESS;
@@ -1309,15 +1362,54 @@ udondnnStatus_t udonatenBackendRmsNorm(udondnnHandle_t handle, int words,
                                        const float *weight, float epsilon,
                                        float *output) {
   int index;
+  int has_weight = weight != 0;
   float alpha = 1.0f, beta = 0.0f;
   size_t global = UDONDNN_WORDS, local = 1;
   cl_int status;
   if (handle != UDONDNN_HANDLE || !context)
     return UDONDNN_STATUS_NOT_INITIALIZED;
-  if (!input || !output || words <= 0 || words > UDONDNN_REGION_WORDS ||
-      normalized_words <= 0 || normalized_words > UDONDNN_REGION_WORDS ||
+  if (!input || !output || words <= 0 || words > 4096 ||
+      normalized_words <= 0 || normalized_words > 4096 ||
       words % normalized_words != 0 || epsilon < 0.0f)
     return UDONDNN_STATUS_BAD_PARAM;
+  if (words > UDONDNN_REGION_WORDS) {
+    if (words != normalized_words)
+      return UDONDNN_STATUS_NOT_SUPPORTED;
+    for (index = 0; index < UDONATEN_RMS_WORDS; ++index)
+      aten_rms_state[index] = 0.0f;
+    for (index = 0; index < words; ++index)
+      aten_rms_state[index] = input[index];
+    for (index = 0; index < normalized_words; ++index)
+      aten_rms_state[UDONATEN_RMS_WEIGHT_OFFSET + index] =
+          weight ? weight[index] : 1.0f;
+#define SET_LARGE_RMS_ARGUMENT(kernel, slot, value)                            \
+  do {                                                                         \
+    status = clSetKernelArg((kernel), (slot), sizeof(value), &(value));        \
+    if (status != CL_SUCCESS)                                                  \
+      return UDONDNN_STATUS_EXECUTION_FAILED;                                  \
+  } while (0)
+    SET_LARGE_RMS_ARGUMENT(aten_rms_reduce_kernel, 2, words);
+    SET_LARGE_RMS_ARGUMENT(aten_rms_reduce_kernel, 3, normalized_words);
+    SET_LARGE_RMS_ARGUMENT(aten_rms_finalize_kernel, 3, words);
+    SET_LARGE_RMS_ARGUMENT(aten_rms_finalize_kernel, 4, normalized_words);
+    SET_LARGE_RMS_ARGUMENT(aten_rms_finalize_kernel, 5, epsilon);
+    SET_LARGE_RMS_ARGUMENT(aten_rms_finalize_kernel, 6, has_weight);
+#undef SET_LARGE_RMS_ARGUMENT
+    global = UDONATEN_RMS_WORDS;
+    if (clEnqueueWriteBuffer(queue, aten_rms_state_buffer, CL_TRUE, 0,
+                             sizeof(aten_rms_state), aten_rms_state, 0, 0,
+                             0) != CL_SUCCESS ||
+        clEnqueueNDRangeKernel(queue, aten_rms_reduce_kernel, 1, 0, &global,
+                               &local, 0, 0, 0) != CL_SUCCESS ||
+        clEnqueueNDRangeKernel(queue, aten_rms_finalize_kernel, 1, 0, &global,
+                               &local, 0, 0, 0) != CL_SUCCESS ||
+        clEnqueueReadBuffer(queue, aten_rms_output_buffer, CL_TRUE, 0,
+                            (size_t)words * sizeof(float), output, 0, 0,
+                            0) != CL_SUCCESS ||
+        clFinish(queue) != CL_SUCCESS)
+      return UDONDNN_STATUS_EXECUTION_FAILED;
+    return UDONDNN_STATUS_SUCCESS;
+  }
   for (index = 0; index < UDONDNN_WORDS; ++index)
     packed[index] = 0.0f;
   for (index = 0; index < words; ++index)

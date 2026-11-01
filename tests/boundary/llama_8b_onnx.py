@@ -115,11 +115,37 @@ rms_calls = [
     if call["function"] == "udonatenRmsNorm"
 ]
 assert len(rms_calls) == 65
-assert all(call["device_profile"]["supported"] is False for call in rms_calls)
 assert all(
-    call["device_profile"]["prototype_state_words"] == 8192 for call in rms_calls
+    call["device_profile"]
+    == {
+        "supported": True,
+        "state_words": 8192,
+        "passes": 2,
+        "reduction_chunk_words": 64,
+        "kernels": [
+            "udonaten_rms_norm_reduce",
+            "udonaten_rms_norm_finalize",
+        ],
+    }
+    for call in rms_calls
 )
-assert len(operator_plan["passes"]) == 3522
+rms_passes = [
+    device_pass
+    for device_pass in operator_plan["passes"]
+    if device_pass["providers"] == ["udonatenRmsNorm"]
+]
+assert len(rms_passes) == 130
+assert {device_pass["phase"] for device_pass in rms_passes} == {
+    "reduce",
+    "finalize",
+}
+assert all(device_pass["fragments"] == 8192 for device_pass in rms_passes)
+assert len(operator_plan["scratch_buffers"]) == 65
+assert all(
+    scratch["words"] == 8192 and scratch["data_type"] == "float32"
+    for scratch in operator_plan["scratch_buffers"]
+)
+assert len(operator_plan["passes"]) == 3587
 operator_q4_calls = [
     call
     for call in operator_plan["aot"]["calls"]

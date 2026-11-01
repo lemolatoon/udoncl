@@ -33,18 +33,22 @@ class Renderer final : public FragmentRenderer {
   ComPtr<ID3D11DeviceContext> context;
   ComPtr<ID3D11VertexShader> vertex;
   ComPtr<ID3D11PixelShader> fragment;
-  ComPtr<ID3D11Texture2D> target, staging, input;
-  ComPtr<ID3D11ShaderResourceView> inputView;
-  uint32_t width = 1, height = 1;
+  ComPtr<ID3D11Texture2D> target, staging;
+  std::vector<ComPtr<ID3D11Texture2D>> inputs;
+  std::vector<ComPtr<ID3D11ShaderResourceView>> inputViews;
+  uint32_t width = 1, height = 1, inputCount = 0;
   bool gather = false;
   ComPtr<ID3D11RenderTargetView> view;
   ComPtr<ID3D11Buffer> uniform;
   ComPtr<ID3D11RasterizerState> raster;
 
 public:
-  explicit Renderer(const std::string &path, uint32_t x = 0, uint32_t y = 1)
-      : width(x ? x : 1), height(y), gather(x != 0) {
-    if (!height || uint64_t(width) * height > 16384)
+  explicit Renderer(const std::string &path, uint32_t x = 0, uint32_t y = 1,
+                    uint32_t inputsRequested = 1)
+      : width(x ? x : 1), height(y), inputCount(x ? inputsRequested : 0),
+        gather(x != 0) {
+    if (!height || uint64_t(width) * height > 16384 || inputCount > 13 ||
+        (gather && !inputCount))
       throw std::runtime_error("gather extent exceeds supported profile");
     D3D_FEATURE_LEVEL requested = D3D_FEATURE_LEVEL_11_0, actual;
     check(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0,
@@ -75,8 +79,13 @@ public:
     check(device->CreateRenderTargetView(target.Get(), nullptr, &view));
     if (gather) {
       texture.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-      check(device->CreateTexture2D(&texture, nullptr, &input));
-      check(device->CreateShaderResourceView(input.Get(), nullptr, &inputView));
+      inputs.resize(inputCount);
+      inputViews.resize(inputCount);
+      for (uint32_t index = 0; index < inputCount; ++index) {
+        check(device->CreateTexture2D(&texture, nullptr, &inputs[index]));
+        check(device->CreateShaderResourceView(inputs[index].Get(), nullptr,
+                                               &inputViews[index]));
+      }
     }
     texture.BindFlags = 0;
     texture.Usage = D3D11_USAGE_STAGING;
@@ -105,20 +114,25 @@ public:
   }
   std::vector<uint8_t> drawWords(std::span<const uint8_t> state,
                                  std::span<const uint8_t> scalars) override {
+    size_t inputBytes = size_t(width) * height * 4;
     if (scalars.size() > 64 ||
-        (gather ? state.size() != width * height * 4 : !state.empty()))
+        (gather ? state.size() != inputBytes * inputCount : !state.empty()))
       throw std::runtime_error("invalid fragment input/payload size");
     uint8_t data[64]{};
     if (!scalars.empty())
       std::memcpy(data, scalars.data(), scalars.size());
     context->UpdateSubresource(uniform.Get(), 0, nullptr, data, 0, 0);
     if (gather) {
-      ID3D11ShaderResourceView *srv = nullptr;
-      context->PSSetShaderResources(0, 1, &srv);
-      context->UpdateSubresource(input.Get(), 0, nullptr, state.data(),
-                                 width * 4, 0);
-      srv = inputView.Get();
-      context->PSSetShaderResources(0, 1, &srv);
+      ID3D11ShaderResourceView *nullViews[15]{};
+      context->PSSetShaderResources(0, inputCount, nullViews);
+      ID3D11ShaderResourceView *views[15]{};
+      for (uint32_t index = 0; index < inputCount; ++index) {
+        context->UpdateSubresource(inputs[index].Get(), 0, nullptr,
+                                   state.data() + inputBytes * index, width * 4,
+                                   0);
+        views[index] = inputViews[index].Get();
+      }
+      context->PSSetShaderResources(0, inputCount, views);
     }
     float clear[4]{1, 0, 1, 1};
     context->ClearRenderTargetView(view.Get(), clear);
@@ -132,7 +146,7 @@ public:
     context->VSSetShader(vertex.Get(), nullptr, 0);
     context->PSSetShader(fragment.Get(), nullptr, 0);
     ID3D11Buffer *cb = uniform.Get();
-    context->PSSetConstantBuffers(gather ? 1 : 0, 1, &cb);
+    context->PSSetConstantBuffers(gather ? 13 : 0, 1, &cb);
     context->Draw(3, 0);
     context->CopyResource(staging.Get(), target.Get());
     D3D11_MAPPED_SUBRESOURCE mapped{};
@@ -155,8 +169,8 @@ createFragmentRenderer(const std::string &shader, const std::string &) {
 
 std::unique_ptr<FragmentRenderer>
 createGatherRenderer(const std::string &shader, const std::string &,
-                     uint32_t width, uint32_t height) {
-  if (!width || !height || uint64_t(width) * height < 4)
+                     uint32_t width, uint32_t height, uint32_t inputCount) {
+  if (!width || !height || uint64_t(width) * height < 4 || !inputCount)
     throw std::runtime_error("invalid gather extent");
-  return std::make_unique<Renderer>(shader, width, height);
+  return std::make_unique<Renderer>(shader, width, height, inputCount);
 }

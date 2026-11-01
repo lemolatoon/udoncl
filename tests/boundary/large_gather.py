@@ -276,6 +276,7 @@ assert multi_kernel["passes"][0] == {
 multi_hlsl = (multi_bundle / "kernels/kernel_25.hlsl").read_text()
 assert "Texture2D<float4> _VRC_Input : register(t0);" in multi_hlsl
 assert "Texture2D<float4> _VRC_Input1 : register(t1);" in multi_hlsl
+assert "cbuffer Params : register(b13)" in multi_hlsl
 assert "_VRC_Input.Load" in multi_hlsl and "_VRC_Input1.Load" in multi_hlsl
 assert "float _VRC_Arg3;" in multi_hlsl
 multi_shader = (multi_bundle / "kernels/kernel_25.shader").read_text()
@@ -331,7 +332,7 @@ run(
         "-o",
         output / "two-outputs-bundle",
     ],
-    error="exactly one float output",
+    error="exactly one trailing float output",
 )
 
 invalid_tile = tile_source.read_text().replace("output[gid]", "output[x]")

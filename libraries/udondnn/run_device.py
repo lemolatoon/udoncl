@@ -122,6 +122,8 @@ def main():
         + int4_text
         + "\n"
         + tile_text
+        + "\n"
+        + aten_rms_text
     )
     (output / "udondnn_device_source.h").write_text(
         "#define UDONDNN_DEVICE_SOURCE " + json.dumps(device_text) + "\n",
@@ -233,11 +235,18 @@ def main():
         209,
         8192,
     )
-    aten_rms_bundle = emit_device(
-        "aten-rms-norm",
+    aten_rms_reduce_bundle = emit_device(
+        "aten-rms-norm-reduce",
         aten_rms_device,
-        "udondnn_ext_rms_normalization_forward",
+        "udonaten_rms_norm_reduce",
         210,
+        8192,
+    )
+    aten_rms_finalize_bundle = emit_device(
+        "aten-rms-norm-finalize",
+        aten_rms_device,
+        "udonaten_rms_norm_finalize",
+        211,
         8192,
     )
     manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
@@ -374,16 +383,38 @@ def main():
     )
     if '_VRC_Arg3 ("Arg3", Int)' not in rms_norm_shaderlab:
         raise RuntimeError("UdonDNN RMSNorm integer uniforms are not Unity-compatible")
-    aten_rms_manifest = json.loads(
-        (aten_rms_bundle / "manifest.json").read_text(encoding="utf-8")
+    aten_rms_reduce_manifest = json.loads(
+        (aten_rms_reduce_bundle / "manifest.json").read_text(encoding="utf-8")
     )
-    aten_rms_kernel = aten_rms_manifest["device"]["kernels"][0]
+    aten_rms_reduce_kernel = aten_rms_reduce_manifest["device"]["kernels"][0]
     if (
-        aten_rms_kernel["name"] != "udondnn_ext_rms_normalization_forward"
-        or aten_rms_kernel["global_size"] != [8192, 1, 1]
-        or len(aten_rms_kernel["args"]) != 6
+        aten_rms_reduce_kernel["name"] != "udonaten_rms_norm_reduce"
+        or aten_rms_reduce_kernel["global_size"] != [8192, 1, 1]
+        or len(aten_rms_reduce_kernel["args"]) != 4
     ):
-        raise RuntimeError("UdonATen RMSNorm manifest is invalid")
+        raise RuntimeError("UdonATen RMSNorm reduction manifest is invalid")
+    aten_rms_finalize_manifest = json.loads(
+        (aten_rms_finalize_bundle / "manifest.json").read_text(encoding="utf-8")
+    )
+    aten_rms_finalize_kernel = aten_rms_finalize_manifest["device"]["kernels"][0]
+    if (
+        aten_rms_finalize_kernel["name"] != "udonaten_rms_norm_finalize"
+        or aten_rms_finalize_kernel["global_size"] != [8192, 1, 1]
+        or [argument["access"] for argument in aten_rms_finalize_kernel["args"][:3]]
+        != ["read", "read", "write"]
+        or len(aten_rms_finalize_kernel["args"]) != 7
+    ):
+        raise RuntimeError("UdonATen RMSNorm finalization manifest is invalid")
+    aten_rms_reduce_fragment = (
+        aten_rms_reduce_bundle / "kernels/kernel_210.hlsl"
+    )
+    aten_rms_finalize_fragment = (
+        aten_rms_finalize_bundle / "kernels/kernel_211.hlsl"
+    )
+    if "_VRC_Input1.Load" not in aten_rms_finalize_fragment.read_text(
+        encoding="utf-8"
+    ):
+        raise RuntimeError("UdonATen RMSNorm did not bind its reduction texture")
     gather_manifest = json.loads(
         (gather_bundle / "manifest.json").read_text(encoding="utf-8")
     )
@@ -445,7 +476,8 @@ def main():
         + "const std::string &pooling, const std::string &softmax, "
         + "const std::string &batchnorm, const std::string &opTensor, "
         + "const std::string &rmsNorm, const std::string &gather, "
-        + "const std::string &int4, const std::string &tile) { return {"
+        + "const std::string &int4, const std::string &tile, "
+        + "const std::string &atenRmsReduce, const std::string &atenRmsFinalize) { return {"
         + '{200, 2048, 7, "udondnn_convolution_forward", convolution}, '
         + '{201, 2048, 6, "udondnn_activation_forward", activation}, '
         + '{202, 2048, 7, "udondnn_pooling_forward", pooling}, '
@@ -455,7 +487,9 @@ def main():
         + '{206, 2048, 5, "udondnn_ext_rms_normalization_forward", rmsNorm}, '
         + '{207, 2048, 6, "udondnn_ext_gather_forward", gather}, '
         + '{208, 8192, 4, "udonaten_weight_int4pack_mm", int4}, '
-        + '{209, 8192, 9, "udonaten_tile", tile}}; }\n',
+        + '{209, 8192, 9, "udonaten_tile", tile}, '
+        + '{210, 8192, 2, "udonaten_rms_norm_reduce", atenRmsReduce}, '
+        + '{211, 8192, 4, "udonaten_rms_norm_finalize", atenRmsFinalize, 0, 0, 2}}; }\n',
         encoding="utf-8",
     )
 
@@ -1900,6 +1934,8 @@ def main():
                 (gather_fragment, "frag", "frag"),
                 (int4_fragment, "frag", "frag"),
                 (tile_fragment, "frag", "frag"),
+                (aten_rms_reduce_fragment, "frag", "frag"),
+                (aten_rms_finalize_fragment, "frag", "frag"),
                 (vertex, "vert", "vert"),
             ]
         ):
@@ -1931,6 +1967,8 @@ def main():
             gather_fragment,
             int4_fragment,
             tile_fragment,
+            aten_rms_reduce_fragment,
+            aten_rms_finalize_fragment,
             vertex,
         ) = compiled
 
@@ -1976,6 +2014,8 @@ def main():
                 gather_fragment,
                 int4_fragment,
                 tile_fragment,
+                aten_rms_reduce_fragment,
+                aten_rms_finalize_fragment,
                 vertex,
             ]
         ),

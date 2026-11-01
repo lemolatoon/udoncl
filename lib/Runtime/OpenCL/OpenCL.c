@@ -36,8 +36,8 @@ struct _cl_program {
 struct _cl_kernel {
   unsigned refs;
   cl_program program;
-  cl_mem buffer, input;
-  uint32_t buffer_generation, input_generation;
+  cl_mem buffer, inputs[15];
+  uint32_t buffer_generation, input_generations[15];
   struct udoncl_cl_gather_profile gather;
   unsigned char scalar[56];
   unsigned args;
@@ -526,7 +526,9 @@ CL_API_ENTRY cl_kernel CL_API_CALL clCreateKernel(cl_program p,
   udoncl_cl_gather_profile(name, &k->gather);
   if (k->gather.id &&
       (k->gather.words < 4 || k->gather.words > 16384 ||
-       k->gather.scalar_count > 14 || !k->gather.width || !k->gather.height ||
+       !k->gather.input_count || k->gather.input_count > 13 ||
+       k->gather.scalar_count > 15 - k->gather.input_count ||
+       !k->gather.width || !k->gather.height ||
        (size_t)k->gather.width * k->gather.height != k->gather.words)) {
     free(k);
     ERROR(CL_INVALID_KERNEL_DEFINITION);
@@ -559,28 +561,31 @@ CL_API_ENTRY cl_int CL_API_CALL clReleaseKernel(cl_kernel k) {
 }
 CL_API_ENTRY cl_int CL_API_CALL clSetKernelArg(cl_kernel k, cl_uint index,
                                                size_t size, const void *value) {
+  cl_uint buffer_count = k->gather.id ? k->gather.input_count + 1 : 1;
   if (!kernel_find(k))
     return CL_INVALID_KERNEL;
-  if (index >= (k->gather.id ? 2 + k->gather.scalar_count : 2))
+  if (index >= (k->gather.id ? buffer_count + k->gather.scalar_count : 2))
     return CL_INVALID_ARG_INDEX;
-  if (size != ((k->gather.id ? index < 2 : index == 0) ? sizeof(cl_mem) : 4))
+  if (size !=
+      ((k->gather.id ? index < buffer_count : index == 0) ? sizeof(cl_mem) : 4))
     return CL_INVALID_ARG_SIZE;
   if (!value)
     return CL_INVALID_ARG_VALUE;
-  if (k->gather.id ? index < 2 : index == 0) {
+  if (k->gather.id ? index < buffer_count : index == 0) {
     cl_mem m;
     memcpy(&m, value, sizeof(m));
     if (m && !buffer_find(m))
       return CL_INVALID_MEM_OBJECT;
-    if (k->gather.id && index == 0) {
-      k->input = m;
-      k->input_generation = m ? m->generation : 0;
+    if (k->gather.id && index < k->gather.input_count) {
+      k->inputs[index] = m;
+      k->input_generations[index] = m ? m->generation : 0;
     } else {
       k->buffer = m;
       k->buffer_generation = m ? m->generation : 0;
     }
   } else
-    memcpy(k->scalar + (k->gather.id ? (index - 2) * 4 : 0), value, 4);
+    memcpy(k->scalar + (k->gather.id ? (index - buffer_count) * 4 : 0), value,
+           4);
   k->args |= 1u << index;
   return CL_SUCCESS;
 }
@@ -592,6 +597,9 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueNDRangeKernel(
   cl_int status;
   cl_event event = NULL;
   cl_mem m;
+  const unsigned char *input_data[15];
+  cl_uint argument_count =
+      k->gather.id ? k->gather.input_count + 1 + k->gather.scalar_count : 2;
   if (!queue_find(q))
     return CL_INVALID_COMMAND_QUEUE;
   if (!kernel_find(k))
@@ -616,7 +624,7 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueNDRangeKernel(
     if (local && local[i] != 1)
       return CL_INVALID_WORK_GROUP_SIZE;
   }
-  if (k->args != ((1u << (k->gather.id ? 2 + k->gather.scalar_count : 2)) - 1u))
+  if (k->args != ((1u << argument_count) - 1u))
     return CL_INVALID_KERNEL_ARGS;
   m = buffer_find(k->buffer);
   if (!m || m->generation != k->buffer_generation)
@@ -628,30 +636,37 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueNDRangeKernel(
   if (m->size != (k->gather.id ? k->gather.words * 4 : 4))
     return CL_INVALID_MEM_OBJECT;
   if (k->gather.id) {
-    cl_mem input = buffer_find(k->input);
     size_t byte;
-    if (!input || input->generation != k->input_generation)
-      return CL_INVALID_MEM_OBJECT;
-    if (input->context != q->context)
-      return CL_INVALID_CONTEXT;
-    if (input == m || (input->flags & CL_MEM_WRITE_ONLY))
-      return CL_INVALID_OPERATION;
-    if (input->size != m->size)
-      return CL_INVALID_MEM_OBJECT;
-    for (byte = 0; byte < input->size; ++byte)
-      if (!input->initialized[byte])
+    for (i = 0; i < k->gather.input_count; ++i) {
+      cl_mem input = buffer_find(k->inputs[i]);
+      cl_uint other;
+      if (!input || input->generation != k->input_generations[i])
+        return CL_INVALID_MEM_OBJECT;
+      if (input->context != q->context)
+        return CL_INVALID_CONTEXT;
+      if (input == m || (input->flags & CL_MEM_WRITE_ONLY))
         return CL_INVALID_OPERATION;
+      for (other = 0; other < i; ++other)
+        if (input == k->inputs[other])
+          return CL_INVALID_OPERATION;
+      if (input->size != m->size)
+        return CL_INVALID_MEM_OBJECT;
+      for (byte = 0; byte < input->size; ++byte)
+        if (!input->initialized[byte])
+          return CL_INVALID_OPERATION;
+      input_data[i] = input->data;
+    }
   }
   if (result) {
     event = new_event(q, CL_COMMAND_NDRANGE_KERNEL);
     if (!event)
       return CL_OUT_OF_HOST_MEMORY;
   }
-  if (!(k->gather.id
-            ? udoncl_cl_draw_gather(k->gather.id, k->input->data, m->size,
-                                    k->scalar, k->gather.scalar_count * 4,
-                                    m->data)
-            : udoncl_cl_draw(m->id, m->generation, k->scalar, m->data))) {
+  if (k->gather.id
+          ? !udoncl_cl_draw_gather(k->gather.id, input_data,
+                                   k->gather.input_count, m->size, k->scalar,
+                                   k->gather.scalar_count * 4, m->data)
+          : !udoncl_cl_draw(m->id, m->generation, k->scalar, m->data)) {
     if (event)
       clReleaseEvent(event);
     return CL_OUT_OF_RESOURCES;

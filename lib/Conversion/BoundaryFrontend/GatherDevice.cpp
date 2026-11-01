@@ -248,7 +248,8 @@ struct RaiseGatherDevicePass
             recoveredTypes.push_back(llvmType);
           }
         }
-        if (valid && recoveredOutput && !recoveredInputs.empty()) {
+        if (valid && recoveredOutput && !recoveredInputs.empty() &&
+            *recoveredOutput == recoveredInputs.size()) {
           types = std::move(recoveredTypes);
           inputArguments = std::move(recoveredInputs);
           outputArgument = recoveredOutput;
@@ -257,7 +258,7 @@ struct RaiseGatherDevicePass
       }
     if (!metadata) {
       fail("requires one or more metadata-proven const float inputs and "
-           "exactly one float output before scalar arguments");
+           "exactly one trailing float output before scalar arguments");
       return;
     }
     // Preserve the original function contract but do not discard unknown FP,
@@ -462,8 +463,7 @@ struct RaiseGatherDevicePass
     for (auto &op : module.getBody()->getOperations())
       if (&op != source) {
         auto f = dyn_cast<LLVM::LLVMFuncOp>(op);
-        if (!f || f.getCConv() == LLVM::cconv::CConv::SPIR_KERNEL ||
-            !SymbolTable::symbolKnownUseEmpty(f, module)) {
+        if (!f || !SymbolTable::symbolKnownUseEmpty(f, module)) {
           // Known builtin declarations are used by the selected kernel and are
           // removed only after their call sites have been recovered below.
           bool builtin =

@@ -20,5 +20,6 @@ std::unique_ptr<FragmentRenderer>
 createFragmentRenderer(const std::string &shader, const std::string &vertex);
 std::unique_ptr<FragmentRenderer>
 createGatherRenderer(const std::string &shader, const std::string &vertex,
-                     uint32_t width, uint32_t height = 1);
+                     uint32_t width, uint32_t height = 1,
+                     uint32_t inputCount = 1);
 #endif
