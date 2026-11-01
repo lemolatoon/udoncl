@@ -262,6 +262,36 @@ tile_calls = [
 assert len(tile_calls) == 32
 assert all(math.prod(call["output_shape"]) <= 4096 for call in tile_calls)
 assert all(call["attributes"]["repeats"]["ints"] == [1, 1, 4, 1] for call in tile_calls)
+assert all(
+    call["device_profile"]
+    == {
+        "supported": True,
+        "kernel": "udonaten_arena_tile",
+        "shader": "kernel_216.shader",
+        "storage_words": 16384,
+        "width": 8192,
+        "height": 2,
+    }
+    for call in tile_calls
+)
+tile_passes = [
+    device_pass
+    for device_pass in operator_plan["passes"]
+    if device_pass["providers"] == ["udonatenTile"]
+]
+assert len(tile_passes) == 32
+assert all(
+    device_pass["kernel"] == "udonaten_arena_tile"
+    and device_pass["shader"] == "kernel_216.shader"
+    and device_pass["inputs"] == [
+        operator_plan["aot"]["calls"][device_pass["call_index"]]["inputs"][0]
+    ]
+    and device_pass["fragments"] == 16384
+    and device_pass["tile"]["input_shape"] == [1, 8, 1, 128]
+    and device_pass["tile"]["repeats"] == [1, 1, 4, 1]
+    and device_pass["material_ints"]["_VRC_Arg10"] == 4096
+    for device_pass in tile_passes
+)
 
 sys.path.insert(0, str(root / "runtime/onnx"))
 from udon_onnx import (  # noqa: E402
@@ -333,7 +363,7 @@ assert model_uasm.count("MaterialArray.__Get") == 322
 assert model_uasm.count("__SetProgramVariable__") == 450
 assert model_uasm.count("__SendCustomEvent__") == 225
 assert model_uasm.count("VRCSDKBaseVRCGraphics.__Blit__") == 322
-assert model_uasm.count("UnityEngineMaterial.__SetInt__") == 320
+assert model_uasm.count("UnityEngineMaterial.__SetInt__") == 608
 assert "PUSH, resultState\n        PUSH, arenaSlot0\n        COPY" in model_uasm
 (output / "model-host.uasm").write_text(model_uasm, encoding="utf-8")
 

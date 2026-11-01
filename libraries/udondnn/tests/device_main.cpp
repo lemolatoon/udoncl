@@ -40,6 +40,10 @@ extern "C" size_t udonaten_arena_pointwise_cpu_gid_x;
 size_t udonaten_arena_pointwise_cpu_gid_x;
 extern "C" size_t udonaten_arena_pointwise_cpu_gid_y;
 size_t udonaten_arena_pointwise_cpu_gid_y;
+extern "C" size_t udonaten_arena_tile_cpu_gid_x;
+size_t udonaten_arena_tile_cpu_gid_x;
+extern "C" size_t udonaten_arena_tile_cpu_gid_y;
+size_t udonaten_arena_tile_cpu_gid_y;
 extern "C" size_t udonblas_cpu_gid;
 size_t udonblas_cpu_gid;
 extern "C" size_t udonblas_saxpy_cpu_gid;
@@ -369,14 +373,14 @@ void opTensorReference(const OpTensorCase &test, const std::vector<float> &a,
 } // namespace
 
 int main(int argc, char **argv) {
-  if (argc != 18) {
+  if (argc != 19) {
     std::cerr << "usage: udondnn-device convolution-fragment "
                  "activation-fragment pooling-fragment softmax-fragment "
                  "batchnorm-fragment op-tensor-fragment rmsnorm-fragment "
                  "gather-fragment int4-fragment tile-fragment "
                  "aten-rms-reduce-fragment aten-rms-finalize-fragment "
                  "sgemm-fragment q4-fragment saxpy-fragment "
-                 "arena-pointwise-fragment vertex\n";
+                 "arena-pointwise-fragment arena-tile-fragment vertex\n";
     return 2;
   }
   try {
@@ -384,8 +388,9 @@ int main(int argc, char **argv) {
         deviceSource(),
         manifestBindings(argv[1], argv[2], argv[3], argv[4], argv[5], argv[6],
                          argv[7], argv[8], argv[9], argv[10], argv[11],
-                         argv[12], argv[13], argv[14], argv[15], argv[16]),
-        argv[17]);
+                         argv[12], argv[13], argv[14], argv[15], argv[16],
+                         argv[17]),
+        argv[18]);
     udondnnHandle_t handle = 0;
     require(udondnnCreate(&handle), UDONDNN_STATUS_SUCCESS, "udondnnCreate");
     std::array<udondnnTensorDescriptor_t, 64> descriptorCapacity{};
@@ -1270,6 +1275,35 @@ int main(int argc, char **argv) {
           tileMaximumError, std::abs(tileActual[index] - tileExpected[index]));
     if (tileMaximumError > 0.0f)
       throw std::runtime_error("UdonATen Tile results diverged");
+    std::vector<float> arenaTileInput(1024), arenaTileActual(4096),
+        arenaTileExpected(4096);
+    const int64_t arenaTileRepeats[4] = {1, 1, 4, 1};
+    for (int index = 0; index < int(arenaTileInput.size()); ++index)
+      arenaTileInput[index] = value(index, 193);
+    for (int index = 0; index < int(arenaTileExpected.size()); ++index) {
+      int channel = (index / (4 * 128)) % 8;
+      int width = index % 128;
+      arenaTileExpected[index] = arenaTileInput[channel * 128 + width];
+    }
+    require(udondnnSetTensor4dDescriptor(tileInputDescriptor,
+                                         UDONDNN_TENSOR_NCHW,
+                                         UDONDNN_DATA_FLOAT, 1, 8, 1, 128),
+            UDONDNN_STATUS_SUCCESS, "set arena Tile input descriptor");
+    require(udondnnSetTensor4dDescriptor(tileOutputDescriptor,
+                                         UDONDNN_TENSOR_NCHW,
+                                         UDONDNN_DATA_FLOAT, 1, 8, 4, 128),
+            UDONDNN_STATUS_SUCCESS, "set arena Tile output descriptor");
+    require(udonatenTile(handle, tileInputDescriptor, arenaTileInput.data(),
+                         arenaTileRepeats, 4, tileOutputDescriptor,
+                         arenaTileActual.data()),
+            UDONDNN_STATUS_SUCCESS, "arena udonatenTile");
+    float arenaTileMaximumError = 0.0f;
+    for (size_t index = 0; index < arenaTileActual.size(); ++index)
+      arenaTileMaximumError =
+          std::max(arenaTileMaximumError,
+                   std::abs(arenaTileActual[index] - arenaTileExpected[index]));
+    if (arenaTileMaximumError > 0.0f)
+      throw std::runtime_error("UdonATen arena Tile results diverged");
     const int64_t tooManyTileDimensions[5] = {1, 1, 1, 1, 1};
     require(udonatenTile(handle, tileInputDescriptor, tileInput.data(),
                          tooManyTileDimensions, 5, tileOutputDescriptor,
@@ -1695,6 +1729,8 @@ int main(int argc, char **argv) {
               << " int4_max_error=" << int4MaximumError
               << " tile_outputs=" << tileActual.size()
               << " tile_max_error=" << tileMaximumError
+              << " arena_tile_outputs=" << arenaTileActual.size()
+              << " arena_tile_max_error=" << arenaTileMaximumError
               << " arena_pointwise_outputs=" << atenLargeWords * 3
               << " arena_pointwise_max_error=" << arenaPointwiseMaximumError
               << " rl_outputs=" << rlProbabilities.size()

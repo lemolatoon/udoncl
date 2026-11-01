@@ -92,6 +92,7 @@ def main():
     tile_device = root / "libraries/udonaten/device/tile.cl"
     aten_rms_device = root / "libraries/udonaten/device/rms_norm.cl"
     arena_pointwise_device = root / "libraries/udonaten/device/arena_pointwise.cl"
+    arena_tile_device = root / "libraries/udonaten/device/arena_tile.cl"
     sgemm_device = root / "libraries/udonblas/device/sgemm.cl"
     q4_device = root / "libraries/udonblas/device/q4_gemv.cl"
     saxpy_device = root / "libraries/udonblas/device/saxpy.cl"
@@ -107,6 +108,7 @@ def main():
     tile_text = tile_device.read_text(encoding="utf-8")
     aten_rms_text = aten_rms_device.read_text(encoding="utf-8")
     arena_pointwise_text = arena_pointwise_device.read_text(encoding="utf-8")
+    arena_tile_text = arena_tile_device.read_text(encoding="utf-8")
     sgemm_text = sgemm_device.read_text(encoding="utf-8")
     q4_text = q4_device.read_text(encoding="utf-8")
     saxpy_text = saxpy_device.read_text(encoding="utf-8")
@@ -134,6 +136,8 @@ def main():
         + aten_rms_text
         + "\n"
         + arena_pointwise_text
+        + "\n"
+        + arena_tile_text
         + "\n"
         + sgemm_text
         + "\n"
@@ -284,6 +288,14 @@ def main():
         arena_pointwise_device,
         "udonaten_arena_pointwise",
         215,
+        16384,
+        (8192, 2),
+    )
+    arena_tile_bundle = emit_device(
+        "aten-arena-tile",
+        arena_tile_device,
+        "udonaten_arena_tile",
+        216,
         16384,
         (8192, 2),
     )
@@ -471,6 +483,21 @@ def main():
     arena_pointwise_hlsl = arena_pointwise_fragment.read_text(encoding="utf-8")
     if "_VRC_Input1.Load" not in arena_pointwise_hlsl or "uint(position.y)" not in arena_pointwise_hlsl:
         raise RuntimeError("UdonATen arena pointwise lost its multi-row texture ABI")
+    arena_tile_manifest = json.loads(
+        (arena_tile_bundle / "manifest.json").read_text(encoding="utf-8")
+    )
+    arena_tile_kernel = arena_tile_manifest["device"]["kernels"][0]
+    if (
+        arena_tile_kernel["name"] != "udonaten_arena_tile"
+        or arena_tile_kernel["global_size"] != [8192, 2, 1]
+        or [argument["access"] for argument in arena_tile_kernel["args"][:2]]
+        != ["read", "write"]
+        or len(arena_tile_kernel["args"]) != 11
+    ):
+        raise RuntimeError("UdonATen arena Tile manifest is invalid")
+    arena_tile_fragment = arena_tile_bundle / "kernels/kernel_216.hlsl"
+    if "uint(position.y)" not in arena_tile_fragment.read_text(encoding="utf-8"):
+        raise RuntimeError("UdonATen arena Tile lost its multi-row texture ABI")
     blas_bundles = [
         (sgemm_bundle, "udonblas_sgemm", 212, 1024, 10),
         (q4_bundle, "udonblas_sgemv_q4", 213, 8192, 7),
@@ -558,7 +585,8 @@ def main():
         + "const std::string &int4, const std::string &tile, "
         + "const std::string &atenRmsReduce, const std::string &atenRmsFinalize, "
         + "const std::string &sgemm, const std::string &q4, "
-        + "const std::string &saxpy, const std::string &arenaPointwise) { return {"
+        + "const std::string &saxpy, const std::string &arenaPointwise, "
+        + "const std::string &arenaTile) { return {"
         + '{200, 2048, 7, "udondnn_convolution_forward", convolution}, '
         + '{201, 2048, 6, "udondnn_activation_forward", activation}, '
         + '{202, 2048, 7, "udondnn_pooling_forward", pooling}, '
@@ -574,7 +602,8 @@ def main():
         + '{212, 1024, 10, "udonblas_sgemm", sgemm, 32, 32}, '
         + '{213, 8192, 7, "udonblas_sgemv_q4", q4}, '
         + '{214, 1024, 4, "udonblas_saxpy", saxpy}, '
-        + '{215, 16384, 2, "udonaten_arena_pointwise", arenaPointwise, 8192, 2, 2}}; }\n',
+        + '{215, 16384, 2, "udonaten_arena_pointwise", arenaPointwise, 8192, 2, 2}, '
+        + '{216, 16384, 9, "udonaten_arena_tile", arenaTile, 8192, 2}}; }\n',
         encoding="utf-8",
     )
 
@@ -1941,6 +1970,7 @@ def main():
     q4_object = output / ("q4-gemv-device" + object_suffix)
     saxpy_object = output / ("saxpy-device" + object_suffix)
     arena_pointwise_object = output / ("arena-pointwise-device" + object_suffix)
+    arena_tile_object = output / ("arena-tile-device" + object_suffix)
     run([clang, *runtime_flags, "-c", native_ir, "-o", host_object])
     run([clang, *runtime_flags, "-c", blas_native_ir, "-o", blas_host_object])
     run(
@@ -2129,6 +2159,20 @@ def main():
             arena_pointwise_object,
         ]
     )
+    run(
+        [
+            clang,
+            *runtime_flags,
+            "-x",
+            "c",
+            "-std=c11",
+            "-ffp-contract=off",
+            "-c",
+            arena_tile_device,
+            "-o",
+            arena_tile_object,
+        ]
+    )
     for blas_device, blas_object in (
         (sgemm_device, sgemm_object),
         (q4_device, q4_object),
@@ -2177,6 +2221,7 @@ def main():
                 (blas_fragments[1], "frag", "frag"),
                 (blas_fragments[2], "frag", "frag"),
                 (arena_pointwise_fragment, "frag", "frag"),
+                (arena_tile_fragment, "frag", "frag"),
                 (vertex, "vert", "vert"),
             ]
         ):
@@ -2212,6 +2257,7 @@ def main():
             aten_rms_finalize_fragment,
             *blas_fragments,
             arena_pointwise_fragment,
+            arena_tile_fragment,
             vertex,
         ) = compiled
 
@@ -2244,6 +2290,7 @@ def main():
             "-DUDONBLAS_Q4_OBJECT=" + q4_object.as_posix(),
             "-DUDONBLAS_SAXPY_OBJECT=" + saxpy_object.as_posix(),
             "-DUDONATEN_ARENA_POINTWISE_OBJECT=" + arena_pointwise_object.as_posix(),
+            "-DUDONATEN_ARENA_TILE_OBJECT=" + arena_tile_object.as_posix(),
             "-DUDONDNN_BINDINGS_DIR=" + output.as_posix(),
         ]
     )
@@ -2267,6 +2314,7 @@ def main():
                 aten_rms_finalize_fragment,
                 *blas_fragments,
                 arena_pointwise_fragment,
+                arena_tile_fragment,
                 vertex,
             ]
         ),

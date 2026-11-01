@@ -922,6 +922,19 @@ def emit_int4_model_uasm(plan: dict) -> str:
         dynamic_inputs[device_pass["id"]] = names
         max_inputs = max(max_inputs, len(names))
         _model_arena_binding(plan, device_pass.get("output"))
+    material_int_properties = sorted(
+        {
+            property_name
+            for device_pass in direct_passes
+            for property_name in (device_pass.get("material_ints") or {})
+        }
+    )
+    if any(not name.startswith("_VRC_Arg") for name in material_int_properties):
+        raise ValueError("Device pass has an unsupported material integer property")
+    material_int_names = {
+        name: f"__materialIntName{name.removeprefix('_VRC_Arg')}"
+        for name in material_int_properties
+    }
 
     lines = [".data_start"]
     lines.extend(f"    .export {name}" for name in slot_names)
@@ -949,13 +962,15 @@ def emit_int4_model_uasm(plan: dict) -> str:
             '    __activationStateName: %SystemString, "activationState"',
             '    __resultAName: %SystemString, "resultA"',
             '    __resultBName: %SystemString, "resultB"',
-            '    __arg3Name: %SystemString, "_VRC_Arg3"',
-            '    __arg4Name: %SystemString, "_VRC_Arg4"',
         ]
     )
     for index in range(max_inputs):
         suffix = "" if index == 0 else str(index)
         lines.append(f'    __inputName{index}: %SystemString, "_VRC_Input{suffix}"')
+    lines.extend(
+        f'    {material_int_names[name]}: %SystemString, "{name}"'
+        for name in material_int_properties
+    )
     lines.extend([".data_end", "", ".code_start", "    .export _start", "    _start:"])
     lines.extend(
         [
@@ -1087,11 +1102,7 @@ def emit_int4_model_uasm(plan: dict) -> str:
                 binding = _model_arena_binding(plan, name)
                 set_texture(material, f"__inputName{input_index}", slot_names[binding["slot"]])
             for property_name, value in (device_pass.get("material_ints") or {}).items():
-                set_int(
-                    material,
-                    "__arg3Name" if property_name == "_VRC_Arg3" else "__arg4Name",
-                    value,
-                )
+                set_int(material, material_int_names[property_name], value)
             output = _model_arena_binding(plan, device_pass["output"])
             source = _model_arena_binding(plan, inputs[0])
             blit(slot_names[source["slot"]], slot_names[output["slot"]], material)

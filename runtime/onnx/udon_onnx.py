@@ -1593,6 +1593,27 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
                 tiles = _matmul_schedule(node, shapes)
             elif node["provider"] in POINTWISE_PROVIDERS:
                 tiles = _pointwise_schedule(node, shapes)
+            elif (
+                node["provider"] == "udonatenTile"
+                and math.prod(node["shape"]) <= ARENA_POINTWISE_WORDS
+            ):
+                input_shape = [1] * (4 - len(shapes[node["inputs"][0]])) + shapes[
+                    node["inputs"][0]
+                ]
+                repeats = [1] * (4 - len(node["attributes"]["repeats"]["ints"])) + node[
+                    "attributes"
+                ]["repeats"]["ints"]
+                tiles = [
+                    {
+                        "arena_tile": True,
+                        "storage_words": ARENA_POINTWISE_WORDS,
+                        "width": 8192,
+                        "height": 2,
+                        "input_shape": input_shape,
+                        "repeats": repeats,
+                        "output_words": math.prod(node["shape"]),
+                    }
+                ]
             else:
                 tiles = [None]
             for tile_index, tile in enumerate(tiles):
@@ -1613,7 +1634,7 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
                             if "words" in tile
                             else (
                                 tile["storage_words"]
-                                if "arena_words" in tile
+                                if "storage_words" in tile
                                 else tile["m"] * tile["n"]
                             )
                         )
@@ -1635,6 +1656,24 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
                             "material_ints": {
                                 "_VRC_Arg3": tile["arena_words"],
                                 "_VRC_Arg4": tile["operation"],
+                            },
+                        }
+                    )
+                if tile is not None and tile.get("arena_tile"):
+                    device_pass.update(
+                        {
+                            "kernel": "udonaten_arena_tile",
+                            "shader": "kernel_216.shader",
+                            "inputs": [node["inputs"][0]],
+                            "fragments": tile["storage_words"],
+                            "material_ints": {
+                                **{
+                                    f"_VRC_Arg{index + 2}": value
+                                    for index, value in enumerate(
+                                        tile["input_shape"] + tile["repeats"]
+                                    )
+                                },
+                                "_VRC_Arg10": tile["output_words"],
                             },
                         }
                     )
@@ -1821,6 +1860,17 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
                         "reason": "large multi-row RMSNorm is not implemented",
                     }
                 )
+        elif node["provider"] == "udonatenTile" and math.prod(
+            node["shape"]
+        ) <= ARENA_POINTWISE_WORDS:
+            call["device_profile"] = {
+                "supported": True,
+                "kernel": "udonaten_arena_tile",
+                "shader": "kernel_216.shader",
+                "storage_words": ARENA_POINTWISE_WORDS,
+                "width": 8192,
+                "height": 2,
+            }
         calls.append(call)
     scratch_buffers = [
         {
