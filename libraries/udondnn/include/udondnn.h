@@ -12,6 +12,7 @@ typedef uint32_t udondnnHandle_t;
 typedef uint32_t udondnnTensorDescriptor_t;
 typedef uint32_t udondnnFilterDescriptor_t;
 typedef uint32_t udondnnConvolutionDescriptor_t;
+typedef uint32_t udondnnActivationDescriptor_t;
 
 typedef enum udondnnStatus_t {
   UDONDNN_STATUS_SUCCESS = 0,
@@ -33,6 +34,18 @@ typedef enum udondnnConvolutionMode_t {
 typedef enum udondnnConvolutionFwdAlgo_t {
   UDONDNN_CONVOLUTION_FWD_ALGO_IMPLICIT_GEMM = 0
 } udondnnConvolutionFwdAlgo_t;
+typedef enum udondnnNanPropagation_t {
+  UDONDNN_NOT_PROPAGATE_NAN = 0,
+  UDONDNN_PROPAGATE_NAN = 1
+} udondnnNanPropagation_t;
+typedef enum udondnnActivationMode_t {
+  UDONDNN_ACTIVATION_SIGMOID = 0,
+  UDONDNN_ACTIVATION_RELU = 1,
+  UDONDNN_ACTIVATION_TANH = 2,
+  UDONDNN_ACTIVATION_CLIPPED_RELU = 3,
+  UDONDNN_ACTIVATION_ELU = 4,
+  UDONDNN_ACTIVATION_IDENTITY = 5
+} udondnnActivationMode_t;
 
 enum {
   UDONDNN_CONV_MAX_TENSOR_WORDS = 512,
@@ -84,6 +97,19 @@ udondnnStatus_t udondnnConvolutionForward(
     udondnnConvolutionDescriptor_t convolution_descriptor,
     udondnnConvolutionFwdAlgo_t algorithm, void *workspace,
     size_t workspace_size_in_bytes, const float *beta,
+    udondnnTensorDescriptor_t output_descriptor, float *output);
+
+udondnnStatus_t
+udondnnCreateActivationDescriptor(udondnnActivationDescriptor_t *descriptor);
+udondnnStatus_t udondnnSetActivationDescriptor(
+    udondnnActivationDescriptor_t descriptor, udondnnActivationMode_t mode,
+    udondnnNanPropagation_t nan_propagation, float coefficient);
+udondnnStatus_t
+udondnnDestroyActivationDescriptor(udondnnActivationDescriptor_t descriptor);
+udondnnStatus_t udondnnActivationForward(
+    udondnnHandle_t handle, udondnnActivationDescriptor_t activation_descriptor,
+    const float *alpha, udondnnTensorDescriptor_t input_descriptor,
+    const float *input, const float *beta,
     udondnnTensorDescriptor_t output_descriptor, float *output);
 
 #ifdef __cplusplus

@@ -4,14 +4,17 @@ UdonDNN is the cuDNN-shaped tensor and neural-network layer built on UdonCL.
 Its public C API uses generation-checked 32-bit descriptors that remain safe to
 store in Udon heap slots.
 
-The first Device primitive is NCHW float `udondnnConvolutionForward`. One
-fragment owns each output tensor element. The initial gather profile supports
+The first Device primitives are NCHW float `udondnnConvolutionForward` and
+`udondnnActivationForward`. One fragment owns each output tensor element. The
+initial gather profile supports
 up to 512 input, filter, and output words, at most eight input channels, and
 filters up to 5x5. It supports padding, independent horizontal and vertical
 stride and dilation, cross-correlation and true convolution, and alpha/beta
 accumulation. These are profile limits rather than permanent API limits.
 Packed Unity material integers remain at or below 24 bits; the convolution
 mode is a separate scalar so Unity cannot round away low configuration bits.
+Activation descriptors cover sigmoid, ReLU, tanh, clipped ReLU, ELU, identity,
+and explicit NaN propagation policy with alpha/beta accumulation.
 
 Run the real fragment-backed validation with:
 
@@ -19,10 +22,10 @@ Run the real fragment-backed validation with:
 python libraries/udondnn/run_device.py --build-dir build/udoncl
 ```
 
-The validation compares five convolution shapes against an independent CPU
-reference and covers descriptor lifetimes, stale descriptor rejection, output
-shape calculation, zero-workspace planning, invalid shapes, and OpenCL object
-cleanup.
+The validation compares five convolution shapes and eight activation modes and
+policies against independent CPU references. It covers descriptor lifetimes,
+stale descriptor rejection, output shape calculation, zero-workspace planning,
+invalid shapes, NaN behavior, and OpenCL object cleanup.
 
 The same command emits `unity-bundle`, containing a reusable 3D prefab, host
 Udon assembly, generated convolution shader, packed fixture tensor, and

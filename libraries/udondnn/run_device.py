@@ -1,4 +1,4 @@
-"""Compile and execute UdonDNN convolution through the fragment backend."""
+"""Compile and execute UdonDNN primitives through the fragment backend."""
 
 import argparse
 import json
@@ -66,70 +66,85 @@ def main():
     mlir_translate = sdk / "bin" / ("mlir-translate" + suffix)
     runtime_flags = ["-fms-runtime-lib=dll"] if sys.platform == "win32" else []
 
-    device = source / "device/convolution.cl"
-    device_text = device.read_text(encoding="utf-8")
+    convolution_device = source / "device/convolution.cl"
+    activation_device = source / "device/activation.cl"
+    convolution_text = convolution_device.read_text(encoding="utf-8")
+    activation_text = activation_device.read_text(encoding="utf-8")
+    device_text = convolution_text + "\n" + activation_text
     (output / "udondnn_device_source.h").write_text(
         "#define UDONDNN_DEVICE_SOURCE " + json.dumps(device_text) + "\n",
         encoding="utf-8",
     )
-    device_ir = output / "convolution.ll"
-    run(
-        [
-            clang,
-            "-target",
-            "spir-unknown-unknown",
-            "-x",
-            "cl",
-            "-cl-std=CL1.2",
-            "-cl-kernel-arg-info",
-            "-O0",
-            "-Xclang",
-            "-disable-O0-optnone",
-            "-fomit-frame-pointer",
-            "-ffp-contract=off",
-            "-S",
-            "-emit-llvm",
-            device,
-            "-o",
-            device_ir,
-        ]
-    )
-    config = output / "convolution.json"
-    config.write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "profile": "gather-f32",
-                "words": 2048,
-                "kernel": "udondnn_convolution_forward",
-                "kernel_id": 200,
-                "global_size": [2048, 1, 1],
-                "local_size": [1, 1, 1],
-                "global_offset": [0, 0, 0],
-            }
-        ),
-        encoding="utf-8",
-    )
-    bundle = output / "convolution-bundle"
-    with tempfile.TemporaryDirectory(prefix="convolution-", dir=output) as staging:
-        staged = Path(staging) / "bundle"
+
+    def emit_device(name, device, kernel_name, kernel_id, words):
+        device_ir = output / f"{name}.ll"
         run(
             [
-                compiler,
-                "--emit-native-device-bundle",
-                config,
-                "--device-llvm",
-                device_ir,
+                clang,
+                "-target",
+                "spir-unknown-unknown",
+                "-x",
+                "cl",
+                "-cl-std=CL1.2",
+                "-cl-kernel-arg-info",
+                "-O0",
+                "-Xclang",
+                "-disable-O0-optnone",
+                "-fomit-frame-pointer",
+                "-ffp-contract=off",
+                "-S",
+                "-emit-llvm",
+                device,
                 "-o",
-                staged,
+                device_ir,
             ]
         )
-        if bundle.exists():
-            previous = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
-            if previous.get("artifact_stage") != "native-device-prototype":
-                raise RuntimeError("refusing to replace a non-UdonDNN bundle")
-            shutil.rmtree(bundle)
-        staged.rename(bundle)
+        config = output / f"{name}.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "profile": "gather-f32",
+                    "words": words,
+                    "kernel": kernel_name,
+                    "kernel_id": kernel_id,
+                    "global_size": [words, 1, 1],
+                    "local_size": [1, 1, 1],
+                    "global_offset": [0, 0, 0],
+                }
+            ),
+            encoding="utf-8",
+        )
+        bundle = output / f"{name}-bundle"
+        with tempfile.TemporaryDirectory(prefix=f"{name}-", dir=output) as staging:
+            staged = Path(staging) / "bundle"
+            run(
+                [
+                    compiler,
+                    "--emit-native-device-bundle",
+                    config,
+                    "--device-llvm",
+                    device_ir,
+                    "-o",
+                    staged,
+                ]
+            )
+            if bundle.exists():
+                previous = json.loads(
+                    (bundle / "manifest.json").read_text(encoding="utf-8")
+                )
+                if previous.get("artifact_stage") != "native-device-prototype":
+                    raise RuntimeError("refusing to replace a non-UdonDNN bundle")
+                shutil.rmtree(bundle)
+            staged.rename(bundle)
+        return bundle
+
+    bundle = emit_device(
+        "convolution", convolution_device, "udondnn_convolution_forward", 200, 2048
+    )
+    activation_bundle = emit_device(
+        "activation", activation_device, "udondnn_activation_forward", 201, 2048
+    )
     manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
     kernel = manifest["device"]["kernels"][0]
     if (
@@ -145,17 +160,40 @@ def main():
     shaderlab = (bundle / "kernels/kernel_200.shader").read_text(encoding="utf-8")
     if '_VRC_Arg6 ("Arg6", Int)' not in shaderlab or "Integer)" in shaderlab:
         raise RuntimeError("UdonDNN integer uniforms are not Unity SetInt-compatible")
-    if "mode ==" in device_text or "? ky" in device_text or "? kx" in device_text:
+    if (
+        "mode ==" in convolution_text
+        or "? ky" in convolution_text
+        or "? kx" in convolution_text
+    ):
         raise RuntimeError("UdonDNN convolution mode must not lower through select")
     if "(_VRC_Arg4 >>" not in fragment_text or "(_VRC_Arg5 &" not in fragment_text:
         raise RuntimeError("UdonDNN generated shader lost packed shape or separate mode")
+    activation_manifest = json.loads(
+        (activation_bundle / "manifest.json").read_text(encoding="utf-8")
+    )
+    activation_kernel = activation_manifest["device"]["kernels"][0]
+    if (
+        activation_kernel["name"] != "udondnn_activation_forward"
+        or activation_kernel["global_size"] != [2048, 1, 1]
+        or [argument["required_bytes"] for argument in activation_kernel["args"][:2]]
+        != [8192, 8192]
+        or len(activation_kernel["args"]) != 8
+    ):
+        raise RuntimeError("UdonDNN activation manifest does not match its packed ABI")
+    activation_fragment = activation_bundle / "kernels/kernel_201.hlsl"
+    activation_shaderlab = (
+        activation_bundle / "kernels/kernel_201.shader"
+    ).read_text(encoding="utf-8")
+    if '_VRC_Arg4 ("Arg4", Int)' not in activation_shaderlab:
+        raise RuntimeError("UdonDNN activation integer uniforms are not Unity-compatible")
     (output / "Bindings.h").write_text(
         "inline const char *deviceSource() { return "
         + json.dumps(device_text)
         + "; }\n"
         + "inline std::vector<native_opencl::GatherBinding> manifestBindings("
-        + "const std::string &fragment) { return {{200, 2048, 7, "
-        + '"udondnn_convolution_forward", fragment}}; }\n',
+        + "const std::string &convolution, const std::string &activation) { return {"
+        + '{200, 2048, 7, "udondnn_convolution_forward", convolution}, '
+        + '{201, 2048, 6, "udondnn_activation_forward", activation}}; }\n',
         encoding="utf-8",
     )
 
@@ -318,7 +356,8 @@ def main():
     run([opt, "--vrc-lower-native-host-calls", "--verify-each", udonhl, "-o", lowered])
     run([mlir_translate, "--mlir-to-llvmir", lowered, "-o", native_ir])
     host_object = output / ("host" + object_suffix)
-    device_object = output / ("device" + object_suffix)
+    device_object = output / ("convolution-device" + object_suffix)
+    activation_object = output / ("activation-device" + object_suffix)
     run([clang, *runtime_flags, "-c", native_ir, "-o", host_object])
     run(
         [
@@ -329,9 +368,23 @@ def main():
             "-std=c11",
             "-ffp-contract=off",
             "-c",
-            device,
+            convolution_device,
             "-o",
             device_object,
+        ]
+    )
+    run(
+        [
+            clang,
+            *runtime_flags,
+            "-x",
+            "c",
+            "-std=c11",
+            "-ffp-contract=off",
+            "-c",
+            activation_device,
+            "-o",
+            activation_object,
         ]
     )
 
@@ -346,7 +399,11 @@ def main():
             parser.error("install glslang-tools")
         compiled = []
         for index, (asset, stage, entry) in enumerate(
-            [(fragment, "frag", "frag"), (vertex, "vert", "vert")]
+            [
+                (fragment, "frag", "frag"),
+                (activation_fragment, "frag", "frag"),
+                (vertex, "vert", "vert"),
+            ]
         ):
             binary = output / f"shader_{index}.spv"
             run(
@@ -365,7 +422,7 @@ def main():
                 ]
             )
             compiled.append(binary)
-        fragment, vertex = compiled
+        fragment, activation_fragment, vertex = compiled
 
     runtime_build = output / "runtime-build"
     run(
@@ -380,12 +437,13 @@ def main():
             "-DCMAKE_BUILD_TYPE=Release",
             "-DUDONDNN_HOST_OBJECT=" + str(host_object),
             "-DUDONDNN_DEVICE_OBJECT=" + str(device_object),
+            "-DUDONDNN_ACTIVATION_OBJECT=" + str(activation_object),
             "-DUDONDNN_BINDINGS_DIR=" + str(output),
         ]
     )
     run([sys.executable, root / "scripts/build.py", "--build-dir", runtime_build])
     executable = runtime_build / ("udondnn-device" + suffix)
-    print(run([executable, fragment, vertex]), end="")
+    print(run([executable, fragment, activation_fragment, vertex]), end="")
 
 
 if __name__ == "__main__":

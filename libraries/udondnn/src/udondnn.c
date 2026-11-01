@@ -1,6 +1,7 @@
 #include "udondnn.h"
 #include "udondnn_device_source.h"
 #include <CL/cl.h>
+#include <float.h>
 
 #define UDONDNN_WORDS 2048
 #define UDONDNN_REGION_WORDS 512
@@ -8,6 +9,9 @@
 #define UDONDNN_FILTER_OFFSET 512
 #define UDONDNN_PREVIOUS_OUTPUT_OFFSET 1024
 #define UDONDNN_RESULT_OFFSET 1536
+#define UDONDNN_ACTIVATION_WORDS 2048
+#define UDONDNN_ACTIVATION_PREVIOUS_OUTPUT_OFFSET 512
+#define UDONDNN_ACTIVATION_RESULT_OFFSET 1024
 #define UDONDNN_HANDLE 1u
 #define UDONDNN_DESCRIPTOR_SLOTS 8
 #define UDONDNN_SLOT_MASK 255u
@@ -37,10 +41,20 @@ typedef struct ConvolutionDescriptor {
   udondnnConvolutionMode_t mode;
 } ConvolutionDescriptor;
 
+typedef struct ActivationDescriptor {
+  unsigned generation;
+  int used;
+  int configured;
+  udondnnActivationMode_t mode;
+  udondnnNanPropagation_t nan_propagation;
+  float coefficient;
+} ActivationDescriptor;
+
 static cl_context context;
 static cl_command_queue queue;
 static cl_program program;
 static cl_kernel convolution_kernel;
+static cl_kernel activation_kernel;
 static cl_mem input_buffer;
 static cl_mem output_buffer;
 static float packed[UDONDNN_WORDS];
@@ -48,6 +62,7 @@ static float result[UDONDNN_REGION_WORDS];
 static TensorDescriptor tensors[UDONDNN_DESCRIPTOR_SLOTS];
 static FilterDescriptor filters[UDONDNN_DESCRIPTOR_SLOTS];
 static ConvolutionDescriptor convolutions[UDONDNN_DESCRIPTOR_SLOTS];
+static ActivationDescriptor activations[UDONDNN_DESCRIPTOR_SLOTS];
 
 static unsigned next_generation(unsigned generation) {
   generation = (generation + 1u) & UDONDNN_GENERATION_MASK;
@@ -92,7 +107,19 @@ get_convolution(udondnnConvolutionDescriptor_t descriptor) {
   return &convolutions[slot];
 }
 
+static ActivationDescriptor *
+get_activation(udondnnActivationDescriptor_t descriptor) {
+  unsigned generation;
+  int slot = descriptor_slot(descriptor, &generation);
+  if (slot < 0 || !activations[slot].used ||
+      activations[slot].generation != generation)
+    return 0;
+  return &activations[slot];
+}
+
 static void clear_objects(void) {
+  if (activation_kernel)
+    clReleaseKernel(activation_kernel);
   if (convolution_kernel)
     clReleaseKernel(convolution_kernel);
   if (program)
@@ -106,6 +133,7 @@ static void clear_objects(void) {
   if (context)
     clReleaseContext(context);
   convolution_kernel = 0;
+  activation_kernel = 0;
   program = 0;
   output_buffer = input_buffer = 0;
   queue = 0;
@@ -154,6 +182,14 @@ udondnnStatus_t udondnnCreate(udondnnHandle_t *handle) {
       clSetKernelArg(convolution_kernel, 0, sizeof(input_buffer),
                      &input_buffer) != CL_SUCCESS ||
       clSetKernelArg(convolution_kernel, 1, sizeof(output_buffer),
+                     &output_buffer) != CL_SUCCESS)
+    return execution_failure();
+  activation_kernel =
+      clCreateKernel(program, "udondnn_activation_forward", &status);
+  if (status != CL_SUCCESS ||
+      clSetKernelArg(activation_kernel, 0, sizeof(input_buffer),
+                     &input_buffer) != CL_SUCCESS ||
+      clSetKernelArg(activation_kernel, 1, sizeof(output_buffer),
                      &output_buffer) != CL_SUCCESS)
     return execution_failure();
   *handle = UDONDNN_HANDLE;
@@ -301,6 +337,55 @@ udondnnDestroyConvolutionDescriptor(udondnnConvolutionDescriptor_t descriptor) {
     return UDONDNN_STATUS_BAD_PARAM;
   convolution->used = 0;
   convolution->configured = 0;
+  return UDONDNN_STATUS_SUCCESS;
+}
+
+udondnnStatus_t
+udondnnCreateActivationDescriptor(udondnnActivationDescriptor_t *descriptor) {
+  int slot;
+  if (!descriptor)
+    return UDONDNN_STATUS_BAD_PARAM;
+  for (slot = 0; slot < UDONDNN_DESCRIPTOR_SLOTS; ++slot)
+    if (!activations[slot].used) {
+      activations[slot].generation =
+          next_generation(activations[slot].generation);
+      activations[slot].used = 1;
+      activations[slot].configured = 0;
+      *descriptor =
+          make_descriptor(activations[slot].generation, (unsigned)slot);
+      return UDONDNN_STATUS_SUCCESS;
+    }
+  return UDONDNN_STATUS_ALLOC_FAILED;
+}
+
+udondnnStatus_t udondnnSetActivationDescriptor(
+    udondnnActivationDescriptor_t descriptor, udondnnActivationMode_t mode,
+    udondnnNanPropagation_t nan_propagation, float coefficient) {
+  ActivationDescriptor *activation = get_activation(descriptor);
+  if (!activation || mode < UDONDNN_ACTIVATION_SIGMOID ||
+      mode > UDONDNN_ACTIVATION_IDENTITY ||
+      (nan_propagation != UDONDNN_NOT_PROPAGATE_NAN &&
+       nan_propagation != UDONDNN_PROPAGATE_NAN) ||
+      coefficient != coefficient || coefficient > FLT_MAX ||
+      coefficient < -FLT_MAX ||
+      ((mode == UDONDNN_ACTIVATION_CLIPPED_RELU ||
+        mode == UDONDNN_ACTIVATION_ELU) &&
+       coefficient < 0.0f))
+    return UDONDNN_STATUS_BAD_PARAM;
+  activation->mode = mode;
+  activation->nan_propagation = nan_propagation;
+  activation->coefficient = coefficient;
+  activation->configured = 1;
+  return UDONDNN_STATUS_SUCCESS;
+}
+
+udondnnStatus_t
+udondnnDestroyActivationDescriptor(udondnnActivationDescriptor_t descriptor) {
+  ActivationDescriptor *activation = get_activation(descriptor);
+  if (!activation)
+    return UDONDNN_STATUS_BAD_PARAM;
+  activation->used = 0;
+  activation->configured = 0;
   return UDONDNN_STATUS_SUCCESS;
 }
 
@@ -467,6 +552,70 @@ udondnnStatus_t udondnnConvolutionForward(
       clFinish(queue) != CL_SUCCESS)
     return UDONDNN_STATUS_EXECUTION_FAILED;
   for (index = 0; index < output_words; ++index)
+    output[index] = result[index];
+  return UDONDNN_STATUS_SUCCESS;
+}
+
+udondnnStatus_t udondnnActivationForward(
+    udondnnHandle_t handle, udondnnActivationDescriptor_t activation_descriptor,
+    const float *alpha, udondnnTensorDescriptor_t input_descriptor,
+    const float *input, const float *beta,
+    udondnnTensorDescriptor_t output_descriptor, float *output) {
+  ActivationDescriptor *activation;
+  TensorDescriptor *input_info, *output_info;
+  int words, index;
+  int mode, nan_propagation;
+  float coefficient;
+  size_t global = UDONDNN_ACTIVATION_WORDS, local = 1;
+  cl_int cl_status;
+  if (handle != UDONDNN_HANDLE || !context)
+    return UDONDNN_STATUS_NOT_INITIALIZED;
+  activation = get_activation(activation_descriptor);
+  input_info = get_tensor(input_descriptor);
+  output_info = get_tensor(output_descriptor);
+  if (!activation || !activation->configured || !input_info ||
+      !input_info->configured || !output_info || !output_info->configured ||
+      !alpha || !input || !beta || !output || input_info->n != output_info->n ||
+      input_info->c != output_info->c || input_info->h != output_info->h ||
+      input_info->w != output_info->w)
+    return UDONDNN_STATUS_BAD_PARAM;
+  words = input_info->n * input_info->c * input_info->h * input_info->w;
+  for (index = 0; index < UDONDNN_WORDS; ++index)
+    packed[index] = 0.0f;
+  for (index = 0; index < words; ++index) {
+    packed[index] = input[index];
+    packed[UDONDNN_ACTIVATION_PREVIOUS_OUTPUT_OFFSET + index] = output[index];
+  }
+  mode = (int)activation->mode;
+  nan_propagation = (int)activation->nan_propagation;
+  coefficient = activation->coefficient;
+
+#define SET_ACTIVATION_ARGUMENT(slot, value)                                   \
+  do {                                                                         \
+    cl_status =                                                                \
+        clSetKernelArg(activation_kernel, slot, sizeof(value), &(value));      \
+    if (cl_status != CL_SUCCESS)                                               \
+      return UDONDNN_STATUS_EXECUTION_FAILED;                                  \
+  } while (0)
+  SET_ACTIVATION_ARGUMENT(2, words);
+  SET_ACTIVATION_ARGUMENT(3, mode);
+  SET_ACTIVATION_ARGUMENT(4, nan_propagation);
+  SET_ACTIVATION_ARGUMENT(5, coefficient);
+  SET_ACTIVATION_ARGUMENT(6, *alpha);
+  SET_ACTIVATION_ARGUMENT(7, *beta);
+#undef SET_ACTIVATION_ARGUMENT
+
+  if (clEnqueueWriteBuffer(queue, input_buffer, CL_TRUE, 0, sizeof(packed),
+                           packed, 0, 0, 0) != CL_SUCCESS ||
+      clEnqueueNDRangeKernel(queue, activation_kernel, 1, 0, &global, &local, 0,
+                             0, 0) != CL_SUCCESS ||
+      clEnqueueReadBuffer(queue, output_buffer, CL_TRUE,
+                          UDONDNN_ACTIVATION_RESULT_OFFSET * sizeof(float),
+                          words * sizeof(float), result, 0, 0,
+                          0) != CL_SUCCESS ||
+      clFinish(queue) != CL_SUCCESS)
+    return UDONDNN_STATUS_EXECUTION_FAILED;
+  for (index = 0; index < words; ++index)
     output[index] = result[index];
   return UDONDNN_STATUS_SUCCESS;
 }

@@ -1,6 +1,7 @@
 """Run UdonDNN convolution through the UdonCL Device fragment backend."""
 
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -22,7 +23,11 @@ result = subprocess.run(
 )
 assert result.returncode == 0, (result.stdout, result.stderr)
 assert "udondnn_convolution_outputs=171" in result.stdout
-assert "cases=5" in result.stdout
-assert "max_cpu_gpu_error=0" in result.stdout
-assert "draws=5" in result.stdout
+assert "convolution_cases=5" in result.stdout
+assert "convolution_max_error=0" in result.stdout
+assert "activation_outputs=512" in result.stdout
+assert "activation_cases=8" in result.stdout
+activation_error = re.search(r"activation_max_error=([0-9.eE+-]+)", result.stdout)
+assert activation_error and float(activation_error.group(1)) < 0.0005
+assert "draws=13" in result.stdout
 print(result.stdout, end="")

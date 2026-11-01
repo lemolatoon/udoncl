@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -12,6 +13,8 @@
 
 extern "C" size_t udondnn_cpu_gid;
 size_t udondnn_cpu_gid;
+extern "C" size_t udondnn_activation_cpu_gid;
+size_t udondnn_activation_cpu_gid;
 
 namespace {
 struct Case {
@@ -21,6 +24,13 @@ struct Case {
   int dilationHeight, dilationWidth;
   udondnnConvolutionMode_t mode;
   float alpha, beta;
+};
+
+struct ActivationCase {
+  udondnnActivationMode_t mode;
+  udondnnNanPropagation_t nanPropagation;
+  float coefficient, alpha, beta;
+  bool injectNan;
 };
 
 float value(int index, int salt) {
@@ -92,16 +102,40 @@ void reference(const Case &test, const std::vector<float> &input,
               test.alpha * sum + test.beta * output[outputIndex];
         }
 }
+
+float activationReference(const ActivationCase &test, float input) {
+  if (std::isnan(input)) {
+    if (test.nanPropagation == UDONDNN_PROPAGATE_NAN)
+      return input;
+    input = 0.0f;
+  }
+  switch (test.mode) {
+  case UDONDNN_ACTIVATION_SIGMOID:
+    return 1.0f / (1.0f + std::exp(-input));
+  case UDONDNN_ACTIVATION_RELU:
+    return input > 0.0f ? input : 0.0f;
+  case UDONDNN_ACTIVATION_TANH:
+    return 2.0f / (1.0f + std::exp(-2.0f * input)) - 1.0f;
+  case UDONDNN_ACTIVATION_CLIPPED_RELU:
+    return std::min(test.coefficient, input > 0.0f ? input : 0.0f);
+  case UDONDNN_ACTIVATION_ELU:
+    return input > 0.0f ? input : test.coefficient * (std::exp(input) - 1.0f);
+  case UDONDNN_ACTIVATION_IDENTITY:
+    return input;
+  }
+  throw std::runtime_error("unknown activation mode");
+}
 } // namespace
 
 int main(int argc, char **argv) {
-  if (argc != 3) {
-    std::cerr << "usage: udondnn-device convolution-fragment vertex\n";
+  if (argc != 4) {
+    std::cerr << "usage: udondnn-device convolution-fragment "
+                 "activation-fragment vertex\n";
     return 2;
   }
   try {
-    native_opencl::Session session(deviceSource(), manifestBindings(argv[1]),
-                                   argv[2]);
+    native_opencl::Session session(deviceSource(),
+                                   manifestBindings(argv[1], argv[2]), argv[3]);
     udondnnHandle_t handle = 0;
     require(udondnnCreate(&handle), UDONDNN_STATUS_SUCCESS, "udondnnCreate");
     const std::array<Case, 5> cases{{
@@ -206,6 +240,87 @@ int main(int argc, char **argv) {
       throw std::runtime_error(
           "UdonDNN convolution CPU/Device results diverged");
 
+    const std::array<ActivationCase, 8> activationCases{{
+        {UDONDNN_ACTIVATION_SIGMOID, UDONDNN_NOT_PROPAGATE_NAN, 0.0f, 1.0f,
+         0.0f, false},
+        {UDONDNN_ACTIVATION_RELU, UDONDNN_NOT_PROPAGATE_NAN, 0.0f, 0.75f,
+         -0.25f, false},
+        {UDONDNN_ACTIVATION_TANH, UDONDNN_NOT_PROPAGATE_NAN, 0.0f, -1.25f, 0.5f,
+         false},
+        {UDONDNN_ACTIVATION_CLIPPED_RELU, UDONDNN_NOT_PROPAGATE_NAN, 0.8f, 1.0f,
+         0.125f, false},
+        {UDONDNN_ACTIVATION_ELU, UDONDNN_NOT_PROPAGATE_NAN, 1.2f, 0.5f, -0.5f,
+         false},
+        {UDONDNN_ACTIVATION_IDENTITY, UDONDNN_NOT_PROPAGATE_NAN, 0.0f, -0.75f,
+         1.0f, false},
+        {UDONDNN_ACTIVATION_RELU, UDONDNN_NOT_PROPAGATE_NAN, 0.0f, 1.0f, 0.0f,
+         true},
+        {UDONDNN_ACTIVATION_RELU, UDONDNN_PROPAGATE_NAN, 0.0f, 1.0f, 0.0f,
+         true},
+    }};
+    constexpr int activationWords = 64;
+    udondnnTensorDescriptor_t activationInputDescriptor = 0;
+    udondnnTensorDescriptor_t activationOutputDescriptor = 0;
+    require(udondnnCreateTensorDescriptor(&activationInputDescriptor),
+            UDONDNN_STATUS_SUCCESS, "create activation input descriptor");
+    require(udondnnCreateTensorDescriptor(&activationOutputDescriptor),
+            UDONDNN_STATUS_SUCCESS, "create activation output descriptor");
+    require(udondnnSetTensor4dDescriptor(activationInputDescriptor,
+                                         UDONDNN_TENSOR_NCHW,
+                                         UDONDNN_DATA_FLOAT, 1, 2, 4, 8),
+            UDONDNN_STATUS_SUCCESS, "set activation input descriptor");
+    require(udondnnSetTensor4dDescriptor(activationOutputDescriptor,
+                                         UDONDNN_TENSOR_NCHW,
+                                         UDONDNN_DATA_FLOAT, 1, 2, 4, 8),
+            UDONDNN_STATUS_SUCCESS, "set activation output descriptor");
+    float activationMaximumError = 0.0f;
+    int activationOutputs = 0;
+    for (size_t caseIndex = 0; caseIndex < activationCases.size();
+         ++caseIndex) {
+      const ActivationCase &test = activationCases[caseIndex];
+      std::vector<float> input(activationWords), actual(activationWords),
+          expected(activationWords);
+      for (int index = 0; index < activationWords; ++index) {
+        input[index] = value(index, int(caseIndex) + 19) * 4.0f;
+        actual[index] = value(index, int(caseIndex) + 31);
+      }
+      if (test.injectNan)
+        input[7] = std::numeric_limits<float>::quiet_NaN();
+      for (int index = 0; index < activationWords; ++index)
+        expected[index] = test.alpha * activationReference(test, input[index]) +
+                          test.beta * actual[index];
+      udondnnActivationDescriptor_t activationDescriptor = 0;
+      require(udondnnCreateActivationDescriptor(&activationDescriptor),
+              UDONDNN_STATUS_SUCCESS, "create activation descriptor");
+      require(udondnnSetActivationDescriptor(activationDescriptor, test.mode,
+                                             test.nanPropagation,
+                                             test.coefficient),
+              UDONDNN_STATUS_SUCCESS, "set activation descriptor");
+      require(udondnnActivationForward(
+                  handle, activationDescriptor, &test.alpha,
+                  activationInputDescriptor, input.data(), &test.beta,
+                  activationOutputDescriptor, actual.data()),
+              UDONDNN_STATUS_SUCCESS, "udondnnActivationForward");
+      for (int index = 0; index < activationWords; ++index) {
+        if (std::isnan(expected[index]) && std::isnan(actual[index])) {
+          ++activationOutputs;
+          continue;
+        }
+        activationMaximumError = std::max(
+            activationMaximumError, std::abs(actual[index] - expected[index]));
+        ++activationOutputs;
+      }
+      require(udondnnDestroyActivationDescriptor(activationDescriptor),
+              UDONDNN_STATUS_SUCCESS, "destroy activation descriptor");
+    }
+    if (activationMaximumError > 0.0005f)
+      throw std::runtime_error(
+          "UdonDNN activation CPU/Device results diverged");
+    require(udondnnDestroyTensorDescriptor(activationInputDescriptor),
+            UDONDNN_STATUS_SUCCESS, "destroy activation input descriptor");
+    require(udondnnDestroyTensorDescriptor(activationOutputDescriptor),
+            UDONDNN_STATUS_SUCCESS, "destroy activation output descriptor");
+
     udondnnTensorDescriptor_t stale = 0, replacement = 0;
     require(udondnnCreateTensorDescriptor(&stale), UDONDNN_STATUS_SUCCESS,
             "create stale descriptor");
@@ -221,12 +336,42 @@ int main(int argc, char **argv) {
             UDONDNN_STATUS_BAD_PARAM, "reject oversized tensor");
     require(udondnnDestroyTensorDescriptor(replacement), UDONDNN_STATUS_SUCCESS,
             "destroy replacement descriptor");
+    udondnnActivationDescriptor_t staleActivation = 0;
+    require(udondnnCreateActivationDescriptor(&staleActivation),
+            UDONDNN_STATUS_SUCCESS, "create stale activation descriptor");
+    require(udondnnDestroyActivationDescriptor(staleActivation),
+            UDONDNN_STATUS_SUCCESS, "destroy stale activation descriptor");
+    require(udondnnSetActivationDescriptor(staleActivation,
+                                           UDONDNN_ACTIVATION_RELU,
+                                           UDONDNN_NOT_PROPAGATE_NAN, 0.0f),
+            UDONDNN_STATUS_BAD_PARAM, "reject stale activation descriptor");
+    udondnnActivationDescriptor_t invalidActivation = 0;
+    require(udondnnCreateActivationDescriptor(&invalidActivation),
+            UDONDNN_STATUS_SUCCESS, "create invalid activation descriptor");
+    require(udondnnSetActivationDescriptor(invalidActivation,
+                                           UDONDNN_ACTIVATION_CLIPPED_RELU,
+                                           UDONDNN_NOT_PROPAGATE_NAN, -1.0f),
+            UDONDNN_STATUS_BAD_PARAM, "reject negative activation ceiling");
+    require(udondnnSetActivationDescriptor(invalidActivation,
+                                           udondnnActivationMode_t(99),
+                                           UDONDNN_NOT_PROPAGATE_NAN, 0.0f),
+            UDONDNN_STATUS_BAD_PARAM, "reject invalid activation mode");
+    require(udondnnSetActivationDescriptor(
+                invalidActivation, UDONDNN_ACTIVATION_ELU,
+                UDONDNN_NOT_PROPAGATE_NAN,
+                std::numeric_limits<float>::infinity()),
+            UDONDNN_STATUS_BAD_PARAM, "reject infinite activation coefficient");
+    require(udondnnDestroyActivationDescriptor(invalidActivation),
+            UDONDNN_STATUS_SUCCESS, "destroy invalid activation descriptor");
     require(udondnnDestroy(handle), UDONDNN_STATUS_SUCCESS, "udondnnDestroy");
     if (udoncl_cl_live_objects())
       throw std::runtime_error("OpenCL object leak");
     std::cout << "udondnn_convolution_outputs=" << outputs
-              << " cases=" << cases.size()
-              << " max_cpu_gpu_error=" << maximumError
+              << " convolution_cases=" << cases.size()
+              << " convolution_max_error=" << maximumError
+              << " activation_outputs=" << activationOutputs
+              << " activation_cases=" << activationCases.size()
+              << " activation_max_error=" << activationMaximumError
               << " renderer=" << session.deviceName()
               << " draws=" << session.drawCount() << "\n";
     return 0;

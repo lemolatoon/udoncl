@@ -5,8 +5,10 @@ add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../../lib/Runtime/OpenCL" opencl-r
 add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../../lib/Testing/NativeFragment" fragment-runtime)
 add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../../lib/Testing/NativeOpenCL" native-opencl-runtime)
 add_executable(udondnn-device tests/device_main.cpp
-  "${UDONDNN_HOST_OBJECT}" "${UDONDNN_DEVICE_OBJECT}")
+  "${UDONDNN_HOST_OBJECT}" "${UDONDNN_DEVICE_OBJECT}"
+  "${UDONDNN_ACTIVATION_OBJECT}")
 set_source_files_properties("${UDONDNN_HOST_OBJECT}" "${UDONDNN_DEVICE_OBJECT}"
+  "${UDONDNN_ACTIVATION_OBJECT}"
   PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
 target_include_directories(udondnn-device PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/include" "${UDONDNN_BINDINGS_DIR}")
