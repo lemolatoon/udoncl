@@ -23,8 +23,9 @@ These rules apply to the entire repository.
 
 ## Pre-Commit Gates
 
-- Before every commit, run the complete Unity Editor test gate through the CI
-  driver against a Unity 2022.3 project with the VRChat Worlds SDK installed:
+- Before every commit, run the complete Unity Editor test gate through the
+  local Python driver against a normally closed Unity 2022.3 project with the
+  VRChat Worlds SDK and Unity for MCP installed:
 
   ```text
   python scripts/unity_ci.py --unity <Unity.exe> --project <UnityProject>
@@ -35,6 +36,11 @@ These rules apply to the entire repository.
   accept skipped/inconclusive tests, or commit when any test fails. Confirm the
   reported test count, zero failures, clean Unity console, and lifecycle cleanup
   before committing.
+- The driver must fail before generating fixtures or launching Unity when the
+  project does not declare or embed `com.coplaydev.unity-mcp`. Do not bypass
+  that check. The Python command above is the authoritative Unity test gate;
+  do not substitute a GitHub Actions, GameCI, class-filtered, or method-filtered
+  run for it.
 - Unity execution for this gate must follow the Unity MCP subagent rules above.
 
 - Immediately before every commit, run the repository formatter in write mode:
@@ -57,3 +63,22 @@ These rules apply to the entire repository.
 - C, C++, and OpenCL C use the repository-pinned LLVM `clang-format`; C# uses
   the repository-pinned CSharpier tool. Do not bypass or substitute formatter
   versions locally.
+
+## CUDA Library API Compatibility
+
+- Keep public UdonBLAS and UdonDNN C APIs aligned with the corresponding
+  cuBLAS and cuDNN APIs after the `cublas`/`cudnn` to `udonblas`/`udondnn`
+  prefix substitution. Match function names, argument order and types, enum
+  numeric values, status semantics, and matrix/tensor layout contracts.
+- Pin and document the NVIDIA API version being mirrored. Treat the existing
+  fixed-function UdonDNN surface as a cuDNN Legacy API compatibility layer;
+  add Graph API support separately rather than silently changing that contract.
+- Preserve the compatible public signature when Udon cannot implement an
+  option yet. Declare the compatible value and return `NOT_SUPPORTED` instead
+  of removing parameters, changing types, or imposing a different contract.
+- Put Udon-specific operations such as quantized Q4 kernels in an explicitly
+  named extension API; they must not redefine or overload a compatible entry
+  point with non-cuBLAS/cuDNN semantics.
+- Every public API change must include conformance tests against the pinned
+  NVIDIA declarations, plus behavioral tests for supported paths and explicit
+  `NOT_SUPPORTED` tests for unsupported paths.
