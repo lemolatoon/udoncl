@@ -71,10 +71,12 @@ def main():
     activation_device = source / "device/activation.cl"
     pooling_device = source / "device/pooling.cl"
     softmax_device = source / "device/softmax.cl"
+    batchnorm_device = source / "device/batchnorm.cl"
     convolution_text = convolution_device.read_text(encoding="utf-8")
     activation_text = activation_device.read_text(encoding="utf-8")
     pooling_text = pooling_device.read_text(encoding="utf-8")
     softmax_text = softmax_device.read_text(encoding="utf-8")
+    batchnorm_text = batchnorm_device.read_text(encoding="utf-8")
     device_text = (
         convolution_text
         + "\n"
@@ -83,6 +85,8 @@ def main():
         + pooling_text
         + "\n"
         + softmax_text
+        + "\n"
+        + batchnorm_text
     )
     (output / "udondnn_device_source.h").write_text(
         "#define UDONDNN_DEVICE_SOURCE " + json.dumps(device_text) + "\n",
@@ -164,6 +168,9 @@ def main():
     softmax_bundle = emit_device(
         "softmax", softmax_device, "udondnn_softmax_forward", 203, 2048
     )
+    batchnorm_bundle = emit_device(
+        "batchnorm", batchnorm_device, "udondnn_batchnorm_inference", 204, 4096
+    )
     manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
     kernel = manifest["device"]["kernels"][0]
     if (
@@ -244,17 +251,37 @@ def main():
     )
     if '_VRC_Arg4 ("Arg4", Int)' not in softmax_shaderlab:
         raise RuntimeError("UdonDNN softmax integer uniforms are not Unity-compatible")
+    batchnorm_manifest = json.loads(
+        (batchnorm_bundle / "manifest.json").read_text(encoding="utf-8")
+    )
+    batchnorm_kernel = batchnorm_manifest["device"]["kernels"][0]
+    if (
+        batchnorm_kernel["name"] != "udondnn_batchnorm_inference"
+        or batchnorm_kernel["global_size"] != [4096, 1, 1]
+        or [argument["required_bytes"] for argument in batchnorm_kernel["args"][:2]]
+        != [16384, 16384]
+        or len(batchnorm_kernel["args"]) != 7
+    ):
+        raise RuntimeError("UdonDNN batchnorm manifest does not match its packed ABI")
+    batchnorm_fragment = batchnorm_bundle / "kernels/kernel_204.hlsl"
+    batchnorm_shaderlab = (
+        batchnorm_bundle / "kernels/kernel_204.shader"
+    ).read_text(encoding="utf-8")
+    if '_VRC_Arg3 ("Arg3", Int)' not in batchnorm_shaderlab:
+        raise RuntimeError("UdonDNN batchnorm integer uniforms are not Unity-compatible")
     (output / "Bindings.h").write_text(
         "inline const char *deviceSource() { return "
         + json.dumps(device_text)
         + "; }\n"
         + "inline std::vector<native_opencl::GatherBinding> manifestBindings("
         + "const std::string &convolution, const std::string &activation, "
-        + "const std::string &pooling, const std::string &softmax) { return {"
+        + "const std::string &pooling, const std::string &softmax, "
+        + "const std::string &batchnorm) { return {"
         + '{200, 2048, 7, "udondnn_convolution_forward", convolution}, '
         + '{201, 2048, 6, "udondnn_activation_forward", activation}, '
         + '{202, 2048, 7, "udondnn_pooling_forward", pooling}, '
-        + '{203, 2048, 5, "udondnn_softmax_forward", softmax}}; }\n',
+        + '{203, 2048, 5, "udondnn_softmax_forward", softmax}, '
+        + '{204, 4096, 5, "udondnn_batchnorm_inference", batchnorm}}; }\n',
         encoding="utf-8",
     )
 
@@ -826,6 +853,7 @@ def main():
     activation_object = output / ("activation-device" + object_suffix)
     pooling_object = output / ("pooling-device" + object_suffix)
     softmax_object = output / ("softmax-device" + object_suffix)
+    batchnorm_object = output / ("batchnorm-device" + object_suffix)
     run([clang, *runtime_flags, "-c", native_ir, "-o", host_object])
     run(
         [
@@ -883,6 +911,20 @@ def main():
             softmax_object,
         ]
     )
+    run(
+        [
+            clang,
+            *runtime_flags,
+            "-x",
+            "c",
+            "-std=c11",
+            "-ffp-contract=off",
+            "-c",
+            batchnorm_device,
+            "-o",
+            batchnorm_object,
+        ]
+    )
 
     vertex = output / "fullscreen.hlsl"
     vertex.write_text(
@@ -900,6 +942,7 @@ def main():
                 (activation_fragment, "frag", "frag"),
                 (pooling_fragment, "frag", "frag"),
                 (softmax_fragment, "frag", "frag"),
+                (batchnorm_fragment, "frag", "frag"),
                 (vertex, "vert", "vert"),
             ]
         ):
@@ -920,9 +963,14 @@ def main():
                 ]
             )
             compiled.append(binary)
-        fragment, activation_fragment, pooling_fragment, softmax_fragment, vertex = (
-            compiled
-        )
+        (
+            fragment,
+            activation_fragment,
+            pooling_fragment,
+            softmax_fragment,
+            batchnorm_fragment,
+            vertex,
+        ) = compiled
 
     runtime_build = output / "runtime-build"
     run(
@@ -940,6 +988,7 @@ def main():
             "-DUDONDNN_ACTIVATION_OBJECT=" + str(activation_object),
             "-DUDONDNN_POOLING_OBJECT=" + str(pooling_object),
             "-DUDONDNN_SOFTMAX_OBJECT=" + str(softmax_object),
+            "-DUDONDNN_BATCHNORM_OBJECT=" + str(batchnorm_object),
             "-DUDONDNN_BINDINGS_DIR=" + str(output),
         ]
     )
@@ -953,6 +1002,7 @@ def main():
                 activation_fragment,
                 pooling_fragment,
                 softmax_fragment,
+                batchnorm_fragment,
                 vertex,
             ]
         ),

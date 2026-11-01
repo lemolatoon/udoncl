@@ -62,6 +62,13 @@ typedef enum udondnnSoftmaxMode_t {
   UDONDNN_SOFTMAX_MODE_INSTANCE = 0,
   UDONDNN_SOFTMAX_MODE_CHANNEL = 1
 } udondnnSoftmaxMode_t;
+typedef enum udondnnBatchNormMode_t {
+  UDONDNN_BATCHNORM_PER_ACTIVATION = 0,
+  UDONDNN_BATCHNORM_SPATIAL = 1,
+  UDONDNN_BATCHNORM_SPATIAL_PERSISTENT = 2
+} udondnnBatchNormMode_t;
+
+#define UDONDNN_BN_MIN_EPSILON 1.0e-5f
 
 enum {
   UDONDNN_CONV_MAX_TENSOR_WORDS = 512,
@@ -152,6 +159,18 @@ udondnnStatus_t udondnnSoftmaxForward(
     udondnnTensorDescriptor_t input_descriptor, const float *input,
     const float *beta, udondnnTensorDescriptor_t output_descriptor,
     float *output);
+
+udondnnStatus_t
+udondnnDeriveBNTensorDescriptor(udondnnTensorDescriptor_t derived_descriptor,
+                                udondnnTensorDescriptor_t input_descriptor,
+                                udondnnBatchNormMode_t mode);
+udondnnStatus_t udondnnBatchNormalizationForwardInference(
+    udondnnHandle_t handle, udondnnBatchNormMode_t mode, const float *alpha,
+    const float *beta, udondnnTensorDescriptor_t input_descriptor,
+    const float *input, udondnnTensorDescriptor_t output_descriptor,
+    float *output, udondnnTensorDescriptor_t parameter_descriptor,
+    const float *scale, const float *bias, const float *estimated_mean,
+    const float *estimated_variance, float epsilon);
 
 #ifdef __cplusplus
 }

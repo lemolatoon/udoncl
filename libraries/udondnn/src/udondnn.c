@@ -18,6 +18,13 @@
 #define UDONDNN_SOFTMAX_WORDS 2048
 #define UDONDNN_SOFTMAX_PREVIOUS_OUTPUT_OFFSET 512
 #define UDONDNN_SOFTMAX_RESULT_OFFSET 1024
+#define UDONDNN_BATCHNORM_WORDS 4096
+#define UDONDNN_BATCHNORM_PREVIOUS_OUTPUT_OFFSET 512
+#define UDONDNN_BATCHNORM_SCALE_OFFSET 1024
+#define UDONDNN_BATCHNORM_BIAS_OFFSET 1536
+#define UDONDNN_BATCHNORM_MEAN_OFFSET 2048
+#define UDONDNN_BATCHNORM_VARIANCE_OFFSET 2560
+#define UDONDNN_BATCHNORM_RESULT_OFFSET 3072
 #define UDONDNN_HANDLE 1u
 #define UDONDNN_DESCRIPTOR_SLOTS 8
 #define UDONDNN_SLOT_MASK 255u
@@ -74,9 +81,13 @@ static cl_kernel convolution_kernel;
 static cl_kernel activation_kernel;
 static cl_kernel pooling_kernel;
 static cl_kernel softmax_kernel;
+static cl_kernel batchnorm_kernel;
 static cl_mem input_buffer;
 static cl_mem output_buffer;
+static cl_mem batchnorm_input_buffer;
+static cl_mem batchnorm_output_buffer;
 static float packed[UDONDNN_WORDS];
+static float batchnorm_packed[UDONDNN_BATCHNORM_WORDS];
 static float result[UDONDNN_REGION_WORDS];
 static TensorDescriptor tensors[UDONDNN_DESCRIPTOR_SLOTS];
 static FilterDescriptor filters[UDONDNN_DESCRIPTOR_SLOTS];
@@ -147,6 +158,8 @@ static PoolingDescriptor *get_pooling(udondnnPoolingDescriptor_t descriptor) {
 }
 
 static void clear_objects(void) {
+  if (batchnorm_kernel)
+    clReleaseKernel(batchnorm_kernel);
   if (softmax_kernel)
     clReleaseKernel(softmax_kernel);
   if (pooling_kernel)
@@ -161,6 +174,10 @@ static void clear_objects(void) {
     clReleaseMemObject(output_buffer);
   if (input_buffer)
     clReleaseMemObject(input_buffer);
+  if (batchnorm_output_buffer)
+    clReleaseMemObject(batchnorm_output_buffer);
+  if (batchnorm_input_buffer)
+    clReleaseMemObject(batchnorm_input_buffer);
   if (queue)
     clReleaseCommandQueue(queue);
   if (context)
@@ -169,8 +186,10 @@ static void clear_objects(void) {
   activation_kernel = 0;
   pooling_kernel = 0;
   softmax_kernel = 0;
+  batchnorm_kernel = 0;
   program = 0;
   output_buffer = input_buffer = 0;
+  batchnorm_output_buffer = batchnorm_input_buffer = 0;
   queue = 0;
   context = 0;
 }
@@ -207,6 +226,14 @@ udondnnStatus_t udondnnCreate(udondnnHandle_t *handle) {
       clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(packed), 0, &status);
   if (status != CL_SUCCESS)
     return execution_failure();
+  batchnorm_input_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE,
+                                          sizeof(batchnorm_packed), 0, &status);
+  if (status != CL_SUCCESS)
+    return execution_failure();
+  batchnorm_output_buffer = clCreateBuffer(
+      context, CL_MEM_READ_WRITE, sizeof(batchnorm_packed), 0, &status);
+  if (status != CL_SUCCESS)
+    return execution_failure();
   program = clCreateProgramWithSource(context, 1, &source, 0, &status);
   if (status != CL_SUCCESS ||
       clBuildProgram(program, 0, 0, "-cl-std=CL1.2", 0, 0) != CL_SUCCESS)
@@ -240,6 +267,14 @@ udondnnStatus_t udondnnCreate(udondnnHandle_t *handle) {
           CL_SUCCESS ||
       clSetKernelArg(softmax_kernel, 1, sizeof(output_buffer),
                      &output_buffer) != CL_SUCCESS)
+    return execution_failure();
+  batchnorm_kernel =
+      clCreateKernel(program, "udondnn_batchnorm_inference", &status);
+  if (status != CL_SUCCESS ||
+      clSetKernelArg(batchnorm_kernel, 0, sizeof(batchnorm_input_buffer),
+                     &batchnorm_input_buffer) != CL_SUCCESS ||
+      clSetKernelArg(batchnorm_kernel, 1, sizeof(batchnorm_output_buffer),
+                     &batchnorm_output_buffer) != CL_SUCCESS)
     return execution_failure();
   *handle = UDONDNN_HANDLE;
   return UDONDNN_STATUS_SUCCESS;
@@ -881,6 +916,111 @@ udondnnStatus_t udondnnSoftmaxForward(
                              0) != CL_SUCCESS ||
       clEnqueueReadBuffer(queue, output_buffer, CL_TRUE,
                           UDONDNN_SOFTMAX_RESULT_OFFSET * sizeof(float),
+                          words * sizeof(float), result, 0, 0,
+                          0) != CL_SUCCESS ||
+      clFinish(queue) != CL_SUCCESS)
+    return UDONDNN_STATUS_EXECUTION_FAILED;
+  for (index = 0; index < words; ++index)
+    output[index] = result[index];
+  return UDONDNN_STATUS_SUCCESS;
+}
+
+udondnnStatus_t
+udondnnDeriveBNTensorDescriptor(udondnnTensorDescriptor_t derived_descriptor,
+                                udondnnTensorDescriptor_t input_descriptor,
+                                udondnnBatchNormMode_t mode) {
+  TensorDescriptor *derived = get_tensor(derived_descriptor);
+  TensorDescriptor *input = get_tensor(input_descriptor);
+  if (!derived || !input || !input->configured ||
+      mode < UDONDNN_BATCHNORM_PER_ACTIVATION ||
+      mode > UDONDNN_BATCHNORM_SPATIAL_PERSISTENT)
+    return UDONDNN_STATUS_BAD_PARAM;
+  derived->n = 1;
+  derived->c = input->c;
+  derived->h = mode == UDONDNN_BATCHNORM_PER_ACTIVATION ? input->h : 1;
+  derived->w = mode == UDONDNN_BATCHNORM_PER_ACTIVATION ? input->w : 1;
+  derived->configured = 1;
+  return UDONDNN_STATUS_SUCCESS;
+}
+
+udondnnStatus_t udondnnBatchNormalizationForwardInference(
+    udondnnHandle_t handle, udondnnBatchNormMode_t mode, const float *alpha,
+    const float *beta, udondnnTensorDescriptor_t input_descriptor,
+    const float *input, udondnnTensorDescriptor_t output_descriptor,
+    float *output, udondnnTensorDescriptor_t parameter_descriptor,
+    const float *scale, const float *bias, const float *estimated_mean,
+    const float *estimated_variance, float epsilon) {
+  TensorDescriptor *input_info, *output_info, *parameter_info;
+  int words, parameter_words, index, input_shape, mode_value;
+  size_t global = UDONDNN_BATCHNORM_WORDS, local = 1;
+  cl_int cl_status;
+  if (handle != UDONDNN_HANDLE || !context)
+    return UDONDNN_STATUS_NOT_INITIALIZED;
+  input_info = get_tensor(input_descriptor);
+  output_info = get_tensor(output_descriptor);
+  parameter_info = get_tensor(parameter_descriptor);
+  if (mode < UDONDNN_BATCHNORM_PER_ACTIVATION ||
+      mode > UDONDNN_BATCHNORM_SPATIAL_PERSISTENT || !input_info ||
+      !input_info->configured || !output_info || !output_info->configured ||
+      !parameter_info || !parameter_info->configured || !alpha || !beta ||
+      !input || !output || !scale || !bias || !estimated_mean ||
+      !estimated_variance || epsilon < UDONDNN_BN_MIN_EPSILON ||
+      epsilon != epsilon || epsilon > FLT_MAX ||
+      input_info->n != output_info->n || input_info->c != output_info->c ||
+      input_info->h != output_info->h || input_info->w != output_info->w ||
+      parameter_info->n != 1 || parameter_info->c != input_info->c ||
+      parameter_info->h !=
+          (mode == UDONDNN_BATCHNORM_PER_ACTIVATION ? input_info->h : 1) ||
+      parameter_info->w !=
+          (mode == UDONDNN_BATCHNORM_PER_ACTIVATION ? input_info->w : 1))
+    return UDONDNN_STATUS_BAD_PARAM;
+  words = input_info->n * input_info->c * input_info->h * input_info->w;
+  parameter_words = parameter_info->c * parameter_info->h * parameter_info->w;
+  for (index = 0; index < parameter_words; ++index)
+    if (estimated_variance[index] < 0.0f ||
+        estimated_variance[index] != estimated_variance[index] ||
+        estimated_variance[index] > FLT_MAX)
+      return UDONDNN_STATUS_BAD_PARAM;
+  for (index = 0; index < UDONDNN_BATCHNORM_WORDS; ++index)
+    batchnorm_packed[index] = 0.0f;
+  for (index = 0; index < words; ++index) {
+    batchnorm_packed[index] = input[index];
+    batchnorm_packed[UDONDNN_BATCHNORM_PREVIOUS_OUTPUT_OFFSET + index] =
+        output[index];
+  }
+  for (index = 0; index < parameter_words; ++index) {
+    batchnorm_packed[UDONDNN_BATCHNORM_SCALE_OFFSET + index] = scale[index];
+    batchnorm_packed[UDONDNN_BATCHNORM_BIAS_OFFSET + index] = bias[index];
+    batchnorm_packed[UDONDNN_BATCHNORM_MEAN_OFFSET + index] =
+        estimated_mean[index];
+    batchnorm_packed[UDONDNN_BATCHNORM_VARIANCE_OFFSET + index] =
+        estimated_variance[index];
+  }
+  input_shape =
+      pack_shape(input_info->n, input_info->c, input_info->h, input_info->w);
+  mode_value = (int)mode;
+
+#define SET_BATCHNORM_ARGUMENT(slot, value)                                    \
+  do {                                                                         \
+    cl_status =                                                                \
+        clSetKernelArg(batchnorm_kernel, slot, sizeof(value), &(value));       \
+    if (cl_status != CL_SUCCESS)                                               \
+      return UDONDNN_STATUS_EXECUTION_FAILED;                                  \
+  } while (0)
+  SET_BATCHNORM_ARGUMENT(2, input_shape);
+  SET_BATCHNORM_ARGUMENT(3, mode_value);
+  SET_BATCHNORM_ARGUMENT(4, epsilon);
+  SET_BATCHNORM_ARGUMENT(5, *alpha);
+  SET_BATCHNORM_ARGUMENT(6, *beta);
+#undef SET_BATCHNORM_ARGUMENT
+
+  if (clEnqueueWriteBuffer(queue, batchnorm_input_buffer, CL_TRUE, 0,
+                           sizeof(batchnorm_packed), batchnorm_packed, 0, 0,
+                           0) != CL_SUCCESS ||
+      clEnqueueNDRangeKernel(queue, batchnorm_kernel, 1, 0, &global, &local, 0,
+                             0, 0) != CL_SUCCESS ||
+      clEnqueueReadBuffer(queue, batchnorm_output_buffer, CL_TRUE,
+                          UDONDNN_BATCHNORM_RESULT_OFFSET * sizeof(float),
                           words * sizeof(float), result, 0, 0,
                           0) != CL_SUCCESS ||
       clFinish(queue) != CL_SUCCESS)

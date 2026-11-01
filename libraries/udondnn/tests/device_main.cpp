@@ -19,6 +19,8 @@ extern "C" size_t udondnn_pooling_cpu_gid;
 size_t udondnn_pooling_cpu_gid;
 extern "C" size_t udondnn_softmax_cpu_gid;
 size_t udondnn_softmax_cpu_gid;
+extern "C" size_t udondnn_batchnorm_cpu_gid;
+size_t udondnn_batchnorm_cpu_gid;
 
 namespace {
 struct Case {
@@ -53,6 +55,13 @@ struct SoftmaxCase {
   udondnnSoftmaxAlgorithm_t algorithm;
   udondnnSoftmaxMode_t mode;
   float alpha, beta;
+  bool injectNan;
+};
+
+struct BatchNormCase {
+  int n, channels, height, width;
+  udondnnBatchNormMode_t mode;
+  float epsilon, alpha, beta;
   bool injectNan;
 };
 
@@ -252,19 +261,39 @@ void softmaxReference(const SoftmaxCase &test, const std::vector<float> &input,
     output[element] = test.alpha * normalized + test.beta * output[element];
   }
 }
+
+void batchNormReference(const BatchNormCase &test,
+                        const std::vector<float> &input,
+                        const std::vector<float> &scale,
+                        const std::vector<float> &bias,
+                        const std::vector<float> &mean,
+                        const std::vector<float> &variance,
+                        std::vector<float> &output) {
+  int sampleWords = test.channels * test.height * test.width;
+  int words = test.n * sampleWords;
+  for (int element = 0; element < words; ++element) {
+    int parameter = element % sampleWords;
+    if (test.mode != UDONDNN_BATCHNORM_PER_ACTIVATION)
+      parameter = (element / (test.height * test.width)) % test.channels;
+    float normalized = (input[element] - mean[parameter]) /
+                       std::sqrt(variance[parameter] + test.epsilon);
+    normalized = normalized * scale[parameter] + bias[parameter];
+    output[element] = test.alpha * normalized + test.beta * output[element];
+  }
+}
 } // namespace
 
 int main(int argc, char **argv) {
-  if (argc != 6) {
+  if (argc != 7) {
     std::cerr << "usage: udondnn-device convolution-fragment "
                  "activation-fragment pooling-fragment softmax-fragment "
-                 "vertex\n";
+                 "batchnorm-fragment vertex\n";
     return 2;
   }
   try {
     native_opencl::Session session(
-        deviceSource(), manifestBindings(argv[1], argv[2], argv[3], argv[4]),
-        argv[5]);
+        deviceSource(),
+        manifestBindings(argv[1], argv[2], argv[3], argv[4], argv[5]), argv[6]);
     udondnnHandle_t handle = 0;
     require(udondnnCreate(&handle), UDONDNN_STATUS_SUCCESS, "udondnnCreate");
     const std::array<Case, 5> cases{{
@@ -599,6 +628,85 @@ int main(int argc, char **argv) {
     if (softmaxMaximumError > 0.0005f)
       throw std::runtime_error("UdonDNN softmax CPU/Device results diverged");
 
+    const std::array<BatchNormCase, 4> batchNormCases{{
+        {1, 2, 2, 3, UDONDNN_BATCHNORM_PER_ACTIVATION, 1.0e-5f, 1.0f, 0.0f,
+         false},
+        {2, 3, 2, 2, UDONDNN_BATCHNORM_SPATIAL, 1.0e-4f, 0.75f, -0.25f, false},
+        {1, 4, 3, 2, UDONDNN_BATCHNORM_SPATIAL_PERSISTENT, 1.0e-3f, -1.25f,
+         0.5f, false},
+        {1, 2, 2, 2, UDONDNN_BATCHNORM_SPATIAL, 1.0e-5f, 0.5f, 0.125f, true},
+    }};
+    float batchNormMaximumError = 0.0f;
+    int batchNormOutputs = 0;
+    for (size_t caseIndex = 0; caseIndex < batchNormCases.size(); ++caseIndex) {
+      const BatchNormCase &test = batchNormCases[caseIndex];
+      int words = test.n * test.channels * test.height * test.width;
+      int parameterWords = test.mode == UDONDNN_BATCHNORM_PER_ACTIVATION
+                               ? test.channels * test.height * test.width
+                               : test.channels;
+      std::vector<float> input(words), actual(words), expected;
+      std::vector<float> scale(parameterWords), bias(parameterWords),
+          mean(parameterWords), variance(parameterWords);
+      for (int index = 0; index < words; ++index) {
+        input[index] = value(index, int(caseIndex) + 97) * 4.0f;
+        actual[index] = value(index, int(caseIndex) + 103);
+      }
+      for (int index = 0; index < parameterWords; ++index) {
+        scale[index] = 0.5f + 0.125f * float(index % 5);
+        bias[index] = value(index, int(caseIndex) + 107);
+        mean[index] = value(index, int(caseIndex) + 109);
+        variance[index] = 0.25f + 0.0625f * float((index * 3) % 7);
+      }
+      if (test.injectNan)
+        input[7] = std::numeric_limits<float>::quiet_NaN();
+      expected = actual;
+      batchNormReference(test, input, scale, bias, mean, variance, expected);
+
+      udondnnTensorDescriptor_t inputDescriptor = 0, outputDescriptor = 0,
+                                parameterDescriptor = 0;
+      require(udondnnCreateTensorDescriptor(&inputDescriptor),
+              UDONDNN_STATUS_SUCCESS, "create batchnorm input descriptor");
+      require(udondnnCreateTensorDescriptor(&outputDescriptor),
+              UDONDNN_STATUS_SUCCESS, "create batchnorm output descriptor");
+      require(udondnnCreateTensorDescriptor(&parameterDescriptor),
+              UDONDNN_STATUS_SUCCESS, "create batchnorm parameter descriptor");
+      require(udondnnSetTensor4dDescriptor(
+                  inputDescriptor, UDONDNN_TENSOR_NCHW, UDONDNN_DATA_FLOAT,
+                  test.n, test.channels, test.height, test.width),
+              UDONDNN_STATUS_SUCCESS, "set batchnorm input descriptor");
+      require(udondnnSetTensor4dDescriptor(
+                  outputDescriptor, UDONDNN_TENSOR_NCHW, UDONDNN_DATA_FLOAT,
+                  test.n, test.channels, test.height, test.width),
+              UDONDNN_STATUS_SUCCESS, "set batchnorm output descriptor");
+      require(udondnnDeriveBNTensorDescriptor(parameterDescriptor,
+                                              inputDescriptor, test.mode),
+              UDONDNN_STATUS_SUCCESS, "derive batchnorm parameter descriptor");
+      require(udondnnBatchNormalizationForwardInference(
+                  handle, test.mode, &test.alpha, &test.beta, inputDescriptor,
+                  input.data(), outputDescriptor, actual.data(),
+                  parameterDescriptor, scale.data(), bias.data(), mean.data(),
+                  variance.data(), test.epsilon),
+              UDONDNN_STATUS_SUCCESS,
+              "udondnnBatchNormalizationForwardInference");
+      for (int index = 0; index < words; ++index) {
+        if (std::isnan(expected[index]) && std::isnan(actual[index])) {
+          ++batchNormOutputs;
+          continue;
+        }
+        batchNormMaximumError = std::max(
+            batchNormMaximumError, std::abs(actual[index] - expected[index]));
+        ++batchNormOutputs;
+      }
+      require(udondnnDestroyTensorDescriptor(inputDescriptor),
+              UDONDNN_STATUS_SUCCESS, "destroy batchnorm input descriptor");
+      require(udondnnDestroyTensorDescriptor(outputDescriptor),
+              UDONDNN_STATUS_SUCCESS, "destroy batchnorm output descriptor");
+      require(udondnnDestroyTensorDescriptor(parameterDescriptor),
+              UDONDNN_STATUS_SUCCESS, "destroy batchnorm parameter descriptor");
+    }
+    if (batchNormMaximumError > 0.0005f)
+      throw std::runtime_error("UdonDNN batchnorm CPU/Device results diverged");
+
     udondnnTensorDescriptor_t stale = 0, replacement = 0;
     require(udondnnCreateTensorDescriptor(&stale), UDONDNN_STATUS_SUCCESS,
             "create stale descriptor");
@@ -692,6 +800,49 @@ int main(int argc, char **argv) {
     require(udondnnDestroyTensorDescriptor(softmaxOutput),
             UDONDNN_STATUS_SUCCESS,
             "destroy invalid softmax output descriptor");
+    udondnnTensorDescriptor_t batchNormInput = 0, batchNormOutput = 0,
+                              batchNormParameter = 0;
+    float batchNormInputValues[2] = {0.0f, 1.0f};
+    float batchNormOutputValues[2] = {0.0f, 0.0f};
+    float batchNormScale[1] = {1.0f}, batchNormBias[1] = {0.0f};
+    float batchNormMean[1] = {0.0f}, batchNormVariance[1] = {1.0f};
+    require(udondnnCreateTensorDescriptor(&batchNormInput),
+            UDONDNN_STATUS_SUCCESS,
+            "create invalid batchnorm input descriptor");
+    require(udondnnCreateTensorDescriptor(&batchNormOutput),
+            UDONDNN_STATUS_SUCCESS,
+            "create invalid batchnorm output descriptor");
+    require(udondnnCreateTensorDescriptor(&batchNormParameter),
+            UDONDNN_STATUS_SUCCESS,
+            "create invalid batchnorm parameter descriptor");
+    require(udondnnSetTensor4dDescriptor(batchNormInput, UDONDNN_TENSOR_NCHW,
+                                         UDONDNN_DATA_FLOAT, 1, 1, 1, 2),
+            UDONDNN_STATUS_SUCCESS, "set invalid batchnorm input descriptor");
+    require(udondnnSetTensor4dDescriptor(batchNormOutput, UDONDNN_TENSOR_NCHW,
+                                         UDONDNN_DATA_FLOAT, 1, 1, 1, 2),
+            UDONDNN_STATUS_SUCCESS, "set invalid batchnorm output descriptor");
+    require(udondnnDeriveBNTensorDescriptor(batchNormParameter, batchNormInput,
+                                            UDONDNN_BATCHNORM_SPATIAL),
+            UDONDNN_STATUS_SUCCESS,
+            "derive invalid batchnorm parameter descriptor");
+    require(udondnnBatchNormalizationForwardInference(
+                handle, UDONDNN_BATCHNORM_SPATIAL, &one, &zero, batchNormInput,
+                batchNormInputValues, batchNormOutput, batchNormOutputValues,
+                batchNormParameter, batchNormScale, batchNormBias,
+                batchNormMean, batchNormVariance, 0.0f),
+            UDONDNN_STATUS_BAD_PARAM, "reject batchnorm epsilon below minimum");
+    require(udondnnDeriveBNTensorDescriptor(batchNormParameter, batchNormInput,
+                                            udondnnBatchNormMode_t(99)),
+            UDONDNN_STATUS_BAD_PARAM, "reject invalid batchnorm mode");
+    require(udondnnDestroyTensorDescriptor(batchNormInput),
+            UDONDNN_STATUS_SUCCESS,
+            "destroy invalid batchnorm input descriptor");
+    require(udondnnDestroyTensorDescriptor(batchNormOutput),
+            UDONDNN_STATUS_SUCCESS,
+            "destroy invalid batchnorm output descriptor");
+    require(udondnnDestroyTensorDescriptor(batchNormParameter),
+            UDONDNN_STATUS_SUCCESS,
+            "destroy invalid batchnorm parameter descriptor");
     require(udondnnDestroy(handle), UDONDNN_STATUS_SUCCESS, "udondnnDestroy");
     if (udoncl_cl_live_objects())
       throw std::runtime_error("OpenCL object leak");
@@ -707,6 +858,9 @@ int main(int argc, char **argv) {
               << " softmax_outputs=" << softmaxOutputs
               << " softmax_cases=" << softmaxCases.size()
               << " softmax_max_error=" << softmaxMaximumError
+              << " batchnorm_outputs=" << batchNormOutputs
+              << " batchnorm_cases=" << batchNormCases.size()
+              << " batchnorm_max_error=" << batchNormMaximumError
               << " renderer=" << session.deviceName()
               << " draws=" << session.drawCount() << "\n";
     return 0;
