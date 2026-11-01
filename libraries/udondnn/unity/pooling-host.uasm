@@ -1,0 +1,85 @@
+.data_start
+    .export packedState
+    .export outputState
+    .export poolingMaterial
+    .export displayMaterial
+    .export inputShape
+    .export poolingShape
+    .export poolingMode
+    .export nanPropagation
+    .export outputShape
+    .export alpha
+    .export beta
+
+    packedState: %UnityEngineTexture, null
+    outputState: %UnityEngineRenderTexture, null
+    poolingMaterial: %UnityEngineMaterial, null
+    displayMaterial: %UnityEngineMaterial, null
+    inputShape: %SystemInt32, null
+    poolingShape: %SystemInt32, null
+    poolingMode: %SystemInt32, null
+    nanPropagation: %SystemInt32, null
+    outputShape: %SystemInt32, null
+    alpha: %SystemSingle, null
+    beta: %SystemSingle, null
+
+    __inputName: %SystemString, "_VRC_Input"
+    __resultName: %SystemString, "_Result"
+    __inputShapeName: %SystemString, "_VRC_Arg2"
+    __poolingShapeName: %SystemString, "_VRC_Arg3"
+    __poolingModeName: %SystemString, "_VRC_Arg4"
+    __nanPropagationName: %SystemString, "_VRC_Arg5"
+    __outputShapeName: %SystemString, "_VRC_Arg6"
+    __alphaName: %SystemString, "_VRC_Arg7"
+    __betaName: %SystemString, "_VRC_Arg8"
+.data_end
+
+.code_start
+    .export _start
+    _start:
+        JUMP, 0xFFFFFFFC
+
+    .export _run
+    _run:
+        PUSH, poolingMaterial
+        PUSH, __inputName
+        PUSH, packedState
+        EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
+        PUSH, poolingMaterial
+        PUSH, __inputShapeName
+        PUSH, inputShape
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, poolingMaterial
+        PUSH, __poolingShapeName
+        PUSH, poolingShape
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, poolingMaterial
+        PUSH, __poolingModeName
+        PUSH, poolingMode
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, poolingMaterial
+        PUSH, __nanPropagationName
+        PUSH, nanPropagation
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, poolingMaterial
+        PUSH, __outputShapeName
+        PUSH, outputShape
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, poolingMaterial
+        PUSH, __alphaName
+        PUSH, alpha
+        EXTERN, "UnityEngineMaterial.__SetFloat__SystemString_SystemSingle__SystemVoid"
+        PUSH, poolingMaterial
+        PUSH, __betaName
+        PUSH, beta
+        EXTERN, "UnityEngineMaterial.__SetFloat__SystemString_SystemSingle__SystemVoid"
+        PUSH, packedState
+        PUSH, outputState
+        PUSH, poolingMaterial
+        EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"
+        PUSH, displayMaterial
+        PUSH, __resultName
+        PUSH, outputState
+        EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
+        JUMP, 0xFFFFFFFC
+.code_end

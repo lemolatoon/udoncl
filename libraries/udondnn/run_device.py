@@ -482,6 +482,154 @@ def main():
             shutil.rmtree(unity_activation_bundle)
         staged.rename(unity_activation_bundle)
 
+    pooling_input_shape = (1, 2, 4, 4)
+    pooling_output_shape = (1, 2, 2, 2)
+    pooling_window = (3, 3)
+    pooling_padding = (1, 1)
+    pooling_stride = (2, 2)
+    pooling_input = [
+        ((index + 5) * (61 * 11 + 7) % 31 - 15) * 0.125
+        for index in range(32)
+    ]
+    pooling_input[7] = math.nan
+    pooling_previous = [
+        ((index + 5) * (67 * 11 + 7) % 31 - 15) * 0.0625
+        for index in range(8)
+    ]
+    pooling_cases = [
+        (0, 0, 1.0, 0.0),
+        (3, 0, 0.75, -0.25),
+        (1, 0, -1.0, 0.5),
+        (2, 0, 1.25, 0.125),
+        (0, 1, 1.0, 0.0),
+        (0, 0, 0.5, -0.5),
+    ]
+
+    def pooling_reference(mode, nan_propagation, alpha, beta):
+        values = []
+        for channel in range(2):
+            for output_y in range(2):
+                for output_x in range(2):
+                    samples = []
+                    has_nan = False
+                    for kernel_y in range(3):
+                        for kernel_x in range(3):
+                            input_y = output_y * 2 + kernel_y - 1
+                            input_x = output_x * 2 + kernel_x - 1
+                            if 0 <= input_y < 4 and 0 <= input_x < 4:
+                                sample = pooling_input[
+                                    (channel * 4 + input_y) * 4 + input_x
+                                ]
+                                if math.isnan(sample):
+                                    if nan_propagation:
+                                        has_nan = True
+                                    sample = 0.0
+                                samples.append(sample)
+                    if has_nan:
+                        pooled = math.nan
+                    elif mode == 1:
+                        pooled = sum(samples) / 9.0
+                    elif mode == 2:
+                        pooled = sum(samples) / len(samples)
+                    else:
+                        pooled = max(samples) if samples else 0.0
+                    element = (channel * 2 + output_y) * 2 + output_x
+                    values.append(alpha * pooled + beta * pooling_previous[element])
+        return values
+
+    pooling_reference_values = []
+    for pooling_case in pooling_cases:
+        pooling_reference_values.extend(pooling_reference(*pooling_case))
+    pooling_packed = [0.0] * 2048
+    pooling_packed[: len(pooling_input)] = pooling_input
+    pooling_packed[512 : 512 + len(pooling_previous)] = pooling_previous
+    unity_pooling_bundle = output / "unity-pooling-bundle"
+    with tempfile.TemporaryDirectory(
+        prefix="unity-udondnn-pooling-", dir=output
+    ) as staging:
+        staged = Path(staging) / "bundle"
+        (staged / "kernels").mkdir(parents=True)
+        shutil.copy2(source / "unity/pooling-host.uasm", staged / "host.uasm")
+        shutil.copy2(
+            source / "unity/pooling-display.shader", staged / "display.shader"
+        )
+        shutil.copy2(
+            pooling_bundle / "kernels/kernel_202.shader",
+            staged / "kernels/kernel_202.shader",
+        )
+        (staged / "fixture_input.bytes").write_bytes(
+            struct.pack("<2048f", *pooling_packed)
+        )
+        (staged / "fixture_reference.bytes").write_bytes(
+            struct.pack("<48f", *pooling_reference_values)
+        )
+        pooling_unity_manifest = {
+            "schema_version": 1,
+            "compiler_version": "0.1.0-dev",
+            "runtime_abi_version": 1,
+            "artifact_stage": "unity-udondnn-pooling",
+            "ready_for_unity": True,
+            "sdk_compatibility": {"sdk_version": "3.10.5", "extern_db_hash": None},
+            "target": {
+                "host_pointer_bits": 32,
+                "device_pointer_bits": 32,
+                "endianness": "little",
+                "platform": "VRChat-PC",
+            },
+            "program": {
+                "name": "udondnn_pooling",
+                "assembly": "host.uasm",
+                "display_shader": "display.shader",
+            },
+            "exports": [
+                {
+                    "id": 1,
+                    "c_symbol": "udondnnPoolingForward",
+                    "udon_event": "_run",
+                    "status_slot": "",
+                    "async": False,
+                }
+            ],
+            "device": {
+                "kernels": [
+                    {
+                        "id": 202,
+                        "name": "udondnn_pooling_forward",
+                        "shader": "kernels/kernel_202.shader",
+                    }
+                ]
+            },
+            "resources": [
+                {"name": "fixture_input", "kind": "bytes", "path": "fixture_input.bytes"},
+                {
+                    "name": "fixture_reference",
+                    "kind": "bytes",
+                    "path": "fixture_reference.bytes",
+                },
+            ],
+            "fixture": {
+                "input_shape": pooling_input_shape,
+                "output_shape": pooling_output_shape,
+                "window": pooling_window,
+                "padding": pooling_padding,
+                "stride": pooling_stride,
+                "cases": len(pooling_cases),
+            },
+        }
+        (staged / "manifest.json").write_text(
+            json.dumps(pooling_unity_manifest, indent=2), encoding="utf-8"
+        )
+        if unity_pooling_bundle.exists():
+            previous = json.loads(
+                (unity_pooling_bundle / "manifest.json").read_text(encoding="utf-8")
+            )
+            if previous.get("artifact_stage") != "unity-udondnn-pooling":
+                raise RuntimeError(
+                    "refusing to replace a non-UdonDNN pooling Unity bundle"
+                )
+            shutil.rmtree(unity_pooling_bundle)
+        staged.rename(unity_pooling_bundle)
+
     host_ir = output / "host.ll"
     imported = output / "host.imported.mlir"
     udonhl = output / "host.udonhl.mlir"

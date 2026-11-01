@@ -59,3 +59,9 @@ sigmoid, ReLU, tanh, clipped ReLU, ELU, and identity with cuDNN-shaped
 alpha/beta accumulation and selectable NaN propagation. The packaged IUdonVM
 lifecycle fixture executes all six modes and both NaN policies, compares 512
 Device outputs, and removes every generated Unity asset during teardown.
+
+The `unity-udondnn-pooling` stage creates `UdonDnnPooling.prefab` with public
+input/window/output shapes, pooling mode, NaN policy, and alpha/beta bindings.
+MAX, deterministic MAX, and average pooling with padding included or excluded
+all use one independently owned output fragment per tensor element. Its IUdonVM
+fixture exercises all four modes and both NaN policies against 48 references.
