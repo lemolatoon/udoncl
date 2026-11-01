@@ -601,6 +601,27 @@ assert all(
     for item in int4_model_manifest["call_artifacts"]
 )
 assert len(int4_model_manifest["execution_plan_sha256"]) == 64
+unity_int4_plan = json.loads(json.dumps(int4_model_plan))
+unity_int4_plan["aot"]["calls"] = [unity_int4_plan["aot"]["calls"][0]]
+unity_int4_plan["passes"] = [unity_int4_plan["passes"][0]]
+unity_int4_plan["outputs"] = {"projection_a": [1, int4_n]}
+unity_int4_bundle = output / "unity-int4-model-bundle"
+unity_int4_manifest = materialize_int4_model(
+    unity_int4_plan,
+    output,
+    unity_int4_bundle,
+    unity_template_directory=root
+    / "build/udondnn-device-run/unity-udonaten-int4-mm-bundle",
+    model_path=model_path,
+    program_name="onnx_int4_fixture",
+)
+assert unity_int4_manifest["artifact_stage"] == "unity-udon-onnx-model"
+assert unity_int4_manifest["ready_for_unity"] is True
+assert unity_int4_manifest["complete_graph"] is True
+assert len(unity_int4_manifest["call_artifacts"]) == 1
+assert (unity_int4_bundle / "model.onnx.bytes").is_file()
+assert (unity_int4_bundle / "execution-plan.json.bytes").is_file()
+assert (unity_int4_bundle / "kernels/kernel_208.shader").is_file()
 int4_model_plan_path = output / "int4-model-plan.json"
 int4_model_plan_path.write_text(json.dumps(int4_model_plan), encoding="utf-8")
 int4_model_cli_bundle = output / "int4-model-cli-bundle"

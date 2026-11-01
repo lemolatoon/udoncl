@@ -1503,6 +1503,15 @@ namespace Lemolatoon.Udoncl.Editor
                     );
                 passMaterials.Add(passMaterial);
             }
+            GameObject runtimePrefab = CreateOrUpdateOnnxModelPrefab(
+                transaction,
+                artifact,
+                programRoot,
+                programAsset,
+                kernelMaterials,
+                textureArenaSlots,
+                passMaterials.ToArray()
+            );
             string assetPath = modelDirectory + "/UdonOnnxModel.asset";
             transaction.Track(assetPath);
             Lemolatoon.Udoncl.UdonOnnxModelAsset modelAsset =
@@ -1540,12 +1549,169 @@ namespace Lemolatoon.Udoncl.Editor
             for (int index = 0; index < staticInputTextures.Length; ++index)
                 staticTextures.GetArrayElementAtIndex(index).objectReferenceValue =
                     staticInputTextures[index];
+            serialized.FindProperty("runtimePrefab").objectReferenceValue = runtimePrefab;
             serialized.ApplyModifiedPropertiesWithoutUndo();
             EditorUtility.SetDirty(modelAsset);
             // Later stage-specific imports refresh the AssetDatabase before the
             // transaction commits. Persist these references first so that refresh
             // cannot reload the new asset with unassigned fields.
             AssetDatabase.SaveAssetIfDirty(modelAsset);
+        }
+
+        private static GameObject CreateOrUpdateOnnxModelPrefab(
+            AssetImportTransaction transaction,
+            ValidatedArtifact artifact,
+            string programRoot,
+            UdonAssemblyProgramAsset programAsset,
+            IDictionary<int, Material> kernelMaterials,
+            RenderTexture[] arenaSlots,
+            Material[] passMaterials
+        )
+        {
+            if (artifact.OnnxInt4Calls.Count == 0)
+                return null;
+            if (!kernelMaterials.TryGetValue(208, out Material int4Template))
+                throw new InvalidDataException("ONNX INT4 runners require UdonATen kernel 208.");
+            ValidatedResource composeResource = FindResource(artifact, "page_compose", "shader");
+            ValidatedResource scatterResource = FindResource(artifact, "result_scatter", "shader");
+            string composeShaderPath = programRoot + "/Shaders/onnx-int4-compose.shader";
+            string scatterShaderPath = programRoot + "/Shaders/onnx-int4-scatter.shader";
+            transaction.CopyFile(composeResource.AbsolutePath, composeShaderPath);
+            transaction.CopyFile(scatterResource.AbsolutePath, scatterShaderPath);
+            Shader composeShader = AssetDatabase.LoadAssetAtPath<Shader>(composeShaderPath);
+            Shader scatterShader = AssetDatabase.LoadAssetAtPath<Shader>(scatterShaderPath);
+            if (composeShader == null || scatterShader == null)
+                throw new InvalidDataException("Unity could not import ONNX INT4 runner shaders.");
+
+            string prefabDirectory = programRoot + "/Prefabs";
+            EnsureFolders(prefabDirectory);
+            string prefabPath = prefabDirectory + "/UdonOnnxModel.prefab";
+            transaction.Track(prefabPath);
+            GameObject root = new GameObject("Udon ONNX model");
+            try
+            {
+                UdonBehaviour model = root.AddComponent<UdonBehaviour>();
+                BindProgramAsset(model, programAsset);
+                model.interactText = "Run ONNX model";
+                model.proximity = 3.0f;
+                model.SyncMethod = SyncType.None;
+                for (int index = 0; index < arenaSlots.Length; ++index)
+                    SetPublicVariable(model, "arenaSlot" + index, arenaSlots[index]);
+                SetPublicVariable(model, "passMaterials", passMaterials);
+
+                IUdonEventReceiver[] runners = new IUdonEventReceiver[artifact.OnnxInt4Calls.Count];
+                for (int runnerIndex = 0; runnerIndex < artifact.OnnxInt4Calls.Count; ++runnerIndex)
+                {
+                    ValidatedOnnxInt4Call call = artifact.OnnxInt4Calls[runnerIndex];
+                    string runnerName = "call-" + call.CallIndex.ToString("D4");
+                    string runnerRoot = programRoot + "/Int4Runners/" + runnerName;
+                    UdonAssemblyProgramAsset runnerProgram = CreateOrUpdateProgramAsset(
+                        transaction,
+                        runnerRoot,
+                        File.ReadAllText(call.AssemblyAbsolutePath)
+                    );
+                    Material composeMaterial = CreateOrUpdateNamedMaterial(
+                        transaction,
+                        runnerRoot,
+                        "compose.mat",
+                        composeShader
+                    );
+                    Material int4Material = CreateOrUpdateNamedMaterial(
+                        transaction,
+                        runnerRoot,
+                        "int4.mat",
+                        int4Template.shader
+                    );
+                    Material scatterMaterial = CreateOrUpdateNamedMaterial(
+                        transaction,
+                        runnerRoot,
+                        "scatter.mat",
+                        scatterShader
+                    );
+                    RenderTexture composeState = CreateOrUpdateRgbaRenderTexture(
+                        transaction,
+                        runnerRoot,
+                        "compose.asset",
+                        8192,
+                        1
+                    );
+                    RenderTexture accumulatorState = CreateOrUpdateRgbaRenderTexture(
+                        transaction,
+                        runnerRoot,
+                        "accumulator.asset",
+                        8192,
+                        1
+                    );
+                    RenderTexture resultA = CreateOrUpdateRgbaRenderTexture(
+                        transaction,
+                        runnerRoot,
+                        "result-a.asset",
+                        call.ResultWidth,
+                        call.ResultHeight
+                    );
+                    RenderTexture resultB = CreateOrUpdateRgbaRenderTexture(
+                        transaction,
+                        runnerRoot,
+                        "result-b.asset",
+                        call.ResultWidth,
+                        call.ResultHeight
+                    );
+
+                    GameObject child = new GameObject(runnerName);
+                    child.transform.SetParent(root.transform, false);
+                    UdonBehaviour runner = child.AddComponent<UdonBehaviour>();
+                    BindProgramAsset(runner, runnerProgram);
+                    runner.SyncMethod = SyncType.None;
+                    SetPublicVariable(runner, "composeState", composeState);
+                    SetPublicVariable(runner, "accumulatorState", accumulatorState);
+                    SetPublicVariable(runner, "resultA", resultA);
+                    SetPublicVariable(runner, "resultB", resultB);
+                    SetPublicVariable(runner, "composeMaterial", composeMaterial);
+                    SetPublicVariable(runner, "int4Material", int4Material);
+                    SetPublicVariable(runner, "scatterMaterial", scatterMaterial);
+                    for (int atlasIndex = 0; atlasIndex < call.Atlases.Count; ++atlasIndex)
+                    {
+                        ValidatedOnnxInt4Atlas atlas = call.Atlases[atlasIndex];
+                        Texture2D texture = CreateOrUpdateByteTexture(
+                            transaction,
+                            runnerRoot,
+                            "atlas-" + atlasIndex.ToString("D4") + ".asset",
+                            atlas.Width,
+                            atlas.Height,
+                            File.ReadAllBytes(atlas.AbsolutePath)
+                        );
+                        SetPublicVariable(runner, atlas.Name, (Texture)texture);
+                    }
+                    runners[runnerIndex] = runner;
+                }
+                SetPublicVariable(model, "int4Runners", runners);
+                if (arenaSlots.Length > 0)
+                    SetPublicVariable(model, "resultState", (Texture)arenaSlots[0]);
+
+                PrefabUtility.SaveAsPrefabAsset(root, prefabPath, out bool success);
+                GameObject prefab = AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath);
+                if (!success || prefab == null)
+                    throw new InvalidOperationException(
+                        "Could not create ONNX model prefab: " + prefabPath
+                    );
+                return prefab;
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        private static void BindProgramAsset(
+            UdonBehaviour behaviour,
+            UdonAssemblyProgramAsset programAsset
+        )
+        {
+            behaviour.programSource = programAsset;
+            SerializedObject serialized = new SerializedObject(behaviour);
+            serialized.FindProperty("serializedProgramAsset").objectReferenceValue =
+                programAsset.SerializedProgramAsset;
+            serialized.ApplyModifiedPropertiesWithoutUndo();
         }
 
         private static void SetIntArray(SerializedProperty property, int[] values)

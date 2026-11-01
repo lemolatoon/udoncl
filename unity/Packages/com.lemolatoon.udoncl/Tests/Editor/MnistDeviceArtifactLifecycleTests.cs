@@ -119,6 +119,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 Assert.IsFalse(slot.sRGB);
             }
             Assert.IsEmpty(modelAsset.StaticInputTextures);
+            Assert.IsNull(modelAsset.RuntimePrefab);
         }
 
         [Test]

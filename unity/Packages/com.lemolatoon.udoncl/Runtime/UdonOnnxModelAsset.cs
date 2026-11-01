@@ -43,6 +43,9 @@ namespace Lemolatoon.Udoncl
         [SerializeField]
         private Texture2D[] staticInputTextures;
 
+        [SerializeField]
+        private GameObject runtimePrefab;
+
         public TextAsset Model => model;
 
         public TextAsset ExecutionPlan => executionPlan;
@@ -69,5 +72,7 @@ namespace Lemolatoon.Udoncl
         public RenderTexture[] TextureArenaSlots => textureArenaSlots;
 
         public Texture2D[] StaticInputTextures => staticInputTextures;
+
+        public GameObject RuntimePrefab => runtimePrefab;
     }
 }

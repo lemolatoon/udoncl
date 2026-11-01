@@ -1298,6 +1298,10 @@ def materialize_int4_model(
     plan: dict,
     external_data_directory: Path,
     output_directory: Path,
+    *,
+    unity_template_directory: Path | None = None,
+    model_path: Path | None = None,
+    program_name: str = "udon_onnx_int4_model",
 ) -> dict:
     """Bundle every ATen INT4 call with the complete AOT model schedule."""
     if plan.get("runtime") != "udon-onnx" or not isinstance(plan.get("aot"), dict):
@@ -1396,7 +1400,12 @@ def materialize_int4_model(
             plan, external_data_directory, staging
         )
         serialized_plan = json.dumps(plan, indent=2) + "\n"
-        (staging / "execution-plan.json").write_text(serialized_plan, encoding="utf-8")
+        plan_name = (
+            "execution-plan.json.bytes"
+            if unity_template_directory is not None
+            else "execution-plan.json"
+        )
+        (staging / plan_name).write_text(serialized_plan, encoding="utf-8")
         (staging / "host.uasm").write_text(
             emit_int4_model_uasm(plan), encoding="utf-8"
         )
@@ -1406,7 +1415,7 @@ def materialize_int4_model(
             "runtime": "udon-onnx",
             "graph": plan.get("graph"),
             "execution_provider": plan.get("execution_provider"),
-            "execution_plan": "execution-plan.json",
+            "execution_plan": plan_name,
             "assembly": "host.uasm",
             "execution_plan_sha256": hashlib.sha256(
                 serialized_plan.encode("utf-8")
@@ -1432,10 +1441,87 @@ def materialize_int4_model(
                 if call not in int4_calls
             ],
         }
+        publish_stage = "udon-onnx-int4-model"
+        if unity_template_directory is not None:
+            if model_path is None:
+                raise ValueError("Unity ONNX bundle requires model_path")
+            unity_template_directory = unity_template_directory.resolve()
+            model_path = model_path.resolve()
+            required = {
+                "display.shader": unity_template_directory / "display.shader",
+                "compose.shader": unity_template_directory / "compose.shader",
+                "scatter.shader": unity_template_directory / "scatter.shader",
+                "kernels/kernel_208.shader": unity_template_directory
+                / "kernels/kernel_208.shader",
+            }
+            for relative, source in required.items():
+                if not source.is_file():
+                    raise ValueError(f"Unity ONNX template is missing {relative}")
+                destination = staging / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, destination)
+            if not model_path.is_file():
+                raise ValueError("Unity ONNX model file does not exist")
+            shutil.copyfile(model_path, staging / "model.onnx.bytes")
+            publish_stage = "unity-udon-onnx-model"
+            manifest.update(
+                {
+                    "compiler_version": "0.1.0-dev",
+                    "runtime_abi_version": 1,
+                    "artifact_stage": publish_stage,
+                    "ready_for_unity": True,
+                    "sdk_compatibility": {
+                        "sdk_version": "3.10.5",
+                        "extern_db_hash": None,
+                    },
+                    "target": {
+                        "host_pointer_bits": 32,
+                        "device_pointer_bits": 32,
+                        "endianness": "little",
+                        "platform": "VRChat-PC",
+                    },
+                    "program": {
+                        "name": program_name,
+                        "assembly": "host.uasm",
+                        "display_shader": "display.shader",
+                    },
+                    "device": {
+                        "kernels": [
+                            {
+                                "id": 208,
+                                "name": "udonaten_weight_int4pack_mm",
+                                "shader": "kernels/kernel_208.shader",
+                            }
+                        ]
+                    },
+                    "resources": [
+                        {
+                            "name": "onnx_model",
+                            "kind": "bytes",
+                            "path": "model.onnx.bytes",
+                        },
+                        {
+                            "name": "onnx_execution_plan",
+                            "kind": "bytes",
+                            "path": plan_name,
+                        },
+                        {
+                            "name": "page_compose",
+                            "kind": "shader",
+                            "path": "compose.shader",
+                        },
+                        {
+                            "name": "result_scatter",
+                            "kind": "shader",
+                            "path": "scatter.shader",
+                        },
+                    ],
+                }
+            )
         (staging / "manifest.json").write_text(
             json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
         )
-        _publish_artifact(staging, output_directory, "udon-onnx-int4-model")
+        _publish_artifact(staging, output_directory, publish_stage)
         return manifest
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
