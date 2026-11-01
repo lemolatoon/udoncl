@@ -3,8 +3,7 @@
 typedef unsigned int uint;
 extern size_t udonblas_cpu_gid;
 static inline size_t get_global_id(unsigned dimension) {
-  (void)dimension;
-  return udonblas_cpu_gid;
+  return dimension == 0 ? udonblas_cpu_gid & 31u : udonblas_cpu_gid >> 5u;
 }
 #define __kernel
 #define __global
@@ -23,7 +22,7 @@ __kernel void udonblas_sgemm(__global const float *input,
                              __global float *output, int m, int n, int k,
                              int transa, int transb, int lda, int ldb, int ldc,
                              float alpha, float beta) {
-  uint gid = (uint)get_global_id(0);
+  uint gid = (uint)get_global_id(1) * 32u + (uint)get_global_id(0);
   float value = input[gid];
   if (gid >= UDONBLAS_RESULT_OFFSET &&
       gid < UDONBLAS_RESULT_OFFSET + (uint)(m * n)) {

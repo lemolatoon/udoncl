@@ -200,6 +200,7 @@ llvm::json::Object buildBoundaryManifest(ModuleOp module) {
     if (!profile || profile != "gather-f32")
       continue;
     int64_t words = kernel->getAttrOfType<IntegerAttr>("vrc.words").getInt();
+    auto global = kernel.getGlobalSize();
     llvm::json::Array args;
     for (unsigned i = 0; i < 2; ++i)
       args.push_back(
@@ -226,7 +227,8 @@ llvm::json::Object buildBoundaryManifest(ModuleOp module) {
         {"resource_order", llvm::json::Array{0, 1}},
         {"distinct_resources", true},
         {"argument_copy_policy", "required_at_clSetKernelArg"}};
-    (*entry.getObject("target_texture"))["width"] = words;
+    (*entry.getObject("target_texture"))["width"] = global[0];
+    (*entry.getObject("target_texture"))["height"] = global[1];
     entry["passes"] =
         llvm::json::Array{llvm::json::Object{{"id", 0},
                                              {"output_arg", 1},

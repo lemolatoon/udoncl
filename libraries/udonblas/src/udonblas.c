@@ -268,7 +268,7 @@ udonblasStatus_t udonblasSgemm(udonblasHandle_t handle,
   int a_rows = transa == UDONBLAS_OP_N ? m : k;
   int b_rows = transb == UDONBLAS_OP_N ? k : n;
   int a_words, b_words, c_words, index, row, column;
-  size_t global = UDONBLAS_WORDS, local = 1;
+  size_t global[2] = {32, 32}, local[2] = {1, 1};
   cl_int status;
   if (handle != UDONBLAS_HANDLE || !context)
     return UDONBLAS_STATUS_NOT_INITIALIZED;
@@ -316,7 +316,7 @@ udonblasStatus_t udonblasSgemm(udonblasHandle_t handle,
 
   if (clEnqueueWriteBuffer(queue, input_buffer, CL_TRUE, 0, sizeof(packed),
                            packed, 0, 0, 0) != CL_SUCCESS ||
-      clEnqueueNDRangeKernel(queue, sgemm_kernel, 1, 0, &global, &local, 0, 0,
+      clEnqueueNDRangeKernel(queue, sgemm_kernel, 2, 0, global, local, 0, 0,
                              0) != CL_SUCCESS ||
       clEnqueueReadBuffer(
           queue, output_buffer, CL_TRUE, UDONBLAS_RESULT_OFFSET * sizeof(float),

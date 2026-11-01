@@ -11,7 +11,7 @@ size_t udoncl_cl_live_objects(void);
 /* Zero means the legacy one-word profile; otherwise id is an AOT gather
  * kernel with two buffers and scalar_count four-byte scalar arguments. */
 struct udoncl_cl_gather_profile {
-  uint32_t id, words, scalar_count;
+  uint32_t id, words, scalar_count, width, height;
 };
 size_t udoncl_cl_buffer_limit(void);
 int udoncl_cl_gather_profile(const char *name,

@@ -524,8 +524,10 @@ CL_API_ENTRY cl_kernel CL_API_CALL clCreateKernel(cl_program p,
   if (!k)
     ERROR(CL_OUT_OF_HOST_MEMORY);
   udoncl_cl_gather_profile(name, &k->gather);
-  if (k->gather.id && (k->gather.words < 4 || k->gather.words > 16384 ||
-                       k->gather.scalar_count > 14)) {
+  if (k->gather.id &&
+      (k->gather.words < 4 || k->gather.words > 16384 ||
+       k->gather.scalar_count > 14 || !k->gather.width || !k->gather.height ||
+       (size_t)k->gather.width * k->gather.height != k->gather.words)) {
     free(k);
     ERROR(CL_INVALID_KERNEL_DEFINITION);
   }
@@ -598,12 +600,16 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueNDRangeKernel(
     return CL_INVALID_CONTEXT;
   if ((status = waits(q->context, count, list)))
     return status;
-  if (!dims || dims > 3)
+  if (!dims || dims > 3 ||
+      (k->gather.id && dims != (k->gather.height > 1 ? 2u : 1u)))
     return CL_INVALID_WORK_DIMENSION;
   if (!global)
     return CL_INVALID_GLOBAL_WORK_SIZE;
   for (i = 0; i < dims; i++) {
-    if (global[i] != (i == 0 && k->gather.id ? k->gather.words : 1))
+    size_t expected = 1;
+    if (k->gather.id)
+      expected = i == 0 ? k->gather.width : k->gather.height;
+    if (global[i] != expected)
       return CL_INVALID_GLOBAL_WORK_SIZE;
     if (offset && offset[i])
       return CL_INVALID_GLOBAL_OFFSET;

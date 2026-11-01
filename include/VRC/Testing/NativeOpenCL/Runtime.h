@@ -7,6 +7,7 @@ namespace native_opencl {
 struct GatherBinding {
   uint32_t id, words, scalarCount;
   std::string name, fragment;
+  uint32_t width = 0, height = 0;
 };
 class Session {
 public:

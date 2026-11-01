@@ -120,7 +120,8 @@ def main():
     q4_ir = compile_device_ir(q4_device, "q4_gemv")
     saxpy_ir = compile_device_ir(saxpy_device, "saxpy")
 
-    def emit_kernel(name, kernel_id, words, scalar_count, device_ir):
+    def emit_kernel(name, kernel_id, words, scalar_count, device_ir, shape=None):
+        global_size = [words, 1, 1] if shape is None else [*shape, 1]
         config = output / f"{name}.json"
         config.write_text(
             json.dumps(
@@ -130,7 +131,7 @@ def main():
                     "words": words,
                     "kernel": name,
                     "kernel_id": kernel_id,
-                    "global_size": [words, 1, 1],
+                    "global_size": global_size,
                     "local_size": [1, 1, 1],
                     "global_offset": [0, 0, 0],
                 }
@@ -165,7 +166,7 @@ def main():
         kernel = manifest["device"]["kernels"][0]
         if (
             kernel["name"] != name
-            or kernel["global_size"] != [words, 1, 1]
+            or kernel["global_size"] != global_size
             or [argument["required_bytes"] for argument in kernel["args"][:2]]
             != [words * 4, words * 4]
             or len(kernel["args"]) != scalar_count + 2
@@ -173,7 +174,7 @@ def main():
             raise RuntimeError(f"UdonBLAS {name} manifest does not match its ABI")
         return bundle
 
-    bundle = emit_kernel("udonblas_sgemm", 100, 1024, 10, sgemm_ir)
+    bundle = emit_kernel("udonblas_sgemm", 100, 1024, 10, sgemm_ir, (32, 32))
     q4_bundle = emit_kernel("udonblas_sgemv_q4", 101, 8192, 7, q4_ir)
     saxpy_bundle = emit_kernel("udonblas_saxpy", 102, 1024, 4, saxpy_ir)
     fragment = bundle / "kernels/kernel_100.hlsl"
@@ -202,7 +203,7 @@ def main():
         + "inline std::vector<native_opencl::GatherBinding> manifestBindings("
         + "const std::string &sgemm, const std::string &q4, "
         + "const std::string &saxpy) { return {"
-        + '{100, 1024, 10, "udonblas_sgemm", sgemm}, '
+        + '{100, 1024, 10, "udonblas_sgemm", sgemm, 32, 32}, '
         + '{101, 8192, 7, "udonblas_sgemv_q4", q4}, '
         + '{102, 1024, 4, "udonblas_saxpy", saxpy}}; }\n',
         encoding="utf-8",

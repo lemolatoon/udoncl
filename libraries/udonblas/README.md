@@ -10,7 +10,10 @@ the 256-word gather partition.
 
 `udonblasSgemm` is the first Level-3 primitive. One fragment owns each
 output matrix element, so an M×N multiplication exposes M×N independent Device
-invocations. The initial `gather-f32` profile accepts M, N, and K up to 16 and
+invocations. Its UdonCL state is dispatched as a 32×32 two-dimensional fragment
+grid; `get_global_id(0/1)` is preserved through the AOT manifest, HLSL pixel
+coordinates, OpenCL NDRange validation, and the native D3D11/Vulkan adapters.
+The initial `gather-f32` profile accepts M, N, and K up to 16 and
 one serialized handle per UdonBehaviour instance. These are profile limits,
 not intended API limits; tiled multi-pass kernels will lift them without
 changing the function signature.

@@ -35,17 +35,17 @@ class Renderer final : public FragmentRenderer {
   ComPtr<ID3D11PixelShader> fragment;
   ComPtr<ID3D11Texture2D> target, staging, input;
   ComPtr<ID3D11ShaderResourceView> inputView;
-  uint32_t width = 1;
+  uint32_t width = 1, height = 1;
   bool gather = false;
   ComPtr<ID3D11RenderTargetView> view;
   ComPtr<ID3D11Buffer> uniform;
   ComPtr<ID3D11RasterizerState> raster;
 
 public:
-  explicit Renderer(const std::string &path, uint32_t words = 0)
-      : width(words ? words : 1), gather(words != 0) {
-    if (width > 16384)
-      throw std::runtime_error("gather width exceeds supported profile");
+  explicit Renderer(const std::string &path, uint32_t x = 0, uint32_t y = 1)
+      : width(x ? x : 1), height(y), gather(x != 0) {
+    if (!height || uint64_t(width) * height > 16384)
+      throw std::runtime_error("gather extent exceeds supported profile");
     D3D_FEATURE_LEVEL requested = D3D_FEATURE_LEVEL_11_0, actual;
     check(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0,
                             &requested, 1, D3D11_SDK_VERSION, &device, &actual,
@@ -66,7 +66,8 @@ public:
                                      &vertex));
     D3D11_TEXTURE2D_DESC texture{};
     texture.Width = width;
-    texture.Height = texture.MipLevels = texture.ArraySize = 1;
+    texture.Height = height;
+    texture.MipLevels = texture.ArraySize = 1;
     texture.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     texture.SampleDesc.Count = 1;
     texture.BindFlags = D3D11_BIND_RENDER_TARGET;
@@ -105,7 +106,7 @@ public:
   std::vector<uint8_t> drawWords(std::span<const uint8_t> state,
                                  std::span<const uint8_t> scalars) override {
     if (scalars.size() > 64 ||
-        (gather ? state.size() != width * 4 : !state.empty()))
+        (gather ? state.size() != width * height * 4 : !state.empty()))
       throw std::runtime_error("invalid fragment input/payload size");
     uint8_t data[64]{};
     if (!scalars.empty())
@@ -124,7 +125,7 @@ public:
     ID3D11RenderTargetView *rt = view.Get();
     context->OMSetRenderTargets(1, &rt, nullptr);
     context->OMSetBlendState(nullptr, nullptr, 0xffffffff);
-    D3D11_VIEWPORT viewport{0, 0, float(width), 1, 0, 1};
+    D3D11_VIEWPORT viewport{0, 0, float(width), float(height), 0, 1};
     context->RSSetViewports(1, &viewport);
     context->RSSetState(raster.Get());
     context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -136,8 +137,12 @@ public:
     context->CopyResource(staging.Get(), target.Get());
     D3D11_MAPPED_SUBRESOURCE mapped{};
     check(context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped));
-    std::vector<uint8_t> result(width * 4);
-    std::memcpy(result.data(), mapped.pData, result.size());
+    std::vector<uint8_t> result(width * height * 4);
+    for (uint32_t row = 0; row < height; ++row)
+      std::memcpy(result.data() + size_t(row) * width * 4,
+                  static_cast<const uint8_t *>(mapped.pData) +
+                      size_t(row) * mapped.RowPitch,
+                  size_t(width) * 4);
     context->Unmap(staging.Get(), 0);
     return result;
   }
@@ -150,8 +155,8 @@ createFragmentRenderer(const std::string &shader, const std::string &) {
 
 std::unique_ptr<FragmentRenderer>
 createGatherRenderer(const std::string &shader, const std::string &,
-                     uint32_t words) {
-  if (words < 4)
-    throw std::runtime_error("invalid gather width");
-  return std::make_unique<Renderer>(shader, words);
+                     uint32_t width, uint32_t height) {
+  if (!width || !height || uint64_t(width) * height < 4)
+    throw std::runtime_error("invalid gather extent");
+  return std::make_unique<Renderer>(shader, width, height);
 }

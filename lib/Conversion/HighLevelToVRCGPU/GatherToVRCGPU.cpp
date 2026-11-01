@@ -33,8 +33,9 @@ struct LowerGatherDevicePass
       modules.push_back(module);
       for (auto source : module.getOps<gpu::GPUFuncOp>()) {
         auto words = source->getAttrOfType<IntegerAttr>("vrc.words");
-        if (!source->hasAttr("vrc.gather_proven") || !words ||
-            !source.getBody().hasOneBlock()) {
+        auto grid = source->getAttrOfType<DenseI32ArrayAttr>("known_grid_size");
+        if (!source->hasAttr("vrc.gather_proven") || !words || !grid ||
+            grid.size() != 3 || !source.getBody().hasOneBlock()) {
           source.emitError("gather lowering requires bounded memory/loop "
                            "recovery and structured CFG");
           signalPassFailure();
@@ -78,9 +79,7 @@ struct LowerGatherDevicePass
              b.getNamedAttr("source_module", b.getStringAttr(module.getName())),
              b.getNamedAttr("kernel_id", id),
              b.getNamedAttr("argument_kinds", b.getArrayAttr(kinds)),
-             b.getNamedAttr(
-                 "global_size",
-                 b.getDenseI32ArrayAttr({int32_t(words.getInt()), 1, 1})),
+             b.getNamedAttr("global_size", grid),
              b.getNamedAttr("local_size", b.getDenseI32ArrayAttr({1, 1, 1})),
              b.getNamedAttr("global_offset", b.getDenseI32ArrayAttr({0, 0, 0})),
              b.getNamedAttr("vrc.profile", b.getStringAttr("gather-f32")),
@@ -140,14 +139,17 @@ struct LowerGatherDevicePass
         SmallVector<gpu::GlobalIdOp> globals;
         pass->walk([&](gpu::GlobalIdOp op) { globals.push_back(op); });
         for (auto op : globals) {
-          if (op.getDimension() != gpu::Dimension::x) {
-            op.emitError("only x global id is fragment-legal");
+          unsigned coordinate = op.getDimension() == gpu::Dimension::x   ? 0
+                                : op.getDimension() == gpu::Dimension::y ? 1
+                                                                         : 2;
+          if (coordinate == 2) {
+            op.emitError("only x/y global ids are fragment-legal");
             signalPassFailure();
             return;
           }
           b.setInsertionPoint(op);
-          b.replaceOpWithNewOp<arith::IndexCastOp>(op, b.getIndexType(),
-                                                   coord->getResult(0));
+          b.replaceOpWithNewOp<arith::IndexCastOp>(
+              op, b.getIndexType(), coord->getResult(coordinate));
         }
         SmallVector<memref::LoadOp> loads;
         pass->walk([&](memref::LoadOp op) { loads.push_back(op); });
@@ -159,13 +161,15 @@ struct LowerGatherDevicePass
             return;
           }
           b.setInsertionPoint(op);
-          auto x = arith::IndexCastOp::create(b, op.getLoc(), b.getI32Type(),
-                                              op.getIndices()[0]);
-          auto zero = arith::ConstantIntOp::create(b, op.getLoc(), 0, 32);
+          Value x = arith::IndexCastOp::create(b, op.getLoc(), b.getI32Type(),
+                                               op.getIndices()[0]);
+          auto width = arith::ConstantIntOp::create(b, op.getLoc(),
+                                                    grid.asArrayRef()[0], 32);
+          Value y = arith::DivUIOp::create(b, op.getLoc(), x, width);
+          x = arith::RemUIOp::create(b, op.getLoc(), x, width);
           auto *texel = make(
               b, op.getLoc(), fragment::TextureLoadOp::getOperationName(),
-              TypeRange{VectorType::get({4}, b.getF32Type())},
-              ValueRange{x, zero},
+              TypeRange{VectorType::get({4}, b.getF32Type())}, ValueRange{x, y},
               {b.getNamedAttr("resource",
                               FlatSymbolRefAttr::get(&getContext(), "arg0")),
                b.getNamedAttr("element_count", words)});

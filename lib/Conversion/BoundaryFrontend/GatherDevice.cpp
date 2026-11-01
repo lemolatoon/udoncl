@@ -27,10 +27,11 @@ std::optional<int64_t> constant(Value value) {
 }
 struct Proof {
   LLVM::LLVMFuncOp function;
-  int64_t words;
+  int64_t words, width, height;
   DominanceInfo dominance;
-  Value gid;
-  Proof(LLVM::LLVMFuncOp f, int64_t w) : function(f), words(w), dominance(f) {}
+  Value gid[2];
+  Proof(LLVM::LLVMFuncOp f, int64_t w, int64_t x, int64_t y)
+      : function(f), words(w), width(x), height(y), dominance(f) {}
   std::optional<Range> induction(BlockArgument iv, Operation *at) {
     auto *header = iv.getOwner();
     if (header->isEntryBlock() || !iv.getType().isInteger(32))
@@ -76,8 +77,10 @@ struct Proof {
   std::optional<Range> range(Value value, Operation *at, unsigned depth = 0) {
     if (depth > 32)
       return std::nullopt;
-    if (value == gid)
-      return Range{0, words - 1};
+    if (value == gid[0])
+      return Range{0, width - 1};
+    if (value == gid[1])
+      return Range{0, height - 1};
     if (auto c = constant(value))
       return Range{*c, *c};
     if (auto arg = dyn_cast<BlockArgument>(value))
@@ -121,6 +124,33 @@ struct Proof {
       return std::nullopt;
     return result;
   }
+  Value strip(Value value) {
+    while (auto *op = value.getDefiningOp()) {
+      if (!isa<LLVM::SExtOp, LLVM::ZExtOp>(op))
+        break;
+      value = op->getOperand(0);
+    }
+    return value;
+  }
+  bool rowTerm(Value value) {
+    value = strip(value);
+    auto multiply = value.getDefiningOp<LLVM::MulOp>();
+    if (!multiply)
+      return false;
+    auto matches = [&](Value id, Value extent) {
+      return strip(id) == gid[1] && constant(strip(extent)) == width;
+    };
+    return matches(multiply.getLhs(), multiply.getRhs()) ||
+           matches(multiply.getRhs(), multiply.getLhs());
+  }
+  bool linearOutput(Value value) {
+    value = strip(value);
+    if (height == 1)
+      return value == gid[0];
+    auto add = value.getDefiningOp<LLVM::AddOp>();
+    return add && ((strip(add.getLhs()) == gid[0] && rowTerm(add.getRhs())) ||
+                   (strip(add.getRhs()) == gid[0] && rowTerm(add.getLhs())));
+  }
 };
 struct Pointer {
   unsigned argument;
@@ -152,6 +182,8 @@ struct RaiseGatherDevicePass
       return;
     }
     int64_t words = wordsAttr.getInt();
+    auto global = config.getAs<DenseI32ArrayAttr>("global_size").asArrayRef();
+    int64_t width = global[0], height = global[1];
     SmallVector<Type> types;
     for (unsigned i = 0; i < source.getNumArguments(); ++i) {
       auto type = source.getArgument(i).getType();
@@ -245,7 +277,7 @@ struct RaiseGatherDevicePass
         fail("unproven kernel argument attribute");
         return;
       }
-    Proof proof(source, words);
+    Proof proof(source, words, width, height);
     SmallVector<LLVM::CallOp> calls;
     for (auto call : source.getOps<LLVM::CallOp>()) {
       StringRef callee = call.getCallee().value_or("");
@@ -264,12 +296,14 @@ struct RaiseGatherDevicePass
         return;
       }
       if (id) {
-        if (proof.gid || constant(call.getOperand(0)) != 0 ||
+        auto dimension = constant(call.getOperand(0));
+        if (!dimension || *dimension < 0 || *dimension > 1 ||
+            proof.gid[*dimension] || (*dimension == 1 && height == 1) ||
             !call.getResult().getType().isInteger(32)) {
-          fail("only one dimension-zero global id is supported");
+          fail("global ids must uniquely match the declared 1D/2D extent");
           return;
         }
-        proof.gid = call.getResult();
+        proof.gid[*dimension] = call.getResult();
       } else if (!call.getOperand(0).getType().isF32() ||
                  !call.getResult().getType().isF32()) {
         fail("builtin type mismatch");
@@ -277,8 +311,8 @@ struct RaiseGatherDevicePass
       }
       calls.push_back(call);
     }
-    if (!proof.gid) {
-      fail("kernel must use global id zero");
+    if (!proof.gid[0] || (height > 1 && !proof.gid[1])) {
+      fail("kernel must use every declared global-id dimension");
       return;
     }
     llvm::DenseMap<Value, Pointer> pointers;
@@ -324,7 +358,7 @@ struct RaiseGatherDevicePass
         } else if (auto store = dyn_cast<LLVM::StoreOp>(op)) {
           auto p = pointers.find(store.getAddr());
           if (output || p == pointers.end() || p->second.argument != 1 ||
-              p->second.index != proof.gid ||
+              !p->second.index || !proof.linearOutput(p->second.index) ||
               !store.getValue().getType().isF32() || store.getVolatile_() ||
               store.getOrdering() != LLVM::AtomicOrdering::not_atomic ||
               store.getAlignment().value_or(4) > 4) {
@@ -448,10 +482,12 @@ struct RaiseGatherDevicePass
       rewriter.setInsertionPoint(call);
       StringRef callee = *call.getCallee();
       if (callee == "_Z13get_global_idj") {
-        auto global =
-            gpu::GlobalIdOp::create(rewriter, call.getLoc(), gpu::Dimension::x);
+        auto dimension = *constant(call.getOperand(0));
+        auto globalId = gpu::GlobalIdOp::create(rewriter, call.getLoc(),
+                                                dimension ? gpu::Dimension::y
+                                                          : gpu::Dimension::x);
         rewriter.replaceOpWithNewOp<arith::IndexCastOp>(
-            call, rewriter.getI32Type(), global);
+            call, rewriter.getI32Type(), globalId);
       } else if (callee == "_Z5floorf")
         rewriter.replaceOpWithNewOp<math::FloorOp>(call, call.getOperand(0));
       else if (callee == "_Z4sqrtf")

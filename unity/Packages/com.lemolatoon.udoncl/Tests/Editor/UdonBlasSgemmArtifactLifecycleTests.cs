@@ -108,7 +108,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             vm.SetProgramCounter(program.EntryPoints.GetAddressFromSymbol("_run"));
             Assert.AreEqual(0u, vm.Interpret(), "SDK IUdonVM rejected UdonBLAS SGEMM.");
 
-            Color32[] actual = ReadPixels(output, 1024);
+            Color32[] actual = ReadPixels(output, 32, 32);
             Color32[] expected = Load<Texture2D>("Textures/udonblas_sgemm_reference.asset")
                 .GetPixels32();
             float maximumError = 0.0f;
@@ -146,14 +146,14 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             Assert.AreEqual(expected, actual);
         }
 
-        private static Color32[] ReadPixels(RenderTexture source, int width)
+        private static Color32[] ReadPixels(RenderTexture source, int width, int height)
         {
             RenderTexture previous = RenderTexture.active;
-            Texture2D pixels = new Texture2D(width, 1, TextureFormat.RGBA32, false, true);
+            Texture2D pixels = new Texture2D(width, height, TextureFormat.RGBA32, false, true);
             try
             {
                 RenderTexture.active = source;
-                pixels.ReadPixels(new Rect(0, 0, width, 1), 0, 0);
+                pixels.ReadPixels(new Rect(0, 0, width, height), 0, 0);
                 pixels.Apply(false, false);
                 return pixels.GetPixels32();
             }

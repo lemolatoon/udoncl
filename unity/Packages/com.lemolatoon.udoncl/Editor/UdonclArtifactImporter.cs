@@ -580,8 +580,8 @@ namespace Lemolatoon.Udoncl.Editor
                 transaction,
                 programRoot,
                 "udonblas_sgemm_input.asset",
-                1024,
-                1,
+                32,
+                32,
                 File.ReadAllBytes(inputResource.AbsolutePath)
             );
             CreateOrUpdateByteTexture(
@@ -596,8 +596,8 @@ namespace Lemolatoon.Udoncl.Editor
                 transaction,
                 programRoot,
                 "udonblas_sgemm_output.asset",
-                1024,
-                1
+                32,
+                32
             );
             displayMaterial.SetTexture("_Result", output);
             EditorUtility.SetDirty(displayMaterial);

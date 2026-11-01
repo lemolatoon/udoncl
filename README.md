@@ -268,9 +268,10 @@ Its first public operation is cuBLAS-contract column-major SGEMM:
 python libraries/udonblas/run_device.py --build-dir build/udoncl
 ```
 
-The current gather profile assigns one fragment to every output element and
-validates rectangular/transposed/padded matrices against an independent CPU
-reference on the real fragment backend. See
+The gather profile supports one- and two-dimensional NDRange ownership. SGEMM
+uses a 32×32 fragment target, assigns one active fragment to every output
+element, and validates rectangular/transposed/padded matrices against an
+independent CPU reference on the real fragment backend. See
 [libraries/udonblas/README.md](libraries/udonblas/README.md) for the stable API
 and the initial 16×16 profile limits.
 

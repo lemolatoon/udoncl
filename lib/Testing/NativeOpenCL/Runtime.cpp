@@ -37,15 +37,18 @@ Session::Session(const std::string &text, std::vector<GatherBinding> kernels,
   if (active || gatherBindings.empty())
     throw std::runtime_error("native OpenCL session already active or empty");
   for (const auto &binding : gatherBindings) {
+    uint32_t width = binding.width ? binding.width : binding.words;
+    uint32_t height = binding.height ? binding.height : 1;
     if (!binding.id || binding.words < 4 || binding.words > 16384 ||
-        binding.scalarCount > 14)
+        binding.scalarCount > 14 || !width || !height ||
+        uint64_t(width) * height != binding.words)
       throw std::runtime_error("invalid gather binding");
     for (const auto &other : gatherBindings)
       if (&other != &binding &&
           (other.id == binding.id || other.name == binding.name))
         throw std::runtime_error("duplicate gather binding");
     gatherRenderers.push_back(
-        createGatherRenderer(binding.fragment, vertex, binding.words));
+        createGatherRenderer(binding.fragment, vertex, width, height));
   }
   active = this;
 }
@@ -67,7 +70,10 @@ bool Session::gatherProfile(const char *name,
   *profile = {};
   for (const auto &binding : gatherBindings)
     if (binding.name == name) {
-      *profile = {binding.id, binding.words, binding.scalarCount};
+      uint32_t width = binding.width ? binding.width : binding.words;
+      uint32_t height = binding.height ? binding.height : 1;
+      *profile = {binding.id, binding.words, binding.scalarCount, width,
+                  height};
       return true;
     }
   return false;

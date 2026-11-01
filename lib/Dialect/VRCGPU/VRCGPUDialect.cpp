@@ -58,6 +58,7 @@ LogicalResult KernelOp::verify() {
         "kernel must retain source module and public entry name");
   if (gather(*this)) {
     auto words = (*this)->getAttrOfType<IntegerAttr>("vrc.words");
+    auto global = getGlobalSize();
     if (getBody().front().getNumArguments() != 1 ||
         !isa<VersionType>(getBody().front().getArgument(0).getType()) ||
         cast<VersionType>(getBody().front().getArgument(0).getType())
@@ -67,7 +68,8 @@ LogicalResult KernelOp::verify() {
         getArgumentKinds().size() > 16 ||
         getArgumentKinds()[0] != StringAttr::get(getContext(), "buffer") ||
         getArgumentKinds()[1] != StringAttr::get(getContext(), "buffer") ||
-        getGlobalSize() != ArrayRef<int32_t>{int32_t(words.getInt()), 1, 1} ||
+        global.size() != 3 || global[0] <= 0 || global[1] <= 0 ||
+        global[2] != 1 || int64_t(global[0]) * global[1] != words.getInt() ||
         getLocalSize() != ArrayRef<int32_t>{1, 1, 1} ||
         getGlobalOffset() != ArrayRef<int32_t>{0, 0, 0} ||
         !(*this)->hasAttr("vrc.gather_proven"))
@@ -253,13 +255,18 @@ LogicalResult TextureLoadOp::verify() {
   auto k = (*this)->getParentOfType<KernelOp>();
   auto r = SymbolTable::lookupNearestSymbolFrom<ResourceOp>(*this,
                                                             getResourceAttr());
-  auto y = getY().getDefiningOp<arith::ConstantOp>();
+  auto x = getX().getDefiningOp<arith::RemUIOp>();
+  auto y = getY().getDefiningOp<arith::DivUIOp>();
+  auto width =
+      x ? x.getRhs().getDefiningOp<arith::ConstantOp>() : arith::ConstantOp();
+  auto widthValue =
+      width ? dyn_cast<IntegerAttr>(width.getValue()) : IntegerAttr();
   auto words = k ? k->getAttrOfType<IntegerAttr>("vrc.words") : IntegerAttr();
   if (!k || !gather(k) || !r || r.getKind() != "texture" || !words ||
-      words.getInt() != getElementCount() || !y ||
-      !isa<IntegerAttr>(y.getValue()) ||
-      cast<IntegerAttr>(y.getValue()).getInt() != 0)
-    return emitOpError("load must address the read-only 1D input extent");
+      words.getInt() != getElementCount() || !x || !y ||
+      x.getLhs() != y.getLhs() || x.getRhs() != y.getRhs() || !widthValue ||
+      widthValue.getInt() != k.getGlobalSize()[0])
+    return emitOpError("load must address the read-only 2D input extent");
   return success();
 }
 LogicalResult RawUnpackOp::verify() {

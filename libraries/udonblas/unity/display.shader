@@ -22,7 +22,8 @@ float decodeFloat(float4 bytes) {
 fixed4 frag(v2f input) : SV_Target {
     uint row = min(3u, uint(input.uv.y * 4.0));
     uint column = min(4u, uint(input.uv.x * 5.0));
-    float value = decodeFloat(_Result.Load(int3(768u + row + column * 4u, 0, 0)));
+    uint index = 768u + row + column * 4u;
+    float value = decodeFloat(_Result.Load(int3(index & 31u, index >> 5u, 0)));
     float magnitude = saturate(abs(value) * 0.25);
     return value >= 0.0 ? fixed4(0.1, magnitude, 0.2, 1.0)
                         : fixed4(magnitude, 0.1, 0.2, 1.0);
