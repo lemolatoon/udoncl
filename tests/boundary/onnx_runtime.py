@@ -629,6 +629,27 @@ assert "int64_t *" in llama_view_host_c
 assert llama_view_host_c.count(" = buffers->") == 4
 (output / "llama-view-host.c").write_text(llama_view_host_c, encoding="utf-8")
 
+tile_model = parse_model(
+    model_proto(
+        graph_proto(
+            "standard_tile",
+            [node_proto("Tile", ["x", "repeats"], ["y"], "tile")],
+            [tensor_int64_proto("repeats", [2], [2, 3])],
+            [value_info_proto("x", [2, 3])],
+            [value_info_proto("y", [4, 9])],
+        )
+    )
+)
+tile_plan = compile_operators(tile_model)
+assert tile_plan["nodes"][0]["provider"] == "udonatenTile"
+assert tile_plan["nodes"][0]["shape"] == [4, 9]
+assert tile_plan["nodes"][0]["attributes"]["repeats"]["ints"] == [2, 3]
+assert tile_plan["aot"]["calls"][0]["function"] == "udonatenTile"
+tile_host_c = emit_c_host(tile_plan)
+assert "udonatenTile(" in tile_host_c
+assert "(const int64_t[]){2, 3}, 2" in tile_host_c
+(output / "tile-host.c").write_text(tile_host_c, encoding="utf-8")
+
 rms_model = parse_model(
     model_proto(
         graph_proto(
@@ -722,6 +743,7 @@ generated_sources = [
     output / "rl-policy-host.c",
     output / "attention-matmul-host.c",
     output / "llama-view-host.c",
+    output / "tile-host.c",
     output / "rms-normalization-host.c",
     output / "gather-host.c",
     output / "tiny-llama-standard-host.c",

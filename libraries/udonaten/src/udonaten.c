@@ -7,6 +7,12 @@ udonatenBackendWeightInt4packMm(udonatenHandle_t handle, int m, int n, int k,
                                 const uint8_t *packed_weight, int group_size,
                                 const float *scales_and_zeros, float *output);
 
+udonatenStatus_t udonatenBackendTile(udonatenHandle_t handle, int input_n,
+                                     int input_c, int input_h, int input_w,
+                                     const float *input, int repeat_n,
+                                     int repeat_c, int repeat_h, int repeat_w,
+                                     int output_words, float *output);
+
 udonatenStatus_t udonatenEmbedding(udonatenHandle_t handle,
                                    udonatenTensorDescriptor_t weight_descriptor,
                                    const float *weight, const int32_t *indices,
@@ -38,6 +44,49 @@ udonatenRmsNorm(udonatenHandle_t handle,
   return udondnnExtRmsNormalizationForward(
       handle, &alpha, input_descriptor, input, weight_descriptor, weight,
       effective_epsilon, &beta, output_descriptor, output);
+}
+
+udonatenStatus_t udonatenTile(udonatenHandle_t handle,
+                              udonatenTensorDescriptor_t input_descriptor,
+                              const float *input, const int64_t *dims,
+                              size_t dimensions,
+                              udonatenTensorDescriptor_t output_descriptor,
+                              float *output) {
+  udondnnDataType_t input_type, output_type;
+  int input_n, input_c, input_h, input_w;
+  int output_n, output_c, output_h, output_w;
+  int n_stride, c_stride, h_stride, w_stride;
+  int repeats[4] = {1, 1, 1, 1};
+  size_t index;
+  if (dimensions > 4)
+    return UDONDNN_STATUS_NOT_SUPPORTED;
+  if (dimensions && !dims)
+    return UDONDNN_STATUS_BAD_PARAM;
+  for (index = 0; index < dimensions; ++index) {
+    int64_t repeat = dims[index];
+    if (repeat < 0)
+      return UDONDNN_STATUS_BAD_PARAM;
+    if (repeat == 0 || repeat > 0x7fffffff)
+      return UDONDNN_STATUS_NOT_SUPPORTED;
+    repeats[4 - dimensions + index] = (int)repeat;
+  }
+  if (udondnnGetTensor4dDescriptor(input_descriptor, &input_type, &input_n,
+                                   &input_c, &input_h, &input_w, &n_stride,
+                                   &c_stride, &h_stride,
+                                   &w_stride) != UDONDNN_STATUS_SUCCESS ||
+      udondnnGetTensor4dDescriptor(output_descriptor, &output_type, &output_n,
+                                   &output_c, &output_h, &output_w, &n_stride,
+                                   &c_stride, &h_stride,
+                                   &w_stride) != UDONDNN_STATUS_SUCCESS ||
+      input_type != UDONDNN_DATA_FLOAT || output_type != UDONDNN_DATA_FLOAT ||
+      (int64_t)output_n != (int64_t)input_n * repeats[0] ||
+      (int64_t)output_c != (int64_t)input_c * repeats[1] ||
+      (int64_t)output_h != (int64_t)input_h * repeats[2] ||
+      (int64_t)output_w != (int64_t)input_w * repeats[3] || !input || !output)
+    return UDONDNN_STATUS_BAD_PARAM;
+  return udonatenBackendTile(handle, input_n, input_c, input_h, input_w, input,
+                             repeats[0], repeats[1], repeats[2], repeats[3],
+                             output_n * output_c * output_h * output_w, output);
 }
 
 udonatenStatus_t udonatenWeightInt4packMm(

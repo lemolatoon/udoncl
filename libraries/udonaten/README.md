@@ -15,6 +15,12 @@ The first supported inference operators are:
   `rms_norm(input, normalized_shape, weight=None, eps=None)`. The current
   backend requires a weight tensor and supports normalized regions through the
   existing 512-element Device profile.
+- `udonatenTile`, corresponding to ATen `tile(input, dims)`. Repeat dimensions
+  align to the trailing input dimensions and omitted leading repeats are one,
+  matching ATen's `tile_symint` delegation to `repeat`. The current four-axis
+  Device profile copies up to 4,096 float elements with one independent
+  fragment per output element; ranks above four and zero-sized outputs return
+  `NOT_SUPPORTED`.
 - `udonatenWeightInt4packMm`, corresponding exactly in semantic argument order
   to ATen `_weight_int4pack_mm(input, packed_weight, group_size,
   scales_and_zeros)`. Its Device kernel applies signed INT4 dequantization as
@@ -39,8 +45,9 @@ The package importer creates `UdonAtenWeightInt4packMm.prefab`; the Editor
 lifecycle test executes kernel 208 through SDK IUdonVM and validates non-zero
 zero points before deleting all generated assets.
 
-The implementation currently adapts the already validated UdonDNN prototype
+Embedding and RMSNorm currently adapt the already validated UdonDNN prototype
 kernels. Those functions are backend details, not the public ownership model.
+Tile and INT4 matrix multiplication have UdonATen-owned Device kernels.
 The fixed two-page artifact validates the runtime texture-copy and accumulation
 mechanism. `udon-onnx-page --all` now materializes and dispatches arbitrary M/K
 tile grids for one call, including edge tiles and M-tile result scatter. Its

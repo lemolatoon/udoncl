@@ -26,6 +26,11 @@ Authoritative sources:
   <https://github.com/pytorch/pytorch/blob/main/aten/src/ATen/native/layer_norm.cpp>
   and
   <https://github.com/pytorch/pytorch/blob/main/aten/src/ATen/native/cuda/layer_norm_kernel.cu>
+- ATen `tile` schema and its `repeat` decomposition (leading-one promotion,
+  followed by a parallel copy):
+  <https://github.com/pytorch/pytorch/blob/main/aten/src/ATen/native/native_functions.yaml>
+  and
+  <https://github.com/pytorch/pytorch/blob/main/aten/src/ATen/native/TensorShape.cpp>
 - TorchAO INT4 weight-only configuration and dispatch:
   <https://github.com/pytorch/ao/blob/main/torchao/quantization/quant_api.py>
 - ATen INT4 schema and CUDA implementation (`[M,K]` input, `[M,N]` output,
@@ -34,10 +39,12 @@ Authoritative sources:
   and
   <https://github.com/pytorch/pytorch/blob/main/aten/src/ATen/native/cuda/int4mm.cu>
 
-The existing `udondnnExtGatherForward`, `udondnnExtRmsNormalizationForward`,
-and `udondnnExtTileForward` names are provisional backend details. UdonATen may
-reuse their Device kernels internally during migration, but ONNX plans and
-generated Host code expose UdonATen contracts. INT4 AOT now uses separate
+The existing `udondnnExtGatherForward` and
+`udondnnExtRmsNormalizationForward` names are provisional backend details.
+UdonATen may reuse their Device kernels internally during migration, but ONNX
+plans and generated Host code expose UdonATen contracts. Tile is implemented
+directly as the ATen-shaped `udonatenTile` operation and Device kernel, without
+adding a UdonDNN extension. INT4 AOT now uses separate
 packed-weight and `[K/group_size,N,2]` bfloat16 scale/zero inputs and the
 `udonatenWeightInt4packMm` contract. Its Device implementation remains
 an UdonATen-owned kernel, with one fragment per output feature and numerical

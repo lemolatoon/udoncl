@@ -62,6 +62,11 @@ across all calls remain separate packaging work.
 Identity, Reshape, Squeeze, and Unsqueeze are compiled as typed zero-copy views.
 Their embedded int32/int64 shape inputs are evaluated at AOT time and retained
 with the correct C ABI type rather than being treated as float buffers.
+ONNX Tile with constant repeats lowers to the ATen-shaped `udonatenTile`
+operation. Its repeats are retained in the execution plan and emitted into the
+AOT Host call, so the provider no longer advertises Tile without an executable
+library implementation. All 32 key/value-head repetition nodes in the checked
+Llama 3.1 8B single-token plan fit the 4,096-element Device profile.
 ONNX opset-23 RMSNormalization lowers to the ATen-shaped `udonatenRmsNorm`
 operator, not to cuDNN. Rank-2, axis-zero ONNX Gather used for token lookup
 lowers to `udonatenEmbedding`, following ATen's

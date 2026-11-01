@@ -1149,6 +1149,8 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
             output = [dimension * repeat for dimension, repeat in zip(inputs[0], repeats)]
             if len(output) > 4:
                 raise ValueError("Udon Tile output rank must not exceed four")
+            attributes = dict(attributes)
+            attributes["repeats"] = {"ints": repeats}
         elif operation == "Gemm":
             if len(node["inputs"]) not in (2, 3):
                 raise ValueError("ONNX Gemm requires two or three inputs")
@@ -1713,6 +1715,17 @@ def emit_c_host(plan: dict) -> str:
                 "  CHECK_DNN(udonatenEmbedding("
                 f"dnn, {tensor_descriptors[inputs[0]]}, buffers->{names[inputs[0]]}, "
                 f"buffers->{names[inputs[1]]}, {indices_count}, -1, 0, 0, "
+                f"{tensor_descriptors[output]}, buffers->{names[output]}));"
+            )
+        elif operation == "Tile":
+            repeats = _attribute(node, "repeats", "ints", None)
+            if repeats is None:
+                raise ValueError("Tile AOT emission requires constant repeats")
+            repeat_values = ", ".join(str(value) for value in repeats)
+            lines.append(
+                "  CHECK_DNN(udonatenTile("
+                f"dnn, {tensor_descriptors[inputs[0]]}, buffers->{names[inputs[0]]}, "
+                f"(const int64_t[]){{{repeat_values}}}, {len(repeats)}, "
                 f"{tensor_descriptors[output]}, buffers->{names[output]}));"
             )
         elif operation == "AveragePool":

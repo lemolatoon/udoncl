@@ -89,6 +89,7 @@ def main():
     rms_norm_device = source / "device/rms_norm.cl"
     gather_device = source / "device/gather.cl"
     int4_device = root / "libraries/udonaten/device/weight_int4pack_mm.cl"
+    tile_device = root / "libraries/udonaten/device/tile.cl"
     convolution_text = convolution_device.read_text(encoding="utf-8")
     activation_text = activation_device.read_text(encoding="utf-8")
     pooling_text = pooling_device.read_text(encoding="utf-8")
@@ -98,6 +99,7 @@ def main():
     rms_norm_text = rms_norm_device.read_text(encoding="utf-8")
     gather_text = gather_device.read_text(encoding="utf-8")
     int4_text = int4_device.read_text(encoding="utf-8")
+    tile_text = tile_device.read_text(encoding="utf-8")
     device_text = (
         convolution_text
         + "\n"
@@ -116,6 +118,8 @@ def main():
         + gather_text
         + "\n"
         + int4_text
+        + "\n"
+        + tile_text
     )
     (output / "udondnn_device_source.h").write_text(
         "#define UDONDNN_DEVICE_SOURCE " + json.dumps(device_text) + "\n",
@@ -218,6 +222,13 @@ def main():
         int4_device,
         "udonaten_weight_int4pack_mm",
         208,
+        8192,
+    )
+    tile_bundle = emit_device(
+        "tile",
+        tile_device,
+        "udonaten_tile",
+        209,
         8192,
     )
     manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
@@ -390,6 +401,22 @@ def main():
     )
     if '_VRC_Arg5 ("Arg5", Int)' not in int4_shaderlab:
         raise RuntimeError("UdonATen INT4 integer uniforms are not Unity-compatible")
+    tile_manifest = json.loads((tile_bundle / "manifest.json").read_text(encoding="utf-8"))
+    tile_kernel = tile_manifest["device"]["kernels"][0]
+    if (
+        tile_kernel["name"] != "udonaten_tile"
+        or tile_kernel["global_size"] != [8192, 1, 1]
+        or [argument["required_bytes"] for argument in tile_kernel["args"][:2]]
+        != [32768, 32768]
+        or len(tile_kernel["args"]) != 11
+    ):
+        raise RuntimeError("UdonATen Tile manifest does not match its ATen ABI")
+    tile_fragment = tile_bundle / "kernels/kernel_209.hlsl"
+    tile_shaderlab = (tile_bundle / "kernels/kernel_209.shader").read_text(
+        encoding="utf-8"
+    )
+    if '_VRC_Arg10 ("Arg10", Int)' not in tile_shaderlab:
+        raise RuntimeError("UdonATen Tile integer uniforms are not Unity-compatible")
     (output / "Bindings.h").write_text(
         "inline const char *deviceSource() { return "
         + json.dumps(device_text)
@@ -399,7 +426,7 @@ def main():
         + "const std::string &pooling, const std::string &softmax, "
         + "const std::string &batchnorm, const std::string &opTensor, "
         + "const std::string &rmsNorm, const std::string &gather, "
-        + "const std::string &int4) { return {"
+        + "const std::string &int4, const std::string &tile) { return {"
         + '{200, 2048, 7, "udondnn_convolution_forward", convolution}, '
         + '{201, 2048, 6, "udondnn_activation_forward", activation}, '
         + '{202, 2048, 7, "udondnn_pooling_forward", pooling}, '
@@ -408,7 +435,8 @@ def main():
         + '{205, 2048, 8, "udondnn_op_tensor", opTensor}, '
         + '{206, 2048, 5, "udondnn_ext_rms_normalization_forward", rmsNorm}, '
         + '{207, 2048, 6, "udondnn_ext_gather_forward", gather}, '
-        + '{208, 8192, 4, "udonaten_weight_int4pack_mm", int4}}; }\n',
+        + '{208, 8192, 4, "udonaten_weight_int4pack_mm", int4}, '
+        + '{209, 8192, 9, "udonaten_tile", tile}}; }\n',
         encoding="utf-8",
     )
 
@@ -1566,6 +1594,7 @@ def main():
     rms_norm_object = output / ("rms-norm-device" + object_suffix)
     gather_object = output / ("gather-device" + object_suffix)
     int4_object = output / ("weight-int4pack-mm-device" + object_suffix)
+    tile_object = output / ("tile-device" + object_suffix)
     run([clang, *runtime_flags, "-c", native_ir, "-o", host_object])
     run(
         [
@@ -1708,6 +1737,20 @@ def main():
             int4_object,
         ]
     )
+    run(
+        [
+            clang,
+            *runtime_flags,
+            "-x",
+            "c",
+            "-std=c11",
+            "-ffp-contract=off",
+            "-c",
+            tile_device,
+            "-o",
+            tile_object,
+        ]
+    )
 
     vertex = output / "fullscreen.hlsl"
     vertex.write_text(
@@ -1730,6 +1773,7 @@ def main():
                 (rms_norm_fragment, "frag", "frag"),
                 (gather_fragment, "frag", "frag"),
                 (int4_fragment, "frag", "frag"),
+                (tile_fragment, "frag", "frag"),
                 (vertex, "vert", "vert"),
             ]
         ):
@@ -1760,6 +1804,7 @@ def main():
             rms_norm_fragment,
             gather_fragment,
             int4_fragment,
+            tile_fragment,
             vertex,
         ) = compiled
 
@@ -1785,6 +1830,7 @@ def main():
             "-DUDONDNN_RMS_NORM_OBJECT=" + rms_norm_object.as_posix(),
             "-DUDONDNN_GATHER_OBJECT=" + gather_object.as_posix(),
             "-DUDONATEN_INT4_OBJECT=" + int4_object.as_posix(),
+            "-DUDONATEN_TILE_OBJECT=" + tile_object.as_posix(),
             "-DUDONDNN_BINDINGS_DIR=" + output.as_posix(),
         ]
     )
@@ -1803,6 +1849,7 @@ def main():
                 rms_norm_fragment,
                 gather_fragment,
                 int4_fragment,
+                tile_fragment,
                 vertex,
             ]
         ),

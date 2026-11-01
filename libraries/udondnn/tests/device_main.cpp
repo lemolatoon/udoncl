@@ -30,6 +30,8 @@ extern "C" size_t udondnn_gather_cpu_gid;
 size_t udondnn_gather_cpu_gid;
 extern "C" size_t udonaten_int4_cpu_gid;
 size_t udonaten_int4_cpu_gid;
+extern "C" size_t udonaten_tile_cpu_gid;
+size_t udonaten_tile_cpu_gid;
 
 namespace {
 struct Case {
@@ -350,19 +352,19 @@ void opTensorReference(const OpTensorCase &test, const std::vector<float> &a,
 } // namespace
 
 int main(int argc, char **argv) {
-  if (argc != 11) {
+  if (argc != 12) {
     std::cerr << "usage: udondnn-device convolution-fragment "
                  "activation-fragment pooling-fragment softmax-fragment "
                  "batchnorm-fragment op-tensor-fragment rmsnorm-fragment "
-                 "gather-fragment int4-fragment vertex\n";
+                 "gather-fragment int4-fragment tile-fragment vertex\n";
     return 2;
   }
   try {
-    native_opencl::Session session(deviceSource(),
-                                   manifestBindings(argv[1], argv[2], argv[3],
-                                                    argv[4], argv[5], argv[6],
-                                                    argv[7], argv[8], argv[9]),
-                                   argv[10]);
+    native_opencl::Session session(
+        deviceSource(),
+        manifestBindings(argv[1], argv[2], argv[3], argv[4], argv[5], argv[6],
+                         argv[7], argv[8], argv[9], argv[10]),
+        argv[11]);
     udondnnHandle_t handle = 0;
     require(udondnnCreate(&handle), UDONDNN_STATUS_SUCCESS, "udondnnCreate");
     const std::array<Case, 5> cases{{
@@ -1000,6 +1002,60 @@ int main(int argc, char **argv) {
     require(udondnnDestroyTensorDescriptor(gatherOutputDescriptor),
             UDONDNN_STATUS_SUCCESS, "destroy Gather output descriptor");
 
+    udondnnTensorDescriptor_t tileInputDescriptor = 0, tileOutputDescriptor = 0;
+    std::vector<float> tileInput(12), tileActual(72), tileExpected(72);
+    const int64_t tileRepeats[2] = {2, 3};
+    for (int index = 0; index < int(tileInput.size()); ++index)
+      tileInput[index] = value(index, 181);
+    for (int channel = 0; channel < 2; ++channel)
+      for (int height = 0; height < 4; ++height)
+        for (int width = 0; width < 9; ++width) {
+          int outputIndex = (channel * 4 + height) * 9 + width;
+          int inputIndex = (channel * 2 + height % 2) * 3 + width % 3;
+          tileExpected[outputIndex] = tileInput[inputIndex];
+        }
+    require(udondnnCreateTensorDescriptor(&tileInputDescriptor),
+            UDONDNN_STATUS_SUCCESS, "create Tile input descriptor");
+    require(udondnnCreateTensorDescriptor(&tileOutputDescriptor),
+            UDONDNN_STATUS_SUCCESS, "create Tile output descriptor");
+    require(udondnnSetTensor4dDescriptor(tileInputDescriptor,
+                                         UDONDNN_TENSOR_NCHW,
+                                         UDONDNN_DATA_FLOAT, 1, 2, 2, 3),
+            UDONDNN_STATUS_SUCCESS, "set Tile input descriptor");
+    require(udondnnSetTensor4dDescriptor(tileOutputDescriptor,
+                                         UDONDNN_TENSOR_NCHW,
+                                         UDONDNN_DATA_FLOAT, 1, 2, 4, 9),
+            UDONDNN_STATUS_SUCCESS, "set Tile output descriptor");
+    require(udonatenTile(handle, tileInputDescriptor, tileInput.data(),
+                         tileRepeats, 2, tileOutputDescriptor,
+                         tileActual.data()),
+            UDONDNN_STATUS_SUCCESS, "udonatenTile");
+    float tileMaximumError = 0.0f;
+    for (size_t index = 0; index < tileActual.size(); ++index)
+      tileMaximumError = std::max(
+          tileMaximumError, std::abs(tileActual[index] - tileExpected[index]));
+    if (tileMaximumError > 0.0f)
+      throw std::runtime_error("UdonATen Tile results diverged");
+    const int64_t tooManyTileDimensions[5] = {1, 1, 1, 1, 1};
+    require(udonatenTile(handle, tileInputDescriptor, tileInput.data(),
+                         tooManyTileDimensions, 5, tileOutputDescriptor,
+                         tileActual.data()),
+            UDONDNN_STATUS_NOT_SUPPORTED, "reject Tile rank above four");
+    const int64_t zeroTileRepeat[2] = {0, 3};
+    require(udonatenTile(handle, tileInputDescriptor, tileInput.data(),
+                         zeroTileRepeat, 2, tileOutputDescriptor,
+                         tileActual.data()),
+            UDONDNN_STATUS_NOT_SUPPORTED, "report unsupported empty Tile");
+    const int64_t negativeTileRepeat[2] = {-1, 3};
+    require(udonatenTile(handle, tileInputDescriptor, tileInput.data(),
+                         negativeTileRepeat, 2, tileOutputDescriptor,
+                         tileActual.data()),
+            UDONDNN_STATUS_BAD_PARAM, "reject negative Tile repeat");
+    require(udondnnDestroyTensorDescriptor(tileInputDescriptor),
+            UDONDNN_STATUS_SUCCESS, "destroy Tile input descriptor");
+    require(udondnnDestroyTensorDescriptor(tileOutputDescriptor),
+            UDONDNN_STATUS_SUCCESS, "destroy Tile output descriptor");
+
     /* K=256 forces two kernel-208 pages while the public ATen call remains a
      * single whole-matrix operation. */
     constexpr int int4M = 3, int4N = 32, int4K = 256, int4Group = 32;
@@ -1324,6 +1380,8 @@ int main(int argc, char **argv) {
               << " gather_max_error=" << gatherMaximumError
               << " int4_outputs=" << int4Actual.size()
               << " int4_max_error=" << int4MaximumError
+              << " tile_outputs=" << tileActual.size()
+              << " tile_max_error=" << tileMaximumError
               << " renderer=" << session.deviceName()
               << " draws=" << session.drawCount() << "\n";
     return 0;

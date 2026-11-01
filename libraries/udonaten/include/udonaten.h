@@ -31,6 +31,15 @@ udonatenRmsNorm(udonatenHandle_t handle,
                 const float *weight, const float *epsilon,
                 udonatenTensorDescriptor_t output_descriptor, float *output);
 
+/* ATen: tile(input, dims). The dimensions are aligned to the trailing input
+ * dimensions; omitted leading repeats are one, as in ATen tile_symint. */
+udonatenStatus_t udonatenTile(udonatenHandle_t handle,
+                              udonatenTensorDescriptor_t input_descriptor,
+                              const float *input, const int64_t *dims,
+                              size_t dimensions,
+                              udonatenTensorDescriptor_t output_descriptor,
+                              float *output);
+
 /* ATen: _weight_int4pack_mm(input, packed_weight, group_size,
  *                           scales_and_zeros).
  *

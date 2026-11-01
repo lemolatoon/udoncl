@@ -38,6 +38,7 @@
 #define UDONATEN_INT4_RESULT_OFFSET 7168
 #define UDONATEN_INT4_MAX_N 64
 #define UDONATEN_INT4_MAX_K 128
+#define UDONATEN_TILE_RESULT_OFFSET 4096
 #define UDONDNN_DESCRIPTOR_MAX_WORDS 4096
 #define UDONDNN_HANDLE 1u
 #define UDONDNN_DESCRIPTOR_SLOTS 8
@@ -108,6 +109,7 @@ static cl_kernel op_tensor_kernel;
 static cl_kernel rms_norm_kernel;
 static cl_kernel gather_kernel;
 static cl_kernel weight_int4pack_mm_kernel;
+static cl_kernel tile_kernel;
 static cl_mem input_buffer;
 static cl_mem output_buffer;
 static cl_mem batchnorm_input_buffer;
@@ -198,6 +200,8 @@ get_op_tensor(udondnnOpTensorDescriptor_t descriptor) {
 }
 
 static void clear_objects(void) {
+  if (tile_kernel)
+    clReleaseKernel(tile_kernel);
   if (weight_int4pack_mm_kernel)
     clReleaseKernel(weight_int4pack_mm_kernel);
   if (gather_kernel)
@@ -243,6 +247,7 @@ static void clear_objects(void) {
   rms_norm_kernel = 0;
   gather_kernel = 0;
   weight_int4pack_mm_kernel = 0;
+  tile_kernel = 0;
   program = 0;
   output_buffer = input_buffer = 0;
   batchnorm_output_buffer = batchnorm_input_buffer = 0;
@@ -370,6 +375,13 @@ udondnnStatus_t udondnnCreate(udondnnHandle_t *handle) {
       clSetKernelArg(weight_int4pack_mm_kernel, 0, sizeof(int4_input_buffer),
                      &int4_input_buffer) != CL_SUCCESS ||
       clSetKernelArg(weight_int4pack_mm_kernel, 1, sizeof(int4_output_buffer),
+                     &int4_output_buffer) != CL_SUCCESS)
+    return execution_failure();
+  tile_kernel = clCreateKernel(program, "udonaten_tile", &status);
+  if (status != CL_SUCCESS ||
+      clSetKernelArg(tile_kernel, 0, sizeof(int4_input_buffer),
+                     &int4_input_buffer) != CL_SUCCESS ||
+      clSetKernelArg(tile_kernel, 1, sizeof(int4_output_buffer),
                      &int4_output_buffer) != CL_SUCCESS)
     return execution_failure();
   *handle = UDONDNN_HANDLE;
@@ -1512,5 +1524,57 @@ udonatenBackendWeightInt4packMm(udondnnHandle_t handle, int m, int n, int k,
       }
     }
 #undef SET_INT4_ARGUMENT
+  return UDONDNN_STATUS_SUCCESS;
+}
+
+/* Private UdonATen backend. ATen owns tile; UdonDNN only supplies the shared
+ * OpenCL runtime and descriptor implementation. */
+udondnnStatus_t udonatenBackendTile(udondnnHandle_t handle, int input_n,
+                                    int input_c, int input_h, int input_w,
+                                    const float *input, int repeat_n,
+                                    int repeat_c, int repeat_h, int repeat_w,
+                                    int output_words, float *output) {
+  int input_words = input_n * input_c * input_h * input_w;
+  int index;
+  size_t global = UDONATEN_INT4_WORDS, local = 1;
+  cl_int status;
+  if (handle != UDONDNN_HANDLE || !context)
+    return UDONDNN_STATUS_NOT_INITIALIZED;
+  if (!input || !output || input_n <= 0 || input_c <= 0 || input_h <= 0 ||
+      input_w <= 0 || repeat_n <= 0 || repeat_c <= 0 || repeat_h <= 0 ||
+      repeat_w <= 0 || input_words > UDONATEN_TILE_RESULT_OFFSET ||
+      output_words <= 0 || output_words > UDONATEN_TILE_RESULT_OFFSET)
+    return UDONDNN_STATUS_BAD_PARAM;
+  for (index = 0; index < UDONATEN_INT4_WORDS; ++index)
+    int4_state[index] = 0.0f;
+  for (index = 0; index < input_words; ++index)
+    int4_state[index] = input[index];
+#define SET_TILE_ARGUMENT(slot, value)                                         \
+  do {                                                                         \
+    status = clSetKernelArg(tile_kernel, slot, sizeof(value), &(value));       \
+    if (status != CL_SUCCESS)                                                  \
+      return UDONDNN_STATUS_EXECUTION_FAILED;                                  \
+  } while (0)
+  SET_TILE_ARGUMENT(2, input_n);
+  SET_TILE_ARGUMENT(3, input_c);
+  SET_TILE_ARGUMENT(4, input_h);
+  SET_TILE_ARGUMENT(5, input_w);
+  SET_TILE_ARGUMENT(6, repeat_n);
+  SET_TILE_ARGUMENT(7, repeat_c);
+  SET_TILE_ARGUMENT(8, repeat_h);
+  SET_TILE_ARGUMENT(9, repeat_w);
+  SET_TILE_ARGUMENT(10, output_words);
+#undef SET_TILE_ARGUMENT
+  if (clEnqueueWriteBuffer(queue, int4_input_buffer, CL_TRUE, 0,
+                           sizeof(int4_state), int4_state, 0, 0,
+                           0) != CL_SUCCESS ||
+      clEnqueueNDRangeKernel(queue, tile_kernel, 1, 0, &global, &local, 0, 0,
+                             0) != CL_SUCCESS ||
+      clEnqueueReadBuffer(queue, int4_output_buffer, CL_TRUE,
+                          UDONATEN_TILE_RESULT_OFFSET * sizeof(float),
+                          output_words * sizeof(float), output, 0, 0,
+                          0) != CL_SUCCESS ||
+      clFinish(queue) != CL_SUCCESS)
+    return UDONDNN_STATUS_EXECUTION_FAILED;
   return UDONDNN_STATUS_SUCCESS;
 }

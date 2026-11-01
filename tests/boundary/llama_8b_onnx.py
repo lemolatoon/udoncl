@@ -1,6 +1,7 @@
 """Validate the Llama 3.1 8B ONNX external-weight execution plan."""
 
 import json
+import math
 from pathlib import Path
 import subprocess
 import sys
@@ -127,6 +128,12 @@ assert (
     == 513024
 )
 assert sum(node["op_type"] == "Tile" for node in operator_plan["nodes"]) == 32
+tile_calls = [
+    call for call in operator_plan["aot"]["calls"] if call["function"] == "udonatenTile"
+]
+assert len(tile_calls) == 32
+assert all(math.prod(call["output_shape"]) <= 4096 for call in tile_calls)
+assert all(call["attributes"]["repeats"]["ints"] == [1, 1, 4, 1] for call in tile_calls)
 
 sys.path.insert(0, str(root / "runtime/onnx"))
 from udon_onnx import (  # noqa: E402
