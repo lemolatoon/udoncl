@@ -27,17 +27,20 @@ The first supported inference operators are:
 `libraries/udondnn/run_device.py` also emits the
 `unity-udonaten-int4-mm-bundle` reusable Unity artifact. Its manifest retains
 the semantic input, packed-weight, `[K/group_size,N,2]` scale/zero, and output
-shapes while the fixture expands one 8x64 active tile for Device dispatch.
+shapes while the fixture expands two 8x128 Device weight pages for one 8x256
+public operation. A fragment compose pass copies the runtime activation slice
+and prior GPU output into each 8,192-word active state; one Host `_run` executes
+both pages without a CPU readback or a prefilled partial-sum fixture.
 The package importer creates `UdonAtenWeightInt4packMm.prefab`; the Editor
 lifecycle test executes kernel 208 through SDK IUdonVM and validates non-zero
 zero points before deleting all generated assets.
 
 The implementation currently adapts the already validated UdonDNN prototype
 kernels. Those functions are backend details, not the public ownership model.
-Tile/repeat and the runtime texture-copy dispatcher remain before
-the Llama 8B operator plan can emit an executable Host. Its external-weight
-page contract and bounded page materializer are now implemented in the ONNX
-runtime.
+The fixed two-page artifact validates the runtime texture-copy and accumulation
+mechanism. A general AOT dispatcher over arbitrary M/K tile grids and binding
+the materialized external pages still remain before the Llama 8B operator plan
+can emit an executable Host.
 
 See [operator ownership](../../docs/architecture/operator-ownership.md) for
 the source audit and compatibility rules.

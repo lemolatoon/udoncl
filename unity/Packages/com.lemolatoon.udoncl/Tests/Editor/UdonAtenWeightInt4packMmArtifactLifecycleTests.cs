@@ -70,9 +70,8 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             UdonBehaviour behaviour = prefab.GetComponent<UdonBehaviour>();
             Assert.NotNull(behaviour);
             AssertPublic(behaviour, "n", 8);
-            AssertPublic(behaviour, "k", 64);
-            AssertPublic(behaviour, "rowStride", 36);
-            AssertPublic(behaviour, "accumulate", 0);
+            AssertPublic(behaviour, "k", 128);
+            AssertPublic(behaviour, "rowStride", 72);
         }
 
         [Test]
@@ -91,13 +90,38 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             Set(
                 heap,
                 program,
-                "inputState",
-                Load<Texture2D>("Textures/udonaten_weight_int4pack_mm_input.asset")
+                "weightPage0",
+                Load<Texture2D>("Textures/udonaten_weight_int4pack_mm_weight_page_0.asset")
+            );
+            Set(
+                heap,
+                program,
+                "weightPage1",
+                Load<Texture2D>("Textures/udonaten_weight_int4pack_mm_weight_page_1.asset")
+            );
+            Set(
+                heap,
+                program,
+                "activationState",
+                Load<Texture2D>("Textures/udonaten_weight_int4pack_mm_activation.asset")
+            );
+            Set(
+                heap,
+                program,
+                "assemblyState",
+                Load<RenderTexture>("RenderTextures/udonaten_weight_int4pack_mm_assembly.asset")
+            );
+            Set(
+                heap,
+                program,
+                "partialState",
+                Load<RenderTexture>("RenderTextures/udonaten_weight_int4pack_mm_partial.asset")
             );
             RenderTexture output = Load<RenderTexture>(
                 "RenderTextures/udonaten_weight_int4pack_mm_output.asset"
             );
             Set(heap, program, "outputState", output);
+            Set(heap, program, "composeMaterial", Load<Material>("Materials/page-compose.mat"));
             Set(
                 heap,
                 program,
@@ -106,9 +130,8 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             );
             Set(heap, program, "displayMaterial", Load<Material>("Materials/display.mat"));
             Set(heap, program, "n", 8);
-            Set(heap, program, "k", 64);
-            Set(heap, program, "rowStride", 36);
-            Set(heap, program, "accumulate", 0);
+            Set(heap, program, "k", 128);
+            Set(heap, program, "rowStride", 72);
             vm.SetProgramCounter(program.EntryPoints.GetAddressFromSymbol("_run"));
             Assert.AreEqual(0u, vm.Interpret(), "SDK IUdonVM rejected UdonATen INT4 MM.");
 
@@ -122,28 +145,6 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 maximumError = Mathf.Max(
                     maximumError,
                     Mathf.Abs(Decode(actual[7168 + row]) - Decode(expected[row]))
-                );
-            Assert.That(maximumError, Is.LessThan(0.0005f));
-
-            Set(
-                heap,
-                program,
-                "inputState",
-                Load<Texture2D>("Textures/udonaten_weight_int4pack_mm_accumulate_input.asset")
-            );
-            Set(heap, program, "accumulate", 1);
-            vm.SetProgramCounter(program.EntryPoints.GetAddressFromSymbol("_run"));
-            Assert.AreEqual(
-                0u,
-                vm.Interpret(),
-                "SDK IUdonVM rejected an accumulated UdonATen INT4 K tile."
-            );
-            actual = ReadPixels(output, 8192);
-            maximumError = 0.0f;
-            for (int row = 0; row < 8; ++row)
-                maximumError = Mathf.Max(
-                    maximumError,
-                    Mathf.Abs(Decode(actual[7168 + row]) - Decode(expected[8 + row]))
                 );
             Assert.That(maximumError, Is.LessThan(0.0005f));
         }

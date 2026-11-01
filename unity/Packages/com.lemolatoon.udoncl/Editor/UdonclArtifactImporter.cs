@@ -782,40 +782,90 @@ namespace Lemolatoon.Udoncl.Editor
         {
             if (!kernelMaterials.TryGetValue(208, out Material int4Material))
                 throw new InvalidDataException("UdonATen INT4 MM requires kernel id 208.");
-            ValidatedResource inputResource = FindResource(artifacts, "fixture_input", "bytes");
+            ValidatedResource weightPage0Resource = FindResource(
+                artifacts,
+                "fixture_weight_page_0",
+                "bytes"
+            );
+            ValidatedResource weightPage1Resource = FindResource(
+                artifacts,
+                "fixture_weight_page_1",
+                "bytes"
+            );
+            ValidatedResource activationResource = FindResource(
+                artifacts,
+                "fixture_activation",
+                "bytes"
+            );
             ValidatedResource referenceResource = FindResource(
                 artifacts,
                 "fixture_reference",
                 "bytes"
             );
-            ValidatedResource accumulateInputResource = FindResource(
+            ValidatedResource composeShaderResource = FindResource(
                 artifacts,
-                "fixture_accumulate_input",
-                "bytes"
+                "page_compose",
+                "shader"
             );
-            Texture2D input = CreateOrUpdateByteTexture(
+            string composeShaderPath = programRoot + "/Shaders/page-compose.shader";
+            transaction.CopyFile(composeShaderResource.AbsolutePath, composeShaderPath);
+            Shader composeShader = AssetDatabase.LoadAssetAtPath<Shader>(composeShaderPath);
+            if (composeShader == null)
+                throw new InvalidDataException(
+                    "Unity could not import the UdonATen INT4 page compose shader: "
+                        + composeShaderPath
+                );
+            Material composeMaterial = CreateOrUpdateNamedMaterial(
                 transaction,
                 programRoot,
-                "udonaten_weight_int4pack_mm_input.asset",
-                8192,
-                1,
-                File.ReadAllBytes(inputResource.AbsolutePath)
+                "page-compose.mat",
+                composeShader
             );
-            CreateOrUpdateByteTexture(
+            Texture2D weightPage0 = CreateOrUpdateByteTexture(
                 transaction,
                 programRoot,
-                "udonaten_weight_int4pack_mm_accumulate_input.asset",
+                "udonaten_weight_int4pack_mm_weight_page_0.asset",
                 8192,
                 1,
-                File.ReadAllBytes(accumulateInputResource.AbsolutePath)
+                File.ReadAllBytes(weightPage0Resource.AbsolutePath)
+            );
+            Texture2D weightPage1 = CreateOrUpdateByteTexture(
+                transaction,
+                programRoot,
+                "udonaten_weight_int4pack_mm_weight_page_1.asset",
+                8192,
+                1,
+                File.ReadAllBytes(weightPage1Resource.AbsolutePath)
+            );
+            Texture2D activation = CreateOrUpdateByteTexture(
+                transaction,
+                programRoot,
+                "udonaten_weight_int4pack_mm_activation.asset",
+                256,
+                1,
+                File.ReadAllBytes(activationResource.AbsolutePath)
             );
             CreateOrUpdateByteTexture(
                 transaction,
                 programRoot,
                 "udonaten_weight_int4pack_mm_reference.asset",
-                16,
+                8,
                 1,
                 File.ReadAllBytes(referenceResource.AbsolutePath)
+            );
+            RenderTexture assembly = CreateOrUpdateRgbaRenderTexture(
+                transaction,
+                programRoot,
+                "udonaten_weight_int4pack_mm_assembly.asset",
+                8192,
+                1
+            );
+            RenderTexture partial = CreateOrUpdateRgbaRenderTexture(
+                transaction,
+                programRoot,
+                "udonaten_weight_int4pack_mm_partial.asset",
+                8192,
+                1
             );
             RenderTexture output = CreateOrUpdateRgbaRenderTexture(
                 transaction,
@@ -830,8 +880,13 @@ namespace Lemolatoon.Udoncl.Editor
                 transaction,
                 programRoot,
                 programAsset,
-                input,
+                weightPage0,
+                weightPage1,
+                activation,
+                assembly,
+                partial,
                 output,
+                composeMaterial,
                 int4Material,
                 displayMaterial
             );
@@ -1975,8 +2030,13 @@ namespace Lemolatoon.Udoncl.Editor
             AssetImportTransaction transaction,
             string programRoot,
             UdonAssemblyProgramAsset programAsset,
-            Texture inputState,
+            Texture weightPage0,
+            Texture weightPage1,
+            Texture activationState,
+            RenderTexture assemblyState,
+            RenderTexture partialState,
             RenderTexture outputState,
+            Material composeMaterial,
             Material int4Material,
             Material displayMaterial
         )
@@ -1996,14 +2056,18 @@ namespace Lemolatoon.Udoncl.Editor
                 behaviour.interactText = "Run UdonATen INT4 MM";
                 behaviour.proximity = 3.0f;
                 behaviour.SyncMethod = SyncType.None;
-                SetPublicVariable(behaviour, "inputState", inputState);
+                SetPublicVariable(behaviour, "weightPage0", weightPage0);
+                SetPublicVariable(behaviour, "weightPage1", weightPage1);
+                SetPublicVariable(behaviour, "activationState", activationState);
+                SetPublicVariable(behaviour, "assemblyState", assemblyState);
+                SetPublicVariable(behaviour, "partialState", partialState);
                 SetPublicVariable(behaviour, "outputState", outputState);
+                SetPublicVariable(behaviour, "composeMaterial", composeMaterial);
                 SetPublicVariable(behaviour, "int4Material", int4Material);
                 SetPublicVariable(behaviour, "displayMaterial", displayMaterial);
                 SetPublicVariable(behaviour, "n", 8);
-                SetPublicVariable(behaviour, "k", 64);
-                SetPublicVariable(behaviour, "rowStride", 36);
-                SetPublicVariable(behaviour, "accumulate", 0);
+                SetPublicVariable(behaviour, "k", 128);
+                SetPublicVariable(behaviour, "rowStride", 72);
                 SerializedObject serializedBehaviour = new SerializedObject(behaviour);
                 serializedBehaviour.FindProperty("serializedProgramAsset").objectReferenceValue =
                     programAsset.SerializedProgramAsset;

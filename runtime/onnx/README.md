@@ -49,14 +49,16 @@ The general provider also accepts the explicit
 embedding-independent single-token decoder expands to 546 operator nodes and
 225 tiled `udonatenWeightInt4packMm` calls instead of one fused `LlamaDecoder`
 node.
-Each call records its 64x128 tile grid and K-tile accumulation contract. Host
-Each call now also records the exact packed-weight row stride, scale/zero group
+Each call records its 64x128 tile grid and K-tile accumulation contract. Each
+call also records the exact packed-weight row stride, scale/zero group
 stride, external byte ranges, and 8,192-word kernel-208 active-state layout.
 `udon-onnx-page` validates those ranges and materializes any requested 64x128
 tile without loading a complete tensor or model. It can also place a prior
-output tile at word 7,168 for the kernel's private accumulation argument. Host
-emission still rejects these plans until the runtime texture-copy dispatcher is wired,
-rather than generating an executable that cannot supply the materialized page.
+output tile at word 7,168 for the kernel's private accumulation argument. The
+Unity artifact proves two-page GPU texture composition and accumulation in one
+Host `_run`. General Host emission still rejects these plans until it can emit
+that dispatcher for arbitrary M/K tile grids and bind all external pages,
+rather than generating an executable that cannot supply them.
 Identity, Reshape, Squeeze, and Unsqueeze are compiled as typed zero-copy views.
 Their embedded int32/int64 shape inputs are evaluated at AOT time and retained
 with the correct C ABI type rather than being treated as float buffers.
@@ -138,5 +140,5 @@ full output accumulator fills the selected N slice at word 7,168.
 
 This is not full ONNX operator coverage yet. The MNIST provider still contains
 model-level fusion, while the Llama provider deliberately isolates its custom
-fusion behind the registry. General tiled kernels and external-weight page
-streaming remain the next runtime layer.
+fusion behind the registry. General emitted tiled dispatch and external-weight
+page binding remain the next runtime layer.

@@ -1,28 +1,49 @@
 .data_start
-    .export inputState
+    .export weightPage0
+    .export weightPage1
+    .export activationState
+    .export assemblyState
+    .export partialState
     .export outputState
+    .export composeMaterial
     .export int4Material
     .export displayMaterial
     .export n
     .export k
     .export rowStride
-    .export accumulate
 
-    inputState: %UnityEngineTexture, null
+    weightPage0: %UnityEngineTexture, null
+    weightPage1: %UnityEngineTexture, null
+    activationState: %UnityEngineTexture, null
+    assemblyState: %UnityEngineRenderTexture, null
+    partialState: %UnityEngineRenderTexture, null
     outputState: %UnityEngineRenderTexture, null
+    composeMaterial: %UnityEngineMaterial, null
     int4Material: %UnityEngineMaterial, null
     displayMaterial: %UnityEngineMaterial, null
     n: %SystemInt32, null
     k: %SystemInt32, null
     rowStride: %SystemInt32, null
-    accumulate: %SystemInt32, null
 
+    __weightPageName: %SystemString, "_WeightPage"
+    __activationName: %SystemString, "_Activation"
+    __accumulatorName: %SystemString, "_Accumulator"
+    __activationOffsetName: %SystemString, "_ActivationOffset"
+    __accumulatorOffsetName: %SystemString, "_AccumulatorOffset"
+    __kOffsetName: %SystemString, "_KOffset"
+    __composeNName: %SystemString, "_N"
+    __composeKName: %SystemString, "_K"
+    __composeAccumulateName: %SystemString, "_Accumulate"
     __inputName: %SystemString, "_VRC_Input"
     __resultName: %SystemString, "_Result"
     __nName: %SystemString, "_VRC_Arg2"
     __kName: %SystemString, "_VRC_Arg3"
     __rowStrideName: %SystemString, "_VRC_Arg4"
     __accumulateName: %SystemString, "_VRC_Arg5"
+    __zero: %SystemInt32, 0
+    __one: %SystemInt32, 1
+    __secondK: %SystemInt32, 128
+    __resultOffset: %SystemInt32, 7168
 .data_end
 
 .code_start
@@ -32,9 +53,50 @@
 
     .export _run
     _run:
+        PUSH, composeMaterial
+        PUSH, __activationName
+        PUSH, activationState
+        EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
+        PUSH, composeMaterial
+        PUSH, __activationOffsetName
+        PUSH, __zero
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, composeMaterial
+        PUSH, __accumulatorOffsetName
+        PUSH, __resultOffset
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, composeMaterial
+        PUSH, __composeNName
+        PUSH, n
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, composeMaterial
+        PUSH, __composeKName
+        PUSH, k
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, composeMaterial
+        PUSH, __weightPageName
+        PUSH, weightPage0
+        EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
+        PUSH, composeMaterial
+        PUSH, __accumulatorName
+        PUSH, weightPage0
+        EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
+        PUSH, composeMaterial
+        PUSH, __kOffsetName
+        PUSH, __zero
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, composeMaterial
+        PUSH, __composeAccumulateName
+        PUSH, __zero
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, weightPage0
+        PUSH, assemblyState
+        PUSH, composeMaterial
+        EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"
+
         PUSH, int4Material
         PUSH, __inputName
-        PUSH, inputState
+        PUSH, assemblyState
         EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
         PUSH, int4Material
         PUSH, __nName
@@ -50,9 +112,43 @@
         EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
         PUSH, int4Material
         PUSH, __accumulateName
-        PUSH, accumulate
+        PUSH, __zero
         EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
-        PUSH, inputState
+        PUSH, assemblyState
+        PUSH, partialState
+        PUSH, int4Material
+        EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"
+
+        PUSH, composeMaterial
+        PUSH, __weightPageName
+        PUSH, weightPage1
+        EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
+        PUSH, composeMaterial
+        PUSH, __accumulatorName
+        PUSH, partialState
+        EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
+        PUSH, composeMaterial
+        PUSH, __kOffsetName
+        PUSH, __secondK
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, composeMaterial
+        PUSH, __composeAccumulateName
+        PUSH, __one
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, weightPage1
+        PUSH, assemblyState
+        PUSH, composeMaterial
+        EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"
+
+        PUSH, int4Material
+        PUSH, __inputName
+        PUSH, assemblyState
+        EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
+        PUSH, int4Material
+        PUSH, __accumulateName
+        PUSH, __one
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, assemblyState
         PUSH, outputState
         PUSH, int4Material
         EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"

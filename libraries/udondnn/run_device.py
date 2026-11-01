@@ -1356,9 +1356,10 @@ def main():
 
     # Package the public ATen-shaped INT4 tile separately from the legacy
     # UdonBLAS Q4 backend. Build semantic packed-weight and [group,N,2]
-    # scale/zero inputs first, then expand only the active Device tile.
-    int4_n, int4_k, int4_group = 8, 64, 32
-    int4_row_stride = (int4_k // int4_group) * 18
+    # scale/zero inputs first, then expand two bounded Device weight pages.
+    # The Unity Host composes activation and prior output textures on-GPU.
+    int4_n, int4_k, int4_group, int4_tile_k = 8, 256, 32, 128
+    int4_row_stride = (int4_tile_k // int4_group) * 18
     int4_input = [
         ((inner * 13 + 5) % 29 - 14) * 0.0625 for inner in range(int4_k)
     ]
@@ -1387,28 +1388,24 @@ def main():
             int4_reference[row] += (
                 quantized * int4_qparams[qparam] + int4_qparams[qparam + 1]
             ) * int4_input[inner]
-    int4_state = [0.0] * 8192
-    for row in range(int4_n):
-        for block in range(int4_k // int4_group):
-            state_base = row * int4_row_stride + block * 18
-            packed_base = row * (int4_k // 2) + block * 16
-            for byte in range(16):
-                int4_state[state_base + byte] = float(
-                    int4_packed[packed_base + byte]
+    int4_pages = []
+    for k_offset in range(0, int4_k, int4_tile_k):
+        state = [0.0] * 8192
+        for row in range(int4_n):
+            for block in range(int4_tile_k // int4_group):
+                source_block = k_offset // int4_group + block
+                state_base = row * int4_row_stride + block * 18
+                packed_base = (
+                    row * (int4_k // 2) + k_offset // 2 + block * 16
                 )
-            qparam = (block * int4_n + row) * 2
-            int4_state[state_base + 16] = int4_qparams[qparam]
-            int4_state[state_base + 17] = int4_qparams[qparam + 1]
-    int4_state[6144 : 6144 + int4_k] = int4_input
-    int4_accumulator = [
-        ((row * 11 + 3) % 17 - 8) * 0.125 for row in range(int4_n)
-    ]
-    int4_accumulate_state = list(int4_state)
-    int4_accumulate_state[7168 : 7168 + int4_n] = int4_accumulator
-    int4_reference_values = int4_reference + [
-        value + accumulator
-        for value, accumulator in zip(int4_reference, int4_accumulator)
-    ]
+                for byte in range(16):
+                    state[state_base + byte] = float(
+                        int4_packed[packed_base + byte]
+                    )
+                qparam = (source_block * int4_n + row) * 2
+                state[state_base + 16] = int4_qparams[qparam]
+                state[state_base + 17] = int4_qparams[qparam + 1]
+        int4_pages.append(state)
 
     unity_int4_bundle = output / "unity-udonaten-int4-mm-bundle"
     with tempfile.TemporaryDirectory(
@@ -1425,17 +1422,24 @@ def main():
             staged / "display.shader",
         )
         shutil.copy2(
+            root / "libraries/udonaten/unity/weight-int4pack-mm-compose.shader",
+            staged / "compose.shader",
+        )
+        shutil.copy2(
             int4_bundle / "kernels/kernel_208.shader",
             staged / "kernels/kernel_208.shader",
         )
-        (staged / "fixture_input.bytes").write_bytes(
-            struct.pack("<8192f", *int4_state)
+        (staged / "fixture_weight_page_0.bytes").write_bytes(
+            struct.pack("<8192f", *int4_pages[0])
         )
-        (staged / "fixture_accumulate_input.bytes").write_bytes(
-            struct.pack("<8192f", *int4_accumulate_state)
+        (staged / "fixture_weight_page_1.bytes").write_bytes(
+            struct.pack("<8192f", *int4_pages[1])
+        )
+        (staged / "fixture_activation.bytes").write_bytes(
+            struct.pack(f"<{int4_k}f", *int4_input)
         )
         (staged / "fixture_reference.bytes").write_bytes(
-            struct.pack(f"<{len(int4_reference_values)}f", *int4_reference_values)
+            struct.pack(f"<{int4_n}f", *int4_reference)
         )
         int4_unity_manifest = {
             "schema_version": 1,
@@ -1474,17 +1478,27 @@ def main():
                 ]
             },
             "resources": [
-                {"name": "fixture_input", "kind": "bytes", "path": "fixture_input.bytes"},
                 {
-                    "name": "fixture_accumulate_input",
+                    "name": "fixture_weight_page_0",
                     "kind": "bytes",
-                    "path": "fixture_accumulate_input.bytes",
+                    "path": "fixture_weight_page_0.bytes",
+                },
+                {
+                    "name": "fixture_weight_page_1",
+                    "kind": "bytes",
+                    "path": "fixture_weight_page_1.bytes",
+                },
+                {
+                    "name": "fixture_activation",
+                    "kind": "bytes",
+                    "path": "fixture_activation.bytes",
                 },
                 {
                     "name": "fixture_reference",
                     "kind": "bytes",
                     "path": "fixture_reference.bytes",
                 },
+                {"name": "page_compose", "kind": "shader", "path": "compose.shader"},
             ],
             "fixture": {
                 "input_shape": [1, int4_k],
@@ -1493,6 +1507,7 @@ def main():
                 "output_shape": [1, int4_n],
                 "group_size": int4_group,
                 "row_stride": int4_row_stride,
+                "k_tiles": int4_k // int4_tile_k,
             },
         }
         (staged / "manifest.json").write_text(

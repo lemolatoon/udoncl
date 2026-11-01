@@ -82,13 +82,13 @@ The `unity-udonaten-int4-mm` stage creates
 `_weight_int4pack_mm(input, packed_weight, group_size, scales_and_zeros)`
 operator. It deliberately does not expose this operator as a UdonBLAS or
 UdonDNN extension. The artifact manifest records separate packed-weight and
-`[K/group_size,N,2]` scale/zero shapes; its active Device tile expands those
-inputs into an 8,192-word state texture and assigns each output feature to an
-independent fragment. The IUdonVM lifecycle fixture uses non-zero zero points,
-compares all eight outputs both with replacement and with a prior K-tile
-accumulator, and removes generated program and prefab assets. Accumulation is
-an internal Device paging control; the public API remains the ATen operator
-without a BLAS-style beta argument.
+`[K/group_size,N,2]` scale/zero shapes. Its two 8x128 weight pages are combined
+on GPU with the runtime activation texture and the first page's output, forming
+each 8,192-word active state without CPU readback. One Host `_run` dispatches
+the complete 8x256 operation. The IUdonVM lifecycle fixture uses non-zero zero
+points, compares all eight results, and removes generated program and prefab
+assets. Accumulation remains a private Device paging control; the public API is
+the ATen operator without a BLAS-style beta argument.
 
 ## UdonDNN
 
