@@ -48,6 +48,12 @@ SiLU expressed as Sigmoid+Mul, and the final vocabulary projection.
 Rank-2 through rank-4 ONNX MatMul, including broadcast batch dimensions used
 by attention, is expanded AOT into one or more tiled `udonblasSgemm` calls per
 output batch matrix.
+Rank-1 matrix-vector and vector-matrix forms, including batched matrices, lower
+to the CUDA-13.0-compatible `udonblasSgemv` interface. The current Device
+profile requires the reduction dimension, and for vector-matrix also the
+output dimension, to be at most 16. Vector-vector MatMul remains unsupported
+until the cuBLAS-compatible `udonblasSdot` path exists; it is not disguised as
+SGEMV or exposed through an `Ext` API.
 The general provider also accepts the explicit
 `com.lemolatoon.udoncl::WeightInt4packMM` library extension. Llama 3.1 8B's
 embedding-independent single-token decoder expands to 546 operator nodes and

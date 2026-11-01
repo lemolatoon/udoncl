@@ -935,16 +935,91 @@ def _batch_offset(coordinates: list[int], shape: list[int]) -> int:
 
 
 def _matmul_shape(left: list[int], right: list[int]) -> list[int]:
-    if not 2 <= len(left) <= 4 or not 2 <= len(right) <= 4:
-        raise ValueError("Udon ONNX MatMul currently requires rank-2 through rank-4 tensors")
-    if left[-1] != right[-2]:
+    if not 1 <= len(left) <= 4 or not 1 <= len(right) <= 4:
+        raise ValueError("Udon ONNX MatMul requires rank-1 through rank-4 tensors")
+    if len(left) == 1 and len(right) == 1:
+        raise ValueError("ONNX vector-vector MatMul requires the cuBLAS udonblasSdot path")
+    left_inner = left[-1]
+    right_inner = right[0] if len(right) == 1 else right[-2]
+    if left_inner != right_inner:
         raise ValueError("MatMul inner dimensions do not match")
-    return _broadcast(left[:-2], right[:-2]) + [left[-2], right[-1]]
+    batch = _broadcast(
+        left[:-2] if len(left) > 1 else [],
+        right[:-2] if len(right) > 1 else [],
+    )
+    return (
+        batch
+        + ([left[-2]] if len(left) > 1 else [])
+        + ([right[-1]] if len(right) > 1 else [])
+    )
+
+
+def _matmul_provider(left: list[int], right: list[int]) -> str:
+    _matmul_shape(left, right)
+    return "udonblasSgemv" if len(left) == 1 or len(right) == 1 else "udonblasSgemm"
 
 
 def _matmul_schedule(node: dict, values: dict, tile_size: int = 16) -> list[dict]:
     left_shape, right_shape = (values[name] for name in node["inputs"])
     output_shape = _matmul_shape(left_shape, right_shape)
+    if len(left_shape) == 1:
+        k, n = left_shape[0], right_shape[-1]
+        if k > tile_size or n > tile_size:
+            raise ValueError(
+                "UdonBLAS SGEMV vector-matrix profile requires K and N at most 16"
+            )
+        batch_shape = right_shape[:-2]
+        batch_count = math.prod(batch_shape) if batch_shape else 1
+        return [
+            {
+                "batch": batch,
+                "trans": "UDONBLAS_OP_N",
+                "m": n,
+                "n": k,
+                "lda": n,
+                "matrix_input": 1,
+                "matrix_offset": batch * k * n,
+                "vector_input": 0,
+                "vector_offset": 0,
+                "output_offset": batch * n,
+                "output_length": n,
+                "alpha": 1.0,
+                "beta": 0,
+            }
+            for batch in range(batch_count)
+        ]
+    if len(right_shape) == 1:
+        m, k = left_shape[-2], left_shape[-1]
+        if k > tile_size:
+            raise ValueError(
+                "UdonBLAS SGEMV matrix-vector profile requires K at most 16"
+            )
+        batch_shape = left_shape[:-2]
+        batch_count = math.prod(batch_shape) if batch_shape else 1
+        tiles = []
+        for batch in range(batch_count):
+            matrix_base = batch * m * k
+            output_base = batch * m
+            for output_offset in range(0, m, tile_size):
+                output_length = min(tile_size, m - output_offset)
+                tiles.append(
+                    {
+                        "batch": batch,
+                        "trans": "UDONBLAS_OP_T",
+                        "m": k,
+                        "n": output_length,
+                        "lda": k,
+                        "matrix_input": 0,
+                        "matrix_offset": matrix_base + output_offset * k,
+                        "vector_input": 1,
+                        "vector_offset": 0,
+                        "output_offset": output_base + output_offset,
+                        "output_length": output_length,
+                        "alpha": 1.0,
+                        "beta": 0,
+                    }
+                )
+        return tiles
     batch_shape = output_shape[:-2]
     m, k, n = left_shape[-2], left_shape[-1], right_shape[-1]
     tiles = []
@@ -1423,6 +1498,7 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
             if len(inputs) != 2:
                 raise ValueError("ONNX MatMul requires exactly two inputs")
             output = _matmul_shape(inputs[0], inputs[1])
+            provider = _matmul_provider(inputs[0], inputs[1])
         elif node["domain"] == LLAMA_DOMAIN and operation == "WeightInt4packMM":
             if len(inputs) != 3 or len(inputs[0]) != 2 or inputs[0][0] != 1:
                 raise ValueError(
@@ -1663,7 +1739,7 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
                             else (
                                 tile["storage_words"]
                                 if "storage_words" in tile
-                                else tile["m"] * tile["n"]
+                            else tile.get("output_length", tile["m"] * tile["n"])
                             )
                         )
                     ),
@@ -1810,7 +1886,7 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
                         "index": len(calls),
                         "node_index": node_index,
                         "kind": "library",
-                        "function": "udonblasSgemm",
+                        "function": node["provider"],
                         "inputs": node["inputs"][:2],
                         "output": node["output"],
                         "output_shape": node["shape"],
@@ -2300,16 +2376,27 @@ def emit_c_host(plan: dict) -> str:
                 )
         elif operation == "MatMul":
             left_shape, right_shape = values[inputs[0]], values[inputs[1]]
-            k, n = left_shape[-1], right_shape[-1]
             for tile in _matmul_schedule(node, values):
                 beta = "zero" if tile["beta"] == 0 else "one"
-                lines.append(
-                    "  CHECK_BLAS(udonblasSgemm("
-                    f"blas, UDONBLAS_OP_N, UDONBLAS_OP_N, {tile['n']}, {tile['m']}, {tile['k']}, &one, "
-                    f"buffers->{names[inputs[1]]} + {tile['right_offset']}, {n}, "
-                    f"buffers->{names[inputs[0]]} + {tile['left_offset']}, {k}, &{beta}, "
-                    f"buffers->{names[output]} + {tile['output_offset']}, {n}));"
-                )
+                if "output_length" in tile:
+                    matrix = inputs[tile["matrix_input"]]
+                    vector = inputs[tile["vector_input"]]
+                    lines.append(
+                        "  CHECK_BLAS(udonblasSgemv("
+                        f"blas, {tile['trans']}, {tile['m']}, {tile['n']}, &one, "
+                        f"buffers->{names[matrix]} + {tile['matrix_offset']}, {tile['lda']}, "
+                        f"buffers->{names[vector]} + {tile['vector_offset']}, 1, &{beta}, "
+                        f"buffers->{names[output]} + {tile['output_offset']}, 1));"
+                    )
+                else:
+                    k, n = left_shape[-1], right_shape[-1]
+                    lines.append(
+                        "  CHECK_BLAS(udonblasSgemm("
+                        f"blas, UDONBLAS_OP_N, UDONBLAS_OP_N, {tile['n']}, {tile['m']}, {tile['k']}, &one, "
+                        f"buffers->{names[inputs[1]]} + {tile['right_offset']}, {n}, "
+                        f"buffers->{names[inputs[0]]} + {tile['left_offset']}, {k}, &{beta}, "
+                        f"buffers->{names[output]} + {tile['output_offset']}, {n}));"
+                    )
         else:
             raise ValueError(f"cannot emit AOT host call for {operation!r}")
     lines.append("cleanup:")

@@ -57,9 +57,11 @@ These rules apply to the entire repository.
 ## Operator Ownership
 
 - Before adding an API for an ONNX/PyTorch operator, inspect official
-  PyTorch/TorchAO CUDA sources and identify the component that implements it.
-  Match that component's operator name, argument order, and semantics; do not
-  place an operation in UdonBLAS/UdonDNN merely because it runs on the GPU.
+  PyTorch/TorchAO sources, trace its CUDA dispatch, and identify whether the
+  implementation is owned by cuBLAS, cuDNN, ATen, or TorchAO. If PyTorch calls
+  a CUDA library, mirror that library's interface; otherwise mirror the owning
+  ATen/TorchAO operator contract. Do not place an operation in UdonBLAS/UdonDNN
+  merely because it runs on the GPU.
 - cuBLAS/cuDNN counterparts belong in UdonBLAS/UdonDNN. ATen-native operators
   belong in UdonATen. TorchAO/ATen quantized operators follow their packed
   weight, group-size, scale, and zero-point contracts. Record the source and

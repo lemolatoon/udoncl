@@ -214,6 +214,87 @@ assert ".export pass211Material" in tiled_host_uasm
 (output / "tiled-gemm-host.c").write_text(tiled_host_c, encoding="utf-8")
 (output / "tiled-gemm-host.uasm").write_text(tiled_host_uasm, encoding="utf-8")
 
+matrix_vector_model = parse_model(
+    model_proto(
+        graph_proto(
+            "matrix_vector_graph",
+            [node_proto("MatMul", ["matrix", "vector"], ["result"], "matvec")],
+            [],
+            [value_info_proto("matrix", [18, 4]), value_info_proto("vector", [4])],
+            [value_info_proto("result", [18])],
+        )
+    )
+)
+matrix_vector_plan = compile_model(matrix_vector_model)
+assert matrix_vector_plan["nodes"][0]["provider"] == "udonblasSgemv"
+assert [call["function"] for call in matrix_vector_plan["aot"]["calls"]] == [
+    "udonblasSgemv",
+    "udonblasSgemv",
+]
+assert [item["fragments"] for item in matrix_vector_plan["passes"]] == [16, 2]
+assert matrix_vector_plan["aot"]["calls"][1]["tile"] == {
+    "batch": 0,
+    "trans": "UDONBLAS_OP_T",
+    "m": 4,
+    "n": 2,
+    "lda": 4,
+    "matrix_input": 0,
+    "matrix_offset": 64,
+    "vector_input": 1,
+    "vector_offset": 0,
+    "output_offset": 16,
+    "output_length": 2,
+    "alpha": 1.0,
+    "beta": 0,
+}
+matrix_vector_host_c = emit_c_host(matrix_vector_plan)
+assert matrix_vector_host_c.count("udonblasSgemv(") == 2
+assert "UDONBLAS_OP_T, 4, 16" in matrix_vector_host_c
+assert "buffers->v0_matrix + 64, 4" in matrix_vector_host_c
+
+vector_batched_matrix_model = parse_model(
+    model_proto(
+        graph_proto(
+            "vector_batched_matrix_graph",
+            [node_proto("MatMul", ["vector", "matrix"], ["result"], "vecmat")],
+            [],
+            [value_info_proto("vector", [4]), value_info_proto("matrix", [2, 4, 5])],
+            [value_info_proto("result", [2, 5])],
+        )
+    )
+)
+vector_batched_matrix_plan = compile_model(vector_batched_matrix_model)
+assert vector_batched_matrix_plan["nodes"][0]["provider"] == "udonblasSgemv"
+assert [call["function"] for call in vector_batched_matrix_plan["aot"]["calls"]] == [
+    "udonblasSgemv",
+    "udonblasSgemv",
+]
+assert [item["fragments"] for item in vector_batched_matrix_plan["passes"]] == [5, 5]
+assert vector_batched_matrix_plan["aot"]["calls"][1]["tile"]["matrix_offset"] == 20
+assert vector_batched_matrix_plan["aot"]["calls"][1]["tile"]["output_offset"] == 5
+vector_batched_matrix_host_c = emit_c_host(vector_batched_matrix_plan)
+assert vector_batched_matrix_host_c.count("udonblasSgemv(") == 2
+assert "UDONBLAS_OP_N, 5, 4" in vector_batched_matrix_host_c
+assert "buffers->v0_matrix + 20, 5" in vector_batched_matrix_host_c
+
+vector_dot_model = parse_model(
+    model_proto(
+        graph_proto(
+            "vector_dot_graph",
+            [node_proto("MatMul", ["left", "right"], ["result"], "dot")],
+            [],
+            [value_info_proto("left", [4]), value_info_proto("right", [4])],
+            [value_info_proto("result", [])],
+        )
+    )
+)
+try:
+    compile_model(vector_dot_model)
+except ValueError as error:
+    assert "udonblasSdot" in str(error)
+else:
+    raise AssertionError("vector-vector MatMul must wait for the cuBLAS Sdot path")
+
 biased_gemm_model = parse_model(
     model_proto(
         graph_proto(

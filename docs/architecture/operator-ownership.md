@@ -21,6 +21,9 @@ Authoritative sources:
   <https://docs.nvidia.com/cuda/archive/13.0.0/cublas/index.html>
 - PyTorch ATen native operator registration and dispatch:
   <https://github.com/pytorch/pytorch/blob/main/aten/src/ATen/native/README.md>
+- PyTorch CUDA BLAS backend declarations (`gemm`, `gemv`, and `dot`), which
+  preserve the cuBLAS-shaped argument contracts:
+  <https://github.com/pytorch/pytorch/blob/main/aten/src/ATen/cuda/CUDABlas.h>
 - ATen pointwise schemas, including `add.Tensor`, `sub.Tensor`, `relu`, `tanh`,
   and their TensorIterator dispatch:
   <https://github.com/pytorch/pytorch/blob/main/aten/src/ATen/native/native_functions.yaml>
