@@ -782,14 +782,9 @@ namespace Lemolatoon.Udoncl.Editor
         {
             if (!kernelMaterials.TryGetValue(208, out Material int4Material))
                 throw new InvalidDataException("UdonATen INT4 MM requires kernel id 208.");
-            ValidatedResource weightPage0Resource = FindResource(
+            ValidatedResource weightAtlasResource = FindResource(
                 artifacts,
-                "fixture_weight_page_0",
-                "bytes"
-            );
-            ValidatedResource weightPage1Resource = FindResource(
-                artifacts,
-                "fixture_weight_page_1",
+                "fixture_weight_atlas",
                 "bytes"
             );
             ValidatedResource activationResource = FindResource(
@@ -840,21 +835,13 @@ namespace Lemolatoon.Udoncl.Editor
                 "result-scatter.mat",
                 scatterShader
             );
-            Texture2D weightPage0 = CreateOrUpdateByteTexture(
+            Texture2D weightAtlas = CreateOrUpdateByteTexture(
                 transaction,
                 programRoot,
-                "udonaten_weight_int4pack_mm_weight_page_0.asset",
-                8192,
-                1,
-                File.ReadAllBytes(weightPage0Resource.AbsolutePath)
-            );
-            Texture2D weightPage1 = CreateOrUpdateByteTexture(
-                transaction,
-                programRoot,
-                "udonaten_weight_int4pack_mm_weight_page_1.asset",
-                8192,
-                1,
-                File.ReadAllBytes(weightPage1Resource.AbsolutePath)
+                "udonaten_weight_int4pack_mm_weight_atlas.asset",
+                1280,
+                2,
+                File.ReadAllBytes(weightAtlasResource.AbsolutePath)
             );
             Texture2D activation = CreateOrUpdateByteTexture(
                 transaction,
@@ -906,8 +893,7 @@ namespace Lemolatoon.Udoncl.Editor
                 transaction,
                 programRoot,
                 programAsset,
-                weightPage0,
-                weightPage1,
+                weightAtlas,
                 activation,
                 assembly,
                 partial,
@@ -2058,8 +2044,7 @@ namespace Lemolatoon.Udoncl.Editor
             AssetImportTransaction transaction,
             string programRoot,
             UdonAssemblyProgramAsset programAsset,
-            Texture weightPage0,
-            Texture weightPage1,
+            Texture weightAtlas,
             Texture activationState,
             RenderTexture assemblyState,
             RenderTexture partialState,
@@ -2086,8 +2071,7 @@ namespace Lemolatoon.Udoncl.Editor
                 behaviour.interactText = "Run UdonATen INT4 MM";
                 behaviour.proximity = 3.0f;
                 behaviour.SyncMethod = SyncType.None;
-                SetPublicVariable(behaviour, "weightPage0", weightPage0);
-                SetPublicVariable(behaviour, "weightPage1", weightPage1);
+                SetPublicVariable(behaviour, "weightAtlas", weightAtlas);
                 SetPublicVariable(behaviour, "activationState", activationState);
                 SetPublicVariable(behaviour, "assemblyState", assemblyState);
                 SetPublicVariable(behaviour, "partialState", partialState);

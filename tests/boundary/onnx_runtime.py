@@ -34,10 +34,13 @@ from udon_onnx import (
     value_info_proto,
 )
 from udon_pages import (
+    decode_int4_compact_page,
     emit_int4_call_uasm,
     encode_int4_page,
+    int4_atlas_location,
     linear_texture_layout,
     materialize_int4_call,
+    materialize_int4_compact_page,
     materialize_int4_page,
 )
 
@@ -357,6 +360,9 @@ except ValueError as error:
     assert "outside" in str(error)
 else:
     raise AssertionError("out-of-grid INT4 page coordinates were accepted")
+int4_compact_page = materialize_int4_compact_page(int4_plan, 0, 1, 1, output)
+assert len(int4_compact_page["data"]) == 5120
+assert decode_int4_compact_page(int4_compact_page)[:6144] == int4_page["state"][:6144]
 
 int4_call_bundle = output / "int4-call-bundle"
 int4_call_manifest = materialize_int4_call(
@@ -367,29 +373,43 @@ assert int4_call_manifest["input_features"] == 160
 assert int4_call_manifest["output_features"] == 70
 assert int4_call_manifest["activation_layout"] == {"width": 160, "height": 1}
 assert int4_call_manifest["result_layout"] == {"width": 70, "height": 1}
-assert len(int4_call_manifest["resources"]) == 4
+assert int4_call_manifest["page_encoding"] == {
+    "name": "q4-bf16-row80-rgba32",
+    "row_bytes": 80,
+    "page_bytes": 5120,
+    "atlas_width": 1280,
+    "max_pages_per_atlas": 8192,
+}
+assert len(int4_call_manifest["resources"]) == 1
 assert {
-    (resource["m_tile"], resource["k_tile"], resource["n"], resource["k"])
-    for resource in int4_call_manifest["resources"]
-} == {(0, 0, 64, 128), (0, 1, 64, 32), (1, 0, 6, 128), (1, 1, 6, 32)}
-assert all(
-    (int4_call_bundle / resource["path"]).stat().st_size == 8192 * 4
-    for resource in int4_call_manifest["resources"]
-)
-assert all(
-    resource["bytes"] == 8192 * 4 and len(resource["sha256"]) == 64
-    for resource in int4_call_manifest["resources"]
-)
+    (tile["m_tile"], tile["k_tile"], tile["atlas"], tile["row"], tile["n"], tile["k"])
+    for tile in int4_call_manifest["tiles"]
+} == {
+    (0, 0, 0, 0, 64, 128),
+    (0, 1, 0, 1, 64, 32),
+    (1, 0, 0, 2, 6, 128),
+    (1, 1, 0, 3, 6, 32),
+}
+int4_atlas = int4_call_manifest["resources"][0]
+assert int4_atlas["width"] == 1280
+assert int4_atlas["height"] == 4
+assert int4_atlas["bytes"] == 4 * 5120
+assert len(int4_atlas["sha256"]) == 64
+assert (int4_call_bundle / int4_atlas["path"]).stat().st_size == 4 * 5120
 int4_call_uasm = emit_int4_call_uasm(int4_plan, 0)
 assert int4_call_uasm == (int4_call_bundle / "host.uasm").read_text(encoding="utf-8")
 assert int4_call_uasm.count("VRCSDKBaseVRCGraphics.__Blit__") == 10
-assert int4_call_uasm.count(".export pageM") == 4
+assert int4_call_uasm.count(".export pageAtlas") == 1
+assert "__compactPageName: %SystemString, \"_CompactPage\"" in int4_call_uasm
+assert "__pageRow3: %SystemInt32, 3" in int4_call_uasm
 assert "__n1: %SystemInt32, 6" in int4_call_uasm
 assert "__k1: %SystemInt32, 32" in int4_call_uasm
 assert "PUSH, resultState" in int4_call_uasm
-assert len(materialize_int4_call(int4_plan, 0, output, int4_call_bundle)["resources"]) == 4
+assert len(materialize_int4_call(int4_plan, 0, output, int4_call_bundle)["tiles"]) == 4
 
 assert linear_texture_layout(20000) == {"width": 8192, "height": 3}
+assert int4_atlas_location(8191) == {"atlas": 0, "row": 8191}
+assert int4_atlas_location(8192) == {"atlas": 1, "row": 0}
 try:
     materialize_int4_call(int4_plan, 0, output, output)
 except ValueError as error:
@@ -417,6 +437,7 @@ int4_cli = subprocess.run(
 )
 assert int4_cli.returncode == 0, (int4_cli.stdout, int4_cli.stderr)
 assert "pages=4" in int4_cli.stdout
+assert "atlases=1" in int4_cli.stdout
 assert (int4_cli_bundle / "host.uasm").is_file()
 
 rl_model_path = output / "rl-policy.onnx"

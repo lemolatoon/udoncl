@@ -1,6 +1,8 @@
 Shader "UdonCL/UdonATen/WeightInt4packMmCompose" {
 Properties {
     _WeightPage ("External weight page", 2D) = "black" {}
+    _CompactPage ("Compact Q4/BF16 page", Int) = 0
+    _PageRow ("Compact atlas row", Int) = 0
     _Activation ("Activation state", 2D) = "black" {}
     _Accumulator ("Prior output state", 2D) = "black" {}
     _ActivationOffset ("Activation offset", Int) = 0
@@ -20,6 +22,8 @@ CGPROGRAM
 Texture2D<float4> _WeightPage;
 Texture2D<float4> _Activation;
 Texture2D<float4> _Accumulator;
+int _CompactPage;
+int _PageRow;
 int _ActivationOffset;
 int _ActivationWidth;
 int _AccumulatorOffset;
@@ -35,9 +39,36 @@ v2f vert(appdata input) {
     output.uv = input.uv;
     return output;
 }
+uint loadByte(uint address) {
+    float4 packed = _WeightPage.Load(int3(address >> 2u, (uint)_PageRow, 0));
+    uint lane = address & 3u;
+    float value = lane == 0u ? packed.r : lane == 1u ? packed.g : lane == 2u ? packed.b : packed.a;
+    return (uint)round(saturate(value) * 255.0);
+}
+float4 encodeFloat(float value) {
+    uint bits = asuint(value);
+    return float4(
+        (float)(bits & 255u),
+        (float)((bits >> 8u) & 255u),
+        (float)((bits >> 16u) & 255u),
+        (float)((bits >> 24u) & 255u)) / 255.0;
+}
+float compactWeight(uint word) {
+    uint row = word / 72u;
+    uint local = word - row * 72u;
+    uint block = local / 18u;
+    uint slot = local - block * 18u;
+    if (slot < 16u)
+        return (float)loadByte(row * 80u + block * 16u + slot);
+    uint qparam = row * 80u + 64u + block * 4u + (slot - 16u) * 2u;
+    uint bits = (loadByte(qparam) | (loadByte(qparam + 1u) << 8u)) << 16u;
+    return asfloat(bits);
+}
 float4 frag(v2f input) : SV_Target {
     uint word = min(8191u, uint(input.uv.x * 8192.0));
-    float4 value = _WeightPage.Load(int3(word, 0, 0));
+    float4 value = _CompactPage != 0
+        ? (word < 4608u ? encodeFloat(compactWeight(word)) : float4(0.0, 0.0, 0.0, 0.0))
+        : _WeightPage.Load(int3(word, 0, 0));
     if (word >= 6144u && word < 6144u + (uint)_K) {
         uint activationWidth = max(1u, (uint)_ActivationWidth);
         uint activation = (uint)_ActivationOffset + (uint)_KOffset + word - 6144u;

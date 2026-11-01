@@ -132,11 +132,13 @@ udon-onnx-page execution-plan.json . --call 0 --all \
   -o int4-call-0
 ```
 
-The resulting `udon-onnx-int4-call` directory contains one bounded 8,192-word
-weight page per planned tile, a manifest with edge-tile dimensions, and
-`host.uasm`. The dispatcher composes runtime activations on GPU, accumulates all
-K pages privately through kernel 208, and scatters every completed 64-feature M
-tile into the call result. The public operation remains
+The resulting `udon-onnx-int4-call` directory packs each planned tile as 64
+80-byte rows (Q4 bytes followed by BF16 scale/zero values) into RGBA32 atlases
+of up to 8,192 pages. Its manifest records atlas rows and edge-tile dimensions,
+alongside `host.uasm`. The dispatcher expands the selected row and composes
+runtime activations on GPU, accumulates all K pages privately through kernel
+208, and scatters every completed 64-feature M tile into the call result. The
+public operation remains
 `udonatenWeightInt4packMm`; paging does not add an Ext API or a beta argument.
 Activations and results use a row-major linear texture ABI capped at 8,192
 words per row, so feature vectors larger than a single Unity texture row retain

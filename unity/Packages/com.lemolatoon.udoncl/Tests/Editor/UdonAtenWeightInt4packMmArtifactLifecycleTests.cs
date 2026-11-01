@@ -90,14 +90,8 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             Set(
                 heap,
                 program,
-                "weightPage0",
-                Load<Texture2D>("Textures/udonaten_weight_int4pack_mm_weight_page_0.asset")
-            );
-            Set(
-                heap,
-                program,
-                "weightPage1",
-                Load<Texture2D>("Textures/udonaten_weight_int4pack_mm_weight_page_1.asset")
+                "weightAtlas",
+                Load<Texture2D>("Textures/udonaten_weight_int4pack_mm_weight_atlas.asset")
             );
             Set(
                 heap,

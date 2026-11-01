@@ -1390,22 +1390,25 @@ def main():
             ) * int4_input[inner]
     int4_pages = []
     for k_offset in range(0, int4_k, int4_tile_k):
-        state = [0.0] * 8192
+        page = bytearray(64 * 80)
         for row in range(int4_n):
             for block in range(int4_tile_k // int4_group):
                 source_block = k_offset // int4_group + block
-                state_base = row * int4_row_stride + block * 18
                 packed_base = (
                     row * (int4_k // 2) + k_offset // 2 + block * 16
                 )
                 for byte in range(16):
-                    state[state_base + byte] = float(
-                        int4_packed[packed_base + byte]
-                    )
+                    page[row * 80 + block * 16 + byte] = int4_packed[
+                        packed_base + byte
+                    ]
                 qparam = (source_block * int4_n + row) * 2
-                state[state_base + 16] = int4_qparams[qparam]
-                state[state_base + 17] = int4_qparams[qparam + 1]
-        int4_pages.append(state)
+                qparam_base = row * 80 + 64 + block * 4
+                for value_index, value in enumerate(int4_qparams[qparam : qparam + 2]):
+                    bits = struct.unpack("<I", struct.pack("<f", value))[0]
+                    page[
+                        qparam_base + value_index * 2 : qparam_base + value_index * 2 + 2
+                    ] = struct.pack("<H", bits >> 16)
+        int4_pages.append(bytes(page))
 
     unity_int4_bundle = output / "unity-udonaten-int4-mm-bundle"
     with tempfile.TemporaryDirectory(
@@ -1433,12 +1436,7 @@ def main():
             int4_bundle / "kernels/kernel_208.shader",
             staged / "kernels/kernel_208.shader",
         )
-        (staged / "fixture_weight_page_0.bytes").write_bytes(
-            struct.pack("<8192f", *int4_pages[0])
-        )
-        (staged / "fixture_weight_page_1.bytes").write_bytes(
-            struct.pack("<8192f", *int4_pages[1])
-        )
+        (staged / "fixture_weight_atlas.bytes").write_bytes(b"".join(int4_pages))
         (staged / "fixture_activation.bytes").write_bytes(
             struct.pack(f"<{int4_k}f", *int4_input)
         )
@@ -1483,14 +1481,9 @@ def main():
             },
             "resources": [
                 {
-                    "name": "fixture_weight_page_0",
+                    "name": "fixture_weight_atlas",
                     "kind": "bytes",
-                    "path": "fixture_weight_page_0.bytes",
-                },
-                {
-                    "name": "fixture_weight_page_1",
-                    "kind": "bytes",
-                    "path": "fixture_weight_page_1.bytes",
+                    "path": "fixture_weight_atlas.bytes",
                 },
                 {
                     "name": "fixture_activation",
@@ -1513,6 +1506,8 @@ def main():
                 "group_size": int4_group,
                 "row_stride": int4_row_stride,
                 "k_tiles": int4_k // int4_tile_k,
+                "weight_page_encoding": "q4-bf16-row80-rgba32",
+                "weight_atlas_shape": [2, 1280],
             },
         }
         (staged / "manifest.json").write_text(

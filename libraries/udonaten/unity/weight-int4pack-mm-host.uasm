@@ -1,6 +1,5 @@
 .data_start
-    .export weightPage0
-    .export weightPage1
+    .export weightAtlas
     .export activationState
     .export assemblyState
     .export partialState
@@ -14,8 +13,7 @@
     .export k
     .export rowStride
 
-    weightPage0: %UnityEngineTexture, null
-    weightPage1: %UnityEngineTexture, null
+    weightAtlas: %UnityEngineTexture, null
     activationState: %UnityEngineTexture, null
     assemblyState: %UnityEngineRenderTexture, null
     partialState: %UnityEngineRenderTexture, null
@@ -30,6 +28,8 @@
     rowStride: %SystemInt32, null
 
     __weightPageName: %SystemString, "_WeightPage"
+    __compactPageName: %SystemString, "_CompactPage"
+    __pageRowName: %SystemString, "_PageRow"
     __activationName: %SystemString, "_Activation"
     __accumulatorName: %SystemString, "_Accumulator"
     __activationOffsetName: %SystemString, "_ActivationOffset"
@@ -71,6 +71,14 @@
         PUSH, activationState
         EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
         PUSH, composeMaterial
+        PUSH, __compactPageName
+        PUSH, __one
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, composeMaterial
+        PUSH, __pageRowName
+        PUSH, __zero
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, composeMaterial
         PUSH, __activationOffsetName
         PUSH, __zero
         EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
@@ -92,11 +100,11 @@
         EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
         PUSH, composeMaterial
         PUSH, __weightPageName
-        PUSH, weightPage0
+        PUSH, weightAtlas
         EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
         PUSH, composeMaterial
         PUSH, __accumulatorName
-        PUSH, weightPage0
+        PUSH, weightAtlas
         EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
         PUSH, composeMaterial
         PUSH, __kOffsetName
@@ -106,7 +114,7 @@
         PUSH, __composeAccumulateName
         PUSH, __zero
         EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
-        PUSH, weightPage0
+        PUSH, weightAtlas
         PUSH, assemblyState
         PUSH, composeMaterial
         EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"
@@ -138,8 +146,12 @@
 
         PUSH, composeMaterial
         PUSH, __weightPageName
-        PUSH, weightPage1
+        PUSH, weightAtlas
         EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
+        PUSH, composeMaterial
+        PUSH, __pageRowName
+        PUSH, __one
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
         PUSH, composeMaterial
         PUSH, __accumulatorName
         PUSH, partialState
@@ -152,7 +164,7 @@
         PUSH, __composeAccumulateName
         PUSH, __one
         EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
-        PUSH, weightPage1
+        PUSH, weightAtlas
         PUSH, assemblyState
         PUSH, composeMaterial
         EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"

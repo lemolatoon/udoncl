@@ -14,6 +14,12 @@ import tempfile
 import time
 
 
+INT4_COMPACT_ROW_BYTES = 80
+INT4_COMPACT_PAGE_BYTES = 64 * INT4_COMPACT_ROW_BYTES
+INT4_COMPACT_ATLAS_WIDTH = INT4_COMPACT_PAGE_BYTES // 4
+INT4_ATLAS_MAX_PAGES = 8192
+
+
 def _safe_external_path(directory: Path, location: str) -> Path:
     if not isinstance(location, str) or not location or "\\" in location:
         raise ValueError("external page location must be a non-empty POSIX path")
@@ -71,6 +77,16 @@ def linear_texture_layout(words: int) -> dict:
     if not isinstance(words, int) or words <= 0:
         raise ValueError("linear texture word count must be positive")
     return {"width": min(8192, words), "height": math.ceil(words / 8192)}
+
+
+def int4_atlas_location(page_index: int) -> dict:
+    """Map a non-negative linear page index to a bounded atlas and row."""
+    if not isinstance(page_index, int) or page_index < 0:
+        raise ValueError("INT4 page index must be non-negative")
+    return {
+        "atlas": page_index // INT4_ATLAS_MAX_PAGES,
+        "row": page_index % INT4_ATLAS_MAX_PAGES,
+    }
 
 
 def _replace_path(source: Path, destination: Path):
@@ -251,16 +267,108 @@ def encode_int4_page(page: dict) -> bytes:
     return struct.pack("<8192f", *state)
 
 
+def materialize_int4_compact_page(
+    plan: dict,
+    call_index: int,
+    m_tile: int,
+    k_tile: int,
+    external_data_directory: Path,
+) -> dict:
+    """Gather one tile as 64 compact 80-byte Q4/BF16 rows."""
+    contract = _int4_call_contract(plan, call_index)
+    grid = contract["grid"]
+    if (
+        not isinstance(m_tile, int)
+        or not isinstance(k_tile, int)
+        or not 0 <= m_tile < grid["m_tiles"]
+        or not 0 <= k_tile < grid["k_tiles"]
+    ):
+        raise ValueError("INT4 tile coordinates are outside the planned grid")
+    output_features = contract["output_features"]
+    input_features = contract["input_features"]
+    m_offset = m_tile * 64
+    k_offset = k_tile * 128
+    n = min(64, output_features - m_offset)
+    k = min(128, input_features - k_offset)
+    groups = math.ceil(k / 32)
+    paging = contract["paging"]
+    packed = paging.get("packed_weight") or {}
+    qparams = paging.get("scales_and_zeros") or {}
+    if (
+        packed.get("source_row_stride_bytes") != input_features // 2
+        or qparams.get("source_group_stride_bytes") != output_features * 4
+        or qparams.get("source_row_stride_bytes") != 4
+    ):
+        raise ValueError("INT4 call paging strides do not match its tensor shapes")
+    payload = bytearray(INT4_COMPACT_PAGE_BYTES)
+    for row in range(n):
+        source_row = m_offset + row
+        packed_relative = source_row * (input_features // 2) + k_offset // 2
+        packed_row = _read_external(
+            external_data_directory,
+            packed.get("external"),
+            packed_relative,
+            k // 2,
+        )
+        destination = row * INT4_COMPACT_ROW_BYTES
+        payload[destination : destination + len(packed_row)] = packed_row
+        for block in range(groups):
+            source_group = k_offset // 32 + block
+            qparam_relative = (source_group * output_features + source_row) * 4
+            qparam = _read_external(
+                external_data_directory,
+                qparams.get("external"),
+                qparam_relative,
+                4,
+            )
+            qparam_destination = destination + 64 + block * 4
+            payload[qparam_destination : qparam_destination + 4] = qparam
+    return {
+        "call_index": call_index,
+        "m_tile": m_tile,
+        "k_tile": k_tile,
+        "m_offset": m_offset,
+        "k_offset": k_offset,
+        "n": n,
+        "k": k,
+        "data": bytes(payload),
+    }
+
+
+def decode_int4_compact_page(page: dict) -> list[float]:
+    """Decode compact bytes to the kernel-208 weight area for validation."""
+    payload = page.get("data")
+    if not isinstance(payload, bytes) or len(payload) != INT4_COMPACT_PAGE_BYTES:
+        raise ValueError("compact INT4 page must contain 5,120 bytes")
+    state = [0.0] * 8192
+    for row in range(64):
+        source = row * INT4_COMPACT_ROW_BYTES
+        destination = row * 72
+        for block in range(4):
+            for byte in range(16):
+                state[destination + block * 18 + byte] = float(
+                    payload[source + block * 16 + byte]
+                )
+            qparam = source + 64 + block * 4
+            state[destination + block * 18 + 16] = _bfloat16(
+                payload[qparam : qparam + 2]
+            )
+            state[destination + block * 18 + 17] = _bfloat16(
+                payload[qparam + 2 : qparam + 4]
+            )
+    return state
+
+
 def emit_int4_call_uasm(plan: dict, call_index: int) -> str:
     """Emit a static Udon Host dispatcher for every M/K page of one INT4 call."""
     contract = _int4_call_contract(plan, call_index)
     grid = contract["grid"]
     output_features = contract["output_features"]
     input_features = contract["input_features"]
-    pages = [
-        (m_tile, k_tile, f"pageM{m_tile}K{k_tile}")
-        for m_tile in range(grid["m_tiles"])
-        for k_tile in range(grid["k_tiles"])
+    page_count = grid["m_tiles"] * grid["k_tiles"]
+    atlases = [
+        f"pageAtlas{index}"
+        for index in range(math.ceil(page_count / INT4_ATLAS_MAX_PAGES))
     ]
     lines = [
         ".data_start",
@@ -274,7 +382,7 @@ def emit_int4_call_uasm(plan: dict, call_index: int) -> str:
         "    .export int4Material",
         "    .export scatterMaterial",
     ]
-    lines.extend(f"    .export {name}" for _, _, name in pages)
+    lines.extend(f"    .export {name}" for name in atlases)
     lines.extend(
         [
             "",
@@ -289,7 +397,7 @@ def emit_int4_call_uasm(plan: dict, call_index: int) -> str:
             "    scatterMaterial: %UnityEngineMaterial, null",
         ]
     )
-    lines.extend(f"    {name}: %UnityEngineTexture, null" for _, _, name in pages)
+    lines.extend(f"    {name}: %UnityEngineTexture, null" for name in atlases)
     constants = {
         "__zero": 0,
         "__one": 1,
@@ -305,9 +413,13 @@ def emit_int4_call_uasm(plan: dict, call_index: int) -> str:
     for k_tile in range(grid["k_tiles"]):
         constants[f"__kOffset{k_tile}"] = k_tile * 128
         constants[f"__k{k_tile}"] = min(128, input_features - k_tile * 128)
+    for page in range(page_count):
+        constants[f"__pageRow{page}"] = int4_atlas_location(page)["row"]
     lines.extend(f"    {name}: %SystemInt32, {value}" for name, value in constants.items())
     strings = {
         "__weightPageName": "_WeightPage",
+        "__compactPageName": "_CompactPage",
+        "__pageRowName": "_PageRow",
         "__activationName": "_Activation",
         "__accumulatorName": "_Accumulator",
         "__activationOffsetName": "_ActivationOffset",
@@ -376,6 +488,7 @@ def emit_int4_call_uasm(plan: dict, call_index: int) -> str:
         )
 
     set_texture("composeMaterial", "__activationName", "activationState")
+    set_int("composeMaterial", "__compactPageName", "__one")
     set_int("composeMaterial", "__activationOffsetName", "__zero")
     set_int("composeMaterial", "__activationWidthName", "__activationWidth")
     set_int("composeMaterial", "__accumulatorOffsetName", "__resultOffset")
@@ -385,15 +498,17 @@ def emit_int4_call_uasm(plan: dict, call_index: int) -> str:
     previous_result = None
     for m_tile in range(grid["m_tiles"]):
         for k_tile in range(grid["k_tiles"]):
-            page = f"pageM{m_tile}K{k_tile}"
+            page = m_tile * grid["k_tiles"] + k_tile
+            atlas = f"pageAtlas{int4_atlas_location(page)['atlas']}"
             accumulate = "__zero" if k_tile == 0 else "__one"
-            set_texture("composeMaterial", "__weightPageName", page)
+            set_texture("composeMaterial", "__weightPageName", atlas)
+            set_int("composeMaterial", "__pageRowName", f"__pageRow{page}")
             set_texture("composeMaterial", "__accumulatorName", "accumulatorState")
             set_int("composeMaterial", "__kOffsetName", f"__kOffset{k_tile}")
             set_int("composeMaterial", "__composeNName", f"__n{m_tile}")
             set_int("composeMaterial", "__composeKName", f"__k{k_tile}")
             set_int("composeMaterial", "__composeAccumulateName", accumulate)
-            blit(page, "composeState", "composeMaterial")
+            blit(atlas, "composeState", "composeMaterial")
             set_texture("int4Material", "__inputName", "composeState")
             set_int("int4Material", "__nName", f"__n{m_tile}")
             set_int("int4Material", "__kName", f"__k{k_tile}")
@@ -450,34 +565,58 @@ def materialize_int4_call(
         tempfile.mkdtemp(prefix=output_directory.name + "-", dir=output_directory.parent)
     )
     try:
-        pages_directory = staging / "pages"
-        pages_directory.mkdir()
+        atlases_directory = staging / "atlases"
+        atlases_directory.mkdir()
         resources = []
+        tiles = []
+        atlas_payload = bytearray()
+        atlas_index = 0
+        atlas_first_page = 0
         for m_tile in range(grid["m_tiles"]):
             for k_tile in range(grid["k_tiles"]):
-                page = materialize_int4_page(
+                page = materialize_int4_compact_page(
                     plan,
                     call_index,
                     m_tile,
                     k_tile,
                     external_data_directory,
                 )
-                relative = f"pages/m{m_tile:04d}-k{k_tile:04d}.bytes"
-                payload = encode_int4_page(page)
-                (staging / relative).write_bytes(payload)
-                resources.append(
+                page_index = m_tile * grid["k_tiles"] + k_tile
+                location = int4_atlas_location(page_index)
+                atlas_row = location["row"]
+                atlas_payload.extend(page["data"])
+                tiles.append(
                     {
-                        "name": f"pageM{m_tile}K{k_tile}",
-                        "kind": "bytes",
-                        "path": relative,
                         "m_tile": m_tile,
                         "k_tile": k_tile,
+                        "atlas": location["atlas"],
+                        "row": atlas_row,
                         "n": page["n"],
                         "k": page["k"],
-                        "bytes": len(payload),
-                        "sha256": hashlib.sha256(payload).hexdigest(),
                     }
                 )
+                last_page = page_index + 1 == grid["m_tiles"] * grid["k_tiles"]
+                if atlas_row + 1 == INT4_ATLAS_MAX_PAGES or last_page:
+                    relative = f"atlases/atlas-{atlas_index:04d}.rgba"
+                    payload = bytes(atlas_payload)
+                    (staging / relative).write_bytes(payload)
+                    resources.append(
+                        {
+                            "name": f"pageAtlas{atlas_index}",
+                            "kind": "bytes",
+                            "path": relative,
+                            "encoding": "q4-bf16-row80-rgba32",
+                            "width": INT4_COMPACT_ATLAS_WIDTH,
+                            "height": atlas_row + 1,
+                            "first_page": atlas_first_page,
+                            "page_count": atlas_row + 1,
+                            "bytes": len(payload),
+                            "sha256": hashlib.sha256(payload).hexdigest(),
+                        }
+                    )
+                    atlas_index += 1
+                    atlas_first_page = page_index + 1
+                    atlas_payload = bytearray()
         (staging / "host.uasm").write_text(
             emit_int4_call_uasm(plan, call_index), encoding="utf-8"
         )
@@ -493,6 +632,13 @@ def materialize_int4_call(
             "activation_layout": linear_texture_layout(contract["input_features"]),
             "result_layout": linear_texture_layout(contract["output_features"]),
             "tile_grid": dict(grid),
+            "page_encoding": {
+                "name": "q4-bf16-row80-rgba32",
+                "row_bytes": INT4_COMPACT_ROW_BYTES,
+                "page_bytes": INT4_COMPACT_PAGE_BYTES,
+                "atlas_width": INT4_COMPACT_ATLAS_WIDTH,
+                "max_pages_per_atlas": INT4_ATLAS_MAX_PAGES,
+            },
             "assembly": "host.uasm",
             "required_shaders": [
                 "weight-int4pack-mm-compose.shader",
@@ -500,6 +646,7 @@ def materialize_int4_call(
                 "kernel_208.shader",
             ],
             "resources": resources,
+            "tiles": tiles,
         }
         (staging / "manifest.json").write_text(
             json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
@@ -571,7 +718,7 @@ def main():
         )
         print(
             f"udon_onnx_int4_call={args.output} call={args.call} "
-            f"pages={len(manifest['resources'])}"
+            f"pages={len(manifest['tiles'])} atlases={len(manifest['resources'])}"
         )
         return
     if args.m_tile is None or args.k_tile is None:
