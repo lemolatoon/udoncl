@@ -30,8 +30,8 @@
 #define UDONDNN_OP_TENSOR_RESULT_OFFSET 1536
 #define UDONDNN_RMS_SCALE_OFFSET 512
 #define UDONDNN_RMS_RESULT_OFFSET 1536
-#define UDONDNN_GATHER_INDICES_OFFSET 512
-#define UDONDNN_GATHER_RESULT_OFFSET 1024
+#define UDONATEN_EMBEDDING_INDICES_OFFSET 512
+#define UDONATEN_EMBEDDING_RESULT_OFFSET 1024
 #define UDONATEN_INT4_WORDS 8192
 #define UDONATEN_INT4_INPUT_OFFSET 6144
 #define UDONATEN_INT4_RESULT_OFFSET 7168
@@ -109,7 +109,7 @@ static cl_kernel softmax_kernel;
 static cl_kernel batchnorm_kernel;
 static cl_kernel op_tensor_kernel;
 static cl_kernel rms_norm_kernel;
-static cl_kernel gather_kernel;
+static cl_kernel embedding_kernel;
 static cl_kernel weight_int4pack_mm_kernel;
 static cl_kernel tile_kernel;
 static cl_kernel aten_rms_reduce_kernel;
@@ -233,8 +233,8 @@ static void clear_objects(void) {
     clReleaseKernel(tile_kernel);
   if (weight_int4pack_mm_kernel)
     clReleaseKernel(weight_int4pack_mm_kernel);
-  if (gather_kernel)
-    clReleaseKernel(gather_kernel);
+  if (embedding_kernel)
+    clReleaseKernel(embedding_kernel);
   if (rms_norm_kernel)
     clReleaseKernel(rms_norm_kernel);
   if (op_tensor_kernel)
@@ -288,7 +288,7 @@ static void clear_objects(void) {
   batchnorm_kernel = 0;
   op_tensor_kernel = 0;
   rms_norm_kernel = 0;
-  gather_kernel = 0;
+  embedding_kernel = 0;
   weight_int4pack_mm_kernel = 0;
   tile_kernel = 0;
   aten_rms_reduce_kernel = 0;
@@ -446,13 +446,12 @@ udondnnStatus_t udondnnCreate(udondnnHandle_t *handle) {
       clSetKernelArg(rms_norm_kernel, 1, sizeof(output_buffer),
                      &output_buffer) != CL_SUCCESS)
     return execution_failure();
-  gather_kernel =
-      clCreateKernel(program, "udondnn_ext_gather_forward", &status);
+  embedding_kernel = clCreateKernel(program, "udonaten_embedding", &status);
   if (status != CL_SUCCESS ||
-      clSetKernelArg(gather_kernel, 0, sizeof(input_buffer), &input_buffer) !=
-          CL_SUCCESS ||
-      clSetKernelArg(gather_kernel, 1, sizeof(output_buffer), &output_buffer) !=
-          CL_SUCCESS)
+      clSetKernelArg(embedding_kernel, 0, sizeof(input_buffer),
+                     &input_buffer) != CL_SUCCESS ||
+      clSetKernelArg(embedding_kernel, 1, sizeof(output_buffer),
+                     &output_buffer) != CL_SUCCESS)
     return execution_failure();
   weight_int4pack_mm_kernel =
       clCreateKernel(program, "udonaten_weight_int4pack_mm", &status);
@@ -1596,22 +1595,24 @@ udondnnStatus_t udonatenBackendArenaPointwise(udondnnHandle_t handle, int words,
   return UDONDNN_STATUS_SUCCESS;
 }
 
-udondnnStatus_t udondnnExtGatherForward(
-    udondnnHandle_t handle, udondnnTensorDescriptor_t data_descriptor,
-    const float *data, const int32_t *indices, int indices_count, int axis,
+/* Private ATen embedding backend. The public operation is udonatenEmbedding;
+ * this implementation intentionally does not appear in udondnn.h. */
+udondnnStatus_t udonatenBackendEmbedding(
+    udondnnHandle_t handle, udondnnTensorDescriptor_t weight_descriptor,
+    const float *weight, const int32_t *indices, int indices_count,
     udondnnTensorDescriptor_t output_descriptor, float *output) {
   TensorDescriptor *data_info, *output_info;
   int dimensions[4], data_words, output_words, outer = 1, inner = 1;
-  int index, selected;
+  int index, selected, axis = 0;
   size_t global = UDONDNN_WORDS, local = 1;
   cl_int status;
   if (handle != UDONDNN_HANDLE || !context)
     return UDONDNN_STATUS_NOT_INITIALIZED;
-  data_info = get_tensor(data_descriptor);
+  data_info = get_tensor(weight_descriptor);
   output_info = get_tensor(output_descriptor);
   if (!data_info || !data_info->configured || !output_info ||
-      !output_info->configured || !data || !indices || indices_count <= 0 ||
-      axis < 0 || axis >= 4 || !output)
+      !output_info->configured || !weight || !indices || indices_count <= 0 ||
+      !output)
     return UDONDNN_STATUS_BAD_PARAM;
   dimensions[0] = data_info->n;
   dimensions[1] = data_info->c;
@@ -1639,33 +1640,33 @@ udondnnStatus_t udondnnExtGatherForward(
   for (index = 0; index < UDONDNN_WORDS; ++index)
     packed[index] = 0.0f;
   for (index = 0; index < data_words; ++index)
-    packed[index] = data[index];
+    packed[index] = weight[index];
   for (index = 0; index < indices_count; ++index)
-    packed[UDONDNN_GATHER_INDICES_OFFSET + index] = (float)indices[index];
+    packed[UDONATEN_EMBEDDING_INDICES_OFFSET + index] = (float)indices[index];
 
-#define SET_GATHER_ARGUMENT(slot, value)                                       \
+#define SET_EMBEDDING_ARGUMENT(slot, value)                                    \
   do {                                                                         \
-    status = clSetKernelArg(gather_kernel, slot, sizeof(value), &(value));     \
+    status = clSetKernelArg(embedding_kernel, slot, sizeof(value), &(value));  \
     if (status != CL_SUCCESS)                                                  \
       return UDONDNN_STATUS_EXECUTION_FAILED;                                  \
   } while (0)
-  SET_GATHER_ARGUMENT(2, outer);
-  SET_GATHER_ARGUMENT(3, dimensions[axis]);
+  SET_EMBEDDING_ARGUMENT(2, outer);
+  SET_EMBEDDING_ARGUMENT(3, dimensions[axis]);
   {
     float axis_words_float = (float)dimensions[axis];
-    SET_GATHER_ARGUMENT(4, axis_words_float);
+    SET_EMBEDDING_ARGUMENT(4, axis_words_float);
   }
-  SET_GATHER_ARGUMENT(5, inner);
-  SET_GATHER_ARGUMENT(6, indices_count);
-  SET_GATHER_ARGUMENT(7, output_words);
-#undef SET_GATHER_ARGUMENT
+  SET_EMBEDDING_ARGUMENT(5, inner);
+  SET_EMBEDDING_ARGUMENT(6, indices_count);
+  SET_EMBEDDING_ARGUMENT(7, output_words);
+#undef SET_EMBEDDING_ARGUMENT
 
   if (clEnqueueWriteBuffer(queue, input_buffer, CL_TRUE, 0, sizeof(packed),
                            packed, 0, 0, 0) != CL_SUCCESS ||
-      clEnqueueNDRangeKernel(queue, gather_kernel, 1, 0, &global, &local, 0, 0,
-                             0) != CL_SUCCESS ||
+      clEnqueueNDRangeKernel(queue, embedding_kernel, 1, 0, &global, &local, 0,
+                             0, 0) != CL_SUCCESS ||
       clEnqueueReadBuffer(queue, output_buffer, CL_TRUE,
-                          UDONDNN_GATHER_RESULT_OFFSET * sizeof(float),
+                          UDONATEN_EMBEDDING_RESULT_OFFSET * sizeof(float),
                           output_words * sizeof(float), result, 0, 0,
                           0) != CL_SUCCESS ||
       clFinish(queue) != CL_SUCCESS)

@@ -8,7 +8,7 @@ stale-handle detection in the bounded Udon representation.
 
 The first Device primitives are NCHW float `udondnnConvolutionForward` and
 `udondnnActivationForward`. One fragment owns each output tensor element. The
-initial gather profile supports
+initial convolution profile supports
 up to 512 input, filter, and output words, at most eight input channels, and
 filters up to 5x5. It supports padding, independent horizontal and vertical
 stride and dilation, cross-correlation and true convolution, and alpha/beta
@@ -17,6 +17,8 @@ Packed Unity material integers remain at or below 24 bits; the convolution
 mode is a separate scalar so Unity cannot round away low configuration bits.
 Activation descriptors cover sigmoid, ReLU, tanh, clipped ReLU, ELU, identity,
 and explicit NaN propagation policy with alpha/beta accumulation.
+Embedding is not a UdonDNN extension: PyTorch owns it in ATen and the public
+entry point is `udonatenEmbedding` in UdonATen.
 
 Run the real fragment-backed validation with:
 

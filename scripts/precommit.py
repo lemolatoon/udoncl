@@ -451,8 +451,9 @@ def run_unity_mcp_gate(root, unity, project, build, output):
 
 
 def restage_original_paths(root: Path, staged_paths):
-    if staged_paths:
-        run(["git", "add", "--", *staged_paths], cwd=root)
+    existing = [path for path in staged_paths if (root / path).exists()]
+    if existing:
+        run(["git", "add", "--", *existing], cwd=root)
 
 
 def main():

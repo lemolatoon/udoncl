@@ -8,6 +8,10 @@ import sys
 
 build, output = (Path(value).resolve() for value in sys.argv[1:])
 root = Path(__file__).resolve().parents[2]
+udondnn_header = (root / "libraries/udondnn/include/udondnn.h").read_text(
+    encoding="utf-8"
+)
+assert "udondnnExt" not in udondnn_header
 result = subprocess.run(
     [
         sys.executable,
@@ -48,7 +52,7 @@ assert optensor_error and float(optensor_error.group(1)) < 0.0005
 assert "rmsnorm_outputs=4112" in result.stdout
 rmsnorm_error = re.search(r"rmsnorm_max_error=([0-9.eE+-]+)", result.stdout)
 assert rmsnorm_error and float(rmsnorm_error.group(1)) < 0.001
-assert "gather_outputs=24" in result.stdout
+assert "embedding_outputs=24" in result.stdout
 assert "int4_outputs=96" in result.stdout
 int4_error = re.search(r"int4_max_error=([0-9.eE+-]+)", result.stdout)
 assert int4_error and float(int4_error.group(1)) < 0.0005

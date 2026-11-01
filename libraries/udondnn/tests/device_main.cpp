@@ -30,8 +30,8 @@ extern "C" size_t udondnn_op_tensor_cpu_gid;
 size_t udondnn_op_tensor_cpu_gid;
 extern "C" size_t udondnn_rms_norm_cpu_gid;
 size_t udondnn_rms_norm_cpu_gid;
-extern "C" size_t udondnn_gather_cpu_gid;
-size_t udondnn_gather_cpu_gid;
+extern "C" size_t udonaten_embedding_cpu_gid;
+size_t udonaten_embedding_cpu_gid;
 extern "C" size_t udonaten_int4_cpu_gid;
 size_t udonaten_int4_cpu_gid;
 extern "C" size_t udonaten_tile_cpu_gid;
@@ -1244,17 +1244,17 @@ int main(int argc, char **argv) {
         gatherExpected[selected * 8 + column] = gatherData[row * 8 + column];
     }
     require(udondnnCreateTensorDescriptor(&gatherDataDescriptor),
-            UDONDNN_STATUS_SUCCESS, "create Gather data descriptor");
+            UDONDNN_STATUS_SUCCESS, "create Embedding weight descriptor");
     require(udondnnCreateTensorDescriptor(&gatherOutputDescriptor),
-            UDONDNN_STATUS_SUCCESS, "create Gather output descriptor");
+            UDONDNN_STATUS_SUCCESS, "create Embedding output descriptor");
     require(udondnnSetTensor4dDescriptor(gatherDataDescriptor,
                                          UDONDNN_TENSOR_NCHW,
                                          UDONDNN_DATA_FLOAT, 6, 8, 1, 1),
-            UDONDNN_STATUS_SUCCESS, "set Gather data descriptor");
+            UDONDNN_STATUS_SUCCESS, "set Embedding weight descriptor");
     require(udondnnSetTensor4dDescriptor(gatherOutputDescriptor,
                                          UDONDNN_TENSOR_NCHW,
                                          UDONDNN_DATA_FLOAT, 3, 8, 1, 1),
-            UDONDNN_STATUS_SUCCESS, "set Gather output descriptor");
+            UDONDNN_STATUS_SUCCESS, "set Embedding output descriptor");
     require(udonatenEmbedding(handle, gatherDataDescriptor, gatherData.data(),
                               gatherIndices.data(), int(gatherIndices.size()),
                               -1, 0, 0, gatherOutputDescriptor,
@@ -1271,15 +1271,15 @@ int main(int argc, char **argv) {
           std::max(gatherMaximumError,
                    std::abs(gatherActual[index] - gatherExpected[index]));
     if (gatherMaximumError > 0.0f)
-      throw std::runtime_error("UdonDNN Gather results diverged");
+      throw std::runtime_error("UdonATen Embedding results diverged");
     require(udonatenEmbedding(handle, gatherDataDescriptor, gatherData.data(),
                               std::array<int32_t, 1>{{6}}.data(), 1, -1, 0, 0,
                               gatherOutputDescriptor, gatherActual.data()),
             UDONDNN_STATUS_BAD_PARAM, "reject out-of-range embedding index");
     require(udondnnDestroyTensorDescriptor(gatherDataDescriptor),
-            UDONDNN_STATUS_SUCCESS, "destroy Gather data descriptor");
+            UDONDNN_STATUS_SUCCESS, "destroy Embedding weight descriptor");
     require(udondnnDestroyTensorDescriptor(gatherOutputDescriptor),
-            UDONDNN_STATUS_SUCCESS, "destroy Gather output descriptor");
+            UDONDNN_STATUS_SUCCESS, "destroy Embedding output descriptor");
 
     udondnnTensorDescriptor_t tileInputDescriptor = 0, tileOutputDescriptor = 0;
     std::vector<float> tileInput(12), tileActual(72), tileExpected(72);
@@ -1765,8 +1765,8 @@ int main(int argc, char **argv) {
               << rmsActual.size() + rmsLargeActual.size() +
                      rmsMultiActual.size()
               << " rmsnorm_max_error=" << rmsMaximumError
-              << " gather_outputs=" << gatherActual.size()
-              << " gather_max_error=" << gatherMaximumError
+              << " embedding_outputs=" << gatherActual.size()
+              << " embedding_max_error=" << gatherMaximumError
               << " int4_outputs=" << int4Actual.size()
               << " int4_max_error=" << int4MaximumError
               << " tile_outputs=" << tileActual.size()

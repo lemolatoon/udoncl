@@ -87,7 +87,7 @@ def main():
     batchnorm_device = source / "device/batchnorm.cl"
     op_tensor_device = source / "device/op_tensor.cl"
     rms_norm_device = source / "device/rms_norm.cl"
-    gather_device = source / "device/gather.cl"
+    embedding_device = root / "libraries/udonaten/device/embedding.cl"
     int4_device = root / "libraries/udonaten/device/weight_int4pack_mm.cl"
     tile_device = root / "libraries/udonaten/device/tile.cl"
     aten_rms_device = root / "libraries/udonaten/device/rms_norm.cl"
@@ -104,7 +104,7 @@ def main():
     batchnorm_text = batchnorm_device.read_text(encoding="utf-8")
     op_tensor_text = op_tensor_device.read_text(encoding="utf-8")
     rms_norm_text = rms_norm_device.read_text(encoding="utf-8")
-    gather_text = gather_device.read_text(encoding="utf-8")
+    embedding_text = embedding_device.read_text(encoding="utf-8")
     int4_text = int4_device.read_text(encoding="utf-8")
     tile_text = tile_device.read_text(encoding="utf-8")
     aten_rms_text = aten_rms_device.read_text(encoding="utf-8")
@@ -129,7 +129,7 @@ def main():
         + "\n"
         + rms_norm_text
         + "\n"
-        + gather_text
+        + embedding_text
         + "\n"
         + int4_text
         + "\n"
@@ -247,8 +247,8 @@ def main():
         206,
         2048,
     )
-    gather_bundle = emit_device(
-        "gather", gather_device, "udondnn_ext_gather_forward", 207, 2048
+    embedding_bundle = emit_device(
+        "embedding", embedding_device, "udonaten_embedding", 207, 2048
     )
     int4_bundle = emit_device(
         "weight-int4pack-mm",
@@ -577,24 +577,29 @@ def main():
         blas_fragments.append(
             blas_bundle / f"kernels/kernel_{identifier}.hlsl"
         )
-    gather_manifest = json.loads(
-        (gather_bundle / "manifest.json").read_text(encoding="utf-8")
+    embedding_manifest = json.loads(
+        (embedding_bundle / "manifest.json").read_text(encoding="utf-8")
     )
-    gather_kernel = gather_manifest["device"]["kernels"][0]
+    embedding_kernel = embedding_manifest["device"]["kernels"][0]
     if (
-        gather_kernel["name"] != "udondnn_ext_gather_forward"
-        or gather_kernel["global_size"] != [2048, 1, 1]
-        or [argument["required_bytes"] for argument in gather_kernel["args"][:2]]
+        embedding_kernel["name"] != "udonaten_embedding"
+        or embedding_kernel["global_size"] != [2048, 1, 1]
+        or [
+            argument["required_bytes"]
+            for argument in embedding_kernel["args"][:2]
+        ]
         != [8192, 8192]
-        or len(gather_kernel["args"]) != 8
+        or len(embedding_kernel["args"]) != 8
     ):
-        raise RuntimeError("UdonDNN Gather manifest does not match its packed ABI")
-    gather_fragment = gather_bundle / "kernels/kernel_207.hlsl"
-    gather_shaderlab = (gather_bundle / "kernels/kernel_207.shader").read_text(
-        encoding="utf-8"
-    )
-    if '_VRC_Arg2 ("Arg2", Int)' not in gather_shaderlab:
-        raise RuntimeError("UdonDNN Gather integer uniforms are not Unity-compatible")
+        raise RuntimeError("UdonATen Embedding manifest does not match its packed ABI")
+    embedding_fragment = embedding_bundle / "kernels/kernel_207.hlsl"
+    embedding_shaderlab = (
+        embedding_bundle / "kernels/kernel_207.shader"
+    ).read_text(encoding="utf-8")
+    if '_VRC_Arg2 ("Arg2", Int)' not in embedding_shaderlab:
+        raise RuntimeError(
+            "UdonATen Embedding integer uniforms are not Unity-compatible"
+        )
     int4_manifest = json.loads(
         (int4_bundle / "manifest.json").read_text(encoding="utf-8")
     )
@@ -637,7 +642,7 @@ def main():
         + "const std::string &convolution, const std::string &activation, "
         + "const std::string &pooling, const std::string &softmax, "
         + "const std::string &batchnorm, const std::string &opTensor, "
-        + "const std::string &rmsNorm, const std::string &gather, "
+        + "const std::string &rmsNorm, const std::string &embedding, "
         + "const std::string &int4, const std::string &tile, "
         + "const std::string &atenRmsReduce, const std::string &atenRmsFinalize, "
         + "const std::string &sgemm, const std::string &q4, "
@@ -651,7 +656,7 @@ def main():
         + '{204, 4096, 5, "udondnn_batchnorm_inference", batchnorm}, '
         + '{205, 2048, 8, "udondnn_op_tensor", opTensor}, '
         + '{206, 2048, 5, "udondnn_ext_rms_normalization_forward", rmsNorm}, '
-        + '{207, 2048, 6, "udondnn_ext_gather_forward", gather}, '
+        + '{207, 2048, 6, "udonaten_embedding", embedding}, '
         + '{208, 8192, 4, "udonaten_weight_int4pack_mm", int4}, '
         + '{209, 8192, 9, "udonaten_tile", tile}, '
         + '{210, 8192, 2, "udonaten_rms_norm_reduce", atenRmsReduce}, '
@@ -2022,7 +2027,7 @@ def main():
     batchnorm_object = output / ("batchnorm-device" + object_suffix)
     op_tensor_object = output / ("op-tensor-device" + object_suffix)
     rms_norm_object = output / ("rms-norm-device" + object_suffix)
-    gather_object = output / ("gather-device" + object_suffix)
+    embedding_object = output / ("embedding-device" + object_suffix)
     int4_object = output / ("weight-int4pack-mm-device" + object_suffix)
     tile_object = output / ("tile-device" + object_suffix)
     sgemm_object = output / ("sgemm-device" + object_suffix)
@@ -2172,9 +2177,9 @@ def main():
             "-std=c11",
             "-ffp-contract=off",
             "-c",
-            gather_device,
+            embedding_device,
             "-o",
-            gather_object,
+            embedding_object,
         ]
     )
     run(
@@ -2286,7 +2291,7 @@ def main():
                 (batchnorm_fragment, "frag", "frag"),
                 (op_tensor_fragment, "frag", "frag"),
                 (rms_norm_fragment, "frag", "frag"),
-                (gather_fragment, "frag", "frag"),
+                (embedding_fragment, "frag", "frag"),
                 (int4_fragment, "frag", "frag"),
                 (tile_fragment, "frag", "frag"),
                 (aten_rms_reduce_fragment, "frag", "frag"),
@@ -2326,7 +2331,7 @@ def main():
             batchnorm_fragment,
             op_tensor_fragment,
             rms_norm_fragment,
-            gather_fragment,
+            embedding_fragment,
             int4_fragment,
             tile_fragment,
             aten_rms_reduce_fragment,
@@ -2361,7 +2366,7 @@ def main():
             "-DUDONDNN_BATCHNORM_OBJECT=" + batchnorm_object.as_posix(),
             "-DUDONDNN_OP_TENSOR_OBJECT=" + op_tensor_object.as_posix(),
             "-DUDONDNN_RMS_NORM_OBJECT=" + rms_norm_object.as_posix(),
-            "-DUDONDNN_GATHER_OBJECT=" + gather_object.as_posix(),
+            "-DUDONATEN_EMBEDDING_OBJECT=" + embedding_object.as_posix(),
             "-DUDONATEN_INT4_OBJECT=" + int4_object.as_posix(),
             "-DUDONATEN_TILE_OBJECT=" + tile_object.as_posix(),
             "-DUDONBLAS_SGEMM_OBJECT=" + sgemm_object.as_posix(),
@@ -2386,7 +2391,7 @@ def main():
                 batchnorm_fragment,
                 op_tensor_fragment,
                 rms_norm_fragment,
-                gather_fragment,
+                embedding_fragment,
                 int4_fragment,
                 tile_fragment,
                 aten_rms_reduce_fragment,

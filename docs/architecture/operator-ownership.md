@@ -51,9 +51,11 @@ Authoritative sources:
   and
   <https://github.com/pytorch/pytorch/blob/main/aten/src/ATen/native/cuda/int4mm.cu>
 
-The existing `udondnnExtGatherForward` name is a provisional backend detail.
-UdonATen may reuse it internally during migration, but ONNX plans and generated
-Host code expose UdonATen contracts. RMSNorm now uses an UdonATen-owned
+Embedding now exposes only `udonatenEmbedding`; the former public
+`udondnnExtGatherForward` shortcut has been removed. Its Device kernel is named
+and packaged as UdonATen, following PyTorch's `embedding` delegation to
+CUDA `index_select`. ONNX plans and generated Host code expose that same
+UdonATen contract. RMSNorm now uses an UdonATen-owned
 Device kernel and is no longer exposed as a UdonDNN extension. Its arena
 profile executes up to 16,384 words with normalized rows up to 4,096 words as
 an UdonATen-owned two-pass reduction and normalization, without CPU readback.

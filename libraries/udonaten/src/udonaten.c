@@ -47,6 +47,10 @@ udonatenStatus_t udonatenBackendRmsNorm(udonatenHandle_t handle, int words,
                                         int normalized_words,
                                         const float *input, const float *weight,
                                         float epsilon, float *output);
+udonatenStatus_t udonatenBackendEmbedding(
+    udonatenHandle_t handle, udonatenTensorDescriptor_t weight_descriptor,
+    const float *weight, const int32_t *indices, int indices_count,
+    udonatenTensorDescriptor_t output_descriptor, float *output);
 
 static udonatenStatus_t
 udonatenBinary(udonatenHandle_t handle, udondnnOpTensorOp_t operation,
@@ -256,8 +260,8 @@ udonatenStatus_t udonatenEmbedding(udonatenHandle_t handle,
                                    float *output) {
   if (padding_idx != -1 || scale_grad_by_freq || sparse)
     return UDONDNN_STATUS_NOT_SUPPORTED;
-  return udondnnExtGatherForward(handle, weight_descriptor, weight, indices,
-                                 indices_count, 0, output_descriptor, output);
+  return udonatenBackendEmbedding(handle, weight_descriptor, weight, indices,
+                                  indices_count, output_descriptor, output);
 }
 
 udonatenStatus_t

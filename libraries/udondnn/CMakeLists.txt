@@ -11,7 +11,7 @@ add_executable(udondnn-device tests/device_main.cpp
   "${UDONDNN_SOFTMAX_OBJECT}" "${UDONDNN_BATCHNORM_OBJECT}"
   "${UDONDNN_OP_TENSOR_OBJECT}")
 target_sources(udondnn-device PRIVATE "${UDONDNN_RMS_NORM_OBJECT}")
-target_sources(udondnn-device PRIVATE "${UDONDNN_GATHER_OBJECT}")
+target_sources(udondnn-device PRIVATE "${UDONATEN_EMBEDDING_OBJECT}")
 target_sources(udondnn-device PRIVATE "${UDONATEN_INT4_OBJECT}")
 target_sources(udondnn-device PRIVATE "${UDONATEN_TILE_OBJECT}")
 target_sources(udondnn-device PRIVATE "${UDONATEN_ARENA_POINTWISE_OBJECT}")
@@ -26,7 +26,7 @@ set_source_files_properties("${UDONDNN_HOST_OBJECT}" "${UDONDNN_DEVICE_OBJECT}"
   "${UDONDNN_SOFTMAX_OBJECT}" "${UDONDNN_BATCHNORM_OBJECT}"
   "${UDONDNN_OP_TENSOR_OBJECT}"
   "${UDONDNN_RMS_NORM_OBJECT}"
-  "${UDONDNN_GATHER_OBJECT}"
+  "${UDONATEN_EMBEDDING_OBJECT}"
   "${UDONATEN_INT4_OBJECT}"
   "${UDONATEN_TILE_OBJECT}"
   "${UDONATEN_ARENA_POINTWISE_OBJECT}"

@@ -22,7 +22,8 @@ The first supported inference operators are:
 - `udonatenEmbedding`, corresponding to
   `embedding(weight, indices, padding_idx, scale_grad_by_freq, sparse)`. The
   current backend supports `padding_idx=-1`, `scale_grad_by_freq=false`, and
-  `sparse=false`.
+  `sparse=false`. Its Device kernel and artifact are UdonATen-owned; no Gather
+  extension is exposed from the cuDNN-compatible UdonDNN API.
 - `udonatenRmsNorm`, corresponding to
   `rms_norm(input, normalized_shape, weight=None, eps=None)`. Optional weight
   is supported. A two-pass UdonATen Device path reduces 64-element chunks into
