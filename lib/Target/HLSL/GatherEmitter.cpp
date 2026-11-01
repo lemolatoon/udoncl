@@ -7,6 +7,9 @@ using namespace mlir;
 namespace vrc {
 namespace fragment = ::vrc::vrcgpu;
 namespace {
+std::string textureName(unsigned argument) {
+  return argument == 0 ? "_VRC_Input" : "_VRC_Input" + std::to_string(argument);
+}
 struct Emitter {
   explicit Emitter(llvm::raw_ostream &stream) : out(stream) {}
   llvm::raw_ostream &out;
@@ -83,7 +86,13 @@ struct Emitter {
       names[coord.getX()] = "uint(position.x)";
       names[coord.getY()] = "uint(position.y)";
     } else if (auto load = dyn_cast<fragment::TextureLoadOp>(op)) {
-      declare(load.getTexel(), "_VRC_Input.Load(int3(int(" + get(load.getX()) +
+      auto resource =
+          SymbolTable::lookupNearestSymbolFrom<fragment::ResourceOp>(
+              op, load.getResourceAttr());
+      if (!resource)
+        return op->emitError("missing texture resource");
+      declare(load.getTexel(), textureName(resource.getArgIndex()) +
+                                   ".Load(int3(int(" + get(load.getX()) +
                                    "), int(" + get(load.getY()) + "), 0))");
     } else if (auto unpack = dyn_cast<fragment::RawUnpackOp>(op)) {
       auto bytes = "bytes" + std::to_string(next++);
@@ -270,15 +279,16 @@ struct Emitter {
 } // namespace
 LogicalResult emitGatherFragmentHLSL(fragment::KernelOp kernel,
                                      llvm::raw_ostream &out) {
-  out << "Texture2D<float4> _VRC_Input : register(t0);\ncbuffer Params : "
-         "register(b1) {\n";
-  for (unsigned i = 2; i < kernel.getArgumentKinds().size(); ++i)
-    out << "  "
-        << (kernel.getArgumentKinds()[i] ==
-                    StringAttr::get(kernel.getContext(), "f32")
-                ? "float"
-                : "uint")
-        << " _VRC_Arg" << i << ";\n";
+  unsigned textureBinding = 0;
+  for (auto resource : kernel.getBody().front().getOps<fragment::ResourceOp>())
+    if (resource.getKind() == "texture")
+      out << "Texture2D<float4> " << textureName(resource.getArgIndex())
+          << " : register(t" << textureBinding++ << ");\n";
+  out << "cbuffer Params : register(b1) {\n";
+  for (auto resource : kernel.getBody().front().getOps<fragment::ResourceOp>())
+    if (resource.getKind() == "uniform")
+      out << "  " << (resource.getValueType().isF32() ? "float" : "uint")
+          << " _VRC_Arg" << resource.getArgIndex() << ";\n";
   out << "};\nfloat4 frag(float4 position : SV_POSITION) : SV_Target {\n";
   Emitter emitter{out};
   for (auto pass : kernel.getBody().front().getOps<fragment::PassOp>())

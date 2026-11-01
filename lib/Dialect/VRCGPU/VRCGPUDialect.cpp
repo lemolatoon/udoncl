@@ -59,38 +59,57 @@ LogicalResult KernelOp::verify() {
   if (gather(*this)) {
     auto words = (*this)->getAttrOfType<IntegerAttr>("vrc.words");
     auto global = getGlobalSize();
-    if (getBody().front().getNumArguments() != 1 ||
-        !isa<VersionType>(getBody().front().getArgument(0).getType()) ||
-        cast<VersionType>(getBody().front().getArgument(0).getType())
-                .getBufferId() != 0 ||
-        !words || words.getInt() < 4 || words.getInt() > 16384 ||
+    if (!words || words.getInt() < 4 || words.getInt() > 16384 ||
         getKernelId() <= 0 || getArgumentKinds().size() < 2 ||
-        getArgumentKinds().size() > 16 ||
-        getArgumentKinds()[0] != StringAttr::get(getContext(), "buffer") ||
-        getArgumentKinds()[1] != StringAttr::get(getContext(), "buffer") ||
-        global.size() != 3 || global[0] <= 0 || global[1] <= 0 ||
-        global[2] != 1 || int64_t(global[0]) * global[1] != words.getInt() ||
+        getArgumentKinds().size() > 16 || global.size() != 3 ||
+        global[0] <= 0 || global[1] <= 0 || global[2] != 1 ||
+        int64_t(global[0]) * global[1] != words.getInt() ||
         getLocalSize() != ArrayRef<int32_t>{1, 1, 1} ||
         getGlobalOffset() != ArrayRef<int32_t>{0, 0, 0} ||
         !(*this)->hasAttr("vrc.gather_proven"))
       return emitOpError("invalid proven gather launch/argument contract");
-    for (auto kind : getArgumentKinds().getValue().drop_front(2))
-      if (kind != StringAttr::get(getContext(), "f32") &&
-          kind != StringAttr::get(getContext(), "i32"))
+    unsigned bufferCount = 0;
+    bool sawScalar = false;
+    for (auto kind : getArgumentKinds().getValue()) {
+      if (kind == StringAttr::get(getContext(), "buffer")) {
+        if (sawScalar)
+          return emitOpError("gather buffers must precede scalar arguments");
+        ++bufferCount;
+      } else if (kind == StringAttr::get(getContext(), "f32") ||
+                 kind == StringAttr::get(getContext(), "i32"))
+        sawScalar = true;
+      else
         return emitOpError("unsupported gather scalar ABI");
+    }
+    if (bufferCount < 2)
+      return emitOpError("gather requires at least one input and one output");
     llvm::SmallDenseSet<int32_t> indices;
-    unsigned passes = 0;
+    llvm::SmallDenseSet<int32_t> inputs;
+    unsigned passes = 0, targets = 0;
     for (auto &op : getBody().front()) {
       if (auto r = dyn_cast<ResourceOp>(op)) {
         if (!indices.insert(r.getArgIndex()).second)
           return emitOpError("resource argument collision");
+        if (r.getKind() == "texture")
+          inputs.insert(r.getArgIndex());
+        else if (r.getKind() == "target")
+          ++targets;
       } else if (isa<PassOp>(op))
         ++passes;
       else
         return emitOpError("unsupported gather kernel operation");
     }
-    if (indices.size() != getArgumentKinds().size() || passes != 1)
+    if (indices.size() != getArgumentKinds().size() || passes != 1 ||
+        targets != 1 || inputs.size() + targets != bufferCount ||
+        getBody().front().getNumArguments() != inputs.size())
       return emitOpError("gather requires all argument bindings and one pass");
+    llvm::SmallDenseSet<int32_t> versions;
+    for (auto argument : getBody().front().getArguments()) {
+      auto version = dyn_cast<VersionType>(argument.getType());
+      if (!version || !inputs.contains(version.getBufferId()) ||
+          !versions.insert(version.getBufferId()).second)
+        return emitOpError("gather input versions must match texture bindings");
+    }
     return success();
   }
   if (getKernelIdAttr().getInt() <= 0 || getArgumentKinds().size() != 2 ||
@@ -128,9 +147,10 @@ LogicalResult ResourceOp::verify() {
     if (getBinding() != i || i < 0 ||
         size_t(i) >= kernel.getArgumentKinds().size())
       return emitOpError("invalid gather argument binding");
-    if (i < 2) {
+    auto argumentKind = kernel.getArgumentKinds()[i];
+    if (argumentKind == StringAttr::get(getContext(), "buffer")) {
       if (!getValueType().isF32() ||
-          getKind() != (i == 0 ? "texture" : "target") || !getFormat() ||
+          (getKind() != "texture" && getKind() != "target") || !getFormat() ||
           *getFormat() != "rgba8_unorm")
         return emitOpError("invalid input/target format");
     } else if (getKind() != "uniform" || getFormat() ||
@@ -164,15 +184,20 @@ LogicalResult PassOp::verify() {
       SymbolTable::lookupNearestSymbolFrom<ResourceOp>(*this, getOutputAttr());
   auto kernel = (*this)->getParentOfType<KernelOp>();
   if (kernel && gather(kernel)) {
-    if (!target || target.getKind() != "target" || target.getArgIndex() != 1 ||
-        getVersion().getType().getBufferId() != 1 || getPassId() != 0 ||
-        getReads().size() != 1 || getBody().empty() ||
-        !getBody().hasOneBlock() || getBody().front().getNumArguments())
+    if (!target || target.getKind() != "target" ||
+        getVersion().getType().getBufferId() !=
+            uint32_t(target.getArgIndex()) ||
+        getPassId() != 0 ||
+        getReads().size() != kernel.getBody().front().getNumArguments() ||
+        getBody().empty() || !getBody().hasOneBlock() ||
+        getBody().front().getNumArguments())
       return emitOpError(
           "gather pass requires distinct input/output versions and one block");
-    if (getReads()[0] != kernel.getBody().front().getArgument(0))
-      return emitOpError(
-          "input version must name the bound read-only resource");
+    for (auto pair :
+         llvm::zip(getReads(), kernel.getBody().front().getArguments()))
+      if (std::get<0>(pair) != std::get<1>(pair))
+        return emitOpError(
+            "input versions must name every bound read-only resource");
     bool invalid = false;
     getBody().walk([&](Operation *op) {
       if (isa<FragmentCoordOp, TextureLoadOp, RawUnpackOp, RawPackOp,

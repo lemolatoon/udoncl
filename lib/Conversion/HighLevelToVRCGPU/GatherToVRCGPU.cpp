@@ -56,8 +56,23 @@ struct LowerGatherDevicePass
           }
           store = candidate;
         }
-        if (!store || store.getMemref() != source.getArgument(1)) {
+        if (!store) {
           source.emitError("missing proven output store");
+          signalPassFailure();
+          return;
+        }
+        std::optional<unsigned> outputArgument;
+        SmallVector<unsigned> inputArguments;
+        for (unsigned i = 0; i < source.getNumArguments(); ++i) {
+          if (!isa<MemRefType>(source.getArgument(i).getType()))
+            continue;
+          if (store.getMemref() == source.getArgument(i))
+            outputArgument = i;
+          else
+            inputArguments.push_back(i);
+        }
+        if (!outputArgument || inputArguments.empty()) {
+          source.emitError("gather requires read-only inputs and one output");
           signalPassFailure();
           return;
         }
@@ -66,9 +81,9 @@ struct LowerGatherDevicePass
         SmallVector<Attribute> kinds;
         for (unsigned i = 0; i < source.getNumArguments(); ++i)
           kinds.push_back(b.getStringAttr(
-              i < 2                                     ? "buffer"
-              : source.getArgument(i).getType().isF32() ? "f32"
-                                                        : "i32"));
+              isa<MemRefType>(source.getArgument(i).getType()) ? "buffer"
+              : source.getArgument(i).getType().isF32()        ? "f32"
+                                                               : "i32"));
         auto *kernel = make(
             b, loc, fragment::KernelOp::getOperationName(), {}, {},
             {b.getNamedAttr(
@@ -89,39 +104,49 @@ struct LowerGatherDevicePass
         auto *body = new Block;
         kernel->getRegion(0).push_back(body);
         b.setInsertionPointToEnd(body);
-        Value inputVersion = body->addArgument(
-            fragment::VersionType::get(&getContext(), 0), loc);
+        SmallVector<Value> inputVersions;
+        for (unsigned i : inputArguments)
+          inputVersions.push_back(body->addArgument(
+              fragment::VersionType::get(&getContext(), i), loc));
         for (unsigned i = 0; i < source.getNumArguments(); ++i) {
+          bool buffer = isa<MemRefType>(source.getArgument(i).getType());
+          bool output = i == *outputArgument;
           SmallVector<NamedAttribute> attrs{
               b.getNamedAttr("sym_name",
                              b.getStringAttr("arg" + std::to_string(i))),
-              b.getNamedAttr("kind", b.getStringAttr(i == 0   ? "texture"
-                                                     : i == 1 ? "target"
-                                                              : "uniform")),
+              b.getNamedAttr(
+                  "kind",
+                  b.getStringAttr(buffer ? (output ? "target" : "texture")
+                                         : "uniform")),
               b.getNamedAttr("arg_index", b.getI32IntegerAttr(i)),
               b.getNamedAttr("binding", b.getI32IntegerAttr(i)),
               b.getNamedAttr(
                   "value_type",
-                  TypeAttr::get(i < 2 ? b.getF32Type()
-                                      : source.getArgument(i).getType()))};
-          if (i < 2)
+                  TypeAttr::get(buffer ? b.getF32Type()
+                                       : source.getArgument(i).getType()))};
+          if (buffer)
             attrs.push_back(
                 b.getNamedAttr("format", b.getStringAttr("rgba8_unorm")));
           make(b, loc, fragment::ResourceOp::getOperationName(), {}, {}, attrs);
         }
         auto *pass =
             make(b, loc, fragment::PassOp::getOperationName(),
-                 TypeRange{fragment::VersionType::get(&getContext(), 1)},
-                 ValueRange{inputVersion},
+                 TypeRange{fragment::VersionType::get(&getContext(),
+                                                      *outputArgument)},
+                 inputVersions,
                  {b.getNamedAttr("output",
-                                 FlatSymbolRefAttr::get(&getContext(), "arg1")),
+                                 FlatSymbolRefAttr::get(
+                                     &getContext(),
+                                     "arg" + std::to_string(*outputArgument))),
                   b.getNamedAttr("pass_id", b.getI32IntegerAttr(0))},
                  1);
         auto *block = new Block;
         pass->getRegion(0).push_back(block);
         b.setInsertionPointToEnd(block);
         IRMapping mapping;
-        for (unsigned i = 2; i < source.getNumArguments(); ++i) {
+        for (unsigned i = 0; i < source.getNumArguments(); ++i) {
+          if (isa<MemRefType>(source.getArgument(i).getType()))
+            continue;
           auto *uniform = make(
               b, loc, fragment::UniformLoadOp::getOperationName(),
               TypeRange{source.getArgument(i).getType()}, {},
@@ -154,8 +179,11 @@ struct LowerGatherDevicePass
         SmallVector<memref::LoadOp> loads;
         pass->walk([&](memref::LoadOp op) { loads.push_back(op); });
         for (auto op : loads) {
-          if (op.getMemref() != source.getArgument(0) ||
-              op.getIndices().size() != 1) {
+          std::optional<unsigned> inputArgument;
+          for (unsigned i : inputArguments)
+            if (op.getMemref() == source.getArgument(i))
+              inputArgument = i;
+          if (!inputArgument || op.getIndices().size() != 1) {
             op.emitError("unproven input read");
             signalPassFailure();
             return;
@@ -170,8 +198,10 @@ struct LowerGatherDevicePass
           auto *texel = make(
               b, op.getLoc(), fragment::TextureLoadOp::getOperationName(),
               TypeRange{VectorType::get({4}, b.getF32Type())}, ValueRange{x, y},
-              {b.getNamedAttr("resource",
-                              FlatSymbolRefAttr::get(&getContext(), "arg0")),
+              {b.getNamedAttr(
+                   "resource",
+                   FlatSymbolRefAttr::get(
+                       &getContext(), "arg" + std::to_string(*inputArgument))),
                b.getNamedAttr("element_count", words)});
           auto *value =
               make(b, op.getLoc(), fragment::RawUnpackOp::getOperationName(),

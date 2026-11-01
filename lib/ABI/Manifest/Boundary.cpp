@@ -192,7 +192,7 @@ llvm::json::Object buildBoundaryManifest(ModuleOp module) {
                                     {"scratch_bytes", 0}}}});
   }
   // Gather kernels retain the same byte-preserving texture representation,
-  // with one input word and one output word per pixel.
+  // with one word per pixel in every read-only input and the output.
   unsigned kernelIndex = 0;
   for (auto kernel : module.getOps<fragment::KernelOp>()) {
     auto &entry = *kernels[kernelIndex++].getAsObject();
@@ -202,38 +202,59 @@ llvm::json::Object buildBoundaryManifest(ModuleOp module) {
     int64_t words = kernel->getAttrOfType<IntegerAttr>("vrc.words").getInt();
     auto global = kernel.getGlobalSize();
     llvm::json::Array args;
-    for (unsigned i = 0; i < 2; ++i)
-      args.push_back(
-          llvm::json::Object{{"index", i},
-                             {"kind", "buffer"},
-                             {"access", i == 0 ? "read" : "write"},
-                             {"resource_index", i},
-                             {"required_bytes", words * 4},
-                             {"alignment", 4},
-                             {"binding", i == 0 ? "_VRC_Input" : "SV_Target"}});
-    for (unsigned i = 2; i < kernel.getArgumentKinds().size(); ++i)
-      args.push_back(llvm::json::Object{
-          {"index", i},
-          {"kind",
-           cast<StringAttr>(kernel.getArgumentKinds()[i]).getValue().str()},
-          {"scalar_payload_offset", (i - 2) * 4},
-          {"byte_size", 4},
-          {"binding", "_VRC_Arg" + std::to_string(i)}});
+    llvm::DenseMap<unsigned, fragment::ResourceOp> resources;
+    for (auto resource :
+         kernel.getBody().front().getOps<fragment::ResourceOp>())
+      resources[resource.getArgIndex()] = resource;
+    llvm::json::Array resourceOrder, reads, writes;
+    std::optional<unsigned> outputArgument;
+    unsigned scalarOffset = 0;
+    for (unsigned i = 0; i < kernel.getArgumentKinds().size(); ++i) {
+      auto resource = resources.lookup(i);
+      if (resource && resource.getKind() != "uniform") {
+        bool output = resource.getKind() == "target";
+        std::string binding = output   ? "SV_Target"
+                              : i == 0 ? "_VRC_Input"
+                                       : "_VRC_Input" + std::to_string(i);
+        args.push_back(llvm::json::Object{{"index", i},
+                                          {"kind", "buffer"},
+                                          {"access", output ? "write" : "read"},
+                                          {"resource_index", i},
+                                          {"required_bytes", words * 4},
+                                          {"alignment", 4},
+                                          {"binding", std::move(binding)}});
+        resourceOrder.push_back(i);
+        if (output) {
+          outputArgument = i;
+          writes.push_back(i);
+        } else
+          reads.push_back(i);
+      } else {
+        args.push_back(llvm::json::Object{
+            {"index", i},
+            {"kind",
+             cast<StringAttr>(kernel.getArgumentKinds()[i]).getValue().str()},
+            {"scalar_payload_offset", scalarOffset},
+            {"byte_size", 4},
+            {"binding", "_VRC_Arg" + std::to_string(i)}});
+        scalarOffset += 4;
+      }
+    }
     entry["profile"] = "gather-f32";
     entry["args"] = std::move(args);
     entry["descriptor"] = llvm::json::Object{
-        {"scalar_payload_bytes", (kernel.getArgumentKinds().size() - 2) * 4},
+        {"scalar_payload_bytes", scalarOffset},
         {"byte_order", "little"},
-        {"resource_order", llvm::json::Array{0, 1}},
+        {"resource_order", std::move(resourceOrder)},
         {"distinct_resources", true},
         {"argument_copy_policy", "required_at_clSetKernelArg"}};
     (*entry.getObject("target_texture"))["width"] = global[0];
     (*entry.getObject("target_texture"))["height"] = global[1];
     entry["passes"] =
         llvm::json::Array{llvm::json::Object{{"id", 0},
-                                             {"output_arg", 1},
-                                             {"reads", llvm::json::Array{0}},
-                                             {"writes", llvm::json::Array{1}}}};
+                                             {"output_arg", *outputArgument},
+                                             {"reads", std::move(reads)},
+                                             {"writes", std::move(writes)}}};
     // Dynamic gather counts depend on control flow; do not invent a static
     // read cost from the allocation size.
     entry["cost"] = llvm::json::Object{{"kind", "bounded-dynamic"},

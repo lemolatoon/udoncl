@@ -184,22 +184,6 @@ struct RaiseGatherDevicePass
     int64_t words = wordsAttr.getInt();
     auto global = config.getAs<DenseI32ArrayAttr>("global_size").asArrayRef();
     int64_t width = global[0], height = global[1];
-    SmallVector<Type> types;
-    for (unsigned i = 0; i < source.getNumArguments(); ++i) {
-      auto type = source.getArgument(i).getType();
-      if (i < 2) {
-        auto pointer = dyn_cast<LLVM::LLVMPointerType>(type);
-        if (!pointer || pointer.getAddressSpace() != 1) {
-          fail("input/output must be distinct global f32 buffers");
-          return;
-        }
-        type = MemRefType::get({words}, Float32Type::get(&getContext()));
-      } else if (!type.isF32() && !type.isInteger(32)) {
-        fail("uniform ABI supports f32/i32 only");
-        return;
-      }
-      types.push_back(type);
-    }
     auto frontend = module->getAttrOfType<StringAttr>("vrc.frontend");
     auto json =
         frontend
@@ -212,6 +196,9 @@ struct RaiseGatherDevicePass
     }
     auto *doc = json->getAsObject();
     auto *functions = doc ? doc->getArray("functions") : nullptr;
+    SmallVector<Type> types;
+    SmallVector<unsigned> inputArguments;
+    std::optional<unsigned> outputArgument;
     bool metadata = false;
     if (functions)
       for (const auto &item : *functions) {
@@ -221,14 +208,56 @@ struct RaiseGatherDevicePass
         auto *m = f->getObject("metadata");
         auto *t = m ? m->getArray("kernel_arg_type") : nullptr;
         auto *q = m ? m->getArray("kernel_arg_type_qual") : nullptr;
-        metadata =
-            t && q && t->size() == types.size() && q->size() == types.size() &&
-            (*t)[0].getAsString() == "float*" &&
-            (*t)[1].getAsString() == "float*" &&
-            (*q)[0].getAsString() == "const" && (*q)[1].getAsString() == "";
+        if (!t || !q || t->size() != source.getNumArguments() ||
+            q->size() != source.getNumArguments())
+          continue;
+        bool sawScalar = false, valid = true;
+        SmallVector<Type> recoveredTypes;
+        SmallVector<unsigned> recoveredInputs;
+        std::optional<unsigned> recoveredOutput;
+        for (unsigned i = 0; i < source.getNumArguments(); ++i) {
+          auto llvmType = source.getArgument(i).getType();
+          auto sourceType = (*t)[i].getAsString();
+          auto qualifier = (*q)[i].getAsString();
+          if (!sourceType || !qualifier) {
+            valid = false;
+            break;
+          }
+          if (*sourceType == "float*") {
+            auto pointer = dyn_cast<LLVM::LLVMPointerType>(llvmType);
+            if (sawScalar || !pointer || pointer.getAddressSpace() != 1) {
+              valid = false;
+              break;
+            }
+            recoveredTypes.push_back(
+                MemRefType::get({words}, Float32Type::get(&getContext())));
+            if (*qualifier == "const")
+              recoveredInputs.push_back(i);
+            else if (qualifier->empty() && !recoveredOutput)
+              recoveredOutput = i;
+            else {
+              valid = false;
+              break;
+            }
+          } else {
+            sawScalar = true;
+            if (!llvmType.isF32() && !llvmType.isInteger(32)) {
+              valid = false;
+              break;
+            }
+            recoveredTypes.push_back(llvmType);
+          }
+        }
+        if (valid && recoveredOutput && !recoveredInputs.empty()) {
+          types = std::move(recoveredTypes);
+          inputArguments = std::move(recoveredInputs);
+          outputArgument = recoveredOutput;
+          metadata = true;
+        }
       }
     if (!metadata) {
-      fail("requires metadata-proven const float input and float output");
+      fail("requires one or more metadata-proven const float inputs and "
+           "exactly one float output before scalar arguments");
       return;
     }
     // Preserve the original function contract but do not discard unknown FP,
@@ -272,7 +301,8 @@ struct RaiseGatherDevicePass
         if (attr.getName() == "llvm.noundef")
           continue;
         auto a = dyn_cast<IntegerAttr>(attr.getValue());
-        if (i < 2 && attr.getName() == "llvm.align" && a && a.getInt() <= 4)
+        if (isa<MemRefType>(types[i]) && attr.getName() == "llvm.align" && a &&
+            a.getInt() <= 4)
           continue;
         fail("unproven kernel argument attribute");
         return;
@@ -316,8 +346,9 @@ struct RaiseGatherDevicePass
       return;
     }
     llvm::DenseMap<Value, Pointer> pointers;
-    pointers[source.getArgument(0)] = {0, {}};
-    pointers[source.getArgument(1)] = {1, {}};
+    for (unsigned argument : inputArguments)
+      pointers[source.getArgument(argument)] = {argument, {}};
+    pointers[source.getArgument(*outputArgument)] = {*outputArgument, {}};
     SmallVector<LLVM::GEPOp> geps;
     SmallVector<LLVM::LoadOp> loads;
     LLVM::StoreOp output;
@@ -347,7 +378,7 @@ struct RaiseGatherDevicePass
           geps.push_back(gep);
         } else if (auto load = dyn_cast<LLVM::LoadOp>(op)) {
           auto p = pointers.find(load.getAddr());
-          if (p == pointers.end() || p->second.argument != 0 ||
+          if (p == pointers.end() || p->second.argument == *outputArgument ||
               !load.getType().isF32() || load.getVolatile_() ||
               load.getOrdering() != LLVM::AtomicOrdering::not_atomic ||
               load.getAlignment().value_or(4) > 4) {
@@ -357,8 +388,9 @@ struct RaiseGatherDevicePass
           loads.push_back(load);
         } else if (auto store = dyn_cast<LLVM::StoreOp>(op)) {
           auto p = pointers.find(store.getAddr());
-          if (output || p == pointers.end() || p->second.argument != 1 ||
-              !p->second.index || !proof.linearOutput(p->second.index) ||
+          if (output || p == pointers.end() ||
+              p->second.argument != *outputArgument || !p->second.index ||
+              !proof.linearOutput(p->second.index) ||
               !store.getValue().getType().isF32() || store.getVolatile_() ||
               store.getOrdering() != LLVM::AtomicOrdering::not_atomic ||
               store.getAlignment().value_or(4) > 4) {
@@ -469,13 +501,14 @@ struct RaiseGatherDevicePass
       rewriter.setInsertionPoint(load);
       auto p = pointers.lookup(load.getAddr());
       rewriter.replaceOpWithNewOp<memref::LoadOp>(
-          load, recovered.getArgument(0), ValueRange{index(p, load.getLoc())});
+          load, recovered.getArgument(p.argument),
+          ValueRange{index(p, load.getLoc())});
     }
     rewriter.setInsertionPoint(output);
     auto outIndex = index(pointers.lookup(output.getAddr()), output.getLoc());
-    rewriter.replaceOpWithNewOp<memref::StoreOp>(output, output.getValue(),
-                                                 recovered.getArgument(1),
-                                                 ValueRange{outIndex});
+    rewriter.replaceOpWithNewOp<memref::StoreOp>(
+        output, output.getValue(), recovered.getArgument(*outputArgument),
+        ValueRange{outIndex});
     for (auto gep : llvm::reverse(geps))
       rewriter.eraseOp(gep);
     for (auto call : calls) {

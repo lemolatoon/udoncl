@@ -75,14 +75,19 @@ LogicalResult emitShaderLab(fragment::KernelOp kernel, llvm::raw_ostream &out) {
       << "\" {\nProperties {\n";
   auto profile = kernel->getAttrOfType<StringAttr>("vrc.profile");
   if (profile && profile == "gather-f32") {
-    out << "_VRC_Input (\"Input state\", 2D) = \"black\" {}\n";
-    for (unsigned i = 2; i < kernel.getArgumentKinds().size(); ++i)
-      out << "_VRC_Arg" << i << " (\"Arg" << i << "\", "
-          << (kernel.getArgumentKinds()[i] ==
-                      StringAttr::get(kernel.getContext(), "f32")
-                  ? "Float"
-                  : "Int")
-          << ") = 0\n";
+    for (auto resource :
+         kernel.getBody().front().getOps<fragment::ResourceOp>()) {
+      if (resource.getKind() == "texture") {
+        auto name = resource.getArgIndex() == 0
+                        ? "_VRC_Input"
+                        : "_VRC_Input" + std::to_string(resource.getArgIndex());
+        out << name << " (\"Input " << resource.getArgIndex()
+            << "\", 2D) = \"black\" {}\n";
+      } else if (resource.getKind() == "uniform")
+        out << "_VRC_Arg" << resource.getArgIndex() << " (\"Arg"
+            << resource.getArgIndex() << "\", "
+            << (resource.getValueType().isF32() ? "Float" : "Int") << ") = 0\n";
+    }
   } else
     out << "_VRC_Arg1 (\"Arg1\", Float) = 0\n";
   out << "}\n"
