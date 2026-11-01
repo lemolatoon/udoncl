@@ -1,0 +1,99 @@
+.data_start
+    .export inputState
+    .export outputState
+    .export tileMaterial
+    .export displayMaterial
+    .export inputN
+    .export inputC
+    .export inputH
+    .export inputW
+    .export repeatN
+    .export repeatC
+    .export repeatH
+    .export repeatW
+    .export outputWords
+
+    inputState: %UnityEngineTexture, null
+    outputState: %UnityEngineRenderTexture, null
+    tileMaterial: %UnityEngineMaterial, null
+    displayMaterial: %UnityEngineMaterial, null
+    inputN: %SystemInt32, null
+    inputC: %SystemInt32, null
+    inputH: %SystemInt32, null
+    inputW: %SystemInt32, null
+    repeatN: %SystemInt32, null
+    repeatC: %SystemInt32, null
+    repeatH: %SystemInt32, null
+    repeatW: %SystemInt32, null
+    outputWords: %SystemInt32, null
+
+    __inputName: %SystemString, "_VRC_Input"
+    __resultName: %SystemString, "_Result"
+    __inputNName: %SystemString, "_VRC_Arg2"
+    __inputCName: %SystemString, "_VRC_Arg3"
+    __inputHName: %SystemString, "_VRC_Arg4"
+    __inputWName: %SystemString, "_VRC_Arg5"
+    __repeatNName: %SystemString, "_VRC_Arg6"
+    __repeatCName: %SystemString, "_VRC_Arg7"
+    __repeatHName: %SystemString, "_VRC_Arg8"
+    __repeatWName: %SystemString, "_VRC_Arg9"
+    __outputWordsName: %SystemString, "_VRC_Arg10"
+.data_end
+
+.code_start
+    .export _start
+    _start:
+        JUMP, 0xFFFFFFFC
+
+    .export _run
+    _run:
+        PUSH, tileMaterial
+        PUSH, __inputName
+        PUSH, inputState
+        EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
+        PUSH, tileMaterial
+        PUSH, __inputNName
+        PUSH, inputN
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, tileMaterial
+        PUSH, __inputCName
+        PUSH, inputC
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, tileMaterial
+        PUSH, __inputHName
+        PUSH, inputH
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, tileMaterial
+        PUSH, __inputWName
+        PUSH, inputW
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, tileMaterial
+        PUSH, __repeatNName
+        PUSH, repeatN
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, tileMaterial
+        PUSH, __repeatCName
+        PUSH, repeatC
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, tileMaterial
+        PUSH, __repeatHName
+        PUSH, repeatH
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, tileMaterial
+        PUSH, __repeatWName
+        PUSH, repeatW
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, tileMaterial
+        PUSH, __outputWordsName
+        PUSH, outputWords
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, inputState
+        PUSH, outputState
+        PUSH, tileMaterial
+        EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"
+        PUSH, displayMaterial
+        PUSH, __resultName
+        PUSH, outputState
+        EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
+        JUMP, 0xFFFFFFFC
+.code_end

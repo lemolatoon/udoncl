@@ -1550,6 +1550,113 @@ def main():
             shutil.rmtree(unity_int4_bundle)
         publish_bundle(staged, unity_int4_bundle)
 
+    tile_input_shape = (1, 2, 2, 3)
+    tile_repeats = (1, 1, 2, 3)
+    tile_output_shape = tuple(
+        dimension * repeat
+        for dimension, repeat in zip(tile_input_shape, tile_repeats)
+    )
+    tile_input = [((index * 23 + 7) % 31 - 15) * 0.125 for index in range(12)]
+    tile_reference = []
+    for n in range(tile_output_shape[0]):
+        for c in range(tile_output_shape[1]):
+            for h in range(tile_output_shape[2]):
+                for w in range(tile_output_shape[3]):
+                    source_index = (
+                        ((n % tile_input_shape[0]) * tile_input_shape[1]
+                         + c % tile_input_shape[1])
+                        * tile_input_shape[2]
+                        + h % tile_input_shape[2]
+                    ) * tile_input_shape[3] + w % tile_input_shape[3]
+                    tile_reference.append(tile_input[source_index])
+    tile_state = [0.0] * 8192
+    tile_state[: len(tile_input)] = tile_input
+    unity_tile_bundle = output / "unity-udonaten-tile-bundle"
+    with tempfile.TemporaryDirectory(
+        prefix="unity-udonaten-tile-", dir=output
+    ) as staging:
+        staged = Path(staging) / "bundle"
+        (staged / "kernels").mkdir(parents=True)
+        shutil.copy2(
+            root / "libraries/udonaten/unity/tile-host.uasm",
+            staged / "host.uasm",
+        )
+        shutil.copy2(
+            root / "libraries/udonaten/unity/tile-display.shader",
+            staged / "display.shader",
+        )
+        shutil.copy2(
+            tile_bundle / "kernels/kernel_209.shader",
+            staged / "kernels/kernel_209.shader",
+        )
+        (staged / "fixture_input.bytes").write_bytes(
+            struct.pack("<8192f", *tile_state)
+        )
+        (staged / "fixture_reference.bytes").write_bytes(
+            struct.pack(f"<{len(tile_reference)}f", *tile_reference)
+        )
+        tile_unity_manifest = {
+            "schema_version": 1,
+            "compiler_version": "0.1.0-dev",
+            "runtime_abi_version": 1,
+            "artifact_stage": "unity-udonaten-tile",
+            "ready_for_unity": True,
+            "sdk_compatibility": {"sdk_version": "3.10.5", "extern_db_hash": None},
+            "target": {
+                "host_pointer_bits": 32,
+                "device_pointer_bits": 32,
+                "endianness": "little",
+                "platform": "VRChat-PC",
+            },
+            "program": {
+                "name": "udonaten_tile",
+                "assembly": "host.uasm",
+                "display_shader": "display.shader",
+            },
+            "exports": [
+                {
+                    "id": 1,
+                    "c_symbol": "udonatenTile",
+                    "udon_event": "_run",
+                    "status_slot": "",
+                    "async": False,
+                }
+            ],
+            "device": {
+                "kernels": [
+                    {
+                        "id": 209,
+                        "name": "udonaten_tile",
+                        "shader": "kernels/kernel_209.shader",
+                    }
+                ]
+            },
+            "resources": [
+                {"name": "fixture_input", "kind": "bytes", "path": "fixture_input.bytes"},
+                {
+                    "name": "fixture_reference",
+                    "kind": "bytes",
+                    "path": "fixture_reference.bytes",
+                },
+            ],
+            "fixture": {
+                "input_shape": list(tile_input_shape),
+                "repeats": list(tile_repeats),
+                "output_shape": list(tile_output_shape),
+            },
+        }
+        (staged / "manifest.json").write_text(
+            json.dumps(tile_unity_manifest, indent=2), encoding="utf-8"
+        )
+        if unity_tile_bundle.exists():
+            previous = json.loads(
+                (unity_tile_bundle / "manifest.json").read_text(encoding="utf-8")
+            )
+            if previous.get("artifact_stage") != "unity-udonaten-tile":
+                raise RuntimeError("refusing to replace a non-UdonATen Tile Unity bundle")
+            shutil.rmtree(unity_tile_bundle)
+        publish_bundle(staged, unity_tile_bundle)
+
     host_ir = output / "host.ll"
     imported = output / "host.imported.mlir"
     udonhl = output / "host.udonhl.mlir"

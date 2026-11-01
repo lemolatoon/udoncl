@@ -91,6 +91,13 @@ points, compares all eight results, and removes generated program and prefab
 assets. Accumulation remains a private Device paging control; the public API is
 the ATen operator without a BLAS-style beta argument.
 
+The `unity-udonaten-tile` stage creates `UdonAtenTile.prefab` for ATen
+`tile(input, dims)`, which backs standard ONNX Tile without adding a cuDNN
+extension. Repeat dimensions align to the trailing tensor dimensions and one
+fragment owns each output element. The packaged fixture repeats a `[1,2,2,3]`
+input to `[1,2,4,9]`; its IUdonVM lifecycle test compares all 72 outputs and
+cleans up the generated program, textures, Material, and prefab.
+
 ## UdonDNN
 
 The `unity-udondnn-convolution` artifact stage creates

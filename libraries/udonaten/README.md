@@ -48,6 +48,10 @@ zero points before deleting all generated assets.
 Embedding and RMSNorm currently adapt the already validated UdonDNN prototype
 kernels. Those functions are backend details, not the public ownership model.
 Tile and INT4 matrix multiplication have UdonATen-owned Device kernels.
+`libraries/udondnn/run_device.py` packages Tile as the reusable
+`unity-udonaten-tile-bundle`; the Unity importer creates
+`UdonAtenTile.prefab`, and its SDK IUdonVM lifecycle fixture validates all 72
+outputs for trailing-dimension repeats before removing generated assets.
 The fixed two-page artifact validates the runtime texture-copy and accumulation
 mechanism. `udon-onnx-page --all` now materializes and dispatches arbitrary M/K
 tile grids for one call, including edge tiles and M-tile result scatter. Its
