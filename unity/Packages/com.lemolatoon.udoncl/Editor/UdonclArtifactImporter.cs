@@ -178,6 +178,20 @@ namespace Lemolatoon.Udoncl.Editor
                         transaction.Commit();
                         return programRoot;
                     }
+                    if (artifacts.ArtifactStage == "unity-udondnn-softmax")
+                    {
+                        ImportUdonDnnSoftmax(
+                            transaction,
+                            artifacts,
+                            programRoot,
+                            programAsset,
+                            kernelMaterials,
+                            displayMaterial
+                        );
+                        AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+                        transaction.Commit();
+                        return programRoot;
+                    }
                     if (artifacts.ArtifactStage != "unity-lj-prototype")
                         throw new InvalidDataException(
                             "Unsupported Unity artifact stage: " + artifacts.ArtifactStage
@@ -662,6 +676,59 @@ namespace Lemolatoon.Udoncl.Editor
                 input,
                 output,
                 poolingMaterial,
+                displayMaterial
+            );
+        }
+
+        private static void ImportUdonDnnSoftmax(
+            AssetImportTransaction transaction,
+            ValidatedArtifact artifacts,
+            string programRoot,
+            UdonAssemblyProgramAsset programAsset,
+            IDictionary<int, Material> kernelMaterials,
+            Material displayMaterial
+        )
+        {
+            if (!kernelMaterials.TryGetValue(203, out Material softmaxMaterial))
+                throw new InvalidDataException("UdonDNN softmax requires kernel id 203.");
+            ValidatedResource inputResource = FindResource(artifacts, "fixture_input", "bytes");
+            ValidatedResource referenceResource = FindResource(
+                artifacts,
+                "fixture_reference",
+                "bytes"
+            );
+            Texture2D input = CreateOrUpdateByteTexture(
+                transaction,
+                programRoot,
+                "udondnn_softmax_input.asset",
+                2048,
+                1,
+                File.ReadAllBytes(inputResource.AbsolutePath)
+            );
+            CreateOrUpdateByteTexture(
+                transaction,
+                programRoot,
+                "udondnn_softmax_reference.asset",
+                72,
+                1,
+                File.ReadAllBytes(referenceResource.AbsolutePath)
+            );
+            RenderTexture output = CreateOrUpdateRgbaRenderTexture(
+                transaction,
+                programRoot,
+                "udondnn_softmax_output.asset",
+                2048,
+                1
+            );
+            displayMaterial.SetTexture("_Result", output);
+            EditorUtility.SetDirty(displayMaterial);
+            CreateOrUpdateUdonDnnSoftmaxPrefab(
+                transaction,
+                programRoot,
+                programAsset,
+                input,
+                output,
+                softmaxMaterial,
                 displayMaterial
             );
         }
@@ -1507,6 +1574,66 @@ namespace Lemolatoon.Udoncl.Editor
                 if (!success || AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath) == null)
                     throw new InvalidOperationException(
                         "Could not create UdonDNN pooling prefab: " + prefabPath
+                    );
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        private static void CreateOrUpdateUdonDnnSoftmaxPrefab(
+            AssetImportTransaction transaction,
+            string programRoot,
+            UdonAssemblyProgramAsset programAsset,
+            Texture packedState,
+            RenderTexture outputState,
+            Material softmaxMaterial,
+            Material displayMaterial
+        )
+        {
+            string prefabDirectory = programRoot + "/Prefabs";
+            EnsureFolders(prefabDirectory);
+            string prefabPath = prefabDirectory + "/UdonDnnSoftmax.prefab";
+            transaction.Track(prefabPath);
+            GameObject root = new GameObject("UdonDNN softmax");
+            try
+            {
+                root.transform.position = new Vector3(44.0f, 1.5f, 0.0f);
+                BoxCollider collider = root.AddComponent<BoxCollider>();
+                collider.size = new Vector3(4.0f, 3.0f, 0.4f);
+                UdonBehaviour behaviour = root.AddComponent<UdonBehaviour>();
+                behaviour.programSource = programAsset;
+                behaviour.interactText = "Run UdonDNN softmax";
+                behaviour.proximity = 3.0f;
+                behaviour.SyncMethod = SyncType.None;
+                SetPublicVariable(behaviour, "packedState", packedState);
+                SetPublicVariable(behaviour, "outputState", outputState);
+                SetPublicVariable(behaviour, "softmaxMaterial", softmaxMaterial);
+                SetPublicVariable(behaviour, "displayMaterial", displayMaterial);
+                SetPublicVariable(behaviour, "inputShape", 8753);
+                SetPublicVariable(behaviour, "algorithm", 1);
+                SetPublicVariable(behaviour, "mode", 1);
+                SetPublicVariable(behaviour, "alpha", 1.0f);
+                SetPublicVariable(behaviour, "beta", 0.0f);
+                SerializedObject serializedBehaviour = new SerializedObject(behaviour);
+                serializedBehaviour.FindProperty("serializedProgramAsset").objectReferenceValue =
+                    programAsset.SerializedProgramAsset;
+                serializedBehaviour.ApplyModifiedPropertiesWithoutUndo();
+
+                GameObject display = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                display.name = "UdonDNN softmax result";
+                display.transform.SetParent(root.transform, false);
+                display.transform.localScale = new Vector3(4.0f, 3.0f, 0.12f);
+                Collider displayCollider = display.GetComponent<Collider>();
+                if (displayCollider != null)
+                    UnityEngine.Object.DestroyImmediate(displayCollider);
+                display.GetComponent<MeshRenderer>().sharedMaterial = displayMaterial;
+
+                PrefabUtility.SaveAsPrefabAsset(root, prefabPath, out bool success);
+                if (!success || AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath) == null)
+                    throw new InvalidOperationException(
+                        "Could not create UdonDNN softmax prefab: " + prefabPath
                     );
             }
             finally

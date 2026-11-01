@@ -665,6 +665,129 @@ def main():
             shutil.rmtree(unity_pooling_bundle)
         staged.rename(unity_pooling_bundle)
 
+    softmax_input_shape = (1, 3, 2, 2)
+    softmax_input = [
+        ((index + 5) * (83 * 11 + 7) % 31 - 15) * 0.5 for index in range(12)
+    ]
+    softmax_previous = [
+        ((index + 5) * (89 * 11 + 7) % 31 - 15) * 0.0625
+        for index in range(12)
+    ]
+    softmax_cases = [
+        (0, 0, 1.0, 0.0),
+        (1, 0, 0.75, -0.25),
+        (2, 0, -1.0, 0.5),
+        (0, 1, 1.25, 0.125),
+        (1, 1, 0.5, -0.5),
+        (2, 1, -0.75, 1.0),
+    ]
+
+    def softmax_reference(algorithm, mode, alpha, beta):
+        values = []
+        for element in range(12):
+            x = element % 2
+            y = (element // 2) % 2
+            if mode == 0:
+                group = softmax_input
+            else:
+                group = [softmax_input[(channel * 2 + y) * 2 + x] for channel in range(3)]
+            maximum = max(group)
+            denominator = sum(math.exp(value - maximum) for value in group)
+            normalized = math.exp(softmax_input[element] - maximum) / denominator
+            if algorithm == 2:
+                normalized = softmax_input[element] - maximum - math.log(denominator)
+            values.append(alpha * normalized + beta * softmax_previous[element])
+        return values
+
+    softmax_reference_values = []
+    for softmax_case in softmax_cases:
+        softmax_reference_values.extend(softmax_reference(*softmax_case))
+    softmax_packed = [0.0] * 2048
+    softmax_packed[: len(softmax_input)] = softmax_input
+    softmax_packed[512 : 512 + len(softmax_previous)] = softmax_previous
+    unity_softmax_bundle = output / "unity-softmax-bundle"
+    with tempfile.TemporaryDirectory(
+        prefix="unity-udondnn-softmax-", dir=output
+    ) as staging:
+        staged = Path(staging) / "bundle"
+        (staged / "kernels").mkdir(parents=True)
+        shutil.copy2(source / "unity/softmax-host.uasm", staged / "host.uasm")
+        shutil.copy2(
+            source / "unity/softmax-display.shader", staged / "display.shader"
+        )
+        shutil.copy2(
+            softmax_bundle / "kernels/kernel_203.shader",
+            staged / "kernels/kernel_203.shader",
+        )
+        (staged / "fixture_input.bytes").write_bytes(
+            struct.pack("<2048f", *softmax_packed)
+        )
+        (staged / "fixture_reference.bytes").write_bytes(
+            struct.pack("<72f", *softmax_reference_values)
+        )
+        softmax_unity_manifest = {
+            "schema_version": 1,
+            "compiler_version": "0.1.0-dev",
+            "runtime_abi_version": 1,
+            "artifact_stage": "unity-udondnn-softmax",
+            "ready_for_unity": True,
+            "sdk_compatibility": {"sdk_version": "3.10.5", "extern_db_hash": None},
+            "target": {
+                "host_pointer_bits": 32,
+                "device_pointer_bits": 32,
+                "endianness": "little",
+                "platform": "VRChat-PC",
+            },
+            "program": {
+                "name": "udondnn_softmax",
+                "assembly": "host.uasm",
+                "display_shader": "display.shader",
+            },
+            "exports": [
+                {
+                    "id": 1,
+                    "c_symbol": "udondnnSoftmaxForward",
+                    "udon_event": "_run",
+                    "status_slot": "",
+                    "async": False,
+                }
+            ],
+            "device": {
+                "kernels": [
+                    {
+                        "id": 203,
+                        "name": "udondnn_softmax_forward",
+                        "shader": "kernels/kernel_203.shader",
+                    }
+                ]
+            },
+            "resources": [
+                {"name": "fixture_input", "kind": "bytes", "path": "fixture_input.bytes"},
+                {
+                    "name": "fixture_reference",
+                    "kind": "bytes",
+                    "path": "fixture_reference.bytes",
+                },
+            ],
+            "fixture": {
+                "input_shape": softmax_input_shape,
+                "cases": len(softmax_cases),
+            },
+        }
+        (staged / "manifest.json").write_text(
+            json.dumps(softmax_unity_manifest, indent=2), encoding="utf-8"
+        )
+        if unity_softmax_bundle.exists():
+            previous = json.loads(
+                (unity_softmax_bundle / "manifest.json").read_text(encoding="utf-8")
+            )
+            if previous.get("artifact_stage") != "unity-udondnn-softmax":
+                raise RuntimeError(
+                    "refusing to replace a non-UdonDNN softmax Unity bundle"
+                )
+            shutil.rmtree(unity_softmax_bundle)
+        staged.rename(unity_softmax_bundle)
+
     host_ir = output / "host.ll"
     imported = output / "host.imported.mlir"
     udonhl = output / "host.udonhl.mlir"

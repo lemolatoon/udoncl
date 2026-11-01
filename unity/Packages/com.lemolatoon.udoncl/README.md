@@ -65,3 +65,9 @@ input/window/output shapes, pooling mode, NaN policy, and alpha/beta bindings.
 MAX, deterministic MAX, and average pooling with padding included or excluded
 all use one independently owned output fragment per tensor element. Its IUdonVM
 fixture exercises all four modes and both NaN policies against 48 references.
+
+The `unity-udondnn-softmax` stage creates `UdonDnnSoftmax.prefab`. FAST,
+ACCURATE, and LOG algorithms support both per-instance and per-channel
+normalization, public alpha/beta accumulation, and one independent fragment per
+output. Its generated shader uses the generic UdonCL `exp` and `log` lowering;
+the IUdonVM lifecycle fixture compares all six combinations across 72 outputs.
