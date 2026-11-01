@@ -1181,7 +1181,7 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
             if (
                 not isinstance(output_features, int)
                 or not isinstance(input_features, int)
-                or group_size not in (32, 64, 128, 256)
+                or group_size != 32
                 or output_features <= 0
                 or input_features <= 0
                 or input_features % group_size
@@ -1375,6 +1375,32 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
                         "m_tiles": (output_features + 63) // 64,
                         "k_tiles": (input_features + 127) // 128,
                         "accumulation": "beta=0 for first K tile; beta=1 thereafter",
+                    },
+                    "paging": {
+                        "state_words": 8192,
+                        "input_offset_words": 6144,
+                        "result_offset_words": 7168,
+                        "row_stride_words": 72,
+                        "packed_weight": {
+                            "tensor": node["inputs"][1],
+                            "external": dict(
+                                graph["initializers"][node["inputs"][1]]["external"]
+                            ),
+                            "source_row_stride_bytes": input_features // 2,
+                            "tile_row_bytes": 64,
+                        },
+                        "scales_and_zeros": {
+                            "tensor": node["inputs"][2],
+                            "external": dict(
+                                graph["initializers"][node["inputs"][2]]["external"]
+                            ),
+                            "source_group_stride_bytes": output_features * 4,
+                            "source_row_stride_bytes": 4,
+                            "tile_groups": 4,
+                            "destination_group_stride_words": 18,
+                            "scale_word": 16,
+                            "zero_word": 17,
+                        },
                     },
                 }
             )

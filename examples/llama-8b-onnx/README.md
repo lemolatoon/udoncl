@@ -22,8 +22,10 @@ library-extension nodes,
 standard RMSNormalization/Add/Sigmoid/Mul/Reshape/Tile nodes, and records the
 64x128 `udonatenWeightInt4packMm` tile grid for every projection. Its input is the
 post-embedding `[1,4096]` hidden state. It is a resource-complete AOT plan, but
-the C/Udon Host emitter intentionally rejects it until external-weight paging
-can feed those tile grids; the legacy fused plan remains available meanwhile.
+the C/Udon Host emitter intentionally rejects it until the runtime
+texture-copy/accumulation dispatcher feeds those tile grids; the plan now
+contains exact external row/group strides and `udon-onnx-page` can materialize
+each bounded Device page. The legacy fused plan remains available meanwhile.
 
 ```text
 python examples/llama-8b-onnx/generate_onnx.py \

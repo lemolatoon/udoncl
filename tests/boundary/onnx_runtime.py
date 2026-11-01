@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+import struct
 import subprocess
 import sys
 
@@ -17,6 +18,7 @@ sys.path.insert(0, str(root / "runtime/onnx"))
 from udon_onnx import (
     ExecutionProviderRegistry,
     attribute_float,
+    attribute_int,
     bytes_field,
     compile_model,
     compile_operators,
@@ -31,6 +33,7 @@ from udon_onnx import (
     tensor_int64_proto,
     value_info_proto,
 )
+from udon_pages import encode_int4_page, materialize_int4_page
 
 
 model_path = output / "mnist.onnx"
@@ -250,6 +253,99 @@ assert external_gemm_plan["initializers"]["weight"] == {
     "storage": "external",
     "external": {"location": "weights.bin", "offset": 16, "length": 48},
 }
+
+int4_n, int4_k = 70, 160
+int4_weight_bytes = int4_n * int4_k // 2
+int4_qparam_bytes = (int4_k // 32) * int4_n * 4
+int4_external = bytearray(6000 + int4_qparam_bytes)
+for index in range(int4_weight_bytes):
+    int4_external[32 + index] = (index * 17 + 9) & 255
+
+
+def bfloat16(value):
+    bits = struct.unpack("<I", struct.pack("<f", value))[0]
+    return struct.pack("<H", bits >> 16)
+
+
+for group in range(int4_k // 32):
+    for row in range(int4_n):
+        offset = 6000 + (group * int4_n + row) * 4
+        int4_external[offset : offset + 2] = bfloat16(0.5 + group * 0.125)
+        int4_external[offset + 2 : offset + 4] = bfloat16((row % 7 - 3) * 0.25)
+(output / "int4-weights.bin").write_bytes(int4_external)
+int4_model = parse_model(
+    model_proto(
+        graph_proto(
+            "external_weight_int4_mm",
+            [
+                node_proto(
+                    "WeightInt4packMM",
+                    ["x", "weight", "weight.scales_and_zeros"],
+                    ["y"],
+                    "int4_mm",
+                    [
+                        attribute_int("output_features", int4_n),
+                        attribute_int("input_features", int4_k),
+                        attribute_int("group_size", 32),
+                    ],
+                    "com.lemolatoon.udoncl",
+                )
+            ],
+            [
+                external_tensor_proto(
+                    "weight",
+                    [int4_n, int4_k // 2],
+                    2,
+                    "int4-weights.bin",
+                    32,
+                    int4_weight_bytes,
+                ),
+                external_tensor_proto(
+                    "weight.scales_and_zeros",
+                    [int4_k // 32, int4_n, 2],
+                    16,
+                    "int4-weights.bin",
+                    6000,
+                    int4_qparam_bytes,
+                ),
+            ],
+            [value_info_proto("x", [1, int4_k])],
+            [value_info_proto("y", [1, int4_n])],
+        )
+    )
+)
+int4_plan = compile_operators(int4_model)
+int4_call = int4_plan["aot"]["calls"][0]
+assert int4_call["function"] == "udonatenWeightInt4packMm"
+assert int4_call["tile_grid"]["m_tiles"] == 2
+assert int4_call["tile_grid"]["k_tiles"] == 2
+assert int4_call["paging"]["packed_weight"] == {
+    "tensor": "weight",
+    "external": {"location": "int4-weights.bin", "offset": 32, "length": 5600},
+    "source_row_stride_bytes": 80,
+    "tile_row_bytes": 64,
+}
+assert int4_call["paging"]["scales_and_zeros"]["source_group_stride_bytes"] == 280
+activation = [index * 0.125 for index in range(int4_k)]
+int4_page = materialize_int4_page(int4_plan, 0, 1, 1, output, activation)
+assert int4_page["n"] == 6
+assert int4_page["k"] == 32
+assert int4_page["m_offset"] == 64
+assert int4_page["k_offset"] == 128
+assert int4_page["row_stride"] == 72
+assert len(encode_int4_page(int4_page)) == 8192 * 4
+first_source = 64 * (int4_k // 2) + 128 // 2
+assert int4_page["state"][0] == float((first_source * 17 + 9) & 255)
+assert int4_page["state"][16] == 1.0
+assert int4_page["state"][17] == -0.5
+assert int4_page["state"][6144] == activation[128]
+assert int4_page["state"][6144 + 31] == activation[159]
+try:
+    materialize_int4_page(int4_plan, 0, 2, 0, output)
+except ValueError as error:
+    assert "outside" in str(error)
+else:
+    raise AssertionError("out-of-grid INT4 page coordinates were accepted")
 
 rl_model_path = output / "rl-policy.onnx"
 rl_generate = subprocess.run(

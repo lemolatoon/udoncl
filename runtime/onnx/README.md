@@ -50,8 +50,12 @@ embedding-independent single-token decoder expands to 546 operator nodes and
 225 tiled `udonatenWeightInt4packMm` calls instead of one fused `LlamaDecoder`
 node.
 Each call records its 64x128 tile grid and K-tile accumulation contract. Host
-emission currently rejects these plans until external-weight paging is wired,
-rather than generating an executable that cannot supply the compact weights.
+Each call now also records the exact packed-weight row stride, scale/zero group
+stride, external byte ranges, and 8,192-word kernel-208 active-state layout.
+`udon-onnx-page` validates those ranges and materializes any requested 64x128
+tile without loading a complete tensor or model. Host emission still rejects
+these plans until the runtime texture-copy/accumulation dispatcher is wired,
+rather than generating an executable that cannot supply the materialized page.
 Identity, Reshape, Squeeze, and Unsqueeze are compiled as typed zero-copy views.
 Their embedded int32/int64 shape inputs are evaluated at AOT time and retained
 with the correct C ABI type rather than being treated as float buffers.
@@ -113,6 +117,8 @@ Checkpoint conversion is an optional build-time component:
 ```text
 python -m pip install 'runtime/onnx[weights]'
 udon-onnx-pack /path/to/safetensors weights-index.json -o weights.q4
+udon-onnx-page execution-plan.json . --call 0 --m-tile 0 --k-tile 0 \
+  -o page-0-0.bytes
 ```
 
 The packer accepts indexed or single-file safetensors in float32, float16, or
@@ -121,6 +127,12 @@ signed-INT4 packed weights and `[K/group_size,N,2]` bfloat16 scale/zero tensors,
 preserves normalization tensors as bfloat16, emits
 per-tensor SHA-256 evidence, and replaces the destination only after the full
 conversion succeeds.
+
+The page tool is dependency-free. It gathers signed-INT4 row slices and
+bfloat16 `[K/group_size,N,2]` scale/zero slices directly from validated ONNX
+external ranges, converts only the selected metadata to float32, and emits the
+same active-state layout consumed by the UnityPackage kernel. An optional full
+float32 activation vector fills the selected K slice at word 6,144.
 
 This is not full ONNX operator coverage yet. The MNIST provider still contains
 model-level fusion, while the Llama provider deliberately isolates its custom

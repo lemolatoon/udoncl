@@ -1001,8 +1001,9 @@ int main(int argc, char **argv) {
             UDONDNN_STATUS_SUCCESS, "destroy Gather output descriptor");
 
     constexpr int int4N = 64, int4K = 128, int4Group = 32;
-    std::vector<float> int4Input(int4K), int4Qparams(2 * int4N * 2),
-        int4Actual(int4N), int4Expected(int4N);
+    std::vector<float> int4Input(int4K),
+        int4Qparams((int4K / int4Group) * int4N * 2), int4Actual(int4N),
+        int4Expected(int4N);
     std::vector<uint8_t> int4Packed(int4N * int4K / 2);
     for (int inner = 0; inner < int4K; ++inner)
       int4Input[inner] = value(inner, 173);

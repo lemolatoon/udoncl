@@ -32,8 +32,10 @@ zero points before deleting all generated assets.
 
 The implementation currently adapts the already validated UdonDNN prototype
 kernels. Those functions are backend details, not the public ownership model.
-Tile/repeat and external-weight page streaming remain before the Llama 8B
-operator plan can emit an executable Host.
+Tile/repeat and the runtime texture-copy/accumulation dispatcher remain before
+the Llama 8B operator plan can emit an executable Host. Its external-weight
+page contract and bounded page materializer are now implemented in the ONNX
+runtime.
 
 See [operator ownership](../../docs/architecture/operator-ownership.md) for
 the source audit and compatibility rules.

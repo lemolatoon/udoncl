@@ -12,6 +12,7 @@ from .udon_onnx import (
     tensor_int64_proto,
     validate_external_data,
 )
+from .udon_pages import encode_int4_page, materialize_int4_page
 
 __all__ = [
     "ExecutionProviderRegistry",
@@ -21,6 +22,8 @@ __all__ = [
     "default_registry",
     "emit_c_host",
     "emit_uasm_host",
+    "encode_int4_page",
+    "materialize_int4_page",
     "parse_model",
     "tensor_int64_proto",
     "validate_external_data",
