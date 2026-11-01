@@ -23,6 +23,13 @@ language-model head):
 python examples/tiny-llama/run_device.py --build-dir build/udoncl
 ```
 
+The Device runner first generates a real ONNX model, compiles its
+`com.lemolatoon.udoncl::LlamaDecoder` node through the public
+`UdonLlamaExecutionProvider`, and derives all seven kernel ids and names from
+that execution plan. The checked CPU/Device logits therefore validate the
+same provider schedule used by the 8B external-weight profile rather than a
+parallel hand-maintained list.
+
 Each active output is owned by a separate fragment. The native fragment test
 compares all 16 logits for four prompts and eight greedy generation steps
 against the C model.

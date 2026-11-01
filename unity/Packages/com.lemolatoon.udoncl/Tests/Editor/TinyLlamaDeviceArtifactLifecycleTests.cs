@@ -94,6 +94,36 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         }
 
         [Test]
+        public void ImportIncludesOnnxModelAndUdonLlamaExecutionPlan()
+        {
+            TextAsset model = AssetDatabase.LoadAssetAtPath<TextAsset>(
+                GeneratedRoot + "/Models/model.onnx.bytes"
+            );
+            Assert.NotNull(model);
+            Assert.That(model.bytes.Length, Is.GreaterThan(5000));
+            TextAsset plan = AssetDatabase.LoadAssetAtPath<TextAsset>(
+                GeneratedRoot + "/Models/execution-plan.json.bytes"
+            );
+            Assert.NotNull(plan);
+            StringAssert.Contains("\"runtime\": \"udon-onnx\"", plan.text);
+            StringAssert.Contains("\"profile\": \"udon-tiny-llama-f32\"", plan.text);
+            StringAssert.Contains("UdonLlamaExecutionProvider", plan.text);
+            StringAssert.Contains("udondnnRmsNormalizationForward", plan.text);
+            StringAssert.Contains("udonblasSgemm", plan.text);
+            Lemolatoon.Udoncl.UdonOnnxModelAsset modelAsset =
+                AssetDatabase.LoadAssetAtPath<Lemolatoon.Udoncl.UdonOnnxModelAsset>(
+                    GeneratedRoot + "/Models/UdonOnnxModel.asset"
+                );
+            Assert.NotNull(modelAsset);
+            Assert.AreSame(model, modelAsset.Model);
+            Assert.AreSame(plan, modelAsset.ExecutionPlan);
+            Assert.AreEqual("UdonLlamaExecutionProvider", modelAsset.ExecutionProvider);
+            Assert.AreEqual("udon-tiny-llama-f32", modelAsset.Profile);
+            Assert.AreEqual(7, modelAsset.PassMaterials.Length);
+            CollectionAssert.AllItemsAreNotNull(modelAsset.PassMaterials);
+        }
+
+        [Test]
         public void SdkUdonVmExecutesDevicePassesAndMatchesReferenceLogits()
         {
             UdonAssemblyProgramAsset asset =

@@ -83,12 +83,12 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         public void ImportIncludesOnnxModelAndUdonLibraryExecutionPlan()
         {
             TextAsset model = AssetDatabase.LoadAssetAtPath<TextAsset>(
-                GeneratedRoot + "/Models/mnist.onnx.bytes"
+                GeneratedRoot + "/Models/model.onnx.bytes"
             );
             Assert.NotNull(model);
             Assert.That(model.bytes.Length, Is.GreaterThan(8000));
             TextAsset plan = AssetDatabase.LoadAssetAtPath<TextAsset>(
-                GeneratedRoot + "/Models/onnx-plan.json.bytes"
+                GeneratedRoot + "/Models/execution-plan.json.bytes"
             );
             Assert.NotNull(plan);
             StringAssert.Contains("\"runtime\": \"udon-onnx\"", plan.text);

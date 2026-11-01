@@ -69,19 +69,52 @@ def main():
     mlir_translate = sdk / "bin" / ("mlir-translate" + suffix)
     runtime_flags = ["-fms-runtime-lib=dll"] if sys.platform == "win32" else []
 
+    onnx_model = output / "tiny-llama.onnx"
+    onnx_plan_path = output / "onnx-plan.json"
+    run(
+        [
+            sys.executable,
+            source / "generate_onnx.py",
+            "-o",
+            onnx_model,
+            "--plan",
+            onnx_plan_path,
+        ]
+    )
+    onnx_plan = json.loads(onnx_plan_path.read_text(encoding="utf-8"))
+    expected_kernels = [
+        "tiny_llama_embed",
+        "tiny_llama_qkv",
+        "tiny_llama_attention",
+        "tiny_llama_project",
+        "tiny_llama_ffn_up",
+        "tiny_llama_ffn_down",
+        "tiny_llama_logits",
+    ]
+    if (
+        onnx_plan.get("profile") != "udon-tiny-llama-f32"
+        or [device_pass["kernel"] for device_pass in onnx_plan["passes"]]
+        != expected_kernels
+    ):
+        raise RuntimeError("Tiny Llama ONNX graph was not assigned to Device passes")
+
     device_text = (source / "device.cl").read_text(encoding="utf-8")
     (output / "device_source.h").write_text(
         "#define UDONCL_DEVICE_SOURCE " + json.dumps(device_text) + "\n",
         encoding="utf-8",
     )
+    defines = {
+        "tiny_llama_embed": "TINY_LLAMA_EMBED",
+        "tiny_llama_qkv": "TINY_LLAMA_QKV",
+        "tiny_llama_attention": "TINY_LLAMA_ATTENTION",
+        "tiny_llama_project": "TINY_LLAMA_PROJECT",
+        "tiny_llama_ffn_up": "TINY_LLAMA_FFN_UP",
+        "tiny_llama_ffn_down": "TINY_LLAMA_FFN_DOWN",
+        "tiny_llama_logits": "TINY_LLAMA_LOGITS",
+    }
     kernels = [
-        ("tiny_llama_embed", 30, "TINY_LLAMA_EMBED"),
-        ("tiny_llama_qkv", 31, "TINY_LLAMA_QKV"),
-        ("tiny_llama_attention", 32, "TINY_LLAMA_ATTENTION"),
-        ("tiny_llama_project", 33, "TINY_LLAMA_PROJECT"),
-        ("tiny_llama_ffn_up", 34, "TINY_LLAMA_FFN_UP"),
-        ("tiny_llama_ffn_down", 35, "TINY_LLAMA_FFN_DOWN"),
-        ("tiny_llama_logits", 36, "TINY_LLAMA_LOGITS"),
+        (device_pass["kernel"], device_pass["id"], defines[device_pass["kernel"]])
+        for device_pass in onnx_plan["passes"]
     ]
     bundles = {}
     fragments = []
@@ -208,6 +241,8 @@ def main():
         shutil.copy2(source / "display.shader", staged / "display.shader")
         shutil.copy2(source / "prompt-pack.shader", staged / "prompt-pack.shader")
         shutil.copy2(source / "argmax-readback.shader", staged / "argmax-readback.shader")
+        shutil.copy2(onnx_model, staged / "model.onnx.bytes")
+        shutil.copy2(onnx_plan_path, staged / "onnx-plan.bytes")
         for name, identifier, _ in kernels:
             shutil.copy2(
                 bundles[identifier] / f"kernels/kernel_{identifier}.shader",
@@ -271,7 +306,21 @@ def main():
                     "kind": "bytes",
                     "path": "reference_logits.bytes",
                 },
+                {"name": "onnx_model", "kind": "bytes", "path": "model.onnx.bytes"},
+                {
+                    "name": "onnx_execution_plan",
+                    "kind": "bytes",
+                    "path": "onnx-plan.bytes",
+                },
             ],
+            "onnx": {
+                "profile": onnx_plan["profile"],
+                "ir_version": onnx_plan["ir_version"],
+                "opset": onnx_plan["opset"],
+                "custom_opset": onnx_plan["custom_opset"],
+                "device_passes": len(onnx_plan["passes"]),
+                "provider": onnx_plan["nodes"][0]["provider"],
+            },
         }
         (staged / "manifest.json").write_text(
             json.dumps(unity_manifest, indent=2), encoding="utf-8"

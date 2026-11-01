@@ -233,6 +233,7 @@ namespace Lemolatoon.Udoncl.Editor
                     );
                 }
             }
+            ValidateOnnxResources(resources);
 
             return new ValidatedArtifact(
                 root,
@@ -244,6 +245,68 @@ namespace Lemolatoon.Udoncl.Editor
                 kernels,
                 resources
             );
+        }
+
+        private static void ValidateOnnxResources(IList<ValidatedResource> resources)
+        {
+            ValidatedResource model = null;
+            ValidatedResource planResource = null;
+            foreach (ValidatedResource resource in resources)
+            {
+                if (resource.Name == "onnx_model" && resource.Kind == "bytes")
+                    model = resource;
+                else if (resource.Name == "onnx_execution_plan" && resource.Kind == "bytes")
+                    planResource = resource;
+            }
+            if (model == null && planResource == null)
+                return;
+            if (model == null || planResource == null)
+                throw new InvalidDataException(
+                    "ONNX artifacts require paired onnx_model and onnx_execution_plan byte resources."
+                );
+            UdonOnnxExecutionPlan plan;
+            try
+            {
+                plan = JsonUtility.FromJson<UdonOnnxExecutionPlan>(
+                    ReadUtf8(planResource.AbsolutePath)
+                );
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidDataException("ONNX execution plan is invalid JSON.", ex);
+            }
+            if (
+                plan == null
+                || plan.schema_version != 1
+                || plan.runtime != "udon-onnx"
+                || !IsSafeIdentifier(plan.execution_provider)
+                || plan.passes == null
+                || plan.passes.Length == 0
+            )
+                throw new InvalidDataException(
+                    "ONNX execution plan requires schema 1, runtime udon-onnx, a safe execution provider, and Device passes."
+                );
+            HashSet<int> passIds = new HashSet<int>();
+            foreach (UdonOnnxPassInfo pass in plan.passes)
+            {
+                if (
+                    pass == null
+                    || pass.id < 0
+                    || !passIds.Add(pass.id)
+                    || !IsSafeIdentifier(pass.kernel)
+                    || pass.fragments <= 0
+                    || pass.providers == null
+                    || pass.providers.Length == 0
+                )
+                    throw new InvalidDataException(
+                        "Every ONNX Device pass needs a unique id, safe kernel, providers, and positive fragment count."
+                    );
+                foreach (string provider in pass.providers)
+                    if (!IsSafeIdentifier(provider))
+                        throw new InvalidDataException(
+                            "ONNX Device pass provider names must be safe identifiers."
+                        );
+            }
         }
 
         private static void ValidateSdk(SdkCompatibility compatibility)

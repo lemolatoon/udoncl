@@ -1,7 +1,7 @@
 {
   "name": "Udoncl.Editor",
   "rootNamespace": "Lemolatoon.Udoncl.Editor",
-  "references": ["VRC.Udon", "VRC.Udon.Editor"],
+  "references": ["Udoncl.Runtime", "VRC.Udon", "VRC.Udon.Editor"],
   "includePlatforms": ["Editor"],
   "excludePlatforms": [],
   "allowUnsafeCode": false,

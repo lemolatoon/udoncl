@@ -94,6 +94,12 @@ namespace Lemolatoon.Udoncl.Editor
                         programRoot,
                         displayShader
                     );
+                    ImportOnnxRuntimeResources(
+                        transaction,
+                        artifacts,
+                        programRoot,
+                        kernelMaterials
+                    );
                     if (artifacts.ArtifactStage == "unity-mnist-prototype")
                     {
                         ImportMnistDemo(
@@ -292,22 +298,6 @@ namespace Lemolatoon.Udoncl.Editor
                 artifacts,
                 "reference_blank_logits",
                 "bytes"
-            );
-            ValidatedResource onnxModelResource = FindResource(artifacts, "onnx_model", "bytes");
-            ValidatedResource onnxPlanResource = FindResource(
-                artifacts,
-                "onnx_execution_plan",
-                "bytes"
-            );
-            string modelDirectory = programRoot + "/Models";
-            EnsureFolders(modelDirectory);
-            transaction.CopyFile(
-                onnxModelResource.AbsolutePath,
-                modelDirectory + "/mnist.onnx.bytes"
-            );
-            transaction.CopyFile(
-                onnxPlanResource.AbsolutePath,
-                modelDirectory + "/onnx-plan.json.bytes"
             );
             string packShaderPath = programRoot + "/Shaders/pack.shader";
             transaction.CopyFile(packShaderResource.AbsolutePath, packShaderPath);
@@ -897,6 +887,84 @@ namespace Lemolatoon.Udoncl.Editor
             throw new InvalidDataException(
                 "Artifact is missing required " + kind + " resource '" + name + "'."
             );
+        }
+
+        private static ValidatedResource FindOptionalResource(
+            ValidatedArtifact artifact,
+            string name,
+            string kind
+        )
+        {
+            foreach (ValidatedResource resource in artifact.Resources)
+                if (resource.Name == name && resource.Kind == kind)
+                    return resource;
+            return null;
+        }
+
+        private static void ImportOnnxRuntimeResources(
+            AssetImportTransaction transaction,
+            ValidatedArtifact artifact,
+            string programRoot,
+            IDictionary<int, Material> kernelMaterials
+        )
+        {
+            ValidatedResource model = FindOptionalResource(artifact, "onnx_model", "bytes");
+            ValidatedResource plan = FindOptionalResource(artifact, "onnx_execution_plan", "bytes");
+            if (model == null && plan == null)
+                return;
+            if (model == null || plan == null)
+                throw new InvalidDataException(
+                    "ONNX artifacts must provide both onnx_model and onnx_execution_plan."
+                );
+            string modelDirectory = programRoot + "/Models";
+            EnsureFolders(modelDirectory);
+            transaction.CopyFile(model.AbsolutePath, modelDirectory + "/model.onnx.bytes");
+            transaction.CopyFile(plan.AbsolutePath, modelDirectory + "/execution-plan.json.bytes");
+            TextAsset modelText = AssetDatabase.LoadAssetAtPath<TextAsset>(
+                modelDirectory + "/model.onnx.bytes"
+            );
+            TextAsset planText = AssetDatabase.LoadAssetAtPath<TextAsset>(
+                modelDirectory + "/execution-plan.json.bytes"
+            );
+            UdonOnnxExecutionPlan executionPlan = JsonUtility.FromJson<UdonOnnxExecutionPlan>(
+                planText.text
+            );
+            Material[] passMaterials = new Material[executionPlan.passes.Length];
+            for (int index = 0; index < executionPlan.passes.Length; ++index)
+                if (
+                    !kernelMaterials.TryGetValue(
+                        executionPlan.passes[index].id,
+                        out passMaterials[index]
+                    )
+                )
+                    throw new InvalidDataException(
+                        "ONNX execution pass references missing kernel id "
+                            + executionPlan.passes[index].id
+                            + "."
+                    );
+            string assetPath = modelDirectory + "/UdonOnnxModel.asset";
+            transaction.Track(assetPath);
+            Lemolatoon.Udoncl.UdonOnnxModelAsset modelAsset =
+                AssetDatabase.LoadAssetAtPath<Lemolatoon.Udoncl.UdonOnnxModelAsset>(assetPath);
+            if (modelAsset == null)
+            {
+                modelAsset =
+                    ScriptableObject.CreateInstance<Lemolatoon.Udoncl.UdonOnnxModelAsset>();
+                modelAsset.name = "UdonOnnxModel";
+                AssetDatabase.CreateAsset(modelAsset, assetPath);
+            }
+            SerializedObject serialized = new SerializedObject(modelAsset);
+            serialized.FindProperty("model").objectReferenceValue = modelText;
+            serialized.FindProperty("executionPlan").objectReferenceValue = planText;
+            serialized.FindProperty("executionProvider").stringValue =
+                executionPlan.execution_provider;
+            serialized.FindProperty("profile").stringValue = executionPlan.profile ?? "";
+            SerializedProperty materials = serialized.FindProperty("passMaterials");
+            materials.arraySize = passMaterials.Length;
+            for (int index = 0; index < passMaterials.Length; ++index)
+                materials.GetArrayElementAtIndex(index).objectReferenceValue = passMaterials[index];
+            serialized.ApplyModifiedPropertiesWithoutUndo();
+            EditorUtility.SetDirty(modelAsset);
         }
 
         private static UdonAssemblyProgramAsset CreateOrUpdateProgramAsset(

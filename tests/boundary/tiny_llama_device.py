@@ -1,6 +1,7 @@
 """Run Tiny LLaMA through the Device fragment backend."""
 
 from pathlib import Path
+import json
 import subprocess
 import sys
 
@@ -25,4 +26,9 @@ assert "tiny_llama_device_logits=64/64" in result.stdout
 assert "prompts=4" in result.stdout
 assert "generated=2,2,2,2,2,2,2,2" in result.stdout
 assert "draws=84" in result.stdout
+plan = json.loads((output / "onnx-plan.json").read_text(encoding="utf-8"))
+assert plan["runtime"] == "udon-onnx"
+assert plan["profile"] == "udon-tiny-llama-f32"
+assert len(plan["passes"]) == 7
+assert plan["nodes"][0]["provider"] == "UdonLlamaExecutionProvider"
 print(result.stdout, end="")

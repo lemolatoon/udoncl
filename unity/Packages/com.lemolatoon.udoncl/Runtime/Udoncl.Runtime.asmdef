@@ -1,0 +1,14 @@
+{
+  "name": "Udoncl.Runtime",
+  "rootNamespace": "Lemolatoon.Udoncl",
+  "references": [],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

@@ -2,6 +2,25 @@
 
 This Unity 2022.3 package imports `udoncl` compiler artifacts into stable paths under `Assets/udoncl-generated/<program-name>`. It targets the VRChat Worlds SDK 3.x (`com.vrchat.worlds`) and has no UdonSharp dependency.
 
+## Udon ONNX Runtime
+
+Any artifact can expose the paired `onnx_model` and `onnx_execution_plan`
+resources. The importer validates both through the normal transaction-safe
+manifest path and installs them as `Models/model.onnx.bytes` and
+`Models/execution-plan.json.bytes`; this is not tied to MNIST or Llama demo
+stages. It also creates a public `UdonOnnxModelAsset` containing those two
+assets, the provider/profile identity, and the ordered Material for every
+Device pass. Other Unity tooling can consume that stable asset without knowing
+the demo's artifact stage. Execution providers are registered in the host-side
+ONNX compiler and lower their graph or fusion into reusable UdonDNN/UdonBLAS
+Device passes.
+
+The included Tiny Llama lifecycle fixture numerically executes the public
+Llama provider's seven-pass plan through SDK IUdonVM. The Llama 3.1 8B profile
+uses the same provider with 32 layers, Q4 ONNX external weights, KV-cache-aware
+one-token input, and 162 planned passes. Licensed pretrained weights are not
+part of the Unity package.
+
 ## Import
 
 Use **Tools → udoncl → Import Artifacts...** and select a compiler output directory containing `manifest.json`, its host `.uasm`, and any referenced generated `.shader` files. The importer checks schema v1, the runtime ABI and target, Worlds SDK version, names, extensions, UTF-8 content, referenced files, and relative paths before writing any assets.

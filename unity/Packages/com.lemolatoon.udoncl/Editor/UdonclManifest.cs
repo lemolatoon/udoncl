@@ -73,4 +73,23 @@ namespace Lemolatoon.Udoncl.Editor
         public string kind;
         public string path;
     }
+
+    [Serializable]
+    internal sealed class UdonOnnxExecutionPlan
+    {
+        public int schema_version;
+        public string runtime;
+        public string profile;
+        public string execution_provider;
+        public UdonOnnxPassInfo[] passes;
+    }
+
+    [Serializable]
+    internal sealed class UdonOnnxPassInfo
+    {
+        public int id;
+        public string kernel;
+        public string[] providers;
+        public int fragments;
+    }
 }

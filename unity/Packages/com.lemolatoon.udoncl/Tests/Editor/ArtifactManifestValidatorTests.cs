@@ -81,6 +81,44 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             );
         }
 
+        [Test]
+        public void ValidateAcceptsGenericOnnxModelAndExecutionPlanPair()
+        {
+            File.WriteAllBytes(Path.Combine(_directory, "model.onnx.bytes"), new byte[] { 8, 1 });
+            File.WriteAllText(
+                Path.Combine(_directory, "plan.bytes"),
+                "{\"schema_version\":1,\"runtime\":\"udon-onnx\",\"execution_provider\":\"FixtureProvider\",\"passes\":[{\"id\":7,\"kernel\":\"fixture_kernel\",\"providers\":[\"udonblasSgemm\"],\"fragments\":16}]}"
+            );
+            AddResources(
+                "[{\"name\":\"onnx_model\",\"kind\":\"bytes\",\"path\":\"model.onnx.bytes\"},{\"name\":\"onnx_execution_plan\",\"kind\":\"bytes\",\"path\":\"plan.bytes\"}]"
+            );
+            ValidatedArtifact artifact = ArtifactManifestValidator.Validate(_directory);
+            Assert.AreEqual(2, artifact.Resources.Count);
+        }
+
+        [Test]
+        public void ValidateRejectsUnpairedOnnxResource()
+        {
+            File.WriteAllBytes(Path.Combine(_directory, "model.onnx.bytes"), new byte[] { 8, 1 });
+            AddResources(
+                "[{\"name\":\"onnx_model\",\"kind\":\"bytes\",\"path\":\"model.onnx.bytes\"}]"
+            );
+            Assert.Throws<InvalidDataException>(() =>
+                ArtifactManifestValidator.Validate(_directory)
+            );
+        }
+
+        private void AddResources(string resources)
+        {
+            string manifestPath = Path.Combine(_directory, "manifest.json");
+            string json = File.ReadAllText(manifestPath);
+            File.WriteAllText(
+                manifestPath,
+                json.Substring(0, json.Length - 1) + ",\"resources\":" + resources + "}",
+                new UTF8Encoding(false)
+            );
+        }
+
         private void WriteManifest(string assemblyPath, string shaderPath, string sdkVersion)
         {
             string json =

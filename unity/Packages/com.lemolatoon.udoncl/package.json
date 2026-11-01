@@ -1,8 +1,8 @@
 {
   "name": "com.lemolatoon.udoncl",
-  "displayName": "udoncl Unity Importer",
+  "displayName": "udoncl Runtime and ONNX Importer",
   "version": "0.1.0",
-  "description": "Transaction-safe Unity Editor import for udoncl Udon Assembly and shader artifacts.",
+  "description": "Transaction-safe Unity import for udoncl programs, Device kernels, UdonDNN/UdonBLAS, and ONNX execution plans.",
   "unity": "2022.3",
   "vpmDependencies": {
     "com.vrchat.worlds": ">=3.0.0"

@@ -1,0 +1,27 @@
+# Llama 3.1 8B ONNX profile
+
+This example emits a real ONNX `ModelProto` for the public Udon ONNX Runtime.
+The graph contains a `com.lemolatoon.udoncl::LlamaDecoder` execution-provider
+node and 291 ONNX external-data tensors describing the canonical Llama 3.1 8B
+shape: 32 decoder layers, hidden size 4096, intermediate size 14336, 32 query
+heads, eight KV heads, and vocabulary size 128256.
+
+```text
+python examples/llama-8b-onnx/generate_onnx.py \
+  -o build/llama-8b-onnx/model.onnx \
+  --index build/llama-8b-onnx/weights-index.json \
+  --plan build/llama-8b-onnx/execution-plan.json
+```
+
+The runtime validates 8,030,261,248 logical parameters and plans 162 Device
+passes. Matrix weights use signed Q4 blocks of 32 values with one fp16 scale;
+normalization weights remain bfloat16. The resulting external payload is
+4,517,404,672 bytes before 64 KiB alignment gaps.
+
+The repository does not redistribute Meta weights. `weights.q4` must be
+created from a checkpoint the user is licensed to use and must match the
+generated index. Supplying the descriptor alone is compilation and resource
+planning, not pretrained-model inference. The numerically executable
+`examples/tiny-llama` fixture uses the same public Llama execution provider,
+the same seven-pass layer schedule, and the real Device backend at a small
+shape suitable for CI and Unity MCP verification.
