@@ -978,6 +978,177 @@ def main():
             shutil.rmtree(unity_batchnorm_bundle)
         staged.rename(unity_batchnorm_bundle)
 
+    op_tensor_output_shape = (1, 3, 2, 2)
+    op_tensor_a = [
+        ((index + 5) * (109 * 11 + 7) % 31 - 15) * 0.25
+        for index in range(12)
+    ]
+    op_tensor_b = [
+        ((index + 5) * (113 * 11 + 7) % 31 - 15) * 0.1875
+        for index in range(12)
+    ]
+    op_tensor_previous = [
+        ((index + 5) * (127 * 11 + 7) % 31 - 15) * 0.0625
+        for index in range(12)
+    ]
+    op_tensor_a[10] = math.nan
+    op_tensor_cases = [
+        ((1, 3, 2, 2), (1, 3, 1, 1), op_tensor_output_shape, 0, 0, 1.0, 0.75, -0.25),
+        ((1, 1, 2, 2), (1, 3, 2, 2), op_tensor_output_shape, 1, 0, -1.0, 0.5, 0.25),
+        ((1, 1, 1, 2), (1, 1, 2, 1), op_tensor_output_shape, 2, 0, 1.25, -0.75, 0.0),
+        ((1, 1, 1, 1), (1, 3, 2, 2), op_tensor_output_shape, 3, 1, 0.5, 1.5, -0.5),
+        ((1, 3, 2, 2), (1, 3, 2, 2), op_tensor_output_shape, 2, 1, 0.75, 1.25, 0.125),
+        ((1, 3, 2, 2), (1, 3, 2, 2), op_tensor_output_shape, 3, 0, 1.0, -1.0, 0.5),
+    ]
+
+    def tensor_words(shape):
+        return math.prod(shape)
+
+    def packed_shape(shape):
+        return shape[0] | (shape[1] << 4) | (shape[2] << 8) | (shape[3] << 12)
+
+    def broadcast_index(element, source_shape, output_shape):
+        x = element % output_shape[3]
+        y = (element // output_shape[3]) % output_shape[2]
+        channel = (element // (output_shape[3] * output_shape[2])) % output_shape[1]
+        batch = element // (output_shape[3] * output_shape[2] * output_shape[1])
+        if source_shape[0] == 1:
+            batch = 0
+        if source_shape[1] == 1:
+            channel = 0
+        if source_shape[2] == 1:
+            y = 0
+        if source_shape[3] == 1:
+            x = 0
+        return ((batch * source_shape[1] + channel) * source_shape[2] + y) * source_shape[3] + x
+
+    def op_tensor_reference(case):
+        a_shape, b_shape, c_shape, operation, nan_propagation, alpha_a, alpha_b, beta = case
+        values = []
+        for element in range(tensor_words(c_shape)):
+            left = alpha_a * op_tensor_a[broadcast_index(element, a_shape, c_shape)]
+            right = alpha_b * op_tensor_b[broadcast_index(element, b_shape, c_shape)]
+            if operation == 1:
+                combined = left * right
+            elif operation in (2, 3):
+                if nan_propagation and (math.isnan(left) or math.isnan(right)):
+                    combined = math.nan
+                elif math.isnan(left):
+                    combined = 0.0 if math.isnan(right) else right
+                elif math.isnan(right):
+                    combined = left
+                elif operation == 2:
+                    combined = min(left, right)
+                else:
+                    combined = max(left, right)
+            else:
+                combined = left + right
+            values.append(combined + beta * op_tensor_previous[element])
+        return values
+
+    op_tensor_reference_values = []
+    for op_tensor_case in op_tensor_cases:
+        op_tensor_reference_values.extend(op_tensor_reference(op_tensor_case))
+    op_tensor_packed = [0.0] * 2048
+    op_tensor_packed[: len(op_tensor_a)] = op_tensor_a
+    op_tensor_packed[512 : 512 + len(op_tensor_b)] = op_tensor_b
+    op_tensor_packed[1024 : 1024 + len(op_tensor_previous)] = op_tensor_previous
+    unity_op_tensor_bundle = output / "unity-op-tensor-bundle"
+    with tempfile.TemporaryDirectory(
+        prefix="unity-udondnn-op-tensor-", dir=output
+    ) as staging:
+        staged = Path(staging) / "bundle"
+        (staged / "kernels").mkdir(parents=True)
+        shutil.copy2(source / "unity/op-tensor-host.uasm", staged / "host.uasm")
+        shutil.copy2(
+            source / "unity/op-tensor-display.shader", staged / "display.shader"
+        )
+        shutil.copy2(
+            op_tensor_bundle / "kernels/kernel_205.shader",
+            staged / "kernels/kernel_205.shader",
+        )
+        (staged / "fixture_input.bytes").write_bytes(
+            struct.pack("<2048f", *op_tensor_packed)
+        )
+        (staged / "fixture_reference.bytes").write_bytes(
+            struct.pack("<72f", *op_tensor_reference_values)
+        )
+        op_tensor_unity_manifest = {
+            "schema_version": 1,
+            "compiler_version": "0.1.0-dev",
+            "runtime_abi_version": 1,
+            "artifact_stage": "unity-udondnn-op-tensor",
+            "ready_for_unity": True,
+            "sdk_compatibility": {"sdk_version": "3.10.5", "extern_db_hash": None},
+            "target": {
+                "host_pointer_bits": 32,
+                "device_pointer_bits": 32,
+                "endianness": "little",
+                "platform": "VRChat-PC",
+            },
+            "program": {
+                "name": "udondnn_op_tensor",
+                "assembly": "host.uasm",
+                "display_shader": "display.shader",
+            },
+            "exports": [
+                {
+                    "id": 1,
+                    "c_symbol": "udondnnOpTensor",
+                    "udon_event": "_run",
+                    "status_slot": "",
+                    "async": False,
+                }
+            ],
+            "device": {
+                "kernels": [
+                    {
+                        "id": 205,
+                        "name": "udondnn_op_tensor",
+                        "shader": "kernels/kernel_205.shader",
+                    }
+                ]
+            },
+            "resources": [
+                {"name": "fixture_input", "kind": "bytes", "path": "fixture_input.bytes"},
+                {
+                    "name": "fixture_reference",
+                    "kind": "bytes",
+                    "path": "fixture_reference.bytes",
+                },
+            ],
+            "fixture": {
+                "output_shape": op_tensor_output_shape,
+                "cases": len(op_tensor_cases),
+                "shapes": [
+                    {
+                        "a": case[0],
+                        "b": case[1],
+                        "c": case[2],
+                        "a_packed": packed_shape(case[0]),
+                        "b_packed": packed_shape(case[1]),
+                        "c_packed": packed_shape(case[2]),
+                    }
+                    for case in op_tensor_cases
+                ],
+            },
+        }
+        (staged / "manifest.json").write_text(
+            json.dumps(op_tensor_unity_manifest, indent=2), encoding="utf-8"
+        )
+        if unity_op_tensor_bundle.exists():
+            previous = json.loads(
+                (unity_op_tensor_bundle / "manifest.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            if previous.get("artifact_stage") != "unity-udondnn-op-tensor":
+                raise RuntimeError(
+                    "refusing to replace a non-UdonDNN OpTensor Unity bundle"
+                )
+            shutil.rmtree(unity_op_tensor_bundle)
+        staged.rename(unity_op_tensor_bundle)
+
     host_ir = output / "host.ll"
     imported = output / "host.imported.mlir"
     udonhl = output / "host.udonhl.mlir"

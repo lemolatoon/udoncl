@@ -1,0 +1,92 @@
+.data_start
+    .export packedState
+    .export outputState
+    .export opTensorMaterial
+    .export displayMaterial
+    .export aShape
+    .export bShape
+    .export cShape
+    .export operation
+    .export nanPropagation
+    .export alphaA
+    .export alphaB
+    .export beta
+
+    packedState: %UnityEngineTexture, null
+    outputState: %UnityEngineRenderTexture, null
+    opTensorMaterial: %UnityEngineMaterial, null
+    displayMaterial: %UnityEngineMaterial, null
+    aShape: %SystemInt32, null
+    bShape: %SystemInt32, null
+    cShape: %SystemInt32, null
+    operation: %SystemInt32, null
+    nanPropagation: %SystemInt32, null
+    alphaA: %SystemSingle, null
+    alphaB: %SystemSingle, null
+    beta: %SystemSingle, null
+
+    __inputName: %SystemString, "_VRC_Input"
+    __resultName: %SystemString, "_Result"
+    __aShapeName: %SystemString, "_VRC_Arg2"
+    __bShapeName: %SystemString, "_VRC_Arg3"
+    __cShapeName: %SystemString, "_VRC_Arg4"
+    __operationName: %SystemString, "_VRC_Arg5"
+    __nanPropagationName: %SystemString, "_VRC_Arg6"
+    __alphaAName: %SystemString, "_VRC_Arg7"
+    __alphaBName: %SystemString, "_VRC_Arg8"
+    __betaName: %SystemString, "_VRC_Arg9"
+.data_end
+
+.code_start
+    .export _start
+    _start:
+        JUMP, 0xFFFFFFFC
+
+    .export _run
+    _run:
+        PUSH, opTensorMaterial
+        PUSH, __inputName
+        PUSH, packedState
+        EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
+        PUSH, opTensorMaterial
+        PUSH, __aShapeName
+        PUSH, aShape
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, opTensorMaterial
+        PUSH, __bShapeName
+        PUSH, bShape
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, opTensorMaterial
+        PUSH, __cShapeName
+        PUSH, cShape
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, opTensorMaterial
+        PUSH, __operationName
+        PUSH, operation
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, opTensorMaterial
+        PUSH, __nanPropagationName
+        PUSH, nanPropagation
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, opTensorMaterial
+        PUSH, __alphaAName
+        PUSH, alphaA
+        EXTERN, "UnityEngineMaterial.__SetFloat__SystemString_SystemSingle__SystemVoid"
+        PUSH, opTensorMaterial
+        PUSH, __alphaBName
+        PUSH, alphaB
+        EXTERN, "UnityEngineMaterial.__SetFloat__SystemString_SystemSingle__SystemVoid"
+        PUSH, opTensorMaterial
+        PUSH, __betaName
+        PUSH, beta
+        EXTERN, "UnityEngineMaterial.__SetFloat__SystemString_SystemSingle__SystemVoid"
+        PUSH, packedState
+        PUSH, outputState
+        PUSH, opTensorMaterial
+        EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"
+        PUSH, displayMaterial
+        PUSH, __resultName
+        PUSH, outputState
+        EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
+        JUMP, 0xFFFFFFFC
+.code_end

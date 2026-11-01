@@ -78,3 +78,10 @@ bias, estimated mean, and estimated variance are packed into the reusable input
 texture; epsilon and alpha/beta remain public host parameters. One fragment
 owns every output tensor element, and the IUdonVM lifecycle fixture compares
 six parameter combinations across 72 outputs before cleaning up all assets.
+
+The `unity-udondnn-op-tensor` stage creates `UdonDnnOpTensor.prefab` for
+ADD, MUL, MIN, and MAX with cuDNN-shaped alpha/beta accumulation, selectable
+NaN propagation, and four-dimensional NCHW broadcasting. This is the reusable
+Device primitive for ONNX elementwise operators, bias application, and
+residual connections. Its IUdonVM lifecycle fixture covers six broadcast and
+NaN-policy combinations across 72 outputs.
