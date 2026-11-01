@@ -451,10 +451,10 @@ PROVIDERS = {
     "Conv": "udondnnConvolutionForward",
     "Add": "udonatenAdd",
     "Mul": "udonatenMul",
-    "Sub": "udondnnOpTensor",
-    "Relu": "udondnnActivationForward",
+    "Sub": "udonatenSub",
+    "Relu": "udonatenRelu",
     "Sigmoid": "udonatenSigmoid",
-    "Tanh": "udondnnActivationForward",
+    "Tanh": "udonatenTanh",
     "AveragePool": "udondnnPoolingForward",
     "Softmax": "udondnnSoftmaxForward",
     "RMSNormalization": "udonatenRmsNorm",
@@ -1591,7 +1591,6 @@ def emit_c_host(plan: dict) -> str:
             "  int status = 0;",
             "  const float zero = 0.0f;",
             "  const float one = 1.0f;",
-            "  const float minus_one = -1.0f;",
             "  udonblasHandle_t blas = 0;",
             "  udondnnHandle_t dnn = 0;",
         ]
@@ -1613,16 +1612,6 @@ def emit_c_host(plan: dict) -> str:
             )
             lines.append(f"  udondnnFilterDescriptor_t filter_{index} = 0;")
             lines.append(f"  udondnnConvolutionDescriptor_t convolution_{index} = 0;")
-        elif operation == "Sub":
-            operation_descriptors.append(
-                ("udondnnDestroyOpTensorDescriptor", f"operation_{index}")
-            )
-            lines.append(f"  udondnnOpTensorDescriptor_t operation_{index} = 0;")
-        elif operation in ("Relu", "Tanh"):
-            operation_descriptors.append(
-                ("udondnnDestroyActivationDescriptor", f"activation_{index}")
-            )
-            lines.append(f"  udondnnActivationDescriptor_t activation_{index} = 0;")
         elif operation == "AveragePool":
             operation_descriptors.append(
                 ("udondnnDestroyPoolingDescriptor", f"pooling_{index}")
@@ -1665,15 +1654,10 @@ def emit_c_host(plan: dict) -> str:
                 f"{tensor_descriptors[output]}, buffers->{names[output]}));"
             )
         elif operation == "Sub":
-            lines.append(f"  CHECK_DNN(udondnnCreateOpTensorDescriptor(&operation_{index}));")
             lines.append(
-                "  CHECK_DNN(udondnnSetOpTensorDescriptor("
-                f"operation_{index}, UDONDNN_OP_TENSOR_ADD, UDONDNN_DATA_FLOAT, UDONDNN_PROPAGATE_NAN));"
-            )
-            lines.append(
-                "  CHECK_DNN(udondnnOpTensor("
-                f"dnn, operation_{index}, &one, {tensor_descriptors[inputs[0]]}, buffers->{names[inputs[0]]}, "
-                f"&minus_one, {tensor_descriptors[inputs[1]]}, buffers->{names[inputs[1]]}, &zero, "
+                "  CHECK_DNN(udonatenSub("
+                f"dnn, {tensor_descriptors[inputs[0]]}, buffers->{names[inputs[0]]}, "
+                f"{tensor_descriptors[inputs[1]]}, buffers->{names[inputs[1]]}, 1.0f, "
                 f"{tensor_descriptors[output]}, buffers->{names[output]}));"
             )
         elif operation == "Sigmoid":
@@ -1683,19 +1667,11 @@ def emit_c_host(plan: dict) -> str:
                 f"{tensor_descriptors[output]}, buffers->{names[output]}));"
             )
         elif operation in ("Relu", "Tanh"):
-            activation_mode = {
-                "Relu": "UDONDNN_ACTIVATION_RELU",
-                "Tanh": "UDONDNN_ACTIVATION_TANH",
-            }[operation]
-            lines.append(f"  CHECK_DNN(udondnnCreateActivationDescriptor(&activation_{index}));")
+            function = "udonatenRelu" if operation == "Relu" else "udonatenTanh"
             lines.append(
-                "  CHECK_DNN(udondnnSetActivationDescriptor("
-                f"activation_{index}, {activation_mode}, UDONDNN_PROPAGATE_NAN, 0.0f));"
-            )
-            lines.append(
-                "  CHECK_DNN(udondnnActivationForward("
-                f"dnn, activation_{index}, &one, {tensor_descriptors[inputs[0]]}, buffers->{names[inputs[0]]}, "
-                f"&zero, {tensor_descriptors[output]}, buffers->{names[output]}));"
+                f"  CHECK_DNN({function}("
+                f"dnn, {tensor_descriptors[inputs[0]]}, buffers->{names[inputs[0]]}, "
+                f"{tensor_descriptors[output]}, buffers->{names[output]}));"
             )
         elif operation == "Softmax":
             mode = _softmax_mode(node, values[inputs[0]])

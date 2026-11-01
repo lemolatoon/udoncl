@@ -7,13 +7,13 @@ allows.
 
 The first supported inference operators are:
 
-- `udonatenAdd`, `udonatenMul`, and `udonatenSigmoid`, corresponding to the
-  ATen pointwise schemas `add.Tensor(self, other, *, alpha=1)`,
-  `mul.Tensor(self, other)`, and `sigmoid(self)`. Add and Mul support the
-  broadcast shapes accepted by the current four-axis backend. Their public
-  ownership follows PyTorch's TensorIterator CUDA implementation; the private
-  Device path currently reuses validated UdonDNN OpTensor and Activation
-  kernels without exposing those cuDNN-shaped calls to ONNX plans.
+- `udonatenAdd`, `udonatenSub`, `udonatenMul`, `udonatenRelu`,
+  `udonatenSigmoid`, and `udonatenTanh`, corresponding to the ATen pointwise
+  tensor schemas. Add and Sub retain ATen's `alpha` argument; the binary calls
+  support the broadcast shapes accepted by the current four-axis backend.
+  Their public ownership follows PyTorch's TensorIterator CUDA implementation;
+  the private Device path currently reuses validated UdonDNN OpTensor and
+  Activation kernels without exposing those cuDNN-shaped calls to ONNX plans.
 - `udonatenEmbedding`, corresponding to
   `embedding(weight, indices, padding_idx, scale_grad_by_freq, sparse)`. The
   current backend supports `padding_idx=-1`, `scale_grad_by_freq=false`, and

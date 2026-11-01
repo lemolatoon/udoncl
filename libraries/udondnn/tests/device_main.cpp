@@ -920,6 +920,14 @@ int main(int argc, char **argv) {
       if (std::abs(atenOutput[index] -
                    (atenLeft[index] + 0.25f * atenRight[index % 3])) > 0.0005f)
         throw std::runtime_error("UdonATen add results diverged");
+    require(udonatenSub(handle, atenLeftDescriptor, atenLeft.data(),
+                        atenRightDescriptor, atenRight.data(), 0.25f,
+                        atenOutputDescriptor, atenOutput.data()),
+            UDONDNN_STATUS_SUCCESS, "udonatenSub");
+    for (size_t index = 0; index < atenOutput.size(); ++index)
+      if (std::abs(atenOutput[index] -
+                   (atenLeft[index] - 0.25f * atenRight[index % 3])) > 0.0005f)
+        throw std::runtime_error("UdonATen sub results diverged");
     require(udonatenMul(handle, atenLeftDescriptor, atenLeft.data(),
                         atenRightDescriptor, atenRight.data(),
                         atenOutputDescriptor, atenOutput.data()),
@@ -935,6 +943,19 @@ int main(int argc, char **argv) {
       if (std::abs(atenOutput[index] -
                    1.0f / (1.0f + std::exp(-atenLeft[index]))) > 0.0005f)
         throw std::runtime_error("UdonATen sigmoid results diverged");
+    require(udonatenRelu(handle, atenLeftDescriptor, atenLeft.data(),
+                         atenOutputDescriptor, atenOutput.data()),
+            UDONDNN_STATUS_SUCCESS, "udonatenRelu");
+    for (size_t index = 0; index < atenOutput.size(); ++index)
+      if (std::abs(atenOutput[index] - std::max(atenLeft[index], 0.0f)) >
+          0.0005f)
+        throw std::runtime_error("UdonATen relu results diverged");
+    require(udonatenTanh(handle, atenLeftDescriptor, atenLeft.data(),
+                         atenOutputDescriptor, atenOutput.data()),
+            UDONDNN_STATUS_SUCCESS, "udonatenTanh");
+    for (size_t index = 0; index < atenOutput.size(); ++index)
+      if (std::abs(atenOutput[index] - std::tanh(atenLeft[index])) > 0.0005f)
+        throw std::runtime_error("UdonATen tanh results diverged");
     require(udondnnDestroyTensorDescriptor(atenLeftDescriptor),
             UDONDNN_STATUS_SUCCESS, "destroy ATen left descriptor");
     require(udondnnDestroyTensorDescriptor(atenRightDescriptor),

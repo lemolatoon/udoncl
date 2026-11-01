@@ -20,6 +20,13 @@ udonatenAdd(udonatenHandle_t handle, udonatenTensorDescriptor_t self_descriptor,
             const float *other, float alpha,
             udonatenTensorDescriptor_t output_descriptor, float *output);
 
+/* ATen: sub.Tensor(self, other, *, alpha=1). */
+udonatenStatus_t
+udonatenSub(udonatenHandle_t handle, udonatenTensorDescriptor_t self_descriptor,
+            const float *self, udonatenTensorDescriptor_t other_descriptor,
+            const float *other, float alpha,
+            udonatenTensorDescriptor_t output_descriptor, float *output);
+
 /* ATen: mul.Tensor(self, other). */
 udonatenStatus_t
 udonatenMul(udonatenHandle_t handle, udonatenTensorDescriptor_t self_descriptor,
@@ -33,6 +40,20 @@ udonatenStatus_t udonatenSigmoid(udonatenHandle_t handle,
                                  const float *input,
                                  udonatenTensorDescriptor_t output_descriptor,
                                  float *output);
+
+/* ATen: relu(self). */
+udonatenStatus_t udonatenRelu(udonatenHandle_t handle,
+                              udonatenTensorDescriptor_t input_descriptor,
+                              const float *input,
+                              udonatenTensorDescriptor_t output_descriptor,
+                              float *output);
+
+/* ATen: tanh(self). */
+udonatenStatus_t udonatenTanh(udonatenHandle_t handle,
+                              udonatenTensorDescriptor_t input_descriptor,
+                              const float *input,
+                              udonatenTensorDescriptor_t output_descriptor,
+                              float *output);
 
 /* ATen: embedding(weight, indices, padding_idx, scale_grad_by_freq, sparse). */
 udonatenStatus_t udonatenEmbedding(udonatenHandle_t handle,

@@ -78,7 +78,7 @@ assert [node["op_type"] for node in plan["nodes"]] == [
 assert [node["provider"] for node in plan["nodes"]] == [
     "udondnnConvolutionForward",
     "udonatenAdd",
-    "udondnnActivationForward",
+    "udonatenRelu",
     "udondnnPoolingForward",
     "view",
     "udonblasSgemm",
@@ -89,7 +89,7 @@ mnist_calls = [call["function"] for call in plan["aot"]["calls"]]
 assert mnist_calls[:5] == [
     "udondnnConvolutionForward",
     "udonatenAdd",
-    "udondnnActivationForward",
+    "udonatenRelu",
     "udondnnPoolingForward",
     "view",
 ]
@@ -110,7 +110,7 @@ assert generic_mnist_plan["execution_provider"] == "UdonOperatorExecutionProvide
 assert [item["providers"][0] for item in generic_mnist_plan["passes"][:4]] == [
     "udondnnConvolutionForward",
     "udonatenAdd",
-    "udondnnActivationForward",
+    "udonatenRelu",
     "udondnnPoolingForward",
 ]
 assert len(generic_mnist_plan["passes"]) == 14
@@ -144,13 +144,13 @@ assert operator_plan["execution_provider"] == "UdonOperatorExecutionProvider"
 assert [item["function"] for item in operator_plan["aot"]["calls"]] == [
     "udonblasSgemm",
     "udonatenAdd",
-    "udondnnActivationForward",
+    "udonatenRelu",
 ]
 assert [item["fragments"] for item in operator_plan["passes"]] == [8, 8, 8]
 host_c = emit_c_host(operator_plan)
 assert "udonblasSgemm(" in host_c
 assert "udonatenAdd(" in host_c
-assert "udondnnActivationForward(" in host_c
+assert "udonatenRelu(" in host_c
 assert host_c.count("udonblasSgemm(") == 1
 (output / "generic-host.c").write_text(host_c, encoding="utf-8")
 host_uasm = emit_uasm_host(operator_plan)
@@ -543,21 +543,21 @@ assert [item["op_type"] for item in rl_plan["nodes"]] == [
 assert [item["function"] for item in rl_plan["aot"]["calls"]] == [
     "udonblasSgemm",
     "udonatenAdd",
-    "udondnnActivationForward",
+    "udonatenTanh",
     "udonatenSigmoid",
     "udonatenMul",
     "udonblasSgemm",
     "udonatenAdd",
-    "udondnnOpTensor",
+    "udonatenSub",
     "udonatenMul",
     "udondnnSoftmaxForward",
 ]
 assert len(rl_plan["passes"]) == 10
 rl_host_c = emit_c_host(rl_plan)
-assert "UDONDNN_ACTIVATION_TANH" in rl_host_c
+assert "udonatenTanh(" in rl_host_c
 assert "udonatenSigmoid(" in rl_host_c
 assert rl_host_c.count("udonatenMul(") == 2
-assert "&minus_one" in rl_host_c
+assert "udonatenSub(" in rl_host_c
 assert "UDONDNN_SOFTMAX_ACCURATE, UDONDNN_SOFTMAX_MODE_INSTANCE" in rl_host_c
 (output / "rl-policy-host.c").write_text(rl_host_c, encoding="utf-8")
 rl_host_uasm = emit_uasm_host(rl_plan)

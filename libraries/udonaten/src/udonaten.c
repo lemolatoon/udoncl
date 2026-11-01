@@ -48,6 +48,16 @@ udonatenAdd(udonatenHandle_t handle, udonatenTensorDescriptor_t self_descriptor,
 }
 
 udonatenStatus_t
+udonatenSub(udonatenHandle_t handle, udonatenTensorDescriptor_t self_descriptor,
+            const float *self, udonatenTensorDescriptor_t other_descriptor,
+            const float *other, float alpha,
+            udonatenTensorDescriptor_t output_descriptor, float *output) {
+  return udonatenBinary(handle, UDONDNN_OP_TENSOR_ADD, self_descriptor, self,
+                        other_descriptor, other, -alpha, output_descriptor,
+                        output);
+}
+
+udonatenStatus_t
 udonatenMul(udonatenHandle_t handle, udonatenTensorDescriptor_t self_descriptor,
             const float *self, udonatenTensorDescriptor_t other_descriptor,
             const float *other, udonatenTensorDescriptor_t output_descriptor,
@@ -57,18 +67,17 @@ udonatenMul(udonatenHandle_t handle, udonatenTensorDescriptor_t self_descriptor,
                         output);
 }
 
-udonatenStatus_t udonatenSigmoid(udonatenHandle_t handle,
-                                 udonatenTensorDescriptor_t input_descriptor,
-                                 const float *input,
-                                 udonatenTensorDescriptor_t output_descriptor,
-                                 float *output) {
+static udonatenStatus_t udonatenActivation(
+    udonatenHandle_t handle, udondnnActivationMode_t mode,
+    udonatenTensorDescriptor_t input_descriptor, const float *input,
+    udonatenTensorDescriptor_t output_descriptor, float *output) {
   const float one = 1.0f, zero = 0.0f;
   udondnnActivationDescriptor_t descriptor = 0;
   udonatenStatus_t status = udondnnCreateActivationDescriptor(&descriptor);
   if (status != UDONDNN_STATUS_SUCCESS)
     return status;
-  status = udondnnSetActivationDescriptor(
-      descriptor, UDONDNN_ACTIVATION_SIGMOID, UDONDNN_PROPAGATE_NAN, 0.0f);
+  status = udondnnSetActivationDescriptor(descriptor, mode,
+                                          UDONDNN_PROPAGATE_NAN, 0.0f);
   if (status == UDONDNN_STATUS_SUCCESS)
     status =
         udondnnActivationForward(handle, descriptor, &one, input_descriptor,
@@ -78,6 +87,33 @@ udonatenStatus_t udonatenSigmoid(udonatenHandle_t handle,
         udondnnDestroyActivationDescriptor(descriptor);
     return status == UDONDNN_STATUS_SUCCESS ? destroy_status : status;
   }
+}
+
+udonatenStatus_t udonatenSigmoid(udonatenHandle_t handle,
+                                 udonatenTensorDescriptor_t input_descriptor,
+                                 const float *input,
+                                 udonatenTensorDescriptor_t output_descriptor,
+                                 float *output) {
+  return udonatenActivation(handle, UDONDNN_ACTIVATION_SIGMOID,
+                            input_descriptor, input, output_descriptor, output);
+}
+
+udonatenStatus_t udonatenRelu(udonatenHandle_t handle,
+                              udonatenTensorDescriptor_t input_descriptor,
+                              const float *input,
+                              udonatenTensorDescriptor_t output_descriptor,
+                              float *output) {
+  return udonatenActivation(handle, UDONDNN_ACTIVATION_RELU, input_descriptor,
+                            input, output_descriptor, output);
+}
+
+udonatenStatus_t udonatenTanh(udonatenHandle_t handle,
+                              udonatenTensorDescriptor_t input_descriptor,
+                              const float *input,
+                              udonatenTensorDescriptor_t output_descriptor,
+                              float *output) {
+  return udonatenActivation(handle, UDONDNN_ACTIVATION_TANH, input_descriptor,
+                            input, output_descriptor, output);
 }
 
 udonatenStatus_t udonatenEmbedding(udonatenHandle_t handle,

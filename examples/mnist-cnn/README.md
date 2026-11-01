@@ -35,7 +35,7 @@ Before compiling those passes, the run generates and imports a real ONNX model
 without depending on the Python `onnx` or protobuf packages. The initial Udon
 ONNX execution provider validates and shape-infers
 `Conv → Add → Relu → AveragePool → Flatten → Gemm → Add`, assigns the nodes to
-`udondnnConvolutionForward`, `udonatenAdd`, `udondnnActivationForward`,
+`udondnnConvolutionForward`, `udonatenAdd`, `udonatenRelu`,
 `udondnnPoolingForward`, and `udonblasSgemm`, then
 fuses them into the three Device passes. The emitted Unity bundle contains both
 `model.onnx` and the checked execution plan.

@@ -94,6 +94,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             StringAssert.Contains("\"runtime\": \"udon-onnx\"", plan.text);
             StringAssert.Contains("\"provider\": \"udondnnConvolutionForward\"", plan.text);
             StringAssert.Contains("\"provider\": \"udonatenAdd\"", plan.text);
+            StringAssert.Contains("\"provider\": \"udonatenRelu\"", plan.text);
             StringAssert.Contains("\"provider\": \"udonblasSgemm\"", plan.text);
         }
 

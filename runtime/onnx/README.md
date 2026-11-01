@@ -32,10 +32,9 @@ The built-in providers currently are:
   scale/zero metadata; attention activation products remain on
   `udonblasSgemm`.
 
-The general provider lowers Add, Mul, and Sigmoid to their ATen-shaped UdonATen
-entry points. Sub, Relu, Tanh, and Softmax currently retain their
-cuDNN-compatible UdonDNN paths while their PyTorch ownership audits remain
-separate migrations. The checked-in
+The general provider lowers Add, Sub, Mul, Relu, Sigmoid, and Tanh to their
+ATen-shaped UdonATen entry points. Softmax retains the cuDNN-compatible UdonDNN
+path. The checked-in
 reinforcement-learning actor fixture uses these operators and Gemm entirely
 through `UdonOperatorExecutionProvider`, without a model-specific provider.
 The Tiny Llama fixture also emits a standard-operator, single-token decoder

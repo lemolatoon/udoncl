@@ -98,7 +98,7 @@ def main():
     expected_operators = [
         ("Conv", "udondnnConvolutionForward"),
         ("Add", "udonatenAdd"),
-        ("Relu", "udondnnActivationForward"),
+        ("Relu", "udonatenRelu"),
         ("AveragePool", "udondnnPoolingForward"),
         ("Flatten", "view"),
         ("Gemm", "udonblasSgemm"),

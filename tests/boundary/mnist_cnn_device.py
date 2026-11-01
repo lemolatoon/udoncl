@@ -29,7 +29,7 @@ assert plan["runtime"] == "udon-onnx"
 assert [node["provider"] for node in plan["nodes"]] == [
     "udondnnConvolutionForward",
     "udonatenAdd",
-    "udondnnActivationForward",
+    "udonatenRelu",
     "udondnnPoolingForward",
     "view",
     "udonblasSgemm",
