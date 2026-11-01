@@ -3,7 +3,12 @@
 UdonBLAS is the BLAS layer built on UdonCL. Its public C API follows the cuBLAS
 column-major operand contract while using 32-bit Udon-safe opaque handles.
 
-The first implemented operation is `udonblasSgemm`. One fragment owns each
+`udonblasSaxpy` is the first Level-1 primitive. One fragment owns each logical
+vector element for `y = alpha * x + y`; non-unit and negative increments are
+supported, with up to 256 logical elements when each physical vector span fits
+the 256-word gather partition.
+
+`udonblasSgemm` is the first Level-3 primitive. One fragment owns each
 output matrix element, so an M×N multiplication exposes M×N independent Device
 invocations. The initial `gather-f32` profile accepts M, N, and K up to 16 and
 one serialized handle per UdonBehaviour instance. These are profile limits,
@@ -19,10 +24,11 @@ representation. The current profile supports up to 64 output rows and 128
 input values per dispatch; higher-level inference code streams larger matrices
 as tiles.
 
-The build emits separate `unity-bundle` and `unity-q4-bundle` artifacts. Both
-are accepted by the UPM importer; the Q4 bundle includes its generated shader,
-UdonAsm host, prefab configuration, and a signed decode fixture validated by
-the SDK IUdonVM lifecycle suite.
+The build emits separate `unity-bundle`, `unity-q4-bundle`, and
+`unity-saxpy-bundle` artifacts. All are accepted by the UPM importer. Their
+generated shaders, UdonAsm hosts, prefab configurations, and numerical fixtures
+are validated by the SDK IUdonVM lifecycle suite; the SAXPY fixture also covers
+a negative input increment and a non-unit output increment.
 
 Run the real fragment-backed validation with:
 
@@ -30,7 +36,8 @@ Run the real fragment-backed validation with:
 python libraries/udonblas/run_device.py --build-dir build/udoncl
 ```
 
-The validation covers rectangular SGEMM matrices, both transpose flags,
+The validation covers SAXPY with unit, non-unit, negative, and maximum-length
+vectors; rectangular SGEMM matrices, both transpose flags,
 non-unit alpha/beta, padded leading dimensions, signed-Q4 decode with multiple
 blocks and non-unit vector strides, invalid arguments, OpenCL object cleanup,
 and comparison against independent CPU references.

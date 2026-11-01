@@ -12,12 +12,19 @@
 
 extern "C" size_t udonblas_cpu_gid;
 size_t udonblas_cpu_gid;
+extern "C" size_t udonblas_saxpy_cpu_gid;
+size_t udonblas_saxpy_cpu_gid;
 
 namespace {
 struct Case {
   udonblasOperation_t transa, transb;
   int m, n, k, lda, ldb, ldc;
   float alpha, beta;
+};
+
+struct SaxpyCase {
+  int n, incx, incy;
+  float alpha;
 };
 
 int storedWords(udonblasOperation_t operation, int rows, int columns,
@@ -73,13 +80,14 @@ void packQ4(std::vector<float> &matrix, int row, int k, int lda) {
 } // namespace
 
 int main(int argc, char **argv) {
-  if (argc != 4) {
-    std::cerr << "usage: udonblas-device sgemm-fragment q4-fragment vertex\n";
+  if (argc != 5) {
+    std::cerr << "usage: udonblas-device sgemm-fragment q4-fragment "
+                 "saxpy-fragment vertex\n";
     return 2;
   }
   try {
-    native_opencl::Session session(deviceSource(),
-                                   manifestBindings(argv[1], argv[2]), argv[3]);
+    native_opencl::Session session(
+        deviceSource(), manifestBindings(argv[1], argv[2], argv[3]), argv[4]);
     udonblasHandle_t handle = 0;
     require(udonblasCreate(&handle), UDONBLAS_STATUS_SUCCESS, "udonblasCreate");
     const std::array<Case, 5> cases{{
@@ -155,6 +163,44 @@ int main(int argc, char **argv) {
     if (q4MaximumError > 0.0005f)
       throw std::runtime_error("UdonBLAS Q4 GEMV CPU/Device results diverged");
 
+    const std::array<SaxpyCase, 4> saxpyCases{{
+        {7, 1, 1, 1.25f},
+        {9, 2, 3, -0.75f},
+        {8, -2, -3, 0.5f},
+        {UDONBLAS_SAXPY_MAX_N, 1, 1, -0.125f},
+    }};
+    float saxpyMaximumError = 0.0f;
+    int saxpyOutputs = 0;
+    for (size_t caseIndex = 0; caseIndex < saxpyCases.size(); ++caseIndex) {
+      const SaxpyCase &test = saxpyCases[caseIndex];
+      int xSpan = 1 + (test.n - 1) * std::abs(test.incx);
+      int ySpan = 1 + (test.n - 1) * std::abs(test.incy);
+      int xStart = test.incx < 0 ? (1 - test.n) * test.incx : 0;
+      int yStart = test.incy < 0 ? (1 - test.n) * test.incy : 0;
+      std::vector<float> x(xSpan), actual(ySpan), expected;
+      for (int index = 0; index < xSpan; ++index)
+        x[index] = value(index, int(caseIndex) + 37);
+      for (int index = 0; index < ySpan; ++index)
+        actual[index] = value(index, int(caseIndex) + 43);
+      expected = actual;
+      for (int element = 0; element < test.n; ++element) {
+        int xIndex = xStart + element * test.incx;
+        int yIndex = yStart + element * test.incy;
+        expected[yIndex] = test.alpha * x[xIndex] + expected[yIndex];
+      }
+      require(udonblasSaxpy(handle, test.n, &test.alpha, x.data(), test.incx,
+                            actual.data(), test.incy),
+              UDONBLAS_STATUS_SUCCESS, "udonblasSaxpy");
+      for (int element = 0; element < test.n; ++element) {
+        int yIndex = yStart + element * test.incy;
+        saxpyMaximumError = std::max(
+            saxpyMaximumError, std::abs(actual[yIndex] - expected[yIndex]));
+        ++saxpyOutputs;
+      }
+    }
+    if (saxpyMaximumError > 0.0005f)
+      throw std::runtime_error("UdonBLAS SAXPY CPU/Device results diverged");
+
     float one = 1.0f, values[4]{};
     require(udonblasSgemm(0, UDONBLAS_OP_N, UDONBLAS_OP_N, 1, 1, 1, &one,
                           values, 1, values, 1, &one, values, 1),
@@ -168,6 +214,10 @@ int main(int argc, char **argv) {
     require(udonblasSgemvQ4(handle, 1, 31, &one, values, 17, values, 1, &one,
                             values, 1),
             UDONBLAS_STATUS_INVALID_VALUE, "unaligned Q4 K");
+    require(udonblasSaxpy(handle, 1, &one, values, 0, values, 1),
+            UDONBLAS_STATUS_INVALID_VALUE, "zero SAXPY increment");
+    require(udonblasSaxpy(handle, 129, &one, values, 2, values, 1),
+            UDONBLAS_STATUS_INVALID_VALUE, "oversized SAXPY span");
     require(udonblasDestroy(handle), UDONBLAS_STATUS_SUCCESS,
             "udonblasDestroy");
     if (udoncl_cl_live_objects())
@@ -176,6 +226,9 @@ int main(int argc, char **argv) {
               << " cases=" << cases.size()
               << " max_cpu_gpu_error=" << maximumError << " q4_outputs=" << q4M
               << " q4_max_cpu_gpu_error=" << q4MaximumError
+              << " saxpy_outputs=" << saxpyOutputs
+              << " saxpy_cases=" << saxpyCases.size()
+              << " saxpy_max_cpu_gpu_error=" << saxpyMaximumError
               << " renderer=" << session.deviceName()
               << " draws=" << session.drawCount() << "\n";
     return 0;

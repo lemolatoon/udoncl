@@ -156,6 +156,20 @@ namespace Lemolatoon.Udoncl.Editor
                         transaction.Commit();
                         return programRoot;
                     }
+                    if (artifacts.ArtifactStage == "unity-udonblas-saxpy")
+                    {
+                        ImportUdonBlasSaxpy(
+                            transaction,
+                            artifacts,
+                            programRoot,
+                            programAsset,
+                            kernelMaterials,
+                            displayMaterial
+                        );
+                        AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+                        transaction.Commit();
+                        return programRoot;
+                    }
                     if (artifacts.ArtifactStage == "unity-udondnn-convolution")
                     {
                         ImportUdonDnnConvolution(
@@ -675,6 +689,59 @@ namespace Lemolatoon.Udoncl.Editor
             );
         }
 
+        private static void ImportUdonBlasSaxpy(
+            AssetImportTransaction transaction,
+            ValidatedArtifact artifacts,
+            string programRoot,
+            UdonAssemblyProgramAsset programAsset,
+            IDictionary<int, Material> kernelMaterials,
+            Material displayMaterial
+        )
+        {
+            if (!kernelMaterials.TryGetValue(102, out Material saxpyMaterial))
+                throw new InvalidDataException("UdonBLAS SAXPY requires kernel id 102.");
+            ValidatedResource inputResource = FindResource(artifacts, "fixture_input", "bytes");
+            ValidatedResource referenceResource = FindResource(
+                artifacts,
+                "fixture_reference",
+                "bytes"
+            );
+            Texture2D input = CreateOrUpdateByteTexture(
+                transaction,
+                programRoot,
+                "udonblas_saxpy_input.asset",
+                1024,
+                1,
+                File.ReadAllBytes(inputResource.AbsolutePath)
+            );
+            CreateOrUpdateByteTexture(
+                transaction,
+                programRoot,
+                "udonblas_saxpy_reference.asset",
+                16,
+                1,
+                File.ReadAllBytes(referenceResource.AbsolutePath)
+            );
+            RenderTexture output = CreateOrUpdateRgbaRenderTexture(
+                transaction,
+                programRoot,
+                "udonblas_saxpy_output.asset",
+                1024,
+                1
+            );
+            displayMaterial.SetTexture("_Result", output);
+            EditorUtility.SetDirty(displayMaterial);
+            CreateOrUpdateUdonBlasSaxpyPrefab(
+                transaction,
+                programRoot,
+                programAsset,
+                input,
+                output,
+                saxpyMaterial,
+                displayMaterial
+            );
+        }
+
         private static void ImportUdonDnnActivation(
             AssetImportTransaction transaction,
             ValidatedArtifact artifacts,
@@ -993,6 +1060,10 @@ namespace Lemolatoon.Udoncl.Editor
             TextAsset planText = AssetDatabase.LoadAssetAtPath<TextAsset>(
                 modelDirectory + "/execution-plan.json.bytes"
             );
+            if (modelText == null || planText == null)
+                throw new InvalidDataException(
+                    "Unity could not import the ONNX model and execution plan resources."
+                );
             UdonOnnxExecutionPlan executionPlan = JsonUtility.FromJson<UdonOnnxExecutionPlan>(
                 planText.text
             );
@@ -1032,6 +1103,10 @@ namespace Lemolatoon.Udoncl.Editor
                 materials.GetArrayElementAtIndex(index).objectReferenceValue = passMaterials[index];
             serialized.ApplyModifiedPropertiesWithoutUndo();
             EditorUtility.SetDirty(modelAsset);
+            // Later stage-specific imports refresh the AssetDatabase before the
+            // transaction commits. Persist these references first so that refresh
+            // cannot reload the new asset with unassigned fields.
+            AssetDatabase.SaveAssetIfDirty(modelAsset);
         }
 
         private static UdonAssemblyProgramAsset CreateOrUpdateProgramAsset(
@@ -1738,6 +1813,65 @@ namespace Lemolatoon.Udoncl.Editor
                 if (!success || AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath) == null)
                     throw new InvalidOperationException(
                         "Could not create UdonBLAS Q4 GEMV prefab: " + prefabPath
+                    );
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        private static void CreateOrUpdateUdonBlasSaxpyPrefab(
+            AssetImportTransaction transaction,
+            string programRoot,
+            UdonAssemblyProgramAsset programAsset,
+            Texture inputState,
+            RenderTexture outputState,
+            Material saxpyMaterial,
+            Material displayMaterial
+        )
+        {
+            string prefabDirectory = programRoot + "/Prefabs";
+            EnsureFolders(prefabDirectory);
+            string prefabPath = prefabDirectory + "/UdonBlasSaxpy.prefab";
+            transaction.Track(prefabPath);
+            GameObject root = new GameObject("UdonBLAS SAXPY");
+            try
+            {
+                root.transform.position = new Vector3(20.0f, 7.5f, 0.0f);
+                BoxCollider collider = root.AddComponent<BoxCollider>();
+                collider.size = new Vector3(4.0f, 2.0f, 0.4f);
+                UdonBehaviour behaviour = root.AddComponent<UdonBehaviour>();
+                behaviour.programSource = programAsset;
+                behaviour.interactText = "Run UdonBLAS SAXPY";
+                behaviour.proximity = 3.0f;
+                behaviour.SyncMethod = SyncType.None;
+                SetPublicVariable(behaviour, "inputState", inputState);
+                SetPublicVariable(behaviour, "outputState", outputState);
+                SetPublicVariable(behaviour, "saxpyMaterial", saxpyMaterial);
+                SetPublicVariable(behaviour, "displayMaterial", displayMaterial);
+                SetPublicVariable(behaviour, "n", 16);
+                SetPublicVariable(behaviour, "incx", -2);
+                SetPublicVariable(behaviour, "incy", 3);
+                SetPublicVariable(behaviour, "alpha", -0.75f);
+                SerializedObject serializedBehaviour = new SerializedObject(behaviour);
+                serializedBehaviour.FindProperty("serializedProgramAsset").objectReferenceValue =
+                    programAsset.SerializedProgramAsset;
+                serializedBehaviour.ApplyModifiedPropertiesWithoutUndo();
+
+                GameObject display = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                display.name = "UdonBLAS SAXPY vector result";
+                display.transform.SetParent(root.transform, false);
+                display.transform.localScale = new Vector3(4.0f, 2.0f, 0.12f);
+                Collider displayCollider = display.GetComponent<Collider>();
+                if (displayCollider != null)
+                    UnityEngine.Object.DestroyImmediate(displayCollider);
+                display.GetComponent<MeshRenderer>().sharedMaterial = displayMaterial;
+
+                PrefabUtility.SaveAsPrefabAsset(root, prefabPath, out bool success);
+                if (!success || AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath) == null)
+                    throw new InvalidOperationException(
+                        "Could not create UdonBLAS SAXPY prefab: " + prefabPath
                     );
             }
             finally

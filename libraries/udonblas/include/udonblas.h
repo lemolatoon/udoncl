@@ -26,6 +26,7 @@ enum {
   UDONBLAS_SGEMM_MAX_M = 16,
   UDONBLAS_SGEMM_MAX_N = 16,
   UDONBLAS_SGEMM_MAX_K = 16,
+  UDONBLAS_SAXPY_MAX_N = 256,
   UDONBLAS_Q4_BLOCK_VALUES = 32,
   UDONBLAS_Q4_EXPANDED_BLOCK_WORDS = 17,
   UDONBLAS_Q4_GEMV_MAX_M = 64,
@@ -34,6 +35,12 @@ enum {
 
 udonblasStatus_t udonblasCreate(udonblasHandle_t *handle);
 udonblasStatus_t udonblasDestroy(udonblasHandle_t handle);
+
+/* Level-1 vector update with the cuBLAS contract: y = alpha * x + y.
+ * Positive and negative non-zero increments are supported. */
+udonblasStatus_t udonblasSaxpy(udonblasHandle_t handle, int n,
+                               const float *alpha, const float *x, int incx,
+                               float *y, int incy);
 
 /* Column-major SGEMM with the cuBLAS operand contract:
  * C = alpha * op(A) * op(B) + beta * C.

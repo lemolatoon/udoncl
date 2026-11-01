@@ -19,6 +19,7 @@ static cl_command_queue queue;
 static cl_program program;
 static cl_kernel sgemm_kernel;
 static cl_kernel q4_gemv_kernel;
+static cl_kernel saxpy_kernel;
 static cl_mem input_buffer;
 static cl_mem output_buffer;
 static cl_mem q4_input_buffer;
@@ -28,6 +29,8 @@ static float q4_packed[UDONBLAS_Q4_WORDS];
 static float result[UDONBLAS_MATRIX_WORDS];
 
 static void clear_objects(void) {
+  if (saxpy_kernel)
+    clReleaseKernel(saxpy_kernel);
   if (q4_gemv_kernel)
     clReleaseKernel(q4_gemv_kernel);
   if (sgemm_kernel)
@@ -48,6 +51,7 @@ static void clear_objects(void) {
     clReleaseContext(context);
   sgemm_kernel = 0;
   q4_gemv_kernel = 0;
+  saxpy_kernel = 0;
   program = 0;
   output_buffer = input_buffer = 0;
   q4_output_buffer = q4_input_buffer = 0;
@@ -112,7 +116,68 @@ udonblasStatus_t udonblasCreate(udonblasHandle_t *handle) {
       clSetKernelArg(sgemm_kernel, 1, sizeof(output_buffer), &output_buffer) !=
           CL_SUCCESS)
     return execution_failure();
+  saxpy_kernel = clCreateKernel(program, "udonblas_saxpy", &status);
+  if (status != CL_SUCCESS ||
+      clSetKernelArg(saxpy_kernel, 0, sizeof(input_buffer), &input_buffer) !=
+          CL_SUCCESS ||
+      clSetKernelArg(saxpy_kernel, 1, sizeof(output_buffer), &output_buffer) !=
+          CL_SUCCESS)
+    return execution_failure();
   *handle = UDONBLAS_HANDLE;
+  return UDONBLAS_STATUS_SUCCESS;
+}
+
+udonblasStatus_t udonblasSaxpy(udonblasHandle_t handle, int n,
+                               const float *alpha, const float *x, int incx,
+                               float *y, int incy) {
+  int x_span, y_span, y_start, index;
+  int64_t x_span64, y_span64;
+  size_t global = UDONBLAS_WORDS, local = 1;
+  cl_int status;
+  if (handle != UDONBLAS_HANDLE || !context)
+    return UDONBLAS_STATUS_NOT_INITIALIZED;
+  if (n < 0 || n > UDONBLAS_SAXPY_MAX_N || !alpha || !x || !y || incx == 0 ||
+      incy == 0)
+    return UDONBLAS_STATUS_INVALID_VALUE;
+  if (n == 0)
+    return UDONBLAS_STATUS_SUCCESS;
+  x_span64 = 1 + (int64_t)(n - 1) * (incx < 0 ? -(int64_t)incx : incx);
+  y_span64 = 1 + (int64_t)(n - 1) * (incy < 0 ? -(int64_t)incy : incy);
+  if (x_span64 > UDONBLAS_MATRIX_WORDS || y_span64 > UDONBLAS_MATRIX_WORDS)
+    return UDONBLAS_STATUS_INVALID_VALUE;
+  x_span = (int)x_span64;
+  y_span = (int)y_span64;
+  y_start = incy < 0 ? (1 - n) * incy : 0;
+  for (index = 0; index < UDONBLAS_WORDS; ++index)
+    packed[index] = 0.0f;
+  for (index = 0; index < x_span; ++index)
+    packed[UDONBLAS_A_OFFSET + index] = x[index];
+  for (index = 0; index < y_span; ++index)
+    packed[UDONBLAS_B_OFFSET + index] = y[index];
+
+#define SET_SAXPY_ARGUMENT(slot, value)                                        \
+  do {                                                                         \
+    status = clSetKernelArg(saxpy_kernel, slot, sizeof(value), &(value));      \
+    if (status != CL_SUCCESS)                                                  \
+      return UDONBLAS_STATUS_EXECUTION_FAILED;                                 \
+  } while (0)
+  SET_SAXPY_ARGUMENT(2, n);
+  SET_SAXPY_ARGUMENT(3, incx);
+  SET_SAXPY_ARGUMENT(4, incy);
+  SET_SAXPY_ARGUMENT(5, *alpha);
+#undef SET_SAXPY_ARGUMENT
+
+  if (clEnqueueWriteBuffer(queue, input_buffer, CL_TRUE, 0, sizeof(packed),
+                           packed, 0, 0, 0) != CL_SUCCESS ||
+      clEnqueueNDRangeKernel(queue, saxpy_kernel, 1, 0, &global, &local, 0, 0,
+                             0) != CL_SUCCESS ||
+      clEnqueueReadBuffer(queue, output_buffer, CL_TRUE,
+                          UDONBLAS_RESULT_OFFSET * sizeof(float),
+                          n * sizeof(float), result, 0, 0, 0) != CL_SUCCESS ||
+      clFinish(queue) != CL_SUCCESS)
+    return UDONBLAS_STATUS_EXECUTION_FAILED;
+  for (index = 0; index < n; ++index)
+    y[y_start + index * incy] = result[index];
   return UDONBLAS_STATUS_SUCCESS;
 }
 

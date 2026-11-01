@@ -65,6 +65,12 @@ large ONNX language models. It imports kernel 101, an 8,192-word packed state,
 the signed-Q4 fixture/reference pair, and a reusable prefab whose Udon program
 sets the tiled GEMV arguments and dispatches the generated Device shader.
 
+The `unity-udonblas-saxpy` stage creates `UdonBlasSaxpy.prefab` for the Level-1
+`y = alpha * x + y` primitive. Each logical vector element is independently
+owned by one fragment. The public prefab exposes length, alpha, and both signed
+increments; its IUdonVM fixture validates negative input traversal and a
+non-unit output stride across 16 results.
+
 ## UdonDNN
 
 The `unity-udondnn-convolution` artifact stage creates

@@ -1,4 +1,4 @@
-"""Run UdonBLAS SGEMM and quantized GEMV through the Device backend."""
+"""Run UdonBLAS Level-1, Level-3, and quantized kernels on Device."""
 
 from pathlib import Path
 import subprocess
@@ -26,5 +26,8 @@ assert "cases=5" in result.stdout
 assert "max_cpu_gpu_error=0" in result.stdout
 assert "q4_outputs=5" in result.stdout
 assert "q4_max_cpu_gpu_error=0" in result.stdout
-assert "draws=6" in result.stdout
+assert "saxpy_outputs=280" in result.stdout
+assert "saxpy_cases=4" in result.stdout
+assert "saxpy_max_cpu_gpu_error=0" in result.stdout
+assert "draws=10" in result.stdout
 print(result.stdout, end="")

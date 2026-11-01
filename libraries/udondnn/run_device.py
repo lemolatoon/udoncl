@@ -10,6 +10,19 @@ import subprocess
 import struct
 import sys
 import tempfile
+import time
+
+
+def publish_bundle(staged, destination):
+    """Publish a generated directory after transient Windows scanners release it."""
+    for attempt in range(40):
+        try:
+            staged.rename(destination)
+            return
+        except PermissionError:
+            if attempt == 39:
+                raise
+            time.sleep(0.05)
 
 
 def main():
@@ -157,7 +170,7 @@ def main():
                 if previous.get("artifact_stage") != "native-device-prototype":
                     raise RuntimeError("refusing to replace a non-UdonDNN bundle")
                 shutil.rmtree(bundle)
-            staged.rename(bundle)
+            publish_bundle(staged, bundle)
         return bundle
 
     bundle = emit_device(
@@ -434,7 +447,7 @@ def main():
             if previous.get("artifact_stage") != "unity-udondnn-convolution":
                 raise RuntimeError("refusing to replace a non-UdonDNN Unity bundle")
             shutil.rmtree(unity_bundle)
-        staged.rename(unity_bundle)
+        publish_bundle(staged, unity_bundle)
 
     activation_words = 64
     activation_input = [
@@ -568,7 +581,7 @@ def main():
                     "refusing to replace a non-UdonDNN activation Unity bundle"
                 )
             shutil.rmtree(unity_activation_bundle)
-        staged.rename(unity_activation_bundle)
+        publish_bundle(staged, unity_activation_bundle)
 
     pooling_input_shape = (1, 2, 4, 4)
     pooling_output_shape = (1, 2, 2, 2)
@@ -716,7 +729,7 @@ def main():
                     "refusing to replace a non-UdonDNN pooling Unity bundle"
                 )
             shutil.rmtree(unity_pooling_bundle)
-        staged.rename(unity_pooling_bundle)
+        publish_bundle(staged, unity_pooling_bundle)
 
     softmax_input_shape = (1, 3, 2, 2)
     softmax_input = [
@@ -839,7 +852,7 @@ def main():
                     "refusing to replace a non-UdonDNN softmax Unity bundle"
                 )
             shutil.rmtree(unity_softmax_bundle)
-        staged.rename(unity_softmax_bundle)
+        publish_bundle(staged, unity_softmax_bundle)
 
     batchnorm_input_shape = (1, 3, 2, 2)
     batchnorm_input = [
@@ -976,7 +989,7 @@ def main():
                     "refusing to replace a non-UdonDNN batchnorm Unity bundle"
                 )
             shutil.rmtree(unity_batchnorm_bundle)
-        staged.rename(unity_batchnorm_bundle)
+        publish_bundle(staged, unity_batchnorm_bundle)
 
     op_tensor_output_shape = (1, 3, 2, 2)
     op_tensor_a = [
@@ -1147,7 +1160,7 @@ def main():
                     "refusing to replace a non-UdonDNN OpTensor Unity bundle"
                 )
             shutil.rmtree(unity_op_tensor_bundle)
-        staged.rename(unity_op_tensor_bundle)
+        publish_bundle(staged, unity_op_tensor_bundle)
 
     host_ir = output / "host.ll"
     imported = output / "host.imported.mlir"

@@ -110,10 +110,18 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             StringAssert.Contains("UdonLlamaExecutionProvider", plan.text);
             StringAssert.Contains("udondnnRmsNormalizationForward", plan.text);
             StringAssert.Contains("udonblasSgemm", plan.text);
+            string modelAssetPath = GeneratedRoot + "/Models/UdonOnnxModel.asset";
             Lemolatoon.Udoncl.UdonOnnxModelAsset modelAsset =
-                AssetDatabase.LoadAssetAtPath<Lemolatoon.Udoncl.UdonOnnxModelAsset>(
-                    GeneratedRoot + "/Models/UdonOnnxModel.asset"
-                );
+                AssetDatabase.LoadAssetAtPath<Lemolatoon.Udoncl.UdonOnnxModelAsset>(modelAssetPath);
+            Assert.NotNull(modelAsset);
+            Resources.UnloadAsset(modelAsset);
+            AssetDatabase.ImportAsset(
+                modelAssetPath,
+                ImportAssetOptions.ForceSynchronousImport | ImportAssetOptions.ForceUpdate
+            );
+            modelAsset = AssetDatabase.LoadAssetAtPath<Lemolatoon.Udoncl.UdonOnnxModelAsset>(
+                modelAssetPath
+            );
             Assert.NotNull(modelAsset);
             Assert.AreSame(model, modelAsset.Model);
             Assert.AreSame(plan, modelAsset.ExecutionPlan);
