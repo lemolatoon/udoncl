@@ -25,6 +25,9 @@
 #define UDONDNN_BATCHNORM_MEAN_OFFSET 2048
 #define UDONDNN_BATCHNORM_VARIANCE_OFFSET 2560
 #define UDONDNN_BATCHNORM_RESULT_OFFSET 3072
+#define UDONDNN_OP_TENSOR_B_OFFSET 512
+#define UDONDNN_OP_TENSOR_C_OFFSET 1024
+#define UDONDNN_OP_TENSOR_RESULT_OFFSET 1536
 #define UDONDNN_HANDLE 1u
 #define UDONDNN_DESCRIPTOR_SLOTS 8
 #define UDONDNN_SLOT_MASK 255u
@@ -74,6 +77,14 @@ typedef struct PoolingDescriptor {
   int stride_h, stride_w;
 } PoolingDescriptor;
 
+typedef struct OpTensorDescriptor {
+  unsigned generation;
+  int used;
+  int configured;
+  udondnnOpTensorOp_t operation;
+  udondnnNanPropagation_t nan_propagation;
+} OpTensorDescriptor;
+
 static cl_context context;
 static cl_command_queue queue;
 static cl_program program;
@@ -82,6 +93,7 @@ static cl_kernel activation_kernel;
 static cl_kernel pooling_kernel;
 static cl_kernel softmax_kernel;
 static cl_kernel batchnorm_kernel;
+static cl_kernel op_tensor_kernel;
 static cl_mem input_buffer;
 static cl_mem output_buffer;
 static cl_mem batchnorm_input_buffer;
@@ -94,6 +106,7 @@ static FilterDescriptor filters[UDONDNN_DESCRIPTOR_SLOTS];
 static ConvolutionDescriptor convolutions[UDONDNN_DESCRIPTOR_SLOTS];
 static ActivationDescriptor activations[UDONDNN_DESCRIPTOR_SLOTS];
 static PoolingDescriptor poolings[UDONDNN_DESCRIPTOR_SLOTS];
+static OpTensorDescriptor op_tensors[UDONDNN_DESCRIPTOR_SLOTS];
 
 static unsigned next_generation(unsigned generation) {
   generation = (generation + 1u) & UDONDNN_GENERATION_MASK;
@@ -157,7 +170,19 @@ static PoolingDescriptor *get_pooling(udondnnPoolingDescriptor_t descriptor) {
   return &poolings[slot];
 }
 
+static OpTensorDescriptor *
+get_op_tensor(udondnnOpTensorDescriptor_t descriptor) {
+  unsigned generation;
+  int slot = descriptor_slot(descriptor, &generation);
+  if (slot < 0 || !op_tensors[slot].used ||
+      op_tensors[slot].generation != generation)
+    return 0;
+  return &op_tensors[slot];
+}
+
 static void clear_objects(void) {
+  if (op_tensor_kernel)
+    clReleaseKernel(op_tensor_kernel);
   if (batchnorm_kernel)
     clReleaseKernel(batchnorm_kernel);
   if (softmax_kernel)
@@ -187,6 +212,7 @@ static void clear_objects(void) {
   pooling_kernel = 0;
   softmax_kernel = 0;
   batchnorm_kernel = 0;
+  op_tensor_kernel = 0;
   program = 0;
   output_buffer = input_buffer = 0;
   batchnorm_output_buffer = batchnorm_input_buffer = 0;
@@ -275,6 +301,13 @@ udondnnStatus_t udondnnCreate(udondnnHandle_t *handle) {
                      &batchnorm_input_buffer) != CL_SUCCESS ||
       clSetKernelArg(batchnorm_kernel, 1, sizeof(batchnorm_output_buffer),
                      &batchnorm_output_buffer) != CL_SUCCESS)
+    return execution_failure();
+  op_tensor_kernel = clCreateKernel(program, "udondnn_op_tensor", &status);
+  if (status != CL_SUCCESS ||
+      clSetKernelArg(op_tensor_kernel, 0, sizeof(input_buffer),
+                     &input_buffer) != CL_SUCCESS ||
+      clSetKernelArg(op_tensor_kernel, 1, sizeof(output_buffer),
+                     &output_buffer) != CL_SUCCESS)
     return execution_failure();
   *handle = UDONDNN_HANDLE;
   return UDONDNN_STATUS_SUCCESS;
@@ -524,6 +557,49 @@ udondnnDestroyPoolingDescriptor(udondnnPoolingDescriptor_t descriptor) {
     return UDONDNN_STATUS_BAD_PARAM;
   pooling->used = 0;
   pooling->configured = 0;
+  return UDONDNN_STATUS_SUCCESS;
+}
+
+udondnnStatus_t
+udondnnCreateOpTensorDescriptor(udondnnOpTensorDescriptor_t *descriptor) {
+  int slot;
+  if (!descriptor)
+    return UDONDNN_STATUS_BAD_PARAM;
+  for (slot = 0; slot < UDONDNN_DESCRIPTOR_SLOTS; ++slot)
+    if (!op_tensors[slot].used) {
+      op_tensors[slot].generation =
+          next_generation(op_tensors[slot].generation);
+      op_tensors[slot].used = 1;
+      op_tensors[slot].configured = 0;
+      *descriptor =
+          make_descriptor(op_tensors[slot].generation, (unsigned)slot);
+      return UDONDNN_STATUS_SUCCESS;
+    }
+  return UDONDNN_STATUS_ALLOC_FAILED;
+}
+
+udondnnStatus_t udondnnSetOpTensorDescriptor(
+    udondnnOpTensorDescriptor_t descriptor, udondnnOpTensorOp_t operation,
+    udondnnDataType_t compute_type, udondnnNanPropagation_t nan_propagation) {
+  OpTensorDescriptor *op_tensor = get_op_tensor(descriptor);
+  if (!op_tensor || operation < UDONDNN_OP_TENSOR_ADD ||
+      operation > UDONDNN_OP_TENSOR_MAX || compute_type != UDONDNN_DATA_FLOAT ||
+      (nan_propagation != UDONDNN_NOT_PROPAGATE_NAN &&
+       nan_propagation != UDONDNN_PROPAGATE_NAN))
+    return UDONDNN_STATUS_BAD_PARAM;
+  op_tensor->operation = operation;
+  op_tensor->nan_propagation = nan_propagation;
+  op_tensor->configured = 1;
+  return UDONDNN_STATUS_SUCCESS;
+}
+
+udondnnStatus_t
+udondnnDestroyOpTensorDescriptor(udondnnOpTensorDescriptor_t descriptor) {
+  OpTensorDescriptor *op_tensor = get_op_tensor(descriptor);
+  if (!op_tensor)
+    return UDONDNN_STATUS_BAD_PARAM;
+  op_tensor->used = 0;
+  op_tensor->configured = 0;
   return UDONDNN_STATUS_SUCCESS;
 }
 
@@ -1027,5 +1103,85 @@ udondnnStatus_t udondnnBatchNormalizationForwardInference(
     return UDONDNN_STATUS_EXECUTION_FAILED;
   for (index = 0; index < words; ++index)
     output[index] = result[index];
+  return UDONDNN_STATUS_SUCCESS;
+}
+
+static int broadcasts_to(const TensorDescriptor *source,
+                         const TensorDescriptor *output) {
+  return (source->n == 1 || source->n == output->n) &&
+         (source->c == 1 || source->c == output->c) &&
+         (source->h == 1 || source->h == output->h) &&
+         (source->w == 1 || source->w == output->w);
+}
+
+udondnnStatus_t udondnnOpTensor(
+    udondnnHandle_t handle, udondnnOpTensorDescriptor_t operation_descriptor,
+    const float *alpha_a, udondnnTensorDescriptor_t a_descriptor,
+    const float *a, const float *alpha_b,
+    udondnnTensorDescriptor_t b_descriptor, const float *b, const float *beta,
+    udondnnTensorDescriptor_t c_descriptor, float *c) {
+  OpTensorDescriptor *operation_info;
+  TensorDescriptor *a_info, *b_info, *c_info;
+  int a_words, b_words, c_words, index;
+  int a_shape, b_shape, c_shape, operation, nan_propagation;
+  size_t global = UDONDNN_WORDS, local = 1;
+  cl_int cl_status;
+  if (handle != UDONDNN_HANDLE || !context)
+    return UDONDNN_STATUS_NOT_INITIALIZED;
+  operation_info = get_op_tensor(operation_descriptor);
+  a_info = get_tensor(a_descriptor);
+  b_info = get_tensor(b_descriptor);
+  c_info = get_tensor(c_descriptor);
+  if (!operation_info || !operation_info->configured || !a_info ||
+      !a_info->configured || !b_info || !b_info->configured || !c_info ||
+      !c_info->configured || !alpha_a || !a || !alpha_b || !b || !beta || !c ||
+      !broadcasts_to(a_info, c_info) || !broadcasts_to(b_info, c_info))
+    return UDONDNN_STATUS_BAD_PARAM;
+  a_words = a_info->n * a_info->c * a_info->h * a_info->w;
+  b_words = b_info->n * b_info->c * b_info->h * b_info->w;
+  c_words = c_info->n * c_info->c * c_info->h * c_info->w;
+  for (index = 0; index < UDONDNN_WORDS; ++index)
+    packed[index] = 0.0f;
+  for (index = 0; index < a_words; ++index)
+    packed[index] = a[index];
+  for (index = 0; index < b_words; ++index)
+    packed[UDONDNN_OP_TENSOR_B_OFFSET + index] = b[index];
+  for (index = 0; index < c_words; ++index)
+    packed[UDONDNN_OP_TENSOR_C_OFFSET + index] = c[index];
+  a_shape = pack_shape(a_info->n, a_info->c, a_info->h, a_info->w);
+  b_shape = pack_shape(b_info->n, b_info->c, b_info->h, b_info->w);
+  c_shape = pack_shape(c_info->n, c_info->c, c_info->h, c_info->w);
+  operation = (int)operation_info->operation;
+  nan_propagation = (int)operation_info->nan_propagation;
+
+#define SET_OP_TENSOR_ARGUMENT(slot, value)                                    \
+  do {                                                                         \
+    cl_status =                                                                \
+        clSetKernelArg(op_tensor_kernel, slot, sizeof(value), &(value));       \
+    if (cl_status != CL_SUCCESS)                                               \
+      return UDONDNN_STATUS_EXECUTION_FAILED;                                  \
+  } while (0)
+  SET_OP_TENSOR_ARGUMENT(2, a_shape);
+  SET_OP_TENSOR_ARGUMENT(3, b_shape);
+  SET_OP_TENSOR_ARGUMENT(4, c_shape);
+  SET_OP_TENSOR_ARGUMENT(5, operation);
+  SET_OP_TENSOR_ARGUMENT(6, nan_propagation);
+  SET_OP_TENSOR_ARGUMENT(7, *alpha_a);
+  SET_OP_TENSOR_ARGUMENT(8, *alpha_b);
+  SET_OP_TENSOR_ARGUMENT(9, *beta);
+#undef SET_OP_TENSOR_ARGUMENT
+
+  if (clEnqueueWriteBuffer(queue, input_buffer, CL_TRUE, 0, sizeof(packed),
+                           packed, 0, 0, 0) != CL_SUCCESS ||
+      clEnqueueNDRangeKernel(queue, op_tensor_kernel, 1, 0, &global, &local, 0,
+                             0, 0) != CL_SUCCESS ||
+      clEnqueueReadBuffer(queue, output_buffer, CL_TRUE,
+                          UDONDNN_OP_TENSOR_RESULT_OFFSET * sizeof(float),
+                          c_words * sizeof(float), result, 0, 0,
+                          0) != CL_SUCCESS ||
+      clFinish(queue) != CL_SUCCESS)
+    return UDONDNN_STATUS_EXECUTION_FAILED;
+  for (index = 0; index < c_words; ++index)
+    c[index] = result[index];
   return UDONDNN_STATUS_SUCCESS;
 }

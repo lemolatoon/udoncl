@@ -41,5 +41,9 @@ assert "batchnorm_outputs=68" in result.stdout
 assert "batchnorm_cases=4" in result.stdout
 batchnorm_error = re.search(r"batchnorm_max_error=([0-9.eE+-]+)", result.stdout)
 assert batchnorm_error and float(batchnorm_error.group(1)) < 0.0005
-assert "draws=29" in result.stdout
+assert "optensor_outputs=60" in result.stdout
+assert "optensor_cases=4" in result.stdout
+optensor_error = re.search(r"optensor_max_error=([0-9.eE+-]+)", result.stdout)
+assert optensor_error and float(optensor_error.group(1)) < 0.0005
+assert "draws=33" in result.stdout
 print(result.stdout, end="")

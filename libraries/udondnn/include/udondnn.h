@@ -14,6 +14,7 @@ typedef uint32_t udondnnFilterDescriptor_t;
 typedef uint32_t udondnnConvolutionDescriptor_t;
 typedef uint32_t udondnnActivationDescriptor_t;
 typedef uint32_t udondnnPoolingDescriptor_t;
+typedef uint32_t udondnnOpTensorDescriptor_t;
 
 typedef enum udondnnStatus_t {
   UDONDNN_STATUS_SUCCESS = 0,
@@ -67,6 +68,12 @@ typedef enum udondnnBatchNormMode_t {
   UDONDNN_BATCHNORM_SPATIAL = 1,
   UDONDNN_BATCHNORM_SPATIAL_PERSISTENT = 2
 } udondnnBatchNormMode_t;
+typedef enum udondnnOpTensorOp_t {
+  UDONDNN_OP_TENSOR_ADD = 0,
+  UDONDNN_OP_TENSOR_MUL = 1,
+  UDONDNN_OP_TENSOR_MIN = 2,
+  UDONDNN_OP_TENSOR_MAX = 3
+} udondnnOpTensorOp_t;
 
 #define UDONDNN_BN_MIN_EPSILON 1.0e-5f
 
@@ -171,6 +178,20 @@ udondnnStatus_t udondnnBatchNormalizationForwardInference(
     float *output, udondnnTensorDescriptor_t parameter_descriptor,
     const float *scale, const float *bias, const float *estimated_mean,
     const float *estimated_variance, float epsilon);
+
+udondnnStatus_t
+udondnnCreateOpTensorDescriptor(udondnnOpTensorDescriptor_t *descriptor);
+udondnnStatus_t udondnnSetOpTensorDescriptor(
+    udondnnOpTensorDescriptor_t descriptor, udondnnOpTensorOp_t operation,
+    udondnnDataType_t compute_type, udondnnNanPropagation_t nan_propagation);
+udondnnStatus_t
+udondnnDestroyOpTensorDescriptor(udondnnOpTensorDescriptor_t descriptor);
+udondnnStatus_t udondnnOpTensor(
+    udondnnHandle_t handle, udondnnOpTensorDescriptor_t operation_descriptor,
+    const float *alpha_a, udondnnTensorDescriptor_t a_descriptor,
+    const float *a, const float *alpha_b,
+    udondnnTensorDescriptor_t b_descriptor, const float *b, const float *beta,
+    udondnnTensorDescriptor_t c_descriptor, float *c);
 
 #ifdef __cplusplus
 }

@@ -21,6 +21,8 @@ extern "C" size_t udondnn_softmax_cpu_gid;
 size_t udondnn_softmax_cpu_gid;
 extern "C" size_t udondnn_batchnorm_cpu_gid;
 size_t udondnn_batchnorm_cpu_gid;
+extern "C" size_t udondnn_op_tensor_cpu_gid;
+size_t udondnn_op_tensor_cpu_gid;
 
 namespace {
 struct Case {
@@ -62,6 +64,14 @@ struct BatchNormCase {
   int n, channels, height, width;
   udondnnBatchNormMode_t mode;
   float epsilon, alpha, beta;
+  bool injectNan;
+};
+
+struct OpTensorCase {
+  std::array<int, 4> aShape, bShape, cShape;
+  udondnnOpTensorOp_t operation;
+  udondnnNanPropagation_t nanPropagation;
+  float alphaA, alphaB, beta;
   bool injectNan;
 };
 
@@ -281,19 +291,69 @@ void batchNormReference(const BatchNormCase &test,
     output[element] = test.alpha * normalized + test.beta * output[element];
   }
 }
+
+int tensorWords(const std::array<int, 4> &shape) {
+  return shape[0] * shape[1] * shape[2] * shape[3];
+}
+
+int broadcastIndex(int element, const std::array<int, 4> &source,
+                   const std::array<int, 4> &output) {
+  int x = element % output[3];
+  int y = (element / output[3]) % output[2];
+  int channel = (element / (output[3] * output[2])) % output[1];
+  int batch = element / (output[3] * output[2] * output[1]);
+  if (source[0] == 1)
+    batch = 0;
+  if (source[1] == 1)
+    channel = 0;
+  if (source[2] == 1)
+    y = 0;
+  if (source[3] == 1)
+    x = 0;
+  return ((batch * source[1] + channel) * source[2] + y) * source[3] + x;
+}
+
+void opTensorReference(const OpTensorCase &test, const std::vector<float> &a,
+                       const std::vector<float> &b, std::vector<float> &c) {
+  for (int element = 0; element < tensorWords(test.cShape); ++element) {
+    float left =
+        test.alphaA * a[broadcastIndex(element, test.aShape, test.cShape)];
+    float right =
+        test.alphaB * b[broadcastIndex(element, test.bShape, test.cShape)];
+    float combined = left + right;
+    if (test.operation == UDONDNN_OP_TENSOR_MUL)
+      combined = left * right;
+    else if (test.operation == UDONDNN_OP_TENSOR_MIN ||
+             test.operation == UDONDNN_OP_TENSOR_MAX) {
+      bool leftNan = std::isnan(left), rightNan = std::isnan(right);
+      if (test.nanPropagation == UDONDNN_PROPAGATE_NAN && (leftNan || rightNan))
+        combined = left + right;
+      else if (leftNan)
+        combined = rightNan ? 0.0f : right;
+      else if (rightNan)
+        combined = left;
+      else if (test.operation == UDONDNN_OP_TENSOR_MIN)
+        combined = std::min(left, right);
+      else
+        combined = std::max(left, right);
+    }
+    c[element] = combined + test.beta * c[element];
+  }
+}
 } // namespace
 
 int main(int argc, char **argv) {
-  if (argc != 7) {
+  if (argc != 8) {
     std::cerr << "usage: udondnn-device convolution-fragment "
                  "activation-fragment pooling-fragment softmax-fragment "
-                 "batchnorm-fragment vertex\n";
+                 "batchnorm-fragment op-tensor-fragment vertex\n";
     return 2;
   }
   try {
     native_opencl::Session session(
         deviceSource(),
-        manifestBindings(argv[1], argv[2], argv[3], argv[4], argv[5]), argv[6]);
+        manifestBindings(argv[1], argv[2], argv[3], argv[4], argv[5], argv[6]),
+        argv[7]);
     udondnnHandle_t handle = 0;
     require(udondnnCreate(&handle), UDONDNN_STATUS_SUCCESS, "udondnnCreate");
     const std::array<Case, 5> cases{{
@@ -707,6 +767,117 @@ int main(int argc, char **argv) {
     if (batchNormMaximumError > 0.0005f)
       throw std::runtime_error("UdonDNN batchnorm CPU/Device results diverged");
 
+    const std::array<OpTensorCase, 4> opTensorCases{{
+        OpTensorCase{{1, 2, 2, 3},
+                     {1, 2, 1, 1},
+                     {1, 2, 2, 3},
+                     UDONDNN_OP_TENSOR_ADD,
+                     UDONDNN_NOT_PROPAGATE_NAN,
+                     1.0f,
+                     0.75f,
+                     -0.25f,
+                     false},
+        OpTensorCase{{2, 1, 2, 2},
+                     {1, 3, 1, 2},
+                     {2, 3, 2, 2},
+                     UDONDNN_OP_TENSOR_MUL,
+                     UDONDNN_NOT_PROPAGATE_NAN,
+                     -1.0f,
+                     0.5f,
+                     0.25f,
+                     false},
+        OpTensorCase{{1, 2, 1, 3},
+                     {1, 1, 2, 1},
+                     {1, 2, 2, 3},
+                     UDONDNN_OP_TENSOR_MIN,
+                     UDONDNN_NOT_PROPAGATE_NAN,
+                     1.25f,
+                     -0.75f,
+                     0.0f,
+                     true},
+        OpTensorCase{{1, 2, 1, 3},
+                     {1, 1, 2, 1},
+                     {1, 2, 2, 3},
+                     UDONDNN_OP_TENSOR_MAX,
+                     UDONDNN_PROPAGATE_NAN,
+                     0.5f,
+                     1.5f,
+                     -0.5f,
+                     true},
+    }};
+    float opTensorMaximumError = 0.0f;
+    int opTensorOutputs = 0;
+    for (size_t caseIndex = 0; caseIndex < opTensorCases.size(); ++caseIndex) {
+      const OpTensorCase &test = opTensorCases[caseIndex];
+      std::vector<float> a(tensorWords(test.aShape));
+      std::vector<float> b(tensorWords(test.bShape));
+      std::vector<float> actual(tensorWords(test.cShape)), expected;
+      for (int index = 0; index < int(a.size()); ++index)
+        a[index] = value(index, int(caseIndex) + 127) * 2.0f;
+      for (int index = 0; index < int(b.size()); ++index)
+        b[index] = value(index, int(caseIndex) + 131) * 3.0f;
+      for (int index = 0; index < int(actual.size()); ++index)
+        actual[index] = value(index, int(caseIndex) + 137);
+      if (test.injectNan)
+        a[1] = std::numeric_limits<float>::quiet_NaN();
+      expected = actual;
+      opTensorReference(test, a, b, expected);
+
+      udondnnOpTensorDescriptor_t operationDescriptor = 0;
+      udondnnTensorDescriptor_t aDescriptor = 0, bDescriptor = 0,
+                                cDescriptor = 0;
+      require(udondnnCreateOpTensorDescriptor(&operationDescriptor),
+              UDONDNN_STATUS_SUCCESS, "create OpTensor descriptor");
+      require(udondnnSetOpTensorDescriptor(operationDescriptor, test.operation,
+                                           UDONDNN_DATA_FLOAT,
+                                           test.nanPropagation),
+              UDONDNN_STATUS_SUCCESS, "set OpTensor descriptor");
+      require(udondnnCreateTensorDescriptor(&aDescriptor),
+              UDONDNN_STATUS_SUCCESS, "create OpTensor A descriptor");
+      require(udondnnCreateTensorDescriptor(&bDescriptor),
+              UDONDNN_STATUS_SUCCESS, "create OpTensor B descriptor");
+      require(udondnnCreateTensorDescriptor(&cDescriptor),
+              UDONDNN_STATUS_SUCCESS, "create OpTensor C descriptor");
+      require(udondnnSetTensor4dDescriptor(aDescriptor, UDONDNN_TENSOR_NCHW,
+                                           UDONDNN_DATA_FLOAT, test.aShape[0],
+                                           test.aShape[1], test.aShape[2],
+                                           test.aShape[3]),
+              UDONDNN_STATUS_SUCCESS, "set OpTensor A descriptor");
+      require(udondnnSetTensor4dDescriptor(bDescriptor, UDONDNN_TENSOR_NCHW,
+                                           UDONDNN_DATA_FLOAT, test.bShape[0],
+                                           test.bShape[1], test.bShape[2],
+                                           test.bShape[3]),
+              UDONDNN_STATUS_SUCCESS, "set OpTensor B descriptor");
+      require(udondnnSetTensor4dDescriptor(cDescriptor, UDONDNN_TENSOR_NCHW,
+                                           UDONDNN_DATA_FLOAT, test.cShape[0],
+                                           test.cShape[1], test.cShape[2],
+                                           test.cShape[3]),
+              UDONDNN_STATUS_SUCCESS, "set OpTensor C descriptor");
+      require(udondnnOpTensor(handle, operationDescriptor, &test.alphaA,
+                              aDescriptor, a.data(), &test.alphaB, bDescriptor,
+                              b.data(), &test.beta, cDescriptor, actual.data()),
+              UDONDNN_STATUS_SUCCESS, "udondnnOpTensor");
+      for (int index = 0; index < int(actual.size()); ++index) {
+        if (std::isnan(expected[index]) && std::isnan(actual[index])) {
+          ++opTensorOutputs;
+          continue;
+        }
+        opTensorMaximumError = std::max(
+            opTensorMaximumError, std::abs(actual[index] - expected[index]));
+        ++opTensorOutputs;
+      }
+      require(udondnnDestroyOpTensorDescriptor(operationDescriptor),
+              UDONDNN_STATUS_SUCCESS, "destroy OpTensor descriptor");
+      require(udondnnDestroyTensorDescriptor(aDescriptor),
+              UDONDNN_STATUS_SUCCESS, "destroy OpTensor A descriptor");
+      require(udondnnDestroyTensorDescriptor(bDescriptor),
+              UDONDNN_STATUS_SUCCESS, "destroy OpTensor B descriptor");
+      require(udondnnDestroyTensorDescriptor(cDescriptor),
+              UDONDNN_STATUS_SUCCESS, "destroy OpTensor C descriptor");
+    }
+    if (opTensorMaximumError > 0.0005f)
+      throw std::runtime_error("UdonDNN OpTensor CPU/Device results diverged");
+
     udondnnTensorDescriptor_t stale = 0, replacement = 0;
     require(udondnnCreateTensorDescriptor(&stale), UDONDNN_STATUS_SUCCESS,
             "create stale descriptor");
@@ -843,6 +1014,58 @@ int main(int argc, char **argv) {
     require(udondnnDestroyTensorDescriptor(batchNormParameter),
             UDONDNN_STATUS_SUCCESS,
             "destroy invalid batchnorm parameter descriptor");
+    udondnnOpTensorDescriptor_t invalidOpTensor = 0;
+    require(udondnnCreateOpTensorDescriptor(&invalidOpTensor),
+            UDONDNN_STATUS_SUCCESS, "create invalid OpTensor descriptor");
+    require(udondnnSetOpTensorDescriptor(
+                invalidOpTensor, udondnnOpTensorOp_t(99), UDONDNN_DATA_FLOAT,
+                UDONDNN_NOT_PROPAGATE_NAN),
+            UDONDNN_STATUS_BAD_PARAM, "reject invalid OpTensor operation");
+    require(udondnnDestroyOpTensorDescriptor(invalidOpTensor),
+            UDONDNN_STATUS_SUCCESS, "destroy invalid OpTensor descriptor");
+    require(udondnnSetOpTensorDescriptor(invalidOpTensor, UDONDNN_OP_TENSOR_ADD,
+                                         UDONDNN_DATA_FLOAT,
+                                         UDONDNN_NOT_PROPAGATE_NAN),
+            UDONDNN_STATUS_BAD_PARAM, "reject stale OpTensor descriptor");
+    udondnnOpTensorDescriptor_t broadcastOpTensor = 0;
+    udondnnTensorDescriptor_t broadcastA = 0, broadcastB = 0, broadcastC = 0;
+    float broadcastAValues[2] = {1.0f, 2.0f};
+    float broadcastBValues[3] = {1.0f, 2.0f, 3.0f};
+    float broadcastCValues[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    require(udondnnCreateOpTensorDescriptor(&broadcastOpTensor),
+            UDONDNN_STATUS_SUCCESS, "create broadcast OpTensor descriptor");
+    require(udondnnSetOpTensorDescriptor(
+                broadcastOpTensor, UDONDNN_OP_TENSOR_ADD, UDONDNN_DATA_FLOAT,
+                UDONDNN_NOT_PROPAGATE_NAN),
+            UDONDNN_STATUS_SUCCESS, "set broadcast OpTensor descriptor");
+    require(udondnnCreateTensorDescriptor(&broadcastA), UDONDNN_STATUS_SUCCESS,
+            "create incompatible broadcast A");
+    require(udondnnCreateTensorDescriptor(&broadcastB), UDONDNN_STATUS_SUCCESS,
+            "create incompatible broadcast B");
+    require(udondnnCreateTensorDescriptor(&broadcastC), UDONDNN_STATUS_SUCCESS,
+            "create incompatible broadcast C");
+    require(udondnnSetTensor4dDescriptor(broadcastA, UDONDNN_TENSOR_NCHW,
+                                         UDONDNN_DATA_FLOAT, 1, 1, 1, 2),
+            UDONDNN_STATUS_SUCCESS, "set incompatible broadcast A");
+    require(udondnnSetTensor4dDescriptor(broadcastB, UDONDNN_TENSOR_NCHW,
+                                         UDONDNN_DATA_FLOAT, 1, 1, 1, 3),
+            UDONDNN_STATUS_SUCCESS, "set incompatible broadcast B");
+    require(udondnnSetTensor4dDescriptor(broadcastC, UDONDNN_TENSOR_NCHW,
+                                         UDONDNN_DATA_FLOAT, 1, 1, 1, 4),
+            UDONDNN_STATUS_SUCCESS, "set incompatible broadcast C");
+    require(udondnnOpTensor(handle, broadcastOpTensor, &one, broadcastA,
+                            broadcastAValues, &one, broadcastB,
+                            broadcastBValues, &zero, broadcastC,
+                            broadcastCValues),
+            UDONDNN_STATUS_BAD_PARAM, "reject incompatible OpTensor broadcast");
+    require(udondnnDestroyOpTensorDescriptor(broadcastOpTensor),
+            UDONDNN_STATUS_SUCCESS, "destroy broadcast OpTensor descriptor");
+    require(udondnnDestroyTensorDescriptor(broadcastA), UDONDNN_STATUS_SUCCESS,
+            "destroy incompatible broadcast A");
+    require(udondnnDestroyTensorDescriptor(broadcastB), UDONDNN_STATUS_SUCCESS,
+            "destroy incompatible broadcast B");
+    require(udondnnDestroyTensorDescriptor(broadcastC), UDONDNN_STATUS_SUCCESS,
+            "destroy incompatible broadcast C");
     require(udondnnDestroy(handle), UDONDNN_STATUS_SUCCESS, "udondnnDestroy");
     if (udoncl_cl_live_objects())
       throw std::runtime_error("OpenCL object leak");
@@ -861,6 +1084,9 @@ int main(int argc, char **argv) {
               << " batchnorm_outputs=" << batchNormOutputs
               << " batchnorm_cases=" << batchNormCases.size()
               << " batchnorm_max_error=" << batchNormMaximumError
+              << " optensor_outputs=" << opTensorOutputs
+              << " optensor_cases=" << opTensorCases.size()
+              << " optensor_max_error=" << opTensorMaximumError
               << " renderer=" << session.deviceName()
               << " draws=" << session.drawCount() << "\n";
     return 0;
