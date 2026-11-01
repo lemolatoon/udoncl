@@ -52,3 +52,10 @@ eight input channels, 5×5 filters, padding, independent stride/dilation,
 cross-correlation, and true convolution. Shape/configuration uniforms stay
 within Unity's exactly represented 24-bit integer range; convolution mode is a
 separate scalar.
+
+The `unity-udondnn-activation` stage creates a separate
+`UdonDnnActivation.prefab`. Its single fragment-parallel kernel implements
+sigmoid, ReLU, tanh, clipped ReLU, ELU, and identity with cuDNN-shaped
+alpha/beta accumulation and selectable NaN propagation. The packaged IUdonVM
+lifecycle fixture executes all six modes and both NaN policies, compares 512
+Device outputs, and removes every generated Unity asset during teardown.

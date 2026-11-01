@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -321,6 +322,140 @@ def main():
                 raise RuntimeError("refusing to replace a non-UdonDNN Unity bundle")
             shutil.rmtree(unity_bundle)
         staged.rename(unity_bundle)
+
+    activation_words = 64
+    activation_input = [
+        ((index + 5) * (19 * 11 + 7) % 31 - 15) * 0.25
+        for index in range(activation_words)
+    ]
+    activation_input[7] = math.nan
+    activation_previous = [
+        ((index + 5) * (31 * 11 + 7) % 31 - 15) * 0.0625
+        for index in range(activation_words)
+    ]
+    activation_cases = [
+        (0, 0, 0.0, 1.0, 0.0),
+        (1, 0, 0.0, 0.75, -0.25),
+        (2, 0, 0.0, -1.25, 0.5),
+        (3, 0, 0.8, 1.0, 0.125),
+        (4, 0, 1.2, 0.5, -0.5),
+        (5, 0, 0.0, -0.75, 1.0),
+        (1, 0, 0.0, 1.0, 0.0),
+        (1, 1, 0.0, 1.0, 0.0),
+    ]
+
+    def activation_reference(value, mode, nan_propagation, coefficient):
+        if math.isnan(value):
+            if nan_propagation:
+                return value
+            value = 0.0
+        if mode == 0:
+            return 1.0 / (1.0 + math.exp(-value))
+        if mode == 1:
+            return value if value > 0.0 else 0.0
+        if mode == 2:
+            return 2.0 / (1.0 + math.exp(-2.0 * value)) - 1.0
+        if mode == 3:
+            return min(coefficient, value if value > 0.0 else 0.0)
+        if mode == 4:
+            return value if value > 0.0 else coefficient * (math.exp(value) - 1.0)
+        if mode == 5:
+            return value
+        raise RuntimeError(f"unknown activation mode {mode}")
+
+    activation_reference_values = []
+    for mode, nan_propagation, coefficient, alpha, beta in activation_cases:
+        activation_reference_values.extend(
+            alpha
+            * activation_reference(value, mode, nan_propagation, coefficient)
+            + beta * previous
+            for value, previous in zip(activation_input, activation_previous)
+        )
+    activation_packed = [0.0] * 2048
+    activation_packed[:activation_words] = activation_input
+    activation_packed[512 : 512 + activation_words] = activation_previous
+    unity_activation_bundle = output / "unity-activation-bundle"
+    with tempfile.TemporaryDirectory(
+        prefix="unity-udondnn-activation-", dir=output
+    ) as staging:
+        staged = Path(staging) / "bundle"
+        (staged / "kernels").mkdir(parents=True)
+        shutil.copy2(source / "unity/activation-host.uasm", staged / "host.uasm")
+        shutil.copy2(
+            source / "unity/activation-display.shader", staged / "display.shader"
+        )
+        shutil.copy2(
+            activation_bundle / "kernels/kernel_201.shader",
+            staged / "kernels/kernel_201.shader",
+        )
+        (staged / "fixture_input.bytes").write_bytes(
+            struct.pack("<2048f", *activation_packed)
+        )
+        (staged / "fixture_reference.bytes").write_bytes(
+            struct.pack("<512f", *activation_reference_values)
+        )
+        activation_unity_manifest = {
+            "schema_version": 1,
+            "compiler_version": "0.1.0-dev",
+            "runtime_abi_version": 1,
+            "artifact_stage": "unity-udondnn-activation",
+            "ready_for_unity": True,
+            "sdk_compatibility": {"sdk_version": "3.10.5", "extern_db_hash": None},
+            "target": {
+                "host_pointer_bits": 32,
+                "device_pointer_bits": 32,
+                "endianness": "little",
+                "platform": "VRChat-PC",
+            },
+            "program": {
+                "name": "udondnn_activation",
+                "assembly": "host.uasm",
+                "display_shader": "display.shader",
+            },
+            "exports": [
+                {
+                    "id": 1,
+                    "c_symbol": "udondnnActivationForward",
+                    "udon_event": "_run",
+                    "status_slot": "",
+                    "async": False,
+                }
+            ],
+            "device": {
+                "kernels": [
+                    {
+                        "id": 201,
+                        "name": "udondnn_activation_forward",
+                        "shader": "kernels/kernel_201.shader",
+                    }
+                ]
+            },
+            "resources": [
+                {"name": "fixture_input", "kind": "bytes", "path": "fixture_input.bytes"},
+                {
+                    "name": "fixture_reference",
+                    "kind": "bytes",
+                    "path": "fixture_reference.bytes",
+                },
+            ],
+            "fixture": {
+                "tensor_shape": [1, 2, 4, 8],
+                "cases": len(activation_cases),
+            },
+        }
+        (staged / "manifest.json").write_text(
+            json.dumps(activation_unity_manifest, indent=2), encoding="utf-8"
+        )
+        if unity_activation_bundle.exists():
+            previous = json.loads(
+                (unity_activation_bundle / "manifest.json").read_text(encoding="utf-8")
+            )
+            if previous.get("artifact_stage") != "unity-udondnn-activation":
+                raise RuntimeError(
+                    "refusing to replace a non-UdonDNN activation Unity bundle"
+                )
+            shutil.rmtree(unity_activation_bundle)
+        staged.rename(unity_activation_bundle)
 
     host_ir = output / "host.ll"
     imported = output / "host.imported.mlir"
