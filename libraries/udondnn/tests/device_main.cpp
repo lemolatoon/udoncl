@@ -25,6 +25,8 @@ extern "C" size_t udondnn_op_tensor_cpu_gid;
 size_t udondnn_op_tensor_cpu_gid;
 extern "C" size_t udondnn_rms_norm_cpu_gid;
 size_t udondnn_rms_norm_cpu_gid;
+extern "C" size_t udondnn_gather_cpu_gid;
+size_t udondnn_gather_cpu_gid;
 
 namespace {
 struct Case {
@@ -345,19 +347,19 @@ void opTensorReference(const OpTensorCase &test, const std::vector<float> &a,
 } // namespace
 
 int main(int argc, char **argv) {
-  if (argc != 9) {
-    std::cerr
-        << "usage: udondnn-device convolution-fragment "
-           "activation-fragment pooling-fragment softmax-fragment "
-           "batchnorm-fragment op-tensor-fragment rmsnorm-fragment vertex\n";
+  if (argc != 10) {
+    std::cerr << "usage: udondnn-device convolution-fragment "
+                 "activation-fragment pooling-fragment softmax-fragment "
+                 "batchnorm-fragment op-tensor-fragment rmsnorm-fragment "
+                 "gather-fragment vertex\n";
     return 2;
   }
   try {
     native_opencl::Session session(deviceSource(),
                                    manifestBindings(argv[1], argv[2], argv[3],
                                                     argv[4], argv[5], argv[6],
-                                                    argv[7]),
-                                   argv[8]);
+                                                    argv[7], argv[8]),
+                                   argv[9]);
     udondnnHandle_t handle = 0;
     require(udondnnCreate(&handle), UDONDNN_STATUS_SUCCESS, "udondnnCreate");
     const std::array<Case, 5> cases{{
@@ -944,6 +946,52 @@ int main(int argc, char **argv) {
     require(udondnnDestroyTensorDescriptor(rmsOutputDescriptor),
             UDONDNN_STATUS_SUCCESS, "destroy RMS output descriptor");
 
+    udondnnTensorDescriptor_t gatherDataDescriptor = 0,
+                              gatherOutputDescriptor = 0;
+    std::vector<float> gatherData(48), gatherActual(24), gatherExpected(24);
+    const std::array<int32_t, 3> gatherIndices{{4, 1, -1}};
+    for (int index = 0; index < int(gatherData.size()); ++index)
+      gatherData[index] = value(index, 157);
+    for (int selected = 0; selected < 3; ++selected) {
+      int row = gatherIndices[selected] < 0 ? gatherIndices[selected] + 6
+                                            : gatherIndices[selected];
+      for (int column = 0; column < 8; ++column)
+        gatherExpected[selected * 8 + column] = gatherData[row * 8 + column];
+    }
+    require(udondnnCreateTensorDescriptor(&gatherDataDescriptor),
+            UDONDNN_STATUS_SUCCESS, "create Gather data descriptor");
+    require(udondnnCreateTensorDescriptor(&gatherOutputDescriptor),
+            UDONDNN_STATUS_SUCCESS, "create Gather output descriptor");
+    require(udondnnSetTensor4dDescriptor(gatherDataDescriptor,
+                                         UDONDNN_TENSOR_NCHW,
+                                         UDONDNN_DATA_FLOAT, 6, 8, 1, 1),
+            UDONDNN_STATUS_SUCCESS, "set Gather data descriptor");
+    require(udondnnSetTensor4dDescriptor(gatherOutputDescriptor,
+                                         UDONDNN_TENSOR_NCHW,
+                                         UDONDNN_DATA_FLOAT, 3, 8, 1, 1),
+            UDONDNN_STATUS_SUCCESS, "set Gather output descriptor");
+    require(
+        udondnnExtGatherForward(handle, gatherDataDescriptor, gatherData.data(),
+                                gatherIndices.data(), int(gatherIndices.size()),
+                                0, gatherOutputDescriptor, gatherActual.data()),
+        UDONDNN_STATUS_SUCCESS, "udondnnExtGatherForward");
+    float gatherMaximumError = 0.0f;
+    for (int index = 0; index < int(gatherActual.size()); ++index)
+      gatherMaximumError =
+          std::max(gatherMaximumError,
+                   std::abs(gatherActual[index] - gatherExpected[index]));
+    if (gatherMaximumError > 0.0f)
+      throw std::runtime_error("UdonDNN Gather results diverged");
+    require(
+        udondnnExtGatherForward(handle, gatherDataDescriptor, gatherData.data(),
+                                std::array<int32_t, 1>{{6}}.data(), 1, 0,
+                                gatherOutputDescriptor, gatherActual.data()),
+        UDONDNN_STATUS_BAD_PARAM, "reject out-of-range Gather index");
+    require(udondnnDestroyTensorDescriptor(gatherDataDescriptor),
+            UDONDNN_STATUS_SUCCESS, "destroy Gather data descriptor");
+    require(udondnnDestroyTensorDescriptor(gatherOutputDescriptor),
+            UDONDNN_STATUS_SUCCESS, "destroy Gather output descriptor");
+
     udondnnTensorDescriptor_t stale = 0, replacement = 0;
     require(udondnnCreateTensorDescriptor(&stale), UDONDNN_STATUS_SUCCESS,
             "create stale descriptor");
@@ -1155,6 +1203,8 @@ int main(int argc, char **argv) {
               << " optensor_max_error=" << opTensorMaximumError
               << " rmsnorm_outputs=" << rmsActual.size()
               << " rmsnorm_max_error=" << rmsMaximumError
+              << " gather_outputs=" << gatherActual.size()
+              << " gather_max_error=" << gatherMaximumError
               << " renderer=" << session.deviceName()
               << " draws=" << session.drawCount() << "\n";
     return 0;

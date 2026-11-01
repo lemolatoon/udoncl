@@ -45,6 +45,11 @@ ONNX opset-23 RMSNormalization lowers to the explicitly Udon-specific
 `udondnnExtRmsNormalizationForward` extension. The extension keeps the public
 cuDNN-compatible namespace separate from functionality absent from cuDNN
 Legacy, and currently supports normalized regions up to 512 float elements.
+Standard ONNX Gather with float32 data and int32 indices lowers to the same
+explicit extension namespace as `udondnnExtGatherForward`. This supplies the
+token-embedding operation needed to replace the fused Llama graph with a
+standard-operator graph; the current Device profile accepts tensors, indices,
+and results of at most 512 elements each, pending external-weight paging.
 
 Consumers can construct `ExecutionProviderRegistry`, register one graph
 predicate and compiler callback per provider, and pass it to `compile_model`.

@@ -31,6 +31,8 @@
 #define UDONDNN_RMS_SCALE_OFFSET 512
 #define UDONDNN_RMS_PREVIOUS_OUTPUT_OFFSET 1024
 #define UDONDNN_RMS_RESULT_OFFSET 1536
+#define UDONDNN_GATHER_INDICES_OFFSET 512
+#define UDONDNN_GATHER_RESULT_OFFSET 1024
 #define UDONDNN_HANDLE 1u
 #define UDONDNN_DESCRIPTOR_SLOTS 8
 #define UDONDNN_SLOT_MASK 255u
@@ -98,6 +100,7 @@ static cl_kernel softmax_kernel;
 static cl_kernel batchnorm_kernel;
 static cl_kernel op_tensor_kernel;
 static cl_kernel rms_norm_kernel;
+static cl_kernel gather_kernel;
 static cl_mem input_buffer;
 static cl_mem output_buffer;
 static cl_mem batchnorm_input_buffer;
@@ -185,6 +188,8 @@ get_op_tensor(udondnnOpTensorDescriptor_t descriptor) {
 }
 
 static void clear_objects(void) {
+  if (gather_kernel)
+    clReleaseKernel(gather_kernel);
   if (rms_norm_kernel)
     clReleaseKernel(rms_norm_kernel);
   if (op_tensor_kernel)
@@ -220,6 +225,7 @@ static void clear_objects(void) {
   batchnorm_kernel = 0;
   op_tensor_kernel = 0;
   rms_norm_kernel = 0;
+  gather_kernel = 0;
   program = 0;
   output_buffer = input_buffer = 0;
   batchnorm_output_buffer = batchnorm_input_buffer = 0;
@@ -323,6 +329,14 @@ udondnnStatus_t udondnnCreate(udondnnHandle_t *handle) {
           CL_SUCCESS ||
       clSetKernelArg(rms_norm_kernel, 1, sizeof(output_buffer),
                      &output_buffer) != CL_SUCCESS)
+    return execution_failure();
+  gather_kernel =
+      clCreateKernel(program, "udondnn_ext_gather_forward", &status);
+  if (status != CL_SUCCESS ||
+      clSetKernelArg(gather_kernel, 0, sizeof(input_buffer), &input_buffer) !=
+          CL_SUCCESS ||
+      clSetKernelArg(gather_kernel, 1, sizeof(output_buffer), &output_buffer) !=
+          CL_SUCCESS)
     return execution_failure();
   *handle = UDONDNN_HANDLE;
   return UDONDNN_STATUS_SUCCESS;
@@ -1260,6 +1274,85 @@ udondnnStatus_t udondnnExtRmsNormalizationForward(
       clFinish(queue) != CL_SUCCESS)
     return UDONDNN_STATUS_EXECUTION_FAILED;
   for (index = 0; index < words; ++index)
+    output[index] = result[index];
+  return UDONDNN_STATUS_SUCCESS;
+}
+
+udondnnStatus_t udondnnExtGatherForward(
+    udondnnHandle_t handle, udondnnTensorDescriptor_t data_descriptor,
+    const float *data, const int32_t *indices, int indices_count, int axis,
+    udondnnTensorDescriptor_t output_descriptor, float *output) {
+  TensorDescriptor *data_info, *output_info;
+  int dimensions[4], data_words, output_words, outer = 1, inner = 1;
+  int index, selected;
+  size_t global = UDONDNN_WORDS, local = 1;
+  cl_int status;
+  if (handle != UDONDNN_HANDLE || !context)
+    return UDONDNN_STATUS_NOT_INITIALIZED;
+  data_info = get_tensor(data_descriptor);
+  output_info = get_tensor(output_descriptor);
+  if (!data_info || !data_info->configured || !output_info ||
+      !output_info->configured || !data || !indices || indices_count <= 0 ||
+      axis < 0 || axis >= 4 || !output)
+    return UDONDNN_STATUS_BAD_PARAM;
+  dimensions[0] = data_info->n;
+  dimensions[1] = data_info->c;
+  dimensions[2] = data_info->h;
+  dimensions[3] = data_info->w;
+  for (index = 0; index < axis; ++index)
+    outer *= dimensions[index];
+  for (index = axis + 1; index < 4; ++index)
+    inner *= dimensions[index];
+  data_words = outer * dimensions[axis] * inner;
+  output_words =
+      output_info->n * output_info->c * output_info->h * output_info->w;
+  if (data_words > UDONDNN_REGION_WORDS ||
+      indices_count > UDONDNN_REGION_WORDS ||
+      output_words > UDONDNN_REGION_WORDS ||
+      output_words != outer * indices_count * inner)
+    return UDONDNN_STATUS_BAD_PARAM;
+  for (index = 0; index < indices_count; ++index) {
+    selected = indices[index];
+    if (selected < 0)
+      selected += dimensions[axis];
+    if (selected < 0 || selected >= dimensions[axis])
+      return UDONDNN_STATUS_BAD_PARAM;
+  }
+  for (index = 0; index < UDONDNN_WORDS; ++index)
+    packed[index] = 0.0f;
+  for (index = 0; index < data_words; ++index)
+    packed[index] = data[index];
+  for (index = 0; index < indices_count; ++index)
+    packed[UDONDNN_GATHER_INDICES_OFFSET + index] = (float)indices[index];
+
+#define SET_GATHER_ARGUMENT(slot, value)                                       \
+  do {                                                                         \
+    status = clSetKernelArg(gather_kernel, slot, sizeof(value), &(value));     \
+    if (status != CL_SUCCESS)                                                  \
+      return UDONDNN_STATUS_EXECUTION_FAILED;                                  \
+  } while (0)
+  SET_GATHER_ARGUMENT(2, outer);
+  SET_GATHER_ARGUMENT(3, dimensions[axis]);
+  {
+    float axis_words_float = (float)dimensions[axis];
+    SET_GATHER_ARGUMENT(4, axis_words_float);
+  }
+  SET_GATHER_ARGUMENT(5, inner);
+  SET_GATHER_ARGUMENT(6, indices_count);
+  SET_GATHER_ARGUMENT(7, output_words);
+#undef SET_GATHER_ARGUMENT
+
+  if (clEnqueueWriteBuffer(queue, input_buffer, CL_TRUE, 0, sizeof(packed),
+                           packed, 0, 0, 0) != CL_SUCCESS ||
+      clEnqueueNDRangeKernel(queue, gather_kernel, 1, 0, &global, &local, 0, 0,
+                             0) != CL_SUCCESS ||
+      clEnqueueReadBuffer(queue, output_buffer, CL_TRUE,
+                          UDONDNN_GATHER_RESULT_OFFSET * sizeof(float),
+                          output_words * sizeof(float), result, 0, 0,
+                          0) != CL_SUCCESS ||
+      clFinish(queue) != CL_SUCCESS)
+    return UDONDNN_STATUS_EXECUTION_FAILED;
+  for (index = 0; index < output_words; ++index)
     output[index] = result[index];
   return UDONDNN_STATUS_SUCCESS;
 }

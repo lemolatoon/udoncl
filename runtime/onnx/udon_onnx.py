@@ -458,6 +458,7 @@ PROVIDERS = {
     "AveragePool": "udondnnPoolingForward",
     "Softmax": "udondnnSoftmaxForward",
     "RMSNormalization": "udondnnExtRmsNormalizationForward",
+    "Gather": "udondnnExtGatherForward",
     "Flatten": "view",
     "Identity": "view",
     "Reshape": "view",
@@ -998,6 +999,20 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
                     "Udon RMSNormalization scale must cover the normalized dimensions"
                 )
             output = inputs[0]
+        elif operation == "Gather":
+            if len(inputs) != 2:
+                raise ValueError("ONNX Gather requires data and indices inputs")
+            if value_types[node["inputs"][0]] != "float32":
+                raise ValueError("Udon Gather currently requires float32 data")
+            if value_types[node["inputs"][1]] != "int32":
+                raise ValueError("Udon Gather currently requires int32 indices")
+            axis = attributes.get("axis", {"i": 0})["i"]
+            axis = axis + len(inputs[0]) if axis < 0 else axis
+            if axis < 0 or axis >= len(inputs[0]):
+                raise ValueError("Gather axis is outside the data rank")
+            output = inputs[0][:axis] + inputs[1] + inputs[0][axis + 1 :]
+            if len(output) > 4:
+                raise ValueError("Udon Gather output rank must not exceed four")
         elif operation == "AveragePool":
             image = inputs[0]
             kernel = attributes["kernel_shape"]["ints"]
@@ -1485,6 +1500,17 @@ def emit_c_host(plan: dict) -> str:
                 f"dnn, &one, {tensor_descriptors[inputs[0]]}, buffers->{names[inputs[0]]}, "
                 f"{tensor_descriptors[inputs[1]]}, buffers->{names[inputs[1]]}, "
                 f"{_c_float(epsilon)}, &zero, {tensor_descriptors[output]}, buffers->{names[output]}));"
+            )
+        elif operation == "Gather":
+            axis = _attribute(node, "axis", "i", 0)
+            if axis < 0:
+                axis += len(values[inputs[0]])
+            indices_count = math.prod(values[inputs[1]])
+            lines.append(
+                "  CHECK_DNN(udondnnExtGatherForward("
+                f"dnn, {tensor_descriptors[inputs[0]]}, buffers->{names[inputs[0]]}, "
+                f"buffers->{names[inputs[1]]}, {indices_count}, {axis}, "
+                f"{tensor_descriptors[output]}, buffers->{names[output]}));"
             )
         elif operation == "AveragePool":
             kernel = _attribute(node, "kernel_shape", "ints", None)

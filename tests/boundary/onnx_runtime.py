@@ -385,6 +385,28 @@ assert rms_plan["passes"][0]["providers"] == ["udondnnExtRmsNormalizationForward
 rms_host_c = emit_c_host(rms_plan)
 assert "udondnnExtRmsNormalizationForward(" in rms_host_c
 (output / "rms-normalization-host.c").write_text(rms_host_c, encoding="utf-8")
+
+gather_model = parse_model(
+    model_proto(
+        graph_proto(
+            "standard_embedding_gather",
+            [node_proto("Gather", ["embedding", "token_ids"], ["hidden"], "embed")],
+            [tensor_proto("embedding", [16, 8], [index * 0.03125 for index in range(128)])],
+            [value_info_proto("token_ids", [1, 4], 6)],
+            [value_info_proto("hidden", [1, 4, 8])],
+        ),
+        opset=23,
+    )
+)
+gather_plan = compile_operators(gather_model)
+assert gather_plan["execution_provider"] == "UdonOperatorExecutionProvider"
+assert gather_plan["nodes"][0]["shape"] == [1, 4, 8]
+assert gather_plan["nodes"][0]["provider"] == "udondnnExtGatherForward"
+assert gather_plan["aot"]["calls"][0]["function"] == "udondnnExtGatherForward"
+gather_host_c = emit_c_host(gather_plan)
+assert "udondnnExtGatherForward(" in gather_host_c
+assert "int32_t *" in gather_host_c
+(output / "gather-host.c").write_text(gather_host_c, encoding="utf-8")
 generated_sources = [
     output / "generic-host.c",
     output / "tiled-gemm-host.c",
@@ -393,6 +415,7 @@ generated_sources = [
     output / "attention-matmul-host.c",
     output / "llama-view-host.c",
     output / "rms-normalization-host.c",
+    output / "gather-host.c",
 ]
 syntax_command = [
     c_compiler,

@@ -87,6 +87,7 @@ def main():
     batchnorm_device = source / "device/batchnorm.cl"
     op_tensor_device = source / "device/op_tensor.cl"
     rms_norm_device = source / "device/rms_norm.cl"
+    gather_device = source / "device/gather.cl"
     convolution_text = convolution_device.read_text(encoding="utf-8")
     activation_text = activation_device.read_text(encoding="utf-8")
     pooling_text = pooling_device.read_text(encoding="utf-8")
@@ -94,6 +95,7 @@ def main():
     batchnorm_text = batchnorm_device.read_text(encoding="utf-8")
     op_tensor_text = op_tensor_device.read_text(encoding="utf-8")
     rms_norm_text = rms_norm_device.read_text(encoding="utf-8")
+    gather_text = gather_device.read_text(encoding="utf-8")
     device_text = (
         convolution_text
         + "\n"
@@ -108,6 +110,8 @@ def main():
         + op_tensor_text
         + "\n"
         + rms_norm_text
+        + "\n"
+        + gather_text
     )
     (output / "udondnn_device_source.h").write_text(
         "#define UDONDNN_DEVICE_SOURCE " + json.dumps(device_text) + "\n",
@@ -201,6 +205,9 @@ def main():
         "udondnn_ext_rms_normalization_forward",
         206,
         2048,
+    )
+    gather_bundle = emit_device(
+        "gather", gather_device, "udondnn_ext_gather_forward", 207, 2048
     )
     manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
     kernel = manifest["device"]["kernels"][0]
@@ -336,6 +343,24 @@ def main():
     )
     if '_VRC_Arg3 ("Arg3", Int)' not in rms_norm_shaderlab:
         raise RuntimeError("UdonDNN RMSNorm integer uniforms are not Unity-compatible")
+    gather_manifest = json.loads(
+        (gather_bundle / "manifest.json").read_text(encoding="utf-8")
+    )
+    gather_kernel = gather_manifest["device"]["kernels"][0]
+    if (
+        gather_kernel["name"] != "udondnn_ext_gather_forward"
+        or gather_kernel["global_size"] != [2048, 1, 1]
+        or [argument["required_bytes"] for argument in gather_kernel["args"][:2]]
+        != [8192, 8192]
+        or len(gather_kernel["args"]) != 8
+    ):
+        raise RuntimeError("UdonDNN Gather manifest does not match its packed ABI")
+    gather_fragment = gather_bundle / "kernels/kernel_207.hlsl"
+    gather_shaderlab = (gather_bundle / "kernels/kernel_207.shader").read_text(
+        encoding="utf-8"
+    )
+    if '_VRC_Arg2 ("Arg2", Int)' not in gather_shaderlab:
+        raise RuntimeError("UdonDNN Gather integer uniforms are not Unity-compatible")
     (output / "Bindings.h").write_text(
         "inline const char *deviceSource() { return "
         + json.dumps(device_text)
@@ -344,14 +369,15 @@ def main():
         + "const std::string &convolution, const std::string &activation, "
         + "const std::string &pooling, const std::string &softmax, "
         + "const std::string &batchnorm, const std::string &opTensor, "
-        + "const std::string &rmsNorm) { return {"
+        + "const std::string &rmsNorm, const std::string &gather) { return {"
         + '{200, 2048, 7, "udondnn_convolution_forward", convolution}, '
         + '{201, 2048, 6, "udondnn_activation_forward", activation}, '
         + '{202, 2048, 7, "udondnn_pooling_forward", pooling}, '
         + '{203, 2048, 5, "udondnn_softmax_forward", softmax}, '
         + '{204, 4096, 5, "udondnn_batchnorm_inference", batchnorm}, '
         + '{205, 2048, 8, "udondnn_op_tensor", opTensor}, '
-        + '{206, 2048, 5, "udondnn_ext_rms_normalization_forward", rmsNorm}}; }\n',
+        + '{206, 2048, 5, "udondnn_ext_rms_normalization_forward", rmsNorm}, '
+        + '{207, 2048, 6, "udondnn_ext_gather_forward", gather}}; }\n',
         encoding="utf-8",
     )
 
@@ -1338,6 +1364,7 @@ def main():
     batchnorm_object = output / ("batchnorm-device" + object_suffix)
     op_tensor_object = output / ("op-tensor-device" + object_suffix)
     rms_norm_object = output / ("rms-norm-device" + object_suffix)
+    gather_object = output / ("gather-device" + object_suffix)
     run([clang, *runtime_flags, "-c", native_ir, "-o", host_object])
     run(
         [
@@ -1437,6 +1464,20 @@ def main():
             rms_norm_object,
         ]
     )
+    run(
+        [
+            clang,
+            *runtime_flags,
+            "-x",
+            "c",
+            "-std=c11",
+            "-ffp-contract=off",
+            "-c",
+            gather_device,
+            "-o",
+            gather_object,
+        ]
+    )
 
     vertex = output / "fullscreen.hlsl"
     vertex.write_text(
@@ -1457,6 +1498,7 @@ def main():
                 (batchnorm_fragment, "frag", "frag"),
                 (op_tensor_fragment, "frag", "frag"),
                 (rms_norm_fragment, "frag", "frag"),
+                (gather_fragment, "frag", "frag"),
                 (vertex, "vert", "vert"),
             ]
         ):
@@ -1485,6 +1527,7 @@ def main():
             batchnorm_fragment,
             op_tensor_fragment,
             rms_norm_fragment,
+            gather_fragment,
             vertex,
         ) = compiled
 
@@ -1507,6 +1550,7 @@ def main():
             "-DUDONDNN_BATCHNORM_OBJECT=" + batchnorm_object.as_posix(),
             "-DUDONDNN_OP_TENSOR_OBJECT=" + op_tensor_object.as_posix(),
             "-DUDONDNN_RMS_NORM_OBJECT=" + rms_norm_object.as_posix(),
+            "-DUDONDNN_GATHER_OBJECT=" + gather_object.as_posix(),
             "-DUDONDNN_BINDINGS_DIR=" + output.as_posix(),
         ]
     )
@@ -1523,6 +1567,7 @@ def main():
                 batchnorm_fragment,
                 op_tensor_fragment,
                 rms_norm_fragment,
+                gather_fragment,
                 vertex,
             ]
         ),

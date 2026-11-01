@@ -201,6 +201,12 @@ udondnnStatus_t udondnnExtRmsNormalizationForward(
     float epsilon, const float *beta,
     udondnnTensorDescriptor_t output_descriptor, float *output);
 
+/* UdonDNN extension API. This operation is not part of cuDNN Legacy. */
+udondnnStatus_t udondnnExtGatherForward(
+    udondnnHandle_t handle, udondnnTensorDescriptor_t data_descriptor,
+    const float *data, const int32_t *indices, int indices_count, int axis,
+    udondnnTensorDescriptor_t output_descriptor, float *output);
+
 #ifdef __cplusplus
 }
 #endif
