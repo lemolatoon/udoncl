@@ -82,6 +82,7 @@ namespace Lemolatoon.Udoncl.Editor
         public string profile;
         public string execution_provider;
         public UdonOnnxPassInfo[] passes;
+        public UdonOnnxTextureArenaInfo texture_arena;
     }
 
     [Serializable]
@@ -91,5 +92,24 @@ namespace Lemolatoon.Udoncl.Editor
         public string kernel;
         public string[] providers;
         public int fragments;
+    }
+
+    [Serializable]
+    internal sealed class UdonOnnxTextureArenaInfo
+    {
+        public string abi;
+        public int slot_count;
+        public int total_words;
+        public int total_bytes;
+        public UdonOnnxTextureSlotInfo[] slots;
+    }
+
+    [Serializable]
+    internal sealed class UdonOnnxTextureSlotInfo
+    {
+        public int index;
+        public int capacity_words;
+        public int width;
+        public int height;
     }
 }

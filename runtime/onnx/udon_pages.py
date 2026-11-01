@@ -1046,6 +1046,7 @@ def materialize_int4_model(
             "int4_atlas_count": sum(item["atlases"] for item in artifacts),
             "int4_page_count": sum(item["pages"] for item in artifacts),
             "int4_atlas_bytes": sum(item["atlas_bytes"] for item in artifacts),
+            "texture_arena": _texture_arena_summary(plan),
             "complete_graph": len(int4_calls) == len(calls),
             "call_artifacts": artifacts,
             "unmaterialized_calls": [
@@ -1067,6 +1068,48 @@ def materialize_int4_model(
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
         raise
+
+
+def _texture_arena_summary(plan: dict) -> dict:
+    arena = plan.get("texture_arena")
+    if not isinstance(arena, dict) or arena.get("abi") != "linear-rgba32-words":
+        raise ValueError("execution plan has no supported Device texture arena")
+    slots = arena.get("slots")
+    if not isinstance(slots, list) or arena.get("slot_count") != len(slots):
+        raise ValueError("execution plan texture arena slot count is invalid")
+    summary_slots = []
+    total_words = 0
+    for index, slot in enumerate(slots):
+        if (
+            not isinstance(slot, dict)
+            or slot.get("index") != index
+            or not isinstance(slot.get("capacity_words"), int)
+            or slot["capacity_words"] <= 0
+            or slot.get("width") != min(8192, slot["capacity_words"])
+            or slot.get("height") != math.ceil(slot["capacity_words"] / 8192)
+        ):
+            raise ValueError("execution plan texture arena slot layout is invalid")
+        total_words += slot["capacity_words"]
+        summary_slots.append(
+            {
+                "index": index,
+                "capacity_words": slot["capacity_words"],
+                "width": slot["width"],
+                "height": slot["height"],
+            }
+        )
+    if (
+        arena.get("total_words") != total_words
+        or arena.get("total_bytes") != total_words * 4
+    ):
+        raise ValueError("execution plan texture arena capacity is inconsistent")
+    return {
+        "abi": arena["abi"],
+        "slot_count": len(slots),
+        "total_words": total_words,
+        "total_bytes": total_words * 4,
+        "slots": summary_slots,
+    }
 
 
 def plan_int4_model_bundle(plan: dict) -> dict:
@@ -1122,6 +1165,7 @@ def plan_int4_model_bundle(plan: dict) -> dict:
         "int4_atlas_count": sum(item["atlases"] for item in artifacts),
         "int4_page_count": sum(item["pages"] for item in artifacts),
         "int4_atlas_bytes": sum(item["atlas_bytes"] for item in artifacts),
+        "texture_arena": _texture_arena_summary(plan),
         "complete_graph": len(artifacts) == len(calls),
         "call_artifacts": artifacts,
         "unmaterialized_calls": [

@@ -96,6 +96,15 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             StringAssert.Contains("\"provider\": \"udonatenAdd\"", plan.text);
             StringAssert.Contains("\"provider\": \"udonatenRelu\"", plan.text);
             StringAssert.Contains("\"provider\": \"udonblasSgemm\"", plan.text);
+            Lemolatoon.Udoncl.UdonOnnxModelAsset modelAsset =
+                AssetDatabase.LoadAssetAtPath<Lemolatoon.Udoncl.UdonOnnxModelAsset>(
+                    GeneratedRoot + "/Models/UdonOnnxModel.asset"
+                );
+            Assert.NotNull(modelAsset);
+            Assert.AreEqual(18432, modelAsset.TextureArenaTotalWords);
+            CollectionAssert.AreEqual(new[] { 9216, 9216 }, modelAsset.TextureSlotCapacities);
+            CollectionAssert.AreEqual(new[] { 8192, 8192 }, modelAsset.TextureSlotWidths);
+            CollectionAssert.AreEqual(new[] { 2, 2 }, modelAsset.TextureSlotHeights);
         }
 
         [Test]

@@ -25,6 +25,18 @@ namespace Lemolatoon.Udoncl
         [SerializeField]
         private Material[] passMaterials;
 
+        [SerializeField]
+        private int textureArenaTotalWords;
+
+        [SerializeField]
+        private int[] textureSlotCapacities;
+
+        [SerializeField]
+        private int[] textureSlotWidths;
+
+        [SerializeField]
+        private int[] textureSlotHeights;
+
         public TextAsset Model => model;
 
         public TextAsset ExecutionPlan => executionPlan;
@@ -36,5 +48,13 @@ namespace Lemolatoon.Udoncl
         public Object HostProgram => hostProgram;
 
         public Material[] PassMaterials => passMaterials;
+
+        public int TextureArenaTotalWords => textureArenaTotalWords;
+
+        public int[] TextureSlotCapacities => textureSlotCapacities;
+
+        public int[] TextureSlotWidths => textureSlotWidths;
+
+        public int[] TextureSlotHeights => textureSlotHeights;
     }
 }

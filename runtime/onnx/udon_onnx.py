@@ -1055,6 +1055,185 @@ def _reshape_shape(source: list[int], requested: list[int], allow_zero: bool) ->
     return result
 
 
+def _linear_texture_layout(words: int) -> dict:
+    if not isinstance(words, int) or words <= 0:
+        raise ValueError("linear texture word count must be positive")
+    return {"width": min(8192, words), "height": math.ceil(words / 8192)}
+
+
+def _plan_texture_arena(
+    graph: dict,
+    calls: list[dict],
+    shapes: dict,
+    value_types: dict,
+    scratch_buffers: list[dict],
+) -> dict:
+    """Color activation lifetimes into reusable linear Device textures.
+
+    Lifetimes are deliberately inclusive. An input whose last consumer is a
+    call cannot share that call's output slot, because fragment kernels do not
+    promise safe in-place reads and writes. Shape-only views alias their source
+    and therefore consume no additional texture.
+    """
+    initializers = set(graph["initializers"])
+    graph_inputs = set(graph["inputs"])
+    graph_outputs = set(graph["outputs"])
+    aliases = {
+        call["output"]: call["inputs"][0]
+        for call in calls
+        if call.get("kind") == "view"
+    }
+
+    def root(name: str) -> str:
+        visited = set()
+        while name in aliases:
+            if name in visited:
+                raise ValueError("AOT view aliases contain a cycle")
+            visited.add(name)
+            name = aliases[name]
+        return name
+
+    lifetimes = {}
+
+    def touch(name: str, call_index: int, *, produced: bool = False):
+        physical = root(name)
+        if physical in initializers:
+            return
+        if physical not in shapes:
+            raise ValueError(f"AOT value {physical!r} has no inferred shape")
+        data_type = value_types.get(physical)
+        if data_type not in ("float32", "int32"):
+            raise ValueError(
+                f"AOT activation {physical!r} has unsupported Device type {data_type!r}"
+            )
+        start = call_index if produced else (-1 if physical in graph_inputs else call_index)
+        lifetime = lifetimes.setdefault(
+            physical,
+            {
+                "name": physical,
+                "first_call": start,
+                "last_call": call_index,
+                "words": math.prod(shapes[physical]),
+                "data_type": data_type,
+                "aliases": [],
+                "scratch": False,
+            },
+        )
+        lifetime["first_call"] = min(lifetime["first_call"], start)
+        lifetime["last_call"] = max(lifetime["last_call"], call_index)
+
+    for call_index, call in enumerate(calls):
+        if call.get("index") != call_index:
+            raise ValueError("AOT call indexes must be contiguous and topological")
+        for name in call.get("inputs", []):
+            touch(name, call_index)
+        if call.get("kind") != "view":
+            touch(call["output"], call_index, produced=True)
+
+    for name in graph_outputs:
+        physical = root(name)
+        if physical in initializers:
+            continue
+        if physical not in lifetimes:
+            touch(name, len(calls))
+        lifetimes[physical]["last_call"] = len(calls)
+
+    for alias, source in aliases.items():
+        physical = root(source)
+        if physical in lifetimes:
+            lifetimes[physical]["aliases"].append(alias)
+
+    scratch_names = set()
+    for scratch in scratch_buffers:
+        name = scratch.get("name")
+        words = scratch.get("words")
+        if not isinstance(name, str) or not name or name in scratch_names:
+            raise ValueError("scratch buffer names must be unique non-empty strings")
+        if not isinstance(words, int) or words <= 0:
+            raise ValueError("scratch buffer word counts must be positive integers")
+        if scratch.get("data_type") != "float32":
+            raise ValueError("Device scratch buffers must use float32 words")
+        suffix = "__rms_partials"
+        if not name.endswith(suffix):
+            raise ValueError("scratch buffer is not associated with an RMSNorm output")
+        output = name[: -len(suffix)]
+        matches = [call["index"] for call in calls if call.get("output") == output]
+        if len(matches) != 1:
+            raise ValueError("scratch buffer must have exactly one producing AOT call")
+        call_index = matches[0]
+        scratch_name = "$scratch:" + name
+        lifetimes[scratch_name] = {
+            "name": scratch_name,
+            "first_call": call_index,
+            "last_call": call_index,
+            "words": words,
+            "data_type": scratch.get("data_type"),
+            "aliases": [],
+            "scratch": True,
+            "public_name": name,
+        }
+        scratch_names.add(name)
+
+    slots = []
+    bindings = {}
+    ordered = sorted(
+        lifetimes.values(), key=lambda item: (item["first_call"], item["name"])
+    )
+    for lifetime in ordered:
+        reusable = [
+            (max(slot["capacity_words"], lifetime["words"]), slot["index"])
+            for slot in slots
+            if slot["last_call"] < lifetime["first_call"]
+        ]
+        if reusable:
+            _, slot_index = min(reusable)
+            slot = slots[slot_index]
+            slot["capacity_words"] = max(
+                slot["capacity_words"], lifetime["words"]
+            )
+            slot["last_call"] = lifetime["last_call"]
+        else:
+            slot_index = len(slots)
+            slot = {
+                "index": slot_index,
+                "capacity_words": lifetime["words"],
+                "last_call": lifetime["last_call"],
+                "values": [],
+            }
+            slots.append(slot)
+        public_name = lifetime.get("public_name", lifetime["name"])
+        slot["values"].append(public_name)
+        binding = {
+            "slot": slot_index,
+            "offset_words": 0,
+            "words": lifetime["words"],
+            "data_type": lifetime["data_type"],
+            "first_call": lifetime["first_call"],
+            "last_call": lifetime["last_call"],
+        }
+        bindings[public_name] = binding
+        for alias in sorted(lifetime["aliases"]):
+            bindings[alias] = {
+                **binding,
+                "words": math.prod(shapes[alias]),
+                "alias_of": lifetime["name"],
+            }
+
+    for slot in slots:
+        slot.update(_linear_texture_layout(slot["capacity_words"]))
+        del slot["last_call"]
+    total_words = sum(slot["capacity_words"] for slot in slots)
+    return {
+        "abi": "linear-rgba32-words",
+        "max_texture_width": 8192,
+        "slot_count": len(slots),
+        "total_words": total_words,
+        "total_bytes": total_words * 4,
+        "slots": slots,
+        "bindings": bindings,
+    }
+
+
 def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
     graph = model["graph"]
     shapes = {name: tensor["shape"] for name, tensor in graph["initializers"].items()}
@@ -1602,6 +1781,9 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
         if device_pass.get("phase") == "reduce"
         and device_pass["providers"] == ["udonatenRmsNorm"]
     ]
+    texture_arena = _plan_texture_arena(
+        graph, calls, shapes, value_types, scratch_buffers
+    )
     return {
         "schema_version": 1,
         "runtime": "udon-onnx",
@@ -1618,6 +1800,7 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
         "values": shapes,
         "value_types": value_types,
         "scratch_buffers": scratch_buffers,
+        "texture_arena": texture_arena,
         "initializers": {
             name: (
                 {

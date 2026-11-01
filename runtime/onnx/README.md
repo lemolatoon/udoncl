@@ -177,16 +177,19 @@ udon-onnx-page execution-plan.json . --all-calls \
 ```
 
 The model manifest records each call artifact, activation producer linkage,
-atlas/page counts, the original execution-plan hash, and every non-INT4 call
-that still needs whole-graph Host materialization. This keeps mixed
+atlas/page counts, the original execution-plan hash, the reusable Device
+texture arena, and every non-INT4 call that still needs whole-graph Host
+materialization. This keeps mixed
 UdonATen/UdonBLAS/UdonDNN ordering explicit instead of presenting a partial
 INT4 package as a complete runtime.
 
 `plan_int4_model_bundle` performs the same capacity and dependency planning
 without reading external weights. The checked Llama 3.1 8B operator plan has
 225 INT4 calls, 916,096 compact pages, 232 atlases, and 4,690,411,520 atlas
-bytes; these exact values are pinned by the boundary test before any multi-GB
-materialization is attempted.
+bytes. Its 546-call liveness analysis colors all activations, zero-copy views,
+and 65 RMSNorm partial buffers into five linear RGBA32 textures totaling
+185,600 words (742,400 bytes). These exact values are pinned by the boundary
+test before any multi-GB materialization is attempted.
 
 The packer accepts indexed or single-file safetensors in float32, float16, or
 bfloat16, validates every shape/range, converts matrix tensors to separate

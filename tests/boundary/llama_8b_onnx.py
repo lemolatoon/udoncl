@@ -146,6 +146,54 @@ assert all(
     for scratch in operator_plan["scratch_buffers"]
 )
 assert len(operator_plan["passes"]) == 3587
+texture_arena = operator_plan["texture_arena"]
+assert texture_arena["abi"] == "linear-rgba32-words"
+assert texture_arena["max_texture_width"] == 8192
+assert texture_arena["slot_count"] == 5
+assert texture_arena["total_words"] == 185600
+assert texture_arena["total_bytes"] == 742400
+assert [slot["capacity_words"] for slot in texture_arena["slots"]] == [
+    128256,
+    14336,
+    14336,
+    14336,
+    14336,
+]
+assert [
+    (slot["width"], slot["height"]) for slot in texture_arena["slots"]
+] == [(8192, 16), (8192, 2), (8192, 2), (8192, 2), (8192, 2)]
+assert texture_arena["bindings"]["hidden_state"] == {
+    "slot": 0,
+    "offset_words": 0,
+    "words": 4096,
+    "data_type": "float32",
+    "first_call": -1,
+    "last_call": 8,
+}
+assert texture_arena["bindings"]["layer.0.value_heads"]["alias_of"] == (
+    "layer.0.value"
+)
+assert texture_arena["bindings"]["layer.0.value_heads"]["slot"] == (
+    texture_arena["bindings"]["layer.0.value"]["slot"]
+)
+assert texture_arena["bindings"]["logits"]["slot"] == 0
+assert texture_arena["bindings"]["logits"]["last_call"] == 546
+for device_pass in operator_plan["passes"]:
+    assert device_pass["output"] in texture_arena["bindings"]
+    assert all(
+        name in texture_arena["bindings"] or name in operator_plan["initializers"]
+        for name in device_pass.get("inputs", [])
+    )
+for slot in texture_arena["slots"]:
+    intervals = sorted(
+        (
+            texture_arena["bindings"][name]["first_call"],
+            texture_arena["bindings"][name]["last_call"],
+            name,
+        )
+        for name in slot["values"]
+    )
+    assert all(left[1] < right[0] for left, right in zip(intervals, intervals[1:]))
 operator_q4_calls = [
     call
     for call in operator_plan["aot"]["calls"]
@@ -214,6 +262,19 @@ assert int4_bundle_plan["int4_atlas_bytes"] == (
 assert int4_bundle_plan["int4_page_count"] == 916096
 assert int4_bundle_plan["int4_atlas_count"] == 232
 assert int4_bundle_plan["int4_atlas_bytes"] == 4690411520
+assert int4_bundle_plan["texture_arena"] == {
+    "abi": "linear-rgba32-words",
+    "slot_count": 5,
+    "total_words": 185600,
+    "total_bytes": 742400,
+    "slots": [
+        {"index": 0, "capacity_words": 128256, "width": 8192, "height": 16},
+        {"index": 1, "capacity_words": 14336, "width": 8192, "height": 2},
+        {"index": 2, "capacity_words": 14336, "width": 8192, "height": 2},
+        {"index": 3, "capacity_words": 14336, "width": 8192, "height": 2},
+        {"index": 4, "capacity_words": 14336, "width": 8192, "height": 2},
+    ],
+}
 assert int4_bundle_plan["call_artifacts"][-1]["pages"] == 2004 * 32
 assert int4_bundle_plan["call_artifacts"][-1]["atlases"] == 8
 logits_uasm = emit_int4_call_uasm(operator_plan, operator_q4_calls[-1]["index"])

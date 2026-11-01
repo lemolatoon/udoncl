@@ -1352,6 +1352,55 @@ namespace Lemolatoon.Udoncl.Editor
             UdonOnnxExecutionPlan executionPlan = JsonUtility.FromJson<UdonOnnxExecutionPlan>(
                 planText.text
             );
+            int textureArenaTotalWords = 0;
+            int[] textureSlotCapacities = Array.Empty<int>();
+            int[] textureSlotWidths = Array.Empty<int>();
+            int[] textureSlotHeights = Array.Empty<int>();
+            // JsonUtility may materialize a default nested object even when an older
+            // execution plan omits the optional field, so presence must be checked
+            // against the source JSON for backward compatibility.
+            if (
+                executionPlan.texture_arena != null
+                && planText.text.IndexOf("\"texture_arena\"", StringComparison.Ordinal) >= 0
+            )
+            {
+                UdonOnnxTextureArenaInfo arena = executionPlan.texture_arena;
+                if (
+                    arena.abi != "linear-rgba32-words"
+                    || arena.slots == null
+                    || arena.slot_count != arena.slots.Length
+                    || arena.slot_count <= 0
+                )
+                    throw new InvalidDataException("ONNX texture arena header is invalid.");
+                textureSlotCapacities = new int[arena.slot_count];
+                textureSlotWidths = new int[arena.slot_count];
+                textureSlotHeights = new int[arena.slot_count];
+                long totalWords = 0;
+                for (int index = 0; index < arena.slot_count; ++index)
+                {
+                    UdonOnnxTextureSlotInfo slot = arena.slots[index];
+                    int expectedWidth = Math.Min(8192, slot.capacity_words);
+                    int expectedHeight = (slot.capacity_words + 8191) / 8192;
+                    if (
+                        slot.index != index
+                        || slot.capacity_words <= 0
+                        || slot.width != expectedWidth
+                        || slot.height != expectedHeight
+                    )
+                        throw new InvalidDataException("ONNX texture arena slot is invalid.");
+                    textureSlotCapacities[index] = slot.capacity_words;
+                    textureSlotWidths[index] = slot.width;
+                    textureSlotHeights[index] = slot.height;
+                    totalWords += slot.capacity_words;
+                }
+                if (
+                    totalWords > int.MaxValue
+                    || arena.total_words != totalWords
+                    || arena.total_bytes != totalWords * 4
+                )
+                    throw new InvalidDataException("ONNX texture arena capacity is invalid.");
+                textureArenaTotalWords = arena.total_words;
+            }
             Material[] passMaterials = new Material[executionPlan.passes.Length];
             for (int index = 0; index < executionPlan.passes.Length; ++index)
                 if (
@@ -1387,12 +1436,23 @@ namespace Lemolatoon.Udoncl.Editor
             materials.arraySize = passMaterials.Length;
             for (int index = 0; index < passMaterials.Length; ++index)
                 materials.GetArrayElementAtIndex(index).objectReferenceValue = passMaterials[index];
+            serialized.FindProperty("textureArenaTotalWords").intValue = textureArenaTotalWords;
+            SetIntArray(serialized.FindProperty("textureSlotCapacities"), textureSlotCapacities);
+            SetIntArray(serialized.FindProperty("textureSlotWidths"), textureSlotWidths);
+            SetIntArray(serialized.FindProperty("textureSlotHeights"), textureSlotHeights);
             serialized.ApplyModifiedPropertiesWithoutUndo();
             EditorUtility.SetDirty(modelAsset);
             // Later stage-specific imports refresh the AssetDatabase before the
             // transaction commits. Persist these references first so that refresh
             // cannot reload the new asset with unassigned fields.
             AssetDatabase.SaveAssetIfDirty(modelAsset);
+        }
+
+        private static void SetIntArray(SerializedProperty property, int[] values)
+        {
+            property.arraySize = values.Length;
+            for (int index = 0; index < values.Length; ++index)
+                property.GetArrayElementAtIndex(index).intValue = values[index];
         }
 
         private static UdonAssemblyProgramAsset CreateOrUpdateProgramAsset(

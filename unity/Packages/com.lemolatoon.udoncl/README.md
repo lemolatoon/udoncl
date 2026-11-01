@@ -16,6 +16,11 @@ without knowing the demo's artifact stage. Execution providers are registered in
 ONNX compiler and lower their graph or fusion into reusable UdonDNN/UdonBLAS
 Device passes.
 
+Standard-operator plans also carry a liveness-colored linear texture arena.
+The Llama 8B plan reuses five RGBA32 textures for every activation, zero-copy
+view, and RMSNorm scratch value instead of allocating one RenderTexture per
+graph value.
+
 The included Tiny Llama lifecycle fixture numerically executes the public
 Llama provider's seven-pass plan through SDK IUdonVM. The Llama 3.1 8B profile
 uses the same provider with 32 layers, Q4 ONNX external weights, KV-cache-aware

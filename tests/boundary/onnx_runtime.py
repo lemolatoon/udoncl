@@ -536,6 +536,11 @@ rl_generate = subprocess.run(
 assert rl_generate.returncode == 0, (rl_generate.stdout, rl_generate.stderr)
 rl_plan = compile_operators(parse_model(rl_model_path.read_bytes()))
 assert rl_plan["execution_provider"] == "UdonOperatorExecutionProvider"
+assert rl_plan["texture_arena"]["slot_count"] == 3
+assert rl_plan["texture_arena"]["total_words"] == 24
+assert [
+    slot["capacity_words"] for slot in rl_plan["texture_arena"]["slots"]
+] == [8, 8, 8]
 assert [item["op_type"] for item in rl_plan["nodes"]] == [
     "Gemm",
     "Add",

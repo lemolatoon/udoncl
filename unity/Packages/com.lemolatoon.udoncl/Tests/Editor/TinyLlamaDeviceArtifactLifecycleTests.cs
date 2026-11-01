@@ -133,6 +133,10 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             Assert.NotNull(modelAsset.HostProgram);
             Assert.AreEqual(7, modelAsset.PassMaterials.Length);
             CollectionAssert.AllItemsAreNotNull(modelAsset.PassMaterials);
+            Assert.AreEqual(0, modelAsset.TextureArenaTotalWords);
+            Assert.IsEmpty(modelAsset.TextureSlotCapacities);
+            Assert.IsEmpty(modelAsset.TextureSlotWidths);
+            Assert.IsEmpty(modelAsset.TextureSlotHeights);
         }
 
         [Test]
