@@ -94,7 +94,7 @@ def main():
         fragment,vertex=output/'fragment.spv',output/'vertex.spv'
     runtime_build=output/'runtime-build'
     run(['cmake','-S',root/'examples/opencl-host','-B',runtime_build,'-G','Ninja','-DCMAKE_BUILD_TYPE=Release',
-         '-DUDONCL_ORIGINAL_HOST_OBJECT='+str(original_obj),'-DUDONCL_BUILD_RUNTIME_TESTS='+('ON' if args.test_runtime else 'OFF'),'-DUDONCL_HOST_OBJECT='+str(host_obj),'-DUDONCL_ORACLE_OBJECT='+str(oracle_obj),'-DUDONCL_BINDINGS_DIR='+str(output)])
+         '-DUDONCL_ORIGINAL_HOST_OBJECT='+original_obj.as_posix(),'-DUDONCL_BUILD_RUNTIME_TESTS='+('ON' if args.test_runtime else 'OFF'),'-DUDONCL_HOST_OBJECT='+host_obj.as_posix(),'-DUDONCL_ORACLE_OBJECT='+oracle_obj.as_posix(),'-DUDONCL_BINDINGS_DIR='+output.as_posix()])
     run([sys.executable,root/'scripts/build.py','--build-dir',runtime_build])
     stdout=run([runtime_build/('opencl-host'+suffix),fragment,vertex])
     original=run([runtime_build/('opencl-host-original'+suffix),fragment,vertex])

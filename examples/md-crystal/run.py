@@ -169,8 +169,8 @@ def main():
         fragments, vertex = binaries[:2], binaries[2]
     runtime_build = output/'runtime-build'
     run(['cmake', '-S', source, '-B', runtime_build, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release',
-         '-DUDONCL_HOST_OBJECT='+str(host_obj), '-DUDONCL_DRIFT_OBJECT='+str(objects[0]),
-         '-DUDONCL_KICK_OBJECT='+str(objects[1]), '-DUDONCL_BINDINGS_DIR='+str(output)])
+         '-DUDONCL_HOST_OBJECT='+host_obj.as_posix(), '-DUDONCL_DRIFT_OBJECT='+objects[0].as_posix(),
+         '-DUDONCL_KICK_OBJECT='+objects[1].as_posix(), '-DUDONCL_BINDINGS_DIR='+output.as_posix()])
     run([sys.executable, root/'scripts/build.py', '--build-dir', runtime_build])
     executable = [str(x) for x in [runtime_build/('md-crystal'+suffix), *fragments, vertex]]
     if args.serve:

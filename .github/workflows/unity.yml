@@ -1,4 +1,4 @@
-name: Unity SDK UdonVM
+name: Unity Editor tests
 
 on:
   push:
@@ -6,10 +6,32 @@ on:
   workflow_dispatch:
 
 jobs:
-  udonasm-lowering:
+  configuration:
     if: >-
-      vars.UNITY_EDITOR_PATH != '' &&
-      vars.UDONCL_UNITY_TEST_PROJECT != '' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      UNITY_EDITOR_PATH: ${{ vars.UNITY_EDITOR_PATH }}
+      UDONCL_UNITY_TEST_PROJECT: ${{ vars.UDONCL_UNITY_TEST_PROJECT }}
+    steps:
+      - name: Require Unity runner paths
+        shell: bash
+        run: |
+          missing=0
+          if [[ -z "$UNITY_EDITOR_PATH" ]]; then
+            echo "::error::Set the repository variable UNITY_EDITOR_PATH to Unity.exe on the self-hosted runner."
+            missing=1
+          fi
+          if [[ -z "$UDONCL_UNITY_TEST_PROJECT" ]]; then
+            echo "::error::Set the repository variable UDONCL_UNITY_TEST_PROJECT to the dedicated VRChat Worlds Unity project on the self-hosted runner."
+            missing=1
+          fi
+          exit "$missing"
+
+  editor-tests:
+    needs: configuration
+    if: >-
       (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: [self-hosted, Windows, X64, unity-2022.3, vrchat-worlds]
     timeout-minutes: 60
@@ -38,18 +60,18 @@ jobs:
           python scripts/install_llvm.py --check
           cmake --preset udoncl -DVRC_ENABLE_NATIVE_FRAGMENT_TESTS=OFF
           python scripts/build.py
-      - name: Execute fresh UdonAsm lowering in Unity SDK IUdonVM
+      - name: Generate artifacts and execute all UdonCL Editor tests
         run: >-
           python scripts/unity_ci.py
           --unity "${{ vars.UNITY_EDITOR_PATH }}"
           --project "${{ vars.UDONCL_UNITY_TEST_PROJECT }}"
-      - name: Upload Unity lowering evidence
+      - name: Upload Unity Editor test evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: unity-udonvm-lowering-${{ github.run_id }}
+          name: unity-editor-tests-${{ github.run_id }}
           path: |
-            build/unity-ci/udonvm-lowering-results.xml
+            build/unity-ci/editor-test-results.xml
             build/unity-ci/unity.log
             build/unity-ci/lowering/scalar.udonasm.mlir
             build/unity-ci/lowering/scalar.uasm

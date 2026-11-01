@@ -21,7 +21,21 @@ These rules apply to the entire repository.
   finish, report exact test counts and failures, check console errors, and
   confirm that temporary test assets and directories were cleaned up.
 
-## Formatting Before Commits
+## Pre-Commit Gates
+
+- Before every commit, run the complete Unity Editor test gate through the CI
+  driver against a Unity 2022.3 project with the VRChat Worlds SDK installed:
+
+  ```text
+  python scripts/unity_ci.py --unity <Unity.exe> --project <UnityProject>
+  ```
+
+- The command must execute every test registered in the
+  `Udoncl.Editor.Tests` assembly. Do not use `--testFilter`, run only a subset,
+  accept skipped/inconclusive tests, or commit when any test fails. Confirm the
+  reported test count, zero failures, clean Unity console, and lifecycle cleanup
+  before committing.
+- Unity execution for this gate must follow the Unity MCP subagent rules above.
 
 - Immediately before every commit, run the repository formatter in write mode:
 

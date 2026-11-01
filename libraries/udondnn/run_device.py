@@ -1334,14 +1334,14 @@ def main():
             "-G",
             "Ninja",
             "-DCMAKE_BUILD_TYPE=Release",
-            "-DUDONDNN_HOST_OBJECT=" + str(host_object),
-            "-DUDONDNN_DEVICE_OBJECT=" + str(device_object),
-            "-DUDONDNN_ACTIVATION_OBJECT=" + str(activation_object),
-            "-DUDONDNN_POOLING_OBJECT=" + str(pooling_object),
-            "-DUDONDNN_SOFTMAX_OBJECT=" + str(softmax_object),
-            "-DUDONDNN_BATCHNORM_OBJECT=" + str(batchnorm_object),
-            "-DUDONDNN_OP_TENSOR_OBJECT=" + str(op_tensor_object),
-            "-DUDONDNN_BINDINGS_DIR=" + str(output),
+            "-DUDONDNN_HOST_OBJECT=" + host_object.as_posix(),
+            "-DUDONDNN_DEVICE_OBJECT=" + device_object.as_posix(),
+            "-DUDONDNN_ACTIVATION_OBJECT=" + activation_object.as_posix(),
+            "-DUDONDNN_POOLING_OBJECT=" + pooling_object.as_posix(),
+            "-DUDONDNN_SOFTMAX_OBJECT=" + softmax_object.as_posix(),
+            "-DUDONDNN_BATCHNORM_OBJECT=" + batchnorm_object.as_posix(),
+            "-DUDONDNN_OP_TENSOR_OBJECT=" + op_tensor_object.as_posix(),
+            "-DUDONDNN_BINDINGS_DIR=" + output.as_posix(),
         ]
     )
     run([sys.executable, root / "scripts/build.py", "--build-dir", runtime_build])

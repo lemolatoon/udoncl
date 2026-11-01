@@ -9,17 +9,27 @@
 #define UDONBLAS_C_OFFSET 512
 #define UDONBLAS_RESULT_OFFSET 768
 #define UDONBLAS_HANDLE 1u
+#define UDONBLAS_Q4_WORDS 8192
+#define UDONBLAS_Q4_X_OFFSET 6144
+#define UDONBLAS_Q4_Y_OFFSET 6656
+#define UDONBLAS_Q4_RESULT_OFFSET 7168
 
 static cl_context context;
 static cl_command_queue queue;
 static cl_program program;
 static cl_kernel sgemm_kernel;
+static cl_kernel q4_gemv_kernel;
 static cl_mem input_buffer;
 static cl_mem output_buffer;
+static cl_mem q4_input_buffer;
+static cl_mem q4_output_buffer;
 static float packed[UDONBLAS_WORDS];
+static float q4_packed[UDONBLAS_Q4_WORDS];
 static float result[UDONBLAS_MATRIX_WORDS];
 
 static void clear_objects(void) {
+  if (q4_gemv_kernel)
+    clReleaseKernel(q4_gemv_kernel);
   if (sgemm_kernel)
     clReleaseKernel(sgemm_kernel);
   if (program)
@@ -28,13 +38,19 @@ static void clear_objects(void) {
     clReleaseMemObject(output_buffer);
   if (input_buffer)
     clReleaseMemObject(input_buffer);
+  if (q4_output_buffer)
+    clReleaseMemObject(q4_output_buffer);
+  if (q4_input_buffer)
+    clReleaseMemObject(q4_input_buffer);
   if (queue)
     clReleaseCommandQueue(queue);
   if (context)
     clReleaseContext(context);
   sgemm_kernel = 0;
+  q4_gemv_kernel = 0;
   program = 0;
   output_buffer = input_buffer = 0;
+  q4_output_buffer = q4_input_buffer = 0;
   queue = 0;
   context = 0;
 }
@@ -70,9 +86,24 @@ udonblasStatus_t udonblasCreate(udonblasHandle_t *handle) {
       clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(packed), 0, &status);
   if (status != CL_SUCCESS)
     return execution_failure();
+  q4_input_buffer =
+      clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(q4_packed), 0, &status);
+  if (status != CL_SUCCESS)
+    return execution_failure();
+  q4_output_buffer =
+      clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(q4_packed), 0, &status);
+  if (status != CL_SUCCESS)
+    return execution_failure();
   program = clCreateProgramWithSource(context, 1, &source, 0, &status);
   if (status != CL_SUCCESS ||
       clBuildProgram(program, 0, 0, "-cl-std=CL1.2", 0, 0) != CL_SUCCESS)
+    return execution_failure();
+  q4_gemv_kernel = clCreateKernel(program, "udonblas_sgemv_q4", &status);
+  if (status != CL_SUCCESS ||
+      clSetKernelArg(q4_gemv_kernel, 0, sizeof(q4_input_buffer),
+                     &q4_input_buffer) != CL_SUCCESS ||
+      clSetKernelArg(q4_gemv_kernel, 1, sizeof(q4_output_buffer),
+                     &q4_output_buffer) != CL_SUCCESS)
     return execution_failure();
   sgemm_kernel = clCreateKernel(program, "udonblas_sgemm", &status);
   if (status != CL_SUCCESS ||
@@ -82,6 +113,66 @@ udonblasStatus_t udonblasCreate(udonblasHandle_t *handle) {
           CL_SUCCESS)
     return execution_failure();
   *handle = UDONBLAS_HANDLE;
+  return UDONBLAS_STATUS_SUCCESS;
+}
+
+udonblasStatus_t udonblasSgemvQ4(udonblasHandle_t handle, int m, int k,
+                                 const float *alpha, const float *expanded_a,
+                                 int lda, const float *x, int incx,
+                                 const float *beta, float *y, int incy) {
+  int blocks, minimum_lda, weights, index;
+  size_t global = UDONBLAS_Q4_WORDS, local = 1;
+  cl_int status;
+  if (handle != UDONBLAS_HANDLE || !context)
+    return UDONBLAS_STATUS_NOT_INITIALIZED;
+  blocks = k / UDONBLAS_Q4_BLOCK_VALUES;
+  minimum_lda = blocks * UDONBLAS_Q4_EXPANDED_BLOCK_WORDS;
+  if (m < 0 || m > UDONBLAS_Q4_GEMV_MAX_M || k <= 0 ||
+      k > UDONBLAS_Q4_GEMV_MAX_K || k % UDONBLAS_Q4_BLOCK_VALUES != 0 ||
+      !alpha || !expanded_a || !x || !beta || !y || lda < minimum_lda ||
+      incx <= 0 || incy <= 0 || (k - 1) * incx >= 512 || (m - 1) * incy >= 512)
+    return UDONBLAS_STATUS_INVALID_VALUE;
+  if (m == 0)
+    return UDONBLAS_STATUS_SUCCESS;
+  weights = lda * m;
+  if (weights > UDONBLAS_Q4_X_OFFSET)
+    return UDONBLAS_STATUS_INVALID_VALUE;
+  for (index = 0; index < UDONBLAS_Q4_WORDS; ++index)
+    q4_packed[index] = 0.0f;
+  for (index = 0; index < weights; ++index)
+    q4_packed[index] = expanded_a[index];
+  for (index = 0; index < k; ++index)
+    q4_packed[UDONBLAS_Q4_X_OFFSET + index * incx] = x[index * incx];
+  for (index = 0; index < m; ++index)
+    q4_packed[UDONBLAS_Q4_Y_OFFSET + index * incy] = y[index * incy];
+
+#define SET_Q4_ARGUMENT(slot, value)                                           \
+  do {                                                                         \
+    status = clSetKernelArg(q4_gemv_kernel, slot, sizeof(value), &(value));    \
+    if (status != CL_SUCCESS)                                                  \
+      return UDONBLAS_STATUS_EXECUTION_FAILED;                                 \
+  } while (0)
+  SET_Q4_ARGUMENT(2, m);
+  SET_Q4_ARGUMENT(3, k);
+  SET_Q4_ARGUMENT(4, lda);
+  SET_Q4_ARGUMENT(5, incx);
+  SET_Q4_ARGUMENT(6, incy);
+  SET_Q4_ARGUMENT(7, *alpha);
+  SET_Q4_ARGUMENT(8, *beta);
+#undef SET_Q4_ARGUMENT
+
+  if (clEnqueueWriteBuffer(queue, q4_input_buffer, CL_TRUE, 0,
+                           sizeof(q4_packed), q4_packed, 0, 0,
+                           0) != CL_SUCCESS ||
+      clEnqueueNDRangeKernel(queue, q4_gemv_kernel, 1, 0, &global, &local, 0, 0,
+                             0) != CL_SUCCESS ||
+      clEnqueueReadBuffer(queue, q4_output_buffer, CL_TRUE,
+                          UDONBLAS_Q4_RESULT_OFFSET * sizeof(float),
+                          m * sizeof(float), result, 0, 0, 0) != CL_SUCCESS ||
+      clFinish(queue) != CL_SUCCESS)
+    return UDONBLAS_STATUS_EXECUTION_FAILED;
+  for (index = 0; index < m; ++index)
+    y[index * incy] = result[index];
   return UDONBLAS_STATUS_SUCCESS;
 }
 

@@ -1,4 +1,4 @@
-"""Compile and execute UdonBLAS SGEMM through the UdonCL fragment backend."""
+"""Compile and execute UdonBLAS kernels through the UdonCL fragment backend."""
 
 import argparse
 import json
@@ -64,91 +64,121 @@ def main():
     mlir_translate = sdk / "bin" / ("mlir-translate" + suffix)
     runtime_flags = ["-fms-runtime-lib=dll"] if sys.platform == "win32" else []
 
-    device = source / "device/sgemm.cl"
-    device_text = device.read_text(encoding="utf-8")
+    sgemm_device = source / "device/sgemm.cl"
+    q4_device = source / "device/q4_gemv.cl"
+    device_text = (
+        sgemm_device.read_text(encoding="utf-8")
+        + "\n"
+        + q4_device.read_text(encoding="utf-8")
+    )
     (output / "udonblas_device_source.h").write_text(
         "#define UDONBLAS_DEVICE_SOURCE " + json.dumps(device_text) + "\n",
         encoding="utf-8",
     )
-    device_ir = output / "sgemm.ll"
-    run(
-        [
-            clang,
-            "-target",
-            "spir-unknown-unknown",
-            "-x",
-            "cl",
-            "-cl-std=CL1.2",
-            "-cl-kernel-arg-info",
-            "-O0",
-            "-Xclang",
-            "-disable-O0-optnone",
-            "-fomit-frame-pointer",
-            "-ffp-contract=off",
-            "-S",
-            "-emit-llvm",
-            device,
-            "-o",
-            device_ir,
-        ]
-    )
-    config = output / "sgemm.json"
-    config.write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "profile": "gather-f32",
-                "words": 1024,
-                "kernel": "udonblas_sgemm",
-                "kernel_id": 100,
-                "global_size": [1024, 1, 1],
-                "local_size": [1, 1, 1],
-                "global_offset": [0, 0, 0],
-            }
-        ),
-        encoding="utf-8",
-    )
-    bundle = output / "sgemm-bundle"
-    with tempfile.TemporaryDirectory(prefix="sgemm-", dir=output) as staging:
-        staged = Path(staging) / "bundle"
+    def compile_device_ir(device, name):
+        device_ir = output / f"{name}.ll"
         run(
             [
-                compiler,
-                "--emit-native-device-bundle",
-                config,
-                "--device-llvm",
-                device_ir,
+                clang,
+                "-target",
+                "spir-unknown-unknown",
+                "-x",
+                "cl",
+                "-cl-std=CL1.2",
+                "-cl-kernel-arg-info",
+                "-O0",
+                "-Xclang",
+                "-disable-O0-optnone",
+                "-fomit-frame-pointer",
+                "-ffp-contract=off",
+                "-S",
+                "-emit-llvm",
+                device,
                 "-o",
-                staged,
+                device_ir,
             ]
         )
-        if bundle.exists():
-            previous = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
-            if previous.get("artifact_stage") != "native-device-prototype":
-                raise RuntimeError("refusing to replace a non-UdonBLAS bundle")
-            shutil.rmtree(bundle)
-        staged.rename(bundle)
-    manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
-    kernel = manifest["device"]["kernels"][0]
-    if (
-        kernel["name"] != "udonblas_sgemm"
-        or kernel["global_size"] != [1024, 1, 1]
-        or [argument["required_bytes"] for argument in kernel["args"][:2]]
-        != [4096, 4096]
-        or len(kernel["args"]) != 12
-    ):
-        raise RuntimeError("UdonBLAS SGEMM manifest does not match its packed ABI")
+        return device_ir
+
+    sgemm_ir = compile_device_ir(sgemm_device, "sgemm")
+    q4_ir = compile_device_ir(q4_device, "q4_gemv")
+
+    def emit_kernel(name, kernel_id, words, scalar_count, device_ir):
+        config = output / f"{name}.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "profile": "gather-f32",
+                    "words": words,
+                    "kernel": name,
+                    "kernel_id": kernel_id,
+                    "global_size": [words, 1, 1],
+                    "local_size": [1, 1, 1],
+                    "global_offset": [0, 0, 0],
+                }
+            ),
+            encoding="utf-8",
+        )
+        bundle = output / f"{name}-bundle"
+        with tempfile.TemporaryDirectory(prefix=f"{name}-", dir=output) as staging:
+            staged = Path(staging) / "bundle"
+            run(
+                [
+                    compiler,
+                    "--emit-native-device-bundle",
+                    config,
+                    "--device-llvm",
+                    device_ir,
+                    "-o",
+                    staged,
+                ]
+            )
+            if bundle.exists():
+                previous = json.loads(
+                    (bundle / "manifest.json").read_text(encoding="utf-8")
+                )
+                if previous.get("artifact_stage") != "native-device-prototype":
+                    raise RuntimeError("refusing to replace a non-UdonBLAS bundle")
+                shutil.rmtree(bundle)
+            staged.rename(bundle)
+        manifest = json.loads(
+            (bundle / "manifest.json").read_text(encoding="utf-8")
+        )
+        kernel = manifest["device"]["kernels"][0]
+        if (
+            kernel["name"] != name
+            or kernel["global_size"] != [words, 1, 1]
+            or [argument["required_bytes"] for argument in kernel["args"][:2]]
+            != [words * 4, words * 4]
+            or len(kernel["args"]) != scalar_count + 2
+        ):
+            raise RuntimeError(f"UdonBLAS {name} manifest does not match its ABI")
+        return bundle
+
+    bundle = emit_kernel("udonblas_sgemm", 100, 1024, 10, sgemm_ir)
+    q4_bundle = emit_kernel("udonblas_sgemv_q4", 101, 8192, 7, q4_ir)
     fragment = bundle / "kernels/kernel_100.hlsl"
+    q4_fragment = q4_bundle / "kernels/kernel_101.hlsl"
     shaderlab = (bundle / "kernels/kernel_100.shader").read_text(encoding="utf-8")
-    if "_VRC_Arg9 (\"Arg9\", Int)" not in shaderlab or "Integer)" in shaderlab:
+    q4_shaderlab = (q4_bundle / "kernels/kernel_101.shader").read_text(
+        encoding="utf-8"
+    )
+    if (
+        "_VRC_Arg9 (\"Arg9\", Int)" not in shaderlab
+        or "_VRC_Arg6 (\"Arg6\", Int)" not in q4_shaderlab
+        or "Integer)" in shaderlab
+        or "Integer)" in q4_shaderlab
+    ):
         raise RuntimeError("UdonBLAS integer uniforms are not Unity SetInt-compatible")
     (output / "Bindings.h").write_text(
         "inline const char *deviceSource() { return "
         + json.dumps(device_text)
         + "; }\n"
         + "inline std::vector<native_opencl::GatherBinding> manifestBindings("
-        + "const std::string &fragment) { return {{100, 1024, 10, "
-        + '"udonblas_sgemm", fragment}}; }\n',
+        + "const std::string &sgemm, const std::string &q4) { return {"
+        + '{100, 1024, 10, "udonblas_sgemm", sgemm}, '
+        + '{101, 8192, 7, "udonblas_sgemv_q4", q4}}; }\n',
         encoding="utf-8",
     )
 
@@ -281,7 +311,22 @@ def main():
     host_object = output / ("host" + object_suffix)
     device_object = output / ("device" + object_suffix)
     run([clang, *runtime_flags, "-c", native_ir, "-o", host_object])
-    run([clang, *runtime_flags, "-x", "c", "-std=c11", "-ffp-contract=off", "-c", device, "-o", device_object])
+    combined_device = output / "device.cl"
+    combined_device.write_text(device_text, encoding="utf-8")
+    run(
+        [
+            clang,
+            *runtime_flags,
+            "-x",
+            "c",
+            "-std=c11",
+            "-ffp-contract=off",
+            "-c",
+            combined_device,
+            "-o",
+            device_object,
+        ]
+    )
 
     vertex = output / "fullscreen.hlsl"
     vertex.write_text(
@@ -294,12 +339,16 @@ def main():
             parser.error("install glslang-tools")
         compiled = []
         for index, (asset, stage, entry) in enumerate(
-            [(fragment, "frag", "frag"), (vertex, "vert", "vert")]
+            [
+                (fragment, "frag", "frag"),
+                (q4_fragment, "frag", "frag"),
+                (vertex, "vert", "vert"),
+            ]
         ):
             binary = output / f"shader_{index}.spv"
             run([glslang, "-D", "-V", "-S", stage, "-e", entry, "--auto-map-locations", asset, "-o", binary])
             compiled.append(binary)
-        fragment, vertex = compiled
+        fragment, q4_fragment, vertex = compiled
 
     runtime_build = output / "runtime-build"
     run(
@@ -312,14 +361,14 @@ def main():
             "-G",
             "Ninja",
             "-DCMAKE_BUILD_TYPE=Release",
-            "-DUDONBLAS_HOST_OBJECT=" + str(host_object),
-            "-DUDONBLAS_DEVICE_OBJECT=" + str(device_object),
-            "-DUDONBLAS_BINDINGS_DIR=" + str(output),
+            "-DUDONBLAS_HOST_OBJECT=" + host_object.as_posix(),
+            "-DUDONBLAS_DEVICE_OBJECT=" + device_object.as_posix(),
+            "-DUDONBLAS_BINDINGS_DIR=" + output.as_posix(),
         ]
     )
     run([sys.executable, root / "scripts/build.py", "--build-dir", runtime_build])
     executable = runtime_build / ("udonblas-device" + suffix)
-    print(run([executable, fragment, vertex]), end="")
+    print(run([executable, fragment, q4_fragment, vertex]), end="")
 
 
 if __name__ == "__main__":

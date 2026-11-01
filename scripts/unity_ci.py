@@ -1,8 +1,9 @@
-"""Generate fresh UdonAsm lowering and execute it with Unity's SDK IUdonVM."""
+"""Build Unity fixtures and run every UdonCL package Editor test in CI."""
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -11,7 +12,21 @@ import sys
 import xml.etree.ElementTree as ET
 
 
-TEST_FILTER = "Lemolatoon.Udoncl.Editor.Tests.UdonVmLoweringLifecycleTests"
+TEST_ASSEMBLY = "Udoncl.Editor.Tests"
+
+
+def tree_snapshot(root: Path):
+    if not root.exists():
+        return {}
+    snapshot = {}
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root).as_posix()
+        snapshot[relative] = (
+            "directory"
+            if path.is_dir()
+            else hashlib.sha256(path.read_bytes()).hexdigest()
+        )
+    return snapshot
 
 
 def executable(path: Path) -> Path:
@@ -45,6 +60,10 @@ def main():
     if not manifest_path.is_file():
         parser.error(f"Unity project has no Packages/manifest.json: {project}")
     output.mkdir(parents=True, exist_ok=True)
+    generated = project / "Assets/udoncl-generated"
+    serialized = project / "Assets/SerializedUdonPrograms"
+    generated_before = tree_snapshot(generated)
+    serialized_before = tree_snapshot(serialized)
     lowering = output / "lowering"
     run(
         [
@@ -55,8 +74,38 @@ def main():
             lowering,
         ]
     )
+    artifact_commands = [
+        (
+            root / "libraries/udonblas/run_device.py",
+            root / "build/udonblas-device-run",
+        ),
+        (
+            root / "libraries/udondnn/run_device.py",
+            root / "build/udondnn-device-run",
+        ),
+        (
+            root / "examples/mnist-cnn/run_device.py",
+            root / "build/mnist-cnn-device-run",
+        ),
+        (
+            root / "examples/tiny-llama/run_device.py",
+            root / "build/tiny-llama-device-run",
+        ),
+    ]
+    for generator, artifact_output in artifact_commands:
+        run(
+            [
+                sys.executable,
+                generator,
+                "--build-dir",
+                build,
+                "--output",
+                artifact_output,
+            ],
+            timeout=1200,
+        )
     assembly = (lowering / "scalar.uasm").resolve()
-    results = (output / "udonvm-lowering-results.xml").resolve()
+    results = (output / "editor-test-results.xml").resolve()
     log = (output / "unity.log").resolve()
     manifest_original = manifest_path.read_bytes()
     lock_original = lock_path.read_bytes() if lock_path.is_file() else None
@@ -73,14 +122,14 @@ def main():
             [
                 unity,
                 "-batchmode",
-                "-nographics",
+                "-force-d3d11",
                 "-projectPath",
                 project,
                 "-runTests",
                 "-testPlatform",
                 "EditMode",
-                "-testFilter",
-                TEST_FILTER,
+                "-assemblyNames",
+                TEST_ASSEMBLY,
                 "-testResults",
                 results,
                 "-logFile",
@@ -98,17 +147,37 @@ def main():
     if not results.is_file():
         raise SystemExit(f"Unity did not write test results; inspect {log}")
     test_run = ET.parse(results).getroot()
+    total = int(test_run.attrib.get("total", "-1"))
     failed = int(test_run.attrib.get("failed", "-1"))
     passed = int(test_run.attrib.get("passed", "0"))
+    skipped = int(test_run.attrib.get("skipped", "0"))
+    inconclusive = int(test_run.attrib.get("inconclusive", "0"))
     result = test_run.attrib.get("result", "")
-    if failed != 0 or passed != 6 or result not in ("Passed", "Success"):
+    if (
+        total <= 0
+        or failed != 0
+        or skipped != 0
+        or inconclusive != 0
+        or passed != total
+        or result not in ("Passed", "Success")
+    ):
         raise SystemExit(
-            f"Unity lowering fixture result={result} passed={passed} failed={failed}; inspect {results}"
+            "Unity Editor tests "
+            f"result={result} total={total} passed={passed} failed={failed} "
+            f"skipped={skipped} inconclusive={inconclusive}; inspect {results}"
         )
     leaked = project / "Library/UdonclLoweringIntegration"
     if leaked.exists():
         raise SystemExit(f"Unity lowering fixture leaked its setup directory: {leaked}")
-    print(f"unity_udonvm_lowering=passed tests={passed} cleanup=passed results={results}")
+    generated_after = tree_snapshot(generated)
+    serialized_after = tree_snapshot(serialized)
+    if generated_after != generated_before or serialized_after != serialized_before:
+        raise SystemExit(
+            "Unity Editor tests changed lifecycle-managed assets; "
+            f"generated entries {len(generated_before)} -> {len(generated_after)}, "
+            f"serialized entries {len(serialized_before)} -> {len(serialized_after)}"
+        )
+    print(f"unity_editor_tests=passed tests={passed} cleanup=passed results={results}")
 
 
 if __name__ == "__main__":

@@ -105,8 +105,8 @@ def main():
         fragment, vertex = args.output / 'fragment.spv', args.output / 'vertex.spv'
     runtime_build = args.output / 'runtime-build'
     run(['cmake', '-S', root / 'examples/native-fragment', '-B', runtime_build, '-G', 'Ninja',
-         '-DCMAKE_BUILD_TYPE=Release', '-DUDONCL_HOST_OBJECT=' + str(host_object),
-         '-DUDONCL_ORACLE_OBJECT=' + str(oracle_object), '-DUDONCL_BINDINGS_DIR=' + str(args.output)])
+         '-DCMAKE_BUILD_TYPE=Release', '-DUDONCL_HOST_OBJECT=' + host_object.as_posix(),
+         '-DUDONCL_ORACLE_OBJECT=' + oracle_object.as_posix(), '-DUDONCL_BINDINGS_DIR=' + args.output.as_posix()])
     run([sys.executable, root / 'scripts/build.py', '--build-dir', runtime_build])
     executable = runtime_build / ('native-fragment' + suffix)
     command = [executable, fragment, vertex, config['kernel_id']]

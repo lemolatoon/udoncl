@@ -1,4 +1,4 @@
-"""Run UdonBLAS SGEMM through the UdonCL Device fragment backend."""
+"""Run UdonBLAS SGEMM and quantized GEMV through the Device backend."""
 
 from pathlib import Path
 import subprocess
@@ -24,5 +24,7 @@ assert result.returncode == 0, (result.stdout, result.stderr)
 assert "udonblas_sgemm_outputs=323" in result.stdout
 assert "cases=5" in result.stdout
 assert "max_cpu_gpu_error=0" in result.stdout
-assert "draws=5" in result.stdout
+assert "q4_outputs=5" in result.stdout
+assert "q4_max_cpu_gpu_error=0" in result.stdout
+assert "draws=6" in result.stdout
 print(result.stdout, end="")

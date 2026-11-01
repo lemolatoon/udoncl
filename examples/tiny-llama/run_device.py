@@ -424,9 +424,9 @@ def main():
             "-G",
             "Ninja",
             "-DCMAKE_BUILD_TYPE=Release",
-            "-DUDONCL_HOST_OBJECT=" + str(host_object),
-            "-DUDONCL_DEVICE_OBJECT=" + str(device_object),
-            "-DUDONCL_BINDINGS_DIR=" + str(output),
+            "-DUDONCL_HOST_OBJECT=" + host_object.as_posix(),
+            "-DUDONCL_DEVICE_OBJECT=" + device_object.as_posix(),
+            "-DUDONCL_BINDINGS_DIR=" + output.as_posix(),
         ]
     )
     run([sys.executable, root / "scripts/build.py", "--build-dir", runtime_build])

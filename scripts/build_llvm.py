@@ -35,7 +35,7 @@ def main():
     if revision != LOCK['commit']:
         raise SystemExit(f'Expected LLVM {LOCK["commit"]}, found {revision}; checkout was left unchanged')
     run('cmake', '-S', source / 'llvm', '-B', build, '-G', 'Ninja',
-        '-DCMAKE_BUILD_TYPE=Release', f'-DCMAKE_INSTALL_PREFIX={prefix}',
+        '-DCMAKE_BUILD_TYPE=Release', f'-DCMAKE_INSTALL_PREFIX={prefix.as_posix()}',
         '-DLLVM_ENABLE_PROJECTS=clang;mlir', '-DLLVM_TARGETS_TO_BUILD=Native',
         '-DLLVM_ENABLE_ASSERTIONS=ON', '-DLLVM_INCLUDE_TESTS=OFF',
         '-DMLIR_INCLUDE_TESTS=OFF', '-DCLANG_INCLUDE_TESTS=OFF',
