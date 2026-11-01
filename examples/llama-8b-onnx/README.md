@@ -18,6 +18,13 @@ passes. Matrix weights use signed Q4 blocks of 32 values with one fp16 scale;
 normalization weights remain bfloat16. The resulting external payload is
 4,517,404,672 bytes before 64 KiB alignment gaps.
 
+Every quantized projection in the plan selects `udonblasSgemvQ4`. The plan
+names its weight tensor and records 64-output by 128-input tiles, including the
+number of M and K tiles and the beta=0/beta=1 accumulation contract. Attention
+score/value products remain activation-to-activation `udonblasSgemm` calls.
+This distinction lets a Unity runtime stream one compact external-weight page
+at a time without pretending Q4 tensors are ordinary float32 SGEMM inputs.
+
 The repository does not redistribute Meta weights. `weights.q4` must be
 created from a checkpoint the user is licensed to use and must match the
 generated index:

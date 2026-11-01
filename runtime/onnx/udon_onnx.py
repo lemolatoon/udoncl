@@ -569,6 +569,23 @@ def _compile_llama(model: dict) -> dict:
     tiny = architecture == "udon-tiny-llama"
     kernel_prefix = "tiny_llama" if tiny else "llama"
     first_id = 30 if tiny else 1000
+    weight_matmul_provider = "udonblasSgemm" if tiny else "udonblasSgemvQ4"
+    activation_matmul_provider = "udonblasSgemm"
+
+    def q4_matmul(weight: str, output_features: int, input_features: int) -> dict:
+        return {
+            "provider": "udonblasSgemvQ4",
+            "weight": weight,
+            "weight_format": "q4_block32",
+            "output_features": output_features,
+            "input_features": input_features,
+            "m_tile": 64,
+            "k_tile": 128,
+            "m_tiles": (output_features + 63) // 64,
+            "k_tiles": (input_features + 127) // 128,
+            "accumulation": "beta=0 for first K tile; beta=1 thereafter",
+        }
+
     passes = [
         {
             "id": first_id,
@@ -579,44 +596,102 @@ def _compile_llama(model: dict) -> dict:
         }
     ]
     operations = [
-        ("qkv", ["udondnnRmsNormalizationForward", "udonblasSgemm"]),
-        ("attention", ["udondnnSoftmaxForward", "udonblasSgemm"]),
-        ("project", ["udonblasSgemm", "udondnnOpTensor"]),
+        ("qkv", ["udondnnRmsNormalizationForward", weight_matmul_provider]),
+        ("attention", ["udondnnSoftmaxForward", activation_matmul_provider]),
+        ("project", [weight_matmul_provider, "udondnnOpTensor"]),
         (
             "ffn_up",
             [
                 "udondnnRmsNormalizationForward",
-                "udonblasSgemm",
+                weight_matmul_provider,
                 "udondnnActivationForward",
                 "udondnnOpTensor",
             ],
         ),
-        ("ffn_down", ["udonblasSgemm", "udondnnOpTensor"]),
+        ("ffn_down", [weight_matmul_provider, "udondnnOpTensor"]),
     ]
     for layer in range(config["num_hidden_layers"]):
         for operation, providers in operations:
-            passes.append(
-                {
-                    "id": first_id + len(passes),
-                    "kernel": f"{kernel_prefix}_{operation}",
-                    "layer": layer,
-                    "providers": providers,
-                    "fragments": (
-                        config["intermediate_size"]
-                        if operation == "ffn_up"
-                        else config["hidden_size"]
-                    ),
-                }
+            device_pass = {
+                "id": first_id + len(passes),
+                "kernel": f"{kernel_prefix}_{operation}",
+                "layer": layer,
+                "providers": providers,
+                "fragments": (
+                    config["intermediate_size"]
+                    if operation == "ffn_up"
+                    else config["hidden_size"]
+                ),
+            }
+            if not tiny:
+                prefix = f"model.layers.{layer}"
+                if operation == "qkv":
+                    kv = (
+                        config["hidden_size"]
+                        * config["num_key_value_heads"]
+                        // config["num_attention_heads"]
+                    )
+                    device_pass["matmuls"] = [
+                        q4_matmul(
+                            f"{prefix}.self_attn.q_proj.weight",
+                            config["hidden_size"],
+                            config["hidden_size"],
+                        ),
+                        q4_matmul(
+                            f"{prefix}.self_attn.k_proj.weight",
+                            kv,
+                            config["hidden_size"],
+                        ),
+                        q4_matmul(
+                            f"{prefix}.self_attn.v_proj.weight",
+                            kv,
+                            config["hidden_size"],
+                        ),
+                    ]
+                elif operation == "project":
+                    device_pass["matmuls"] = [
+                        q4_matmul(
+                            f"{prefix}.self_attn.o_proj.weight",
+                            config["hidden_size"],
+                            config["hidden_size"],
+                        )
+                    ]
+                elif operation == "ffn_up":
+                    device_pass["matmuls"] = [
+                        q4_matmul(
+                            f"{prefix}.mlp.gate_proj.weight",
+                            config["intermediate_size"],
+                            config["hidden_size"],
+                        ),
+                        q4_matmul(
+                            f"{prefix}.mlp.up_proj.weight",
+                            config["intermediate_size"],
+                            config["hidden_size"],
+                        ),
+                    ]
+                elif operation == "ffn_down":
+                    device_pass["matmuls"] = [
+                        q4_matmul(
+                            f"{prefix}.mlp.down_proj.weight",
+                            config["hidden_size"],
+                            config["intermediate_size"],
+                        )
+                    ]
+            passes.append(device_pass)
+    logits_pass = {
+        "id": first_id + len(passes),
+        "kernel": f"{kernel_prefix}_logits",
+        "layer": None,
+        "providers": ["udondnnRmsNormalizationForward", weight_matmul_provider],
+        "fragments": config["vocab_size"],
+    }
+    if not tiny:
+        logits_pass["matmuls"] = [
+            q4_matmul(
+                "lm_head.weight", config["vocab_size"], config["hidden_size"]
             )
-    passes.append(
-        {
-            "id": first_id + len(passes),
-            "kernel": f"{kernel_prefix}_logits",
-            "layer": None,
-            "providers": ["udondnnRmsNormalizationForward", "udonblasSgemm"],
-            "fragments": config["vocab_size"],
-        }
-    )
+        ]
+    passes.append(logits_pass)
     parameter_count = sum(item["parameters"] for item in spec)
     weight_bytes = sum(item["storage_bytes"] for item in spec)
     return {
@@ -648,6 +723,23 @@ def _compile_llama(model: dict) -> dict:
             "tensors": len(spec),
             "page_bytes": 16 * 1024 * 1024,
             "pages": (weight_bytes + 16 * 1024 * 1024 - 1) // (16 * 1024 * 1024),
+        },
+        "blas": {
+            "weight_provider": weight_matmul_provider,
+            "activation_provider": activation_matmul_provider,
+            **(
+                {
+                    "q4_tile": {
+                        "m": 64,
+                        "k": 128,
+                        "block_values": 32,
+                        "expanded_block_words": 17,
+                        "accumulator": "float32",
+                    }
+                }
+                if not tiny
+                else {}
+            ),
         },
         "initializers": {
             item["name"]: {

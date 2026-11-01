@@ -42,10 +42,37 @@ assert {item["layer"] for item in plan["passes"][1:-1]} == set(range(32))
 providers = {
     provider for device_pass in plan["passes"] for provider in device_pass["providers"]
 }
+assert "udonblasSgemvQ4" in providers
 assert "udonblasSgemm" in providers
 assert "udondnnRmsNormalizationForward" in providers
 assert "udondnnSoftmaxForward" in providers
 assert "udondnnOpTensor" in providers
+assert plan["blas"] == {
+    "weight_provider": "udonblasSgemvQ4",
+    "activation_provider": "udonblasSgemm",
+    "q4_tile": {
+        "m": 64,
+        "k": 128,
+        "block_values": 32,
+        "expanded_block_words": 17,
+        "accumulator": "float32",
+    },
+}
+matmuls = [
+    matmul
+    for device_pass in plan["passes"]
+    for matmul in device_pass.get("matmuls", [])
+]
+assert len(matmuls) == 225
+assert all(matmul["provider"] == "udonblasSgemvQ4" for matmul in matmuls)
+assert all(matmul["weight_format"] == "q4_block32" for matmul in matmuls)
+assert {matmul["weight"] for matmul in matmuls} <= set(plan["initializers"])
+q_projection = plan["passes"][1]["matmuls"][0]
+assert q_projection["weight"] == "model.layers.0.self_attn.q_proj.weight"
+assert (q_projection["m_tiles"], q_projection["k_tiles"]) == (64, 32)
+logits = plan["passes"][-1]["matmuls"][0]
+assert logits["weight"] == "lm_head.weight"
+assert (logits["m_tiles"], logits["k_tiles"]) == (2004, 32)
 
 sys.path.insert(0, str(root / "runtime/onnx"))
 from udon_onnx import external_tensor_proto, parse_model, validate_external_data  # noqa: E402
@@ -70,4 +97,4 @@ except ValueError as error:
 else:
     raise AssertionError("missing 8B external weights were accepted as executable")
 print(result.stdout, end="")
-print("llama_8b_onnx_plan=passed providers=udondnn,udonblas external_data=safe")
+print("llama_8b_onnx_plan=passed providers=udondnn,udonblas-q4 external_data=safe")

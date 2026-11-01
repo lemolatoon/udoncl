@@ -26,7 +26,10 @@ The built-in providers currently are:
 - `UdonMnistExecutionProvider` for the standard-ONNX MNIST fixture.
 - `UdonLlamaExecutionProvider` for a fused Llama decoder custom operator. Its
   tiny float32 profile is numerically executed on Device; its Llama 3.1 8B Q4
-  profile validates 291 external tensors and emits a 162-pass schedule.
+  profile validates 291 external tensors and emits a 162-pass schedule. All
+  225 quantized weight projections are assigned to `udonblasSgemvQ4` with a
+  64x128 tiling and K-tile accumulation contract; attention activation products
+  remain on `udonblasSgemm`.
 
 Consumers can construct `ExecutionProviderRegistry`, register one graph
 predicate and compiler callback per provider, and pass it to `compile_model`.
