@@ -15,6 +15,8 @@ extern "C" size_t udondnn_cpu_gid;
 size_t udondnn_cpu_gid;
 extern "C" size_t udondnn_activation_cpu_gid;
 size_t udondnn_activation_cpu_gid;
+extern "C" size_t udondnn_pooling_cpu_gid;
+size_t udondnn_pooling_cpu_gid;
 
 namespace {
 struct Case {
@@ -30,6 +32,17 @@ struct ActivationCase {
   udondnnActivationMode_t mode;
   udondnnNanPropagation_t nanPropagation;
   float coefficient, alpha, beta;
+  bool injectNan;
+};
+
+struct PoolingCase {
+  int n, channels, inputHeight, inputWidth;
+  int windowHeight, windowWidth;
+  int padHeight, padWidth;
+  int strideHeight, strideWidth;
+  udondnnPoolingMode_t mode;
+  udondnnNanPropagation_t nanPropagation;
+  float alpha, beta;
   bool injectNan;
 };
 
@@ -125,17 +138,81 @@ float activationReference(const ActivationCase &test, float input) {
   }
   throw std::runtime_error("unknown activation mode");
 }
+
+std::array<int, 4> poolingOutputShape(const PoolingCase &test) {
+  return {test.n, test.channels,
+          1 + (test.inputHeight + 2 * test.padHeight - test.windowHeight) /
+                  test.strideHeight,
+          1 + (test.inputWidth + 2 * test.padWidth - test.windowWidth) /
+                  test.strideWidth};
+}
+
+void poolingReference(const PoolingCase &test, const std::vector<float> &input,
+                      std::vector<float> &output) {
+  auto shape = poolingOutputShape(test);
+  for (int batch = 0; batch < shape[0]; ++batch)
+    for (int channel = 0; channel < shape[1]; ++channel)
+      for (int outputY = 0; outputY < shape[2]; ++outputY)
+        for (int outputX = 0; outputX < shape[3]; ++outputX) {
+          float sum = 0.0f;
+          float maximum = -std::numeric_limits<float>::max();
+          float nanValue = 0.0f;
+          int valid = 0, numeric = 0;
+          bool hasNan = false;
+          for (int kernelY = 0; kernelY < test.windowHeight; ++kernelY)
+            for (int kernelX = 0; kernelX < test.windowWidth; ++kernelX) {
+              int inputY =
+                  outputY * test.strideHeight + kernelY - test.padHeight;
+              int inputX = outputX * test.strideWidth + kernelX - test.padWidth;
+              if (inputY < 0 || inputX < 0 || inputY >= test.inputHeight ||
+                  inputX >= test.inputWidth)
+                continue;
+              int inputIndex =
+                  ((batch * test.channels + channel) * test.inputHeight +
+                   inputY) *
+                      test.inputWidth +
+                  inputX;
+              float sample = input[inputIndex];
+              ++valid;
+              if (std::isnan(sample)) {
+                if (test.nanPropagation == UDONDNN_PROPAGATE_NAN) {
+                  hasNan = true;
+                  nanValue = sample;
+                }
+                sample = 0.0f;
+              } else {
+                ++numeric;
+              }
+              sum += sample;
+              maximum = std::max(maximum, sample);
+            }
+          float pooled = maximum;
+          if (test.mode == UDONDNN_POOLING_AVERAGE_COUNT_INCLUDE_PADDING)
+            pooled = sum / float(test.windowHeight * test.windowWidth);
+          else if (test.mode == UDONDNN_POOLING_AVERAGE_COUNT_EXCLUDE_PADDING)
+            pooled = sum / float(valid);
+          else if (!numeric)
+            pooled = 0.0f;
+          if (hasNan)
+            pooled = nanValue;
+          int outputIndex =
+              ((batch * shape[1] + channel) * shape[2] + outputY) * shape[3] +
+              outputX;
+          output[outputIndex] =
+              test.alpha * pooled + test.beta * output[outputIndex];
+        }
+}
 } // namespace
 
 int main(int argc, char **argv) {
-  if (argc != 4) {
+  if (argc != 5) {
     std::cerr << "usage: udondnn-device convolution-fragment "
-                 "activation-fragment vertex\n";
+                 "activation-fragment pooling-fragment vertex\n";
     return 2;
   }
   try {
-    native_opencl::Session session(deviceSource(),
-                                   manifestBindings(argv[1], argv[2]), argv[3]);
+    native_opencl::Session session(
+        deviceSource(), manifestBindings(argv[1], argv[2], argv[3]), argv[4]);
     udondnnHandle_t handle = 0;
     require(udondnnCreate(&handle), UDONDNN_STATUS_SUCCESS, "udondnnCreate");
     const std::array<Case, 5> cases{{
@@ -321,6 +398,91 @@ int main(int argc, char **argv) {
     require(udondnnDestroyTensorDescriptor(activationOutputDescriptor),
             UDONDNN_STATUS_SUCCESS, "destroy activation output descriptor");
 
+    const std::array<PoolingCase, 6> poolingCases{{
+        {1, 2, 4, 5, 2, 3, 0, 0, 2, 2, UDONDNN_POOLING_MAX,
+         UDONDNN_NOT_PROPAGATE_NAN, 1.0f, 0.0f, false},
+        {1, 1, 5, 5, 3, 3, 1, 1, 2, 2, UDONDNN_POOLING_MAX_DETERMINISTIC,
+         UDONDNN_NOT_PROPAGATE_NAN, 0.75f, -0.25f, false},
+        {1, 2, 4, 4, 3, 3, 1, 1, 2, 2,
+         UDONDNN_POOLING_AVERAGE_COUNT_INCLUDE_PADDING,
+         UDONDNN_NOT_PROPAGATE_NAN, -1.0f, 0.5f, false},
+        {1, 2, 4, 4, 3, 3, 1, 1, 2, 2,
+         UDONDNN_POOLING_AVERAGE_COUNT_EXCLUDE_PADDING,
+         UDONDNN_NOT_PROPAGATE_NAN, 1.25f, 0.125f, false},
+        {1, 1, 4, 4, 2, 2, 0, 0, 2, 2, UDONDNN_POOLING_MAX,
+         UDONDNN_PROPAGATE_NAN, 1.0f, 0.0f, true},
+        {1, 1, 4, 4, 2, 2, 0, 0, 2, 2, UDONDNN_POOLING_MAX,
+         UDONDNN_NOT_PROPAGATE_NAN, 1.0f, 0.0f, true},
+    }};
+    float poolingMaximumError = 0.0f;
+    int poolingOutputs = 0;
+    for (size_t caseIndex = 0; caseIndex < poolingCases.size(); ++caseIndex) {
+      const PoolingCase &test = poolingCases[caseIndex];
+      auto shape = poolingOutputShape(test);
+      int inputWords =
+          test.n * test.channels * test.inputHeight * test.inputWidth;
+      int outputWords = shape[0] * shape[1] * shape[2] * shape[3];
+      std::vector<float> input(inputWords), actual(outputWords), expected;
+      for (int index = 0; index < inputWords; ++index)
+        input[index] = value(index, int(caseIndex) + 43) * 2.0f;
+      for (int index = 0; index < outputWords; ++index)
+        actual[index] = value(index, int(caseIndex) + 53);
+      if (test.injectNan)
+        input[7] = std::numeric_limits<float>::quiet_NaN();
+      expected = actual;
+      poolingReference(test, input, expected);
+
+      udondnnTensorDescriptor_t inputDescriptor = 0, outputDescriptor = 0;
+      udondnnPoolingDescriptor_t poolingDescriptor = 0;
+      require(udondnnCreateTensorDescriptor(&inputDescriptor),
+              UDONDNN_STATUS_SUCCESS, "create pooling input descriptor");
+      require(udondnnCreateTensorDescriptor(&outputDescriptor),
+              UDONDNN_STATUS_SUCCESS, "create pooling output descriptor");
+      require(udondnnCreatePoolingDescriptor(&poolingDescriptor),
+              UDONDNN_STATUS_SUCCESS, "create pooling descriptor");
+      require(udondnnSetTensor4dDescriptor(
+                  inputDescriptor, UDONDNN_TENSOR_NCHW, UDONDNN_DATA_FLOAT,
+                  test.n, test.channels, test.inputHeight, test.inputWidth),
+              UDONDNN_STATUS_SUCCESS, "set pooling input descriptor");
+      require(udondnnSetPooling2dDescriptor(
+                  poolingDescriptor, test.mode, test.nanPropagation,
+                  test.windowHeight, test.windowWidth, test.padHeight,
+                  test.padWidth, test.strideHeight, test.strideWidth),
+              UDONDNN_STATUS_SUCCESS, "set pooling descriptor");
+      int actualN = 0, actualC = 0, actualH = 0, actualW = 0;
+      require(udondnnGetPooling2dForwardOutputDim(poolingDescriptor,
+                                                  inputDescriptor, &actualN,
+                                                  &actualC, &actualH, &actualW),
+              UDONDNN_STATUS_SUCCESS, "get pooling output dimensions");
+      if (std::array<int, 4>{actualN, actualC, actualH, actualW} != shape)
+        throw std::runtime_error("incorrect pooling output dimensions");
+      require(udondnnSetTensor4dDescriptor(
+                  outputDescriptor, UDONDNN_TENSOR_NCHW, UDONDNN_DATA_FLOAT,
+                  shape[0], shape[1], shape[2], shape[3]),
+              UDONDNN_STATUS_SUCCESS, "set pooling output descriptor");
+      require(udondnnPoolingForward(handle, poolingDescriptor, &test.alpha,
+                                    inputDescriptor, input.data(), &test.beta,
+                                    outputDescriptor, actual.data()),
+              UDONDNN_STATUS_SUCCESS, "udondnnPoolingForward");
+      for (int index = 0; index < outputWords; ++index) {
+        if (std::isnan(expected[index]) && std::isnan(actual[index])) {
+          ++poolingOutputs;
+          continue;
+        }
+        poolingMaximumError = std::max(
+            poolingMaximumError, std::abs(actual[index] - expected[index]));
+        ++poolingOutputs;
+      }
+      require(udondnnDestroyPoolingDescriptor(poolingDescriptor),
+              UDONDNN_STATUS_SUCCESS, "destroy pooling descriptor");
+      require(udondnnDestroyTensorDescriptor(inputDescriptor),
+              UDONDNN_STATUS_SUCCESS, "destroy pooling input descriptor");
+      require(udondnnDestroyTensorDescriptor(outputDescriptor),
+              UDONDNN_STATUS_SUCCESS, "destroy pooling output descriptor");
+    }
+    if (poolingMaximumError > 0.0005f)
+      throw std::runtime_error("UdonDNN pooling CPU/Device results diverged");
+
     udondnnTensorDescriptor_t stale = 0, replacement = 0;
     require(udondnnCreateTensorDescriptor(&stale), UDONDNN_STATUS_SUCCESS,
             "create stale descriptor");
@@ -363,6 +525,28 @@ int main(int argc, char **argv) {
             UDONDNN_STATUS_BAD_PARAM, "reject infinite activation coefficient");
     require(udondnnDestroyActivationDescriptor(invalidActivation),
             UDONDNN_STATUS_SUCCESS, "destroy invalid activation descriptor");
+    udondnnPoolingDescriptor_t stalePooling = 0;
+    require(udondnnCreatePoolingDescriptor(&stalePooling),
+            UDONDNN_STATUS_SUCCESS, "create stale pooling descriptor");
+    require(udondnnDestroyPoolingDescriptor(stalePooling),
+            UDONDNN_STATUS_SUCCESS, "destroy stale pooling descriptor");
+    require(udondnnSetPooling2dDescriptor(stalePooling, UDONDNN_POOLING_MAX,
+                                          UDONDNN_NOT_PROPAGATE_NAN, 2, 2, 0, 0,
+                                          2, 2),
+            UDONDNN_STATUS_BAD_PARAM, "reject stale pooling descriptor");
+    udondnnPoolingDescriptor_t invalidPooling = 0;
+    require(udondnnCreatePoolingDescriptor(&invalidPooling),
+            UDONDNN_STATUS_SUCCESS, "create invalid pooling descriptor");
+    require(udondnnSetPooling2dDescriptor(invalidPooling, UDONDNN_POOLING_MAX,
+                                          UDONDNN_NOT_PROPAGATE_NAN, 6, 2, 0, 0,
+                                          1, 1),
+            UDONDNN_STATUS_BAD_PARAM, "reject oversized pooling window");
+    require(udondnnSetPooling2dDescriptor(
+                invalidPooling, udondnnPoolingMode_t(99),
+                UDONDNN_NOT_PROPAGATE_NAN, 2, 2, 0, 0, 1, 1),
+            UDONDNN_STATUS_BAD_PARAM, "reject invalid pooling mode");
+    require(udondnnDestroyPoolingDescriptor(invalidPooling),
+            UDONDNN_STATUS_SUCCESS, "destroy invalid pooling descriptor");
     require(udondnnDestroy(handle), UDONDNN_STATUS_SUCCESS, "udondnnDestroy");
     if (udoncl_cl_live_objects())
       throw std::runtime_error("OpenCL object leak");
@@ -372,6 +556,9 @@ int main(int argc, char **argv) {
               << " activation_outputs=" << activationOutputs
               << " activation_cases=" << activationCases.size()
               << " activation_max_error=" << activationMaximumError
+              << " pooling_outputs=" << poolingOutputs
+              << " pooling_cases=" << poolingCases.size()
+              << " pooling_max_error=" << poolingMaximumError
               << " renderer=" << session.deviceName()
               << " draws=" << session.drawCount() << "\n";
     return 0;

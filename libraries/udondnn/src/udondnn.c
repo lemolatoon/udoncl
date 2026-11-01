@@ -12,6 +12,9 @@
 #define UDONDNN_ACTIVATION_WORDS 2048
 #define UDONDNN_ACTIVATION_PREVIOUS_OUTPUT_OFFSET 512
 #define UDONDNN_ACTIVATION_RESULT_OFFSET 1024
+#define UDONDNN_POOLING_WORDS 2048
+#define UDONDNN_POOLING_PREVIOUS_OUTPUT_OFFSET 512
+#define UDONDNN_POOLING_RESULT_OFFSET 1024
 #define UDONDNN_HANDLE 1u
 #define UDONDNN_DESCRIPTOR_SLOTS 8
 #define UDONDNN_SLOT_MASK 255u
@@ -50,11 +53,23 @@ typedef struct ActivationDescriptor {
   float coefficient;
 } ActivationDescriptor;
 
+typedef struct PoolingDescriptor {
+  unsigned generation;
+  int used;
+  int configured;
+  udondnnPoolingMode_t mode;
+  udondnnNanPropagation_t nan_propagation;
+  int window_h, window_w;
+  int pad_h, pad_w;
+  int stride_h, stride_w;
+} PoolingDescriptor;
+
 static cl_context context;
 static cl_command_queue queue;
 static cl_program program;
 static cl_kernel convolution_kernel;
 static cl_kernel activation_kernel;
+static cl_kernel pooling_kernel;
 static cl_mem input_buffer;
 static cl_mem output_buffer;
 static float packed[UDONDNN_WORDS];
@@ -63,6 +78,7 @@ static TensorDescriptor tensors[UDONDNN_DESCRIPTOR_SLOTS];
 static FilterDescriptor filters[UDONDNN_DESCRIPTOR_SLOTS];
 static ConvolutionDescriptor convolutions[UDONDNN_DESCRIPTOR_SLOTS];
 static ActivationDescriptor activations[UDONDNN_DESCRIPTOR_SLOTS];
+static PoolingDescriptor poolings[UDONDNN_DESCRIPTOR_SLOTS];
 
 static unsigned next_generation(unsigned generation) {
   generation = (generation + 1u) & UDONDNN_GENERATION_MASK;
@@ -117,7 +133,18 @@ get_activation(udondnnActivationDescriptor_t descriptor) {
   return &activations[slot];
 }
 
+static PoolingDescriptor *get_pooling(udondnnPoolingDescriptor_t descriptor) {
+  unsigned generation;
+  int slot = descriptor_slot(descriptor, &generation);
+  if (slot < 0 || !poolings[slot].used ||
+      poolings[slot].generation != generation)
+    return 0;
+  return &poolings[slot];
+}
+
 static void clear_objects(void) {
+  if (pooling_kernel)
+    clReleaseKernel(pooling_kernel);
   if (activation_kernel)
     clReleaseKernel(activation_kernel);
   if (convolution_kernel)
@@ -134,6 +161,7 @@ static void clear_objects(void) {
     clReleaseContext(context);
   convolution_kernel = 0;
   activation_kernel = 0;
+  pooling_kernel = 0;
   program = 0;
   output_buffer = input_buffer = 0;
   queue = 0;
@@ -190,6 +218,13 @@ udondnnStatus_t udondnnCreate(udondnnHandle_t *handle) {
       clSetKernelArg(activation_kernel, 0, sizeof(input_buffer),
                      &input_buffer) != CL_SUCCESS ||
       clSetKernelArg(activation_kernel, 1, sizeof(output_buffer),
+                     &output_buffer) != CL_SUCCESS)
+    return execution_failure();
+  pooling_kernel = clCreateKernel(program, "udondnn_pooling_forward", &status);
+  if (status != CL_SUCCESS ||
+      clSetKernelArg(pooling_kernel, 0, sizeof(input_buffer), &input_buffer) !=
+          CL_SUCCESS ||
+      clSetKernelArg(pooling_kernel, 1, sizeof(output_buffer),
                      &output_buffer) != CL_SUCCESS)
     return execution_failure();
   *handle = UDONDNN_HANDLE;
@@ -386,6 +421,60 @@ udondnnDestroyActivationDescriptor(udondnnActivationDescriptor_t descriptor) {
     return UDONDNN_STATUS_BAD_PARAM;
   activation->used = 0;
   activation->configured = 0;
+  return UDONDNN_STATUS_SUCCESS;
+}
+
+udondnnStatus_t
+udondnnCreatePoolingDescriptor(udondnnPoolingDescriptor_t *descriptor) {
+  int slot;
+  if (!descriptor)
+    return UDONDNN_STATUS_BAD_PARAM;
+  for (slot = 0; slot < UDONDNN_DESCRIPTOR_SLOTS; ++slot)
+    if (!poolings[slot].used) {
+      poolings[slot].generation = next_generation(poolings[slot].generation);
+      poolings[slot].used = 1;
+      poolings[slot].configured = 0;
+      *descriptor = make_descriptor(poolings[slot].generation, (unsigned)slot);
+      return UDONDNN_STATUS_SUCCESS;
+    }
+  return UDONDNN_STATUS_ALLOC_FAILED;
+}
+
+udondnnStatus_t udondnnSetPooling2dDescriptor(
+    udondnnPoolingDescriptor_t descriptor, udondnnPoolingMode_t mode,
+    udondnnNanPropagation_t nan_propagation, int window_height,
+    int window_width, int vertical_padding, int horizontal_padding,
+    int vertical_stride, int horizontal_stride) {
+  PoolingDescriptor *pooling = get_pooling(descriptor);
+  if (!pooling || mode < UDONDNN_POOLING_MAX ||
+      mode > UDONDNN_POOLING_MAX_DETERMINISTIC ||
+      (nan_propagation != UDONDNN_NOT_PROPAGATE_NAN &&
+       nan_propagation != UDONDNN_PROPAGATE_NAN) ||
+      window_height <= 0 || window_height > 5 || window_width <= 0 ||
+      window_width > 5 || vertical_padding < 0 || horizontal_padding < 0 ||
+      vertical_padding * 2 >= window_height ||
+      horizontal_padding * 2 >= window_width || vertical_stride <= 0 ||
+      vertical_stride > 15 || horizontal_stride <= 0 || horizontal_stride > 15)
+    return UDONDNN_STATUS_BAD_PARAM;
+  pooling->mode = mode;
+  pooling->nan_propagation = nan_propagation;
+  pooling->window_h = window_height;
+  pooling->window_w = window_width;
+  pooling->pad_h = vertical_padding;
+  pooling->pad_w = horizontal_padding;
+  pooling->stride_h = vertical_stride;
+  pooling->stride_w = horizontal_stride;
+  pooling->configured = 1;
+  return UDONDNN_STATUS_SUCCESS;
+}
+
+udondnnStatus_t
+udondnnDestroyPoolingDescriptor(udondnnPoolingDescriptor_t descriptor) {
+  PoolingDescriptor *pooling = get_pooling(descriptor);
+  if (!pooling)
+    return UDONDNN_STATUS_BAD_PARAM;
+  pooling->used = 0;
+  pooling->configured = 0;
   return UDONDNN_STATUS_SUCCESS;
 }
 
@@ -616,6 +705,111 @@ udondnnStatus_t udondnnActivationForward(
       clFinish(queue) != CL_SUCCESS)
     return UDONDNN_STATUS_EXECUTION_FAILED;
   for (index = 0; index < words; ++index)
+    output[index] = result[index];
+  return UDONDNN_STATUS_SUCCESS;
+}
+
+static udondnnStatus_t
+pooling_output_dimensions(const PoolingDescriptor *pooling,
+                          const TensorDescriptor *input, int *n, int *c, int *h,
+                          int *w) {
+  int numerator_h, numerator_w;
+  if (!pooling || !pooling->configured || !input || !input->configured)
+    return UDONDNN_STATUS_BAD_PARAM;
+  numerator_h = input->h + 2 * pooling->pad_h - pooling->window_h;
+  numerator_w = input->w + 2 * pooling->pad_w - pooling->window_w;
+  if (numerator_h < 0 || numerator_w < 0)
+    return UDONDNN_STATUS_BAD_PARAM;
+  *n = input->n;
+  *c = input->c;
+  *h = 1 + numerator_h / pooling->stride_h;
+  *w = 1 + numerator_w / pooling->stride_w;
+  if (*n > 15 || *c > 15 || *h > 15 || *w > 15 ||
+      *n * *c * *h * *w > UDONDNN_CONV_MAX_OUTPUT_WORDS)
+    return UDONDNN_STATUS_NOT_SUPPORTED;
+  return UDONDNN_STATUS_SUCCESS;
+}
+
+udondnnStatus_t udondnnGetPooling2dForwardOutputDim(
+    udondnnPoolingDescriptor_t pooling_descriptor,
+    udondnnTensorDescriptor_t input_descriptor, int *n, int *c, int *h,
+    int *w) {
+  if (!n || !c || !h || !w)
+    return UDONDNN_STATUS_BAD_PARAM;
+  return pooling_output_dimensions(get_pooling(pooling_descriptor),
+                                   get_tensor(input_descriptor), n, c, h, w);
+}
+
+udondnnStatus_t udondnnPoolingForward(
+    udondnnHandle_t handle, udondnnPoolingDescriptor_t pooling_descriptor,
+    const float *alpha, udondnnTensorDescriptor_t input_descriptor,
+    const float *input, const float *beta,
+    udondnnTensorDescriptor_t output_descriptor, float *output) {
+  PoolingDescriptor *pooling;
+  TensorDescriptor *input_info, *output_info;
+  int n, c, h, w, input_words, output_words, index;
+  int input_shape, pooling_shape, pooling_mode, nan_propagation, output_shape;
+  size_t global = UDONDNN_POOLING_WORDS, local = 1;
+  cl_int cl_status;
+  udondnnStatus_t status;
+  if (handle != UDONDNN_HANDLE || !context)
+    return UDONDNN_STATUS_NOT_INITIALIZED;
+  pooling = get_pooling(pooling_descriptor);
+  input_info = get_tensor(input_descriptor);
+  output_info = get_tensor(output_descriptor);
+  if (!alpha || !input || !beta || !output || !output_info ||
+      !output_info->configured)
+    return UDONDNN_STATUS_BAD_PARAM;
+  status = pooling_output_dimensions(pooling, input_info, &n, &c, &h, &w);
+  if (status != UDONDNN_STATUS_SUCCESS)
+    return status;
+  if (output_info->n != n || output_info->c != c || output_info->h != h ||
+      output_info->w != w)
+    return UDONDNN_STATUS_BAD_PARAM;
+  input_words = input_info->n * input_info->c * input_info->h * input_info->w;
+  output_words = n * c * h * w;
+  for (index = 0; index < UDONDNN_WORDS; ++index)
+    packed[index] = 0.0f;
+  for (index = 0; index < input_words; ++index)
+    packed[index] = input[index];
+  for (index = 0; index < output_words; ++index)
+    packed[UDONDNN_POOLING_PREVIOUS_OUTPUT_OFFSET + index] = output[index];
+
+  input_shape =
+      pack_shape(input_info->n, input_info->c, input_info->h, input_info->w);
+  pooling_shape = pooling->window_h | (pooling->window_w << 4) |
+                  (pooling->pad_h << 8) | (pooling->pad_w << 12) |
+                  (pooling->stride_h << 16) | (pooling->stride_w << 20);
+  pooling_mode = (int)pooling->mode;
+  nan_propagation = (int)pooling->nan_propagation;
+  output_shape = pack_shape(n, c, h, w);
+
+#define SET_POOLING_ARGUMENT(slot, value)                                      \
+  do {                                                                         \
+    cl_status = clSetKernelArg(pooling_kernel, slot, sizeof(value), &(value)); \
+    if (cl_status != CL_SUCCESS)                                               \
+      return UDONDNN_STATUS_EXECUTION_FAILED;                                  \
+  } while (0)
+  SET_POOLING_ARGUMENT(2, input_shape);
+  SET_POOLING_ARGUMENT(3, pooling_shape);
+  SET_POOLING_ARGUMENT(4, pooling_mode);
+  SET_POOLING_ARGUMENT(5, nan_propagation);
+  SET_POOLING_ARGUMENT(6, output_shape);
+  SET_POOLING_ARGUMENT(7, *alpha);
+  SET_POOLING_ARGUMENT(8, *beta);
+#undef SET_POOLING_ARGUMENT
+
+  if (clEnqueueWriteBuffer(queue, input_buffer, CL_TRUE, 0, sizeof(packed),
+                           packed, 0, 0, 0) != CL_SUCCESS ||
+      clEnqueueNDRangeKernel(queue, pooling_kernel, 1, 0, &global, &local, 0, 0,
+                             0) != CL_SUCCESS ||
+      clEnqueueReadBuffer(queue, output_buffer, CL_TRUE,
+                          UDONDNN_POOLING_RESULT_OFFSET * sizeof(float),
+                          output_words * sizeof(float), result, 0, 0,
+                          0) != CL_SUCCESS ||
+      clFinish(queue) != CL_SUCCESS)
+    return UDONDNN_STATUS_EXECUTION_FAILED;
+  for (index = 0; index < output_words; ++index)
     output[index] = result[index];
   return UDONDNN_STATUS_SUCCESS;
 }

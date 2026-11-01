@@ -13,6 +13,7 @@ typedef uint32_t udondnnTensorDescriptor_t;
 typedef uint32_t udondnnFilterDescriptor_t;
 typedef uint32_t udondnnConvolutionDescriptor_t;
 typedef uint32_t udondnnActivationDescriptor_t;
+typedef uint32_t udondnnPoolingDescriptor_t;
 
 typedef enum udondnnStatus_t {
   UDONDNN_STATUS_SUCCESS = 0,
@@ -46,6 +47,12 @@ typedef enum udondnnActivationMode_t {
   UDONDNN_ACTIVATION_ELU = 4,
   UDONDNN_ACTIVATION_IDENTITY = 5
 } udondnnActivationMode_t;
+typedef enum udondnnPoolingMode_t {
+  UDONDNN_POOLING_MAX = 0,
+  UDONDNN_POOLING_AVERAGE_COUNT_INCLUDE_PADDING = 1,
+  UDONDNN_POOLING_AVERAGE_COUNT_EXCLUDE_PADDING = 2,
+  UDONDNN_POOLING_MAX_DETERMINISTIC = 3
+} udondnnPoolingMode_t;
 
 enum {
   UDONDNN_CONV_MAX_TENSOR_WORDS = 512,
@@ -108,6 +115,24 @@ udondnnStatus_t
 udondnnDestroyActivationDescriptor(udondnnActivationDescriptor_t descriptor);
 udondnnStatus_t udondnnActivationForward(
     udondnnHandle_t handle, udondnnActivationDescriptor_t activation_descriptor,
+    const float *alpha, udondnnTensorDescriptor_t input_descriptor,
+    const float *input, const float *beta,
+    udondnnTensorDescriptor_t output_descriptor, float *output);
+
+udondnnStatus_t
+udondnnCreatePoolingDescriptor(udondnnPoolingDescriptor_t *descriptor);
+udondnnStatus_t udondnnSetPooling2dDescriptor(
+    udondnnPoolingDescriptor_t descriptor, udondnnPoolingMode_t mode,
+    udondnnNanPropagation_t nan_propagation, int window_height,
+    int window_width, int vertical_padding, int horizontal_padding,
+    int vertical_stride, int horizontal_stride);
+udondnnStatus_t
+udondnnDestroyPoolingDescriptor(udondnnPoolingDescriptor_t descriptor);
+udondnnStatus_t udondnnGetPooling2dForwardOutputDim(
+    udondnnPoolingDescriptor_t pooling_descriptor,
+    udondnnTensorDescriptor_t input_descriptor, int *n, int *c, int *h, int *w);
+udondnnStatus_t udondnnPoolingForward(
+    udondnnHandle_t handle, udondnnPoolingDescriptor_t pooling_descriptor,
     const float *alpha, udondnnTensorDescriptor_t input_descriptor,
     const float *input, const float *beta,
     udondnnTensorDescriptor_t output_descriptor, float *output);

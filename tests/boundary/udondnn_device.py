@@ -29,5 +29,9 @@ assert "activation_outputs=512" in result.stdout
 assert "activation_cases=8" in result.stdout
 activation_error = re.search(r"activation_max_error=([0-9.eE+-]+)", result.stdout)
 assert activation_error and float(activation_error.group(1)) < 0.0005
-assert "draws=13" in result.stdout
+assert "pooling_outputs=41" in result.stdout
+assert "pooling_cases=6" in result.stdout
+pooling_error = re.search(r"pooling_max_error=([0-9.eE+-]+)", result.stdout)
+assert pooling_error and float(pooling_error.group(1)) < 0.0005
+assert "draws=19" in result.stdout
 print(result.stdout, end="")

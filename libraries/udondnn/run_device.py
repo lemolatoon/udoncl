@@ -69,9 +69,11 @@ def main():
 
     convolution_device = source / "device/convolution.cl"
     activation_device = source / "device/activation.cl"
+    pooling_device = source / "device/pooling.cl"
     convolution_text = convolution_device.read_text(encoding="utf-8")
     activation_text = activation_device.read_text(encoding="utf-8")
-    device_text = convolution_text + "\n" + activation_text
+    pooling_text = pooling_device.read_text(encoding="utf-8")
+    device_text = convolution_text + "\n" + activation_text + "\n" + pooling_text
     (output / "udondnn_device_source.h").write_text(
         "#define UDONDNN_DEVICE_SOURCE " + json.dumps(device_text) + "\n",
         encoding="utf-8",
@@ -146,6 +148,9 @@ def main():
     activation_bundle = emit_device(
         "activation", activation_device, "udondnn_activation_forward", 201, 2048
     )
+    pooling_bundle = emit_device(
+        "pooling", pooling_device, "udondnn_pooling_forward", 202, 2048
+    )
     manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
     kernel = manifest["device"]["kernels"][0]
     if (
@@ -187,14 +192,34 @@ def main():
     ).read_text(encoding="utf-8")
     if '_VRC_Arg4 ("Arg4", Int)' not in activation_shaderlab:
         raise RuntimeError("UdonDNN activation integer uniforms are not Unity-compatible")
+    pooling_manifest = json.loads(
+        (pooling_bundle / "manifest.json").read_text(encoding="utf-8")
+    )
+    pooling_kernel = pooling_manifest["device"]["kernels"][0]
+    if (
+        pooling_kernel["name"] != "udondnn_pooling_forward"
+        or pooling_kernel["global_size"] != [2048, 1, 1]
+        or [argument["required_bytes"] for argument in pooling_kernel["args"][:2]]
+        != [8192, 8192]
+        or len(pooling_kernel["args"]) != 9
+    ):
+        raise RuntimeError("UdonDNN pooling manifest does not match its packed ABI")
+    pooling_fragment = pooling_bundle / "kernels/kernel_202.hlsl"
+    pooling_shaderlab = (pooling_bundle / "kernels/kernel_202.shader").read_text(
+        encoding="utf-8"
+    )
+    if '_VRC_Arg5 ("Arg5", Int)' not in pooling_shaderlab:
+        raise RuntimeError("UdonDNN pooling integer uniforms are not Unity-compatible")
     (output / "Bindings.h").write_text(
         "inline const char *deviceSource() { return "
         + json.dumps(device_text)
         + "; }\n"
         + "inline std::vector<native_opencl::GatherBinding> manifestBindings("
-        + "const std::string &convolution, const std::string &activation) { return {"
+        + "const std::string &convolution, const std::string &activation, "
+        + "const std::string &pooling) { return {"
         + '{200, 2048, 7, "udondnn_convolution_forward", convolution}, '
-        + '{201, 2048, 6, "udondnn_activation_forward", activation}}; }\n',
+        + '{201, 2048, 6, "udondnn_activation_forward", activation}, '
+        + '{202, 2048, 7, "udondnn_pooling_forward", pooling}}; }\n',
         encoding="utf-8",
     )
 
@@ -493,6 +518,7 @@ def main():
     host_object = output / ("host" + object_suffix)
     device_object = output / ("convolution-device" + object_suffix)
     activation_object = output / ("activation-device" + object_suffix)
+    pooling_object = output / ("pooling-device" + object_suffix)
     run([clang, *runtime_flags, "-c", native_ir, "-o", host_object])
     run(
         [
@@ -522,6 +548,20 @@ def main():
             activation_object,
         ]
     )
+    run(
+        [
+            clang,
+            *runtime_flags,
+            "-x",
+            "c",
+            "-std=c11",
+            "-ffp-contract=off",
+            "-c",
+            pooling_device,
+            "-o",
+            pooling_object,
+        ]
+    )
 
     vertex = output / "fullscreen.hlsl"
     vertex.write_text(
@@ -537,6 +577,7 @@ def main():
             [
                 (fragment, "frag", "frag"),
                 (activation_fragment, "frag", "frag"),
+                (pooling_fragment, "frag", "frag"),
                 (vertex, "vert", "vert"),
             ]
         ):
@@ -557,7 +598,7 @@ def main():
                 ]
             )
             compiled.append(binary)
-        fragment, activation_fragment, vertex = compiled
+        fragment, activation_fragment, pooling_fragment, vertex = compiled
 
     runtime_build = output / "runtime-build"
     run(
@@ -573,12 +614,16 @@ def main():
             "-DUDONDNN_HOST_OBJECT=" + str(host_object),
             "-DUDONDNN_DEVICE_OBJECT=" + str(device_object),
             "-DUDONDNN_ACTIVATION_OBJECT=" + str(activation_object),
+            "-DUDONDNN_POOLING_OBJECT=" + str(pooling_object),
             "-DUDONDNN_BINDINGS_DIR=" + str(output),
         ]
     )
     run([sys.executable, root / "scripts/build.py", "--build-dir", runtime_build])
     executable = runtime_build / ("udondnn-device" + suffix)
-    print(run([executable, fragment, activation_fragment, vertex]), end="")
+    print(
+        run([executable, fragment, activation_fragment, pooling_fragment, vertex]),
+        end="",
+    )
 
 
 if __name__ == "__main__":
