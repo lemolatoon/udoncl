@@ -38,9 +38,10 @@ zero points before deleting all generated assets.
 The implementation currently adapts the already validated UdonDNN prototype
 kernels. Those functions are backend details, not the public ownership model.
 The fixed two-page artifact validates the runtime texture-copy and accumulation
-mechanism. A general AOT dispatcher over arbitrary M/K tile grids and binding
-the materialized external pages still remain before the Llama 8B operator plan
-can emit an executable Host.
+mechanism. `udon-onnx-page --all` now materializes and dispatches arbitrary M/K
+tile grids for one call, including edge tiles and M-tile result scatter. Binding
+those call artifacts into one whole-graph Unity package still remains before
+the Llama 8B operator plan can run end to end.
 
 See [operator ownership](../../docs/architecture/operator-ownership.md) for
 the source audit and compatibility rules.

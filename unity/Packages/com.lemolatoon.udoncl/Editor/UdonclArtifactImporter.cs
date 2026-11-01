@@ -807,6 +807,11 @@ namespace Lemolatoon.Udoncl.Editor
                 "page_compose",
                 "shader"
             );
+            ValidatedResource scatterShaderResource = FindResource(
+                artifacts,
+                "result_scatter",
+                "shader"
+            );
             string composeShaderPath = programRoot + "/Shaders/page-compose.shader";
             transaction.CopyFile(composeShaderResource.AbsolutePath, composeShaderPath);
             Shader composeShader = AssetDatabase.LoadAssetAtPath<Shader>(composeShaderPath);
@@ -820,6 +825,20 @@ namespace Lemolatoon.Udoncl.Editor
                 programRoot,
                 "page-compose.mat",
                 composeShader
+            );
+            string scatterShaderPath = programRoot + "/Shaders/result-scatter.shader";
+            transaction.CopyFile(scatterShaderResource.AbsolutePath, scatterShaderPath);
+            Shader scatterShader = AssetDatabase.LoadAssetAtPath<Shader>(scatterShaderPath);
+            if (scatterShader == null)
+                throw new InvalidDataException(
+                    "Unity could not import the UdonATen INT4 result scatter shader: "
+                        + scatterShaderPath
+                );
+            Material scatterMaterial = CreateOrUpdateNamedMaterial(
+                transaction,
+                programRoot,
+                "result-scatter.mat",
+                scatterShader
             );
             Texture2D weightPage0 = CreateOrUpdateByteTexture(
                 transaction,
@@ -874,7 +893,14 @@ namespace Lemolatoon.Udoncl.Editor
                 8192,
                 1
             );
-            displayMaterial.SetTexture("_Result", output);
+            RenderTexture result = CreateOrUpdateRgbaRenderTexture(
+                transaction,
+                programRoot,
+                "udonaten_weight_int4pack_mm_result.asset",
+                8,
+                1
+            );
+            displayMaterial.SetTexture("_Result", result);
             EditorUtility.SetDirty(displayMaterial);
             CreateOrUpdateUdonAtenWeightInt4packMmPrefab(
                 transaction,
@@ -886,8 +912,10 @@ namespace Lemolatoon.Udoncl.Editor
                 assembly,
                 partial,
                 output,
+                result,
                 composeMaterial,
                 int4Material,
+                scatterMaterial,
                 displayMaterial
             );
         }
@@ -2036,8 +2064,10 @@ namespace Lemolatoon.Udoncl.Editor
             RenderTexture assemblyState,
             RenderTexture partialState,
             RenderTexture outputState,
+            RenderTexture resultState,
             Material composeMaterial,
             Material int4Material,
+            Material scatterMaterial,
             Material displayMaterial
         )
         {
@@ -2062,8 +2092,10 @@ namespace Lemolatoon.Udoncl.Editor
                 SetPublicVariable(behaviour, "assemblyState", assemblyState);
                 SetPublicVariable(behaviour, "partialState", partialState);
                 SetPublicVariable(behaviour, "outputState", outputState);
+                SetPublicVariable(behaviour, "resultState", resultState);
                 SetPublicVariable(behaviour, "composeMaterial", composeMaterial);
                 SetPublicVariable(behaviour, "int4Material", int4Material);
+                SetPublicVariable(behaviour, "scatterMaterial", scatterMaterial);
                 SetPublicVariable(behaviour, "displayMaterial", displayMaterial);
                 SetPublicVariable(behaviour, "n", 8);
                 SetPublicVariable(behaviour, "k", 128);

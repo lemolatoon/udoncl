@@ -33,7 +33,13 @@ from udon_onnx import (
     tensor_int64_proto,
     value_info_proto,
 )
-from udon_pages import encode_int4_page, materialize_int4_page
+from udon_pages import (
+    emit_int4_call_uasm,
+    encode_int4_page,
+    linear_texture_layout,
+    materialize_int4_call,
+    materialize_int4_page,
+)
 
 
 model_path = output / "mnist.onnx"
@@ -351,6 +357,67 @@ except ValueError as error:
     assert "outside" in str(error)
 else:
     raise AssertionError("out-of-grid INT4 page coordinates were accepted")
+
+int4_call_bundle = output / "int4-call-bundle"
+int4_call_manifest = materialize_int4_call(
+    int4_plan, 0, output, int4_call_bundle
+)
+assert int4_call_manifest["artifact_stage"] == "udon-onnx-int4-call"
+assert int4_call_manifest["input_features"] == 160
+assert int4_call_manifest["output_features"] == 70
+assert int4_call_manifest["activation_layout"] == {"width": 160, "height": 1}
+assert int4_call_manifest["result_layout"] == {"width": 70, "height": 1}
+assert len(int4_call_manifest["resources"]) == 4
+assert {
+    (resource["m_tile"], resource["k_tile"], resource["n"], resource["k"])
+    for resource in int4_call_manifest["resources"]
+} == {(0, 0, 64, 128), (0, 1, 64, 32), (1, 0, 6, 128), (1, 1, 6, 32)}
+assert all(
+    (int4_call_bundle / resource["path"]).stat().st_size == 8192 * 4
+    for resource in int4_call_manifest["resources"]
+)
+assert all(
+    resource["bytes"] == 8192 * 4 and len(resource["sha256"]) == 64
+    for resource in int4_call_manifest["resources"]
+)
+int4_call_uasm = emit_int4_call_uasm(int4_plan, 0)
+assert int4_call_uasm == (int4_call_bundle / "host.uasm").read_text(encoding="utf-8")
+assert int4_call_uasm.count("VRCSDKBaseVRCGraphics.__Blit__") == 10
+assert int4_call_uasm.count(".export pageM") == 4
+assert "__n1: %SystemInt32, 6" in int4_call_uasm
+assert "__k1: %SystemInt32, 32" in int4_call_uasm
+assert "PUSH, resultState" in int4_call_uasm
+assert len(materialize_int4_call(int4_plan, 0, output, int4_call_bundle)["resources"]) == 4
+
+assert linear_texture_layout(20000) == {"width": 8192, "height": 3}
+try:
+    materialize_int4_call(int4_plan, 0, output, output)
+except ValueError as error:
+    assert "external data directory" in str(error)
+else:
+    raise AssertionError("INT4 call materializer accepted its external data root as output")
+int4_plan_path = output / "int4-plan.json"
+int4_plan_path.write_text(json.dumps(int4_plan), encoding="utf-8")
+int4_cli_bundle = output / "int4-cli-call-bundle"
+int4_cli = subprocess.run(
+    [
+        sys.executable,
+        root / "runtime/onnx/udon_pages.py",
+        int4_plan_path,
+        output,
+        "--call",
+        "0",
+        "--all",
+        "-o",
+        int4_cli_bundle,
+    ],
+    text=True,
+    capture_output=True,
+    timeout=60,
+)
+assert int4_cli.returncode == 0, (int4_cli.stdout, int4_cli.stderr)
+assert "pages=4" in int4_cli.stdout
+assert (int4_cli_bundle / "host.uasm").is_file()
 
 rl_model_path = output / "rl-policy.onnx"
 rl_generate = subprocess.run(

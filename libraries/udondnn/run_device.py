@@ -1426,6 +1426,10 @@ def main():
             staged / "compose.shader",
         )
         shutil.copy2(
+            root / "libraries/udonaten/unity/weight-int4pack-mm-scatter.shader",
+            staged / "scatter.shader",
+        )
+        shutil.copy2(
             int4_bundle / "kernels/kernel_208.shader",
             staged / "kernels/kernel_208.shader",
         )
@@ -1499,6 +1503,7 @@ def main():
                     "path": "fixture_reference.bytes",
                 },
                 {"name": "page_compose", "kind": "shader", "path": "compose.shader"},
+                {"name": "result_scatter", "kind": "shader", "path": "scatter.shader"},
             ],
             "fixture": {
                 "input_shape": [1, int4_k],

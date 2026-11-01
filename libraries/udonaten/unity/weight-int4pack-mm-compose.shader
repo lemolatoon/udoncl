@@ -4,6 +4,7 @@ Properties {
     _Activation ("Activation state", 2D) = "black" {}
     _Accumulator ("Prior output state", 2D) = "black" {}
     _ActivationOffset ("Activation offset", Int) = 0
+    _ActivationWidth ("Activation texture width", Int) = 8192
     _AccumulatorOffset ("Accumulator offset", Int) = 7168
     _KOffset ("K tile offset", Int) = 0
     _N ("Output features", Int) = 0
@@ -20,6 +21,7 @@ Texture2D<float4> _WeightPage;
 Texture2D<float4> _Activation;
 Texture2D<float4> _Accumulator;
 int _ActivationOffset;
+int _ActivationWidth;
 int _AccumulatorOffset;
 int _KOffset;
 int _N;
@@ -36,9 +38,12 @@ v2f vert(appdata input) {
 float4 frag(v2f input) : SV_Target {
     uint word = min(8191u, uint(input.uv.x * 8192.0));
     float4 value = _WeightPage.Load(int3(word, 0, 0));
-    if (word >= 6144u && word < 6144u + (uint)_K)
+    if (word >= 6144u && word < 6144u + (uint)_K) {
+        uint activationWidth = max(1u, (uint)_ActivationWidth);
+        uint activation = (uint)_ActivationOffset + (uint)_KOffset + word - 6144u;
         value = _Activation.Load(
-            int3((uint)_ActivationOffset + (uint)_KOffset + word - 6144u, 0, 0));
+            int3(activation % activationWidth, activation / activationWidth, 0));
+    }
     if (_Accumulate != 0 && word >= 7168u && word < 7168u + (uint)_N)
         value = _Accumulator.Load(
             int3((uint)_AccumulatorOffset + word - 7168u, 0, 0));

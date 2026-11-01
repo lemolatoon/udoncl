@@ -56,9 +56,9 @@ stride, external byte ranges, and 8,192-word kernel-208 active-state layout.
 tile without loading a complete tensor or model. It can also place a prior
 output tile at word 7,168 for the kernel's private accumulation argument. The
 Unity artifact proves two-page GPU texture composition and accumulation in one
-Host `_run`. General Host emission still rejects these plans until it can emit
-that dispatcher for arbitrary M/K tile grids and bind all external pages,
-rather than generating an executable that cannot supply them.
+Host `_run`. The page tool now emits the same mechanism for an arbitrary M/K
+tile grid of one INT4 call. Whole-graph Host composition and Unity asset binding
+across all calls remain separate packaging work.
 Identity, Reshape, Squeeze, and Unsqueeze are compiled as typed zero-copy views.
 Their embedded int32/int64 shape inputs are evaluated at AOT time and retained
 with the correct C ABI type rather than being treated as float buffers.
@@ -124,6 +124,24 @@ udon-onnx-page execution-plan.json . --call 0 --m-tile 0 --k-tile 0 \
   -o page-0-0.bytes
 ```
 
+Materialize every M/K page for one ATen INT4 call and emit its static Udon Host
+dispatcher with:
+
+```text
+udon-onnx-page execution-plan.json . --call 0 --all \
+  -o int4-call-0
+```
+
+The resulting `udon-onnx-int4-call` directory contains one bounded 8,192-word
+weight page per planned tile, a manifest with edge-tile dimensions, and
+`host.uasm`. The dispatcher composes runtime activations on GPU, accumulates all
+K pages privately through kernel 208, and scatters every completed 64-feature M
+tile into the call result. The public operation remains
+`udonatenWeightInt4packMm`; paging does not add an Ext API or a beta argument.
+Activations and results use a row-major linear texture ABI capped at 8,192
+words per row, so feature vectors larger than a single Unity texture row retain
+the same dispatcher contract.
+
 The packer accepts indexed or single-file safetensors in float32, float16, or
 bfloat16, validates every shape/range, converts matrix tensors to separate
 signed-INT4 packed weights and `[K/group_size,N,2]` bfloat16 scale/zero tensors,
@@ -140,5 +158,5 @@ full output accumulator fills the selected N slice at word 7,168.
 
 This is not full ONNX operator coverage yet. The MNIST provider still contains
 model-level fusion, while the Llama provider deliberately isolates its custom
-fusion behind the registry. General emitted tiled dispatch and external-weight
-page binding remain the next runtime layer.
+fusion behind the registry. Whole-graph dispatch and Unity binding for emitted
+INT4 call artifacts remain the next runtime layer.

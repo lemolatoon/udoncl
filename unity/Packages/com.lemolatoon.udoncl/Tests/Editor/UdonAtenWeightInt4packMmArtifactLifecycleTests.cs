@@ -121,6 +121,10 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 "RenderTextures/udonaten_weight_int4pack_mm_output.asset"
             );
             Set(heap, program, "outputState", output);
+            RenderTexture result = Load<RenderTexture>(
+                "RenderTextures/udonaten_weight_int4pack_mm_result.asset"
+            );
+            Set(heap, program, "resultState", result);
             Set(heap, program, "composeMaterial", Load<Material>("Materials/page-compose.mat"));
             Set(
                 heap,
@@ -128,6 +132,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 "int4Material",
                 Load<Material>("Materials/kernel_208_udonaten_weight_int4pack_mm.mat")
             );
+            Set(heap, program, "scatterMaterial", Load<Material>("Materials/result-scatter.mat"));
             Set(heap, program, "displayMaterial", Load<Material>("Materials/display.mat"));
             Set(heap, program, "n", 8);
             Set(heap, program, "k", 128);
@@ -135,7 +140,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             vm.SetProgramCounter(program.EntryPoints.GetAddressFromSymbol("_run"));
             Assert.AreEqual(0u, vm.Interpret(), "SDK IUdonVM rejected UdonATen INT4 MM.");
 
-            Color32[] actual = ReadPixels(output, 8192);
+            Color32[] actual = ReadPixels(result, 8);
             Color32[] expected = Load<Texture2D>(
                     "Textures/udonaten_weight_int4pack_mm_reference.asset"
                 )
@@ -144,7 +149,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             for (int row = 0; row < 8; ++row)
                 maximumError = Mathf.Max(
                     maximumError,
-                    Mathf.Abs(Decode(actual[7168 + row]) - Decode(expected[row]))
+                    Mathf.Abs(Decode(actual[row]) - Decode(expected[row]))
                 );
             Assert.That(maximumError, Is.LessThan(0.0005f));
         }
