@@ -51,9 +51,11 @@ providers = {
 }
 assert "udonatenWeightInt4packMm" in providers
 assert "udonblasSgemm" in providers
-assert "udondnnRmsNormalizationForward" in providers
+assert "udonatenRmsNorm" in providers
 assert "udondnnSoftmaxForward" in providers
-assert "udondnnOpTensor" in providers
+assert "udonatenAdd" in providers
+assert "udonatenMul" in providers
+assert "udonatenSigmoid" in providers
 assert plan["blas"] == {
     "weight_provider": "udonatenWeightInt4packMm",
     "activation_provider": "udonblasSgemm",
@@ -195,4 +197,4 @@ except ValueError as error:
 else:
     raise AssertionError("missing 8B external weights were accepted as executable")
 print(result.stdout, end="")
-print("llama_8b_onnx_plan=passed providers=udondnn,udonaten-q4 external_data=safe")
+print("llama_8b_onnx_plan=passed providers=udondnn,udonblas,udonaten external_data=safe")

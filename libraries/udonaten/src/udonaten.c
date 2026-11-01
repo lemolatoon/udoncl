@@ -13,6 +13,73 @@ udonatenStatus_t udonatenBackendTile(udonatenHandle_t handle, int input_n,
                                      int repeat_c, int repeat_h, int repeat_w,
                                      int output_words, float *output);
 
+static udonatenStatus_t
+udonatenBinary(udonatenHandle_t handle, udondnnOpTensorOp_t operation,
+               udonatenTensorDescriptor_t self_descriptor, const float *self,
+               udonatenTensorDescriptor_t other_descriptor, const float *other,
+               float other_alpha, udonatenTensorDescriptor_t output_descriptor,
+               float *output) {
+  const float one = 1.0f, zero = 0.0f;
+  udondnnOpTensorDescriptor_t descriptor = 0;
+  udonatenStatus_t status = udondnnCreateOpTensorDescriptor(&descriptor);
+  if (status != UDONDNN_STATUS_SUCCESS)
+    return status;
+  status = udondnnSetOpTensorDescriptor(
+      descriptor, operation, UDONDNN_DATA_FLOAT, UDONDNN_PROPAGATE_NAN);
+  if (status == UDONDNN_STATUS_SUCCESS)
+    status = udondnnOpTensor(handle, descriptor, &one, self_descriptor, self,
+                             &other_alpha, other_descriptor, other, &zero,
+                             output_descriptor, output);
+  {
+    udonatenStatus_t destroy_status =
+        udondnnDestroyOpTensorDescriptor(descriptor);
+    return status == UDONDNN_STATUS_SUCCESS ? destroy_status : status;
+  }
+}
+
+udonatenStatus_t
+udonatenAdd(udonatenHandle_t handle, udonatenTensorDescriptor_t self_descriptor,
+            const float *self, udonatenTensorDescriptor_t other_descriptor,
+            const float *other, float alpha,
+            udonatenTensorDescriptor_t output_descriptor, float *output) {
+  return udonatenBinary(handle, UDONDNN_OP_TENSOR_ADD, self_descriptor, self,
+                        other_descriptor, other, alpha, output_descriptor,
+                        output);
+}
+
+udonatenStatus_t
+udonatenMul(udonatenHandle_t handle, udonatenTensorDescriptor_t self_descriptor,
+            const float *self, udonatenTensorDescriptor_t other_descriptor,
+            const float *other, udonatenTensorDescriptor_t output_descriptor,
+            float *output) {
+  return udonatenBinary(handle, UDONDNN_OP_TENSOR_MUL, self_descriptor, self,
+                        other_descriptor, other, 1.0f, output_descriptor,
+                        output);
+}
+
+udonatenStatus_t udonatenSigmoid(udonatenHandle_t handle,
+                                 udonatenTensorDescriptor_t input_descriptor,
+                                 const float *input,
+                                 udonatenTensorDescriptor_t output_descriptor,
+                                 float *output) {
+  const float one = 1.0f, zero = 0.0f;
+  udondnnActivationDescriptor_t descriptor = 0;
+  udonatenStatus_t status = udondnnCreateActivationDescriptor(&descriptor);
+  if (status != UDONDNN_STATUS_SUCCESS)
+    return status;
+  status = udondnnSetActivationDescriptor(
+      descriptor, UDONDNN_ACTIVATION_SIGMOID, UDONDNN_PROPAGATE_NAN, 0.0f);
+  if (status == UDONDNN_STATUS_SUCCESS)
+    status =
+        udondnnActivationForward(handle, descriptor, &one, input_descriptor,
+                                 input, &zero, output_descriptor, output);
+  {
+    udonatenStatus_t destroy_status =
+        udondnnDestroyActivationDescriptor(descriptor);
+    return status == UDONDNN_STATUS_SUCCESS ? destroy_status : status;
+  }
+}
+
 udonatenStatus_t udonatenEmbedding(udonatenHandle_t handle,
                                    udonatenTensorDescriptor_t weight_descriptor,
                                    const float *weight, const int32_t *indices,

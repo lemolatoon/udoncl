@@ -108,7 +108,10 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             StringAssert.Contains("\"runtime\": \"udon-onnx\"", plan.text);
             StringAssert.Contains("\"profile\": \"udon-tiny-llama-f32\"", plan.text);
             StringAssert.Contains("UdonLlamaExecutionProvider", plan.text);
-            StringAssert.Contains("udondnnRmsNormalizationForward", plan.text);
+            StringAssert.Contains("udonatenRmsNorm", plan.text);
+            StringAssert.Contains("udonatenAdd", plan.text);
+            StringAssert.Contains("udonatenMul", plan.text);
+            StringAssert.Contains("udonatenSigmoid", plan.text);
             StringAssert.Contains("udonblasSgemm", plan.text);
             string modelAssetPath = GeneratedRoot + "/Models/UdonOnnxModel.asset";
             Lemolatoon.Udoncl.UdonOnnxModelAsset modelAsset =

@@ -97,17 +97,19 @@ def main():
     onnx_plan = json.loads(onnx_plan_path.read_text(encoding="utf-8"))
     expected_operators = [
         ("Conv", "udondnnConvolutionForward"),
-        ("Add", "udondnnOpTensor"),
+        ("Add", "udonatenAdd"),
         ("Relu", "udondnnActivationForward"),
         ("AveragePool", "udondnnPoolingForward"),
         ("Flatten", "view"),
         ("Gemm", "udonblasSgemm"),
-        ("Add", "udondnnOpTensor"),
+        ("Add", "udonatenAdd"),
     ]
     if [
         (node["op_type"], node["provider"]) for node in onnx_plan["nodes"]
     ] != expected_operators:
-        raise RuntimeError("MNIST ONNX graph was not assigned to UdonDNN/UdonBLAS")
+        raise RuntimeError(
+            "MNIST ONNX graph was not assigned to UdonDNN/UdonBLAS/UdonATen"
+        )
     expected_passes = [
         (20, "mnist_conv", 9216),
         (21, "mnist_pool", 144),

@@ -93,7 +93,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             Assert.NotNull(plan);
             StringAssert.Contains("\"runtime\": \"udon-onnx\"", plan.text);
             StringAssert.Contains("\"provider\": \"udondnnConvolutionForward\"", plan.text);
-            StringAssert.Contains("\"provider\": \"udondnnOpTensor\"", plan.text);
+            StringAssert.Contains("\"provider\": \"udonatenAdd\"", plan.text);
             StringAssert.Contains("\"provider\": \"udonblasSgemm\"", plan.text);
         }
 

@@ -449,11 +449,11 @@ def _broadcast(left, right):
 
 PROVIDERS = {
     "Conv": "udondnnConvolutionForward",
-    "Add": "udondnnOpTensor",
-    "Mul": "udondnnOpTensor",
+    "Add": "udonatenAdd",
+    "Mul": "udonatenMul",
     "Sub": "udondnnOpTensor",
     "Relu": "udondnnActivationForward",
-    "Sigmoid": "udondnnActivationForward",
+    "Sigmoid": "udonatenSigmoid",
     "Tanh": "udondnnActivationForward",
     "AveragePool": "udondnnPoolingForward",
     "Softmax": "udondnnSoftmaxForward",
@@ -678,24 +678,24 @@ def _compile_llama(model: dict) -> dict:
             "id": first_id,
             "kernel": f"{kernel_prefix}_embed" if tiny else "llama_embedding_gather",
             "layer": None,
-            "providers": ["udondnnGatherForward"],
+            "providers": ["udonatenEmbedding"],
             "fragments": config["hidden_size"],
         }
     ]
     operations = [
-        ("qkv", ["udondnnRmsNormalizationForward", weight_matmul_provider]),
+        ("qkv", ["udonatenRmsNorm", weight_matmul_provider]),
         ("attention", ["udondnnSoftmaxForward", activation_matmul_provider]),
-        ("project", [weight_matmul_provider, "udondnnOpTensor"]),
+        ("project", [weight_matmul_provider, "udonatenAdd"]),
         (
             "ffn_up",
             [
-                "udondnnRmsNormalizationForward",
+                "udonatenRmsNorm",
                 weight_matmul_provider,
-                "udondnnActivationForward",
-                "udondnnOpTensor",
+                "udonatenSigmoid",
+                "udonatenMul",
             ],
         ),
-        ("ffn_down", [weight_matmul_provider, "udondnnOpTensor"]),
+        ("ffn_down", [weight_matmul_provider, "udonatenAdd"]),
     ]
     for layer in range(config["num_hidden_layers"]):
         for operation, providers in operations:
@@ -769,7 +769,7 @@ def _compile_llama(model: dict) -> dict:
         "id": first_id + len(passes),
         "kernel": f"{kernel_prefix}_logits",
         "layer": None,
-        "providers": ["udondnnRmsNormalizationForward", weight_matmul_provider],
+        "providers": ["udonatenRmsNorm", weight_matmul_provider],
         "fragments": config["vocab_size"],
     }
     if not tiny:
@@ -1341,7 +1341,7 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
                     {
                         "id": 200 + len(passes),
                         "kernel": f"onnx_{node_index}_gemm_bias",
-                        "providers": ["udondnnOpTensor"],
+                        "providers": ["udonatenAdd"],
                         "fusion": None,
                         "call_index": node_index,
                         "phase": "bias",
@@ -1434,7 +1434,7 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
                         "index": len(calls),
                         "node_index": node_index,
                         "kind": "library",
-                        "function": "udondnnOpTensor",
+                        "function": "udonatenAdd",
                         "phase": "bias",
                         "inputs": [node["output"], node["inputs"][2]],
                         "output": node["output"],
@@ -1553,7 +1553,7 @@ def _c_float(value: float) -> str:
 
 
 def emit_c_host(plan: dict) -> str:
-    """Emit an AOT C host that invokes the public UdonBLAS/UdonDNN APIs."""
+    """Emit an AOT C host that invokes public UdonBLAS/UdonDNN/UdonATen APIs."""
     if plan.get("runtime") != "udon-onnx" or "aot" not in plan:
         raise ValueError("execution plan has no standard Udon ONNX AOT schedule")
     if any(call["kind"] == "tiled_library" for call in plan["aot"]["calls"]):
@@ -1613,17 +1613,12 @@ def emit_c_host(plan: dict) -> str:
             )
             lines.append(f"  udondnnFilterDescriptor_t filter_{index} = 0;")
             lines.append(f"  udondnnConvolutionDescriptor_t convolution_{index} = 0;")
-        elif operation in ("Add", "Mul", "Sub"):
+        elif operation == "Sub":
             operation_descriptors.append(
                 ("udondnnDestroyOpTensorDescriptor", f"operation_{index}")
             )
             lines.append(f"  udondnnOpTensorDescriptor_t operation_{index} = 0;")
-        elif operation == "Gemm" and len(node["inputs"]) == 3:
-            operation_descriptors.append(
-                ("udondnnDestroyOpTensorDescriptor", f"gemm_bias_{index}")
-            )
-            lines.append(f"  udondnnOpTensorDescriptor_t gemm_bias_{index} = 0;")
-        elif operation in ("Relu", "Sigmoid", "Tanh"):
+        elif operation in ("Relu", "Tanh"):
             operation_descriptors.append(
                 ("udondnnDestroyActivationDescriptor", f"activation_{index}")
             )
@@ -1655,28 +1650,41 @@ def emit_c_host(plan: dict) -> str:
         output = node["output"]
         if node["provider"] == "view":
             lines.append(f"  buffers->{names[output]} = buffers->{names[inputs[0]]};")
-        elif operation in ("Add", "Mul", "Sub"):
-            tensor_operation = (
-                "UDONDNN_OP_TENSOR_MUL"
-                if operation == "Mul"
-                else "UDONDNN_OP_TENSOR_ADD"
+        elif operation == "Add":
+            lines.append(
+                "  CHECK_DNN(udonatenAdd("
+                f"dnn, {tensor_descriptors[inputs[0]]}, buffers->{names[inputs[0]]}, "
+                f"{tensor_descriptors[inputs[1]]}, buffers->{names[inputs[1]]}, 1.0f, "
+                f"{tensor_descriptors[output]}, buffers->{names[output]}));"
             )
-            alpha_b = "minus_one" if operation == "Sub" else "one"
+        elif operation == "Mul":
+            lines.append(
+                "  CHECK_DNN(udonatenMul("
+                f"dnn, {tensor_descriptors[inputs[0]]}, buffers->{names[inputs[0]]}, "
+                f"{tensor_descriptors[inputs[1]]}, buffers->{names[inputs[1]]}, "
+                f"{tensor_descriptors[output]}, buffers->{names[output]}));"
+            )
+        elif operation == "Sub":
             lines.append(f"  CHECK_DNN(udondnnCreateOpTensorDescriptor(&operation_{index}));")
             lines.append(
                 "  CHECK_DNN(udondnnSetOpTensorDescriptor("
-                f"operation_{index}, {tensor_operation}, UDONDNN_DATA_FLOAT, UDONDNN_PROPAGATE_NAN));"
+                f"operation_{index}, UDONDNN_OP_TENSOR_ADD, UDONDNN_DATA_FLOAT, UDONDNN_PROPAGATE_NAN));"
             )
             lines.append(
                 "  CHECK_DNN(udondnnOpTensor("
                 f"dnn, operation_{index}, &one, {tensor_descriptors[inputs[0]]}, buffers->{names[inputs[0]]}, "
-                f"&{alpha_b}, {tensor_descriptors[inputs[1]]}, buffers->{names[inputs[1]]}, &zero, "
+                f"&minus_one, {tensor_descriptors[inputs[1]]}, buffers->{names[inputs[1]]}, &zero, "
                 f"{tensor_descriptors[output]}, buffers->{names[output]}));"
             )
-        elif operation in ("Relu", "Sigmoid", "Tanh"):
+        elif operation == "Sigmoid":
+            lines.append(
+                "  CHECK_DNN(udonatenSigmoid("
+                f"dnn, {tensor_descriptors[inputs[0]]}, buffers->{names[inputs[0]]}, "
+                f"{tensor_descriptors[output]}, buffers->{names[output]}));"
+            )
+        elif operation in ("Relu", "Tanh"):
             activation_mode = {
                 "Relu": "UDONDNN_ACTIVATION_RELU",
-                "Sigmoid": "UDONDNN_ACTIVATION_SIGMOID",
                 "Tanh": "UDONDNN_ACTIVATION_TANH",
             }[operation]
             lines.append(f"  CHECK_DNN(udondnnCreateActivationDescriptor(&activation_{index}));")
@@ -1811,16 +1819,9 @@ def emit_c_host(plan: dict) -> str:
                 beta = _attribute(node, "beta", "f", 1.0)
                 lines.append(f"  const float gemm_beta_{index} = {_c_float(beta)};")
                 lines.append(
-                    f"  CHECK_DNN(udondnnCreateOpTensorDescriptor(&gemm_bias_{index}));"
-                )
-                lines.append(
-                    "  CHECK_DNN(udondnnSetOpTensorDescriptor("
-                    f"gemm_bias_{index}, UDONDNN_OP_TENSOR_ADD, UDONDNN_DATA_FLOAT, UDONDNN_PROPAGATE_NAN));"
-                )
-                lines.append(
-                    "  CHECK_DNN(udondnnOpTensor("
-                    f"dnn, gemm_bias_{index}, &one, {tensor_descriptors[output]}, buffers->{names[output]}, "
-                    f"&gemm_beta_{index}, {tensor_descriptors[bias]}, buffers->{names[bias]}, &zero, "
+                    "  CHECK_DNN(udonatenAdd("
+                    f"dnn, {tensor_descriptors[output]}, buffers->{names[output]}, "
+                    f"{tensor_descriptors[bias]}, buffers->{names[bias]}, gemm_beta_{index}, "
                     f"{tensor_descriptors[output]}, buffers->{names[output]}));"
                 )
         elif operation == "MatMul":

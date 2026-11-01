@@ -13,8 +13,8 @@ The first supported end-to-end graph is the trained MNIST network:
 Conv -> Add -> Relu -> AveragePool -> Flatten -> Gemm -> Add
 ```
 
-Its execution provider maps those nodes to UdonDNN convolution, OpTensor,
-activation and pooling plus UdonBLAS SGEMM. The current large-tensor provider
+Its execution provider maps those nodes to UdonDNN convolution, activation and
+pooling, UdonATen Add, and UdonBLAS SGEMM. The current large-tensor provider
 fuses the graph into three existing fragment passes: 9,216 independently owned
 convolution outputs, 144 pooling outputs, and 10 logits. Model initializers are
 read back from `TensorProto.raw_data` to construct the Device state; the native
@@ -32,8 +32,10 @@ The built-in providers currently are:
   scale/zero metadata; attention activation products remain on
   `udonblasSgemm`.
 
-The general provider also lowers Add, Mul, Sub, Relu, Sigmoid, Tanh, and
-Softmax to their cuDNN-compatible UdonDNN entry points. The checked-in
+The general provider lowers Add, Mul, and Sigmoid to their ATen-shaped UdonATen
+entry points. Sub, Relu, Tanh, and Softmax currently retain their
+cuDNN-compatible UdonDNN paths while their PyTorch ownership audits remain
+separate migrations. The checked-in
 reinforcement-learning actor fixture uses these operators and Gemm entirely
 through `UdonOperatorExecutionProvider`, without a model-specific provider.
 The Tiny Llama fixture also emits a standard-operator, single-token decoder
@@ -79,7 +81,8 @@ Consumers can construct `ExecutionProviderRegistry`, register one graph
 predicate and compiler callback per provider, and pass it to `compile_model`.
 Standard graphs made only from the currently supported operators can also use
 `UdonOperatorExecutionProvider`; it preserves topological node order and emits
-an explicit `aot.calls` list of public UdonBLAS/UdonDNN entry points. The
+an explicit `aot.calls` list of public UdonBLAS, UdonDNN, and UdonATen entry
+points. The
 `--emit-host-c` option turns that list into C Host source with descriptor
 lifecycle management and error cleanup, ready for the normal UdonCL Host
 pipeline. SGEMM dimensions are tiled at AOT time over the current 16x16x16
@@ -93,7 +96,7 @@ schedule, including K-tile accumulation. ONNX Gemm forms that are not yet
 implemented fail during compilation instead of being accepted with different
 numerical semantics. Gemm's optional broadcast C input and its `alpha` and
 `beta` coefficients are lowered to tiled `udonblasSgemm` followed by a
-broadcasting `udondnnOpTensor` bias pass.
+broadcasting `udonatenAdd` bias pass.
 Standard operator plans preserve validated ONNX external initializers as
 explicit location, offset, length, type, and shape metadata instead of loading
 large weights into the compiler process.

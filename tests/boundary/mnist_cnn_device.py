@@ -28,12 +28,12 @@ plan = json.loads((output / "onnx-plan.json").read_text(encoding="utf-8"))
 assert plan["runtime"] == "udon-onnx"
 assert [node["provider"] for node in plan["nodes"]] == [
     "udondnnConvolutionForward",
-    "udondnnOpTensor",
+    "udonatenAdd",
     "udondnnActivationForward",
     "udondnnPoolingForward",
     "view",
     "udonblasSgemm",
-    "udondnnOpTensor",
+    "udonatenAdd",
 ]
 assert [(item["id"], item["fragments"]) for item in plan["passes"]] == [
     (20, 9216),

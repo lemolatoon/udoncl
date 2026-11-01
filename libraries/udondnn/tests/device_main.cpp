@@ -889,6 +889,59 @@ int main(int argc, char **argv) {
     if (opTensorMaximumError > 0.0005f)
       throw std::runtime_error("UdonDNN OpTensor CPU/Device results diverged");
 
+    udondnnTensorDescriptor_t atenLeftDescriptor = 0, atenRightDescriptor = 0,
+                              atenOutputDescriptor = 0;
+    const std::array<float, 6> atenLeft{{-2.0f, -1.0f, 0.0f, 1.0f, 2.0f, 3.0f}};
+    const std::array<float, 3> atenRight{{4.0f, -2.0f, 0.5f}};
+    std::array<float, 6> atenOutput{};
+    require(udondnnCreateTensorDescriptor(&atenLeftDescriptor),
+            UDONDNN_STATUS_SUCCESS, "create ATen left descriptor");
+    require(udondnnCreateTensorDescriptor(&atenRightDescriptor),
+            UDONDNN_STATUS_SUCCESS, "create ATen right descriptor");
+    require(udondnnCreateTensorDescriptor(&atenOutputDescriptor),
+            UDONDNN_STATUS_SUCCESS, "create ATen output descriptor");
+    require(udondnnSetTensor4dDescriptor(atenLeftDescriptor,
+                                         UDONDNN_TENSOR_NCHW,
+                                         UDONDNN_DATA_FLOAT, 1, 2, 1, 3),
+            UDONDNN_STATUS_SUCCESS, "set ATen left descriptor");
+    require(udondnnSetTensor4dDescriptor(atenRightDescriptor,
+                                         UDONDNN_TENSOR_NCHW,
+                                         UDONDNN_DATA_FLOAT, 1, 1, 1, 3),
+            UDONDNN_STATUS_SUCCESS, "set ATen right descriptor");
+    require(udondnnSetTensor4dDescriptor(atenOutputDescriptor,
+                                         UDONDNN_TENSOR_NCHW,
+                                         UDONDNN_DATA_FLOAT, 1, 2, 1, 3),
+            UDONDNN_STATUS_SUCCESS, "set ATen output descriptor");
+    require(udonatenAdd(handle, atenLeftDescriptor, atenLeft.data(),
+                        atenRightDescriptor, atenRight.data(), 0.25f,
+                        atenOutputDescriptor, atenOutput.data()),
+            UDONDNN_STATUS_SUCCESS, "udonatenAdd");
+    for (size_t index = 0; index < atenOutput.size(); ++index)
+      if (std::abs(atenOutput[index] -
+                   (atenLeft[index] + 0.25f * atenRight[index % 3])) > 0.0005f)
+        throw std::runtime_error("UdonATen add results diverged");
+    require(udonatenMul(handle, atenLeftDescriptor, atenLeft.data(),
+                        atenRightDescriptor, atenRight.data(),
+                        atenOutputDescriptor, atenOutput.data()),
+            UDONDNN_STATUS_SUCCESS, "udonatenMul");
+    for (size_t index = 0; index < atenOutput.size(); ++index)
+      if (std::abs(atenOutput[index] - atenLeft[index] * atenRight[index % 3]) >
+          0.0005f)
+        throw std::runtime_error("UdonATen mul results diverged");
+    require(udonatenSigmoid(handle, atenLeftDescriptor, atenLeft.data(),
+                            atenOutputDescriptor, atenOutput.data()),
+            UDONDNN_STATUS_SUCCESS, "udonatenSigmoid");
+    for (size_t index = 0; index < atenOutput.size(); ++index)
+      if (std::abs(atenOutput[index] -
+                   1.0f / (1.0f + std::exp(-atenLeft[index]))) > 0.0005f)
+        throw std::runtime_error("UdonATen sigmoid results diverged");
+    require(udondnnDestroyTensorDescriptor(atenLeftDescriptor),
+            UDONDNN_STATUS_SUCCESS, "destroy ATen left descriptor");
+    require(udondnnDestroyTensorDescriptor(atenRightDescriptor),
+            UDONDNN_STATUS_SUCCESS, "destroy ATen right descriptor");
+    require(udondnnDestroyTensorDescriptor(atenOutputDescriptor),
+            UDONDNN_STATUS_SUCCESS, "destroy ATen output descriptor");
+
     udondnnTensorDescriptor_t rmsInputDescriptor = 0, rmsScaleDescriptor = 0,
                               rmsOutputDescriptor = 0;
     std::vector<float> rmsInput(16), rmsScale(8), rmsActual(16),

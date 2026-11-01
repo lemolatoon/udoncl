@@ -77,24 +77,24 @@ assert [node["op_type"] for node in plan["nodes"]] == [
 ]
 assert [node["provider"] for node in plan["nodes"]] == [
     "udondnnConvolutionForward",
-    "udondnnOpTensor",
+    "udonatenAdd",
     "udondnnActivationForward",
     "udondnnPoolingForward",
     "view",
     "udonblasSgemm",
-    "udondnnOpTensor",
+    "udonatenAdd",
 ]
 assert [item["fragments"] for item in plan["passes"]] == [9216, 144, 10]
 mnist_calls = [call["function"] for call in plan["aot"]["calls"]]
 assert mnist_calls[:5] == [
     "udondnnConvolutionForward",
-    "udondnnOpTensor",
+    "udonatenAdd",
     "udondnnActivationForward",
     "udondnnPoolingForward",
     "view",
 ]
 assert mnist_calls[5:-1] == ["udonblasSgemm"] * 9
-assert mnist_calls[-1] == "udondnnOpTensor"
+assert mnist_calls[-1] == "udonatenAdd"
 assert plan["nodes"][0]["shape"] == [1, 16, 24, 24]
 assert plan["nodes"][3]["shape"] == [1, 16, 3, 3]
 assert plan["nodes"][4]["shape"] == [1, 144]
@@ -109,7 +109,7 @@ generic_mnist_plan = compile_operators(model)
 assert generic_mnist_plan["execution_provider"] == "UdonOperatorExecutionProvider"
 assert [item["providers"][0] for item in generic_mnist_plan["passes"][:4]] == [
     "udondnnConvolutionForward",
-    "udondnnOpTensor",
+    "udonatenAdd",
     "udondnnActivationForward",
     "udondnnPoolingForward",
 ]
@@ -143,13 +143,13 @@ operator_plan = compile_model(operator_model)
 assert operator_plan["execution_provider"] == "UdonOperatorExecutionProvider"
 assert [item["function"] for item in operator_plan["aot"]["calls"]] == [
     "udonblasSgemm",
-    "udondnnOpTensor",
+    "udonatenAdd",
     "udondnnActivationForward",
 ]
 assert [item["fragments"] for item in operator_plan["passes"]] == [8, 8, 8]
 host_c = emit_c_host(operator_plan)
 assert "udonblasSgemm(" in host_c
-assert "udondnnOpTensor(" in host_c
+assert "udonatenAdd(" in host_c
 assert "udondnnActivationForward(" in host_c
 assert host_c.count("udonblasSgemm(") == 1
 (output / "generic-host.c").write_text(host_c, encoding="utf-8")
@@ -231,7 +231,7 @@ biased_gemm_model = parse_model(
 biased_gemm_plan = compile_model(biased_gemm_model)
 assert [item["function"] for item in biased_gemm_plan["aot"]["calls"]] == [
     "udonblasSgemm",
-    "udondnnOpTensor",
+    "udonatenAdd",
 ]
 assert biased_gemm_plan["aot"]["calls"][0]["tile"]["alpha"] == 0.5
 assert biased_gemm_plan["aot"]["calls"][1]["phase"] == "bias"
@@ -241,7 +241,7 @@ biased_gemm_host_c = emit_c_host(biased_gemm_plan)
 assert "const float gemm_alpha_0 = 0.5f;" in biased_gemm_host_c
 assert "const float gemm_beta_0 = 2.0f;" in biased_gemm_host_c
 assert biased_gemm_host_c.count("udonblasSgemm(") == 1
-assert biased_gemm_host_c.count("udondnnOpTensor(") == 1
+assert biased_gemm_host_c.count("udonatenAdd(") == 1
 (output / "biased-gemm-host.c").write_text(biased_gemm_host_c, encoding="utf-8")
 
 external_gemm_model = parse_model(
@@ -454,7 +454,7 @@ int4_model_merge = {
     "index": 2,
     "node_index": 2,
     "kind": "library",
-    "function": "udondnnOpTensor",
+    "function": "udonatenAdd",
     "inputs": ["projection_a", "projection_b"],
     "output": "merged",
     "output_shape": [1, int4_n],
@@ -482,7 +482,7 @@ assert int4_model_manifest["unmaterialized_calls"] == [
     {
         "index": 2,
         "kind": "library",
-        "function": "udondnnOpTensor",
+        "function": "udonatenAdd",
         "output": "merged",
     }
 ]
@@ -542,21 +542,21 @@ assert [item["op_type"] for item in rl_plan["nodes"]] == [
 ]
 assert [item["function"] for item in rl_plan["aot"]["calls"]] == [
     "udonblasSgemm",
-    "udondnnOpTensor",
+    "udonatenAdd",
     "udondnnActivationForward",
-    "udondnnActivationForward",
-    "udondnnOpTensor",
+    "udonatenSigmoid",
+    "udonatenMul",
     "udonblasSgemm",
+    "udonatenAdd",
     "udondnnOpTensor",
-    "udondnnOpTensor",
-    "udondnnOpTensor",
+    "udonatenMul",
     "udondnnSoftmaxForward",
 ]
 assert len(rl_plan["passes"]) == 10
 rl_host_c = emit_c_host(rl_plan)
 assert "UDONDNN_ACTIVATION_TANH" in rl_host_c
-assert "UDONDNN_ACTIVATION_SIGMOID" in rl_host_c
-assert "UDONDNN_OP_TENSOR_MUL" in rl_host_c
+assert "udonatenSigmoid(" in rl_host_c
+assert rl_host_c.count("udonatenMul(") == 2
 assert "&minus_one" in rl_host_c
 assert "UDONDNN_SOFTMAX_ACCURATE, UDONDNN_SOFTMAX_MODE_INSTANCE" in rl_host_c
 (output / "rl-policy-host.c").write_text(rl_host_c, encoding="utf-8")
@@ -785,4 +785,4 @@ except ValueError:
 else:
     raise AssertionError("duplicate execution provider name was accepted")
 (output / "plan.json").write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
-print("udon_onnx_import=passed nodes=7 providers=udondnn,udonblas passes=3")
+print("udon_onnx_import=passed nodes=7 providers=udondnn,udonblas,udonaten passes=3")
