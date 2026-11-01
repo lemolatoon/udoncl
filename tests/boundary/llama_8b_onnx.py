@@ -460,7 +460,9 @@ assert model_uasm.count("VRCSDKBaseVRCGraphics.__Blit__") == 322
 assert model_uasm.count("UnityEngineMaterial.__SetInt__") == 933
 assert model_uasm.count("UnityEngineMaterial.__SetFloat__") == 65
 assert "__float0: %SystemSingle, 0.00001" in model_uasm
-assert "PUSH, resultState\n        PUSH, arenaSlot0\n        COPY" in model_uasm
+assert "PUSH, __zero\n        PUSH, __runnerIndex\n        COPY" in model_uasm
+assert "PUSH, __zero\n        PUSH, __passIndex\n        COPY" in model_uasm
+assert "PUSH, arenaSlot0\n        PUSH, resultState\n        COPY" in model_uasm
 (output / "model-host.uasm").write_text(model_uasm, encoding="utf-8")
 
 try:

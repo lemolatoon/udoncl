@@ -21,6 +21,13 @@ The Llama 8B plan reuses five RGBA32 textures for every activation, zero-copy
 view, and RMSNorm scratch value instead of allocating one RenderTexture per
 graph value.
 
+Use `udon-onnx-page ... --model --unity-template-directory ... --model-path
+...` to publish a general Unity artifact. The generated arena-aware Host binds
+each direct pass to its liveness-planned inputs and output, and the importer
+creates the ordered materials and RenderTextures. Publication fails when a
+physical pass has no assigned public UdonBLAS/UdonDNN/UdonATen Device shader,
+so a plan-only lowering is not mislabeled as an executable Unity model.
+
 The included Tiny Llama lifecycle fixture numerically executes the public
 Llama provider's seven-pass plan through SDK IUdonVM. The Llama 3.1 8B profile
 uses the same provider with 32 layers, Q4 ONNX external weights, KV-cache-aware

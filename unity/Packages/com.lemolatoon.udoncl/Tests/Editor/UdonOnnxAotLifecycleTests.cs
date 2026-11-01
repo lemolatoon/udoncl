@@ -14,6 +14,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
     public sealed class UdonOnnxAotLifecycleTests
     {
         private const string GeneratedRoot = "Assets/udoncl-generated/onnx_int4_fixture";
+        private const string GeneratedArenaRoot = "Assets/udoncl-generated/onnx_arena_add_fixture";
 
         private static string ResolveFixture(string environmentName, string relativeFallback)
         {
@@ -41,6 +42,12 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             );
             Assert.That(File.Exists(Path.Combine(bundle, "manifest.json")));
             Assert.AreEqual(GeneratedRoot, UdonclArtifactImporter.Import(bundle));
+            string arenaBundle = ResolveFixture(
+                "UDONCL_ONNX_ARENA_UNITY_BUNDLE",
+                Path.Combine("build", "precommit", "onnx-aot", "unity-arena-add-model-bundle")
+            );
+            Assert.That(File.Exists(Path.Combine(arenaBundle, "manifest.json")));
+            Assert.AreEqual(GeneratedArenaRoot, UdonclArtifactImporter.Import(arenaBundle));
         }
 
         [OneTimeTearDown]
@@ -52,12 +59,105 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             string runnerProgramGuid = AssetDatabase.AssetPathToGUID(
                 GeneratedRoot + "/Int4Runners/call-0000/Programs/host_program.asset"
             );
+            string arenaProgramGuid = AssetDatabase.AssetPathToGUID(
+                GeneratedArenaRoot + "/Programs/host_program.asset"
+            );
             AssetDatabase.DeleteAsset(GeneratedRoot);
-            foreach (string guid in new[] { modelProgramGuid, runnerProgramGuid })
+            AssetDatabase.DeleteAsset(GeneratedArenaRoot);
+            foreach (string guid in new[] { modelProgramGuid, runnerProgramGuid, arenaProgramGuid })
                 if (!string.IsNullOrEmpty(guid))
                     AssetDatabase.DeleteAsset("Assets/SerializedUdonPrograms/" + guid + ".asset");
             AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
             Assert.IsNull(AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(GeneratedRoot));
+            Assert.IsNull(AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(GeneratedArenaRoot));
+        }
+
+        [Test]
+        public void UnityStandardOperatorModelExecutesArenaAddNumericallyOnSdkVm()
+        {
+            Lemolatoon.Udoncl.UdonOnnxModelAsset modelAsset =
+                AssetDatabase.LoadAssetAtPath<Lemolatoon.Udoncl.UdonOnnxModelAsset>(
+                    GeneratedArenaRoot + "/Models/UdonOnnxModel.asset"
+                );
+            Assert.NotNull(modelAsset);
+            Assert.AreEqual("UdonOperatorExecutionProvider", modelAsset.ExecutionProvider);
+            Assert.AreEqual(3, modelAsset.TextureArenaSlots.Length);
+            Assert.AreEqual(1, modelAsset.PassMaterials.Length);
+
+            UdonAssemblyProgramAsset programAsset =
+                AssetDatabase.LoadAssetAtPath<UdonAssemblyProgramAsset>(
+                    GeneratedArenaRoot + "/Programs/host_program.asset"
+                );
+            Assert.NotNull(programAsset);
+            IUdonProgram program = programAsset.SerializedProgramAsset.RetrieveProgram();
+            Assert.NotNull(program);
+            IUdonVM vm = UdonEditorManager.Instance.ConstructUdonVM();
+            Assert.IsTrue(vm.LoadProgram(program));
+            IUdonHeap heap = vm.InspectHeap();
+
+            const int width = 8192;
+            const int height = 2;
+            Color32[] leftPixels = new Color32[width * height];
+            Color32[] rightPixels = new Color32[width * height];
+            float[] expected = new float[width * height];
+            for (int index = 0; index < expected.Length; ++index)
+            {
+                float left = ((index % 97) - 48) * 0.03125f;
+                float right = ((index % 31) - 15) * 0.0625f;
+                leftPixels[index] = Encode(left);
+                rightPixels[index] = Encode(right);
+                expected[index] = left + right;
+            }
+            Texture2D leftTexture = new Texture2D(width, height, TextureFormat.RGBA32, false, true);
+            Texture2D rightTexture = new Texture2D(
+                width,
+                height,
+                TextureFormat.RGBA32,
+                false,
+                true
+            );
+            try
+            {
+                foreach (Texture2D texture in new[] { leftTexture, rightTexture })
+                {
+                    texture.filterMode = FilterMode.Point;
+                    texture.wrapMode = TextureWrapMode.Clamp;
+                }
+                leftTexture.SetPixels32(leftPixels);
+                leftTexture.Apply(false, false);
+                rightTexture.SetPixels32(rightPixels);
+                rightTexture.Apply(false, false);
+                Graphics.Blit(leftTexture, modelAsset.TextureArenaSlots[0]);
+                Graphics.Blit(rightTexture, modelAsset.TextureArenaSlots[1]);
+
+                for (int index = 0; index < modelAsset.TextureArenaSlots.Length; ++index)
+                    Set(heap, program, "arenaSlot" + index, modelAsset.TextureArenaSlots[index]);
+                Set(heap, program, "int4Runners", Array.Empty<IUdonEventReceiver>());
+                Set(heap, program, "passMaterials", modelAsset.PassMaterials);
+                Set(heap, program, "resultState", modelAsset.TextureArenaSlots[0]);
+                vm.SetProgramCounter(program.EntryPoints.GetAddressFromSymbol("_run"));
+                Assert.AreEqual(0u, vm.Interpret());
+                Assert.AreSame(
+                    modelAsset.TextureArenaSlots[2],
+                    heap.GetHeapVariable<RenderTexture>(
+                        program.SymbolTable.GetAddressFromSymbol("resultState")
+                    )
+                );
+
+                Color32[] actual = ReadPixels(modelAsset.TextureArenaSlots[2], width, height);
+                float maximumError = 0.0f;
+                for (int index = 0; index < actual.Length; ++index)
+                    maximumError = Mathf.Max(
+                        maximumError,
+                        Mathf.Abs(Decode(actual[index]) - expected[index])
+                    );
+                Assert.That(maximumError, Is.EqualTo(0.0f));
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(leftTexture);
+                UnityEngine.Object.DestroyImmediate(rightTexture);
+            }
         }
 
         [Test]
@@ -304,14 +404,14 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             );
         }
 
-        private static Color32[] ReadPixels(RenderTexture source, int width)
+        private static Color32[] ReadPixels(RenderTexture source, int width, int height = 1)
         {
             RenderTexture previous = RenderTexture.active;
-            Texture2D pixels = new Texture2D(width, 1, TextureFormat.RGBA32, false, true);
+            Texture2D pixels = new Texture2D(width, height, TextureFormat.RGBA32, false, true);
             try
             {
                 RenderTexture.active = source;
-                pixels.ReadPixels(new Rect(0, 0, width, 1), 0, 0);
+                pixels.ReadPixels(new Rect(0, 0, width, height), 0, 0);
                 pixels.Apply(false, false);
                 return pixels.GetPixels32();
             }
@@ -326,6 +426,12 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         {
             int bits = bytes.r | (bytes.g << 8) | (bytes.b << 16) | (bytes.a << 24);
             return BitConverter.ToSingle(BitConverter.GetBytes(bits), 0);
+        }
+
+        private static Color32 Encode(float value)
+        {
+            byte[] bytes = BitConverter.GetBytes(value);
+            return new Color32(bytes[0], bytes[1], bytes[2], bytes[3]);
         }
 
         private static void Set<T>(IUdonHeap heap, IUdonProgram program, string symbol, T value)

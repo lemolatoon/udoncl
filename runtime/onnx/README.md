@@ -123,6 +123,21 @@ large weights into the compiler process.
 The Unity package imports every artifact exposing the generic `onnx_model` and
 `onnx_execution_plan` resources to stable `Models/model.onnx.bytes` and
 `Models/execution-plan.json.bytes` paths, independent of the demo stage.
+`materialize_model` and the equivalent CLI below publish the arena-aware Host,
+the original model and plan, static initializer textures, INT4 child runners
+when present, and every Device shader named by a physical pass:
+
+```text
+udon-onnx-page execution-plan.json external-data-directory --model \
+  --unity-template-directory unity-template \
+  --model-path model.onnx --program-name my_onnx_model \
+  -o unity-model-bundle
+```
+
+The publisher rejects a pass without an assigned public-library shader rather
+than emitting a Unity artifact that can only assemble but cannot execute. The
+historical `materialize_int4_model`/`--all-calls` surface remains as a
+compatibility wrapper; new tooling should use the general model publisher.
 
 The compiler can be installed independently for tooling and CI:
 
@@ -194,9 +209,10 @@ than incorrectly assuming that every reused slot has the logical tensor width.
 Pass materials and child runners are exported as two ordered arrays, so the
 Host uses a constant-size Udon heap and remains below the VM's 512-variable
 limit even though its schedule contains thousands of passes.
-The manifest still lists non-INT4 calls as unmaterialized resources until the
-Unity importer creates their pass materials; this field no longer means that
-the topological Host schedule is absent.
+The historical INT4 manifest still lists non-INT4 calls as unmaterialized
+resources for compatibility. The general model manifest instead reports a call
+as materialized when it is a zero-copy view, an INT4 child, or owns one or more
+shader-backed direct Device passes.
 
 `plan_int4_model_bundle` performs the same capacity and dependency planning
 without reading external weights. The checked Llama 3.1 8B operator plan has
@@ -222,7 +238,7 @@ full output accumulator fills the selected N slice at word 7,168.
 
 This is not full ONNX operator coverage yet. The MNIST provider still contains
 model-level fusion, while the Llama provider deliberately isolates its custom
-fusion behind the registry. The INT4 model bundle now contains the combined
-Udon Host; Unity-side materialization and binding of its 225 child runners,
-3,362 direct pass materials, and five arena textures remains the next runtime
-layer.
+fusion behind the registry. The Unity importer can now materialize the general
+arena Host, direct pass materials, static inputs, INT4 child runners, and arena
+textures. Physical shader adapters are still required for plan passes that do
+not yet name a Device shader, including the remaining general BLAS/DNN paths.

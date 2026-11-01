@@ -1724,6 +1724,16 @@ def main():
             int4_bundle / "kernels/kernel_208.shader",
             staged / "kernels/kernel_208.shader",
         )
+        for shader_bundle, shader_name in (
+            (arena_pointwise_bundle, "kernel_215.shader"),
+            (arena_tile_bundle, "kernel_216.shader"),
+            (arena_rms_reduce_bundle, "kernel_217.shader"),
+            (arena_rms_finalize_bundle, "kernel_218.shader"),
+        ):
+            shutil.copy2(
+                shader_bundle / "kernels" / shader_name,
+                staged / "kernels" / shader_name,
+            )
         (staged / "fixture_weight_atlas.bytes").write_bytes(b"".join(int4_pages))
         (staged / "fixture_activation.bytes").write_bytes(
             struct.pack(f"<{int4_k}f", *int4_input)

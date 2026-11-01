@@ -1,4 +1,4 @@
-"""Materialize bounded UdonATen Device pages from ONNX external weights."""
+"""Materialize Udon ONNX model bundles and bounded external-weight pages."""
 
 from __future__ import annotations
 
@@ -880,8 +880,8 @@ def _model_arena_binding(plan: dict, name: str) -> dict:
     return binding
 
 
-def emit_int4_model_uasm(plan: dict) -> str:
-    """Emit one arena-aware Host for a mixed INT4/public-library AOT schedule."""
+def emit_model_uasm(plan: dict) -> str:
+    """Emit one arena-aware Host for a public-library AOT schedule."""
     if plan.get("runtime") != "udon-onnx" or not isinstance(plan.get("aot"), dict):
         raise ValueError("model source is not a Udon ONNX AOT execution plan")
     calls = plan["aot"].get("calls") or []
@@ -971,7 +971,7 @@ def emit_int4_model_uasm(plan: dict) -> str:
         [
             "    int4Runners: %VRCUdonCommonInterfacesIUdonEventReceiverArray, null",
             "    passMaterials: %UnityEngineMaterialArray, null",
-            "    resultState: %UnityEngineTexture, null",
+            "    resultState: %UnityEngineRenderTexture, null",
             "    __runner: %VRCUdonCommonInterfacesIUdonEventReceiver, null",
             "    __material: %UnityEngineMaterial, null",
             "    __runnerIndex: %SystemInt32, null",
@@ -1002,11 +1002,11 @@ def emit_int4_model_uasm(plan: dict) -> str:
             "",
             "    .export _run",
             "    _run:",
+            "        PUSH, __zero",
             "        PUSH, __runnerIndex",
-            "        PUSH, __zero",
             "        COPY",
-            "        PUSH, __passIndex",
             "        PUSH, __zero",
+            "        PUSH, __passIndex",
             "        COPY",
         ]
     )
@@ -1168,8 +1168,8 @@ def emit_int4_model_uasm(plan: dict) -> str:
     result = _model_arena_binding(plan, next(iter(outputs)))
     lines.extend(
         [
-            "        PUSH, resultState",
             f"        PUSH, {slot_names[result['slot']]}",
+            "        PUSH, resultState",
             "        COPY",
             "        JUMP, 0xFFFFFFFC",
             ".code_end",
@@ -1177,6 +1177,11 @@ def emit_int4_model_uasm(plan: dict) -> str:
         ]
     )
     return "\n".join(lines)
+
+
+def emit_int4_model_uasm(plan: dict) -> str:
+    """Compatibility alias for the general arena-aware model Host emitter."""
+    return emit_model_uasm(plan)
 
 
 def materialize_int4_call(
@@ -1294,16 +1299,17 @@ def materialize_int4_call(
         raise
 
 
-def materialize_int4_model(
+def _materialize_model(
     plan: dict,
     external_data_directory: Path,
     output_directory: Path,
     *,
     unity_template_directory: Path | None = None,
     model_path: Path | None = None,
-    program_name: str = "udon_onnx_int4_model",
+    program_name: str = "udon_onnx_model",
+    legacy_int4_manifest: bool = False,
 ) -> dict:
-    """Bundle every ATen INT4 call with the complete AOT model schedule."""
+    """Bundle a complete arena-aware AOT model schedule."""
     if plan.get("runtime") != "udon-onnx" or not isinstance(plan.get("aot"), dict):
         raise ValueError("model source is not a Udon ONNX AOT execution plan")
     calls = plan["aot"].get("calls") or []
@@ -1313,8 +1319,25 @@ def materialize_int4_model(
         if call.get("kind") == "tiled_library"
         and call.get("function") == "udonatenWeightInt4packMm"
     ]
-    if not int4_calls:
+    int4_call_indexes = {call["index"] for call in int4_calls}
+    direct_passes = [
+        device_pass
+        for device_pass in plan.get("passes") or []
+        if device_pass.get("call_index") not in int4_call_indexes
+    ]
+    missing_shader_passes = [
+        device_pass["id"]
+        for device_pass in direct_passes
+        if not isinstance(device_pass.get("shader"), str)
+        or not device_pass["shader"]
+    ]
+    if legacy_int4_manifest and not int4_calls:
         raise ValueError("execution plan contains no tiled ATen INT4 calls")
+    if not legacy_int4_manifest and missing_shader_passes:
+        raise ValueError(
+            "Udon ONNX model has Device passes without public-library shaders: "
+            + ", ".join(map(str, missing_shader_passes))
+        )
     external_data_directory = external_data_directory.resolve()
     output_directory = output_directory.resolve()
     try:
@@ -1406,12 +1429,40 @@ def materialize_int4_model(
             else "execution-plan.json"
         )
         (staging / plan_name).write_text(serialized_plan, encoding="utf-8")
-        (staging / "host.uasm").write_text(
-            emit_int4_model_uasm(plan), encoding="utf-8"
+        (staging / "host.uasm").write_text(emit_model_uasm(plan), encoding="utf-8")
+        scheduled_call_indexes = {
+            call["index"] for call in calls if call.get("kind") == "view"
+        }
+        scheduled_call_indexes.update(call["index"] for call in int4_calls)
+        scheduled_call_indexes.update(
+            device_pass["call_index"] for device_pass in plan.get("passes") or []
+        )
+        unmaterialized_calls = [
+            {
+                "index": call.get("index"),
+                "kind": call.get("kind"),
+                "function": call.get("function"),
+                "output": call.get("output"),
+            }
+            for call in calls
+            if call.get("index") not in scheduled_call_indexes
+        ]
+        legacy_unmaterialized_calls = [
+            {
+                "index": call.get("index"),
+                "kind": call.get("kind"),
+                "function": call.get("function"),
+                "output": call.get("output"),
+            }
+            for call in calls
+            if call not in int4_calls
+        ]
+        artifact_stage = (
+            "udon-onnx-int4-model" if legacy_int4_manifest else "udon-onnx-model"
         )
         manifest = {
             "schema_version": 1,
-            "artifact_stage": "udon-onnx-int4-model",
+            "artifact_stage": artifact_stage,
             "runtime": "udon-onnx",
             "graph": plan.get("graph"),
             "execution_provider": plan.get("execution_provider"),
@@ -1428,32 +1479,48 @@ def materialize_int4_model(
             "texture_arena": _texture_arena_summary(plan),
             "host_schedule": _model_host_summary(plan),
             "static_inputs": static_inputs,
-            "complete_graph": len(int4_calls) == len(calls),
+            "complete_graph": (
+                len(int4_calls) == len(calls)
+                if legacy_int4_manifest
+                else not unmaterialized_calls
+            ),
             "call_artifacts": artifacts,
-            "unmaterialized_calls": [
-                {
-                    "index": call.get("index"),
-                    "kind": call.get("kind"),
-                    "function": call.get("function"),
-                    "output": call.get("output"),
-                }
-                for call in calls
-                if call not in int4_calls
-            ],
+            "unmaterialized_calls": (
+                legacy_unmaterialized_calls
+                if legacy_int4_manifest
+                else unmaterialized_calls
+            ),
         }
-        publish_stage = "udon-onnx-int4-model"
+        publish_stage = artifact_stage
         if unity_template_directory is not None:
             if model_path is None:
                 raise ValueError("Unity ONNX bundle requires model_path")
             unity_template_directory = unity_template_directory.resolve()
             model_path = model_path.resolve()
+            if missing_shader_passes:
+                raise ValueError(
+                    "Unity ONNX bundle has Device passes without public-library "
+                    "shaders: " + ", ".join(map(str, missing_shader_passes))
+                )
+            direct_kernel_passes = {}
+            for device_pass in direct_passes:
+                direct_kernel_passes.setdefault(device_pass["shader"], device_pass)
             required = {
                 "display.shader": unity_template_directory / "display.shader",
-                "compose.shader": unity_template_directory / "compose.shader",
-                "scatter.shader": unity_template_directory / "scatter.shader",
-                "kernels/kernel_208.shader": unity_template_directory
-                / "kernels/kernel_208.shader",
             }
+            if int4_calls:
+                required.update(
+                    {
+                        "compose.shader": unity_template_directory / "compose.shader",
+                        "scatter.shader": unity_template_directory / "scatter.shader",
+                        "kernels/kernel_208.shader": unity_template_directory
+                        / "kernels/kernel_208.shader",
+                    }
+                )
+            for shader in sorted(direct_kernel_passes):
+                required[f"kernels/{shader}"] = (
+                    unity_template_directory / "kernels" / shader
+                )
             for relative, source in required.items():
                 if not source.is_file():
                     raise ValueError(f"Unity ONNX template is missing {relative}")
@@ -1486,12 +1553,26 @@ def materialize_int4_model(
                         "display_shader": "display.shader",
                     },
                     "device": {
-                        "kernels": [
+                        "kernels": (
+                            [
+                                {
+                                    "id": 208,
+                                    "name": "udonaten_weight_int4pack_mm",
+                                    "shader": "kernels/kernel_208.shader",
+                                }
+                            ]
+                            if int4_calls
+                            else []
+                        )
+                        + [
                             {
-                                "id": 208,
-                                "name": "udonaten_weight_int4pack_mm",
-                                "shader": "kernels/kernel_208.shader",
+                                "id": int(
+                                    Path(shader).stem.removeprefix("kernel_")
+                                ),
+                                "name": device_pass["kernel"],
+                                "shader": f"kernels/{shader}",
                             }
+                            for shader, device_pass in direct_kernel_passes.items()
                         ]
                     },
                     "resources": [
@@ -1505,17 +1586,23 @@ def materialize_int4_model(
                             "kind": "bytes",
                             "path": plan_name,
                         },
-                        {
-                            "name": "page_compose",
-                            "kind": "shader",
-                            "path": "compose.shader",
-                        },
-                        {
-                            "name": "result_scatter",
-                            "kind": "shader",
-                            "path": "scatter.shader",
-                        },
-                    ],
+                    ]
+                    + (
+                        [
+                            {
+                                "name": "page_compose",
+                                "kind": "shader",
+                                "path": "compose.shader",
+                            },
+                            {
+                                "name": "result_scatter",
+                                "kind": "shader",
+                                "path": "scatter.shader",
+                            },
+                        ]
+                        if int4_calls
+                        else []
+                    ),
                 }
             )
         (staging / "manifest.json").write_text(
@@ -1526,6 +1613,47 @@ def materialize_int4_model(
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
         raise
+
+
+def materialize_model(
+    plan: dict,
+    external_data_directory: Path,
+    output_directory: Path,
+    *,
+    unity_template_directory: Path | None = None,
+    model_path: Path | None = None,
+    program_name: str = "udon_onnx_model",
+) -> dict:
+    """Bundle any complete arena-aware Udon ONNX AOT schedule."""
+    return _materialize_model(
+        plan,
+        external_data_directory,
+        output_directory,
+        unity_template_directory=unity_template_directory,
+        model_path=model_path,
+        program_name=program_name,
+    )
+
+
+def materialize_int4_model(
+    plan: dict,
+    external_data_directory: Path,
+    output_directory: Path,
+    *,
+    unity_template_directory: Path | None = None,
+    model_path: Path | None = None,
+    program_name: str = "udon_onnx_int4_model",
+) -> dict:
+    """Compatibility wrapper for the historical INT4 model artifact contract."""
+    return _materialize_model(
+        plan,
+        external_data_directory,
+        output_directory,
+        unity_template_directory=unity_template_directory,
+        model_path=model_path,
+        program_name=program_name,
+        legacy_int4_manifest=True,
+    )
 
 
 def _texture_arena_summary(plan: dict) -> dict:
@@ -1768,6 +1896,26 @@ def main():
         help="bundle all tiled ATen INT4 calls plus the complete AOT schedule",
     )
     parser.add_argument(
+        "--model",
+        action="store_true",
+        help="bundle the complete general Udon ONNX AOT schedule",
+    )
+    parser.add_argument(
+        "--unity-template-directory",
+        type=Path,
+        help="copy Unity display and planned Device shaders from this directory",
+    )
+    parser.add_argument(
+        "--model-path",
+        type=Path,
+        help="original ONNX model required with --unity-template-directory",
+    )
+    parser.add_argument(
+        "--program-name",
+        default="udon_onnx_model",
+        help="Unity artifact program and generated asset directory name",
+    )
+    parser.add_argument(
         "--activation-f32",
         type=Path,
         help="optional complete float32 activation vector to copy into the page",
@@ -1779,6 +1927,30 @@ def main():
     )
     args = parser.parse_args()
     plan = json.loads(args.plan.read_text(encoding="utf-8"))
+    if args.model:
+        if (
+            args.call is not None
+            or args.all
+            or args.all_calls
+            or args.m_tile is not None
+            or args.k_tile is not None
+            or args.activation_f32
+            or args.accumulator_f32
+        ):
+            parser.error("--model cannot be combined with call or page options")
+        manifest = materialize_model(
+            plan,
+            args.external_data_directory,
+            args.output,
+            unity_template_directory=args.unity_template_directory,
+            model_path=args.model_path,
+            program_name=args.program_name,
+        )
+        print(
+            f"udon_onnx_model={args.output} calls={manifest['aot_call_count']} "
+            f"complete={manifest['complete_graph']}"
+        )
+        return
     if args.all_calls:
         if (
             args.call is not None
@@ -1799,6 +1971,8 @@ def main():
             f"calls={manifest['int4_call_count']} complete={manifest['complete_graph']}"
         )
         return
+    if args.unity_template_directory or args.model_path:
+        parser.error("Unity model options require --model")
     if args.all:
         if args.call is None:
             parser.error("--all requires --call")

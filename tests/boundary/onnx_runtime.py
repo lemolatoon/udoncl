@@ -36,12 +36,15 @@ from udon_onnx import (
 from udon_pages import (
     decode_int4_compact_page,
     emit_int4_call_uasm,
+    emit_int4_model_uasm,
+    emit_model_uasm,
     encode_int4_page,
     int4_atlas_location,
     linear_texture_layout,
     materialize_int4_call,
     materialize_int4_compact_page,
     materialize_int4_model,
+    materialize_model,
     materialize_int4_page,
 )
 
@@ -780,6 +783,80 @@ assert len(unity_int4_manifest["call_artifacts"]) == 1
 assert (unity_int4_bundle / "model.onnx.bytes").is_file()
 assert (unity_int4_bundle / "execution-plan.json.bytes").is_file()
 assert (unity_int4_bundle / "kernels/kernel_208.shader").is_file()
+
+arena_add_bytes = model_proto(
+    graph_proto(
+        "arena_add",
+        [node_proto("Add", ["left", "right"], ["sum"], "add")],
+        [],
+        [
+            value_info_proto("left", [1, 16384]),
+            value_info_proto("right", [1, 16384]),
+        ],
+        [value_info_proto("sum", [1, 16384])],
+    )
+)
+arena_add_path = output / "arena-add.onnx"
+arena_add_path.write_bytes(arena_add_bytes)
+arena_add_plan = compile_operators(parse_model(arena_add_bytes))
+assert arena_add_plan["execution_provider"] == "UdonOperatorExecutionProvider"
+assert arena_add_plan["passes"][0]["shader"] == "kernel_215.shader"
+assert emit_model_uasm(arena_add_plan) == emit_int4_model_uasm(arena_add_plan)
+arena_add_uasm = emit_model_uasm(arena_add_plan)
+assert "PUSH, __zero\n        PUSH, __passIndex\n        COPY" in arena_add_uasm
+assert "PUSH, arenaSlot2\n        PUSH, resultState\n        COPY" in arena_add_uasm
+arena_add_bundle = output / "unity-arena-add-model-bundle"
+arena_add_manifest = materialize_model(
+    arena_add_plan,
+    output,
+    arena_add_bundle,
+    unity_template_directory=root
+    / "build/udondnn-device-run/unity-udonaten-int4-mm-bundle",
+    model_path=arena_add_path,
+    program_name="onnx_arena_add_fixture",
+)
+assert arena_add_manifest["artifact_stage"] == "unity-udon-onnx-model"
+assert arena_add_manifest["complete_graph"] is True
+assert arena_add_manifest["int4_call_count"] == 0
+assert arena_add_manifest["call_artifacts"] == []
+assert arena_add_manifest["unmaterialized_calls"] == []
+assert arena_add_manifest["device"]["kernels"] == [
+    {
+        "id": 215,
+        "name": "udonaten_arena_pointwise",
+        "shader": "kernels/kernel_215.shader",
+    }
+]
+assert (arena_add_bundle / "host.uasm").is_file()
+assert (arena_add_bundle / "model.onnx.bytes").read_bytes() == arena_add_bytes
+assert (arena_add_bundle / "execution-plan.json.bytes").is_file()
+assert (arena_add_bundle / "kernels/kernel_215.shader").is_file()
+arena_add_plan_path = output / "arena-add-plan.json"
+arena_add_plan_path.write_text(json.dumps(arena_add_plan), encoding="utf-8")
+arena_add_cli_bundle = output / "arena-add-cli-model-bundle"
+arena_add_cli = subprocess.run(
+    [
+        sys.executable,
+        root / "runtime/onnx/udon_pages.py",
+        arena_add_plan_path,
+        output,
+        "--model",
+        "--unity-template-directory",
+        root / "build/udondnn-device-run/unity-udonaten-int4-mm-bundle",
+        "--model-path",
+        arena_add_path,
+        "--program-name",
+        "onnx_arena_add_cli_fixture",
+        "-o",
+        arena_add_cli_bundle,
+    ],
+    text=True,
+    capture_output=True,
+    timeout=60,
+)
+assert arena_add_cli.returncode == 0, (arena_add_cli.stdout, arena_add_cli.stderr)
+assert "calls=1 complete=True" in arena_add_cli.stdout
+assert (arena_add_cli_bundle / "kernels/kernel_215.shader").is_file()
 int4_model_plan_path = output / "int4-model-plan.json"
 int4_model_plan_path.write_text(json.dumps(int4_model_plan), encoding="utf-8")
 int4_model_cli_bundle = output / "int4-model-cli-bundle"
@@ -849,6 +926,12 @@ assert [item["function"] for item in rl_plan["aot"]["calls"]] == [
     "udondnnSoftmaxForward",
 ]
 assert len(rl_plan["passes"]) == 10
+try:
+    materialize_model(rl_plan, output, output / "unsupported-rl-model-bundle")
+except ValueError as error:
+    assert "without public-library shaders" in str(error)
+else:
+    raise AssertionError("general model publisher accepted shaderless RL Device passes")
 rl_host_c = emit_c_host(rl_plan)
 assert "udonatenTanh(" in rl_host_c
 assert "udonatenSigmoid(" in rl_host_c

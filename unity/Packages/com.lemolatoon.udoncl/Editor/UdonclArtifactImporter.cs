@@ -1764,7 +1764,7 @@ namespace Lemolatoon.Udoncl.Editor
                 }
                 SetPublicVariable(model, "int4Runners", runners);
                 if (arenaSlots.Length > 0)
-                    SetPublicVariable(model, "resultState", (Texture)arenaSlots[0]);
+                    SetPublicVariable(model, "resultState", arenaSlots[0]);
 
                 PrefabUtility.SaveAsPrefabAsset(root, prefabPath, out bool success);
                 GameObject prefab = AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath);
