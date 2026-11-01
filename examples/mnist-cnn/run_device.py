@@ -4,27 +4,11 @@ import argparse
 import json
 import os
 from pathlib import Path
-import re
 import shutil
 import struct
 import subprocess
 import sys
 import tempfile
-
-
-def read_weight_array(header, name, expected):
-    match = re.search(
-        rf"static const float {name}\[{expected}\] = \{{(.*?)\}};",
-        header,
-        re.DOTALL,
-    )
-    if not match:
-        raise RuntimeError(f"could not find {name}[{expected}] in weights.h")
-    values = [float(token.rstrip("f")) for token in match.group(1).split(",") if token.strip()]
-    if len(values) != expected:
-        raise RuntimeError(f"{name} contains {len(values)} values; expected {expected}")
-    return values
-
 
 def main():
     root = Path(__file__).resolve().parents[2]
@@ -85,15 +69,69 @@ def main():
     mlir_translate = sdk / "bin" / ("mlir-translate" + suffix)
     runtime_flags = ["-fms-runtime-lib=dll"] if sys.platform == "win32" else []
 
+    onnx_model = output / "mnist.onnx"
+    onnx_plan_path = output / "onnx-plan.json"
+    run([sys.executable, source / "generate_onnx.py", "-o", onnx_model])
+    run(
+        [
+            sys.executable,
+            root / "runtime/onnx/udon_onnx.py",
+            onnx_model,
+            "-o",
+            onnx_plan_path,
+        ]
+    )
+    onnx_plan = json.loads(onnx_plan_path.read_text(encoding="utf-8"))
+    expected_operators = [
+        ("Conv", "udondnnConvolutionForward"),
+        ("Add", "udondnnOpTensor"),
+        ("Relu", "udondnnActivationForward"),
+        ("AveragePool", "udondnnPoolingForward"),
+        ("Flatten", "view"),
+        ("Gemm", "udonblasSgemm"),
+        ("Add", "udondnnOpTensor"),
+    ]
+    if [
+        (node["op_type"], node["provider"]) for node in onnx_plan["nodes"]
+    ] != expected_operators:
+        raise RuntimeError("MNIST ONNX graph was not assigned to UdonDNN/UdonBLAS")
+    expected_passes = [
+        (20, "mnist_conv", 9216),
+        (21, "mnist_pool", 144),
+        (22, "mnist_dense", 10),
+    ]
+    if [
+        (device_pass["id"], device_pass["kernel"], device_pass["fragments"])
+        for device_pass in onnx_plan["passes"]
+    ] != expected_passes:
+        raise RuntimeError("MNIST ONNX execution pass plan is not Device-compatible")
+    sys.path.insert(0, str(root / "runtime/onnx"))
+    from udon_onnx import parse_model
+
+    onnx_graph = parse_model(onnx_model.read_bytes())["graph"]
+
+    def onnx_initializer(name, shape):
+        tensor = onnx_graph["initializers"].get(name)
+        if tensor is None or tensor["shape"] != shape:
+            raise RuntimeError(
+                f"ONNX initializer {name!r} has shape "
+                f"{None if tensor is None else tensor['shape']}; expected {shape}"
+            )
+        return list(struct.unpack(f"<{len(tensor['raw']) // 4}f", tensor["raw"]))
+
     device_text = (source / "device.cl").read_text(encoding="utf-8")
     (output / "device_source.h").write_text(
         "#define UDONCL_DEVICE_SOURCE " + json.dumps(device_text) + "\n",
         encoding="utf-8",
     )
+    defines = {
+        "mnist_conv": "MNIST_CONV",
+        "mnist_pool": "MNIST_POOL",
+        "mnist_dense": "MNIST_DENSE",
+    }
     kernels = [
-        ("mnist_conv", 20, "MNIST_CONV"),
-        ("mnist_pool", 21, "MNIST_POOL"),
-        ("mnist_dense", 22, "MNIST_DENSE"),
+        (device_pass["kernel"], device_pass["id"], defines[device_pass["kernel"]])
+        for device_pass in onnx_plan["passes"]
     ]
     bundles = {}
     fragments = []
@@ -190,16 +228,26 @@ def main():
         shutil.copy2(source / "display.shader", staged / "display.shader")
         shutil.copy2(source / "pack.shader", staged / "pack.shader")
         shutil.copy2(source / "brush.shader", staged / "brush.shader")
+        shutil.copy2(onnx_model, staged / "model.onnx.bytes")
+        shutil.copy2(onnx_plan_path, staged / "onnx-plan.bytes")
         for name, identifier, _ in kernels:
             shutil.copy2(
                 bundles[identifier] / f"kernels/kernel_{identifier}.shader",
                 staged / f"kernels/kernel_{identifier}.shader",
             )
-        header = (source / "weights.h").read_text(encoding="utf-8")
-        conv_weights = read_weight_array(header, "kMnistConvWeight", 400)
-        conv_bias = read_weight_array(header, "kMnistConvBias", 16)
-        dense_weights = read_weight_array(header, "kMnistDenseWeight", 1440)
-        dense_bias = read_weight_array(header, "kMnistDenseBias", 10)
+        conv_weights = onnx_initializer("conv.weight", [16, 1, 5, 5])
+        conv_bias = onnx_initializer("conv.bias", [1, 16, 1, 1])
+        onnx_dense_weights = onnx_initializer("dense.weight", [144, 10])
+        dense_bias = onnx_initializer("dense.bias", [10])
+        dense_weights = [0.0] * 1440
+        for channel in range(16):
+            for pool_pixel in range(9):
+                onnx_feature = channel * 9 + pool_pixel
+                runtime_feature = pool_pixel * 16 + channel
+                for digit in range(10):
+                    dense_weights[digit * 144 + runtime_feature] = (
+                        onnx_dense_weights[onnx_feature * 10 + digit]
+                    )
         packed = [0.0] * 10800
         packed[784:1184] = conv_weights
         packed[1184:1200] = conv_bias
@@ -264,7 +312,26 @@ def main():
                     "kind": "bytes",
                     "path": "reference_blank_logits.bytes",
                 },
+                {
+                    "name": "onnx_model",
+                    "kind": "bytes",
+                    "path": "model.onnx.bytes",
+                },
+                {
+                    "name": "onnx_execution_plan",
+                    "kind": "bytes",
+                    "path": "onnx-plan.bytes",
+                },
             ],
+            "onnx": {
+                "ir_version": onnx_plan["ir_version"],
+                "opset": onnx_plan["opset"],
+                "nodes": len(onnx_plan["nodes"]),
+                "device_passes": len(onnx_plan["passes"]),
+                "providers": sorted(
+                    {node["provider"] for node in onnx_plan["nodes"]}
+                ),
+            },
         }
         (staged / "manifest.json").write_text(
             json.dumps(unity_manifest, indent=2), encoding="utf-8"

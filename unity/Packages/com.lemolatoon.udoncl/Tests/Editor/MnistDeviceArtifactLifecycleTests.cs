@@ -80,6 +80,24 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         }
 
         [Test]
+        public void ImportIncludesOnnxModelAndUdonLibraryExecutionPlan()
+        {
+            TextAsset model = AssetDatabase.LoadAssetAtPath<TextAsset>(
+                GeneratedRoot + "/Models/mnist.onnx.bytes"
+            );
+            Assert.NotNull(model);
+            Assert.That(model.bytes.Length, Is.GreaterThan(8000));
+            TextAsset plan = AssetDatabase.LoadAssetAtPath<TextAsset>(
+                GeneratedRoot + "/Models/onnx-plan.json.bytes"
+            );
+            Assert.NotNull(plan);
+            StringAssert.Contains("\"runtime\": \"udon-onnx\"", plan.text);
+            StringAssert.Contains("\"provider\": \"udondnnConvolutionForward\"", plan.text);
+            StringAssert.Contains("\"provider\": \"udondnnOpTensor\"", plan.text);
+            StringAssert.Contains("\"provider\": \"udonblasSgemm\"", plan.text);
+        }
+
+        [Test]
         public void BrushFragmentWritesTheDrawingRenderTexture()
         {
             RenderTexture drawing = Load<RenderTexture>("mnist_drawing.asset");

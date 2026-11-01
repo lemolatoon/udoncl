@@ -1,5 +1,6 @@
-"""Run the trained MNIST CNN through the Device fragment backend."""
+"""Run the trained MNIST ONNX graph through the Udon Device provider."""
 
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -23,4 +24,20 @@ result = subprocess.run(
 assert result.returncode == 0, (result.stdout, result.stderr)
 assert "mnist_device_predictions=10/10" in result.stdout
 assert "max_cpu_gpu_error=" in result.stdout
+plan = json.loads((output / "onnx-plan.json").read_text(encoding="utf-8"))
+assert plan["runtime"] == "udon-onnx"
+assert [node["provider"] for node in plan["nodes"]] == [
+    "udondnnConvolutionForward",
+    "udondnnOpTensor",
+    "udondnnActivationForward",
+    "udondnnPoolingForward",
+    "view",
+    "udonblasSgemm",
+    "udondnnOpTensor",
+]
+assert [(item["id"], item["fragments"]) for item in plan["passes"]] == [
+    (20, 9216),
+    (21, 144),
+    (22, 10),
+]
 print(result.stdout, end="")

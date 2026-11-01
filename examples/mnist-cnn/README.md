@@ -31,6 +31,15 @@ each output and uses three ordered passes: 9,216 convolution activations, 144
 pooled features, and 10 class logits. It renders all three fragment kernels and
 checks ten predictions and logits against the independent CPU implementation.
 
+Before compiling those passes, the run generates and imports a real ONNX model
+without depending on the Python `onnx` or protobuf packages. The initial Udon
+ONNX execution provider validates and shape-infers
+`Conv → Add → Relu → AveragePool → Flatten → Gemm → Add`, assigns the nodes to
+`udondnnConvolutionForward`, `udondnnOpTensor`,
+`udondnnActivationForward`, `udondnnPoolingForward`, and `udonblasSgemm`, then
+fuses them into the three Device passes. The emitted Unity bundle contains both
+`model.onnx` and the checked execution plan.
+
 The same run publishes `unity-bundle`. Its Udon Assembly Host packs the 28x28
 input and static weights, issues the convolution/pool/dense `VRCGraphics.Blit`
 sequence, and binds the packed logits to the display material. The Unity MCP

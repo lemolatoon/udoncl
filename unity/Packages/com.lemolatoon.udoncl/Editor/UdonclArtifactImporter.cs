@@ -293,6 +293,22 @@ namespace Lemolatoon.Udoncl.Editor
                 "reference_blank_logits",
                 "bytes"
             );
+            ValidatedResource onnxModelResource = FindResource(artifacts, "onnx_model", "bytes");
+            ValidatedResource onnxPlanResource = FindResource(
+                artifacts,
+                "onnx_execution_plan",
+                "bytes"
+            );
+            string modelDirectory = programRoot + "/Models";
+            EnsureFolders(modelDirectory);
+            transaction.CopyFile(
+                onnxModelResource.AbsolutePath,
+                modelDirectory + "/mnist.onnx.bytes"
+            );
+            transaction.CopyFile(
+                onnxPlanResource.AbsolutePath,
+                modelDirectory + "/onnx-plan.json.bytes"
+            );
             string packShaderPath = programRoot + "/Shaders/pack.shader";
             transaction.CopyFile(packShaderResource.AbsolutePath, packShaderPath);
             Shader packShader = AssetDatabase.LoadAssetAtPath<Shader>(packShaderPath);
