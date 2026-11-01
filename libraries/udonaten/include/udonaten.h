@@ -34,9 +34,11 @@ udonatenRmsNorm(udonatenHandle_t handle,
 /* ATen: _weight_int4pack_mm(input, packed_weight, group_size,
  *                           scales_and_zeros).
  *
+ * input is a contiguous logical [M,K] matrix and output is [M,N].
  * packed_weight is the backend-specific signed-INT4 packed layout.
  * scales_and_zeros has logical shape [K / group_size, N, 2] and applies
- * dequantized = signed_int4 * scale + zero. */
+ * dequantized = signed_int4 * scale + zero. Group sizes 32, 64, 128, and 256
+ * belong to the ATen contract; unsupported valid sizes return NOT_SUPPORTED. */
 udonatenStatus_t udonatenWeightInt4packMm(
     udonatenHandle_t handle, udonatenTensorDescriptor_t input_descriptor,
     const float *input, udonatenTensorDescriptor_t packed_weight_descriptor,

@@ -1,12 +1,11 @@
 #include "udonaten.h"
 #include <float.h>
 
-udonatenStatus_t udonatenBackendWeightInt4packMm(udonatenHandle_t handle, int n,
-                                                 int k, const float *input,
-                                                 const uint8_t *packed_weight,
-                                                 int group_size,
-                                                 const float *scales_and_zeros,
-                                                 float *output);
+udonatenStatus_t
+udonatenBackendWeightInt4packMm(udonatenHandle_t handle, int m, int n, int k,
+                                const float *input,
+                                const uint8_t *packed_weight, int group_size,
+                                const float *scales_and_zeros, float *output);
 
 udonatenStatus_t udonatenEmbedding(udonatenHandle_t handle,
                                    udonatenTensorDescriptor_t weight_descriptor,
@@ -68,14 +67,19 @@ udonatenStatus_t udonatenWeightInt4packMm(
              qparams_w);
   GET_TENSOR(output_descriptor, output_n, output_c, output_h, output_w);
 #undef GET_TENSOR
-  if (group_size != 32 || data_type != UDONDNN_DATA_FLOAT || input_n != 1 ||
-      input_c % group_size || input_h != 1 || input_w != 1 || packed_h != 1 ||
-      packed_w != 1 || packed_c != input_c / 2 ||
-      qparams_n != input_c / group_size || qparams_c != packed_n ||
-      qparams_h != 2 || qparams_w != 1 || output_n != 1 ||
-      output_c != packed_n || output_h != 1 || output_w != 1)
+  if (group_size != 32 && group_size != 64 && group_size != 128 &&
+      group_size != 256)
     return UDONDNN_STATUS_BAD_PARAM;
-  return udonatenBackendWeightInt4packMm(handle, packed_n, input_c, input,
-                                         packed_weight, (int)group_size,
+  if (group_size != 32)
+    return UDONDNN_STATUS_NOT_SUPPORTED;
+  if (data_type != UDONDNN_DATA_FLOAT || input_n <= 0 || input_c % group_size ||
+      input_h != 1 || input_w != 1 || packed_h != 1 || packed_w != 1 ||
+      packed_c != input_c / 2 || qparams_n != input_c / group_size ||
+      qparams_c != packed_n || qparams_h != 2 || qparams_w != 1 ||
+      output_n != input_n || output_c != packed_n || output_h != 1 ||
+      output_w != 1)
+    return UDONDNN_STATUS_BAD_PARAM;
+  return udonatenBackendWeightInt4packMm(handle, input_n, packed_n, input_c,
+                                         input, packed_weight, (int)group_size,
                                          scales_and_zeros, output);
 }

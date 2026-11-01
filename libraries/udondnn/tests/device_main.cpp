@@ -1002,13 +1002,15 @@ int main(int argc, char **argv) {
 
     /* K=256 forces two kernel-208 pages while the public ATen call remains a
      * single whole-matrix operation. */
-    constexpr int int4N = 32, int4K = 256, int4Group = 32;
-    std::vector<float> int4Input(int4K),
-        int4Qparams((int4K / int4Group) * int4N * 2), int4Actual(int4N),
-        int4Expected(int4N);
+    constexpr int int4M = 3, int4N = 32, int4K = 256, int4Group = 32;
+    std::vector<float> int4Input(int4M * int4K),
+        int4Qparams((int4K / int4Group) * int4N * 2), int4Actual(int4M * int4N),
+        int4Expected(int4M * int4N);
     std::vector<uint8_t> int4Packed(int4N * int4K / 2);
-    for (int inner = 0; inner < int4K; ++inner)
-      int4Input[inner] = value(inner, 173);
+    for (int matrixRow = 0; matrixRow < int4M; ++matrixRow)
+      for (int inner = 0; inner < int4K; ++inner)
+        int4Input[matrixRow * int4K + inner] =
+            value(inner + matrixRow * 19, 173 + matrixRow * 7);
     for (int block = 0; block < int4K / int4Group; ++block)
       for (int row = 0; row < int4N; ++row) {
         int qparams = (block * int4N + row) * 2;
@@ -1022,17 +1024,19 @@ int main(int argc, char **argv) {
         int4Packed[row * (int4K / 2) + inner / 2] =
             uint8_t((low & 15) | ((high & 15) << 4));
       }
-    for (int row = 0; row < int4N; ++row)
-      for (int inner = 0; inner < int4K; ++inner) {
-        uint8_t packed = int4Packed[row * (int4K / 2) + inner / 2];
-        int nibble = inner % 2 ? packed >> 4 : packed & 15;
-        int quantized = nibble >= 8 ? nibble - 16 : nibble;
-        int block = inner / int4Group;
-        int qparams = (block * int4N + row) * 2;
-        int4Expected[row] += (float(quantized) * int4Qparams[qparams] +
-                              int4Qparams[qparams + 1]) *
-                             int4Input[inner];
-      }
+    for (int matrixRow = 0; matrixRow < int4M; ++matrixRow)
+      for (int row = 0; row < int4N; ++row)
+        for (int inner = 0; inner < int4K; ++inner) {
+          uint8_t packed = int4Packed[row * (int4K / 2) + inner / 2];
+          int nibble = inner % 2 ? packed >> 4 : packed & 15;
+          int quantized = nibble >= 8 ? nibble - 16 : nibble;
+          int block = inner / int4Group;
+          int qparams = (block * int4N + row) * 2;
+          int4Expected[matrixRow * int4N + row] +=
+              (float(quantized) * int4Qparams[qparams] +
+               int4Qparams[qparams + 1]) *
+              int4Input[matrixRow * int4K + inner];
+        }
     udondnnTensorDescriptor_t int4InputDescriptor = 0, int4PackedDescriptor = 0,
                               int4QparamsDescriptor = 0,
                               int4OutputDescriptor = 0;
@@ -1044,10 +1048,10 @@ int main(int argc, char **argv) {
             UDONDNN_STATUS_SUCCESS, "create INT4 qparams descriptor");
     require(udondnnCreateTensorDescriptor(&int4OutputDescriptor),
             UDONDNN_STATUS_SUCCESS, "create INT4 output descriptor");
-    require(udondnnSetTensor4dDescriptor(int4InputDescriptor,
-                                         UDONDNN_TENSOR_NCHW,
-                                         UDONDNN_DATA_FLOAT, 1, int4K, 1, 1),
-            UDONDNN_STATUS_SUCCESS, "set INT4 input descriptor");
+    require(
+        udondnnSetTensor4dDescriptor(int4InputDescriptor, UDONDNN_TENSOR_NCHW,
+                                     UDONDNN_DATA_FLOAT, int4M, int4K, 1, 1),
+        UDONDNN_STATUS_SUCCESS, "set INT4 input descriptor");
     require(udondnnSetTensor4dDescriptor(
                 int4PackedDescriptor, UDONDNN_TENSOR_NCHW, UDONDNN_DATA_FLOAT,
                 int4N, int4K / 2, 1, 1),
@@ -1070,10 +1074,10 @@ int main(int argc, char **argv) {
                 int4QparamsDescriptor, UDONDNN_TENSOR_NCHW, UDONDNN_DATA_FLOAT,
                 int4K / int4Group, int4N, 2, 1),
             UDONDNN_STATUS_SUCCESS, "set INT4 qparams descriptor");
-    require(udondnnSetTensor4dDescriptor(int4OutputDescriptor,
-                                         UDONDNN_TENSOR_NCHW,
-                                         UDONDNN_DATA_FLOAT, 1, int4N, 1, 1),
-            UDONDNN_STATUS_SUCCESS, "set INT4 output descriptor");
+    require(
+        udondnnSetTensor4dDescriptor(int4OutputDescriptor, UDONDNN_TENSOR_NCHW,
+                                     UDONDNN_DATA_FLOAT, int4M, int4N, 1, 1),
+        UDONDNN_STATUS_SUCCESS, "set INT4 output descriptor");
     require(udonatenWeightInt4packMm(handle, int4InputDescriptor,
                                      int4Input.data(), int4PackedDescriptor,
                                      int4Packed.data(), int4Group,
@@ -1081,9 +1085,9 @@ int main(int argc, char **argv) {
                                      int4OutputDescriptor, int4Actual.data()),
             UDONDNN_STATUS_SUCCESS, "udonatenWeightInt4packMm");
     float int4MaximumError = 0.0f;
-    for (int row = 0; row < int4N; ++row)
+    for (size_t index = 0; index < int4Actual.size(); ++index)
       int4MaximumError = std::max(
-          int4MaximumError, std::abs(int4Actual[row] - int4Expected[row]));
+          int4MaximumError, std::abs(int4Actual[index] - int4Expected[index]));
     if (int4MaximumError > 0.0005f)
       throw std::runtime_error("UdonATen INT4 results diverged");
     require(udonatenWeightInt4packMm(handle, int4InputDescriptor,
@@ -1092,6 +1096,13 @@ int main(int argc, char **argv) {
                                      int4QparamsDescriptor, int4Qparams.data(),
                                      int4OutputDescriptor, int4Actual.data()),
             UDONDNN_STATUS_BAD_PARAM, "reject unsupported INT4 group size");
+    require(udonatenWeightInt4packMm(handle, int4InputDescriptor,
+                                     int4Input.data(), int4PackedDescriptor,
+                                     int4Packed.data(), 64,
+                                     int4QparamsDescriptor, int4Qparams.data(),
+                                     int4OutputDescriptor, int4Actual.data()),
+            UDONDNN_STATUS_NOT_SUPPORTED,
+            "report recognized but unsupported INT4 group size");
     for (udondnnTensorDescriptor_t descriptor :
          {int4InputDescriptor, int4PackedDescriptor, int4QparamsDescriptor,
           int4OutputDescriptor})

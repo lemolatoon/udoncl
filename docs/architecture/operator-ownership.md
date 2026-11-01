@@ -28,6 +28,11 @@ Authoritative sources:
   <https://github.com/pytorch/pytorch/blob/main/aten/src/ATen/native/cuda/layer_norm_kernel.cu>
 - TorchAO INT4 weight-only configuration and dispatch:
   <https://github.com/pytorch/ao/blob/main/torchao/quantization/quant_api.py>
+- ATen INT4 schema and CUDA implementation (`[M,K]` input, `[M,N]` output,
+  group sizes 32/64/128/256):
+  <https://github.com/pytorch/pytorch/blob/main/aten/src/ATen/native/native_functions.yaml>
+  and
+  <https://github.com/pytorch/pytorch/blob/main/aten/src/ATen/native/cuda/int4mm.cu>
 
 The existing `udondnnExtGatherForward`, `udondnnExtRmsNormalizationForward`,
 and `udondnnExtTileForward` names are provisional backend details. UdonATen may

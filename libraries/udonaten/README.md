@@ -18,11 +18,14 @@ The first supported inference operators are:
 - `udonatenWeightInt4packMm`, corresponding exactly in semantic argument order
   to ATen `_weight_int4pack_mm(input, packed_weight, group_size,
   scales_and_zeros)`. Its Device kernel applies signed INT4 dequantization as
-  `value * scale + zero`; one fragment independently owns each output feature.
+  `value * scale + zero`; the public input/output contract is `[M,K] → [M,N]`
+  and one fragment independently owns each output feature for a matrix row.
   Each active Device tile supports group size 32, up to 64 outputs and 128
-  input features. The private backend composes larger public calls from those
-  tiles; the first K tile replaces the output and later K tiles add their
-  partial sums without adding a non-ATen beta parameter to the public API.
+  input features. The private backend composes larger public calls and every M
+  row from those tiles; the first K tile replaces the output and later K tiles
+  add their partial sums without adding a non-ATen beta parameter to the public
+  API. ATen-recognized group sizes 64, 128, and 256 currently return
+  `NOT_SUPPORTED` rather than being misclassified as malformed calls.
 
 `libraries/udondnn/run_device.py` also emits the
 `unity-udonaten-int4-mm-bundle` reusable Unity artifact. Its manifest retains
