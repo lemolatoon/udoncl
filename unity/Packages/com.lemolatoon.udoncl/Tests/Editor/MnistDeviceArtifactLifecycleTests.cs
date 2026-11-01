@@ -105,6 +105,19 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             CollectionAssert.AreEqual(new[] { 9216, 9216 }, modelAsset.TextureSlotCapacities);
             CollectionAssert.AreEqual(new[] { 8192, 8192 }, modelAsset.TextureSlotWidths);
             CollectionAssert.AreEqual(new[] { 2, 2 }, modelAsset.TextureSlotHeights);
+            Assert.AreEqual(2, modelAsset.TextureArenaSlots.Length);
+            for (int index = 0; index < modelAsset.TextureArenaSlots.Length; ++index)
+            {
+                RenderTexture slot = modelAsset.TextureArenaSlots[index];
+                Assert.NotNull(slot);
+                Assert.AreEqual(8192, slot.width);
+                Assert.AreEqual(2, slot.height);
+                Assert.AreEqual(RenderTextureFormat.ARGB32, slot.format);
+                Assert.AreEqual(FilterMode.Point, slot.filterMode);
+                Assert.AreEqual(TextureWrapMode.Clamp, slot.wrapMode);
+                Assert.IsFalse(slot.useMipMap);
+                Assert.IsFalse(slot.sRGB);
+            }
         }
 
         [Test]

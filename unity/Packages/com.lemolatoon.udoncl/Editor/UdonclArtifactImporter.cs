@@ -1356,6 +1356,7 @@ namespace Lemolatoon.Udoncl.Editor
             int[] textureSlotCapacities = Array.Empty<int>();
             int[] textureSlotWidths = Array.Empty<int>();
             int[] textureSlotHeights = Array.Empty<int>();
+            RenderTexture[] textureArenaSlots = Array.Empty<RenderTexture>();
             // JsonUtility may materialize a default nested object even when an older
             // execution plan omits the optional field, so presence must be checked
             // against the source JSON for backward compatibility.
@@ -1375,6 +1376,7 @@ namespace Lemolatoon.Udoncl.Editor
                 textureSlotCapacities = new int[arena.slot_count];
                 textureSlotWidths = new int[arena.slot_count];
                 textureSlotHeights = new int[arena.slot_count];
+                textureArenaSlots = new RenderTexture[arena.slot_count];
                 long totalWords = 0;
                 for (int index = 0; index < arena.slot_count; ++index)
                 {
@@ -1391,6 +1393,13 @@ namespace Lemolatoon.Udoncl.Editor
                     textureSlotCapacities[index] = slot.capacity_words;
                     textureSlotWidths[index] = slot.width;
                     textureSlotHeights[index] = slot.height;
+                    textureArenaSlots[index] = CreateOrUpdateRgbaRenderTexture(
+                        transaction,
+                        programRoot,
+                        "onnx_arena_slot_" + index + ".asset",
+                        slot.width,
+                        slot.height
+                    );
                     totalWords += slot.capacity_words;
                 }
                 if (
@@ -1440,6 +1449,12 @@ namespace Lemolatoon.Udoncl.Editor
             SetIntArray(serialized.FindProperty("textureSlotCapacities"), textureSlotCapacities);
             SetIntArray(serialized.FindProperty("textureSlotWidths"), textureSlotWidths);
             SetIntArray(serialized.FindProperty("textureSlotHeights"), textureSlotHeights);
+            SerializedProperty arenaSlots = serialized.FindProperty("textureArenaSlots");
+            arenaSlots.arraySize = textureArenaSlots.Length;
+            for (int index = 0; index < textureArenaSlots.Length; ++index)
+                arenaSlots.GetArrayElementAtIndex(index).objectReferenceValue = textureArenaSlots[
+                    index
+                ];
             serialized.ApplyModifiedPropertiesWithoutUndo();
             EditorUtility.SetDirty(modelAsset);
             // Later stage-specific imports refresh the AssetDatabase before the
