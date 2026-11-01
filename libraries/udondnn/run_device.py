@@ -1354,6 +1354,142 @@ def main():
             shutil.rmtree(unity_rms_bundle)
         publish_bundle(staged, unity_rms_bundle)
 
+    # Package the public ATen-shaped INT4 tile separately from the legacy
+    # UdonBLAS Q4 backend. Build semantic packed-weight and [group,N,2]
+    # scale/zero inputs first, then expand only the active Device tile.
+    int4_n, int4_k, int4_group = 8, 64, 32
+    int4_row_stride = (int4_k // int4_group) * 18
+    int4_input = [
+        ((inner * 13 + 5) % 29 - 14) * 0.0625 for inner in range(int4_k)
+    ]
+    int4_packed = [0] * (int4_n * int4_k // 2)
+    int4_qparams = [0.0] * ((int4_k // int4_group) * int4_n * 2)
+    for block in range(int4_k // int4_group):
+        for row in range(int4_n):
+            qparam = (block * int4_n + row) * 2
+            int4_qparams[qparam] = 0.03125 * (row + block + 1)
+            int4_qparams[qparam + 1] = 0.015625 * (row - block)
+    for row in range(int4_n):
+        for inner in range(0, int4_k, 2):
+            low = (row * 5 + inner * 3 + 1) % 16 - 8
+            high = (row * 7 + (inner + 1) * 5 + 3) % 16 - 8
+            int4_packed[row * (int4_k // 2) + inner // 2] = (
+                (low & 15) | ((high & 15) << 4)
+            )
+    int4_reference = [0.0] * int4_n
+    for row in range(int4_n):
+        for inner in range(int4_k):
+            packed = int4_packed[row * (int4_k // 2) + inner // 2]
+            nibble = packed >> 4 if inner % 2 else packed & 15
+            quantized = nibble - 16 if nibble >= 8 else nibble
+            block = inner // int4_group
+            qparam = (block * int4_n + row) * 2
+            int4_reference[row] += (
+                quantized * int4_qparams[qparam] + int4_qparams[qparam + 1]
+            ) * int4_input[inner]
+    int4_state = [0.0] * 8192
+    for row in range(int4_n):
+        for block in range(int4_k // int4_group):
+            state_base = row * int4_row_stride + block * 18
+            packed_base = row * (int4_k // 2) + block * 16
+            for byte in range(16):
+                int4_state[state_base + byte] = float(
+                    int4_packed[packed_base + byte]
+                )
+            qparam = (block * int4_n + row) * 2
+            int4_state[state_base + 16] = int4_qparams[qparam]
+            int4_state[state_base + 17] = int4_qparams[qparam + 1]
+    int4_state[6144 : 6144 + int4_k] = int4_input
+
+    unity_int4_bundle = output / "unity-udonaten-int4-mm-bundle"
+    with tempfile.TemporaryDirectory(
+        prefix="unity-udonaten-int4-mm-", dir=output
+    ) as staging:
+        staged = Path(staging) / "bundle"
+        (staged / "kernels").mkdir(parents=True)
+        shutil.copy2(
+            root / "libraries/udonaten/unity/weight-int4pack-mm-host.uasm",
+            staged / "host.uasm",
+        )
+        shutil.copy2(
+            root / "libraries/udonaten/unity/weight-int4pack-mm-display.shader",
+            staged / "display.shader",
+        )
+        shutil.copy2(
+            int4_bundle / "kernels/kernel_208.shader",
+            staged / "kernels/kernel_208.shader",
+        )
+        (staged / "fixture_input.bytes").write_bytes(
+            struct.pack("<8192f", *int4_state)
+        )
+        (staged / "fixture_reference.bytes").write_bytes(
+            struct.pack(f"<{int4_n}f", *int4_reference)
+        )
+        int4_unity_manifest = {
+            "schema_version": 1,
+            "compiler_version": "0.1.0-dev",
+            "runtime_abi_version": 1,
+            "artifact_stage": "unity-udonaten-int4-mm",
+            "ready_for_unity": True,
+            "sdk_compatibility": {"sdk_version": "3.10.5", "extern_db_hash": None},
+            "target": {
+                "host_pointer_bits": 32,
+                "device_pointer_bits": 32,
+                "endianness": "little",
+                "platform": "VRChat-PC",
+            },
+            "program": {
+                "name": "udonaten_weight_int4pack_mm",
+                "assembly": "host.uasm",
+                "display_shader": "display.shader",
+            },
+            "exports": [
+                {
+                    "id": 1,
+                    "c_symbol": "udonatenWeightInt4packMm",
+                    "udon_event": "_run",
+                    "status_slot": "",
+                    "async": False,
+                }
+            ],
+            "device": {
+                "kernels": [
+                    {
+                        "id": 208,
+                        "name": "udonaten_weight_int4pack_mm",
+                        "shader": "kernels/kernel_208.shader",
+                    }
+                ]
+            },
+            "resources": [
+                {"name": "fixture_input", "kind": "bytes", "path": "fixture_input.bytes"},
+                {
+                    "name": "fixture_reference",
+                    "kind": "bytes",
+                    "path": "fixture_reference.bytes",
+                },
+            ],
+            "fixture": {
+                "input_shape": [1, int4_k],
+                "packed_weight_shape": [int4_n, int4_k // 2],
+                "scales_and_zeros_shape": [int4_k // int4_group, int4_n, 2],
+                "output_shape": [1, int4_n],
+                "group_size": int4_group,
+                "row_stride": int4_row_stride,
+            },
+        }
+        (staged / "manifest.json").write_text(
+            json.dumps(int4_unity_manifest, indent=2), encoding="utf-8"
+        )
+        if unity_int4_bundle.exists():
+            previous = json.loads(
+                (unity_int4_bundle / "manifest.json").read_text(encoding="utf-8")
+            )
+            if previous.get("artifact_stage") != "unity-udonaten-int4-mm":
+                raise RuntimeError("refusing to replace a non-UdonATen INT4 Unity bundle")
+            shutil.rmtree(unity_int4_bundle)
+        publish_bundle(staged, unity_int4_bundle)
+
     host_ir = output / "host.ll"
     imported = output / "host.imported.mlir"
     udonhl = output / "host.udonhl.mlir"

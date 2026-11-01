@@ -75,6 +75,18 @@ owned by one fragment. The public prefab exposes length, alpha, and both signed
 increments; its IUdonVM fixture validates negative input traversal and a
 non-unit output stride across 16 results.
 
+## UdonATen
+
+The `unity-udonaten-int4-mm` stage creates
+`UdonAtenWeightInt4packMm.prefab` for PyTorch/TorchAO's ATen
+`_weight_int4pack_mm(input, packed_weight, group_size, scales_and_zeros)`
+operator. It deliberately does not expose this operator as a UdonBLAS or
+UdonDNN extension. The artifact manifest records separate packed-weight and
+`[K/group_size,N,2]` scale/zero shapes; its active Device tile expands those
+inputs into an 8,192-word state texture and assigns each output feature to an
+independent fragment. The IUdonVM lifecycle fixture uses non-zero zero points,
+compares all eight outputs, and removes generated program and prefab assets.
+
 ## UdonDNN
 
 The `unity-udondnn-convolution` artifact stage creates

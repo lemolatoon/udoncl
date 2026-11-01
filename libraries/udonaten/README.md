@@ -22,6 +22,14 @@ The first supported inference operators are:
   The current active-tile profile supports group size 32, up to 64 outputs and
   128 input features.
 
+`libraries/udondnn/run_device.py` also emits the
+`unity-udonaten-int4-mm-bundle` reusable Unity artifact. Its manifest retains
+the semantic input, packed-weight, `[K/group_size,N,2]` scale/zero, and output
+shapes while the fixture expands one 8x64 active tile for Device dispatch.
+The package importer creates `UdonAtenWeightInt4packMm.prefab`; the Editor
+lifecycle test executes kernel 208 through SDK IUdonVM and validates non-zero
+zero points before deleting all generated assets.
+
 The implementation currently adapts the already validated UdonDNN prototype
 kernels. Those functions are backend details, not the public ownership model.
 Tile/repeat and external-weight page streaming remain before the Llama 8B
