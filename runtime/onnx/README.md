@@ -35,6 +35,11 @@ The general provider also lowers Add, Mul, Sub, Relu, Sigmoid, Tanh, and
 Softmax to their cuDNN-compatible UdonDNN entry points. The checked-in
 reinforcement-learning actor fixture uses these operators and Gemm entirely
 through `UdonOperatorExecutionProvider`, without a model-specific provider.
+The Tiny Llama fixture also emits a standard-operator, single-token decoder
+through this provider. For sequence length one, causal attention has one
+possible value and therefore reduces exactly to the value projection; the
+graph still exercises embedding Gather, RMSNormalization, projected residuals,
+SiLU expressed as Sigmoid+Mul, and the final vocabulary projection.
 Rank-2 through rank-4 ONNX MatMul, including broadcast batch dimensions used
 by attention, is expanded AOT into one or more tiled `udonblasSgemm` calls per
 output batch matrix.

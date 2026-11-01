@@ -407,6 +407,52 @@ gather_host_c = emit_c_host(gather_plan)
 assert "udondnnExtGatherForward(" in gather_host_c
 assert "int32_t *" in gather_host_c
 (output / "gather-host.c").write_text(gather_host_c, encoding="utf-8")
+
+tiny_custom_model_path = output / "tiny-llama-custom.onnx"
+tiny_custom_plan_path = output / "tiny-llama-custom-plan.json"
+tiny_standard_model_path = output / "tiny-llama-standard.onnx"
+tiny_standard_plan_path = output / "tiny-llama-standard-plan.json"
+tiny_result = subprocess.run(
+    [
+        sys.executable,
+        root / "examples/tiny-llama/generate_onnx.py",
+        "-o",
+        tiny_custom_model_path,
+        "--plan",
+        tiny_custom_plan_path,
+        "--standard-output",
+        tiny_standard_model_path,
+        "--standard-plan",
+        tiny_standard_plan_path,
+    ],
+    text=True,
+    capture_output=True,
+    timeout=60,
+)
+assert tiny_result.returncode == 0, (tiny_result.stdout, tiny_result.stderr)
+tiny_standard_plan = compile_operators(parse_model(tiny_standard_model_path.read_bytes()))
+assert tiny_standard_plan["execution_provider"] == "UdonOperatorExecutionProvider"
+assert len(tiny_standard_plan["nodes"]) == 16
+assert tiny_standard_plan["nodes"][0]["op_type"] == "Gather"
+assert tiny_standard_plan["nodes"][-1]["op_type"] == "Gemm"
+assert tiny_standard_plan["outputs"] == {"logits": [1, 16]}
+assert {node["op_type"] for node in tiny_standard_plan["nodes"]} == {
+    "Gather",
+    "Reshape",
+    "RMSNormalization",
+    "Gemm",
+    "Add",
+    "Sigmoid",
+    "Mul",
+}
+tiny_standard_host_c = emit_c_host(tiny_standard_plan)
+tiny_standard_host_uasm = emit_uasm_host(tiny_standard_plan)
+(output / "tiny-llama-standard-host.c").write_text(
+    tiny_standard_host_c, encoding="utf-8"
+)
+(output / "tiny-llama-standard-host.uasm").write_text(
+    tiny_standard_host_uasm, encoding="utf-8"
+)
 generated_sources = [
     output / "generic-host.c",
     output / "tiled-gemm-host.c",
@@ -416,6 +462,7 @@ generated_sources = [
     output / "llama-view-host.c",
     output / "rms-normalization-host.c",
     output / "gather-host.c",
+    output / "tiny-llama-standard-host.c",
 ]
 syntax_command = [
     c_compiler,

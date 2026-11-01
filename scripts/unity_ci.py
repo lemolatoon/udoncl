@@ -230,6 +230,9 @@ def main():
     environment["UDONCL_ONNX_RL_OPERATOR_AOT_UASM"] = str(
         (output / "onnx-aot/rl-policy-host.uasm").resolve()
     )
+    environment["UDONCL_ONNX_TINY_LLAMA_OPERATOR_AOT_UASM"] = str(
+        (output / "onnx-aot/tiny-llama-standard-host.uasm").resolve()
+    )
     try:
         run(
             [

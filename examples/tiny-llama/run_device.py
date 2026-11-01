@@ -10,6 +10,19 @@ import subprocess
 import struct
 import sys
 import tempfile
+import time
+
+
+def publish_bundle(staged, destination):
+    """Publish a generated directory after transient Windows scanners release it."""
+    for attempt in range(40):
+        try:
+            staged.rename(destination)
+            return
+        except PermissionError:
+            if attempt == 39:
+                raise
+            time.sleep(0.05)
 
 
 def main():
@@ -179,7 +192,7 @@ def main():
                 if previous.get("artifact_stage") != "native-device-prototype":
                     raise RuntimeError("refusing to replace a non-example bundle")
                 shutil.rmtree(bundle)
-            staged.rename(bundle)
+            publish_bundle(staged, bundle)
         manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
         kernel = manifest["device"]["kernels"][0]
         if (
@@ -330,7 +343,7 @@ def main():
             if previous.get("artifact_stage") != "unity-tiny-llama-prototype":
                 raise RuntimeError("refusing to replace a non-example Unity bundle")
             shutil.rmtree(unity_bundle)
-        staged.rename(unity_bundle)
+        publish_bundle(staged, unity_bundle)
 
     host_ir = output / "host.ll"
     imported = output / "host.imported.mlir"

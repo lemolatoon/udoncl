@@ -17,6 +17,11 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             "pass213Material"
         )]
         [TestCase("UDONCL_ONNX_RL_OPERATOR_AOT_UASM", "rl-policy-host.uasm", "pass209Material")]
+        [TestCase(
+            "UDONCL_ONNX_TINY_LLAMA_OPERATOR_AOT_UASM",
+            "tiny-llama-standard-host.uasm",
+            "pass214Material"
+        )]
         public void GeneratedOperatorPlanHostAssemblesWithSdk(
             string environmentName,
             string fallbackName,
