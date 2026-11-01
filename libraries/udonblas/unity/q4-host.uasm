@@ -1,0 +1,85 @@
+.data_start
+    .export inputState
+    .export outputState
+    .export q4Material
+    .export displayMaterial
+    .export m
+    .export k
+    .export lda
+    .export incx
+    .export incy
+    .export alpha
+    .export beta
+
+    inputState: %UnityEngineTexture, null
+    outputState: %UnityEngineRenderTexture, null
+    q4Material: %UnityEngineMaterial, null
+    displayMaterial: %UnityEngineMaterial, null
+    m: %SystemInt32, null
+    k: %SystemInt32, null
+    lda: %SystemInt32, null
+    incx: %SystemInt32, null
+    incy: %SystemInt32, null
+    alpha: %SystemSingle, null
+    beta: %SystemSingle, null
+
+    __inputName: %SystemString, "_VRC_Input"
+    __resultName: %SystemString, "_Result"
+    __mName: %SystemString, "_VRC_Arg2"
+    __kName: %SystemString, "_VRC_Arg3"
+    __ldaName: %SystemString, "_VRC_Arg4"
+    __incxName: %SystemString, "_VRC_Arg5"
+    __incyName: %SystemString, "_VRC_Arg6"
+    __alphaName: %SystemString, "_VRC_Arg7"
+    __betaName: %SystemString, "_VRC_Arg8"
+.data_end
+
+.code_start
+    .export _start
+    _start:
+        JUMP, 0xFFFFFFFC
+
+    .export _run
+    _run:
+        PUSH, q4Material
+        PUSH, __inputName
+        PUSH, inputState
+        EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
+        PUSH, q4Material
+        PUSH, __mName
+        PUSH, m
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, q4Material
+        PUSH, __kName
+        PUSH, k
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, q4Material
+        PUSH, __ldaName
+        PUSH, lda
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, q4Material
+        PUSH, __incxName
+        PUSH, incx
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, q4Material
+        PUSH, __incyName
+        PUSH, incy
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, q4Material
+        PUSH, __alphaName
+        PUSH, alpha
+        EXTERN, "UnityEngineMaterial.__SetFloat__SystemString_SystemSingle__SystemVoid"
+        PUSH, q4Material
+        PUSH, __betaName
+        PUSH, beta
+        EXTERN, "UnityEngineMaterial.__SetFloat__SystemString_SystemSingle__SystemVoid"
+        PUSH, inputState
+        PUSH, outputState
+        PUSH, q4Material
+        EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"
+        PUSH, displayMaterial
+        PUSH, __resultName
+        PUSH, outputState
+        EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
+        JUMP, 0xFFFFFFFC
+.code_end

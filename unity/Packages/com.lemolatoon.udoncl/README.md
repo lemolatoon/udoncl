@@ -60,6 +60,11 @@ profile supports matrices up to 16×16 and retains the cuBLAS column-major
 operand contract so tiled multi-pass implementations can lift that limit
 without changing the public C API.
 
+The `unity-udonblas-q4-gemv` stage exposes the quantized weight path used by
+large ONNX language models. It imports kernel 101, an 8,192-word packed state,
+the signed-Q4 fixture/reference pair, and a reusable prefab whose Udon program
+sets the tiled GEMV arguments and dispatches the generated Device shader.
+
 ## UdonDNN
 
 The `unity-udondnn-convolution` artifact stage creates

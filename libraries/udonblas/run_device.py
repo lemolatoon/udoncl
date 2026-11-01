@@ -275,6 +275,115 @@ def main():
             shutil.rmtree(unity_bundle)
         staged.rename(unity_bundle)
 
+    q4_m, q4_k, q4_lda, q4_incx, q4_incy = 5, 64, 36, 2, 3
+    q4_alpha, q4_beta = 0.75, -0.5
+    q4_matrix = [123.0] * (q4_m * q4_lda)
+    q4_x = [0.0] * (q4_k * q4_incx)
+    q4_y = [0.0] * (q4_m * q4_incy)
+
+    def q4_value(row, inner):
+        return ((row * 19 + inner * 7 + 5) % 16) - 8
+
+    for row in range(q4_m):
+        for block in range(q4_k // 32):
+            base = row * q4_lda + block * 17
+            for pair in range(16):
+                low = q4_value(row, block * 32 + pair * 2) & 15
+                high = q4_value(row, block * 32 + pair * 2 + 1) & 15
+                q4_matrix[base + pair] = float(low | (high << 4))
+            q4_matrix[base + 16] = 0.03125 * (block + row + 1)
+    for inner in range(q4_k):
+        q4_x[inner * q4_incx] = ((inner + 3) * (23 * 7 + 11) % 29 - 14) * 0.0625
+    for row in range(q4_m):
+        q4_y[row * q4_incy] = ((row + 3) * (29 * 7 + 11) % 29 - 14) * 0.0625
+    q4_expected = []
+    for row in range(q4_m):
+        product = 0.0
+        for inner in range(q4_k):
+            block = inner // 32
+            scale = q4_matrix[row * q4_lda + block * 17 + 16]
+            product += q4_value(row, inner) * scale * q4_x[inner * q4_incx]
+        q4_expected.append(q4_alpha * product + q4_beta * q4_y[row * q4_incy])
+    q4_packed = [0.0] * 8192
+    q4_packed[0 : len(q4_matrix)] = q4_matrix
+    for inner in range(q4_k):
+        q4_packed[6144 + inner * q4_incx] = q4_x[inner * q4_incx]
+    for row in range(q4_m):
+        q4_packed[6656 + row * q4_incy] = q4_y[row * q4_incy]
+
+    unity_q4_bundle = output / "unity-q4-bundle"
+    with tempfile.TemporaryDirectory(prefix="unity-udonblas-q4-", dir=output) as staging:
+        staged = Path(staging) / "bundle"
+        (staged / "kernels").mkdir(parents=True)
+        shutil.copy2(source / "unity/q4-host.uasm", staged / "host.uasm")
+        shutil.copy2(source / "unity/q4-display.shader", staged / "display.shader")
+        shutil.copy2(
+            q4_bundle / "kernels/kernel_101.shader",
+            staged / "kernels/kernel_101.shader",
+        )
+        (staged / "fixture_input.bytes").write_bytes(
+            struct.pack("<8192f", *q4_packed)
+        )
+        (staged / "fixture_reference.bytes").write_bytes(
+            struct.pack("<5f", *q4_expected)
+        )
+        q4_unity_manifest = {
+            "schema_version": 1,
+            "compiler_version": "0.1.0-dev",
+            "runtime_abi_version": 1,
+            "artifact_stage": "unity-udonblas-q4-gemv",
+            "ready_for_unity": True,
+            "sdk_compatibility": {"sdk_version": "3.10.5", "extern_db_hash": None},
+            "target": {
+                "host_pointer_bits": 32,
+                "device_pointer_bits": 32,
+                "endianness": "little",
+                "platform": "VRChat-PC",
+            },
+            "program": {
+                "name": "udonblas_q4_gemv",
+                "assembly": "host.uasm",
+                "display_shader": "display.shader",
+            },
+            "exports": [
+                {
+                    "id": 2,
+                    "c_symbol": "udonblasSgemvQ4",
+                    "udon_event": "_run",
+                    "status_slot": "",
+                    "async": False,
+                }
+            ],
+            "device": {
+                "kernels": [
+                    {
+                        "id": 101,
+                        "name": "udonblas_sgemv_q4",
+                        "shader": "kernels/kernel_101.shader",
+                    }
+                ]
+            },
+            "resources": [
+                {"name": "fixture_input", "kind": "bytes", "path": "fixture_input.bytes"},
+                {
+                    "name": "fixture_reference",
+                    "kind": "bytes",
+                    "path": "fixture_reference.bytes",
+                },
+            ],
+        }
+        (staged / "manifest.json").write_text(
+            json.dumps(q4_unity_manifest, indent=2), encoding="utf-8"
+        )
+        if unity_q4_bundle.exists():
+            previous = json.loads(
+                (unity_q4_bundle / "manifest.json").read_text(encoding="utf-8")
+            )
+            if previous.get("artifact_stage") != "unity-udonblas-q4-gemv":
+                raise RuntimeError("refusing to replace a non-UdonBLAS Q4 Unity bundle")
+            shutil.rmtree(unity_q4_bundle)
+        staged.rename(unity_q4_bundle)
+
     host_ir = output / "host.ll"
     imported = output / "host.imported.mlir"
     udonhl = output / "host.udonhl.mlir"

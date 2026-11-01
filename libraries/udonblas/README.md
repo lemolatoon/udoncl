@@ -19,6 +19,11 @@ representation. The current profile supports up to 64 output rows and 128
 input values per dispatch; higher-level inference code streams larger matrices
 as tiles.
 
+The build emits separate `unity-bundle` and `unity-q4-bundle` artifacts. Both
+are accepted by the UPM importer; the Q4 bundle includes its generated shader,
+UdonAsm host, prefab configuration, and a signed decode fixture validated by
+the SDK IUdonVM lifecycle suite.
+
 Run the real fragment-backed validation with:
 
 ```text
