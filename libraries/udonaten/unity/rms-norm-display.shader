@@ -1,4 +1,4 @@
-Shader "UdonCL/UdonDNN/RmsNormDisplay" {
+Shader "UdonCL/UdonATen/RmsNormDisplay" {
 Properties { _Result ("Packed RMS normalization result", 2D) = "black" {} }
 SubShader { Pass {
 CGPROGRAM

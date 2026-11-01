@@ -28,8 +28,8 @@ extern "C" size_t udondnn_batchnorm_cpu_gid;
 size_t udondnn_batchnorm_cpu_gid;
 extern "C" size_t udondnn_op_tensor_cpu_gid;
 size_t udondnn_op_tensor_cpu_gid;
-extern "C" size_t udondnn_rms_norm_cpu_gid;
-size_t udondnn_rms_norm_cpu_gid;
+extern "C" size_t udonaten_rms_norm_small_cpu_gid;
+size_t udonaten_rms_norm_small_cpu_gid;
 extern "C" size_t udonaten_embedding_cpu_gid;
 size_t udonaten_embedding_cpu_gid;
 extern "C" size_t udonaten_int4_cpu_gid;
@@ -1115,7 +1115,7 @@ int main(int argc, char **argv) {
       rmsMaximumError = std::max(
           rmsMaximumError, std::abs(rmsActual[index] - rmsExpected[index]));
     if (rmsMaximumError > 0.0005f)
-      throw std::runtime_error("UdonDNN RMS normalization results diverged");
+      throw std::runtime_error("UdonATen RMS normalization results diverged");
     require(udonatenRmsNorm(handle, rmsInputDescriptor, rmsInput.data(),
                             rmsNormalizedShape, 1, 0, nullptr, &rmsEpsilon,
                             rmsOutputDescriptor, rmsActual.data()),

@@ -55,8 +55,9 @@ Embedding now exposes only `udonatenEmbedding`; the former public
 `udondnnExtGatherForward` shortcut has been removed. Its Device kernel is named
 and packaged as UdonATen, following PyTorch's `embedding` delegation to
 CUDA `index_select`. ONNX plans and generated Host code expose that same
-UdonATen contract. RMSNorm now uses an UdonATen-owned
-Device kernel and is no longer exposed as a UdonDNN extension. Its arena
+UdonATen contract. Both the small packed RMSNorm kernel and the large two-pass
+path are UdonATen-owned and are no longer named or packaged as UdonDNN
+extensions. Its arena
 profile executes up to 16,384 words with normalized rows up to 4,096 words as
 an UdonATen-owned two-pass reduction and normalization, without CPU readback.
 The optional ATen weight is a separate readonly texture input rather than a

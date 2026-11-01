@@ -60,9 +60,10 @@ The package importer creates `UdonAtenWeightInt4packMm.prefab`; the Editor
 lifecycle test executes kernel 208 through SDK IUdonVM and validates non-zero
 zero points before deleting all generated assets.
 
-Pointwise operations, Embedding, and RMSNorm currently adapt already validated
-UdonDNN backend kernels. Those functions are backend details, not the public
-ownership model.
+Pointwise operations currently adapt validated UdonDNN backend kernels as a
+private implementation detail. Embedding and both the small packed and large
+two-pass RMSNorm Device paths are implemented and packaged directly in
+UdonATen.
 Tile and INT4 matrix multiplication have UdonATen-owned Device kernels.
 `libraries/udondnn/run_device.py` packages Tile as the reusable
 `unity-udonaten-tile-bundle`; the Unity importer creates

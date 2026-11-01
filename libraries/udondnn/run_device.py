@@ -86,7 +86,7 @@ def main():
     softmax_device = source / "device/softmax.cl"
     batchnorm_device = source / "device/batchnorm.cl"
     op_tensor_device = source / "device/op_tensor.cl"
-    rms_norm_device = source / "device/rms_norm.cl"
+    rms_norm_small_device = root / "libraries/udonaten/device/rms_norm_small.cl"
     embedding_device = root / "libraries/udonaten/device/embedding.cl"
     int4_device = root / "libraries/udonaten/device/weight_int4pack_mm.cl"
     tile_device = root / "libraries/udonaten/device/tile.cl"
@@ -103,7 +103,7 @@ def main():
     softmax_text = softmax_device.read_text(encoding="utf-8")
     batchnorm_text = batchnorm_device.read_text(encoding="utf-8")
     op_tensor_text = op_tensor_device.read_text(encoding="utf-8")
-    rms_norm_text = rms_norm_device.read_text(encoding="utf-8")
+    rms_norm_small_text = rms_norm_small_device.read_text(encoding="utf-8")
     embedding_text = embedding_device.read_text(encoding="utf-8")
     int4_text = int4_device.read_text(encoding="utf-8")
     tile_text = tile_device.read_text(encoding="utf-8")
@@ -127,7 +127,7 @@ def main():
         + "\n"
         + op_tensor_text
         + "\n"
-        + rms_norm_text
+        + rms_norm_small_text
         + "\n"
         + embedding_text
         + "\n"
@@ -240,10 +240,10 @@ def main():
     op_tensor_bundle = emit_device(
         "op-tensor", op_tensor_device, "udondnn_op_tensor", 205, 2048
     )
-    rms_norm_bundle = emit_device(
-        "rms-norm",
-        rms_norm_device,
-        "udondnn_ext_rms_normalization_forward",
+    rms_norm_small_bundle = emit_device(
+        "aten-rms-norm-small",
+        rms_norm_small_device,
+        "udonaten_rms_norm_small",
         206,
         2048,
     )
@@ -435,24 +435,29 @@ def main():
     ).read_text(encoding="utf-8")
     if '_VRC_Arg6 ("Arg6", Int)' not in op_tensor_shaderlab:
         raise RuntimeError("UdonDNN OpTensor integer uniforms are not Unity-compatible")
-    rms_norm_manifest = json.loads(
-        (rms_norm_bundle / "manifest.json").read_text(encoding="utf-8")
+    rms_norm_small_manifest = json.loads(
+        (rms_norm_small_bundle / "manifest.json").read_text(encoding="utf-8")
     )
-    rms_norm_kernel = rms_norm_manifest["device"]["kernels"][0]
+    rms_norm_small_kernel = rms_norm_small_manifest["device"]["kernels"][0]
     if (
-        rms_norm_kernel["name"] != "udondnn_ext_rms_normalization_forward"
-        or rms_norm_kernel["global_size"] != [2048, 1, 1]
-        or [argument["required_bytes"] for argument in rms_norm_kernel["args"][:2]]
+        rms_norm_small_kernel["name"] != "udonaten_rms_norm_small"
+        or rms_norm_small_kernel["global_size"] != [2048, 1, 1]
+        or [
+            argument["required_bytes"]
+            for argument in rms_norm_small_kernel["args"][:2]
+        ]
         != [8192, 8192]
-        or len(rms_norm_kernel["args"]) != 7
+        or len(rms_norm_small_kernel["args"]) != 7
     ):
-        raise RuntimeError("UdonDNN RMSNorm manifest does not match its packed ABI")
-    rms_norm_fragment = rms_norm_bundle / "kernels/kernel_206.hlsl"
-    rms_norm_shaderlab = (rms_norm_bundle / "kernels/kernel_206.shader").read_text(
-        encoding="utf-8"
-    )
-    if '_VRC_Arg3 ("Arg3", Int)' not in rms_norm_shaderlab:
-        raise RuntimeError("UdonDNN RMSNorm integer uniforms are not Unity-compatible")
+        raise RuntimeError("UdonATen RMSNorm manifest does not match its packed ABI")
+    rms_norm_small_fragment = rms_norm_small_bundle / "kernels/kernel_206.hlsl"
+    rms_norm_small_shaderlab = (
+        rms_norm_small_bundle / "kernels/kernel_206.shader"
+    ).read_text(encoding="utf-8")
+    if '_VRC_Arg3 ("Arg3", Int)' not in rms_norm_small_shaderlab:
+        raise RuntimeError(
+            "UdonATen RMSNorm integer uniforms are not Unity-compatible"
+        )
     aten_rms_reduce_manifest = json.loads(
         (aten_rms_reduce_bundle / "manifest.json").read_text(encoding="utf-8")
     )
@@ -655,7 +660,7 @@ def main():
         + '{203, 2048, 5, "udondnn_softmax_forward", softmax}, '
         + '{204, 4096, 5, "udondnn_batchnorm_inference", batchnorm}, '
         + '{205, 2048, 8, "udondnn_op_tensor", opTensor}, '
-        + '{206, 2048, 5, "udondnn_ext_rms_normalization_forward", rmsNorm}, '
+        + '{206, 2048, 5, "udonaten_rms_norm_small", rmsNorm}, '
         + '{207, 2048, 6, "udonaten_embedding", embedding}, '
         + '{208, 8192, 4, "udonaten_weight_int4pack_mm", int4}, '
         + '{209, 8192, 9, "udonaten_tile", tile}, '
@@ -1540,15 +1545,19 @@ def main():
     rms_packed[512 : 512 + len(rms_scale)] = rms_scale
     rms_packed[1024 : 1024 + len(rms_previous)] = rms_previous
     unity_rms_bundle = output / "unity-rms-norm-bundle"
-    with tempfile.TemporaryDirectory(prefix="unity-udondnn-rms-", dir=output) as staging:
+    with tempfile.TemporaryDirectory(prefix="unity-udonaten-rms-", dir=output) as staging:
         staged = Path(staging) / "bundle"
         (staged / "kernels").mkdir(parents=True)
-        shutil.copy2(source / "unity/rms-norm-host.uasm", staged / "host.uasm")
         shutil.copy2(
-            source / "unity/rms-norm-display.shader", staged / "display.shader"
+            root / "libraries/udonaten/unity/rms-norm-host.uasm",
+            staged / "host.uasm",
         )
         shutil.copy2(
-            rms_norm_bundle / "kernels/kernel_206.shader",
+            root / "libraries/udonaten/unity/rms-norm-display.shader",
+            staged / "display.shader",
+        )
+        shutil.copy2(
+            rms_norm_small_bundle / "kernels/kernel_206.shader",
             staged / "kernels/kernel_206.shader",
         )
         (staged / "fixture_input.bytes").write_bytes(struct.pack("<2048f", *rms_packed))
@@ -1559,7 +1568,7 @@ def main():
             "schema_version": 1,
             "compiler_version": "0.1.0-dev",
             "runtime_abi_version": 1,
-            "artifact_stage": "unity-udondnn-rms-norm",
+            "artifact_stage": "unity-udonaten-rms-norm",
             "ready_for_unity": True,
             "sdk_compatibility": {"sdk_version": "3.10.5", "extern_db_hash": None},
             "target": {
@@ -1569,7 +1578,7 @@ def main():
                 "platform": "VRChat-PC",
             },
             "program": {
-                "name": "udondnn_rms_norm",
+                "name": "udonaten_rms_norm",
                 "assembly": "host.uasm",
                 "display_shader": "display.shader",
             },
@@ -1586,7 +1595,7 @@ def main():
                 "kernels": [
                     {
                         "id": 206,
-                        "name": "udondnn_ext_rms_normalization_forward",
+                        "name": "udonaten_rms_norm_small",
                         "shader": "kernels/kernel_206.shader",
                     }
                 ]
@@ -1608,8 +1617,13 @@ def main():
             previous = json.loads(
                 (unity_rms_bundle / "manifest.json").read_text(encoding="utf-8")
             )
-            if previous.get("artifact_stage") != "unity-udondnn-rms-norm":
-                raise RuntimeError("refusing to replace a non-UdonDNN RMSNorm Unity bundle")
+            if previous.get("artifact_stage") not in (
+                "unity-udondnn-rms-norm",
+                "unity-udonaten-rms-norm",
+            ):
+                raise RuntimeError(
+                    "refusing to replace a non-UdonATen RMSNorm Unity bundle"
+                )
             shutil.rmtree(unity_rms_bundle)
         publish_bundle(staged, unity_rms_bundle)
 
@@ -2026,7 +2040,7 @@ def main():
     softmax_object = output / ("softmax-device" + object_suffix)
     batchnorm_object = output / ("batchnorm-device" + object_suffix)
     op_tensor_object = output / ("op-tensor-device" + object_suffix)
-    rms_norm_object = output / ("rms-norm-device" + object_suffix)
+    rms_norm_small_object = output / ("rms-norm-small-device" + object_suffix)
     embedding_object = output / ("embedding-device" + object_suffix)
     int4_object = output / ("weight-int4pack-mm-device" + object_suffix)
     tile_object = output / ("tile-device" + object_suffix)
@@ -2163,9 +2177,9 @@ def main():
             "-std=c11",
             "-ffp-contract=off",
             "-c",
-            rms_norm_device,
+            rms_norm_small_device,
             "-o",
-            rms_norm_object,
+            rms_norm_small_object,
         ]
     )
     run(
@@ -2290,7 +2304,7 @@ def main():
                 (softmax_fragment, "frag", "frag"),
                 (batchnorm_fragment, "frag", "frag"),
                 (op_tensor_fragment, "frag", "frag"),
-                (rms_norm_fragment, "frag", "frag"),
+                (rms_norm_small_fragment, "frag", "frag"),
                 (embedding_fragment, "frag", "frag"),
                 (int4_fragment, "frag", "frag"),
                 (tile_fragment, "frag", "frag"),
@@ -2330,7 +2344,7 @@ def main():
             softmax_fragment,
             batchnorm_fragment,
             op_tensor_fragment,
-            rms_norm_fragment,
+            rms_norm_small_fragment,
             embedding_fragment,
             int4_fragment,
             tile_fragment,
@@ -2365,7 +2379,7 @@ def main():
             "-DUDONDNN_SOFTMAX_OBJECT=" + softmax_object.as_posix(),
             "-DUDONDNN_BATCHNORM_OBJECT=" + batchnorm_object.as_posix(),
             "-DUDONDNN_OP_TENSOR_OBJECT=" + op_tensor_object.as_posix(),
-            "-DUDONDNN_RMS_NORM_OBJECT=" + rms_norm_object.as_posix(),
+            "-DUDONATEN_RMS_NORM_SMALL_OBJECT=" + rms_norm_small_object.as_posix(),
             "-DUDONATEN_EMBEDDING_OBJECT=" + embedding_object.as_posix(),
             "-DUDONATEN_INT4_OBJECT=" + int4_object.as_posix(),
             "-DUDONATEN_TILE_OBJECT=" + tile_object.as_posix(),
@@ -2390,7 +2404,7 @@ def main():
                 softmax_fragment,
                 batchnorm_fragment,
                 op_tensor_fragment,
-                rms_norm_fragment,
+                rms_norm_small_fragment,
                 embedding_fragment,
                 int4_fragment,
                 tile_fragment,

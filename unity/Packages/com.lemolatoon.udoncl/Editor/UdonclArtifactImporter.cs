@@ -299,9 +299,9 @@ namespace Lemolatoon.Udoncl.Editor
                         transaction.Commit();
                         return programRoot;
                     }
-                    if (artifacts.ArtifactStage == "unity-udondnn-rms-norm")
+                    if (artifacts.ArtifactStage == "unity-udonaten-rms-norm")
                     {
-                        ImportUdonDnnRmsNorm(
+                        ImportUdonAtenRmsNorm(
                             transaction,
                             artifacts,
                             programRoot,
@@ -1256,7 +1256,7 @@ namespace Lemolatoon.Udoncl.Editor
             );
         }
 
-        private static void ImportUdonDnnRmsNorm(
+        private static void ImportUdonAtenRmsNorm(
             AssetImportTransaction transaction,
             ValidatedArtifact artifacts,
             string programRoot,
@@ -1266,7 +1266,7 @@ namespace Lemolatoon.Udoncl.Editor
         )
         {
             if (!kernelMaterials.TryGetValue(206, out Material rmsNormMaterial))
-                throw new InvalidDataException("UdonDNN RMSNorm requires kernel id 206.");
+                throw new InvalidDataException("UdonATen RMSNorm requires kernel id 206.");
             ValidatedResource inputResource = FindResource(artifacts, "fixture_input", "bytes");
             ValidatedResource referenceResource = FindResource(
                 artifacts,
@@ -1276,7 +1276,7 @@ namespace Lemolatoon.Udoncl.Editor
             Texture2D input = CreateOrUpdateByteTexture(
                 transaction,
                 programRoot,
-                "udondnn_rms_norm_input.asset",
+                "udonaten_rms_norm_input.asset",
                 2048,
                 1,
                 File.ReadAllBytes(inputResource.AbsolutePath)
@@ -1284,7 +1284,7 @@ namespace Lemolatoon.Udoncl.Editor
             CreateOrUpdateByteTexture(
                 transaction,
                 programRoot,
-                "udondnn_rms_norm_reference.asset",
+                "udonaten_rms_norm_reference.asset",
                 64,
                 1,
                 File.ReadAllBytes(referenceResource.AbsolutePath)
@@ -1292,13 +1292,13 @@ namespace Lemolatoon.Udoncl.Editor
             RenderTexture output = CreateOrUpdateRgbaRenderTexture(
                 transaction,
                 programRoot,
-                "udondnn_rms_norm_output.asset",
+                "udonaten_rms_norm_output.asset",
                 2048,
                 1
             );
             displayMaterial.SetTexture("_Result", output);
             EditorUtility.SetDirty(displayMaterial);
-            CreateOrUpdateUdonDnnRmsNormPrefab(
+            CreateOrUpdateUdonAtenRmsNormPrefab(
                 transaction,
                 programRoot,
                 programAsset,
@@ -2930,7 +2930,7 @@ namespace Lemolatoon.Udoncl.Editor
             }
         }
 
-        private static void CreateOrUpdateUdonDnnRmsNormPrefab(
+        private static void CreateOrUpdateUdonAtenRmsNormPrefab(
             AssetImportTransaction transaction,
             string programRoot,
             UdonAssemblyProgramAsset programAsset,
@@ -2942,9 +2942,9 @@ namespace Lemolatoon.Udoncl.Editor
         {
             string prefabDirectory = programRoot + "/Prefabs";
             EnsureFolders(prefabDirectory);
-            string prefabPath = prefabDirectory + "/UdonDnnRmsNorm.prefab";
+            string prefabPath = prefabDirectory + "/UdonAtenRmsNorm.prefab";
             transaction.Track(prefabPath);
-            GameObject root = new GameObject("UdonDNN RMS normalization");
+            GameObject root = new GameObject("UdonATen RMS normalization");
             try
             {
                 root.transform.position = new Vector3(62.0f, 1.5f, 0.0f);
@@ -2952,7 +2952,7 @@ namespace Lemolatoon.Udoncl.Editor
                 collider.size = new Vector3(4.0f, 3.0f, 0.4f);
                 UdonBehaviour behaviour = root.AddComponent<UdonBehaviour>();
                 behaviour.programSource = programAsset;
-                behaviour.interactText = "Run UdonDNN RMS normalization";
+                behaviour.interactText = "Run UdonATen RMS normalization";
                 behaviour.proximity = 3.0f;
                 behaviour.SyncMethod = SyncType.None;
                 SetPublicVariable(behaviour, "packedState", packedState);
@@ -2970,7 +2970,7 @@ namespace Lemolatoon.Udoncl.Editor
                 serializedBehaviour.ApplyModifiedPropertiesWithoutUndo();
 
                 GameObject display = GameObject.CreatePrimitive(PrimitiveType.Cube);
-                display.name = "UdonDNN RMS normalization result";
+                display.name = "UdonATen RMS normalization result";
                 display.transform.SetParent(root.transform, false);
                 display.transform.localScale = new Vector3(4.0f, 3.0f, 0.12f);
                 Collider displayCollider = display.GetComponent<Collider>();
@@ -2981,7 +2981,7 @@ namespace Lemolatoon.Udoncl.Editor
                 PrefabUtility.SaveAsPrefabAsset(root, prefabPath, out bool success);
                 if (!success || AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath) == null)
                     throw new InvalidOperationException(
-                        "Could not create UdonDNN RMS normalization prefab: " + prefabPath
+                        "Could not create UdonATen RMS normalization prefab: " + prefabPath
                     );
             }
             finally

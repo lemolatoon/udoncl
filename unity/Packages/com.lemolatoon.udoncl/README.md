@@ -148,7 +148,7 @@ Device primitive for ONNX elementwise operators, bias application, and
 residual connections. Its IUdonVM lifecycle fixture covers six broadcast and
 NaN-policy combinations across 72 outputs.
 
-The `unity-udondnn-rms-norm` stage creates `UdonDnnRmsNorm.prefab` for the
+The `unity-udonaten-rms-norm` stage creates `UdonAtenRmsNorm.prefab` for the
 ATen-shaped `udonatenRmsNorm` operator used by ONNX. The small lifecycle
 fixture retains the validated packed backend, while 4,096-element Llama
 RMSNormalization uses UdonATen-owned reduction and finalization shaders with

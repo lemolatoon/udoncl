@@ -28,8 +28,8 @@
 #define UDONDNN_OP_TENSOR_B_OFFSET 512
 #define UDONDNN_OP_TENSOR_C_OFFSET 1024
 #define UDONDNN_OP_TENSOR_RESULT_OFFSET 1536
-#define UDONDNN_RMS_SCALE_OFFSET 512
-#define UDONDNN_RMS_RESULT_OFFSET 1536
+#define UDONATEN_RMS_SMALL_WEIGHT_OFFSET 512
+#define UDONATEN_RMS_SMALL_RESULT_OFFSET 1536
 #define UDONATEN_EMBEDDING_INDICES_OFFSET 512
 #define UDONATEN_EMBEDDING_RESULT_OFFSET 1024
 #define UDONATEN_INT4_WORDS 8192
@@ -108,7 +108,7 @@ static cl_kernel pooling_kernel;
 static cl_kernel softmax_kernel;
 static cl_kernel batchnorm_kernel;
 static cl_kernel op_tensor_kernel;
-static cl_kernel rms_norm_kernel;
+static cl_kernel rms_norm_small_kernel;
 static cl_kernel embedding_kernel;
 static cl_kernel weight_int4pack_mm_kernel;
 static cl_kernel tile_kernel;
@@ -235,8 +235,8 @@ static void clear_objects(void) {
     clReleaseKernel(weight_int4pack_mm_kernel);
   if (embedding_kernel)
     clReleaseKernel(embedding_kernel);
-  if (rms_norm_kernel)
-    clReleaseKernel(rms_norm_kernel);
+  if (rms_norm_small_kernel)
+    clReleaseKernel(rms_norm_small_kernel);
   if (op_tensor_kernel)
     clReleaseKernel(op_tensor_kernel);
   if (batchnorm_kernel)
@@ -287,7 +287,7 @@ static void clear_objects(void) {
   softmax_kernel = 0;
   batchnorm_kernel = 0;
   op_tensor_kernel = 0;
-  rms_norm_kernel = 0;
+  rms_norm_small_kernel = 0;
   embedding_kernel = 0;
   weight_int4pack_mm_kernel = 0;
   tile_kernel = 0;
@@ -438,12 +438,12 @@ udondnnStatus_t udondnnCreate(udondnnHandle_t *handle) {
       clSetKernelArg(op_tensor_kernel, 1, sizeof(output_buffer),
                      &output_buffer) != CL_SUCCESS)
     return execution_failure();
-  rms_norm_kernel =
-      clCreateKernel(program, "udondnn_ext_rms_normalization_forward", &status);
+  rms_norm_small_kernel =
+      clCreateKernel(program, "udonaten_rms_norm_small", &status);
   if (status != CL_SUCCESS ||
-      clSetKernelArg(rms_norm_kernel, 0, sizeof(input_buffer), &input_buffer) !=
-          CL_SUCCESS ||
-      clSetKernelArg(rms_norm_kernel, 1, sizeof(output_buffer),
+      clSetKernelArg(rms_norm_small_kernel, 0, sizeof(input_buffer),
+                     &input_buffer) != CL_SUCCESS ||
+      clSetKernelArg(rms_norm_small_kernel, 1, sizeof(output_buffer),
                      &output_buffer) != CL_SUCCESS)
     return execution_failure();
   embedding_kernel = clCreateKernel(program, "udonaten_embedding", &status);
@@ -1519,11 +1519,13 @@ udondnnStatus_t udonatenBackendRmsNorm(udondnnHandle_t handle, int words,
   for (index = 0; index < words; ++index)
     packed[index] = input[index];
   for (index = 0; index < normalized_words; ++index)
-    packed[UDONDNN_RMS_SCALE_OFFSET + index] = weight ? weight[index] : 1.0f;
+    packed[UDONATEN_RMS_SMALL_WEIGHT_OFFSET + index] =
+        weight ? weight[index] : 1.0f;
 
 #define SET_ATEN_RMS_ARGUMENT(slot, value)                                     \
   do {                                                                         \
-    status = clSetKernelArg(rms_norm_kernel, slot, sizeof(value), &(value));   \
+    status =                                                                   \
+        clSetKernelArg(rms_norm_small_kernel, slot, sizeof(value), &(value));  \
     if (status != CL_SUCCESS)                                                  \
       return UDONDNN_STATUS_EXECUTION_FAILED;                                  \
   } while (0)
@@ -1536,10 +1538,10 @@ udondnnStatus_t udonatenBackendRmsNorm(udondnnHandle_t handle, int words,
 
   if (clEnqueueWriteBuffer(queue, input_buffer, CL_TRUE, 0, sizeof(packed),
                            packed, 0, 0, 0) != CL_SUCCESS ||
-      clEnqueueNDRangeKernel(queue, rms_norm_kernel, 1, 0, &global, &local, 0,
-                             0, 0) != CL_SUCCESS ||
+      clEnqueueNDRangeKernel(queue, rms_norm_small_kernel, 1, 0, &global,
+                             &local, 0, 0, 0) != CL_SUCCESS ||
       clEnqueueReadBuffer(queue, output_buffer, CL_TRUE,
-                          UDONDNN_RMS_RESULT_OFFSET * sizeof(float),
+                          UDONATEN_RMS_SMALL_RESULT_OFFSET * sizeof(float),
                           (size_t)words * sizeof(float), result, 0, 0,
                           0) != CL_SUCCESS ||
       clFinish(queue) != CL_SUCCESS)

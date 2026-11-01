@@ -10,9 +10,9 @@ using VRC.Udon.Editor.ProgramSources;
 
 namespace Lemolatoon.Udoncl.Editor.Tests
 {
-    public sealed class UdonDnnRmsNormArtifactLifecycleTests
+    public sealed class UdonAtenRmsNormArtifactLifecycleTests
     {
-        private const string GeneratedRoot = "Assets/udoncl-generated/udondnn_rms_norm";
+        private const string GeneratedRoot = "Assets/udoncl-generated/udonaten_rms_norm";
 
         private static readonly float[] Epsilons = { 1.0e-5f, 1.0e-4f, 1.0e-3f, 0.0f };
         private static readonly float[] Alphas = { 1.0f, 0.75f, -1.25f, 0.5f };
@@ -24,7 +24,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             AssetDatabase.DeleteAsset(GeneratedRoot);
             UnityEditor.PackageManager.PackageInfo package =
                 UnityEditor.PackageManager.PackageInfo.FindForAssembly(
-                    typeof(UdonDnnRmsNormArtifactLifecycleTests).Assembly
+                    typeof(UdonAtenRmsNormArtifactLifecycleTests).Assembly
                 );
             Assert.NotNull(package, "Could not resolve the UdonCL package root.");
             string repository = Path.GetFullPath(
@@ -47,12 +47,12 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         public void ImportCreatesReusableRmsNormalizationPrefab()
         {
             GameObject prefab = AssetDatabase.LoadAssetAtPath<GameObject>(
-                GeneratedRoot + "/Prefabs/UdonDnnRmsNorm.prefab"
+                GeneratedRoot + "/Prefabs/UdonAtenRmsNorm.prefab"
             );
             Assert.NotNull(prefab);
             Assert.AreEqual(new Vector3(62.0f, 1.5f, 0.0f), prefab.transform.position);
             Assert.NotNull(prefab.GetComponent<BoxCollider>());
-            Transform display = prefab.transform.Find("UdonDNN RMS normalization result");
+            Transform display = prefab.transform.Find("UdonATen RMS normalization result");
             Assert.NotNull(display);
             Assert.IsNull(display.GetComponent<Collider>());
             UdonBehaviour behaviour = prefab.GetComponent<UdonBehaviour>();
@@ -81,20 +81,18 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 heap,
                 program,
                 "packedState",
-                Load<Texture2D>("Textures/udondnn_rms_norm_input.asset")
+                Load<Texture2D>("Textures/udonaten_rms_norm_input.asset")
             );
             RenderTexture output = Load<RenderTexture>(
-                "RenderTextures/udondnn_rms_norm_output.asset"
+                "RenderTextures/udonaten_rms_norm_output.asset"
             );
             Set(heap, program, "outputState", output);
-            Material material = Load<Material>(
-                "Materials/kernel_206_udondnn_ext_rms_normalization_forward.mat"
-            );
+            Material material = Load<Material>("Materials/kernel_206_udonaten_rms_norm_small.mat");
             Set(heap, program, "rmsNormMaterial", material);
             Set(heap, program, "displayMaterial", Load<Material>("Materials/display.mat"));
             Set(heap, program, "words", 16);
             Set(heap, program, "normalizedWords", 8);
-            Color32[] expected = Load<Texture2D>("Textures/udondnn_rms_norm_reference.asset")
+            Color32[] expected = Load<Texture2D>("Textures/udonaten_rms_norm_reference.asset")
                 .GetPixels32();
 
             float maximumError = 0.0f;
