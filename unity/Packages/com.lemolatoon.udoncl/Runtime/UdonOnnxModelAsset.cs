@@ -20,6 +20,9 @@ namespace Lemolatoon.Udoncl
         private string profile;
 
         [SerializeField]
+        private Object hostProgram;
+
+        [SerializeField]
         private Material[] passMaterials;
 
         public TextAsset Model => model;
@@ -29,6 +32,8 @@ namespace Lemolatoon.Udoncl
         public string ExecutionProvider => executionProvider;
 
         public string Profile => profile;
+
+        public Object HostProgram => hostProgram;
 
         public Material[] PassMaterials => passMaterials;
     }

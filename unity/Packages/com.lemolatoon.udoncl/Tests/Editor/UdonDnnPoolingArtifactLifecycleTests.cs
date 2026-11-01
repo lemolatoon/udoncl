@@ -38,7 +38,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             string bundle = Path.Combine(
                 repository,
                 "build",
-                "udondnn-pooling-run",
+                "udondnn-device-run",
                 "unity-pooling-bundle"
             );
             Assert.That(

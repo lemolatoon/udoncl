@@ -41,7 +41,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             string bundle = Path.Combine(
                 repository,
                 "build",
-                "udondnn-op-tensor-run",
+                "udondnn-device-run",
                 "unity-op-tensor-bundle"
             );
             Assert.That(

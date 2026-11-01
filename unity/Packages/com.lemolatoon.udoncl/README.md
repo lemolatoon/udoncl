@@ -10,8 +10,9 @@ manifest path and installs them as `Models/model.onnx.bytes` and
 `Models/execution-plan.json.bytes`; this is not tied to MNIST or Llama demo
 stages. It also creates a public `UdonOnnxModelAsset` containing those two
 assets, the provider/profile identity, and the ordered Material for every
-Device pass. Other Unity tooling can consume that stable asset without knowing
-the demo's artifact stage. Execution providers are registered in the host-side
+Device pass. The asset also exposes the generated Udon Host program, so other
+Unity tooling can bind the executable program and ordered Device materials
+without knowing the demo's artifact stage. Execution providers are registered in the host-side
 ONNX compiler and lower their graph or fusion into reusable UdonDNN/UdonBLAS
 Device passes.
 
@@ -115,3 +116,9 @@ NaN propagation, and four-dimensional NCHW broadcasting. This is the reusable
 Device primitive for ONNX elementwise operators, bias application, and
 residual connections. Its IUdonVM lifecycle fixture covers six broadcast and
 NaN-policy combinations across 72 outputs.
+
+The `unity-udondnn-rms-norm` stage creates `UdonDnnRmsNorm.prefab` for the
+explicit `udondnnExtRmsNormalizationForward` extension used by ONNX
+RMSNormalization. Input, scale, and previous output occupy separate packed
+regions; epsilon and alpha/beta are public host parameters. Its IUdonVM fixture
+executes four parameter combinations across two independently normalized rows.

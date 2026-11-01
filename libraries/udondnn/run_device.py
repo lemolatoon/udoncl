@@ -86,12 +86,14 @@ def main():
     softmax_device = source / "device/softmax.cl"
     batchnorm_device = source / "device/batchnorm.cl"
     op_tensor_device = source / "device/op_tensor.cl"
+    rms_norm_device = source / "device/rms_norm.cl"
     convolution_text = convolution_device.read_text(encoding="utf-8")
     activation_text = activation_device.read_text(encoding="utf-8")
     pooling_text = pooling_device.read_text(encoding="utf-8")
     softmax_text = softmax_device.read_text(encoding="utf-8")
     batchnorm_text = batchnorm_device.read_text(encoding="utf-8")
     op_tensor_text = op_tensor_device.read_text(encoding="utf-8")
+    rms_norm_text = rms_norm_device.read_text(encoding="utf-8")
     device_text = (
         convolution_text
         + "\n"
@@ -104,6 +106,8 @@ def main():
         + batchnorm_text
         + "\n"
         + op_tensor_text
+        + "\n"
+        + rms_norm_text
     )
     (output / "udondnn_device_source.h").write_text(
         "#define UDONDNN_DEVICE_SOURCE " + json.dumps(device_text) + "\n",
@@ -190,6 +194,13 @@ def main():
     )
     op_tensor_bundle = emit_device(
         "op-tensor", op_tensor_device, "udondnn_op_tensor", 205, 2048
+    )
+    rms_norm_bundle = emit_device(
+        "rms-norm",
+        rms_norm_device,
+        "udondnn_ext_rms_normalization_forward",
+        206,
+        2048,
     )
     manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
     kernel = manifest["device"]["kernels"][0]
@@ -307,6 +318,24 @@ def main():
     ).read_text(encoding="utf-8")
     if '_VRC_Arg6 ("Arg6", Int)' not in op_tensor_shaderlab:
         raise RuntimeError("UdonDNN OpTensor integer uniforms are not Unity-compatible")
+    rms_norm_manifest = json.loads(
+        (rms_norm_bundle / "manifest.json").read_text(encoding="utf-8")
+    )
+    rms_norm_kernel = rms_norm_manifest["device"]["kernels"][0]
+    if (
+        rms_norm_kernel["name"] != "udondnn_ext_rms_normalization_forward"
+        or rms_norm_kernel["global_size"] != [2048, 1, 1]
+        or [argument["required_bytes"] for argument in rms_norm_kernel["args"][:2]]
+        != [8192, 8192]
+        or len(rms_norm_kernel["args"]) != 7
+    ):
+        raise RuntimeError("UdonDNN RMSNorm manifest does not match its packed ABI")
+    rms_norm_fragment = rms_norm_bundle / "kernels/kernel_206.hlsl"
+    rms_norm_shaderlab = (rms_norm_bundle / "kernels/kernel_206.shader").read_text(
+        encoding="utf-8"
+    )
+    if '_VRC_Arg3 ("Arg3", Int)' not in rms_norm_shaderlab:
+        raise RuntimeError("UdonDNN RMSNorm integer uniforms are not Unity-compatible")
     (output / "Bindings.h").write_text(
         "inline const char *deviceSource() { return "
         + json.dumps(device_text)
@@ -314,13 +343,15 @@ def main():
         + "inline std::vector<native_opencl::GatherBinding> manifestBindings("
         + "const std::string &convolution, const std::string &activation, "
         + "const std::string &pooling, const std::string &softmax, "
-        + "const std::string &batchnorm, const std::string &opTensor) { return {"
+        + "const std::string &batchnorm, const std::string &opTensor, "
+        + "const std::string &rmsNorm) { return {"
         + '{200, 2048, 7, "udondnn_convolution_forward", convolution}, '
         + '{201, 2048, 6, "udondnn_activation_forward", activation}, '
         + '{202, 2048, 7, "udondnn_pooling_forward", pooling}, '
         + '{203, 2048, 5, "udondnn_softmax_forward", softmax}, '
         + '{204, 4096, 5, "udondnn_batchnorm_inference", batchnorm}, '
-        + '{205, 2048, 8, "udondnn_op_tensor", opTensor}}; }\n',
+        + '{205, 2048, 8, "udondnn_op_tensor", opTensor}, '
+        + '{206, 2048, 5, "udondnn_ext_rms_normalization_forward", rmsNorm}}; }\n',
         encoding="utf-8",
     )
 
@@ -1162,6 +1193,110 @@ def main():
             shutil.rmtree(unity_op_tensor_bundle)
         publish_bundle(staged, unity_op_tensor_bundle)
 
+    rms_input = [((index * 17 + 5) % 29 - 14) * 0.125 for index in range(16)]
+    rms_scale = [0.5 + 0.125 * index for index in range(8)]
+    rms_previous = [((index * 11 + 3) % 19 - 9) * 0.0625 for index in range(16)]
+    rms_cases = [
+        (1.0e-5, 1.0, 0.0),
+        (1.0e-4, 0.75, -0.25),
+        (1.0e-3, -1.25, 0.5),
+        (0.0, 0.5, 1.0),
+    ]
+
+    def rms_reference(epsilon, alpha, beta):
+        values = []
+        for row in range(2):
+            square_sum = sum(rms_input[row * 8 + column] ** 2 for column in range(8))
+            inverse_rms = 1.0 / math.sqrt(square_sum / 8.0 + epsilon)
+            for column in range(8):
+                element = row * 8 + column
+                values.append(
+                    alpha * rms_input[element] * inverse_rms * rms_scale[column]
+                    + beta * rms_previous[element]
+                )
+        return values
+
+    rms_reference_values = []
+    for rms_case in rms_cases:
+        rms_reference_values.extend(rms_reference(*rms_case))
+    rms_packed = [0.0] * 2048
+    rms_packed[: len(rms_input)] = rms_input
+    rms_packed[512 : 512 + len(rms_scale)] = rms_scale
+    rms_packed[1024 : 1024 + len(rms_previous)] = rms_previous
+    unity_rms_bundle = output / "unity-rms-norm-bundle"
+    with tempfile.TemporaryDirectory(prefix="unity-udondnn-rms-", dir=output) as staging:
+        staged = Path(staging) / "bundle"
+        (staged / "kernels").mkdir(parents=True)
+        shutil.copy2(source / "unity/rms-norm-host.uasm", staged / "host.uasm")
+        shutil.copy2(
+            source / "unity/rms-norm-display.shader", staged / "display.shader"
+        )
+        shutil.copy2(
+            rms_norm_bundle / "kernels/kernel_206.shader",
+            staged / "kernels/kernel_206.shader",
+        )
+        (staged / "fixture_input.bytes").write_bytes(struct.pack("<2048f", *rms_packed))
+        (staged / "fixture_reference.bytes").write_bytes(
+            struct.pack("<64f", *rms_reference_values)
+        )
+        rms_unity_manifest = {
+            "schema_version": 1,
+            "compiler_version": "0.1.0-dev",
+            "runtime_abi_version": 1,
+            "artifact_stage": "unity-udondnn-rms-norm",
+            "ready_for_unity": True,
+            "sdk_compatibility": {"sdk_version": "3.10.5", "extern_db_hash": None},
+            "target": {
+                "host_pointer_bits": 32,
+                "device_pointer_bits": 32,
+                "endianness": "little",
+                "platform": "VRChat-PC",
+            },
+            "program": {
+                "name": "udondnn_rms_norm",
+                "assembly": "host.uasm",
+                "display_shader": "display.shader",
+            },
+            "exports": [
+                {
+                    "id": 1,
+                    "c_symbol": "udondnnExtRmsNormalizationForward",
+                    "udon_event": "_run",
+                    "status_slot": "",
+                    "async": False,
+                }
+            ],
+            "device": {
+                "kernels": [
+                    {
+                        "id": 206,
+                        "name": "udondnn_ext_rms_normalization_forward",
+                        "shader": "kernels/kernel_206.shader",
+                    }
+                ]
+            },
+            "resources": [
+                {"name": "fixture_input", "kind": "bytes", "path": "fixture_input.bytes"},
+                {
+                    "name": "fixture_reference",
+                    "kind": "bytes",
+                    "path": "fixture_reference.bytes",
+                },
+            ],
+            "fixture": {"input_shape": [2, 1, 1, 8], "cases": len(rms_cases)},
+        }
+        (staged / "manifest.json").write_text(
+            json.dumps(rms_unity_manifest, indent=2), encoding="utf-8"
+        )
+        if unity_rms_bundle.exists():
+            previous = json.loads(
+                (unity_rms_bundle / "manifest.json").read_text(encoding="utf-8")
+            )
+            if previous.get("artifact_stage") != "unity-udondnn-rms-norm":
+                raise RuntimeError("refusing to replace a non-UdonDNN RMSNorm Unity bundle")
+            shutil.rmtree(unity_rms_bundle)
+        publish_bundle(staged, unity_rms_bundle)
+
     host_ir = output / "host.ll"
     imported = output / "host.imported.mlir"
     udonhl = output / "host.udonhl.mlir"
@@ -1202,6 +1337,7 @@ def main():
     softmax_object = output / ("softmax-device" + object_suffix)
     batchnorm_object = output / ("batchnorm-device" + object_suffix)
     op_tensor_object = output / ("op-tensor-device" + object_suffix)
+    rms_norm_object = output / ("rms-norm-device" + object_suffix)
     run([clang, *runtime_flags, "-c", native_ir, "-o", host_object])
     run(
         [
@@ -1287,6 +1423,20 @@ def main():
             op_tensor_object,
         ]
     )
+    run(
+        [
+            clang,
+            *runtime_flags,
+            "-x",
+            "c",
+            "-std=c11",
+            "-ffp-contract=off",
+            "-c",
+            rms_norm_device,
+            "-o",
+            rms_norm_object,
+        ]
+    )
 
     vertex = output / "fullscreen.hlsl"
     vertex.write_text(
@@ -1306,6 +1456,7 @@ def main():
                 (softmax_fragment, "frag", "frag"),
                 (batchnorm_fragment, "frag", "frag"),
                 (op_tensor_fragment, "frag", "frag"),
+                (rms_norm_fragment, "frag", "frag"),
                 (vertex, "vert", "vert"),
             ]
         ):
@@ -1333,6 +1484,7 @@ def main():
             softmax_fragment,
             batchnorm_fragment,
             op_tensor_fragment,
+            rms_norm_fragment,
             vertex,
         ) = compiled
 
@@ -1354,6 +1506,7 @@ def main():
             "-DUDONDNN_SOFTMAX_OBJECT=" + softmax_object.as_posix(),
             "-DUDONDNN_BATCHNORM_OBJECT=" + batchnorm_object.as_posix(),
             "-DUDONDNN_OP_TENSOR_OBJECT=" + op_tensor_object.as_posix(),
+            "-DUDONDNN_RMS_NORM_OBJECT=" + rms_norm_object.as_posix(),
             "-DUDONDNN_BINDINGS_DIR=" + output.as_posix(),
         ]
     )
@@ -1369,6 +1522,7 @@ def main():
                 softmax_fragment,
                 batchnorm_fragment,
                 op_tensor_fragment,
+                rms_norm_fragment,
                 vertex,
             ]
         ),

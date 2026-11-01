@@ -1,0 +1,71 @@
+.data_start
+    .export packedState
+    .export outputState
+    .export rmsNormMaterial
+    .export displayMaterial
+    .export words
+    .export normalizedWords
+    .export epsilon
+    .export alpha
+    .export beta
+
+    packedState: %UnityEngineTexture, null
+    outputState: %UnityEngineRenderTexture, null
+    rmsNormMaterial: %UnityEngineMaterial, null
+    displayMaterial: %UnityEngineMaterial, null
+    words: %SystemInt32, null
+    normalizedWords: %SystemInt32, null
+    epsilon: %SystemSingle, null
+    alpha: %SystemSingle, null
+    beta: %SystemSingle, null
+
+    __inputName: %SystemString, "_VRC_Input"
+    __resultName: %SystemString, "_Result"
+    __wordsName: %SystemString, "_VRC_Arg2"
+    __normalizedWordsName: %SystemString, "_VRC_Arg3"
+    __epsilonName: %SystemString, "_VRC_Arg4"
+    __alphaName: %SystemString, "_VRC_Arg5"
+    __betaName: %SystemString, "_VRC_Arg6"
+.data_end
+
+.code_start
+    .export _start
+    _start:
+        JUMP, 0xFFFFFFFC
+
+    .export _run
+    _run:
+        PUSH, rmsNormMaterial
+        PUSH, __inputName
+        PUSH, packedState
+        EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
+        PUSH, rmsNormMaterial
+        PUSH, __wordsName
+        PUSH, words
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, rmsNormMaterial
+        PUSH, __normalizedWordsName
+        PUSH, normalizedWords
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, rmsNormMaterial
+        PUSH, __epsilonName
+        PUSH, epsilon
+        EXTERN, "UnityEngineMaterial.__SetFloat__SystemString_SystemSingle__SystemVoid"
+        PUSH, rmsNormMaterial
+        PUSH, __alphaName
+        PUSH, alpha
+        EXTERN, "UnityEngineMaterial.__SetFloat__SystemString_SystemSingle__SystemVoid"
+        PUSH, rmsNormMaterial
+        PUSH, __betaName
+        PUSH, beta
+        EXTERN, "UnityEngineMaterial.__SetFloat__SystemString_SystemSingle__SystemVoid"
+        PUSH, packedState
+        PUSH, outputState
+        PUSH, rmsNormMaterial
+        EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"
+        PUSH, displayMaterial
+        PUSH, __resultName
+        PUSH, outputState
+        EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
+        JUMP, 0xFFFFFFFC
+.code_end

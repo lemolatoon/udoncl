@@ -46,7 +46,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             string bundle = Path.Combine(
                 repository,
                 "build",
-                "udondnn-batchnorm-run",
+                "udondnn-device-run",
                 "unity-batchnorm-bundle"
             );
             Assert.That(

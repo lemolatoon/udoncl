@@ -124,6 +124,15 @@ def prepare_fixtures(root: Path, build: Path, output: Path):
             ],
             timeout=1200,
         )
+    run(
+        [
+            sys.executable,
+            root / "tests/boundary/onnx_runtime.py",
+            root,
+            output / "onnx-aot",
+        ],
+        timeout=120,
+    )
     return (lowering / "scalar.uasm").resolve()
 
 
@@ -209,6 +218,18 @@ def main():
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     environment = dict(os.environ)
     environment["UDONCL_LOWERED_UASM"] = str(assembly)
+    environment["UDONCL_ONNX_AOT_UASM"] = str(
+        (output / "onnx-aot/generic-host.uasm").resolve()
+    )
+    environment["UDONCL_ONNX_TILED_AOT_UASM"] = str(
+        (output / "onnx-aot/tiled-gemm-host.uasm").resolve()
+    )
+    environment["UDONCL_ONNX_MNIST_OPERATOR_AOT_UASM"] = str(
+        (output / "onnx-aot/mnist-operators-host.uasm").resolve()
+    )
+    environment["UDONCL_ONNX_RL_OPERATOR_AOT_UASM"] = str(
+        (output / "onnx-aot/rl-policy-host.uasm").resolve()
+    )
     try:
         run(
             [

@@ -193,6 +193,14 @@ udondnnStatus_t udondnnOpTensor(
     udondnnTensorDescriptor_t b_descriptor, const float *b, const float *beta,
     udondnnTensorDescriptor_t c_descriptor, float *c);
 
+/* UdonDNN extension API. This operation is not part of cuDNN Legacy. */
+udondnnStatus_t udondnnExtRmsNormalizationForward(
+    udondnnHandle_t handle, const float *alpha,
+    udondnnTensorDescriptor_t input_descriptor, const float *input,
+    udondnnTensorDescriptor_t scale_descriptor, const float *scale,
+    float epsilon, const float *beta,
+    udondnnTensorDescriptor_t output_descriptor, float *output);
+
 #ifdef __cplusplus
 }
 #endif

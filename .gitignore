@@ -4,3 +4,4 @@ __pycache__/
 /CMakeUserPresets.json
 /.vs/
 /*.alf
+/.env

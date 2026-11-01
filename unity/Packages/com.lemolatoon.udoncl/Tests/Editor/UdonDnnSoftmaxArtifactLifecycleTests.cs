@@ -38,7 +38,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             string bundle = Path.Combine(
                 repository,
                 "build",
-                "udondnn-softmax-run",
+                "udondnn-device-run",
                 "unity-softmax-bundle"
             );
             Assert.That(

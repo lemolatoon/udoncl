@@ -23,6 +23,8 @@ extern "C" size_t udondnn_batchnorm_cpu_gid;
 size_t udondnn_batchnorm_cpu_gid;
 extern "C" size_t udondnn_op_tensor_cpu_gid;
 size_t udondnn_op_tensor_cpu_gid;
+extern "C" size_t udondnn_rms_norm_cpu_gid;
+size_t udondnn_rms_norm_cpu_gid;
 
 namespace {
 struct Case {
@@ -343,17 +345,19 @@ void opTensorReference(const OpTensorCase &test, const std::vector<float> &a,
 } // namespace
 
 int main(int argc, char **argv) {
-  if (argc != 8) {
-    std::cerr << "usage: udondnn-device convolution-fragment "
-                 "activation-fragment pooling-fragment softmax-fragment "
-                 "batchnorm-fragment op-tensor-fragment vertex\n";
+  if (argc != 9) {
+    std::cerr
+        << "usage: udondnn-device convolution-fragment "
+           "activation-fragment pooling-fragment softmax-fragment "
+           "batchnorm-fragment op-tensor-fragment rmsnorm-fragment vertex\n";
     return 2;
   }
   try {
-    native_opencl::Session session(
-        deviceSource(),
-        manifestBindings(argv[1], argv[2], argv[3], argv[4], argv[5], argv[6]),
-        argv[7]);
+    native_opencl::Session session(deviceSource(),
+                                   manifestBindings(argv[1], argv[2], argv[3],
+                                                    argv[4], argv[5], argv[6],
+                                                    argv[7]),
+                                   argv[8]);
     udondnnHandle_t handle = 0;
     require(udondnnCreate(&handle), UDONDNN_STATUS_SUCCESS, "udondnnCreate");
     const std::array<Case, 5> cases{{
@@ -878,6 +882,68 @@ int main(int argc, char **argv) {
     if (opTensorMaximumError > 0.0005f)
       throw std::runtime_error("UdonDNN OpTensor CPU/Device results diverged");
 
+    udondnnTensorDescriptor_t rmsInputDescriptor = 0, rmsScaleDescriptor = 0,
+                              rmsOutputDescriptor = 0;
+    std::vector<float> rmsInput(16), rmsScale(8), rmsActual(16),
+        rmsExpected(16);
+    const float rmsAlpha = 0.75f, rmsBeta = -0.25f, rmsEpsilon = 1.0e-5f;
+    float rmsMaximumError = 0.0f;
+    for (int index = 0; index < 16; ++index) {
+      rmsInput[index] = value(index, 149) * 3.0f;
+      rmsActual[index] = value(index, 151);
+      rmsExpected[index] = rmsActual[index];
+    }
+    for (int index = 0; index < 8; ++index)
+      rmsScale[index] = 0.5f + 0.125f * float(index);
+    for (int row = 0; row < 2; ++row) {
+      float squareSum = 0.0f;
+      for (int column = 0; column < 8; ++column) {
+        float sample = rmsInput[row * 8 + column];
+        squareSum += sample * sample;
+      }
+      float inverseRms = 1.0f / std::sqrt(squareSum / 8.0f + rmsEpsilon);
+      for (int column = 0; column < 8; ++column) {
+        int index = row * 8 + column;
+        rmsExpected[index] =
+            rmsAlpha * rmsInput[index] * inverseRms * rmsScale[column] +
+            rmsBeta * rmsExpected[index];
+      }
+    }
+    require(udondnnCreateTensorDescriptor(&rmsInputDescriptor),
+            UDONDNN_STATUS_SUCCESS, "create RMS input descriptor");
+    require(udondnnCreateTensorDescriptor(&rmsScaleDescriptor),
+            UDONDNN_STATUS_SUCCESS, "create RMS scale descriptor");
+    require(udondnnCreateTensorDescriptor(&rmsOutputDescriptor),
+            UDONDNN_STATUS_SUCCESS, "create RMS output descriptor");
+    require(udondnnSetTensor4dDescriptor(rmsInputDescriptor,
+                                         UDONDNN_TENSOR_NCHW,
+                                         UDONDNN_DATA_FLOAT, 2, 1, 1, 8),
+            UDONDNN_STATUS_SUCCESS, "set RMS input descriptor");
+    require(udondnnSetTensor4dDescriptor(rmsScaleDescriptor,
+                                         UDONDNN_TENSOR_NCHW,
+                                         UDONDNN_DATA_FLOAT, 1, 1, 1, 8),
+            UDONDNN_STATUS_SUCCESS, "set RMS scale descriptor");
+    require(udondnnSetTensor4dDescriptor(rmsOutputDescriptor,
+                                         UDONDNN_TENSOR_NCHW,
+                                         UDONDNN_DATA_FLOAT, 2, 1, 1, 8),
+            UDONDNN_STATUS_SUCCESS, "set RMS output descriptor");
+    require(udondnnExtRmsNormalizationForward(
+                handle, &rmsAlpha, rmsInputDescriptor, rmsInput.data(),
+                rmsScaleDescriptor, rmsScale.data(), rmsEpsilon, &rmsBeta,
+                rmsOutputDescriptor, rmsActual.data()),
+            UDONDNN_STATUS_SUCCESS, "udondnnExtRmsNormalizationForward");
+    for (int index = 0; index < 16; ++index)
+      rmsMaximumError = std::max(
+          rmsMaximumError, std::abs(rmsActual[index] - rmsExpected[index]));
+    if (rmsMaximumError > 0.0005f)
+      throw std::runtime_error("UdonDNN RMS normalization results diverged");
+    require(udondnnDestroyTensorDescriptor(rmsInputDescriptor),
+            UDONDNN_STATUS_SUCCESS, "destroy RMS input descriptor");
+    require(udondnnDestroyTensorDescriptor(rmsScaleDescriptor),
+            UDONDNN_STATUS_SUCCESS, "destroy RMS scale descriptor");
+    require(udondnnDestroyTensorDescriptor(rmsOutputDescriptor),
+            UDONDNN_STATUS_SUCCESS, "destroy RMS output descriptor");
+
     udondnnTensorDescriptor_t stale = 0, replacement = 0;
     require(udondnnCreateTensorDescriptor(&stale), UDONDNN_STATUS_SUCCESS,
             "create stale descriptor");
@@ -1087,6 +1153,8 @@ int main(int argc, char **argv) {
               << " optensor_outputs=" << opTensorOutputs
               << " optensor_cases=" << opTensorCases.size()
               << " optensor_max_error=" << opTensorMaximumError
+              << " rmsnorm_outputs=" << rmsActual.size()
+              << " rmsnorm_max_error=" << rmsMaximumError
               << " renderer=" << session.deviceName()
               << " draws=" << session.drawCount() << "\n";
     return 0;

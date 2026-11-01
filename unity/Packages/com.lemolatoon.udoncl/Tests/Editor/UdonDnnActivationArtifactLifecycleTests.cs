@@ -69,7 +69,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             string bundle = Path.Combine(
                 repository,
                 "build",
-                "udondnn-activation-run",
+                "udondnn-device-run",
                 "unity-activation-bundle"
             );
             Assert.That(

@@ -127,6 +127,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             Assert.AreSame(plan, modelAsset.ExecutionPlan);
             Assert.AreEqual("UdonLlamaExecutionProvider", modelAsset.ExecutionProvider);
             Assert.AreEqual("udon-tiny-llama-f32", modelAsset.Profile);
+            Assert.NotNull(modelAsset.HostProgram);
             Assert.AreEqual(7, modelAsset.PassMaterials.Length);
             CollectionAssert.AllItemsAreNotNull(modelAsset.PassMaterials);
         }

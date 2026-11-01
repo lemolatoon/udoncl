@@ -31,8 +31,44 @@ The built-in providers currently are:
   64x128 tiling and K-tile accumulation contract; attention activation products
   remain on `udonblasSgemm`.
 
+The general provider also lowers Add, Mul, Sub, Relu, Sigmoid, Tanh, and
+Softmax to their cuDNN-compatible UdonDNN entry points. The checked-in
+reinforcement-learning actor fixture uses these operators and Gemm entirely
+through `UdonOperatorExecutionProvider`, without a model-specific provider.
+Rank-2 through rank-4 ONNX MatMul, including broadcast batch dimensions used
+by attention, is expanded AOT into one or more tiled `udonblasSgemm` calls per
+output batch matrix.
+Identity, Reshape, Squeeze, and Unsqueeze are compiled as typed zero-copy views.
+Their embedded int32/int64 shape inputs are evaluated at AOT time and retained
+with the correct C ABI type rather than being treated as float buffers.
+ONNX opset-23 RMSNormalization lowers to the explicitly Udon-specific
+`udondnnExtRmsNormalizationForward` extension. The extension keeps the public
+cuDNN-compatible namespace separate from functionality absent from cuDNN
+Legacy, and currently supports normalized regions up to 512 float elements.
+
 Consumers can construct `ExecutionProviderRegistry`, register one graph
 predicate and compiler callback per provider, and pass it to `compile_model`.
+Standard graphs made only from the currently supported operators can also use
+`UdonOperatorExecutionProvider`; it preserves topological node order and emits
+an explicit `aot.calls` list of public UdonBLAS/UdonDNN entry points. The
+`--emit-host-c` option turns that list into C Host source with descriptor
+lifecycle management and error cleanup, ready for the normal UdonCL Host
+pipeline. SGEMM dimensions are tiled at AOT time over the current 16x16x16
+Device profile without changing the cuBLAS-shaped public call.
+`--emit-host-uasm` emits the executable Udon Host side of the same plan: it
+exports the ordered pass Materials and ping-pong state textures, binds each
+pass input, and dispatches it through `VRCGraphics.Blit`. This removes the need
+for a hand-maintained demo Host when packaging a compiled model. The execution
+plan, generated C Host, and Udon Host share the same physical SGEMM tile
+schedule, including K-tile accumulation. ONNX Gemm forms that are not yet
+implemented fail during compilation instead of being accepted with different
+numerical semantics. Gemm's optional broadcast C input and its `alpha` and
+`beta` coefficients are lowered to tiled `udonblasSgemm` followed by a
+broadcasting `udondnnOpTensor` bias pass.
+Standard operator plans preserve validated ONNX external initializers as
+explicit location, offset, length, type, and shape metadata instead of loading
+large weights into the compiler process.
+
 The Unity package imports every artifact exposing the generic `onnx_model` and
 `onnx_execution_plan` resources to stable `Models/model.onnx.bytes` and
 `Models/execution-plan.json.bytes` paths, independent of the demo stage.
@@ -42,7 +78,14 @@ The compiler can be installed independently for tooling and CI:
 ```text
 python -m pip install runtime/onnx
 udon-onnx model.onnx -o execution-plan.json
+udon-onnx model.onnx -o execution-plan.json --emit-host-c generated-host.c
+udon-onnx model.onnx -o execution-plan.json --emit-host-uasm generated-host.uasm
+udon-onnx model.onnx -o execution-plan.json --execution-provider operators
 ```
+
+`--execution-provider operators` deliberately bypasses graph-specific fusion.
+It is used to migrate complete models, including the MNIST fixture, onto the
+same `UdonOperatorExecutionProvider` path used by arbitrary standard graphs.
 
 It has no runtime Python dependencies. Applications can instead import
 `parse_model`, `validate_external_data`, `ExecutionProviderRegistry`, and

@@ -28,6 +28,9 @@
 #define UDONDNN_OP_TENSOR_B_OFFSET 512
 #define UDONDNN_OP_TENSOR_C_OFFSET 1024
 #define UDONDNN_OP_TENSOR_RESULT_OFFSET 1536
+#define UDONDNN_RMS_SCALE_OFFSET 512
+#define UDONDNN_RMS_PREVIOUS_OUTPUT_OFFSET 1024
+#define UDONDNN_RMS_RESULT_OFFSET 1536
 #define UDONDNN_HANDLE 1u
 #define UDONDNN_DESCRIPTOR_SLOTS 8
 #define UDONDNN_SLOT_MASK 255u
@@ -94,6 +97,7 @@ static cl_kernel pooling_kernel;
 static cl_kernel softmax_kernel;
 static cl_kernel batchnorm_kernel;
 static cl_kernel op_tensor_kernel;
+static cl_kernel rms_norm_kernel;
 static cl_mem input_buffer;
 static cl_mem output_buffer;
 static cl_mem batchnorm_input_buffer;
@@ -181,6 +185,8 @@ get_op_tensor(udondnnOpTensorDescriptor_t descriptor) {
 }
 
 static void clear_objects(void) {
+  if (rms_norm_kernel)
+    clReleaseKernel(rms_norm_kernel);
   if (op_tensor_kernel)
     clReleaseKernel(op_tensor_kernel);
   if (batchnorm_kernel)
@@ -213,6 +219,7 @@ static void clear_objects(void) {
   softmax_kernel = 0;
   batchnorm_kernel = 0;
   op_tensor_kernel = 0;
+  rms_norm_kernel = 0;
   program = 0;
   output_buffer = input_buffer = 0;
   batchnorm_output_buffer = batchnorm_input_buffer = 0;
@@ -307,6 +314,14 @@ udondnnStatus_t udondnnCreate(udondnnHandle_t *handle) {
       clSetKernelArg(op_tensor_kernel, 0, sizeof(input_buffer),
                      &input_buffer) != CL_SUCCESS ||
       clSetKernelArg(op_tensor_kernel, 1, sizeof(output_buffer),
+                     &output_buffer) != CL_SUCCESS)
+    return execution_failure();
+  rms_norm_kernel =
+      clCreateKernel(program, "udondnn_ext_rms_normalization_forward", &status);
+  if (status != CL_SUCCESS ||
+      clSetKernelArg(rms_norm_kernel, 0, sizeof(input_buffer), &input_buffer) !=
+          CL_SUCCESS ||
+      clSetKernelArg(rms_norm_kernel, 1, sizeof(output_buffer),
                      &output_buffer) != CL_SUCCESS)
     return execution_failure();
   *handle = UDONDNN_HANDLE;
@@ -1183,5 +1198,68 @@ udondnnStatus_t udondnnOpTensor(
     return UDONDNN_STATUS_EXECUTION_FAILED;
   for (index = 0; index < c_words; ++index)
     c[index] = result[index];
+  return UDONDNN_STATUS_SUCCESS;
+}
+
+udondnnStatus_t udondnnExtRmsNormalizationForward(
+    udondnnHandle_t handle, const float *alpha,
+    udondnnTensorDescriptor_t input_descriptor, const float *input,
+    udondnnTensorDescriptor_t scale_descriptor, const float *scale,
+    float epsilon, const float *beta,
+    udondnnTensorDescriptor_t output_descriptor, float *output) {
+  TensorDescriptor *input_info, *scale_info, *output_info;
+  int words, scale_words, index;
+  size_t global = UDONDNN_WORDS, local = 1;
+  cl_int status;
+  if (handle != UDONDNN_HANDLE || !context)
+    return UDONDNN_STATUS_NOT_INITIALIZED;
+  input_info = get_tensor(input_descriptor);
+  scale_info = get_tensor(scale_descriptor);
+  output_info = get_tensor(output_descriptor);
+  if (!input_info || !input_info->configured || !scale_info ||
+      !scale_info->configured || !output_info || !output_info->configured ||
+      !alpha || !input || !scale || !beta || !output || epsilon < 0.0f)
+    return UDONDNN_STATUS_BAD_PARAM;
+  words = input_info->n * input_info->c * input_info->h * input_info->w;
+  scale_words = scale_info->n * scale_info->c * scale_info->h * scale_info->w;
+  if (words !=
+          output_info->n * output_info->c * output_info->h * output_info->w ||
+      scale_words <= 0 || scale_words > UDONDNN_REGION_WORDS ||
+      words % scale_words != 0)
+    return UDONDNN_STATUS_BAD_PARAM;
+  for (index = 0; index < UDONDNN_WORDS; ++index)
+    packed[index] = 0.0f;
+  for (index = 0; index < words; ++index) {
+    packed[index] = input[index];
+    packed[UDONDNN_RMS_PREVIOUS_OUTPUT_OFFSET + index] = output[index];
+  }
+  for (index = 0; index < scale_words; ++index)
+    packed[UDONDNN_RMS_SCALE_OFFSET + index] = scale[index];
+
+#define SET_RMS_ARGUMENT(slot, value)                                          \
+  do {                                                                         \
+    status = clSetKernelArg(rms_norm_kernel, slot, sizeof(value), &(value));   \
+    if (status != CL_SUCCESS)                                                  \
+      return UDONDNN_STATUS_EXECUTION_FAILED;                                  \
+  } while (0)
+  SET_RMS_ARGUMENT(2, words);
+  SET_RMS_ARGUMENT(3, scale_words);
+  SET_RMS_ARGUMENT(4, epsilon);
+  SET_RMS_ARGUMENT(5, *alpha);
+  SET_RMS_ARGUMENT(6, *beta);
+#undef SET_RMS_ARGUMENT
+
+  if (clEnqueueWriteBuffer(queue, input_buffer, CL_TRUE, 0, sizeof(packed),
+                           packed, 0, 0, 0) != CL_SUCCESS ||
+      clEnqueueNDRangeKernel(queue, rms_norm_kernel, 1, 0, &global, &local, 0,
+                             0, 0) != CL_SUCCESS ||
+      clEnqueueReadBuffer(queue, output_buffer, CL_TRUE,
+                          UDONDNN_RMS_RESULT_OFFSET * sizeof(float),
+                          words * sizeof(float), result, 0, 0,
+                          0) != CL_SUCCESS ||
+      clFinish(queue) != CL_SUCCESS)
+    return UDONDNN_STATUS_EXECUTION_FAILED;
+  for (index = 0; index < words; ++index)
+    output[index] = result[index];
   return UDONDNN_STATUS_SUCCESS;
 }
