@@ -7,6 +7,7 @@ using UnityEngine;
 using VRC.Udon;
 using VRC.Udon.Common.Interfaces;
 using VRC.Udon.Editor;
+using VRC.Udon.Editor.ProgramSources;
 
 namespace Lemolatoon.Udoncl.Editor.Tests
 {
@@ -111,6 +112,136 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             Assert.NotNull(int4Material);
         }
 
+        [Test]
+        public void UnityInt4ChildRunnerExecutesNumericallyOnSdkVm()
+        {
+            UdonAssemblyProgramAsset programAsset =
+                AssetDatabase.LoadAssetAtPath<UdonAssemblyProgramAsset>(
+                    GeneratedRoot + "/Int4Runners/call-0000/Programs/host_program.asset"
+                );
+            Assert.NotNull(programAsset);
+            IUdonProgram program = programAsset.SerializedProgramAsset.RetrieveProgram();
+            Assert.NotNull(program);
+            IUdonVM vm = UdonEditorManager.Instance.ConstructUdonVM();
+            Assert.IsTrue(vm.LoadProgram(program));
+            IUdonHeap heap = vm.InspectHeap();
+
+            GameObject prefab = AssetDatabase.LoadAssetAtPath<GameObject>(
+                GeneratedRoot + "/Prefabs/UdonOnnxModel.prefab"
+            );
+            UdonBehaviour runner = prefab.transform.Find("call-0000").GetComponent<UdonBehaviour>();
+            Assert.IsTrue(
+                runner.publicVariables.TryGetVariableValue("pageAtlas0", out Texture atlas)
+            );
+            Assert.IsTrue(
+                runner.publicVariables.TryGetVariableValue(
+                    "composeState",
+                    out RenderTexture composeState
+                )
+            );
+            Assert.IsTrue(
+                runner.publicVariables.TryGetVariableValue(
+                    "accumulatorState",
+                    out RenderTexture accumulatorState
+                )
+            );
+            Assert.IsTrue(
+                runner.publicVariables.TryGetVariableValue("resultA", out RenderTexture resultA)
+            );
+            Assert.IsTrue(
+                runner.publicVariables.TryGetVariableValue("resultB", out RenderTexture resultB)
+            );
+            Assert.IsTrue(
+                runner.publicVariables.TryGetVariableValue(
+                    "composeMaterial",
+                    out Material composeMaterial
+                )
+            );
+            Assert.IsTrue(
+                runner.publicVariables.TryGetVariableValue(
+                    "int4Material",
+                    out Material int4Material
+                )
+            );
+            Assert.IsTrue(
+                runner.publicVariables.TryGetVariableValue(
+                    "scatterMaterial",
+                    out Material scatterMaterial
+                )
+            );
+
+            byte[] activationBytes = File.ReadAllBytes(
+                ResolveFixture(
+                    "UDONCL_ONNX_INT4_ACTIVATION",
+                    Path.Combine("build", "precommit", "onnx-aot", "unity-int4-activation.bytes")
+                )
+            );
+            Texture2D activation = new Texture2D(160, 1, TextureFormat.RGBA32, false, true);
+            try
+            {
+                activation.filterMode = FilterMode.Point;
+                activation.wrapMode = TextureWrapMode.Clamp;
+                activation.LoadRawTextureData(activationBytes);
+                activation.Apply(false, false);
+                Set(heap, program, "activationState", (Texture)activation);
+                Set(heap, program, "composeState", composeState);
+                Set(heap, program, "accumulatorState", accumulatorState);
+                Set(heap, program, "resultA", resultA);
+                Set(heap, program, "resultB", resultB);
+                Set(heap, program, "composeMaterial", composeMaterial);
+                Set(heap, program, "int4Material", int4Material);
+                Set(heap, program, "scatterMaterial", scatterMaterial);
+                Set(heap, program, "pageAtlas0", atlas);
+                Assert.AreSame(
+                    composeState,
+                    heap.GetHeapVariable<RenderTexture>(
+                        program.SymbolTable.GetAddressFromSymbol("composeState")
+                    )
+                );
+                Assert.AreSame(
+                    accumulatorState,
+                    heap.GetHeapVariable<RenderTexture>(
+                        program.SymbolTable.GetAddressFromSymbol("accumulatorState")
+                    )
+                );
+                Assert.AreSame(
+                    resultA,
+                    heap.GetHeapVariable<RenderTexture>(
+                        program.SymbolTable.GetAddressFromSymbol("resultA")
+                    )
+                );
+                Assert.AreSame(
+                    resultB,
+                    heap.GetHeapVariable<RenderTexture>(
+                        program.SymbolTable.GetAddressFromSymbol("resultB")
+                    )
+                );
+                vm.SetProgramCounter(program.EntryPoints.GetAddressFromSymbol("_run"));
+                Assert.AreEqual(0u, vm.Interpret());
+
+                Color32[] actual = ReadPixels(resultB, 70);
+                byte[] reference = File.ReadAllBytes(
+                    ResolveFixture(
+                        "UDONCL_ONNX_INT4_REFERENCE",
+                        Path.Combine("build", "precommit", "onnx-aot", "unity-int4-reference.bytes")
+                    )
+                );
+                float maximumError = 0.0f;
+                for (int index = 0; index < 70; ++index)
+                    maximumError = Mathf.Max(
+                        maximumError,
+                        Mathf.Abs(
+                            Decode(actual[index]) - BitConverter.ToSingle(reference, index * 4)
+                        )
+                    );
+                Assert.That(maximumError, Is.LessThan(0.01f));
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(activation);
+            }
+        }
+
         [TestCase("UDONCL_ONNX_AOT_UASM", "generic-host.uasm", "pass202Material")]
         [TestCase("UDONCL_ONNX_TILED_AOT_UASM", "tiled-gemm-host.uasm", "pass211Material")]
         [TestCase(
@@ -171,6 +302,35 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 vm.LoadProgram(program),
                 "SDK VM rejected the Llama 8B whole-model Host."
             );
+        }
+
+        private static Color32[] ReadPixels(RenderTexture source, int width)
+        {
+            RenderTexture previous = RenderTexture.active;
+            Texture2D pixels = new Texture2D(width, 1, TextureFormat.RGBA32, false, true);
+            try
+            {
+                RenderTexture.active = source;
+                pixels.ReadPixels(new Rect(0, 0, width, 1), 0, 0);
+                pixels.Apply(false, false);
+                return pixels.GetPixels32();
+            }
+            finally
+            {
+                RenderTexture.active = previous;
+                UnityEngine.Object.DestroyImmediate(pixels);
+            }
+        }
+
+        private static float Decode(Color32 bytes)
+        {
+            int bits = bytes.r | (bytes.g << 8) | (bytes.b << 16) | (bytes.a << 24);
+            return BitConverter.ToSingle(BitConverter.GetBytes(bits), 0);
+        }
+
+        private static void Set<T>(IUdonHeap heap, IUdonProgram program, string symbol, T value)
+        {
+            heap.SetHeapVariable(program.SymbolTable.GetAddressFromSymbol(symbol), value);
         }
     }
 }

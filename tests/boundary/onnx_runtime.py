@@ -415,6 +415,18 @@ assert "__kLoop:" in int4_call_uasm
 assert "__atlasMaxPages: %SystemInt32, 8192" in int4_call_uasm
 assert "SystemInt32.__op_Addition" in int4_call_uasm
 assert "SystemInt32.__op_LessThan" in int4_call_uasm
+assert (
+    "PUSH, __mTile\n        PUSH, __lastMTile\n        PUSH, __condition\n"
+    in int4_call_uasm
+)
+assert (
+    "PUSH, __pageRow\n        PUSH, __one\n        PUSH, __pageRow\n"
+    in int4_call_uasm
+)
+assert (
+    "PUSH, accumulatorState\n        PUSH, __previousResult\n        COPY\n"
+    in int4_call_uasm
+)
 assert "__pageRow3" not in int4_call_uasm
 assert "PUSH, resultState" in int4_call_uasm
 assert len(materialize_int4_call(int4_plan, 0, output, int4_call_bundle)["tiles"]) == 4
@@ -614,6 +626,27 @@ unity_int4_manifest = materialize_int4_model(
     / "build/udondnn-device-run/unity-udonaten-int4-mm-bundle",
     model_path=model_path,
     program_name="onnx_int4_fixture",
+)
+unity_int4_activation = [index * 0.125 for index in range(int4_k)]
+unity_int4_reference = []
+for row in range(int4_n):
+    total = 0.0
+    for inner in range(int4_k):
+        packed = int4_external[32 + row * (int4_k // 2) + inner // 2]
+        nibble = packed >> 4 if inner % 2 else packed & 15
+        quantized = nibble - 16 if nibble >= 8 else nibble
+        group = inner // 32
+        qparam_offset = 6000 + (group * int4_n + row) * 4
+        scale_bits, zero_bits = struct.unpack_from("<2H", int4_external, qparam_offset)
+        scale = struct.unpack("<f", struct.pack("<I", scale_bits << 16))[0]
+        zero = struct.unpack("<f", struct.pack("<I", zero_bits << 16))[0]
+        total += (quantized * scale + zero) * unity_int4_activation[inner]
+    unity_int4_reference.append(total)
+(output / "unity-int4-activation.bytes").write_bytes(
+    struct.pack(f"<{int4_k}f", *unity_int4_activation)
+)
+(output / "unity-int4-reference.bytes").write_bytes(
+    struct.pack(f"<{int4_n}f", *unity_int4_reference)
 )
 assert unity_int4_manifest["artifact_stage"] == "unity-udon-onnx-model"
 assert unity_int4_manifest["ready_for_unity"] is True

@@ -712,14 +712,14 @@ def emit_int4_call_uasm(
     )
 
     def copy(destination: str, source: str):
-        lines.extend([f"        PUSH, {destination}", f"        PUSH, {source}", "        COPY"])
+        lines.extend([f"        PUSH, {source}", f"        PUSH, {destination}", "        COPY"])
 
     def binary(destination: str, left: str, right: str, operation: str):
         lines.extend(
             [
-                f"        PUSH, {destination}",
                 f"        PUSH, {left}",
                 f"        PUSH, {right}",
+                f"        PUSH, {destination}",
                 f'        EXTERN, "SystemInt32.__op_{operation}__SystemInt32_SystemInt32__SystemInt32"',
             ]
         )
@@ -727,9 +727,9 @@ def emit_int4_call_uasm(
     def compare(left: str, right: str, operation: str):
         lines.extend(
             [
-                "        PUSH, __condition",
                 f"        PUSH, {left}",
                 f"        PUSH, {right}",
+                "        PUSH, __condition",
                 f'        EXTERN, "SystemInt32.__op_{operation}__SystemInt32_SystemInt32__SystemBoolean"',
             ]
         )
