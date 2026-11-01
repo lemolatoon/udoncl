@@ -473,7 +473,7 @@ PROVIDERS = {
 LLAMA_DOMAIN = "com.lemolatoon.udoncl"
 
 EXTENSION_PROVIDERS = {
-    (LLAMA_DOMAIN, "Q4Gemm"): "udonblasSgemvQ4",
+    (LLAMA_DOMAIN, "WeightInt4packMM"): "udonatenWeightInt4packMm",
 }
 
 
@@ -524,9 +524,23 @@ def llama_weight_spec(config: dict, storage_format: str = "q4") -> list[dict]:
             item["format"] = "bf16"
             item["storage_bytes"] = item["parameters"] * 2
         else:
-            item["format"] = "q4_block32"
-            blocks = (item["parameters"] + 31) // 32
-            item["storage_bytes"] = blocks * 18  # 16 packed bytes + fp16 scale.
+            if item["shape"][1] % 32:
+                raise ValueError("ATen INT4 weights require K divisible by 32")
+            item["format"] = "q4_int4pack"
+            item["packed_storage_bytes"] = item["parameters"] // 2
+            item["scales_and_zeros_name"] = item["name"] + ".scales_and_zeros"
+            item["scales_and_zeros_shape"] = [
+                item["shape"][1] // 32,
+                item["shape"][0],
+                2,
+            ]
+            item["scales_and_zeros_storage_bytes"] = (
+                math.prod(item["scales_and_zeros_shape"]) * 2
+            )
+            item["storage_bytes"] = (
+                item["packed_storage_bytes"]
+                + item["scales_and_zeros_storage_bytes"]
+            )
     return spec
 
 
@@ -585,19 +599,31 @@ def _compile_llama(model: dict) -> dict:
     if logits_info != {"shape": [1, config["vocab_size"]], "data_type": 1}:
         raise ValueError("Llama logits shape or type does not match the profile")
     spec = llama_weight_spec(config, storage_format)
-    if node["inputs"] != ["token_ids"] + [item["name"] for item in spec]:
+    expected_inputs = ["token_ids"]
+    for item in spec:
+        expected_inputs.append(item["name"])
+        if item["format"] == "q4_int4pack":
+            expected_inputs.append(item["scales_and_zeros_name"])
+    if node["inputs"] != expected_inputs:
         raise ValueError("LlamaDecoder inputs do not match the canonical weight order")
     if node["outputs"] != ["logits"]:
         raise ValueError("LlamaDecoder must produce logits")
     expected_names = {item["name"] for item in spec}
+    expected_names.update(
+        item["scales_and_zeros_name"]
+        for item in spec
+        if item["format"] == "q4_int4pack"
+    )
     if set(graph["initializers"]) != expected_names:
         raise ValueError("Llama external initializers do not match the architecture")
     for item in spec:
         tensor = graph["initializers"][item["name"]]
-        expected_type = {"bf16": 16, "q4_block32": 2, "float32": 1}[item["format"]]
+        expected_type = {"bf16": 16, "q4_int4pack": 2, "float32": 1}[
+            item["format"]
+        ]
         expected_shape = (
-            [item["storage_bytes"]]
-            if item["format"] == "q4_block32"
+            [item["shape"][0], item["shape"][1] // 2]
+            if item["format"] == "q4_int4pack"
             else item["shape"]
         )
         if tensor["data_type"] != expected_type or tensor["shape"] != expected_shape:
@@ -605,22 +631,39 @@ def _compile_llama(model: dict) -> dict:
         if storage_format == "q4":
             if tensor["data_location"] != 1:
                 raise ValueError(f"Llama weight {item['name']!r} must use external_data")
-            if tensor["external"]["length"] != item["storage_bytes"]:
+            expected_length = item.get("packed_storage_bytes", item["storage_bytes"])
+            if tensor["external"]["length"] != expected_length:
                 raise ValueError(f"external_data length mismatch for {item['name']!r}")
+            if item["format"] == "q4_int4pack":
+                qparams = graph["initializers"][item["scales_and_zeros_name"]]
+                if (
+                    qparams["data_type"] != 16
+                    or qparams["shape"] != item["scales_and_zeros_shape"]
+                    or qparams["data_location"] != 1
+                    or qparams["external"]["length"]
+                    != item["scales_and_zeros_storage_bytes"]
+                ):
+                    raise ValueError(
+                        f"invalid scales_and_zeros for {item['name']!r}"
+                    )
         elif tensor["data_location"] != 0:
             raise ValueError("Tiny Llama validation weights must be embedded")
 
     tiny = architecture == "udon-tiny-llama"
     kernel_prefix = "tiny_llama" if tiny else "llama"
     first_id = 30 if tiny else 1000
-    weight_matmul_provider = "udonblasSgemm" if tiny else "udonblasSgemvQ4"
+    weight_matmul_provider = (
+        "udonblasSgemm" if tiny else "udonatenWeightInt4packMm"
+    )
     activation_matmul_provider = "udonblasSgemm"
 
     def q4_matmul(weight: str, output_features: int, input_features: int) -> dict:
         return {
-            "provider": "udonblasSgemvQ4",
+            "provider": "udonatenWeightInt4packMm",
             "weight": weight,
-            "weight_format": "q4_block32",
+            "scales_and_zeros": weight + ".scales_and_zeros",
+            "group_size": 32,
+            "weight_format": "q4_int4pack",
             "output_features": output_features,
             "input_features": input_features,
             "m_tile": 64,
@@ -738,6 +781,24 @@ def _compile_llama(model: dict) -> dict:
     passes.append(logits_pass)
     parameter_count = sum(item["parameters"] for item in spec)
     weight_bytes = sum(item["storage_bytes"] for item in spec)
+    initializers = {}
+    for item in spec:
+        packed_bytes = item.get("packed_storage_bytes", item["storage_bytes"])
+        initializers[item["name"]] = {
+            "logical_shape": item["shape"],
+            "format": item["format"],
+            "bytes": packed_bytes,
+            "external": graph["initializers"][item["name"]]["external"],
+        }
+        if item["format"] == "q4_int4pack":
+            initializers[item["scales_and_zeros_name"]] = {
+                "logical_shape": item["scales_and_zeros_shape"],
+                "format": "bf16_scale_zero",
+                "bytes": item["scales_and_zeros_storage_bytes"],
+                "external": graph["initializers"][item["scales_and_zeros_name"]][
+                    "external"
+                ],
+            }
     return {
         "schema_version": 1,
         "runtime": "udon-onnx",
@@ -762,9 +823,9 @@ def _compile_llama(model: dict) -> dict:
             "parameters": parameter_count,
             "storage_bytes": weight_bytes,
             "format": (
-                "q4_block32+bfloat16_norm" if storage_format == "q4" else "float32"
+                "aten_int4pack+bfloat16_scale_zero" if storage_format == "q4" else "float32"
             ),
-            "tensors": len(spec),
+            "tensors": len(initializers),
             "page_bytes": 16 * 1024 * 1024,
             "pages": (weight_bytes + 16 * 1024 * 1024 - 1) // (16 * 1024 * 1024),
         },
@@ -777,7 +838,7 @@ def _compile_llama(model: dict) -> dict:
                         "m": 64,
                         "k": 128,
                         "block_values": 32,
-                        "expanded_block_words": 17,
+                        "qparams": "[K/group_size,N,2] bfloat16",
                         "accumulator": "float32",
                     }
                 }
@@ -785,15 +846,7 @@ def _compile_llama(model: dict) -> dict:
                 else {}
             ),
         },
-        "initializers": {
-            item["name"]: {
-                "logical_shape": item["shape"],
-                "format": item["format"],
-                "bytes": item["storage_bytes"],
-                "external": graph["initializers"][item["name"]]["external"],
-            }
-            for item in spec
-        },
+        "initializers": initializers,
         "inputs": {name: info["shape"] for name, info in graph["inputs"].items()},
         "outputs": {name: info["shape"] for name, info in graph["outputs"].items()},
     }
@@ -1117,29 +1170,55 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
             if len(inputs) != 2:
                 raise ValueError("ONNX MatMul requires exactly two inputs")
             output = _matmul_shape(inputs[0], inputs[1])
-        elif node["domain"] == LLAMA_DOMAIN and operation == "Q4Gemm":
-            if len(inputs) != 2 or len(inputs[0]) != 2 or inputs[0][0] != 1:
-                raise ValueError("Udon Q4Gemm requires [1,K] activation and packed weight inputs")
+        elif node["domain"] == LLAMA_DOMAIN and operation == "WeightInt4packMM":
+            if len(inputs) != 3 or len(inputs[0]) != 2 or inputs[0][0] != 1:
+                raise ValueError(
+                    "Udon WeightInt4packMM requires input, packed weight, and scales_and_zeros"
+                )
             output_features = attributes.get("output_features", {}).get("i")
             input_features = attributes.get("input_features", {}).get("i")
+            group_size = attributes.get("group_size", {}).get("i")
             if (
                 not isinstance(output_features, int)
                 or not isinstance(input_features, int)
+                or group_size not in (32, 64, 128, 256)
                 or output_features <= 0
                 or input_features <= 0
+                or input_features % group_size
                 or inputs[0][1] != input_features
             ):
-                raise ValueError("Udon Q4Gemm feature attributes do not match its activation")
+                raise ValueError(
+                    "Udon WeightInt4packMM attributes do not match its activation"
+                )
             weight = graph["initializers"].get(node["inputs"][1])
-            expected_bytes = output_features * ((input_features + 31) // 32) * 18
+            qparams = graph["initializers"].get(node["inputs"][2])
+            expected_bytes = output_features * input_features // 2
             if (
                 weight is None
                 or weight["data_type"] != 2
-                or weight["shape"] != [expected_bytes]
+                or weight["shape"] != [output_features, input_features // 2]
                 or weight["data_location"] != 1
                 or weight["external"]["length"] != expected_bytes
             ):
-                raise ValueError("Udon Q4Gemm weight does not match q4_block32 storage")
+                raise ValueError(
+                    "Udon WeightInt4packMM weight does not match packed INT4 storage"
+                )
+            expected_qparams_shape = [
+                input_features // group_size,
+                output_features,
+                2,
+            ]
+            if (
+                qparams is None
+                or qparams["data_type"] != 16
+                or qparams["shape"] != expected_qparams_shape
+                or qparams["data_location"] != 1
+                or qparams["external"]["length"]
+                != math.prod(expected_qparams_shape) * 2
+            ):
+                raise ValueError(
+                    "Udon WeightInt4packMM scales_and_zeros do not match ATen storage"
+                )
             output = [1, output_features]
         else:
             raise AssertionError(operation)
@@ -1241,7 +1320,10 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
                 }
                 if tile is not None:
                     device_pass["tile"] = tile
-                if node["domain"] == LLAMA_DOMAIN and node["op_type"] == "Q4Gemm":
+                if (
+                    node["domain"] == LLAMA_DOMAIN
+                    and node["op_type"] == "WeightInt4packMM"
+                ):
                     output_features = node["attributes"]["output_features"]["i"]
                     input_features = node["attributes"]["input_features"]["i"]
                     device_pass["tile_grid"] = {
@@ -1269,7 +1351,10 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
                 )
     calls = []
     for node_index, node in enumerate(nodes):
-        if node["domain"] == LLAMA_DOMAIN and node["op_type"] == "Q4Gemm":
+        if (
+            node["domain"] == LLAMA_DOMAIN
+            and node["op_type"] == "WeightInt4packMM"
+        ):
             output_features = node["attributes"]["output_features"]["i"]
             input_features = node["attributes"]["input_features"]["i"]
             calls.append(
@@ -1277,12 +1362,13 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
                     "index": len(calls),
                     "node_index": node_index,
                     "kind": "tiled_library",
-                    "function": "udonblasSgemvQ4",
+                    "function": "udonatenWeightInt4packMm",
                     "inputs": node["inputs"],
                     "output": node["output"],
                     "output_shape": node["shape"],
                     "attributes": node["attributes"],
-                    "weight_format": "q4_block32",
+                    "weight_format": "q4_int4pack",
+                    "group_size": node["attributes"]["group_size"]["i"],
                     "tile_grid": {
                         "m": 64,
                         "k": 128,

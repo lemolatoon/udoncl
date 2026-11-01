@@ -15,7 +15,8 @@ extern size_t udonblas_cpu_gid;
 
 /* One fragment owns one output row. Packed Q4 bytes are represented as exact
  * numeric float values during the active tile, avoiding integer bitcasts while
- * preserving the compact 18-byte/block external representation at rest. */
+ * This is a legacy internal tile layout; public Q4 storage belongs to UdonATen.
+ */
 __kernel void udonblas_sgemv_q4(__global const float *input,
                                 __global float *output, int m, int k, int lda,
                                 int incx, int incy, float alpha, float beta) {

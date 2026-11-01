@@ -15,11 +15,16 @@ The first supported inference operators are:
   `rms_norm(input, normalized_shape, weight=None, eps=None)`. The current
   backend requires a weight tensor and supports normalized regions through the
   existing 512-element Device profile.
+- `udonatenWeightInt4packMm`, corresponding exactly in semantic argument order
+  to ATen `_weight_int4pack_mm(input, packed_weight, group_size,
+  scales_and_zeros)`. The external-data and AOT contracts are implemented;
+  the Device entry point currently returns `NOT_SUPPORTED` until its tiled
+  kernel and paging path are connected.
 
 The implementation currently adapts the already validated UdonDNN prototype
 kernels. Those functions are backend details, not the public ownership model.
-Tile/repeat and TorchAO-compatible INT4 packed matrix multiplication remain to
-be migrated before the Llama 8B operator plan can emit an executable Host.
+Tile/repeat and the INT4 Device implementation remain to be migrated before
+the Llama 8B operator plan can emit an executable Host.
 
 See [operator ownership](../../docs/architecture/operator-ownership.md) for
 the source audit and compatibility rules.

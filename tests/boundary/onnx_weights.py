@@ -48,9 +48,17 @@ index = {
         {
             "name": "matrix",
             "logical_shape": [2, 32],
-            "format": "q4_block32",
+            "format": "q4_int4pack",
             "offset": 0,
-            "length": 36,
+            "length": 32,
+        },
+        {
+            "name": "matrix.scales_and_zeros",
+            "source_name": "matrix",
+            "logical_shape": [2, 32],
+            "format": "q4_scale_zero_bf16",
+            "offset": 32,
+            "length": 8,
         },
         {
             "name": "norm",
@@ -73,18 +81,21 @@ index_path.write_text(json.dumps(index), encoding="utf-8")
 packed_path = output / "weights.q4"
 manifest = pack_checkpoint(checkpoint, index_path, packed_path)
 assert manifest["bytes"] == 144
-assert len(manifest["tensors"]) == 3
+assert len(manifest["tensors"]) == 4
 packed = packed_path.read_bytes()
 decoded = []
-for block in range(2):
-    block_data = packed[block * 18 : block * 18 + 18]
-    scale = struct.unpack("<e", block_data[16:18])[0]
+qparams_bits = np.frombuffer(packed[32:40], dtype="<u2").astype(np.uint32)
+qparams = (qparams_bits << np.uint32(16)).view(np.float32).reshape(1, 2, 2)
+for row in range(2):
+    block_data = packed[row * 16 : row * 16 + 16]
+    scale, zero = qparams[0, row]
+    assert zero == 0.0
     values = []
-    for byte in block_data[:16]:
+    for byte in block_data:
         for nibble in (byte & 15, byte >> 4):
             values.append(nibble - 16 if nibble >= 8 else nibble)
-    decoded.extend(value * scale for value in values)
-    source = matrix[block * 32 : block * 32 + 32]
+    decoded.extend(value * scale + zero for value in values)
+    source = matrix[row * 32 : row * 32 + 32]
     error = np.max(np.abs(source - np.asarray(decoded[-32:])))
     assert error <= scale * 0.51 + 1.0e-6
 norm_bits = np.frombuffer(packed[64:80], dtype="<u2").astype(np.uint32) << np.uint32(16)

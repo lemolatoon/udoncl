@@ -15,14 +15,14 @@ one serialized handle per UdonBehaviour instance. These are profile limits,
 not intended API limits; tiled multi-pass kernels will lift them without
 changing the function signature.
 
-`udonblasSgemvQ4` provides the weight-dominated matrix-vector path used by
-quantized ONNX language models. Each fragment owns one output row. Signed
-four-bit values are stored in 32-value blocks with a float32 scale and expanded
-to 16 numeric packed-byte words plus the scale only while a tile is active on
-Device. Model files therefore retain their compact 18-byte-per-block external
-representation. The current profile supports up to 64 output rows and 128
-input values per dispatch; higher-level inference code streams larger matrices
-as tiles.
+The internal `udonblasBackendSgemvQ4` kernel provides the legacy
+weight-dominated matrix-vector path used during the UdonATen migration. It is
+not part of the public cuBLAS-compatible header. Each fragment owns one output row. Signed
+four-bit values in this backend fixture are expanded to 16 numeric packed-byte
+words plus one float32 scale while a tile is active on Device. The public ONNX
+format no longer uses this legacy interleaving: UdonATen receives packed
+weights and scale/zero tensors separately. The current backend profile supports
+up to 64 output rows and 128 input values per dispatch.
 
 The build emits separate `unity-bundle`, `unity-q4-bundle`, and
 `unity-saxpy-bundle` artifacts. All are accepted by the UPM importer. Their

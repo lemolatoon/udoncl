@@ -993,6 +993,12 @@ int main(int argc, char **argv) {
                               std::array<int32_t, 1>{{6}}.data(), 1, -1, 0, 0,
                               gatherOutputDescriptor, gatherActual.data()),
             UDONDNN_STATUS_BAD_PARAM, "reject out-of-range embedding index");
+    require(udonatenWeightInt4packMm(
+                handle, gatherDataDescriptor, gatherData.data(),
+                gatherDataDescriptor, nullptr, 32, gatherDataDescriptor,
+                gatherData.data(), gatherOutputDescriptor, gatherActual.data()),
+            UDONDNN_STATUS_NOT_SUPPORTED,
+            "ATen INT4 contract is declared until its Device kernel lands");
     require(udondnnDestroyTensorDescriptor(gatherDataDescriptor),
             UDONDNN_STATUS_SUCCESS, "destroy Gather data descriptor");
     require(udondnnDestroyTensorDescriptor(gatherOutputDescriptor),

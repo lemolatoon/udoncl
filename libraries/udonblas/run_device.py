@@ -374,7 +374,7 @@ def main():
             "exports": [
                 {
                     "id": 2,
-                    "c_symbol": "udonblasSgemvQ4",
+                    "c_symbol": "udonblasBackendSgemvQ4",
                     "udon_event": "_run",
                     "status_slot": "",
                     "async": False,

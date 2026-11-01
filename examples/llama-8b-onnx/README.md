@@ -2,7 +2,7 @@
 
 This example emits a real ONNX `ModelProto` for the public Udon ONNX Runtime.
 The graph contains a `com.lemolatoon.udoncl::LlamaDecoder` execution-provider
-node and 291 ONNX external-data tensors describing the canonical Llama 3.1 8B
+node and 517 ONNX external-data tensors describing the canonical Llama 3.1 8B
 shape: 32 decoder layers, hidden size 4096, intermediate size 14336, 32 query
 heads, eight KV heads, and vocabulary size 128256.
 
@@ -17,9 +17,10 @@ python examples/llama-8b-onnx/generate_onnx.py \
 ```
 
 That graph has no fused `LlamaDecoder` node. It contains 546 explicit operator
-nodes, including all 225 Q4 projections as `Q4Gemm` library-extension nodes,
+nodes, including all 225 Q4 projections as `WeightInt4packMM`
+library-extension nodes,
 standard RMSNormalization/Add/Sigmoid/Mul/Reshape/Tile nodes, and records the
-64x128 `udonblasSgemvQ4` tile grid for every projection. Its input is the
+64x128 `udonatenWeightInt4packMm` tile grid for every projection. Its input is the
 post-embedding `[1,4096]` hidden state. It is a resource-complete AOT plan, but
 the C/Udon Host emitter intentionally rejects it until external-weight paging
 can feed those tile grids; the legacy fused plan remains available meanwhile.
@@ -32,13 +33,15 @@ python examples/llama-8b-onnx/generate_onnx.py \
 ```
 
 The runtime validates 8,030,261,248 logical parameters and plans 162 Device
-passes. Matrix weights use signed Q4 blocks of 32 values with one fp16 scale;
-normalization weights remain bfloat16. The resulting external payload is
-4,517,404,672 bytes before 64 KiB alignment gaps.
+passes. Matrix weights use signed Q4 blocks of 32 values, while scale and zero
+metadata is stored separately as bfloat16 `[K/32,N,2]`, matching ATen's
+`_weight_int4pack_mm` contract. Normalization weights remain bfloat16. The
+resulting external payload is 5,019,279,360 bytes before 64 KiB alignment gaps.
 
-Every quantized projection in the plan selects `udonblasSgemvQ4`. The plan
-names its weight tensor and records 64-output by 128-input tiles, including the
-number of M and K tiles and the beta=0/beta=1 accumulation contract. Attention
+Every quantized projection in the plan selects `udonatenWeightInt4packMm`. The
+plan names its packed weight and scale/zero tensors and records 64-output by
+128-input tiles, including the number of M and K tiles and the beta=0/beta=1
+accumulation contract. Attention
 score/value products remain activation-to-activation `udonblasSgemm` calls.
 This distinction lets a Unity runtime stream one compact external-weight page
 at a time without pretending Q4 tensors are ordinary float32 SGEMM inputs.

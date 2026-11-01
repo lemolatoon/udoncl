@@ -33,3 +33,23 @@ udonatenRmsNorm(udonatenHandle_t handle,
       handle, &alpha, input_descriptor, input, weight_descriptor, weight,
       effective_epsilon, &beta, output_descriptor, output);
 }
+
+udonatenStatus_t udonatenWeightInt4packMm(
+    udonatenHandle_t handle, udonatenTensorDescriptor_t input_descriptor,
+    const float *input, udonatenTensorDescriptor_t packed_weight_descriptor,
+    const uint8_t *packed_weight, int64_t group_size,
+    udonatenTensorDescriptor_t scales_and_zeros_descriptor,
+    const float *scales_and_zeros, udonatenTensorDescriptor_t output_descriptor,
+    float *output) {
+  (void)handle;
+  (void)input_descriptor;
+  (void)input;
+  (void)packed_weight_descriptor;
+  (void)packed_weight;
+  (void)group_size;
+  (void)scales_and_zeros_descriptor;
+  (void)scales_and_zeros;
+  (void)output_descriptor;
+  (void)output;
+  return UDONDNN_STATUS_NOT_SUPPORTED;
+}

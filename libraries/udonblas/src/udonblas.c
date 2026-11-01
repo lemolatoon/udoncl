@@ -13,6 +13,10 @@
 #define UDONBLAS_Q4_X_OFFSET 6144
 #define UDONBLAS_Q4_Y_OFFSET 6656
 #define UDONBLAS_Q4_RESULT_OFFSET 7168
+#define UDONBLAS_Q4_BLOCK_VALUES 32
+#define UDONBLAS_Q4_EXPANDED_BLOCK_WORDS 17
+#define UDONBLAS_Q4_GEMV_MAX_M 64
+#define UDONBLAS_Q4_GEMV_MAX_K 128
 
 static cl_context context;
 static cl_command_queue queue;
@@ -181,10 +185,11 @@ udonblasStatus_t udonblasSaxpy(udonblasHandle_t handle, int n,
   return UDONBLAS_STATUS_SUCCESS;
 }
 
-udonblasStatus_t udonblasSgemvQ4(udonblasHandle_t handle, int m, int k,
-                                 const float *alpha, const float *expanded_a,
-                                 int lda, const float *x, int incx,
-                                 const float *beta, float *y, int incy) {
+udonblasStatus_t udonblasBackendSgemvQ4(udonblasHandle_t handle, int m, int k,
+                                        const float *alpha,
+                                        const float *expanded_a, int lda,
+                                        const float *x, int incx,
+                                        const float *beta, float *y, int incy) {
   int blocks, minimum_lda, weights, index;
   size_t global = UDONBLAS_Q4_WORDS, local = 1;
   cl_int status;

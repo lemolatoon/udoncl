@@ -125,29 +125,36 @@ def _checkpoint_files(checkpoint: Path) -> tuple[dict[str, str], dict[str, SafeT
     return weight_map, readers
 
 
-def _q4_blocks(
+def _q4_row_chunks(
     reader: SafeTensorFile,
     name: str,
     block_values: int = 32,
-    chunk_blocks: int = 32768,
+    rows_per_chunk: int = 128,
 ):
-    elements = reader.tensors[name]["elements"]
-    if elements % block_values:
-        raise ValueError("Q4 tensors must contain a whole number of blocks")
-    for start in range(0, elements, block_values * chunk_blocks):
-        end = min(start + block_values * chunk_blocks, elements)
-        chunk = np.asarray(
-            reader.array(name, start, end), dtype=np.float32
-        ).reshape(-1, block_values)
-        maximum = np.max(np.abs(chunk), axis=1)
+    shape = reader.tensors[name]["shape"]
+    if len(shape) != 2 or shape[1] % block_values or shape[1] % 2:
+        raise ValueError("ATen INT4 weights must be [N,K] with K divisible by 32")
+    groups_per_row = shape[1] // block_values
+    for row_start in range(0, shape[0], rows_per_chunk):
+        row_end = min(row_start + rows_per_chunk, shape[0])
+        values = np.asarray(
+            reader.array(name, row_start * shape[1], row_end * shape[1]),
+            dtype=np.float32,
+        ).reshape(row_end - row_start, groups_per_row, block_values)
+        maximum = np.max(np.abs(values), axis=2)
         scales = np.where(maximum == 0.0, 1.0, maximum / 7.0).astype(np.float32)
-        quantized = np.clip(np.rint(chunk / scales[:, None]), -8, 7).astype(np.int8)
+        quantized = np.clip(
+            np.rint(values / scales[:, :, None]), -8, 7
+        ).astype(np.int8)
         encoded = np.bitwise_and(quantized.astype(np.int16), 15).astype(np.uint8)
-        packed = encoded[:, 0::2] | (encoded[:, 1::2] << np.uint8(4))
-        result = np.empty((chunk.shape[0], 18), dtype=np.uint8)
-        result[:, :16] = packed
-        result[:, 16:] = scales.astype("<f2").view(np.uint8).reshape(-1, 2)
-        yield result.tobytes()
+        packed = encoded[:, :, 0::2] | (encoded[:, :, 1::2] << np.uint8(4))
+        # ATen CUDA indexes qScaleAndZeros as [K/group_size, N, 2] and computes
+        # dequantized = signed_int4 * scale + zero.
+        scale_zero = np.zeros(
+            (groups_per_row, row_end - row_start, 2), dtype=np.float32
+        )
+        scale_zero[:, :, 0] = scales.T
+        yield row_start, row_end, packed, scale_zero
 
 
 def _bfloat16_bytes(values: np.ndarray) -> bytes:
@@ -175,10 +182,11 @@ def pack_checkpoint(checkpoint: Path, target_index: Path, output: Path) -> dict:
             previous_end = 0
             for target in tensors:
                 name = target.get("name")
-                if name not in weight_map:
-                    raise ValueError(f"checkpoint is missing tensor {name!r}")
-                reader = readers[weight_map[name]]
-                source = reader.tensors[name]
+                source_name = target.get("source_name", name)
+                if source_name not in weight_map:
+                    raise ValueError(f"checkpoint is missing tensor {source_name!r}")
+                reader = readers[weight_map[source_name]]
+                source = reader.tensors[source_name]
                 if source["shape"] != target.get("logical_shape"):
                     raise ValueError(
                         f"shape mismatch for {name!r}: {source['shape']} != {target.get('logical_shape')}"
@@ -195,12 +203,38 @@ def pack_checkpoint(checkpoint: Path, target_index: Path, output: Path) -> dict:
                 stream.seek(offset)
                 digest = hashlib.sha256()
                 written = 0
-                if target.get("format") == "q4_block32":
-                    chunks = _q4_blocks(reader, name)
+                if target.get("format") == "q4_int4pack":
+                    chunks = (
+                        packed.tobytes()
+                        for _, _, packed, _ in _q4_row_chunks(reader, source_name)
+                    )
+                elif target.get("format") == "q4_scale_zero_bf16":
+                    rows, columns = source["shape"]
+                    groups_per_row = columns // 32
+                    for row_start, row_end, _, scale_zero in _q4_row_chunks(
+                        reader, source_name
+                    ):
+                        for group in range(groups_per_row):
+                            stream.seek(offset + (group * rows + row_start) * 4)
+                            stream.write(_bfloat16_bytes(scale_zero[group]))
+                    stream.seek(offset)
+                    remaining = length
+                    while remaining:
+                        chunk = stream.read(min(1024 * 1024, remaining))
+                        if not chunk:
+                            raise ValueError(
+                                f"failed to read packed qparams for {name!r}"
+                            )
+                        digest.update(chunk)
+                        remaining -= len(chunk)
+                    written = length
+                    chunks = ()
                 elif target.get("format") == "bf16":
-                    chunks = [_bfloat16_bytes(reader.array(name))]
+                    chunks = [_bfloat16_bytes(reader.array(source_name))]
                 elif target.get("format") == "float32":
-                    chunks = [np.asarray(reader.array(name), dtype="<f4").tobytes()]
+                    chunks = [
+                        np.asarray(reader.array(source_name), dtype="<f4").tobytes()
+                    ]
                 else:
                     raise ValueError(f"unsupported target format for {name!r}")
                 for chunk in chunks:

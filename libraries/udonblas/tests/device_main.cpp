@@ -15,6 +15,14 @@ size_t udonblas_cpu_gid;
 extern "C" size_t udonblas_saxpy_cpu_gid;
 size_t udonblas_saxpy_cpu_gid;
 
+enum { UDONBLAS_Q4_BLOCK_VALUES = 32, UDONBLAS_Q4_EXPANDED_BLOCK_WORDS = 17 };
+
+extern "C" udonblasStatus_t
+udonblasBackendSgemvQ4(udonblasHandle_t handle, int m, int k,
+                       const float *alpha, const float *expanded_a, int lda,
+                       const float *x, int incx, const float *beta, float *y,
+                       int incy);
+
 namespace {
 struct Case {
   udonblasOperation_t transa, transb;
@@ -151,10 +159,10 @@ int main(int argc, char **argv) {
       q4Expected[row * q4Incy] =
           q4Alpha * sum + q4Beta * q4Expected[row * q4Incy];
     }
-    require(udonblasSgemvQ4(handle, q4M, q4K, &q4Alpha, q4Matrix.data(), q4Lda,
-                            q4X.data(), q4Incx, &q4Beta, q4Actual.data(),
-                            q4Incy),
-            UDONBLAS_STATUS_SUCCESS, "udonblasSgemvQ4");
+    require(udonblasBackendSgemvQ4(handle, q4M, q4K, &q4Alpha, q4Matrix.data(),
+                                   q4Lda, q4X.data(), q4Incx, &q4Beta,
+                                   q4Actual.data(), q4Incy),
+            UDONBLAS_STATUS_SUCCESS, "udonblasBackendSgemvQ4");
     float q4MaximumError = 0.0f;
     for (int row = 0; row < q4M; ++row)
       q4MaximumError =
@@ -211,8 +219,8 @@ int main(int argc, char **argv) {
     require(udonblasSgemm(handle, udonblasOperation_t(9), UDONBLAS_OP_N, 1, 1,
                           1, &one, values, 1, values, 1, &one, values, 1),
             UDONBLAS_STATUS_INVALID_VALUE, "invalid transpose");
-    require(udonblasSgemvQ4(handle, 1, 31, &one, values, 17, values, 1, &one,
-                            values, 1),
+    require(udonblasBackendSgemvQ4(handle, 1, 31, &one, values, 17, values, 1,
+                                   &one, values, 1),
             UDONBLAS_STATUS_INVALID_VALUE, "unaligned Q4 K");
     require(udonblasSaxpy(handle, 1, &one, values, 0, values, 1),
             UDONBLAS_STATUS_INVALID_VALUE, "zero SAXPY increment");

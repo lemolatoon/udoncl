@@ -29,10 +29,10 @@ Authoritative sources:
 - TorchAO INT4 weight-only configuration and dispatch:
   <https://github.com/pytorch/ao/blob/main/torchao/quantization/quant_api.py>
 
-The existing `udondnnExtGatherForward`,
-`udondnnExtRmsNormalizationForward`, `udondnnExtTileForward` plan name, and
-`udonblasSgemvQ4` ONNX mapping are provisional. UdonATen may reuse their Device
-kernels internally during migration, but ONNX plans and generated Host code
-must expose the UdonATen contracts. INT4 migration is not complete until the
-packer produces the separate packed-weight and scales/zeros inputs required by
-the ATen operator contract.
+The existing `udondnnExtGatherForward`, `udondnnExtRmsNormalizationForward`,
+and `udondnnExtTileForward` names are provisional backend details. UdonATen may
+reuse their Device kernels internally during migration, but ONNX plans and
+generated Host code expose UdonATen contracts. INT4 AOT now uses separate
+packed-weight and `[K/group_size,N,2]` bfloat16 scale/zero inputs and the
+`udonatenWeightInt4packMm` contract. Its Device implementation remains
+explicitly `NOT_SUPPORTED` until paging and the tiled kernel are connected.

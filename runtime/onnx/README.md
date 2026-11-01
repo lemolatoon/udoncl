@@ -26,10 +26,11 @@ The built-in providers currently are:
 - `UdonMnistExecutionProvider` for the standard-ONNX MNIST fixture.
 - `UdonLlamaExecutionProvider` for a fused Llama decoder custom operator. Its
   tiny float32 profile is numerically executed on Device; its Llama 3.1 8B Q4
-  profile validates 291 external tensors and emits a 162-pass schedule. All
-  225 quantized weight projections are assigned to `udonblasSgemvQ4` with a
-  64x128 tiling and K-tile accumulation contract; attention activation products
-  remain on `udonblasSgemm`.
+  profile validates 517 external tensors and emits a 162-pass schedule. All
+  225 quantized weight projections are assigned to
+  `udonatenWeightInt4packMm` with separate packed weights and bfloat16
+  scale/zero metadata; attention activation products remain on
+  `udonblasSgemm`.
 
 The general provider also lowers Add, Mul, Sub, Relu, Sigmoid, Tanh, and
 Softmax to their cuDNN-compatible UdonDNN entry points. The checked-in
@@ -44,9 +45,10 @@ Rank-2 through rank-4 ONNX MatMul, including broadcast batch dimensions used
 by attention, is expanded AOT into one or more tiled `udonblasSgemm` calls per
 output batch matrix.
 The general provider also accepts the explicit
-`com.lemolatoon.udoncl::Q4Gemm` library extension. Llama 3.1 8B's
+`com.lemolatoon.udoncl::WeightInt4packMM` library extension. Llama 3.1 8B's
 embedding-independent single-token decoder expands to 546 operator nodes and
-225 tiled `udonblasSgemvQ4` calls instead of one fused `LlamaDecoder` node.
+225 tiled `udonatenWeightInt4packMm` calls instead of one fused `LlamaDecoder`
+node.
 Each call records its 64x128 tile grid and K-tile accumulation contract. Host
 emission currently rejects these plans until external-weight paging is wired,
 rather than generating an executable that cannot supply the compact weights.
@@ -114,8 +116,9 @@ udon-onnx-pack /path/to/safetensors weights-index.json -o weights.q4
 ```
 
 The packer accepts indexed or single-file safetensors in float32, float16, or
-bfloat16, validates every shape/range, converts matrix tensors to signed Q4
-blocks with fp16 scales, preserves normalization tensors as bfloat16, emits
+bfloat16, validates every shape/range, converts matrix tensors to separate
+signed-INT4 packed weights and `[K/group_size,N,2]` bfloat16 scale/zero tensors,
+preserves normalization tensors as bfloat16, emits
 per-tensor SHA-256 evidence, and replaces the destination only after the full
 conversion succeeds.
 

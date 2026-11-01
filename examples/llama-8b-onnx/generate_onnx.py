@@ -56,7 +56,12 @@ def build_weight_tensors():
     for item in spec:
         offset = align(offset)
         data_type = 16 if item["format"] == "bf16" else 2
-        storage_shape = item["shape"] if data_type == 16 else [item["storage_bytes"]]
+        storage_shape = (
+            item["shape"]
+            if data_type == 16
+            else [item["shape"][0], item["shape"][1] // 2]
+        )
+        storage_bytes = item.get("packed_storage_bytes", item["storage_bytes"])
         tensors.append(
             external_tensor_proto(
                 item["name"],
@@ -64,7 +69,7 @@ def build_weight_tensors():
                 data_type,
                 "weights.q4",
                 offset,
-                item["storage_bytes"],
+                storage_bytes,
             )
         )
         index.append(
@@ -75,10 +80,35 @@ def build_weight_tensors():
                 "format": item["format"],
                 "location": "weights.q4",
                 "offset": offset,
-                "length": item["storage_bytes"],
+                "length": storage_bytes,
             }
         )
-        offset += item["storage_bytes"]
+        offset += storage_bytes
+        if item["format"] == "q4_int4pack":
+            offset = align(offset)
+            tensors.append(
+                external_tensor_proto(
+                    item["scales_and_zeros_name"],
+                    item["scales_and_zeros_shape"],
+                    16,
+                    "weights.q4",
+                    offset,
+                    item["scales_and_zeros_storage_bytes"],
+                )
+            )
+            index.append(
+                {
+                    "name": item["scales_and_zeros_name"],
+                    "source_name": item["name"],
+                    "logical_shape": item["shape"],
+                    "format": "q4_scale_zero_bf16",
+                    "storage_shape": item["scales_and_zeros_shape"],
+                    "location": "weights.q4",
+                    "offset": offset,
+                    "length": item["scales_and_zeros_storage_bytes"],
+                }
+            )
+            offset += item["scales_and_zeros_storage_bytes"]
     return tensors, index, offset, spec
 
 
@@ -86,9 +116,14 @@ def build_model():
     tensors, index, offset, spec = build_weight_tensors()
     attributes = [attribute_string("architecture", "llama-3.1-8b")]
     attributes.extend(attribute_int(name, value) for name, value in CONFIG.items())
+    inputs = ["token_ids"]
+    for item in spec:
+        inputs.append(item["name"])
+        if item["format"] == "q4_int4pack":
+            inputs.append(item["scales_and_zeros_name"])
     node = node_proto(
         "LlamaDecoder",
-        ["token_ids"] + [item["name"] for item in spec],
+        inputs,
         ["logits"],
         "decoder",
         attributes,
@@ -135,13 +170,14 @@ def build_operator_model():
 
     def q4_gemm(name, activation, weight, output, output_features, input_features):
         return node_proto(
-            "Q4Gemm",
-            [activation, weight],
+            "WeightInt4packMM",
+            [activation, weight, weight + ".scales_and_zeros"],
             [output],
             name,
             [
                 attribute_int("output_features", output_features),
                 attribute_int("input_features", input_features),
+                attribute_int("group_size", CONFIG["q4_group_size"]),
             ],
             LLAMA_DOMAIN,
         )
@@ -338,7 +374,7 @@ def main():
             json.dumps(operator_plan, indent=2) + "\n", encoding="utf-8"
         )
         q4_calls = sum(
-            call["function"] == "udonblasSgemvQ4"
+            call["function"] == "udonatenWeightInt4packMm"
             for call in operator_plan["aot"]["calls"]
         )
         print(
