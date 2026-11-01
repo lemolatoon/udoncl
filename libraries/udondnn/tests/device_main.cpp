@@ -44,6 +44,10 @@ extern "C" size_t udonaten_arena_tile_cpu_gid_x;
 size_t udonaten_arena_tile_cpu_gid_x;
 extern "C" size_t udonaten_arena_tile_cpu_gid_y;
 size_t udonaten_arena_tile_cpu_gid_y;
+extern "C" size_t udonaten_arena_rms_cpu_gid_x;
+size_t udonaten_arena_rms_cpu_gid_x;
+extern "C" size_t udonaten_arena_rms_cpu_gid_y;
+size_t udonaten_arena_rms_cpu_gid_y;
 extern "C" size_t udonblas_cpu_gid;
 size_t udonblas_cpu_gid;
 extern "C" size_t udonblas_saxpy_cpu_gid;
@@ -373,14 +377,16 @@ void opTensorReference(const OpTensorCase &test, const std::vector<float> &a,
 } // namespace
 
 int main(int argc, char **argv) {
-  if (argc != 19) {
+  if (argc != 21) {
     std::cerr << "usage: udondnn-device convolution-fragment "
                  "activation-fragment pooling-fragment softmax-fragment "
                  "batchnorm-fragment op-tensor-fragment rmsnorm-fragment "
                  "gather-fragment int4-fragment tile-fragment "
                  "aten-rms-reduce-fragment aten-rms-finalize-fragment "
                  "sgemm-fragment q4-fragment saxpy-fragment "
-                 "arena-pointwise-fragment arena-tile-fragment vertex\n";
+                 "arena-pointwise-fragment arena-tile-fragment "
+                 "arena-rms-reduce-fragment arena-rms-finalize-fragment "
+                 "vertex\n";
     return 2;
   }
   try {
@@ -389,8 +395,8 @@ int main(int argc, char **argv) {
         manifestBindings(argv[1], argv[2], argv[3], argv[4], argv[5], argv[6],
                          argv[7], argv[8], argv[9], argv[10], argv[11],
                          argv[12], argv[13], argv[14], argv[15], argv[16],
-                         argv[17]),
-        argv[18]);
+                         argv[17], argv[18], argv[19]),
+        argv[20]);
     udondnnHandle_t handle = 0;
     require(udondnnCreate(&handle), UDONDNN_STATUS_SUCCESS, "udondnnCreate");
     std::array<udondnnTensorDescriptor_t, 64> descriptorCapacity{};
@@ -1165,6 +1171,40 @@ int main(int argc, char **argv) {
     }
     if (rmsMaximumError > 0.001f)
       throw std::runtime_error("large UdonATen RMSNorm diverged");
+    const int rmsMultiWords = rmsLargeWords * 2;
+    std::vector<float> rmsMultiInput(rmsMultiWords),
+        rmsMultiActual(rmsMultiWords);
+    for (int index = 0; index < rmsMultiWords; ++index)
+      rmsMultiInput[index] = value(index, 233) * 1.25f;
+    require(udondnnSetTensor4dDescriptor(
+                rmsInputDescriptor, UDONDNN_TENSOR_NCHW, UDONDNN_DATA_FLOAT, 2,
+                1, 1, rmsLargeWords),
+            UDONDNN_STATUS_SUCCESS, "set multi-row RMS input descriptor");
+    require(udondnnSetTensor4dDescriptor(
+                rmsOutputDescriptor, UDONDNN_TENSOR_NCHW, UDONDNN_DATA_FLOAT, 2,
+                1, 1, rmsLargeWords),
+            UDONDNN_STATUS_SUCCESS, "set multi-row RMS output descriptor");
+    require(udonatenRmsNorm(handle, rmsInputDescriptor, rmsMultiInput.data(),
+                            rmsLargeNormalizedShape, 1, rmsScaleDescriptor,
+                            rmsLargeScale.data(), &rmsEpsilon,
+                            rmsOutputDescriptor, rmsMultiActual.data()),
+            UDONDNN_STATUS_SUCCESS, "multi-row udonatenRmsNorm");
+    for (int row = 0; row < 2; ++row) {
+      float squareSum = 0.0f;
+      for (int column = 0; column < rmsLargeWords; ++column) {
+        float sample = rmsMultiInput[row * rmsLargeWords + column];
+        squareSum += sample * sample;
+      }
+      float inverse = 1.0f / std::sqrt(squareSum / rmsLargeWords + rmsEpsilon);
+      for (int column = 0; column < rmsLargeWords; ++column) {
+        int index = row * rmsLargeWords + column;
+        float expected = rmsMultiInput[index] * inverse * rmsLargeScale[column];
+        rmsMaximumError = std::max(rmsMaximumError,
+                                   std::abs(rmsMultiActual[index] - expected));
+      }
+    }
+    if (rmsMaximumError > 0.001f)
+      throw std::runtime_error("multi-row UdonATen RMSNorm diverged");
     const int64_t rmsOversizedShape[1] = {8192};
     require(udondnnSetTensor4dDescriptor(rmsInputDescriptor,
                                          UDONDNN_TENSOR_NCHW,
@@ -1721,7 +1761,9 @@ int main(int argc, char **argv) {
               << " optensor_outputs=" << opTensorOutputs
               << " optensor_cases=" << opTensorCases.size()
               << " optensor_max_error=" << opTensorMaximumError
-              << " rmsnorm_outputs=" << rmsActual.size() + rmsLargeActual.size()
+              << " rmsnorm_outputs="
+              << rmsActual.size() + rmsLargeActual.size() +
+                     rmsMultiActual.size()
               << " rmsnorm_max_error=" << rmsMaximumError
               << " gather_outputs=" << gatherActual.size()
               << " gather_max_error=" << gatherMaximumError

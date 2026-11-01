@@ -579,8 +579,10 @@ assert int4_model_manifest["host_schedule"] == {
     "arena_slots": 3,
     "int4_runners": 2,
     "direct_device_passes": 1,
+    "static_initializer_textures": 0,
     "zero_copy_views": 0,
 }
+assert int4_model_manifest["static_inputs"] == []
 assert [item["call_index"] for item in int4_model_manifest["call_artifacts"]] == [0, 1]
 assert all(item["atlases"] == 1 for item in int4_model_manifest["call_artifacts"])
 assert int4_model_manifest["unmaterialized_calls"] == [

@@ -20,6 +20,13 @@ INT4_COMPACT_ATLAS_WIDTH = INT4_COMPACT_PAGE_BYTES // 4
 INT4_ATLAS_MAX_PAGES = 8192
 
 
+def _uasm_float(value: float) -> str:
+    if not math.isfinite(value):
+        raise ValueError("Udon assembly float literal must be finite")
+    text = f"{value:.9f}".rstrip("0").rstrip(".")
+    return text if "." in text else text + ".0"
+
+
 def _safe_external_path(directory: Path, location: str) -> Path:
     if not isinstance(location, str) or not location or "\\" in location:
         raise ValueError("external page location must be a non-empty POSIX path")
@@ -935,6 +942,19 @@ def emit_int4_model_uasm(plan: dict) -> str:
         name: f"__materialIntName{name.removeprefix('_VRC_Arg')}"
         for name in material_int_properties
     }
+    material_float_properties = sorted(
+        {
+            property_name
+            for device_pass in direct_passes
+            for property_name in (device_pass.get("material_floats") or {})
+        }
+    )
+    if any(not name.startswith("_VRC_Arg") for name in material_float_properties):
+        raise ValueError("Device pass has an unsupported material float property")
+    material_float_names = {
+        name: f"__materialFloatName{name.removeprefix('_VRC_Arg')}"
+        for name in material_float_properties
+    }
 
     lines = [".data_start"]
     lines.extend(f"    .export {name}" for name in slot_names)
@@ -970,6 +990,10 @@ def emit_int4_model_uasm(plan: dict) -> str:
     lines.extend(
         f'    {material_int_names[name]}: %SystemString, "{name}"'
         for name in material_int_properties
+    )
+    lines.extend(
+        f'    {material_float_names[name]}: %SystemString, "{name}"'
+        for name in material_float_properties
     )
     lines.extend([".data_end", "", ".code_start", "    .export _start", "    _start:"])
     lines.extend(
@@ -1017,6 +1041,16 @@ def emit_int4_model_uasm(plan: dict) -> str:
                 f"        PUSH, {property_name}",
                 f"        PUSH, {value_name}",
                 '        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"',
+            ]
+        )
+
+    def set_float(material: str, property_name: str, value_name: str):
+        lines.extend(
+            [
+                f"        PUSH, {material}",
+                f"        PUSH, {property_name}",
+                f"        PUSH, {value_name}",
+                '        EXTERN, "UnityEngineMaterial.__SetFloat__SystemString_SystemSingle__SystemVoid"',
             ]
         )
 
@@ -1073,6 +1107,20 @@ def emit_int4_model_uasm(plan: dict) -> str:
     lines[data_end:data_end] = [
         f"    __int{value}: %SystemInt32, {value}" for value in material_int_values
     ]
+    material_float_values = sorted(
+        {
+            value
+            for device_pass in direct_passes
+            for value in (device_pass.get("material_floats") or {}).values()
+        }
+    )
+    float_value_names = {
+        value: f"__float{index}" for index, value in enumerate(material_float_values)
+    }
+    lines[data_end:data_end] = [
+        f"    {float_value_names[value]}: %SystemSingle, {_uasm_float(value)}"
+        for value in material_float_values
+    ]
 
     for call in calls:
         call_index = call["index"]
@@ -1103,6 +1151,14 @@ def emit_int4_model_uasm(plan: dict) -> str:
                 set_texture(material, f"__inputName{input_index}", slot_names[binding["slot"]])
             for property_name, value in (device_pass.get("material_ints") or {}).items():
                 set_int(material, material_int_names[property_name], value)
+            for property_name, value in (
+                device_pass.get("material_floats") or {}
+            ).items():
+                set_float(
+                    material,
+                    material_float_names[property_name],
+                    float_value_names[value],
+                )
             output = _model_arena_binding(plan, device_pass["output"])
             source = _model_arena_binding(plan, inputs[0])
             blit(slot_names[source["slot"]], slot_names[output["slot"]], material)
@@ -1336,6 +1392,9 @@ def materialize_int4_model(
                     ),
                 }
             )
+        static_inputs = materialize_static_inputs(
+            plan, external_data_directory, staging
+        )
         serialized_plan = json.dumps(plan, indent=2) + "\n"
         (staging / "execution-plan.json").write_text(serialized_plan, encoding="utf-8")
         (staging / "host.uasm").write_text(
@@ -1359,6 +1418,7 @@ def materialize_int4_model(
             "int4_atlas_bytes": sum(item["atlas_bytes"] for item in artifacts),
             "texture_arena": _texture_arena_summary(plan),
             "host_schedule": _model_host_summary(plan),
+            "static_inputs": static_inputs,
             "complete_graph": len(int4_calls) == len(calls),
             "call_artifacts": artifacts,
             "unmaterialized_calls": [
@@ -1438,13 +1498,96 @@ def _model_host_summary(plan: dict) -> dict:
         for device_pass in plan.get("passes") or []
         if device_pass.get("call_index") not in int4_indexes
     ]
+    static_initializers = {
+        item["initializer"]
+        for device_pass in direct_passes
+        for item in device_pass.get("static_inputs") or []
+    }
     return {
         "assembly": "host.uasm",
         "arena_slots": (plan.get("texture_arena") or {}).get("slot_count"),
         "int4_runners": len(int4_calls),
         "direct_device_passes": len(direct_passes),
+        "static_initializer_textures": len(static_initializers),
         "zero_copy_views": sum(call.get("kind") == "view" for call in calls),
     }
+
+
+def _model_static_inputs(plan: dict) -> list[dict]:
+    uses = {}
+    for device_pass in plan.get("passes") or []:
+        for item in device_pass.get("static_inputs") or []:
+            name = item.get("initializer")
+            property_name = item.get("property")
+            if not isinstance(name, str) or not isinstance(property_name, str):
+                raise ValueError("Device pass static input contract is invalid")
+            uses.setdefault(name, set()).add(property_name)
+    initializers = plan.get("initializers") or {}
+    result = []
+    for name in sorted(uses):
+        initializer = initializers.get(name)
+        if not isinstance(initializer, dict):
+            raise ValueError(f"static input {name!r} is not an initializer")
+        words = math.prod(initializer.get("shape") or [])
+        result.append(
+            {
+                "name": name,
+                "properties": sorted(uses[name]),
+                "shape": initializer.get("shape"),
+                "data_type": initializer.get("data_type"),
+                "source_bytes": initializer.get("bytes"),
+                "storage": initializer.get("storage"),
+                "external": initializer.get("external"),
+                "texture": {
+                    "abi": "linear-rgba32-words",
+                    "words": words,
+                    "width": min(8192, words),
+                    "height": math.ceil(words / 8192),
+                },
+            }
+        )
+    return result
+
+
+def materialize_static_inputs(
+    plan: dict, external_data_directory: Path, output_directory: Path
+) -> list[dict]:
+    """Decode external ATen constants into the RGBA32 word-texture payload."""
+    output_directory.mkdir(parents=True, exist_ok=True)
+    artifacts = []
+    for index, item in enumerate(_model_static_inputs(plan)):
+        words = item["texture"]["words"]
+        if item["storage"] != "external":
+            raise ValueError("static Device inputs must retain external source metadata")
+        raw = _read_external(
+            external_data_directory, item["external"], 0, item["source_bytes"]
+        )
+        if item["data_type"] == "bfloat16":
+            if len(raw) != words * 2:
+                raise ValueError("bfloat16 static input byte size is inconsistent")
+            values = struct.unpack(f"<{words}H", raw)
+            payload = struct.pack(f"<{words}I", *(value << 16 for value in values))
+        elif item["data_type"] == "float32":
+            if len(raw) != words * 4:
+                raise ValueError("float32 static input byte size is inconsistent")
+            payload = raw
+        else:
+            raise ValueError(
+                f"static Device input type {item['data_type']!r} is unsupported"
+            )
+        relative = f"static-inputs/input-{index:04d}.bytes"
+        destination = output_directory / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(payload)
+        artifacts.append(
+            {
+                **item,
+                "resource": relative,
+                "bytes": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+        )
+    return artifacts
 
 
 def plan_int4_model_bundle(plan: dict) -> dict:
@@ -1502,6 +1645,7 @@ def plan_int4_model_bundle(plan: dict) -> dict:
         "int4_atlas_bytes": sum(item["atlas_bytes"] for item in artifacts),
         "texture_arena": _texture_arena_summary(plan),
         "host_schedule": _model_host_summary(plan),
+        "static_inputs": _model_static_inputs(plan),
         "complete_graph": len(artifacts) == len(calls),
         "call_artifacts": artifacts,
         "unmaterialized_calls": [

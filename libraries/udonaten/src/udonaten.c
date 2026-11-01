@@ -3,6 +3,7 @@
 #include <math.h>
 
 #define UDONATEN_POINTWISE_TILE_WORDS 512
+#define UDONATEN_ARENA_WORDS 16384
 
 static int udonatenPointwiseTileShape(size_t remaining, int *n, int *c, int *h,
                                       int *w) {
@@ -318,8 +319,7 @@ udonatenRmsNorm(udonatenHandle_t handle,
         weight_n * weight_c * weight_h * weight_w != normalized_words)
       return UDONDNN_STATUS_BAD_PARAM;
   }
-  if (words > 4096 ||
-      (words > UDONATEN_POINTWISE_TILE_WORDS && words != normalized_words))
+  if (words > UDONATEN_ARENA_WORDS || normalized_words > 4096)
     return UDONDNN_STATUS_NOT_SUPPORTED;
   return udonatenBackendRmsNorm(handle, words, normalized_words, input, weight,
                                 effective_epsilon, output);

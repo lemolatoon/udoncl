@@ -116,6 +116,8 @@ static cl_kernel aten_rms_reduce_kernel;
 static cl_kernel aten_rms_finalize_kernel;
 static cl_kernel arena_pointwise_kernel;
 static cl_kernel arena_tile_kernel;
+static cl_kernel arena_rms_reduce_kernel;
+static cl_kernel arena_rms_finalize_kernel;
 static cl_mem input_buffer;
 static cl_mem output_buffer;
 static cl_mem batchnorm_input_buffer;
@@ -128,6 +130,7 @@ static cl_mem aten_rms_output_buffer;
 static cl_mem arena_pointwise_self_buffer;
 static cl_mem arena_pointwise_other_buffer;
 static cl_mem arena_pointwise_output_buffer;
+static cl_mem arena_rms_partial_buffer;
 static float packed[UDONDNN_WORDS];
 static float batchnorm_packed[UDONDNN_BATCHNORM_WORDS];
 static float result[UDONDNN_REGION_WORDS];
@@ -214,6 +217,10 @@ get_op_tensor(udondnnOpTensorDescriptor_t descriptor) {
 }
 
 static void clear_objects(void) {
+  if (arena_rms_finalize_kernel)
+    clReleaseKernel(arena_rms_finalize_kernel);
+  if (arena_rms_reduce_kernel)
+    clReleaseKernel(arena_rms_reduce_kernel);
   if (arena_tile_kernel)
     clReleaseKernel(arena_tile_kernel);
   if (arena_pointwise_kernel)
@@ -268,6 +275,8 @@ static void clear_objects(void) {
     clReleaseMemObject(arena_pointwise_other_buffer);
   if (arena_pointwise_self_buffer)
     clReleaseMemObject(arena_pointwise_self_buffer);
+  if (arena_rms_partial_buffer)
+    clReleaseMemObject(arena_rms_partial_buffer);
   if (queue)
     clReleaseCommandQueue(queue);
   if (context)
@@ -286,6 +295,8 @@ static void clear_objects(void) {
   aten_rms_finalize_kernel = 0;
   arena_pointwise_kernel = 0;
   arena_tile_kernel = 0;
+  arena_rms_reduce_kernel = 0;
+  arena_rms_finalize_kernel = 0;
   program = 0;
   output_buffer = input_buffer = 0;
   batchnorm_output_buffer = batchnorm_input_buffer = 0;
@@ -293,6 +304,7 @@ static void clear_objects(void) {
   aten_rms_state_buffer = aten_rms_partial_buffer = aten_rms_output_buffer = 0;
   arena_pointwise_self_buffer = arena_pointwise_other_buffer =
       arena_pointwise_output_buffer = 0;
+  arena_rms_partial_buffer = 0;
   queue = 0;
   context = 0;
 }
@@ -368,6 +380,11 @@ udondnnStatus_t udondnnCreate(udondnnHandle_t *handle) {
   if (status != CL_SUCCESS)
     return execution_failure();
   arena_pointwise_output_buffer = clCreateBuffer(
+      context, CL_MEM_READ_WRITE,
+      UDONATEN_ARENA_POINTWISE_WORDS * sizeof(float), 0, &status);
+  if (status != CL_SUCCESS)
+    return execution_failure();
+  arena_rms_partial_buffer = clCreateBuffer(
       context, CL_MEM_READ_WRITE,
       UDONATEN_ARENA_POINTWISE_WORDS * sizeof(float), 0, &status);
   if (status != CL_SUCCESS)
@@ -490,6 +507,32 @@ udondnnStatus_t udondnnCreate(udondnnHandle_t *handle) {
       clSetKernelArg(arena_tile_kernel, 0, sizeof(arena_pointwise_self_buffer),
                      &arena_pointwise_self_buffer) != CL_SUCCESS ||
       clSetKernelArg(arena_tile_kernel, 1,
+                     sizeof(arena_pointwise_output_buffer),
+                     &arena_pointwise_output_buffer) != CL_SUCCESS)
+    return execution_failure();
+  arena_rms_reduce_kernel =
+      clCreateKernel(program, "udonaten_arena_rms_norm_reduce", &status);
+  if (status != CL_SUCCESS ||
+      clSetKernelArg(arena_rms_reduce_kernel, 0,
+                     sizeof(arena_pointwise_self_buffer),
+                     &arena_pointwise_self_buffer) != CL_SUCCESS ||
+      clSetKernelArg(arena_rms_reduce_kernel, 1,
+                     sizeof(arena_rms_partial_buffer),
+                     &arena_rms_partial_buffer) != CL_SUCCESS)
+    return execution_failure();
+  arena_rms_finalize_kernel =
+      clCreateKernel(program, "udonaten_arena_rms_norm_finalize", &status);
+  if (status != CL_SUCCESS ||
+      clSetKernelArg(arena_rms_finalize_kernel, 0,
+                     sizeof(arena_pointwise_self_buffer),
+                     &arena_pointwise_self_buffer) != CL_SUCCESS ||
+      clSetKernelArg(arena_rms_finalize_kernel, 1,
+                     sizeof(arena_rms_partial_buffer),
+                     &arena_rms_partial_buffer) != CL_SUCCESS ||
+      clSetKernelArg(arena_rms_finalize_kernel, 2,
+                     sizeof(arena_pointwise_other_buffer),
+                     &arena_pointwise_other_buffer) != CL_SUCCESS ||
+      clSetKernelArg(arena_rms_finalize_kernel, 3,
                      sizeof(arena_pointwise_output_buffer),
                      &arena_pointwise_output_buffer) != CL_SUCCESS)
     return execution_failure();
@@ -1425,42 +1468,47 @@ udondnnStatus_t udonatenBackendRmsNorm(udondnnHandle_t handle, int words,
   cl_int status;
   if (handle != UDONDNN_HANDLE || !context)
     return UDONDNN_STATUS_NOT_INITIALIZED;
-  if (!input || !output || words <= 0 || words > 4096 ||
-      normalized_words <= 0 || normalized_words > 4096 ||
-      words % normalized_words != 0 || epsilon < 0.0f)
+  if (!input || !output || words <= 0 ||
+      words > UDONATEN_ARENA_POINTWISE_WORDS || normalized_words <= 0 ||
+      normalized_words > 4096 || words % normalized_words != 0 ||
+      epsilon < 0.0f)
     return UDONDNN_STATUS_BAD_PARAM;
   if (words > UDONDNN_REGION_WORDS) {
-    if (words != normalized_words)
-      return UDONDNN_STATUS_NOT_SUPPORTED;
-    for (index = 0; index < UDONATEN_RMS_WORDS; ++index)
-      aten_rms_state[index] = 0.0f;
-    for (index = 0; index < words; ++index)
-      aten_rms_state[index] = input[index];
-    for (index = 0; index < normalized_words; ++index)
-      aten_rms_state[UDONATEN_RMS_WEIGHT_OFFSET + index] =
-          weight ? weight[index] : 1.0f;
+    const size_t arena_global[2] = {8192, 2};
+    const size_t arena_local[2] = {1, 1};
 #define SET_LARGE_RMS_ARGUMENT(kernel, slot, value)                            \
   do {                                                                         \
     status = clSetKernelArg((kernel), (slot), sizeof(value), &(value));        \
     if (status != CL_SUCCESS)                                                  \
       return UDONDNN_STATUS_EXECUTION_FAILED;                                  \
   } while (0)
-    SET_LARGE_RMS_ARGUMENT(aten_rms_reduce_kernel, 2, words);
-    SET_LARGE_RMS_ARGUMENT(aten_rms_reduce_kernel, 3, normalized_words);
-    SET_LARGE_RMS_ARGUMENT(aten_rms_finalize_kernel, 3, words);
-    SET_LARGE_RMS_ARGUMENT(aten_rms_finalize_kernel, 4, normalized_words);
-    SET_LARGE_RMS_ARGUMENT(aten_rms_finalize_kernel, 5, epsilon);
-    SET_LARGE_RMS_ARGUMENT(aten_rms_finalize_kernel, 6, has_weight);
+    SET_LARGE_RMS_ARGUMENT(arena_rms_reduce_kernel, 2, words);
+    SET_LARGE_RMS_ARGUMENT(arena_rms_reduce_kernel, 3, normalized_words);
+    SET_LARGE_RMS_ARGUMENT(arena_rms_finalize_kernel, 4, words);
+    SET_LARGE_RMS_ARGUMENT(arena_rms_finalize_kernel, 5, normalized_words);
+    SET_LARGE_RMS_ARGUMENT(arena_rms_finalize_kernel, 6, epsilon);
+    SET_LARGE_RMS_ARGUMENT(arena_rms_finalize_kernel, 7, has_weight);
 #undef SET_LARGE_RMS_ARGUMENT
-    global = UDONATEN_RMS_WORDS;
-    if (clEnqueueWriteBuffer(queue, aten_rms_state_buffer, CL_TRUE, 0,
-                             sizeof(aten_rms_state), aten_rms_state, 0, 0,
+    if (clEnqueueWriteBuffer(queue, arena_pointwise_self_buffer, CL_TRUE, 0,
+                             sizeof(arena_pointwise_zero), arena_pointwise_zero,
+                             0, 0, 0) != CL_SUCCESS ||
+        clEnqueueWriteBuffer(queue, arena_pointwise_other_buffer, CL_TRUE, 0,
+                             sizeof(arena_pointwise_zero), arena_pointwise_zero,
+                             0, 0, 0) != CL_SUCCESS ||
+        clEnqueueWriteBuffer(queue, arena_pointwise_self_buffer, CL_TRUE, 0,
+                             (size_t)words * sizeof(float), input, 0, 0,
                              0) != CL_SUCCESS ||
-        clEnqueueNDRangeKernel(queue, aten_rms_reduce_kernel, 1, 0, &global,
-                               &local, 0, 0, 0) != CL_SUCCESS ||
-        clEnqueueNDRangeKernel(queue, aten_rms_finalize_kernel, 1, 0, &global,
-                               &local, 0, 0, 0) != CL_SUCCESS ||
-        clEnqueueReadBuffer(queue, aten_rms_output_buffer, CL_TRUE, 0,
+        (weight &&
+         clEnqueueWriteBuffer(queue, arena_pointwise_other_buffer, CL_TRUE, 0,
+                              (size_t)normalized_words * sizeof(float), weight,
+                              0, 0, 0) != CL_SUCCESS) ||
+        clEnqueueNDRangeKernel(queue, arena_rms_reduce_kernel, 2, 0,
+                               arena_global, arena_local, 0, 0,
+                               0) != CL_SUCCESS ||
+        clEnqueueNDRangeKernel(queue, arena_rms_finalize_kernel, 2, 0,
+                               arena_global, arena_local, 0, 0,
+                               0) != CL_SUCCESS ||
+        clEnqueueReadBuffer(queue, arena_pointwise_output_buffer, CL_TRUE, 0,
                             (size_t)words * sizeof(float), output, 0, 0,
                             0) != CL_SUCCESS ||
         clFinish(queue) != CL_SUCCESS)

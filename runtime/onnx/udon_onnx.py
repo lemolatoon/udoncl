@@ -1552,40 +1552,68 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
             if (
                 node["provider"] == "udonatenRmsNorm"
                 and math.prod(node["shape"]) > RMS_NORM_TILE_WORDS
+                and math.prod(node["shape"]) <= ARENA_POINTWISE_WORDS
+                and math.prod(shapes[node["inputs"][1]]) <= 4096
                 and math.prod(node["shape"])
-                == math.prod(shapes[node["inputs"][1]])
-                <= 4096
+                % math.prod(shapes[node["inputs"][1]])
+                == 0
             ):
+                words = math.prod(node["shape"])
+                normalized_words = math.prod(shapes[node["inputs"][1]])
+                epsilon = node["attributes"].get("epsilon", {"f": 1.0e-5})["f"]
                 partials = f"{node['output']}__rms_partials"
-                for phase, kernel, inputs, output in (
-                    (
-                        "reduce",
-                        "udonaten_rms_norm_reduce",
-                        [node["inputs"][0]],
-                        partials,
-                    ),
-                    (
-                        "finalize",
-                        "udonaten_rms_norm_finalize",
-                        [node["inputs"][0], partials],
-                        node["output"],
-                    ),
-                ):
-                    passes.append(
-                        {
-                            "id": 200 + len(passes),
-                            "kernel": kernel,
-                            "providers": [node["provider"]],
-                            "fusion": None,
-                            "call_index": node_index,
-                            "phase": phase,
-                            "inputs": inputs,
-                            "output": output,
-                            "shape": node["shape"],
-                            "fragments": 8192,
-                            "state_words": 8192,
-                        }
-                    )
+                passes.append(
+                    {
+                        "id": 200 + len(passes),
+                        "kernel": "udonaten_arena_rms_norm_reduce",
+                        "shader": "kernel_217.shader",
+                        "providers": [node["provider"]],
+                        "fusion": None,
+                        "call_index": node_index,
+                        "phase": "reduce",
+                        "inputs": [node["inputs"][0]],
+                        "output": partials,
+                        "shape": node["shape"],
+                        "fragments": ARENA_POINTWISE_WORDS,
+                        "state_words": ARENA_POINTWISE_WORDS,
+                        "material_ints": {
+                            "_VRC_Arg2": words,
+                            "_VRC_Arg3": normalized_words,
+                        },
+                    }
+                )
+                passes.append(
+                    {
+                        "id": 200 + len(passes),
+                        "kernel": "udonaten_arena_rms_norm_finalize",
+                        "shader": "kernel_218.shader",
+                        "providers": [node["provider"]],
+                        "fusion": None,
+                        "call_index": node_index,
+                        "phase": "finalize",
+                        "inputs": [
+                            node["inputs"][0],
+                            partials,
+                            node["inputs"][1],
+                        ],
+                        "static_inputs": [
+                            {
+                                "property": "_VRC_Input2",
+                                "initializer": node["inputs"][1],
+                            }
+                        ],
+                        "output": node["output"],
+                        "shape": node["shape"],
+                        "fragments": ARENA_POINTWISE_WORDS,
+                        "state_words": ARENA_POINTWISE_WORDS,
+                        "material_ints": {
+                            "_VRC_Arg4": words,
+                            "_VRC_Arg5": normalized_words,
+                            "_VRC_Arg7": 1,
+                        },
+                        "material_floats": {"_VRC_Arg6": epsilon},
+                    }
+                )
                 continue
             if node["op_type"] == "Gemm":
                 tiles = _gemm_schedule(node, shapes)
@@ -1841,23 +1869,27 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
             if math.prod(node["shape"]) > RMS_NORM_TILE_WORDS:
                 normalized_words = math.prod(shapes[node["inputs"][1]])
                 supported = (
-                    math.prod(node["shape"]) == normalized_words <= 4096
+                    math.prod(node["shape"]) <= ARENA_POINTWISE_WORDS
+                    and normalized_words <= 4096
+                    and math.prod(node["shape"]) % normalized_words == 0
                 )
                 call["device_profile"] = (
                     {
                         "supported": True,
-                        "state_words": 8192,
+                        "state_words": ARENA_POINTWISE_WORDS,
                         "passes": 2,
                         "reduction_chunk_words": 64,
                         "kernels": [
-                            "udonaten_rms_norm_reduce",
-                            "udonaten_rms_norm_finalize",
+                            "udonaten_arena_rms_norm_reduce",
+                            "udonaten_arena_rms_norm_finalize",
                         ],
+                        "shaders": ["kernel_217.shader", "kernel_218.shader"],
+                        "weight_input": "_VRC_Input2",
                     }
                     if supported
                     else {
                         "supported": False,
-                        "reason": "large multi-row RMSNorm is not implemented",
+                        "reason": "RMSNorm exceeds the arena profile",
                     }
                 )
         elif node["provider"] == "udonatenTile" and math.prod(

@@ -54,10 +54,11 @@ Authoritative sources:
 The existing `udondnnExtGatherForward` name is a provisional backend detail.
 UdonATen may reuse it internally during migration, but ONNX plans and generated
 Host code expose UdonATen contracts. RMSNorm now uses an UdonATen-owned
-Device kernel and is no longer exposed as a UdonDNN extension. Its 4,096-word
-single-region profile now executes as an UdonATen-owned two-pass reduction and
-normalization using the multi-input Device ABI, without a CPU readback. The
-same rule applies
+Device kernel and is no longer exposed as a UdonDNN extension. Its arena
+profile executes up to 16,384 words with normalized rows up to 4,096 words as
+an UdonATen-owned two-pass reduction and normalization, without CPU readback.
+The optional ATen weight is a separate readonly texture input rather than a
+packed-state offset. The same rule applies
 to pointwise Add, Sub, Mul, ReLU, Sigmoid, and Tanh: their public calls are
 UdonATen-shaped. Large ONNX Add, Mul, and Sigmoid tensors use the private
 `udonaten_arena_pointwise` Device backend; this is an ATen execution detail and

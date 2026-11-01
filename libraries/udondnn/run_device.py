@@ -93,6 +93,7 @@ def main():
     aten_rms_device = root / "libraries/udonaten/device/rms_norm.cl"
     arena_pointwise_device = root / "libraries/udonaten/device/arena_pointwise.cl"
     arena_tile_device = root / "libraries/udonaten/device/arena_tile.cl"
+    arena_rms_device = root / "libraries/udonaten/device/arena_rms_norm.cl"
     sgemm_device = root / "libraries/udonblas/device/sgemm.cl"
     q4_device = root / "libraries/udonblas/device/q4_gemv.cl"
     saxpy_device = root / "libraries/udonblas/device/saxpy.cl"
@@ -109,6 +110,7 @@ def main():
     aten_rms_text = aten_rms_device.read_text(encoding="utf-8")
     arena_pointwise_text = arena_pointwise_device.read_text(encoding="utf-8")
     arena_tile_text = arena_tile_device.read_text(encoding="utf-8")
+    arena_rms_text = arena_rms_device.read_text(encoding="utf-8")
     sgemm_text = sgemm_device.read_text(encoding="utf-8")
     q4_text = q4_device.read_text(encoding="utf-8")
     saxpy_text = saxpy_device.read_text(encoding="utf-8")
@@ -138,6 +140,8 @@ def main():
         + arena_pointwise_text
         + "\n"
         + arena_tile_text
+        + "\n"
+        + arena_rms_text
         + "\n"
         + sgemm_text
         + "\n"
@@ -296,6 +300,22 @@ def main():
         arena_tile_device,
         "udonaten_arena_tile",
         216,
+        16384,
+        (8192, 2),
+    )
+    arena_rms_reduce_bundle = emit_device(
+        "aten-arena-rms-reduce",
+        arena_rms_device,
+        "udonaten_arena_rms_norm_reduce",
+        217,
+        16384,
+        (8192, 2),
+    )
+    arena_rms_finalize_bundle = emit_device(
+        "aten-arena-rms-finalize",
+        arena_rms_device,
+        "udonaten_arena_rms_norm_finalize",
+        218,
         16384,
         (8192, 2),
     )
@@ -498,6 +518,42 @@ def main():
     arena_tile_fragment = arena_tile_bundle / "kernels/kernel_216.hlsl"
     if "uint(position.y)" not in arena_tile_fragment.read_text(encoding="utf-8"):
         raise RuntimeError("UdonATen arena Tile lost its multi-row texture ABI")
+    arena_rms_reduce_manifest = json.loads(
+        (arena_rms_reduce_bundle / "manifest.json").read_text(encoding="utf-8")
+    )
+    arena_rms_finalize_manifest = json.loads(
+        (arena_rms_finalize_bundle / "manifest.json").read_text(encoding="utf-8")
+    )
+    arena_rms_reduce_kernel = arena_rms_reduce_manifest["device"]["kernels"][0]
+    arena_rms_finalize_kernel = arena_rms_finalize_manifest["device"]["kernels"][0]
+    if (
+        arena_rms_reduce_kernel["name"] != "udonaten_arena_rms_norm_reduce"
+        or arena_rms_reduce_kernel["global_size"] != [8192, 2, 1]
+        or len(arena_rms_reduce_kernel["args"]) != 4
+        or arena_rms_finalize_kernel["name"]
+        != "udonaten_arena_rms_norm_finalize"
+        or arena_rms_finalize_kernel["global_size"] != [8192, 2, 1]
+        or [
+            argument["access"]
+            for argument in arena_rms_finalize_kernel["args"][:4]
+        ]
+        != ["read", "read", "read", "write"]
+        or len(arena_rms_finalize_kernel["args"]) != 8
+    ):
+        raise RuntimeError("UdonATen arena RMSNorm manifest is invalid")
+    arena_rms_reduce_fragment = (
+        arena_rms_reduce_bundle / "kernels/kernel_217.hlsl"
+    )
+    arena_rms_finalize_fragment = (
+        arena_rms_finalize_bundle / "kernels/kernel_218.hlsl"
+    )
+    arena_rms_finalize_hlsl = arena_rms_finalize_fragment.read_text(encoding="utf-8")
+    if (
+        "_VRC_Input1.Load" not in arena_rms_finalize_hlsl
+        or "_VRC_Input2.Load" not in arena_rms_finalize_hlsl
+        or "uint(position.y)" not in arena_rms_finalize_hlsl
+    ):
+        raise RuntimeError("UdonATen arena RMSNorm lost its three-input texture ABI")
     blas_bundles = [
         (sgemm_bundle, "udonblas_sgemm", 212, 1024, 10),
         (q4_bundle, "udonblas_sgemv_q4", 213, 8192, 7),
@@ -586,7 +642,8 @@ def main():
         + "const std::string &atenRmsReduce, const std::string &atenRmsFinalize, "
         + "const std::string &sgemm, const std::string &q4, "
         + "const std::string &saxpy, const std::string &arenaPointwise, "
-        + "const std::string &arenaTile) { return {"
+        + "const std::string &arenaTile, const std::string &arenaRmsReduce, "
+        + "const std::string &arenaRmsFinalize) { return {"
         + '{200, 2048, 7, "udondnn_convolution_forward", convolution}, '
         + '{201, 2048, 6, "udondnn_activation_forward", activation}, '
         + '{202, 2048, 7, "udondnn_pooling_forward", pooling}, '
@@ -603,7 +660,9 @@ def main():
         + '{213, 8192, 7, "udonblas_sgemv_q4", q4}, '
         + '{214, 1024, 4, "udonblas_saxpy", saxpy}, '
         + '{215, 16384, 2, "udonaten_arena_pointwise", arenaPointwise, 8192, 2, 2}, '
-        + '{216, 16384, 9, "udonaten_arena_tile", arenaTile, 8192, 2}}; }\n',
+        + '{216, 16384, 9, "udonaten_arena_tile", arenaTile, 8192, 2}, '
+        + '{217, 16384, 2, "udonaten_arena_rms_norm_reduce", arenaRmsReduce, 8192, 2}, '
+        + '{218, 16384, 4, "udonaten_arena_rms_norm_finalize", arenaRmsFinalize, 8192, 2, 3}}; }\n',
         encoding="utf-8",
     )
 
@@ -1971,6 +2030,7 @@ def main():
     saxpy_object = output / ("saxpy-device" + object_suffix)
     arena_pointwise_object = output / ("arena-pointwise-device" + object_suffix)
     arena_tile_object = output / ("arena-tile-device" + object_suffix)
+    arena_rms_object = output / ("arena-rms-device" + object_suffix)
     run([clang, *runtime_flags, "-c", native_ir, "-o", host_object])
     run([clang, *runtime_flags, "-c", blas_native_ir, "-o", blas_host_object])
     run(
@@ -2173,6 +2233,20 @@ def main():
             arena_tile_object,
         ]
     )
+    run(
+        [
+            clang,
+            *runtime_flags,
+            "-x",
+            "c",
+            "-std=c11",
+            "-ffp-contract=off",
+            "-c",
+            arena_rms_device,
+            "-o",
+            arena_rms_object,
+        ]
+    )
     for blas_device, blas_object in (
         (sgemm_device, sgemm_object),
         (q4_device, q4_object),
@@ -2222,6 +2296,8 @@ def main():
                 (blas_fragments[2], "frag", "frag"),
                 (arena_pointwise_fragment, "frag", "frag"),
                 (arena_tile_fragment, "frag", "frag"),
+                (arena_rms_reduce_fragment, "frag", "frag"),
+                (arena_rms_finalize_fragment, "frag", "frag"),
                 (vertex, "vert", "vert"),
             ]
         ):
@@ -2258,6 +2334,8 @@ def main():
             *blas_fragments,
             arena_pointwise_fragment,
             arena_tile_fragment,
+            arena_rms_reduce_fragment,
+            arena_rms_finalize_fragment,
             vertex,
         ) = compiled
 
@@ -2291,6 +2369,7 @@ def main():
             "-DUDONBLAS_SAXPY_OBJECT=" + saxpy_object.as_posix(),
             "-DUDONATEN_ARENA_POINTWISE_OBJECT=" + arena_pointwise_object.as_posix(),
             "-DUDONATEN_ARENA_TILE_OBJECT=" + arena_tile_object.as_posix(),
+            "-DUDONATEN_ARENA_RMS_OBJECT=" + arena_rms_object.as_posix(),
             "-DUDONDNN_BINDINGS_DIR=" + output.as_posix(),
         ]
     )
@@ -2315,6 +2394,8 @@ def main():
                 *blas_fragments,
                 arena_pointwise_fragment,
                 arena_tile_fragment,
+                arena_rms_reduce_fragment,
+                arena_rms_finalize_fragment,
                 vertex,
             ]
         ),

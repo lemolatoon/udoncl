@@ -3,6 +3,7 @@
 import json
 import math
 from pathlib import Path
+import struct
 import subprocess
 import sys
 
@@ -144,13 +145,15 @@ assert all(
     call["device_profile"]
     == {
         "supported": True,
-        "state_words": 8192,
+        "state_words": 16384,
         "passes": 2,
         "reduction_chunk_words": 64,
         "kernels": [
-            "udonaten_rms_norm_reduce",
-            "udonaten_rms_norm_finalize",
+            "udonaten_arena_rms_norm_reduce",
+            "udonaten_arena_rms_norm_finalize",
         ],
+        "shaders": ["kernel_217.shader", "kernel_218.shader"],
+        "weight_input": "_VRC_Input2",
     }
     for call in rms_calls
 )
@@ -164,10 +167,27 @@ assert {device_pass["phase"] for device_pass in rms_passes} == {
     "reduce",
     "finalize",
 }
-assert all(device_pass["fragments"] == 8192 for device_pass in rms_passes)
+assert all(device_pass["fragments"] == 16384 for device_pass in rms_passes)
+assert all(device_pass["state_words"] == 16384 for device_pass in rms_passes)
+rms_finalize_passes = [
+    device_pass for device_pass in rms_passes if device_pass["phase"] == "finalize"
+]
+assert all(
+    device_pass["kernel"] == "udonaten_arena_rms_norm_finalize"
+    and device_pass["shader"] == "kernel_218.shader"
+    and device_pass["static_inputs"]
+    == [
+        {
+            "property": "_VRC_Input2",
+            "initializer": device_pass["inputs"][2],
+        }
+    ]
+    and device_pass["material_floats"] == {"_VRC_Arg6": 1.0e-5}
+    for device_pass in rms_finalize_passes
+)
 assert len(operator_plan["scratch_buffers"]) == 65
 assert all(
-    scratch["words"] == 8192 and scratch["data_type"] == "float32"
+    scratch["words"] == 16384 and scratch["data_type"] == "float32"
     for scratch in operator_plan["scratch_buffers"]
 )
 assert len(operator_plan["passes"]) == 547
@@ -175,18 +195,18 @@ texture_arena = operator_plan["texture_arena"]
 assert texture_arena["abi"] == "linear-rgba32-words"
 assert texture_arena["max_texture_width"] == 8192
 assert texture_arena["slot_count"] == 5
-assert texture_arena["total_words"] == 185600
-assert texture_arena["total_bytes"] == 742400
+assert texture_arena["total_words"] == 177408
+assert texture_arena["total_bytes"] == 709632
 assert [slot["capacity_words"] for slot in texture_arena["slots"]] == [
     128256,
-    14336,
-    14336,
+    16384,
+    4096,
     14336,
     14336,
 ]
 assert [
     (slot["width"], slot["height"]) for slot in texture_arena["slots"]
-] == [(8192, 16), (8192, 2), (8192, 2), (8192, 2), (8192, 2)]
+] == [(8192, 16), (8192, 2), (4096, 1), (8192, 2), (8192, 2)]
 assert texture_arena["bindings"]["hidden_state"] == {
     "slot": 0,
     "offset_words": 0,
@@ -300,8 +320,48 @@ from udon_onnx import (  # noqa: E402
     parse_model,
     validate_external_data,
 )
-from udon_pages import emit_int4_call_uasm, emit_int4_model_uasm  # noqa: E402
+from udon_pages import (  # noqa: E402
+    emit_int4_call_uasm,
+    emit_int4_model_uasm,
+    materialize_static_inputs,
+)
 from udon_pages import plan_int4_model_bundle  # noqa: E402
+
+static_source = output / "static-input-source"
+static_source.mkdir(exist_ok=True)
+(static_source / "weights.bin").write_bytes(struct.pack("<2H", 0x3F80, 0xC000))
+static_output = output / "static-input-artifact"
+static_artifacts = materialize_static_inputs(
+    {
+        "passes": [
+            {
+                "static_inputs": [
+                    {"property": "_VRC_Input2", "initializer": "scale"}
+                ]
+            }
+        ],
+        "initializers": {
+            "scale": {
+                "shape": [2],
+                "data_type": "bfloat16",
+                "bytes": 4,
+                "storage": "external",
+                "external": {
+                    "location": "weights.bin",
+                    "offset": 0,
+                    "length": 4,
+                },
+            }
+        },
+    },
+    static_source,
+    static_output,
+)
+assert len(static_artifacts) == 1
+assert static_artifacts[0]["bytes"] == 8
+assert (static_output / static_artifacts[0]["resource"]).read_bytes() == struct.pack(
+    "<2f", 1.0, -2.0
+)
 
 int4_bundle_plan = plan_int4_model_bundle(operator_plan)
 assert int4_bundle_plan["aot_call_count"] == len(operator_plan["aot"]["calls"])
@@ -320,12 +380,12 @@ assert int4_bundle_plan["int4_atlas_bytes"] == 4690411520
 assert int4_bundle_plan["texture_arena"] == {
     "abi": "linear-rgba32-words",
     "slot_count": 5,
-    "total_words": 185600,
-    "total_bytes": 742400,
+    "total_words": 177408,
+    "total_bytes": 709632,
     "slots": [
         {"index": 0, "capacity_words": 128256, "width": 8192, "height": 16},
-        {"index": 1, "capacity_words": 14336, "width": 8192, "height": 2},
-        {"index": 2, "capacity_words": 14336, "width": 8192, "height": 2},
+        {"index": 1, "capacity_words": 16384, "width": 8192, "height": 2},
+        {"index": 2, "capacity_words": 4096, "width": 4096, "height": 1},
         {"index": 3, "capacity_words": 14336, "width": 8192, "height": 2},
         {"index": 4, "capacity_words": 14336, "width": 8192, "height": 2},
     ],
@@ -335,8 +395,25 @@ assert int4_bundle_plan["host_schedule"] == {
     "arena_slots": 5,
     "int4_runners": 225,
     "direct_device_passes": 322,
+    "static_initializer_textures": 65,
     "zero_copy_views": 64,
 }
+assert len(int4_bundle_plan["static_inputs"]) == 65
+assert all(
+    item["properties"] == ["_VRC_Input2"]
+    and item["shape"] == [4096]
+    and item["data_type"] == "bfloat16"
+    and item["source_bytes"] == 8192
+    and item["storage"] == "external"
+    and item["texture"]
+    == {
+        "abi": "linear-rgba32-words",
+        "words": 4096,
+        "width": 4096,
+        "height": 1,
+    }
+    for item in int4_bundle_plan["static_inputs"]
+)
 assert int4_bundle_plan["call_artifacts"][-1]["pages"] == 2004 * 32
 assert int4_bundle_plan["call_artifacts"][-1]["atlases"] == 8
 logits_uasm = emit_int4_call_uasm(operator_plan, operator_q4_calls[-1]["index"])
@@ -354,7 +431,7 @@ key_uasm = emit_int4_call_uasm(
 assert "__activationWidth: %SystemInt32, 8192" in key_uasm
 assert "__outputWidth: %SystemInt32, 8192" in key_uasm
 model_uasm = emit_int4_model_uasm(operator_plan)
-assert len(model_uasm) < 600000
+assert len(model_uasm) < 700000
 assert model_uasm.count(".export arenaSlot") == 5
 assert ".export int4Runners" in model_uasm
 assert ".export passMaterials" in model_uasm
@@ -363,7 +440,9 @@ assert model_uasm.count("MaterialArray.__Get") == 322
 assert model_uasm.count("__SetProgramVariable__") == 450
 assert model_uasm.count("__SendCustomEvent__") == 225
 assert model_uasm.count("VRCSDKBaseVRCGraphics.__Blit__") == 322
-assert model_uasm.count("UnityEngineMaterial.__SetInt__") == 608
+assert model_uasm.count("UnityEngineMaterial.__SetInt__") == 933
+assert model_uasm.count("UnityEngineMaterial.__SetFloat__") == 65
+assert "__float0: %SystemSingle, 0.00001" in model_uasm
 assert "PUSH, resultState\n        PUSH, arenaSlot0\n        COPY" in model_uasm
 (output / "model-host.uasm").write_text(model_uasm, encoding="utf-8")
 
