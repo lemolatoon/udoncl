@@ -478,6 +478,12 @@ POINTWISE_PROVIDERS = {
     "udonatenTanh",
 }
 POINTWISE_TILE_WORDS = 512
+ARENA_POINTWISE_WORDS = 16384
+ARENA_POINTWISE_OPERATIONS = {
+    "udonatenAdd": 0,
+    "udonatenMul": 1,
+    "udonatenSigmoid": 2,
+}
 RMS_NORM_TILE_WORDS = 512
 
 
@@ -989,10 +995,25 @@ def _pointwise_schedule(node: dict, values: dict) -> list[dict | None]:
     logical pass until that backend is implemented.
     """
     words = math.prod(node["shape"])
+    exact_shape = all(values[name] == node["shape"] for name in node["inputs"])
+    if (
+        node["provider"] in ARENA_POINTWISE_OPERATIONS
+        and POINTWISE_TILE_WORDS < words <= ARENA_POINTWISE_WORDS
+        and exact_shape
+    ):
+        return [
+            {
+                "arena_words": words,
+                "storage_words": ARENA_POINTWISE_WORDS,
+                "width": 8192,
+                "height": 2,
+                "operation": ARENA_POINTWISE_OPERATIONS[node["provider"]],
+            }
+        ]
     if (
         node["provider"] not in POINTWISE_PROVIDERS
         or words <= POINTWISE_TILE_WORDS
-        or any(values[name] != node["shape"] for name in node["inputs"])
+        or not exact_shape
     ):
         return [None]
     tiles = []
@@ -1590,12 +1611,33 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
                         else (
                             tile["words"]
                             if "words" in tile
-                            else tile["m"] * tile["n"]
+                            else (
+                                tile["storage_words"]
+                                if "arena_words" in tile
+                                else tile["m"] * tile["n"]
+                            )
                         )
                     ),
                 }
                 if tile is not None:
                     device_pass["tile"] = tile
+                if tile is not None and "arena_words" in tile:
+                    device_pass.update(
+                        {
+                            "kernel": "udonaten_arena_pointwise",
+                            "shader": "kernel_215.shader",
+                            "inputs": (
+                                node["inputs"]
+                                if len(node["inputs"]) == 2
+                                else [node["inputs"][0], node["inputs"][0]]
+                            ),
+                            "fragments": tile["storage_words"],
+                            "material_ints": {
+                                "_VRC_Arg3": tile["arena_words"],
+                                "_VRC_Arg4": tile["operation"],
+                            },
+                        }
+                    )
                 if node["provider"] == "udonatenRmsNorm" and math.prod(
                     node["shape"]
                 ) > RMS_NORM_TILE_WORDS:
@@ -1736,7 +1778,17 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
         }
         if node["provider"] in POINTWISE_PROVIDERS:
             tiles = _pointwise_schedule(node, shapes)
-            if tiles != [None]:
+            if tiles != [None] and "arena_words" in tiles[0]:
+                call["device_profile"] = {
+                    "supported": True,
+                    "kernel": "udonaten_arena_pointwise",
+                    "shader": "kernel_215.shader",
+                    "storage_words": ARENA_POINTWISE_WORDS,
+                    "width": 8192,
+                    "height": 2,
+                    "operation": tiles[0]["operation"],
+                }
+            elif tiles != [None]:
                 call["device_tiles"] = {
                     "max_words": POINTWISE_TILE_WORDS,
                     "count": len(tiles),

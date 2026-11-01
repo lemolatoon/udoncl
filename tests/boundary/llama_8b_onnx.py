@@ -98,17 +98,42 @@ pointwise_calls = [
     if call["function"] in {"udonatenAdd", "udonatenMul", "udonatenSigmoid"}
 ]
 assert len(pointwise_calls) == 160
-assert all(call["device_tiles"]["max_words"] == 512 for call in pointwise_calls)
-assert {call["device_tiles"]["count"] for call in pointwise_calls} == {8, 28}
+assert all(call["device_profile"]["supported"] is True for call in pointwise_calls)
+assert all(
+    call["device_profile"]["kernel"] == "udonaten_arena_pointwise"
+    and call["device_profile"]["shader"] == "kernel_215.shader"
+    and call["device_profile"]["storage_words"] == 16384
+    and call["device_profile"]["width"] == 8192
+    and call["device_profile"]["height"] == 2
+    for call in pointwise_calls
+)
+assert {call["device_profile"]["operation"] for call in pointwise_calls} == {
+    0,
+    1,
+    2,
+}
 pointwise_passes = [
     device_pass
     for device_pass in operator_plan["passes"]
     if device_pass["providers"][0]
     in {"udonatenAdd", "udonatenMul", "udonatenSigmoid"}
 ]
-assert len(pointwise_passes) == 3200
-assert all(device_pass["tile"]["tile_words"] == 512 for device_pass in pointwise_passes)
-assert all(0 < device_pass["tile"]["words"] <= 512 for device_pass in pointwise_passes)
+assert len(pointwise_passes) == 160
+assert all(
+    device_pass["kernel"] == "udonaten_arena_pointwise"
+    and device_pass["shader"] == "kernel_215.shader"
+    and device_pass["fragments"] == 16384
+    and len(device_pass["inputs"]) == 2
+    and device_pass["material_ints"]["_VRC_Arg3"]
+    == device_pass["tile"]["arena_words"]
+    and device_pass["material_ints"]["_VRC_Arg4"]
+    == device_pass["tile"]["operation"]
+    for device_pass in pointwise_passes
+)
+assert {device_pass["tile"]["arena_words"] for device_pass in pointwise_passes} == {
+    4096,
+    14336,
+}
 rms_calls = [
     call
     for call in operator_plan["aot"]["calls"]
@@ -145,7 +170,7 @@ assert all(
     scratch["words"] == 8192 and scratch["data_type"] == "float32"
     for scratch in operator_plan["scratch_buffers"]
 )
-assert len(operator_plan["passes"]) == 3587
+assert len(operator_plan["passes"]) == 547
 texture_arena = operator_plan["texture_arena"]
 assert texture_arena["abi"] == "linear-rgba32-words"
 assert texture_arena["max_texture_width"] == 8192
@@ -279,7 +304,7 @@ assert int4_bundle_plan["host_schedule"] == {
     "assembly": "host.uasm",
     "arena_slots": 5,
     "int4_runners": 225,
-    "direct_device_passes": 3362,
+    "direct_device_passes": 322,
     "zero_copy_views": 64,
 }
 assert int4_bundle_plan["call_artifacts"][-1]["pages"] == 2004 * 32
@@ -299,15 +324,16 @@ key_uasm = emit_int4_call_uasm(
 assert "__activationWidth: %SystemInt32, 8192" in key_uasm
 assert "__outputWidth: %SystemInt32, 8192" in key_uasm
 model_uasm = emit_int4_model_uasm(operator_plan)
-assert len(model_uasm) < 3200000
+assert len(model_uasm) < 600000
 assert model_uasm.count(".export arenaSlot") == 5
 assert ".export int4Runners" in model_uasm
 assert ".export passMaterials" in model_uasm
 assert model_uasm.count("IUdonEventReceiverArray.__Get") == 225
-assert model_uasm.count("MaterialArray.__Get") == 3362
+assert model_uasm.count("MaterialArray.__Get") == 322
 assert model_uasm.count("__SetProgramVariable__") == 450
 assert model_uasm.count("__SendCustomEvent__") == 225
-assert model_uasm.count("VRCSDKBaseVRCGraphics.__Blit__") == 3362
+assert model_uasm.count("VRCSDKBaseVRCGraphics.__Blit__") == 322
+assert model_uasm.count("UnityEngineMaterial.__SetInt__") == 320
 assert "PUSH, resultState\n        PUSH, arenaSlot0\n        COPY" in model_uasm
 (output / "model-host.uasm").write_text(model_uasm, encoding="utf-8")
 

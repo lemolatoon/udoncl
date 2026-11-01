@@ -949,6 +949,8 @@ def emit_int4_model_uasm(plan: dict) -> str:
             '    __activationStateName: %SystemString, "activationState"',
             '    __resultAName: %SystemString, "resultA"',
             '    __resultBName: %SystemString, "resultB"',
+            '    __arg3Name: %SystemString, "_VRC_Arg3"',
+            '    __arg4Name: %SystemString, "_VRC_Arg4"',
         ]
     )
     for index in range(max_inputs):
@@ -987,6 +989,19 @@ def emit_int4_model_uasm(plan: dict) -> str:
                 f"        PUSH, {variable}",
                 f"        PUSH, {value}",
                 '        EXTERN, "VRCUdonCommonInterfacesIUdonEventReceiver.__SetProgramVariable__SystemString_SystemObject__SystemVoid"',
+            ]
+        )
+
+    def set_int(material: str, property_name: str, value: int):
+        value_name = f"__int{value}"
+        if not any(line.startswith(f"    {value_name}:") for line in lines):
+            raise ValueError("Device pass references an undeclared material integer")
+        lines.extend(
+            [
+                f"        PUSH, {material}",
+                f"        PUSH, {property_name}",
+                f"        PUSH, {value_name}",
+                '        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"',
             ]
         )
 
@@ -1032,6 +1047,18 @@ def emit_int4_model_uasm(plan: dict) -> str:
         )
         increment("__passIndex")
 
+    material_int_values = sorted(
+        {
+            value
+            for device_pass in direct_passes
+            for value in (device_pass.get("material_ints") or {}).values()
+        }
+    )
+    data_end = lines.index(".data_end")
+    lines[data_end:data_end] = [
+        f"    __int{value}: %SystemInt32, {value}" for value in material_int_values
+    ]
+
     for call in calls:
         call_index = call["index"]
         if call.get("kind") == "view":
@@ -1059,6 +1086,12 @@ def emit_int4_model_uasm(plan: dict) -> str:
             for input_index, name in enumerate(inputs):
                 binding = _model_arena_binding(plan, name)
                 set_texture(material, f"__inputName{input_index}", slot_names[binding["slot"]])
+            for property_name, value in (device_pass.get("material_ints") or {}).items():
+                set_int(
+                    material,
+                    "__arg3Name" if property_name == "_VRC_Arg3" else "__arg4Name",
+                    value,
+                )
             output = _model_arena_binding(plan, device_pass["output"])
             source = _model_arena_binding(plan, inputs[0])
             blit(slot_names[source["slot"]], slot_names[output["slot"]], material)

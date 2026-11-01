@@ -40,6 +40,7 @@
 #define UDONATEN_TILE_RESULT_OFFSET 4096
 #define UDONATEN_RMS_WORDS 8192
 #define UDONATEN_RMS_WEIGHT_OFFSET 4096
+#define UDONATEN_ARENA_POINTWISE_WORDS 16384
 #define UDONDNN_DESCRIPTOR_MAX_WORDS 16777216
 #define UDONDNN_HANDLE 1u
 #define UDONDNN_DESCRIPTOR_SLOTS 64
@@ -113,6 +114,7 @@ static cl_kernel weight_int4pack_mm_kernel;
 static cl_kernel tile_kernel;
 static cl_kernel aten_rms_reduce_kernel;
 static cl_kernel aten_rms_finalize_kernel;
+static cl_kernel arena_pointwise_kernel;
 static cl_mem input_buffer;
 static cl_mem output_buffer;
 static cl_mem batchnorm_input_buffer;
@@ -122,11 +124,15 @@ static cl_mem int4_output_buffer;
 static cl_mem aten_rms_state_buffer;
 static cl_mem aten_rms_partial_buffer;
 static cl_mem aten_rms_output_buffer;
+static cl_mem arena_pointwise_self_buffer;
+static cl_mem arena_pointwise_other_buffer;
+static cl_mem arena_pointwise_output_buffer;
 static float packed[UDONDNN_WORDS];
 static float batchnorm_packed[UDONDNN_BATCHNORM_WORDS];
 static float result[UDONDNN_REGION_WORDS];
 static float int4_state[UDONATEN_INT4_WORDS];
 static float aten_rms_state[UDONATEN_RMS_WORDS];
+static float arena_pointwise_zero[UDONATEN_ARENA_POINTWISE_WORDS];
 static TensorDescriptor tensors[UDONDNN_DESCRIPTOR_SLOTS];
 static FilterDescriptor filters[UDONDNN_DESCRIPTOR_SLOTS];
 static ConvolutionDescriptor convolutions[UDONDNN_DESCRIPTOR_SLOTS];
@@ -207,6 +213,8 @@ get_op_tensor(udondnnOpTensorDescriptor_t descriptor) {
 }
 
 static void clear_objects(void) {
+  if (arena_pointwise_kernel)
+    clReleaseKernel(arena_pointwise_kernel);
   if (aten_rms_finalize_kernel)
     clReleaseKernel(aten_rms_finalize_kernel);
   if (aten_rms_reduce_kernel)
@@ -251,6 +259,12 @@ static void clear_objects(void) {
     clReleaseMemObject(aten_rms_partial_buffer);
   if (aten_rms_state_buffer)
     clReleaseMemObject(aten_rms_state_buffer);
+  if (arena_pointwise_output_buffer)
+    clReleaseMemObject(arena_pointwise_output_buffer);
+  if (arena_pointwise_other_buffer)
+    clReleaseMemObject(arena_pointwise_other_buffer);
+  if (arena_pointwise_self_buffer)
+    clReleaseMemObject(arena_pointwise_self_buffer);
   if (queue)
     clReleaseCommandQueue(queue);
   if (context)
@@ -267,11 +281,14 @@ static void clear_objects(void) {
   tile_kernel = 0;
   aten_rms_reduce_kernel = 0;
   aten_rms_finalize_kernel = 0;
+  arena_pointwise_kernel = 0;
   program = 0;
   output_buffer = input_buffer = 0;
   batchnorm_output_buffer = batchnorm_input_buffer = 0;
   int4_output_buffer = int4_input_buffer = 0;
   aten_rms_state_buffer = aten_rms_partial_buffer = aten_rms_output_buffer = 0;
+  arena_pointwise_self_buffer = arena_pointwise_other_buffer =
+      arena_pointwise_output_buffer = 0;
   queue = 0;
   context = 0;
 }
@@ -334,6 +351,21 @@ udondnnStatus_t udondnnCreate(udondnnHandle_t *handle) {
     return execution_failure();
   aten_rms_output_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE,
                                           sizeof(aten_rms_state), 0, &status);
+  if (status != CL_SUCCESS)
+    return execution_failure();
+  arena_pointwise_self_buffer = clCreateBuffer(
+      context, CL_MEM_READ_WRITE,
+      UDONATEN_ARENA_POINTWISE_WORDS * sizeof(float), 0, &status);
+  if (status != CL_SUCCESS)
+    return execution_failure();
+  arena_pointwise_other_buffer = clCreateBuffer(
+      context, CL_MEM_READ_WRITE,
+      UDONATEN_ARENA_POINTWISE_WORDS * sizeof(float), 0, &status);
+  if (status != CL_SUCCESS)
+    return execution_failure();
+  arena_pointwise_output_buffer = clCreateBuffer(
+      context, CL_MEM_READ_WRITE,
+      UDONATEN_ARENA_POINTWISE_WORDS * sizeof(float), 0, &status);
   if (status != CL_SUCCESS)
     return execution_failure();
   program = clCreateProgramWithSource(context, 1, &source, 0, &status);
@@ -435,6 +467,19 @@ udondnnStatus_t udondnnCreate(udondnnHandle_t *handle) {
       clSetKernelArg(aten_rms_finalize_kernel, 2,
                      sizeof(aten_rms_output_buffer),
                      &aten_rms_output_buffer) != CL_SUCCESS)
+    return execution_failure();
+  arena_pointwise_kernel =
+      clCreateKernel(program, "udonaten_arena_pointwise", &status);
+  if (status != CL_SUCCESS ||
+      clSetKernelArg(arena_pointwise_kernel, 0,
+                     sizeof(arena_pointwise_self_buffer),
+                     &arena_pointwise_self_buffer) != CL_SUCCESS ||
+      clSetKernelArg(arena_pointwise_kernel, 1,
+                     sizeof(arena_pointwise_other_buffer),
+                     &arena_pointwise_other_buffer) != CL_SUCCESS ||
+      clSetKernelArg(arena_pointwise_kernel, 2,
+                     sizeof(arena_pointwise_output_buffer),
+                     &arena_pointwise_output_buffer) != CL_SUCCESS)
     return execution_failure();
   *handle = UDONDNN_HANDLE;
   return UDONDNN_STATUS_SUCCESS;
@@ -1442,6 +1487,52 @@ udondnnStatus_t udonatenBackendRmsNorm(udondnnHandle_t handle, int words,
     return UDONDNN_STATUS_EXECUTION_FAILED;
   for (index = 0; index < words; ++index)
     output[index] = result[index];
+  return UDONDNN_STATUS_SUCCESS;
+}
+
+/* Private UdonATen AOT backend. Add, Mul, and Sigmoid remain public
+ * udonaten* operations; this entry only validates their arena-native shader. */
+udondnnStatus_t udonatenBackendArenaPointwise(udondnnHandle_t handle, int words,
+                                              const float *self,
+                                              const float *other, int operation,
+                                              float *output) {
+  const size_t global[2] = {8192, 2};
+  const size_t local[2] = {1, 1};
+  cl_int status;
+  if (handle != UDONDNN_HANDLE || !context)
+    return UDONDNN_STATUS_NOT_INITIALIZED;
+  if (!self || !other || !output || words <= 0 ||
+      words > UDONATEN_ARENA_POINTWISE_WORDS || operation < 0 || operation > 2)
+    return UDONDNN_STATUS_BAD_PARAM;
+#define SET_ARENA_POINTWISE_ARGUMENT(slot, value)                              \
+  do {                                                                         \
+    status =                                                                   \
+        clSetKernelArg(arena_pointwise_kernel, slot, sizeof(value), &(value)); \
+    if (status != CL_SUCCESS)                                                  \
+      return UDONDNN_STATUS_EXECUTION_FAILED;                                  \
+  } while (0)
+  SET_ARENA_POINTWISE_ARGUMENT(3, words);
+  SET_ARENA_POINTWISE_ARGUMENT(4, operation);
+#undef SET_ARENA_POINTWISE_ARGUMENT
+  if (clEnqueueWriteBuffer(queue, arena_pointwise_self_buffer, CL_TRUE, 0,
+                           sizeof(arena_pointwise_zero), arena_pointwise_zero,
+                           0, 0, 0) != CL_SUCCESS ||
+      clEnqueueWriteBuffer(queue, arena_pointwise_other_buffer, CL_TRUE, 0,
+                           sizeof(arena_pointwise_zero), arena_pointwise_zero,
+                           0, 0, 0) != CL_SUCCESS ||
+      clEnqueueWriteBuffer(queue, arena_pointwise_self_buffer, CL_TRUE, 0,
+                           (size_t)words * sizeof(float), self, 0, 0,
+                           0) != CL_SUCCESS ||
+      clEnqueueWriteBuffer(queue, arena_pointwise_other_buffer, CL_TRUE, 0,
+                           (size_t)words * sizeof(float), other, 0, 0,
+                           0) != CL_SUCCESS ||
+      clEnqueueNDRangeKernel(queue, arena_pointwise_kernel, 2, 0, global, local,
+                             0, 0, 0) != CL_SUCCESS ||
+      clEnqueueReadBuffer(queue, arena_pointwise_output_buffer, CL_TRUE, 0,
+                          (size_t)words * sizeof(float), output, 0, 0,
+                          0) != CL_SUCCESS ||
+      clFinish(queue) != CL_SUCCESS)
+    return UDONDNN_STATUS_EXECUTION_FAILED;
   return UDONDNN_STATUS_SUCCESS;
 }
 

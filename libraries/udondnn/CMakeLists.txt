@@ -14,6 +14,7 @@ target_sources(udondnn-device PRIVATE "${UDONDNN_RMS_NORM_OBJECT}")
 target_sources(udondnn-device PRIVATE "${UDONDNN_GATHER_OBJECT}")
 target_sources(udondnn-device PRIVATE "${UDONATEN_INT4_OBJECT}")
 target_sources(udondnn-device PRIVATE "${UDONATEN_TILE_OBJECT}")
+target_sources(udondnn-device PRIVATE "${UDONATEN_ARENA_POINTWISE_OBJECT}")
 target_sources(udondnn-device PRIVATE "${UDONBLAS_SGEMM_OBJECT}"
   "${UDONBLAS_Q4_OBJECT}" "${UDONBLAS_SAXPY_OBJECT}")
 set_source_files_properties("${UDONDNN_HOST_OBJECT}" "${UDONDNN_DEVICE_OBJECT}"
@@ -26,6 +27,7 @@ set_source_files_properties("${UDONDNN_HOST_OBJECT}" "${UDONDNN_DEVICE_OBJECT}"
   "${UDONDNN_GATHER_OBJECT}"
   "${UDONATEN_INT4_OBJECT}"
   "${UDONATEN_TILE_OBJECT}"
+  "${UDONATEN_ARENA_POINTWISE_OBJECT}"
   "${UDONBLAS_SGEMM_OBJECT}" "${UDONBLAS_Q4_OBJECT}"
   "${UDONBLAS_SAXPY_OBJECT}"
   PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)

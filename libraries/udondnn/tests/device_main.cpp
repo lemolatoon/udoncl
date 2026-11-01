@@ -36,12 +36,21 @@ extern "C" size_t udonaten_int4_cpu_gid;
 size_t udonaten_int4_cpu_gid;
 extern "C" size_t udonaten_tile_cpu_gid;
 size_t udonaten_tile_cpu_gid;
+extern "C" size_t udonaten_arena_pointwise_cpu_gid_x;
+size_t udonaten_arena_pointwise_cpu_gid_x;
+extern "C" size_t udonaten_arena_pointwise_cpu_gid_y;
+size_t udonaten_arena_pointwise_cpu_gid_y;
 extern "C" size_t udonblas_cpu_gid;
 size_t udonblas_cpu_gid;
 extern "C" size_t udonblas_saxpy_cpu_gid;
 size_t udonblas_saxpy_cpu_gid;
 
 namespace {
+extern "C" udondnnStatus_t udonatenBackendArenaPointwise(udondnnHandle_t, int,
+                                                         const float *,
+                                                         const float *, int,
+                                                         float *);
+
 struct Case {
   int n, inputChannels, inputHeight, inputWidth;
   int outputChannels, filterHeight, filterWidth;
@@ -360,13 +369,14 @@ void opTensorReference(const OpTensorCase &test, const std::vector<float> &a,
 } // namespace
 
 int main(int argc, char **argv) {
-  if (argc != 17) {
+  if (argc != 18) {
     std::cerr << "usage: udondnn-device convolution-fragment "
                  "activation-fragment pooling-fragment softmax-fragment "
                  "batchnorm-fragment op-tensor-fragment rmsnorm-fragment "
                  "gather-fragment int4-fragment tile-fragment "
                  "aten-rms-reduce-fragment aten-rms-finalize-fragment "
-                 "sgemm-fragment q4-fragment saxpy-fragment vertex\n";
+                 "sgemm-fragment q4-fragment saxpy-fragment "
+                 "arena-pointwise-fragment vertex\n";
     return 2;
   }
   try {
@@ -374,8 +384,8 @@ int main(int argc, char **argv) {
         deviceSource(),
         manifestBindings(argv[1], argv[2], argv[3], argv[4], argv[5], argv[6],
                          argv[7], argv[8], argv[9], argv[10], argv[11],
-                         argv[12], argv[13], argv[14], argv[15]),
-        argv[16]);
+                         argv[12], argv[13], argv[14], argv[15], argv[16]),
+        argv[17]);
     udondnnHandle_t handle = 0;
     require(udondnnCreate(&handle), UDONDNN_STATUS_SUCCESS, "udondnnCreate");
     std::array<udondnnTensorDescriptor_t, 64> descriptorCapacity{};
@@ -1011,6 +1021,27 @@ int main(int argc, char **argv) {
       if (std::abs(atenLargeOutput[index] -
                    1.0f / (1.0f + std::exp(-atenLargeLeft[index]))) > 0.0005f)
         throw std::runtime_error("large UdonATen sigmoid results diverged");
+    float arenaPointwiseMaximumError = 0.0f;
+    for (int operation = 0; operation < 3; ++operation) {
+      require(udonatenBackendArenaPointwise(
+                  handle, atenLargeWords, atenLargeLeft.data(),
+                  atenLargeRight.data(), operation, atenLargeOutput.data()),
+              UDONDNN_STATUS_SUCCESS, "UdonATen arena pointwise");
+      for (int index = 0; index < atenLargeWords; ++index) {
+        float expected = 0.0f;
+        if (operation == 0)
+          expected = atenLargeLeft[index] + atenLargeRight[index];
+        else if (operation == 1)
+          expected = atenLargeLeft[index] * atenLargeRight[index];
+        else
+          expected = 1.0f / (1.0f + std::exp(-atenLargeLeft[index]));
+        arenaPointwiseMaximumError =
+            std::max(arenaPointwiseMaximumError,
+                     std::abs(atenLargeOutput[index] - expected));
+      }
+    }
+    if (arenaPointwiseMaximumError > 0.0005f)
+      throw std::runtime_error("UdonATen arena pointwise result mismatch");
     require(udondnnDestroyTensorDescriptor(atenLeftDescriptor),
             UDONDNN_STATUS_SUCCESS, "destroy ATen left descriptor");
     require(udondnnDestroyTensorDescriptor(atenRightDescriptor),
@@ -1664,6 +1695,8 @@ int main(int argc, char **argv) {
               << " int4_max_error=" << int4MaximumError
               << " tile_outputs=" << tileActual.size()
               << " tile_max_error=" << tileMaximumError
+              << " arena_pointwise_outputs=" << atenLargeWords * 3
+              << " arena_pointwise_max_error=" << arenaPointwiseMaximumError
               << " rl_outputs=" << rlProbabilities.size()
               << " rl_max_error=" << rlMaximumError
               << " renderer=" << session.deviceName()

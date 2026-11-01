@@ -59,9 +59,10 @@ single-region profile now executes as an UdonATen-owned two-pass reduction and
 normalization using the multi-input Device ABI, without a CPU readback. The
 same rule applies
 to pointwise Add, Sub, Mul, ReLU, Sigmoid, and Tanh: their public calls are
-UdonATen-shaped even
-while their validated Device implementation privately reuses UdonDNN OpTensor
-and Activation kernels. Tile is implemented
+UdonATen-shaped. Large ONNX Add, Mul, and Sigmoid tensors use the private
+`udonaten_arena_pointwise` Device backend; this is an ATen execution detail and
+does not add an UdonDNN extension or public API. Smaller validated paths may
+still reuse compatible UdonDNN kernels privately. Tile is implemented
 directly as the ATen-shaped `udonatenTile` operation and Device kernel, without
 adding a UdonDNN extension. INT4 AOT now uses separate
 packed-weight and `[K/group_size,N,2]` bfloat16 scale/zero inputs and the
