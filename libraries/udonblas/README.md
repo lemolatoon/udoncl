@@ -18,17 +18,11 @@ one serialized handle per UdonBehaviour instance. These are profile limits,
 not intended API limits; tiled multi-pass kernels will lift them without
 changing the function signature.
 
-The internal `udonblasBackendSgemvQ4` kernel provides the legacy
-weight-dominated matrix-vector path used during the UdonATen migration. It is
-not part of the public cuBLAS-compatible header. Each fragment owns one output row. Signed
-four-bit values in this backend fixture are expanded to 16 numeric packed-byte
-words plus one float32 scale while a tile is active on Device. The public ONNX
-format no longer uses this legacy interleaving: UdonATen receives packed
-weights and scale/zero tensors separately. The current backend profile supports
-up to 64 output rows and 128 input values per dispatch.
+Quantized PyTorch operators are not cuBLAS extensions. They are implemented by
+UdonATen using the corresponding ATen/TorchAO packed-weight contracts.
 
-The build emits separate `unity-bundle`, `unity-q4-bundle`, and
-`unity-saxpy-bundle` artifacts. All are accepted by the UPM importer. Their
+The build emits separate `unity-bundle` and `unity-saxpy-bundle` artifacts.
+Both are accepted by the UPM importer. Their
 generated shaders, UdonAsm hosts, prefab configurations, and numerical fixtures
 are validated by the SDK IUdonVM lifecycle suite; the SAXPY fixture also covers
 a negative input increment and a non-unit output increment.
@@ -41,6 +35,5 @@ python libraries/udonblas/run_device.py --build-dir build/udoncl
 
 The validation covers SAXPY with unit, non-unit, negative, and maximum-length
 vectors; rectangular SGEMM matrices, both transpose flags,
-non-unit alpha/beta, padded leading dimensions, signed-Q4 decode with multiple
-blocks and non-unit vector strides, invalid arguments, OpenCL object cleanup,
+non-unit alpha/beta, padded leading dimensions, invalid arguments, OpenCL object cleanup,
 and comparison against independent CPU references.

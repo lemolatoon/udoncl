@@ -377,13 +377,13 @@ void opTensorReference(const OpTensorCase &test, const std::vector<float> &a,
 } // namespace
 
 int main(int argc, char **argv) {
-  if (argc != 21) {
+  if (argc != 20) {
     std::cerr << "usage: udondnn-device convolution-fragment "
                  "activation-fragment pooling-fragment softmax-fragment "
                  "batchnorm-fragment op-tensor-fragment rmsnorm-fragment "
                  "gather-fragment int4-fragment tile-fragment "
                  "aten-rms-reduce-fragment aten-rms-finalize-fragment "
-                 "sgemm-fragment q4-fragment saxpy-fragment "
+                 "sgemm-fragment saxpy-fragment "
                  "arena-pointwise-fragment arena-tile-fragment "
                  "arena-rms-reduce-fragment arena-rms-finalize-fragment "
                  "vertex\n";
@@ -395,8 +395,8 @@ int main(int argc, char **argv) {
         manifestBindings(argv[1], argv[2], argv[3], argv[4], argv[5], argv[6],
                          argv[7], argv[8], argv[9], argv[10], argv[11],
                          argv[12], argv[13], argv[14], argv[15], argv[16],
-                         argv[17], argv[18], argv[19]),
-        argv[20]);
+                         argv[17], argv[18]),
+        argv[19]);
     udondnnHandle_t handle = 0;
     require(udondnnCreate(&handle), UDONDNN_STATUS_SUCCESS, "udondnnCreate");
     std::array<udondnnTensorDescriptor_t, 64> descriptorCapacity{};

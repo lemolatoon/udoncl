@@ -76,4 +76,6 @@ an UdonATen-owned kernel, with one fragment per output feature and numerical
 coverage for non-zero zero points. External-weight paging is still required to
 execute the complete 8B plan. The public call has no beta parameter; private
 Device tiles use replace-then-add accumulation to preserve whole-operator ATen
-semantics across K pages.
+semantics across K pages. The superseded private `udonblasBackendSgemvQ4`
+backend and its UdonBLAS Unity artifact were removed rather than retained as a
+non-cuBLAS extension.

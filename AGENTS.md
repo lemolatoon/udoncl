@@ -46,19 +46,20 @@ These rules apply to the entire repository.
 - Preserve the compatible public signature when Udon cannot implement an
   option yet. Declare the compatible value and return `NOT_SUPPORTED` instead
   of removing parameters, changing types, or imposing a different contract.
-- Put Udon-specific operations such as quantized Q4 kernels in an explicitly
-  named extension API; they must not redefine or overload a compatible entry
-  point with non-cuBLAS/cuDNN semantics.
+- Do not invent public `Ext` APIs for operations outside cuBLAS/cuDNN. First
+  identify the owning PyTorch/TorchAO CUDA component and follow that interface;
+  keep any truly Udon-only mechanism private until it has a separate documented
+  contract.
 - Every public API change must include conformance tests against the pinned
   NVIDIA declarations, plus behavioral tests for supported paths and explicit
   `NOT_SUPPORTED` tests for unsupported paths.
 
 ## Operator Ownership
 
-- Before adding an API for an ONNX/PyTorch operator, identify its actual
-  PyTorch CUDA owner in official PyTorch/TorchAO sources. Match that component's
-  operator name, argument order, and semantics; do not place an operation in
-  UdonBLAS/UdonDNN merely because its implementation runs on the GPU.
+- Before adding an API for an ONNX/PyTorch operator, inspect official
+  PyTorch/TorchAO CUDA sources and identify the component that implements it.
+  Match that component's operator name, argument order, and semantics; do not
+  place an operation in UdonBLAS/UdonDNN merely because it runs on the GPU.
 - cuBLAS/cuDNN counterparts belong in UdonBLAS/UdonDNN. ATen-native operators
   belong in UdonATen. TorchAO/ATen quantized operators follow their packed
   weight, group-size, scale, and zero-point contracts. Record the source and
