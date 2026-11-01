@@ -261,8 +261,9 @@ Outputs are under `build/opencl-host`; use `EXAMPLE_OUTPUT=build/another-opencl`
 to choose a fresh directory. See [examples/opencl-host/README.md](examples/opencl-host/README.md)
 for supported APIs, native ABI preservation and the AOT subset's limits.
 
-UdonBLAS begins the reusable CUDA-family library layer on top of that runtime.
-Its first public operation is cuBLAS-contract column-major SGEMM:
+UdonBLAS is the reusable CUDA-family library layer on top of that runtime. Its
+public CUDA-13.0-compatible subset includes fragment-parallel SAXPY, SGEMV,
+SGEMM, and the two-kernel balanced-tree SDOT reduction:
 
 ```text
 python libraries/udonblas/run_device.py --build-dir build/udoncl

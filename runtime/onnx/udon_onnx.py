@@ -937,8 +937,6 @@ def _batch_offset(coordinates: list[int], shape: list[int]) -> int:
 def _matmul_shape(left: list[int], right: list[int]) -> list[int]:
     if not 1 <= len(left) <= 4 or not 1 <= len(right) <= 4:
         raise ValueError("Udon ONNX MatMul requires rank-1 through rank-4 tensors")
-    if len(left) == 1 and len(right) == 1:
-        raise ValueError("ONNX vector-vector MatMul requires the cuBLAS udonblasSdot path")
     left_inner = left[-1]
     right_inner = right[0] if len(right) == 1 else right[-2]
     if left_inner != right_inner:
@@ -956,12 +954,31 @@ def _matmul_shape(left: list[int], right: list[int]) -> list[int]:
 
 def _matmul_provider(left: list[int], right: list[int]) -> str:
     _matmul_shape(left, right)
+    if len(left) == 1 and len(right) == 1:
+        return "udonblasSdot"
     return "udonblasSgemv" if len(left) == 1 or len(right) == 1 else "udonblasSgemm"
 
 
 def _matmul_schedule(node: dict, values: dict, tile_size: int = 16) -> list[dict]:
     left_shape, right_shape = (values[name] for name in node["inputs"])
     output_shape = _matmul_shape(left_shape, right_shape)
+    if len(left_shape) == 1 and len(right_shape) == 1:
+        n = left_shape[0]
+        if n > 256:
+            raise ValueError("UdonBLAS SDOT Device profile requires N at most 256")
+        return [
+            {
+                "operation": "dot",
+                "n": n,
+                "left_offset": 0,
+                "right_offset": 0,
+                "output_offset": 0,
+                "output_length": 1,
+                "incx": 1,
+                "incy": 1,
+                "reduction_passes": 8,
+            }
+        ]
     if len(left_shape) == 1:
         k, n = left_shape[0], right_shape[-1]
         if k > tile_size or n > tile_size:
@@ -1695,6 +1712,26 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
                 tiles = _gemm_schedule(node, shapes)
             elif node["op_type"] == "MatMul":
                 tiles = _matmul_schedule(node, shapes)
+                if node["provider"] == "udonblasSdot":
+                    dot = tiles[0]
+                    tiles = [
+                        {
+                            **dot,
+                            "phase": "product",
+                            "pass": 0,
+                            "fragments": dot["n"],
+                        }
+                    ] + [
+                        {
+                            **dot,
+                            "phase": "reduce",
+                            "pass": reduction_pass,
+                            "fragments": max(
+                                1, (dot["n"] + (1 << reduction_pass) - 1) >> reduction_pass
+                            ),
+                        }
+                        for reduction_pass in range(1, dot["reduction_passes"] + 1)
+                    ]
             elif node["provider"] in POINTWISE_PROVIDERS:
                 tiles = _pointwise_schedule(node, shapes)
             elif (
@@ -1739,7 +1776,15 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
                             else (
                                 tile["storage_words"]
                                 if "storage_words" in tile
-                            else tile.get("output_length", tile["m"] * tile["n"])
+                                else (
+                                    tile["fragments"]
+                                    if "fragments" in tile
+                                    else (
+                                        tile["output_length"]
+                                        if "output_length" in tile
+                                        else tile["m"] * tile["n"]
+                                    )
+                                )
                             )
                         )
                     ),
@@ -2377,8 +2422,15 @@ def emit_c_host(plan: dict) -> str:
         elif operation == "MatMul":
             left_shape, right_shape = values[inputs[0]], values[inputs[1]]
             for tile in _matmul_schedule(node, values):
-                beta = "zero" if tile["beta"] == 0 else "one"
-                if "output_length" in tile:
+                if tile.get("operation") == "dot":
+                    lines.append(
+                        "  CHECK_BLAS(udonblasSdot("
+                        f"blas, {tile['n']}, buffers->{names[inputs[0]]} + {tile['left_offset']}, {tile['incx']}, "
+                        f"buffers->{names[inputs[1]]} + {tile['right_offset']}, {tile['incy']}, "
+                        f"buffers->{names[output]} + {tile['output_offset']}));"
+                    )
+                elif "output_length" in tile:
+                    beta = "zero" if tile["beta"] == 0 else "one"
                     matrix = inputs[tile["matrix_input"]]
                     vector = inputs[tile["vector_input"]]
                     lines.append(
@@ -2389,6 +2441,7 @@ def emit_c_host(plan: dict) -> str:
                         f"buffers->{names[output]} + {tile['output_offset']}, 1));"
                     )
                 else:
+                    beta = "zero" if tile["beta"] == 0 else "one"
                     k, n = left_shape[-1], right_shape[-1]
                     lines.append(
                         "  CHECK_BLAS(udonblasSgemm("

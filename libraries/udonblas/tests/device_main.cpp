@@ -17,6 +17,9 @@ using SgemvSignature = udonblasStatus_t (*)(udonblasHandle_t,
                                             const float *, int, const float *,
                                             float *, int);
 static_assert(std::is_same_v<decltype(&udonblasSgemv), SgemvSignature>);
+using SdotSignature = udonblasStatus_t (*)(udonblasHandle_t, int, const float *,
+                                           int, const float *, int, float *);
+static_assert(std::is_same_v<decltype(&udonblasSdot), SdotSignature>);
 static_assert(UDONBLAS_OP_N == 0 && UDONBLAS_OP_T == 1 && UDONBLAS_OP_C == 2);
 static_assert(UDONBLAS_STATUS_NOT_SUPPORTED == 15);
 
@@ -26,6 +29,10 @@ extern "C" size_t udonblas_sgemv_cpu_gid;
 size_t udonblas_sgemv_cpu_gid;
 extern "C" size_t udonblas_saxpy_cpu_gid;
 size_t udonblas_saxpy_cpu_gid;
+extern "C" size_t udonblas_sdot_product_cpu_gid;
+size_t udonblas_sdot_product_cpu_gid;
+extern "C" size_t udonblas_sdot_reduce_cpu_gid;
+size_t udonblas_sdot_reduce_cpu_gid;
 
 namespace {
 struct Case {
@@ -43,6 +50,10 @@ struct GemvCase {
   udonblasOperation_t trans;
   int m, n, lda, incx, incy;
   float alpha, beta;
+};
+
+struct DotCase {
+  int n, incx, incy;
 };
 
 int storedWords(udonblasOperation_t operation, int rows, int columns,
@@ -101,15 +112,16 @@ void gemvReference(const GemvCase &test, const std::vector<float> &a,
 } // namespace
 
 int main(int argc, char **argv) {
-  if (argc != 5) {
+  if (argc != 7) {
     std::cerr << "usage: udonblas-device sgemm-fragment sgemv-fragment "
-                 "saxpy-fragment "
+                 "saxpy-fragment sdot-product-fragment sdot-reduce-fragment "
                  "vertex\n";
     return 2;
   }
   try {
     native_opencl::Session session(
-        deviceSource(), manifestBindings(argv[1], argv[2], argv[3]), argv[4]);
+        deviceSource(),
+        manifestBindings(argv[1], argv[2], argv[3], argv[4], argv[5]), argv[6]);
     udonblasHandle_t handle = 0;
     require(udonblasCreate(&handle), UDONBLAS_STATUS_SUCCESS, "udonblasCreate");
     const std::array<Case, 5> cases{{
@@ -227,6 +239,37 @@ int main(int argc, char **argv) {
     if (saxpyMaximumError > 0.0005f)
       throw std::runtime_error("UdonBLAS SAXPY CPU/Device results diverged");
 
+    const std::array<DotCase, 4> dotCases{{
+        {1, 1, 1},
+        {7, 2, 3},
+        {23, -2, -3},
+        {UDONBLAS_SDOT_MAX_N, 1, 1},
+    }};
+    float dotMaximumError = 0.0f;
+    for (size_t caseIndex = 0; caseIndex < dotCases.size(); ++caseIndex) {
+      const DotCase &test = dotCases[caseIndex];
+      int xSpan = 1 + (test.n - 1) * std::abs(test.incx);
+      int ySpan = 1 + (test.n - 1) * std::abs(test.incy);
+      int xStart = test.incx < 0 ? (1 - test.n) * test.incx : 0;
+      int yStart = test.incy < 0 ? (1 - test.n) * test.incy : 0;
+      std::vector<float> x(xSpan), y(ySpan);
+      for (int index = 0; index < xSpan; ++index)
+        x[index] = value(index, int(caseIndex) + 67);
+      for (int index = 0; index < ySpan; ++index)
+        y[index] = value(index, int(caseIndex) + 71);
+      float expected = 0.0f;
+      for (int element = 0; element < test.n; ++element)
+        expected +=
+            x[xStart + element * test.incx] * y[yStart + element * test.incy];
+      float actual = 0.0f;
+      require(udonblasSdot(handle, test.n, x.data(), test.incx, y.data(),
+                           test.incy, &actual),
+              UDONBLAS_STATUS_SUCCESS, "udonblasSdot");
+      dotMaximumError = std::max(dotMaximumError, std::abs(actual - expected));
+    }
+    if (dotMaximumError > 0.0005f)
+      throw std::runtime_error("UdonBLAS SDOT CPU/Device results diverged");
+
     float one = 1.0f, values[4]{};
     require(udonblasSgemm(0, UDONBLAS_OP_N, UDONBLAS_OP_N, 1, 1, 1, &one,
                           values, 1, values, 1, &one, values, 1),
@@ -250,6 +293,17 @@ int main(int argc, char **argv) {
     require(udonblasSgemv(handle, UDONBLAS_OP_N, 17, 1, &one, values, 17,
                           values, 1, &one, values, 1),
             UDONBLAS_STATUS_NOT_SUPPORTED, "oversized GEMV matrix");
+    float dotResult = 1.0f;
+    require(udonblasSdot(handle, 0, values, 1, values, 1, &dotResult),
+            UDONBLAS_STATUS_SUCCESS, "empty SDOT");
+    if (dotResult != 0.0f)
+      throw std::runtime_error("empty SDOT did not return zero");
+    require(udonblasSdot(handle, 1, values, 0, values, 1, &dotResult),
+            UDONBLAS_STATUS_INVALID_VALUE, "zero SDOT increment");
+    require(udonblasSdot(handle, 129, values, 2, values, 1, &dotResult),
+            UDONBLAS_STATUS_NOT_SUPPORTED, "oversized SDOT span");
+    require(udonblasSdot(handle, 1, values, 1, values, 1, nullptr),
+            UDONBLAS_STATUS_INVALID_VALUE, "null SDOT result");
     require(udonblasDestroy(handle), UDONBLAS_STATUS_SUCCESS,
             "udonblasDestroy");
     if (udoncl_cl_live_objects())
@@ -263,6 +317,8 @@ int main(int argc, char **argv) {
               << " saxpy_outputs=" << saxpyOutputs
               << " saxpy_cases=" << saxpyCases.size()
               << " saxpy_max_cpu_gpu_error=" << saxpyMaximumError
+              << " sdot_cases=" << dotCases.size()
+              << " sdot_max_cpu_gpu_error=" << dotMaximumError
               << " renderer=" << session.deviceName()
               << " draws=" << session.drawCount() << "\n";
     return 0;

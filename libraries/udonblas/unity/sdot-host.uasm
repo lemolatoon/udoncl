@@ -1,0 +1,205 @@
+.data_start
+    .export inputState
+    .export outputState
+    .export scratchState
+    .export productMaterial
+    .export reduceMaterial
+    .export displayMaterial
+    .export n
+    .export incx
+    .export incy
+
+    inputState: %UnityEngineTexture, null
+    outputState: %UnityEngineRenderTexture, null
+    scratchState: %UnityEngineRenderTexture, null
+    productMaterial: %UnityEngineMaterial, null
+    reduceMaterial: %UnityEngineMaterial, null
+    displayMaterial: %UnityEngineMaterial, null
+    n: %SystemInt32, null
+    incx: %SystemInt32, null
+    incy: %SystemInt32, null
+
+    __source: %UnityEngineTexture, null
+    __inputName: %SystemString, "_VRC_Input"
+    __resultName: %SystemString, "_Result"
+    __nName: %SystemString, "_VRC_Arg2"
+    __incxName: %SystemString, "_VRC_Arg3"
+    __incyName: %SystemString, "_VRC_Arg4"
+    __passName: %SystemString, "_VRC_Arg3"
+    __pass1: %SystemInt32, 1
+    __pass2: %SystemInt32, 2
+    __pass3: %SystemInt32, 3
+    __pass4: %SystemInt32, 4
+    __pass5: %SystemInt32, 5
+    __pass6: %SystemInt32, 6
+    __pass7: %SystemInt32, 7
+    __pass8: %SystemInt32, 8
+.data_end
+
+.code_start
+    .export _start
+    _start:
+        JUMP, 0xFFFFFFFC
+
+    .export _run
+    _run:
+        PUSH, productMaterial
+        PUSH, __inputName
+        PUSH, inputState
+        EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
+        PUSH, productMaterial
+        PUSH, __nName
+        PUSH, n
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, productMaterial
+        PUSH, __incxName
+        PUSH, incx
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, productMaterial
+        PUSH, __incyName
+        PUSH, incy
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, inputState
+        PUSH, outputState
+        PUSH, productMaterial
+        EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"
+
+        PUSH, reduceMaterial
+        PUSH, __nName
+        PUSH, n
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+
+        PUSH, outputState
+        PUSH, __source
+        COPY
+        PUSH, reduceMaterial
+        PUSH, __inputName
+        PUSH, __source
+        EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
+        PUSH, reduceMaterial
+        PUSH, __passName
+        PUSH, __pass1
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, __source
+        PUSH, scratchState
+        PUSH, reduceMaterial
+        EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"
+
+        PUSH, scratchState
+        PUSH, __source
+        COPY
+        PUSH, reduceMaterial
+        PUSH, __inputName
+        PUSH, __source
+        EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
+        PUSH, reduceMaterial
+        PUSH, __passName
+        PUSH, __pass2
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, __source
+        PUSH, outputState
+        PUSH, reduceMaterial
+        EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"
+
+        PUSH, outputState
+        PUSH, __source
+        COPY
+        PUSH, reduceMaterial
+        PUSH, __inputName
+        PUSH, __source
+        EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
+        PUSH, reduceMaterial
+        PUSH, __passName
+        PUSH, __pass3
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, __source
+        PUSH, scratchState
+        PUSH, reduceMaterial
+        EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"
+
+        PUSH, scratchState
+        PUSH, __source
+        COPY
+        PUSH, reduceMaterial
+        PUSH, __inputName
+        PUSH, __source
+        EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
+        PUSH, reduceMaterial
+        PUSH, __passName
+        PUSH, __pass4
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, __source
+        PUSH, outputState
+        PUSH, reduceMaterial
+        EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"
+
+        PUSH, outputState
+        PUSH, __source
+        COPY
+        PUSH, reduceMaterial
+        PUSH, __inputName
+        PUSH, __source
+        EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
+        PUSH, reduceMaterial
+        PUSH, __passName
+        PUSH, __pass5
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, __source
+        PUSH, scratchState
+        PUSH, reduceMaterial
+        EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"
+
+        PUSH, scratchState
+        PUSH, __source
+        COPY
+        PUSH, reduceMaterial
+        PUSH, __inputName
+        PUSH, __source
+        EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
+        PUSH, reduceMaterial
+        PUSH, __passName
+        PUSH, __pass6
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, __source
+        PUSH, outputState
+        PUSH, reduceMaterial
+        EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"
+
+        PUSH, outputState
+        PUSH, __source
+        COPY
+        PUSH, reduceMaterial
+        PUSH, __inputName
+        PUSH, __source
+        EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
+        PUSH, reduceMaterial
+        PUSH, __passName
+        PUSH, __pass7
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, __source
+        PUSH, scratchState
+        PUSH, reduceMaterial
+        EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"
+
+        PUSH, scratchState
+        PUSH, __source
+        COPY
+        PUSH, reduceMaterial
+        PUSH, __inputName
+        PUSH, __source
+        EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
+        PUSH, reduceMaterial
+        PUSH, __passName
+        PUSH, __pass8
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, __source
+        PUSH, outputState
+        PUSH, reduceMaterial
+        EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"
+
+        PUSH, displayMaterial
+        PUSH, __resultName
+        PUSH, outputState
+        EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
+        JUMP, 0xFFFFFFFC
+.code_end

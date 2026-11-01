@@ -30,7 +30,8 @@ enum {
   UDONBLAS_SGEMM_MAX_K = 16,
   UDONBLAS_SGEMV_MAX_M = 16,
   UDONBLAS_SGEMV_MAX_N = 16,
-  UDONBLAS_SAXPY_MAX_N = 256
+  UDONBLAS_SAXPY_MAX_N = 256,
+  UDONBLAS_SDOT_MAX_N = 256
 };
 
 udonblasStatus_t udonblasCreate(udonblasHandle_t *handle);
@@ -41,6 +42,13 @@ udonblasStatus_t udonblasDestroy(udonblasHandle_t handle);
 udonblasStatus_t udonblasSaxpy(udonblasHandle_t handle, int n,
                                const float *alpha, const float *x, int incx,
                                float *y, int incy);
+
+/* CUDA 13.0 cublasSdot contract. Computes result = sum(x[i] * y[i]) and
+ * writes zero for n <= 0. Positive and negative non-zero increments are
+ * supported by the current 256-element Device reduction profile. */
+udonblasStatus_t udonblasSdot(udonblasHandle_t handle, int n, const float *x,
+                              int incx, const float *y, int incy,
+                              float *result);
 
 /* CUDA 13.0 cublasSgemv contract. A is column-major m by n and
  * y = alpha * op(A) * x + beta * y. For real data, OP_C equals OP_T. */

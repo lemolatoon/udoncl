@@ -288,12 +288,56 @@ vector_dot_model = parse_model(
         )
     )
 )
+vector_dot_plan = compile_model(vector_dot_model)
+assert vector_dot_plan["nodes"][0]["provider"] == "udonblasSdot"
+assert vector_dot_plan["nodes"][0]["shape"] == []
+assert [call["function"] for call in vector_dot_plan["aot"]["calls"]] == [
+    "udonblasSdot"
+]
+assert len(vector_dot_plan["passes"]) == 9
+assert [item["tile"]["phase"] for item in vector_dot_plan["passes"]] == [
+    "product",
+    "reduce",
+    "reduce",
+    "reduce",
+    "reduce",
+    "reduce",
+    "reduce",
+    "reduce",
+    "reduce",
+]
+assert [item["fragments"] for item in vector_dot_plan["passes"]] == [
+    4,
+    2,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+]
+vector_dot_host_c = emit_c_host(vector_dot_plan)
+assert vector_dot_host_c.count("udonblasSdot(") == 1
+assert "blas, 4, buffers->v0_left + 0, 1" in vector_dot_host_c
+
+oversized_dot_model = parse_model(
+    model_proto(
+        graph_proto(
+            "oversized_vector_dot_graph",
+            [node_proto("MatMul", ["left", "right"], ["result"], "dot")],
+            [],
+            [value_info_proto("left", [257]), value_info_proto("right", [257])],
+            [value_info_proto("result", [])],
+        )
+    )
+)
 try:
-    compile_model(vector_dot_model)
+    compile_model(oversized_dot_model)
 except ValueError as error:
-    assert "udonblasSdot" in str(error)
+    assert "SDOT Device profile" in str(error)
 else:
-    raise AssertionError("vector-vector MatMul must wait for the cuBLAS Sdot path")
+    raise AssertionError("oversized vector-vector MatMul must reject the SDOT profile")
 
 biased_gemm_model = parse_model(
     model_proto(

@@ -15,12 +15,18 @@ static cl_program program;
 static cl_kernel sgemm_kernel;
 static cl_kernel sgemv_kernel;
 static cl_kernel saxpy_kernel;
+static cl_kernel sdot_product_kernel;
+static cl_kernel sdot_reduce_kernel;
 static cl_mem input_buffer;
 static cl_mem output_buffer;
 static float packed[UDONBLAS_WORDS];
 static float result[UDONBLAS_MATRIX_WORDS];
 
 static void clear_objects(void) {
+  if (sdot_reduce_kernel)
+    clReleaseKernel(sdot_reduce_kernel);
+  if (sdot_product_kernel)
+    clReleaseKernel(sdot_product_kernel);
   if (saxpy_kernel)
     clReleaseKernel(saxpy_kernel);
   if (sgemv_kernel)
@@ -40,6 +46,8 @@ static void clear_objects(void) {
   sgemm_kernel = 0;
   sgemv_kernel = 0;
   saxpy_kernel = 0;
+  sdot_product_kernel = 0;
+  sdot_reduce_kernel = 0;
   program = 0;
   output_buffer = input_buffer = 0;
   queue = 0;
@@ -102,7 +110,87 @@ udonblasStatus_t udonblasCreate(udonblasHandle_t *handle) {
       clSetKernelArg(saxpy_kernel, 1, sizeof(output_buffer), &output_buffer) !=
           CL_SUCCESS)
     return execution_failure();
+  sdot_product_kernel =
+      clCreateKernel(program, "udonblas_sdot_product", &status);
+  if (status != CL_SUCCESS ||
+      clSetKernelArg(sdot_product_kernel, 0, sizeof(input_buffer),
+                     &input_buffer) != CL_SUCCESS ||
+      clSetKernelArg(sdot_product_kernel, 1, sizeof(output_buffer),
+                     &output_buffer) != CL_SUCCESS)
+    return execution_failure();
+  sdot_reduce_kernel = clCreateKernel(program, "udonblas_sdot_reduce", &status);
+  if (status != CL_SUCCESS)
+    return execution_failure();
   *handle = UDONBLAS_HANDLE;
+  return UDONBLAS_STATUS_SUCCESS;
+}
+
+udonblasStatus_t udonblasSdot(udonblasHandle_t handle, int n, const float *x,
+                              int incx, const float *y, int incy,
+                              float *dot_result) {
+  int x_span, y_span, index, pass;
+  int64_t x_span64, y_span64;
+  size_t global = UDONBLAS_WORDS, local = 1;
+  cl_int status;
+  if (handle != UDONBLAS_HANDLE || !context)
+    return UDONBLAS_STATUS_NOT_INITIALIZED;
+  if (!dot_result)
+    return UDONBLAS_STATUS_INVALID_VALUE;
+  if (n <= 0) {
+    *dot_result = 0.0f;
+    return UDONBLAS_STATUS_SUCCESS;
+  }
+  if (!x || !y || incx == 0 || incy == 0)
+    return UDONBLAS_STATUS_INVALID_VALUE;
+  if (n > UDONBLAS_SDOT_MAX_N)
+    return UDONBLAS_STATUS_NOT_SUPPORTED;
+  x_span64 = 1 + (int64_t)(n - 1) * (incx < 0 ? -(int64_t)incx : incx);
+  y_span64 = 1 + (int64_t)(n - 1) * (incy < 0 ? -(int64_t)incy : incy);
+  if (x_span64 > UDONBLAS_MATRIX_WORDS || y_span64 > UDONBLAS_MATRIX_WORDS)
+    return UDONBLAS_STATUS_NOT_SUPPORTED;
+  x_span = (int)x_span64;
+  y_span = (int)y_span64;
+  for (index = 0; index < UDONBLAS_WORDS; ++index)
+    packed[index] = 0.0f;
+  for (index = 0; index < x_span; ++index)
+    packed[UDONBLAS_A_OFFSET + index] = x[index];
+  for (index = 0; index < y_span; ++index)
+    packed[UDONBLAS_B_OFFSET + index] = y[index];
+
+#define SET_SDOT_ARGUMENT(kernel, slot, value)                                 \
+  do {                                                                         \
+    status = clSetKernelArg(kernel, slot, sizeof(value), &(value));            \
+    if (status != CL_SUCCESS)                                                  \
+      return UDONBLAS_STATUS_EXECUTION_FAILED;                                 \
+  } while (0)
+  SET_SDOT_ARGUMENT(sdot_product_kernel, 2, n);
+  SET_SDOT_ARGUMENT(sdot_product_kernel, 3, incx);
+  SET_SDOT_ARGUMENT(sdot_product_kernel, 4, incy);
+  if (clEnqueueWriteBuffer(queue, input_buffer, CL_TRUE, 0, sizeof(packed),
+                           packed, 0, 0, 0) != CL_SUCCESS ||
+      clEnqueueNDRangeKernel(queue, sdot_product_kernel, 1, 0, &global, &local,
+                             0, 0, 0) != CL_SUCCESS)
+    return UDONBLAS_STATUS_EXECUTION_FAILED;
+  for (pass = 1; pass <= 8; ++pass) {
+    cl_mem source = pass & 1 ? output_buffer : input_buffer;
+    cl_mem destination = pass & 1 ? input_buffer : output_buffer;
+    if (clSetKernelArg(sdot_reduce_kernel, 0, sizeof(source), &source) !=
+            CL_SUCCESS ||
+        clSetKernelArg(sdot_reduce_kernel, 1, sizeof(destination),
+                       &destination) != CL_SUCCESS)
+      return UDONBLAS_STATUS_EXECUTION_FAILED;
+    SET_SDOT_ARGUMENT(sdot_reduce_kernel, 2, n);
+    SET_SDOT_ARGUMENT(sdot_reduce_kernel, 3, pass);
+    if (clEnqueueNDRangeKernel(queue, sdot_reduce_kernel, 1, 0, &global, &local,
+                               0, 0, 0) != CL_SUCCESS)
+      return UDONBLAS_STATUS_EXECUTION_FAILED;
+  }
+#undef SET_SDOT_ARGUMENT
+  if (clEnqueueReadBuffer(queue, output_buffer, CL_TRUE,
+                          UDONBLAS_RESULT_OFFSET * sizeof(float), sizeof(float),
+                          dot_result, 0, 0, 0) != CL_SUCCESS ||
+      clFinish(queue) != CL_SUCCESS)
+    return UDONBLAS_STATUS_EXECUTION_FAILED;
   return UDONBLAS_STATUS_SUCCESS;
 }
 

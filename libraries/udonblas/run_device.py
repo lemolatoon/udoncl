@@ -80,12 +80,15 @@ def main():
     sgemm_device = source / "device/sgemm.cl"
     sgemv_device = source / "device/sgemv.cl"
     saxpy_device = source / "device/saxpy.cl"
+    sdot_device = source / "device/sdot.cl"
     device_text = (
         sgemm_device.read_text(encoding="utf-8")
         + "\n"
         + sgemv_device.read_text(encoding="utf-8")
         + "\n"
         + saxpy_device.read_text(encoding="utf-8")
+        + "\n"
+        + sdot_device.read_text(encoding="utf-8")
     )
     (output / "udonblas_device_source.h").write_text(
         "#define UDONBLAS_DEVICE_SOURCE " + json.dumps(device_text) + "\n",
@@ -119,6 +122,7 @@ def main():
     sgemm_ir = compile_device_ir(sgemm_device, "sgemm")
     sgemv_ir = compile_device_ir(sgemv_device, "sgemv")
     saxpy_ir = compile_device_ir(saxpy_device, "saxpy")
+    sdot_ir = compile_device_ir(sdot_device, "sdot")
 
     def emit_kernel(name, kernel_id, words, scalar_count, device_ir, shape=None):
         global_size = [words, 1, 1] if shape is None else [*shape, 1]
@@ -177,9 +181,15 @@ def main():
     bundle = emit_kernel("udonblas_sgemm", 100, 1024, 10, sgemm_ir, (32, 32))
     sgemv_bundle = emit_kernel("udonblas_sgemv", 101, 1024, 8, sgemv_ir)
     saxpy_bundle = emit_kernel("udonblas_saxpy", 102, 1024, 4, saxpy_ir)
+    sdot_product_bundle = emit_kernel(
+        "udonblas_sdot_product", 103, 1024, 3, sdot_ir
+    )
+    sdot_reduce_bundle = emit_kernel("udonblas_sdot_reduce", 104, 1024, 2, sdot_ir)
     fragment = bundle / "kernels/kernel_100.hlsl"
     sgemv_fragment = sgemv_bundle / "kernels/kernel_101.hlsl"
     saxpy_fragment = saxpy_bundle / "kernels/kernel_102.hlsl"
+    sdot_product_fragment = sdot_product_bundle / "kernels/kernel_103.hlsl"
+    sdot_reduce_fragment = sdot_reduce_bundle / "kernels/kernel_104.hlsl"
     shaderlab = (bundle / "kernels/kernel_100.shader").read_text(encoding="utf-8")
     sgemv_shaderlab = (sgemv_bundle / "kernels/kernel_101.shader").read_text(
         encoding="utf-8"
@@ -187,13 +197,23 @@ def main():
     saxpy_shaderlab = (saxpy_bundle / "kernels/kernel_102.shader").read_text(
         encoding="utf-8"
     )
+    sdot_product_shaderlab = (
+        sdot_product_bundle / "kernels/kernel_103.shader"
+    ).read_text(encoding="utf-8")
+    sdot_reduce_shaderlab = (
+        sdot_reduce_bundle / "kernels/kernel_104.shader"
+    ).read_text(encoding="utf-8")
     if (
         "_VRC_Arg9 (\"Arg9\", Int)" not in shaderlab
         or "_VRC_Arg7 (\"Arg7\", Int)" not in sgemv_shaderlab
         or "_VRC_Arg4 (\"Arg4\", Int)" not in saxpy_shaderlab
+        or "_VRC_Arg4 (\"Arg4\", Int)" not in sdot_product_shaderlab
+        or "_VRC_Arg3 (\"Arg3\", Int)" not in sdot_reduce_shaderlab
         or "Integer)" in shaderlab
         or "Integer)" in sgemv_shaderlab
         or "Integer)" in saxpy_shaderlab
+        or "Integer)" in sdot_product_shaderlab
+        or "Integer)" in sdot_reduce_shaderlab
     ):
         raise RuntimeError("UdonBLAS integer uniforms are not Unity SetInt-compatible")
     (output / "Bindings.h").write_text(
@@ -202,10 +222,13 @@ def main():
         + "; }\n"
         + "inline std::vector<native_opencl::GatherBinding> manifestBindings("
         + "const std::string &sgemm, const std::string &sgemv, "
-        + "const std::string &saxpy) { return {"
+        + "const std::string &saxpy, const std::string &sdotProduct, "
+        + "const std::string &sdotReduce) { return {"
         + '{100, 1024, 10, "udonblas_sgemm", sgemm, 32, 32}, '
         + '{101, 1024, 8, "udonblas_sgemv", sgemv}, '
-        + '{102, 1024, 4, "udonblas_saxpy", saxpy}}; }\n',
+        + '{102, 1024, 4, "udonblas_saxpy", saxpy}, '
+        + '{103, 1024, 3, "udonblas_sdot_product", sdotProduct}, '
+        + '{104, 1024, 2, "udonblas_sdot_reduce", sdotReduce}}; }\n',
         encoding="utf-8",
     )
 
@@ -489,6 +512,110 @@ def main():
             shutil.rmtree(unity_saxpy_bundle)
         publish_bundle(staged, unity_saxpy_bundle)
 
+    sdot_n, sdot_incx, sdot_incy = 23, -2, 3
+    sdot_x_span = 1 + (sdot_n - 1) * abs(sdot_incx)
+    sdot_y_span = 1 + (sdot_n - 1) * abs(sdot_incy)
+    sdot_x_start = (1 - sdot_n) * sdot_incx
+    sdot_y_start = 0
+    sdot_x = [
+        ((index * 13 + 7) % 31 - 15) * 0.0625 for index in range(sdot_x_span)
+    ]
+    sdot_y = [
+        ((index * 17 + 3) % 29 - 14) * 0.0625 for index in range(sdot_y_span)
+    ]
+    sdot_expected = sum(
+        sdot_x[sdot_x_start + element * sdot_incx]
+        * sdot_y[sdot_y_start + element * sdot_incy]
+        for element in range(sdot_n)
+    )
+    sdot_packed = [0.0] * 1024
+    sdot_packed[0:sdot_x_span] = sdot_x
+    sdot_packed[256 : 256 + sdot_y_span] = sdot_y
+
+    unity_sdot_bundle = output / "unity-sdot-bundle"
+    with tempfile.TemporaryDirectory(
+        prefix="unity-udonblas-sdot-", dir=output
+    ) as staging:
+        staged = Path(staging) / "bundle"
+        (staged / "kernels").mkdir(parents=True)
+        shutil.copy2(source / "unity/sdot-host.uasm", staged / "host.uasm")
+        shutil.copy2(source / "unity/sdot-display.shader", staged / "display.shader")
+        shutil.copy2(
+            sdot_product_bundle / "kernels/kernel_103.shader",
+            staged / "kernels/kernel_103.shader",
+        )
+        shutil.copy2(
+            sdot_reduce_bundle / "kernels/kernel_104.shader",
+            staged / "kernels/kernel_104.shader",
+        )
+        (staged / "fixture_input.bytes").write_bytes(
+            struct.pack("<1024f", *sdot_packed)
+        )
+        (staged / "fixture_reference.bytes").write_bytes(
+            struct.pack("<f", sdot_expected)
+        )
+        sdot_unity_manifest = {
+            "schema_version": 1,
+            "compiler_version": "0.1.0-dev",
+            "runtime_abi_version": 1,
+            "artifact_stage": "unity-udonblas-sdot",
+            "ready_for_unity": True,
+            "sdk_compatibility": {"sdk_version": "3.10.5", "extern_db_hash": None},
+            "target": {
+                "host_pointer_bits": 32,
+                "device_pointer_bits": 32,
+                "endianness": "little",
+                "platform": "VRChat-PC",
+            },
+            "program": {
+                "name": "udonblas_sdot",
+                "assembly": "host.uasm",
+                "display_shader": "display.shader",
+            },
+            "exports": [
+                {
+                    "id": 4,
+                    "c_symbol": "udonblasSdot",
+                    "udon_event": "_run",
+                    "status_slot": "",
+                    "async": False,
+                }
+            ],
+            "device": {
+                "kernels": [
+                    {
+                        "id": 103,
+                        "name": "udonblas_sdot_product",
+                        "shader": "kernels/kernel_103.shader",
+                    },
+                    {
+                        "id": 104,
+                        "name": "udonblas_sdot_reduce",
+                        "shader": "kernels/kernel_104.shader",
+                    },
+                ]
+            },
+            "resources": [
+                {"name": "fixture_input", "kind": "bytes", "path": "fixture_input.bytes"},
+                {
+                    "name": "fixture_reference",
+                    "kind": "bytes",
+                    "path": "fixture_reference.bytes",
+                },
+            ],
+        }
+        (staged / "manifest.json").write_text(
+            json.dumps(sdot_unity_manifest, indent=2), encoding="utf-8"
+        )
+        if unity_sdot_bundle.exists():
+            previous = json.loads(
+                (unity_sdot_bundle / "manifest.json").read_text(encoding="utf-8")
+            )
+            if previous.get("artifact_stage") != "unity-udonblas-sdot":
+                raise RuntimeError("refusing to replace a non-UdonBLAS SDOT Unity bundle")
+            shutil.rmtree(unity_sdot_bundle)
+        publish_bundle(staged, unity_sdot_bundle)
+
     host_ir = output / "host.ll"
     imported = output / "host.imported.mlir"
     udonhl = output / "host.udonhl.mlir"
@@ -557,13 +684,22 @@ def main():
                 (fragment, "frag", "frag"),
                 (sgemv_fragment, "frag", "frag"),
                 (saxpy_fragment, "frag", "frag"),
+                (sdot_product_fragment, "frag", "frag"),
+                (sdot_reduce_fragment, "frag", "frag"),
                 (vertex, "vert", "vert"),
             ]
         ):
             binary = output / f"shader_{index}.spv"
             run([glslang, "-D", "-V", "-S", stage, "-e", entry, "--auto-map-locations", asset, "-o", binary])
             compiled.append(binary)
-        fragment, sgemv_fragment, saxpy_fragment, vertex = compiled
+        (
+            fragment,
+            sgemv_fragment,
+            saxpy_fragment,
+            sdot_product_fragment,
+            sdot_reduce_fragment,
+            vertex,
+        ) = compiled
 
     runtime_build = output / "runtime-build"
     run(
@@ -583,7 +719,20 @@ def main():
     )
     run([sys.executable, root / "scripts/build.py", "--build-dir", runtime_build])
     executable = runtime_build / ("udonblas-device" + suffix)
-    print(run([executable, fragment, sgemv_fragment, saxpy_fragment, vertex]), end="")
+    print(
+        run(
+            [
+                executable,
+                fragment,
+                sgemv_fragment,
+                saxpy_fragment,
+                sdot_product_fragment,
+                sdot_reduce_fragment,
+                vertex,
+            ]
+        ),
+        end="",
+    )
 
 
 if __name__ == "__main__":

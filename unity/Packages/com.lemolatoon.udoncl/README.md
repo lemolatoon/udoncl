@@ -77,6 +77,13 @@ owned by one fragment. The public prefab exposes length, alpha, and both signed
 increments; its IUdonVM fixture validates negative input traversal and a
 non-unit output stride across 16 results.
 
+The `unity-udonblas-sdot` stage creates `UdonBlasSdot.prefab` for the CUDA 13.0
+`cublasSdot` contract. The product kernel assigns one logical product to each
+fragment and the reduction kernel performs eight balanced tree passes through
+two ping-pong RenderTextures. The public prefab exposes length and both signed
+increments; its IUdonVM fixture validates a negative/non-unit input pair and
+the final scalar result.
+
 ## UdonATen
 
 The `unity-udonaten-int4-mm` stage creates

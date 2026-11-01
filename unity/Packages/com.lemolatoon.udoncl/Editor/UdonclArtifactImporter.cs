@@ -215,6 +215,20 @@ namespace Lemolatoon.Udoncl.Editor
                         transaction.Commit();
                         return programRoot;
                     }
+                    if (artifacts.ArtifactStage == "unity-udonblas-sdot")
+                    {
+                        ImportUdonBlasSdot(
+                            transaction,
+                            artifacts,
+                            programRoot,
+                            programAsset,
+                            kernelMaterials,
+                            displayMaterial
+                        );
+                        AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+                        transaction.Commit();
+                        return programRoot;
+                    }
                     if (artifacts.ArtifactStage == "unity-udondnn-convolution")
                     {
                         ImportUdonDnnConvolution(
@@ -797,6 +811,70 @@ namespace Lemolatoon.Udoncl.Editor
                 input,
                 output,
                 saxpyMaterial,
+                displayMaterial
+            );
+        }
+
+        private static void ImportUdonBlasSdot(
+            AssetImportTransaction transaction,
+            ValidatedArtifact artifacts,
+            string programRoot,
+            UdonAssemblyProgramAsset programAsset,
+            IDictionary<int, Material> kernelMaterials,
+            Material displayMaterial
+        )
+        {
+            if (!kernelMaterials.TryGetValue(103, out Material productMaterial))
+                throw new InvalidDataException("UdonBLAS SDOT requires product kernel id 103.");
+            if (!kernelMaterials.TryGetValue(104, out Material reduceMaterial))
+                throw new InvalidDataException("UdonBLAS SDOT requires reduction kernel id 104.");
+            ValidatedResource inputResource = FindResource(artifacts, "fixture_input", "bytes");
+            ValidatedResource referenceResource = FindResource(
+                artifacts,
+                "fixture_reference",
+                "bytes"
+            );
+            Texture2D input = CreateOrUpdateByteTexture(
+                transaction,
+                programRoot,
+                "udonblas_sdot_input.asset",
+                1024,
+                1,
+                File.ReadAllBytes(inputResource.AbsolutePath)
+            );
+            CreateOrUpdateByteTexture(
+                transaction,
+                programRoot,
+                "udonblas_sdot_reference.asset",
+                1,
+                1,
+                File.ReadAllBytes(referenceResource.AbsolutePath)
+            );
+            RenderTexture output = CreateOrUpdateRgbaRenderTexture(
+                transaction,
+                programRoot,
+                "udonblas_sdot_output.asset",
+                1024,
+                1
+            );
+            RenderTexture scratch = CreateOrUpdateRgbaRenderTexture(
+                transaction,
+                programRoot,
+                "udonblas_sdot_scratch.asset",
+                1024,
+                1
+            );
+            displayMaterial.SetTexture("_Result", output);
+            EditorUtility.SetDirty(displayMaterial);
+            CreateOrUpdateUdonBlasSdotPrefab(
+                transaction,
+                programRoot,
+                programAsset,
+                input,
+                output,
+                scratch,
+                productMaterial,
+                reduceMaterial,
                 displayMaterial
             );
         }
@@ -2555,6 +2633,68 @@ namespace Lemolatoon.Udoncl.Editor
                 if (!success || AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath) == null)
                     throw new InvalidOperationException(
                         "Could not create UdonBLAS SAXPY prefab: " + prefabPath
+                    );
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        private static void CreateOrUpdateUdonBlasSdotPrefab(
+            AssetImportTransaction transaction,
+            string programRoot,
+            UdonAssemblyProgramAsset programAsset,
+            Texture inputState,
+            RenderTexture outputState,
+            RenderTexture scratchState,
+            Material productMaterial,
+            Material reduceMaterial,
+            Material displayMaterial
+        )
+        {
+            string prefabDirectory = programRoot + "/Prefabs";
+            EnsureFolders(prefabDirectory);
+            string prefabPath = prefabDirectory + "/UdonBlasSdot.prefab";
+            transaction.Track(prefabPath);
+            GameObject root = new GameObject("UdonBLAS SDOT");
+            try
+            {
+                root.transform.position = new Vector3(20.0f, 10.5f, 0.0f);
+                BoxCollider collider = root.AddComponent<BoxCollider>();
+                collider.size = new Vector3(4.0f, 2.0f, 0.4f);
+                UdonBehaviour behaviour = root.AddComponent<UdonBehaviour>();
+                behaviour.programSource = programAsset;
+                behaviour.interactText = "Run UdonBLAS SDOT";
+                behaviour.proximity = 3.0f;
+                behaviour.SyncMethod = SyncType.None;
+                SetPublicVariable(behaviour, "inputState", inputState);
+                SetPublicVariable(behaviour, "outputState", outputState);
+                SetPublicVariable(behaviour, "scratchState", scratchState);
+                SetPublicVariable(behaviour, "productMaterial", productMaterial);
+                SetPublicVariable(behaviour, "reduceMaterial", reduceMaterial);
+                SetPublicVariable(behaviour, "displayMaterial", displayMaterial);
+                SetPublicVariable(behaviour, "n", 23);
+                SetPublicVariable(behaviour, "incx", -2);
+                SetPublicVariable(behaviour, "incy", 3);
+                SerializedObject serializedBehaviour = new SerializedObject(behaviour);
+                serializedBehaviour.FindProperty("serializedProgramAsset").objectReferenceValue =
+                    programAsset.SerializedProgramAsset;
+                serializedBehaviour.ApplyModifiedPropertiesWithoutUndo();
+
+                GameObject display = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                display.name = "UdonBLAS SDOT scalar result";
+                display.transform.SetParent(root.transform, false);
+                display.transform.localScale = new Vector3(4.0f, 2.0f, 0.12f);
+                Collider displayCollider = display.GetComponent<Collider>();
+                if (displayCollider != null)
+                    UnityEngine.Object.DestroyImmediate(displayCollider);
+                display.GetComponent<MeshRenderer>().sharedMaterial = displayMaterial;
+
+                PrefabUtility.SaveAsPrefabAsset(root, prefabPath, out bool success);
+                if (!success || AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath) == null)
+                    throw new InvalidOperationException(
+                        "Could not create UdonBLAS SDOT prefab: " + prefabPath
                     );
             }
             finally
