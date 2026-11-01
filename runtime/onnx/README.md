@@ -144,6 +144,26 @@ Activations and results use a row-major linear texture ABI capped at 8,192
 words per row, so feature vectors larger than a single Unity texture row retain
 the same dispatcher contract.
 
+Bundle every tiled ATen INT4 call together with the complete topological AOT
+schedule using:
+
+```text
+udon-onnx-page execution-plan.json . --all-calls \
+  -o int4-model
+```
+
+The model manifest records each call artifact, activation producer linkage,
+atlas/page counts, the original execution-plan hash, and every non-INT4 call
+that still needs whole-graph Host materialization. This keeps mixed
+UdonATen/UdonBLAS/UdonDNN ordering explicit instead of presenting a partial
+INT4 package as a complete runtime.
+
+`plan_int4_model_bundle` performs the same capacity and dependency planning
+without reading external weights. The checked Llama 3.1 8B operator plan has
+225 INT4 calls, 916,096 compact pages, 232 atlases, and 4,690,411,520 atlas
+bytes; these exact values are pinned by the boundary test before any multi-GB
+materialization is attempted.
+
 The packer accepts indexed or single-file safetensors in float32, float16, or
 bfloat16, validates every shape/range, converts matrix tensors to separate
 signed-INT4 packed weights and `[K/group_size,N,2]` bfloat16 scale/zero tensors,
@@ -160,5 +180,6 @@ full output accumulator fills the selected N slice at word 7,168.
 
 This is not full ONNX operator coverage yet. The MNIST provider still contains
 model-level fusion, while the Llama provider deliberately isolates its custom
-fusion behind the registry. Whole-graph dispatch and Unity binding for emitted
-INT4 call artifacts remain the next runtime layer.
+fusion behind the registry. The INT4 model bundle now preserves the full AOT
+schedule, but one combined Udon Host and Unity binding for its mixed library
+calls remain the next runtime layer.

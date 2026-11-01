@@ -20,7 +20,9 @@ from .udon_pages import (
     linear_texture_layout,
     materialize_int4_call,
     materialize_int4_compact_page,
+    materialize_int4_model,
     materialize_int4_page,
+    plan_int4_model_bundle,
 )
 
 __all__ = [
@@ -38,7 +40,9 @@ __all__ = [
     "linear_texture_layout",
     "materialize_int4_call",
     "materialize_int4_compact_page",
+    "materialize_int4_model",
     "materialize_int4_page",
+    "plan_int4_model_bundle",
     "parse_model",
     "tensor_int64_proto",
     "validate_external_data",

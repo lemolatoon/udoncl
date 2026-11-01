@@ -41,6 +41,7 @@ from udon_pages import (
     linear_texture_layout,
     materialize_int4_call,
     materialize_int4_compact_page,
+    materialize_int4_model,
     materialize_int4_page,
 )
 
@@ -439,6 +440,75 @@ assert int4_cli.returncode == 0, (int4_cli.stdout, int4_cli.stderr)
 assert "pages=4" in int4_cli.stdout
 assert "atlases=1" in int4_cli.stdout
 assert (int4_cli_bundle / "host.uasm").is_file()
+
+int4_model_plan = json.loads(json.dumps(int4_plan))
+int4_model_call0 = int4_model_plan["aot"]["calls"][0]
+int4_model_call0["output"] = "projection_a"
+int4_model_call1 = json.loads(json.dumps(int4_model_call0))
+int4_model_call1["index"] = 1
+int4_model_call1["output"] = "projection_b"
+int4_model_merge = {
+    "index": 2,
+    "node_index": 2,
+    "kind": "library",
+    "function": "udondnnOpTensor",
+    "inputs": ["projection_a", "projection_b"],
+    "output": "merged",
+    "output_shape": [1, int4_n],
+    "attributes": {},
+}
+int4_model_plan["aot"]["calls"] = [
+    int4_model_call0,
+    int4_model_call1,
+    int4_model_merge,
+]
+int4_model_bundle = output / "int4-model-bundle"
+int4_model_manifest = materialize_int4_model(
+    int4_model_plan, output, int4_model_bundle
+)
+assert int4_model_manifest["artifact_stage"] == "udon-onnx-int4-model"
+assert int4_model_manifest["aot_call_count"] == 3
+assert int4_model_manifest["int4_call_count"] == 2
+assert int4_model_manifest["int4_atlas_count"] == 2
+assert int4_model_manifest["int4_page_count"] == 8
+assert int4_model_manifest["int4_atlas_bytes"] == 8 * 5120
+assert int4_model_manifest["complete_graph"] is False
+assert [item["call_index"] for item in int4_model_manifest["call_artifacts"]] == [0, 1]
+assert all(item["atlases"] == 1 for item in int4_model_manifest["call_artifacts"])
+assert int4_model_manifest["unmaterialized_calls"] == [
+    {
+        "index": 2,
+        "kind": "library",
+        "function": "udondnnOpTensor",
+        "output": "merged",
+    }
+]
+assert (int4_model_bundle / "calls/call-0000/host.uasm").is_file()
+assert (int4_model_bundle / "calls/call-0001/host.uasm").is_file()
+assert len(int4_model_manifest["execution_plan_sha256"]) == 64
+int4_model_plan_path = output / "int4-model-plan.json"
+int4_model_plan_path.write_text(json.dumps(int4_model_plan), encoding="utf-8")
+int4_model_cli_bundle = output / "int4-model-cli-bundle"
+int4_model_cli = subprocess.run(
+    [
+        sys.executable,
+        root / "runtime/onnx/udon_pages.py",
+        int4_model_plan_path,
+        output,
+        "--all-calls",
+        "-o",
+        int4_model_cli_bundle,
+    ],
+    text=True,
+    capture_output=True,
+    timeout=60,
+)
+assert int4_model_cli.returncode == 0, (
+    int4_model_cli.stdout,
+    int4_model_cli.stderr,
+)
+assert "calls=2 complete=False" in int4_model_cli.stdout
+assert (int4_model_cli_bundle / "execution-plan.json").is_file()
 
 rl_model_path = output / "rl-policy.onnx"
 rl_generate = subprocess.run(

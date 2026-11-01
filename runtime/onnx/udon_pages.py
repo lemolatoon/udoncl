@@ -101,6 +101,33 @@ def _replace_path(source: Path, destination: Path):
             time.sleep(0.05 * (attempt + 1))
 
 
+def _publish_artifact(staging: Path, output_directory: Path, artifact_stage: str):
+    """Publish a staged artifact with validation, retry, and rollback."""
+    backup = None
+    if output_directory.exists():
+        previous_manifest = output_directory / "manifest.json"
+        if not previous_manifest.is_file() or json.loads(
+            previous_manifest.read_text(encoding="utf-8")
+        ).get("artifact_stage") != artifact_stage:
+            raise ValueError(f"refusing to replace a non-{artifact_stage} output directory")
+        backup = Path(
+            tempfile.mkdtemp(
+                prefix=output_directory.name + "-backup-",
+                dir=output_directory.parent,
+            )
+        )
+        backup.rmdir()
+        _replace_path(output_directory, backup)
+    try:
+        _replace_path(staging, output_directory)
+    except BaseException:
+        if backup is not None:
+            _replace_path(backup, output_directory)
+        raise
+    if backup is not None:
+        shutil.rmtree(backup)
+
+
 def _int4_call_contract(plan: dict, call_index: int) -> dict:
     """Validate and return one tiled ATen INT4 call and its fixed paging ABI."""
     if plan.get("runtime") != "udon-onnx":
@@ -651,33 +678,192 @@ def materialize_int4_call(
         (staging / "manifest.json").write_text(
             json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
         )
-        backup = None
-        if output_directory.exists():
-            previous_manifest = output_directory / "manifest.json"
-            if not previous_manifest.is_file() or json.loads(
-                previous_manifest.read_text(encoding="utf-8")
-            ).get("artifact_stage") != "udon-onnx-int4-call":
-                raise ValueError("refusing to replace a non-INT4-call output directory")
-            backup = Path(
-                tempfile.mkdtemp(
-                    prefix=output_directory.name + "-backup-",
-                    dir=output_directory.parent,
-                )
-            )
-            backup.rmdir()
-            _replace_path(output_directory, backup)
-        try:
-            _replace_path(staging, output_directory)
-        except BaseException:
-            if backup is not None:
-                _replace_path(backup, output_directory)
-            raise
-        if backup is not None:
-            shutil.rmtree(backup)
+        _publish_artifact(staging, output_directory, "udon-onnx-int4-call")
         return manifest
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
         raise
+
+
+def materialize_int4_model(
+    plan: dict,
+    external_data_directory: Path,
+    output_directory: Path,
+) -> dict:
+    """Bundle every ATen INT4 call with the complete AOT model schedule."""
+    if plan.get("runtime") != "udon-onnx" or not isinstance(plan.get("aot"), dict):
+        raise ValueError("model source is not a Udon ONNX AOT execution plan")
+    calls = plan["aot"].get("calls") or []
+    int4_calls = [
+        call
+        for call in calls
+        if call.get("kind") == "tiled_library"
+        and call.get("function") == "udonatenWeightInt4packMm"
+    ]
+    if not int4_calls:
+        raise ValueError("execution plan contains no tiled ATen INT4 calls")
+    external_data_directory = external_data_directory.resolve()
+    output_directory = output_directory.resolve()
+    try:
+        external_data_directory.relative_to(output_directory)
+    except ValueError:
+        pass
+    else:
+        raise ValueError("INT4 model output cannot contain its external data directory")
+    output_directory.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(
+        tempfile.mkdtemp(prefix=output_directory.name + "-", dir=output_directory.parent)
+    )
+    try:
+        calls_directory = staging / "calls"
+        calls_directory.mkdir()
+        producers = {}
+        for call in calls:
+            output = call.get("output")
+            if not isinstance(output, str):
+                continue
+            if output in producers:
+                raise ValueError(f"AOT schedule has duplicate producer for {output!r}")
+            producers[output] = call.get("index")
+        artifacts = []
+        for call in int4_calls:
+            call_index = call.get("index")
+            if not isinstance(call_index, int):
+                raise ValueError("INT4 model call index must be an integer")
+            relative = f"calls/call-{call_index:04d}"
+            child = materialize_int4_call(
+                plan,
+                call_index,
+                external_data_directory,
+                staging / relative,
+            )
+            activation = call["inputs"][0]
+            producer = producers.get(activation)
+            if producer is not None and (
+                not isinstance(producer, int) or producer >= call_index
+            ):
+                raise ValueError("INT4 activation producer is not topologically earlier")
+            artifacts.append(
+                {
+                    "call_index": call_index,
+                    "path": relative,
+                    "input": activation,
+                    "input_producer_call": producer,
+                    "output": call["output"],
+                    "tile_grid": dict(child["tile_grid"]),
+                    "atlases": len(child["resources"]),
+                    "pages": len(child["tiles"]),
+                    "atlas_bytes": sum(
+                        resource["bytes"] for resource in child["resources"]
+                    ),
+                }
+            )
+        serialized_plan = json.dumps(plan, indent=2) + "\n"
+        (staging / "execution-plan.json").write_text(serialized_plan, encoding="utf-8")
+        manifest = {
+            "schema_version": 1,
+            "artifact_stage": "udon-onnx-int4-model",
+            "runtime": "udon-onnx",
+            "graph": plan.get("graph"),
+            "execution_provider": plan.get("execution_provider"),
+            "execution_plan": "execution-plan.json",
+            "execution_plan_sha256": hashlib.sha256(
+                serialized_plan.encode("utf-8")
+            ).hexdigest(),
+            "aot_call_count": len(calls),
+            "int4_call_count": len(artifacts),
+            "int4_atlas_count": sum(item["atlases"] for item in artifacts),
+            "int4_page_count": sum(item["pages"] for item in artifacts),
+            "int4_atlas_bytes": sum(item["atlas_bytes"] for item in artifacts),
+            "complete_graph": len(int4_calls) == len(calls),
+            "call_artifacts": artifacts,
+            "unmaterialized_calls": [
+                {
+                    "index": call.get("index"),
+                    "kind": call.get("kind"),
+                    "function": call.get("function"),
+                    "output": call.get("output"),
+                }
+                for call in calls
+                if call not in int4_calls
+            ],
+        }
+        (staging / "manifest.json").write_text(
+            json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+        )
+        _publish_artifact(staging, output_directory, "udon-onnx-int4-model")
+        return manifest
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+
+
+def plan_int4_model_bundle(plan: dict) -> dict:
+    """Plan call artifacts and compact-atlas capacity without reading weights."""
+    if plan.get("runtime") != "udon-onnx" or not isinstance(plan.get("aot"), dict):
+        raise ValueError("model source is not a Udon ONNX AOT execution plan")
+    calls = plan["aot"].get("calls") or []
+    producers = {}
+    for call in calls:
+        output = call.get("output")
+        if not isinstance(output, str):
+            continue
+        if output in producers:
+            raise ValueError(f"AOT schedule has duplicate producer for {output!r}")
+        producers[output] = call.get("index")
+    artifacts = []
+    materialized_indexes = set()
+    for call in calls:
+        if not (
+            call.get("kind") == "tiled_library"
+            and call.get("function") == "udonatenWeightInt4packMm"
+        ):
+            continue
+        call_index = call.get("index")
+        if not isinstance(call_index, int) or call_index in materialized_indexes:
+            raise ValueError("INT4 model call indexes must be unique integers")
+        contract = _int4_call_contract(plan, call_index)
+        activation = call["inputs"][0]
+        producer = producers.get(activation)
+        if producer is not None and (
+            not isinstance(producer, int) or producer >= call_index
+        ):
+            raise ValueError("INT4 activation producer is not topologically earlier")
+        pages = contract["grid"]["m_tiles"] * contract["grid"]["k_tiles"]
+        artifacts.append(
+            {
+                "call_index": call_index,
+                "input": activation,
+                "input_producer_call": producer,
+                "output": call["output"],
+                "tile_grid": dict(contract["grid"]),
+                "atlases": math.ceil(pages / INT4_ATLAS_MAX_PAGES),
+                "pages": pages,
+                "atlas_bytes": pages * INT4_COMPACT_PAGE_BYTES,
+            }
+        )
+        materialized_indexes.add(call_index)
+    if not artifacts:
+        raise ValueError("execution plan contains no tiled ATen INT4 calls")
+    return {
+        "aot_call_count": len(calls),
+        "int4_call_count": len(artifacts),
+        "int4_atlas_count": sum(item["atlases"] for item in artifacts),
+        "int4_page_count": sum(item["pages"] for item in artifacts),
+        "int4_atlas_bytes": sum(item["atlas_bytes"] for item in artifacts),
+        "complete_graph": len(artifacts) == len(calls),
+        "call_artifacts": artifacts,
+        "unmaterialized_calls": [
+            {
+                "index": call.get("index"),
+                "kind": call.get("kind"),
+                "function": call.get("function"),
+                "output": call.get("output"),
+            }
+            for call in calls
+            if call.get("index") not in materialized_indexes
+        ],
+    }
 
 
 def main():
@@ -685,13 +871,18 @@ def main():
     parser.add_argument("plan", type=Path)
     parser.add_argument("external_data_directory", type=Path)
     parser.add_argument("-o", "--output", type=Path, required=True)
-    parser.add_argument("--call", type=int, required=True)
+    parser.add_argument("--call", type=int)
     parser.add_argument("--m-tile", type=int)
     parser.add_argument("--k-tile", type=int)
     parser.add_argument(
         "--all",
         action="store_true",
         help="materialize every M/K page plus the static Udon Host dispatcher",
+    )
+    parser.add_argument(
+        "--all-calls",
+        action="store_true",
+        help="bundle all tiled ATen INT4 calls plus the complete AOT schedule",
     )
     parser.add_argument(
         "--activation-f32",
@@ -705,7 +896,29 @@ def main():
     )
     args = parser.parse_args()
     plan = json.loads(args.plan.read_text(encoding="utf-8"))
+    if args.all_calls:
+        if (
+            args.call is not None
+            or args.all
+            or args.m_tile is not None
+            or args.k_tile is not None
+            or args.activation_f32
+            or args.accumulator_f32
+        ):
+            parser.error("--all-calls cannot be combined with call or page options")
+        manifest = materialize_int4_model(
+            plan,
+            args.external_data_directory,
+            args.output,
+        )
+        print(
+            f"udon_onnx_int4_model={args.output} "
+            f"calls={manifest['int4_call_count']} complete={manifest['complete_graph']}"
+        )
+        return
     if args.all:
+        if args.call is None:
+            parser.error("--all requires --call")
         if args.m_tile is not None or args.k_tile is not None:
             parser.error("--all cannot be combined with --m-tile or --k-tile")
         if args.activation_f32 or args.accumulator_f32:
@@ -723,6 +936,8 @@ def main():
         return
     if args.m_tile is None or args.k_tile is None:
         parser.error("single-page mode requires --m-tile and --k-tile")
+    if args.call is None:
+        parser.error("single-page mode requires --call")
     activation = None
     if args.activation_f32:
         raw = args.activation_f32.read_bytes()

@@ -135,6 +135,24 @@ from udon_onnx import (  # noqa: E402
     parse_model,
     validate_external_data,
 )
+from udon_pages import plan_int4_model_bundle  # noqa: E402
+
+int4_bundle_plan = plan_int4_model_bundle(operator_plan)
+assert int4_bundle_plan["aot_call_count"] == len(operator_plan["aot"]["calls"])
+assert int4_bundle_plan["int4_call_count"] == 225
+assert int4_bundle_plan["complete_graph"] is False
+assert int4_bundle_plan["int4_page_count"] == sum(
+    call["tile_grid"]["m_tiles"] * call["tile_grid"]["k_tiles"]
+    for call in operator_q4_calls
+)
+assert int4_bundle_plan["int4_atlas_bytes"] == (
+    int4_bundle_plan["int4_page_count"] * 5120
+)
+assert int4_bundle_plan["int4_page_count"] == 916096
+assert int4_bundle_plan["int4_atlas_count"] == 232
+assert int4_bundle_plan["int4_atlas_bytes"] == 4690411520
+assert int4_bundle_plan["call_artifacts"][-1]["pages"] == 2004 * 32
+assert int4_bundle_plan["call_artifacts"][-1]["atlases"] == 8
 
 try:
     emit_c_host(operator_plan)
