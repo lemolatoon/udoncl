@@ -815,6 +815,143 @@ def main():
             shutil.rmtree(unity_softmax_bundle)
         staged.rename(unity_softmax_bundle)
 
+    batchnorm_input_shape = (1, 3, 2, 2)
+    batchnorm_input = [
+        ((index + 5) * (97 * 11 + 7) % 31 - 15) * 0.25 for index in range(12)
+    ]
+    batchnorm_previous = [
+        ((index + 5) * (101 * 11 + 7) % 31 - 15) * 0.0625
+        for index in range(12)
+    ]
+    batchnorm_scale = [
+        ((index + 3) * 17 % 19 - 9) * 0.125 for index in range(12)
+    ]
+    batchnorm_bias = [
+        ((index + 7) * 23 % 17 - 8) * 0.0625 for index in range(12)
+    ]
+    batchnorm_mean = [
+        ((index + 11) * 29 % 23 - 11) * 0.125 for index in range(12)
+    ]
+    batchnorm_variance = [0.25 + ((index * 13 + 5) % 17) * 0.125 for index in range(12)]
+    batchnorm_cases = [
+        (0, 1.0e-5, 1.0, 0.0),
+        (1, 1.0e-4, 0.75, -0.25),
+        (2, 1.0e-3, -1.25, 0.5),
+        (0, 1.0e-3, 0.5, 0.125),
+        (1, 1.0e-5, -0.75, 1.0),
+        (2, 1.0e-4, 1.25, -0.5),
+    ]
+
+    def batchnorm_reference(mode, epsilon, alpha, beta):
+        values = []
+        for element, input_value in enumerate(batchnorm_input):
+            parameter = element if mode == 0 else element // 4
+            normalized = (input_value - batchnorm_mean[parameter]) / math.sqrt(
+                batchnorm_variance[parameter] + epsilon
+            )
+            transformed = (
+                normalized * batchnorm_scale[parameter] + batchnorm_bias[parameter]
+            )
+            values.append(
+                alpha * transformed + beta * batchnorm_previous[element]
+            )
+        return values
+
+    batchnorm_reference_values = []
+    for batchnorm_case in batchnorm_cases:
+        batchnorm_reference_values.extend(batchnorm_reference(*batchnorm_case))
+    batchnorm_packed = [0.0] * 4096
+    batchnorm_packed[: len(batchnorm_input)] = batchnorm_input
+    batchnorm_packed[512 : 512 + len(batchnorm_previous)] = batchnorm_previous
+    batchnorm_packed[1024 : 1024 + len(batchnorm_scale)] = batchnorm_scale
+    batchnorm_packed[1536 : 1536 + len(batchnorm_bias)] = batchnorm_bias
+    batchnorm_packed[2048 : 2048 + len(batchnorm_mean)] = batchnorm_mean
+    batchnorm_packed[2560 : 2560 + len(batchnorm_variance)] = batchnorm_variance
+    unity_batchnorm_bundle = output / "unity-batchnorm-bundle"
+    with tempfile.TemporaryDirectory(
+        prefix="unity-udondnn-batchnorm-", dir=output
+    ) as staging:
+        staged = Path(staging) / "bundle"
+        (staged / "kernels").mkdir(parents=True)
+        shutil.copy2(source / "unity/batchnorm-host.uasm", staged / "host.uasm")
+        shutil.copy2(
+            source / "unity/batchnorm-display.shader", staged / "display.shader"
+        )
+        shutil.copy2(
+            batchnorm_bundle / "kernels/kernel_204.shader",
+            staged / "kernels/kernel_204.shader",
+        )
+        (staged / "fixture_input.bytes").write_bytes(
+            struct.pack("<4096f", *batchnorm_packed)
+        )
+        (staged / "fixture_reference.bytes").write_bytes(
+            struct.pack("<72f", *batchnorm_reference_values)
+        )
+        batchnorm_unity_manifest = {
+            "schema_version": 1,
+            "compiler_version": "0.1.0-dev",
+            "runtime_abi_version": 1,
+            "artifact_stage": "unity-udondnn-batchnorm",
+            "ready_for_unity": True,
+            "sdk_compatibility": {"sdk_version": "3.10.5", "extern_db_hash": None},
+            "target": {
+                "host_pointer_bits": 32,
+                "device_pointer_bits": 32,
+                "endianness": "little",
+                "platform": "VRChat-PC",
+            },
+            "program": {
+                "name": "udondnn_batchnorm",
+                "assembly": "host.uasm",
+                "display_shader": "display.shader",
+            },
+            "exports": [
+                {
+                    "id": 1,
+                    "c_symbol": "udondnnBatchNormalizationForwardInference",
+                    "udon_event": "_run",
+                    "status_slot": "",
+                    "async": False,
+                }
+            ],
+            "device": {
+                "kernels": [
+                    {
+                        "id": 204,
+                        "name": "udondnn_batchnorm_inference",
+                        "shader": "kernels/kernel_204.shader",
+                    }
+                ]
+            },
+            "resources": [
+                {"name": "fixture_input", "kind": "bytes", "path": "fixture_input.bytes"},
+                {
+                    "name": "fixture_reference",
+                    "kind": "bytes",
+                    "path": "fixture_reference.bytes",
+                },
+            ],
+            "fixture": {
+                "input_shape": batchnorm_input_shape,
+                "cases": len(batchnorm_cases),
+            },
+        }
+        (staged / "manifest.json").write_text(
+            json.dumps(batchnorm_unity_manifest, indent=2), encoding="utf-8"
+        )
+        if unity_batchnorm_bundle.exists():
+            previous = json.loads(
+                (unity_batchnorm_bundle / "manifest.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            if previous.get("artifact_stage") != "unity-udondnn-batchnorm":
+                raise RuntimeError(
+                    "refusing to replace a non-UdonDNN batchnorm Unity bundle"
+                )
+            shutil.rmtree(unity_batchnorm_bundle)
+        staged.rename(unity_batchnorm_bundle)
+
     host_ir = output / "host.ll"
     imported = output / "host.imported.mlir"
     udonhl = output / "host.udonhl.mlir"

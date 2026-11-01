@@ -192,6 +192,20 @@ namespace Lemolatoon.Udoncl.Editor
                         transaction.Commit();
                         return programRoot;
                     }
+                    if (artifacts.ArtifactStage == "unity-udondnn-batchnorm")
+                    {
+                        ImportUdonDnnBatchNorm(
+                            transaction,
+                            artifacts,
+                            programRoot,
+                            programAsset,
+                            kernelMaterials,
+                            displayMaterial
+                        );
+                        AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+                        transaction.Commit();
+                        return programRoot;
+                    }
                     if (artifacts.ArtifactStage != "unity-lj-prototype")
                         throw new InvalidDataException(
                             "Unsupported Unity artifact stage: " + artifacts.ArtifactStage
@@ -729,6 +743,61 @@ namespace Lemolatoon.Udoncl.Editor
                 input,
                 output,
                 softmaxMaterial,
+                displayMaterial
+            );
+        }
+
+        private static void ImportUdonDnnBatchNorm(
+            AssetImportTransaction transaction,
+            ValidatedArtifact artifacts,
+            string programRoot,
+            UdonAssemblyProgramAsset programAsset,
+            IDictionary<int, Material> kernelMaterials,
+            Material displayMaterial
+        )
+        {
+            if (!kernelMaterials.TryGetValue(204, out Material batchnormMaterial))
+                throw new InvalidDataException(
+                    "UdonDNN batch normalization requires kernel id 204."
+                );
+            ValidatedResource inputResource = FindResource(artifacts, "fixture_input", "bytes");
+            ValidatedResource referenceResource = FindResource(
+                artifacts,
+                "fixture_reference",
+                "bytes"
+            );
+            Texture2D input = CreateOrUpdateByteTexture(
+                transaction,
+                programRoot,
+                "udondnn_batchnorm_input.asset",
+                4096,
+                1,
+                File.ReadAllBytes(inputResource.AbsolutePath)
+            );
+            CreateOrUpdateByteTexture(
+                transaction,
+                programRoot,
+                "udondnn_batchnorm_reference.asset",
+                72,
+                1,
+                File.ReadAllBytes(referenceResource.AbsolutePath)
+            );
+            RenderTexture output = CreateOrUpdateRgbaRenderTexture(
+                transaction,
+                programRoot,
+                "udondnn_batchnorm_output.asset",
+                4096,
+                1
+            );
+            displayMaterial.SetTexture("_Result", output);
+            EditorUtility.SetDirty(displayMaterial);
+            CreateOrUpdateUdonDnnBatchNormPrefab(
+                transaction,
+                programRoot,
+                programAsset,
+                input,
+                output,
+                batchnormMaterial,
                 displayMaterial
             );
         }
@@ -1634,6 +1703,66 @@ namespace Lemolatoon.Udoncl.Editor
                 if (!success || AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath) == null)
                     throw new InvalidOperationException(
                         "Could not create UdonDNN softmax prefab: " + prefabPath
+                    );
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        private static void CreateOrUpdateUdonDnnBatchNormPrefab(
+            AssetImportTransaction transaction,
+            string programRoot,
+            UdonAssemblyProgramAsset programAsset,
+            Texture packedState,
+            RenderTexture outputState,
+            Material batchnormMaterial,
+            Material displayMaterial
+        )
+        {
+            string prefabDirectory = programRoot + "/Prefabs";
+            EnsureFolders(prefabDirectory);
+            string prefabPath = prefabDirectory + "/UdonDnnBatchNorm.prefab";
+            transaction.Track(prefabPath);
+            GameObject root = new GameObject("UdonDNN batch normalization");
+            try
+            {
+                root.transform.position = new Vector3(50.0f, 1.5f, 0.0f);
+                BoxCollider collider = root.AddComponent<BoxCollider>();
+                collider.size = new Vector3(4.0f, 3.0f, 0.4f);
+                UdonBehaviour behaviour = root.AddComponent<UdonBehaviour>();
+                behaviour.programSource = programAsset;
+                behaviour.interactText = "Run UdonDNN batch normalization";
+                behaviour.proximity = 3.0f;
+                behaviour.SyncMethod = SyncType.None;
+                SetPublicVariable(behaviour, "packedState", packedState);
+                SetPublicVariable(behaviour, "outputState", outputState);
+                SetPublicVariable(behaviour, "batchnormMaterial", batchnormMaterial);
+                SetPublicVariable(behaviour, "displayMaterial", displayMaterial);
+                SetPublicVariable(behaviour, "inputShape", 8753);
+                SetPublicVariable(behaviour, "mode", 1);
+                SetPublicVariable(behaviour, "epsilon", 1.0e-4f);
+                SetPublicVariable(behaviour, "alpha", 1.0f);
+                SetPublicVariable(behaviour, "beta", 0.0f);
+                SerializedObject serializedBehaviour = new SerializedObject(behaviour);
+                serializedBehaviour.FindProperty("serializedProgramAsset").objectReferenceValue =
+                    programAsset.SerializedProgramAsset;
+                serializedBehaviour.ApplyModifiedPropertiesWithoutUndo();
+
+                GameObject display = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                display.name = "UdonDNN batch normalization result";
+                display.transform.SetParent(root.transform, false);
+                display.transform.localScale = new Vector3(4.0f, 3.0f, 0.12f);
+                Collider displayCollider = display.GetComponent<Collider>();
+                if (displayCollider != null)
+                    UnityEngine.Object.DestroyImmediate(displayCollider);
+                display.GetComponent<MeshRenderer>().sharedMaterial = displayMaterial;
+
+                PrefabUtility.SaveAsPrefabAsset(root, prefabPath, out bool success);
+                if (!success || AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath) == null)
+                    throw new InvalidOperationException(
+                        "Could not create UdonDNN batch normalization prefab: " + prefabPath
                     );
             }
             finally

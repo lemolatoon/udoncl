@@ -71,3 +71,10 @@ ACCURATE, and LOG algorithms support both per-instance and per-channel
 normalization, public alpha/beta accumulation, and one independent fragment per
 output. Its generated shader uses the generic UdonCL `exp` and `log` lowering;
 the IUdonVM lifecycle fixture compares all six combinations across 72 outputs.
+
+The `unity-udondnn-batchnorm` stage creates `UdonDnnBatchNorm.prefab` for
+inference with PER_ACTIVATION, SPATIAL, and SPATIAL_PERSISTENT modes. Scale,
+bias, estimated mean, and estimated variance are packed into the reusable input
+texture; epsilon and alpha/beta remain public host parameters. One fragment
+owns every output tensor element, and the IUdonVM lifecycle fixture compares
+six parameter combinations across 72 outputs before cleaning up all assets.
