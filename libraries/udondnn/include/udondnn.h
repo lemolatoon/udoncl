@@ -92,6 +92,11 @@ udondnnStatus_t udondnnSetTensor4dDescriptor(
     udondnnTensorDescriptor_t descriptor, udondnnTensorFormat_t format,
     udondnnDataType_t data_type, int n, int c, int h, int w);
 udondnnStatus_t
+udondnnGetTensor4dDescriptor(udondnnTensorDescriptor_t descriptor,
+                             udondnnDataType_t *data_type, int *n, int *c,
+                             int *h, int *w, int *n_stride, int *c_stride,
+                             int *h_stride, int *w_stride);
+udondnnStatus_t
 udondnnDestroyTensorDescriptor(udondnnTensorDescriptor_t descriptor);
 
 udondnnStatus_t

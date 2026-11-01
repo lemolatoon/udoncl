@@ -45,5 +45,8 @@ assert "optensor_outputs=60" in result.stdout
 assert "optensor_cases=4" in result.stdout
 optensor_error = re.search(r"optensor_max_error=([0-9.eE+-]+)", result.stdout)
 assert optensor_error and float(optensor_error.group(1)) < 0.0005
-assert "draws=33" in result.stdout
+assert "int4_outputs=64" in result.stdout
+int4_error = re.search(r"int4_max_error=([0-9.eE+-]+)", result.stdout)
+assert int4_error and float(int4_error.group(1)) < 0.0005
+assert "draws=36" in result.stdout
 print(result.stdout, end="")

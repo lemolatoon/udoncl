@@ -33,6 +33,12 @@
 #define UDONDNN_RMS_RESULT_OFFSET 1536
 #define UDONDNN_GATHER_INDICES_OFFSET 512
 #define UDONDNN_GATHER_RESULT_OFFSET 1024
+#define UDONATEN_INT4_WORDS 8192
+#define UDONATEN_INT4_INPUT_OFFSET 6144
+#define UDONATEN_INT4_RESULT_OFFSET 7168
+#define UDONATEN_INT4_MAX_N 64
+#define UDONATEN_INT4_MAX_K 128
+#define UDONDNN_DESCRIPTOR_MAX_WORDS 4096
 #define UDONDNN_HANDLE 1u
 #define UDONDNN_DESCRIPTOR_SLOTS 8
 #define UDONDNN_SLOT_MASK 255u
@@ -101,13 +107,17 @@ static cl_kernel batchnorm_kernel;
 static cl_kernel op_tensor_kernel;
 static cl_kernel rms_norm_kernel;
 static cl_kernel gather_kernel;
+static cl_kernel weight_int4pack_mm_kernel;
 static cl_mem input_buffer;
 static cl_mem output_buffer;
 static cl_mem batchnorm_input_buffer;
 static cl_mem batchnorm_output_buffer;
+static cl_mem int4_input_buffer;
+static cl_mem int4_output_buffer;
 static float packed[UDONDNN_WORDS];
 static float batchnorm_packed[UDONDNN_BATCHNORM_WORDS];
 static float result[UDONDNN_REGION_WORDS];
+static float int4_state[UDONATEN_INT4_WORDS];
 static TensorDescriptor tensors[UDONDNN_DESCRIPTOR_SLOTS];
 static FilterDescriptor filters[UDONDNN_DESCRIPTOR_SLOTS];
 static ConvolutionDescriptor convolutions[UDONDNN_DESCRIPTOR_SLOTS];
@@ -188,6 +198,8 @@ get_op_tensor(udondnnOpTensorDescriptor_t descriptor) {
 }
 
 static void clear_objects(void) {
+  if (weight_int4pack_mm_kernel)
+    clReleaseKernel(weight_int4pack_mm_kernel);
   if (gather_kernel)
     clReleaseKernel(gather_kernel);
   if (rms_norm_kernel)
@@ -214,6 +226,10 @@ static void clear_objects(void) {
     clReleaseMemObject(batchnorm_output_buffer);
   if (batchnorm_input_buffer)
     clReleaseMemObject(batchnorm_input_buffer);
+  if (int4_output_buffer)
+    clReleaseMemObject(int4_output_buffer);
+  if (int4_input_buffer)
+    clReleaseMemObject(int4_input_buffer);
   if (queue)
     clReleaseCommandQueue(queue);
   if (context)
@@ -226,9 +242,11 @@ static void clear_objects(void) {
   op_tensor_kernel = 0;
   rms_norm_kernel = 0;
   gather_kernel = 0;
+  weight_int4pack_mm_kernel = 0;
   program = 0;
   output_buffer = input_buffer = 0;
   batchnorm_output_buffer = batchnorm_input_buffer = 0;
+  int4_output_buffer = int4_input_buffer = 0;
   queue = 0;
   context = 0;
 }
@@ -271,6 +289,14 @@ udondnnStatus_t udondnnCreate(udondnnHandle_t *handle) {
     return execution_failure();
   batchnorm_output_buffer = clCreateBuffer(
       context, CL_MEM_READ_WRITE, sizeof(batchnorm_packed), 0, &status);
+  if (status != CL_SUCCESS)
+    return execution_failure();
+  int4_input_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE,
+                                     sizeof(int4_state), 0, &status);
+  if (status != CL_SUCCESS)
+    return execution_failure();
+  int4_output_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE,
+                                      sizeof(int4_state), 0, &status);
   if (status != CL_SUCCESS)
     return execution_failure();
   program = clCreateProgramWithSource(context, 1, &source, 0, &status);
@@ -338,6 +364,14 @@ udondnnStatus_t udondnnCreate(udondnnHandle_t *handle) {
       clSetKernelArg(gather_kernel, 1, sizeof(output_buffer), &output_buffer) !=
           CL_SUCCESS)
     return execution_failure();
+  weight_int4pack_mm_kernel =
+      clCreateKernel(program, "udonaten_weight_int4pack_mm", &status);
+  if (status != CL_SUCCESS ||
+      clSetKernelArg(weight_int4pack_mm_kernel, 0, sizeof(int4_input_buffer),
+                     &int4_input_buffer) != CL_SUCCESS ||
+      clSetKernelArg(weight_int4pack_mm_kernel, 1, sizeof(int4_output_buffer),
+                     &int4_output_buffer) != CL_SUCCESS)
+    return execution_failure();
   *handle = UDONDNN_HANDLE;
   return UDONDNN_STATUS_SUCCESS;
 }
@@ -371,14 +405,35 @@ udondnnStatus_t udondnnSetTensor4dDescriptor(
   TensorDescriptor *tensor = get_tensor(descriptor);
   if (!tensor || format != UDONDNN_TENSOR_NCHW ||
       data_type != UDONDNN_DATA_FLOAT || n <= 0 || c <= 0 || h <= 0 || w <= 0 ||
-      n > 15 || c > 15 || h > 15 || w > 15 ||
-      n * c * h * w > UDONDNN_CONV_MAX_TENSOR_WORDS)
+      (size_t)n * (size_t)c * (size_t)h * (size_t)w >
+          UDONDNN_DESCRIPTOR_MAX_WORDS)
     return UDONDNN_STATUS_BAD_PARAM;
   tensor->n = n;
   tensor->c = c;
   tensor->h = h;
   tensor->w = w;
   tensor->configured = 1;
+  return UDONDNN_STATUS_SUCCESS;
+}
+
+udondnnStatus_t
+udondnnGetTensor4dDescriptor(udondnnTensorDescriptor_t descriptor,
+                             udondnnDataType_t *data_type, int *n, int *c,
+                             int *h, int *w, int *n_stride, int *c_stride,
+                             int *h_stride, int *w_stride) {
+  TensorDescriptor *tensor = get_tensor(descriptor);
+  if (!tensor || !tensor->configured || !data_type || !n || !c || !h || !w ||
+      !n_stride || !c_stride || !h_stride || !w_stride)
+    return UDONDNN_STATUS_BAD_PARAM;
+  *data_type = UDONDNN_DATA_FLOAT;
+  *n = tensor->n;
+  *c = tensor->c;
+  *h = tensor->h;
+  *w = tensor->w;
+  *w_stride = 1;
+  *h_stride = tensor->w;
+  *c_stride = tensor->h * *h_stride;
+  *n_stride = tensor->c * *c_stride;
   return UDONDNN_STATUS_SUCCESS;
 }
 
@@ -714,6 +769,11 @@ static int pack_shape(int a, int b, int c, int d) {
   return a | (b << 4) | (c << 8) | (d << 12);
 }
 
+static int packable_shape(const TensorDescriptor *tensor) {
+  return tensor && tensor->configured && tensor->n <= 15 && tensor->c <= 15 &&
+         tensor->h <= 15 && tensor->w <= 15;
+}
+
 udondnnStatus_t udondnnConvolutionForward(
     udondnnHandle_t handle, const float *alpha,
     udondnnTensorDescriptor_t input_descriptor, const float *input,
@@ -748,6 +808,10 @@ udondnnStatus_t udondnnConvolutionForward(
   filter_words =
       filter_info->k * filter_info->c * filter_info->h * filter_info->w;
   output_words = n * c * h * w;
+  if (!packable_shape(input_info) || input_words > UDONDNN_REGION_WORDS ||
+      filter_words > UDONDNN_REGION_WORDS ||
+      output_words > UDONDNN_REGION_WORDS)
+    return UDONDNN_STATUS_NOT_SUPPORTED;
   for (index = 0; index < UDONDNN_WORDS; ++index)
     packed[index] = 0.0f;
   for (index = 0; index < input_words; ++index)
@@ -823,6 +887,8 @@ udondnnStatus_t udondnnActivationForward(
       input_info->w != output_info->w)
     return UDONDNN_STATUS_BAD_PARAM;
   words = input_info->n * input_info->c * input_info->h * input_info->w;
+  if (words > UDONDNN_REGION_WORDS)
+    return UDONDNN_STATUS_NOT_SUPPORTED;
   for (index = 0; index < UDONDNN_WORDS; ++index)
     packed[index] = 0.0f;
   for (index = 0; index < words; ++index) {
@@ -922,6 +988,9 @@ udondnnStatus_t udondnnPoolingForward(
     return UDONDNN_STATUS_BAD_PARAM;
   input_words = input_info->n * input_info->c * input_info->h * input_info->w;
   output_words = n * c * h * w;
+  if (!packable_shape(input_info) || input_words > UDONDNN_REGION_WORDS ||
+      output_words > UDONDNN_REGION_WORDS)
+    return UDONDNN_STATUS_NOT_SUPPORTED;
   for (index = 0; index < UDONDNN_WORDS; ++index)
     packed[index] = 0.0f;
   for (index = 0; index < input_words; ++index)
@@ -991,6 +1060,8 @@ udondnnStatus_t udondnnSoftmaxForward(
       input_info->w != output_info->w)
     return UDONDNN_STATUS_BAD_PARAM;
   words = input_info->n * input_info->c * input_info->h * input_info->w;
+  if (!packable_shape(input_info) || words > UDONDNN_REGION_WORDS)
+    return UDONDNN_STATUS_NOT_SUPPORTED;
   for (index = 0; index < UDONDNN_WORDS; ++index)
     packed[index] = 0.0f;
   for (index = 0; index < words; ++index) {
@@ -1081,6 +1152,9 @@ udondnnStatus_t udondnnBatchNormalizationForwardInference(
     return UDONDNN_STATUS_BAD_PARAM;
   words = input_info->n * input_info->c * input_info->h * input_info->w;
   parameter_words = parameter_info->c * parameter_info->h * parameter_info->w;
+  if (!packable_shape(input_info) || words > UDONDNN_REGION_WORDS ||
+      parameter_words > UDONDNN_REGION_WORDS)
+    return UDONDNN_STATUS_NOT_SUPPORTED;
   for (index = 0; index < parameter_words; ++index)
     if (estimated_variance[index] < 0.0f ||
         estimated_variance[index] != estimated_variance[index] ||
@@ -1169,6 +1243,10 @@ udondnnStatus_t udondnnOpTensor(
   a_words = a_info->n * a_info->c * a_info->h * a_info->w;
   b_words = b_info->n * b_info->c * b_info->h * b_info->w;
   c_words = c_info->n * c_info->c * c_info->h * c_info->w;
+  if (!packable_shape(a_info) || !packable_shape(b_info) ||
+      !packable_shape(c_info) || a_words > UDONDNN_REGION_WORDS ||
+      b_words > UDONDNN_REGION_WORDS || c_words > UDONDNN_REGION_WORDS)
+    return UDONDNN_STATUS_NOT_SUPPORTED;
   for (index = 0; index < UDONDNN_WORDS; ++index)
     packed[index] = 0.0f;
   for (index = 0; index < a_words; ++index)
@@ -1238,8 +1316,8 @@ udondnnStatus_t udondnnExtRmsNormalizationForward(
   scale_words = scale_info->n * scale_info->c * scale_info->h * scale_info->w;
   if (words !=
           output_info->n * output_info->c * output_info->h * output_info->w ||
-      scale_words <= 0 || scale_words > UDONDNN_REGION_WORDS ||
-      words % scale_words != 0)
+      words > UDONDNN_REGION_WORDS || scale_words <= 0 ||
+      scale_words > UDONDNN_REGION_WORDS || words % scale_words != 0)
     return UDONDNN_STATUS_BAD_PARAM;
   for (index = 0; index < UDONDNN_WORDS; ++index)
     packed[index] = 0.0f;
@@ -1354,5 +1432,65 @@ udondnnStatus_t udondnnExtGatherForward(
     return UDONDNN_STATUS_EXECUTION_FAILED;
   for (index = 0; index < output_words; ++index)
     output[index] = result[index];
+  return UDONDNN_STATUS_SUCCESS;
+}
+
+/* Private UdonATen backend. This symbol is intentionally absent from the
+ * UdonDNN public header: ownership and validation remain in UdonATen. */
+udondnnStatus_t udonatenBackendWeightInt4packMm(udondnnHandle_t handle, int n,
+                                                int k, const float *input,
+                                                const uint8_t *packed_weight,
+                                                int group_size,
+                                                const float *scales_and_zeros,
+                                                float *output) {
+  int blocks, row_stride, row, block, byte_index, index;
+  size_t global = UDONATEN_INT4_WORDS, local = 1;
+  cl_int status;
+  if (handle != UDONDNN_HANDLE || !context)
+    return UDONDNN_STATUS_NOT_INITIALIZED;
+  if (n <= 0 || n > UDONATEN_INT4_MAX_N || k <= 0 || k > UDONATEN_INT4_MAX_K ||
+      group_size != 32 || k % group_size || !input || !packed_weight ||
+      !scales_and_zeros || !output)
+    return UDONDNN_STATUS_BAD_PARAM;
+  blocks = k / group_size;
+  row_stride = blocks * 18;
+  for (index = 0; index < UDONATEN_INT4_WORDS; ++index)
+    int4_state[index] = 0.0f;
+  for (row = 0; row < n; ++row)
+    for (block = 0; block < blocks; ++block) {
+      int destination = row * row_stride + block * 18;
+      int source = row * (k / 2) + block * 16;
+      int qparams = (block * n + row) * 2;
+      for (byte_index = 0; byte_index < 16; ++byte_index)
+        int4_state[destination + byte_index] =
+            (float)packed_weight[source + byte_index];
+      int4_state[destination + 16] = scales_and_zeros[qparams];
+      int4_state[destination + 17] = scales_and_zeros[qparams + 1];
+    }
+  for (index = 0; index < k; ++index)
+    int4_state[UDONATEN_INT4_INPUT_OFFSET + index] = input[index];
+
+#define SET_INT4_ARGUMENT(slot, value)                                         \
+  do {                                                                         \
+    status = clSetKernelArg(weight_int4pack_mm_kernel, slot, sizeof(value),    \
+                            &(value));                                         \
+    if (status != CL_SUCCESS)                                                  \
+      return UDONDNN_STATUS_EXECUTION_FAILED;                                  \
+  } while (0)
+  SET_INT4_ARGUMENT(2, n);
+  SET_INT4_ARGUMENT(3, k);
+  SET_INT4_ARGUMENT(4, row_stride);
+#undef SET_INT4_ARGUMENT
+
+  if (clEnqueueWriteBuffer(queue, int4_input_buffer, CL_TRUE, 0,
+                           sizeof(int4_state), int4_state, 0, 0,
+                           0) != CL_SUCCESS ||
+      clEnqueueNDRangeKernel(queue, weight_int4pack_mm_kernel, 1, 0, &global,
+                             &local, 0, 0, 0) != CL_SUCCESS ||
+      clEnqueueReadBuffer(queue, int4_output_buffer, CL_TRUE,
+                          UDONATEN_INT4_RESULT_OFFSET * sizeof(float),
+                          n * sizeof(float), output, 0, 0, 0) != CL_SUCCESS ||
+      clFinish(queue) != CL_SUCCESS)
+    return UDONDNN_STATUS_EXECUTION_FAILED;
   return UDONDNN_STATUS_SUCCESS;
 }

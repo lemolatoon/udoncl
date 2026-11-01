@@ -35,4 +35,6 @@ reuse their Device kernels internally during migration, but ONNX plans and
 generated Host code expose UdonATen contracts. INT4 AOT now uses separate
 packed-weight and `[K/group_size,N,2]` bfloat16 scale/zero inputs and the
 `udonatenWeightInt4packMm` contract. Its Device implementation remains
-explicitly `NOT_SUPPORTED` until paging and the tiled kernel are connected.
+an UdonATen-owned kernel, with one fragment per output feature and numerical
+coverage for non-zero zero points. External-weight paging is still required to
+execute the complete 8B plan.

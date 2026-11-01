@@ -88,6 +88,7 @@ def main():
     op_tensor_device = source / "device/op_tensor.cl"
     rms_norm_device = source / "device/rms_norm.cl"
     gather_device = source / "device/gather.cl"
+    int4_device = root / "libraries/udonaten/device/weight_int4pack_mm.cl"
     convolution_text = convolution_device.read_text(encoding="utf-8")
     activation_text = activation_device.read_text(encoding="utf-8")
     pooling_text = pooling_device.read_text(encoding="utf-8")
@@ -96,6 +97,7 @@ def main():
     op_tensor_text = op_tensor_device.read_text(encoding="utf-8")
     rms_norm_text = rms_norm_device.read_text(encoding="utf-8")
     gather_text = gather_device.read_text(encoding="utf-8")
+    int4_text = int4_device.read_text(encoding="utf-8")
     device_text = (
         convolution_text
         + "\n"
@@ -112,6 +114,8 @@ def main():
         + rms_norm_text
         + "\n"
         + gather_text
+        + "\n"
+        + int4_text
     )
     (output / "udondnn_device_source.h").write_text(
         "#define UDONDNN_DEVICE_SOURCE " + json.dumps(device_text) + "\n",
@@ -208,6 +212,13 @@ def main():
     )
     gather_bundle = emit_device(
         "gather", gather_device, "udondnn_ext_gather_forward", 207, 2048
+    )
+    int4_bundle = emit_device(
+        "weight-int4pack-mm",
+        int4_device,
+        "udonaten_weight_int4pack_mm",
+        208,
+        8192,
     )
     manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
     kernel = manifest["device"]["kernels"][0]
@@ -361,6 +372,24 @@ def main():
     )
     if '_VRC_Arg2 ("Arg2", Int)' not in gather_shaderlab:
         raise RuntimeError("UdonDNN Gather integer uniforms are not Unity-compatible")
+    int4_manifest = json.loads(
+        (int4_bundle / "manifest.json").read_text(encoding="utf-8")
+    )
+    int4_kernel = int4_manifest["device"]["kernels"][0]
+    if (
+        int4_kernel["name"] != "udonaten_weight_int4pack_mm"
+        or int4_kernel["global_size"] != [8192, 1, 1]
+        or [argument["required_bytes"] for argument in int4_kernel["args"][:2]]
+        != [32768, 32768]
+        or len(int4_kernel["args"]) != 5
+    ):
+        raise RuntimeError("UdonATen INT4 manifest does not match its packed ABI")
+    int4_fragment = int4_bundle / "kernels/kernel_208.hlsl"
+    int4_shaderlab = (int4_bundle / "kernels/kernel_208.shader").read_text(
+        encoding="utf-8"
+    )
+    if '_VRC_Arg4 ("Arg4", Int)' not in int4_shaderlab:
+        raise RuntimeError("UdonATen INT4 integer uniforms are not Unity-compatible")
     (output / "Bindings.h").write_text(
         "inline const char *deviceSource() { return "
         + json.dumps(device_text)
@@ -369,7 +398,8 @@ def main():
         + "const std::string &convolution, const std::string &activation, "
         + "const std::string &pooling, const std::string &softmax, "
         + "const std::string &batchnorm, const std::string &opTensor, "
-        + "const std::string &rmsNorm, const std::string &gather) { return {"
+        + "const std::string &rmsNorm, const std::string &gather, "
+        + "const std::string &int4) { return {"
         + '{200, 2048, 7, "udondnn_convolution_forward", convolution}, '
         + '{201, 2048, 6, "udondnn_activation_forward", activation}, '
         + '{202, 2048, 7, "udondnn_pooling_forward", pooling}, '
@@ -377,7 +407,8 @@ def main():
         + '{204, 4096, 5, "udondnn_batchnorm_inference", batchnorm}, '
         + '{205, 2048, 8, "udondnn_op_tensor", opTensor}, '
         + '{206, 2048, 5, "udondnn_ext_rms_normalization_forward", rmsNorm}, '
-        + '{207, 2048, 6, "udondnn_ext_gather_forward", gather}}; }\n',
+        + '{207, 2048, 6, "udondnn_ext_gather_forward", gather}, '
+        + '{208, 8192, 3, "udonaten_weight_int4pack_mm", int4}}; }\n',
         encoding="utf-8",
     )
 
@@ -1366,6 +1397,7 @@ def main():
     op_tensor_object = output / ("op-tensor-device" + object_suffix)
     rms_norm_object = output / ("rms-norm-device" + object_suffix)
     gather_object = output / ("gather-device" + object_suffix)
+    int4_object = output / ("weight-int4pack-mm-device" + object_suffix)
     run([clang, *runtime_flags, "-c", native_ir, "-o", host_object])
     run(
         [
@@ -1494,6 +1526,20 @@ def main():
             gather_object,
         ]
     )
+    run(
+        [
+            clang,
+            *runtime_flags,
+            "-x",
+            "c",
+            "-std=c11",
+            "-ffp-contract=off",
+            "-c",
+            int4_device,
+            "-o",
+            int4_object,
+        ]
+    )
 
     vertex = output / "fullscreen.hlsl"
     vertex.write_text(
@@ -1515,6 +1561,7 @@ def main():
                 (op_tensor_fragment, "frag", "frag"),
                 (rms_norm_fragment, "frag", "frag"),
                 (gather_fragment, "frag", "frag"),
+                (int4_fragment, "frag", "frag"),
                 (vertex, "vert", "vert"),
             ]
         ):
@@ -1544,6 +1591,7 @@ def main():
             op_tensor_fragment,
             rms_norm_fragment,
             gather_fragment,
+            int4_fragment,
             vertex,
         ) = compiled
 
@@ -1568,6 +1616,7 @@ def main():
             "-DUDONDNN_OP_TENSOR_OBJECT=" + op_tensor_object.as_posix(),
             "-DUDONDNN_RMS_NORM_OBJECT=" + rms_norm_object.as_posix(),
             "-DUDONDNN_GATHER_OBJECT=" + gather_object.as_posix(),
+            "-DUDONATEN_INT4_OBJECT=" + int4_object.as_posix(),
             "-DUDONDNN_BINDINGS_DIR=" + output.as_posix(),
         ]
     )
@@ -1585,6 +1634,7 @@ def main():
                 op_tensor_fragment,
                 rms_norm_fragment,
                 gather_fragment,
+                int4_fragment,
                 vertex,
             ]
         ),
