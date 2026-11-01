@@ -570,12 +570,30 @@ def _emit_unrolled_int4_call_uasm(plan: dict, call_index: int) -> str:
     return "\n".join(lines)
 
 
-def emit_int4_call_uasm(plan: dict, call_index: int) -> str:
+def emit_int4_call_uasm(
+    plan: dict,
+    call_index: int,
+    *,
+    activation_storage_width: int | None = None,
+    result_storage_width: int | None = None,
+) -> str:
     """Emit a bounded counter-based Udon Host dispatcher for one INT4 call."""
     contract = _int4_call_contract(plan, call_index)
     grid = contract["grid"]
     output_features = contract["output_features"]
     input_features = contract["input_features"]
+    activation_storage_width = activation_storage_width or linear_texture_layout(
+        input_features
+    )["width"]
+    result_storage_width = result_storage_width or linear_texture_layout(output_features)[
+        "width"
+    ]
+    for label, width in (
+        ("activation", activation_storage_width),
+        ("result", result_storage_width),
+    ):
+        if not isinstance(width, int) or not 1 <= width <= 8192:
+            raise ValueError(f"INT4 {label} storage width must be between 1 and 8,192")
     page_count = grid["m_tiles"] * grid["k_tiles"]
     atlas_count = math.ceil(page_count / INT4_ATLAS_MAX_PAGES)
     atlas_names = [f"pageAtlas{index}" for index in range(atlas_count)]
@@ -638,8 +656,8 @@ def emit_int4_call_uasm(plan: dict, call_index: int) -> str:
             f"    __lastK: %SystemInt32, {last_k}",
             f"    __atlasMaxPages: %SystemInt32, {INT4_ATLAS_MAX_PAGES}",
             f"    __outputFeatures: %SystemInt32, {output_features}",
-            f"    __activationWidth: %SystemInt32, {linear_texture_layout(input_features)['width']}",
-            f"    __outputWidth: %SystemInt32, {linear_texture_layout(output_features)['width']}",
+            f"    __activationWidth: %SystemInt32, {activation_storage_width}",
+            f"    __outputWidth: %SystemInt32, {result_storage_width}",
         ]
     )
     lines.extend(
@@ -841,6 +859,226 @@ def emit_int4_call_uasm(plan: dict, call_index: int) -> str:
     return "\n".join(lines)
 
 
+def _model_arena_binding(plan: dict, name: str) -> dict:
+    arena = plan.get("texture_arena") or {}
+    bindings = arena.get("bindings") or {}
+    binding = bindings.get(name)
+    if (
+        not isinstance(binding, dict)
+        or not isinstance(binding.get("slot"), int)
+        or not 0 <= binding["slot"] < arena.get("slot_count", 0)
+        or binding.get("offset_words") != 0
+    ):
+        raise ValueError(f"AOT value {name!r} has no whole-slot texture arena binding")
+    return binding
+
+
+def emit_int4_model_uasm(plan: dict) -> str:
+    """Emit one arena-aware Host for a mixed INT4/public-library AOT schedule."""
+    if plan.get("runtime") != "udon-onnx" or not isinstance(plan.get("aot"), dict):
+        raise ValueError("model source is not a Udon ONNX AOT execution plan")
+    calls = plan["aot"].get("calls") or []
+    passes = plan.get("passes") or []
+    arena = plan.get("texture_arena") or {}
+    summary = _texture_arena_summary(plan)
+    if [call.get("index") for call in calls] != list(range(len(calls))):
+        raise ValueError("AOT model calls must have contiguous topological indexes")
+    calls_by_index = {call["index"]: call for call in calls}
+    passes_by_call = {index: [] for index in range(len(calls))}
+    for device_pass in passes:
+        call_index = device_pass.get("call_index")
+        if call_index not in calls_by_index:
+            raise ValueError("Device pass references an unknown AOT call")
+        passes_by_call[call_index].append(device_pass)
+    int4_calls = [
+        call
+        for call in calls
+        if call.get("kind") == "tiled_library"
+        and call.get("function") == "udonatenWeightInt4packMm"
+    ]
+    direct_passes = [
+        device_pass
+        for device_pass in passes
+        if calls_by_index[device_pass["call_index"]] not in int4_calls
+    ]
+    for call in calls:
+        if call.get("kind") == "view":
+            if passes_by_call[call["index"]]:
+                raise ValueError("zero-copy view call unexpectedly owns a Device pass")
+        elif call not in int4_calls and not passes_by_call[call["index"]]:
+            raise ValueError("public-library AOT call has no Device pass")
+
+    slot_names = [f"arenaSlot{index}" for index in range(summary["slot_count"])]
+    max_inputs = 0
+    dynamic_inputs = {}
+    for device_pass in direct_passes:
+        call = calls_by_index[device_pass["call_index"]]
+        names = device_pass.get("inputs")
+        if not isinstance(names, list):
+            names = call.get("inputs") or []
+        names = [name for name in names if name in (arena.get("bindings") or {})]
+        if not names:
+            raise ValueError("Device pass has no texture-arena activation input")
+        dynamic_inputs[device_pass["id"]] = names
+        max_inputs = max(max_inputs, len(names))
+        _model_arena_binding(plan, device_pass.get("output"))
+
+    lines = [".data_start"]
+    lines.extend(f"    .export {name}" for name in slot_names)
+    lines.extend(
+        [
+            "    .export int4Runners",
+            "    .export passMaterials",
+            "    .export resultState",
+            "",
+        ]
+    )
+    lines.extend(f"    {name}: %UnityEngineRenderTexture, null" for name in slot_names)
+    lines.extend(
+        [
+            "    int4Runners: %VRCUdonCommonInterfacesIUdonEventReceiverArray, null",
+            "    passMaterials: %UnityEngineMaterialArray, null",
+            "    resultState: %UnityEngineTexture, null",
+            "    __runner: %VRCUdonCommonInterfacesIUdonEventReceiver, null",
+            "    __material: %UnityEngineMaterial, null",
+            "    __runnerIndex: %SystemInt32, null",
+            "    __passIndex: %SystemInt32, null",
+            "    __zero: %SystemInt32, 0",
+            "    __one: %SystemInt32, 1",
+            '    __runName: %SystemString, "_run"',
+            '    __activationStateName: %SystemString, "activationState"',
+            '    __resultAName: %SystemString, "resultA"',
+            '    __resultBName: %SystemString, "resultB"',
+        ]
+    )
+    for index in range(max_inputs):
+        suffix = "" if index == 0 else str(index)
+        lines.append(f'    __inputName{index}: %SystemString, "_VRC_Input{suffix}"')
+    lines.extend([".data_end", "", ".code_start", "    .export _start", "    _start:"])
+    lines.extend(
+        [
+            "        JUMP, 0xFFFFFFFC",
+            "",
+            "    .export _run",
+            "    _run:",
+            "        PUSH, __runnerIndex",
+            "        PUSH, __zero",
+            "        COPY",
+            "        PUSH, __passIndex",
+            "        PUSH, __zero",
+            "        COPY",
+        ]
+    )
+
+    def set_texture(material: str, property_name: str, texture: str):
+        lines.extend(
+            [
+                f"        PUSH, {material}",
+                f"        PUSH, {property_name}",
+                f"        PUSH, {texture}",
+                '        EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"',
+            ]
+        )
+
+    def set_program_variable(runner: str, variable: str, value: str):
+        lines.extend(
+            [
+                f"        PUSH, {runner}",
+                f"        PUSH, {variable}",
+                f"        PUSH, {value}",
+                '        EXTERN, "VRCUdonCommonInterfacesIUdonEventReceiver.__SetProgramVariable__SystemString_SystemObject__SystemVoid"',
+            ]
+        )
+
+    def blit(source: str, target: str, material: str):
+        lines.extend(
+            [
+                f"        PUSH, {source}",
+                f"        PUSH, {target}",
+                f"        PUSH, {material}",
+                '        EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"',
+            ]
+        )
+
+    def increment(variable: str):
+        lines.extend(
+            [
+                f"        PUSH, {variable}",
+                "        PUSH, __one",
+                f"        PUSH, {variable}",
+                '        EXTERN, "SystemInt32.__op_Addition__SystemInt32_SystemInt32__SystemInt32"',
+            ]
+        )
+
+    def get_runner():
+        lines.extend(
+            [
+                "        PUSH, int4Runners",
+                "        PUSH, __runnerIndex",
+                "        PUSH, __runner",
+                '        EXTERN, "VRCUdonCommonInterfacesIUdonEventReceiverArray.__Get__SystemInt32__VRCUdonCommonInterfacesIUdonEventReceiver"',
+            ]
+        )
+        increment("__runnerIndex")
+
+    def get_material():
+        lines.extend(
+            [
+                "        PUSH, passMaterials",
+                "        PUSH, __passIndex",
+                "        PUSH, __material",
+                '        EXTERN, "UnityEngineMaterialArray.__Get__SystemInt32__UnityEngineMaterial"',
+            ]
+        )
+        increment("__passIndex")
+
+    for call in calls:
+        call_index = call["index"]
+        if call.get("kind") == "view":
+            continue
+        if call in int4_calls:
+            get_runner()
+            runner = "__runner"
+            activation = _model_arena_binding(plan, call["inputs"][0])
+            output = _model_arena_binding(plan, call["output"])
+            result_name = "__resultAName" if call["tile_grid"]["m_tiles"] % 2 else "__resultBName"
+            set_program_variable(runner, "__activationStateName", slot_names[activation["slot"]])
+            set_program_variable(runner, result_name, slot_names[output["slot"]])
+            lines.extend(
+                [
+                    f"        PUSH, {runner}",
+                    "        PUSH, __runName",
+                    '        EXTERN, "VRCUdonCommonInterfacesIUdonEventReceiver.__SendCustomEvent__SystemString__SystemVoid"',
+                ]
+            )
+            continue
+        for device_pass in passes_by_call[call_index]:
+            get_material()
+            material = "__material"
+            inputs = dynamic_inputs[device_pass["id"]]
+            for input_index, name in enumerate(inputs):
+                binding = _model_arena_binding(plan, name)
+                set_texture(material, f"__inputName{input_index}", slot_names[binding["slot"]])
+            output = _model_arena_binding(plan, device_pass["output"])
+            source = _model_arena_binding(plan, inputs[0])
+            blit(slot_names[source["slot"]], slot_names[output["slot"]], material)
+    outputs = plan.get("outputs") or {}
+    if len(outputs) != 1:
+        raise ValueError("mixed INT4 model Host currently requires exactly one graph output")
+    result = _model_arena_binding(plan, next(iter(outputs)))
+    lines.extend(
+        [
+            "        PUSH, resultState",
+            f"        PUSH, {slot_names[result['slot']]}",
+            "        COPY",
+            "        JUMP, 0xFFFFFFFC",
+            ".code_end",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def materialize_int4_call(
     plan: dict,
     call_index: int,
@@ -1009,6 +1247,30 @@ def materialize_int4_model(
                 staging / relative,
             )
             activation = call["inputs"][0]
+            activation_binding = _model_arena_binding(plan, activation)
+            output_binding = _model_arena_binding(plan, call["output"])
+            slots = plan["texture_arena"]["slots"]
+            activation_width = slots[activation_binding["slot"]]["width"]
+            result_width = slots[output_binding["slot"]]["width"]
+            child["model_arena_binding"] = {
+                "activation_slot": activation_binding["slot"],
+                "activation_storage_width": activation_width,
+                "result_slot": output_binding["slot"],
+                "result_storage_width": result_width,
+            }
+            child_directory = staging / relative
+            (child_directory / "host.uasm").write_text(
+                emit_int4_call_uasm(
+                    plan,
+                    call_index,
+                    activation_storage_width=activation_width,
+                    result_storage_width=result_width,
+                ),
+                encoding="utf-8",
+            )
+            (child_directory / "manifest.json").write_text(
+                json.dumps(child, indent=2) + "\n", encoding="utf-8"
+            )
             producer = producers.get(activation)
             if producer is not None and (
                 not isinstance(producer, int) or producer >= call_index
@@ -1021,6 +1283,7 @@ def materialize_int4_model(
                     "input": activation,
                     "input_producer_call": producer,
                     "output": call["output"],
+                    "arena_binding": dict(child["model_arena_binding"]),
                     "tile_grid": dict(child["tile_grid"]),
                     "atlases": len(child["resources"]),
                     "pages": len(child["tiles"]),
@@ -1031,6 +1294,9 @@ def materialize_int4_model(
             )
         serialized_plan = json.dumps(plan, indent=2) + "\n"
         (staging / "execution-plan.json").write_text(serialized_plan, encoding="utf-8")
+        (staging / "host.uasm").write_text(
+            emit_int4_model_uasm(plan), encoding="utf-8"
+        )
         manifest = {
             "schema_version": 1,
             "artifact_stage": "udon-onnx-int4-model",
@@ -1038,6 +1304,7 @@ def materialize_int4_model(
             "graph": plan.get("graph"),
             "execution_provider": plan.get("execution_provider"),
             "execution_plan": "execution-plan.json",
+            "assembly": "host.uasm",
             "execution_plan_sha256": hashlib.sha256(
                 serialized_plan.encode("utf-8")
             ).hexdigest(),
@@ -1047,6 +1314,7 @@ def materialize_int4_model(
             "int4_page_count": sum(item["pages"] for item in artifacts),
             "int4_atlas_bytes": sum(item["atlas_bytes"] for item in artifacts),
             "texture_arena": _texture_arena_summary(plan),
+            "host_schedule": _model_host_summary(plan),
             "complete_graph": len(int4_calls) == len(calls),
             "call_artifacts": artifacts,
             "unmaterialized_calls": [
@@ -1112,6 +1380,29 @@ def _texture_arena_summary(plan: dict) -> dict:
     }
 
 
+def _model_host_summary(plan: dict) -> dict:
+    calls = (plan.get("aot") or {}).get("calls") or []
+    int4_calls = [
+        call
+        for call in calls
+        if call.get("kind") == "tiled_library"
+        and call.get("function") == "udonatenWeightInt4packMm"
+    ]
+    int4_indexes = {call.get("index") for call in int4_calls}
+    direct_passes = [
+        device_pass
+        for device_pass in plan.get("passes") or []
+        if device_pass.get("call_index") not in int4_indexes
+    ]
+    return {
+        "assembly": "host.uasm",
+        "arena_slots": (plan.get("texture_arena") or {}).get("slot_count"),
+        "int4_runners": len(int4_calls),
+        "direct_device_passes": len(direct_passes),
+        "zero_copy_views": sum(call.get("kind") == "view" for call in calls),
+    }
+
+
 def plan_int4_model_bundle(plan: dict) -> dict:
     """Plan call artifacts and compact-atlas capacity without reading weights."""
     if plan.get("runtime") != "udon-onnx" or not isinstance(plan.get("aot"), dict):
@@ -1166,6 +1457,7 @@ def plan_int4_model_bundle(plan: dict) -> dict:
         "int4_page_count": sum(item["pages"] for item in artifacts),
         "int4_atlas_bytes": sum(item["atlas_bytes"] for item in artifacts),
         "texture_arena": _texture_arena_summary(plan),
+        "host_schedule": _model_host_summary(plan),
         "complete_graph": len(artifacts) == len(calls),
         "call_artifacts": artifacts,
         "unmaterialized_calls": [

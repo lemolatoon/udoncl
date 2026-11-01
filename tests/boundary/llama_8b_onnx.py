@@ -245,8 +245,8 @@ from udon_onnx import (  # noqa: E402
     parse_model,
     validate_external_data,
 )
+from udon_pages import emit_int4_call_uasm, emit_int4_model_uasm  # noqa: E402
 from udon_pages import plan_int4_model_bundle  # noqa: E402
-from udon_pages import emit_int4_call_uasm  # noqa: E402
 
 int4_bundle_plan = plan_int4_model_bundle(operator_plan)
 assert int4_bundle_plan["aot_call_count"] == len(operator_plan["aot"]["calls"])
@@ -275,6 +275,13 @@ assert int4_bundle_plan["texture_arena"] == {
         {"index": 4, "capacity_words": 14336, "width": 8192, "height": 2},
     ],
 }
+assert int4_bundle_plan["host_schedule"] == {
+    "assembly": "host.uasm",
+    "arena_slots": 5,
+    "int4_runners": 225,
+    "direct_device_passes": 3362,
+    "zero_copy_views": 64,
+}
 assert int4_bundle_plan["call_artifacts"][-1]["pages"] == 2004 * 32
 assert int4_bundle_plan["call_artifacts"][-1]["atlases"] == 8
 logits_uasm = emit_int4_call_uasm(operator_plan, operator_q4_calls[-1]["index"])
@@ -283,6 +290,26 @@ assert logits_uasm.count(".export pageAtlas") == 8
 assert logits_uasm.count("VRCSDKBaseVRCGraphics.__Blit__") == 4
 assert "__mTiles: %SystemInt32, 2004" in logits_uasm
 assert "__kTiles: %SystemInt32, 32" in logits_uasm
+key_uasm = emit_int4_call_uasm(
+    operator_plan,
+    operator_q4_calls[1]["index"],
+    activation_storage_width=8192,
+    result_storage_width=8192,
+)
+assert "__activationWidth: %SystemInt32, 8192" in key_uasm
+assert "__outputWidth: %SystemInt32, 8192" in key_uasm
+model_uasm = emit_int4_model_uasm(operator_plan)
+assert len(model_uasm) < 3200000
+assert model_uasm.count(".export arenaSlot") == 5
+assert ".export int4Runners" in model_uasm
+assert ".export passMaterials" in model_uasm
+assert model_uasm.count("IUdonEventReceiverArray.__Get") == 225
+assert model_uasm.count("MaterialArray.__Get") == 3362
+assert model_uasm.count("__SetProgramVariable__") == 450
+assert model_uasm.count("__SendCustomEvent__") == 225
+assert model_uasm.count("VRCSDKBaseVRCGraphics.__Blit__") == 3362
+assert "PUSH, resultState\n        PUSH, arenaSlot0\n        COPY" in model_uasm
+(output / "model-host.uasm").write_text(model_uasm, encoding="utf-8")
 
 try:
     emit_c_host(operator_plan)

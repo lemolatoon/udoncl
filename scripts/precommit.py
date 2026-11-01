@@ -349,6 +349,9 @@ def run_unity_mcp_gate(root, unity, project, build, output):
             "UDONCL_ONNX_TINY_LLAMA_OPERATOR_AOT_UASM": str(
                 (output / "onnx-aot/tiny-llama-standard-host.uasm").resolve()
             ),
+            "UDONCL_ONNX_LLAMA_8B_MODEL_UASM": str(
+                (output / "llama-8b-onnx/model-host.uasm").resolve()
+            ),
             "UNITY_MCP_STATUS_DIR": str(status_dir),
             "UNITY_MCP_TRANSPORT": "stdio",
             "GIT_CONFIG_COUNT": "1",

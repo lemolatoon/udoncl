@@ -15,6 +15,7 @@ from .udon_onnx import (
 from .udon_pages import (
     decode_int4_compact_page,
     emit_int4_call_uasm,
+    emit_int4_model_uasm,
     encode_int4_page,
     int4_atlas_location,
     linear_texture_layout,
@@ -34,6 +35,7 @@ __all__ = [
     "decode_int4_compact_page",
     "emit_c_host",
     "emit_int4_call_uasm",
+    "emit_int4_model_uasm",
     "emit_uasm_host",
     "encode_int4_page",
     "int4_atlas_location",

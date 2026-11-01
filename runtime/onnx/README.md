@@ -177,11 +177,19 @@ udon-onnx-page execution-plan.json . --all-calls \
 ```
 
 The model manifest records each call artifact, activation producer linkage,
-atlas/page counts, the original execution-plan hash, the reusable Device
-texture arena, and every non-INT4 call that still needs whole-graph Host
-materialization. This keeps mixed
-UdonATen/UdonBLAS/UdonDNN ordering explicit instead of presenting a partial
-INT4 package as a complete runtime.
+atlas/page counts, the original execution-plan hash, and the reusable Device
+texture arena. It also emits one `host.uasm` that walks the complete mixed
+UdonATen/UdonBLAS/UdonDNN schedule. The Host binds every direct Device pass to
+the liveness-planned arena slots, treats views as aliases, and synchronously
+invokes each counter-based INT4 child runner with its activation and result
+slots. Child dispatchers are specialized to the physical arena widths rather
+than incorrectly assuming that every reused slot has the logical tensor width.
+Pass materials and child runners are exported as two ordered arrays, so the
+Host uses a constant-size Udon heap and remains below the VM's 512-variable
+limit even though its schedule contains thousands of passes.
+The manifest still lists non-INT4 calls as unmaterialized resources until the
+Unity importer creates their pass materials; this field no longer means that
+the topological Host schedule is absent.
 
 `plan_int4_model_bundle` performs the same capacity and dependency planning
 without reading external weights. The checked Llama 3.1 8B operator plan has
@@ -207,6 +215,7 @@ full output accumulator fills the selected N slice at word 7,168.
 
 This is not full ONNX operator coverage yet. The MNIST provider still contains
 model-level fusion, while the Llama provider deliberately isolates its custom
-fusion behind the registry. The INT4 model bundle now preserves the full AOT
-schedule, but one combined Udon Host and Unity binding for its mixed library
-calls remain the next runtime layer.
+fusion behind the registry. The INT4 model bundle now contains the combined
+Udon Host; Unity-side materialization and binding of its 225 child runners,
+3,362 direct pass materials, and five arena textures remains the next runtime
+layer.

@@ -473,6 +473,95 @@ int4_model_plan["aot"]["calls"] = [
     int4_model_call1,
     int4_model_merge,
 ]
+int4_model_plan["passes"] = [
+    {
+        **int4_model_plan["passes"][0],
+        "call_index": 0,
+        "output": "projection_a",
+    },
+    {
+        **int4_model_plan["passes"][0],
+        "id": 201,
+        "call_index": 1,
+        "output": "projection_b",
+    },
+    {
+        "id": 202,
+        "kernel": "onnx_2_add",
+        "providers": ["udonatenAdd"],
+        "fusion": None,
+        "call_index": 2,
+        "inputs": ["projection_a", "projection_b"],
+        "output": "merged",
+        "shape": [1, int4_n],
+        "fragments": int4_n,
+    },
+]
+int4_model_plan["outputs"] = {"merged": [1, int4_n]}
+int4_model_plan["texture_arena"] = {
+    "abi": "linear-rgba32-words",
+    "max_texture_width": 8192,
+    "slot_count": 3,
+    "total_words": int4_k + int4_n * 2,
+    "total_bytes": (int4_k + int4_n * 2) * 4,
+    "slots": [
+        {
+            "index": 0,
+            "capacity_words": int4_k,
+            "values": ["x", "merged"],
+            "width": int4_k,
+            "height": 1,
+        },
+        {
+            "index": 1,
+            "capacity_words": int4_n,
+            "values": ["projection_a"],
+            "width": int4_n,
+            "height": 1,
+        },
+        {
+            "index": 2,
+            "capacity_words": int4_n,
+            "values": ["projection_b"],
+            "width": int4_n,
+            "height": 1,
+        },
+    ],
+    "bindings": {
+        "x": {
+            "slot": 0,
+            "offset_words": 0,
+            "words": int4_k,
+            "data_type": "float32",
+            "first_call": -1,
+            "last_call": 1,
+        },
+        "projection_a": {
+            "slot": 1,
+            "offset_words": 0,
+            "words": int4_n,
+            "data_type": "float32",
+            "first_call": 0,
+            "last_call": 2,
+        },
+        "projection_b": {
+            "slot": 2,
+            "offset_words": 0,
+            "words": int4_n,
+            "data_type": "float32",
+            "first_call": 1,
+            "last_call": 2,
+        },
+        "merged": {
+            "slot": 0,
+            "offset_words": 0,
+            "words": int4_n,
+            "data_type": "float32",
+            "first_call": 2,
+            "last_call": 3,
+        },
+    },
+}
 int4_model_bundle = output / "int4-model-bundle"
 int4_model_manifest = materialize_int4_model(
     int4_model_plan, output, int4_model_bundle
@@ -484,6 +573,14 @@ assert int4_model_manifest["int4_atlas_count"] == 2
 assert int4_model_manifest["int4_page_count"] == 8
 assert int4_model_manifest["int4_atlas_bytes"] == 8 * 5120
 assert int4_model_manifest["complete_graph"] is False
+assert int4_model_manifest["assembly"] == "host.uasm"
+assert int4_model_manifest["host_schedule"] == {
+    "assembly": "host.uasm",
+    "arena_slots": 3,
+    "int4_runners": 2,
+    "direct_device_passes": 1,
+    "zero_copy_views": 0,
+}
 assert [item["call_index"] for item in int4_model_manifest["call_artifacts"]] == [0, 1]
 assert all(item["atlases"] == 1 for item in int4_model_manifest["call_artifacts"])
 assert int4_model_manifest["unmaterialized_calls"] == [
@@ -496,6 +593,11 @@ assert int4_model_manifest["unmaterialized_calls"] == [
 ]
 assert (int4_model_bundle / "calls/call-0000/host.uasm").is_file()
 assert (int4_model_bundle / "calls/call-0001/host.uasm").is_file()
+assert (int4_model_bundle / "host.uasm").is_file()
+assert all(
+    item["arena_binding"]["activation_slot"] == 0
+    for item in int4_model_manifest["call_artifacts"]
+)
 assert len(int4_model_manifest["execution_plan_sha256"]) == 64
 int4_model_plan_path = output / "int4-model-plan.json"
 int4_model_plan_path.write_text(json.dumps(int4_model_plan), encoding="utf-8")
