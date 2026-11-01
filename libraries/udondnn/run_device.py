@@ -1357,6 +1357,7 @@ def main():
     run([opt, "--vrc-lower-native-host-calls", "--verify-each", udonhl, "-o", lowered])
     run([mlir_translate, "--mlir-to-llvmir", lowered, "-o", native_ir])
     host_object = output / ("host" + object_suffix)
+    udonaten_object = output / ("udonaten" + object_suffix)
     device_object = output / ("convolution-device" + object_suffix)
     activation_object = output / ("activation-device" + object_suffix)
     pooling_object = output / ("pooling-device" + object_suffix)
@@ -1366,6 +1367,21 @@ def main():
     rms_norm_object = output / ("rms-norm-device" + object_suffix)
     gather_object = output / ("gather-device" + object_suffix)
     run([clang, *runtime_flags, "-c", native_ir, "-o", host_object])
+    run(
+        [
+            clang,
+            *runtime_flags,
+            "-std=c11",
+            "-I",
+            source / "include",
+            "-I",
+            root / "libraries/udonaten/include",
+            "-c",
+            root / "libraries/udonaten/src/udonaten.c",
+            "-o",
+            udonaten_object,
+        ]
+    )
     run(
         [
             clang,
@@ -1543,6 +1559,7 @@ def main():
             "Ninja",
             "-DCMAKE_BUILD_TYPE=Release",
             "-DUDONDNN_HOST_OBJECT=" + host_object.as_posix(),
+            "-DUDONATEN_OBJECT=" + udonaten_object.as_posix(),
             "-DUDONDNN_DEVICE_OBJECT=" + device_object.as_posix(),
             "-DUDONDNN_ACTIVATION_OBJECT=" + activation_object.as_posix(),
             "-DUDONDNN_POOLING_OBJECT=" + pooling_object.as_posix(),

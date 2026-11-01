@@ -118,7 +118,8 @@ residual connections. Its IUdonVM lifecycle fixture covers six broadcast and
 NaN-policy combinations across 72 outputs.
 
 The `unity-udondnn-rms-norm` stage creates `UdonDnnRmsNorm.prefab` for the
-explicit `udondnnExtRmsNormalizationForward` extension used by ONNX
+ATen-shaped `udonatenRmsNorm` operator used by ONNX; its current backend
+reuses the provisional UdonDNN RMS kernel
 RMSNormalization. Input, scale, and previous output occupy separate packed
 regions; epsilon and alpha/beta are public host parameters. Its IUdonVM fixture
 executes four parameter combinations across two independently normalized rows.

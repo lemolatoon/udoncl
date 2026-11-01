@@ -1,4 +1,5 @@
 #include "VRC/Testing/NativeOpenCL/Runtime.h"
+#include "udonaten.h"
 #include "udondnn.h"
 #include <algorithm>
 #include <array>
@@ -888,7 +889,7 @@ int main(int argc, char **argv) {
                               rmsOutputDescriptor = 0;
     std::vector<float> rmsInput(16), rmsScale(8), rmsActual(16),
         rmsExpected(16);
-    const float rmsAlpha = 0.75f, rmsBeta = -0.25f, rmsEpsilon = 1.0e-5f;
+    const float rmsAlpha = 1.0f, rmsBeta = 0.0f, rmsEpsilon = 1.0e-5f;
     float rmsMaximumError = 0.0f;
     for (int index = 0; index < 16; ++index) {
       rmsInput[index] = value(index, 149) * 3.0f;
@@ -929,11 +930,12 @@ int main(int argc, char **argv) {
                                          UDONDNN_TENSOR_NCHW,
                                          UDONDNN_DATA_FLOAT, 2, 1, 1, 8),
             UDONDNN_STATUS_SUCCESS, "set RMS output descriptor");
-    require(udondnnExtRmsNormalizationForward(
-                handle, &rmsAlpha, rmsInputDescriptor, rmsInput.data(),
-                rmsScaleDescriptor, rmsScale.data(), rmsEpsilon, &rmsBeta,
-                rmsOutputDescriptor, rmsActual.data()),
-            UDONDNN_STATUS_SUCCESS, "udondnnExtRmsNormalizationForward");
+    const int64_t rmsNormalizedShape[1] = {8};
+    require(udonatenRmsNorm(handle, rmsInputDescriptor, rmsInput.data(),
+                            rmsNormalizedShape, 1, rmsScaleDescriptor,
+                            rmsScale.data(), &rmsEpsilon, rmsOutputDescriptor,
+                            rmsActual.data()),
+            UDONDNN_STATUS_SUCCESS, "udonatenRmsNorm");
     for (int index = 0; index < 16; ++index)
       rmsMaximumError = std::max(
           rmsMaximumError, std::abs(rmsActual[index] - rmsExpected[index]));
@@ -970,11 +972,16 @@ int main(int argc, char **argv) {
                                          UDONDNN_TENSOR_NCHW,
                                          UDONDNN_DATA_FLOAT, 3, 8, 1, 1),
             UDONDNN_STATUS_SUCCESS, "set Gather output descriptor");
+    require(udonatenEmbedding(handle, gatherDataDescriptor, gatherData.data(),
+                              gatherIndices.data(), int(gatherIndices.size()),
+                              -1, 0, 0, gatherOutputDescriptor,
+                              gatherActual.data()),
+            UDONDNN_STATUS_SUCCESS, "udonatenEmbedding");
     require(
-        udondnnExtGatherForward(handle, gatherDataDescriptor, gatherData.data(),
-                                gatherIndices.data(), int(gatherIndices.size()),
-                                0, gatherOutputDescriptor, gatherActual.data()),
-        UDONDNN_STATUS_SUCCESS, "udondnnExtGatherForward");
+        udonatenEmbedding(handle, gatherDataDescriptor, gatherData.data(),
+                          gatherIndices.data(), int(gatherIndices.size()), 0, 0,
+                          0, gatherOutputDescriptor, gatherActual.data()),
+        UDONDNN_STATUS_NOT_SUPPORTED, "reject unsupported embedding padding");
     float gatherMaximumError = 0.0f;
     for (int index = 0; index < int(gatherActual.size()); ++index)
       gatherMaximumError =
@@ -982,11 +989,10 @@ int main(int argc, char **argv) {
                    std::abs(gatherActual[index] - gatherExpected[index]));
     if (gatherMaximumError > 0.0f)
       throw std::runtime_error("UdonDNN Gather results diverged");
-    require(
-        udondnnExtGatherForward(handle, gatherDataDescriptor, gatherData.data(),
-                                std::array<int32_t, 1>{{6}}.data(), 1, 0,
-                                gatherOutputDescriptor, gatherActual.data()),
-        UDONDNN_STATUS_BAD_PARAM, "reject out-of-range Gather index");
+    require(udonatenEmbedding(handle, gatherDataDescriptor, gatherData.data(),
+                              std::array<int32_t, 1>{{6}}.data(), 1, -1, 0, 0,
+                              gatherOutputDescriptor, gatherActual.data()),
+            UDONDNN_STATUS_BAD_PARAM, "reject out-of-range embedding index");
     require(udondnnDestroyTensorDescriptor(gatherDataDescriptor),
             UDONDNN_STATUS_SUCCESS, "destroy Gather data descriptor");
     require(udondnnDestroyTensorDescriptor(gatherOutputDescriptor),

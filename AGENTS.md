@@ -52,3 +52,17 @@ These rules apply to the entire repository.
 - Every public API change must include conformance tests against the pinned
   NVIDIA declarations, plus behavioral tests for supported paths and explicit
   `NOT_SUPPORTED` tests for unsupported paths.
+
+## Operator Ownership
+
+- Before adding an API for an ONNX/PyTorch operator, identify its actual
+  PyTorch CUDA owner in official PyTorch/TorchAO sources. Match that component's
+  operator name, argument order, and semantics; do not place an operation in
+  UdonBLAS/UdonDNN merely because its implementation runs on the GPU.
+- cuBLAS/cuDNN counterparts belong in UdonBLAS/UdonDNN. ATen-native operators
+  belong in UdonATen. TorchAO/ATen quantized operators follow their packed
+  weight, group-size, scale, and zero-point contracts. Record the source and
+  ownership decision in `docs/architecture/operator-ownership.md`.
+- Do not introduce `udondnnExt*` or `udonblasExt*` as a shortcut around this
+  ownership check. Existing provisional extensions are backend details to
+  migrate, not precedents for new public APIs.

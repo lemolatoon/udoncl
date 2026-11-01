@@ -53,15 +53,13 @@ rather than generating an executable that cannot supply the compact weights.
 Identity, Reshape, Squeeze, and Unsqueeze are compiled as typed zero-copy views.
 Their embedded int32/int64 shape inputs are evaluated at AOT time and retained
 with the correct C ABI type rather than being treated as float buffers.
-ONNX opset-23 RMSNormalization lowers to the explicitly Udon-specific
-`udondnnExtRmsNormalizationForward` extension. The extension keeps the public
-cuDNN-compatible namespace separate from functionality absent from cuDNN
-Legacy, and currently supports normalized regions up to 512 float elements.
-Standard ONNX Gather with float32 data and int32 indices lowers to the same
-explicit extension namespace as `udondnnExtGatherForward`. This supplies the
-token-embedding operation needed to replace the fused Llama graph with a
-standard-operator graph; the current Device profile accepts tensors, indices,
-and results of at most 512 elements each, pending external-weight paging.
+ONNX opset-23 RMSNormalization lowers to the ATen-shaped `udonatenRmsNorm`
+operator, not to cuDNN. Rank-2, axis-zero ONNX Gather used for token lookup
+lowers to `udonatenEmbedding`, following ATen's
+`embedding(weight, indices, padding_idx, scale_grad_by_freq, sparse)` argument
+order. Their current Device backend reuses the earlier UdonDNN prototype
+kernels internally and accepts regions of at most 512 float elements; those
+kernels are not part of the public cuDNN-compatibility surface.
 
 Consumers can construct `ExecutionProviderRegistry`, register one graph
 predicate and compiler callback per provider, and pass it to `compile_model`.

@@ -380,10 +380,10 @@ rms_model = parse_model(
     )
 )
 rms_plan = compile_operators(rms_model)
-assert rms_plan["aot"]["calls"][0]["function"] == "udondnnExtRmsNormalizationForward"
-assert rms_plan["passes"][0]["providers"] == ["udondnnExtRmsNormalizationForward"]
+assert rms_plan["aot"]["calls"][0]["function"] == "udonatenRmsNorm"
+assert rms_plan["passes"][0]["providers"] == ["udonatenRmsNorm"]
 rms_host_c = emit_c_host(rms_plan)
-assert "udondnnExtRmsNormalizationForward(" in rms_host_c
+assert "udonatenRmsNorm(" in rms_host_c
 (output / "rms-normalization-host.c").write_text(rms_host_c, encoding="utf-8")
 
 gather_model = parse_model(
@@ -401,10 +401,10 @@ gather_model = parse_model(
 gather_plan = compile_operators(gather_model)
 assert gather_plan["execution_provider"] == "UdonOperatorExecutionProvider"
 assert gather_plan["nodes"][0]["shape"] == [1, 4, 8]
-assert gather_plan["nodes"][0]["provider"] == "udondnnExtGatherForward"
-assert gather_plan["aot"]["calls"][0]["function"] == "udondnnExtGatherForward"
+assert gather_plan["nodes"][0]["provider"] == "udonatenEmbedding"
+assert gather_plan["aot"]["calls"][0]["function"] == "udonatenEmbedding"
 gather_host_c = emit_c_host(gather_plan)
-assert "udondnnExtGatherForward(" in gather_host_c
+assert "udonatenEmbedding(" in gather_host_c
 assert "int32_t *" in gather_host_c
 (output / "gather-host.c").write_text(gather_host_c, encoding="utf-8")
 
@@ -472,6 +472,8 @@ syntax_command = [
     root / "libraries/udonblas/include",
     "-I",
     root / "libraries/udondnn/include",
+    "-I",
+    root / "libraries/udonaten/include",
     *generated_sources,
 ]
 syntax = subprocess.run(syntax_command, text=True, capture_output=True, timeout=60)
