@@ -136,6 +136,7 @@ from udon_onnx import (  # noqa: E402
     validate_external_data,
 )
 from udon_pages import plan_int4_model_bundle  # noqa: E402
+from udon_pages import emit_int4_call_uasm  # noqa: E402
 
 int4_bundle_plan = plan_int4_model_bundle(operator_plan)
 assert int4_bundle_plan["aot_call_count"] == len(operator_plan["aot"]["calls"])
@@ -153,6 +154,12 @@ assert int4_bundle_plan["int4_atlas_count"] == 232
 assert int4_bundle_plan["int4_atlas_bytes"] == 4690411520
 assert int4_bundle_plan["call_artifacts"][-1]["pages"] == 2004 * 32
 assert int4_bundle_plan["call_artifacts"][-1]["atlases"] == 8
+logits_uasm = emit_int4_call_uasm(operator_plan, operator_q4_calls[-1]["index"])
+assert len(logits_uasm) < 50000
+assert logits_uasm.count(".export pageAtlas") == 8
+assert logits_uasm.count("VRCSDKBaseVRCGraphics.__Blit__") == 4
+assert "__mTiles: %SystemInt32, 2004" in logits_uasm
+assert "__kTiles: %SystemInt32, 32" in logits_uasm
 
 try:
     emit_c_host(operator_plan)

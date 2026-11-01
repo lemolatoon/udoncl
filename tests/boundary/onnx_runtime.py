@@ -399,12 +399,15 @@ assert len(int4_atlas["sha256"]) == 64
 assert (int4_call_bundle / int4_atlas["path"]).stat().st_size == 4 * 5120
 int4_call_uasm = emit_int4_call_uasm(int4_plan, 0)
 assert int4_call_uasm == (int4_call_bundle / "host.uasm").read_text(encoding="utf-8")
-assert int4_call_uasm.count("VRCSDKBaseVRCGraphics.__Blit__") == 10
+assert int4_call_uasm.count("VRCSDKBaseVRCGraphics.__Blit__") == 4
 assert int4_call_uasm.count(".export pageAtlas") == 1
 assert "__compactPageName: %SystemString, \"_CompactPage\"" in int4_call_uasm
-assert "__pageRow3: %SystemInt32, 3" in int4_call_uasm
-assert "__n1: %SystemInt32, 6" in int4_call_uasm
-assert "__k1: %SystemInt32, 32" in int4_call_uasm
+assert "__mLoop:" in int4_call_uasm
+assert "__kLoop:" in int4_call_uasm
+assert "__atlasMaxPages: %SystemInt32, 8192" in int4_call_uasm
+assert "SystemInt32.__op_Addition" in int4_call_uasm
+assert "SystemInt32.__op_LessThan" in int4_call_uasm
+assert "__pageRow3" not in int4_call_uasm
 assert "PUSH, resultState" in int4_call_uasm
 assert len(materialize_int4_call(int4_plan, 0, output, int4_call_bundle)["tiles"]) == 4
 

@@ -124,8 +124,8 @@ udon-onnx-page execution-plan.json . --call 0 --m-tile 0 --k-tile 0 \
   -o page-0-0.bytes
 ```
 
-Materialize every M/K page for one ATen INT4 call and emit its static Udon Host
-dispatcher with:
+Materialize every M/K page for one ATen INT4 call and emit its counter-based
+Udon Host dispatcher with:
 
 ```text
 udon-onnx-page execution-plan.json . --call 0 --all \
@@ -140,6 +140,10 @@ runtime activations on GPU, accumulates all K pages privately through kernel
 208, and scatters every completed 64-feature M tile into the call result. The
 public operation remains
 `udonatenWeightInt4packMm`; paging does not add an Ext API or a beta argument.
+The Host loops over M/K/page counters at runtime and contains one atlas-selection
+branch per atlas rather than one instruction sequence per page. The 64,128-page
+Llama logits call therefore emits fewer than 50,000 UASM characters and only
+four distinct blit sites.
 Activations and results use a row-major linear texture ABI capped at 8,192
 words per row, so feature vectors larger than a single Unity texture row retain
 the same dispatcher contract.

@@ -17,6 +17,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
     {
         private const string GeneratedRoot = "Assets/udoncl-generated/udonaten_weight_int4pack_mm";
         private string bundle;
+        private string repository;
 
         [OneTimeSetUp]
         public void ImportGeneratedBundle()
@@ -27,9 +28,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                     typeof(UdonAtenWeightInt4packMmArtifactLifecycleTests).Assembly
                 );
             Assert.NotNull(package, "Could not resolve the UdonCL package root.");
-            string repository = Path.GetFullPath(
-                Path.Combine(package.resolvedPath, "..", "..", "..")
-            );
+            repository = Path.GetFullPath(Path.Combine(package.resolvedPath, "..", "..", ".."));
             bundle = Path.Combine(
                 repository,
                 "build",
@@ -41,6 +40,33 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 "Run libraries/udondnn/run_device.py before this lifecycle test."
             );
             Assert.AreEqual(GeneratedRoot, UdonclArtifactImporter.Import(bundle));
+        }
+
+        [Test]
+        public void GeneratedCounterBasedInt4DispatcherAssemblesWithSdk()
+        {
+            string dispatcher = Path.Combine(
+                repository,
+                "build",
+                "precommit",
+                "onnx-aot",
+                "int4-call-bundle",
+                "host.uasm"
+            );
+            Assert.That(
+                File.Exists(dispatcher),
+                "Run tests/boundary/onnx_runtime.py before this lifecycle test."
+            );
+            IUdonProgram program = UdonEditorManager.Instance.Assemble(
+                File.ReadAllText(dispatcher)
+            );
+            Assert.NotNull(program, "SDK assembler rejected the counter-based INT4 dispatcher.");
+            Assert.AreNotEqual(0xFFFFFFFFu, program.EntryPoints.GetAddressFromSymbol("_run"));
+            Assert.AreNotEqual(0xFFFFFFFFu, program.SymbolTable.GetAddressFromSymbol("pageAtlas0"));
+            Assert.AreNotEqual(
+                0xFFFFFFFFu,
+                program.SymbolTable.GetAddressFromSymbol("resultState")
+            );
         }
 
         [Test]

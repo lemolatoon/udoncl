@@ -386,8 +386,8 @@ def decode_int4_compact_page(page: dict) -> list[float]:
     return state
 
 
-def emit_int4_call_uasm(plan: dict, call_index: int) -> str:
-    """Emit a static Udon Host dispatcher for every M/K page of one INT4 call."""
+def _emit_unrolled_int4_call_uasm(plan: dict, call_index: int) -> str:
+    """Reference emitter used to compare the bounded loop dispatcher."""
     contract = _int4_call_contract(plan, call_index)
     grid = contract["grid"]
     output_features = contract["output_features"]
@@ -567,6 +567,277 @@ def emit_int4_call_uasm(plan: dict, call_index: int) -> str:
             "",
         ]
     )
+    return "\n".join(lines)
+
+
+def emit_int4_call_uasm(plan: dict, call_index: int) -> str:
+    """Emit a bounded counter-based Udon Host dispatcher for one INT4 call."""
+    contract = _int4_call_contract(plan, call_index)
+    grid = contract["grid"]
+    output_features = contract["output_features"]
+    input_features = contract["input_features"]
+    page_count = grid["m_tiles"] * grid["k_tiles"]
+    atlas_count = math.ceil(page_count / INT4_ATLAS_MAX_PAGES)
+    atlas_names = [f"pageAtlas{index}" for index in range(atlas_count)]
+    last_n = output_features - (grid["m_tiles"] - 1) * 64
+    last_k = input_features - (grid["k_tiles"] - 1) * 128
+    lines = [
+        ".data_start",
+        "    .export activationState",
+        "    .export composeState",
+        "    .export accumulatorState",
+        "    .export resultA",
+        "    .export resultB",
+        "    .export resultState",
+        "    .export composeMaterial",
+        "    .export int4Material",
+        "    .export scatterMaterial",
+    ]
+    lines.extend(f"    .export {name}" for name in atlas_names)
+    lines.extend(
+        [
+            "",
+            "    activationState: %UnityEngineTexture, null",
+            "    composeState: %UnityEngineRenderTexture, null",
+            "    accumulatorState: %UnityEngineRenderTexture, null",
+            "    resultA: %UnityEngineRenderTexture, null",
+            "    resultB: %UnityEngineRenderTexture, null",
+            "    resultState: %UnityEngineRenderTexture, null",
+            "    composeMaterial: %UnityEngineMaterial, null",
+            "    int4Material: %UnityEngineMaterial, null",
+            "    scatterMaterial: %UnityEngineMaterial, null",
+        ]
+    )
+    lines.extend(f"    {name}: %UnityEngineTexture, null" for name in atlas_names)
+    lines.extend(
+        [
+            "    __selectedAtlas: %UnityEngineTexture, null",
+            "    __previousResult: %UnityEngineTexture, null",
+            "    __mTile: %SystemInt32, null",
+            "    __kTile: %SystemInt32, null",
+            "    __mOffset: %SystemInt32, null",
+            "    __kOffset: %SystemInt32, null",
+            "    __pageRow: %SystemInt32, null",
+            "    __atlasIndex: %SystemInt32, null",
+            "    __currentN: %SystemInt32, null",
+            "    __currentK: %SystemInt32, null",
+            "    __resultSelector: %SystemInt32, null",
+            "    __hasPrior: %SystemInt32, null",
+            "    __condition: %SystemBoolean, null",
+            "    __zero: %SystemInt32, 0",
+            "    __one: %SystemInt32, 1",
+            "    __tileN: %SystemInt32, 64",
+            "    __tileK: %SystemInt32, 128",
+            "    __rowStride: %SystemInt32, 72",
+            "    __resultOffset: %SystemInt32, 7168",
+            f"    __mTiles: %SystemInt32, {grid['m_tiles']}",
+            f"    __kTiles: %SystemInt32, {grid['k_tiles']}",
+            f"    __lastMTile: %SystemInt32, {grid['m_tiles'] - 1}",
+            f"    __lastKTile: %SystemInt32, {grid['k_tiles'] - 1}",
+            f"    __lastN: %SystemInt32, {last_n}",
+            f"    __lastK: %SystemInt32, {last_k}",
+            f"    __atlasMaxPages: %SystemInt32, {INT4_ATLAS_MAX_PAGES}",
+            f"    __outputFeatures: %SystemInt32, {output_features}",
+            f"    __activationWidth: %SystemInt32, {linear_texture_layout(input_features)['width']}",
+            f"    __outputWidth: %SystemInt32, {linear_texture_layout(output_features)['width']}",
+        ]
+    )
+    lines.extend(
+        f"    __atlas{index}: %SystemInt32, {index}" for index in range(atlas_count)
+    )
+    strings = {
+        "__weightPageName": "_WeightPage",
+        "__compactPageName": "_CompactPage",
+        "__pageRowName": "_PageRow",
+        "__activationName": "_Activation",
+        "__accumulatorName": "_Accumulator",
+        "__activationOffsetName": "_ActivationOffset",
+        "__activationWidthName": "_ActivationWidth",
+        "__accumulatorOffsetName": "_AccumulatorOffset",
+        "__kOffsetName": "_KOffset",
+        "__composeNName": "_N",
+        "__composeKName": "_K",
+        "__composeAccumulateName": "_Accumulate",
+        "__inputName": "_VRC_Input",
+        "__nName": "_VRC_Arg2",
+        "__kName": "_VRC_Arg3",
+        "__rowStrideName": "_VRC_Arg4",
+        "__accumulateName": "_VRC_Arg5",
+        "__scatterSourceName": "_TileState",
+        "__scatterPriorName": "_PriorResult",
+        "__scatterOffsetName": "_OutputOffset",
+        "__scatterNName": "_N",
+        "__scatterWidthName": "_OutputWidth",
+        "__scatterFeaturesName": "_OutputFeatures",
+        "__scatterPriorFlagName": "_HasPrior",
+    }
+    lines.extend(f'    {name}: %SystemString, "{value}"' for name, value in strings.items())
+    lines.extend(
+        [
+            ".data_end",
+            "",
+            ".code_start",
+            "    .export _start",
+            "    _start:",
+            "        JUMP, 0xFFFFFFFC",
+            "",
+            "    .export _run",
+            "    _run:",
+        ]
+    )
+
+    def copy(destination: str, source: str):
+        lines.extend([f"        PUSH, {destination}", f"        PUSH, {source}", "        COPY"])
+
+    def binary(destination: str, left: str, right: str, operation: str):
+        lines.extend(
+            [
+                f"        PUSH, {destination}",
+                f"        PUSH, {left}",
+                f"        PUSH, {right}",
+                f'        EXTERN, "SystemInt32.__op_{operation}__SystemInt32_SystemInt32__SystemInt32"',
+            ]
+        )
+
+    def compare(left: str, right: str, operation: str):
+        lines.extend(
+            [
+                "        PUSH, __condition",
+                f"        PUSH, {left}",
+                f"        PUSH, {right}",
+                f'        EXTERN, "SystemInt32.__op_{operation}__SystemInt32_SystemInt32__SystemBoolean"',
+            ]
+        )
+
+    def jump_if_false(label: str):
+        lines.extend(["        PUSH, __condition", f"        JUMP_IF_FALSE, {label}"])
+
+    def set_texture(material: str, property_name: str, texture: str):
+        lines.extend(
+            [
+                f"        PUSH, {material}",
+                f"        PUSH, {property_name}",
+                f"        PUSH, {texture}",
+                '        EXTERN, "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"',
+            ]
+        )
+
+    def set_int(material: str, property_name: str, value: str):
+        lines.extend(
+            [
+                f"        PUSH, {material}",
+                f"        PUSH, {property_name}",
+                f"        PUSH, {value}",
+                '        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"',
+            ]
+        )
+
+    def blit(source: str, target: str, material: str):
+        lines.extend(
+            [
+                f"        PUSH, {source}",
+                f"        PUSH, {target}",
+                f"        PUSH, {material}",
+                '        EXTERN, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid"',
+            ]
+        )
+
+    for variable in (
+        "__mTile",
+        "__kTile",
+        "__mOffset",
+        "__kOffset",
+        "__pageRow",
+        "__atlasIndex",
+        "__resultSelector",
+        "__hasPrior",
+    ):
+        copy(variable, "__zero")
+    copy("__previousResult", "accumulatorState")
+    set_texture("composeMaterial", "__activationName", "activationState")
+    set_int("composeMaterial", "__compactPageName", "__one")
+    set_int("composeMaterial", "__activationOffsetName", "__zero")
+    set_int("composeMaterial", "__activationWidthName", "__activationWidth")
+    set_int("composeMaterial", "__accumulatorOffsetName", "__resultOffset")
+    set_int("int4Material", "__rowStrideName", "__rowStride")
+    set_int("scatterMaterial", "__scatterWidthName", "__outputWidth")
+    set_int("scatterMaterial", "__scatterFeaturesName", "__outputFeatures")
+    lines.append("    __mLoop:")
+    compare("__mTile", "__lastMTile", "Equality")
+    jump_if_false("__fullN")
+    copy("__currentN", "__lastN")
+    lines.append("        JUMP, __kLoop")
+    lines.append("    __fullN:")
+    copy("__currentN", "__tileN")
+    lines.append("    __kLoop:")
+    compare("__kTile", "__lastKTile", "Equality")
+    jump_if_false("__fullK")
+    copy("__currentK", "__lastK")
+    lines.append("        JUMP, __kReady")
+    lines.append("    __fullK:")
+    copy("__currentK", "__tileK")
+    lines.append("    __kReady:")
+    for index, atlas in enumerate(atlas_names):
+        next_label = f"__atlasNext{index}"
+        compare("__atlasIndex", f"__atlas{index}", "Equality")
+        jump_if_false(next_label)
+        copy("__selectedAtlas", atlas)
+        lines.append("        JUMP, __atlasReady")
+        lines.append(f"    {next_label}:")
+    lines.append("        JUMP, __halt")
+    lines.append("    __atlasReady:")
+    set_texture("composeMaterial", "__weightPageName", "__selectedAtlas")
+    set_texture("composeMaterial", "__accumulatorName", "accumulatorState")
+    set_int("composeMaterial", "__pageRowName", "__pageRow")
+    set_int("composeMaterial", "__kOffsetName", "__kOffset")
+    set_int("composeMaterial", "__composeNName", "__currentN")
+    set_int("composeMaterial", "__composeKName", "__currentK")
+    set_int("composeMaterial", "__composeAccumulateName", "__kTile")
+    blit("__selectedAtlas", "composeState", "composeMaterial")
+    set_texture("int4Material", "__inputName", "composeState")
+    set_int("int4Material", "__nName", "__currentN")
+    set_int("int4Material", "__kName", "__currentK")
+    set_int("int4Material", "__accumulateName", "__kTile")
+    blit("composeState", "accumulatorState", "int4Material")
+    binary("__pageRow", "__pageRow", "__one", "Addition")
+    compare("__pageRow", "__atlasMaxPages", "Equality")
+    jump_if_false("__pageReady")
+    copy("__pageRow", "__zero")
+    binary("__atlasIndex", "__atlasIndex", "__one", "Addition")
+    lines.append("    __pageReady:")
+    binary("__kTile", "__kTile", "__one", "Addition")
+    binary("__kOffset", "__kOffset", "__tileK", "Addition")
+    compare("__kTile", "__kTiles", "LessThan")
+    jump_if_false("__scatter")
+    lines.append("        JUMP, __kLoop")
+    lines.append("    __scatter:")
+    set_texture("scatterMaterial", "__scatterSourceName", "accumulatorState")
+    set_texture("scatterMaterial", "__scatterPriorName", "__previousResult")
+    set_int("scatterMaterial", "__scatterOffsetName", "__mOffset")
+    set_int("scatterMaterial", "__scatterNName", "__currentN")
+    set_int("scatterMaterial", "__scatterPriorFlagName", "__hasPrior")
+    compare("__resultSelector", "__zero", "Equality")
+    jump_if_false("__scatterB")
+    blit("accumulatorState", "resultA", "scatterMaterial")
+    copy("__previousResult", "resultA")
+    copy("__resultSelector", "__one")
+    lines.append("        JUMP, __scatterDone")
+    lines.append("    __scatterB:")
+    blit("accumulatorState", "resultB", "scatterMaterial")
+    copy("__previousResult", "resultB")
+    copy("__resultSelector", "__zero")
+    lines.append("    __scatterDone:")
+    copy("__hasPrior", "__one")
+    binary("__mTile", "__mTile", "__one", "Addition")
+    binary("__mOffset", "__mOffset", "__tileN", "Addition")
+    copy("__kTile", "__zero")
+    copy("__kOffset", "__zero")
+    compare("__mTile", "__mTiles", "LessThan")
+    jump_if_false("__complete")
+    lines.append("        JUMP, __mLoop")
+    lines.append("    __complete:")
+    copy("resultState", "__previousResult")
+    lines.extend(["    __halt:", "        JUMP, 0xFFFFFFFC", ".code_end", ""])
     return "\n".join(lines)
 
 

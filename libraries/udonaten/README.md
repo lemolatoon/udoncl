@@ -40,7 +40,8 @@ The implementation currently adapts the already validated UdonDNN prototype
 kernels. Those functions are backend details, not the public ownership model.
 The fixed two-page artifact validates the runtime texture-copy and accumulation
 mechanism. `udon-onnx-page --all` now materializes and dispatches arbitrary M/K
-tile grids for one call, including edge tiles and M-tile result scatter. Binding
+tile grids for one call, including edge tiles and M-tile result scatter. Its
+counter-based Host remains bounded by atlas count rather than page count. Binding
 all call artifacts and the full mixed-library schedule into one model bundle is
 also available through `--all-calls`. A single combined Udon Host and Unity
 binding still remain before the Llama 8B operator plan can run end to end.
