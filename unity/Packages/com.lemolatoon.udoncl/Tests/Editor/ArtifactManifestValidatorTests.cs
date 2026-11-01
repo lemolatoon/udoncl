@@ -122,6 +122,46 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             Assert.AreEqual(2, artifact.OnnxStaticInputs[0].Width);
         }
 
+        [Test]
+        public void ValidateAcceptsOnnxInt4ChildCall()
+        {
+            string child = Path.Combine(_directory, "calls", "call-0003");
+            Directory.CreateDirectory(Path.Combine(child, "atlases"));
+            File.WriteAllText(
+                Path.Combine(child, "host.uasm"),
+                ".data_start\n.data_end\n.code_start\n.code_end\n"
+            );
+            File.WriteAllBytes(Path.Combine(child, "atlases", "atlas-0000.rgba"), new byte[5120]);
+            File.WriteAllText(
+                Path.Combine(child, "manifest.json"),
+                "{\"schema_version\":1,\"artifact_stage\":\"udon-onnx-int4-call\","
+                    + "\"call_index\":3,\"function\":\"udonatenWeightInt4packMm\","
+                    + "\"result_layout\":{\"width\":70,\"height\":1},"
+                    + "\"assembly\":\"host.uasm\",\"resources\":[{\"name\":\"pageAtlas0\","
+                    + "\"kind\":\"bytes\",\"path\":\"atlases/atlas-0000.rgba\","
+                    + "\"encoding\":\"q4-bf16-row80-rgba32\",\"width\":1280,"
+                    + "\"height\":1,\"bytes\":5120}]}"
+            );
+            AddManifestProperty(
+                "\"call_artifacts\":[{\"call_index\":3,\"path\":\"calls/call-0003\"}]"
+            );
+            ValidatedArtifact artifact = ArtifactManifestValidator.Validate(_directory);
+            Assert.AreEqual(1, artifact.OnnxInt4Calls.Count);
+            Assert.AreEqual(3, artifact.OnnxInt4Calls[0].CallIndex);
+            Assert.AreEqual(1, artifact.OnnxInt4Calls[0].Atlases.Count);
+            Assert.AreEqual(70, artifact.OnnxInt4Calls[0].ResultWidth);
+            Assert.AreEqual(1280, artifact.OnnxInt4Calls[0].Atlases[0].Width);
+        }
+
+        [Test]
+        public void ValidateRejectsOnnxInt4ChildTraversal()
+        {
+            AddManifestProperty("\"call_artifacts\":[{\"call_index\":0,\"path\":\"../outside\"}]");
+            Assert.Throws<InvalidDataException>(() =>
+                ArtifactManifestValidator.Validate(_directory)
+            );
+        }
+
         private void AddResources(string resources)
         {
             AddManifestProperty("\"resources\":" + resources);

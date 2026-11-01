@@ -17,6 +17,7 @@ namespace Lemolatoon.Udoncl.Editor
         public DeviceInfo device;
         public ArtifactResourceInfo[] resources;
         public UdonOnnxStaticInputInfo[] static_inputs;
+        public UdonOnnxCallArtifactInfo[] call_artifacts;
     }
 
     [Serializable]
@@ -73,6 +74,36 @@ namespace Lemolatoon.Udoncl.Editor
         public string name;
         public string kind;
         public string path;
+        public string encoding;
+        public int width;
+        public int height;
+        public int bytes;
+    }
+
+    [Serializable]
+    internal sealed class UdonOnnxCallArtifactInfo
+    {
+        public int call_index;
+        public string path;
+    }
+
+    [Serializable]
+    internal sealed class UdonOnnxInt4CallManifest
+    {
+        public int schema_version;
+        public string artifact_stage;
+        public int call_index;
+        public string function;
+        public string assembly;
+        public UdonOnnxTextureLayout result_layout;
+        public ArtifactResourceInfo[] resources;
+    }
+
+    [Serializable]
+    internal sealed class UdonOnnxTextureLayout
+    {
+        public int width;
+        public int height;
     }
 
     [Serializable]

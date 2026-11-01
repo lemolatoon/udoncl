@@ -19,7 +19,8 @@ namespace Lemolatoon.Udoncl.Editor
             string programName,
             IList<ValidatedKernel> kernels,
             IList<ValidatedResource> resources,
-            IList<ValidatedOnnxStaticInput> onnxStaticInputs
+            IList<ValidatedOnnxStaticInput> onnxStaticInputs,
+            IList<ValidatedOnnxInt4Call> onnxInt4Calls
         )
         {
             RootDirectory = root;
@@ -31,6 +32,7 @@ namespace Lemolatoon.Udoncl.Editor
             Kernels = kernels;
             Resources = resources;
             OnnxStaticInputs = onnxStaticInputs;
+            OnnxInt4Calls = onnxInt4Calls;
         }
 
         public string RootDirectory { get; private set; }
@@ -42,6 +44,47 @@ namespace Lemolatoon.Udoncl.Editor
         public IList<ValidatedKernel> Kernels { get; private set; }
         public IList<ValidatedResource> Resources { get; private set; }
         public IList<ValidatedOnnxStaticInput> OnnxStaticInputs { get; private set; }
+        public IList<ValidatedOnnxInt4Call> OnnxInt4Calls { get; private set; }
+    }
+
+    public sealed class ValidatedOnnxInt4Atlas
+    {
+        internal ValidatedOnnxInt4Atlas(string name, string absolutePath, int width, int height)
+        {
+            Name = name;
+            AbsolutePath = absolutePath;
+            Width = width;
+            Height = height;
+        }
+
+        public string Name { get; private set; }
+        public string AbsolutePath { get; private set; }
+        public int Width { get; private set; }
+        public int Height { get; private set; }
+    }
+
+    public sealed class ValidatedOnnxInt4Call
+    {
+        internal ValidatedOnnxInt4Call(
+            int callIndex,
+            string assemblyAbsolutePath,
+            int resultWidth,
+            int resultHeight,
+            IList<ValidatedOnnxInt4Atlas> atlases
+        )
+        {
+            CallIndex = callIndex;
+            AssemblyAbsolutePath = assemblyAbsolutePath;
+            ResultWidth = resultWidth;
+            ResultHeight = resultHeight;
+            Atlases = atlases;
+        }
+
+        public int CallIndex { get; private set; }
+        public string AssemblyAbsolutePath { get; private set; }
+        public int ResultWidth { get; private set; }
+        public int ResultHeight { get; private set; }
+        public IList<ValidatedOnnxInt4Atlas> Atlases { get; private set; }
     }
 
     public sealed class ValidatedOnnxStaticInput
@@ -265,6 +308,10 @@ namespace Lemolatoon.Udoncl.Editor
                 root,
                 manifest.static_inputs
             );
+            List<ValidatedOnnxInt4Call> onnxInt4Calls = ValidateOnnxInt4Calls(
+                root,
+                manifest.call_artifacts
+            );
 
             return new ValidatedArtifact(
                 root,
@@ -275,8 +322,105 @@ namespace Lemolatoon.Udoncl.Editor
                 manifest.program.name,
                 kernels,
                 resources,
-                onnxStaticInputs
+                onnxStaticInputs,
+                onnxInt4Calls
             );
+        }
+
+        private static List<ValidatedOnnxInt4Call> ValidateOnnxInt4Calls(
+            string root,
+            UdonOnnxCallArtifactInfo[] calls
+        )
+        {
+            List<ValidatedOnnxInt4Call> validated = new List<ValidatedOnnxInt4Call>();
+            HashSet<int> callIndexes = new HashSet<int>();
+            foreach (
+                UdonOnnxCallArtifactInfo call in calls ?? Array.Empty<UdonOnnxCallArtifactInfo>()
+            )
+            {
+                if (call == null || call.call_index < 0 || !callIndexes.Add(call.call_index))
+                    throw new InvalidDataException(
+                        "ONNX INT4 call index is invalid or duplicated."
+                    );
+                string manifestRelativePath = ValidateRelativeFilePath(
+                    call.path + "/manifest.json",
+                    ".json"
+                );
+                string manifestPath = ResolveExistingFile(root, manifestRelativePath);
+                UdonOnnxInt4CallManifest child;
+                try
+                {
+                    child = JsonUtility.FromJson<UdonOnnxInt4CallManifest>(ReadUtf8(manifestPath));
+                }
+                catch (Exception ex)
+                {
+                    throw new InvalidDataException("ONNX INT4 child manifest is invalid JSON.", ex);
+                }
+                if (
+                    child == null
+                    || child.schema_version != 1
+                    || child.artifact_stage != "udon-onnx-int4-call"
+                    || child.call_index != call.call_index
+                    || child.function != "udonatenWeightInt4packMm"
+                    || child.result_layout == null
+                    || child.result_layout.width <= 0
+                    || child.result_layout.width > 8192
+                    || child.result_layout.height <= 0
+                )
+                    throw new InvalidDataException("ONNX INT4 child manifest contract is invalid.");
+                string childRoot = Path.GetDirectoryName(manifestPath);
+                string assemblyRelativePath = ValidateRelativeFilePath(child.assembly, ".uasm");
+                string assemblyPath = ResolveExistingFile(childRoot, assemblyRelativePath);
+                ReadUtf8(assemblyPath);
+                List<ValidatedOnnxInt4Atlas> atlases = new List<ValidatedOnnxInt4Atlas>();
+                HashSet<string> atlasNames = new HashSet<string>(StringComparer.Ordinal);
+                foreach (
+                    ArtifactResourceInfo resource in child.resources
+                        ?? Array.Empty<ArtifactResourceInfo>()
+                )
+                {
+                    if (
+                        resource == null
+                        || !IsSafeIdentifier(resource.name)
+                        || !atlasNames.Add(resource.name)
+                        || resource.kind != "bytes"
+                        || resource.encoding != "q4-bf16-row80-rgba32"
+                        || resource.width != 1280
+                        || resource.height <= 0
+                        || resource.height > 8192
+                    )
+                        throw new InvalidDataException("ONNX INT4 atlas contract is invalid.");
+                    string relativePath = ValidateRelativeFilePath(resource.path, ".rgba");
+                    string absolutePath = ResolveExistingFile(childRoot, relativePath);
+                    long expectedBytes = (long)resource.width * resource.height * 4;
+                    if (
+                        resource.bytes != expectedBytes
+                        || new FileInfo(absolutePath).Length != expectedBytes
+                    )
+                        throw new InvalidDataException("ONNX INT4 atlas byte size is invalid.");
+                    atlases.Add(
+                        new ValidatedOnnxInt4Atlas(
+                            resource.name,
+                            absolutePath,
+                            resource.width,
+                            resource.height
+                        )
+                    );
+                }
+                if (atlases.Count == 0)
+                    throw new InvalidDataException("ONNX INT4 child has no weight atlas.");
+                validated.Add(
+                    new ValidatedOnnxInt4Call(
+                        call.call_index,
+                        assemblyPath,
+                        child.result_layout.width,
+                        child.result_layout.height,
+                        atlases
+                    )
+                );
+            }
+            validated.Sort((left, right) => left.CallIndex.CompareTo(right.CallIndex));
+            return validated;
         }
 
         private static List<ValidatedOnnxStaticInput> ValidateOnnxStaticInputs(
