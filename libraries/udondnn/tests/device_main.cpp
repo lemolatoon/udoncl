@@ -1053,6 +1053,49 @@ int main(int argc, char **argv) {
           rmsMaximumError, std::abs(rmsActual[index] - rmsExpected[index]));
     if (rmsMaximumError > 0.0005f)
       throw std::runtime_error("UdonDNN RMS normalization results diverged");
+    require(udonatenRmsNorm(handle, rmsInputDescriptor, rmsInput.data(),
+                            rmsNormalizedShape, 1, 0, nullptr, &rmsEpsilon,
+                            rmsOutputDescriptor, rmsActual.data()),
+            UDONDNN_STATUS_SUCCESS, "weightless udonatenRmsNorm");
+    for (int row = 0; row < 2; ++row) {
+      float squareSum = 0.0f;
+      for (int column = 0; column < 8; ++column) {
+        float sample = rmsInput[row * 8 + column];
+        squareSum += sample * sample;
+      }
+      float inverseRms = 1.0f / std::sqrt(squareSum / 8.0f + rmsEpsilon);
+      for (int column = 0; column < 8; ++column) {
+        int index = row * 8 + column;
+        if (std::abs(rmsActual[index] - rmsInput[index] * inverseRms) > 0.0005f)
+          throw std::runtime_error("weightless UdonATen RMSNorm diverged");
+      }
+    }
+    const int rmsLargeWords = 4096;
+    std::vector<float> rmsLargeInput(rmsLargeWords),
+        rmsLargeScale(rmsLargeWords), rmsLargeActual(rmsLargeWords);
+    for (int index = 0; index < rmsLargeWords; ++index) {
+      rmsLargeInput[index] = value(index, 227) * 1.5f;
+      rmsLargeScale[index] = 0.75f + value(index, 229) * 0.125f;
+    }
+    require(udondnnSetTensor4dDescriptor(
+                rmsInputDescriptor, UDONDNN_TENSOR_NCHW, UDONDNN_DATA_FLOAT, 1,
+                1, 1, rmsLargeWords),
+            UDONDNN_STATUS_SUCCESS, "set large RMS input descriptor");
+    require(udondnnSetTensor4dDescriptor(
+                rmsScaleDescriptor, UDONDNN_TENSOR_NCHW, UDONDNN_DATA_FLOAT, 1,
+                1, 1, rmsLargeWords),
+            UDONDNN_STATUS_SUCCESS, "set large RMS scale descriptor");
+    require(udondnnSetTensor4dDescriptor(
+                rmsOutputDescriptor, UDONDNN_TENSOR_NCHW, UDONDNN_DATA_FLOAT, 1,
+                1, 1, rmsLargeWords),
+            UDONDNN_STATUS_SUCCESS, "set large RMS output descriptor");
+    const int64_t rmsLargeNormalizedShape[1] = {rmsLargeWords};
+    require(udonatenRmsNorm(handle, rmsInputDescriptor, rmsLargeInput.data(),
+                            rmsLargeNormalizedShape, 1, rmsScaleDescriptor,
+                            rmsLargeScale.data(), &rmsEpsilon,
+                            rmsOutputDescriptor, rmsLargeActual.data()),
+            UDONDNN_STATUS_NOT_SUPPORTED,
+            "reject unbound large udonatenRmsNorm Host path");
     require(udondnnDestroyTensorDescriptor(rmsInputDescriptor),
             UDONDNN_STATUS_SUCCESS, "destroy RMS input descriptor");
     require(udondnnDestroyTensorDescriptor(rmsScaleDescriptor),

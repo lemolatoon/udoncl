@@ -24,9 +24,14 @@ The first supported inference operators are:
   current backend supports `padding_idx=-1`, `scale_grad_by_freq=false`, and
   `sparse=false`.
 - `udonatenRmsNorm`, corresponding to
-  `rms_norm(input, normalized_shape, weight=None, eps=None)`. The current
-  backend requires a weight tensor and supports normalized regions through the
-  existing 512-element Device profile.
+  `rms_norm(input, normalized_shape, weight=None, eps=None)`. Optional weight
+  is supported for the executable 512-word profile. An UdonATen-owned
+  8,192-word prototype bundle holds a 4,096-word input and weight and assigns
+  one fragment to every output element, but it is not advertised as executable:
+  WARP rejects its repeated normalized-region scan, while a correct
+  hierarchical reduction needs a future multi-input Device ABI. The public API
+  therefore returns `NOT_SUPPORTED` above 512 words instead of using a CPU
+  fallback.
 - `udonatenTile`, corresponding to ATen `tile(input, dims)`. Repeat dimensions
   align to the trailing input dimensions and omitted leading repeats are one,
   matching ATen's `tile_symint` delegation to `repeat`. The current four-axis

@@ -109,6 +109,16 @@ pointwise_passes = [
 assert len(pointwise_passes) == 3200
 assert all(device_pass["tile"]["tile_words"] == 512 for device_pass in pointwise_passes)
 assert all(0 < device_pass["tile"]["words"] <= 512 for device_pass in pointwise_passes)
+rms_calls = [
+    call
+    for call in operator_plan["aot"]["calls"]
+    if call["function"] == "udonatenRmsNorm"
+]
+assert len(rms_calls) == 65
+assert all(call["device_profile"]["supported"] is False for call in rms_calls)
+assert all(
+    call["device_profile"]["prototype_state_words"] == 8192 for call in rms_calls
+)
 assert len(operator_plan["passes"]) == 3522
 operator_q4_calls = [
     call

@@ -29,7 +29,6 @@
 #define UDONDNN_OP_TENSOR_C_OFFSET 1024
 #define UDONDNN_OP_TENSOR_RESULT_OFFSET 1536
 #define UDONDNN_RMS_SCALE_OFFSET 512
-#define UDONDNN_RMS_PREVIOUS_OUTPUT_OFFSET 1024
 #define UDONDNN_RMS_RESULT_OFFSET 1536
 #define UDONDNN_GATHER_INDICES_OFFSET 512
 #define UDONDNN_GATHER_RESULT_OFFSET 1024
@@ -1305,53 +1304,39 @@ udondnnStatus_t udondnnOpTensor(
   return UDONDNN_STATUS_SUCCESS;
 }
 
-udondnnStatus_t udondnnExtRmsNormalizationForward(
-    udondnnHandle_t handle, const float *alpha,
-    udondnnTensorDescriptor_t input_descriptor, const float *input,
-    udondnnTensorDescriptor_t scale_descriptor, const float *scale,
-    float epsilon, const float *beta,
-    udondnnTensorDescriptor_t output_descriptor, float *output) {
-  TensorDescriptor *input_info, *scale_info, *output_info;
-  int words, scale_words, index;
+udondnnStatus_t udonatenBackendRmsNorm(udondnnHandle_t handle, int words,
+                                       int normalized_words, const float *input,
+                                       const float *weight, float epsilon,
+                                       float *output) {
+  int index;
+  float alpha = 1.0f, beta = 0.0f;
   size_t global = UDONDNN_WORDS, local = 1;
   cl_int status;
   if (handle != UDONDNN_HANDLE || !context)
     return UDONDNN_STATUS_NOT_INITIALIZED;
-  input_info = get_tensor(input_descriptor);
-  scale_info = get_tensor(scale_descriptor);
-  output_info = get_tensor(output_descriptor);
-  if (!input_info || !input_info->configured || !scale_info ||
-      !scale_info->configured || !output_info || !output_info->configured ||
-      !alpha || !input || !scale || !beta || !output || epsilon < 0.0f)
-    return UDONDNN_STATUS_BAD_PARAM;
-  words = input_info->n * input_info->c * input_info->h * input_info->w;
-  scale_words = scale_info->n * scale_info->c * scale_info->h * scale_info->w;
-  if (words !=
-          output_info->n * output_info->c * output_info->h * output_info->w ||
-      words > UDONDNN_REGION_WORDS || scale_words <= 0 ||
-      scale_words > UDONDNN_REGION_WORDS || words % scale_words != 0)
+  if (!input || !output || words <= 0 || words > UDONDNN_REGION_WORDS ||
+      normalized_words <= 0 || normalized_words > UDONDNN_REGION_WORDS ||
+      words % normalized_words != 0 || epsilon < 0.0f)
     return UDONDNN_STATUS_BAD_PARAM;
   for (index = 0; index < UDONDNN_WORDS; ++index)
     packed[index] = 0.0f;
-  for (index = 0; index < words; ++index) {
+  for (index = 0; index < words; ++index)
     packed[index] = input[index];
-    packed[UDONDNN_RMS_PREVIOUS_OUTPUT_OFFSET + index] = output[index];
-  }
-  for (index = 0; index < scale_words; ++index)
-    packed[UDONDNN_RMS_SCALE_OFFSET + index] = scale[index];
+  for (index = 0; index < normalized_words; ++index)
+    packed[UDONDNN_RMS_SCALE_OFFSET + index] = weight ? weight[index] : 1.0f;
 
-#define SET_RMS_ARGUMENT(slot, value)                                          \
+#define SET_ATEN_RMS_ARGUMENT(slot, value)                                     \
   do {                                                                         \
     status = clSetKernelArg(rms_norm_kernel, slot, sizeof(value), &(value));   \
     if (status != CL_SUCCESS)                                                  \
       return UDONDNN_STATUS_EXECUTION_FAILED;                                  \
   } while (0)
-  SET_RMS_ARGUMENT(2, words);
-  SET_RMS_ARGUMENT(3, scale_words);
-  SET_RMS_ARGUMENT(4, epsilon);
-  SET_RMS_ARGUMENT(5, *alpha);
-  SET_RMS_ARGUMENT(6, *beta);
-#undef SET_RMS_ARGUMENT
+  SET_ATEN_RMS_ARGUMENT(2, words);
+  SET_ATEN_RMS_ARGUMENT(3, normalized_words);
+  SET_ATEN_RMS_ARGUMENT(4, epsilon);
+  SET_ATEN_RMS_ARGUMENT(5, alpha);
+  SET_ATEN_RMS_ARGUMENT(6, beta);
+#undef SET_ATEN_RMS_ARGUMENT
 
   if (clEnqueueWriteBuffer(queue, input_buffer, CL_TRUE, 0, sizeof(packed),
                            packed, 0, 0, 0) != CL_SUCCESS ||
@@ -1359,7 +1344,7 @@ udondnnStatus_t udondnnExtRmsNormalizationForward(
                              0, 0) != CL_SUCCESS ||
       clEnqueueReadBuffer(queue, output_buffer, CL_TRUE,
                           UDONDNN_RMS_RESULT_OFFSET * sizeof(float),
-                          words * sizeof(float), result, 0, 0,
+                          (size_t)words * sizeof(float), result, 0, 0,
                           0) != CL_SUCCESS ||
       clFinish(queue) != CL_SUCCESS)
     return UDONDNN_STATUS_EXECUTION_FAILED;

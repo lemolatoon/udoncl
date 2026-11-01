@@ -51,10 +51,12 @@ Authoritative sources:
   and
   <https://github.com/pytorch/pytorch/blob/main/aten/src/ATen/native/cuda/int4mm.cu>
 
-The existing `udondnnExtGatherForward` and
-`udondnnExtRmsNormalizationForward` names are provisional backend details.
-UdonATen may reuse their Device kernels internally during migration, but ONNX
-plans and generated Host code expose UdonATen contracts. The same rule applies
+The existing `udondnnExtGatherForward` name is a provisional backend detail.
+UdonATen may reuse it internally during migration, but ONNX plans and generated
+Host code expose UdonATen contracts. RMSNorm now uses an UdonATen-owned
+Device kernel and is no longer exposed as a UdonDNN extension. Its 4,096-word
+profile remains a non-executable prototype until the Device ABI can bind the
+extra reduction state without a CPU readback. The same rule applies
 to pointwise Add, Sub, Mul, ReLU, Sigmoid, and Tanh: their public calls are
 UdonATen-shaped even
 while their validated Device implementation privately reuses UdonDNN OpTensor

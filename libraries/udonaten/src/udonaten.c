@@ -1,5 +1,6 @@
 #include "udonaten.h"
 #include <float.h>
+#include <math.h>
 
 #define UDONATEN_POINTWISE_TILE_WORDS 512
 
@@ -41,6 +42,10 @@ udonatenStatus_t udonatenBackendTile(udonatenHandle_t handle, int input_n,
                                      const float *input, int repeat_n,
                                      int repeat_c, int repeat_h, int repeat_w,
                                      int output_words, float *output);
+udonatenStatus_t udonatenBackendRmsNorm(udonatenHandle_t handle, int words,
+                                        int normalized_words,
+                                        const float *input, const float *weight,
+                                        float epsilon, float *output);
 
 static udonatenStatus_t
 udonatenBinary(udonatenHandle_t handle, udondnnOpTensorOp_t operation,
@@ -261,17 +266,59 @@ udonatenRmsNorm(udonatenHandle_t handle,
                 udonatenTensorDescriptor_t weight_descriptor,
                 const float *weight, const float *epsilon,
                 udonatenTensorDescriptor_t output_descriptor, float *output) {
-  const float alpha = 1.0f, beta = 0.0f;
   float effective_epsilon = epsilon ? *epsilon : FLT_EPSILON;
+  udondnnDataType_t input_type, weight_type, output_type;
+  int input_n, input_c, input_h, input_w;
+  int weight_n, weight_c, weight_h, weight_w;
+  int output_n, output_c, output_h, output_w;
+  int n_stride, c_stride, h_stride, w_stride;
+  int input_shape[4], normalized_words = 1, words;
+  udonatenStatus_t status;
   size_t index;
-  if (!normalized_shape || normalized_dimensions == 0)
+  if (!normalized_shape || normalized_dimensions == 0 ||
+      normalized_dimensions > 4 || !input || !output ||
+      !isfinite(effective_epsilon) || effective_epsilon < 0.0f)
     return UDONDNN_STATUS_BAD_PARAM;
-  for (index = 0; index < normalized_dimensions; ++index)
-    if (normalized_shape[index] <= 0)
+  status = udondnnGetTensor4dDescriptor(input_descriptor, &input_type, &input_n,
+                                        &input_c, &input_h, &input_w, &n_stride,
+                                        &c_stride, &h_stride, &w_stride);
+  if (status == UDONDNN_STATUS_SUCCESS)
+    status = udondnnGetTensor4dDescriptor(
+        output_descriptor, &output_type, &output_n, &output_c, &output_h,
+        &output_w, &n_stride, &c_stride, &h_stride, &w_stride);
+  if (status != UDONDNN_STATUS_SUCCESS)
+    return status;
+  if (input_type != UDONDNN_DATA_FLOAT || output_type != UDONDNN_DATA_FLOAT ||
+      input_n != output_n || input_c != output_c || input_h != output_h ||
+      input_w != output_w)
+    return UDONDNN_STATUS_BAD_PARAM;
+  input_shape[0] = input_n;
+  input_shape[1] = input_c;
+  input_shape[2] = input_h;
+  input_shape[3] = input_w;
+  for (index = 0; index < normalized_dimensions; ++index) {
+    if (normalized_shape[index] <= 0 ||
+        normalized_shape[index] !=
+            input_shape[4 - normalized_dimensions + index] ||
+        normalized_words > 4096 / normalized_shape[index])
       return UDONDNN_STATUS_BAD_PARAM;
-  return udondnnExtRmsNormalizationForward(
-      handle, &alpha, input_descriptor, input, weight_descriptor, weight,
-      effective_epsilon, &beta, output_descriptor, output);
+    normalized_words *= (int)normalized_shape[index];
+  }
+  words = input_n * input_c * input_h * input_w;
+  if (weight) {
+    status = udondnnGetTensor4dDescriptor(
+        weight_descriptor, &weight_type, &weight_n, &weight_c, &weight_h,
+        &weight_w, &n_stride, &c_stride, &h_stride, &w_stride);
+    if (status != UDONDNN_STATUS_SUCCESS)
+      return status;
+    if (weight_type != UDONDNN_DATA_FLOAT ||
+        weight_n * weight_c * weight_h * weight_w != normalized_words)
+      return UDONDNN_STATUS_BAD_PARAM;
+  }
+  if (words > UDONATEN_POINTWISE_TILE_WORDS)
+    return UDONDNN_STATUS_NOT_SUPPORTED;
+  return udonatenBackendRmsNorm(handle, words, normalized_words, input, weight,
+                                effective_epsilon, output);
 }
 
 udonatenStatus_t udonatenTile(udonatenHandle_t handle,

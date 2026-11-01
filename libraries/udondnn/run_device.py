@@ -90,6 +90,7 @@ def main():
     gather_device = source / "device/gather.cl"
     int4_device = root / "libraries/udonaten/device/weight_int4pack_mm.cl"
     tile_device = root / "libraries/udonaten/device/tile.cl"
+    aten_rms_device = root / "libraries/udonaten/device/rms_norm.cl"
     convolution_text = convolution_device.read_text(encoding="utf-8")
     activation_text = activation_device.read_text(encoding="utf-8")
     pooling_text = pooling_device.read_text(encoding="utf-8")
@@ -100,6 +101,7 @@ def main():
     gather_text = gather_device.read_text(encoding="utf-8")
     int4_text = int4_device.read_text(encoding="utf-8")
     tile_text = tile_device.read_text(encoding="utf-8")
+    aten_rms_text = aten_rms_device.read_text(encoding="utf-8")
     device_text = (
         convolution_text
         + "\n"
@@ -229,6 +231,13 @@ def main():
         tile_device,
         "udonaten_tile",
         209,
+        8192,
+    )
+    aten_rms_bundle = emit_device(
+        "aten-rms-norm",
+        aten_rms_device,
+        "udondnn_ext_rms_normalization_forward",
+        210,
         8192,
     )
     manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
@@ -365,6 +374,16 @@ def main():
     )
     if '_VRC_Arg3 ("Arg3", Int)' not in rms_norm_shaderlab:
         raise RuntimeError("UdonDNN RMSNorm integer uniforms are not Unity-compatible")
+    aten_rms_manifest = json.loads(
+        (aten_rms_bundle / "manifest.json").read_text(encoding="utf-8")
+    )
+    aten_rms_kernel = aten_rms_manifest["device"]["kernels"][0]
+    if (
+        aten_rms_kernel["name"] != "udondnn_ext_rms_normalization_forward"
+        or aten_rms_kernel["global_size"] != [8192, 1, 1]
+        or len(aten_rms_kernel["args"]) != 6
+    ):
+        raise RuntimeError("UdonATen RMSNorm manifest is invalid")
     gather_manifest = json.loads(
         (gather_bundle / "manifest.json").read_text(encoding="utf-8")
     )
@@ -1345,7 +1364,7 @@ def main():
             "exports": [
                 {
                     "id": 1,
-                    "c_symbol": "udondnnExtRmsNormalizationForward",
+                    "c_symbol": "udonatenRmsNorm",
                     "udon_event": "_run",
                     "status_slot": "",
                     "async": False,

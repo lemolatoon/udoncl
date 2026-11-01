@@ -80,8 +80,12 @@ in the AOT schedule into explicit 512-word Device passes. The public call list
 still contains one ATen-shaped call per ONNX node, while each pass records its
 linear `offset` and `words`; the Llama 8B plan therefore exposes the actual
 14,336-element MLP tiling. Large broadcast pointwise calls are marked
-unsupported in call metadata, and the 4,096-element RMSNorm still requires a
-multi-pass reduction before the mixed 8B Host is executable end to end.
+unsupported in call metadata. The 4,096-element RMSNorm call records its
+8,192-word UdonATen prototype bundle but remains explicitly unsupported: WARP
+rejects the repeated normalized-region scan, and a correct hierarchical
+reduction requires a future multi-input Device ABI. Binding that reduction and
+the remaining mixed calls into one 8B Unity Host is still required for
+end-to-end execution.
 
 Consumers can construct `ExecutionProviderRegistry`, register one graph
 predicate and compiler callback per provider, and pass it to `compile_model`.

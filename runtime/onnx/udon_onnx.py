@@ -478,6 +478,7 @@ POINTWISE_PROVIDERS = {
     "udonatenTanh",
 }
 POINTWISE_TILE_WORDS = 512
+RMS_NORM_TILE_WORDS = 512
 
 
 LLAMA_DOMAIN = "com.lemolatoon.udoncl"
@@ -1379,6 +1380,17 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
                 if tile is not None:
                     device_pass["tile"] = tile
                 if (
+                    node["provider"] == "udonatenRmsNorm"
+                    and math.prod(node["shape"]) > RMS_NORM_TILE_WORDS
+                ):
+                    device_pass["supported"] = False
+                    device_pass["prototype_kernel"] = (
+                        "udondnn_ext_rms_normalization_forward"
+                    )
+                    device_pass["reason"] = (
+                        "large RMSNorm requires a multi-input Device reduction ABI"
+                    )
+                if (
                     node["domain"] == LLAMA_DOMAIN
                     and node["op_type"] == "WeightInt4packMM"
                 ):
@@ -1520,6 +1532,14 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
                 call["device_tiles"] = {
                     "supported": False,
                     "reason": "broadcast addressing is not implemented for large tensors",
+                }
+        elif node["provider"] == "udonatenRmsNorm":
+            if math.prod(node["shape"]) > RMS_NORM_TILE_WORDS:
+                call["device_profile"] = {
+                    "supported": False,
+                    "prototype_state_words": 8192,
+                    "prototype_kernel": "udondnn_ext_rms_normalization_forward",
+                    "reason": "large RMSNorm requires a multi-input Device reduction ABI",
                 }
         calls.append(call)
     return {
