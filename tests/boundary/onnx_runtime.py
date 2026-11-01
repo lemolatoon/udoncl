@@ -107,18 +107,26 @@ assert set(plan["initializers"]) == {
 
 generic_mnist_plan = compile_operators(model)
 assert generic_mnist_plan["execution_provider"] == "UdonOperatorExecutionProvider"
-assert [item["providers"][0] for item in generic_mnist_plan["passes"][:4]] == [
-    "udondnnConvolutionForward",
-    "udonatenAdd",
-    "udonatenRelu",
-    "udondnnPoolingForward",
+assert generic_mnist_plan["passes"][0]["providers"] == [
+    "udondnnConvolutionForward"
 ]
-assert len(generic_mnist_plan["passes"]) == 14
+assert generic_mnist_plan["passes"][1]["providers"] == ["udonatenAdd"]
+generic_mnist_relu_passes = [
+    item
+    for item in generic_mnist_plan["passes"]
+    if item["providers"] == ["udonatenRelu"]
+]
+assert len(generic_mnist_relu_passes) == 18
+assert all(item["tile"]["words"] == 512 for item in generic_mnist_relu_passes)
+assert generic_mnist_plan["passes"][20]["providers"] == [
+    "udondnnPoolingForward"
+]
+assert len(generic_mnist_plan["passes"]) == 31
 assert sum(
     item["providers"] == ["udonblasSgemm"] for item in generic_mnist_plan["passes"]
 ) == 9
 generic_mnist_uasm = emit_uasm_host(generic_mnist_plan)
-assert generic_mnist_uasm.count("VRCSDKBaseVRCGraphics.__Blit__") == 14
+assert generic_mnist_uasm.count("VRCSDKBaseVRCGraphics.__Blit__") == 31
 (output / "mnist-operators-host.uasm").write_text(generic_mnist_uasm, encoding="utf-8")
 
 operator_model = parse_model(

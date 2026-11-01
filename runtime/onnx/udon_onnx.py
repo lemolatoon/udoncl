@@ -469,6 +469,16 @@ PROVIDERS = {
     "MatMul": "udonblasSgemm",
 }
 
+POINTWISE_PROVIDERS = {
+    "udonatenAdd",
+    "udonatenMul",
+    "udonatenSub",
+    "udonatenRelu",
+    "udonatenSigmoid",
+    "udonatenTanh",
+}
+POINTWISE_TILE_WORDS = 512
+
 
 LLAMA_DOMAIN = "com.lemolatoon.udoncl"
 
@@ -959,6 +969,46 @@ def _matmul_schedule(node: dict, values: dict, tile_size: int = 16) -> list[dict
     return tiles
 
 
+def _pointwise_tile_words(remaining: int) -> int:
+    for candidate in range(min(POINTWISE_TILE_WORDS, remaining), 0, -1):
+        for n in range(1, 16):
+            for c in range(1, 16):
+                for h in range(1, 16):
+                    divisor = n * c * h
+                    if candidate % divisor == 0 and candidate // divisor <= 15:
+                        return candidate
+    raise AssertionError("every positive word count has a packable unit tile")
+
+
+def _pointwise_schedule(node: dict, values: dict) -> list[dict | None]:
+    """Describe the private Device launches behind one public ATen call.
+
+    Linear slicing is valid only when every tensor has the output shape. A
+    broadcast operand needs coordinate-aware addressing and remains one
+    logical pass until that backend is implemented.
+    """
+    words = math.prod(node["shape"])
+    if (
+        node["provider"] not in POINTWISE_PROVIDERS
+        or words <= POINTWISE_TILE_WORDS
+        or any(values[name] != node["shape"] for name in node["inputs"])
+    ):
+        return [None]
+    tiles = []
+    offset = 0
+    while offset < words:
+        tile_words = _pointwise_tile_words(words - offset)
+        tiles.append(
+            {
+                "offset": offset,
+                "words": tile_words,
+                "tile_words": POINTWISE_TILE_WORDS,
+            }
+        )
+        offset += tile_words
+    return tiles
+
+
 def _initializer_ints(graph: dict, name: str) -> list[int]:
     tensor = graph["initializers"].get(name)
     if tensor is None or tensor["data_location"] == 1:
@@ -1302,6 +1352,8 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
                 tiles = _gemm_schedule(node, shapes)
             elif node["op_type"] == "MatMul":
                 tiles = _matmul_schedule(node, shapes)
+            elif node["provider"] in POINTWISE_PROVIDERS:
+                tiles = _pointwise_schedule(node, shapes)
             else:
                 tiles = [None]
             for tile_index, tile in enumerate(tiles):
@@ -1317,7 +1369,11 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
                     "fragments": (
                         math.prod(node["shape"])
                         if tile is None
-                        else tile["m"] * tile["n"]
+                        else (
+                            tile["words"]
+                            if "words" in tile
+                            else tile["m"] * tile["n"]
+                        )
                     ),
                 }
                 if tile is not None:
@@ -1443,18 +1499,29 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
                     }
                 )
             continue
-        calls.append(
-            {
-                "index": len(calls),
-                "node_index": node_index,
-                "kind": "view" if node["provider"] == "view" else "library",
-                "function": node["provider"],
-                "inputs": node["inputs"],
-                "output": node["output"],
-                "output_shape": node["shape"],
-                "attributes": node["attributes"],
-            }
-        )
+        call = {
+            "index": len(calls),
+            "node_index": node_index,
+            "kind": "view" if node["provider"] == "view" else "library",
+            "function": node["provider"],
+            "inputs": node["inputs"],
+            "output": node["output"],
+            "output_shape": node["shape"],
+            "attributes": node["attributes"],
+        }
+        if node["provider"] in POINTWISE_PROVIDERS:
+            tiles = _pointwise_schedule(node, shapes)
+            if tiles != [None]:
+                call["device_tiles"] = {
+                    "max_words": POINTWISE_TILE_WORDS,
+                    "count": len(tiles),
+                }
+            elif math.prod(node["shape"]) > POINTWISE_TILE_WORDS:
+                call["device_tiles"] = {
+                    "supported": False,
+                    "reason": "broadcast addressing is not implemented for large tensors",
+                }
+        calls.append(call)
     return {
         "schema_version": 1,
         "runtime": "udon-onnx",

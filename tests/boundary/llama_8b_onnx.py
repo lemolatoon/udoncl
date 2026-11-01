@@ -91,8 +91,25 @@ assert operator_plan["graph"] == "llama_3_1_8b_operator_decoder_single_token"
 assert operator_plan["inputs"] == {"hidden_state": [1, 4096]}
 assert operator_plan["outputs"] == {"logits": [1, 128256]}
 assert len(operator_plan["nodes"]) == 546
-assert len(operator_plan["passes"]) == 482
 assert all(node["op_type"] != "LlamaDecoder" for node in operator_plan["nodes"])
+pointwise_calls = [
+    call
+    for call in operator_plan["aot"]["calls"]
+    if call["function"] in {"udonatenAdd", "udonatenMul", "udonatenSigmoid"}
+]
+assert len(pointwise_calls) == 160
+assert all(call["device_tiles"]["max_words"] == 512 for call in pointwise_calls)
+assert {call["device_tiles"]["count"] for call in pointwise_calls} == {8, 28}
+pointwise_passes = [
+    device_pass
+    for device_pass in operator_plan["passes"]
+    if device_pass["providers"][0]
+    in {"udonatenAdd", "udonatenMul", "udonatenSigmoid"}
+]
+assert len(pointwise_passes) == 3200
+assert all(device_pass["tile"]["tile_words"] == 512 for device_pass in pointwise_passes)
+assert all(0 < device_pass["tile"]["words"] <= 512 for device_pass in pointwise_passes)
+assert len(operator_plan["passes"]) == 3522
 operator_q4_calls = [
     call
     for call in operator_plan["aot"]["calls"]

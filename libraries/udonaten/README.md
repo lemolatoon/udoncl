@@ -11,6 +11,11 @@ The first supported inference operators are:
   `udonatenSigmoid`, and `udonatenTanh`, corresponding to the ATen pointwise
   tensor schemas. Add and Sub retain ATen's `alpha` argument; the binary calls
   support the broadcast shapes accepted by the current four-axis backend.
+  Exact-shape tensors larger than 512 elements are composed internally from
+  independent 512-word Device tiles without changing the public ATen-shaped
+  call; the 14,336-element Llama MLP shape is covered by the native Device
+  test. Broadcast operands above 512 output elements still return
+  `NOT_SUPPORTED` until coordinate-aware tile addressing is implemented.
   Their public ownership follows PyTorch's TensorIterator CUDA implementation;
   the private Device path currently reuses validated UdonDNN OpTensor and
   Activation kernels without exposing those cuDNN-shaped calls to ONNX plans.

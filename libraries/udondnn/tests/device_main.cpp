@@ -956,6 +956,40 @@ int main(int argc, char **argv) {
     for (size_t index = 0; index < atenOutput.size(); ++index)
       if (std::abs(atenOutput[index] - std::tanh(atenLeft[index])) > 0.0005f)
         throw std::runtime_error("UdonATen tanh results diverged");
+    const int atenLargeWords = 14336;
+    std::vector<float> atenLargeLeft(atenLargeWords),
+        atenLargeRight(atenLargeWords), atenLargeOutput(atenLargeWords);
+    for (int index = 0; index < atenLargeWords; ++index) {
+      atenLargeLeft[index] = value(index, 211) * 2.0f;
+      atenLargeRight[index] = value(index, 223) * 0.5f;
+    }
+    require(udondnnSetTensor4dDescriptor(
+                atenLeftDescriptor, UDONDNN_TENSOR_NCHW, UDONDNN_DATA_FLOAT, 1,
+                1, 1, atenLargeWords),
+            UDONDNN_STATUS_SUCCESS, "set large ATen left descriptor");
+    require(udondnnSetTensor4dDescriptor(
+                atenRightDescriptor, UDONDNN_TENSOR_NCHW, UDONDNN_DATA_FLOAT, 1,
+                1, 1, atenLargeWords),
+            UDONDNN_STATUS_SUCCESS, "set large ATen right descriptor");
+    require(udondnnSetTensor4dDescriptor(
+                atenOutputDescriptor, UDONDNN_TENSOR_NCHW, UDONDNN_DATA_FLOAT,
+                1, 1, 1, atenLargeWords),
+            UDONDNN_STATUS_SUCCESS, "set large ATen output descriptor");
+    require(udonatenMul(handle, atenLeftDescriptor, atenLargeLeft.data(),
+                        atenRightDescriptor, atenLargeRight.data(),
+                        atenOutputDescriptor, atenLargeOutput.data()),
+            UDONDNN_STATUS_SUCCESS, "large udonatenMul");
+    for (int index = 0; index < atenLargeWords; ++index)
+      if (std::abs(atenLargeOutput[index] -
+                   atenLargeLeft[index] * atenLargeRight[index]) > 0.0005f)
+        throw std::runtime_error("large UdonATen mul results diverged");
+    require(udonatenSigmoid(handle, atenLeftDescriptor, atenLargeLeft.data(),
+                            atenOutputDescriptor, atenLargeOutput.data()),
+            UDONDNN_STATUS_SUCCESS, "large udonatenSigmoid");
+    for (int index = 0; index < atenLargeWords; ++index)
+      if (std::abs(atenLargeOutput[index] -
+                   1.0f / (1.0f + std::exp(-atenLargeLeft[index]))) > 0.0005f)
+        throw std::runtime_error("large UdonATen sigmoid results diverged");
     require(udondnnDestroyTensorDescriptor(atenLeftDescriptor),
             UDONDNN_STATUS_SUCCESS, "destroy ATen left descriptor");
     require(udondnnDestroyTensorDescriptor(atenRightDescriptor),
@@ -1250,7 +1284,10 @@ int main(int argc, char **argv) {
                                          UDONDNN_DATA_FLOAT, 1, 1, 1, 1),
             UDONDNN_STATUS_BAD_PARAM, "reject stale descriptor");
     require(udondnnSetTensor4dDescriptor(replacement, UDONDNN_TENSOR_NCHW,
-                                         UDONDNN_DATA_FLOAT, 1, 17, 17, 17),
+                                         UDONDNN_DATA_FLOAT, 1, 1, 1, 128256),
+            UDONDNN_STATUS_SUCCESS, "accept Llama logits descriptor");
+    require(udondnnSetTensor4dDescriptor(replacement, UDONDNN_TENSOR_NCHW,
+                                         UDONDNN_DATA_FLOAT, 1, 1, 1, 16777217),
             UDONDNN_STATUS_BAD_PARAM, "reject oversized tensor");
     require(udondnnDestroyTensorDescriptor(replacement), UDONDNN_STATUS_SUCCESS,
             "destroy replacement descriptor");

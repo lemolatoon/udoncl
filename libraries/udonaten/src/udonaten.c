@@ -1,6 +1,35 @@
 #include "udonaten.h"
 #include <float.h>
 
+#define UDONATEN_POINTWISE_TILE_WORDS 512
+
+static int udonatenPointwiseTileShape(size_t remaining, int *n, int *c, int *h,
+                                      int *w) {
+  int candidate = remaining > UDONATEN_POINTWISE_TILE_WORDS
+                      ? UDONATEN_POINTWISE_TILE_WORDS
+                      : (int)remaining;
+  for (; candidate > 0; --candidate) {
+    int candidate_n, candidate_c, candidate_h;
+    for (candidate_n = 1; candidate_n <= 15; ++candidate_n)
+      for (candidate_c = 1; candidate_c <= 15; ++candidate_c)
+        for (candidate_h = 1; candidate_h <= 15; ++candidate_h) {
+          int divisor = candidate_n * candidate_c * candidate_h;
+          int candidate_w;
+          if (candidate % divisor)
+            continue;
+          candidate_w = candidate / divisor;
+          if (candidate_w > 0 && candidate_w <= 15) {
+            *n = candidate_n;
+            *c = candidate_c;
+            *h = candidate_h;
+            *w = candidate_w;
+            return candidate;
+          }
+        }
+  }
+  return 0;
+}
+
 udonatenStatus_t
 udonatenBackendWeightInt4packMm(udonatenHandle_t handle, int m, int n, int k,
                                 const float *input,
@@ -21,16 +50,68 @@ udonatenBinary(udonatenHandle_t handle, udondnnOpTensorOp_t operation,
                float *output) {
   const float one = 1.0f, zero = 0.0f;
   udondnnOpTensorDescriptor_t descriptor = 0;
+  udondnnTensorDescriptor_t tile_descriptor = 0;
+  udondnnDataType_t self_type, other_type, output_type;
+  int self_n, self_c, self_h, self_w;
+  int other_n, other_c, other_h, other_w;
+  int output_n, output_c, output_h, output_w;
+  int n_stride, c_stride, h_stride, w_stride;
+  size_t words = 0, offset;
   udonatenStatus_t status = udondnnCreateOpTensorDescriptor(&descriptor);
   if (status != UDONDNN_STATUS_SUCCESS)
     return status;
   status = udondnnSetOpTensorDescriptor(
       descriptor, operation, UDONDNN_DATA_FLOAT, UDONDNN_PROPAGATE_NAN);
   if (status == UDONDNN_STATUS_SUCCESS)
+    status = udondnnGetTensor4dDescriptor(self_descriptor, &self_type, &self_n,
+                                          &self_c, &self_h, &self_w, &n_stride,
+                                          &c_stride, &h_stride, &w_stride);
+  if (status == UDONDNN_STATUS_SUCCESS)
+    status = udondnnGetTensor4dDescriptor(
+        other_descriptor, &other_type, &other_n, &other_c, &other_h, &other_w,
+        &n_stride, &c_stride, &h_stride, &w_stride);
+  if (status == UDONDNN_STATUS_SUCCESS)
+    status = udondnnGetTensor4dDescriptor(
+        output_descriptor, &output_type, &output_n, &output_c, &output_h,
+        &output_w, &n_stride, &c_stride, &h_stride, &w_stride);
+  if (status == UDONDNN_STATUS_SUCCESS)
+    words = (size_t)output_n * (size_t)output_c * (size_t)output_h *
+            (size_t)output_w;
+  if (status == UDONDNN_STATUS_SUCCESS &&
+      words > UDONATEN_POINTWISE_TILE_WORDS) {
+    if (self_type != UDONDNN_DATA_FLOAT || other_type != UDONDNN_DATA_FLOAT ||
+        output_type != UDONDNN_DATA_FLOAT || self_n != output_n ||
+        self_c != output_c || self_h != output_h || self_w != output_w ||
+        other_n != output_n || other_c != output_c || other_h != output_h ||
+        other_w != output_w)
+      status = UDONDNN_STATUS_NOT_SUPPORTED;
+    else
+      status = udondnnCreateTensorDescriptor(&tile_descriptor);
+    for (offset = 0; status == UDONDNN_STATUS_SUCCESS && offset < words;) {
+      int tile_n, tile_c, tile_h, tile_w;
+      int tile_words = udonatenPointwiseTileShape(words - offset, &tile_n,
+                                                  &tile_c, &tile_h, &tile_w);
+      status = udondnnSetTensor4dDescriptor(
+          tile_descriptor, UDONDNN_TENSOR_NCHW, UDONDNN_DATA_FLOAT, tile_n,
+          tile_c, tile_h, tile_w);
+      if (status == UDONDNN_STATUS_SUCCESS)
+        status = udondnnOpTensor(handle, descriptor, &one, tile_descriptor,
+                                 self + offset, &other_alpha, tile_descriptor,
+                                 other + offset, &zero, tile_descriptor,
+                                 output + offset);
+      offset += (size_t)tile_words;
+    }
+  } else if (status == UDONDNN_STATUS_SUCCESS)
     status = udondnnOpTensor(handle, descriptor, &one, self_descriptor, self,
                              &other_alpha, other_descriptor, other, &zero,
                              output_descriptor, output);
   {
+    if (tile_descriptor) {
+      udonatenStatus_t tile_destroy_status =
+          udondnnDestroyTensorDescriptor(tile_descriptor);
+      if (status == UDONDNN_STATUS_SUCCESS)
+        status = tile_destroy_status;
+    }
     udonatenStatus_t destroy_status =
         udondnnDestroyOpTensorDescriptor(descriptor);
     return status == UDONDNN_STATUS_SUCCESS ? destroy_status : status;
@@ -73,16 +154,60 @@ static udonatenStatus_t udonatenActivation(
     udonatenTensorDescriptor_t output_descriptor, float *output) {
   const float one = 1.0f, zero = 0.0f;
   udondnnActivationDescriptor_t descriptor = 0;
+  udondnnTensorDescriptor_t tile_descriptor = 0;
+  udondnnDataType_t input_type, output_type;
+  int input_n, input_c, input_h, input_w;
+  int output_n, output_c, output_h, output_w;
+  int n_stride, c_stride, h_stride, w_stride;
+  size_t words = 0, offset;
   udonatenStatus_t status = udondnnCreateActivationDescriptor(&descriptor);
   if (status != UDONDNN_STATUS_SUCCESS)
     return status;
   status = udondnnSetActivationDescriptor(descriptor, mode,
                                           UDONDNN_PROPAGATE_NAN, 0.0f);
   if (status == UDONDNN_STATUS_SUCCESS)
+    status = udondnnGetTensor4dDescriptor(
+        input_descriptor, &input_type, &input_n, &input_c, &input_h, &input_w,
+        &n_stride, &c_stride, &h_stride, &w_stride);
+  if (status == UDONDNN_STATUS_SUCCESS)
+    status = udondnnGetTensor4dDescriptor(
+        output_descriptor, &output_type, &output_n, &output_c, &output_h,
+        &output_w, &n_stride, &c_stride, &h_stride, &w_stride);
+  if (status == UDONDNN_STATUS_SUCCESS)
+    words = (size_t)output_n * (size_t)output_c * (size_t)output_h *
+            (size_t)output_w;
+  if (status == UDONDNN_STATUS_SUCCESS &&
+      words > UDONATEN_POINTWISE_TILE_WORDS) {
+    if (input_type != UDONDNN_DATA_FLOAT || output_type != UDONDNN_DATA_FLOAT ||
+        input_n != output_n || input_c != output_c || input_h != output_h ||
+        input_w != output_w)
+      status = UDONDNN_STATUS_BAD_PARAM;
+    else
+      status = udondnnCreateTensorDescriptor(&tile_descriptor);
+    for (offset = 0; status == UDONDNN_STATUS_SUCCESS && offset < words;) {
+      int tile_n, tile_c, tile_h, tile_w;
+      int tile_words = udonatenPointwiseTileShape(words - offset, &tile_n,
+                                                  &tile_c, &tile_h, &tile_w);
+      status = udondnnSetTensor4dDescriptor(
+          tile_descriptor, UDONDNN_TENSOR_NCHW, UDONDNN_DATA_FLOAT, tile_n,
+          tile_c, tile_h, tile_w);
+      if (status == UDONDNN_STATUS_SUCCESS)
+        status = udondnnActivationForward(
+            handle, descriptor, &one, tile_descriptor, input + offset, &zero,
+            tile_descriptor, output + offset);
+      offset += (size_t)tile_words;
+    }
+  } else if (status == UDONDNN_STATUS_SUCCESS)
     status =
         udondnnActivationForward(handle, descriptor, &one, input_descriptor,
                                  input, &zero, output_descriptor, output);
   {
+    if (tile_descriptor) {
+      udonatenStatus_t tile_destroy_status =
+          udondnnDestroyTensorDescriptor(tile_descriptor);
+      if (status == UDONDNN_STATUS_SUCCESS)
+        status = tile_destroy_status;
+    }
     udonatenStatus_t destroy_status =
         udondnnDestroyActivationDescriptor(descriptor);
     return status == UDONDNN_STATUS_SUCCESS ? destroy_status : status;
