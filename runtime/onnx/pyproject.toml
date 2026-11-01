@@ -11,6 +11,10 @@ requires-python = ">=3.12"
 
 [project.scripts]
 udon-onnx = "udon_onnx:main"
+udon-onnx-pack = "udon_weights:main"
+
+[project.optional-dependencies]
+weights = ["numpy>=2.1"]
 
 [tool.setuptools]
-py-modules = ["udon_onnx"]
+py-modules = ["udon_onnx", "udon_weights"]

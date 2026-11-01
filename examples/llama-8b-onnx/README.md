@@ -20,7 +20,19 @@ normalization weights remain bfloat16. The resulting external payload is
 
 The repository does not redistribute Meta weights. `weights.q4` must be
 created from a checkpoint the user is licensed to use and must match the
-generated index. Supplying the descriptor alone is compilation and resource
+generated index:
+
+```text
+python -m pip install 'runtime/onnx[weights]'
+udon-onnx-pack /path/to/Meta-Llama-3.1-8B-Instruct \
+  build/llama-8b-onnx/weights-index.json \
+  -o build/llama-8b-onnx/weights.q4
+python runtime/onnx/udon_onnx.py build/llama-8b-onnx/model.onnx \
+  --external-data-dir build/llama-8b-onnx \
+  -o build/llama-8b-onnx/validated-plan.json
+```
+
+Supplying the descriptor alone is compilation and resource
 planning, not pretrained-model inference. The numerically executable
 `examples/tiny-llama` fixture uses the same public Llama execution provider,
 the same seven-pass layer schedule, and the real Device backend at a small

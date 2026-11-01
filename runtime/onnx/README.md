@@ -45,6 +45,19 @@ It has no runtime Python dependencies. Applications can instead import
 `parse_model`, `validate_external_data`, `ExecutionProviderRegistry`, and
 `compile_model` from the installed `udon_onnx` module.
 
+Checkpoint conversion is an optional build-time component:
+
+```text
+python -m pip install 'runtime/onnx[weights]'
+udon-onnx-pack /path/to/safetensors weights-index.json -o weights.q4
+```
+
+The packer accepts indexed or single-file safetensors in float32, float16, or
+bfloat16, validates every shape/range, converts matrix tensors to signed Q4
+blocks with fp16 scales, preserves normalization tensors as bfloat16, emits
+per-tensor SHA-256 evidence, and replaces the destination only after the full
+conversion succeeds.
+
 This is not full ONNX operator coverage yet. The MNIST provider still contains
 model-level fusion, while the Llama provider deliberately isolates its custom
 fusion behind the registry. General tiled kernels and external-weight page
