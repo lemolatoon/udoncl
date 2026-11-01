@@ -138,6 +138,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             Assert.IsEmpty(modelAsset.TextureSlotWidths);
             Assert.IsEmpty(modelAsset.TextureSlotHeights);
             Assert.IsEmpty(modelAsset.TextureArenaSlots);
+            Assert.IsEmpty(modelAsset.StaticInputTextures);
         }
 
         [Test]

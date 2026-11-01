@@ -1578,6 +1578,8 @@ def materialize_static_inputs(
         relative = f"static-inputs/input-{index:04d}.bytes"
         destination = output_directory / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
+        texture_bytes = item["texture"]["width"] * item["texture"]["height"] * 4
+        payload = payload.ljust(texture_bytes, b"\0")
         destination.write_bytes(payload)
         artifacts.append(
             {

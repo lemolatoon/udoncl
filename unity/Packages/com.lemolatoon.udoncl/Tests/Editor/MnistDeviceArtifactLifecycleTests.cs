@@ -118,6 +118,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 Assert.IsFalse(slot.useMipMap);
                 Assert.IsFalse(slot.sRGB);
             }
+            Assert.IsEmpty(modelAsset.StaticInputTextures);
         }
 
         [Test]

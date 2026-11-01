@@ -18,7 +18,8 @@ namespace Lemolatoon.Udoncl.Editor
             string artifactStage,
             string programName,
             IList<ValidatedKernel> kernels,
-            IList<ValidatedResource> resources
+            IList<ValidatedResource> resources,
+            IList<ValidatedOnnxStaticInput> onnxStaticInputs
         )
         {
             RootDirectory = root;
@@ -29,6 +30,7 @@ namespace Lemolatoon.Udoncl.Editor
             ProgramName = programName;
             Kernels = kernels;
             Resources = resources;
+            OnnxStaticInputs = onnxStaticInputs;
         }
 
         public string RootDirectory { get; private set; }
@@ -39,6 +41,31 @@ namespace Lemolatoon.Udoncl.Editor
         public string ProgramName { get; private set; }
         public IList<ValidatedKernel> Kernels { get; private set; }
         public IList<ValidatedResource> Resources { get; private set; }
+        public IList<ValidatedOnnxStaticInput> OnnxStaticInputs { get; private set; }
+    }
+
+    public sealed class ValidatedOnnxStaticInput
+    {
+        internal ValidatedOnnxStaticInput(
+            string name,
+            string absolutePath,
+            int words,
+            int width,
+            int height
+        )
+        {
+            Name = name;
+            AbsolutePath = absolutePath;
+            Words = words;
+            Width = width;
+            Height = height;
+        }
+
+        public string Name { get; private set; }
+        public string AbsolutePath { get; private set; }
+        public int Words { get; private set; }
+        public int Width { get; private set; }
+        public int Height { get; private set; }
     }
 
     public sealed class ValidatedResource
@@ -234,6 +261,10 @@ namespace Lemolatoon.Udoncl.Editor
                 }
             }
             ValidateOnnxResources(resources);
+            List<ValidatedOnnxStaticInput> onnxStaticInputs = ValidateOnnxStaticInputs(
+                root,
+                manifest.static_inputs
+            );
 
             return new ValidatedArtifact(
                 root,
@@ -243,8 +274,54 @@ namespace Lemolatoon.Udoncl.Editor
                 manifest.artifact_stage,
                 manifest.program.name,
                 kernels,
-                resources
+                resources,
+                onnxStaticInputs
             );
+        }
+
+        private static List<ValidatedOnnxStaticInput> ValidateOnnxStaticInputs(
+            string root,
+            UdonOnnxStaticInputInfo[] inputs
+        )
+        {
+            List<ValidatedOnnxStaticInput> validated = new List<ValidatedOnnxStaticInput>();
+            HashSet<string> names = new HashSet<string>(StringComparer.Ordinal);
+            foreach (
+                UdonOnnxStaticInputInfo input in inputs ?? Array.Empty<UdonOnnxStaticInputInfo>()
+            )
+            {
+                UdonOnnxStaticTextureInfo texture = input?.texture;
+                if (
+                    input == null
+                    || string.IsNullOrWhiteSpace(input.name)
+                    || !names.Add(input.name)
+                    || texture == null
+                    || texture.abi != "linear-rgba32-words"
+                    || texture.words <= 0
+                    || texture.width != Math.Min(8192, texture.words)
+                    || texture.height != (texture.words + 8191) / 8192
+                )
+                    throw new InvalidDataException(
+                        "ONNX static input texture contract is invalid."
+                    );
+                string relativePath = ValidateRelativeFilePath(input.resource, ".bytes");
+                string absolutePath = ResolveExistingFile(root, relativePath);
+                long expectedBytes = (long)texture.width * texture.height * 4;
+                if (new FileInfo(absolutePath).Length != expectedBytes)
+                    throw new InvalidDataException(
+                        "ONNX static input byte size does not match its texture dimensions."
+                    );
+                validated.Add(
+                    new ValidatedOnnxStaticInput(
+                        input.name,
+                        absolutePath,
+                        texture.words,
+                        texture.width,
+                        texture.height
+                    )
+                );
+            }
+            return validated;
         }
 
         private static void ValidateOnnxResources(IList<ValidatedResource> resources)

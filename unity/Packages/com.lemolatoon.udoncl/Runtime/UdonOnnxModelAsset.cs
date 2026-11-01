@@ -40,6 +40,9 @@ namespace Lemolatoon.Udoncl
         [SerializeField]
         private RenderTexture[] textureArenaSlots;
 
+        [SerializeField]
+        private Texture2D[] staticInputTextures;
+
         public TextAsset Model => model;
 
         public TextAsset ExecutionPlan => executionPlan;
@@ -64,5 +67,7 @@ namespace Lemolatoon.Udoncl
         /// Reusable RGBA32 word-storage surfaces indexed by the execution plan's arena slot.
         /// </summary>
         public RenderTexture[] TextureArenaSlots => textureArenaSlots;
+
+        public Texture2D[] StaticInputTextures => staticInputTextures;
     }
 }

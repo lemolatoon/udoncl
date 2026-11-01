@@ -16,6 +16,7 @@ namespace Lemolatoon.Udoncl.Editor
         public ExportInfo[] exports;
         public DeviceInfo device;
         public ArtifactResourceInfo[] resources;
+        public UdonOnnxStaticInputInfo[] static_inputs;
     }
 
     [Serializable]
@@ -95,6 +96,7 @@ namespace Lemolatoon.Udoncl.Editor
         public int fragments;
         public UdonOnnxIntMaterialBinding[] material_int_bindings;
         public UdonOnnxFloatMaterialBinding[] material_float_bindings;
+        public UdonOnnxPassStaticInput[] static_inputs;
     }
 
     [Serializable]
@@ -109,6 +111,30 @@ namespace Lemolatoon.Udoncl.Editor
     {
         public string property;
         public float value;
+    }
+
+    [Serializable]
+    internal sealed class UdonOnnxPassStaticInput
+    {
+        public string property;
+        public string initializer;
+    }
+
+    [Serializable]
+    internal sealed class UdonOnnxStaticInputInfo
+    {
+        public string name;
+        public string resource;
+        public UdonOnnxStaticTextureInfo texture;
+    }
+
+    [Serializable]
+    internal sealed class UdonOnnxStaticTextureInfo
+    {
+        public string abi;
+        public int words;
+        public int width;
+        public int height;
     }
 
     [Serializable]

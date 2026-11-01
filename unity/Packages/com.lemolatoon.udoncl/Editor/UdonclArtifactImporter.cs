@@ -111,6 +111,12 @@ namespace Lemolatoon.Udoncl.Editor
                         kernelMaterials,
                         kernelShaders
                     );
+                    if (artifacts.ArtifactStage == "unity-udon-onnx-model")
+                    {
+                        AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+                        transaction.Commit();
+                        return programRoot;
+                    }
                     if (artifacts.ArtifactStage == "unity-mnist-prototype")
                     {
                         ImportMnistDemo(
@@ -1422,6 +1428,24 @@ namespace Lemolatoon.Udoncl.Editor
                 textureArenaTotalWords = arena.total_words;
             }
             Material[] passMaterials = new Material[executionPlan.passes.Length];
+            Dictionary<string, Texture2D> staticInputs = new Dictionary<string, Texture2D>(
+                StringComparer.Ordinal
+            );
+            Texture2D[] staticInputTextures = new Texture2D[artifact.OnnxStaticInputs.Count];
+            for (int index = 0; index < artifact.OnnxStaticInputs.Count; ++index)
+            {
+                ValidatedOnnxStaticInput input = artifact.OnnxStaticInputs[index];
+                Texture2D texture = CreateOrUpdateByteTexture(
+                    transaction,
+                    programRoot,
+                    "onnx_static_input_" + index + ".asset",
+                    input.Width,
+                    input.Height,
+                    File.ReadAllBytes(input.AbsolutePath)
+                );
+                staticInputs.Add(input.Name, texture);
+                staticInputTextures[index] = texture;
+            }
             for (int index = 0; index < executionPlan.passes.Length; ++index)
             {
                 UdonOnnxPassInfo pass = executionPlan.passes[index];
@@ -1447,6 +1471,19 @@ namespace Lemolatoon.Udoncl.Editor
                             ?? Array.Empty<UdonOnnxFloatMaterialBinding>()
                     )
                         material.SetFloat(binding.property, binding.value);
+                    foreach (
+                        UdonOnnxPassStaticInput binding in pass.static_inputs
+                            ?? Array.Empty<UdonOnnxPassStaticInput>()
+                    )
+                    {
+                        if (!staticInputs.TryGetValue(binding.initializer, out Texture2D texture))
+                            throw new InvalidDataException(
+                                "ONNX pass references missing static input "
+                                    + binding.initializer
+                                    + "."
+                            );
+                        material.SetTexture(binding.property, texture);
+                    }
                     EditorUtility.SetDirty(material);
                     passMaterials[index] = material;
                 }
@@ -1487,6 +1524,11 @@ namespace Lemolatoon.Udoncl.Editor
                 arenaSlots.GetArrayElementAtIndex(index).objectReferenceValue = textureArenaSlots[
                     index
                 ];
+            SerializedProperty staticTextures = serialized.FindProperty("staticInputTextures");
+            staticTextures.arraySize = staticInputTextures.Length;
+            for (int index = 0; index < staticInputTextures.Length; ++index)
+                staticTextures.GetArrayElementAtIndex(index).objectReferenceValue =
+                    staticInputTextures[index];
             serialized.ApplyModifiedPropertiesWithoutUndo();
             EditorUtility.SetDirty(modelAsset);
             // Later stage-specific imports refresh the AssetDatabase before the

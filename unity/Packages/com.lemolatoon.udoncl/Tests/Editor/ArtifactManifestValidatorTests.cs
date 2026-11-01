@@ -108,13 +108,32 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             );
         }
 
+        [Test]
+        public void ValidateAcceptsOnnxStaticInputTexture()
+        {
+            File.WriteAllBytes(Path.Combine(_directory, "scale.bytes"), new byte[8]);
+            AddManifestProperty(
+                "\"static_inputs\":[{\"name\":\"model.scale\",\"resource\":\"scale.bytes\","
+                    + "\"texture\":{\"abi\":\"linear-rgba32-words\",\"words\":2,\"width\":2,\"height\":1}}]"
+            );
+            ValidatedArtifact artifact = ArtifactManifestValidator.Validate(_directory);
+            Assert.AreEqual(1, artifact.OnnxStaticInputs.Count);
+            Assert.AreEqual("model.scale", artifact.OnnxStaticInputs[0].Name);
+            Assert.AreEqual(2, artifact.OnnxStaticInputs[0].Width);
+        }
+
         private void AddResources(string resources)
+        {
+            AddManifestProperty("\"resources\":" + resources);
+        }
+
+        private void AddManifestProperty(string property)
         {
             string manifestPath = Path.Combine(_directory, "manifest.json");
             string json = File.ReadAllText(manifestPath);
             File.WriteAllText(
                 manifestPath,
-                json.Substring(0, json.Length - 1) + ",\"resources\":" + resources + "}",
+                json.Substring(0, json.Length - 1) + "," + property + "}",
                 new UTF8Encoding(false)
             );
         }
