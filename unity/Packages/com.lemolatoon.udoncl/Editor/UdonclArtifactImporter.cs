@@ -1427,7 +1427,7 @@ namespace Lemolatoon.Udoncl.Editor
                     throw new InvalidDataException("ONNX texture arena capacity is invalid.");
                 textureArenaTotalWords = arena.total_words;
             }
-            Material[] passMaterials = new Material[executionPlan.passes.Length];
+            List<Material> passMaterials = new List<Material>();
             Dictionary<string, Texture2D> staticInputs = new Dictionary<string, Texture2D>(
                 StringComparer.Ordinal
             );
@@ -1449,6 +1449,16 @@ namespace Lemolatoon.Udoncl.Editor
             for (int index = 0; index < executionPlan.passes.Length; ++index)
             {
                 UdonOnnxPassInfo pass = executionPlan.passes[index];
+                if (pass.has_host_material_index && pass.host_material_index < 0)
+                    continue;
+                int expectedMaterialIndex = pass.has_host_material_index
+                    ? pass.host_material_index
+                    : passMaterials.Count;
+                if (expectedMaterialIndex != passMaterials.Count)
+                    throw new InvalidDataException(
+                        "ONNX Host material indexes must be contiguous and topological."
+                    );
+                Material passMaterial;
                 if (!string.IsNullOrWhiteSpace(pass.shader))
                 {
                     if (!kernelShaders.TryGetValue(pass.shader, out Shader shader))
@@ -1485,12 +1495,13 @@ namespace Lemolatoon.Udoncl.Editor
                         material.SetTexture(binding.property, texture);
                     }
                     EditorUtility.SetDirty(material);
-                    passMaterials[index] = material;
+                    passMaterial = material;
                 }
-                else if (!kernelMaterials.TryGetValue(pass.id, out passMaterials[index]))
+                else if (!kernelMaterials.TryGetValue(pass.id, out passMaterial))
                     throw new InvalidDataException(
                         "ONNX execution pass references missing kernel id " + pass.id + "."
                     );
+                passMaterials.Add(passMaterial);
             }
             string assetPath = modelDirectory + "/UdonOnnxModel.asset";
             transaction.Track(assetPath);
@@ -1511,8 +1522,8 @@ namespace Lemolatoon.Udoncl.Editor
             serialized.FindProperty("profile").stringValue = executionPlan.profile ?? "";
             serialized.FindProperty("hostProgram").objectReferenceValue = programAsset;
             SerializedProperty materials = serialized.FindProperty("passMaterials");
-            materials.arraySize = passMaterials.Length;
-            for (int index = 0; index < passMaterials.Length; ++index)
+            materials.arraySize = passMaterials.Count;
+            for (int index = 0; index < passMaterials.Count; ++index)
                 materials.GetArrayElementAtIndex(index).objectReferenceValue = passMaterials[index];
             serialized.FindProperty("textureArenaTotalWords").intValue = textureArenaTotalWords;
             SetIntArray(serialized.FindProperty("textureSlotCapacities"), textureSlotCapacities);

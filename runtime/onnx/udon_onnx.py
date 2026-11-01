@@ -1934,6 +1934,23 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
                 (device_pass.get("material_floats") or {}).items()
             )
         ]
+    calls_by_index = {
+        call["index"]: call
+        for call in calls
+        if isinstance(call.get("index"), int)
+    }
+    host_material_index = 0
+    for device_pass in passes:
+        call = calls_by_index.get(device_pass.get("call_index"))
+        uses_material = not (
+            isinstance(call, dict)
+            and call.get("kind") == "tiled_library"
+            and call.get("function") == "udonatenWeightInt4packMm"
+        )
+        device_pass["has_host_material_index"] = True
+        device_pass["host_material_index"] = host_material_index if uses_material else -1
+        if uses_material:
+            host_material_index += 1
     return {
         "schema_version": 1,
         "runtime": "udon-onnx",

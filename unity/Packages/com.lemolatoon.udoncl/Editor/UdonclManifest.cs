@@ -97,6 +97,8 @@ namespace Lemolatoon.Udoncl.Editor
         public UdonOnnxIntMaterialBinding[] material_int_bindings;
         public UdonOnnxFloatMaterialBinding[] material_float_bindings;
         public UdonOnnxPassStaticInput[] static_inputs;
+        public bool has_host_material_index;
+        public int host_material_index;
     }
 
     [Serializable]

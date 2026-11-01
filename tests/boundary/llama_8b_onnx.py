@@ -191,6 +191,16 @@ assert all(
     for scratch in operator_plan["scratch_buffers"]
 )
 assert len(operator_plan["passes"]) == 547
+host_material_passes = [
+    device_pass
+    for device_pass in operator_plan["passes"]
+    if device_pass["host_material_index"] >= 0
+]
+assert len(host_material_passes) == 322
+assert [item["host_material_index"] for item in host_material_passes] == list(
+    range(322)
+)
+assert sum(item["host_material_index"] < 0 for item in operator_plan["passes"]) == 225
 texture_arena = operator_plan["texture_arena"]
 assert texture_arena["abi"] == "linear-rgba32-words"
 assert texture_arena["max_texture_width"] == 8192
