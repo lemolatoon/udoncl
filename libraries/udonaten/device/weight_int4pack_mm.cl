@@ -17,13 +17,15 @@ extern size_t udonaten_int4_cpu_gid;
  * contract: dequantized = signed_int4 * scale + zero. */
 __kernel void udonaten_weight_int4pack_mm(__global const float *state,
                                           __global float *result, int n, int k,
-                                          int row_stride) {
+                                          int row_stride, int accumulate) {
   uint gid = (uint)UDONATEN_INT4_GID();
   float value = state[gid];
   if (gid >= UDONATEN_INT4_RESULT_OFFSET &&
       gid < UDONATEN_INT4_RESULT_OFFSET + (uint)n) {
     uint row = gid - UDONATEN_INT4_RESULT_OFFSET;
-    float sum = 0.0f;
+    float sum = accumulate != 0
+                    ? state[(UDONATEN_INT4_RESULT_OFFSET + row) & 8191u]
+                    : 0.0f;
     for (uint inner = 0; inner < 128u; ++inner) {
       if (inner < (uint)k) {
         uint block = inner / 32u;

@@ -19,8 +19,10 @@ The first supported inference operators are:
   to ATen `_weight_int4pack_mm(input, packed_weight, group_size,
   scales_and_zeros)`. Its Device kernel applies signed INT4 dequantization as
   `value * scale + zero`; one fragment independently owns each output feature.
-  The current active-tile profile supports group size 32, up to 64 outputs and
-  128 input features.
+  Each active Device tile supports group size 32, up to 64 outputs and 128
+  input features. The private backend composes larger public calls from those
+  tiles; the first K tile replaces the output and later K tiles add their
+  partial sums without adding a non-ATen beta parameter to the public API.
 
 `libraries/udondnn/run_device.py` also emits the
 `unity-udonaten-int4-mm-bundle` reusable Unity artifact. Its manifest retains
@@ -32,7 +34,7 @@ zero points before deleting all generated assets.
 
 The implementation currently adapts the already validated UdonDNN prototype
 kernels. Those functions are backend details, not the public ownership model.
-Tile/repeat and the runtime texture-copy/accumulation dispatcher remain before
+Tile/repeat and the runtime texture-copy dispatcher remain before
 the Llama 8B operator plan can emit an executable Host. Its external-weight
 page contract and bounded page materializer are now implemented in the ONNX
 runtime.

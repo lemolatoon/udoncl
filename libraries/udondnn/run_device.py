@@ -381,14 +381,14 @@ def main():
         or int4_kernel["global_size"] != [8192, 1, 1]
         or [argument["required_bytes"] for argument in int4_kernel["args"][:2]]
         != [32768, 32768]
-        or len(int4_kernel["args"]) != 5
+        or len(int4_kernel["args"]) != 6
     ):
         raise RuntimeError("UdonATen INT4 manifest does not match its packed ABI")
     int4_fragment = int4_bundle / "kernels/kernel_208.hlsl"
     int4_shaderlab = (int4_bundle / "kernels/kernel_208.shader").read_text(
         encoding="utf-8"
     )
-    if '_VRC_Arg4 ("Arg4", Int)' not in int4_shaderlab:
+    if '_VRC_Arg5 ("Arg5", Int)' not in int4_shaderlab:
         raise RuntimeError("UdonATen INT4 integer uniforms are not Unity-compatible")
     (output / "Bindings.h").write_text(
         "inline const char *deviceSource() { return "
@@ -408,7 +408,7 @@ def main():
         + '{205, 2048, 8, "udondnn_op_tensor", opTensor}, '
         + '{206, 2048, 5, "udondnn_ext_rms_normalization_forward", rmsNorm}, '
         + '{207, 2048, 6, "udondnn_ext_gather_forward", gather}, '
-        + '{208, 8192, 3, "udonaten_weight_int4pack_mm", int4}}; }\n',
+        + '{208, 8192, 4, "udonaten_weight_int4pack_mm", int4}}; }\n',
         encoding="utf-8",
     )
 
@@ -1400,6 +1400,15 @@ def main():
             int4_state[state_base + 16] = int4_qparams[qparam]
             int4_state[state_base + 17] = int4_qparams[qparam + 1]
     int4_state[6144 : 6144 + int4_k] = int4_input
+    int4_accumulator = [
+        ((row * 11 + 3) % 17 - 8) * 0.125 for row in range(int4_n)
+    ]
+    int4_accumulate_state = list(int4_state)
+    int4_accumulate_state[7168 : 7168 + int4_n] = int4_accumulator
+    int4_reference_values = int4_reference + [
+        value + accumulator
+        for value, accumulator in zip(int4_reference, int4_accumulator)
+    ]
 
     unity_int4_bundle = output / "unity-udonaten-int4-mm-bundle"
     with tempfile.TemporaryDirectory(
@@ -1422,8 +1431,11 @@ def main():
         (staged / "fixture_input.bytes").write_bytes(
             struct.pack("<8192f", *int4_state)
         )
+        (staged / "fixture_accumulate_input.bytes").write_bytes(
+            struct.pack("<8192f", *int4_accumulate_state)
+        )
         (staged / "fixture_reference.bytes").write_bytes(
-            struct.pack(f"<{int4_n}f", *int4_reference)
+            struct.pack(f"<{len(int4_reference_values)}f", *int4_reference_values)
         )
         int4_unity_manifest = {
             "schema_version": 1,
@@ -1463,6 +1475,11 @@ def main():
             },
             "resources": [
                 {"name": "fixture_input", "kind": "bytes", "path": "fixture_input.bytes"},
+                {
+                    "name": "fixture_accumulate_input",
+                    "kind": "bytes",
+                    "path": "fixture_accumulate_input.bytes",
+                },
                 {
                     "name": "fixture_reference",
                     "kind": "bytes",

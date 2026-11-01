@@ -85,7 +85,10 @@ UdonDNN extension. The artifact manifest records separate packed-weight and
 `[K/group_size,N,2]` scale/zero shapes; its active Device tile expands those
 inputs into an 8,192-word state texture and assigns each output feature to an
 independent fragment. The IUdonVM lifecycle fixture uses non-zero zero points,
-compares all eight outputs, and removes generated program and prefab assets.
+compares all eight outputs both with replacement and with a prior K-tile
+accumulator, and removes generated program and prefab assets. Accumulation is
+an internal Device paging control; the public API remains the ATen operator
+without a BLAS-style beta argument.
 
 ## UdonDNN
 

@@ -327,7 +327,10 @@ assert int4_call["paging"]["packed_weight"] == {
 }
 assert int4_call["paging"]["scales_and_zeros"]["source_group_stride_bytes"] == 280
 activation = [index * 0.125 for index in range(int4_k)]
-int4_page = materialize_int4_page(int4_plan, 0, 1, 1, output, activation)
+accumulator = [index * -0.25 for index in range(int4_n)]
+int4_page = materialize_int4_page(
+    int4_plan, 0, 1, 1, output, activation, accumulator
+)
 assert int4_page["n"] == 6
 assert int4_page["k"] == 32
 assert int4_page["m_offset"] == 64
@@ -340,6 +343,8 @@ assert int4_page["state"][16] == 1.0
 assert int4_page["state"][17] == -0.5
 assert int4_page["state"][6144] == activation[128]
 assert int4_page["state"][6144 + 31] == activation[159]
+assert int4_page["state"][7168] == accumulator[64]
+assert int4_page["state"][7168 + 5] == accumulator[69]
 try:
     materialize_int4_page(int4_plan, 0, 2, 0, output)
 except ValueError as error:

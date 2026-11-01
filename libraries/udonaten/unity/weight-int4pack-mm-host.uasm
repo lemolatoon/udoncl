@@ -6,6 +6,7 @@
     .export n
     .export k
     .export rowStride
+    .export accumulate
 
     inputState: %UnityEngineTexture, null
     outputState: %UnityEngineRenderTexture, null
@@ -14,12 +15,14 @@
     n: %SystemInt32, null
     k: %SystemInt32, null
     rowStride: %SystemInt32, null
+    accumulate: %SystemInt32, null
 
     __inputName: %SystemString, "_VRC_Input"
     __resultName: %SystemString, "_Result"
     __nName: %SystemString, "_VRC_Arg2"
     __kName: %SystemString, "_VRC_Arg3"
     __rowStrideName: %SystemString, "_VRC_Arg4"
+    __accumulateName: %SystemString, "_VRC_Arg5"
 .data_end
 
 .code_start
@@ -44,6 +47,10 @@
         PUSH, int4Material
         PUSH, __rowStrideName
         PUSH, rowStride
+        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        PUSH, int4Material
+        PUSH, __accumulateName
+        PUSH, accumulate
         EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
         PUSH, inputState
         PUSH, outputState

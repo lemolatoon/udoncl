@@ -1000,7 +1000,9 @@ int main(int argc, char **argv) {
     require(udondnnDestroyTensorDescriptor(gatherOutputDescriptor),
             UDONDNN_STATUS_SUCCESS, "destroy Gather output descriptor");
 
-    constexpr int int4N = 64, int4K = 128, int4Group = 32;
+    /* K=256 forces two kernel-208 pages while the public ATen call remains a
+     * single whole-matrix operation. */
+    constexpr int int4N = 32, int4K = 256, int4Group = 32;
     std::vector<float> int4Input(int4K),
         int4Qparams((int4K / int4Group) * int4N * 2), int4Actual(int4N),
         int4Expected(int4N);

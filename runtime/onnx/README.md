@@ -53,8 +53,9 @@ Each call records its 64x128 tile grid and K-tile accumulation contract. Host
 Each call now also records the exact packed-weight row stride, scale/zero group
 stride, external byte ranges, and 8,192-word kernel-208 active-state layout.
 `udon-onnx-page` validates those ranges and materializes any requested 64x128
-tile without loading a complete tensor or model. Host emission still rejects
-these plans until the runtime texture-copy/accumulation dispatcher is wired,
+tile without loading a complete tensor or model. It can also place a prior
+output tile at word 7,168 for the kernel's private accumulation argument. Host
+emission still rejects these plans until the runtime texture-copy dispatcher is wired,
 rather than generating an executable that cannot supply the materialized page.
 Identity, Reshape, Squeeze, and Unsqueeze are compiled as typed zero-copy views.
 Their embedded int32/int64 shape inputs are evaluated at AOT time and retained
@@ -132,7 +133,8 @@ The page tool is dependency-free. It gathers signed-INT4 row slices and
 bfloat16 `[K/group_size,N,2]` scale/zero slices directly from validated ONNX
 external ranges, converts only the selected metadata to float32, and emits the
 same active-state layout consumed by the UnityPackage kernel. An optional full
-float32 activation vector fills the selected K slice at word 6,144.
+float32 activation vector fills the selected K slice at word 6,144; an optional
+full output accumulator fills the selected N slice at word 7,168.
 
 This is not full ONNX operator coverage yet. The MNIST provider still contains
 model-level fusion, while the Llama provider deliberately isolates its custom

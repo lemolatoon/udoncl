@@ -670,7 +670,7 @@ def _compile_llama(model: dict) -> dict:
             "k_tile": 128,
             "m_tiles": (output_features + 63) // 64,
             "k_tiles": (input_features + 127) // 128,
-            "accumulation": "beta=0 for first K tile; beta=1 thereafter",
+            "accumulation": "first K tile replaces; later K tiles add internally",
         }
 
     passes = [
@@ -1331,7 +1331,7 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
                         "k": 128,
                         "m_tiles": (output_features + 63) // 64,
                         "k_tiles": (input_features + 127) // 128,
-                        "accumulation": "beta=0 for first K tile; beta=1 thereafter",
+                        "accumulation": "first K tile replaces; later K tiles add internally",
                     }
                 passes.append(device_pass)
             if node["op_type"] == "Gemm" and len(node["inputs"]) == 3:
@@ -1374,13 +1374,14 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
                         "k": 128,
                         "m_tiles": (output_features + 63) // 64,
                         "k_tiles": (input_features + 127) // 128,
-                        "accumulation": "beta=0 for first K tile; beta=1 thereafter",
+                        "accumulation": "first K tile replaces; later K tiles add internally",
                     },
                     "paging": {
                         "state_words": 8192,
                         "input_offset_words": 6144,
                         "result_offset_words": 7168,
                         "row_stride_words": 72,
+                        "accumulate_argument": 5,
                         "packed_weight": {
                             "tensor": node["inputs"][1],
                             "external": dict(

@@ -37,4 +37,6 @@ packed-weight and `[K/group_size,N,2]` bfloat16 scale/zero inputs and the
 `udonatenWeightInt4packMm` contract. Its Device implementation remains
 an UdonATen-owned kernel, with one fragment per output feature and numerical
 coverage for non-zero zero points. External-weight paging is still required to
-execute the complete 8B plan.
+execute the complete 8B plan. The public call has no beta parameter; private
+Device tiles use replace-then-add accumulation to preserve whole-operator ATen
+semantics across K pages.

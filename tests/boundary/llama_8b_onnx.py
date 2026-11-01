@@ -104,7 +104,7 @@ assert operator_q4_calls[0]["tile_grid"] == {
     "k": 128,
     "m_tiles": 64,
     "k_tiles": 32,
-    "accumulation": "beta=0 for first K tile; beta=1 thereafter",
+    "accumulation": "first K tile replaces; later K tiles add internally",
 }
 assert operator_q4_calls[-1]["tile_grid"]["m_tiles"] == 2004
 assert operator_q4_calls[-1]["tile_grid"]["k_tiles"] == 32
@@ -112,6 +112,7 @@ assert operator_q4_calls[0]["paging"]["state_words"] == 8192
 assert operator_q4_calls[0]["paging"]["input_offset_words"] == 6144
 assert operator_q4_calls[0]["paging"]["result_offset_words"] == 7168
 assert operator_q4_calls[0]["paging"]["row_stride_words"] == 72
+assert operator_q4_calls[0]["paging"]["accumulate_argument"] == 5
 assert operator_q4_calls[0]["paging"]["packed_weight"]["source_row_stride_bytes"] == 2048
 assert (
     operator_q4_calls[0]["paging"]["scales_and_zeros"][

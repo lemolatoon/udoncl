@@ -72,6 +72,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             AssertPublic(behaviour, "n", 8);
             AssertPublic(behaviour, "k", 64);
             AssertPublic(behaviour, "rowStride", 36);
+            AssertPublic(behaviour, "accumulate", 0);
         }
 
         [Test]
@@ -107,6 +108,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             Set(heap, program, "n", 8);
             Set(heap, program, "k", 64);
             Set(heap, program, "rowStride", 36);
+            Set(heap, program, "accumulate", 0);
             vm.SetProgramCounter(program.EntryPoints.GetAddressFromSymbol("_run"));
             Assert.AreEqual(0u, vm.Interpret(), "SDK IUdonVM rejected UdonATen INT4 MM.");
 
@@ -120,6 +122,28 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 maximumError = Mathf.Max(
                     maximumError,
                     Mathf.Abs(Decode(actual[7168 + row]) - Decode(expected[row]))
+                );
+            Assert.That(maximumError, Is.LessThan(0.0005f));
+
+            Set(
+                heap,
+                program,
+                "inputState",
+                Load<Texture2D>("Textures/udonaten_weight_int4pack_mm_accumulate_input.asset")
+            );
+            Set(heap, program, "accumulate", 1);
+            vm.SetProgramCounter(program.EntryPoints.GetAddressFromSymbol("_run"));
+            Assert.AreEqual(
+                0u,
+                vm.Interpret(),
+                "SDK IUdonVM rejected an accumulated UdonATen INT4 K tile."
+            );
+            actual = ReadPixels(output, 8192);
+            maximumError = 0.0f;
+            for (int row = 0; row < 8; ++row)
+                maximumError = Mathf.Max(
+                    maximumError,
+                    Mathf.Abs(Decode(actual[7168 + row]) - Decode(expected[8 + row]))
                 );
             Assert.That(maximumError, Is.LessThan(0.0005f));
         }

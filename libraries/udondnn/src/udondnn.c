@@ -1443,33 +1443,15 @@ udondnnStatus_t udonatenBackendWeightInt4packMm(udondnnHandle_t handle, int n,
                                                 int group_size,
                                                 const float *scales_and_zeros,
                                                 float *output) {
-  int blocks, row_stride, row, block, byte_index, index;
+  int n_offset, k_offset, tile_n, tile_k, blocks, row_stride, row, block;
+  int byte_index, index, accumulate;
   size_t global = UDONATEN_INT4_WORDS, local = 1;
   cl_int status;
   if (handle != UDONDNN_HANDLE || !context)
     return UDONDNN_STATUS_NOT_INITIALIZED;
-  if (n <= 0 || n > UDONATEN_INT4_MAX_N || k <= 0 || k > UDONATEN_INT4_MAX_K ||
-      group_size != 32 || k % group_size || !input || !packed_weight ||
-      !scales_and_zeros || !output)
+  if (n <= 0 || k <= 0 || group_size != 32 || k % group_size || !input ||
+      !packed_weight || !scales_and_zeros || !output)
     return UDONDNN_STATUS_BAD_PARAM;
-  blocks = k / group_size;
-  row_stride = blocks * 18;
-  for (index = 0; index < UDONATEN_INT4_WORDS; ++index)
-    int4_state[index] = 0.0f;
-  for (row = 0; row < n; ++row)
-    for (block = 0; block < blocks; ++block) {
-      int destination = row * row_stride + block * 18;
-      int source = row * (k / 2) + block * 16;
-      int qparams = (block * n + row) * 2;
-      for (byte_index = 0; byte_index < 16; ++byte_index)
-        int4_state[destination + byte_index] =
-            (float)packed_weight[source + byte_index];
-      int4_state[destination + 16] = scales_and_zeros[qparams];
-      int4_state[destination + 17] = scales_and_zeros[qparams + 1];
-    }
-  for (index = 0; index < k; ++index)
-    int4_state[UDONATEN_INT4_INPUT_OFFSET + index] = input[index];
-
 #define SET_INT4_ARGUMENT(slot, value)                                         \
   do {                                                                         \
     status = clSetKernelArg(weight_int4pack_mm_kernel, slot, sizeof(value),    \
@@ -1477,20 +1459,56 @@ udondnnStatus_t udonatenBackendWeightInt4packMm(udondnnHandle_t handle, int n,
     if (status != CL_SUCCESS)                                                  \
       return UDONDNN_STATUS_EXECUTION_FAILED;                                  \
   } while (0)
-  SET_INT4_ARGUMENT(2, n);
-  SET_INT4_ARGUMENT(3, k);
-  SET_INT4_ARGUMENT(4, row_stride);
+  for (n_offset = 0; n_offset < n; n_offset += UDONATEN_INT4_MAX_N) {
+    tile_n = n - n_offset;
+    if (tile_n > UDONATEN_INT4_MAX_N)
+      tile_n = UDONATEN_INT4_MAX_N;
+    for (k_offset = 0; k_offset < k; k_offset += UDONATEN_INT4_MAX_K) {
+      tile_k = k - k_offset;
+      if (tile_k > UDONATEN_INT4_MAX_K)
+        tile_k = UDONATEN_INT4_MAX_K;
+      blocks = tile_k / group_size;
+      row_stride = blocks * 18;
+      accumulate = k_offset != 0;
+      for (index = 0; index < UDONATEN_INT4_WORDS; ++index)
+        int4_state[index] = 0.0f;
+      for (row = 0; row < tile_n; ++row) {
+        int source_row = n_offset + row;
+        for (block = 0; block < blocks; ++block) {
+          int source_block = k_offset / group_size + block;
+          int destination = row * row_stride + block * 18;
+          int source = source_row * (k / 2) + k_offset / 2 + block * 16;
+          int qparams = (source_block * n + source_row) * 2;
+          for (byte_index = 0; byte_index < 16; ++byte_index)
+            int4_state[destination + byte_index] =
+                (float)packed_weight[source + byte_index];
+          int4_state[destination + 16] = scales_and_zeros[qparams];
+          int4_state[destination + 17] = scales_and_zeros[qparams + 1];
+        }
+        if (accumulate)
+          int4_state[UDONATEN_INT4_RESULT_OFFSET + row] =
+              output[n_offset + row];
+      }
+      for (index = 0; index < tile_k; ++index)
+        int4_state[UDONATEN_INT4_INPUT_OFFSET + index] =
+            input[k_offset + index];
+      SET_INT4_ARGUMENT(2, tile_n);
+      SET_INT4_ARGUMENT(3, tile_k);
+      SET_INT4_ARGUMENT(4, row_stride);
+      SET_INT4_ARGUMENT(5, accumulate);
+      if (clEnqueueWriteBuffer(queue, int4_input_buffer, CL_TRUE, 0,
+                               sizeof(int4_state), int4_state, 0, 0,
+                               0) != CL_SUCCESS ||
+          clEnqueueNDRangeKernel(queue, weight_int4pack_mm_kernel, 1, 0,
+                                 &global, &local, 0, 0, 0) != CL_SUCCESS ||
+          clEnqueueReadBuffer(queue, int4_output_buffer, CL_TRUE,
+                              UDONATEN_INT4_RESULT_OFFSET * sizeof(float),
+                              tile_n * sizeof(float), output + n_offset, 0, 0,
+                              0) != CL_SUCCESS ||
+          clFinish(queue) != CL_SUCCESS)
+        return UDONDNN_STATUS_EXECUTION_FAILED;
+    }
+  }
 #undef SET_INT4_ARGUMENT
-
-  if (clEnqueueWriteBuffer(queue, int4_input_buffer, CL_TRUE, 0,
-                           sizeof(int4_state), int4_state, 0, 0,
-                           0) != CL_SUCCESS ||
-      clEnqueueNDRangeKernel(queue, weight_int4pack_mm_kernel, 1, 0, &global,
-                             &local, 0, 0, 0) != CL_SUCCESS ||
-      clEnqueueReadBuffer(queue, int4_output_buffer, CL_TRUE,
-                          UDONATEN_INT4_RESULT_OFFSET * sizeof(float),
-                          n * sizeof(float), output, 0, 0, 0) != CL_SUCCESS ||
-      clFinish(queue) != CL_SUCCESS)
-    return UDONDNN_STATUS_EXECUTION_FAILED;
   return UDONDNN_STATUS_SUCCESS;
 }

@@ -68,6 +68,7 @@ def materialize_int4_page(
     k_tile: int,
     external_data_directory: Path,
     activation=None,
+    accumulator=None,
 ) -> dict:
     """Gather one ATen INT4 tile into the kernel-208 active-state layout."""
     if plan.get("runtime") != "udon-onnx":
@@ -92,6 +93,7 @@ def materialize_int4_page(
         or paging.get("input_offset_words") != 6144
         or paging.get("result_offset_words") != 7168
         or paging.get("row_stride_words") != 72
+        or paging.get("accumulate_argument") != 5
     ):
         raise ValueError("execution-plan INT4 paging ABI is unsupported")
     if (
@@ -168,6 +170,15 @@ def materialize_int4_page(
             if not math.isfinite(value):
                 raise ValueError("activation page values must be finite")
             state[6144 + index] = value
+    if accumulator is not None:
+        accumulator = list(accumulator)
+        if len(accumulator) != output_features:
+            raise ValueError("accumulator length does not match INT4 output features")
+        for index, value in enumerate(accumulator[m_offset : m_offset + n]):
+            value = float(value)
+            if not math.isfinite(value):
+                raise ValueError("accumulator page values must be finite")
+            state[7168 + index] = value
     return {
         "call_index": call_index,
         "m_tile": m_tile,
@@ -201,6 +212,11 @@ def main():
         type=Path,
         help="optional complete float32 activation vector to copy into the page",
     )
+    parser.add_argument(
+        "--accumulator-f32",
+        type=Path,
+        help="optional complete float32 output accumulator for a later K tile",
+    )
     args = parser.parse_args()
     plan = json.loads(args.plan.read_text(encoding="utf-8"))
     activation = None
@@ -209,6 +225,12 @@ def main():
         if len(raw) % 4:
             parser.error("activation file size is not a multiple of four bytes")
         activation = struct.unpack(f"<{len(raw) // 4}f", raw)
+    accumulator = None
+    if args.accumulator_f32:
+        raw = args.accumulator_f32.read_bytes()
+        if len(raw) % 4:
+            parser.error("accumulator file size is not a multiple of four bytes")
+        accumulator = struct.unpack(f"<{len(raw) // 4}f", raw)
     page = materialize_int4_page(
         plan,
         args.call,
@@ -216,6 +238,7 @@ def main():
         args.k_tile,
         args.external_data_directory,
         activation,
+        accumulator,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_bytes(encode_int4_page(page))

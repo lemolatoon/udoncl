@@ -788,6 +788,11 @@ namespace Lemolatoon.Udoncl.Editor
                 "fixture_reference",
                 "bytes"
             );
+            ValidatedResource accumulateInputResource = FindResource(
+                artifacts,
+                "fixture_accumulate_input",
+                "bytes"
+            );
             Texture2D input = CreateOrUpdateByteTexture(
                 transaction,
                 programRoot,
@@ -799,8 +804,16 @@ namespace Lemolatoon.Udoncl.Editor
             CreateOrUpdateByteTexture(
                 transaction,
                 programRoot,
+                "udonaten_weight_int4pack_mm_accumulate_input.asset",
+                8192,
+                1,
+                File.ReadAllBytes(accumulateInputResource.AbsolutePath)
+            );
+            CreateOrUpdateByteTexture(
+                transaction,
+                programRoot,
                 "udonaten_weight_int4pack_mm_reference.asset",
-                8,
+                16,
                 1,
                 File.ReadAllBytes(referenceResource.AbsolutePath)
             );
@@ -1990,6 +2003,7 @@ namespace Lemolatoon.Udoncl.Editor
                 SetPublicVariable(behaviour, "n", 8);
                 SetPublicVariable(behaviour, "k", 64);
                 SetPublicVariable(behaviour, "rowStride", 36);
+                SetPublicVariable(behaviour, "accumulate", 0);
                 SerializedObject serializedBehaviour = new SerializedObject(behaviour);
                 serializedBehaviour.FindProperty("serializedProgramAsset").objectReferenceValue =
                     programAsset.SerializedProgramAsset;
