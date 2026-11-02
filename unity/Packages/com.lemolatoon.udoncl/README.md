@@ -89,7 +89,9 @@ archives of all four examples; the two ONNX examples do not use Pooling. The
 Editor extracts an archive to a temporary directory, applies the same manifest
 validation and transaction-safe importer, and removes the temporary files
 after import. C/OpenCL imports generate their typed U# binding and finish the
-binding prefab after Unity's script reload.
+binding prefab after Unity's script reload. Public buffer semantics generate
+named typed methods such as `TryWriteInput` and `StartReadOutput`; the physical
+buffer-ID methods remain available only as the lower-level interface.
 
 After a general ONNX import, choose **Add to Scene** in the completion dialog.
 The same action is available as **Add Runtime to Active Scene** on the generated

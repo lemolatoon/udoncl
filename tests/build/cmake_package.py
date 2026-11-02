@@ -167,6 +167,12 @@ def main():
         'resources': 1,
         'completion': 'pending_event',
     }]
+    assert opencl_dispatch_manifest['device']['buffers'][0][
+        'element_type'
+    ] == 'float32'
+    assert opencl_dispatch_manifest['device']['buffers'][0][
+        'public_access'
+    ] == 'output'
     opencl_dispatch_assembly = (
         opencl_dispatch_artifact / 'host.uasm'
     ).read_text(encoding='utf-8')
@@ -261,9 +267,15 @@ def main():
         'completion': 'pending_event',
     }]
     assert [
-        (buffer['name'], buffer['logical_bytes'])
+        (
+            buffer['name'], buffer['logical_bytes'], buffer['element_type'],
+            buffer['public_access'],
+        )
         for buffer in saxpy_manifest['device']['buffers']
-    ] == [('input', 128), ('output', 128)]
+    ] == [
+        ('input', 128, 'float32', 'input'),
+        ('output', 128, 'float32', 'output'),
+    ]
     assert saxpy_manifest['program']['buffer_copy_shader'] == 'buffer-copy.shader'
     assert (saxpy_artifact / 'buffer-copy.shader').is_file()
     saxpy_kernel = saxpy_manifest['device']['kernels'][0]
@@ -307,9 +319,19 @@ def main():
         '-ffp-contract=off', '-emit-llvm', '-c', str(invalid_saxpy_source),
         '-I' + str(install / 'include'), '-o', str(invalid_saxpy_module),
     ])
+    legacy_saxpy_config = output / 'legacy-saxpy-buffer-config.json'
+    legacy_saxpy_document = json.loads(
+        (saxpy_source / 'unity-library.json').read_text(encoding='utf-8')
+    )
+    for buffer in legacy_saxpy_document['buffers']:
+        buffer.pop('element_type')
+        buffer.pop('public_access')
+    legacy_saxpy_config.write_text(
+        json.dumps(legacy_saxpy_document), encoding='utf-8'
+    )
     run_failure([
         installed_compiler, '--emit-unity-library-bundle',
-        saxpy_source / 'unity-library.json',
+        legacy_saxpy_config,
         '--host-llvm', invalid_saxpy_module,
         '--device-llvm',
         saxpy_consumer / 'udoncl/saxpy-unity-library/device.bc',
@@ -475,6 +497,23 @@ def main():
         '--device-llvm', consumer / 'udoncl/hello-unity-library/device.bc',
         '-o', output / 'mismatched-dispatch-buffer-artifact',
     ], 'requires one configured four-byte buffer')
+    mismatched_semantics_config = output / 'mismatched-dispatch-semantics.json'
+    dispatch_config = json.loads(
+        (args.source.resolve() / 'dispatch-library.json').read_text(
+            encoding='utf-8'
+        )
+    )
+    dispatch_config['buffers'][0]['public_access'] = 'input'
+    mismatched_semantics_config.write_text(
+        json.dumps(dispatch_config), encoding='utf-8'
+    )
+    run_failure([
+        installed_compiler, '--emit-unity-library-bundle',
+        mismatched_semantics_config,
+        '--host-llvm', consumer / 'udoncl/hello-dispatch-unity-library/host.bc',
+        '--device-llvm', consumer / 'udoncl/hello-unity-library/device.bc',
+        '-o', output / 'mismatched-dispatch-semantics-artifact',
+    ], 'public buffer semantics do not match the write-only kernel output')
     print(
         'cmake_package=passed host_sources=3 device_sources=3 '
         'artifacts=hello-artifact,hello-unity-library,'

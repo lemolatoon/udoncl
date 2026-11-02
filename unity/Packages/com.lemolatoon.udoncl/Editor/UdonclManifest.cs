@@ -121,6 +121,8 @@ namespace Lemolatoon.Udoncl.Editor
         public bool srgb;
         public bool mipmaps;
         public string filter;
+        public string element_type;
+        public string public_access;
     }
 
     [Serializable]

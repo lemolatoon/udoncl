@@ -22,7 +22,9 @@
     {
       "id": 1,
       "name": "output",
-      "byte_size": 4
+      "byte_size": 4,
+      "element_type": "int32",
+      "public_access": "output"
     }
   ]
 }

@@ -10,6 +10,8 @@ All notable changes to this package are recorded here.
   Llama example artifacts.
 - One-click Editor imports for packaged C/OpenCL Hello Dispatch and SAXPY
   artifacts, including generated typed U# bindings.
+- Manifest-validated public buffer semantics and generated named typed U#
+  WriteBuffer/ReadBuffer methods that do not expose physical buffer IDs.
 - Initial VPM prerelease packaging for the UdonCL Unity runtime and artifact
   importer.
 - Public Unity assets for UdonBLAS, UdonDNN, UdonATen, and AOT ONNX execution

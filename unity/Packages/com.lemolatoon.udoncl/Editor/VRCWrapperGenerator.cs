@@ -282,9 +282,25 @@ namespace Lemolatoon.Udoncl.Editor
             if (buffers.Length != 0)
                 EmitBufferTransfers(source, "public");
 
+            HashSet<string> generatedMethodNames = new HashSet<string>(StringComparer.Ordinal)
+            {
+                "GetLastReadbackStatus",
+                "IsInitialized",
+                "StartReadFloatBuffer",
+                "StartReadIntBuffer",
+                "TryBindProgram",
+                "TryDispose",
+                "TryWriteFloatBuffer",
+                "TryWriteIntBuffer",
+            };
+            if (buffers.Length != 0)
+                EmitNamedBufferTransfers(source, buffers, generatedMethodNames);
+
             foreach (ExportInfo export in exports)
             {
                 ValidateExport(export, publicNames);
+                if (!generatedMethodNames.Add("Try" + export.public_name))
+                    throw new ArgumentException("Generated U# method names collide.");
                 EmitExport(source, export);
             }
 
@@ -513,6 +529,71 @@ namespace Lemolatoon.Udoncl.Editor
             source.AppendLine("        }");
         }
 
+        private static void EmitNamedBufferTransfers(
+            StringBuilder source,
+            DeviceBufferInfo[] buffers,
+            HashSet<string> generatedMethodNames
+        )
+        {
+            for (int index = 0; index < buffers.Length; ++index)
+            {
+                DeviceBufferInfo buffer = buffers[index];
+                if (string.IsNullOrEmpty(buffer.element_type))
+                    continue;
+                string suffix = PublicIoName(buffer.name, index);
+                if (buffer.public_access == "input")
+                {
+                    string method = "TryWrite" + suffix;
+                    if (!generatedMethodNames.Add(method))
+                        throw new ArgumentException("Generated U# buffer method names collide.");
+                    source.AppendLine();
+                    source
+                        .Append("        public int ")
+                        .Append(method)
+                        .Append('(')
+                        .Append(buffer.element_type == "float32" ? "float[]" : "int[]")
+                        .AppendLine(" source)");
+                    source.AppendLine("        {");
+                    source
+                        .Append("            return ")
+                        .Append(
+                            buffer.element_type == "float32"
+                                ? "TryWriteFloatBuffer("
+                                : "TryWriteIntBuffer("
+                        )
+                        .Append(buffer.id)
+                        .AppendLine(", source);");
+                    source.AppendLine("        }");
+                }
+                else
+                {
+                    string method = "StartRead" + suffix;
+                    if (!generatedMethodNames.Add(method))
+                        throw new ArgumentException("Generated U# buffer method names collide.");
+                    source.AppendLine();
+                    source
+                        .Append("        public int ")
+                        .Append(method)
+                        .Append('(')
+                        .Append(buffer.element_type == "float32" ? "float[]" : "int[]")
+                        .AppendLine(
+                            " destination, UdonSharpBehaviour receiver, string completionEvent)"
+                        );
+                    source.AppendLine("        {");
+                    source
+                        .Append("            return ")
+                        .Append(
+                            buffer.element_type == "float32"
+                                ? "StartReadFloatBuffer("
+                                : "StartReadIntBuffer("
+                        )
+                        .Append(buffer.id)
+                        .AppendLine(", destination, receiver, completionEvent);");
+                    source.AppendLine("        }");
+                }
+            }
+        }
+
         private static void ValidateDeviceBuffers(DeviceBufferInfo[] buffers)
         {
             HashSet<int> ids = new HashSet<int>();
@@ -527,6 +608,17 @@ namespace Lemolatoon.Udoncl.Editor
                     || buffer.height <= 0
                     || buffer.width * buffer.height * 4 < buffer.logical_bytes
                     || buffer.format != "rgba8_unorm"
+                    || (
+                        !string.IsNullOrEmpty(buffer.element_type)
+                        && (
+                            (buffer.element_type != "float32" && buffer.element_type != "int32")
+                            || (buffer.public_access != "input" && buffer.public_access != "output")
+                        )
+                    )
+                    || (
+                        string.IsNullOrEmpty(buffer.element_type)
+                        != string.IsNullOrEmpty(buffer.public_access)
+                    )
                 )
                     throw new ArgumentException(
                         "Unsupported generated Device buffer transfer ABI."

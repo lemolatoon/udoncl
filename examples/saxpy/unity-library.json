@@ -24,12 +24,16 @@
     {
       "id": 1,
       "name": "input",
-      "byte_size": 128
+      "byte_size": 128,
+      "element_type": "float32",
+      "public_access": "input"
     },
     {
       "id": 2,
       "name": "output",
-      "byte_size": 128
+      "byte_size": 128,
+      "element_type": "float32",
+      "public_access": "output"
     }
   ]
 }

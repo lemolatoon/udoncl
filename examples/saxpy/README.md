@@ -35,10 +35,13 @@ input words are `x`, the next 16 are `y`; `RunSaxpy(16, 2.0f)` writes
 This is still a deliberately fixed subset. Buffers must precede copied i32/f32
 scalars, use constant sizes matching `unity-library.json`, and contain exactly
 one write-only output. The NDRange and kernel are AOT constants. The generated
-U# binding exposes byte-exact whole-buffer transfers:
+U# binding exposes the preferred named transfers `TryWriteInput(float[])` and
+`StartReadOutput(float[], receiver, completionEvent)`. It also retains the
+lower-level byte-exact whole-buffer transfers:
 `TryWriteFloatBuffer` / `TryWriteIntBuffer` upload data, while
 `StartReadFloatBuffer` / `StartReadIntBuffer` send a completion event to the
 supplied `UdonSharpBehaviour`. Pass the `input` or `output` buffer ID from
-`manifest.json`. Partial transfers and direct lowering of blocking OpenCL
+`manifest.json` only when using that low-level API. Partial transfers and
+direct lowering of blocking OpenCL
 write/read calls to Udon continuations remain outside this public transfer
 path.

@@ -47,6 +47,9 @@ Import
 the generated Device kernel from the generated U# binding. The repository
 validation calls `DispatchSquare(3.0f)` through SDK IUdonVM and expects the
 one-float GPU output to be exactly `10.0f` after both import and reimport.
+The generated binding reads that public output with the named
+`StartReadOutput(float[], receiver, completionEvent)` method; the generic
+buffer-ID read methods remain available as a low-level escape hatch.
 
 This is deliberately a small AOT OpenCL 1.2 subset: one platform, one GPU
 device, one context and in-order queue, one fixed four-byte output buffer, a

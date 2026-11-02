@@ -157,6 +157,8 @@ struct UnityBuffer {
   int64_t height;
   std::string name;
   std::string heapSlot;
+  std::string elementType;
+  std::string publicAccess;
 };
 
 FailureOr<SmallVector<UnityBuffer>>
@@ -172,10 +174,18 @@ parseUnityBuffers(const json::Object &config) {
     auto id = entry ? entry->getInteger("id") : std::nullopt;
     auto name = entry ? entry->getString("name") : std::nullopt;
     auto bytes = entry ? entry->getInteger("byte_size") : std::nullopt;
+    auto elementType = entry ? entry->getString("element_type") : std::nullopt;
+    auto publicAccess =
+        entry ? entry->getString("public_access") : std::nullopt;
     constexpr int64_t maximumBytes = 8192LL * 8192LL * 4LL;
+    bool semanticBinding =
+        elementType && publicAccess &&
+        (*elementType == "float32" || *elementType == "int32") &&
+        (*publicAccess == "input" || *publicAccess == "output");
     if (!id || *id <= 0 || *id > INT32_MAX || !name || !identifier(*name) ||
         !bytes || *bytes <= 0 || *bytes > maximumBytes ||
-        !ids.insert(*id).second || !names.insert(name->str()).second) {
+        !ids.insert(*id).second || !names.insert(name->str()).second ||
+        ((elementType || publicAccess) && !semanticBinding)) {
       errs() << "invalid or duplicate Unity Device buffer\n";
       return failure();
     }
@@ -183,7 +193,9 @@ parseUnityBuffers(const json::Object &config) {
     int64_t width = std::min<int64_t>(pixels, 8192);
     int64_t height = (pixels + width - 1) / width;
     result.push_back({*id, *bytes, width, height, name->str(),
-                      "__udoncl_buffer_" + std::to_string(*id)});
+                      "__udoncl_buffer_" + std::to_string(*id),
+                      elementType ? elementType->str() : "",
+                      publicAccess ? publicAccess->str() : ""});
   }
   return result;
 }
@@ -379,8 +391,8 @@ void appendUnityDispatchMaterialSlots(ModuleOp module,
 
 json::Array unityBufferManifest(ArrayRef<UnityBuffer> buffers) {
   json::Array result;
-  for (const UnityBuffer &buffer : buffers)
-    result.push_back(json::Object{
+  for (const UnityBuffer &buffer : buffers) {
+    json::Object entry{
         {"id", buffer.id},
         {"name", buffer.name},
         {"heap_slot", buffer.heapSlot},
@@ -391,7 +403,13 @@ json::Array unityBufferManifest(ArrayRef<UnityBuffer> buffers) {
         {"srgb", false},
         {"mipmaps", false},
         {"filter", "point"},
-    });
+    };
+    if (!buffer.elementType.empty()) {
+      entry["element_type"] = buffer.elementType;
+      entry["public_access"] = buffer.publicAccess;
+    }
+    result.push_back(std::move(entry));
+  }
   return result;
 }
 
@@ -609,6 +627,10 @@ recoverUnityOpenCLDispatchProgram(const llvm::Module &input,
       buffers && buffers->size() == 1 ? (*buffers)[0].getAsObject() : nullptr;
   auto bufferBytes =
       bufferConfig ? bufferConfig->getInteger("byte_size") : std::nullopt;
+  auto publicElementType =
+      bufferConfig ? bufferConfig->getString("element_type") : std::nullopt;
+  auto publicAccess =
+      bufferConfig ? bufferConfig->getString("public_access") : std::nullopt;
   if (!kernelConfig || !exports || exports->size() != 1 || !buffers ||
       buffers->size() != 1 || !kernelName || !kernelId || !argumentKinds ||
       argumentKinds->size() != 2 || !scalarKind || !bufferBytes ||
@@ -616,6 +638,13 @@ recoverUnityOpenCLDispatchProgram(const llvm::Module &input,
       (*scalarKind != "f32" && *scalarKind != "i32")) {
     errs() << "initial Unity OpenCL dispatch requires one configured "
               "four-byte buffer and one f32/i32 scalar kernel\n";
+    return {};
+  }
+  if ((publicElementType || publicAccess) &&
+      (!publicElementType || !publicAccess || *publicAccess != "output" ||
+       *publicElementType != (*scalarKind == "f32" ? "float32" : "int32"))) {
+    errs() << "initial Unity OpenCL dispatch public buffer semantics do not "
+              "match the write-only kernel output\n";
     return {};
   }
   SmallVector<int32_t> configuredGlobal, configuredLocal, configuredOffset;
@@ -984,11 +1013,22 @@ recoverUnityOpenCLGatherDispatchProgram(const llvm::Module &input,
   std::optional<size_t> outputBuffer;
   for (size_t i = 0; valid && i < buffers->size(); ++i) {
     auto flags = llvmIRConstantInt(calls[bufferBase + i]->getArgOperand(1));
+    auto *bufferObject = (*buffers)[i].getAsObject();
+    auto publicElementType =
+        bufferObject ? bufferObject->getString("element_type") : std::nullopt;
+    auto publicAccess =
+        bufferObject ? bufferObject->getString("public_access") : std::nullopt;
     if (flags == 2 && !outputBuffer)
       outputBuffer = i;
     else if (flags != 4)
       valid =
           require(false, "requires read-only inputs and one write-only output");
+    if (publicElementType || publicAccess)
+      valid = valid &&
+              require(publicElementType && *publicElementType == "float32" &&
+                          publicAccess &&
+                          *publicAccess == (*flags == 2 ? "output" : "input"),
+                      "public buffer semantics do not match OpenCL access");
     valid = valid &&
             require(llvmIRLoadsFrom(calls[bufferBase + i]->getArgOperand(0),
                                     contextSlot) &&

@@ -139,7 +139,12 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 "],\"device\":{\"buffers\":[{"
                     + "\"id\":7,\"name\":\"input\",\"heap_slot\":\"__udoncl_buffer_7\","
                     + "\"logical_bytes\":16,\"width\":4,\"height\":1,"
-                    + "\"format\":\"rgba8_unorm\"}]}}"
+                    + "\"format\":\"rgba8_unorm\",\"element_type\":\"float32\","
+                    + "\"public_access\":\"input\"},{"
+                    + "\"id\":8,\"name\":\"output\",\"heap_slot\":\"__udoncl_buffer_8\","
+                    + "\"logical_bytes\":16,\"width\":4,\"height\":1,"
+                    + "\"format\":\"rgba8_unorm\",\"element_type\":\"int32\","
+                    + "\"public_access\":\"output\"}]}}"
             );
             string source = VRCWrapperGenerator.GenerateFromJson(
                 manifest,
@@ -167,6 +172,13 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             StringAssert.Contains("public override void OnAsyncGpuReadbackComplete", source);
             StringAssert.Contains("request.TryGetData(pixels, 0);", source);
             StringAssert.Contains("System.BitConverter.Int32BitsToSingle", source);
+            StringAssert.Contains("public int TryWriteInput(float[] source)", source);
+            StringAssert.Contains("return TryWriteFloatBuffer(7, source);", source);
+            StringAssert.Contains("public int StartReadOutput(int[] destination", source);
+            StringAssert.Contains(
+                "return StartReadIntBuffer(8, destination, receiver, completionEvent);",
+                source
+            );
         }
 
         [Test]

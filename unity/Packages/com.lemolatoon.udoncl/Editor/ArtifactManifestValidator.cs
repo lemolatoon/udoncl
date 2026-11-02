@@ -191,7 +191,9 @@ namespace Lemolatoon.Udoncl.Editor
             string heapSlot,
             int logicalBytes,
             int width,
-            int height
+            int height,
+            string elementType,
+            string publicAccess
         )
         {
             Id = id;
@@ -200,6 +202,8 @@ namespace Lemolatoon.Udoncl.Editor
             LogicalBytes = logicalBytes;
             Width = width;
             Height = height;
+            ElementType = elementType;
+            PublicAccess = publicAccess;
         }
 
         public int Id { get; private set; }
@@ -208,6 +212,8 @@ namespace Lemolatoon.Udoncl.Editor
         public int LogicalBytes { get; private set; }
         public int Width { get; private set; }
         public int Height { get; private set; }
+        public string ElementType { get; private set; }
+        public string PublicAccess { get; private set; }
     }
 
     public static class ArtifactManifestValidator
@@ -483,6 +489,15 @@ namespace Lemolatoon.Udoncl.Editor
                     expectedWidth == 0
                         ? 0
                         : (int)((expectedPixels + expectedWidth - 1) / expectedWidth);
+                bool hasPublicBinding =
+                    !string.IsNullOrEmpty(buffer.element_type)
+                    || !string.IsNullOrEmpty(buffer.public_access);
+                bool validPublicBinding =
+                    !hasPublicBinding
+                    || (
+                        (buffer.element_type == "float32" || buffer.element_type == "int32")
+                        && (buffer.public_access == "input" || buffer.public_access == "output")
+                    );
                 if (
                     buffer.id <= 0
                     || !ids.Add(buffer.id)
@@ -499,6 +514,7 @@ namespace Lemolatoon.Udoncl.Editor
                     || buffer.srgb
                     || buffer.mipmaps
                     || buffer.filter != "point"
+                    || !validPublicBinding
                 )
                     throw new InvalidDataException(
                         "Device buffers require unique ids/names/slots and a canonical linear RGBA8 layout."
@@ -510,7 +526,9 @@ namespace Lemolatoon.Udoncl.Editor
                         buffer.heap_slot,
                         buffer.logical_bytes,
                         buffer.width,
-                        buffer.height
+                        buffer.height,
+                        buffer.element_type,
+                        buffer.public_access
                     )
                 );
             }
