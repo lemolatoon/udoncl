@@ -64,6 +64,11 @@ uses the same provider with 32 layers, Q4 ONNX external weights, KV-cache-aware
 one-token input, and 162 planned passes. Licensed pretrained weights are not
 part of the Unity package.
 
+For a user-built, non-Pooling graph, follow
+`examples/onnx-arena-add/README.md`. It generates a standard ONNX `Add` model,
+materializes the Unity artifact, imports the runtime prefab, and drives the
+typed Write/Run/async Read API from a small U# component.
+
 ## Import
 
 Use **Tools → udoncl → Import Artifacts...** and select a compiler output directory containing `manifest.json`, its host `.uasm`, and any referenced generated `.shader` files. The importer checks schema v1, the runtime ABI and target, Worlds SDK version, names, extensions, UTF-8 content, referenced files, and relative paths before writing any assets.
