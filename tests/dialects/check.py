@@ -25,6 +25,29 @@ assert first.returncode == 0, first.stderr
 second = run(first.stdout)
 assert second.returncode == 0, second.stderr
 assert first.stdout == second.stdout, (first.stdout, second.stdout)
+
+events = run('''module {
+  func.func @poll(%event: !vrc.event) -> i32 attributes {vrc.async_effect = "may_suspend"} {
+    %current = vrc.event_status %event : (!vrc.event) -> i32
+    %completed = vrc.await %event : (!vrc.event) -> i32
+    return %completed : i32
+  }
+}
+''')
+assert events.returncode == 0, events.stderr
+events_roundtrip = run(events.stdout)
+assert events_roundtrip.returncode == 0, events_roundtrip.stderr
+assert events.stdout == events_roundtrip.stdout
+
+invalid_await = run('''module {
+  func.func @bad(%event: !vrc.event) -> i32 {
+    %status = vrc.await %event : (!vrc.event) -> i32
+    return %status : i32
+  }
+}
+''')
+assert invalid_await.returncode != 0
+assert 'requires a may_suspend Host function' in invalid_await.stderr
 for operation, diagnostic in [
     ('udonasm.push ""', 'assembler identifier'),
     ('udonasm.push "bad slot"', 'assembler identifier'),

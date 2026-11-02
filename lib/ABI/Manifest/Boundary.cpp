@@ -122,7 +122,7 @@ LogicalResult verifyHostDeviceBoundary(ModuleOp module) {
     if (function.isExternal() || function->hasAttr("vrc.intrinsic") ||
         (effect && effect != "none"))
       return function.emitError(
-          "unresolved intrinsic or async/frame lowering at the boundary");
+          "unresolved intrinsic or continuation lowering at the boundary");
     for (auto &op : function.getBody().front())
       if (isa<func::CallOp>(op))
         return op.emitError(

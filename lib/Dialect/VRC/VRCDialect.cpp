@@ -108,3 +108,19 @@ mlir::LogicalResult vrc::vrc::DispatchOp::verify() {
       return emitOpError("invalid size, offset or local-size divisibility");
   return mlir::success();
 }
+
+mlir::LogicalResult vrc::vrc::AwaitOp::verify() {
+  if (mlir::failed(verifyHostRuntimeOperation(*this)))
+    return mlir::failure();
+  auto function = (*this)->getParentOfType<mlir::func::FuncOp>();
+  auto effect =
+      function ? function->getAttrOfType<mlir::StringAttr>("vrc.async_effect")
+               : mlir::StringAttr();
+  if (!effect || effect.getValue() != "may_suspend")
+    return emitOpError("requires a may_suspend Host function");
+  return mlir::success();
+}
+
+mlir::LogicalResult vrc::vrc::EventStatusOp::verify() {
+  return verifyHostRuntimeOperation(*this);
+}

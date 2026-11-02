@@ -32,3 +32,17 @@ def VRC_DispatchOp : Op<VRC_Dialect, "dispatch"> {
   let assemblyFormat = "$desc `(` $resources `)` attr-dict `:` functional-type(operands, results)";
   let hasVerifier = 1;
 }
+def VRC_AwaitOp : Op<VRC_Dialect, "await"> {
+  let summary = "Suspend the Host path until an owned Device event completes";
+  let arguments = (ins VRC_EventType:$event);
+  let results = (outs I32:$status);
+  let assemblyFormat = "$event attr-dict `:` functional-type(operands, results)";
+  let hasVerifier = 1;
+}
+def VRC_EventStatusOp : Op<VRC_Dialect, "event_status"> {
+  let summary = "Read the current completion status of an owned Device event";
+  let arguments = (ins VRC_EventType:$event);
+  let results = (outs I32:$status);
+  let assemblyFormat = "$event attr-dict `:` functional-type(operands, results)";
+  let hasVerifier = 1;
+}

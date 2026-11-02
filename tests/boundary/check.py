@@ -89,6 +89,44 @@ assert 'vrc.buffer_alloc ' in typed_buffer_ops
 assert 'vrc.buffer_copy ' in typed_buffer_ops
 assert 'func.call ' not in typed_buffer_ops and 'udonhl.call ' not in typed_buffer_ops
 
+event_runtime = r'''
+module attributes {vrc.host_stage = "udonhl"} {
+  func.func private @event_status(!vrc.event) -> i32 attributes {vrc.intrinsic = "event_status"}
+  func.func private @await(!vrc.event) -> i32 attributes {vrc.intrinsic = "await", vrc.async_effect = "may_suspend"}
+  func.func @runtime(%event: !vrc.event) -> i32 attributes {vrc.async_effect = "may_suspend"} {
+    %current = udonhl.call @event_status(%event) {call_policy = #udonhl<call_policy normal>} : (!vrc.event) -> i32
+    %completed = udonhl.call @await(%event) {call_policy = #udonhl<call_policy may_suspend>} : (!vrc.event) -> i32
+    return %completed : i32
+  }
+}
+'''
+event_ops = run([
+    opt, '--pass-pipeline=builtin.module(' + intrinsic_pass + ')',
+    '--verify-each'
+], event_runtime)
+assert 'vrc.event_status ' in event_ops and 'vrc.await ' in event_ops
+assert '@event_status' not in event_ops and '@await' not in event_ops
+typed_event_source = event_runtime.replace(
+    'module attributes {vrc.host_stage = "udonhl"}', 'module'
+).replace(
+    'udonhl.call', 'func.call'
+).replace(
+    ' {call_policy = #udonhl<call_policy normal>}', ''
+).replace(
+    ' {call_policy = #udonhl<call_policy may_suspend>}', ''
+)
+typed_event_ops = run([
+    opt, '--pass-pipeline=builtin.module(' + host_pass + ',' + intrinsic_pass + ')',
+    '--verify-each'
+], typed_event_source)
+assert 'vrc.event_status ' in typed_event_ops and 'vrc.await ' in typed_event_ops
+assert 'func.call ' not in typed_event_ops and 'udonhl.call ' not in typed_event_ops
+run([
+    opt, '--pass-pipeline=builtin.module(' + intrinsic_pass + ')'
+], event_runtime.replace(
+    '#udonhl<call_policy may_suspend>', '#udonhl<call_policy normal>'
+), error='may_suspend callee requires may_suspend call policy')
+
 copy_artifact = output / 'unity-buffer-copy'
 copy_config = root / 'tests/boundary/unity_buffer_copy.json'
 copy_host = root / 'tests/boundary/unity_buffer_copy.mlir'

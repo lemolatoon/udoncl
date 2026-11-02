@@ -26,9 +26,15 @@ struct CallPattern : OpConversionPattern<func::CallOp> {
     state.addOperands(adaptor.getOperands());
     state.addTypes(op.getResultTypes());
     state.addAttribute("callee", op.getCalleeAttr());
-    state.addAttribute(
-        "call_policy",
-        host::CallPolicyAttr::get(getContext(), host::CallPolicy::Normal));
+    auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
+        op, op.getCalleeAttr());
+    auto effect = callee ? callee->getAttrOfType<StringAttr>("vrc.async_effect")
+                         : StringAttr();
+    state.addAttribute("call_policy",
+                       host::CallPolicyAttr::get(
+                           getContext(), effect && effect == "may_suspend"
+                                             ? host::CallPolicy::MaySuspend
+                                             : host::CallPolicy::Normal));
     rewriter.replaceOp(op, rewriter.create(state)->getResults());
     return success();
   }
@@ -63,15 +69,16 @@ struct LowerHostToUdonHLPass
         return;
       }
       auto effect = function->getAttrOfType<StringAttr>("vrc.async_effect");
-      if (effect && effect != "none") {
-        fail("suspending Host functions need continuation lowering");
+      if (effect && effect != "none" && effect != "may_suspend") {
+        fail("unsupported Host async effect");
         return;
       }
       if (function.isExternal()) {
         auto intrinsic = function->getAttrOfType<StringAttr>("vrc.intrinsic");
         if (!intrinsic ||
             (intrinsic != "dispatch" && intrinsic != "buffer_alloc" &&
-             intrinsic != "buffer_copy") ||
+             intrinsic != "buffer_copy" && intrinsic != "await" &&
+             intrinsic != "event_status") ||
             function->hasAttr("vrc.export_id")) {
           fail("external Host calls require a recognized internal runtime "
                "intrinsic");
@@ -118,7 +125,8 @@ struct LowerHostToUdonHLPass
         }
       }
     }
-    // Direct calls are normal calls only. Do not hide SCC/continuation work.
+    // Direct calls may carry a proven may_suspend effect, but recursive SCCs
+    // still require explicit frame lowering before conversion.
     llvm::DenseSet<Operation *> active, done;
     auto visit = [&](auto &&self, func::FuncOp function) -> LogicalResult {
       if (done.contains(function))

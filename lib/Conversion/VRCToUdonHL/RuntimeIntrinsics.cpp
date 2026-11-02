@@ -58,6 +58,12 @@ struct SubstituteRuntimeIntrinsicsPass
                                    IntegerType::get(&getContext(), 32),
                                    IntegerType::get(&getContext(), 32)} &&
             results == ArrayRef<Type>{runtime::EventType::get(&getContext())};
+      else if (name == "await" || name == "event_status")
+        valid =
+            args == ArrayRef<Type>{runtime::EventType::get(&getContext())} &&
+            results == ArrayRef<Type>{IntegerType::get(&getContext(), 32)} &&
+            (name != "await" || prototype->getAttrOfType<StringAttr>(
+                                    "vrc.async_effect") == "may_suspend");
       if (!prototype.isExternal() || !prototype.isPrivate() || !valid) {
         prototype.emitError("invalid typed runtime intrinsic contract");
         signalPassFailure();
@@ -72,10 +78,15 @@ struct SubstituteRuntimeIntrinsicsPass
               if (!callee || !callee->hasAttr("vrc.intrinsic"))
                 return WalkResult::advance();
               auto caller = call->getParentOfType<func::FuncOp>();
+              auto name = callee->getAttrOfType<StringAttr>("vrc.intrinsic");
+              auto expectedPolicy = name == "await"
+                                        ? host::CallPolicy::MaySuspend
+                                        : host::CallPolicy::Normal;
               if (!caller || caller->getParentOp() != module ||
-                  call.getCallPolicy() != host::CallPolicy::Normal) {
+                  call.getCallPolicy() != expectedPolicy) {
                 call.emitError(
-                    "runtime intrinsic must be a normal internal Host call");
+                    "runtime intrinsic call policy does not match its Host "
+                    "suspension contract");
                 return WalkResult::interrupt();
               }
               sites.emplace_back(call, callee);
@@ -94,7 +105,9 @@ struct SubstituteRuntimeIntrinsicsPass
       StringRef operationName =
           name == "dispatch"       ? runtime::DispatchOp::getOperationName()
           : name == "buffer_alloc" ? runtime::BufferAllocOp::getOperationName()
-                                   : runtime::BufferCopyOp::getOperationName();
+          : name == "buffer_copy"  ? runtime::BufferCopyOp::getOperationName()
+          : name == "await"        ? runtime::AwaitOp::getOperationName()
+                                   : runtime::EventStatusOp::getOperationName();
       OperationState state(call.getLoc(), operationName);
       state.addOperands(call.getArgs());
       state.addTypes(call.getResultTypes());

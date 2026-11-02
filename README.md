@@ -168,7 +168,7 @@ local alternative and is not run by CI.
 
 Current components:
 
-- Four separate TableGen dialect libraries; 20 of the closed catalog of 57 operations are defined.
+- Four separate TableGen dialect libraries; 25 of the closed catalog of 57 operations are defined.
 - A C OpenCL 1.2 AOT API subset and native Host Runtime linked to the fragment renderer.
 - Explicit Device buffer allocation with bounded Write/Read/Copy commands;
   host-backed buffers, SubBuffer, Map/Unmap, and rectangular copies fail
@@ -210,7 +210,7 @@ Current components:
   an incremental scalar/CFG backend for real Udon opcodes and textual `.uasm`.
 - `vrc-raise-llvm-memory` / `vrc-raise-llvm-to-scalar` MLIR Passes and the `vrc-recover-high-level` pipeline: proven fixed local arrays, scalar/CFG conversion and upstream SCF structuring.
 
-The other 37 operations, complete verifiers/lowerings, the full executable Udon
+The other 32 operations, complete verifiers/lowerings, the full executable Udon
 host ABI, complete OpenCL runtime coverage and production Unity integration
 remain pending. The scalar backend's integer, float and CFG golden programs have
 passed the installed SDK assembler and actual `IUdonVM`; memory, calls,
