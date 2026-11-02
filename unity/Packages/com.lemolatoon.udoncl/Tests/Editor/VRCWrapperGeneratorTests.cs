@@ -170,6 +170,42 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         }
 
         [Test]
+        public void GeneratesNamedOnnxWriteRunReadBinding()
+        {
+            const string manifest =
+                "{"
+                + "\"artifact_stage\":\"unity-udon-onnx-model\","
+                + "\"runtime_abi_version\":1,"
+                + "\"model_inputs\":["
+                + "{\"index\":0,\"name\":\"left.input\",\"data_type\":\"float32\",\"words\":4,\"slot\":0},"
+                + "{\"index\":1,\"name\":\"tokens\",\"data_type\":\"int32\",\"words\":2,\"slot\":1}],"
+                + "\"model_outputs\":["
+                + "{\"index\":0,\"name\":\"sum\",\"data_type\":\"float32\",\"words\":4,\"slot\":2}]"
+                + "}";
+            string source = VRCWrapperGenerator.GenerateOnnxFromJson(
+                manifest,
+                "Lemolatoon.Generated",
+                "ArenaAddBinding"
+            );
+
+            StringAssert.Contains("public int TryWriteInputLeftInput(float[] source)", source);
+            StringAssert.Contains("return TryWriteFloatBuffer(1, source);", source);
+            StringAssert.Contains("public int TryWriteInputTokens(int[] source)", source);
+            StringAssert.Contains("return TryWriteIntBuffer(2, source);", source);
+            StringAssert.Contains("public int TryRun()", source);
+            StringAssert.Contains("program.SendCustomEvent(\"_run\");", source);
+            StringAssert.Contains("public int StartReadOutputSum(float[] destination", source);
+            StringAssert.Contains(
+                "return StartReadFloatBuffer(1073741825, destination, receiver, completionEvent);",
+                source
+            );
+            StringAssert.Contains("private int TryWriteFloatBuffer", source);
+            StringAssert.Contains("private int StartReadFloatBuffer", source);
+            StringAssert.Contains("public int TryDispose()", source);
+            StringAssert.Contains("VRCAsyncGPUReadback.Request", source);
+        }
+
+        [Test]
         public void RejectsAsyncUntilContinuationWrapperIsImplemented()
         {
             string manifest = ScalarManifest.Replace("\"async\":false", "\"async\":true");

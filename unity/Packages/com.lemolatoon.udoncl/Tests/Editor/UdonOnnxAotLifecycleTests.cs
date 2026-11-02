@@ -16,6 +16,8 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         private const string GeneratedRoot = "Assets/udoncl-generated/onnx_int4_fixture";
         private const string GeneratedArenaRoot = "Assets/udoncl-generated/onnx_arena_add_fixture";
         private const string GeneratedRlRoot = "Assets/udoncl-generated/onnx_rl_policy_fixture";
+        private const string GeneratedRuntimeRoot = "Assets/udoncl-generated/Runtime";
+        private bool runtimeProgramAssetExisted;
 
         private static string ResolveFixture(string environmentName, string relativeFallback)
         {
@@ -36,6 +38,10 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         [OneTimeSetUp]
         public void ImportUnityInt4ModelBundle()
         {
+            runtimeProgramAssetExisted =
+                AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(
+                    GeneratedRuntimeRoot + "/UdonOnnxRuntimeBehaviour.asset"
+                ) != null;
             AssetDatabase.DeleteAsset(GeneratedRoot);
             string bundle = ResolveFixture(
                 "UDONCL_ONNX_INT4_UNITY_BUNDLE",
@@ -72,9 +78,16 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             string rlProgramGuid = AssetDatabase.AssetPathToGUID(
                 GeneratedRlRoot + "/Programs/host_program.asset"
             );
+            string runtimeProgramGuid = runtimeProgramAssetExisted
+                ? null
+                : AssetDatabase.AssetPathToGUID(
+                    GeneratedRuntimeRoot + "/UdonOnnxRuntimeBehaviour.asset"
+                );
             AssetDatabase.DeleteAsset(GeneratedRoot);
             AssetDatabase.DeleteAsset(GeneratedArenaRoot);
             AssetDatabase.DeleteAsset(GeneratedRlRoot);
+            if (!runtimeProgramAssetExisted)
+                AssetDatabase.DeleteAsset(GeneratedRuntimeRoot);
             foreach (
                 string guid in new[]
                 {
@@ -82,6 +95,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                     runnerProgramGuid,
                     arenaProgramGuid,
                     rlProgramGuid,
+                    runtimeProgramGuid,
                 }
             )
                 if (!string.IsNullOrEmpty(guid))
@@ -90,6 +104,10 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             Assert.IsNull(AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(GeneratedRoot));
             Assert.IsNull(AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(GeneratedArenaRoot));
             Assert.IsNull(AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(GeneratedRlRoot));
+            if (!runtimeProgramAssetExisted)
+                Assert.IsNull(
+                    AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(GeneratedRuntimeRoot)
+                );
         }
 
 #if false
@@ -336,6 +354,25 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             Assert.AreEqual("UdonOperatorExecutionProvider", modelAsset.ExecutionProvider);
             Assert.AreEqual(3, modelAsset.TextureArenaSlots.Length);
             Assert.AreEqual(1, modelAsset.PassMaterials.Length);
+            CollectionAssert.AreEqual(new[] { "left", "right" }, modelAsset.InputNames);
+            CollectionAssert.AreEqual(new[] { "float32", "float32" }, modelAsset.InputDataTypes);
+            CollectionAssert.AreEqual(new[] { 16384, 16384 }, modelAsset.InputWords);
+            CollectionAssert.AreEqual(new[] { 0, 1 }, modelAsset.InputSlots);
+            CollectionAssert.AreEqual(new[] { "sum" }, modelAsset.OutputNames);
+            CollectionAssert.AreEqual(new[] { "float32" }, modelAsset.OutputDataTypes);
+            CollectionAssert.AreEqual(new[] { 16384 }, modelAsset.OutputWords);
+            CollectionAssert.AreEqual(new[] { 2 }, modelAsset.OutputSlots);
+            Assert.NotNull(modelAsset.RuntimePrefab);
+            Assert.NotNull(modelAsset.RuntimePrefab.GetComponent<UdonBehaviour>());
+            Lemolatoon.Udoncl.UdonOnnxRuntimeBehaviour runtime =
+                modelAsset.RuntimePrefab.GetComponent<Lemolatoon.Udoncl.UdonOnnxRuntimeBehaviour>();
+            Assert.NotNull(runtime);
+            Assert.IsTrue(runtime.IsInitialized());
+            Assert.AreEqual(2, runtime.GetInputCount());
+            Assert.AreEqual(1, runtime.GetOutputCount());
+            Assert.AreEqual(0, runtime.FindInput("left"));
+            Assert.AreEqual(1, runtime.FindInput("right"));
+            Assert.AreEqual(0, runtime.FindOutput("sum"));
 
             UdonAssemblyProgramAsset programAsset =
                 AssetDatabase.LoadAssetAtPath<UdonAssemblyProgramAsset>(

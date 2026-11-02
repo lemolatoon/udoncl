@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using UdonSharp;
+using UdonSharp.Compiler;
+using UdonSharpEditor;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.UI;
@@ -475,6 +477,51 @@ namespace Lemolatoon.Udoncl.Editor
                 programAsset.sourceCsScript = script;
                 EditorUtility.SetDirty(programAsset);
             }
+        }
+
+        private static void EnsureOnnxRuntimeProgramAsset(AssetImportTransaction transaction)
+        {
+            const string scriptPath =
+                "Packages/com.lemolatoon.udoncl/Runtime/UdonOnnxRuntimeBehaviour.cs";
+            string runtimeRoot = GeneratedRoot + "/Runtime";
+            string programAssetPath = runtimeRoot + "/UdonOnnxRuntimeBehaviour.asset";
+            EnsureFolders(runtimeRoot);
+            CreateOrUpdateUdonSharpProgramAsset(transaction, scriptPath, programAssetPath);
+            AssetDatabase.ImportAsset(programAssetPath, ImportAssetOptions.ForceSynchronousImport);
+
+            UdonSharpProgramAsset generatedProgramAsset =
+                AssetDatabase.LoadAssetAtPath<UdonSharpProgramAsset>(programAssetPath);
+            if (generatedProgramAsset == null)
+                throw new InvalidDataException(
+                    "Unity could not create the Udon ONNX runtime U# program asset."
+                );
+            UdonSharpProgramAsset programAsset = UdonSharpEditorUtility.GetUdonSharpProgramAsset(
+                typeof(Lemolatoon.Udoncl.UdonOnnxRuntimeBehaviour)
+            );
+            if (
+                programAsset != null
+                && programAsset.SerializedProgramAsset != null
+                && programAsset.ScriptVersion == UdonSharpProgramVersion.CurrentVersion
+                && programAsset.CompiledVersion == UdonSharpProgramVersion.CurrentVersion
+            )
+                return;
+
+            generatedProgramAsset.ScriptVersion = UdonSharpProgramVersion.CurrentVersion;
+            EditorUtility.SetDirty(generatedProgramAsset);
+
+            UdonSharpCompilerV1.CompileSync();
+            programAsset = UdonSharpEditorUtility.GetUdonSharpProgramAsset(
+                typeof(Lemolatoon.Udoncl.UdonOnnxRuntimeBehaviour)
+            );
+            if (
+                programAsset == null
+                || programAsset.SerializedProgramAsset == null
+                || programAsset.ScriptVersion != UdonSharpProgramVersion.CurrentVersion
+                || programAsset.CompiledVersion != UdonSharpProgramVersion.CurrentVersion
+            )
+                throw new InvalidDataException(
+                    "Unity could not compile the Udon ONNX runtime U# program asset."
+                );
         }
 
         private static void ImportMnistDemo(
@@ -1727,6 +1774,8 @@ namespace Lemolatoon.Udoncl.Editor
             for (int index = 0; index < staticInputTextures.Length; ++index)
                 staticTextures.GetArrayElementAtIndex(index).objectReferenceValue =
                     staticInputTextures[index];
+            SetOnnxIoProperties(serialized, "input", artifact.OnnxInputs);
+            SetOnnxIoProperties(serialized, "output", artifact.OnnxOutputs);
             serialized.FindProperty("runtimePrefab").objectReferenceValue = runtimePrefab;
             serialized.ApplyModifiedPropertiesWithoutUndo();
             EditorUtility.SetDirty(modelAsset);
@@ -1746,20 +1795,41 @@ namespace Lemolatoon.Udoncl.Editor
             Material[] passMaterials
         )
         {
-            if (artifact.OnnxInt4Calls.Count == 0)
+            if (
+                artifact.ArtifactStage != "unity-udon-onnx-model"
+                && artifact.OnnxInt4Calls.Count == 0
+            )
                 return null;
-            if (!kernelMaterials.TryGetValue(208, out Material int4Template))
-                throw new InvalidDataException("ONNX INT4 runners require UdonATen kernel 208.");
-            ValidatedResource composeResource = FindResource(artifact, "page_compose", "shader");
-            ValidatedResource scatterResource = FindResource(artifact, "result_scatter", "shader");
-            string composeShaderPath = programRoot + "/Shaders/onnx-int4-compose.shader";
-            string scatterShaderPath = programRoot + "/Shaders/onnx-int4-scatter.shader";
-            transaction.CopyFile(composeResource.AbsolutePath, composeShaderPath);
-            transaction.CopyFile(scatterResource.AbsolutePath, scatterShaderPath);
-            Shader composeShader = AssetDatabase.LoadAssetAtPath<Shader>(composeShaderPath);
-            Shader scatterShader = AssetDatabase.LoadAssetAtPath<Shader>(scatterShaderPath);
-            if (composeShader == null || scatterShader == null)
-                throw new InvalidDataException("Unity could not import ONNX INT4 runner shaders.");
+            Material int4Template = null;
+            Shader composeShader = null;
+            Shader scatterShader = null;
+            if (artifact.OnnxInt4Calls.Count != 0)
+            {
+                if (!kernelMaterials.TryGetValue(208, out int4Template))
+                    throw new InvalidDataException(
+                        "ONNX INT4 runners require UdonATen kernel 208."
+                    );
+                ValidatedResource composeResource = FindResource(
+                    artifact,
+                    "page_compose",
+                    "shader"
+                );
+                ValidatedResource scatterResource = FindResource(
+                    artifact,
+                    "result_scatter",
+                    "shader"
+                );
+                string composeShaderPath = programRoot + "/Shaders/onnx-int4-compose.shader";
+                string scatterShaderPath = programRoot + "/Shaders/onnx-int4-scatter.shader";
+                transaction.CopyFile(composeResource.AbsolutePath, composeShaderPath);
+                transaction.CopyFile(scatterResource.AbsolutePath, scatterShaderPath);
+                composeShader = AssetDatabase.LoadAssetAtPath<Shader>(composeShaderPath);
+                scatterShader = AssetDatabase.LoadAssetAtPath<Shader>(scatterShaderPath);
+                if (composeShader == null || scatterShader == null)
+                    throw new InvalidDataException(
+                        "Unity could not import ONNX INT4 runner shaders."
+                    );
+            }
 
             string prefabDirectory = programRoot + "/Prefabs";
             EnsureFolders(prefabDirectory);
@@ -1776,6 +1846,31 @@ namespace Lemolatoon.Udoncl.Editor
                 for (int index = 0; index < arenaSlots.Length; ++index)
                     SetPublicVariable(model, "arenaSlot" + index, arenaSlots[index]);
                 SetPublicVariable(model, "passMaterials", passMaterials);
+
+                EnsureOnnxRuntimeProgramAsset(transaction);
+                UdonSharpBehaviour runtime = root.AddUdonSharpComponent(
+                    typeof(Lemolatoon.Udoncl.UdonOnnxRuntimeBehaviour)
+                );
+                SerializedObject serializedRuntime = new SerializedObject(runtime);
+                serializedRuntime.FindProperty("program").objectReferenceValue = model;
+                SetOnnxIoProperties(serializedRuntime, "input", artifact.OnnxInputs);
+                SetOnnxIoProperties(serializedRuntime, "output", artifact.OnnxOutputs);
+                SerializedProperty serializedSlots = serializedRuntime.FindProperty("arenaSlots");
+                serializedSlots.arraySize = arenaSlots.Length;
+                for (int index = 0; index < arenaSlots.Length; ++index)
+                    serializedSlots.GetArrayElementAtIndex(index).objectReferenceValue = arenaSlots[
+                        index
+                    ];
+                string copyMaterialPath = programRoot + "/Materials/buffer-copy.mat";
+                Material copyMaterial = AssetDatabase.LoadAssetAtPath<Material>(copyMaterialPath);
+                if (copyMaterial == null)
+                    throw new InvalidDataException(
+                        "Generated ONNX transfer material is missing: " + copyMaterialPath
+                    );
+                serializedRuntime.FindProperty("bufferCopyMaterial").objectReferenceValue =
+                    copyMaterial;
+                serializedRuntime.ApplyModifiedPropertiesWithoutUndo();
+                UdonSharpEditorUtility.CopyProxyToUdon(runtime, ProxySerializationPolicy.All);
 
                 IUdonEventReceiver[] runners = new IUdonEventReceiver[artifact.OnnxInt4Calls.Count];
                 for (int runnerIndex = 0; runnerIndex < artifact.OnnxInt4Calls.Count; ++runnerIndex)
@@ -1876,7 +1971,12 @@ namespace Lemolatoon.Udoncl.Editor
             }
             finally
             {
-                UnityEngine.Object.DestroyImmediate(root);
+                GameObject pendingRoot = root;
+                EditorApplication.delayCall += () =>
+                {
+                    if (pendingRoot != null)
+                        UnityEngine.Object.DestroyImmediate(pendingRoot);
+                };
             }
         }
 
@@ -1897,6 +1997,30 @@ namespace Lemolatoon.Udoncl.Editor
             property.arraySize = values.Length;
             for (int index = 0; index < values.Length; ++index)
                 property.GetArrayElementAtIndex(index).intValue = values[index];
+        }
+
+        private static void SetOnnxIoProperties(
+            SerializedObject serialized,
+            string prefix,
+            IList<ValidatedOnnxIo> entries
+        )
+        {
+            SerializedProperty names = serialized.FindProperty(prefix + "Names");
+            SerializedProperty dataTypes = serialized.FindProperty(prefix + "DataTypes");
+            SerializedProperty words = serialized.FindProperty(prefix + "Words");
+            SerializedProperty slots = serialized.FindProperty(prefix + "Slots");
+            names.arraySize = entries.Count;
+            dataTypes.arraySize = entries.Count;
+            words.arraySize = entries.Count;
+            slots.arraySize = entries.Count;
+            for (int index = 0; index < entries.Count; ++index)
+            {
+                ValidatedOnnxIo entry = entries[index];
+                names.GetArrayElementAtIndex(index).stringValue = entry.Name;
+                dataTypes.GetArrayElementAtIndex(index).stringValue = entry.DataType;
+                words.GetArrayElementAtIndex(index).intValue = entry.Words;
+                slots.GetArrayElementAtIndex(index).intValue = entry.Slot;
+            }
         }
 
         private static UdonAssemblyProgramAsset CreateOrUpdateProgramAsset(

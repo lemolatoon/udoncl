@@ -21,6 +21,9 @@ namespace Lemolatoon.Udoncl.Editor
         public ArtifactResourceInfo[] resources;
         public UdonOnnxStaticInputInfo[] static_inputs;
         public UdonOnnxCallArtifactInfo[] call_artifacts;
+        public UdonOnnxTextureArenaInfo texture_arena;
+        public UdonOnnxIoInfo[] model_inputs;
+        public UdonOnnxIoInfo[] model_outputs;
     }
 
     [Serializable]
@@ -247,5 +250,15 @@ namespace Lemolatoon.Udoncl.Editor
         public int capacity_words;
         public int width;
         public int height;
+    }
+
+    [Serializable]
+    internal sealed class UdonOnnxIoInfo
+    {
+        public int index;
+        public string name;
+        public string data_type;
+        public int words;
+        public int slot;
     }
 }

@@ -44,6 +44,30 @@ namespace Lemolatoon.Udoncl
         private Texture2D[] staticInputTextures;
 
         [SerializeField]
+        private string[] inputNames;
+
+        [SerializeField]
+        private string[] inputDataTypes;
+
+        [SerializeField]
+        private int[] inputWords;
+
+        [SerializeField]
+        private int[] inputSlots;
+
+        [SerializeField]
+        private string[] outputNames;
+
+        [SerializeField]
+        private string[] outputDataTypes;
+
+        [SerializeField]
+        private int[] outputWords;
+
+        [SerializeField]
+        private int[] outputSlots;
+
+        [SerializeField]
         private GameObject runtimePrefab;
 
         public TextAsset Model => model;
@@ -72,6 +96,22 @@ namespace Lemolatoon.Udoncl
         public RenderTexture[] TextureArenaSlots => textureArenaSlots;
 
         public Texture2D[] StaticInputTextures => staticInputTextures;
+
+        public string[] InputNames => inputNames;
+
+        public string[] InputDataTypes => inputDataTypes;
+
+        public int[] InputWords => inputWords;
+
+        public int[] InputSlots => inputSlots;
+
+        public string[] OutputNames => outputNames;
+
+        public string[] OutputDataTypes => outputDataTypes;
+
+        public int[] OutputWords => outputWords;
+
+        public int[] OutputSlots => outputSlots;
 
         public GameObject RuntimePrefab => runtimePrefab;
     }

@@ -767,6 +767,26 @@ if unity_int4_manifest is not None:
     assert unity_int4_manifest["ready_for_unity"] is True
     assert unity_int4_manifest["complete_graph"] is True
     assert len(unity_int4_manifest["call_artifacts"]) == 1
+    assert unity_int4_manifest["model_inputs"] == [
+        {
+            "index": 0,
+            "name": "x",
+            "data_type": "float32",
+            "words": int4_k,
+            "slot": 0,
+        }
+    ]
+    assert unity_int4_manifest["model_outputs"] == [
+        {
+            "index": 0,
+            "name": "projection_a",
+            "data_type": "float32",
+            "words": int4_n,
+            "slot": 1,
+        }
+    ]
+    assert unity_int4_manifest["program"]["buffer_copy_shader"] == "buffer-copy.shader"
+    assert (unity_int4_bundle / "buffer-copy.shader").is_file()
     assert (unity_int4_bundle / "model.onnx.bytes").is_file()
     assert (unity_int4_bundle / "execution-plan.json.bytes").is_file()
     assert (unity_int4_bundle / "kernels/kernel_208.shader").is_file()
@@ -807,6 +827,31 @@ if unity_template_directory is not None:
     assert arena_add_manifest["int4_call_count"] == 0
     assert arena_add_manifest["call_artifacts"] == []
     assert arena_add_manifest["unmaterialized_calls"] == []
+    assert arena_add_manifest["model_inputs"] == [
+        {
+            "index": 0,
+            "name": "left",
+            "data_type": "float32",
+            "words": 16384,
+            "slot": 0,
+        },
+        {
+            "index": 1,
+            "name": "right",
+            "data_type": "float32",
+            "words": 16384,
+            "slot": 1,
+        },
+    ]
+    assert arena_add_manifest["model_outputs"] == [
+        {
+            "index": 0,
+            "name": "sum",
+            "data_type": "float32",
+            "words": 16384,
+            "slot": 2,
+        }
+    ]
     assert arena_add_manifest["device"]["kernels"] == [
         {
             "id": 215,
@@ -818,6 +863,7 @@ if unity_template_directory is not None:
     assert (arena_add_bundle / "model.onnx.bytes").read_bytes() == arena_add_bytes
     assert (arena_add_bundle / "execution-plan.json.bytes").is_file()
     assert (arena_add_bundle / "kernels/kernel_215.shader").is_file()
+    assert (arena_add_bundle / "buffer-copy.shader").is_file()
     arena_add_plan_path = output / "arena-add-plan.json"
     arena_add_plan_path.write_text(json.dumps(arena_add_plan), encoding="utf-8")
     arena_add_cli_bundle = output / "arena-add-cli-model-bundle"

@@ -136,6 +136,13 @@ udon-onnx-page execution-plan.json external-data-directory --model \
 
 The publisher rejects a pass without an assigned public-library shader rather
 than emitting a Unity artifact that can only assemble but cannot execute. The
+published manifest records each public graph input and output as a validated
+name, `float32`/`int32` type, logical word count, and whole texture-arena slot.
+It also includes a byte-exact RGBA8 copy shader used by the package's U# model
+runtime. The imported prefab exposes `FindInput`/`FindOutput`, typed
+`TryWriteInputFloat`/`TryWriteInputInt`, `TryRun`, and asynchronous
+`StartReadOutputFloat`/`StartReadOutputInt` methods without exposing physical
+arena slots to user code. The
 historical `materialize_int4_model`/`--all-calls` surface remains as a
 compatibility wrapper; new tooling should use the general model publisher.
 

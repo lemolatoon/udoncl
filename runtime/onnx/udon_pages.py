@@ -1477,6 +1477,8 @@ def _materialize_model(
             "int4_page_count": sum(item["pages"] for item in artifacts),
             "int4_atlas_bytes": sum(item["atlas_bytes"] for item in artifacts),
             "texture_arena": _texture_arena_summary(plan),
+            "model_inputs": _model_io_summary(plan, "inputs"),
+            "model_outputs": _model_io_summary(plan, "outputs"),
             "host_schedule": _model_host_summary(plan),
             "static_inputs": static_inputs,
             "complete_graph": (
@@ -1530,6 +1532,9 @@ def _materialize_model(
             if not model_path.is_file():
                 raise ValueError("Unity ONNX model file does not exist")
             shutil.copyfile(model_path, staging / "model.onnx.bytes")
+            (staging / "buffer-copy.shader").write_text(
+                _model_buffer_copy_shader(program_name), encoding="utf-8"
+            )
             publish_stage = "unity-udon-onnx-model"
             manifest.update(
                 {
@@ -1551,6 +1556,7 @@ def _materialize_model(
                         "name": program_name,
                         "assembly": "host.uasm",
                         "display_shader": "display.shader",
+                        "buffer_copy_shader": "buffer-copy.shader",
                     },
                     "device": {
                         "kernels": (
@@ -1696,6 +1702,62 @@ def _texture_arena_summary(plan: dict) -> dict:
         "total_bytes": total_words * 4,
         "slots": summary_slots,
     }
+
+
+def _model_io_summary(plan: dict, field: str) -> list[dict]:
+    values = plan.get(field)
+    if not isinstance(values, dict) or not values:
+        raise ValueError(f"execution plan has no graph {field}")
+    bindings = (plan.get("texture_arena") or {}).get("bindings") or {}
+    value_types = plan.get("value_types") or {}
+    result = []
+    for index, name in enumerate(values):
+        binding = bindings.get(name)
+        data_type = value_types.get(name)
+        if data_type is None and isinstance(binding, dict):
+            data_type = binding.get("data_type")
+        if (
+            not isinstance(binding, dict)
+            or not isinstance(binding.get("slot"), int)
+            or binding.get("offset_words") != 0
+            or not isinstance(binding.get("words"), int)
+            or binding["words"] <= 0
+            or data_type not in {"float32", "int32"}
+            or binding.get("data_type") != data_type
+        ):
+            raise ValueError(
+                f"graph {field[:-1]} {name!r} has no supported whole-slot binding"
+            )
+        result.append(
+            {
+                "index": index,
+                "name": name,
+                "data_type": data_type,
+                "words": binding["words"],
+                "slot": binding["slot"],
+            }
+        )
+    return result
+
+
+def _model_buffer_copy_shader(program_name: str) -> str:
+    return f'''Shader "Hidden/UdonCL/{program_name}/OnnxBufferCopy" {{
+  Properties {{ _MainTex ("Source", 2D) = "black" {{}} }}
+  SubShader {{ Pass {{ ZTest Always Cull Off ZWrite Off
+    HLSLPROGRAM
+    #pragma vertex vert_img
+    #pragma fragment frag
+    #include "UnityCG.cginc"
+    Texture2D<float4> _MainTex;
+    float4 frag(v2f_img input) : SV_Target {{
+      uint width, height; _MainTex.GetDimensions(width, height);
+      uint2 p = min(uint2(input.pos.xy), uint2(width - 1, height - 1));
+      return _MainTex.Load(int3(p, 0));
+    }}
+    ENDHLSL
+  }} }}
+}}
+'''
 
 
 def _model_host_summary(plan: dict) -> dict:

@@ -47,6 +47,17 @@ creates the ordered materials and RenderTextures. Publication fails when a
 physical pass has no assigned public UdonBLAS/UdonDNN/UdonATen Device shader,
 so a plan-only lowering is not mislabeled as an executable Unity model.
 
+General ONNX imports automatically bind the package's
+`UdonOnnxRuntimeBehaviour` onto `Prefabs/UdonOnnxModel.prefab`. Use
+`FindInput`/`FindOutput`, the typed `TryWriteInputFloat`/`TryWriteInputInt`
+methods, `TryRun()`, and asynchronous
+`StartReadOutputFloat`/`StartReadOutputInt`. Uploads use byte-exact
+whole-buffer RGBA8 packing; the completion event can inspect
+`GetLastReadbackStatus()`. Input/output names, types, word counts, and internal
+arena slots are available on `UdonOnnxModelAsset`, while physical slots remain
+an importer-owned detail. The stable package component avoids a C# compile and
+domain reload for every imported model.
+
 The included Tiny Llama lifecycle fixture numerically executes the public
 Llama provider's seven-pass plan through SDK IUdonVM. The Llama 3.1 8B profile
 uses the same provider with 32 layers, Q4 ONNX external weights, KV-cache-aware

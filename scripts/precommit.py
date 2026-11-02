@@ -342,6 +342,32 @@ def is_transient_unity_project_file_lock(payload):
     )
 
 
+def unity_console_messages(payload):
+    data = payload.get("data", payload)
+    if isinstance(data, dict):
+        return data.get("messages", [])
+    if isinstance(data, list):
+        return data
+    return []
+
+
+def is_transient_unity_project_file_lock_messages(messages):
+    if not messages:
+        return False
+    for message in messages:
+        text = message.get("message") or ""
+        file = message.get("file") or ""
+        project_lock = "Sharing violation on path" in text and ".csproj" in text
+        udonsharp_skin_startup = (
+            "Unable to find style 'FloatFieldLinkButton' in skin 'GameSkin'"
+            in text
+            and "UdonSharpEditorManager.cs" in file
+        )
+        if not project_lock and not udonsharp_skin_startup:
+            return False
+    return True
+
+
 def wait_for_test_job(client: McpClient, job_id: str, timeout=1260):
     deadline = time.monotonic() + timeout
     last_error = None
@@ -498,8 +524,23 @@ def run_unity_mcp_gate(root, unity, project, build, output):
         (output / "unity-console.json").write_text(
             json.dumps(console, indent=2) + "\n", encoding="utf-8"
         )
-        console_data = console.get("data", console)
-        messages = console_data.get("messages", []) if isinstance(console_data, dict) else []
+        messages = unity_console_messages(console)
+        if is_transient_unity_project_file_lock_messages(messages):
+            print(
+                "unity_mcp_console=retry reason=transient_editor_noise",
+                flush=True,
+            )
+            client.tool("read_console", {"action": "clear"})
+            wait_for_editor(client)
+            time.sleep(2)
+            console = client.tool(
+                "read_console",
+                {"action": "get", "types": ["error"], "count": 200, "format": "detailed"},
+            )
+            (output / "unity-console.json").write_text(
+                json.dumps(console, indent=2) + "\n", encoding="utf-8"
+            )
+            messages = unity_console_messages(console)
         if messages:
             raise RuntimeError(f"Unity console contains {len(messages)} error(s): {messages}")
     finally:

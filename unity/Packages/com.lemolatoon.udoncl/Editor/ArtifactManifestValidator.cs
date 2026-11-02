@@ -22,7 +22,9 @@ namespace Lemolatoon.Udoncl.Editor
             IList<ValidatedDeviceBuffer> deviceBuffers,
             IList<ValidatedResource> resources,
             IList<ValidatedOnnxStaticInput> onnxStaticInputs,
-            IList<ValidatedOnnxInt4Call> onnxInt4Calls
+            IList<ValidatedOnnxInt4Call> onnxInt4Calls,
+            IList<ValidatedOnnxIo> onnxInputs,
+            IList<ValidatedOnnxIo> onnxOutputs
         )
         {
             RootDirectory = root;
@@ -37,6 +39,8 @@ namespace Lemolatoon.Udoncl.Editor
             Resources = resources;
             OnnxStaticInputs = onnxStaticInputs;
             OnnxInt4Calls = onnxInt4Calls;
+            OnnxInputs = onnxInputs;
+            OnnxOutputs = onnxOutputs;
         }
 
         public string RootDirectory { get; private set; }
@@ -51,6 +55,26 @@ namespace Lemolatoon.Udoncl.Editor
         public IList<ValidatedResource> Resources { get; private set; }
         public IList<ValidatedOnnxStaticInput> OnnxStaticInputs { get; private set; }
         public IList<ValidatedOnnxInt4Call> OnnxInt4Calls { get; private set; }
+        public IList<ValidatedOnnxIo> OnnxInputs { get; private set; }
+        public IList<ValidatedOnnxIo> OnnxOutputs { get; private set; }
+    }
+
+    public sealed class ValidatedOnnxIo
+    {
+        internal ValidatedOnnxIo(int index, string name, string dataType, int words, int slot)
+        {
+            Index = index;
+            Name = name;
+            DataType = dataType;
+            Words = words;
+            Slot = slot;
+        }
+
+        public int Index { get; private set; }
+        public string Name { get; private set; }
+        public string DataType { get; private set; }
+        public int Words { get; private set; }
+        public int Slot { get; private set; }
     }
 
     public sealed class ValidatedOnnxInt4Atlas
@@ -364,6 +388,27 @@ namespace Lemolatoon.Udoncl.Editor
                 root,
                 manifest.call_artifacts
             );
+            List<ValidatedOnnxIo> onnxInputs = ValidateOnnxIo(
+                manifest.model_inputs,
+                manifest.texture_arena,
+                "input"
+            );
+            List<ValidatedOnnxIo> onnxOutputs = ValidateOnnxIo(
+                manifest.model_outputs,
+                manifest.texture_arena,
+                "output"
+            );
+            if (
+                manifest.artifact_stage == "unity-udon-onnx-model"
+                && (
+                    onnxInputs.Count == 0
+                    || onnxOutputs.Count == 0
+                    || string.IsNullOrEmpty(manifest.program.buffer_copy_shader)
+                )
+            )
+                throw new InvalidDataException(
+                    "Unity ONNX models require public inputs, outputs, and a buffer copy shader."
+                );
 
             return new ValidatedArtifact(
                 root,
@@ -377,8 +422,49 @@ namespace Lemolatoon.Udoncl.Editor
                 deviceBuffers,
                 resources,
                 onnxStaticInputs,
-                onnxInt4Calls
+                onnxInt4Calls,
+                onnxInputs,
+                onnxOutputs
             );
+        }
+
+        private static List<ValidatedOnnxIo> ValidateOnnxIo(
+            UdonOnnxIoInfo[] entries,
+            UdonOnnxTextureArenaInfo arena,
+            string kind
+        )
+        {
+            List<ValidatedOnnxIo> validated = new List<ValidatedOnnxIo>();
+            HashSet<string> names = new HashSet<string>(StringComparer.Ordinal);
+            UdonOnnxTextureSlotInfo[] slots = arena?.slots;
+            foreach (UdonOnnxIoInfo entry in entries ?? Array.Empty<UdonOnnxIoInfo>())
+            {
+                if (
+                    entry == null
+                    || entry.index != validated.Count
+                    || string.IsNullOrWhiteSpace(entry.name)
+                    || !names.Add(entry.name)
+                    || (entry.data_type != "float32" && entry.data_type != "int32")
+                    || entry.words <= 0
+                    || slots == null
+                    || entry.slot < 0
+                    || entry.slot >= slots.Length
+                    || slots[entry.slot] == null
+                    || slots[entry.slot].index != entry.slot
+                    || entry.words > slots[entry.slot].capacity_words
+                )
+                    throw new InvalidDataException("ONNX model " + kind + " binding is invalid.");
+                validated.Add(
+                    new ValidatedOnnxIo(
+                        entry.index,
+                        entry.name,
+                        entry.data_type,
+                        entry.words,
+                        entry.slot
+                    )
+                );
+            }
+            return validated;
         }
 
         private static List<ValidatedDeviceBuffer> ValidateDeviceBuffers(DeviceBufferInfo[] buffers)
