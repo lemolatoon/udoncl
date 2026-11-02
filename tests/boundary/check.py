@@ -15,7 +15,7 @@ opt, compiler, output = sys.argv[1:]
 output = Path(output)
 output.mkdir(parents=True, exist_ok=True)
 # These are disposable test-owned bundle directories, not user assets.
-for directory in ['bundle', 'variant-bundle']:
+for directory in ['bundle', 'variant-bundle', 'unity-buffer-copy']:
     if (output / directory).exists():
         shutil.rmtree(output / directory)
 root = Path(__file__).resolve().parents[2]
@@ -88,6 +88,29 @@ typed_buffer_ops = run(
 assert 'vrc.buffer_alloc ' in typed_buffer_ops
 assert 'vrc.buffer_copy ' in typed_buffer_ops
 assert 'func.call ' not in typed_buffer_ops and 'udonhl.call ' not in typed_buffer_ops
+
+copy_artifact = output / 'unity-buffer-copy'
+copy_config = root / 'tests/boundary/unity_buffer_copy.json'
+copy_host = root / 'tests/boundary/unity_buffer_copy.mlir'
+run([
+    compiler, '--emit-unity-library-bundle', copy_config,
+    '--host-mlir', copy_host, '-o', copy_artifact,
+])
+copy_manifest = json.loads((copy_artifact / 'manifest.json').read_text())
+assert copy_manifest['artifact_stage'] == 'unity-udoncl-library'
+assert copy_manifest['program']['buffer_copy_shader'] == 'buffer-copy.shader'
+assert [buffer['logical_bytes'] for buffer in copy_manifest['device']['buffers']] == [4, 4]
+copy_assembly = (copy_artifact / 'host.uasm').read_text()
+for expected in [
+    '.export CopyFull',
+    '.export __udoncl_buffer_1',
+    '.export __udoncl_buffer_2',
+    '.export __udoncl_buffer_copy_material',
+    'VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_'
+    'UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid',
+]:
+    assert expected in copy_assembly, (expected, copy_assembly)
+assert (copy_artifact / 'buffer-copy.shader').is_file()
 nested = source.replace('  gpu.module @device {', '''  gpu.module @device {
     func.func private @device_helper(%x: f32) -> f32 { return %x : f32 }
     func.func private @device_caller(%x: f32) -> f32 {

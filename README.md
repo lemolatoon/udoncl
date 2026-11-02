@@ -178,6 +178,9 @@ Current components:
   `VRCGraphics.Blit`. This first Unity subset requires constant exact sizes,
   zero offsets, equal texture shapes, and distinct source/destination buffers;
   partial, dynamic, or self copies are compile errors rather than approximated.
+  `udonclc --host-mlir` exists for typed compiler/Unity validation; normal
+  user C still enters through `--host-llvm`, and its OpenCL runtime-to-typed-IR
+  bridge remains pending.
 - `udoncl-opt`: MLIR parser/printer with operation verification, rejects unknown ops by default.
 - `VRCLLVMToHighLevelMLIR`: independent import/metadata, local-memory and scalar/CFG recovery library for host/device development.
 - `udoncl-translate --import-llvm input.ll`: LLVM dialect import with preserved frontend metadata and optional JSON sidecar.

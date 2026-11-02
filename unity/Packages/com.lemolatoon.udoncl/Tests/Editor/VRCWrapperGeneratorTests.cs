@@ -56,6 +56,34 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         }
 
         [Test]
+        public void GeneratesVoidExportWhenJsonUtilityMaterializesNullResult()
+        {
+            string manifest = ScalarManifest
+                .Replace("\"public_name\":\"Add\"", "\"public_name\":\"CopyFull\"")
+                .Replace("\"udon_event\":\"__0_Add\"", "\"udon_event\":\"CopyFull\"")
+                .Replace(
+                    "\"parameters\":["
+                        + "{\"index\":0,\"name\":\"left\",\"kind\":\"i32\",\"heap_slot\":\"__0_left__param\"},"
+                        + "{\"index\":1,\"name\":\"right\",\"kind\":\"i32\",\"heap_slot\":\"__0_right__param\"}]",
+                    "\"parameters\":[]"
+                )
+                .Replace(
+                    "\"result\":{\"kind\":\"i32\",\"heap_slot\":\"__0___0_Add__ret\"}",
+                    "\"result\":null"
+                );
+            string source = VRCWrapperGenerator.GenerateFromJson(
+                manifest,
+                "Lemolatoon.Generated",
+                "CopyBinding"
+            );
+
+            StringAssert.Contains("public int TryCopyFull()", source);
+            StringAssert.Contains("program.SendCustomEvent(\"CopyFull\");", source);
+            StringAssert.DoesNotContain("out int result", source);
+            StringAssert.DoesNotContain("rawResult", source);
+        }
+
+        [Test]
         public void RejectsAsyncUntilContinuationWrapperIsImplemented()
         {
             string manifest = ScalarManifest.Replace("\"async\":false", "\"async\":true");

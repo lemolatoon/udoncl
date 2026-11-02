@@ -49,6 +49,8 @@ cl::opt<bool> emitUnityLibrary(
     "emit-unity-library-bundle",
     cl::desc("Compile scalar Host C exports into an importable Unity bundle"));
 cl::opt<std::string> hostLLVM("host-llvm", cl::desc("Host LLVM IR from C"));
+cl::opt<std::string>
+    hostMLIR("host-mlir", cl::desc("Typed Host MLIR for compiler validation"));
 cl::opt<std::string> deviceLLVM("device-llvm",
                                 cl::desc("Device LLVM IR from OpenCL C"));
 cl::opt<bool> checkRequest(
@@ -465,9 +467,10 @@ int main(int argc, char **argv) {
   bool unityUsesBufferCopy = false;
   if (emitUnityLibrary) {
     auto input = MemoryBuffer::getFile(inputFilename);
-    if (!input || hostLLVM.empty() || !deviceLLVM.empty()) {
-      errs() << "Unity library mode requires a JSON config and --host-llvm "
-                "without --device-llvm\n";
+    if (!input || (hostLLVM.empty() == hostMLIR.empty()) ||
+        !deviceLLVM.empty()) {
+      errs() << "Unity library mode requires a JSON config and exactly one of "
+                "--host-llvm or --host-mlir, without --device-llvm\n";
       return 1;
     }
     auto parsed = json::parse((*input)->getBuffer());
@@ -485,29 +488,37 @@ int main(int argc, char **argv) {
     if (failed(parsedBuffers))
       return 1;
     unityBuffers = std::move(*parsedBuffers);
-    LLVMContext llvmContext;
-    SMDiagnostic diagnostic;
-    auto inputModule = parseIRFile(hostLLVM, diagnostic, llvmContext);
-    if (!inputModule) {
-      diagnostic.print(argv[0], errs());
-      return 1;
+    if (!hostMLIR.empty()) {
+      module = parseSourceFile<ModuleOp>(hostMLIR, &context);
+      if (!module || failed(verify(*module)) ||
+          !configureUnityExports(*module, *unityConfig))
+        return 1;
+    } else {
+      LLVMContext llvmContext;
+      SMDiagnostic diagnostic;
+      auto inputModule = parseIRFile(hostLLVM, diagnostic, llvmContext);
+      if (!inputModule) {
+        diagnostic.print(argv[0], errs());
+        return 1;
+      }
+      if (inputModule->getTargetTriple().str() != "spir-unknown-unknown" ||
+          !inputModule->getDataLayout().isLittleEndian() ||
+          inputModule->getDataLayout().getPointerSizeInBits() != 32) {
+        errs()
+            << "Unity Host library requires 32-bit little-endian SPIR input\n";
+        return 1;
+      }
+      module = ::vrc::importLLVM(std::move(inputModule), context);
+      if (!module || failed(verify(*module)))
+        return 1;
+      PassManager recovery(&context);
+      recovery.addPass(createMem2Reg());
+      recovery.addPass(::vrc::createRaiseLLVMToScalarPass());
+      recovery.addPass(createCanonicalizerPass());
+      if (failed(recovery.run(*module)) ||
+          !configureUnityExports(*module, *unityConfig))
+        return 1;
     }
-    if (inputModule->getTargetTriple().str() != "spir-unknown-unknown" ||
-        !inputModule->getDataLayout().isLittleEndian() ||
-        inputModule->getDataLayout().getPointerSizeInBits() != 32) {
-      errs() << "Unity Host library requires 32-bit little-endian SPIR input\n";
-      return 1;
-    }
-    module = ::vrc::importLLVM(std::move(inputModule), context);
-    if (!module || failed(verify(*module)))
-      return 1;
-    PassManager recovery(&context);
-    recovery.addPass(createMem2Reg());
-    recovery.addPass(::vrc::createRaiseLLVMToScalarPass());
-    recovery.addPass(createCanonicalizerPass());
-    if (failed(recovery.run(*module)) ||
-        !configureUnityExports(*module, *unityConfig))
-      return 1;
     raw_string_ostream recovered(files["frontend.recovered.mlir"]);
     module->print(recovered);
     recovered << "\n";

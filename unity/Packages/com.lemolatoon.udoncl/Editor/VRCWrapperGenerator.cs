@@ -102,7 +102,7 @@ namespace Lemolatoon.Udoncl.Editor
         {
             ExportParameterInfo[] parameters =
                 export.parameters ?? Array.Empty<ExportParameterInfo>();
-            string resultType = export.result == null ? null : CSharpType(export.result.kind);
+            string resultType = HasResult(export) ? CSharpType(export.result.kind) : null;
             source.AppendLine();
             source.Append("        public int Try").Append(export.public_name).Append('(');
             for (int index = 0; index < parameters.Length; ++index)
@@ -187,11 +187,20 @@ namespace Lemolatoon.Udoncl.Editor
                 RequireSymbol(parameter.heap_slot, "parameter.heap_slot");
                 CSharpType(parameter.kind);
             }
-            if (export.result != null)
+            if (HasResult(export))
             {
                 RequireSymbol(export.result.heap_slot, "result.heap_slot");
                 CSharpType(export.result.kind);
             }
+        }
+
+        private static bool HasResult(ExportInfo export)
+        {
+            return export.result != null
+                && (
+                    !string.IsNullOrEmpty(export.result.kind)
+                    || !string.IsNullOrEmpty(export.result.heap_slot)
+                );
         }
 
         private static string CSharpType(string kind)

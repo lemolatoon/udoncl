@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "program": "buffer_copy",
+  "exports": [
+    {
+      "symbol": "copy_full",
+      "public_name": "CopyFull",
+      "id": 1,
+      "parameters": []
+    }
+  ],
+  "buffers": [
+    {
+      "id": 1,
+      "name": "source",
+      "byte_size": 4
+    },
+    {
+      "id": 2,
+      "name": "destination",
+      "byte_size": 4
+    }
+  ]
+}
