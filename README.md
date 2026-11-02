@@ -193,6 +193,11 @@ Current components:
   import path; Host `clSetKernelArg`/`clEnqueueNDRangeKernel` lowering and
   runtime material dispatch are still pending, so bundling a kernel alone does
   not make it callable from Host C.
+- The typed Unity backend can lower a fixed one-output `vrc.dispatch` with a
+  copied f32/i32 descriptor to material property updates and one
+  `VRCGraphics.Blit`; the Importer binds the generated kernel material through
+  its manifest dispatch site. The remaining public-path work is recovering
+  that descriptor and dispatch from standard OpenCL Host calls.
 - `udoncl-opt`: MLIR parser/printer with operation verification, rejects unknown ops by default.
 - `VRCLLVMToHighLevelMLIR`: independent import/metadata, local-memory and scalar/CFG recovery library for host/device development.
 - `udoncl-translate --import-llvm input.ll`: LLVM dialect import with preserved frontend metadata and optional JSON sidecar.

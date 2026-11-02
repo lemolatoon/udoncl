@@ -62,11 +62,33 @@ mlir::LogicalResult vrc::vrc::BufferCopyOp::verify() {
   return mlir::success();
 }
 
+mlir::LogicalResult vrc::vrc::DispatchDescCreateOp::verify() {
+  if (mlir::failed(verifyHostRuntimeOperation(*this)))
+    return mlir::failure();
+  if (getKernelIdAttr().getInt() <= 0)
+    return emitOpError("requires a positive kernel id");
+  if (getScalarKinds().size() != getScalars().size())
+    return emitOpError("scalar kind count must match captured values");
+  for (auto [kindValue, scalar] : llvm::zip(getScalarKinds(), getScalars())) {
+    auto kind = mlir::dyn_cast<mlir::StringAttr>(kindValue);
+    if (!kind || (kind != "f32" && kind != "i32"))
+      return emitOpError("supports only f32 and i32 scalar kinds");
+    if ((kind == "f32" && !scalar.getType().isF32()) ||
+        (kind == "i32" && !scalar.getType().isInteger(32)))
+      return emitOpError("captured scalar type does not match its kind");
+  }
+  return mlir::success();
+}
+
 mlir::LogicalResult vrc::vrc::DispatchOp::verify() {
   if (mlir::failed(verifyHostRuntimeOperation(*this)))
     return mlir::failure();
   if (getKernelIdAttr().getInt() <= 0)
     return emitOpError("requires a positive kernel id");
+  if (auto descriptor =
+          getDesc().getDefiningOp<::vrc::vrc::DispatchDescCreateOp>())
+    if (descriptor.getKernelId() != getKernelId())
+      return emitOpError("descriptor kernel id must match dispatch kernel id");
   unsigned buffers = 0;
   for (auto value : getArgumentKinds()) {
     auto kind = mlir::dyn_cast<mlir::StringAttr>(value);

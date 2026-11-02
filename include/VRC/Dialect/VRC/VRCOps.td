@@ -14,6 +14,14 @@ def VRC_BufferCopyOp : Op<VRC_Dialect, "buffer_copy"> {
   let assemblyFormat = "$source `,` $destination `,` $source_offset `,` $destination_offset `,` $byte_size attr-dict `:` functional-type(operands, results)";
   let hasVerifier = 1;
 }
+def VRC_DispatchDescCreateOp : Op<VRC_Dialect, "dispatch_desc_create"> {
+  let summary = "Capture copied scalar kernel arguments in an AOT descriptor";
+  let arguments = (ins Variadic<AnyType>:$scalars, I32Attr:$kernel_id,
+    ArrayAttr:$scalar_kinds);
+  let results = (outs VRC_DispatchDescType:$desc);
+  let assemblyFormat = "$scalars attr-dict `:` functional-type(operands, results)";
+  let hasVerifier = 1;
+}
 def VRC_DispatchOp : Op<VRC_Dialect, "dispatch"> {
   let summary = "Enqueue a Manifest-defined kernel; C runtime owns OpenCL API contracts";
   let arguments = (ins VRC_DispatchDescType:$desc, Variadic<VRC_BufferType>:$resources,

@@ -161,6 +161,35 @@ namespace Lemolatoon.Udoncl.Editor
                         );
                     SetPublicVariable(program, "__udoncl_buffer_copy_material", material);
                 }
+                if (manifest.dispatch_sites != null)
+                    foreach (DispatchSiteInfo dispatch in manifest.dispatch_sites)
+                    {
+                        KernelInfo kernel = Array.Find(
+                            manifest.device?.kernels,
+                            candidate => candidate.id == dispatch.kernel_id
+                        );
+                        if (kernel == null)
+                            throw new InvalidDataException(
+                                "Generated dispatch references a missing kernel material."
+                            );
+                        string materialPath =
+                            programRoot
+                            + "/Materials/kernel_"
+                            + kernel.id
+                            + "_"
+                            + kernel.name
+                            + ".mat";
+                        Material material = AssetDatabase.LoadAssetAtPath<Material>(materialPath);
+                        if (material == null)
+                            throw new InvalidDataException(
+                                "Generated kernel material is missing: " + materialPath
+                            );
+                        SetPublicVariable(
+                            program,
+                            "__udoncl_kernel_material_" + kernel.id,
+                            material
+                        );
+                    }
 
                 UdonSharpBehaviour wrapper = root.AddUdonSharpComponent(wrapperType);
                 SerializedObject serializedWrapper = new SerializedObject(wrapper);

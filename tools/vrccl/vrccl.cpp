@@ -207,15 +207,25 @@ void appendUnityBufferSlots(ModuleOp module, ArrayRef<UnityBuffer> buffers) {
   module->setAttr("udonasm.data", builder.getArrayAttr(entries));
 }
 
-FailureOr<bool> bindUnityBufferOperations(ModuleOp module,
-                                          ArrayRef<UnityBuffer> buffers) {
+struct UnityBufferBinding {
+  bool usesCopy = false;
+  SmallVector<int32_t> dispatchKernelIds;
+};
+
+FailureOr<UnityBufferBinding>
+bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
+                          std::optional<int64_t> configuredKernelId) {
   SmallVector<::vrc::vrc::BufferAllocOp> allocations;
   SmallVector<::vrc::vrc::BufferCopyOp> copies;
+  SmallVector<::vrc::vrc::DispatchOp> dispatches;
   module.walk([&](::vrc::vrc::BufferAllocOp operation) {
     allocations.push_back(operation);
   });
   module.walk(
       [&](::vrc::vrc::BufferCopyOp operation) { copies.push_back(operation); });
+  module.walk([&](::vrc::vrc::DispatchOp operation) {
+    dispatches.push_back(operation);
+  });
   if (allocations.size() > buffers.size()) {
     module.emitError("Unity library has more buffer allocation sites than "
                      "configured Device buffers");
@@ -270,7 +280,49 @@ FailureOr<bool> bindUnityBufferOperations(ModuleOp module,
     copy->setAttr("vrc.unity_copy_material_slot",
                   builder.getStringAttr("__udoncl_buffer_copy_material"));
   }
-  return !copies.empty();
+  UnityBufferBinding result;
+  result.usesCopy = !copies.empty();
+  for (auto dispatch : dispatches) {
+    auto descriptor =
+        dispatch.getDesc().getDefiningOp<::vrc::vrc::DispatchDescCreateOp>();
+    SmallVector<StringRef> scalarKinds;
+    for (mlir::Attribute value : dispatch.getArgumentKinds()) {
+      auto kind = dyn_cast<StringAttr>(value);
+      if (kind && kind.getValue() != "buffer")
+        scalarKinds.push_back(kind.getValue());
+    }
+    bool descriptorMatches =
+        descriptor && descriptor.getKernelId() == dispatch.getKernelId() &&
+        descriptor.getScalarKinds().size() == scalarKinds.size();
+    if (descriptorMatches)
+      for (auto [expected, actual] :
+           llvm::zip(scalarKinds, descriptor.getScalarKinds())) {
+        auto kind = dyn_cast<StringAttr>(actual);
+        descriptorMatches &= kind && kind.getValue() == expected;
+      }
+    auto output = dispatch.getResources().size() == 1
+                      ? dispatch.getResources()
+                            .front()
+                            .getDefiningOp<::vrc::vrc::BufferAllocOp>()
+                      : ::vrc::vrc::BufferAllocOp();
+    if (!configuredKernelId || dispatch.getKernelId() != *configuredKernelId ||
+        !descriptorMatches || dispatch.getArgumentKinds().empty() ||
+        !isa<StringAttr>(*dispatch.getArgumentKinds().begin()) ||
+        cast<StringAttr>(*dispatch.getArgumentKinds().begin()).getValue() !=
+            "buffer" ||
+        !output || !bound.contains(output.getOperation())) {
+      dispatch.emitError(
+          "initial Unity dispatch requires the configured kernel, one direct "
+          "output allocation, and a copied f32/i32 scalar descriptor");
+      return failure();
+    }
+    int32_t kernelId = static_cast<int32_t>(dispatch.getKernelId());
+    dispatch->setAttr("vrc.unity_dispatch_material_slot",
+                      builder.getStringAttr("__udoncl_kernel_material_" +
+                                            std::to_string(kernelId)));
+    result.dispatchKernelIds.push_back(kernelId);
+  }
+  return result;
 }
 
 void appendUnityCopyMaterialSlot(ModuleOp module) {
@@ -290,6 +342,30 @@ void appendUnityCopyMaterialSlot(ModuleOp module) {
                             builder.getStringAttr("UnityEngineMaterial")),
        builder.getNamedAttr("initial", builder.getStringAttr("null")),
        builder.getNamedAttr("public", builder.getUnitAttr())}));
+  module->setAttr("udonasm.data", builder.getArrayAttr(entries));
+}
+
+void appendUnityDispatchMaterialSlots(ModuleOp module,
+                                      ArrayRef<int32_t> kernelIds) {
+  auto data = module->getAttrOfType<ArrayAttr>("udonasm.data");
+  SmallVector<mlir::Attribute> entries(data.begin(), data.end());
+  OpBuilder builder(module.getContext());
+  for (int32_t kernelId : kernelIds) {
+    std::string name = "__udoncl_kernel_material_" + std::to_string(kernelId);
+    if (llvm::any_of(entries, [&](mlir::Attribute attribute) {
+          auto entry = dyn_cast<DictionaryAttr>(attribute);
+          auto existing =
+              entry ? entry.getAs<StringAttr>("name") : StringAttr();
+          return existing && existing.getValue() == name;
+        }))
+      continue;
+    entries.push_back(builder.getDictionaryAttr(
+        {builder.getNamedAttr("name", builder.getStringAttr(name)),
+         builder.getNamedAttr("type",
+                              builder.getStringAttr("UnityEngineMaterial")),
+         builder.getNamedAttr("initial", builder.getStringAttr("null")),
+         builder.getNamedAttr("public", builder.getUnitAttr())}));
+  }
   module->setAttr("udonasm.data", builder.getArrayAttr(entries));
 }
 
@@ -872,6 +948,7 @@ int main(int argc, char **argv) {
   OwningOpRef<ModuleOp> unityDeviceModule;
   SmallVector<UnityBuffer> unityBuffers;
   bool unityUsesBufferCopy = false;
+  SmallVector<int32_t> unityDispatchKernelIds;
   if (emitUnityLibrary) {
     auto input = MemoryBuffer::getFile(inputFilename);
     if (!input || (hostLLVM.empty() == hostMLIR.empty())) {
@@ -1025,10 +1102,15 @@ int main(int argc, char **argv) {
     manager.addPass(::vrc::createSubstituteRuntimeIntrinsicsPass());
     if (failed(manager.run(*module)) || failed(verify(*module)))
       return 1;
-    auto bufferBinding = bindUnityBufferOperations(*module, unityBuffers);
+    auto *deviceKernel = unityConfig->getObject("device_kernel");
+    std::optional<int64_t> configuredKernelId =
+        deviceKernel ? deviceKernel->getInteger("kernel_id") : std::nullopt;
+    auto bufferBinding =
+        bindUnityBufferOperations(*module, unityBuffers, configuredKernelId);
     if (failed(bufferBinding))
       return 1;
-    unityUsesBufferCopy = *bufferBinding;
+    unityUsesBufferCopy = bufferBinding->usesCopy;
+    unityDispatchKernelIds = std::move(bufferBinding->dispatchKernelIds);
     auto manifest = ::vrc::buildBoundaryManifest(*module);
     auto program = unityConfig->getString("program");
     manifest["artifact_stage"] = "unity-udoncl-library";
@@ -1082,6 +1164,7 @@ int main(int argc, char **argv) {
     appendUnityBufferSlots(*module, unityBuffers);
     if (unityUsesBufferCopy)
       appendUnityCopyMaterialSlot(*module);
+    appendUnityDispatchMaterialSlots(*module, unityDispatchKernelIds);
     std::string assembly;
     raw_string_ostream assemblyOut(assembly);
     if (failed(::vrc::emitUdonAssembly(*module, assemblyOut)))

@@ -120,6 +120,31 @@ def main():
         '--host-llvm', consumer / 'udoncl/hello-unity-library/host.bc',
         '-o', output / 'missing-device-artifact',
     ], 'device_kernel and --device-llvm must be provided together')
+    dispatch_artifact = output / 'typed-dispatch-artifact'
+    run([
+        installed_compiler, '--emit-unity-library-bundle',
+        args.source.resolve() / 'dispatch-library.json',
+        '--host-mlir', args.source.resolve().parents[1]
+        / 'tests/boundary/unity_dispatch.mlir',
+        '--device-llvm', consumer / 'udoncl/hello-unity-library/device.bc',
+        '-o', dispatch_artifact,
+    ])
+    dispatch_manifest = json.loads(
+        (dispatch_artifact / 'manifest.json').read_text(encoding='utf-8')
+    )
+    assert dispatch_manifest['dispatch_sites'] == [{
+        'function': 'dispatch_square',
+        'kernel_id': 1,
+        'descriptor_abi': 1,
+        'resources': 1,
+        'completion': 'pending_event',
+    }]
+    dispatch_assembly = (dispatch_artifact / 'host.uasm').read_text(
+        encoding='utf-8'
+    )
+    assert '.export __udoncl_kernel_material_1' in dispatch_assembly
+    assert 'UnityEngineMaterial.__SetFloat__' in dispatch_assembly
+    assert dispatch_assembly.count('VRCSDKBaseVRCGraphics.__Blit__') == 1
     copy_artifact = consumer / 'udoncl/hello-buffer-copy-unity-library/artifact'
     copy_manifest = json.loads(
         (copy_artifact / 'manifest.json').read_text(encoding='utf-8')

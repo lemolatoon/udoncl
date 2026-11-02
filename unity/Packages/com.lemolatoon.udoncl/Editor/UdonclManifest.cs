@@ -17,9 +17,16 @@ namespace Lemolatoon.Udoncl.Editor
         public ProgramInfo program;
         public ExportInfo[] exports;
         public DeviceInfo device;
+        public DispatchSiteInfo[] dispatch_sites;
         public ArtifactResourceInfo[] resources;
         public UdonOnnxStaticInputInfo[] static_inputs;
         public UdonOnnxCallArtifactInfo[] call_artifacts;
+    }
+
+    [Serializable]
+    internal sealed class DispatchSiteInfo
+    {
+        public int kernel_id;
     }
 
     [Serializable]

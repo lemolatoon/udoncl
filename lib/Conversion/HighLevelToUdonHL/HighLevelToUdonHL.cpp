@@ -102,10 +102,10 @@ struct LowerHostToUdonHLPass
         }
       }
       for (auto &op : function.getBody().front()) {
-        if (!isa<func::CallOp, func::ReturnOp, runtime::DispatchOp,
-                 runtime::BufferAllocOp, runtime::BufferCopyOp,
-                 arith::ConstantOp, arith::AddIOp, arith::AddFOp,
-                 arith::MulFOp>(op)) {
+        if (!isa<func::CallOp, func::ReturnOp, runtime::DispatchDescCreateOp,
+                 runtime::DispatchOp, runtime::BufferAllocOp,
+                 runtime::BufferCopyOp, arith::ConstantOp, arith::AddIOp,
+                 arith::AddFOp, arith::MulFOp>(op)) {
           op.emitError(
               "operation is outside the initial Host lowering pattern");
           signalPassFailure();

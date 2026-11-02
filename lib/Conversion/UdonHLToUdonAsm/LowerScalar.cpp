@@ -300,6 +300,8 @@ private:
       for (Operation &operation : block) {
         if (!operation.getNumResults())
           continue;
+        if (isa<::vrc::vrc::DispatchDescCreateOp>(operation))
+          continue;
         if (auto allocation = dyn_cast<::vrc::vrc::BufferAllocOp>(operation)) {
           auto heapSlot =
               allocation->getAttrOfType<StringAttr>("vrc.unity_heap_slot");
@@ -379,8 +381,66 @@ private:
       for (Operation &operation : block) {
         if (isa<arith::ConstantOp>(operation))
           continue;
+        if (isa<::vrc::vrc::DispatchDescCreateOp>(operation))
+          continue;
         if (isa<::vrc::vrc::BufferAllocOp>(operation))
           continue;
+        if (auto dispatch = dyn_cast<::vrc::vrc::DispatchOp>(operation)) {
+          auto descriptor =
+              dispatch.getDesc()
+                  .getDefiningOp<::vrc::vrc::DispatchDescCreateOp>();
+          auto materialSlot = dispatch->getAttrOfType<StringAttr>(
+              "vrc.unity_dispatch_material_slot");
+          std::string destination =
+              dispatch.getResources().size() == 1
+                  ? valueSlots.lookup(dispatch.getResources().front())
+                  : std::string();
+          if (!descriptor || !materialSlot || materialSlot.getValue().empty() ||
+              destination.empty())
+            return dispatch.emitError(
+                "Unity dispatch requires one bound output, a copied scalar "
+                "descriptor and a kernel material slot");
+          addSlot(materialSlot.getValue(), "UnityEngineMaterial", "null", true);
+          unsigned scalarIndex = 0;
+          for (auto [argumentIndex, kindValue] :
+               llvm::enumerate(dispatch.getArgumentKinds())) {
+            auto kind = dyn_cast<StringAttr>(kindValue);
+            if (!kind)
+              return dispatch.emitError("invalid dispatch argument kind");
+            if (kind.getValue() == "buffer")
+              continue;
+            if (scalarIndex >= descriptor.getScalars().size())
+              return dispatch.emitError("dispatch descriptor is incomplete");
+            std::string scalar =
+                valueSlots.lookup(descriptor.getScalars()[scalarIndex++]);
+            if (scalar.empty())
+              return dispatch.emitError(
+                  "dispatch scalar has no allocated Udon heap slot");
+            std::string propertySlot = "__udoncl_kernel_" +
+                                       std::to_string(dispatch.getKernelId()) +
+                                       "_arg_" + std::to_string(argumentIndex);
+            addSlot(propertySlot, "SystemString",
+                    "\"_VRC_Arg" + std::to_string(argumentIndex) + "\"", false);
+            emitPush(dispatch.getLoc(), materialSlot.getValue());
+            emitPush(dispatch.getLoc(), propertySlot);
+            emitPush(dispatch.getLoc(), scalar);
+            emitExtern(dispatch.getLoc(),
+                       kind.getValue() == "f32"
+                           ? "UnityEngineMaterial.__SetFloat__SystemString_"
+                             "SystemSingle__SystemVoid"
+                           : "UnityEngineMaterial.__SetInteger__SystemString_"
+                             "SystemInt32__SystemVoid");
+          }
+          addSlot("__udoncl_null_texture", "UnityEngineTexture", "null", false);
+          emitPush(dispatch.getLoc(), "__udoncl_null_texture");
+          emitPush(dispatch.getLoc(), destination);
+          emitPush(dispatch.getLoc(), materialSlot.getValue());
+          emitExtern(
+              dispatch.getLoc(),
+              "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_"
+              "UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid");
+          continue;
+        }
         if (auto copy = dyn_cast<::vrc::vrc::BufferCopyOp>(operation)) {
           auto materialSlot =
               copy->getAttrOfType<StringAttr>("vrc.unity_copy_material_slot");
