@@ -221,6 +221,10 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             );
             StringAssert.Contains("private int TryWriteFloatBuffer", source);
             StringAssert.Contains("private int StartReadFloatBuffer", source);
+            StringAssert.Contains(
+                "new Color32((byte)(word & 255), (byte)((word >> 8) & 255), (byte)((word >> 16) & 255), (byte)((word >> 24) & 255))",
+                source
+            );
             StringAssert.Contains("public int TryDispose()", source);
             StringAssert.Contains("VRCAsyncGPUReadback.Request", source);
             StringAssert.Contains("pendingReadbackGeneration = generation;", source);

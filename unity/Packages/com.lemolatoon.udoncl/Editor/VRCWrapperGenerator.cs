@@ -358,7 +358,7 @@ namespace Lemolatoon.Udoncl.Editor
             source.AppendLine("        private Color32 PackWord(int word)");
             source.AppendLine("        {");
             source.AppendLine(
-                "            return new Color32((byte)word, (byte)(word >> 8), (byte)(word >> 16), (byte)(word >> 24));"
+                "            return new Color32((byte)(word & 255), (byte)((word >> 8) & 255), (byte)((word >> 16) & 255), (byte)((word >> 24) & 255));"
             );
             source.AppendLine("        }");
             source.AppendLine();
