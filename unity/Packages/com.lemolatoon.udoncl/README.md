@@ -2,6 +2,25 @@
 
 This Unity 2022.3 package imports `udoncl` compiler artifacts into stable paths under `Assets/udoncl-generated/<program-name>`. It targets the VRChat Worlds SDK 3.x (`com.vrchat.worlds`) and has no UdonSharp dependency.
 
+## Installation
+
+This package is distributed as the prerelease VPM package
+`com.lemolatoon.udoncl`. Add the repository to the VRChat Creator Companion:
+
+```text
+https://lemolatoon.github.io/udoncl/index.json
+```
+
+Then add **UdonCL Runtime and ONNX Importer** to a Worlds project. Prerelease
+versions require **Show Pre-Release Packages** in the VCC package settings.
+
+For local development, validate and add the package with the VPM CLI:
+
+```text
+vpm check package unity/Packages/com.lemolatoon.udoncl
+vpm add package unity/Packages/com.lemolatoon.udoncl -p path/to/WorldProject
+```
+
 ## Udon ONNX Runtime
 
 Any artifact can expose the paired `onnx_model` and `onnx_execution_plan`

@@ -1,0 +1,58 @@
+name: Build VPM Listing
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published, created, edited, unpublished, deleted, released]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: vpm-pages
+  cancel-in-progress: true
+
+jobs:
+  build-listing:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate repository configuration
+        run: |
+          test -n "${{ vars.PACKAGE_NAME }}"
+          test "${{ vars.PACKAGE_NAME }}" = "com.lemolatoon.udoncl"
+      - name: Checkout official VPM listing builder
+        uses: actions/checkout@v4
+        with:
+          repository: vrchat-community/package-list-action
+          ref: cb31c3b5d17d1070d7741c61de2ca1b219224039
+          path: .vpm-listing-ci
+          clean: false
+      - name: Restore listing builder cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .vpm-listing-ci/.nuke/temp
+            ~/.nuget/packages
+          key: vpm-listing-${{ runner.os }}-${{ hashFiles('.vpm-listing-ci/**/global.json', '.vpm-listing-ci/**/*.csproj') }}
+      - name: Build repository listing
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          .vpm-listing-ci/build.cmd BuildRepoListing
+          --root .vpm-listing-ci
+          --list-publish-directory "$GITHUB_WORKSPACE/Website"
+          --current-package-name "${{ vars.PACKAGE_NAME }}"
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: Website
+      - name: Deploy VPM listing
+        id: deployment
+        uses: actions/deploy-pages@v4

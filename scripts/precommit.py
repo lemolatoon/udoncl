@@ -480,6 +480,7 @@ def main():
     staged = [path for path in staged if path]
     if not staged:
         parser.error("stage the intended commit before running the pre-commit gate")
+    run([sys.executable, root / "scripts/validate_vpm_package.py"], cwd=root)
     ensure_cmake_toolchain_on_path()
     run_unity_mcp_gate(
         root, unity, project, args.build_dir.resolve(), args.output.resolve()

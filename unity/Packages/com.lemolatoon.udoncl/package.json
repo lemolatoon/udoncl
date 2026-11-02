@@ -1,10 +1,19 @@
 {
   "name": "com.lemolatoon.udoncl",
-  "displayName": "udoncl Runtime and ONNX Importer",
-  "version": "0.1.0",
+  "displayName": "UdonCL Runtime and ONNX Importer",
+  "version": "0.1.0-beta.1",
   "description": "Transaction-safe Unity import for udoncl programs, Device kernels, UdonDNN/UdonBLAS, and ONNX execution plans.",
   "unity": "2022.3",
+  "license": "GPL-3.0-only",
+  "licensesUrl": "https://github.com/lemolatoon/udoncl/blob/master/LICENSE",
+  "documentationUrl": "https://github.com/lemolatoon/udoncl/tree/master/unity/Packages/com.lemolatoon.udoncl",
+  "changelogUrl": "https://github.com/lemolatoon/udoncl/blob/master/unity/Packages/com.lemolatoon.udoncl/CHANGELOG.md",
+  "author": {
+    "name": "Lemolatoon",
+    "email": "lemolatoon@gmail.com",
+    "url": "https://github.com/lemolatoon"
+  },
   "vpmDependencies": {
-    "com.vrchat.worlds": ">=3.0.0"
+    "com.vrchat.worlds": "3.10.x"
   }
 }

@@ -4,6 +4,16 @@ on:
   pull_request:
   workflow_dispatch:
 jobs:
+  vpm-package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate VPM package
+        run: python scripts/validate_vpm_package.py
   format:
     runs-on: ubuntu-24.04
     timeout-minutes: 10

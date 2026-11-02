@@ -4,6 +4,12 @@ C / OpenCL C → Udon / Fragment Shader compiler under development.
 [PLAN.md](PLAN.md) is the design specification. The application entry is UdonSharp;
 C is a library. This repository does not yet compile C into a working VRChat world.
 
+The Unity runtime and artifact importer are distributed as the prerelease VPM
+package `com.lemolatoon.udoncl`. Its community repository URL is
+`https://lemolatoon.github.io/udoncl/index.json`; enable prerelease packages in
+VCC to install beta versions. Maintainer setup and publication steps are in
+[docs/vpm-release.md](docs/vpm-release.md).
+
 LLVM, MLIR and Clang are pinned together to **23.1.4** (commit recorded in
 [cmake/llvm-lock.json](cmake/llvm-lock.json)). Compiler development targets Linux,
 macOS and Windows x64; the initial generated world targets VRChat PC (Windows).

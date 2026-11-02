@@ -1,0 +1,64 @@
+name: Build VPM Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      PACKAGE_NAME: ${{ vars.PACKAGE_NAME }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate repository configuration
+        run: |
+          test -n "$PACKAGE_NAME"
+          test "$PACKAGE_NAME" = "com.lemolatoon.udoncl"
+      - name: Validate package
+        run: python scripts/validate_vpm_package.py
+      - name: Read release version
+        id: package
+        shell: bash
+        run: |
+          version=$(python -c "import json; print(json.load(open('unity/Packages/com.lemolatoon.udoncl/package.json', encoding='utf-8'))['version'])")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "archive=$PACKAGE_NAME-$version.zip" >> "$GITHUB_OUTPUT"
+      - name: Build package archive
+        shell: bash
+        run: |
+          cd "unity/Packages/$PACKAGE_NAME"
+          zip -r "$GITHUB_WORKSPACE/${{ steps.package.outputs.archive }}" .
+      - name: Verify package archive root
+        shell: bash
+        run: |
+          unzip -Z1 "${{ steps.package.outputs.archive }}" > archive-files.txt
+          grep -Fxq package.json archive-files.txt
+          grep -Fxq Runtime/Udoncl.Runtime.asmdef archive-files.txt
+          if grep -Eq "^$PACKAGE_NAME/" archive-files.txt; then
+            echo "Package archive has an extra top-level directory." >&2
+            exit 1
+          fi
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.package.outputs.version }}
+          ARCHIVE: ${{ steps.package.outputs.archive }}
+        shell: bash
+        run: |
+          prerelease=()
+          if [[ "$VERSION" == *-* ]]; then
+            prerelease=(--prerelease)
+          fi
+          gh release create "$VERSION" \
+            "$ARCHIVE" \
+            "unity/Packages/$PACKAGE_NAME/package.json" \
+            --title "$PACKAGE_NAME $VERSION" \
+            --generate-notes \
+            "${prerelease[@]}"
