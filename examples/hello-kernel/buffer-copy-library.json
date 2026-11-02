@@ -17,6 +17,11 @@
     },
     {
       "id": 2,
+      "name": "intermediate",
+      "byte_size": 32772
+    },
+    {
+      "id": 3,
       "name": "destination",
       "byte_size": 32772
     }

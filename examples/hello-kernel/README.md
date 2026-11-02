@@ -49,9 +49,9 @@ from C source:
 cmake --build build/hello-kernel-cmake --target hello-buffer-copy-unity-library
 ```
 
-`buffer_copy.c` includes the installed `<udoncl/unity_buffer.h>`, allocates two
-fixed 32,772-byte (8192×2 texel) buffers, and reuses them for two full
-`udonclCopyBuffer` calls. The generated
+`buffer_copy.c` includes the installed `<udoncl/unity_buffer.h>`, allocates
+three fixed 32,772-byte (8192×2 texel) buffers, and copies source to
+intermediate and then intermediate to destination. The generated
 artifact is under
 `build/hello-kernel-cmake/udoncl/hello-buffer-copy-unity-library/artifact`.
 This restricted bridge accepts one or more direct allocation-to-copy uses;

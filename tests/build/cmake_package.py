@@ -108,15 +108,22 @@ def main():
     )
     assert copy_manifest['program']['buffer_copy_shader'] == 'buffer-copy.shader'
     assert [buffer['name'] for buffer in copy_manifest['device']['buffers']] == [
-        'source', 'destination',
+        'source', 'intermediate', 'destination',
     ]
     assert [
         (buffer['logical_bytes'], buffer['width'], buffer['height'])
         for buffer in copy_manifest['device']['buffers']
-    ] == [(32772, 8192, 2), (32772, 8192, 2)]
+    ] == [(32772, 8192, 2), (32772, 8192, 2), (32772, 8192, 2)]
     copy_assembly = (copy_artifact / 'host.uasm').read_text(encoding='utf-8')
     assert '.export CopyFull' in copy_assembly
     assert copy_assembly.count('VRCSDKBaseVRCGraphics.__Blit__') == 2
+    first_copy = copy_assembly.index('PUSH, __udoncl_buffer_1')
+    intermediate_write = copy_assembly.index('PUSH, __udoncl_buffer_2', first_copy)
+    intermediate_read = copy_assembly.index(
+        'PUSH, __udoncl_buffer_2', intermediate_write + 1
+    )
+    final_write = copy_assembly.index('PUSH, __udoncl_buffer_3', intermediate_read)
+    assert first_copy < intermediate_write < intermediate_read < final_write
     assert (copy_artifact / 'buffer-copy.shader').is_file()
     assert (install / 'include/udoncl/unity_buffer.h').is_file()
 
