@@ -54,6 +54,28 @@ namespace Lemolatoon.Udoncl.Editor
                     EnsureFolders(programRoot + "/Shaders");
                     transaction.CopyFile(artifacts.DisplayShaderAssetPath, displayShaderPath);
 
+                    if (!string.IsNullOrEmpty(artifacts.BufferCopyShaderAssetPath))
+                    {
+                        string bufferCopyShaderPath = programRoot + "/Shaders/buffer-copy.shader";
+                        transaction.CopyFile(
+                            artifacts.BufferCopyShaderAssetPath,
+                            bufferCopyShaderPath
+                        );
+                        Shader bufferCopyShader = AssetDatabase.LoadAssetAtPath<Shader>(
+                            bufferCopyShaderPath
+                        );
+                        if (bufferCopyShader == null)
+                            throw new InvalidDataException(
+                                "Unity could not import buffer copy shader: " + bufferCopyShaderPath
+                            );
+                        CreateOrUpdateNamedMaterial(
+                            transaction,
+                            programRoot,
+                            "buffer-copy.mat",
+                            bufferCopyShader
+                        );
+                    }
+
                     Dictionary<ValidatedKernel, string> shaderAssetPaths =
                         new Dictionary<ValidatedKernel, string>();
                     foreach (ValidatedKernel kernel in artifacts.Kernels)

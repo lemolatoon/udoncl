@@ -15,6 +15,7 @@ namespace Lemolatoon.Udoncl.Editor
             string manifestAssetPath,
             string assemblyAssetPath,
             string displayShaderAssetPath,
+            string bufferCopyShaderAssetPath,
             string artifactStage,
             string programName,
             IList<ValidatedKernel> kernels,
@@ -28,6 +29,7 @@ namespace Lemolatoon.Udoncl.Editor
             ManifestAssetPath = manifestAssetPath;
             AssemblyAssetPath = assemblyAssetPath;
             DisplayShaderAssetPath = displayShaderAssetPath;
+            BufferCopyShaderAssetPath = bufferCopyShaderAssetPath;
             ArtifactStage = artifactStage;
             ProgramName = programName;
             Kernels = kernels;
@@ -41,6 +43,7 @@ namespace Lemolatoon.Udoncl.Editor
         public string ManifestAssetPath { get; private set; }
         public string AssemblyAssetPath { get; private set; }
         public string DisplayShaderAssetPath { get; private set; }
+        public string BufferCopyShaderAssetPath { get; private set; }
         public string ArtifactStage { get; private set; }
         public string ProgramName { get; private set; }
         public IList<ValidatedKernel> Kernels { get; private set; }
@@ -261,6 +264,21 @@ namespace Lemolatoon.Udoncl.Editor
                 );
             ReadUtf8(displayShaderPath);
 
+            string bufferCopyShaderPath = null;
+            if (!string.IsNullOrEmpty(manifest.program.buffer_copy_shader))
+            {
+                string bufferCopyRelativePath = ValidateRelativeFilePath(
+                    manifest.program.buffer_copy_shader,
+                    ".shader"
+                );
+                bufferCopyShaderPath = ResolveExistingFile(root, bufferCopyRelativePath);
+                if (new FileInfo(bufferCopyShaderPath).Length == 0)
+                    throw new InvalidDataException(
+                        "Buffer copy shader artifact is empty: " + bufferCopyRelativePath
+                    );
+                ReadUtf8(bufferCopyShaderPath);
+            }
+
             List<ValidatedKernel> kernels = new List<ValidatedKernel>();
             HashSet<int> kernelIds = new HashSet<int>();
             HashSet<string> shaderPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -352,6 +370,7 @@ namespace Lemolatoon.Udoncl.Editor
                 manifestPath,
                 assemblyPath,
                 displayShaderPath,
+                bufferCopyShaderPath,
                 manifest.artifact_stage,
                 manifest.program.name,
                 kernels,

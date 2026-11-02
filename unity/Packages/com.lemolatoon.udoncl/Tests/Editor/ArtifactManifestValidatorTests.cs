@@ -50,6 +50,45 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         }
 
         [Test]
+        public void ValidateAcceptsOptionalBufferCopyShader()
+        {
+            File.WriteAllText(
+                Path.Combine(_directory, "buffer-copy.shader"),
+                "Shader \"Hidden/udoncl/copy\" { SubShader { Pass {} } }"
+            );
+            string manifestPath = Path.Combine(_directory, "manifest.json");
+            string json = File.ReadAllText(manifestPath)
+                .Replace(
+                    "\"display_shader\":\"display.shader\"",
+                    "\"display_shader\":\"display.shader\","
+                        + "\"buffer_copy_shader\":\"buffer-copy.shader\""
+                );
+            File.WriteAllText(manifestPath, json, new UTF8Encoding(false));
+
+            ValidatedArtifact artifact = ArtifactManifestValidator.Validate(_directory);
+            Assert.AreEqual(
+                Path.GetFullPath(Path.Combine(_directory, "buffer-copy.shader")),
+                artifact.BufferCopyShaderAssetPath
+            );
+        }
+
+        [Test]
+        public void ValidateRejectsMissingBufferCopyShader()
+        {
+            string manifestPath = Path.Combine(_directory, "manifest.json");
+            string json = File.ReadAllText(manifestPath)
+                .Replace(
+                    "\"display_shader\":\"display.shader\"",
+                    "\"display_shader\":\"display.shader\","
+                        + "\"buffer_copy_shader\":\"missing.shader\""
+                );
+            File.WriteAllText(manifestPath, json, new UTF8Encoding(false));
+            Assert.Throws<FileNotFoundException>(() =>
+                ArtifactManifestValidator.Validate(_directory)
+            );
+        }
+
+        [Test]
         public void ValidateRejectsTraversalShaderPath()
         {
             WriteManifest("host.uasm", "../escape.shader", "3.7.0");

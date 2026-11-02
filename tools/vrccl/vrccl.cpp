@@ -185,13 +185,107 @@ void appendUnityBufferSlots(ModuleOp module, ArrayRef<UnityBuffer> buffers) {
   auto data = module->getAttrOfType<ArrayAttr>("udonasm.data");
   SmallVector<mlir::Attribute> entries(data.begin(), data.end());
   OpBuilder builder(module.getContext());
-  for (const UnityBuffer &buffer : buffers)
+  for (const UnityBuffer &buffer : buffers) {
+    bool exists = llvm::any_of(entries, [&](mlir::Attribute attribute) {
+      auto entry = dyn_cast<DictionaryAttr>(attribute);
+      auto name = entry ? entry.getAs<StringAttr>("name") : StringAttr();
+      return name && name.getValue() == buffer.heapSlot;
+    });
+    if (exists)
+      continue;
     entries.push_back(builder.getDictionaryAttr(
         {builder.getNamedAttr("name", builder.getStringAttr(buffer.heapSlot)),
          builder.getNamedAttr(
              "type", builder.getStringAttr("UnityEngineRenderTexture")),
          builder.getNamedAttr("initial", builder.getStringAttr("null")),
          builder.getNamedAttr("public", builder.getUnitAttr())}));
+  }
+  module->setAttr("udonasm.data", builder.getArrayAttr(entries));
+}
+
+FailureOr<bool> bindUnityBufferOperations(ModuleOp module,
+                                          ArrayRef<UnityBuffer> buffers) {
+  SmallVector<::vrc::vrc::BufferAllocOp> allocations;
+  SmallVector<::vrc::vrc::BufferCopyOp> copies;
+  module.walk([&](::vrc::vrc::BufferAllocOp operation) {
+    allocations.push_back(operation);
+  });
+  module.walk(
+      [&](::vrc::vrc::BufferCopyOp operation) { copies.push_back(operation); });
+  if (allocations.size() > buffers.size()) {
+    module.emitError("Unity library has more buffer allocation sites than "
+                     "configured Device buffers");
+    return failure();
+  }
+  OpBuilder builder(module.getContext());
+  llvm::DenseMap<Operation *, const UnityBuffer *> bound;
+  for (auto [index, allocation] : llvm::enumerate(allocations)) {
+    auto constant =
+        allocation.getByteSize().getDefiningOp<arith::ConstantIntOp>();
+    const UnityBuffer &buffer = buffers[index];
+    if (!constant || constant.value() != buffer.logicalBytes) {
+      allocation.emitError()
+          << "Unity buffer allocation " << index
+          << " must have constant byte size " << buffer.logicalBytes
+          << " from the configured pool order";
+      return failure();
+    }
+    allocation->setAttr("vrc.unity_buffer_id",
+                        builder.getI32IntegerAttr(buffer.id));
+    allocation->setAttr("vrc.unity_heap_slot",
+                        builder.getStringAttr(buffer.heapSlot));
+    allocation->setAttr("vrc.unity_logical_bytes",
+                        builder.getI32IntegerAttr(buffer.logicalBytes));
+    bound.try_emplace(allocation.getOperation(), &buffer);
+  }
+  for (auto copy : copies) {
+    auto source = copy.getSource().getDefiningOp<::vrc::vrc::BufferAllocOp>();
+    auto destination =
+        copy.getDestination().getDefiningOp<::vrc::vrc::BufferAllocOp>();
+    auto sourceOffset =
+        copy.getSourceOffset().getDefiningOp<arith::ConstantIntOp>();
+    auto destinationOffset =
+        copy.getDestinationOffset().getDefiningOp<arith::ConstantIntOp>();
+    auto byteSize = copy.getByteSize().getDefiningOp<arith::ConstantIntOp>();
+    auto sourceBuffer =
+        source ? bound.find(source.getOperation()) : bound.end();
+    auto destinationBuffer =
+        destination ? bound.find(destination.getOperation()) : bound.end();
+    if (!source || !destination || source == destination ||
+        sourceBuffer == bound.end() || destinationBuffer == bound.end() ||
+        !sourceOffset || sourceOffset.value() != 0 || !destinationOffset ||
+        destinationOffset.value() != 0 || !byteSize ||
+        byteSize.value() != sourceBuffer->second->logicalBytes ||
+        byteSize.value() != destinationBuffer->second->logicalBytes ||
+        sourceBuffer->second->width != destinationBuffer->second->width ||
+        sourceBuffer->second->height != destinationBuffer->second->height) {
+      copy.emitError("initial Unity CopyBuffer requires distinct direct "
+                     "allocations, zero offsets, and equal full buffer shapes");
+      return failure();
+    }
+    copy->setAttr("vrc.unity_copy_material_slot",
+                  builder.getStringAttr("__udoncl_buffer_copy_material"));
+  }
+  return !copies.empty();
+}
+
+void appendUnityCopyMaterialSlot(ModuleOp module) {
+  auto data = module->getAttrOfType<ArrayAttr>("udonasm.data");
+  SmallVector<mlir::Attribute> entries(data.begin(), data.end());
+  OpBuilder builder(module.getContext());
+  if (llvm::any_of(entries, [](mlir::Attribute attribute) {
+        auto entry = dyn_cast<DictionaryAttr>(attribute);
+        auto name = entry ? entry.getAs<StringAttr>("name") : StringAttr();
+        return name && name.getValue() == "__udoncl_buffer_copy_material";
+      }))
+    return;
+  entries.push_back(builder.getDictionaryAttr(
+      {builder.getNamedAttr(
+           "name", builder.getStringAttr("__udoncl_buffer_copy_material")),
+       builder.getNamedAttr("type",
+                            builder.getStringAttr("UnityEngineMaterial")),
+       builder.getNamedAttr("initial", builder.getStringAttr("null")),
+       builder.getNamedAttr("public", builder.getUnitAttr())}));
   module->setAttr("udonasm.data", builder.getArrayAttr(entries));
 }
 
@@ -263,13 +357,17 @@ bool configureUnityExports(ModuleOp module, const json::Object &config) {
     if (selected.count(function.getSymName().str()))
       for (func::CallOp call : function.getOps<func::CallOp>())
         if (!selected.count(call.getCallee().str())) {
+          auto callee = module.lookupSymbol<func::FuncOp>(call.getCallee());
+          if (callee && callee->hasAttr("vrc.intrinsic"))
+            continue;
           call.emitError("Unity library helper calls must be inlined before "
                          "Udon lowering");
           return false;
         }
   for (func::FuncOp function :
        llvm::make_early_inc_range(module.getOps<func::FuncOp>()))
-    if (!selected.count(function.getSymName().str()))
+    if (!selected.count(function.getSymName().str()) &&
+        !function->hasAttr("vrc.intrinsic"))
       function.erase();
   module->setAttr("vrc.target", builder.getStringAttr("vrc-pc"));
   return true;
@@ -286,6 +384,27 @@ std::string unityLibraryDisplayShader(StringRef program) {
           "      return UnityObjectToClipPos(vertex);\n"
           "    }\n"
           "    float4 frag() : SV_Target { return float4(0, 0, 0, 1); }\n"
+          "  ENDHLSL } }\n"
+          "}\n")
+      .str();
+}
+
+std::string unityLibraryBufferCopyShader(StringRef program) {
+  return (Twine("Shader \"Hidden/UdonCL/") + program +
+          "/BufferCopy\" {\n"
+          "  Properties { _MainTex (\"Source\", 2D) = \"black\" {} }\n"
+          "  SubShader { Pass { ZTest Always Cull Off ZWrite Off\n"
+          "    HLSLPROGRAM\n"
+          "    #pragma vertex vert_img\n"
+          "    #pragma fragment frag\n"
+          "    #include \"UnityCG.cginc\"\n"
+          "    Texture2D<float4> _MainTex;\n"
+          "    float4 frag(v2f_img input) : SV_Target {\n"
+          "      uint width, height; _MainTex.GetDimensions(width, height);\n"
+          "      uint2 p = min(uint2(input.uv * uint2(width, height)), "
+          "uint2(width - 1, height - 1));\n"
+          "      return _MainTex.Load(int3(p, 0));\n"
+          "    }\n"
           "  ENDHLSL } }\n"
           "}\n")
       .str();
@@ -343,6 +462,7 @@ int main(int argc, char **argv) {
   bool gatherProfile = false;
   std::optional<json::Object> unityConfig;
   SmallVector<UnityBuffer> unityBuffers;
+  bool unityUsesBufferCopy = false;
   if (emitUnityLibrary) {
     auto input = MemoryBuffer::getFile(inputFilename);
     if (!input || hostLLVM.empty() || !deviceLLVM.empty()) {
@@ -447,8 +567,13 @@ int main(int argc, char **argv) {
   PassManager manager(&context);
   if (emitUnityLibrary) {
     manager.addPass(::vrc::createLowerHostToUdonHLPass());
+    manager.addPass(::vrc::createSubstituteRuntimeIntrinsicsPass());
     if (failed(manager.run(*module)) || failed(verify(*module)))
       return 1;
+    auto bufferBinding = bindUnityBufferOperations(*module, unityBuffers);
+    if (failed(bufferBinding))
+      return 1;
+    unityUsesBufferCopy = *bufferBinding;
     auto manifest = ::vrc::buildBoundaryManifest(*module);
     auto program = unityConfig->getString("program");
     manifest["artifact_stage"] = "unity-udoncl-library";
@@ -456,6 +581,9 @@ int main(int argc, char **argv) {
                                        {"assembly", "host.uasm"},
                                        {"display_shader", "display.shader"},
                                        {"ir", "host.udonasm.mlir"}};
+    if (unityUsesBufferCopy)
+      (*manifest["program"].getAsObject())["buffer_copy_shader"] =
+          "buffer-copy.shader";
     manifest["ready_for_unity"] = true;
     auto *device = manifest["device"].getAsObject();
     if (!device) {
@@ -468,12 +596,16 @@ int main(int argc, char **argv) {
     if (failed(udon.run(*module)) || failed(verify(*module)))
       return 1;
     appendUnityBufferSlots(*module, unityBuffers);
+    if (unityUsesBufferCopy)
+      appendUnityCopyMaterialSlot(*module);
     std::string assembly;
     raw_string_ostream assemblyOut(assembly);
     if (failed(::vrc::emitUdonAssembly(*module, assemblyOut)))
       return 1;
     files["host.uasm"] = std::move(assembly);
     files["display.shader"] = unityLibraryDisplayShader(*program);
+    if (unityUsesBufferCopy)
+      files["buffer-copy.shader"] = unityLibraryBufferCopyShader(*program);
     raw_string_ostream lowered(files["host.udonasm.mlir"]);
     module->print(lowered);
     lowered << "\n";

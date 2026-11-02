@@ -186,6 +186,52 @@ rejected = subprocess.run(
 assert rejected.returncode != 0
 assert 'extern legalization set' in rejected.stderr
 
+buffer_source = r'''module attributes {vrc.host_stage = "udonhl"} {
+  func.func @copy_full() attributes {vrc.export_id = 6 : i32} {
+    %bytes = arith.constant 4 : i32
+    %zero = arith.constant 0 : i32
+    %source, %source_status = vrc.buffer_alloc %bytes {
+      format = "rgba8_unorm", usage = "storage",
+      vrc.unity_buffer_id = 1 : i32,
+      vrc.unity_heap_slot = "__udoncl_buffer_1",
+      vrc.unity_logical_bytes = 4 : i32
+    } : (i32) -> (!vrc.buffer, i32)
+    %destination, %destination_status = vrc.buffer_alloc %bytes {
+      format = "rgba8_unorm", usage = "storage",
+      vrc.unity_buffer_id = 2 : i32,
+      vrc.unity_heap_slot = "__udoncl_buffer_2",
+      vrc.unity_logical_bytes = 4 : i32
+    } : (i32) -> (!vrc.buffer, i32)
+    %event = vrc.buffer_copy %source, %destination, %zero, %zero, %bytes {
+      vrc.unity_copy_material_slot = "__udoncl_buffer_copy_material"
+    } : (!vrc.buffer, !vrc.buffer, i32, i32, i32) -> !vrc.event
+    return
+  }
+}'''
+buffer_lowered = subprocess.run(
+    [opt, '--vrc-lower-udonhl-to-udonasm', '--verify-each'],
+    input=buffer_source, text=True, capture_output=True)
+assert buffer_lowered.returncode == 0, buffer_lowered.stderr
+for expected in [
+    'name = "__udoncl_buffer_1"',
+    'name = "__udoncl_buffer_2"',
+    'name = "__udoncl_buffer_copy_material"',
+    'udonasm.push "__udoncl_buffer_1"',
+    'udonasm.push "__udoncl_buffer_2"',
+    'udonasm.push "__udoncl_buffer_copy_material"',
+    'VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_'
+    'UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid',
+]:
+    assert expected in buffer_lowered.stdout, (expected, buffer_lowered.stdout)
+
+unbound_buffer = buffer_source.replace(
+    'vrc.unity_heap_slot = "__udoncl_buffer_1",', '', 1)
+rejected = subprocess.run(
+    [opt, '--vrc-lower-udonhl-to-udonasm'], input=unbound_buffer,
+    text=True, capture_output=True)
+assert rejected.returncode != 0
+assert 'requires a bound heap slot' in rejected.stderr
+
 for argument_type, diagnostic in [
     ('memref<2x2xf32>', 'unsupported scalar Udon argument type'),
     ('memref<4xi32>', 'unsupported scalar Udon argument type'),

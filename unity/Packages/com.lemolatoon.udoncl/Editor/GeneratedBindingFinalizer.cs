@@ -148,6 +148,19 @@ namespace Lemolatoon.Udoncl.Editor
                             );
                         SetPublicVariable(program, buffer.heap_slot, texture);
                     }
+                if (
+                    manifest.program != null
+                    && !string.IsNullOrEmpty(manifest.program.buffer_copy_shader)
+                )
+                {
+                    string materialPath = programRoot + "/Materials/buffer-copy.mat";
+                    Material material = AssetDatabase.LoadAssetAtPath<Material>(materialPath);
+                    if (material == null)
+                        throw new InvalidDataException(
+                            "Generated buffer copy material is missing: " + materialPath
+                        );
+                    SetPublicVariable(program, "__udoncl_buffer_copy_material", material);
+                }
 
                 UdonSharpBehaviour wrapper = root.AddUdonSharpComponent(wrapperType);
                 SerializedObject serializedWrapper = new SerializedObject(wrapper);

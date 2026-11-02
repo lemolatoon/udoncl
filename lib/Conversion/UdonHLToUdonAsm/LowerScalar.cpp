@@ -1,6 +1,7 @@
 #include "VRC/Conversion/Passes.h"
 #include "VRC/ABI/Manifest/UdonSharpABI.h"
 #include "VRC/Dialect/UdonAsm/UdonAsmDialect.h"
+#include "VRC/Dialect/VRC/VRCDialect.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -36,6 +37,10 @@ static FailureOr<StringRef> udonType(Type type) {
   if (type.isF32())
     return StringRef("SystemSingle");
   if (type.isIndex())
+    return StringRef("SystemInt32");
+  if (isa<::vrc::vrc::BufferType>(type))
+    return StringRef("UnityEngineRenderTexture");
+  if (isa<::vrc::vrc::EventType>(type))
     return StringRef("SystemInt32");
   if (auto memref = dyn_cast<MemRefType>(type)) {
     if (memref.getRank() != 1 || !memref.getLayout().isIdentity())
@@ -295,9 +300,24 @@ private:
       for (Operation &operation : block) {
         if (!operation.getNumResults())
           continue;
+        if (auto allocation = dyn_cast<::vrc::vrc::BufferAllocOp>(operation)) {
+          auto heapSlot =
+              allocation->getAttrOfType<StringAttr>("vrc.unity_heap_slot");
+          if (!heapSlot || heapSlot.getValue().empty())
+            return allocation.emitError(
+                "Unity buffer allocation requires a bound heap slot");
+          addSlot(heapSlot.getValue(), "UnityEngineRenderTexture", "null",
+                  true);
+          valueSlots[allocation.getBuffer()] = heapSlot.getValue().str();
+          std::string status = prefix + "v" + std::to_string(valueIndex++);
+          addSlot(status, "SystemInt32", "0", false);
+          valueSlots[allocation.getStatus()] = status;
+          continue;
+        }
         if (operation.getNumResults() != 1)
           return operation.emitError(
-              "initial Udon lowering supports one result per operation");
+              "initial Udon lowering supports one result "
+              "per non-allocation operation");
         auto type = udonType(operation.getResult(0).getType());
         if (failed(type))
           return operation.emitError("unsupported Udon result type");
@@ -359,6 +379,28 @@ private:
       for (Operation &operation : block) {
         if (isa<arith::ConstantOp>(operation))
           continue;
+        if (isa<::vrc::vrc::BufferAllocOp>(operation))
+          continue;
+        if (auto copy = dyn_cast<::vrc::vrc::BufferCopyOp>(operation)) {
+          auto materialSlot =
+              copy->getAttrOfType<StringAttr>("vrc.unity_copy_material_slot");
+          std::string source = valueSlots.lookup(copy.getSource());
+          std::string destination = valueSlots.lookup(copy.getDestination());
+          if (!materialSlot || materialSlot.getValue().empty() ||
+              source.empty() || destination.empty() || source == destination)
+            return copy.emitError(
+                "Unity buffer copy requires distinct bound buffers and a copy "
+                "material slot");
+          addSlot(materialSlot.getValue(), "UnityEngineMaterial", "null", true);
+          emitPush(copy.getLoc(), source);
+          emitPush(copy.getLoc(), destination);
+          emitPush(copy.getLoc(), materialSlot.getValue());
+          emitExtern(
+              copy.getLoc(),
+              "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_"
+              "UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid");
+          continue;
+        }
         if (auto returned = dyn_cast<func::ReturnOp>(operation)) {
           if (returned.getNumOperands()) {
             auto found = valueSlots.find(returned.getOperand(0));
@@ -469,6 +511,9 @@ private:
 
   void addSlot(StringRef name, StringRef type, StringRef initial,
                bool isPublic) {
+    if (llvm::any_of(slots,
+                     [&](const Slot &slot) { return slot.name == name; }))
+      return;
     slots.push_back({name.str(), type.str(), initial.str(), isPublic});
   }
 

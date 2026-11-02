@@ -173,6 +173,11 @@ Current components:
 - Explicit Device buffer allocation with bounded Write/Read/Copy commands;
   host-backed buffers, SubBuffer, Map/Unmap, and rectangular copies fail
   explicitly instead of selecting an unimplemented fallback.
+- The Udon backend can bind typed `vrc.buffer_alloc` operations to the ordered
+  fixed buffer pool and lower an initial full-buffer `vrc.buffer_copy` to
+  `VRCGraphics.Blit`. This first Unity subset requires constant exact sizes,
+  zero offsets, equal texture shapes, and distinct source/destination buffers;
+  partial, dynamic, or self copies are compile errors rather than approximated.
 - `udoncl-opt`: MLIR parser/printer with operation verification, rejects unknown ops by default.
 - `VRCLLVMToHighLevelMLIR`: independent import/metadata, local-memory and scalar/CFG recovery library for host/device development.
 - `udoncl-translate --import-llvm input.ll`: LLVM dialect import with preserved frontend metadata and optional JSON sidecar.
