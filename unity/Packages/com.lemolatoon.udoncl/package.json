@@ -21,6 +21,11 @@
       "displayName": "ONNX Arena Add",
       "description": "Generate, import, and call a standard ONNX Add graph from U#.",
       "path": "Samples~/ONNX Arena Add"
+    },
+    {
+      "displayName": "ONNX Tiny Llama",
+      "description": "Run a multi-operator Tiny Llama graph with typed token upload and asynchronous logits readback.",
+      "path": "Samples~/ONNX Tiny Llama"
     }
   ]
 }

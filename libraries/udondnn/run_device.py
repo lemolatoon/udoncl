@@ -95,6 +95,7 @@ def main():
     arena_broadcast_device = root / "libraries/udonaten/device/arena_broadcast_pointwise.cl"
     arena_tile_device = root / "libraries/udonaten/device/arena_tile.cl"
     arena_rms_device = root / "libraries/udonaten/device/arena_rms_norm.cl"
+    arena_embedding_device = root / "libraries/udonaten/device/arena_embedding.cl"
     arena_sgemm_device = root / "libraries/udonblas/device/arena_sgemm.cl"
     arena_softmax_device = source / "device/arena_softmax.cl"
     arena_convolution_device = source / "device/arena_convolution.cl"
@@ -118,6 +119,7 @@ def main():
     arena_broadcast_text = arena_broadcast_device.read_text(encoding="utf-8")
     arena_tile_text = arena_tile_device.read_text(encoding="utf-8")
     arena_rms_text = arena_rms_device.read_text(encoding="utf-8")
+    arena_embedding_text = arena_embedding_device.read_text(encoding="utf-8")
     arena_sgemm_text = arena_sgemm_device.read_text(encoding="utf-8")
     arena_softmax_text = arena_softmax_device.read_text(encoding="utf-8")
     arena_convolution_text = arena_convolution_device.read_text(encoding="utf-8")
@@ -156,6 +158,8 @@ def main():
         + arena_tile_text
         + "\n"
         + arena_rms_text
+        + "\n"
+        + arena_embedding_text
         + "\n"
         + arena_sgemm_text
         + "\n"
@@ -386,6 +390,14 @@ def main():
         arena_pooling_device,
         "udondnn_arena_pooling_forward",
         225,
+        16384,
+        (8192, 2),
+    )
+    arena_embedding_bundle = emit_device(
+        "udonaten-arena-embedding",
+        arena_embedding_device,
+        "udonaten_arena_embedding",
+        226,
         16384,
         (8192, 2),
     )
@@ -701,6 +713,21 @@ def main():
     ):
         raise RuntimeError("UdonDNN arena pooling manifest is invalid")
     arena_pooling_fragment = arena_pooling_bundle / "kernels/kernel_225.hlsl"
+    arena_embedding_manifest = json.loads(
+        (arena_embedding_bundle / "manifest.json").read_text(encoding="utf-8")
+    )
+    arena_embedding_kernel = arena_embedding_manifest["device"]["kernels"][0]
+    if (
+        arena_embedding_kernel["name"] != "udonaten_arena_embedding"
+        or arena_embedding_kernel["global_size"] != [8192, 2, 1]
+        or [argument["access"] for argument in arena_embedding_kernel["args"][:3]]
+        != ["read", "read", "write"]
+        or len(arena_embedding_kernel["args"]) != 7
+    ):
+        raise RuntimeError("UdonATen arena embedding manifest is invalid")
+    arena_embedding_fragment = (
+        arena_embedding_bundle / "kernels/kernel_226.hlsl"
+    )
     blas_bundles = [
         (sgemm_bundle, "udonblas_sgemm", 212, 1024, 10),
         (sgemv_bundle, "udonblas_sgemv", 213, 1024, 8),
@@ -1866,6 +1893,7 @@ def main():
             (arena_broadcast_bundle, "kernel_223.shader"),
             (arena_convolution_bundle, "kernel_224.shader"),
             (arena_pooling_bundle, "kernel_225.shader"),
+            (arena_embedding_bundle, "kernel_226.shader"),
         ):
             shutil.copy2(
                 shader_bundle / "kernels" / shader_name,
@@ -2488,6 +2516,7 @@ def main():
                 (arena_broadcast_fragment, "frag", "frag"),
                 (arena_convolution_fragment, "frag", "frag"),
                 (arena_pooling_fragment, "frag", "frag"),
+                (arena_embedding_fragment, "frag", "frag"),
                 (vertex, "vert", "vert"),
             ]
         ):
@@ -2531,6 +2560,7 @@ def main():
             arena_broadcast_fragment,
             arena_convolution_fragment,
             arena_pooling_fragment,
+            arena_embedding_fragment,
             vertex,
         ) = compiled
 

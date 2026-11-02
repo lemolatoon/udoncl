@@ -444,6 +444,18 @@ def run_unity_mcp_gate(root, unity, project, build, output):
             "UDONCL_ONNX_LLAMA_8B_MODEL_UASM": str(
                 (output / "llama-8b-onnx/model-host.uasm").resolve()
             ),
+            "UDONCL_ONNX_TINY_STANDARD_UNITY_BUNDLE": str(
+                (
+                    output
+                    / "onnx-aot/unity-tiny-llama-standard-model-bundle"
+                ).resolve()
+            ),
+            "UDONCL_ONNX_TINY_STANDARD_REFERENCE": str(
+                (
+                    output
+                    / "onnx-aot/unity-tiny-llama-standard-reference.bytes"
+                ).resolve()
+            ),
             "UNITY_MCP_STATUS_DIR": str(status_dir),
             "UNITY_MCP_TRANSPORT": "stdio",
             "GIT_CONFIG_COUNT": "1",
@@ -456,11 +468,18 @@ def run_unity_mcp_gate(root, unity, project, build, output):
     client = None
     try:
         sample_validation.mkdir()
-        shutil.copy2(
-            root
-            / "unity/Packages/com.lemolatoon.udoncl/Samples~/ONNX Arena Add/UdonOnnxArenaAddExample.cs",
-            sample_validation / "UdonOnnxArenaAddExample.cs",
+        sample_sources = sorted(
+            (
+                root / "unity/Packages/com.lemolatoon.udoncl/Samples~"
+            ).rglob("*.cs")
         )
+        if not sample_sources:
+            raise RuntimeError("Unity package contains no sample scripts")
+        for source in sample_sources:
+            destination = sample_validation / source.name
+            if destination.exists():
+                raise RuntimeError(f"duplicate Unity sample script name: {source.name}")
+            shutil.copy2(source, destination)
         unity_command = [
             unity,
             "-batchmode",

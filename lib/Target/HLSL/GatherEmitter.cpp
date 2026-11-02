@@ -235,8 +235,17 @@ struct Emitter {
       declare(op->getResult(0), "float(asint(" + get(op->getOperand(0)) + "))");
     else if (isa<arith::FPToUIOp>(op))
       declare(op->getResult(0), "uint(" + get(op->getOperand(0)) + ")");
-    else if (isa<math::FloorOp, math::SqrtOp, math::CosOp, math::SinOp,
-                 math::ExpOp, math::LogOp, arith::NegFOp>(op)) {
+    else if (auto bitcast = dyn_cast<arith::BitcastOp>(op)) {
+      if (bitcast.getIn().getType().isF32() &&
+          bitcast.getOut().getType().isInteger(32))
+        declare(bitcast.getOut(), "asuint(" + get(bitcast.getIn()) + ")");
+      else if (bitcast.getIn().getType().isInteger(32) &&
+               bitcast.getOut().getType().isF32())
+        declare(bitcast.getOut(), "asfloat(" + get(bitcast.getIn()) + ")");
+      else
+        return op->emitError("unsupported fragment bitcast");
+    } else if (isa<math::FloorOp, math::SqrtOp, math::CosOp, math::SinOp,
+                   math::ExpOp, math::LogOp, arith::NegFOp>(op)) {
       auto expression = get(op->getOperand(0));
       declare(op->getResult(0),
               isa<math::FloorOp>(op)  ? "floor(" + expression + ")"

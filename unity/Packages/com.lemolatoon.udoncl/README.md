@@ -71,6 +71,13 @@ typed Write/Run/async Read API from a small U# component. Import the **ONNX
 Arena Add** sample from this package's Samples tab instead of copying the
 component source manually.
 
+For a multi-operator path, `examples/tiny-llama/build_onnx.py` generates a
+standard ONNX decoder using Gather, RMSNormalization, Gemm, Add, Sigmoid, Mul,
+and Reshape, then publishes an 18-pass general-runtime artifact. Import the
+**ONNX Tiny Llama** Package Sample to upload an int32 token and read 16 logits
+asynchronously. This model intentionally does not use the disabled general
+ONNX Pooling path.
+
 ## Import
 
 Use **Tools → udoncl → Import Artifacts...** and select a compiler output directory containing `manifest.json`, its host `.uasm`, and any referenced generated `.shader` files. The importer checks schema v1, the runtime ABI and target, Worlds SDK version, names, extensions, UTF-8 content, referenced files, and relative paths before writing any assets.

@@ -49,6 +49,7 @@ StringRef raisedName(StringRef name) {
       .Case("llvm.uitofp", "arith.uitofp")
       .Case("llvm.sitofp", "arith.sitofp")
       .Case("llvm.fptoui", "arith.fptoui")
+      .Case("llvm.bitcast", "arith.bitcast")
       .Case("llvm.select", "arith.select")
       .Default("");
 }
@@ -193,6 +194,15 @@ LogicalResult checkOperation(Operation *op) {
   if (auto constant = dyn_cast<LLVM::ConstantOp>(op)) {
     if (!isa<IntegerAttr, FloatAttr>(constant.getValue()))
       return reject(op, "only scalar integer/float constants are supported");
+    return success();
+  }
+  if (isa<LLVM::BitcastOp>(op)) {
+    Type source = op->getOperand(0).getType();
+    Type target = op->getResult(0).getType();
+    bool proven = (source.isF32() && target.isInteger(32)) ||
+                  (source.isInteger(32) && target.isF32());
+    if (!proven)
+      return reject(op, "only bit-exact f32/i32 scalar casts are proven");
     return success();
   }
   if (!raisedName(op->getName().getStringRef()).empty() ||
@@ -366,7 +376,7 @@ struct RaiseLLVMToScalarPass
           "llvm.shl",    "llvm.lshr",   "llvm.ashr",   "llvm.zext",
           "llvm.sext",   "llvm.trunc",  "llvm.fadd",   "llvm.fsub",
           "llvm.fmul",   "llvm.fneg",   "llvm.select", "llvm.fdiv",
-          "llvm.uitofp", "llvm.sitofp", "llvm.fptoui"})
+          "llvm.uitofp", "llvm.sitofp", "llvm.fptoui", "llvm.bitcast"})
       patterns.add<ScalarPattern>(source, raisedName(source), &getContext());
     if (failed(applyFullConversion(module, target, std::move(patterns))))
       signalPassFailure();

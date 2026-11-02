@@ -1855,7 +1855,6 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
                 continue
             if (
                 node["provider"] == "udonatenRmsNorm"
-                and math.prod(node["shape"]) > RMS_NORM_TILE_WORDS
                 and math.prod(node["shape"]) <= ARENA_POINTWISE_WORDS
                 and math.prod(shapes[node["inputs"][1]]) <= 4096
                 and math.prod(node["shape"])
@@ -1916,6 +1915,37 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
                             "_VRC_Arg7": 1,
                         },
                         "material_floats": {"_VRC_Arg6": epsilon},
+                    }
+                )
+                continue
+            if node["provider"] == "udonatenEmbedding":
+                data_shape = shapes[node["inputs"][0]]
+                indices_words = math.prod(shapes[node["inputs"][1]])
+                output_words = math.prod(node["shape"])
+                passes.append(
+                    {
+                        "id": 200 + len(passes),
+                        "kernel": "udonaten_arena_embedding",
+                        "shader": "kernel_226.shader",
+                        "providers": [node["provider"]],
+                        "fusion": None,
+                        "call_index": node_index,
+                        "inputs": [node["inputs"][1], node["inputs"][0]],
+                        "static_inputs": [
+                            {
+                                "property": "_VRC_Input1",
+                                "initializer": node["inputs"][0],
+                            }
+                        ],
+                        "output": node["output"],
+                        "shape": node["shape"],
+                        "fragments": ARENA_POINTWISE_WORDS,
+                        "material_ints": {
+                            "_VRC_Arg3": data_shape[0],
+                            "_VRC_Arg4": data_shape[1],
+                            "_VRC_Arg5": indices_words,
+                            "_VRC_Arg6": output_words,
+                        },
                     }
                 )
                 continue
@@ -2355,32 +2385,41 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
                     "reason": ONNX_ARENA_POOLING_DISABLED_REASON,
                 }
         elif node["provider"] == "udonatenRmsNorm":
-            if math.prod(node["shape"]) > RMS_NORM_TILE_WORDS:
-                normalized_words = math.prod(shapes[node["inputs"][1]])
-                supported = (
-                    math.prod(node["shape"]) <= ARENA_POINTWISE_WORDS
-                    and normalized_words <= 4096
-                    and math.prod(node["shape"]) % normalized_words == 0
-                )
-                call["device_profile"] = (
-                    {
-                        "supported": True,
-                        "state_words": ARENA_POINTWISE_WORDS,
-                        "passes": 2,
-                        "reduction_chunk_words": 64,
-                        "kernels": [
-                            "udonaten_arena_rms_norm_reduce",
-                            "udonaten_arena_rms_norm_finalize",
-                        ],
-                        "shaders": ["kernel_217.shader", "kernel_218.shader"],
-                        "weight_input": "_VRC_Input2",
-                    }
-                    if supported
-                    else {
-                        "supported": False,
-                        "reason": "RMSNorm exceeds the arena profile",
-                    }
-                )
+            normalized_words = math.prod(shapes[node["inputs"][1]])
+            supported = (
+                math.prod(node["shape"]) <= ARENA_POINTWISE_WORDS
+                and normalized_words <= 4096
+                and math.prod(node["shape"]) % normalized_words == 0
+            )
+            call["device_profile"] = (
+                {
+                    "supported": True,
+                    "state_words": ARENA_POINTWISE_WORDS,
+                    "passes": 2,
+                    "reduction_chunk_words": 64,
+                    "kernels": [
+                        "udonaten_arena_rms_norm_reduce",
+                        "udonaten_arena_rms_norm_finalize",
+                    ],
+                    "shaders": ["kernel_217.shader", "kernel_218.shader"],
+                    "weight_input": "_VRC_Input2",
+                }
+                if supported
+                else {
+                    "supported": False,
+                    "reason": "RMSNorm exceeds the arena profile",
+                }
+            )
+        elif node["provider"] == "udonatenEmbedding":
+            call["device_profile"] = {
+                "supported": True,
+                "kernel": "udonaten_arena_embedding",
+                "shader": "kernel_226.shader",
+                "storage_words": ARENA_POINTWISE_WORDS,
+                "width": 8192,
+                "height": 2,
+                "weight_input": "_VRC_Input1",
+            }
         elif node["provider"] == "udonatenTile" and math.prod(
             node["shape"]
         ) <= ARENA_POINTWISE_WORDS:

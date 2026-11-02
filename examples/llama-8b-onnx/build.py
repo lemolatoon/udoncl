@@ -51,7 +51,7 @@ def ensure_template(build_dir: Path, template: Path) -> None:
             "--build-dir",
             build_dir,
             "--output",
-            template.parent.parent,
+            template.parent,
         ],
         cwd=ROOT,
         check=True,

@@ -17,6 +17,8 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         private const string GeneratedMixedRoot = "Assets/udoncl-generated/onnx_mixed_int4_fixture";
         private const string GeneratedArenaRoot = "Assets/udoncl-generated/onnx_arena_add_fixture";
         private const string GeneratedRlRoot = "Assets/udoncl-generated/onnx_rl_policy_fixture";
+        private const string GeneratedTinyStandardRoot =
+            "Assets/udoncl-generated/onnx_tiny_llama_standard_fixture";
         private const string GeneratedRuntimeRoot = "Assets/udoncl-generated/Runtime";
         private bool runtimeProgramAssetExisted;
 
@@ -68,6 +70,20 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             );
             Assert.That(File.Exists(Path.Combine(rlBundle, "manifest.json")));
             Assert.AreEqual(GeneratedRlRoot, UdonclArtifactImporter.Import(rlBundle));
+            string tinyStandardBundle = ResolveFixture(
+                "UDONCL_ONNX_TINY_STANDARD_UNITY_BUNDLE",
+                Path.Combine(
+                    "build",
+                    "precommit",
+                    "onnx-aot",
+                    "unity-tiny-llama-standard-model-bundle"
+                )
+            );
+            Assert.That(File.Exists(Path.Combine(tinyStandardBundle, "manifest.json")));
+            Assert.AreEqual(
+                GeneratedTinyStandardRoot,
+                UdonclArtifactImporter.Import(tinyStandardBundle)
+            );
         }
 
         [OneTimeTearDown]
@@ -94,6 +110,9 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             string rlProgramGuid = AssetDatabase.AssetPathToGUID(
                 GeneratedRlRoot + "/Programs/host_program.asset"
             );
+            string tinyStandardProgramGuid = AssetDatabase.AssetPathToGUID(
+                GeneratedTinyStandardRoot + "/Programs/host_program.asset"
+            );
             string runtimeProgramGuid = runtimeProgramAssetExisted
                 ? null
                 : AssetDatabase.AssetPathToGUID(
@@ -103,6 +122,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             AssetDatabase.DeleteAsset(GeneratedMixedRoot);
             AssetDatabase.DeleteAsset(GeneratedArenaRoot);
             AssetDatabase.DeleteAsset(GeneratedRlRoot);
+            AssetDatabase.DeleteAsset(GeneratedTinyStandardRoot);
             if (!runtimeProgramAssetExisted)
                 AssetDatabase.DeleteAsset(GeneratedRuntimeRoot);
             foreach (
@@ -115,6 +135,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                     mixedRunner1ProgramGuid,
                     arenaProgramGuid,
                     rlProgramGuid,
+                    tinyStandardProgramGuid,
                     runtimeProgramGuid,
                 }
             )
@@ -125,6 +146,9 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             Assert.IsNull(AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(GeneratedMixedRoot));
             Assert.IsNull(AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(GeneratedArenaRoot));
             Assert.IsNull(AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(GeneratedRlRoot));
+            Assert.IsNull(
+                AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(GeneratedTinyStandardRoot)
+            );
             if (!runtimeProgramAssetExisted)
                 Assert.IsNull(
                     AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(GeneratedRuntimeRoot)
@@ -468,6 +492,98 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             {
                 UnityEngine.Object.DestroyImmediate(leftTexture);
                 UnityEngine.Object.DestroyImmediate(rightTexture);
+            }
+        }
+
+        [Test]
+        public void UnityStandardOperatorTinyLlamaExecutesNumericallyOnSdkVm()
+        {
+            Lemolatoon.Udoncl.UdonOnnxModelAsset modelAsset =
+                AssetDatabase.LoadAssetAtPath<Lemolatoon.Udoncl.UdonOnnxModelAsset>(
+                    GeneratedTinyStandardRoot + "/Models/UdonOnnxModel.asset"
+                );
+            Assert.NotNull(modelAsset);
+            Assert.AreEqual("UdonOperatorExecutionProvider", modelAsset.ExecutionProvider);
+            Assert.AreEqual(5, modelAsset.TextureArenaSlots.Length);
+            Assert.AreEqual(18, modelAsset.PassMaterials.Length);
+            CollectionAssert.AreEqual(new[] { "token_ids" }, modelAsset.InputNames);
+            CollectionAssert.AreEqual(new[] { "int32" }, modelAsset.InputDataTypes);
+            CollectionAssert.AreEqual(new[] { 1 }, modelAsset.InputWords);
+            CollectionAssert.AreEqual(new[] { "logits" }, modelAsset.OutputNames);
+            CollectionAssert.AreEqual(new[] { "float32" }, modelAsset.OutputDataTypes);
+            CollectionAssert.AreEqual(new[] { 16 }, modelAsset.OutputWords);
+            foreach (Material material in modelAsset.PassMaterials)
+            {
+                Assert.IsTrue(material.shader.isSupported, material.shader.name);
+                Assert.Greater(material.passCount, 0, material.shader.name);
+            }
+            Assert.AreEqual(
+                "UdonCL/device_gpu__udonaten_arena_embedding_226",
+                modelAsset.PassMaterials[0].shader.name
+            );
+
+            UdonAssemblyProgramAsset programAsset =
+                AssetDatabase.LoadAssetAtPath<UdonAssemblyProgramAsset>(
+                    GeneratedTinyStandardRoot + "/Programs/host_program.asset"
+                );
+            Assert.NotNull(programAsset);
+            IUdonProgram program = programAsset.SerializedProgramAsset.RetrieveProgram();
+            Assert.NotNull(program);
+            IUdonVM vm = UdonEditorManager.Instance.ConstructUdonVM();
+            Assert.IsTrue(vm.LoadProgram(program));
+            IUdonHeap heap = vm.InspectHeap();
+
+            RenderTexture inputSlot = modelAsset.TextureArenaSlots[modelAsset.InputSlots[0]];
+            Color32[] inputPixels = new Color32[inputSlot.width * inputSlot.height];
+            inputPixels[0] = new Color32(3, 0, 0, 0);
+            Texture2D input = new Texture2D(
+                inputSlot.width,
+                inputSlot.height,
+                TextureFormat.RGBA32,
+                false,
+                true
+            );
+            try
+            {
+                input.filterMode = FilterMode.Point;
+                input.wrapMode = TextureWrapMode.Clamp;
+                input.SetPixels32(inputPixels);
+                input.Apply(false, false);
+                Graphics.Blit(input, inputSlot);
+                for (int index = 0; index < modelAsset.TextureArenaSlots.Length; ++index)
+                    Set(heap, program, "arenaSlot" + index, modelAsset.TextureArenaSlots[index]);
+                Set(heap, program, "int4Runners", Array.Empty<IUdonEventReceiver>());
+                Set(heap, program, "passMaterials", modelAsset.PassMaterials);
+                Set(heap, program, "resultState", modelAsset.TextureArenaSlots[0]);
+                vm.SetProgramCounter(program.EntryPoints.GetAddressFromSymbol("_run"));
+                Assert.AreEqual(0u, vm.Interpret());
+
+                byte[] reference = File.ReadAllBytes(
+                    ResolveFixture(
+                        "UDONCL_ONNX_TINY_STANDARD_REFERENCE",
+                        Path.Combine(
+                            "build",
+                            "precommit",
+                            "onnx-aot",
+                            "unity-tiny-llama-standard-reference.bytes"
+                        )
+                    )
+                );
+                RenderTexture outputSlot = modelAsset.TextureArenaSlots[modelAsset.OutputSlots[0]];
+                Color32[] actual = ReadPixels(outputSlot, 16);
+                float maximumError = 0.0f;
+                for (int index = 0; index < 16; ++index)
+                    maximumError = Mathf.Max(
+                        maximumError,
+                        Mathf.Abs(
+                            Decode(actual[index]) - BitConverter.ToSingle(reference, index * 4)
+                        )
+                    );
+                Assert.That(maximumError, Is.LessThan(0.0005f));
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(input);
             }
         }
 

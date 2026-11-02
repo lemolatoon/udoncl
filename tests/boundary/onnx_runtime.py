@@ -1,6 +1,7 @@
 """Validate the dependency-free ONNX importer and MNIST Udon provider plan."""
 
 import json
+import importlib.util
 import os
 from pathlib import Path
 import struct
@@ -1213,6 +1214,11 @@ assert gather_plan["execution_provider"] == "UdonOperatorExecutionProvider"
 assert gather_plan["nodes"][0]["shape"] == [1, 4, 8]
 assert gather_plan["nodes"][0]["provider"] == "udonatenEmbedding"
 assert gather_plan["aot"]["calls"][0]["function"] == "udonatenEmbedding"
+assert gather_plan["aot"]["calls"][0]["device_profile"]["shader"] == (
+    "kernel_226.shader"
+)
+assert gather_plan["passes"][0]["kernel"] == "udonaten_arena_embedding"
+assert gather_plan["passes"][0]["shader"] == "kernel_226.shader"
 gather_host_c = emit_c_host(gather_plan)
 assert "udonatenEmbedding(" in gather_host_c
 assert "int32_t *" in gather_host_c
@@ -1255,6 +1261,59 @@ assert {node["op_type"] for node in tiny_standard_plan["nodes"]} == {
     "Sigmoid",
     "Mul",
 }
+assert len(tiny_standard_plan["passes"]) == 18
+assert all(device_pass.get("shader") for device_pass in tiny_standard_plan["passes"])
+assert {device_pass["shader"] for device_pass in tiny_standard_plan["passes"]} == {
+    "kernel_215.shader",
+    "kernel_217.shader",
+    "kernel_218.shader",
+    "kernel_221.shader",
+    "kernel_226.shader",
+}
+assert {
+    device_pass["call_index"] for device_pass in tiny_standard_plan["passes"]
+} | {
+    call["index"]
+    for call in tiny_standard_plan["aot"]["calls"]
+    if call.get("kind") == "view"
+} == {call["index"] for call in tiny_standard_plan["aot"]["calls"]}
+if unity_template_directory is not None:
+    tiny_standard_bundle = output / "unity-tiny-llama-standard-model-bundle"
+    tiny_standard_manifest = materialize_model(
+        tiny_standard_plan,
+        output,
+        tiny_standard_bundle,
+        unity_template_directory=unity_template_directory,
+        model_path=tiny_standard_model_path,
+        program_name="onnx_tiny_llama_standard_fixture",
+    )
+    assert tiny_standard_manifest["complete_graph"] is True
+    assert tiny_standard_manifest["unmaterialized_calls"] == []
+    assert tiny_standard_manifest["model_inputs"] == [
+        {
+            "index": 0,
+            "name": "token_ids",
+            "data_type": "int32",
+            "words": 1,
+            "slot": tiny_standard_plan["texture_arena"]["bindings"]["token_ids"][
+                "slot"
+            ],
+        }
+    ]
+    assert tiny_standard_manifest["model_outputs"][0]["name"] == "logits"
+    assert tiny_standard_manifest["model_outputs"][0]["words"] == 16
+    assert (tiny_standard_bundle / "kernels/kernel_226.shader").is_file()
+    reference_spec = importlib.util.spec_from_file_location(
+        "tiny_llama_reference", root / "examples/tiny-llama/run.py"
+    )
+    reference = importlib.util.module_from_spec(reference_spec)
+    reference_spec.loader.exec_module(reference)
+    tiny_standard_reference = reference.forward(
+        reference.make_weights(0x4C4C414D), [3]
+    )
+    (output / "unity-tiny-llama-standard-reference.bytes").write_bytes(
+        struct.pack("<16f", *tiny_standard_reference)
+    )
 tiny_standard_host_c = emit_c_host(tiny_standard_plan)
 tiny_standard_host_uasm = emit_uasm_host(tiny_standard_plan)
 (output / "tiny-llama-standard-host.c").write_text(

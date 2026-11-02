@@ -91,6 +91,10 @@ add_test(NAME onnx-arena-add-example
   COMMAND Python3::Interpreter "${PROJECT_SOURCE_DIR}/examples/onnx-arena-add/build.py"
     --output "${PROJECT_BINARY_DIR}/tests/onnx-arena-add-example" --plan-only
 )
+add_test(NAME onnx-tiny-llama-example
+  COMMAND Python3::Interpreter "${PROJECT_SOURCE_DIR}/examples/tiny-llama/build_onnx.py"
+    --output "${PROJECT_BINARY_DIR}/tests/onnx-tiny-llama-example" --plan-only
+)
 add_test(NAME onnx-weight-packer
   COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/boundary/onnx_weights.py"
     "${PROJECT_SOURCE_DIR}" "${PROJECT_BINARY_DIR}/tests/onnx-weight-packer"

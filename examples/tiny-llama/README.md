@@ -30,6 +30,22 @@ that execution plan. The checked CPU/Device logits therefore validate the
 same provider schedule used by the 8B external-weight profile rather than a
 parallel hand-maintained list.
 
+## Standard ONNX Unity artifact
+
+Build the same single-token block from only standard ONNX operators and
+materialize an importable general-runtime artifact:
+
+```text
+python examples/tiny-llama/build_onnx.py --output build/tiny-llama-onnx
+```
+
+Import `build/tiny-llama-onnx/unity-artifact` with **Tools → udoncl → Import
+Artifacts...**, then import the **ONNX Tiny Llama** Package Sample. This path
+uses the stable typed int32 upload, 18 shader-backed Device passes, and
+asynchronous float32 logits readback. It covers Gather, RMSNormalization,
+Gemm, Add, Sigmoid, Mul, and Reshape without using the disabled general ONNX
+Pooling path.
+
 Each active output is owned by a separate fragment. The native fragment test
 compares all 16 logits for four prompts and eight greedy generation steps
 against the C model.

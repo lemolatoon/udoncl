@@ -25,7 +25,7 @@ def ensure_template(build_dir: Path, template: Path) -> None:
     required = [template / "manifest.json", template / "kernels/kernel_215.shader"]
     if all(path.is_file() for path in required):
         return
-    output = template.parent.parent
+    output = template.parent
     subprocess.run(
         [
             sys.executable,

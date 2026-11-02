@@ -43,9 +43,9 @@ static bool legalArithmetic(Operation *op) {
                  "arith.shrui",        "arith.shrsi",  "arith.cmpi",
                  "arith.cmpf",         "arith.select", "arith.uitofp",
                  "arith.sitofp",       "arith.fptoui", "arith.index_cast",
-                 "arith.index_castui", "arith.trunci", "math.floor",
-                 "math.sqrt",          "math.cos",     "math.sin",
-                 "math.exp",           "math.log"},
+                 "arith.index_castui", "arith.trunci", "arith.bitcast",
+                 "math.floor",         "math.sqrt",    "math.cos",
+                 "math.sin",           "math.exp",     "math.log"},
              op->getName().getStringRef()) &&
          llvm::all_of(op->getResultTypes(), scalar);
 }

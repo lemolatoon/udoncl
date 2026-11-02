@@ -16,3 +16,6 @@ All notable changes to this package are recorded here.
   reentrant-call rejection, and explicit disposal.
 - Importable ONNX Arena Add sample using the public typed Write/Run/async Read
   runtime API.
+- Importable standard-operator Tiny Llama sample with typed token upload,
+  shader-backed Gather/RMSNorm/Gemm/pointwise execution, and async logits
+  readback.
