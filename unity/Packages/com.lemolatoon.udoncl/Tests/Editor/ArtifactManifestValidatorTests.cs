@@ -239,6 +239,36 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             }
         }
 
+        [Test]
+        public void PackagedHelloUsageCallsGeneratedTypedBinding()
+        {
+            PackagedExampleUsage usage = PackagedExampleUsageGenerator.ForProgram("hello_dispatch");
+            Assert.NotNull(usage);
+            Assert.AreEqual("UdonclHelloDispatchExample", usage.ClassName);
+            StringAssert.Contains("UdonclHelloDispatchBinding binding", usage.Source);
+            StringAssert.Contains("binding.TryDispatchSquare(input)", usage.Source);
+            StringAssert.Contains("binding.StartReadOutput(output", usage.Source);
+            StringAssert.DoesNotContain("SendCustomEvent", usage.Source);
+        }
+
+        [Test]
+        public void PackagedSaxpyUsageWritesRunsAndReadsGeneratedBinding()
+        {
+            PackagedExampleUsage usage = PackagedExampleUsageGenerator.ForProgram("saxpy_demo");
+            Assert.NotNull(usage);
+            Assert.AreEqual("UdonclSaxpyDemoExample", usage.ClassName);
+            StringAssert.Contains("binding.TryWriteInput(input)", usage.Source);
+            StringAssert.Contains("binding.TryRunSaxpy(count, alpha)", usage.Source);
+            StringAssert.Contains("binding.StartReadOutput(output", usage.Source);
+            StringAssert.DoesNotContain("SetProgramVariable", usage.Source);
+        }
+
+        [Test]
+        public void OtherArtifactsDoNotReceivePackagedUsageCode()
+        {
+            Assert.IsNull(PackagedExampleUsageGenerator.ForProgram("user_library"));
+        }
+
         private void AddResources(string resources)
         {
             AddManifestProperty("\"resources\":" + resources);

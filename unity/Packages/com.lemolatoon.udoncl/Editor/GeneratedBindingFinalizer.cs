@@ -63,6 +63,29 @@ namespace Lemolatoon.Udoncl.Editor
                     .SingleOrDefault(type => type.FullName == GeneratedNamespace + "." + className);
                 if (wrapperType == null)
                     continue;
+
+                PackagedExampleUsage usage = PackagedExampleUsageGenerator.ForProgram(
+                    manifest.program.name
+                );
+                Type exampleType =
+                    usage == null
+                        ? null
+                        : TypeCache
+                            .GetTypesDerivedFrom<UdonSharpBehaviour>()
+                            .SingleOrDefault(type =>
+                                type.FullName == GeneratedNamespace + "." + usage.ClassName
+                            );
+                if (exampleType != null)
+                {
+                    UdonSharpProgramAsset exampleProgram =
+                        UdonSharpEditorUtility.GetUdonSharpProgramAsset(exampleType);
+                    if (
+                        exampleProgram == null
+                        || exampleProgram.SerializedProgramAsset == null
+                        || exampleProgram.CompiledVersion != UdonSharpProgramVersion.CurrentVersion
+                    )
+                        continue;
+                }
                 UdonSharpProgramAsset wrapperProgram =
                     UdonSharpEditorUtility.GetUdonSharpProgramAsset(wrapperType);
                 if (
@@ -89,6 +112,7 @@ namespace Lemolatoon.Udoncl.Editor
                         prefabPath,
                         className,
                         wrapperType,
+                        exampleType,
                         programAsset,
                         manifest,
                         programRoot.Replace('\\', '/')
@@ -121,6 +145,7 @@ namespace Lemolatoon.Udoncl.Editor
             string prefabPath,
             string className,
             Type wrapperType,
+            Type exampleType,
             UdonAssemblyProgramAsset programAsset,
             UdonclManifest manifest,
             string programRoot
@@ -259,6 +284,20 @@ namespace Lemolatoon.Udoncl.Editor
                 }
                 serializedWrapper.ApplyModifiedPropertiesWithoutUndo();
                 UdonSharpEditorUtility.CopyProxyToUdon(wrapper, ProxySerializationPolicy.All);
+
+                if (exampleType != null)
+                {
+                    UdonSharpBehaviour example = root.AddUdonSharpComponent(exampleType);
+                    SerializedObject serializedExample = new SerializedObject(example);
+                    SerializedProperty binding = serializedExample.FindProperty("binding");
+                    if (binding == null)
+                        throw new InvalidDataException(
+                            "Packaged example does not contain its generated binding reference."
+                        );
+                    binding.objectReferenceValue = wrapper;
+                    serializedExample.ApplyModifiedPropertiesWithoutUndo();
+                    UdonSharpEditorUtility.CopyProxyToUdon(example, ProxySerializationPolicy.All);
+                }
 
                 PrefabUtility.SaveAsPrefabAsset(root, prefabPath, out bool success);
                 if (!success || AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath) == null)

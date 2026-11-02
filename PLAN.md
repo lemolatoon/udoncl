@@ -122,6 +122,7 @@ Host .c / libc sources                     Device .cl sources
 - Arena Addとstandard ONNX Tiny LlamaのPackage Sampleを実際にUdon programへcompileし、import済みruntime prefabに対する公開Write→Run→async ReadをPlay Modeで検証済み。Tiny Llamaは18 Device pass後にreference argmax token 2を返す。これはEditor/D3D11検証であり、VRChat client完了の主張には使わない。
 - 一般ONNX artifactのimport完了dialogと`UdonOnnxModelAsset` Inspectorは、生成runtime prefabをactive sceneへUndo可能なlinked instanceとして配置できる。Package Sampleはprefab assetではなくこのscene instanceのruntime componentを参照する。
 - VPM packageは非PoolingのArena Addとstandard ONNX Tiny Llamaを再現可能なarchiveとして同梱し、EditorのExamples menuから一時展開、通常と同じvalidation/import、runtime scene配置までcompiler checkoutなしで試せる。一時artifactはimport後に削除する。
+- packaged C/OpenCL Hello DispatchとSAXPYはimport時にgenerated typed bindingだけでなく、その公開`Try*`/named Write/async Read APIだけを使うU# controllerも生成する。domain reload後にcontrollerをbinding prefabへ自動添付し、binding参照を設定することで、配置したprefabをInteractしてend-to-end実行できる。raw event/heap slotはsampleへ露出しない。
 - 同じExamples menuは標準OpenCL Host APIのhello dispatchとSAXPY artifactも同梱し、compiler checkoutなしのimportからgenerated U# binding/prefab完成まで試せる。source CMake workflowは編集・再生成経路として維持する。
 - 固定Device bufferは`element_type`と`public_access`をOpenCLの実型・read/write flagに照合し、Importerが物理buffer IDを隠した`TryWrite<InputName>` / `StartRead<OutputName>` U# APIを生成する。buffer ID指定APIは低レベル互換面として残す。
 - C/OpenCL artifactのimport時にscene配置を選択でき、generated U# wrapperのcompile/domain reload後にprogram-scopedな一回限りのrequestを消費してbinding prefabのlinked instanceをactive sceneへ配置する。

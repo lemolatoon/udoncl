@@ -3771,7 +3771,7 @@ namespace Lemolatoon.Udoncl.Editor
             ImportAndOfferScene(directory);
         }
 
-        internal static void ImportAndOfferScene(string directory)
+        internal static string ImportAndOfferScene(string directory)
         {
             try
             {
@@ -3827,11 +3827,13 @@ namespace Lemolatoon.Udoncl.Editor
                         EditorGUIUtility.PingObject(modelAsset);
                     }
                 }
+                return destination;
             }
             catch (Exception exception)
             {
                 Debug.LogException(exception);
                 EditorUtility.DisplayDialog("udoncl Import Failed", exception.Message, "OK");
+                return null;
             }
         }
     }

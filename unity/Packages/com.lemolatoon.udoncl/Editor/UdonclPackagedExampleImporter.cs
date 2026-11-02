@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.IO.Compression;
+using System.Text;
 using UnityEditor;
 
 namespace Lemolatoon.Udoncl.Editor
@@ -127,7 +128,9 @@ namespace Lemolatoon.Udoncl.Editor
             try
             {
                 directory = Extract(archiveName);
-                UdonclImportMenu.ImportAndOfferScene(directory);
+                string destination = UdonclImportMenu.ImportAndOfferScene(directory);
+                if (!string.IsNullOrEmpty(destination))
+                    InstallUsageExample(destination);
             }
             catch (Exception exception)
             {
@@ -143,6 +146,31 @@ namespace Lemolatoon.Udoncl.Editor
                 if (!string.IsNullOrEmpty(directory) && Directory.Exists(directory))
                     Directory.Delete(directory, true);
             }
+        }
+
+        internal static string InstallUsageExample(string destination)
+        {
+            string manifestPath = destination + "/manifest.json";
+            UdonclManifest manifest = UnityEngine.JsonUtility.FromJson<UdonclManifest>(
+                File.ReadAllText(manifestPath)
+            );
+            PackagedExampleUsage usage = PackagedExampleUsageGenerator.ForProgram(
+                manifest?.program?.name
+            );
+            if (usage == null)
+                return null;
+
+            string examplesRoot = destination + "/Examples";
+            if (!AssetDatabase.IsValidFolder(examplesRoot))
+                AssetDatabase.CreateFolder(destination, "Examples");
+            string sourcePath = examplesRoot + "/" + usage.ClassName + ".cs";
+            File.WriteAllText(sourcePath, usage.Source, new UTF8Encoding(false));
+            AssetDatabase.ImportAsset(
+                sourcePath,
+                ImportAssetOptions.ForceSynchronousImport | ImportAssetOptions.ForceUpdate
+            );
+            GeneratedBindingFinalizer.Schedule();
+            return sourcePath;
         }
     }
 }

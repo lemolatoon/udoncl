@@ -94,7 +94,11 @@ archives of all four examples; the two ONNX examples do not use Pooling. The
 Editor extracts an archive to a temporary directory, applies the same manifest
 validation and transaction-safe importer, and removes the temporary files
 after import. C/OpenCL imports generate their typed U# binding and finish the
-binding prefab after Unity's script reload. Public buffer semantics generate
+binding prefab after Unity's script reload. The packaged Hello and SAXPY
+imports also generate a small U# controller, attach it to the prefab, and bind
+the controller to the typed wrapper. Interact with the placed prefab to run the
+complete dispatch and asynchronous readback without writing raw event/slot
+code. Public buffer semantics generate
 named typed methods such as `TryWriteInput` and `StartReadOutput`; the physical
 buffer-ID methods remain available only as the lower-level interface. Choose
 **Add after Compile** to place that binding prefab in the active scene
