@@ -461,6 +461,23 @@ LogicalResult recoverUnityCBufferIntrinsics(ModuleOp module) {
   return success();
 }
 
+bool rejectUnityOpenCLHostCalls(const llvm::Module &module) {
+  constexpr StringLiteral names[] = {"clCreateBuffer", "clEnqueueCopyBuffer"};
+  for (StringLiteral name : names) {
+    const llvm::Function *function = module.getFunction(name);
+    if (!function || function->use_empty())
+      continue;
+    errs() << "Unity library lowering does not yet support standard OpenCL "
+              "Host API call "
+           << name
+           << " because its context, queue, status, and opaque cl_mem ABI "
+              "must be preserved; use <udoncl/unity_buffer.h> for the "
+              "temporary fixed-buffer subset\n";
+    return false;
+  }
+  return true;
+}
+
 std::string unityLibraryDisplayShader(StringRef program) {
   return (Twine("Shader \"Hidden/UdonCL/") + program +
           "/Display\" {\n"
@@ -594,6 +611,8 @@ int main(int argc, char **argv) {
             << "Unity Host library requires 32-bit little-endian SPIR input\n";
         return 1;
       }
+      if (!rejectUnityOpenCLHostCalls(*inputModule))
+        return 1;
       module = ::vrc::importLLVM(std::move(inputModule), context);
       if (!module || failed(verify(*module)))
         return 1;

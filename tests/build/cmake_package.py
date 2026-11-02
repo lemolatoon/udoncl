@@ -150,6 +150,34 @@ def main():
         args.source.resolve() / 'buffer-copy-library.json',
         '--host-llvm', invalid_module, '-o', output / 'invalid-buffer-artifact',
     ], 'must flow directly to one or more CopyBuffer calls')
+
+    opencl_source = output / 'unsupported-opencl-buffer.c'
+    opencl_module = output / 'unsupported-opencl-buffer.bc'
+    opencl_source.write_text(
+        '#define CL_TARGET_OPENCL_VERSION 120\n'
+        '#include <CL/cl.h>\n'
+        'void copy_full(void) {\n'
+        '  cl_mem source = clCreateBuffer((cl_context)0, CL_MEM_READ_WRITE, '
+        '32772, 0, 0);\n'
+        '  cl_mem destination = clCreateBuffer((cl_context)0, '
+        'CL_MEM_READ_WRITE, 32772, 0, 0);\n'
+        '  (void)clEnqueueCopyBuffer((cl_command_queue)0, source, destination, '
+        '0, 0, 32772, 0, 0, 0);\n'
+        '}\n',
+        encoding='utf-8',
+    )
+    run([
+        args.clang, '-target', 'spir-unknown-unknown', '-x', 'c', '-std=c11',
+        '-Xclang', '-fdefault-calling-conv=cdecl', '-O0',
+        '-Xclang', '-disable-O0-optnone', '-fomit-frame-pointer',
+        '-ffp-contract=off', '-emit-llvm', '-c', str(opencl_source),
+        '-I' + str(install / 'include'), '-o', str(opencl_module),
+    ])
+    run_failure([
+        installed_compiler, '--emit-unity-library-bundle',
+        args.source.resolve() / 'buffer-copy-library.json',
+        '--host-llvm', opencl_module, '-o', output / 'unsupported-opencl-artifact',
+    ], 'does not yet support standard OpenCL Host API call clCreateBuffer')
     print(
         'cmake_package=passed host_sources=3 device_sources=3 '
         'artifacts=hello-artifact,hello-unity-library,hello-buffer-copy-unity-library'
