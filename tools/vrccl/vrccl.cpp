@@ -14,6 +14,7 @@
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/IR/PatternMatch.h"
@@ -461,21 +462,323 @@ LogicalResult recoverUnityCBufferIntrinsics(ModuleOp module) {
   return success();
 }
 
-bool rejectUnityOpenCLHostCalls(const llvm::Module &module) {
-  constexpr StringLiteral names[] = {"clCreateBuffer", "clEnqueueCopyBuffer"};
-  for (StringLiteral name : names) {
-    const llvm::Function *function = module.getFunction(name);
-    if (!function || function->use_empty())
-      continue;
-    errs() << "Unity library lowering does not yet support standard OpenCL "
-              "Host API call "
-           << name
-           << " because its context, queue, status, and opaque cl_mem ABI "
-              "must be preserved; use <udoncl/unity_buffer.h> for the "
-              "temporary fixed-buffer subset\n";
-    return false;
+constexpr StringLiteral openCLAllocName = "__udoncl_opencl_buffer_alloc";
+constexpr StringLiteral openCLCopyName = "__udoncl_opencl_buffer_copy";
+constexpr StringLiteral openCLDeviceName = "__udoncl_opencl_device";
+constexpr StringLiteral openCLContextName = "__udoncl_opencl_context";
+constexpr StringLiteral openCLQueueName = "__udoncl_opencl_queue";
+
+std::optional<int64_t> llvmConstantInt(mlir::Value value) {
+  auto constant = value.getDefiningOp<LLVM::ConstantOp>();
+  auto integer =
+      constant ? dyn_cast<IntegerAttr>(constant.getValue()) : IntegerAttr();
+  return integer ? std::optional<int64_t>(integer.getInt()) : std::nullopt;
+}
+
+bool llvmNull(mlir::Value value) {
+  return !!value.getDefiningOp<LLVM::ZeroOp>();
+}
+
+LLVM::CallOp createLLVMCall(IRRewriter &rewriter, LLVM::CallOp source,
+                            StringRef callee, TypeRange results,
+                            ValueRange operands) {
+  OperationState state(source.getLoc(), LLVM::CallOp::getOperationName());
+  NamedAttrList attributes(source->getAttrs());
+  attributes.set("callee", SymbolRefAttr::get(rewriter.getContext(), callee));
+  attributes.set("operandSegmentSizes",
+                 rewriter.getDenseI32ArrayAttr(
+                     {static_cast<int32_t>(operands.size()), 0}));
+  state.addAttributes(attributes);
+  state.addOperands(operands);
+  state.addTypes(results);
+  return cast<LLVM::CallOp>(rewriter.create(state));
+}
+
+void storeOpenCLSuccess(IRRewriter &rewriter, Location location,
+                        mlir::Value pointer) {
+  if (llvmNull(pointer))
+    return;
+  auto zero = rewriter.create<LLVM::ConstantOp>(location, rewriter.getI32Type(),
+                                                rewriter.getI32IntegerAttr(0));
+  rewriter.create<LLVM::StoreOp>(location, zero, pointer);
+}
+
+mlir::Value openCLSentinel(IRRewriter &rewriter, Location location,
+                           int32_t value) {
+  auto integer = rewriter.create<LLVM::ConstantOp>(
+      location, rewriter.getI32Type(), rewriter.getI32IntegerAttr(value));
+  return rewriter.create<LLVM::IntToPtrOp>(
+      location, LLVM::LLVMPointerType::get(rewriter.getContext()),
+      ValueRange{integer.getResult()});
+}
+
+LogicalResult normalizeUnityOpenCLHostCalls(ModuleOp module) {
+  SmallVector<LLVM::CallOp> calls;
+  module.walk([&](LLVM::CallOp call) {
+    if (call.getCallee() && call.getCallee()->starts_with("cl"))
+      calls.push_back(call);
+  });
+  if (calls.empty())
+    return success();
+
+  auto invalid = [](LLVM::CallOp call, const Twine &message) {
+    return call.emitError() << "Unity OpenCL AOT subset " << message;
+  };
+  std::set<Operation *> hostFunctions;
+  for (LLVM::CallOp call : calls)
+    hostFunctions.insert(call->getParentOfType<LLVM::LLVMFuncOp>());
+  for (Operation *operation : hostFunctions) {
+    bool hasConditionalBranch = false;
+    operation->walk([&](LLVM::CondBrOp) { hasConditionalBranch = true; });
+    if (hasConditionalBranch)
+      return invalid(calls.front(),
+                     "does not support control flow around setup calls; use a "
+                     "straight-line AOT setup function");
   }
-  return true;
+  for (LLVM::CallOp call : calls) {
+    StringRef name = *call.getCallee();
+    auto operands = call.getCalleeOperands();
+    if (name == "clGetPlatformIDs") {
+      if (operands.size() != 3 || llvmConstantInt(operands[0]) != 1 ||
+          llvmNull(operands[1]))
+        return invalid(call, "requires clGetPlatformIDs(1, &platform, ...)");
+    } else if (name == "clGetDeviceIDs") {
+      if (operands.size() != 5 || llvmConstantInt(operands[1]) != 4 ||
+          llvmConstantInt(operands[2]) != 1 || llvmNull(operands[3]))
+        return invalid(call, "requires one CL_DEVICE_TYPE_GPU device request");
+    } else if (name == "clCreateContext") {
+      if (operands.size() != 6 || !llvmNull(operands[0]) ||
+          llvmConstantInt(operands[1]) != 1 || llvmNull(operands[2]) ||
+          !llvmNull(operands[3]) || !llvmNull(operands[4]))
+        return invalid(call, "requires one device and no context properties or "
+                             "callback");
+    } else if (name == "clCreateCommandQueue") {
+      if (operands.size() != 4 || llvmConstantInt(operands[2]) != 0)
+        return invalid(call, "requires an in-order command queue");
+    } else if (name == "clCreateBuffer") {
+      auto flags =
+          operands.size() == 5 ? llvmConstantInt(operands[1]) : std::nullopt;
+      if (operands.size() != 5 ||
+          (!flags || (*flags != 1 && *flags != 2 && *flags != 4)) ||
+          !llvmConstantInt(operands[2]) || *llvmConstantInt(operands[2]) <= 0 ||
+          !llvmNull(operands[3]))
+        return invalid(call, "requires a positive constant size, one standard "
+                             "access flag, and a null host pointer");
+    } else if (name == "clEnqueueCopyBuffer") {
+      if (operands.size() != 9 || llvmConstantInt(operands[6]) != 0 ||
+          !llvmNull(operands[7]) || !llvmNull(operands[8]))
+        return invalid(
+            call, "requires an empty event wait list and null output event");
+    } else if (name != "clReleaseMemObject" &&
+               name != "clReleaseCommandQueue" && name != "clReleaseContext") {
+      return invalid(call, "does not support Host API call ") << name;
+    }
+  }
+
+  IRRewriter rewriter(module.getContext());
+  rewriter.setInsertionPointToEnd(module.getBody());
+  auto pointer = LLVM::LLVMPointerType::get(module.getContext());
+  auto i32 = rewriter.getI32Type();
+  if (!module.lookupSymbol<LLVM::LLVMFuncOp>(openCLAllocName))
+    LLVM::LLVMFuncOp::create(rewriter, module.getLoc(), openCLAllocName,
+                             LLVM::LLVMFunctionType::get(
+                                 LLVM::LLVMVoidType::get(module.getContext()),
+                                 {pointer, i32, i32}, false));
+  if (!module.lookupSymbol<LLVM::LLVMFuncOp>(openCLCopyName))
+    LLVM::LLVMFuncOp::create(rewriter, module.getLoc(), openCLCopyName,
+                             LLVM::LLVMFunctionType::get(
+                                 LLVM::LLVMVoidType::get(module.getContext()),
+                                 {pointer, pointer, pointer, i32, i32, i32},
+                                 false));
+  if (!module.lookupSymbol<LLVM::LLVMFuncOp>(openCLDeviceName))
+    LLVM::LLVMFuncOp::create(
+        rewriter, module.getLoc(), openCLDeviceName,
+        LLVM::LLVMFunctionType::get(
+            LLVM::LLVMVoidType::get(module.getContext()), {pointer}, false));
+  if (!module.lookupSymbol<LLVM::LLVMFuncOp>(openCLContextName))
+    LLVM::LLVMFuncOp::create(
+        rewriter, module.getLoc(), openCLContextName,
+        LLVM::LLVMFunctionType::get(
+            LLVM::LLVMVoidType::get(module.getContext()), {pointer}, false));
+  if (!module.lookupSymbol<LLVM::LLVMFuncOp>(openCLQueueName))
+    LLVM::LLVMFuncOp::create(rewriter, module.getLoc(), openCLQueueName,
+                             LLVM::LLVMFunctionType::get(
+                                 LLVM::LLVMVoidType::get(module.getContext()),
+                                 {pointer, pointer}, false));
+  int32_t nextBufferHandle = 16;
+  for (LLVM::CallOp call : calls) {
+    rewriter.setInsertionPoint(call);
+    StringRef name = *call.getCallee();
+    auto operands = call.getCalleeOperands();
+    auto success = [&]() -> mlir::Value {
+      return rewriter.create<LLVM::ConstantOp>(
+          call.getLoc(), rewriter.getI32Type(), rewriter.getI32IntegerAttr(0));
+    };
+    if (name == "clGetPlatformIDs") {
+      rewriter.create<LLVM::StoreOp>(call.getLoc(),
+                                     openCLSentinel(rewriter, call.getLoc(), 1),
+                                     operands[1]);
+      if (!llvmNull(operands[2])) {
+        auto one = rewriter.create<LLVM::ConstantOp>(
+            call.getLoc(), rewriter.getI32Type(),
+            rewriter.getI32IntegerAttr(1));
+        rewriter.create<LLVM::StoreOp>(call.getLoc(), one, operands[2]);
+      }
+      rewriter.replaceOp(call, success());
+    } else if (name == "clGetDeviceIDs") {
+      createLLVMCall(rewriter, call, openCLDeviceName, TypeRange{},
+                     ValueRange{operands[0]});
+      rewriter.create<LLVM::StoreOp>(call.getLoc(),
+                                     openCLSentinel(rewriter, call.getLoc(), 2),
+                                     operands[3]);
+      if (!llvmNull(operands[4])) {
+        auto one = rewriter.create<LLVM::ConstantOp>(
+            call.getLoc(), rewriter.getI32Type(),
+            rewriter.getI32IntegerAttr(1));
+        rewriter.create<LLVM::StoreOp>(call.getLoc(), one, operands[4]);
+      }
+      rewriter.replaceOp(call, success());
+    } else if (name == "clCreateContext") {
+      auto device =
+          rewriter.create<LLVM::LoadOp>(call.getLoc(), pointer, operands[2]);
+      createLLVMCall(rewriter, call, openCLContextName, TypeRange{},
+                     ValueRange{device.getResult()});
+      storeOpenCLSuccess(rewriter, call.getLoc(), operands[5]);
+      rewriter.replaceOp(call, openCLSentinel(rewriter, call.getLoc(), 3));
+    } else if (name == "clCreateCommandQueue") {
+      createLLVMCall(rewriter, call, openCLQueueName, TypeRange{},
+                     ValueRange{operands[0], operands[1]});
+      storeOpenCLSuccess(rewriter, call.getLoc(), operands[3]);
+      rewriter.replaceOp(call, openCLSentinel(rewriter, call.getLoc(), 4));
+    } else if (name == "clCreateBuffer") {
+      storeOpenCLSuccess(rewriter, call.getLoc(), operands[4]);
+      auto handle = rewriter.create<LLVM::ConstantOp>(
+          call.getLoc(), i32, rewriter.getI32IntegerAttr(nextBufferHandle));
+      SmallVector<mlir::Value> arguments = {operands[0], handle.getResult(),
+                                            operands[2]};
+      createLLVMCall(rewriter, call, openCLAllocName, TypeRange{}, arguments);
+      rewriter.replaceOp(
+          call, openCLSentinel(rewriter, call.getLoc(), nextBufferHandle));
+      ++nextBufferHandle;
+    } else if (name == "clEnqueueCopyBuffer") {
+      SmallVector<mlir::Value> arguments = {operands[0], operands[1],
+                                            operands[2], operands[3],
+                                            operands[4], operands[5]};
+      createLLVMCall(rewriter, call, openCLCopyName, TypeRange{}, arguments);
+      rewriter.replaceOp(call, success());
+    } else {
+      rewriter.replaceOp(call, success());
+    }
+  }
+  return success();
+}
+
+LogicalResult recoverUnityOpenCLBufferCalls(ModuleOp module) {
+  SmallVector<LLVM::CallOp> allocations, copies, devices, contexts, queues;
+  module.walk([&](LLVM::CallOp call) {
+    StringRef name = call.getCallee().value_or("");
+    if (name == openCLAllocName)
+      allocations.push_back(call);
+    else if (name == openCLCopyName)
+      copies.push_back(call);
+    else if (name == openCLDeviceName)
+      devices.push_back(call);
+    else if (name == openCLContextName)
+      contexts.push_back(call);
+    else if (name == openCLQueueName)
+      queues.push_back(call);
+  });
+  if (allocations.empty() && copies.empty() && devices.empty() &&
+      contexts.empty() && queues.empty())
+    return success();
+
+  llvm::DenseMap<int64_t, mlir::Value> buffers;
+  IRRewriter rewriter(module.getContext());
+  auto i32 = rewriter.getI32Type();
+  auto getHandle = [](mlir::Value pointer) -> std::optional<int64_t> {
+    auto cast = pointer.getDefiningOp<LLVM::IntToPtrOp>();
+    return cast ? llvmConstantInt(cast.getArg()) : std::nullopt;
+  };
+  for (LLVM::CallOp device : devices)
+    if (getHandle(device.getOperand(0)) != 1)
+      return device.emitError(
+          "clGetDeviceIDs must use the platform returned by clGetPlatformIDs");
+  for (LLVM::CallOp context : contexts)
+    if (getHandle(context.getOperand(0)) != 2)
+      return context.emitError(
+          "clCreateContext must use the device returned by clGetDeviceIDs");
+  for (LLVM::CallOp queue : queues)
+    if (getHandle(queue.getOperand(0)) != 3 ||
+        getHandle(queue.getOperand(1)) != 2)
+      return queue.emitError("clCreateCommandQueue must use the context and "
+                             "device returned by the AOT setup sequence");
+  for (LLVM::CallOp allocation : allocations) {
+    if (getHandle(allocation.getOperand(0)) != 3)
+      return allocation.emitError(
+          "clCreateBuffer must use the context returned by clCreateContext");
+    auto handle = llvmConstantInt(allocation.getOperand(1));
+    if (!handle)
+      return allocation.emitError("internal OpenCL buffer handle must be "
+                                  "a compiler-generated constant");
+    rewriter.setInsertionPoint(allocation);
+    OperationState state(allocation.getLoc(),
+                         ::vrc::vrc::BufferAllocOp::getOperationName());
+    state.addOperands(allocation.getOperand(2));
+    state.addTypes({::vrc::vrc::BufferType::get(module.getContext()), i32});
+    state.addAttribute("format", rewriter.getStringAttr("rgba8_unorm"));
+    state.addAttribute("usage", rewriter.getStringAttr("storage"));
+    Operation *operation = rewriter.create(state);
+    if (!buffers.try_emplace(*handle, operation->getResult(0)).second)
+      return allocation.emitError("duplicate internal OpenCL buffer handle");
+  }
+  for (LLVM::CallOp copy : copies) {
+    if (getHandle(copy.getOperand(0)) != 4)
+      return copy.emitError(
+          "clEnqueueCopyBuffer must use the queue returned by "
+          "clCreateCommandQueue");
+    auto sourceHandle = getHandle(copy.getOperand(1));
+    auto destinationHandle = getHandle(copy.getOperand(2));
+    mlir::Value source =
+        sourceHandle ? buffers.lookup(*sourceHandle) : mlir::Value();
+    mlir::Value destination =
+        destinationHandle ? buffers.lookup(*destinationHandle) : mlir::Value();
+    if (!source || !destination)
+      return copy.emitError("standard OpenCL buffer handles must flow directly "
+                            "from clCreateBuffer to clEnqueueCopyBuffer");
+    rewriter.setInsertionPoint(copy);
+    OperationState state(copy.getLoc(),
+                         ::vrc::vrc::BufferCopyOp::getOperationName());
+    state.addOperands({source, destination, copy.getOperand(3),
+                       copy.getOperand(4), copy.getOperand(5)});
+    state.addTypes(::vrc::vrc::EventType::get(module.getContext()));
+    rewriter.create(state);
+    rewriter.eraseOp(copy);
+  }
+  for (LLVM::CallOp allocation : allocations) {
+    if (!allocation->use_empty())
+      return allocation.emitError(
+          "standard OpenCL buffer handles cannot escape the fixed CopyBuffer "
+          "subset");
+    rewriter.eraseOp(allocation);
+  }
+  for (LLVM::CallOp call : devices)
+    rewriter.eraseOp(call);
+  for (LLVM::CallOp call : contexts)
+    rewriter.eraseOp(call);
+  for (LLVM::CallOp call : queues)
+    rewriter.eraseOp(call);
+  constexpr StringLiteral prototypes[] = {
+      "clGetPlatformIDs",     "clGetDeviceIDs",        "clCreateContext",
+      "clCreateCommandQueue", "clCreateBuffer",        "clEnqueueCopyBuffer",
+      "clReleaseMemObject",   "clReleaseCommandQueue", "clReleaseContext",
+      openCLAllocName,        openCLCopyName,          openCLDeviceName,
+      openCLContextName,      openCLQueueName,
+  };
+  for (StringLiteral name : prototypes)
+    if (auto function = module.lookupSymbol<LLVM::LLVMFuncOp>(name))
+      if (function.isExternal())
+        rewriter.eraseOp(function);
+  return success();
 }
 
 std::string unityLibraryDisplayShader(StringRef program) {
@@ -611,13 +914,24 @@ int main(int argc, char **argv) {
             << "Unity Host library requires 32-bit little-endian SPIR input\n";
         return 1;
       }
-      if (!rejectUnityOpenCLHostCalls(*inputModule))
-        return 1;
       module = ::vrc::importLLVM(std::move(inputModule), context);
       if (!module || failed(verify(*module)))
         return 1;
+      if (failed(normalizeUnityOpenCLHostCalls(*module)))
+        return 1;
+      PassManager cleanup(&context);
+      cleanup.addPass(createMem2Reg());
+      cleanup.addPass(createCanonicalizerPass());
+      if (failed(cleanup.run(*module)) ||
+          failed(recoverUnityOpenCLBufferCalls(*module)))
+        return 1;
       PassManager recovery(&context);
-      recovery.addPass(createMem2Reg());
+      // The first canonicalization removes dead opaque OpenCL handles while
+      // typed buffer operations still temporarily live in llvm.func.  The
+      // following pass immediately raises that function to the Host runtime
+      // path, where the VRC operation verifier accepts them.
+      recovery.enableVerifier(false);
+      recovery.addPass(createCanonicalizerPass());
       recovery.addPass(::vrc::createRaiseLLVMToScalarPass());
       recovery.addPass(createCanonicalizerPass());
       if (failed(recovery.run(*module)) ||

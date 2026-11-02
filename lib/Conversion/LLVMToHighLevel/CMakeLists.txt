@@ -5,6 +5,7 @@ add_mlir_library(VRCLLVMToHighLevelMLIR DISABLE_INSTALL
   RaiseLLVMMemory.cpp
   DEPENDS VRCRecoveryPassIncGen
   LINK_LIBS PUBLIC
+    VRCDialectVRC
     MLIRArithDialect
     MLIRControlFlowDialect
     MLIRControlFlowToSCF

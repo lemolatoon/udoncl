@@ -1,4 +1,5 @@
 #include "VRC/Conversion/LLVMToHighLevel/Passes.h"
+#include "VRC/Dialect/VRC/VRCDialect.h"
 #include "mlir/Conversion/ControlFlowToSCF/ControlFlowToSCF.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
@@ -352,7 +353,8 @@ struct RaiseLLVMToScalarPass
     target.addLegalOp<ModuleOp>();
     target.addLegalDialect<func::FuncDialect, arith::ArithDialect,
                            cf::ControlFlowDialect, memref::MemRefDialect,
-                           math::MathDialect, gpu::GPUDialect>();
+                           math::MathDialect, gpu::GPUDialect,
+                           ::vrc::vrc::VRCDialect>();
     target.addIllegalDialect<LLVM::LLVMDialect>();
     RewritePatternSet patterns(&getContext());
     patterns.add<FunctionPattern, ConstantPattern, ComparePattern,

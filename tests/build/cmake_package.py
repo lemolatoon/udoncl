@@ -130,6 +130,11 @@ def main():
     assert first_copy < intermediate_write < intermediate_read < final_write
     assert (copy_artifact / 'buffer-copy.shader').is_file()
     assert (install / 'include/udoncl/unity_buffer.h').is_file()
+    copy_recovered = (copy_artifact / 'frontend.recovered.mlir').read_text(
+        encoding='utf-8'
+    )
+    assert copy_recovered.count('vrc.buffer_alloc ') == 3
+    assert copy_recovered.count('vrc.buffer_copy ') == 2
 
     invalid_source = output / 'invalid-buffer-handle.c'
     invalid_module = output / 'invalid-buffer-handle.bc'
@@ -151,18 +156,14 @@ def main():
         '--host-llvm', invalid_module, '-o', output / 'invalid-buffer-artifact',
     ], 'must flow directly to one or more CopyBuffer calls')
 
-    opencl_source = output / 'unsupported-opencl-buffer.c'
-    opencl_module = output / 'unsupported-opencl-buffer.bc'
+    opencl_source = output / 'unsupported-opencl-read.c'
+    opencl_module = output / 'unsupported-opencl-read.bc'
     opencl_source.write_text(
         '#define CL_TARGET_OPENCL_VERSION 120\n'
         '#include <CL/cl.h>\n'
         'void copy_full(void) {\n'
-        '  cl_mem source = clCreateBuffer((cl_context)0, CL_MEM_READ_WRITE, '
-        '32772, 0, 0);\n'
-        '  cl_mem destination = clCreateBuffer((cl_context)0, '
-        'CL_MEM_READ_WRITE, 32772, 0, 0);\n'
-        '  (void)clEnqueueCopyBuffer((cl_command_queue)0, source, destination, '
-        '0, 0, 32772, 0, 0, 0);\n'
+        '  (void)clEnqueueReadBuffer((cl_command_queue)0, (cl_mem)0, CL_TRUE, '
+        '0, 4, 0, 0, 0, 0);\n'
         '}\n',
         encoding='utf-8',
     )
@@ -177,7 +178,54 @@ def main():
         installed_compiler, '--emit-unity-library-bundle',
         args.source.resolve() / 'buffer-copy-library.json',
         '--host-llvm', opencl_module, '-o', output / 'unsupported-opencl-artifact',
-    ], 'does not yet support standard OpenCL Host API call clCreateBuffer')
+    ], 'does not support Host API call clEnqueueReadBuffer')
+
+    context_source = output / 'invalid-opencl-context.c'
+    context_module = output / 'invalid-opencl-context.bc'
+    context_source.write_text(
+        '#define CL_TARGET_OPENCL_VERSION 120\n'
+        '#include <CL/cl.h>\n'
+        'void copy_full(void) {\n'
+        '  (void)clCreateBuffer((cl_context)0, CL_MEM_READ_WRITE, 32772, 0, 0);\n'
+        '}\n',
+        encoding='utf-8',
+    )
+    run([
+        args.clang, '-target', 'spir-unknown-unknown', '-x', 'c', '-std=c11',
+        '-Xclang', '-fdefault-calling-conv=cdecl', '-O0',
+        '-Xclang', '-disable-O0-optnone', '-fomit-frame-pointer',
+        '-ffp-contract=off', '-emit-llvm', '-c', str(context_source),
+        '-I' + str(install / 'include'), '-o', str(context_module),
+    ])
+    run_failure([
+        installed_compiler, '--emit-unity-library-bundle',
+        args.source.resolve() / 'buffer-copy-library.json',
+        '--host-llvm', context_module, '-o', output / 'invalid-context-artifact',
+    ], 'clCreateBuffer must use the context returned by clCreateContext')
+
+    status_source = output / 'unsupported-opencl-status-branch.c'
+    status_module = output / 'unsupported-opencl-status-branch.bc'
+    status_source.write_text(
+        '#define CL_TARGET_OPENCL_VERSION 120\n'
+        '#include <CL/cl.h>\n'
+        'void copy_full(void) {\n'
+        '  cl_platform_id platform;\n'
+        '  if (clGetPlatformIDs(1, &platform, 0) != CL_SUCCESS) return;\n'
+        '}\n',
+        encoding='utf-8',
+    )
+    run([
+        args.clang, '-target', 'spir-unknown-unknown', '-x', 'c', '-std=c11',
+        '-Xclang', '-fdefault-calling-conv=cdecl', '-O0',
+        '-Xclang', '-disable-O0-optnone', '-fomit-frame-pointer',
+        '-ffp-contract=off', '-emit-llvm', '-c', str(status_source),
+        '-I' + str(install / 'include'), '-o', str(status_module),
+    ])
+    run_failure([
+        installed_compiler, '--emit-unity-library-bundle',
+        args.source.resolve() / 'buffer-copy-library.json',
+        '--host-llvm', status_module, '-o', output / 'status-branch-artifact',
+    ], 'does not support control flow around setup calls')
     print(
         'cmake_package=passed host_sources=3 device_sources=3 '
         'artifacts=hello-artifact,hello-unity-library,hello-buffer-copy-unity-library'

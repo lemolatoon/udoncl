@@ -49,19 +49,22 @@ from C source:
 cmake --build build/hello-kernel-cmake --target hello-buffer-copy-unity-library
 ```
 
-`buffer_copy.c` includes the installed `<udoncl/unity_buffer.h>`, allocates
-three fixed 32,772-byte (8192×2 texel) buffers, and copies source to
-intermediate and then intermediate to destination. The generated
+`buffer_copy.c` includes the installed `<CL/cl.h>`, creates one OpenCL 1.2
+platform/device/context/in-order queue sequence, allocates three fixed
+32,772-byte (8192×2 texel) buffers with `clCreateBuffer`, and copies source to
+intermediate and then intermediate to destination with
+`clEnqueueCopyBuffer`. The generated
 artifact is under
 `build/hello-kernel-cmake/udoncl/hello-buffer-copy-unity-library/artifact`.
-This restricted bridge accepts one or more direct allocation-to-copy uses;
-general OpenCL `cl_mem`, release/reuse, upload/readback, and partial copy remain
-pending.
+This restricted AOT bridge accepts direct context/queue/buffer flow in a
+straight-line setup function. Status-dependent cleanup/control flow, general
+`cl_mem` lifetime, release/reuse, upload/readback, and partial copy remain
+pending and are rejected rather than approximated.
 
-The compiler package also installs the pinned Khronos OpenCL headers, and Host
-targets can include `<CL/cl.h>` without adding an include directory. This fixes
-the public OpenCL types and constants at version 1.2; standard `clCreateBuffer`
-and `clEnqueueCopyBuffer` calls are not yet accepted by the Unity lowering.
+The compiler package installs the pinned Khronos OpenCL headers, so Host
+targets can include `<CL/cl.h>` without adding an include directory. The Unity
+lowering accepts the restricted sequence above; this is not general OpenCL Host
+API coverage.
 
 ## Build by invoking each CLI
 

@@ -178,15 +178,15 @@ Current components:
   `VRCGraphics.Blit`. This first Unity subset requires constant exact sizes,
   zero offsets, equal texture shapes, and distinct source/destination buffers;
   partial, dynamic, or self copies are compile errors rather than approximated.
-  `udonclc --host-mlir` exists for typed compiler/Unity validation; normal
-  user C still enters through `--host-llvm`, and its OpenCL runtime-to-typed-IR
-  bridge remains pending.
-- The fixed-pool C subset is exposed by `<udoncl/unity_buffer.h>` as
-  `udonclBufferAlloc` and `udonclCopyBuffer`. The compiler recovers their
-  opaque ILP32 handles into typed IR only when each allocation flows directly
-  to one copy; storing, returning, reusing, or doing arithmetic on a handle is
-  rejected. `hello-buffer-copy-unity-library` demonstrates the public CMake
-  path. These temporary names are not a claim of full OpenCL host API support.
+  `udonclc --host-mlir` remains available for typed compiler validation.
+- Normal Host C can use a restricted straight-line OpenCL 1.2 setup sequence:
+  one platform and GPU device, one context and in-order queue, constant-sized
+  `clCreateBuffer` allocations, full `clEnqueueCopyBuffer` commands, and their
+  release calls. The compiler validates context/queue/opaque-handle flow and
+  recovers typed buffer IR. Status-dependent control flow, uploads/readbacks,
+  kernel dispatch, partial copies, and general OpenCL lifetime semantics remain
+  explicit compile errors. `<udoncl/unity_buffer.h>` remains a temporary
+  compatibility input, not the preferred public example.
 - `udoncl-opt`: MLIR parser/printer with operation verification, rejects unknown ops by default.
 - `VRCLLVMToHighLevelMLIR`: independent import/metadata, local-memory and scalar/CFG recovery library for host/device development.
 - `udoncl-translate --import-llvm input.ll`: LLVM dialect import with preserved frontend metadata and optional JSON sidecar.
