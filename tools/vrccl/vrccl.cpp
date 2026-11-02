@@ -16,6 +16,7 @@
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Verifier.h"
+#include "mlir/IR/PatternMatch.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/Passes.h"
@@ -375,6 +376,88 @@ bool configureUnityExports(ModuleOp module, const json::Object &config) {
   return true;
 }
 
+LogicalResult recoverUnityCBufferIntrinsics(ModuleOp module) {
+  constexpr StringLiteral allocName = "__udoncl_buffer_alloc";
+  constexpr StringLiteral copyName = "__udoncl_buffer_copy";
+  SmallVector<func::CallOp> allocations, copies;
+  module.walk([&](func::CallOp call) {
+    if (call.getCallee() == allocName)
+      allocations.push_back(call);
+    else if (call.getCallee() == copyName)
+      copies.push_back(call);
+  });
+  if (allocations.empty() && copies.empty())
+    return success();
+  auto allocPrototype = module.lookupSymbol<func::FuncOp>(allocName);
+  auto copyPrototype = module.lookupSymbol<func::FuncOp>(copyName);
+  auto i32 = mlir::IntegerType::get(module.getContext(), 32);
+  bool invalidAllocation =
+      !allocations.empty() &&
+      (!allocPrototype || !allocPrototype.isExternal() ||
+       allocPrototype.getArgumentTypes() != ArrayRef<mlir::Type>{i32} ||
+       allocPrototype.getResultTypes() != ArrayRef<mlir::Type>{i32});
+  bool invalidCopy =
+      !copies.empty() &&
+      (!copyPrototype || !copyPrototype.isExternal() ||
+       copyPrototype.getArgumentTypes() !=
+           ArrayRef<mlir::Type>{i32, i32, i32, i32, i32} ||
+       copyPrototype.getResultTypes() != ArrayRef<mlir::Type>{i32});
+  if (invalidAllocation || invalidCopy)
+    return module.emitError(
+        "Unity C buffer intrinsics have an invalid ILP32 signature");
+  llvm::DenseSet<Operation *> copySites;
+  for (func::CallOp copy : copies)
+    copySites.insert(copy.getOperation());
+  for (func::CallOp allocation : allocations) {
+    if (!allocation.getResult(0).hasOneUse() ||
+        !copySites.contains(*allocation.getResult(0).getUsers().begin()))
+      return allocation.emitError(
+          "initial Unity C buffer handles must flow directly to one CopyBuffer "
+          "call");
+  }
+  for (func::CallOp copy : copies)
+    for (unsigned index : {0u, 1u}) {
+      auto allocation = copy.getOperand(index).getDefiningOp<func::CallOp>();
+      if (!allocation || allocation.getCallee() != allocName)
+        return copy.emitError(
+            "initial Unity C CopyBuffer operands must be direct allocations");
+    }
+
+  IRRewriter rewriter(module.getContext());
+  llvm::DenseMap<mlir::Value, mlir::Value> buffers;
+  for (func::CallOp allocation : allocations) {
+    rewriter.setInsertionPoint(allocation);
+    OperationState state(allocation.getLoc(),
+                         ::vrc::vrc::BufferAllocOp::getOperationName());
+    state.addOperands(allocation.getOperand(0));
+    state.addTypes({::vrc::vrc::BufferType::get(module.getContext()), i32});
+    state.addAttribute("format", rewriter.getStringAttr("rgba8_unorm"));
+    state.addAttribute("usage", rewriter.getStringAttr("storage"));
+    Operation *operation = rewriter.create(state);
+    buffers.try_emplace(allocation.getResult(0), operation->getResult(0));
+  }
+  for (func::CallOp copy : copies) {
+    rewriter.setInsertionPoint(copy);
+    OperationState state(copy.getLoc(),
+                         ::vrc::vrc::BufferCopyOp::getOperationName());
+    state.addOperands({buffers.lookup(copy.getOperand(0)),
+                       buffers.lookup(copy.getOperand(1)), copy.getOperand(2),
+                       copy.getOperand(3), copy.getOperand(4)});
+    state.addTypes(::vrc::vrc::EventType::get(module.getContext()));
+    rewriter.create(state);
+    mlir::Value success =
+        rewriter.create<arith::ConstantIntOp>(copy.getLoc(), 0, 32);
+    rewriter.replaceOp(copy, success);
+  }
+  for (func::CallOp allocation : allocations)
+    rewriter.eraseOp(allocation);
+  if (allocPrototype)
+    rewriter.eraseOp(allocPrototype);
+  if (copyPrototype)
+    rewriter.eraseOp(copyPrototype);
+  return success();
+}
+
 std::string unityLibraryDisplayShader(StringRef program) {
   return (Twine("Shader \"Hidden/UdonCL/") + program +
           "/Display\" {\n"
@@ -516,6 +599,7 @@ int main(int argc, char **argv) {
       recovery.addPass(::vrc::createRaiseLLVMToScalarPass());
       recovery.addPass(createCanonicalizerPass());
       if (failed(recovery.run(*module)) ||
+          failed(recoverUnityCBufferIntrinsics(*module)) ||
           !configureUnityExports(*module, *unityConfig))
         return 1;
     }

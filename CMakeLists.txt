@@ -52,6 +52,9 @@ install(FILES
   cmake/UdonCLCompileUnityLibrary.cmake
   DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/UdonCL"
   COMPONENT UdonCLCompiler)
+install(FILES include/udoncl/unity_buffer.h
+  DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/udoncl"
+  COMPONENT UdonCLCompiler)
 if(BUILD_TESTING)
   add_subdirectory(tests)
 endif()

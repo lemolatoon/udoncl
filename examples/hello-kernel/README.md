@@ -42,6 +42,21 @@ and binds Point-filtered RenderTextures in the generated prefab. Helper calls mu
 continuation, or GPU-dispatch exports fail compilation instead of publishing a
 partly runnable Unity artifact.
 
+The second Unity target exercises the initial explicit Device-memory subset
+from C source:
+
+```powershell
+cmake --build build/hello-kernel-cmake --target hello-buffer-copy-unity-library
+```
+
+`buffer_copy.c` includes the installed `<udoncl/unity_buffer.h>`, allocates two
+fixed four-byte buffers, and issues one full `udonclCopyBuffer`. The generated
+artifact is under
+`build/hello-kernel-cmake/udoncl/hello-buffer-copy-unity-library/artifact`.
+This restricted bridge accepts only direct allocation-to-copy handle flow;
+general OpenCL `cl_mem`, release/reuse, upload/readback, and partial copy remain
+pending.
+
 ## Build by invoking each CLI
 
 The remainder deliberately avoids a wrapper script. Run each public CLI

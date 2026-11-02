@@ -181,6 +181,12 @@ Current components:
   `udonclc --host-mlir` exists for typed compiler/Unity validation; normal
   user C still enters through `--host-llvm`, and its OpenCL runtime-to-typed-IR
   bridge remains pending.
+- The fixed-pool C subset is exposed by `<udoncl/unity_buffer.h>` as
+  `udonclBufferAlloc` and `udonclCopyBuffer`. The compiler recovers their
+  opaque ILP32 handles into typed IR only when each allocation flows directly
+  to one copy; storing, returning, reusing, or doing arithmetic on a handle is
+  rejected. `hello-buffer-copy-unity-library` demonstrates the public CMake
+  path. These temporary names are not a claim of full OpenCL host API support.
 - `udoncl-opt`: MLIR parser/printer with operation verification, rejects unknown ops by default.
 - `VRCLLVMToHighLevelMLIR`: independent import/metadata, local-memory and scalar/CFG recovery library for host/device development.
 - `udoncl-translate --import-llvm input.ll`: LLVM dialect import with preserved frontend metadata and optional JSON sidecar.

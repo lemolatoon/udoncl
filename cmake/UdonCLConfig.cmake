@@ -4,6 +4,11 @@ include(CMakeParseArguments)
 get_filename_component(_UDONCL_CONFIG_DIR "${CMAKE_CURRENT_LIST_FILE}" DIRECTORY)
 get_filename_component(_UDONCL_INSTALL_PREFIX "${_UDONCL_CONFIG_DIR}/../../.." ABSOLUTE)
 get_filename_component(_UDONCL_SOURCE_HINT "${_UDONCL_CONFIG_DIR}/.." ABSOLUTE)
+if(EXISTS "${_UDONCL_INSTALL_PREFIX}/include/udoncl/unity_buffer.h")
+  set(_UDONCL_INCLUDE_DIR "${_UDONCL_INSTALL_PREFIX}/include")
+else()
+  set(_UDONCL_INCLUDE_DIR "${_UDONCL_SOURCE_HINT}/include")
+endif()
 
 set(UDONCLC_EXECUTABLE "${UDONCLC_EXECUTABLE}" CACHE FILEPATH
     "Path to the udonclc artifact compiler")
@@ -70,6 +75,7 @@ endfunction()
 
 function(udoncl_add_host_library target)
   _udoncl_add_source_library("${target}" HOST ${ARGN})
+  target_include_directories("${target}" INTERFACE "${_UDONCL_INCLUDE_DIR}")
 endfunction()
 
 function(udoncl_add_device_library target)
