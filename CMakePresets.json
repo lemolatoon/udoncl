@@ -9,7 +9,8 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_PREFIX_PATH": "${sourceDir}/.deps/llvm23",
-        "BUILD_TESTING": "ON"
+        "BUILD_TESTING": "ON",
+        "VRC_ENABLE_NATIVE_FRAGMENT_TESTS": "ON"
       }
     }
   ],

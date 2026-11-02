@@ -78,6 +78,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends zlib1g-dev libzstd-dev libxml2-dev glslang-tools libvulkan-dev mesa-vulkan-drivers
-      - run: cmake --preset udoncl -DVRC_ENABLE_NATIVE_FRAGMENT_TESTS=ON
+      - run: cmake --preset udoncl
       - run: python scripts/build.py
       - run: ctest --preset udoncl

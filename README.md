@@ -17,16 +17,21 @@ macOS and Windows x64; the initial generated world targets VRChat PC (Windows).
 Prerequisites: CMake 3.30+, Ninja, Python 3.12+, and a C++17 compiler (C++20 for the native renderer examples).
 Git is required when building LLVM from source.
 For the prebuilt Windows SDK, install **Visual Studio 2026** with Desktop
-development with C++, and run these commands from its **x64 Native Tools /
-Developer PowerShell**. The locked SDK uses newer MSVC STL symbols unavailable
-in Visual Studio 2022; a VS 2022 source build must use an SDK built with that
-toolset instead.
+development with C++. In an ordinary PowerShell, activate its CMake, Ninja,
+compiler, Windows SDK include paths and libraries once per terminal:
+
+```powershell
+. .\scripts\activate_msvc.ps1
+```
+
+The locked SDK uses newer MSVC STL symbols unavailable in Visual Studio 2022;
+a VS 2022 source build must use an SDK built with that toolset instead.
 
 ```text
 python -m pip install -r scripts/requirements-llvm.txt
 python scripts/install_llvm.py
 cmake --preset udoncl
-python scripts/build.py
+cmake --build --preset udoncl
 ctest --preset udoncl
 ```
 
@@ -41,7 +46,7 @@ Download URLs and checksums are recorded in `cmake/llvm-lock.json`.
 On Ubuntu, install the SDK's system libraries before configuring:
 
 ```text
-sudo apt-get install zlib1g-dev libzstd-dev libxml2-dev
+sudo apt-get install zlib1g-dev libzstd-dev libxml2-dev glslang-tools libvulkan-dev mesa-vulkan-drivers
 ```
 
 Once installed, subsequent builds only need the last three commands above.
@@ -50,7 +55,7 @@ configuring without presets:
 
 ```text
 cmake -S . -B build/udoncl -G Ninja -DCMAKE_BUILD_TYPE=Release
-python scripts/build.py --build-dir build/udoncl
+cmake --build build/udoncl
 ctest --test-dir build/udoncl --output-on-failure
 ```
 
@@ -64,7 +69,7 @@ To use another complete 23.1.4 installation explicitly:
 
 ```text
 cmake --preset udoncl -DVRC_LLVM_ROOT="path/to/llvm"
-python scripts/build.py
+cmake --build --preset udoncl
 ctest --preset udoncl
 ```
 
@@ -88,11 +93,11 @@ For example, this Linux host needs `--query-driver=/usr/bin/c++` to discover GCC
 15 headers instead of an incomplete GCC 16 installation. On Windows, launch the
 editor from the Developer PowerShell so clangd inherits the MSVC include paths.
 
-`scripts/build.py` selects the number of CPUs available to the process and passes
-it to CMake's `--parallel`, including on Windows. CI and Makefile targets use the
-same entry point. The LLVM source builder also defaults to that CPU count. The
-CMake build preset has no fixed job limit; direct Ninja builds use its native
-automatic parallelism.
+The standard preset builds and registers native fragment execution by default.
+On Linux this requires Vulkan, Mesa's software renderer and glslang as listed
+above; Windows uses D3D11. `scripts/build.py` remains available for automation
+that needs an explicit process-aware parallel job count. The CMake build preset
+has no fixed job limit, so direct Ninja builds use its native parallelism.
 
 Before every commit, format C/C++/OpenCL C with LLVM style and C# with the
 repository-pinned CSharpier tool:

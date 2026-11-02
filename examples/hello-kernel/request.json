@@ -1,0 +1,26 @@
+{
+  "runtime_abi_version": 1,
+  "kernel_id": 1,
+  "generation": 1,
+  "global_size": [1, 1, 1],
+  "local_size": [1, 1, 1],
+  "global_offset": [0, 0, 0],
+  "resources": [
+    {
+      "kind": "buffer",
+      "arg_index": 0,
+      "handle": 1,
+      "logical_bytes": 4,
+      "generation": 1,
+      "texture": {
+        "width": 1,
+        "height": 1,
+        "format": "rgba8_unorm",
+        "srgb": false,
+        "mipmaps": false,
+        "filter": "point"
+      }
+    }
+  ],
+  "scalar_payload": [0, 0, 0, 64]
+}
