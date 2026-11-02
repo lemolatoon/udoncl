@@ -3,6 +3,7 @@
 For a package-only first run, choose **Tools → udoncl → Examples → Import C
 and OpenCL Hello Dispatch**. Unity imports the same artifact shape described
 below and generates `UdonclHelloDispatchBinding.prefab` after script reload.
+Choose **Add after Compile** to place a linked instance in the active scene.
 The source workflow remains the reproducible way to edit the Host C and OpenCL
 C inputs yourself.
 

@@ -95,6 +95,11 @@ namespace Lemolatoon.Udoncl.Editor
                     );
                     transaction.Commit();
                 }
+                if (GeneratedBindingScenePlacement.ConsumeRequest(manifest.program.name))
+                {
+                    GameObject prefab = AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath);
+                    GeneratedBindingScenePlacement.Instantiate(prefab);
+                }
                 finalized++;
             }
             return finalized;
@@ -295,6 +300,48 @@ namespace Lemolatoon.Udoncl.Editor
                     AssetDatabase.CreateFolder(current, parts[index]);
                 current = next;
             }
+        }
+    }
+
+    internal static class GeneratedBindingScenePlacement
+    {
+        private const string PendingProgramKey = "Lemolatoon.Udoncl.PendingBindingSceneProgram";
+
+        internal static void Request(string programName)
+        {
+            if (string.IsNullOrEmpty(programName))
+                throw new ArgumentException("Program name is empty.", nameof(programName));
+            SessionState.SetString(PendingProgramKey, programName);
+        }
+
+        internal static bool ConsumeRequest(string programName)
+        {
+            if (
+                string.IsNullOrEmpty(programName)
+                || SessionState.GetString(PendingProgramKey, "") != programName
+            )
+                return false;
+            SessionState.EraseString(PendingProgramKey);
+            return true;
+        }
+
+        internal static void ClearRequest()
+        {
+            SessionState.EraseString(PendingProgramKey);
+        }
+
+        internal static GameObject Instantiate(GameObject prefab)
+        {
+            if (prefab == null)
+                throw new ArgumentNullException(nameof(prefab));
+            GameObject instance = PrefabUtility.InstantiatePrefab(prefab) as GameObject;
+            if (instance == null)
+                throw new InvalidOperationException(
+                    "Unity could not instantiate the generated UdonCL binding prefab."
+                );
+            Undo.RegisterCreatedObjectUndo(instance, "Add UdonCL Binding");
+            Selection.activeGameObject = instance;
+            return instance;
         }
     }
 }

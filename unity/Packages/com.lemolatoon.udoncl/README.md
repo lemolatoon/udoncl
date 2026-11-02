@@ -91,7 +91,9 @@ validation and transaction-safe importer, and removes the temporary files
 after import. C/OpenCL imports generate their typed U# binding and finish the
 binding prefab after Unity's script reload. Public buffer semantics generate
 named typed methods such as `TryWriteInput` and `StartReadOutput`; the physical
-buffer-ID methods remain available only as the lower-level interface.
+buffer-ID methods remain available only as the lower-level interface. Choose
+**Add after Compile** to place that binding prefab in the active scene
+automatically after the script reload.
 
 After a general ONNX import, choose **Add to Scene** in the completion dialog.
 The same action is available as **Add Runtime to Active Scene** on the generated

@@ -3620,11 +3620,33 @@ namespace Lemolatoon.Udoncl.Editor
                         destination + "/Models/UdonOnnxModel.asset"
                     );
                 if (modelAsset == null)
-                    EditorUtility.DisplayDialog(
-                        "udoncl Import",
-                        "Imported assets to " + destination,
-                        "OK"
+                {
+                    UdonclManifest manifest = JsonUtility.FromJson<UdonclManifest>(
+                        File.ReadAllText(destination + "/manifest.json")
                     );
+                    bool hasGeneratedBinding =
+                        manifest != null
+                        && manifest.artifact_stage == "unity-udoncl-library"
+                        && manifest.program != null
+                        && !string.IsNullOrEmpty(manifest.program.name);
+                    if (!hasGeneratedBinding)
+                        EditorUtility.DisplayDialog(
+                            "udoncl Import",
+                            "Imported assets to " + destination,
+                            "OK"
+                        );
+                    else if (
+                        EditorUtility.DisplayDialog(
+                            "udoncl Library Import",
+                            "Imported assets to "
+                                + destination
+                                + ". Add the generated binding prefab to the active scene after its U# wrapper compiles?",
+                            "Add after Compile",
+                            "Import Only"
+                        )
+                    )
+                        GeneratedBindingScenePlacement.Request(manifest.program.name);
+                }
                 else
                 {
                     int choice = EditorUtility.DisplayDialogComplex(

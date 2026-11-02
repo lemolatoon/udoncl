@@ -12,6 +12,8 @@ All notable changes to this package are recorded here.
   artifacts, including generated typed U# bindings.
 - Manifest-validated public buffer semantics and generated named typed U#
   WriteBuffer/ReadBuffer methods that do not expose physical buffer IDs.
+- Deferred scene placement for C/OpenCL binding prefabs after their generated
+  U# wrapper finishes compiling.
 - Initial VPM prerelease packaging for the UdonCL Unity runtime and artifact
   importer.
 - Public Unity assets for UdonBLAS, UdonDNN, UdonATen, and AOT ONNX execution

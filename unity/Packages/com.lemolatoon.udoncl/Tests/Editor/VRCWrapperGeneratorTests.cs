@@ -284,5 +284,22 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
             }
         }
+
+        [Test]
+        public void PendingBindingScenePlacementIsScopedAndConsumedOnce()
+        {
+            GeneratedBindingScenePlacement.ClearRequest();
+            try
+            {
+                GeneratedBindingScenePlacement.Request("hello_dispatch");
+                Assert.IsFalse(GeneratedBindingScenePlacement.ConsumeRequest("saxpy_demo"));
+                Assert.IsTrue(GeneratedBindingScenePlacement.ConsumeRequest("hello_dispatch"));
+                Assert.IsFalse(GeneratedBindingScenePlacement.ConsumeRequest("hello_dispatch"));
+            }
+            finally
+            {
+                GeneratedBindingScenePlacement.ClearRequest();
+            }
+        }
     }
 }
