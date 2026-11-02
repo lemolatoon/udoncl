@@ -105,6 +105,14 @@ namespace Lemolatoon.Udoncl.Editor
                         programRoot,
                         displayShader
                     );
+                    foreach (ValidatedDeviceBuffer buffer in artifacts.DeviceBuffers)
+                        CreateOrUpdateRgbaRenderTexture(
+                            transaction,
+                            programRoot,
+                            DeviceBufferFileName(buffer.Id, buffer.Name),
+                            buffer.Width,
+                            buffer.Height
+                        );
                     ImportOnnxRuntimeResources(
                         transaction,
                         artifacts,
@@ -2136,6 +2144,11 @@ namespace Lemolatoon.Udoncl.Editor
             // so that refresh cannot reload Unity's default Bilinear mode.
             AssetDatabase.SaveAssetIfDirty(texture);
             return texture;
+        }
+
+        internal static string DeviceBufferFileName(int id, string name)
+        {
+            return "udoncl_buffer_" + id + "_" + name + ".asset";
         }
 
         private static Texture2D CreateOrUpdateParticleTexture(

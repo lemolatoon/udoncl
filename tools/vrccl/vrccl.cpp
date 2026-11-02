@@ -143,6 +143,76 @@ bool identifier(StringRef value) {
                       [](char c) { return isAlnum(c) || c == '_'; });
 }
 
+struct UnityBuffer {
+  int64_t id;
+  int64_t logicalBytes;
+  int64_t width;
+  int64_t height;
+  std::string name;
+  std::string heapSlot;
+};
+
+FailureOr<SmallVector<UnityBuffer>>
+parseUnityBuffers(const json::Object &config) {
+  SmallVector<UnityBuffer> result;
+  auto *buffers = config.getArray("buffers");
+  if (!buffers)
+    return result;
+  std::set<int64_t> ids;
+  std::set<std::string> names;
+  for (const json::Value &value : *buffers) {
+    auto *entry = value.getAsObject();
+    auto id = entry ? entry->getInteger("id") : std::nullopt;
+    auto name = entry ? entry->getString("name") : std::nullopt;
+    auto bytes = entry ? entry->getInteger("byte_size") : std::nullopt;
+    constexpr int64_t maximumBytes = 8192LL * 8192LL * 4LL;
+    if (!id || *id <= 0 || *id > INT32_MAX || !name || !identifier(*name) ||
+        !bytes || *bytes <= 0 || *bytes > maximumBytes ||
+        !ids.insert(*id).second || !names.insert(name->str()).second) {
+      errs() << "invalid or duplicate Unity Device buffer\n";
+      return failure();
+    }
+    int64_t pixels = (*bytes + 3) / 4;
+    int64_t width = std::min<int64_t>(pixels, 8192);
+    int64_t height = (pixels + width - 1) / width;
+    result.push_back({*id, *bytes, width, height, name->str(),
+                      "__udoncl_buffer_" + std::to_string(*id)});
+  }
+  return result;
+}
+
+void appendUnityBufferSlots(ModuleOp module, ArrayRef<UnityBuffer> buffers) {
+  auto data = module->getAttrOfType<ArrayAttr>("udonasm.data");
+  SmallVector<mlir::Attribute> entries(data.begin(), data.end());
+  OpBuilder builder(module.getContext());
+  for (const UnityBuffer &buffer : buffers)
+    entries.push_back(builder.getDictionaryAttr(
+        {builder.getNamedAttr("name", builder.getStringAttr(buffer.heapSlot)),
+         builder.getNamedAttr(
+             "type", builder.getStringAttr("UnityEngineRenderTexture")),
+         builder.getNamedAttr("initial", builder.getStringAttr("null")),
+         builder.getNamedAttr("public", builder.getUnitAttr())}));
+  module->setAttr("udonasm.data", builder.getArrayAttr(entries));
+}
+
+json::Array unityBufferManifest(ArrayRef<UnityBuffer> buffers) {
+  json::Array result;
+  for (const UnityBuffer &buffer : buffers)
+    result.push_back(json::Object{
+        {"id", buffer.id},
+        {"name", buffer.name},
+        {"heap_slot", buffer.heapSlot},
+        {"logical_bytes", buffer.logicalBytes},
+        {"width", buffer.width},
+        {"height", buffer.height},
+        {"format", "rgba8_unorm"},
+        {"srgb", false},
+        {"mipmaps", false},
+        {"filter", "point"},
+    });
+  return result;
+}
+
 bool configureUnityExports(ModuleOp module, const json::Object &config) {
   auto program = config.getString("program");
   auto *exports = config.getArray("exports");
@@ -272,6 +342,7 @@ int main(int argc, char **argv) {
   std::map<std::string, std::string> files;
   bool gatherProfile = false;
   std::optional<json::Object> unityConfig;
+  SmallVector<UnityBuffer> unityBuffers;
   if (emitUnityLibrary) {
     auto input = MemoryBuffer::getFile(inputFilename);
     if (!input || hostLLVM.empty() || !deviceLLVM.empty()) {
@@ -290,6 +361,10 @@ int main(int argc, char **argv) {
       return 1;
     }
     unityConfig = *object;
+    auto parsedBuffers = parseUnityBuffers(*unityConfig);
+    if (failed(parsedBuffers))
+      return 1;
+    unityBuffers = std::move(*parsedBuffers);
     LLVMContext llvmContext;
     SMDiagnostic diagnostic;
     auto inputModule = parseIRFile(hostLLVM, diagnostic, llvmContext);
@@ -382,10 +457,17 @@ int main(int argc, char **argv) {
                                        {"display_shader", "display.shader"},
                                        {"ir", "host.udonasm.mlir"}};
     manifest["ready_for_unity"] = true;
+    auto *device = manifest["device"].getAsObject();
+    if (!device) {
+      errs() << "Unity library manifest is missing its Device section\n";
+      return 1;
+    }
+    (*device)["buffers"] = unityBufferManifest(unityBuffers);
     PassManager udon(&context);
     udon.addPass(::vrc::createLowerUdonHLToUdonAsmPass());
     if (failed(udon.run(*module)) || failed(verify(*module)))
       return 1;
+    appendUnityBufferSlots(*module, unityBuffers);
     std::string assembly;
     raw_string_ostream assemblyOut(assembly);
     if (failed(::vrc::emitUdonAssembly(*module, assemblyOut)))

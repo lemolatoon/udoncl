@@ -18,6 +18,7 @@ namespace Lemolatoon.Udoncl.Editor
             string artifactStage,
             string programName,
             IList<ValidatedKernel> kernels,
+            IList<ValidatedDeviceBuffer> deviceBuffers,
             IList<ValidatedResource> resources,
             IList<ValidatedOnnxStaticInput> onnxStaticInputs,
             IList<ValidatedOnnxInt4Call> onnxInt4Calls
@@ -30,6 +31,7 @@ namespace Lemolatoon.Udoncl.Editor
             ArtifactStage = artifactStage;
             ProgramName = programName;
             Kernels = kernels;
+            DeviceBuffers = deviceBuffers;
             Resources = resources;
             OnnxStaticInputs = onnxStaticInputs;
             OnnxInt4Calls = onnxInt4Calls;
@@ -42,6 +44,7 @@ namespace Lemolatoon.Udoncl.Editor
         public string ArtifactStage { get; private set; }
         public string ProgramName { get; private set; }
         public IList<ValidatedKernel> Kernels { get; private set; }
+        public IList<ValidatedDeviceBuffer> DeviceBuffers { get; private set; }
         public IList<ValidatedResource> Resources { get; private set; }
         public IList<ValidatedOnnxStaticInput> OnnxStaticInputs { get; private set; }
         public IList<ValidatedOnnxInt4Call> OnnxInt4Calls { get; private set; }
@@ -151,6 +154,33 @@ namespace Lemolatoon.Udoncl.Editor
         public string Name { get; private set; }
         public string RelativeShaderPath { get; private set; }
         public string AbsoluteShaderPath { get; private set; }
+    }
+
+    public sealed class ValidatedDeviceBuffer
+    {
+        internal ValidatedDeviceBuffer(
+            int id,
+            string name,
+            string heapSlot,
+            int logicalBytes,
+            int width,
+            int height
+        )
+        {
+            Id = id;
+            Name = name;
+            HeapSlot = heapSlot;
+            LogicalBytes = logicalBytes;
+            Width = width;
+            Height = height;
+        }
+
+        public int Id { get; private set; }
+        public string Name { get; private set; }
+        public string HeapSlot { get; private set; }
+        public int LogicalBytes { get; private set; }
+        public int Width { get; private set; }
+        public int Height { get; private set; }
     }
 
     public static class ArtifactManifestValidator
@@ -263,6 +293,10 @@ namespace Lemolatoon.Udoncl.Editor
                 }
             }
 
+            List<ValidatedDeviceBuffer> deviceBuffers = ValidateDeviceBuffers(
+                manifest.device == null ? null : manifest.device.buffers
+            );
+
             List<ValidatedResource> resources = new List<ValidatedResource>();
             HashSet<string> resourceNames = new HashSet<string>(StringComparer.Ordinal);
             if (manifest.resources != null)
@@ -321,10 +355,61 @@ namespace Lemolatoon.Udoncl.Editor
                 manifest.artifact_stage,
                 manifest.program.name,
                 kernels,
+                deviceBuffers,
                 resources,
                 onnxStaticInputs,
                 onnxInt4Calls
             );
+        }
+
+        private static List<ValidatedDeviceBuffer> ValidateDeviceBuffers(DeviceBufferInfo[] buffers)
+        {
+            List<ValidatedDeviceBuffer> validated = new List<ValidatedDeviceBuffer>();
+            HashSet<int> ids = new HashSet<int>();
+            HashSet<string> names = new HashSet<string>(StringComparer.Ordinal);
+            HashSet<string> heapSlots = new HashSet<string>(StringComparer.Ordinal);
+            foreach (DeviceBufferInfo buffer in buffers ?? Array.Empty<DeviceBufferInfo>())
+            {
+                if (buffer == null)
+                    throw new InvalidDataException("Device buffer entry is null.");
+                long expectedPixels = ((long)buffer.logical_bytes + 3) / 4;
+                int expectedWidth = (int)Math.Min(expectedPixels, 8192);
+                int expectedHeight =
+                    expectedWidth == 0
+                        ? 0
+                        : (int)((expectedPixels + expectedWidth - 1) / expectedWidth);
+                if (
+                    buffer.id <= 0
+                    || !ids.Add(buffer.id)
+                    || !IsSafeIdentifier(buffer.name)
+                    || !names.Add(buffer.name)
+                    || !IsSafeIdentifier(buffer.heap_slot)
+                    || !heapSlots.Add(buffer.heap_slot)
+                    || buffer.heap_slot != "__udoncl_buffer_" + buffer.id
+                    || buffer.logical_bytes <= 0
+                    || buffer.width != expectedWidth
+                    || buffer.height != expectedHeight
+                    || buffer.height > 8192
+                    || buffer.format != "rgba8_unorm"
+                    || buffer.srgb
+                    || buffer.mipmaps
+                    || buffer.filter != "point"
+                )
+                    throw new InvalidDataException(
+                        "Device buffers require unique ids/names/slots and a canonical linear RGBA8 layout."
+                    );
+                validated.Add(
+                    new ValidatedDeviceBuffer(
+                        buffer.id,
+                        buffer.name,
+                        buffer.heap_slot,
+                        buffer.logical_bytes,
+                        buffer.width,
+                        buffer.height
+                    )
+                );
+            }
+            return validated;
         }
 
         private static List<ValidatedOnnxInt4Call> ValidateOnnxInt4Calls(

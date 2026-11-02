@@ -89,6 +89,22 @@ namespace Lemolatoon.Udoncl.Editor
     internal sealed class DeviceInfo
     {
         public KernelInfo[] kernels;
+        public DeviceBufferInfo[] buffers;
+    }
+
+    [Serializable]
+    internal sealed class DeviceBufferInfo
+    {
+        public int id;
+        public string name;
+        public string heap_slot;
+        public int logical_bytes;
+        public int width;
+        public int height;
+        public string format;
+        public bool srgb;
+        public bool mipmaps;
+        public string filter;
     }
 
     [Serializable]

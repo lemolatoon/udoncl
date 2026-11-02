@@ -36,7 +36,9 @@ also discovers the built `udonclc` and pinned `.deps/llvm23` tools. Explicit
 `UDONCL_LLVM_LINK_EXECUTABLE` cache paths override discovery.
 
 `unity-library.json` is the stable public ABI description for the scalar Host
-library. Helper calls must currently be inlined; unsupported pointer,
+library. Its `buffers` array reserves explicit linear RGBA8 Device backing;
+the compiler exports the corresponding Udon heap slots and the Importer creates
+and binds Point-filtered RenderTextures in the generated prefab. Helper calls must currently be inlined; unsupported pointer,
 continuation, or GPU-dispatch exports fail compilation instead of publishing a
 partly runnable Unity artifact.
 

@@ -75,8 +75,22 @@ def main():
     assert unity_manifest['program']['assembly'] == 'host.uasm'
     assert unity_manifest['program']['display_shader'] == 'display.shader'
     assert unity_manifest['exports'][0]['public_name'] == 'SquarePlusOne'
+    assert unity_manifest['device']['buffers'] == [{
+        'id': 1,
+        'name': 'scratch',
+        'heap_slot': '__udoncl_buffer_1',
+        'logical_bytes': 4,
+        'width': 1,
+        'height': 1,
+        'format': 'rgba8_unorm',
+        'srgb': False,
+        'mipmaps': False,
+        'filter': 'point',
+    }]
     assembly = (unity_artifact / 'host.uasm').read_text(encoding='utf-8')
     assert '.export __0_SquarePlusOne' in assembly
+    assert '.export __udoncl_buffer_1' in assembly
+    assert '__udoncl_buffer_1: %UnityEngineRenderTexture, null' in assembly
     assert (unity_artifact / 'display.shader').is_file()
     print(
         'cmake_package=passed host_sources=3 device_sources=3 '

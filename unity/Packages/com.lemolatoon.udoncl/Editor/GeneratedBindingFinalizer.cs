@@ -6,6 +6,7 @@ using UdonSharpEditor;
 using UnityEditor;
 using UnityEngine;
 using VRC.Udon;
+using VRC.Udon.Common;
 using VRC.Udon.Editor.ProgramSources;
 using SyncType = VRC.SDKBase.Networking.SyncType;
 
@@ -56,8 +57,6 @@ namespace Lemolatoon.Udoncl.Editor
                 string className = VRCWrapperGenerator.BindingClassName(manifest.program.name);
                 string prefabDirectory = programRoot.Replace('\\', '/') + "/Prefabs";
                 string prefabPath = prefabDirectory + "/" + className + ".prefab";
-                if (AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath) != null)
-                    continue;
 
                 Type wrapperType = TypeCache
                     .GetTypesDerivedFrom<UdonSharpBehaviour>()
@@ -90,7 +89,9 @@ namespace Lemolatoon.Udoncl.Editor
                         prefabPath,
                         className,
                         wrapperType,
-                        programAsset
+                        programAsset,
+                        manifest,
+                        programRoot.Replace('\\', '/')
                     );
                     transaction.Commit();
                 }
@@ -115,7 +116,9 @@ namespace Lemolatoon.Udoncl.Editor
             string prefabPath,
             string className,
             Type wrapperType,
-            UdonAssemblyProgramAsset programAsset
+            UdonAssemblyProgramAsset programAsset,
+            UdonclManifest manifest,
+            string programRoot
         )
         {
             transaction.Track(prefabPath);
@@ -129,6 +132,22 @@ namespace Lemolatoon.Udoncl.Editor
                 serializedProgram.FindProperty("serializedProgramAsset").objectReferenceValue =
                     programAsset.SerializedProgramAsset;
                 serializedProgram.ApplyModifiedPropertiesWithoutUndo();
+                if (manifest.device != null && manifest.device.buffers != null)
+                    foreach (DeviceBufferInfo buffer in manifest.device.buffers)
+                    {
+                        string texturePath =
+                            programRoot
+                            + "/RenderTextures/"
+                            + UdonclArtifactImporter.DeviceBufferFileName(buffer.id, buffer.name);
+                        RenderTexture texture = AssetDatabase.LoadAssetAtPath<RenderTexture>(
+                            texturePath
+                        );
+                        if (texture == null)
+                            throw new InvalidDataException(
+                                "Generated Device buffer is missing: " + texturePath
+                            );
+                        SetPublicVariable(program, buffer.heap_slot, texture);
+                    }
 
                 UdonSharpBehaviour wrapper = root.AddUdonSharpComponent(wrapperType);
                 SerializedObject serializedWrapper = new SerializedObject(wrapper);
@@ -150,6 +169,23 @@ namespace Lemolatoon.Udoncl.Editor
             finally
             {
                 UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        private static void SetPublicVariable<T>(UdonBehaviour behaviour, string symbol, T value)
+        {
+            if (
+                behaviour.publicVariables.TryGetVariableType(symbol, out Type existingType)
+                && existingType != typeof(T)
+            )
+                behaviour.publicVariables.RemoveVariable(symbol);
+            if (!behaviour.publicVariables.TrySetVariableValue(symbol, value))
+            {
+                behaviour.publicVariables.RemoveVariable(symbol);
+                if (!behaviour.publicVariables.TryAddVariable(new UdonVariable<T>(symbol, value)))
+                    throw new InvalidOperationException(
+                        "Could not bind generated Udon variable: " + symbol
+                    );
             }
         }
 

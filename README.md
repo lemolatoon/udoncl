@@ -34,7 +34,8 @@ The package also honors `target_include_directories`,
 `target_compile_definitions`, and `target_compile_options` usage requirements
 on those source targets. Build `my_artifact` to generate its immutable bundle.
 The Unity-library config assigns stable export IDs, public U# names and
-parameter names. Its artifact contains `manifest.json`, compiler-emitted
+parameter names. Optional explicit `buffers` entries become canonical linear
+RGBA8 RenderTexture assets bound to compiler-emitted Udon heap slots. Its artifact contains `manifest.json`, compiler-emitted
 `host.uasm`, and a valid display shader; import it with **Tools → udoncl →
 Import Artifacts...**. The complete source-tree example is in
 `examples/hello-kernel`; CMake preset support and the future Unity

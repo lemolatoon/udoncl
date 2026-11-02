@@ -20,6 +20,14 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             ValidatedArtifact artifact = ArtifactManifestValidator.Validate(artifactDirectory);
             Assert.AreEqual("unity-udoncl-library", artifact.ArtifactStage);
             Assert.AreEqual("hello_kernel", artifact.ProgramName);
+            Assert.AreEqual(1, artifact.DeviceBuffers.Count);
+            ValidatedDeviceBuffer buffer = artifact.DeviceBuffers[0];
+            Assert.AreEqual(1, buffer.Id);
+            Assert.AreEqual("scratch", buffer.Name);
+            Assert.AreEqual("__udoncl_buffer_1", buffer.HeapSlot);
+            Assert.AreEqual(4, buffer.LogicalBytes);
+            Assert.AreEqual(1, buffer.Width);
+            Assert.AreEqual(1, buffer.Height);
 
             string assemblyPath = Path.Combine(artifact.RootDirectory, "host.uasm");
             Assert.That(File.Exists(assemblyPath), "Compiler output is missing host.uasm.");

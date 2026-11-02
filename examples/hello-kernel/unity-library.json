@@ -1,6 +1,13 @@
 {
   "schema_version": 1,
   "program": "hello_kernel",
+  "buffers": [
+    {
+      "id": 1,
+      "name": "scratch",
+      "byte_size": 4
+    }
+  ],
   "exports": [
     {
       "symbol": "host_square_plus_one",
