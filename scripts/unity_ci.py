@@ -19,6 +19,7 @@ LOWERING_TEST_CASES = {
     "FloatMultiplicationLoweringExecutesOnSdkUdonVm": 1,
     "ControlFlowLoweringExecutesOnSdkUdonVm": 2,
     "FloatArrayLoadStoreLoweringExecutesOnSdkUdonVm": 1,
+    "ContinuationFrameSurvivesUdonEventReturnAndResume": 1,
 }
 
 
@@ -259,6 +260,9 @@ def main():
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     environment = dict(os.environ)
     environment["UDONCL_LOWERED_UASM"] = str(assembly)
+    environment["UDONCL_CONTINUATION_UASM"] = str(
+        (output / "lowering/continuation.uasm").resolve()
+    )
     environment["UDONCL_UNITY_LIBRARY_ARTIFACT"] = str(unity_library)
     environment["UDONCL_ONNX_AOT_UASM"] = str(
         (output / "onnx-aot/generic-host.uasm").resolve()

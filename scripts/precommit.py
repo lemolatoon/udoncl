@@ -446,6 +446,9 @@ def run_unity_mcp_gate(root, unity, project, build, output):
     environment.update(
         {
             "UDONCL_LOWERED_UASM": str(assembly),
+            "UDONCL_CONTINUATION_UASM": str(
+                (output / "lowering/continuation.uasm").resolve()
+            ),
             "UDONCL_UNITY_LIBRARY_ARTIFACT": str(unity_library),
             "UDONCL_ONNX_AOT_UASM": str(
                 (output / "onnx-aot/generic-host.uasm").resolve()

@@ -1,6 +1,7 @@
 #include "VRC/Conversion/Passes.h"
 #include "VRC/ABI/Manifest/UdonSharpABI.h"
 #include "VRC/Dialect/UdonAsm/UdonAsmDialect.h"
+#include "VRC/Dialect/UdonHL/UdonHLDialect.h"
 #include "VRC/Dialect/VRC/VRCDialect.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
@@ -21,6 +22,7 @@ namespace vrc {
 
 namespace {
 namespace vm = ::vrc::udonasm;
+namespace host = ::vrc::udonhl;
 
 struct Slot {
   std::string name;
@@ -41,6 +43,8 @@ static FailureOr<StringRef> udonType(Type type) {
   if (isa<::vrc::vrc::BufferType>(type))
     return StringRef("UnityEngineRenderTexture");
   if (isa<::vrc::vrc::EventType>(type))
+    return StringRef("SystemInt32");
+  if (isa<host::FrameType>(type))
     return StringRef("SystemInt32");
   if (auto memref = dyn_cast<MemRefType>(type)) {
     if (memref.getRank() != 1 || !memref.getLayout().isIdentity())
@@ -274,6 +278,7 @@ private:
     exports.push_back(DictionaryAttr::get(module.getContext(), exportFields));
 
     llvm::DenseMap<Value, std::string> valueSlots;
+    llvm::DenseMap<Operation *, SmallVector<std::string>> frameSlots;
     for (auto [index, argument] : llvm::enumerate(function.getArguments())) {
       auto type = *udonType(argument.getType());
       std::string name = abi.parameterSlots[index];
@@ -320,6 +325,29 @@ private:
           std::string status = prefix + "v" + std::to_string(valueIndex++);
           addSlot(status, "SystemInt32", "0", false);
           valueSlots[allocation.getStatus()] = status;
+          continue;
+        }
+        if (auto frame = dyn_cast<host::FrameCreateOp>(operation)) {
+          std::string frameName =
+              prefix + "frame_" + std::to_string(frameSlots.size());
+          addSlot(frameName, "SystemInt32", "0", false);
+          valueSlots[frame.getFrame()] = frameName;
+          SmallVector<std::string> persistent;
+          for (auto [slot, attribute] : llvm::enumerate(frame.getSlotTypes())) {
+            auto type = dyn_cast<TypeAttr>(attribute);
+            if (!type)
+              return frame.emitError(
+                  "static continuation frame requires type attributes");
+            auto udon = udonType(type.getValue());
+            if (failed(udon) ||
+                (!type.getValue().isInteger(32) && !type.getValue().isF32()))
+              return frame.emitError(
+                  "static continuation frame supports only i32/f32 slots");
+            std::string slotName = frameName + "_slot_" + std::to_string(slot);
+            addSlot(slotName, *udon, "0", false);
+            persistent.push_back(std::move(slotName));
+          }
+          frameSlots.try_emplace(frame.getOperation(), std::move(persistent));
           continue;
         }
         if (operation.getNumResults() != 1)
@@ -391,6 +419,94 @@ private:
           continue;
         if (isa<::vrc::vrc::BufferAllocOp>(operation))
           continue;
+        if (auto frame = dyn_cast<host::FrameCreateOp>(operation)) {
+          std::string execution = valueSlots.lookup(frame.getExecutionId());
+          std::string handle = valueSlots.lookup(frame.getFrame());
+          if (execution.empty() || handle.empty())
+            return frame.emitError(
+                "continuation frame has no allocated execution-id slots");
+          emitCopy(frame.getLoc(), execution, handle);
+          continue;
+        }
+        if (auto store = dyn_cast<host::FrameStoreOp>(operation)) {
+          auto frame = store.getFrame().getDefiningOp<host::FrameCreateOp>();
+          auto found =
+              frame ? frameSlots.find(frame.getOperation()) : frameSlots.end();
+          std::string value = valueSlots.lookup(store.getValue());
+          if (found == frameSlots.end() || store.getSlot() < 0 ||
+              static_cast<size_t>(store.getSlot()) >= found->second.size() ||
+              value.empty())
+            return store.emitError(
+                "continuation store requires a direct static frame slot");
+          emitCopy(store.getLoc(), value, found->second[store.getSlot()]);
+          continue;
+        }
+        if (auto load = dyn_cast<host::FrameLoadOp>(operation)) {
+          auto frame = load.getFrame().getDefiningOp<host::FrameCreateOp>();
+          auto found =
+              frame ? frameSlots.find(frame.getOperation()) : frameSlots.end();
+          std::string result = valueSlots.lookup(load.getValue());
+          if (found == frameSlots.end() || load.getSlot() < 0 ||
+              static_cast<size_t>(load.getSlot()) >= found->second.size() ||
+              result.empty())
+            return load.emitError(
+                "continuation load requires a direct static frame slot");
+          emitCopy(load.getLoc(), found->second[load.getSlot()], result);
+          continue;
+        }
+        if (auto dispatch = dyn_cast<host::ResumeDispatchOp>(operation)) {
+          std::string state = valueSlots.lookup(dispatch.getState());
+          if (state.empty())
+            return dispatch.emitError(
+                "continuation resume state has no allocated Udon heap slot");
+          for (auto [index, destination] :
+               llvm::enumerate(dispatch.getDestinations())) {
+            int32_t resumeState = dispatch.getRegisteredStates()[index];
+            std::string constant =
+                prefix + "resume_" + std::to_string(resumeState);
+            std::string matches =
+                prefix + "resume_match_" + std::to_string(index);
+            addSlot(constant, "SystemInt32", std::to_string(resumeState),
+                    false);
+            addSlot(matches, "SystemBoolean", "null", false);
+            emitPush(dispatch.getLoc(), state);
+            emitPush(dispatch.getLoc(), constant);
+            emitPush(dispatch.getLoc(), matches);
+            emitExtern(dispatch.getLoc(),
+                       "SystemInt32.__op_Equality__SystemInt32_SystemInt32__"
+                       "SystemBoolean");
+            emitPush(dispatch.getLoc(), matches);
+            Operation *next = create(
+                dispatch.getLoc(), vm::JumpIfFalseOp::getOperationName(),
+                {builder.getNamedAttr("target", builder.getI64IntegerAttr(0))});
+            address += 8;
+            jumpTo(dispatch.getLoc(), destination);
+            next->setAttr("target", builder.getI64IntegerAttr(
+                                        static_cast<int64_t>(address)));
+          }
+          emitJump(dispatch.getLoc(), 0xfffffffcLL);
+          continue;
+        }
+        if (auto suspend = dyn_cast<host::SuspendOp>(operation)) {
+          host::ResumeDispatchOp owner;
+          function.walk([&](host::ResumeDispatchOp candidate) {
+            if (llvm::is_contained(candidate.getRegisteredStates(),
+                                   suspend.getResumeState()))
+              owner = candidate;
+          });
+          std::string state =
+              owner ? valueSlots.lookup(owner.getState()) : std::string();
+          if (state.empty())
+            return suspend.emitError(
+                "suspend has no static resume-state heap slot");
+          std::string constant =
+              prefix + "resume_" + std::to_string(suspend.getResumeState());
+          addSlot(constant, "SystemInt32",
+                  std::to_string(suspend.getResumeState()), false);
+          emitCopy(suspend.getLoc(), constant, state);
+          emitJump(suspend.getLoc(), 0xfffffffcLL);
+          continue;
+        }
         if (auto dispatch = dyn_cast<::vrc::vrc::DispatchOp>(operation)) {
           auto descriptor =
               dispatch.getDesc()

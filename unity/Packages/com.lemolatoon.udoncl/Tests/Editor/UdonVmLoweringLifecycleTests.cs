@@ -17,6 +17,8 @@ namespace Lemolatoon.Udoncl.Editor.Tests
     {
         private const string TemporaryDirectory = "Library/UdonclLoweringIntegration";
         private const string TemporaryAssembly = TemporaryDirectory + "/scalar.uasm";
+        private const string TemporaryContinuationAssembly =
+            TemporaryDirectory + "/continuation.uasm";
         private string assemblyText;
 
         [OneTimeSetUp]
@@ -55,11 +57,36 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 fixture = Path.GetFullPath(fixture);
             Assert.That(File.Exists(fixture), "Missing compiler-emitted scalar.uasm fixture.");
             assemblyText = File.ReadAllText(fixture);
+            string continuationFixture = Environment.GetEnvironmentVariable(
+                "UDONCL_CONTINUATION_UASM"
+            );
+            if (string.IsNullOrWhiteSpace(continuationFixture))
+            {
+                string repository = Path.GetFullPath(
+                    Path.Combine(package.resolvedPath, "..", "..", "..")
+                );
+                continuationFixture = Path.Combine(
+                    repository,
+                    "build",
+                    "udoncl",
+                    "tests",
+                    "udon-scalar",
+                    "continuation.uasm"
+                );
+            }
+            else
+                continuationFixture = Path.GetFullPath(continuationFixture);
+            Assert.That(
+                File.Exists(continuationFixture),
+                "Missing compiler-emitted continuation.uasm fixture."
+            );
             if (Directory.Exists(TemporaryDirectory))
                 Directory.Delete(TemporaryDirectory, true);
             Directory.CreateDirectory(TemporaryDirectory);
             File.WriteAllText(TemporaryAssembly, assemblyText);
+            File.Copy(continuationFixture, TemporaryContinuationAssembly, true);
             Assert.That(File.Exists(TemporaryAssembly));
+            Assert.That(File.Exists(TemporaryContinuationAssembly));
         }
 
         [TestCase("__0_add", "__0_arg0__param", 17, "__0_arg1__param", 25, "__0___0_add__ret", 42)]
@@ -162,6 +189,44 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             Assert.AreEqual(4.5f, output[0], 1e-6f);
         }
 
+        [Test]
+        public void ContinuationFrameSurvivesUdonEventReturnAndResume()
+        {
+            IUdonProgram program = LoadProgram(TemporaryContinuationAssembly);
+            IUdonVM vm = CreateVm(program);
+            IUdonHeap heap = vm.InspectHeap();
+            heap.SetHeapVariable(program.SymbolTable.GetAddressFromSymbol("__0_arg0__param"), 77);
+            heap.SetHeapVariable(program.SymbolTable.GetAddressFromSymbol("__0_arg1__param"), 0);
+            heap.SetHeapVariable(program.SymbolTable.GetAddressFromSymbol("__0_arg2__param"), 0);
+            heap.SetHeapVariable(program.SymbolTable.GetAddressFromSymbol("__0_arg3__param"), 41);
+
+            Execute(vm, program, "__0_resume");
+            Assert.AreEqual(
+                1,
+                heap.GetHeapVariable<int>(
+                    program.SymbolTable.GetAddressFromSymbol("__0_arg1__param")
+                )
+            );
+            Assert.AreEqual(
+                41,
+                heap.GetHeapVariable<int>(
+                    program.SymbolTable.GetAddressFromSymbol("__vrc_f6_frame_0_slot_1")
+                )
+            );
+
+            heap.SetHeapVariable(
+                program.SymbolTable.GetAddressFromSymbol("__vrc_f6_frame_0_slot_0"),
+                1
+            );
+            Execute(vm, program, "__0_resume");
+            Assert.AreEqual(
+                42,
+                heap.GetHeapVariable<int>(
+                    program.SymbolTable.GetAddressFromSymbol("__0___0_resume__ret")
+                )
+            );
+        }
+
         [OneTimeTearDown]
         public void CleanupLoweredAssemblyAsset()
         {
@@ -176,9 +241,12 @@ namespace Lemolatoon.Udoncl.Editor.Tests
 
         private static IUdonProgram LoadProgram()
         {
-            IUdonProgram program = UdonEditorManager.Instance.Assemble(
-                File.ReadAllText(TemporaryAssembly)
-            );
+            return LoadProgram(TemporaryAssembly);
+        }
+
+        private static IUdonProgram LoadProgram(string path)
+        {
+            IUdonProgram program = UdonEditorManager.Instance.Assemble(File.ReadAllText(path));
             Assert.NotNull(program, "SDK assembler rejected the lowered program.");
             return program;
         }

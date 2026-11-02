@@ -224,6 +224,56 @@ for expected in [
 ]:
     assert expected in buffer_lowered.stdout, (expected, buffer_lowered.stdout)
 
+continuation_source = r'''module attributes {vrc.host_stage = "udonhl"} {
+  func.func @resume(%execution: i32, %resume_state: i32, %event: !vrc.event, %value: i32) -> i32 attributes {
+    vrc.async_effect = "may_suspend",
+    vrc.execution_id_arg = 0 : i32,
+    vrc.export_id = 6 : i32,
+    vrc.resume_state_arg = 1 : i32
+  } {
+    %status = vrc.await %event : (!vrc.event) -> i32
+    %sum = arith.addi %status, %value : i32
+    return %sum : i32
+  }
+}'''
+continuation_lowered = subprocess.run(
+    [
+        opt,
+        '--pass-pipeline=builtin.module(vrc-lower-await-to-continuations,vrc-lower-udonhl-to-udonasm)',
+        '--verify-each',
+    ],
+    input=continuation_source,
+    text=True,
+    capture_output=True,
+)
+assert continuation_lowered.returncode == 0, continuation_lowered.stderr
+for expected in [
+    'name = "__vrc_f6_frame_0"',
+    'name = "__vrc_f6_frame_0_slot_0"',
+    'name = "__vrc_f6_frame_0_slot_1"',
+    'name = "__vrc_f6_resume_0"',
+    'name = "__vrc_f6_resume_1"',
+    'SystemInt32.__op_Equality__SystemInt32_SystemInt32__SystemBoolean',
+    'udonasm.jump 4294967292',
+]:
+    assert expected in continuation_lowered.stdout, (
+        expected,
+        continuation_lowered.stdout,
+    )
+continuation_mlir = output / 'continuation.udonasm.mlir'
+continuation_uasm = output / 'continuation.uasm'
+continuation_mlir.write_text(continuation_lowered.stdout, encoding='utf-8')
+emitted = subprocess.run(
+    [translate, '--emit-udon-assembly', continuation_mlir, '-o', continuation_uasm],
+    text=True,
+    capture_output=True,
+)
+assert emitted.returncode == 0, emitted.stderr
+continuation_assembly = continuation_uasm.read_text(encoding='utf-8')
+assert '.export __0_resume' in continuation_assembly
+assert '__vrc_f6_frame_0_slot_0: %SystemInt32, 0' in continuation_assembly
+assert '__vrc_f6_frame_0_slot_1: %SystemInt32, 0' in continuation_assembly
+
 unbound_buffer = buffer_source.replace(
     'vrc.unity_heap_slot = "__udoncl_buffer_1",', '', 1)
 rejected = subprocess.run(
