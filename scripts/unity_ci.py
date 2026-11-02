@@ -124,6 +124,10 @@ def prepare_fixtures(root: Path, build: Path, output: Path):
             ],
             timeout=1200,
         )
+    onnx_environment = dict(os.environ)
+    onnx_environment["UDONCL_ONNX_UNITY_TEMPLATE"] = str(
+        root / "build/udondnn-device-run/unity-udonaten-int4-mm-bundle"
+    )
     run(
         [
             sys.executable,
@@ -132,6 +136,7 @@ def prepare_fixtures(root: Path, build: Path, output: Path):
             output / "onnx-aot",
         ],
         timeout=120,
+        env=onnx_environment,
     )
     run(
         [

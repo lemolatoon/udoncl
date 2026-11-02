@@ -52,7 +52,12 @@ variants = [
     ('scatter', 'out[word] =', 'out[word & 3u] =', 'output[global_id]'),
     ('write-input', 'out[word] =', '((__global float *)state)[word] =', 'output[global_id]'),
     ('barrier', 'out[word] =', 'barrier(CLK_GLOBAL_MEM_FENCE); out[word] =', 'unsupported builtin'),
-    ('wrong-dimension', 'get_global_id(0)', 'get_global_id(1)', 'dimension-zero'),
+    (
+        'wrong-dimension',
+        'get_global_id(0)',
+        'get_global_id(1)',
+        'global ids must uniquely match the declared 1D/2D extent',
+    ),
     ('unbounded-loop', '++j)', 'j += 0u)', 'buffer index bounds'),
 ]
 for name, old, new, error in variants:

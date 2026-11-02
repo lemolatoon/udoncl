@@ -10,6 +10,7 @@ import queue
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -75,6 +76,50 @@ def ensure_cmake_toolchain_on_path():
             break
     if not shutil.which("cmake") or not shutil.which("ninja"):
         raise RuntimeError("CMake and Ninja are required for fixture generation")
+
+
+def ensure_msvc_environment(build: Path):
+    if sys.platform != "win32" or (
+        os.environ.get("INCLUDE") and os.environ.get("VCToolsInstallDir")
+    ):
+        return
+    cache = build / "CMakeCache.txt"
+    if not cache.is_file():
+        raise RuntimeError(f"configured CMake build is missing: {cache}")
+    compiler_value = next(
+        (
+            line.split("=", 1)[1]
+            for line in cache.read_text(encoding="utf-8").splitlines()
+            if line.startswith("CMAKE_CXX_COMPILER:") and "=" in line
+        ),
+        None,
+    )
+    if not compiler_value:
+        raise RuntimeError("CMake cache does not identify the MSVC compiler")
+    compiler = Path(compiler_value)
+    try:
+        visual_studio = compiler.parents[7]
+    except IndexError as error:
+        raise RuntimeError(f"unexpected MSVC compiler path: {compiler}") from error
+    vsdevcmd = visual_studio / "Common7/Tools/VsDevCmd.bat"
+    if not vsdevcmd.is_file():
+        raise RuntimeError(f"Visual Studio environment script is missing: {vsdevcmd}")
+    with tempfile.TemporaryDirectory(prefix="udoncl-vsdevcmd-", dir=build) as temporary:
+        batch = Path(temporary) / "environment.cmd"
+        batch.write_text(
+            f'@call "{vsdevcmd}" -no_logo -arch=x64 -host_arch=x64 >nul\n@set\n',
+            encoding="utf-8",
+        )
+        result = subprocess.run(
+            ["cmd.exe", "/d", "/c", batch],
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+    for line in result.stdout.splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            os.environ[key] = value
 
 
 def run(command, **kwargs):
@@ -482,6 +527,39 @@ def main():
         parser.error("stage the intended commit before running the pre-commit gate")
     run([sys.executable, root / "scripts/validate_vpm_package.py"], cwd=root)
     ensure_cmake_toolchain_on_path()
+    ensure_msvc_environment(args.build_dir.resolve())
+    run(
+        [
+            sys.executable,
+            root / "scripts/build.py",
+            "--build-dir",
+            args.build_dir.resolve(),
+        ],
+        cwd=root,
+    )
+    run(
+        [
+            "ctest",
+            "--test-dir",
+            args.build_dir.resolve(),
+            "--output-on-failure",
+            "-R",
+            "^(udondnn-device-execution|onnx-runtime-mnist|md-crystal-execution)$",
+            "-j",
+            "1",
+        ],
+        cwd=root,
+    )
+    run(
+        [
+            sys.executable,
+            root / "tests/boundary/md_crystal.py",
+            args.build_dir.resolve(),
+            args.output.resolve() / "md-crystal",
+        ],
+        cwd=root,
+        timeout=1200,
+    )
     run_unity_mcp_gate(
         root, unity, project, args.build_dir.resolve(), args.output.resolve()
     )

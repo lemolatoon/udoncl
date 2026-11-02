@@ -1,6 +1,7 @@
 """Validate the dependency-free ONNX importer and MNIST Udon provider plan."""
 
 import json
+import os
 from pathlib import Path
 import struct
 import subprocess
@@ -8,6 +9,10 @@ import sys
 
 
 root, output = (Path(value).resolve() for value in sys.argv[1:])
+unity_template_value = os.environ.get("UDONCL_ONNX_UNITY_TEMPLATE")
+unity_template_directory = (
+    Path(unity_template_value).resolve() if unity_template_value else None
+)
 c_compiler = root / ".deps/llvm23/bin" / (
     "clang.exe" if sys.platform == "win32" else "clang"
 )
@@ -726,15 +731,16 @@ unity_int4_plan["aot"]["calls"] = [unity_int4_plan["aot"]["calls"][0]]
 unity_int4_plan["passes"] = [unity_int4_plan["passes"][0]]
 unity_int4_plan["outputs"] = {"projection_a": [1, int4_n]}
 unity_int4_bundle = output / "unity-int4-model-bundle"
-unity_int4_manifest = materialize_int4_model(
-    unity_int4_plan,
-    output,
-    unity_int4_bundle,
-    unity_template_directory=root
-    / "build/udondnn-device-run/unity-udonaten-int4-mm-bundle",
-    model_path=model_path,
-    program_name="onnx_int4_fixture",
-)
+unity_int4_manifest = None
+if unity_template_directory is not None:
+    unity_int4_manifest = materialize_int4_model(
+        unity_int4_plan,
+        output,
+        unity_int4_bundle,
+        unity_template_directory=unity_template_directory,
+        model_path=model_path,
+        program_name="onnx_int4_fixture",
+    )
 unity_int4_activation = [index * 0.125 for index in range(int4_k)]
 unity_int4_reference = []
 for row in range(int4_n):
@@ -756,13 +762,14 @@ for row in range(int4_n):
 (output / "unity-int4-reference.bytes").write_bytes(
     struct.pack(f"<{int4_n}f", *unity_int4_reference)
 )
-assert unity_int4_manifest["artifact_stage"] == "unity-udon-onnx-model"
-assert unity_int4_manifest["ready_for_unity"] is True
-assert unity_int4_manifest["complete_graph"] is True
-assert len(unity_int4_manifest["call_artifacts"]) == 1
-assert (unity_int4_bundle / "model.onnx.bytes").is_file()
-assert (unity_int4_bundle / "execution-plan.json.bytes").is_file()
-assert (unity_int4_bundle / "kernels/kernel_208.shader").is_file()
+if unity_int4_manifest is not None:
+    assert unity_int4_manifest["artifact_stage"] == "unity-udon-onnx-model"
+    assert unity_int4_manifest["ready_for_unity"] is True
+    assert unity_int4_manifest["complete_graph"] is True
+    assert len(unity_int4_manifest["call_artifacts"]) == 1
+    assert (unity_int4_bundle / "model.onnx.bytes").is_file()
+    assert (unity_int4_bundle / "execution-plan.json.bytes").is_file()
+    assert (unity_int4_bundle / "kernels/kernel_208.shader").is_file()
 
 arena_add_bytes = model_proto(
     graph_proto(
@@ -785,58 +792,58 @@ assert emit_model_uasm(arena_add_plan) == emit_int4_model_uasm(arena_add_plan)
 arena_add_uasm = emit_model_uasm(arena_add_plan)
 assert "PUSH, __zero\n        PUSH, __passIndex\n        COPY" in arena_add_uasm
 assert "PUSH, arenaSlot2\n        PUSH, resultState\n        COPY" in arena_add_uasm
-arena_add_bundle = output / "unity-arena-add-model-bundle"
-arena_add_manifest = materialize_model(
-    arena_add_plan,
-    output,
-    arena_add_bundle,
-    unity_template_directory=root
-    / "build/udondnn-device-run/unity-udonaten-int4-mm-bundle",
-    model_path=arena_add_path,
-    program_name="onnx_arena_add_fixture",
-)
-assert arena_add_manifest["artifact_stage"] == "unity-udon-onnx-model"
-assert arena_add_manifest["complete_graph"] is True
-assert arena_add_manifest["int4_call_count"] == 0
-assert arena_add_manifest["call_artifacts"] == []
-assert arena_add_manifest["unmaterialized_calls"] == []
-assert arena_add_manifest["device"]["kernels"] == [
-    {
-        "id": 215,
-        "name": "udonaten_arena_pointwise",
-        "shader": "kernels/kernel_215.shader",
-    }
-]
-assert (arena_add_bundle / "host.uasm").is_file()
-assert (arena_add_bundle / "model.onnx.bytes").read_bytes() == arena_add_bytes
-assert (arena_add_bundle / "execution-plan.json.bytes").is_file()
-assert (arena_add_bundle / "kernels/kernel_215.shader").is_file()
-arena_add_plan_path = output / "arena-add-plan.json"
-arena_add_plan_path.write_text(json.dumps(arena_add_plan), encoding="utf-8")
-arena_add_cli_bundle = output / "arena-add-cli-model-bundle"
-arena_add_cli = subprocess.run(
-    [
-        sys.executable,
-        root / "runtime/onnx/udon_pages.py",
-        arena_add_plan_path,
+if unity_template_directory is not None:
+    arena_add_bundle = output / "unity-arena-add-model-bundle"
+    arena_add_manifest = materialize_model(
+        arena_add_plan,
         output,
-        "--model",
-        "--unity-template-directory",
-        root / "build/udondnn-device-run/unity-udonaten-int4-mm-bundle",
-        "--model-path",
-        arena_add_path,
-        "--program-name",
-        "onnx_arena_add_cli_fixture",
-        "-o",
-        arena_add_cli_bundle,
-    ],
-    text=True,
-    capture_output=True,
-    timeout=60,
-)
-assert arena_add_cli.returncode == 0, (arena_add_cli.stdout, arena_add_cli.stderr)
-assert "calls=1 complete=True" in arena_add_cli.stdout
-assert (arena_add_cli_bundle / "kernels/kernel_215.shader").is_file()
+        arena_add_bundle,
+        unity_template_directory=unity_template_directory,
+        model_path=arena_add_path,
+        program_name="onnx_arena_add_fixture",
+    )
+    assert arena_add_manifest["artifact_stage"] == "unity-udon-onnx-model"
+    assert arena_add_manifest["complete_graph"] is True
+    assert arena_add_manifest["int4_call_count"] == 0
+    assert arena_add_manifest["call_artifacts"] == []
+    assert arena_add_manifest["unmaterialized_calls"] == []
+    assert arena_add_manifest["device"]["kernels"] == [
+        {
+            "id": 215,
+            "name": "udonaten_arena_pointwise",
+            "shader": "kernels/kernel_215.shader",
+        }
+    ]
+    assert (arena_add_bundle / "host.uasm").is_file()
+    assert (arena_add_bundle / "model.onnx.bytes").read_bytes() == arena_add_bytes
+    assert (arena_add_bundle / "execution-plan.json.bytes").is_file()
+    assert (arena_add_bundle / "kernels/kernel_215.shader").is_file()
+    arena_add_plan_path = output / "arena-add-plan.json"
+    arena_add_plan_path.write_text(json.dumps(arena_add_plan), encoding="utf-8")
+    arena_add_cli_bundle = output / "arena-add-cli-model-bundle"
+    arena_add_cli = subprocess.run(
+        [
+            sys.executable,
+            root / "runtime/onnx/udon_pages.py",
+            arena_add_plan_path,
+            output,
+            "--model",
+            "--unity-template-directory",
+            unity_template_directory,
+            "--model-path",
+            arena_add_path,
+            "--program-name",
+            "onnx_arena_add_cli_fixture",
+            "-o",
+            arena_add_cli_bundle,
+        ],
+        text=True,
+        capture_output=True,
+        timeout=60,
+    )
+    assert arena_add_cli.returncode == 0, (arena_add_cli.stdout, arena_add_cli.stderr)
+    assert "calls=1 complete=True" in arena_add_cli.stdout
+    assert (arena_add_cli_bundle / "kernels/kernel_215.shader").is_file()
 int4_model_plan_path = output / "int4-model-plan.json"
 int4_model_plan_path.write_text(json.dumps(int4_model_plan), encoding="utf-8")
 int4_model_cli_bundle = output / "int4-model-cli-bundle"
@@ -912,26 +919,26 @@ assert {item["shader"] for item in rl_plan["passes"]} == {
     "kernel_222.shader",
 }
 rl_unity_bundle = output / "unity-rl-policy-model-bundle"
-rl_unity_manifest = materialize_model(
-    rl_plan,
-    output,
-    rl_unity_bundle,
-    unity_template_directory=root
-    / "build/udondnn-device-run/unity-udonaten-int4-mm-bundle",
-    model_path=rl_model_path,
-    program_name="onnx_rl_policy_fixture",
-)
-assert rl_unity_manifest["artifact_stage"] == "unity-udon-onnx-model"
-assert rl_unity_manifest["complete_graph"] is True
-assert rl_unity_manifest["unmaterialized_calls"] == []
-assert len(rl_unity_manifest["static_inputs"]) == 6
-assert {item["id"] for item in rl_unity_manifest["device"]["kernels"]} == {
-    215,
-    221,
-    222,
-}
-assert (rl_unity_bundle / "kernels/kernel_221.shader").is_file()
-assert (rl_unity_bundle / "kernels/kernel_222.shader").is_file()
+if unity_template_directory is not None:
+    rl_unity_manifest = materialize_model(
+        rl_plan,
+        output,
+        rl_unity_bundle,
+        unity_template_directory=unity_template_directory,
+        model_path=rl_model_path,
+        program_name="onnx_rl_policy_fixture",
+    )
+    assert rl_unity_manifest["artifact_stage"] == "unity-udon-onnx-model"
+    assert rl_unity_manifest["complete_graph"] is True
+    assert rl_unity_manifest["unmaterialized_calls"] == []
+    assert len(rl_unity_manifest["static_inputs"]) == 6
+    assert {item["id"] for item in rl_unity_manifest["device"]["kernels"]} == {
+        215,
+        221,
+        222,
+    }
+    assert (rl_unity_bundle / "kernels/kernel_221.shader").is_file()
+    assert (rl_unity_bundle / "kernels/kernel_222.shader").is_file()
 rl_host_c = emit_c_host(rl_plan)
 assert "udonatenTanh(" in rl_host_c
 assert "udonatenSigmoid(" in rl_host_c
