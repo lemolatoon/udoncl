@@ -62,8 +62,8 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             Assert.That(File.Exists(TemporaryAssembly));
         }
 
-        [TestCase("VRC_Call_add_1", "VRC_ARG_1_0", 17, "VRC_ARG_1_1", 25, "VRC_RET_1", 42)]
-        [TestCase("VRC_Call_sum_to_3", "VRC_ARG_3_0", 5, null, 0, "VRC_RET_3", 10)]
+        [TestCase("__0_add", "__0_arg0__param", 17, "__0_arg1__param", 25, "__0___0_add__ret", 42)]
+        [TestCase("__0_sum_to", "__2_arg0__param", 5, null, 0, "__0___0_sum_to__ret", 10)]
         public void IntegerLoweringExecutesOnSdkUdonVm(
             string entry,
             string arg0,
@@ -97,12 +97,20 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             IUdonProgram program = LoadProgram();
             IUdonVM vm = CreateVm(program);
             IUdonHeap heap = vm.InspectHeap();
-            heap.SetHeapVariable(program.SymbolTable.GetAddressFromSymbol("VRC_ARG_2_0"), value);
-            heap.SetHeapVariable(program.SymbolTable.GetAddressFromSymbol("VRC_ARG_2_1"), factor);
-            Execute(vm, program, "VRC_Call_scale_2");
+            heap.SetHeapVariable(
+                program.SymbolTable.GetAddressFromSymbol("__1_arg0__param"),
+                value
+            );
+            heap.SetHeapVariable(
+                program.SymbolTable.GetAddressFromSymbol("__1_arg1__param"),
+                factor
+            );
+            Execute(vm, program, "__0_scale");
             Assert.AreEqual(
                 expected,
-                heap.GetHeapVariable<float>(program.SymbolTable.GetAddressFromSymbol("VRC_RET_2")),
+                heap.GetHeapVariable<float>(
+                    program.SymbolTable.GetAddressFromSymbol("__0___0_scale__ret")
+                ),
                 1e-6f
             );
         }
@@ -115,13 +123,15 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             IUdonVM vm = CreateVm(program);
             IUdonHeap heap = vm.InspectHeap();
             heap.SetHeapVariable(
-                program.SymbolTable.GetAddressFromSymbol("VRC_ARG_4_0"),
+                program.SymbolTable.GetAddressFromSymbol("__3_arg0__param"),
                 temperature
             );
-            Execute(vm, program, "VRC_Call_phase_4");
+            Execute(vm, program, "__0_phase");
             Assert.AreEqual(
                 expected,
-                heap.GetHeapVariable<int>(program.SymbolTable.GetAddressFromSymbol("VRC_RET_4"))
+                heap.GetHeapVariable<int>(
+                    program.SymbolTable.GetAddressFromSymbol("__0___0_phase__ret")
+                )
             );
         }
 
@@ -133,12 +143,20 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             IUdonHeap heap = vm.InspectHeap();
             float[] input = { 1.0f, -2.0f, 3.5f, 2.0f };
             float[] output = { 0.0f };
-            heap.SetHeapVariable(program.SymbolTable.GetAddressFromSymbol("VRC_ARG_5_0"), input);
-            heap.SetHeapVariable(program.SymbolTable.GetAddressFromSymbol("VRC_ARG_5_1"), output);
-            Execute(vm, program, "VRC_Call_array_sum_5");
+            heap.SetHeapVariable(
+                program.SymbolTable.GetAddressFromSymbol("__4_arg0__param"),
+                input
+            );
+            heap.SetHeapVariable(
+                program.SymbolTable.GetAddressFromSymbol("__2_arg1__param"),
+                output
+            );
+            Execute(vm, program, "__0_array_sum");
             Assert.AreEqual(
                 4.5f,
-                heap.GetHeapVariable<float>(program.SymbolTable.GetAddressFromSymbol("VRC_RET_5")),
+                heap.GetHeapVariable<float>(
+                    program.SymbolTable.GetAddressFromSymbol("__0___0_array_sum__ret")
+                ),
                 1e-6f
             );
             Assert.AreEqual(4.5f, output[0], 1e-6f);

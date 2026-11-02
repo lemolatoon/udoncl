@@ -5,7 +5,6 @@ where glslang-tools is installed. SPIR-V here is only a test artifact.
 """
 from pathlib import Path
 import copy
-import hashlib
 import json
 import re
 import shutil
@@ -81,14 +80,21 @@ manifest = json.loads((bundle / 'manifest.json').read_text())
 assert manifest['schema_version'] == manifest['runtime_abi_version'] == 1
 assert manifest['artifact_stage'] == 'boundary-prototype' and not manifest['ready_for_unity']
 assert manifest['program']['assembly'] is None
-assert manifest['sdk_compatibility']['sdk_version'] is None
+assert manifest['sdk_compatibility']['sdk_version'] == '3.10.5'
+assert manifest['sdk_compatibility']['unity_version'] == '2022.3.22f1'
+assert manifest['physical_export_abi'] == 'udonsharp-worlds-sdk-3.10.5'
+assert re.fullmatch(r'[0-9a-f]{64}', manifest['public_abi_fingerprint'])
 assert manifest['target']['host_pointer_bits'] == manifest['target']['device_pointer_bits'] == 32
 export = manifest['exports'][0]
-assert export['c_symbol'] == 'add' and not export['async']
-assert export['udon_event'].startswith('VRC_Call_') and not export['udon_event'].startswith('_')
-expected_hash = hashlib.sha256(b'add:i32:i32->i32').hexdigest()[:16]
-assert export['udon_event'] == 'VRC_Call_' + expected_hash
-assert [p['heap_slot'] for p in export['parameters']] == ['VRC_ARG_1_0', 'VRC_ARG_1_1']
+assert export['c_symbol'] == 'add' and export['public_name'] == 'Add' and not export['async']
+assert export['udon_event'] == '__0_Add'
+assert [p['name'] for p in export['parameters']] == ['left', 'right']
+assert [p['heap_slot'] for p in export['parameters']] == [
+    '__0_left__param', '__0_right__param']
+assert export['result']['heap_slot'] == '__0___0_Add__ret'
+assert export['status_slot'] == '__udoncl_status_1'
+assert export['parameters'][0]['type_schema'] == {
+    'category': 'signed-integer', 'bits': 32}
 kernel = manifest['device']['kernels'][0]
 assert kernel['id'] == manifest['dispatch_sites'][0]['kernel_id'] == 7
 assert kernel['name'] == 'square' and kernel['source_module'] == 'device'
@@ -158,6 +164,8 @@ for field, value in [('width', 2), ('format', 'rfloat'), ('srgb', True), ('mipma
 # Cross-component failures are checked before any asset publication.
 negative_sources = [
     (source.replace('module {', 'module attributes {vrc.abi_version = 2 : i32} {', 1), 'unsupported Host/Device ABI version'),
+    (source.replace('vrc.public_name = "Add"', 'vrc.public_name = "1Bad"', 1), 'invalid UdonSharp public export name'),
+    (source.replace('vrc.parameter_names = ["left", "right"]', 'vrc.parameter_names = ["left"]', 1), 'invalid UdonSharp parameter names'),
     (source.replace('module {', 'module attributes {vrc.target = "quest"} {', 1), 'initial boundary target'),
     (source.replace('vrc.kernel_id = 7', 'vrc.kernel_id = 8', 1), 'missing Device kernel id'),
     (source.replace('vrc.argument_kinds = ["buffer", "f32"]', 'vrc.argument_kinds = ["buffer", "i32"]'), 'schema does not match'),

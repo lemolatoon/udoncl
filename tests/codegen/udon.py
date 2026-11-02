@@ -8,8 +8,7 @@ output.mkdir(parents=True, exist_ok=True)
 
 source = r'''module attributes {vrc.host_stage = "udonhl"} {
   func.func @add(%a: i32, %b: i32) -> i32 attributes {
-    vrc.export_id = 1 : i32,
-    vrc.udon_event = "VRC_Call_add_1"
+    vrc.export_id = 1 : i32
   } {
     %sum = arith.addi %a, %b : i32
     return %sum : i32
@@ -79,8 +78,8 @@ assert lowered.returncode == 0, lowered.stderr
 text = lowered.stdout
 for expected in [
     'udonasm.stage = "scalar-v1"',
-    'udonasm.push "VRC_ARG_1_0"',
-    'udonasm.push "VRC_ARG_1_1"',
+    'udonasm.push "__0_arg0__param"',
+    'udonasm.push "__0_arg1__param"',
     'SystemInt32.__op_Addition__SystemInt32_SystemInt32__SystemInt32',
     'SystemSingle.__op_Multiplication__SystemSingle_SystemSingle__SystemSingle',
     'SystemInt32.__op_LessThan__SystemInt32_SystemInt32__SystemBoolean',
@@ -103,17 +102,16 @@ assert emitted.returncode == 0, emitted.stderr
 assembly = uasm.read_text(encoding='utf-8')
 for expected in [
     '.data_start',
-    '.export VRC_ARG_1_0',
-    'VRC_ARG_1_0: %SystemInt32, null',
-    '.export VRC_Call_add_1',
-    'VRC_Call_add_1:',
+    '__0_arg0__param: %SystemInt32, null',
+    '.export __0_add',
+    '__0_add:',
     'EXTERN, "SystemInt32.__op_Addition__SystemInt32_SystemInt32__SystemInt32"',
-    '.export VRC_Call_scale_2',
-    '.export VRC_Call_sum_to_3',
-    '.export VRC_Call_phase_4',
-    '.export VRC_Call_array_sum_5',
-    'VRC_ARG_5_0: %SystemSingleArray, null',
-    'VRC_ARG_5_1: %SystemSingleArray, null',
+    '.export __0_scale',
+    '.export __0_sum_to',
+    '.export __0_phase',
+    '.export __0_array_sum',
+    '__4_arg0__param: %SystemSingleArray, null',
+    '__2_arg1__param: %SystemSingleArray, null',
     'JUMP, 0xFFFFFFFC',
     '.code_end',
 ]:
@@ -127,6 +125,59 @@ normalize = lambda value: '\n'.join(line.rstrip() for line in value.splitlines()
 assert fixture.exists(), fixture
 assert normalize(fixture.read_text(encoding='utf-8')) == normalize(assembly), \
     'Unity IUdonVM fixture is stale; regenerate it from scalar.uasm'
+
+# Pin the exact cross-UdonBehaviour naming observed from UdonSharp in Worlds
+# SDK 3.10.5. Logical export ids remain separate from this physical ABI.
+abi_source = r'''module {
+  func.func @c_add(%left: i32, %right: i32) -> i32 attributes {
+    vrc.export_id = 1 : i32,
+    vrc.public_name = "Add",
+    vrc.parameter_names = ["left", "right"]
+  } {
+    %sum = arith.addi %left, %right : i32
+    return %sum : i32
+  }
+  func.func @c_ref_out(%value: i32, %copy: i32) -> i32 attributes {
+    vrc.export_id = 2 : i32,
+    vrc.public_name = "RefOutCall",
+    vrc.parameter_names = ["value", "copy"]
+  } {
+    return %value : i32
+  }
+}'''
+abi_lowered = subprocess.run(
+    [opt, '--vrc-lower-udonhl-to-udonasm'], input=abi_source, text=True,
+    capture_output=True)
+assert abi_lowered.returncode == 0, abi_lowered.stderr
+for expected in [
+    'name = "__0_Add"',
+    'name = "__0_RefOutCall"',
+    'name = "__0_left__param"',
+    'name = "__0_right__param"',
+    'name = "__0___0_Add__ret"',
+    'name = "__0_value__param"',
+    'name = "__0_copy__param"',
+    'name = "__0___0_RefOutCall__ret"',
+]:
+    assert expected in abi_lowered.stdout, (expected, abi_lowered.stdout)
+
+duplicate_name = abi_source.replace('vrc.public_name = "RefOutCall"',
+                                    'vrc.public_name = "Add"')
+rejected = subprocess.run(
+    [opt, '--vrc-lower-udonhl-to-udonasm'], input=duplicate_name, text=True,
+    capture_output=True)
+assert rejected.returncode != 0
+assert 'duplicate UdonSharp public export name' in rejected.stderr
+
+mismatched_event = abi_source.replace(
+    'vrc.parameter_names = ["left", "right"]',
+    'vrc.parameter_names = ["left", "right"], vrc.udon_event = "Wrong"',
+    1)
+rejected = subprocess.run(
+    [opt, '--vrc-lower-udonhl-to-udonasm'], input=mismatched_event, text=True,
+    capture_output=True)
+assert rejected.returncode != 0
+assert 'vrc.udon_event does not match the pinned UdonSharp ABI' in rejected.stderr
 
 invalid = source.replace('%sum = arith.addi %a, %b : i32', '%sum = arith.andi %a, %b : i32')
 rejected = subprocess.run(

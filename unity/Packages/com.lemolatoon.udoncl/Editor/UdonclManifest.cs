@@ -8,6 +8,8 @@ namespace Lemolatoon.Udoncl.Editor
         public int schema_version;
         public string compiler_version;
         public int runtime_abi_version;
+        public string public_abi_fingerprint;
+        public string physical_export_abi;
         public string artifact_stage;
         public bool ready_for_unity;
         public SdkCompatibility sdk_compatibility;
@@ -24,6 +26,7 @@ namespace Lemolatoon.Udoncl.Editor
     internal sealed class SdkCompatibility
     {
         public string sdk_version;
+        public string unity_version;
         public string extern_db_hash;
     }
 
@@ -49,9 +52,37 @@ namespace Lemolatoon.Udoncl.Editor
     {
         public int id;
         public string c_symbol;
+        public string public_name;
         public string udon_event;
+        public ExportParameterInfo[] parameters;
+        public ExportResultInfo result;
         public string status_slot;
         public bool async;
+    }
+
+    [Serializable]
+    internal sealed class ExportParameterInfo
+    {
+        public int index;
+        public string name;
+        public string kind;
+        public TypeSchemaInfo type_schema;
+        public string heap_slot;
+    }
+
+    [Serializable]
+    internal sealed class ExportResultInfo
+    {
+        public string kind;
+        public TypeSchemaInfo type_schema;
+        public string heap_slot;
+    }
+
+    [Serializable]
+    internal sealed class TypeSchemaInfo
+    {
+        public string category;
+        public int bits;
     }
 
     [Serializable]

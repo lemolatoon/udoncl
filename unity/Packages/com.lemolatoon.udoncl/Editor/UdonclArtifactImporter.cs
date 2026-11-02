@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.UI;
@@ -34,6 +35,7 @@ namespace Lemolatoon.Udoncl.Editor
                         artifacts.ManifestAssetPath,
                         programRoot + "/manifest.json"
                     );
+                    GenerateTypedWrapper(transaction, artifacts, programRoot);
                     string sourceDirectory = programRoot + "/Sources";
                     EnsureFolders(sourceDirectory);
                     string assemblySourcePath =
@@ -375,6 +377,47 @@ namespace Lemolatoon.Udoncl.Editor
             }
 
             return programRoot;
+        }
+
+        private static void GenerateTypedWrapper(
+            AssetImportTransaction transaction,
+            ValidatedArtifact artifacts,
+            string programRoot
+        )
+        {
+            string manifestJson = File.ReadAllText(artifacts.ManifestAssetPath);
+            UdonclManifest manifest = JsonUtility.FromJson<UdonclManifest>(manifestJson);
+            if (manifest == null || string.IsNullOrEmpty(manifest.physical_export_abi))
+                return;
+
+            string className = GeneratedTypeName(artifacts.ProgramName) + "Binding";
+            string bindingRoot = programRoot + "/Bindings";
+            EnsureFolders(bindingRoot);
+            transaction.WriteText(
+                bindingRoot + "/" + className + ".cs",
+                VRCWrapperGenerator.GenerateFromJson(
+                    manifestJson,
+                    "Lemolatoon.Udoncl.Generated",
+                    className
+                )
+            );
+        }
+
+        private static string GeneratedTypeName(string value)
+        {
+            StringBuilder result = new StringBuilder("Udoncl");
+            bool capitalize = true;
+            foreach (char character in value)
+            {
+                if (!char.IsLetterOrDigit(character))
+                {
+                    capitalize = true;
+                    continue;
+                }
+                result.Append(capitalize ? char.ToUpperInvariant(character) : character);
+                capitalize = false;
+            }
+            return result.ToString();
         }
 
         private static void ImportMnistDemo(

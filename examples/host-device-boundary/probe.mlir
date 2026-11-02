@@ -1,6 +1,10 @@
 module {
   // U# entry ABI: a scalar C library export, not an automatic main().
-  func.func @add(%a: i32, %b: i32) -> i32 attributes {vrc.export_id = 1 : i32} {
+  func.func @add(%a: i32, %b: i32) -> i32 attributes {
+    vrc.export_id = 1 : i32,
+    vrc.public_name = "Add",
+    vrc.parameter_names = ["left", "right"]
+  } {
     %result = func.call @add_impl(%a, %b) : (i32, i32) -> i32
     return %result : i32
   }

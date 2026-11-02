@@ -1,4 +1,5 @@
 #include "VRC/ABI/Manifest/Boundary.h"
+#include "VRC/ABI/Manifest/UdonSharpABI.h"
 #include "VRC/Conversion/Passes.h"
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
 #include "VRC/Dialect/VRC/VRCDialect.h"
@@ -18,22 +19,50 @@ namespace fragment = ::vrc::vrcgpu;
 std::string kind(Type type) {
   return type.isInteger(32) ? "i32" : type.isF32() ? "f32" : "unsupported";
 }
+UdonSharpMethodABI methodABI(func::FuncOp function,
+                             UdonSharpABIBuilder &abiBuilder) {
+  auto publicName = function->getAttrOfType<StringAttr>("vrc.public_name");
+  SmallVector<std::string> ownedNames;
+  SmallVector<StringRef> parameterNames;
+  if (auto names = function->getAttrOfType<ArrayAttr>("vrc.parameter_names")) {
+    for (Attribute name : names)
+      parameterNames.push_back(cast<StringAttr>(name).getValue());
+  } else {
+    ownedNames.reserve(function.getNumArguments());
+    parameterNames.reserve(function.getNumArguments());
+    for (unsigned index = 0; index < function.getNumArguments(); ++index)
+      ownedNames.push_back(defaultUdonSharpParameterName(index));
+    for (const std::string &name : ownedNames)
+      parameterNames.push_back(name);
+  }
+  return abiBuilder.buildMethod(publicName ? publicName.getValue()
+                                           : function.getSymName(),
+                                parameterNames, function.getNumResults() != 0);
+}
+SmallVector<std::string> parameterNames(func::FuncOp function) {
+  SmallVector<std::string> result;
+  result.reserve(function.getNumArguments());
+  if (auto names = function->getAttrOfType<ArrayAttr>("vrc.parameter_names")) {
+    for (Attribute name : names)
+      result.push_back(cast<StringAttr>(name).getValue().str());
+  } else {
+    for (unsigned index = 0; index < function.getNumArguments(); ++index)
+      result.push_back(defaultUdonSharpParameterName(index));
+  }
+  return result;
+}
+llvm::json::Object typeSchema(Type type) {
+  if (type.isInteger(32))
+    return llvm::json::Object{{"category", "signed-integer"}, {"bits", 32}};
+  if (type.isF32())
+    return llvm::json::Object{{"category", "float"}, {"bits", 32}};
+  return llvm::json::Object{{"category", "unsupported"}};
+}
 llvm::json::Array dimensions(ArrayRef<int32_t> values) {
   llvm::json::Array result;
   for (auto value : values)
     result.push_back(value);
   return result;
-}
-std::string eventName(func::FuncOp function) {
-  std::string signature = function.getName().str();
-  for (auto type : function.getArgumentTypes())
-    signature += ":" + kind(type);
-  signature += "->";
-  for (auto type : function.getResultTypes())
-    signature += kind(type);
-  auto digest = llvm::SHA256::hash(llvm::ArrayRef<uint8_t>(
-      reinterpret_cast<const uint8_t *>(signature.data()), signature.size()));
-  return "VRC_Call_" + llvm::toHex(digest, true).substr(0, 16);
 }
 } // namespace
 LogicalResult verifyHostDeviceBoundary(ModuleOp module) {
@@ -55,6 +84,38 @@ LogicalResult verifyHostDeviceBoundary(ModuleOp module) {
     return module.emitError("boundary requires at least one Device kernel");
   llvm::SmallDenseSet<int64_t> ids;
   llvm::StringSet<> events;
+  llvm::StringSet<> publicNames;
+  SmallVector<func::FuncOp> exportedFunctions;
+  for (auto function : module.getOps<func::FuncOp>()) {
+    if (function->hasAttr("vrc.export_id")) {
+      if (!function->getAttrOfType<IntegerAttr>("vrc.export_id"))
+        return function.emitError("Host export id must be an integer");
+      if (Attribute value = function->getAttr("vrc.public_name")) {
+        auto name = dyn_cast<StringAttr>(value);
+        if (!name || !isUdonSharpIdentifier(name.getValue()))
+          return function.emitError("invalid UdonSharp public export name");
+      }
+      if (Attribute value = function->getAttr("vrc.parameter_names")) {
+        auto names = dyn_cast<ArrayAttr>(value);
+        if (!names || names.size() != function.getNumArguments() ||
+            !llvm::all_of(names, [](Attribute name) {
+              auto string = dyn_cast<StringAttr>(name);
+              return string && isUdonSharpIdentifier(string.getValue());
+            }))
+          return function.emitError("invalid UdonSharp parameter names");
+      }
+      exportedFunctions.push_back(function);
+    }
+  }
+  llvm::sort(exportedFunctions, [](func::FuncOp lhs, func::FuncOp rhs) {
+    return lhs->getAttrOfType<IntegerAttr>("vrc.export_id").getInt() <
+           rhs->getAttrOfType<IntegerAttr>("vrc.export_id").getInt();
+  });
+  llvm::DenseMap<Operation *, UdonSharpMethodABI> methodABIs;
+  UdonSharpABIBuilder abiBuilder;
+  for (func::FuncOp function : exportedFunctions)
+    methodABIs.try_emplace(function.getOperation(),
+                           methodABI(function, abiBuilder));
   bool exported = false;
   for (auto function : module.getOps<func::FuncOp>()) {
     auto effect = function->getAttrOfType<StringAttr>("vrc.async_effect");
@@ -67,15 +128,17 @@ LogicalResult verifyHostDeviceBoundary(ModuleOp module) {
         return op.emitError(
             "Host calls must pass through UdonHL before boundary verification");
     if (auto id = function->getAttrOfType<IntegerAttr>("vrc.export_id")) {
+      const auto &abi = methodABIs.at(function.getOperation());
       if (id.getInt() <= 0 || !ids.insert(id.getInt()).second ||
-          function.isPrivate() ||
+          function.isPrivate() || !isUdonSharpIdentifier(abi.publicName) ||
+          !publicNames.insert(abi.publicName).second ||
           function.getFunctionType().getNumResults() > 1 ||
           !llvm::all_of(function.getArgumentTypes(),
                         [](Type t) { return kind(t) != "unsupported"; }) ||
           !llvm::all_of(function.getResultTypes(),
                         [](Type t) { return kind(t) != "unsupported"; }))
         return function.emitError("invalid or duplicate Host export ABI");
-      if (!events.insert(eventName(function)).second)
+      if (!events.insert(abi.eventName).second)
         return function.emitError("generated export event name collision");
       exported = true;
     }
@@ -116,31 +179,55 @@ LogicalResult verifyHostDeviceBoundary(ModuleOp module) {
 }
 llvm::json::Object buildBoundaryManifest(ModuleOp module) {
   llvm::json::Array exports, kernels, dispatches;
-  for (auto function : module.getOps<func::FuncOp>()) {
+  SmallVector<func::FuncOp> exportedFunctions;
+  for (auto function : module.getOps<func::FuncOp>())
+    if (function->hasAttr("vrc.export_id"))
+      exportedFunctions.push_back(function);
+  llvm::sort(exportedFunctions, [](func::FuncOp lhs, func::FuncOp rhs) {
+    return lhs->getAttrOfType<IntegerAttr>("vrc.export_id").getInt() <
+           rhs->getAttrOfType<IntegerAttr>("vrc.export_id").getInt();
+  });
+  std::string canonicalABI = "udoncl-public-abi-v1\n";
+  UdonSharpABIBuilder abiBuilder;
+  for (auto function : exportedFunctions) {
     auto id = function->getAttrOfType<IntegerAttr>("vrc.export_id");
-    if (!id)
-      continue;
-    std::string suffix = std::to_string(id.getInt());
+    auto abi = methodABI(function, abiBuilder);
+    SmallVector<std::string> names = parameterNames(function);
+    canonicalABI += std::to_string(id.getInt()) + "|" + abi.publicName + "|";
     llvm::json::Array args;
-    for (auto indexed : llvm::enumerate(function.getArgumentTypes()))
+    for (auto indexed : llvm::enumerate(function.getArgumentTypes())) {
+      canonicalABI += kind(indexed.value()) + ",";
       args.push_back(llvm::json::Object{
           {"index", int64_t(indexed.index())},
+          {"name", names[indexed.index()]},
           {"kind", kind(indexed.value())},
-          {"heap_slot",
-           "VRC_ARG_" + suffix + "_" + std::to_string(indexed.index())}});
+          {"type_schema", typeSchema(indexed.value())},
+          {"heap_slot", abi.parameterSlots[indexed.index()]}});
+    }
+    canonicalABI += "->";
     llvm::json::Value result = nullptr;
-    if (!function.getResultTypes().empty())
-      result = llvm::json::Object{{"kind", kind(function.getResultTypes()[0])},
-                                  {"heap_slot", "VRC_RET_" + suffix}};
+    if (!function.getResultTypes().empty()) {
+      canonicalABI += kind(function.getResultTypes()[0]);
+      result = llvm::json::Object{
+          {"kind", kind(function.getResultTypes()[0])},
+          {"type_schema", typeSchema(function.getResultTypes()[0])},
+          {"heap_slot", *abi.resultSlot}};
+    } else
+      canonicalABI += "void";
+    canonicalABI += "\n";
     exports.push_back(
         llvm::json::Object{{"id", id.getInt()},
                            {"c_symbol", function.getName().str()},
-                           {"udon_event", eventName(function)},
+                           {"public_name", abi.publicName},
+                           {"udon_event", abi.eventName},
                            {"parameters", std::move(args)},
                            {"result", std::move(result)},
-                           {"status_slot", "VRC_STATUS_" + suffix},
+                           {"status_slot", udonclStatusSlot(id.getInt())},
                            {"async", false}});
   }
+  auto publicDigest = llvm::SHA256::hash(llvm::ArrayRef<uint8_t>(
+      reinterpret_cast<const uint8_t *>(canonicalABI.data()),
+      canonicalABI.size()));
   for (auto kernel : module.getOps<fragment::KernelOp>()) {
     std::string shader =
         "kernels/kernel_" + std::to_string(kernel.getKernelId()) + ".shader";
@@ -274,8 +361,11 @@ llvm::json::Object buildBoundaryManifest(ModuleOp module) {
       {"schema_version", 1},
       {"compiler_version", "0.1.0-dev"},
       {"runtime_abi_version", 1},
+      {"public_abi_fingerprint", llvm::toHex(publicDigest, true)},
+      {"physical_export_abi", "udonsharp-worlds-sdk-3.10.5"},
       {"artifact_stage", "boundary-prototype"},
-      {"sdk_compatibility", llvm::json::Object{{"sdk_version", nullptr},
+      {"sdk_compatibility", llvm::json::Object{{"sdk_version", "3.10.5"},
+                                               {"unity_version", "2022.3.22f1"},
                                                {"extern_db_hash", nullptr},
                                                {"validated", false}}},
       {"target", llvm::json::Object{{"host_pointer_bits", 32},

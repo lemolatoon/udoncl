@@ -1,7 +1,7 @@
 # PLAN.md — VRChat向け C / OpenCL C → Udon / HLSL コンパイラ
 
-> Status: **Design agreed / P0–P1 bootstrap in progress (gates not passed)**  
-> Design cut-off: **2026-10-30**
+> Status: **Design agreed / U# export ABI and typed-wrapper implementation in progress**
+> Design cut-off: **2026-11-02**
 > Implementation amendments (user): **LLVM/MLIR 23 baseline; Windows host builds supported by design.**
 > Initial toolchain pin: **LLVM/MLIR/Clang 23.1.4** (see `cmake/llvm-lock.json`).  
 > Audience: Codex / compiler・runtime・Unity integration 実装担当  
@@ -100,7 +100,7 @@ Host .c / libc sources                     Device .cl sources
 ### 2.3 U# API、Unity、デバッグ
 
 - **アプリのエントリーポイントはユーザーのUdonSharp**。`main()`自動実行ではない。Cはリンク可能なライブラリ。Export属性（例`annotate("vrc_export")`）を付けたC関数のみ公開。
-- ExportごとにManifestから**型付きU# wrapper**をUnity Editor Importerが生成。同期呼出：予約Heap変数へのSetProgramVariable →公開Custom Event → GetProgramVariable。非同期：Start +完了通知Event/Status。Custom Event名は公開仕様に則り**先頭に`_`を付けない**安定ハッシュ名にする。
+- ExportごとにManifestから**型付きU# wrapper**をUnity Editor Importerが生成。同期呼出：予約Heap変数へのSetProgramVariable →公開Custom Event → GetProgramVariable。非同期：Start +完了通知Event/Status。論理API名とexport IDは安定化する一方、実際のevent/slot名は対象SDKのUdonSharp compiler出力へ一致させ、Manifestで物理ABI versionを固定する。
 - 同期/非同期はCall Graph解析で自動判定し、GPU待機可能性が呼出元まで伝播。U#には`async/await`を要求しない。
 - 文字列はUTF-8 null終端C byte buffer ↔ U# stringをコピー。基本型・Udon typed arraysは直接、構造体はWrapperマーシャリング、生ポインタをpublic APIに出さない。共有配列は同一Udon array objectを参照できると実機検証されたときだけzero-copy、実行中の参照/寿命条件を明示。
 - 1 UdonBehaviour instanceごとにGlobals/Heap/Stack/VFS/サービスBindingが独立。`Initialize()`, `Reset()`, `Dispose()`とgeneration counterで古いGPU callbackを無視。未完了commandのTextureは安全になるまで保持。
@@ -108,6 +108,16 @@ Host .c / libc sources                     Device .cl sources
 - Unity統合は**外部Clang/MLIR CLI + Unity Editor Importer**、UPM package。Shader/Material/Udon Program Asset生成、wrapper C#生成とscript reload後のBindingの2段階処理。GUID保持・トランザクション的Import（失敗時既存正常Asset維持）。ManifestにCompiler/Runtime/SDK/ABI versionを記録し検証。
 - Udon ExternデータベースはインストールSDKの公開情報から生成/検証。`udonasm`は実opcode 1:1、TableGenで4 Dialectのop/type/attrを定義し、各々独立CMake library。**LLVM IR→High-level MLIR復元はそれ自体が独立CMake library**。
 - 開発時は、利用可能な**SDK付属Udon VM**を第一に利用。Unity Test Runner / ClientSim、実VRChat Build & Test。スタンドアロンVMが実証できれば活用するが、独自VMやFastUdonVMのみで正しさを断言しない。Compiler自体はmacOS/Linux上でUnityなしでもbuild/test可。
+
+### 2.4 U# Host API・Binding実装の確定事項（Grilling 135以降）
+
+- 対象を当面 Unity 2022.3.22f1 / VRChat Worlds SDK 3.10.5 に固定する。論理export ID・公開名・TypeSchemaはUdonCLの安定ABI、event/parameter/result slotは当該UdonSharp compilerに合わせたversioned physical ABIとする。
+- ユーザー向け入口はImporter生成の型付きU# wrapperであり、raw event/slot ABIは内部実装とする。C HostとU# OpenCL Host APIは同じDevice artifact/runtimeを利用する二つのHost記述方式とする。
+- U#からCへ渡すprimitive arrayは安全性と寿命を証明できる場合に同一Udon arrayを借用してzero-copyとする。Device memoryは初期版では明示的にallocateし、WriteBuffer/ReadBuffer/CopyBufferだけを許可する。Map/SubBuffer/host-backed bufferは後回しとする。
+- 公開handleは一意なUdonSharpBehaviour instanceとし、物理GPU resourceは内部poolで再利用する。handleのgeneration/lifetime検査と物理resource所有権を分離する。
+- CMakeは通常の複数source/target記述を入力とし、preset対応は後回しとする。Windows向けcompiler/toolchainはruntime packageと分離したVPM packageとして配布し、将来は`udonclc`を同梱してUnity UIからCMake directoryを指定できるようにする。
+- ONNXは同じ基盤上の別AOT packageとし、生成C Host orchestrationからUdonBLAS/UdonDNN/UdonATenを呼ぶ。PyTorch operatorを追加する前に、実際のPyTorch/CUDA実装が属するcomponentとinterfaceを確認して合わせる。
+- 実装順は (1) U# physical ABI/Manifest、(2) scalar C→UASM、(3) typed wrapper/Importer、(4) CMake/toolchain、(5) Device buffer runtime、(6) GPU dispatch、(7) ONNX AOT統合とする。各段階は単独でtest可能にし、commit前は`python scripts/precommit.py`だけを主agentが実行する。
 
 ## 3. ABIとExecution Contract
 

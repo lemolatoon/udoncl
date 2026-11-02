@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text;
 using UnityEditor;
 
 namespace Lemolatoon.Udoncl.Editor
@@ -67,6 +68,18 @@ namespace Lemolatoon.Udoncl.Editor
             Directory.CreateDirectory(Path.GetDirectoryName(destinationPath));
             if (!PathsEqual(sourcePath, destinationPath))
                 File.Copy(sourcePath, destinationPath, true);
+            AssetDatabase.ImportAsset(
+                destinationAssetPath,
+                ImportAssetOptions.ForceSynchronousImport | ImportAssetOptions.ForceUpdate
+            );
+        }
+
+        public void WriteText(string destinationAssetPath, string contents)
+        {
+            Track(destinationAssetPath);
+            string destinationPath = ToAbsoluteAssetPath(destinationAssetPath);
+            Directory.CreateDirectory(Path.GetDirectoryName(destinationPath));
+            File.WriteAllText(destinationPath, contents, new UTF8Encoding(false));
             AssetDatabase.ImportAsset(
                 destinationAssetPath,
                 ImportAssetOptions.ForceSynchronousImport | ImportAssetOptions.ForceUpdate

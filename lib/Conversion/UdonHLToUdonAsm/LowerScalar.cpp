@@ -1,4 +1,5 @@
 #include "VRC/Conversion/Passes.h"
+#include "VRC/ABI/Manifest/UdonSharpABI.h"
 #include "VRC/Dialect/UdonAsm/UdonAsmDialect.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
@@ -57,14 +58,35 @@ static StringRef arrayStoreExtern(MemRefType type) {
   return {};
 }
 
-static std::string sanitize(StringRef value) {
-  std::string result;
-  result.reserve(value.size());
-  for (char c : value)
-    result.push_back(llvm::isAlnum(c) || c == '_' ? c : '_');
-  if (result.empty() || llvm::isDigit(result.front()))
-    result.insert(result.begin(), '_');
-  return result;
+static FailureOr<UdonSharpMethodABI>
+methodABI(func::FuncOp function, UdonSharpABIBuilder &abiBuilder) {
+  auto publicNameAttr = function->getAttrOfType<StringAttr>("vrc.public_name");
+  StringRef publicName =
+      publicNameAttr ? publicNameAttr.getValue() : function.getSymName();
+  if (!isUdonSharpIdentifier(publicName))
+    return failure();
+
+  SmallVector<std::string> ownedNames;
+  SmallVector<StringRef> parameterNames;
+  if (auto names = function->getAttrOfType<ArrayAttr>("vrc.parameter_names")) {
+    if (names.size() != function.getNumArguments())
+      return failure();
+    for (Attribute name : names) {
+      auto string = dyn_cast<StringAttr>(name);
+      if (!string || !isUdonSharpIdentifier(string.getValue()))
+        return failure();
+      parameterNames.push_back(string.getValue());
+    }
+  } else {
+    ownedNames.reserve(function.getNumArguments());
+    parameterNames.reserve(function.getNumArguments());
+    for (unsigned index = 0; index < function.getNumArguments(); ++index)
+      ownedNames.push_back(defaultUdonSharpParameterName(index));
+    for (const std::string &name : ownedNames)
+      parameterNames.push_back(name);
+  }
+  return abiBuilder.buildMethod(publicName, parameterNames,
+                                function.getNumResults() != 0);
 }
 
 static StringRef binaryExtern(Operation *operation) {
@@ -160,6 +182,7 @@ public:
     SmallVector<func::FuncOp> functions;
     llvm::SmallSet<int64_t, 8> exportIds;
     llvm::SmallSet<std::string, 8> eventNames;
+    llvm::SmallSet<std::string, 8> publicNames;
     for (func::FuncOp function : module.getOps<func::FuncOp>()) {
       auto exportId = function->getAttrOfType<IntegerAttr>("vrc.export_id");
       if (!exportId)
@@ -180,21 +203,33 @@ public:
       for (Type type : function.getResultTypes())
         if (failed(udonType(type)))
           return function.emitError("unsupported scalar Udon result type");
-      auto event = function->getAttrOfType<StringAttr>("vrc.udon_event");
-      std::string eventName =
-          event ? event.getValue().str()
-                : ("VRC_Call_" + sanitize(function.getSymName()) + "_" +
-                   std::to_string(exportId.getInt()));
-      if (eventName.empty() || eventName.front() == '_' ||
-          sanitize(eventName) != eventName ||
-          !eventNames.insert(eventName).second)
-        return function.emitError("Udon custom event must be a unique "
-                                  "assembler identifier not starting with '_'");
       functions.push_back(function);
     }
     if (functions.empty())
       return module.emitError(
           "scalar Udon lowering requires at least one export");
+
+    llvm::sort(functions, [](func::FuncOp lhs, func::FuncOp rhs) {
+      return lhs->getAttrOfType<IntegerAttr>("vrc.export_id").getInt() <
+             rhs->getAttrOfType<IntegerAttr>("vrc.export_id").getInt();
+    });
+    UdonSharpABIBuilder abiBuilder;
+    for (func::FuncOp function : functions) {
+      auto abi = methodABI(function, abiBuilder);
+      if (failed(abi))
+        return function.emitError(
+            "invalid UdonSharp public or parameter identifier ABI");
+      if (!publicNames.insert(abi->publicName).second)
+        return function.emitError("duplicate UdonSharp public export name");
+      if (auto explicitEvent =
+              function->getAttrOfType<StringAttr>("vrc.udon_event"))
+        if (explicitEvent.getValue() != abi->eventName)
+          return function.emitError(
+              "vrc.udon_event does not match the pinned UdonSharp ABI");
+      if (!eventNames.insert(abi->eventName).second)
+        return function.emitError("duplicate UdonSharp export event name");
+      methodABIs.try_emplace(function.getOperation(), std::move(*abi));
+    }
 
     for (func::FuncOp function : functions)
       if (failed(lower(function)))
@@ -213,12 +248,9 @@ public:
 private:
   LogicalResult lower(func::FuncOp function) {
     auto exportId = function->getAttrOfType<IntegerAttr>("vrc.export_id");
-    auto explicitEvent = function->getAttrOfType<StringAttr>("vrc.udon_event");
+    const UdonSharpMethodABI &abi = methodABIs.at(function.getOperation());
     std::string prefix = "__vrc_f" + std::to_string(exportId.getInt()) + "_";
-    std::string event = explicitEvent
-                            ? explicitEvent.getValue().str()
-                            : "VRC_Call_" + sanitize(function.getSymName()) +
-                                  "_" + std::to_string(exportId.getInt());
+    StringRef event = abi.eventName;
 
     SmallVector<NamedAttribute> exportFields;
     exportFields.push_back(
@@ -233,19 +265,17 @@ private:
     llvm::DenseMap<Value, std::string> valueSlots;
     for (auto [index, argument] : llvm::enumerate(function.getArguments())) {
       auto type = *udonType(argument.getType());
-      std::string name = "VRC_ARG_" + std::to_string(exportId.getInt()) + "_" +
-                         std::to_string(index);
-      addSlot(name, type, "null", true);
+      std::string name = abi.parameterSlots[index];
+      addSlot(name, type, "null", false);
       valueSlots[argument] = name;
     }
     std::string resultSlot;
     if (function.getNumResults()) {
       auto type = *udonType(function.getResultTypes().front());
-      resultSlot = "VRC_RET_" + std::to_string(exportId.getInt());
-      addSlot(resultSlot, type, "null", true);
+      resultSlot = *abi.resultSlot;
+      addSlot(resultSlot, type, "null", false);
     }
-    addSlot("VRC_STATUS_" + std::to_string(exportId.getInt()), "SystemInt32",
-            "0", true);
+    addSlot(udonclStatusSlot(exportId.getInt()), "SystemInt32", "0", false);
 
     // Allocate every SSA value before emitting code. This makes block argument
     // transfer and forward-branch relocation independent of traversal order.
@@ -499,6 +529,7 @@ private:
   uint64_t address = 0;
   SmallVector<Slot> slots;
   SmallVector<Attribute> exports;
+  llvm::DenseMap<Operation *, UdonSharpMethodABI> methodABIs;
 };
 
 struct LowerUdonHLToUdonAsmPass
