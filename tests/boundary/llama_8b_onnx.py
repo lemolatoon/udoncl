@@ -10,28 +10,30 @@ import sys
 
 root, output = (Path(value).resolve() for value in sys.argv[1:])
 output.mkdir(parents=True, exist_ok=True)
-model = output / "llama-8b.onnx"
-plan_path = output / "onnx-plan.json"
-operator_model = output / "llama-8b-operators.onnx"
-operator_plan_path = output / "operator-plan.json"
+model = output / "model.onnx"
+plan_path = output / "execution-plan.json"
+operator_model = output / "operators.onnx"
+operator_plan_path = output / "operators-plan.json"
 result = subprocess.run(
     [
         sys.executable,
-        root / "examples/llama-8b-onnx/generate_onnx.py",
-        "-o",
-        model,
-        "--plan",
-        plan_path,
-        "--operator-output",
-        operator_model,
-        "--operator-plan",
-        operator_plan_path,
+        root / "examples/llama-8b-onnx/build.py",
+        "--output",
+        output,
     ],
     text=True,
     capture_output=True,
     timeout=60,
 )
 assert result.returncode == 0, (result.stdout, result.stderr)
+assert "llama_8b_preflight=passed" in result.stdout
+materialization_plan = json.loads(
+    (output / "materialization-plan.json").read_text(encoding="utf-8")
+)
+assert materialization_plan["complete_graph"] is True
+assert materialization_plan["unmaterialized_calls"] == []
+assert materialization_plan["int4_only_complete_graph"] is False
+assert materialization_plan["int4_atlas_bytes"] == 4690411520
 plan = json.loads(plan_path.read_text(encoding="utf-8"))
 assert plan["runtime"] == "udon-onnx"
 assert plan["profile"] == "llama-3.1-8b-q4"

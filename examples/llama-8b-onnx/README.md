@@ -6,14 +6,13 @@ node and 517 ONNX external-data tensors describing the canonical Llama 3.1 8B
 shape: 32 decoder layers, hidden size 4096, intermediate size 14336, 32 query
 heads, eight KV heads, and vocabulary size 128256.
 
-The generator can additionally emit an embedding-independent, single-token
-decoder graph through the general `UdonOperatorExecutionProvider`:
+The user-facing build command emits both the fused descriptor and an
+embedding-independent, single-token decoder graph through the general
+`UdonOperatorExecutionProvider`:
 
-```text
-python examples/llama-8b-onnx/generate_onnx.py \
-  -o build/llama-8b-onnx/model.onnx \
-  --operator-output build/llama-8b-onnx/operators.onnx \
-  --operator-plan build/llama-8b-onnx/operators-plan.json
+```powershell
+python examples/llama-8b-onnx/build.py `
+  --output build/llama-8b-onnx
 ```
 
 That graph has no fused `LlamaDecoder` node. It contains 546 explicit operator
@@ -21,18 +20,12 @@ nodes, including all 225 Q4 projections as `WeightInt4packMM`
 library-extension nodes,
 standard RMSNormalization/Add/Sigmoid/Mul/Reshape/Tile nodes, and records the
 64x128 `udonatenWeightInt4packMm` tile grid for every projection. Its input is the
-post-embedding `[1,4096]` hidden state. It is a resource-complete AOT plan, but
-the C/Udon Host emitter intentionally rejects it until the runtime texture-copy
-dispatcher feeds those tile grids; the plan now
-contains exact external row/group strides and `udon-onnx-page` can materialize
-each bounded Device page. The legacy fused plan remains available meanwhile.
-
-```text
-python examples/llama-8b-onnx/generate_onnx.py \
-  -o build/llama-8b-onnx/model.onnx \
-  --index build/llama-8b-onnx/weights-index.json \
-  --plan build/llama-8b-onnx/execution-plan.json
-```
+post-embedding `[1,4096]` hidden state. It is a resource-complete AOT plan.
+The generated `materialization-plan.json` records 225 paged Q4 calls, 322
+direct Device passes, five reusable activation textures, and the exact artifact
+capacity without reading licensed weights. The general Host emitter schedules
+the page runners and direct passes together; the legacy fused descriptor
+remains available for execution-provider compatibility.
 
 The runtime validates 8,030,261,248 logical parameters and plans 162 Device
 passes. Matrix weights use signed Q4 blocks of 32 values, while scale and zero
@@ -57,10 +50,24 @@ python -m pip install 'runtime/onnx[weights]'
 udon-onnx-pack /path/to/Meta-Llama-3.1-8B-Instruct \
   build/llama-8b-onnx/weights-index.json \
   -o build/llama-8b-onnx/weights.q4
-python runtime/onnx/udon_onnx.py build/llama-8b-onnx/model.onnx \
-  --external-data-dir build/llama-8b-onnx \
-  -o build/llama-8b-onnx/validated-plan.json
+python examples/llama-8b-onnx/build.py \
+  --output build/llama-8b-onnx \
+  --external-data-directory build/llama-8b-onnx \
+  --materialize
 ```
+
+The last command validates all 517 ONNX external tensors before reading them,
+checks available disk space, creates `unity-artifact`, and may take a long time:
+the compact Q4 atlases alone contain 4,690,411,520 bytes. To reuse an existing
+shader template, pass `--unity-template-directory
+build/udondnn-device-run/unity-udonaten-int4-mm-bundle`.
+
+Install the UdonCL VPM package in a Worlds project, then choose **Tools →
+udoncl → Import Artifacts...** and select
+`build/llama-8b-onnx/unity-artifact`. The generated runtime prefab exposes the
+general typed Write/Run/async Read API. This operator graph accepts a
+post-embedding `hidden_state` float array and returns `logits`; tokenization and
+embedding lookup remain application responsibilities.
 
 Supplying the descriptor alone is compilation and resource
 planning, not pretrained-model inference. The numerically executable
