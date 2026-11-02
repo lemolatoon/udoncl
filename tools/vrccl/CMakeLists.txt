@@ -1,6 +1,6 @@
 add_llvm_executable(vrccl vrccl.cpp)
 set_target_properties(vrccl PROPERTIES OUTPUT_NAME udonclc)
 llvm_update_compile_flags(vrccl)
-target_link_libraries(vrccl PRIVATE VRCBoundaryFrontend VRCConversionHost VRCConversionVRC VRCConversionDevice VRCManifest VRCTargetHLSL
+target_link_libraries(vrccl PRIVATE VRCBoundaryFrontend VRCConversionHost VRCConversionVRC VRCConversionDevice VRCConversionUdon VRCManifest VRCTargetHLSL VRCTargetUdon
   MLIRParser MLIRPass MLIRGPUDialect MLIRMemRefDialect MLIRArithDialect MLIRFuncDialect)
 vrc_configure_target(vrccl)

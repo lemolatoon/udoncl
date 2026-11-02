@@ -2114,12 +2114,9 @@ namespace Lemolatoon.Udoncl.Editor
                 texture.depth = 0;
                 texture.format = RenderTextureFormat.ARGB32;
             }
-            texture.filterMode = FilterMode.Point;
-            texture.wrapMode = TextureWrapMode.Clamp;
             texture.useMipMap = false;
             texture.autoGenerateMips = false;
             texture.antiAliasing = 1;
-            texture.anisoLevel = 0;
             if (texture.sRGB)
                 throw new InvalidOperationException(
                     "Generated RenderTexture unexpectedly uses sRGB: " + texturePath
@@ -2128,7 +2125,16 @@ namespace Lemolatoon.Udoncl.Editor
                 throw new InvalidOperationException(
                     "Could not create generated RenderTexture: " + texturePath
                 );
+            // RenderTexture.Create can restore sampling defaults on an asset
+            // that was released and resized during a repeated import.
+            texture.filterMode = FilterMode.Point;
+            texture.wrapMode = TextureWrapMode.Clamp;
+            texture.anisoLevel = 0;
             EditorUtility.SetDirty(texture);
+            // The importer performs a synchronous refresh before its final
+            // transaction commit. Persist this newly created native asset now
+            // so that refresh cannot reload Unity's default Bilinear mode.
+            AssetDatabase.SaveAssetIfDirty(texture);
             return texture;
         }
 

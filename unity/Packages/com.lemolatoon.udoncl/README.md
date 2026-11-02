@@ -63,6 +63,20 @@ On import failure, the importer restores prior file contents and `.meta` files a
 
 ## Generated U# Host binding
 
+The recommended user path starts from a CMake target:
+
+```cmake
+find_package(UdonCL 0.1 REQUIRED CONFIG)
+udoncl_add_host_library(my_host host.c)
+udoncl_add_unity_library(my_unity_library
+  CONFIG unity-library.json
+  HOST_LIBRARIES my_host)
+```
+
+Build the target and select its generated artifact directory in **Tools →
+udoncl → Import Artifacts...**. Scalar C exports are compiled to Udon Assembly
+by `udonclc`; no handwritten `.uasm` is needed for this path.
+
 The `unity-udoncl-library` artifact stage carries a stable logical export ID and
 TypeSchema plus the versioned
 `physical_export_abi: udonsharp-worlds-sdk-3.10.5`. The importer generates a

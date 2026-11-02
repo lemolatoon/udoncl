@@ -17,6 +17,7 @@ import time
 from unity_ci import (
     LOWERING_TEST_CASES,
     TEST_ASSEMBLY,
+    prepare_cmake_unity_library,
     prepare_fixtures,
     require_resolved_unity_mcp,
     require_unity_mcp,
@@ -324,6 +325,23 @@ def validate_test_payload(payload):
     return total
 
 
+def is_transient_unity_project_file_lock(payload):
+    data = payload.get("data", payload)
+    result = data.get("result") or {}
+    failed = [
+        case
+        for case in result.get("results") or []
+        if case.get("state") not in ("Passed", "Success")
+    ]
+    if not failed:
+        return False
+    return all(
+        "Sharing violation on path" in (case.get("message") or "")
+        and ".csproj" in (case.get("message") or "")
+        for case in failed
+    )
+
+
 def wait_for_test_job(client: McpClient, job_id: str, timeout=1260):
     deadline = time.monotonic() + timeout
     last_error = None
@@ -367,6 +385,7 @@ def run_unity_mcp_gate(root, unity, project, build, output):
     serialized = project / "Assets/SerializedUdonPrograms"
     generated_before = tree_snapshot(generated)
     serialized_before = tree_snapshot(serialized)
+    unity_library = prepare_cmake_unity_library(build)
     assembly = prepare_fixtures(root, build, output)
     manifest_original = manifest_path.read_bytes()
     lock_original = lock_path.read_bytes() if lock_path.is_file() else None
@@ -379,6 +398,7 @@ def run_unity_mcp_gate(root, unity, project, build, output):
     environment.update(
         {
             "UDONCL_LOWERED_UASM": str(assembly),
+            "UDONCL_UNITY_LIBRARY_ARTIFACT": str(unity_library),
             "UDONCL_ONNX_AOT_UASM": str(
                 (output / "onnx-aot/generic-host.uasm").resolve()
             ),
@@ -439,20 +459,33 @@ def run_unity_mcp_gate(root, unity, project, build, output):
         client.tool("set_active_instance", {"instance": instance})
         wait_for_editor(client)
         client.tool("read_console", {"action": "clear"})
-        started = client.tool(
-            "run_tests",
-            {
-                "mode": "EditMode",
-                "assembly_names": [TEST_ASSEMBLY],
-                "include_failed_tests": True,
-                "include_details": True,
-            },
-            timeout=300,
-        )
-        job_id = (started.get("data") or started).get("job_id")
-        if not job_id:
-            raise RuntimeError(f"Unity MCP did not return a test job id: {started}")
-        finished = wait_for_test_job(client, job_id)
+        for attempt in range(2):
+            started = client.tool(
+                "run_tests",
+                {
+                    "mode": "EditMode",
+                    "assembly_names": [TEST_ASSEMBLY],
+                    "include_failed_tests": True,
+                    "include_details": True,
+                },
+                timeout=300,
+            )
+            job_id = (started.get("data") or started).get("job_id")
+            if not job_id:
+                raise RuntimeError(f"Unity MCP did not return a test job id: {started}")
+            finished = wait_for_test_job(client, job_id)
+            (output / f"unity-mcp-results-attempt-{attempt + 1}.json").write_text(
+                json.dumps(finished, indent=2) + "\n", encoding="utf-8"
+            )
+            if not is_transient_unity_project_file_lock(finished) or attempt == 1:
+                break
+            print(
+                "unity_mcp_tests=retry reason=transient_csproj_sharing_violation",
+                flush=True,
+            )
+            wait_for_editor(client)
+            time.sleep(2)
+            client.tool("read_console", {"action": "clear"})
         (output / "unity-mcp-results.json").write_text(
             json.dumps(finished, indent=2) + "\n", encoding="utf-8"
         )

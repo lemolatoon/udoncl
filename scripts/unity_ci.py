@@ -150,6 +150,32 @@ def prepare_fixtures(root: Path, build: Path, output: Path):
     return (lowering / "scalar.uasm").resolve()
 
 
+def prepare_cmake_unity_library(build: Path):
+    run(
+        [
+            "ctest",
+            "--test-dir",
+            build,
+            "--output-on-failure",
+            "-R",
+            "^cmake-package-consumer$",
+            "-j",
+            "1",
+        ]
+    )
+    artifact = (
+        build
+        / "tests/cmake-package/consumer/udoncl/hello-unity-library/artifact"
+    ).resolve()
+    required = ("manifest.json", "host.uasm", "display.shader")
+    missing = [name for name in required if not (artifact / name).is_file()]
+    if missing:
+        raise SystemExit(
+            f"CMake Unity library artifact is incomplete at {artifact}: {missing}"
+        )
+    return artifact
+
+
 def validate_results(results: Path):
     if not results.is_file():
         raise SystemExit(f"Unity did not write test results: {results}")
@@ -219,6 +245,7 @@ def main():
     serialized = project / "Assets/SerializedUdonPrograms"
     generated_before = tree_snapshot(generated)
     serialized_before = tree_snapshot(serialized)
+    unity_library = prepare_cmake_unity_library(build)
     assembly = prepare_fixtures(root, build, output)
     results = (output / "editor-test-results.xml").resolve()
     log = (output / "unity.log").resolve()
@@ -232,6 +259,7 @@ def main():
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     environment = dict(os.environ)
     environment["UDONCL_LOWERED_UASM"] = str(assembly)
+    environment["UDONCL_UNITY_LIBRARY_ARTIFACT"] = str(unity_library)
     environment["UDONCL_ONNX_AOT_UASM"] = str(
         (output / "onnx-aot/generic-host.uasm").resolve()
     )

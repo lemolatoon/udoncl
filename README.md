@@ -23,13 +23,22 @@ udoncl_add_artifact(my_artifact
   CONFIG kernel.json
   HOST_LIBRARIES my_host
   DEVICE_LIBRARIES my_device)
+
+# A scalar Host library is directly importable by the Unity package.
+udoncl_add_unity_library(my_unity_library
+  CONFIG unity-library.json
+  HOST_LIBRARIES my_host)
 ```
 
 The package also honors `target_include_directories`,
 `target_compile_definitions`, and `target_compile_options` usage requirements
 on those source targets. Build `my_artifact` to generate its immutable bundle.
-The complete source-tree example is in `examples/hello-kernel`; CMake preset
-support and the future Unity directory-picker UI are deliberately separate.
+The Unity-library config assigns stable export IDs, public U# names and
+parameter names. Its artifact contains `manifest.json`, compiler-emitted
+`host.uasm`, and a valid display shader; import it with **Tools → udoncl →
+Import Artifacts...**. The complete source-tree example is in
+`examples/hello-kernel`; CMake preset support and the future Unity
+directory-picker UI are deliberately separate.
 
 LLVM, MLIR and Clang are pinned together to **23.1.4** (commit recorded in
 [cmake/llvm-lock.json](cmake/llvm-lock.json)). Compiler development targets Linux,

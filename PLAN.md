@@ -1,6 +1,6 @@
 # PLAN.md — VRChat向け C / OpenCL C → Udon / HLSL コンパイラ
 
-> Status: **Device buffer contract implemented in C runtime / Unity GPU dispatch phase next**
+> Status: **CMake-to-Unity scalar library path validated / Unity GPU dispatch phase next**
 > Design cut-off: **2026-11-02**
 > Implementation amendments (user): **LLVM/MLIR 23 baseline; Windows host builds supported by design.**
 > Initial toolchain pin: **LLVM/MLIR/Clang 23.1.4** (see `cmake/llvm-lock.json`).  
@@ -120,6 +120,7 @@ Host .c / libc sources                     Device .cl sources
 - Device buffer C runtimeは明示的`clCreateBuffer` allocationと範囲検査付き`clEnqueueWriteBuffer` / `clEnqueueReadBuffer` / `clEnqueueCopyBuffer`を実装済み。host pointer flags、SubBuffer、Map/Unmap、矩形Copyは暗黙fallbackせず明示的に拒否する。handle/context/generation、未初期化range、overlap、event依存をnative fragment実行テストで検証する。Unity側の物理RenderTexture poolと非同期Readbackは次段階。
 - ONNXは同じ基盤上の別AOT packageとし、生成C Host orchestrationからUdonBLAS/UdonDNN/UdonATenを呼ぶ。PyTorch operatorを追加する前に、実際のPyTorch/CUDA実装が属するcomponentとinterfaceを確認して合わせる。
 - 実装順は (1) U# physical ABI/Manifest、(2) scalar C→UASM、(3) typed wrapper/Importer、(4) CMake/toolchain、(5) Device buffer runtime、(6) GPU dispatch、(7) ONNX AOT統合とする。各段階は単独でtest可能にし、commit前は`python scripts/precommit.py`だけを主agentが実行する。
+- 公開CMake packageは複数Host/Device sourceを通常のCMake targetとして扱い、`udoncl_add_unity_library`でImporter入力（`manifest.json`、`host.uasm`、`display.shader`）を生成する。現段階ではhelper callをinlineできる同期scalar Host exportが対象で、`hello-kernel`の`SquarePlusOne(3.0f) == 10.0f`をUnity 2022.3.22f1 / Worlds SDK 3.10.5のSDK IUdonVMと生成U# binding prefabで実証済み。GPU dispatchを含むartifactは次段階であり、未実装のdispatchをUnity-readyとは表示しない。
 
 ## 3. ABIとExecution Contract
 

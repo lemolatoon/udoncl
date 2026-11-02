@@ -141,7 +141,11 @@ def main():
             if previous.get('artifact_stage') != 'unity-lj-prototype':
                 raise RuntimeError('refusing to replace a non-example Unity bundle')
             shutil.rmtree(unity_bundle)
-        staged.rename(unity_bundle)
+        # Moving a populated directory out of TemporaryDirectory intermittently
+        # fails with WinError 5 on Windows even after the prior bundle is gone.
+        # Copy into the already validated, example-owned destination instead;
+        # the temporary tree is removed when the context exits.
+        shutil.copytree(staged, unity_bundle)
     host_ir = output/'host.ll'
     run([clang, *flags, '-x', 'c', '-std=c11', '-O0', '-Xclang', '-disable-O0-optnone', '-fomit-frame-pointer',
          '-I', root/'third_party/OpenCL-Headers', '-I', output, '-S', '-emit-llvm', source/'host.c', '-o', host_ir])

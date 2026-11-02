@@ -53,6 +53,7 @@ def main():
         f'-DUDONCL_LLVM_LINK_EXECUTABLE={Path(args.llvm_link).resolve()}',
     ])
     run([args.cmake, '--build', str(consumer), '--target', 'hello-artifact'])
+    run([args.cmake, '--build', str(consumer), '--target', 'hello-unity-library'])
 
     build_root = consumer / 'udoncl/hello-artifact'
     artifact = build_root / 'artifact'
@@ -65,7 +66,22 @@ def main():
     assert (build_root / 'device.bc').is_file()
     assert (artifact / 'host-device.mlir').is_file()
     assert (artifact / 'kernels/kernel_1.shader').is_file()
-    print('cmake_package=passed host_sources=3 device_sources=3 artifact=hello-artifact')
+    unity_artifact = consumer / 'udoncl/hello-unity-library/artifact'
+    unity_manifest = json.loads(
+        (unity_artifact / 'manifest.json').read_text(encoding='utf-8')
+    )
+    assert unity_manifest['artifact_stage'] == 'unity-udoncl-library'
+    assert unity_manifest['ready_for_unity'] is True
+    assert unity_manifest['program']['assembly'] == 'host.uasm'
+    assert unity_manifest['program']['display_shader'] == 'display.shader'
+    assert unity_manifest['exports'][0]['public_name'] == 'SquarePlusOne'
+    assembly = (unity_artifact / 'host.uasm').read_text(encoding='utf-8')
+    assert '.export __0_SquarePlusOne' in assembly
+    assert (unity_artifact / 'display.shader').is_file()
+    print(
+        'cmake_package=passed host_sources=3 device_sources=3 '
+        'artifacts=hello-artifact,hello-unity-library'
+    )
 
 
 if __name__ == '__main__':

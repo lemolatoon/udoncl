@@ -302,3 +302,73 @@ function(udoncl_add_artifact target)
   set_property(TARGET "${target}" PROPERTY
                UDONCL_ARTIFACT_DIRECTORY "${_artifact_directory}")
 endfunction()
+
+function(udoncl_add_unity_library target)
+  set(_one_value CONFIG OUTPUT_DIRECTORY)
+  set(_multi_value HOST_LIBRARIES)
+  cmake_parse_arguments(PARSE_ARGV 1 ARG "" "${_one_value}" "${_multi_value}")
+  if(ARG_UNPARSED_ARGUMENTS OR NOT ARG_CONFIG OR NOT ARG_HOST_LIBRARIES)
+    message(FATAL_ERROR
+      "udoncl_add_unity_library requires CONFIG and HOST_LIBRARIES")
+  endif()
+  if(TARGET "${target}")
+    message(FATAL_ERROR "UdonCL Unity library target '${target}' already exists")
+  endif()
+  cmake_path(ABSOLUTE_PATH ARG_CONFIG BASE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+             NORMALIZE OUTPUT_VARIABLE _config)
+  if(NOT EXISTS "${_config}")
+    message(FATAL_ERROR "UdonCL Unity library config does not exist: ${_config}")
+  endif()
+
+  set(_host_modules)
+  foreach(_library IN LISTS ARG_HOST_LIBRARIES)
+    set(_sources)
+    set(_dependencies)
+    set(_flags)
+    _udoncl_append_target_usage("${_library}" HOST _sources _dependencies _flags)
+    list(REMOVE_DUPLICATES _sources)
+    list(REMOVE_DUPLICATES _dependencies)
+    _udoncl_compile_source_target("${target}" HOST "${_library}"
+                                  "${_sources}" "${_dependencies}" "${_flags}"
+                                  _library_module)
+    list(APPEND _host_modules "${_library_module}")
+  endforeach()
+  _udoncl_link_module_set("${target}" HOST "${_host_modules}" _host_module)
+
+  if(ARG_OUTPUT_DIRECTORY)
+    cmake_path(ABSOLUTE_PATH ARG_OUTPUT_DIRECTORY
+               BASE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}" NORMALIZE
+               OUTPUT_VARIABLE _artifact_directory)
+  else()
+    set(_artifact_directory
+        "${CMAKE_CURRENT_BINARY_DIR}/udoncl/${target}/artifact")
+  endif()
+  cmake_path(IS_PREFIX CMAKE_BINARY_DIR "${_artifact_directory}" NORMALIZE
+             _artifact_is_in_build_tree)
+  if(NOT _artifact_is_in_build_tree OR
+     _artifact_directory STREQUAL CMAKE_BINARY_DIR)
+    message(FATAL_ERROR
+      "UdonCL OUTPUT_DIRECTORY must be a child of CMAKE_BINARY_DIR because "
+      "CMake replaces that directory on rebuild: ${_artifact_directory}")
+  endif()
+  set(_stamp "${CMAKE_CURRENT_BINARY_DIR}/udoncl/${target}/artifact.stamp")
+  add_custom_command(
+    OUTPUT "${_stamp}"
+    COMMAND "${CMAKE_COMMAND}"
+            "-DUDONCL_COMPILER=${UDONCLC_EXECUTABLE}"
+            "-DUDONCL_CONFIG=${_config}"
+            "-DUDONCL_HOST_MODULE=${_host_module}"
+            "-DUDONCL_OUTPUT_DIRECTORY=${_artifact_directory}"
+            "-DUDONCL_BUILD_ROOT=${CMAKE_BINARY_DIR}"
+            -P "${_UDONCL_CONFIG_DIR}/UdonCLCompileUnityLibrary.cmake"
+    COMMAND "${CMAKE_COMMAND}" -E touch "${_stamp}"
+    DEPENDS "${_config}" "${_host_module}"
+    BYPRODUCTS "${_artifact_directory}/manifest.json"
+               "${_artifact_directory}/host.uasm"
+               "${_artifact_directory}/display.shader"
+    COMMENT "Generating importable UdonCL Unity library ${target}"
+    VERBATIM)
+  add_custom_target("${target}" DEPENDS "${_stamp}")
+  set_property(TARGET "${target}" PROPERTY
+               UDONCL_ARTIFACT_DIRECTORY "${_artifact_directory}")
+endfunction()

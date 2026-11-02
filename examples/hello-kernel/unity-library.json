@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "program": "hello_kernel",
+  "exports": [
+    {
+      "symbol": "host_square_plus_one",
+      "id": 1,
+      "public_name": "SquarePlusOne",
+      "parameters": ["value"]
+    }
+  ]
+}

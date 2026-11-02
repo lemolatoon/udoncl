@@ -49,6 +49,7 @@ install(FILES
   cmake/UdonCLConfig.cmake
   cmake/UdonCLConfigVersion.cmake
   cmake/UdonCLCompileArtifact.cmake
+  cmake/UdonCLCompileUnityLibrary.cmake
   DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/UdonCL"
   COMPONENT UdonCLCompiler)
 if(BUILD_TESTING)

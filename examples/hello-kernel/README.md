@@ -17,14 +17,28 @@ the repository root:
 cmake -S examples/hello-kernel -B build/hello-kernel-cmake -G Ninja `
   -DUdonCL_DIR="$PWD/cmake"
 cmake --build build/hello-kernel-cmake --target hello-artifact
+cmake --build build/hello-kernel-cmake --target hello-unity-library
 ```
 
 The bundle is generated under
-`build/hello-kernel-cmake/udoncl/hello-artifact/artifact`. A packaged compiler
-installation finds its tools beside the CMake package. The source-tree package
+`build/hello-kernel-cmake/udoncl/hello-artifact/artifact`. That boundary bundle
+contains the Device shader but remains a compiler/debug artifact while GPU Host
+continuation lowering is pending. The separately built importable scalar Host
+library is under
+`build/hello-kernel-cmake/udoncl/hello-unity-library/artifact`; select that
+directory in **Tools → udoncl → Import Artifacts...**. Unity generates
+`UdonclHelloKernelBinding`, whose `SquarePlusOne(float value)` method calls the
+compiler-emitted Udon Assembly.
+
+A packaged compiler installation finds its tools beside the CMake package. The source-tree package
 also discovers the built `udonclc` and pinned `.deps/llvm23` tools. Explicit
 `UDONCLC_EXECUTABLE`, `UDONCL_CLANG_EXECUTABLE`, and
 `UDONCL_LLVM_LINK_EXECUTABLE` cache paths override discovery.
+
+`unity-library.json` is the stable public ABI description for the scalar Host
+library. Helper calls must currently be inlined; unsupported pointer,
+continuation, or GPU-dispatch exports fail compilation instead of publishing a
+partly runnable Unity artifact.
 
 ## Build by invoking each CLI
 
