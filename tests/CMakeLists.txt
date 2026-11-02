@@ -21,6 +21,7 @@ function(vrc_find_test_tool variable tool)
   set(${variable} "${vrc_sdk_tool}" PARENT_SCOPE)
 endfunction()
 vrc_find_test_tool(VRC_TEST_CLANG clang)
+vrc_find_test_tool(VRC_TEST_LLVM_LINK llvm-link)
 vrc_find_test_tool(VRC_TEST_LLVM_OPT opt)
 vrc_find_test_tool(VRC_TEST_MLIR_OPT mlir-opt)
 vrc_find_test_tool(VRC_TEST_MLIR_TRANSLATE mlir-translate)
@@ -96,6 +97,19 @@ add_test(NAME prebuilt-sdk-installer
 add_test(NAME build-parallelism
   COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/build/parallel.py"
 )
+add_test(NAME cmake-package-consumer
+  COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/build/cmake_package.py"
+    --source "${PROJECT_SOURCE_DIR}/examples/hello-kernel"
+    --output "${PROJECT_BINARY_DIR}/tests/cmake-package"
+    --project-build "${PROJECT_BINARY_DIR}"
+    --cmake "${CMAKE_COMMAND}"
+    --generator "${CMAKE_GENERATOR}"
+    --make-program "${CMAKE_MAKE_PROGRAM}"
+    --compiler $<TARGET_FILE:vrccl>
+    --clang "${VRC_TEST_CLANG}"
+    --llvm-link "${VRC_TEST_LLVM_LINK}"
+)
+set_tests_properties(cmake-package-consumer PROPERTIES TIMEOUT 300)
 
 if(VRC_ENABLE_NATIVE_FRAGMENT_TESTS)
   if(NOT WIN32)

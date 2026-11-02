@@ -1,10 +1,35 @@
 # Hello kernel: build an artifact by hand
 
-This example deliberately has no wrapper script. Run each public CLI yourself
-from a PowerShell opened at the repository root. The Device kernel computes
+The Device kernel computes
 `x * x + 1` and writes the result to its one-element output buffer. `host.c`
 contains both a matching scalar Host export and the restricted Host-to-Device
 dispatch request, so both halves of the current compiler boundary are visible.
+
+## Build through a user CMake project
+
+`CMakeLists.txt` is a standalone consumer of the public UdonCL package. It uses
+three Host C files and three Device OpenCL C files across two targets of each
+kind, so both the multi-translation-unit and multi-target paths are exercised.
+After building the repository compiler, configure and build the example from
+the repository root:
+
+```powershell
+cmake -S examples/hello-kernel -B build/hello-kernel-cmake -G Ninja `
+  -DUdonCL_DIR="$PWD/cmake"
+cmake --build build/hello-kernel-cmake --target hello-artifact
+```
+
+The bundle is generated under
+`build/hello-kernel-cmake/udoncl/hello-artifact/artifact`. A packaged compiler
+installation finds its tools beside the CMake package. The source-tree package
+also discovers the built `udonclc` and pinned `.deps/llvm23` tools. Explicit
+`UDONCLC_EXECUTABLE`, `UDONCL_CLANG_EXECUTABLE`, and
+`UDONCL_LLVM_LINK_EXECUTABLE` cache paths override discovery.
+
+## Build by invoking each CLI
+
+The remainder deliberately avoids a wrapper script. Run each public CLI
+yourself from a PowerShell opened at the repository root.
 
 Configure and build the pinned toolchain first:
 

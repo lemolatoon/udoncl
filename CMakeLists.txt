@@ -42,6 +42,15 @@ endif()
 add_subdirectory(tools/vrc-opt)
 add_subdirectory(tools/vrc-translate)
 add_subdirectory(tools/vrccl)
+include(GNUInstallDirs)
+install(TARGETS vrccl RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+        COMPONENT UdonCLCompiler)
+install(FILES
+  cmake/UdonCLConfig.cmake
+  cmake/UdonCLConfigVersion.cmake
+  cmake/UdonCLCompileArtifact.cmake
+  DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/UdonCL"
+  COMPONENT UdonCLCompiler)
 if(BUILD_TESTING)
   add_subdirectory(tests)
 endif()

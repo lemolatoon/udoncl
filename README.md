@@ -10,6 +10,27 @@ package `com.lemolatoon.udoncl`. Its community repository URL is
 VCC to install beta versions. Maintainer setup and publication steps are in
 [docs/vpm-release.md](docs/vpm-release.md).
 
+User CMake projects can consume the compiler with `find_package(UdonCL CONFIG)`.
+Host C and Device OpenCL C are ordinary source-library targets; the artifact
+target compiles every translation unit, links one Host and one Device LLVM
+module, then invokes `udonclc`:
+
+```cmake
+find_package(UdonCL 0.1 REQUIRED CONFIG)
+udoncl_add_host_library(my_host host.c host_helpers.c)
+udoncl_add_device_library(my_device kernel.cl device_helpers.cl)
+udoncl_add_artifact(my_artifact
+  CONFIG kernel.json
+  HOST_LIBRARIES my_host
+  DEVICE_LIBRARIES my_device)
+```
+
+The package also honors `target_include_directories`,
+`target_compile_definitions`, and `target_compile_options` usage requirements
+on those source targets. Build `my_artifact` to generate its immutable bundle.
+The complete source-tree example is in `examples/hello-kernel`; CMake preset
+support and the future Unity directory-picker UI are deliberately separate.
+
 LLVM, MLIR and Clang are pinned together to **23.1.4** (commit recorded in
 [cmake/llvm-lock.json](cmake/llvm-lock.json)). Compiler development targets Linux,
 macOS and Windows x64; the initial generated world targets VRChat PC (Windows).

@@ -1,6 +1,6 @@
 # PLAN.md — VRChat向け C / OpenCL C → Udon / HLSL コンパイラ
 
-> Status: **U# export ABI and typed wrapper implemented / CMake-toolchain phase next**
+> Status: **U# binding and multi-source CMake package implemented / Device buffer runtime phase next**
 > Design cut-off: **2026-11-02**
 > Implementation amendments (user): **LLVM/MLIR 23 baseline; Windows host builds supported by design.**
 > Initial toolchain pin: **LLVM/MLIR/Clang 23.1.4** (see `cmake/llvm-lock.json`).  
@@ -116,6 +116,7 @@ Host .c / libc sources                     Device .cl sources
 - U#からCへ渡すprimitive arrayは安全性と寿命を証明できる場合に同一Udon arrayを借用してzero-copyとする。Device memoryは初期版では明示的にallocateし、WriteBuffer/ReadBuffer/CopyBufferだけを許可する。Map/SubBuffer/host-backed bufferは後回しとする。
 - 公開handleは一意なUdonSharpBehaviour instanceとし、物理GPU resourceは内部poolで再利用する。handleのgeneration/lifetime検査と物理resource所有権を分離する。
 - CMakeは通常の複数source/target記述を入力とし、preset対応は後回しとする。Windows向けcompiler/toolchainはruntime packageと分離したVPM packageとして配布し、将来は`udonclc`を同梱してUnity UIからCMake directoryを指定できるようにする。
+- CMake-toolchain MVPは`find_package(UdonCL CONFIG)`とHost/Device source-library target、artifact targetとして実装済み。各targetの複数translation unitをClangでLLVM bitcode化し、target固有usage requirementsを保ったまま`llvm-link`でHost/Deviceごとに結合してから`udonclc`へ渡す。外部consumer CTestが各3 source・各2 targetと生成bundleを検証する。preset、Unity UI、compiler VPMへの実バイナリ同梱は後続。
 - ONNXは同じ基盤上の別AOT packageとし、生成C Host orchestrationからUdonBLAS/UdonDNN/UdonATenを呼ぶ。PyTorch operatorを追加する前に、実際のPyTorch/CUDA実装が属するcomponentとinterfaceを確認して合わせる。
 - 実装順は (1) U# physical ABI/Manifest、(2) scalar C→UASM、(3) typed wrapper/Importer、(4) CMake/toolchain、(5) Device buffer runtime、(6) GPU dispatch、(7) ONNX AOT統合とする。各段階は単独でtest可能にし、commit前は`python scripts/precommit.py`だけを主agentが実行する。
 
