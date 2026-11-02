@@ -31,6 +31,13 @@ are imported with **Tools → udoncl → Import Artifacts...**.
 
 ## Fastest importable example
 
+After installing the VPM package, the shortest user path needs no compiler
+checkout: choose **Tools → udoncl → Examples → Import ONNX Arena Add**, then
+choose **Add to Scene**. Import the **ONNX Arena Add** Package Sample for its U#
+caller component.
+
+To regenerate the artifact yourself instead, use the source workflow below.
+
 Generate the non-Pooling ONNX artifact:
 
 ```powershell

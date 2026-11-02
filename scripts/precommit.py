@@ -417,6 +417,18 @@ def run_unity_mcp_gate(root, unity, project, build, output):
     serialized_before = tree_snapshot(serialized)
     unity_library = prepare_cmake_unity_library(build)
     assembly = prepare_fixtures(root, build, output)
+    run(
+        [
+            sys.executable,
+            root / "scripts/package_example_artifacts.py",
+            "--arena",
+            output / "onnx-aot/unity-arena-add-model-bundle",
+            "--tiny",
+            output / "onnx-aot/unity-tiny-llama-standard-model-bundle",
+            "--check",
+        ],
+        cwd=root,
+    )
     manifest_original = manifest_path.read_bytes()
     lock_original = lock_path.read_bytes() if lock_path.is_file() else None
     manifest = json.loads(manifest_original.decode("utf-8"))

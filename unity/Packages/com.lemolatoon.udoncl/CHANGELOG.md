@@ -6,6 +6,8 @@ All notable changes to this package are recorded here.
 
 ### Added
 
+- One-click Editor imports for packaged, non-Pooling ONNX Arena Add and Tiny
+  Llama example artifacts.
 - Initial VPM prerelease packaging for the UdonCL Unity runtime and artifact
   importer.
 - Public Unity assets for UdonBLAS, UdonDNN, UdonATen, and AOT ONNX execution

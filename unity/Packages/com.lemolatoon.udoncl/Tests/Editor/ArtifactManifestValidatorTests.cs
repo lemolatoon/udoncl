@@ -201,6 +201,30 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             );
         }
 
+        [TestCase("onnx-arena-add.zip.bytes", "onnx_arena_add_example", 1)]
+        [TestCase("onnx-tiny-llama.zip.bytes", "onnx_tiny_llama_example", 5)]
+        public void PackagedOnnxExampleExtractsAndValidates(
+            string archiveName,
+            string programName,
+            int kernelCount
+        )
+        {
+            string extracted = UdonclPackagedExampleImporter.Extract(archiveName);
+            try
+            {
+                ValidatedArtifact artifact = ArtifactManifestValidator.Validate(extracted);
+                Assert.AreEqual(programName, artifact.ProgramName);
+                Assert.AreEqual("unity-udon-onnx-model", artifact.ArtifactStage);
+                Assert.AreEqual(kernelCount, artifact.Kernels.Count);
+                Assert.IsTrue(File.Exists(Path.Combine(extracted, "model.onnx.bytes")));
+                Assert.IsTrue(File.Exists(Path.Combine(extracted, "execution-plan.json.bytes")));
+            }
+            finally
+            {
+                Directory.Delete(extracted, true);
+            }
+        }
+
         private void AddResources(string resources)
         {
             AddManifestProperty("\"resources\":" + resources);

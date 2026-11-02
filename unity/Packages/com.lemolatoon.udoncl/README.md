@@ -82,6 +82,13 @@ ONNX Pooling path.
 
 Use **Tools → udoncl → Import Artifacts...** and select a compiler output directory containing `manifest.json`, its host `.uasm`, and any referenced generated `.shader` files. The importer checks schema v1, the runtime ABI and target, Worlds SDK version, names, extensions, UTF-8 content, referenced files, and relative paths before writing any assets.
 
+To try the runtime without first building the compiler repository, use
+**Tools → udoncl → Examples → Import ONNX Arena Add** or **Import ONNX Tiny
+Llama**. The package contains deterministic archives of those two non-Pooling
+artifacts. The Editor extracts them to a temporary directory, applies the same
+manifest validation and transaction-safe importer, and removes the temporary
+files after import.
+
 After a general ONNX import, choose **Add to Scene** in the completion dialog.
 The same action is available as **Add Runtime to Active Scene** on the generated
 `Models/UdonOnnxModel.asset` Inspector. Unity instantiates the generated runtime

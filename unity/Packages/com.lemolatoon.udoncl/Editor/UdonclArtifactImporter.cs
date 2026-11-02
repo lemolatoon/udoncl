@@ -3607,6 +3607,11 @@ namespace Lemolatoon.Udoncl.Editor
             if (string.IsNullOrEmpty(directory))
                 return;
 
+            ImportAndOfferScene(directory);
+        }
+
+        internal static void ImportAndOfferScene(string directory)
+        {
             try
             {
                 string destination = UdonclArtifactImporter.Import(directory);

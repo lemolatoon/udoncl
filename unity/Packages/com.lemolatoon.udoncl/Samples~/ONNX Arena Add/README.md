@@ -4,7 +4,9 @@ This U# component drives the importable artifact produced by
 `examples/onnx-arena-add/build.py` through the public
 `UdonOnnxRuntimeBehaviour` API.
 
-1. Generate and import the `onnx-arena-add` Unity artifact.
+1. Choose **Tools → udoncl → Examples → Import ONNX Arena Add**. To rebuild
+   the artifact yourself, run `examples/onnx-arena-add/build.py` and use the
+   general **Import Artifacts...** command instead.
 2. Choose **Add to Scene** when import completes (or select the generated model
    asset and click **Add Runtime to Active Scene**).
 3. Attach `UdonOnnxArenaAddExample` to another GameObject.
