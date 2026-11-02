@@ -24,6 +24,11 @@ public sealed class UdonOnnxTinyLlamaExample : UdonSharpBehaviour
 
     public void Run()
     {
+        if (runtime == null)
+        {
+            status = UdonOnnxRuntimeBehaviour.StatusNotInitialized;
+            return;
+        }
         int inputIndex = runtime.FindInput("token_ids");
         int outputIndex = runtime.FindOutput("logits");
         if (inputIndex < 0 || outputIndex < 0)
@@ -32,9 +37,16 @@ public sealed class UdonOnnxTinyLlamaExample : UdonSharpBehaviour
             return;
         }
 
-        int[] tokens = new int[1];
+        int inputWords = runtime.GetInputWordCount(inputIndex);
+        int outputWords = runtime.GetOutputWordCount(outputIndex);
+        if (inputWords <= 0 || outputWords <= 0)
+        {
+            status = UdonOnnxRuntimeBehaviour.StatusInvalidArgument;
+            return;
+        }
+        int[] tokens = new int[inputWords];
         tokens[0] = tokenId;
-        logits = new float[16];
+        logits = new float[outputWords];
         status = runtime.TryWriteInputInt(inputIndex, tokens);
         if (status != UdonOnnxRuntimeBehaviour.StatusSuccess)
             return;

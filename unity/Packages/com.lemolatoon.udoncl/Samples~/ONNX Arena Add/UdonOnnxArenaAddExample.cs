@@ -26,6 +26,11 @@ public sealed class UdonOnnxArenaAddExample : UdonSharpBehaviour
 
     public void Run()
     {
+        if (runtime == null)
+        {
+            status = UdonOnnxRuntimeBehaviour.StatusNotInitialized;
+            return;
+        }
         int leftIndex = runtime.FindInput("left");
         int rightIndex = runtime.FindInput("right");
         int outputIndex = runtime.FindOutput("sum");
@@ -35,9 +40,17 @@ public sealed class UdonOnnxArenaAddExample : UdonSharpBehaviour
             return;
         }
 
-        float[] leftValues = new float[512];
-        float[] rightValues = new float[512];
-        output = new float[512];
+        int leftWords = runtime.GetInputWordCount(leftIndex);
+        int rightWords = runtime.GetInputWordCount(rightIndex);
+        int outputWords = runtime.GetOutputWordCount(outputIndex);
+        if (leftWords <= 0 || leftWords != rightWords || leftWords != outputWords)
+        {
+            status = UdonOnnxRuntimeBehaviour.StatusInvalidArgument;
+            return;
+        }
+        float[] leftValues = new float[leftWords];
+        float[] rightValues = new float[rightWords];
+        output = new float[outputWords];
         leftValues[0] = left;
         rightValues[0] = right;
 

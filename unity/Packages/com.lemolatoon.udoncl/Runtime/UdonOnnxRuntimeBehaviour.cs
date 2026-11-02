@@ -92,6 +92,34 @@ namespace Lemolatoon.Udoncl
                 : null;
         }
 
+        public string GetInputDataType(int index)
+        {
+            return inputDataTypes != null && index >= 0 && index < inputDataTypes.Length
+                ? inputDataTypes[index]
+                : null;
+        }
+
+        public string GetOutputDataType(int index)
+        {
+            return outputDataTypes != null && index >= 0 && index < outputDataTypes.Length
+                ? outputDataTypes[index]
+                : null;
+        }
+
+        public int GetInputWordCount(int index)
+        {
+            return inputWords != null && index >= 0 && index < inputWords.Length
+                ? inputWords[index]
+                : -1;
+        }
+
+        public int GetOutputWordCount(int index)
+        {
+            return outputWords != null && index >= 0 && index < outputWords.Length
+                ? outputWords[index]
+                : -1;
+        }
+
         public int FindInput(string name)
         {
             if (inputNames == null || string.IsNullOrEmpty(name))

@@ -418,6 +418,13 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             Assert.AreEqual(0, runtime.FindInput("left"));
             Assert.AreEqual(1, runtime.FindInput("right"));
             Assert.AreEqual(0, runtime.FindOutput("sum"));
+            Assert.AreEqual("float32", runtime.GetInputDataType(0));
+            Assert.AreEqual("float32", runtime.GetOutputDataType(0));
+            Assert.AreEqual(16384, runtime.GetInputWordCount(0));
+            Assert.AreEqual(16384, runtime.GetInputWordCount(1));
+            Assert.AreEqual(16384, runtime.GetOutputWordCount(0));
+            Assert.AreEqual(-1, runtime.GetInputWordCount(-1));
+            Assert.AreEqual(-1, runtime.GetOutputWordCount(1));
 
             UdonAssemblyProgramAsset programAsset =
                 AssetDatabase.LoadAssetAtPath<UdonAssemblyProgramAsset>(

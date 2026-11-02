@@ -76,6 +76,15 @@ def validate(package: Path) -> dict:
         and "guid: 36e72c97d34c4a489d882db18bbdf480" in runtime_usharp,
         "Runtime assembly is not registered as an UdonSharp assembly",
     )
+    for relative in (
+        "Samples~/ONNX Arena Add/UdonOnnxArenaAddExample.cs",
+        "Samples~/ONNX Tiny Llama/UdonOnnxTinyLlamaExample.cs",
+    ):
+        sample = (package / relative).read_text(encoding="utf-8")
+        require(
+            "GetInputWordCount" in sample and "GetOutputWordCount" in sample,
+            f"ONNX sample does not allocate Manifest-defined tensor sizes: {relative}",
+        )
     license_text = (package / "LICENSE.md").read_text(encoding="utf-8")
     require(
         "GNU GENERAL PUBLIC LICENSE" in license_text and "Version 3" in license_text,

@@ -58,6 +58,11 @@ arena slots are available on `UdonOnnxModelAsset`, while physical slots remain
 an importer-owned detail. The stable package component avoids a C# compile and
 domain reload for every imported model.
 
+Use `GetInputWordCount()` and `GetOutputWordCount()` when allocating arrays for
+the runtime API. Writes and reads are whole-buffer operations in this version,
+so arrays with guessed or partial lengths are rejected instead of being padded
+or truncated.
+
 The included Tiny Llama lifecycle fixture numerically executes the public
 Llama provider's seven-pass plan through SDK IUdonVM. The Llama 3.1 8B profile
 uses the same provider with 32 layers, Q4 ONNX external weights, KV-cache-aware
