@@ -132,6 +132,44 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         }
 
         [Test]
+        public void GeneratesByteExactDeviceBufferTransferApi()
+        {
+            string manifest = ScalarManifest.Replace(
+                "]}",
+                "],\"device\":{\"buffers\":[{"
+                    + "\"id\":7,\"name\":\"input\",\"heap_slot\":\"__udoncl_buffer_7\","
+                    + "\"logical_bytes\":16,\"width\":4,\"height\":1,"
+                    + "\"format\":\"rgba8_unorm\"}]}}"
+            );
+            string source = VRCWrapperGenerator.GenerateFromJson(
+                manifest,
+                "Lemolatoon.Generated",
+                "TransferBinding"
+            );
+
+            StringAssert.Contains(
+                "public int TryWriteFloatBuffer(int bufferId, float[] source)",
+                source
+            );
+            StringAssert.Contains(
+                "public int TryWriteIntBuffer(int bufferId, int[] source)",
+                source
+            );
+            StringAssert.Contains("System.BitConverter.SingleToInt32Bits", source);
+            StringAssert.Contains("staging.SetPixels32(pixels);", source);
+            StringAssert.Contains(
+                "VRCGraphics.Blit(staging, destination, bufferCopyMaterial);",
+                source
+            );
+            StringAssert.Contains("public int StartReadFloatBuffer", source);
+            StringAssert.Contains("public int StartReadIntBuffer", source);
+            StringAssert.Contains("VRCAsyncGPUReadback.Request", source);
+            StringAssert.Contains("public override void OnAsyncGpuReadbackComplete", source);
+            StringAssert.Contains("request.TryGetData(pixels, 0);", source);
+            StringAssert.Contains("System.BitConverter.Int32BitsToSingle", source);
+        }
+
+        [Test]
         public void RejectsAsyncUntilContinuationWrapperIsImplemented()
         {
             string manifest = ScalarManifest.Replace("\"async\":false", "\"async\":true");

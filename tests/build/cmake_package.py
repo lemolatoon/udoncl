@@ -264,6 +264,8 @@ def main():
         (buffer['name'], buffer['logical_bytes'])
         for buffer in saxpy_manifest['device']['buffers']
     ] == [('input', 128), ('output', 128)]
+    assert saxpy_manifest['program']['buffer_copy_shader'] == 'buffer-copy.shader'
+    assert (saxpy_artifact / 'buffer-copy.shader').is_file()
     saxpy_kernel = saxpy_manifest['device']['kernels'][0]
     assert saxpy_kernel['name'] == 'saxpy_demo'
     assert saxpy_kernel['profile'] == 'gather-f32'

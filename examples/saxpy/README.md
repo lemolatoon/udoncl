@@ -29,7 +29,11 @@ input words are `x`, the next 16 are `y`; `RunSaxpy(16, 2.0f)` writes
 
 This is still a deliberately fixed subset. Buffers must precede copied i32/f32
 scalars, use constant sizes matching `unity-library.json`, and contain exactly
-one write-only output. The NDRange and kernel are AOT constants. Public
-WriteBuffer/ReadBuffer and asynchronous completion are not implemented yet, so
-outside the repository validation harness there is not yet a supported user
-API for uploading the example input or reading its output.
+one write-only output. The NDRange and kernel are AOT constants. The generated
+U# binding exposes byte-exact whole-buffer transfers:
+`TryWriteFloatBuffer` / `TryWriteIntBuffer` upload data, while
+`StartReadFloatBuffer` / `StartReadIntBuffer` send a completion event to the
+supplied `UdonSharpBehaviour`. Pass the `input` or `output` buffer ID from
+`manifest.json`. Partial transfers and direct lowering of blocking OpenCL
+write/read calls to Udon continuations remain outside this public transfer
+path.

@@ -132,7 +132,11 @@ namespace Lemolatoon.Udoncl.Editor
                 serializedProgram.FindProperty("serializedProgramAsset").objectReferenceValue =
                     programAsset.SerializedProgramAsset;
                 serializedProgram.ApplyModifiedPropertiesWithoutUndo();
-                if (manifest.device != null && manifest.device.buffers != null)
+                if (
+                    manifest.device != null
+                    && manifest.device.buffers != null
+                    && manifest.device.buffers.Length != 0
+                )
                     foreach (DeviceBufferInfo buffer in manifest.device.buffers)
                     {
                         string texturePath =
@@ -151,6 +155,7 @@ namespace Lemolatoon.Udoncl.Editor
                 if (
                     manifest.program != null
                     && !string.IsNullOrEmpty(manifest.program.buffer_copy_shader)
+                    && manifest.program.buffer_copy_program_slot
                 )
                 {
                     string materialPath = programRoot + "/Materials/buffer-copy.mat";
@@ -199,6 +204,54 @@ namespace Lemolatoon.Udoncl.Editor
                         "Generated wrapper does not contain its program binding."
                     );
                 programProperty.objectReferenceValue = program;
+                if (
+                    manifest.device != null
+                    && manifest.device.buffers != null
+                    && manifest.device.buffers.Length != 0
+                )
+                {
+                    DeviceBufferInfo[] buffers = manifest.device.buffers;
+                    SerializedProperty ids = serializedWrapper.FindProperty("deviceBufferIds");
+                    SerializedProperty logicalBytes = serializedWrapper.FindProperty(
+                        "deviceBufferLogicalBytes"
+                    );
+                    SerializedProperty textures = serializedWrapper.FindProperty("deviceBuffers");
+                    SerializedProperty copyMaterial = serializedWrapper.FindProperty(
+                        "bufferCopyMaterial"
+                    );
+                    if (
+                        ids == null
+                        || logicalBytes == null
+                        || textures == null
+                        || copyMaterial == null
+                    )
+                        throw new InvalidDataException(
+                            "Generated wrapper does not contain its Device buffer transfer binding."
+                        );
+                    ids.arraySize = buffers.Length;
+                    logicalBytes.arraySize = buffers.Length;
+                    textures.arraySize = buffers.Length;
+                    for (int index = 0; index < buffers.Length; ++index)
+                    {
+                        DeviceBufferInfo buffer = buffers[index];
+                        ids.GetArrayElementAtIndex(index).intValue = buffer.id;
+                        logicalBytes.GetArrayElementAtIndex(index).intValue = buffer.logical_bytes;
+                        string texturePath =
+                            programRoot
+                            + "/RenderTextures/"
+                            + UdonclArtifactImporter.DeviceBufferFileName(buffer.id, buffer.name);
+                        textures.GetArrayElementAtIndex(index).objectReferenceValue =
+                            AssetDatabase.LoadAssetAtPath<RenderTexture>(texturePath);
+                    }
+                    string materialPath = programRoot + "/Materials/buffer-copy.mat";
+                    copyMaterial.objectReferenceValue = AssetDatabase.LoadAssetAtPath<Material>(
+                        materialPath
+                    );
+                    if (copyMaterial.objectReferenceValue == null)
+                        throw new InvalidDataException(
+                            "Generated Device buffer transfer material is missing: " + materialPath
+                        );
+                }
                 serializedWrapper.ApplyModifiedPropertiesWithoutUndo();
                 UdonSharpEditorUtility.CopyProxyToUdon(wrapper, ProxySerializationPolicy.All);
 

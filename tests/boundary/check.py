@@ -146,6 +146,7 @@ run([
 copy_manifest = json.loads((copy_artifact / 'manifest.json').read_text())
 assert copy_manifest['artifact_stage'] == 'unity-udoncl-library'
 assert copy_manifest['program']['buffer_copy_shader'] == 'buffer-copy.shader'
+assert copy_manifest['program']['buffer_copy_program_slot'] is True
 assert [buffer['logical_bytes'] for buffer in copy_manifest['device']['buffers']] == [4, 4]
 copy_assembly = (copy_artifact / 'host.uasm').read_text()
 for expected in [

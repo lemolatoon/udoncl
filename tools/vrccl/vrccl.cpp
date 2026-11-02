@@ -1700,9 +1700,11 @@ int main(int argc, char **argv) {
                                        {"assembly", "host.uasm"},
                                        {"display_shader", "display.shader"},
                                        {"ir", "host.udonasm.mlir"}};
-    if (unityUsesBufferCopy)
+    if (unityUsesBufferCopy || !unityBuffers.empty())
       (*manifest["program"].getAsObject())["buffer_copy_shader"] =
           "buffer-copy.shader";
+    if (unityUsesBufferCopy)
+      (*manifest["program"].getAsObject())["buffer_copy_program_slot"] = true;
     manifest["ready_for_unity"] = true;
     auto *device = manifest["device"].getAsObject();
     if (!device) {
@@ -1756,7 +1758,7 @@ int main(int argc, char **argv) {
       return 1;
     files["host.uasm"] = std::move(assembly);
     files["display.shader"] = unityLibraryDisplayShader(*program);
-    if (unityUsesBufferCopy)
+    if (unityUsesBufferCopy || !unityBuffers.empty())
       files["buffer-copy.shader"] = unityLibraryBufferCopyShader(*program);
     raw_string_ostream lowered(files["host.udonasm.mlir"]);
     module->print(lowered);

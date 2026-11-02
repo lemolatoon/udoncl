@@ -53,6 +53,7 @@ namespace Lemolatoon.Udoncl.Editor
         public string assembly;
         public string display_shader;
         public string buffer_copy_shader;
+        public bool buffer_copy_program_slot;
     }
 
     [Serializable]
