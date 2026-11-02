@@ -62,10 +62,35 @@ namespace Lemolatoon.Udoncl.Editor
             source.AppendLine("        public const int StatusDisposed = -6;");
             source.AppendLine();
             source.AppendLine("        [SerializeField] private UdonBehaviour program;");
+            source.AppendLine("        private bool busy;");
+            source.AppendLine("        private bool disposed;");
             source.AppendLine();
-            source.AppendLine("        public void BindProgram(UdonBehaviour value)");
+            source.AppendLine("        public int TryBindProgram(UdonBehaviour value)");
             source.AppendLine("        {");
+            source.AppendLine("            if (value == null)");
+            source.AppendLine("                return StatusInvalidArgument;");
+            source.AppendLine("            if (busy)");
+            source.AppendLine("                return StatusBusy;");
             source.AppendLine("            program = value;");
+            source.AppendLine("            busy = false;");
+            source.AppendLine("            disposed = false;");
+            source.AppendLine("            return StatusSuccess;");
+            source.AppendLine("        }");
+            source.AppendLine();
+            source.AppendLine("        public bool IsInitialized()");
+            source.AppendLine("        {");
+            source.AppendLine("            return program != null && !disposed;");
+            source.AppendLine("        }");
+            source.AppendLine();
+            source.AppendLine("        public int TryDispose()");
+            source.AppendLine("        {");
+            source.AppendLine("            if (disposed)");
+            source.AppendLine("                return StatusSuccess;");
+            source.AppendLine("            if (busy)");
+            source.AppendLine("                return StatusBusy;");
+            source.AppendLine("            disposed = true;");
+            source.AppendLine("            program = null;");
+            source.AppendLine("            return StatusSuccess;");
             source.AppendLine("        }");
 
             foreach (ExportInfo export in exports)
@@ -124,8 +149,13 @@ namespace Lemolatoon.Udoncl.Editor
             source.AppendLine("        {");
             if (resultType != null)
                 source.AppendLine("            result = default;");
+            source.AppendLine("            if (disposed)");
+            source.AppendLine("                return StatusDisposed;");
             source.AppendLine("            if (program == null)");
             source.AppendLine("                return StatusNotInitialized;");
+            source.AppendLine("            if (busy)");
+            source.AppendLine("                return StatusBusy;");
+            source.AppendLine("            busy = true;");
             for (int index = 0; index < parameters.Length; ++index)
                 source
                     .Append("            program.SetProgramVariable(\"")
@@ -142,8 +172,12 @@ namespace Lemolatoon.Udoncl.Editor
                 .Append(Escape(export.status_slot))
                 .AppendLine("\");");
             source.AppendLine("            if (rawStatus == null)");
+            source.AppendLine("            {");
+            source.AppendLine("                busy = false;");
             source.AppendLine("                return StatusAbiMismatch;");
+            source.AppendLine("            }");
             source.AppendLine("            int status = (int)rawStatus;");
+            source.AppendLine("            busy = false;");
             source.AppendLine("            if (status != StatusSuccess)");
             source.AppendLine("                return status;");
             if (resultType != null)

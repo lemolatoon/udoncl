@@ -89,8 +89,13 @@ is wired to the raw program automatically.
 Synchronous scalar wrappers return an OpenCL-style integer status and expose
 named `Status*` constants on the generated class. They use the pinned UdonSharp
 SetProgramVariable → SendCustomEvent → GetProgramVariable ABI. Import waits for
-the generated type instead of publishing a partly bound prefab. Async exports
-and types other than the currently supported `i32`/`f32` fail explicitly.
+the generated type instead of publishing a partly bound prefab. The generated
+UdonSharp behaviour is the public library-instance handle: `IsInitialized()`
+reports whether it is bound, nested calls return `StatusBusy`, and
+`TryDispose()` invalidates that handle without exposing its internal GPU
+resources. Calling `TryBindProgram` again starts a fresh binding lifetime. Async
+exports and types other than the currently supported `i32`/`f32` fail
+explicitly.
 
 ## Udon Assembly and prefab
 

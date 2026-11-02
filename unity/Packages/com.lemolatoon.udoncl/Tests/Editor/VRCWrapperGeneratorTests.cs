@@ -47,6 +47,17 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             );
             StringAssert.DoesNotContain("GetProgramVariable<int>", source);
             StringAssert.Contains("public const int StatusSuccess = 0;", source);
+            StringAssert.Contains("private bool busy;", source);
+            StringAssert.Contains("private bool disposed;", source);
+            StringAssert.Contains("public int TryBindProgram(UdonBehaviour value)", source);
+            StringAssert.Contains("public bool IsInitialized()", source);
+            StringAssert.Contains("public int TryDispose()", source);
+            StringAssert.Contains("if (disposed)", source);
+            StringAssert.Contains("return StatusDisposed;", source);
+            StringAssert.Contains("if (busy)", source);
+            StringAssert.Contains("return StatusBusy;", source);
+            StringAssert.Contains("busy = true;", source);
+            StringAssert.Contains("busy = false;", source);
             StringAssert.Contains("if (status != StatusSuccess)", source);
             StringAssert.Contains("if (rawStatus == null)", source);
             StringAssert.Contains("if (rawResult == null)", source);
