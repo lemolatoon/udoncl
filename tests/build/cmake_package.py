@@ -89,6 +89,12 @@ def main():
     assert unity_manifest['program']['assembly'] == 'host.uasm'
     assert unity_manifest['program']['display_shader'] == 'display.shader'
     assert unity_manifest['exports'][0]['public_name'] == 'SquarePlusOne'
+    assert [kernel['name'] for kernel in unity_manifest['device']['kernels']] == [
+        'square_plus_one'
+    ]
+    assert unity_manifest['device']['kernels'][0]['shader'] == (
+        'kernels/kernel_1.shader'
+    )
     assert unity_manifest['device']['buffers'] == [{
         'id': 1,
         'name': 'scratch',
@@ -106,6 +112,14 @@ def main():
     assert '.export __udoncl_buffer_1' in assembly
     assert '__udoncl_buffer_1: %UnityEngineRenderTexture, null' in assembly
     assert (unity_artifact / 'display.shader').is_file()
+    assert (unity_artifact / 'kernels/kernel_1.shader').is_file()
+    assert (unity_artifact / 'kernels/kernel_1.hlsl').is_file()
+    run_failure([
+        installed_compiler, '--emit-unity-library-bundle',
+        args.source.resolve() / 'unity-library.json',
+        '--host-llvm', consumer / 'udoncl/hello-unity-library/host.bc',
+        '-o', output / 'missing-device-artifact',
+    ], 'device_kernel and --device-llvm must be provided together')
     copy_artifact = consumer / 'udoncl/hello-buffer-copy-unity-library/artifact'
     copy_manifest = json.loads(
         (copy_artifact / 'manifest.json').read_text(encoding='utf-8')

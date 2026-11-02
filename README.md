@@ -187,6 +187,12 @@ Current components:
   kernel dispatch, partial copies, and general OpenCL lifetime semantics remain
   explicit compile errors. `<udoncl/unity_buffer.h>` remains a temporary
   compatibility input, not the preferred public example.
+- `udoncl_add_unity_library` accepts ordinary `DEVICE_LIBRARIES` targets and
+  packages the selected AOT kernel's ShaderLab/HLSL plus manifest metadata in
+  the Unity artifact. This establishes the public multi-file Device build and
+  import path; Host `clSetKernelArg`/`clEnqueueNDRangeKernel` lowering and
+  runtime material dispatch are still pending, so bundling a kernel alone does
+  not make it callable from Host C.
 - `udoncl-opt`: MLIR parser/printer with operation verification, rejects unknown ops by default.
 - `VRCLLVMToHighLevelMLIR`: independent import/metadata, local-memory and scalar/CFG recovery library for host/device development.
 - `udoncl-translate --import-llvm input.ll`: LLVM dialect import with preserved frontend metadata and optional JSON sidecar.

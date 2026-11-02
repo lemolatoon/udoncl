@@ -1,6 +1,14 @@
 {
   "schema_version": 1,
   "program": "hello_kernel",
+  "device_kernel": {
+    "schema_version": 1,
+    "kernel": "square_plus_one",
+    "kernel_id": 1,
+    "global_size": [1, 1, 1],
+    "local_size": [1, 1, 1],
+    "global_offset": [0, 0, 0]
+  },
   "buffers": [
     {
       "id": 1,

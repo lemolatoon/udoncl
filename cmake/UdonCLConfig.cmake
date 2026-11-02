@@ -316,7 +316,7 @@ endfunction()
 
 function(udoncl_add_unity_library target)
   set(_one_value CONFIG OUTPUT_DIRECTORY)
-  set(_multi_value HOST_LIBRARIES)
+  set(_multi_value HOST_LIBRARIES DEVICE_LIBRARIES)
   cmake_parse_arguments(PARSE_ARGV 1 ARG "" "${_one_value}" "${_multi_value}")
   if(ARG_UNPARSED_ARGUMENTS OR NOT ARG_CONFIG OR NOT ARG_HOST_LIBRARIES)
     message(FATAL_ERROR
@@ -346,6 +346,26 @@ function(udoncl_add_unity_library target)
   endforeach()
   _udoncl_link_module_set("${target}" HOST "${_host_modules}" _host_module)
 
+  set(_device_module)
+  if(ARG_DEVICE_LIBRARIES)
+    set(_device_modules)
+    foreach(_library IN LISTS ARG_DEVICE_LIBRARIES)
+      set(_sources)
+      set(_dependencies)
+      set(_flags)
+      _udoncl_append_target_usage("${_library}" DEVICE _sources _dependencies
+                                  _flags)
+      list(REMOVE_DUPLICATES _sources)
+      list(REMOVE_DUPLICATES _dependencies)
+      _udoncl_compile_source_target("${target}" DEVICE "${_library}"
+                                    "${_sources}" "${_dependencies}" "${_flags}"
+                                    _library_module)
+      list(APPEND _device_modules "${_library_module}")
+    endforeach()
+    _udoncl_link_module_set("${target}" DEVICE "${_device_modules}"
+                            _device_module)
+  endif()
+
   if(ARG_OUTPUT_DIRECTORY)
     cmake_path(ABSOLUTE_PATH ARG_OUTPUT_DIRECTORY
                BASE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}" NORMALIZE
@@ -369,11 +389,12 @@ function(udoncl_add_unity_library target)
             "-DUDONCL_COMPILER=${UDONCLC_EXECUTABLE}"
             "-DUDONCL_CONFIG=${_config}"
             "-DUDONCL_HOST_MODULE=${_host_module}"
+            "-DUDONCL_DEVICE_MODULE=${_device_module}"
             "-DUDONCL_OUTPUT_DIRECTORY=${_artifact_directory}"
             "-DUDONCL_BUILD_ROOT=${CMAKE_BINARY_DIR}"
             -P "${_UDONCL_CONFIG_DIR}/UdonCLCompileUnityLibrary.cmake"
     COMMAND "${CMAKE_COMMAND}" -E touch "${_stamp}"
-    DEPENDS "${_config}" "${_host_module}"
+    DEPENDS "${_config}" "${_host_module}" ${_device_module}
     BYPRODUCTS "${_artifact_directory}/manifest.json"
                "${_artifact_directory}/host.uasm"
                "${_artifact_directory}/display.shader"

@@ -30,6 +30,13 @@ directory in **Tools → udoncl → Import Artifacts...**. Unity generates
 `UdonclHelloKernelBinding`, whose `SquarePlusOne(float value)` method calls the
 compiler-emitted Udon Assembly.
 
+The Unity target also compiles the normal multi-file `hello_device` targets
+named in `DEVICE_LIBRARIES` and packages `square_plus_one` as
+`kernels/kernel_1.shader` and `.hlsl`. The Importer can create its material,
+but this checkpoint does not yet lower Host `clSetKernelArg` or
+`clEnqueueNDRangeKernel`; the scalar `SquarePlusOne` export remains the only
+callable entry point in this artifact.
+
 A packaged compiler installation finds its tools beside the CMake package. The source-tree package
 also discovers the built `udonclc` and pinned `.deps/llvm23` tools. Explicit
 `UDONCLC_EXECUTABLE`, `UDONCL_CLANG_EXECUTABLE`, and

@@ -869,14 +869,14 @@ int main(int argc, char **argv) {
   std::map<std::string, std::string> files;
   bool gatherProfile = false;
   std::optional<json::Object> unityConfig;
+  OwningOpRef<ModuleOp> unityDeviceModule;
   SmallVector<UnityBuffer> unityBuffers;
   bool unityUsesBufferCopy = false;
   if (emitUnityLibrary) {
     auto input = MemoryBuffer::getFile(inputFilename);
-    if (!input || (hostLLVM.empty() == hostMLIR.empty()) ||
-        !deviceLLVM.empty()) {
+    if (!input || (hostLLVM.empty() == hostMLIR.empty())) {
       errs() << "Unity library mode requires a JSON config and exactly one of "
-                "--host-llvm or --host-mlir, without --device-llvm\n";
+                "--host-llvm or --host-mlir; --device-llvm is optional\n";
       return 1;
     }
     auto parsed = json::parse((*input)->getBuffer());
@@ -890,10 +890,34 @@ int main(int argc, char **argv) {
       return 1;
     }
     unityConfig = *object;
+    if ((unityConfig->getObject("device_kernel") != nullptr) !=
+        !deviceLLVM.empty()) {
+      errs() << "Unity library device_kernel and --device-llvm must be "
+                "provided together\n";
+      return 1;
+    }
     auto parsedBuffers = parseUnityBuffers(*unityConfig);
     if (failed(parsedBuffers))
       return 1;
     unityBuffers = std::move(*parsedBuffers);
+    if (!deviceLLVM.empty()) {
+      auto *deviceConfig = unityConfig->getObject("device_kernel");
+      unityDeviceModule =
+          ::vrc::importCBoundary({}, deviceLLVM, *deviceConfig, context);
+      if (!unityDeviceModule || failed(verify(*unityDeviceModule)))
+        return 1;
+      PassManager deviceRecovery(&context);
+      deviceRecovery.addNestedPass<ModuleOp>(createMem2Reg());
+      deviceRecovery.addNestedPass<ModuleOp>(
+          ::vrc::createRaiseLLVMBoundaryDevicePass());
+      deviceRecovery.addNestedPass<ModuleOp>(
+          ::vrc::createRaiseLLVMToScalarPass());
+      deviceRecovery.addNestedPass<ModuleOp>(createCanonicalizerPass());
+      deviceRecovery.addPass(::vrc::createPrepareNativeDevicePass());
+      if (failed(deviceRecovery.run(*unityDeviceModule)) ||
+          failed(verify(*unityDeviceModule)))
+        return 1;
+    }
     if (!hostMLIR.empty()) {
       module = parseSourceFile<ModuleOp>(hostMLIR, &context);
       if (!module || failed(verify(*module)) ||
@@ -1022,6 +1046,35 @@ int main(int argc, char **argv) {
       return 1;
     }
     (*device)["buffers"] = unityBufferManifest(unityBuffers);
+    if (unityDeviceModule) {
+      PassManager deviceLowering(&context);
+      deviceLowering.addPass(::vrc::createLowerDeviceSingleInvocationPass());
+      if (failed(deviceLowering.run(*unityDeviceModule)) ||
+          failed(verify(*unityDeviceModule)))
+        return 1;
+      for (auto kernel : unityDeviceModule->getOps<::vrc::vrcgpu::KernelOp>()) {
+        std::string shader, hlsl;
+        raw_string_ostream shaderOut(shader), hlslOut(hlsl);
+        if (failed(::vrc::emitShaderLab(kernel, shaderOut)) ||
+            failed(::vrc::emitFragmentHLSL(kernel, hlslOut)))
+          return 1;
+        shaderOut.flush();
+        hlslOut.flush();
+        std::string prefix =
+            "kernels/kernel_" + std::to_string(kernel.getKernelId());
+        files[prefix + ".shader"] = std::move(shader);
+        files[prefix + ".hlsl"] = std::move(hlsl);
+      }
+      auto deviceManifest = ::vrc::buildBoundaryManifest(*unityDeviceModule);
+      auto *compiledDevice = deviceManifest["device"].getAsObject();
+      auto *kernels =
+          compiledDevice ? compiledDevice->getArray("kernels") : nullptr;
+      if (!kernels || kernels->empty()) {
+        errs() << "Unity Device module did not produce a kernel manifest\n";
+        return 1;
+      }
+      (*device)["kernels"] = std::move(*kernels);
+    }
     PassManager udon(&context);
     udon.addPass(::vrc::createLowerUdonHLToUdonAsmPass());
     if (failed(udon.run(*module)) || failed(verify(*module)))

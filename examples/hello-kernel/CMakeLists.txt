@@ -24,7 +24,8 @@ udoncl_add_artifact(hello-artifact
 
 udoncl_add_unity_library(hello-unity-library
   CONFIG unity-library.json
-  HOST_LIBRARIES hello_host hello_host_extra)
+  HOST_LIBRARIES hello_host hello_host_extra
+  DEVICE_LIBRARIES hello_device hello_device_extra)
 
 udoncl_add_unity_library(hello-buffer-copy-unity-library
   CONFIG buffer-copy-library.json

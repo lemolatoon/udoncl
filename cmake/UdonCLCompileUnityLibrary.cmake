@@ -13,10 +13,15 @@ if(NOT _output_is_in_build_tree OR
     "${UDONCL_OUTPUT_DIRECTORY}")
 endif()
 
+set(_device_argument)
+if(DEFINED UDONCL_DEVICE_MODULE AND NOT "${UDONCL_DEVICE_MODULE}" STREQUAL "")
+  set(_device_argument --device-llvm "${UDONCL_DEVICE_MODULE}")
+endif()
 file(REMOVE_RECURSE "${UDONCL_OUTPUT_DIRECTORY}")
 execute_process(
   COMMAND "${UDONCL_COMPILER}" --emit-unity-library-bundle "${UDONCL_CONFIG}"
-          --host-llvm "${UDONCL_HOST_MODULE}" -o "${UDONCL_OUTPUT_DIRECTORY}"
+          --host-llvm "${UDONCL_HOST_MODULE}" ${_device_argument}
+          -o "${UDONCL_OUTPUT_DIRECTORY}"
   RESULT_VARIABLE _result
   OUTPUT_VARIABLE _stdout
   ERROR_VARIABLE _stderr)
