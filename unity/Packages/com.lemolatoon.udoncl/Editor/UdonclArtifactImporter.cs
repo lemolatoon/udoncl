@@ -522,13 +522,25 @@ namespace Lemolatoon.Udoncl.Editor
                 );
         }
 
-        internal static UdonBehaviour AddUdonSharpComponentAndGetBacking(
+        internal static UdonBehaviour AddCompiledUdonSharpBehaviour(
             GameObject target,
-            Type type
+            string programAssetPath
         )
         {
-            UdonSharpBehaviour proxy = target.AddUdonSharpComponent(type);
-            return UdonSharpEditorUtility.GetBackingUdonBehaviour(proxy);
+            UdonSharpProgramAsset programAsset =
+                AssetDatabase.LoadAssetAtPath<UdonSharpProgramAsset>(programAssetPath);
+            if (programAsset == null || programAsset.SerializedProgramAsset == null)
+                throw new InvalidDataException(
+                    "Compiled UdonSharp program asset is missing: " + programAssetPath
+                );
+            UdonBehaviour behaviour = target.AddComponent<UdonBehaviour>();
+            behaviour.programSource = programAsset;
+            behaviour.SyncMethod = SyncType.None;
+            SerializedObject serialized = new SerializedObject(behaviour);
+            serialized.FindProperty("serializedProgramAsset").objectReferenceValue =
+                programAsset.SerializedProgramAsset;
+            serialized.ApplyModifiedPropertiesWithoutUndo();
+            return behaviour;
         }
 
         internal static UdonBehaviour FindUdonSharpBacking(GameObject target)
@@ -548,6 +560,18 @@ namespace Lemolatoon.Udoncl.Editor
         internal static void InitializeUdonBehaviour(UdonBehaviour behaviour)
         {
             behaviour.InitializeUdonContent();
+        }
+
+        internal static string GetUdonBehaviourGlobalObjectId(GameObject target)
+        {
+            return GlobalObjectId
+                .GetGlobalObjectIdSlow(target.GetComponent<UdonBehaviour>())
+                .ToString();
+        }
+
+        internal static string GetUdonEventReceiverGlobalObjectId(IUdonEventReceiver receiver)
+        {
+            return GlobalObjectId.GetGlobalObjectIdSlow((UdonBehaviour)receiver).ToString();
         }
 
         internal static void SetUdonProgramVariable(

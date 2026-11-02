@@ -1,5 +1,17 @@
 # Validation status
 
+## Public ONNX Package Sample lifecycle (2026-11-03)
+
+Unity 2022.3.22f1 with Worlds SDK 3.10.5 passed all 85 Editor tests. The
+non-Pooling Arena Add and standard-operator Tiny Llama Package Samples were
+compiled to Udon programs and executed in Play Mode against their imported
+runtime prefabs. Arena Add completed float32 upload, one Device pass, async
+readback, and returned `5`. Tiny Llama completed int32 token upload, all 18
+Device passes, async 16-logit readback, and returned the reference argmax token
+`2`. Lifecycle cleanup and the final Unity error-console check passed. This is
+Editor/D3D11 validation, not a VRChat client claim, and the disabled general
+ONNX Pooling path was not exercised.
+
 ## UdonSharp assembly discovery in batch Editor tests (2026-11-03)
 
 An asmdef containing `UdonSharpBehaviour` subclasses is not a U# compilation

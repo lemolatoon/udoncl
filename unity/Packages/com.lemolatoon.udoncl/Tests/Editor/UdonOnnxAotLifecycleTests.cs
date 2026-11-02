@@ -26,7 +26,12 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             "Assets/UdonclSampleValidation/UdonOnnxArenaAddExample.cs";
         private const string ArenaSampleProgram =
             "Assets/UdonclSampleValidation/UdonOnnxArenaAddExample.asset";
+        private const string TinySampleScript =
+            "Assets/UdonclSampleValidation/UdonOnnxTinyLlamaExample.cs";
+        private const string TinySampleProgram =
+            "Assets/UdonclSampleValidation/UdonOnnxTinyLlamaExample.asset";
         private bool arenaSampleProgramAssetExisted;
+        private bool tinySampleProgramAssetExisted;
 
         private static string ResolveFixture(string environmentName, string relativeFallback)
         {
@@ -49,6 +54,8 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         {
             arenaSampleProgramAssetExisted =
                 AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(ArenaSampleProgram) != null;
+            tinySampleProgramAssetExisted =
+                AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(TinySampleProgram) != null;
             AssetDatabase.DeleteAsset(GeneratedRoot);
             string bundle = ResolveFixture(
                 "UDONCL_ONNX_INT4_UNITY_BUNDLE",
@@ -89,6 +96,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 UdonclArtifactImporter.Import(tinyStandardBundle)
             );
             EnsureArenaSampleProgram();
+            EnsureTinySampleProgram();
         }
 
         [OneTimeTearDown]
@@ -124,6 +132,9 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             string arenaSampleProgramGuid = arenaSampleProgramAssetExisted
                 ? null
                 : AssetDatabase.AssetPathToGUID(ArenaSampleProgram);
+            string tinySampleProgramGuid = tinySampleProgramAssetExisted
+                ? null
+                : AssetDatabase.AssetPathToGUID(TinySampleProgram);
             AssetDatabase.DeleteAsset(GeneratedRoot);
             AssetDatabase.DeleteAsset(GeneratedMixedRoot);
             AssetDatabase.DeleteAsset(GeneratedArenaRoot);
@@ -132,6 +143,8 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             AssetDatabase.DeleteAsset(GeneratedRuntimeRoot);
             if (!arenaSampleProgramAssetExisted)
                 AssetDatabase.DeleteAsset(ArenaSampleProgram);
+            if (!tinySampleProgramAssetExisted)
+                AssetDatabase.DeleteAsset(TinySampleProgram);
             foreach (
                 string guid in new[]
                 {
@@ -145,6 +158,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                     tinyStandardProgramGuid,
                     runtimeProgramGuid,
                     arenaSampleProgramGuid,
+                    tinySampleProgramGuid,
                 }
             )
                 if (!string.IsNullOrEmpty(guid))
@@ -162,6 +176,8 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 Assert.IsNull(
                     AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(ArenaSampleProgram)
                 );
+            if (!tinySampleProgramAssetExisted)
+                Assert.IsNull(AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(TinySampleProgram));
         }
 
         private static void EnsureArenaSampleProgram()
@@ -173,6 +189,18 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             UdonclArtifactImporter.EnsureCompiledUdonSharpProgramAsset(
                 ArenaSampleScript,
                 ArenaSampleProgram
+            );
+        }
+
+        private static void EnsureTinySampleProgram()
+        {
+            Assert.NotNull(
+                AssetDatabase.LoadAssetAtPath<MonoScript>(TinySampleScript),
+                "The precommit driver did not stage the Tiny Llama sample."
+            );
+            UdonclArtifactImporter.EnsureCompiledUdonSharpProgramAsset(
+                TinySampleScript,
+                TinySampleProgram
             );
         }
 
@@ -534,10 +562,9 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 );
             GameObject runtimeInstance = UnityEngine.Object.Instantiate(modelAsset.RuntimePrefab);
             GameObject sampleObject = new GameObject("udoncl Arena Add public API test");
-            MonoScript sampleScript = AssetDatabase.LoadAssetAtPath<MonoScript>(ArenaSampleScript);
-            UdonBehaviour sample = UdonclArtifactImporter.AddUdonSharpComponentAndGetBacking(
+            UdonBehaviour sample = UdonclArtifactImporter.AddCompiledUdonSharpBehaviour(
                 sampleObject,
-                sampleScript.GetClass()
+                ArenaSampleProgram
             );
             UdonclArtifactImporter.InitializeUdonBehaviours(runtimeInstance);
             UdonclArtifactImporter.InitializeUdonBehaviour(sample);
@@ -593,6 +620,60 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             );
             Assert.AreEqual(Lemolatoon.Udoncl.UdonOnnxRuntimeBehaviour.StatusSuccess, status);
             Assert.AreEqual(5.0f, result, 0.0001f);
+        }
+
+        [UnityTest]
+        public IEnumerator TinyLlamaSampleExecutesPublicWriteRunAndAsyncReadPath()
+        {
+            // UnityStandardOperatorTinyLlamaExecutesNumericallyOnSdkVm compares
+            // all 16 logits against the generated reference. Its deterministic
+            // token-3 fixture has argmax token 2.
+            const int expectedToken = 2;
+
+            yield return new EnterPlayMode();
+
+            Lemolatoon.Udoncl.UdonOnnxModelAsset modelAsset =
+                AssetDatabase.LoadAssetAtPath<Lemolatoon.Udoncl.UdonOnnxModelAsset>(
+                    GeneratedTinyStandardRoot + "/Models/UdonOnnxModel.asset"
+                );
+            GameObject runtimeInstance = UnityEngine.Object.Instantiate(modelAsset.RuntimePrefab);
+            GameObject sampleObject = new GameObject("udoncl Tiny Llama public API test");
+            UdonBehaviour sample = UdonclArtifactImporter.AddCompiledUdonSharpBehaviour(
+                sampleObject,
+                TinySampleProgram
+            );
+            UdonclArtifactImporter.InitializeUdonBehaviours(runtimeInstance);
+            UdonclArtifactImporter.InitializeUdonBehaviour(sample);
+            yield return null;
+
+            UdonBehaviour runtime = UdonclArtifactImporter.FindUdonSharpBacking(runtimeInstance);
+            Assert.NotNull(runtime, "The instantiated Tiny Llama runtime was not initialized.");
+            UdonclArtifactImporter.SetUdonProgramVariable(sample, "runtime", runtime);
+            UdonclArtifactImporter.SetUdonProgramVariable(sample, "tokenId", 3);
+            UdonclArtifactImporter.SendUdonCustomEvent(sample, "Run");
+
+            const int timeoutFrames = 300;
+            int frame = 0;
+            int predictedToken = -1;
+            while (frame < timeoutFrames && predictedToken < 0)
+            {
+                ++frame;
+                yield return null;
+                predictedToken = (int)
+                    UdonclArtifactImporter.GetUdonProgramVariable(sample, "predictedToken");
+            }
+            int status = (int)UdonclArtifactImporter.GetUdonProgramVariable(sample, "status");
+            UdonclArtifactImporter.SetUdonProgramVariable(sample, "runtime", null);
+
+            yield return new ExitPlayMode();
+
+            Assert.Less(
+                frame,
+                timeoutFrames,
+                "Tiny Llama async logits readback did not complete; status=" + status
+            );
+            Assert.AreEqual(Lemolatoon.Udoncl.UdonOnnxRuntimeBehaviour.StatusSuccess, status);
+            Assert.AreEqual(expectedToken, predictedToken);
         }
 
         [Test]
@@ -815,14 +896,20 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 )
             );
             Assert.AreEqual(1, passMaterials.Length);
-            Assert.AreSame(modelAsset.PassMaterials[0], passMaterials[0]);
+            Assert.AreEqual(
+                GlobalObjectId.GetGlobalObjectIdSlow(modelAsset.PassMaterials[0]),
+                GlobalObjectId.GetGlobalObjectIdSlow(passMaterials[0])
+            );
             for (int index = 0; index < runners.Length; ++index)
             {
                 Transform child = modelAsset.RuntimePrefab.transform.Find(
                     "call-" + index.ToString("D4")
                 );
                 Assert.NotNull(child);
-                Assert.AreSame(child.GetComponent<UdonBehaviour>(), runners[index]);
+                Assert.AreEqual(
+                    UdonclArtifactImporter.GetUdonBehaviourGlobalObjectId(child.gameObject),
+                    UdonclArtifactImporter.GetUdonEventReceiverGlobalObjectId(runners[index])
+                );
             }
 
             UdonAssemblyProgramAsset programAsset =
