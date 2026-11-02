@@ -99,8 +99,8 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             Set(heap, program, "beta", -0.25f);
             vm.SetProgramCounter(program.EntryPoints.GetAddressFromSymbol("_run"));
             Assert.AreEqual(0u, vm.Interpret(), "SDK IUdonVM rejected UdonDNN convolution.");
-            Assert.AreEqual(1118481, convolutionMaterial.GetInt("_VRC_Arg4"));
-            Assert.AreEqual(1, convolutionMaterial.GetInt("_VRC_Arg5"));
+            Assert.AreEqual(1118481, convolutionMaterial.GetInteger("_VRC_Arg4"));
+            Assert.AreEqual(1, convolutionMaterial.GetInteger("_VRC_Arg5"));
 
             Color32[] actual = ReadPixels(output, 2048);
             Color32[] expected = Load<Texture2D>("Textures/udondnn_convolution_reference.asset")

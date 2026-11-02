@@ -461,7 +461,8 @@ assert model_uasm.count("MaterialArray.__Get") == 322
 assert model_uasm.count("__SetProgramVariable__") == 450
 assert model_uasm.count("__SendCustomEvent__") == 225
 assert model_uasm.count("VRCSDKBaseVRCGraphics.__Blit__") == 322
-assert model_uasm.count("UnityEngineMaterial.__SetInt__") == 1253
+assert model_uasm.count("UnityEngineMaterial.__SetInteger__") == 1253
+assert "UnityEngineMaterial.__SetInt__" not in model_uasm
 assert model_uasm.count("UnityEngineMaterial.__SetFloat__") == 65
 assert "__float0: %SystemSingle, 0.00001" in model_uasm
 assert "PUSH, __zero\n        PUSH, __runnerIndex\n        COPY" in model_uasm

@@ -107,30 +107,19 @@ assert set(plan["initializers"]) == {
     "dense.weight",
     "dense.bias",
 }
+pooling_call = next(
+    call for call in plan["aot"]["calls"] if call["function"] == "udondnnPoolingForward"
+)
+assert pooling_call["device_profile"]["supported"] is False
+assert "udondnn_arena_pooling_forward" in pooling_call["device_profile"]["reason"]
 
-generic_mnist_plan = compile_operators(model)
-assert generic_mnist_plan["execution_provider"] == "UdonOperatorExecutionProvider"
-assert generic_mnist_plan["passes"][0]["providers"] == [
-    "udondnnConvolutionForward"
-]
-assert generic_mnist_plan["passes"][1]["providers"] == ["udonatenAdd"]
-generic_mnist_relu_passes = [
-    item
-    for item in generic_mnist_plan["passes"]
-    if item["providers"] == ["udonatenRelu"]
-]
-assert len(generic_mnist_relu_passes) == 1
-assert generic_mnist_relu_passes[0]["shader"] == "kernel_215.shader"
-assert generic_mnist_plan["passes"][3]["providers"] == [
-    "udondnnPoolingForward"
-]
-assert len(generic_mnist_plan["passes"]) == 6
-assert sum(
-    item["providers"] == ["udonblasSgemm"] for item in generic_mnist_plan["passes"]
-) == 1
-generic_mnist_uasm = emit_uasm_host(generic_mnist_plan)
-assert generic_mnist_uasm.count("VRCSDKBaseVRCGraphics.__Blit__") == 6
-(output / "mnist-operators-host.uasm").write_text(generic_mnist_uasm, encoding="utf-8")
+try:
+    compile_operators(model)
+except NotImplementedError as error:
+    assert "udondnn_arena_pooling_forward" in str(error)
+    assert "2026-11-02-unity-mnist-averagepool-zero.md" in str(error)
+else:
+    raise AssertionError("ONNX arena AveragePool must fail explicitly while unresolved")
 
 operator_model = parse_model(
     model_proto(

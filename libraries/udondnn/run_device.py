@@ -92,10 +92,13 @@ def main():
     tile_device = root / "libraries/udonaten/device/tile.cl"
     aten_rms_device = root / "libraries/udonaten/device/rms_norm.cl"
     arena_pointwise_device = root / "libraries/udonaten/device/arena_pointwise.cl"
+    arena_broadcast_device = root / "libraries/udonaten/device/arena_broadcast_pointwise.cl"
     arena_tile_device = root / "libraries/udonaten/device/arena_tile.cl"
     arena_rms_device = root / "libraries/udonaten/device/arena_rms_norm.cl"
     arena_sgemm_device = root / "libraries/udonblas/device/arena_sgemm.cl"
     arena_softmax_device = source / "device/arena_softmax.cl"
+    arena_convolution_device = source / "device/arena_convolution.cl"
+    arena_pooling_device = source / "device/arena_pooling.cl"
     sgemm_device = root / "libraries/udonblas/device/sgemm.cl"
     sgemv_device = root / "libraries/udonblas/device/sgemv.cl"
     saxpy_device = root / "libraries/udonblas/device/saxpy.cl"
@@ -112,10 +115,13 @@ def main():
     tile_text = tile_device.read_text(encoding="utf-8")
     aten_rms_text = aten_rms_device.read_text(encoding="utf-8")
     arena_pointwise_text = arena_pointwise_device.read_text(encoding="utf-8")
+    arena_broadcast_text = arena_broadcast_device.read_text(encoding="utf-8")
     arena_tile_text = arena_tile_device.read_text(encoding="utf-8")
     arena_rms_text = arena_rms_device.read_text(encoding="utf-8")
     arena_sgemm_text = arena_sgemm_device.read_text(encoding="utf-8")
     arena_softmax_text = arena_softmax_device.read_text(encoding="utf-8")
+    arena_convolution_text = arena_convolution_device.read_text(encoding="utf-8")
+    arena_pooling_text = arena_pooling_device.read_text(encoding="utf-8")
     sgemm_text = sgemm_device.read_text(encoding="utf-8")
     sgemv_text = sgemv_device.read_text(encoding="utf-8")
     saxpy_text = saxpy_device.read_text(encoding="utf-8")
@@ -145,6 +151,8 @@ def main():
         + "\n"
         + arena_pointwise_text
         + "\n"
+        + arena_broadcast_text
+        + "\n"
         + arena_tile_text
         + "\n"
         + arena_rms_text
@@ -152,6 +160,10 @@ def main():
         + arena_sgemm_text
         + "\n"
         + arena_softmax_text
+        + "\n"
+        + arena_convolution_text
+        + "\n"
+        + arena_pooling_text
         + "\n"
         + sgemm_text
         + "\n"
@@ -353,6 +365,30 @@ def main():
         16384,
         (8192, 2),
     )
+    arena_broadcast_bundle = emit_device(
+        "udonaten-arena-broadcast-pointwise",
+        arena_broadcast_device,
+        "udonaten_arena_broadcast_pointwise",
+        223,
+        16384,
+        (8192, 2),
+    )
+    arena_convolution_bundle = emit_device(
+        "udondnn-arena-convolution",
+        arena_convolution_device,
+        "udondnn_arena_convolution_forward",
+        224,
+        16384,
+        (8192, 2),
+    )
+    arena_pooling_bundle = emit_device(
+        "udondnn-arena-pooling",
+        arena_pooling_device,
+        "udondnn_arena_pooling_forward",
+        225,
+        16384,
+        (8192, 2),
+    )
     manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
     kernel = manifest["device"]["kernels"][0]
     if (
@@ -366,15 +402,22 @@ def main():
     fragment = bundle / "kernels/kernel_200.hlsl"
     fragment_text = fragment.read_text(encoding="utf-8")
     shaderlab = (bundle / "kernels/kernel_200.shader").read_text(encoding="utf-8")
-    if '_VRC_Arg6 ("Arg6", Int)' not in shaderlab or "Integer)" in shaderlab:
-        raise RuntimeError("UdonDNN integer uniforms are not Unity SetInt-compatible")
+    if (
+        '_VRC_Arg6 ("Arg6", Integer)' not in shaderlab
+        or "int _VRC_Arg6;" not in fragment_text
+        or "asuint(_VRC_Arg6)" not in fragment_text
+    ):
+        raise RuntimeError("UdonDNN integer uniforms are not Unity SetInteger-compatible")
     if (
         "mode ==" in convolution_text
         or "? ky" in convolution_text
         or "? kx" in convolution_text
     ):
         raise RuntimeError("UdonDNN convolution mode must not lower through select")
-    if "(_VRC_Arg4 >>" not in fragment_text or "(_VRC_Arg5 &" not in fragment_text:
+    if (
+        "(asuint(_VRC_Arg4) >>" not in fragment_text
+        or "(asuint(_VRC_Arg5) &" not in fragment_text
+    ):
         raise RuntimeError("UdonDNN generated shader lost packed shape or separate mode")
     activation_manifest = json.loads(
         (activation_bundle / "manifest.json").read_text(encoding="utf-8")
@@ -392,7 +435,7 @@ def main():
     activation_shaderlab = (
         activation_bundle / "kernels/kernel_201.shader"
     ).read_text(encoding="utf-8")
-    if '_VRC_Arg4 ("Arg4", Int)' not in activation_shaderlab:
+    if '_VRC_Arg4 ("Arg4", Integer)' not in activation_shaderlab:
         raise RuntimeError("UdonDNN activation integer uniforms are not Unity-compatible")
     pooling_manifest = json.loads(
         (pooling_bundle / "manifest.json").read_text(encoding="utf-8")
@@ -410,7 +453,7 @@ def main():
     pooling_shaderlab = (pooling_bundle / "kernels/kernel_202.shader").read_text(
         encoding="utf-8"
     )
-    if '_VRC_Arg5 ("Arg5", Int)' not in pooling_shaderlab:
+    if '_VRC_Arg5 ("Arg5", Integer)' not in pooling_shaderlab:
         raise RuntimeError("UdonDNN pooling integer uniforms are not Unity-compatible")
     softmax_manifest = json.loads(
         (softmax_bundle / "manifest.json").read_text(encoding="utf-8")
@@ -431,7 +474,7 @@ def main():
     softmax_shaderlab = (softmax_bundle / "kernels/kernel_203.shader").read_text(
         encoding="utf-8"
     )
-    if '_VRC_Arg4 ("Arg4", Int)' not in softmax_shaderlab:
+    if '_VRC_Arg4 ("Arg4", Integer)' not in softmax_shaderlab:
         raise RuntimeError("UdonDNN softmax integer uniforms are not Unity-compatible")
     batchnorm_manifest = json.loads(
         (batchnorm_bundle / "manifest.json").read_text(encoding="utf-8")
@@ -449,7 +492,7 @@ def main():
     batchnorm_shaderlab = (
         batchnorm_bundle / "kernels/kernel_204.shader"
     ).read_text(encoding="utf-8")
-    if '_VRC_Arg3 ("Arg3", Int)' not in batchnorm_shaderlab:
+    if '_VRC_Arg3 ("Arg3", Integer)' not in batchnorm_shaderlab:
         raise RuntimeError("UdonDNN batchnorm integer uniforms are not Unity-compatible")
     op_tensor_manifest = json.loads(
         (op_tensor_bundle / "manifest.json").read_text(encoding="utf-8")
@@ -467,7 +510,7 @@ def main():
     op_tensor_shaderlab = (
         op_tensor_bundle / "kernels/kernel_205.shader"
     ).read_text(encoding="utf-8")
-    if '_VRC_Arg6 ("Arg6", Int)' not in op_tensor_shaderlab:
+    if '_VRC_Arg6 ("Arg6", Integer)' not in op_tensor_shaderlab:
         raise RuntimeError("UdonDNN OpTensor integer uniforms are not Unity-compatible")
     rms_norm_small_manifest = json.loads(
         (rms_norm_small_bundle / "manifest.json").read_text(encoding="utf-8")
@@ -488,7 +531,7 @@ def main():
     rms_norm_small_shaderlab = (
         rms_norm_small_bundle / "kernels/kernel_206.shader"
     ).read_text(encoding="utf-8")
-    if '_VRC_Arg3 ("Arg3", Int)' not in rms_norm_small_shaderlab:
+    if '_VRC_Arg3 ("Arg3", Integer)' not in rms_norm_small_shaderlab:
         raise RuntimeError(
             "UdonATen RMSNorm integer uniforms are not Unity-compatible"
         )
@@ -619,6 +662,45 @@ def main():
     ):
         raise RuntimeError("UdonDNN arena Softmax manifest is invalid")
     arena_softmax_fragment = arena_softmax_bundle / "kernels/kernel_222.hlsl"
+    arena_broadcast_manifest = json.loads(
+        (arena_broadcast_bundle / "manifest.json").read_text(encoding="utf-8")
+    )
+    arena_broadcast_kernel = arena_broadcast_manifest["device"]["kernels"][0]
+    if (
+        arena_broadcast_kernel["name"] != "udonaten_arena_broadcast_pointwise"
+        or arena_broadcast_kernel["global_size"] != [8192, 2, 1]
+        or [argument["access"] for argument in arena_broadcast_kernel["args"][:3]]
+        != ["read", "read", "write"]
+        or len(arena_broadcast_kernel["args"]) != 16
+    ):
+        raise RuntimeError("UdonATen arena broadcast pointwise manifest is invalid")
+    arena_broadcast_fragment = arena_broadcast_bundle / "kernels/kernel_223.hlsl"
+    arena_convolution_manifest = json.loads(
+        (arena_convolution_bundle / "manifest.json").read_text(encoding="utf-8")
+    )
+    arena_convolution_kernel = arena_convolution_manifest["device"]["kernels"][0]
+    if (
+        arena_convolution_kernel["name"] != "udondnn_arena_convolution_forward"
+        or arena_convolution_kernel["global_size"] != [8192, 2, 1]
+        or [argument["access"] for argument in arena_convolution_kernel["args"][:3]]
+        != ["read", "read", "write"]
+        or len(arena_convolution_kernel["args"]) != 16
+    ):
+        raise RuntimeError("UdonDNN arena convolution manifest is invalid")
+    arena_convolution_fragment = arena_convolution_bundle / "kernels/kernel_224.hlsl"
+    arena_pooling_manifest = json.loads(
+        (arena_pooling_bundle / "manifest.json").read_text(encoding="utf-8")
+    )
+    arena_pooling_kernel = arena_pooling_manifest["device"]["kernels"][0]
+    if (
+        arena_pooling_kernel["name"] != "udondnn_arena_pooling_forward"
+        or arena_pooling_kernel["global_size"] != [8192, 2, 1]
+        or [argument["access"] for argument in arena_pooling_kernel["args"][:2]]
+        != ["read", "write"]
+        or len(arena_pooling_kernel["args"]) != 13
+    ):
+        raise RuntimeError("UdonDNN arena pooling manifest is invalid")
+    arena_pooling_fragment = arena_pooling_bundle / "kernels/kernel_225.hlsl"
     blas_bundles = [
         (sgemm_bundle, "udonblas_sgemm", 212, 1024, 10),
         (sgemv_bundle, "udonblas_sgemv", 213, 1024, 8),
@@ -663,7 +745,7 @@ def main():
     embedding_shaderlab = (
         embedding_bundle / "kernels/kernel_207.shader"
     ).read_text(encoding="utf-8")
-    if '_VRC_Arg2 ("Arg2", Int)' not in embedding_shaderlab:
+    if '_VRC_Arg2 ("Arg2", Integer)' not in embedding_shaderlab:
         raise RuntimeError(
             "UdonATen Embedding integer uniforms are not Unity-compatible"
         )
@@ -683,7 +765,7 @@ def main():
     int4_shaderlab = (int4_bundle / "kernels/kernel_208.shader").read_text(
         encoding="utf-8"
     )
-    if '_VRC_Arg5 ("Arg5", Int)' not in int4_shaderlab:
+    if '_VRC_Arg5 ("Arg5", Integer)' not in int4_shaderlab:
         raise RuntimeError("UdonATen INT4 integer uniforms are not Unity-compatible")
     tile_manifest = json.loads((tile_bundle / "manifest.json").read_text(encoding="utf-8"))
     tile_kernel = tile_manifest["device"]["kernels"][0]
@@ -699,7 +781,7 @@ def main():
     tile_shaderlab = (tile_bundle / "kernels/kernel_209.shader").read_text(
         encoding="utf-8"
     )
-    if '_VRC_Arg10 ("Arg10", Int)' not in tile_shaderlab:
+    if '_VRC_Arg10 ("Arg10", Integer)' not in tile_shaderlab:
         raise RuntimeError("UdonATen Tile integer uniforms are not Unity-compatible")
     (output / "Bindings.h").write_text(
         "inline const char *deviceSource() { return "
@@ -1781,6 +1863,9 @@ def main():
             (arena_rms_finalize_bundle, "kernel_218.shader"),
             (arena_sgemm_bundle, "kernel_221.shader"),
             (arena_softmax_bundle, "kernel_222.shader"),
+            (arena_broadcast_bundle, "kernel_223.shader"),
+            (arena_convolution_bundle, "kernel_224.shader"),
+            (arena_pooling_bundle, "kernel_225.shader"),
         ):
             shutil.copy2(
                 shader_bundle / "kernels" / shader_name,
@@ -2398,6 +2483,9 @@ def main():
                 (arena_rms_finalize_fragment, "frag", "frag"),
                 (arena_sgemm_fragment, "frag", "frag"),
                 (arena_softmax_fragment, "frag", "frag"),
+                (arena_broadcast_fragment, "frag", "frag"),
+                (arena_convolution_fragment, "frag", "frag"),
+                (arena_pooling_fragment, "frag", "frag"),
                 (vertex, "vert", "vert"),
             ]
         ):
@@ -2438,6 +2526,9 @@ def main():
             arena_rms_finalize_fragment,
             arena_sgemm_fragment,
             arena_softmax_fragment,
+            arena_broadcast_fragment,
+            arena_convolution_fragment,
+            arena_pooling_fragment,
             vertex,
         ) = compiled
 

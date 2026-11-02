@@ -54,39 +54,39 @@
         PUSH, tileMaterial
         PUSH, __inputNName
         PUSH, inputN
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, tileMaterial
         PUSH, __inputCName
         PUSH, inputC
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, tileMaterial
         PUSH, __inputHName
         PUSH, inputH
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, tileMaterial
         PUSH, __inputWName
         PUSH, inputW
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, tileMaterial
         PUSH, __repeatNName
         PUSH, repeatN
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, tileMaterial
         PUSH, __repeatCName
         PUSH, repeatC
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, tileMaterial
         PUSH, __repeatHName
         PUSH, repeatH
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, tileMaterial
         PUSH, __repeatWName
         PUSH, repeatW
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, tileMaterial
         PUSH, __outputWordsName
         PUSH, outputWords
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, inputState
         PUSH, outputState
         PUSH, tileMaterial

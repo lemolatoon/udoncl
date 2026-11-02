@@ -35,17 +35,17 @@ static bool scalar(Type t) {
 static bool legalArithmetic(Operation *op) {
   return llvm::is_contained(
              ArrayRef<StringRef>{
-                 "arith.constant", "arith.addf",       "arith.subf",
-                 "arith.mulf",     "arith.divf",       "arith.negf",
-                 "arith.addi",     "arith.subi",       "arith.muli",
-                 "arith.divui",    "arith.remui",      "arith.andi",
-                 "arith.ori",      "arith.xori",       "arith.shli",
-                 "arith.shrui",    "arith.shrsi",      "arith.cmpi",
-                 "arith.cmpf",     "arith.select",     "arith.uitofp",
-                 "arith.sitofp",   "arith.index_cast", "arith.index_castui",
-                 "arith.trunci",   "math.floor",       "math.sqrt",
-                 "math.cos",       "math.sin",         "math.exp",
-                 "math.log"},
+                 "arith.constant",     "arith.addf",   "arith.subf",
+                 "arith.mulf",         "arith.divf",   "arith.negf",
+                 "arith.addi",         "arith.subi",   "arith.muli",
+                 "arith.divui",        "arith.remui",  "arith.andi",
+                 "arith.ori",          "arith.xori",   "arith.shli",
+                 "arith.shrui",        "arith.shrsi",  "arith.cmpi",
+                 "arith.cmpf",         "arith.select", "arith.uitofp",
+                 "arith.sitofp",       "arith.fptoui", "arith.index_cast",
+                 "arith.index_castui", "arith.trunci", "math.floor",
+                 "math.sqrt",          "math.cos",     "math.sin",
+                 "math.exp",           "math.log"},
              op->getName().getStringRef()) &&
          llvm::all_of(op->getResultTypes(), scalar);
 }

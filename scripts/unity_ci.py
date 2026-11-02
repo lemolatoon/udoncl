@@ -233,9 +233,6 @@ def main():
     environment["UDONCL_ONNX_TILED_AOT_UASM"] = str(
         (output / "onnx-aot/tiled-gemm-host.uasm").resolve()
     )
-    environment["UDONCL_ONNX_MNIST_OPERATOR_AOT_UASM"] = str(
-        (output / "onnx-aot/mnist-operators-host.uasm").resolve()
-    )
     environment["UDONCL_ONNX_RL_OPERATOR_AOT_UASM"] = str(
         (output / "onnx-aot/rl-policy-host.uasm").resolve()
     )

@@ -42,11 +42,11 @@
         PUSH, batchnormMaterial
         PUSH, __inputShapeName
         PUSH, inputShape
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, batchnormMaterial
         PUSH, __modeName
         PUSH, mode
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, batchnormMaterial
         PUSH, __epsilonName
         PUSH, epsilon

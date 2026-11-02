@@ -104,8 +104,8 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 Set(heap, program, "beta", Betas[caseIndex]);
                 vm.SetProgramCounter(program.EntryPoints.GetAddressFromSymbol("_run"));
                 Assert.AreEqual(0u, vm.Interpret(), "SDK IUdonVM rejected RMSNorm case.");
-                Assert.AreEqual(16, material.GetInt("_VRC_Arg2"));
-                Assert.AreEqual(8, material.GetInt("_VRC_Arg3"));
+                Assert.AreEqual(16, material.GetInteger("_VRC_Arg2"));
+                Assert.AreEqual(8, material.GetInteger("_VRC_Arg3"));
                 Color32[] actual = ReadPixels(output, 2048);
                 for (int element = 0; element < 16; ++element)
                 {

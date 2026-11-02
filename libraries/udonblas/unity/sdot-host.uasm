@@ -50,15 +50,15 @@
         PUSH, productMaterial
         PUSH, __nName
         PUSH, n
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, productMaterial
         PUSH, __incxName
         PUSH, incx
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, productMaterial
         PUSH, __incyName
         PUSH, incy
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, inputState
         PUSH, outputState
         PUSH, productMaterial
@@ -67,7 +67,7 @@
         PUSH, reduceMaterial
         PUSH, __nName
         PUSH, n
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
 
         PUSH, outputState
         PUSH, __source
@@ -79,7 +79,7 @@
         PUSH, reduceMaterial
         PUSH, __passName
         PUSH, __pass1
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, __source
         PUSH, scratchState
         PUSH, reduceMaterial
@@ -95,7 +95,7 @@
         PUSH, reduceMaterial
         PUSH, __passName
         PUSH, __pass2
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, __source
         PUSH, outputState
         PUSH, reduceMaterial
@@ -111,7 +111,7 @@
         PUSH, reduceMaterial
         PUSH, __passName
         PUSH, __pass3
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, __source
         PUSH, scratchState
         PUSH, reduceMaterial
@@ -127,7 +127,7 @@
         PUSH, reduceMaterial
         PUSH, __passName
         PUSH, __pass4
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, __source
         PUSH, outputState
         PUSH, reduceMaterial
@@ -143,7 +143,7 @@
         PUSH, reduceMaterial
         PUSH, __passName
         PUSH, __pass5
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, __source
         PUSH, scratchState
         PUSH, reduceMaterial
@@ -159,7 +159,7 @@
         PUSH, reduceMaterial
         PUSH, __passName
         PUSH, __pass6
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, __source
         PUSH, outputState
         PUSH, reduceMaterial
@@ -175,7 +175,7 @@
         PUSH, reduceMaterial
         PUSH, __passName
         PUSH, __pass7
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, __source
         PUSH, scratchState
         PUSH, reduceMaterial
@@ -191,7 +191,7 @@
         PUSH, reduceMaterial
         PUSH, __passName
         PUSH, __pass8
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, __source
         PUSH, outputState
         PUSH, reduceMaterial

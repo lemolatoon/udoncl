@@ -57,35 +57,35 @@
         PUSH, sgemmMaterial
         PUSH, __mName
         PUSH, m
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, sgemmMaterial
         PUSH, __nName
         PUSH, n
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, sgemmMaterial
         PUSH, __kName
         PUSH, k
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, sgemmMaterial
         PUSH, __transaName
         PUSH, transa
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, sgemmMaterial
         PUSH, __transbName
         PUSH, transb
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, sgemmMaterial
         PUSH, __ldaName
         PUSH, lda
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, sgemmMaterial
         PUSH, __ldbName
         PUSH, ldb
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, sgemmMaterial
         PUSH, __ldcName
         PUSH, ldc
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, sgemmMaterial
         PUSH, __alphaName
         PUSH, alpha

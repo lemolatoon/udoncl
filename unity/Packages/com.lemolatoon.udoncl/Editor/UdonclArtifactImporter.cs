@@ -1553,7 +1553,7 @@ namespace Lemolatoon.Udoncl.Editor
                         UdonOnnxIntMaterialBinding binding in pass.material_int_bindings
                             ?? Array.Empty<UdonOnnxIntMaterialBinding>()
                     )
-                        material.SetInt(binding.property, binding.value);
+                        material.SetInteger(binding.property, binding.value);
                     foreach (
                         UdonOnnxFloatMaterialBinding binding in pass.material_float_bindings
                             ?? Array.Empty<UdonOnnxFloatMaterialBinding>()

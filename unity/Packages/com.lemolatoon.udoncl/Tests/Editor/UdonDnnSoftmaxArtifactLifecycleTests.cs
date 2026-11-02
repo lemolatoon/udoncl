@@ -116,9 +116,9 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                     vm.Interpret(),
                     "SDK IUdonVM rejected UdonDNN softmax case " + caseIndex + "."
                 );
-                Assert.AreEqual(8753, softmaxMaterial.GetInt("_VRC_Arg2"));
-                Assert.AreEqual(Algorithms[caseIndex], softmaxMaterial.GetInt("_VRC_Arg3"));
-                Assert.AreEqual(Modes[caseIndex], softmaxMaterial.GetInt("_VRC_Arg4"));
+                Assert.AreEqual(8753, softmaxMaterial.GetInteger("_VRC_Arg2"));
+                Assert.AreEqual(Algorithms[caseIndex], softmaxMaterial.GetInteger("_VRC_Arg3"));
+                Assert.AreEqual(Modes[caseIndex], softmaxMaterial.GetInteger("_VRC_Arg4"));
 
                 Color32[] actual = ReadPixels(output, 2048);
                 for (int element = 0; element < 12; ++element)

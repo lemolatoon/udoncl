@@ -45,15 +45,15 @@
         PUSH, activationMaterial
         PUSH, __wordsName
         PUSH, words
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, activationMaterial
         PUSH, __modeName
         PUSH, mode
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, activationMaterial
         PUSH, __nanPropagationName
         PUSH, nanPropagation
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, activationMaterial
         PUSH, __coefficientName
         PUSH, coefficient

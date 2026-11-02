@@ -2,11 +2,11 @@ Shader "UdonCL/UdonATen/WeightInt4packMmScatter" {
 Properties {
     _TileState ("Completed tile state", 2D) = "black" {}
     _PriorResult ("Prior output features", 2D) = "black" {}
-    _OutputOffset ("Output feature offset", Int) = 0
-    _N ("Tile output features", Int) = 0
-    _OutputWidth ("Output texture width", Int) = 8192
-    _OutputFeatures ("Complete output features", Int) = 0
-    _HasPrior ("Copy prior output", Int) = 0
+    _OutputOffset ("Output feature offset", Integer) = 0
+    _N ("Tile output features", Integer) = 0
+    _OutputWidth ("Output texture width", Integer) = 8192
+    _OutputFeatures ("Complete output features", Integer) = 0
+    _HasPrior ("Copy prior output", Integer) = 0
 }
 SubShader { Pass {
 CGPROGRAM

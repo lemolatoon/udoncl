@@ -71,8 +71,8 @@ LogicalResult emitShaderLab(fragment::KernelOp kernel, llvm::raw_ostream &out) {
   llvm::raw_string_ostream shader(hlsl);
   if (failed(emitFragmentHLSL(kernel, shader)))
     return failure();
-  out << "Shader \"UdonCL/Kernel_" << kernel.getKernelId()
-      << "\" {\nProperties {\n";
+  out << "Shader \"UdonCL/" << kernel.getSymName() << "_"
+      << kernel.getKernelId() << "\" {\nProperties {\n";
   auto profile = kernel->getAttrOfType<StringAttr>("vrc.profile");
   if (profile && profile == "gather-f32") {
     for (auto resource :
@@ -86,7 +86,8 @@ LogicalResult emitShaderLab(fragment::KernelOp kernel, llvm::raw_ostream &out) {
       } else if (resource.getKind() == "uniform")
         out << "_VRC_Arg" << resource.getArgIndex() << " (\"Arg"
             << resource.getArgIndex() << "\", "
-            << (resource.getValueType().isF32() ? "Float" : "Int") << ") = 0\n";
+            << (resource.getValueType().isF32() ? "Float" : "Integer")
+            << ") = 0\n";
     }
   } else
     out << "_VRC_Arg1 (\"Arg1\", Float) = 0\n";

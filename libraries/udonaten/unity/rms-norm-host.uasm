@@ -42,11 +42,11 @@
         PUSH, rmsNormMaterial
         PUSH, __wordsName
         PUSH, words
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, rmsNormMaterial
         PUSH, __normalizedWordsName
         PUSH, normalizedWords
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, rmsNormMaterial
         PUSH, __epsilonName
         PUSH, epsilon

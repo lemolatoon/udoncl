@@ -94,15 +94,15 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             Set(heap, program, "outputWords", 72);
             vm.SetProgramCounter(program.EntryPoints.GetAddressFromSymbol("_run"));
             Assert.AreEqual(0u, vm.Interpret(), "SDK IUdonVM rejected UdonATen Tile.");
-            Assert.AreEqual(1, material.GetInt("_VRC_Arg2"));
-            Assert.AreEqual(2, material.GetInt("_VRC_Arg3"));
-            Assert.AreEqual(2, material.GetInt("_VRC_Arg4"));
-            Assert.AreEqual(3, material.GetInt("_VRC_Arg5"));
-            Assert.AreEqual(1, material.GetInt("_VRC_Arg6"));
-            Assert.AreEqual(1, material.GetInt("_VRC_Arg7"));
-            Assert.AreEqual(2, material.GetInt("_VRC_Arg8"));
-            Assert.AreEqual(3, material.GetInt("_VRC_Arg9"));
-            Assert.AreEqual(72, material.GetInt("_VRC_Arg10"));
+            Assert.AreEqual(1, material.GetInteger("_VRC_Arg2"));
+            Assert.AreEqual(2, material.GetInteger("_VRC_Arg3"));
+            Assert.AreEqual(2, material.GetInteger("_VRC_Arg4"));
+            Assert.AreEqual(3, material.GetInteger("_VRC_Arg5"));
+            Assert.AreEqual(1, material.GetInteger("_VRC_Arg6"));
+            Assert.AreEqual(1, material.GetInteger("_VRC_Arg7"));
+            Assert.AreEqual(2, material.GetInteger("_VRC_Arg8"));
+            Assert.AreEqual(3, material.GetInteger("_VRC_Arg9"));
+            Assert.AreEqual(72, material.GetInteger("_VRC_Arg10"));
 
             Color32[] expected = Load<Texture2D>("Textures/udonaten_tile_reference.asset")
                 .GetPixels32();

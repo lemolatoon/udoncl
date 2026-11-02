@@ -73,31 +73,31 @@
         PUSH, composeMaterial
         PUSH, __compactPageName
         PUSH, __one
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, composeMaterial
         PUSH, __pageRowName
         PUSH, __zero
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, composeMaterial
         PUSH, __activationOffsetName
         PUSH, __zero
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, composeMaterial
         PUSH, __activationWidthName
         PUSH, __activationWidth
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, composeMaterial
         PUSH, __accumulatorOffsetName
         PUSH, __resultOffset
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, composeMaterial
         PUSH, __composeNName
         PUSH, n
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, composeMaterial
         PUSH, __composeKName
         PUSH, k
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, composeMaterial
         PUSH, __weightPageName
         PUSH, weightAtlas
@@ -109,11 +109,11 @@
         PUSH, composeMaterial
         PUSH, __kOffsetName
         PUSH, __zero
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, composeMaterial
         PUSH, __composeAccumulateName
         PUSH, __zero
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, weightAtlas
         PUSH, assemblyState
         PUSH, composeMaterial
@@ -126,19 +126,19 @@
         PUSH, int4Material
         PUSH, __nName
         PUSH, n
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, int4Material
         PUSH, __kName
         PUSH, k
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, int4Material
         PUSH, __rowStrideName
         PUSH, rowStride
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, int4Material
         PUSH, __accumulateName
         PUSH, __zero
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, assemblyState
         PUSH, partialState
         PUSH, int4Material
@@ -151,7 +151,7 @@
         PUSH, composeMaterial
         PUSH, __pageRowName
         PUSH, __one
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, composeMaterial
         PUSH, __accumulatorName
         PUSH, partialState
@@ -159,11 +159,11 @@
         PUSH, composeMaterial
         PUSH, __kOffsetName
         PUSH, __secondK
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, composeMaterial
         PUSH, __composeAccumulateName
         PUSH, __one
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, weightAtlas
         PUSH, assemblyState
         PUSH, composeMaterial
@@ -176,7 +176,7 @@
         PUSH, int4Material
         PUSH, __accumulateName
         PUSH, __one
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, assemblyState
         PUSH, outputState
         PUSH, int4Material
@@ -193,23 +193,23 @@
         PUSH, scatterMaterial
         PUSH, __scatterOffsetName
         PUSH, __zero
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, scatterMaterial
         PUSH, __scatterNName
         PUSH, n
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, scatterMaterial
         PUSH, __scatterWidthName
         PUSH, n
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, scatterMaterial
         PUSH, __scatterFeaturesName
         PUSH, n
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, scatterMaterial
         PUSH, __scatterPriorFlagName
         PUSH, __zero
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, outputState
         PUSH, resultState
         PUSH, scatterMaterial

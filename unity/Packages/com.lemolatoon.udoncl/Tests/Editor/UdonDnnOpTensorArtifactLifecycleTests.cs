@@ -125,11 +125,14 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                     vm.Interpret(),
                     "SDK IUdonVM rejected UdonDNN OpTensor case " + caseIndex + "."
                 );
-                Assert.AreEqual(AShapes[caseIndex], opTensorMaterial.GetInt("_VRC_Arg2"));
-                Assert.AreEqual(BShapes[caseIndex], opTensorMaterial.GetInt("_VRC_Arg3"));
-                Assert.AreEqual(8753, opTensorMaterial.GetInt("_VRC_Arg4"));
-                Assert.AreEqual(Operations[caseIndex], opTensorMaterial.GetInt("_VRC_Arg5"));
-                Assert.AreEqual(NanPropagation[caseIndex], opTensorMaterial.GetInt("_VRC_Arg6"));
+                Assert.AreEqual(AShapes[caseIndex], opTensorMaterial.GetInteger("_VRC_Arg2"));
+                Assert.AreEqual(BShapes[caseIndex], opTensorMaterial.GetInteger("_VRC_Arg3"));
+                Assert.AreEqual(8753, opTensorMaterial.GetInteger("_VRC_Arg4"));
+                Assert.AreEqual(Operations[caseIndex], opTensorMaterial.GetInteger("_VRC_Arg5"));
+                Assert.AreEqual(
+                    NanPropagation[caseIndex],
+                    opTensorMaterial.GetInteger("_VRC_Arg6")
+                );
 
                 Color32[] actual = ReadPixels(output, 2048);
                 for (int element = 0; element < 12; ++element)

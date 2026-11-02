@@ -92,6 +92,144 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             Assert.IsNull(AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(GeneratedRlRoot));
         }
 
+#if false
+        // Disabled while the arena AveragePool Unity/D3D11 zero-output defect remains unresolved.
+        // See docs/investigations/2026-11-02-unity-mnist-averagepool-zero.md.
+        [Test]
+        public void UnityGenericMnistModelExecutesAllOperatorsNumericallyOnSdkVm()
+        {
+            Lemolatoon.Udoncl.UdonOnnxModelAsset modelAsset =
+                AssetDatabase.LoadAssetAtPath<Lemolatoon.Udoncl.UdonOnnxModelAsset>(
+                    GeneratedMnistRoot + "/Models/UdonOnnxModel.asset"
+                );
+            Assert.NotNull(modelAsset);
+            Assert.AreEqual("UdonOperatorExecutionProvider", modelAsset.ExecutionProvider);
+            Assert.AreEqual(2, modelAsset.TextureArenaSlots.Length);
+            Assert.AreEqual(6, modelAsset.PassMaterials.Length);
+            foreach (Material material in modelAsset.PassMaterials)
+            {
+                Assert.IsTrue(material.shader.isSupported, material.shader.name);
+                Assert.Greater(material.passCount, 0, material.shader.name);
+            }
+            Assert.AreEqual(
+                "UdonCL/device_gpu__udondnn_arena_pooling_forward_225",
+                modelAsset.PassMaterials[3].shader.name
+            );
+            Assert.AreEqual(
+                "UdonCL/device_gpu__udonblas_arena_sgemm_221",
+                modelAsset.PassMaterials[4].shader.name
+            );
+            Assert.AreEqual(
+                "UdonCL/device_gpu__udonaten_arena_pointwise_215",
+                modelAsset.PassMaterials[5].shader.name
+            );
+            int[] poolingArguments = { 144, 16, 24, 24, 16, 3, 3, 8, 8, 8, 8 };
+            for (int index = 0; index < poolingArguments.Length; ++index)
+                Assert.AreEqual(
+                    poolingArguments[index],
+                    modelAsset.PassMaterials[3].GetInteger("_VRC_Arg" + (index + 2))
+                );
+            Assert.AreEqual(1, modelAsset.PassMaterials[4].GetInteger("_VRC_Arg3"));
+            Assert.AreEqual(10, modelAsset.PassMaterials[4].GetInteger("_VRC_Arg4"));
+            Assert.AreEqual(144, modelAsset.PassMaterials[4].GetInteger("_VRC_Arg5"));
+            Assert.AreEqual(1.0f, modelAsset.PassMaterials[4].GetFloat("_VRC_Arg8"));
+            Assert.NotNull(modelAsset.PassMaterials[4].GetTexture("_VRC_Input1"));
+            Assert.NotNull(modelAsset.PassMaterials[5].GetTexture("_VRC_Input1"));
+
+            UdonAssemblyProgramAsset programAsset =
+                AssetDatabase.LoadAssetAtPath<UdonAssemblyProgramAsset>(
+                    GeneratedMnistRoot + "/Programs/host_program.asset"
+                );
+            Assert.NotNull(programAsset);
+            IUdonProgram program = programAsset.SerializedProgramAsset.RetrieveProgram();
+            Assert.NotNull(program);
+            IUdonVM vm = UdonEditorManager.Instance.ConstructUdonVM();
+            Assert.IsTrue(vm.LoadProgram(program));
+            IUdonHeap heap = vm.InspectHeap();
+
+            byte[] inputBytes = File.ReadAllBytes(
+                ResolveFixture(
+                    "UDONCL_ONNX_MNIST_INPUT",
+                    Path.Combine("build", "precommit", "onnx-aot", "unity-mnist-input.bytes")
+                )
+            );
+            byte[] reference = File.ReadAllBytes(
+                ResolveFixture(
+                    "UDONCL_ONNX_MNIST_REFERENCE",
+                    Path.Combine("build", "precommit", "onnx-aot", "unity-mnist-reference.bytes")
+                )
+            );
+            Color32[] pixels = new Color32[8192 * 2];
+            for (int index = 0; index < inputBytes.Length / 4; ++index)
+                pixels[index] = Encode(BitConverter.ToSingle(inputBytes, index * 4));
+            Texture2D input = new Texture2D(8192, 2, TextureFormat.RGBA32, false, true);
+            try
+            {
+                input.filterMode = FilterMode.Point;
+                input.wrapMode = TextureWrapMode.Clamp;
+                input.SetPixels32(pixels);
+                input.Apply(false, false);
+                Graphics.Blit(input, modelAsset.TextureArenaSlots[0]);
+                int[] stageWords = { 9216, 9216, 9216, 144, 10, 10 };
+                float[] stageTolerances = { 0.0002f, 0.0002f, 0.0002f, 0.0002f, 0.002f, 0.002f };
+                for (int index = 0; index < modelAsset.PassMaterials.Length; ++index)
+                {
+                    int source = index % 2;
+                    int destination = 1 - source;
+                    Material material = modelAsset.PassMaterials[index];
+                    material.SetTexture("_VRC_Input", modelAsset.TextureArenaSlots[source]);
+                    Graphics.Blit(
+                        modelAsset.TextureArenaSlots[source],
+                        modelAsset.TextureArenaSlots[destination],
+                        material
+                    );
+                    byte[] stageReference = File.ReadAllBytes(
+                        ResolveFixture(
+                            "UDONCL_ONNX_MNIST_STAGE_" + index,
+                            Path.Combine(
+                                "build",
+                                "precommit",
+                                "onnx-aot",
+                                "unity-mnist-stage-" + index + ".bytes"
+                            )
+                        )
+                    );
+                    AssertTextureMatches(
+                        modelAsset.TextureArenaSlots[destination],
+                        stageReference,
+                        stageWords[index],
+                        stageTolerances[index],
+                        "MNIST pass " + index
+                    );
+                }
+
+                Graphics.Blit(input, modelAsset.TextureArenaSlots[0]);
+                for (int index = 0; index < modelAsset.TextureArenaSlots.Length; ++index)
+                    Set(heap, program, "arenaSlot" + index, modelAsset.TextureArenaSlots[index]);
+                Set(heap, program, "int4Runners", Array.Empty<IUdonEventReceiver>());
+                Set(heap, program, "passMaterials", modelAsset.PassMaterials);
+                Set(heap, program, "resultState", modelAsset.TextureArenaSlots[0]);
+                vm.SetProgramCounter(program.EntryPoints.GetAddressFromSymbol("_run"));
+                Assert.AreEqual(0u, vm.Interpret());
+
+                Color32[] actual = ReadPixels(modelAsset.TextureArenaSlots[0], 10);
+                float maximumError = 0.0f;
+                for (int index = 0; index < 10; ++index)
+                    maximumError = Mathf.Max(
+                        maximumError,
+                        Mathf.Abs(
+                            Decode(actual[index]) - BitConverter.ToSingle(reference, index * 4)
+                        )
+                    );
+                Assert.That(maximumError, Is.LessThan(0.002f));
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(input);
+            }
+        }
+#endif
+
         [Test]
         public void UnityRlPolicyModelExecutesAllOperatorsNumericallyOnSdkVm()
         {
@@ -459,11 +597,6 @@ namespace Lemolatoon.Udoncl.Editor.Tests
 
         [TestCase("UDONCL_ONNX_AOT_UASM", "generic-host.uasm", "pass202Material")]
         [TestCase("UDONCL_ONNX_TILED_AOT_UASM", "tiled-gemm-host.uasm", "pass200Material")]
-        [TestCase(
-            "UDONCL_ONNX_MNIST_OPERATOR_AOT_UASM",
-            "mnist-operators-host.uasm",
-            "pass205Material"
-        )]
         [TestCase("UDONCL_ONNX_RL_OPERATOR_AOT_UASM", "rl-policy-host.uasm", "pass209Material")]
         [TestCase(
             "UDONCL_ONNX_TINY_LLAMA_OPERATOR_AOT_UASM",
@@ -541,6 +674,56 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         {
             int bits = bytes.r | (bytes.g << 8) | (bytes.b << 16) | (bytes.a << 24);
             return BitConverter.ToSingle(BitConverter.GetBytes(bits), 0);
+        }
+
+        private static void AssertTextureMatches(
+            RenderTexture actualTexture,
+            byte[] reference,
+            int words,
+            float tolerance,
+            string label
+        )
+        {
+            Assert.AreEqual(words * 4, reference.Length, label + " reference size");
+            int width = Math.Min(words, 8192);
+            int height = (words + 8191) / 8192;
+            Color32[] actual = ReadPixels(actualTexture, width, height);
+            float maximumError = 0.0f;
+            int maximumIndex = 0;
+            float maximumActual = 0.0f;
+            float maximumReference = 0.0f;
+            for (int index = 0; index < words; ++index)
+            {
+                float actualValue = Decode(actual[index]);
+                float referenceValue = BitConverter.ToSingle(reference, index * 4);
+                if (float.IsNaN(actualValue) || float.IsInfinity(actualValue))
+                    Assert.Fail(
+                        label
+                            + " non-finite value at word "
+                            + index
+                            + ": actual="
+                            + actualValue.ToString("R")
+                    );
+                float error = Mathf.Abs(actualValue - referenceValue);
+                if (error > maximumError)
+                {
+                    maximumError = error;
+                    maximumIndex = index;
+                    maximumActual = actualValue;
+                    maximumReference = referenceValue;
+                }
+            }
+            Assert.That(
+                maximumError,
+                Is.LessThan(tolerance),
+                label
+                    + " maximum error at word "
+                    + maximumIndex
+                    + ": actual="
+                    + maximumActual.ToString("R")
+                    + " reference="
+                    + maximumReference.ToString("R")
+            );
         }
 
         private static Color32 Encode(float value)

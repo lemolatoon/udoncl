@@ -86,3 +86,9 @@ Device tiles use replace-then-add accumulation to preserve whole-operator ATen
 semantics across K pages. The superseded private `udonblasBackendSgemvQ4`
 backend and its UdonBLAS Unity artifact were removed rather than retained as a
 non-cuBLAS extension.
+
+The general ONNX MNIST path follows the same boundary: arena convolution and
+pooling are private backends of `udondnnConvolutionForward` and
+`udondnnPoolingForward`, while coordinate-aware broadcast Add remains an
+UdonATen backend. These kernels only expand physical texture capacity; they do
+not define alternate public signatures.

@@ -48,23 +48,23 @@
         PUSH, convolutionMaterial
         PUSH, __inputShapeName
         PUSH, inputShape
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, convolutionMaterial
         PUSH, __filterShapeName
         PUSH, filterShape
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, convolutionMaterial
         PUSH, __convolutionShapeName
         PUSH, convolutionShape
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, convolutionMaterial
         PUSH, __convolutionModeName
         PUSH, convolutionMode
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, convolutionMaterial
         PUSH, __outputShapeName
         PUSH, outputShape
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, convolutionMaterial
         PUSH, __alphaName
         PUSH, alpha

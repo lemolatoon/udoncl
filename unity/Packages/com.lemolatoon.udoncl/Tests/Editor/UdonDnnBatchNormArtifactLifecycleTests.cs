@@ -129,8 +129,8 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                     vm.Interpret(),
                     "SDK IUdonVM rejected UdonDNN batch normalization case " + caseIndex + "."
                 );
-                Assert.AreEqual(8753, batchnormMaterial.GetInt("_VRC_Arg2"));
-                Assert.AreEqual(Modes[caseIndex], batchnormMaterial.GetInt("_VRC_Arg3"));
+                Assert.AreEqual(8753, batchnormMaterial.GetInteger("_VRC_Arg2"));
+                Assert.AreEqual(Modes[caseIndex], batchnormMaterial.GetInteger("_VRC_Arg3"));
                 Assert.AreEqual(Epsilons[caseIndex], batchnormMaterial.GetFloat("_VRC_Arg4"));
 
                 Color32[] actual = ReadPixels(output, 4096);

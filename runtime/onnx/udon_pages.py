@@ -507,7 +507,7 @@ def _emit_unrolled_int4_call_uasm(plan: dict, call_index: int) -> str:
                 f"        PUSH, {material}",
                 f"        PUSH, {property_name}",
                 f"        PUSH, {value}",
-                '        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"',
+                '        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"',
             ]
         )
 
@@ -753,7 +753,7 @@ def emit_int4_call_uasm(
                 f"        PUSH, {material}",
                 f"        PUSH, {property_name}",
                 f"        PUSH, {value}",
-                '        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"',
+                '        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"',
             ]
         )
 
@@ -1040,7 +1040,7 @@ def emit_model_uasm(plan: dict) -> str:
                 f"        PUSH, {material}",
                 f"        PUSH, {property_name}",
                 f"        PUSH, {value_name}",
-                '        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"',
+                '        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"',
             ]
         )
 

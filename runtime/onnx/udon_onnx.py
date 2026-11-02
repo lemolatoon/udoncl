@@ -16,6 +16,13 @@ from pathlib import Path
 import struct
 
 
+ONNX_ARENA_POOLING_DISABLED_REASON = (
+    "udondnn_arena_pooling_forward is disabled for ONNX because its Unity/D3D11 "
+    "zero-output defect is unresolved; see "
+    "docs/investigations/2026-11-02-unity-mnist-averagepool-zero.md"
+)
+
+
 def _varint(value: int) -> bytes:
     if value < 0:
         value &= (1 << 64) - 1
@@ -972,6 +979,99 @@ def _arena_softmax_profile(node: dict) -> dict | None:
     }
 
 
+def _shape4(shape: list[int]) -> list[int] | None:
+    if not 1 <= len(shape) <= 4:
+        return None
+    return [1] * (4 - len(shape)) + list(shape)
+
+
+def _pack_u8_pair(values: list[int]) -> int:
+    if len(values) != 2 or any(value <= 0 or value > 255 for value in values):
+        raise ValueError("packed dimensions must be in [1, 255]")
+    return values[0] | (values[1] << 8)
+
+
+def _arena_convolution_profile(node: dict, values: dict) -> dict | None:
+    image = _shape4(values[node["inputs"][0]])
+    weight = _shape4(values[node["inputs"][1]])
+    output = _shape4(node["shape"])
+    attributes = node["attributes"]
+    pads = attributes.get("pads", {"ints": [0, 0, 0, 0]})["ints"]
+    strides = attributes.get("strides", {"ints": [1, 1]})["ints"]
+    dilations = attributes.get("dilations", {"ints": [1, 1]})["ints"]
+    groups = attributes.get("group", {"i": 1})["i"]
+    if (
+        image is None
+        or weight is None
+        or output is None
+        or len(pads) != 4
+        or len(strides) != 2
+        or len(dilations) != 2
+        or groups != 1
+        or dilations != [1, 1]
+        or any(value <= 0 for value in strides + dilations)
+        or any(value < 0 for value in pads)
+        or math.prod(image) > ARENA_POINTWISE_WORDS
+        or math.prod(weight) > ARENA_POINTWISE_WORDS
+        or math.prod(output) > ARENA_POINTWISE_WORDS
+        or image[1] * weight[2] * weight[3] > 256
+    ):
+        return None
+    return {
+        "arena_convolution": True,
+        "storage_words": ARENA_POINTWISE_WORDS,
+        "width": 8192,
+        "height": 2,
+        "input_shape": image,
+        "output_shape": output,
+        "filter_shape": weight,
+        "pads": pads,
+        "strides": strides,
+        "dilations": dilations,
+        "groups": groups,
+    }
+
+
+def _arena_pooling_profile(node: dict, values: dict) -> dict | None:
+    image = _shape4(values[node["inputs"][0]])
+    output = _shape4(node["shape"])
+    attributes = node["attributes"]
+    window = attributes.get("kernel_shape", {"ints": []})["ints"]
+    pads = attributes.get("pads", {"ints": [0, 0, 0, 0]})["ints"]
+    strides = attributes.get("strides", {"ints": [1, 1]})["ints"]
+    count_include_pad = attributes.get("count_include_pad", {"i": 0})["i"]
+    ceil_mode = attributes.get("ceil_mode", {"i": 0})["i"]
+    if (
+        image is None
+        or output is None
+        or len(window) != 2
+        or len(pads) != 4
+        or len(strides) != 2
+        or any(value <= 0 for value in window + strides)
+        or any(value < 0 for value in pads)
+        or pads != [0, 0, 0, 0]
+        or count_include_pad != 0
+        or ceil_mode != 0
+        or any(value > 255 for value in image + output)
+        or math.prod(window) > 256
+        or any(value > 8 for value in window)
+        or math.prod(image) > ARENA_POINTWISE_WORDS
+        or math.prod(output) > ARENA_POINTWISE_WORDS
+    ):
+        return None
+    return {
+        "arena_pooling": True,
+        "storage_words": ARENA_POINTWISE_WORDS,
+        "width": 8192,
+        "height": 2,
+        "input_shape": image,
+        "output_shape": output,
+        "window": window,
+        "pads": pads,
+        "strides": strides,
+    }
+
+
 def _unravel(index: int, shape: list[int]) -> list[int]:
     coordinates = [0] * len(shape)
     for axis in range(len(shape) - 1, -1, -1):
@@ -1158,6 +1258,27 @@ def _pointwise_schedule(node: dict, values: dict) -> list[dict | None]:
                 "height": 2,
                 "operation": ARENA_POINTWISE_OPERATIONS[node["provider"]],
                 "input_words": input_words,
+            }
+        ]
+    padded_inputs = [_shape4(values[name]) for name in node["inputs"]]
+    output_shape = _shape4(node["shape"])
+    if (
+        node["provider"] in ARENA_POINTWISE_OPERATIONS
+        and len(node["inputs"]) == 2
+        and words <= ARENA_POINTWISE_WORDS
+        and output_shape is not None
+        and all(shape is not None for shape in padded_inputs)
+        and all(math.prod(shape) <= ARENA_POINTWISE_WORDS for shape in padded_inputs)
+    ):
+        return [
+            {
+                "arena_broadcast_words": words,
+                "storage_words": ARENA_POINTWISE_WORDS,
+                "width": 8192,
+                "height": 2,
+                "operation": ARENA_POINTWISE_OPERATIONS[node["provider"]],
+                "output_shape": output_shape,
+                "input_shapes": padded_inputs,
             }
         ]
     exact_shape = all(values[name] == node["shape"] for name in node["inputs"])
@@ -1825,6 +1946,14 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
                     ]
             elif node["provider"] in POINTWISE_PROVIDERS:
                 tiles = _pointwise_schedule(node, shapes)
+            elif node["provider"] == "udondnnConvolutionForward":
+                arena_convolution = _arena_convolution_profile(node, shapes)
+                tiles = [arena_convolution] if arena_convolution is not None else [None]
+            elif node["provider"] == "udondnnPoolingForward":
+                arena_pooling = _arena_pooling_profile(node, shapes)
+                if arena_pooling is not None and not fuse_mnist:
+                    raise NotImplementedError(ONNX_ARENA_POOLING_DISABLED_REASON)
+                tiles = [arena_pooling] if arena_pooling is not None else [None]
             elif node["provider"] == "udondnnSoftmaxForward":
                 arena_softmax = _arena_softmax_profile(node)
                 tiles = [arena_softmax] if arena_softmax is not None else [None]
@@ -1930,6 +2059,75 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
                                     else tile["input_words"][0]
                                 ),
                                 "_VRC_Arg6": tile["operation"],
+                            },
+                        }
+                    )
+                if tile is not None and "arena_broadcast_words" in tile:
+                    pointwise_inputs = node["inputs"]
+                    broadcast_shapes = tile["output_shape"][1:] + sum(
+                        tile["input_shapes"], []
+                    )
+                    device_pass.update(
+                        {
+                            "kernel": "udonaten_arena_broadcast_pointwise",
+                            "shader": "kernel_223.shader",
+                            "inputs": pointwise_inputs,
+                            "static_inputs": _pass_static_inputs(
+                                pointwise_inputs, graph["initializers"]
+                            ),
+                            "fragments": tile["storage_words"],
+                            "material_ints": {
+                                "_VRC_Arg3": tile["arena_broadcast_words"],
+                                "_VRC_Arg4": tile["operation"],
+                                **{
+                                    f"_VRC_Arg{index + 5}": value
+                                    for index, value in enumerate(broadcast_shapes)
+                                },
+                            },
+                        }
+                    )
+                if tile is not None and tile.get("arena_convolution"):
+                    convolution_inputs = node["inputs"][:2]
+                    values = (
+                        [math.prod(tile["output_shape"])]
+                        + tile["input_shape"][1:]
+                        + tile["output_shape"][1:]
+                        + tile["filter_shape"][2:]
+                        + tile["pads"][:2]
+                        + tile["strides"]
+                    )
+                    device_pass.update(
+                        {
+                            "kernel": "udondnn_arena_convolution_forward",
+                            "shader": "kernel_224.shader",
+                            "inputs": convolution_inputs,
+                            "static_inputs": _pass_static_inputs(
+                                convolution_inputs, graph["initializers"]
+                            ),
+                            "fragments": tile["storage_words"],
+                            "material_ints": {
+                                f"_VRC_Arg{index + 3}": value
+                                for index, value in enumerate(values)
+                            },
+                        }
+                    )
+                if tile is not None and tile.get("arena_pooling"):
+                    values = (
+                        [math.prod(tile["output_shape"])]
+                        + tile["input_shape"][1:]
+                        + tile["output_shape"][1:]
+                        + tile["window"]
+                        + tile["strides"]
+                    )
+                    device_pass.update(
+                        {
+                            "kernel": "udondnn_arena_pooling_forward",
+                            "shader": "kernel_225.shader",
+                            "inputs": [node["inputs"][0]],
+                            "fragments": tile["storage_words"],
+                            "material_ints": {
+                                f"_VRC_Arg{index + 2}": value
+                                for index, value in enumerate(values)
                             },
                         }
                     )
@@ -2118,6 +2316,16 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
                     "height": 2,
                     "operation": tiles[0]["operation"],
                 }
+            elif tiles != [None] and "arena_broadcast_words" in tiles[0]:
+                call["device_profile"] = {
+                    "supported": True,
+                    "kernel": "udonaten_arena_broadcast_pointwise",
+                    "shader": "kernel_223.shader",
+                    "storage_words": ARENA_POINTWISE_WORDS,
+                    "width": 8192,
+                    "height": 2,
+                    "operation": tiles[0]["operation"],
+                }
             elif tiles != [None]:
                 call["device_tiles"] = {
                     "max_words": POINTWISE_TILE_WORDS,
@@ -2127,6 +2335,24 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
                 call["device_tiles"] = {
                     "supported": False,
                     "reason": "broadcast addressing is not implemented for large tensors",
+                }
+        elif node["provider"] == "udondnnConvolutionForward":
+            profile = _arena_convolution_profile(node, shapes)
+            if profile is not None:
+                call["device_profile"] = {
+                    "supported": True,
+                    "kernel": "udondnn_arena_convolution_forward",
+                    "shader": "kernel_224.shader",
+                    "storage_words": ARENA_POINTWISE_WORDS,
+                    "width": 8192,
+                    "height": 2,
+                }
+        elif node["provider"] == "udondnnPoolingForward":
+            profile = _arena_pooling_profile(node, shapes)
+            if profile is not None:
+                call["device_profile"] = {
+                    "supported": False,
+                    "reason": ONNX_ARENA_POOLING_DISABLED_REASON,
                 }
         elif node["provider"] == "udonatenRmsNorm":
             if math.prod(node["shape"]) > RMS_NORM_TILE_WORDS:

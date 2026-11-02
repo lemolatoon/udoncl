@@ -204,18 +204,15 @@ def main():
         sdot_reduce_bundle / "kernels/kernel_104.shader"
     ).read_text(encoding="utf-8")
     if (
-        "_VRC_Arg9 (\"Arg9\", Int)" not in shaderlab
-        or "_VRC_Arg7 (\"Arg7\", Int)" not in sgemv_shaderlab
-        or "_VRC_Arg4 (\"Arg4\", Int)" not in saxpy_shaderlab
-        or "_VRC_Arg4 (\"Arg4\", Int)" not in sdot_product_shaderlab
-        or "_VRC_Arg3 (\"Arg3\", Int)" not in sdot_reduce_shaderlab
-        or "Integer)" in shaderlab
-        or "Integer)" in sgemv_shaderlab
-        or "Integer)" in saxpy_shaderlab
-        or "Integer)" in sdot_product_shaderlab
-        or "Integer)" in sdot_reduce_shaderlab
+        "_VRC_Arg9 (\"Arg9\", Integer)" not in shaderlab
+        or "int _VRC_Arg9;" not in fragment.read_text(encoding="utf-8")
+        or "asuint(_VRC_Arg9)" not in fragment.read_text(encoding="utf-8")
+        or "_VRC_Arg7 (\"Arg7\", Integer)" not in sgemv_shaderlab
+        or "_VRC_Arg4 (\"Arg4\", Integer)" not in saxpy_shaderlab
+        or "_VRC_Arg4 (\"Arg4\", Integer)" not in sdot_product_shaderlab
+        or "_VRC_Arg3 (\"Arg3\", Integer)" not in sdot_reduce_shaderlab
     ):
-        raise RuntimeError("UdonBLAS integer uniforms are not Unity SetInt-compatible")
+        raise RuntimeError("UdonBLAS integer uniforms are not Unity SetInteger-compatible")
     (output / "Bindings.h").write_text(
         "inline const char *deviceSource() { return "
         + json.dumps(device_text)

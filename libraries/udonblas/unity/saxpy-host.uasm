@@ -39,15 +39,15 @@
         PUSH, saxpyMaterial
         PUSH, __nName
         PUSH, n
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, saxpyMaterial
         PUSH, __incxName
         PUSH, incx
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, saxpyMaterial
         PUSH, __incyName
         PUSH, incy
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, saxpyMaterial
         PUSH, __alphaName
         PUSH, alpha

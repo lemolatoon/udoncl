@@ -48,23 +48,23 @@
         PUSH, poolingMaterial
         PUSH, __inputShapeName
         PUSH, inputShape
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, poolingMaterial
         PUSH, __poolingShapeName
         PUSH, poolingShape
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, poolingMaterial
         PUSH, __poolingModeName
         PUSH, poolingMode
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, poolingMaterial
         PUSH, __nanPropagationName
         PUSH, nanPropagation
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, poolingMaterial
         PUSH, __outputShapeName
         PUSH, outputShape
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, poolingMaterial
         PUSH, __alphaName
         PUSH, alpha

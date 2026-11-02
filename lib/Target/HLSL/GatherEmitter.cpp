@@ -80,8 +80,9 @@ struct Emitter {
       auto resource =
           SymbolTable::lookupNearestSymbolFrom<fragment::ResourceOp>(
               op, uniform.getResourceAttr());
+      auto name = "_VRC_Arg" + std::to_string(resource.getArgIndex());
       names[uniform.getValue()] =
-          "_VRC_Arg" + std::to_string(resource.getArgIndex());
+          uniform.getValue().getType().isF32() ? name : "asuint(" + name + ")";
     } else if (auto coord = dyn_cast<fragment::FragmentCoordOp>(op)) {
       names[coord.getX()] = "uint(position.x)";
       names[coord.getY()] = "uint(position.y)";
@@ -232,6 +233,8 @@ struct Emitter {
       declare(op->getResult(0), "float(" + get(op->getOperand(0)) + ")");
     else if (isa<arith::SIToFPOp>(op))
       declare(op->getResult(0), "float(asint(" + get(op->getOperand(0)) + "))");
+    else if (isa<arith::FPToUIOp>(op))
+      declare(op->getResult(0), "uint(" + get(op->getOperand(0)) + ")");
     else if (isa<math::FloorOp, math::SqrtOp, math::CosOp, math::SinOp,
                  math::ExpOp, math::LogOp, arith::NegFOp>(op)) {
       auto expression = get(op->getOperand(0));
@@ -289,7 +292,7 @@ LogicalResult emitGatherFragmentHLSL(fragment::KernelOp kernel,
   out << "cbuffer Params : register(b13) {\n";
   for (auto resource : kernel.getBody().front().getOps<fragment::ResourceOp>())
     if (resource.getKind() == "uniform")
-      out << "  " << (resource.getValueType().isF32() ? "float" : "uint")
+      out << "  " << (resource.getValueType().isF32() ? "float" : "int")
           << " _VRC_Arg" << resource.getArgIndex() << ";\n";
   out << "};\nfloat4 frag(float4 position : SV_POSITION) : SV_Target {\n";
   Emitter emitter{out};

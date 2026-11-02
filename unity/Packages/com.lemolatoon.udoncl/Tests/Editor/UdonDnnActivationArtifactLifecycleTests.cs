@@ -149,9 +149,12 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                     vm.Interpret(),
                     "SDK IUdonVM rejected UdonDNN activation case " + caseIndex + "."
                 );
-                Assert.AreEqual(64, activationMaterial.GetInt("_VRC_Arg2"));
-                Assert.AreEqual(Modes[caseIndex], activationMaterial.GetInt("_VRC_Arg3"));
-                Assert.AreEqual(NanPropagation[caseIndex], activationMaterial.GetInt("_VRC_Arg4"));
+                Assert.AreEqual(64, activationMaterial.GetInteger("_VRC_Arg2"));
+                Assert.AreEqual(Modes[caseIndex], activationMaterial.GetInteger("_VRC_Arg3"));
+                Assert.AreEqual(
+                    NanPropagation[caseIndex],
+                    activationMaterial.GetInteger("_VRC_Arg4")
+                );
 
                 Color32[] actual = ReadPixels(output, 2048);
                 for (int element = 0; element < 64; ++element)

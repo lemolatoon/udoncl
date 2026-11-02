@@ -75,6 +75,17 @@ location_case = '''module {
 located = run([opt, '--vrc-raise-llvm-to-scalar', '--mlir-print-debuginfo'], location_case)
 assert 'example.c' in located and ':7:4' in located
 
+# Positive finite float-to-unsigned conversion is required by proven shader
+# profiles that carry exact integer metadata through Unity float uniforms.
+float_to_uint_case = '''module {
+  llvm.func @float_to_uint(%value: f32) -> i32 {
+    %result = llvm.fptoui %value : f32 to i32
+    llvm.return %result : i32
+  }
+}'''
+float_to_uint = run([opt, '--vrc-raise-llvm-to-scalar'], float_to_uint_case)
+assert 'arith.fptoui' in float_to_uint and 'llvm.fptoui' not in float_to_uint
+
 negative = [
     ('llvm.func @pointer(%p: !llvm.ptr) { llvm.return }', 'memory/provenance'),
     ('llvm.func @exact(%a: i32, %b: i32) -> i32 { %r = llvm.lshr exact %a, %b : i32 llvm.return %r : i32 }', 'poison-generating flag'),

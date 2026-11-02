@@ -340,9 +340,6 @@ def run_unity_mcp_gate(root, unity, project, build, output):
             "UDONCL_ONNX_TILED_AOT_UASM": str(
                 (output / "onnx-aot/tiled-gemm-host.uasm").resolve()
             ),
-            "UDONCL_ONNX_MNIST_OPERATOR_AOT_UASM": str(
-                (output / "onnx-aot/mnist-operators-host.uasm").resolve()
-            ),
             "UDONCL_ONNX_RL_OPERATOR_AOT_UASM": str(
                 (output / "onnx-aot/rl-policy-host.uasm").resolve()
             ),

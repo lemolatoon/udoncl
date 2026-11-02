@@ -1,17 +1,17 @@
 Shader "UdonCL/UdonATen/WeightInt4packMmCompose" {
 Properties {
     _WeightPage ("External weight page", 2D) = "black" {}
-    _CompactPage ("Compact Q4/BF16 page", Int) = 0
-    _PageRow ("Compact atlas row", Int) = 0
+    _CompactPage ("Compact Q4/BF16 page", Integer) = 0
+    _PageRow ("Compact atlas row", Integer) = 0
     _Activation ("Activation state", 2D) = "black" {}
     _Accumulator ("Prior output state", 2D) = "black" {}
-    _ActivationOffset ("Activation offset", Int) = 0
-    _ActivationWidth ("Activation texture width", Int) = 8192
-    _AccumulatorOffset ("Accumulator offset", Int) = 7168
-    _KOffset ("K tile offset", Int) = 0
-    _N ("Output features", Int) = 0
-    _K ("Input tile features", Int) = 0
-    _Accumulate ("Accumulate prior output", Int) = 0
+    _ActivationOffset ("Activation offset", Integer) = 0
+    _ActivationWidth ("Activation texture width", Integer) = 8192
+    _AccumulatorOffset ("Accumulator offset", Integer) = 7168
+    _KOffset ("K tile offset", Integer) = 0
+    _N ("Output features", Integer) = 0
+    _K ("Input tile features", Integer) = 0
+    _Accumulate ("Accumulate prior output", Integer) = 0
 }
 SubShader { Pass {
 CGPROGRAM

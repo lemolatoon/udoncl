@@ -42,15 +42,15 @@
         PUSH, softmaxMaterial
         PUSH, __inputShapeName
         PUSH, inputShape
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, softmaxMaterial
         PUSH, __algorithmName
         PUSH, algorithm
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, softmaxMaterial
         PUSH, __modeName
         PUSH, mode
-        EXTERN, "UnityEngineMaterial.__SetInt__SystemString_SystemInt32__SystemVoid"
+        EXTERN, "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
         PUSH, softmaxMaterial
         PUSH, __alphaName
         PUSH, alpha

@@ -120,11 +120,11 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                     vm.Interpret(),
                     "SDK IUdonVM rejected UdonDNN pooling case " + caseIndex + "."
                 );
-                Assert.AreEqual(17441, poolingMaterial.GetInt("_VRC_Arg2"));
-                Assert.AreEqual(2232627, poolingMaterial.GetInt("_VRC_Arg3"));
-                Assert.AreEqual(Modes[caseIndex], poolingMaterial.GetInt("_VRC_Arg4"));
-                Assert.AreEqual(NanPropagation[caseIndex], poolingMaterial.GetInt("_VRC_Arg5"));
-                Assert.AreEqual(8737, poolingMaterial.GetInt("_VRC_Arg6"));
+                Assert.AreEqual(17441, poolingMaterial.GetInteger("_VRC_Arg2"));
+                Assert.AreEqual(2232627, poolingMaterial.GetInteger("_VRC_Arg3"));
+                Assert.AreEqual(Modes[caseIndex], poolingMaterial.GetInteger("_VRC_Arg4"));
+                Assert.AreEqual(NanPropagation[caseIndex], poolingMaterial.GetInteger("_VRC_Arg5"));
+                Assert.AreEqual(8737, poolingMaterial.GetInteger("_VRC_Arg6"));
 
                 Color32[] actual = ReadPixels(output, 2048);
                 for (int element = 0; element < 8; ++element)
