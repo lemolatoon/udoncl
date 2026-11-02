@@ -13,12 +13,12 @@
     {
       "id": 1,
       "name": "source",
-      "byte_size": 4
+      "byte_size": 32772
     },
     {
       "id": 2,
       "name": "destination",
-      "byte_size": 4
+      "byte_size": 32772
     }
   ]
 }

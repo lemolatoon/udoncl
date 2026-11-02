@@ -110,6 +110,10 @@ def main():
     assert [buffer['name'] for buffer in copy_manifest['device']['buffers']] == [
         'source', 'destination',
     ]
+    assert [
+        (buffer['logical_bytes'], buffer['width'], buffer['height'])
+        for buffer in copy_manifest['device']['buffers']
+    ] == [(32772, 8192, 2), (32772, 8192, 2)]
     copy_assembly = (copy_artifact / 'host.uasm').read_text(encoding='utf-8')
     assert '.export CopyFull' in copy_assembly
     assert 'VRCSDKBaseVRCGraphics.__Blit__' in copy_assembly

@@ -486,7 +486,7 @@ std::string unityLibraryBufferCopyShader(StringRef program) {
           "    Texture2D<float4> _MainTex;\n"
           "    float4 frag(v2f_img input) : SV_Target {\n"
           "      uint width, height; _MainTex.GetDimensions(width, height);\n"
-          "      uint2 p = min(uint2(input.uv * uint2(width, height)), "
+          "      uint2 p = min(uint2(input.pos.xy), "
           "uint2(width - 1, height - 1));\n"
           "      return _MainTex.Load(int3(p, 0));\n"
           "    }\n"
