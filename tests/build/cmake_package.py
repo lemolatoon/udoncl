@@ -68,6 +68,10 @@ def main():
         args.cmake, '--build', str(consumer),
         '--target', 'hello-buffer-copy-unity-library',
     ])
+    run([
+        args.cmake, '--build', str(consumer),
+        '--target', 'hello-dispatch-unity-library',
+    ])
 
     build_root = consumer / 'udoncl/hello-artifact'
     artifact = build_root / 'artifact'
@@ -145,6 +149,28 @@ def main():
     assert '.export __udoncl_kernel_material_1' in dispatch_assembly
     assert 'UnityEngineMaterial.__SetFloat__' in dispatch_assembly
     assert dispatch_assembly.count('VRCSDKBaseVRCGraphics.__Blit__') == 1
+    opencl_dispatch_artifact = (
+        consumer / 'udoncl/hello-dispatch-unity-library/artifact'
+    )
+    opencl_dispatch_manifest = json.loads(
+        (opencl_dispatch_artifact / 'manifest.json').read_text(encoding='utf-8')
+    )
+    assert opencl_dispatch_manifest['dispatch_sites'] == [{
+        'function': 'dispatch_square',
+        'kernel_id': 1,
+        'descriptor_abi': 1,
+        'resources': 1,
+        'completion': 'pending_event',
+    }]
+    opencl_dispatch_assembly = (
+        opencl_dispatch_artifact / 'host.uasm'
+    ).read_text(encoding='utf-8')
+    assert '.export __0_DispatchSquare' in opencl_dispatch_assembly
+    assert '.export __udoncl_kernel_material_1' in opencl_dispatch_assembly
+    assert opencl_dispatch_assembly.count('UnityEngineMaterial.__SetFloat__') == 1
+    assert opencl_dispatch_assembly.count('VRCSDKBaseVRCGraphics.__Blit__') == 1
+    assert (opencl_dispatch_artifact / 'kernels/kernel_1.shader').is_file()
+    assert (opencl_dispatch_artifact / 'kernels/kernel_1.hlsl').is_file()
     copy_artifact = consumer / 'udoncl/hello-buffer-copy-unity-library/artifact'
     copy_manifest = json.loads(
         (copy_artifact / 'manifest.json').read_text(encoding='utf-8')
@@ -265,9 +291,61 @@ def main():
         args.source.resolve() / 'buffer-copy-library.json',
         '--host-llvm', status_module, '-o', output / 'status-branch-artifact',
     ], 'does not support control flow around setup calls')
+
+    wrong_kernel_source = output / 'wrong-dispatch-kernel.c'
+    wrong_kernel_module = output / 'wrong-dispatch-kernel.bc'
+    dispatch_source = (args.source.resolve() / 'dispatch.c').read_text(
+        encoding='utf-8'
+    )
+    wrong_kernel_source.write_text(
+        dispatch_source.replace(
+            'clCreateKernel(program, "square_plus_one"',
+            'clCreateKernel(program, "wrong_kernel"',
+        ),
+        encoding='utf-8',
+    )
+    run([
+        args.clang, '-target', 'spir-unknown-unknown', '-x', 'c', '-std=c11',
+        '-Xclang', '-fdefault-calling-conv=cdecl', '-O0',
+        '-Xclang', '-disable-O0-optnone', '-fomit-frame-pointer',
+        '-ffp-contract=off', '-emit-llvm', '-c', str(wrong_kernel_source),
+        '-I' + str(install / 'include'), '-o', str(wrong_kernel_module),
+    ])
+    run_failure([
+        installed_compiler, '--emit-unity-library-bundle',
+        args.source.resolve() / 'dispatch-library.json',
+        '--host-llvm', wrong_kernel_module,
+        '--device-llvm', consumer / 'udoncl/hello-unity-library/device.bc',
+        '-o', output / 'wrong-dispatch-kernel-artifact',
+    ], 'kernel name does not match device_kernel')
+
+    wrong_queue_source = output / 'wrong-dispatch-queue.c'
+    wrong_queue_module = output / 'wrong-dispatch-queue.bc'
+    wrong_queue_source.write_text(
+        dispatch_source.replace(
+            'clEnqueueNDRangeKernel(queue, kernel',
+            'clEnqueueNDRangeKernel((cl_command_queue)context, kernel',
+        ),
+        encoding='utf-8',
+    )
+    run([
+        args.clang, '-target', 'spir-unknown-unknown', '-x', 'c', '-std=c11',
+        '-Xclang', '-fdefault-calling-conv=cdecl', '-O0',
+        '-Xclang', '-disable-O0-optnone', '-fomit-frame-pointer',
+        '-ffp-contract=off', '-emit-llvm', '-c', str(wrong_queue_source),
+        '-I' + str(install / 'include'), '-o', str(wrong_queue_module),
+    ])
+    run_failure([
+        installed_compiler, '--emit-unity-library-bundle',
+        args.source.resolve() / 'dispatch-library.json',
+        '--host-llvm', wrong_queue_module,
+        '--device-llvm', consumer / 'udoncl/hello-unity-library/device.bc',
+        '-o', output / 'wrong-dispatch-queue-artifact',
+    ], 'enqueue and release handles must match their created objects')
     print(
         'cmake_package=passed host_sources=3 device_sources=3 '
-        'artifacts=hello-artifact,hello-unity-library,hello-buffer-copy-unity-library'
+        'artifacts=hello-artifact,hello-unity-library,'
+        'hello-buffer-copy-unity-library,hello-dispatch-unity-library'
     )
 
 

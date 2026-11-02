@@ -10,6 +10,7 @@ udoncl_add_host_library(hello_host
 target_include_directories(hello_host INTERFACE include)
 udoncl_add_host_library(hello_host_extra host_extra.c)
 udoncl_add_host_library(hello_buffer_copy_host buffer_copy.c)
+udoncl_add_host_library(hello_dispatch_host dispatch.c)
 udoncl_add_device_library(hello_device
   kernel.cl
   kernel_support.cl
@@ -30,3 +31,8 @@ udoncl_add_unity_library(hello-unity-library
 udoncl_add_unity_library(hello-buffer-copy-unity-library
   CONFIG buffer-copy-library.json
   HOST_LIBRARIES hello_buffer_copy_host)
+
+udoncl_add_unity_library(hello-dispatch-unity-library
+  CONFIG dispatch-library.json
+  HOST_LIBRARIES hello_dispatch_host
+  DEVICE_LIBRARIES hello_device hello_device_extra)

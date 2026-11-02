@@ -183,21 +183,23 @@ Current components:
   one platform and GPU device, one context and in-order queue, constant-sized
   `clCreateBuffer` allocations, full `clEnqueueCopyBuffer` commands, and their
   release calls. The compiler validates context/queue/opaque-handle flow and
-  recovers typed buffer IR. Status-dependent control flow, uploads/readbacks,
-  kernel dispatch, partial copies, and general OpenCL lifetime semantics remain
-  explicit compile errors. `<udoncl/unity_buffer.h>` remains a temporary
+  recovers typed buffer IR. A second fixed subset accepts one four-byte output,
+  a copied f32 scalar argument, and a one-work-item `clEnqueueNDRangeKernel`,
+  lowering it to a generated material property update and `VRCGraphics.Blit`.
+  Status-dependent control flow, uploads/readbacks, dynamic NDRange sizes,
+  other argument layouts, partial copies, and general OpenCL lifetime semantics
+  remain explicit compile errors. `<udoncl/unity_buffer.h>` remains a temporary
   compatibility input, not the preferred public example.
 - `udoncl_add_unity_library` accepts ordinary `DEVICE_LIBRARIES` targets and
   packages the selected AOT kernel's ShaderLab/HLSL plus manifest metadata in
-  the Unity artifact. This establishes the public multi-file Device build and
-  import path; Host `clSetKernelArg`/`clEnqueueNDRangeKernel` lowering and
-  runtime material dispatch are still pending, so bundling a kernel alone does
-  not make it callable from Host C.
+  the Unity artifact. The `hello-dispatch-unity-library` example connects its
+  restricted standard OpenCL Host sequence to the generated kernel material.
 - The typed Unity backend can lower a fixed one-output `vrc.dispatch` with a
   copied f32/i32 descriptor to material property updates and one
   `VRCGraphics.Blit`; the Importer binds the generated kernel material through
-  its manifest dispatch site. The remaining public-path work is recovering
-  that descriptor and dispatch from standard OpenCL Host calls.
+  its manifest dispatch site. The first standard OpenCL Host bridge now
+  recovers the fixed buffer/f32 descriptor and dispatch; broader descriptors,
+  multiple kernels, and asynchronous continuation remain pending.
 - `udoncl-opt`: MLIR parser/printer with operation verification, rejects unknown ops by default.
 - `VRCLLVMToHighLevelMLIR`: independent import/metadata, local-memory and scalar/CFG recovery library for host/device development.
 - `udoncl-translate --import-llvm input.ll`: LLVM dialect import with preserved frontend metadata and optional JSON sidecar.

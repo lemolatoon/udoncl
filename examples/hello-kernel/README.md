@@ -18,6 +18,7 @@ cmake -S examples/hello-kernel -B build/hello-kernel-cmake -G Ninja `
   -DUdonCL_DIR="$PWD/cmake"
 cmake --build build/hello-kernel-cmake --target hello-artifact
 cmake --build build/hello-kernel-cmake --target hello-unity-library
+cmake --build build/hello-kernel-cmake --target hello-dispatch-unity-library
 ```
 
 The bundle is generated under
@@ -30,12 +31,23 @@ directory in **Tools → udoncl → Import Artifacts...**. Unity generates
 `UdonclHelloKernelBinding`, whose `SquarePlusOne(float value)` method calls the
 compiler-emitted Udon Assembly.
 
-The Unity target also compiles the normal multi-file `hello_device` targets
-named in `DEVICE_LIBRARIES` and packages `square_plus_one` as
-`kernels/kernel_1.shader` and `.hlsl`. The Importer can create its material,
-but this checkpoint does not yet lower Host `clSetKernelArg` or
-`clEnqueueNDRangeKernel`; the scalar `SquarePlusOne` export remains the only
-callable entry point in this artifact.
+The `hello-dispatch-unity-library` target compiles `dispatch.c` through the
+public Host C path and the normal multi-file `hello_device` targets named in
+`DEVICE_LIBRARIES`. It packages `square_plus_one` as
+`kernels/kernel_1.shader` and `.hlsl`, and exports `DispatchSquare(float)`.
+Import
+`build/hello-kernel-cmake/udoncl/hello-dispatch-unity-library/artifact` to call
+the generated Device kernel from the generated U# binding. The repository
+validation calls `DispatchSquare(3.0f)` through SDK IUdonVM and expects the
+one-float GPU output to be exactly `10.0f` after both import and reimport.
+
+This is deliberately a small AOT OpenCL 1.2 subset: one platform, one GPU
+device, one context and in-order queue, one fixed four-byte output buffer, a
+statically known program/kernel, buffer argument 0, copied f32 argument 1, and
+a one-work-item 1D enqueue. The calls must be direct and straight-line and
+must match `dispatch-library.json`. Runtime source compilation, dynamic
+NDRange sizes, other argument layouts, readback, and general handle lifetime
+remain compile errors rather than implicit fallbacks.
 
 A packaged compiler installation finds its tools beside the CMake package. The source-tree package
 also discovers the built `udonclc` and pinned `.deps/llvm23` tools. Explicit
@@ -211,11 +223,7 @@ The command prints `Descriptor contract valid; no GPU dispatch executed`.
 
 ## Unity boundary
 
-This procedure produces real Device and linked Host/Device compiler artifacts.
-Their manifests have `ready_for_unity: false`, so the Unity package correctly
-refuses to import either as a runnable prefab. The linked artifact reaches
-UdonHL plus a typed dispatch boundary; the current compiler does not yet lower
-that dispatch into an executable Unity Host Udon Assembly program. A runnable
-Unity artifact additionally needs that Host backend, runtime resources, display
-shader, and a supported Unity-stage manifest. The example makes this missing
-boundary explicit rather than substituting a handwritten runnable Host.
+This lower-level procedure produces Device and linked Host/Device boundary
+artifacts whose manifests have `ready_for_unity: false`; they remain useful for
+inspecting recovery. Use the CMake `hello-dispatch-unity-library` target above
+to run the same kernel through the restricted executable Unity path.

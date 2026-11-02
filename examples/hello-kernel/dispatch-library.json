@@ -5,6 +5,7 @@
     "schema_version": 1,
     "kernel": "square_plus_one",
     "kernel_id": 1,
+    "argument_kinds": ["buffer", "f32"],
     "global_size": [1, 1, 1],
     "local_size": [1, 1, 1],
     "global_offset": [0, 0, 0]

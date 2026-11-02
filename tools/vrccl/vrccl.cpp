@@ -30,6 +30,8 @@
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/ToolOutputFile.h"
 #include "llvm/IR/DataLayout.h"
+#include "llvm/IR/Instructions.h"
+#include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IRReader/IRReader.h"
 #include <set>
 #include <map>
@@ -544,6 +546,218 @@ constexpr StringLiteral openCLDeviceName = "__udoncl_opencl_device";
 constexpr StringLiteral openCLContextName = "__udoncl_opencl_context";
 constexpr StringLiteral openCLQueueName = "__udoncl_opencl_queue";
 
+std::optional<int64_t> llvmIRConstantInt(const llvm::Value *value) {
+  auto constant = dyn_cast<llvm::ConstantInt>(value);
+  return constant ? std::optional<int64_t>(constant->getSExtValue())
+                  : std::nullopt;
+}
+
+const llvm::Value *llvmIRStoredSlot(const llvm::Value *value) {
+  for (const llvm::User *user : value->users())
+    if (auto store = dyn_cast<llvm::StoreInst>(user))
+      if (store->getValueOperand() == value)
+        return store->getPointerOperand()->stripPointerCasts();
+  return nullptr;
+}
+
+bool llvmIRLoadsFrom(const llvm::Value *value, const llvm::Value *slot) {
+  auto load = dyn_cast<llvm::LoadInst>(value);
+  return load && slot &&
+         load->getPointerOperand()->stripPointerCasts() ==
+             slot->stripPointerCasts();
+}
+
+bool llvmIRSameSlot(const llvm::Value *left, const llvm::Value *right) {
+  return left && right &&
+         left->stripPointerCasts() == right->stripPointerCasts();
+}
+
+bool llvmIRSlotStoresConstant(const llvm::Value *slot, int64_t expected) {
+  if (!slot)
+    return false;
+  for (const llvm::User *user : slot->users())
+    if (auto store = dyn_cast<llvm::StoreInst>(user))
+      if (llvmIRSameSlot(store->getPointerOperand(), slot) &&
+          llvmIRConstantInt(store->getValueOperand()) == expected)
+        return true;
+  return false;
+}
+
+OwningOpRef<ModuleOp>
+recoverUnityOpenCLDispatchProgram(const llvm::Module &input,
+                                  const json::Object &config,
+                                  MLIRContext &context) {
+  auto *kernelConfig = config.getObject("device_kernel");
+  auto *exports = config.getArray("exports");
+  auto *buffers = config.getArray("buffers");
+  auto kernelName =
+      kernelConfig ? kernelConfig->getString("kernel") : std::nullopt;
+  auto kernelId =
+      kernelConfig ? kernelConfig->getInteger("kernel_id") : std::nullopt;
+  auto *argumentKinds =
+      kernelConfig ? kernelConfig->getArray("argument_kinds") : nullptr;
+  if (!kernelConfig || !exports || exports->size() != 1 || !buffers ||
+      buffers->size() != 1 || !kernelName || !kernelId || !argumentKinds ||
+      argumentKinds->size() != 2 ||
+      (*argumentKinds)[0].getAsString() != "buffer" ||
+      (*argumentKinds)[1].getAsString() != "f32") {
+    errs() << "initial Unity OpenCL dispatch requires one configured "
+              "buffer,f32 kernel\n";
+    return {};
+  }
+  auto *exportConfig = (*exports)[0].getAsObject();
+  auto exportName =
+      exportConfig ? exportConfig->getString("symbol") : std::nullopt;
+  auto *function = exportName ? input.getFunction(*exportName) : nullptr;
+  if (!function || function->isDeclaration() || function->size() != 1 ||
+      !function->getReturnType()->isVoidTy() || function->arg_size() != 1 ||
+      !function->getArg(0)->getType()->isFloatTy()) {
+    errs() << "initial Unity OpenCL dispatch export must be a straight-line "
+              "void(float) definition\n";
+    return {};
+  }
+  SmallVector<const llvm::CallBase *> calls;
+  for (const llvm::Instruction &instruction : function->front())
+    if (auto *call = dyn_cast<llvm::CallBase>(&instruction))
+      if (const llvm::Function *callee = call->getCalledFunction())
+        if (callee->getName().starts_with("cl"))
+          calls.push_back(call);
+  constexpr StringLiteral expected[] = {
+      "clGetPlatformIDs",       "clGetDeviceIDs",
+      "clCreateContext",        "clCreateCommandQueue",
+      "clCreateBuffer",         "clCreateProgramWithSource",
+      "clBuildProgram",         "clCreateKernel",
+      "clSetKernelArg",         "clSetKernelArg",
+      "clEnqueueNDRangeKernel", "clReleaseKernel",
+      "clReleaseProgram",       "clReleaseMemObject",
+      "clReleaseCommandQueue",  "clReleaseContext",
+  };
+  if (calls.size() != std::size(expected)) {
+    errs() << "initial Unity OpenCL dispatch requires the complete ordered "
+              "OpenCL 1.2 setup/dispatch/release sequence\n";
+    return {};
+  }
+  for (auto [call, name] : llvm::zip(calls, expected))
+    if (call->getCalledFunction()->getName() != name) {
+      errs() << "initial Unity OpenCL dispatch call order mismatch at " << name
+             << "\n";
+      return {};
+    }
+  auto require = [&](bool condition, StringRef message) {
+    if (!condition)
+      errs() << "initial Unity OpenCL dispatch " << message << "\n";
+    return condition;
+  };
+  StringRef actualKernelName;
+  const llvm::Value *platformSlot = calls[0]->getArgOperand(1);
+  const llvm::Value *deviceSlot = calls[1]->getArgOperand(3);
+  const llvm::Value *contextSlot = llvmIRStoredSlot(calls[2]);
+  const llvm::Value *queueSlot = llvmIRStoredSlot(calls[3]);
+  const llvm::Value *bufferSlot = llvmIRStoredSlot(calls[4]);
+  const llvm::Value *programSlot = llvmIRStoredSlot(calls[5]);
+  const llvm::Value *kernelSlot = llvmIRStoredSlot(calls[7]);
+  const llvm::Value *scalarSlot = llvmIRStoredSlot(function->getArg(0));
+  bool valid =
+      require(llvmIRConstantInt(calls[0]->getArgOperand(0)) == 1,
+              "requires one platform") &&
+      require(llvmIRConstantInt(calls[1]->getArgOperand(1)) == 4 &&
+                  llvmIRConstantInt(calls[1]->getArgOperand(2)) == 1,
+              "requires one GPU device") &&
+      require(llvmIRConstantInt(calls[2]->getArgOperand(1)) == 1,
+              "requires one context device") &&
+      require(llvmIRConstantInt(calls[3]->getArgOperand(2)) == 0,
+              "requires an in-order queue") &&
+      require(llvmIRConstantInt(calls[4]->getArgOperand(1)) == 2 &&
+                  llvmIRConstantInt(calls[4]->getArgOperand(2)) == 4,
+              "requires one four-byte write-only output") &&
+      require(llvmIRConstantInt(calls[5]->getArgOperand(1)) == 1,
+              "requires one static program source") &&
+      require(llvm::getConstantStringInfo(calls[7]->getArgOperand(1),
+                                          actualKernelName) &&
+                  actualKernelName == *kernelName,
+              "kernel name does not match device_kernel") &&
+      require(llvmIRConstantInt(calls[8]->getArgOperand(1)) == 0 &&
+                  llvmIRConstantInt(calls[8]->getArgOperand(2)) == 4 &&
+                  llvmIRConstantInt(calls[9]->getArgOperand(1)) == 1 &&
+                  llvmIRConstantInt(calls[9]->getArgOperand(2)) == 4,
+              "requires buffer arg 0 and f32 arg 1") &&
+      require(llvmIRConstantInt(calls[10]->getArgOperand(2)) == 1 &&
+                  isa<llvm::ConstantPointerNull>(calls[10]->getArgOperand(3)) &&
+                  llvmIRSlotStoresConstant(calls[10]->getArgOperand(4), 1) &&
+                  llvmIRSlotStoresConstant(calls[10]->getArgOperand(5), 1) &&
+                  llvmIRConstantInt(calls[10]->getArgOperand(6)) == 0 &&
+                  isa<llvm::ConstantPointerNull>(calls[10]->getArgOperand(7)) &&
+                  isa<llvm::ConstantPointerNull>(calls[10]->getArgOperand(8)),
+              "requires a one-dimensional dispatch without wait events") &&
+      require(llvmIRLoadsFrom(calls[1]->getArgOperand(0), platformSlot) &&
+                  llvmIRSameSlot(calls[2]->getArgOperand(2), deviceSlot) &&
+                  llvmIRLoadsFrom(calls[3]->getArgOperand(0), contextSlot) &&
+                  llvmIRLoadsFrom(calls[3]->getArgOperand(1), deviceSlot) &&
+                  llvmIRLoadsFrom(calls[4]->getArgOperand(0), contextSlot) &&
+                  llvmIRLoadsFrom(calls[5]->getArgOperand(0), contextSlot),
+              "context and queue handles must flow from their setup calls") &&
+      require(llvmIRLoadsFrom(calls[6]->getArgOperand(0), programSlot) &&
+                  llvmIRLoadsFrom(calls[7]->getArgOperand(0), programSlot) &&
+                  llvmIRLoadsFrom(calls[8]->getArgOperand(0), kernelSlot) &&
+                  llvmIRLoadsFrom(calls[9]->getArgOperand(0), kernelSlot) &&
+                  llvmIRSameSlot(calls[8]->getArgOperand(3), bufferSlot) &&
+                  llvmIRSameSlot(calls[9]->getArgOperand(3), scalarSlot),
+              "program, kernel, buffer, and scalar arguments must keep their "
+              "declared provenance") &&
+      require(llvmIRLoadsFrom(calls[10]->getArgOperand(0), queueSlot) &&
+                  llvmIRLoadsFrom(calls[10]->getArgOperand(1), kernelSlot) &&
+                  llvmIRLoadsFrom(calls[11]->getArgOperand(0), kernelSlot) &&
+                  llvmIRLoadsFrom(calls[12]->getArgOperand(0), programSlot) &&
+                  llvmIRLoadsFrom(calls[13]->getArgOperand(0), bufferSlot) &&
+                  llvmIRLoadsFrom(calls[14]->getArgOperand(0), queueSlot) &&
+                  llvmIRLoadsFrom(calls[15]->getArgOperand(0), contextSlot),
+              "enqueue and release handles must match their created objects");
+  if (!valid)
+    return {};
+
+  auto owner = ModuleOp::create(UnknownLoc::get(&context));
+  OpBuilder builder(owner.getBodyRegion());
+  auto functionType = builder.getFunctionType({builder.getF32Type()}, {});
+  auto host =
+      func::FuncOp::create(builder, owner.getLoc(), *exportName, functionType);
+  Block *entry = host.addEntryBlock();
+  builder.setInsertionPointToStart(entry);
+  auto bytes = arith::ConstantIntOp::create(builder, owner.getLoc(), 4, 32);
+  OperationState allocation(owner.getLoc(),
+                            ::vrc::vrc::BufferAllocOp::getOperationName());
+  allocation.addOperands(bytes.getResult());
+  allocation.addTypes(
+      {::vrc::vrc::BufferType::get(&context), builder.getI32Type()});
+  allocation.addAttribute("format", builder.getStringAttr("rgba8_unorm"));
+  allocation.addAttribute("usage", builder.getStringAttr("storage"));
+  Operation *buffer = builder.create(allocation);
+  OperationState descriptor(
+      owner.getLoc(), ::vrc::vrc::DispatchDescCreateOp::getOperationName());
+  descriptor.addOperands(entry->getArgument(0));
+  descriptor.addTypes(::vrc::vrc::DispatchDescType::get(&context));
+  descriptor.addAttribute("kernel_id", builder.getI32IntegerAttr(*kernelId));
+  descriptor.addAttribute("scalar_kinds",
+                          builder.getArrayAttr({builder.getStringAttr("f32")}));
+  Operation *desc = builder.create(descriptor);
+  OperationState dispatch(owner.getLoc(),
+                          ::vrc::vrc::DispatchOp::getOperationName());
+  dispatch.addOperands({desc->getResult(0), buffer->getResult(0)});
+  dispatch.addTypes(::vrc::vrc::EventType::get(&context));
+  dispatch.addAttribute("kernel_id", builder.getI32IntegerAttr(*kernelId));
+  dispatch.addAttribute("argument_kinds",
+                        builder.getArrayAttr({builder.getStringAttr("buffer"),
+                                              builder.getStringAttr("f32")}));
+  for (StringRef key : {"global_size", "local_size", "global_offset"}) {
+    SmallVector<int32_t> values;
+    for (const json::Value &value : *kernelConfig->getArray(key))
+      values.push_back(static_cast<int32_t>(*value.getAsInteger()));
+    dispatch.addAttribute(key, builder.getDenseI32ArrayAttr(values));
+  }
+  builder.create(dispatch);
+  func::ReturnOp::create(builder, owner.getLoc());
+  return OwningOpRef<ModuleOp>(owner);
+}
+
 std::optional<int64_t> llvmConstantInt(mlir::Value value) {
   auto constant = value.getDefiningOp<LLVM::ConstantOp>();
   auto integer =
@@ -1015,30 +1229,39 @@ int main(int argc, char **argv) {
             << "Unity Host library requires 32-bit little-endian SPIR input\n";
         return 1;
       }
-      module = ::vrc::importLLVM(std::move(inputModule), context);
-      if (!module || failed(verify(*module)))
-        return 1;
-      if (failed(normalizeUnityOpenCLHostCalls(*module)))
-        return 1;
-      PassManager cleanup(&context);
-      cleanup.addPass(createMem2Reg());
-      cleanup.addPass(createCanonicalizerPass());
-      if (failed(cleanup.run(*module)) ||
-          failed(recoverUnityOpenCLBufferCalls(*module)))
-        return 1;
-      PassManager recovery(&context);
-      // The first canonicalization removes dead opaque OpenCL handles while
-      // typed buffer operations still temporarily live in llvm.func.  The
-      // following pass immediately raises that function to the Host runtime
-      // path, where the VRC operation verifier accepts them.
-      recovery.enableVerifier(false);
-      recovery.addPass(createCanonicalizerPass());
-      recovery.addPass(::vrc::createRaiseLLVMToScalarPass());
-      recovery.addPass(createCanonicalizerPass());
-      if (failed(recovery.run(*module)) ||
-          failed(recoverUnityCBufferIntrinsics(*module)) ||
-          !configureUnityExports(*module, *unityConfig))
-        return 1;
+      auto *enqueue = inputModule->getFunction("clEnqueueNDRangeKernel");
+      if (enqueue && !enqueue->use_empty()) {
+        module = recoverUnityOpenCLDispatchProgram(*inputModule, *unityConfig,
+                                                   context);
+        if (!module || failed(verify(*module)) ||
+            !configureUnityExports(*module, *unityConfig))
+          return 1;
+      } else {
+        module = ::vrc::importLLVM(std::move(inputModule), context);
+        if (!module || failed(verify(*module)))
+          return 1;
+        if (failed(normalizeUnityOpenCLHostCalls(*module)))
+          return 1;
+        PassManager cleanup(&context);
+        cleanup.addPass(createMem2Reg());
+        cleanup.addPass(createCanonicalizerPass());
+        if (failed(cleanup.run(*module)) ||
+            failed(recoverUnityOpenCLBufferCalls(*module)))
+          return 1;
+        PassManager recovery(&context);
+        // The first canonicalization removes dead opaque OpenCL handles while
+        // typed buffer operations still temporarily live in llvm.func.  The
+        // following pass immediately raises that function to the Host runtime
+        // path, where the VRC operation verifier accepts them.
+        recovery.enableVerifier(false);
+        recovery.addPass(createCanonicalizerPass());
+        recovery.addPass(::vrc::createRaiseLLVMToScalarPass());
+        recovery.addPass(createCanonicalizerPass());
+        if (failed(recovery.run(*module)) ||
+            failed(recoverUnityCBufferIntrinsics(*module)) ||
+            !configureUnityExports(*module, *unityConfig))
+          return 1;
+      }
     }
     raw_string_ostream recovered(files["frontend.recovered.mlir"]);
     module->print(recovered);
