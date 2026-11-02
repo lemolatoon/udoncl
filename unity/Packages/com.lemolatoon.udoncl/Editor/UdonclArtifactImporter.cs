@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Reflection;
 using UdonSharp;
 using UdonSharp.Compiler;
 using UdonSharpEditor;
@@ -486,6 +487,7 @@ namespace Lemolatoon.Udoncl.Editor
             string runtimeRoot = GeneratedRoot + "/Runtime";
             string programAssetPath = runtimeRoot + "/UdonOnnxRuntimeBehaviour.asset";
             EnsureFolders(runtimeRoot);
+            WarmUdonSharpAssemblyCache();
             CreateOrUpdateUdonSharpProgramAsset(transaction, scriptPath, programAssetPath);
             AssetDatabase.ImportAsset(programAssetPath, ImportAssetOptions.ForceSynchronousImport);
 
@@ -521,6 +523,20 @@ namespace Lemolatoon.Udoncl.Editor
             )
                 throw new InvalidDataException(
                     "Unity could not compile the Udon ONNX runtime U# program asset."
+                );
+        }
+
+        private static void WarmUdonSharpAssemblyCache()
+        {
+            const string typeName = "UdonSharp.Compiler.Udon.CompilerUdonInterface";
+            Type interfaceType = typeof(UdonSharpCompilerV1).Assembly.GetType(typeName);
+            PropertyInfo definitions = interfaceType?.GetProperty(
+                "UdonSharpAssemblyDefinitions",
+                BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static
+            );
+            if (definitions == null || definitions.GetValue(null) == null)
+                throw new InvalidDataException(
+                    "Unity could not initialize the UdonSharp assembly cache."
                 );
         }
 

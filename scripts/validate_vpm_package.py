@@ -65,8 +65,17 @@ def validate(package: Path) -> dict:
         "Editor/Examples/onnx-tiny-llama.zip.bytes",
         "Editor/Examples/saxpy.zip.bytes",
         "Runtime/Udoncl.Runtime.asmdef",
+        "Runtime/Udoncl.Runtime.asset",
     ):
         require((package / relative).is_file(), f"required file is missing: {relative}")
+    runtime_usharp = (package / "Runtime/Udoncl.Runtime.asset").read_text(
+        encoding="utf-8"
+    )
+    require(
+        "guid: 5136146375e9a0a498a72a0091b40cc1" in runtime_usharp
+        and "guid: 36e72c97d34c4a489d882db18bbdf480" in runtime_usharp,
+        "Runtime assembly is not registered as an UdonSharp assembly",
+    )
     license_text = (package / "LICENSE.md").read_text(encoding="utf-8")
     require(
         "GNU GENERAL PUBLIC LICENSE" in license_text and "Version 3" in license_text,

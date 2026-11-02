@@ -1,5 +1,23 @@
 # Validation status
 
+## UdonSharp assembly discovery in batch Editor tests (2026-11-03)
+
+An asmdef containing `UdonSharpBehaviour` subclasses is not a U# compilation
+unit merely because it references `UdonSharp.Runtime`. Worlds SDK 3.10.5 also
+requires a `UdonSharpAssemblyDefinition` asset whose `sourceAssembly` points at
+that asmdef. `Udoncl.Runtime.asset` supplies this registration for the package
+runtime.
+
+The SDK lazily discovers those assets through `AssetDatabase` and Unity Package
+Manager APIs. If its first `CompilerUdonInterface` assembly-cache access occurs
+inside the background work started by `UdonSharpCompilerV1.CompileSync`, Unity
+throws `GetAllRegisteredPackages can only be called from the main thread`; the
+failed cache then makes even registered SDK scripts appear not to belong to a
+U# assembly. Importers that explicitly compile package U# assets must therefore
+materialize `UdonSharpAssemblyDefinitions` on the Editor main thread before
+entering `CompileSync`. This is an SDK 3.10.5 integration constraint, not proof
+that arbitrary Unity or worker-thread U# compilation is safe.
+
 No VRChat client gate has passed. Targeted Unity Editor, installed Worlds SDK
 assembler/IUdonVM, and GPU readback gates have passed for the explicitly listed
 subsets; compiler host and the incomplete generated runtime remain separate.

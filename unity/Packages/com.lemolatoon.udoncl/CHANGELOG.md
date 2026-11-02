@@ -6,6 +6,8 @@ All notable changes to this package are recorded here.
 
 ### Added
 
+- UdonSharp assembly registration and main-thread cache warmup for the package
+  runtime so ONNX behaviours compile in fresh VPM and local-package projects.
 - One-click Editor imports for packaged, non-Pooling ONNX Arena Add and Tiny
   Llama example artifacts.
 - One-click Editor imports for packaged C/OpenCL Hello Dispatch and SAXPY
