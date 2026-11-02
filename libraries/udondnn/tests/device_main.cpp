@@ -1040,19 +1040,27 @@ int main(int argc, char **argv) {
                    1.0f / (1.0f + std::exp(-atenLargeLeft[index]))) > 0.0005f)
         throw std::runtime_error("large UdonATen sigmoid results diverged");
     float arenaPointwiseMaximumError = 0.0f;
-    for (int operation = 0; operation < 3; ++operation) {
+    for (int operation = 0; operation < 6; ++operation) {
+      std::string arenaOperation =
+          "UdonATen arena pointwise " + std::to_string(operation);
       require(udonatenBackendArenaPointwise(
                   handle, atenLargeWords, atenLargeLeft.data(),
                   atenLargeRight.data(), operation, atenLargeOutput.data()),
-              UDONDNN_STATUS_SUCCESS, "UdonATen arena pointwise");
+              UDONDNN_STATUS_SUCCESS, arenaOperation.c_str());
       for (int index = 0; index < atenLargeWords; ++index) {
         float expected = 0.0f;
         if (operation == 0)
           expected = atenLargeLeft[index] + atenLargeRight[index];
         else if (operation == 1)
           expected = atenLargeLeft[index] * atenLargeRight[index];
-        else
+        else if (operation == 2)
           expected = 1.0f / (1.0f + std::exp(-atenLargeLeft[index]));
+        else if (operation == 3)
+          expected = atenLargeLeft[index] - atenLargeRight[index];
+        else if (operation == 4)
+          expected = std::max(atenLargeLeft[index], 0.0f);
+        else
+          expected = std::tanh(atenLargeLeft[index]);
         arenaPointwiseMaximumError =
             std::max(arenaPointwiseMaximumError,
                      std::abs(atenLargeOutput[index] - expected));
@@ -1780,7 +1788,7 @@ int main(int argc, char **argv) {
               << " tile_max_error=" << tileMaximumError
               << " arena_tile_outputs=" << arenaTileActual.size()
               << " arena_tile_max_error=" << arenaTileMaximumError
-              << " arena_pointwise_outputs=" << atenLargeWords * 3
+              << " arena_pointwise_outputs=" << atenLargeWords * 6
               << " arena_pointwise_max_error=" << arenaPointwiseMaximumError
               << " rl_outputs=" << rlProbabilities.size()
               << " rl_max_error=" << rlMaximumError

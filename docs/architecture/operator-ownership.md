@@ -68,10 +68,12 @@ an UdonATen-owned two-pass reduction and normalization, without CPU readback.
 The optional ATen weight is a separate readonly texture input rather than a
 packed-state offset. The same rule applies
 to pointwise Add, Sub, Mul, ReLU, Sigmoid, and Tanh: their public calls are
-UdonATen-shaped. Large ONNX Add, Mul, and Sigmoid tensors use the private
+UdonATen-shaped. Large ONNX pointwise tensors use the private
 `udonaten_arena_pointwise` Device backend; this is an ATen execution detail and
 does not add an UdonDNN extension or public API. Smaller validated paths may
-still reuse compatible UdonDNN kernels privately. Tile is implemented directly
+still reuse compatible UdonDNN kernels privately. ONNX Gemm and Softmax arena
+profiles are private Device backends of the existing `udonblasSgemm` and
+`udondnnSoftmaxForward` contracts; they do not add public APIs. Tile is implemented directly
 as the ATen-shaped `udonatenTile` operation. ONNX Tile uses the private
 `udonaten_arena_tile` backend to write at texture-arena offset zero, without
 adding a UdonDNN extension. INT4 AOT now uses separate

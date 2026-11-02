@@ -128,6 +128,10 @@ assert all(
     and device_pass["material_ints"]["_VRC_Arg3"]
     == device_pass["tile"]["arena_words"]
     and device_pass["material_ints"]["_VRC_Arg4"]
+    == device_pass["tile"]["input_words"][0]
+    and device_pass["material_ints"]["_VRC_Arg5"]
+    == device_pass["tile"]["input_words"][-1]
+    and device_pass["material_ints"]["_VRC_Arg6"]
     == device_pass["tile"]["operation"]
     for device_pass in pointwise_passes
 )
@@ -457,7 +461,7 @@ assert model_uasm.count("MaterialArray.__Get") == 322
 assert model_uasm.count("__SetProgramVariable__") == 450
 assert model_uasm.count("__SendCustomEvent__") == 225
 assert model_uasm.count("VRCSDKBaseVRCGraphics.__Blit__") == 322
-assert model_uasm.count("UnityEngineMaterial.__SetInt__") == 933
+assert model_uasm.count("UnityEngineMaterial.__SetInt__") == 1253
 assert model_uasm.count("UnityEngineMaterial.__SetFloat__") == 65
 assert "__float0: %SystemSingle, 0.00001" in model_uasm
 assert "PUSH, __zero\n        PUSH, __runnerIndex\n        COPY" in model_uasm

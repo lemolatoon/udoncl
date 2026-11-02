@@ -1551,8 +1551,8 @@ udondnnStatus_t udonatenBackendRmsNorm(udondnnHandle_t handle, int words,
   return UDONDNN_STATUS_SUCCESS;
 }
 
-/* Private UdonATen AOT backend. Add, Mul, and Sigmoid remain public
- * udonaten* operations; this entry only validates their arena-native shader. */
+/* Private UdonATen AOT backend. Pointwise operations remain public udonaten*
+ * calls; this entry only validates their arena-native shader. */
 udondnnStatus_t udonatenBackendArenaPointwise(udondnnHandle_t handle, int words,
                                               const float *self,
                                               const float *other, int operation,
@@ -1563,7 +1563,7 @@ udondnnStatus_t udonatenBackendArenaPointwise(udondnnHandle_t handle, int words,
   if (handle != UDONDNN_HANDLE || !context)
     return UDONDNN_STATUS_NOT_INITIALIZED;
   if (!self || !other || !output || words <= 0 ||
-      words > UDONATEN_ARENA_POINTWISE_WORDS || operation < 0 || operation > 2)
+      words > UDONATEN_ARENA_POINTWISE_WORDS || operation < 0 || operation > 5)
     return UDONDNN_STATUS_BAD_PARAM;
 #define SET_ARENA_POINTWISE_ARGUMENT(slot, value)                              \
   do {                                                                         \
@@ -1573,7 +1573,9 @@ udondnnStatus_t udonatenBackendArenaPointwise(udondnnHandle_t handle, int words,
       return UDONDNN_STATUS_EXECUTION_FAILED;                                  \
   } while (0)
   SET_ARENA_POINTWISE_ARGUMENT(3, words);
-  SET_ARENA_POINTWISE_ARGUMENT(4, operation);
+  SET_ARENA_POINTWISE_ARGUMENT(4, words);
+  SET_ARENA_POINTWISE_ARGUMENT(5, words);
+  SET_ARENA_POINTWISE_ARGUMENT(6, operation);
 #undef SET_ARENA_POINTWISE_ARGUMENT
   if (clEnqueueWriteBuffer(queue, arena_pointwise_self_buffer, CL_TRUE, 0,
                            sizeof(arena_pointwise_zero), arena_pointwise_zero,

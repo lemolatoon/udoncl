@@ -96,7 +96,7 @@ assert mnist_calls[:5] == [
     "udondnnPoolingForward",
     "view",
 ]
-assert mnist_calls[5:-1] == ["udonblasSgemm"] * 9
+assert mnist_calls[5:-1] == ["udonblasSgemm"]
 assert mnist_calls[-1] == "udonatenAdd"
 assert plan["nodes"][0]["shape"] == [1, 16, 24, 24]
 assert plan["nodes"][3]["shape"] == [1, 16, 3, 3]
@@ -119,17 +119,17 @@ generic_mnist_relu_passes = [
     for item in generic_mnist_plan["passes"]
     if item["providers"] == ["udonatenRelu"]
 ]
-assert len(generic_mnist_relu_passes) == 18
-assert all(item["tile"]["words"] == 512 for item in generic_mnist_relu_passes)
-assert generic_mnist_plan["passes"][20]["providers"] == [
+assert len(generic_mnist_relu_passes) == 1
+assert generic_mnist_relu_passes[0]["shader"] == "kernel_215.shader"
+assert generic_mnist_plan["passes"][3]["providers"] == [
     "udondnnPoolingForward"
 ]
-assert len(generic_mnist_plan["passes"]) == 31
+assert len(generic_mnist_plan["passes"]) == 6
 assert sum(
     item["providers"] == ["udonblasSgemm"] for item in generic_mnist_plan["passes"]
-) == 9
+) == 1
 generic_mnist_uasm = emit_uasm_host(generic_mnist_plan)
-assert generic_mnist_uasm.count("VRCSDKBaseVRCGraphics.__Blit__") == 31
+assert generic_mnist_uasm.count("VRCSDKBaseVRCGraphics.__Blit__") == 6
 (output / "mnist-operators-host.uasm").write_text(generic_mnist_uasm, encoding="utf-8")
 
 operator_model = parse_model(
@@ -157,7 +157,7 @@ assert [item["function"] for item in operator_plan["aot"]["calls"]] == [
     "udonatenAdd",
     "udonatenRelu",
 ]
-assert [item["fragments"] for item in operator_plan["passes"]] == [8, 8, 8]
+assert [item["fragments"] for item in operator_plan["passes"]] == [16384, 16384, 16384]
 host_c = emit_c_host(operator_plan)
 assert "udonblasSgemm(" in host_c
 assert "udonatenAdd(" in host_c
@@ -187,33 +187,24 @@ tiled_plan = compile_model(tiled_model)
 tiled_host_c = emit_c_host(tiled_plan)
 tiled_host_uasm = emit_uasm_host(tiled_plan)
 assert tiled_plan["execution_provider"] == "UdonOperatorExecutionProvider"
-assert len(tiled_plan["passes"]) == 12
-assert [item["id"] for item in tiled_plan["passes"]] == list(range(200, 212))
+assert len(tiled_plan["passes"]) == 1
+assert [item["id"] for item in tiled_plan["passes"]] == [200]
 assert tiled_plan["passes"][0]["tile"] == {
-    "m_offset": 0,
-    "n_offset": 0,
-    "k_offset": 0,
-    "m": 16,
-    "n": 16,
-    "k": 16,
+    "arena_sgemm": True,
+    "storage_words": 16384,
+    "width": 8192,
+    "height": 2,
+    "m": 17,
+    "n": 18,
+    "k": 33,
+    "transa": 0,
+    "transb": 0,
     "alpha": 1.0,
-    "beta": 0,
-}
-assert tiled_plan["passes"][1]["tile"]["beta"] == 1
-assert tiled_plan["passes"][-1]["tile"] == {
-    "m_offset": 16,
-    "n_offset": 16,
-    "k_offset": 32,
-    "m": 1,
-    "n": 2,
-    "k": 1,
-    "alpha": 1.0,
-    "beta": 1,
 }
 assert tiled_host_c.count("udonblasSgemm(") == 12
 assert "buffers->v0_left + 528" in tiled_host_c
-assert tiled_host_uasm.count("VRCSDKBaseVRCGraphics.__Blit__") == 12
-assert ".export pass211Material" in tiled_host_uasm
+assert tiled_host_uasm.count("VRCSDKBaseVRCGraphics.__Blit__") == 1
+assert ".export pass200Material" in tiled_host_uasm
 (output / "tiled-gemm-host.c").write_text(tiled_host_c, encoding="utf-8")
 (output / "tiled-gemm-host.uasm").write_text(tiled_host_uasm, encoding="utf-8")
 
@@ -926,12 +917,32 @@ assert [item["function"] for item in rl_plan["aot"]["calls"]] == [
     "udondnnSoftmaxForward",
 ]
 assert len(rl_plan["passes"]) == 10
-try:
-    materialize_model(rl_plan, output, output / "unsupported-rl-model-bundle")
-except ValueError as error:
-    assert "without public-library shaders" in str(error)
-else:
-    raise AssertionError("general model publisher accepted shaderless RL Device passes")
+assert {item["shader"] for item in rl_plan["passes"]} == {
+    "kernel_215.shader",
+    "kernel_221.shader",
+    "kernel_222.shader",
+}
+rl_unity_bundle = output / "unity-rl-policy-model-bundle"
+rl_unity_manifest = materialize_model(
+    rl_plan,
+    output,
+    rl_unity_bundle,
+    unity_template_directory=root
+    / "build/udondnn-device-run/unity-udonaten-int4-mm-bundle",
+    model_path=rl_model_path,
+    program_name="onnx_rl_policy_fixture",
+)
+assert rl_unity_manifest["artifact_stage"] == "unity-udon-onnx-model"
+assert rl_unity_manifest["complete_graph"] is True
+assert rl_unity_manifest["unmaterialized_calls"] == []
+assert len(rl_unity_manifest["static_inputs"]) == 6
+assert {item["id"] for item in rl_unity_manifest["device"]["kernels"]} == {
+    215,
+    221,
+    222,
+}
+assert (rl_unity_bundle / "kernels/kernel_221.shader").is_file()
+assert (rl_unity_bundle / "kernels/kernel_222.shader").is_file()
 rl_host_c = emit_c_host(rl_plan)
 assert "udonatenTanh(" in rl_host_c
 assert "udonatenSigmoid(" in rl_host_c

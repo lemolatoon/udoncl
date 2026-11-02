@@ -483,6 +483,9 @@ ARENA_POINTWISE_OPERATIONS = {
     "udonatenAdd": 0,
     "udonatenMul": 1,
     "udonatenSigmoid": 2,
+    "udonatenSub": 3,
+    "udonatenRelu": 4,
+    "udonatenTanh": 5,
 }
 RMS_NORM_TILE_WORDS = 512
 
@@ -906,6 +909,36 @@ def _gemm_schedule(node: dict, values: dict, tile_size: int = 16) -> list[dict]:
     return tiles
 
 
+def _arena_gemm_profile(node: dict, values: dict) -> dict | None:
+    inputs = node["inputs"]
+    left_shape, right_shape = values[inputs[0]], values[inputs[1]]
+    trans_a = node["attributes"].get("transA", {"i": 0})["i"]
+    trans_b = node["attributes"].get("transB", {"i": 0})["i"]
+    m, k = (left_shape[1], left_shape[0]) if trans_a else left_shape
+    right_k, n = (right_shape[1], right_shape[0]) if trans_b else right_shape
+    if (
+        k != right_k
+        or k > 256
+        or any(
+            math.prod(shape) > ARENA_POINTWISE_WORDS
+            for shape in (left_shape, right_shape, node["shape"])
+        )
+    ):
+        return None
+    return {
+        "arena_sgemm": True,
+        "storage_words": ARENA_POINTWISE_WORDS,
+        "width": 8192,
+        "height": 2,
+        "m": m,
+        "n": n,
+        "k": k,
+        "transa": trans_a,
+        "transb": trans_b,
+        "alpha": node["attributes"].get("alpha", {"f": 1.0})["f"],
+    }
+
+
 def _softmax_mode(node: dict, shape: list[int]) -> str:
     axis = node["attributes"].get("axis", {"i": -1})["i"]
     axis = axis + len(shape) if axis < 0 else axis
@@ -916,6 +949,27 @@ def _softmax_mode(node: dict, shape: list[int]) -> str:
     raise ValueError(
         f"Softmax axis {axis} for rank-{len(shape)} cannot map to a cuDNN softmax mode"
     )
+
+
+def _arena_softmax_profile(node: dict) -> dict | None:
+    shape = node["shape"]
+    if math.prod(shape) > ARENA_POINTWISE_WORDS:
+        return None
+    padded_shape = [1] * (4 - len(shape)) + shape
+    mode_name = _softmax_mode(node, shape)
+    mode = 0 if mode_name == "UDONDNN_SOFTMAX_MODE_INSTANCE" else 1
+    group_words = math.prod(padded_shape[1:]) if mode == 0 else padded_shape[1]
+    if group_words > 512:
+        return None
+    return {
+        "arena_softmax": True,
+        "storage_words": ARENA_POINTWISE_WORDS,
+        "width": 8192,
+        "height": 2,
+        "input_shape": padded_shape,
+        "algorithm": 1,
+        "mode": mode,
+    }
 
 
 def _unravel(index: int, shape: list[int]) -> list[int]:
@@ -1087,11 +1141,14 @@ def _pointwise_schedule(node: dict, values: dict) -> list[dict | None]:
     logical pass until that backend is implemented.
     """
     words = math.prod(node["shape"])
-    exact_shape = all(values[name] == node["shape"] for name in node["inputs"])
+    input_words = [
+        _linear_broadcast_words(values[name], node["shape"])
+        for name in node["inputs"]
+    ]
     if (
         node["provider"] in ARENA_POINTWISE_OPERATIONS
-        and POINTWISE_TILE_WORDS < words <= ARENA_POINTWISE_WORDS
-        and exact_shape
+        and words <= ARENA_POINTWISE_WORDS
+        and all(value is not None for value in input_words)
     ):
         return [
             {
@@ -1100,8 +1157,10 @@ def _pointwise_schedule(node: dict, values: dict) -> list[dict | None]:
                 "width": 8192,
                 "height": 2,
                 "operation": ARENA_POINTWISE_OPERATIONS[node["provider"]],
+                "input_words": input_words,
             }
         ]
+    exact_shape = all(values[name] == node["shape"] for name in node["inputs"])
     if (
         node["provider"] not in POINTWISE_PROVIDERS
         or words <= POINTWISE_TILE_WORDS
@@ -1121,6 +1180,37 @@ def _pointwise_schedule(node: dict, values: dict) -> list[dict | None]:
         )
         offset += tile_words
     return tiles
+
+
+def _linear_broadcast_words(input_shape: list[int], output_shape: list[int]) -> int | None:
+    if len(input_shape) > len(output_shape):
+        return None
+    padded = [1] * (len(output_shape) - len(input_shape)) + list(input_shape)
+    if any(source not in (1, target) for source, target in zip(padded, output_shape)):
+        return None
+    input_words = math.prod(input_shape)
+    output_words = math.prod(output_shape)
+    for linear in range(output_words):
+        coordinates = _unravel(linear, output_shape)
+        source_offset = 0
+        for coordinate, source_dimension in zip(coordinates, padded):
+            source_offset = source_offset * source_dimension + (
+                0 if source_dimension == 1 else coordinate
+            )
+        if source_offset != linear % input_words:
+            return None
+    return input_words
+
+
+def _pass_static_inputs(inputs: list[str], initializers: dict) -> list[dict]:
+    return [
+        {
+            "property": "_VRC_Input" + ("" if index == 0 else str(index)),
+            "initializer": name,
+        }
+        for index, name in enumerate(inputs)
+        if name in initializers
+    ]
 
 
 def _initializer_ints(graph: dict, name: str) -> list[int]:
@@ -1709,7 +1799,8 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
                 )
                 continue
             if node["op_type"] == "Gemm":
-                tiles = _gemm_schedule(node, shapes)
+                arena_gemm = _arena_gemm_profile(node, shapes)
+                tiles = [arena_gemm] if arena_gemm is not None else _gemm_schedule(node, shapes)
             elif node["op_type"] == "MatMul":
                 tiles = _matmul_schedule(node, shapes)
                 if node["provider"] == "udonblasSdot":
@@ -1734,6 +1825,9 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
                     ]
             elif node["provider"] in POINTWISE_PROVIDERS:
                 tiles = _pointwise_schedule(node, shapes)
+            elif node["provider"] == "udondnnSoftmaxForward":
+                arena_softmax = _arena_softmax_profile(node)
+                tiles = [arena_softmax] if arena_softmax is not None else [None]
             elif (
                 node["provider"] == "udonatenTile"
                 and math.prod(node["shape"]) <= ARENA_POINTWISE_WORDS
@@ -1791,20 +1885,68 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
                 }
                 if tile is not None:
                     device_pass["tile"] = tile
+                if tile is not None and tile.get("arena_sgemm"):
+                    gemm_inputs = node["inputs"][:2]
+                    device_pass.update(
+                        {
+                            "kernel": "udonblas_arena_sgemm",
+                            "shader": "kernel_221.shader",
+                            "inputs": gemm_inputs,
+                            "static_inputs": _pass_static_inputs(
+                                gemm_inputs, graph["initializers"]
+                            ),
+                            "fragments": tile["storage_words"],
+                            "material_ints": {
+                                "_VRC_Arg3": tile["m"],
+                                "_VRC_Arg4": tile["n"],
+                                "_VRC_Arg5": tile["k"],
+                                "_VRC_Arg6": tile["transa"],
+                                "_VRC_Arg7": tile["transb"],
+                            },
+                            "material_floats": {"_VRC_Arg8": tile["alpha"]},
+                        }
+                    )
                 if tile is not None and "arena_words" in tile:
+                    pointwise_inputs = (
+                        node["inputs"]
+                        if len(node["inputs"]) == 2
+                        else [node["inputs"][0], node["inputs"][0]]
+                    )
                     device_pass.update(
                         {
                             "kernel": "udonaten_arena_pointwise",
                             "shader": "kernel_215.shader",
-                            "inputs": (
-                                node["inputs"]
-                                if len(node["inputs"]) == 2
-                                else [node["inputs"][0], node["inputs"][0]]
+                            "inputs": pointwise_inputs,
+                            "static_inputs": _pass_static_inputs(
+                                pointwise_inputs, graph["initializers"]
                             ),
                             "fragments": tile["storage_words"],
                             "material_ints": {
                                 "_VRC_Arg3": tile["arena_words"],
-                                "_VRC_Arg4": tile["operation"],
+                                "_VRC_Arg4": tile["input_words"][0],
+                                "_VRC_Arg5": (
+                                    tile["input_words"][1]
+                                    if len(tile["input_words"]) == 2
+                                    else tile["input_words"][0]
+                                ),
+                                "_VRC_Arg6": tile["operation"],
+                            },
+                        }
+                    )
+                if tile is not None and tile.get("arena_softmax"):
+                    device_pass.update(
+                        {
+                            "kernel": "udondnn_arena_softmax_forward",
+                            "shader": "kernel_222.shader",
+                            "inputs": [node["inputs"][0]],
+                            "fragments": tile["storage_words"],
+                            "material_ints": {
+                                **{
+                                    f"_VRC_Arg{index + 2}": value
+                                    for index, value in enumerate(tile["input_shape"])
+                                },
+                                "_VRC_Arg6": tile["algorithm"],
+                                "_VRC_Arg7": tile["mode"],
                             },
                         }
                     )
@@ -1920,11 +2062,11 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
             )
             continue
         if node["op_type"] in ("Gemm", "MatMul"):
-            tiles = (
-                _gemm_schedule(node, shapes)
-                if node["op_type"] == "Gemm"
-                else _matmul_schedule(node, shapes)
-            )
+            if node["op_type"] == "Gemm":
+                arena_gemm = _arena_gemm_profile(node, shapes)
+                tiles = [arena_gemm] if arena_gemm is not None else _gemm_schedule(node, shapes)
+            else:
+                tiles = _matmul_schedule(node, shapes)
             for tile in tiles:
                 calls.append(
                     {

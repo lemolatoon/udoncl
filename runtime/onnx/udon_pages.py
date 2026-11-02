@@ -1420,7 +1420,7 @@ def _materialize_model(
                 }
             )
         static_inputs = materialize_static_inputs(
-            plan, external_data_directory, staging
+            plan, external_data_directory, staging, model_path=model_path
         )
         serialized_plan = json.dumps(plan, indent=2) + "\n"
         plan_name = (
@@ -1764,18 +1764,47 @@ def _model_static_inputs(plan: dict) -> list[dict]:
 
 
 def materialize_static_inputs(
-    plan: dict, external_data_directory: Path, output_directory: Path
+    plan: dict,
+    external_data_directory: Path,
+    output_directory: Path,
+    *,
+    model_path: Path | None = None,
 ) -> list[dict]:
-    """Decode external ATen constants into the RGBA32 word-texture payload."""
+    """Decode ATen constants into the RGBA32 word-texture payload."""
     output_directory.mkdir(parents=True, exist_ok=True)
+    embedded = None
     artifacts = []
     for index, item in enumerate(_model_static_inputs(plan)):
         words = item["texture"]["words"]
-        if item["storage"] != "external":
-            raise ValueError("static Device inputs must retain external source metadata")
-        raw = _read_external(
-            external_data_directory, item["external"], 0, item["source_bytes"]
-        )
+        if item["storage"] == "external":
+            raw = _read_external(
+                external_data_directory, item["external"], 0, item["source_bytes"]
+            )
+        elif item["storage"] == "embedded":
+            if model_path is None or not model_path.is_file():
+                raise ValueError(
+                    "embedded static Device inputs require the original ONNX model"
+                )
+            if embedded is None:
+                from udon_onnx import parse_model
+
+                embedded = parse_model(model_path.read_bytes())["graph"]["initializers"]
+            tensor = embedded.get(item["name"])
+            if not isinstance(tensor, dict) or tensor.get("data_location") != 0:
+                raise ValueError(f"embedded static input {item['name']!r} is missing")
+            raw = tensor["raw"]
+            expected_sha256 = (plan.get("initializers") or {}).get(item["name"], {}).get(
+                "sha256"
+            )
+            if (
+                len(raw) != item["source_bytes"]
+                or hashlib.sha256(raw).hexdigest() != expected_sha256
+            ):
+                raise ValueError(
+                    f"embedded static input {item['name']!r} does not match the plan"
+                )
+        else:
+            raise ValueError("static Device input storage is unsupported")
         if item["data_type"] == "bfloat16":
             if len(raw) != words * 2:
                 raise ValueError("bfloat16 static input byte size is inconsistent")

@@ -94,6 +94,8 @@ def main():
     arena_pointwise_device = root / "libraries/udonaten/device/arena_pointwise.cl"
     arena_tile_device = root / "libraries/udonaten/device/arena_tile.cl"
     arena_rms_device = root / "libraries/udonaten/device/arena_rms_norm.cl"
+    arena_sgemm_device = root / "libraries/udonblas/device/arena_sgemm.cl"
+    arena_softmax_device = source / "device/arena_softmax.cl"
     sgemm_device = root / "libraries/udonblas/device/sgemm.cl"
     sgemv_device = root / "libraries/udonblas/device/sgemv.cl"
     saxpy_device = root / "libraries/udonblas/device/saxpy.cl"
@@ -112,6 +114,8 @@ def main():
     arena_pointwise_text = arena_pointwise_device.read_text(encoding="utf-8")
     arena_tile_text = arena_tile_device.read_text(encoding="utf-8")
     arena_rms_text = arena_rms_device.read_text(encoding="utf-8")
+    arena_sgemm_text = arena_sgemm_device.read_text(encoding="utf-8")
+    arena_softmax_text = arena_softmax_device.read_text(encoding="utf-8")
     sgemm_text = sgemm_device.read_text(encoding="utf-8")
     sgemv_text = sgemv_device.read_text(encoding="utf-8")
     saxpy_text = saxpy_device.read_text(encoding="utf-8")
@@ -144,6 +148,10 @@ def main():
         + arena_tile_text
         + "\n"
         + arena_rms_text
+        + "\n"
+        + arena_sgemm_text
+        + "\n"
+        + arena_softmax_text
         + "\n"
         + sgemm_text
         + "\n"
@@ -329,6 +337,22 @@ def main():
         16384,
         (8192, 2),
     )
+    arena_sgemm_bundle = emit_device(
+        "udonblas-arena-sgemm",
+        arena_sgemm_device,
+        "udonblas_arena_sgemm",
+        221,
+        16384,
+        (8192, 2),
+    )
+    arena_softmax_bundle = emit_device(
+        "udondnn-arena-softmax",
+        arena_softmax_device,
+        "udondnn_arena_softmax_forward",
+        222,
+        16384,
+        (8192, 2),
+    )
     manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
     kernel = manifest["device"]["kernels"][0]
     if (
@@ -509,7 +533,7 @@ def main():
         or arena_pointwise_kernel["global_size"] != [8192, 2, 1]
         or [argument["access"] for argument in arena_pointwise_kernel["args"][:3]]
         != ["read", "read", "write"]
-        or len(arena_pointwise_kernel["args"]) != 5
+        or len(arena_pointwise_kernel["args"]) != 7
     ):
         raise RuntimeError("UdonATen arena pointwise manifest is invalid")
     arena_pointwise_fragment = (
@@ -569,6 +593,32 @@ def main():
         or "uint(position.y)" not in arena_rms_finalize_hlsl
     ):
         raise RuntimeError("UdonATen arena RMSNorm lost its three-input texture ABI")
+    arena_sgemm_manifest = json.loads(
+        (arena_sgemm_bundle / "manifest.json").read_text(encoding="utf-8")
+    )
+    arena_sgemm_kernel = arena_sgemm_manifest["device"]["kernels"][0]
+    if (
+        arena_sgemm_kernel["name"] != "udonblas_arena_sgemm"
+        or arena_sgemm_kernel["global_size"] != [8192, 2, 1]
+        or [argument["access"] for argument in arena_sgemm_kernel["args"][:3]]
+        != ["read", "read", "write"]
+        or len(arena_sgemm_kernel["args"]) != 9
+    ):
+        raise RuntimeError("UdonBLAS arena SGEMM manifest is invalid")
+    arena_sgemm_fragment = arena_sgemm_bundle / "kernels/kernel_221.hlsl"
+    arena_softmax_manifest = json.loads(
+        (arena_softmax_bundle / "manifest.json").read_text(encoding="utf-8")
+    )
+    arena_softmax_kernel = arena_softmax_manifest["device"]["kernels"][0]
+    if (
+        arena_softmax_kernel["name"] != "udondnn_arena_softmax_forward"
+        or arena_softmax_kernel["global_size"] != [8192, 2, 1]
+        or [argument["access"] for argument in arena_softmax_kernel["args"][:2]]
+        != ["read", "write"]
+        or len(arena_softmax_kernel["args"]) != 8
+    ):
+        raise RuntimeError("UdonDNN arena Softmax manifest is invalid")
+    arena_softmax_fragment = arena_softmax_bundle / "kernels/kernel_222.hlsl"
     blas_bundles = [
         (sgemm_bundle, "udonblas_sgemm", 212, 1024, 10),
         (sgemv_bundle, "udonblas_sgemv", 213, 1024, 8),
@@ -685,7 +735,7 @@ def main():
         + '{214, 1024, 4, "udonblas_saxpy", saxpy}, '
         + '{219, 1024, 3, "udonblas_sdot_product", sdotProduct}, '
         + '{220, 1024, 2, "udonblas_sdot_reduce", sdotReduce}, '
-        + '{215, 16384, 2, "udonaten_arena_pointwise", arenaPointwise, 8192, 2, 2}, '
+        + '{215, 16384, 4, "udonaten_arena_pointwise", arenaPointwise, 8192, 2, 2}, '
         + '{216, 16384, 9, "udonaten_arena_tile", arenaTile, 8192, 2}, '
         + '{217, 16384, 2, "udonaten_arena_rms_norm_reduce", arenaRmsReduce, 8192, 2}, '
         + '{218, 16384, 4, "udonaten_arena_rms_norm_finalize", arenaRmsFinalize, 8192, 2, 3}}; }\n',
@@ -1729,6 +1779,8 @@ def main():
             (arena_tile_bundle, "kernel_216.shader"),
             (arena_rms_reduce_bundle, "kernel_217.shader"),
             (arena_rms_finalize_bundle, "kernel_218.shader"),
+            (arena_sgemm_bundle, "kernel_221.shader"),
+            (arena_softmax_bundle, "kernel_222.shader"),
         ):
             shutil.copy2(
                 shader_bundle / "kernels" / shader_name,
@@ -2344,6 +2396,8 @@ def main():
                 (arena_tile_fragment, "frag", "frag"),
                 (arena_rms_reduce_fragment, "frag", "frag"),
                 (arena_rms_finalize_fragment, "frag", "frag"),
+                (arena_sgemm_fragment, "frag", "frag"),
+                (arena_softmax_fragment, "frag", "frag"),
                 (vertex, "vert", "vert"),
             ]
         ):
@@ -2382,6 +2436,8 @@ def main():
             arena_tile_fragment,
             arena_rms_reduce_fragment,
             arena_rms_finalize_fragment,
+            arena_sgemm_fragment,
+            arena_softmax_fragment,
             vertex,
         ) = compiled
 

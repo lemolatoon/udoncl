@@ -49,7 +49,7 @@ assert "optensor_outputs=60" in result.stdout
 assert "optensor_cases=4" in result.stdout
 optensor_error = re.search(r"optensor_max_error=([0-9.eE+-]+)", result.stdout)
 assert optensor_error and float(optensor_error.group(1)) < 0.0005
-assert "rmsnorm_outputs=4112" in result.stdout
+assert "rmsnorm_outputs=12304" in result.stdout
 rmsnorm_error = re.search(r"rmsnorm_max_error=([0-9.eE+-]+)", result.stdout)
 assert rmsnorm_error and float(rmsnorm_error.group(1)) < 0.001
 assert "embedding_outputs=24" in result.stdout
@@ -57,8 +57,14 @@ assert "int4_outputs=96" in result.stdout
 int4_error = re.search(r"int4_max_error=([0-9.eE+-]+)", result.stdout)
 assert int4_error and float(int4_error.group(1)) < 0.0005
 assert "tile_outputs=72" in result.stdout
+assert "arena_tile_outputs=4096" in result.stdout
+assert "arena_pointwise_outputs=86016" in result.stdout
+arena_pointwise_error = re.search(
+    r"arena_pointwise_max_error=([0-9.eE+-]+)", result.stdout
+)
+assert arena_pointwise_error and float(arena_pointwise_error.group(1)) < 0.0005
 assert "rl_outputs=3" in result.stdout
 rl_error = re.search(r"rl_max_error=([0-9.eE+-]+)", result.stdout)
 assert rl_error and float(rl_error.group(1)) < 0.0005
-assert "draws=117" in result.stdout
+assert "draws=126" in result.stdout
 print(result.stdout, end="")

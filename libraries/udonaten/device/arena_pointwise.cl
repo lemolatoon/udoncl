@@ -22,16 +22,27 @@ extern size_t udonaten_arena_pointwise_cpu_gid_y;
 __kernel void udonaten_arena_pointwise(__global const float *self,
                                        __global const float *other,
                                        __global float *output, int words,
+                                       int self_words, int other_words,
                                        int operation) {
   size_t gid = UDONATEN_ARENA_Y() * UDONATEN_ARENA_WIDTH + UDONATEN_ARENA_X();
   float value = 0.0f;
   if (gid < (size_t)words) {
+    size_t left_index = (gid % (size_t)self_words) & 16383u;
+    size_t right_index = (gid % (size_t)other_words) & 16383u;
+    float left = self[left_index];
+    float right = other[right_index];
     if (operation == 0)
-      value = self[gid] + other[gid];
+      value = left + right;
     else if (operation == 1)
-      value = self[gid] * other[gid];
+      value = left * right;
     else if (operation == 2)
-      value = 1.0f / (1.0f + exp(-self[gid]));
+      value = 1.0f / (1.0f + exp(-left));
+    else if (operation == 3)
+      value = left - right;
+    else if (operation == 4)
+      value = left > 0.0f ? left : 0.0f;
+    else if (operation == 5)
+      value = 2.0f / (1.0f + exp(-2.0f * left)) - 1.0f;
   }
   output[gid] = value;
 }

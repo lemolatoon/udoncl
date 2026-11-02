@@ -15,6 +15,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
     {
         private const string GeneratedRoot = "Assets/udoncl-generated/onnx_int4_fixture";
         private const string GeneratedArenaRoot = "Assets/udoncl-generated/onnx_arena_add_fixture";
+        private const string GeneratedRlRoot = "Assets/udoncl-generated/onnx_rl_policy_fixture";
 
         private static string ResolveFixture(string environmentName, string relativeFallback)
         {
@@ -48,6 +49,12 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             );
             Assert.That(File.Exists(Path.Combine(arenaBundle, "manifest.json")));
             Assert.AreEqual(GeneratedArenaRoot, UdonclArtifactImporter.Import(arenaBundle));
+            string rlBundle = ResolveFixture(
+                "UDONCL_ONNX_RL_UNITY_BUNDLE",
+                Path.Combine("build", "precommit", "onnx-aot", "unity-rl-policy-model-bundle")
+            );
+            Assert.That(File.Exists(Path.Combine(rlBundle, "manifest.json")));
+            Assert.AreEqual(GeneratedRlRoot, UdonclArtifactImporter.Import(rlBundle));
         }
 
         [OneTimeTearDown]
@@ -62,14 +69,122 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             string arenaProgramGuid = AssetDatabase.AssetPathToGUID(
                 GeneratedArenaRoot + "/Programs/host_program.asset"
             );
+            string rlProgramGuid = AssetDatabase.AssetPathToGUID(
+                GeneratedRlRoot + "/Programs/host_program.asset"
+            );
             AssetDatabase.DeleteAsset(GeneratedRoot);
             AssetDatabase.DeleteAsset(GeneratedArenaRoot);
-            foreach (string guid in new[] { modelProgramGuid, runnerProgramGuid, arenaProgramGuid })
+            AssetDatabase.DeleteAsset(GeneratedRlRoot);
+            foreach (
+                string guid in new[]
+                {
+                    modelProgramGuid,
+                    runnerProgramGuid,
+                    arenaProgramGuid,
+                    rlProgramGuid,
+                }
+            )
                 if (!string.IsNullOrEmpty(guid))
                     AssetDatabase.DeleteAsset("Assets/SerializedUdonPrograms/" + guid + ".asset");
             AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
             Assert.IsNull(AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(GeneratedRoot));
             Assert.IsNull(AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(GeneratedArenaRoot));
+            Assert.IsNull(AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(GeneratedRlRoot));
+        }
+
+        [Test]
+        public void UnityRlPolicyModelExecutesAllOperatorsNumericallyOnSdkVm()
+        {
+            Lemolatoon.Udoncl.UdonOnnxModelAsset modelAsset =
+                AssetDatabase.LoadAssetAtPath<Lemolatoon.Udoncl.UdonOnnxModelAsset>(
+                    GeneratedRlRoot + "/Models/UdonOnnxModel.asset"
+                );
+            Assert.NotNull(modelAsset);
+            Assert.AreEqual("UdonOperatorExecutionProvider", modelAsset.ExecutionProvider);
+            Assert.AreEqual(3, modelAsset.TextureArenaSlots.Length);
+            Assert.AreEqual(10, modelAsset.PassMaterials.Length);
+
+            UdonAssemblyProgramAsset programAsset =
+                AssetDatabase.LoadAssetAtPath<UdonAssemblyProgramAsset>(
+                    GeneratedRlRoot + "/Programs/host_program.asset"
+                );
+            Assert.NotNull(programAsset);
+            IUdonProgram program = programAsset.SerializedProgramAsset.RetrieveProgram();
+            Assert.NotNull(program);
+            IUdonVM vm = UdonEditorManager.Instance.ConstructUdonVM();
+            Assert.IsTrue(vm.LoadProgram(program));
+            IUdonHeap heap = vm.InspectHeap();
+
+            float[] observation = { 0.25f, -0.5f, 0.75f, -1.0f };
+            float[] expected = EvaluateRlPolicy(observation);
+            Color32[] pixels = new Color32[8];
+            for (int index = 0; index < observation.Length; ++index)
+                pixels[index] = Encode(observation[index]);
+            Texture2D input = new Texture2D(8, 1, TextureFormat.RGBA32, false, true);
+            try
+            {
+                input.filterMode = FilterMode.Point;
+                input.wrapMode = TextureWrapMode.Clamp;
+                input.SetPixels32(pixels);
+                input.Apply(false, false);
+                Graphics.Blit(input, modelAsset.TextureArenaSlots[0]);
+                for (int index = 0; index < modelAsset.TextureArenaSlots.Length; ++index)
+                    Set(heap, program, "arenaSlot" + index, modelAsset.TextureArenaSlots[index]);
+                Set(heap, program, "int4Runners", Array.Empty<IUdonEventReceiver>());
+                Set(heap, program, "passMaterials", modelAsset.PassMaterials);
+                Set(heap, program, "resultState", modelAsset.TextureArenaSlots[0]);
+                vm.SetProgramCounter(program.EntryPoints.GetAddressFromSymbol("_run"));
+                Assert.AreEqual(0u, vm.Interpret());
+
+                Color32[] actual = ReadPixels(modelAsset.TextureArenaSlots[1], 3);
+                float maximumError = 0.0f;
+                for (int index = 0; index < expected.Length; ++index)
+                    maximumError = Mathf.Max(
+                        maximumError,
+                        Mathf.Abs(Decode(actual[index]) - expected[index])
+                    );
+                Assert.That(maximumError, Is.LessThan(0.0005f));
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(input);
+            }
+        }
+
+        private static float[] EvaluateRlPolicy(float[] observation)
+        {
+            float[] preactivation = new float[8];
+            float[] hidden = new float[8];
+            for (int column = 0; column < 8; ++column)
+            {
+                float value = 0.05f * (column - 3);
+                for (int inner = 0; inner < 4; ++inner)
+                    value += observation[inner] * (((inner * 8 + column) % 9) - 4) / 16.0f;
+                preactivation[column] = value;
+                float tanh = (float)Math.Tanh(value);
+                float sigmoid = 1.0f / (1.0f + (float)Math.Exp(-value));
+                hidden[column] = tanh * sigmoid;
+            }
+            float[] logits = new float[3];
+            float[] bias = { 0.1f, -0.05f, 0.025f };
+            float maximum = float.NegativeInfinity;
+            for (int column = 0; column < 3; ++column)
+            {
+                float value = bias[column] - 0.02f;
+                for (int inner = 0; inner < 8; ++inner)
+                    value += hidden[inner] * (((inner * 3 + column) % 7) - 3) / 12.0f;
+                logits[column] = value * 0.75f;
+                maximum = Mathf.Max(maximum, logits[column]);
+            }
+            float denominator = 0.0f;
+            for (int index = 0; index < logits.Length; ++index)
+            {
+                logits[index] = (float)Math.Exp(logits[index] - maximum);
+                denominator += logits[index];
+            }
+            for (int index = 0; index < logits.Length; ++index)
+                logits[index] /= denominator;
+            return logits;
         }
 
         [Test]
@@ -343,11 +458,11 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         }
 
         [TestCase("UDONCL_ONNX_AOT_UASM", "generic-host.uasm", "pass202Material")]
-        [TestCase("UDONCL_ONNX_TILED_AOT_UASM", "tiled-gemm-host.uasm", "pass211Material")]
+        [TestCase("UDONCL_ONNX_TILED_AOT_UASM", "tiled-gemm-host.uasm", "pass200Material")]
         [TestCase(
             "UDONCL_ONNX_MNIST_OPERATOR_AOT_UASM",
             "mnist-operators-host.uasm",
-            "pass213Material"
+            "pass205Material"
         )]
         [TestCase("UDONCL_ONNX_RL_OPERATOR_AOT_UASM", "rl-policy-host.uasm", "pass209Material")]
         [TestCase(
