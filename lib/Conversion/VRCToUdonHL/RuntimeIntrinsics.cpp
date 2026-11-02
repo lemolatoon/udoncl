@@ -58,6 +58,13 @@ struct SubstituteRuntimeIntrinsicsPass
                                    IntegerType::get(&getContext(), 32),
                                    IntegerType::get(&getContext(), 32)} &&
             results == ArrayRef<Type>{runtime::EventType::get(&getContext())};
+      else if (name == "buffer_upload" || name == "buffer_readback")
+        valid =
+            args == ArrayRef<Type>{runtime::BufferType::get(&getContext()),
+                                   IntegerType::get(&getContext(), 32),
+                                   IntegerType::get(&getContext(), 32),
+                                   IntegerType::get(&getContext(), 32)} &&
+            results == ArrayRef<Type>{runtime::EventType::get(&getContext())};
       else if (name == "await" || name == "event_status")
         valid =
             args == ArrayRef<Type>{runtime::EventType::get(&getContext())} &&
@@ -106,8 +113,12 @@ struct SubstituteRuntimeIntrinsicsPass
           name == "dispatch"       ? runtime::DispatchOp::getOperationName()
           : name == "buffer_alloc" ? runtime::BufferAllocOp::getOperationName()
           : name == "buffer_copy"  ? runtime::BufferCopyOp::getOperationName()
-          : name == "await"        ? runtime::AwaitOp::getOperationName()
-                                   : runtime::EventStatusOp::getOperationName();
+          : name == "buffer_upload"
+              ? runtime::BufferUploadOp::getOperationName()
+          : name == "buffer_readback"
+              ? runtime::BufferReadbackOp::getOperationName()
+          : name == "await" ? runtime::AwaitOp::getOperationName()
+                            : runtime::EventStatusOp::getOperationName();
       OperationState state(call.getLoc(), operationName);
       state.addOperands(call.getArgs());
       state.addTypes(call.getResultTypes());

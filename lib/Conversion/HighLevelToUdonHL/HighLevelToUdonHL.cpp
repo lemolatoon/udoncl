@@ -77,7 +77,8 @@ struct LowerHostToUdonHLPass
         auto intrinsic = function->getAttrOfType<StringAttr>("vrc.intrinsic");
         if (!intrinsic ||
             (intrinsic != "dispatch" && intrinsic != "buffer_alloc" &&
-             intrinsic != "buffer_copy" && intrinsic != "await" &&
+             intrinsic != "buffer_copy" && intrinsic != "buffer_upload" &&
+             intrinsic != "buffer_readback" && intrinsic != "await" &&
              intrinsic != "event_status") ||
             function->hasAttr("vrc.export_id")) {
           fail("external Host calls require a recognized internal runtime "

@@ -67,17 +67,24 @@ buffer_runtime = r'''
 module attributes {vrc.host_stage = "udonhl"} {
   func.func private @allocate(i32) -> (!vrc.buffer, i32) attributes {vrc.intrinsic = "buffer_alloc", vrc.format = "rgba8_unorm", vrc.usage = "storage"}
   func.func private @copy(!vrc.buffer, !vrc.buffer, i32, i32, i32) -> !vrc.event attributes {vrc.intrinsic = "buffer_copy"}
-  func.func @runtime(%bytes: i32, %source: !vrc.buffer, %zero: i32) -> !vrc.event {
+  func.func private @upload(!vrc.buffer, i32, i32, i32) -> !vrc.event attributes {vrc.intrinsic = "buffer_upload"}
+  func.func private @readback(!vrc.buffer, i32, i32, i32) -> !vrc.event attributes {vrc.intrinsic = "buffer_readback"}
+  func.func @runtime(%bytes: i32, %source: !vrc.buffer, %zero: i32, %pointer: i32) -> !vrc.event {
     %destination, %status = udonhl.call @allocate(%bytes) {call_policy = #udonhl<call_policy normal>} : (i32) -> (!vrc.buffer, i32)
-    %event = udonhl.call @copy(%source, %destination, %zero, %zero, %bytes) {call_policy = #udonhl<call_policy normal>} : (!vrc.buffer, !vrc.buffer, i32, i32, i32) -> !vrc.event
-    return %event : !vrc.event
+    %copied = udonhl.call @copy(%source, %destination, %zero, %zero, %bytes) {call_policy = #udonhl<call_policy normal>} : (!vrc.buffer, !vrc.buffer, i32, i32, i32) -> !vrc.event
+    %uploaded = udonhl.call @upload(%destination, %zero, %bytes, %pointer) {call_policy = #udonhl<call_policy normal>} : (!vrc.buffer, i32, i32, i32) -> !vrc.event
+    %read = udonhl.call @readback(%destination, %zero, %bytes, %pointer) {call_policy = #udonhl<call_policy normal>} : (!vrc.buffer, i32, i32, i32) -> !vrc.event
+    return %read : !vrc.event
   }
 }
 '''
 buffer_ops = run([opt, '--pass-pipeline=builtin.module(' + intrinsic_pass + ')',
                   '--verify-each'], buffer_runtime)
-assert 'vrc.buffer_alloc ' in buffer_ops and 'vrc.buffer_copy ' in buffer_ops
-assert '@allocate' not in buffer_ops and '@copy' not in buffer_ops
+for operation in ['vrc.buffer_alloc ', 'vrc.buffer_copy ',
+                  'vrc.buffer_upload ', 'vrc.buffer_readback ']:
+    assert operation in buffer_ops
+for prototype in ['@allocate', '@copy', '@upload', '@readback']:
+    assert prototype not in buffer_ops
 typed_buffer_source = buffer_runtime.replace(
     'module attributes {vrc.host_stage = "udonhl"}', 'module').replace(
     'udonhl.call', 'func.call').replace(
@@ -87,6 +94,8 @@ typed_buffer_ops = run(
      '--verify-each'], typed_buffer_source)
 assert 'vrc.buffer_alloc ' in typed_buffer_ops
 assert 'vrc.buffer_copy ' in typed_buffer_ops
+assert 'vrc.buffer_upload ' in typed_buffer_ops
+assert 'vrc.buffer_readback ' in typed_buffer_ops
 assert 'func.call ' not in typed_buffer_ops and 'udonhl.call ' not in typed_buffer_ops
 
 event_runtime = r'''

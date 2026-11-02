@@ -39,6 +39,21 @@ events_roundtrip = run(events.stdout)
 assert events_roundtrip.returncode == 0, events_roundtrip.stderr
 assert events.stdout == events_roundtrip.stdout
 
+transfers = run('''module {
+  func.func @transfers(%buffer: !vrc.buffer, %pointer: i32) -> !vrc.event {
+    %zero = arith.constant 0 : i32
+    %bytes = arith.constant 16 : i32
+    %uploaded = vrc.buffer_upload %buffer, %zero, %bytes, %pointer : (!vrc.buffer, i32, i32, i32) -> !vrc.event
+    %read = vrc.buffer_readback %buffer, %zero, %bytes, %pointer : (!vrc.buffer, i32, i32, i32) -> !vrc.event
+    return %read : !vrc.event
+  }
+}
+''')
+assert transfers.returncode == 0, transfers.stderr
+transfers_roundtrip = run(transfers.stdout)
+assert transfers_roundtrip.returncode == 0, transfers_roundtrip.stderr
+assert transfers.stdout == transfers_roundtrip.stdout
+
 invalid_await = run('''module {
   func.func @bad(%event: !vrc.event) -> i32 {
     %status = vrc.await %event : (!vrc.event) -> i32
@@ -48,6 +63,18 @@ invalid_await = run('''module {
 ''')
 assert invalid_await.returncode != 0
 assert 'requires a may_suspend Host function' in invalid_await.stderr
+
+invalid_transfer = run('''module {
+  func.func @bad(%buffer: !vrc.buffer) -> !vrc.event {
+    %zero = arith.constant 0 : i32
+    %bytes = arith.constant 16 : i32
+    %event = vrc.buffer_upload %buffer, %zero, %bytes, %zero : (!vrc.buffer, i32, i32, i32) -> !vrc.event
+    return %event : !vrc.event
+  }
+}
+''')
+assert invalid_transfer.returncode != 0
+assert 'constant Host pointer must be non-null' in invalid_transfer.stderr
 for operation, diagnostic in [
     ('udonasm.push ""', 'assembler identifier'),
     ('udonasm.push "bad slot"', 'assembler identifier'),
@@ -69,4 +96,4 @@ for operation, diagnostic in [
     result = run('module { ' + operation + ' }')
     assert result.returncode != 0, operation
     assert diagnostic in result.stderr, (operation, result.stderr)
-print('9 opcode round-trip and 16 negative parser/verifier cases passed')
+print('9 opcode round-trip, transfer/event round-trips and 17 negative parser/verifier cases passed')

@@ -49,6 +49,30 @@ mlir::LogicalResult vrc::vrc::BufferAllocOp::verify() {
   return mlir::success();
 }
 
+mlir::LogicalResult vrc::vrc::BufferUploadOp::verify() {
+  if (mlir::failed(verifyHostRuntimeOperation(*this)))
+    return mlir::failure();
+  if (auto offset = constantI32(getDestinationOffset()); offset && *offset < 0)
+    return emitOpError("constant destination offset must be non-negative");
+  if (auto size = constantI32(getByteSize()); size && *size <= 0)
+    return emitOpError("constant byte size must be positive");
+  if (auto pointer = constantI32(getHostPointer()); pointer && *pointer == 0)
+    return emitOpError("constant Host pointer must be non-null");
+  return mlir::success();
+}
+
+mlir::LogicalResult vrc::vrc::BufferReadbackOp::verify() {
+  if (mlir::failed(verifyHostRuntimeOperation(*this)))
+    return mlir::failure();
+  if (auto offset = constantI32(getSourceOffset()); offset && *offset < 0)
+    return emitOpError("constant source offset must be non-negative");
+  if (auto size = constantI32(getByteSize()); size && *size <= 0)
+    return emitOpError("constant byte size must be positive");
+  if (auto pointer = constantI32(getHostPointer()); pointer && *pointer == 0)
+    return emitOpError("constant Host pointer must be non-null");
+  return mlir::success();
+}
+
 mlir::LogicalResult vrc::vrc::BufferCopyOp::verify() {
   if (mlir::failed(verifyHostRuntimeOperation(*this)))
     return mlir::failure();

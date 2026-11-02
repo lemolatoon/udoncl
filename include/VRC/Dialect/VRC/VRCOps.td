@@ -6,6 +6,22 @@ def VRC_BufferAllocOp : Op<VRC_Dialect, "buffer_alloc"> {
   let assemblyFormat = "$byte_size attr-dict `:` functional-type(operands, results)";
   let hasVerifier = 1;
 }
+def VRC_BufferUploadOp : Op<VRC_Dialect, "buffer_upload"> {
+  let summary = "Upload a bounded Host byte range to an explicit Device buffer";
+  let arguments = (ins VRC_BufferType:$destination, I32:$destination_offset,
+    I32:$byte_size, I32:$host_pointer);
+  let results = (outs VRC_EventType:$event);
+  let assemblyFormat = "$destination `,` $destination_offset `,` $byte_size `,` $host_pointer attr-dict `:` functional-type(operands, results)";
+  let hasVerifier = 1;
+}
+def VRC_BufferReadbackOp : Op<VRC_Dialect, "buffer_readback"> {
+  let summary = "Read back a bounded Device byte range to Host memory";
+  let arguments = (ins VRC_BufferType:$source, I32:$source_offset,
+    I32:$byte_size, I32:$host_pointer);
+  let results = (outs VRC_EventType:$event);
+  let assemblyFormat = "$source `,` $source_offset `,` $byte_size `,` $host_pointer attr-dict `:` functional-type(operands, results)";
+  let hasVerifier = 1;
+}
 def VRC_BufferCopyOp : Op<VRC_Dialect, "buffer_copy"> {
   let summary = "Copy a bounded byte range between explicit Device buffers";
   let arguments = (ins VRC_BufferType:$source, VRC_BufferType:$destination,

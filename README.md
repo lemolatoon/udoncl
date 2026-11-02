@@ -168,7 +168,7 @@ local alternative and is not run by CI.
 
 Current components:
 
-- Four separate TableGen dialect libraries; 25 of the closed catalog of 57 operations are defined.
+- Four separate TableGen dialect libraries; 27 of the closed catalog of 57 operations are defined.
 - A C OpenCL 1.2 AOT API subset and native Host Runtime linked to the fragment renderer.
 - Explicit Device buffer allocation with bounded Write/Read/Copy commands;
   host-backed buffers, SubBuffer, Map/Unmap, and rectangular copies fail
