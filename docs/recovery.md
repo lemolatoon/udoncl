@@ -38,7 +38,7 @@ are under `build/udoncl/tests/opencl`. Checked-in results are in
 
 ## Frontend sidecar v1
 
-`vrc-translate --import-llvm input.ll --metadata-output sidecar.json -o input.mlir`
+`udoncl-translate --import-llvm input.ll --metadata-output sidecar.json -o input.mlir`
 captures metadata in a JSON document with:
 
 - Schema version, LLVM version, target triple, data layout, pointer bit width.
@@ -65,7 +65,7 @@ strides and conflicting explicit LLVM layouts are diagnosed.
 
 `include/VRC/Conversion/LLVMToHighLevel/Passes.td` defines
 `vrc-raise-llvm-to-scalar`; TableGen generates declarations, base class and
-registration. `registerVRCRecoveryPasses()` exposes the Pass to `vrc-opt`.
+registration. `registerVRCRecoveryPasses()` exposes the Pass to `udoncl-opt`.
 Conversion uses `ConversionTarget`, rewrite patterns and `applyFullConversion`.
 LLVM operations are illegal after this Pass; unknown operations do not become
 implicitly legal. Validation precedes rewriting, diagnoses the original location

@@ -52,7 +52,7 @@ Insiders 18.12 / MSVC 19.52.37025 and the locked LLVM/MLIR 23.1.4 SDK. All
 13 CTests passed. The new `vrc-lower-udonhl-to-udonasm` pass allocates typed
 heap slots and lowers scalar `i32`/`f32` arithmetic, signed integer comparison,
 block arguments, loops and conditional branches to the existing nine-opcode
-UdonAsm dialect. `vrc-translate --emit-udon-assembly` emits data/export
+UdonAsm dialect. `udoncl-translate --emit-udon-assembly` emits data/export
 directives and textual opcode assembly with byte-address relocation.
 
 This remains a compiler bootstrap, not a complete G0/G1 runtime claim. The

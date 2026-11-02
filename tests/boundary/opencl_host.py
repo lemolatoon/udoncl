@@ -39,7 +39,7 @@ assert 'actual=0x40e80000' in reports[0]['stdout'] # 2.5*2.5 + 1 = 7.25
 assert 'actual=0x40c00000' in reports[1]['stdout'] # 2.5+2.5 + 1 = 6
 assert all('runtime_contract_tests=passed draws=9' in r['stdout'] for r in reports)
 suffix='.exe' if sys.platform=='win32' else ''
-opt=build/'tools/vrc-opt'/('vrc-opt'+suffix)
+opt=build/'tools/vrc-opt'/('udoncl-opt'+suffix)
 base=(output/'square/host.udonhl.mlir').read_text()
 run([opt,'--vrc-lower-native-host-calls'],text=base.replace('#udonhl<call_policy normal>','#udonhl<call_policy recursive>'),error='normal policy and original LLVM ABI')
 run([opt,'--vrc-lower-native-host-calls'],text=base.replace('vrc.native_host_calls','vrc.wrong_marker'),error='requires native Host call recovery')

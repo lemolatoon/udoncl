@@ -22,7 +22,7 @@ accepts a restricted single-block scalar subset and rejects recursion/suspension
 Run the commands in the README to emit a bundle. The equivalent MLIR pipeline is:
 
 ```text
-build/udoncl/tools/vrc-opt/vrc-opt --pass-pipeline="builtin.module(vrc-lower-host-to-udonhl,vrc-substitute-runtime-intrinsics,vrc-lower-device-single-invocation,vrc-verify-host-device)" --verify-each examples/host-device-boundary/probe.mlir -o build/boundary-lowered.mlir
+build/udoncl/tools/vrc-opt/udoncl-opt --pass-pipeline="builtin.module(vrc-lower-host-to-udonhl,vrc-substitute-runtime-intrinsics,vrc-lower-device-single-invocation,vrc-verify-host-device)" --verify-each examples/host-device-boundary/probe.mlir -o build/boundary-lowered.mlir
 ```
 
 `vrc-verify-host-device` requires all three preceding stages. It checks kernel

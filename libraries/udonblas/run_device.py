@@ -71,9 +71,9 @@ def main():
     )
     sdk = Path(llvm_dir).parents[2]
     clang = sdk / "bin" / ("clang" + suffix)
-    compiler = build / "tools/vrccl" / ("vrccl" + suffix)
-    translate = build / "tools/vrc-translate" / ("vrc-translate" + suffix)
-    opt = build / "tools/vrc-opt" / ("vrc-opt" + suffix)
+    compiler = build / "tools/vrccl" / ("udonclc" + suffix)
+    translate = build / "tools/vrc-translate" / ("udoncl-translate" + suffix)
+    opt = build / "tools/vrc-opt" / ("udoncl-opt" + suffix)
     mlir_translate = sdk / "bin" / ("mlir-translate" + suffix)
     runtime_flags = ["-fms-runtime-lib=dll"] if sys.platform == "win32" else []
 

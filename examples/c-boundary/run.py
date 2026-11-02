@@ -26,7 +26,7 @@ def main():
         if llvm_dir is None:
             parser.error('LLVM_DIR is missing from the selected build directory')
         clang = Path(llvm_dir).parents[2] / 'bin' / ('clang' + suffix)
-    compiler = args.build_dir / 'tools/vrccl' / ('vrccl' + suffix)
+    compiler = args.build_dir / 'tools/vrccl' / ('udonclc' + suffix)
     if not clang.is_file() or not compiler.is_file():
         parser.error('build the project first, or specify --build-dir / --clang')
     args.output.mkdir(parents=True, exist_ok=True)

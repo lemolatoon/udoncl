@@ -49,7 +49,7 @@ def main():
     clang = sdk / 'bin' / ('clang' + suffix)
     upstream_opt = sdk / 'bin' / ('mlir-opt' + suffix)
     upstream_translate = sdk / 'bin' / ('mlir-translate' + suffix)
-    opt = args.build_dir / 'tools/vrc-opt' / ('vrc-opt' + suffix)
+    opt = args.build_dir / 'tools/vrc-opt' / ('udoncl-opt' + suffix)
     run([sys.executable, root / 'examples/c-boundary/run.py', '--build-dir', args.build_dir,
          '--source-dir', args.source_dir, '--output', args.output / 'compile'])
     bundle = args.output / 'compile/bundle'

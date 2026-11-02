@@ -36,9 +36,9 @@ def main():
     cache=(build/'CMakeCache.txt').read_text()
     sdk=Path(next(line.split('=',1)[1] for line in cache.splitlines() if line.startswith('LLVM_DIR:'))).parents[2]
     clang=sdk/'bin'/('clang'+suffix)
-    compiler=build/'tools/vrccl'/('vrccl'+suffix)
-    opt=build/'tools/vrc-opt'/('vrc-opt'+suffix)
-    translate=build/'tools/vrc-translate'/('vrc-translate'+suffix)
+    compiler=build/'tools/vrccl'/('udonclc'+suffix)
+    opt=build/'tools/vrc-opt'/('udoncl-opt'+suffix)
+    translate=build/'tools/vrc-translate'/('udoncl-translate'+suffix)
     llvm_translate=sdk/'bin'/('mlir-translate'+suffix)
     config=json.loads((source/'device.json').read_text())
     kernel=config['kernel']

@@ -44,7 +44,7 @@ for name in ['md_drift', 'md_kick']:
 
 commands = json.loads((output/'commands.json').read_text())
 compile_device = next(item['argv'] for item in commands if '-DMD_DRIFT=1' in item['argv'] and '-emit-llvm' in item['argv'])
-compiler = build/'tools/vrccl'/('vrccl'+suffix)
+compiler = build/'tools/vrccl'/('udonclc'+suffix)
 source = (root/'examples/md-crystal/device.cl').read_text()
 variants = [
     ('output-oob', 'out[word] =', 'out[word + 1u] =', 'buffer index bounds'),

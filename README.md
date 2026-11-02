@@ -134,10 +134,10 @@ Current components:
 
 - Four separate TableGen dialect libraries; 20 of the closed catalog of 57 operations are defined.
 - A C OpenCL 1.2 AOT API subset and native Host Runtime linked to the fragment renderer.
-- `vrc-opt`: MLIR parser/printer with operation verification, rejects unknown ops by default.
+- `udoncl-opt`: MLIR parser/printer with operation verification, rejects unknown ops by default.
 - `VRCLLVMToHighLevelMLIR`: independent import/metadata, local-memory and scalar/CFG recovery library for host/device development.
-- `vrc-translate --import-llvm input.ll`: LLVM dialect import with preserved frontend metadata and optional JSON sidecar.
-- `vrc-lower-udonhl-to-udonasm` and `vrc-translate --emit-udon-assembly`:
+- `udoncl-translate --import-llvm input.ll`: LLVM dialect import with preserved frontend metadata and optional JSON sidecar.
+- `vrc-lower-udonhl-to-udonasm` and `udoncl-translate --emit-udon-assembly`:
   an incremental scalar/CFG backend for real Udon opcodes and textual `.uasm`.
 - `vrc-raise-llvm-memory` / `vrc-raise-llvm-to-scalar` MLIR Passes and the `vrc-recover-high-level` pipeline: proven fixed local arrays, scalar/CFG conversion and upstream SCF structuring.
 
@@ -152,8 +152,8 @@ See [docs/validation.md](docs/validation.md) for gates and evidence.
 Import and high-level recovery examples (add `.exe` to tool names on Windows):
 
 ```text
-build/udoncl/tools/vrc-translate/vrc-translate --import-llvm tests/recovery/loop.ll --metadata-output build/loop.frontend.json -o build/loop.llvm.mlir
-build/udoncl/tools/vrc-opt/vrc-opt --pass-pipeline="builtin.module(vrc-recover-high-level)" --verify-each build/loop.llvm.mlir -o build/loop.high.mlir
+build/udoncl/tools/vrc-translate/udoncl-translate --import-llvm tests/recovery/loop.ll --metadata-output build/loop.frontend.json -o build/loop.llvm.mlir
+build/udoncl/tools/vrc-opt/udoncl-opt --pass-pipeline="builtin.module(vrc-recover-high-level)" --verify-each build/loop.llvm.mlir -o build/loop.high.mlir
 ```
 
 The raising Pass is defined in TableGen and uses MLIR dialect conversion;
@@ -173,8 +173,8 @@ in `build/udoncl/tests/opencl`; recovery artifacts are in `build/udoncl/tests/re
 Try fixed-array recovery (initialization, update and sum):
 
 ```text
-build/udoncl/tools/vrc-translate/vrc-translate --import-llvm tests/recovery/array-loop.ll -o build/array.llvm.mlir
-build/udoncl/tools/vrc-opt/vrc-opt --pass-pipeline="builtin.module(vrc-recover-high-level)" --verify-each build/array.llvm.mlir -o build/array.high.mlir
+build/udoncl/tools/vrc-translate/udoncl-translate --import-llvm tests/recovery/array-loop.ll -o build/array.llvm.mlir
+build/udoncl/tools/vrc-opt/udoncl-opt --pass-pipeline="builtin.module(vrc-recover-high-level)" --verify-each build/array.llvm.mlir -o build/array.high.mlir
 ```
 
 `build/array.high.mlir` contains `memref.alloca`, `memref.load/store` and
@@ -189,8 +189,8 @@ Memory test IR, native executables, diagnostics and reports are saved under
 Host/Device boundary example (prepared high-level MLIR input):
 
 ```text
-build/udoncl/tools/vrccl/vrccl --emit-boundary-bundle examples/host-device-boundary/probe.mlir -o build/boundary-example
-build/udoncl/tools/vrccl/vrccl --check-boundary-request build/boundary-example/manifest.json --request examples/host-device-boundary/request.json
+build/udoncl/tools/vrccl/udonclc --emit-boundary-bundle examples/host-device-boundary/probe.mlir -o build/boundary-example
+build/udoncl/tools/vrccl/udonclc --check-boundary-request build/boundary-example/manifest.json --request examples/host-device-boundary/request.json
 ```
 
 The Host path lowers `func.call` through `udonhl.call`, then substitutes the

@@ -64,13 +64,13 @@ build/c-boundary/bundle/kernels/kernel_7.hlsl
 You can also replay recovery independently:
 
 ```text
-build/udoncl/tools/vrc-opt/vrc-opt --pass-pipeline="builtin.module(vrc-recover-c-boundary)" build/c-boundary/bundle/frontend.imported.mlir
+build/udoncl/tools/vrc-opt/udoncl-opt --pass-pipeline="builtin.module(vrc-recover-c-boundary)" build/c-boundary/bundle/frontend.imported.mlir
 ```
 
 The script invokes this compiler mode after Clang (add `.exe` on Windows):
 
 ```text
-build/udoncl/tools/vrccl/vrccl --emit-llvm-boundary-bundle examples/c-boundary/boundary.json --host-llvm build/c-boundary/host.ll --device-llvm build/c-boundary/device.ll -o build/c-boundary/manual-bundle
+build/udoncl/tools/vrccl/udonclc --emit-llvm-boundary-bundle examples/c-boundary/boundary.json --host-llvm build/c-boundary/host.ll --device-llvm build/c-boundary/device.ll -o build/c-boundary/manual-bundle
 ```
 
 Scope: one configured kernel, (__global float*, float), one direct f32 store,

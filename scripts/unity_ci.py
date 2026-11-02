@@ -89,8 +89,8 @@ def prepare_fixtures(root: Path, build: Path, output: Path):
         [
             sys.executable,
             root / "tests/codegen/udon.py",
-            executable(build / "tools/vrc-opt/vrc-opt"),
-            executable(build / "tools/vrc-translate/vrc-translate"),
+            executable(build / "tools/vrc-opt/udoncl-opt"),
+            executable(build / "tools/vrc-translate/udoncl-translate"),
             lowering,
         ]
     )

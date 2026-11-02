@@ -15,7 +15,9 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
+#include "mlir/Transforms/Passes.h"
 int main(int argc, char **argv) {
+  mlir::registerTransformsPasses();
   vrc::registerCBoundaryRecoveryPipeline();
   vrc::registerVRCRecoveryPasses();
   vrc::registerHighLevelRecoveryPipeline();

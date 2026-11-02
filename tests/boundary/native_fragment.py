@@ -44,7 +44,7 @@ assert 'actual=0x40a00000' in reports[1]['stdout'] # 2.5 doubled = 5
 assert 'input=-0 expected=0x80000000 actual=0x80000000' in reports[1]['stdout']
 
 suffix = '.exe' if sys.platform == 'win32' else ''
-opt = build / 'tools/vrc-opt' / ('vrc-opt' + suffix)
+opt = build / 'tools/vrc-opt' / ('udoncl-opt' + suffix)
 boundary = (output / 'square/compile/bundle/host-device.mlir').read_text()
 # Native lowering must start after the paired boundary verifier and reject
 # calls whose recursion/suspension semantics have not been lowered.
