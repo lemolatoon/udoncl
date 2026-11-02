@@ -86,6 +86,8 @@ namespace Lemolatoon.Udoncl.Editor
             source.AppendLine("        private UdonSharpBehaviour pendingReadbackReceiver;");
             source.AppendLine("        private string pendingReadbackEvent;");
             source.AppendLine("        private int lastReadbackStatus;");
+            source.AppendLine("        private int pendingReadbackGeneration;");
+            source.AppendLine("        private int generation = 1;");
             source.AppendLine("        private bool busy;");
             source.AppendLine("        private bool readbackBusy;");
             source.AppendLine("        private bool disposed;");
@@ -101,6 +103,9 @@ namespace Lemolatoon.Udoncl.Editor
             source.AppendLine("                return StatusSuccess;");
             source.AppendLine("            if (busy || readbackBusy)");
             source.AppendLine("                return StatusBusy;");
+            source.AppendLine(
+                "            generation = generation == int.MaxValue ? 1 : generation + 1;"
+            );
             source.AppendLine("            disposed = true;");
             source.AppendLine("            program = null;");
             source.AppendLine("            return StatusSuccess;");
@@ -246,7 +251,9 @@ namespace Lemolatoon.Udoncl.Editor
                 source.AppendLine("        private UdonSharpBehaviour pendingReadbackReceiver;");
                 source.AppendLine("        private string pendingReadbackEvent;");
                 source.AppendLine("        private int lastReadbackStatus;");
+                source.AppendLine("        private int pendingReadbackGeneration;");
             }
+            source.AppendLine("        private int generation = 1;");
             source.AppendLine("        private bool busy;");
             source.AppendLine("        private bool readbackBusy;");
             source.AppendLine("        private bool disposed;");
@@ -257,6 +264,9 @@ namespace Lemolatoon.Udoncl.Editor
             source.AppendLine("                return StatusInvalidArgument;");
             source.AppendLine("            if (busy || readbackBusy)");
             source.AppendLine("                return StatusBusy;");
+            source.AppendLine(
+                "            generation = generation == int.MaxValue ? 1 : generation + 1;"
+            );
             source.AppendLine("            program = value;");
             source.AppendLine("            busy = false;");
             source.AppendLine("            disposed = false;");
@@ -274,6 +284,9 @@ namespace Lemolatoon.Udoncl.Editor
             source.AppendLine("                return StatusSuccess;");
             source.AppendLine("            if (busy || readbackBusy)");
             source.AppendLine("                return StatusBusy;");
+            source.AppendLine(
+                "            generation = generation == int.MaxValue ? 1 : generation + 1;"
+            );
             source.AppendLine("            disposed = true;");
             source.AppendLine("            program = null;");
             source.AppendLine("            return StatusSuccess;");
@@ -433,6 +446,7 @@ namespace Lemolatoon.Udoncl.Editor
             source.AppendLine("            pendingReadbackIndex = index;");
             source.AppendLine("            pendingReadbackReceiver = receiver;");
             source.AppendLine("            pendingReadbackEvent = completionEvent;");
+            source.AppendLine("            pendingReadbackGeneration = generation;");
             source.AppendLine("            lastReadbackStatus = StatusBusy;");
             source.AppendLine(
                 "            VRCAsyncGPUReadback.Request(deviceBuffers[index], 0, TextureFormat.RGBA32, this);"
@@ -491,6 +505,16 @@ namespace Lemolatoon.Udoncl.Editor
             source.AppendLine("        {");
             source.AppendLine("            if (!readbackBusy)");
             source.AppendLine("                return;");
+            source.AppendLine("            if (pendingReadbackGeneration != generation)");
+            source.AppendLine("            {");
+            source.AppendLine("                readbackBusy = false;");
+            source.AppendLine("                pendingFloatReadback = null;");
+            source.AppendLine("                pendingIntReadback = null;");
+            source.AppendLine("                pendingReadbackReceiver = null;");
+            source.AppendLine("                pendingReadbackEvent = null;");
+            source.AppendLine("                pendingReadbackGeneration = 0;");
+            source.AppendLine("                return;");
+            source.AppendLine("            }");
             source.AppendLine(
                 "            RenderTexture source = deviceBuffers[pendingReadbackIndex];"
             );
@@ -524,6 +548,7 @@ namespace Lemolatoon.Udoncl.Editor
             source.AppendLine("            string completionEvent = pendingReadbackEvent;");
             source.AppendLine("            pendingReadbackReceiver = null;");
             source.AppendLine("            pendingReadbackEvent = null;");
+            source.AppendLine("            pendingReadbackGeneration = 0;");
             source.AppendLine("            if (receiver != null)");
             source.AppendLine("                receiver.SendCustomEvent(completionEvent);");
             source.AppendLine("        }");

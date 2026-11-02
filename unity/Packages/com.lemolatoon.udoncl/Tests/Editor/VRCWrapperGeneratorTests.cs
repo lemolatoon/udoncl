@@ -49,6 +49,11 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             StringAssert.Contains("public const int StatusSuccess = 0;", source);
             StringAssert.Contains("private bool busy;", source);
             StringAssert.Contains("private bool disposed;", source);
+            StringAssert.Contains("private int generation = 1;", source);
+            StringAssert.Contains(
+                "generation = generation == int.MaxValue ? 1 : generation + 1;",
+                source
+            );
             StringAssert.Contains("public int TryBindProgram(UdonBehaviour value)", source);
             StringAssert.Contains("public bool IsInitialized()", source);
             StringAssert.Contains("public int TryDispose()", source);
@@ -171,6 +176,9 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             StringAssert.Contains("VRCAsyncGPUReadback.Request", source);
             StringAssert.Contains("public override void OnAsyncGpuReadbackComplete", source);
             StringAssert.Contains("request.TryGetData(pixels, 0);", source);
+            StringAssert.Contains("pendingReadbackGeneration = generation;", source);
+            StringAssert.Contains("if (pendingReadbackGeneration != generation)", source);
+            StringAssert.Contains("pendingReadbackGeneration = 0;", source);
             StringAssert.Contains("System.BitConverter.Int32BitsToSingle", source);
             StringAssert.Contains("public int TryWriteInput(float[] source)", source);
             StringAssert.Contains("return TryWriteFloatBuffer(7, source);", source);
@@ -215,6 +223,8 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             StringAssert.Contains("private int StartReadFloatBuffer", source);
             StringAssert.Contains("public int TryDispose()", source);
             StringAssert.Contains("VRCAsyncGPUReadback.Request", source);
+            StringAssert.Contains("pendingReadbackGeneration = generation;", source);
+            StringAssert.Contains("if (pendingReadbackGeneration != generation)", source);
         }
 
         [Test]

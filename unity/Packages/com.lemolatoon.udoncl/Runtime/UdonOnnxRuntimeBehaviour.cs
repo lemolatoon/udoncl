@@ -60,6 +60,8 @@ namespace Lemolatoon.Udoncl
         private UdonSharpBehaviour pendingReadbackReceiver;
         private string pendingReadbackEvent;
         private int lastReadbackStatus;
+        private int generation = 1;
+        private int pendingReadbackGeneration;
 
         public bool IsInitialized()
         {
@@ -204,6 +206,7 @@ namespace Lemolatoon.Udoncl
                 return StatusSuccess;
             if (busy || readbackBusy)
                 return StatusBusy;
+            generation = generation == int.MaxValue ? 1 : generation + 1;
             disposed = true;
             program = null;
             return StatusSuccess;
@@ -213,6 +216,16 @@ namespace Lemolatoon.Udoncl
         {
             if (!readbackBusy)
                 return;
+            if (pendingReadbackGeneration != generation)
+            {
+                readbackBusy = false;
+                pendingFloatReadback = null;
+                pendingIntReadback = null;
+                pendingReadbackReceiver = null;
+                pendingReadbackEvent = null;
+                pendingReadbackGeneration = 0;
+                return;
+            }
             int slot = outputSlots[pendingOutputIndex];
             RenderTexture source = arenaSlots[slot];
             Color32[] pixels = new Color32[source.width * source.height];
@@ -240,6 +253,7 @@ namespace Lemolatoon.Udoncl
             string completionEvent = pendingReadbackEvent;
             pendingReadbackReceiver = null;
             pendingReadbackEvent = null;
+            pendingReadbackGeneration = 0;
             if (receiver != null)
                 receiver.SendCustomEvent(completionEvent);
         }
@@ -308,6 +322,7 @@ namespace Lemolatoon.Udoncl
             pendingOutputIndex = index;
             pendingReadbackReceiver = receiver;
             pendingReadbackEvent = completionEvent;
+            pendingReadbackGeneration = generation;
             lastReadbackStatus = StatusBusy;
             VRCAsyncGPUReadback.Request(
                 arenaSlots[outputSlots[index]],
