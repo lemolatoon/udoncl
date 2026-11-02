@@ -69,7 +69,9 @@ struct LowerHostToUdonHLPass
       }
       if (function.isExternal()) {
         auto intrinsic = function->getAttrOfType<StringAttr>("vrc.intrinsic");
-        if (!intrinsic || intrinsic != "dispatch" ||
+        if (!intrinsic ||
+            (intrinsic != "dispatch" && intrinsic != "buffer_alloc" &&
+             intrinsic != "buffer_copy") ||
             function->hasAttr("vrc.export_id")) {
           fail("external Host calls require a recognized internal runtime "
                "intrinsic");
@@ -101,6 +103,7 @@ struct LowerHostToUdonHLPass
       }
       for (auto &op : function.getBody().front()) {
         if (!isa<func::CallOp, func::ReturnOp, runtime::DispatchOp,
+                 runtime::BufferAllocOp, runtime::BufferCopyOp,
                  arith::ConstantOp, arith::AddIOp, arith::AddFOp,
                  arith::MulFOp>(op)) {
           op.emitError(

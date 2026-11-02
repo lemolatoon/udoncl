@@ -78,6 +78,16 @@ buffer_ops = run([opt, '--pass-pipeline=builtin.module(' + intrinsic_pass + ')',
                   '--verify-each'], buffer_runtime)
 assert 'vrc.buffer_alloc ' in buffer_ops and 'vrc.buffer_copy ' in buffer_ops
 assert '@allocate' not in buffer_ops and '@copy' not in buffer_ops
+typed_buffer_source = buffer_runtime.replace(
+    'module attributes {vrc.host_stage = "udonhl"}', 'module').replace(
+    'udonhl.call', 'func.call').replace(
+    ' {call_policy = #udonhl<call_policy normal>}', '')
+typed_buffer_ops = run(
+    [opt, '--pass-pipeline=builtin.module(' + host_pass + ',' + intrinsic_pass + ')',
+     '--verify-each'], typed_buffer_source)
+assert 'vrc.buffer_alloc ' in typed_buffer_ops
+assert 'vrc.buffer_copy ' in typed_buffer_ops
+assert 'func.call ' not in typed_buffer_ops and 'udonhl.call ' not in typed_buffer_ops
 nested = source.replace('  gpu.module @device {', '''  gpu.module @device {
     func.func private @device_helper(%x: f32) -> f32 { return %x : f32 }
     func.func private @device_caller(%x: f32) -> f32 {
