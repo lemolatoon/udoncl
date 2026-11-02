@@ -63,6 +63,21 @@ assert run([opt, '--verify-each'], roundtrip) == roundtrip
 # Runtime intrinsics must be substituted in Host order, and GPU functions must
 # never be rewritten as Host calls just because both use standard func ops.
 run([opt, '--pass-pipeline=builtin.module(' + intrinsic_pass + ')'], source, error='must follow UdonHL')
+buffer_runtime = r'''
+module attributes {vrc.host_stage = "udonhl"} {
+  func.func private @allocate(i32) -> (!vrc.buffer, i32) attributes {vrc.intrinsic = "buffer_alloc", vrc.format = "rgba8_unorm", vrc.usage = "storage"}
+  func.func private @copy(!vrc.buffer, !vrc.buffer, i32, i32, i32) -> !vrc.event attributes {vrc.intrinsic = "buffer_copy"}
+  func.func @runtime(%bytes: i32, %source: !vrc.buffer, %zero: i32) -> !vrc.event {
+    %destination, %status = udonhl.call @allocate(%bytes) {call_policy = #udonhl<call_policy normal>} : (i32) -> (!vrc.buffer, i32)
+    %event = udonhl.call @copy(%source, %destination, %zero, %zero, %bytes) {call_policy = #udonhl<call_policy normal>} : (!vrc.buffer, !vrc.buffer, i32, i32, i32) -> !vrc.event
+    return %event : !vrc.event
+  }
+}
+'''
+buffer_ops = run([opt, '--pass-pipeline=builtin.module(' + intrinsic_pass + ')',
+                  '--verify-each'], buffer_runtime)
+assert 'vrc.buffer_alloc ' in buffer_ops and 'vrc.buffer_copy ' in buffer_ops
+assert '@allocate' not in buffer_ops and '@copy' not in buffer_ops
 nested = source.replace('  gpu.module @device {', '''  gpu.module @device {
     func.func private @device_helper(%x: f32) -> f32 { return %x : f32 }
     func.func private @device_caller(%x: f32) -> f32 {

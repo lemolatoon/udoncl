@@ -28,6 +28,28 @@ module {
 
 // -----
 module {
+  func.func @bad() {
+    %zero = arith.constant 0 : i32
+    // expected-error @below {{constant byte size must be positive}}
+    %buffer, %status = vrc.buffer_alloc %zero {format = "rgba8_unorm", usage = "storage"} : (i32) -> (!vrc.buffer, i32)
+    return
+  }
+}
+
+// -----
+module {
+  func.func @bad(%source: !vrc.buffer, %destination: !vrc.buffer) {
+    %negative = arith.constant -1 : i32
+    %zero = arith.constant 0 : i32
+    %bytes = arith.constant 4 : i32
+    // expected-error @below {{constant source offset must be non-negative}}
+    %event = vrc.buffer_copy %source, %destination, %negative, %zero, %bytes : (!vrc.buffer, !vrc.buffer, i32, i32, i32) -> !vrc.event
+    return
+  }
+}
+
+// -----
+module {
   func.func @bad(%d: !vrc.dispatch_desc, %b: !vrc.buffer) {
     // expected-error @below {{NDRange must contain three dimensions}}
     %e = vrc.dispatch %d(%b) {kernel_id = 7 : i32, argument_kinds = ["buffer", "f32"], global_size = array<i32: 1>, local_size = array<i32: 1, 1, 1>, global_offset = array<i32: 0, 0, 0>} : (!vrc.dispatch_desc, !vrc.buffer) -> !vrc.event

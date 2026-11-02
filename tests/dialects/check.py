@@ -37,7 +37,7 @@ for operation, diagnostic in [
     ('udonasm.annotation 4294967296', 'u32 annotation'),
     ('udonasm.extern ""', 'extern signature'),
     ('udonasm.call', 'unknown'),
-    ('vrc.buffer_alloc', 'unknown'),
+    ('vrc.made_up', 'unknown'),
     ('udonhl.made_up', 'unknown'),
     ('vrcgpu.made_up', 'unknown'),
     ('"udonasm.push"() : () -> ()', 'slot'),

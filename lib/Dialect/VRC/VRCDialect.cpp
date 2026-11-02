@@ -1,4 +1,5 @@
 #include "VRC/Dialect/VRC/VRCDialect.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/DialectImplementation.h"
@@ -20,11 +21,50 @@ void vrc::vrc::VRCDialect::initialize() {
 #define GET_OP_CLASSES
 #include "VRC/Dialect/VRC/VRCOps.cpp.inc"
 
+namespace {
+mlir::LogicalResult verifyHostRuntimeOperation(mlir::Operation *operation) {
+  auto function = operation->getParentOfType<mlir::func::FuncOp>();
+  if (!function || !mlir::isa<mlir::ModuleOp>(function->getParentOp()))
+    return operation->emitOpError("must belong to the Host runtime path");
+  return mlir::success();
+}
+
+std::optional<int64_t> constantI32(mlir::Value value) {
+  auto constant = value.getDefiningOp<mlir::arith::ConstantIntOp>();
+  if (!constant || !constant.getType().isInteger(32))
+    return std::nullopt;
+  return constant.value();
+}
+} // namespace
+
+mlir::LogicalResult vrc::vrc::BufferAllocOp::verify() {
+  if (mlir::failed(verifyHostRuntimeOperation(*this)))
+    return mlir::failure();
+  if (getFormat() != "rgba8_unorm")
+    return emitOpError("initial Device buffers require rgba8_unorm format");
+  if (getUsage() != "storage")
+    return emitOpError("initial Device buffers require storage usage");
+  if (auto size = constantI32(getByteSize()); size && *size <= 0)
+    return emitOpError("constant byte size must be positive");
+  return mlir::success();
+}
+
+mlir::LogicalResult vrc::vrc::BufferCopyOp::verify() {
+  if (mlir::failed(verifyHostRuntimeOperation(*this)))
+    return mlir::failure();
+  for (auto [name, value] :
+       {std::pair{"source offset", getSourceOffset()},
+        std::pair{"destination offset", getDestinationOffset()}})
+    if (auto constant = constantI32(value); constant && *constant < 0)
+      return emitOpError() << "constant " << name << " must be non-negative";
+  if (auto size = constantI32(getByteSize()); size && *size <= 0)
+    return emitOpError("constant byte size must be positive");
+  return mlir::success();
+}
+
 mlir::LogicalResult vrc::vrc::DispatchOp::verify() {
-  if (!(*this)->getParentOfType<mlir::func::FuncOp>() ||
-      !mlir::isa<mlir::ModuleOp>(
-          (*this)->getParentOfType<mlir::func::FuncOp>()->getParentOp()))
-    return emitOpError("dispatch must belong to the Host runtime path");
+  if (mlir::failed(verifyHostRuntimeOperation(*this)))
+    return mlir::failure();
   if (getKernelIdAttr().getInt() <= 0)
     return emitOpError("requires a positive kernel id");
   unsigned buffers = 0;

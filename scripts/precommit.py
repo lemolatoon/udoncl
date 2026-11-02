@@ -576,8 +576,6 @@ def main():
             "--test-dir",
             args.build_dir.resolve(),
             "--output-on-failure",
-            "-R",
-            "^(udondnn-device-execution|onnx-runtime-mnist|md-crystal-execution)$",
             "-j",
             "1",
         ],

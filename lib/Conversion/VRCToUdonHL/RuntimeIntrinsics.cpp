@@ -30,19 +30,36 @@ struct SubstituteRuntimeIntrinsicsPass
         continue;
       auto args = prototype.getArgumentTypes(),
            results = prototype.getResultTypes();
-      if (name != "dispatch" || !prototype.isExternal() ||
-          !prototype.isPrivate() || args.empty() ||
-          !isa<runtime::DispatchDescType>(args[0]) ||
-          !llvm::all_of(args.drop_front(),
-                        [](Type t) { return isa<runtime::BufferType>(t); }) ||
-          results.size() != 1 || !isa<runtime::EventType>(results[0]) ||
-          !prototype->getAttrOfType<IntegerAttr>("vrc.kernel_id") ||
-          !prototype->getAttrOfType<ArrayAttr>("vrc.argument_kinds") ||
-          !prototype->getAttrOfType<DenseI32ArrayAttr>("vrc.global_size") ||
-          !prototype->getAttrOfType<DenseI32ArrayAttr>("vrc.local_size") ||
-          !prototype->getAttrOfType<DenseI32ArrayAttr>("vrc.global_offset")) {
-        prototype.emitError(
-            "invalid typed runtime dispatch intrinsic contract");
+      bool valid = false;
+      if (name == "dispatch")
+        valid =
+            args.size() >= 1 && isa<runtime::DispatchDescType>(args[0]) &&
+            llvm::all_of(
+                args.drop_front(),
+                [](Type type) { return isa<runtime::BufferType>(type); }) &&
+            results.size() == 1 && isa<runtime::EventType>(results[0]) &&
+            prototype->getAttrOfType<IntegerAttr>("vrc.kernel_id") &&
+            prototype->getAttrOfType<ArrayAttr>("vrc.argument_kinds") &&
+            prototype->getAttrOfType<DenseI32ArrayAttr>("vrc.global_size") &&
+            prototype->getAttrOfType<DenseI32ArrayAttr>("vrc.local_size") &&
+            prototype->getAttrOfType<DenseI32ArrayAttr>("vrc.global_offset");
+      else if (name == "buffer_alloc")
+        valid =
+            args == ArrayRef<Type>{IntegerType::get(&getContext(), 32)} &&
+            results == ArrayRef<Type>{runtime::BufferType::get(&getContext()),
+                                      IntegerType::get(&getContext(), 32)} &&
+            prototype->getAttrOfType<StringAttr>("vrc.format") &&
+            prototype->getAttrOfType<StringAttr>("vrc.usage");
+      else if (name == "buffer_copy")
+        valid =
+            args == ArrayRef<Type>{runtime::BufferType::get(&getContext()),
+                                   runtime::BufferType::get(&getContext()),
+                                   IntegerType::get(&getContext(), 32),
+                                   IntegerType::get(&getContext(), 32),
+                                   IntegerType::get(&getContext(), 32)} &&
+            results == ArrayRef<Type>{runtime::EventType::get(&getContext())};
+      if (!prototype.isExternal() || !prototype.isPrivate() || !valid) {
+        prototype.emitError("invalid typed runtime intrinsic contract");
         signalPassFailure();
         return;
       }
@@ -57,8 +74,8 @@ struct SubstituteRuntimeIntrinsicsPass
               auto caller = call->getParentOfType<func::FuncOp>();
               if (!caller || caller->getParentOp() != module ||
                   call.getCallPolicy() != host::CallPolicy::Normal) {
-                call.emitError("runtime dispatch intrinsic is a normal "
-                               "internal Host call");
+                call.emitError(
+                    "runtime intrinsic must be a normal internal Host call");
                 return WalkResult::interrupt();
               }
               sites.emplace_back(call, callee);
@@ -72,14 +89,25 @@ struct SubstituteRuntimeIntrinsicsPass
     for (auto site : sites) {
       auto call = site.first;
       auto callee = site.second;
+      auto name = callee->getAttrOfType<StringAttr>("vrc.intrinsic");
       rewriter.setInsertionPoint(call);
-      OperationState state(call.getLoc(),
-                           runtime::DispatchOp::getOperationName());
+      StringRef operationName =
+          name == "dispatch"       ? runtime::DispatchOp::getOperationName()
+          : name == "buffer_alloc" ? runtime::BufferAllocOp::getOperationName()
+                                   : runtime::BufferCopyOp::getOperationName();
+      OperationState state(call.getLoc(), operationName);
       state.addOperands(call.getArgs());
       state.addTypes(call.getResultTypes());
-      for (StringRef name : {"kernel_id", "argument_kinds", "global_size",
-                             "local_size", "global_offset"})
-        state.addAttribute(name, callee->getAttr(("vrc." + name).str()));
+      if (name == "dispatch")
+        for (StringRef attribute :
+             {"kernel_id", "argument_kinds", "global_size", "local_size",
+              "global_offset"})
+          state.addAttribute(attribute,
+                             callee->getAttr(("vrc." + attribute).str()));
+      else if (name == "buffer_alloc")
+        for (StringRef attribute : {"format", "usage"})
+          state.addAttribute(attribute,
+                             callee->getAttr(("vrc." + attribute).str()));
       auto *dispatch = rewriter.create(state);
       rewriter.replaceOp(call, dispatch->getResults());
     }

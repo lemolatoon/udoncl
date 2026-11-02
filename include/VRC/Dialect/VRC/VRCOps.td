@@ -1,4 +1,19 @@
 include "VRC/Dialect/VRC/VRCTypes.td"
+def VRC_BufferAllocOp : Op<VRC_Dialect, "buffer_alloc"> {
+  let summary = "Allocate an explicitly sized Device buffer";
+  let arguments = (ins I32:$byte_size, StrAttr:$format, StrAttr:$usage);
+  let results = (outs VRC_BufferType:$buffer, I32:$status);
+  let assemblyFormat = "$byte_size attr-dict `:` functional-type(operands, results)";
+  let hasVerifier = 1;
+}
+def VRC_BufferCopyOp : Op<VRC_Dialect, "buffer_copy"> {
+  let summary = "Copy a bounded byte range between explicit Device buffers";
+  let arguments = (ins VRC_BufferType:$source, VRC_BufferType:$destination,
+    I32:$source_offset, I32:$destination_offset, I32:$byte_size);
+  let results = (outs VRC_EventType:$event);
+  let assemblyFormat = "$source `,` $destination `,` $source_offset `,` $destination_offset `,` $byte_size attr-dict `:` functional-type(operands, results)";
+  let hasVerifier = 1;
+}
 def VRC_DispatchOp : Op<VRC_Dialect, "dispatch"> {
   let summary = "Enqueue a Manifest-defined kernel; C runtime owns OpenCL API contracts";
   let arguments = (ins VRC_DispatchDescType:$desc, Variadic<VRC_BufferType>:$resources,
