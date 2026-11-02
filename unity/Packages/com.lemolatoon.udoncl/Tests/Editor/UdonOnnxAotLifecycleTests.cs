@@ -496,6 +496,39 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         }
 
         [Test]
+        public void ImportedOnnxModelCanAddItsRuntimePrefabToTheActiveScene()
+        {
+            Lemolatoon.Udoncl.UdonOnnxModelAsset modelAsset =
+                AssetDatabase.LoadAssetAtPath<Lemolatoon.Udoncl.UdonOnnxModelAsset>(
+                    GeneratedArenaRoot + "/Models/UdonOnnxModel.asset"
+                );
+            Assert.NotNull(modelAsset);
+            Assert.NotNull(modelAsset.RuntimePrefab);
+            GameObject instance = null;
+            try
+            {
+                instance = UdonOnnxModelEditorUtility.InstantiateRuntime(modelAsset);
+                Assert.NotNull(instance);
+                Assert.AreSame(instance, Selection.activeGameObject);
+                Assert.AreEqual(
+                    modelAsset.RuntimePrefab,
+                    PrefabUtility.GetCorrespondingObjectFromSource(instance)
+                );
+                Assert.NotNull(instance.GetComponent<UdonBehaviour>());
+                Lemolatoon.Udoncl.UdonOnnxRuntimeBehaviour runtime =
+                    instance.GetComponent<Lemolatoon.Udoncl.UdonOnnxRuntimeBehaviour>();
+                Assert.NotNull(runtime);
+                Assert.IsTrue(runtime.IsInitialized());
+            }
+            finally
+            {
+                Selection.activeObject = null;
+                if (instance != null)
+                    UnityEngine.Object.DestroyImmediate(instance);
+            }
+        }
+
+        [Test]
         public void UnityStandardOperatorTinyLlamaExecutesNumericallyOnSdkVm()
         {
             Lemolatoon.Udoncl.UdonOnnxModelAsset modelAsset =

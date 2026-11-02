@@ -82,6 +82,13 @@ ONNX Pooling path.
 
 Use **Tools → udoncl → Import Artifacts...** and select a compiler output directory containing `manifest.json`, its host `.uasm`, and any referenced generated `.shader` files. The importer checks schema v1, the runtime ABI and target, Worlds SDK version, names, extensions, UTF-8 content, referenced files, and relative paths before writing any assets.
 
+After a general ONNX import, choose **Add to Scene** in the completion dialog.
+The same action is available as **Add Runtime to Active Scene** on the generated
+`Models/UdonOnnxModel.asset` Inspector. Unity instantiates the generated runtime
+as a linked prefab instance, selects it, and registers the operation with Undo;
+sample components must reference this scene instance rather than the prefab
+asset itself.
+
 It copies the manifest, `.uasm`, and shaders to stable asset paths, creates or updates one Material per device kernel, and creates an initial 256×1 linear RGBA32 particle texture plus two point-filtered, linear 256×1 RenderTextures. Each of 32 FCC particles occupies eight aligned float32 words: x, y, z, reserved, vx, vy, vz, reserved. The initial 2×2×2 conventional FCC cell has zero total momentum.
 
 On import failure, the importer restores prior file contents and `.meta` files and removes newly created assets. Existing asset paths retain their GUIDs. Shader compilation is checked by loading each imported shader; a missing shader aborts and rolls back the import.

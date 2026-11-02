@@ -5,7 +5,8 @@ This U# component drives the importable artifact produced by
 `UdonOnnxRuntimeBehaviour` API.
 
 1. Generate and import the `onnx-arena-add` Unity artifact.
-2. Place its generated `UdonOnnxModel.prefab` in the scene.
+2. Choose **Add to Scene** when import completes (or select the generated model
+   asset and click **Add Runtime to Active Scene**).
 3. Attach `UdonOnnxArenaAddExample` to another GameObject.
 4. Assign the prefab instance's `UdonOnnxRuntimeBehaviour` to `runtime`.
 5. Interact with the GameObject. The default inputs produce `5` after the

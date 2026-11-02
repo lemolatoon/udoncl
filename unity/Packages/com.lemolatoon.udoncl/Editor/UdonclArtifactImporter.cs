@@ -3610,11 +3610,35 @@ namespace Lemolatoon.Udoncl.Editor
             try
             {
                 string destination = UdonclArtifactImporter.Import(directory);
-                EditorUtility.DisplayDialog(
-                    "udoncl Import",
-                    "Imported assets to " + destination,
-                    "OK"
-                );
+                Lemolatoon.Udoncl.UdonOnnxModelAsset modelAsset =
+                    AssetDatabase.LoadAssetAtPath<Lemolatoon.Udoncl.UdonOnnxModelAsset>(
+                        destination + "/Models/UdonOnnxModel.asset"
+                    );
+                if (modelAsset == null)
+                    EditorUtility.DisplayDialog(
+                        "udoncl Import",
+                        "Imported assets to " + destination,
+                        "OK"
+                    );
+                else
+                {
+                    int choice = EditorUtility.DisplayDialogComplex(
+                        "udoncl ONNX Import",
+                        "Imported the ONNX model to "
+                            + destination
+                            + ". Add its runtime prefab to the active scene?",
+                        "Add to Scene",
+                        "Close",
+                        "Show Model Asset"
+                    );
+                    if (choice == 0)
+                        UdonOnnxModelEditorUtility.InstantiateRuntime(modelAsset);
+                    else if (choice == 2)
+                    {
+                        Selection.activeObject = modelAsset;
+                        EditorGUIUtility.PingObject(modelAsset);
+                    }
+                }
             }
             catch (Exception exception)
             {

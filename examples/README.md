@@ -40,8 +40,9 @@ python examples/onnx-arena-add/build.py `
 
 Import `build/onnx-arena-add/unity-artifact` in Unity. In Package Manager,
 select **UdonCL Runtime and ONNX Importer**, open **Samples**, and import
-**ONNX Arena Add**. The sample component calls the generated runtime prefab
-through typed Write/Run/asynchronous Read methods.
+**ONNX Arena Add**. Choose **Add to Scene** in the import completion dialog;
+the sample component calls that runtime instance through typed
+Write/Run/asynchronous Read methods.
 
 ## C and OpenCL C consumer example
 

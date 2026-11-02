@@ -13,10 +13,11 @@ demo operator.
 
 2. Select `build/tiny-llama-onnx/unity-artifact` with **Tools → udoncl →
    Import Artifacts...**.
-3. Add `UdonOnnxTinyLlamaExample` to an object and assign the generated
-   `Assets/udoncl-generated/onnx_tiny_llama_example/Prefabs/UdonOnnxModel.prefab`
-   component to `Runtime`.
-4. Interact with the object. The component uploads one int32 token, runs all
+3. Choose **Add to Scene** when import completes (or select the generated model
+   asset and click **Add Runtime to Active Scene**).
+4. Add `UdonOnnxTinyLlamaExample` to an object and assign the runtime component
+   on that scene instance to `Runtime`.
+5. Interact with the object. The component uploads one int32 token, runs all
    18 Device passes, reads 16 logits asynchronously, and records the argmax in
    `GetPredictedToken()`.
 

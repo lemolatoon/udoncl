@@ -19,3 +19,5 @@ All notable changes to this package are recorded here.
 - Importable standard-operator Tiny Llama sample with typed token upload,
   shader-backed Gather/RMSNorm/Gemm/pointwise execution, and async logits
   readback.
+- ONNX model Inspector and import-completion actions that instantiate the
+  generated runtime prefab into the active scene with Undo support.
