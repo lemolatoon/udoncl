@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Text;
+using UdonSharp;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.UI;
@@ -113,6 +113,13 @@ namespace Lemolatoon.Udoncl.Editor
                         kernelMaterials,
                         kernelShaders
                     );
+                    if (artifacts.ArtifactStage == "unity-udoncl-library")
+                    {
+                        AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+                        transaction.Commit();
+                        GeneratedBindingFinalizer.Schedule();
+                        return programRoot;
+                    }
                     if (artifacts.ArtifactStage == "unity-udon-onnx-model")
                     {
                         AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
@@ -390,7 +397,7 @@ namespace Lemolatoon.Udoncl.Editor
             if (manifest == null || string.IsNullOrEmpty(manifest.physical_export_abi))
                 return;
 
-            string className = GeneratedTypeName(artifacts.ProgramName) + "Binding";
+            string className = VRCWrapperGenerator.BindingClassName(artifacts.ProgramName);
             string bindingRoot = programRoot + "/Bindings";
             EnsureFolders(bindingRoot);
             transaction.WriteText(
@@ -401,23 +408,43 @@ namespace Lemolatoon.Udoncl.Editor
                     className
                 )
             );
+            CreateOrUpdateUdonSharpProgramAsset(
+                transaction,
+                bindingRoot + "/" + className + ".cs",
+                bindingRoot + "/" + className + ".asset"
+            );
         }
 
-        private static string GeneratedTypeName(string value)
+        private static void CreateOrUpdateUdonSharpProgramAsset(
+            AssetImportTransaction transaction,
+            string scriptPath,
+            string programAssetPath
+        )
         {
-            StringBuilder result = new StringBuilder("Udoncl");
-            bool capitalize = true;
-            foreach (char character in value)
+            MonoScript script = AssetDatabase.LoadAssetAtPath<MonoScript>(scriptPath);
+            if (script == null)
+                throw new InvalidDataException(
+                    "Unity could not import generated UdonSharp source: " + scriptPath
+                );
+
+            transaction.Track(programAssetPath);
+            UdonSharpProgramAsset programAsset =
+                AssetDatabase.LoadAssetAtPath<UdonSharpProgramAsset>(programAssetPath);
+            if (programAsset == null)
             {
-                if (!char.IsLetterOrDigit(character))
-                {
-                    capitalize = true;
-                    continue;
-                }
-                result.Append(capitalize ? char.ToUpperInvariant(character) : character);
-                capitalize = false;
+                if (AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(programAssetPath) != null)
+                    throw new InvalidDataException(
+                        "An incompatible asset already occupies " + programAssetPath
+                    );
+                programAsset = ScriptableObject.CreateInstance<UdonSharpProgramAsset>();
+                programAsset.sourceCsScript = script;
+                AssetDatabase.CreateAsset(programAsset, programAssetPath);
             }
-            return result.ToString();
+            else if (programAsset.sourceCsScript != script)
+            {
+                programAsset.sourceCsScript = script;
+                EditorUtility.SetDirty(programAsset);
+            }
         }
 
         private static void ImportMnistDemo(

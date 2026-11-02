@@ -1,5 +1,8 @@
 using System;
+using System.IO;
 using NUnit.Framework;
+using UnityEditor;
+using UnityEngine;
 
 namespace Lemolatoon.Udoncl.Editor.Tests
 {
@@ -31,10 +34,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             );
 
             StringAssert.Contains("public sealed class AdderBinding : UdonSharpBehaviour", source);
-            StringAssert.Contains(
-                "public UdonClStatus TryAdd(int left, int right, out int result)",
-                source
-            );
+            StringAssert.Contains("public int TryAdd(int left, int right, out int result)", source);
             StringAssert.Contains("program.SetProgramVariable(\"__0_left__param\", left);", source);
             StringAssert.Contains("program.SendCustomEvent(\"__0_Add\");", source);
             StringAssert.Contains(
@@ -46,7 +46,12 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 source
             );
             StringAssert.DoesNotContain("GetProgramVariable<int>", source);
-            StringAssert.Contains("if (status != UdonClStatus.Success)", source);
+            StringAssert.Contains("public const int StatusSuccess = 0;", source);
+            StringAssert.Contains("if (status != StatusSuccess)", source);
+            StringAssert.Contains("if (rawStatus == null)", source);
+            StringAssert.Contains("if (rawResult == null)", source);
+            StringAssert.DoesNotContain(" is int", source);
+            StringAssert.DoesNotContain("UdonClStatus", source);
             StringAssert.Contains("result = (int)rawResult;", source);
         }
 
@@ -74,6 +79,48 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                     "AdderBinding"
                 )
             );
+        }
+
+        [Test]
+        public void DerivesStableBindingClassNameFromProgramName()
+        {
+            Assert.AreEqual(
+                "UdonclHelloKernelBinding",
+                VRCWrapperGenerator.BindingClassName("hello-kernel")
+            );
+        }
+
+        [Test]
+        public void FinalizerWaitsUntilGeneratedWrapperTypeIsCompiled()
+        {
+            const string root = "Assets/udoncl-generated/__binding_type_pending";
+            AssetDatabase.DeleteAsset(root);
+            Directory.CreateDirectory(root);
+            File.WriteAllText(
+                root + "/manifest.json",
+                "{"
+                    + "\"artifact_stage\":\"unity-udoncl-library\","
+                    + "\"physical_export_abi\":\"udonsharp-worlds-sdk-3.10.5\","
+                    + "\"program\":{\"name\":\"type_pending\"}"
+                    + "}"
+            );
+            AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+            try
+            {
+                Assert.AreEqual(0, GeneratedBindingFinalizer.FinalizeAvailableBindings());
+                Assert.IsNull(
+                    AssetDatabase.LoadAssetAtPath<GameObject>(
+                        root + "/Prefabs/UdonclTypePendingBinding.prefab"
+                    )
+                );
+            }
+            finally
+            {
+                AssetDatabase.DeleteAsset(root);
+                if (Directory.Exists(root))
+                    Directory.Delete(root, true);
+                AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+            }
         }
     }
 }

@@ -1,6 +1,6 @@
 # udoncl Unity Editor package
 
-This Unity 2022.3 package imports `udoncl` compiler artifacts into stable paths under `Assets/udoncl-generated/<program-name>`. It targets the VRChat Worlds SDK 3.x (`com.vrchat.worlds`) and has no UdonSharp dependency.
+This Unity 2022.3 package imports `udoncl` compiler artifacts into stable paths under `Assets/udoncl-generated/<program-name>`. It targets the VRChat Worlds SDK 3.x (`com.vrchat.worlds`) and uses the UdonSharp compiler included with that SDK for generated typed Host bindings.
 
 ## Installation
 
@@ -60,6 +60,23 @@ Use **Tools → udoncl → Import Artifacts...** and select a compiler output di
 It copies the manifest, `.uasm`, and shaders to stable asset paths, creates or updates one Material per device kernel, and creates an initial 256×1 linear RGBA32 particle texture plus two point-filtered, linear 256×1 RenderTextures. Each of 32 FCC particles occupies eight aligned float32 words: x, y, z, reserved, vx, vy, vz, reserved. The initial 2×2×2 conventional FCC cell has zero total momentum.
 
 On import failure, the importer restores prior file contents and `.meta` files and removes newly created assets. Existing asset paths retain their GUIDs. Shader compilation is checked by loading each imported shader; a missing shader aborts and rolls back the import.
+
+## Generated U# Host binding
+
+The `unity-udoncl-library` artifact stage carries a stable logical export ID and
+TypeSchema plus the versioned
+`physical_export_abi: udonsharp-worlds-sdk-3.10.5`. The importer generates a
+typed UdonSharp wrapper under `Bindings/`. After Unity compiles that source, an
+Editor reload finalizer creates `Prefabs/Udoncl<ProgramName>Binding.prefab`.
+The prefab contains the raw C-library `UdonBehaviour`, the generated U# proxy,
+and its UdonSharp backing behaviour; the wrapper's serialized `program` field
+is wired to the raw program automatically.
+
+Synchronous scalar wrappers return an OpenCL-style integer status and expose
+named `Status*` constants on the generated class. They use the pinned UdonSharp
+SetProgramVariable → SendCustomEvent → GetProgramVariable ABI. Import waits for
+the generated type instead of publishing a partly bound prefab. Async exports
+and types other than the currently supported `i32`/`f32` fail explicitly.
 
 ## Udon Assembly and prefab
 

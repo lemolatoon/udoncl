@@ -1,6 +1,6 @@
 # PLAN.md — VRChat向け C / OpenCL C → Udon / HLSL コンパイラ
 
-> Status: **Design agreed / U# export ABI and typed-wrapper implementation in progress**
+> Status: **U# export ABI and typed wrapper implemented / CMake-toolchain phase next**
 > Design cut-off: **2026-11-02**
 > Implementation amendments (user): **LLVM/MLIR 23 baseline; Windows host builds supported by design.**
 > Initial toolchain pin: **LLVM/MLIR/Clang 23.1.4** (see `cmake/llvm-lock.json`).  
