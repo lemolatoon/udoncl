@@ -187,7 +187,7 @@ function(_udoncl_compile_source_target artifact kind unit sources dependencies
       COMMAND "${UDONCL_CLANG_EXECUTABLE}" ${_language_flags} ${flags}
               -O0 -Xclang -disable-O0-optnone -fomit-frame-pointer
               -ffp-contract=off -emit-llvm -c "${_source}" -o "${_object}"
-      DEPENDS "${_source}" ${dependencies}
+      DEPENDS "${UDONCL_CLANG_EXECUTABLE}" "${_source}" ${dependencies}
       COMMENT "Compiling ${kind} source ${_source}"
       COMMAND_EXPAND_LISTS VERBATIM)
     list(APPEND _objects "${_object}")
@@ -204,7 +204,7 @@ function(_udoncl_compile_source_target artifact kind unit sources dependencies
     COMMAND "${CMAKE_COMMAND}" -E make_directory
             "${CMAKE_CURRENT_BINARY_DIR}/udoncl/${artifact}/modules/${_kind_lower}"
     COMMAND "${UDONCL_LLVM_LINK_EXECUTABLE}" ${_objects} -o "${_module}"
-    DEPENDS ${_objects}
+    DEPENDS "${UDONCL_LLVM_LINK_EXECUTABLE}" ${_objects}
     COMMENT "Linking ${kind} source target ${unit}"
     COMMAND_EXPAND_LISTS VERBATIM)
   set(${output_var} "${_module}" PARENT_SCOPE)
@@ -218,7 +218,7 @@ function(_udoncl_link_module_set artifact kind modules output_var)
     COMMAND "${CMAKE_COMMAND}" -E make_directory
             "${CMAKE_CURRENT_BINARY_DIR}/udoncl/${artifact}"
     COMMAND "${UDONCL_LLVM_LINK_EXECUTABLE}" ${modules} -o "${_module}"
-    DEPENDS ${modules}
+    DEPENDS "${UDONCL_LLVM_LINK_EXECUTABLE}" ${modules}
     COMMENT "Linking ${kind} LLVM module for ${artifact}"
     COMMAND_EXPAND_LISTS VERBATIM)
   set(${output_var} "${_module}" PARENT_SCOPE)
@@ -305,7 +305,8 @@ function(udoncl_add_artifact target)
             "-DUDONCL_BUILD_ROOT=${CMAKE_BINARY_DIR}"
             -P "${_UDONCL_CONFIG_DIR}/UdonCLCompileArtifact.cmake"
     COMMAND "${CMAKE_COMMAND}" -E touch "${_stamp}"
-    DEPENDS "${_config}" "${_host_module}" "${_device_module}"
+    DEPENDS "${UDONCLC_EXECUTABLE}" "${_config}" "${_host_module}"
+            "${_device_module}"
     BYPRODUCTS "${_artifact_directory}/manifest.json"
     COMMENT "Generating UdonCL artifact ${target}"
     VERBATIM)
@@ -394,7 +395,8 @@ function(udoncl_add_unity_library target)
             "-DUDONCL_BUILD_ROOT=${CMAKE_BINARY_DIR}"
             -P "${_UDONCL_CONFIG_DIR}/UdonCLCompileUnityLibrary.cmake"
     COMMAND "${CMAKE_COMMAND}" -E touch "${_stamp}"
-    DEPENDS "${_config}" "${_host_module}" ${_device_module}
+    DEPENDS "${UDONCLC_EXECUTABLE}" "${_config}" "${_host_module}"
+            ${_device_module}
     BYPRODUCTS "${_artifact_directory}/manifest.json"
                "${_artifact_directory}/host.uasm"
                "${_artifact_directory}/display.shader"

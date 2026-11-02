@@ -153,8 +153,13 @@ LogicalResult verifyHostDeviceBoundary(ModuleOp module) {
       return WalkResult::interrupt();
     }
     auto kernel = found->second;
+    size_t bufferArguments =
+        llvm::count_if(kernel.getArgumentKinds(), [](Attribute value) {
+          auto kind = dyn_cast<StringAttr>(value);
+          return kind && kind.getValue() == "buffer";
+        });
     if (dispatch.getArgumentKinds() != kernel.getArgumentKinds() ||
-        dispatch.getResources().size() != 1 ||
+        dispatch.getResources().size() != bufferArguments ||
         dispatch.getGlobalSize() != kernel.getGlobalSize() ||
         dispatch.getLocalSize() != kernel.getLocalSize() ||
         dispatch.getGlobalOffset() != kernel.getGlobalOffset()) {
@@ -354,7 +359,7 @@ llvm::json::Object buildBoundaryManifest(ModuleOp module) {
         {"function", dispatch->getParentOfType<func::FuncOp>().getName().str()},
         {"kernel_id", dispatch.getKernelId()},
         {"descriptor_abi", 1},
-        {"resources", 1},
+        {"resources", static_cast<int64_t>(dispatch.getResources().size())},
         {"completion", "pending_event"}});
   });
   return llvm::json::Object{

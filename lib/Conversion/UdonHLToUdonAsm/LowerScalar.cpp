@@ -391,24 +391,53 @@ private:
                   .getDefiningOp<::vrc::vrc::DispatchDescCreateOp>();
           auto materialSlot = dispatch->getAttrOfType<StringAttr>(
               "vrc.unity_dispatch_material_slot");
+          auto outputIndex = dispatch->getAttrOfType<IntegerAttr>(
+              "vrc.unity_output_resource_index");
+          int64_t output = outputIndex ? outputIndex.getInt() : 0;
           std::string destination =
-              dispatch.getResources().size() == 1
-                  ? valueSlots.lookup(dispatch.getResources().front())
+              output >= 0 && size_t(output) < dispatch.getResources().size()
+                  ? valueSlots.lookup(dispatch.getResources()[output])
                   : std::string();
           if (!descriptor || !materialSlot || materialSlot.getValue().empty() ||
               destination.empty())
             return dispatch.emitError(
-                "Unity dispatch requires one bound output, a copied scalar "
+                "Unity dispatch requires a bound output, a copied scalar "
                 "descriptor and a kernel material slot");
           addSlot(materialSlot.getValue(), "UnityEngineMaterial", "null", true);
-          unsigned scalarIndex = 0;
+          unsigned scalarIndex = 0, bufferIndex = 0;
           for (auto [argumentIndex, kindValue] :
                llvm::enumerate(dispatch.getArgumentKinds())) {
             auto kind = dyn_cast<StringAttr>(kindValue);
             if (!kind)
               return dispatch.emitError("invalid dispatch argument kind");
-            if (kind.getValue() == "buffer")
+            if (kind.getValue() == "buffer") {
+              if (bufferIndex >= dispatch.getResources().size())
+                return dispatch.emitError(
+                    "dispatch buffer descriptor is incomplete");
+              std::string texture =
+                  valueSlots.lookup(dispatch.getResources()[bufferIndex]);
+              if (texture.empty())
+                return dispatch.emitError(
+                    "dispatch buffer has no allocated Udon heap slot");
+              if (bufferIndex++ == size_t(output))
+                continue;
+              std::string propertySlot =
+                  "__udoncl_kernel_" + std::to_string(dispatch.getKernelId()) +
+                  "_arg_" + std::to_string(argumentIndex);
+              addSlot(propertySlot, "SystemString",
+                      argumentIndex == 0
+                          ? "\"_VRC_Input\""
+                          : "\"_VRC_Input" + std::to_string(argumentIndex) +
+                                "\"",
+                      false);
+              emitPush(dispatch.getLoc(), materialSlot.getValue());
+              emitPush(dispatch.getLoc(), propertySlot);
+              emitPush(dispatch.getLoc(), texture);
+              emitExtern(dispatch.getLoc(),
+                         "UnityEngineMaterial.__SetTexture__SystemString_"
+                         "UnityEngineTexture__SystemVoid");
               continue;
+            }
             if (scalarIndex >= descriptor.getScalars().size())
               return dispatch.emitError("dispatch descriptor is incomplete");
             std::string scalar =

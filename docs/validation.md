@@ -1,7 +1,8 @@
 # Validation status
 
-No SDK/client gate has passed. Compiler host and generated runtime are separate.
-All pending target tests below are `TODO: verify on target SDK/client`.
+No VRChat client gate has passed. Targeted Unity Editor, installed Worlds SDK
+assembler/IUdonVM, and GPU readback gates have passed for the explicitly listed
+subsets; compiler host and the incomplete generated runtime remain separate.
 
 | ID | Test | State / acceptance evidence needed |
 |---|---|---|
@@ -17,10 +18,10 @@ All pending target tests below are `TODO: verify on target SDK/client`.
 | HOST-10 | UdonHL → LLVM → native Host + fragment execution | PASS on Linux: 16 bitwise readbacks, 8 runtime and 4 native-lowering rejections; validation/2026-10-30-native-fragment.json |
 | HOST-11 | OpenCL Host C + linked C runtime + native fragment execution | PASS on Linux and Windows CI: square/x+x, original/lowered Host differential, API contracts and six adapter rejections; validation/2026-10-30-opencl-host.json |
 | HOST-WIN-01 | Windows x64 MSVC configure/build/CTest | PASS: VS 2026/windows-2025 configure/build and 14/14 CTests, including OpenCL Host API and D3D11/WARP fragment draw/readbacks. See validation/2026-10-30-windows-ci.json |
-| P0-SDK-01 | Public Program Asset generation and behaviour binding | Pending: Unity + installed Worlds SDK unavailable |
+| P0-SDK-01 | Public Program Asset generation and behaviour binding | PARTIAL: scalar, fixed CopyBuffer, fixed f32/i32 dispatch, and two-buffer SAXPY import/reimport pass in Unity 2022.3.22f1 + Worlds SDK 3.10.5; general runtime pending |
 | P0-VM-01 | Nine actual VM opcodes and COPY stack order | Pending SDK VM golden output |
 | P0-ABI-01 | Two behaviours, exported slots, CustomEvent sync/callback/reentrancy | Pending SDK VM + PC client |
-| P0-GPU-01 | Fragment/Blit/fence/readback ordering, src != dst | Pending PC Build & Test stress run |
+| P0-GPU-01 | Fragment/Blit/fence/readback ordering, src != dst | PARTIAL: Editor IUdonVM + synchronous readback passes fixed CopyBuffer and SAXPY; async fence/readback and PC Build & Test stress remain pending |
 | P0-UPLOAD-01 | Typed array → Texture upload, Q18 latency/throughput | Pending sizes/format/bit-pattern measurements |
 | P0-FORMAT-01 | RGBA8 byte fidelity, sRGB disabled, RFloat roundtrip | Pending PC graphics API / device results |
 | P0-REQUEST-01 | Multiple request identity; stale generation callbacks | Pending; serialize requests unless proven identifiable |
@@ -66,6 +67,29 @@ DB validation remains pending. Unsigned C provenance, normal/recursive calls,
 memory, VRC GPU intrinsics and continuation lowering are deliberately rejected
 until their general contracts are implemented. The LJ Host remains on the
 native backend at this checkpoint. See `validation/2026-10-31-udon-vm.json`.
+
+## Public CMake SAXPY Unity dispatch (2026-11-02)
+
+The standalone `examples/saxpy` consumer passed the public
+`find_package(UdonCL CONFIG)` path, artifact import, and reimport in Unity
+2022.3.22f1 with Worlds SDK 3.10.5. The artifact contains two 128-byte buffers,
+the gather kernel `saxpy_demo`, mixed copied i32/f32 scalars, and the typed
+`RunSaxpy(int n, float alpha)` binding.
+
+Both initial import and reimport ran `RunSaxpy(16, 2.0f)` through the installed
+SDK `IUdonVM` with Interpret/status 0. Input words were `x = 1..16` followed by
+`y = 100..115`. All 32 output words matched exactly: the first 16 were
+`2*x+y = 102, 105, ..., 147`, and the remaining 16 were the kernel's
+`input[gid]` passthrough `100..115`. Input roundtrip and output each had zero
+mismatches and maximum absolute error 0.
+
+The generated shader was supported with one pass. The prefab/Udon heap bound
+the exact input/output RenderTextures and material; `_VRC_Input`,
+`_VRC_Arg2=16`, and `_VRC_Arg3=2.0` matched the dispatched values. Final Unity
+console counts were 0 errors and 0 warnings. Cleanup removed the generated
+asset root and serialized Udon program, leaving no scene instance or temporary
+import backup directory. This proves the fixed synchronous AOT subset, not
+public upload/readback, asynchronous continuation, or a VRChat client run.
 
 ## LJ ice / liquid / refreeze native oracle (2026-10-31)
 

@@ -38,6 +38,7 @@ def main():
         shutil.rmtree(output)
     install = output / 'install'
     consumer = output / 'consumer'
+    saxpy_consumer = output / 'saxpy-consumer'
     run([
         args.cmake,
         '--install', str(args.project_build.resolve()),
@@ -230,6 +231,89 @@ def main():
     assert copy_recovered.count('vrc.buffer_alloc ') == 3
     assert copy_recovered.count('vrc.buffer_copy ') == 2
 
+    saxpy_source = args.source.resolve().parent / 'saxpy'
+    run([
+        args.cmake,
+        '-S', str(saxpy_source),
+        '-B', str(saxpy_consumer),
+        '-G', args.generator,
+        f'-DCMAKE_MAKE_PROGRAM={args.make_program}',
+        f'-DUdonCL_DIR={package}',
+        f'-DUDONCL_CLANG_EXECUTABLE={Path(args.clang).resolve()}',
+        f'-DUDONCL_LLVM_LINK_EXECUTABLE={Path(args.llvm_link).resolve()}',
+    ])
+    run([
+        args.cmake, '--build', str(saxpy_consumer),
+        '--target', 'saxpy-unity-library',
+    ])
+    saxpy_artifact = (
+        saxpy_consumer / 'udoncl/saxpy-unity-library/artifact'
+    )
+    saxpy_manifest = json.loads(
+        (saxpy_artifact / 'manifest.json').read_text(encoding='utf-8')
+    )
+    assert saxpy_manifest['ready_for_unity'] is True
+    assert saxpy_manifest['dispatch_sites'] == [{
+        'function': 'run_saxpy',
+        'kernel_id': 10,
+        'descriptor_abi': 1,
+        'resources': 2,
+        'completion': 'pending_event',
+    }]
+    assert [
+        (buffer['name'], buffer['logical_bytes'])
+        for buffer in saxpy_manifest['device']['buffers']
+    ] == [('input', 128), ('output', 128)]
+    saxpy_kernel = saxpy_manifest['device']['kernels'][0]
+    assert saxpy_kernel['name'] == 'saxpy_demo'
+    assert saxpy_kernel['profile'] == 'gather-f32'
+    assert [arg['kind'] for arg in saxpy_kernel['args']] == [
+        'buffer', 'buffer', 'i32', 'f32',
+    ]
+    assert [arg.get('access') for arg in saxpy_kernel['args'][:2]] == [
+        'read', 'write',
+    ]
+    saxpy_assembly = (saxpy_artifact / 'host.uasm').read_text(
+        encoding='utf-8'
+    )
+    assert '.export __0_RunSaxpy' in saxpy_assembly
+    assert saxpy_assembly.count('UnityEngineMaterial.__SetTexture__') == 1
+    assert saxpy_assembly.count('UnityEngineMaterial.__SetInteger__') == 1
+    assert saxpy_assembly.count('UnityEngineMaterial.__SetFloat__') == 1
+    assert saxpy_assembly.count('VRCSDKBaseVRCGraphics.__Blit__') == 1
+    saxpy_hlsl = (saxpy_artifact / 'kernels/kernel_10.hlsl').read_text(
+        encoding='utf-8'
+    )
+    assert 'Texture2D<float4> _VRC_Input' in saxpy_hlsl
+    assert 'int _VRC_Arg2;' in saxpy_hlsl
+    assert 'float _VRC_Arg3;' in saxpy_hlsl
+    assert (saxpy_artifact / 'kernels/kernel_10.shader').is_file()
+
+    invalid_saxpy_source = output / 'invalid-saxpy-access.c'
+    invalid_saxpy_module = output / 'invalid-saxpy-access.bc'
+    invalid_saxpy_source.write_text(
+        (saxpy_source / 'host.c').read_text(encoding='utf-8').replace(
+            'input = clCreateBuffer(context, CL_MEM_READ_ONLY,',
+            'input = clCreateBuffer(context, CL_MEM_WRITE_ONLY,',
+        ),
+        encoding='utf-8',
+    )
+    run([
+        args.clang, '-target', 'spir-unknown-unknown', '-x', 'c', '-std=c11',
+        '-Xclang', '-fdefault-calling-conv=cdecl', '-O0',
+        '-Xclang', '-disable-O0-optnone', '-fomit-frame-pointer',
+        '-ffp-contract=off', '-emit-llvm', '-c', str(invalid_saxpy_source),
+        '-I' + str(install / 'include'), '-o', str(invalid_saxpy_module),
+    ])
+    run_failure([
+        installed_compiler, '--emit-unity-library-bundle',
+        saxpy_source / 'unity-library.json',
+        '--host-llvm', invalid_saxpy_module,
+        '--device-llvm',
+        saxpy_consumer / 'udoncl/saxpy-unity-library/device.bc',
+        '-o', output / 'invalid-saxpy-access-artifact',
+    ], 'requires read-only inputs and one write-only output')
+
     invalid_source = output / 'invalid-buffer-handle.c'
     invalid_module = output / 'invalid-buffer-handle.bc'
     invalid_source.write_text(
@@ -393,7 +477,7 @@ def main():
         'cmake_package=passed host_sources=3 device_sources=3 '
         'artifacts=hello-artifact,hello-unity-library,'
         'hello-buffer-copy-unity-library,hello-dispatch-unity-library,'
-        'hello-int-dispatch-unity-library'
+        'hello-int-dispatch-unity-library,saxpy-unity-library'
     )
 
 

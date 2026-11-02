@@ -303,20 +303,25 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
         auto kind = dyn_cast<StringAttr>(actual);
         descriptorMatches &= kind && kind.getValue() == expected;
       }
-    auto output = dispatch.getResources().size() == 1
-                      ? dispatch.getResources()
-                            .front()
-                            .getDefiningOp<::vrc::vrc::BufferAllocOp>()
-                      : ::vrc::vrc::BufferAllocOp();
+    size_t bufferKindCount =
+        llvm::count_if(dispatch.getArgumentKinds(), [](mlir::Attribute value) {
+          auto kind = dyn_cast<StringAttr>(value);
+          return kind && kind.getValue() == "buffer";
+        });
+    bool resourcesMatch = dispatch.getResources().size() == bufferKindCount;
+    for (mlir::Value resource : dispatch.getResources()) {
+      auto allocation = resource.getDefiningOp<::vrc::vrc::BufferAllocOp>();
+      resourcesMatch &= allocation && bound.contains(allocation.getOperation());
+    }
     if (!configuredKernelId || dispatch.getKernelId() != *configuredKernelId ||
         !descriptorMatches || dispatch.getArgumentKinds().empty() ||
         !isa<StringAttr>(*dispatch.getArgumentKinds().begin()) ||
         cast<StringAttr>(*dispatch.getArgumentKinds().begin()).getValue() !=
             "buffer" ||
-        !output || !bound.contains(output.getOperation())) {
+        !resourcesMatch) {
       dispatch.emitError(
-          "initial Unity dispatch requires the configured kernel, one direct "
-          "output allocation, and a copied f32/i32 scalar descriptor");
+          "Unity dispatch requires the configured kernel, direct buffer "
+          "allocations, and a copied f32/i32 scalar descriptor");
       return failure();
     }
     int32_t kernelId = static_cast<int32_t>(dispatch.getKernelId());
@@ -797,6 +802,305 @@ recoverUnityOpenCLDispatchProgram(const llvm::Module &input,
   return OwningOpRef<ModuleOp>(owner);
 }
 
+OwningOpRef<ModuleOp>
+recoverUnityOpenCLGatherDispatchProgram(const llvm::Module &input,
+                                        const json::Object &config,
+                                        MLIRContext &context) {
+  auto *kernelConfig = config.getObject("device_kernel");
+  auto *exports = config.getArray("exports");
+  auto *buffers = config.getArray("buffers");
+  auto *argumentKinds =
+      kernelConfig ? kernelConfig->getArray("argument_kinds") : nullptr;
+  auto kernelName =
+      kernelConfig ? kernelConfig->getString("kernel") : std::nullopt;
+  auto kernelId =
+      kernelConfig ? kernelConfig->getInteger("kernel_id") : std::nullopt;
+  auto words = kernelConfig ? kernelConfig->getInteger("words") : std::nullopt;
+  if (!kernelConfig || kernelConfig->getString("profile") != "gather-f32" ||
+      !exports || exports->size() != 1 || !buffers || buffers->empty() ||
+      !argumentKinds || argumentKinds->size() < 3 ||
+      argumentKinds->size() > 16 || !kernelName || !kernelId || !words ||
+      *words < 4 || *words > 16384) {
+    errs() << "Unity OpenCL gather dispatch requires one configured export, "
+              "kernel, and 3-16 arguments\n";
+    return {};
+  }
+  SmallVector<StringRef> kinds, scalarKinds;
+  SmallVector<int32_t> bufferBytes;
+  bool sawScalar = false;
+  for (const json::Value &value : *argumentKinds) {
+    auto kind = value.getAsString();
+    if (!kind || (*kind != "buffer" && *kind != "f32" && *kind != "i32") ||
+        (*kind == "buffer" && sawScalar)) {
+      errs() << "Unity OpenCL gather arguments require buffers before f32/i32 "
+                "scalars\n";
+      return {};
+    }
+    kinds.push_back(*kind);
+    if (*kind != "buffer") {
+      sawScalar = true;
+      scalarKinds.push_back(*kind);
+    }
+  }
+  if (kinds.size() - scalarKinds.size() != buffers->size() ||
+      scalarKinds.empty()) {
+    errs() << "Unity OpenCL gather argument_kinds do not match buffers\n";
+    return {};
+  }
+  for (const json::Value &value : *buffers) {
+    auto *object = value.getAsObject();
+    auto bytes = object ? object->getInteger("byte_size") : std::nullopt;
+    if (!bytes || *bytes != *words * 4 || *bytes > INT32_MAX) {
+      errs() << "Unity OpenCL gather buffers must each contain words * 4 "
+                "bytes\n";
+      return {};
+    }
+    bufferBytes.push_back(static_cast<int32_t>(*bytes));
+  }
+  SmallVector<int32_t> global, local, offset;
+  auto readShape = [&](StringRef key, SmallVectorImpl<int32_t> &values) {
+    auto *array = kernelConfig->getArray(key);
+    if (!array || array->size() != 3)
+      return false;
+    for (const json::Value &value : *array) {
+      auto integer = value.getAsInteger();
+      if (!integer || *integer < 0 || *integer > INT32_MAX)
+        return false;
+      values.push_back(static_cast<int32_t>(*integer));
+    }
+    return true;
+  };
+  if (!readShape("global_size", global) || !readShape("local_size", local) ||
+      !readShape("global_offset", offset) ||
+      local != SmallVector<int32_t>{1, 1, 1} ||
+      offset != SmallVector<int32_t>{0, 0, 0} || global[0] <= 0 ||
+      global[1] <= 0 || global[2] != 1 ||
+      int64_t(global[0]) * global[1] != *words) {
+    errs() << "Unity OpenCL gather launch does not match words\n";
+    return {};
+  }
+  auto *exportConfig = (*exports)[0].getAsObject();
+  auto exportName =
+      exportConfig ? exportConfig->getString("symbol") : std::nullopt;
+  auto *function = exportName ? input.getFunction(*exportName) : nullptr;
+  if (!function || function->isDeclaration() || function->size() != 1 ||
+      !function->getReturnType()->isVoidTy() ||
+      function->arg_size() != scalarKinds.size()) {
+    errs() << "Unity OpenCL gather export must be straight-line "
+              "void(f32/i32...)\n";
+    return {};
+  }
+  for (auto [argument, kind] : llvm::zip(function->args(), scalarKinds))
+    if ((kind == "f32" && !argument.getType()->isFloatTy()) ||
+        (kind == "i32" && !argument.getType()->isIntegerTy(32))) {
+      errs() << "Unity OpenCL gather export scalar signature mismatch\n";
+      return {};
+    }
+  SmallVector<const llvm::CallBase *> calls;
+  for (const llvm::Instruction &instruction : function->front())
+    if (auto *call = dyn_cast<llvm::CallBase>(&instruction))
+      if (const llvm::Function *callee = call->getCalledFunction())
+        if (callee->getName().starts_with("cl"))
+          calls.push_back(call);
+  SmallVector<StringRef> expected{"clGetPlatformIDs", "clGetDeviceIDs",
+                                  "clCreateContext", "clCreateCommandQueue"};
+  for (size_t i = 0; i < buffers->size(); ++i)
+    expected.push_back("clCreateBuffer");
+  for (StringRef name :
+       {"clCreateProgramWithSource", "clBuildProgram", "clCreateKernel"})
+    expected.push_back(name);
+  for (size_t i = 0; i < argumentKinds->size(); ++i)
+    expected.push_back("clSetKernelArg");
+  for (StringRef name :
+       {"clEnqueueNDRangeKernel", "clReleaseKernel", "clReleaseProgram"})
+    expected.push_back(name);
+  for (size_t i = 0; i < buffers->size(); ++i)
+    expected.push_back("clReleaseMemObject");
+  expected.push_back("clReleaseCommandQueue");
+  expected.push_back("clReleaseContext");
+  if (calls.size() != expected.size()) {
+    errs() << "Unity OpenCL gather requires the complete ordered setup, "
+              "dispatch, and release sequence\n";
+    return {};
+  }
+  for (auto [call, name] : llvm::zip(calls, expected))
+    if (call->getCalledFunction()->getName() != name) {
+      errs() << "Unity OpenCL gather call order mismatch at " << name << "\n";
+      return {};
+    }
+  auto require = [&](bool condition, StringRef message) {
+    if (!condition)
+      errs() << "Unity OpenCL gather " << message << "\n";
+    return condition;
+  };
+  size_t bufferBase = 4;
+  size_t programIndex = bufferBase + buffers->size();
+  size_t buildIndex = programIndex + 1;
+  size_t kernelIndex = programIndex + 2;
+  size_t setArgBase = programIndex + 3;
+  size_t enqueueIndex = setArgBase + argumentKinds->size();
+  size_t releaseKernelIndex = enqueueIndex + 1;
+  size_t releaseProgramIndex = enqueueIndex + 2;
+  size_t releaseMemBase = enqueueIndex + 3;
+  size_t releaseQueueIndex = releaseMemBase + buffers->size();
+  size_t releaseContextIndex = releaseQueueIndex + 1;
+  const llvm::Value *platformSlot = calls[0]->getArgOperand(1);
+  const llvm::Value *deviceSlot = calls[1]->getArgOperand(3);
+  const llvm::Value *contextSlot = llvmIRStoredSlot(calls[2]);
+  const llvm::Value *queueSlot = llvmIRStoredSlot(calls[3]);
+  SmallVector<const llvm::Value *> bufferSlots, scalarSlots;
+  for (size_t i = 0; i < buffers->size(); ++i)
+    bufferSlots.push_back(llvmIRStoredSlot(calls[bufferBase + i]));
+  for (llvm::Argument &argument : function->args())
+    scalarSlots.push_back(llvmIRStoredSlot(&argument));
+  const llvm::Value *programSlot = llvmIRStoredSlot(calls[programIndex]);
+  const llvm::Value *kernelSlot = llvmIRStoredSlot(calls[kernelIndex]);
+  StringRef actualKernelName;
+  bool valid =
+      require(llvmIRConstantInt(calls[0]->getArgOperand(0)) == 1,
+              "requires one platform") &&
+      require(llvmIRConstantInt(calls[1]->getArgOperand(1)) == 4 &&
+                  llvmIRConstantInt(calls[1]->getArgOperand(2)) == 1,
+              "requires one GPU device") &&
+      require(llvmIRConstantInt(calls[2]->getArgOperand(1)) == 1 &&
+                  llvmIRConstantInt(calls[3]->getArgOperand(2)) == 0,
+              "requires one context and in-order queue") &&
+      require(llvmIRLoadsFrom(calls[1]->getArgOperand(0), platformSlot) &&
+                  llvmIRSameSlot(calls[2]->getArgOperand(2), deviceSlot) &&
+                  llvmIRLoadsFrom(calls[3]->getArgOperand(0), contextSlot) &&
+                  llvmIRLoadsFrom(calls[3]->getArgOperand(1), deviceSlot),
+              "platform/device/context/queue provenance mismatch") &&
+      require(llvmIRConstantInt(calls[programIndex]->getArgOperand(1)) == 1 &&
+                  llvmIRLoadsFrom(calls[programIndex]->getArgOperand(0),
+                                  contextSlot) &&
+                  llvmIRLoadsFrom(calls[buildIndex]->getArgOperand(0),
+                                  programSlot) &&
+                  llvmIRLoadsFrom(calls[kernelIndex]->getArgOperand(0),
+                                  programSlot) &&
+                  llvm::getConstantStringInfo(
+                      calls[kernelIndex]->getArgOperand(1), actualKernelName) &&
+                  actualKernelName == *kernelName,
+              "program/kernel provenance or configured name mismatch");
+  std::optional<size_t> outputBuffer;
+  for (size_t i = 0; valid && i < buffers->size(); ++i) {
+    auto flags = llvmIRConstantInt(calls[bufferBase + i]->getArgOperand(1));
+    if (flags == 2 && !outputBuffer)
+      outputBuffer = i;
+    else if (flags != 4)
+      valid =
+          require(false, "requires read-only inputs and one write-only output");
+    valid = valid &&
+            require(llvmIRLoadsFrom(calls[bufferBase + i]->getArgOperand(0),
+                                    contextSlot) &&
+                        flags && (*flags == 2 || *flags == 4) &&
+                        llvmIRConstantInt(calls[bufferBase + i]->getArgOperand(
+                            2)) == bufferBytes[i] &&
+                        isa<llvm::ConstantPointerNull>(
+                            calls[bufferBase + i]->getArgOperand(3)),
+                    "buffer allocation must match configured size and context");
+  }
+  valid = valid && require(outputBuffer.has_value(),
+                           "requires exactly one write-only output buffer");
+  size_t bufferOrdinal = 0, scalarOrdinal = 0;
+  for (size_t i = 0; valid && i < kinds.size(); ++i) {
+    const llvm::Value *slot = kinds[i] == "buffer"
+                                  ? bufferSlots[bufferOrdinal++]
+                                  : scalarSlots[scalarOrdinal++];
+    const llvm::CallBase *set = calls[setArgBase + i];
+    valid =
+        require(llvmIRLoadsFrom(set->getArgOperand(0), kernelSlot) &&
+                    llvmIRConstantInt(set->getArgOperand(1)) == int64_t(i) &&
+                    llvmIRConstantInt(set->getArgOperand(2)) == 4 &&
+                    llvmIRSameSlot(set->getArgOperand(3), slot),
+                "SetKernelArg order, size, or provenance mismatch");
+  }
+  const llvm::CallBase *enqueue = calls[enqueueIndex];
+  valid =
+      valid &&
+      require(
+          llvmIRLoadsFrom(enqueue->getArgOperand(0), queueSlot) &&
+              llvmIRLoadsFrom(enqueue->getArgOperand(1), kernelSlot) &&
+              llvmIRConstantInt(enqueue->getArgOperand(2)) == 1 &&
+              isa<llvm::ConstantPointerNull>(enqueue->getArgOperand(3)) &&
+              llvmIRSlotStoresConstant(enqueue->getArgOperand(4), global[0]) &&
+              llvmIRSlotStoresConstant(enqueue->getArgOperand(5), 1) &&
+              llvmIRConstantInt(enqueue->getArgOperand(6)) == 0 &&
+              isa<llvm::ConstantPointerNull>(enqueue->getArgOperand(7)) &&
+              isa<llvm::ConstantPointerNull>(enqueue->getArgOperand(8)),
+          "enqueue does not match configured 1D launch") &&
+      require(llvmIRLoadsFrom(calls[releaseKernelIndex]->getArgOperand(0),
+                              kernelSlot) &&
+                  llvmIRLoadsFrom(calls[releaseProgramIndex]->getArgOperand(0),
+                                  programSlot) &&
+                  llvmIRLoadsFrom(calls[releaseQueueIndex]->getArgOperand(0),
+                                  queueSlot) &&
+                  llvmIRLoadsFrom(calls[releaseContextIndex]->getArgOperand(0),
+                                  contextSlot),
+              "released handles must match their created objects");
+  for (size_t i = 0; valid && i < buffers->size(); ++i)
+    valid = require(llvmIRLoadsFrom(calls[releaseMemBase + i]->getArgOperand(0),
+                                    bufferSlots[i]),
+                    "released buffer must match its created object");
+  if (!valid)
+    return {};
+
+  auto owner = ModuleOp::create(UnknownLoc::get(&context));
+  OpBuilder builder(owner.getBodyRegion());
+  SmallVector<mlir::Type> scalarTypes;
+  SmallVector<mlir::Attribute> scalarKindAttrs, kindAttrs;
+  for (StringRef kind : scalarKinds) {
+    scalarTypes.push_back(kind == "f32" ? mlir::Type(builder.getF32Type())
+                                        : mlir::Type(builder.getI32Type()));
+    scalarKindAttrs.push_back(builder.getStringAttr(kind));
+  }
+  for (StringRef kind : kinds)
+    kindAttrs.push_back(builder.getStringAttr(kind));
+  auto host =
+      func::FuncOp::create(builder, owner.getLoc(), *exportName,
+                           builder.getFunctionType(scalarTypes, TypeRange{}));
+  Block *entry = host.addEntryBlock();
+  builder.setInsertionPointToStart(entry);
+  SmallVector<Operation *> allocatedBuffers;
+  for (int32_t byteSize : bufferBytes) {
+    auto bytes =
+        arith::ConstantIntOp::create(builder, owner.getLoc(), byteSize, 32);
+    OperationState allocation(owner.getLoc(),
+                              ::vrc::vrc::BufferAllocOp::getOperationName());
+    allocation.addOperands(bytes.getResult());
+    allocation.addTypes(
+        {::vrc::vrc::BufferType::get(&context), builder.getI32Type()});
+    allocation.addAttribute("format", builder.getStringAttr("rgba8_unorm"));
+    allocation.addAttribute("usage", builder.getStringAttr("storage"));
+    allocatedBuffers.push_back(builder.create(allocation));
+  }
+  OperationState descriptor(
+      owner.getLoc(), ::vrc::vrc::DispatchDescCreateOp::getOperationName());
+  descriptor.addOperands(entry->getArguments());
+  descriptor.addTypes(::vrc::vrc::DispatchDescType::get(&context));
+  descriptor.addAttribute("kernel_id", builder.getI32IntegerAttr(*kernelId));
+  descriptor.addAttribute("scalar_kinds",
+                          builder.getArrayAttr(scalarKindAttrs));
+  Operation *desc = builder.create(descriptor);
+  OperationState dispatch(owner.getLoc(),
+                          ::vrc::vrc::DispatchOp::getOperationName());
+  SmallVector<mlir::Value> operands{desc->getResult(0)};
+  for (Operation *buffer : allocatedBuffers)
+    operands.push_back(buffer->getResult(0));
+  dispatch.addOperands(operands);
+  dispatch.addTypes(::vrc::vrc::EventType::get(&context));
+  dispatch.addAttribute("kernel_id", builder.getI32IntegerAttr(*kernelId));
+  dispatch.addAttribute("argument_kinds", builder.getArrayAttr(kindAttrs));
+  dispatch.addAttribute(
+      "vrc.unity_output_resource_index",
+      builder.getI32IntegerAttr(static_cast<int32_t>(*outputBuffer)));
+  dispatch.addAttribute("global_size", builder.getDenseI32ArrayAttr(global));
+  dispatch.addAttribute("local_size", builder.getDenseI32ArrayAttr(local));
+  dispatch.addAttribute("global_offset", builder.getDenseI32ArrayAttr(offset));
+  builder.create(dispatch);
+  func::ReturnOp::create(builder, owner.getLoc());
+  return OwningOpRef<ModuleOp>(owner);
+}
+
 std::optional<int64_t> llvmConstantInt(mlir::Value value) {
   auto constant = value.getDefiningOp<LLVM::ConstantOp>();
   auto integer =
@@ -1197,6 +1501,7 @@ int main(int argc, char **argv) {
   OwningOpRef<ModuleOp> module;
   std::map<std::string, std::string> files;
   bool gatherProfile = false;
+  bool unityGatherProfile = false;
   std::optional<json::Object> unityConfig;
   OwningOpRef<ModuleOp> unityDeviceModule;
   SmallVector<UnityBuffer> unityBuffers;
@@ -1238,11 +1543,22 @@ int main(int argc, char **argv) {
         return 1;
       PassManager deviceRecovery(&context);
       deviceRecovery.addNestedPass<ModuleOp>(createMem2Reg());
-      deviceRecovery.addNestedPass<ModuleOp>(
-          ::vrc::createRaiseLLVMBoundaryDevicePass());
+      unityGatherProfile = deviceConfig->getString("profile") == "gather-f32";
+      if (unityGatherProfile) {
+        deviceRecovery.addNestedPass<ModuleOp>(createCanonicalizerPass());
+        deviceRecovery.addNestedPass<ModuleOp>(
+            ::vrc::createRaiseGatherDevicePass());
+      } else
+        deviceRecovery.addNestedPass<ModuleOp>(
+            ::vrc::createRaiseLLVMBoundaryDevicePass());
       deviceRecovery.addNestedPass<ModuleOp>(
           ::vrc::createRaiseLLVMToScalarPass());
       deviceRecovery.addNestedPass<ModuleOp>(createCanonicalizerPass());
+      if (unityGatherProfile) {
+        deviceRecovery.addNestedPass<ModuleOp>(
+            createLiftControlFlowToSCFPass());
+        deviceRecovery.addNestedPass<ModuleOp>(createCanonicalizerPass());
+      }
       deviceRecovery.addPass(::vrc::createPrepareNativeDevicePass());
       if (failed(deviceRecovery.run(*unityDeviceModule)) ||
           failed(verify(*unityDeviceModule)))
@@ -1270,8 +1586,12 @@ int main(int argc, char **argv) {
       }
       auto *enqueue = inputModule->getFunction("clEnqueueNDRangeKernel");
       if (enqueue && !enqueue->use_empty()) {
-        module = recoverUnityOpenCLDispatchProgram(*inputModule, *unityConfig,
-                                                   context);
+        auto *device = unityConfig->getObject("device_kernel");
+        module = device && device->getString("profile") == "gather-f32"
+                     ? recoverUnityOpenCLGatherDispatchProgram(
+                           *inputModule, *unityConfig, context)
+                     : recoverUnityOpenCLDispatchProgram(*inputModule,
+                                                         *unityConfig, context);
         if (!module || failed(verify(*module)) ||
             !configureUnityExports(*module, *unityConfig))
           return 1;
@@ -1392,7 +1712,10 @@ int main(int argc, char **argv) {
     (*device)["buffers"] = unityBufferManifest(unityBuffers);
     if (unityDeviceModule) {
       PassManager deviceLowering(&context);
-      deviceLowering.addPass(::vrc::createLowerDeviceSingleInvocationPass());
+      if (unityGatherProfile)
+        deviceLowering.addPass(::vrc::createLowerGatherDevicePass());
+      else
+        deviceLowering.addPass(::vrc::createLowerDeviceSingleInvocationPass());
       if (failed(deviceLowering.run(*unityDeviceModule)) ||
           failed(verify(*unityDeviceModule)))
         return 1;

@@ -514,7 +514,8 @@ OwningOpRef<ModuleOp> importCBoundary(llvm::StringRef hostFile,
       values.push_back(*v.getAsInteger());
     attrs.append(key, builder.getDenseI32ArrayAttr(values));
   }
-  if (auto *kinds = config.getArray("argument_kinds")) {
+  if (auto *kinds = config.getArray("argument_kinds");
+      kinds && config.getString("profile") != "gather-f32") {
     auto scalar = kinds->size() == 2 ? (*kinds)[1].getAsString()
                                      : std::optional<StringRef>();
     if (!scalar || (*scalar != "f32" && *scalar != "i32")) {
