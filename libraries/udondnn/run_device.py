@@ -2477,6 +2477,8 @@ def main():
                 (blas_fragments[0], "frag", "frag"),
                 (blas_fragments[1], "frag", "frag"),
                 (blas_fragments[2], "frag", "frag"),
+                (blas_fragments[3], "frag", "frag"),
+                (blas_fragments[4], "frag", "frag"),
                 (arena_pointwise_fragment, "frag", "frag"),
                 (arena_tile_fragment, "frag", "frag"),
                 (arena_rms_reduce_fragment, "frag", "frag"),

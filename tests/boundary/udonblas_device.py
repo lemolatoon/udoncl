@@ -30,5 +30,5 @@ assert "sgemv_max_cpu_gpu_error=0" in result.stdout
 assert "saxpy_outputs=280" in result.stdout
 assert "saxpy_cases=4" in result.stdout
 assert "saxpy_max_cpu_gpu_error=0" in result.stdout
-assert "draws=13" in result.stdout
+assert "draws=49" in result.stdout
 print(result.stdout, end="")
