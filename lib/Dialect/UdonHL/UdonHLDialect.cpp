@@ -137,9 +137,9 @@ mlir::LogicalResult vrc::udonhl::ResumeDispatchOp::verify() {
   for (auto indexedState : llvm::enumerate(states)) {
     size_t index = indexedState.index();
     int32_t resumeId = indexedState.value();
-    if (resumeId <= 0 || !unique.insert(resumeId).second)
+    if (resumeId < 0 || !unique.insert(resumeId).second)
       return emitOpError(
-          "registered resume states must be unique and positive");
+          "registered resume states must be unique and nonnegative");
     mlir::Block *destination = getDestinations()[index];
     if (destination->getParent() != (*this)->getBlock()->getParent() ||
         destination->getNumArguments() != 0)
@@ -155,6 +155,16 @@ mlir::LogicalResult vrc::udonhl::SuspendOp::verify() {
     return emitOpError("requires a may_suspend Host function");
   if (getResumeState() <= 0)
     return emitOpError("resume_state must be positive");
+  if (getCompletionSlot() < 0)
+    return emitOpError("completion_slot must be nonnegative");
+  if (auto create = getFrame().getDefiningOp<FrameCreateOp>()) {
+    auto slots = create.getSlotTypes();
+    if (static_cast<size_t>(getCompletionSlot()) >= slots.size() ||
+        !mlir::cast<mlir::TypeAttr>(slots[getCompletionSlot()])
+             .getValue()
+             .isInteger(32))
+      return emitOpError("completion_slot must name an i32 frame slot");
+  }
   if (getReason() == SuspendReason::Gpu &&
       (!getToken() || !isVRCEvent(getToken().getType())))
     return emitOpError("gpu suspension requires a !vrc.event token");

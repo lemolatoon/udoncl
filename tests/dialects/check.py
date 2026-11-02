@@ -42,11 +42,13 @@ assert events.stdout == events_roundtrip.stdout
 continuation = run('''module {
   func.func @continuation(%execution: i32, %event: !vrc.event, %state: i32, %value: f32) attributes {vrc.async_effect = "may_suspend"} {
     %frame = udonhl.frame_create %execution {layout_version = 1 : i32, slot_types = [i32, f32]} : i32 -> !udonhl.frame
-    udonhl.frame_store %frame[1], %value {layout_version = 1 : i32, slot_types = [i32, f32]} : f32
-    "udonhl.resume_dispatch"(%frame, %state)[^bb1] <{registered_states = array<i32: 1>}> : (!udonhl.frame, i32) -> ()
+    "udonhl.resume_dispatch"(%frame, %state)[^bb1, ^bb2] <{registered_states = array<i32: 0, 1>}> : (!udonhl.frame, i32) -> ()
   ^bb1:
+    udonhl.frame_store %frame[1], %value {layout_version = 1 : i32, slot_types = [i32, f32]} : f32
+    "udonhl.suspend"(%frame, %event) <{completion_slot = 0 : i32, reason = #udonhl<suspend_reason gpu>, resume_state = 1 : i32}> : (!udonhl.frame, !vrc.event) -> ()
+  ^bb2:
     %loaded = udonhl.frame_load %frame[1] {layout_version = 1 : i32, slot_types = [i32, f32]} : f32
-    "udonhl.suspend"(%frame, %event) <{reason = #udonhl<suspend_reason gpu>, resume_state = 1 : i32}> : (!udonhl.frame, !vrc.event) -> ()
+    return
   }
 }
 ''')
@@ -71,16 +73,18 @@ for source, diagnostic in [
     }''', 'slot type does not match'),
     ('''module {
       func.func @bad(%execution: i32, %event: !vrc.event) attributes {vrc.async_effect = "may_suspend"} {
-        %frame = udonhl.frame_create %execution {layout_version = 1 : i32, slot_types = []} : i32 -> !udonhl.frame
-        "udonhl.suspend"(%frame, %event) <{reason = #udonhl<suspend_reason gpu>, resume_state = 7 : i32}> : (!udonhl.frame, !vrc.event) -> ()
+        %frame = udonhl.frame_create %execution {layout_version = 1 : i32, slot_types = [i32]} : i32 -> !udonhl.frame
+        "udonhl.suspend"(%frame, %event) <{completion_slot = 0 : i32, reason = #udonhl<suspend_reason gpu>, resume_state = 7 : i32}> : (!udonhl.frame, !vrc.event) -> ()
       }
     }''', 'not registered by resume_dispatch'),
     ('''module {
       func.func @bad(%execution: i32, %state: i32) attributes {vrc.async_effect = "may_suspend"} {
-        %frame = udonhl.frame_create %execution {layout_version = 1 : i32, slot_types = []} : i32 -> !udonhl.frame
-        "udonhl.resume_dispatch"(%frame, %state)[^bb1] <{registered_states = array<i32: 1>}> : (!udonhl.frame, i32) -> ()
+        %frame = udonhl.frame_create %execution {layout_version = 1 : i32, slot_types = [i32]} : i32 -> !udonhl.frame
+        "udonhl.resume_dispatch"(%frame, %state)[^bb1, ^bb2] <{registered_states = array<i32: 0, 1>}> : (!udonhl.frame, i32) -> ()
       ^bb1:
-        "udonhl.suspend"(%frame) <{reason = #udonhl<suspend_reason gpu>, resume_state = 1 : i32}> : (!udonhl.frame) -> ()
+        "udonhl.suspend"(%frame) <{completion_slot = 0 : i32, reason = #udonhl<suspend_reason gpu>, resume_state = 1 : i32}> : (!udonhl.frame) -> ()
+      ^bb2:
+        return
       }
     }''', 'gpu suspension requires a !vrc.event token'),
 ]:

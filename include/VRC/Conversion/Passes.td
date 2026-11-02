@@ -9,6 +9,10 @@ def SubstituteRuntimeIntrinsicsPass : Pass<"vrc-substitute-runtime-intrinsics", 
   let summary = "Replace typed __vrc_* calls after UdonHL construction; preserve C runtime ownership";
   let dependentDialects = ["::vrc::vrc::VRCDialect"];
 }
+def LowerAwaitToContinuationsPass : Pass<"vrc-lower-await-to-continuations", "mlir::ModuleOp"> {
+  let summary = "Split a single typed await into explicit UdonHL frame, suspend and resume blocks";
+  let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "::vrc::vrc::VRCDialect"];
+}
 def LowerDeviceSingleInvocationPass : Pass<"vrc-lower-device-single-invocation", "mlir::ModuleOp"> {
   let summary = "Lower a proven 1-invocation scalar-output GPU kernel to fragment-safe vrcgpu";
   let dependentDialects = ["::vrc::vrcgpu::VRCGPUDialect", "mlir::arith::ArithDialect"];

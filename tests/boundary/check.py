@@ -98,6 +98,41 @@ assert 'vrc.buffer_upload ' in typed_buffer_ops
 assert 'vrc.buffer_readback ' in typed_buffer_ops
 assert 'func.call ' not in typed_buffer_ops and 'udonhl.call ' not in typed_buffer_ops
 
+continuation_source = r'''
+module {
+  func.func @resume(%execution: i32, %resume_state: i32, %event: !vrc.event, %value: i32) -> i32 attributes {vrc.async_effect = "may_suspend", vrc.execution_id_arg = 0 : i32, vrc.resume_state_arg = 1 : i32} {
+    %status = vrc.await %event : (!vrc.event) -> i32
+    %sum = arith.addi %status, %value : i32
+    return %sum : i32
+  }
+}
+'''
+continuation_pass = 'vrc-lower-await-to-continuations'
+continuation = run(
+    [opt, '--pass-pipeline=builtin.module(' + continuation_pass + ')',
+     '--verify-each'], continuation_source)
+assert 'vrc.await ' not in continuation
+for operation in ['udonhl.frame_create ', 'udonhl.frame_store ',
+                  'udonhl.frame_load ', '"udonhl.resume_dispatch"',
+                  '"udonhl.suspend"']:
+    assert operation in continuation
+assert 'vrc.continuation_stage = "udonhl-frame"' in continuation
+assert run([opt, '--verify-each'], continuation) == continuation
+
+nonpersistable_continuation = r'''
+module {
+  func.func @resume(%execution: i32, %resume_state: i32, %event: !vrc.event, %values: memref<?xi32>) -> i32 attributes {vrc.async_effect = "may_suspend", vrc.execution_id_arg = 0 : i32, vrc.resume_state_arg = 1 : i32} {
+    %status = vrc.await %event : (!vrc.event) -> i32
+    %zero = arith.constant 0 : index
+    %value = memref.load %values[%zero] : memref<?xi32>
+    %sum = arith.addi %status, %value : i32
+    return %sum : i32
+  }
+}
+'''
+run([opt, '--pass-pipeline=builtin.module(' + continuation_pass + ')'],
+    nonpersistable_continuation, error='not yet persistable')
+
 event_runtime = r'''
 module attributes {vrc.host_stage = "udonhl"} {
   func.func private @event_status(!vrc.event) -> i32 attributes {vrc.intrinsic = "event_status"}

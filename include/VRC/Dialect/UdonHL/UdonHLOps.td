@@ -45,6 +45,7 @@ def UdonHL_ResumeDispatchOp : Op<UdonHL_Dialect, "resume_dispatch", [Terminator]
 def UdonHL_SuspendOp : Op<UdonHL_Dialect, "suspend", [Terminator]> {
   let summary = "End the current Udon event and persist a continuation";
   let arguments = (ins UdonHL_FrameType:$frame, Optional<AnyType>:$token,
-    UdonHL_SuspendReasonAttr:$reason, I32Attr:$resume_state);
+    UdonHL_SuspendReasonAttr:$reason, I32Attr:$resume_state,
+    I32Attr:$completion_slot);
   let hasVerifier = 1;
 }
