@@ -31,8 +31,8 @@ def VRCGPU_UniformLoadOp : Op<VRCGPU_Dialect, "uniform_load", [Pure]> {
   let hasVerifier = 1;
 }
 def VRCGPU_RawPackOp : Op<VRCGPU_Dialect, "raw_pack", [Pure]> {
-  let summary = "Encode one complete f32 word as little-endian RGBA8 UNorm lanes";
-  let arguments = (ins F32:$value, I32Attr:$byte_offset, StrAttr:$format);
+  let summary = "Encode one complete f32/i32 word as little-endian RGBA8 UNorm lanes";
+  let arguments = (ins AnyType:$value, I32Attr:$byte_offset, StrAttr:$format);
   let results = (outs VectorOfLengthAndType<[4], [F32]>:$texel);
   let hasVerifier = 1;
 }

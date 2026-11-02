@@ -64,7 +64,7 @@ module {
     "vrcgpu.resource"() <{sym_name = "arg1", kind = "uniform", arg_index = 1 : i32, binding = 1 : i32, value_type = f32}> : () -> ()
     %v = "vrcgpu.pass"() <{output = @arg0, pass_id = 0 : i32}> ({
       %x = "vrcgpu.uniform_load"() <{resource = @arg1}> : () -> f32
-      // expected-error @below {{initial raw_pack encodes one complete f32 word at byte offset zero}}
+      // expected-error @below {{initial raw_pack encodes one complete f32/i32 word at byte offset zero}}
       %p = "vrcgpu.raw_pack"(%x) <{byte_offset = 1 : i32, format = "rgba8_unorm"}> : (f32) -> vector<4xf32>
       "vrcgpu.output"(%p) : (vector<4xf32>) -> ()
     }) : () -> !vrcgpu.version<0>

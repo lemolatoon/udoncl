@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "program": "hello_int_dispatch",
+  "device_kernel": {
+    "schema_version": 1,
+    "kernel": "square_plus_one_i32",
+    "kernel_id": 2,
+    "argument_kinds": ["buffer", "i32"],
+    "global_size": [1, 1, 1],
+    "local_size": [1, 1, 1],
+    "global_offset": [0, 0, 0]
+  },
+  "exports": [
+    {
+      "symbol": "dispatch_square_i32",
+      "public_name": "DispatchSquareInt",
+      "id": 1,
+      "parameters": ["value"]
+    }
+  ],
+  "buffers": [
+    {
+      "id": 1,
+      "name": "output",
+      "byte_size": 4
+    }
+  ]
+}

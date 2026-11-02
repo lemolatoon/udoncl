@@ -19,6 +19,7 @@ cmake -S examples/hello-kernel -B build/hello-kernel-cmake -G Ninja `
 cmake --build build/hello-kernel-cmake --target hello-artifact
 cmake --build build/hello-kernel-cmake --target hello-unity-library
 cmake --build build/hello-kernel-cmake --target hello-dispatch-unity-library
+cmake --build build/hello-kernel-cmake --target hello-int-dispatch-unity-library
 ```
 
 The bundle is generated under
@@ -48,6 +49,13 @@ a one-work-item 1D enqueue. The calls must be direct and straight-line and
 must match `dispatch-library.json`. Runtime source compilation, dynamic
 NDRange sizes, other argument layouts, readback, and general handle lifetime
 remain compile errors rather than implicit fallbacks.
+
+`hello-int-dispatch-unity-library` exercises the same public path with an i32
+scalar and `square_plus_one_i32`. Its generated wrapper exports
+`DispatchSquareInt(int)`, the Udon program uses `Material.SetInteger`, and the
+HLSL/ShaderLab uniform is emitted as `int`/`Integer`. The output is still raw
+four-byte RGBA8 storage; i32 support does not imply a broader buffer or NDRange
+contract.
 
 A packaged compiler installation finds its tools beside the CMake package. The source-tree package
 also discovers the built `udonclc` and pinned `.deps/llvm23` tools. Explicit

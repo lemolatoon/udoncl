@@ -35,6 +35,7 @@
 #include "llvm/IRReader/IRReader.h"
 #include <set>
 #include <map>
+#include <limits>
 using namespace mlir;
 using namespace llvm;
 namespace {
@@ -596,13 +597,44 @@ recoverUnityOpenCLDispatchProgram(const llvm::Module &input,
       kernelConfig ? kernelConfig->getInteger("kernel_id") : std::nullopt;
   auto *argumentKinds =
       kernelConfig ? kernelConfig->getArray("argument_kinds") : nullptr;
+  auto scalarKind = argumentKinds && argumentKinds->size() == 2
+                        ? (*argumentKinds)[1].getAsString()
+                        : std::nullopt;
+  auto *bufferConfig =
+      buffers && buffers->size() == 1 ? (*buffers)[0].getAsObject() : nullptr;
+  auto bufferBytes =
+      bufferConfig ? bufferConfig->getInteger("byte_size") : std::nullopt;
   if (!kernelConfig || !exports || exports->size() != 1 || !buffers ||
       buffers->size() != 1 || !kernelName || !kernelId || !argumentKinds ||
-      argumentKinds->size() != 2 ||
-      (*argumentKinds)[0].getAsString() != "buffer" ||
-      (*argumentKinds)[1].getAsString() != "f32") {
+      argumentKinds->size() != 2 || !scalarKind || !bufferBytes ||
+      *bufferBytes != 4 || (*argumentKinds)[0].getAsString() != "buffer" ||
+      (*scalarKind != "f32" && *scalarKind != "i32")) {
     errs() << "initial Unity OpenCL dispatch requires one configured "
-              "buffer,f32 kernel\n";
+              "four-byte buffer and one f32/i32 scalar kernel\n";
+    return {};
+  }
+  SmallVector<int32_t> configuredGlobal, configuredLocal, configuredOffset;
+  auto readShape = [&](StringRef key, SmallVectorImpl<int32_t> &values) {
+    auto *array = kernelConfig->getArray(key);
+    if (!array || array->size() != 3)
+      return false;
+    for (const json::Value &value : *array) {
+      auto integer = value.getAsInteger();
+      if (!integer || *integer < std::numeric_limits<int32_t>::min() ||
+          *integer > std::numeric_limits<int32_t>::max())
+        return false;
+      values.push_back(static_cast<int32_t>(*integer));
+    }
+    return true;
+  };
+  if (!readShape("global_size", configuredGlobal) ||
+      !readShape("local_size", configuredLocal) ||
+      !readShape("global_offset", configuredOffset) ||
+      configuredGlobal != SmallVector<int32_t>{1, 1, 1} ||
+      configuredLocal != SmallVector<int32_t>{1, 1, 1} ||
+      configuredOffset != SmallVector<int32_t>{0, 0, 0}) {
+    errs() << "initial Unity OpenCL dispatch requires configured global/local "
+              "size 1 and zero offset\n";
     return {};
   }
   auto *exportConfig = (*exports)[0].getAsObject();
@@ -611,9 +643,11 @@ recoverUnityOpenCLDispatchProgram(const llvm::Module &input,
   auto *function = exportName ? input.getFunction(*exportName) : nullptr;
   if (!function || function->isDeclaration() || function->size() != 1 ||
       !function->getReturnType()->isVoidTy() || function->arg_size() != 1 ||
-      !function->getArg(0)->getType()->isFloatTy()) {
+      (*scalarKind == "f32" && !function->getArg(0)->getType()->isFloatTy()) ||
+      (*scalarKind == "i32" &&
+       !function->getArg(0)->getType()->isIntegerTy(32))) {
     errs() << "initial Unity OpenCL dispatch export must be a straight-line "
-              "void(float) definition\n";
+              "void(f32/i32) definition matching argument_kinds\n";
     return {};
   }
   SmallVector<const llvm::CallBase *> calls;
@@ -680,7 +714,7 @@ recoverUnityOpenCLDispatchProgram(const llvm::Module &input,
                   llvmIRConstantInt(calls[8]->getArgOperand(2)) == 4 &&
                   llvmIRConstantInt(calls[9]->getArgOperand(1)) == 1 &&
                   llvmIRConstantInt(calls[9]->getArgOperand(2)) == 4,
-              "requires buffer arg 0 and f32 arg 1") &&
+              "requires buffer arg 0 and one four-byte scalar arg 1") &&
       require(llvmIRConstantInt(calls[10]->getArgOperand(2)) == 1 &&
                   isa<llvm::ConstantPointerNull>(calls[10]->getArgOperand(3)) &&
                   llvmIRSlotStoresConstant(calls[10]->getArgOperand(4), 1) &&
@@ -717,7 +751,10 @@ recoverUnityOpenCLDispatchProgram(const llvm::Module &input,
 
   auto owner = ModuleOp::create(UnknownLoc::get(&context));
   OpBuilder builder(owner.getBodyRegion());
-  auto functionType = builder.getFunctionType({builder.getF32Type()}, {});
+  mlir::Type scalarType = *scalarKind == "f32"
+                              ? mlir::Type(builder.getF32Type())
+                              : mlir::Type(builder.getI32Type());
+  auto functionType = builder.getFunctionType({scalarType}, {});
   auto host =
       func::FuncOp::create(builder, owner.getLoc(), *exportName, functionType);
   Block *entry = host.addEntryBlock();
@@ -736,23 +773,25 @@ recoverUnityOpenCLDispatchProgram(const llvm::Module &input,
   descriptor.addOperands(entry->getArgument(0));
   descriptor.addTypes(::vrc::vrc::DispatchDescType::get(&context));
   descriptor.addAttribute("kernel_id", builder.getI32IntegerAttr(*kernelId));
-  descriptor.addAttribute("scalar_kinds",
-                          builder.getArrayAttr({builder.getStringAttr("f32")}));
+  descriptor.addAttribute(
+      "scalar_kinds",
+      builder.getArrayAttr({builder.getStringAttr(*scalarKind)}));
   Operation *desc = builder.create(descriptor);
   OperationState dispatch(owner.getLoc(),
                           ::vrc::vrc::DispatchOp::getOperationName());
   dispatch.addOperands({desc->getResult(0), buffer->getResult(0)});
   dispatch.addTypes(::vrc::vrc::EventType::get(&context));
   dispatch.addAttribute("kernel_id", builder.getI32IntegerAttr(*kernelId));
-  dispatch.addAttribute("argument_kinds",
-                        builder.getArrayAttr({builder.getStringAttr("buffer"),
-                                              builder.getStringAttr("f32")}));
-  for (StringRef key : {"global_size", "local_size", "global_offset"}) {
-    SmallVector<int32_t> values;
-    for (const json::Value &value : *kernelConfig->getArray(key))
-      values.push_back(static_cast<int32_t>(*value.getAsInteger()));
-    dispatch.addAttribute(key, builder.getDenseI32ArrayAttr(values));
-  }
+  dispatch.addAttribute(
+      "argument_kinds",
+      builder.getArrayAttr({builder.getStringAttr("buffer"),
+                            builder.getStringAttr(*scalarKind)}));
+  dispatch.addAttribute("global_size",
+                        builder.getDenseI32ArrayAttr(configuredGlobal));
+  dispatch.addAttribute("local_size",
+                        builder.getDenseI32ArrayAttr(configuredLocal));
+  dispatch.addAttribute("global_offset",
+                        builder.getDenseI32ArrayAttr(configuredOffset));
   builder.create(dispatch);
   func::ReturnOp::create(builder, owner.getLoc());
   return OwningOpRef<ModuleOp>(owner);

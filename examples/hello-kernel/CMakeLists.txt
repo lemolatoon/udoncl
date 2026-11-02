@@ -17,6 +17,7 @@ udoncl_add_device_library(hello_device
   include/hello_device.h)
 target_include_directories(hello_device INTERFACE include)
 udoncl_add_device_library(hello_device_extra kernel_extra.cl)
+udoncl_add_device_library(hello_device_int kernel_int.cl)
 
 udoncl_add_artifact(hello-artifact
   CONFIG kernel.json
@@ -36,3 +37,8 @@ udoncl_add_unity_library(hello-dispatch-unity-library
   CONFIG dispatch-library.json
   HOST_LIBRARIES hello_dispatch_host
   DEVICE_LIBRARIES hello_device hello_device_extra)
+
+udoncl_add_unity_library(hello-int-dispatch-unity-library
+  CONFIG dispatch-int-library.json
+  HOST_LIBRARIES hello_dispatch_host
+  DEVICE_LIBRARIES hello_device_int)

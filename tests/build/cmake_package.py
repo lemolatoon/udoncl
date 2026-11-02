@@ -72,6 +72,10 @@ def main():
         args.cmake, '--build', str(consumer),
         '--target', 'hello-dispatch-unity-library',
     ])
+    run([
+        args.cmake, '--build', str(consumer),
+        '--target', 'hello-int-dispatch-unity-library',
+    ])
 
     build_root = consumer / 'udoncl/hello-artifact'
     artifact = build_root / 'artifact'
@@ -171,6 +175,31 @@ def main():
     assert opencl_dispatch_assembly.count('VRCSDKBaseVRCGraphics.__Blit__') == 1
     assert (opencl_dispatch_artifact / 'kernels/kernel_1.shader').is_file()
     assert (opencl_dispatch_artifact / 'kernels/kernel_1.hlsl').is_file()
+    int_dispatch_artifact = (
+        consumer / 'udoncl/hello-int-dispatch-unity-library/artifact'
+    )
+    int_dispatch_manifest = json.loads(
+        (int_dispatch_artifact / 'manifest.json').read_text(encoding='utf-8')
+    )
+    assert int_dispatch_manifest['device']['kernels'][0]['name'] == (
+        'square_plus_one_i32'
+    )
+    assert int_dispatch_manifest['dispatch_sites'][0]['kernel_id'] == 2
+    int_dispatch_assembly = (int_dispatch_artifact / 'host.uasm').read_text(
+        encoding='utf-8'
+    )
+    assert '.export __0_DispatchSquareInt' in int_dispatch_assembly
+    assert int_dispatch_assembly.count('UnityEngineMaterial.__SetInteger__') == 1
+    assert int_dispatch_assembly.count('VRCSDKBaseVRCGraphics.__Blit__') == 1
+    int_hlsl = (int_dispatch_artifact / 'kernels/kernel_2.hlsl').read_text(
+        encoding='utf-8'
+    )
+    int_shader = (int_dispatch_artifact / 'kernels/kernel_2.shader').read_text(
+        encoding='utf-8'
+    )
+    assert 'int _VRC_Arg1;' in int_hlsl
+    assert 'int v0 = 1;' in int_hlsl
+    assert '_VRC_Arg1 ("Arg1", Integer)' in int_shader
     copy_artifact = consumer / 'udoncl/hello-buffer-copy-unity-library/artifact'
     copy_manifest = json.loads(
         (copy_artifact / 'manifest.json').read_text(encoding='utf-8')
@@ -342,10 +371,29 @@ def main():
         '--device-llvm', consumer / 'udoncl/hello-unity-library/device.bc',
         '-o', output / 'wrong-dispatch-queue-artifact',
     ], 'enqueue and release handles must match their created objects')
+
+    mismatched_launch_config = output / 'mismatched-dispatch-buffer.json'
+    dispatch_config = json.loads(
+        (args.source.resolve() / 'dispatch-library.json').read_text(
+            encoding='utf-8'
+        )
+    )
+    dispatch_config['buffers'][0]['byte_size'] = 8
+    mismatched_launch_config.write_text(
+        json.dumps(dispatch_config), encoding='utf-8'
+    )
+    run_failure([
+        installed_compiler, '--emit-unity-library-bundle',
+        mismatched_launch_config,
+        '--host-llvm', consumer / 'udoncl/hello-dispatch-unity-library/host.bc',
+        '--device-llvm', consumer / 'udoncl/hello-unity-library/device.bc',
+        '-o', output / 'mismatched-dispatch-buffer-artifact',
+    ], 'requires one configured four-byte buffer')
     print(
         'cmake_package=passed host_sources=3 device_sources=3 '
         'artifacts=hello-artifact,hello-unity-library,'
-        'hello-buffer-copy-unity-library,hello-dispatch-unity-library'
+        'hello-buffer-copy-unity-library,hello-dispatch-unity-library,'
+        'hello-int-dispatch-unity-library'
     )
 
 

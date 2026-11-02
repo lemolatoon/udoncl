@@ -114,9 +114,10 @@ LogicalResult KernelOp::verify() {
   }
   if (getKernelIdAttr().getInt() <= 0 || getArgumentKinds().size() != 2 ||
       getArgumentKinds()[0] != StringAttr::get(getContext(), "buffer") ||
-      getArgumentKinds()[1] != StringAttr::get(getContext(), "f32"))
+      (getArgumentKinds()[1] != StringAttr::get(getContext(), "f32") &&
+       getArgumentKinds()[1] != StringAttr::get(getContext(), "i32")))
     return emitOpError(
-        "initial kernel ABI requires a positive id and [buffer, f32]");
+        "initial kernel ABI requires a positive id and [buffer, f32/i32]");
   if (getGlobalSize() != ArrayRef<int32_t>({1, 1, 1}) ||
       getLocalSize() != ArrayRef<int32_t>({1, 1, 1}) ||
       getGlobalOffset() != ArrayRef<int32_t>({0, 0, 0}))
@@ -163,10 +164,17 @@ LogicalResult ResourceOp::verify() {
       return emitOpError("invalid gather uniform type");
     return success();
   }
-  if (!(*this)->getParentOfType<KernelOp>() || getBinding() != getArgIndex() ||
-      !getValueType().isF32())
-    return emitOpError("resource must have a kernel, f32 value type and stable "
-                       "argument binding");
+  if (!kernel || getArgIndex() < 0 || getArgIndex() > 1 ||
+      getBinding() != getArgIndex() ||
+      (getValueType().isF32()
+           ? kernel.getArgumentKinds()[getArgIndex()] !=
+                 StringAttr::get(getContext(), getArgIndex() ? "f32" : "buffer")
+           : !getValueType().isInteger(32) ||
+                 kernel.getArgumentKinds()[getArgIndex()] !=
+                     StringAttr::get(getContext(),
+                                     getArgIndex() ? "i32" : "buffer")))
+    return emitOpError("resource type must match the stable kernel argument "
+                       "binding");
   if (getKind() == "target") {
     if (getArgIndex() != 0 || !getFormat() || *getFormat() != "rgba8_unorm")
       return emitOpError(
@@ -174,7 +182,7 @@ LogicalResult ResourceOp::verify() {
   } else if (getKind() == "uniform") {
     if (getArgIndex() != 1 || getFormat())
       return emitOpError(
-          "initial f32 uniform is argument one without a texture format");
+          "initial scalar uniform is argument one without a texture format");
   } else
     return emitOpError("unsupported resource kind");
   return success();
@@ -230,18 +238,22 @@ LogicalResult PassOp::verify() {
   auto &block = getBody().front();
   for (auto &op : block) {
     if (!isa<UniformLoadOp, RawPackOp, OutputOp, arith::ConstantOp,
-             arith::AddFOp, arith::SubFOp, arith::MulFOp>(op))
+             arith::AddFOp, arith::SubFOp, arith::MulFOp, arith::AddIOp,
+             arith::SubIOp, arith::MulIOp>(op))
       return emitOpError(
           "operation is not fragment-safe in the initial pattern");
     if (auto constant = dyn_cast<arith::ConstantOp>(op))
-      if (!constant.getType().isF32())
-        return emitOpError("fragment constant must be f32");
+      if (!constant.getType().isF32() && !constant.getType().isInteger(32))
+        return emitOpError("fragment constant must be f32 or i32");
     if (isa<arith::AddFOp, arith::SubFOp, arith::MulFOp>(op)) {
       auto flags = op.getAttrOfType<arith::FastMathFlagsAttr>("fastmath");
       if (!op.getResult(0).getType().isF32() ||
           (flags && flags.getValue() != arith::FastMathFlags::none))
         return emitOpError("fragment arithmetic must be f32 without fast-math");
     }
+    if (isa<arith::AddIOp, arith::SubIOp, arith::MulIOp>(op) &&
+        !op.getResult(0).getType().isInteger(32))
+      return emitOpError("fragment integer arithmetic must be i32");
   }
   if (block.empty() || !isa<OutputOp>(block.back()))
     return emitOpError("fragment region must terminate with vrcgpu.output");
@@ -265,9 +277,10 @@ LogicalResult UniformLoadOp::verify() {
 }
 LogicalResult RawPackOp::verify() {
   if (getByteOffset() != 0 || getFormat() != "rgba8_unorm" ||
+      (!getValue().getType().isF32() && !getValue().getType().isInteger(32)) ||
       !(*this)->getParentOfType<PassOp>())
-    return emitOpError(
-        "initial raw_pack encodes one complete f32 word at byte offset zero");
+    return emitOpError("initial raw_pack encodes one complete f32/i32 word at "
+                       "byte offset zero");
   return success();
 }
 LogicalResult FragmentCoordOp::verify() {

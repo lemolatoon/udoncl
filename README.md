@@ -184,7 +184,8 @@ Current components:
   `clCreateBuffer` allocations, full `clEnqueueCopyBuffer` commands, and their
   release calls. The compiler validates context/queue/opaque-handle flow and
   recovers typed buffer IR. A second fixed subset accepts one four-byte output,
-  a copied f32 scalar argument, and a one-work-item `clEnqueueNDRangeKernel`,
+  a copied f32 or i32 scalar argument, and a one-work-item
+  `clEnqueueNDRangeKernel`,
   lowering it to a generated material property update and `VRCGraphics.Blit`.
   Status-dependent control flow, uploads/readbacks, dynamic NDRange sizes,
   other argument layouts, partial copies, and general OpenCL lifetime semantics
@@ -195,7 +196,7 @@ Current components:
   the Unity artifact. The `hello-dispatch-unity-library` example connects its
   restricted standard OpenCL Host sequence to the generated kernel material.
 - The typed Unity backend can lower a fixed one-output `vrc.dispatch` with a
-  copied f32/i32 descriptor to material property updates and one
+  copied f32/i32 descriptor to typed material property updates and one
   `VRCGraphics.Blit`; the Importer binds the generated kernel material through
   its manifest dispatch site. The first standard OpenCL Host bridge now
   recovers the fixed buffer/f32 descriptor and dispatch; broader descriptors,

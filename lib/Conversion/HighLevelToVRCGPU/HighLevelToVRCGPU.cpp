@@ -29,13 +29,14 @@ LogicalResult validate(gpu::GPUFuncOp function) {
       function.getFunctionType().getNumResults() ||
       function.getBody().front().getNumArguments() != 2)
     return fail("initial Device pattern requires one kernel block, output "
-                "buffer and f32 scalar");
+                "buffer and f32/i32 scalar");
   auto output = dyn_cast<MemRefType>(function.getArgument(0).getType());
+  auto scalar = function.getArgument(1).getType();
   if (!output || output.getShape() != ArrayRef<int64_t>({1}) ||
-      !output.getElementType().isF32() || !output.getLayout().isIdentity() ||
-      output.getMemorySpace() || !function.getArgument(1).getType().isF32())
-    return fail(
-        "initial Device ABI is (memref<1xf32>, f32) with identity layout");
+      (scalar.isF32() == scalar.isInteger(32)) ||
+      output.getElementType() != scalar || !output.getLayout().isIdentity() ||
+      output.getMemorySpace())
+    return fail("initial Device ABI is matching memref<1xf32/i32>, f32/i32");
   auto id = function->getAttrOfType<IntegerAttr>("vrc.kernel_id");
   auto block = function.getKnownBlockSize(), grid = function.getKnownGridSize();
   if (!id || id.getInt() <= 0 || id.getInt() > INT32_MAX || !block || !grid ||
@@ -53,10 +54,14 @@ LogicalResult validate(gpu::GPUFuncOp function) {
       if (++stores != 1 || store.getMemref() != function.getArgument(0) ||
           !index || index.value() != 0 || store.getNontemporal() ||
           store.getAlignment().value_or(4) > 4)
-        return store.emitError("initial fragment ownership requires one "
-                               "complete f32 store to output[0]");
+        return store.emitError(
+            scalar.isF32()
+                ? "initial fragment ownership requires one complete f32 store "
+                  "to output[0]"
+                : "initial fragment ownership requires one complete i32 store "
+                  "to output[0]");
     } else if (auto constant = dyn_cast<arith::ConstantOp>(op)) {
-      if (!constant.getType().isF32() && !constant.getType().isIndex())
+      if (constant.getType() != scalar && !constant.getType().isIndex())
         return constant.emitError("unsupported Device constant type");
     } else if (isa<arith::AddFOp, arith::SubFOp, arith::MulFOp>(op)) {
       auto flags = op.getAttrOfType<arith::FastMathFlagsAttr>("fastmath");
@@ -64,6 +69,9 @@ LogicalResult validate(gpu::GPUFuncOp function) {
           (flags && flags.getValue() != arith::FastMathFlags::none))
         return op.emitError(
             "initial Device arithmetic requires f32 without fast-math");
+    } else if (isa<arith::AddIOp, arith::SubIOp, arith::MulIOp>(op)) {
+      if (!op.getResult(0).getType().isInteger(32))
+        return op.emitError("initial integer Device arithmetic requires i32");
     } else if (!isa<gpu::ReturnOp>(op)) {
       return op.emitError("operation requires additional GPU "
                           "legality/barrier/dependence analysis");
@@ -81,8 +89,10 @@ void lower(gpu::GPUModuleOp parent, gpu::GPUFuncOp source,
            IRRewriter &rewriter) {
   auto loc = source.getLoc();
   rewriter.setInsertionPoint(parent);
+  auto scalarType = source.getArgument(1).getType();
+  auto scalarKind = scalarType.isF32() ? "f32" : "i32";
   auto kinds = rewriter.getArrayAttr(
-      {rewriter.getStringAttr("buffer"), rewriter.getStringAttr("f32")});
+      {rewriter.getStringAttr("buffer"), rewriter.getStringAttr(scalarKind)});
   auto one = rewriter.getDenseI32ArrayAttr({1, 1, 1}),
        zero = rewriter.getDenseI32ArrayAttr({0, 0, 0});
   auto id = source->getAttrOfType<IntegerAttr>("vrc.kernel_id");
@@ -113,8 +123,7 @@ void lower(gpu::GPUModuleOp parent, gpu::GPUFuncOp source,
             "kind", rewriter.getStringAttr(i == 0 ? "target" : "uniform")),
         rewriter.getNamedAttr("arg_index", rewriter.getI32IntegerAttr(i)),
         rewriter.getNamedAttr("binding", rewriter.getI32IntegerAttr(i)),
-        rewriter.getNamedAttr("value_type",
-                              TypeAttr::get(rewriter.getF32Type()))};
+        rewriter.getNamedAttr("value_type", TypeAttr::get(scalarType))};
     if (!i)
       attrs.push_back(rewriter.getNamedAttr(
           "format", rewriter.getStringAttr("rgba8_unorm")));
@@ -134,7 +143,7 @@ void lower(gpu::GPUModuleOp parent, gpu::GPUFuncOp source,
   rewriter.setInsertionPointToEnd(passBody);
   auto *uniform = make(
       rewriter, loc, fragment::UniformLoadOp::getOperationName(),
-      TypeRange{rewriter.getF32Type()}, {},
+      TypeRange{scalarType}, {},
       {rewriter.getNamedAttr(
           "resource", FlatSymbolRefAttr::get(rewriter.getContext(), "arg1"))});
   IRMapping mapping;
@@ -143,8 +152,8 @@ void lower(gpu::GPUModuleOp parent, gpu::GPUFuncOp source,
   for (auto &op : source.getBody().front()) {
     if (auto store = dyn_cast<memref::StoreOp>(op))
       output = store;
-    else if (isa<arith::ConstantOp, arith::AddFOp, arith::SubFOp,
-                 arith::MulFOp>(op) &&
+    else if (isa<arith::ConstantOp, arith::AddFOp, arith::SubFOp, arith::MulFOp,
+                 arith::AddIOp, arith::SubIOp, arith::MulIOp>(op) &&
              !op.getResult(0).getType().isIndex())
       rewriter.clone(op, mapping);
   }

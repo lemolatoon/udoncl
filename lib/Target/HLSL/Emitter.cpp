@@ -12,7 +12,12 @@ LogicalResult emitFragmentHLSL(fragment::KernelOp kernel,
   llvm::DenseMap<Value, std::string> names;
   std::string code;
   llvm::raw_string_ostream body(code);
-  body << "float _VRC_Arg1;\nfloat4 frag(float4 position : SV_POSITION) : "
+  bool integer = false;
+  for (auto resource : kernel.getBody().front().getOps<fragment::ResourceOp>())
+    if (resource.getArgIndex() == 1)
+      integer = resource.getValueType().isInteger(32);
+  body << (integer ? "int" : "float")
+       << " _VRC_Arg1;\nfloat4 frag(float4 position : SV_POSITION) : "
           "SV_Target {\n";
   unsigned index = 0;
   for (auto pass : kernel.getBody().front().getOps<fragment::PassOp>()) {
@@ -20,28 +25,34 @@ LogicalResult emitFragmentHLSL(fragment::KernelOp kernel,
       if (auto load = dyn_cast<fragment::UniformLoadOp>(op)) {
         names[load.getValue()] = "_VRC_Arg1";
       } else if (auto constant = dyn_cast<arith::ConstantOp>(op)) {
-        auto attr = dyn_cast<FloatAttr>(constant.getValue());
-        if (!attr || !attr.getType().isF32())
-          return op.emitError("HLSL requires scalar f32 constants");
         auto name = "v" + std::to_string(index++);
         names[constant.getResult()] = name;
-        body << "  precise float " << name << " = asfloat(0x"
-             << llvm::utohexstr(attr.getValue().bitcastToAPInt().getZExtValue())
-             << "u);\n";
-      } else if (isa<arith::AddFOp, arith::SubFOp, arith::MulFOp>(op)) {
+        if (auto attr = dyn_cast<FloatAttr>(constant.getValue()))
+          body << "  precise float " << name << " = asfloat(0x"
+               << llvm::utohexstr(
+                      attr.getValue().bitcastToAPInt().getZExtValue())
+               << "u);\n";
+        else if (auto attr = dyn_cast<IntegerAttr>(constant.getValue()))
+          body << "  int " << name << " = " << attr.getInt() << ";\n";
+        else
+          return op.emitError("HLSL requires scalar f32/i32 constants");
+      } else if (isa<arith::AddFOp, arith::SubFOp, arith::MulFOp, arith::AddIOp,
+                     arith::SubIOp, arith::MulIOp>(op)) {
         auto lhs = names.find(op.getOperand(0)),
              rhs = names.find(op.getOperand(1));
         if (lhs == names.end() || rhs == names.end())
           return op.emitError("unresolved HLSL SSA value");
-        auto flags = op.getAttrOfType<arith::FastMathFlagsAttr>("fastmath");
-        if (flags && flags.getValue() != arith::FastMathFlags::none)
-          return op.emitError("fast-math is not legalized");
+        if (auto flags = op.getAttrOfType<arith::FastMathFlagsAttr>("fastmath"))
+          if (flags.getValue() != arith::FastMathFlags::none)
+            return op.emitError("fast-math is not legalized");
         auto name = "v" + std::to_string(index++);
-        char operation = isa<arith::AddFOp>(op)   ? '+'
-                         : isa<arith::SubFOp>(op) ? '-'
-                                                  : '*';
-        body << "  precise float " << name << " = " << lhs->second << " "
-             << operation << " " << rhs->second << ";\n";
+        char operation = isa<arith::AddFOp, arith::AddIOp>(op)   ? '+'
+                         : isa<arith::SubFOp, arith::SubIOp>(op) ? '-'
+                                                                 : '*';
+        body << "  "
+             << (op.getResult(0).getType().isF32() ? "precise float " : "int ")
+             << name << " = " << lhs->second << " " << operation << " "
+             << rhs->second << ";\n";
         names[op.getResult(0)] = name;
       } else if (auto pack = dyn_cast<fragment::RawPackOp>(op)) {
         auto source = names.find(pack.getValue());
@@ -90,7 +101,12 @@ LogicalResult emitShaderLab(fragment::KernelOp kernel, llvm::raw_ostream &out) {
             << ") = 0\n";
     }
   } else
-    out << "_VRC_Arg1 (\"Arg1\", Float) = 0\n";
+    out << "_VRC_Arg1 (\"Arg1\", "
+        << (kernel.getArgumentKinds()[1] ==
+                    StringAttr::get(kernel.getContext(), "i32")
+                ? "Integer"
+                : "Float")
+        << ") = 0\n";
   out << "}\n"
          "SubShader { Pass { Cull Off ZWrite Off ZTest Always Blend Off\n"
          "CGPROGRAM\n#pragma target 5.0\n#pragma vertex vert_img\n#pragma "

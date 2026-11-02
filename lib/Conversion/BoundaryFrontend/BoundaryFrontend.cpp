@@ -83,6 +83,10 @@ bool validContract(DictionaryAttr config) {
                       [&](int32_t value) { return value == expected; }))
       return false;
   }
+  auto scalarKind = config.getAs<StringAttr>("scalar_kind");
+  if (scalarKind && scalarKind != StringAttr::get(config.getContext(), "f32") &&
+      scalarKind != StringAttr::get(config.getContext(), "i32"))
+    return false;
   return true;
 }
 struct RaiseLLVMBoundaryDevicePass
@@ -113,9 +117,14 @@ struct RaiseLLVMBoundaryDevicePass
     }
     auto pointer =
         dyn_cast<LLVM::LLVMPointerType>(source.getArgument(0).getType());
+    auto scalarKind = config.getAs<StringAttr>("scalar_kind");
+    bool integer = scalarKind && scalarKind.getValue() == "i32";
+    Type scalarType = integer ? Type(IntegerType::get(&getContext(), 32))
+                              : Type(Float32Type::get(&getContext()));
     if (!pointer || pointer.getAddressSpace() != 1 ||
-        !source.getArgument(1).getType().isF32()) {
-      reject("kernel signature must be (__global float*, float)");
+        source.getArgument(1).getType() != scalarType) {
+      reject(integer ? "kernel signature must be (__global int*, int)"
+                     : "kernel signature must be (__global float*, float)");
       return;
     }
     for (unsigned index = 0; index < source.getNumArguments(); ++index) {
@@ -153,12 +162,13 @@ struct RaiseLLVMBoundaryDevicePass
         auto *meta = function->getObject("metadata");
         auto *types = meta ? meta->getArray("kernel_arg_type") : nullptr;
         auto *spaces = meta ? meta->getArray("kernel_arg_addr_space") : nullptr;
-        metadataOK = function->getBoolean("is_kernel") == true && types &&
-                     spaces && types->size() == 2 && spaces->size() == 2 &&
-                     (*types)[0].getAsString() == "float*" &&
-                     (*types)[1].getAsString() == "float" &&
-                     (*spaces)[0].getAsInteger() == 1 &&
-                     (*spaces)[1].getAsInteger() == 0;
+        metadataOK =
+            function->getBoolean("is_kernel") == true && types && spaces &&
+            types->size() == 2 && spaces->size() == 2 &&
+            (*types)[0].getAsString() == (integer ? "int*" : "float*") &&
+            (*types)[1].getAsString() == (integer ? "int" : "float") &&
+            (*spaces)[0].getAsInteger() == 1 &&
+            (*spaces)[1].getAsInteger() == 0;
         if (meta && meta->get("reqd_work_group_size")) {
           auto *required = meta->getArray("reqd_work_group_size");
           metadataOK &= required && required->size() == 3 &&
@@ -177,15 +187,16 @@ struct RaiseLLVMBoundaryDevicePass
     for (auto &op : source.getBody().front()) {
       if (auto store = dyn_cast<LLVM::StoreOp>(op)) {
         if (output || store.getAddr() != source.getArgument(0) ||
-            !store.getValue().getType().isF32() || store.getVolatile_() ||
+            store.getValue().getType() != scalarType || store.getVolatile_() ||
             store.getOrdering() != LLVM::AtomicOrdering::not_atomic ||
             store.getAlignment().value_or(4) > 4) {
-          reject("requires one non-atomic complete f32 store to output[0]");
+          reject("requires one non-atomic complete scalar store to output[0]");
           return;
         }
         output = store;
       } else if (!isa<LLVM::ConstantOp, LLVM::FAddOp, LLVM::FSubOp,
-                      LLVM::FMulOp, LLVM::ReturnOp>(op)) {
+                      LLVM::FMulOp, LLVM::AddOp, LLVM::SubOp, LLVM::MulOp,
+                      LLVM::ReturnOp>(op)) {
         reject("unsupported kernel operation; pointer offsets, reads and "
                "barriers need further proofs");
         return;
@@ -252,8 +263,7 @@ struct RaiseLLVMBoundaryDevicePass
     IRRewriter rewriter(&getContext());
     rewriter.setInsertionPoint(source);
     auto type = rewriter.getFunctionType(
-        {MemRefType::get({1}, rewriter.getF32Type()), rewriter.getF32Type()},
-        {});
+        {MemRefType::get({1}, scalarType), scalarType}, {});
     auto recovered =
         func::FuncOp::create(rewriter, source.getLoc(), kernelName, type);
     recovered->setAttr("vrc.llvm_function", rewriter.getDictionaryAttr(attrs));
@@ -503,6 +513,15 @@ OwningOpRef<ModuleOp> importCBoundary(llvm::StringRef hostFile,
     for (const auto &v : *config.getArray(key))
       values.push_back(*v.getAsInteger());
     attrs.append(key, builder.getDenseI32ArrayAttr(values));
+  }
+  if (auto *kinds = config.getArray("argument_kinds")) {
+    auto scalar = kinds->size() == 2 ? (*kinds)[1].getAsString()
+                                     : std::optional<StringRef>();
+    if (!scalar || (*scalar != "f32" && *scalar != "i32")) {
+      fail(root, "unsupported configured scalar argument kind");
+      return {};
+    }
+    attrs.append("scalar_kind", builder.getStringAttr(*scalar));
   }
   if (config.getString("profile") == "gather-f32") {
     attrs.append("profile", builder.getStringAttr("gather-f32"));
