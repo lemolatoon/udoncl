@@ -14,3 +14,5 @@ All notable changes to this package are recorded here.
   materials, textures, and prefabs.
 - Generated U# library-instance lifecycle checks for initialization,
   reentrant-call rejection, and explicit disposal.
+- Importable ONNX Arena Add sample using the public typed Write/Run/async Read
+  runtime API.

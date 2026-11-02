@@ -409,6 +409,10 @@ def run_unity_mcp_gate(root, unity, project, build, output):
     lock_path = project / "Packages/packages-lock.json"
     generated = project / "Assets/udoncl-generated"
     serialized = project / "Assets/SerializedUdonPrograms"
+    sample_validation = project / "Assets/UdonclSampleValidation"
+    sample_validation_meta = sample_validation.with_suffix(".meta")
+    if sample_validation.exists() or sample_validation_meta.exists():
+        raise RuntimeError(f"Unity sample validation path already exists: {sample_validation}")
     generated_before = tree_snapshot(generated)
     serialized_before = tree_snapshot(serialized)
     unity_library = prepare_cmake_unity_library(build)
@@ -451,6 +455,12 @@ def run_unity_mcp_gate(root, unity, project, build, output):
     unity_process = None
     client = None
     try:
+        sample_validation.mkdir()
+        shutil.copy2(
+            root
+            / "unity/Packages/com.lemolatoon.udoncl/Samples~/ONNX Arena Add/UdonOnnxArenaAddExample.cs",
+            sample_validation / "UdonOnnxArenaAddExample.cs",
+        )
         unity_command = [
             unity,
             "-batchmode",
@@ -558,9 +568,13 @@ def run_unity_mcp_gate(root, unity, project, build, output):
             lock_path.unlink(missing_ok=True)
         else:
             lock_path.write_bytes(lock_original)
+        shutil.rmtree(sample_validation, ignore_errors=True)
+        sample_validation_meta.unlink(missing_ok=True)
     leaked = project / "Library/UdonclLoweringIntegration"
     if leaked.exists():
         raise RuntimeError(f"Unity lowering fixture leaked its setup directory: {leaked}")
+    if sample_validation.exists() or sample_validation_meta.exists():
+        raise RuntimeError("Unity sample validation source was not cleaned up")
     if tree_snapshot(generated) != generated_before or tree_snapshot(serialized) != serialized_before:
         raise RuntimeError("Unity tests changed lifecycle-managed assets")
     print(f"unity_mcp_tests=passed tests={passed} cleanup=passed")

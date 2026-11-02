@@ -15,5 +15,12 @@
   },
   "vpmDependencies": {
     "com.vrchat.worlds": "3.10.x"
-  }
+  },
+  "samples": [
+    {
+      "displayName": "ONNX Arena Add",
+      "description": "Generate, import, and call a standard ONNX Add graph from U#.",
+      "path": "Samples~/ONNX Arena Add"
+    }
+  ]
 }

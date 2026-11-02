@@ -67,7 +67,9 @@ part of the Unity package.
 For a user-built, non-Pooling graph, follow
 `examples/onnx-arena-add/README.md`. It generates a standard ONNX `Add` model,
 materializes the Unity artifact, imports the runtime prefab, and drives the
-typed Write/Run/async Read API from a small U# component.
+typed Write/Run/async Read API from a small U# component. Import the **ONNX
+Arena Add** sample from this package's Samples tab instead of copying the
+component source manually.
 
 ## Import
 

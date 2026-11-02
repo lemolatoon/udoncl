@@ -32,9 +32,10 @@ In the Unity Worlds project:
 2. Open **Tools → udoncl → Import Artifacts...** and select
    `build/onnx-arena-add/unity-artifact`.
 3. Add the generated `Prefabs/UdonOnnxModel.prefab` to the scene.
-4. Copy `UdonOnnxArenaAddExample.cs` into the project's `Assets` directory,
-   attach it to another GameObject, and assign the generated prefab's
-   `UdonOnnxRuntimeBehaviour` component to `runtime`.
+4. In Unity Package Manager, select **UdonCL Runtime and ONNX Importer** and
+   import the **ONNX Arena Add** sample. Attach its
+   `UdonOnnxArenaAddExample` component to another GameObject and assign the
+   generated prefab's `UdonOnnxRuntimeBehaviour` component to `runtime`.
 5. Invoke `Run` or interact with that GameObject. After asynchronous readback,
    `GetStatus()` returns `0` and `GetResult()` returns `5` with the defaults.
 
