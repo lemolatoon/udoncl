@@ -2,7 +2,10 @@
 
 C / OpenCL C → Udon / Fragment Shader compiler under development.
 [PLAN.md](PLAN.md) is the design specification. The application entry is UdonSharp;
-C is a library. This repository does not yet compile C into a working VRChat world.
+C is a library. The implemented fixed AOT subsets compile Host C and OpenCL C
+into importable VRChat Worlds artifacts; the full PLAN and general OpenCL/C11
+coverage remain in progress. Start with the user workflows in
+[examples/README.md](examples/README.md).
 
 The Unity runtime and artifact importer are distributed as the prerelease VPM
 package `com.lemolatoon.udoncl`. Its community repository URL is
@@ -37,8 +40,9 @@ The Unity-library config assigns stable export IDs, public U# names and
 parameter names. Optional explicit `buffers` entries become canonical linear
 RGBA8 RenderTexture assets bound to compiler-emitted Udon heap slots. Its artifact contains `manifest.json`, compiler-emitted
 `host.uasm`, and a valid display shader; import it with **Tools → udoncl →
-Import Artifacts...**. The complete source-tree example is in
-`examples/hello-kernel`; CMake preset support and the future Unity
+Import Artifacts...**. The complete source-tree examples and their support
+boundaries are catalogued in [examples/README.md](examples/README.md); CMake
+preset support and the future Unity
 directory-picker UI are deliberately separate.
 
 LLVM, MLIR and Clang are pinned together to **23.1.4** (commit recorded in
@@ -190,7 +194,10 @@ Current components:
   `examples/saxpy` consumer exercises two buffers and mixed i32/f32 scalars.
   Status-dependent control flow, uploads/readbacks, dynamic NDRange sizes,
   other argument layouts, partial copies, and general OpenCL lifetime semantics
-  remain explicit compile errors. `<udoncl/unity_buffer.h>` remains a temporary
+  remain explicit compile errors in the C Host lowering. Generated U# bindings
+  separately expose byte-exact whole-buffer upload and asynchronous readback;
+  direct lowering of blocking C read/write calls to Host continuations remains
+  pending. `<udoncl/unity_buffer.h>` remains a temporary
   compatibility input, not the preferred public example.
 - `udoncl_add_unity_library` accepts ordinary `DEVICE_LIBRARIES` targets and
   packages the selected AOT kernel's ShaderLab/HLSL plus manifest metadata in
@@ -201,8 +208,9 @@ Current components:
   property updates and one `VRCGraphics.Blit`; the Importer binds the generated
   kernel material through its manifest dispatch site. The standard OpenCL Host
   bridge validates the straight-line object and argument provenance before
-  recovering that dispatch. Multiple kernels, dynamic layouts/NDRange, public
-  upload/readback, and asynchronous continuation remain pending.
+  recovering that dispatch. Multiple kernels, dynamic layouts/NDRange, C-side
+  upload/readback lowering, and asynchronous Host continuation remain pending.
+  Generated bindings already provide explicit fixed-buffer transfers.
 - `udoncl-opt`: MLIR parser/printer with operation verification, rejects unknown ops by default.
 - `VRCLLVMToHighLevelMLIR`: independent import/metadata, local-memory and scalar/CFG recovery library for host/device development.
 - `udoncl-translate --import-llvm input.ll`: LLVM dialect import with preserved frontend metadata and optional JSON sidecar.
