@@ -47,6 +47,10 @@ def main():
     suffix = '.exe' if Path(args.compiler).suffix == '.exe' else ''
     installed_compiler = install / 'bin' / f'udonclc{suffix}'
     assert installed_compiler.is_file(), installed_compiler
+    assert (install / 'include/CL/cl.h').is_file()
+    assert (install / 'include/CL/cl_platform.h').is_file()
+    assert (install / 'include/CL/cl_version.h').is_file()
+    assert (install / 'share/licenses/UdonCL/OpenCL-Headers.LICENSE').is_file()
     package = install / 'lib/cmake/UdonCL'
     run([
         args.cmake,

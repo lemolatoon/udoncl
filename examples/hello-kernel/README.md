@@ -58,6 +58,11 @@ This restricted bridge accepts one or more direct allocation-to-copy uses;
 general OpenCL `cl_mem`, release/reuse, upload/readback, and partial copy remain
 pending.
 
+The compiler package also installs the pinned Khronos OpenCL headers, and Host
+targets can include `<CL/cl.h>` without adding an include directory. This fixes
+the public OpenCL types and constants at version 1.2; standard `clCreateBuffer`
+and `clEnqueueCopyBuffer` calls are not yet accepted by the Unity lowering.
+
 ## Build by invoking each CLI
 
 The remainder deliberately avoids a wrapper script. Run each public CLI

@@ -55,6 +55,13 @@ install(FILES
 install(FILES include/udoncl/unity_buffer.h
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/udoncl"
   COMPONENT UdonCLCompiler)
+install(DIRECTORY third_party/OpenCL-Headers/CL
+  DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+  COMPONENT UdonCLCompiler)
+install(FILES third_party/OpenCL-Headers/LICENSE
+  DESTINATION "${CMAKE_INSTALL_DATADIR}/licenses/UdonCL"
+  RENAME OpenCL-Headers.LICENSE
+  COMPONENT UdonCLCompiler)
 if(BUILD_TESTING)
   add_subdirectory(tests)
 endif()
