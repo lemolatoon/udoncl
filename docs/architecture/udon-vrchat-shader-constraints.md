@@ -79,3 +79,9 @@ formed the reproduced successful pattern. The exact compiler or driver
 mechanism is not yet proven. See the dedicated
 [investigation record](../investigations/2026-11-02-unity-mnist-averagepool-zero.md)
 for the tested variants, measurements, exclusions, and next diagnostic.
+
+## UdonSharp narrowing conversions
+
+UdonSharp lowers an `int` to `byte` cast through checked `Convert.ToByte` in
+Udon VM. Mask packed byte lanes with `& 255` before casting; relying on C#'s
+usual truncating cast can halt the UdonBehaviour at runtime.

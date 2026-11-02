@@ -393,10 +393,10 @@ namespace Lemolatoon.Udoncl
         private Color32 PackWord(int word)
         {
             return new Color32(
-                (byte)word,
-                (byte)(word >> 8),
-                (byte)(word >> 16),
-                (byte)(word >> 24)
+                (byte)(word & 255),
+                (byte)((word >> 8) & 255),
+                (byte)((word >> 16) & 255),
+                (byte)((word >> 24) & 255)
             );
         }
 

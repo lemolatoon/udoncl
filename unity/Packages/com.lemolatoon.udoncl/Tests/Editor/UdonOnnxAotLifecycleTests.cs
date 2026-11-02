@@ -1,9 +1,11 @@
 using System;
+using System.Collections;
 using System.IO;
 using NUnit.Framework;
 using UnityEditor;
 using UnityEditor.PackageManager;
 using UnityEngine;
+using UnityEngine.TestTools;
 using VRC.Udon;
 using VRC.Udon.Common.Interfaces;
 using VRC.Udon.Editor;
@@ -20,7 +22,11 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         private const string GeneratedTinyStandardRoot =
             "Assets/udoncl-generated/onnx_tiny_llama_standard_fixture";
         private const string GeneratedRuntimeRoot = "Assets/udoncl-generated/Runtime";
-        private bool runtimeProgramAssetExisted;
+        private const string ArenaSampleScript =
+            "Assets/UdonclSampleValidation/UdonOnnxArenaAddExample.cs";
+        private const string ArenaSampleProgram =
+            "Assets/UdonclSampleValidation/UdonOnnxArenaAddExample.asset";
+        private bool arenaSampleProgramAssetExisted;
 
         private static string ResolveFixture(string environmentName, string relativeFallback)
         {
@@ -41,10 +47,8 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         [OneTimeSetUp]
         public void ImportUnityInt4ModelBundle()
         {
-            runtimeProgramAssetExisted =
-                AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(
-                    GeneratedRuntimeRoot + "/UdonOnnxRuntimeBehaviour.asset"
-                ) != null;
+            arenaSampleProgramAssetExisted =
+                AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(ArenaSampleProgram) != null;
             AssetDatabase.DeleteAsset(GeneratedRoot);
             string bundle = ResolveFixture(
                 "UDONCL_ONNX_INT4_UNITY_BUNDLE",
@@ -84,6 +88,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 GeneratedTinyStandardRoot,
                 UdonclArtifactImporter.Import(tinyStandardBundle)
             );
+            EnsureArenaSampleProgram();
         }
 
         [OneTimeTearDown]
@@ -113,18 +118,20 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             string tinyStandardProgramGuid = AssetDatabase.AssetPathToGUID(
                 GeneratedTinyStandardRoot + "/Programs/host_program.asset"
             );
-            string runtimeProgramGuid = runtimeProgramAssetExisted
+            string runtimeProgramGuid = AssetDatabase.AssetPathToGUID(
+                GeneratedRuntimeRoot + "/UdonOnnxRuntimeBehaviour.asset"
+            );
+            string arenaSampleProgramGuid = arenaSampleProgramAssetExisted
                 ? null
-                : AssetDatabase.AssetPathToGUID(
-                    GeneratedRuntimeRoot + "/UdonOnnxRuntimeBehaviour.asset"
-                );
+                : AssetDatabase.AssetPathToGUID(ArenaSampleProgram);
             AssetDatabase.DeleteAsset(GeneratedRoot);
             AssetDatabase.DeleteAsset(GeneratedMixedRoot);
             AssetDatabase.DeleteAsset(GeneratedArenaRoot);
             AssetDatabase.DeleteAsset(GeneratedRlRoot);
             AssetDatabase.DeleteAsset(GeneratedTinyStandardRoot);
-            if (!runtimeProgramAssetExisted)
-                AssetDatabase.DeleteAsset(GeneratedRuntimeRoot);
+            AssetDatabase.DeleteAsset(GeneratedRuntimeRoot);
+            if (!arenaSampleProgramAssetExisted)
+                AssetDatabase.DeleteAsset(ArenaSampleProgram);
             foreach (
                 string guid in new[]
                 {
@@ -137,6 +144,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                     rlProgramGuid,
                     tinyStandardProgramGuid,
                     runtimeProgramGuid,
+                    arenaSampleProgramGuid,
                 }
             )
                 if (!string.IsNullOrEmpty(guid))
@@ -149,10 +157,23 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             Assert.IsNull(
                 AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(GeneratedTinyStandardRoot)
             );
-            if (!runtimeProgramAssetExisted)
+            Assert.IsNull(AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(GeneratedRuntimeRoot));
+            if (!arenaSampleProgramAssetExisted)
                 Assert.IsNull(
-                    AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(GeneratedRuntimeRoot)
+                    AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(ArenaSampleProgram)
                 );
+        }
+
+        private static void EnsureArenaSampleProgram()
+        {
+            Assert.NotNull(
+                AssetDatabase.LoadAssetAtPath<MonoScript>(ArenaSampleScript),
+                "The precommit driver did not stage the Arena Add sample."
+            );
+            UdonclArtifactImporter.EnsureCompiledUdonSharpProgramAsset(
+                ArenaSampleScript,
+                ArenaSampleProgram
+            );
         }
 
 #if false
@@ -500,6 +521,78 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 UnityEngine.Object.DestroyImmediate(leftTexture);
                 UnityEngine.Object.DestroyImmediate(rightTexture);
             }
+        }
+
+        [UnityTest]
+        public IEnumerator ArenaAddSampleExecutesPublicWriteRunAndAsyncReadPath()
+        {
+            yield return new EnterPlayMode();
+
+            Lemolatoon.Udoncl.UdonOnnxModelAsset modelAsset =
+                AssetDatabase.LoadAssetAtPath<Lemolatoon.Udoncl.UdonOnnxModelAsset>(
+                    GeneratedArenaRoot + "/Models/UdonOnnxModel.asset"
+                );
+            GameObject runtimeInstance = UnityEngine.Object.Instantiate(modelAsset.RuntimePrefab);
+            GameObject sampleObject = new GameObject("udoncl Arena Add public API test");
+            MonoScript sampleScript = AssetDatabase.LoadAssetAtPath<MonoScript>(ArenaSampleScript);
+            UdonBehaviour sample = UdonclArtifactImporter.AddUdonSharpComponentAndGetBacking(
+                sampleObject,
+                sampleScript.GetClass()
+            );
+            UdonclArtifactImporter.InitializeUdonBehaviours(runtimeInstance);
+            UdonclArtifactImporter.InitializeUdonBehaviour(sample);
+            yield return null;
+            UdonBehaviour runtime = UdonclArtifactImporter.FindUdonSharpBacking(runtimeInstance);
+            Assert.NotNull(runtime, "The instantiated runtime Udon heap was not initialized.");
+            int[] runtimeInputWords =
+                UdonclArtifactImporter.GetUdonProgramVariable(runtime, "inputWords") as int[];
+            int[] runtimeOutputWords =
+                UdonclArtifactImporter.GetUdonProgramVariable(runtime, "outputWords") as int[];
+            UdonclArtifactImporter.SetUdonProgramVariable(sample, "runtime", runtime);
+            UdonclArtifactImporter.SetUdonProgramVariable(sample, "left", 2.0f);
+            UdonclArtifactImporter.SetUdonProgramVariable(sample, "right", 3.0f);
+            UdonclArtifactImporter.SendUdonCustomEvent(sample, "Run");
+
+            const int timeoutFrames = 300;
+            int frame = 0;
+            float result = 0.0f;
+            while (frame < timeoutFrames && Math.Abs(result - 5.0f) > 0.0001f)
+            {
+                ++frame;
+                yield return null;
+                result = (float)UdonclArtifactImporter.GetUdonProgramVariable(sample, "result");
+            }
+            int status = (int)UdonclArtifactImporter.GetUdonProgramVariable(sample, "status");
+            int stage = (int)UdonclArtifactImporter.GetUdonProgramVariable(sample, "stage");
+            int leftWords = (int)
+                UdonclArtifactImporter.GetUdonProgramVariable(sample, "leftWordCount");
+            int rightWords = (int)
+                UdonclArtifactImporter.GetUdonProgramVariable(sample, "rightWordCount");
+            int outputWords = (int)
+                UdonclArtifactImporter.GetUdonProgramVariable(sample, "outputWordCount");
+
+            yield return new ExitPlayMode();
+
+            Assert.Less(
+                frame,
+                timeoutFrames,
+                "Arena Add async readback did not complete; status="
+                    + status
+                    + " stage="
+                    + stage
+                    + " words="
+                    + leftWords
+                    + "/"
+                    + rightWords
+                    + "/"
+                    + outputWords
+                    + " runtimeWords="
+                    + (runtimeInputWords == null ? "null" : string.Join(",", runtimeInputWords))
+                    + "/"
+                    + (runtimeOutputWords == null ? "null" : string.Join(",", runtimeOutputWords))
+            );
+            Assert.AreEqual(Lemolatoon.Udoncl.UdonOnnxRuntimeBehaviour.StatusSuccess, status);
+            Assert.AreEqual(5.0f, result, 0.0001f);
         }
 
         [Test]

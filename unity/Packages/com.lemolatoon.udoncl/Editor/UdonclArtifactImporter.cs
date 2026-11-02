@@ -480,6 +480,95 @@ namespace Lemolatoon.Udoncl.Editor
             }
         }
 
+        internal static void EnsureCompiledUdonSharpProgramAsset(
+            string scriptPath,
+            string programAssetPath
+        )
+        {
+            WarmUdonSharpAssemblyCache();
+            MonoScript script = AssetDatabase.LoadAssetAtPath<MonoScript>(scriptPath);
+            if (script == null)
+                throw new InvalidDataException(
+                    "Unity could not import UdonSharp source: " + scriptPath
+                );
+            UdonSharpProgramAsset programAsset =
+                AssetDatabase.LoadAssetAtPath<UdonSharpProgramAsset>(programAssetPath);
+            if (programAsset == null)
+            {
+                if (AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(programAssetPath) != null)
+                    throw new InvalidDataException(
+                        "An incompatible asset already occupies " + programAssetPath
+                    );
+                programAsset = ScriptableObject.CreateInstance<UdonSharpProgramAsset>();
+                programAsset.sourceCsScript = script;
+                AssetDatabase.CreateAsset(programAsset, programAssetPath);
+            }
+            else
+            {
+                programAsset.sourceCsScript = script;
+            }
+            programAsset.ScriptVersion = UdonSharpProgramVersion.CurrentVersion;
+            EditorUtility.SetDirty(programAsset);
+            AssetDatabase.ImportAsset(programAssetPath, ImportAssetOptions.ForceSynchronousImport);
+            UdonSharpCompilerV1.CompileSync();
+            programAsset = AssetDatabase.LoadAssetAtPath<UdonSharpProgramAsset>(programAssetPath);
+            if (
+                programAsset == null
+                || programAsset.SerializedProgramAsset == null
+                || programAsset.CompiledVersion != UdonSharpProgramVersion.CurrentVersion
+            )
+                throw new InvalidDataException(
+                    "Unity could not compile UdonSharp source: " + scriptPath
+                );
+        }
+
+        internal static UdonBehaviour AddUdonSharpComponentAndGetBacking(
+            GameObject target,
+            Type type
+        )
+        {
+            UdonSharpBehaviour proxy = target.AddUdonSharpComponent(type);
+            return UdonSharpEditorUtility.GetBackingUdonBehaviour(proxy);
+        }
+
+        internal static UdonBehaviour FindUdonSharpBacking(GameObject target)
+        {
+            foreach (UdonBehaviour behaviour in target.GetComponents<UdonBehaviour>())
+                if (behaviour.programSource is UdonSharpProgramAsset)
+                    return behaviour;
+            return null;
+        }
+
+        internal static void InitializeUdonBehaviours(GameObject target)
+        {
+            foreach (UdonBehaviour behaviour in target.GetComponents<UdonBehaviour>())
+                behaviour.InitializeUdonContent();
+        }
+
+        internal static void InitializeUdonBehaviour(UdonBehaviour behaviour)
+        {
+            behaviour.InitializeUdonContent();
+        }
+
+        internal static void SetUdonProgramVariable(
+            UdonBehaviour behaviour,
+            string symbol,
+            object value
+        )
+        {
+            behaviour.SetProgramVariable(symbol, value);
+        }
+
+        internal static object GetUdonProgramVariable(UdonBehaviour behaviour, string symbol)
+        {
+            return behaviour.GetProgramVariable(symbol);
+        }
+
+        internal static void SendUdonCustomEvent(UdonBehaviour behaviour, string eventName)
+        {
+            behaviour.SendCustomEvent(eventName);
+        }
+
         private static void EnsureOnnxRuntimeProgramAsset(AssetImportTransaction transaction)
         {
             const string scriptPath =
@@ -1887,6 +1976,14 @@ namespace Lemolatoon.Udoncl.Editor
                     copyMaterial;
                 serializedRuntime.ApplyModifiedPropertiesWithoutUndo();
                 UdonSharpEditorUtility.CopyProxyToUdon(runtime, ProxySerializationPolicy.All);
+                UdonBehaviour runtimeBacking = UdonSharpEditorUtility.GetBackingUdonBehaviour(
+                    runtime
+                );
+                SetPublicVariable(runtimeBacking, "program", model);
+                SetOnnxIoVariables(runtimeBacking, "input", artifact.OnnxInputs);
+                SetOnnxIoVariables(runtimeBacking, "output", artifact.OnnxOutputs);
+                SetPublicVariable(runtimeBacking, "arenaSlots", arenaSlots);
+                SetPublicVariable(runtimeBacking, "bufferCopyMaterial", copyMaterial);
 
                 IUdonEventReceiver[] runners = new IUdonEventReceiver[artifact.OnnxInt4Calls.Count];
                 for (int runnerIndex = 0; runnerIndex < artifact.OnnxInt4Calls.Count; ++runnerIndex)
@@ -2037,6 +2134,30 @@ namespace Lemolatoon.Udoncl.Editor
                 words.GetArrayElementAtIndex(index).intValue = entry.Words;
                 slots.GetArrayElementAtIndex(index).intValue = entry.Slot;
             }
+        }
+
+        private static void SetOnnxIoVariables(
+            UdonBehaviour behaviour,
+            string prefix,
+            IList<ValidatedOnnxIo> entries
+        )
+        {
+            string[] names = new string[entries.Count];
+            string[] dataTypes = new string[entries.Count];
+            int[] words = new int[entries.Count];
+            int[] slots = new int[entries.Count];
+            for (int index = 0; index < entries.Count; ++index)
+            {
+                ValidatedOnnxIo entry = entries[index];
+                names[index] = entry.Name;
+                dataTypes[index] = entry.DataType;
+                words[index] = entry.Words;
+                slots[index] = entry.Slot;
+            }
+            SetPublicVariable(behaviour, prefix + "Names", names);
+            SetPublicVariable(behaviour, prefix + "DataTypes", dataTypes);
+            SetPublicVariable(behaviour, prefix + "Words", words);
+            SetPublicVariable(behaviour, prefix + "Slots", slots);
         }
 
         private static UdonAssemblyProgramAsset CreateOrUpdateProgramAsset(
