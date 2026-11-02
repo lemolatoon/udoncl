@@ -67,6 +67,9 @@ namespace Lemolatoon.Udoncl.Editor
                 PackagedExampleUsage usage = PackagedExampleUsageGenerator.ForProgram(
                     manifest.program.name
                 );
+                bool expectsExample =
+                    usage != null
+                    && File.Exists(Path.Combine(programRoot, "Examples", usage.ClassName + ".cs"));
                 Type exampleType =
                     usage == null
                         ? null
@@ -75,6 +78,8 @@ namespace Lemolatoon.Udoncl.Editor
                             .SingleOrDefault(type =>
                                 type.FullName == GeneratedNamespace + "." + usage.ClassName
                             );
+                if (expectsExample && exampleType == null)
+                    continue;
                 if (exampleType != null)
                 {
                     UdonSharpProgramAsset exampleProgram =
