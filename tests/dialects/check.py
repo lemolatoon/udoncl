@@ -39,6 +39,55 @@ events_roundtrip = run(events.stdout)
 assert events_roundtrip.returncode == 0, events_roundtrip.stderr
 assert events.stdout == events_roundtrip.stdout
 
+continuation = run('''module {
+  func.func @continuation(%execution: i32, %event: !vrc.event, %state: i32, %value: f32) attributes {vrc.async_effect = "may_suspend"} {
+    %frame = udonhl.frame_create %execution {layout_version = 1 : i32, slot_types = [i32, f32]} : i32 -> !udonhl.frame
+    udonhl.frame_store %frame[1], %value {layout_version = 1 : i32, slot_types = [i32, f32]} : f32
+    "udonhl.resume_dispatch"(%frame, %state)[^bb1] <{registered_states = array<i32: 1>}> : (!udonhl.frame, i32) -> ()
+  ^bb1:
+    %loaded = udonhl.frame_load %frame[1] {layout_version = 1 : i32, slot_types = [i32, f32]} : f32
+    "udonhl.suspend"(%frame, %event) <{reason = #udonhl<suspend_reason gpu>, resume_state = 1 : i32}> : (!udonhl.frame, !vrc.event) -> ()
+  }
+}
+''')
+assert continuation.returncode == 0, continuation.stderr
+continuation_roundtrip = run(continuation.stdout)
+assert continuation_roundtrip.returncode == 0, continuation_roundtrip.stderr
+assert continuation.stdout == continuation_roundtrip.stdout
+
+for source, diagnostic in [
+    ('''module {
+      func.func @bad(%execution: i32) {
+        %frame = udonhl.frame_create %execution {layout_version = 2 : i32, slot_types = [i32]} : i32 -> !udonhl.frame
+        return
+      }
+    }''', 'layout version 1'),
+    ('''module {
+      func.func @bad(%execution: i32, %value: f32) {
+        %frame = udonhl.frame_create %execution {layout_version = 1 : i32, slot_types = [i32]} : i32 -> !udonhl.frame
+        udonhl.frame_store %frame[0], %value {layout_version = 1 : i32, slot_types = [i32]} : f32
+        return
+      }
+    }''', 'slot type does not match'),
+    ('''module {
+      func.func @bad(%execution: i32, %event: !vrc.event) attributes {vrc.async_effect = "may_suspend"} {
+        %frame = udonhl.frame_create %execution {layout_version = 1 : i32, slot_types = []} : i32 -> !udonhl.frame
+        "udonhl.suspend"(%frame, %event) <{reason = #udonhl<suspend_reason gpu>, resume_state = 7 : i32}> : (!udonhl.frame, !vrc.event) -> ()
+      }
+    }''', 'not registered by resume_dispatch'),
+    ('''module {
+      func.func @bad(%execution: i32, %state: i32) attributes {vrc.async_effect = "may_suspend"} {
+        %frame = udonhl.frame_create %execution {layout_version = 1 : i32, slot_types = []} : i32 -> !udonhl.frame
+        "udonhl.resume_dispatch"(%frame, %state)[^bb1] <{registered_states = array<i32: 1>}> : (!udonhl.frame, i32) -> ()
+      ^bb1:
+        "udonhl.suspend"(%frame) <{reason = #udonhl<suspend_reason gpu>, resume_state = 1 : i32}> : (!udonhl.frame) -> ()
+      }
+    }''', 'gpu suspension requires a !vrc.event token'),
+]:
+    invalid_continuation = run(source)
+    assert invalid_continuation.returncode != 0, source
+    assert diagnostic in invalid_continuation.stderr, invalid_continuation.stderr
+
 transfers = run('''module {
   func.func @transfers(%buffer: !vrc.buffer, %pointer: i32) -> !vrc.event {
     %zero = arith.constant 0 : i32
@@ -96,4 +145,4 @@ for operation, diagnostic in [
     result = run('module { ' + operation + ' }')
     assert result.returncode != 0, operation
     assert diagnostic in result.stderr, (operation, result.stderr)
-print('9 opcode round-trip, transfer/event round-trips and 17 negative parser/verifier cases passed')
+print('9 opcode, transfer/event and continuation-frame round-trips plus negative verifier cases passed')

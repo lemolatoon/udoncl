@@ -12,5 +12,7 @@
 
 #define GET_ATTRDEF_CLASSES
 #include "VRC/Dialect/UdonHL/UdonHLAttrs.h.inc"
+#define GET_TYPEDEF_CLASSES
+#include "VRC/Dialect/UdonHL/UdonHLTypes.h.inc"
 #define GET_OP_CLASSES
 #include "VRC/Dialect/UdonHL/UdonHLOps.h.inc"
