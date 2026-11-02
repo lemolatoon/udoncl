@@ -116,7 +116,7 @@ def main():
     ] == [(32772, 8192, 2), (32772, 8192, 2)]
     copy_assembly = (copy_artifact / 'host.uasm').read_text(encoding='utf-8')
     assert '.export CopyFull' in copy_assembly
-    assert 'VRCSDKBaseVRCGraphics.__Blit__' in copy_assembly
+    assert copy_assembly.count('VRCSDKBaseVRCGraphics.__Blit__') == 2
     assert (copy_artifact / 'buffer-copy.shader').is_file()
     assert (install / 'include/udoncl/unity_buffer.h').is_file()
 
@@ -138,7 +138,7 @@ def main():
         installed_compiler, '--emit-unity-library-bundle',
         args.source.resolve() / 'buffer-copy-library.json',
         '--host-llvm', invalid_module, '-o', output / 'invalid-buffer-artifact',
-    ], 'must flow directly to one CopyBuffer call')
+    ], 'must flow directly to one or more CopyBuffer calls')
     print(
         'cmake_package=passed host_sources=3 device_sources=3 '
         'artifacts=hello-artifact,hello-unity-library,hello-buffer-copy-unity-library'

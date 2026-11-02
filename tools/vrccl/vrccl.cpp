@@ -409,11 +409,14 @@ LogicalResult recoverUnityCBufferIntrinsics(ModuleOp module) {
   for (func::CallOp copy : copies)
     copySites.insert(copy.getOperation());
   for (func::CallOp allocation : allocations) {
-    if (!allocation.getResult(0).hasOneUse() ||
-        !copySites.contains(*allocation.getResult(0).getUsers().begin()))
+    mlir::Value handle = allocation.getResult(0);
+    if (handle.use_empty() ||
+        !llvm::all_of(handle.getUsers(), [&](Operation *user) {
+          return copySites.contains(user);
+        }))
       return allocation.emitError(
-          "initial Unity C buffer handles must flow directly to one CopyBuffer "
-          "call");
+          "initial Unity C buffer handles must flow directly to one or more "
+          "CopyBuffer calls");
   }
   for (func::CallOp copy : copies)
     for (unsigned index : {0u, 1u}) {
