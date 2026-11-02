@@ -14,6 +14,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
     public sealed class UdonOnnxAotLifecycleTests
     {
         private const string GeneratedRoot = "Assets/udoncl-generated/onnx_int4_fixture";
+        private const string GeneratedMixedRoot = "Assets/udoncl-generated/onnx_mixed_int4_fixture";
         private const string GeneratedArenaRoot = "Assets/udoncl-generated/onnx_arena_add_fixture";
         private const string GeneratedRlRoot = "Assets/udoncl-generated/onnx_rl_policy_fixture";
         private const string GeneratedRuntimeRoot = "Assets/udoncl-generated/Runtime";
@@ -49,6 +50,12 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             );
             Assert.That(File.Exists(Path.Combine(bundle, "manifest.json")));
             Assert.AreEqual(GeneratedRoot, UdonclArtifactImporter.Import(bundle));
+            string mixedBundle = ResolveFixture(
+                "UDONCL_ONNX_MIXED_INT4_UNITY_BUNDLE",
+                Path.Combine("build", "precommit", "onnx-aot", "unity-mixed-int4-model-bundle")
+            );
+            Assert.That(File.Exists(Path.Combine(mixedBundle, "manifest.json")));
+            Assert.AreEqual(GeneratedMixedRoot, UdonclArtifactImporter.Import(mixedBundle));
             string arenaBundle = ResolveFixture(
                 "UDONCL_ONNX_ARENA_UNITY_BUNDLE",
                 Path.Combine("build", "precommit", "onnx-aot", "unity-arena-add-model-bundle")
@@ -72,6 +79,15 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             string runnerProgramGuid = AssetDatabase.AssetPathToGUID(
                 GeneratedRoot + "/Int4Runners/call-0000/Programs/host_program.asset"
             );
+            string mixedModelProgramGuid = AssetDatabase.AssetPathToGUID(
+                GeneratedMixedRoot + "/Programs/host_program.asset"
+            );
+            string mixedRunner0ProgramGuid = AssetDatabase.AssetPathToGUID(
+                GeneratedMixedRoot + "/Int4Runners/call-0000/Programs/host_program.asset"
+            );
+            string mixedRunner1ProgramGuid = AssetDatabase.AssetPathToGUID(
+                GeneratedMixedRoot + "/Int4Runners/call-0001/Programs/host_program.asset"
+            );
             string arenaProgramGuid = AssetDatabase.AssetPathToGUID(
                 GeneratedArenaRoot + "/Programs/host_program.asset"
             );
@@ -84,6 +100,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                     GeneratedRuntimeRoot + "/UdonOnnxRuntimeBehaviour.asset"
                 );
             AssetDatabase.DeleteAsset(GeneratedRoot);
+            AssetDatabase.DeleteAsset(GeneratedMixedRoot);
             AssetDatabase.DeleteAsset(GeneratedArenaRoot);
             AssetDatabase.DeleteAsset(GeneratedRlRoot);
             if (!runtimeProgramAssetExisted)
@@ -93,6 +110,9 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 {
                     modelProgramGuid,
                     runnerProgramGuid,
+                    mixedModelProgramGuid,
+                    mixedRunner0ProgramGuid,
+                    mixedRunner1ProgramGuid,
                     arenaProgramGuid,
                     rlProgramGuid,
                     runtimeProgramGuid,
@@ -102,6 +122,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                     AssetDatabase.DeleteAsset("Assets/SerializedUdonPrograms/" + guid + ".asset");
             AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
             Assert.IsNull(AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(GeneratedRoot));
+            Assert.IsNull(AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(GeneratedMixedRoot));
             Assert.IsNull(AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(GeneratedArenaRoot));
             Assert.IsNull(AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(GeneratedRlRoot));
             if (!runtimeProgramAssetExisted)
@@ -500,6 +521,73 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 )
             );
             Assert.NotNull(int4Material);
+        }
+
+        [Test]
+        public void UnityMixedInt4ModelBindsPagedAndDirectSchedule()
+        {
+            Lemolatoon.Udoncl.UdonOnnxModelAsset modelAsset =
+                AssetDatabase.LoadAssetAtPath<Lemolatoon.Udoncl.UdonOnnxModelAsset>(
+                    GeneratedMixedRoot + "/Models/UdonOnnxModel.asset"
+                );
+            Assert.NotNull(modelAsset);
+            Assert.AreEqual("UdonOperatorExecutionProvider", modelAsset.ExecutionProvider);
+            CollectionAssert.AreEqual(new[] { "x" }, modelAsset.InputNames);
+            CollectionAssert.AreEqual(new[] { 160 }, modelAsset.InputWords);
+            CollectionAssert.AreEqual(new[] { "merged" }, modelAsset.OutputNames);
+            CollectionAssert.AreEqual(new[] { 70 }, modelAsset.OutputWords);
+            Assert.AreEqual(3, modelAsset.TextureArenaSlots.Length);
+            Assert.AreEqual(1, modelAsset.PassMaterials.Length);
+            Assert.AreEqual(
+                "UdonCL/device_gpu__udonaten_arena_pointwise_215",
+                modelAsset.PassMaterials[0].shader.name
+            );
+            Assert.NotNull(modelAsset.RuntimePrefab);
+            Lemolatoon.Udoncl.UdonOnnxRuntimeBehaviour runtime =
+                modelAsset.RuntimePrefab.GetComponent<Lemolatoon.Udoncl.UdonOnnxRuntimeBehaviour>();
+            Assert.NotNull(runtime);
+            Assert.IsTrue(runtime.IsInitialized());
+            Assert.AreEqual(0, runtime.FindInput("x"));
+            Assert.AreEqual(0, runtime.FindOutput("merged"));
+
+            UdonBehaviour model = modelAsset.RuntimePrefab.GetComponent<UdonBehaviour>();
+            Assert.NotNull(model);
+            Assert.IsTrue(
+                model.publicVariables.TryGetVariableValue(
+                    "int4Runners",
+                    out IUdonEventReceiver[] runners
+                )
+            );
+            Assert.AreEqual(2, runners.Length);
+            Assert.IsTrue(
+                model.publicVariables.TryGetVariableValue(
+                    "passMaterials",
+                    out Material[] passMaterials
+                )
+            );
+            Assert.AreEqual(1, passMaterials.Length);
+            Assert.AreSame(modelAsset.PassMaterials[0], passMaterials[0]);
+            for (int index = 0; index < runners.Length; ++index)
+            {
+                Transform child = modelAsset.RuntimePrefab.transform.Find(
+                    "call-" + index.ToString("D4")
+                );
+                Assert.NotNull(child);
+                Assert.AreSame(child.GetComponent<UdonBehaviour>(), runners[index]);
+            }
+
+            UdonAssemblyProgramAsset programAsset =
+                AssetDatabase.LoadAssetAtPath<UdonAssemblyProgramAsset>(
+                    GeneratedMixedRoot + "/Programs/host_program.asset"
+                );
+            Assert.NotNull(programAsset);
+            IUdonProgram program = programAsset.SerializedProgramAsset.RetrieveProgram();
+            Assert.NotNull(program);
+            IUdonVM vm = UdonEditorManager.Instance.ConstructUdonVM();
+            Assert.IsTrue(vm.LoadProgram(program));
+            Assert.DoesNotThrow(() => program.EntryPoints.GetAddressFromSymbol("_run"));
+            Assert.DoesNotThrow(() => program.SymbolTable.GetAddressFromSymbol("int4Runners"));
+            Assert.DoesNotThrow(() => program.SymbolTable.GetAddressFromSymbol("passMaterials"));
         }
 
         [Test]

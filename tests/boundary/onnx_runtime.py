@@ -791,6 +791,101 @@ if unity_int4_manifest is not None:
     assert (unity_int4_bundle / "execution-plan.json.bytes").is_file()
     assert (unity_int4_bundle / "kernels/kernel_208.shader").is_file()
 
+mixed_int4_model_bytes = model_proto(
+    graph_proto(
+        "external_weight_int4_mixed",
+        [
+            node_proto(
+                "WeightInt4packMM",
+                ["x", "weight", "weight.scales_and_zeros"],
+                ["projection_a"],
+                "int4_mm_a",
+                [
+                    attribute_int("output_features", int4_n),
+                    attribute_int("input_features", int4_k),
+                    attribute_int("group_size", 32),
+                ],
+                "com.lemolatoon.udoncl",
+            ),
+            node_proto(
+                "WeightInt4packMM",
+                ["x", "weight", "weight.scales_and_zeros"],
+                ["projection_b"],
+                "int4_mm_b",
+                [
+                    attribute_int("output_features", int4_n),
+                    attribute_int("input_features", int4_k),
+                    attribute_int("group_size", 32),
+                ],
+                "com.lemolatoon.udoncl",
+            ),
+            node_proto(
+                "Add",
+                ["projection_a", "projection_b"],
+                ["merged"],
+                "merge",
+            ),
+        ],
+        [
+            external_tensor_proto(
+                "weight",
+                [int4_n, int4_k // 2],
+                2,
+                "int4-weights.bin",
+                32,
+                int4_weight_bytes,
+            ),
+            external_tensor_proto(
+                "weight.scales_and_zeros",
+                [int4_k // 32, int4_n, 2],
+                16,
+                "int4-weights.bin",
+                6000,
+                int4_qparam_bytes,
+            ),
+        ],
+        [value_info_proto("x", [1, int4_k])],
+        [value_info_proto("merged", [1, int4_n])],
+    )
+)
+mixed_int4_model_path = output / "mixed-int4.onnx"
+mixed_int4_model_path.write_bytes(mixed_int4_model_bytes)
+mixed_int4_plan = compile_operators(parse_model(mixed_int4_model_bytes))
+assert len(mixed_int4_plan["aot"]["calls"]) == 3
+assert sum(
+    call["function"] == "udonatenWeightInt4packMm"
+    for call in mixed_int4_plan["aot"]["calls"]
+) == 2
+assert mixed_int4_plan["aot"]["calls"][-1]["function"] == "udonatenAdd"
+assert mixed_int4_plan["passes"][-1]["shader"] == "kernel_215.shader"
+if unity_template_directory is not None:
+    mixed_int4_bundle = output / "unity-mixed-int4-model-bundle"
+    mixed_int4_manifest = materialize_model(
+        mixed_int4_plan,
+        output,
+        mixed_int4_bundle,
+        unity_template_directory=unity_template_directory,
+        model_path=mixed_int4_model_path,
+        program_name="onnx_mixed_int4_fixture",
+    )
+    assert mixed_int4_manifest["complete_graph"] is True
+    assert mixed_int4_manifest["int4_call_count"] == 2
+    assert mixed_int4_manifest["host_schedule"] == {
+        "assembly": "host.uasm",
+        "arena_slots": 3,
+        "int4_runners": 2,
+        "direct_device_passes": 1,
+        "static_initializer_textures": 0,
+        "zero_copy_views": 0,
+    }
+    assert mixed_int4_manifest["unmaterialized_calls"] == []
+    assert [item["name"] for item in mixed_int4_manifest["model_inputs"]] == ["x"]
+    assert [item["name"] for item in mixed_int4_manifest["model_outputs"]] == [
+        "merged"
+    ]
+    assert (mixed_int4_bundle / "kernels/kernel_208.shader").is_file()
+    assert (mixed_int4_bundle / "kernels/kernel_215.shader").is_file()
+
 arena_add_bytes = model_proto(
     graph_proto(
         "arena_add",
