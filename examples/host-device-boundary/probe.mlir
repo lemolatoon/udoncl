@@ -12,6 +12,14 @@ module {
     %result = arith.addi %a, %b : i32
     return %result : i32
   }
+  // Public primitive arrays share the same Udon array object with generated U#.
+  func.func @TouchArrays(%values: memref<4xf32>, %indices: memref<2xi32>) attributes {
+    vrc.export_id = 2 : i32,
+    vrc.public_name = "TouchArrays",
+    vrc.parameter_names = ["values", "indices"]
+  } {
+    return
+  }
   // Internal __vrc_* boundary probe. This is not clEnqueueNDRangeKernel itself;
   // the C OpenCL runtime will own handles, copied arguments, queue and errors.
   func.func private @request_square(%buffer: !vrc.buffer, %desc: !vrc.dispatch_desc) -> !vrc.event {

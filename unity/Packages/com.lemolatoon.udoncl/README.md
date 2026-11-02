@@ -86,16 +86,17 @@ The prefab contains the raw C-library `UdonBehaviour`, the generated U# proxy,
 and its UdonSharp backing behaviour; the wrapper's serialized `program` field
 is wired to the raw program automatically.
 
-Synchronous scalar wrappers return an OpenCL-style integer status and expose
+Synchronous scalar and one-dimensional primitive-array wrappers return an OpenCL-style integer status and expose
 named `Status*` constants on the generated class. They use the pinned UdonSharp
 SetProgramVariable → SendCustomEvent → GetProgramVariable ABI. Import waits for
 the generated type instead of publishing a partly bound prefab. The generated
 UdonSharp behaviour is the public library-instance handle: `IsInitialized()`
 reports whether it is bound, nested calls return `StatusBusy`, and
 `TryDispose()` invalidates that handle without exposing its internal GPU
-resources. Calling `TryBindProgram` again starts a fresh binding lifetime. Async
-exports and types other than the currently supported `i32`/`f32` fail
-explicitly.
+resources. Calling `TryBindProgram` again starts a fresh binding lifetime.
+`float[]` and `int[]` parameters are assigned to the raw Udon heap without a
+wrapper-side copy, preserving the shared Udon array object required by Host
+buffer transfers. Async exports and other public types still fail explicitly.
 
 ## Udon Assembly and prefab
 

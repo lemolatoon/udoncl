@@ -3,6 +3,7 @@
 #include "VRC/Dialect/VRC/VRCDialect.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "llvm/ADT/DenseSet.h"
 using namespace mlir;
@@ -13,9 +14,16 @@ namespace {
 namespace host = ::vrc::udonhl;
 namespace runtime = ::vrc::vrc;
 bool scalar(Type type) { return type.isInteger(32) || type.isF32(); }
+bool publicArray(Type type) {
+  auto memref = dyn_cast<MemRefType>(type);
+  return memref && memref.getRank() == 1 && memref.getLayout().isIdentity() &&
+         (memref.getElementType().isInteger(32) ||
+          memref.getElementType().isF32());
+}
+bool publicType(Type type) { return scalar(type) || publicArray(type); }
 bool internalType(Type type) {
-  return scalar(type) || isa<runtime::BufferType, runtime::DispatchDescType,
-                             runtime::EventType>(type);
+  return publicType(type) || isa<runtime::BufferType, runtime::DispatchDescType,
+                                 runtime::EventType>(type);
 }
 struct CallPattern : OpConversionPattern<func::CallOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -100,20 +108,23 @@ struct LowerHostToUdonHLPass
       if (auto id = function->getAttrOfType<IntegerAttr>("vrc.export_id")) {
         if (id.getInt() <= 0 || id.getInt() > INT32_MAX ||
             !exportIds.insert(id.getInt()).second ||
-            !llvm::all_of(function.getArgumentTypes(), scalar) ||
-            !llvm::all_of(function.getResultTypes(), scalar) ||
+            !llvm::all_of(function.getArgumentTypes(), publicType) ||
+            !llvm::all_of(function.getResultTypes(), publicType) ||
             function.getFunctionType().getNumResults() > 1 ||
             function.isPrivate()) {
-          fail("export id/signature must be unique, public and scalar; opaque "
-               "resources are internal only");
+          fail("export id/signature must be unique and use public scalar or "
+               "one-dimensional array types; opaque resources are internal "
+               "only");
           return;
         }
       }
       for (auto &op : function.getBody().front()) {
         if (!isa<func::CallOp, func::ReturnOp, runtime::DispatchDescCreateOp,
                  runtime::DispatchOp, runtime::BufferAllocOp,
-                 runtime::BufferCopyOp, arith::ConstantOp, arith::AddIOp,
-                 arith::AddFOp, arith::MulFOp>(op)) {
+                 runtime::BufferCopyOp, runtime::BufferUploadOp,
+                 runtime::BufferReadbackOp, memref::LoadOp, memref::StoreOp,
+                 arith::ConstantOp, arith::AddIOp, arith::AddFOp,
+                 arith::MulFOp>(op)) {
           op.emitError(
               "operation is outside the initial Host lowering pattern");
           signalPassFailure();

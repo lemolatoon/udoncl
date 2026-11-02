@@ -234,7 +234,7 @@ assert 'requires a bound heap slot' in rejected.stderr
 
 for argument_type, diagnostic in [
     ('memref<2x2xf32>', 'unsupported scalar Udon argument type'),
-    ('memref<4xi32>', 'unsupported scalar Udon argument type'),
+    ('memref<2x2xi32>', 'unsupported scalar Udon argument type'),
 ]:
     unsupported = f'''module {{
       func.func @bad(%array: {argument_type}) attributes {{vrc.export_id = 99 : i32}} {{

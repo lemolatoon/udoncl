@@ -95,6 +95,43 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         }
 
         [Test]
+        public void GeneratesPrimitiveArrayParametersWithoutCopyingThem()
+        {
+            string manifest = ScalarManifest
+                .Replace("\"public_name\":\"Add\"", "\"public_name\":\"Run\"")
+                .Replace("\"udon_event\":\"__0_Add\"", "\"udon_event\":\"__0_Run\"")
+                .Replace(
+                    "\"parameters\":["
+                        + "{\"index\":0,\"name\":\"left\",\"kind\":\"i32\",\"heap_slot\":\"__0_left__param\"},"
+                        + "{\"index\":1,\"name\":\"right\",\"kind\":\"i32\",\"heap_slot\":\"__0_right__param\"}]",
+                    "\"parameters\":["
+                        + "{\"index\":0,\"name\":\"input\",\"kind\":\"f32_array\",\"heap_slot\":\"__0_input__param\"},"
+                        + "{\"index\":1,\"name\":\"tokens\",\"kind\":\"i32_array\",\"heap_slot\":\"__0_tokens__param\"}]"
+                )
+                .Replace(
+                    "\"result\":{\"kind\":\"i32\",\"heap_slot\":\"__0___0_Add__ret\"}",
+                    "\"result\":null"
+                );
+            string source = VRCWrapperGenerator.GenerateFromJson(
+                manifest,
+                "Lemolatoon.Generated",
+                "OnnxBinding"
+            );
+
+            StringAssert.Contains("public int TryRun(float[] input, int[] tokens)", source);
+            StringAssert.Contains(
+                "program.SetProgramVariable(\"__0_input__param\", input);",
+                source
+            );
+            StringAssert.Contains(
+                "program.SetProgramVariable(\"__0_tokens__param\", tokens);",
+                source
+            );
+            StringAssert.DoesNotContain("new float", source);
+            StringAssert.DoesNotContain("new int", source);
+        }
+
+        [Test]
         public void RejectsAsyncUntilContinuationWrapperIsImplemented()
         {
             string manifest = ScalarManifest.Replace("\"async\":false", "\"async\":true");

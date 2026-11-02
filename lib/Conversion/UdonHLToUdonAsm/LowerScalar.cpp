@@ -47,6 +47,8 @@ static FailureOr<StringRef> udonType(Type type) {
       return failure();
     if (memref.getElementType().isF32())
       return StringRef("SystemSingleArray");
+    if (memref.getElementType().isInteger(32))
+      return StringRef("SystemInt32Array");
   }
   return failure();
 }
@@ -54,12 +56,16 @@ static FailureOr<StringRef> udonType(Type type) {
 static StringRef arrayLoadExtern(MemRefType type) {
   if (type.getElementType().isF32())
     return "SystemSingleArray.__Get__SystemInt32__SystemSingle";
+  if (type.getElementType().isInteger(32))
+    return "SystemInt32Array.__Get__SystemInt32__SystemInt32";
   return {};
 }
 
 static StringRef arrayStoreExtern(MemRefType type) {
   if (type.getElementType().isF32())
     return "SystemSingleArray.__Set__SystemInt32_SystemSingle__SystemVoid";
+  if (type.getElementType().isInteger(32))
+    return "SystemInt32Array.__Set__SystemInt32_SystemInt32__SystemVoid";
   return {};
 }
 

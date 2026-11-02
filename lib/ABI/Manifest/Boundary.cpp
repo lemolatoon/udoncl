@@ -5,6 +5,7 @@
 #include "VRC/Dialect/VRC/VRCDialect.h"
 #include "VRC/Dialect/VRCGPU/VRCGPUDialect.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSet.h"
@@ -17,7 +18,18 @@ namespace {
 namespace runtime = ::vrc::vrc;
 namespace fragment = ::vrc::vrcgpu;
 std::string kind(Type type) {
-  return type.isInteger(32) ? "i32" : type.isF32() ? "f32" : "unsupported";
+  if (type.isInteger(32))
+    return "i32";
+  if (type.isF32())
+    return "f32";
+  auto memref = dyn_cast<MemRefType>(type);
+  if (!memref || memref.getRank() != 1 || !memref.getLayout().isIdentity())
+    return "unsupported";
+  if (memref.getElementType().isInteger(32))
+    return "i32_array";
+  if (memref.getElementType().isF32())
+    return "f32_array";
+  return "unsupported";
 }
 UdonSharpMethodABI methodABI(func::FuncOp function,
                              UdonSharpABIBuilder &abiBuilder) {
@@ -56,6 +68,17 @@ llvm::json::Object typeSchema(Type type) {
     return llvm::json::Object{{"category", "signed-integer"}, {"bits", 32}};
   if (type.isF32())
     return llvm::json::Object{{"category", "float"}, {"bits", 32}};
+  auto memref = dyn_cast<MemRefType>(type);
+  if (memref && memref.getRank() == 1 && memref.getLayout().isIdentity() &&
+      (memref.getElementType().isInteger(32) ||
+       memref.getElementType().isF32()))
+    return llvm::json::Object{
+        {"category", "array"},
+        {"element_category",
+         memref.getElementType().isInteger(32) ? "signed-integer" : "float"},
+        {"element_bits", 32},
+        {"rank", 1},
+        {"elements", memref.hasStaticShape() ? memref.getNumElements() : -1}};
   return llvm::json::Object{{"category", "unsupported"}};
 }
 llvm::json::Array dimensions(ArrayRef<int32_t> values) {
@@ -144,7 +167,7 @@ LogicalResult verifyHostDeviceBoundary(ModuleOp module) {
     }
   }
   if (!exported)
-    return module.emitError("boundary requires a scalar Host export");
+    return module.emitError("boundary requires a public Host export");
   llvm::SmallDenseSet<int32_t> referenced;
   auto status = module.walk([&](runtime::DispatchOp dispatch) {
     auto found = kernels.find(dispatch.getKernelId());

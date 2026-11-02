@@ -201,7 +201,7 @@ namespace Lemolatoon.Udoncl.Editor
         {
             if (export == null || export.id <= 0 || export.async)
                 throw new ArgumentException(
-                    "Only positive synchronous scalar exports are supported."
+                    "Only positive synchronous scalar or one-dimensional array exports are supported."
                 );
             RequireIdentifier(export.public_name, "export.public_name", allowDots: false);
             if (!publicNames.Add(export.public_name))
@@ -245,6 +245,10 @@ namespace Lemolatoon.Udoncl.Editor
                     return "int";
                 case "f32":
                     return "float";
+                case "i32_array":
+                    return "int[]";
+                case "f32_array":
+                    return "float[]";
                 default:
                     throw new ArgumentException("Unsupported generated wrapper type: " + kind);
             }

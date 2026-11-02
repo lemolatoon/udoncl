@@ -190,6 +190,19 @@ assert export['result']['heap_slot'] == '__0___0_Add__ret'
 assert export['status_slot'] == '__udoncl_status_1'
 assert export['parameters'][0]['type_schema'] == {
     'category': 'signed-integer', 'bits': 32}
+array_export = manifest['exports'][1]
+assert array_export['public_name'] == 'TouchArrays'
+assert [parameter['kind'] for parameter in array_export['parameters']] == [
+    'f32_array', 'i32_array'
+]
+assert array_export['parameters'][0]['type_schema'] == {
+    'category': 'array', 'element_category': 'float', 'element_bits': 32,
+    'rank': 1, 'elements': 4,
+}
+assert array_export['parameters'][1]['type_schema'] == {
+    'category': 'array', 'element_category': 'signed-integer',
+    'element_bits': 32, 'rank': 1, 'elements': 2,
+}
 kernel = manifest['device']['kernels'][0]
 assert kernel['id'] == manifest['dispatch_sites'][0]['kernel_id'] == 7
 assert kernel['name'] == 'square' and kernel['source_module'] == 'device'

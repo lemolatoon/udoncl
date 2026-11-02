@@ -91,6 +91,10 @@ namespace Lemolatoon.Udoncl.Editor
     {
         public string category;
         public int bits;
+        public string element_category;
+        public int element_bits;
+        public int rank;
+        public int elements;
     }
 
     [Serializable]
