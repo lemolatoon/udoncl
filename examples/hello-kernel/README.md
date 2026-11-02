@@ -1,5 +1,11 @@
 # Hello kernel: build an artifact by hand
 
+For a package-only first run, choose **Tools → udoncl → Examples → Import C
+and OpenCL Hello Dispatch**. Unity imports the same artifact shape described
+below and generates `UdonclHelloDispatchBinding.prefab` after script reload.
+The source workflow remains the reproducible way to edit the Host C and OpenCL
+C inputs yourself.
+
 The Device kernel computes
 `x * x + 1` and writes the result to its one-element output buffer. `host.c`
 contains both a matching scalar Host export and the restricted Host-to-Device

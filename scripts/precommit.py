@@ -425,6 +425,12 @@ def run_unity_mcp_gate(root, unity, project, build, output):
             output / "onnx-aot/unity-arena-add-model-bundle",
             "--tiny",
             output / "onnx-aot/unity-tiny-llama-standard-model-bundle",
+            "--hello",
+            build
+            / "tests/cmake-package/consumer/udoncl/hello-dispatch-unity-library/artifact",
+            "--saxpy",
+            build
+            / "tests/cmake-package/saxpy-consumer/udoncl/saxpy-unity-library/artifact",
             "--check",
         ],
         cwd=root,

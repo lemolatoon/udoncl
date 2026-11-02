@@ -201,11 +201,19 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             );
         }
 
-        [TestCase("onnx-arena-add.zip.bytes", "onnx_arena_add_example", 1)]
-        [TestCase("onnx-tiny-llama.zip.bytes", "onnx_tiny_llama_example", 5)]
-        public void PackagedOnnxExampleExtractsAndValidates(
+        [TestCase("hello-dispatch.zip.bytes", "hello_dispatch", "unity-udoncl-library", 1)]
+        [TestCase("saxpy.zip.bytes", "saxpy_demo", "unity-udoncl-library", 1)]
+        [TestCase("onnx-arena-add.zip.bytes", "onnx_arena_add_example", "unity-udon-onnx-model", 1)]
+        [TestCase(
+            "onnx-tiny-llama.zip.bytes",
+            "onnx_tiny_llama_example",
+            "unity-udon-onnx-model",
+            5
+        )]
+        public void PackagedExampleExtractsAndValidates(
             string archiveName,
             string programName,
+            string artifactStage,
             int kernelCount
         )
         {
@@ -214,10 +222,16 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             {
                 ValidatedArtifact artifact = ArtifactManifestValidator.Validate(extracted);
                 Assert.AreEqual(programName, artifact.ProgramName);
-                Assert.AreEqual("unity-udon-onnx-model", artifact.ArtifactStage);
+                Assert.AreEqual(artifactStage, artifact.ArtifactStage);
                 Assert.AreEqual(kernelCount, artifact.Kernels.Count);
-                Assert.IsTrue(File.Exists(Path.Combine(extracted, "model.onnx.bytes")));
-                Assert.IsTrue(File.Exists(Path.Combine(extracted, "execution-plan.json.bytes")));
+                Assert.IsTrue(File.Exists(Path.Combine(extracted, "host.uasm")));
+                if (artifactStage == "unity-udon-onnx-model")
+                {
+                    Assert.IsTrue(File.Exists(Path.Combine(extracted, "model.onnx.bytes")));
+                    Assert.IsTrue(
+                        File.Exists(Path.Combine(extracted, "execution-plan.json.bytes"))
+                    );
+                }
             }
             finally
             {

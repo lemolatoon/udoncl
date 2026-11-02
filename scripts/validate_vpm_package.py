@@ -60,8 +60,10 @@ def validate(package: Path) -> dict:
         "CHANGELOG.md",
         "LICENSE.md",
         "Editor/Udoncl.Editor.asmdef",
+        "Editor/Examples/hello-dispatch.zip.bytes",
         "Editor/Examples/onnx-arena-add.zip.bytes",
         "Editor/Examples/onnx-tiny-llama.zip.bytes",
+        "Editor/Examples/saxpy.zip.bytes",
         "Runtime/Udoncl.Runtime.asmdef",
     ):
         require((package / relative).is_file(), f"required file is missing: {relative}")

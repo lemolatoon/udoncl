@@ -1,4 +1,4 @@
-"""Build deterministic package archives for the importable ONNX examples."""
+"""Build deterministic package archives for the importable user examples."""
 
 from __future__ import annotations
 
@@ -14,6 +14,14 @@ PACKAGE_EXAMPLES = ROOT / "unity/Packages/com.lemolatoon.udoncl/Editor/Examples"
 DEFAULT_ARENA = ROOT / "build/precommit/onnx-aot/unity-arena-add-model-bundle"
 DEFAULT_TINY = (
     ROOT / "build/precommit/onnx-aot/unity-tiny-llama-standard-model-bundle"
+)
+DEFAULT_HELLO = (
+    ROOT
+    / "build/udoncl/tests/cmake-package/consumer/udoncl/hello-dispatch-unity-library/artifact"
+)
+DEFAULT_SAXPY = (
+    ROOT
+    / "build/udoncl/tests/cmake-package/saxpy-consumer/udoncl/saxpy-unity-library/artifact"
 )
 
 
@@ -65,6 +73,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--arena", type=Path, default=DEFAULT_ARENA)
     parser.add_argument("--tiny", type=Path, default=DEFAULT_TINY)
+    parser.add_argument("--hello", type=Path, default=DEFAULT_HELLO)
+    parser.add_argument("--saxpy", type=Path, default=DEFAULT_SAXPY)
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args()
     publish(
@@ -77,6 +87,18 @@ def main() -> None:
         args.tiny,
         PACKAGE_EXAMPLES / "onnx-tiny-llama.zip.bytes",
         "onnx_tiny_llama_example",
+        args.check,
+    )
+    publish(
+        args.hello,
+        PACKAGE_EXAMPLES / "hello-dispatch.zip.bytes",
+        "hello_dispatch",
+        args.check,
+    )
+    publish(
+        args.saxpy,
+        PACKAGE_EXAMPLES / "saxpy.zip.bytes",
+        "saxpy_demo",
         args.check,
     )
     print("package_examples=valid" if args.check else "package_examples=updated")

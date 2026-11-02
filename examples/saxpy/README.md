@@ -1,5 +1,10 @@
 # SAXPY through the public UdonCL package
 
+For a package-only first run, choose **Tools → udoncl → Examples → Import C
+and OpenCL SAXPY**. Unity generates `UdonclSaxpyDemoBinding.prefab` after the
+imported U# wrapper compiles. The source workflow below lets users modify and
+rebuild the ordinary Host C and OpenCL C inputs.
+
 This example is a standalone consumer of `find_package(UdonCL CONFIG)`. Its
 ordinary OpenCL 1.2 Host C creates explicit input and output buffers, copies an
 `int n` and `float alpha` with `clSetKernelArg`, and enqueues the OpenCL C

@@ -82,12 +82,14 @@ ONNX Pooling path.
 
 Use **Tools → udoncl → Import Artifacts...** and select a compiler output directory containing `manifest.json`, its host `.uasm`, and any referenced generated `.shader` files. The importer checks schema v1, the runtime ABI and target, Worlds SDK version, names, extensions, UTF-8 content, referenced files, and relative paths before writing any assets.
 
-To try the runtime without first building the compiler repository, use
-**Tools → udoncl → Examples → Import ONNX Arena Add** or **Import ONNX Tiny
-Llama**. The package contains deterministic archives of those two non-Pooling
-artifacts. The Editor extracts them to a temporary directory, applies the same
-manifest validation and transaction-safe importer, and removes the temporary
-files after import.
+To try the runtime without first building the compiler repository, open
+**Tools → udoncl → Examples**. The menu contains C/OpenCL Hello Dispatch,
+SAXPY, ONNX Arena Add, and ONNX Tiny Llama. The package contains deterministic
+archives of all four examples; the two ONNX examples do not use Pooling. The
+Editor extracts an archive to a temporary directory, applies the same manifest
+validation and transaction-safe importer, and removes the temporary files
+after import. C/OpenCL imports generate their typed U# binding and finish the
+binding prefab after Unity's script reload.
 
 After a general ONNX import, choose **Add to Scene** in the completion dialog.
 The same action is available as **Add Runtime to Active Scene** on the generated

@@ -38,6 +38,10 @@ caller component.
 
 To regenerate the artifact yourself instead, use the source workflow below.
 
+The same menu also provides **Import C and OpenCL Hello Dispatch** and **Import
+C and OpenCL SAXPY**. These exercise the public CMake/compiler artifact shape
+and generate typed U# binding prefabs after Unity reloads the imported wrapper.
+
 Generate the non-Pooling ONNX artifact:
 
 ```powershell

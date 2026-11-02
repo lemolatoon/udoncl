@@ -8,6 +8,8 @@ All notable changes to this package are recorded here.
 
 - One-click Editor imports for packaged, non-Pooling ONNX Arena Add and Tiny
   Llama example artifacts.
+- One-click Editor imports for packaged C/OpenCL Hello Dispatch and SAXPY
+  artifacts, including generated typed U# bindings.
 - Initial VPM prerelease packaging for the UdonCL Unity runtime and artifact
   importer.
 - Public Unity assets for UdonBLAS, UdonDNN, UdonATen, and AOT ONNX execution

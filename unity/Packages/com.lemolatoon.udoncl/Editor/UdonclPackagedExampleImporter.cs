@@ -8,7 +8,21 @@ namespace Lemolatoon.Udoncl.Editor
     internal static class UdonclPackagedExampleImporter
     {
         private const string ArenaArchive = "onnx-arena-add.zip.bytes";
+        private const string HelloArchive = "hello-dispatch.zip.bytes";
+        private const string SaxpyArchive = "saxpy.zip.bytes";
         private const string TinyArchive = "onnx-tiny-llama.zip.bytes";
+
+        [MenuItem("Tools/udoncl/Examples/Import C and OpenCL Hello Dispatch")]
+        private static void ImportHelloDispatch()
+        {
+            Import(HelloArchive);
+        }
+
+        [MenuItem("Tools/udoncl/Examples/Import C and OpenCL SAXPY")]
+        private static void ImportSaxpy()
+        {
+            Import(SaxpyArchive);
+        }
 
         [MenuItem("Tools/udoncl/Examples/Import ONNX Arena Add")]
         private static void ImportArenaAdd()
@@ -24,7 +38,12 @@ namespace Lemolatoon.Udoncl.Editor
 
         internal static string Extract(string archiveName)
         {
-            if (archiveName != ArenaArchive && archiveName != TinyArchive)
+            if (
+                archiveName != ArenaArchive
+                && archiveName != HelloArchive
+                && archiveName != SaxpyArchive
+                && archiveName != TinyArchive
+            )
                 throw new ArgumentException(
                     "Unknown packaged example archive.",
                     nameof(archiveName)
