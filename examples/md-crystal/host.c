@@ -49,9 +49,11 @@ int md_init(const float *initial) {
   CHECK(status);
   queue = clCreateCommandQueue(context, device, 0, &status);
   CHECK(status);
-  state = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
-                         MD_WORDS * sizeof(float), (void *)initial, &status);
+  state = clCreateBuffer(context, CL_MEM_READ_WRITE, MD_WORDS * sizeof(float),
+                         0, &status);
   CHECK(status);
+  CHECK(clEnqueueWriteBuffer(queue, state, CL_TRUE, 0, MD_WORDS * sizeof(float),
+                             initial, 0, 0, 0));
   predicted = clCreateBuffer(context, CL_MEM_READ_WRITE,
                              MD_WORDS * sizeof(float), 0, &status);
   CHECK(status);

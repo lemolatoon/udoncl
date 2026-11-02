@@ -45,6 +45,14 @@ shader and changes the Host result for 2.5 to 6.0.
 
 ## Runtime and bindings
 
+Buffers are always allocated explicitly with `clCreateBuffer`. Initial data is
+transferred with `clEnqueueWriteBuffer`, results with `clEnqueueReadBuffer`, and
+Device-to-Device ranges with `clEnqueueCopyBuffer`. The initial contract does
+not accept `USE_HOST_PTR`, `ALLOC_HOST_PTR`, or `COPY_HOST_PTR`; SubBuffer,
+Map/Unmap, and rectangular copy calls return an explicit unsupported error.
+This keeps C arrays and Device allocations separate until their lifetime and
+zero-copy rules can be proven on Udon.
+
 The executable links `VRCNativeOpenCLRuntime`, which brings in:
 
 - `VRCOpenCLRuntime`: the OpenCL API implementation in C under `lib/Runtime/OpenCL`.

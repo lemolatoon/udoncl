@@ -160,6 +160,9 @@ Current components:
 
 - Four separate TableGen dialect libraries; 20 of the closed catalog of 57 operations are defined.
 - A C OpenCL 1.2 AOT API subset and native Host Runtime linked to the fragment renderer.
+- Explicit Device buffer allocation with bounded Write/Read/Copy commands;
+  host-backed buffers, SubBuffer, Map/Unmap, and rectangular copies fail
+  explicitly instead of selecting an unimplemented fallback.
 - `udoncl-opt`: MLIR parser/printer with operation verification, rejects unknown ops by default.
 - `VRCLLVMToHighLevelMLIR`: independent import/metadata, local-memory and scalar/CFG recovery library for host/device development.
 - `udoncl-translate --import-llvm input.ll`: LLVM dialect import with preserved frontend metadata and optional JSON sidecar.

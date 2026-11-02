@@ -340,12 +340,11 @@ CL_API_ENTRY cl_mem CL_API_CALL clCreateBuffer(cl_context c, cl_mem_flags flags,
     ERROR(CL_INVALID_CONTEXT);
   if (!size || size > udoncl_cl_buffer_limit())
     ERROR(CL_INVALID_BUFFER_SIZE);
-  if (flags & ~(CL_MEM_READ_WRITE | CL_MEM_WRITE_ONLY | CL_MEM_READ_ONLY |
-                CL_MEM_COPY_HOST_PTR))
+  if (flags & ~(CL_MEM_READ_WRITE | CL_MEM_WRITE_ONLY | CL_MEM_READ_ONLY))
     ERROR(CL_INVALID_VALUE);
   if (access && (access & (access - 1)))
     ERROR(CL_INVALID_VALUE);
-  if (!!(flags & CL_MEM_COPY_HOST_PTR) != !!host)
+  if (host)
     ERROR(CL_INVALID_HOST_PTR);
   if (!next_buffer)
     ERROR(CL_OUT_OF_RESOURCES);
@@ -367,15 +366,22 @@ CL_API_ENTRY cl_mem CL_API_CALL clCreateBuffer(cl_context c, cl_mem_flags flags,
   m->flags = flags;
   m->id = next_buffer++;
   m->generation = m->id;
-  if (host) {
-    memcpy(m->data, host, size);
-    memset(m->initialized, 1, size);
-  }
   m->next = buffers;
   buffers = m;
   if (errcode_ret)
     *errcode_ret = CL_SUCCESS;
   return m;
+}
+CL_API_ENTRY cl_mem CL_API_CALL clCreateSubBuffer(cl_mem m, cl_mem_flags flags,
+                                                  cl_buffer_create_type type,
+                                                  const void *info,
+                                                  cl_int *errcode_ret) {
+  (void)flags;
+  (void)type;
+  (void)info;
+  if (!buffer_find(m))
+    ERROR(CL_INVALID_MEM_OBJECT);
+  ERROR(CL_INVALID_OPERATION);
 }
 CL_API_ENTRY cl_int CL_API_CALL clRetainMemObject(cl_mem m) {
   if (!buffer_find(m))
@@ -723,6 +729,98 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueWriteBuffer(
     const void *ptr, cl_uint n, const cl_event *list, cl_event *result) {
   return transfer(q, m, blocking, offset, bytes, (void *)ptr, n, list, result,
                   1);
+}
+CL_API_ENTRY cl_int CL_API_CALL clEnqueueCopyBuffer(
+    cl_command_queue q, cl_mem source, cl_mem destination, size_t source_offset,
+    size_t destination_offset, size_t bytes, cl_uint count,
+    const cl_event *list, cl_event *result) {
+  cl_int status;
+  cl_event event = NULL;
+  size_t byte;
+  if (!queue_find(q))
+    return CL_INVALID_COMMAND_QUEUE;
+  if (!buffer_find(source) || !buffer_find(destination))
+    return CL_INVALID_MEM_OBJECT;
+  if (source->context != q->context || destination->context != q->context)
+    return CL_INVALID_CONTEXT;
+  if (!bytes || source_offset > source->size ||
+      bytes > source->size - source_offset ||
+      destination_offset > destination->size ||
+      bytes > destination->size - destination_offset)
+    return CL_INVALID_VALUE;
+  if (source == destination && source_offset < destination_offset + bytes &&
+      destination_offset < source_offset + bytes)
+    return CL_MEM_COPY_OVERLAP;
+  if ((status = waits(q->context, count, list)))
+    return status;
+  for (byte = source_offset; byte < source_offset + bytes; ++byte)
+    if (!source->initialized[byte])
+      return CL_INVALID_OPERATION;
+  if (result) {
+    event = new_event(q, CL_COMMAND_COPY_BUFFER);
+    if (!event)
+      return CL_OUT_OF_HOST_MEMORY;
+  }
+  memmove(destination->data + destination_offset, source->data + source_offset,
+          bytes);
+  memset(destination->initialized + destination_offset, 1, bytes);
+  if (result)
+    *result = event;
+  return CL_SUCCESS;
+}
+CL_API_ENTRY cl_int CL_API_CALL clEnqueueCopyBufferRect(
+    cl_command_queue q, cl_mem source, cl_mem destination,
+    const size_t *source_origin, const size_t *destination_origin,
+    const size_t *region, size_t source_row_pitch, size_t source_slice_pitch,
+    size_t destination_row_pitch, size_t destination_slice_pitch, cl_uint count,
+    const cl_event *list, cl_event *result) {
+  (void)source_origin;
+  (void)destination_origin;
+  (void)region;
+  (void)source_row_pitch;
+  (void)source_slice_pitch;
+  (void)destination_row_pitch;
+  (void)destination_slice_pitch;
+  (void)count;
+  (void)list;
+  (void)result;
+  if (!queue_find(q))
+    return CL_INVALID_COMMAND_QUEUE;
+  if (!buffer_find(source) || !buffer_find(destination))
+    return CL_INVALID_MEM_OBJECT;
+  return CL_INVALID_OPERATION;
+}
+CL_API_ENTRY void *CL_API_CALL clEnqueueMapBuffer(
+    cl_command_queue q, cl_mem m, cl_bool blocking, cl_map_flags flags,
+    size_t offset, size_t bytes, cl_uint count, const cl_event *list,
+    cl_event *result, cl_int *errcode_ret) {
+  (void)blocking;
+  (void)flags;
+  (void)offset;
+  (void)bytes;
+  (void)count;
+  (void)list;
+  (void)result;
+  if (!queue_find(q))
+    ERROR(CL_INVALID_COMMAND_QUEUE);
+  if (!buffer_find(m))
+    ERROR(CL_INVALID_MEM_OBJECT);
+  ERROR(CL_INVALID_OPERATION);
+}
+CL_API_ENTRY cl_int CL_API_CALL clEnqueueUnmapMemObject(cl_command_queue q,
+                                                        cl_mem m, void *mapped,
+                                                        cl_uint count,
+                                                        const cl_event *list,
+                                                        cl_event *result) {
+  (void)mapped;
+  (void)count;
+  (void)list;
+  (void)result;
+  if (!queue_find(q))
+    return CL_INVALID_COMMAND_QUEUE;
+  if (!buffer_find(m))
+    return CL_INVALID_MEM_OBJECT;
+  return CL_INVALID_OPERATION;
 }
 CL_API_ENTRY cl_int CL_API_CALL clFlush(cl_command_queue q) {
   return queue_find(q) ? CL_SUCCESS : CL_INVALID_COMMAND_QUEUE;

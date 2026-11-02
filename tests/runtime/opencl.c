@@ -16,8 +16,8 @@ int run_opencl_runtime_tests(void) {
   cl_command_queue queue, other_queue;
   cl_program program, bad;
   cl_kernel kernel;
-  cl_mem buffer, foreign, saved;
-  cl_event done, read, foreign_event;
+  cl_mem buffer, copy_buffer, foreign, saved;
+  cl_event copied_event, done, read, foreign_event;
   cl_int error, status;
   cl_uint count;
   float scalar = 2.5f, expected = 0, actual = 0;
@@ -44,6 +44,8 @@ int run_opencl_runtime_tests(void) {
          error == CL_INVALID_BUFFER_SIZE);
   EXPECT(!clCreateBuffer(context, 0, 4, bytes, &error) &&
          error == CL_INVALID_HOST_PTR);
+  EXPECT(!clCreateBuffer(context, CL_MEM_COPY_HOST_PTR, 4, bytes, &error) &&
+         error == CL_INVALID_VALUE);
   EXPECT(!clCreateCommandQueue(
              context, device, CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE, &error) &&
          error == CL_INVALID_QUEUE_PROPERTIES);
@@ -81,11 +83,20 @@ int run_opencl_runtime_tests(void) {
   EXPECT(kernel && !error);
   EXPECT(clBuildProgram(program, 0, NULL, NULL, NULL, NULL) ==
          CL_INVALID_OPERATION);
-  buffer = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, 4,
-                          bytes, &error);
+  buffer = clCreateBuffer(context, CL_MEM_READ_WRITE, 4, NULL, &error);
   EXPECT(buffer && !error);
+  copy_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE, 4, NULL, &error);
+  EXPECT(copy_buffer && !error);
   foreign = clCreateBuffer(other, CL_MEM_WRITE_ONLY, 4, NULL, &error);
   EXPECT(foreign && !error);
+  EXPECT(!clCreateSubBuffer(buffer, 0, CL_BUFFER_CREATE_TYPE_REGION, NULL,
+                            &error) &&
+         error == CL_INVALID_OPERATION);
+  EXPECT(!clEnqueueMapBuffer(queue, buffer, CL_TRUE, CL_MAP_READ, 0, 4, 0, NULL,
+                             NULL, &error) &&
+         error == CL_INVALID_OPERATION);
+  EXPECT(clEnqueueUnmapMemObject(queue, buffer, bytes, 0, NULL, NULL) ==
+         CL_INVALID_OPERATION);
   EXPECT(clEnqueueNDRangeKernel(queue, kernel, 1, NULL, &one, &one, 0, NULL,
                                 NULL) == CL_INVALID_KERNEL_ARGS);
   EXPECT(clSetKernelArg(kernel, 2, 4, &scalar) == CL_INVALID_ARG_INDEX);
@@ -117,6 +128,22 @@ int run_opencl_runtime_tests(void) {
                           NULL));
   OK(clEnqueueReadBuffer(queue, buffer, CL_TRUE, 0, 4, copied, 0, NULL, NULL));
   EXPECT(!memcmp(bytes, copied, 4));
+  EXPECT(clEnqueueCopyBuffer(queue, copy_buffer, buffer, 0, 0, 4, 0, NULL,
+                             NULL) == CL_INVALID_OPERATION);
+  EXPECT(clEnqueueCopyBuffer(queue, buffer, buffer, 0, 1, 3, 0, NULL, NULL) ==
+         CL_MEM_COPY_OVERLAP);
+  EXPECT(clEnqueueCopyBuffer(queue, buffer, foreign, 0, 0, 4, 0, NULL, NULL) ==
+         CL_INVALID_CONTEXT);
+  EXPECT(clEnqueueCopyBufferRect(queue, buffer, copy_buffer, NULL, NULL, NULL,
+                                 0, 0, 0, 0, 0, NULL,
+                                 NULL) == CL_INVALID_OPERATION);
+  OK(clEnqueueCopyBuffer(queue, buffer, copy_buffer, 0, 0, 4, 0, NULL,
+                         &copied_event));
+  memset(copied, 0, sizeof(copied));
+  OK(clEnqueueReadBuffer(queue, copy_buffer, CL_TRUE, 0, 4, copied, 1,
+                         &copied_event, NULL));
+  EXPECT(!memcmp(bytes, copied, 4));
+  OK(clReleaseEvent(copied_event));
   OK(clEnqueueWriteBuffer(other_queue, foreign, CL_TRUE, 0, 4, bytes, 0, NULL,
                           &foreign_event));
   EXPECT(clEnqueueNDRangeKernel(queue, kernel, 1, NULL, &one, &one, 1,
@@ -141,6 +168,7 @@ int run_opencl_runtime_tests(void) {
   OK(clReleaseContext(context));
   OK(clReleaseProgram(program)); /* Children keep parents alive. */
   OK(clReleaseMemObject(saved));
+  OK(clReleaseMemObject(copy_buffer));
   buffer = clCreateBuffer(context, CL_MEM_WRITE_ONLY, 4, NULL, &error);
   EXPECT(buffer && !error);
   EXPECT(clEnqueueNDRangeKernel(queue, kernel, 1, NULL, &one, NULL, 0, NULL,
