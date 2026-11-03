@@ -525,6 +525,23 @@ assert command_buffer_copy.group(1) != command_pointer_copy.group(1), (
     command_buffer_copy.group(1), command_pointer_copy.group(1),
     async_buffer_lowered.stdout)
 
+async_buffer_mlir = output / 'async-buffer.udonasm.mlir'
+async_buffer_uasm = output / 'async-buffer.uasm'
+async_buffer_mlir.write_text(async_buffer_lowered.stdout, encoding='utf-8')
+emitted = subprocess.run(
+    [translate, '--emit-udon-assembly', async_buffer_mlir, '-o', async_buffer_uasm],
+    text=True,
+    capture_output=True,
+)
+assert emitted.returncode == 0, emitted.stderr
+async_buffer_assembly = async_buffer_uasm.read_text(encoding='utf-8')
+for expected in [
+    '.export transfer',
+    '__vrc_f7_await_state_1: %SystemInt32, 1',
+    '__vrc_f7_await_state_2: %SystemInt32, 2',
+]:
+    assert expected in async_buffer_assembly, (expected, async_buffer_assembly)
+
 continuation_source = r'''module attributes {vrc.host_stage = "udonhl"} {
   func.func @resume(%execution: i32, %resume_state: i32, %event: !vrc.event, %value: i32) -> i32 attributes {
     vrc.async_effect = "may_suspend",

@@ -19,6 +19,8 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         private const string TemporaryAssembly = TemporaryDirectory + "/scalar.uasm";
         private const string TemporaryContinuationAssembly =
             TemporaryDirectory + "/continuation.uasm";
+        private const string TemporaryAsyncBufferAssembly =
+            TemporaryDirectory + "/async-buffer.uasm";
         private string assemblyText;
 
         [OneTimeSetUp]
@@ -80,13 +82,23 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 File.Exists(continuationFixture),
                 "Missing compiler-emitted continuation.uasm fixture."
             );
+            string asyncBufferFixture = Path.Combine(
+                Path.GetDirectoryName(continuationFixture),
+                "async-buffer.uasm"
+            );
+            Assert.That(
+                File.Exists(asyncBufferFixture),
+                "Missing compiler-emitted async-buffer.uasm fixture."
+            );
             if (Directory.Exists(TemporaryDirectory))
                 Directory.Delete(TemporaryDirectory, true);
             Directory.CreateDirectory(TemporaryDirectory);
             File.WriteAllText(TemporaryAssembly, assemblyText);
             File.Copy(continuationFixture, TemporaryContinuationAssembly, true);
+            File.Copy(asyncBufferFixture, TemporaryAsyncBufferAssembly, true);
             Assert.That(File.Exists(TemporaryAssembly));
             Assert.That(File.Exists(TemporaryContinuationAssembly));
+            Assert.That(File.Exists(TemporaryAsyncBufferAssembly));
         }
 
         [TestCase("__0_add", "__0_arg0__param", 17, "__0_arg1__param", 25, "__0___0_add__ret", 42)]
@@ -223,6 +235,44 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 42,
                 heap.GetHeapVariable<int>(
                     program.SymbolTable.GetAddressFromSymbol("__0___0_resume__ret")
+                )
+            );
+        }
+
+        [Test]
+        public void TwoAwaitStatesAdvanceAcrossSeparateUdonInvocations()
+        {
+            IUdonProgram program = LoadProgram(TemporaryAsyncBufferAssembly);
+            IUdonVM vm = CreateVm(program);
+            IUdonHeap heap = vm.InspectHeap();
+            uint resumeAddress = program.SymbolTable.GetAddressFromSymbol(
+                "__udoncl_async_resume_state"
+            );
+            uint completionAddress = program.SymbolTable.GetAddressFromSymbol(
+                "__udoncl_async_completion_status"
+            );
+            uint commandAddress = program.SymbolTable.GetAddressFromSymbol(
+                "__udoncl_async_command_kind"
+            );
+
+            Execute(vm, program, "transfer");
+            Assert.AreEqual(1, heap.GetHeapVariable<int>(resumeAddress));
+            Assert.AreEqual(1, heap.GetHeapVariable<int>(commandAddress));
+
+            heap.SetHeapVariable(completionAddress, 0);
+            heap.SetHeapVariable(commandAddress, 0);
+            Execute(vm, program, "transfer");
+            Assert.AreEqual(2, heap.GetHeapVariable<int>(resumeAddress));
+            Assert.AreEqual(2, heap.GetHeapVariable<int>(commandAddress));
+
+            heap.SetHeapVariable(completionAddress, 0);
+            heap.SetHeapVariable(commandAddress, 0);
+            Execute(vm, program, "transfer");
+            Assert.AreEqual(0, heap.GetHeapVariable<int>(resumeAddress));
+            Assert.AreEqual(
+                0,
+                heap.GetHeapVariable<int>(
+                    program.SymbolTable.GetAddressFromSymbol("__0_transfer__ret")
                 )
             );
         }
