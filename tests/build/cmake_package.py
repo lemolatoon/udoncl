@@ -115,11 +115,15 @@ def main():
         (udonblas_artifact / 'manifest.json').read_text(encoding='utf-8')
     )
     assert udonblas_manifest['exports'][0]['async'] is True
-    assert udonblas_manifest['ready_for_unity'] is False
+    assert udonblas_manifest['ready_for_unity'] is True
     assert udonblas_manifest['program']['async_commands']['readback_kind'] == 2
     udonblas_assembly = (udonblas_artifact / 'host.uasm').read_text(
         encoding='utf-8'
     )
+    udonblas_data = udonblas_assembly.split('.data_start', 1)[1].split(
+        '.data_end', 1
+    )[0]
+    assert sum(': %' in line for line in udonblas_data.splitlines()) <= 512
     for slot in [
         '__udoncl_async_resume_state',
         '__udoncl_async_completion_status',

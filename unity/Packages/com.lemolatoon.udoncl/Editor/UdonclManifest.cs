@@ -57,6 +57,22 @@ namespace Lemolatoon.Udoncl.Editor
         public string display_shader;
         public string buffer_copy_shader;
         public bool buffer_copy_program_slot;
+        public AsyncCommandInfo async_commands;
+    }
+
+    [Serializable]
+    internal sealed class AsyncCommandInfo
+    {
+        public string resume_state_slot;
+        public string completion_status_slot;
+        public string command_kind_slot;
+        public string command_buffer_slot;
+        public string command_offset_slot;
+        public string command_size_slot;
+        public string command_pointer_slot;
+        public string raw_heap_slot;
+        public int upload_kind;
+        public int readback_kind;
     }
 
     [Serializable]

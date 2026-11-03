@@ -3,6 +3,7 @@
 #include "VRC/Dialect/UdonAsm/UdonAsmDialect.h"
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
 #include "VRC/Dialect/VRC/VRCDialect.h"
+#include "mlir/Analysis/Liveness.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -482,8 +483,94 @@ private:
     }
 
     llvm::DenseMap<Value, std::string> valueSlots;
+    llvm::DenseMap<Value, unsigned> valueColors;
+    llvm::DenseMap<Value, unsigned> valueOrdinals;
+    llvm::DenseMap<Value, SmallVector<Value>> interference;
+    llvm::DenseMap<Value, std::string> valueUdonTypes;
+    SmallVector<Value> colorableValues;
+    auto isColorableResult = [&](Operation &operation) {
+      return !isa<arith::ConstantOp, memref::GetGlobalOp,
+                  UnrealizedConversionCastOp, ::vrc::vrc::BufferAllocOp,
+                  ::vrc::vrc::DispatchDescCreateOp, host::FrameCreateOp>(
+          operation);
+    };
+    for (Block &block : function.getBody()) {
+      if (&block != &function.getBody().front())
+        for (BlockArgument argument : block.getArguments())
+          colorableValues.push_back(argument);
+      for (Operation &operation : block)
+        if (isColorableResult(operation))
+          llvm::append_range(colorableValues, operation.getResults());
+    }
+    for (auto [ordinal, value] : llvm::enumerate(colorableValues))
+      valueOrdinals.try_emplace(value, ordinal);
+    for (Value value : colorableValues) {
+      auto type = udonType(value.getType());
+      if (succeeded(type))
+        valueUdonTypes.try_emplace(value, type->str());
+    }
+
+    Liveness liveness(function);
+    function.walk([&](Operation *operation) {
+      const LivenessBlockInfo *blockInfo =
+          liveness.getLiveness(operation->getBlock());
+      if (!blockInfo)
+        return;
+      SmallVector<Value> live;
+      for (Value value : blockInfo->currentlyLiveValues(operation))
+        if (valueOrdinals.contains(value))
+          live.push_back(value);
+      llvm::sort(live, [&](Value left, Value right) {
+        return valueOrdinals.lookup(left) < valueOrdinals.lookup(right);
+      });
+      for (auto [leftIndex, left] : llvm::enumerate(live))
+        for (Value right : ArrayRef<Value>(live).drop_front(leftIndex + 1))
+          if (valueUdonTypes.lookup(left) == valueUdonTypes.lookup(right)) {
+            interference[left].push_back(right);
+            interference[right].push_back(left);
+          }
+    });
+    for (auto &entry : interference) {
+      SmallVector<Value> &neighbors = entry.second;
+      llvm::sort(neighbors, [&](Value left, Value right) {
+        return valueOrdinals.lookup(left) < valueOrdinals.lookup(right);
+      });
+      neighbors.erase(std::unique(neighbors.begin(), neighbors.end()),
+                      neighbors.end());
+    }
+    SmallVector<Value> coloringOrder(colorableValues);
+    llvm::sort(coloringOrder, [&](Value left, Value right) {
+      size_t leftDegree = interference[left].size();
+      size_t rightDegree = interference[right].size();
+      if (leftDegree != rightDegree)
+        return leftDegree > rightDegree;
+      return valueOrdinals.lookup(left) < valueOrdinals.lookup(right);
+    });
+    for (Value value : coloringOrder) {
+      llvm::SmallSet<unsigned, 16> used;
+      for (Value neighbor : interference[value]) {
+        auto found = valueColors.find(neighbor);
+        if (found != valueColors.end())
+          used.insert(found->second);
+      }
+      unsigned color = 0;
+      while (used.contains(color))
+        ++color;
+      valueColors.try_emplace(value, color);
+    }
+    auto coloredSlot = [&](Value value) -> std::string {
+      auto type = udonType(value.getType());
+      if (failed(type))
+        return {};
+      std::string name = prefix + "r_" + type->str() + "_" +
+                         std::to_string(valueColors.lookup(value));
+      addSlot(name, *type, "null", false);
+      return name;
+    };
     llvm::DenseMap<Operation *, SmallVector<std::string>> frameSlots;
     llvm::DenseMap<Operation *, std::string> allocaLengthSlots;
+    llvm::StringMap<std::string> constantSlots;
+    unsigned constantIndex = 0;
     for (auto [index, argument] : llvm::enumerate(function.getArguments())) {
       auto type = *udonType(argument.getType());
       std::string name = plan.parameterSlots[index];
@@ -555,9 +642,7 @@ private:
           auto type = udonType(argument.getType());
           if (failed(type))
             return function.emitError("unsupported Udon block argument type");
-          std::string name = prefix + "b" + std::to_string(blockIndex) + "_a" +
-                             std::to_string(argumentIndex);
-          addSlot(name, *type, "null", false);
+          std::string name = coloredSlot(argument);
           valueSlots[argument] = name;
         }
       for (Operation &operation : block) {
@@ -580,8 +665,7 @@ private:
               !alloca.getSymbolOperands().empty())
             return alloca.emitError(
                 "Udon local array requires a fixed non-empty i32/f32 shape");
-          std::string name = prefix + "a" + std::to_string(valueIndex++);
-          addSlot(name, *udonType(type), "null", false);
+          std::string name = coloredSlot(alloca.getResult());
           valueSlots[alloca.getResult()] = name;
           std::string length = name + "_length";
           addSlot(length, "SystemInt32", std::to_string(type.getNumElements()),
@@ -593,8 +677,7 @@ private:
           auto found = rawAllocaBases.find(allocation.getOperation());
           if (found == rawAllocaBases.end())
             return allocation.emitError("raw alloca has no static heap plan");
-          std::string name = prefix + "p" + std::to_string(valueIndex++);
-          addSlot(name, "SystemInt32", std::to_string(found->second), false);
+          std::string name = coloredSlot(allocation.getResult());
           valueSlots[allocation.getResult()] = name;
           continue;
         }
@@ -602,8 +685,7 @@ private:
           auto found = rawGlobalBases.find(addressOf.getGlobal());
           if (found == rawGlobalBases.end())
             return addressOf.emitError("raw global has no static heap plan");
-          std::string name = prefix + "p" + std::to_string(valueIndex++);
-          addSlot(name, "SystemInt32", std::to_string(found->second), false);
+          std::string name = coloredSlot(addressOf.getResult());
           valueSlots[addressOf.getResult()] = name;
           continue;
         }
@@ -664,21 +746,42 @@ private:
           return operation.emitError("unsupported Udon result type");
         std::string initial = "null";
         std::string kind = "v";
+        std::string constantIdentity;
         if (auto constant = dyn_cast<arith::ConstantOp>(operation)) {
           kind = "c";
+          llvm::raw_string_ostream identityStream(constantIdentity);
+          constant.getValue().print(identityStream);
+          identityStream.flush();
           if (constant.getType().isInteger(1)) {
             initial = "null";
-          } else if (auto integer = dyn_cast<IntegerAttr>(constant.getValue()))
-            initial = std::to_string(integer.getInt());
-          else if (auto floating = dyn_cast<FloatAttr>(constant.getValue())) {
+          } else if (auto integer =
+                         dyn_cast<IntegerAttr>(constant.getValue())) {
+            if (constant.getType().isInteger(64)) {
+              initial = "null";
+            } else {
+              initial = std::to_string(integer.getInt());
+            }
+          } else if (auto floating = dyn_cast<FloatAttr>(constant.getValue())) {
             llvm::SmallString<32> text;
             floating.getValue().toString(text);
             initial = text.str().str();
           } else
             return constant.emitError("unsupported scalar constant attribute");
         }
-        std::string name = prefix + kind + std::to_string(valueIndex++);
-        addSlot(name, *type, initial, false);
+        std::string name;
+        if (kind == "c") {
+          std::string key = type->str() + "\n" + constantIdentity;
+          auto found = constantSlots.find(key);
+          if (found == constantSlots.end()) {
+            name = prefix + "constant_" + std::to_string(constantIndex++);
+            addSlot(name, *type, initial, false);
+            constantSlots.try_emplace(key, name);
+          } else {
+            name = found->second;
+          }
+        } else {
+          name = coloredSlot(operation.getResult(0));
+        }
         valueSlots[operation.getResult(0)] = name;
       }
     }
@@ -693,9 +796,12 @@ private:
       if (sources.size() != destination->getNumArguments())
         return emitError(location)
                << "branch operand count does not match destination";
-      llvm::SmallSet<std::string, 8> destinations;
-      for (BlockArgument argument : destination->getArguments())
-        destinations.insert(valueSlots.lookup(argument));
+      struct Move {
+        std::string source;
+        std::string destination;
+        std::string type;
+      };
+      SmallVector<Move> moves;
       for (auto [source, target] :
            llvm::zip(sources, destination->getArguments())) {
         std::string sourceSlot = valueSlots.lookup(source);
@@ -705,10 +811,31 @@ private:
                  << "branch value has no allocated Udon heap slot";
         if (sourceSlot == targetSlot)
           continue;
-        if (destinations.contains(sourceSlot))
-          return emitError(location)
-                 << "parallel branch copy cycle requires a typed scratch slot";
-        emitCopy(location, sourceSlot, targetSlot);
+        auto type = udonType(target.getType());
+        if (failed(type))
+          return emitError(location) << "branch target has unsupported type";
+        moves.push_back(
+            {std::move(sourceSlot), std::move(targetSlot), type->str()});
+      }
+      while (!moves.empty()) {
+        auto safe = llvm::find_if(moves, [&](const Move &move) {
+          return llvm::none_of(moves, [&](const Move &candidate) {
+            return candidate.source == move.destination;
+          });
+        });
+        if (safe != moves.end()) {
+          emitCopy(location, safe->source, safe->destination);
+          moves.erase(safe);
+          continue;
+        }
+        Move &cycle = moves.front();
+        std::string scratch = "__vrc_parallel_copy_scratch_" + cycle.type;
+        addSlot(scratch, cycle.type, "null", false);
+        emitCopy(location, cycle.source, scratch);
+        std::string captured = cycle.source;
+        for (Move &move : moves)
+          if (move.source == captured)
+            move.source = scratch;
       }
       return success();
     };
@@ -737,8 +864,22 @@ private:
                   : "SystemInt32Array.__ctor__SystemInt32__SystemInt32Array");
           continue;
         }
-        if (isa<host::AllocaOp, host::AddressOfOp>(operation))
+        if (auto allocation = dyn_cast<host::AllocaOp>(operation)) {
+          auto found = rawAllocaBases.find(allocation.getOperation());
+          if (found == rawAllocaBases.end())
+            return allocation.emitError("raw alloca has no static heap plan");
+          emitI32Literal(allocation.getLoc(), found->second,
+                         valueSlots.lookup(allocation.getResult()));
           continue;
+        }
+        if (auto addressOf = dyn_cast<host::AddressOfOp>(operation)) {
+          auto found = rawGlobalBases.find(addressOf.getGlobal());
+          if (found == rawGlobalBases.end())
+            return addressOf.emitError("raw global has no static heap plan");
+          emitI32Literal(addressOf.getLoc(), found->second,
+                         valueSlots.lookup(addressOf.getResult()));
+          continue;
+        }
         if (isa<UnrealizedConversionCastOp>(operation))
           continue;
         if (auto constant = dyn_cast<arith::ConstantOp>(operation)) {
@@ -753,6 +894,10 @@ private:
             emitExtern(constant.getLoc(),
                        "SystemInt32.__op_Equality__SystemInt32_SystemInt32__"
                        "SystemBoolean");
+          } else if (constant.getType().isInteger(64)) {
+            auto integer = cast<IntegerAttr>(constant.getValue());
+            emitI64Constant(constant.getLoc(), integer.getValue(),
+                            valueSlots.lookup(constant.getResult()));
           }
           continue;
         }
@@ -1400,6 +1545,8 @@ private:
     if (llvm::any_of(slots,
                      [&](const Slot &slot) { return slot.name == name; }))
       return;
+    if (type == "SystemInt64" && initial == "0")
+      initial = "null";
     slots.push_back({name.str(), type.str(), initial.str(), isPublic});
   }
 
@@ -1438,6 +1585,82 @@ private:
     return selected;
   }
 
+  void emitI32Literal(Location location, uint64_t value, StringRef result) {
+    assert(value <= UINT32_MAX && "i32 literal exceeds 32 bits");
+    constexpr StringLiteral zero = "__vrc_i32_literal_zero";
+    constexpr StringLiteral one = "__vrc_i32_literal_one";
+    constexpr StringLiteral scratch = "__vrc_i32_literal_scratch";
+    addSlot(zero, "SystemInt32", "0", false);
+    addSlot(one, "SystemInt32", "1", false);
+    addSlot(scratch, "SystemInt32", "0", false);
+    emitCopy(location, zero, result);
+    if (!value)
+      return;
+    unsigned highestBit = 0;
+    for (uint64_t remaining = value; remaining >>= 1;)
+      ++highestBit;
+    for (int bit = static_cast<int>(highestBit); bit >= 0; --bit) {
+      emitPush(location, result);
+      emitPush(location, result);
+      emitPush(location, scratch);
+      emitExtern(location,
+                 "SystemInt32.__op_Addition__SystemInt32_SystemInt32__"
+                 "SystemInt32");
+      emitCopy(location, scratch, result);
+      if ((value >> bit) & 1) {
+        emitPush(location, result);
+        emitPush(location, one);
+        emitPush(location, scratch);
+        emitExtern(location,
+                   "SystemInt32.__op_Addition__SystemInt32_SystemInt32__"
+                   "SystemInt32");
+        emitCopy(location, scratch, result);
+      }
+    }
+  }
+
+  void emitI64Constant(Location location, const llvm::APInt &value,
+                       StringRef result) {
+    std::string prefix = (result + "_constant").str();
+    for (unsigned byteIndex = 0; byteIndex < 8; ++byteIndex) {
+      uint64_t byteValue = value.extractBitsAsZExtValue(8, byteIndex * 8);
+      std::string seed = prefix + "_byte_" + std::to_string(byteIndex);
+      std::string component = seed + "_wide";
+      addSlot(seed, "SystemInt32", std::to_string(byteValue), false);
+      addSlot(component, "SystemInt64", "null", false);
+      emitPush(location, seed);
+      emitPush(location, component);
+      emitExtern(location, "SystemConvert.__ToInt64__SystemInt32__SystemInt64");
+      if (byteIndex) {
+        std::string shift = prefix + "_shift_" + std::to_string(byteIndex);
+        std::string shifted = component + "_shifted";
+        addSlot(shift, "SystemInt32", std::to_string(byteIndex * 8), false);
+        addSlot(shifted, "SystemInt64", "null", false);
+        emitPush(location, component);
+        emitPush(location, shift);
+        emitPush(location, shifted);
+        emitExtern(location,
+                   "SystemInt64.__op_LeftShift__SystemInt64_SystemInt32__"
+                   "SystemInt64");
+        component = std::move(shifted);
+      }
+      if (!byteIndex) {
+        emitCopy(location, component, result);
+      } else {
+        std::string combined =
+            prefix + "_combined_" + std::to_string(byteIndex);
+        addSlot(combined, "SystemInt64", "null", false);
+        emitPush(location, result);
+        emitPush(location, component);
+        emitPush(location, combined);
+        emitExtern(location,
+                   "SystemInt64.__op_BitwiseOr__SystemInt64_SystemInt64__"
+                   "SystemInt64");
+        emitCopy(location, combined, result);
+      }
+    }
+  }
+
   LogicalResult emitRawLoad(Location location, StringRef pointer,
                             StringRef result, Type type) {
     if (!type.isInteger(8) && !type.isInteger(32) && !type.isInteger(64) &&
@@ -1445,7 +1668,7 @@ private:
       return failure();
     bool wide = type.isInteger(64);
     unsigned byteWidth = type.isInteger(8) ? 1 : wide ? 8 : 4;
-    std::string prefix = "__vrc_raw_load_" + std::to_string(rawAccessIndex++);
+    std::string prefix = "__vrc_raw_load_scratch";
     std::string bits = prefix + "_bits";
     addSlot(bits, wide ? "SystemInt64" : "SystemInt32", "0", false);
     for (unsigned byteIndex = 0; byteIndex < byteWidth; ++byteIndex) {
@@ -1529,11 +1752,19 @@ private:
       return failure();
     bool wide = type.isInteger(64);
     unsigned byteWidth = type.isInteger(8) ? 1 : wide ? 8 : 4;
-    std::string prefix = "__vrc_raw_store_" + std::to_string(rawAccessIndex++);
+    std::string prefix = "__vrc_raw_store_scratch";
     std::string bits = prefix + "_bits";
     std::string mask = prefix + "_mask";
     addSlot(bits, wide ? "SystemInt64" : "SystemInt32", "0", false);
-    addSlot(mask, wide ? "SystemInt64" : "SystemInt32", "255", false);
+    addSlot(mask, wide ? "SystemInt64" : "SystemInt32", wide ? "null" : "255",
+            false);
+    if (wide) {
+      std::string maskSeed = mask + "_i32_seed";
+      addSlot(maskSeed, "SystemInt32", "255", false);
+      emitPush(location, maskSeed);
+      emitPush(location, mask);
+      emitExtern(location, "SystemConvert.__ToInt64__SystemInt32__SystemInt64");
+    }
     if (type.isF32()) {
       emitPush(location, value);
       emitPush(location, bits);
@@ -1600,7 +1831,7 @@ private:
 
   void emitRawMemcpy(Location location, StringRef destination, StringRef source,
                      StringRef byteCount) {
-    std::string prefix = "__vrc_raw_memcpy_" + std::to_string(rawAccessIndex++);
+    std::string prefix = "__vrc_raw_memcpy_scratch";
     std::string counter = prefix + "_counter";
     std::string one = prefix + "_one";
     std::string condition = prefix + "_condition";
@@ -1675,7 +1906,10 @@ private:
       emitExtern(location,
                  "SystemInt32Array.__ctor__SystemInt32__SystemInt32Array");
     }
-    unsigned rawGlobal = 0;
+    constexpr StringLiteral rawIndexSlot = "__vrc_raw_global_init_index";
+    constexpr StringLiteral rawValueSlot = "__vrc_raw_global_init_value";
+    addSlot(rawIndexSlot, "SystemInt32", "0", false);
+    addSlot(rawValueSlot, "SystemInt32", "0", false);
     for (host::GlobalOp global : module.getOps<host::GlobalOp>()) {
       auto initial = rawGlobalInitializers.find(global.getSymName());
       auto base = rawGlobalBases.find(global.getSymName());
@@ -1685,33 +1919,34 @@ private:
       unsigned index = 0;
       for (int8_t byte : initial->second.asArrayRef()) {
         if (byte) {
-          std::string prefix = "__vrc_raw_global_init_" +
-                               std::to_string(rawGlobal) + "_" +
-                               std::to_string(index);
-          std::string indexSlot = prefix + "_index";
-          std::string valueSlot = prefix + "_value";
-          addSlot(indexSlot, "SystemInt32",
-                  std::to_string(base->second + index), false);
-          addSlot(valueSlot, "SystemInt32",
-                  std::to_string(static_cast<uint8_t>(byte)), false);
+          emitI32Literal(location, base->second + index, rawIndexSlot);
+          emitI32Literal(location, static_cast<uint8_t>(byte), rawValueSlot);
           emitPush(location, rawHeapSlot);
-          emitPush(location, indexSlot);
-          emitPush(location, valueSlot);
+          emitPush(location, rawIndexSlot);
+          emitPush(location, rawValueSlot);
           emitExtern(
               location,
               "SystemInt32Array.__Set__SystemInt32_SystemInt32__SystemVoid");
         }
         ++index;
       }
-      ++rawGlobal;
     }
-    unsigned global = 0;
+    constexpr StringLiteral globalLengthSlot = "__vrc_global_init_length";
+    constexpr StringLiteral globalIndexSlot = "__vrc_global_init_index";
+    constexpr StringLiteral globalIntValueSlot = "__vrc_global_init_int_value";
+    constexpr StringLiteral globalFloatBitsSlot =
+        "__vrc_global_init_float_bits";
+    constexpr StringLiteral globalFloatValueSlot =
+        "__vrc_global_init_float_value";
+    addSlot(globalLengthSlot, "SystemInt32", "0", false);
+    addSlot(globalIndexSlot, "SystemInt32", "0", false);
+    addSlot(globalIntValueSlot, "SystemInt32", "0", false);
+    addSlot(globalFloatBitsSlot, "SystemInt32", "0", false);
+    addSlot(globalFloatValueSlot, "SystemSingle", "0", false);
     for (const std::string &name : globalOrder) {
       const GlobalPlan &plan = globalPlans.at(name);
-      std::string length = plan.slot + "_length";
-      addSlot(length, "SystemInt32", std::to_string(plan.type.getNumElements()),
-              false);
-      emitPush(location, length);
+      emitI32Literal(location, plan.type.getNumElements(), globalLengthSlot);
+      emitPush(location, globalLengthSlot);
       emitPush(location, plan.slot);
       emitExtern(
           location,
@@ -1721,28 +1956,33 @@ private:
       unsigned index = 0;
       for (Attribute value : plan.initialValue.getValues<Attribute>()) {
         bool zero = false;
-        std::string initial;
+        bool floatingValue = false;
+        uint32_t bits = 0;
         if (auto integer = dyn_cast<IntegerAttr>(value)) {
           zero = integer.getValue().isZero();
-          initial = std::to_string(integer.getInt());
+          bits = static_cast<uint32_t>(integer.getInt());
         } else if (auto floating = dyn_cast<FloatAttr>(value)) {
           zero = floating.getValue().isZero();
-          llvm::SmallString<32> text;
-          floating.getValue().toString(text);
-          initial = text.str().str();
+          floatingValue = true;
+          bits = static_cast<uint32_t>(
+              floating.getValue().bitcastToAPInt().getZExtValue());
         }
         if (!zero) {
-          std::string prefix = "__vrc_global_init_" + std::to_string(global) +
-                               "_" + std::to_string(index);
-          std::string indexSlot = prefix + "_index";
-          std::string valueSlot = prefix + "_value";
-          addSlot(indexSlot, "SystemInt32", std::to_string(index), false);
-          addSlot(valueSlot,
-                  plan.type.getElementType().isF32() ? "SystemSingle"
-                                                     : "SystemInt32",
-                  initial, false);
+          emitI32Literal(location, index, globalIndexSlot);
+          StringRef valueSlot = globalIntValueSlot;
+          if (floatingValue) {
+            emitI32Literal(location, bits, globalFloatBitsSlot);
+            emitPush(location, globalFloatBitsSlot);
+            emitPush(location, globalFloatValueSlot);
+            emitExtern(location,
+                       "SystemBitConverter.__Int32BitsToSingle__SystemInt32__"
+                       "SystemSingle");
+            valueSlot = globalFloatValueSlot;
+          } else {
+            emitI32Literal(location, bits, globalIntValueSlot);
+          }
           emitPush(location, plan.slot);
-          emitPush(location, indexSlot);
+          emitPush(location, globalIndexSlot);
           emitPush(location, valueSlot);
           emitExtern(location,
                      plan.type.getElementType().isF32()
@@ -1753,7 +1993,6 @@ private:
         }
         ++index;
       }
-      ++global;
     }
     emitCopy(location, globalOneSlot, globalInitializedSlot);
     initialize->setAttr("target", builder.getI64IntegerAttr(

@@ -111,6 +111,28 @@ stay in the investigation section.
   but it has no Unity async scheduler. Real callback delivery remains a Play
   Mode or client integration gate.
 
+### SystemInt64 Udon data slots must use null initialization
+
+- Worlds SDK 3.10.5 rejects a `.data` declaration whose `SystemInt64` slot is
+  initialized with a numeric literal, including `0`. Such slots must start as
+  `null` (or as a `this` reference where applicable).
+- UdonCL therefore emits `null` for every `SystemInt64` data slot and constructs
+  nonzero i64 constants at runtime from `SystemInt32` byte seeds using
+  `SystemConvert.__ToInt64`, shifts, and bitwise OR. Raw-memory masks use the
+  same path.
+
+### Udon Assembly is limited to 512 heap variables
+
+- Worlds SDK 3.10.5 rejects the 513th typed `.data` declaration with
+  `Address: '512' is larger than the UdonVM's heap size of '512'`.
+- Compiler-generated SSA values therefore cannot receive one permanent Udon
+  heap variable each. UdonCL colors simultaneously live values into reusable
+  type-compatible slots, uses typed scratch slots for parallel branch copies,
+  and shares raw-memory/global-initialization scratch slots.
+- The linked UdonBLAS `m=1,n=10,k=144` Host artifact assembles with 430 typed
+  data slots after this allocation. The CMake package test rejects artifacts
+  above the 512-slot limit.
+
 ## Investigation log
 
 ### 2026-11-02: generic MNIST arena pooling returned zero

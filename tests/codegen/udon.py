@@ -1,5 +1,6 @@
 """Exercise scalar SSA to real Udon opcodes and textual assembly emission."""
 import pathlib
+import re
 import subprocess
 import sys
 
@@ -284,6 +285,12 @@ for expected in [
 ]:
     assert expected in raw_memory_lowered.stdout, (
         expected, raw_memory_lowered.stdout)
+int64_initializers = re.findall(
+    r'\{initial = "([^"]+)", name = "[^"]+", type = "SystemInt64"\}',
+    raw_memory_lowered.stdout,
+)
+assert int64_initializers and set(int64_initializers) == {'null'}, \
+    int64_initializers
 for forbidden in ['udonhl.global', 'udonhl.address_of', 'udonhl.alloca',
                   'udonhl.load', 'udonhl.store', 'udonhl.memcpy']:
     assert forbidden not in raw_memory_lowered.stdout, (

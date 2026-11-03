@@ -4,45 +4,42 @@
     __0_arg1__param: %SystemInt32, null
     __0___0_add__ret: %SystemInt32, null
     __udoncl_status_1: %SystemInt32, 0
-    __vrc_f1_v0: %SystemInt32, null
+    __vrc_f1_r_SystemInt32_0: %SystemInt32, null
     __1_arg0__param: %SystemSingle, null
     __1_arg1__param: %SystemSingle, null
     __0___0_scale__ret: %SystemSingle, null
     __udoncl_status_2: %SystemInt32, 0
-    __vrc_f2_v0: %SystemSingle, null
+    __vrc_f2_r_SystemSingle_0: %SystemSingle, null
     __2_arg0__param: %SystemInt32, null
     __0___0_sum_to__ret: %SystemInt32, null
     __udoncl_status_3: %SystemInt32, 0
-    __vrc_f3_c0: %SystemInt32, 0
-    __vrc_f3_b1_a0: %SystemInt32, null
-    __vrc_f3_b1_a1: %SystemInt32, null
-    __vrc_f3_v1: %SystemBoolean, null
-    __vrc_f3_v2: %SystemInt32, null
-    __vrc_f3_c3: %SystemInt32, 1
-    __vrc_f3_v4: %SystemInt32, null
-    __vrc_f3_b3_a0: %SystemInt32, null
+    __vrc_f3_constant_0: %SystemInt32, 0
+    __vrc_f3_r_SystemInt32_0: %SystemInt32, null
+    __vrc_f3_r_SystemInt32_2: %SystemInt32, null
+    __vrc_f3_r_SystemBoolean_0: %SystemBoolean, null
+    __vrc_f3_r_SystemInt32_1: %SystemInt32, null
+    __vrc_f3_constant_1: %SystemInt32, 1
     __3_arg0__param: %SystemSingle, null
     __0___0_phase__ret: %SystemInt32, null
     __udoncl_status_4: %SystemInt32, 0
-    __vrc_f4_c0: %SystemSingle, 0.0799999982
-    __vrc_f4_v1: %SystemBoolean, null
-    __vrc_f4_c2: %SystemInt32, 0
-    __vrc_f4_c3: %SystemInt32, 2
+    __vrc_f4_constant_0: %SystemSingle, 0.0799999982
+    __vrc_f4_r_SystemBoolean_0: %SystemBoolean, null
+    __vrc_f4_constant_1: %SystemInt32, 0
+    __vrc_f4_constant_2: %SystemInt32, 2
     __4_arg0__param: %SystemSingleArray, null
     __2_arg1__param: %SystemSingleArray, null
     __0___0_array_sum__ret: %SystemSingle, null
     __udoncl_status_5: %SystemInt32, 0
-    __vrc_f5_c0: %SystemInt32, 0
-    __vrc_f5_c1: %SystemSingle, 0
-    __vrc_f5_b1_a0: %SystemInt32, null
-    __vrc_f5_b1_a1: %SystemSingle, null
-    __vrc_f5_c2: %SystemInt32, 4
-    __vrc_f5_v3: %SystemBoolean, null
-    __vrc_f5_v4: %SystemSingle, null
-    __vrc_f5_v5: %SystemSingle, null
-    __vrc_f5_c6: %SystemInt32, 1
-    __vrc_f5_v7: %SystemInt32, null
-    __vrc_f5_b3_a0: %SystemSingle, null
+    __vrc_f5_constant_0: %SystemInt32, 0
+    __vrc_f5_constant_1: %SystemSingle, 0
+    __vrc_f5_r_SystemInt32_0: %SystemInt32, null
+    __vrc_f5_r_SystemSingle_0: %SystemSingle, null
+    __vrc_f5_constant_2: %SystemInt32, 4
+    __vrc_f5_r_SystemBoolean_0: %SystemBoolean, null
+    __vrc_f5_r_SystemSingle_1: %SystemSingle, null
+    __vrc_f5_r_SystemSingle_2: %SystemSingle, null
+    __vrc_f5_constant_3: %SystemInt32, 1
+    __vrc_f5_r_SystemInt32_1: %SystemInt32, null
 .data_end
 
 .code_start
@@ -51,9 +48,9 @@
     __0_add:
         PUSH, __0_arg0__param
         PUSH, __0_arg1__param
-        PUSH, __vrc_f1_v0
+        PUSH, __vrc_f1_r_SystemInt32_0
         EXTERN, "SystemInt32.__op_Addition__SystemInt32_SystemInt32__SystemInt32"
-        PUSH, __vrc_f1_v0
+        PUSH, __vrc_f1_r_SystemInt32_0
         PUSH, __0___0_add__ret
         COPY
         JUMP, 0xFFFFFFFC
@@ -62,49 +59,49 @@
     __0_scale:
         PUSH, __1_arg0__param
         PUSH, __1_arg1__param
-        PUSH, __vrc_f2_v0
+        PUSH, __vrc_f2_r_SystemSingle_0
         EXTERN, "SystemSingle.__op_Multiplication__SystemSingle_SystemSingle__SystemSingle"
-        PUSH, __vrc_f2_v0
+        PUSH, __vrc_f2_r_SystemSingle_0
         PUSH, __0___0_scale__ret
         COPY
         JUMP, 0xFFFFFFFC
 
     .export __0_sum_to
     __0_sum_to:
-        PUSH, __vrc_f3_c0
-        PUSH, __vrc_f3_b1_a0
+        PUSH, __vrc_f3_constant_0
+        PUSH, __vrc_f3_r_SystemInt32_0
         COPY
-        PUSH, __vrc_f3_c0
-        PUSH, __vrc_f3_b1_a1
+        PUSH, __vrc_f3_constant_0
+        PUSH, __vrc_f3_r_SystemInt32_2
         COPY
         JUMP, 0x000000A8
-        PUSH, __vrc_f3_b1_a0
+        PUSH, __vrc_f3_r_SystemInt32_0
         PUSH, __2_arg0__param
-        PUSH, __vrc_f3_v1
+        PUSH, __vrc_f3_r_SystemBoolean_0
         EXTERN, "SystemInt32.__op_LessThan__SystemInt32_SystemInt32__SystemBoolean"
-        PUSH, __vrc_f3_v1
+        PUSH, __vrc_f3_r_SystemBoolean_0
         JUMP_IF_FALSE, 0x000000E0
         JUMP, 0x000000FC
-        PUSH, __vrc_f3_b1_a1
-        PUSH, __vrc_f3_b3_a0
+        PUSH, __vrc_f3_r_SystemInt32_2
+        PUSH, __vrc_f3_r_SystemInt32_0
         COPY
         JUMP, 0x0000016C
-        PUSH, __vrc_f3_b1_a1
-        PUSH, __vrc_f3_b1_a0
-        PUSH, __vrc_f3_v2
+        PUSH, __vrc_f3_r_SystemInt32_2
+        PUSH, __vrc_f3_r_SystemInt32_0
+        PUSH, __vrc_f3_r_SystemInt32_1
         EXTERN, "SystemInt32.__op_Addition__SystemInt32_SystemInt32__SystemInt32"
-        PUSH, __vrc_f3_b1_a0
-        PUSH, __vrc_f3_c3
-        PUSH, __vrc_f3_v4
+        PUSH, __vrc_f3_r_SystemInt32_0
+        PUSH, __vrc_f3_constant_1
+        PUSH, __vrc_f3_r_SystemInt32_2
         EXTERN, "SystemInt32.__op_Addition__SystemInt32_SystemInt32__SystemInt32"
-        PUSH, __vrc_f3_v4
-        PUSH, __vrc_f3_b1_a0
+        PUSH, __vrc_f3_r_SystemInt32_2
+        PUSH, __vrc_f3_r_SystemInt32_0
         COPY
-        PUSH, __vrc_f3_v2
-        PUSH, __vrc_f3_b1_a1
+        PUSH, __vrc_f3_r_SystemInt32_1
+        PUSH, __vrc_f3_r_SystemInt32_2
         COPY
         JUMP, 0x000000A8
-        PUSH, __vrc_f3_b3_a0
+        PUSH, __vrc_f3_r_SystemInt32_0
         PUSH, __0___0_sum_to__ret
         COPY
         JUMP, 0xFFFFFFFC
@@ -112,66 +109,63 @@
     .export __0_phase
     __0_phase:
         PUSH, __3_arg0__param
-        PUSH, __vrc_f4_c0
-        PUSH, __vrc_f4_v1
+        PUSH, __vrc_f4_constant_0
+        PUSH, __vrc_f4_r_SystemBoolean_0
         EXTERN, "SystemSingle.__op_LessThan__SystemSingle_SystemSingle__SystemBoolean"
-        PUSH, __vrc_f4_v1
+        PUSH, __vrc_f4_r_SystemBoolean_0
         JUMP_IF_FALSE, 0x000001C0
         JUMP, 0x000001C8
         JUMP, 0x000001E4
-        PUSH, __vrc_f4_c2
+        PUSH, __vrc_f4_constant_1
         PUSH, __0___0_phase__ret
         COPY
         JUMP, 0xFFFFFFFC
-        PUSH, __vrc_f4_c3
+        PUSH, __vrc_f4_constant_2
         PUSH, __0___0_phase__ret
         COPY
         JUMP, 0xFFFFFFFC
 
     .export __0_array_sum
     __0_array_sum:
-        PUSH, __vrc_f5_c0
-        PUSH, __vrc_f5_b1_a0
+        PUSH, __vrc_f5_constant_0
+        PUSH, __vrc_f5_r_SystemInt32_0
         COPY
-        PUSH, __vrc_f5_c1
-        PUSH, __vrc_f5_b1_a1
+        PUSH, __vrc_f5_constant_1
+        PUSH, __vrc_f5_r_SystemSingle_0
         COPY
         JUMP, 0x00000230
-        PUSH, __vrc_f5_b1_a0
-        PUSH, __vrc_f5_c2
-        PUSH, __vrc_f5_v3
+        PUSH, __vrc_f5_r_SystemInt32_0
+        PUSH, __vrc_f5_constant_2
+        PUSH, __vrc_f5_r_SystemBoolean_0
         EXTERN, "SystemInt32.__op_LessThan__SystemInt32_SystemInt32__SystemBoolean"
-        PUSH, __vrc_f5_v3
+        PUSH, __vrc_f5_r_SystemBoolean_0
         JUMP_IF_FALSE, 0x00000268
-        JUMP, 0x00000284
-        PUSH, __vrc_f5_b1_a1
-        PUSH, __vrc_f5_b3_a0
-        COPY
-        JUMP, 0x00000314
+        JUMP, 0x00000270
+        JUMP, 0x00000300
         PUSH, __4_arg0__param
-        PUSH, __vrc_f5_b1_a0
-        PUSH, __vrc_f5_v4
+        PUSH, __vrc_f5_r_SystemInt32_0
+        PUSH, __vrc_f5_r_SystemSingle_1
         EXTERN, "SystemSingleArray.__Get__SystemInt32__SystemSingle"
-        PUSH, __vrc_f5_b1_a1
-        PUSH, __vrc_f5_v4
-        PUSH, __vrc_f5_v5
+        PUSH, __vrc_f5_r_SystemSingle_0
+        PUSH, __vrc_f5_r_SystemSingle_1
+        PUSH, __vrc_f5_r_SystemSingle_2
         EXTERN, "SystemSingle.__op_Addition__SystemSingle_SystemSingle__SystemSingle"
-        PUSH, __vrc_f5_b1_a0
-        PUSH, __vrc_f5_c6
-        PUSH, __vrc_f5_v7
+        PUSH, __vrc_f5_r_SystemInt32_0
+        PUSH, __vrc_f5_constant_3
+        PUSH, __vrc_f5_r_SystemInt32_1
         EXTERN, "SystemInt32.__op_Addition__SystemInt32_SystemInt32__SystemInt32"
-        PUSH, __vrc_f5_v7
-        PUSH, __vrc_f5_b1_a0
+        PUSH, __vrc_f5_r_SystemInt32_1
+        PUSH, __vrc_f5_r_SystemInt32_0
         COPY
-        PUSH, __vrc_f5_v5
-        PUSH, __vrc_f5_b1_a1
+        PUSH, __vrc_f5_r_SystemSingle_2
+        PUSH, __vrc_f5_r_SystemSingle_0
         COPY
         JUMP, 0x00000230
         PUSH, __2_arg1__param
-        PUSH, __vrc_f5_c0
-        PUSH, __vrc_f5_b3_a0
+        PUSH, __vrc_f5_constant_0
+        PUSH, __vrc_f5_r_SystemSingle_0
         EXTERN, "SystemSingleArray.__Set__SystemInt32_SystemSingle__SystemVoid"
-        PUSH, __vrc_f5_b3_a0
+        PUSH, __vrc_f5_r_SystemSingle_0
         PUSH, __0___0_array_sum__ret
         COPY
         JUMP, 0xFFFFFFFC

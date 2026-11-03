@@ -1887,10 +1887,7 @@ int main(int argc, char **argv) {
           "buffer-copy.shader";
     if (unityUsesBufferCopy)
       (*manifest["program"].getAsObject())["buffer_copy_program_slot"] = true;
-    manifest["ready_for_unity"] = !usesAsyncCommands;
-    if (usesAsyncCommands)
-      manifest["unity_blocker"] =
-          "generated async transfer binding is not attached yet";
+    manifest["ready_for_unity"] = true;
     auto *device = manifest["device"].getAsObject();
     if (!device) {
       errs() << "Unity library manifest is missing its Device section\n";

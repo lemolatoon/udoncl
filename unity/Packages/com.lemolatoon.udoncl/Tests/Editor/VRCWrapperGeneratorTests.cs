@@ -232,16 +232,51 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         }
 
         [Test]
-        public void RejectsAsyncUntilContinuationWrapperIsImplemented()
+        public void GeneratesAsyncContinuationAndTransferPump()
         {
-            string manifest = ScalarManifest.Replace("\"async\":false", "\"async\":true");
-            Assert.Throws<ArgumentException>(() =>
-                VRCWrapperGenerator.GenerateFromJson(
-                    manifest,
-                    "Lemolatoon.Generated",
-                    "AdderBinding"
-                )
+            string manifest = ScalarManifest
+                .Replace("\"async\":false", "\"async\":true")
+                .Replace(
+                    "\"exports\":[",
+                    "\"program\":{\"async_commands\":{"
+                        + "\"resume_state_slot\":\"__resume\","
+                        + "\"completion_status_slot\":\"__completion\","
+                        + "\"command_kind_slot\":\"__kind\","
+                        + "\"command_buffer_slot\":\"__buffer\","
+                        + "\"command_offset_slot\":\"__offset\","
+                        + "\"command_size_slot\":\"__size\","
+                        + "\"command_pointer_slot\":\"__pointer\","
+                        + "\"raw_heap_slot\":\"__heap\","
+                        + "\"upload_kind\":1,\"readback_kind\":2}},"
+                        + "\"device\":{\"buffers\":[{"
+                        + "\"id\":7,\"name\":\"scratch\",\"heap_slot\":\"__device_7\","
+                        + "\"logical_bytes\":16,\"width\":4,\"height\":1,"
+                        + "\"format\":\"rgba8_unorm\"}]},"
+                        + "\"exports\":["
+                );
+            string source = VRCWrapperGenerator.GenerateFromJson(
+                manifest,
+                "Lemolatoon.Generated",
+                "AdderBinding"
             );
+
+            StringAssert.Contains(
+                "public int StartAdd(int left, int right, UdonSharpBehaviour receiver, string completionEvent)",
+                source
+            );
+            StringAssert.Contains("program.SetProgramVariable(\"__resume\", 0);", source);
+            StringAssert.Contains("private void PumpAsyncCommand()", source);
+            StringAssert.Contains("int[] heap = (int[])rawHeap;", source);
+            StringAssert.Contains("CopyHeapToPixels(pixels);", source);
+            StringAssert.Contains("private void CompleteAsyncCommandReadback", source);
+            StringAssert.Contains(
+                "SendCustomEventDelayedFrames(\"_ContinueAsyncCommand\", 1);",
+                source
+            );
+            StringAssert.Contains("public void _ContinueAsyncCommand()", source);
+            StringAssert.Contains("public int GetAddStatus()", source);
+            StringAssert.Contains("public int TryGetAddResult(out int result)", source);
+            StringAssert.DoesNotContain("public int TryAdd(", source);
         }
 
         [Test]
