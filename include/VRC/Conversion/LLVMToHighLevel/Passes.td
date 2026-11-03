@@ -26,6 +26,10 @@ def RaiseLLVMMemoryPass : Pass<"vrc-raise-llvm-memory", "mlir::ModuleOp"> {
     for the scalar conversion stage; no pointer casts are used as a fallback.
   }];
   let dependentDialects = ["mlir::arith::ArithDialect", "mlir::memref::MemRefDialect"];
+  let options = [
+    Option<"allowRawFallback", "allow-raw-fallback", "bool", "false",
+           "Leave allocation units that need raw byte semantics for the following raw-memory pass">
+  ];
 }
 def RaiseLLVMRawMemoryPass : Pass<"vrc-raise-llvm-raw-memory", "mlir::ModuleOp"> {
   let summary = "Recover C pointers and byte-addressed memory as UdonHL";

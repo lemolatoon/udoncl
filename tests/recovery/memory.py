@@ -163,6 +163,52 @@ for forbidden in ['llvm.func ', 'llvm.return', 'llvm.call ', 'llvm.load ',
                   'llvm.store ', 'llvm.getelementptr ']:
     assert forbidden not in raw_high, (forbidden, raw_high)
 
+aggregate_raw_source = r'''module {
+  llvm.mlir.global internal @seed() {addr_space = 0 : i32, alignment = 4 : i64} : !llvm.struct<packed (f32, array<3 x f32>)> {
+    %zeros = llvm.mlir.constant(dense<0.000000e+00> : tensor<3xf32>) : !llvm.array<3 x f32>
+    %value = llvm.mlir.constant(2.000000e+00 : f32) : f32
+    %undef = llvm.mlir.undef : !llvm.struct<packed (f32, array<3 x f32>)>
+    %head = llvm.insertvalue %value, %undef[0] : !llvm.struct<packed (f32, array<3 x f32>)>
+    %result = llvm.insertvalue %zeros, %head[1] : !llvm.struct<packed (f32, array<3 x f32>)>
+    llvm.return %result : !llvm.struct<packed (f32, array<3 x f32>)>
+  }
+  llvm.func internal @choose(%condition: i1, %source: !llvm.ptr) -> !llvm.ptr {
+    %null = llvm.mlir.zero : !llvm.ptr
+    llvm.cond_br %condition, ^left, ^right
+  ^left:
+    llvm.br ^join(%source : !llvm.ptr)
+  ^right:
+    llvm.br ^join(%null : !llvm.ptr)
+  ^join(%selected: !llvm.ptr):
+    llvm.return %selected : !llvm.ptr
+  }
+  llvm.func @copy(%condition: i1, %source: !llvm.ptr) -> i1 {
+    %one = llvm.mlir.constant(1 : i32) : i32
+    %bytes = llvm.mlir.constant(16 : i32) : i32
+    %destination = llvm.alloca %one x !llvm.array<4 x i32> {alignment = 4 : i64} : (i32) -> !llvm.ptr
+    %selected = llvm.call @choose(%condition, %source) : (i1, !llvm.ptr) -> !llvm.ptr
+    "llvm.intr.memcpy"(%destination, %selected, %bytes) <{isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i32) -> ()
+    %null = llvm.mlir.zero : !llvm.ptr
+    %nonnull = llvm.icmp "ne" %selected, %null : !llvm.ptr
+    llvm.return %nonnull : i1
+  }
+}'''
+aggregate_raw = run([
+    opt, '--vrc-raise-llvm-memory=allow-raw-fallback=true',
+    '--vrc-raise-llvm-raw-memory',
+    '--vrc-raise-llvm-to-scalar', '--verify-each'
+], aggregate_raw_source)
+for expected in [
+    'initial_value = array<i8:', 'udonhl.memcpy', 'udonhl.inttoptr',
+    'udonhl.ptrtoint', 'cf.cond_br', 'cf.br', 'udonhl.call @choose',
+]:
+    assert expected in aggregate_raw, (expected, aggregate_raw)
+for forbidden in [
+    'llvm.func ', 'llvm.call ', 'llvm.return', 'llvm.intr.memcpy',
+    'llvm.icmp', 'llvm.mlir.global', 'builtin.unrealized_conversion_cast',
+]:
+    assert forbidden not in aggregate_raw, (forbidden, aggregate_raw)
+
 allocation = '%a = alloca [4 x i32], align 16\n'
 cases = [
     ('dynamic-allocation', '%a = alloca i32, i32 %index, align 4\n', 'positive static constant'),
@@ -227,7 +273,7 @@ for name, source, diagnostic in source_cases:
     assert result.returncode != 0 and not result.stdout, (name, result)
     assert 'cannot recover memory' in result.stderr and diagnostic in result.stderr, (name, result.stderr)
     rejections.append({'name': name, 'diagnostic': diagnostic, 'returncode': result.returncode})
-    if name in ['volatile', 'atomic', 'escape', 'mixed-load', 'skipped-init-store']:
+    if name in ['volatile', 'atomic', 'mixed-load', 'skipped-init-store']:
         pipeline = subprocess.run(
             [opt, '--pass-pipeline=builtin.module(vrc-recover-high-level)', '--verify-each'],
             input=imported, text=True, capture_output=True, timeout=60)

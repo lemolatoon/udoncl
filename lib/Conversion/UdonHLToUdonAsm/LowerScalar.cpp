@@ -359,15 +359,21 @@ private:
         return global.emitError(
             "raw Udon globals currently require internal address-space zero");
       Type type = global.getStorageType();
-      if (!type.isInteger(32) && !type.isF32() && !isa<host::PtrType>(type))
+      auto bytes = dyn_cast_or_null<DenseI8ArrayAttr>(
+          global.getInitialValueAttr());
+      bool scalar = type.isInteger(32) || type.isF32() ||
+                    isa<host::PtrType>(type);
+      if (!scalar && !bytes)
         return global.emitError(
-            "raw Udon global storage currently supports i32/f32/pointer");
+            "aggregate raw Udon globals require a serialized byte initializer");
       uint64_t alignment = static_cast<uint64_t>(global.getAlignment());
       cursor = llvm::alignTo(cursor, alignment);
       rawGlobalBases.try_emplace(global.getSymName(), cursor);
-      cursor += 4;
+      cursor += bytes ? bytes.size() : 4;
+      if (bytes)
+        rawGlobalInitializers.try_emplace(global.getSymName(), bytes);
       Attribute initial = global.getInitialValueAttr();
-      bool zero = !initial || isa<UnitAttr>(initial);
+      bool zero = !initial || isa<UnitAttr, DenseI8ArrayAttr>(initial);
       if (auto integer = dyn_cast_or_null<IntegerAttr>(initial))
         zero = integer.getValue().isZero();
       if (auto floating = dyn_cast_or_null<FloatAttr>(initial))
@@ -875,6 +881,16 @@ private:
             return store.emitError("unsupported raw Udon store");
           continue;
         }
+        if (auto memcpy = dyn_cast<host::MemcpyOp>(operation)) {
+          std::string destination =
+              valueSlots.lookup(memcpy.getDestination());
+          std::string source = valueSlots.lookup(memcpy.getSource());
+          std::string byteSize = valueSlots.lookup(memcpy.getByteSize());
+          if (destination.empty() || source.empty() || byteSize.empty())
+            return memcpy.emitError("memcpy pointer has no Udon heap slot");
+          emitRawMemcpy(memcpy.getLoc(), destination, source, byteSize);
+          continue;
+        }
         if (auto call = dyn_cast<host::CallOp>(operation)) {
           auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
               call, call.getCalleeAttr());
@@ -1167,6 +1183,69 @@ private:
     return success();
   }
 
+  void emitRawMemcpy(Location location, StringRef destination, StringRef source,
+                     StringRef byteCount) {
+    std::string prefix =
+        "__vrc_raw_memcpy_" + std::to_string(rawAccessIndex++);
+    std::string counter = prefix + "_counter";
+    std::string one = prefix + "_one";
+    std::string condition = prefix + "_condition";
+    std::string sourceIndex = prefix + "_source_index";
+    std::string destinationIndex = prefix + "_destination_index";
+    std::string byte = prefix + "_byte";
+    std::string next = prefix + "_next";
+    addSlot(counter, "SystemInt32", "0", false);
+    addSlot(one, "SystemInt32", "1", false);
+    addSlot(condition, "SystemBoolean", "null", false);
+    addSlot(sourceIndex, "SystemInt32", "0", false);
+    addSlot(destinationIndex, "SystemInt32", "0", false);
+    addSlot(byte, "SystemInt32", "0", false);
+    addSlot(next, "SystemInt32", "0", false);
+    uint64_t loopAddress = address;
+    emitPush(location, counter);
+    emitPush(location, byteCount);
+    emitPush(location, condition);
+    emitExtern(location,
+               "SystemInt32.__op_LessThan__SystemInt32_SystemInt32__"
+               "SystemBoolean");
+    emitPush(location, condition);
+    Operation *done = create(
+        location, vm::JumpIfFalseOp::getOperationName(),
+        {builder.getNamedAttr("target", builder.getI64IntegerAttr(0))});
+    address += 8;
+    emitPush(location, source);
+    emitPush(location, counter);
+    emitPush(location, sourceIndex);
+    emitExtern(location,
+               "SystemInt32.__op_Addition__SystemInt32_SystemInt32__"
+               "SystemInt32");
+    emitPush(location, destination);
+    emitPush(location, counter);
+    emitPush(location, destinationIndex);
+    emitExtern(location,
+               "SystemInt32.__op_Addition__SystemInt32_SystemInt32__"
+               "SystemInt32");
+    emitPush(location, rawHeapSlot);
+    emitPush(location, sourceIndex);
+    emitPush(location, byte);
+    emitExtern(location, "SystemInt32Array.__Get__SystemInt32__SystemInt32");
+    emitPush(location, rawHeapSlot);
+    emitPush(location, destinationIndex);
+    emitPush(location, byte);
+    emitExtern(location,
+               "SystemInt32Array.__Set__SystemInt32_SystemInt32__SystemVoid");
+    emitPush(location, counter);
+    emitPush(location, one);
+    emitPush(location, next);
+    emitExtern(location,
+               "SystemInt32.__op_Addition__SystemInt32_SystemInt32__"
+               "SystemInt32");
+    emitCopy(location, next, counter);
+    emitJump(location, static_cast<int64_t>(loopAddress));
+    done->setAttr("target",
+                  builder.getI64IntegerAttr(static_cast<int64_t>(address)));
+  }
+
   void emitGlobalInitialization(Location location) {
     emitPush(location, globalInitializedSlot);
     emitPush(location, globalOneSlot);
@@ -1185,6 +1264,36 @@ private:
       emitPush(location, rawHeapSlot);
       emitExtern(location,
                  "SystemInt32Array.__ctor__SystemInt32__SystemInt32Array");
+    }
+    unsigned rawGlobal = 0;
+    for (host::GlobalOp global : module.getOps<host::GlobalOp>()) {
+      auto initial = rawGlobalInitializers.find(global.getSymName());
+      auto base = rawGlobalBases.find(global.getSymName());
+      if (initial == rawGlobalInitializers.end() ||
+          base == rawGlobalBases.end())
+        continue;
+      unsigned index = 0;
+      for (int8_t byte : initial->second.asArrayRef()) {
+        if (byte) {
+          std::string prefix = "__vrc_raw_global_init_" +
+                               std::to_string(rawGlobal) + "_" +
+                               std::to_string(index);
+          std::string indexSlot = prefix + "_index";
+          std::string valueSlot = prefix + "_value";
+          addSlot(indexSlot, "SystemInt32",
+                  std::to_string(base->second + index), false);
+          addSlot(valueSlot, "SystemInt32",
+                  std::to_string(static_cast<uint8_t>(byte)), false);
+          emitPush(location, rawHeapSlot);
+          emitPush(location, indexSlot);
+          emitPush(location, valueSlot);
+          emitExtern(
+              location,
+              "SystemInt32Array.__Set__SystemInt32_SystemInt32__SystemVoid");
+        }
+        ++index;
+      }
+      ++rawGlobal;
     }
     unsigned global = 0;
     for (const std::string &name : globalOrder) {
@@ -1305,6 +1414,7 @@ private:
   llvm::StringMap<GlobalPlan> globalPlans;
   SmallVector<std::string> globalOrder;
   llvm::StringMap<uint64_t> rawGlobalBases;
+  llvm::StringMap<DenseI8ArrayAttr> rawGlobalInitializers;
   llvm::DenseMap<Operation *, uint64_t> rawAllocaBases;
   uint64_t rawHeapBytes = 0;
   uint64_t rawAccessIndex = 0;

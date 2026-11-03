@@ -1,6 +1,7 @@
 #include "VRC/Conversion/LLVMToHighLevel/Passes.h"
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -10,6 +11,7 @@
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/MathExtras.h"
+#include <cstring>
 
 using namespace mlir;
 
@@ -34,6 +36,9 @@ bool containsPointer(Type type) {
 }
 
 FailureOr<uint64_t> abiAlignment(const DataLayout &layout, Type type);
+FailureOr<uint64_t> structFieldOffset(const DataLayout &layout,
+                                      LLVM::LLVMStructType structure,
+                                      unsigned selected);
 
 FailureOr<uint64_t> fixedSize(const DataLayout &layout, Type type) {
   if (isa<LLVM::LLVMPointerType>(type))
@@ -119,8 +124,6 @@ struct FunctionPattern : OpConversionPattern<LLVM::LLVMFuncOp> {
   LogicalResult
   matchAndRewrite(LLVM::LLVMFuncOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    if (!hasPointerSignature(op))
-      return failure();
     SmallVector<Type> arguments, results;
     if (failed(getTypeConverter()->convertTypes(op.getArgumentTypes(),
                                                 arguments)) ||
@@ -152,7 +155,7 @@ struct CallPattern : OpConversionPattern<LLVM::CallOp> {
   LogicalResult
   matchAndRewrite(LLVM::CallOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    if (!hasPointerSignature(op) || !op.getCallee() ||
+    if (!op.getCallee() ||
         op.getCConv() != LLVM::cconv::CConv::C ||
         op.getTailCallKind() != LLVM::TailCallKind::None ||
         !op.getOpBundleSizes().empty() || op.getVarCalleeType())
@@ -180,8 +183,6 @@ struct ReturnPattern : OpConversionPattern<LLVM::ReturnOp> {
   LogicalResult
   matchAndRewrite(LLVM::ReturnOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    if (!llvm::any_of(op.getOperandTypes(), containsPointer))
-      return failure();
     rewriter.replaceOpWithNewOp<func::ReturnOp>(op, adaptor.getOperands());
     return success();
   }
@@ -199,8 +200,128 @@ FailureOr<Attribute> zeroInitializer(OpBuilder &builder, Type storageType) {
   return builder.getUnitAttr();
 }
 
+LogicalResult serializeInteger(llvm::APInt value, MutableArrayRef<int8_t> out) {
+  if (value.getBitWidth() > out.size() * 8)
+    return failure();
+  value = value.zextOrTrunc(out.size() * 8);
+  for (unsigned index = 0; index < out.size(); ++index)
+    out[index] = static_cast<int8_t>(value.extractBitsAsZExtValue(8, index * 8));
+  return success();
+}
+
+LogicalResult serializeAttribute(Attribute attribute, Type type,
+                                 const DataLayout &layout,
+                                 MutableArrayRef<int8_t> out) {
+  if (auto integer = dyn_cast<IntegerAttr>(attribute))
+    return serializeInteger(integer.getValue(), out);
+  if (auto floating = dyn_cast<FloatAttr>(attribute))
+    return serializeInteger(floating.getValue().bitcastToAPInt(), out);
+  if (isa<LLVM::ZeroAttr>(attribute)) {
+    llvm::fill(out, 0);
+    return success();
+  }
+  if (auto text = dyn_cast<StringAttr>(attribute)) {
+    if (text.getValue().size() > out.size())
+      return failure();
+    llvm::fill(out, 0);
+    std::memcpy(out.data(), text.getValue().data(), text.getValue().size());
+    return success();
+  }
+  auto elements = dyn_cast<ElementsAttr>(attribute);
+  auto array = dyn_cast<LLVM::LLVMArrayType>(type);
+  if (!elements || !array ||
+      elements.getNumElements() != array.getNumElements())
+    return failure();
+  auto elementSize = fixedSize(layout, array.getElementType());
+  auto elementAlignment = abiAlignment(layout, array.getElementType());
+  if (failed(elementSize) || failed(elementAlignment))
+    return failure();
+  uint64_t stride = llvm::alignTo(*elementSize, *elementAlignment);
+  unsigned index = 0;
+  for (Attribute element : elements.getValues<Attribute>()) {
+    if (failed(serializeAttribute(element, array.getElementType(), layout,
+                                  out.slice(index * stride, *elementSize))))
+      return failure();
+    ++index;
+  }
+  return success();
+}
+
+FailureOr<std::pair<uint64_t, Type>> aggregateElement(
+    Type type, ArrayRef<int64_t> position, const DataLayout &layout) {
+  uint64_t offset = 0;
+  for (int64_t selected : position) {
+    if (selected < 0)
+      return failure();
+    if (auto array = dyn_cast<LLVM::LLVMArrayType>(type)) {
+      if (static_cast<uint64_t>(selected) >= array.getNumElements())
+        return failure();
+      auto size = fixedSize(layout, array.getElementType());
+      auto alignment = abiAlignment(layout, array.getElementType());
+      if (failed(size) || failed(alignment))
+        return failure();
+      offset += static_cast<uint64_t>(selected) *
+                llvm::alignTo(*size, *alignment);
+      type = array.getElementType();
+    } else if (auto structure = dyn_cast<LLVM::LLVMStructType>(type)) {
+      auto field = structFieldOffset(layout, structure,
+                                     static_cast<unsigned>(selected));
+      if (failed(field))
+        return failure();
+      offset += *field;
+      type = structure.getBody()[selected];
+    } else {
+      return failure();
+    }
+  }
+  return std::pair<uint64_t, Type>{offset, type};
+}
+
+LogicalResult serializeValue(Value value, Type type, const DataLayout &layout,
+                             MutableArrayRef<int8_t> out) {
+  if (isa_and_nonnull<LLVM::UndefOp>(value.getDefiningOp()) ||
+      isa_and_nonnull<LLVM::ZeroOp>(value.getDefiningOp())) {
+    llvm::fill(out, 0);
+    return success();
+  }
+  if (auto constant = value.getDefiningOp<LLVM::ConstantOp>())
+    return serializeAttribute(constant.getValue(), type, layout, out);
+  auto insert = value.getDefiningOp<LLVM::InsertValueOp>();
+  if (!insert || failed(serializeValue(insert.getContainer(), type, layout, out)))
+    return failure();
+  auto selected = aggregateElement(type, insert.getPosition(), layout);
+  if (failed(selected))
+    return failure();
+  auto size = fixedSize(layout, selected->second);
+  if (failed(size) || selected->first > out.size() ||
+      *size > out.size() - selected->first)
+    return failure();
+  return serializeValue(insert.getValue(), selected->second, layout,
+                        out.slice(selected->first, *size));
+}
+
 FailureOr<Attribute> globalInitializer(LLVM::GlobalOp op, Type storageType,
-                                       OpBuilder &builder) {
+                                       OpBuilder &builder,
+                                       const DataLayout &layout) {
+  bool aggregate = isa<LLVM::LLVMArrayType, LLVM::LLVMStructType>(
+      op.getGlobalType());
+  if (aggregate) {
+    auto size = fixedSize(layout, op.getGlobalType());
+    if (failed(size))
+      return failure();
+    SmallVector<int8_t> bytes(*size, 0);
+    if (auto value = op.getValue()) {
+      if (failed(serializeAttribute(*value, op.getGlobalType(), layout, bytes)))
+        return failure();
+    } else if (Block *block = op.getInitializerBlock()) {
+      auto returned = dyn_cast<LLVM::ReturnOp>(block->getTerminator());
+      if (!returned || returned.getNumOperands() != 1 ||
+          failed(serializeValue(returned.getOperand(0), op.getGlobalType(),
+                                layout, bytes)))
+        return failure();
+    }
+    return builder.getDenseI8ArrayAttr(bytes);
+  }
   if (auto value = op.getValue()) {
     if (isa<LLVM::ZeroAttr>(*value))
       return zeroInitializer(builder, storageType);
@@ -239,10 +360,10 @@ struct GlobalPattern : OpConversionPattern<LLVM::GlobalOp> {
     Type storageType = getTypeConverter()->convertType(op.getGlobalType());
     if (!storageType)
       return failure();
-    auto initial = globalInitializer(op, storageType, rewriter);
+    DataLayout layout(op->getParentOfType<ModuleOp>());
+    auto initial = globalInitializer(op, storageType, rewriter, layout);
     if (failed(initial))
       return reject(op, "global initializer is not a constant or zero value");
-    DataLayout layout(op->getParentOfType<ModuleOp>());
     auto naturalAlignment = abiAlignment(layout, op.getGlobalType());
     if (failed(naturalAlignment))
       return reject(op, "global alignment is not representable by ILP32");
@@ -525,6 +646,118 @@ struct IntToPtrPattern : OpConversionPattern<LLVM::IntToPtrOp> {
   }
 };
 
+struct NullPointerPattern : OpConversionPattern<LLVM::ZeroOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(LLVM::ZeroOp op, OpAdaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto pointer = dyn_cast<LLVM::LLVMPointerType>(op.getType());
+    if (!pointer)
+      return failure();
+    Value zero = arith::ConstantIntOp::create(rewriter, op.getLoc(), 0, 32);
+    OperationState state(op.getLoc(),
+                         ::vrc::udonhl::IntToPtrOp::getOperationName());
+    state.addOperands(zero);
+    state.addTypes(pointerType(rewriter.getContext(), pointer));
+    auto *result = rewriter.create(state);
+    rewriter.replaceOp(op, result->getResults());
+    return success();
+  }
+};
+
+struct PointerComparePattern : OpConversionPattern<LLVM::ICmpOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(LLVM::ICmpOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (!isa<::vrc::udonhl::PtrType>(adaptor.getLhs().getType()) ||
+        !isa<::vrc::udonhl::PtrType>(adaptor.getRhs().getType()))
+      return failure();
+    arith::CmpIPredicate predicate;
+    switch (op.getPredicate()) {
+    case LLVM::ICmpPredicate::eq:
+      predicate = arith::CmpIPredicate::eq;
+      break;
+    case LLVM::ICmpPredicate::ne:
+      predicate = arith::CmpIPredicate::ne;
+      break;
+    case LLVM::ICmpPredicate::ult:
+      predicate = arith::CmpIPredicate::ult;
+      break;
+    case LLVM::ICmpPredicate::ule:
+      predicate = arith::CmpIPredicate::ule;
+      break;
+    case LLVM::ICmpPredicate::ugt:
+      predicate = arith::CmpIPredicate::ugt;
+      break;
+    case LLVM::ICmpPredicate::uge:
+      predicate = arith::CmpIPredicate::uge;
+      break;
+    default:
+      return reject(op, "pointer comparison predicate is not implemented");
+    }
+    auto toInteger = [&](Value pointer) {
+      OperationState state(op.getLoc(),
+                           ::vrc::udonhl::PtrToIntOp::getOperationName());
+      state.addOperands(pointer);
+      state.addTypes(rewriter.getI32Type());
+      return rewriter.create(state)->getResult(0);
+    };
+    rewriter.replaceOpWithNewOp<arith::CmpIOp>(
+        op, predicate, toInteger(adaptor.getLhs()),
+        toInteger(adaptor.getRhs()));
+    return success();
+  }
+};
+
+struct PointerBranchPattern : OpConversionPattern<LLVM::BrOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(LLVM::BrOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.replaceOpWithNewOp<cf::BranchOp>(op, op.getDest(),
+                                              adaptor.getDestOperands());
+    return success();
+  }
+};
+
+struct PointerCondBranchPattern : OpConversionPattern<LLVM::CondBrOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(LLVM::CondBrOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.replaceOpWithNewOp<cf::CondBranchOp>(
+        op, adaptor.getCondition(), op.getTrueDest(),
+        adaptor.getTrueDestOperands(), op.getFalseDest(),
+        adaptor.getFalseDestOperands());
+    return success();
+  }
+};
+
+struct MemcpyPattern : OpConversionPattern<LLVM::MemcpyOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(LLVM::MemcpyOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (op.getIsVolatile())
+      return reject(op, "volatile memcpy is not implemented");
+    if (!adaptor.getLen().getType().isInteger(32))
+      return reject(op, "memcpy length must use the 32-bit Udon ABI");
+    OperationState state(op.getLoc(),
+                         ::vrc::udonhl::MemcpyOp::getOperationName());
+    state.addOperands(
+        {adaptor.getDst(), adaptor.getSrc(), adaptor.getLen()});
+    rewriter.create(state);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 struct RaiseLLVMRawMemoryPass
     : impl::RaiseLLVMRawMemoryPassBase<RaiseLLVMRawMemoryPass> {
   void runOnOperation() override {
@@ -541,23 +774,35 @@ struct RaiseLLVMRawMemoryPass
     ConversionTarget target(getContext());
     target.addLegalOp<ModuleOp>();
     target.addLegalDialect<LLVM::LLVMDialect, arith::ArithDialect,
+                           cf::ControlFlowDialect,
                            func::FuncDialect, memref::MemRefDialect,
                            ::vrc::udonhl::UdonHLDialect>();
     target.addIllegalOp<LLVM::AllocaOp, LLVM::GEPOp, LLVM::LoadOp,
                         LLVM::StoreOp, LLVM::PtrToIntOp, LLVM::IntToPtrOp,
                         LLVM::GlobalOp, LLVM::AddressOfOp>();
-    target.addDynamicallyLegalOp<LLVM::LLVMFuncOp>(
-        [](LLVM::LLVMFuncOp op) { return !hasPointerSignature(op); });
-    target.addDynamicallyLegalOp<LLVM::CallOp>(
-        [](LLVM::CallOp op) { return !hasPointerSignature(op); });
-    target.addDynamicallyLegalOp<LLVM::ReturnOp>([](LLVM::ReturnOp op) {
-      return !llvm::any_of(op.getOperandTypes(), containsPointer);
+    target.addIllegalOp<LLVM::MemcpyOp>();
+    target.addDynamicallyLegalOp<LLVM::ZeroOp>([](LLVM::ZeroOp op) {
+      return !isa<LLVM::LLVMPointerType>(op.getType());
     });
+    target.addDynamicallyLegalOp<LLVM::ICmpOp>([](LLVM::ICmpOp op) {
+      return !isa<LLVM::LLVMPointerType>(op.getLhs().getType());
+    });
+    target.addDynamicallyLegalOp<LLVM::BrOp>([](LLVM::BrOp op) {
+      return llvm::none_of(op.getOperandTypes(), containsPointer);
+    });
+    target.addDynamicallyLegalOp<LLVM::CondBrOp>([](LLVM::CondBrOp op) {
+      return llvm::none_of(op.getOperandTypes(), containsPointer);
+    });
+    target.addIllegalOp<LLVM::LLVMFuncOp, LLVM::CallOp, LLVM::ReturnOp>();
 
     RewritePatternSet patterns(&getContext());
     patterns.add<FunctionPattern, CallPattern, ReturnPattern, GlobalPattern,
                  AllocaPattern, GEPPattern, LoadPattern, StorePattern,
                  PtrToIntPattern, IntToPtrPattern>(converter, &getContext());
+    patterns.add<NullPointerPattern, PointerComparePattern,
+                 PointerBranchPattern, PointerCondBranchPattern>(converter,
+                                                                  &getContext());
+    patterns.add<MemcpyPattern>(converter, &getContext());
     patterns.add<AddressPattern>(converter, &getContext(), globalAddressSpaces);
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns))))

@@ -88,7 +88,8 @@ mlir::LogicalResult vrc::udonhl::GlobalOp::verify() {
           mlir::dyn_cast_if_present<mlir::TypedAttr>(getInitialValueAttr()))
     if (initial.getType() != getStorageType() &&
         !(mlir::isa<PtrType>(getStorageType()) &&
-          initial.getType().isInteger(32)))
+          initial.getType().isInteger(32)) &&
+        !mlir::isa<mlir::DenseI8ArrayAttr>(initial))
       return emitOpError("initializer type must match storage_type");
   return mlir::success();
 }

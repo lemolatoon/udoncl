@@ -207,6 +207,17 @@ raw_memory_source = r'''module {
     %loaded = "udonhl.load"(%pointer) <{alignment = 4 : i64}> : (!udonhl.ptr<0>) -> f32
     return %loaded : f32
   }
+  func.func @raw_memcpy() -> i32 attributes {vrc.export_id = 3 : i32} {
+    %source_bytes = arith.constant 4 : i32
+    %source = "udonhl.alloca"(%source_bytes) <{alignment = 4 : i64}> : (i32) -> !udonhl.ptr<0>
+    %destination_bytes = arith.constant 4 : i32
+    %destination = "udonhl.alloca"(%destination_bytes) <{alignment = 4 : i64}> : (i32) -> !udonhl.ptr<0>
+    %value = arith.constant 270544960 : i32
+    "udonhl.store"(%value, %source) <{alignment = 4 : i64}> : (i32, !udonhl.ptr<0>) -> ()
+    "udonhl.memcpy"(%destination, %source, %source_bytes) : (!udonhl.ptr<0>, !udonhl.ptr<0>, i32) -> ()
+    %copied = "udonhl.load"(%destination) <{alignment = 4 : i64}> : (!udonhl.ptr<0>) -> i32
+    return %copied : i32
+  }
 }'''
 raw_memory_lowered = subprocess.run(
     [opt, '--vrc-lower-udonhl-to-udonasm', '--verify-each'],
@@ -214,7 +225,7 @@ raw_memory_lowered = subprocess.run(
 assert raw_memory_lowered.returncode == 0, raw_memory_lowered.stderr
 for expected in [
     'name = "__vrc_raw_heap"',
-    'initial = "12", name = "__vrc_raw_heap_length"',
+    'initial = "20", name = "__vrc_raw_heap_length"',
     'SystemInt32Array.__ctor__SystemInt32__SystemInt32Array',
     'SystemInt32Array.__Get__SystemInt32__SystemInt32',
     'SystemInt32Array.__Set__SystemInt32_SystemInt32__SystemVoid',
@@ -224,13 +235,27 @@ for expected in [
     'SystemInt32.__op_BitwiseOr__SystemInt32_SystemInt32__SystemInt32',
     'SystemBitConverter.__SingleToInt32Bits__SystemSingle__SystemInt32',
     'SystemBitConverter.__Int32BitsToSingle__SystemInt32__SystemSingle',
+    'name = "__vrc_raw_memcpy_',
 ]:
     assert expected in raw_memory_lowered.stdout, (
         expected, raw_memory_lowered.stdout)
 for forbidden in ['udonhl.global', 'udonhl.address_of', 'udonhl.alloca',
-                  'udonhl.load', 'udonhl.store']:
+                  'udonhl.load', 'udonhl.store', 'udonhl.memcpy']:
     assert forbidden not in raw_memory_lowered.stdout, (
         forbidden, raw_memory_lowered.stdout)
+
+dynamic_memcpy = raw_memory_source.replace(
+    'func.func @raw_memcpy() -> i32',
+    'func.func @raw_memcpy(%dynamic_size: i32) -> i32').replace(
+        '"udonhl.memcpy"(%destination, %source, %source_bytes)',
+        '"udonhl.memcpy"(%destination, %source, %dynamic_size)')
+rejected = subprocess.run(
+    [opt, '--vrc-lower-udonhl-to-udonasm'], input=dynamic_memcpy,
+    text=True, capture_output=True)
+assert rejected.returncode == 0, rejected.stderr
+assert 'udonhl.memcpy' not in rejected.stdout
+assert 'SystemInt32.__op_LessThan__SystemInt32_SystemInt32__SystemBoolean' \
+    in rejected.stdout
 
 raw_llvm_source = r'''module {
   llvm.mlir.global internal @counter(0 : i32) {addr_space = 0 : i32, alignment = 4 : i64} : i32

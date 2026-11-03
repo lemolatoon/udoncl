@@ -1667,7 +1667,9 @@ int main(int argc, char **argv) {
         // path, where the VRC operation verifier accepts them.
         recovery.enableVerifier(false);
         recovery.addPass(createCanonicalizerPass());
-        recovery.addPass(::vrc::createRaiseLLVMMemoryPass());
+        ::vrc::RaiseLLVMMemoryPassOptions memoryOptions;
+        memoryOptions.allowRawFallback = true;
+        recovery.addPass(::vrc::createRaiseLLVMMemoryPass(memoryOptions));
         recovery.addPass(::vrc::createRaiseLLVMRawMemoryPass());
         recovery.addPass(::vrc::createRaiseLLVMToScalarPass());
         recovery.addPass(createCanonicalizerPass());

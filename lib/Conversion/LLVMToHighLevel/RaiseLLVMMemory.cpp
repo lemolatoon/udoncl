@@ -6,6 +6,7 @@
 #include "mlir/Interfaces/DataLayoutInterfaces.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "llvm/ADT/SmallSet.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/IR/DataLayout.h"
@@ -14,6 +15,7 @@
 #include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/MathExtras.h"
+#include <functional>
 #include <numeric>
 
 using namespace mlir;
@@ -73,8 +75,9 @@ struct CountedLoop {
 // elements; flattening avoids inventing per-dimension bounds for LLVM GEPs.
 class MemoryPlan {
 public:
-  MemoryPlan(ModuleOp module)
-      : module(module), layout(module), dominance(module) {}
+  MemoryPlan(ModuleOp module, bool allowRawFallback)
+      : module(module), layout(module), dominance(module),
+        allowRawFallback(allowRawFallback) {}
   LogicalResult analyze();
   SmallVector<Allocation> allocations;
   llvm::StringMap<unsigned> globalAllocations;
@@ -88,6 +91,7 @@ private:
   uint64_t abiAlignment(Type type);
   LogicalResult addAllocation(LLVM::AllocaOp op);
   LogicalResult addGlobal(LLVM::GlobalOp op);
+  bool canUseTyped(Value pointer, unsigned depth = 0);
   FailureOr<PointerInfo> resolve(Value pointer, Operation *at,
                                  unsigned depth = 0);
   FailureOr<int64_t> leafCount(Type type, Type &leaf);
@@ -103,7 +107,31 @@ private:
   DominanceInfo dominance;
   llvm::LLVMContext llvmContext;
   std::optional<llvm::DataLayout> sourceLayout;
+  bool allowRawFallback;
 };
+
+bool MemoryPlan::canUseTyped(Value pointer, unsigned depth) {
+  if (depth > 64)
+    return false;
+  for (OpOperand &use : pointer.getUses()) {
+    Operation *user = use.getOwner();
+    if (auto gep = dyn_cast<LLVM::GEPOp>(user)) {
+      if (use.getOperandNumber() != 0)
+        return false;
+      if (!canUseTyped(gep.getRes(), depth + 1))
+        return false;
+    } else if (isa<LLVM::LoadOp>(user)) {
+      if (use.getOperandNumber() != 0)
+        return false;
+    } else if (isa<LLVM::StoreOp>(user)) {
+      if (use.getOperandNumber() != 1)
+        return false;
+    } else {
+      return false;
+    }
+  }
+  return true;
+}
 
 llvm::Type *MemoryPlan::sourceType(Type type) {
   if (auto array = dyn_cast<LLVM::LLVMArrayType>(type))
@@ -148,7 +176,8 @@ FailureOr<int64_t> MemoryPlan::leafCount(Type type, Type &leaf) {
   return count;
 }
 LogicalResult MemoryPlan::addAllocation(LLVM::AllocaOp op) {
-  if (requiresRawMemory(op.getElemType()))
+  if (requiresRawMemory(op.getElemType()) ||
+      (allowRawFallback && !canUseTyped(op.getRes())))
     return success();
   auto function = op->getParentOfType<LLVM::LLVMFuncOp>();
   if (!function || op->getParentOfType<ModuleOp>() != module ||
@@ -223,6 +252,16 @@ LogicalResult MemoryPlan::addGlobal(LLVM::GlobalOp op) {
   auto initial = op.getValue();
   auto elements = initial ? dyn_cast<ElementsAttr>(*initial) : ElementsAttr();
   if (!array || !elements)
+    return success();
+  bool hasAddress = false;
+  bool eligible = true;
+  module.walk([&](LLVM::AddressOfOp address) {
+    if (address.getGlobalName() == op.getSymName()) {
+      hasAddress = true;
+      eligible &= canUseTyped(address.getRes());
+    }
+  });
+  if (!hasAddress || (allowRawFallback && !eligible))
     return success();
   Type leaf;
   auto count = leafCount(array, leaf);
@@ -501,6 +540,29 @@ bool MemoryPlan::initialized(LLVM::LoadOp load, const PointerInfo &info) {
         dominance.dominates(loop->exit, load->getBlock()))
       return true;
   }
+  llvm::SmallPtrSet<Block *, 16> visiting;
+  std::function<bool(Block *, Operation *)> initializedOnAllPaths =
+      [&](Block *block, Operation *before) {
+        for (Operation &operation : llvm::reverse(*block)) {
+          if (before && !operation.isBeforeInBlock(before))
+            continue;
+          auto found = accesses.find(&operation);
+          if (found != accesses.end())
+            if (auto store = dyn_cast<LLVM::StoreOp>(&operation))
+              if (found->second.allocation == info.allocation &&
+                  sameOffset(found->second, info))
+                return true;
+        }
+        if (block->isEntryBlock() || !visiting.insert(block).second)
+          return false;
+        bool result = llvm::all_of(block->getPredecessors(), [&](Block *pred) {
+          return initializedOnAllPaths(pred, nullptr);
+        });
+        visiting.erase(block);
+        return result;
+      };
+  if (initializedOnAllPaths(load->getBlock(), load.getOperation()))
+    return true;
   return static_cast<int64_t>(initializedConstants.size()) ==
          allocations[info.allocation].count;
 }
@@ -723,9 +785,14 @@ struct StorePattern : OpConversionPattern<LLVM::StoreOp> {
 };
 struct RaiseLLVMMemoryPass
     : impl::RaiseLLVMMemoryPassBase<RaiseLLVMMemoryPass> {
+  RaiseLLVMMemoryPass() = default;
+  explicit RaiseLLVMMemoryPass(RaiseLLVMMemoryPassOptions options)
+      : Base(std::move(options)) {}
+  RaiseLLVMMemoryPass(const RaiseLLVMMemoryPass &other) : Base(other) {}
+
   void runOnOperation() override {
     auto module = getOperation();
-    MemoryPlan plan(module);
+    MemoryPlan plan(module, allowRawFallback);
     if (failed(plan.analyze())) {
       signalPassFailure();
       return;

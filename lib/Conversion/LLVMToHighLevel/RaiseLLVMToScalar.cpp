@@ -392,7 +392,9 @@ void registerHighLevelRecoveryPipeline() {
       "Recover proven LLVM memory/scalars and structure the recovered CFG",
       [](OpPassManager &manager) {
         manager.addPass(mlir::createMem2Reg());
-        manager.addPass(createRaiseLLVMMemoryPass());
+        RaiseLLVMMemoryPassOptions memoryOptions;
+        memoryOptions.allowRawFallback = true;
+        manager.addPass(createRaiseLLVMMemoryPass(memoryOptions));
         manager.addPass(createRaiseLLVMRawMemoryPass());
         manager.addPass(createRaiseLLVMToScalarPass());
         manager.addPass(mlir::createLiftControlFlowToSCFPass());
