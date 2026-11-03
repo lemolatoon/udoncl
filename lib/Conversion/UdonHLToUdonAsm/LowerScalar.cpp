@@ -46,6 +46,11 @@ struct GlobalPlan {
   ElementsAttr initialValue;
 };
 
+struct UnityBufferPoolEntry {
+  int64_t id;
+  std::string heapSlot;
+};
+
 static FailureOr<StringRef> udonType(Type type) {
   if (type.isInteger(1))
     return StringRef("SystemBoolean");
@@ -60,7 +65,7 @@ static FailureOr<StringRef> udonType(Type type) {
   if (type.isIndex())
     return StringRef("SystemInt32");
   if (isa<::vrc::vrc::BufferType>(type))
-    return StringRef("UnityEngineRenderTexture");
+    return StringRef("SystemInt32");
   if (isa<::vrc::vrc::EventType>(type))
     return StringRef("SystemInt32");
   if (isa<host::FrameType>(type))
@@ -168,15 +173,19 @@ static StringRef comparisonExtern(arith::CmpIOp operation) {
     name = "Inequality";
     break;
   case arith::CmpIPredicate::slt:
+  case arith::CmpIPredicate::ult:
     name = "LessThan";
     break;
   case arith::CmpIPredicate::sle:
+  case arith::CmpIPredicate::ule:
     name = "LessThanOrEqual";
     break;
   case arith::CmpIPredicate::sgt:
+  case arith::CmpIPredicate::ugt:
     name = "GreaterThan";
     break;
   case arith::CmpIPredicate::sge:
+  case arith::CmpIPredicate::uge:
     name = "GreaterThanOrEqual";
     break;
   default:
@@ -235,7 +244,7 @@ public:
     llvm::SmallSet<int64_t, 8> exportIds;
     llvm::SmallSet<std::string, 8> eventNames;
     llvm::SmallSet<std::string, 8> publicNames;
-    if (failed(planRawMemory()))
+    if (failed(planUnityBufferPool()) || failed(planRawMemory()))
       return failure();
     unsigned globalIndex = 0;
     for (memref::GlobalOp global : module.getOps<memref::GlobalOp>()) {
@@ -370,6 +379,27 @@ public:
   }
 
 private:
+  LogicalResult planUnityBufferPool() {
+    auto pool = module->getAttrOfType<ArrayAttr>("vrc.unity_buffer_pool");
+    if (!pool)
+      return success();
+    llvm::SmallSet<int64_t, 8> ids;
+    llvm::SmallSet<std::string, 8> slots;
+    for (Attribute attribute : pool) {
+      auto entry = dyn_cast<DictionaryAttr>(attribute);
+      auto id = entry ? entry.getAs<IntegerAttr>("id") : IntegerAttr();
+      auto heapSlot =
+          entry ? entry.getAs<StringAttr>("heap_slot") : StringAttr();
+      if (!id || id.getInt() <= 0 || !heapSlot || heapSlot.getValue().empty() ||
+          !ids.insert(id.getInt()).second ||
+          !slots.insert(heapSlot.getValue().str()).second)
+        return module.emitError("invalid Unity buffer pool metadata");
+      unityBufferPool.push_back({id.getInt(), heapSlot.getValue().str()});
+      addSlot(heapSlot.getValue(), "UnityEngineRenderTexture", "null", true);
+    }
+    return success();
+  }
+
   LogicalResult planRawMemory() {
     uint64_t cursor = 4; // Keep the null pointer unmapped.
     for (host::GlobalOp global : module.getOps<host::GlobalOp>()) {
@@ -536,15 +566,22 @@ private:
           continue;
         if (isa<::vrc::vrc::DispatchDescCreateOp>(operation))
           continue;
+        if (auto cast = dyn_cast<UnrealizedConversionCastOp>(operation)) {
+          if (cast.getInputs().size() != 1 || cast.getOutputs().size() != 1)
+            return cast.emitError(
+                "Udon token conversion requires one input and one output");
+          std::string source = valueSlots.lookup(cast.getInputs().front());
+          if (source.empty())
+            return cast.emitError("Udon token conversion has no source slot");
+          valueSlots[cast.getOutputs().front()] = source;
+          continue;
+        }
         if (auto allocation = dyn_cast<::vrc::vrc::BufferAllocOp>(operation)) {
-          auto heapSlot =
-              allocation->getAttrOfType<StringAttr>("vrc.unity_heap_slot");
-          if (!heapSlot || heapSlot.getValue().empty())
+          std::string logicalId = valueSlots.lookup(allocation.getLogicalId());
+          if (logicalId.empty())
             return allocation.emitError(
-                "Unity buffer allocation requires a bound heap slot");
-          addSlot(heapSlot.getValue(), "UnityEngineRenderTexture", "null",
-                  true);
-          valueSlots[allocation.getBuffer()] = heapSlot.getValue().str();
+                "Unity buffer allocation requires a logical-id slot");
+          valueSlots[allocation.getBuffer()] = logicalId;
           std::string status = prefix + "v" + std::to_string(valueIndex++);
           addSlot(status, "SystemInt32", "0", false);
           valueSlots[allocation.getStatus()] = status;
@@ -658,6 +695,8 @@ private:
         }
         if (isa<host::AllocaOp, host::AddressOfOp>(operation))
           continue;
+        if (isa<UnrealizedConversionCastOp>(operation))
+          continue;
         if (isa<arith::ConstantOp>(operation))
           continue;
         if (isa<::vrc::vrc::DispatchDescCreateOp>(operation))
@@ -767,15 +806,21 @@ private:
           auto outputIndex = dispatch->getAttrOfType<IntegerAttr>(
               "vrc.unity_output_resource_index");
           int64_t output = outputIndex ? outputIndex.getInt() : 0;
-          std::string destination =
+          std::string destinationToken =
               output >= 0 && size_t(output) < dispatch.getResources().size()
                   ? valueSlots.lookup(dispatch.getResources()[output])
                   : std::string();
           if (!descriptor || !materialSlot || materialSlot.getValue().empty() ||
-              destination.empty())
+              destinationToken.empty())
             return dispatch.emitError(
                 "Unity dispatch requires a bound output, a copied scalar "
                 "descriptor and a kernel material slot");
+          std::string destination = selectUnityBuffer(
+              dispatch.getLoc(), destinationToken,
+              prefix + "dispatch_" + std::to_string(dispatch.getKernelId()) +
+                  "_output");
+          if (destination.empty())
+            return dispatch.emitError("Unity dispatch has no physical pool");
           addSlot(materialSlot.getValue(), "UnityEngineMaterial", "null", true);
           unsigned scalarIndex = 0, bufferIndex = 0;
           for (auto [argumentIndex, kindValue] :
@@ -794,6 +839,14 @@ private:
                     "dispatch buffer has no allocated Udon heap slot");
               if (bufferIndex++ == size_t(output))
                 continue;
+              texture = selectUnityBuffer(
+                  dispatch.getLoc(), texture,
+                  prefix + "dispatch_" +
+                      std::to_string(dispatch.getKernelId()) + "_input_" +
+                      std::to_string(argumentIndex));
+              if (texture.empty())
+                return dispatch.emitError(
+                    "Unity dispatch has no physical pool");
               std::string propertySlot =
                   "__udoncl_kernel_" + std::to_string(dispatch.getKernelId()) +
                   "_arg_" + std::to_string(argumentIndex);
@@ -846,13 +899,22 @@ private:
         if (auto copy = dyn_cast<::vrc::vrc::BufferCopyOp>(operation)) {
           auto materialSlot =
               copy->getAttrOfType<StringAttr>("vrc.unity_copy_material_slot");
-          std::string source = valueSlots.lookup(copy.getSource());
-          std::string destination = valueSlots.lookup(copy.getDestination());
+          std::string sourceToken = valueSlots.lookup(copy.getSource());
+          std::string destinationToken =
+              valueSlots.lookup(copy.getDestination());
           if (!materialSlot || materialSlot.getValue().empty() ||
-              source.empty() || destination.empty() || source == destination)
+              sourceToken.empty() || destinationToken.empty())
             return copy.emitError(
                 "Unity buffer copy requires distinct bound buffers and a copy "
                 "material slot");
+          std::string source = selectUnityBuffer(
+              copy.getLoc(), sourceToken,
+              prefix + "copy_source_" + std::to_string(valueIndex++));
+          std::string destination = selectUnityBuffer(
+              copy.getLoc(), destinationToken,
+              prefix + "copy_destination_" + std::to_string(valueIndex++));
+          if (source.empty() || destination.empty())
+            return copy.emitError("Unity copy has no physical buffer pool");
           addSlot(materialSlot.getValue(), "UnityEngineMaterial", "null", true);
           emitPush(copy.getLoc(), source);
           emitPush(copy.getLoc(), destination);
@@ -1186,8 +1248,10 @@ private:
           signature = comparisonExtern(comparison);
         if (signature.empty() || operation.getNumOperands() != 2 ||
             operation.getNumResults() != 1)
-          return operation.emitError("operation is not in the initial scalar "
-                                     "Udon extern legalization set");
+          return operation.emitError()
+                 << "operation " << operation.getName()
+                 << " is not in the initial scalar Udon extern legalization "
+                    "set";
         auto lhs = valueSlots.find(operation.getOperand(0));
         auto rhs = valueSlots.find(operation.getOperand(1));
         if (lhs == valueSlots.end() || rhs == valueSlots.end())
@@ -1217,15 +1281,51 @@ private:
     slots.push_back({name.str(), type.str(), initial.str(), isPublic});
   }
 
+  std::string selectUnityBuffer(Location location, StringRef token,
+                                StringRef prefix) {
+    if (unityBufferPool.empty())
+      return {};
+    std::string selected = (prefix + "_texture").str();
+    addSlot(selected, "UnityEngineRenderTexture", "null", false);
+    SmallVector<Operation *> done;
+    for (auto [index, entry] : llvm::enumerate(unityBufferPool)) {
+      std::string id = (prefix + "_id_" + std::to_string(index)).str();
+      std::string matches =
+          (prefix + "_matches_" + std::to_string(index)).str();
+      addSlot(id, "SystemInt32", std::to_string(entry.id), false);
+      addSlot(matches, "SystemBoolean", "null", false);
+      emitPush(location, token);
+      emitPush(location, id);
+      emitPush(location, matches);
+      emitExtern(location,
+                 "SystemInt32.__op_Equality__SystemInt32_SystemInt32__"
+                 "SystemBoolean");
+      emitPush(location, matches);
+      Operation *next = create(
+          location, vm::JumpIfFalseOp::getOperationName(),
+          {builder.getNamedAttr("target", builder.getI64IntegerAttr(0))});
+      address += 8;
+      emitCopy(location, entry.heapSlot, selected);
+      done.push_back(emitJump(location, 0));
+      next->setAttr("target",
+                    builder.getI64IntegerAttr(static_cast<int64_t>(address)));
+    }
+    for (Operation *jump : done)
+      jump->setAttr("target",
+                    builder.getI64IntegerAttr(static_cast<int64_t>(address)));
+    return selected;
+  }
+
   LogicalResult emitRawLoad(Location location, StringRef pointer,
                             StringRef result, Type type) {
-    if (!type.isInteger(8) && !type.isInteger(32) && !type.isF32() &&
-        !isa<host::PtrType>(type))
+    if (!type.isInteger(8) && !type.isInteger(32) && !type.isInteger(64) &&
+        !type.isF32() && !isa<host::PtrType>(type))
       return failure();
-    unsigned byteWidth = type.isInteger(8) ? 1 : 4;
+    bool wide = type.isInteger(64);
+    unsigned byteWidth = type.isInteger(8) ? 1 : wide ? 8 : 4;
     std::string prefix = "__vrc_raw_load_" + std::to_string(rawAccessIndex++);
     std::string bits = prefix + "_bits";
-    addSlot(bits, "SystemInt32", "0", false);
+    addSlot(bits, wide ? "SystemInt64" : "SystemInt32", "0", false);
     for (unsigned byteIndex = 0; byteIndex < byteWidth; ++byteIndex) {
       std::string index = pointer.str();
       if (byteIndex) {
@@ -1247,30 +1347,44 @@ private:
       emitPush(location, byte);
       emitExtern(location, "SystemInt32Array.__Get__SystemInt32__SystemInt32");
       std::string component = byte;
-      if (byteIndex) {
-        std::string shift = prefix + "_shift_" + std::to_string(byteIndex);
-        component = prefix + "_component_" + std::to_string(byteIndex);
-        addSlot(shift, "SystemInt32", std::to_string(byteIndex * 8), false);
-        addSlot(component, "SystemInt32", "0", false);
+      if (wide) {
+        component = prefix + "_wide_" + std::to_string(byteIndex);
+        addSlot(component, "SystemInt64", "0", false);
         emitPush(location, byte);
-        emitPush(location, shift);
         emitPush(location, component);
         emitExtern(location,
-                   "SystemInt32.__op_LeftShift__SystemInt32_SystemInt32__"
-                   "SystemInt32");
+                   "SystemConvert.__ToInt64__SystemInt32__SystemInt64");
+      }
+      if (byteIndex) {
+        std::string shift = prefix + "_shift_" + std::to_string(byteIndex);
+        std::string shifted =
+            prefix + "_component_" + std::to_string(byteIndex);
+        addSlot(shift, "SystemInt32", std::to_string(byteIndex * 8), false);
+        addSlot(shifted, wide ? "SystemInt64" : "SystemInt32", "0", false);
+        emitPush(location, component);
+        emitPush(location, shift);
+        emitPush(location, shifted);
+        emitExtern(location, wide ? "SystemInt64.__op_LeftShift__SystemInt64_"
+                                    "SystemInt32__SystemInt64"
+                                  : "SystemInt32.__op_LeftShift__SystemInt32_"
+                                    "SystemInt32__SystemInt32");
+        component = shifted;
       }
       if (!byteIndex) {
         emitCopy(location, component, bits);
       } else {
         std::string combined =
             prefix + "_combined_" + std::to_string(byteIndex);
-        addSlot(combined, "SystemInt32", "0", false);
+        addSlot(combined, wide ? "SystemInt64" : "SystemInt32", "0", false);
         emitPush(location, bits);
         emitPush(location, component);
         emitPush(location, combined);
         emitExtern(location,
-                   "SystemInt32.__op_BitwiseOr__SystemInt32_SystemInt32__"
-                   "SystemInt32");
+                   wide
+                       ? "SystemInt64.__op_BitwiseOr__SystemInt64_SystemInt64__"
+                         "SystemInt64"
+                       : "SystemInt32.__op_BitwiseOr__SystemInt32_SystemInt32__"
+                         "SystemInt32");
         emitCopy(location, combined, bits);
       }
     }
@@ -1288,15 +1402,16 @@ private:
 
   LogicalResult emitRawStore(Location location, StringRef pointer,
                              StringRef value, Type type) {
-    if (!type.isInteger(8) && !type.isInteger(32) && !type.isF32() &&
-        !isa<host::PtrType>(type))
+    if (!type.isInteger(8) && !type.isInteger(32) && !type.isInteger(64) &&
+        !type.isF32() && !isa<host::PtrType>(type))
       return failure();
-    unsigned byteWidth = type.isInteger(8) ? 1 : 4;
+    bool wide = type.isInteger(64);
+    unsigned byteWidth = type.isInteger(8) ? 1 : wide ? 8 : 4;
     std::string prefix = "__vrc_raw_store_" + std::to_string(rawAccessIndex++);
     std::string bits = prefix + "_bits";
     std::string mask = prefix + "_mask";
-    addSlot(bits, "SystemInt32", "0", false);
-    addSlot(mask, "SystemInt32", "255", false);
+    addSlot(bits, wide ? "SystemInt64" : "SystemInt32", "0", false);
+    addSlot(mask, wide ? "SystemInt64" : "SystemInt32", "255", false);
     if (type.isF32()) {
       emitPush(location, value);
       emitPush(location, bits);
@@ -1312,22 +1427,33 @@ private:
         std::string shift = prefix + "_shift_" + std::to_string(byteIndex);
         component = prefix + "_component_" + std::to_string(byteIndex);
         addSlot(shift, "SystemInt32", std::to_string(byteIndex * 8), false);
-        addSlot(component, "SystemInt32", "0", false);
+        addSlot(component, wide ? "SystemInt64" : "SystemInt32", "0", false);
         emitPush(location, bits);
         emitPush(location, shift);
         emitPush(location, component);
-        emitExtern(location,
-                   "SystemInt32.__op_RightShift__SystemInt32_SystemInt32__"
-                   "SystemInt32");
+        emitExtern(location, wide ? "SystemInt64.__op_RightShift__SystemInt64_"
+                                    "SystemInt32__SystemInt64"
+                                  : "SystemInt32.__op_RightShift__SystemInt32_"
+                                    "SystemInt32__SystemInt32");
       }
       std::string byte = prefix + "_byte_" + std::to_string(byteIndex);
+      std::string masked = wide ? byte + "_wide" : byte;
+      addSlot(masked, wide ? "SystemInt64" : "SystemInt32", "0", false);
       addSlot(byte, "SystemInt32", "0", false);
       emitPush(location, component);
       emitPush(location, mask);
-      emitPush(location, byte);
+      emitPush(location, masked);
       emitExtern(location,
-                 "SystemInt32.__op_BitwiseAnd__SystemInt32_SystemInt32__"
-                 "SystemInt32");
+                 wide ? "SystemInt64.__op_BitwiseAnd__SystemInt64_SystemInt64__"
+                        "SystemInt64"
+                      : "SystemInt32.__op_BitwiseAnd__SystemInt32_SystemInt32__"
+                        "SystemInt32");
+      if (wide) {
+        emitPush(location, masked);
+        emitPush(location, byte);
+        emitExtern(location,
+                   "SystemConvert.__ToInt32__SystemInt64__SystemInt32");
+      }
       std::string index = pointer.str();
       if (byteIndex) {
         std::string offset = prefix + "_offset_" + std::to_string(byteIndex);
@@ -1578,6 +1704,7 @@ private:
   llvm::StringMap<uint64_t> rawGlobalBases;
   llvm::StringMap<DenseI8ArrayAttr> rawGlobalInitializers;
   llvm::DenseMap<Operation *, uint64_t> rawAllocaBases;
+  SmallVector<UnityBufferPoolEntry> unityBufferPool;
   uint64_t rawHeapBytes = 0;
   uint64_t rawAccessIndex = 0;
   SmallVector<std::pair<Operation *, func::FuncOp>> callRelocations;

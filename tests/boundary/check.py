@@ -66,13 +66,13 @@ assert run([opt, '--verify-each'], roundtrip) == roundtrip
 run([opt, '--pass-pipeline=builtin.module(' + intrinsic_pass + ')'], source, error='must follow UdonHL')
 buffer_runtime = r'''
 module attributes {vrc.host_stage = "udonhl"} {
-  func.func private @allocate(i32) -> (!vrc.buffer, i32) attributes {vrc.intrinsic = "buffer_alloc", vrc.format = "rgba8_unorm", vrc.usage = "storage"}
+  func.func private @allocate(i32, i32) -> (!vrc.buffer, i32) attributes {vrc.intrinsic = "buffer_alloc", vrc.format = "rgba8_unorm", vrc.usage = "storage"}
   func.func private @release(!vrc.buffer) -> i32 attributes {vrc.intrinsic = "buffer_release"}
   func.func private @copy(!vrc.buffer, !vrc.buffer, i32, i32, i32) -> !vrc.event attributes {vrc.intrinsic = "buffer_copy"}
   func.func private @upload(!vrc.buffer, i32, i32, i32) -> !vrc.event attributes {vrc.intrinsic = "buffer_upload"}
   func.func private @readback(!vrc.buffer, i32, i32, i32) -> !vrc.event attributes {vrc.intrinsic = "buffer_readback"}
   func.func @runtime(%bytes: i32, %source: !vrc.buffer, %zero: i32, %pointer: i32) -> !vrc.event {
-    %destination, %status = udonhl.call @allocate(%bytes) {call_policy = #udonhl<call_policy normal>} : (i32) -> (!vrc.buffer, i32)
+    %destination, %status = udonhl.call @allocate(%zero, %bytes) {call_policy = #udonhl<call_policy normal>} : (i32, i32) -> (!vrc.buffer, i32)
     %copied = udonhl.call @copy(%source, %destination, %zero, %zero, %bytes) {call_policy = #udonhl<call_policy normal>} : (!vrc.buffer, !vrc.buffer, i32, i32, i32) -> !vrc.event
     %uploaded = udonhl.call @upload(%destination, %zero, %bytes, %pointer) {call_policy = #udonhl<call_policy normal>} : (!vrc.buffer, i32, i32, i32) -> !vrc.event
     %read = udonhl.call @readback(%destination, %zero, %bytes, %pointer) {call_policy = #udonhl<call_policy normal>} : (!vrc.buffer, i32, i32, i32) -> !vrc.event

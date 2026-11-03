@@ -45,7 +45,8 @@ struct SubstituteRuntimeIntrinsicsPass
             prototype->getAttrOfType<DenseI32ArrayAttr>("vrc.global_offset");
       else if (name == "buffer_alloc")
         valid =
-            args == ArrayRef<Type>{IntegerType::get(&getContext(), 32)} &&
+            args == ArrayRef<Type>{IntegerType::get(&getContext(), 32),
+                                   IntegerType::get(&getContext(), 32)} &&
             results == ArrayRef<Type>{runtime::BufferType::get(&getContext()),
                                       IntegerType::get(&getContext(), 32)} &&
             prototype->getAttrOfType<StringAttr>("vrc.format") &&

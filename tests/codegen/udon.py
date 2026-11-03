@@ -251,6 +251,14 @@ raw_memory_source = r'''module {
     %copied = "udonhl.load"(%destination) <{alignment = 4 : i64}> : (!udonhl.ptr<0>) -> i32
     return %copied : i32
   }
+  func.func @raw_i64() -> i64 attributes {vrc.export_id = 4 : i32} {
+    %bytes = arith.constant 8 : i32
+    %pointer = "udonhl.alloca"(%bytes) <{alignment = 8 : i64}> : (i32) -> !udonhl.ptr<0>
+    %value = arith.constant 72623859790382856 : i64
+    "udonhl.store"(%value, %pointer) <{alignment = 8 : i64}> : (i64, !udonhl.ptr<0>) -> ()
+    %loaded = "udonhl.load"(%pointer) <{alignment = 8 : i64}> : (!udonhl.ptr<0>) -> i64
+    return %loaded : i64
+  }
 }'''
 raw_memory_lowered = subprocess.run(
     [opt, '--vrc-lower-udonhl-to-udonasm', '--verify-each'],
@@ -258,7 +266,7 @@ raw_memory_lowered = subprocess.run(
 assert raw_memory_lowered.returncode == 0, raw_memory_lowered.stderr
 for expected in [
     'name = "__vrc_raw_heap"',
-    'initial = "20", name = "__vrc_raw_heap_length"',
+    'initial = "32", name = "__vrc_raw_heap_length"',
     'SystemInt32Array.__ctor__SystemInt32__SystemInt32Array',
     'SystemInt32Array.__Get__SystemInt32__SystemInt32',
     'SystemInt32Array.__Set__SystemInt32_SystemInt32__SystemVoid',
@@ -266,6 +274,10 @@ for expected in [
     'SystemInt32.__op_RightShift__SystemInt32_SystemInt32__SystemInt32',
     'SystemInt32.__op_BitwiseAnd__SystemInt32_SystemInt32__SystemInt32',
     'SystemInt32.__op_BitwiseOr__SystemInt32_SystemInt32__SystemInt32',
+    'SystemInt64.__op_LeftShift__SystemInt64_SystemInt32__SystemInt64',
+    'SystemInt64.__op_RightShift__SystemInt64_SystemInt32__SystemInt64',
+    'SystemInt64.__op_BitwiseAnd__SystemInt64_SystemInt64__SystemInt64',
+    'SystemInt64.__op_BitwiseOr__SystemInt64_SystemInt64__SystemInt64',
     'SystemBitConverter.__SingleToInt32Bits__SystemSingle__SystemInt32',
     'SystemBitConverter.__Int32BitsToSingle__SystemInt32__SystemSingle',
     'name = "__vrc_raw_memcpy_',
@@ -380,22 +392,30 @@ rejected = subprocess.run(
 assert rejected.returncode != 0
 assert 'extern legalization set' in rejected.stderr
 
-buffer_source = r'''module attributes {vrc.host_stage = "udonhl"} {
+buffer_source = r'''module attributes {
+  vrc.host_stage = "udonhl",
+  vrc.unity_buffer_pool = [
+    {id = 1 : i32, logical_bytes = 4 : i32, heap_slot = "__udoncl_buffer_1"},
+    {id = 2 : i32, logical_bytes = 4 : i32, heap_slot = "__udoncl_buffer_2"}
+  ]
+} {
   func.func @copy_full() attributes {vrc.export_id = 6 : i32} {
     %bytes = arith.constant 4 : i32
     %zero = arith.constant 0 : i32
-    %source, %source_status = vrc.buffer_alloc %bytes {
+    %source_id = arith.constant 1 : i32
+    %destination_id = arith.constant 2 : i32
+    %source, %source_status = vrc.buffer_alloc %source_id, %bytes {
       format = "rgba8_unorm", usage = "storage",
       vrc.unity_buffer_id = 1 : i32,
       vrc.unity_heap_slot = "__udoncl_buffer_1",
       vrc.unity_logical_bytes = 4 : i32
-    } : (i32) -> (!vrc.buffer, i32)
-    %destination, %destination_status = vrc.buffer_alloc %bytes {
+    } : (i32, i32) -> (!vrc.buffer, i32)
+    %destination, %destination_status = vrc.buffer_alloc %destination_id, %bytes {
       format = "rgba8_unorm", usage = "storage",
       vrc.unity_buffer_id = 2 : i32,
       vrc.unity_heap_slot = "__udoncl_buffer_2",
       vrc.unity_logical_bytes = 4 : i32
-    } : (i32) -> (!vrc.buffer, i32)
+    } : (i32, i32) -> (!vrc.buffer, i32)
     %event = vrc.buffer_copy %source, %destination, %zero, %zero, %bytes {
       vrc.unity_copy_material_slot = "__udoncl_buffer_copy_material"
     } : (!vrc.buffer, !vrc.buffer, i32, i32, i32) -> !vrc.event
@@ -469,12 +489,12 @@ assert '__vrc_f6_frame_0_slot_0: %SystemInt32, 0' in continuation_assembly
 assert '__vrc_f6_frame_0_slot_1: %SystemInt32, 0' in continuation_assembly
 
 unbound_buffer = buffer_source.replace(
-    'vrc.unity_heap_slot = "__udoncl_buffer_1",', '', 1)
+    'vrc.unity_buffer_pool', 'vrc.unity_buffer_pool_missing', 1)
 rejected = subprocess.run(
     [opt, '--vrc-lower-udonhl-to-udonasm'], input=unbound_buffer,
     text=True, capture_output=True)
 assert rejected.returncode != 0
-assert 'requires a bound heap slot' in rejected.stderr
+assert 'Unity copy has no physical buffer pool' in rejected.stderr
 
 for argument_type, diagnostic in [
     ('memref<2x2xf32>', 'unsupported scalar Udon argument type'),

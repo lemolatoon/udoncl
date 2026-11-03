@@ -6,7 +6,7 @@
     "profile": "gather-f32",
     "words": 1024,
     "kernel": "udonblas_sgemm",
-    "kernel_id": 100,
+    "kernel_id": 1,
     "argument_kinds": [
       "buffer",
       "buffer",

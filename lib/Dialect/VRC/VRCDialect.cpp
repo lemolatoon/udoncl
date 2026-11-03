@@ -44,6 +44,8 @@ mlir::LogicalResult vrc::vrc::BufferAllocOp::verify() {
     return emitOpError("initial Device buffers require rgba8_unorm format");
   if (getUsage() != "storage")
     return emitOpError("initial Device buffers require storage usage");
+  if (auto id = constantI32(getLogicalId()); id && *id <= 0)
+    return emitOpError("constant logical id must be positive");
   if (auto size = constantI32(getByteSize()); size && *size <= 0)
     return emitOpError("constant byte size must be positive");
   return mlir::success();

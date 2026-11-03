@@ -99,7 +99,7 @@ struct LowerOpenCLAOTIntrinsicsPass
       if (name == "__vrc_opencl_buffer_alloc") {
         OperationState state(call.getLoc(),
                              runtime::BufferAllocOp::getOperationName());
-        state.addOperands(call.getOperand(1));
+        state.addOperands({call.getOperand(0), call.getOperand(1)});
         state.addTypes({buffer, i32});
         state.addAttribute("format", rewriter.getStringAttr("rgba8_unorm"));
         state.addAttribute("usage", rewriter.getStringAttr("storage"));

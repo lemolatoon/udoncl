@@ -428,7 +428,7 @@ def main():
     invalid_module = output / 'invalid-buffer-handle.bc'
     invalid_source.write_text(
         '#include <udoncl/unity_buffer.h>\n'
-        'udoncl_buffer copy_full(void) { return udonclBufferAlloc(4); }\n',
+        'udoncl_buffer copy_full(void) { return udonclBufferAlloc(1, 4); }\n',
         encoding='utf-8',
     )
     run([

@@ -247,25 +247,41 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
     return failure();
   }
   OpBuilder builder(module.getContext());
+  SmallVector<mlir::Attribute> poolEntries;
+  for (const UnityBuffer &buffer : buffers)
+    poolEntries.push_back(builder.getDictionaryAttr(
+        {builder.getNamedAttr("id", builder.getI32IntegerAttr(buffer.id)),
+         builder.getNamedAttr("logical_bytes",
+                              builder.getI32IntegerAttr(buffer.logicalBytes)),
+         builder.getNamedAttr("heap_slot",
+                              builder.getStringAttr(buffer.heapSlot))}));
+  module->setAttr("vrc.unity_buffer_pool", builder.getArrayAttr(poolEntries));
   llvm::DenseMap<Operation *, const UnityBuffer *> bound;
-  for (auto [index, allocation] : llvm::enumerate(allocations)) {
+  for (auto allocation : allocations) {
+    auto logicalId =
+        allocation.getLogicalId().getDefiningOp<arith::ConstantIntOp>();
     auto constant =
         allocation.getByteSize().getDefiningOp<arith::ConstantIntOp>();
-    const UnityBuffer &buffer = buffers[index];
-    if (!constant || constant.value() != buffer.logicalBytes) {
-      allocation.emitError()
-          << "Unity buffer allocation " << index
-          << " must have constant byte size " << buffer.logicalBytes
-          << " from the configured pool order";
-      return failure();
-    }
+    const UnityBuffer *buffer = nullptr;
+    if (logicalId)
+      for (const UnityBuffer &candidate : buffers)
+        if (candidate.id == logicalId.value()) {
+          buffer = &candidate;
+          break;
+        }
+    if (!logicalId)
+      continue;
+    if (!buffer || !constant || constant.value() != buffer->logicalBytes)
+      return allocation.emitError(
+          "constant Unity buffer allocation must match its configured logical "
+          "id and byte size");
     allocation->setAttr("vrc.unity_buffer_id",
-                        builder.getI32IntegerAttr(buffer.id));
+                        builder.getI32IntegerAttr(buffer->id));
     allocation->setAttr("vrc.unity_heap_slot",
-                        builder.getStringAttr(buffer.heapSlot));
+                        builder.getStringAttr(buffer->heapSlot));
     allocation->setAttr("vrc.unity_logical_bytes",
-                        builder.getI32IntegerAttr(buffer.logicalBytes));
-    bound.try_emplace(allocation.getOperation(), &buffer);
+                        builder.getI32IntegerAttr(buffer->logicalBytes));
+    bound.try_emplace(allocation.getOperation(), buffer);
   }
   for (auto copy : copies) {
     auto source = copy.getSource().getDefiningOp<::vrc::vrc::BufferAllocOp>();
@@ -323,7 +339,10 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
     bool resourcesMatch = dispatch.getResources().size() == bufferKindCount;
     for (mlir::Value resource : dispatch.getResources()) {
       auto allocation = resource.getDefiningOp<::vrc::vrc::BufferAllocOp>();
-      resourcesMatch &= allocation && bound.contains(allocation.getOperation());
+      if (allocation)
+        resourcesMatch &= bound.contains(allocation.getOperation());
+      else
+        resourcesMatch &= !buffers.empty();
     }
     if (!configuredKernelId || dispatch.getKernelId() != *configuredKernelId ||
         !descriptorMatches || dispatch.getArgumentKinds().empty() ||
@@ -332,8 +351,8 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
             "buffer" ||
         !resourcesMatch) {
       dispatch.emitError(
-          "Unity dispatch requires the configured kernel, direct buffer "
-          "allocations, and a copied f32/i32 scalar descriptor");
+          "Unity dispatch requires the configured kernel, logical buffers "
+          "from the fixed pool, and a copied f32/i32 scalar descriptor");
       return failure();
     }
     int32_t kernelId = static_cast<int32_t>(dispatch.getKernelId());
@@ -510,7 +529,7 @@ LogicalResult recoverUnityCBufferIntrinsics(ModuleOp module) {
   bool invalidAllocation =
       !allocations.empty() &&
       (!allocPrototype || !allocPrototype.isExternal() ||
-       allocPrototype.getArgumentTypes() != ArrayRef<mlir::Type>{i32} ||
+       allocPrototype.getArgumentTypes() != ArrayRef<mlir::Type>{i32, i32} ||
        allocPrototype.getResultTypes() != ArrayRef<mlir::Type>{i32});
   bool invalidCopy =
       !copies.empty() &&
@@ -548,7 +567,7 @@ LogicalResult recoverUnityCBufferIntrinsics(ModuleOp module) {
     rewriter.setInsertionPoint(allocation);
     OperationState state(allocation.getLoc(),
                          ::vrc::vrc::BufferAllocOp::getOperationName());
-    state.addOperands(allocation.getOperand(0));
+    state.addOperands({allocation.getOperand(0), allocation.getOperand(1)});
     state.addTypes({::vrc::vrc::BufferType::get(module.getContext()), i32});
     state.addAttribute("format", rewriter.getStringAttr("rgba8_unorm"));
     state.addAttribute("usage", rewriter.getStringAttr("storage"));
@@ -807,9 +826,10 @@ recoverUnityOpenCLDispatchProgram(const llvm::Module &input,
   Block *entry = host.addEntryBlock();
   builder.setInsertionPointToStart(entry);
   auto bytes = arith::ConstantIntOp::create(builder, owner.getLoc(), 4, 32);
+  auto logicalId = arith::ConstantIntOp::create(builder, owner.getLoc(), 1, 32);
   OperationState allocation(owner.getLoc(),
                             ::vrc::vrc::BufferAllocOp::getOperationName());
-  allocation.addOperands(bytes.getResult());
+  allocation.addOperands({logicalId.getResult(), bytes.getResult()});
   allocation.addTypes(
       {::vrc::vrc::BufferType::get(&context), builder.getI32Type()});
   allocation.addAttribute("format", builder.getStringAttr("rgba8_unorm"));
@@ -1114,12 +1134,14 @@ recoverUnityOpenCLGatherDispatchProgram(const llvm::Module &input,
   Block *entry = host.addEntryBlock();
   builder.setInsertionPointToStart(entry);
   SmallVector<Operation *> allocatedBuffers;
-  for (int32_t byteSize : bufferBytes) {
+  for (auto [bufferIndex, byteSize] : llvm::enumerate(bufferBytes)) {
+    auto logicalId = arith::ConstantIntOp::create(
+        builder, owner.getLoc(), static_cast<int64_t>(bufferIndex + 1), 32);
     auto bytes =
         arith::ConstantIntOp::create(builder, owner.getLoc(), byteSize, 32);
     OperationState allocation(owner.getLoc(),
                               ::vrc::vrc::BufferAllocOp::getOperationName());
-    allocation.addOperands(bytes.getResult());
+    allocation.addOperands({logicalId.getResult(), bytes.getResult()});
     allocation.addTypes(
         {::vrc::vrc::BufferType::get(&context), builder.getI32Type()});
     allocation.addAttribute("format", builder.getStringAttr("rgba8_unorm"));
@@ -1398,7 +1420,7 @@ LogicalResult recoverUnityOpenCLBufferCalls(ModuleOp module) {
         getHandle(queue.getOperand(1)) != 2)
       return queue.emitError("clCreateCommandQueue must use the context and "
                              "device returned by the AOT setup sequence");
-  for (LLVM::CallOp allocation : allocations) {
+  for (auto [allocationIndex, allocation] : llvm::enumerate(allocations)) {
     if (getHandle(allocation.getOperand(0)) != 3)
       return allocation.emitError(
           "clCreateBuffer must use the context returned by clCreateContext");
@@ -1407,9 +1429,12 @@ LogicalResult recoverUnityOpenCLBufferCalls(ModuleOp module) {
       return allocation.emitError("internal OpenCL buffer handle must be "
                                   "a compiler-generated constant");
     rewriter.setInsertionPoint(allocation);
+    auto logicalId = arith::ConstantIntOp::create(
+        rewriter, allocation.getLoc(),
+        static_cast<int64_t>(allocationIndex + 1), 32);
     OperationState state(allocation.getLoc(),
                          ::vrc::vrc::BufferAllocOp::getOperationName());
-    state.addOperands(allocation.getOperand(2));
+    state.addOperands({logicalId.getResult(), allocation.getOperand(2)});
     state.addTypes({::vrc::vrc::BufferType::get(module.getContext()), i32});
     state.addAttribute("format", rewriter.getStringAttr("rgba8_unorm"));
     state.addAttribute("usage", rewriter.getStringAttr("storage"));

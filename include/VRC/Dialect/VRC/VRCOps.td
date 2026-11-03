@@ -1,9 +1,10 @@
 include "VRC/Dialect/VRC/VRCTypes.td"
 def VRC_BufferAllocOp : Op<VRC_Dialect, "buffer_alloc"> {
   let summary = "Allocate an explicitly sized Device buffer";
-  let arguments = (ins I32:$byte_size, StrAttr:$format, StrAttr:$usage);
+  let arguments = (ins I32:$logical_id, I32:$byte_size, StrAttr:$format,
+    StrAttr:$usage);
   let results = (outs VRC_BufferType:$buffer, I32:$status);
-  let assemblyFormat = "$byte_size attr-dict `:` functional-type(operands, results)";
+  let assemblyFormat = "$logical_id `,` $byte_size attr-dict `:` functional-type(operands, results)";
   let hasVerifier = 1;
 }
 def VRC_BufferReleaseOp : Op<VRC_Dialect, "buffer_release"> {
