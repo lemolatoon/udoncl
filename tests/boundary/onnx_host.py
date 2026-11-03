@@ -20,6 +20,8 @@ output.mkdir(parents=True)
 model_path = output / "mnist.onnx"
 host_path = output / "host.c"
 mlir_path = output / "host.mlir"
+full_host_path = output / "full-host.c"
+full_mlir_path = output / "full-host.mlir"
 harness_path = output / "harness.c"
 executable = output / ("onnx-host.exe" if sys.platform == "win32" else "onnx-host")
 
@@ -53,6 +55,33 @@ assert "!udonhl.ptr<0>" in mlir
 assert "udonhl.address_of @mnist_dense_weight" in mlir
 assert "memref.global" not in mlir
 assert "vrc.public_name = \"RunMnistDense\"" in mlir
+run(
+    [
+        sys.executable,
+        root / "runtime/onnx/udon_onnx_host.py",
+        model_path,
+        "--profile",
+        "mnist",
+        "-o",
+        full_host_path,
+        "--mlir-output",
+        full_mlir_path,
+    ]
+)
+run([opt, full_mlir_path, "--verify-each", "-o", output / "full-verified.mlir"])
+full_mlir = full_mlir_path.read_text(encoding="utf-8")
+assert 'udoncl.onnx_profile = "mnist"' in full_mlir
+for call in (
+    "udondnnConvolutionForward",
+    "udondnnOpTensor",
+    "udondnnActivationForward",
+    "udondnnPoolingForward",
+    "udonblasSgemm",
+):
+    assert f"func.call @{call}" in full_mlir
+assert "mnist_conv_output" in full_mlir
+assert "!llvm.array<9216 x f32>" in full_mlir
+assert "execution-plan" not in full_mlir
 source = host_path.read_text(encoding="utf-8")
 assert "UDONBLAS_OP_N, UDONBLAS_OP_N, 1, 10, 144" in source
 assert "execution plan" in source

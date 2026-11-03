@@ -139,10 +139,7 @@ function(udoncl_add_onnx_host_library target)
   if(_ARG_PROFILE)
     set(_command "${Python3_EXECUTABLE}" "${_UDONCL_ONNX_HOST_COMPILER}"
                  "${_model}" --profile "${_ARG_PROFILE}"
-                 -o "${_generated_host}")
-    if(_ARG_PROFILE STREQUAL "mnist-dense")
-      list(APPEND _command --mlir-output "${_generated_mlir}")
-    endif()
+                 -o "${_generated_host}" --mlir-output "${_generated_mlir}")
   else()
     set(_command "${Python3_EXECUTABLE}" "${_UDONCL_ONNX_COMPILER}"
                  "${_model}" --execution-provider "${_ARG_EXECUTION_PROVIDER}"
@@ -165,6 +162,9 @@ function(udoncl_add_onnx_host_library target)
                "${_generated_host}")
   if(_ARG_PROFILE STREQUAL "mnist-dense")
     set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_HOST_MLIR
+                 "${_generated_mlir}")
+  elseif(_ARG_PROFILE STREQUAL "mnist")
+    set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_HOST_MLIR_CANDIDATE
                  "${_generated_mlir}")
   endif()
 endfunction()

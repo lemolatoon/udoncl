@@ -40,6 +40,335 @@ def _udonhl_global(name: str, storage_type: str, data: bytes) -> str:
     )
 
 
+def _float_bytes(values: list[float]) -> bytes:
+    return struct.pack(f"<{len(values)}f", *values)
+
+
+def _checked_call(
+    lines: list[str],
+    index: int,
+    callee: str,
+    arguments: str,
+    signature: str,
+) -> None:
+    lines.extend(
+        [
+            f"  ^step{index}:",
+            f"    %status{index} = func.call @{callee}({arguments}) : {signature}",
+            f"    %ok{index} = arith.cmpi eq, %status{index}, %success : i32",
+            f"    cf.cond_br %ok{index}, ^step{index + 1}, "
+            f"^cleanup(%status{index} : i32)",
+        ]
+    )
+
+
+def emit_mnist_mlir(model: dict) -> str:
+    """Lower full MNIST to public UdonDNN and UdonBLAS calls."""
+    nodes = model["graph"]["nodes"]
+    if [node["op_type"] for node in nodes] != [
+        "Conv",
+        "Add",
+        "Relu",
+        "AveragePool",
+        "Flatten",
+        "Gemm",
+        "Add",
+    ]:
+        raise ValueError("MNIST MLIR requires Conv/Add/Relu/Pool/Flatten/Gemm/Add")
+    initializers = model["graph"]["initializers"]
+    expected = {
+        "conv.weight": [16, 1, 5, 5],
+        "conv.bias": [1, 16, 1, 1],
+        "dense.weight": [144, 10],
+        "dense.bias": [10],
+    }
+    for name, shape in expected.items():
+        if name not in initializers or initializers[name]["shape"] != shape:
+            raise ValueError(f"MNIST MLIR initializer {name!r} must have shape {shape}")
+    conv_weight = _float_initializer(initializers["conv.weight"])
+    conv_bias = _float_initializer(initializers["conv.bias"])
+    dense_weight = _float_initializer(initializers["dense.weight"])
+    dense_bias = _float_initializer(initializers["dense.bias"])
+    packed_dense = [
+        dense_weight[feature * 10 + column]
+        for column in range(10)
+        for feature in range(144)
+    ]
+
+    lines = [
+        'module attributes {udoncl.onnx_lowering = "library-calls-v1", '
+        'udoncl.onnx_profile = "mnist"} {',
+        _udonhl_global("mnist_input", "!llvm.array<784 x f32>", bytes(784 * 4)),
+        _udonhl_global(
+            "mnist_conv_weight", "!llvm.array<400 x f32>", _float_bytes(conv_weight)
+        ),
+        _udonhl_global(
+            "mnist_conv_bias", "!llvm.array<16 x f32>", _float_bytes(conv_bias)
+        ),
+        _udonhl_global("mnist_conv_output", "!llvm.array<9216 x f32>", bytes(9216 * 4)),
+        _udonhl_global("mnist_pool_output", "!llvm.array<144 x f32>", bytes(144 * 4)),
+        _udonhl_global(
+            "mnist_dense_weight", "!llvm.array<1440 x f32>", _float_bytes(packed_dense)
+        ),
+        _udonhl_global("mnist_logits", "!llvm.array<10 x f32>", bytes(10 * 4)),
+        "",
+        '  func.func private @udondnnCreate(!udonhl.ptr<0>) -> i32 attributes '
+        '{udoncl.api = "udondnnCreate", udoncl.library = "UdonDNN"}',
+        '  func.func private @udondnnDestroy(i32) -> i32 attributes '
+        '{udoncl.api = "udondnnDestroy", udoncl.library = "UdonDNN"}',
+        '  func.func private @udondnnCreateTensorDescriptor(!udonhl.ptr<0>) -> i32 '
+        'attributes {udoncl.library = "UdonDNN"}',
+        '  func.func private @udondnnSetTensor4dDescriptor(i32, i32, i32, i32, i32, '
+        'i32, i32) -> i32 attributes {udoncl.library = "UdonDNN"}',
+        '  func.func private @udondnnDestroyTensorDescriptor(i32) -> i32 attributes '
+        '{udoncl.library = "UdonDNN"}',
+        '  func.func private @udondnnCreateFilterDescriptor(!udonhl.ptr<0>) -> i32 '
+        'attributes {udoncl.library = "UdonDNN"}',
+        '  func.func private @udondnnSetFilter4dDescriptor(i32, i32, i32, i32, i32, '
+        'i32, i32) -> i32 attributes {udoncl.library = "UdonDNN"}',
+        '  func.func private @udondnnDestroyFilterDescriptor(i32) -> i32 attributes '
+        '{udoncl.library = "UdonDNN"}',
+        '  func.func private @udondnnCreateConvolutionDescriptor(!udonhl.ptr<0>) -> i32 '
+        'attributes {udoncl.library = "UdonDNN"}',
+        '  func.func private @udondnnSetConvolution2dDescriptor(i32, i32, i32, i32, '
+        'i32, i32, i32, i32, i32) -> i32 attributes {udoncl.library = "UdonDNN"}',
+        '  func.func private @udondnnDestroyConvolutionDescriptor(i32) -> i32 '
+        'attributes {udoncl.library = "UdonDNN"}',
+        '  func.func private @udondnnCreateOpTensorDescriptor(!udonhl.ptr<0>) -> i32 '
+        'attributes {udoncl.library = "UdonDNN"}',
+        '  func.func private @udondnnSetOpTensorDescriptor(i32, i32, i32, i32) -> i32 '
+        'attributes {udoncl.library = "UdonDNN"}',
+        '  func.func private @udondnnDestroyOpTensorDescriptor(i32) -> i32 attributes '
+        '{udoncl.library = "UdonDNN"}',
+        '  func.func private @udondnnCreateActivationDescriptor(!udonhl.ptr<0>) -> i32 '
+        'attributes {udoncl.library = "UdonDNN"}',
+        '  func.func private @udondnnSetActivationDescriptor(i32, i32, i32, f32) -> i32 '
+        'attributes {udoncl.library = "UdonDNN"}',
+        '  func.func private @udondnnDestroyActivationDescriptor(i32) -> i32 attributes '
+        '{udoncl.library = "UdonDNN"}',
+        '  func.func private @udondnnCreatePoolingDescriptor(!udonhl.ptr<0>) -> i32 '
+        'attributes {udoncl.library = "UdonDNN"}',
+        '  func.func private @udondnnSetPooling2dDescriptor(i32, i32, i32, i32, i32, '
+        'i32, i32, i32, i32) -> i32 attributes {udoncl.library = "UdonDNN"}',
+        '  func.func private @udondnnDestroyPoolingDescriptor(i32) -> i32 attributes '
+        '{udoncl.library = "UdonDNN"}',
+        '  func.func private @udondnnConvolutionForward(i32, !udonhl.ptr<0>, i32, '
+        '!udonhl.ptr<0>, i32, !udonhl.ptr<0>, i32, i32, !udonhl.ptr<0>, i32, '
+        '!udonhl.ptr<0>, i32, !udonhl.ptr<0>) -> i32 attributes '
+        '{udoncl.library = "UdonDNN", vrc.async_effect = "may_suspend"}',
+        '  func.func private @udondnnOpTensor(i32, i32, !udonhl.ptr<0>, i32, '
+        '!udonhl.ptr<0>, !udonhl.ptr<0>, i32, !udonhl.ptr<0>, !udonhl.ptr<0>, '
+        'i32, !udonhl.ptr<0>) -> i32 attributes '
+        '{udoncl.library = "UdonDNN", vrc.async_effect = "may_suspend"}',
+        '  func.func private @udondnnActivationForward(i32, i32, !udonhl.ptr<0>, '
+        'i32, !udonhl.ptr<0>, !udonhl.ptr<0>, i32, !udonhl.ptr<0>) -> i32 '
+        'attributes {udoncl.library = "UdonDNN", vrc.async_effect = "may_suspend"}',
+        '  func.func private @udondnnPoolingForward(i32, i32, !udonhl.ptr<0>, i32, '
+        '!udonhl.ptr<0>, !udonhl.ptr<0>, i32, !udonhl.ptr<0>) -> i32 attributes '
+        '{udoncl.library = "UdonDNN", vrc.async_effect = "may_suspend"}',
+        '  func.func private @udonblasCreate(!udonhl.ptr<0>) -> i32 attributes '
+        '{udoncl.library = "UdonBLAS"}',
+        '  func.func private @udonblasDestroy(i32) -> i32 attributes '
+        '{udoncl.library = "UdonBLAS"}',
+        '  func.func private @udonblasSgemm(i32, i32, i32, i32, i32, i32, '
+        '!udonhl.ptr<0>, !udonhl.ptr<0>, i32, !udonhl.ptr<0>, i32, '
+        '!udonhl.ptr<0>, !udonhl.ptr<0>, i32) -> i32 attributes '
+        '{udoncl.library = "UdonBLAS", vrc.async_effect = "may_suspend"}',
+        "",
+        '  func.func @write_mnist_input(%index: i32, %value: f32) -> i32 attributes {',
+        '    vrc.export_id = 1 : i32, vrc.parameter_names = ["index", "value"],',
+        '    vrc.public_name = "WriteMnistInput"',
+        '  } {',
+        '    %four = arith.constant 4 : i32',
+        '    %base = udonhl.address_of @mnist_input : <0>',
+        '    %offset = arith.muli %index, %four : i32',
+        '    %position = "udonhl.ptr_add"(%base, %offset) : '
+        '(!udonhl.ptr<0>, i32) -> !udonhl.ptr<0>',
+        '    "udonhl.store"(%value, %position) <{alignment = 4 : i64}> : '
+        '(f32, !udonhl.ptr<0>) -> ()',
+        '    %success = arith.constant 0 : i32',
+        '    return %success : i32',
+        '  }',
+        "",
+        '  func.func @run_mnist() -> i32 attributes {',
+        '    vrc.async_effect = "may_suspend", vrc.export_id = 2 : i32,',
+        '    vrc.public_name = "RunMnist"',
+        '  } {',
+        '    %success = arith.constant 0 : i32',
+        '    %zero = arith.constant 0 : i32',
+        '    %one = arith.constant 1 : i32',
+        '    %four = arith.constant 4 : i32',
+        '    %fzero = arith.constant 0.0 : f32',
+        '    %fone = arith.constant 1.0 : f32',
+        '    %null = "udonhl.inttoptr"(%zero) : (i32) -> !udonhl.ptr<0>',
+        '    %alpha = "udonhl.alloca"(%four) <{alignment = 4 : i64}> : '
+        '(i32) -> !udonhl.ptr<0>',
+        '    %beta0 = "udonhl.alloca"(%four) <{alignment = 4 : i64}> : '
+        '(i32) -> !udonhl.ptr<0>',
+        '    %beta1 = "udonhl.alloca"(%four) <{alignment = 4 : i64}> : '
+        '(i32) -> !udonhl.ptr<0>',
+        '    "udonhl.store"(%fone, %alpha) <{alignment = 4 : i64}> : '
+        '(f32, !udonhl.ptr<0>) -> ()',
+        '    "udonhl.store"(%fzero, %beta0) <{alignment = 4 : i64}> : '
+        '(f32, !udonhl.ptr<0>) -> ()',
+        '    "udonhl.store"(%fone, %beta1) <{alignment = 4 : i64}> : '
+        '(f32, !udonhl.ptr<0>) -> ()',
+    ]
+    slot_names = [
+        "dnn_handle",
+        "blas_handle",
+        "input_desc",
+        "conv_desc",
+        "bias_desc",
+        "pool_desc",
+        "filter_desc",
+        "convolution_desc",
+        "op_desc",
+        "activation_desc",
+        "pooling_desc",
+    ]
+    for name in slot_names:
+        lines.extend(
+            [
+                f'    %{name}_slot = "udonhl.alloca"(%four) <{{alignment = 4 : i64}}> : '
+                '(i32) -> !udonhl.ptr<0>',
+                f'    "udonhl.store"(%zero, %{name}_slot) <{{alignment = 4 : i64}}> : '
+                '(i32, !udonhl.ptr<0>) -> ()',
+            ]
+        )
+    lines.extend(
+        [
+            '    %image = udonhl.address_of @mnist_input : <0>',
+            '    %conv_weight = udonhl.address_of @mnist_conv_weight : <0>',
+            '    %conv_bias = udonhl.address_of @mnist_conv_bias : <0>',
+            '    %conv_output = udonhl.address_of @mnist_conv_output : <0>',
+            '    %pool_output = udonhl.address_of @mnist_pool_output : <0>',
+            '    %dense_weight = udonhl.address_of @mnist_dense_weight : <0>',
+            '    %logits = udonhl.address_of @mnist_logits : <0>',
+        ]
+    )
+    for digit, value in enumerate(dense_bias):
+        lines.extend(
+            [
+                f'    %logit_offset{digit} = arith.constant {digit * 4} : i32',
+                f'    %logit{digit} = "udonhl.ptr_add"(%logits, %logit_offset{digit}) : '
+                '(!udonhl.ptr<0>, i32) -> !udonhl.ptr<0>',
+                f'    %dense_bias{digit} = arith.constant {_c_float(value)[:-1]} : f32',
+                f'    "udonhl.store"(%dense_bias{digit}, %logit{digit}) '
+                '<{alignment = 4 : i64}> : (f32, !udonhl.ptr<0>) -> ()',
+            ]
+        )
+    lines.append('    cf.br ^step0')
+
+    calls = [
+        ("udondnnCreate", "%dnn_handle_slot", "(!udonhl.ptr<0>) -> i32"),
+        ("udonblasCreate", "%blas_handle_slot", "(!udonhl.ptr<0>) -> i32"),
+        ("udondnnCreateTensorDescriptor", "%input_desc_slot", "(!udonhl.ptr<0>) -> i32"),
+        ("udondnnCreateTensorDescriptor", "%conv_desc_slot", "(!udonhl.ptr<0>) -> i32"),
+        ("udondnnCreateTensorDescriptor", "%bias_desc_slot", "(!udonhl.ptr<0>) -> i32"),
+        ("udondnnCreateTensorDescriptor", "%pool_desc_slot", "(!udonhl.ptr<0>) -> i32"),
+        ("udondnnCreateFilterDescriptor", "%filter_desc_slot", "(!udonhl.ptr<0>) -> i32"),
+        (
+            "udondnnCreateConvolutionDescriptor",
+            "%convolution_desc_slot",
+            "(!udonhl.ptr<0>) -> i32",
+        ),
+        ("udondnnCreateOpTensorDescriptor", "%op_desc_slot", "(!udonhl.ptr<0>) -> i32"),
+        (
+            "udondnnCreateActivationDescriptor",
+            "%activation_desc_slot",
+            "(!udonhl.ptr<0>) -> i32",
+        ),
+        ("udondnnCreatePoolingDescriptor", "%pooling_desc_slot", "(!udonhl.ptr<0>) -> i32"),
+    ]
+    for index, (callee, arguments, signature) in enumerate(calls):
+        _checked_call(lines, index, callee, arguments, signature)
+
+    load_step = len(calls)
+    lines.append(f"  ^step{load_step}:")
+    for name in slot_names:
+        lines.append(
+            f'    %{name} = "udonhl.load"(%{name}_slot) <{{alignment = 4 : i64}}> : '
+            '(!udonhl.ptr<0>) -> i32'
+        )
+    lines.append(f"    cf.br ^step{load_step + 1}")
+    configured_calls = [
+        ("udondnnSetTensor4dDescriptor", "%input_desc, %zero, %zero, %one, %one, %c28, %c28", "(i32, i32, i32, i32, i32, i32, i32) -> i32"),
+        ("udondnnSetTensor4dDescriptor", "%conv_desc, %zero, %zero, %one, %c16, %c24, %c24", "(i32, i32, i32, i32, i32, i32, i32) -> i32"),
+        ("udondnnSetTensor4dDescriptor", "%bias_desc, %zero, %zero, %one, %c16, %one, %one", "(i32, i32, i32, i32, i32, i32, i32) -> i32"),
+        ("udondnnSetTensor4dDescriptor", "%pool_desc, %zero, %zero, %one, %c16, %c3, %c3", "(i32, i32, i32, i32, i32, i32, i32) -> i32"),
+        ("udondnnSetFilter4dDescriptor", "%filter_desc, %zero, %zero, %c16, %one, %c5, %c5", "(i32, i32, i32, i32, i32, i32, i32) -> i32"),
+        ("udondnnSetConvolution2dDescriptor", "%convolution_desc, %zero, %zero, %one, %one, %one, %one, %one, %zero", "(i32, i32, i32, i32, i32, i32, i32, i32, i32) -> i32"),
+        ("udondnnSetOpTensorDescriptor", "%op_desc, %zero, %zero, %zero", "(i32, i32, i32, i32) -> i32"),
+        ("udondnnSetActivationDescriptor", "%activation_desc, %one, %zero, %fzero", "(i32, i32, i32, f32) -> i32"),
+        ("udondnnSetPooling2dDescriptor", "%pooling_desc, %c2, %zero, %c8, %c8, %zero, %zero, %c8, %c8", "(i32, i32, i32, i32, i32, i32, i32, i32, i32) -> i32"),
+    ]
+    constants = {"c2": 2, "c3": 3, "c5": 5, "c8": 8, "c16": 16, "c24": 24, "c28": 28, "c144": 144, "c10": 10}
+    lines.insert(lines.index(f"  ^step{load_step}:"), "")
+    # Constants dominate all configuration and execution blocks.
+    entry_branch = lines.index('    cf.br ^step0')
+    for name, value in reversed(list(constants.items())):
+        lines.insert(entry_branch, f"    %{name} = arith.constant {value} : i32")
+    step = load_step + 1
+    for callee, arguments, signature in configured_calls:
+        _checked_call(lines, step, callee, arguments, signature)
+        step += 1
+    operations = [
+        ("udondnnConvolutionForward", "%dnn_handle, %alpha, %input_desc, %image, %filter_desc, %conv_weight, %convolution_desc, %zero, %null, %zero, %beta0, %conv_desc, %conv_output", "(i32, !udonhl.ptr<0>, i32, !udonhl.ptr<0>, i32, !udonhl.ptr<0>, i32, i32, !udonhl.ptr<0>, i32, !udonhl.ptr<0>, i32, !udonhl.ptr<0>) -> i32"),
+        ("udondnnOpTensor", "%dnn_handle, %op_desc, %alpha, %conv_desc, %conv_output, %alpha, %bias_desc, %conv_bias, %beta0, %conv_desc, %conv_output", "(i32, i32, !udonhl.ptr<0>, i32, !udonhl.ptr<0>, !udonhl.ptr<0>, i32, !udonhl.ptr<0>, !udonhl.ptr<0>, i32, !udonhl.ptr<0>) -> i32"),
+        ("udondnnActivationForward", "%dnn_handle, %activation_desc, %alpha, %conv_desc, %conv_output, %beta0, %conv_desc, %conv_output", "(i32, i32, !udonhl.ptr<0>, i32, !udonhl.ptr<0>, !udonhl.ptr<0>, i32, !udonhl.ptr<0>) -> i32"),
+        ("udondnnPoolingForward", "%dnn_handle, %pooling_desc, %alpha, %conv_desc, %conv_output, %beta0, %pool_desc, %pool_output", "(i32, i32, !udonhl.ptr<0>, i32, !udonhl.ptr<0>, !udonhl.ptr<0>, i32, !udonhl.ptr<0>) -> i32"),
+        ("udonblasSgemm", "%blas_handle, %zero, %zero, %one, %c10, %c144, %alpha, %pool_output, %one, %dense_weight, %c144, %beta1, %logits, %one", "(i32, i32, i32, i32, i32, i32, !udonhl.ptr<0>, !udonhl.ptr<0>, i32, !udonhl.ptr<0>, i32, !udonhl.ptr<0>, !udonhl.ptr<0>, i32) -> i32"),
+    ]
+    for callee, arguments, signature in operations:
+        _checked_call(lines, step, callee, arguments, signature)
+        step += 1
+    lines.extend([f"  ^step{step}:", "    cf.br ^cleanup(%success : i32)", "  ^cleanup(%result: i32):"])
+    for name in slot_names:
+        lines.append(
+            f'    %cleanup_{name} = "udonhl.load"(%{name}_slot) '
+            '<{alignment = 4 : i64}> : (!udonhl.ptr<0>) -> i32'
+        )
+    destroy_calls = [
+        ("udondnnDestroyPoolingDescriptor", "%cleanup_pooling_desc"),
+        ("udondnnDestroyActivationDescriptor", "%cleanup_activation_desc"),
+        ("udondnnDestroyOpTensorDescriptor", "%cleanup_op_desc"),
+        ("udondnnDestroyConvolutionDescriptor", "%cleanup_convolution_desc"),
+        ("udondnnDestroyFilterDescriptor", "%cleanup_filter_desc"),
+        ("udondnnDestroyTensorDescriptor", "%cleanup_pool_desc"),
+        ("udondnnDestroyTensorDescriptor", "%cleanup_bias_desc"),
+        ("udondnnDestroyTensorDescriptor", "%cleanup_conv_desc"),
+        ("udondnnDestroyTensorDescriptor", "%cleanup_input_desc"),
+        ("udonblasDestroy", "%cleanup_blas_handle"),
+        ("udondnnDestroy", "%cleanup_dnn_handle"),
+    ]
+    for index, (callee, argument) in enumerate(destroy_calls):
+        lines.append(f"    %ignored{index} = func.call @{callee}({argument}) : (i32) -> i32")
+    lines.extend(
+        [
+            "    return %result : i32",
+            "  }",
+            "",
+            '  func.func @read_mnist_output(%index: i32) -> f32 attributes {',
+            '    vrc.export_id = 3 : i32, vrc.parameter_names = ["index"],',
+            '    vrc.public_name = "ReadMnistOutput"',
+            '  } {',
+            '    %four = arith.constant 4 : i32',
+            '    %base = udonhl.address_of @mnist_logits : <0>',
+            '    %offset = arith.muli %index, %four : i32',
+            '    %position = "udonhl.ptr_add"(%base, %offset) : '
+            '(!udonhl.ptr<0>, i32) -> !udonhl.ptr<0>',
+            '    %value = "udonhl.load"(%position) <{alignment = 4 : i64}> : '
+            '(!udonhl.ptr<0>) -> f32',
+            '    return %value : f32',
+            '  }',
+            "}",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def emit_mnist_dense_mlir(model: dict) -> str:
     """Lower the MNIST Dense tail to UdonHL and the public UdonBLAS ABI."""
     nodes = model["graph"]["nodes"]
@@ -400,9 +729,11 @@ def main() -> None:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(source, encoding="utf-8")
     if args.mlir_output is not None:
-        if args.profile != "mnist-dense":
-            raise ValueError("MLIR output currently supports the mnist-dense profile")
-        mlir = emit_mnist_dense_mlir(model)
+        mlir = (
+            emit_mnist_mlir(model)
+            if args.profile == "mnist"
+            else emit_mnist_dense_mlir(model)
+        )
         args.mlir_output.parent.mkdir(parents=True, exist_ok=True)
         args.mlir_output.write_text(mlir, encoding="utf-8")
     print(f"udon_onnx_host_profile={args.profile} bytes={len(source.encode())}")

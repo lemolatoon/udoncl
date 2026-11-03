@@ -208,6 +208,12 @@ Current components:
   that Host MLIR against the recovered UdonBLAS/OpenCL AOT library module and
   emits the final Unity artifact without using the generated Host C as input.
   Host C remains a numerical oracle and temporary compatibility output.
+- The full MNIST profile also emits a verified candidate Host MLIR call graph
+  using the public UdonDNN convolution, op-tensor, activation, and pooling APIs
+  followed by UdonBLAS SGEMM. It is not selected as the executable artifact yet:
+  the public UdonDNN staging backend currently rejects the 9,216-word
+  convolution intermediate, and the compiler does not silently substitute an
+  ONNX-specific arena scheduler.
 - The typed Unity backend can lower a fixed AOT `vrc.dispatch` with ordered
   input/output buffers and a copied f32/i32 descriptor to typed material
   property updates and one `VRCGraphics.Blit`; the Importer binds the generated

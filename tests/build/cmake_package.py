@@ -205,11 +205,18 @@ def main():
     ])
     onnx_mnist_root = onnx_mnist_consumer / 'udoncl/onnx-mnist'
     onnx_mnist_host = onnx_mnist_consumer / 'udoncl-onnx/mnist_host/host.c'
+    onnx_mnist_mlir = onnx_mnist_consumer / 'udoncl-onnx/mnist_host/host.mlir'
     assert onnx_mnist_host.is_file()
+    assert onnx_mnist_mlir.is_file()
     onnx_mnist_source_text = onnx_mnist_host.read_text(encoding='utf-8')
     assert 'clCreateKernel(program, "mnist_conv"' in onnx_mnist_source_text
     assert 'clCreateKernel(program, "mnist_pool"' in onnx_mnist_source_text
     assert 'clCreateKernel(program, "mnist_dense"' in onnx_mnist_source_text
+    onnx_mnist_mlir_text = onnx_mnist_mlir.read_text(encoding='utf-8')
+    assert 'udoncl.onnx_profile = "mnist"' in onnx_mnist_mlir_text
+    assert 'func.call @udondnnConvolutionForward' in onnx_mnist_mlir_text
+    assert 'func.call @udondnnPoolingForward' in onnx_mnist_mlir_text
+    assert 'func.call @udonblasSgemm' in onnx_mnist_mlir_text
     assert not list(onnx_mnist_consumer.rglob('execution-plan.json'))
     onnx_mnist_artifact = onnx_mnist_root / 'artifact'
     onnx_mnist_manifest = json.loads(
