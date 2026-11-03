@@ -168,6 +168,9 @@ add_test(NAME onnx-mlir-frontend-installer
 add_test(NAME onnx-mlir-pipeline
   COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/build/compile_onnx_mlir.py"
 )
+add_test(NAME onnx-mlir-graph
+  COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/build/onnx_mlir_graph.py"
+)
 add_test(NAME build-parallelism
   COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/build/parallel.py"
 )
@@ -182,6 +185,8 @@ add_test(NAME cmake-package-consumer
     --compiler $<TARGET_FILE:vrccl>
     --clang "${VRC_TEST_CLANG}"
     --llvm-link "${VRC_TEST_LLVM_LINK}"
+    --onnx-importer "${VRC_TEST_ONNX_IMPORTER}"
+    --onnx-opt "${VRC_TEST_ONNX_OPT}"
 )
 set_tests_properties(cmake-package-consumer PROPERTIES TIMEOUT 300)
 

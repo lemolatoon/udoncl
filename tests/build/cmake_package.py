@@ -32,6 +32,8 @@ def main():
     parser.add_argument('--compiler', required=True)
     parser.add_argument('--clang', required=True)
     parser.add_argument('--llvm-link', required=True)
+    parser.add_argument('--onnx-importer', required=True)
+    parser.add_argument('--onnx-opt', required=True)
     args = parser.parse_args()
 
     output = args.output.resolve()
@@ -139,12 +141,18 @@ def main():
         f'-DUdonONNXOperators_DIR={udononnxoperators_package}',
         f'-DUDONCL_CLANG_EXECUTABLE={Path(args.clang).resolve()}',
         f'-DUDONCL_LLVM_LINK_EXECUTABLE={Path(args.llvm_link).resolve()}',
+        f'-DUDONCL_ONNX_IMPORTER_EXECUTABLE={Path(args.onnx_importer).resolve()}',
+        f'-DUDONCL_ONNX_OPT_EXECUTABLE={Path(args.onnx_opt).resolve()}',
     ])
     generated_onnx_host = onnx_consumer / 'udoncl-onnx/mnist_host/host.c'
     assert generated_onnx_host.is_file()
     generated_onnx_source = generated_onnx_host.read_text(encoding='utf-8')
     assert 'int udon_onnx_run(udon_onnx_buffers_t *buffers)' in generated_onnx_source
-    assert 'udonblasSgemv(' in generated_onnx_source
+    assert 'udondnnConvolutionForward(' in generated_onnx_source
+    assert 'udonatenAdd(' in generated_onnx_source
+    assert 'udondnnPoolingForward(' in generated_onnx_source
+    assert 'udonblasSgemm(' in generated_onnx_source
+    assert (onnx_consumer / 'udoncl-onnx/mnist_host/model.mlir').is_file()
     assert not list(onnx_consumer.rglob('execution-plan.json'))
     assert not list(onnx_consumer.rglob('plan.json'))
     run([
@@ -187,6 +195,8 @@ def main():
                 f'-DUdonCL_DIR={package}',
                 f'-DUDONCL_CLANG_EXECUTABLE={Path(args.clang).resolve()}',
                 f'-DUDONCL_LLVM_LINK_EXECUTABLE={Path(args.llvm_link).resolve()}',
+                f'-DUDONCL_ONNX_IMPORTER_EXECUTABLE={Path(args.onnx_importer).resolve()}',
+                f'-DUDONCL_ONNX_OPT_EXECUTABLE={Path(args.onnx_opt).resolve()}',
             ],
             diagnostic,
         )

@@ -89,11 +89,26 @@ install(FILES
 install(FILES
   runtime/onnx/udon_onnx.py
   runtime/onnx/udon_onnx_host.py
+  runtime/onnx/onnx_mlir_graph.py
+  runtime/onnx/onnx_mlir_lower.py
   runtime/onnx/udon_pages.py
   runtime/onnx/udon_weights.py
   scripts/compile_onnx_mlir.py
   DESTINATION "${CMAKE_INSTALL_DATADIR}/udoncl/onnx"
   COMPONENT UdonCLCompiler)
+
+find_program(VRC_TEST_ONNX_IMPORTER NAMES udoncl-onnx
+  HINTS
+    "${PROJECT_SOURCE_DIR}/build/onnx-mlir-probe/Release/bin"
+    "${PROJECT_SOURCE_DIR}/.deps/onnx-mlir/bin"
+    "${PROJECT_SOURCE_DIR}/.deps/onnx-mlir-complete/bin"
+  NO_DEFAULT_PATH)
+find_program(VRC_TEST_ONNX_OPT NAMES onnx-mlir-opt
+  HINTS
+    "${PROJECT_SOURCE_DIR}/build/onnx-mlir-probe/Release/bin"
+    "${PROJECT_SOURCE_DIR}/.deps/onnx-mlir/bin"
+    "${PROJECT_SOURCE_DIR}/.deps/onnx-mlir-complete/bin"
+  NO_DEFAULT_PATH)
 install(FILES libraries/udonblas/include/udonblas.h
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
   COMPONENT UdonCLCompiler)

@@ -1,11 +1,16 @@
 # Udon ONNX runtime
 
-`udon_onnx.py` is the dependency-free compiler half of the public Udon ONNX
-Runtime. It provides a protobuf reader, typed shape validator, safe ONNX
-external-data metadata handling, an extensible `ExecutionProviderRegistry`,
-and a serializable Device execution plan. It skips unknown protobuf fields,
-rejects malformed tensors and unsafe external paths, and records the UdonDNN
-or UdonBLAS call selected for every pass.
+The public compiler path imports ONNX with the locked ONNX-MLIR frontend,
+applies shape inference and canonicalization while preserving ONNX operators,
+and lowers the resulting in-memory SSA graph directly to public UdonBLAS,
+UdonDNN, and UdonATen Host calls. It does not create or consume a serialized
+execution plan. Initializer source locations preserve the original ONNX names,
+and unsupported operators fail with their canonical source location.
+
+`udon_onnx.py` still provides the dependency-free protobuf reader, typed shape
+validator, safe external-data handling, and the compatibility execution-plan
+tooling used by older Material-scheduler artifacts. Those legacy entry points
+are not part of the public CMake lowering path.
 
 The first supported end-to-end graph is the trained MNIST network:
 
@@ -156,30 +161,30 @@ udon-onnx model.onnx -o execution-plan.json --emit-host-uasm generated-host.uasm
 udon-onnx model.onnx -o execution-plan.json --execution-provider operators
 ```
 
-The normal CMake Host path does not need to publish an execution-plan JSON.
-`udoncl_add_onnx_host_library` invokes the installed compiler during configure
-and exposes the generated C as an ordinary UdonCL Host source target:
+The normal CMake Host path does not publish an execution-plan JSON.
+`udoncl_add_onnx_host_library` runs the locked importer, ONNX shape inference
+and canonicalization, then direct library-call lowering during configure. It
+exposes the generated C as an ordinary UdonCL Host source target:
 
 ```cmake
 find_package(UdonCL 0.1 REQUIRED CONFIG)
 udoncl_add_onnx_host_library(model_host
   MODEL model.onnx
-  EXECUTION_PROVIDER operators)
+  DIMENSION_BOUNDS batch=1 sequence=128)
 ```
 
-The equivalent CLI form writes only Host C and deliberately omits `-o`:
+The equivalent low-level CLI sequence is:
 
 ```text
-udon-onnx model.onnx --execution-provider operators --emit-host-c host.c
+python compile_onnx_mlir.py model.onnx -o model.mlir \
+  --importer /path/to/udoncl-onnx --optimizer /path/to/onnx-mlir-opt
+python onnx_mlir_lower.py model.onnx model.mlir -o host.c
 ```
 
 Link `model_host` with the UdonBLAS, UdonDNN, and UdonATen targets required by
-the generated calls when constructing the final Unity library. The JSON output
-remains available only for compatibility with the old Material scheduler.
-
-`--execution-provider operators` deliberately bypasses graph-specific fusion.
-It is used to migrate complete models, including the MNIST fixture, onto the
-same `UdonOperatorExecutionProvider` path used by arbitrary standard graphs.
+the generated calls when constructing the final Unity library. The legacy JSON
+output remains available only for compatibility with the old Material
+scheduler.
 
 It has no runtime Python dependencies. Applications can instead import
 `parse_model`, `validate_external_data`, `ExecutionProviderRegistry`, and

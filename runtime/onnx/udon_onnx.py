@@ -364,8 +364,10 @@ def _parse_value_info(data: bytes) -> tuple[str, dict]:
                             for dim_number, dim_wire, dim_value in fields(shape_value):
                                 if dim_number == 1 and dim_wire == 0:
                                     dimension = dim_value
+                                elif dim_number == 2 and dim_wire == 2:
+                                    dimension = _string(dim_value)
                             if dimension is None:
-                                raise ValueError("symbolic ONNX dimensions are not yet supported")
+                                raise ValueError("ONNX dimension has no value or symbol")
                             shape.append(dimension)
                 if elem_type not in DATA_TYPES:
                     raise ValueError(f"value {name!r} has unsupported element type")
@@ -2752,9 +2754,12 @@ def _c_float(value: float) -> str:
 
 def emit_c_host(plan: dict) -> str:
     """Emit an AOT C host that invokes public UdonBLAS/UdonDNN/UdonATen APIs."""
-    if plan.get("runtime") != "udon-onnx" or "aot" not in plan:
-        raise ValueError("execution plan has no standard Udon ONNX AOT schedule")
-    if any(call["kind"] == "tiled_library" for call in plan["aot"]["calls"]):
+    if not all(field in plan for field in ("nodes", "values", "value_types")):
+        raise ValueError("ONNX Host graph lacks nodes or typed values")
+    if any(
+        call["kind"] == "tiled_library"
+        for call in plan.get("aot", {}).get("calls", ())
+    ):
         raise ValueError(
             "Q4 tiled-library calls require the external-weight paging Host emitter"
         )

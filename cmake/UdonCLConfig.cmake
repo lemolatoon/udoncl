@@ -15,6 +15,8 @@ if(EXISTS "${_UDONCL_INSTALL_PREFIX}/include/udoncl/unity_buffer.h")
       "${_UDONCL_INSTALL_PREFIX}/share/udoncl/onnx/udon_onnx_host.py")
   set(_UDONCL_ONNX_MLIR_COMPILER
       "${_UDONCL_INSTALL_PREFIX}/share/udoncl/onnx/compile_onnx_mlir.py")
+  set(_UDONCL_ONNX_MLIR_LOWER
+      "${_UDONCL_INSTALL_PREFIX}/share/udoncl/onnx/onnx_mlir_lower.py")
 else()
   set(_UDONCL_INCLUDE_DIR "${_UDONCL_SOURCE_HINT}/include")
   set(_UDONCL_OPENCL_INCLUDE_DIR
@@ -26,6 +28,8 @@ else()
       "${_UDONCL_SOURCE_HINT}/runtime/onnx/udon_onnx_host.py")
   set(_UDONCL_ONNX_MLIR_COMPILER
       "${_UDONCL_SOURCE_HINT}/scripts/compile_onnx_mlir.py")
+  set(_UDONCL_ONNX_MLIR_LOWER
+      "${_UDONCL_SOURCE_HINT}/runtime/onnx/onnx_mlir_lower.py")
 endif()
 
 set(UDONCLC_EXECUTABLE "${UDONCLC_EXECUTABLE}" CACHE FILEPATH
@@ -213,19 +217,42 @@ function(udoncl_add_onnx_host_library target)
     endif()
     list(APPEND _bound_names "${_bound_name}")
   endforeach()
-  if(NOT EXISTS "${_UDONCL_ONNX_COMPILER}")
+  foreach(_tool IN ITEMS UDONCL_ONNX_IMPORTER_EXECUTABLE
+                         UDONCL_ONNX_OPT_EXECUTABLE)
+    if(NOT ${_tool} OR NOT EXISTS "${${_tool}}")
+      message(FATAL_ERROR
+        "${_tool} is required by udoncl_add_onnx_host_library; run scripts/install_onnx_mlir.py or set it explicitly")
+    endif()
+  endforeach()
+  if(NOT EXISTS "${_UDONCL_ONNX_MLIR_COMPILER}" OR
+     NOT EXISTS "${_UDONCL_ONNX_MLIR_LOWER}")
     message(FATAL_ERROR
-      "Udon ONNX Host compiler does not exist: ${_UDONCL_ONNX_COMPILER}")
+      "Udon ONNX MLIR Host pipeline is incomplete")
   endif()
   find_package(Python3 3.12 REQUIRED COMPONENTS Interpreter)
   set(_generated_dir "${CMAKE_CURRENT_BINARY_DIR}/udoncl-onnx/${target}")
+  set(_generated_mlir "${_generated_dir}/model.mlir")
   set(_generated_host "${_generated_dir}/host.c")
   file(MAKE_DIRECTORY "${_generated_dir}")
-  set(_command "${Python3_EXECUTABLE}" "${_UDONCL_ONNX_COMPILER}"
-               "${_model}" --execution-provider operators
-               --emit-host-c "${_generated_host}")
   execute_process(
-    COMMAND ${_command}
+    COMMAND "${Python3_EXECUTABLE}" "${_UDONCL_ONNX_MLIR_COMPILER}"
+            "${_model}" -o "${_generated_mlir}"
+            --importer "${UDONCL_ONNX_IMPORTER_EXECUTABLE}"
+            --optimizer "${UDONCL_ONNX_OPT_EXECUTABLE}"
+    RESULT_VARIABLE _result
+    OUTPUT_VARIABLE _stdout
+    ERROR_VARIABLE _stderr)
+  if(NOT _result EQUAL 0)
+    message(FATAL_ERROR
+      "ONNX MLIR canonicalization failed for ${_model}:\n${_stdout}${_stderr}")
+  endif()
+  set(_lower_command "${Python3_EXECUTABLE}" "${_UDONCL_ONNX_MLIR_LOWER}"
+      "${_model}" "${_generated_mlir}" -o "${_generated_host}")
+  foreach(_bound IN LISTS _ARG_DIMENSION_BOUNDS)
+    list(APPEND _lower_command --dimension-bound "${_bound}")
+  endforeach()
+  execute_process(
+    COMMAND ${_lower_command}
     RESULT_VARIABLE _result
     OUTPUT_VARIABLE _stdout
     ERROR_VARIABLE _stderr)
@@ -234,11 +261,14 @@ function(udoncl_add_onnx_host_library target)
       "ONNX Host generation failed for ${_model}:\n${_stdout}${_stderr}")
   endif()
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-    "${_model}" "${_UDONCL_ONNX_COMPILER}")
+    "${_model}" "${_UDONCL_ONNX_MLIR_COMPILER}"
+    "${_UDONCL_ONNX_MLIR_LOWER}")
   udoncl_add_host_library("${target}" "${_generated_host}")
   set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_MODEL "${_model}")
   set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_HOST
                "${_generated_host}")
+  set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_MLIR
+               "${_generated_mlir}")
   set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_DIMENSION_BOUNDS
                "${_ARG_DIMENSION_BOUNDS}")
 endfunction()
