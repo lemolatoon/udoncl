@@ -53,7 +53,8 @@ endif()
 
 if(NOT TARGET udonblas)
   add_library(udonblas INTERFACE)
-  set_property(TARGET udonblas PROPERTY UDONCL_HOST_LIBRARIES udonblas_host)
+  set_property(TARGET udonblas PROPERTY UDONCL_HOST_LIBRARIES
+    udonblas_host UdonCL::OpenCLRuntime)
   set_property(TARGET udonblas PROPERTY UDONCL_DEVICE_LIBRARIES udonblas_device)
 endif()
 if(NOT TARGET UdonBLAS::UdonBLAS)

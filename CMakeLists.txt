@@ -60,6 +60,12 @@ install(FILES
 install(FILES include/udoncl/unity_buffer.h
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/udoncl"
   COMPONENT UdonCLCompiler)
+install(FILES include/VRC/Runtime/OpenCL/Backend.h
+  DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/VRC/Runtime/OpenCL"
+  COMPONENT UdonCLCompiler)
+install(FILES lib/Runtime/OpenCL/OpenCLAOT.c
+  DESTINATION "${CMAKE_INSTALL_DATADIR}/udoncl/runtime"
+  COMPONENT UdonCLCompiler)
 install(FILES libraries/udonblas/include/udonblas.h
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
   COMPONENT UdonCLCompiler)

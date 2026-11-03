@@ -53,6 +53,8 @@ def main():
     assert (install / 'include/CL/cl.h').is_file()
     assert (install / 'include/CL/cl_platform.h').is_file()
     assert (install / 'include/CL/cl_version.h').is_file()
+    assert (install / 'include/VRC/Runtime/OpenCL/Backend.h').is_file()
+    assert (install / 'share/udoncl/runtime/OpenCLAOT.c').is_file()
     assert (install / 'share/licenses/UdonCL/OpenCL-Headers.LICENSE').is_file()
     package = install / 'lib/cmake/UdonCL'
     udonblas_package = install / 'lib/cmake/UdonBLAS'
@@ -102,6 +104,7 @@ def main():
     udonblas_root = udonblas_consumer / 'udoncl/udonblas-sgemm-example'
     assert (udonblas_root / 'host.bc').is_file()
     assert (udonblas_root / 'device.bc').is_file()
+    assert len(list((udonblas_root / 'objects/host').rglob('*.bc'))) == 3
     assert len(list((udonblas_root / 'objects/device').rglob('*.bc'))) == 6
 
     build_root = consumer / 'udoncl/hello-artifact'

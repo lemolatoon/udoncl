@@ -146,7 +146,7 @@ raw_memory = run([opt, '--vrc-raise-llvm-memory',
                  raw_memory_source)
 for expected in ['!udonhl.ptr<0>', 'arith.constant 4 : i32',
                  'udonhl.alloca', 'udonhl.ptr_add', 'udonhl.load',
-                 'udonhl.store', 'udonhl.call @identity', 'udonhl.global',
+                 'udonhl.store', 'call @identity', 'udonhl.global',
                  'storage_type = !udonhl.ptr<0>',
                  'udonhl.address_of @handle']:
     assert expected in raw_memory, (expected, raw_memory)
@@ -158,7 +158,7 @@ for forbidden in ['llvm.alloca', 'llvm.getelementptr', 'llvm.load',
 raw_high = run([opt, '--pass-pipeline=builtin.module(vrc-recover-high-level)',
                 '--verify-each'], raw_memory_source)
 assert 'func.func private @identity(%arg0: !udonhl.ptr<0>)' in raw_high
-assert 'udonhl.call @identity' in raw_high
+assert 'call @identity' in raw_high
 for forbidden in ['llvm.func ', 'llvm.return', 'llvm.call ', 'llvm.load ',
                   'llvm.store ', 'llvm.getelementptr ']:
     assert forbidden not in raw_high, (forbidden, raw_high)
@@ -200,7 +200,7 @@ aggregate_raw = run([
 ], aggregate_raw_source)
 for expected in [
     'initial_value = array<i8:', 'udonhl.memcpy', 'udonhl.inttoptr',
-    'udonhl.ptrtoint', 'cf.cond_br', 'cf.br', 'udonhl.call @choose',
+    'udonhl.ptrtoint', 'cf.cond_br', 'cf.br', 'call @choose',
 ]:
     assert expected in aggregate_raw, (expected, aggregate_raw)
 for forbidden in [

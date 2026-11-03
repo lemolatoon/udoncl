@@ -162,16 +162,8 @@ struct CallPattern : OpConversionPattern<LLVM::CallOp> {
     SmallVector<Type> results;
     if (failed(getTypeConverter()->convertTypes(op.getResultTypes(), results)))
       return failure();
-    OperationState state(op.getLoc(),
-                         ::vrc::udonhl::CallOp::getOperationName());
-    state.addOperands(adaptor.getOperands());
-    state.addTypes(results);
-    state.addAttribute("callee", op.getCalleeAttr());
-    state.addAttribute("call_policy", ::vrc::udonhl::CallPolicyAttr::get(
-                                          rewriter.getContext(),
-                                          ::vrc::udonhl::CallPolicy::Normal));
-    auto *call = rewriter.create(state);
-    rewriter.replaceOp(op, call->getResults());
+    rewriter.replaceOpWithNewOp<func::CallOp>(
+        op, *op.getCallee(), results, adaptor.getOperands());
     return success();
   }
 };

@@ -7,10 +7,13 @@ get_filename_component(_UDONCL_SOURCE_HINT "${_UDONCL_CONFIG_DIR}/.." ABSOLUTE)
 if(EXISTS "${_UDONCL_INSTALL_PREFIX}/include/udoncl/unity_buffer.h")
   set(_UDONCL_INCLUDE_DIR "${_UDONCL_INSTALL_PREFIX}/include")
   set(_UDONCL_OPENCL_INCLUDE_DIR "${_UDONCL_INSTALL_PREFIX}/include")
+  set(_UDONCL_RUNTIME_DIR
+      "${_UDONCL_INSTALL_PREFIX}/share/udoncl/runtime")
 else()
   set(_UDONCL_INCLUDE_DIR "${_UDONCL_SOURCE_HINT}/include")
   set(_UDONCL_OPENCL_INCLUDE_DIR
       "${_UDONCL_SOURCE_HINT}/third_party/OpenCL-Headers")
+  set(_UDONCL_RUNTIME_DIR "${_UDONCL_SOURCE_HINT}/lib/Runtime/OpenCL")
 endif()
 
 set(UDONCLC_EXECUTABLE "${UDONCLC_EXECUTABLE}" CACHE FILEPATH
@@ -87,6 +90,16 @@ function(udoncl_add_device_library target)
   _udoncl_add_source_library("${target}" DEVICE ${ARGN})
 endfunction()
 
+if(NOT TARGET udoncl_opencl_runtime)
+  udoncl_add_host_library(udoncl_opencl_runtime
+    "${_UDONCL_RUNTIME_DIR}/OpenCLAOT.c")
+  target_compile_definitions(udoncl_opencl_runtime INTERFACE
+    CL_TARGET_OPENCL_VERSION=120)
+endif()
+if(NOT TARGET UdonCL::OpenCLRuntime)
+  add_library(UdonCL::OpenCLRuntime ALIAS udoncl_opencl_runtime)
+endif()
+
 function(_udoncl_append_target_usage target expected_kind sources_var
          dependencies_var flags_var)
   if(NOT TARGET "${target}")
@@ -100,16 +113,17 @@ function(_udoncl_append_target_usage target expected_kind sources_var
       message(FATAL_ERROR
         "UdonCL target '${target}' does not provide ${expected_kind} sources")
     endif()
-    set(_sources "${${sources_var}}")
-    set(_dependencies "${${dependencies_var}}")
-    set(_flags "${${flags_var}}")
+    set(_aggregate_sources "${${sources_var}}")
+    set(_aggregate_dependencies "${${dependencies_var}}")
+    set(_aggregate_flags "${${flags_var}}")
     foreach(_library IN LISTS _libraries)
       _udoncl_append_target_usage("${_library}" "${expected_kind}"
-                                  _sources _dependencies _flags)
+                                  _aggregate_sources _aggregate_dependencies
+                                  _aggregate_flags)
     endforeach()
-    set(${sources_var} "${_sources}" PARENT_SCOPE)
-    set(${dependencies_var} "${_dependencies}" PARENT_SCOPE)
-    set(${flags_var} "${_flags}" PARENT_SCOPE)
+    set(${sources_var} "${_aggregate_sources}" PARENT_SCOPE)
+    set(${dependencies_var} "${_aggregate_dependencies}" PARENT_SCOPE)
+    set(${flags_var} "${_aggregate_flags}" PARENT_SCOPE)
     return()
   endif()
   if(NOT _kind STREQUAL expected_kind)
