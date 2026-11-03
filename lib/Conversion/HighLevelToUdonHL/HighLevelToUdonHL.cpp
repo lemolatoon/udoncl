@@ -19,7 +19,8 @@ namespace host = ::vrc::udonhl;
 namespace runtime = ::vrc::vrc;
 bool scalar(Type type) { return type.isInteger(32) || type.isF32(); }
 bool internalScalar(Type type) {
-  return scalar(type) || type.isInteger(1) || type.isIndex();
+  return scalar(type) || type.isInteger(1) || type.isInteger(64) ||
+         type.isIndex();
 }
 bool publicArray(Type type) {
   auto memref = dyn_cast<MemRefType>(type);
@@ -65,9 +66,9 @@ struct LowerHostToUdonHLPass
       target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
       RewritePatternSet patterns(&getContext());
       populateSCFToControlFlowConversionPatterns(patterns);
-      if (failed(
-              applyPartialConversion(module, target, std::move(patterns)))) {
-        module.emitError("failed to lower recovered structured Host control flow");
+      if (failed(applyPartialConversion(module, target, std::move(patterns)))) {
+        module.emitError(
+            "failed to lower recovered structured Host control flow");
         signalPassFailure();
         return;
       }

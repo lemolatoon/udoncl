@@ -51,6 +51,8 @@ static FailureOr<StringRef> udonType(Type type) {
     return StringRef("SystemBoolean");
   if (type.isInteger(32))
     return StringRef("SystemInt32");
+  if (type.isInteger(64))
+    return StringRef("SystemInt64");
   if (type.isF32())
     return StringRef("SystemSingle");
   if (type.isIndex())

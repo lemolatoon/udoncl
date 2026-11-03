@@ -164,6 +164,27 @@ structured_udon = run([
 ], structured_control_flow_source)
 assert 'udonasm.jump_if_false' in structured_udon
 
+internal_i64_source = r'''
+module {
+  func.func private @accept_flags(%flags: i64) -> i32 {
+    %one = arith.constant 1 : i32
+    return %one : i32
+  }
+  func.func @use_flags() -> i32 attributes {vrc.export_id = 6 : i32} {
+    %flags = arith.constant 5 : i64
+    %result = func.call @accept_flags(%flags) : (i64) -> i32
+    return %result : i32
+  }
+}
+'''
+internal_i64_udon = run([
+    opt,
+    '--pass-pipeline=builtin.module(' + host_pass +
+    ',vrc-lower-udonhl-to-udonasm)',
+    '--verify-each',
+], internal_i64_source)
+assert 'type = "SystemInt64"' in internal_i64_udon
+
 public_boolean = r'''
 module {
   func.func @identity(%value: i1) -> i32 attributes {vrc.export_id = 4 : i32} {
