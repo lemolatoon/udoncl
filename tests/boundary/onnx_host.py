@@ -49,6 +49,9 @@ mlir = mlir_path.read_text(encoding="utf-8")
 assert 'udoncl.onnx_lowering = "library-calls-v1"' in mlir
 assert 'udoncl.library = "UdonBLAS"' in mlir
 assert "func.call @udonblasSgemm" in mlir
+assert "!udonhl.ptr<0>" in mlir
+assert "udonhl.address_of @mnist_dense_weight" in mlir
+assert "memref.global" not in mlir
 assert "vrc.public_name = \"RunMnistDense\"" in mlir
 source = host_path.read_text(encoding="utf-8")
 assert "UDONBLAS_OP_N, UDONBLAS_OP_N, 1, 10, 144" in source

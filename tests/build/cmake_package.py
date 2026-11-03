@@ -165,7 +165,13 @@ def main():
     onnx_dense_mlir_text = onnx_dense_mlir.read_text(encoding='utf-8')
     assert 'udoncl.onnx_lowering = "library-calls-v1"' in onnx_dense_mlir_text
     assert 'func.call @udonblasSgemm' in onnx_dense_mlir_text
+    assert '!udonhl.ptr<0>' in onnx_dense_mlir_text
     assert not list(onnx_dense_consumer.rglob('execution-plan.json'))
+    onnx_dense_recovered = (
+        onnx_dense_root / 'artifact/frontend.recovered.mlir'
+    ).read_text(encoding='utf-8')
+    assert 'udoncl.onnx_lowering = "library-calls-v1"' in onnx_dense_recovered
+    assert 'func.func @run_mnist_dense()' in onnx_dense_recovered
     onnx_dense_manifest = json.loads(
         (onnx_dense_root / 'artifact/manifest.json').read_text(encoding='utf-8')
     )

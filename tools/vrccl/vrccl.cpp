@@ -57,6 +57,9 @@ cl::opt<bool> emitUnityLibrary(
 cl::opt<std::string> hostLLVM("host-llvm", cl::desc("Host LLVM IR from C"));
 cl::opt<std::string>
     hostMLIR("host-mlir", cl::desc("Typed Host MLIR for compiler validation"));
+cl::opt<std::string> hostLibraryLLVM(
+    "host-library-llvm",
+    cl::desc("Linked Host library LLVM IR used to resolve Host MLIR calls"));
 cl::opt<std::string> deviceLLVM("device-llvm",
                                 cl::desc("Device LLVM IR from OpenCL C"));
 cl::opt<bool> checkRequest(
@@ -1646,6 +1649,83 @@ LogicalResult recoverUnityOpenCLBufferCalls(ModuleOp module) {
   return success();
 }
 
+FailureOr<OwningOpRef<ModuleOp>>
+recoverLinkedUnityHostLibrary(StringRef filename, MLIRContext &context) {
+  LLVMContext llvmContext;
+  SMDiagnostic diagnostic;
+  auto inputModule = parseIRFile(filename, diagnostic, llvmContext);
+  if (!inputModule) {
+    diagnostic.print("udonclc", errs());
+    return failure();
+  }
+  if (inputModule->getTargetTriple().str() != "spir-unknown-unknown" ||
+      !inputModule->getDataLayout().isLittleEndian() ||
+      inputModule->getDataLayout().getPointerSizeInBits() != 32) {
+    errs() << "Unity Host library requires 32-bit little-endian SPIR input\n";
+    return failure();
+  }
+  if (!inputModule->getFunction("__vrc_opencl_buffer_alloc")) {
+    errs() << "--host-library-llvm requires the linked OpenCL AOT runtime\n";
+    return failure();
+  }
+  auto library = ::vrc::importLLVM(std::move(inputModule), context);
+  if (!library || failed(verify(*library)))
+    return failure();
+  PassManager cleanup(&context);
+  cleanup.addPass(createMem2Reg());
+  cleanup.addPass(createCanonicalizerPass());
+  if (failed(cleanup.run(*library)))
+    return failure();
+  PassManager recovery(&context);
+  recovery.enableVerifier(false);
+  recovery.addPass(createCanonicalizerPass());
+  ::vrc::RaiseLLVMMemoryPassOptions memoryOptions;
+  memoryOptions.allowRawFallback = true;
+  recovery.addPass(::vrc::createRaiseLLVMMemoryPass(memoryOptions));
+  recovery.addPass(::vrc::createRaiseLLVMRawMemoryPass());
+  recovery.addPass(::vrc::createRaiseLLVMToScalarPass());
+  recovery.addPass(createCanonicalizerPass());
+  recovery.addPass(::vrc::createLowerOpenCLAOTIntrinsicsPass());
+  if (failed(recovery.run(*library)) || failed(verify(*library)))
+    return failure();
+  return library;
+}
+
+LogicalResult linkUnityHostLibrary(ModuleOp destination, ModuleOp library) {
+  for (NamedAttribute attribute : library->getAttrs())
+    if (!destination->hasAttr(attribute.getName()))
+      destination->setAttr(attribute.getName(), attribute.getValue());
+
+  SymbolTable symbols(destination);
+  for (Operation &operation :
+       llvm::make_early_inc_range(library.getBody()->getOperations())) {
+    auto symbol = dyn_cast<SymbolOpInterface>(&operation);
+    if (!symbol) {
+      operation.moveBefore(destination.getBody(), destination.getBody()->end());
+      continue;
+    }
+    Operation *existing = symbols.lookup(symbol.getName());
+    if (existing) {
+      auto existingFunction = dyn_cast<func::FuncOp>(existing);
+      auto libraryFunction = dyn_cast<func::FuncOp>(&operation);
+      if (existingFunction && libraryFunction &&
+          existingFunction.isDeclaration()) {
+        if (existingFunction.getFunctionType() !=
+            libraryFunction.getFunctionType())
+          return existingFunction.emitError(
+              "Host library definition has a mismatched ABI");
+        symbols.erase(existingFunction);
+      } else {
+        operation.erase();
+        continue;
+      }
+    }
+    operation.moveBefore(destination.getBody(), destination.getBody()->end());
+    symbols.insert(&operation);
+  }
+  return verify(destination);
+}
+
 std::string unityLibraryDisplayShader(StringRef program) {
   return (Twine("Shader \"Hidden/UdonCL/") + program +
           "/Display\" {\n"
@@ -1742,9 +1822,11 @@ int main(int argc, char **argv) {
   SmallVector<int32_t> unityDispatchKernelIds;
   if (emitUnityLibrary) {
     auto input = MemoryBuffer::getFile(inputFilename);
-    if (!input || (hostLLVM.empty() == hostMLIR.empty())) {
+    if (!input || (hostLLVM.empty() == hostMLIR.empty()) ||
+        (!hostLibraryLLVM.empty() && hostMLIR.empty())) {
       errs() << "Unity library mode requires a JSON config and exactly one of "
-                "--host-llvm or --host-mlir; --device-llvm is optional\n";
+                "--host-llvm or --host-mlir; --host-library-llvm is valid "
+                "with --host-mlir; --device-llvm is optional\n";
       return 1;
     }
     auto parsed = json::parse((*input)->getBuffer());
@@ -1826,7 +1908,14 @@ int main(int argc, char **argv) {
     }
     if (!hostMLIR.empty()) {
       module = parseSourceFile<ModuleOp>(hostMLIR, &context);
-      if (!module || failed(verify(*module)) ||
+      if (!module || failed(verify(*module)))
+        return 1;
+      if (!hostLibraryLLVM.empty()) {
+        auto library = recoverLinkedUnityHostLibrary(hostLibraryLLVM, context);
+        if (failed(library) || failed(linkUnityHostLibrary(*module, **library)))
+          return 1;
+      }
+      if (failed(verify(*module)) ||
           !configureUnityExports(*module, *unityConfig))
         return 1;
     } else {

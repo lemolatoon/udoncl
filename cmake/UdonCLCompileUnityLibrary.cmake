@@ -17,10 +17,16 @@ set(_device_argument)
 if(DEFINED UDONCL_DEVICE_MODULE AND NOT "${UDONCL_DEVICE_MODULE}" STREQUAL "")
   set(_device_argument --device-llvm "${UDONCL_DEVICE_MODULE}")
 endif()
+if(DEFINED UDONCL_HOST_MLIR AND NOT "${UDONCL_HOST_MLIR}" STREQUAL "")
+  set(_host_arguments --host-mlir "${UDONCL_HOST_MLIR}"
+                      --host-library-llvm "${UDONCL_HOST_MODULE}")
+else()
+  set(_host_arguments --host-llvm "${UDONCL_HOST_MODULE}")
+endif()
 file(REMOVE_RECURSE "${UDONCL_OUTPUT_DIRECTORY}")
 execute_process(
   COMMAND "${UDONCL_COMPILER}" --emit-unity-library-bundle "${UDONCL_CONFIG}"
-          --host-llvm "${UDONCL_HOST_MODULE}" ${_device_argument}
+          ${_host_arguments} ${_device_argument}
           -o "${UDONCL_OUTPUT_DIRECTORY}"
   RESULT_VARIABLE _result
   OUTPUT_VARIABLE _stdout

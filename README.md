@@ -203,6 +203,11 @@ Current components:
   packages the selected AOT kernel's ShaderLab/HLSL plus manifest metadata in
   the Unity artifact. The `hello-dispatch-unity-library` example connects its
   restricted standard OpenCL Host sequence to the generated kernel material.
+- The `mnist-dense` ONNX profile lowers its Host graph to `func`/`cf`/`arith`
+  plus the raw `!udonhl.ptr<0>` UdonBLAS ABI. `udoncl_add_unity_library` links
+  that Host MLIR against the recovered UdonBLAS/OpenCL AOT library module and
+  emits the final Unity artifact without using the generated Host C as input.
+  Host C remains a numerical oracle and temporary compatibility output.
 - The typed Unity backend can lower a fixed AOT `vrc.dispatch` with ordered
   input/output buffers and a copied f32/i32 descriptor to typed material
   property updates and one `VRCGraphics.Blit`; the Importer binds the generated

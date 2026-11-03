@@ -27,12 +27,21 @@ def _array(lines: list[str], declaration: str, values: list[float]) -> None:
     lines.append("};")
 
 
-def _mlir_dense_f32(values: list[float]) -> str:
-    return "dense<[" + ", ".join(_c_float(value)[:-1] for value in values) + "]>"
+def _mlir_i8_array(data: bytes) -> str:
+    signed = (value if value < 128 else value - 256 for value in data)
+    return "array<i8: " + ", ".join(str(value) for value in signed) + ">"
+
+
+def _udonhl_global(name: str, storage_type: str, data: bytes) -> str:
+    return (
+        '  "udonhl.global"() <{address_space = 0 : i32, alignment = 4 : i64, '
+        f"initial_value = {_mlir_i8_array(data)}, linkage = \"internal\", "
+        f"storage_type = {storage_type}, sym_name = \"{name}\"}}> : () -> ()"
+    )
 
 
 def emit_mnist_dense_mlir(model: dict) -> str:
-    """Lower the MNIST Dense tail to standard MLIR and the public UdonBLAS ABI."""
+    """Lower the MNIST Dense tail to UdonHL and the public UdonBLAS ABI."""
     nodes = model["graph"]["nodes"]
     dense_index = next(
         (index for index, node in enumerate(nodes) if node["op_type"] == "Gemm"),
@@ -64,26 +73,21 @@ def emit_mnist_dense_mlir(model: dict) -> str:
         for feature in range(144)
     ]
 
+    weight_bytes = struct.pack(f"<{len(packed_weight)}f", *packed_weight)
     lines = [
         'module attributes {udoncl.onnx_lowering = "library-calls-v1", '
         'udoncl.onnx_profile = "mnist-dense"} {',
-        '  memref.global "private" @mnist_dense_input : memref<144xf32> = dense<0.0>',
-        '  memref.global "private" constant @mnist_dense_weight : memref<1440xf32> = '
-        + _mlir_dense_f32(packed_weight),
-        '  memref.global "private" constant @mnist_dense_bias : memref<10xf32> = '
-        + _mlir_dense_f32(bias),
-        '  memref.global "private" @mnist_dense_output : memref<10xf32> = dense<0.0>',
-        '  memref.global "private" @mnist_dense_handle : memref<1xi32> = dense<0>',
-        '  memref.global "private" constant @mnist_dense_alpha : memref<1xf32> = dense<1.0>',
-        '  memref.global "private" constant @mnist_dense_beta : memref<1xf32> = dense<1.0>',
+        _udonhl_global("mnist_dense_input", "!llvm.array<144 x f32>", bytes(144 * 4)),
+        _udonhl_global("mnist_dense_weight", "!llvm.array<1440 x f32>", weight_bytes),
+        _udonhl_global("mnist_dense_output", "!llvm.array<10 x f32>", bytes(10 * 4)),
         '',
-        '  func.func private @udonblasCreate(memref<1xi32>) -> i32 attributes '
+        '  func.func private @udonblasCreate(!udonhl.ptr<0>) -> i32 attributes '
         '{udoncl.api = "udonblasCreate", udoncl.library = "UdonBLAS"}',
         '  func.func private @udonblasDestroy(i32) -> i32 attributes '
         '{udoncl.api = "udonblasDestroy", udoncl.library = "UdonBLAS"}',
         '  func.func private @udonblasSgemm(i32, i32, i32, i32, i32, i32, '
-        'memref<1xf32>, memref<144xf32>, i32, memref<1440xf32>, i32, '
-        'memref<1xf32>, memref<10xf32>, i32) -> i32 attributes '
+        '!udonhl.ptr<0>, !udonhl.ptr<0>, i32, !udonhl.ptr<0>, i32, '
+        '!udonhl.ptr<0>, !udonhl.ptr<0>, i32) -> i32 attributes '
         '{udoncl.api = "udonblasSgemm", udoncl.library = "UdonBLAS"}',
         '',
         '  func.func @write_mnist_dense_input(%index: i32, %value: f32) -> i32 attributes {',
@@ -91,31 +95,47 @@ def emit_mnist_dense_mlir(model: dict) -> str:
         '    vrc.parameter_names = ["index", "value"],',
         '    vrc.public_name = "WriteMnistDenseInput"',
         '  } {',
-        '    %input = memref.get_global @mnist_dense_input : memref<144xf32>',
-        '    %position = arith.index_cast %index : i32 to index',
-        '    memref.store %value, %input[%position] : memref<144xf32>',
+        '    %four = arith.constant 4 : i32',
+        '    %input = udonhl.address_of @mnist_dense_input : <0>',
+        '    %offset = arith.muli %index, %four : i32',
+        '    %position = "udonhl.ptr_add"(%input, %offset) : '
+        '(!udonhl.ptr<0>, i32) -> !udonhl.ptr<0>',
+        '    "udonhl.store"(%value, %position) <{alignment = 4 : i64}> : '
+        '(f32, !udonhl.ptr<0>) -> ()',
         '    %success = arith.constant 0 : i32',
         '    return %success : i32',
         '  }',
         '',
         '  func.func @run_mnist_dense() -> i32 attributes {',
+        '    vrc.async_effect = "may_suspend",',
         '    vrc.export_id = 2 : i32,',
         '    vrc.public_name = "RunMnistDense"',
         '  } {',
-        '    %input = memref.get_global @mnist_dense_input : memref<144xf32>',
-        '    %weight = memref.get_global @mnist_dense_weight : memref<1440xf32>',
-        '    %bias = memref.get_global @mnist_dense_bias : memref<10xf32>',
-        '    %output = memref.get_global @mnist_dense_output : memref<10xf32>',
-        '    %handle_slot = memref.get_global @mnist_dense_handle : memref<1xi32>',
-        '    %alpha = memref.get_global @mnist_dense_alpha : memref<1xf32>',
-        '    %beta = memref.get_global @mnist_dense_beta : memref<1xf32>',
+        '    %four = arith.constant 4 : i32',
+        '    %input = udonhl.address_of @mnist_dense_input : <0>',
+        '    %weight = udonhl.address_of @mnist_dense_weight : <0>',
+        '    %output = udonhl.address_of @mnist_dense_output : <0>',
+        '    %handle_slot = "udonhl.alloca"(%four) <{alignment = 4 : i64}> : '
+        '(i32) -> !udonhl.ptr<0>',
+        '    %alpha = "udonhl.alloca"(%four) <{alignment = 4 : i64}> : '
+        '(i32) -> !udonhl.ptr<0>',
+        '    %beta = "udonhl.alloca"(%four) <{alignment = 4 : i64}> : '
+        '(i32) -> !udonhl.ptr<0>',
+        '    %one = arith.constant 1.0 : f32',
+        '    "udonhl.store"(%one, %alpha) <{alignment = 4 : i64}> : '
+        '(f32, !udonhl.ptr<0>) -> ()',
+        '    "udonhl.store"(%one, %beta) <{alignment = 4 : i64}> : '
+        '(f32, !udonhl.ptr<0>) -> ()',
     ]
     for index in range(10):
         lines.extend(
             [
-                f'    %i{index} = arith.constant {index} : index',
-                f'    %bias{index} = memref.load %bias[%i{index}] : memref<10xf32>',
-                f'    memref.store %bias{index}, %output[%i{index}] : memref<10xf32>',
+                f'    %offset{index} = arith.constant {index * 4} : i32',
+                f'    %output{index} = "udonhl.ptr_add"(%output, %offset{index}) : '
+                '(!udonhl.ptr<0>, i32) -> !udonhl.ptr<0>',
+                f'    %bias{index} = arith.constant {_c_float(bias[index])[:-1]} : f32',
+                f'    "udonhl.store"(%bias{index}, %output{index}) '
+                '<{alignment = 4 : i64}> : (f32, !udonhl.ptr<0>) -> ()',
             ]
         )
     lines.extend(
@@ -129,17 +149,17 @@ def emit_mnist_dense_mlir(model: dict) -> str:
             '    %ldb = arith.constant 144 : i32',
             '    %ldc = arith.constant 1 : i32',
             '    %create_status = func.call @udonblasCreate(%handle_slot) : '
-            '(memref<1xi32>) -> i32',
+            '(!udonhl.ptr<0>) -> i32',
             '    %created = arith.cmpi eq, %create_status, %success : i32',
             '    cf.cond_br %created, ^sgemm, ^return(%create_status : i32)',
             '  ^sgemm:',
-            '    %zero = arith.constant 0 : index',
-            '    %handle = memref.load %handle_slot[%zero] : memref<1xi32>',
+            '    %handle = "udonhl.load"(%handle_slot) <{alignment = 4 : i64}> : '
+            '(!udonhl.ptr<0>) -> i32',
             '    %sgemm_status = func.call @udonblasSgemm('
             '%handle, %op_n, %op_n, %m, %n, %k, %alpha, %input, %lda, '
             '%weight, %ldb, %beta, %output, %ldc) : '
-            '(i32, i32, i32, i32, i32, i32, memref<1xf32>, memref<144xf32>, '
-            'i32, memref<1440xf32>, i32, memref<1xf32>, memref<10xf32>, i32) -> i32',
+            '(i32, i32, i32, i32, i32, i32, !udonhl.ptr<0>, !udonhl.ptr<0>, '
+            'i32, !udonhl.ptr<0>, i32, !udonhl.ptr<0>, !udonhl.ptr<0>, i32) -> i32',
             '    %computed = arith.cmpi eq, %sgemm_status, %success : i32',
             '    cf.cond_br %computed, ^destroy, ^return(%sgemm_status : i32)',
             '  ^destroy:',
@@ -154,9 +174,13 @@ def emit_mnist_dense_mlir(model: dict) -> str:
             '    vrc.parameter_names = ["index"],',
             '    vrc.public_name = "ReadMnistDenseOutput"',
             '  } {',
-            '    %output = memref.get_global @mnist_dense_output : memref<10xf32>',
-            '    %position = arith.index_cast %index : i32 to index',
-            '    %value = memref.load %output[%position] : memref<10xf32>',
+            '    %four = arith.constant 4 : i32',
+            '    %output = udonhl.address_of @mnist_dense_output : <0>',
+            '    %offset = arith.muli %index, %four : i32',
+            '    %position = "udonhl.ptr_add"(%output, %offset) : '
+            '(!udonhl.ptr<0>, i32) -> !udonhl.ptr<0>',
+            '    %value = "udonhl.load"(%position) <{alignment = 4 : i64}> : '
+            '(!udonhl.ptr<0>) -> f32',
             '    return %value : f32',
             '  }',
             '}',

@@ -477,7 +477,18 @@ function(udoncl_add_unity_library target)
 
   set(_host_modules)
   set(_host_seen_sources)
+  set(_host_mlir)
   foreach(_library IN LISTS ARG_HOST_LIBRARIES)
+    get_target_property(_library_host_mlir "${_library}"
+                        UDONCL_ONNX_HOST_MLIR)
+    if(_library_host_mlir)
+      if(_host_mlir)
+        message(FATAL_ERROR
+          "UdonCL Unity libraries currently support one Host MLIR module")
+      endif()
+      set(_host_mlir "${_library_host_mlir}")
+      continue()
+    endif()
     set(_sources)
     set(_dependencies)
     set(_flags)
@@ -549,12 +560,14 @@ function(udoncl_add_unity_library target)
             "-DUDONCL_COMPILER=${UDONCLC_EXECUTABLE}"
             "-DUDONCL_CONFIG=${_config}"
             "-DUDONCL_HOST_MODULE=${_host_module}"
+            "-DUDONCL_HOST_MLIR=${_host_mlir}"
             "-DUDONCL_DEVICE_MODULE=${_device_module}"
             "-DUDONCL_OUTPUT_DIRECTORY=${_artifact_directory}"
             "-DUDONCL_BUILD_ROOT=${CMAKE_BINARY_DIR}"
             -P "${_UDONCL_CONFIG_DIR}/UdonCLCompileUnityLibrary.cmake"
     COMMAND "${CMAKE_COMMAND}" -E touch "${_stamp}"
     DEPENDS "${UDONCLC_EXECUTABLE}" "${_config}" "${_host_module}"
+            ${_host_mlir}
             ${_device_module}
     BYPRODUCTS "${_artifact_directory}/manifest.json"
                "${_artifact_directory}/host.uasm"
