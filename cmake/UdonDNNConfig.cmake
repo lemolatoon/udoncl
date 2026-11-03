@@ -47,6 +47,8 @@ if(NOT TARGET udondnn_host)
     "${_UDONDNN_INCLUDE_DIR}"
     "${_UDONATEN_INCLUDE_DIR}"
     "${_UDONDNN_GENERATED_DIR}")
+  target_compile_definitions(udondnn_host INTERFACE
+    UDONDNN_AOT_DIRECT_DISPATCH=1)
 endif()
 
 if(NOT TARGET udondnn_device)
@@ -57,10 +59,25 @@ if(NOT TARGET udondnn_device)
   udoncl_add_device_library(udondnn_device ${_UDONDNN_DEVICE_SOURCES})
 endif()
 
+if(NOT TARGET udondnn_opencl_runtime)
+  if(EXISTS "${_UDONDNN_INSTALL_PREFIX}/share/udoncl/runtime/OpenCLAOT.c")
+    set(_UDONDNN_OPENCL_RUNTIME
+      "${_UDONDNN_INSTALL_PREFIX}/share/udoncl/runtime/OpenCLAOT.c")
+  else()
+    set(_UDONDNN_OPENCL_RUNTIME
+      "${_UDONDNN_SOURCE_HINT}/lib/Runtime/OpenCL/OpenCLAOT.c")
+  endif()
+  udoncl_add_host_library(udondnn_opencl_runtime
+    "${_UDONDNN_OPENCL_RUNTIME}")
+  target_compile_definitions(udondnn_opencl_runtime INTERFACE
+    CL_TARGET_OPENCL_VERSION=120
+    UDONCL_AOT_ENABLE_DNN=1)
+endif()
+
 if(NOT TARGET udondnn)
   add_library(udondnn INTERFACE)
   set_property(TARGET udondnn PROPERTY UDONCL_HOST_LIBRARIES
-    udondnn_host UdonCL::OpenCLRuntime)
+    udondnn_host udondnn_opencl_runtime)
   set_property(TARGET udondnn PROPERTY UDONCL_DEVICE_LIBRARIES udondnn_device)
 endif()
 if(NOT TARGET UdonDNN::UdonDNN)

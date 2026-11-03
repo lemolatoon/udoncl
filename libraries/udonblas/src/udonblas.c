@@ -2,6 +2,35 @@
 #include "udonblas_device_source.h"
 #include <CL/cl.h>
 
+#ifdef UDONBLAS_AOT_RAW_INTRINSICS
+extern int __vrc_opencl_buffer_alloc(int, int);
+extern int __vrc_opencl_buffer_release(int);
+extern int __vrc_opencl_buffer_upload(int, int, int, const void *);
+extern int __vrc_opencl_buffer_readback(int, int, int, void *);
+extern int __vrc_opencl_await(int);
+extern int __vrc_opencl_dispatch_udonblas_sgemm(int, int, int, int, int, int,
+                                                int, int, int, int, float,
+                                                float);
+#define AOT_BUFFER_TOKEN(buffer) ((int)(size_t)(buffer))
+static int aot_wait(int event) { return __vrc_opencl_await(event); }
+#endif
+
+#ifdef UDONBLAS_AOT_DIRECT_DISPATCH
+extern cl_int __vrc_enqueue_udonblas_sgemm(cl_command_queue, cl_kernel, cl_uint,
+                                           const size_t *, const size_t *,
+                                           const size_t *, cl_uint,
+                                           const cl_event *, cl_event *);
+extern cl_int __vrc_enqueue_udonblas_sgemv(cl_command_queue, cl_kernel, cl_uint,
+                                           const size_t *, const size_t *,
+                                           const size_t *, cl_uint,
+                                           const cl_event *, cl_event *);
+#define UDONBLAS_ENQUEUE_SGEMM __vrc_enqueue_udonblas_sgemm
+#define UDONBLAS_ENQUEUE_SGEMV __vrc_enqueue_udonblas_sgemv
+#else
+#define UDONBLAS_ENQUEUE_SGEMM clEnqueueNDRangeKernel
+#define UDONBLAS_ENQUEUE_SGEMV clEnqueueNDRangeKernel
+#endif
+
 #define UDONBLAS_WORDS 1024
 #define UDONBLAS_MATRIX_WORDS 256
 #define UDONBLAS_A_OFFSET 0
@@ -23,6 +52,15 @@ static float packed[UDONBLAS_WORDS];
 static float result[UDONBLAS_MATRIX_WORDS];
 
 static void clear_objects(void) {
+#ifdef UDONBLAS_AOT_RAW_INTRINSICS
+  if (output_buffer)
+    __vrc_opencl_buffer_release(AOT_BUFFER_TOKEN(output_buffer));
+  if (input_buffer)
+    __vrc_opencl_buffer_release(AOT_BUFFER_TOKEN(input_buffer));
+  output_buffer = input_buffer = 0;
+  queue = 0;
+  context = 0;
+#else
   if (sdot_reduce_kernel)
     clReleaseKernel(sdot_reduce_kernel);
   if (sdot_product_kernel)
@@ -52,6 +90,7 @@ static void clear_objects(void) {
   output_buffer = input_buffer = 0;
   queue = 0;
   context = 0;
+#endif
 }
 
 static udonblasStatus_t execution_failure(void) {
@@ -67,6 +106,14 @@ udonblasStatus_t udonblasCreate(udonblasHandle_t *handle) {
   if (!handle)
     return UDONBLAS_STATUS_INVALID_VALUE;
   clear_objects();
+#ifdef UDONBLAS_AOT_RAW_INTRINSICS
+  input_buffer = (cl_mem)(size_t)__vrc_opencl_buffer_alloc(5, sizeof(packed));
+  output_buffer = (cl_mem)(size_t)__vrc_opencl_buffer_alloc(6, sizeof(packed));
+  context = (cl_context)(size_t)1;
+  queue = (cl_command_queue)(size_t)1;
+  *handle = UDONBLAS_HANDLE;
+  return UDONBLAS_STATUS_SUCCESS;
+#else
   if (clGetPlatformIDs(1, &platform, 0) != CL_SUCCESS ||
       clGetDeviceIDs(platform, CL_DEVICE_TYPE_DEFAULT, 1, &device, 0) !=
           CL_SUCCESS)
@@ -123,6 +170,7 @@ udonblasStatus_t udonblasCreate(udonblasHandle_t *handle) {
     return execution_failure();
   *handle = UDONBLAS_HANDLE;
   return UDONBLAS_STATUS_SUCCESS;
+#endif
 }
 
 udonblasStatus_t udonblasSdot(udonblasHandle_t handle, int n, const float *x,
@@ -310,7 +358,7 @@ udonblasStatus_t udonblasSgemv(udonblasHandle_t handle,
 
   if (clEnqueueWriteBuffer(queue, input_buffer, CL_TRUE, 0, sizeof(packed),
                            packed, 0, 0, 0) != CL_SUCCESS ||
-      clEnqueueNDRangeKernel(queue, sgemv_kernel, 1, 0, &global, &local, 0, 0,
+      UDONBLAS_ENQUEUE_SGEMV(queue, sgemv_kernel, 1, 0, &global, &local, 0, 0,
                              0) != CL_SUCCESS ||
       clEnqueueReadBuffer(
           queue, output_buffer, CL_TRUE, UDONBLAS_RESULT_OFFSET * sizeof(float),
@@ -383,6 +431,20 @@ udonblasStatus_t udonblasSgemm(udonblasHandle_t handle,
       for (row = 0; row < m; ++row)
         packed[UDONBLAS_C_OFFSET + row + column * m] = c[row + column * ldc];
 
+#ifdef UDONBLAS_AOT_RAW_INTRINSICS
+    if (aot_wait(__vrc_opencl_buffer_upload(AOT_BUFFER_TOKEN(input_buffer), 0,
+                                            sizeof(packed), packed)) !=
+            CL_SUCCESS ||
+        aot_wait(__vrc_opencl_dispatch_udonblas_sgemm(
+            AOT_BUFFER_TOKEN(input_buffer), AOT_BUFFER_TOKEN(output_buffer), m,
+            n, tile_k, kernel_transa, kernel_transb, kernel_lda, kernel_ldb,
+            kernel_ldc, *alpha, tile_beta)) != CL_SUCCESS ||
+        aot_wait(__vrc_opencl_buffer_readback(
+            AOT_BUFFER_TOKEN(output_buffer),
+            UDONBLAS_RESULT_OFFSET * sizeof(float), m * n * sizeof(float),
+            result)) != CL_SUCCESS)
+      return UDONBLAS_STATUS_EXECUTION_FAILED;
+#else
 #define SET_ARGUMENT(slot, value)                                              \
   do {                                                                         \
     status = clSetKernelArg(sgemm_kernel, slot, sizeof(value), &(value));      \
@@ -403,7 +465,7 @@ udonblasStatus_t udonblasSgemm(udonblasHandle_t handle,
 
     if (clEnqueueWriteBuffer(queue, input_buffer, CL_TRUE, 0, sizeof(packed),
                              packed, 0, 0, 0) != CL_SUCCESS ||
-        clEnqueueNDRangeKernel(queue, sgemm_kernel, 2, 0, global, local, 0, 0,
+        UDONBLAS_ENQUEUE_SGEMM(queue, sgemm_kernel, 2, 0, global, local, 0, 0,
                                0) != CL_SUCCESS ||
         clEnqueueReadBuffer(queue, output_buffer, CL_TRUE,
                             UDONBLAS_RESULT_OFFSET * sizeof(float),
@@ -411,6 +473,7 @@ udonblasStatus_t udonblasSgemm(udonblasHandle_t handle,
                             0) != CL_SUCCESS ||
         clFinish(queue) != CL_SUCCESS)
       return UDONBLAS_STATUS_EXECUTION_FAILED;
+#endif
     for (column = 0; column < n; ++column)
       for (row = 0; row < m; ++row)
         c[row + column * ldc] = result[row + column * m];

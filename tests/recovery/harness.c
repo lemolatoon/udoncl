@@ -4,6 +4,7 @@ extern unsigned scalar_ops(unsigned a, unsigned b);
 extern float float_ops(float a, float b);
 extern int checked_inc(int a);
 extern unsigned unsigned_divrem(unsigned a, unsigned b);
+extern int signed_divrem(int a, int b);
 extern int stack_add(int a);
 int main(void) {
   for (int n = -5; n <= 129; ++n) {
@@ -38,6 +39,10 @@ int main(void) {
     for (unsigned b = 1; b < 17; ++b)
       if (unsigned_divrem(a, b) != a / b + a % b)
         return 6;
+  for (int a = -100; a <= 100; ++a)
+    for (int b = -17; b <= 17; ++b)
+      if (b != 0 && signed_divrem(a, b) != a / b + a % b)
+        return 7;
   for (int i = -100; i <= 100; ++i)
     if (stack_add(i) != i + 3)
       return 5;

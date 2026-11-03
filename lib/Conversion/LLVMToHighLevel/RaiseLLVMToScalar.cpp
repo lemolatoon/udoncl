@@ -32,7 +32,9 @@ StringRef raisedName(StringRef name) {
       .Case("llvm.add", "arith.addi")
       .Case("llvm.sub", "arith.subi")
       .Case("llvm.mul", "arith.muli")
+      .Case("llvm.sdiv", "arith.divsi")
       .Case("llvm.udiv", "arith.divui")
+      .Case("llvm.srem", "arith.remsi")
       .Case("llvm.urem", "arith.remui")
       .Case("llvm.and", "arith.andi")
       .Case("llvm.or", "arith.ori")
@@ -373,12 +375,13 @@ struct RaiseLLVMToScalarPass
                  FloatComparePattern, BranchPattern, CondBranchPattern,
                  ReturnPattern, CallPattern>(&getContext());
     for (auto source :
-         {"llvm.add",    "llvm.sub",    "llvm.mul",    "llvm.udiv",
-          "llvm.urem",   "llvm.and",    "llvm.or",     "llvm.xor",
-          "llvm.shl",    "llvm.lshr",   "llvm.ashr",   "llvm.zext",
-          "llvm.sext",   "llvm.trunc",  "llvm.fadd",   "llvm.fsub",
-          "llvm.fmul",   "llvm.fneg",   "llvm.select", "llvm.fdiv",
-          "llvm.uitofp", "llvm.sitofp", "llvm.fptoui", "llvm.bitcast"})
+         {"llvm.add",    "llvm.sub",    "llvm.mul",    "llvm.sdiv",
+          "llvm.udiv",   "llvm.srem",   "llvm.urem",   "llvm.and",
+          "llvm.or",     "llvm.xor",    "llvm.shl",    "llvm.lshr",
+          "llvm.ashr",   "llvm.zext",   "llvm.sext",   "llvm.trunc",
+          "llvm.fadd",   "llvm.fsub",   "llvm.fmul",   "llvm.fneg",
+          "llvm.select", "llvm.fdiv",   "llvm.uitofp", "llvm.sitofp",
+          "llvm.fptoui", "llvm.bitcast"})
       patterns.add<ScalarPattern>(source, raisedName(source), &getContext());
     if (failed(applyFullConversion(module, target, std::move(patterns))))
       signalPassFailure();

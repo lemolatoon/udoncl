@@ -42,6 +42,8 @@ if(NOT TARGET udonblas_host)
   target_include_directories(udonblas_host INTERFACE
     "${_UDONBLAS_INCLUDE_DIR}"
     "${_UDONBLAS_GENERATED_DIR}")
+  target_compile_definitions(udonblas_host INTERFACE
+    UDONBLAS_AOT_DIRECT_DISPATCH=1)
 endif()
 
 if(NOT TARGET udonblas_device)

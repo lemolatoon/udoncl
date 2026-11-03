@@ -1,5 +1,6 @@
 include "VRC/Dialect/VRC/VRCTypes.td"
-def VRC_BufferAllocOp : Op<VRC_Dialect, "buffer_alloc"> {
+include "mlir/Interfaces/SideEffectInterfaces.td"
+def VRC_BufferAllocOp : Op<VRC_Dialect, "buffer_alloc", [MemoryEffects<[MemWrite]>]> {
   let summary = "Allocate an explicitly sized Device buffer";
   let arguments = (ins I32:$logical_id, I32:$byte_size, StrAttr:$format,
     StrAttr:$usage);
@@ -7,14 +8,14 @@ def VRC_BufferAllocOp : Op<VRC_Dialect, "buffer_alloc"> {
   let assemblyFormat = "$logical_id `,` $byte_size attr-dict `:` functional-type(operands, results)";
   let hasVerifier = 1;
 }
-def VRC_BufferReleaseOp : Op<VRC_Dialect, "buffer_release"> {
+def VRC_BufferReleaseOp : Op<VRC_Dialect, "buffer_release", [MemoryEffects<[MemWrite]>]> {
   let summary = "Release a logical reference to a fixed Device buffer";
   let arguments = (ins VRC_BufferType:$buffer);
   let results = (outs I32:$status);
   let assemblyFormat = "$buffer attr-dict `:` functional-type(operands, results)";
   let hasVerifier = 1;
 }
-def VRC_BufferUploadOp : Op<VRC_Dialect, "buffer_upload"> {
+def VRC_BufferUploadOp : Op<VRC_Dialect, "buffer_upload", [MemoryEffects<[MemWrite]>]> {
   let summary = "Upload a bounded Host byte range to an explicit Device buffer";
   let arguments = (ins VRC_BufferType:$destination, I32:$destination_offset,
     I32:$byte_size, I32:$host_pointer);
@@ -22,7 +23,7 @@ def VRC_BufferUploadOp : Op<VRC_Dialect, "buffer_upload"> {
   let assemblyFormat = "$destination `,` $destination_offset `,` $byte_size `,` $host_pointer attr-dict `:` functional-type(operands, results)";
   let hasVerifier = 1;
 }
-def VRC_BufferReadbackOp : Op<VRC_Dialect, "buffer_readback"> {
+def VRC_BufferReadbackOp : Op<VRC_Dialect, "buffer_readback", [MemoryEffects<[MemWrite]>]> {
   let summary = "Read back a bounded Device byte range to Host memory";
   let arguments = (ins VRC_BufferType:$source, I32:$source_offset,
     I32:$byte_size, I32:$host_pointer);
@@ -30,7 +31,7 @@ def VRC_BufferReadbackOp : Op<VRC_Dialect, "buffer_readback"> {
   let assemblyFormat = "$source `,` $source_offset `,` $byte_size `,` $host_pointer attr-dict `:` functional-type(operands, results)";
   let hasVerifier = 1;
 }
-def VRC_BufferCopyOp : Op<VRC_Dialect, "buffer_copy"> {
+def VRC_BufferCopyOp : Op<VRC_Dialect, "buffer_copy", [MemoryEffects<[MemWrite]>]> {
   let summary = "Copy a bounded byte range between explicit Device buffers";
   let arguments = (ins VRC_BufferType:$source, VRC_BufferType:$destination,
     I32:$source_offset, I32:$destination_offset, I32:$byte_size);
@@ -46,7 +47,7 @@ def VRC_DispatchDescCreateOp : Op<VRC_Dialect, "dispatch_desc_create"> {
   let assemblyFormat = "$scalars attr-dict `:` functional-type(operands, results)";
   let hasVerifier = 1;
 }
-def VRC_DispatchOp : Op<VRC_Dialect, "dispatch"> {
+def VRC_DispatchOp : Op<VRC_Dialect, "dispatch", [MemoryEffects<[MemWrite]>]> {
   let summary = "Enqueue a Manifest-defined kernel; C runtime owns OpenCL API contracts";
   let arguments = (ins VRC_DispatchDescType:$desc, Variadic<VRC_BufferType>:$resources,
     I32Attr:$kernel_id, ArrayAttr:$argument_kinds,
@@ -56,14 +57,14 @@ def VRC_DispatchOp : Op<VRC_Dialect, "dispatch"> {
   let assemblyFormat = "$desc `(` $resources `)` attr-dict `:` functional-type(operands, results)";
   let hasVerifier = 1;
 }
-def VRC_AwaitOp : Op<VRC_Dialect, "await"> {
+def VRC_AwaitOp : Op<VRC_Dialect, "await", [MemoryEffects<[MemWrite]>]> {
   let summary = "Suspend the Host path until an owned Device event completes";
   let arguments = (ins VRC_EventType:$event);
   let results = (outs I32:$status);
   let assemblyFormat = "$event attr-dict `:` functional-type(operands, results)";
   let hasVerifier = 1;
 }
-def VRC_EventStatusOp : Op<VRC_Dialect, "event_status"> {
+def VRC_EventStatusOp : Op<VRC_Dialect, "event_status", [MemoryEffects<[MemWrite]>]> {
   let summary = "Read the current completion status of an owned Device event";
   let arguments = (ins VRC_EventType:$event);
   let results = (outs I32:$status);

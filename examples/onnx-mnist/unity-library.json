@@ -3,73 +3,47 @@
   "program": "onnx_mnist",
   "device_kernels": [
     {
-      "schema_version": 1,
-      "profile": "gather-f32",
-      "words": 10800,
-      "kernel": "mnist_conv",
-      "kernel_id": 20,
-      "argument_kinds": ["buffer", "buffer"],
-      "global_size": [10800, 1, 1],
-      "local_size": [1, 1, 1],
-      "global_offset": [0, 0, 0]
+      "schema_version": 1, "profile": "gather-f32", "words": 16384,
+      "kernel": "udondnn_large_convolution_forward", "kernel_id": 232,
+      "argument_kinds": ["buffer", "buffer", "buffer", "buffer", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "f32", "f32"],
+      "global_size": [8192, 2, 1], "local_size": [1, 1, 1], "global_offset": [0, 0, 0]
     },
     {
-      "schema_version": 1,
-      "profile": "gather-f32",
-      "words": 10800,
-      "kernel": "mnist_pool",
-      "kernel_id": 21,
-      "argument_kinds": ["buffer", "buffer"],
-      "global_size": [10800, 1, 1],
-      "local_size": [1, 1, 1],
-      "global_offset": [0, 0, 0]
+      "schema_version": 1, "profile": "gather-f32", "words": 16384,
+      "kernel": "udondnn_large_op_tensor", "kernel_id": 234,
+      "argument_kinds": ["buffer", "buffer", "buffer", "buffer", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "f32", "f32", "f32"],
+      "global_size": [8192, 2, 1], "local_size": [1, 1, 1], "global_offset": [0, 0, 0]
     },
     {
-      "schema_version": 1,
-      "profile": "gather-f32",
-      "words": 10800,
-      "kernel": "mnist_dense",
-      "kernel_id": 22,
-      "argument_kinds": ["buffer", "buffer"],
-      "global_size": [10800, 1, 1],
-      "local_size": [1, 1, 1],
-      "global_offset": [0, 0, 0]
+      "schema_version": 1, "profile": "gather-f32", "words": 16384,
+      "kernel": "udondnn_large_activation_forward", "kernel_id": 233,
+      "argument_kinds": ["buffer", "buffer", "buffer", "i32", "i32", "i32", "f32", "f32", "f32"],
+      "global_size": [8192, 2, 1], "local_size": [1, 1, 1], "global_offset": [0, 0, 0]
+    },
+    {
+      "schema_version": 1, "profile": "gather-f32", "words": 16384,
+      "kernel": "udondnn_large_pooling_forward", "kernel_id": 231,
+      "argument_kinds": ["buffer", "buffer", "buffer", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "f32", "f32"],
+      "global_size": [8192, 2, 1], "local_size": [1, 1, 1], "global_offset": [0, 0, 0]
+    },
+    {
+      "schema_version": 1, "profile": "gather-f32", "words": 1024,
+      "kernel": "udonblas_sgemm", "kernel_id": 1,
+      "argument_kinds": ["buffer", "buffer", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "f32", "f32"],
+      "global_size": [32, 32, 1], "local_size": [1, 1, 1], "global_offset": [0, 0, 0]
     }
   ],
   "exports": [
-    {
-      "symbol": "write_mnist_input",
-      "public_name": "WriteMnistInput",
-      "id": 1,
-      "parameters": ["index", "value"]
-    },
-    {
-      "symbol": "run_mnist",
-      "public_name": "RunMnist",
-      "id": 2,
-      "parameters": []
-    },
-    {
-      "symbol": "read_mnist_output",
-      "public_name": "ReadMnistOutput",
-      "id": 3,
-      "parameters": ["index"]
-    }
+    {"symbol": "write_mnist_input", "public_name": "WriteMnistInput", "id": 1, "parameters": ["index", "value"]},
+    {"symbol": "run_mnist", "public_name": "RunMnist", "id": 2, "parameters": []},
+    {"symbol": "read_mnist_output", "public_name": "ReadMnistOutput", "id": 3, "parameters": ["index"]}
   ],
   "buffers": [
-    {
-      "id": 1,
-      "name": "first",
-      "byte_size": 43200,
-      "element_type": "float32",
-      "public_access": "input"
-    },
-    {
-      "id": 2,
-      "name": "second",
-      "byte_size": 43200,
-      "element_type": "float32",
-      "public_access": "output"
-    }
+    {"id": 1, "name": "dnn_pointwise_self", "byte_size": 65536, "element_type": "float32", "public_access": "input"},
+    {"id": 2, "name": "dnn_pointwise_other", "byte_size": 65536},
+    {"id": 3, "name": "dnn_pointwise_output", "byte_size": 65536},
+    {"id": 4, "name": "dnn_rms_arena_partial", "byte_size": 65536},
+    {"id": 5, "name": "blas_input", "byte_size": 4096},
+    {"id": 6, "name": "blas_output", "byte_size": 4096, "element_type": "float32", "public_access": "output"}
   ]
 }

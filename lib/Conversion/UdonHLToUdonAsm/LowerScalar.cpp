@@ -148,8 +148,32 @@ static StringRef binaryExtern(Operation *operation) {
     return integerSignature("Subtraction");
   if (isa<arith::MulIOp>(operation))
     return integerSignature("Multiplication");
+  if (isa<arith::DivSIOp>(operation))
+    return integerSignature("Division");
+  if (isa<arith::RemSIOp>(operation))
+    return integerSignature("Modulus");
   if (isa<arith::AndIOp>(operation))
     return integerSignature("LogicalAnd");
+  if (isa<arith::OrIOp>(operation))
+    return integerSignature("LogicalOr");
+  if (isa<arith::XOrIOp>(operation))
+    return integerSignature("LogicalXor");
+  if (isa<arith::ShLIOp>(operation)) {
+    Type type = operation->getOperand(0).getType();
+    return type.isInteger(64)
+               ? "SystemInt64.__op_LeftShift__SystemInt64_SystemInt32__"
+                 "SystemInt64"
+               : "SystemInt32.__op_LeftShift__SystemInt32_SystemInt32__"
+                 "SystemInt32";
+  }
+  if (isa<arith::ShRSIOp>(operation)) {
+    Type type = operation->getOperand(0).getType();
+    return type.isInteger(64)
+               ? "SystemInt64.__op_RightShift__SystemInt64_SystemInt32__"
+                 "SystemInt64"
+               : "SystemInt32.__op_RightShift__SystemInt32_SystemInt32__"
+                 "SystemInt32";
+  }
   if (isa<arith::AddFOp>(operation))
     return "SystemSingle.__op_Addition__SystemSingle_SystemSingle__"
            "SystemSingle";
@@ -208,6 +232,7 @@ static StringRef comparisonExtern(arith::CmpFOp operation) {
   case arith::CmpFPredicate::OEQ:
     name = "Equality";
     break;
+  case arith::CmpFPredicate::UNE:
   case arith::CmpFPredicate::ONE:
     name = "Inequality";
     break;
@@ -1566,6 +1591,112 @@ private:
           useRhs->setAttr("target", builder.getI64IntegerAttr(
                                         static_cast<int64_t>(address)));
           emitCopy(maximum.getLoc(), rhs, result);
+          done->setAttr("target", builder.getI64IntegerAttr(
+                                      static_cast<int64_t>(address)));
+          continue;
+        }
+        if (auto minimum = dyn_cast<arith::MinSIOp>(operation)) {
+          std::string lhs = valueSlots.lookup(minimum.getLhs());
+          std::string rhs = valueSlots.lookup(minimum.getRhs());
+          std::string result = valueSlots.lookup(minimum.getResult());
+          std::string condition = result + "_min_condition";
+          if (lhs.empty() || rhs.empty() || result.empty() ||
+              !minimum.getType().isInteger(32))
+            return minimum.emitError("unsupported signed integer minimum");
+          addSlot(condition, "SystemBoolean", "null", false);
+          emitPush(minimum.getLoc(), lhs);
+          emitPush(minimum.getLoc(), rhs);
+          emitPush(minimum.getLoc(), condition);
+          emitExtern(minimum.getLoc(),
+                     "SystemInt32.__op_LessThanOrEqual__SystemInt32_"
+                     "SystemInt32__SystemBoolean");
+          emitPush(minimum.getLoc(), condition);
+          Operation *useRhs = create(
+              minimum.getLoc(), vm::JumpIfFalseOp::getOperationName(),
+              {builder.getNamedAttr("target", builder.getI64IntegerAttr(0))});
+          address += 8;
+          emitCopy(minimum.getLoc(), lhs, result);
+          Operation *done = emitJump(minimum.getLoc(), 0);
+          useRhs->setAttr("target", builder.getI64IntegerAttr(
+                                        static_cast<int64_t>(address)));
+          emitCopy(minimum.getLoc(), rhs, result);
+          done->setAttr("target", builder.getI64IntegerAttr(
+                                      static_cast<int64_t>(address)));
+          continue;
+        }
+        if (auto shift = dyn_cast<arith::ShRUIOp>(operation)) {
+          std::string value = valueSlots.lookup(shift.getLhs());
+          std::string amount = valueSlots.lookup(shift.getRhs());
+          std::string result = valueSlots.lookup(shift.getResult());
+          if (value.empty() || amount.empty() || result.empty() ||
+              !shift.getType().isInteger(32))
+            return shift.emitError(
+                "logical right shift currently requires i32 operands");
+
+          std::string prefix = result + "_logical_right_shift";
+          std::string zero = prefix + "_zero";
+          std::string width = prefix + "_width";
+          std::string allOnes = prefix + "_all_ones";
+          std::string isZero = prefix + "_is_zero";
+          std::string arithmetic = prefix + "_arithmetic";
+          std::string inverseAmount = prefix + "_inverse_amount";
+          std::string highMask = prefix + "_high_mask";
+          std::string lowMask = prefix + "_low_mask";
+          addSlot(zero, "SystemInt32", "0", false);
+          addSlot(width, "SystemInt32", "32", false);
+          addSlot(allOnes, "SystemInt32", "-1", false);
+          addSlot(isZero, "SystemBoolean", "null", false);
+          addSlot(arithmetic, "SystemInt32", "0", false);
+          addSlot(inverseAmount, "SystemInt32", "0", false);
+          addSlot(highMask, "SystemInt32", "0", false);
+          addSlot(lowMask, "SystemInt32", "0", false);
+
+          emitPush(shift.getLoc(), amount);
+          emitPush(shift.getLoc(), zero);
+          emitPush(shift.getLoc(), isZero);
+          emitExtern(shift.getLoc(),
+                     "SystemInt32.__op_Equality__SystemInt32_SystemInt32__"
+                     "SystemBoolean");
+          emitPush(shift.getLoc(), isZero);
+          Operation *useMaskedShift = create(
+              shift.getLoc(), vm::JumpIfFalseOp::getOperationName(),
+              {builder.getNamedAttr("target", builder.getI64IntegerAttr(0))});
+          address += 8;
+          emitCopy(shift.getLoc(), value, result);
+          Operation *done = emitJump(shift.getLoc(), 0);
+          useMaskedShift->setAttr("target", builder.getI64IntegerAttr(
+                                                static_cast<int64_t>(address)));
+
+          emitPush(shift.getLoc(), value);
+          emitPush(shift.getLoc(), amount);
+          emitPush(shift.getLoc(), arithmetic);
+          emitExtern(shift.getLoc(),
+                     "SystemInt32.__op_RightShift__SystemInt32_SystemInt32__"
+                     "SystemInt32");
+          emitPush(shift.getLoc(), width);
+          emitPush(shift.getLoc(), amount);
+          emitPush(shift.getLoc(), inverseAmount);
+          emitExtern(shift.getLoc(),
+                     "SystemInt32.__op_Subtraction__SystemInt32_SystemInt32__"
+                     "SystemInt32");
+          emitPush(shift.getLoc(), allOnes);
+          emitPush(shift.getLoc(), inverseAmount);
+          emitPush(shift.getLoc(), highMask);
+          emitExtern(shift.getLoc(),
+                     "SystemInt32.__op_LeftShift__SystemInt32_SystemInt32__"
+                     "SystemInt32");
+          emitPush(shift.getLoc(), highMask);
+          emitPush(shift.getLoc(), allOnes);
+          emitPush(shift.getLoc(), lowMask);
+          emitExtern(shift.getLoc(),
+                     "SystemInt32.__op_LogicalXor__SystemInt32_SystemInt32__"
+                     "SystemInt32");
+          emitPush(shift.getLoc(), arithmetic);
+          emitPush(shift.getLoc(), lowMask);
+          emitPush(shift.getLoc(), result);
+          emitExtern(shift.getLoc(),
+                     "SystemInt32.__op_LogicalAnd__SystemInt32_SystemInt32__"
+                     "SystemInt32");
           done->setAttr("target", builder.getI64IntegerAttr(
                                       static_cast<int64_t>(address)));
           continue;

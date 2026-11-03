@@ -17,15 +17,6 @@ module {
 
 // -----
 module {
-  llvm.func @divide(%a: i32, %b: i32) -> i32 {
-    // expected-error @below {{cannot raise llvm.sdiv: unsupported semantics}}
-    %r = llvm.sdiv %a, %b : i32
-    llvm.return %r : i32
-  }
-}
-
-// -----
-module {
   llvm.func @unpromoted(%a: i32) -> i32 {
     %one = llvm.mlir.constant(1 : i32) : i32
     // expected-error @below {{cannot raise llvm.alloca: non-scalar result requires memory/provenance recovery}}

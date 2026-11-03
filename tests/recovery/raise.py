@@ -40,6 +40,7 @@ for fixture in ['loop', 'scalar-ops', 'stack']:
         assert 'arith.cmpi ult' in structured and 'arith.extui' in structured
         assert 'arith.mulf' in structured and 'arith.negf' in structured
         assert 'arith.divui' in structured and 'arith.remui' in structured
+        assert 'arith.divsi' in structured and 'arith.remsi' in structured
     else:
         assert 'llvm.alloca' not in structured and 'llvm.load' not in structured
         assert 'arith.addi' in structured
@@ -91,7 +92,6 @@ negative = [
     ('llvm.func @exact(%a: i32, %b: i32) -> i32 { %r = llvm.lshr exact %a, %b : i32 llvm.return %r : i32 }', 'poison-generating flag'),
     ('llvm.func @disjoint(%a: i32, %b: i32) -> i32 { %r = llvm.or disjoint %a, %b : i32 llvm.return %r : i32 }', 'poison-generating flag'),
     ('llvm.func @negative(%a: i8) -> i32 { %r = llvm.zext nneg %a : i8 to i32 llvm.return %r : i32 }', 'poison-generating flag'),
-    ('llvm.func @divide(%a: i32, %b: i32) -> i32 { %r = llvm.sdiv %a, %b : i32 llvm.return %r : i32 }', 'unsupported semantics'),
     ('llvm.func @poison() -> i32 { %r = llvm.mlir.poison : i32 llvm.return %r : i32 }', 'unsupported semantics'),
     ('llvm.func @fast(%a: f32, %b: f32) -> f32 { %r = llvm.fadd %a, %b {fastmathFlags = #llvm.fastmath<fast>} : f32 llvm.return %r : f32 }', 'fast-math'),
     ('llvm.func @vararg(...)', 'variadic ABI'),

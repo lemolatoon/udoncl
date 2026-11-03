@@ -7,7 +7,7 @@
  */
 #include <CL/cl.h>
 
-#define UDONCL_AOT_BUFFER_CAPACITY 8
+#define UDONCL_AOT_BUFFER_CAPACITY 32
 #define UDONCL_AOT_KERNEL_CAPACITY 32
 #define UDONCL_AOT_ARGUMENT_BYTES 8
 
@@ -16,6 +16,9 @@
 #endif
 #ifndef UDONCL_AOT_ENABLE_MNIST
 #define UDONCL_AOT_ENABLE_MNIST 0
+#endif
+#ifndef UDONCL_AOT_ENABLE_DNN
+#define UDONCL_AOT_ENABLE_DNN 0
 #endif
 
 /* The compiler backend returns an opaque physical-buffer token.  It is kept
@@ -37,6 +40,28 @@ extern cl_int __vrc_opencl_dispatch_udonblas_sgemm(
 extern cl_int __vrc_opencl_dispatch_udonblas_sgemv(
     cl_uint input_token, cl_uint output_token, cl_int trans, cl_int m, cl_int n,
     cl_int lda, cl_int incx, cl_int incy, cl_float alpha, cl_float beta);
+#endif
+#if UDONCL_AOT_ENABLE_DNN
+extern cl_int __vrc_opencl_dispatch_udondnn_large_convolution(
+    cl_uint input_token, cl_uint filter_token, cl_uint previous_token,
+    cl_uint output_token, cl_int output_words, cl_int input_ch, cl_int input_w,
+    cl_int output_ch, cl_int output_w, cl_int filter_hw, cl_int pad_hw,
+    cl_int stride_hw, cl_int dilation_hw, cl_int mode, cl_float alpha,
+    cl_float beta);
+extern cl_int __vrc_opencl_dispatch_udondnn_large_activation(
+    cl_uint input_token, cl_uint previous_token, cl_uint output_token,
+    cl_int words, cl_int mode, cl_int nan_propagation, cl_float coefficient,
+    cl_float alpha, cl_float beta);
+extern cl_int __vrc_opencl_dispatch_udondnn_large_pooling(
+    cl_uint input_token, cl_uint previous_token, cl_uint output_token,
+    cl_int output_words, cl_int input_c, cl_int input_h, cl_int input_w,
+    cl_int output_h, cl_int output_w, cl_int window_shape, cl_int pad_shape,
+    cl_int stride_shape, cl_int options, cl_float alpha, cl_float beta);
+extern cl_int __vrc_opencl_dispatch_udondnn_large_op_tensor(
+    cl_uint a_token, cl_uint b_token, cl_uint previous_token,
+    cl_uint output_token, cl_int output_words, cl_int a_nc, cl_int a_hw,
+    cl_int b_nc, cl_int b_hw, cl_int output_nc, cl_int output_hw,
+    cl_int options, cl_float alpha_a, cl_float alpha_b, cl_float beta);
 #endif
 #if UDONCL_AOT_ENABLE_MNIST
 extern cl_int __vrc_opencl_dispatch_mnist_conv(cl_uint input_token,
@@ -122,6 +147,48 @@ static cl_uint udoncl_kernel_id(const char *name) {
     return 21;
   if (udoncl_string_equal(name, "mnist_dense"))
     return 22;
+#endif
+#if UDONCL_AOT_ENABLE_DNN
+  if (udoncl_string_equal(name, "udondnn_convolution_forward"))
+    return 200;
+  if (udoncl_string_equal(name, "udondnn_activation_forward"))
+    return 201;
+  if (udoncl_string_equal(name, "udondnn_pooling_forward"))
+    return 202;
+  if (udoncl_string_equal(name, "udondnn_softmax_forward"))
+    return 203;
+  if (udoncl_string_equal(name, "udondnn_batchnorm_inference"))
+    return 204;
+  if (udoncl_string_equal(name, "udondnn_op_tensor"))
+    return 205;
+  if (udoncl_string_equal(name, "udonaten_rms_norm_small"))
+    return 206;
+  if (udoncl_string_equal(name, "udonaten_embedding"))
+    return 207;
+  if (udoncl_string_equal(name, "udonaten_weight_int4pack_mm"))
+    return 208;
+  if (udoncl_string_equal(name, "udonaten_tile"))
+    return 209;
+  if (udoncl_string_equal(name, "udonaten_rms_norm_reduce"))
+    return 210;
+  if (udoncl_string_equal(name, "udonaten_rms_norm_finalize"))
+    return 211;
+  if (udoncl_string_equal(name, "udonaten_arena_pointwise"))
+    return 215;
+  if (udoncl_string_equal(name, "udonaten_arena_tile"))
+    return 216;
+  if (udoncl_string_equal(name, "udonaten_arena_rms_norm_reduce"))
+    return 217;
+  if (udoncl_string_equal(name, "udonaten_arena_rms_norm_finalize"))
+    return 218;
+  if (udoncl_string_equal(name, "udondnn_large_pooling_forward"))
+    return 231;
+  if (udoncl_string_equal(name, "udondnn_large_convolution_forward"))
+    return 232;
+  if (udoncl_string_equal(name, "udondnn_large_activation_forward"))
+    return 233;
+  if (udoncl_string_equal(name, "udondnn_large_op_tensor"))
+    return 234;
 #endif
   return 0;
 }
@@ -402,6 +469,160 @@ static void udoncl_dispatch_sgemv(cl_kernel kernel, cl_uint work_dim,
 }
 #endif
 
+#if UDONCL_AOT_ENABLE_DNN
+static int udoncl_large_dispatch_header(cl_kernel kernel, cl_uint work_dim,
+                                        const size_t *global_offset,
+                                        const size_t *global_size,
+                                        const size_t *local_size) {
+  if (work_dim != 2) {
+    udoncl_dispatch_status = CL_INVALID_WORK_DIMENSION;
+    return 0;
+  }
+  if (global_offset) {
+    udoncl_dispatch_status = CL_INVALID_GLOBAL_OFFSET;
+    return 0;
+  }
+  (void)kernel;
+  (void)global_size;
+  (void)local_size;
+  return 1;
+}
+
+static void udoncl_dispatch_large_convolution(cl_kernel kernel,
+                                              cl_uint work_dim,
+                                              const size_t *global_offset,
+                                              const size_t *global_size,
+                                              const size_t *local_size) {
+  cl_mem buffers[4];
+  cl_int values[10];
+  cl_float alpha, beta;
+  cl_uint index;
+  if (!udoncl_large_dispatch_header(kernel, work_dim, global_offset,
+                                    global_size, local_size))
+    return;
+  for (index = 0; index < 4; ++index)
+    if (udoncl_mem_argument(kernel, index, &buffers[index]) != CL_SUCCESS) {
+      udoncl_dispatch_status = CL_INVALID_MEM_OBJECT;
+      return;
+    }
+  for (index = 0; index < 10; ++index)
+    if (udoncl_i32_argument(kernel, index + 4, &values[index]) != CL_SUCCESS) {
+      udoncl_dispatch_status = CL_INVALID_KERNEL_ARGS;
+      return;
+    }
+  if (udoncl_f32_argument(kernel, 14, &alpha) != CL_SUCCESS ||
+      udoncl_f32_argument(kernel, 15, &beta) != CL_SUCCESS) {
+    udoncl_dispatch_status = CL_INVALID_KERNEL_ARGS;
+    return;
+  }
+  (void)__vrc_opencl_dispatch_udondnn_large_convolution(
+      buffers[0]->physical_token, buffers[1]->physical_token,
+      buffers[2]->physical_token, buffers[3]->physical_token, values[0],
+      values[1], values[2], values[3], values[4], values[5], values[6],
+      values[7], values[8], values[9], alpha, beta);
+}
+
+static void udoncl_dispatch_large_activation(cl_kernel kernel, cl_uint work_dim,
+                                             const size_t *global_offset,
+                                             const size_t *global_size,
+                                             const size_t *local_size) {
+  cl_mem buffers[3];
+  cl_int values[3];
+  cl_float coefficient, alpha, beta;
+  cl_uint index;
+  if (!udoncl_large_dispatch_header(kernel, work_dim, global_offset,
+                                    global_size, local_size))
+    return;
+  for (index = 0; index < 3; ++index)
+    if (udoncl_mem_argument(kernel, index, &buffers[index]) != CL_SUCCESS) {
+      udoncl_dispatch_status = CL_INVALID_MEM_OBJECT;
+      return;
+    }
+  for (index = 0; index < 3; ++index)
+    if (udoncl_i32_argument(kernel, index + 3, &values[index]) != CL_SUCCESS) {
+      udoncl_dispatch_status = CL_INVALID_KERNEL_ARGS;
+      return;
+    }
+  if (udoncl_f32_argument(kernel, 6, &coefficient) != CL_SUCCESS ||
+      udoncl_f32_argument(kernel, 7, &alpha) != CL_SUCCESS ||
+      udoncl_f32_argument(kernel, 8, &beta) != CL_SUCCESS) {
+    udoncl_dispatch_status = CL_INVALID_KERNEL_ARGS;
+    return;
+  }
+  (void)__vrc_opencl_dispatch_udondnn_large_activation(
+      buffers[0]->physical_token, buffers[1]->physical_token,
+      buffers[2]->physical_token, values[0], values[1], values[2], coefficient,
+      alpha, beta);
+}
+
+static void udoncl_dispatch_large_pooling(cl_kernel kernel, cl_uint work_dim,
+                                          const size_t *global_offset,
+                                          const size_t *global_size,
+                                          const size_t *local_size) {
+  cl_mem buffers[3];
+  cl_int values[10];
+  cl_float alpha, beta;
+  cl_uint index;
+  if (!udoncl_large_dispatch_header(kernel, work_dim, global_offset,
+                                    global_size, local_size))
+    return;
+  for (index = 0; index < 3; ++index)
+    if (udoncl_mem_argument(kernel, index, &buffers[index]) != CL_SUCCESS) {
+      udoncl_dispatch_status = CL_INVALID_MEM_OBJECT;
+      return;
+    }
+  for (index = 0; index < 10; ++index)
+    if (udoncl_i32_argument(kernel, index + 3, &values[index]) != CL_SUCCESS) {
+      udoncl_dispatch_status = CL_INVALID_KERNEL_ARGS;
+      return;
+    }
+  if (udoncl_f32_argument(kernel, 13, &alpha) != CL_SUCCESS ||
+      udoncl_f32_argument(kernel, 14, &beta) != CL_SUCCESS) {
+    udoncl_dispatch_status = CL_INVALID_KERNEL_ARGS;
+    return;
+  }
+  (void)__vrc_opencl_dispatch_udondnn_large_pooling(
+      buffers[0]->physical_token, buffers[1]->physical_token,
+      buffers[2]->physical_token, values[0], values[1], values[2], values[3],
+      values[4], values[5], values[6], values[7], values[8], values[9], alpha,
+      beta);
+}
+
+static void udoncl_dispatch_large_op_tensor(cl_kernel kernel, cl_uint work_dim,
+                                            const size_t *global_offset,
+                                            const size_t *global_size,
+                                            const size_t *local_size) {
+  cl_mem buffers[4];
+  cl_int values[8];
+  cl_float alpha_a, alpha_b, beta;
+  cl_uint index;
+  if (!udoncl_large_dispatch_header(kernel, work_dim, global_offset,
+                                    global_size, local_size))
+    return;
+  for (index = 0; index < 4; ++index)
+    if (udoncl_mem_argument(kernel, index, &buffers[index]) != CL_SUCCESS) {
+      udoncl_dispatch_status = CL_INVALID_MEM_OBJECT;
+      return;
+    }
+  for (index = 0; index < 8; ++index)
+    if (udoncl_i32_argument(kernel, index + 4, &values[index]) != CL_SUCCESS) {
+      udoncl_dispatch_status = CL_INVALID_KERNEL_ARGS;
+      return;
+    }
+  if (udoncl_f32_argument(kernel, 12, &alpha_a) != CL_SUCCESS ||
+      udoncl_f32_argument(kernel, 13, &alpha_b) != CL_SUCCESS ||
+      udoncl_f32_argument(kernel, 14, &beta) != CL_SUCCESS) {
+    udoncl_dispatch_status = CL_INVALID_KERNEL_ARGS;
+    return;
+  }
+  (void)__vrc_opencl_dispatch_udondnn_large_op_tensor(
+      buffers[0]->physical_token, buffers[1]->physical_token,
+      buffers[2]->physical_token, buffers[3]->physical_token, values[0],
+      values[1], values[2], values[3], values[4], values[5], values[6],
+      values[7], alpha_a, alpha_b, beta);
+}
+#endif
+
 #if UDONCL_AOT_ENABLE_MNIST
 static void udoncl_dispatch_mnist(cl_kernel kernel, cl_uint work_dim,
                                   const size_t *global_offset) {
@@ -434,6 +655,40 @@ static void udoncl_dispatch_mnist(cl_kernel kernel, cl_uint work_dim,
 static cl_int udoncl_wait_list(cl_uint count, const cl_event *events) {
   return (!count && !events) ? CL_SUCCESS : CL_INVALID_EVENT_WAIT_LIST;
 }
+
+#define UDONCL_DEFINE_DIRECT_ENQUEUE(function_name, expected_id, dispatcher)   \
+  CL_API_ENTRY cl_int CL_API_CALL function_name(                               \
+      cl_command_queue queue, cl_kernel kernel, cl_uint work_dim,              \
+      const size_t *global_offset, const size_t *global_size,                  \
+      const size_t *local_size, cl_uint wait_count, const cl_event *wait_list, \
+      cl_event *event) {                                                       \
+    if (queue != &udoncl_queue || !queue->active || !kernel ||                 \
+        !kernel->active || kernel->id != expected_id || !global_size ||        \
+        !local_size || event ||                                                \
+        udoncl_wait_list(wait_count, wait_list) != CL_SUCCESS)                 \
+      return CL_INVALID_VALUE;                                                 \
+    udoncl_dispatch_status = CL_SUCCESS;                                       \
+    dispatcher(kernel, work_dim, global_offset, global_size, local_size);      \
+    return udoncl_dispatch_status;                                             \
+  }
+
+#if UDONCL_AOT_ENABLE_BLAS
+UDONCL_DEFINE_DIRECT_ENQUEUE(__vrc_enqueue_udonblas_sgemm, 1,
+                             udoncl_dispatch_sgemm)
+UDONCL_DEFINE_DIRECT_ENQUEUE(__vrc_enqueue_udonblas_sgemv, 2,
+                             udoncl_dispatch_sgemv)
+#endif
+#if UDONCL_AOT_ENABLE_DNN
+UDONCL_DEFINE_DIRECT_ENQUEUE(__vrc_enqueue_udondnn_large_pooling, 231,
+                             udoncl_dispatch_large_pooling)
+UDONCL_DEFINE_DIRECT_ENQUEUE(__vrc_enqueue_udondnn_large_convolution, 232,
+                             udoncl_dispatch_large_convolution)
+UDONCL_DEFINE_DIRECT_ENQUEUE(__vrc_enqueue_udondnn_large_activation, 233,
+                             udoncl_dispatch_large_activation)
+UDONCL_DEFINE_DIRECT_ENQUEUE(__vrc_enqueue_udondnn_large_op_tensor, 234,
+                             udoncl_dispatch_large_op_tensor)
+#endif
+#undef UDONCL_DEFINE_DIRECT_ENQUEUE
 
 CL_API_ENTRY cl_int CL_API_CALL clEnqueueWriteBuffer(
     cl_command_queue queue, cl_mem buffer, cl_bool blocking, size_t offset,
@@ -484,6 +739,32 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueNDRangeKernel(
     udoncl_dispatch_status = CL_SUCCESS;
     udoncl_dispatch_sgemv(kernel, work_dim, global_offset, global_size,
                           local_size);
+    return udoncl_dispatch_status;
+  }
+#endif
+#if UDONCL_AOT_ENABLE_DNN
+  if (kernel->id == 231) {
+    udoncl_dispatch_status = CL_SUCCESS;
+    udoncl_dispatch_large_pooling(kernel, work_dim, global_offset, global_size,
+                                  local_size);
+    return udoncl_dispatch_status;
+  }
+  if (kernel->id == 232) {
+    udoncl_dispatch_status = CL_SUCCESS;
+    udoncl_dispatch_large_convolution(kernel, work_dim, global_offset,
+                                      global_size, local_size);
+    return udoncl_dispatch_status;
+  }
+  if (kernel->id == 233) {
+    udoncl_dispatch_status = CL_SUCCESS;
+    udoncl_dispatch_large_activation(kernel, work_dim, global_offset,
+                                     global_size, local_size);
+    return udoncl_dispatch_status;
+  }
+  if (kernel->id == 234) {
+    udoncl_dispatch_status = CL_SUCCESS;
+    udoncl_dispatch_large_op_tensor(kernel, work_dim, global_offset,
+                                    global_size, local_size);
     return udoncl_dispatch_status;
   }
 #endif

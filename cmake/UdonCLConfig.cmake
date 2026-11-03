@@ -164,7 +164,7 @@ function(udoncl_add_onnx_host_library target)
     set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_HOST_MLIR
                  "${_generated_mlir}")
   elseif(_ARG_PROFILE STREQUAL "mnist")
-    set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_HOST_MLIR_CANDIDATE
+    set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_HOST_MLIR
                  "${_generated_mlir}")
   endif()
 endfunction()

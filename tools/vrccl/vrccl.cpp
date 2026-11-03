@@ -425,9 +425,13 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
         cast<StringAttr>(*dispatch.getArgumentKinds().begin()).getValue() !=
             "buffer" ||
         !resourcesMatch) {
-      dispatch.emitError(
-          "Unity dispatch requires the configured kernel, logical buffers "
-          "from the fixed pool, and a copied f32/i32 scalar descriptor");
+      dispatch.emitError()
+          << "Unity dispatch requires the configured kernel, logical buffers "
+             "from the fixed pool, and a copied f32/i32 scalar descriptor "
+          << "(kernel_id=" << dispatch.getKernelId() << ", configured="
+          << llvm::is_contained(configuredKernelIds, dispatch.getKernelId())
+          << ", descriptor=" << descriptorMatches
+          << ", resources=" << resourcesMatch << ")";
       return failure();
     }
     int32_t kernelId = static_cast<int32_t>(dispatch.getKernelId());
@@ -435,12 +439,16 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
                       builder.getStringAttr("__udoncl_kernel_material_" +
                                             std::to_string(kernelId)));
     if (!dispatch->hasAttr("vrc.unity_output_resource_index")) {
-      size_t output = semanticOutput.value_or(0);
-      if (output >= dispatch.getResources().size()) {
+      if (dispatch.getResources().empty()) {
         dispatch.emitError(
             "Unity output buffer does not match a kernel resource");
         return failure();
       }
+      // Gather kernels use their final buffer argument as the write target.
+      // The configured public output identifies the final user-visible pool
+      // buffer; its pool index is unrelated to a particular dispatch's
+      // resource-argument index.
+      size_t output = dispatch.getResources().size() - 1;
       dispatch->setAttr(
           "vrc.unity_output_resource_index",
           builder.getI32IntegerAttr(static_cast<int32_t>(output)));

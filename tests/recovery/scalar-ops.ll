@@ -24,3 +24,9 @@ define i32 @unsigned_divrem(i32 %a, i32 %b) {
   %result = add i32 %quotient, %remainder
   ret i32 %result
 }
+define i32 @signed_divrem(i32 %a, i32 %b) {
+  %quotient = sdiv i32 %a, %b
+  %remainder = srem i32 %a, %b
+  %result = add i32 %quotient, %remainder
+  ret i32 %result
+}

@@ -93,6 +93,49 @@ for expected in [
     assert expected in text, (expected, text)
 assert 'func.func' not in text and 'arith.' not in text
 
+integer_bit_source = r'''module attributes {vrc.host_stage = "udonhl"} {
+  func.func @integer_bits(%value: i32, %shift: i32, %mask: i32) -> i32 attributes {
+    vrc.export_id = 1 : i32
+  } {
+    %left = arith.shli %value, %shift : i32
+    %right = arith.shrsi %value, %shift : i32
+    %logical = arith.shrui %value, %shift : i32
+    %combined = arith.ori %left, %right : i32
+    %either = arith.ori %combined, %logical : i32
+    %result = arith.xori %either, %mask : i32
+    return %result : i32
+  }
+}'''
+integer_bits = subprocess.run(
+    [opt, '--vrc-lower-udonhl-to-udonasm', '--verify-each'],
+    input=integer_bit_source, text=True, capture_output=True)
+assert integer_bits.returncode == 0, integer_bits.stderr
+for expected in [
+    'SystemInt32.__op_LeftShift__SystemInt32_SystemInt32__SystemInt32',
+    'SystemInt32.__op_RightShift__SystemInt32_SystemInt32__SystemInt32',
+    'SystemInt32.__op_LogicalOr__SystemInt32_SystemInt32__SystemInt32',
+    'SystemInt32.__op_LogicalXor__SystemInt32_SystemInt32__SystemInt32',
+    'SystemInt32.__op_LogicalAnd__SystemInt32_SystemInt32__SystemInt32',
+]:
+    assert expected in integer_bits.stdout, (expected, integer_bits.stdout)
+
+unordered_not_equal_source = r'''module attributes {vrc.host_stage = "udonhl"} {
+  func.func @is_nan_or_different(%lhs: f32, %rhs: f32) -> i1 attributes {
+    vrc.export_id = 1 : i32
+  } {
+    %result = arith.cmpf une, %lhs, %rhs : f32
+    return %result : i1
+  }
+}'''
+unordered_not_equal = subprocess.run(
+    [opt, '--vrc-lower-udonhl-to-udonasm', '--verify-each'],
+    input=unordered_not_equal_source, text=True, capture_output=True)
+assert unordered_not_equal.returncode == 0, unordered_not_equal.stderr
+assert (
+    'SystemSingle.__op_Inequality__SystemSingle_SystemSingle__SystemBoolean'
+    in unordered_not_equal.stdout
+)
+
 mlir = output / 'scalar.udonasm.mlir'
 uasm = output / 'scalar.uasm'
 mlir.write_text(text, encoding='utf-8')

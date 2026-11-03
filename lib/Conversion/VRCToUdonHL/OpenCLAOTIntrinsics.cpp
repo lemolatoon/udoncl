@@ -48,6 +48,10 @@ struct LowerOpenCLAOTIntrinsicsPass
                    name == "__vrc_opencl_await" ||
                    name == "__vrc_opencl_dispatch_udonblas_sgemm" ||
                    name == "__vrc_opencl_dispatch_udonblas_sgemv" ||
+                   name == "__vrc_opencl_dispatch_udondnn_large_convolution" ||
+                   name == "__vrc_opencl_dispatch_udondnn_large_activation" ||
+                   name == "__vrc_opencl_dispatch_udondnn_large_pooling" ||
+                   name == "__vrc_opencl_dispatch_udondnn_large_op_tensor" ||
                    name == "__vrc_opencl_dispatch_mnist_conv" ||
                    name == "__vrc_opencl_dispatch_mnist_pool" ||
                    name == "__vrc_opencl_dispatch_mnist_dense";
@@ -75,6 +79,17 @@ struct LowerOpenCLAOTIntrinsicsPass
                      i32, i32, i32, i32, f32, f32};
       else if (name == "__vrc_opencl_dispatch_udonblas_sgemv")
         arguments = {i32, i32, i32, i32, i32, i32, i32, i32, f32, f32};
+      else if (name == "__vrc_opencl_dispatch_udondnn_large_convolution")
+        arguments = {i32, i32, i32, i32, i32, i32, i32, i32,
+                     i32, i32, i32, i32, i32, i32, f32, f32};
+      else if (name == "__vrc_opencl_dispatch_udondnn_large_activation")
+        arguments = {i32, i32, i32, i32, i32, i32, f32, f32, f32};
+      else if (name == "__vrc_opencl_dispatch_udondnn_large_pooling")
+        arguments = {i32, i32, i32, i32, i32, i32, i32, i32,
+                     i32, i32, i32, i32, i32, f32, f32};
+      else if (name == "__vrc_opencl_dispatch_udondnn_large_op_tensor")
+        arguments = {i32, i32, i32, i32, i32, i32, i32, i32,
+                     i32, i32, i32, i32, f32, f32, f32};
       else
         arguments = {i32, i32};
       if (!function.isExternal() ||
@@ -158,16 +173,43 @@ struct LowerOpenCLAOTIntrinsicsPass
       } else {
         bool sgemm = name == "__vrc_opencl_dispatch_udonblas_sgemm";
         bool sgemv = name == "__vrc_opencl_dispatch_udonblas_sgemv";
+        bool largeConvolution =
+            name == "__vrc_opencl_dispatch_udondnn_large_convolution";
+        bool largeActivation =
+            name == "__vrc_opencl_dispatch_udondnn_large_activation";
+        bool largePooling =
+            name == "__vrc_opencl_dispatch_udondnn_large_pooling";
+        bool largeOpTensor =
+            name == "__vrc_opencl_dispatch_udondnn_large_op_tensor";
+        unsigned bufferCount = largeConvolution || largeOpTensor ? 4
+                               : largeActivation || largePooling ? 3
+                                                                 : 2;
         int32_t kernelId = sgemm                                        ? 1
                            : sgemv                                      ? 2
+                           : largeConvolution                           ? 232
+                           : largeActivation                            ? 233
+                           : largePooling                               ? 231
+                           : largeOpTensor                              ? 234
                            : name == "__vrc_opencl_dispatch_mnist_conv" ? 20
                            : name == "__vrc_opencl_dispatch_mnist_pool" ? 21
                                                                         : 22;
-        SmallVector<Value> scalars(call.getOperands().drop_front(2));
+        SmallVector<Value> scalars(call.getOperands().drop_front(bufferCount));
         SmallVector<Attribute> scalarKinds;
         if (sgemm || sgemv) {
           scalarKinds.append(sgemm ? 8 : 6, rewriter.getStringAttr("i32"));
           scalarKinds.append(2, rewriter.getStringAttr("f32"));
+        } else if (largeConvolution) {
+          scalarKinds.append(10, rewriter.getStringAttr("i32"));
+          scalarKinds.append(2, rewriter.getStringAttr("f32"));
+        } else if (largeActivation) {
+          scalarKinds.append(3, rewriter.getStringAttr("i32"));
+          scalarKinds.append(3, rewriter.getStringAttr("f32"));
+        } else if (largePooling) {
+          scalarKinds.append(10, rewriter.getStringAttr("i32"));
+          scalarKinds.append(2, rewriter.getStringAttr("f32"));
+        } else if (largeOpTensor) {
+          scalarKinds.append(8, rewriter.getStringAttr("i32"));
+          scalarKinds.append(3, rewriter.getStringAttr("f32"));
         }
         OperationState descriptorState(
             call.getLoc(), runtime::DispatchDescCreateOp::getOperationName());
@@ -178,13 +220,18 @@ struct LowerOpenCLAOTIntrinsicsPass
         descriptorState.addAttribute("scalar_kinds",
                                      rewriter.getArrayAttr(scalarKinds));
         Value descriptor = rewriter.create(descriptorState)->getResult(0);
-        Value output = cast(call.getLoc(), buffer, call.getOperand(1));
-        SmallVector<Attribute> argumentKinds = {
-            rewriter.getStringAttr("buffer"), rewriter.getStringAttr("buffer")};
+        SmallVector<Value> resources;
+        SmallVector<Attribute> argumentKinds;
+        for (unsigned index = 0; index < bufferCount; ++index) {
+          resources.push_back(
+              cast(call.getLoc(), buffer, call.getOperand(index)));
+          argumentKinds.push_back(rewriter.getStringAttr("buffer"));
+        }
         argumentKinds.append(scalarKinds);
         OperationState dispatchState(call.getLoc(),
                                      runtime::DispatchOp::getOperationName());
-        dispatchState.addOperands({descriptor, typedBuffer, output});
+        dispatchState.addOperands(descriptor);
+        dispatchState.addOperands(resources);
         dispatchState.addTypes(event);
         dispatchState.addAttribute("kernel_id",
                                    rewriter.getI32IntegerAttr(kernelId));

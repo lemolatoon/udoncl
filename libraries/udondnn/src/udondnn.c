@@ -3,6 +3,60 @@
 #include <CL/cl.h>
 #include <float.h>
 
+#ifdef UDONDNN_AOT_RAW_INTRINSICS
+extern int __vrc_opencl_buffer_alloc(int, int);
+extern int __vrc_opencl_buffer_release(int);
+extern int __vrc_opencl_buffer_upload(int, int, int, const void *);
+extern int __vrc_opencl_buffer_readback(int, int, int, void *);
+extern int __vrc_opencl_await(int);
+extern int __vrc_opencl_dispatch_udondnn_large_convolution(int, int, int, int,
+                                                           int, int, int, int,
+                                                           int, int, int, int,
+                                                           int, int, float,
+                                                           float);
+extern int __vrc_opencl_dispatch_udondnn_large_activation(int, int, int, int,
+                                                          int, int, float,
+                                                          float, float);
+extern int __vrc_opencl_dispatch_udondnn_large_pooling(int, int, int, int, int,
+                                                       int, int, int, int, int,
+                                                       int, int, int, float,
+                                                       float);
+extern int __vrc_opencl_dispatch_udondnn_large_op_tensor(int, int, int, int,
+                                                         int, int, int, int,
+                                                         int, int, int, int,
+                                                         float, float, float);
+
+static int aot_wait(int event) { return __vrc_opencl_await(event); }
+
+#define AOT_BUFFER_TOKEN(buffer) ((int)(size_t)(buffer))
+#endif
+
+#ifdef UDONDNN_AOT_DIRECT_DISPATCH
+extern cl_int __vrc_enqueue_udondnn_large_convolution(
+    cl_command_queue, cl_kernel, cl_uint, const size_t *, const size_t *,
+    const size_t *, cl_uint, const cl_event *, cl_event *);
+extern cl_int __vrc_enqueue_udondnn_large_activation(
+    cl_command_queue, cl_kernel, cl_uint, const size_t *, const size_t *,
+    const size_t *, cl_uint, const cl_event *, cl_event *);
+extern cl_int __vrc_enqueue_udondnn_large_pooling(cl_command_queue, cl_kernel,
+                                                  cl_uint, const size_t *,
+                                                  const size_t *,
+                                                  const size_t *, cl_uint,
+                                                  const cl_event *, cl_event *);
+extern cl_int __vrc_enqueue_udondnn_large_op_tensor(
+    cl_command_queue, cl_kernel, cl_uint, const size_t *, const size_t *,
+    const size_t *, cl_uint, const cl_event *, cl_event *);
+#define UDONDNN_ENQUEUE_LARGE_CONV __vrc_enqueue_udondnn_large_convolution
+#define UDONDNN_ENQUEUE_LARGE_ACTIVATION __vrc_enqueue_udondnn_large_activation
+#define UDONDNN_ENQUEUE_LARGE_POOLING __vrc_enqueue_udondnn_large_pooling
+#define UDONDNN_ENQUEUE_LARGE_OP __vrc_enqueue_udondnn_large_op_tensor
+#else
+#define UDONDNN_ENQUEUE_LARGE_CONV clEnqueueNDRangeKernel
+#define UDONDNN_ENQUEUE_LARGE_ACTIVATION clEnqueueNDRangeKernel
+#define UDONDNN_ENQUEUE_LARGE_POOLING clEnqueueNDRangeKernel
+#define UDONDNN_ENQUEUE_LARGE_OP clEnqueueNDRangeKernel
+#endif
+
 #define UDONDNN_WORDS 2048
 #define UDONDNN_REGION_WORDS 512
 #define UDONDNN_INPUT_OFFSET 0
@@ -43,7 +97,9 @@
 #define UDONATEN_ARENA_POINTWISE_WORDS 16384
 #define UDONDNN_DESCRIPTOR_MAX_WORDS 16777216
 #define UDONDNN_HANDLE 1u
+#ifndef UDONDNN_DESCRIPTOR_SLOTS
 #define UDONDNN_DESCRIPTOR_SLOTS 64
+#endif
 #define UDONDNN_SLOT_MASK 255u
 #define UDONDNN_GENERATION_MASK 0x00ffffffu
 
@@ -221,6 +277,57 @@ get_op_tensor(udondnnOpTensorDescriptor_t descriptor) {
 }
 
 static void clear_objects(void) {
+#ifdef UDONDNN_AOT_RAW_INTRINSICS
+  if (arena_rms_partial_buffer)
+    __vrc_opencl_buffer_release(AOT_BUFFER_TOKEN(arena_rms_partial_buffer));
+  if (arena_pointwise_output_buffer)
+    __vrc_opencl_buffer_release(
+        AOT_BUFFER_TOKEN(arena_pointwise_output_buffer));
+  if (arena_pointwise_other_buffer)
+    __vrc_opencl_buffer_release(AOT_BUFFER_TOKEN(arena_pointwise_other_buffer));
+  if (arena_pointwise_self_buffer)
+    __vrc_opencl_buffer_release(AOT_BUFFER_TOKEN(arena_pointwise_self_buffer));
+  arena_pointwise_self_buffer = 0;
+  arena_pointwise_other_buffer = 0;
+  arena_pointwise_output_buffer = 0;
+  arena_rms_partial_buffer = 0;
+  queue = 0;
+  context = 0;
+#elif defined(UDONDNN_AOT_LARGE_ONLY)
+  if (large_op_tensor_kernel)
+    clReleaseKernel(large_op_tensor_kernel);
+  if (large_pooling_kernel)
+    clReleaseKernel(large_pooling_kernel);
+  if (large_activation_kernel)
+    clReleaseKernel(large_activation_kernel);
+  if (large_convolution_kernel)
+    clReleaseKernel(large_convolution_kernel);
+  if (program)
+    clReleaseProgram(program);
+  if (arena_rms_partial_buffer)
+    clReleaseMemObject(arena_rms_partial_buffer);
+  if (arena_pointwise_output_buffer)
+    clReleaseMemObject(arena_pointwise_output_buffer);
+  if (arena_pointwise_other_buffer)
+    clReleaseMemObject(arena_pointwise_other_buffer);
+  if (arena_pointwise_self_buffer)
+    clReleaseMemObject(arena_pointwise_self_buffer);
+  if (queue)
+    clReleaseCommandQueue(queue);
+  if (context)
+    clReleaseContext(context);
+  large_convolution_kernel = 0;
+  large_activation_kernel = 0;
+  large_pooling_kernel = 0;
+  large_op_tensor_kernel = 0;
+  program = 0;
+  arena_pointwise_self_buffer = 0;
+  arena_pointwise_other_buffer = 0;
+  arena_pointwise_output_buffer = 0;
+  arena_rms_partial_buffer = 0;
+  queue = 0;
+  context = 0;
+#else
   if (arena_rms_finalize_kernel)
     clReleaseKernel(arena_rms_finalize_kernel);
   if (arena_rms_reduce_kernel)
@@ -323,6 +430,7 @@ static void clear_objects(void) {
   arena_rms_partial_buffer = 0;
   queue = 0;
   context = 0;
+#endif
 }
 
 static udondnnStatus_t execution_failure(void) {
@@ -339,6 +447,20 @@ udondnnStatus_t udondnnCreate(udondnnHandle_t *handle) {
     return UDONDNN_STATUS_BAD_PARAM;
   if (context)
     return UDONDNN_STATUS_NOT_SUPPORTED;
+#ifdef UDONDNN_AOT_RAW_INTRINSICS
+  arena_pointwise_self_buffer =
+      (cl_mem)(size_t)__vrc_opencl_buffer_alloc(1, 65536);
+  arena_pointwise_other_buffer =
+      (cl_mem)(size_t)__vrc_opencl_buffer_alloc(2, 65536);
+  arena_pointwise_output_buffer =
+      (cl_mem)(size_t)__vrc_opencl_buffer_alloc(3, 65536);
+  arena_rms_partial_buffer =
+      (cl_mem)(size_t)__vrc_opencl_buffer_alloc(4, 65536);
+  context = (cl_context)(size_t)1;
+  queue = (cl_command_queue)(size_t)1;
+  *handle = UDONDNN_HANDLE;
+  return UDONDNN_STATUS_SUCCESS;
+#else
   if (clGetPlatformIDs(1, &platform, 0) != CL_SUCCESS ||
       clGetDeviceIDs(platform, CL_DEVICE_TYPE_DEFAULT, 1, &device, 0) !=
           CL_SUCCESS)
@@ -349,6 +471,7 @@ udondnnStatus_t udondnnCreate(udondnnHandle_t *handle) {
   queue = clCreateCommandQueue(context, device, 0, &status);
   if (status != CL_SUCCESS)
     return execution_failure();
+#ifndef UDONDNN_AOT_LARGE_ONLY
   input_buffer =
       clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(packed), 0, &status);
   if (status != CL_SUCCESS)
@@ -385,6 +508,7 @@ udondnnStatus_t udondnnCreate(udondnnHandle_t *handle) {
                                           sizeof(aten_rms_state), 0, &status);
   if (status != CL_SUCCESS)
     return execution_failure();
+#endif
   arena_pointwise_self_buffer = clCreateBuffer(
       context, CL_MEM_READ_WRITE,
       UDONATEN_ARENA_POINTWISE_WORDS * sizeof(float), 0, &status);
@@ -409,6 +533,7 @@ udondnnStatus_t udondnnCreate(udondnnHandle_t *handle) {
   if (status != CL_SUCCESS ||
       clBuildProgram(program, 0, 0, "-cl-std=CL1.2", 0, 0) != CL_SUCCESS)
     return execution_failure();
+#ifndef UDONDNN_AOT_LARGE_ONLY
   convolution_kernel =
       clCreateKernel(program, "udondnn_convolution_forward", &status);
   if (status != CL_SUCCESS ||
@@ -551,8 +676,10 @@ udondnnStatus_t udondnnCreate(udondnnHandle_t *handle) {
                      sizeof(arena_pointwise_output_buffer),
                      &arena_pointwise_output_buffer) != CL_SUCCESS)
     return execution_failure();
+#endif
   *handle = UDONDNN_HANDLE;
   return UDONDNN_STATUS_SUCCESS;
+#endif
 }
 
 udondnnStatus_t udondnnDestroy(udondnnHandle_t handle) {
@@ -987,9 +1114,13 @@ udondnnStatus_t udondnnConvolutionForward(
   filter_words =
       filter_info->k * filter_info->c * filter_info->h * filter_info->w;
   output_words = n * c * h * w;
+#ifdef UDONDNN_AOT_LARGE_ONLY
+  {
+#else
   if (input_words > UDONDNN_REGION_WORDS ||
       filter_words > UDONDNN_REGION_WORDS ||
       output_words > UDONDNN_REGION_WORDS) {
+#endif
     int input_ch, output_ch, filter_hw, pad_hw, stride_hw, dilation_hw, mode;
     size_t large_global[2] = {8192, 2};
     size_t large_local[2] = {1, 1};
@@ -1006,6 +1137,29 @@ udondnnStatus_t udondnnConvolutionForward(
     dilation_hw =
         convolution_info->dilation_h | (convolution_info->dilation_w << 16);
     mode = (int)convolution_info->mode;
+#ifdef UDONDNN_AOT_RAW_INTRINSICS
+    if (aot_wait(__vrc_opencl_buffer_upload(
+            AOT_BUFFER_TOKEN(arena_pointwise_self_buffer), 0,
+            input_words * sizeof(float), input)) != CL_SUCCESS ||
+        aot_wait(__vrc_opencl_buffer_upload(
+            AOT_BUFFER_TOKEN(arena_pointwise_other_buffer), 0,
+            filter_words * sizeof(float), filter)) != CL_SUCCESS ||
+        aot_wait(__vrc_opencl_buffer_upload(
+            AOT_BUFFER_TOKEN(arena_rms_partial_buffer), 0,
+            output_words * sizeof(float), output)) != CL_SUCCESS ||
+        aot_wait(__vrc_opencl_dispatch_udondnn_large_convolution(
+            AOT_BUFFER_TOKEN(arena_pointwise_self_buffer),
+            AOT_BUFFER_TOKEN(arena_pointwise_other_buffer),
+            AOT_BUFFER_TOKEN(arena_rms_partial_buffer),
+            AOT_BUFFER_TOKEN(arena_pointwise_output_buffer), output_words,
+            input_ch, input_info->w, output_ch, w, filter_hw, pad_hw, stride_hw,
+            dilation_hw, mode, *alpha, *beta)) != CL_SUCCESS ||
+        aot_wait(__vrc_opencl_buffer_readback(
+            AOT_BUFFER_TOKEN(arena_pointwise_output_buffer), 0,
+            output_words * sizeof(float), output)) != CL_SUCCESS)
+      return UDONDNN_STATUS_EXECUTION_FAILED;
+    return UDONDNN_STATUS_SUCCESS;
+#else
     if (!large_convolution_kernel) {
       large_convolution_kernel = clCreateKernel(
           program, "udondnn_large_convolution_forward", &cl_status);
@@ -1052,16 +1206,18 @@ udondnnStatus_t udondnnConvolutionForward(
         clEnqueueWriteBuffer(queue, arena_rms_partial_buffer, CL_TRUE, 0,
                              output_words * sizeof(float), output, 0, 0,
                              0) != CL_SUCCESS ||
-        clEnqueueNDRangeKernel(queue, large_convolution_kernel, 2, 0,
-                               large_global, large_local, 0, 0,
-                               0) != CL_SUCCESS ||
+        UDONDNN_ENQUEUE_LARGE_CONV(queue, large_convolution_kernel, 2, 0,
+                                   large_global, large_local, 0, 0,
+                                   0) != CL_SUCCESS ||
         clEnqueueReadBuffer(queue, arena_pointwise_output_buffer, CL_TRUE, 0,
                             output_words * sizeof(float), output, 0, 0,
                             0) != CL_SUCCESS ||
         clFinish(queue) != CL_SUCCESS)
       return UDONDNN_STATUS_EXECUTION_FAILED;
     return UDONDNN_STATUS_SUCCESS;
+#endif
   }
+#ifndef UDONDNN_AOT_LARGE_ONLY
   if (!packable_shape(input_info) || input_words > UDONDNN_REGION_WORDS ||
       filter_words > UDONDNN_REGION_WORDS ||
       output_words > UDONDNN_REGION_WORDS)
@@ -1115,6 +1271,9 @@ udondnnStatus_t udondnnConvolutionForward(
   for (index = 0; index < output_words; ++index)
     output[index] = result[index];
   return UDONDNN_STATUS_SUCCESS;
+#else
+  return UDONDNN_STATUS_NOT_SUPPORTED;
+#endif
 }
 
 udondnnStatus_t udondnnActivationForward(
@@ -1144,11 +1303,33 @@ udondnnStatus_t udondnnActivationForward(
   mode = (int)activation->mode;
   nan_propagation = (int)activation->nan_propagation;
   coefficient = activation->coefficient;
+#ifdef UDONDNN_AOT_LARGE_ONLY
+  {
+#else
   if (words > UDONDNN_REGION_WORDS) {
+#endif
     size_t large_global[2] = {8192, 2};
     size_t large_local[2] = {1, 1};
     if (words > UDONATEN_ARENA_POINTWISE_WORDS)
       return UDONDNN_STATUS_NOT_SUPPORTED;
+#ifdef UDONDNN_AOT_RAW_INTRINSICS
+    if (aot_wait(__vrc_opencl_buffer_upload(
+            AOT_BUFFER_TOKEN(arena_pointwise_self_buffer), 0,
+            words * sizeof(float), input)) != CL_SUCCESS ||
+        aot_wait(__vrc_opencl_buffer_upload(
+            AOT_BUFFER_TOKEN(arena_pointwise_other_buffer), 0,
+            words * sizeof(float), output)) != CL_SUCCESS ||
+        aot_wait(__vrc_opencl_dispatch_udondnn_large_activation(
+            AOT_BUFFER_TOKEN(arena_pointwise_self_buffer),
+            AOT_BUFFER_TOKEN(arena_pointwise_other_buffer),
+            AOT_BUFFER_TOKEN(arena_pointwise_output_buffer), words, mode,
+            nan_propagation, coefficient, *alpha, *beta)) != CL_SUCCESS ||
+        aot_wait(__vrc_opencl_buffer_readback(
+            AOT_BUFFER_TOKEN(arena_pointwise_output_buffer), 0,
+            words * sizeof(float), output)) != CL_SUCCESS)
+      return UDONDNN_STATUS_EXECUTION_FAILED;
+    return UDONDNN_STATUS_SUCCESS;
+#else
     if (!large_activation_kernel) {
       large_activation_kernel = clCreateKernel(
           program, "udondnn_large_activation_forward", &cl_status);
@@ -1183,16 +1364,18 @@ udondnnStatus_t udondnnActivationForward(
         clEnqueueWriteBuffer(queue, arena_pointwise_other_buffer, CL_TRUE, 0,
                              words * sizeof(float), output, 0, 0,
                              0) != CL_SUCCESS ||
-        clEnqueueNDRangeKernel(queue, large_activation_kernel, 2, 0,
-                               large_global, large_local, 0, 0,
-                               0) != CL_SUCCESS ||
+        UDONDNN_ENQUEUE_LARGE_ACTIVATION(queue, large_activation_kernel, 2, 0,
+                                         large_global, large_local, 0, 0,
+                                         0) != CL_SUCCESS ||
         clEnqueueReadBuffer(queue, arena_pointwise_output_buffer, CL_TRUE, 0,
                             words * sizeof(float), output, 0, 0,
                             0) != CL_SUCCESS ||
         clFinish(queue) != CL_SUCCESS)
       return UDONDNN_STATUS_EXECUTION_FAILED;
     return UDONDNN_STATUS_SUCCESS;
+#endif
   }
+#ifndef UDONDNN_AOT_LARGE_ONLY
   for (index = 0; index < UDONDNN_WORDS; ++index)
     packed[index] = 0.0f;
   for (index = 0; index < words; ++index) {
@@ -1227,6 +1410,9 @@ udondnnStatus_t udondnnActivationForward(
   for (index = 0; index < words; ++index)
     output[index] = result[index];
   return UDONDNN_STATUS_SUCCESS;
+#else
+  return UDONDNN_STATUS_NOT_SUPPORTED;
+#endif
 }
 
 static udondnnStatus_t
@@ -1288,8 +1474,12 @@ udondnnStatus_t udondnnPoolingForward(
     return UDONDNN_STATUS_BAD_PARAM;
   input_words = input_info->n * input_info->c * input_info->h * input_info->w;
   output_words = n * c * h * w;
+#ifdef UDONDNN_AOT_LARGE_ONLY
+  {
+#else
   if (input_words > UDONDNN_REGION_WORDS ||
       output_words > UDONDNN_REGION_WORDS) {
+#endif
     int window_shape, pad_shape, stride_shape, pooling_options;
     size_t global[2] = {8192, 2};
     size_t local[2] = {1, 1};
@@ -1303,6 +1493,26 @@ udondnnStatus_t udondnnPoolingForward(
     pad_shape = pooling->pad_h | (pooling->pad_w << 16);
     stride_shape = pooling->stride_h | (pooling->stride_w << 16);
     pooling_options = pooling_mode | (nan_propagation << 8);
+#ifdef UDONDNN_AOT_RAW_INTRINSICS
+    if (aot_wait(__vrc_opencl_buffer_upload(
+            AOT_BUFFER_TOKEN(arena_pointwise_self_buffer), 0,
+            input_words * sizeof(float), input)) != CL_SUCCESS ||
+        aot_wait(__vrc_opencl_buffer_upload(
+            AOT_BUFFER_TOKEN(arena_pointwise_other_buffer), 0,
+            output_words * sizeof(float), output)) != CL_SUCCESS ||
+        aot_wait(__vrc_opencl_dispatch_udondnn_large_pooling(
+            AOT_BUFFER_TOKEN(arena_pointwise_self_buffer),
+            AOT_BUFFER_TOKEN(arena_pointwise_other_buffer),
+            AOT_BUFFER_TOKEN(arena_pointwise_output_buffer), output_words,
+            input_info->c, input_info->h, input_info->w, h, w, window_shape,
+            pad_shape, stride_shape, pooling_options, *alpha, *beta)) !=
+            CL_SUCCESS ||
+        aot_wait(__vrc_opencl_buffer_readback(
+            AOT_BUFFER_TOKEN(arena_pointwise_output_buffer), 0,
+            output_words * sizeof(float), output)) != CL_SUCCESS)
+      return UDONDNN_STATUS_EXECUTION_FAILED;
+    return UDONDNN_STATUS_SUCCESS;
+#else
     if (!large_pooling_kernel) {
       large_pooling_kernel =
           clCreateKernel(program, "udondnn_large_pooling_forward", &cl_status);
@@ -1344,15 +1554,17 @@ udondnnStatus_t udondnnPoolingForward(
         clEnqueueWriteBuffer(queue, arena_pointwise_other_buffer, CL_TRUE, 0,
                              output_words * sizeof(float), output, 0, 0,
                              0) != CL_SUCCESS ||
-        clEnqueueNDRangeKernel(queue, large_pooling_kernel, 2, 0, global, local,
-                               0, 0, 0) != CL_SUCCESS ||
+        UDONDNN_ENQUEUE_LARGE_POOLING(queue, large_pooling_kernel, 2, 0, global,
+                                      local, 0, 0, 0) != CL_SUCCESS ||
         clEnqueueReadBuffer(queue, arena_pointwise_output_buffer, CL_TRUE, 0,
                             output_words * sizeof(float), output, 0, 0,
                             0) != CL_SUCCESS ||
         clFinish(queue) != CL_SUCCESS)
       return UDONDNN_STATUS_EXECUTION_FAILED;
     return UDONDNN_STATUS_SUCCESS;
+#endif
   }
+#ifndef UDONDNN_AOT_LARGE_ONLY
   if (!packable_shape(input_info) || input_words > UDONDNN_REGION_WORDS ||
       output_words > UDONDNN_REGION_WORDS)
     return UDONDNN_STATUS_NOT_SUPPORTED;
@@ -1400,6 +1612,9 @@ udondnnStatus_t udondnnPoolingForward(
   for (index = 0; index < output_words; ++index)
     output[index] = result[index];
   return UDONDNN_STATUS_SUCCESS;
+#else
+  return UDONDNN_STATUS_NOT_SUPPORTED;
+#endif
 }
 
 udondnnStatus_t udondnnSoftmaxForward(
@@ -1608,8 +1823,12 @@ udondnnStatus_t udondnnOpTensor(
   a_words = a_info->n * a_info->c * a_info->h * a_info->w;
   b_words = b_info->n * b_info->c * b_info->h * b_info->w;
   c_words = c_info->n * c_info->c * c_info->h * c_info->w;
+#ifdef UDONDNN_AOT_LARGE_ONLY
+  {
+#else
   if (a_words > UDONDNN_REGION_WORDS || b_words > UDONDNN_REGION_WORDS ||
       c_words > UDONDNN_REGION_WORDS) {
+#endif
     int a_nc, a_hw, b_nc, b_hw, c_nc, c_hw, options;
     size_t large_global[2] = {8192, 2};
     size_t large_local[2] = {1, 1};
@@ -1630,6 +1849,29 @@ udondnnStatus_t udondnnOpTensor(
     operation = (int)operation_info->operation;
     nan_propagation = (int)operation_info->nan_propagation;
     options = operation | (nan_propagation << 8);
+#ifdef UDONDNN_AOT_RAW_INTRINSICS
+    if (aot_wait(__vrc_opencl_buffer_upload(
+            AOT_BUFFER_TOKEN(arena_pointwise_self_buffer), 0,
+            a_words * sizeof(float), a)) != CL_SUCCESS ||
+        aot_wait(__vrc_opencl_buffer_upload(
+            AOT_BUFFER_TOKEN(arena_pointwise_other_buffer), 0,
+            b_words * sizeof(float), b)) != CL_SUCCESS ||
+        aot_wait(__vrc_opencl_buffer_upload(
+            AOT_BUFFER_TOKEN(arena_rms_partial_buffer), 0,
+            c_words * sizeof(float), c)) != CL_SUCCESS ||
+        aot_wait(__vrc_opencl_dispatch_udondnn_large_op_tensor(
+            AOT_BUFFER_TOKEN(arena_pointwise_self_buffer),
+            AOT_BUFFER_TOKEN(arena_pointwise_other_buffer),
+            AOT_BUFFER_TOKEN(arena_rms_partial_buffer),
+            AOT_BUFFER_TOKEN(arena_pointwise_output_buffer), c_words, a_nc,
+            a_hw, b_nc, b_hw, c_nc, c_hw, options, *alpha_a, *alpha_b,
+            *beta)) != CL_SUCCESS ||
+        aot_wait(__vrc_opencl_buffer_readback(
+            AOT_BUFFER_TOKEN(arena_pointwise_output_buffer), 0,
+            c_words * sizeof(float), c)) != CL_SUCCESS)
+      return UDONDNN_STATUS_EXECUTION_FAILED;
+    return UDONDNN_STATUS_SUCCESS;
+#else
     if (!large_op_tensor_kernel) {
       large_op_tensor_kernel =
           clCreateKernel(program, "udondnn_large_op_tensor", &cl_status);
@@ -1675,16 +1917,18 @@ udondnnStatus_t udondnnOpTensor(
         clEnqueueWriteBuffer(queue, arena_rms_partial_buffer, CL_TRUE, 0,
                              c_words * sizeof(float), c, 0, 0,
                              0) != CL_SUCCESS ||
-        clEnqueueNDRangeKernel(queue, large_op_tensor_kernel, 2, 0,
-                               large_global, large_local, 0, 0,
-                               0) != CL_SUCCESS ||
+        UDONDNN_ENQUEUE_LARGE_OP(queue, large_op_tensor_kernel, 2, 0,
+                                 large_global, large_local, 0, 0,
+                                 0) != CL_SUCCESS ||
         clEnqueueReadBuffer(queue, arena_pointwise_output_buffer, CL_TRUE, 0,
                             c_words * sizeof(float), c, 0, 0,
                             0) != CL_SUCCESS ||
         clFinish(queue) != CL_SUCCESS)
       return UDONDNN_STATUS_EXECUTION_FAILED;
     return UDONDNN_STATUS_SUCCESS;
+#endif
   }
+#ifndef UDONDNN_AOT_LARGE_ONLY
   if (!packable_shape(a_info) || !packable_shape(b_info) ||
       !packable_shape(c_info) || a_words > UDONDNN_REGION_WORDS ||
       b_words > UDONDNN_REGION_WORDS || c_words > UDONDNN_REGION_WORDS)
@@ -1733,6 +1977,9 @@ udondnnStatus_t udondnnOpTensor(
   for (index = 0; index < c_words; ++index)
     c[index] = result[index];
   return UDONDNN_STATUS_SUCCESS;
+#else
+  return UDONDNN_STATUS_NOT_SUPPORTED;
+#endif
 }
 
 udondnnStatus_t udonatenBackendRmsNorm(udondnnHandle_t handle, int words,

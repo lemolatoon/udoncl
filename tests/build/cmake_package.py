@@ -197,6 +197,8 @@ def main():
         '-G', args.generator,
         f'-DCMAKE_MAKE_PROGRAM={args.make_program}',
         f'-DUdonCL_DIR={package}',
+        f'-DUdonBLAS_DIR={udonblas_package}',
+        f'-DUdonDNN_DIR={udondnn_package}',
         f'-DUDONCL_CLANG_EXECUTABLE={Path(args.clang).resolve()}',
         f'-DUDONCL_LLVM_LINK_EXECUTABLE={Path(args.llvm_link).resolve()}',
     ])
@@ -208,10 +210,6 @@ def main():
     onnx_mnist_mlir = onnx_mnist_consumer / 'udoncl-onnx/mnist_host/host.mlir'
     assert onnx_mnist_host.is_file()
     assert onnx_mnist_mlir.is_file()
-    onnx_mnist_source_text = onnx_mnist_host.read_text(encoding='utf-8')
-    assert 'clCreateKernel(program, "mnist_conv"' in onnx_mnist_source_text
-    assert 'clCreateKernel(program, "mnist_pool"' in onnx_mnist_source_text
-    assert 'clCreateKernel(program, "mnist_dense"' in onnx_mnist_source_text
     onnx_mnist_mlir_text = onnx_mnist_mlir.read_text(encoding='utf-8')
     assert 'udoncl.onnx_profile = "mnist"' in onnx_mnist_mlir_text
     assert 'func.call @udondnnConvolutionForward' in onnx_mnist_mlir_text
@@ -223,19 +221,23 @@ def main():
         (onnx_mnist_artifact / 'manifest.json').read_text(encoding='utf-8')
     )
     assert [item['name'] for item in onnx_mnist_manifest['device']['kernels']] == [
-        'mnist_conv', 'mnist_pool', 'mnist_dense',
+        'udondnn_large_convolution_forward',
+        'udondnn_large_op_tensor',
+        'udondnn_large_activation_forward',
+        'udondnn_large_pooling_forward',
+        'udonblas_sgemm',
     ]
     mnist_dispatch_ids = [
         item['kernel_id'] for item in onnx_mnist_manifest['dispatch_sites']
     ]
-    assert len(mnist_dispatch_ids) == 9
-    assert set(mnist_dispatch_ids) == {20, 21, 22}
+    assert mnist_dispatch_ids == [232, 234, 233, 231, 1]
     assert [item['public_name'] for item in onnx_mnist_manifest['exports']] == [
         'WriteMnistInput', 'RunMnist', 'ReadMnistOutput',
     ]
-    assert (onnx_mnist_artifact / 'kernels/kernel_20.shader').is_file()
-    assert (onnx_mnist_artifact / 'kernels/kernel_21.shader').is_file()
-    assert (onnx_mnist_artifact / 'kernels/kernel_22.shader').is_file()
+    for kernel_id in [1, 231, 232, 233, 234]:
+        assert (
+            onnx_mnist_artifact / f'kernels/kernel_{kernel_id}.shader'
+        ).is_file()
     onnx_mnist_assembly = (onnx_mnist_artifact / 'host.uasm').read_text(
         encoding='utf-8'
     )

@@ -172,11 +172,14 @@ struct LowerHostToUdonHLPass
                    memref::StoreOp, memref::AllocaOp, memref::GetGlobalOp,
                    arith::ConstantOp, arith::AddIOp, arith::SubIOp,
                    arith::MulIOp, arith::AddFOp, arith::SubFOp, arith::MulFOp,
-                   arith::DivFOp, arith::CmpIOp, arith::CmpFOp>(op) &&
-              !isa<arith::AndIOp, arith::SelectOp, arith::ExtSIOp,
-                   arith::ExtUIOp, arith::TruncIOp, arith::MaxSIOp>(op)) {
-            op.emitError(
-                "operation is outside the initial Host lowering pattern");
+                   arith::DivSIOp, arith::RemSIOp, arith::DivFOp, arith::CmpIOp,
+                   arith::CmpFOp>(op) &&
+              !isa<arith::AndIOp, arith::OrIOp, arith::XOrIOp, arith::ShLIOp,
+                   arith::ShRSIOp, arith::ShRUIOp, arith::SelectOp,
+                   arith::ExtSIOp, arith::ExtUIOp, arith::TruncIOp,
+                   arith::MaxSIOp, arith::MinSIOp>(op)) {
+            op.emitError() << "operation " << op.getName()
+                           << " is outside the initial Host lowering pattern";
             signalPassFailure();
             return;
           }
