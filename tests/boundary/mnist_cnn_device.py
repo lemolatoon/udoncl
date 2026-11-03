@@ -32,7 +32,7 @@ assert [node["provider"] for node in plan["nodes"]] == [
     "udonatenRelu",
     "udondnnPoolingForward",
     "view",
-    "udonblasSgemm",
+    "udonblasSgemv",
     "udonatenAdd",
 ]
 assert [(item["id"], item["fragments"]) for item in plan["passes"]] == [

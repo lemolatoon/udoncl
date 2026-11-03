@@ -18,10 +18,13 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         private const string GeneratedRoot = "Assets/udoncl-generated/onnx_int4_fixture";
         private const string GeneratedMixedRoot = "Assets/udoncl-generated/onnx_mixed_int4_fixture";
         private const string GeneratedArenaRoot = "Assets/udoncl-generated/onnx_arena_add_fixture";
+        private const string GeneratedMnistRoot = "Assets/udoncl-generated/onnx_mnist_fixture";
         private const string GeneratedRlRoot = "Assets/udoncl-generated/onnx_rl_policy_fixture";
         private const string GeneratedTinyStandardRoot =
             "Assets/udoncl-generated/onnx_tiny_llama_standard_fixture";
         private const string GeneratedRuntimeRoot = "Assets/udoncl-generated/Runtime";
+        private const string StandaloneSgemmRoot = "Assets/UdonclSgemmSizeValidation";
+        private const string StandaloneSgemmShader = StandaloneSgemmRoot + "/kernel_221.shader";
         private const string ArenaSampleScript =
             "Assets/UdonclSampleValidation/UdonOnnxArenaAddExample.cs";
         private const string ArenaSampleProgram =
@@ -82,6 +85,12 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             );
             Assert.That(File.Exists(Path.Combine(arenaBundle, "manifest.json")));
             Assert.AreEqual(GeneratedArenaRoot, UdonclArtifactImporter.Import(arenaBundle));
+            string mnistBundle = ResolveFixture(
+                "UDONCL_ONNX_MNIST_UNITY_BUNDLE",
+                Path.Combine("build", "precommit", "onnx-aot", "unity-mnist-model-bundle")
+            );
+            Assert.That(File.Exists(Path.Combine(mnistBundle, "manifest.json")));
+            Assert.AreEqual(GeneratedMnistRoot, UdonclArtifactImporter.Import(mnistBundle));
             string rlBundle = ResolveFixture(
                 "UDONCL_ONNX_RL_UNITY_BUNDLE",
                 Path.Combine("build", "precommit", "onnx-aot", "unity-rl-policy-model-bundle")
@@ -102,6 +111,29 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 GeneratedTinyStandardRoot,
                 UdonclArtifactImporter.Import(tinyStandardBundle)
             );
+            AssetDatabase.DeleteAsset(StandaloneSgemmRoot);
+            Assert.IsFalse(
+                string.IsNullOrEmpty(
+                    AssetDatabase.CreateFolder("Assets", "UdonclSgemmSizeValidation")
+                )
+            );
+            string sgemmShaderSource = ResolveFixture(
+                "UDONCL_ONNX_SGEMM_SHADER",
+                Path.Combine(
+                    "build",
+                    "udondnn-device-run",
+                    "unity-udonaten-int4-mm-bundle",
+                    "kernels",
+                    "kernel_221.shader"
+                )
+            );
+            Assert.That(File.Exists(sgemmShaderSource));
+            File.Copy(sgemmShaderSource, StandaloneSgemmShader, true);
+            AssetDatabase.ImportAsset(
+                StandaloneSgemmShader,
+                ImportAssetOptions.ForceSynchronousImport
+            );
+            Assert.NotNull(AssetDatabase.LoadAssetAtPath<Shader>(StandaloneSgemmShader));
             EnsureArenaSampleProgram();
             EnsureTinySampleProgram();
             EnsureLlama8BSampleProgram();
@@ -128,6 +160,9 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             string arenaProgramGuid = AssetDatabase.AssetPathToGUID(
                 GeneratedArenaRoot + "/Programs/host_program.asset"
             );
+            string mnistProgramGuid = AssetDatabase.AssetPathToGUID(
+                GeneratedMnistRoot + "/Programs/host_program.asset"
+            );
             string rlProgramGuid = AssetDatabase.AssetPathToGUID(
                 GeneratedRlRoot + "/Programs/host_program.asset"
             );
@@ -149,9 +184,11 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             AssetDatabase.DeleteAsset(GeneratedRoot);
             AssetDatabase.DeleteAsset(GeneratedMixedRoot);
             AssetDatabase.DeleteAsset(GeneratedArenaRoot);
+            AssetDatabase.DeleteAsset(GeneratedMnistRoot);
             AssetDatabase.DeleteAsset(GeneratedRlRoot);
             AssetDatabase.DeleteAsset(GeneratedTinyStandardRoot);
             AssetDatabase.DeleteAsset(GeneratedRuntimeRoot);
+            AssetDatabase.DeleteAsset(StandaloneSgemmRoot);
             if (!arenaSampleProgramAssetExisted)
                 AssetDatabase.DeleteAsset(ArenaSampleProgram);
             if (!tinySampleProgramAssetExisted)
@@ -167,6 +204,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                     mixedRunner0ProgramGuid,
                     mixedRunner1ProgramGuid,
                     arenaProgramGuid,
+                    mnistProgramGuid,
                     rlProgramGuid,
                     tinyStandardProgramGuid,
                     runtimeProgramGuid,
@@ -181,11 +219,13 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             Assert.IsNull(AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(GeneratedRoot));
             Assert.IsNull(AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(GeneratedMixedRoot));
             Assert.IsNull(AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(GeneratedArenaRoot));
+            Assert.IsNull(AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(GeneratedMnistRoot));
             Assert.IsNull(AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(GeneratedRlRoot));
             Assert.IsNull(
                 AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(GeneratedTinyStandardRoot)
             );
             Assert.IsNull(AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(GeneratedRuntimeRoot));
+            Assert.IsNull(AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(StandaloneSgemmRoot));
             if (!arenaSampleProgramAssetExisted)
                 Assert.IsNull(
                     AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(ArenaSampleProgram)
@@ -234,9 +274,77 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             );
         }
 
-#if false
-        // Disabled while the arena AveragePool Unity/D3D11 zero-output defect remains unresolved.
-        // See docs/investigations/2026-11-02-unity-mnist-averagepool-zero.md.
+        [Test]
+        public void ArenaSgemmM1N10K144MatchesStandaloneReference()
+        {
+            Shader shader = AssetDatabase.LoadAssetAtPath<Shader>(StandaloneSgemmShader);
+            Assert.NotNull(shader);
+            Assert.IsTrue(shader.isSupported, shader.name);
+            Material material = new Material(shader);
+            Texture2D vector = new Texture2D(8192, 2, TextureFormat.RGBA32, false, true);
+            Texture2D matrix = new Texture2D(8192, 1, TextureFormat.RGBA32, false, true);
+            RenderTexture output = new RenderTexture(
+                8192,
+                2,
+                0,
+                RenderTextureFormat.ARGB32,
+                RenderTextureReadWrite.Linear
+            );
+            try
+            {
+                float[] x = new float[144];
+                Color32[] vectorPixels = new Color32[8192 * 2];
+                for (int inner = 0; inner < x.Length; ++inner)
+                {
+                    x[inner] = ((inner * 7) % 23 - 11) * 0.0625f;
+                    vectorPixels[inner] = Encode(x[inner]);
+                }
+                Color32[] matrixPixels = new Color32[8192];
+                float[] expected = new float[10];
+                for (int inner = 0; inner < 144; ++inner)
+                for (int column = 0; column < 10; ++column)
+                {
+                    float value = ((inner * 10 + column) % 31 - 15) * 0.03125f;
+                    matrixPixels[inner * 10 + column] = Encode(value);
+                    expected[column] += x[inner] * value;
+                }
+                vector.filterMode = FilterMode.Point;
+                vector.wrapMode = TextureWrapMode.Clamp;
+                vector.SetPixels32(vectorPixels);
+                vector.Apply(false, false);
+                matrix.filterMode = FilterMode.Point;
+                matrix.wrapMode = TextureWrapMode.Clamp;
+                matrix.SetPixels32(matrixPixels);
+                matrix.Apply(false, false);
+                Assert.IsTrue(output.Create());
+                material.SetTexture("_VRC_Input", vector);
+                material.SetTexture("_VRC_Input1", matrix);
+                material.SetInteger("_VRC_Arg3", 1);
+                material.SetInteger("_VRC_Arg4", 10);
+                material.SetInteger("_VRC_Arg5", 144);
+                material.SetInteger("_VRC_Arg6", 0);
+                material.SetInteger("_VRC_Arg7", 0);
+                material.SetFloat("_VRC_Arg8", 1.0f);
+                Graphics.Blit(vector, output, material);
+                AssertTextureMatches(
+                    output,
+                    FloatBytes(expected),
+                    expected.Length,
+                    0.001f,
+                    "arena SGEMM M=1 N=10 K=144"
+                );
+            }
+            finally
+            {
+                if (RenderTexture.active == output)
+                    RenderTexture.active = null;
+                UnityEngine.Object.DestroyImmediate(output);
+                UnityEngine.Object.DestroyImmediate(matrix);
+                UnityEngine.Object.DestroyImmediate(vector);
+                UnityEngine.Object.DestroyImmediate(material);
+            }
+        }
+
         [Test]
         public void UnityGenericMnistModelExecutesAllOperatorsNumericallyOnSdkVm()
         {
@@ -246,8 +354,8 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 );
             Assert.NotNull(modelAsset);
             Assert.AreEqual("UdonOperatorExecutionProvider", modelAsset.ExecutionProvider);
-            Assert.AreEqual(2, modelAsset.TextureArenaSlots.Length);
-            Assert.AreEqual(6, modelAsset.PassMaterials.Length);
+            Assert.AreEqual(4, modelAsset.TextureArenaSlots.Length);
+            Assert.AreEqual(8, modelAsset.PassMaterials.Length);
             foreach (Material material in modelAsset.PassMaterials)
             {
                 Assert.IsTrue(material.shader.isSupported, material.shader.name);
@@ -258,12 +366,20 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 modelAsset.PassMaterials[3].shader.name
             );
             Assert.AreEqual(
-                "UdonCL/device_gpu__udonblas_arena_sgemm_221",
+                "UdonCL/device_gpu__udonblas_arena_sgemv_product_227",
                 modelAsset.PassMaterials[4].shader.name
             );
             Assert.AreEqual(
-                "UdonCL/device_gpu__udonaten_arena_pointwise_215",
+                "UdonCL/device_gpu__udonblas_arena_sgemv_reduce_228",
                 modelAsset.PassMaterials[5].shader.name
+            );
+            Assert.AreEqual(
+                "UdonCL/device_gpu__udonblas_arena_sgemv_finalize_229",
+                modelAsset.PassMaterials[6].shader.name
+            );
+            Assert.AreEqual(
+                "UdonCL/device_gpu__udonaten_arena_pointwise_215",
+                modelAsset.PassMaterials[7].shader.name
             );
             int[] poolingArguments = { 144, 16, 24, 24, 16, 3, 3, 8, 8, 8, 8 };
             for (int index = 0; index < poolingArguments.Length; ++index)
@@ -271,12 +387,62 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                     poolingArguments[index],
                     modelAsset.PassMaterials[3].GetInteger("_VRC_Arg" + (index + 2))
                 );
-            Assert.AreEqual(1, modelAsset.PassMaterials[4].GetInteger("_VRC_Arg3"));
+            Assert.AreEqual(0, modelAsset.PassMaterials[4].GetInteger("_VRC_Arg3"));
             Assert.AreEqual(10, modelAsset.PassMaterials[4].GetInteger("_VRC_Arg4"));
             Assert.AreEqual(144, modelAsset.PassMaterials[4].GetInteger("_VRC_Arg5"));
+            Assert.AreEqual(10, modelAsset.PassMaterials[4].GetInteger("_VRC_Arg6"));
+            Assert.AreEqual(1, modelAsset.PassMaterials[4].GetInteger("_VRC_Arg7"));
             Assert.AreEqual(1.0f, modelAsset.PassMaterials[4].GetFloat("_VRC_Arg8"));
             Assert.NotNull(modelAsset.PassMaterials[4].GetTexture("_VRC_Input1"));
-            Assert.NotNull(modelAsset.PassMaterials[5].GetTexture("_VRC_Input1"));
+            Assert.AreEqual(10, modelAsset.PassMaterials[5].GetInteger("_VRC_Arg2"));
+            Assert.AreEqual(144, modelAsset.PassMaterials[5].GetInteger("_VRC_Arg3"));
+            Assert.AreEqual(10, modelAsset.PassMaterials[6].GetInteger("_VRC_Arg2"));
+            Assert.AreEqual(9, modelAsset.PassMaterials[6].GetInteger("_VRC_Arg3"));
+            Assert.NotNull(modelAsset.PassMaterials[7].GetTexture("_VRC_Input1"));
+            Texture2D denseWeightTexture =
+                modelAsset.PassMaterials[4].GetTexture("_VRC_Input1") as Texture2D;
+            Assert.NotNull(denseWeightTexture);
+            Assert.AreEqual(8192, denseWeightTexture.width);
+            Assert.AreEqual(1, denseWeightTexture.height);
+            byte[] denseWeightReference = File.ReadAllBytes(
+                ResolveFixture(
+                    "UDONCL_ONNX_MNIST_DENSE_WEIGHT",
+                    Path.Combine("build", "precommit", "onnx-aot", "unity-mnist-dense-weight.bytes")
+                )
+            );
+            Color32[] denseWeightPixels = denseWeightTexture.GetPixels32();
+            Assert.AreEqual(8192, denseWeightPixels.Length);
+            for (int index = 0; index < 1440; ++index)
+                Assert.AreEqual(
+                    BitConverter.ToSingle(denseWeightReference, index * 4),
+                    Decode(denseWeightPixels[index]),
+                    "dense weight word " + index
+                );
+            RenderTexture denseWeightProbe = new RenderTexture(
+                8192,
+                1,
+                0,
+                RenderTextureFormat.ARGB32,
+                RenderTextureReadWrite.Linear
+            );
+            try
+            {
+                Assert.IsTrue(denseWeightProbe.Create());
+                Graphics.Blit(denseWeightTexture, denseWeightProbe);
+                AssertTextureMatches(
+                    denseWeightProbe,
+                    denseWeightReference,
+                    1440,
+                    0.0000001f,
+                    "MNIST dense weight GPU upload"
+                );
+            }
+            finally
+            {
+                if (RenderTexture.active == denseWeightProbe)
+                    RenderTexture.active = null;
+                UnityEngine.Object.DestroyImmediate(denseWeightProbe);
+            }
 
             UdonAssemblyProgramAsset programAsset =
                 AssetDatabase.LoadAssetAtPath<UdonAssemblyProgramAsset>(
@@ -312,12 +478,24 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 input.SetPixels32(pixels);
                 input.Apply(false, false);
                 Graphics.Blit(input, modelAsset.TextureArenaSlots[0]);
-                int[] stageWords = { 9216, 9216, 9216, 144, 10, 10 };
-                float[] stageTolerances = { 0.0002f, 0.0002f, 0.0002f, 0.0002f, 0.002f, 0.002f };
+                int[] stageWords = { 9216, 9216, 9216, 144, 1440, 90, 10, 10 };
+                float[] stageTolerances =
+                {
+                    0.0002f,
+                    0.0002f,
+                    0.0002f,
+                    0.0002f,
+                    0.0002f,
+                    0.002f,
+                    0.003f,
+                    0.003f,
+                };
+                int[] sourceSlots = { 0, 1, 0, 1, 0, 2, 1, 3 };
+                int[] destinationSlots = { 1, 0, 1, 0, 2, 1, 3, 0 };
                 for (int index = 0; index < modelAsset.PassMaterials.Length; ++index)
                 {
-                    int source = index % 2;
-                    int destination = 1 - source;
+                    int source = sourceSlots[index];
+                    int destination = destinationSlots[index];
                     Material material = modelAsset.PassMaterials[index];
                     material.SetTexture("_VRC_Input", modelAsset.TextureArenaSlots[source]);
                     Graphics.Blit(
@@ -370,7 +548,6 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 UnityEngine.Object.DestroyImmediate(input);
             }
         }
-#endif
 
         [Test]
         public void UnityRlPolicyModelExecutesAllOperatorsNumericallyOnSdkVm()
@@ -381,8 +558,8 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 );
             Assert.NotNull(modelAsset);
             Assert.AreEqual("UdonOperatorExecutionProvider", modelAsset.ExecutionProvider);
-            Assert.AreEqual(3, modelAsset.TextureArenaSlots.Length);
-            Assert.AreEqual(10, modelAsset.PassMaterials.Length);
+            Assert.AreEqual(4, modelAsset.TextureArenaSlots.Length);
+            Assert.AreEqual(14, modelAsset.PassMaterials.Length);
 
             UdonAssemblyProgramAsset programAsset =
                 AssetDatabase.LoadAssetAtPath<UdonAssemblyProgramAsset>(
@@ -416,7 +593,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 vm.SetProgramCounter(program.EntryPoints.GetAddressFromSymbol("_run"));
                 Assert.AreEqual(0u, vm.Interpret());
 
-                Color32[] actual = ReadPixels(modelAsset.TextureArenaSlots[1], 3);
+                Color32[] actual = ReadPixels(modelAsset.TextureArenaSlots[3], 3);
                 float maximumError = 0.0f;
                 for (int index = 0; index < expected.Length; ++index)
                     maximumError = Mathf.Max(
@@ -1183,10 +1360,16 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             int maximumIndex = 0;
             float maximumActual = 0.0f;
             float maximumReference = 0.0f;
+            int firstMismatchIndex = -1;
+            float firstMismatchActual = 0.0f;
+            float firstMismatchReference = 0.0f;
+            int nonzeroActualWords = 0;
             for (int index = 0; index < words; ++index)
             {
                 float actualValue = Decode(actual[index]);
                 float referenceValue = BitConverter.ToSingle(reference, index * 4);
+                if (actualValue != 0.0f)
+                    ++nonzeroActualWords;
                 if (float.IsNaN(actualValue) || float.IsInfinity(actualValue))
                     Assert.Fail(
                         label
@@ -1196,6 +1379,12 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                             + actualValue.ToString("R")
                     );
                 float error = Mathf.Abs(actualValue - referenceValue);
+                if (firstMismatchIndex < 0 && error >= tolerance)
+                {
+                    firstMismatchIndex = index;
+                    firstMismatchActual = actualValue;
+                    firstMismatchReference = referenceValue;
+                }
                 if (error > maximumError)
                 {
                     maximumError = error;
@@ -1214,6 +1403,16 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                     + maximumActual.ToString("R")
                     + " reference="
                     + maximumReference.ToString("R")
+                    + "; first mismatch word "
+                    + firstMismatchIndex
+                    + " actual="
+                    + firstMismatchActual.ToString("R")
+                    + " reference="
+                    + firstMismatchReference.ToString("R")
+                    + "; nonzero actual words="
+                    + nonzeroActualWords
+                    + "/"
+                    + words
             );
         }
 
@@ -1221,6 +1420,13 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         {
             byte[] bytes = BitConverter.GetBytes(value);
             return new Color32(bytes[0], bytes[1], bytes[2], bytes[3]);
+        }
+
+        private static byte[] FloatBytes(float[] values)
+        {
+            byte[] bytes = new byte[values.Length * sizeof(float)];
+            Buffer.BlockCopy(values, 0, bytes, 0, bytes.Length);
+            return bytes;
         }
 
         private static void Set<T>(IUdonHeap heap, IUdonProgram program, string symbol, T value)

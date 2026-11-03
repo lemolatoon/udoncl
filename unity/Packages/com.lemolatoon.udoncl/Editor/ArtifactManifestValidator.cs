@@ -650,7 +650,7 @@ namespace Lemolatoon.Udoncl.Editor
                     || texture == null
                     || texture.abi != "linear-rgba32-words"
                     || texture.words <= 0
-                    || texture.width != Math.Min(8192, texture.words)
+                    || texture.width != 8192
                     || texture.height != (texture.words + 8191) / 8192
                 )
                     throw new InvalidDataException(

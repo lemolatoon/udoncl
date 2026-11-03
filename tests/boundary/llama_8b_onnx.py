@@ -417,10 +417,10 @@ static_artifacts = materialize_static_inputs(
     static_output,
 )
 assert len(static_artifacts) == 1
-assert static_artifacts[0]["bytes"] == 8
-assert (static_output / static_artifacts[0]["resource"]).read_bytes() == struct.pack(
-    "<2f", 1.0, -2.0
-)
+assert static_artifacts[0]["bytes"] == 8192 * 4
+static_payload = (static_output / static_artifacts[0]["resource"]).read_bytes()
+assert static_payload[:8] == struct.pack("<2f", 1.0, -2.0)
+assert static_payload[8:] == bytes(8192 * 4 - 8)
 
 int4_bundle_plan = plan_int4_model_bundle(operator_plan)
 assert int4_bundle_plan["aot_call_count"] == len(operator_plan["aot"]["calls"])
@@ -468,7 +468,7 @@ assert all(
     == {
         "abi": "linear-rgba32-words",
         "words": 4096,
-        "width": 4096,
+        "width": 8192,
         "height": 1,
     }
     for item in int4_bundle_plan["static_inputs"]

@@ -1817,7 +1817,7 @@ def _model_static_inputs(plan: dict) -> list[dict]:
                 "texture": {
                     "abi": "linear-rgba32-words",
                     "words": words,
-                    "width": min(8192, words),
+                    "width": 8192,
                     "height": math.ceil(words / 8192),
                 },
             }

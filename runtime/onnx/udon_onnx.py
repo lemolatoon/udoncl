@@ -16,13 +16,6 @@ from pathlib import Path
 import struct
 
 
-ONNX_ARENA_POOLING_DISABLED_REASON = (
-    "udondnn_arena_pooling_forward is disabled for ONNX because its Unity/D3D11 "
-    "zero-output defect is unresolved; see "
-    "docs/investigations/2026-11-02-unity-mnist-averagepool-zero.md"
-)
-
-
 def _varint(value: int) -> bytes:
     if value < 0:
         value &= (1 << 64) - 1
@@ -946,6 +939,41 @@ def _arena_gemm_profile(node: dict, values: dict) -> dict | None:
     }
 
 
+def _arena_sgemv_profile(node: dict, values: dict) -> dict | None:
+    gemm = _arena_gemm_profile(node, values)
+    if (
+        gemm is None
+        or gemm["m"] != 1
+        or gemm["transa"] != 0
+        or gemm["transb"] != 0
+    ):
+        return None
+    output_length = gemm["n"]
+    inner_length = gemm["k"]
+    chunks = (inner_length + 15) // 16
+    if (
+        output_length > 16
+        or output_length * inner_length > ARENA_POINTWISE_WORDS
+        or output_length * chunks > ARENA_POINTWISE_WORDS
+    ):
+        return None
+    return {
+        "arena_sgemv": True,
+        "storage_words": ARENA_POINTWISE_WORDS,
+        "width": 8192,
+        "height": 2,
+        "trans": 0,
+        "m": output_length,
+        "n": inner_length,
+        "lda": output_length,
+        "incx": 1,
+        "alpha": gemm["alpha"],
+        "output_length": output_length,
+        "inner_length": inner_length,
+        "chunks": chunks,
+    }
+
+
 def _softmax_mode(node: dict, shape: list[int]) -> str:
     axis = node["attributes"].get("axis", {"i": -1})["i"]
     axis = axis + len(shape) if axis < 0 else axis
@@ -1053,10 +1081,9 @@ def _arena_pooling_profile(node: dict, values: dict) -> dict | None:
         or count_include_pad != 0
         or ceil_mode != 0
         or any(value > 255 for value in image + output)
-        or math.prod(window) > 256
-        or any(value > 8 for value in window)
+        or window != [8, 8]
         or math.prod(image) > ARENA_POINTWISE_WORDS
-        or math.prod(output) > ARENA_POINTWISE_WORDS
+        or math.prod(output) > 8192
     ):
         return None
     return {
@@ -1477,10 +1504,14 @@ def _plan_texture_arena(
             raise ValueError("scratch buffer word counts must be positive integers")
         if scratch.get("data_type") != "float32":
             raise ValueError("Device scratch buffers must use float32 words")
-        suffix = "__rms_partials"
-        if not name.endswith(suffix):
-            raise ValueError("scratch buffer is not associated with an RMSNorm output")
-        output = name[: -len(suffix)]
+        output = scratch.get("producer_output")
+        if output is None:
+            suffix = "__rms_partials"
+            if not name.endswith(suffix):
+                raise ValueError("scratch buffer has no associated producer output")
+            output = name[: -len(suffix)]
+        elif not isinstance(output, str) or not output:
+            raise ValueError("scratch buffer producer output must be a non-empty string")
         matches = [call["index"] for call in calls if call.get("output") == output]
         if len(matches) != 1:
             raise ValueError("scratch buffer must have exactly one producing AOT call")
@@ -1720,6 +1751,15 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
             if k != right_k:
                 raise ValueError("Gemm inner dimensions do not match")
             output = [m, n]
+            if (
+                m == 1
+                and n <= 16
+                and k <= 256
+                and trans_a == 0
+                and trans_b == 0
+                and n * k <= ARENA_POINTWISE_WORDS
+            ):
+                provider = "udonblasSgemv"
             if len(inputs) == 3 and _broadcast(output, inputs[2]) != output:
                 raise ValueError("Gemm C input cannot broadcast to the matrix output")
         elif operation == "MatMul":
@@ -1950,6 +1990,103 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
                 )
                 continue
             if node["op_type"] == "Gemm":
+                arena_sgemv = _arena_sgemv_profile(node, shapes)
+                if arena_sgemv is not None:
+                    sgemv_inputs = node["inputs"][:2]
+                    products = f"{node['output']}__sgemv_products"
+                    partials = f"{node['output']}__sgemv_partials"
+                    passes.append(
+                        {
+                            "id": 200 + len(passes),
+                            "kernel": "udonblas_arena_sgemv_product",
+                            "shader": "kernel_227.shader",
+                            "providers": [node["provider"]],
+                            "fusion": None,
+                            "call_index": node_index,
+                            "phase": "product",
+                            "inputs": sgemv_inputs,
+                            "static_inputs": _pass_static_inputs(
+                                sgemv_inputs, graph["initializers"]
+                            ),
+                            "output": products,
+                            "shape": [
+                                arena_sgemv["output_length"],
+                                arena_sgemv["inner_length"],
+                            ],
+                            "fragments": arena_sgemv["storage_words"],
+                            "state_words": arena_sgemv["storage_words"],
+                            "material_ints": {
+                                "_VRC_Arg3": arena_sgemv["trans"],
+                                "_VRC_Arg4": arena_sgemv["m"],
+                                "_VRC_Arg5": arena_sgemv["n"],
+                                "_VRC_Arg6": arena_sgemv["lda"],
+                                "_VRC_Arg7": arena_sgemv["incx"],
+                            },
+                            "material_floats": {"_VRC_Arg8": arena_sgemv["alpha"]},
+                        }
+                    )
+                    passes.append(
+                        {
+                            "id": 200 + len(passes),
+                            "kernel": "udonblas_arena_sgemv_reduce",
+                            "shader": "kernel_228.shader",
+                            "providers": [node["provider"]],
+                            "fusion": None,
+                            "call_index": node_index,
+                            "phase": "reduce",
+                            "inputs": [products],
+                            "output": partials,
+                            "shape": [
+                                arena_sgemv["output_length"],
+                                arena_sgemv["chunks"],
+                            ],
+                            "fragments": arena_sgemv["storage_words"],
+                            "state_words": arena_sgemv["storage_words"],
+                            "material_ints": {
+                                "_VRC_Arg2": arena_sgemv["output_length"],
+                                "_VRC_Arg3": arena_sgemv["inner_length"],
+                            },
+                        }
+                    )
+                    passes.append(
+                        {
+                            "id": 200 + len(passes),
+                            "kernel": "udonblas_arena_sgemv_finalize",
+                            "shader": "kernel_229.shader",
+                            "providers": [node["provider"]],
+                            "fusion": None,
+                            "call_index": node_index,
+                            "phase": "finalize",
+                            "inputs": [partials],
+                            "output": node["output"],
+                            "shape": node["shape"],
+                            "fragments": arena_sgemv["storage_words"],
+                            "state_words": arena_sgemv["storage_words"],
+                            "material_ints": {
+                                "_VRC_Arg2": arena_sgemv["output_length"],
+                                "_VRC_Arg3": arena_sgemv["chunks"],
+                            },
+                        }
+                    )
+                    if len(node["inputs"]) == 3:
+                        passes.append(
+                            {
+                                "id": 200 + len(passes),
+                                "kernel": f"onnx_{node_index}_gemm_bias",
+                                "providers": ["udonatenAdd"],
+                                "fusion": None,
+                                "call_index": node_index,
+                                "phase": "bias",
+                                "beta": node["attributes"].get("beta", {"f": 1.0})[
+                                    "f"
+                                ],
+                                "output": node["output"],
+                                "shape": node["shape"],
+                                "fragments": math.prod(node["shape"]),
+                            }
+                        )
+                    continue
+            if node["op_type"] == "Gemm":
                 arena_gemm = _arena_gemm_profile(node, shapes)
                 tiles = [arena_gemm] if arena_gemm is not None else _gemm_schedule(node, shapes)
             elif node["op_type"] == "MatMul":
@@ -1981,8 +2118,6 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
                 tiles = [arena_convolution] if arena_convolution is not None else [None]
             elif node["provider"] == "udondnnPoolingForward":
                 arena_pooling = _arena_pooling_profile(node, shapes)
-                if arena_pooling is not None and not fuse_mnist:
-                    raise NotImplementedError(ONNX_ARENA_POOLING_DISABLED_REASON)
                 tiles = [arena_pooling] if arena_pooling is not None else [None]
             elif node["provider"] == "udondnnSoftmaxForward":
                 arena_softmax = _arena_softmax_profile(node)
@@ -2291,8 +2426,18 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
             continue
         if node["op_type"] in ("Gemm", "MatMul"):
             if node["op_type"] == "Gemm":
-                arena_gemm = _arena_gemm_profile(node, shapes)
-                tiles = [arena_gemm] if arena_gemm is not None else _gemm_schedule(node, shapes)
+                if node["provider"] == "udonblasSgemv":
+                    arena_sgemv = _arena_sgemv_profile(node, shapes)
+                    if arena_sgemv is None:
+                        raise ValueError("UdonBLAS SGEMV arena profile is unavailable")
+                    tiles = [arena_sgemv]
+                else:
+                    arena_gemm = _arena_gemm_profile(node, shapes)
+                    tiles = (
+                        [arena_gemm]
+                        if arena_gemm is not None
+                        else _gemm_schedule(node, shapes)
+                    )
             else:
                 tiles = _matmul_schedule(node, shapes)
             for tile in tiles:
@@ -2381,8 +2526,13 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
             profile = _arena_pooling_profile(node, shapes)
             if profile is not None:
                 call["device_profile"] = {
-                    "supported": False,
-                    "reason": ONNX_ARENA_POOLING_DISABLED_REASON,
+                    "supported": True,
+                    "kernel": "udondnn_arena_pooling_forward",
+                    "shader": "kernel_225.shader",
+                    "storage_words": ARENA_POINTWISE_WORDS,
+                    "width": 8192,
+                    "height": 2,
+                    "logical_output_words": math.prod(node["shape"]),
                 }
         elif node["provider"] == "udonatenRmsNorm":
             normalized_words = math.prod(shapes[node["inputs"][1]])
@@ -2442,6 +2592,28 @@ def _compile_standard_graph(model: dict, *, fuse_mnist: bool) -> dict:
         for device_pass in passes
         if device_pass.get("phase") == "reduce"
         and device_pass["providers"] == ["udonatenRmsNorm"]
+    ] + [
+        {
+            "name": device_pass["output"],
+            "words": device_pass["state_words"],
+            "data_type": "float32",
+            "lifetime": "until the matching arena SGEMV reduction completes",
+            "producer_output": next(
+                finalize_pass["output"]
+                for finalize_pass in passes
+                if finalize_pass.get("phase") == "finalize"
+                and finalize_pass.get("kernel")
+                == "udonblas_arena_sgemv_finalize"
+                and finalize_pass.get("call_index") == device_pass.get("call_index")
+            ),
+        }
+        for device_pass in passes
+        if device_pass.get("phase") in ("product", "reduce")
+        and device_pass.get("kernel")
+        in (
+            "udonblas_arena_sgemv_product",
+            "udonblas_arena_sgemv_reduce",
+        )
     ]
     texture_arena = _plan_texture_arena(
         graph, calls, shapes, value_types, scratch_buffers
@@ -2808,14 +2980,23 @@ def emit_c_host(plan: dict) -> str:
                 left_offset = k0 * left_shape[1] + m0 if trans_a else m0 * left_shape[1] + k0
                 right_offset = n0 * right_shape[1] + k0 if trans_b else k0 * right_shape[1] + n0
                 beta = "zero" if tile["beta"] == 0 else "one"
-                lines.append(
-                    "  CHECK_BLAS(udonblasSgemm("
-                    f"blas, {'UDONBLAS_OP_T' if trans_b else 'UDONBLAS_OP_N'}, "
-                    f"{'UDONBLAS_OP_T' if trans_a else 'UDONBLAS_OP_N'}, {tile['n']}, {tile['m']}, {tile['k']}, &gemm_alpha_{index}, "
-                    f"buffers->{names[inputs[1]]} + {right_offset}, {right_shape[1]}, "
-                    f"buffers->{names[inputs[0]]} + {left_offset}, {left_shape[1]}, &{beta}, "
-                    f"buffers->{names[output]} + {m0 * n + n0}, {n}));"
-                )
+                if node["provider"] == "udonblasSgemv":
+                    lines.append(
+                        "  CHECK_BLAS(udonblasSgemv("
+                        f"blas, UDONBLAS_OP_N, {tile['n']}, {tile['k']}, &gemm_alpha_{index}, "
+                        f"buffers->{names[inputs[1]]} + {right_offset}, {right_shape[1]}, "
+                        f"buffers->{names[inputs[0]]} + {left_offset}, 1, &{beta}, "
+                        f"buffers->{names[output]} + {n0}, 1));"
+                    )
+                else:
+                    lines.append(
+                        "  CHECK_BLAS(udonblasSgemm("
+                        f"blas, {'UDONBLAS_OP_T' if trans_b else 'UDONBLAS_OP_N'}, "
+                        f"{'UDONBLAS_OP_T' if trans_a else 'UDONBLAS_OP_N'}, {tile['n']}, {tile['m']}, {tile['k']}, &gemm_alpha_{index}, "
+                        f"buffers->{names[inputs[1]]} + {right_offset}, {right_shape[1]}, "
+                        f"buffers->{names[inputs[0]]} + {left_offset}, {left_shape[1]}, &{beta}, "
+                        f"buffers->{names[output]} + {m0 * n + n0}, {n}));"
+                    )
             if len(inputs) == 3:
                 bias = inputs[2]
                 beta = _attribute(node, "beta", "f", 1.0)

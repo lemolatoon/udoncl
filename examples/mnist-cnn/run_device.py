@@ -101,7 +101,7 @@ def main():
         ("Relu", "udonatenRelu"),
         ("AveragePool", "udondnnPoolingForward"),
         ("Flatten", "view"),
-        ("Gemm", "udonblasSgemm"),
+        ("Gemm", "udonblasSgemv"),
         ("Add", "udonatenAdd"),
     ]
     if [

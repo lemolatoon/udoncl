@@ -97,6 +97,7 @@ def main():
     arena_rms_device = root / "libraries/udonaten/device/arena_rms_norm.cl"
     arena_embedding_device = root / "libraries/udonaten/device/arena_embedding.cl"
     arena_sgemm_device = root / "libraries/udonblas/device/arena_sgemm.cl"
+    arena_sgemv_device = root / "libraries/udonblas/device/arena_sgemv.cl"
     arena_softmax_device = source / "device/arena_softmax.cl"
     arena_convolution_device = source / "device/arena_convolution.cl"
     arena_pooling_device = source / "device/arena_pooling.cl"
@@ -121,6 +122,7 @@ def main():
     arena_rms_text = arena_rms_device.read_text(encoding="utf-8")
     arena_embedding_text = arena_embedding_device.read_text(encoding="utf-8")
     arena_sgemm_text = arena_sgemm_device.read_text(encoding="utf-8")
+    arena_sgemv_text = arena_sgemv_device.read_text(encoding="utf-8")
     arena_softmax_text = arena_softmax_device.read_text(encoding="utf-8")
     arena_convolution_text = arena_convolution_device.read_text(encoding="utf-8")
     arena_pooling_text = arena_pooling_device.read_text(encoding="utf-8")
@@ -162,6 +164,8 @@ def main():
         + arena_embedding_text
         + "\n"
         + arena_sgemm_text
+        + "\n"
+        + arena_sgemv_text
         + "\n"
         + arena_softmax_text
         + "\n"
@@ -358,6 +362,30 @@ def main():
         arena_sgemm_device,
         "udonblas_arena_sgemm",
         221,
+        16384,
+        (8192, 2),
+    )
+    arena_sgemv_product_bundle = emit_device(
+        "udonblas-arena-sgemv-product",
+        arena_sgemv_device,
+        "udonblas_arena_sgemv_product",
+        227,
+        16384,
+        (8192, 2),
+    )
+    arena_sgemv_reduce_bundle = emit_device(
+        "udonblas-arena-sgemv-reduce",
+        arena_sgemv_device,
+        "udonblas_arena_sgemv_reduce",
+        228,
+        16384,
+        (8192, 2),
+    )
+    arena_sgemv_finalize_bundle = emit_device(
+        "udonblas-arena-sgemv-finalize",
+        arena_sgemv_device,
+        "udonblas_arena_sgemv_finalize",
+        229,
         16384,
         (8192, 2),
     )
@@ -713,6 +741,48 @@ def main():
     ):
         raise RuntimeError("UdonDNN arena pooling manifest is invalid")
     arena_pooling_fragment = arena_pooling_bundle / "kernels/kernel_225.hlsl"
+    arena_sgemv_product_manifest = json.loads(
+        (arena_sgemv_product_bundle / "manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    arena_sgemv_product_kernel = arena_sgemv_product_manifest["device"][
+        "kernels"
+    ][0]
+    if (
+        arena_sgemv_product_kernel["name"] != "udonblas_arena_sgemv_product"
+        or arena_sgemv_product_kernel["global_size"] != [8192, 2, 1]
+        or len(arena_sgemv_product_kernel["args"]) != 9
+    ):
+        raise RuntimeError("UdonBLAS arena SGEMV product manifest is invalid")
+    arena_sgemv_reduce_manifest = json.loads(
+        (arena_sgemv_reduce_bundle / "manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    arena_sgemv_reduce_kernel = arena_sgemv_reduce_manifest["device"][
+        "kernels"
+    ][0]
+    if (
+        arena_sgemv_reduce_kernel["name"] != "udonblas_arena_sgemv_reduce"
+        or arena_sgemv_reduce_kernel["global_size"] != [8192, 2, 1]
+        or len(arena_sgemv_reduce_kernel["args"]) != 4
+    ):
+        raise RuntimeError("UdonBLAS arena SGEMV reduce manifest is invalid")
+    arena_sgemv_finalize_manifest = json.loads(
+        (arena_sgemv_finalize_bundle / "manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    arena_sgemv_finalize_kernel = arena_sgemv_finalize_manifest["device"][
+        "kernels"
+    ][0]
+    if (
+        arena_sgemv_finalize_kernel["name"] != "udonblas_arena_sgemv_finalize"
+        or arena_sgemv_finalize_kernel["global_size"] != [8192, 2, 1]
+        or len(arena_sgemv_finalize_kernel["args"]) != 4
+    ):
+        raise RuntimeError("UdonBLAS arena SGEMV finalize manifest is invalid")
     arena_embedding_manifest = json.loads(
         (arena_embedding_bundle / "manifest.json").read_text(encoding="utf-8")
     )
@@ -1889,6 +1959,9 @@ def main():
             (arena_rms_reduce_bundle, "kernel_217.shader"),
             (arena_rms_finalize_bundle, "kernel_218.shader"),
             (arena_sgemm_bundle, "kernel_221.shader"),
+            (arena_sgemv_product_bundle, "kernel_227.shader"),
+            (arena_sgemv_reduce_bundle, "kernel_228.shader"),
+            (arena_sgemv_finalize_bundle, "kernel_229.shader"),
             (arena_softmax_bundle, "kernel_222.shader"),
             (arena_broadcast_bundle, "kernel_223.shader"),
             (arena_convolution_bundle, "kernel_224.shader"),
@@ -2106,12 +2179,12 @@ def main():
 
     rl_plan = compile_operators(parse_model(rl_model.read_bytes()))
     expected_rl_calls = [
-        "udonblasSgemm",
+        "udonblasSgemv",
         "udonatenAdd",
         "udonatenTanh",
         "udonatenSigmoid",
         "udonatenMul",
-        "udonblasSgemm",
+        "udonblasSgemv",
         "udonatenAdd",
         "udonatenSub",
         "udonatenMul",

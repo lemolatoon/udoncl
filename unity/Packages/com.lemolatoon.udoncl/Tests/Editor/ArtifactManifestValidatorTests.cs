@@ -150,15 +150,15 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         [Test]
         public void ValidateAcceptsOnnxStaticInputTexture()
         {
-            File.WriteAllBytes(Path.Combine(_directory, "scale.bytes"), new byte[8]);
+            File.WriteAllBytes(Path.Combine(_directory, "scale.bytes"), new byte[8192 * 4]);
             AddManifestProperty(
                 "\"static_inputs\":[{\"name\":\"model.scale\",\"resource\":\"scale.bytes\","
-                    + "\"texture\":{\"abi\":\"linear-rgba32-words\",\"words\":2,\"width\":2,\"height\":1}}]"
+                    + "\"texture\":{\"abi\":\"linear-rgba32-words\",\"words\":2,\"width\":8192,\"height\":1}}]"
             );
             ValidatedArtifact artifact = ArtifactManifestValidator.Validate(_directory);
             Assert.AreEqual(1, artifact.OnnxStaticInputs.Count);
             Assert.AreEqual("model.scale", artifact.OnnxStaticInputs[0].Name);
-            Assert.AreEqual(2, artifact.OnnxStaticInputs[0].Width);
+            Assert.AreEqual(8192, artifact.OnnxStaticInputs[0].Width);
         }
 
         [Test]

@@ -95,7 +95,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             StringAssert.Contains("\"provider\": \"udondnnConvolutionForward\"", plan.text);
             StringAssert.Contains("\"provider\": \"udonatenAdd\"", plan.text);
             StringAssert.Contains("\"provider\": \"udonatenRelu\"", plan.text);
-            StringAssert.Contains("\"provider\": \"udonblasSgemm\"", plan.text);
+            StringAssert.Contains("\"provider\": \"udonblasSgemv\"", plan.text);
             Lemolatoon.Udoncl.UdonOnnxModelAsset modelAsset =
                 AssetDatabase.LoadAssetAtPath<Lemolatoon.Udoncl.UdonOnnxModelAsset>(
                     GeneratedRoot + "/Models/UdonOnnxModel.asset"

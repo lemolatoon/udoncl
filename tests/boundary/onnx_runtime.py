@@ -90,7 +90,7 @@ assert [node["provider"] for node in plan["nodes"]] == [
     "udonatenRelu",
     "udondnnPoolingForward",
     "view",
-    "udonblasSgemm",
+    "udonblasSgemv",
     "udonatenAdd",
 ]
 assert [item["fragments"] for item in plan["passes"]] == [9216, 144, 10]
@@ -102,7 +102,7 @@ assert mnist_calls[:5] == [
     "udondnnPoolingForward",
     "view",
 ]
-assert mnist_calls[5:-1] == ["udonblasSgemm"]
+assert mnist_calls[5:-1] == ["udonblasSgemv"]
 assert mnist_calls[-1] == "udonatenAdd"
 assert plan["nodes"][0]["shape"] == [1, 16, 24, 24]
 assert plan["nodes"][3]["shape"] == [1, 16, 3, 3]
@@ -116,16 +116,154 @@ assert set(plan["initializers"]) == {
 pooling_call = next(
     call for call in plan["aot"]["calls"] if call["function"] == "udondnnPoolingForward"
 )
-assert pooling_call["device_profile"]["supported"] is False
-assert "udondnn_arena_pooling_forward" in pooling_call["device_profile"]["reason"]
+assert pooling_call["device_profile"] == {
+    "supported": True,
+    "kernel": "udondnn_arena_pooling_forward",
+    "shader": "kernel_225.shader",
+    "storage_words": 16384,
+    "width": 8192,
+    "height": 2,
+    "logical_output_words": 144,
+}
 
-try:
-    compile_operators(model)
-except NotImplementedError as error:
-    assert "udondnn_arena_pooling_forward" in str(error)
-    assert "2026-11-02-unity-mnist-averagepool-zero.md" in str(error)
-else:
-    raise AssertionError("ONNX arena AveragePool must fail explicitly while unresolved")
+mnist_operator_plan = compile_operators(model)
+assert mnist_operator_plan["execution_provider"] == "UdonOperatorExecutionProvider"
+assert [item["function"] for item in mnist_operator_plan["aot"]["calls"]] == [
+    "udondnnConvolutionForward",
+    "udonatenAdd",
+    "udonatenRelu",
+    "udondnnPoolingForward",
+    "view",
+    "udonblasSgemv",
+    "udonatenAdd",
+]
+assert [item.get("shader") for item in mnist_operator_plan["passes"]] == [
+    "kernel_224.shader",
+    "kernel_223.shader",
+    "kernel_215.shader",
+    "kernel_225.shader",
+    "kernel_227.shader",
+    "kernel_228.shader",
+    "kernel_229.shader",
+    "kernel_215.shader",
+]
+assert mnist_operator_plan["passes"][3]["tile"]["output_shape"] == [1, 16, 3, 3]
+
+mnist_host_c = emit_c_host(mnist_operator_plan)
+mnist_host_uasm = emit_uasm_host(mnist_operator_plan)
+(output / "mnist-host.c").write_text(mnist_host_c, encoding="utf-8")
+(output / "mnist-host.uasm").write_text(mnist_host_uasm, encoding="utf-8")
+assert mnist_host_uasm.count("VRCSDKBaseVRCGraphics.__Blit__") == 8
+
+mnist_input = [((index * 17 + 3) % 101) / 100.0 for index in range(28 * 28)]
+generator_spec = importlib.util.spec_from_file_location(
+    "mnist_onnx_generator", root / "examples/mnist-cnn/generate_onnx.py"
+)
+mnist_generator = importlib.util.module_from_spec(generator_spec)
+generator_spec.loader.exec_module(mnist_generator)
+weight_header = (root / "examples/mnist-cnn/weights.h").read_text(encoding="utf-8")
+conv_weight = mnist_generator.read_weight_array(
+    weight_header, "kMnistConvWeight", 400
+)
+conv_bias = mnist_generator.read_weight_array(weight_header, "kMnistConvBias", 16)
+original_dense = mnist_generator.read_weight_array(
+    weight_header, "kMnistDenseWeight", 1440
+)
+dense_bias = mnist_generator.read_weight_array(weight_header, "kMnistDenseBias", 10)
+dense_weight = [
+    original_dense[digit * 144 + (feature % 9) * 16 + feature // 9]
+    for feature in range(144)
+    for digit in range(10)
+]
+
+conv_raw = []
+for channel in range(16):
+    for output_y in range(24):
+        for output_x in range(24):
+            value = 0.0
+            for kernel_y in range(5):
+                for kernel_x in range(5):
+                    value += (
+                        mnist_input[(output_y + kernel_y) * 28 + output_x + kernel_x]
+                        * conv_weight[(channel * 5 + kernel_y) * 5 + kernel_x]
+                    )
+            conv_raw.append(value)
+conv_biased = [
+    value + conv_bias[index // (24 * 24)] for index, value in enumerate(conv_raw)
+]
+relu = [max(value, 0.0) for value in conv_biased]
+pooled = []
+for channel in range(16):
+    for output_y in range(3):
+        for output_x in range(3):
+            value = 0.0
+            for window_y in range(8):
+                for window_x in range(8):
+                    input_y = output_y * 8 + window_y
+                    input_x = output_x * 8 + window_x
+                    value += relu[(channel * 24 + input_y) * 24 + input_x]
+            pooled.append(value / 64.0)
+dense_products = []
+for digit in range(10):
+    for feature in range(144):
+        channel = feature // 9
+        pool_pixel = feature % 9
+        original_feature = pool_pixel * 16 + channel
+        dense_products.append(
+            pooled[feature] * original_dense[digit * 144 + original_feature]
+        )
+dense_partials = [
+    sum(
+        dense_products[digit * 144 + feature]
+        for feature in range(chunk * 16, (chunk + 1) * 16)
+    )
+    for digit in range(10)
+    for chunk in range(9)
+]
+logits_raw = [
+    sum(dense_partials[digit * 9 + chunk] for chunk in range(9))
+    for digit in range(10)
+]
+logits = [value + dense_bias[index] for index, value in enumerate(logits_raw)]
+
+for fixture_name, values in (
+    ("unity-mnist-input.bytes", mnist_input),
+    ("unity-mnist-dense-weight.bytes", dense_weight),
+    ("unity-mnist-stage-0.bytes", conv_raw),
+    ("unity-mnist-stage-1.bytes", conv_biased),
+    ("unity-mnist-stage-2.bytes", relu),
+    ("unity-mnist-stage-3.bytes", pooled),
+    ("unity-mnist-stage-4.bytes", dense_products),
+    ("unity-mnist-stage-5.bytes", dense_partials),
+    ("unity-mnist-stage-6.bytes", logits_raw),
+    ("unity-mnist-stage-7.bytes", logits),
+    ("unity-mnist-reference.bytes", logits),
+):
+    (output / fixture_name).write_bytes(struct.pack(f"<{len(values)}f", *values))
+
+mnist_unity_bundle = output / "unity-mnist-model-bundle"
+if unity_template_directory is not None:
+    mnist_unity_manifest = materialize_model(
+        mnist_operator_plan,
+        output,
+        mnist_unity_bundle,
+        unity_template_directory=unity_template_directory,
+        model_path=model_path,
+        program_name="onnx_mnist_fixture",
+    )
+    assert mnist_unity_manifest["complete_graph"] is True
+    assert mnist_unity_manifest["unmaterialized_calls"] == []
+    assert len(mnist_unity_manifest["static_inputs"]) == 4
+    assert {item["id"] for item in mnist_unity_manifest["device"]["kernels"]} == {
+        215,
+        227,
+        228,
+        229,
+        223,
+        224,
+        225,
+    }
+    assert (mnist_unity_bundle / "kernels/kernel_225.shader").is_file()
 
 operator_model = parse_model(
     model_proto(
@@ -1025,11 +1163,11 @@ rl_generate = subprocess.run(
 assert rl_generate.returncode == 0, (rl_generate.stdout, rl_generate.stderr)
 rl_plan = compile_operators(parse_model(rl_model_path.read_bytes()))
 assert rl_plan["execution_provider"] == "UdonOperatorExecutionProvider"
-assert rl_plan["texture_arena"]["slot_count"] == 3
-assert rl_plan["texture_arena"]["total_words"] == 24
+assert rl_plan["texture_arena"]["slot_count"] == 4
+assert rl_plan["texture_arena"]["total_words"] == 32784
 assert [
     slot["capacity_words"] for slot in rl_plan["texture_arena"]["slots"]
-] == [8, 8, 8]
+] == [8, 16384, 16384, 8]
 assert [item["op_type"] for item in rl_plan["nodes"]] == [
     "Gemm",
     "Add",
@@ -1043,22 +1181,24 @@ assert [item["op_type"] for item in rl_plan["nodes"]] == [
     "Softmax",
 ]
 assert [item["function"] for item in rl_plan["aot"]["calls"]] == [
-    "udonblasSgemm",
+    "udonblasSgemv",
     "udonatenAdd",
     "udonatenTanh",
     "udonatenSigmoid",
     "udonatenMul",
-    "udonblasSgemm",
+    "udonblasSgemv",
     "udonatenAdd",
     "udonatenSub",
     "udonatenMul",
     "udondnnSoftmaxForward",
 ]
-assert len(rl_plan["passes"]) == 10
+assert len(rl_plan["passes"]) == 14
 assert {item["shader"] for item in rl_plan["passes"]} == {
     "kernel_215.shader",
-    "kernel_221.shader",
     "kernel_222.shader",
+    "kernel_227.shader",
+    "kernel_228.shader",
+    "kernel_229.shader",
 }
 rl_unity_bundle = output / "unity-rl-policy-model-bundle"
 if unity_template_directory is not None:
@@ -1076,10 +1216,12 @@ if unity_template_directory is not None:
     assert len(rl_unity_manifest["static_inputs"]) == 6
     assert {item["id"] for item in rl_unity_manifest["device"]["kernels"]} == {
         215,
-        221,
         222,
+        227,
+        228,
+        229,
     }
-    assert (rl_unity_bundle / "kernels/kernel_221.shader").is_file()
+    assert (rl_unity_bundle / "kernels/kernel_227.shader").is_file()
     assert (rl_unity_bundle / "kernels/kernel_222.shader").is_file()
 rl_host_c = emit_c_host(rl_plan)
 assert "udonatenTanh(" in rl_host_c
@@ -1089,7 +1231,7 @@ assert "udonatenSub(" in rl_host_c
 assert "UDONDNN_SOFTMAX_ACCURATE, UDONDNN_SOFTMAX_MODE_INSTANCE" in rl_host_c
 (output / "rl-policy-host.c").write_text(rl_host_c, encoding="utf-8")
 rl_host_uasm = emit_uasm_host(rl_plan)
-assert rl_host_uasm.count("VRCSDKBaseVRCGraphics.__Blit__") == 10
+assert rl_host_uasm.count("VRCSDKBaseVRCGraphics.__Blit__") == 14
 (output / "rl-policy-host.uasm").write_text(rl_host_uasm, encoding="utf-8")
 
 attention_matmul_model = parse_model(
@@ -1323,6 +1465,7 @@ tiny_standard_host_uasm = emit_uasm_host(tiny_standard_plan)
     tiny_standard_host_uasm, encoding="utf-8"
 )
 generated_sources = [
+    output / "mnist-host.c",
     output / "generic-host.c",
     output / "tiled-gemm-host.c",
     output / "biased-gemm-host.c",
