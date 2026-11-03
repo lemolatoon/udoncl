@@ -161,6 +161,9 @@ add_test(NAME prebuilt-sdk-installer
 add_test(NAME onnx-mlir-frontend-installer
   COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/build/install_onnx_mlir.py"
 )
+add_test(NAME onnx-mlir-pipeline
+  COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/build/compile_onnx_mlir.py"
+)
 add_test(NAME build-parallelism
   COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/build/parallel.py"
 )

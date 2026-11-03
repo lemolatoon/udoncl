@@ -13,6 +13,8 @@ if(EXISTS "${_UDONCL_INSTALL_PREFIX}/include/udoncl/unity_buffer.h")
       "${_UDONCL_INSTALL_PREFIX}/share/udoncl/onnx/udon_onnx.py")
   set(_UDONCL_ONNX_HOST_COMPILER
       "${_UDONCL_INSTALL_PREFIX}/share/udoncl/onnx/udon_onnx_host.py")
+  set(_UDONCL_ONNX_MLIR_COMPILER
+      "${_UDONCL_INSTALL_PREFIX}/share/udoncl/onnx/compile_onnx_mlir.py")
 else()
   set(_UDONCL_INCLUDE_DIR "${_UDONCL_SOURCE_HINT}/include")
   set(_UDONCL_OPENCL_INCLUDE_DIR
@@ -22,6 +24,8 @@ else()
       "${_UDONCL_SOURCE_HINT}/runtime/onnx/udon_onnx.py")
   set(_UDONCL_ONNX_HOST_COMPILER
       "${_UDONCL_SOURCE_HINT}/runtime/onnx/udon_onnx_host.py")
+  set(_UDONCL_ONNX_MLIR_COMPILER
+      "${_UDONCL_SOURCE_HINT}/scripts/compile_onnx_mlir.py")
 endif()
 
 set(UDONCLC_EXECUTABLE "${UDONCLC_EXECUTABLE}" CACHE FILEPATH
@@ -30,6 +34,10 @@ set(UDONCL_CLANG_EXECUTABLE "${UDONCL_CLANG_EXECUTABLE}" CACHE FILEPATH
     "Path to the pinned Clang executable")
 set(UDONCL_LLVM_LINK_EXECUTABLE "${UDONCL_LLVM_LINK_EXECUTABLE}" CACHE FILEPATH
     "Path to the pinned llvm-link executable")
+set(UDONCL_ONNX_IMPORTER_EXECUTABLE "${UDONCL_ONNX_IMPORTER_EXECUTABLE}"
+    CACHE FILEPATH "Path to the locked udoncl-onnx protobuf importer")
+set(UDONCL_ONNX_OPT_EXECUTABLE "${UDONCL_ONNX_OPT_EXECUTABLE}"
+    CACHE FILEPATH "Path to the locked onnx-mlir-opt executable")
 
 if(NOT UDONCLC_EXECUTABLE)
   find_program(_UDONCLC_DISCOVERED NAMES udonclc
@@ -64,6 +72,29 @@ if(NOT UDONCL_LLVM_LINK_EXECUTABLE)
         CACHE FILEPATH "Path to the pinned llvm-link executable" FORCE)
   endif()
 endif()
+if(NOT UDONCL_ONNX_IMPORTER_EXECUTABLE)
+  find_program(_UDONCL_ONNX_IMPORTER_DISCOVERED NAMES udoncl-onnx
+    HINTS
+      "${_UDONCL_INSTALL_PREFIX}/bin"
+      "${_UDONCL_SOURCE_HINT}/.deps/onnx-mlir/bin"
+    NO_DEFAULT_PATH)
+  if(_UDONCL_ONNX_IMPORTER_DISCOVERED)
+    set(UDONCL_ONNX_IMPORTER_EXECUTABLE
+        "${_UDONCL_ONNX_IMPORTER_DISCOVERED}" CACHE FILEPATH
+        "Path to the locked udoncl-onnx protobuf importer" FORCE)
+  endif()
+endif()
+if(NOT UDONCL_ONNX_OPT_EXECUTABLE)
+  find_program(_UDONCL_ONNX_OPT_DISCOVERED NAMES onnx-mlir-opt
+    HINTS
+      "${_UDONCL_INSTALL_PREFIX}/bin"
+      "${_UDONCL_SOURCE_HINT}/.deps/onnx-mlir/bin"
+    NO_DEFAULT_PATH)
+  if(_UDONCL_ONNX_OPT_DISCOVERED)
+    set(UDONCL_ONNX_OPT_EXECUTABLE "${_UDONCL_ONNX_OPT_DISCOVERED}"
+        CACHE FILEPATH "Path to the locked onnx-mlir-opt executable" FORCE)
+  endif()
+endif()
 
 foreach(_tool IN ITEMS UDONCLC_EXECUTABLE UDONCL_CLANG_EXECUTABLE
                        UDONCL_LLVM_LINK_EXECUTABLE)
@@ -96,6 +127,60 @@ endfunction()
 
 function(udoncl_add_device_library target)
   _udoncl_add_source_library("${target}" DEVICE ${ARGN})
+endfunction()
+
+function(udoncl_add_onnx_mlir target)
+  set(_options)
+  set(_one_value MODEL)
+  set(_multi_value SUPPORTED_OPERATORS)
+  cmake_parse_arguments(PARSE_ARGV 1 _ARG "${_options}" "${_one_value}"
+                        "${_multi_value}")
+  if(_ARG_UNPARSED_ARGUMENTS)
+    message(FATAL_ERROR
+      "udoncl_add_onnx_mlir received unknown arguments: ${_ARG_UNPARSED_ARGUMENTS}")
+  endif()
+  if(NOT _ARG_MODEL)
+    message(FATAL_ERROR "udoncl_add_onnx_mlir requires MODEL")
+  endif()
+  cmake_path(ABSOLUTE_PATH _ARG_MODEL BASE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+             NORMALIZE OUTPUT_VARIABLE _model)
+  if(NOT EXISTS "${_model}")
+    message(FATAL_ERROR "ONNX model does not exist: ${_model}")
+  endif()
+  foreach(_tool IN ITEMS UDONCL_ONNX_IMPORTER_EXECUTABLE
+                         UDONCL_ONNX_OPT_EXECUTABLE)
+    if(NOT ${_tool} OR NOT EXISTS "${${_tool}}")
+      message(FATAL_ERROR
+        "${_tool} is required by udoncl_add_onnx_mlir; run scripts/install_onnx_mlir.py or set it explicitly")
+    endif()
+  endforeach()
+  if(NOT EXISTS "${_UDONCL_ONNX_MLIR_COMPILER}")
+    message(FATAL_ERROR
+      "UdonCL ONNX MLIR pipeline does not exist: ${_UDONCL_ONNX_MLIR_COMPILER}")
+  endif()
+  find_package(Python3 3.12 REQUIRED COMPONENTS Interpreter)
+  set(_generated_dir "${CMAKE_CURRENT_BINARY_DIR}/udoncl-onnx/${target}")
+  set(_generated_mlir "${_generated_dir}/model.mlir")
+  set(_command "${Python3_EXECUTABLE}" "${_UDONCL_ONNX_MLIR_COMPILER}"
+      "${_model}" -o "${_generated_mlir}"
+      --importer "${UDONCL_ONNX_IMPORTER_EXECUTABLE}"
+      --optimizer "${UDONCL_ONNX_OPT_EXECUTABLE}")
+  foreach(_operator IN LISTS _ARG_SUPPORTED_OPERATORS)
+    list(APPEND _command --supported-operator "${_operator}")
+  endforeach()
+  add_custom_command(
+    OUTPUT "${_generated_mlir}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${_generated_dir}"
+    COMMAND ${_command}
+    DEPENDS "${_model}" "${_UDONCL_ONNX_MLIR_COMPILER}"
+            "${UDONCL_ONNX_IMPORTER_EXECUTABLE}"
+            "${UDONCL_ONNX_OPT_EXECUTABLE}"
+    VERBATIM
+    COMMENT "Canonicalizing ONNX model ${_model}")
+  add_custom_target("${target}" DEPENDS "${_generated_mlir}")
+  set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_MODEL "${_model}")
+  set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_MLIR
+               "${_generated_mlir}")
 endfunction()
 
 function(udoncl_add_onnx_host_library target)

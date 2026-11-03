@@ -78,6 +78,25 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends zlib1g-dev libzstd-dev libxml2-dev glslang-tools libvulkan-dev mesa-vulkan-drivers
+      - name: Restore pinned ONNX MLIR frontend
+        uses: actions/cache/restore@v4
+        id: onnx-mlir
+        with:
+          path: .deps/onnx-mlir
+          key: onnx-mlir-frontend-v1-${{ matrix.os }}-${{ runner.arch }}-${{ hashFiles('cmake/onnx-mlir-lock.json', 'cmake/patches/onnx-mlir-*.patch', 'scripts/install_onnx_mlir.py') }}
+      - name: Build pinned ONNX MLIR frontend
+        if: steps.onnx-mlir.outputs.cache-hit != 'true'
+        run: python scripts/install_onnx_mlir.py
+      - name: Validate restored or built ONNX MLIR frontend
+        run: python scripts/install_onnx_mlir.py --check
+      # Publish only the immutable frontend prefix. Source and intermediate
+      # build trees are intentionally excluded from the cross-run cache.
+      - name: Save pinned ONNX MLIR frontend
+        if: steps.onnx-mlir.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .deps/onnx-mlir
+          key: ${{ steps.onnx-mlir.outputs.cache-primary-key }}
       - run: cmake --preset udoncl
       - run: python scripts/build.py
       - run: ctest --preset udoncl
