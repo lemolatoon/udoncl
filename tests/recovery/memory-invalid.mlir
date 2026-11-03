@@ -23,7 +23,7 @@ module {
   llvm.func @escape() -> i64 {
     %one = llvm.mlir.constant(1 : i32) : i32
     %a = llvm.alloca %one x i32 : (i32) -> !llvm.ptr
-    // expected-error @below {{local pointer escapes or has an unsupported alias use}}
+    // expected-error @below {{pointer escapes or has an unsupported alias use}}
     %address = llvm.ptrtoint %a : !llvm.ptr to i64
     llvm.return %address : i64
   }

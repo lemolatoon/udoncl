@@ -130,9 +130,10 @@ struct LowerHostToUdonHLPass
                    runtime::BufferAllocOp, runtime::BufferCopyOp,
                    runtime::BufferUploadOp, runtime::BufferReadbackOp,
                    memref::LoadOp, memref::StoreOp, memref::AllocaOp,
-                   arith::ConstantOp, arith::AddIOp, arith::SubIOp,
-                   arith::MulIOp, arith::AddFOp, arith::SubFOp, arith::MulFOp,
-                   arith::DivFOp, arith::CmpIOp, arith::CmpFOp>(op)) {
+                   memref::GetGlobalOp, arith::ConstantOp, arith::AddIOp,
+                   arith::SubIOp, arith::MulIOp, arith::AddFOp, arith::SubFOp,
+                   arith::MulFOp, arith::DivFOp, arith::CmpIOp, arith::CmpFOp>(
+                  op)) {
             op.emitError(
                 "operation is outside the initial Host lowering pattern");
             signalPassFailure();

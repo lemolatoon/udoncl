@@ -6,6 +6,7 @@
 #include "mlir/Interfaces/DataLayoutInterfaces.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "llvm/ADT/SmallSet.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/DerivedTypes.h"
@@ -51,6 +52,9 @@ struct Allocation {
   MemRefType type;
   int64_t count;
   uint64_t bytes, alignment;
+  std::optional<std::string> global;
+  Attribute initialValue;
+  bool constant = false;
 };
 struct CountedLoop {
   BlockArgument iv;
@@ -66,6 +70,7 @@ public:
       : module(module), layout(module), dominance(module) {}
   LogicalResult analyze();
   SmallVector<Allocation> allocations;
+  llvm::StringMap<unsigned> globalAllocations;
   DenseMap<Value, PointerInfo> pointers;
   DenseMap<Operation *, PointerInfo> accesses;
   DenseMap<Operation *, uint64_t> accessAlignments;
@@ -75,6 +80,7 @@ private:
   uint64_t byteStride(Type type);
   uint64_t abiAlignment(Type type);
   LogicalResult addAllocation(LLVM::AllocaOp op);
+  LogicalResult addGlobal(LLVM::GlobalOp op);
   FailureOr<PointerInfo> resolve(Value pointer, Operation *at,
                                  unsigned depth = 0);
   FailureOr<int64_t> leafCount(Type type, Type &leaf);
@@ -189,9 +195,42 @@ LogicalResult MemoryPlan::addAllocation(LLVM::AllocaOp op) {
                            sourceLayout->getPointerSizeInBits(0)))
     return reject(op, "source and MLIR pointer layouts disagree");
   unsigned index = allocations.size();
-  allocations.push_back(
-      {MemRefType::get({*total}, leaf), *total, bytes, alignment});
+  allocations.push_back({MemRefType::get({*total}, leaf),
+                         *total,
+                         bytes,
+                         alignment,
+                         std::nullopt,
+                         {},
+                         false});
   pointers.try_emplace(op.getRes(), PointerInfo{index, 0, {}});
+  return success();
+}
+
+LogicalResult MemoryPlan::addGlobal(LLVM::GlobalOp op) {
+  if (op.getAddrSpace() != 0 || (op.getLinkage() != LLVM::Linkage::Internal &&
+                                 op.getLinkage() != LLVM::Linkage::Private))
+    return success();
+  auto array = dyn_cast<LLVM::LLVMArrayType>(op.getGlobalType());
+  auto initial = op.getValue();
+  auto elements = initial ? dyn_cast<ElementsAttr>(*initial) : ElementsAttr();
+  if (!array || !elements)
+    return success();
+  Type leaf;
+  auto count = leafCount(array, leaf);
+  if (failed(count) || (!leaf.isInteger(32) && !leaf.isF32()) ||
+      elements.getNumElements() != static_cast<uint64_t>(*count) ||
+      elements.getElementType() != leaf)
+    return success();
+  uint64_t bytes = layout.getTypeSize(leaf).getFixedValue();
+  uint64_t alignment = op.getAlignment().value_or(abiAlignment(array));
+  if (!alignment || alignment > INT64_MAX ||
+      byteStride(array) != static_cast<uint64_t>(*count) * bytes)
+    return reject(op, "global array layout is outside the typed contract");
+  unsigned index = allocations.size();
+  allocations.push_back({MemRefType::get({*count}, leaf), *count, bytes,
+                         alignment, op.getSymName().str(), elements,
+                         op.getConstant()});
+  globalAllocations.try_emplace(op.getSymName(), index);
   return success();
 }
 
@@ -382,6 +421,8 @@ LogicalResult MemoryPlan::checkAccess(Operation *op, Value pointer, Type type,
   if (failed(info))
     return failure();
   auto &allocation = allocations[info->allocation];
+  if (allocation.constant && isa<LLVM::StoreOp>(op))
+    return reject(op, "store to a constant global is unsupported");
   if (type != allocation.type.getElementType())
     return reject(op, "mixed access types require raw byte-memory recovery");
   auto bounds = range(*info, op);
@@ -422,6 +463,8 @@ bool sameOffset(const PointerInfo &a, const PointerInfo &b) {
   });
 }
 bool MemoryPlan::initialized(LLVM::LoadOp load, const PointerInfo &info) {
+  if (allocations[info.allocation].initialValue)
+    return true;
   llvm::SmallSet<int64_t, 16> initializedConstants;
   for (const auto &entry : accesses) {
     auto store = dyn_cast<LLVM::StoreOp>(entry.first);
@@ -484,6 +527,18 @@ LogicalResult MemoryPlan::analyze() {
           .wasInterrupted())
     return failure();
   if (module
+          .walk([&](LLVM::GlobalOp op) {
+            return failed(addGlobal(op)) ? WalkResult::interrupt()
+                                         : WalkResult::advance();
+          })
+          .wasInterrupted())
+    return failure();
+  module.walk([&](LLVM::AddressOfOp op) {
+    auto found = globalAllocations.find(op.getGlobalName());
+    if (found != globalAllocations.end())
+      pointers.try_emplace(op.getRes(), PointerInfo{found->second, 0, {}});
+  });
+  if (module
           .walk([&](Operation *op) {
             if (auto gep = dyn_cast<LLVM::GEPOp>(op)) {
               if (failed(resolve(gep.getRes(), gep)))
@@ -517,8 +572,7 @@ LogicalResult MemoryPlan::analyze() {
       } else if (isa<LLVM::StoreOp>(user) && use.getOperandNumber() == 1) {
         continue;
       }
-      return reject(user,
-                    "local pointer escapes or has an unsupported alias use");
+      return reject(user, "pointer escapes or has an unsupported alias use");
     }
   for (auto &entry : accesses)
     if (auto load = dyn_cast<LLVM::LoadOp>(entry.first))
@@ -544,6 +598,45 @@ struct AllocationPattern : OpConversionPattern<LLVM::AllocaOp> {
         memref::AllocaOp::create(rewriter, op.getLoc(), allocation.type);
     result.setAlignment(allocation.alignment);
     rewriter.replaceOp(op, result.getResult());
+    return success();
+  }
+  const MemoryPlan &plan;
+};
+struct GlobalPattern : OpConversionPattern<LLVM::GlobalOp> {
+  GlobalPattern(TypeConverter &converter, MLIRContext *context,
+                const MemoryPlan &plan)
+      : OpConversionPattern(converter, context), plan(plan) {}
+  LogicalResult
+  matchAndRewrite(LLVM::GlobalOp op, OpAdaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto found = plan.globalAllocations.find(op.getSymName());
+    if (found == plan.globalAllocations.end())
+      return failure();
+    const auto &allocation = plan.allocations[found->second];
+    memref::GlobalOp::create(rewriter, op.getLoc(), op.getSymName(),
+                             rewriter.getStringAttr("private"), allocation.type,
+                             allocation.initialValue, allocation.constant,
+                             rewriter.getI64IntegerAttr(allocation.alignment));
+    rewriter.eraseOp(op);
+    return success();
+  }
+  const MemoryPlan &plan;
+};
+struct AddressPattern : OpConversionPattern<LLVM::AddressOfOp> {
+  AddressPattern(TypeConverter &converter, MLIRContext *context,
+                 const MemoryPlan &plan)
+      : OpConversionPattern(converter, context), plan(plan) {}
+  LogicalResult
+  matchAndRewrite(LLVM::AddressOfOp op, OpAdaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto info = plan.pointers.find(op.getRes());
+    if (info == plan.pointers.end())
+      return failure();
+    const auto &allocation = plan.allocations[info->second.allocation];
+    if (!allocation.global)
+      return failure();
+    rewriter.replaceOpWithNewOp<memref::GetGlobalOp>(op, allocation.type,
+                                                     *allocation.global);
     return success();
   }
   const MemoryPlan &plan;
@@ -631,9 +724,15 @@ struct RaiseLLVMMemoryPass
     target.addLegalOp<ModuleOp>();
     target.addIllegalOp<LLVM::AllocaOp, LLVM::GEPOp, LLVM::LoadOp,
                         LLVM::StoreOp>();
+    target.addDynamicallyLegalOp<LLVM::GlobalOp>([&](LLVM::GlobalOp op) {
+      return !plan.globalAllocations.contains(op.getSymName());
+    });
+    target.addDynamicallyLegalOp<LLVM::AddressOfOp>([&](LLVM::AddressOfOp op) {
+      return !plan.pointers.contains(op.getRes());
+    });
     RewritePatternSet patterns(&getContext());
-    patterns.add<AllocationPattern, LoadPattern, StorePattern>(
-        converter, &getContext(), plan);
+    patterns.add<AllocationPattern, GlobalPattern, AddressPattern, LoadPattern,
+                 StorePattern>(converter, &getContext(), plan);
     patterns.add<GEPattern>(converter, &getContext());
     if (failed(applyPartialConversion(module, target, std::move(patterns))))
       signalPassFailure();

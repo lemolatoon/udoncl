@@ -157,6 +157,39 @@ for expected in [
 ]:
     assert expected in call_lowered.stdout, (expected, call_lowered.stdout)
 
+global_source = r'''module {
+  memref.global "private" @weights : memref<2xf32> = dense<[1.0, 2.0]>
+  func.func @read_weight() -> f32 attributes {vrc.export_id = 1 : i32} {
+    %weights = memref.get_global @weights : memref<2xf32>
+    %index = arith.constant 1 : index
+    %value = memref.load %weights[%index] : memref<2xf32>
+    return %value : f32
+  }
+}'''
+global_lowered = subprocess.run(
+    [
+        opt,
+        '--pass-pipeline=builtin.module(vrc-lower-host-to-udonhl,'
+        'vrc-lower-udonhl-to-udonasm)',
+        '--verify-each',
+    ],
+    input=global_source,
+    text=True,
+    capture_output=True,
+)
+assert global_lowered.returncode == 0, global_lowered.stderr
+for expected in [
+    'name = "__vrc_global_0"',
+    'name = "__vrc_globals_initialized"',
+    'SystemSingleArray.__ctor__SystemInt32__SystemSingleArray',
+    'SystemSingleArray.__Set__SystemInt32_SystemSingle__SystemVoid',
+    'SystemSingleArray.__Get__SystemInt32__SystemSingle',
+    'udonasm.jump_if_false',
+]:
+    assert expected in global_lowered.stdout, (expected, global_lowered.stdout)
+assert 'memref.global' not in global_lowered.stdout
+assert 'memref.get_global' not in global_lowered.stdout
+
 # Pin the exact cross-UdonBehaviour naming observed from UdonSharp in Worlds
 # SDK 3.10.5. Logical export ids remain separate from this physical ABI.
 abi_source = r'''module {

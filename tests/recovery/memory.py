@@ -94,6 +94,27 @@ located = run([opt, '--vrc-raise-llvm-memory', '--mlir-print-debuginfo', '--veri
 }''')
 assert 'memref.load' in located and 'memory.c' in located and ':17:3' in located
 
+global_memory = run([
+    opt, '--vrc-raise-llvm-memory', '--verify-each'
+], r'''module {
+  llvm.mlir.global internal @weights(dense<[1.0, 2.0]> : tensor<2xf32>) {addr_space = 0 : i32, alignment = 4 : i64} : !llvm.array<2 x f32>
+  llvm.func @read_weight() -> f32 {
+    %base = llvm.mlir.addressof @weights : !llvm.ptr
+    %element = llvm.getelementptr %base[0, 1] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<2 x f32>
+    %value = llvm.load %element {alignment = 4 : i64} : !llvm.ptr -> f32
+    llvm.return %value : f32
+  }
+}''')
+for expected in [
+    'memref.global "private" @weights : memref<2xf32>',
+    'memref.get_global @weights : memref<2xf32>',
+    'memref.load',
+]:
+    assert expected in global_memory, (expected, global_memory)
+for forbidden in ['llvm.mlir.global', 'llvm.mlir.addressof',
+                  'llvm.getelementptr', 'llvm.load']:
+    assert forbidden not in global_memory, (forbidden, global_memory)
+
 allocation = '%a = alloca [4 x i32], align 16\n'
 cases = [
     ('dynamic-allocation', '%a = alloca i32, i32 %index, align 4\n', 'positive static constant'),
@@ -121,6 +142,12 @@ cases = [
 source_cases = [(name, 'declare void @escape(ptr)\ndefine i32 @bad(i32 %index) {\nentry:\n' + body + 'ret i32 0\n}\n', reason)
                 for name, body, reason in cases]
 source_cases += [
+    ('constant-global-store',
+     '@values = private constant [2 x i32] [i32 1, i32 2], align 4\n'
+     'define void @bad() {\nentry:\n'
+     '%p = getelementptr [2 x i32], ptr @values, i32 0, i32 1\n'
+     'store i32 3, ptr %p, align 4\nret void\n}',
+     'store to a constant global'),
     ('nonzero-stack-space', 'target datalayout = "e-p:64:64-A3"\ndefine void @bad() { %a = alloca i32, align 4, addrspace(0)\nret void }', 'default stack memory space'),
     ('padded-scalar', 'target datalayout = "e-p:64:64-i32:64"\ndefine void @bad() { %a = alloca i32, i32 4, align 8\nret void }', 'padding'),
     ('padded-nested-array', 'target datalayout = "e-p:64:64-i32:64"\ndefine void @bad() { %a = alloca [4 x [3 x i32]], align 16\nret void }', 'padding'),

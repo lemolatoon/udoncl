@@ -13,6 +13,7 @@
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/ADT/StringMap.h"
 
 using namespace mlir;
 
@@ -37,6 +38,12 @@ struct FunctionPlan {
   std::optional<std::string> resultSlot;
   std::optional<std::string> returnSlot;
   std::optional<uint64_t> entryAddress;
+};
+
+struct GlobalPlan {
+  std::string slot;
+  MemRefType type;
+  ElementsAttr initialValue;
 };
 
 static FailureOr<StringRef> udonType(Type type) {
@@ -208,6 +215,32 @@ public:
     llvm::SmallSet<int64_t, 8> exportIds;
     llvm::SmallSet<std::string, 8> eventNames;
     llvm::SmallSet<std::string, 8> publicNames;
+    unsigned globalIndex = 0;
+    for (memref::GlobalOp global : module.getOps<memref::GlobalOp>()) {
+      auto type = global.getType();
+      auto initial = global.getInitialValue();
+      auto elements =
+          initial ? dyn_cast<ElementsAttr>(*initial) : ElementsAttr();
+      if (type.getRank() != 1 || !type.hasStaticShape() ||
+          type.getNumElements() <= 0 || type.getNumElements() > INT32_MAX ||
+          (!type.getElementType().isInteger(32) &&
+           !type.getElementType().isF32()) ||
+          !elements ||
+          elements.getNumElements() !=
+              static_cast<uint64_t>(type.getNumElements()))
+        return global.emitError(
+            "Udon global requires an initialized fixed i32/f32 array");
+      std::string slot = "__vrc_global_" + std::to_string(globalIndex++);
+      addSlot(slot, *udonType(type), "null", false);
+      globalPlans.try_emplace(global.getSymName(),
+                              GlobalPlan{std::move(slot), type, elements});
+      globalOrder.push_back(global.getSymName().str());
+    }
+    if (!globalPlans.empty()) {
+      addSlot(globalInitializedSlot, "SystemInt32", "0", false);
+      addSlot(globalOneSlot, "SystemInt32", "1", false);
+      addSlot(globalReadySlot, "SystemBoolean", "null", false);
+    }
     for (func::FuncOp function : module.getOps<func::FuncOp>()) {
       auto exportId = function->getAttrOfType<IntegerAttr>("vrc.export_id");
       if (exportId && (exportId.getInt() <= 0 ||
@@ -300,6 +333,9 @@ public:
 
     for (func::FuncOp function : functions)
       function.erase();
+    for (memref::GlobalOp global :
+         llvm::make_early_inc_range(module.getOps<memref::GlobalOp>()))
+      global.erase();
     module->setAttr("udonasm.data", dataMetadata());
     module->setAttr("udonasm.exports",
                     ArrayAttr::get(module.getContext(), exports));
@@ -364,6 +400,15 @@ private:
           valueSlots[argument] = name;
         }
       for (Operation &operation : block) {
+        if (auto getGlobal = dyn_cast<memref::GetGlobalOp>(operation)) {
+          auto found = globalPlans.find(getGlobal.getName());
+          if (found == globalPlans.end() ||
+              found->second.type != getGlobal.getType())
+            return getGlobal.emitError(
+                "Udon global reference does not match a defined array");
+          valueSlots[getGlobal.getResult()] = found->second.slot;
+          continue;
+        }
         if (auto alloca = dyn_cast<memref::AllocaOp>(operation)) {
           auto type = alloca.getType();
           if (type.getRank() != 1 || !type.hasStaticShape() ||
@@ -453,6 +498,9 @@ private:
       }
     }
 
+    if (exportId && !globalPlans.empty())
+      emitGlobalInitialization(function.getLoc());
+
     llvm::DenseMap<Block *, uint64_t> blockAddresses;
     SmallVector<std::pair<Operation *, Block *>> relocations;
     auto copies = [&](Location location, ValueRange sources,
@@ -487,6 +535,8 @@ private:
     for (Block &block : function.getBody()) {
       blockAddresses[&block] = address;
       for (Operation &operation : block) {
+        if (isa<memref::GetGlobalOp>(operation))
+          continue;
         if (auto alloca = dyn_cast<memref::AllocaOp>(operation)) {
           std::string length = allocaLengthSlots.lookup(&operation);
           std::string result = valueSlots.lookup(alloca.getResult());
@@ -864,6 +914,76 @@ private:
     slots.push_back({name.str(), type.str(), initial.str(), isPublic});
   }
 
+  void emitGlobalInitialization(Location location) {
+    emitPush(location, globalInitializedSlot);
+    emitPush(location, globalOneSlot);
+    emitPush(location, globalReadySlot);
+    emitExtern(location, "SystemInt32.__op_Equality__SystemInt32_SystemInt32__"
+                         "SystemBoolean");
+    emitPush(location, globalReadySlot);
+    Operation *initialize =
+        create(location, vm::JumpIfFalseOp::getOperationName(),
+               {builder.getNamedAttr("target", builder.getI64IntegerAttr(0))});
+    address += 8;
+    Operation *ready = emitJump(location, 0);
+    uint64_t initializeAddress = address;
+    unsigned global = 0;
+    for (const std::string &name : globalOrder) {
+      const GlobalPlan &plan = globalPlans.at(name);
+      std::string length = plan.slot + "_length";
+      addSlot(length, "SystemInt32", std::to_string(plan.type.getNumElements()),
+              false);
+      emitPush(location, length);
+      emitPush(location, plan.slot);
+      emitExtern(
+          location,
+          plan.type.getElementType().isF32()
+              ? "SystemSingleArray.__ctor__SystemInt32__SystemSingleArray"
+              : "SystemInt32Array.__ctor__SystemInt32__SystemInt32Array");
+      unsigned index = 0;
+      for (Attribute value : plan.initialValue.getValues<Attribute>()) {
+        bool zero = false;
+        std::string initial;
+        if (auto integer = dyn_cast<IntegerAttr>(value)) {
+          zero = integer.getValue().isZero();
+          initial = std::to_string(integer.getInt());
+        } else if (auto floating = dyn_cast<FloatAttr>(value)) {
+          zero = floating.getValue().isZero();
+          llvm::SmallString<32> text;
+          floating.getValue().toString(text);
+          initial = text.str().str();
+        }
+        if (!zero) {
+          std::string prefix = "__vrc_global_init_" + std::to_string(global) +
+                               "_" + std::to_string(index);
+          std::string indexSlot = prefix + "_index";
+          std::string valueSlot = prefix + "_value";
+          addSlot(indexSlot, "SystemInt32", std::to_string(index), false);
+          addSlot(valueSlot,
+                  plan.type.getElementType().isF32() ? "SystemSingle"
+                                                     : "SystemInt32",
+                  initial, false);
+          emitPush(location, plan.slot);
+          emitPush(location, indexSlot);
+          emitPush(location, valueSlot);
+          emitExtern(location,
+                     plan.type.getElementType().isF32()
+                         ? "SystemSingleArray.__Set__SystemInt32_SystemSingle__"
+                           "SystemVoid"
+                         : "SystemInt32Array.__Set__SystemInt32_SystemInt32__"
+                           "SystemVoid");
+        }
+        ++index;
+      }
+      ++global;
+    }
+    emitCopy(location, globalOneSlot, globalInitializedSlot);
+    initialize->setAttr("target", builder.getI64IntegerAttr(
+                                      static_cast<int64_t>(initializeAddress)));
+    ready->setAttr("target",
+                   builder.getI64IntegerAttr(static_cast<int64_t>(address)));
+  }
+
   ArrayAttr dataMetadata() {
     SmallVector<Attribute> attributes;
     for (const Slot &slot : slots) {
@@ -923,8 +1043,14 @@ private:
   SmallVector<Attribute> exports;
   llvm::DenseMap<Operation *, UdonSharpMethodABI> methodABIs;
   llvm::DenseMap<Operation *, FunctionPlan> functionPlans;
+  llvm::StringMap<GlobalPlan> globalPlans;
+  SmallVector<std::string> globalOrder;
   SmallVector<std::pair<Operation *, func::FuncOp>> callRelocations;
   uint64_t callReturnIndex = 0;
+  static constexpr StringLiteral globalInitializedSlot =
+      "__vrc_globals_initialized";
+  static constexpr StringLiteral globalOneSlot = "__vrc_globals_one";
+  static constexpr StringLiteral globalReadySlot = "__vrc_globals_ready";
 };
 
 struct LowerUdonHLToUdonAsmPass
