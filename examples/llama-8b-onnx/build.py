@@ -73,7 +73,20 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--build-dir", type=Path, default=ROOT / "build/udoncl")
-    parser.add_argument("--external-data-directory", type=Path)
+    weight_source = parser.add_mutually_exclusive_group()
+    weight_source.add_argument(
+        "--checkpoint",
+        type=Path,
+        help=(
+            "Pack a licensed safetensors checkpoint into weights.q4, then "
+            "materialize the Unity artifact."
+        ),
+    )
+    weight_source.add_argument(
+        "--external-data-directory",
+        type=Path,
+        help="Reuse a directory that already contains the generated weights.q4.",
+    )
     parser.add_argument("--unity-template-directory", type=Path)
     parser.add_argument(
         "--materialize",
@@ -150,7 +163,8 @@ def main() -> None:
     ):
         raise RuntimeError("Llama 8B operator graph is not fully scheduled")
 
-    if not args.materialize:
+    materialize = args.materialize or args.checkpoint is not None
+    if not materialize:
         print(
             "llama_8b_preflight=passed "
             f"operators={len(operator_plan['nodes'])} "
@@ -160,9 +174,25 @@ def main() -> None:
         )
         return
 
-    if args.external_data_directory is None:
-        parser.error("--materialize requires --external-data-directory containing weights.q4")
-    external_data_directory = args.external_data_directory.resolve()
+    external_data_directory = args.external_data_directory
+    if args.checkpoint is not None:
+        from udon_weights import pack_checkpoint
+
+        packed = output / "weights.q4"
+        weight_manifest = pack_checkpoint(args.checkpoint, index_path, packed)
+        if weight_manifest["bytes"] != storage_bytes:
+            raise RuntimeError("packed Llama 8B external weights have the wrong byte size")
+        external_data_directory = output
+        print(
+            "llama_8b_weights=packed "
+            f"tensors={len(weight_manifest['tensors'])} bytes={weight_manifest['bytes']}"
+        )
+    if external_data_directory is None:
+        parser.error(
+            "--materialize requires --checkpoint or --external-data-directory "
+            "containing weights.q4"
+        )
+    external_data_directory = external_data_directory.resolve()
     weight_summary = validate_external_data(
         parse_model(operator_model), external_data_directory
     )

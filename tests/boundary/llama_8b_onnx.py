@@ -27,6 +27,42 @@ result = subprocess.run(
 )
 assert result.returncode == 0, (result.stdout, result.stderr)
 assert "llama_8b_preflight=passed" in result.stdout
+
+conflicting = subprocess.run(
+    [
+        sys.executable,
+        root / "examples/llama-8b-onnx/build.py",
+        "--output",
+        output / "conflicting-weight-source",
+        "--checkpoint",
+        output / "checkpoint",
+        "--external-data-directory",
+        output,
+    ],
+    text=True,
+    capture_output=True,
+    timeout=10,
+)
+assert conflicting.returncode != 0
+assert "not allowed with argument" in conflicting.stderr
+
+missing_checkpoint = subprocess.run(
+    [
+        sys.executable,
+        root / "examples/llama-8b-onnx/build.py",
+        "--output",
+        output / "missing-checkpoint",
+        "--checkpoint",
+        output / "does-not-exist",
+    ],
+    text=True,
+    capture_output=True,
+    timeout=60,
+)
+assert missing_checkpoint.returncode != 0
+assert "checkpoint directory does not exist" in missing_checkpoint.stderr
+assert not (output / "missing-checkpoint/weights.q4").exists()
+
 materialization_plan = json.loads(
     (output / "materialization-plan.json").read_text(encoding="utf-8")
 )

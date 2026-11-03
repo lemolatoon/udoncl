@@ -41,26 +41,27 @@ score/value products remain activation-to-activation `udonblasSgemm` calls.
 This distinction lets a Unity runtime stream one compact external-weight page
 at a time without pretending Q4 tensors are ordinary float32 SGEMM inputs.
 
-The repository does not redistribute Meta weights. `weights.q4` must be
-created from a checkpoint the user is licensed to use and must match the
-generated index:
+The repository does not redistribute Meta weights. The example can pack a
+checkpoint the user is licensed to use and materialize the Unity artifact in
+one command:
 
-```text
+```powershell
 python -m pip install 'runtime/onnx[weights]'
-udon-onnx-pack /path/to/Meta-Llama-3.1-8B-Instruct \
-  build/llama-8b-onnx/weights-index.json \
-  -o build/llama-8b-onnx/weights.q4
-python examples/llama-8b-onnx/build.py \
-  --output build/llama-8b-onnx \
-  --external-data-directory build/llama-8b-onnx \
-  --materialize
+python examples/llama-8b-onnx/build.py `
+  --output build/llama-8b-onnx `
+  --checkpoint /path/to/Meta-Llama-3.1-8B-Instruct
 ```
 
-The last command validates all 517 ONNX external tensors before reading them,
-checks available disk space, creates `unity-artifact`, and may take a long time:
-the compact Q4 atlases alone contain 4,690,411,520 bytes. To reuse an existing
-shader template, pass `--unity-template-directory
+The command writes the exact generated weight index first, transactionally
+packs all 517 tensors into `weights.q4`, validates the ONNX external-data
+ranges, checks available disk space, and creates `unity-artifact`. It may take
+a long time: the compact Q4 atlases alone contain 4,690,411,520 bytes. To reuse
+an existing shader template, pass `--unity-template-directory
 build/udondnn-device-run/unity-udonaten-int4-mm-bundle`.
+
+To reuse an already packed `weights.q4`, pass `--materialize
+--external-data-directory build/llama-8b-onnx` instead. The standalone
+`udon-onnx-pack` CLI remains available for custom pipelines.
 
 Install the UdonCL VPM package in a Worlds project, then choose **Tools →
 udoncl → Import Artifacts...** and select
