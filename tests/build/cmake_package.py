@@ -4,6 +4,7 @@ import argparse
 import json
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -41,6 +42,7 @@ def main():
     saxpy_consumer = output / 'saxpy-consumer'
     pooling_consumer = output / 'average-pooling-consumer'
     udonblas_consumer = output / 'udonblas-consumer'
+    onnx_consumer = output / 'onnx-consumer'
     run([
         args.cmake,
         '--install', str(args.project_build.resolve()),
@@ -55,10 +57,49 @@ def main():
     assert (install / 'include/CL/cl_version.h').is_file()
     assert (install / 'include/VRC/Runtime/OpenCL/Backend.h').is_file()
     assert (install / 'share/udoncl/runtime/OpenCLAOT.c').is_file()
+    installed_onnx_compiler = install / 'share/udoncl/onnx/udon_onnx.py'
+    assert installed_onnx_compiler.is_file()
     assert (install / 'share/licenses/UdonCL/OpenCL-Headers.LICENSE').is_file()
     package = install / 'lib/cmake/UdonCL'
     udonblas_package = install / 'lib/cmake/UdonBLAS'
     assert (udonblas_package / 'UdonBLASConfig.cmake').is_file()
+
+    onnx_source = output / 'onnx-source'
+    onnx_source.mkdir()
+    onnx_model = onnx_source / 'model.onnx'
+    run([
+        sys.executable,
+        args.source.resolve().parents[1] / 'examples/mnist-cnn/generate_onnx.py',
+        '-o', onnx_model,
+    ])
+    (onnx_source / 'CMakeLists.txt').write_text(
+        'cmake_minimum_required(VERSION 3.30)\n'
+        'project(udoncl_onnx_consumer LANGUAGES NONE)\n'
+        'find_package(UdonCL 0.1 REQUIRED CONFIG)\n'
+        'udoncl_add_onnx_host_library(mnist_host MODEL model.onnx)\n'
+        'get_target_property(generated mnist_host UDONCL_ONNX_HOST)\n'
+        'if(NOT EXISTS "${generated}")\n'
+        '  message(FATAL_ERROR "generated ONNX Host is missing")\n'
+        'endif()\n',
+        encoding='utf-8',
+    )
+    run([
+        args.cmake,
+        '-S', onnx_source,
+        '-B', onnx_consumer,
+        '-G', args.generator,
+        f'-DCMAKE_MAKE_PROGRAM={args.make_program}',
+        f'-DUdonCL_DIR={package}',
+        f'-DUDONCL_CLANG_EXECUTABLE={Path(args.clang).resolve()}',
+        f'-DUDONCL_LLVM_LINK_EXECUTABLE={Path(args.llvm_link).resolve()}',
+    ])
+    generated_onnx_host = onnx_consumer / 'udoncl-onnx/mnist_host/host.c'
+    assert generated_onnx_host.is_file()
+    generated_onnx_source = generated_onnx_host.read_text(encoding='utf-8')
+    assert 'int udon_onnx_run(udon_onnx_buffers_t *buffers)' in generated_onnx_source
+    assert 'udonblasSgemv(' in generated_onnx_source
+    assert not list(onnx_consumer.rglob('execution-plan.json'))
+    assert not list(onnx_consumer.rglob('plan.json'))
     run([
         args.cmake,
         '-S', str(args.source.resolve()),

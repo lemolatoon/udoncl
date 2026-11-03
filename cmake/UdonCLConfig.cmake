@@ -9,11 +9,15 @@ if(EXISTS "${_UDONCL_INSTALL_PREFIX}/include/udoncl/unity_buffer.h")
   set(_UDONCL_OPENCL_INCLUDE_DIR "${_UDONCL_INSTALL_PREFIX}/include")
   set(_UDONCL_RUNTIME_DIR
       "${_UDONCL_INSTALL_PREFIX}/share/udoncl/runtime")
+  set(_UDONCL_ONNX_COMPILER
+      "${_UDONCL_INSTALL_PREFIX}/share/udoncl/onnx/udon_onnx.py")
 else()
   set(_UDONCL_INCLUDE_DIR "${_UDONCL_SOURCE_HINT}/include")
   set(_UDONCL_OPENCL_INCLUDE_DIR
       "${_UDONCL_SOURCE_HINT}/third_party/OpenCL-Headers")
   set(_UDONCL_RUNTIME_DIR "${_UDONCL_SOURCE_HINT}/lib/Runtime/OpenCL")
+  set(_UDONCL_ONNX_COMPILER
+      "${_UDONCL_SOURCE_HINT}/runtime/onnx/udon_onnx.py")
 endif()
 
 set(UDONCLC_EXECUTABLE "${UDONCLC_EXECUTABLE}" CACHE FILEPATH
@@ -88,6 +92,57 @@ endfunction()
 
 function(udoncl_add_device_library target)
   _udoncl_add_source_library("${target}" DEVICE ${ARGN})
+endfunction()
+
+function(udoncl_add_onnx_host_library target)
+  set(_options)
+  set(_one_value MODEL EXECUTION_PROVIDER)
+  cmake_parse_arguments(PARSE_ARGV 1 _ARG "${_options}" "${_one_value}" "")
+  if(_ARG_UNPARSED_ARGUMENTS)
+    message(FATAL_ERROR
+      "udoncl_add_onnx_host_library received unknown arguments: ${_ARG_UNPARSED_ARGUMENTS}")
+  endif()
+  if(NOT _ARG_MODEL)
+    message(FATAL_ERROR "udoncl_add_onnx_host_library requires MODEL")
+  endif()
+  if(NOT _ARG_EXECUTION_PROVIDER)
+    set(_ARG_EXECUTION_PROVIDER operators)
+  endif()
+  if(NOT _ARG_EXECUTION_PROVIDER STREQUAL "auto" AND
+     NOT _ARG_EXECUTION_PROVIDER STREQUAL "operators")
+    message(FATAL_ERROR
+      "EXECUTION_PROVIDER must be 'auto' or 'operators'")
+  endif()
+  cmake_path(ABSOLUTE_PATH _ARG_MODEL BASE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+             NORMALIZE OUTPUT_VARIABLE _model)
+  if(NOT EXISTS "${_model}")
+    message(FATAL_ERROR "ONNX model does not exist: ${_model}")
+  endif()
+  if(NOT EXISTS "${_UDONCL_ONNX_COMPILER}")
+    message(FATAL_ERROR
+      "Udon ONNX Host compiler does not exist: ${_UDONCL_ONNX_COMPILER}")
+  endif()
+  find_package(Python3 3.12 REQUIRED COMPONENTS Interpreter)
+  set(_generated_dir "${CMAKE_CURRENT_BINARY_DIR}/udoncl-onnx/${target}")
+  set(_generated_host "${_generated_dir}/host.c")
+  file(MAKE_DIRECTORY "${_generated_dir}")
+  execute_process(
+    COMMAND "${Python3_EXECUTABLE}" "${_UDONCL_ONNX_COMPILER}"
+            "${_model}" --execution-provider "${_ARG_EXECUTION_PROVIDER}"
+            --emit-host-c "${_generated_host}"
+    RESULT_VARIABLE _result
+    OUTPUT_VARIABLE _stdout
+    ERROR_VARIABLE _stderr)
+  if(NOT _result EQUAL 0)
+    message(FATAL_ERROR
+      "ONNX Host generation failed for ${_model}:\n${_stdout}${_stderr}")
+  endif()
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${_model}" "${_UDONCL_ONNX_COMPILER}")
+  udoncl_add_host_library("${target}" "${_generated_host}")
+  set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_MODEL "${_model}")
+  set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_HOST
+               "${_generated_host}")
 endfunction()
 
 if(NOT TARGET udoncl_opencl_runtime)

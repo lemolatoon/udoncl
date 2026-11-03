@@ -3208,7 +3208,12 @@ def compile_model(model: dict, registry=None) -> dict:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("model", type=Path)
-    parser.add_argument("-o", "--output", type=Path, required=True)
+    parser.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        help="write the legacy JSON execution plan (not required for Host C generation)",
+    )
     parser.add_argument(
         "--emit-host-c",
         type=Path,
@@ -3231,6 +3236,8 @@ def main():
         help="validate external tensor paths and ranges before writing the plan",
     )
     args = parser.parse_args()
+    if not args.output and not args.emit_host_c and not args.emit_host_uasm:
+        parser.error("at least one output must be selected")
     model = parse_model(args.model.read_bytes())
     external = (
         validate_external_data(model, args.external_data_dir)
@@ -3240,8 +3247,9 @@ def main():
     plan = compile_operators(model) if args.execution_provider == "operators" else compile_model(model)
     if external is not None:
         plan["external_data_validation"] = external
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
     if args.emit_host_c:
         args.emit_host_c.parent.mkdir(parents=True, exist_ok=True)
         args.emit_host_c.write_text(emit_c_host(plan), encoding="utf-8")

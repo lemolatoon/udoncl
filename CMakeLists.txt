@@ -66,6 +66,12 @@ install(FILES include/VRC/Runtime/OpenCL/Backend.h
 install(FILES lib/Runtime/OpenCL/OpenCLAOT.c
   DESTINATION "${CMAKE_INSTALL_DATADIR}/udoncl/runtime"
   COMPONENT UdonCLCompiler)
+install(FILES
+  runtime/onnx/udon_onnx.py
+  runtime/onnx/udon_pages.py
+  runtime/onnx/udon_weights.py
+  DESTINATION "${CMAKE_INSTALL_DATADIR}/udoncl/onnx"
+  COMPONENT UdonCLCompiler)
 install(FILES libraries/udonblas/include/udonblas.h
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
   COMPONENT UdonCLCompiler)

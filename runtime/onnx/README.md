@@ -156,6 +156,27 @@ udon-onnx model.onnx -o execution-plan.json --emit-host-uasm generated-host.uasm
 udon-onnx model.onnx -o execution-plan.json --execution-provider operators
 ```
 
+The normal CMake Host path does not need to publish an execution-plan JSON.
+`udoncl_add_onnx_host_library` invokes the installed compiler during configure
+and exposes the generated C as an ordinary UdonCL Host source target:
+
+```cmake
+find_package(UdonCL 0.1 REQUIRED CONFIG)
+udoncl_add_onnx_host_library(model_host
+  MODEL model.onnx
+  EXECUTION_PROVIDER operators)
+```
+
+The equivalent CLI form writes only Host C and deliberately omits `-o`:
+
+```text
+udon-onnx model.onnx --execution-provider operators --emit-host-c host.c
+```
+
+Link `model_host` with the UdonBLAS, UdonDNN, and UdonATen targets required by
+the generated calls when constructing the final Unity library. The JSON output
+remains available only for compatibility with the old Material scheduler.
+
 `--execution-provider operators` deliberately bypasses graph-specific fusion.
 It is used to migrate complete models, including the MNIST fixture, onto the
 same `UdonOperatorExecutionProvider` path used by arbitrary standard graphs.
