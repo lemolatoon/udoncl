@@ -93,6 +93,25 @@ function(_udoncl_append_target_usage target expected_kind sources_var
     message(FATAL_ERROR "Unknown UdonCL source target '${target}'")
   endif()
   get_target_property(_kind "${target}" UDONCL_SOURCE_KIND)
+  if(NOT _kind)
+    get_target_property(_libraries "${target}"
+                        "UDONCL_${expected_kind}_LIBRARIES")
+    if(NOT _libraries)
+      message(FATAL_ERROR
+        "UdonCL target '${target}' does not provide ${expected_kind} sources")
+    endif()
+    set(_sources "${${sources_var}}")
+    set(_dependencies "${${dependencies_var}}")
+    set(_flags "${${flags_var}}")
+    foreach(_library IN LISTS _libraries)
+      _udoncl_append_target_usage("${_library}" "${expected_kind}"
+                                  _sources _dependencies _flags)
+    endforeach()
+    set(${sources_var} "${_sources}" PARENT_SCOPE)
+    set(${dependencies_var} "${_dependencies}" PARENT_SCOPE)
+    set(${flags_var} "${_flags}" PARENT_SCOPE)
+    return()
+  endif()
   if(NOT _kind STREQUAL expected_kind)
     message(FATAL_ERROR
       "UdonCL target '${target}' is ${_kind}; expected ${expected_kind}")
@@ -226,12 +245,14 @@ endfunction()
 
 function(udoncl_add_artifact target)
   set(_one_value CONFIG OUTPUT_DIRECTORY)
-  set(_multi_value HOST_LIBRARIES DEVICE_LIBRARIES)
+  set(_multi_value LIBRARIES HOST_LIBRARIES DEVICE_LIBRARIES)
   cmake_parse_arguments(PARSE_ARGV 1 ARG "" "${_one_value}" "${_multi_value}")
   if(ARG_UNPARSED_ARGUMENTS)
     message(FATAL_ERROR
       "Unknown arguments to udoncl_add_artifact: ${ARG_UNPARSED_ARGUMENTS}")
   endif()
+  list(APPEND ARG_HOST_LIBRARIES ${ARG_LIBRARIES})
+  list(APPEND ARG_DEVICE_LIBRARIES ${ARG_LIBRARIES})
   if(NOT ARG_CONFIG OR NOT ARG_HOST_LIBRARIES OR NOT ARG_DEVICE_LIBRARIES)
     message(FATAL_ERROR
       "udoncl_add_artifact requires CONFIG, HOST_LIBRARIES and DEVICE_LIBRARIES")
@@ -317,8 +338,10 @@ endfunction()
 
 function(udoncl_add_unity_library target)
   set(_one_value CONFIG OUTPUT_DIRECTORY)
-  set(_multi_value HOST_LIBRARIES DEVICE_LIBRARIES)
+  set(_multi_value LIBRARIES HOST_LIBRARIES DEVICE_LIBRARIES)
   cmake_parse_arguments(PARSE_ARGV 1 ARG "" "${_one_value}" "${_multi_value}")
+  list(APPEND ARG_HOST_LIBRARIES ${ARG_LIBRARIES})
+  list(APPEND ARG_DEVICE_LIBRARIES ${ARG_LIBRARIES})
   if(ARG_UNPARSED_ARGUMENTS OR NOT ARG_CONFIG OR NOT ARG_HOST_LIBRARIES)
     message(FATAL_ERROR
       "udoncl_add_unity_library requires CONFIG and HOST_LIBRARIES")

@@ -52,9 +52,24 @@ install(FILES
   cmake/UdonCLCompileUnityLibrary.cmake
   DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/UdonCL"
   COMPONENT UdonCLCompiler)
+install(FILES
+  cmake/UdonBLASConfig.cmake
+  cmake/UdonBLASConfigVersion.cmake
+  DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/UdonBLAS"
+  COMPONENT UdonCLCompiler)
 install(FILES include/udoncl/unity_buffer.h
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/udoncl"
   COMPONENT UdonCLCompiler)
+install(FILES libraries/udonblas/include/udonblas.h
+  DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+  COMPONENT UdonCLCompiler)
+install(FILES libraries/udonblas/src/udonblas.c
+  DESTINATION "${CMAKE_INSTALL_DATADIR}/udonblas/src"
+  COMPONENT UdonCLCompiler)
+install(DIRECTORY libraries/udonblas/device
+  DESTINATION "${CMAKE_INSTALL_DATADIR}/udonblas"
+  COMPONENT UdonCLCompiler
+  FILES_MATCHING PATTERN "*.cl")
 install(DIRECTORY third_party/OpenCL-Headers/CL
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
   COMPONENT UdonCLCompiler)

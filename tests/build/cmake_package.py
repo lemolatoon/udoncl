@@ -40,6 +40,7 @@ def main():
     consumer = output / 'consumer'
     saxpy_consumer = output / 'saxpy-consumer'
     pooling_consumer = output / 'average-pooling-consumer'
+    udonblas_consumer = output / 'udonblas-consumer'
     run([
         args.cmake,
         '--install', str(args.project_build.resolve()),
@@ -54,6 +55,8 @@ def main():
     assert (install / 'include/CL/cl_version.h').is_file()
     assert (install / 'share/licenses/UdonCL/OpenCL-Headers.LICENSE').is_file()
     package = install / 'lib/cmake/UdonCL'
+    udonblas_package = install / 'lib/cmake/UdonBLAS'
+    assert (udonblas_package / 'UdonBLASConfig.cmake').is_file()
     run([
         args.cmake,
         '-S', str(args.source.resolve()),
@@ -78,6 +81,28 @@ def main():
         args.cmake, '--build', str(consumer),
         '--target', 'hello-int-dispatch-unity-library',
     ])
+
+    udonblas_source = args.source.resolve().parents[1] / 'examples/udonblas-sgemm'
+    run([
+        args.cmake,
+        '-S', str(udonblas_source),
+        '-B', str(udonblas_consumer),
+        '-G', args.generator,
+        f'-DCMAKE_MAKE_PROGRAM={args.make_program}',
+        f'-DUdonCL_DIR={package}',
+        f'-DUdonBLAS_DIR={udonblas_package}',
+        f'-DUDONCL_CLANG_EXECUTABLE={Path(args.clang).resolve()}',
+        f'-DUDONCL_LLVM_LINK_EXECUTABLE={Path(args.llvm_link).resolve()}',
+    ])
+    run([
+        args.cmake, '--build', str(udonblas_consumer), '--target',
+        'udoncl/udonblas-sgemm-example/host.bc',
+        'udoncl/udonblas-sgemm-example/device.bc',
+    ])
+    udonblas_root = udonblas_consumer / 'udoncl/udonblas-sgemm-example'
+    assert (udonblas_root / 'host.bc').is_file()
+    assert (udonblas_root / 'device.bc').is_file()
+    assert len(list((udonblas_root / 'objects/device').rglob('*.bc'))) == 6
 
     build_root = consumer / 'udoncl/hello-artifact'
     artifact = build_root / 'artifact'

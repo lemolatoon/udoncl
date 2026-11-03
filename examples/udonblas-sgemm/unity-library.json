@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "program": "udonblas_sgemm_m1n10k144",
+  "device_kernel": {
+    "schema_version": 1,
+    "profile": "gather-f32",
+    "words": 1024,
+    "kernel": "udonblas_sgemm",
+    "kernel_id": 100,
+    "argument_kinds": [
+      "buffer",
+      "buffer",
+      "i32",
+      "i32",
+      "i32",
+      "i32",
+      "i32",
+      "i32",
+      "i32",
+      "i32",
+      "f32",
+      "f32"
+    ],
+    "global_size": [32, 32, 1],
+    "local_size": [1, 1, 1],
+    "global_offset": [0, 0, 0]
+  },
+  "exports": [
+    {
+      "symbol": "run_udonblas_sgemm",
+      "public_name": "RunUdonBlasSgemm",
+      "id": 1,
+      "parameters": []
+    }
+  ],
+  "buffers": [
+    {
+      "id": 1,
+      "name": "input_buffer",
+      "byte_size": 4096,
+      "element_type": "float32",
+      "public_access": "input"
+    },
+    {
+      "id": 2,
+      "name": "output_buffer",
+      "byte_size": 4096,
+      "element_type": "float32",
+      "public_access": "output"
+    }
+  ]
+}
