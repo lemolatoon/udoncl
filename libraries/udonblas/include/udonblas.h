@@ -27,7 +27,7 @@ typedef enum udonblasOperation_t {
 enum {
   UDONBLAS_SGEMM_MAX_M = 16,
   UDONBLAS_SGEMM_MAX_N = 16,
-  UDONBLAS_SGEMM_MAX_K = 16,
+  UDONBLAS_SGEMM_TILE_K = 16,
   UDONBLAS_SGEMV_MAX_M = 16,
   UDONBLAS_SGEMV_MAX_N = 16,
   UDONBLAS_SAXPY_MAX_N = 256,
@@ -61,9 +61,9 @@ udonblasStatus_t udonblasSgemv(udonblasHandle_t handle,
 /* Column-major SGEMM with the cuBLAS operand contract:
  * C = alpha * op(A) * op(B) + beta * C.
  *
- * The initial UdonCL gather profile supports dimensions up to 16 and one
- * serialized handle per UdonBehaviour instance. The stable API is intended to
- * remain unchanged when tiled multi-pass kernels lift those profile limits. */
+ * The initial UdonCL gather profile supports M and N dimensions up to 16 and
+ * executes K in 16-word Device tiles. One serialized handle is supported per
+ * UdonBehaviour instance. */
 udonblasStatus_t udonblasSgemm(udonblasHandle_t handle,
                                udonblasOperation_t transa,
                                udonblasOperation_t transb, int m, int n, int k,

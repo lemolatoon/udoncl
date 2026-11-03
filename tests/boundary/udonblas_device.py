@@ -24,11 +24,14 @@ assert result.returncode == 0, (result.stdout, result.stderr)
 assert "udonblas_sgemm_outputs=323" in result.stdout
 assert "cases=5" in result.stdout
 assert "max_cpu_gpu_error=0" in result.stdout
+assert "sgemm_m1n10k144_outputs=10" in result.stdout
+assert "sgemm_m1n10k144_tiles=9" in result.stdout
+assert "sgemm_m1n10k144_max_cpu_gpu_error=0" in result.stdout
 assert "sgemv_outputs=28" in result.stdout
 assert "sgemv_cases=4" in result.stdout
 assert "sgemv_max_cpu_gpu_error=0" in result.stdout
 assert "saxpy_outputs=280" in result.stdout
 assert "saxpy_cases=4" in result.stdout
 assert "saxpy_max_cpu_gpu_error=0" in result.stdout
-assert "draws=49" in result.stdout
+assert "draws=58" in result.stdout
 print(result.stdout, end="")

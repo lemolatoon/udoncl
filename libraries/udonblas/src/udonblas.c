@@ -329,12 +329,6 @@ udonblasStatus_t udonblasDestroy(udonblasHandle_t handle) {
   return UDONBLAS_STATUS_SUCCESS;
 }
 
-static int matrix_words(udonblasOperation_t operation, int rows, int columns,
-                        int leading_dimension) {
-  int stored_columns = operation == UDONBLAS_OP_N ? columns : rows;
-  return leading_dimension * stored_columns;
-}
-
 udonblasStatus_t udonblasSgemm(udonblasHandle_t handle,
                                udonblasOperation_t transa,
                                udonblasOperation_t transb, int m, int n, int k,
@@ -343,7 +337,10 @@ udonblasStatus_t udonblasSgemm(udonblasHandle_t handle,
                                float *c, int ldc) {
   int a_rows = transa == UDONBLAS_OP_N ? m : k;
   int b_rows = transb == UDONBLAS_OP_N ? k : n;
-  int a_words, b_words, c_words, index, row, column;
+  int index, row, column, inner, k_offset, tile_k, source_index;
+  int kernel_transa = UDONBLAS_OP_N, kernel_transb = UDONBLAS_OP_N;
+  int kernel_lda = m, kernel_ldb, kernel_ldc = m;
+  float tile_beta;
   size_t global[2] = {32, 32}, local[2] = {1, 1};
   cl_int status;
   if (handle != UDONBLAS_HANDLE || !context)
@@ -358,23 +355,33 @@ udonblasStatus_t udonblasSgemm(udonblasHandle_t handle,
     return UDONBLAS_STATUS_INVALID_VALUE;
   if (m == 0 || n == 0)
     return UDONBLAS_STATUS_SUCCESS;
-  if (m > UDONBLAS_SGEMM_MAX_M || n > UDONBLAS_SGEMM_MAX_N ||
-      k > UDONBLAS_SGEMM_MAX_K)
+  if (m > UDONBLAS_SGEMM_MAX_M || n > UDONBLAS_SGEMM_MAX_N)
     return UDONBLAS_STATUS_NOT_SUPPORTED;
-  a_words = matrix_words(transa, m, k, lda);
-  b_words = matrix_words(transb, k, n, ldb);
-  c_words = ldc * n;
-  if (a_words > UDONBLAS_MATRIX_WORDS || b_words > UDONBLAS_MATRIX_WORDS ||
-      c_words > UDONBLAS_MATRIX_WORDS)
-    return UDONBLAS_STATUS_NOT_SUPPORTED;
-  for (index = 0; index < UDONBLAS_WORDS; ++index)
-    packed[index] = 0.0f;
-  for (index = 0; index < a_words; ++index)
-    packed[UDONBLAS_A_OFFSET + index] = a[index];
-  for (index = 0; index < b_words; ++index)
-    packed[UDONBLAS_B_OFFSET + index] = b[index];
-  for (index = 0; index < c_words; ++index)
-    packed[UDONBLAS_C_OFFSET + index] = c[index];
+  for (k_offset = 0;; k_offset += UDONBLAS_SGEMM_TILE_K) {
+    tile_k = k - k_offset;
+    if (tile_k > UDONBLAS_SGEMM_TILE_K)
+      tile_k = UDONBLAS_SGEMM_TILE_K;
+    kernel_ldb = tile_k > 0 ? tile_k : 1;
+    tile_beta = k_offset == 0 ? *beta : 1.0f;
+    for (index = 0; index < UDONBLAS_WORDS; ++index)
+      packed[index] = 0.0f;
+    for (inner = 0; inner < tile_k; ++inner) {
+      for (row = 0; row < m; ++row) {
+        source_index = transa == UDONBLAS_OP_N ? row + (k_offset + inner) * lda
+                                               : k_offset + inner + row * lda;
+        packed[UDONBLAS_A_OFFSET + row + inner * m] = a[source_index];
+      }
+      for (column = 0; column < n; ++column) {
+        source_index = transb == UDONBLAS_OP_N
+                           ? k_offset + inner + column * ldb
+                           : column + (k_offset + inner) * ldb;
+        packed[UDONBLAS_B_OFFSET + inner + column * kernel_ldb] =
+            b[source_index];
+      }
+    }
+    for (column = 0; column < n; ++column)
+      for (row = 0; row < m; ++row)
+        packed[UDONBLAS_C_OFFSET + row + column * m] = c[row + column * ldc];
 
 #define SET_ARGUMENT(slot, value)                                              \
   do {                                                                         \
@@ -382,29 +389,33 @@ udonblasStatus_t udonblasSgemm(udonblasHandle_t handle,
     if (status != CL_SUCCESS)                                                  \
       return UDONBLAS_STATUS_EXECUTION_FAILED;                                 \
   } while (0)
-  SET_ARGUMENT(2, m);
-  SET_ARGUMENT(3, n);
-  SET_ARGUMENT(4, k);
-  SET_ARGUMENT(5, transa);
-  SET_ARGUMENT(6, transb);
-  SET_ARGUMENT(7, lda);
-  SET_ARGUMENT(8, ldb);
-  SET_ARGUMENT(9, ldc);
-  SET_ARGUMENT(10, *alpha);
-  SET_ARGUMENT(11, *beta);
+    SET_ARGUMENT(2, m);
+    SET_ARGUMENT(3, n);
+    SET_ARGUMENT(4, tile_k);
+    SET_ARGUMENT(5, kernel_transa);
+    SET_ARGUMENT(6, kernel_transb);
+    SET_ARGUMENT(7, kernel_lda);
+    SET_ARGUMENT(8, kernel_ldb);
+    SET_ARGUMENT(9, kernel_ldc);
+    SET_ARGUMENT(10, *alpha);
+    SET_ARGUMENT(11, tile_beta);
 #undef SET_ARGUMENT
 
-  if (clEnqueueWriteBuffer(queue, input_buffer, CL_TRUE, 0, sizeof(packed),
-                           packed, 0, 0, 0) != CL_SUCCESS ||
-      clEnqueueNDRangeKernel(queue, sgemm_kernel, 2, 0, global, local, 0, 0,
-                             0) != CL_SUCCESS ||
-      clEnqueueReadBuffer(
-          queue, output_buffer, CL_TRUE, UDONBLAS_RESULT_OFFSET * sizeof(float),
-          m * n * sizeof(float), result, 0, 0, 0) != CL_SUCCESS ||
-      clFinish(queue) != CL_SUCCESS)
-    return UDONBLAS_STATUS_EXECUTION_FAILED;
-  for (column = 0; column < n; ++column)
-    for (row = 0; row < m; ++row)
-      c[row + column * ldc] = result[row + column * m];
+    if (clEnqueueWriteBuffer(queue, input_buffer, CL_TRUE, 0, sizeof(packed),
+                             packed, 0, 0, 0) != CL_SUCCESS ||
+        clEnqueueNDRangeKernel(queue, sgemm_kernel, 2, 0, global, local, 0, 0,
+                               0) != CL_SUCCESS ||
+        clEnqueueReadBuffer(queue, output_buffer, CL_TRUE,
+                            UDONBLAS_RESULT_OFFSET * sizeof(float),
+                            m * n * sizeof(float), result, 0, 0,
+                            0) != CL_SUCCESS ||
+        clFinish(queue) != CL_SUCCESS)
+      return UDONBLAS_STATUS_EXECUTION_FAILED;
+    for (column = 0; column < n; ++column)
+      for (row = 0; row < m; ++row)
+        c[row + column * ldc] = result[row + column * m];
+    if (k_offset + tile_k >= k)
+      break;
+  }
   return UDONBLAS_STATUS_SUCCESS;
 }

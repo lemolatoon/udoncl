@@ -162,6 +162,40 @@ int main(int argc, char **argv) {
     if (maximumError > 0.0005f)
       throw std::runtime_error("UdonBLAS SGEMM CPU/Device results diverged");
 
+    // Exercise the exact logical Dense dimensions used by the ONNX MNIST graph
+    // through one public SGEMM call. UdonBLAS owns the 16-word Device tiling.
+    constexpr int denseM = 1, denseN = 10, denseK = 144;
+    constexpr int denseLda = denseM, denseLdb = denseK, denseLdc = denseM;
+    std::vector<float> denseA(denseLda * denseK);
+    std::vector<float> denseB(denseLdb * denseN);
+    std::vector<float> denseActual(denseLdc * denseN);
+    for (size_t index = 0; index < denseA.size(); ++index)
+      denseA[index] = value(int(index), 101);
+    for (size_t index = 0; index < denseB.size(); ++index)
+      denseB[index] = value(int(index), 103);
+    for (size_t index = 0; index < denseActual.size(); ++index)
+      denseActual[index] = value(int(index), 107);
+    std::vector<float> denseExpected = denseActual;
+    const Case denseCase{UDONBLAS_OP_N, UDONBLAS_OP_N, denseM,   denseN, denseK,
+                         denseLda,      denseLdb,      denseLdc, 1.0f,   0.0f};
+    reference(denseCase, denseA, denseB, denseExpected);
+    size_t denseDrawsBefore = session.drawCount();
+    require(udonblasSgemm(handle, denseCase.transa, denseCase.transb,
+                          denseCase.m, denseCase.n, denseCase.k,
+                          &denseCase.alpha, denseA.data(), denseCase.lda,
+                          denseB.data(), denseCase.ldb, &denseCase.beta,
+                          denseActual.data(), denseCase.ldc),
+            UDONBLAS_STATUS_SUCCESS, "udonblasSgemm M1N10K144");
+    int denseTiles = int(session.drawCount() - denseDrawsBefore);
+    float denseMaximumError = 0.0f;
+    for (size_t index = 0; index < denseActual.size(); ++index)
+      denseMaximumError =
+          std::max(denseMaximumError,
+                   std::abs(denseActual[index] - denseExpected[index]));
+    if (denseMaximumError > 0.0005f)
+      throw std::runtime_error(
+          "UdonBLAS tiled M1N10K144 SGEMM CPU/Device results diverged");
+
     const std::array<GemvCase, 4> gemvCases{{
         {UDONBLAS_OP_N, 4, 6, 5, 1, 1, 0.75f, -0.25f},
         {UDONBLAS_OP_T, 5, 3, 7, 2, 3, -1.25f, 0.5f},
@@ -311,6 +345,9 @@ int main(int argc, char **argv) {
     std::cout << "udonblas_sgemm_outputs=" << outputs
               << " cases=" << cases.size()
               << " max_cpu_gpu_error=" << maximumError
+              << " sgemm_m1n10k144_outputs=" << denseActual.size()
+              << " sgemm_m1n10k144_tiles=" << denseTiles
+              << " sgemm_m1n10k144_max_cpu_gpu_error=" << denseMaximumError
               << " sgemv_outputs=" << gemvOutputs
               << " sgemv_cases=" << gemvCases.size()
               << " sgemv_max_cpu_gpu_error=" << gemvMaximumError
