@@ -243,6 +243,8 @@ llvm::json::Object buildBoundaryManifest(ModuleOp module) {
     } else
       canonicalABI += "void";
     canonicalABI += "\n";
+    auto asyncEffect = function->getAttrOfType<StringAttr>("vrc.async_effect");
+    bool isAsync = asyncEffect && asyncEffect.getValue() == "may_suspend";
     exports.push_back(
         llvm::json::Object{{"id", id.getInt()},
                            {"c_symbol", function.getName().str()},
@@ -251,7 +253,7 @@ llvm::json::Object buildBoundaryManifest(ModuleOp module) {
                            {"parameters", std::move(args)},
                            {"result", std::move(result)},
                            {"status_slot", udonclStatusSlot(id.getInt())},
-                           {"async", false}});
+                           {"async", isAsync}});
   }
   auto publicDigest = llvm::SHA256::hash(llvm::ArrayRef<uint8_t>(
       reinterpret_cast<const uint8_t *>(canonicalABI.data()),

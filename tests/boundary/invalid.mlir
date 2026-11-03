@@ -30,8 +30,8 @@ module {
 module {
   func.func @bad() {
     %zero = arith.constant 0 : i32
-    // expected-error @below {{constant byte size must be positive}}
     %one = arith.constant 1 : i32
+    // expected-error @below {{constant byte size must be positive}}
     %buffer, %status = vrc.buffer_alloc %one, %zero {format = "rgba8_unorm", usage = "storage"} : (i32, i32) -> (!vrc.buffer, i32)
     return
   }

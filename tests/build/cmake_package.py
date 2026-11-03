@@ -106,6 +106,30 @@ def main():
     assert (udonblas_root / 'device.bc').is_file()
     assert len(list((udonblas_root / 'objects/host').rglob('*.bc'))) == 3
     assert len(list((udonblas_root / 'objects/device').rglob('*.bc'))) == 6
+    run([
+        args.cmake, '--build', str(udonblas_consumer), '--target',
+        'udonblas-sgemm-example',
+    ])
+    udonblas_artifact = udonblas_root / 'artifact'
+    udonblas_manifest = json.loads(
+        (udonblas_artifact / 'manifest.json').read_text(encoding='utf-8')
+    )
+    assert udonblas_manifest['exports'][0]['async'] is True
+    assert udonblas_manifest['ready_for_unity'] is False
+    assert udonblas_manifest['program']['async_commands']['readback_kind'] == 2
+    udonblas_assembly = (udonblas_artifact / 'host.uasm').read_text(
+        encoding='utf-8'
+    )
+    for slot in [
+        '__udoncl_async_resume_state',
+        '__udoncl_async_completion_status',
+        '__udoncl_async_command_kind',
+        '__udoncl_async_command_buffer',
+        '__udoncl_async_command_offset',
+        '__udoncl_async_command_size',
+        '__udoncl_async_command_pointer',
+    ]:
+        assert f'.export {slot}' in udonblas_assembly
 
     build_root = consumer / 'udoncl/hello-artifact'
     artifact = build_root / 'artifact'
@@ -149,8 +173,8 @@ def main():
     assert '.export __0_SquarePlusOne' in assembly
     assert '.export __udoncl_buffer_1' in assembly
     assert '__udoncl_buffer_1: %UnityEngineRenderTexture, null' in assembly
-    assert 'JUMP_INDIRECT' in assembly
-    assert '__vrc_internal_1_return: %SystemUInt32, 0' in assembly
+    assert 'JUMP_INDIRECT' not in assembly
+    assert '__vrc_internal_1_return' not in assembly
     assert 'SystemSingleArray.__ctor__SystemInt32__SystemSingleArray' in assembly
     assert (unity_artifact / 'display.shader').is_file()
     assert (unity_artifact / 'kernels/kernel_1.shader').is_file()

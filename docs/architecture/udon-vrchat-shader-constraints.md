@@ -89,6 +89,28 @@ stay in the investigation section.
   inspection can still see that value, but Play Mode initialization does not
   restore it into the compiled U# field.
 
+### Async GPU readback data must be copied inside the callback
+
+- Environment: Unity 2022.3.22f1 and VRChat Worlds SDK 3.10.5. The SDK raw
+  Udon sample is
+  `Packages/com.vrchat.worlds/Samples/AsyncGPUReadbackExampleScene/AsyncGPUReadback.asset`.
+- A raw program receives `_onAsyncGpuReadbackComplete` with the request in the
+  heap variable `onAsyncGpuReadbackCompleteRequest`; event parameters are not
+  retained on a VM call stack.
+- `VRCAsyncGPUReadbackRequest` data remains accessible for one frame after
+  completion and the request is disposed in the following frame. Therefore a
+  generated companion must call `TryGetData` and copy the pixels/status inside
+  `OnAsyncGpuReadbackComplete`. It may then schedule a separate resume event,
+  but must not defer reading the request object itself.
+- The confirmed readback externs are
+  `VRCSDK3RenderingVRCAsyncGPUReadback.__Request__UnityEngineTexture_SystemInt32_UnityEngineTextureFormat_VRCUdonCommonInterfacesIUdonEventReceiver__VRCSDK3RenderingVRCAsyncGPUReadbackRequest`,
+  `VRCSDK3RenderingVRCAsyncGPUReadbackRequest.__TryGetData__UnityEngineColor32Array_SystemInt32__SystemBoolean`,
+  and
+  `VRCSDK3RenderingVRCAsyncGPUReadbackRequest.__get_hasError__SystemBoolean`.
+- `IUdonVM` can invoke the callback entrypoint with a prepared heap variable,
+  but it has no Unity async scheduler. Real callback delivery remains a Play
+  Mode or client integration gate.
+
 ## Investigation log
 
 ### 2026-11-02: generic MNIST arena pooling returned zero

@@ -24,6 +24,7 @@ namespace vrc {
 namespace {
 namespace vm = ::vrc::udonasm;
 namespace host = ::vrc::udonhl;
+namespace runtime = ::vrc::vrc;
 
 struct Slot {
   std::string name;
@@ -500,6 +501,50 @@ private:
     if (exportId)
       addSlot(udonclStatusSlot(exportId.getInt()), "SystemInt32", "0", false);
 
+    SmallVector<runtime::AwaitOp> awaits;
+    function.walk([&](runtime::AwaitOp await) { awaits.push_back(await); });
+    if (!awaits.empty() && !exportId)
+      return function.emitError()
+             << "suspending helper " << function.getSymName()
+             << " must be inlined into a Udon export";
+    llvm::DenseMap<Operation *, int32_t> awaitStates;
+    llvm::DenseMap<Operation *, Operation *> awaitResumeJumps;
+    if (!awaits.empty()) {
+      addSlot(asyncResumeStateSlot, "SystemInt32", "0", true);
+      addSlot(asyncCompletionStatusSlot, "SystemInt32", "0", true);
+      addSlot(asyncCommandKindSlot, "SystemInt32", "0", true);
+      addSlot(asyncCommandBufferSlot, "SystemInt32", "0", true);
+      addSlot(asyncCommandOffsetSlot, "SystemInt32", "0", true);
+      addSlot(asyncCommandSizeSlot, "SystemInt32", "0", true);
+      addSlot(asyncCommandPointerSlot, "SystemInt32", "0", true);
+      addSlot(asyncEventSlot, "SystemInt32", "1", true);
+      addSlot(asyncZeroSlot, "SystemInt32", "0", false);
+      for (auto [index, await] : llvm::enumerate(awaits)) {
+        int32_t state = static_cast<int32_t>(index + 1);
+        awaitStates.try_emplace(await.getOperation(), state);
+        std::string stateSlot = prefix + "await_state_" + std::to_string(state);
+        std::string matches = prefix + "await_matches_" + std::to_string(state);
+        addSlot(stateSlot, "SystemInt32", std::to_string(state), false);
+        addSlot(matches, "SystemBoolean", "null", false);
+        emitPush(function.getLoc(), asyncResumeStateSlot);
+        emitPush(function.getLoc(), stateSlot);
+        emitPush(function.getLoc(), matches);
+        emitExtern(function.getLoc(),
+                   "SystemInt32.__op_Equality__SystemInt32_SystemInt32__"
+                   "SystemBoolean");
+        emitPush(function.getLoc(), matches);
+        Operation *next = create(
+            function.getLoc(), vm::JumpIfFalseOp::getOperationName(),
+            {builder.getNamedAttr("target", builder.getI64IntegerAttr(0))});
+        address += 8;
+        emitCopy(function.getLoc(), asyncZeroSlot, asyncResumeStateSlot);
+        awaitResumeJumps.try_emplace(await.getOperation(),
+                                     emitJump(function.getLoc(), 0));
+        next->setAttr("target",
+                      builder.getI64IntegerAttr(static_cast<int64_t>(address)));
+      }
+    }
+
     // Allocate every SSA value before emitting code. This makes block argument
     // transfer and forward-branch relocation independent of traversal order.
     unsigned valueIndex = 0;
@@ -621,10 +666,9 @@ private:
         std::string kind = "v";
         if (auto constant = dyn_cast<arith::ConstantOp>(operation)) {
           kind = "c";
-          if (constant.getType().isInteger(1))
-            return constant.emitError("boolean constants require "
-                                      "target-verified runtime initialization");
-          if (auto integer = dyn_cast<IntegerAttr>(constant.getValue()))
+          if (constant.getType().isInteger(1)) {
+            initial = "null";
+          } else if (auto integer = dyn_cast<IntegerAttr>(constant.getValue()))
             initial = std::to_string(integer.getInt());
           else if (auto floating = dyn_cast<FloatAttr>(constant.getValue())) {
             llvm::SmallString<32> text;
@@ -697,8 +741,21 @@ private:
           continue;
         if (isa<UnrealizedConversionCastOp>(operation))
           continue;
-        if (isa<arith::ConstantOp>(operation))
+        if (auto constant = dyn_cast<arith::ConstantOp>(operation)) {
+          if (constant.getType().isInteger(1) &&
+              cast<IntegerAttr>(constant.getValue()).getInt()) {
+            std::string one = valueSlots.lookup(constant.getResult()) + "_one";
+            addSlot(one, "SystemInt32", "1", false);
+            emitPush(constant.getLoc(), one);
+            emitPush(constant.getLoc(), one);
+            emitPush(constant.getLoc(),
+                     valueSlots.lookup(constant.getResult()));
+            emitExtern(constant.getLoc(),
+                       "SystemInt32.__op_Equality__SystemInt32_SystemInt32__"
+                       "SystemBoolean");
+          }
           continue;
+        }
         if (isa<::vrc::vrc::DispatchDescCreateOp>(operation))
           continue;
         if (isa<::vrc::vrc::BufferAllocOp>(operation))
@@ -709,6 +766,71 @@ private:
           // RenderTexture backing and the result slot's initial zero models a
           // successful backend release without destroying the pool asset.
           continue;
+        if (auto transfer = dyn_cast<runtime::BufferUploadOp>(operation)) {
+          std::string buffer = valueSlots.lookup(transfer.getDestination());
+          std::string offset =
+              valueSlots.lookup(transfer.getDestinationOffset());
+          std::string size = valueSlots.lookup(transfer.getByteSize());
+          std::string pointer = valueSlots.lookup(transfer.getHostPointer());
+          std::string event = valueSlots.lookup(transfer.getEvent());
+          if (buffer.empty() || offset.empty() || size.empty() ||
+              pointer.empty() || event.empty())
+            return transfer.emitError(
+                "Unity buffer upload has missing command slots");
+          std::string kind = prefix + "upload_command";
+          addSlot(kind, "SystemInt32", "1", false);
+          emitCopy(transfer.getLoc(), buffer, asyncCommandBufferSlot);
+          emitCopy(transfer.getLoc(), offset, asyncCommandOffsetSlot);
+          emitCopy(transfer.getLoc(), size, asyncCommandSizeSlot);
+          emitCopy(transfer.getLoc(), pointer, asyncCommandPointerSlot);
+          emitCopy(transfer.getLoc(), kind, asyncCommandKindSlot);
+          emitCopy(transfer.getLoc(), asyncEventSlot, event);
+          continue;
+        }
+        if (auto transfer = dyn_cast<runtime::BufferReadbackOp>(operation)) {
+          std::string buffer = valueSlots.lookup(transfer.getSource());
+          std::string offset = valueSlots.lookup(transfer.getSourceOffset());
+          std::string size = valueSlots.lookup(transfer.getByteSize());
+          std::string pointer = valueSlots.lookup(transfer.getHostPointer());
+          std::string event = valueSlots.lookup(transfer.getEvent());
+          if (buffer.empty() || offset.empty() || size.empty() ||
+              pointer.empty() || event.empty())
+            return transfer.emitError(
+                "Unity buffer readback has missing command slots");
+          std::string kind = prefix + "readback_command";
+          addSlot(kind, "SystemInt32", "2", false);
+          emitCopy(transfer.getLoc(), buffer, asyncCommandBufferSlot);
+          emitCopy(transfer.getLoc(), offset, asyncCommandOffsetSlot);
+          emitCopy(transfer.getLoc(), size, asyncCommandSizeSlot);
+          emitCopy(transfer.getLoc(), pointer, asyncCommandPointerSlot);
+          emitCopy(transfer.getLoc(), kind, asyncCommandKindSlot);
+          emitCopy(transfer.getLoc(), asyncEventSlot, event);
+          continue;
+        }
+        if (auto await = dyn_cast<runtime::AwaitOp>(operation)) {
+          auto state = awaitStates.find(await.getOperation());
+          auto resumeJump = awaitResumeJumps.find(await.getOperation());
+          std::string status = valueSlots.lookup(await.getStatus());
+          if (state == awaitStates.end() ||
+              resumeJump == awaitResumeJumps.end() || status.empty())
+            return await.emitError("await has no static resume state");
+          std::string stateSlot =
+              prefix + "await_state_" + std::to_string(state->second);
+          emitCopy(await.getLoc(), stateSlot, asyncResumeStateSlot);
+          emitJump(await.getLoc(), 0xfffffffcLL);
+          resumeJump->second->setAttr(
+              "target",
+              builder.getI64IntegerAttr(static_cast<int64_t>(address)));
+          emitCopy(await.getLoc(), asyncCompletionStatusSlot, status);
+          continue;
+        }
+        if (auto status = dyn_cast<runtime::EventStatusOp>(operation)) {
+          std::string result = valueSlots.lookup(status.getStatus());
+          if (result.empty())
+            return status.emitError("event status has no result slot");
+          emitCopy(status.getLoc(), asyncCompletionStatusSlot, result);
+          continue;
+        }
         if (auto frame = dyn_cast<host::FrameCreateOp>(operation)) {
           std::string execution = valueSlots.lookup(frame.getExecutionId());
           std::string handle = valueSlots.lookup(frame.getFrame());
@@ -1715,6 +1837,22 @@ private:
   static constexpr StringLiteral globalReadySlot = "__vrc_globals_ready";
   static constexpr StringLiteral rawHeapSlot = "__vrc_raw_heap";
   static constexpr StringLiteral rawHeapLengthSlot = "__vrc_raw_heap_length";
+  static constexpr StringLiteral asyncResumeStateSlot =
+      "__udoncl_async_resume_state";
+  static constexpr StringLiteral asyncCompletionStatusSlot =
+      "__udoncl_async_completion_status";
+  static constexpr StringLiteral asyncCommandKindSlot =
+      "__udoncl_async_command_kind";
+  static constexpr StringLiteral asyncCommandBufferSlot =
+      "__udoncl_async_command_buffer";
+  static constexpr StringLiteral asyncCommandOffsetSlot =
+      "__udoncl_async_command_offset";
+  static constexpr StringLiteral asyncCommandSizeSlot =
+      "__udoncl_async_command_size";
+  static constexpr StringLiteral asyncCommandPointerSlot =
+      "__udoncl_async_command_pointer";
+  static constexpr StringLiteral asyncEventSlot = "__udoncl_async_event";
+  static constexpr StringLiteral asyncZeroSlot = "__udoncl_async_zero";
 };
 
 struct LowerUdonHLToUdonAsmPass

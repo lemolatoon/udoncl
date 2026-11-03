@@ -17,6 +17,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Verifier.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassManager.h"
@@ -507,8 +508,79 @@ bool configureUnityExports(ModuleOp module, const json::Object &config) {
     if (!reachable.count(function.getSymName().str()) &&
         !function->hasAttr("vrc.intrinsic"))
       function.erase();
+    else if (reachable.count(function.getSymName().str()) &&
+             !selected.count(function.getSymName().str()) &&
+             !function.isExternal())
+      function.setPrivate();
   module->setAttr("vrc.target", builder.getStringAttr("vrc-pc"));
   return true;
+}
+
+LogicalResult inlineUnityHostCallGraph(ModuleOp module) {
+  for (func::FuncOp exportFunction : module.getOps<func::FuncOp>()) {
+    if (!exportFunction->hasAttr("vrc.export_id"))
+      continue;
+    unsigned inlineCount = 0;
+    while (true) {
+      func::CallOp call;
+      func::CallOp unresolved;
+      exportFunction.walk([&](func::CallOp candidate) {
+        auto candidateCallee =
+            module.lookupSymbol<func::FuncOp>(candidate.getCallee());
+        if (!candidateCallee || (candidateCallee.isExternal() &&
+                                 !candidateCallee->hasAttr("vrc.intrinsic"))) {
+          if (!unresolved)
+            unresolved = candidate;
+        } else if (!call && !candidateCallee.isExternal()) {
+          call = candidate;
+        }
+      });
+      if (unresolved)
+        return unresolved.emitError(
+            "Unity Host call graph contains an unresolved helper");
+      if (!call)
+        break;
+      auto callee = module.lookupSymbol<func::FuncOp>(call.getCallee());
+      if (callee == exportFunction || ++inlineCount > 10000)
+        return call.emitError(
+            "Unity Host call graph recursion cannot cross suspension");
+      Block *callerBlock = call->getBlock();
+      Block *continuation =
+          callerBlock->splitBlock(std::next(call->getIterator()));
+      for (mlir::Value result : call.getResults()) {
+        mlir::BlockArgument argument =
+            continuation->addArgument(result.getType(), call.getLoc());
+        result.replaceAllUsesWith(argument);
+      }
+      IRMapping mapping;
+      for (auto [argument, operand] :
+           llvm::zip(callee.getArguments(), call.getOperands()))
+        mapping.map(argument, operand);
+      callee.getBody().cloneInto(&exportFunction.getBody(),
+                                 continuation->getIterator(), mapping);
+      Block *entry = mapping.lookup(&callee.getBody().front());
+      for (Block &sourceBlock : callee.getBody()) {
+        Block *clonedBlock = mapping.lookup(&sourceBlock);
+        auto returnOperation =
+            dyn_cast<func::ReturnOp>(clonedBlock->getTerminator());
+        if (!returnOperation)
+          continue;
+        OpBuilder returnBuilder(returnOperation);
+        cf::BranchOp::create(returnBuilder, returnOperation.getLoc(),
+                             continuation, returnOperation.getOperands());
+        returnOperation.erase();
+      }
+      call.erase();
+      OpBuilder callerBuilder(callerBlock, callerBlock->end());
+      cf::BranchOp::create(callerBuilder, callee.getLoc(), entry);
+    }
+  }
+  for (func::FuncOp function :
+       llvm::make_early_inc_range(module.getOps<func::FuncOp>()))
+    if (!function->hasAttr("vrc.export_id") &&
+        !function->hasAttr("vrc.intrinsic"))
+      function.erase();
+  return success();
 }
 
 LogicalResult recoverUnityCBufferIntrinsics(ModuleOp module) {
@@ -1769,6 +1841,8 @@ int main(int argc, char **argv) {
     return 1;
   PassManager manager(&context);
   if (emitUnityLibrary) {
+    if (failed(inlineUnityHostCallGraph(*module)))
+      return 1;
     manager.addPass(::vrc::createLowerHostToUdonHLPass());
     manager.addPass(::vrc::createSubstituteRuntimeIntrinsicsPass());
     if (failed(manager.run(*module)) || failed(verify(*module)))
@@ -1783,18 +1857,40 @@ int main(int argc, char **argv) {
     unityUsesBufferCopy = bufferBinding->usesCopy;
     unityDispatchKernelIds = std::move(bufferBinding->dispatchKernelIds);
     auto manifest = ::vrc::buildBoundaryManifest(*module);
+    bool usesAsyncCommands = false;
+    module->walk([&](Operation *operation) {
+      usesAsyncCommands |=
+          isa<::vrc::vrc::BufferUploadOp, ::vrc::vrc::BufferReadbackOp,
+              ::vrc::vrc::AwaitOp>(operation);
+    });
     auto program = unityConfig->getString("program");
     manifest["artifact_stage"] = "unity-udoncl-library";
     manifest["program"] = json::Object{{"name", *program},
                                        {"assembly", "host.uasm"},
                                        {"display_shader", "display.shader"},
                                        {"ir", "host.udonasm.mlir"}};
+    if (usesAsyncCommands)
+      (*manifest["program"].getAsObject())["async_commands"] = json::Object{
+          {"resume_state_slot", "__udoncl_async_resume_state"},
+          {"completion_status_slot", "__udoncl_async_completion_status"},
+          {"command_kind_slot", "__udoncl_async_command_kind"},
+          {"command_buffer_slot", "__udoncl_async_command_buffer"},
+          {"command_offset_slot", "__udoncl_async_command_offset"},
+          {"command_size_slot", "__udoncl_async_command_size"},
+          {"command_pointer_slot", "__udoncl_async_command_pointer"},
+          {"raw_heap_slot", "__vrc_raw_heap"},
+          {"upload_kind", 1},
+          {"readback_kind", 2},
+      };
     if (unityUsesBufferCopy || !unityBuffers.empty())
       (*manifest["program"].getAsObject())["buffer_copy_shader"] =
           "buffer-copy.shader";
     if (unityUsesBufferCopy)
       (*manifest["program"].getAsObject())["buffer_copy_program_slot"] = true;
-    manifest["ready_for_unity"] = true;
+    manifest["ready_for_unity"] = !usesAsyncCommands;
+    if (usesAsyncCommands)
+      manifest["unity_blocker"] =
+          "generated async transfer binding is not attached yet";
     auto *device = manifest["device"].getAsObject();
     if (!device) {
       errs() << "Unity library manifest is missing its Device section\n";

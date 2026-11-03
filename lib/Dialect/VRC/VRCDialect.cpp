@@ -4,10 +4,20 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/DialectImplementation.h"
 #include "mlir/IR/OpImplementation.h"
+#include "mlir/Transforms/InliningUtils.h"
 #include "llvm/ADT/TypeSwitch.h"
 #define GET_TYPEDEF_CLASSES
 #include "VRC/Dialect/VRC/VRCDialect.cpp.inc"
 #include "VRC/Dialect/VRC/VRCTypes.cpp.inc"
+namespace {
+struct VRCInlinerInterface final : mlir::DialectInlinerInterface {
+  using DialectInlinerInterface::DialectInlinerInterface;
+  bool isLegalToInline(mlir::Operation *, mlir::Region *, bool,
+                       mlir::IRMapping &) const override {
+    return true;
+  }
+};
+} // namespace
 void vrc::vrc::VRCDialect::initialize() {
   addTypes<
 #define GET_TYPEDEF_LIST
@@ -17,6 +27,7 @@ void vrc::vrc::VRCDialect::initialize() {
 #define GET_OP_LIST
 #include "VRC/Dialect/VRC/VRCOps.cpp.inc"
       >();
+  addInterfaces<VRCInlinerInterface>();
 }
 #define GET_OP_CLASSES
 #include "VRC/Dialect/VRC/VRCOps.cpp.inc"

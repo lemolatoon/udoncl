@@ -438,6 +438,51 @@ for expected in [
 ]:
     assert expected in buffer_lowered.stdout, (expected, buffer_lowered.stdout)
 
+async_buffer_source = r'''module attributes {
+  vrc.host_stage = "udonhl",
+  vrc.unity_buffer_pool = [
+    {id = 1 : i32, logical_bytes = 4 : i32, heap_slot = "__udoncl_buffer_1"}
+  ]
+} {
+  func.func @transfer() -> i32 attributes {
+    vrc.async_effect = "may_suspend",
+    vrc.export_id = 7 : i32
+  } {
+    %id = arith.constant 1 : i32
+    %bytes = arith.constant 4 : i32
+    %zero = arith.constant 0 : i32
+    %pointer = arith.constant 16 : i32
+    %buffer, %status = vrc.buffer_alloc %id, %bytes {
+      format = "rgba8_unorm", usage = "storage"
+    } : (i32, i32) -> (!vrc.buffer, i32)
+    %uploaded = vrc.buffer_upload %buffer, %zero, %bytes, %pointer : (!vrc.buffer, i32, i32, i32) -> !vrc.event
+    %upload_status = vrc.await %uploaded : (!vrc.event) -> i32
+    %read = vrc.buffer_readback %buffer, %zero, %bytes, %pointer : (!vrc.buffer, i32, i32, i32) -> !vrc.event
+    %read_status = vrc.await %read : (!vrc.event) -> i32
+    %result = arith.addi %upload_status, %read_status : i32
+    return %result : i32
+  }
+}'''
+async_buffer_lowered = subprocess.run(
+    [opt, '--vrc-lower-udonhl-to-udonasm', '--verify-each'],
+    input=async_buffer_source, text=True, capture_output=True)
+assert async_buffer_lowered.returncode == 0, async_buffer_lowered.stderr
+for expected in [
+    'name = "__udoncl_async_resume_state"',
+    'name = "__udoncl_async_completion_status"',
+    'name = "__udoncl_async_command_kind"',
+    'name = "__udoncl_async_command_buffer"',
+    'name = "__udoncl_async_command_offset"',
+    'name = "__udoncl_async_command_size"',
+    'name = "__udoncl_async_command_pointer"',
+    'initial = "1", name = "__vrc_f7_upload_command"',
+    'initial = "2", name = "__vrc_f7_readback_command"',
+    'udonasm.jump 4294967292',
+]:
+    assert expected in async_buffer_lowered.stdout, (
+        expected, async_buffer_lowered.stdout)
+assert async_buffer_lowered.stdout.count('udonasm.jump 4294967292') == 3
+
 continuation_source = r'''module attributes {vrc.host_stage = "udonhl"} {
   func.func @resume(%execution: i32, %resume_state: i32, %event: !vrc.event, %value: i32) -> i32 attributes {
     vrc.async_effect = "may_suspend",

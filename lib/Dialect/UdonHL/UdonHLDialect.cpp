@@ -4,6 +4,7 @@
 #include "mlir/IR/DialectImplementation.h"
 #include "mlir/IR/OpImplementation.h"
 #include "mlir/IR/SymbolTable.h"
+#include "mlir/Transforms/InliningUtils.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/TypeSwitch.h"
@@ -15,6 +16,15 @@
 #define GET_TYPEDEF_CLASSES
 #include "VRC/Dialect/UdonHL/UdonHLTypes.cpp.inc"
 #include "VRC/Dialect/UdonHL/UdonHLDialect.cpp.inc"
+namespace {
+struct UdonHLInlinerInterface final : mlir::DialectInlinerInterface {
+  using DialectInlinerInterface::DialectInlinerInterface;
+  bool isLegalToInline(mlir::Operation *, mlir::Region *, bool,
+                       mlir::IRMapping &) const override {
+    return true;
+  }
+};
+} // namespace
 void vrc::udonhl::UdonHLDialect::initialize() {
   addAttributes<
 #define GET_ATTRDEF_LIST
@@ -28,6 +38,7 @@ void vrc::udonhl::UdonHLDialect::initialize() {
 #define GET_OP_LIST
 #include "VRC/Dialect/UdonHL/UdonHLOps.cpp.inc"
       >();
+  addInterfaces<UdonHLInlinerInterface>();
 }
 #define GET_OP_CLASSES
 #include "VRC/Dialect/UdonHL/UdonHLOps.cpp.inc"
