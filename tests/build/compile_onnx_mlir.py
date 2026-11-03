@@ -44,8 +44,9 @@ class CompileONNXMLIRTests(unittest.TestCase):
             '"onnx.Add"() : () -> ()\nonnx.Return\n', ['Add'])
         self.assertEqual(len(calls), 2)
         optimizer = calls[1].args[0]
-        self.assertIn('--onnx-op-transform', optimizer)
+        self.assertIn('--shape-inference', optimizer)
         self.assertIn('--canonicalize', optimizer)
+        self.assertIn('--mlir-print-debuginfo', optimizer)
         self.assertTrue(self.output.is_file())
 
     def test_unsupported_operator_is_explicit_and_output_is_atomic(self):
@@ -60,7 +61,8 @@ class CompileONNXMLIRTests(unittest.TestCase):
 
     def test_operator_scan_ignores_structural_onnx_ops(self):
         found = compiler.operators(
-            '"onnx.EntryPoint"()\nonnx.Return\n"onnx.MatMulNBits"()\n')
+            '"onnx.EntryPoint"()\nonnx.Return\nonnx.Constant\nonnx.NoValue\n'
+            '"onnx.MatMulNBits"() {onnx.name = "input"}\n')
         self.assertEqual(found, {'MatMulNBits'})
 
 

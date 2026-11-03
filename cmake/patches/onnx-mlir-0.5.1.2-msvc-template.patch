@@ -45,7 +45,7 @@ new file mode 100644
 index 00000000..02a44346
 --- /dev/null
 +++ b/src/Tools/udoncl-onnx/udoncl-onnx.cpp
-@@ -0,0 +1,59 @@
+@@ -0,0 +1,62 @@
 +// SPDX-License-Identifier: Apache-2.0
 +
 +#include "src/Builder/FrontendDialectTransformer.hpp"
@@ -53,6 +53,7 @@ index 00000000..02a44346
 +#include "src/Dialect/ONNX/ONNXDialect.hpp"
 +
 +#include "mlir/Dialect/Func/IR/FuncOps.h"
++#include "mlir/IR/AsmState.h"
 +#include "mlir/IR/BuiltinOps.h"
 +#include "mlir/IR/DialectRegistry.h"
 +#include "mlir/IR/MLIRContext.h"
@@ -89,7 +90,9 @@ index 00000000..02a44346
 +  }
 +
 +  if (argc == 2) {
-+    module->print(llvm::outs());
++    mlir::OpPrintingFlags flags;
++    flags.enableDebugInfo();
++    module->print(llvm::outs(), flags);
 +    llvm::outs() << "\n";
 +    return 0;
 +  }
@@ -101,7 +104,9 @@ index 00000000..02a44346
 +                 << outputError.message() << "\n";
 +    return 1;
 +  }
-+  module->print(output);
++  mlir::OpPrintingFlags flags;
++  flags.enableDebugInfo();
++  module->print(output, flags);
 +  output << "\n";
 +  return 0;
 +}

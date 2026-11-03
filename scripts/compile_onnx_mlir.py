@@ -6,8 +6,8 @@ import re
 import subprocess
 import tempfile
 
-STRUCTURAL_OPERATORS = {'EntryPoint', 'Return'}
-OPERATOR_PATTERN = re.compile(r'(?<![A-Za-z0-9_])onnx\.([A-Za-z0-9_]+)')
+STRUCTURAL_OPERATORS = {'Constant', 'EntryPoint', 'NoValue', 'Return'}
+OPERATOR_PATTERN = re.compile(r'(?<![A-Za-z0-9_])onnx\.([A-Z][A-Za-z0-9_]*)')
 
 
 def operators(mlir):
@@ -31,8 +31,8 @@ def canonicalize(model, output, importer, optimizer, supported=()):
         subprocess.run(
             [importer, model, '-o', imported], check=True)
         subprocess.run([
-            optimizer, imported, '--onnx-op-transform', '--canonicalize',
-            '-o', transformed], check=True)
+            optimizer, imported, '--shape-inference', '--canonicalize',
+            '--mlir-print-debuginfo', '-o', transformed], check=True)
         text = transformed.read_text(encoding='utf-8')
         if supported:
             unsupported = sorted(operators(text) - set(supported))
