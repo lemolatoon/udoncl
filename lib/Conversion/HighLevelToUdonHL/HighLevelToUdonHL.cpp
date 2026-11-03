@@ -164,14 +164,15 @@ struct LowerHostToUdonHLPass
           bool udonHL = op.getName().getDialectNamespace() == "udonhl";
           if (!udonHL &&
               !isa<func::CallOp, func::ReturnOp, cf::BranchOp, cf::CondBranchOp,
-                   runtime::DispatchDescCreateOp, runtime::DispatchOp,
-                   runtime::BufferAllocOp, runtime::BufferReleaseOp,
-                   runtime::BufferCopyOp, runtime::BufferUploadOp,
-                   runtime::BufferReadbackOp, memref::LoadOp, memref::StoreOp,
-                   memref::AllocaOp, memref::GetGlobalOp, arith::ConstantOp,
-                   arith::AddIOp, arith::SubIOp, arith::MulIOp, arith::AddFOp,
-                   arith::SubFOp, arith::MulFOp, arith::DivFOp, arith::CmpIOp,
-                   arith::CmpFOp>(op)) {
+                   UnrealizedConversionCastOp, runtime::DispatchDescCreateOp,
+                   runtime::DispatchOp, runtime::BufferAllocOp,
+                   runtime::BufferReleaseOp, runtime::BufferCopyOp,
+                   runtime::BufferUploadOp, runtime::BufferReadbackOp,
+                   memref::LoadOp, memref::StoreOp, memref::AllocaOp,
+                   memref::GetGlobalOp, arith::ConstantOp, arith::AddIOp,
+                   arith::SubIOp, arith::MulIOp, arith::AddFOp, arith::SubFOp,
+                   arith::MulFOp, arith::DivFOp, arith::CmpIOp, arith::CmpFOp>(
+                  op)) {
             op.emitError(
                 "operation is outside the initial Host lowering pattern");
             signalPassFailure();

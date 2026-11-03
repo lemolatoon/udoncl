@@ -1638,7 +1638,10 @@ int main(int argc, char **argv) {
         return 1;
       }
       auto *enqueue = inputModule->getFunction("clEnqueueNDRangeKernel");
-      if (enqueue && !enqueue->use_empty()) {
+      bool linkedOpenCLAOT =
+          inputModule->getFunction("__vrc_opencl_dispatch_udonblas_sgemm") !=
+          nullptr;
+      if (enqueue && !enqueue->use_empty() && !linkedOpenCLAOT) {
         auto *device = unityConfig->getObject("device_kernel");
         module = device && device->getString("profile") == "gather-f32"
                      ? recoverUnityOpenCLGatherDispatchProgram(
@@ -1652,13 +1655,14 @@ int main(int argc, char **argv) {
         module = ::vrc::importLLVM(std::move(inputModule), context);
         if (!module || failed(verify(*module)))
           return 1;
-        if (failed(normalizeUnityOpenCLHostCalls(*module)))
+        if (!linkedOpenCLAOT && failed(normalizeUnityOpenCLHostCalls(*module)))
           return 1;
         PassManager cleanup(&context);
         cleanup.addPass(createMem2Reg());
         cleanup.addPass(createCanonicalizerPass());
         if (failed(cleanup.run(*module)) ||
-            failed(recoverUnityOpenCLBufferCalls(*module)))
+            (!linkedOpenCLAOT &&
+             failed(recoverUnityOpenCLBufferCalls(*module))))
           return 1;
         PassManager recovery(&context);
         // The first canonicalization removes dead opaque OpenCL handles while
@@ -1673,8 +1677,11 @@ int main(int argc, char **argv) {
         recovery.addPass(::vrc::createRaiseLLVMRawMemoryPass());
         recovery.addPass(::vrc::createRaiseLLVMToScalarPass());
         recovery.addPass(createCanonicalizerPass());
+        if (linkedOpenCLAOT)
+          recovery.addPass(::vrc::createLowerOpenCLAOTIntrinsicsPass());
         if (failed(recovery.run(*module)) ||
-            failed(recoverUnityCBufferIntrinsics(*module)) ||
+            (!linkedOpenCLAOT &&
+             failed(recoverUnityCBufferIntrinsics(*module))) ||
             !configureUnityExports(*module, *unityConfig))
           return 1;
       }

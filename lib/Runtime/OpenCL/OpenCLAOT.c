@@ -22,12 +22,6 @@ extern cl_int __vrc_opencl_buffer_upload(cl_uint physical_token, size_t offset,
 extern cl_int __vrc_opencl_buffer_readback(cl_uint physical_token,
                                            size_t offset, size_t bytes,
                                            void *destination);
-extern cl_int __vrc_opencl_dispatch(cl_uint kernel_id,
-                                    const unsigned char *arguments,
-                                    size_t argument_bytes, cl_uint work_dim,
-                                    const size_t *global_offset,
-                                    const size_t *global_size,
-                                    const size_t *local_size);
 extern cl_int __vrc_opencl_dispatch_udonblas_sgemm(
     cl_uint input_token, cl_uint output_token, cl_int m, cl_int n, cl_int k,
     cl_int transa, cl_int transb, cl_int lda, cl_int ldb, cl_int ldc,
@@ -366,11 +360,7 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueNDRangeKernel(
                                  local_size) < 0
                ? CL_OUT_OF_RESOURCES
                : CL_SUCCESS;
-  return __vrc_opencl_dispatch(kernel->id, &kernel->arguments[0][0],
-                               sizeof(kernel->arguments), work_dim,
-                               global_offset, global_size, local_size) < 0
-             ? CL_OUT_OF_RESOURCES
-             : CL_SUCCESS;
+  return CL_INVALID_KERNEL;
 }
 
 CL_API_ENTRY cl_int CL_API_CALL clFinish(cl_command_queue queue) {

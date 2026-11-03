@@ -40,6 +40,7 @@ def run(args, text=None, error=None):
 
 host_pass = 'vrc-lower-host-to-udonhl'
 intrinsic_pass = 'vrc-substitute-runtime-intrinsics'
+opencl_aot_pass = 'vrc-lower-opencl-aot-intrinsics'
 device_pass = 'vrc-lower-device-single-invocation'
 verify_pass = 'vrc-verify-host-device'
 pipeline = f'builtin.module({host_pass},{intrinsic_pass},{device_pass},{verify_pass})'
@@ -100,6 +101,41 @@ assert 'vrc.buffer_copy ' in typed_buffer_ops
 assert 'vrc.buffer_upload ' in typed_buffer_ops
 assert 'vrc.buffer_readback ' in typed_buffer_ops
 assert 'func.call ' not in typed_buffer_ops and 'udonhl.call ' not in typed_buffer_ops
+
+opencl_aot_runtime = r'''
+module {
+  func.func private @__vrc_opencl_buffer_alloc(i32, i32) -> i32
+  func.func private @__vrc_opencl_buffer_release(i32) -> i32
+  func.func private @__vrc_opencl_buffer_upload(i32, i32, i32, i32) -> i32
+  func.func private @__vrc_opencl_buffer_readback(i32, i32, i32, i32) -> i32
+  func.func private @__vrc_opencl_await(i32) -> i32
+  func.func private @__vrc_opencl_dispatch_udonblas_sgemm(i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, f32, f32) -> i32
+  func.func private @blocking_transfer(%token: i32, %offset: i32, %bytes: i32, %pointer: i32) -> i32 {
+    %event = func.call @__vrc_opencl_buffer_readback(%token, %offset, %bytes, %pointer) : (i32, i32, i32, i32) -> i32
+    %status = func.call @__vrc_opencl_await(%event) : (i32) -> i32
+    return %status : i32
+  }
+  func.func @run(%bytes: i32, %zero: i32, %pointer: i32, %one: i32, %scalar: f32) -> i32 {
+    %input = func.call @__vrc_opencl_buffer_alloc(%one, %bytes) : (i32, i32) -> i32
+    %output = func.call @__vrc_opencl_buffer_alloc(%one, %bytes) : (i32, i32) -> i32
+    %upload = func.call @__vrc_opencl_buffer_upload(%input, %zero, %bytes, %pointer) : (i32, i32, i32, i32) -> i32
+    %dispatch = func.call @__vrc_opencl_dispatch_udonblas_sgemm(%input, %output, %one, %one, %one, %zero, %zero, %one, %one, %one, %scalar, %scalar) : (i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, f32, f32) -> i32
+    %status = func.call @blocking_transfer(%output, %zero, %bytes, %pointer) : (i32, i32, i32, i32) -> i32
+    %released = func.call @__vrc_opencl_buffer_release(%output) : (i32) -> i32
+    return %status : i32
+  }
+}
+'''
+opencl_aot_ops = run(
+    [opt, '--pass-pipeline=builtin.module(' + opencl_aot_pass + ')',
+     '--verify-each'], opencl_aot_runtime)
+for operation in ['vrc.buffer_alloc ', 'vrc.buffer_release ',
+                  'vrc.buffer_upload ', 'vrc.buffer_readback ',
+                  'vrc.dispatch_desc_create ', 'vrc.dispatch ', 'vrc.await ']:
+    assert operation in opencl_aot_ops
+assert 'vrc.async_effect = "may_suspend"' in opencl_aot_ops
+assert '@__vrc_opencl_' not in opencl_aot_ops
+assert 'scalar_kinds = ["i32", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "f32", "f32"]' in opencl_aot_ops
 
 # Recovered C control flow remains in cf form on the Host path. Keep the public
 # ABI narrow while allowing internal booleans, index values, block arguments,

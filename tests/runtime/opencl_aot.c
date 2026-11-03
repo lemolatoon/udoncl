@@ -45,21 +45,6 @@ cl_int __vrc_opencl_buffer_readback(cl_uint physical_token, size_t offset,
   return 8;
 }
 
-cl_int __vrc_opencl_dispatch(cl_uint kernel_id, const unsigned char *arguments,
-                             size_t argument_bytes, cl_uint work_dim,
-                             const size_t *global_offset,
-                             const size_t *global_size,
-                             const size_t *local_size) {
-  (void)kernel_id;
-  (void)arguments;
-  (void)argument_bytes;
-  (void)work_dim;
-  (void)global_offset;
-  (void)global_size;
-  (void)local_size;
-  return 9;
-}
-
 cl_int __vrc_opencl_dispatch_udonblas_sgemm(cl_uint input_token,
                                             cl_uint output_token, cl_int m,
                                             cl_int n, cl_int k, cl_int transa,
