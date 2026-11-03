@@ -330,6 +330,7 @@ private:
 
     llvm::DenseMap<Value, std::string> valueSlots;
     llvm::DenseMap<Operation *, SmallVector<std::string>> frameSlots;
+    llvm::DenseMap<Operation *, std::string> allocaLengthSlots;
     for (auto [index, argument] : llvm::enumerate(function.getArguments())) {
       auto type = *udonType(argument.getType());
       std::string name = plan.parameterSlots[index];
@@ -363,6 +364,25 @@ private:
           valueSlots[argument] = name;
         }
       for (Operation &operation : block) {
+        if (auto alloca = dyn_cast<memref::AllocaOp>(operation)) {
+          auto type = alloca.getType();
+          if (type.getRank() != 1 || !type.hasStaticShape() ||
+              type.getNumElements() <= 0 || type.getNumElements() > INT32_MAX ||
+              (!type.getElementType().isInteger(32) &&
+               !type.getElementType().isF32()) ||
+              !alloca.getDynamicSizes().empty() ||
+              !alloca.getSymbolOperands().empty())
+            return alloca.emitError(
+                "Udon local array requires a fixed non-empty i32/f32 shape");
+          std::string name = prefix + "a" + std::to_string(valueIndex++);
+          addSlot(name, *udonType(type), "null", false);
+          valueSlots[alloca.getResult()] = name;
+          std::string length = name + "_length";
+          addSlot(length, "SystemInt32", std::to_string(type.getNumElements()),
+                  false);
+          allocaLengthSlots[alloca.getOperation()] = std::move(length);
+          continue;
+        }
         if (!operation.getNumResults())
           continue;
         if (isa<::vrc::vrc::DispatchDescCreateOp>(operation))
@@ -467,6 +487,21 @@ private:
     for (Block &block : function.getBody()) {
       blockAddresses[&block] = address;
       for (Operation &operation : block) {
+        if (auto alloca = dyn_cast<memref::AllocaOp>(operation)) {
+          std::string length = allocaLengthSlots.lookup(&operation);
+          std::string result = valueSlots.lookup(alloca.getResult());
+          if (length.empty() || result.empty())
+            return alloca.emitError(
+                "Udon local array has no allocated heap slots");
+          emitPush(alloca.getLoc(), length);
+          emitPush(alloca.getLoc(), result);
+          emitExtern(
+              alloca.getLoc(),
+              alloca.getType().getElementType().isF32()
+                  ? "SystemSingleArray.__ctor__SystemInt32__SystemSingleArray"
+                  : "SystemInt32Array.__ctor__SystemInt32__SystemInt32Array");
+          continue;
+        }
         if (isa<arith::ConstantOp>(operation))
           continue;
         if (isa<::vrc::vrc::DispatchDescCreateOp>(operation))
@@ -686,7 +721,9 @@ private:
           }
           std::string returnAddress =
               prefix + "call_return_" + std::to_string(callReturnIndex++);
-          addSlot(returnAddress, "SystemUInt32", std::to_string(address + 20),
+          // Two eight-byte PUSH instructions plus four-byte COPY store the
+          // return address, then an eight-byte JUMP enters the callee.
+          addSlot(returnAddress, "SystemUInt32", std::to_string(address + 28),
                   false);
           emitCopy(call.getLoc(), returnAddress,
                    *calleePlan->second.returnSlot);

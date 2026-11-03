@@ -134,7 +134,11 @@ call_source = r'''module attributes {vrc.host_stage = "udonhl"} {
     return %result : i32
   }
   func.func private @double(%value: i32) -> i32 {
-    %result = arith.addi %value, %value : i32
+    %values = memref.alloca() : memref<2xi32>
+    %zero = arith.constant 0 : index
+    memref.store %value, %values[%zero] : memref<2xi32>
+    %stored = memref.load %values[%zero] : memref<2xi32>
+    %result = arith.addi %stored, %stored : i32
     return %result : i32
   }
 }'''
@@ -146,6 +150,9 @@ for expected in [
     'name = "__vrc_internal_1_return"',
     'type = "SystemUInt32"',
     'udonasm.jump_indirect "__vrc_internal_1_return"',
+    'SystemInt32Array.__ctor__SystemInt32__SystemInt32Array',
+    'SystemInt32Array.__Get__SystemInt32__SystemInt32',
+    'SystemInt32Array.__Set__SystemInt32_SystemInt32__SystemVoid',
     'SystemInt32.__op_Addition__SystemInt32_SystemInt32__SystemInt32',
 ]:
     assert expected in call_lowered.stdout, (expected, call_lowered.stdout)

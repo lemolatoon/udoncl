@@ -5,6 +5,17 @@ Unity materials, VRCGraphics dispatch, or VRChat shaders. A finding is a
 project rule only after a focused reproducer confirms it. Unresolved failures
 stay in the investigation section.
 
+## Udon array allocation ABI
+
+- UdonSharp in Worlds SDK 3.10.5 lowers `new float[n]` by pushing the i32
+  length slot, pushing the destination `SystemSingleArray` slot, then invoking
+  `SystemSingleArray.__ctor__SystemInt32__SystemSingleArray`.
+- `new int[n]` uses the same operand order with
+  `SystemInt32Array.__ctor__SystemInt32__SystemInt32Array`.
+- UdonCL fixed `memref.alloca` lowering must follow this order and recreate the
+  array on each function invocation. A `null` array heap initializer alone is
+  not an allocation.
+
 ## Confirmed constraints
 
 ### Integer shader arguments must use the non-legacy Unity integer API
