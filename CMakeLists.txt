@@ -68,6 +68,7 @@ install(FILES lib/Runtime/OpenCL/OpenCLAOT.c
   COMPONENT UdonCLCompiler)
 install(FILES
   runtime/onnx/udon_onnx.py
+  runtime/onnx/udon_onnx_host.py
   runtime/onnx/udon_pages.py
   runtime/onnx/udon_weights.py
   DESTINATION "${CMAKE_INSTALL_DATADIR}/udoncl/onnx"

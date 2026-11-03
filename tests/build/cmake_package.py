@@ -43,6 +43,7 @@ def main():
     pooling_consumer = output / 'average-pooling-consumer'
     udonblas_consumer = output / 'udonblas-consumer'
     onnx_consumer = output / 'onnx-consumer'
+    onnx_dense_consumer = output / 'onnx-dense-consumer'
     run([
         args.cmake,
         '--install', str(args.project_build.resolve()),
@@ -100,6 +101,41 @@ def main():
     assert 'udonblasSgemv(' in generated_onnx_source
     assert not list(onnx_consumer.rglob('execution-plan.json'))
     assert not list(onnx_consumer.rglob('plan.json'))
+
+    onnx_dense_source = args.source.resolve().parents[1] / 'examples/onnx-mnist-dense'
+    run([
+        args.cmake,
+        '-S', onnx_dense_source,
+        '-B', onnx_dense_consumer,
+        '-G', args.generator,
+        f'-DCMAKE_MAKE_PROGRAM={args.make_program}',
+        f'-DUdonCL_DIR={package}',
+        f'-DUdonBLAS_DIR={udonblas_package}',
+        f'-DUDONCL_CLANG_EXECUTABLE={Path(args.clang).resolve()}',
+        f'-DUDONCL_LLVM_LINK_EXECUTABLE={Path(args.llvm_link).resolve()}',
+    ])
+    run([
+        args.cmake, '--build', onnx_dense_consumer, '--target',
+        'onnx-mnist-dense',
+    ])
+    onnx_dense_root = onnx_dense_consumer / 'udoncl/onnx-mnist-dense'
+    onnx_dense_host = onnx_dense_consumer / 'udoncl-onnx/mnist_dense_host/host.c'
+    assert onnx_dense_host.is_file()
+    onnx_dense_source_text = onnx_dense_host.read_text(encoding='utf-8')
+    assert 'm=1, n=10, k=144' not in onnx_dense_source_text
+    assert 'UDONBLAS_OP_N, UDONBLAS_OP_N, 1, 10, 144' in onnx_dense_source_text
+    assert not list(onnx_dense_consumer.rglob('execution-plan.json'))
+    onnx_dense_manifest = json.loads(
+        (onnx_dense_root / 'artifact/manifest.json').read_text(encoding='utf-8')
+    )
+    assert [item['public_name'] for item in onnx_dense_manifest['exports']] == [
+        'WriteMnistDenseInput',
+        'RunMnistDense',
+        'ReadMnistDenseOutput',
+    ]
+    assert onnx_dense_manifest['exports'][0]['async'] is False
+    assert onnx_dense_manifest['exports'][1]['async'] is True
+    assert onnx_dense_manifest['exports'][2]['async'] is False
     run([
         args.cmake,
         '-S', str(args.source.resolve()),

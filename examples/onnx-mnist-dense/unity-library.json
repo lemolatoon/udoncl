@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "program": "onnx_mnist_dense",
+  "device_kernel": {
+    "schema_version": 1,
+    "profile": "gather-f32",
+    "words": 1024,
+    "kernel": "udonblas_sgemm",
+    "kernel_id": 1,
+    "argument_kinds": [
+      "buffer",
+      "buffer",
+      "i32",
+      "i32",
+      "i32",
+      "i32",
+      "i32",
+      "i32",
+      "i32",
+      "i32",
+      "f32",
+      "f32"
+    ],
+    "global_size": [32, 32, 1],
+    "local_size": [1, 1, 1],
+    "global_offset": [0, 0, 0]
+  },
+  "exports": [
+    {
+      "symbol": "write_mnist_dense_input",
+      "public_name": "WriteMnistDenseInput",
+      "id": 1,
+      "parameters": ["index", "value"]
+    },
+    {
+      "symbol": "run_mnist_dense",
+      "public_name": "RunMnistDense",
+      "id": 2,
+      "parameters": []
+    },
+    {
+      "symbol": "read_mnist_dense_output",
+      "public_name": "ReadMnistDenseOutput",
+      "id": 3,
+      "parameters": ["index"]
+    }
+  ],
+  "buffers": [
+    {
+      "id": 1,
+      "name": "input_buffer",
+      "byte_size": 4096,
+      "element_type": "float32",
+      "public_access": "input"
+    },
+    {
+      "id": 2,
+      "name": "output_buffer",
+      "byte_size": 4096,
+      "element_type": "float32",
+      "public_access": "output"
+    }
+  ]
+}
