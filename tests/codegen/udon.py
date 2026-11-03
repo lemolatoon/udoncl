@@ -190,6 +190,78 @@ for expected in [
 assert 'memref.global' not in global_lowered.stdout
 assert 'memref.get_global' not in global_lowered.stdout
 
+raw_memory_source = r'''module {
+  "udonhl.global"() <{sym_name = "handle", storage_type = !udonhl.ptr<0>, initial_value = 0 : i32, linkage = "internal", address_space = 0 : i32, alignment = 4 : i64}> : () -> ()
+  func.func @raw_roundtrip() -> i32 attributes {vrc.export_id = 1 : i32} {
+    %address = udonhl.address_of @handle : !udonhl.ptr<0>
+    %value = arith.constant 305419896 : i32
+    "udonhl.store"(%value, %address) <{alignment = 4 : i64}> : (i32, !udonhl.ptr<0>) -> ()
+    %loaded = "udonhl.load"(%address) <{alignment = 4 : i64}> : (!udonhl.ptr<0>) -> i32
+    return %loaded : i32
+  }
+  func.func @raw_float() -> f32 attributes {vrc.export_id = 2 : i32} {
+    %bytes = arith.constant 4 : i32
+    %pointer = "udonhl.alloca"(%bytes) <{alignment = 4 : i64}> : (i32) -> !udonhl.ptr<0>
+    %value = arith.constant 1.25 : f32
+    "udonhl.store"(%value, %pointer) <{alignment = 4 : i64}> : (f32, !udonhl.ptr<0>) -> ()
+    %loaded = "udonhl.load"(%pointer) <{alignment = 4 : i64}> : (!udonhl.ptr<0>) -> f32
+    return %loaded : f32
+  }
+}'''
+raw_memory_lowered = subprocess.run(
+    [opt, '--vrc-lower-udonhl-to-udonasm', '--verify-each'],
+    input=raw_memory_source, text=True, capture_output=True)
+assert raw_memory_lowered.returncode == 0, raw_memory_lowered.stderr
+for expected in [
+    'name = "__vrc_raw_heap"',
+    'initial = "12", name = "__vrc_raw_heap_length"',
+    'SystemInt32Array.__ctor__SystemInt32__SystemInt32Array',
+    'SystemInt32Array.__Get__SystemInt32__SystemInt32',
+    'SystemInt32Array.__Set__SystemInt32_SystemInt32__SystemVoid',
+    'SystemInt32.__op_LeftShift__SystemInt32_SystemInt32__SystemInt32',
+    'SystemInt32.__op_RightShift__SystemInt32_SystemInt32__SystemInt32',
+    'SystemInt32.__op_BitwiseAnd__SystemInt32_SystemInt32__SystemInt32',
+    'SystemInt32.__op_BitwiseOr__SystemInt32_SystemInt32__SystemInt32',
+    'SystemBitConverter.__SingleToInt32Bits__SystemSingle__SystemInt32',
+    'SystemBitConverter.__Int32BitsToSingle__SystemInt32__SystemSingle',
+]:
+    assert expected in raw_memory_lowered.stdout, (
+        expected, raw_memory_lowered.stdout)
+for forbidden in ['udonhl.global', 'udonhl.address_of', 'udonhl.alloca',
+                  'udonhl.load', 'udonhl.store']:
+    assert forbidden not in raw_memory_lowered.stdout, (
+        forbidden, raw_memory_lowered.stdout)
+
+raw_llvm_source = r'''module {
+  llvm.mlir.global internal @counter(0 : i32) {addr_space = 0 : i32, alignment = 4 : i64} : i32
+  llvm.func @raw_export() -> i32 attributes {vrc.export_id = 1 : i32} {
+    %address = llvm.mlir.addressof @counter : !llvm.ptr
+    %value = llvm.mlir.constant(42 : i32) : i32
+    llvm.store %value, %address {alignment = 4 : i64} : i32, !llvm.ptr
+    %result = llvm.load %address {alignment = 4 : i64} : !llvm.ptr -> i32
+    llvm.return %result : i32
+  }
+}'''
+raw_llvm_lowered = subprocess.run(
+    [
+        opt,
+        '--pass-pipeline=builtin.module(vrc-recover-high-level,'
+        'vrc-lower-host-to-udonhl,vrc-lower-udonhl-to-udonasm)',
+        '--verify-each',
+    ],
+    input=raw_llvm_source,
+    text=True,
+    capture_output=True,
+)
+assert raw_llvm_lowered.returncode == 0, raw_llvm_lowered.stderr
+assert 'initial = "42"' in raw_llvm_lowered.stdout
+assert 'SystemInt32Array.__Set__SystemInt32_SystemInt32__SystemVoid' in raw_llvm_lowered.stdout
+for forbidden in ['llvm.mlir.global', 'llvm.mlir.addressof', 'llvm.load',
+                  'llvm.store', 'udonhl.global', 'udonhl.load',
+                  'udonhl.store']:
+    assert forbidden not in raw_llvm_lowered.stdout, (
+        forbidden, raw_llvm_lowered.stdout)
+
 # Pin the exact cross-UdonBehaviour naming observed from UdonSharp in Worlds
 # SDK 3.10.5. Logical export ids remain separate from this physical ABI.
 abi_source = r'''module {

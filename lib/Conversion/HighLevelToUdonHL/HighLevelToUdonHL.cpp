@@ -27,8 +27,8 @@ bool publicArray(Type type) {
 bool publicType(Type type) { return scalar(type) || publicArray(type); }
 bool internalType(Type type) {
   return internalScalar(type) || publicArray(type) ||
-         isa<runtime::BufferType, runtime::DispatchDescType,
-             runtime::EventType>(type);
+         isa<runtime::BufferType, runtime::DispatchDescType, runtime::EventType,
+             host::PtrType, host::FrameType>(type);
 }
 struct CallPattern : OpConversionPattern<func::CallOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -125,7 +125,9 @@ struct LowerHostToUdonHLPass
           return;
         }
         for (Operation &op : block) {
-          if (!isa<func::CallOp, func::ReturnOp, cf::BranchOp, cf::CondBranchOp,
+          bool udonHL = op.getName().getDialectNamespace() == "udonhl";
+          if (!udonHL &&
+              !isa<func::CallOp, func::ReturnOp, cf::BranchOp, cf::CondBranchOp,
                    runtime::DispatchDescCreateOp, runtime::DispatchOp,
                    runtime::BufferAllocOp, runtime::BufferCopyOp,
                    runtime::BufferUploadOp, runtime::BufferReadbackOp,
