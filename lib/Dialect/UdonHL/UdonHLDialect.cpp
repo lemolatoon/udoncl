@@ -46,6 +46,8 @@ mlir::LogicalResult verifyAlignment(mlir::Operation *operation,
 }
 
 bool isMemoryAccessType(mlir::Type type) {
+  if (mlir::isa<vrc::udonhl::PtrType>(type))
+    return true;
   if (auto integer = mlir::dyn_cast<mlir::IntegerType>(type))
     return integer.getWidth() == 8 || integer.getWidth() == 16 ||
            integer.getWidth() == 32 || integer.getWidth() == 64;
@@ -84,7 +86,9 @@ mlir::LogicalResult vrc::udonhl::GlobalOp::verify() {
     return emitOpError("constant globals require an initializer");
   if (auto initial =
           mlir::dyn_cast_if_present<mlir::TypedAttr>(getInitialValueAttr()))
-    if (initial.getType() != getStorageType())
+    if (initial.getType() != getStorageType() &&
+        !(mlir::isa<PtrType>(getStorageType()) &&
+          initial.getType().isInteger(32)))
       return emitOpError("initializer type must match storage_type");
   return mlir::success();
 }

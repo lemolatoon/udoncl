@@ -27,4 +27,15 @@ def RaiseLLVMMemoryPass : Pass<"vrc-raise-llvm-memory", "mlir::ModuleOp"> {
   }];
   let dependentDialects = ["mlir::arith::ArithDialect", "mlir::memref::MemRefDialect"];
 }
+def RaiseLLVMRawMemoryPass : Pass<"vrc-raise-llvm-raw-memory", "mlir::ModuleOp"> {
+  let summary = "Recover C pointers and byte-addressed memory as UdonHL";
+  let description = [{
+    Convert remaining LLVM pointer types, raw allocas, GEPs, loads, stores,
+    pointer-valued direct calls and simple globals to the UdonHL logical byte
+    memory model. This runs after typed memref recovery so proven homogeneous
+    arrays retain their higher-level representation.
+  }];
+  let dependentDialects = ["mlir::arith::ArithDialect", "mlir::func::FuncDialect",
+                           "vrc::udonhl::UdonHLDialect"];
+}
 #endif

@@ -1,4 +1,5 @@
 #include "VRC/Conversion/LLVMToHighLevel/Passes.h"
+#include "VRC/Dialect/UdonHL/UdonHLDialect.h"
 #include "VRC/Dialect/VRC/VRCDialect.h"
 #include "mlir/Conversion/ControlFlowToSCF/ControlFlowToSCF.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -21,7 +22,8 @@ namespace vrc {
 
 namespace {
 bool isScalar(Type type) {
-  return isa<IntegerType>(type) || type.isF32() || type.isF64();
+  return isa<IntegerType, ::vrc::udonhl::PtrType>(type) || type.isF32() ||
+         type.isF64();
 }
 
 // Match operation names explicitly. Unknown LLVM operations are never legal.
@@ -361,10 +363,10 @@ struct RaiseLLVMToScalarPass
     }
     ConversionTarget target(getContext());
     target.addLegalOp<ModuleOp>();
-    target.addLegalDialect<func::FuncDialect, arith::ArithDialect,
-                           cf::ControlFlowDialect, memref::MemRefDialect,
-                           math::MathDialect, gpu::GPUDialect,
-                           ::vrc::vrc::VRCDialect>();
+    target.addLegalDialect<
+        func::FuncDialect, arith::ArithDialect, cf::ControlFlowDialect,
+        memref::MemRefDialect, math::MathDialect, gpu::GPUDialect,
+        ::vrc::vrc::VRCDialect, ::vrc::udonhl::UdonHLDialect>();
     target.addIllegalDialect<LLVM::LLVMDialect>();
     RewritePatternSet patterns(&getContext());
     patterns.add<FunctionPattern, ConstantPattern, ComparePattern,
@@ -391,6 +393,7 @@ void registerHighLevelRecoveryPipeline() {
       [](OpPassManager &manager) {
         manager.addPass(mlir::createMem2Reg());
         manager.addPass(createRaiseLLVMMemoryPass());
+        manager.addPass(createRaiseLLVMRawMemoryPass());
         manager.addPass(createRaiseLLVMToScalarPass());
         manager.addPass(mlir::createLiftControlFlowToSCFPass());
       });

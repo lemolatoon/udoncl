@@ -35,6 +35,13 @@ std::optional<int64_t> constant(Value value) {
     return std::nullopt;
   return attr.getValue().getSExtValue();
 }
+bool requiresRawMemory(Type type) {
+  if (isa<LLVM::LLVMPointerType, LLVM::LLVMStructType>(type))
+    return true;
+  if (auto array = dyn_cast<LLVM::LLVMArrayType>(type))
+    return requiresRawMemory(array.getElementType());
+  return false;
+}
 
 struct Interval {
   int64_t min, max;
@@ -141,6 +148,8 @@ FailureOr<int64_t> MemoryPlan::leafCount(Type type, Type &leaf) {
   return count;
 }
 LogicalResult MemoryPlan::addAllocation(LLVM::AllocaOp op) {
+  if (requiresRawMemory(op.getElemType()))
+    return success();
   auto function = op->getParentOfType<LLVM::LLVMFuncOp>();
   if (!function || op->getParentOfType<ModuleOp>() != module ||
       op->getParentOp() != function ||
@@ -538,17 +547,28 @@ LogicalResult MemoryPlan::analyze() {
     if (found != globalAllocations.end())
       pointers.try_emplace(op.getRes(), PointerInfo{found->second, 0, {}});
   });
+  auto hasTrackedRoot = [&](Value pointer) {
+    while (auto gep = pointer.getDefiningOp<LLVM::GEPOp>())
+      pointer = gep.getBase();
+    return pointers.contains(pointer);
+  };
   if (module
           .walk([&](Operation *op) {
             if (auto gep = dyn_cast<LLVM::GEPOp>(op)) {
+              if (!hasTrackedRoot(gep.getBase()))
+                return WalkResult::advance();
               if (failed(resolve(gep.getRes(), gep)))
                 return WalkResult::interrupt();
             } else if (auto load = dyn_cast<LLVM::LoadOp>(op)) {
+              if (!hasTrackedRoot(load.getAddr()))
+                return WalkResult::advance();
               if (failed(checkAccess(op, load.getAddr(), load.getType(),
                                      load.getAlignment(), load.getVolatile_(),
                                      load.getOrdering())))
                 return WalkResult::interrupt();
             } else if (auto store = dyn_cast<LLVM::StoreOp>(op)) {
+              if (!hasTrackedRoot(store.getAddr()))
+                return WalkResult::advance();
               if (failed(checkAccess(op, store.getAddr(),
                                      store.getValue().getType(),
                                      store.getAlignment(), store.getVolatile_(),
@@ -722,8 +742,15 @@ struct RaiseLLVMMemoryPass
     target.addLegalDialect<LLVM::LLVMDialect, arith::ArithDialect,
                            memref::MemRefDialect>();
     target.addLegalOp<ModuleOp>();
-    target.addIllegalOp<LLVM::AllocaOp, LLVM::GEPOp, LLVM::LoadOp,
-                        LLVM::StoreOp>();
+    target.addDynamicallyLegalOp<LLVM::AllocaOp>([&](LLVM::AllocaOp op) {
+      return !plan.pointers.contains(op.getRes());
+    });
+    target.addDynamicallyLegalOp<LLVM::GEPOp>(
+        [&](LLVM::GEPOp op) { return !plan.pointers.contains(op.getRes()); });
+    target.addDynamicallyLegalOp<LLVM::LoadOp>(
+        [&](LLVM::LoadOp op) { return !plan.accesses.contains(op); });
+    target.addDynamicallyLegalOp<LLVM::StoreOp>(
+        [&](LLVM::StoreOp op) { return !plan.accesses.contains(op); });
     target.addDynamicallyLegalOp<LLVM::GlobalOp>([&](LLVM::GlobalOp op) {
       return !plan.globalAllocations.contains(op.getSymName());
     });

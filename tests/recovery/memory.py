@@ -115,11 +115,58 @@ for forbidden in ['llvm.mlir.global', 'llvm.mlir.addressof',
                   'llvm.getelementptr', 'llvm.load']:
     assert forbidden not in global_memory, (forbidden, global_memory)
 
+raw_memory_source = r'''module {
+  llvm.mlir.global internal @handle() {addr_space = 0 : i32, alignment = 4 : i64} : !llvm.ptr {
+    %zero = llvm.mlir.zero : !llvm.ptr
+    llvm.return %zero : !llvm.ptr
+  }
+  llvm.func internal @identity(%pointer: !llvm.ptr) -> !llvm.ptr {
+    llvm.return %pointer : !llvm.ptr
+  }
+  llvm.func @write(%pointer: !llvm.ptr, %index: i32, %value: f32) -> f32 {
+    %one = llvm.mlir.constant(1 : i32) : i32
+    %slot = llvm.alloca %one x !llvm.ptr {alignment = 4 : i64} : (i32) -> !llvm.ptr
+    llvm.store %pointer, %slot {alignment = 4 : i64} : !llvm.ptr, !llvm.ptr
+    %stored = llvm.load %slot {alignment = 4 : i64} : !llvm.ptr -> !llvm.ptr
+    %base = llvm.call @identity(%stored) : (!llvm.ptr) -> !llvm.ptr
+    %element = llvm.getelementptr %base[%index] : (!llvm.ptr, i32) -> !llvm.ptr, f32
+    llvm.store %value, %element {alignment = 4 : i64} : f32, !llvm.ptr
+    %result = llvm.load %element {alignment = 4 : i64} : !llvm.ptr -> f32
+    llvm.return %result : f32
+  }
+  llvm.func @set_handle(%pointer: !llvm.ptr) -> !llvm.ptr {
+    %address = llvm.mlir.addressof @handle : !llvm.ptr
+    llvm.store %pointer, %address {alignment = 4 : i64} : !llvm.ptr, !llvm.ptr
+    %result = llvm.load %address {alignment = 4 : i64} : !llvm.ptr -> !llvm.ptr
+    llvm.return %result : !llvm.ptr
+  }
+}'''
+raw_memory = run([opt, '--vrc-raise-llvm-memory',
+                  '--vrc-raise-llvm-raw-memory', '--verify-each'],
+                 raw_memory_source)
+for expected in ['!udonhl.ptr<0>', 'arith.constant 4 : i32',
+                 'udonhl.alloca', 'udonhl.ptr_add', 'udonhl.load',
+                 'udonhl.store', 'udonhl.call @identity', 'udonhl.global',
+                 'storage_type = !udonhl.ptr<0>',
+                 'udonhl.address_of @handle']:
+    assert expected in raw_memory, (expected, raw_memory)
+for forbidden in ['llvm.alloca', 'llvm.getelementptr', 'llvm.load',
+                  'llvm.store', 'llvm.call', 'llvm.mlir.global',
+                  'llvm.mlir.addressof', 'builtin.unrealized_conversion_cast']:
+    assert forbidden not in raw_memory, (forbidden, raw_memory)
+
+raw_high = run([opt, '--pass-pipeline=builtin.module(vrc-recover-high-level)',
+                '--verify-each'], raw_memory_source)
+assert 'func.func private @identity(%arg0: !udonhl.ptr<0>)' in raw_high
+assert 'udonhl.call @identity' in raw_high
+for forbidden in ['llvm.func ', 'llvm.return', 'llvm.call ', 'llvm.load ',
+                  'llvm.store ', 'llvm.getelementptr ']:
+    assert forbidden not in raw_high, (forbidden, raw_high)
+
 allocation = '%a = alloca [4 x i32], align 16\n'
 cases = [
     ('dynamic-allocation', '%a = alloca i32, i32 %index, align 4\n', 'positive static constant'),
     ('zero-allocation', '%a = alloca i32, i32 0, align 4\n', 'positive static constant'),
-    ('struct-storage', '%a = alloca {i32, i32}, align 4\n', 'homogeneous scalar/array'),
     ('odd-width', '%a = alloca i24, align 4\n', 'homogeneous scalar/array'),
     ('nonentry-alloca', 'br label %next\nnext:\n' + allocation, 'entry-block allocas'),
     ('address-space', '%a = alloca i32, align 4, addrspace(3)\n', 'address-space-zero'),
@@ -134,7 +181,7 @@ cases = [
     ('alignment', allocation + '%p = getelementptr [4 x i32], ptr %a, i32 0, i32 1\n%v = load i32, ptr %p, align 8\n', 'access alignment'),
     ('escape', allocation + 'call void @escape(ptr %a)\n', 'escapes'),
     ('ptrtoint', allocation + '%address = ptrtoint ptr %a to i64\n', 'escapes'),
-    ('pointer-select', allocation + '%b = alloca [4 x i32], align 4\n%c = icmp eq i32 %index, 0\n%p = select i1 %c, ptr %a, ptr %b\n%v = load i32, ptr %p, align 4\n', 'pointer provenance'),
+    ('pointer-select', allocation + '%b = alloca [4 x i32], align 4\n%c = icmp eq i32 %index, 0\n%p = select i1 %c, ptr %a, ptr %b\n%v = load i32, ptr %p, align 4\n', 'escapes'),
     ('uninitialized', allocation + '%v = load i32, ptr %a, align 4\n', 'definite initialization'),
     ('partially-initialized', allocation + 'store i32 1, ptr %a, align 4\n%i = and i32 %index, 3\n%p = getelementptr [4 x i32], ptr %a, i32 0, i32 %i\n%v = load i32, ptr %p, align 4\n', 'definite initialization'),
     ('nuw-gep', allocation + '%p = getelementptr nuw [4 x i32], ptr %a, i32 0, i32 0\n', 'GEP no-wrap flags'),

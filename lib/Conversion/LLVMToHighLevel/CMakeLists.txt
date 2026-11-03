@@ -3,9 +3,11 @@ add_mlir_library(VRCLLVMToHighLevelMLIR DISABLE_INSTALL
   FrontendMetadata.cpp
   RaiseLLVMToScalar.cpp
   RaiseLLVMMemory.cpp
+  RaiseLLVMRawMemory.cpp
   DEPENDS VRCRecoveryPassIncGen
   LINK_LIBS PUBLIC
     VRCDialectVRC
+    VRCDialectUdonHL
     MLIRArithDialect
     MLIRControlFlowDialect
     MLIRControlFlowToSCF
