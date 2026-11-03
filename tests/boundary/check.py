@@ -66,6 +66,7 @@ run([opt, '--pass-pipeline=builtin.module(' + intrinsic_pass + ')'], source, err
 buffer_runtime = r'''
 module attributes {vrc.host_stage = "udonhl"} {
   func.func private @allocate(i32) -> (!vrc.buffer, i32) attributes {vrc.intrinsic = "buffer_alloc", vrc.format = "rgba8_unorm", vrc.usage = "storage"}
+  func.func private @release(!vrc.buffer) -> i32 attributes {vrc.intrinsic = "buffer_release"}
   func.func private @copy(!vrc.buffer, !vrc.buffer, i32, i32, i32) -> !vrc.event attributes {vrc.intrinsic = "buffer_copy"}
   func.func private @upload(!vrc.buffer, i32, i32, i32) -> !vrc.event attributes {vrc.intrinsic = "buffer_upload"}
   func.func private @readback(!vrc.buffer, i32, i32, i32) -> !vrc.event attributes {vrc.intrinsic = "buffer_readback"}
@@ -74,16 +75,17 @@ module attributes {vrc.host_stage = "udonhl"} {
     %copied = udonhl.call @copy(%source, %destination, %zero, %zero, %bytes) {call_policy = #udonhl<call_policy normal>} : (!vrc.buffer, !vrc.buffer, i32, i32, i32) -> !vrc.event
     %uploaded = udonhl.call @upload(%destination, %zero, %bytes, %pointer) {call_policy = #udonhl<call_policy normal>} : (!vrc.buffer, i32, i32, i32) -> !vrc.event
     %read = udonhl.call @readback(%destination, %zero, %bytes, %pointer) {call_policy = #udonhl<call_policy normal>} : (!vrc.buffer, i32, i32, i32) -> !vrc.event
+    %released = udonhl.call @release(%destination) {call_policy = #udonhl<call_policy normal>} : (!vrc.buffer) -> i32
     return %read : !vrc.event
   }
 }
 '''
 buffer_ops = run([opt, '--pass-pipeline=builtin.module(' + intrinsic_pass + ')',
                   '--verify-each'], buffer_runtime)
-for operation in ['vrc.buffer_alloc ', 'vrc.buffer_copy ',
+for operation in ['vrc.buffer_alloc ', 'vrc.buffer_release ', 'vrc.buffer_copy ',
                   'vrc.buffer_upload ', 'vrc.buffer_readback ']:
     assert operation in buffer_ops
-for prototype in ['@allocate', '@copy', '@upload', '@readback']:
+for prototype in ['@allocate', '@release', '@copy', '@upload', '@readback']:
     assert prototype not in buffer_ops
 typed_buffer_source = buffer_runtime.replace(
     'module attributes {vrc.host_stage = "udonhl"}', 'module').replace(
@@ -93,6 +95,7 @@ typed_buffer_ops = run(
     [opt, '--pass-pipeline=builtin.module(' + host_pass + ',' + intrinsic_pass + ')',
      '--verify-each'], typed_buffer_source)
 assert 'vrc.buffer_alloc ' in typed_buffer_ops
+assert 'vrc.buffer_release ' in typed_buffer_ops
 assert 'vrc.buffer_copy ' in typed_buffer_ops
 assert 'vrc.buffer_upload ' in typed_buffer_ops
 assert 'vrc.buffer_readback ' in typed_buffer_ops

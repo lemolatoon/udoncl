@@ -648,6 +648,12 @@ private:
           continue;
         if (isa<::vrc::vrc::BufferAllocOp>(operation))
           continue;
+        if (isa<::vrc::vrc::BufferReleaseOp>(operation))
+          // Unity buffers belong to the fixed physical pool. The C runtime
+          // has already released its logical cl_mem reference; retaining the
+          // RenderTexture backing and the result slot's initial zero models a
+          // successful backend release without destroying the pool asset.
+          continue;
         if (auto frame = dyn_cast<host::FrameCreateOp>(operation)) {
           std::string execution = valueSlots.lookup(frame.getExecutionId());
           std::string handle = valueSlots.lookup(frame.getFrame());

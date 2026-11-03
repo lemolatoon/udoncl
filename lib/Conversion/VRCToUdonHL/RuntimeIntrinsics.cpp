@@ -50,6 +50,10 @@ struct SubstituteRuntimeIntrinsicsPass
                                       IntegerType::get(&getContext(), 32)} &&
             prototype->getAttrOfType<StringAttr>("vrc.format") &&
             prototype->getAttrOfType<StringAttr>("vrc.usage");
+      else if (name == "buffer_release")
+        valid =
+            args == ArrayRef<Type>{runtime::BufferType::get(&getContext())} &&
+            results == ArrayRef<Type>{IntegerType::get(&getContext(), 32)};
       else if (name == "buffer_copy")
         valid =
             args == ArrayRef<Type>{runtime::BufferType::get(&getContext()),
@@ -112,6 +116,8 @@ struct SubstituteRuntimeIntrinsicsPass
       StringRef operationName =
           name == "dispatch"       ? runtime::DispatchOp::getOperationName()
           : name == "buffer_alloc" ? runtime::BufferAllocOp::getOperationName()
+          : name == "buffer_release"
+              ? runtime::BufferReleaseOp::getOperationName()
           : name == "buffer_copy"  ? runtime::BufferCopyOp::getOperationName()
           : name == "buffer_upload"
               ? runtime::BufferUploadOp::getOperationName()

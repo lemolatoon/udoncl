@@ -11,11 +11,16 @@
 #define UDONCL_AOT_KERNEL_CAPACITY 16
 #define UDONCL_AOT_ARGUMENT_BYTES 128
 
-extern cl_int __vrc_opencl_buffer_alloc(cl_uint id, size_t bytes);
-extern cl_int __vrc_opencl_buffer_release(cl_uint id);
-extern cl_int __vrc_opencl_buffer_upload(cl_uint id, size_t offset,
+/* The compiler backend returns an opaque physical-buffer token.  It is kept
+ * separately from the OpenCL handle-table id: cl_mem identity and lifetime
+ * belong to this runtime, while the token only selects a preallocated Unity
+ * backing resource.  Zero is reserved for allocation failure. */
+extern cl_uint __vrc_opencl_buffer_alloc(cl_uint logical_id, size_t bytes);
+extern cl_int __vrc_opencl_buffer_release(cl_uint physical_token);
+extern cl_int __vrc_opencl_buffer_upload(cl_uint physical_token, size_t offset,
                                          size_t bytes, const void *source);
-extern cl_int __vrc_opencl_buffer_readback(cl_uint id, size_t offset,
+extern cl_int __vrc_opencl_buffer_readback(cl_uint physical_token,
+                                           size_t offset,
                                            size_t bytes, void *destination);
 extern cl_int __vrc_opencl_dispatch(cl_uint kernel_id,
                                     const unsigned char *arguments,
@@ -46,6 +51,7 @@ struct _cl_program {
 struct _cl_mem {
   cl_uint active;
   cl_uint id;
+  cl_uint physical_token;
   cl_context context;
   cl_mem_flags flags;
   size_t bytes;
@@ -173,7 +179,9 @@ CL_API_ENTRY cl_mem CL_API_CALL clCreateBuffer(cl_context context,
     buffer->context = context;
     buffer->flags = flags;
     buffer->bytes = bytes;
-    if (__vrc_opencl_buffer_alloc(buffer->id, bytes) != CL_SUCCESS) {
+    buffer->physical_token =
+        __vrc_opencl_buffer_alloc(buffer->id, buffer->bytes);
+    if (!buffer->physical_token) {
       buffer->active = 0;
       udoncl_error(error, CL_OUT_OF_RESOURCES);
       return 0;
@@ -262,7 +270,8 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueWriteBuffer(
       !source || offset > buffer->bytes || bytes > buffer->bytes - offset ||
       event || udoncl_wait_list(wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
-  pending = __vrc_opencl_buffer_upload(buffer->id, offset, bytes, source);
+  pending = __vrc_opencl_buffer_upload(buffer->physical_token, offset, bytes,
+                                       source);
   return blocking ? __vrc_opencl_await(pending) : CL_SUCCESS;
 }
 
@@ -277,7 +286,8 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueReadBuffer(
       udoncl_wait_list(wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
   pending =
-      __vrc_opencl_buffer_readback(buffer->id, offset, bytes, destination);
+      __vrc_opencl_buffer_readback(buffer->physical_token, offset, bytes,
+                                   destination);
   return blocking ? __vrc_opencl_await(pending) : CL_SUCCESS;
 }
 
@@ -320,7 +330,8 @@ CL_API_ENTRY cl_int CL_API_CALL clReleaseMemObject(cl_mem buffer) {
   cl_int status;
   if (!buffer || !buffer->active)
     return CL_INVALID_MEM_OBJECT;
-  status = __vrc_opencl_buffer_release(buffer->id);
+  status = __vrc_opencl_buffer_release(buffer->physical_token);
+  buffer->physical_token = 0;
   buffer->active = 0;
   return status;
 }

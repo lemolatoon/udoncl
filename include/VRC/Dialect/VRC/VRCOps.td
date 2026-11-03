@@ -6,6 +6,13 @@ def VRC_BufferAllocOp : Op<VRC_Dialect, "buffer_alloc"> {
   let assemblyFormat = "$byte_size attr-dict `:` functional-type(operands, results)";
   let hasVerifier = 1;
 }
+def VRC_BufferReleaseOp : Op<VRC_Dialect, "buffer_release"> {
+  let summary = "Release a logical reference to a fixed Device buffer";
+  let arguments = (ins VRC_BufferType:$buffer);
+  let results = (outs I32:$status);
+  let assemblyFormat = "$buffer attr-dict `:` functional-type(operands, results)";
+  let hasVerifier = 1;
+}
 def VRC_BufferUploadOp : Op<VRC_Dialect, "buffer_upload"> {
   let summary = "Upload a bounded Host byte range to an explicit Device buffer";
   let arguments = (ins VRC_BufferType:$destination, I32:$destination_offset,

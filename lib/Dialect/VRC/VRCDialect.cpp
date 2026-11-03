@@ -49,6 +49,10 @@ mlir::LogicalResult vrc::vrc::BufferAllocOp::verify() {
   return mlir::success();
 }
 
+mlir::LogicalResult vrc::vrc::BufferReleaseOp::verify() {
+  return verifyHostRuntimeOperation(*this);
+}
+
 mlir::LogicalResult vrc::vrc::BufferUploadOp::verify() {
   if (mlir::failed(verifyHostRuntimeOperation(*this)))
     return mlir::failure();

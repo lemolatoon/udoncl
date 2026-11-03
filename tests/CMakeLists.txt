@@ -1,4 +1,15 @@
 find_package(Python3 3.12 REQUIRED COMPONENTS Interpreter)
+add_executable(opencl-aot-runtime
+  runtime/opencl_aot.c
+  "${PROJECT_SOURCE_DIR}/lib/Runtime/OpenCL/OpenCLAOT.c")
+target_compile_features(opencl-aot-runtime PRIVATE c_std_11)
+set_target_properties(opencl-aot-runtime PROPERTIES
+  C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS OFF)
+target_include_directories(opencl-aot-runtime PRIVATE
+  "${PROJECT_SOURCE_DIR}/third_party/OpenCL-Headers")
+target_compile_definitions(opencl-aot-runtime PRIVATE
+  CL_TARGET_OPENCL_VERSION=120)
+add_test(NAME opencl-aot-runtime COMMAND opencl-aot-runtime)
 add_test(NAME dialect-roundtrip
   COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/dialects/check.py"
     $<TARGET_FILE:vrc-opt>
