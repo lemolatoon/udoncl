@@ -57,6 +57,16 @@ install(FILES
   cmake/UdonBLASConfigVersion.cmake
   DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/UdonBLAS"
   COMPONENT UdonCLCompiler)
+install(FILES
+  cmake/UdonDNNConfig.cmake
+  cmake/UdonDNNConfigVersion.cmake
+  DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/UdonDNN"
+  COMPONENT UdonCLCompiler)
+install(FILES
+  cmake/UdonATenConfig.cmake
+  cmake/UdonATenConfigVersion.cmake
+  DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/UdonATen"
+  COMPONENT UdonCLCompiler)
 install(FILES include/udoncl/unity_buffer.h
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/udoncl"
   COMPONENT UdonCLCompiler)
@@ -81,6 +91,24 @@ install(FILES libraries/udonblas/src/udonblas.c
   COMPONENT UdonCLCompiler)
 install(DIRECTORY libraries/udonblas/device
   DESTINATION "${CMAKE_INSTALL_DATADIR}/udonblas"
+  COMPONENT UdonCLCompiler
+  FILES_MATCHING PATTERN "*.cl")
+install(FILES libraries/udondnn/include/udondnn.h
+  libraries/udonaten/include/udonaten.h
+  DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+  COMPONENT UdonCLCompiler)
+install(FILES libraries/udondnn/src/udondnn.c
+  DESTINATION "${CMAKE_INSTALL_DATADIR}/udondnn/src"
+  COMPONENT UdonCLCompiler)
+install(FILES libraries/udonaten/src/udonaten.c
+  DESTINATION "${CMAKE_INSTALL_DATADIR}/udonaten/src"
+  COMPONENT UdonCLCompiler)
+install(DIRECTORY libraries/udondnn/device
+  DESTINATION "${CMAKE_INSTALL_DATADIR}/udondnn"
+  COMPONENT UdonCLCompiler
+  FILES_MATCHING PATTERN "*.cl")
+install(DIRECTORY libraries/udonaten/device
+  DESTINATION "${CMAKE_INSTALL_DATADIR}/udonaten"
   COMPONENT UdonCLCompiler
   FILES_MATCHING PATTERN "*.cl")
 install(DIRECTORY third_party/OpenCL-Headers/CL

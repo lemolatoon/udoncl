@@ -1,6 +1,5 @@
 #include "udonaten.h"
 #include <float.h>
-#include <math.h>
 
 #define UDONATEN_POINTWISE_TILE_WORDS 512
 #define UDONATEN_ARENA_WORDS 16384
@@ -283,7 +282,7 @@ udonatenRmsNorm(udonatenHandle_t handle,
   size_t index;
   if (!normalized_shape || normalized_dimensions == 0 ||
       normalized_dimensions > 4 || !input || !output ||
-      !isfinite(effective_epsilon) || effective_epsilon < 0.0f)
+      !(effective_epsilon <= FLT_MAX && effective_epsilon >= 0.0f))
     return UDONDNN_STATUS_BAD_PARAM;
   status = udondnnGetTensor4dDescriptor(input_descriptor, &input_type, &input_n,
                                         &input_c, &input_h, &input_w, &n_stride,
