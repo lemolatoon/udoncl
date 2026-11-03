@@ -98,6 +98,55 @@ assert 'vrc.buffer_upload ' in typed_buffer_ops
 assert 'vrc.buffer_readback ' in typed_buffer_ops
 assert 'func.call ' not in typed_buffer_ops and 'udonhl.call ' not in typed_buffer_ops
 
+# Recovered C control flow remains in cf form on the Host path. Keep the public
+# ABI narrow while allowing internal booleans, index values, block arguments,
+# loops and branches to reach the existing Udon jump lowering.
+control_flow_source = r'''
+module {
+  func.func @sum_to(%n: i32) -> i32 attributes {vrc.export_id = 3 : i32} {
+    %zero = arith.constant 0 : i32
+    cf.br ^loop(%zero, %zero : i32, i32)
+  ^loop(%index: i32, %sum: i32):
+    %condition = arith.cmpi slt, %index, %n : i32
+    cf.cond_br %condition, ^body, ^exit(%sum : i32)
+  ^body:
+    %next_sum = arith.addi %sum, %index : i32
+    %one = arith.constant 1 : i32
+    %next_index = arith.addi %index, %one : i32
+    cf.br ^loop(%next_index, %next_sum : i32, i32)
+  ^exit(%result: i32):
+    return %result : i32
+  }
+}
+'''
+control_flow_host = run([
+    opt,
+    '--pass-pipeline=builtin.module(' + host_pass + ')',
+    '--verify-each',
+], control_flow_source)
+assert 'cf.cond_br ' in control_flow_host
+control_flow_udon = run([
+    opt,
+    '--pass-pipeline=builtin.module(' + host_pass +
+    ',vrc-lower-udonhl-to-udonasm)',
+    '--verify-each',
+], control_flow_source)
+assert 'udonasm.jump_if_false' in control_flow_udon
+assert 'SystemInt32.__op_LessThan__SystemInt32_SystemInt32__SystemBoolean' in control_flow_udon
+
+public_boolean = r'''
+module {
+  func.func @identity(%value: i1) -> i32 attributes {vrc.export_id = 4 : i32} {
+    %zero = arith.constant 0 : i32
+    return %zero : i32
+  }
+}
+'''
+run([
+    opt,
+    '--pass-pipeline=builtin.module(' + host_pass + ')',
+], public_boolean, error='export id/signature')
+
 continuation_source = r'''
 module {
   func.func @resume(%execution: i32, %resume_state: i32, %event: !vrc.event, %value: i32) -> i32 attributes {vrc.async_effect = "may_suspend", vrc.execution_id_arg = 0 : i32, vrc.resume_state_arg = 1 : i32} {

@@ -2,6 +2,7 @@
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
 #include "VRC/Dialect/VRC/VRCDialect.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Transforms/DialectConversion.h"
@@ -14,6 +15,9 @@ namespace {
 namespace host = ::vrc::udonhl;
 namespace runtime = ::vrc::vrc;
 bool scalar(Type type) { return type.isInteger(32) || type.isF32(); }
+bool internalScalar(Type type) {
+  return scalar(type) || type.isInteger(1) || type.isIndex();
+}
 bool publicArray(Type type) {
   auto memref = dyn_cast<MemRefType>(type);
   return memref && memref.getRank() == 1 && memref.getLayout().isIdentity() &&
@@ -22,8 +26,9 @@ bool publicArray(Type type) {
 }
 bool publicType(Type type) { return scalar(type) || publicArray(type); }
 bool internalType(Type type) {
-  return publicType(type) || isa<runtime::BufferType, runtime::DispatchDescType,
-                                 runtime::EventType>(type);
+  return internalScalar(type) || publicArray(type) ||
+         isa<runtime::BufferType, runtime::DispatchDescType,
+             runtime::EventType>(type);
 }
 struct CallPattern : OpConversionPattern<func::CallOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -95,10 +100,6 @@ struct LowerHostToUdonHLPass
         }
         continue;
       }
-      if (function.getBody().getBlocks().size() != 1) {
-        fail("initial Host lowering requires a defined single-block function");
-        return;
-      }
       if (!llvm::all_of(function.getArgumentTypes(), internalType) ||
           !llvm::all_of(function.getResultTypes(), internalType)) {
         fail("unsupported Host ABI type; pointers, memory and aggregate "
@@ -118,22 +119,30 @@ struct LowerHostToUdonHLPass
           return;
         }
       }
-      for (auto &op : function.getBody().front()) {
-        if (!isa<func::CallOp, func::ReturnOp, runtime::DispatchDescCreateOp,
-                 runtime::DispatchOp, runtime::BufferAllocOp,
-                 runtime::BufferCopyOp, runtime::BufferUploadOp,
-                 runtime::BufferReadbackOp, memref::LoadOp, memref::StoreOp,
-                 arith::ConstantOp, arith::AddIOp, arith::AddFOp,
-                 arith::MulFOp>(op)) {
-          op.emitError(
-              "operation is outside the initial Host lowering pattern");
-          signalPassFailure();
+      for (Block &block : function.getBody()) {
+        if (!llvm::all_of(block.getArgumentTypes(), internalType)) {
+          fail("unsupported Host block argument type");
           return;
         }
-        if (!llvm::all_of(op.getResultTypes(), internalType)) {
-          op.emitError("unsupported Host intermediate type");
-          signalPassFailure();
-          return;
+        for (Operation &op : block) {
+          if (!isa<func::CallOp, func::ReturnOp, cf::BranchOp, cf::CondBranchOp,
+                   runtime::DispatchDescCreateOp, runtime::DispatchOp,
+                   runtime::BufferAllocOp, runtime::BufferCopyOp,
+                   runtime::BufferUploadOp, runtime::BufferReadbackOp,
+                   memref::LoadOp, memref::StoreOp, arith::ConstantOp,
+                   arith::AddIOp, arith::SubIOp, arith::MulIOp, arith::AddFOp,
+                   arith::SubFOp, arith::MulFOp, arith::DivFOp, arith::CmpIOp,
+                   arith::CmpFOp>(op)) {
+            op.emitError(
+                "operation is outside the initial Host lowering pattern");
+            signalPassFailure();
+            return;
+          }
+          if (!llvm::all_of(op.getResultTypes(), internalType)) {
+            op.emitError("unsupported Host intermediate type");
+            signalPassFailure();
+            return;
+          }
         }
       }
     }
