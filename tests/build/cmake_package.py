@@ -242,6 +242,9 @@ def main():
         encoding='utf-8'
     )
     assert sum(': %' in line for line in onnx_mnist_assembly.splitlines()) <= 480
+    for kernel_id in [1, 231, 232, 233, 234]:
+        assert f'dispatch_{kernel_id}_output_matches_' not in onnx_mnist_assembly
+        assert f'dispatch_{kernel_id}_input_' not in onnx_mnist_assembly
     run([
         args.cmake,
         '-S', str(args.source.resolve()),

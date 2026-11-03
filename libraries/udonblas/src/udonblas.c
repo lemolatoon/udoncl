@@ -11,7 +11,8 @@ extern int __vrc_opencl_await(int);
 extern int __vrc_opencl_dispatch_udonblas_sgemm(int, int, int, int, int, int,
                                                 int, int, int, int, float,
                                                 float);
-#define AOT_BUFFER_TOKEN(buffer) ((int)(size_t)(buffer))
+#define AOT_INPUT_TOKEN 5
+#define AOT_OUTPUT_TOKEN 6
 static int aot_wait(int event) { return __vrc_opencl_await(event); }
 #endif
 
@@ -54,9 +55,9 @@ static float result[UDONBLAS_MATRIX_WORDS];
 static void clear_objects(void) {
 #ifdef UDONBLAS_AOT_RAW_INTRINSICS
   if (output_buffer)
-    __vrc_opencl_buffer_release(AOT_BUFFER_TOKEN(output_buffer));
+    __vrc_opencl_buffer_release(AOT_OUTPUT_TOKEN);
   if (input_buffer)
-    __vrc_opencl_buffer_release(AOT_BUFFER_TOKEN(input_buffer));
+    __vrc_opencl_buffer_release(AOT_INPUT_TOKEN);
   output_buffer = input_buffer = 0;
   queue = 0;
   context = 0;
@@ -432,17 +433,15 @@ udonblasStatus_t udonblasSgemm(udonblasHandle_t handle,
         packed[UDONBLAS_C_OFFSET + row + column * m] = c[row + column * ldc];
 
 #ifdef UDONBLAS_AOT_RAW_INTRINSICS
-    if (aot_wait(__vrc_opencl_buffer_upload(AOT_BUFFER_TOKEN(input_buffer), 0,
-                                            sizeof(packed), packed)) !=
-            CL_SUCCESS ||
+    if (aot_wait(__vrc_opencl_buffer_upload(AOT_INPUT_TOKEN, 0, sizeof(packed),
+                                            packed)) != CL_SUCCESS ||
         aot_wait(__vrc_opencl_dispatch_udonblas_sgemm(
-            AOT_BUFFER_TOKEN(input_buffer), AOT_BUFFER_TOKEN(output_buffer), m,
-            n, tile_k, kernel_transa, kernel_transb, kernel_lda, kernel_ldb,
-            kernel_ldc, *alpha, tile_beta)) != CL_SUCCESS ||
+            AOT_INPUT_TOKEN, AOT_OUTPUT_TOKEN, m, n, tile_k, kernel_transa,
+            kernel_transb, kernel_lda, kernel_ldb, kernel_ldc, *alpha,
+            tile_beta)) != CL_SUCCESS ||
         aot_wait(__vrc_opencl_buffer_readback(
-            AOT_BUFFER_TOKEN(output_buffer),
-            UDONBLAS_RESULT_OFFSET * sizeof(float), m * n * sizeof(float),
-            result)) != CL_SUCCESS)
+            AOT_OUTPUT_TOKEN, UDONBLAS_RESULT_OFFSET * sizeof(float),
+            m * n * sizeof(float), result)) != CL_SUCCESS)
       return UDONBLAS_STATUS_EXECUTION_FAILED;
 #else
 #define SET_ARGUMENT(slot, value)                                              \

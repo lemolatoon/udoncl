@@ -28,7 +28,10 @@ extern int __vrc_opencl_dispatch_udondnn_large_op_tensor(int, int, int, int,
 
 static int aot_wait(int event) { return __vrc_opencl_await(event); }
 
-#define AOT_BUFFER_TOKEN(buffer) ((int)(size_t)(buffer))
+#define AOT_POINTWISE_SELF_TOKEN 1
+#define AOT_POINTWISE_OTHER_TOKEN 2
+#define AOT_POINTWISE_OUTPUT_TOKEN 3
+#define AOT_RMS_PARTIAL_TOKEN 4
 #endif
 
 #ifdef UDONDNN_AOT_DIRECT_DISPATCH
@@ -279,14 +282,13 @@ get_op_tensor(udondnnOpTensorDescriptor_t descriptor) {
 static void clear_objects(void) {
 #ifdef UDONDNN_AOT_RAW_INTRINSICS
   if (arena_rms_partial_buffer)
-    __vrc_opencl_buffer_release(AOT_BUFFER_TOKEN(arena_rms_partial_buffer));
+    __vrc_opencl_buffer_release(AOT_RMS_PARTIAL_TOKEN);
   if (arena_pointwise_output_buffer)
-    __vrc_opencl_buffer_release(
-        AOT_BUFFER_TOKEN(arena_pointwise_output_buffer));
+    __vrc_opencl_buffer_release(AOT_POINTWISE_OUTPUT_TOKEN);
   if (arena_pointwise_other_buffer)
-    __vrc_opencl_buffer_release(AOT_BUFFER_TOKEN(arena_pointwise_other_buffer));
+    __vrc_opencl_buffer_release(AOT_POINTWISE_OTHER_TOKEN);
   if (arena_pointwise_self_buffer)
-    __vrc_opencl_buffer_release(AOT_BUFFER_TOKEN(arena_pointwise_self_buffer));
+    __vrc_opencl_buffer_release(AOT_POINTWISE_SELF_TOKEN);
   arena_pointwise_self_buffer = 0;
   arena_pointwise_other_buffer = 0;
   arena_pointwise_output_buffer = 0;
@@ -1138,25 +1140,23 @@ udondnnStatus_t udondnnConvolutionForward(
         convolution_info->dilation_h | (convolution_info->dilation_w << 16);
     mode = (int)convolution_info->mode;
 #ifdef UDONDNN_AOT_RAW_INTRINSICS
-    if (aot_wait(__vrc_opencl_buffer_upload(
-            AOT_BUFFER_TOKEN(arena_pointwise_self_buffer), 0,
-            input_words * sizeof(float), input)) != CL_SUCCESS ||
-        aot_wait(__vrc_opencl_buffer_upload(
-            AOT_BUFFER_TOKEN(arena_pointwise_other_buffer), 0,
-            filter_words * sizeof(float), filter)) != CL_SUCCESS ||
-        aot_wait(__vrc_opencl_buffer_upload(
-            AOT_BUFFER_TOKEN(arena_rms_partial_buffer), 0,
-            output_words * sizeof(float), output)) != CL_SUCCESS ||
+    if (aot_wait(__vrc_opencl_buffer_upload(AOT_POINTWISE_SELF_TOKEN, 0,
+                                            input_words * sizeof(float),
+                                            input)) != CL_SUCCESS ||
+        aot_wait(__vrc_opencl_buffer_upload(AOT_POINTWISE_OTHER_TOKEN, 0,
+                                            filter_words * sizeof(float),
+                                            filter)) != CL_SUCCESS ||
+        aot_wait(__vrc_opencl_buffer_upload(AOT_RMS_PARTIAL_TOKEN, 0,
+                                            output_words * sizeof(float),
+                                            output)) != CL_SUCCESS ||
         aot_wait(__vrc_opencl_dispatch_udondnn_large_convolution(
-            AOT_BUFFER_TOKEN(arena_pointwise_self_buffer),
-            AOT_BUFFER_TOKEN(arena_pointwise_other_buffer),
-            AOT_BUFFER_TOKEN(arena_rms_partial_buffer),
-            AOT_BUFFER_TOKEN(arena_pointwise_output_buffer), output_words,
+            AOT_POINTWISE_SELF_TOKEN, AOT_POINTWISE_OTHER_TOKEN,
+            AOT_RMS_PARTIAL_TOKEN, AOT_POINTWISE_OUTPUT_TOKEN, output_words,
             input_ch, input_info->w, output_ch, w, filter_hw, pad_hw, stride_hw,
             dilation_hw, mode, *alpha, *beta)) != CL_SUCCESS ||
-        aot_wait(__vrc_opencl_buffer_readback(
-            AOT_BUFFER_TOKEN(arena_pointwise_output_buffer), 0,
-            output_words * sizeof(float), output)) != CL_SUCCESS)
+        aot_wait(__vrc_opencl_buffer_readback(AOT_POINTWISE_OUTPUT_TOKEN, 0,
+                                              output_words * sizeof(float),
+                                              output)) != CL_SUCCESS)
       return UDONDNN_STATUS_EXECUTION_FAILED;
     return UDONDNN_STATUS_SUCCESS;
 #else
@@ -1313,20 +1313,19 @@ udondnnStatus_t udondnnActivationForward(
     if (words > UDONATEN_ARENA_POINTWISE_WORDS)
       return UDONDNN_STATUS_NOT_SUPPORTED;
 #ifdef UDONDNN_AOT_RAW_INTRINSICS
-    if (aot_wait(__vrc_opencl_buffer_upload(
-            AOT_BUFFER_TOKEN(arena_pointwise_self_buffer), 0,
-            words * sizeof(float), input)) != CL_SUCCESS ||
-        aot_wait(__vrc_opencl_buffer_upload(
-            AOT_BUFFER_TOKEN(arena_pointwise_other_buffer), 0,
-            words * sizeof(float), output)) != CL_SUCCESS ||
+    if (aot_wait(__vrc_opencl_buffer_upload(AOT_POINTWISE_SELF_TOKEN, 0,
+                                            words * sizeof(float), input)) !=
+            CL_SUCCESS ||
+        aot_wait(__vrc_opencl_buffer_upload(AOT_POINTWISE_OTHER_TOKEN, 0,
+                                            words * sizeof(float), output)) !=
+            CL_SUCCESS ||
         aot_wait(__vrc_opencl_dispatch_udondnn_large_activation(
-            AOT_BUFFER_TOKEN(arena_pointwise_self_buffer),
-            AOT_BUFFER_TOKEN(arena_pointwise_other_buffer),
-            AOT_BUFFER_TOKEN(arena_pointwise_output_buffer), words, mode,
-            nan_propagation, coefficient, *alpha, *beta)) != CL_SUCCESS ||
-        aot_wait(__vrc_opencl_buffer_readback(
-            AOT_BUFFER_TOKEN(arena_pointwise_output_buffer), 0,
-            words * sizeof(float), output)) != CL_SUCCESS)
+            AOT_POINTWISE_SELF_TOKEN, AOT_POINTWISE_OTHER_TOKEN,
+            AOT_POINTWISE_OUTPUT_TOKEN, words, mode, nan_propagation,
+            coefficient, *alpha, *beta)) != CL_SUCCESS ||
+        aot_wait(__vrc_opencl_buffer_readback(AOT_POINTWISE_OUTPUT_TOKEN, 0,
+                                              words * sizeof(float), output)) !=
+            CL_SUCCESS)
       return UDONDNN_STATUS_EXECUTION_FAILED;
     return UDONDNN_STATUS_SUCCESS;
 #else
@@ -1494,22 +1493,20 @@ udondnnStatus_t udondnnPoolingForward(
     stride_shape = pooling->stride_h | (pooling->stride_w << 16);
     pooling_options = pooling_mode | (nan_propagation << 8);
 #ifdef UDONDNN_AOT_RAW_INTRINSICS
-    if (aot_wait(__vrc_opencl_buffer_upload(
-            AOT_BUFFER_TOKEN(arena_pointwise_self_buffer), 0,
-            input_words * sizeof(float), input)) != CL_SUCCESS ||
-        aot_wait(__vrc_opencl_buffer_upload(
-            AOT_BUFFER_TOKEN(arena_pointwise_other_buffer), 0,
-            output_words * sizeof(float), output)) != CL_SUCCESS ||
+    if (aot_wait(__vrc_opencl_buffer_upload(AOT_POINTWISE_SELF_TOKEN, 0,
+                                            input_words * sizeof(float),
+                                            input)) != CL_SUCCESS ||
+        aot_wait(__vrc_opencl_buffer_upload(AOT_POINTWISE_OTHER_TOKEN, 0,
+                                            output_words * sizeof(float),
+                                            output)) != CL_SUCCESS ||
         aot_wait(__vrc_opencl_dispatch_udondnn_large_pooling(
-            AOT_BUFFER_TOKEN(arena_pointwise_self_buffer),
-            AOT_BUFFER_TOKEN(arena_pointwise_other_buffer),
-            AOT_BUFFER_TOKEN(arena_pointwise_output_buffer), output_words,
-            input_info->c, input_info->h, input_info->w, h, w, window_shape,
-            pad_shape, stride_shape, pooling_options, *alpha, *beta)) !=
-            CL_SUCCESS ||
-        aot_wait(__vrc_opencl_buffer_readback(
-            AOT_BUFFER_TOKEN(arena_pointwise_output_buffer), 0,
-            output_words * sizeof(float), output)) != CL_SUCCESS)
+            AOT_POINTWISE_SELF_TOKEN, AOT_POINTWISE_OTHER_TOKEN,
+            AOT_POINTWISE_OUTPUT_TOKEN, output_words, input_info->c,
+            input_info->h, input_info->w, h, w, window_shape, pad_shape,
+            stride_shape, pooling_options, *alpha, *beta)) != CL_SUCCESS ||
+        aot_wait(__vrc_opencl_buffer_readback(AOT_POINTWISE_OUTPUT_TOKEN, 0,
+                                              output_words * sizeof(float),
+                                              output)) != CL_SUCCESS)
       return UDONDNN_STATUS_EXECUTION_FAILED;
     return UDONDNN_STATUS_SUCCESS;
 #else
@@ -1850,25 +1847,23 @@ udondnnStatus_t udondnnOpTensor(
     nan_propagation = (int)operation_info->nan_propagation;
     options = operation | (nan_propagation << 8);
 #ifdef UDONDNN_AOT_RAW_INTRINSICS
-    if (aot_wait(__vrc_opencl_buffer_upload(
-            AOT_BUFFER_TOKEN(arena_pointwise_self_buffer), 0,
-            a_words * sizeof(float), a)) != CL_SUCCESS ||
-        aot_wait(__vrc_opencl_buffer_upload(
-            AOT_BUFFER_TOKEN(arena_pointwise_other_buffer), 0,
-            b_words * sizeof(float), b)) != CL_SUCCESS ||
-        aot_wait(__vrc_opencl_buffer_upload(
-            AOT_BUFFER_TOKEN(arena_rms_partial_buffer), 0,
-            c_words * sizeof(float), c)) != CL_SUCCESS ||
+    if (aot_wait(__vrc_opencl_buffer_upload(AOT_POINTWISE_SELF_TOKEN, 0,
+                                            a_words * sizeof(float), a)) !=
+            CL_SUCCESS ||
+        aot_wait(__vrc_opencl_buffer_upload(AOT_POINTWISE_OTHER_TOKEN, 0,
+                                            b_words * sizeof(float), b)) !=
+            CL_SUCCESS ||
+        aot_wait(__vrc_opencl_buffer_upload(AOT_RMS_PARTIAL_TOKEN, 0,
+                                            c_words * sizeof(float), c)) !=
+            CL_SUCCESS ||
         aot_wait(__vrc_opencl_dispatch_udondnn_large_op_tensor(
-            AOT_BUFFER_TOKEN(arena_pointwise_self_buffer),
-            AOT_BUFFER_TOKEN(arena_pointwise_other_buffer),
-            AOT_BUFFER_TOKEN(arena_rms_partial_buffer),
-            AOT_BUFFER_TOKEN(arena_pointwise_output_buffer), c_words, a_nc,
+            AOT_POINTWISE_SELF_TOKEN, AOT_POINTWISE_OTHER_TOKEN,
+            AOT_RMS_PARTIAL_TOKEN, AOT_POINTWISE_OUTPUT_TOKEN, c_words, a_nc,
             a_hw, b_nc, b_hw, c_nc, c_hw, options, *alpha_a, *alpha_b,
             *beta)) != CL_SUCCESS ||
-        aot_wait(__vrc_opencl_buffer_readback(
-            AOT_BUFFER_TOKEN(arena_pointwise_output_buffer), 0,
-            c_words * sizeof(float), c)) != CL_SUCCESS)
+        aot_wait(__vrc_opencl_buffer_readback(AOT_POINTWISE_OUTPUT_TOKEN, 0,
+                                              c_words * sizeof(float), c)) !=
+            CL_SUCCESS)
       return UDONDNN_STATUS_EXECUTION_FAILED;
     return UDONDNN_STATUS_SUCCESS;
 #else

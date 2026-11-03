@@ -1151,6 +1151,8 @@ private:
               "vrc.unity_dispatch_material_slot");
           auto outputIndex = dispatch->getAttrOfType<IntegerAttr>(
               "vrc.unity_output_resource_index");
+          auto resourceHeapSlots = dispatch->getAttrOfType<ArrayAttr>(
+              "vrc.unity_resource_heap_slots");
           int64_t output = outputIndex ? outputIndex.getInt() : 0;
           std::string destinationToken =
               output >= 0 && size_t(output) < dispatch.getResources().size()
@@ -1161,8 +1163,16 @@ private:
             return dispatch.emitError(
                 "Unity dispatch requires a bound output, a copied scalar "
                 "descriptor and a kernel material slot");
-          std::string destination = selectUnityBuffer(
-              dispatch.getLoc(), destinationToken,
+          auto physicalBuffer = [&](size_t index, StringRef token,
+                                    StringRef dynamicPrefix) {
+            if (resourceHeapSlots && index < resourceHeapSlots.size())
+              if (auto slot = dyn_cast<StringAttr>(resourceHeapSlots[index]);
+                  slot && !slot.getValue().empty())
+                return slot.getValue().str();
+            return selectUnityBuffer(dispatch.getLoc(), token, dynamicPrefix);
+          };
+          std::string destination = physicalBuffer(
+              static_cast<size_t>(output), destinationToken,
               prefix + "dispatch_" + std::to_string(dispatch.getKernelId()) +
                   "_output");
           if (destination.empty())
@@ -1185,11 +1195,11 @@ private:
                     "dispatch buffer has no allocated Udon heap slot");
               if (bufferIndex++ == size_t(output))
                 continue;
-              texture = selectUnityBuffer(
-                  dispatch.getLoc(), texture,
-                  prefix + "dispatch_" +
-                      std::to_string(dispatch.getKernelId()) + "_input_" +
-                      std::to_string(argumentIndex));
+              texture =
+                  physicalBuffer(bufferIndex - 1, texture,
+                                 prefix + "dispatch_" +
+                                     std::to_string(dispatch.getKernelId()) +
+                                     "_input_" + std::to_string(argumentIndex));
               if (texture.empty())
                 return dispatch.emitError(
                     "Unity dispatch has no physical pool");

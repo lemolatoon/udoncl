@@ -412,12 +412,34 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
           return kind && kind.getValue() == "buffer";
         });
     bool resourcesMatch = dispatch.getResources().size() == bufferKindCount;
+    SmallVector<mlir::Attribute> resourceHeapSlots;
     for (mlir::Value resource : dispatch.getResources()) {
       auto allocation = resource.getDefiningOp<::vrc::vrc::BufferAllocOp>();
-      if (allocation)
+      const UnityBuffer *constantBuffer = nullptr;
+      mlir::Value token = resource;
+      while (auto cast = token.getDefiningOp<UnrealizedConversionCastOp>()) {
+        if (cast.getInputs().size() != 1)
+          break;
+        token = cast.getInputs().front();
+      }
+      if (auto logicalId = token.getDefiningOp<arith::ConstantIntOp>())
+        for (const UnityBuffer &candidate : buffers)
+          if (candidate.id == logicalId.value()) {
+            constantBuffer = &candidate;
+            break;
+          }
+      if (allocation) {
         resourcesMatch &= bound.contains(allocation.getOperation());
-      else
+        auto found = bound.find(allocation.getOperation());
+        resourceHeapSlots.push_back(builder.getStringAttr(
+            found == bound.end() ? "" : found->second->heapSlot));
+      } else if (constantBuffer) {
+        resourceHeapSlots.push_back(
+            builder.getStringAttr(constantBuffer->heapSlot));
+      } else {
         resourcesMatch &= !buffers.empty();
+        resourceHeapSlots.push_back(builder.getStringAttr(""));
+      }
     }
     if (!llvm::is_contained(configuredKernelIds, dispatch.getKernelId()) ||
         !descriptorMatches || dispatch.getArgumentKinds().empty() ||
@@ -438,6 +460,8 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
     dispatch->setAttr("vrc.unity_dispatch_material_slot",
                       builder.getStringAttr("__udoncl_kernel_material_" +
                                             std::to_string(kernelId)));
+    dispatch->setAttr("vrc.unity_resource_heap_slots",
+                      builder.getArrayAttr(resourceHeapSlots));
     if (!dispatch->hasAttr("vrc.unity_output_resource_index")) {
       if (dispatch.getResources().empty()) {
         dispatch.emitError(
@@ -1827,7 +1851,7 @@ int main(int argc, char **argv) {
   SmallVector<const json::Object *> unityDeviceConfigs;
   SmallVector<UnityBuffer> unityBuffers;
   bool unityUsesBufferCopy = false;
-  SmallVector<int32_t> unityDispatchKernelIds;
+  SmallVector<int32_t> unityConfiguredKernelIds;
   if (emitUnityLibrary) {
     auto input = MemoryBuffer::getFile(inputFilename);
     if (!input || (hostLLVM.empty() == hostMLIR.empty()) ||
@@ -2058,14 +2082,16 @@ int main(int argc, char **argv) {
     if (failed(manager.run(*module)) || failed(verify(*module)))
       return 1;
     SmallVector<int64_t> configuredKernelIds;
-    for (const json::Object *deviceKernel : unityDeviceConfigs)
-      configuredKernelIds.push_back(*deviceKernel->getInteger("kernel_id"));
+    for (const json::Object *deviceKernel : unityDeviceConfigs) {
+      int64_t kernelId = *deviceKernel->getInteger("kernel_id");
+      configuredKernelIds.push_back(kernelId);
+      unityConfiguredKernelIds.push_back(static_cast<int32_t>(kernelId));
+    }
     auto bufferBinding =
         bindUnityBufferOperations(*module, unityBuffers, configuredKernelIds);
     if (failed(bufferBinding))
       return 1;
     unityUsesBufferCopy = bufferBinding->usesCopy;
-    unityDispatchKernelIds = std::move(bufferBinding->dispatchKernelIds);
     auto manifest = ::vrc::buildBoundaryManifest(*module);
     bool usesAsyncCommands = false;
     module->walk([&](Operation *operation) {
@@ -2166,7 +2192,7 @@ int main(int argc, char **argv) {
     appendUnityBufferSlots(*module, unityBuffers);
     if (unityUsesBufferCopy)
       appendUnityCopyMaterialSlot(*module);
-    appendUnityDispatchMaterialSlots(*module, unityDispatchKernelIds);
+    appendUnityDispatchMaterialSlots(*module, unityConfiguredKernelIds);
     std::string assembly;
     raw_string_ostream assemblyOut(assembly);
     if (failed(::vrc::emitUdonAssembly(*module, assemblyOut)))
