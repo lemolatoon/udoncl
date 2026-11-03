@@ -158,6 +158,9 @@ add_test(NAME onnx-weight-packer
 add_test(NAME prebuilt-sdk-installer
   COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/build/install_llvm.py"
 )
+add_test(NAME onnx-mlir-frontend-installer
+  COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/build/install_onnx_mlir.py"
+)
 add_test(NAME build-parallelism
   COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/build/parallel.py"
 )

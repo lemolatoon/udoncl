@@ -10,7 +10,8 @@ if(MSVC)
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 endif()
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-  "${PROJECT_SOURCE_DIR}/cmake/llvm-lock.json")
+  "${PROJECT_SOURCE_DIR}/cmake/llvm-lock.json"
+  "${PROJECT_SOURCE_DIR}/cmake/onnx-mlir-lock.json")
 file(READ "${PROJECT_SOURCE_DIR}/cmake/llvm-lock.json" vrc_llvm_lock)
 string(JSON VRC_LLVM_VERSION GET "${vrc_llvm_lock}" version)
 include(cmake/VRCFindLLVM.cmake)

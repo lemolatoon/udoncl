@@ -1,0 +1,26 @@
+{
+  "repository": "https://github.com/onnx/onnx-mlir.git",
+  "revision": "7cc4a17af7bc7202b14e9b839ac87e9bdf81b8be",
+  "upstream_branch": "0.5.1.2",
+  "llvm_version": "23.1.4",
+  "patches": [
+    "cmake/patches/onnx-mlir-0.5.1.2-msvc-template.patch"
+  ],
+  "submodules": {
+    "third_party/benchmark": "a4cf155615c63e019ae549e31703bf367df5b471",
+    "third_party/onnx": "be2b5fde82d9c8874f3d19328bdfe3b6962dc67b",
+    "third_party/pybind11": "3e9dfa2866941655c56877882565e7577de6fc7b",
+    "third_party/rapidcheck": "ff6af6fc683159deb51c543b065eba14dfcf329b"
+  },
+  "cmake_options": {
+    "ONNX_MLIR_BUILD_STANDALONE": "ON",
+    "ONNX_MLIR_ENABLE_JAVA": "OFF",
+    "ONNX_MLIR_ENABLE_STABLEHLO": "OFF",
+    "ONNX_MLIR_ENABLE_WERROR": "OFF",
+    "ONNX_MLIR_BUILD_TESTS": "OFF"
+  },
+  "targets": [
+    "onnx-mlir-opt",
+    "udoncl-onnx"
+  ]
+}
