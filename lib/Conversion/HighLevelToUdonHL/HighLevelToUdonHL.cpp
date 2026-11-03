@@ -19,8 +19,8 @@ namespace host = ::vrc::udonhl;
 namespace runtime = ::vrc::vrc;
 bool scalar(Type type) { return type.isInteger(32) || type.isF32(); }
 bool internalScalar(Type type) {
-  return scalar(type) || type.isInteger(1) || type.isInteger(64) ||
-         type.isIndex();
+  return scalar(type) || type.isInteger(1) || type.isInteger(8) ||
+         type.isInteger(16) || type.isInteger(64) || type.isIndex();
 }
 bool publicArray(Type type) {
   auto memref = dyn_cast<MemRefType>(type);
@@ -168,11 +168,13 @@ struct LowerHostToUdonHLPass
                    runtime::DispatchOp, runtime::BufferAllocOp,
                    runtime::BufferReleaseOp, runtime::BufferCopyOp,
                    runtime::BufferUploadOp, runtime::BufferReadbackOp,
-                   memref::LoadOp, memref::StoreOp, memref::AllocaOp,
-                   memref::GetGlobalOp, arith::ConstantOp, arith::AddIOp,
-                   arith::SubIOp, arith::MulIOp, arith::AddFOp, arith::SubFOp,
-                   arith::MulFOp, arith::DivFOp, arith::CmpIOp, arith::CmpFOp>(
-                  op)) {
+                   runtime::AwaitOp, runtime::EventStatusOp, memref::LoadOp,
+                   memref::StoreOp, memref::AllocaOp, memref::GetGlobalOp,
+                   arith::ConstantOp, arith::AddIOp, arith::SubIOp,
+                   arith::MulIOp, arith::AddFOp, arith::SubFOp, arith::MulFOp,
+                   arith::DivFOp, arith::CmpIOp, arith::CmpFOp>(op) &&
+              !isa<arith::AndIOp, arith::SelectOp, arith::ExtSIOp,
+                   arith::ExtUIOp, arith::TruncIOp, arith::MaxSIOp>(op)) {
             op.emitError(
                 "operation is outside the initial Host lowering pattern");
             signalPassFailure();

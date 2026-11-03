@@ -49,6 +49,8 @@ struct GlobalPlan {
 static FailureOr<StringRef> udonType(Type type) {
   if (type.isInteger(1))
     return StringRef("SystemBoolean");
+  if (type.isInteger(8) || type.isInteger(16))
+    return StringRef("SystemInt32");
   if (type.isInteger(32))
     return StringRef("SystemInt32");
   if (type.isInteger(64))
@@ -124,12 +126,23 @@ methodABI(func::FuncOp function, UdonSharpABIBuilder &abiBuilder) {
 }
 
 static StringRef binaryExtern(Operation *operation) {
+  auto integerSignature = [&](StringRef name) -> StringRef {
+    Type type = operation->getOperand(0).getType();
+    StringRef systemType = type.isInteger(64) ? "SystemInt64" : "SystemInt32";
+    static thread_local std::string signature;
+    signature = systemType.str() + ".__op_" + name.str() + "__" +
+                systemType.str() + "_" + systemType.str() + "__" +
+                systemType.str();
+    return signature;
+  };
   if (isa<arith::AddIOp>(operation))
-    return "SystemInt32.__op_Addition__SystemInt32_SystemInt32__SystemInt32";
+    return integerSignature("Addition");
   if (isa<arith::SubIOp>(operation))
-    return "SystemInt32.__op_Subtraction__SystemInt32_SystemInt32__SystemInt32";
+    return integerSignature("Subtraction");
   if (isa<arith::MulIOp>(operation))
-    return "SystemInt32.__op_Multiply__SystemInt32_SystemInt32__SystemInt32";
+    return integerSignature("Multiply");
+  if (isa<arith::AndIOp>(operation))
+    return integerSignature("BitwiseAnd");
   if (isa<arith::AddFOp>(operation))
     return "SystemSingle.__op_Addition__SystemSingle_SystemSingle__"
            "SystemSingle";
@@ -170,8 +183,11 @@ static StringRef comparisonExtern(arith::CmpIOp operation) {
     return {};
   }
   static thread_local std::string signature;
-  signature = "SystemInt32.__op_" + name.str() +
-              "__SystemInt32_SystemInt32__SystemBoolean";
+  StringRef systemType = operation.getLhs().getType().isInteger(64)
+                             ? "SystemInt64"
+                             : "SystemInt32";
+  signature = systemType.str() + ".__op_" + name.str() + "__" +
+              systemType.str() + "_" + systemType.str() + "__SystemBoolean";
   return signature;
 }
 
@@ -1023,6 +1039,146 @@ private:
           emitExtern(store.getLoc(), signature);
           continue;
         }
+        if (auto cast = dyn_cast<arith::ExtSIOp>(operation)) {
+          std::string source = valueSlots.lookup(cast.getIn());
+          std::string result = valueSlots.lookup(cast.getOut());
+          if (source.empty() || result.empty())
+            return cast.emitError("integer extension has missing heap slots");
+          if (cast.getIn().getType().isInteger(8) &&
+              cast.getOut().getType().isInteger(32)) {
+            std::string prefix = result + "_sign_extend";
+            std::string threshold = prefix + "_threshold";
+            std::string modulus = prefix + "_modulus";
+            std::string negative = prefix + "_negative";
+            std::string isNegative = prefix + "_is_negative";
+            addSlot(threshold, "SystemInt32", "128", false);
+            addSlot(modulus, "SystemInt32", "256", false);
+            addSlot(negative, "SystemInt32", "0", false);
+            addSlot(isNegative, "SystemBoolean", "null", false);
+            emitPush(cast.getLoc(), source);
+            emitPush(cast.getLoc(), threshold);
+            emitPush(cast.getLoc(), isNegative);
+            emitExtern(cast.getLoc(),
+                       "SystemInt32.__op_GreaterThanOrEqual__SystemInt32_"
+                       "SystemInt32__SystemBoolean");
+            emitPush(cast.getLoc(), isNegative);
+            Operation *positive = create(
+                cast.getLoc(), vm::JumpIfFalseOp::getOperationName(),
+                {builder.getNamedAttr("target", builder.getI64IntegerAttr(0))});
+            address += 8;
+            emitPush(cast.getLoc(), source);
+            emitPush(cast.getLoc(), modulus);
+            emitPush(cast.getLoc(), negative);
+            emitExtern(cast.getLoc(),
+                       "SystemInt32.__op_Subtraction__SystemInt32_SystemInt32__"
+                       "SystemInt32");
+            emitCopy(cast.getLoc(), negative, result);
+            Operation *done = emitJump(cast.getLoc(), 0);
+            positive->setAttr("target", builder.getI64IntegerAttr(
+                                            static_cast<int64_t>(address)));
+            emitCopy(cast.getLoc(), source, result);
+            done->setAttr("target", builder.getI64IntegerAttr(
+                                        static_cast<int64_t>(address)));
+          } else if (cast.getIn().getType().isInteger(32) &&
+                     cast.getOut().getType().isInteger(64)) {
+            emitPush(cast.getLoc(), source);
+            emitPush(cast.getLoc(), result);
+            emitExtern(cast.getLoc(),
+                       "SystemConvert.__ToInt64__SystemInt32__SystemInt64");
+          } else {
+            return cast.emitError("unsupported signed integer extension");
+          }
+          continue;
+        }
+        if (auto cast = dyn_cast<arith::ExtUIOp>(operation)) {
+          std::string source = valueSlots.lookup(cast.getIn());
+          std::string result = valueSlots.lookup(cast.getOut());
+          if (source.empty() || result.empty() ||
+              !cast.getIn().getType().isInteger(1) ||
+              !cast.getOut().getType().isInteger(32))
+            return cast.emitError("unsupported unsigned integer extension");
+          std::string zero = result + "_false";
+          std::string one = result + "_true";
+          addSlot(zero, "SystemInt32", "0", false);
+          addSlot(one, "SystemInt32", "1", false);
+          emitPush(cast.getLoc(), source);
+          Operation *useZero = create(
+              cast.getLoc(), vm::JumpIfFalseOp::getOperationName(),
+              {builder.getNamedAttr("target", builder.getI64IntegerAttr(0))});
+          address += 8;
+          emitCopy(cast.getLoc(), one, result);
+          Operation *done = emitJump(cast.getLoc(), 0);
+          useZero->setAttr("target", builder.getI64IntegerAttr(
+                                         static_cast<int64_t>(address)));
+          emitCopy(cast.getLoc(), zero, result);
+          done->setAttr("target", builder.getI64IntegerAttr(
+                                      static_cast<int64_t>(address)));
+          continue;
+        }
+        if (auto cast = dyn_cast<arith::TruncIOp>(operation)) {
+          std::string source = valueSlots.lookup(cast.getIn());
+          std::string result = valueSlots.lookup(cast.getOut());
+          if (source.empty() || result.empty() ||
+              !cast.getIn().getType().isInteger(64) ||
+              !cast.getOut().getType().isInteger(32))
+            return cast.emitError("unsupported integer truncation");
+          emitPush(cast.getLoc(), source);
+          emitPush(cast.getLoc(), result);
+          emitExtern(cast.getLoc(),
+                     "SystemConvert.__ToInt32__SystemInt64__SystemInt32");
+          continue;
+        }
+        if (auto select = dyn_cast<arith::SelectOp>(operation)) {
+          std::string condition = valueSlots.lookup(select.getCondition());
+          std::string trueValue = valueSlots.lookup(select.getTrueValue());
+          std::string falseValue = valueSlots.lookup(select.getFalseValue());
+          std::string result = valueSlots.lookup(select.getResult());
+          if (condition.empty() || trueValue.empty() || falseValue.empty() ||
+              result.empty())
+            return select.emitError("select has missing heap slots");
+          emitPush(select.getLoc(), condition);
+          Operation *useFalse = create(
+              select.getLoc(), vm::JumpIfFalseOp::getOperationName(),
+              {builder.getNamedAttr("target", builder.getI64IntegerAttr(0))});
+          address += 8;
+          emitCopy(select.getLoc(), trueValue, result);
+          Operation *done = emitJump(select.getLoc(), 0);
+          useFalse->setAttr("target", builder.getI64IntegerAttr(
+                                          static_cast<int64_t>(address)));
+          emitCopy(select.getLoc(), falseValue, result);
+          done->setAttr("target", builder.getI64IntegerAttr(
+                                      static_cast<int64_t>(address)));
+          continue;
+        }
+        if (auto maximum = dyn_cast<arith::MaxSIOp>(operation)) {
+          std::string lhs = valueSlots.lookup(maximum.getLhs());
+          std::string rhs = valueSlots.lookup(maximum.getRhs());
+          std::string result = valueSlots.lookup(maximum.getResult());
+          std::string condition = result + "_max_condition";
+          if (lhs.empty() || rhs.empty() || result.empty() ||
+              !maximum.getType().isInteger(32))
+            return maximum.emitError("unsupported signed integer maximum");
+          addSlot(condition, "SystemBoolean", "null", false);
+          emitPush(maximum.getLoc(), lhs);
+          emitPush(maximum.getLoc(), rhs);
+          emitPush(maximum.getLoc(), condition);
+          emitExtern(maximum.getLoc(),
+                     "SystemInt32.__op_GreaterThanOrEqual__SystemInt32_"
+                     "SystemInt32__SystemBoolean");
+          emitPush(maximum.getLoc(), condition);
+          Operation *useRhs = create(
+              maximum.getLoc(), vm::JumpIfFalseOp::getOperationName(),
+              {builder.getNamedAttr("target", builder.getI64IntegerAttr(0))});
+          address += 8;
+          emitCopy(maximum.getLoc(), lhs, result);
+          Operation *done = emitJump(maximum.getLoc(), 0);
+          useRhs->setAttr("target", builder.getI64IntegerAttr(
+                                        static_cast<int64_t>(address)));
+          emitCopy(maximum.getLoc(), rhs, result);
+          done->setAttr("target", builder.getI64IntegerAttr(
+                                      static_cast<int64_t>(address)));
+          continue;
+        }
         StringRef signature = binaryExtern(&operation);
         if (auto comparison = dyn_cast<arith::CmpIOp>(operation))
           signature = comparisonExtern(comparison);
@@ -1063,12 +1219,14 @@ private:
 
   LogicalResult emitRawLoad(Location location, StringRef pointer,
                             StringRef result, Type type) {
-    if (!type.isInteger(32) && !type.isF32() && !isa<host::PtrType>(type))
+    if (!type.isInteger(8) && !type.isInteger(32) && !type.isF32() &&
+        !isa<host::PtrType>(type))
       return failure();
+    unsigned byteWidth = type.isInteger(8) ? 1 : 4;
     std::string prefix = "__vrc_raw_load_" + std::to_string(rawAccessIndex++);
     std::string bits = prefix + "_bits";
     addSlot(bits, "SystemInt32", "0", false);
-    for (unsigned byteIndex = 0; byteIndex < 4; ++byteIndex) {
+    for (unsigned byteIndex = 0; byteIndex < byteWidth; ++byteIndex) {
       std::string index = pointer.str();
       if (byteIndex) {
         std::string offset = prefix + "_offset_" + std::to_string(byteIndex);
@@ -1130,8 +1288,10 @@ private:
 
   LogicalResult emitRawStore(Location location, StringRef pointer,
                              StringRef value, Type type) {
-    if (!type.isInteger(32) && !type.isF32() && !isa<host::PtrType>(type))
+    if (!type.isInteger(8) && !type.isInteger(32) && !type.isF32() &&
+        !isa<host::PtrType>(type))
       return failure();
+    unsigned byteWidth = type.isInteger(8) ? 1 : 4;
     std::string prefix = "__vrc_raw_store_" + std::to_string(rawAccessIndex++);
     std::string bits = prefix + "_bits";
     std::string mask = prefix + "_mask";
@@ -1146,7 +1306,7 @@ private:
     } else {
       emitCopy(location, value, bits);
     }
-    for (unsigned byteIndex = 0; byteIndex < 4; ++byteIndex) {
+    for (unsigned byteIndex = 0; byteIndex < byteWidth; ++byteIndex) {
       std::string component = bits;
       if (byteIndex) {
         std::string shift = prefix + "_shift_" + std::to_string(byteIndex);

@@ -190,6 +190,39 @@ for expected in [
 assert 'memref.global' not in global_lowered.stdout
 assert 'memref.get_global' not in global_lowered.stdout
 
+integer_ops_source = r'''module {
+  func.func @integer_ops(%value: i32, %other: i32) -> i32 attributes {vrc.export_id = 8 : i32} {
+    %wide = arith.extsi %value : i32 to i64
+    %mask = arith.constant 5 : i64
+    %masked = arith.andi %wide, %mask : i64
+    %narrow = arith.trunci %masked : i64 to i32
+    %maximum = arith.maxsi %narrow, %other : i32
+    %positive = arith.cmpi sgt, %maximum, %value : i32
+    %selected = arith.select %positive, %maximum, %value : i32
+    %as_int = arith.extui %positive : i1 to i32
+    %byte = arith.constant -1 : i8
+    %signed_byte = arith.extsi %byte : i8 to i32
+    %sum = arith.addi %selected, %as_int : i32
+    %result = arith.addi %sum, %signed_byte : i32
+    return %result : i32
+  }
+}'''
+integer_ops_lowered = subprocess.run(
+    [opt, '--pass-pipeline=builtin.module(vrc-lower-host-to-udonhl,'
+          'vrc-lower-udonhl-to-udonasm)', '--verify-each'],
+    input=integer_ops_source, text=True, capture_output=True)
+assert integer_ops_lowered.returncode == 0, integer_ops_lowered.stderr
+for expected in [
+    'SystemConvert.__ToInt64__SystemInt32__SystemInt64',
+    'SystemInt64.__op_BitwiseAnd__SystemInt64_SystemInt64__SystemInt64',
+    'SystemConvert.__ToInt32__SystemInt64__SystemInt32',
+    'SystemInt32.__op_GreaterThanOrEqual__SystemInt32_SystemInt32__SystemBoolean',
+    'SystemInt32.__op_Subtraction__SystemInt32_SystemInt32__SystemInt32',
+    'udonasm.jump_if_false',
+]:
+    assert expected in integer_ops_lowered.stdout, (
+        expected, integer_ops_lowered.stdout)
+
 raw_memory_source = r'''module {
   "udonhl.global"() <{sym_name = "handle", storage_type = !udonhl.ptr<0>, initial_value = 0 : i32, linkage = "internal", address_space = 0 : i32, alignment = 4 : i64}> : () -> ()
   func.func @raw_roundtrip() -> i32 attributes {vrc.export_id = 1 : i32} {
@@ -340,7 +373,7 @@ rejected = subprocess.run(
 assert rejected.returncode != 0
 assert 'vrc.udon_event does not match the pinned UdonSharp ABI' in rejected.stderr
 
-invalid = source.replace('%sum = arith.addi %a, %b : i32', '%sum = arith.andi %a, %b : i32')
+invalid = source.replace('%sum = arith.addi %a, %b : i32', '%sum = arith.divui %a, %b : i32')
 rejected = subprocess.run(
     [opt, '--vrc-lower-udonhl-to-udonasm'], input=invalid, text=True,
     capture_output=True)
