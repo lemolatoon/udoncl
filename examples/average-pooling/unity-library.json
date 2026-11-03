@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "program": "average_pooling",
+  "device_kernel": {
+    "schema_version": 1,
+    "profile": "gather-f32",
+    "words": 8192,
+    "kernel": "average_pool_8x8",
+    "kernel_id": 11,
+    "argument_kinds": ["buffer", "buffer", "i32"],
+    "global_size": [8192, 1, 1],
+    "local_size": [1, 1, 1],
+    "global_offset": [0, 0, 0]
+  },
+  "exports": [
+    {
+      "symbol": "run_average_pool",
+      "public_name": "RunAveragePool",
+      "id": 1,
+      "parameters": ["output_words"]
+    }
+  ],
+  "buffers": [
+    {
+      "id": 1,
+      "name": "input",
+      "byte_size": 32768,
+      "element_type": "float32",
+      "public_access": "input"
+    },
+    {
+      "id": 2,
+      "name": "output",
+      "byte_size": 32768,
+      "element_type": "float32",
+      "public_access": "output"
+    }
+  ]
+}

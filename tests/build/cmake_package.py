@@ -39,6 +39,7 @@ def main():
     install = output / 'install'
     consumer = output / 'consumer'
     saxpy_consumer = output / 'saxpy-consumer'
+    pooling_consumer = output / 'average-pooling-consumer'
     run([
         args.cmake,
         '--install', str(args.project_build.resolve()),
@@ -302,6 +303,60 @@ def main():
     assert 'int _VRC_Arg2;' in saxpy_hlsl
     assert 'float _VRC_Arg3;' in saxpy_hlsl
     assert (saxpy_artifact / 'kernels/kernel_10.shader').is_file()
+
+    pooling_source = args.source.resolve().parent / 'average-pooling'
+    run([
+        args.cmake,
+        '-S', str(pooling_source),
+        '-B', str(pooling_consumer),
+        '-G', args.generator,
+        f'-DCMAKE_MAKE_PROGRAM={args.make_program}',
+        f'-DUdonCL_DIR={package}',
+        f'-DUDONCL_CLANG_EXECUTABLE={Path(args.clang).resolve()}',
+        f'-DUDONCL_LLVM_LINK_EXECUTABLE={Path(args.llvm_link).resolve()}',
+    ])
+    run([
+        args.cmake, '--build', str(pooling_consumer),
+        '--target', 'average-pooling-unity-library',
+    ])
+    pooling_artifact = (
+        pooling_consumer / 'udoncl/average-pooling-unity-library/artifact'
+    )
+    pooling_manifest = json.loads(
+        (pooling_artifact / 'manifest.json').read_text(encoding='utf-8')
+    )
+    assert pooling_manifest['ready_for_unity'] is True
+    assert pooling_manifest['dispatch_sites'] == [{
+        'function': 'run_average_pool',
+        'kernel_id': 11,
+        'descriptor_abi': 1,
+        'resources': 2,
+        'completion': 'pending_event',
+    }]
+    assert [
+        (
+            buffer['name'], buffer['logical_bytes'], buffer['element_type'],
+            buffer['public_access'],
+        )
+        for buffer in pooling_manifest['device']['buffers']
+    ] == [
+        ('input', 32768, 'float32', 'input'),
+        ('output', 32768, 'float32', 'output'),
+    ]
+    pooling_kernel = pooling_manifest['device']['kernels'][0]
+    assert pooling_kernel['name'] == 'average_pool_8x8'
+    assert pooling_kernel['profile'] == 'gather-f32'
+    assert pooling_kernel['global_size'] == [8192, 1, 1]
+    assert [arg['kind'] for arg in pooling_kernel['args']] == [
+        'buffer', 'buffer', 'i32',
+    ]
+    pooling_assembly = (pooling_artifact / 'host.uasm').read_text(
+        encoding='utf-8'
+    )
+    assert '.export __0_RunAveragePool' in pooling_assembly
+    assert pooling_assembly.count('VRCSDKBaseVRCGraphics.__Blit__') == 1
+    assert (pooling_artifact / 'kernels/kernel_11.shader').is_file()
+    assert (pooling_artifact / 'buffer-copy.shader').is_file()
 
     invalid_saxpy_source = output / 'invalid-saxpy-access.c'
     invalid_saxpy_module = output / 'invalid-saxpy-access.bc'

@@ -515,6 +515,9 @@ def run_unity_mcp_gate(root, unity, project, build, output):
             "--saxpy",
             build
             / "tests/cmake-package/saxpy-consumer/udoncl/saxpy-unity-library/artifact",
+            "--pooling",
+            build
+            / "tests/cmake-package/average-pooling-consumer/udoncl/average-pooling-unity-library/artifact",
             "--check",
         ],
         cwd=root,
@@ -693,7 +696,7 @@ def run_unity_mcp_gate(root, unity, project, build, output):
             except subprocess.TimeoutExpired:
                 unity_process.kill()
                 unity_process.wait(timeout=30)
-        for program_name in ("hello_dispatch", "saxpy_demo"):
+        for program_name in ("hello_dispatch", "saxpy_demo", "average_pooling"):
             program_root = generated / program_name
             shutil.rmtree(program_root, ignore_errors=True)
             program_root.with_suffix(".meta").unlink(missing_ok=True)

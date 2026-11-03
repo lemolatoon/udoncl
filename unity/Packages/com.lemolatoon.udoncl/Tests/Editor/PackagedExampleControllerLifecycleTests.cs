@@ -13,6 +13,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
     {
         private const string HelloRoot = "Assets/udoncl-generated/hello_dispatch";
         private const string SaxpyRoot = "Assets/udoncl-generated/saxpy_demo";
+        private const string PoolingRoot = "Assets/udoncl-generated/average_pooling";
         private const string GeneratedNamespace = "Lemolatoon.Udoncl.Generated.";
 
         [OneTimeSetUp]
@@ -26,9 +27,15 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 "UdonclHelloDispatchExample"
             );
             EnsureCompiledPrograms(SaxpyRoot, "UdonclSaxpyDemoBinding", "UdonclSaxpyDemoExample");
+            EnsureCompiledPrograms(
+                PoolingRoot,
+                "UdonclAveragePoolingBinding",
+                "UdonclAveragePoolingExample"
+            );
             GeneratedBindingFinalizer.FinalizeAvailableBindings();
             Assert.NotNull(LoadPrefab(HelloRoot, "UdonclHelloDispatchBinding"));
             Assert.NotNull(LoadPrefab(SaxpyRoot, "UdonclSaxpyDemoBinding"));
+            Assert.NotNull(LoadPrefab(PoolingRoot, "UdonclAveragePoolingBinding"));
         }
 
         [Test]
@@ -46,6 +53,11 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 "UdonclSaxpyDemoBinding",
                 "UdonclSaxpyDemoExample"
             );
+            AssertControllerBinding(
+                LoadPrefab(PoolingRoot, "UdonclAveragePoolingBinding"),
+                "UdonclAveragePoolingBinding",
+                "UdonclAveragePoolingExample"
+            );
         }
 
         [UnityTest]
@@ -61,8 +73,12 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             GameObject saxpy = UnityEngine.Object.Instantiate(
                 LoadPrefab(SaxpyRoot, "UdonclSaxpyDemoBinding")
             );
+            GameObject pooling = UnityEngine.Object.Instantiate(
+                LoadPrefab(PoolingRoot, "UdonclAveragePoolingBinding")
+            );
             UdonclArtifactImporter.InitializeUdonBehaviours(hello);
             UdonclArtifactImporter.InitializeUdonBehaviours(saxpy);
+            UdonclArtifactImporter.InitializeUdonBehaviours(pooling);
             yield return null;
 
             UdonBehaviour helloController = UdonclArtifactImporter.FindUdonSharpBacking(
@@ -73,10 +89,16 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 saxpy,
                 GeneratedNamespace + "UdonclSaxpyDemoExample"
             );
+            UdonBehaviour poolingController = UdonclArtifactImporter.FindUdonSharpBacking(
+                pooling,
+                GeneratedNamespace + "UdonclAveragePoolingExample"
+            );
             Assert.NotNull(helloController);
             Assert.NotNull(saxpyController);
+            Assert.NotNull(poolingController);
             AssertRuntimeBinding(hello, helloController, "UdonclHelloDispatchBinding");
             AssertRuntimeBinding(saxpy, saxpyController, "UdonclSaxpyDemoBinding");
+            AssertRuntimeBinding(pooling, poolingController, "UdonclAveragePoolingBinding");
             UdonclArtifactImporter.SendUdonCustomEvent(helloController, "Run");
             UdonclArtifactImporter.SendUdonCustomEvent(saxpyController, "Run");
 
@@ -99,21 +121,51 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 saxpyResult = (float)
                     UdonclArtifactImporter.GetUdonProgramVariable(saxpyController, "firstResult");
             }
+
+            UdonclArtifactImporter.SendUdonCustomEvent(poolingController, "Run");
+            int poolingFrame = 0;
+            float poolingResult = 0.0f;
+            while (poolingFrame < timeoutFrames && Math.Abs(poolingResult - 87.5f) > 0.0001f)
+            {
+                ++poolingFrame;
+                yield return null;
+                poolingResult = (float)
+                    UdonclArtifactImporter.GetUdonProgramVariable(poolingController, "firstResult");
+            }
             int helloStatus = (int)
                 UdonclArtifactImporter.GetUdonProgramVariable(helloController, "status");
             int saxpyStatus = (int)
                 UdonclArtifactImporter.GetUdonProgramVariable(saxpyController, "status");
+            int poolingStatus = (int)
+                UdonclArtifactImporter.GetUdonProgramVariable(poolingController, "status");
             yield return new ExitPlayMode();
 
             Assert.Less(
                 frame,
                 timeoutFrames,
-                "Packaged controller readback timed out; status=" + helloStatus + "/" + saxpyStatus
+                "Hello/SAXPY readback timed out; status="
+                    + helloStatus
+                    + "/"
+                    + saxpyStatus
+                    + "; results="
+                    + helloResult
+                    + "/"
+                    + saxpyResult
+            );
+            Assert.Less(
+                poolingFrame,
+                timeoutFrames,
+                "Average pooling readback timed out; status="
+                    + poolingStatus
+                    + "; result="
+                    + poolingResult
             );
             Assert.AreEqual(0, helloStatus);
             Assert.AreEqual(0, saxpyStatus);
+            Assert.AreEqual(0, poolingStatus);
             Assert.AreEqual(10.0f, helloResult, 0.0001f);
             Assert.AreEqual(102.0f, saxpyResult, 0.0001f);
+            Assert.AreEqual(87.5f, poolingResult, 0.0001f);
         }
 
         private static GameObject LoadPrefab(string root, string bindingClass)

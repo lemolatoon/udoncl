@@ -13,6 +13,7 @@ namespace Lemolatoon.Udoncl.Editor
         private const string HelloArchive = "hello-dispatch.zip.bytes";
         private const string SaxpyArchive = "saxpy.zip.bytes";
         private const string TinyArchive = "onnx-tiny-llama.zip.bytes";
+        private const string PoolingArchive = "average-pooling.zip.bytes";
 
         [MenuItem("Tools/udoncl/Examples/Import C and OpenCL Hello Dispatch")]
         private static void ImportHelloDispatch()
@@ -38,6 +39,12 @@ namespace Lemolatoon.Udoncl.Editor
             Import(TinyArchive);
         }
 
+        [MenuItem("Tools/udoncl/Examples/Import OpenCL Average Pooling")]
+        private static void ImportAveragePooling()
+        {
+            Import(PoolingArchive);
+        }
+
         [MenuItem("Tools/udoncl/Internal/Prepare Packaged Example Validation")]
         public static void PreparePackagedExampleValidation()
         {
@@ -47,6 +54,7 @@ namespace Lemolatoon.Udoncl.Editor
                 );
             PrepareValidationExample(HelloArchive, "hello_dispatch");
             PrepareValidationExample(SaxpyArchive, "saxpy_demo");
+            PrepareValidationExample(PoolingArchive, "average_pooling");
             AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
         }
 
@@ -57,6 +65,7 @@ namespace Lemolatoon.Udoncl.Editor
                 && archiveName != HelloArchive
                 && archiveName != SaxpyArchive
                 && archiveName != TinyArchive
+                && archiveName != PoolingArchive
             )
                 throw new ArgumentException(
                     "Unknown packaged example archive.",

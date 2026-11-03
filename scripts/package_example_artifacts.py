@@ -23,6 +23,10 @@ DEFAULT_SAXPY = (
     ROOT
     / "build/udoncl/tests/cmake-package/saxpy-consumer/udoncl/saxpy-unity-library/artifact"
 )
+DEFAULT_POOLING = (
+    ROOT
+    / "build/udoncl/tests/cmake-package/average-pooling-consumer/udoncl/average-pooling-unity-library/artifact"
+)
 
 
 def require_artifact(source: Path) -> None:
@@ -75,6 +79,7 @@ def main() -> None:
     parser.add_argument("--tiny", type=Path, default=DEFAULT_TINY)
     parser.add_argument("--hello", type=Path, default=DEFAULT_HELLO)
     parser.add_argument("--saxpy", type=Path, default=DEFAULT_SAXPY)
+    parser.add_argument("--pooling", type=Path, default=DEFAULT_POOLING)
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args()
     publish(
@@ -99,6 +104,12 @@ def main() -> None:
         args.saxpy,
         PACKAGE_EXAMPLES / "saxpy.zip.bytes",
         "saxpy_demo",
+        args.check,
+    )
+    publish(
+        args.pooling,
+        PACKAGE_EXAMPLES / "average-pooling.zip.bytes",
+        "average_pooling",
         args.check,
     )
     print("package_examples=valid" if args.check else "package_examples=updated")
