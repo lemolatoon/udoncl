@@ -459,20 +459,33 @@ bool configureUnityExports(ModuleOp module, const json::Object &config) {
     function->setAttr("vrc.public_name", builder.getStringAttr(*publicName));
     function->setAttr("vrc.parameter_names", builder.getArrayAttr(names));
   }
-  for (func::FuncOp function : module.getOps<func::FuncOp>())
-    if (selected.count(function.getSymName().str()))
-      for (func::CallOp call : function.getOps<func::CallOp>())
-        if (!selected.count(call.getCallee().str())) {
-          auto callee = module.lookupSymbol<func::FuncOp>(call.getCallee());
-          if (callee && callee->hasAttr("vrc.intrinsic"))
-            continue;
-          call.emitError("Unity library helper calls must be inlined before "
-                         "Udon lowering");
-          return false;
-        }
+  std::set<std::string> reachable = selected;
+  SmallVector<std::string> worklist(selected.begin(), selected.end());
+  while (!worklist.empty()) {
+    std::string symbol = std::move(worklist.pop_back_val());
+    auto function = module.lookupSymbol<func::FuncOp>(symbol);
+    if (!function)
+      continue;
+    for (func::CallOp call : function.getOps<func::CallOp>()) {
+      auto callee = module.lookupSymbol<func::FuncOp>(call.getCallee());
+      if (!callee) {
+        call.emitError("Unity library helper does not resolve in the linked "
+                       "Host module");
+        return false;
+      }
+      if (callee->hasAttr("vrc.intrinsic"))
+        continue;
+      if (callee.isExternal()) {
+        call.emitError("Unity library helper requires a definition");
+        return false;
+      }
+      if (reachable.insert(call.getCallee().str()).second)
+        worklist.push_back(call.getCallee().str());
+    }
+  }
   for (func::FuncOp function :
        llvm::make_early_inc_range(module.getOps<func::FuncOp>()))
-    if (!selected.count(function.getSymName().str()) &&
+    if (!reachable.count(function.getSymName().str()) &&
         !function->hasAttr("vrc.intrinsic"))
       function.erase();
   module->setAttr("vrc.target", builder.getStringAttr("vrc-pc"));

@@ -3,4 +3,6 @@
 
 #define HELLO_HOST_SCALE 1.0f
 
+float hello_host_identity(float value);
+
 #endif

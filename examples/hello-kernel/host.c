@@ -1,10 +1,12 @@
 // Host-visible scalar export. It mirrors the Device calculation so the
 // recovered Host IR can be inspected independently.
+#include "hello_host.h"
+
 float host_square_plus_one(float x) {
   float square = 1.0f;
   for (int factor = 0; factor < 2; ++factor)
     square *= x;
-  return square + 1.0f;
+  return hello_host_identity(square) + 1.0f;
 }
 
 // The current AOT boundary represents runtime-owned objects as uint32 handles;

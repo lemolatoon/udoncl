@@ -121,6 +121,8 @@ def main():
     assert '.export __0_SquarePlusOne' in assembly
     assert '.export __udoncl_buffer_1' in assembly
     assert '__udoncl_buffer_1: %UnityEngineRenderTexture, null' in assembly
+    assert 'JUMP_INDIRECT' in assembly
+    assert '__vrc_internal_1_return: %SystemUInt32, 0' in assembly
     assert (unity_artifact / 'display.shader').is_file()
     assert (unity_artifact / 'kernels/kernel_1.shader').is_file()
     assert (unity_artifact / 'kernels/kernel_1.hlsl').is_file()

@@ -126,6 +126,30 @@ assert fixture.exists(), fixture
 assert normalize(fixture.read_text(encoding='utf-8')) == normalize(assembly), \
     'Unity IUdonVM fixture is stale; regenerate it from scalar.uasm'
 
+call_source = r'''module attributes {vrc.host_stage = "udonhl"} {
+  func.func @call_double(%value: i32) -> i32 attributes {
+    vrc.export_id = 1 : i32
+  } {
+    %result = udonhl.call @double(%value) {call_policy = #udonhl<call_policy normal>} : (i32) -> i32
+    return %result : i32
+  }
+  func.func private @double(%value: i32) -> i32 {
+    %result = arith.addi %value, %value : i32
+    return %result : i32
+  }
+}'''
+call_lowered = subprocess.run(
+    [opt, '--vrc-lower-udonhl-to-udonasm', '--verify-each'],
+    input=call_source, text=True, capture_output=True)
+assert call_lowered.returncode == 0, call_lowered.stderr
+for expected in [
+    'name = "__vrc_internal_1_return"',
+    'type = "SystemUInt32"',
+    'udonasm.jump_indirect "__vrc_internal_1_return"',
+    'SystemInt32.__op_Addition__SystemInt32_SystemInt32__SystemInt32',
+]:
+    assert expected in call_lowered.stdout, (expected, call_lowered.stdout)
+
 # Pin the exact cross-UdonBehaviour naming observed from UdonSharp in Worlds
 # SDK 3.10.5. Logical export ids remain separate from this physical ABI.
 abi_source = r'''module {

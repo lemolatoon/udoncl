@@ -31,6 +31,14 @@ struct Slot {
   bool isPublic = false;
 };
 
+struct FunctionPlan {
+  std::string prefix;
+  SmallVector<std::string> parameterSlots;
+  std::optional<std::string> resultSlot;
+  std::optional<std::string> returnSlot;
+  std::optional<uint64_t> entryAddress;
+};
+
 static FailureOr<StringRef> udonType(Type type) {
   if (type.isInteger(1))
     return StringRef("SystemBoolean");
@@ -195,20 +203,22 @@ public:
 
   LogicalResult run() {
     SmallVector<func::FuncOp> functions;
+    SmallVector<func::FuncOp> exportsToLower;
+    SmallVector<func::FuncOp> internalsToLower;
     llvm::SmallSet<int64_t, 8> exportIds;
     llvm::SmallSet<std::string, 8> eventNames;
     llvm::SmallSet<std::string, 8> publicNames;
     for (func::FuncOp function : module.getOps<func::FuncOp>()) {
       auto exportId = function->getAttrOfType<IntegerAttr>("vrc.export_id");
-      if (!exportId)
-        return function.emitError(
-            "initial Udon backend requires every remaining function to be an "
-            "export; inline or lower internal calls first");
-      if (exportId.getInt() <= 0 || !exportIds.insert(exportId.getInt()).second)
+      if (exportId && (exportId.getInt() <= 0 ||
+                       !exportIds.insert(exportId.getInt()).second))
         return function.emitError("requires a unique positive vrc.export_id");
-      if (function.isExternal() || function.isPrivate())
+      if (function.isExternal())
         return function.emitError(
-            "initial scalar Udon lowering requires a public, defined function");
+            "Udon lowering requires runtime intrinsics to be substituted and "
+            "every remaining function to be defined");
+      if (exportId && function.isPrivate())
+        return function.emitError("a Udon export cannot be private");
       if (function.getNumResults() > 1)
         return function.emitError(
             "initial scalar Udon ABI supports at most one result");
@@ -219,17 +229,25 @@ public:
         if (failed(udonType(type)))
           return function.emitError("unsupported scalar Udon result type");
       functions.push_back(function);
+      (exportId ? exportsToLower : internalsToLower).push_back(function);
     }
-    if (functions.empty())
+    if (exportsToLower.empty())
       return module.emitError(
           "scalar Udon lowering requires at least one export");
 
-    llvm::sort(functions, [](func::FuncOp lhs, func::FuncOp rhs) {
+    llvm::sort(exportsToLower, [](func::FuncOp lhs, func::FuncOp rhs) {
       return lhs->getAttrOfType<IntegerAttr>("vrc.export_id").getInt() <
              rhs->getAttrOfType<IntegerAttr>("vrc.export_id").getInt();
     });
+    llvm::sort(internalsToLower, [](func::FuncOp lhs, func::FuncOp rhs) {
+      return lhs.getSymName() < rhs.getSymName();
+    });
+    functions.clear();
+    llvm::append_range(functions, exportsToLower);
+    llvm::append_range(functions, internalsToLower);
+
     UdonSharpABIBuilder abiBuilder;
-    for (func::FuncOp function : functions) {
+    for (func::FuncOp function : exportsToLower) {
       auto abi = methodABI(function, abiBuilder);
       if (failed(abi))
         return function.emitError(
@@ -246,9 +264,39 @@ public:
       methodABIs.try_emplace(function.getOperation(), std::move(*abi));
     }
 
+    for (auto [index, function] : llvm::enumerate(functions)) {
+      FunctionPlan plan;
+      if (auto exportId =
+              function->getAttrOfType<IntegerAttr>("vrc.export_id")) {
+        plan.prefix = "__vrc_f" + std::to_string(exportId.getInt()) + "_";
+        const UdonSharpMethodABI &abi = methodABIs.at(function.getOperation());
+        plan.parameterSlots.append(abi.parameterSlots.begin(),
+                                   abi.parameterSlots.end());
+        plan.resultSlot = abi.resultSlot;
+      } else {
+        plan.prefix = "__vrc_internal_" + std::to_string(index) + "_";
+        for (unsigned argument = 0; argument < function.getNumArguments();
+             ++argument)
+          plan.parameterSlots.push_back(plan.prefix + "arg" +
+                                        std::to_string(argument));
+        if (function.getNumResults())
+          plan.resultSlot = plan.prefix + "result";
+        plan.returnSlot = plan.prefix + "return";
+      }
+      functionPlans.try_emplace(function.getOperation(), std::move(plan));
+    }
+
     for (func::FuncOp function : functions)
       if (failed(lower(function)))
         return failure();
+
+    for (auto [jump, callee] : callRelocations) {
+      auto plan = functionPlans.find(callee.getOperation());
+      if (plan == functionPlans.end() || !plan->second.entryAddress)
+        return jump->emitError("call target was not lowered");
+      jump->setAttr("target", builder.getI64IntegerAttr(static_cast<int64_t>(
+                                  *plan->second.entryAddress)));
+    }
 
     for (func::FuncOp function : functions)
       function.erase();
@@ -263,35 +311,41 @@ public:
 private:
   LogicalResult lower(func::FuncOp function) {
     auto exportId = function->getAttrOfType<IntegerAttr>("vrc.export_id");
-    const UdonSharpMethodABI &abi = methodABIs.at(function.getOperation());
-    std::string prefix = "__vrc_f" + std::to_string(exportId.getInt()) + "_";
-    StringRef event = abi.eventName;
+    FunctionPlan &plan = functionPlans.at(function.getOperation());
+    std::string prefix = plan.prefix;
+    plan.entryAddress = address;
 
-    SmallVector<NamedAttribute> exportFields;
-    exportFields.push_back(
-        builder.getNamedAttr("name", builder.getStringAttr(event)));
-    exportFields.push_back(builder.getNamedAttr(
-        "address", builder.getI64IntegerAttr(static_cast<int64_t>(address))));
-    exportFields.push_back(builder.getNamedAttr(
-        "function", builder.getStringAttr(function.getSymName())));
-    exportFields.push_back(builder.getNamedAttr("export_id", exportId));
-    exports.push_back(DictionaryAttr::get(module.getContext(), exportFields));
+    if (exportId) {
+      const UdonSharpMethodABI &abi = methodABIs.at(function.getOperation());
+      SmallVector<NamedAttribute> exportFields;
+      exportFields.push_back(
+          builder.getNamedAttr("name", builder.getStringAttr(abi.eventName)));
+      exportFields.push_back(builder.getNamedAttr(
+          "address", builder.getI64IntegerAttr(static_cast<int64_t>(address))));
+      exportFields.push_back(builder.getNamedAttr(
+          "function", builder.getStringAttr(function.getSymName())));
+      exportFields.push_back(builder.getNamedAttr("export_id", exportId));
+      exports.push_back(DictionaryAttr::get(module.getContext(), exportFields));
+    }
 
     llvm::DenseMap<Value, std::string> valueSlots;
     llvm::DenseMap<Operation *, SmallVector<std::string>> frameSlots;
     for (auto [index, argument] : llvm::enumerate(function.getArguments())) {
       auto type = *udonType(argument.getType());
-      std::string name = abi.parameterSlots[index];
+      std::string name = plan.parameterSlots[index];
       addSlot(name, type, "null", false);
       valueSlots[argument] = name;
     }
     std::string resultSlot;
     if (function.getNumResults()) {
       auto type = *udonType(function.getResultTypes().front());
-      resultSlot = *abi.resultSlot;
+      resultSlot = *plan.resultSlot;
       addSlot(resultSlot, type, "null", false);
     }
-    addSlot(udonclStatusSlot(exportId.getInt()), "SystemInt32", "0", false);
+    if (plan.returnSlot)
+      addSlot(*plan.returnSlot, "SystemUInt32", "0", false);
+    if (exportId)
+      addSlot(udonclStatusSlot(exportId.getInt()), "SystemInt32", "0", false);
 
     // Allocate every SSA value before emitting code. This makes block argument
     // transfer and forward-branch relocation independent of traversal order.
@@ -612,6 +666,44 @@ private:
               "UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid");
           continue;
         }
+        if (auto call = dyn_cast<host::CallOp>(operation)) {
+          auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
+              call, call.getCalleeAttr());
+          auto calleePlan = callee ? functionPlans.find(callee.getOperation())
+                                   : functionPlans.end();
+          if (!callee || calleePlan == functionPlans.end() ||
+              !calleePlan->second.returnSlot)
+            return call.emitError(
+                "normal Udon call requires a defined internal callee");
+          if (call.getNumOperands() != calleePlan->second.parameterSlots.size())
+            return call.emitError("callee argument slot count mismatch");
+          for (auto [operand, destination] : llvm::zip(
+                   call.getOperands(), calleePlan->second.parameterSlots)) {
+            std::string source = valueSlots.lookup(operand);
+            if (source.empty())
+              return call.emitError("call operand has no Udon heap slot");
+            emitCopy(call.getLoc(), source, destination);
+          }
+          std::string returnAddress =
+              prefix + "call_return_" + std::to_string(callReturnIndex++);
+          addSlot(returnAddress, "SystemUInt32", std::to_string(address + 20),
+                  false);
+          emitCopy(call.getLoc(), returnAddress,
+                   *calleePlan->second.returnSlot);
+          Operation *jump = emitJump(call.getLoc(), 0);
+          callRelocations.emplace_back(jump, callee);
+          if (call.getNumResults()) {
+            if (call.getNumResults() != 1 || !calleePlan->second.resultSlot)
+              return call.emitError(
+                  "normal Udon call supports at most one matching result");
+            std::string destination = valueSlots.lookup(call.getResult(0));
+            if (destination.empty())
+              return call.emitError("call result has no Udon heap slot");
+            emitCopy(call.getLoc(), *calleePlan->second.resultSlot,
+                     destination);
+          }
+          continue;
+        }
         if (auto returned = dyn_cast<func::ReturnOp>(operation)) {
           if (returned.getNumOperands()) {
             auto found = valueSlots.find(returned.getOperand(0));
@@ -620,7 +712,14 @@ private:
                   "return value has no allocated Udon heap slot");
             emitCopy(returned.getLoc(), found->second, resultSlot);
           }
-          emitJump(returned.getLoc(), 0xfffffffcLL);
+          if (plan.returnSlot) {
+            create(returned.getLoc(), vm::JumpIndirectOp::getOperationName(),
+                   {builder.getNamedAttr(
+                       "slot", builder.getStringAttr(*plan.returnSlot))});
+            address += 8;
+          } else {
+            emitJump(returned.getLoc(), 0xfffffffcLL);
+          }
           continue;
         }
         if (auto branch = dyn_cast<cf::BranchOp>(operation)) {
@@ -786,6 +885,9 @@ private:
   SmallVector<Slot> slots;
   SmallVector<Attribute> exports;
   llvm::DenseMap<Operation *, UdonSharpMethodABI> methodABIs;
+  llvm::DenseMap<Operation *, FunctionPlan> functionPlans;
+  SmallVector<std::pair<Operation *, func::FuncOp>> callRelocations;
+  uint64_t callReturnIndex = 0;
 };
 
 struct LowerUdonHLToUdonAsmPass
