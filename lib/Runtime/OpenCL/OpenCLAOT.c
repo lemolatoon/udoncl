@@ -142,9 +142,9 @@ CL_API_ENTRY cl_context CL_API_CALL clCreateContext(
   return &udoncl_context;
 }
 
-CL_API_ENTRY cl_command_queue CL_API_CALL clCreateCommandQueue(
-    cl_context context, cl_device_id device,
-    cl_command_queue_properties properties, cl_int *error) {
+CL_API_ENTRY cl_command_queue CL_API_CALL
+clCreateCommandQueue(cl_context context, cl_device_id device,
+                     cl_command_queue_properties properties, cl_int *error) {
   if (context != &udoncl_context || !context->active ||
       device != &udoncl_device || properties) {
     udoncl_error(error, CL_INVALID_VALUE);
@@ -157,9 +157,8 @@ CL_API_ENTRY cl_command_queue CL_API_CALL clCreateCommandQueue(
 }
 
 CL_API_ENTRY cl_mem CL_API_CALL clCreateBuffer(cl_context context,
-                                               cl_mem_flags flags,
-                                               size_t bytes, void *host,
-                                               cl_int *error) {
+                                               cl_mem_flags flags, size_t bytes,
+                                               void *host, cl_int *error) {
   cl_uint index;
   if (context != &udoncl_context || !context->active || !bytes || host) {
     udoncl_error(error, CL_INVALID_VALUE);
@@ -202,10 +201,10 @@ CL_API_ENTRY cl_program CL_API_CALL clCreateProgramWithSource(
   return &udoncl_program;
 }
 
-CL_API_ENTRY cl_int CL_API_CALL clBuildProgram(
-    cl_program program, cl_uint count, const cl_device_id *devices,
-    const char *options, void(CL_CALLBACK *notify)(cl_program, void *),
-    void *user) {
+CL_API_ENTRY cl_int CL_API_CALL
+clBuildProgram(cl_program program, cl_uint count, const cl_device_id *devices,
+               const char *options,
+               void(CL_CALLBACK *notify)(cl_program, void *), void *user) {
   (void)options;
   if (program != &udoncl_program || !program->active || count || devices ||
       notify || user)
@@ -233,8 +232,8 @@ CL_API_ENTRY cl_kernel CL_API_CALL clCreateKernel(cl_program program,
   return kernel;
 }
 
-CL_API_ENTRY cl_int CL_API_CALL clSetKernelArg(cl_kernel kernel,
-                                               cl_uint index, size_t bytes,
+CL_API_ENTRY cl_int CL_API_CALL clSetKernelArg(cl_kernel kernel, cl_uint index,
+                                               size_t bytes,
                                                const void *value) {
   const unsigned char *source = (const unsigned char *)value;
   cl_uint cursor;
@@ -273,8 +272,9 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueReadBuffer(
     const cl_event *wait_list, cl_event *event) {
   cl_int pending;
   if (queue != &udoncl_queue || !queue->active || !buffer || !buffer->active ||
-      !destination || offset > buffer->bytes || bytes > buffer->bytes - offset ||
-      event || udoncl_wait_list(wait_count, wait_list) != CL_SUCCESS)
+      !destination || offset > buffer->bytes ||
+      bytes > buffer->bytes - offset || event ||
+      udoncl_wait_list(wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
   pending =
       __vrc_opencl_buffer_readback(buffer->id, offset, bytes, destination);
@@ -290,9 +290,9 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueNDRangeKernel(
       !global_size || !local_size || work_dim < 1 || work_dim > 3 || event ||
       udoncl_wait_list(wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
-  return __vrc_opencl_dispatch(
-      kernel->id, kernel->arguments, kernel->argument_bytes, work_dim,
-      global_offset, global_size, local_size) < 0
+  return __vrc_opencl_dispatch(kernel->id, kernel->arguments,
+                               kernel->argument_bytes, work_dim, global_offset,
+                               global_size, local_size) < 0
              ? CL_OUT_OF_RESOURCES
              : CL_SUCCESS;
 }
@@ -325,8 +325,7 @@ CL_API_ENTRY cl_int CL_API_CALL clReleaseMemObject(cl_mem buffer) {
   return status;
 }
 
-CL_API_ENTRY cl_int CL_API_CALL
-clReleaseCommandQueue(cl_command_queue queue) {
+CL_API_ENTRY cl_int CL_API_CALL clReleaseCommandQueue(cl_command_queue queue) {
   if (queue != &udoncl_queue || !queue->active)
     return CL_INVALID_COMMAND_QUEUE;
   queue->active = 0;

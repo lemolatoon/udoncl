@@ -162,8 +162,8 @@ struct CallPattern : OpConversionPattern<LLVM::CallOp> {
     SmallVector<Type> results;
     if (failed(getTypeConverter()->convertTypes(op.getResultTypes(), results)))
       return failure();
-    rewriter.replaceOpWithNewOp<func::CallOp>(
-        op, *op.getCallee(), results, adaptor.getOperands());
+    rewriter.replaceOpWithNewOp<func::CallOp>(op, *op.getCallee(), results,
+                                              adaptor.getOperands());
     return success();
   }
 };
