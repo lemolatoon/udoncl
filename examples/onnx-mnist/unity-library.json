@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "program": "onnx_mnist",
+  "device_kernels": [
+    {
+      "schema_version": 1,
+      "profile": "gather-f32",
+      "words": 10800,
+      "kernel": "mnist_conv",
+      "kernel_id": 20,
+      "argument_kinds": ["buffer", "buffer"],
+      "global_size": [10800, 1, 1],
+      "local_size": [1, 1, 1],
+      "global_offset": [0, 0, 0]
+    },
+    {
+      "schema_version": 1,
+      "profile": "gather-f32",
+      "words": 10800,
+      "kernel": "mnist_pool",
+      "kernel_id": 21,
+      "argument_kinds": ["buffer", "buffer"],
+      "global_size": [10800, 1, 1],
+      "local_size": [1, 1, 1],
+      "global_offset": [0, 0, 0]
+    },
+    {
+      "schema_version": 1,
+      "profile": "gather-f32",
+      "words": 10800,
+      "kernel": "mnist_dense",
+      "kernel_id": 22,
+      "argument_kinds": ["buffer", "buffer"],
+      "global_size": [10800, 1, 1],
+      "local_size": [1, 1, 1],
+      "global_offset": [0, 0, 0]
+    }
+  ],
+  "exports": [
+    {
+      "symbol": "write_mnist_input",
+      "public_name": "WriteMnistInput",
+      "id": 1,
+      "parameters": ["index", "value"]
+    },
+    {
+      "symbol": "run_mnist",
+      "public_name": "RunMnist",
+      "id": 2,
+      "parameters": []
+    },
+    {
+      "symbol": "read_mnist_output",
+      "public_name": "ReadMnistOutput",
+      "id": 3,
+      "parameters": ["index"]
+    }
+  ],
+  "buffers": [
+    {
+      "id": 1,
+      "name": "first",
+      "byte_size": 43200,
+      "element_type": "float32",
+      "public_access": "input"
+    },
+    {
+      "id": 2,
+      "name": "second",
+      "byte_size": 43200,
+      "element_type": "float32",
+      "public_access": "output"
+    }
+  ]
+}

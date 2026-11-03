@@ -122,7 +122,8 @@ function(udoncl_add_onnx_host_library target)
   if(NOT EXISTS "${_model}")
     message(FATAL_ERROR "ONNX model does not exist: ${_model}")
   endif()
-  if(_ARG_PROFILE AND NOT _ARG_PROFILE STREQUAL "mnist-dense")
+  if(_ARG_PROFILE AND NOT _ARG_PROFILE STREQUAL "mnist" AND
+     NOT _ARG_PROFILE STREQUAL "mnist-dense")
     message(FATAL_ERROR "Unsupported ONNX Host PROFILE: ${_ARG_PROFILE}")
   endif()
   if(NOT EXISTS "${_UDONCL_ONNX_COMPILER}" OR
@@ -168,6 +169,17 @@ if(NOT TARGET udoncl_opencl_runtime)
 endif()
 if(NOT TARGET UdonCL::OpenCLRuntime)
   add_library(UdonCL::OpenCLRuntime ALIAS udoncl_opencl_runtime)
+endif()
+if(NOT TARGET udoncl_opencl_mnist_runtime)
+  udoncl_add_host_library(udoncl_opencl_mnist_runtime
+    "${_UDONCL_RUNTIME_DIR}/OpenCLAOT.c")
+  target_compile_definitions(udoncl_opencl_mnist_runtime INTERFACE
+    CL_TARGET_OPENCL_VERSION=120
+    UDONCL_AOT_ENABLE_BLAS=0
+    UDONCL_AOT_ENABLE_MNIST=1)
+endif()
+if(NOT TARGET UdonCL::OpenCLMnistRuntime)
+  add_library(UdonCL::OpenCLMnistRuntime ALIAS udoncl_opencl_mnist_runtime)
 endif()
 
 function(_udoncl_append_target_usage target expected_kind sources_var

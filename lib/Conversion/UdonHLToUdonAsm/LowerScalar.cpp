@@ -1169,8 +1169,7 @@ private:
                 return dispatch.emitError(
                     "Unity dispatch has no physical pool");
               std::string propertySlot =
-                  "__udoncl_kernel_" + std::to_string(dispatch.getKernelId()) +
-                  "_arg_" + std::to_string(argumentIndex);
+                  "__udoncl_material_input_" + std::to_string(argumentIndex);
               addSlot(propertySlot, "SystemString",
                       argumentIndex == 0
                           ? "\"_VRC_Input\""
@@ -1192,9 +1191,8 @@ private:
             if (scalar.empty())
               return dispatch.emitError(
                   "dispatch scalar has no allocated Udon heap slot");
-            std::string propertySlot = "__udoncl_kernel_" +
-                                       std::to_string(dispatch.getKernelId()) +
-                                       "_arg_" + std::to_string(argumentIndex);
+            std::string propertySlot =
+                "__udoncl_material_arg_" + std::to_string(argumentIndex);
             addSlot(propertySlot, "SystemString",
                     "\"_VRC_Arg" + std::to_string(argumentIndex) + "\"", false);
             emitPush(dispatch.getLoc(), materialSlot.getValue());

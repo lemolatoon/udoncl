@@ -47,7 +47,10 @@ struct LowerOpenCLAOTIntrinsicsPass
                    name == "__vrc_opencl_buffer_readback" ||
                    name == "__vrc_opencl_await" ||
                    name == "__vrc_opencl_dispatch_udonblas_sgemm" ||
-                   name == "__vrc_opencl_dispatch_udonblas_sgemv";
+                   name == "__vrc_opencl_dispatch_udonblas_sgemv" ||
+                   name == "__vrc_opencl_dispatch_mnist_conv" ||
+                   name == "__vrc_opencl_dispatch_mnist_pool" ||
+                   name == "__vrc_opencl_dispatch_mnist_dense";
       if (!known)
         continue;
       SmallVector<Type> arguments;
@@ -70,8 +73,10 @@ struct LowerOpenCLAOTIntrinsicsPass
       } else if (name == "__vrc_opencl_dispatch_udonblas_sgemm")
         arguments = {i32, i32, i32, i32, i32, i32,
                      i32, i32, i32, i32, f32, f32};
-      else
+      else if (name == "__vrc_opencl_dispatch_udonblas_sgemv")
         arguments = {i32, i32, i32, i32, i32, i32, i32, i32, f32, f32};
+      else
+        arguments = {i32, i32};
       if (!function.isExternal() ||
           !signatureIs(function, arguments, results)) {
         function.emitError("invalid OpenCL AOT backend intrinsic signature");
@@ -152,11 +157,18 @@ struct LowerOpenCLAOTIntrinsicsPass
           suspendFunctions.insert(function);
       } else {
         bool sgemm = name == "__vrc_opencl_dispatch_udonblas_sgemm";
-        int32_t kernelId = sgemm ? 1 : 2;
+        bool sgemv = name == "__vrc_opencl_dispatch_udonblas_sgemv";
+        int32_t kernelId = sgemm                                        ? 1
+                           : sgemv                                      ? 2
+                           : name == "__vrc_opencl_dispatch_mnist_conv" ? 20
+                           : name == "__vrc_opencl_dispatch_mnist_pool" ? 21
+                                                                        : 22;
         SmallVector<Value> scalars(call.getOperands().drop_front(2));
         SmallVector<Attribute> scalarKinds;
-        scalarKinds.append(sgemm ? 8 : 6, rewriter.getStringAttr("i32"));
-        scalarKinds.append(2, rewriter.getStringAttr("f32"));
+        if (sgemm || sgemv) {
+          scalarKinds.append(sgemm ? 8 : 6, rewriter.getStringAttr("i32"));
+          scalarKinds.append(2, rewriter.getStringAttr("f32"));
+        }
         OperationState descriptorState(
             call.getLoc(), runtime::DispatchDescCreateOp::getOperationName());
         descriptorState.addOperands(scalars);
@@ -180,7 +192,9 @@ struct LowerOpenCLAOTIntrinsicsPass
                                    rewriter.getArrayAttr(argumentKinds));
         dispatchState.addAttribute(
             "global_size", sgemm ? rewriter.getDenseI32ArrayAttr({32, 32, 1})
-                                 : rewriter.getDenseI32ArrayAttr({1024, 1, 1}));
+                           : sgemv
+                               ? rewriter.getDenseI32ArrayAttr({1024, 1, 1})
+                               : rewriter.getDenseI32ArrayAttr({10800, 1, 1}));
         dispatchState.addAttribute("local_size",
                                    rewriter.getDenseI32ArrayAttr({1, 1, 1}));
         dispatchState.addAttribute("global_offset",

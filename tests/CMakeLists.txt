@@ -8,7 +8,8 @@ set_target_properties(opencl-aot-runtime PROPERTIES
 target_include_directories(opencl-aot-runtime PRIVATE
   "${PROJECT_SOURCE_DIR}/third_party/OpenCL-Headers")
 target_compile_definitions(opencl-aot-runtime PRIVATE
-  CL_TARGET_OPENCL_VERSION=120)
+  CL_TARGET_OPENCL_VERSION=120
+  UDONCL_AOT_ENABLE_MNIST=1)
 add_test(NAME opencl-aot-runtime COMMAND opencl-aot-runtime)
 add_test(NAME dialect-roundtrip
   COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/dialects/check.py"

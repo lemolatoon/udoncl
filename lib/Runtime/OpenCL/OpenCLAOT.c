@@ -8,8 +8,15 @@
 #include <CL/cl.h>
 
 #define UDONCL_AOT_BUFFER_CAPACITY 8
-#define UDONCL_AOT_KERNEL_CAPACITY 16
+#define UDONCL_AOT_KERNEL_CAPACITY 32
 #define UDONCL_AOT_ARGUMENT_BYTES 8
+
+#ifndef UDONCL_AOT_ENABLE_BLAS
+#define UDONCL_AOT_ENABLE_BLAS 1
+#endif
+#ifndef UDONCL_AOT_ENABLE_MNIST
+#define UDONCL_AOT_ENABLE_MNIST 0
+#endif
 
 /* The compiler backend returns an opaque physical-buffer token.  It is kept
  * separately from the OpenCL handle-table id: cl_mem identity and lifetime
@@ -22,6 +29,7 @@ extern cl_int __vrc_opencl_buffer_upload(cl_uint physical_token, size_t offset,
 extern cl_int __vrc_opencl_buffer_readback(cl_uint physical_token,
                                            size_t offset, size_t bytes,
                                            void *destination);
+#if UDONCL_AOT_ENABLE_BLAS
 extern cl_int __vrc_opencl_dispatch_udonblas_sgemm(
     cl_uint input_token, cl_uint output_token, cl_int m, cl_int n, cl_int k,
     cl_int transa, cl_int transb, cl_int lda, cl_int ldb, cl_int ldc,
@@ -29,6 +37,15 @@ extern cl_int __vrc_opencl_dispatch_udonblas_sgemm(
 extern cl_int __vrc_opencl_dispatch_udonblas_sgemv(
     cl_uint input_token, cl_uint output_token, cl_int trans, cl_int m, cl_int n,
     cl_int lda, cl_int incx, cl_int incy, cl_float alpha, cl_float beta);
+#endif
+#if UDONCL_AOT_ENABLE_MNIST
+extern cl_int __vrc_opencl_dispatch_mnist_conv(cl_uint input_token,
+                                               cl_uint output_token);
+extern cl_int __vrc_opencl_dispatch_mnist_pool(cl_uint input_token,
+                                               cl_uint output_token);
+extern cl_int __vrc_opencl_dispatch_mnist_dense(cl_uint input_token,
+                                                cl_uint output_token);
+#endif
 extern cl_int __vrc_opencl_await(cl_int event);
 
 struct _cl_platform_id {
@@ -86,6 +103,7 @@ static int udoncl_string_equal(const char *left, const char *right) {
 }
 
 static cl_uint udoncl_kernel_id(const char *name) {
+#if UDONCL_AOT_ENABLE_BLAS
   if (udoncl_string_equal(name, "udonblas_sgemm"))
     return 1;
   if (udoncl_string_equal(name, "udonblas_sgemv"))
@@ -96,6 +114,15 @@ static cl_uint udoncl_kernel_id(const char *name) {
     return 4;
   if (udoncl_string_equal(name, "udonblas_sdot_reduce"))
     return 5;
+#endif
+#if UDONCL_AOT_ENABLE_MNIST
+  if (udoncl_string_equal(name, "mnist_conv"))
+    return 20;
+  if (udoncl_string_equal(name, "mnist_pool"))
+    return 21;
+  if (udoncl_string_equal(name, "mnist_dense"))
+    return 22;
+#endif
   return 0;
 }
 
@@ -291,6 +318,7 @@ static cl_int udoncl_mem_argument(cl_kernel kernel, cl_uint index,
   return CL_SUCCESS;
 }
 
+#if UDONCL_AOT_ENABLE_BLAS
 static void udoncl_dispatch_sgemm(cl_kernel kernel, cl_uint work_dim,
                                   const size_t *global_offset,
                                   const size_t *global_size,
@@ -372,6 +400,36 @@ static void udoncl_dispatch_sgemv(cl_kernel kernel, cl_uint work_dim,
       input->physical_token, output->physical_token, values[0], values[1],
       values[2], values[3], values[4], values[5], alpha, beta);
 }
+#endif
+
+#if UDONCL_AOT_ENABLE_MNIST
+static void udoncl_dispatch_mnist(cl_kernel kernel, cl_uint work_dim,
+                                  const size_t *global_offset) {
+  cl_mem input, output;
+  if (work_dim != 1) {
+    udoncl_dispatch_status = CL_INVALID_WORK_DIMENSION;
+    return;
+  }
+  if (global_offset) {
+    udoncl_dispatch_status = CL_INVALID_GLOBAL_OFFSET;
+    return;
+  }
+  if (udoncl_mem_argument(kernel, 0, &input) != CL_SUCCESS ||
+      udoncl_mem_argument(kernel, 1, &output) != CL_SUCCESS) {
+    udoncl_dispatch_status = CL_INVALID_MEM_OBJECT;
+    return;
+  }
+  if (kernel->id == 20)
+    (void)__vrc_opencl_dispatch_mnist_conv(input->physical_token,
+                                           output->physical_token);
+  else if (kernel->id == 21)
+    (void)__vrc_opencl_dispatch_mnist_pool(input->physical_token,
+                                           output->physical_token);
+  else
+    (void)__vrc_opencl_dispatch_mnist_dense(input->physical_token,
+                                            output->physical_token);
+}
+#endif
 
 static cl_int udoncl_wait_list(cl_uint count, const cl_event *events) {
   return (!count && !events) ? CL_SUCCESS : CL_INVALID_EVENT_WAIT_LIST;
@@ -415,6 +473,7 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueNDRangeKernel(
       !global_size || !local_size || work_dim < 1 || work_dim > 3 || event ||
       udoncl_wait_list(wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
+#if UDONCL_AOT_ENABLE_BLAS
   if (kernel->id == 1) {
     udoncl_dispatch_status = CL_SUCCESS;
     udoncl_dispatch_sgemm(kernel, work_dim, global_offset, global_size,
@@ -427,6 +486,14 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueNDRangeKernel(
                           local_size);
     return udoncl_dispatch_status;
   }
+#endif
+#if UDONCL_AOT_ENABLE_MNIST
+  if (kernel->id >= 20 && kernel->id <= 22) {
+    udoncl_dispatch_status = CL_SUCCESS;
+    udoncl_dispatch_mnist(kernel, work_dim, global_offset);
+    return udoncl_dispatch_status;
+  }
+#endif
   return CL_INVALID_KERNEL;
 }
 

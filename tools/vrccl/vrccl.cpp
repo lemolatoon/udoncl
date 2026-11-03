@@ -1846,8 +1846,7 @@ int main(int argc, char **argv) {
       }
       auto *enqueue = inputModule->getFunction("clEnqueueNDRangeKernel");
       bool linkedOpenCLAOT =
-          inputModule->getFunction("__vrc_opencl_dispatch_udonblas_sgemm") !=
-          nullptr;
+          inputModule->getFunction("__vrc_opencl_buffer_alloc") != nullptr;
       if (enqueue && !enqueue->use_empty() && !linkedOpenCLAOT) {
         if (unityDeviceConfigs.size() != 1) {
           errs() << "legacy OpenCL recovery supports one configured kernel\n";

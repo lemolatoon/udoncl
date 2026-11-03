@@ -44,6 +44,7 @@ def main():
     udonblas_consumer = output / 'udonblas-consumer'
     onnx_consumer = output / 'onnx-consumer'
     onnx_dense_consumer = output / 'onnx-dense-consumer'
+    onnx_mnist_consumer = output / 'onnx-mnist-consumer'
     run([
         args.cmake,
         '--install', str(args.project_build.resolve()),
@@ -171,6 +172,56 @@ def main():
     assert onnx_dense_manifest['exports'][0]['async'] is False
     assert onnx_dense_manifest['exports'][1]['async'] is True
     assert onnx_dense_manifest['exports'][2]['async'] is False
+    onnx_dense_assembly = (
+        onnx_dense_root / 'artifact/host.uasm'
+    ).read_text(encoding='utf-8')
+    assert sum(': %' in line for line in onnx_dense_assembly.splitlines()) <= 480
+    assert onnx_dense_assembly.count('__udoncl_material_input_0:') == 1
+
+    onnx_mnist_source = args.source.resolve().parents[1] / 'examples/onnx-mnist'
+    run([
+        args.cmake,
+        '-S', onnx_mnist_source,
+        '-B', onnx_mnist_consumer,
+        '-G', args.generator,
+        f'-DCMAKE_MAKE_PROGRAM={args.make_program}',
+        f'-DUdonCL_DIR={package}',
+        f'-DUDONCL_CLANG_EXECUTABLE={Path(args.clang).resolve()}',
+        f'-DUDONCL_LLVM_LINK_EXECUTABLE={Path(args.llvm_link).resolve()}',
+    ])
+    run([
+        args.cmake, '--build', onnx_mnist_consumer, '--target', 'onnx-mnist',
+    ])
+    onnx_mnist_root = onnx_mnist_consumer / 'udoncl/onnx-mnist'
+    onnx_mnist_host = onnx_mnist_consumer / 'udoncl-onnx/mnist_host/host.c'
+    assert onnx_mnist_host.is_file()
+    onnx_mnist_source_text = onnx_mnist_host.read_text(encoding='utf-8')
+    assert 'clCreateKernel(program, "mnist_conv"' in onnx_mnist_source_text
+    assert 'clCreateKernel(program, "mnist_pool"' in onnx_mnist_source_text
+    assert 'clCreateKernel(program, "mnist_dense"' in onnx_mnist_source_text
+    assert not list(onnx_mnist_consumer.rglob('execution-plan.json'))
+    onnx_mnist_artifact = onnx_mnist_root / 'artifact'
+    onnx_mnist_manifest = json.loads(
+        (onnx_mnist_artifact / 'manifest.json').read_text(encoding='utf-8')
+    )
+    assert [item['name'] for item in onnx_mnist_manifest['device']['kernels']] == [
+        'mnist_conv', 'mnist_pool', 'mnist_dense',
+    ]
+    mnist_dispatch_ids = [
+        item['kernel_id'] for item in onnx_mnist_manifest['dispatch_sites']
+    ]
+    assert len(mnist_dispatch_ids) == 9
+    assert set(mnist_dispatch_ids) == {20, 21, 22}
+    assert [item['public_name'] for item in onnx_mnist_manifest['exports']] == [
+        'WriteMnistInput', 'RunMnist', 'ReadMnistOutput',
+    ]
+    assert (onnx_mnist_artifact / 'kernels/kernel_20.shader').is_file()
+    assert (onnx_mnist_artifact / 'kernels/kernel_21.shader').is_file()
+    assert (onnx_mnist_artifact / 'kernels/kernel_22.shader').is_file()
+    onnx_mnist_assembly = (onnx_mnist_artifact / 'host.uasm').read_text(
+        encoding='utf-8'
+    )
+    assert sum(': %' in line for line in onnx_mnist_assembly.splitlines()) <= 480
     run([
         args.cmake,
         '-S', str(args.source.resolve()),
