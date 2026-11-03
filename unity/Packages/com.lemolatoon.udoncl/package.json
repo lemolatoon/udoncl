@@ -26,6 +26,11 @@
       "displayName": "ONNX Tiny Llama",
       "description": "Run a multi-operator Tiny Llama graph with typed token upload and asynchronous logits readback.",
       "path": "Samples~/ONNX Tiny Llama"
+    },
+    {
+      "displayName": "ONNX Llama 3.1 8B Host",
+      "description": "Drive a user-materialized Llama 3.1 8B artifact from U# without redistributing licensed weights.",
+      "path": "Samples~/ONNX Llama 3.1 8B Host"
     }
   ]
 }

@@ -69,6 +69,12 @@ uses the same provider with 32 layers, Q4 ONNX external weights, KV-cache-aware
 one-token input, and 162 planned passes. Licensed pretrained weights are not
 part of the Unity package.
 
+Import the **ONNX Llama 3.1 8B Host** Package Sample for a typed U# caller of a
+user-materialized artifact. The component accepts the model's post-embedding
+`hidden_state`, uses the general Write/Run/async Read API, and exposes the
+logit argmax after completion. It deliberately does not pretend that a token ID
+is an embedding; tokenization and embedding remain application responsibilities.
+
 For a user-built, non-Pooling graph, follow
 `examples/onnx-arena-add/README.md`. It generates a standard ONNX `Add` model,
 materializes the Unity artifact, imports the runtime prefab, and drives the

@@ -30,8 +30,13 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             "Assets/UdonclSampleValidation/UdonOnnxTinyLlamaExample.cs";
         private const string TinySampleProgram =
             "Assets/UdonclSampleValidation/UdonOnnxTinyLlamaExample.asset";
+        private const string Llama8BSampleScript =
+            "Assets/UdonclSampleValidation/UdonOnnxLlama8BHostExample.cs";
+        private const string Llama8BSampleProgram =
+            "Assets/UdonclSampleValidation/UdonOnnxLlama8BHostExample.asset";
         private bool arenaSampleProgramAssetExisted;
         private bool tinySampleProgramAssetExisted;
+        private bool llama8BSampleProgramAssetExisted;
 
         private static string ResolveFixture(string environmentName, string relativeFallback)
         {
@@ -56,6 +61,8 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(ArenaSampleProgram) != null;
             tinySampleProgramAssetExisted =
                 AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(TinySampleProgram) != null;
+            llama8BSampleProgramAssetExisted =
+                AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(Llama8BSampleProgram) != null;
             AssetDatabase.DeleteAsset(GeneratedRoot);
             string bundle = ResolveFixture(
                 "UDONCL_ONNX_INT4_UNITY_BUNDLE",
@@ -97,6 +104,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             );
             EnsureArenaSampleProgram();
             EnsureTinySampleProgram();
+            EnsureLlama8BSampleProgram();
         }
 
         [OneTimeTearDown]
@@ -135,6 +143,9 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             string tinySampleProgramGuid = tinySampleProgramAssetExisted
                 ? null
                 : AssetDatabase.AssetPathToGUID(TinySampleProgram);
+            string llama8BSampleProgramGuid = llama8BSampleProgramAssetExisted
+                ? null
+                : AssetDatabase.AssetPathToGUID(Llama8BSampleProgram);
             AssetDatabase.DeleteAsset(GeneratedRoot);
             AssetDatabase.DeleteAsset(GeneratedMixedRoot);
             AssetDatabase.DeleteAsset(GeneratedArenaRoot);
@@ -145,6 +156,8 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 AssetDatabase.DeleteAsset(ArenaSampleProgram);
             if (!tinySampleProgramAssetExisted)
                 AssetDatabase.DeleteAsset(TinySampleProgram);
+            if (!llama8BSampleProgramAssetExisted)
+                AssetDatabase.DeleteAsset(Llama8BSampleProgram);
             foreach (
                 string guid in new[]
                 {
@@ -159,6 +172,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                     runtimeProgramGuid,
                     arenaSampleProgramGuid,
                     tinySampleProgramGuid,
+                    llama8BSampleProgramGuid,
                 }
             )
                 if (!string.IsNullOrEmpty(guid))
@@ -178,6 +192,10 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 );
             if (!tinySampleProgramAssetExisted)
                 Assert.IsNull(AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(TinySampleProgram));
+            if (!llama8BSampleProgramAssetExisted)
+                Assert.IsNull(
+                    AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(Llama8BSampleProgram)
+                );
         }
 
         private static void EnsureArenaSampleProgram()
@@ -201,6 +219,18 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             UdonclArtifactImporter.EnsureCompiledUdonSharpProgramAsset(
                 TinySampleScript,
                 TinySampleProgram
+            );
+        }
+
+        private static void EnsureLlama8BSampleProgram()
+        {
+            Assert.NotNull(
+                AssetDatabase.LoadAssetAtPath<MonoScript>(Llama8BSampleScript),
+                "The precommit driver did not stage the Llama 8B Host sample."
+            );
+            UdonclArtifactImporter.EnsureCompiledUdonSharpProgramAsset(
+                Llama8BSampleScript,
+                Llama8BSampleProgram
             );
         }
 

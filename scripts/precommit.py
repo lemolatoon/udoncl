@@ -630,7 +630,7 @@ def run_unity_mcp_gate(root, unity, project, build, output):
             timeout=300,
         )
         instance = wait_for_instance_reconnect(client, timeout=600)
-        for attempt in range(3):
+        for attempt in range(4):
             started = start_unity_tests(client)
             job_id = (started.get("data") or started).get("job_id")
             if not job_id:
@@ -641,7 +641,7 @@ def run_unity_mcp_gate(root, unity, project, build, output):
             )
             project_lock = is_transient_unity_project_file_lock(finished)
             start_failure = is_transient_unity_test_start_failure(finished)
-            if (not project_lock and not start_failure) or attempt == 2:
+            if (not project_lock and not start_failure) or attempt == 3:
                 break
             reason = (
                 "transient_csproj_sharing_violation"
@@ -649,8 +649,8 @@ def run_unity_mcp_gate(root, unity, project, build, output):
                 else "transient_test_start_timeout"
             )
             print(f"unity_mcp_tests=retry reason={reason}", flush=True)
-            wait_for_editor(client)
-            time.sleep(2)
+            wait_for_instance_reconnect(client, timeout=600)
+            time.sleep(5)
             client.tool("read_console", {"action": "clear"})
         (output / "unity-mcp-results.json").write_text(
             json.dumps(finished, indent=2) + "\n", encoding="utf-8"
