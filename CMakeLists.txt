@@ -68,13 +68,17 @@ install(FILES
   cmake/UdonATenConfigVersion.cmake
   DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/UdonATen"
   COMPONENT UdonCLCompiler)
-install(FILES include/udoncl/unity_buffer.h
+install(FILES
+  include/udoncl/unity_buffer.h
+  include/udoncl/device_memory.h
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/udoncl"
   COMPONENT UdonCLCompiler)
 install(FILES include/VRC/Runtime/OpenCL/Backend.h
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/VRC/Runtime/OpenCL"
   COMPONENT UdonCLCompiler)
-install(FILES lib/Runtime/OpenCL/OpenCLAOT.c
+install(FILES
+  lib/Runtime/OpenCL/OpenCLAOT.c
+  lib/Runtime/OpenCL/DeviceMemory.c
   DESTINATION "${CMAKE_INSTALL_DATADIR}/udoncl/runtime"
   COMPONENT UdonCLCompiler)
 install(FILES

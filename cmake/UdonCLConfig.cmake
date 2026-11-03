@@ -256,7 +256,8 @@ endfunction()
 
 if(NOT TARGET udoncl_opencl_runtime)
   udoncl_add_host_library(udoncl_opencl_runtime
-    "${_UDONCL_RUNTIME_DIR}/OpenCLAOT.c")
+    "${_UDONCL_RUNTIME_DIR}/OpenCLAOT.c"
+    "${_UDONCL_RUNTIME_DIR}/DeviceMemory.c")
   target_compile_definitions(udoncl_opencl_runtime INTERFACE
     CL_TARGET_OPENCL_VERSION=120)
 endif()
@@ -265,7 +266,8 @@ if(NOT TARGET UdonCL::OpenCLRuntime)
 endif()
 if(NOT TARGET udoncl_opencl_mnist_runtime)
   udoncl_add_host_library(udoncl_opencl_mnist_runtime
-    "${_UDONCL_RUNTIME_DIR}/OpenCLAOT.c")
+    "${_UDONCL_RUNTIME_DIR}/OpenCLAOT.c"
+    "${_UDONCL_RUNTIME_DIR}/DeviceMemory.c")
   target_compile_definitions(udoncl_opencl_mnist_runtime INTERFACE
     CL_TARGET_OPENCL_VERSION=120
     UDONCL_AOT_ENABLE_BLAS=0

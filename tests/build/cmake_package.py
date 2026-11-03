@@ -308,7 +308,7 @@ def main():
     udonblas_root = udonblas_consumer / 'udoncl/udonblas-sgemm-example'
     assert (udonblas_root / 'host.bc').is_file()
     assert (udonblas_root / 'device.bc').is_file()
-    assert len(list((udonblas_root / 'objects/host').rglob('*.bc'))) == 3
+    assert len(list((udonblas_root / 'objects/host').rglob('*.bc'))) == 4
     assert len(list((udonblas_root / 'objects/device').rglob('*.bc'))) == 6
     run([
         args.cmake, '--build', str(udonblas_consumer), '--target',

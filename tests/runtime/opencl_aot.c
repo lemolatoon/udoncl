@@ -1,5 +1,6 @@
 #include <CL/cl.h>
 #include <stddef.h>
+#include <udoncl/device_memory.h>
 
 #define EXPECT(condition)                                                      \
   do {                                                                         \
@@ -120,6 +121,10 @@ int main(void) {
   cl_program program;
   cl_kernel kernel;
   cl_mem first, second;
+  cl_mem resolved;
+  udonclBufferHandle_t common_buffer = {0, 0}, stale_buffer, replacement;
+  udonclBufferView_t view;
+  udonclWorkspace_t workspace;
   cl_int error;
   cl_int integer_arguments[8] = {1, 10, 16, 0, 0, 1, 16, 1};
   cl_float float_arguments[2] = {1.5f, 0.0f};
@@ -127,6 +132,7 @@ int main(void) {
   size_t global[2] = {32, 32}, local[2] = {1, 1};
   cl_uint index;
   int source = 42;
+  size_t bytes, byte_offset, byte_length;
 
   EXPECT(clGetPlatformIDs(1, &platform, 0) == CL_SUCCESS);
   EXPECT(clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &device, 0) ==
@@ -135,6 +141,38 @@ int main(void) {
   EXPECT(context && error == CL_SUCCESS);
   queue = clCreateCommandQueue(context, device, 0, &error);
   EXPECT(queue && error == CL_SUCCESS);
+
+  EXPECT(udonclDeviceBufferCreate(context, CL_MEM_READ_WRITE, 64,
+                                  &common_buffer) == UDONCL_STATUS_SUCCESS);
+  stale_buffer = common_buffer;
+  EXPECT(udonclDeviceBufferGetSize(common_buffer, &bytes) ==
+             UDONCL_STATUS_SUCCESS &&
+         bytes == 64);
+  EXPECT(udonclDeviceBufferView(common_buffer, 8, 4, UDONCL_DATA_FLOAT32,
+                                &view) == UDONCL_STATUS_SUCCESS);
+  EXPECT(udonclBufferViewResolve(view, &resolved, &byte_offset, &byte_length) ==
+             UDONCL_STATUS_SUCCESS &&
+         resolved && byte_offset == 8 && byte_length == 16);
+  EXPECT(udonclDeviceBufferView(common_buffer, 2, 1, UDONCL_DATA_FLOAT32,
+                                &view) == UDONCL_STATUS_INVALID_VALUE);
+  EXPECT(udonclDeviceBufferView(common_buffer, 60, 2, UDONCL_DATA_FLOAT32,
+                                &view) == UDONCL_STATUS_INVALID_VALUE);
+  EXPECT(udonclDeviceWorkspace(common_buffer, 24, 32, &workspace) ==
+         UDONCL_STATUS_SUCCESS);
+  EXPECT(udonclWorkspaceResolve(workspace, &resolved, &byte_offset,
+                                &byte_length) == UDONCL_STATUS_SUCCESS &&
+         byte_offset == 24 && byte_length == 32);
+  EXPECT(udonclDeviceBufferDestroy(&common_buffer) == UDONCL_STATUS_SUCCESS);
+  EXPECT(!common_buffer.slot && !common_buffer.generation);
+  EXPECT(udonclWorkspaceResolve(workspace, &resolved, &byte_offset,
+                                &byte_length) == UDONCL_STATUS_STALE_HANDLE);
+  EXPECT(udonclDeviceBufferCreate(context, CL_MEM_READ_WRITE, 64,
+                                  &replacement) == UDONCL_STATUS_SUCCESS);
+  EXPECT(replacement.slot == stale_buffer.slot &&
+         replacement.generation != stale_buffer.generation);
+  EXPECT(udonclDeviceBufferGetRaw(stale_buffer, &resolved) ==
+         UDONCL_STATUS_STALE_HANDLE);
+  EXPECT(udonclDeviceBufferDestroy(&replacement) == UDONCL_STATUS_SUCCESS);
 
   first = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(source), 0, &error);
   EXPECT(first && error == CL_SUCCESS);

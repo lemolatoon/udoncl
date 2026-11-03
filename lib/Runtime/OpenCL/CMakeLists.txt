@@ -1,4 +1,4 @@
-add_library(VRCOpenCLRuntime STATIC OpenCL.c)
+add_library(VRCOpenCLRuntime STATIC OpenCL.c DeviceMemory.c)
 target_compile_features(VRCOpenCLRuntime PRIVATE c_std_11)
 set_target_properties(VRCOpenCLRuntime PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS OFF)
 target_include_directories(VRCOpenCLRuntime PUBLIC
