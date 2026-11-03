@@ -66,13 +66,21 @@ def main():
     udonblas_package = install / 'lib/cmake/UdonBLAS'
     udondnn_package = install / 'lib/cmake/UdonDNN'
     udonaten_package = install / 'lib/cmake/UdonATen'
+    udononnxoperators_package = install / 'lib/cmake/UdonONNXOperators'
     assert (udonblas_package / 'UdonBLASConfig.cmake').is_file()
     assert (udondnn_package / 'UdonDNNConfig.cmake').is_file()
     assert (udonaten_package / 'UdonATenConfig.cmake').is_file()
+    assert (
+        udononnxoperators_package / 'UdonONNXOperatorsConfig.cmake'
+    ).is_file()
     assert (install / 'include/udondnn.h').is_file()
     assert (install / 'include/udonaten.h').is_file()
+    assert (install / 'include/udononnxoperators.h').is_file()
     assert (install / 'share/udondnn/src/udondnn.c').is_file()
     assert (install / 'share/udonaten/src/udonaten.c').is_file()
+    assert (
+        install / 'share/udononnxoperators/src/udononnxoperators.c'
+    ).is_file()
 
     onnx_source = output / 'onnx-source'
     onnx_source.mkdir()
@@ -93,20 +101,26 @@ def main():
         'find_package(UdonBLAS 0.1 REQUIRED CONFIG)\n'
         'find_package(UdonDNN 0.1 REQUIRED CONFIG)\n'
         'find_package(UdonATen 0.1 REQUIRED CONFIG)\n'
-        'udoncl_add_onnx_host_library(mnist_host MODEL model.onnx)\n'
+        'find_package(UdonONNXOperators 0.1 REQUIRED CONFIG)\n'
+        'udoncl_add_onnx_host_library(mnist_host MODEL model.onnx\n'
+        '  DIMENSION_BOUNDS batch=1 sequence=4)\n'
         'target_include_directories(mnist_host INTERFACE\n'
         '  "${UdonBLAS_INCLUDE_DIRS}" "${UdonDNN_INCLUDE_DIRS}"\n'
         '  "${UdonATen_INCLUDE_DIRS}")\n'
-        'foreach(required IN ITEMS UdonBLAS::UdonBLAS UdonDNN::UdonDNN UdonATen::UdonATen)\n'
+        'foreach(required IN ITEMS UdonBLAS::UdonBLAS UdonDNN::UdonDNN UdonATen::UdonATen UdonONNXOperators::UdonONNXOperators)\n'
         '  if(NOT TARGET "${required}")\n'
         '    message(FATAL_ERROR "missing public target ${required}")\n'
         '  endif()\n'
         'endforeach()\n'
         'udoncl_add_unity_library(onnx-host-link-probe\n'
         '  CONFIG probe.json\n'
-        '  HOST_LIBRARIES mnist_host\n'
+        '  HOST_LIBRARIES mnist_host UdonONNXOperators::UdonONNXOperators\n'
         '  LIBRARIES UdonBLAS::UdonBLAS UdonDNN::UdonDNN UdonATen::UdonATen)\n'
         'get_target_property(generated mnist_host UDONCL_ONNX_HOST)\n'
+        'get_target_property(bounds mnist_host UDONCL_ONNX_DIMENSION_BOUNDS)\n'
+        'if(NOT bounds STREQUAL "batch=1;sequence=4")\n'
+        '  message(FATAL_ERROR "generic ONNX dimension bounds were not retained")\n'
+        'endif()\n'
         'if(NOT EXISTS "${generated}")\n'
         '  message(FATAL_ERROR "generated ONNX Host is missing")\n'
         'endif()\n',
@@ -122,6 +136,7 @@ def main():
         f'-DUdonBLAS_DIR={udonblas_package}',
         f'-DUdonDNN_DIR={udondnn_package}',
         f'-DUdonATen_DIR={udonaten_package}',
+        f'-DUdonONNXOperators_DIR={udononnxoperators_package}',
         f'-DUDONCL_CLANG_EXECUTABLE={Path(args.clang).resolve()}',
         f'-DUDONCL_LLVM_LINK_EXECUTABLE={Path(args.llvm_link).resolve()}',
     ])
@@ -137,6 +152,44 @@ def main():
         'udoncl/onnx-host-link-probe/host.bc',
     ])
     assert (onnx_consumer / 'udoncl/onnx-host-link-probe/host.bc').is_file()
+
+    for case, invocation, diagnostic in [
+        (
+            'invalid-bound',
+            'udoncl_add_onnx_host_library(probe MODEL model.onnx '
+            'DIMENSION_BOUNDS sequence=0)',
+            'Invalid DIMENSION_BOUNDS entry',
+        ),
+        (
+            'legacy-profile',
+            'udoncl_add_onnx_host_library(probe MODEL model.onnx PROFILE mnist)',
+            'received unknown arguments',
+        ),
+    ]:
+        invalid_source = output / f'onnx-{case}-source'
+        invalid_build = output / f'onnx-{case}-build'
+        invalid_source.mkdir()
+        shutil.copyfile(onnx_model, invalid_source / 'model.onnx')
+        (invalid_source / 'CMakeLists.txt').write_text(
+            'cmake_minimum_required(VERSION 3.30)\n'
+            'project(udoncl_onnx_invalid LANGUAGES NONE)\n'
+            'find_package(UdonCL 0.1 REQUIRED CONFIG)\n'
+            f'{invocation}\n',
+            encoding='utf-8',
+        )
+        run_failure(
+            [
+                args.cmake,
+                '-S', invalid_source,
+                '-B', invalid_build,
+                '-G', args.generator,
+                f'-DCMAKE_MAKE_PROGRAM={args.make_program}',
+                f'-DUdonCL_DIR={package}',
+                f'-DUDONCL_CLANG_EXECUTABLE={Path(args.clang).resolve()}',
+                f'-DUDONCL_LLVM_LINK_EXECUTABLE={Path(args.llvm_link).resolve()}',
+            ],
+            diagnostic,
+        )
 
     onnx_dense_source = args.source.resolve().parents[1] / 'examples/onnx-mnist-dense'
     run([

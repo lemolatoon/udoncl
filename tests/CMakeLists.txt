@@ -2,13 +2,15 @@ find_package(Python3 3.12 REQUIRED COMPONENTS Interpreter)
 add_executable(opencl-aot-runtime
   runtime/opencl_aot.c
   "${PROJECT_SOURCE_DIR}/lib/Runtime/OpenCL/OpenCLAOT.c"
-  "${PROJECT_SOURCE_DIR}/lib/Runtime/OpenCL/DeviceMemory.c")
+  "${PROJECT_SOURCE_DIR}/lib/Runtime/OpenCL/DeviceMemory.c"
+  "${PROJECT_SOURCE_DIR}/libraries/udononnxoperators/src/udononnxoperators.c")
 target_compile_features(opencl-aot-runtime PRIVATE c_std_11)
 set_target_properties(opencl-aot-runtime PROPERTIES
   C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS OFF)
 target_include_directories(opencl-aot-runtime PRIVATE
   "${PROJECT_SOURCE_DIR}/third_party/OpenCL-Headers"
-  "${PROJECT_SOURCE_DIR}/include")
+  "${PROJECT_SOURCE_DIR}/include"
+  "${PROJECT_SOURCE_DIR}/libraries/udononnxoperators/include")
 target_compile_definitions(opencl-aot-runtime PRIVATE
   CL_TARGET_OPENCL_VERSION=120
   UDONCL_AOT_ENABLE_MNIST=1)

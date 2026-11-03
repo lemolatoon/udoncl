@@ -31,7 +31,7 @@ if(NOT result EQUAL 0)
   message(FATAL_ERROR "MNIST ONNX generation failed:\n${stdout}${stderr}")
 endif()
 
-udoncl_add_onnx_host_library(mnist_host MODEL "${model}" PROFILE mnist)
+_udoncl_add_legacy_onnx_host_library(mnist_host MODEL "${model}" PROFILE mnist)
 udoncl_add_unity_library(onnx-mnist
   CONFIG "${CMAKE_CURRENT_SOURCE_DIR}/unity-library.json"
   HOST_LIBRARIES mnist_host

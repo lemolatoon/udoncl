@@ -397,9 +397,12 @@ def validate_test_payload(payload):
 def is_transient_unity_project_file_lock(payload):
     data = payload.get("data", payload)
     result = data.get("result") or {}
+    progress = data.get("progress") or {}
     failed = [
         case
-        for case in result.get("results") or []
+        for case in (
+            result.get("results") or progress.get("failures_so_far") or []
+        )
         if case.get("state") not in ("Passed", "Success")
     ]
     if not failed:
@@ -467,17 +470,23 @@ def wait_for_test_job(client: McpClient, job_id: str, timeout=1260):
             if status in ("succeeded", "failed", "cancelled"):
                 return payload
             last_error = f"test job remained in status {status!r}"
-        except RuntimeError as error:
+        except (RuntimeError, TimeoutError) as error:
             # The Unity bridge cannot answer discovery probes while a long
             # main-thread test/import is running. Keep the job and reconnect
             # after the Editor becomes responsive again.
             transient = (
                 "No Unity Editor instances found" in str(error)
                 or "Timeout receiving Unity response" in str(error)
+                or "Could not connect to Unity" in str(error)
+                or "MCP request timed out: tools/call" in str(error)
             )
             if not transient:
                 raise
             last_error = str(error)
+            print("unity_mcp_tests=reconnecting_after_disconnect", flush=True)
+            wait_for_instance_reconnect(
+                client, timeout=max(1, min(600, int(deadline - time.monotonic())))
+            )
         time.sleep(2)
     raise TimeoutError(f"Unity test job did not finish: {last_error}")
 

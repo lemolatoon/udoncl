@@ -185,8 +185,10 @@ endfunction()
 
 function(udoncl_add_onnx_host_library target)
   set(_options)
-  set(_one_value MODEL EXECUTION_PROVIDER PROFILE)
-  cmake_parse_arguments(PARSE_ARGV 1 _ARG "${_options}" "${_one_value}" "")
+  set(_one_value MODEL)
+  set(_multi_value DIMENSION_BOUNDS)
+  cmake_parse_arguments(PARSE_ARGV 1 _ARG "${_options}" "${_one_value}"
+                        "${_multi_value}")
   if(_ARG_UNPARSED_ARGUMENTS)
     message(FATAL_ERROR
       "udoncl_add_onnx_host_library received unknown arguments: ${_ARG_UNPARSED_ARGUMENTS}")
@@ -194,42 +196,34 @@ function(udoncl_add_onnx_host_library target)
   if(NOT _ARG_MODEL)
     message(FATAL_ERROR "udoncl_add_onnx_host_library requires MODEL")
   endif()
-  if(NOT _ARG_EXECUTION_PROVIDER)
-    set(_ARG_EXECUTION_PROVIDER operators)
-  endif()
-  if(NOT _ARG_EXECUTION_PROVIDER STREQUAL "auto" AND
-     NOT _ARG_EXECUTION_PROVIDER STREQUAL "operators")
-    message(FATAL_ERROR
-      "EXECUTION_PROVIDER must be 'auto' or 'operators'")
-  endif()
   cmake_path(ABSOLUTE_PATH _ARG_MODEL BASE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
              NORMALIZE OUTPUT_VARIABLE _model)
   if(NOT EXISTS "${_model}")
     message(FATAL_ERROR "ONNX model does not exist: ${_model}")
   endif()
-  if(_ARG_PROFILE AND NOT _ARG_PROFILE STREQUAL "mnist" AND
-     NOT _ARG_PROFILE STREQUAL "mnist-dense")
-    message(FATAL_ERROR "Unsupported ONNX Host PROFILE: ${_ARG_PROFILE}")
-  endif()
-  if(NOT EXISTS "${_UDONCL_ONNX_COMPILER}" OR
-     NOT EXISTS "${_UDONCL_ONNX_HOST_COMPILER}")
+  set(_bound_names)
+  foreach(_bound IN LISTS _ARG_DIMENSION_BOUNDS)
+    if(NOT _bound MATCHES "^([A-Za-z_][A-Za-z0-9_.]*)=([1-9][0-9]*)$")
+      message(FATAL_ERROR
+        "Invalid DIMENSION_BOUNDS entry '${_bound}'; expected name=positive_integer")
+    endif()
+    set(_bound_name "${CMAKE_MATCH_1}")
+    if(_bound_name IN_LIST _bound_names)
+      message(FATAL_ERROR "Duplicate DIMENSION_BOUNDS entry '${_bound_name}'")
+    endif()
+    list(APPEND _bound_names "${_bound_name}")
+  endforeach()
+  if(NOT EXISTS "${_UDONCL_ONNX_COMPILER}")
     message(FATAL_ERROR
       "Udon ONNX Host compiler does not exist: ${_UDONCL_ONNX_COMPILER}")
   endif()
   find_package(Python3 3.12 REQUIRED COMPONENTS Interpreter)
   set(_generated_dir "${CMAKE_CURRENT_BINARY_DIR}/udoncl-onnx/${target}")
   set(_generated_host "${_generated_dir}/host.c")
-  set(_generated_mlir "${_generated_dir}/host.mlir")
   file(MAKE_DIRECTORY "${_generated_dir}")
-  if(_ARG_PROFILE)
-    set(_command "${Python3_EXECUTABLE}" "${_UDONCL_ONNX_HOST_COMPILER}"
-                 "${_model}" --profile "${_ARG_PROFILE}"
-                 -o "${_generated_host}" --mlir-output "${_generated_mlir}")
-  else()
-    set(_command "${Python3_EXECUTABLE}" "${_UDONCL_ONNX_COMPILER}"
-                 "${_model}" --execution-provider "${_ARG_EXECUTION_PROVIDER}"
-                 --emit-host-c "${_generated_host}")
-  endif()
+  set(_command "${Python3_EXECUTABLE}" "${_UDONCL_ONNX_COMPILER}"
+               "${_model}" --execution-provider operators
+               --emit-host-c "${_generated_host}")
   execute_process(
     COMMAND ${_command}
     RESULT_VARIABLE _result
@@ -240,18 +234,56 @@ function(udoncl_add_onnx_host_library target)
       "ONNX Host generation failed for ${_model}:\n${_stdout}${_stderr}")
   endif()
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-    "${_model}" "${_UDONCL_ONNX_COMPILER}" "${_UDONCL_ONNX_HOST_COMPILER}")
+    "${_model}" "${_UDONCL_ONNX_COMPILER}")
   udoncl_add_host_library("${target}" "${_generated_host}")
   set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_MODEL "${_model}")
   set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_HOST
                "${_generated_host}")
-  if(_ARG_PROFILE STREQUAL "mnist-dense")
-    set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_HOST_MLIR
-                 "${_generated_mlir}")
-  elseif(_ARG_PROFILE STREQUAL "mnist")
-    set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_HOST_MLIR
-                 "${_generated_mlir}")
+  set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_DIMENSION_BOUNDS
+               "${_ARG_DIMENSION_BOUNDS}")
+endfunction()
+
+# Temporary migration-only entry point for the two checked-in MNIST fixtures.
+# New consumers must use udoncl_add_onnx_host_library above. Delete this after
+# the generic ONNX-MLIR MNIST gate replaces the profile emitter.
+function(_udoncl_add_legacy_onnx_host_library target)
+  set(_options)
+  set(_one_value MODEL PROFILE)
+  cmake_parse_arguments(PARSE_ARGV 1 _ARG "${_options}" "${_one_value}" "")
+  if(_ARG_UNPARSED_ARGUMENTS OR NOT _ARG_MODEL OR NOT _ARG_PROFILE)
+    message(FATAL_ERROR
+      "_udoncl_add_legacy_onnx_host_library requires MODEL and PROFILE")
   endif()
+  if(NOT _ARG_PROFILE STREQUAL "mnist" AND
+     NOT _ARG_PROFILE STREQUAL "mnist-dense")
+    message(FATAL_ERROR "Unsupported legacy ONNX Host PROFILE: ${_ARG_PROFILE}")
+  endif()
+  cmake_path(ABSOLUTE_PATH _ARG_MODEL BASE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+             NORMALIZE OUTPUT_VARIABLE _model)
+  if(NOT EXISTS "${_model}" OR NOT EXISTS "${_UDONCL_ONNX_HOST_COMPILER}")
+    message(FATAL_ERROR "Legacy ONNX Host input or compiler does not exist")
+  endif()
+  find_package(Python3 3.12 REQUIRED COMPONENTS Interpreter)
+  set(_generated_dir "${CMAKE_CURRENT_BINARY_DIR}/udoncl-onnx/${target}")
+  set(_generated_host "${_generated_dir}/host.c")
+  set(_generated_mlir "${_generated_dir}/host.mlir")
+  file(MAKE_DIRECTORY "${_generated_dir}")
+  execute_process(
+    COMMAND "${Python3_EXECUTABLE}" "${_UDONCL_ONNX_HOST_COMPILER}"
+            "${_model}" --profile "${_ARG_PROFILE}" -o "${_generated_host}"
+            --mlir-output "${_generated_mlir}"
+    RESULT_VARIABLE _result OUTPUT_VARIABLE _stdout ERROR_VARIABLE _stderr)
+  if(NOT _result EQUAL 0)
+    message(FATAL_ERROR
+      "Legacy ONNX Host generation failed for ${_model}:\n${_stdout}${_stderr}")
+  endif()
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${_model}" "${_UDONCL_ONNX_HOST_COMPILER}")
+  udoncl_add_host_library("${target}" "${_generated_host}")
+  set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_MODEL "${_model}")
+  set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_HOST "${_generated_host}")
+  set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_HOST_MLIR
+               "${_generated_mlir}")
 endfunction()
 
 if(NOT TARGET udoncl_opencl_runtime)

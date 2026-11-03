@@ -1,6 +1,7 @@
 #include <CL/cl.h>
 #include <stddef.h>
 #include <udoncl/device_memory.h>
+#include <udononnxoperators.h>
 
 #define EXPECT(condition)                                                      \
   do {                                                                         \
@@ -125,6 +126,10 @@ int main(void) {
   udonclBufferHandle_t common_buffer = {0, 0}, stale_buffer, replacement;
   udonclBufferView_t view;
   udonclWorkspace_t workspace;
+  udononnxTensor_t tensor;
+  udononnxTensor_t input_bindings[1], output_bindings[1];
+  udononnxSession_t session = {0};
+  udononnxRunToken_t run_token;
   cl_int error;
   cl_int integer_arguments[8] = {1, 10, 16, 0, 0, 1, 16, 1};
   cl_float float_arguments[2] = {1.5f, 0.0f};
@@ -133,6 +138,14 @@ int main(void) {
   cl_uint index;
   int source = 42;
   size_t bytes, byte_offset, byte_length;
+  size_t elements;
+  int64_t tensor_dimensions[2] = {2, 2};
+  int64_t dynamic_dimensions[2] = {-1, 2};
+  int64_t dynamic_bounds[2] = {2, 0};
+  udononnxTensorMetadata_t input_metadata[1] = {
+      {"tokens", UDONCL_DATA_FLOAT32, 2, dynamic_dimensions, dynamic_bounds}};
+  udononnxTensorMetadata_t output_metadata[1] = {
+      {"logits", UDONCL_DATA_FLOAT32, 2, tensor_dimensions, 0}};
 
   EXPECT(clGetPlatformIDs(1, &platform, 0) == CL_SUCCESS);
   EXPECT(clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &device, 0) ==
@@ -153,6 +166,31 @@ int main(void) {
   EXPECT(udonclBufferViewResolve(view, &resolved, &byte_offset, &byte_length) ==
              UDONCL_STATUS_SUCCESS &&
          resolved && byte_offset == 8 && byte_length == 16);
+  EXPECT(udononnxCreateTensor(view, 2, tensor_dimensions, &tensor) ==
+         UDONONNX_STATUS_SUCCESS);
+  EXPECT(udononnxGetTensorElementCount(tensor, &elements) ==
+             UDONONNX_STATUS_SUCCESS &&
+         elements == 4);
+  EXPECT(udononnxSessionInitialize(&session, input_metadata, 1, input_bindings,
+                                   output_metadata, 1,
+                                   output_bindings) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(udononnxSessionFindInput(&session, "tokens") == 0);
+  EXPECT(udononnxSessionFindOutput(&session, "logits") == 0);
+  EXPECT(udononnxSessionBindInput(&session, 0, tensor) ==
+         UDONONNX_STATUS_SUCCESS);
+  EXPECT(udononnxSessionBindOutput(&session, 0, tensor) ==
+         UDONONNX_STATUS_SUCCESS);
+  EXPECT(udononnxSessionStartRun(&session, &run_token) ==
+         UDONONNX_STATUS_SUCCESS);
+  EXPECT(udononnxSessionStartRun(&session, &run_token) == UDONONNX_STATUS_BUSY);
+  EXPECT(udononnxSessionDispose(&session) == UDONONNX_STATUS_BUSY);
+  EXPECT(udononnxSessionCompleteRun(&session, run_token,
+                                    UDONONNX_STATUS_SUCCESS) ==
+         UDONONNX_STATUS_SUCCESS);
+  EXPECT(udononnxSessionDispose(&session) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(udononnxSessionCompleteRun(&session, run_token,
+                                    UDONONNX_STATUS_SUCCESS) ==
+         UDONONNX_STATUS_STALE_HANDLE);
   EXPECT(udonclDeviceBufferView(common_buffer, 2, 1, UDONCL_DATA_FLOAT32,
                                 &view) == UDONCL_STATUS_INVALID_VALUE);
   EXPECT(udonclDeviceBufferView(common_buffer, 60, 2, UDONCL_DATA_FLOAT32,
@@ -166,6 +204,7 @@ int main(void) {
   EXPECT(!common_buffer.slot && !common_buffer.generation);
   EXPECT(udonclWorkspaceResolve(workspace, &resolved, &byte_offset,
                                 &byte_length) == UDONCL_STATUS_STALE_HANDLE);
+  EXPECT(udononnxValidateTensor(tensor) == UDONONNX_STATUS_STALE_HANDLE);
   EXPECT(udonclDeviceBufferCreate(context, CL_MEM_READ_WRITE, 64,
                                   &replacement) == UDONCL_STATUS_SUCCESS);
   EXPECT(replacement.slot == stale_buffer.slot &&

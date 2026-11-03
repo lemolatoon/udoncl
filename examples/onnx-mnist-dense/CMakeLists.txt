@@ -16,7 +16,7 @@ if(NOT result EQUAL 0)
   message(FATAL_ERROR "MNIST ONNX generation failed:\n${stdout}${stderr}")
 endif()
 
-udoncl_add_onnx_host_library(mnist_dense_host
+_udoncl_add_legacy_onnx_host_library(mnist_dense_host
   MODEL "${model}"
   PROFILE mnist-dense)
 target_include_directories(mnist_dense_host INTERFACE "${UdonBLAS_INCLUDE_DIRS}")

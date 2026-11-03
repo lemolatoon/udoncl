@@ -69,6 +69,11 @@ install(FILES
   DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/UdonATen"
   COMPONENT UdonCLCompiler)
 install(FILES
+  cmake/UdonONNXOperatorsConfig.cmake
+  cmake/UdonONNXOperatorsConfigVersion.cmake
+  DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/UdonONNXOperators"
+  COMPONENT UdonCLCompiler)
+install(FILES
   include/udoncl/unity_buffer.h
   include/udoncl/device_memory.h
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/udoncl"
@@ -101,6 +106,7 @@ install(DIRECTORY libraries/udonblas/device
   FILES_MATCHING PATTERN "*.cl")
 install(FILES libraries/udondnn/include/udondnn.h
   libraries/udonaten/include/udonaten.h
+  libraries/udononnxoperators/include/udononnxoperators.h
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
   COMPONENT UdonCLCompiler)
 install(FILES libraries/udondnn/src/udondnn.c
@@ -108,6 +114,9 @@ install(FILES libraries/udondnn/src/udondnn.c
   COMPONENT UdonCLCompiler)
 install(FILES libraries/udonaten/src/udonaten.c
   DESTINATION "${CMAKE_INSTALL_DATADIR}/udonaten/src"
+  COMPONENT UdonCLCompiler)
+install(FILES libraries/udononnxoperators/src/udononnxoperators.c
+  DESTINATION "${CMAKE_INSTALL_DATADIR}/udononnxoperators/src"
   COMPONENT UdonCLCompiler)
 install(DIRECTORY libraries/udondnn/device
   DESTINATION "${CMAKE_INSTALL_DATADIR}/udondnn"
