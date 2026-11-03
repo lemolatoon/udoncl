@@ -169,7 +169,12 @@ parseUnityBuffers(const json::Object &config) {
   if (!buffers)
     return result;
   std::optional<std::pair<int64_t, int64_t>> dispatchShape;
-  if (auto *kernel = config.getObject("device_kernel"))
+  const json::Object *shapeKernel = config.getObject("device_kernel");
+  if (!shapeKernel)
+    if (auto *kernels = config.getArray("device_kernels");
+        kernels && !kernels->empty())
+      shapeKernel = (*kernels)[0].getAsObject();
+  if (auto *kernel = shapeKernel)
     if (auto *global = kernel->getArray("global_size");
         global && global->size() == 3) {
       auto width = (*global)[0].getAsInteger();
@@ -216,6 +221,46 @@ parseUnityBuffers(const json::Object &config) {
   return result;
 }
 
+FailureOr<SmallVector<const json::Object *>>
+parseUnityDeviceKernels(const json::Object &config) {
+  SmallVector<const json::Object *> result;
+  auto *single = config.getObject("device_kernel");
+  auto *multiple = config.getArray("device_kernels");
+  if (single && multiple) {
+    errs() << "Unity library config cannot contain both device_kernel and "
+              "device_kernels\n";
+    return failure();
+  }
+  if (single)
+    result.push_back(single);
+  if (multiple) {
+    if (multiple->empty()) {
+      errs() << "Unity library device_kernels must not be empty\n";
+      return failure();
+    }
+    for (const json::Value &value : *multiple) {
+      auto *kernel = value.getAsObject();
+      if (!kernel) {
+        errs() << "Unity library device_kernels entries must be objects\n";
+        return failure();
+      }
+      result.push_back(kernel);
+    }
+  }
+  std::set<int64_t> ids;
+  std::set<std::string> names;
+  for (const json::Object *kernel : result) {
+    auto id = kernel->getInteger("kernel_id");
+    auto name = kernel->getString("kernel");
+    if (!id || *id <= 0 || !name || !identifier(*name) ||
+        !ids.insert(*id).second || !names.insert(name->str()).second) {
+      errs() << "invalid or duplicate Unity Device kernel\n";
+      return failure();
+    }
+  }
+  return result;
+}
+
 void appendUnityBufferSlots(ModuleOp module, ArrayRef<UnityBuffer> buffers) {
   auto data = module->getAttrOfType<ArrayAttr>("udonasm.data");
   SmallVector<mlir::Attribute> entries(data.begin(), data.end());
@@ -245,7 +290,7 @@ struct UnityBufferBinding {
 
 FailureOr<UnityBufferBinding>
 bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
-                          std::optional<int64_t> configuredKernelId) {
+                          ArrayRef<int64_t> configuredKernelIds) {
   SmallVector<::vrc::vrc::BufferAllocOp> allocations;
   SmallVector<::vrc::vrc::BufferCopyOp> copies;
   SmallVector<::vrc::vrc::DispatchOp> dispatches;
@@ -371,7 +416,7 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
       else
         resourcesMatch &= !buffers.empty();
     }
-    if (!configuredKernelId || dispatch.getKernelId() != *configuredKernelId ||
+    if (!llvm::is_contained(configuredKernelIds, dispatch.getKernelId()) ||
         !descriptorMatches || dispatch.getArgumentKinds().empty() ||
         !isa<StringAttr>(*dispatch.getArgumentKinds().begin()) ||
         cast<StringAttr>(*dispatch.getArgumentKinds().begin()).getValue() !=
@@ -1691,6 +1736,7 @@ int main(int argc, char **argv) {
   bool unityGatherProfile = false;
   std::optional<json::Object> unityConfig;
   OwningOpRef<ModuleOp> unityDeviceModule;
+  SmallVector<const json::Object *> unityDeviceConfigs;
   SmallVector<UnityBuffer> unityBuffers;
   bool unityUsesBufferCopy = false;
   SmallVector<int32_t> unityDispatchKernelIds;
@@ -1712,9 +1758,12 @@ int main(int argc, char **argv) {
       return 1;
     }
     unityConfig = *object;
-    if ((unityConfig->getObject("device_kernel") != nullptr) !=
-        !deviceLLVM.empty()) {
-      errs() << "Unity library device_kernel and --device-llvm must be "
+    auto parsedDeviceConfigs = parseUnityDeviceKernels(*unityConfig);
+    if (failed(parsedDeviceConfigs))
+      return 1;
+    unityDeviceConfigs = std::move(*parsedDeviceConfigs);
+    if (unityDeviceConfigs.empty() != deviceLLVM.empty()) {
+      errs() << "Unity library Device kernel config and --device-llvm must be "
                 "provided together\n";
       return 1;
     }
@@ -1723,32 +1772,56 @@ int main(int argc, char **argv) {
       return 1;
     unityBuffers = std::move(*parsedBuffers);
     if (!deviceLLVM.empty()) {
-      auto *deviceConfig = unityConfig->getObject("device_kernel");
-      unityDeviceModule =
-          ::vrc::importCBoundary({}, deviceLLVM, *deviceConfig, context);
-      if (!unityDeviceModule || failed(verify(*unityDeviceModule)))
-        return 1;
-      PassManager deviceRecovery(&context);
-      deviceRecovery.addNestedPass<ModuleOp>(createMem2Reg());
-      unityGatherProfile = deviceConfig->getString("profile") == "gather-f32";
-      if (unityGatherProfile) {
+      unityDeviceModule = ModuleOp::create(UnknownLoc::get(&context));
+      unityGatherProfile = true;
+      for (const json::Object *deviceConfig : unityDeviceConfigs) {
+        bool gather = deviceConfig->getString("profile") == "gather-f32";
+        if (unityDeviceConfigs.size() > 1 && !gather) {
+          errs() << "multi-kernel Unity libraries currently require the "
+                    "gather-f32 profile\n";
+          return 1;
+        }
+        unityGatherProfile &= gather;
+        auto recovered =
+            ::vrc::importCBoundary({}, deviceLLVM, *deviceConfig, context);
+        if (!recovered || failed(verify(*recovered)))
+          return 1;
+        PassManager deviceRecovery(&context);
+        deviceRecovery.addNestedPass<ModuleOp>(createMem2Reg());
+        if (gather) {
+          deviceRecovery.addNestedPass<ModuleOp>(createCanonicalizerPass());
+          deviceRecovery.addNestedPass<ModuleOp>(
+              ::vrc::createRaiseGatherDevicePass());
+        } else
+          deviceRecovery.addNestedPass<ModuleOp>(
+              ::vrc::createRaiseLLVMBoundaryDevicePass());
+        deviceRecovery.addNestedPass<ModuleOp>(
+            ::vrc::createRaiseLLVMToScalarPass());
         deviceRecovery.addNestedPass<ModuleOp>(createCanonicalizerPass());
-        deviceRecovery.addNestedPass<ModuleOp>(
-            ::vrc::createRaiseGatherDevicePass());
-      } else
-        deviceRecovery.addNestedPass<ModuleOp>(
-            ::vrc::createRaiseLLVMBoundaryDevicePass());
-      deviceRecovery.addNestedPass<ModuleOp>(
-          ::vrc::createRaiseLLVMToScalarPass());
-      deviceRecovery.addNestedPass<ModuleOp>(createCanonicalizerPass());
-      if (unityGatherProfile) {
-        deviceRecovery.addNestedPass<ModuleOp>(
-            createLiftControlFlowToSCFPass());
-        deviceRecovery.addNestedPass<ModuleOp>(createCanonicalizerPass());
+        if (gather) {
+          deviceRecovery.addNestedPass<ModuleOp>(
+              createLiftControlFlowToSCFPass());
+          deviceRecovery.addNestedPass<ModuleOp>(createCanonicalizerPass());
+        }
+        deviceRecovery.addPass(::vrc::createPrepareNativeDevicePass());
+        if (failed(deviceRecovery.run(*recovered)) ||
+            failed(verify(*recovered)))
+          return 1;
+        auto modules = recovered->getOps<gpu::GPUModuleOp>();
+        if (!llvm::hasSingleElement(modules)) {
+          errs() << "recovered Unity Device kernel is missing its GPU module\n";
+          return 1;
+        }
+        auto gpuModule = *modules.begin();
+        int64_t kernelId = *deviceConfig->getInteger("kernel_id");
+        gpuModule->setAttr(
+            SymbolTable::getSymbolAttrName(),
+            StringAttr::get(&context,
+                            "device_gpu_" + std::to_string(kernelId)));
+        gpuModule->moveBefore(unityDeviceModule->getBody(),
+                              unityDeviceModule->getBody()->end());
       }
-      deviceRecovery.addPass(::vrc::createPrepareNativeDevicePass());
-      if (failed(deviceRecovery.run(*unityDeviceModule)) ||
-          failed(verify(*unityDeviceModule)))
+      if (failed(verify(*unityDeviceModule)))
         return 1;
     }
     if (!hostMLIR.empty()) {
@@ -1776,7 +1849,11 @@ int main(int argc, char **argv) {
           inputModule->getFunction("__vrc_opencl_dispatch_udonblas_sgemm") !=
           nullptr;
       if (enqueue && !enqueue->use_empty() && !linkedOpenCLAOT) {
-        auto *device = unityConfig->getObject("device_kernel");
+        if (unityDeviceConfigs.size() != 1) {
+          errs() << "legacy OpenCL recovery supports one configured kernel\n";
+          return 1;
+        }
+        auto *device = unityDeviceConfigs.front();
         module = device && device->getString("profile") == "gather-f32"
                      ? recoverUnityOpenCLGatherDispatchProgram(
                            *inputModule, *unityConfig, context)
@@ -1884,11 +1961,11 @@ int main(int argc, char **argv) {
     manager.addPass(::vrc::createSubstituteRuntimeIntrinsicsPass());
     if (failed(manager.run(*module)) || failed(verify(*module)))
       return 1;
-    auto *deviceKernel = unityConfig->getObject("device_kernel");
-    std::optional<int64_t> configuredKernelId =
-        deviceKernel ? deviceKernel->getInteger("kernel_id") : std::nullopt;
+    SmallVector<int64_t> configuredKernelIds;
+    for (const json::Object *deviceKernel : unityDeviceConfigs)
+      configuredKernelIds.push_back(*deviceKernel->getInteger("kernel_id"));
     auto bufferBinding =
-        bindUnityBufferOperations(*module, unityBuffers, configuredKernelId);
+        bindUnityBufferOperations(*module, unityBuffers, configuredKernelIds);
     if (failed(bufferBinding))
       return 1;
     unityUsesBufferCopy = bufferBinding->usesCopy;

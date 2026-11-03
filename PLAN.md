@@ -178,6 +178,7 @@ Host .c / libc sources                     Device .cl sources
 - 実装順は、(1) 既存high-level recoveryをmulti-block Host/UdonHLまで接続、(2) pointer/global/memoryとcall graph、(3) 共通async runtimeとpinned continuation frame、(4) installed CMake `UdonBLAS::UdonBLAS`、(5) public SGEMM Unity gate、(6) ONNX MLIR→library calls、(7) MNIST Denseを公開SGEMMで実行、(8) UdonDNN/UdonATenとLlama 8B、(9) 旧execution-plan経路削除、とする。
 - 2026-11-03 checkpoint: installed CMakeにexecution-plan JSONを生成しない`udoncl_add_onnx_host_library`を追加し、MNIST ONNXのDense tailを`udonblasSgemm(m=1,n=10,k=144)`へ直接生成した。Unity 2022.3.22f1 / Worlds SDK 3.10.5の生成U# bindingで144入力、async完了、10出力を実行し、status 0、最大絶対誤差`3.814697e-6`、cleanup完了を確認済み。これはDense受入checkpointであり、MNIST全graphのmulti-kernel Host call graphとONNX MLIR lowering、Llama 8Bは未完了である。
 - 同checkpointでinstalled `UdonDNN::UdonDNN` / `UdonATen::UdonATen` targetも追加し、生成MNIST Host C、UdonBLAS、UdonDNN、UdonATen、OpenCL AOT runtimeを重複定義なしに一つのHost LLVM moduleへlinkできることを外部CMake consumerで確認済み。次の阻害要因は複数Device kernelを一つのUnity library config/Manifestへ導出するcompiler側の対応である。
+- `device_kernels`配列から同一Device LLVM module内の複数gather kernelを個別回復し、一つのUnity artifactへ複数Shader/HLSL/Manifest entryとして生成するcompiler対応まで実装済み。UdonBLAS SGEMM+SGEMVの2-kernel artifactで検証した。full MNISTの次の阻害要因はOpenCL AOT runtimeのkernel-id/argument ABIがSGEMM dispatch一つに固定されている点である。
 
 ## 3. ABIとExecution Contract
 
