@@ -194,6 +194,8 @@ parseUnityBuffers(const json::Object &config) {
     auto id = entry ? entry->getInteger("id") : std::nullopt;
     auto name = entry ? entry->getString("name") : std::nullopt;
     auto bytes = entry ? entry->getInteger("byte_size") : std::nullopt;
+    auto explicitWidth = entry ? entry->getInteger("width") : std::nullopt;
+    auto explicitHeight = entry ? entry->getInteger("height") : std::nullopt;
     auto elementType = entry ? entry->getString("element_type") : std::nullopt;
     auto publicAccess =
         entry ? entry->getString("public_access") : std::nullopt;
@@ -204,18 +206,27 @@ parseUnityBuffers(const json::Object &config) {
         (*publicAccess == "input" || *publicAccess == "output");
     if (!id || *id <= 0 || *id > INT32_MAX || !name || !identifier(*name) ||
         !bytes || *bytes <= 0 || *bytes > maximumBytes ||
+        (explicitWidth.has_value() != explicitHeight.has_value()) ||
         !ids.insert(*id).second || !names.insert(name->str()).second ||
         ((elementType || publicAccess) && !semanticBinding)) {
       errs() << "invalid or duplicate Unity Device buffer\n";
       return failure();
     }
     int64_t pixels = (*bytes + 3) / 4;
+    if (explicitWidth &&
+        (*explicitWidth <= 0 || *explicitWidth > 8192 || *explicitHeight <= 0 ||
+         *explicitHeight > 8192 || *explicitWidth * *explicitHeight < pixels)) {
+      errs() << "invalid Unity Device buffer texture dimensions\n";
+      return failure();
+    }
     bool shapeFits =
         dispatchShape && dispatchShape->first * dispatchShape->second >= pixels;
-    int64_t width =
-        shapeFits ? dispatchShape->first : std::min<int64_t>(pixels, 8192);
-    int64_t height =
-        shapeFits ? dispatchShape->second : (pixels + width - 1) / width;
+    int64_t width = explicitWidth ? *explicitWidth
+                    : shapeFits   ? dispatchShape->first
+                                  : std::min<int64_t>(pixels, 8192);
+    int64_t height = explicitHeight ? *explicitHeight
+                     : shapeFits    ? dispatchShape->second
+                                    : (pixels + width - 1) / width;
     result.push_back({*id, *bytes, width, height, name->str(),
                       "__udoncl_buffer_" + std::to_string(*id),
                       elementType ? elementType->str() : "",

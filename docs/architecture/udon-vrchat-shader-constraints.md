@@ -46,6 +46,12 @@ stay in the investigation section.
   short-lived raw-load result. Those slots may be color-reused only when their
   live ranges do not overlap; assigning one dedicated slot per cast can exceed
   the Udon VM's 512-address heap limit in a generated BLAS host program.
+- OpenCL scalar kernel arguments have copy semantics at `clSetKernelArg`, not
+  reference semantics at enqueue. Lowering therefore copies every scalar into
+  a descriptor snapshot slot when `vrc.dispatch_desc_create` executes, and the
+  later `vrc.dispatch` reads only that snapshot. Descriptor liveness coloring
+  lets non-overlapping descriptors reuse the same typed snapshot slots without
+  extending the source SSA values or changing OpenCL behavior.
 - A Unity dispatch must select its render target from the configured Device
   buffer whose public access is `output`; the first resource is not implicitly
   the output. For a conventional `(input, output, ...)` OpenCL kernel, treating
@@ -67,6 +73,10 @@ stay in the investigation section.
   RGBA8 RenderTexture, not a canonical `1024 x 1` linear texture. Otherwise
   shader loads such as logical offset 256 become out-of-range `y = 8` reads and
   silently return zero.
+- A multi-kernel artifact cannot infer every buffer's texture geometry from its
+  first kernel. Its config must give explicit `width` and `height` for buffers
+  consumed by a differently shaped gather kernel; dimensions remain optional
+  only when the common dispatch shape or canonical linear layout is correct.
 
 ### Integer shader arguments must use the non-legacy Unity integer API
 

@@ -43,7 +43,7 @@
     {"id": 2, "name": "dnn_pointwise_other", "byte_size": 65536},
     {"id": 3, "name": "dnn_pointwise_output", "byte_size": 65536},
     {"id": 4, "name": "dnn_rms_arena_partial", "byte_size": 65536},
-    {"id": 5, "name": "blas_input", "byte_size": 4096},
-    {"id": 6, "name": "blas_output", "byte_size": 4096, "element_type": "float32", "public_access": "output"}
+    {"id": 5, "name": "blas_input", "byte_size": 4096, "width": 32, "height": 32},
+    {"id": 6, "name": "blas_output", "byte_size": 4096, "width": 32, "height": 32, "element_type": "float32", "public_access": "output"}
   ]
 }

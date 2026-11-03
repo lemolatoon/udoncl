@@ -266,6 +266,12 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             );
             StringAssert.Contains("program.SetProgramVariable(\"__resume\", 0);", source);
             StringAssert.Contains("private void PumpAsyncCommand()", source);
+            StringAssert.Contains(
+                "object rawResume = program.GetProgramVariable(\"__resume\");",
+                source
+            );
+            StringAssert.Contains("if (resume != 0)", source);
+            StringAssert.Contains("FinishAsyncCommand(StatusSuccess);", source);
             StringAssert.Contains("int[] heap = (int[])rawHeap;", source);
             StringAssert.Contains("CopyHeapToPixels(pixels);", source);
             StringAssert.Contains("pointer > heap.Length - size", source);

@@ -234,6 +234,10 @@ def main():
     assert [item['public_name'] for item in onnx_mnist_manifest['exports']] == [
         'WriteMnistInput', 'RunMnist', 'ReadMnistOutput',
     ]
+    assert [
+        (buffer['width'], buffer['height'])
+        for buffer in onnx_mnist_manifest['device']['buffers']
+    ] == [(8192, 2)] * 4 + [(32, 32)] * 2
     for kernel_id in [1, 231, 232, 233, 234]:
         assert (
             onnx_mnist_artifact / f'kernels/kernel_{kernel_id}.shader'
@@ -242,6 +246,20 @@ def main():
         encoding='utf-8'
     )
     assert sum(': %' in line for line in onnx_mnist_assembly.splitlines()) <= 480
+    assert 'E+' not in onnx_mnist_assembly
+    mnist_uasm_lines = [
+        line.strip() for line in onnx_mnist_assembly.splitlines() if line.strip()
+    ]
+    descriptor_pushes = [
+        index for index, line in enumerate(mnist_uasm_lines)
+        if 'PUSH, __vrc_f2_descriptor_' in line
+    ]
+    assert descriptor_pushes
+    assert any(
+        mnist_uasm_lines[index + 1] == 'COPY'
+        for index in descriptor_pushes
+    )
+    assert '__vrc_f2_descriptor_1_' not in onnx_mnist_assembly
     for kernel_id in [1, 231, 232, 233, 234]:
         assert f'dispatch_{kernel_id}_output_matches_' not in onnx_mnist_assembly
         assert f'dispatch_{kernel_id}_input_' not in onnx_mnist_assembly

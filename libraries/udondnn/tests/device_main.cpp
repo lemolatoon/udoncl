@@ -416,6 +416,36 @@ int main(int argc, char **argv) {
     for (auto descriptor : descriptorCapacity)
       require(udondnnDestroyTensorDescriptor(descriptor),
               UDONDNN_STATUS_SUCCESS, "release tensor descriptor capacity");
+    udondnnFilterDescriptor_t sixteenChannelFilter = 0;
+    require(udondnnCreateFilterDescriptor(&sixteenChannelFilter),
+            UDONDNN_STATUS_SUCCESS, "create sixteen-channel filter descriptor");
+    require(udondnnSetFilter4dDescriptor(sixteenChannelFilter,
+                                         UDONDNN_DATA_FLOAT,
+                                         UDONDNN_TENSOR_NCHW, 16, 1, 5, 5),
+            UDONDNN_STATUS_SUCCESS, "configure sixteen-channel filter");
+    require(udondnnSetFilter4dDescriptor(sixteenChannelFilter,
+                                         UDONDNN_DATA_FLOAT,
+                                         UDONDNN_TENSOR_NCHW, 17, 1, 5, 5),
+            UDONDNN_STATUS_BAD_PARAM, "reject seventeen-channel filter");
+    require(udondnnDestroyFilterDescriptor(sixteenChannelFilter),
+            UDONDNN_STATUS_SUCCESS,
+            "destroy sixteen-channel filter descriptor");
+    udondnnPoolingDescriptor_t eightByEightPooling = 0;
+    require(udondnnCreatePoolingDescriptor(&eightByEightPooling),
+            UDONDNN_STATUS_SUCCESS, "create eight-by-eight pooling descriptor");
+    require(udondnnSetPooling2dDescriptor(
+                eightByEightPooling,
+                UDONDNN_POOLING_AVERAGE_COUNT_EXCLUDE_PADDING,
+                UDONDNN_NOT_PROPAGATE_NAN, 8, 8, 0, 0, 8, 8),
+            UDONDNN_STATUS_SUCCESS, "configure eight-by-eight pooling");
+    require(udondnnSetPooling2dDescriptor(
+                eightByEightPooling,
+                UDONDNN_POOLING_AVERAGE_COUNT_EXCLUDE_PADDING,
+                UDONDNN_NOT_PROPAGATE_NAN, 9, 8, 0, 0, 8, 8),
+            UDONDNN_STATUS_BAD_PARAM, "reject nine-row pooling window");
+    require(udondnnDestroyPoolingDescriptor(eightByEightPooling),
+            UDONDNN_STATUS_SUCCESS,
+            "destroy eight-by-eight pooling descriptor");
     const std::array<Case, 5> cases{{
         {1, 1, 4, 5, 2, 2, 3, 0, 0, 1, 1, 1, 1, UDONDNN_CROSS_CORRELATION, 1.0f,
          0.0f},
@@ -1546,7 +1576,7 @@ int main(int argc, char **argv) {
     require(udondnnCreatePoolingDescriptor(&invalidPooling),
             UDONDNN_STATUS_SUCCESS, "create invalid pooling descriptor");
     require(udondnnSetPooling2dDescriptor(invalidPooling, UDONDNN_POOLING_MAX,
-                                          UDONDNN_NOT_PROPAGATE_NAN, 6, 2, 0, 0,
+                                          UDONDNN_NOT_PROPAGATE_NAN, 9, 2, 0, 0,
                                           1, 1),
             UDONDNN_STATUS_BAD_PARAM, "reject oversized pooling window");
     require(udondnnSetPooling2dDescriptor(

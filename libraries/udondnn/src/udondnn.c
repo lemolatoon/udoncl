@@ -777,7 +777,7 @@ udondnnStatus_t udondnnSetFilter4dDescriptor(
   FilterDescriptor *filter = get_filter(descriptor);
   if (!filter || data_type != UDONDNN_DATA_FLOAT ||
       format != UDONDNN_TENSOR_NCHW || k <= 0 || c <= 0 || h <= 0 || w <= 0 ||
-      k > 15 || c > 8 || h > 5 || w > 5 ||
+      k > 16 || c > 8 || h > 5 || w > 5 ||
       k * c * h * w > UDONDNN_CONV_MAX_FILTER_WORDS)
     return UDONDNN_STATUS_BAD_PARAM;
   filter->k = k;
@@ -924,8 +924,8 @@ udondnnStatus_t udondnnSetPooling2dDescriptor(
       mode > UDONDNN_POOLING_MAX_DETERMINISTIC ||
       (nan_propagation != UDONDNN_NOT_PROPAGATE_NAN &&
        nan_propagation != UDONDNN_PROPAGATE_NAN) ||
-      window_height <= 0 || window_height > 5 || window_width <= 0 ||
-      window_width > 5 || vertical_padding < 0 || horizontal_padding < 0 ||
+      window_height <= 0 || window_height > 8 || window_width <= 0 ||
+      window_width > 8 || vertical_padding < 0 || horizontal_padding < 0 ||
       vertical_padding * 2 >= window_height ||
       horizontal_padding * 2 >= window_width || vertical_stride <= 0 ||
       vertical_stride > 15 || horizontal_stride <= 0 || horizontal_stride > 15)
@@ -1119,7 +1119,7 @@ udondnnStatus_t udondnnConvolutionForward(
 #ifdef UDONDNN_AOT_LARGE_ONLY
   {
 #else
-  if (input_words > UDONDNN_REGION_WORDS ||
+  if (filter_info->k > 15 || input_words > UDONDNN_REGION_WORDS ||
       filter_words > UDONDNN_REGION_WORDS ||
       output_words > UDONDNN_REGION_WORDS) {
 #endif
@@ -1476,7 +1476,8 @@ udondnnStatus_t udondnnPoolingForward(
 #ifdef UDONDNN_AOT_LARGE_ONLY
   {
 #else
-  if (input_words > UDONDNN_REGION_WORDS ||
+  if (pooling->window_h > 5 || pooling->window_w > 5 ||
+      input_words > UDONDNN_REGION_WORDS ||
       output_words > UDONDNN_REGION_WORDS) {
 #endif
     int window_shape, pad_shape, stride_shape, pooling_options;

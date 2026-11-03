@@ -951,8 +951,23 @@ namespace Lemolatoon.Udoncl.Editor
             source.AppendLine("                return;");
             source.AppendLine("            }");
             source.AppendLine("            int kind = (int)rawKind;");
+            source
+                .Append("            object rawResume = program.GetProgramVariable(\"")
+                .Append(Escape(commands.resume_state_slot))
+                .AppendLine("\");");
+            source.AppendLine("            if (rawResume == null)");
+            source.AppendLine("            {");
+            source.AppendLine("                CompleteAsyncExport(StatusAbiMismatch);");
+            source.AppendLine("                return;");
+            source.AppendLine("            }");
+            source.AppendLine("            int resume = (int)rawResume;");
             source.AppendLine("            if (kind == 0)");
             source.AppendLine("            {");
+            source.AppendLine("                if (resume != 0)");
+            source.AppendLine("                {");
+            source.AppendLine("                    FinishAsyncCommand(StatusSuccess);");
+            source.AppendLine("                    return;");
+            source.AppendLine("                }");
             source.AppendLine("                CompleteAsyncExportFromProgram();");
             source.AppendLine("                return;");
             source.AppendLine("            }");

@@ -527,7 +527,11 @@ private:
     llvm::DenseMap<Value, unsigned> valueOrdinals;
     llvm::DenseMap<Value, SmallVector<Value>> interference;
     llvm::DenseMap<Value, std::string> valueUdonTypes;
+    llvm::DenseMap<Value, unsigned> descriptorColors;
+    llvm::DenseMap<Value, unsigned> descriptorOrdinals;
+    llvm::DenseMap<Value, SmallVector<Value>> descriptorInterference;
     SmallVector<Value> colorableValues;
+    SmallVector<Value> descriptors;
     auto isColorableResult = [&](Operation &operation) {
       return !isa<arith::ConstantOp, memref::GetGlobalOp,
                   ::vrc::vrc::BufferAllocOp, ::vrc::vrc::DispatchDescCreateOp,
@@ -538,7 +542,10 @@ private:
         for (BlockArgument argument : block.getArguments())
           colorableValues.push_back(argument);
       for (Operation &operation : block)
-        if (isColorableResult(operation))
+        if (auto descriptor =
+                dyn_cast<::vrc::vrc::DispatchDescCreateOp>(operation))
+          descriptors.push_back(descriptor.getResult());
+        else if (isColorableResult(operation))
           llvm::append_range(colorableValues, operation.getResults());
     }
     for (auto [ordinal, value] : llvm::enumerate(colorableValues))
@@ -548,6 +555,8 @@ private:
       if (succeeded(type))
         valueUdonTypes.try_emplace(value, type->str());
     }
+    for (auto [ordinal, descriptor] : llvm::enumerate(descriptors))
+      descriptorOrdinals.try_emplace(descriptor, ordinal);
 
     Liveness liveness(function);
     function.walk([&](Operation *operation) {
@@ -562,17 +571,48 @@ private:
       llvm::sort(live, [&](Value left, Value right) {
         return valueOrdinals.lookup(left) < valueOrdinals.lookup(right);
       });
+      live.erase(std::unique(live.begin(), live.end()), live.end());
       for (auto [leftIndex, left] : llvm::enumerate(live))
         for (Value right : ArrayRef<Value>(live).drop_front(leftIndex + 1))
           if (valueUdonTypes.lookup(left) == valueUdonTypes.lookup(right)) {
             interference[left].push_back(right);
             interference[right].push_back(left);
           }
+
+      SmallVector<Value> liveDescriptors;
+      for (Value value : blockInfo->currentlyLiveValues(operation))
+        if (descriptorOrdinals.contains(value))
+          liveDescriptors.push_back(value);
+      for (Value operand : operation->getOperands())
+        if (descriptorOrdinals.contains(operand))
+          liveDescriptors.push_back(operand);
+      llvm::sort(liveDescriptors, [&](Value left, Value right) {
+        return descriptorOrdinals.lookup(left) <
+               descriptorOrdinals.lookup(right);
+      });
+      liveDescriptors.erase(
+          std::unique(liveDescriptors.begin(), liveDescriptors.end()),
+          liveDescriptors.end());
+      for (auto [leftIndex, left] : llvm::enumerate(liveDescriptors))
+        for (Value right :
+             ArrayRef<Value>(liveDescriptors).drop_front(leftIndex + 1)) {
+          descriptorInterference[left].push_back(right);
+          descriptorInterference[right].push_back(left);
+        }
     });
     for (auto &entry : interference) {
       SmallVector<Value> &neighbors = entry.second;
       llvm::sort(neighbors, [&](Value left, Value right) {
         return valueOrdinals.lookup(left) < valueOrdinals.lookup(right);
+      });
+      neighbors.erase(std::unique(neighbors.begin(), neighbors.end()),
+                      neighbors.end());
+    }
+    for (auto &entry : descriptorInterference) {
+      SmallVector<Value> &neighbors = entry.second;
+      llvm::sort(neighbors, [&](Value left, Value right) {
+        return descriptorOrdinals.lookup(left) <
+               descriptorOrdinals.lookup(right);
       });
       neighbors.erase(std::unique(neighbors.begin(), neighbors.end()),
                       neighbors.end());
@@ -597,6 +637,26 @@ private:
         ++color;
       valueColors.try_emplace(value, color);
     }
+    SmallVector<Value> descriptorColoringOrder(descriptors);
+    llvm::sort(descriptorColoringOrder, [&](Value left, Value right) {
+      size_t leftDegree = descriptorInterference[left].size();
+      size_t rightDegree = descriptorInterference[right].size();
+      if (leftDegree != rightDegree)
+        return leftDegree > rightDegree;
+      return descriptorOrdinals.lookup(left) < descriptorOrdinals.lookup(right);
+    });
+    for (Value descriptor : descriptorColoringOrder) {
+      llvm::SmallSet<unsigned, 16> used;
+      for (Value neighbor : descriptorInterference[descriptor]) {
+        auto found = descriptorColors.find(neighbor);
+        if (found != descriptorColors.end())
+          used.insert(found->second);
+      }
+      unsigned color = 0;
+      while (used.contains(color))
+        ++color;
+      descriptorColors.try_emplace(descriptor, color);
+    }
     auto coloredSlot = [&](Value value) -> std::string {
       auto type = udonType(value.getType());
       if (failed(type))
@@ -607,6 +667,7 @@ private:
       return name;
     };
     llvm::DenseMap<Operation *, SmallVector<std::string>> frameSlots;
+    llvm::DenseMap<Operation *, SmallVector<std::string>> descriptorSlots;
     llvm::DenseMap<Operation *, std::string> allocaLengthSlots;
     llvm::StringMap<std::string> mutableConstantSlots;
     unsigned mutableConstantIndex = 0;
@@ -730,8 +791,25 @@ private:
         }
         if (!operation.getNumResults())
           continue;
-        if (isa<::vrc::vrc::DispatchDescCreateOp>(operation))
+        if (auto descriptor =
+                dyn_cast<::vrc::vrc::DispatchDescCreateOp>(operation)) {
+          SmallVector<std::string> snapshots;
+          unsigned color = descriptorColors.lookup(descriptor.getResult());
+          for (auto [index, scalar] :
+               llvm::enumerate(descriptor.getScalars())) {
+            auto type = udonType(scalar.getType());
+            if (failed(type))
+              return descriptor.emitError(
+                  "dispatch scalar has unsupported Udon type");
+            std::string name = prefix + "descriptor_" + std::to_string(color) +
+                               "_" + std::to_string(index) + "_" + type->str();
+            addSlot(name, *type, "null", false);
+            snapshots.push_back(std::move(name));
+          }
+          descriptorSlots.try_emplace(descriptor.getOperation(),
+                                      std::move(snapshots));
           continue;
+        }
         if (auto cast = dyn_cast<UnrealizedConversionCastOp>(operation)) {
           if (cast.getInputs().size() != 1 || cast.getOutputs().size() != 1)
             return cast.emitError(
@@ -815,6 +893,19 @@ private:
             llvm::SmallString<32> text;
             floating.getValue().toString(text);
             initial = text.str().str();
+            // The Worlds SDK assembler does not accept APFloat's positive
+            // scientific exponent spelling (E+NN or ENN). Reformat only
+            // those large finite values with enough padding to force an
+            // equivalent fixed-decimal literal.
+            size_t exponent = initial.find_first_of("eE");
+            if (exponent != std::string::npos &&
+                exponent + 1 < initial.size() && initial[exponent + 1] == '+') {
+              text.clear();
+              floating.getValue().toString(text, 50, 400);
+              initial = text.str().str();
+              if (initial.find('.') == std::string::npos)
+                initial += ".0";
+            }
           } else
             return constant.emitError("unsupported scalar constant attribute");
         }
@@ -973,8 +1064,23 @@ private:
           }
           continue;
         }
-        if (isa<::vrc::vrc::DispatchDescCreateOp>(operation))
+        if (auto descriptor =
+                dyn_cast<::vrc::vrc::DispatchDescCreateOp>(operation)) {
+          auto found = descriptorSlots.find(descriptor.getOperation());
+          if (found == descriptorSlots.end() ||
+              found->second.size() != descriptor.getScalars().size())
+            return descriptor.emitError(
+                "dispatch descriptor has no scalar snapshot slots");
+          for (auto [scalar, snapshot] :
+               llvm::zip(descriptor.getScalars(), found->second)) {
+            std::string source = valueSlots.lookup(scalar);
+            if (source.empty())
+              return descriptor.emitError(
+                  "dispatch scalar has no allocated Udon heap slot");
+            emitCopy(descriptor.getLoc(), source, snapshot);
+          }
           continue;
+        }
         if (auto allocation = dyn_cast<::vrc::vrc::BufferAllocOp>(operation)) {
           std::string logicalId = valueSlots.lookup(allocation.getLogicalId());
           std::string token = valueSlots.lookup(allocation.getBuffer());
@@ -1179,6 +1285,10 @@ private:
             return dispatch.emitError("Unity dispatch has no physical pool");
           addSlot(materialSlot.getValue(), "UnityEngineMaterial", "null", true);
           unsigned scalarIndex = 0, bufferIndex = 0;
+          auto snapshots = descriptorSlots.find(descriptor.getOperation());
+          if (snapshots == descriptorSlots.end())
+            return dispatch.emitError(
+                "Unity dispatch descriptor has no scalar snapshots");
           for (auto [argumentIndex, kindValue] :
                llvm::enumerate(dispatch.getArgumentKinds())) {
             auto kind = dyn_cast<StringAttr>(kindValue);
@@ -1219,10 +1329,9 @@ private:
                          "UnityEngineTexture__SystemVoid");
               continue;
             }
-            if (scalarIndex >= descriptor.getScalars().size())
+            if (scalarIndex >= snapshots->second.size())
               return dispatch.emitError("dispatch descriptor is incomplete");
-            std::string scalar =
-                valueSlots.lookup(descriptor.getScalars()[scalarIndex++]);
+            std::string scalar = snapshots->second[scalarIndex++];
             if (scalar.empty())
               return dispatch.emitError(
                   "dispatch scalar has no allocated Udon heap slot");

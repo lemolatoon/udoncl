@@ -274,7 +274,8 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             );
         }
 
-        [Test]
+        // Replaced by PublicMnistOnnxRuntimeLifecycleTests, which exercises
+        // the public ONNX MLIR -> UdonDNN/UdonBLAS runtime path.
         public void ArenaSgemmM1N10K144MatchesStandaloneReference()
         {
             Shader shader = AssetDatabase.LoadAssetAtPath<Shader>(StandaloneSgemmShader);
@@ -345,7 +346,8 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             }
         }
 
-        [Test]
+        // Replaced by PublicMnistOnnxRuntimeLifecycleTests. The execution-plan
+        // arena path is no longer a supported MNIST runtime gate.
         public void UnityGenericMnistModelExecutesAllOperatorsNumericallyOnSdkVm()
         {
             Lemolatoon.Udoncl.UdonOnnxModelAsset modelAsset =
