@@ -9,7 +9,7 @@
 
 #define UDONCL_AOT_BUFFER_CAPACITY 8
 #define UDONCL_AOT_KERNEL_CAPACITY 16
-#define UDONCL_AOT_ARGUMENT_BYTES 128
+#define UDONCL_AOT_ARGUMENT_BYTES 8
 
 /* The compiler backend returns an opaque physical-buffer token.  It is kept
  * separately from the OpenCL handle-table id: cl_mem identity and lifetime
@@ -20,14 +20,18 @@ extern cl_int __vrc_opencl_buffer_release(cl_uint physical_token);
 extern cl_int __vrc_opencl_buffer_upload(cl_uint physical_token, size_t offset,
                                          size_t bytes, const void *source);
 extern cl_int __vrc_opencl_buffer_readback(cl_uint physical_token,
-                                           size_t offset,
-                                           size_t bytes, void *destination);
+                                           size_t offset, size_t bytes,
+                                           void *destination);
 extern cl_int __vrc_opencl_dispatch(cl_uint kernel_id,
                                     const unsigned char *arguments,
                                     size_t argument_bytes, cl_uint work_dim,
                                     const size_t *global_offset,
                                     const size_t *global_size,
                                     const size_t *local_size);
+extern cl_int __vrc_opencl_dispatch_udonblas_sgemm(
+    cl_uint input_token, cl_uint output_token, cl_int m, cl_int n, cl_int k,
+    cl_int transa, cl_int transb, cl_int lda, cl_int ldb, cl_int ldc,
+    cl_float alpha, cl_float beta);
 extern cl_int __vrc_opencl_await(cl_int event);
 
 struct _cl_platform_id {
@@ -60,10 +64,9 @@ struct _cl_kernel {
   cl_uint active;
   cl_uint id;
   cl_program program;
-  unsigned char arguments[UDONCL_AOT_ARGUMENT_BYTES];
-  cl_uint argument_offsets[UDONCL_AOT_KERNEL_CAPACITY];
+  unsigned char arguments[UDONCL_AOT_KERNEL_CAPACITY]
+                         [UDONCL_AOT_ARGUMENT_BYTES];
   cl_uint argument_sizes[UDONCL_AOT_KERNEL_CAPACITY];
-  cl_uint argument_bytes;
 };
 
 static struct _cl_platform_id udoncl_platform = {1};
@@ -235,7 +238,8 @@ CL_API_ENTRY cl_kernel CL_API_CALL clCreateKernel(cl_program program,
   kernel->active = 1;
   kernel->id = id;
   kernel->program = program;
-  kernel->argument_bytes = 0;
+  for (id = 0; id < UDONCL_AOT_KERNEL_CAPACITY; ++id)
+    kernel->argument_sizes[id] = 0;
   udoncl_error(error, CL_SUCCESS);
   return kernel;
 }
@@ -246,15 +250,73 @@ CL_API_ENTRY cl_int CL_API_CALL clSetKernelArg(cl_kernel kernel, cl_uint index,
   const unsigned char *source = (const unsigned char *)value;
   cl_uint cursor;
   if (!kernel || !kernel->active || index >= UDONCL_AOT_KERNEL_CAPACITY ||
-      !bytes || !value || bytes > UDONCL_AOT_ARGUMENT_BYTES ||
-      kernel->argument_bytes > UDONCL_AOT_ARGUMENT_BYTES - bytes)
+      !bytes || !value || bytes > UDONCL_AOT_ARGUMENT_BYTES)
     return CL_INVALID_ARG_VALUE;
-  kernel->argument_offsets[index] = kernel->argument_bytes;
   kernel->argument_sizes[index] = (cl_uint)bytes;
   for (cursor = 0; cursor < bytes; ++cursor)
-    kernel->arguments[kernel->argument_bytes + cursor] = source[cursor];
-  kernel->argument_bytes += (cl_uint)bytes;
+    kernel->arguments[index][cursor] = source[cursor];
   return CL_SUCCESS;
+}
+
+static cl_int udoncl_i32_argument(cl_kernel kernel, cl_uint index,
+                                  cl_int *value) {
+  unsigned char *destination = (unsigned char *)value;
+  cl_uint cursor;
+  if (kernel->argument_sizes[index] != sizeof(*value))
+    return CL_INVALID_KERNEL_ARGS;
+  for (cursor = 0; cursor < sizeof(*value); ++cursor)
+    destination[cursor] = kernel->arguments[index][cursor];
+  return CL_SUCCESS;
+}
+
+static cl_int udoncl_f32_argument(cl_kernel kernel, cl_uint index,
+                                  cl_float *value) {
+  unsigned char *destination = (unsigned char *)value;
+  cl_uint cursor;
+  if (kernel->argument_sizes[index] != sizeof(*value))
+    return CL_INVALID_KERNEL_ARGS;
+  for (cursor = 0; cursor < sizeof(*value); ++cursor)
+    destination[cursor] = kernel->arguments[index][cursor];
+  return CL_SUCCESS;
+}
+
+static cl_int udoncl_mem_argument(cl_kernel kernel, cl_uint index,
+                                  cl_mem *value) {
+  unsigned char *destination = (unsigned char *)value;
+  cl_uint cursor;
+  if (kernel->argument_sizes[index] != sizeof(*value))
+    return CL_INVALID_KERNEL_ARGS;
+  for (cursor = 0; cursor < sizeof(*value); ++cursor)
+    destination[cursor] = kernel->arguments[index][cursor];
+  if (!*value || !(*value)->active)
+    return CL_INVALID_MEM_OBJECT;
+  return CL_SUCCESS;
+}
+
+static cl_int udoncl_dispatch_sgemm(cl_kernel kernel, cl_uint work_dim,
+                                    const size_t *global_offset,
+                                    const size_t *global_size,
+                                    const size_t *local_size) {
+  cl_mem input, output;
+  cl_int values[8];
+  cl_float alpha, beta;
+  cl_uint index;
+  if (work_dim != 2 || global_offset || global_size[0] != 32 ||
+      global_size[1] != 32 || local_size[0] != 1 || local_size[1] != 1)
+    return CL_INVALID_GLOBAL_WORK_SIZE;
+  if (udoncl_mem_argument(kernel, 0, &input) != CL_SUCCESS ||
+      udoncl_mem_argument(kernel, 1, &output) != CL_SUCCESS)
+    return CL_INVALID_MEM_OBJECT;
+  for (index = 0; index < 8; ++index)
+    if (udoncl_i32_argument(kernel, index + 2, &values[index]) != CL_SUCCESS)
+      return CL_INVALID_KERNEL_ARGS;
+  if (udoncl_f32_argument(kernel, 10, &alpha) != CL_SUCCESS ||
+      udoncl_f32_argument(kernel, 11, &beta) != CL_SUCCESS)
+    return CL_INVALID_KERNEL_ARGS;
+  return __vrc_opencl_dispatch_udonblas_sgemm(
+      input->physical_token, output->physical_token, values[0], values[1],
+      values[2], values[3], values[4], values[5], values[6], values[7], alpha,
+      beta);
 }
 
 static cl_int udoncl_wait_list(cl_uint count, const cl_event *events) {
@@ -270,8 +332,8 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueWriteBuffer(
       !source || offset > buffer->bytes || bytes > buffer->bytes - offset ||
       event || udoncl_wait_list(wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
-  pending = __vrc_opencl_buffer_upload(buffer->physical_token, offset, bytes,
-                                       source);
+  pending =
+      __vrc_opencl_buffer_upload(buffer->physical_token, offset, bytes, source);
   return blocking ? __vrc_opencl_await(pending) : CL_SUCCESS;
 }
 
@@ -285,9 +347,8 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueReadBuffer(
       bytes > buffer->bytes - offset || event ||
       udoncl_wait_list(wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
-  pending =
-      __vrc_opencl_buffer_readback(buffer->physical_token, offset, bytes,
-                                   destination);
+  pending = __vrc_opencl_buffer_readback(buffer->physical_token, offset, bytes,
+                                         destination);
   return blocking ? __vrc_opencl_await(pending) : CL_SUCCESS;
 }
 
@@ -300,9 +361,14 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueNDRangeKernel(
       !global_size || !local_size || work_dim < 1 || work_dim > 3 || event ||
       udoncl_wait_list(wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
-  return __vrc_opencl_dispatch(kernel->id, kernel->arguments,
-                               kernel->argument_bytes, work_dim, global_offset,
-                               global_size, local_size) < 0
+  if (kernel->id == 1)
+    return udoncl_dispatch_sgemm(kernel, work_dim, global_offset, global_size,
+                                 local_size) < 0
+               ? CL_OUT_OF_RESOURCES
+               : CL_SUCCESS;
+  return __vrc_opencl_dispatch(kernel->id, &kernel->arguments[0][0],
+                               sizeof(kernel->arguments), work_dim,
+                               global_offset, global_size, local_size) < 0
              ? CL_OUT_OF_RESOURCES
              : CL_SUCCESS;
 }

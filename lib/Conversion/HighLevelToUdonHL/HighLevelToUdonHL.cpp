@@ -127,9 +127,8 @@ struct LowerHostToUdonHLPass
         if (!intrinsic ||
             (intrinsic != "dispatch" && intrinsic != "buffer_alloc" &&
              intrinsic != "buffer_release" && intrinsic != "buffer_copy" &&
-             intrinsic != "buffer_upload" &&
-             intrinsic != "buffer_readback" && intrinsic != "await" &&
-             intrinsic != "event_status") ||
+             intrinsic != "buffer_upload" && intrinsic != "buffer_readback" &&
+             intrinsic != "await" && intrinsic != "event_status") ||
             function->hasAttr("vrc.export_id")) {
           fail("external Host calls require a recognized internal runtime "
                "intrinsic");
@@ -168,12 +167,11 @@ struct LowerHostToUdonHLPass
                    runtime::DispatchDescCreateOp, runtime::DispatchOp,
                    runtime::BufferAllocOp, runtime::BufferReleaseOp,
                    runtime::BufferCopyOp, runtime::BufferUploadOp,
-                   runtime::BufferReadbackOp,
-                   memref::LoadOp, memref::StoreOp, memref::AllocaOp,
-                   memref::GetGlobalOp, arith::ConstantOp, arith::AddIOp,
-                   arith::SubIOp, arith::MulIOp, arith::AddFOp, arith::SubFOp,
-                   arith::MulFOp, arith::DivFOp, arith::CmpIOp, arith::CmpFOp>(
-                  op)) {
+                   runtime::BufferReadbackOp, memref::LoadOp, memref::StoreOp,
+                   memref::AllocaOp, memref::GetGlobalOp, arith::ConstantOp,
+                   arith::AddIOp, arith::SubIOp, arith::MulIOp, arith::AddFOp,
+                   arith::SubFOp, arith::MulFOp, arith::DivFOp, arith::CmpIOp,
+                   arith::CmpFOp>(op)) {
             op.emitError(
                 "operation is outside the initial Host lowering pattern");
             signalPassFailure();

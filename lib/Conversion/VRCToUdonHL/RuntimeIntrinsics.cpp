@@ -118,7 +118,7 @@ struct SubstituteRuntimeIntrinsicsPass
           : name == "buffer_alloc" ? runtime::BufferAllocOp::getOperationName()
           : name == "buffer_release"
               ? runtime::BufferReleaseOp::getOperationName()
-          : name == "buffer_copy"  ? runtime::BufferCopyOp::getOperationName()
+          : name == "buffer_copy" ? runtime::BufferCopyOp::getOperationName()
           : name == "buffer_upload"
               ? runtime::BufferUploadOp::getOperationName()
           : name == "buffer_readback"
