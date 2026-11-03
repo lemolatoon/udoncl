@@ -3,6 +3,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Text;
 using UnityEditor;
+using UnityEngine;
 
 namespace Lemolatoon.Udoncl.Editor
 {
@@ -35,6 +36,18 @@ namespace Lemolatoon.Udoncl.Editor
         private static void ImportTinyLlama()
         {
             Import(TinyArchive);
+        }
+
+        [MenuItem("Tools/udoncl/Internal/Prepare Packaged Example Validation")]
+        public static void PreparePackagedExampleValidation()
+        {
+            if (!Application.isBatchMode)
+                throw new InvalidOperationException(
+                    "Packaged example validation setup is batchmode-only."
+                );
+            PrepareValidationExample(HelloArchive, "hello_dispatch");
+            PrepareValidationExample(SaxpyArchive, "saxpy_demo");
+            AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
         }
 
         internal static string Extract(string archiveName)
@@ -171,6 +184,34 @@ namespace Lemolatoon.Udoncl.Editor
             );
             GeneratedBindingFinalizer.Schedule();
             return sourcePath;
+        }
+
+        private static void PrepareValidationExample(string archiveName, string programName)
+        {
+            string expected = "Assets/udoncl-generated/" + programName;
+            if (AssetDatabase.IsValidFolder(expected))
+                throw new InvalidOperationException(
+                    "Packaged example validation requires a fresh path: " + expected
+                );
+
+            string directory = Extract(archiveName);
+            try
+            {
+                string destination = UdonclArtifactImporter.Import(directory);
+                if (destination != expected)
+                    throw new InvalidOperationException(
+                        "Packaged example imported to an unexpected path: " + destination
+                    );
+                if (string.IsNullOrEmpty(InstallUsageExample(destination)))
+                    throw new InvalidOperationException(
+                        "Packaged example did not generate its U# controller: " + programName
+                    );
+            }
+            finally
+            {
+                if (Directory.Exists(directory))
+                    Directory.Delete(directory, true);
+            }
         }
     }
 }

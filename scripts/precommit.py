@@ -296,6 +296,75 @@ def wait_for_editor(client: McpClient, timeout=300):
     raise TimeoutError(f"Unity Editor never became ready: {last}")
 
 
+def wait_for_instance_reconnect(client: McpClient, timeout=600):
+    """Wait for the MCP bridge to remain usable after a script-import reload."""
+    deadline = time.monotonic() + timeout
+    connected_since = None
+    last = None
+    while time.monotonic() < deadline:
+        try:
+            last = client.resource("mcpforunity://instances")
+            instances = last.get("instances", [])
+        except RuntimeError as error:
+            last = str(error)
+            instances = []
+        if not instances:
+            connected_since = None
+            time.sleep(1)
+            continue
+        if connected_since is None:
+            connected_since = time.monotonic()
+        # Depending on transport timing, the server either reports no instance
+        # during the reload or replaces the connection under the same instance
+        # id. Requiring a continuously available bridge avoids accepting the
+        # short stale-ready window in both cases.
+        if time.monotonic() - connected_since < 10:
+            time.sleep(1)
+            continue
+        if len(instances) != 1:
+            raise RuntimeError(
+                f"Expected one isolated Unity MCP instance after reload: {last}"
+            )
+        instance = instances[0].get("id") or instances[0].get("instance_id")
+        if not instance:
+            raise RuntimeError(f"Reloaded Unity MCP instance has no id: {last}")
+        try:
+            client.tool("set_active_instance", {"instance": instance})
+            wait_for_editor(client, timeout=max(1, int(deadline - time.monotonic())))
+            return instance
+        except RuntimeError as error:
+            last = str(error)
+            connected_since = None
+            time.sleep(1)
+    raise TimeoutError(
+        "Unity MCP bridge did not stabilize after script import: " f"{last}"
+    )
+
+
+def start_unity_tests(client: McpClient):
+    for reconnect_attempt in range(3):
+        try:
+            return client.tool(
+                "run_tests",
+                {
+                    "mode": "EditMode",
+                    "assembly_names": [TEST_ASSEMBLY],
+                    "include_failed_tests": True,
+                    "include_details": True,
+                },
+                timeout=300,
+            )
+        except RuntimeError as error:
+            if (
+                "No Unity Editor instances found" not in str(error)
+                or reconnect_attempt == 2
+            ):
+                raise
+            print("unity_mcp=reconnecting_after_domain_reload", flush=True)
+            wait_for_instance_reconnect(client, timeout=600)
+    raise AssertionError("unreachable")
+
+
 def validate_test_payload(payload):
     data = payload.get("data", payload)
     if data.get("status") != "succeeded":
@@ -339,6 +408,17 @@ def is_transient_unity_project_file_lock(payload):
         "Sharing violation on path" in (case.get("message") or "")
         and ".csproj" in (case.get("message") or "")
         for case in failed
+    )
+
+
+def is_transient_unity_test_start_failure(payload):
+    data = payload.get("data", payload)
+    progress = data.get("progress") or {}
+    return (
+        data.get("status") == "failed"
+        and data.get("result") is None
+        and int(progress.get("completed") or 0) == 0
+        and "tests did not start within timeout" in (data.get("error") or "")
     )
 
 
@@ -391,7 +471,11 @@ def wait_for_test_job(client: McpClient, job_id: str, timeout=1260):
             # The Unity bridge cannot answer discovery probes while a long
             # main-thread test/import is running. Keep the job and reconnect
             # after the Editor becomes responsive again.
-            if "No Unity Editor instances found" not in str(error):
+            transient = (
+                "No Unity Editor instances found" in str(error)
+                or "Timeout receiving Unity response" in str(error)
+            )
+            if not transient:
                 raise
             last_error = str(error)
         time.sleep(2)
@@ -479,6 +563,7 @@ def run_unity_mcp_gate(root, unity, project, build, output):
             ),
             "UNITY_MCP_STATUS_DIR": str(status_dir),
             "UNITY_MCP_TRANSPORT": "stdio",
+            "UDONCL_PACKAGED_EXAMPLE_VALIDATION": "1",
             "GIT_CONFIG_COUNT": "1",
             "GIT_CONFIG_KEY_0": "core.longpaths",
             "GIT_CONFIG_VALUE_0": "true",
@@ -535,17 +620,18 @@ def run_unity_mcp_gate(root, unity, project, build, output):
         client.tool("set_active_instance", {"instance": instance})
         wait_for_editor(client)
         client.tool("read_console", {"action": "clear"})
-        for attempt in range(2):
-            started = client.tool(
-                "run_tests",
-                {
-                    "mode": "EditMode",
-                    "assembly_names": [TEST_ASSEMBLY],
-                    "include_failed_tests": True,
-                    "include_details": True,
-                },
-                timeout=300,
-            )
+        client.tool(
+            "execute_menu_item",
+            {
+                "menu_path": (
+                    "Tools/udoncl/Internal/Prepare Packaged Example Validation"
+                )
+            },
+            timeout=300,
+        )
+        instance = wait_for_instance_reconnect(client, timeout=600)
+        for attempt in range(3):
+            started = start_unity_tests(client)
             job_id = (started.get("data") or started).get("job_id")
             if not job_id:
                 raise RuntimeError(f"Unity MCP did not return a test job id: {started}")
@@ -553,12 +639,16 @@ def run_unity_mcp_gate(root, unity, project, build, output):
             (output / f"unity-mcp-results-attempt-{attempt + 1}.json").write_text(
                 json.dumps(finished, indent=2) + "\n", encoding="utf-8"
             )
-            if not is_transient_unity_project_file_lock(finished) or attempt == 1:
+            project_lock = is_transient_unity_project_file_lock(finished)
+            start_failure = is_transient_unity_test_start_failure(finished)
+            if (not project_lock and not start_failure) or attempt == 2:
                 break
-            print(
-                "unity_mcp_tests=retry reason=transient_csproj_sharing_violation",
-                flush=True,
+            reason = (
+                "transient_csproj_sharing_violation"
+                if project_lock
+                else "transient_test_start_timeout"
             )
+            print(f"unity_mcp_tests=retry reason={reason}", flush=True)
             wait_for_editor(client)
             time.sleep(2)
             client.tool("read_console", {"action": "clear"})
@@ -603,6 +693,25 @@ def run_unity_mcp_gate(root, unity, project, build, output):
             except subprocess.TimeoutExpired:
                 unity_process.kill()
                 unity_process.wait(timeout=30)
+        for program_name in ("hello_dispatch", "saxpy_demo"):
+            program_root = generated / program_name
+            shutil.rmtree(program_root, ignore_errors=True)
+            program_root.with_suffix(".meta").unlink(missing_ok=True)
+        if serialized.exists():
+            additions = [
+                path
+                for path in serialized.rglob("*")
+                if path.relative_to(serialized).as_posix() not in serialized_before
+            ]
+            for path in sorted(
+                additions,
+                key=lambda candidate: len(candidate.relative_to(serialized).parts),
+                reverse=True,
+            ):
+                if path.is_dir():
+                    path.rmdir()
+                else:
+                    path.unlink(missing_ok=True)
         manifest_path.write_bytes(manifest_original)
         if lock_original is None:
             lock_path.unlink(missing_ok=True)

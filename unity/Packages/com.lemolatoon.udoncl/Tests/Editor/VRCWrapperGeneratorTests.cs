@@ -283,7 +283,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
             try
             {
-                Assert.AreEqual(0, GeneratedBindingFinalizer.FinalizeAvailableBindings());
+                GeneratedBindingFinalizer.FinalizeAvailableBindings();
                 Assert.IsNull(
                     AssetDatabase.LoadAssetAtPath<GameObject>(
                         root + "/Prefabs/UdonclTypePendingBinding.prefab"

@@ -551,6 +551,14 @@ namespace Lemolatoon.Udoncl.Editor
             return null;
         }
 
+        internal static UdonBehaviour FindUdonSharpBacking(GameObject target, string proxyTypeName)
+        {
+            foreach (UdonSharpBehaviour proxy in target.GetComponents<UdonSharpBehaviour>())
+                if (proxy.GetType().FullName == proxyTypeName)
+                    return UdonSharpEditorUtility.GetBackingUdonBehaviour(proxy);
+            return null;
+        }
+
         internal static void InitializeUdonBehaviours(GameObject target)
         {
             foreach (UdonBehaviour behaviour in target.GetComponents<UdonBehaviour>())

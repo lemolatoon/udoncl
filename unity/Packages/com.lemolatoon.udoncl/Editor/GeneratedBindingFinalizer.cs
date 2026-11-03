@@ -239,6 +239,10 @@ namespace Lemolatoon.Udoncl.Editor
                         "Generated wrapper does not contain its program binding."
                     );
                 programProperty.objectReferenceValue = program;
+                int[] bufferIds = null;
+                int[] bufferLogicalBytes = null;
+                RenderTexture[] bufferTextures = null;
+                Material bufferCopyMaterial = null;
                 if (
                     manifest.device != null
                     && manifest.device.buffers != null
@@ -246,6 +250,9 @@ namespace Lemolatoon.Udoncl.Editor
                 )
                 {
                     DeviceBufferInfo[] buffers = manifest.device.buffers;
+                    bufferIds = new int[buffers.Length];
+                    bufferLogicalBytes = new int[buffers.Length];
+                    bufferTextures = new RenderTexture[buffers.Length];
                     SerializedProperty ids = serializedWrapper.FindProperty("deviceBufferIds");
                     SerializedProperty logicalBytes = serializedWrapper.FindProperty(
                         "deviceBufferLogicalBytes"
@@ -269,26 +276,47 @@ namespace Lemolatoon.Udoncl.Editor
                     for (int index = 0; index < buffers.Length; ++index)
                     {
                         DeviceBufferInfo buffer = buffers[index];
-                        ids.GetArrayElementAtIndex(index).intValue = buffer.id;
-                        logicalBytes.GetArrayElementAtIndex(index).intValue = buffer.logical_bytes;
+                        bufferIds[index] = buffer.id;
+                        bufferLogicalBytes[index] = buffer.logical_bytes;
                         string texturePath =
                             programRoot
                             + "/RenderTextures/"
                             + UdonclArtifactImporter.DeviceBufferFileName(buffer.id, buffer.name);
+                        bufferTextures[index] = AssetDatabase.LoadAssetAtPath<RenderTexture>(
+                            texturePath
+                        );
+                        ids.GetArrayElementAtIndex(index).intValue = bufferIds[index];
+                        logicalBytes.GetArrayElementAtIndex(index).intValue = bufferLogicalBytes[
+                            index
+                        ];
                         textures.GetArrayElementAtIndex(index).objectReferenceValue =
-                            AssetDatabase.LoadAssetAtPath<RenderTexture>(texturePath);
+                            bufferTextures[index];
                     }
                     string materialPath = programRoot + "/Materials/buffer-copy.mat";
-                    copyMaterial.objectReferenceValue = AssetDatabase.LoadAssetAtPath<Material>(
-                        materialPath
-                    );
-                    if (copyMaterial.objectReferenceValue == null)
+                    bufferCopyMaterial = AssetDatabase.LoadAssetAtPath<Material>(materialPath);
+                    copyMaterial.objectReferenceValue = bufferCopyMaterial;
+                    if (bufferCopyMaterial == null)
                         throw new InvalidDataException(
                             "Generated Device buffer transfer material is missing: " + materialPath
                         );
                 }
                 serializedWrapper.ApplyModifiedPropertiesWithoutUndo();
                 UdonSharpEditorUtility.CopyProxyToUdon(wrapper, ProxySerializationPolicy.All);
+                UdonBehaviour wrapperBacking = UdonSharpEditorUtility.GetBackingUdonBehaviour(
+                    wrapper
+                );
+                SetPublicVariable(wrapperBacking, "program", program);
+                if (bufferIds != null)
+                {
+                    SetPublicVariable(wrapperBacking, "deviceBufferIds", bufferIds);
+                    SetPublicVariable(
+                        wrapperBacking,
+                        "deviceBufferLogicalBytes",
+                        bufferLogicalBytes
+                    );
+                    SetPublicVariable(wrapperBacking, "deviceBuffers", bufferTextures);
+                    SetPublicVariable(wrapperBacking, "bufferCopyMaterial", bufferCopyMaterial);
+                }
 
                 if (exampleType != null)
                 {
@@ -302,6 +330,10 @@ namespace Lemolatoon.Udoncl.Editor
                     binding.objectReferenceValue = wrapper;
                     serializedExample.ApplyModifiedPropertiesWithoutUndo();
                     UdonSharpEditorUtility.CopyProxyToUdon(example, ProxySerializationPolicy.All);
+                    UdonBehaviour exampleBacking = UdonSharpEditorUtility.GetBackingUdonBehaviour(
+                        example
+                    );
+                    SetPublicVariable(exampleBacking, "binding", wrapperBacking);
                 }
 
                 PrefabUtility.SaveAsPrefabAsset(root, prefabPath, out bool success);
@@ -312,7 +344,12 @@ namespace Lemolatoon.Udoncl.Editor
             }
             finally
             {
-                UnityEngine.Object.DestroyImmediate(root);
+                root.hideFlags = HideFlags.HideAndDontSave;
+                EditorApplication.delayCall += () =>
+                {
+                    if (root != null)
+                        UnityEngine.Object.DestroyImmediate(root);
+                };
             }
         }
 

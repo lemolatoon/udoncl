@@ -68,6 +68,16 @@ stay in the investigation section.
   File names and manifest references may remain ID-based because the importer
   resolves those references by exact asset path.
 
+### U# behaviour references use UdonBehaviour physical storage
+
+- UdonSharp's behaviour serializer reports `UdonBehaviour` as the Udon storage
+  type for fields whose C# type derives from `UdonSharpBehaviour`.
+- Rule: generated prefab finalization must serialize a typed U# reference as
+  the referenced proxy's backing `UdonBehaviour`. Replacing the public variable
+  with `IUdonEventReceiver` creates a different heap variable type: an Editor
+  inspection can still see that value, but Play Mode initialization does not
+  restore it into the compiled U# field.
+
 ## Investigation log
 
 ### 2026-11-02: generic MNIST arena pooling returned zero
