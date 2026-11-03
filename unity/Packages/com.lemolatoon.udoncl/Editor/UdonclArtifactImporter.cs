@@ -47,6 +47,12 @@ namespace Lemolatoon.Udoncl.Editor
                         + Path.GetFileName(artifacts.AssemblyAssetPath)
                         + ".txt";
                     transaction.CopyFile(artifacts.AssemblyAssetPath, assemblySourcePath);
+                    foreach (ValidatedResource resource in artifacts.Resources)
+                        if (resource.Name == "raw_heap_initializer" && resource.Kind == "bytes")
+                            transaction.CopyFile(
+                                resource.AbsolutePath,
+                                sourceDirectory + "/raw-heap.bytes"
+                            );
                     UdonAssemblyProgramAsset programAsset = CreateOrUpdateProgramAsset(
                         transaction,
                         programRoot,

@@ -1926,10 +1926,33 @@ int main(int argc, char **argv) {
       }
       (*device)["kernels"] = std::move(*kernels);
     }
+    (*module)->setAttr("vrc.external_raw_heap_initialization",
+                       UnitAttr::get(&context));
     PassManager udon(&context);
     udon.addPass(::vrc::createLowerUdonHLToUdonAsmPass());
     if (failed(udon.run(*module)) || failed(verify(*module)))
       return 1;
+    if (auto initializer = (*module)->getAttrOfType<DenseI8ArrayAttr>(
+            "udonasm.raw_heap_initializer")) {
+      ArrayRef<int8_t> bytes = initializer.asArrayRef();
+      files["raw-heap.bytes"] = std::string(
+          reinterpret_cast<const char *>(bytes.data()), bytes.size());
+      auto *programManifest = manifest["program"].getAsObject();
+      (*programManifest)["raw_heap_initializer"] = "raw-heap.bytes";
+      (*programManifest)["raw_heap_slot"] = "__vrc_raw_heap";
+      (*programManifest)["raw_heap_words"] = static_cast<int64_t>(bytes.size());
+      json::Array *resources = manifest.getArray("resources");
+      if (!resources) {
+        manifest["resources"] = json::Array();
+        resources = manifest.getArray("resources");
+      }
+      resources->push_back(json::Object{
+          {"name", "raw_heap_initializer"},
+          {"kind", "bytes"},
+          {"path", "raw-heap.bytes"},
+          {"bytes", static_cast<int64_t>(bytes.size())},
+      });
+    }
     appendUnityBufferSlots(*module, unityBuffers);
     if (unityUsesBufferCopy)
       appendUnityCopyMaterialSlot(*module);

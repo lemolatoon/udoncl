@@ -117,9 +117,16 @@ def main():
     assert udonblas_manifest['exports'][0]['async'] is True
     assert udonblas_manifest['ready_for_unity'] is True
     assert udonblas_manifest['program']['async_commands']['readback_kind'] == 2
+    raw_heap = udonblas_artifact / udonblas_manifest['program'][
+        'raw_heap_initializer'
+    ]
+    assert raw_heap.stat().st_size == udonblas_manifest['program'][
+        'raw_heap_words'
+    ]
     udonblas_assembly = (udonblas_artifact / 'host.uasm').read_text(
         encoding='utf-8'
     )
+    assert len(udonblas_assembly) < 8 * 1024 * 1024
     udonblas_data = udonblas_assembly.split('.data_start', 1)[1].split(
         '.data_end', 1
     )[0]

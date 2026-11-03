@@ -235,7 +235,9 @@ static StringRef comparisonExtern(arith::CmpFOp operation) {
 class ScalarLowering {
 public:
   ScalarLowering(ModuleOp module)
-      : module(module), builder(module.getContext()) {
+      : module(module), builder(module.getContext()),
+        externalRawHeapInitialization(
+            module->hasAttr("vrc.external_raw_heap_initialization")) {
     builder.setInsertionPointToEnd(module.getBody());
   }
 
@@ -248,6 +250,17 @@ public:
     llvm::SmallSet<std::string, 8> publicNames;
     if (failed(planUnityBufferPool()) || failed(planRawMemory()))
       return failure();
+    if (externalRawHeapInitialization && rawHeapBytes) {
+      SmallVector<int8_t> image(rawHeapBytes, 0);
+      for (auto &entry : rawGlobalInitializers) {
+        auto base = rawGlobalBases.find(entry.getKey());
+        if (base == rawGlobalBases.end())
+          return module.emitError("raw global initializer has no heap base");
+        llvm::copy(entry.getValue().asArrayRef(), image.begin() + base->second);
+      }
+      module->setAttr("udonasm.raw_heap_initializer",
+                      DenseI8ArrayAttr::get(module.getContext(), image));
+    }
     unsigned globalIndex = 0;
     for (memref::GlobalOp global : module.getOps<memref::GlobalOp>()) {
       auto type = global.getType();
@@ -269,7 +282,8 @@ public:
                               GlobalPlan{std::move(slot), type, elements});
       globalOrder.push_back(global.getSymName().str());
     }
-    if (!globalPlans.empty() || rawHeapBytes) {
+    if (!globalPlans.empty() ||
+        (rawHeapBytes && !externalRawHeapInitialization)) {
       addSlot(globalInitializedSlot, "SystemInt32", "0", false);
       addSlot(globalOneSlot, "SystemInt32", "1", false);
       addSlot(globalReadySlot, "SystemBoolean", "null", false);
@@ -456,7 +470,8 @@ private:
       if (cursor > INT32_MAX)
         return module.emitError("raw Udon heap exceeds signed i32 capacity");
       rawHeapBytes = cursor;
-      addSlot(rawHeapSlot, "SystemInt32Array", "null", false);
+      addSlot(rawHeapSlot, "SystemInt32Array", "null",
+              externalRawHeapInitialization);
       addSlot(rawHeapLengthSlot, "SystemInt32", std::to_string(rawHeapBytes),
               false);
     }
@@ -786,7 +801,8 @@ private:
       }
     }
 
-    if (exportId && (!globalPlans.empty() || rawHeapBytes))
+    if (exportId && (!globalPlans.empty() ||
+                     (rawHeapBytes && !externalRawHeapInitialization)))
       emitGlobalInitialization(function.getLoc());
 
     llvm::DenseMap<Block *, uint64_t> blockAddresses;
@@ -1661,6 +1677,40 @@ private:
     }
   }
 
+  void emitByteLiteral(Location location, uint8_t value, StringRef result) {
+    uint8_t high = value >> 4;
+    uint8_t low = value & 15;
+    auto nibbleSlot = [&](uint8_t nibble) {
+      std::string slot = "__vrc_byte_literal_" + std::to_string(nibble);
+      addSlot(slot, "SystemInt32", std::to_string(nibble), false);
+      return slot;
+    };
+    std::string lowSlot = nibbleSlot(low);
+    if (!high) {
+      emitCopy(location, lowSlot, result);
+      return;
+    }
+    std::string highSlot = nibbleSlot(high);
+    constexpr StringLiteral shift = "__vrc_byte_literal_shift";
+    constexpr StringLiteral shifted = "__vrc_byte_literal_shifted";
+    addSlot(shift, "SystemInt32", "4", false);
+    addSlot(shifted, "SystemInt32", "0", false);
+    emitPush(location, highSlot);
+    emitPush(location, shift);
+    emitPush(location, shifted);
+    emitExtern(location, "SystemInt32.__op_LeftShift__SystemInt32_SystemInt32__"
+                         "SystemInt32");
+    if (!low) {
+      emitCopy(location, shifted, result);
+      return;
+    }
+    emitPush(location, shifted);
+    emitPush(location, lowSlot);
+    emitPush(location, result);
+    emitExtern(location, "SystemInt32.__op_Addition__SystemInt32_SystemInt32__"
+                         "SystemInt32");
+  }
+
   LogicalResult emitRawLoad(Location location, StringRef pointer,
                             StringRef result, Type type) {
     if (!type.isInteger(8) && !type.isInteger(32) && !type.isInteger(64) &&
@@ -1900,7 +1950,7 @@ private:
     address += 8;
     Operation *ready = emitJump(location, 0);
     uint64_t initializeAddress = address;
-    if (rawHeapBytes) {
+    if (rawHeapBytes && !externalRawHeapInitialization) {
       emitPush(location, rawHeapLengthSlot);
       emitPush(location, rawHeapSlot);
       emitExtern(location,
@@ -1908,29 +1958,39 @@ private:
     }
     constexpr StringLiteral rawIndexSlot = "__vrc_raw_global_init_index";
     constexpr StringLiteral rawValueSlot = "__vrc_raw_global_init_value";
+    constexpr StringLiteral rawNextSlot = "__vrc_raw_global_init_next";
+    constexpr StringLiteral rawOneSlot = "__vrc_raw_global_init_one";
     addSlot(rawIndexSlot, "SystemInt32", "0", false);
     addSlot(rawValueSlot, "SystemInt32", "0", false);
-    for (host::GlobalOp global : module.getOps<host::GlobalOp>()) {
-      auto initial = rawGlobalInitializers.find(global.getSymName());
-      auto base = rawGlobalBases.find(global.getSymName());
-      if (initial == rawGlobalInitializers.end() ||
-          base == rawGlobalBases.end())
-        continue;
-      unsigned index = 0;
-      for (int8_t byte : initial->second.asArrayRef()) {
-        if (byte) {
-          emitI32Literal(location, base->second + index, rawIndexSlot);
-          emitI32Literal(location, static_cast<uint8_t>(byte), rawValueSlot);
-          emitPush(location, rawHeapSlot);
+    addSlot(rawNextSlot, "SystemInt32", "0", false);
+    addSlot(rawOneSlot, "SystemInt32", "1", false);
+    if (!externalRawHeapInitialization)
+      for (host::GlobalOp global : module.getOps<host::GlobalOp>()) {
+        auto initial = rawGlobalInitializers.find(global.getSymName());
+        auto base = rawGlobalBases.find(global.getSymName());
+        if (initial == rawGlobalInitializers.end() ||
+            base == rawGlobalBases.end())
+          continue;
+        emitI32Literal(location, base->second, rawIndexSlot);
+        for (int8_t byte : initial->second.asArrayRef()) {
+          if (byte) {
+            emitByteLiteral(location, static_cast<uint8_t>(byte), rawValueSlot);
+            emitPush(location, rawHeapSlot);
+            emitPush(location, rawIndexSlot);
+            emitPush(location, rawValueSlot);
+            emitExtern(
+                location,
+                "SystemInt32Array.__Set__SystemInt32_SystemInt32__SystemVoid");
+          }
           emitPush(location, rawIndexSlot);
-          emitPush(location, rawValueSlot);
-          emitExtern(
-              location,
-              "SystemInt32Array.__Set__SystemInt32_SystemInt32__SystemVoid");
+          emitPush(location, rawOneSlot);
+          emitPush(location, rawNextSlot);
+          emitExtern(location,
+                     "SystemInt32.__op_Addition__SystemInt32_SystemInt32__"
+                     "SystemInt32");
+          emitCopy(location, rawNextSlot, rawIndexSlot);
         }
-        ++index;
       }
-    }
     constexpr StringLiteral globalLengthSlot = "__vrc_global_init_length";
     constexpr StringLiteral globalIndexSlot = "__vrc_global_init_index";
     constexpr StringLiteral globalIntValueSlot = "__vrc_global_init_int_value";
@@ -2068,6 +2128,7 @@ private:
   SmallVector<UnityBufferPoolEntry> unityBufferPool;
   uint64_t rawHeapBytes = 0;
   uint64_t rawAccessIndex = 0;
+  bool externalRawHeapInitialization = false;
   SmallVector<std::pair<Operation *, func::FuncOp>> callRelocations;
   uint64_t callReturnIndex = 0;
   static constexpr StringLiteral globalInitializedSlot =

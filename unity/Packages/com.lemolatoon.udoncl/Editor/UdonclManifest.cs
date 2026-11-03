@@ -57,6 +57,9 @@ namespace Lemolatoon.Udoncl.Editor
         public string display_shader;
         public string buffer_copy_shader;
         public bool buffer_copy_program_slot;
+        public string raw_heap_initializer;
+        public string raw_heap_slot;
+        public int raw_heap_words;
         public AsyncCommandInfo async_commands;
     }
 

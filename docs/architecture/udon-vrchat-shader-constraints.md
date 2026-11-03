@@ -133,6 +133,24 @@ stay in the investigation section.
   data slots after this allocation. The CMake package test rejects artifacts
   above the 512-slot limit.
 
+### Compact byte payloads and raw heap binding
+
+- Worlds SDK 3.10.5 exposes
+  `SystemConvert.__FromBase64String__SystemString__SystemByteArray`.
+  `SystemString.__get_Length__SystemInt32`,
+  `SystemString.__ToCharArray__SystemInt32_SystemInt32__SystemCharArray`,
+  `SystemCharArray.__Get__SystemInt32__SystemChar`, and
+  `SystemConvert.__ToInt32__SystemChar__SystemInt32` were also executed on the
+  SDK IUdonVM. Base64 text is therefore a safe compact Udon payload alphabet.
+- Raw Udon Assembly string literals accept direct Unicode and interpret `\n`,
+  but the tested quote/backslash/Unicode escape spellings are not general C#
+  escapes. Generated arbitrary payloads must not rely on them.
+- Unity library artifacts currently emit `raw-heap.bytes`. The importer stores
+  its unsigned bytes as a serialized `System.Int32[]` public-variable override
+  for `__vrc_raw_heap`; the raw program does not expand every initializer byte
+  into Udon instructions. The linked UdonBLAS fixture bound all 30,660 entries
+  with zero mismatches.
+
 ## Investigation log
 
 ### 2026-11-02: generic MNIST arena pooling returned zero

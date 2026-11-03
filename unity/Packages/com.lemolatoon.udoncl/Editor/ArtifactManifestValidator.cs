@@ -385,6 +385,29 @@ namespace Lemolatoon.Udoncl.Editor
                     );
                 }
             }
+            if (!string.IsNullOrEmpty(manifest.program.raw_heap_initializer))
+            {
+                ArtifactResourceInfo rawHeap =
+                    manifest.resources == null
+                        ? null
+                        : Array.Find(
+                            manifest.resources,
+                            resource =>
+                                resource != null
+                                && resource.name == "raw_heap_initializer"
+                                && resource.kind == "bytes"
+                        );
+                if (
+                    rawHeap == null
+                    || rawHeap.path != manifest.program.raw_heap_initializer
+                    || string.IsNullOrEmpty(manifest.program.raw_heap_slot)
+                    || manifest.program.raw_heap_words <= 0
+                    || rawHeap.bytes != manifest.program.raw_heap_words
+                )
+                    throw new InvalidDataException(
+                        "Raw heap initializer metadata and byte resource must match."
+                    );
+            }
             ValidateOnnxResources(resources);
             List<ValidatedOnnxStaticInput> onnxStaticInputs = ValidateOnnxStaticInputs(
                 root,

@@ -168,6 +168,29 @@ namespace Lemolatoon.Udoncl.Editor
                     programAsset.SerializedProgramAsset;
                 serializedProgram.ApplyModifiedPropertiesWithoutUndo();
                 if (
+                    manifest.program != null
+                    && !string.IsNullOrEmpty(manifest.program.raw_heap_initializer)
+                )
+                {
+                    if (
+                        string.IsNullOrEmpty(manifest.program.raw_heap_slot)
+                        || manifest.program.raw_heap_words <= 0
+                    )
+                        throw new InvalidDataException(
+                            "Generated raw heap initializer metadata is incomplete."
+                        );
+                    string rawHeapPath = programRoot + "/Sources/raw-heap.bytes";
+                    byte[] rawHeapBytes = File.ReadAllBytes(rawHeapPath);
+                    if (rawHeapBytes.Length != manifest.program.raw_heap_words)
+                        throw new InvalidDataException(
+                            "Generated raw heap initializer length does not match the manifest."
+                        );
+                    int[] rawHeap = new int[rawHeapBytes.Length];
+                    for (int index = 0; index < rawHeapBytes.Length; ++index)
+                        rawHeap[index] = rawHeapBytes[index];
+                    SetPublicVariable(program, manifest.program.raw_heap_slot, rawHeap);
+                }
+                if (
                     manifest.device != null
                     && manifest.device.buffers != null
                     && manifest.device.buffers.Length != 0
