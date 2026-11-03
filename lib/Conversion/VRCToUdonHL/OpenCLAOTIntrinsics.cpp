@@ -46,7 +46,8 @@ struct LowerOpenCLAOTIntrinsicsPass
                    name == "__vrc_opencl_buffer_upload" ||
                    name == "__vrc_opencl_buffer_readback" ||
                    name == "__vrc_opencl_await" ||
-                   name == "__vrc_opencl_dispatch_udonblas_sgemm";
+                   name == "__vrc_opencl_dispatch_udonblas_sgemm" ||
+                   name == "__vrc_opencl_dispatch_udonblas_sgemv";
       if (!known)
         continue;
       SmallVector<Type> arguments;
@@ -66,9 +67,11 @@ struct LowerOpenCLAOTIntrinsicsPass
           signalPassFailure();
           return;
         }
-      } else
+      } else if (name == "__vrc_opencl_dispatch_udonblas_sgemm")
         arguments = {i32, i32, i32, i32, i32, i32,
                      i32, i32, i32, i32, f32, f32};
+      else
+        arguments = {i32, i32, i32, i32, i32, i32, i32, i32, f32, f32};
       if (!function.isExternal() ||
           !signatureIs(function, arguments, results)) {
         function.emitError("invalid OpenCL AOT backend intrinsic signature");
@@ -148,16 +151,18 @@ struct LowerOpenCLAOTIntrinsicsPass
         if (function)
           suspendFunctions.insert(function);
       } else {
+        bool sgemm = name == "__vrc_opencl_dispatch_udonblas_sgemm";
+        int32_t kernelId = sgemm ? 1 : 2;
         SmallVector<Value> scalars(call.getOperands().drop_front(2));
         SmallVector<Attribute> scalarKinds;
-        scalarKinds.append(8, rewriter.getStringAttr("i32"));
+        scalarKinds.append(sgemm ? 8 : 6, rewriter.getStringAttr("i32"));
         scalarKinds.append(2, rewriter.getStringAttr("f32"));
         OperationState descriptorState(
             call.getLoc(), runtime::DispatchDescCreateOp::getOperationName());
         descriptorState.addOperands(scalars);
         descriptorState.addTypes(runtime::DispatchDescType::get(context));
         descriptorState.addAttribute("kernel_id",
-                                     rewriter.getI32IntegerAttr(1));
+                                     rewriter.getI32IntegerAttr(kernelId));
         descriptorState.addAttribute("scalar_kinds",
                                      rewriter.getArrayAttr(scalarKinds));
         Value descriptor = rewriter.create(descriptorState)->getResult(0);
@@ -169,11 +174,13 @@ struct LowerOpenCLAOTIntrinsicsPass
                                      runtime::DispatchOp::getOperationName());
         dispatchState.addOperands({descriptor, typedBuffer, output});
         dispatchState.addTypes(event);
-        dispatchState.addAttribute("kernel_id", rewriter.getI32IntegerAttr(1));
+        dispatchState.addAttribute("kernel_id",
+                                   rewriter.getI32IntegerAttr(kernelId));
         dispatchState.addAttribute("argument_kinds",
                                    rewriter.getArrayAttr(argumentKinds));
-        dispatchState.addAttribute("global_size",
-                                   rewriter.getDenseI32ArrayAttr({32, 32, 1}));
+        dispatchState.addAttribute(
+            "global_size", sgemm ? rewriter.getDenseI32ArrayAttr({32, 32, 1})
+                                 : rewriter.getDenseI32ArrayAttr({1024, 1, 1}));
         dispatchState.addAttribute("local_size",
                                    rewriter.getDenseI32ArrayAttr({1, 1, 1}));
         dispatchState.addAttribute("global_offset",

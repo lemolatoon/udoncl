@@ -583,8 +583,8 @@ private:
     };
     llvm::DenseMap<Operation *, SmallVector<std::string>> frameSlots;
     llvm::DenseMap<Operation *, std::string> allocaLengthSlots;
-    llvm::StringMap<std::string> constantSlots;
-    unsigned constantIndex = 0;
+    llvm::StringMap<std::string> mutableConstantSlots;
+    unsigned mutableConstantIndex = 0;
     for (auto [index, argument] : llvm::enumerate(function.getArguments())) {
       auto type = *udonType(argument.getType());
       std::string name = plan.parameterSlots[index];
@@ -796,9 +796,21 @@ private:
         std::string name;
         if (kind == "c") {
           std::string key = type->str() + "\n" + constantIdentity;
+          // Ordinary scalar constants are immutable Udon heap values, so one
+          // module-wide slot can serve every function.  i1 and i64 constants
+          // are materialized by writing their result slot at runtime and must
+          // remain function-local.
+          Type constantType = operation.getResult(0).getType();
+          bool mutableConstant =
+              constantType.isInteger(1) || constantType.isInteger(64);
+          auto &constantSlots =
+              mutableConstant ? mutableConstantSlots : sharedConstantSlots;
           auto found = constantSlots.find(key);
           if (found == constantSlots.end()) {
-            name = prefix + "constant_" + std::to_string(constantIndex++);
+            name = mutableConstant ? prefix + "constant_" +
+                                         std::to_string(mutableConstantIndex++)
+                                   : "__vrc_constant_" +
+                                         std::to_string(sharedConstantIndex++);
             addSlot(name, *type, initial, false);
             constantSlots.try_emplace(key, name);
           } else {
@@ -2159,6 +2171,8 @@ private:
   llvm::DenseMap<Operation *, UdonSharpMethodABI> methodABIs;
   llvm::DenseMap<Operation *, FunctionPlan> functionPlans;
   llvm::StringMap<GlobalPlan> globalPlans;
+  llvm::StringMap<std::string> sharedConstantSlots;
+  unsigned sharedConstantIndex = 0;
   SmallVector<std::string> globalOrder;
   llvm::StringMap<uint64_t> rawGlobalBases;
   llvm::StringMap<DenseI8ArrayAttr> rawGlobalInitializers;

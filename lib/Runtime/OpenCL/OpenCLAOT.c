@@ -26,6 +26,9 @@ extern cl_int __vrc_opencl_dispatch_udonblas_sgemm(
     cl_uint input_token, cl_uint output_token, cl_int m, cl_int n, cl_int k,
     cl_int transa, cl_int transb, cl_int lda, cl_int ldb, cl_int ldc,
     cl_float alpha, cl_float beta);
+extern cl_int __vrc_opencl_dispatch_udonblas_sgemv(
+    cl_uint input_token, cl_uint output_token, cl_int trans, cl_int m, cl_int n,
+    cl_int lda, cl_int incx, cl_int incy, cl_float alpha, cl_float beta);
 extern cl_int __vrc_opencl_await(cl_int event);
 
 struct _cl_platform_id {
@@ -332,6 +335,44 @@ static void udoncl_dispatch_sgemm(cl_kernel kernel, cl_uint work_dim,
   return;
 }
 
+static void udoncl_dispatch_sgemv(cl_kernel kernel, cl_uint work_dim,
+                                  const size_t *global_offset,
+                                  const size_t *global_size,
+                                  const size_t *local_size) {
+  cl_mem input, output;
+  cl_int values[6];
+  cl_float alpha, beta;
+  cl_uint index;
+  if (work_dim != 1) {
+    udoncl_dispatch_status = CL_INVALID_WORK_DIMENSION;
+    return;
+  }
+  if (global_offset) {
+    udoncl_dispatch_status = CL_INVALID_GLOBAL_OFFSET;
+    return;
+  }
+  (void)global_size;
+  (void)local_size;
+  if (udoncl_mem_argument(kernel, 0, &input) != CL_SUCCESS ||
+      udoncl_mem_argument(kernel, 1, &output) != CL_SUCCESS) {
+    udoncl_dispatch_status = CL_INVALID_MEM_OBJECT;
+    return;
+  }
+  for (index = 0; index < 6; ++index)
+    if (udoncl_i32_argument(kernel, index + 2, &values[index]) != CL_SUCCESS) {
+      udoncl_dispatch_status = CL_INVALID_KERNEL_ARGS;
+      return;
+    }
+  if (udoncl_f32_argument(kernel, 8, &alpha) != CL_SUCCESS ||
+      udoncl_f32_argument(kernel, 9, &beta) != CL_SUCCESS) {
+    udoncl_dispatch_status = CL_INVALID_KERNEL_ARGS;
+    return;
+  }
+  (void)__vrc_opencl_dispatch_udonblas_sgemv(
+      input->physical_token, output->physical_token, values[0], values[1],
+      values[2], values[3], values[4], values[5], alpha, beta);
+}
+
 static cl_int udoncl_wait_list(cl_uint count, const cl_event *events) {
   return (!count && !events) ? CL_SUCCESS : CL_INVALID_EVENT_WAIT_LIST;
 }
@@ -377,6 +418,12 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueNDRangeKernel(
   if (kernel->id == 1) {
     udoncl_dispatch_status = CL_SUCCESS;
     udoncl_dispatch_sgemm(kernel, work_dim, global_offset, global_size,
+                          local_size);
+    return udoncl_dispatch_status;
+  }
+  if (kernel->id == 2) {
+    udoncl_dispatch_status = CL_SUCCESS;
+    udoncl_dispatch_sgemv(kernel, work_dim, global_offset, global_size,
                           local_size);
     return udoncl_dispatch_status;
   }

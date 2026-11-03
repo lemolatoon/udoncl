@@ -273,47 +273,14 @@ def main():
     ]:
         assert f'.export {slot}' in udonblas_assembly
 
-    multi_kernel_config = output / 'udonblas-multi-kernel.json'
-    multi_document = json.loads(
-        (udonblas_source / 'unity-library.json').read_text(encoding='utf-8')
-    )
-    sgemm_kernel = multi_document.pop('device_kernel')
-    multi_document['device_kernels'] = [
-        sgemm_kernel,
-        {
-            'schema_version': 1,
-            'profile': 'gather-f32',
-            'words': 1024,
-            'kernel': 'udonblas_sgemv',
-            'kernel_id': 2,
-            'argument_kinds': [
-                'buffer', 'buffer', 'i32', 'i32', 'i32', 'i32', 'i32', 'i32',
-                'f32', 'f32',
-            ],
-            'global_size': [1024, 1, 1],
-            'local_size': [1, 1, 1],
-            'global_offset': [0, 0, 0],
-        },
-    ]
-    multi_kernel_config.write_text(
-        json.dumps(multi_document), encoding='utf-8'
-    )
-    multi_kernel_artifact = output / 'udonblas-multi-kernel-artifact'
-    run([
-        installed_compiler, '--emit-unity-library-bundle', multi_kernel_config,
-        '--host-llvm', udonblas_root / 'host.bc',
-        '--device-llvm', udonblas_root / 'device.bc',
-        '-o', multi_kernel_artifact,
-    ])
-    multi_manifest = json.loads(
-        (multi_kernel_artifact / 'manifest.json').read_text(encoding='utf-8')
-    )
-    assert [item['name'] for item in multi_manifest['device']['kernels']] == [
+    assert [item['name'] for item in udonblas_manifest['device']['kernels']] == [
         'udonblas_sgemm',
         'udonblas_sgemv',
     ]
-    assert (multi_kernel_artifact / 'kernels/kernel_1.shader').is_file()
-    assert (multi_kernel_artifact / 'kernels/kernel_2.shader').is_file()
+    assert (udonblas_artifact / 'kernels/kernel_1.shader').is_file()
+    assert (udonblas_artifact / 'kernels/kernel_2.shader').is_file()
+    assert '.export __udoncl_kernel_material_1' in udonblas_assembly
+    assert '.export __udoncl_kernel_material_2' in udonblas_assembly
 
     build_root = consumer / 'udoncl/hello-artifact'
     artifact = build_root / 'artifact'
