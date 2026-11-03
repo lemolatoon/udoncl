@@ -230,7 +230,6 @@ cases = [
     ('pointer-select', allocation + '%b = alloca [4 x i32], align 4\n%c = icmp eq i32 %index, 0\n%p = select i1 %c, ptr %a, ptr %b\n%v = load i32, ptr %p, align 4\n', 'escapes'),
     ('uninitialized', allocation + '%v = load i32, ptr %a, align 4\n', 'definite initialization'),
     ('partially-initialized', allocation + 'store i32 1, ptr %a, align 4\n%i = and i32 %index, 3\n%p = getelementptr [4 x i32], ptr %a, i32 0, i32 %i\n%v = load i32, ptr %p, align 4\n', 'definite initialization'),
-    ('nuw-gep', allocation + '%p = getelementptr nuw [4 x i32], ptr %a, i32 0, i32 0\n', 'GEP no-wrap flags'),
 ]
 source_cases = [(name, 'declare void @escape(ptr)\ndefine i32 @bad(i32 %index) {\nentry:\n' + body + 'ret i32 0\n}\n', reason)
                 for name, body, reason in cases]
@@ -261,6 +260,21 @@ source_cases.append(('skipped-init-store', skipped, 'definite initialization'))
 bypassed = original_loop.replace('label %init_body, label %initialized', 'label %init_body, label %bypass')
 bypassed = bypassed.replace('init_body:\n', 'bypass:\n  br label %init_body\ninit_body:\n')
 source_cases.append(('bypassed-guard', bypassed, 'index bounds'))
+
+nowrap_source = (
+    'define i32 @nowrap() {\nentry:\n' + allocation
+    + '%p = getelementptr nuw [4 x i32], ptr %a, i32 0, i32 2\n'
+    + 'store i32 7, ptr %p, align 4\n'
+    + '%value = load i32, ptr %p, align 4\n'
+    + 'ret i32 %value\n}\n'
+)
+nowrap_ir = output / 'nowrap.ll'
+nowrap_ir.write_text(nowrap_source)
+nowrap_imported = run([translate, '--import-llvm', nowrap_ir])
+nowrap_lowered = run(
+    [opt, '--vrc-raise-llvm-memory', '--verify-each'], nowrap_imported)
+assert 'memref.store' in nowrap_lowered and 'memref.load' in nowrap_lowered
+assert 'llvm.getelementptr' not in nowrap_lowered
 
 rejections = []
 for name, source, diagnostic in source_cases:

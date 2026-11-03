@@ -320,18 +320,27 @@ CL_API_ENTRY cl_kernel CL_API_CALL clCreateKernel(cl_program program,
                                                   const char *name,
                                                   cl_int *error) {
   cl_uint id = udoncl_kernel_id(name);
-  cl_kernel kernel;
+  cl_uint slot;
+  cl_kernel kernel = 0;
   if (program != &udoncl_program || !program->active ||
       program->status != CL_BUILD_SUCCESS || !id) {
     udoncl_error(error, id ? CL_INVALID_PROGRAM : CL_INVALID_KERNEL_NAME);
     return 0;
   }
-  kernel = &udoncl_kernels[id - 1];
+  for (slot = 0; slot < UDONCL_AOT_KERNEL_CAPACITY; ++slot)
+    if (!udoncl_kernels[slot].active) {
+      kernel = &udoncl_kernels[slot];
+      break;
+    }
+  if (!kernel) {
+    udoncl_error(error, CL_OUT_OF_RESOURCES);
+    return 0;
+  }
   kernel->active = 1;
   kernel->id = id;
   kernel->program = program;
-  for (id = 0; id < UDONCL_AOT_KERNEL_CAPACITY; ++id)
-    kernel->argument_sizes[id] = 0;
+  for (slot = 0; slot < UDONCL_AOT_KERNEL_CAPACITY; ++slot)
+    kernel->argument_sizes[slot] = 0;
   udoncl_error(error, CL_SUCCESS);
   return kernel;
 }

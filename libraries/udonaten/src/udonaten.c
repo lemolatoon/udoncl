@@ -90,25 +90,29 @@ udonatenBinary(udonatenHandle_t handle, udondnnOpTensorOp_t operation,
       words > UDONATEN_POINTWISE_TILE_WORDS) {
     if (self_type != UDONDNN_DATA_FLOAT || other_type != UDONDNN_DATA_FLOAT ||
         output_type != UDONDNN_DATA_FLOAT || self_n != output_n ||
-        self_c != output_c || self_h != output_h || self_w != output_w ||
-        other_n != output_n || other_c != output_c || other_h != output_h ||
-        other_w != output_w)
+        self_c != output_c || self_h != output_h || self_w != output_w)
       status = UDONDNN_STATUS_NOT_SUPPORTED;
-    else
+    else if (other_n != output_n || other_c != output_c ||
+             other_h != output_h || other_w != output_w)
+      status = udondnnOpTensor(handle, descriptor, &one, self_descriptor, self,
+                               &other_alpha, other_descriptor, other, &zero,
+                               output_descriptor, output);
+    else {
       status = udondnnCreateTensorDescriptor(&tile_descriptor);
-    for (offset = 0; status == UDONDNN_STATUS_SUCCESS && offset < words;) {
-      int tile_n, tile_c, tile_h, tile_w;
-      int tile_words = udonatenPointwiseTileShape(words - offset, &tile_n,
-                                                  &tile_c, &tile_h, &tile_w);
-      status = udondnnSetTensor4dDescriptor(
-          tile_descriptor, UDONDNN_TENSOR_NCHW, UDONDNN_DATA_FLOAT, tile_n,
-          tile_c, tile_h, tile_w);
-      if (status == UDONDNN_STATUS_SUCCESS)
-        status = udondnnOpTensor(handle, descriptor, &one, tile_descriptor,
-                                 self + offset, &other_alpha, tile_descriptor,
-                                 other + offset, &zero, tile_descriptor,
-                                 output + offset);
-      offset += (size_t)tile_words;
+      for (offset = 0; status == UDONDNN_STATUS_SUCCESS && offset < words;) {
+        int tile_n, tile_c, tile_h, tile_w;
+        int tile_words = udonatenPointwiseTileShape(words - offset, &tile_n,
+                                                    &tile_c, &tile_h, &tile_w);
+        status = udondnnSetTensor4dDescriptor(
+            tile_descriptor, UDONDNN_TENSOR_NCHW, UDONDNN_DATA_FLOAT, tile_n,
+            tile_c, tile_h, tile_w);
+        if (status == UDONDNN_STATUS_SUCCESS)
+          status = udondnnOpTensor(handle, descriptor, &one, tile_descriptor,
+                                   self + offset, &other_alpha, tile_descriptor,
+                                   other + offset, &zero, tile_descriptor,
+                                   output + offset);
+        offset += (size_t)tile_words;
+      }
     }
   } else if (status == UDONDNN_STATUS_SUCCESS)
     status = udondnnOpTensor(handle, descriptor, &one, self_descriptor, self,
@@ -191,6 +195,12 @@ static udonatenStatus_t udonatenActivation(
         input_n != output_n || input_c != output_c || input_h != output_h ||
         input_w != output_w)
       status = UDONDNN_STATUS_BAD_PARAM;
+#ifdef UDONATEN_AOT_DIRECT_LARGE
+    else
+      status =
+          udondnnActivationForward(handle, descriptor, &one, input_descriptor,
+                                   input, &zero, output_descriptor, output);
+#else
     else
       status = udondnnCreateTensorDescriptor(&tile_descriptor);
     for (offset = 0; status == UDONDNN_STATUS_SUCCESS && offset < words;) {
@@ -206,6 +216,7 @@ static udonatenStatus_t udonatenActivation(
             tile_descriptor, output + offset);
       offset += (size_t)tile_words;
     }
+#endif
   } else if (status == UDONDNN_STATUS_SUCCESS)
     status =
         udondnnActivationForward(handle, descriptor, &one, input_descriptor,
@@ -302,9 +313,9 @@ udonatenRmsNorm(udonatenHandle_t handle,
   input_shape[2] = input_h;
   input_shape[3] = input_w;
   for (index = 0; index < normalized_dimensions; ++index) {
+    size_t input_axis = (4 - normalized_dimensions + index) & 3u;
     if (normalized_shape[index] <= 0 ||
-        normalized_shape[index] !=
-            input_shape[4 - normalized_dimensions + index])
+        normalized_shape[index] != input_shape[input_axis])
       return UDONDNN_STATUS_BAD_PARAM;
     normalized_product *= normalized_shape[index];
   }
@@ -346,11 +357,12 @@ udonatenStatus_t udonatenTile(udonatenHandle_t handle,
     return UDONDNN_STATUS_BAD_PARAM;
   for (index = 0; index < dimensions; ++index) {
     int64_t repeat = dims[index];
+    size_t repeat_axis = (4 - dimensions + index) & 3u;
     if (repeat < 0)
       return UDONDNN_STATUS_BAD_PARAM;
     if (repeat == 0 || repeat > 0x7fffffff)
       return UDONDNN_STATUS_NOT_SUPPORTED;
-    repeats[4 - dimensions + index] = (int)repeat;
+    repeats[repeat_axis] = (int)repeat;
   }
   if (udondnnGetTensor4dDescriptor(input_descriptor, &input_type, &input_n,
                                    &input_c, &input_h, &input_w, &n_stride,

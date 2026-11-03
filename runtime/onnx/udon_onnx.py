@@ -2752,6 +2752,116 @@ def _c_float(value: float) -> str:
     return repr(float(value)) + "f"
 
 
+def _emit_owned_session(lines: list[str], graph: dict, names: dict[str, str]) -> None:
+    session = graph.get("session")
+    if not session:
+        return
+    initializers = session.get("initializers", {})
+
+    def capacity(name: str) -> int:
+        logical = math.prod(graph["values"][name])
+        return 1 << (logical - 1).bit_length()
+
+    lines.append("/* Generic index-based ONNX session storage and exports. */")
+    for name in sorted(graph["values"]):
+        declaration = f"static float storage_{names[name]}[{capacity(name)}]"
+        initializer = initializers.get(name)
+        if initializer is None:
+            lines.append(declaration + ";")
+            continue
+        if initializer["data_type_name"] != "float32":
+            raise ValueError(
+                f"owned ONNX session does not yet support initializer type {initializer['data_type_name']!r}"
+            )
+        if initializer["data_location"] == 1:
+            raise ValueError(
+                "owned ONNX session requires external initializers to be materialized by the artifact packer"
+            )
+        values = struct.unpack(f"<{len(initializer['raw']) // 4}f", initializer["raw"])
+        lines.append(declaration + " = {")
+        for offset in range(0, len(values), 6):
+            lines.append(
+                "  "
+                + ", ".join(_c_float(value) for value in values[offset : offset + 6])
+                + ","
+            )
+        lines.append("};")
+    lines.extend(["", "static udon_onnx_buffers_t udon_onnx_session_buffers;", ""])
+
+    inputs = list(session.get("inputs", {}).items())
+    outputs = list(session.get("outputs", {}).items())
+    lines.extend(
+        [
+            f"int udon_onnx_session_get_input_count(void) {{ return {len(inputs)}; }}",
+            f"int udon_onnx_session_get_output_count(void) {{ return {len(outputs)}; }}",
+            "",
+            "int udon_onnx_session_get_input_word_count(int input_index) {",
+        ]
+    )
+    for index, (_, value) in enumerate(inputs):
+        lines.append(
+            f"  if (input_index == {index}) return {math.prod(graph['values'][value])};"
+        )
+    lines.extend(["  return -1;", "}", ""])
+    lines.extend(
+        [
+            "int udon_onnx_session_get_output_word_count(int output_index) {",
+        ]
+    )
+    for index, (_, value) in enumerate(outputs):
+        lines.append(
+            f"  if (output_index == {index}) return {math.prod(graph['values'][value])};"
+        )
+    lines.extend(["  return -1;", "}", ""])
+    lines.extend(
+        [
+            "int udon_onnx_session_write_input_float(int input_index, int element_index, float value) {",
+        ]
+    )
+    for index, (_, value) in enumerate(inputs):
+        count = math.prod(graph["values"][value])
+        mask = capacity(value) - 1
+        lines.extend(
+            [
+                f"  if (input_index == {index}) {{",
+                f"    if (element_index < 0 || element_index >= {count}) return -1;",
+                f"    storage_{names[value]}[(unsigned)element_index & {mask}u] = value;",
+                "    return 0;",
+                "  }",
+            ]
+        )
+    lines.extend(["  return -1;", "}", ""])
+    lines.extend(
+        [
+            "int udon_onnx_session_run(void) {",
+        ]
+    )
+    for name in sorted(graph["values"]):
+        lines.append(
+            f"  udon_onnx_session_buffers.{names[name]} = storage_{names[name]};"
+        )
+    lines.extend(
+        [
+            "  return udon_onnx_run(&udon_onnx_session_buffers);",
+            "}",
+            "",
+            "float udon_onnx_session_read_output_float(int output_index, int element_index) {",
+        ]
+    )
+    for index, (_, value) in enumerate(outputs):
+        count = math.prod(graph["values"][value])
+        mask = capacity(value) - 1
+        lines.extend(
+            [
+                f"  if (output_index == {index}) {{",
+                f"    if (element_index < 0 || element_index >= {count}) return 0.0f;",
+                f"    return storage_{names[value]}[(unsigned)element_index & {mask}u];",
+                "  }",
+            ]
+        )
+    lines.extend(["  return 0.0f;", "}", ""])
+
+
 def emit_c_host(plan: dict) -> str:
     """Emit an AOT C host that invokes public UdonBLAS/UdonDNN/UdonATen APIs."""
     if not all(field in plan for field in ("nodes", "values", "value_types")):
@@ -3064,6 +3174,7 @@ def emit_c_host(plan: dict) -> str:
             "",
         ]
     )
+    _emit_owned_session(lines, plan, names)
     return "\n".join(lines)
 
 

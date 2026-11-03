@@ -392,9 +392,11 @@ FailureOr<PointerInfo> MemoryPlan::resolve(Value pointer, Operation *at,
   if (!gep || depth > 64)
     return reject(
         at, "pointer provenance must trace through GEPs to a local allocation");
-  if (gep.getNoWrapFlags() != LLVM::GEPNoWrapFlags::none &&
-      gep.getNoWrapFlags() != LLVM::GEPNoWrapFlags::inbounds)
-    return reject(gep, "GEP no-wrap flags require additional proof");
+  // LLVM 23 attaches nusw/nuw to ordinary C array indexing. Do not trust the
+  // source flag by itself: the interval and allocation checks below prove the
+  // recovered element offset cannot wrap and remains within this allocation.
+  // Once that stronger proof succeeds, discarding the poison-only flag keeps
+  // all defined C executions equivalent in the typed memory model.
   for (NamedAttribute attr : gep->getAttrs())
     if (!llvm::StringSwitch<bool>(attr.getName())
              .Cases({"elem_type", "rawConstantIndices", "noWrapFlags"}, true)

@@ -59,6 +59,8 @@ LogicalResult KernelOp::verify() {
   if (gather(*this)) {
     auto words = (*this)->getAttrOfType<IntegerAttr>("vrc.words");
     auto global = getGlobalSize();
+    auto textureShape =
+        (*this)->getAttrOfType<DenseI32ArrayAttr>("vrc.texture_shape");
     if (!words || words.getInt() < 4 || words.getInt() > 16384 ||
         getKernelId() <= 0 || getArgumentKinds().size() < 2 ||
         getArgumentKinds().size() > 16 || global.size() != 3 ||
@@ -68,6 +70,11 @@ LogicalResult KernelOp::verify() {
         getGlobalOffset() != ArrayRef<int32_t>{0, 0, 0} ||
         !(*this)->hasAttr("vrc.gather_proven"))
       return emitOpError("invalid proven gather launch/argument contract");
+    if (textureShape &&
+        (textureShape.size() != 2 || textureShape[0] <= 0 ||
+         textureShape[1] <= 0 ||
+         int64_t(textureShape[0]) * textureShape[1] < words.getInt()))
+      return emitOpError("invalid physical texture shape");
     unsigned bufferCount = 0;
     bool sawScalar = false;
     for (auto kind : getArgumentKinds().getValue()) {
@@ -300,10 +307,15 @@ LogicalResult TextureLoadOp::verify() {
   auto widthValue =
       width ? dyn_cast<IntegerAttr>(width.getValue()) : IntegerAttr();
   auto words = k ? k->getAttrOfType<IntegerAttr>("vrc.words") : IntegerAttr();
+  auto textureShape =
+      k ? k->getAttrOfType<DenseI32ArrayAttr>("vrc.texture_shape")
+        : DenseI32ArrayAttr();
+  int64_t expectedWidth = textureShape ? textureShape.asArrayRef()[0]
+                                       : (k ? k.getGlobalSize()[0] : 0);
   if (!k || !gather(k) || !r || r.getKind() != "texture" || !words ||
       words.getInt() != getElementCount() || !x || !y ||
       x.getLhs() != y.getLhs() || x.getRhs() != y.getRhs() || !widthValue ||
-      widthValue.getInt() != k.getGlobalSize()[0])
+      widthValue.getInt() != expectedWidth)
     return emitOpError("load must address the read-only 2D input extent");
   return success();
 }

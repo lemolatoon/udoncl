@@ -365,8 +365,12 @@ llvm::json::Object buildBoundaryManifest(ModuleOp module) {
         {"resource_order", std::move(resourceOrder)},
         {"distinct_resources", true},
         {"argument_copy_policy", "required_at_clSetKernelArg"}};
-    (*entry.getObject("target_texture"))["width"] = global[0];
-    (*entry.getObject("target_texture"))["height"] = global[1];
+    auto textureShape =
+        kernel->getAttrOfType<DenseI32ArrayAttr>("vrc.texture_shape");
+    (*entry.getObject("target_texture"))["width"] =
+        textureShape ? textureShape.asArrayRef()[0] : global[0];
+    (*entry.getObject("target_texture"))["height"] =
+        textureShape ? textureShape.asArrayRef()[1] : global[1];
     entry["passes"] =
         llvm::json::Array{llvm::json::Object{{"id", 0},
                                              {"output_arg", *outputArgument},

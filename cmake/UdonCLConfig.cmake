@@ -321,7 +321,8 @@ if(NOT TARGET udoncl_opencl_runtime)
     "${_UDONCL_RUNTIME_DIR}/OpenCLAOT.c"
     "${_UDONCL_RUNTIME_DIR}/DeviceMemory.c")
   target_compile_definitions(udoncl_opencl_runtime INTERFACE
-    CL_TARGET_OPENCL_VERSION=120)
+    CL_TARGET_OPENCL_VERSION=120
+    UDONCL_AOT_ENABLE_DNN=0)
 endif()
 if(NOT TARGET UdonCL::OpenCLRuntime)
   add_library(UdonCL::OpenCLRuntime ALIAS udoncl_opencl_runtime)

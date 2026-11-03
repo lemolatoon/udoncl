@@ -546,6 +546,12 @@ def run_unity_mcp_gate(root, unity, project, build, output):
                 (output / "lowering/continuation.uasm").resolve()
             ),
             "UDONCL_UNITY_LIBRARY_ARTIFACT": str(unity_library),
+            "UDONCL_PUBLIC_MNIST_UNITY_BUNDLE": str(
+                (
+                    build
+                    / "tests/cmake-package/onnx-consumer/udoncl/onnx-host-link-probe/artifact"
+                ).resolve()
+            ),
             "UDONCL_ONNX_AOT_UASM": str(
                 (output / "onnx-aot/generic-host.uasm").resolve()
             ),

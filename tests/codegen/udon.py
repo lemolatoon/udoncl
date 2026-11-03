@@ -93,6 +93,26 @@ for expected in [
     assert expected in text, (expected, text)
 assert 'func.func' not in text and 'arith.' not in text
 
+remainder_source = r'''module attributes {vrc.host_stage = "udonhl"} {
+  func.func @remainder(%x: i32, %divisor: i32) -> i32 attributes {
+    vrc.export_id = 1 : i32
+  } {
+    %result = arith.remsi %x, %divisor : i32
+    return %result : i32
+  }
+}'''
+remainder = subprocess.run(
+    [opt, '--vrc-lower-udonhl-to-udonasm', '--verify-each'],
+    input=remainder_source, text=True, capture_output=True)
+assert remainder.returncode == 0, remainder.stderr
+for expected in [
+    'SystemInt32.__op_Division__SystemInt32_SystemInt32__SystemInt32',
+    'SystemInt32.__op_Multiplication__SystemInt32_SystemInt32__SystemInt32',
+    'SystemInt32.__op_Subtraction__SystemInt32_SystemInt32__SystemInt32',
+]:
+    assert expected in remainder.stdout, (expected, remainder.stdout)
+assert '__op_Modulus__' not in remainder.stdout
+
 integer_bit_source = r'''module attributes {vrc.host_stage = "udonhl"} {
   func.func @integer_bits(%value: i32, %shift: i32, %mask: i32) -> i32 attributes {
     vrc.export_id = 1 : i32
@@ -580,8 +600,8 @@ assert emitted.returncode == 0, emitted.stderr
 async_buffer_assembly = async_buffer_uasm.read_text(encoding='utf-8')
 for expected in [
     '.export transfer',
-    '__vrc_f7_await_state_1: %SystemInt32, 1',
-    '__vrc_f7_await_state_2: %SystemInt32, 2',
+    '__vrc_f7_await_state_value: %SystemInt32, 0',
+    'SystemInt32.__op_Equality__SystemInt32_SystemInt32__SystemBoolean',
 ]:
     assert expected in async_buffer_assembly, (expected, async_buffer_assembly)
 

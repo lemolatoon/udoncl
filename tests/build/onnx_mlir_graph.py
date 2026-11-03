@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 
 import importlib.util
+import math
 from pathlib import Path
+import struct
 import sys
 import unittest
 
@@ -15,6 +17,16 @@ sys.modules[SPEC.name] = graph_module
 SPEC.loader.exec_module(graph_module)
 from onnx_mlir_lower import host_graph
 from udon_onnx import emit_c_host
+
+
+def initializer(shape):
+    count = math.prod(shape)
+    return {
+        "shape": list(shape),
+        "data_type_name": "float32",
+        "data_location": 0,
+        "raw": struct.pack(f"<{count}f", *([0.0] * count)),
+    }
 
 
 CANONICAL = r'''
@@ -80,8 +92,8 @@ class ONNXMLIRGraphTests(unittest.TestCase):
         model = {
             "graph": {
                 "initializers": {
-                    "weight": {"shape": [4, 2]},
-                    "bias": {"shape": [2]},
+                    "weight": initializer((4, 2)),
+                    "bias": initializer((2,)),
                 }
             }
         }
@@ -95,6 +107,8 @@ class ONNXMLIRGraphTests(unittest.TestCase):
         source = emit_c_host(lowering)
         self.assertIn("udonblasSgemm(", source)
         self.assertIn("udonatenRelu(", source)
+        self.assertIn("int udon_onnx_session_run(void)", source)
+        self.assertIn("udon_onnx_session_write_input_float", source)
 
     def test_unsupported_operator_reports_source_location(self):
         unsupported = CANONICAL.replace("?x", "1x").replace(
@@ -109,8 +123,8 @@ class ONNXMLIRGraphTests(unittest.TestCase):
                 {
                     "graph": {
                         "initializers": {
-                            "weight": {"shape": [4, 2]},
-                            "bias": {"shape": [2]},
+                            "weight": initializer((4, 2)),
+                            "bias": initializer((2,)),
                         }
                     }
                 },

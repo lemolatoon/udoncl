@@ -148,6 +148,17 @@ def host_graph(graph: Graph, model: dict, dimension_bounds=None) -> dict:
         "initializers": {
             name: model_initializers[name] for name in canonical_initializers
         },
+        "session": {
+            "inputs": {
+                value.name: ssa_names[value.ssa_name] for value in graph.inputs
+            },
+            "outputs": {
+                value.name: ssa_names[value.ssa_name] for value in graph.outputs
+            },
+            "initializers": {
+                name: model_initializers[name] for name in canonical_initializers
+            },
+        },
     }
 
 

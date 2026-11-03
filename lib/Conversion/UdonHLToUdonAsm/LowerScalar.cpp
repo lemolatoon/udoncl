@@ -669,8 +669,6 @@ private:
     llvm::DenseMap<Operation *, SmallVector<std::string>> frameSlots;
     llvm::DenseMap<Operation *, SmallVector<std::string>> descriptorSlots;
     llvm::DenseMap<Operation *, std::string> allocaLengthSlots;
-    llvm::StringMap<std::string> mutableConstantSlots;
-    unsigned mutableConstantIndex = 0;
     for (auto [index, argument] : llvm::enumerate(function.getArguments())) {
       auto type = *udonType(argument.getType());
       std::string name = plan.parameterSlots[index];
@@ -706,13 +704,15 @@ private:
       addSlot(asyncCommandPointerSlot, "SystemInt32", "0", true);
       addSlot(asyncEventSlot, "SystemInt32", "1", true);
       addSlot(asyncZeroSlot, "SystemInt32", "0", false);
+      std::string stateSlot = prefix + "await_state_value";
+      addSlot(stateSlot, "SystemInt32", "0", false);
       for (auto [index, await] : llvm::enumerate(awaits)) {
         int32_t state = static_cast<int32_t>(index + 1);
         awaitStates.try_emplace(await.getOperation(), state);
-        std::string stateSlot = prefix + "await_state_" + std::to_string(state);
-        std::string matches = prefix + "await_matches_" + std::to_string(state);
-        addSlot(stateSlot, "SystemInt32", std::to_string(state), false);
+        constexpr StringLiteral matches = "__vrc_await_state_matches";
         addSlot(matches, "SystemBoolean", "null", false);
+        emitI32Literal(function.getLoc(), static_cast<uint32_t>(state),
+                       stateSlot);
         emitPush(function.getLoc(), asyncResumeStateSlot);
         emitPush(function.getLoc(), stateSlot);
         emitPush(function.getLoc(), matches);
@@ -912,23 +912,15 @@ private:
         std::string name;
         if (kind == "c") {
           std::string key = type->str() + "\n" + constantIdentity;
-          // Ordinary scalar constants are immutable Udon heap values, so one
-          // module-wide slot can serve every function.  i1 and i64 constants
-          // are materialized by writing their result slot at runtime and must
-          // remain function-local.
-          Type constantType = operation.getResult(0).getType();
-          bool mutableConstant =
-              constantType.isInteger(1) || constantType.isInteger(64);
-          auto &constantSlots =
-              mutableConstant ? mutableConstantSlots : sharedConstantSlots;
-          auto found = constantSlots.find(key);
-          if (found == constantSlots.end()) {
-            name = mutableConstant ? prefix + "constant_" +
-                                         std::to_string(mutableConstantIndex++)
-                                   : "__vrc_constant_" +
-                                         std::to_string(sharedConstantIndex++);
+          // Every occurrence with this type and value materializes the same
+          // immutable value. i1/i64 need runtime construction because the SDK
+          // assembler cannot encode all literals directly, but writing the
+          // same module-wide slot is still safe across helpers and exports.
+          auto found = sharedConstantSlots.find(key);
+          if (found == sharedConstantSlots.end()) {
+            name = "__vrc_constant_" + std::to_string(sharedConstantIndex++);
             addSlot(name, *type, initial, false);
-            constantSlots.try_emplace(key, name);
+            sharedConstantSlots.try_emplace(key, name);
           } else {
             name = found->second;
           }
@@ -1144,8 +1136,9 @@ private:
           if (state == awaitStates.end() ||
               resumeJump == awaitResumeJumps.end() || status.empty())
             return await.emitError("await has no static resume state");
-          std::string stateSlot =
-              prefix + "await_state_" + std::to_string(state->second);
+          std::string stateSlot = prefix + "await_state_value";
+          emitI32Literal(await.getLoc(), static_cast<uint32_t>(state->second),
+                         stateSlot);
           emitCopy(await.getLoc(), stateSlot, asyncResumeStateSlot);
           emitJump(await.getLoc(), 0xfffffffcLL);
           resumeJump->second->setAttr(
@@ -1581,11 +1574,12 @@ private:
             return cast.emitError("integer extension has missing heap slots");
           if (cast.getIn().getType().isInteger(8) &&
               cast.getOut().getType().isInteger(32)) {
-            std::string prefix = result + "_sign_extend";
-            std::string threshold = prefix + "_threshold";
-            std::string modulus = prefix + "_modulus";
-            std::string negative = prefix + "_negative";
-            std::string isNegative = prefix + "_is_negative";
+            constexpr StringLiteral threshold =
+                "__vrc_i8_sign_extend_threshold";
+            constexpr StringLiteral modulus = "__vrc_i8_sign_extend_modulus";
+            constexpr StringLiteral negative = "__vrc_i8_sign_extend_negative";
+            constexpr StringLiteral isNegative =
+                "__vrc_i8_sign_extend_is_negative";
             addSlot(threshold, "SystemInt32", "128", false);
             addSlot(modulus, "SystemInt32", "256", false);
             addSlot(negative, "SystemInt32", "0", false);
@@ -1632,8 +1626,8 @@ private:
               !cast.getIn().getType().isInteger(1) ||
               !cast.getOut().getType().isInteger(32))
             return cast.emitError("unsupported unsigned integer extension");
-          std::string zero = result + "_false";
-          std::string one = result + "_true";
+          constexpr StringLiteral zero = "__vrc_bool_to_i32_false";
+          constexpr StringLiteral one = "__vrc_bool_to_i32_true";
           addSlot(zero, "SystemInt32", "0", false);
           addSlot(one, "SystemInt32", "1", false);
           emitPush(cast.getLoc(), source);
@@ -1689,7 +1683,7 @@ private:
           std::string lhs = valueSlots.lookup(maximum.getLhs());
           std::string rhs = valueSlots.lookup(maximum.getRhs());
           std::string result = valueSlots.lookup(maximum.getResult());
-          std::string condition = result + "_max_condition";
+          constexpr StringLiteral condition = "__vrc_i32_max_condition";
           if (lhs.empty() || rhs.empty() || result.empty() ||
               !maximum.getType().isInteger(32))
             return maximum.emitError("unsupported signed integer maximum");
@@ -1752,15 +1746,15 @@ private:
             return shift.emitError(
                 "logical right shift currently requires i32 operands");
 
-          std::string prefix = result + "_logical_right_shift";
-          std::string zero = prefix + "_zero";
-          std::string width = prefix + "_width";
-          std::string allOnes = prefix + "_all_ones";
-          std::string isZero = prefix + "_is_zero";
-          std::string arithmetic = prefix + "_arithmetic";
-          std::string inverseAmount = prefix + "_inverse_amount";
-          std::string highMask = prefix + "_high_mask";
-          std::string lowMask = prefix + "_low_mask";
+          constexpr StringLiteral zero = "__vrc_lshr_i32_zero";
+          constexpr StringLiteral width = "__vrc_lshr_i32_width";
+          constexpr StringLiteral allOnes = "__vrc_lshr_i32_all_ones";
+          constexpr StringLiteral isZero = "__vrc_lshr_i32_is_zero";
+          constexpr StringLiteral arithmetic = "__vrc_lshr_i32_arithmetic";
+          constexpr StringLiteral inverseAmount =
+              "__vrc_lshr_i32_inverse_amount";
+          constexpr StringLiteral highMask = "__vrc_lshr_i32_high_mask";
+          constexpr StringLiteral lowMask = "__vrc_lshr_i32_low_mask";
           addSlot(zero, "SystemInt32", "0", false);
           addSlot(width, "SystemInt32", "32", false);
           addSlot(allOnes, "SystemInt32", "-1", false);
@@ -1820,6 +1814,38 @@ private:
                                       static_cast<int64_t>(address)));
           continue;
         }
+        if (auto remainder = dyn_cast<arith::RemSIOp>(operation)) {
+          std::string lhs = valueSlots.lookup(remainder.getLhs());
+          std::string rhs = valueSlots.lookup(remainder.getRhs());
+          std::string result = valueSlots.lookup(remainder.getResult());
+          constexpr StringLiteral quotient = "__vrc_remsi_quotient";
+          constexpr StringLiteral product = "__vrc_remsi_product";
+          if (!remainder.getType().isInteger(32) || lhs.empty() ||
+              rhs.empty() || result.empty())
+            return remainder.emitError(
+                "signed remainder requires allocated i32 slots");
+          addSlot(quotient, "SystemInt32", "0", false);
+          addSlot(product, "SystemInt32", "0", false);
+          emitPush(remainder.getLoc(), lhs);
+          emitPush(remainder.getLoc(), rhs);
+          emitPush(remainder.getLoc(), quotient);
+          emitExtern(remainder.getLoc(),
+                     "SystemInt32.__op_Division__SystemInt32_SystemInt32__"
+                     "SystemInt32");
+          emitPush(remainder.getLoc(), quotient);
+          emitPush(remainder.getLoc(), rhs);
+          emitPush(remainder.getLoc(), product);
+          emitExtern(remainder.getLoc(),
+                     "SystemInt32.__op_Multiplication__SystemInt32_"
+                     "SystemInt32__SystemInt32");
+          emitPush(remainder.getLoc(), lhs);
+          emitPush(remainder.getLoc(), product);
+          emitPush(remainder.getLoc(), result);
+          emitExtern(remainder.getLoc(),
+                     "SystemInt32.__op_Subtraction__SystemInt32_SystemInt32__"
+                     "SystemInt32");
+          continue;
+        }
         StringRef signature = binaryExtern(&operation);
         if (auto comparison = dyn_cast<arith::CmpIOp>(operation))
           signature = comparisonExtern(comparison);
@@ -1870,9 +1896,8 @@ private:
     addSlot(selected, "UnityEngineRenderTexture", "null", false);
     SmallVector<Operation *> done;
     for (auto [index, entry] : llvm::enumerate(unityBufferPool)) {
-      std::string id = (prefix + "_id_" + std::to_string(index)).str();
-      std::string matches =
-          (prefix + "_matches_" + std::to_string(index)).str();
+      std::string id = "__vrc_unity_buffer_id_" + std::to_string(index);
+      constexpr StringLiteral matches = "__vrc_unity_buffer_matches";
       addSlot(id, "SystemInt32", std::to_string(entry.id), false);
       addSlot(matches, "SystemBoolean", "null", false);
       emitPush(location, token);
@@ -1933,35 +1958,35 @@ private:
 
   void emitI64Constant(Location location, const llvm::APInt &value,
                        StringRef result) {
-    std::string prefix = (result + "_constant").str();
+    constexpr StringLiteral wide = "__vrc_i64_constant_wide";
+    constexpr StringLiteral shifted = "__vrc_i64_constant_shifted";
+    constexpr StringLiteral combined = "__vrc_i64_constant_combined";
+    addSlot(wide, "SystemInt64", "null", false);
+    addSlot(shifted, "SystemInt64", "null", false);
+    addSlot(combined, "SystemInt64", "null", false);
     for (unsigned byteIndex = 0; byteIndex < 8; ++byteIndex) {
       uint64_t byteValue = value.extractBitsAsZExtValue(8, byteIndex * 8);
-      std::string seed = prefix + "_byte_" + std::to_string(byteIndex);
-      std::string component = seed + "_wide";
+      std::string seed = "__vrc_i64_constant_byte_" + std::to_string(byteValue);
       addSlot(seed, "SystemInt32", std::to_string(byteValue), false);
-      addSlot(component, "SystemInt64", "null", false);
       emitPush(location, seed);
-      emitPush(location, component);
+      emitPush(location, wide);
       emitExtern(location, "SystemConvert.__ToInt64__SystemInt32__SystemInt64");
+      StringRef component = wide;
       if (byteIndex) {
-        std::string shift = prefix + "_shift_" + std::to_string(byteIndex);
-        std::string shifted = component + "_shifted";
+        std::string shift =
+            "__vrc_i64_constant_shift_" + std::to_string(byteIndex);
         addSlot(shift, "SystemInt32", std::to_string(byteIndex * 8), false);
-        addSlot(shifted, "SystemInt64", "null", false);
         emitPush(location, component);
         emitPush(location, shift);
         emitPush(location, shifted);
         emitExtern(location,
                    "SystemInt64.__op_LeftShift__SystemInt64_SystemInt32__"
                    "SystemInt64");
-        component = std::move(shifted);
+        component = shifted;
       }
       if (!byteIndex) {
         emitCopy(location, component, result);
       } else {
-        std::string combined =
-            prefix + "_combined_" + std::to_string(byteIndex);
-        addSlot(combined, "SystemInt64", "null", false);
         emitPush(location, result);
         emitPush(location, component);
         emitPush(location, combined);
@@ -2017,12 +2042,17 @@ private:
     std::string prefix =
         wide ? "__vrc_raw_load_i64_scratch" : "__vrc_raw_load_i32_scratch";
     std::string bits = prefix + "_bits";
+    std::string scratchIndex = prefix + "_index";
+    std::string scratchByte = prefix + "_byte";
+    std::string scratchWide = prefix + "_wide";
+    std::string scratchComponent = prefix + "_component";
+    std::string scratchCombined = prefix + "_combined";
     addSlot(bits, wide ? "SystemInt64" : "SystemInt32", "0", false);
     for (unsigned byteIndex = 0; byteIndex < byteWidth; ++byteIndex) {
       std::string index = pointer.str();
       if (byteIndex) {
         std::string offset = prefix + "_offset_" + std::to_string(byteIndex);
-        index = prefix + "_index_" + std::to_string(byteIndex);
+        index = scratchIndex;
         addSlot(offset, "SystemInt32", std::to_string(byteIndex), false);
         addSlot(index, "SystemInt32", "0", false);
         emitPush(location, pointer);
@@ -2032,7 +2062,7 @@ private:
                    "SystemInt32.__op_Addition__SystemInt32_SystemInt32__"
                    "SystemInt32");
       }
-      std::string byte = prefix + "_byte_" + std::to_string(byteIndex);
+      std::string byte = scratchByte;
       addSlot(byte, "SystemInt32", "0", false);
       emitPush(location, rawHeapSlot);
       emitPush(location, index);
@@ -2040,7 +2070,7 @@ private:
       emitExtern(location, "SystemInt32Array.__Get__SystemInt32__SystemInt32");
       std::string component = byte;
       if (wide) {
-        component = prefix + "_wide_" + std::to_string(byteIndex);
+        component = scratchWide;
         addSlot(component, "SystemInt64", "0", false);
         emitPush(location, byte);
         emitPush(location, component);
@@ -2049,8 +2079,7 @@ private:
       }
       if (byteIndex) {
         std::string shift = prefix + "_shift_" + std::to_string(byteIndex);
-        std::string shifted =
-            prefix + "_component_" + std::to_string(byteIndex);
+        std::string shifted = scratchComponent;
         addSlot(shift, "SystemInt32", std::to_string(byteIndex * 8), false);
         addSlot(shifted, wide ? "SystemInt64" : "SystemInt32", "0", false);
         emitPush(location, component);
@@ -2065,8 +2094,7 @@ private:
       if (!byteIndex) {
         emitCopy(location, component, bits);
       } else {
-        std::string combined =
-            prefix + "_combined_" + std::to_string(byteIndex);
+        std::string combined = scratchCombined;
         addSlot(combined, wide ? "SystemInt64" : "SystemInt32", "0", false);
         emitPush(location, bits);
         emitPush(location, component);
@@ -2103,6 +2131,10 @@ private:
         wide ? "__vrc_raw_store_i64_scratch" : "__vrc_raw_store_i32_scratch";
     std::string bits = prefix + "_bits";
     std::string mask = prefix + "_mask";
+    std::string scratchComponent = prefix + "_component";
+    std::string scratchByte = prefix + "_byte";
+    std::string scratchWideByte = prefix + "_byte_wide";
+    std::string scratchIndex = prefix + "_index";
     addSlot(bits, wide ? "SystemInt64" : "SystemInt32", "0", false);
     addSlot(mask, wide ? "SystemInt64" : "SystemInt32", wide ? "null" : "255",
             false);
@@ -2126,7 +2158,7 @@ private:
       std::string component = bits;
       if (byteIndex) {
         std::string shift = prefix + "_shift_" + std::to_string(byteIndex);
-        component = prefix + "_component_" + std::to_string(byteIndex);
+        component = scratchComponent;
         addSlot(shift, "SystemInt32", std::to_string(byteIndex * 8), false);
         addSlot(component, wide ? "SystemInt64" : "SystemInt32", "0", false);
         emitPush(location, bits);
@@ -2137,8 +2169,8 @@ private:
                                   : "SystemInt32.__op_RightShift__SystemInt32_"
                                     "SystemInt32__SystemInt32");
       }
-      std::string byte = prefix + "_byte_" + std::to_string(byteIndex);
-      std::string masked = wide ? byte + "_wide" : byte;
+      std::string byte = scratchByte;
+      std::string masked = wide ? scratchWideByte : byte;
       addSlot(masked, wide ? "SystemInt64" : "SystemInt32", "0", false);
       addSlot(byte, "SystemInt32", "0", false);
       emitPush(location, component);
@@ -2158,7 +2190,7 @@ private:
       std::string index = pointer.str();
       if (byteIndex) {
         std::string offset = prefix + "_offset_" + std::to_string(byteIndex);
-        index = prefix + "_index_" + std::to_string(byteIndex);
+        index = scratchIndex;
         addSlot(offset, "SystemInt32", std::to_string(byteIndex), false);
         addSlot(index, "SystemInt32", "0", false);
         emitPush(location, pointer);
@@ -2427,7 +2459,6 @@ private:
   llvm::DenseMap<Operation *, uint64_t> rawAllocaBases;
   SmallVector<UnityBufferPoolEntry> unityBufferPool;
   uint64_t rawHeapBytes = 0;
-  uint64_t rawAccessIndex = 0;
   bool externalRawHeapInitialization = false;
   SmallVector<std::pair<Operation *, func::FuncOp>> callRelocations;
   uint64_t callReturnIndex = 0;

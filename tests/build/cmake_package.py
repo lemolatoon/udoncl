@@ -92,10 +92,45 @@ def main():
         args.source.resolve().parents[1] / 'examples/mnist-cnn/generate_onnx.py',
         '-o', onnx_model,
     ])
-    shutil.copyfile(
-        args.source.resolve().parents[1] / 'examples/udonblas-sgemm/unity-library.json',
-        onnx_source / 'probe.json',
-    )
+    probe = json.loads((
+        args.source.resolve().parents[1] / 'examples/onnx-mnist/unity-library.json'
+    ).read_text(encoding='utf-8'))
+    probe['program'] = 'generic_onnx_mnist'
+    blas_probe = json.loads((
+        args.source.resolve().parents[1]
+        / 'examples/udonblas-sgemm/unity-library.json'
+    ).read_text(encoding='utf-8'))
+    probe['device_kernels'].append(blas_probe['device_kernels'][1])
+    probe['exports'] = [
+        {
+            'symbol': 'udon_onnx_session_write_input_float',
+            'public_name': 'TryWriteInputFloat',
+            'id': 1,
+            'parameters': ['input_index', 'element_index', 'value'],
+        },
+        {
+            'symbol': 'udon_onnx_session_run',
+            'public_name': 'StartRun',
+            'id': 2,
+            'parameters': [],
+        },
+        {
+            'symbol': 'udon_onnx_session_read_output_float',
+            'public_name': 'ReadOutputFloat',
+            'id': 3,
+            'parameters': ['output_index', 'element_index'],
+        },
+    ]
+    probe['buffers'] = [
+        {
+            'id': index,
+            'name': f'onnx_device_buffer_{index}',
+            'byte_size': 65536,
+        }
+        for index in range(1, 16)
+    ]
+    (onnx_source / 'probe.json').write_text(
+        json.dumps(probe, indent=2) + '\n', encoding='utf-8')
     (onnx_source / 'CMakeLists.txt').write_text(
         'cmake_minimum_required(VERSION 3.30)\n'
         'project(udoncl_onnx_consumer LANGUAGES NONE)\n'
@@ -116,8 +151,8 @@ def main():
         'endforeach()\n'
         'udoncl_add_unity_library(onnx-host-link-probe\n'
         '  CONFIG probe.json\n'
-        '  HOST_LIBRARIES mnist_host UdonONNXOperators::UdonONNXOperators\n'
-        '  LIBRARIES UdonBLAS::UdonBLAS UdonDNN::UdonDNN UdonATen::UdonATen)\n'
+        '  HOST_LIBRARIES mnist_host\n'
+        '  LIBRARIES UdonATen::UdonATen UdonBLAS::UdonBLAS)\n'
         'get_target_property(generated mnist_host UDONCL_ONNX_HOST)\n'
         'get_target_property(bounds mnist_host UDONCL_ONNX_DIMENSION_BOUNDS)\n'
         'if(NOT bounds STREQUAL "batch=1;sequence=4")\n'
@@ -155,11 +190,33 @@ def main():
     assert (onnx_consumer / 'udoncl-onnx/mnist_host/model.mlir').is_file()
     assert not list(onnx_consumer.rglob('execution-plan.json'))
     assert not list(onnx_consumer.rglob('plan.json'))
-    run([
-        args.cmake, '--build', onnx_consumer, '--target',
-        'udoncl/onnx-host-link-probe/host.bc',
-    ])
-    assert (onnx_consumer / 'udoncl/onnx-host-link-probe/host.bc').is_file()
+    run([args.cmake, '--build', onnx_consumer, '--target', 'onnx-host-link-probe'])
+    generic_artifact = onnx_consumer / 'udoncl/onnx-host-link-probe/artifact'
+    with (generic_artifact / 'host.uasm').open(encoding='utf-8') as stream:
+        assert sum(': %' in line for line in stream) <= 480
+    generic_manifest = json.loads(
+        (generic_artifact / 'manifest.json').read_text(encoding='utf-8'))
+    assert [item['public_name'] for item in generic_manifest['exports']] == [
+        'TryWriteInputFloat', 'StartRun', 'ReadOutputFloat',
+    ]
+    assert len(generic_manifest['device']['buffers']) == 15
+    assert {
+        item['id'] for item in generic_manifest['device']['kernels']
+    } == {1, 2, 231, 232, 233, 234}
+    generic_gemm = next(
+        item for item in generic_manifest['device']['kernels']
+        if item['id'] == 1
+    )
+    assert generic_gemm['global_size'] == [32, 32, 1]
+    assert generic_gemm['target_texture']['width'] == 8192
+    assert generic_gemm['target_texture']['height'] == 2
+    generic_gemm_hlsl = (
+        generic_artifact / 'kernels/kernel_1.hlsl'
+    ).read_text(encoding='utf-8')
+    assert 'uint(position.y) *' in generic_gemm_hlsl
+    assert '8192u' in generic_gemm_hlsl
+    assert '32u' in generic_gemm_hlsl
+    assert len(generic_manifest['dispatch_sites']) > 0
 
     for case, invocation, diagnostic in [
         (

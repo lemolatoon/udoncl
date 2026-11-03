@@ -18,12 +18,13 @@ namespace Lemolatoon.Udoncl.Editor.Tests
     /// </summary>
     public sealed class PublicMnistOnnxRuntimeLifecycleTests
     {
-        private const string GeneratedRoot = "Assets/udoncl-generated/onnx_mnist";
-        private const string RunEntry = "RunMnist";
+        private const string GeneratedRoot = "Assets/udoncl-generated/generic_onnx_mnist";
+        private const string RunEntry = "StartRun";
         private string repository;
         private string artifactDirectory;
         private string serializedProgramPath;
         private HashSet<string> serializedProgramsBefore;
+        private ValidatedArtifact artifact;
 
         [OneTimeSetUp]
         public void ImportPublicMnistArtifact()
@@ -38,13 +39,15 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                     "udoncl",
                     "tests",
                     "cmake-package",
-                    "onnx-mnist-consumer",
+                    "onnx-consumer",
                     "udoncl",
-                    "onnx-mnist",
+                    "onnx-host-link-probe",
                     "artifact"
                 )
             );
             Assert.That(File.Exists(Path.Combine(artifactDirectory, "manifest.json")));
+            artifact = ArtifactManifestValidator.Validate(artifactDirectory);
+            Assert.AreEqual("generic_onnx_mnist", artifact.ProgramName);
             Assert.AreEqual(GeneratedRoot, UdonclArtifactImporter.Import(artifactDirectory));
 
             string programPath = GeneratedRoot + "/Programs/host_program.asset";
@@ -75,45 +78,31 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             Set(heap, program, "__vrc_raw_heap", rawHeap);
 
             Dictionary<int, RenderTexture> buffers = new Dictionary<int, RenderTexture>();
-            string[] bufferNames =
+            Assert.AreEqual(15, artifact.DeviceBuffers.Count);
+            foreach (ValidatedDeviceBuffer descriptor in artifact.DeviceBuffers)
             {
-                "dnn_pointwise_self",
-                "dnn_pointwise_other",
-                "dnn_pointwise_output",
-                "dnn_rms_arena_partial",
-                "blas_input",
-                "blas_output",
-            };
-            for (int index = 0; index < bufferNames.Length; ++index)
-            {
-                int id = index + 1;
                 RenderTexture buffer = Load<RenderTexture>(
                     "RenderTextures/"
-                        + UdonclArtifactImporter.DeviceBufferFileName(id, bufferNames[index])
+                        + UdonclArtifactImporter.DeviceBufferFileName(
+                            descriptor.Id,
+                            descriptor.Name
+                        )
                 );
-                buffers.Add(id, buffer);
-                Set(heap, program, "__udoncl_buffer_" + id, buffer);
+                buffers.Add(descriptor.Id, buffer);
+                Set(heap, program, descriptor.HeapSlot, buffer);
                 Clear(buffer);
             }
 
-            int[] kernelIds = { 232, 234, 233, 231, 1 };
-            string[] kernelNames =
-            {
-                "udondnn_large_convolution_forward",
-                "udondnn_large_op_tensor",
-                "udondnn_large_activation_forward",
-                "udondnn_large_pooling_forward",
-                "udonblas_sgemm",
-            };
             Dictionary<int, Material> materials = new Dictionary<int, Material>();
-            for (int index = 0; index < kernelIds.Length; ++index)
+            foreach (ValidatedKernel kernel in artifact.Kernels)
             {
                 Material material = Load<Material>(
-                    "Materials/kernel_" + kernelIds[index] + "_" + kernelNames[index] + ".mat"
+                    "Materials/kernel_" + kernel.Id + "_" + kernel.Name + ".mat"
                 );
-                materials.Add(kernelIds[index], material);
-                Set(heap, program, "__udoncl_kernel_material_" + kernelIds[index], material);
+                materials.Add(kernel.Id, material);
+                Set(heap, program, "__udoncl_kernel_material_" + kernel.Id, material);
             }
+            CollectionAssert.AreEquivalent(new[] { 1, 2, 231, 232, 233, 234 }, materials.Keys);
             Material copyMaterial = Load<Material>("Materials/buffer-copy.mat");
 
             float[] input = ReadFloats(
@@ -125,11 +114,12 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             Assert.AreEqual(28 * 28, input.Length);
             for (int index = 0; index < input.Length; ++index)
             {
-                Set(heap, program, "__0_index__param", index);
+                Set(heap, program, "__0_input_index__param", 0);
+                Set(heap, program, "__0_element_index__param", index);
                 Set(heap, program, "__0_value__param", input[index]);
-                Execute(vm, program, "__0_WriteMnistInput");
+                Execute(vm, program, "__0_TryWriteInputFloat");
                 Assert.AreEqual(0, Get<int>(heap, program, "__udoncl_status_1"));
-                Assert.AreEqual(0, Get<int>(heap, program, "__0___0_WriteMnistInput__ret"));
+                Assert.AreEqual(0, Get<int>(heap, program, "__0___0_TryWriteInputFloat__ret"));
             }
 
             Set(heap, program, "__udoncl_async_resume_state", 0);
@@ -144,11 +134,10 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 copyMaterial
             );
             int runStatus = Get<int>(heap, program, "__udoncl_status_2");
-            int runResult = Get<int>(heap, program, "__0_RunMnist__ret");
+            int runResult = Get<int>(heap, program, "__0_StartRun__ret");
             TestContext.WriteLine(
                 $"commands={commands} status={runStatus} result={runResult} resume={Get<int>(heap, program, "__udoncl_async_resume_state")}"
             );
-            TestContext.WriteLine("run_i32_slots=" + DumpRunIntSlots(heap, program));
             Assert.AreEqual(0, runStatus, "MNIST inference returned an OpenCL error status.");
             Assert.AreEqual(0, runResult, "RunMnist returned an error.");
             Assert.Greater(commands, 0, "MNIST inference emitted no transfer commands.");
@@ -156,10 +145,11 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             float[] actual = new float[10];
             for (int index = 0; index < actual.Length; ++index)
             {
-                Set(heap, program, "__1_index__param", index);
-                Execute(vm, program, "__0_ReadMnistOutput");
+                Set(heap, program, "__0_output_index__param", 0);
+                Set(heap, program, "__1_element_index__param", index);
+                Execute(vm, program, "__0_ReadOutputFloat");
                 Assert.AreEqual(0, Get<int>(heap, program, "__udoncl_status_3"));
-                actual[index] = Get<float>(heap, program, "__0___0_ReadMnistOutput__ret");
+                actual[index] = Get<float>(heap, program, "__0___0_ReadOutputFloat__ret");
             }
 
             float[] expected = ReadFloats(
@@ -237,7 +227,6 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                         TestContext.WriteLine(
                             $"async_step iteration={iteration} resume={resume} kind=immediate"
                         );
-                        LogDispatchState(resume, buffers, materials);
                         Set(heap, program, "__udoncl_async_completion_status", 0);
                         continue;
                     }
@@ -261,9 +250,6 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 if (kind == 1)
                 {
                     Upload(buffer, offset, size, pointer, rawHeap, copyMaterial);
-                    TestContext.WriteLine(
-                        $"async_upload iteration={iteration} buffer={bufferId} {TextureStats(buffer, offset / 4, size / 4)}"
-                    );
                 }
                 else if (kind == 2)
                 {
@@ -454,20 +440,6 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             return heap.GetHeapVariable<T>(program.SymbolTable.GetAddressFromSymbol(symbol));
         }
 
-        private static string DumpRunIntSlots(IUdonHeap heap, IUdonProgram program)
-        {
-            List<string> values = new List<string>();
-            for (int index = 0; index <= 44; ++index)
-            {
-                string symbol = "__vrc_f2_r_SystemInt32_" + index;
-                object value = heap.GetHeapVariable<object>(
-                    program.SymbolTable.GetAddressFromSymbol(symbol)
-                );
-                values.Add(index + "=" + (value == null ? "null" : value.ToString()));
-            }
-            return string.Join(",", values);
-        }
-
         private static float HeapFloat(int[] heap, int pointer)
         {
             int bits =
@@ -476,92 +448,6 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 | ((heap[pointer + 2] & 255) << 16)
                 | ((heap[pointer + 3] & 255) << 24);
             return BitConverter.Int32BitsToSingle(bits);
-        }
-
-        private static void LogDispatchState(
-            int resume,
-            IReadOnlyDictionary<int, RenderTexture> buffers,
-            IReadOnlyDictionary<int, Material> materials
-        )
-        {
-            if (resume == 4)
-            {
-                Material material = materials[232];
-                TestContext.WriteLine(
-                    "conv_material="
-                        + string.Join(
-                            ",",
-                            new[]
-                            {
-                                material.GetInteger("_VRC_Arg4"),
-                                material.GetInteger("_VRC_Arg5"),
-                                material.GetInteger("_VRC_Arg6"),
-                                material.GetInteger("_VRC_Arg7"),
-                                material.GetInteger("_VRC_Arg8"),
-                                material.GetInteger("_VRC_Arg9"),
-                                material.GetInteger("_VRC_Arg10"),
-                                material.GetInteger("_VRC_Arg11"),
-                                material.GetInteger("_VRC_Arg12"),
-                                material.GetInteger("_VRC_Arg13"),
-                            }
-                        )
-                        + $",alpha={material.GetFloat("_VRC_Arg14"):R},beta={material.GetFloat("_VRC_Arg15"):R}"
-                );
-                TestContext.WriteLine(
-                    $"conv_textures={ReferenceEquals(material.GetTexture("_VRC_Input"), buffers[1])},{ReferenceEquals(material.GetTexture("_VRC_Input1"), buffers[2])},{ReferenceEquals(material.GetTexture("_VRC_Input2"), buffers[4])}"
-                );
-            }
-            if (resume == 20)
-            {
-                Material material = materials[1];
-                TestContext.WriteLine(
-                    "dense_material="
-                        + string.Join(
-                            ",",
-                            new[]
-                            {
-                                material.GetInteger("_VRC_Arg2"),
-                                material.GetInteger("_VRC_Arg3"),
-                                material.GetInteger("_VRC_Arg4"),
-                                material.GetInteger("_VRC_Arg5"),
-                                material.GetInteger("_VRC_Arg6"),
-                                material.GetInteger("_VRC_Arg7"),
-                                material.GetInteger("_VRC_Arg8"),
-                                material.GetInteger("_VRC_Arg9"),
-                            }
-                        )
-                        + $",alpha={material.GetFloat("_VRC_Arg10"):R},beta={material.GetFloat("_VRC_Arg11"):R}"
-                );
-                TestContext.WriteLine(
-                    $"dense_texture={ReferenceEquals(material.GetTexture("_VRC_Input"), buffers[5])}"
-                );
-            }
-            int bufferId = resume == 20 ? 6 : 3;
-            int offsetWords = resume == 20 ? 768 : 0;
-            int words =
-                resume == 17 ? 144
-                : resume == 20 ? 10
-                : 9216;
-            TestContext.WriteLine(
-                $"dispatch_output resume={resume} {TextureStats(buffers[bufferId], offsetWords, words)}"
-            );
-        }
-
-        private static string TextureStats(RenderTexture texture, int offsetWords, int words)
-        {
-            Color32[] pixels = ReadPixels(texture);
-            int nonzero = 0;
-            float maximumAbsolute = 0.0f;
-            for (int index = 0; index < words; ++index)
-            {
-                Color32 pixel = pixels[offsetWords + index];
-                int bits = pixel.r | (pixel.g << 8) | (pixel.b << 16) | (pixel.a << 24);
-                float value = BitConverter.Int32BitsToSingle(bits);
-                if (bits != 0)
-                    ++nonzero;
-                maximumAbsolute = Mathf.Max(maximumAbsolute, Mathf.Abs(value));
-            }
-            return $"nonzero={nonzero}/{words} max_abs={maximumAbsolute:R}";
         }
 
         private static void Set<T>(IUdonHeap heap, IUdonProgram program, string symbol, T value)

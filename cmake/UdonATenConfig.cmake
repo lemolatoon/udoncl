@@ -21,6 +21,8 @@ if(NOT TARGET udonaten_host)
   target_include_directories(udonaten_host INTERFACE
     "${_UDONATEN_INCLUDE_DIR}"
     "${UdonDNN_INCLUDE_DIRS}")
+  target_compile_definitions(udonaten_host INTERFACE
+    UDONATEN_AOT_DIRECT_LARGE=1)
 endif()
 
 if(NOT TARGET udonaten)

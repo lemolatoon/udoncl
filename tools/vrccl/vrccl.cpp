@@ -317,8 +317,9 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
     dispatches.push_back(operation);
   });
   if (allocations.size() > buffers.size()) {
-    module.emitError("Unity library has more buffer allocation sites than "
-                     "configured Device buffers");
+    module.emitError() << "Unity library has " << allocations.size()
+                       << " buffer allocation sites but only " << buffers.size()
+                       << " configured Device buffers";
     return failure();
   }
   OpBuilder builder(module.getContext());
@@ -624,7 +625,8 @@ bool configureUnityExports(ModuleOp module, const json::Object &config) {
       if (callee->hasAttr("vrc.intrinsic"))
         continue;
       if (callee.isExternal()) {
-        call.emitError("Unity library helper requires a definition");
+        call.emitError("Unity library helper requires a definition: ")
+            << call.getCallee();
         return false;
       }
       if (reachable.insert(call.getCallee().str()).second)
@@ -1898,6 +1900,17 @@ int main(int argc, char **argv) {
     unityBuffers = std::move(*parsedBuffers);
     if (!deviceLLVM.empty()) {
       unityDeviceModule = ModuleOp::create(UnknownLoc::get(&context));
+      if (!unityBuffers.empty() &&
+          llvm::all_of(unityBuffers, [&](const UnityBuffer &buffer) {
+            return buffer.width == unityBuffers.front().width &&
+                   buffer.height == unityBuffers.front().height;
+          }))
+        (*unityDeviceModule)
+            ->setAttr("vrc.texture_shape",
+                      DenseI32ArrayAttr::get(
+                          &context,
+                          {static_cast<int32_t>(unityBuffers.front().width),
+                           static_cast<int32_t>(unityBuffers.front().height)}));
       unityGatherProfile = true;
       for (const json::Object *deviceConfig : unityDeviceConfigs) {
         bool gather = deviceConfig->getString("profile") == "gather-f32";

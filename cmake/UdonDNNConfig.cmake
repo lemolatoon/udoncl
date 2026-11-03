@@ -48,7 +48,8 @@ if(NOT TARGET udondnn_host)
     "${_UDONATEN_INCLUDE_DIR}"
     "${_UDONDNN_GENERATED_DIR}")
   target_compile_definitions(udondnn_host INTERFACE
-    UDONDNN_AOT_DIRECT_DISPATCH=1)
+    UDONDNN_AOT_DIRECT_DISPATCH=1
+    UDONDNN_AOT_LARGE_ONLY=1)
 endif()
 
 if(NOT TARGET udondnn_device)

@@ -27,6 +27,14 @@ struct LowerGatherDevicePass
   void runOnOperation() override {
     auto root = getOperation();
     IRRewriter b(&getContext());
+    auto textureShape =
+        root->getAttrOfType<DenseI32ArrayAttr>("vrc.texture_shape");
+    if (textureShape && (textureShape.size() != 2 || textureShape[0] <= 0 ||
+                         textureShape[1] <= 0)) {
+      root.emitError("invalid physical texture shape");
+      signalPassFailure();
+      return;
+    }
     SmallVector<gpu::GPUModuleOp> modules;
     llvm::SmallDenseSet<int64_t> ids;
     for (auto module : root.getOps<gpu::GPUModuleOp>()) {
@@ -84,23 +92,26 @@ struct LowerGatherDevicePass
               isa<MemRefType>(source.getArgument(i).getType()) ? "buffer"
               : source.getArgument(i).getType().isF32()        ? "f32"
                                                                : "i32"));
-        auto *kernel = make(
-            b, loc, fragment::KernelOp::getOperationName(), {}, {},
-            {b.getNamedAttr(
-                 "sym_name",
-                 b.getStringAttr(
-                     (module.getName() + "__" + source.getName()).str())),
-             b.getNamedAttr("entry_name", b.getStringAttr(source.getName())),
-             b.getNamedAttr("source_module", b.getStringAttr(module.getName())),
-             b.getNamedAttr("kernel_id", id),
-             b.getNamedAttr("argument_kinds", b.getArrayAttr(kinds)),
-             b.getNamedAttr("global_size", grid),
-             b.getNamedAttr("local_size", b.getDenseI32ArrayAttr({1, 1, 1})),
-             b.getNamedAttr("global_offset", b.getDenseI32ArrayAttr({0, 0, 0})),
-             b.getNamedAttr("vrc.profile", b.getStringAttr("gather-f32")),
-             b.getNamedAttr("vrc.words", words),
-             b.getNamedAttr("vrc.gather_proven", b.getUnitAttr())},
-            1);
+        SmallVector<NamedAttribute> kernelAttrs{
+            b.getNamedAttr(
+                "sym_name",
+                b.getStringAttr(
+                    (module.getName() + "__" + source.getName()).str())),
+            b.getNamedAttr("entry_name", b.getStringAttr(source.getName())),
+            b.getNamedAttr("source_module", b.getStringAttr(module.getName())),
+            b.getNamedAttr("kernel_id", id),
+            b.getNamedAttr("argument_kinds", b.getArrayAttr(kinds)),
+            b.getNamedAttr("global_size", grid),
+            b.getNamedAttr("local_size", b.getDenseI32ArrayAttr({1, 1, 1})),
+            b.getNamedAttr("global_offset", b.getDenseI32ArrayAttr({0, 0, 0})),
+            b.getNamedAttr("vrc.profile", b.getStringAttr("gather-f32")),
+            b.getNamedAttr("vrc.words", words),
+            b.getNamedAttr("vrc.gather_proven", b.getUnitAttr())};
+        if (textureShape)
+          kernelAttrs.push_back(
+              b.getNamedAttr("vrc.texture_shape", textureShape));
+        auto *kernel = make(b, loc, fragment::KernelOp::getOperationName(), {},
+                            {}, kernelAttrs, 1);
         auto *body = new Block;
         kernel->getRegion(0).push_back(body);
         b.setInsertionPointToEnd(body);
@@ -158,6 +169,21 @@ struct LowerGatherDevicePass
         auto *coord =
             make(b, loc, fragment::FragmentCoordOp::getOperationName(),
                  TypeRange{b.getI32Type(), b.getI32Type()}, {}, {});
+        int32_t physicalWidth =
+            textureShape ? textureShape.asArrayRef()[0] : grid.asArrayRef()[0];
+        auto physicalWidthValue =
+            arith::ConstantIntOp::create(b, loc, physicalWidth, 32);
+        Value physicalLinear = arith::AddIOp::create(
+            b, loc,
+            arith::MulIOp::create(b, loc, coord->getResult(1),
+                                  physicalWidthValue),
+            coord->getResult(0));
+        auto logicalWidth =
+            arith::ConstantIntOp::create(b, loc, grid.asArrayRef()[0], 32);
+        Value logicalX =
+            arith::RemUIOp::create(b, loc, physicalLinear, logicalWidth);
+        Value logicalY =
+            arith::DivUIOp::create(b, loc, physicalLinear, logicalWidth);
         for (auto &op : source.getBody().front())
           if (!isa<gpu::ReturnOp, memref::StoreOp>(op))
             b.clone(op, mapping);
@@ -174,7 +200,7 @@ struct LowerGatherDevicePass
           }
           b.setInsertionPoint(op);
           b.replaceOpWithNewOp<arith::IndexCastOp>(
-              op, b.getIndexType(), coord->getResult(coordinate));
+              op, b.getIndexType(), coordinate == 0 ? logicalX : logicalY);
         }
         SmallVector<memref::LoadOp> loads;
         pass->walk([&](memref::LoadOp op) { loads.push_back(op); });
@@ -191,8 +217,8 @@ struct LowerGatherDevicePass
           b.setInsertionPoint(op);
           Value x = arith::IndexCastOp::create(b, op.getLoc(), b.getI32Type(),
                                                op.getIndices()[0]);
-          auto width = arith::ConstantIntOp::create(b, op.getLoc(),
-                                                    grid.asArrayRef()[0], 32);
+          auto width =
+              arith::ConstantIntOp::create(b, op.getLoc(), physicalWidth, 32);
           Value y = arith::DivUIOp::create(b, op.getLoc(), x, width);
           x = arith::RemUIOp::create(b, op.getLoc(), x, width);
           auto *texel = make(
