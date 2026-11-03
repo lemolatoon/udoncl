@@ -11,6 +11,13 @@ target_compile_definitions(opencl-aot-runtime PRIVATE
   CL_TARGET_OPENCL_VERSION=120
   UDONCL_AOT_ENABLE_MNIST=1)
 add_test(NAME opencl-aot-runtime COMMAND opencl-aot-runtime)
+add_executable(udondnn-large-convolution-kernel
+  boundary/udondnn_large_convolution.cpp)
+target_compile_features(udondnn-large-convolution-kernel PRIVATE cxx_std_20)
+set_target_properties(udondnn-large-convolution-kernel PROPERTIES
+  CXX_EXTENSIONS OFF)
+add_test(NAME udondnn-large-convolution-kernel
+  COMMAND udondnn-large-convolution-kernel)
 add_executable(udondnn-large-pooling-kernel
   boundary/udondnn_large_pooling.cpp)
 target_compile_features(udondnn-large-pooling-kernel PRIVATE cxx_std_20)
@@ -95,6 +102,12 @@ add_test(NAME udondnn-large-pooling-lowering
     "${CMAKE_CURRENT_SOURCE_DIR}/boundary/udondnn_large_pooling.py"
     $<TARGET_FILE:vrccl> "${VRC_TEST_CLANG}"
     "${PROJECT_BINARY_DIR}/tests/udondnn-large-pooling"
+)
+add_test(NAME udondnn-large-convolution-lowering
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/boundary/udondnn_large_convolution.py"
+    $<TARGET_FILE:vrccl> "${VRC_TEST_CLANG}"
+    "${PROJECT_BINARY_DIR}/tests/udondnn-large-convolution"
 )
 add_test(NAME mnist-cnn-native
   COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/boundary/mnist_cnn.py"

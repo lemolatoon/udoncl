@@ -103,6 +103,7 @@ static cl_context context;
 static cl_command_queue queue;
 static cl_program program;
 static cl_kernel convolution_kernel;
+static cl_kernel large_convolution_kernel;
 static cl_kernel activation_kernel;
 static cl_kernel pooling_kernel;
 static cl_kernel large_pooling_kernel;
@@ -252,6 +253,8 @@ static void clear_objects(void) {
     clReleaseKernel(activation_kernel);
   if (convolution_kernel)
     clReleaseKernel(convolution_kernel);
+  if (large_convolution_kernel)
+    clReleaseKernel(large_convolution_kernel);
   if (program)
     clReleaseProgram(program);
   if (output_buffer)
@@ -285,6 +288,7 @@ static void clear_objects(void) {
   if (context)
     clReleaseContext(context);
   convolution_kernel = 0;
+  large_convolution_kernel = 0;
   activation_kernel = 0;
   pooling_kernel = 0;
   large_pooling_kernel = 0;
@@ -872,8 +876,8 @@ output_dimensions(const ConvolutionDescriptor *convolution,
   *c = filter->k;
   *h = 1 + numerator_h / convolution->stride_h;
   *w = 1 + numerator_w / convolution->stride_w;
-  if (*n > 15 || *c > 15 || *h > 15 || *w > 15 ||
-      *n * *c * *h * *w > UDONDNN_CONV_MAX_OUTPUT_WORDS)
+  if (*n <= 0 || *c <= 0 || *h <= 0 || *w <= 0 ||
+      *n * *c * *h * *w > UDONDNN_DESCRIPTOR_MAX_WORDS)
     return UDONDNN_STATUS_NOT_SUPPORTED;
   return UDONDNN_STATUS_SUCCESS;
 }
@@ -975,6 +979,81 @@ udondnnStatus_t udondnnConvolutionForward(
   filter_words =
       filter_info->k * filter_info->c * filter_info->h * filter_info->w;
   output_words = n * c * h * w;
+  if (input_words > UDONDNN_REGION_WORDS ||
+      filter_words > UDONDNN_REGION_WORDS ||
+      output_words > UDONDNN_REGION_WORDS) {
+    int input_ch, output_ch, filter_hw, pad_hw, stride_hw, dilation_hw, mode;
+    size_t large_global[2] = {8192, 2};
+    size_t large_local[2] = {1, 1};
+    if (input_words > UDONATEN_ARENA_POINTWISE_WORDS ||
+        filter_words > UDONATEN_ARENA_POINTWISE_WORDS ||
+        output_words > UDONATEN_ARENA_POINTWISE_WORDS ||
+        input_info->c * filter_info->h * filter_info->w > 256)
+      return UDONDNN_STATUS_NOT_SUPPORTED;
+    input_ch = input_info->c | (input_info->h << 16);
+    output_ch = c | (h << 16);
+    filter_hw = filter_info->h | (filter_info->w << 16);
+    pad_hw = convolution_info->pad_h | (convolution_info->pad_w << 16);
+    stride_hw = convolution_info->stride_h | (convolution_info->stride_w << 16);
+    dilation_hw =
+        convolution_info->dilation_h | (convolution_info->dilation_w << 16);
+    mode = (int)convolution_info->mode;
+    if (!large_convolution_kernel) {
+      large_convolution_kernel = clCreateKernel(
+          program, "udondnn_large_convolution_forward", &cl_status);
+      if (cl_status != CL_SUCCESS ||
+          clSetKernelArg(large_convolution_kernel, 0,
+                         sizeof(arena_pointwise_self_buffer),
+                         &arena_pointwise_self_buffer) != CL_SUCCESS ||
+          clSetKernelArg(large_convolution_kernel, 1,
+                         sizeof(arena_pointwise_other_buffer),
+                         &arena_pointwise_other_buffer) != CL_SUCCESS ||
+          clSetKernelArg(large_convolution_kernel, 2,
+                         sizeof(arena_rms_partial_buffer),
+                         &arena_rms_partial_buffer) != CL_SUCCESS ||
+          clSetKernelArg(large_convolution_kernel, 3,
+                         sizeof(arena_pointwise_output_buffer),
+                         &arena_pointwise_output_buffer) != CL_SUCCESS)
+        return UDONDNN_STATUS_EXECUTION_FAILED;
+    }
+#define SET_LARGE_CONV_ARGUMENT(slot, value)                                   \
+  do {                                                                         \
+    if (clSetKernelArg(large_convolution_kernel, slot, sizeof(value),          \
+                       &(value)) != CL_SUCCESS)                                \
+      return UDONDNN_STATUS_EXECUTION_FAILED;                                  \
+  } while (0)
+    SET_LARGE_CONV_ARGUMENT(4, output_words);
+    SET_LARGE_CONV_ARGUMENT(5, input_ch);
+    SET_LARGE_CONV_ARGUMENT(6, input_info->w);
+    SET_LARGE_CONV_ARGUMENT(7, output_ch);
+    SET_LARGE_CONV_ARGUMENT(8, w);
+    SET_LARGE_CONV_ARGUMENT(9, filter_hw);
+    SET_LARGE_CONV_ARGUMENT(10, pad_hw);
+    SET_LARGE_CONV_ARGUMENT(11, stride_hw);
+    SET_LARGE_CONV_ARGUMENT(12, dilation_hw);
+    SET_LARGE_CONV_ARGUMENT(13, mode);
+    SET_LARGE_CONV_ARGUMENT(14, *alpha);
+    SET_LARGE_CONV_ARGUMENT(15, *beta);
+#undef SET_LARGE_CONV_ARGUMENT
+    if (clEnqueueWriteBuffer(queue, arena_pointwise_self_buffer, CL_TRUE, 0,
+                             input_words * sizeof(float), input, 0, 0,
+                             0) != CL_SUCCESS ||
+        clEnqueueWriteBuffer(queue, arena_pointwise_other_buffer, CL_TRUE, 0,
+                             filter_words * sizeof(float), filter, 0, 0,
+                             0) != CL_SUCCESS ||
+        clEnqueueWriteBuffer(queue, arena_rms_partial_buffer, CL_TRUE, 0,
+                             output_words * sizeof(float), output, 0, 0,
+                             0) != CL_SUCCESS ||
+        clEnqueueNDRangeKernel(queue, large_convolution_kernel, 2, 0,
+                               large_global, large_local, 0, 0,
+                               0) != CL_SUCCESS ||
+        clEnqueueReadBuffer(queue, arena_pointwise_output_buffer, CL_TRUE, 0,
+                            output_words * sizeof(float), output, 0, 0,
+                            0) != CL_SUCCESS ||
+        clFinish(queue) != CL_SUCCESS)
+      return UDONDNN_STATUS_EXECUTION_FAILED;
+    return UDONDNN_STATUS_SUCCESS;
+  }
   if (!packable_shape(input_info) || input_words > UDONDNN_REGION_WORDS ||
       filter_words > UDONDNN_REGION_WORDS ||
       output_words > UDONDNN_REGION_WORDS)
