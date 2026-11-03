@@ -134,6 +134,36 @@ control_flow_udon = run([
 assert 'udonasm.jump_if_false' in control_flow_udon
 assert 'SystemInt32.__op_LessThan__SystemInt32_SystemInt32__SystemBoolean' in control_flow_udon
 
+structured_control_flow_source = r'''
+module {
+  func.func @choose(%condition_value: i32, %value: i32) -> i32 attributes {vrc.export_id = 5 : i32} {
+    %zero = arith.constant 0 : i32
+    %condition = arith.cmpi ne, %condition_value, %zero : i32
+    %poison = ub.poison : i32
+    %result = scf.if %condition -> (i32) {
+      scf.yield %value : i32
+    } else {
+      scf.yield %poison : i32
+    }
+    return %result : i32
+  }
+}
+'''
+structured_host = run([
+    opt,
+    '--pass-pipeline=builtin.module(' + host_pass + ')',
+    '--verify-each',
+], structured_control_flow_source)
+assert 'scf.' not in structured_host and 'ub.poison' not in structured_host
+assert 'cf.cond_br ' in structured_host
+structured_udon = run([
+    opt,
+    '--pass-pipeline=builtin.module(' + host_pass +
+    ',vrc-lower-udonhl-to-udonasm)',
+    '--verify-each',
+], structured_control_flow_source)
+assert 'udonasm.jump_if_false' in structured_udon
+
 public_boolean = r'''
 module {
   func.func @identity(%value: i1) -> i32 attributes {vrc.export_id = 4 : i32} {

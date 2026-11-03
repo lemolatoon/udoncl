@@ -1,10 +1,13 @@
 #include "VRC/Conversion/Passes.h"
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
 #include "VRC/Dialect/VRC/VRCDialect.h"
+#include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "llvm/ADT/DenseSet.h"
 using namespace mlir;
@@ -56,6 +59,38 @@ struct LowerHostToUdonHLPass
     : impl::LowerHostToUdonHLPassBase<LowerHostToUdonHLPass> {
   void runOnOperation() override {
     auto module = getOperation();
+    {
+      ConversionTarget target(getContext());
+      target.addIllegalDialect<scf::SCFDialect>();
+      target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
+      RewritePatternSet patterns(&getContext());
+      populateSCFToControlFlowConversionPatterns(patterns);
+      if (failed(
+              applyPartialConversion(module, target, std::move(patterns)))) {
+        module.emitError("failed to lower recovered structured Host control flow");
+        signalPassFailure();
+        return;
+      }
+    }
+    SmallVector<ub::PoisonOp> poisonValues;
+    module.walk([&](ub::PoisonOp poison) { poisonValues.push_back(poison); });
+    for (ub::PoisonOp poison : poisonValues) {
+      Type type = poison.getType();
+      if (!internalScalar(type)) {
+        poison.emitError("unsupported poison type in recovered Host code");
+        signalPassFailure();
+        return;
+      }
+      // Udon has no poison value. A zero realization is valid for the
+      // undefined C executions represented by LLVM poison and keeps valid C
+      // paths deterministic; public ABI validation below still rejects types
+      // that cannot be represented by the target.
+      OpBuilder builder(poison);
+      auto zero = arith::ConstantOp::create(builder, poison.getLoc(), type,
+                                            builder.getZeroAttr(type));
+      poison.replaceAllUsesWith(zero.getResult());
+      poison.erase();
+    }
     if (auto abi = module->getAttrOfType<IntegerAttr>("vrc.abi_version"))
       if (abi.getInt() != 1) {
         module.emitError("unsupported Host/Device ABI version");

@@ -359,10 +359,10 @@ private:
         return global.emitError(
             "raw Udon globals currently require internal address-space zero");
       Type type = global.getStorageType();
-      auto bytes = dyn_cast_or_null<DenseI8ArrayAttr>(
-          global.getInitialValueAttr());
-      bool scalar = type.isInteger(32) || type.isF32() ||
-                    isa<host::PtrType>(type);
+      auto bytes =
+          dyn_cast_or_null<DenseI8ArrayAttr>(global.getInitialValueAttr());
+      bool scalar =
+          type.isInteger(32) || type.isF32() || isa<host::PtrType>(type);
       if (!scalar && !bytes)
         return global.emitError(
             "aggregate raw Udon globals require a serialized byte initializer");
@@ -882,8 +882,7 @@ private:
           continue;
         }
         if (auto memcpy = dyn_cast<host::MemcpyOp>(operation)) {
-          std::string destination =
-              valueSlots.lookup(memcpy.getDestination());
+          std::string destination = valueSlots.lookup(memcpy.getDestination());
           std::string source = valueSlots.lookup(memcpy.getSource());
           std::string byteSize = valueSlots.lookup(memcpy.getByteSize());
           if (destination.empty() || source.empty() || byteSize.empty())
@@ -1185,8 +1184,7 @@ private:
 
   void emitRawMemcpy(Location location, StringRef destination, StringRef source,
                      StringRef byteCount) {
-    std::string prefix =
-        "__vrc_raw_memcpy_" + std::to_string(rawAccessIndex++);
+    std::string prefix = "__vrc_raw_memcpy_" + std::to_string(rawAccessIndex++);
     std::string counter = prefix + "_counter";
     std::string one = prefix + "_one";
     std::string condition = prefix + "_condition";
@@ -1205,26 +1203,23 @@ private:
     emitPush(location, counter);
     emitPush(location, byteCount);
     emitPush(location, condition);
-    emitExtern(location,
-               "SystemInt32.__op_LessThan__SystemInt32_SystemInt32__"
-               "SystemBoolean");
+    emitExtern(location, "SystemInt32.__op_LessThan__SystemInt32_SystemInt32__"
+                         "SystemBoolean");
     emitPush(location, condition);
-    Operation *done = create(
-        location, vm::JumpIfFalseOp::getOperationName(),
-        {builder.getNamedAttr("target", builder.getI64IntegerAttr(0))});
+    Operation *done =
+        create(location, vm::JumpIfFalseOp::getOperationName(),
+               {builder.getNamedAttr("target", builder.getI64IntegerAttr(0))});
     address += 8;
     emitPush(location, source);
     emitPush(location, counter);
     emitPush(location, sourceIndex);
-    emitExtern(location,
-               "SystemInt32.__op_Addition__SystemInt32_SystemInt32__"
-               "SystemInt32");
+    emitExtern(location, "SystemInt32.__op_Addition__SystemInt32_SystemInt32__"
+                         "SystemInt32");
     emitPush(location, destination);
     emitPush(location, counter);
     emitPush(location, destinationIndex);
-    emitExtern(location,
-               "SystemInt32.__op_Addition__SystemInt32_SystemInt32__"
-               "SystemInt32");
+    emitExtern(location, "SystemInt32.__op_Addition__SystemInt32_SystemInt32__"
+                         "SystemInt32");
     emitPush(location, rawHeapSlot);
     emitPush(location, sourceIndex);
     emitPush(location, byte);
@@ -1237,9 +1232,8 @@ private:
     emitPush(location, counter);
     emitPush(location, one);
     emitPush(location, next);
-    emitExtern(location,
-               "SystemInt32.__op_Addition__SystemInt32_SystemInt32__"
-               "SystemInt32");
+    emitExtern(location, "SystemInt32.__op_Addition__SystemInt32_SystemInt32__"
+                         "SystemInt32");
     emitCopy(location, next, counter);
     emitJump(location, static_cast<int64_t>(loopAddress));
     done->setAttr("target",

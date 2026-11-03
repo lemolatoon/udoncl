@@ -2,8 +2,8 @@
 #define VRC_BOUNDARY_PASSES
 include "mlir/Pass/PassBase.td"
 def LowerHostToUdonHLPass : Pass<"vrc-lower-host-to-udonhl", "mlir::ModuleOp"> {
-  let summary = "Validate a small host ABI and lower direct C calls to udonhl.call";
-  let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "::vrc::vrc::VRCDialect"];
+  let summary = "Lower recovered structured Host control flow and direct C calls to UdonHL";
+  let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "::vrc::vrc::VRCDialect", "mlir::cf::ControlFlowDialect", "mlir::arith::ArithDialect"];
 }
 def SubstituteRuntimeIntrinsicsPass : Pass<"vrc-substitute-runtime-intrinsics", "mlir::ModuleOp"> {
   let summary = "Replace typed __vrc_* calls after UdonHL construction; preserve C runtime ownership";
