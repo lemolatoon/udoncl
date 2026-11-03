@@ -156,10 +156,15 @@ def main():
     ])
     onnx_dense_root = onnx_dense_consumer / 'udoncl/onnx-mnist-dense'
     onnx_dense_host = onnx_dense_consumer / 'udoncl-onnx/mnist_dense_host/host.c'
+    onnx_dense_mlir = onnx_dense_consumer / 'udoncl-onnx/mnist_dense_host/host.mlir'
     assert onnx_dense_host.is_file()
+    assert onnx_dense_mlir.is_file()
     onnx_dense_source_text = onnx_dense_host.read_text(encoding='utf-8')
     assert 'm=1, n=10, k=144' not in onnx_dense_source_text
     assert 'UDONBLAS_OP_N, UDONBLAS_OP_N, 1, 10, 144' in onnx_dense_source_text
+    onnx_dense_mlir_text = onnx_dense_mlir.read_text(encoding='utf-8')
+    assert 'udoncl.onnx_lowering = "library-calls-v1"' in onnx_dense_mlir_text
+    assert 'func.call @udonblasSgemm' in onnx_dense_mlir_text
     assert not list(onnx_dense_consumer.rglob('execution-plan.json'))
     onnx_dense_manifest = json.loads(
         (onnx_dense_root / 'artifact/manifest.json').read_text(encoding='utf-8')

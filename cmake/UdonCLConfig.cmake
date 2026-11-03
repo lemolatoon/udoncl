@@ -134,11 +134,15 @@ function(udoncl_add_onnx_host_library target)
   find_package(Python3 3.12 REQUIRED COMPONENTS Interpreter)
   set(_generated_dir "${CMAKE_CURRENT_BINARY_DIR}/udoncl-onnx/${target}")
   set(_generated_host "${_generated_dir}/host.c")
+  set(_generated_mlir "${_generated_dir}/host.mlir")
   file(MAKE_DIRECTORY "${_generated_dir}")
   if(_ARG_PROFILE)
     set(_command "${Python3_EXECUTABLE}" "${_UDONCL_ONNX_HOST_COMPILER}"
                  "${_model}" --profile "${_ARG_PROFILE}"
                  -o "${_generated_host}")
+    if(_ARG_PROFILE STREQUAL "mnist-dense")
+      list(APPEND _command --mlir-output "${_generated_mlir}")
+    endif()
   else()
     set(_command "${Python3_EXECUTABLE}" "${_UDONCL_ONNX_COMPILER}"
                  "${_model}" --execution-provider "${_ARG_EXECUTION_PROVIDER}"
@@ -159,6 +163,10 @@ function(udoncl_add_onnx_host_library target)
   set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_MODEL "${_model}")
   set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_HOST
                "${_generated_host}")
+  if(_ARG_PROFILE STREQUAL "mnist-dense")
+    set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_HOST_MLIR
+                 "${_generated_mlir}")
+  endif()
 endfunction()
 
 if(NOT TARGET udoncl_opencl_runtime)

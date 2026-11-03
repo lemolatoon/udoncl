@@ -27,6 +27,145 @@ def _array(lines: list[str], declaration: str, values: list[float]) -> None:
     lines.append("};")
 
 
+def _mlir_dense_f32(values: list[float]) -> str:
+    return "dense<[" + ", ".join(_c_float(value)[:-1] for value in values) + "]>"
+
+
+def emit_mnist_dense_mlir(model: dict) -> str:
+    """Lower the MNIST Dense tail to standard MLIR and the public UdonBLAS ABI."""
+    nodes = model["graph"]["nodes"]
+    dense_index = next(
+        (index for index, node in enumerate(nodes) if node["op_type"] == "Gemm"),
+        None,
+    )
+    if dense_index is None or dense_index + 1 >= len(nodes):
+        raise ValueError("MNIST Dense MLIR requires Gemm followed by Add")
+    dense = nodes[dense_index]
+    bias_add = nodes[dense_index + 1]
+    if (
+        bias_add["op_type"] != "Add"
+        or dense["outputs"][0] not in bias_add["inputs"]
+        or len(dense["inputs"]) != 2
+        or len(bias_add["inputs"]) != 2
+    ):
+        raise ValueError("MNIST Dense MLIR requires Gemm output plus one bias")
+    _, weight_name = dense["inputs"]
+    bias_name = next(name for name in bias_add["inputs"] if name != dense["outputs"][0])
+    initializers = model["graph"]["initializers"]
+    if initializers[weight_name]["shape"] != [144, 10]:
+        raise ValueError("MNIST Dense MLIR requires [1,144] x [144,10]")
+    weight = _float_initializer(initializers[weight_name])
+    bias = _float_initializer(initializers[bias_name])
+    if len(weight) != 1440 or len(bias) != 10:
+        raise ValueError("MNIST Dense MLIR initializer size mismatch")
+    packed_weight = [
+        weight[feature * 10 + column]
+        for column in range(10)
+        for feature in range(144)
+    ]
+
+    lines = [
+        'module attributes {udoncl.onnx_lowering = "library-calls-v1", '
+        'udoncl.onnx_profile = "mnist-dense"} {',
+        '  memref.global "private" @mnist_dense_input : memref<144xf32> = dense<0.0>',
+        '  memref.global "private" constant @mnist_dense_weight : memref<1440xf32> = '
+        + _mlir_dense_f32(packed_weight),
+        '  memref.global "private" constant @mnist_dense_bias : memref<10xf32> = '
+        + _mlir_dense_f32(bias),
+        '  memref.global "private" @mnist_dense_output : memref<10xf32> = dense<0.0>',
+        '  memref.global "private" @mnist_dense_handle : memref<1xi32> = dense<0>',
+        '  memref.global "private" constant @mnist_dense_alpha : memref<1xf32> = dense<1.0>',
+        '  memref.global "private" constant @mnist_dense_beta : memref<1xf32> = dense<1.0>',
+        '',
+        '  func.func private @udonblasCreate(memref<1xi32>) -> i32 attributes '
+        '{udoncl.api = "udonblasCreate", udoncl.library = "UdonBLAS"}',
+        '  func.func private @udonblasDestroy(i32) -> i32 attributes '
+        '{udoncl.api = "udonblasDestroy", udoncl.library = "UdonBLAS"}',
+        '  func.func private @udonblasSgemm(i32, i32, i32, i32, i32, i32, '
+        'memref<1xf32>, memref<144xf32>, i32, memref<1440xf32>, i32, '
+        'memref<1xf32>, memref<10xf32>, i32) -> i32 attributes '
+        '{udoncl.api = "udonblasSgemm", udoncl.library = "UdonBLAS"}',
+        '',
+        '  func.func @write_mnist_dense_input(%index: i32, %value: f32) -> i32 attributes {',
+        '    vrc.export_id = 1 : i32,',
+        '    vrc.parameter_names = ["index", "value"],',
+        '    vrc.public_name = "WriteMnistDenseInput"',
+        '  } {',
+        '    %input = memref.get_global @mnist_dense_input : memref<144xf32>',
+        '    %position = arith.index_cast %index : i32 to index',
+        '    memref.store %value, %input[%position] : memref<144xf32>',
+        '    %success = arith.constant 0 : i32',
+        '    return %success : i32',
+        '  }',
+        '',
+        '  func.func @run_mnist_dense() -> i32 attributes {',
+        '    vrc.export_id = 2 : i32,',
+        '    vrc.public_name = "RunMnistDense"',
+        '  } {',
+        '    %input = memref.get_global @mnist_dense_input : memref<144xf32>',
+        '    %weight = memref.get_global @mnist_dense_weight : memref<1440xf32>',
+        '    %bias = memref.get_global @mnist_dense_bias : memref<10xf32>',
+        '    %output = memref.get_global @mnist_dense_output : memref<10xf32>',
+        '    %handle_slot = memref.get_global @mnist_dense_handle : memref<1xi32>',
+        '    %alpha = memref.get_global @mnist_dense_alpha : memref<1xf32>',
+        '    %beta = memref.get_global @mnist_dense_beta : memref<1xf32>',
+    ]
+    for index in range(10):
+        lines.extend(
+            [
+                f'    %i{index} = arith.constant {index} : index',
+                f'    %bias{index} = memref.load %bias[%i{index}] : memref<10xf32>',
+                f'    memref.store %bias{index}, %output[%i{index}] : memref<10xf32>',
+            ]
+        )
+    lines.extend(
+        [
+            '    %success = arith.constant 0 : i32',
+            '    %op_n = arith.constant 0 : i32',
+            '    %m = arith.constant 1 : i32',
+            '    %n = arith.constant 10 : i32',
+            '    %k = arith.constant 144 : i32',
+            '    %lda = arith.constant 1 : i32',
+            '    %ldb = arith.constant 144 : i32',
+            '    %ldc = arith.constant 1 : i32',
+            '    %create_status = func.call @udonblasCreate(%handle_slot) : '
+            '(memref<1xi32>) -> i32',
+            '    %created = arith.cmpi eq, %create_status, %success : i32',
+            '    cf.cond_br %created, ^sgemm, ^return(%create_status : i32)',
+            '  ^sgemm:',
+            '    %zero = arith.constant 0 : index',
+            '    %handle = memref.load %handle_slot[%zero] : memref<1xi32>',
+            '    %sgemm_status = func.call @udonblasSgemm('
+            '%handle, %op_n, %op_n, %m, %n, %k, %alpha, %input, %lda, '
+            '%weight, %ldb, %beta, %output, %ldc) : '
+            '(i32, i32, i32, i32, i32, i32, memref<1xf32>, memref<144xf32>, '
+            'i32, memref<1440xf32>, i32, memref<1xf32>, memref<10xf32>, i32) -> i32',
+            '    %computed = arith.cmpi eq, %sgemm_status, %success : i32',
+            '    cf.cond_br %computed, ^destroy, ^return(%sgemm_status : i32)',
+            '  ^destroy:',
+            '    %destroy_status = func.call @udonblasDestroy(%handle) : (i32) -> i32',
+            '    cf.br ^return(%destroy_status : i32)',
+            '  ^return(%status: i32):',
+            '    return %status : i32',
+            '  }',
+            '',
+            '  func.func @read_mnist_dense_output(%index: i32) -> f32 attributes {',
+            '    vrc.export_id = 3 : i32,',
+            '    vrc.parameter_names = ["index"],',
+            '    vrc.public_name = "ReadMnistDenseOutput"',
+            '  } {',
+            '    %output = memref.get_global @mnist_dense_output : memref<10xf32>',
+            '    %position = arith.index_cast %index : i32 to index',
+            '    %value = memref.load %output[%position] : memref<10xf32>',
+            '    return %value : f32',
+            '  }',
+            '}',
+            '',
+        ]
+    )
+    return "\n".join(lines)
+
+
 def emit_mnist_dense_host(model: dict) -> str:
     """Lower the trained MNIST Dense tail to the public UdonBLAS SGEMM ABI."""
     nodes = model["graph"]["nodes"]
@@ -229,12 +368,19 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("model", type=Path)
     parser.add_argument("-o", "--output", type=Path, required=True)
+    parser.add_argument("--mlir-output", type=Path)
     parser.add_argument("--profile", choices=("mnist", "mnist-dense"), required=True)
     args = parser.parse_args()
     model = parse_model(args.model.read_bytes())
     source = emit_mnist_host(model) if args.profile == "mnist" else emit_mnist_dense_host(model)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(source, encoding="utf-8")
+    if args.mlir_output is not None:
+        if args.profile != "mnist-dense":
+            raise ValueError("MLIR output currently supports the mnist-dense profile")
+        mlir = emit_mnist_dense_mlir(model)
+        args.mlir_output.parent.mkdir(parents=True, exist_ok=True)
+        args.mlir_output.write_text(mlir, encoding="utf-8")
     print(f"udon_onnx_host_profile={args.profile} bytes={len(source.encode())}")
 
 

@@ -8,12 +8,18 @@ import subprocess
 import sys
 
 
-root, output, compiler = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
+root, output, compiler, opt = (
+    Path(sys.argv[1]),
+    Path(sys.argv[2]),
+    Path(sys.argv[3]),
+    Path(sys.argv[4]),
+)
 if output.exists():
     shutil.rmtree(output)
 output.mkdir(parents=True)
 model_path = output / "mnist.onnx"
 host_path = output / "host.c"
+mlir_path = output / "host.mlir"
 harness_path = output / "harness.c"
 executable = output / ("onnx-host.exe" if sys.platform == "win32" else "onnx-host")
 
@@ -34,8 +40,16 @@ run(
         "mnist-dense",
         "-o",
         host_path,
+        "--mlir-output",
+        mlir_path,
     ]
 )
+run([opt, mlir_path, "--verify-each", "-o", output / "verified.mlir"])
+mlir = mlir_path.read_text(encoding="utf-8")
+assert 'udoncl.onnx_lowering = "library-calls-v1"' in mlir
+assert 'udoncl.library = "UdonBLAS"' in mlir
+assert "func.call @udonblasSgemm" in mlir
+assert "vrc.public_name = \"RunMnistDense\"" in mlir
 source = host_path.read_text(encoding="utf-8")
 assert "UDONBLAS_OP_N, UDONBLAS_OP_N, 1, 10, 144" in source
 assert "execution plan" in source
