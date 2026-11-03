@@ -211,9 +211,11 @@ Current components:
 - The full MNIST profile also emits a verified candidate Host MLIR call graph
   using the public UdonDNN convolution, op-tensor, activation, and pooling APIs
   followed by UdonBLAS SGEMM. It is not selected as the executable artifact yet:
-  the public UdonDNN staging backend currently rejects the 9,216-word
-  convolution intermediate, and the compiler does not silently substitute an
-  ONNX-specific arena scheduler.
+  public `udondnnPoolingForward` now has a generic 16,384-word Device backend
+  that covers the model's 8x8 AveragePool, but the public convolution,
+  op-tensor, and activation staging paths still reject the 9,216-word
+  intermediate. The compiler does not silently substitute an ONNX-specific
+  arena scheduler.
 - The typed Unity backend can lower a fixed AOT `vrc.dispatch` with ordered
   input/output buffers and a copied f32/i32 descriptor to typed material
   property updates and one `VRCGraphics.Blit`; the Importer binds the generated

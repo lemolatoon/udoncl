@@ -105,6 +105,7 @@ static cl_program program;
 static cl_kernel convolution_kernel;
 static cl_kernel activation_kernel;
 static cl_kernel pooling_kernel;
+static cl_kernel large_pooling_kernel;
 static cl_kernel softmax_kernel;
 static cl_kernel batchnorm_kernel;
 static cl_kernel op_tensor_kernel;
@@ -245,6 +246,8 @@ static void clear_objects(void) {
     clReleaseKernel(softmax_kernel);
   if (pooling_kernel)
     clReleaseKernel(pooling_kernel);
+  if (large_pooling_kernel)
+    clReleaseKernel(large_pooling_kernel);
   if (activation_kernel)
     clReleaseKernel(activation_kernel);
   if (convolution_kernel)
@@ -284,6 +287,7 @@ static void clear_objects(void) {
   convolution_kernel = 0;
   activation_kernel = 0;
   pooling_kernel = 0;
+  large_pooling_kernel = 0;
   softmax_kernel = 0;
   batchnorm_kernel = 0;
   op_tensor_kernel = 0;
@@ -1107,8 +1111,8 @@ pooling_output_dimensions(const PoolingDescriptor *pooling,
   *c = input->c;
   *h = 1 + numerator_h / pooling->stride_h;
   *w = 1 + numerator_w / pooling->stride_w;
-  if (*n > 15 || *c > 15 || *h > 15 || *w > 15 ||
-      *n * *c * *h * *w > UDONDNN_CONV_MAX_OUTPUT_WORDS)
+  if (*n <= 0 || *c <= 0 || *h <= 0 || *w <= 0 ||
+      *n * *c * *h * *w > UDONDNN_DESCRIPTOR_MAX_WORDS)
     return UDONDNN_STATUS_NOT_SUPPORTED;
   return UDONDNN_STATUS_SUCCESS;
 }
@@ -1151,6 +1155,71 @@ udondnnStatus_t udondnnPoolingForward(
     return UDONDNN_STATUS_BAD_PARAM;
   input_words = input_info->n * input_info->c * input_info->h * input_info->w;
   output_words = n * c * h * w;
+  if (input_words > UDONDNN_REGION_WORDS ||
+      output_words > UDONDNN_REGION_WORDS) {
+    int window_shape, pad_shape, stride_shape, pooling_options;
+    size_t global[2] = {8192, 2};
+    size_t local[2] = {1, 1};
+    if (input_words > UDONATEN_ARENA_POINTWISE_WORDS ||
+        output_words > UDONATEN_ARENA_POINTWISE_WORDS ||
+        pooling->window_h > 8 || pooling->window_w > 8)
+      return UDONDNN_STATUS_NOT_SUPPORTED;
+    pooling_mode = (int)pooling->mode;
+    nan_propagation = (int)pooling->nan_propagation;
+    window_shape = pooling->window_h | (pooling->window_w << 16);
+    pad_shape = pooling->pad_h | (pooling->pad_w << 16);
+    stride_shape = pooling->stride_h | (pooling->stride_w << 16);
+    pooling_options = pooling_mode | (nan_propagation << 8);
+    if (!large_pooling_kernel) {
+      large_pooling_kernel =
+          clCreateKernel(program, "udondnn_large_pooling_forward", &cl_status);
+      if (cl_status != CL_SUCCESS ||
+          clSetKernelArg(large_pooling_kernel, 0,
+                         sizeof(arena_pointwise_self_buffer),
+                         &arena_pointwise_self_buffer) != CL_SUCCESS ||
+          clSetKernelArg(large_pooling_kernel, 1,
+                         sizeof(arena_pointwise_other_buffer),
+                         &arena_pointwise_other_buffer) != CL_SUCCESS ||
+          clSetKernelArg(large_pooling_kernel, 2,
+                         sizeof(arena_pointwise_output_buffer),
+                         &arena_pointwise_output_buffer) != CL_SUCCESS)
+        return UDONDNN_STATUS_EXECUTION_FAILED;
+    }
+#define SET_LARGE_POOLING_ARGUMENT(slot, value)                                \
+  do {                                                                         \
+    cl_status =                                                                \
+        clSetKernelArg(large_pooling_kernel, slot, sizeof(value), &(value));   \
+    if (cl_status != CL_SUCCESS)                                               \
+      return UDONDNN_STATUS_EXECUTION_FAILED;                                  \
+  } while (0)
+    SET_LARGE_POOLING_ARGUMENT(3, output_words);
+    SET_LARGE_POOLING_ARGUMENT(4, input_info->c);
+    SET_LARGE_POOLING_ARGUMENT(5, input_info->h);
+    SET_LARGE_POOLING_ARGUMENT(6, input_info->w);
+    SET_LARGE_POOLING_ARGUMENT(7, h);
+    SET_LARGE_POOLING_ARGUMENT(8, w);
+    SET_LARGE_POOLING_ARGUMENT(9, window_shape);
+    SET_LARGE_POOLING_ARGUMENT(10, pad_shape);
+    SET_LARGE_POOLING_ARGUMENT(11, stride_shape);
+    SET_LARGE_POOLING_ARGUMENT(12, pooling_options);
+    SET_LARGE_POOLING_ARGUMENT(13, *alpha);
+    SET_LARGE_POOLING_ARGUMENT(14, *beta);
+#undef SET_LARGE_POOLING_ARGUMENT
+    if (clEnqueueWriteBuffer(queue, arena_pointwise_self_buffer, CL_TRUE, 0,
+                             input_words * sizeof(float), input, 0, 0,
+                             0) != CL_SUCCESS ||
+        clEnqueueWriteBuffer(queue, arena_pointwise_other_buffer, CL_TRUE, 0,
+                             output_words * sizeof(float), output, 0, 0,
+                             0) != CL_SUCCESS ||
+        clEnqueueNDRangeKernel(queue, large_pooling_kernel, 2, 0, global, local,
+                               0, 0, 0) != CL_SUCCESS ||
+        clEnqueueReadBuffer(queue, arena_pointwise_output_buffer, CL_TRUE, 0,
+                            output_words * sizeof(float), output, 0, 0,
+                            0) != CL_SUCCESS ||
+        clFinish(queue) != CL_SUCCESS)
+      return UDONDNN_STATUS_EXECUTION_FAILED;
+    return UDONDNN_STATUS_SUCCESS;
+  }
   if (!packable_shape(input_info) || input_words > UDONDNN_REGION_WORDS ||
       output_words > UDONDNN_REGION_WORDS)
     return UDONDNN_STATUS_NOT_SUPPORTED;
