@@ -18,6 +18,56 @@ stay in the investigation section.
 
 ## Confirmed constraints
 
+### Udon integer operator extern names differ from CLR names
+
+- Worlds SDK 3.10.5 UdonSharp rewrites the CLR operator names `Multiply`,
+  `BitwiseAnd`, `BitwiseOr`, `ExclusiveOr`, and `Modulus` to the Udon extern
+  names `Multiplication`, `LogicalAnd`, `LogicalOr`, `LogicalXor`, and
+  `Remainder`, respectively.
+- A raw CLR name may assemble and import but then stop the SDK VM with an
+  unimplemented-extern error. Direct Udon Assembly emitters must use the Udon
+  names verified from a disposable U# compilation probe.
+- Scratch slots shared by emitted raw-memory helpers must be partitioned by
+  physical Udon type. Reusing one name for both `SystemInt32` and `SystemInt64`
+  can import successfully but fails when an extern retrieves the heap operand
+  using its declared parameter type.
+- The serialized raw Host heap uses `int[]` because Udon has no public byte
+  heap ABI, but each array element stores exactly one unsigned byte. Async
+  transfer bindings therefore keep Host pointers in bytes and convert four
+  adjacent heap elements to or from one `Color32`; treating one `int` element
+  as one packed word corrupts addressing and range checks.
+- A lowered Device buffer handle must own a stable Udon heap slot for its full
+  lifetime. Aliasing the handle result to the allocation's logical-ID SSA slot
+  lets slot coloring reuse that storage for a later Host pointer, causing the
+  async command's buffer ID to become the pointer value.
+- The same rule applies when the C runtime reloads a stored physical token and
+  casts `i32` back to `!vrc.buffer` or `!vrc.event`: the token-typed cast result
+  must receive its own liveness-tracked slot rather than aliasing the
+  short-lived raw-load result. Those slots may be color-reused only when their
+  live ranges do not overlap; assigning one dedicated slot per cast can exceed
+  the Udon VM's 512-address heap limit in a generated BLAS host program.
+- A Unity dispatch must select its render target from the configured Device
+  buffer whose public access is `output`; the first resource is not implicitly
+  the output. For a conventional `(input, output, ...)` OpenCL kernel, treating
+  resource zero as the target both reverses the buffers and generates the wrong
+  `_VRC_Input1` shader property instead of `_VRC_Input`.
+- `VRCGraphics.Blit` is synchronous from the lowered Host program's point of
+  view. The lowering must explicitly store a non-negative completed event
+  value after the Blit. Leaving the event SSA result uninitialized lets a
+  colored heap slot retain an unrelated negative value, which the OpenCL AOT
+  runtime reports as `CL_OUT_OF_RESOURCES` even though the Blit was issued.
+- The Unity OpenCL AOT path pins global/local dispatch sizes in the generated
+  `vrc.dispatch` attributes. It must not re-read the C caller's temporary
+  `size_t[]` arrays after a blocking Host transfer resumes; continuation
+  lowering does not make those temporary arrays part of the Device dispatch
+  ABI. The independent native OpenCL runtime retains its normal runtime shape
+  validation.
+- Gather Device buffers must use the same 2D texture geometry as the configured
+  dispatch. A 4096-byte buffer for a `32 x 32` gather kernel is a `32 x 32`
+  RGBA8 RenderTexture, not a canonical `1024 x 1` linear texture. Otherwise
+  shader loads such as logical offset 256 become out-of-range `y = 8` reads and
+  silently return zero.
+
 ### Integer shader arguments must use the non-legacy Unity integer API
 
 - Environment: Unity 2022.3.22f1, VRChat Worlds SDK 3.10.5, D3D11.

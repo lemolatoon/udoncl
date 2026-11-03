@@ -268,6 +268,10 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             StringAssert.Contains("private void PumpAsyncCommand()", source);
             StringAssert.Contains("int[] heap = (int[])rawHeap;", source);
             StringAssert.Contains("CopyHeapToPixels(pixels);", source);
+            StringAssert.Contains("pointer > heap.Length - size", source);
+            StringAssert.Contains("asyncCommandPointerBytes = pointer;", source);
+            StringAssert.Contains("int byteIndex = asyncCommandPointerBytes + word * 4;", source);
+            StringAssert.Contains("asyncCommandHeap[byteIndex] = pixel.r;", source);
             StringAssert.Contains("private void CompleteAsyncCommandReadback", source);
             StringAssert.Contains(
                 "SendCustomEventDelayedFrames(\"_ContinueAsyncCommand\", 1);",

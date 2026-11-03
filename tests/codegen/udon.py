@@ -200,10 +200,11 @@ integer_ops_source = r'''module {
     %maximum = arith.maxsi %narrow, %other : i32
     %positive = arith.cmpi sgt, %maximum, %value : i32
     %selected = arith.select %positive, %maximum, %value : i32
+    %product = arith.muli %selected, %other : i32
     %as_int = arith.extui %positive : i1 to i32
     %byte = arith.constant -1 : i8
     %signed_byte = arith.extsi %byte : i8 to i32
-    %sum = arith.addi %selected, %as_int : i32
+    %sum = arith.addi %product, %as_int : i32
     %result = arith.addi %sum, %signed_byte : i32
     return %result : i32
   }
@@ -215,9 +216,10 @@ integer_ops_lowered = subprocess.run(
 assert integer_ops_lowered.returncode == 0, integer_ops_lowered.stderr
 for expected in [
     'SystemConvert.__ToInt64__SystemInt32__SystemInt64',
-    'SystemInt64.__op_BitwiseAnd__SystemInt64_SystemInt64__SystemInt64',
+    'SystemInt64.__op_LogicalAnd__SystemInt64_SystemInt64__SystemInt64',
     'SystemConvert.__ToInt32__SystemInt64__SystemInt32',
     'SystemInt32.__op_GreaterThanOrEqual__SystemInt32_SystemInt32__SystemBoolean',
+    'SystemInt32.__op_Multiplication__SystemInt32_SystemInt32__SystemInt32',
     'SystemInt32.__op_Subtraction__SystemInt32_SystemInt32__SystemInt32',
     'udonasm.jump_if_false',
 ]:
@@ -273,18 +275,30 @@ for expected in [
     'SystemInt32Array.__Set__SystemInt32_SystemInt32__SystemVoid',
     'SystemInt32.__op_LeftShift__SystemInt32_SystemInt32__SystemInt32',
     'SystemInt32.__op_RightShift__SystemInt32_SystemInt32__SystemInt32',
-    'SystemInt32.__op_BitwiseAnd__SystemInt32_SystemInt32__SystemInt32',
-    'SystemInt32.__op_BitwiseOr__SystemInt32_SystemInt32__SystemInt32',
+    'SystemInt32.__op_LogicalAnd__SystemInt32_SystemInt32__SystemInt32',
+    'SystemInt32.__op_LogicalOr__SystemInt32_SystemInt32__SystemInt32',
     'SystemInt64.__op_LeftShift__SystemInt64_SystemInt32__SystemInt64',
     'SystemInt64.__op_RightShift__SystemInt64_SystemInt32__SystemInt64',
-    'SystemInt64.__op_BitwiseAnd__SystemInt64_SystemInt64__SystemInt64',
-    'SystemInt64.__op_BitwiseOr__SystemInt64_SystemInt64__SystemInt64',
+    'SystemInt64.__op_LogicalAnd__SystemInt64_SystemInt64__SystemInt64',
+    'SystemInt64.__op_LogicalOr__SystemInt64_SystemInt64__SystemInt64',
     'SystemBitConverter.__SingleToInt32Bits__SystemSingle__SystemInt32',
     'SystemBitConverter.__Int32BitsToSingle__SystemInt32__SystemSingle',
     'name = "__vrc_raw_memcpy_',
 ]:
     assert expected in raw_memory_lowered.stdout, (
         expected, raw_memory_lowered.stdout)
+for forbidden in ['__op_BitwiseAnd__', '__op_BitwiseOr__', '__op_Multiply__']:
+    assert forbidden not in raw_memory_lowered.stdout, (
+        forbidden, raw_memory_lowered.stdout)
+for typed_scratch, udon_type in [
+    ('__vrc_raw_load_i32_scratch_bits', 'SystemInt32'),
+    ('__vrc_raw_load_i64_scratch_bits', 'SystemInt64'),
+    ('__vrc_raw_store_i32_scratch_bits', 'SystemInt32'),
+    ('__vrc_raw_store_i64_scratch_bits', 'SystemInt64'),
+]:
+    declaration = f'name = "{typed_scratch}", type = "{udon_type}"'
+    assert declaration in raw_memory_lowered.stdout, (
+        declaration, raw_memory_lowered.stdout)
 int64_initializers = re.findall(
     r'\{initial = "([^"]+)", name = "[^"]+", type = "SystemInt64"\}',
     raw_memory_lowered.stdout,
@@ -440,10 +454,15 @@ for expected in [
     'udonasm.push "__udoncl_buffer_1"',
     'udonasm.push "__udoncl_buffer_2"',
     'udonasm.push "__udoncl_buffer_copy_material"',
+    'name = "__udoncl_completed_event"',
     'VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_'
     'UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid',
 ]:
     assert expected in buffer_lowered.stdout, (expected, buffer_lowered.stdout)
+assert re.search(
+    r'udonasm\.push "__udoncl_completed_event"\s+'
+    r'udonasm\.push "[^"]+"\s+udonasm\.copy',
+    buffer_lowered.stdout), buffer_lowered.stdout
 
 async_buffer_source = r'''module attributes {
   vrc.host_stage = "udonhl",
@@ -462,7 +481,10 @@ async_buffer_source = r'''module attributes {
     %buffer, %status = vrc.buffer_alloc %id, %bytes {
       format = "rgba8_unorm", usage = "storage"
     } : (i32, i32) -> (!vrc.buffer, i32)
-    %uploaded = vrc.buffer_upload %buffer, %zero, %bytes, %pointer : (!vrc.buffer, i32, i32, i32) -> !vrc.event
+    %loaded_id = arith.addi %id, %zero : i32
+    %host_pointer = arith.addi %pointer, %zero : i32
+    %recovered = builtin.unrealized_conversion_cast %loaded_id : i32 to !vrc.buffer
+    %uploaded = vrc.buffer_upload %recovered, %zero, %bytes, %host_pointer : (!vrc.buffer, i32, i32, i32) -> !vrc.event
     %upload_status = vrc.await %uploaded : (!vrc.event) -> i32
     %read = vrc.buffer_readback %buffer, %zero, %bytes, %pointer : (!vrc.buffer, i32, i32, i32) -> !vrc.event
     %read_status = vrc.await %read : (!vrc.event) -> i32
@@ -482,6 +504,7 @@ for expected in [
     'name = "__udoncl_async_command_offset"',
     'name = "__udoncl_async_command_size"',
     'name = "__udoncl_async_command_pointer"',
+    'name = "__vrc_f7_buffer_',
     'initial = "1", name = "__vrc_f7_upload_command"',
     'initial = "2", name = "__vrc_f7_readback_command"',
     'udonasm.jump 4294967292',
@@ -489,6 +512,18 @@ for expected in [
     assert expected in async_buffer_lowered.stdout, (
         expected, async_buffer_lowered.stdout)
 assert async_buffer_lowered.stdout.count('udonasm.jump 4294967292') == 3
+command_buffer_copy = re.search(
+    r'udonasm\.push "([^"]+)"\s+'
+    r'udonasm\.push "__udoncl_async_command_buffer"\s+udonasm\.copy',
+    async_buffer_lowered.stdout)
+command_pointer_copy = re.search(
+    r'udonasm\.push "([^"]+)"\s+'
+    r'udonasm\.push "__udoncl_async_command_pointer"\s+udonasm\.copy',
+    async_buffer_lowered.stdout)
+assert command_buffer_copy and command_pointer_copy, async_buffer_lowered.stdout
+assert command_buffer_copy.group(1) != command_pointer_copy.group(1), (
+    command_buffer_copy.group(1), command_pointer_copy.group(1),
+    async_buffer_lowered.stdout)
 
 continuation_source = r'''module attributes {vrc.host_stage = "udonhl"} {
   func.func @resume(%execution: i32, %resume_state: i32, %event: !vrc.event, %value: i32) -> i32 attributes {

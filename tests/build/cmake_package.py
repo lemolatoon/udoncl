@@ -114,9 +114,23 @@ def main():
     udonblas_manifest = json.loads(
         (udonblas_artifact / 'manifest.json').read_text(encoding='utf-8')
     )
+    assert [export['public_name'] for export in udonblas_manifest['exports']] == [
+        'RunUdonBlasSgemm',
+        'GetUdonBlasSgemmResult',
+        'GetUdonBlasSgemmPhase',
+    ]
     assert udonblas_manifest['exports'][0]['async'] is True
+    assert udonblas_manifest['exports'][0]['result']['kind'] == 'i32'
+    assert udonblas_manifest['exports'][1]['async'] is False
+    assert udonblas_manifest['exports'][1]['parameters'][0]['kind'] == 'i32'
+    assert udonblas_manifest['exports'][1]['result']['kind'] == 'f32'
+    assert udonblas_manifest['exports'][2]['result']['kind'] == 'i32'
     assert udonblas_manifest['ready_for_unity'] is True
     assert udonblas_manifest['program']['async_commands']['readback_kind'] == 2
+    assert [
+        (buffer['width'], buffer['height'])
+        for buffer in udonblas_manifest['device']['buffers']
+    ] == [(32, 32), (32, 32)]
     raw_heap = udonblas_artifact / udonblas_manifest['program'][
         'raw_heap_initializer'
     ]
@@ -130,7 +144,12 @@ def main():
     udonblas_data = udonblas_assembly.split('.data_start', 1)[1].split(
         '.data_end', 1
     )[0]
-    assert sum(': %' in line for line in udonblas_data.splitlines()) <= 512
+    # The SDK assembler adds its own heap entries around the generated data
+    # section. Keep a margin below the Udon VM's 512-address hard limit.
+    assert sum(': %' in line for line in udonblas_data.splitlines()) <= 480
+    assert ': %SystemString, "_VRC_Input"' in udonblas_data
+    assert ': %SystemString, "_VRC_Input1"' not in udonblas_data
+    assert '__udoncl_completed_event: %SystemInt32, 0' in udonblas_data
     for slot in [
         '__udoncl_async_resume_state',
         '__udoncl_async_completion_status',

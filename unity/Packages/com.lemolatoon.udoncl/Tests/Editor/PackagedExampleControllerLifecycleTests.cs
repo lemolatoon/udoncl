@@ -14,6 +14,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         private const string HelloRoot = "Assets/udoncl-generated/hello_dispatch";
         private const string SaxpyRoot = "Assets/udoncl-generated/saxpy_demo";
         private const string PoolingRoot = "Assets/udoncl-generated/average_pooling";
+        private const string UdonBlasRoot = "Assets/udoncl-generated/udonblas_sgemm_m1n10k144";
         private const string GeneratedNamespace = "Lemolatoon.Udoncl.Generated.";
 
         [OneTimeSetUp]
@@ -38,6 +39,20 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             Assert.NotNull(LoadPrefab(PoolingRoot, "UdonclAveragePoolingBinding"));
         }
 
+        [OneTimeSetUp]
+        public void FinalizePreparedUdonBlasExample()
+        {
+            if (Environment.GetEnvironmentVariable("UDONCL_UDONBLAS_HOST_VALIDATION") != "1")
+                return;
+            EnsureCompiledPrograms(
+                UdonBlasRoot,
+                "UdonclUdonblasSgemmM1n10k144Binding",
+                "UdonclUdonBlasSgemmExample"
+            );
+            GeneratedBindingFinalizer.FinalizeAvailableBindings();
+            Assert.NotNull(LoadPrefab(UdonBlasRoot, "UdonclUdonblasSgemmM1n10k144Binding"));
+        }
+
         [Test]
         public void ImportedPrefabsContainBoundTypedControllers()
         {
@@ -57,6 +72,18 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 LoadPrefab(PoolingRoot, "UdonclAveragePoolingBinding"),
                 "UdonclAveragePoolingBinding",
                 "UdonclAveragePoolingExample"
+            );
+        }
+
+        [Test]
+        public void ImportedUdonBlasPrefabContainsBoundTypedController()
+        {
+            if (Environment.GetEnvironmentVariable("UDONCL_UDONBLAS_HOST_VALIDATION") != "1")
+                return;
+            AssertControllerBinding(
+                LoadPrefab(UdonBlasRoot, "UdonclUdonblasSgemmM1n10k144Binding"),
+                "UdonclUdonblasSgemmM1n10k144Binding",
+                "UdonclUdonBlasSgemmExample"
             );
         }
 
@@ -166,6 +193,67 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             Assert.AreEqual(10.0f, helloResult, 0.0001f);
             Assert.AreEqual(102.0f, saxpyResult, 0.0001f);
             Assert.AreEqual(87.5f, poolingResult, 0.0001f);
+        }
+
+        [UnityTest]
+        public IEnumerator ImportedUdonBlasControllerExecutesNumericallyThroughPublicApi()
+        {
+            if (Environment.GetEnvironmentVariable("UDONCL_UDONBLAS_HOST_VALIDATION") != "1")
+                yield break;
+
+            yield return new EnterPlayMode();
+            GameObject instance = UnityEngine.Object.Instantiate(
+                LoadPrefab(UdonBlasRoot, "UdonclUdonblasSgemmM1n10k144Binding")
+            );
+            UdonclArtifactImporter.InitializeUdonBehaviours(instance);
+            yield return null;
+
+            UdonBehaviour controller = UdonclArtifactImporter.FindUdonSharpBacking(
+                instance,
+                GeneratedNamespace + "UdonclUdonBlasSgemmExample"
+            );
+            Assert.NotNull(controller);
+            AssertRuntimeBinding(instance, controller, "UdonclUdonblasSgemmM1n10k144Binding");
+            UdonclArtifactImporter.SendUdonCustomEvent(controller, "Run");
+
+            const int timeoutFrames = 900;
+            int frame = 0;
+            bool completed = false;
+            while (frame < timeoutFrames && !completed)
+            {
+                ++frame;
+                yield return null;
+                completed = (bool)
+                    UdonclArtifactImporter.GetUdonProgramVariable(controller, "completed");
+            }
+            int status = (int)UdonclArtifactImporter.GetUdonProgramVariable(controller, "status");
+            int libraryStatus = (int)
+                UdonclArtifactImporter.GetUdonProgramVariable(controller, "libraryStatus");
+            int libraryPhase = (int)
+                UdonclArtifactImporter.GetUdonProgramVariable(controller, "libraryPhase");
+            float maximumError = (float)
+                UdonclArtifactImporter.GetUdonProgramVariable(controller, "maximumError");
+            float[] results = (float[])
+                UdonclArtifactImporter.GetUdonProgramVariable(controller, "results");
+            yield return new ExitPlayMode();
+
+            Assert.IsTrue(
+                completed,
+                "UdonBLAS async execution timed out after "
+                    + frame
+                    + " frames; status="
+                    + status
+                    + "; libraryStatus="
+                    + libraryStatus
+                    + "; libraryPhase="
+                    + libraryPhase
+            );
+            Assert.AreEqual(0, status);
+            Assert.AreEqual(0, libraryStatus);
+            Assert.That(maximumError, Is.LessThan(0.0005f));
+            Assert.AreEqual(10, results.Length);
+            for (int column = 0; column < results.Length; ++column)
+                Assert.AreEqual(1224.0f * (column + 1), results[column], 0.0005f);
         }
 
         private static GameObject LoadPrefab(string root, string bindingClass)

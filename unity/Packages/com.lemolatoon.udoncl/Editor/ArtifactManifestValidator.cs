@@ -506,12 +506,7 @@ namespace Lemolatoon.Udoncl.Editor
             {
                 if (buffer == null)
                     throw new InvalidDataException("Device buffer entry is null.");
-                long expectedPixels = ((long)buffer.logical_bytes + 3) / 4;
-                int expectedWidth = (int)Math.Min(expectedPixels, 8192);
-                int expectedHeight =
-                    expectedWidth == 0
-                        ? 0
-                        : (int)((expectedPixels + expectedWidth - 1) / expectedWidth);
+                long textureBytes = (long)buffer.width * buffer.height * 4;
                 bool hasPublicBinding =
                     !string.IsNullOrEmpty(buffer.element_type)
                     || !string.IsNullOrEmpty(buffer.public_access);
@@ -530,9 +525,11 @@ namespace Lemolatoon.Udoncl.Editor
                     || !heapSlots.Add(buffer.heap_slot)
                     || buffer.heap_slot != "__udoncl_buffer_" + buffer.id
                     || buffer.logical_bytes <= 0
-                    || buffer.width != expectedWidth
-                    || buffer.height != expectedHeight
+                    || buffer.width <= 0
+                    || buffer.width > 8192
+                    || buffer.height <= 0
                     || buffer.height > 8192
+                    || textureBytes < buffer.logical_bytes
                     || buffer.format != "rgba8_unorm"
                     || buffer.srgb
                     || buffer.mipmaps
@@ -540,7 +537,7 @@ namespace Lemolatoon.Udoncl.Editor
                     || !validPublicBinding
                 )
                     throw new InvalidDataException(
-                        "Device buffers require unique ids/names/slots and a canonical linear RGBA8 layout."
+                        "Device buffers require unique ids/names/slots and a bounded RGBA8 layout with sufficient capacity."
                     );
                 validated.Add(
                     new ValidatedDeviceBuffer(

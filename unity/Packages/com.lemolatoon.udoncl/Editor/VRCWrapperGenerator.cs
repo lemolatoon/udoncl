@@ -275,7 +275,7 @@ namespace Lemolatoon.Udoncl.Editor
                 source.AppendLine("        private int asyncCommandBufferIndex;");
                 source.AppendLine("        private int asyncCommandOffsetWords;");
                 source.AppendLine("        private int asyncCommandSizeWords;");
-                source.AppendLine("        private int asyncCommandPointerWords;");
+                source.AppendLine("        private int asyncCommandPointerBytes;");
                 source.AppendLine("        private int[] asyncCommandHeap;");
             }
             source.AppendLine("        private int generation = 1;");
@@ -975,7 +975,7 @@ namespace Lemolatoon.Udoncl.Editor
             source.AppendLine("            int[] heap = (int[])rawHeap;");
             source.AppendLine("            int index = FindDeviceBuffer(bufferId);");
             source.AppendLine(
-                "            if (index < 0 || deviceBuffers[index] == null || offset < 0 || size <= 0 || pointer < 0 || (offset & 3) != 0 || (size & 3) != 0 || (pointer & 3) != 0 || offset > deviceBufferLogicalBytes[index] - size || pointer / 4 > heap.Length - size / 4)"
+                "            if (index < 0 || deviceBuffers[index] == null || offset < 0 || size <= 0 || pointer < 0 || (offset & 3) != 0 || (size & 3) != 0 || (pointer & 3) != 0 || offset > deviceBufferLogicalBytes[index] - size || pointer > heap.Length - size)"
             );
             source.AppendLine("            {");
             source.AppendLine("                FinishAsyncCommand(StatusInvalidArgument);");
@@ -984,7 +984,7 @@ namespace Lemolatoon.Udoncl.Editor
             source.AppendLine("            asyncCommandBufferIndex = index;");
             source.AppendLine("            asyncCommandOffsetWords = offset / 4;");
             source.AppendLine("            asyncCommandSizeWords = size / 4;");
-            source.AppendLine("            asyncCommandPointerWords = pointer / 4;");
+            source.AppendLine("            asyncCommandPointerBytes = pointer;");
             source.AppendLine("            asyncCommandHeap = heap;");
             source.Append("            if (kind == ").Append(commands.upload_kind).AppendLine(")");
             source.AppendLine("            {");
@@ -1027,9 +1027,14 @@ namespace Lemolatoon.Udoncl.Editor
             source.AppendLine(
                 "            for (int word = 0; word < asyncCommandSizeWords; ++word)"
             );
+            source.AppendLine("            {");
             source.AppendLine(
-                "                pixels[asyncCommandOffsetWords + word] = PackWord(asyncCommandHeap[asyncCommandPointerWords + word]);"
+                "                int byteIndex = asyncCommandPointerBytes + word * 4;"
             );
+            source.AppendLine(
+                "                pixels[asyncCommandOffsetWords + word] = new Color32((byte)asyncCommandHeap[byteIndex], (byte)asyncCommandHeap[byteIndex + 1], (byte)asyncCommandHeap[byteIndex + 2], (byte)asyncCommandHeap[byteIndex + 3]);"
+            );
+            source.AppendLine("            }");
             source.AppendLine("        }");
 
             source.AppendLine();
@@ -1055,9 +1060,18 @@ namespace Lemolatoon.Udoncl.Editor
             source.AppendLine(
                 "                for (int word = 0; word < asyncCommandSizeWords; ++word)"
             );
+            source.AppendLine("                {");
             source.AppendLine(
-                "                    asyncCommandHeap[asyncCommandPointerWords + word] = UnpackWord(pixels[asyncCommandOffsetWords + word]);"
+                "                    int byteIndex = asyncCommandPointerBytes + word * 4;"
             );
+            source.AppendLine(
+                "                    Color32 pixel = pixels[asyncCommandOffsetWords + word];"
+            );
+            source.AppendLine("                    asyncCommandHeap[byteIndex] = pixel.r;");
+            source.AppendLine("                    asyncCommandHeap[byteIndex + 1] = pixel.g;");
+            source.AppendLine("                    asyncCommandHeap[byteIndex + 2] = pixel.b;");
+            source.AppendLine("                    asyncCommandHeap[byteIndex + 3] = pixel.a;");
+            source.AppendLine("                }");
             source.AppendLine("                FinishAsyncCommand(StatusSuccess);");
             source.AppendLine("                return;");
             source.AppendLine("            }");

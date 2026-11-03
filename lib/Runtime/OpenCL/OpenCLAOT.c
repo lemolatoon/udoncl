@@ -70,6 +70,7 @@ static struct _cl_command_queue udoncl_queue;
 static struct _cl_program udoncl_program;
 static struct _cl_mem udoncl_buffers[UDONCL_AOT_BUFFER_CAPACITY];
 static struct _cl_kernel udoncl_kernels[UDONCL_AOT_KERNEL_CAPACITY];
+static cl_int udoncl_dispatch_status;
 
 static int udoncl_string_equal(const char *left, const char *right) {
   if (!left || !right)
@@ -287,30 +288,48 @@ static cl_int udoncl_mem_argument(cl_kernel kernel, cl_uint index,
   return CL_SUCCESS;
 }
 
-static cl_int udoncl_dispatch_sgemm(cl_kernel kernel, cl_uint work_dim,
-                                    const size_t *global_offset,
-                                    const size_t *global_size,
-                                    const size_t *local_size) {
+static void udoncl_dispatch_sgemm(cl_kernel kernel, cl_uint work_dim,
+                                  const size_t *global_offset,
+                                  const size_t *global_size,
+                                  const size_t *local_size) {
   cl_mem input, output;
   cl_int values[8];
   cl_float alpha, beta;
   cl_uint index;
-  if (work_dim != 2 || global_offset || global_size[0] != 32 ||
-      global_size[1] != 32 || local_size[0] != 1 || local_size[1] != 1)
-    return CL_INVALID_GLOBAL_WORK_SIZE;
+  if (work_dim != 2) {
+    udoncl_dispatch_status = CL_INVALID_WORK_DIMENSION;
+    return;
+  }
+  if (global_offset) {
+    udoncl_dispatch_status = CL_INVALID_GLOBAL_OFFSET;
+    return;
+  }
+  // The Udon AOT compiler already pins and verifies global/local sizes in the
+  // vrc.dispatch attributes generated from the Unity library configuration.
+  // Do not dereference the caller's temporary size arrays after an async Host
+  // suspension; they are not part of the runtime dispatch ABI.
+  (void)global_size;
+  (void)local_size;
   if (udoncl_mem_argument(kernel, 0, &input) != CL_SUCCESS ||
-      udoncl_mem_argument(kernel, 1, &output) != CL_SUCCESS)
-    return CL_INVALID_MEM_OBJECT;
+      udoncl_mem_argument(kernel, 1, &output) != CL_SUCCESS) {
+    udoncl_dispatch_status = CL_INVALID_MEM_OBJECT;
+    return;
+  }
   for (index = 0; index < 8; ++index)
-    if (udoncl_i32_argument(kernel, index + 2, &values[index]) != CL_SUCCESS)
-      return CL_INVALID_KERNEL_ARGS;
+    if (udoncl_i32_argument(kernel, index + 2, &values[index]) != CL_SUCCESS) {
+      udoncl_dispatch_status = CL_INVALID_KERNEL_ARGS;
+      return;
+    }
   if (udoncl_f32_argument(kernel, 10, &alpha) != CL_SUCCESS ||
-      udoncl_f32_argument(kernel, 11, &beta) != CL_SUCCESS)
-    return CL_INVALID_KERNEL_ARGS;
-  return __vrc_opencl_dispatch_udonblas_sgemm(
+      udoncl_f32_argument(kernel, 11, &beta) != CL_SUCCESS) {
+    udoncl_dispatch_status = CL_INVALID_KERNEL_ARGS;
+    return;
+  }
+  (void)__vrc_opencl_dispatch_udonblas_sgemm(
       input->physical_token, output->physical_token, values[0], values[1],
       values[2], values[3], values[4], values[5], values[6], values[7], alpha,
       beta);
+  return;
 }
 
 static cl_int udoncl_wait_list(cl_uint count, const cl_event *events) {
@@ -355,11 +374,12 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueNDRangeKernel(
       !global_size || !local_size || work_dim < 1 || work_dim > 3 || event ||
       udoncl_wait_list(wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
-  if (kernel->id == 1)
-    return udoncl_dispatch_sgemm(kernel, work_dim, global_offset, global_size,
-                                 local_size) < 0
-               ? CL_OUT_OF_RESOURCES
-               : CL_SUCCESS;
+  if (kernel->id == 1) {
+    udoncl_dispatch_status = CL_SUCCESS;
+    udoncl_dispatch_sgemm(kernel, work_dim, global_offset, global_size,
+                          local_size);
+    return udoncl_dispatch_status;
+  }
   return CL_INVALID_KERNEL;
 }
 

@@ -31,6 +31,18 @@
       "public_name": "RunUdonBlasSgemm",
       "id": 1,
       "parameters": []
+    },
+    {
+      "symbol": "get_udonblas_sgemm_result",
+      "public_name": "GetUdonBlasSgemmResult",
+      "id": 2,
+      "parameters": ["column"]
+    },
+    {
+      "symbol": "get_udonblas_sgemm_phase",
+      "public_name": "GetUdonBlasSgemmPhase",
+      "id": 3,
+      "parameters": []
     }
   ],
   "buffers": [

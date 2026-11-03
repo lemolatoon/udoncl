@@ -168,6 +168,17 @@ parseUnityBuffers(const json::Object &config) {
   auto *buffers = config.getArray("buffers");
   if (!buffers)
     return result;
+  std::optional<std::pair<int64_t, int64_t>> dispatchShape;
+  if (auto *kernel = config.getObject("device_kernel"))
+    if (auto *global = kernel->getArray("global_size");
+        global && global->size() == 3) {
+      auto width = (*global)[0].getAsInteger();
+      auto height = (*global)[1].getAsInteger();
+      auto depth = (*global)[2].getAsInteger();
+      if (width && height && depth && *width > 0 && *width <= 8192 &&
+          *height > 0 && *height <= 8192 && *depth == 1)
+        dispatchShape = std::make_pair(*width, *height);
+    }
   std::set<int64_t> ids;
   std::set<std::string> names;
   for (const json::Value &value : *buffers) {
@@ -191,8 +202,12 @@ parseUnityBuffers(const json::Object &config) {
       return failure();
     }
     int64_t pixels = (*bytes + 3) / 4;
-    int64_t width = std::min<int64_t>(pixels, 8192);
-    int64_t height = (pixels + width - 1) / width;
+    bool shapeFits =
+        dispatchShape && dispatchShape->first * dispatchShape->second >= pixels;
+    int64_t width =
+        shapeFits ? dispatchShape->first : std::min<int64_t>(pixels, 8192);
+    int64_t height =
+        shapeFits ? dispatchShape->second : (pixels + width - 1) / width;
     result.push_back({*id, *bytes, width, height, name->str(),
                       "__udoncl_buffer_" + std::to_string(*id),
                       elementType ? elementType->str() : "",
@@ -248,6 +263,17 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
     return failure();
   }
   OpBuilder builder(module.getContext());
+  std::optional<size_t> semanticOutput;
+  for (auto [index, buffer] : llvm::enumerate(buffers)) {
+    if (buffer.publicAccess != "output")
+      continue;
+    if (semanticOutput) {
+      module.emitError(
+          "Unity dispatch currently requires exactly one output buffer");
+      return failure();
+    }
+    semanticOutput = index;
+  }
   SmallVector<mlir::Attribute> poolEntries;
   for (const UnityBuffer &buffer : buffers)
     poolEntries.push_back(builder.getDictionaryAttr(
@@ -360,6 +386,17 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
     dispatch->setAttr("vrc.unity_dispatch_material_slot",
                       builder.getStringAttr("__udoncl_kernel_material_" +
                                             std::to_string(kernelId)));
+    if (!dispatch->hasAttr("vrc.unity_output_resource_index")) {
+      size_t output = semanticOutput.value_or(0);
+      if (output >= dispatch.getResources().size()) {
+        dispatch.emitError(
+            "Unity output buffer does not match a kernel resource");
+        return failure();
+      }
+      dispatch->setAttr(
+          "vrc.unity_output_resource_index",
+          builder.getI32IntegerAttr(static_cast<int32_t>(output)));
+    }
     result.dispatchKernelIds.push_back(kernelId);
   }
   return result;

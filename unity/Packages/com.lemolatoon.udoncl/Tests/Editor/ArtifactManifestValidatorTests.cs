@@ -279,6 +279,32 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         }
 
         [Test]
+        public void PackagedUdonBlasUsageAwaitsAndReadsGeneratedBinding()
+        {
+            PackagedExampleUsage usage = PackagedExampleUsageGenerator.ForProgram(
+                "udonblas_sgemm_m1n10k144"
+            );
+            Assert.NotNull(usage);
+            Assert.AreEqual("UdonclUdonBlasSgemmExample", usage.ClassName);
+            StringAssert.Contains("binding.StartRunUdonBlasSgemm(this", usage.Source);
+            StringAssert.Contains("binding.GetRunUdonBlasSgemmStatus()", usage.Source);
+            StringAssert.Contains(
+                "binding.TryGetRunUdonBlasSgemmResult(out libraryStatus)",
+                usage.Source
+            );
+            StringAssert.Contains(
+                "binding.TryGetUdonBlasSgemmPhase(out libraryPhase)",
+                usage.Source
+            );
+            StringAssert.Contains(
+                "binding.TryGetUdonBlasSgemmResult(column, out value)",
+                usage.Source
+            );
+            StringAssert.Contains("1224.0f * (column + 1)", usage.Source);
+            StringAssert.DoesNotContain("SetProgramVariable", usage.Source);
+        }
+
+        [Test]
         public void OtherArtifactsDoNotReceivePackagedUsageCode()
         {
             Assert.IsNull(PackagedExampleUsageGenerator.ForProgram("user_library"));

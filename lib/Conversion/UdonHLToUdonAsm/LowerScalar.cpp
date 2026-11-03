@@ -147,9 +147,9 @@ static StringRef binaryExtern(Operation *operation) {
   if (isa<arith::SubIOp>(operation))
     return integerSignature("Subtraction");
   if (isa<arith::MulIOp>(operation))
-    return integerSignature("Multiply");
+    return integerSignature("Multiplication");
   if (isa<arith::AndIOp>(operation))
-    return integerSignature("BitwiseAnd");
+    return integerSignature("LogicalAnd");
   if (isa<arith::AddFOp>(operation))
     return "SystemSingle.__op_Addition__SystemSingle_SystemSingle__"
            "SystemSingle";
@@ -505,9 +505,8 @@ private:
     SmallVector<Value> colorableValues;
     auto isColorableResult = [&](Operation &operation) {
       return !isa<arith::ConstantOp, memref::GetGlobalOp,
-                  UnrealizedConversionCastOp, ::vrc::vrc::BufferAllocOp,
-                  ::vrc::vrc::DispatchDescCreateOp, host::FrameCreateOp>(
-          operation);
+                  ::vrc::vrc::BufferAllocOp, ::vrc::vrc::DispatchDescCreateOp,
+                  host::FrameCreateOp>(operation);
     };
     for (Block &block : function.getBody()) {
       if (&block != &function.getBody().front())
@@ -715,7 +714,16 @@ private:
           std::string source = valueSlots.lookup(cast.getInputs().front());
           if (source.empty())
             return cast.emitError("Udon token conversion has no source slot");
-          valueSlots[cast.getOutputs().front()] = source;
+          Type outputType = cast.getOutputs().front().getType();
+          if (isa<::vrc::vrc::BufferType, ::vrc::vrc::EventType>(outputType)) {
+            std::string token = coloredSlot(cast.getOutputs().front());
+            if (token.empty())
+              return cast.emitError(
+                  "Udon token conversion has no colorable output slot");
+            valueSlots[cast.getOutputs().front()] = token;
+          } else {
+            valueSlots[cast.getOutputs().front()] = source;
+          }
           continue;
         }
         if (auto allocation = dyn_cast<::vrc::vrc::BufferAllocOp>(operation)) {
@@ -723,7 +731,9 @@ private:
           if (logicalId.empty())
             return allocation.emitError(
                 "Unity buffer allocation requires a logical-id slot");
-          valueSlots[allocation.getBuffer()] = logicalId;
+          std::string token = prefix + "buffer_" + std::to_string(valueIndex++);
+          addSlot(token, "SystemInt32", "0", false);
+          valueSlots[allocation.getBuffer()] = token;
           std::string status = prefix + "v" + std::to_string(valueIndex++);
           addSlot(status, "SystemInt32", "0", false);
           valueSlots[allocation.getStatus()] = status;
@@ -896,8 +906,17 @@ private:
                          valueSlots.lookup(addressOf.getResult()));
           continue;
         }
-        if (isa<UnrealizedConversionCastOp>(operation))
+        if (auto cast = dyn_cast<UnrealizedConversionCastOp>(operation)) {
+          Type outputType = cast.getOutputs().front().getType();
+          if (isa<::vrc::vrc::BufferType, ::vrc::vrc::EventType>(outputType)) {
+            std::string source = valueSlots.lookup(cast.getInputs().front());
+            std::string token = valueSlots.lookup(cast.getOutputs().front());
+            if (source.empty() || token.empty())
+              return cast.emitError("Udon token conversion has missing slots");
+            emitCopy(cast.getLoc(), source, token);
+          }
           continue;
+        }
         if (auto constant = dyn_cast<arith::ConstantOp>(operation)) {
           if (constant.getType().isInteger(1) &&
               cast<IntegerAttr>(constant.getValue()).getInt()) {
@@ -919,8 +938,15 @@ private:
         }
         if (isa<::vrc::vrc::DispatchDescCreateOp>(operation))
           continue;
-        if (isa<::vrc::vrc::BufferAllocOp>(operation))
+        if (auto allocation = dyn_cast<::vrc::vrc::BufferAllocOp>(operation)) {
+          std::string logicalId = valueSlots.lookup(allocation.getLogicalId());
+          std::string token = valueSlots.lookup(allocation.getBuffer());
+          if (logicalId.empty() || token.empty())
+            return allocation.emitError(
+                "Unity buffer allocation has missing handle slots");
+          emitCopy(allocation.getLoc(), logicalId, token);
           continue;
+        }
         if (isa<::vrc::vrc::BufferReleaseOp>(operation))
           // Unity buffers belong to the fixed physical pool. The C runtime
           // has already released its logical cl_mem reference; retaining the
@@ -1177,6 +1203,11 @@ private:
               dispatch.getLoc(),
               "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_"
               "UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid");
+          std::string event = valueSlots.lookup(dispatch.getEvent());
+          if (event.empty())
+            return dispatch.emitError("Unity dispatch has no event slot");
+          addSlot("__udoncl_completed_event", "SystemInt32", "0", false);
+          emitCopy(dispatch.getLoc(), "__udoncl_completed_event", event);
           continue;
         }
         if (auto copy = dyn_cast<::vrc::vrc::BufferCopyOp>(operation)) {
@@ -1206,6 +1237,11 @@ private:
               copy.getLoc(),
               "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_"
               "UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid");
+          std::string event = valueSlots.lookup(copy.getEvent());
+          if (event.empty())
+            return copy.emitError("Unity buffer copy has no event slot");
+          addSlot("__udoncl_completed_event", "SystemInt32", "0", false);
+          emitCopy(copy.getLoc(), "__udoncl_completed_event", event);
           continue;
         }
         if (auto pointer = dyn_cast<host::PtrAddOp>(operation)) {
@@ -1670,7 +1706,7 @@ private:
         emitPush(location, component);
         emitPush(location, combined);
         emitExtern(location,
-                   "SystemInt64.__op_BitwiseOr__SystemInt64_SystemInt64__"
+                   "SystemInt64.__op_LogicalOr__SystemInt64_SystemInt64__"
                    "SystemInt64");
         emitCopy(location, combined, result);
       }
@@ -1718,7 +1754,8 @@ private:
       return failure();
     bool wide = type.isInteger(64);
     unsigned byteWidth = type.isInteger(8) ? 1 : wide ? 8 : 4;
-    std::string prefix = "__vrc_raw_load_scratch";
+    std::string prefix =
+        wide ? "__vrc_raw_load_i64_scratch" : "__vrc_raw_load_i32_scratch";
     std::string bits = prefix + "_bits";
     addSlot(bits, wide ? "SystemInt64" : "SystemInt32", "0", false);
     for (unsigned byteIndex = 0; byteIndex < byteWidth; ++byteIndex) {
@@ -1776,9 +1813,9 @@ private:
         emitPush(location, combined);
         emitExtern(location,
                    wide
-                       ? "SystemInt64.__op_BitwiseOr__SystemInt64_SystemInt64__"
+                       ? "SystemInt64.__op_LogicalOr__SystemInt64_SystemInt64__"
                          "SystemInt64"
-                       : "SystemInt32.__op_BitwiseOr__SystemInt32_SystemInt32__"
+                       : "SystemInt32.__op_LogicalOr__SystemInt32_SystemInt32__"
                          "SystemInt32");
         emitCopy(location, combined, bits);
       }
@@ -1802,7 +1839,8 @@ private:
       return failure();
     bool wide = type.isInteger(64);
     unsigned byteWidth = type.isInteger(8) ? 1 : wide ? 8 : 4;
-    std::string prefix = "__vrc_raw_store_scratch";
+    std::string prefix =
+        wide ? "__vrc_raw_store_i64_scratch" : "__vrc_raw_store_i32_scratch";
     std::string bits = prefix + "_bits";
     std::string mask = prefix + "_mask";
     addSlot(bits, wide ? "SystemInt64" : "SystemInt32", "0", false);
@@ -1847,9 +1885,9 @@ private:
       emitPush(location, mask);
       emitPush(location, masked);
       emitExtern(location,
-                 wide ? "SystemInt64.__op_BitwiseAnd__SystemInt64_SystemInt64__"
+                 wide ? "SystemInt64.__op_LogicalAnd__SystemInt64_SystemInt64__"
                         "SystemInt64"
-                      : "SystemInt32.__op_BitwiseAnd__SystemInt32_SystemInt32__"
+                      : "SystemInt32.__op_LogicalAnd__SystemInt32_SystemInt32__"
                         "SystemInt32");
       if (wide) {
         emitPush(location, masked);
