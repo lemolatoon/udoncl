@@ -212,10 +212,11 @@ Current components:
   using the public UdonDNN convolution, op-tensor, activation, and pooling APIs
   followed by UdonBLAS SGEMM. It is not selected as the executable artifact yet:
   public `udondnnConvolutionForward` and `udondnnPoolingForward` now have
-  generic 16,384-word Device backends covering the model's 5x5 convolution and
-  8x8 AveragePool. The public op-tensor and activation staging paths still
-  reject the 9,216-word intermediate. The compiler does not silently
-  substitute an ONNX-specific arena scheduler.
+  generic 16,384-word Device backends covering the model's 5x5 convolution,
+  channel-bias Add, ReLU, and 8x8 AveragePool. The full graph is not selected
+  as the executable artifact until its multi-kernel Host continuation is
+  numerically validated. The compiler does not silently substitute an
+  ONNX-specific arena scheduler.
 - The typed Unity backend can lower a fixed AOT `vrc.dispatch` with ordered
   input/output buffers and a copied f32/i32 descriptor to typed material
   property updates and one `VRCGraphics.Blit`; the Importer binds the generated

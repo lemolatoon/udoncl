@@ -105,11 +105,13 @@ static cl_program program;
 static cl_kernel convolution_kernel;
 static cl_kernel large_convolution_kernel;
 static cl_kernel activation_kernel;
+static cl_kernel large_activation_kernel;
 static cl_kernel pooling_kernel;
 static cl_kernel large_pooling_kernel;
 static cl_kernel softmax_kernel;
 static cl_kernel batchnorm_kernel;
 static cl_kernel op_tensor_kernel;
+static cl_kernel large_op_tensor_kernel;
 static cl_kernel rms_norm_small_kernel;
 static cl_kernel embedding_kernel;
 static cl_kernel weight_int4pack_mm_kernel;
@@ -241,6 +243,8 @@ static void clear_objects(void) {
     clReleaseKernel(rms_norm_small_kernel);
   if (op_tensor_kernel)
     clReleaseKernel(op_tensor_kernel);
+  if (large_op_tensor_kernel)
+    clReleaseKernel(large_op_tensor_kernel);
   if (batchnorm_kernel)
     clReleaseKernel(batchnorm_kernel);
   if (softmax_kernel)
@@ -251,6 +255,8 @@ static void clear_objects(void) {
     clReleaseKernel(large_pooling_kernel);
   if (activation_kernel)
     clReleaseKernel(activation_kernel);
+  if (large_activation_kernel)
+    clReleaseKernel(large_activation_kernel);
   if (convolution_kernel)
     clReleaseKernel(convolution_kernel);
   if (large_convolution_kernel)
@@ -290,11 +296,13 @@ static void clear_objects(void) {
   convolution_kernel = 0;
   large_convolution_kernel = 0;
   activation_kernel = 0;
+  large_activation_kernel = 0;
   pooling_kernel = 0;
   large_pooling_kernel = 0;
   softmax_kernel = 0;
   batchnorm_kernel = 0;
   op_tensor_kernel = 0;
+  large_op_tensor_kernel = 0;
   rms_norm_small_kernel = 0;
   embedding_kernel = 0;
   weight_int4pack_mm_kernel = 0;
@@ -1133,18 +1141,64 @@ udondnnStatus_t udondnnActivationForward(
       input_info->w != output_info->w)
     return UDONDNN_STATUS_BAD_PARAM;
   words = input_info->n * input_info->c * input_info->h * input_info->w;
-  if (words > UDONDNN_REGION_WORDS)
-    return UDONDNN_STATUS_NOT_SUPPORTED;
+  mode = (int)activation->mode;
+  nan_propagation = (int)activation->nan_propagation;
+  coefficient = activation->coefficient;
+  if (words > UDONDNN_REGION_WORDS) {
+    size_t large_global[2] = {8192, 2};
+    size_t large_local[2] = {1, 1};
+    if (words > UDONATEN_ARENA_POINTWISE_WORDS)
+      return UDONDNN_STATUS_NOT_SUPPORTED;
+    if (!large_activation_kernel) {
+      large_activation_kernel = clCreateKernel(
+          program, "udondnn_large_activation_forward", &cl_status);
+      if (cl_status != CL_SUCCESS ||
+          clSetKernelArg(large_activation_kernel, 0,
+                         sizeof(arena_pointwise_self_buffer),
+                         &arena_pointwise_self_buffer) != CL_SUCCESS ||
+          clSetKernelArg(large_activation_kernel, 1,
+                         sizeof(arena_pointwise_other_buffer),
+                         &arena_pointwise_other_buffer) != CL_SUCCESS ||
+          clSetKernelArg(large_activation_kernel, 2,
+                         sizeof(arena_pointwise_output_buffer),
+                         &arena_pointwise_output_buffer) != CL_SUCCESS)
+        return UDONDNN_STATUS_EXECUTION_FAILED;
+    }
+#define SET_LARGE_ACTIVATION_ARGUMENT(slot, value)                             \
+  do {                                                                         \
+    if (clSetKernelArg(large_activation_kernel, slot, sizeof(value),           \
+                       &(value)) != CL_SUCCESS)                                \
+      return UDONDNN_STATUS_EXECUTION_FAILED;                                  \
+  } while (0)
+    SET_LARGE_ACTIVATION_ARGUMENT(3, words);
+    SET_LARGE_ACTIVATION_ARGUMENT(4, mode);
+    SET_LARGE_ACTIVATION_ARGUMENT(5, nan_propagation);
+    SET_LARGE_ACTIVATION_ARGUMENT(6, coefficient);
+    SET_LARGE_ACTIVATION_ARGUMENT(7, *alpha);
+    SET_LARGE_ACTIVATION_ARGUMENT(8, *beta);
+#undef SET_LARGE_ACTIVATION_ARGUMENT
+    if (clEnqueueWriteBuffer(queue, arena_pointwise_self_buffer, CL_TRUE, 0,
+                             words * sizeof(float), input, 0, 0,
+                             0) != CL_SUCCESS ||
+        clEnqueueWriteBuffer(queue, arena_pointwise_other_buffer, CL_TRUE, 0,
+                             words * sizeof(float), output, 0, 0,
+                             0) != CL_SUCCESS ||
+        clEnqueueNDRangeKernel(queue, large_activation_kernel, 2, 0,
+                               large_global, large_local, 0, 0,
+                               0) != CL_SUCCESS ||
+        clEnqueueReadBuffer(queue, arena_pointwise_output_buffer, CL_TRUE, 0,
+                            words * sizeof(float), output, 0, 0,
+                            0) != CL_SUCCESS ||
+        clFinish(queue) != CL_SUCCESS)
+      return UDONDNN_STATUS_EXECUTION_FAILED;
+    return UDONDNN_STATUS_SUCCESS;
+  }
   for (index = 0; index < UDONDNN_WORDS; ++index)
     packed[index] = 0.0f;
   for (index = 0; index < words; ++index) {
     packed[index] = input[index];
     packed[UDONDNN_ACTIVATION_PREVIOUS_OUTPUT_OFFSET + index] = output[index];
   }
-  mode = (int)activation->mode;
-  nan_propagation = (int)activation->nan_propagation;
-  coefficient = activation->coefficient;
-
 #define SET_ACTIVATION_ARGUMENT(slot, value)                                   \
   do {                                                                         \
     cl_status =                                                                \
@@ -1554,6 +1608,83 @@ udondnnStatus_t udondnnOpTensor(
   a_words = a_info->n * a_info->c * a_info->h * a_info->w;
   b_words = b_info->n * b_info->c * b_info->h * b_info->w;
   c_words = c_info->n * c_info->c * c_info->h * c_info->w;
+  if (a_words > UDONDNN_REGION_WORDS || b_words > UDONDNN_REGION_WORDS ||
+      c_words > UDONDNN_REGION_WORDS) {
+    int a_nc, a_hw, b_nc, b_hw, c_nc, c_hw, options;
+    size_t large_global[2] = {8192, 2};
+    size_t large_local[2] = {1, 1};
+    if (a_words > UDONATEN_ARENA_POINTWISE_WORDS ||
+        b_words > UDONATEN_ARENA_POINTWISE_WORDS ||
+        c_words > UDONATEN_ARENA_POINTWISE_WORDS || a_info->n > 65535 ||
+        a_info->c > 65535 || a_info->h > 65535 || a_info->w > 65535 ||
+        b_info->n > 65535 || b_info->c > 65535 || b_info->h > 65535 ||
+        b_info->w > 65535 || c_info->n > 65535 || c_info->c > 65535 ||
+        c_info->h > 65535 || c_info->w > 65535)
+      return UDONDNN_STATUS_NOT_SUPPORTED;
+    a_nc = a_info->n | (a_info->c << 16);
+    a_hw = a_info->h | (a_info->w << 16);
+    b_nc = b_info->n | (b_info->c << 16);
+    b_hw = b_info->h | (b_info->w << 16);
+    c_nc = c_info->n | (c_info->c << 16);
+    c_hw = c_info->h | (c_info->w << 16);
+    operation = (int)operation_info->operation;
+    nan_propagation = (int)operation_info->nan_propagation;
+    options = operation | (nan_propagation << 8);
+    if (!large_op_tensor_kernel) {
+      large_op_tensor_kernel =
+          clCreateKernel(program, "udondnn_large_op_tensor", &cl_status);
+      if (cl_status != CL_SUCCESS ||
+          clSetKernelArg(large_op_tensor_kernel, 0,
+                         sizeof(arena_pointwise_self_buffer),
+                         &arena_pointwise_self_buffer) != CL_SUCCESS ||
+          clSetKernelArg(large_op_tensor_kernel, 1,
+                         sizeof(arena_pointwise_other_buffer),
+                         &arena_pointwise_other_buffer) != CL_SUCCESS ||
+          clSetKernelArg(large_op_tensor_kernel, 2,
+                         sizeof(arena_rms_partial_buffer),
+                         &arena_rms_partial_buffer) != CL_SUCCESS ||
+          clSetKernelArg(large_op_tensor_kernel, 3,
+                         sizeof(arena_pointwise_output_buffer),
+                         &arena_pointwise_output_buffer) != CL_SUCCESS)
+        return UDONDNN_STATUS_EXECUTION_FAILED;
+    }
+#define SET_LARGE_OP_ARGUMENT(slot, value)                                     \
+  do {                                                                         \
+    if (clSetKernelArg(large_op_tensor_kernel, slot, sizeof(value),            \
+                       &(value)) != CL_SUCCESS)                                \
+      return UDONDNN_STATUS_EXECUTION_FAILED;                                  \
+  } while (0)
+    SET_LARGE_OP_ARGUMENT(4, c_words);
+    SET_LARGE_OP_ARGUMENT(5, a_nc);
+    SET_LARGE_OP_ARGUMENT(6, a_hw);
+    SET_LARGE_OP_ARGUMENT(7, b_nc);
+    SET_LARGE_OP_ARGUMENT(8, b_hw);
+    SET_LARGE_OP_ARGUMENT(9, c_nc);
+    SET_LARGE_OP_ARGUMENT(10, c_hw);
+    SET_LARGE_OP_ARGUMENT(11, options);
+    SET_LARGE_OP_ARGUMENT(12, *alpha_a);
+    SET_LARGE_OP_ARGUMENT(13, *alpha_b);
+    SET_LARGE_OP_ARGUMENT(14, *beta);
+#undef SET_LARGE_OP_ARGUMENT
+    if (clEnqueueWriteBuffer(queue, arena_pointwise_self_buffer, CL_TRUE, 0,
+                             a_words * sizeof(float), a, 0, 0,
+                             0) != CL_SUCCESS ||
+        clEnqueueWriteBuffer(queue, arena_pointwise_other_buffer, CL_TRUE, 0,
+                             b_words * sizeof(float), b, 0, 0,
+                             0) != CL_SUCCESS ||
+        clEnqueueWriteBuffer(queue, arena_rms_partial_buffer, CL_TRUE, 0,
+                             c_words * sizeof(float), c, 0, 0,
+                             0) != CL_SUCCESS ||
+        clEnqueueNDRangeKernel(queue, large_op_tensor_kernel, 2, 0,
+                               large_global, large_local, 0, 0,
+                               0) != CL_SUCCESS ||
+        clEnqueueReadBuffer(queue, arena_pointwise_output_buffer, CL_TRUE, 0,
+                            c_words * sizeof(float), c, 0, 0,
+                            0) != CL_SUCCESS ||
+        clFinish(queue) != CL_SUCCESS)
+      return UDONDNN_STATUS_EXECUTION_FAILED;
+    return UDONDNN_STATUS_SUCCESS;
+  }
   if (!packable_shape(a_info) || !packable_shape(b_info) ||
       !packable_shape(c_info) || a_words > UDONDNN_REGION_WORDS ||
       b_words > UDONDNN_REGION_WORDS || c_words > UDONDNN_REGION_WORDS)

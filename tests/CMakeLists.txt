@@ -18,6 +18,13 @@ set_target_properties(udondnn-large-convolution-kernel PROPERTIES
   CXX_EXTENSIONS OFF)
 add_test(NAME udondnn-large-convolution-kernel
   COMMAND udondnn-large-convolution-kernel)
+add_executable(udondnn-large-pointwise-kernel
+  boundary/udondnn_large_pointwise.cpp)
+target_compile_features(udondnn-large-pointwise-kernel PRIVATE cxx_std_20)
+set_target_properties(udondnn-large-pointwise-kernel PROPERTIES
+  CXX_EXTENSIONS OFF)
+add_test(NAME udondnn-large-pointwise-kernel
+  COMMAND udondnn-large-pointwise-kernel)
 add_executable(udondnn-large-pooling-kernel
   boundary/udondnn_large_pooling.cpp)
 target_compile_features(udondnn-large-pooling-kernel PRIVATE cxx_std_20)
@@ -108,6 +115,12 @@ add_test(NAME udondnn-large-convolution-lowering
     "${CMAKE_CURRENT_SOURCE_DIR}/boundary/udondnn_large_convolution.py"
     $<TARGET_FILE:vrccl> "${VRC_TEST_CLANG}"
     "${PROJECT_BINARY_DIR}/tests/udondnn-large-convolution"
+)
+add_test(NAME udondnn-large-pointwise-lowering
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/boundary/udondnn_large_pointwise.py"
+    $<TARGET_FILE:vrccl> "${VRC_TEST_CLANG}"
+    "${PROJECT_BINARY_DIR}/tests/udondnn-large-pointwise"
 )
 add_test(NAME mnist-cnn-native
   COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/boundary/mnist_cnn.py"
