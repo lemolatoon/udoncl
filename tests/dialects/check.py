@@ -57,6 +57,33 @@ continuation_roundtrip = run(continuation.stdout)
 assert continuation_roundtrip.returncode == 0, continuation_roundtrip.stderr
 assert continuation.stdout == continuation_roundtrip.stdout
 
+memory = run('''module {
+  "udonhl.global"() <{sym_name = "bytes", storage_type = tensor<4xi32>, initial_value = dense<[1, 2, 3, 4]> : tensor<4xi32>, linkage = "internal", address_space = 0 : i32, alignment = 16 : i64}> : () -> ()
+  func.func @memory(%array: tensor<4xf32>, %size: i32, %offset: i32, %value: i32, %byte: i8, %address: i32) -> i32 {
+    %global = udonhl.address_of @bytes : !udonhl.ptr<0>
+    %stack = "udonhl.alloca"(%size) <{alignment = 4 : i64}> : (i32) -> !udonhl.ptr<0>
+    %heap, %ok = "udonhl.heap_alloc"(%size) <{alignment = 8 : i64, memory_kind = #udonhl<memory_kind unknown>}> : (i32) -> (!udonhl.ptr<0>, i1)
+    %element = "udonhl.ptr_add"(%global, %offset) : (!udonhl.ptr<0>, i32) -> !udonhl.ptr<0>
+    "udonhl.store"(%value, %element) <{alignment = 4 : i64}> : (i32, !udonhl.ptr<0>) -> ()
+    %loaded = "udonhl.load"(%element) <{alignment = 4 : i64}> : (!udonhl.ptr<0>) -> i32
+    "udonhl.memcpy"(%stack, %global, %size) : (!udonhl.ptr<0>, !udonhl.ptr<0>, i32) -> ()
+    "udonhl.memmove"(%stack, %element, %size) : (!udonhl.ptr<0>, !udonhl.ptr<0>, i32) -> ()
+    "udonhl.memset"(%stack, %byte, %size) : (!udonhl.ptr<0>, i8, i32) -> ()
+    "udonhl.lifetime_start"(%stack, %size) : (!udonhl.ptr<0>, i32) -> ()
+    "udonhl.lifetime_end"(%stack, %size) : (!udonhl.ptr<0>, i32) -> ()
+    %view = "udonhl.array_view"(%array) <{element_byte_size = 4 : i32, memory_kind = #udonhl<memory_kind typed>}> : (tensor<4xf32>) -> !udonhl.ptr<0>
+    %integer = "udonhl.ptrtoint"(%view) : (!udonhl.ptr<0>) -> i32
+    %pointer = "udonhl.inttoptr"(%address) : (i32) -> !udonhl.ptr<0>
+    "udonhl.heap_free"(%heap) : (!udonhl.ptr<0>) -> ()
+    return %loaded : i32
+  }
+}
+''')
+assert memory.returncode == 0, memory.stderr
+memory_roundtrip = run(memory.stdout)
+assert memory_roundtrip.returncode == 0, memory_roundtrip.stderr
+assert memory.stdout == memory_roundtrip.stdout
+
 for source, diagnostic in [
     ('''module {
       func.func @bad(%execution: i32) {
@@ -87,6 +114,37 @@ for source, diagnostic in [
         return
       }
     }''', 'gpu suspension requires a !vrc.event token'),
+    ('''module {
+      "udonhl.global"() <{sym_name = "data", storage_type = i32, initial_value = 0 : i32, linkage = "internal", address_space = 1 : i32, alignment = 4 : i64}> : () -> ()
+      func.func @bad() {
+        %pointer = udonhl.address_of @data : !udonhl.ptr<0>
+        return
+      }
+    }''', 'address space must match'),
+    ('''module {
+      func.func @bad(%size: i32) {
+        %pointer = "udonhl.alloca"(%size) <{alignment = 3 : i64}> : (i32) -> !udonhl.ptr<0>
+        return
+      }
+    }''', 'positive power of two'),
+    ('''module {
+      func.func @bad(%dst: !udonhl.ptr<0>, %src: !udonhl.ptr<1>, %size: i32) {
+        "udonhl.memcpy"(%dst, %src, %size) : (!udonhl.ptr<0>, !udonhl.ptr<1>, i32) -> ()
+        return
+      }
+    }''', 'address spaces must match'),
+    ('''module {
+      func.func @bad(%pointer: !udonhl.ptr<0>) {
+        %value = "udonhl.load"(%pointer) <{alignment = 4 : i64}> : (!udonhl.ptr<0>) -> tensor<4xi32>
+        return
+      }
+    }''', 'fixed-width scalar or vector'),
+    ('''module {
+      func.func @bad(%array: tensor<4xf32>) {
+        %view = "udonhl.array_view"(%array) <{element_byte_size = 4 : i32, memory_kind = #udonhl<memory_kind raw>}> : (tensor<4xf32>) -> !udonhl.ptr<0>
+        return
+      }
+    }''', 'cannot declare raw backing'),
 ]:
     invalid_continuation = run(source)
     assert invalid_continuation.returncode != 0, source
@@ -149,4 +207,4 @@ for operation, diagnostic in [
     result = run('module { ' + operation + ' }')
     assert result.returncode != 0, operation
     assert diagnostic in result.stderr, (operation, result.stderr)
-print('9 opcode, transfer/event and continuation-frame round-trips plus negative verifier cases passed')
+print('10 opcode, memory, transfer/event and continuation-frame round-trips plus negative verifier cases passed')

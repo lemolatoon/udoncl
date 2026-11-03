@@ -20,4 +20,13 @@ def UdonHL_SuspendReason : I32EnumAttr<"SuspendReason", "continuation suspension
   let genSpecializedAttr = 0;
 }
 def UdonHL_SuspendReasonAttr : EnumAttr<UdonHL_Dialect, UdonHL_SuspendReason, "suspend_reason">;
+def UdonHL_MemoryKind : I32EnumAttr<"MemoryKind", "logical memory backing kind", [
+  I32EnumAttrCase<"Raw", 0, "raw">,
+  I32EnumAttrCase<"Typed", 1, "typed">,
+  I32EnumAttrCase<"Unknown", 2, "unknown">
+]> {
+  let cppNamespace = "::vrc::udonhl";
+  let genSpecializedAttr = 0;
+}
+def UdonHL_MemoryKindAttr : EnumAttr<UdonHL_Dialect, UdonHL_MemoryKind, "memory_kind">;
 #endif

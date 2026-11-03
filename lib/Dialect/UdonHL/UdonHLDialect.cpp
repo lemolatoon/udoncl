@@ -3,6 +3,7 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/DialectImplementation.h"
 #include "mlir/IR/OpImplementation.h"
+#include "mlir/IR/SymbolTable.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/TypeSwitch.h"
@@ -30,6 +31,119 @@ void vrc::udonhl::UdonHLDialect::initialize() {
 }
 #define GET_OP_CLASSES
 #include "VRC/Dialect/UdonHL/UdonHLOps.cpp.inc"
+
+namespace {
+bool isPowerOfTwo(int64_t value) {
+  return value > 0 && (value & (value - 1)) == 0;
+}
+
+mlir::LogicalResult verifyAlignment(mlir::Operation *operation,
+                                    int64_t alignment) {
+  if (!isPowerOfTwo(alignment) || alignment > (1LL << 31))
+    return operation->emitOpError(
+        "alignment must be a positive power of two no larger than 2^31");
+  return mlir::success();
+}
+
+bool isMemoryAccessType(mlir::Type type) {
+  if (auto integer = mlir::dyn_cast<mlir::IntegerType>(type))
+    return integer.getWidth() == 8 || integer.getWidth() == 16 ||
+           integer.getWidth() == 32 || integer.getWidth() == 64;
+  if (type.isF16() || type.isF32() || type.isF64())
+    return true;
+  if (auto vector = mlir::dyn_cast<mlir::VectorType>(type))
+    return vector.hasStaticShape() &&
+           isMemoryAccessType(vector.getElementType());
+  return false;
+}
+
+mlir::LogicalResult verifyMatchingAddressSpaces(mlir::Operation *operation,
+                                                mlir::Type destination,
+                                                mlir::Type source) {
+  auto destinationPointer = mlir::cast<vrc::udonhl::PtrType>(destination);
+  auto sourcePointer = mlir::cast<vrc::udonhl::PtrType>(source);
+  if (destinationPointer.getAddressSpace() != sourcePointer.getAddressSpace())
+    return operation->emitOpError(
+        "source and destination address spaces must match");
+  return mlir::success();
+}
+} // namespace
+
+mlir::LogicalResult vrc::udonhl::GlobalOp::verify() {
+  if (!mlir::isa<mlir::ModuleOp>((*this)->getParentOp()))
+    return emitOpError("must be defined directly inside a module");
+  if (getLinkage() != "internal" && getLinkage() != "external")
+    return emitOpError("linkage must be 'internal' or 'external'");
+  if (getAddressSpace() < 0)
+    return emitOpError("address_space must be nonnegative");
+  if (mlir::failed(verifyAlignment(*this, getAlignment())))
+    return mlir::failure();
+  if (getLinkage() == "external" && getInitialValue())
+    return emitOpError("external globals cannot have an initializer");
+  if (getConstant() && !getInitialValue())
+    return emitOpError("constant globals require an initializer");
+  if (auto initial =
+          mlir::dyn_cast_if_present<mlir::TypedAttr>(getInitialValueAttr()))
+    if (initial.getType() != getStorageType())
+      return emitOpError("initializer type must match storage_type");
+  return mlir::success();
+}
+
+mlir::LogicalResult vrc::udonhl::AddressOfOp::verifySymbolUses(
+    mlir::SymbolTableCollection &symbols) {
+  auto global =
+      symbols.lookupNearestSymbolFrom<GlobalOp>(*this, getGlobalAttr());
+  if (!global)
+    return emitOpError("global must resolve to udonhl.global");
+  if (static_cast<int64_t>(getResult().getType().getAddressSpace()) !=
+      global.getAddressSpace())
+    return emitOpError("result address space must match the global");
+  return mlir::success();
+}
+
+mlir::LogicalResult vrc::udonhl::AllocaOp::verify() {
+  return verifyAlignment(*this, getAlignment());
+}
+
+mlir::LogicalResult vrc::udonhl::HeapAllocOp::verify() {
+  return verifyAlignment(*this, getAlignment());
+}
+
+mlir::LogicalResult vrc::udonhl::PtrAddOp::verify() {
+  if (getPointer().getType() != getResult().getType())
+    return emitOpError("result address space must match the input pointer");
+  return mlir::success();
+}
+
+mlir::LogicalResult vrc::udonhl::LoadOp::verify() {
+  if (!isMemoryAccessType(getResult().getType()))
+    return emitOpError("result must be a fixed-width scalar or vector");
+  return verifyAlignment(*this, getAlignment());
+}
+
+mlir::LogicalResult vrc::udonhl::StoreOp::verify() {
+  if (!isMemoryAccessType(getValue().getType()))
+    return emitOpError("value must be a fixed-width scalar or vector");
+  return verifyAlignment(*this, getAlignment());
+}
+
+mlir::LogicalResult vrc::udonhl::MemcpyOp::verify() {
+  return verifyMatchingAddressSpaces(*this, getDestination().getType(),
+                                     getSource().getType());
+}
+
+mlir::LogicalResult vrc::udonhl::MemmoveOp::verify() {
+  return verifyMatchingAddressSpaces(*this, getDestination().getType(),
+                                     getSource().getType());
+}
+
+mlir::LogicalResult vrc::udonhl::ArrayViewOp::verify() {
+  if (getElementByteSize() <= 0)
+    return emitOpError("element_byte_size must be positive");
+  if (getMemoryKind() == MemoryKind::Raw)
+    return emitOpError("an Udon typed array view cannot declare raw backing");
+  return mlir::success();
+}
 
 mlir::LogicalResult vrc::udonhl::CallOp::verify() {
   if (!(*this)->getParentOfType<mlir::func::FuncOp>() ||
