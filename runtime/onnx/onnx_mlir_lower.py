@@ -9,12 +9,28 @@ from onnx_mlir_graph import Graph, Operator, parse
 from udon_onnx import PROVIDERS, emit_c_host, parse_model, validate_external_data
 
 
-def _static_shape(type_, context: str) -> list[int]:
-    if type_ is None or type_.shape is None or any(item is None for item in type_.shape):
-        raise ValueError(f"{context} requires a static tensor shape after specialization")
-    if type_.element_type != "f32":
-        raise ValueError(f"{context} has unsupported element type {type_.element_type!r}")
-    return list(type_.shape)
+_ELEMENT_TYPES = {"f32": "float32", "i32": "int32", "i64": "int64"}
+
+
+def _bounded_shape(type_, context: str, dimension_bounds: dict[str, int]) -> list[int]:
+    if type_ is None or type_.shape is None:
+        raise ValueError(f"{context} requires a ranked tensor shape")
+    if all(item is not None for item in type_.shape):
+        return list(type_.shape)
+    unique_bounds = set(dimension_bounds.values())
+    if len(unique_bounds) != 1:
+        raise ValueError(
+            f"{context} has dynamic dimensions whose symbols are not recoverable from canonical MLIR; provide one unambiguous DIMENSION_BOUNDS value"
+        )
+    bound = next(iter(unique_bounds))
+    return [bound if item is None else item for item in type_.shape]
+
+
+def _element_type(type_, context: str) -> str:
+    if type_ is None or type_.element_type not in _ELEMENT_TYPES:
+        actual = None if type_ is None else type_.element_type
+        raise ValueError(f"{context} has unsupported element type {actual!r}")
+    return _ELEMENT_TYPES[type_.element_type]
 
 
 def _attribute(value: object) -> dict:
@@ -83,8 +99,10 @@ def host_graph(graph: Graph, model: dict, dimension_bounds=None) -> dict:
                 specialized.append(dimension_bounds[symbol])
             values[value.name] = specialized
         else:
-            values[value.name] = _static_shape(value.type, value.name)
-        value_types[value.name] = "float32"
+            values[value.name] = _bounded_shape(
+                value.type, value.name, dimension_bounds
+            )
+        value_types[value.name] = _element_type(value.type, value.name)
     canonical_initializers = {value.name for value in graph.initializers}
     missing = sorted(canonical_initializers - set(model_initializers))
     if missing:
@@ -112,8 +130,12 @@ def host_graph(graph: Graph, model: dict, dimension_bounds=None) -> dict:
         ):
             name = _value_name(operator, output_index, used)
             ssa_names[ssa] = name
-            values[name] = _static_shape(type_, f"ONNX {operator.op_type} output")
-            value_types[name] = "float32"
+            values[name] = _bounded_shape(
+                type_, f"ONNX {operator.op_type} output", dimension_bounds
+            )
+            value_types[name] = _element_type(
+                type_, f"ONNX {operator.op_type} output"
+            )
             outputs.append(name)
         if len(outputs) != 1:
             raise ValueError(

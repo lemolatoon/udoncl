@@ -45,8 +45,8 @@ def main():
     pooling_consumer = output / 'average-pooling-consumer'
     udonblas_consumer = output / 'udonblas-consumer'
     onnx_consumer = output / 'onnx-consumer'
-    onnx_dense_consumer = output / 'onnx-dense-consumer'
     onnx_mnist_consumer = output / 'onnx-mnist-consumer'
+    onnx_transformer_consumer = output / 'onnx-transformer-consumer'
     run([
         args.cmake,
         '--install', str(args.project_build.resolve()),
@@ -96,11 +96,6 @@ def main():
         args.source.resolve().parents[1] / 'examples/onnx-mnist/unity-library.json'
     ).read_text(encoding='utf-8'))
     probe['program'] = 'generic_onnx_mnist'
-    blas_probe = json.loads((
-        args.source.resolve().parents[1]
-        / 'examples/udonblas-sgemm/unity-library.json'
-    ).read_text(encoding='utf-8'))
-    probe['device_kernels'].append(blas_probe['device_kernels'][1])
     probe['exports'] = [
         {
             'symbol': 'udon_onnx_session_write_input_float',
@@ -258,57 +253,6 @@ def main():
             diagnostic,
         )
 
-    onnx_dense_source = args.source.resolve().parents[1] / 'examples/onnx-mnist-dense'
-    run([
-        args.cmake,
-        '-S', onnx_dense_source,
-        '-B', onnx_dense_consumer,
-        '-G', args.generator,
-        f'-DCMAKE_MAKE_PROGRAM={args.make_program}',
-        f'-DUdonCL_DIR={package}',
-        f'-DUdonBLAS_DIR={udonblas_package}',
-        f'-DUDONCL_CLANG_EXECUTABLE={Path(args.clang).resolve()}',
-        f'-DUDONCL_LLVM_LINK_EXECUTABLE={Path(args.llvm_link).resolve()}',
-    ])
-    run([
-        args.cmake, '--build', onnx_dense_consumer, '--target',
-        'onnx-mnist-dense',
-    ])
-    onnx_dense_root = onnx_dense_consumer / 'udoncl/onnx-mnist-dense'
-    onnx_dense_host = onnx_dense_consumer / 'udoncl-onnx/mnist_dense_host/host.c'
-    onnx_dense_mlir = onnx_dense_consumer / 'udoncl-onnx/mnist_dense_host/host.mlir'
-    assert onnx_dense_host.is_file()
-    assert onnx_dense_mlir.is_file()
-    onnx_dense_source_text = onnx_dense_host.read_text(encoding='utf-8')
-    assert 'm=1, n=10, k=144' not in onnx_dense_source_text
-    assert 'UDONBLAS_OP_N, UDONBLAS_OP_N, 1, 10, 144' in onnx_dense_source_text
-    onnx_dense_mlir_text = onnx_dense_mlir.read_text(encoding='utf-8')
-    assert 'udoncl.onnx_lowering = "library-calls-v1"' in onnx_dense_mlir_text
-    assert 'func.call @udonblasSgemm' in onnx_dense_mlir_text
-    assert '!udonhl.ptr<0>' in onnx_dense_mlir_text
-    assert not list(onnx_dense_consumer.rglob('execution-plan.json'))
-    onnx_dense_recovered = (
-        onnx_dense_root / 'artifact/frontend.recovered.mlir'
-    ).read_text(encoding='utf-8')
-    assert 'udoncl.onnx_lowering = "library-calls-v1"' in onnx_dense_recovered
-    assert 'func.func @run_mnist_dense()' in onnx_dense_recovered
-    onnx_dense_manifest = json.loads(
-        (onnx_dense_root / 'artifact/manifest.json').read_text(encoding='utf-8')
-    )
-    assert [item['public_name'] for item in onnx_dense_manifest['exports']] == [
-        'WriteMnistDenseInput',
-        'RunMnistDense',
-        'ReadMnistDenseOutput',
-    ]
-    assert onnx_dense_manifest['exports'][0]['async'] is False
-    assert onnx_dense_manifest['exports'][1]['async'] is True
-    assert onnx_dense_manifest['exports'][2]['async'] is False
-    onnx_dense_assembly = (
-        onnx_dense_root / 'artifact/host.uasm'
-    ).read_text(encoding='utf-8')
-    assert sum(': %' in line for line in onnx_dense_assembly.splitlines()) <= 480
-    assert onnx_dense_assembly.count('__udoncl_material_input_0:') == 1
-
     onnx_mnist_source = args.source.resolve().parents[1] / 'examples/onnx-mnist'
     run([
         args.cmake,
@@ -319,22 +263,28 @@ def main():
         f'-DUdonCL_DIR={package}',
         f'-DUdonBLAS_DIR={udonblas_package}',
         f'-DUdonDNN_DIR={udondnn_package}',
+        f'-DUdonATen_DIR={udonaten_package}',
+        f'-DUdonONNXOperators_DIR={udononnxoperators_package}',
         f'-DUDONCL_CLANG_EXECUTABLE={Path(args.clang).resolve()}',
         f'-DUDONCL_LLVM_LINK_EXECUTABLE={Path(args.llvm_link).resolve()}',
+        f'-DUDONCL_ONNX_IMPORTER_EXECUTABLE={Path(args.onnx_importer).resolve()}',
+        f'-DUDONCL_ONNX_OPT_EXECUTABLE={Path(args.onnx_opt).resolve()}',
     ])
     run([
         args.cmake, '--build', onnx_mnist_consumer, '--target', 'onnx-mnist',
     ])
     onnx_mnist_root = onnx_mnist_consumer / 'udoncl/onnx-mnist'
     onnx_mnist_host = onnx_mnist_consumer / 'udoncl-onnx/mnist_host/host.c'
-    onnx_mnist_mlir = onnx_mnist_consumer / 'udoncl-onnx/mnist_host/host.mlir'
+    onnx_mnist_mlir = onnx_mnist_consumer / 'udoncl-onnx/mnist_host/model.mlir'
     assert onnx_mnist_host.is_file()
     assert onnx_mnist_mlir.is_file()
+    onnx_mnist_host_text = onnx_mnist_host.read_text(encoding='utf-8')
+    assert 'int udon_onnx_run(udon_onnx_buffers_t *buffers)' in onnx_mnist_host_text
     onnx_mnist_mlir_text = onnx_mnist_mlir.read_text(encoding='utf-8')
-    assert 'udoncl.onnx_profile = "mnist"' in onnx_mnist_mlir_text
-    assert 'func.call @udondnnConvolutionForward' in onnx_mnist_mlir_text
-    assert 'func.call @udondnnPoolingForward' in onnx_mnist_mlir_text
-    assert 'func.call @udonblasSgemm' in onnx_mnist_mlir_text
+    assert '"onnx.Conv"' in onnx_mnist_mlir_text
+    assert '"onnx.AveragePool"' in onnx_mnist_mlir_text
+    assert '"onnx.Gemm"' in onnx_mnist_mlir_text
+    assert 'udoncl.onnx_profile' not in onnx_mnist_mlir_text
     assert not list(onnx_mnist_consumer.rglob('execution-plan.json'))
     onnx_mnist_artifact = onnx_mnist_root / 'artifact'
     onnx_mnist_manifest = json.loads(
@@ -346,19 +296,20 @@ def main():
         'udondnn_large_activation_forward',
         'udondnn_large_pooling_forward',
         'udonblas_sgemm',
+        'udonblas_sgemv',
     ]
     mnist_dispatch_ids = [
         item['kernel_id'] for item in onnx_mnist_manifest['dispatch_sites']
     ]
-    assert mnist_dispatch_ids == [232, 234, 233, 231, 1]
+    assert set(mnist_dispatch_ids) == {1, 231, 232, 233, 234}
     assert [item['public_name'] for item in onnx_mnist_manifest['exports']] == [
-        'WriteMnistInput', 'RunMnist', 'ReadMnistOutput',
+        'TryWriteInputFloat', 'StartRun', 'ReadOutputFloat',
     ]
     assert [
         (buffer['width'], buffer['height'])
         for buffer in onnx_mnist_manifest['device']['buffers']
-    ] == [(8192, 2)] * 4 + [(32, 32)] * 2
-    for kernel_id in [1, 231, 232, 233, 234]:
+    ] == [(8192, 2)] * 15
+    for kernel_id in [1, 2, 231, 232, 233, 234]:
         assert (
             onnx_mnist_artifact / f'kernels/kernel_{kernel_id}.shader'
         ).is_file()
@@ -367,22 +318,60 @@ def main():
     )
     assert sum(': %' in line for line in onnx_mnist_assembly.splitlines()) <= 480
     assert 'E+' not in onnx_mnist_assembly
-    mnist_uasm_lines = [
-        line.strip() for line in onnx_mnist_assembly.splitlines() if line.strip()
-    ]
-    descriptor_pushes = [
-        index for index, line in enumerate(mnist_uasm_lines)
-        if 'PUSH, __vrc_f2_descriptor_' in line
-    ]
-    assert descriptor_pushes
-    assert any(
-        mnist_uasm_lines[index + 1] == 'COPY'
-        for index in descriptor_pushes
+    onnx_transformer_source = (
+        args.source.resolve().parents[1] / 'examples/onnx-transformer-tiny'
     )
-    assert '__vrc_f2_descriptor_1_' not in onnx_mnist_assembly
-    for kernel_id in [1, 231, 232, 233, 234]:
-        assert f'dispatch_{kernel_id}_output_matches_' not in onnx_mnist_assembly
-        assert f'dispatch_{kernel_id}_input_' not in onnx_mnist_assembly
+    run([
+        args.cmake,
+        '-S', onnx_transformer_source,
+        '-B', onnx_transformer_consumer,
+        '-G', args.generator,
+        f'-DCMAKE_MAKE_PROGRAM={args.make_program}',
+        f'-DUdonCL_DIR={package}',
+        f'-DUdonBLAS_DIR={udonblas_package}',
+        f'-DUdonDNN_DIR={udondnn_package}',
+        f'-DUdonATen_DIR={udonaten_package}',
+        f'-DUdonONNXOperators_DIR={udononnxoperators_package}',
+        f'-DUDONCL_CLANG_EXECUTABLE={Path(args.clang).resolve()}',
+        f'-DUDONCL_LLVM_LINK_EXECUTABLE={Path(args.llvm_link).resolve()}',
+        f'-DUDONCL_ONNX_IMPORTER_EXECUTABLE={Path(args.onnx_importer).resolve()}',
+        f'-DUDONCL_ONNX_OPT_EXECUTABLE={Path(args.onnx_opt).resolve()}',
+    ])
+    run([
+        args.cmake, '--build', onnx_transformer_consumer,
+        '--target', 'onnx-transformer-tiny',
+    ])
+    transformer_host = (
+        onnx_transformer_consumer / 'udoncl-onnx/transformer_host/host.c'
+    )
+    transformer_mlir = (
+        onnx_transformer_consumer / 'udoncl-onnx/transformer_host/model.mlir'
+    )
+    transformer_artifact = (
+        onnx_transformer_consumer / 'udoncl/onnx-transformer-tiny/artifact'
+    )
+    transformer_source = transformer_host.read_text(encoding='utf-8')
+    assert 'udon_onnx_session_write_input_int32' in transformer_source
+    assert 'udon_onnx_session_bind_output_to_input' in transformer_source
+    assert 'output_index == 1 && input_index == 1' in transformer_source
+    assert 'output_index == 2 && input_index == 2' in transformer_source
+    transformer_mlir_source = transformer_mlir.read_text(encoding='utf-8')
+    assert 'tensor<1x?xi32>' in transformer_mlir_source
+    assert 'onnx.dim_params = "1:sequence"' in transformer_mlir_source
+    transformer_manifest = json.loads(
+        (transformer_artifact / 'manifest.json').read_text(encoding='utf-8')
+    )
+    assert [item['public_name'] for item in transformer_manifest['exports']] == [
+        'TryWriteInputFloat', 'TryWriteInputInt32', 'StartRun',
+        'ReadOutputFloat', 'TryBindOutputToInput', 'TryUnbindInput',
+    ]
+    assert {
+        item['kernel_id'] for item in transformer_manifest['dispatch_sites']
+    } == {1, 2, 207, 231, 232, 233, 234}
+    assert {
+        item['id'] for item in transformer_manifest['device']['kernels']
+    } == {1, 2, 207, 231, 232, 233, 234}
+    assert not list(onnx_transformer_consumer.rglob('execution-plan.json'))
     run([
         args.cmake,
         '-S', str(args.source.resolve()),

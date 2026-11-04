@@ -113,6 +113,23 @@ for expected in [
     assert expected in remainder.stdout, (expected, remainder.stdout)
 assert '__op_Modulus__' not in remainder.stdout
 
+conversion_source = r'''module attributes {vrc.host_stage = "udonhl"} {
+  func.func @to_float(%value: i32) -> f32 attributes {
+    vrc.export_id = 1 : i32
+  } {
+    %result = arith.sitofp %value : i32 to f32
+    return %result : f32
+  }
+}'''
+conversion = subprocess.run(
+    [opt, '--vrc-lower-udonhl-to-udonasm', '--verify-each'],
+    input=conversion_source, text=True, capture_output=True)
+assert conversion.returncode == 0, conversion.stderr
+assert (
+    'SystemConvert.__ToSingle__SystemInt32__SystemSingle'
+    in conversion.stdout
+)
+
 integer_bit_source = r'''module attributes {vrc.host_stage = "udonhl"} {
   func.func @integer_bits(%value: i32, %shift: i32, %mask: i32) -> i32 attributes {
     vrc.export_id = 1 : i32

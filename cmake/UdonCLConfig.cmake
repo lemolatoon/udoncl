@@ -11,8 +11,6 @@ if(EXISTS "${_UDONCL_INSTALL_PREFIX}/include/udoncl/unity_buffer.h")
       "${_UDONCL_INSTALL_PREFIX}/share/udoncl/runtime")
   set(_UDONCL_ONNX_COMPILER
       "${_UDONCL_INSTALL_PREFIX}/share/udoncl/onnx/udon_onnx.py")
-  set(_UDONCL_ONNX_HOST_COMPILER
-      "${_UDONCL_INSTALL_PREFIX}/share/udoncl/onnx/udon_onnx_host.py")
   set(_UDONCL_ONNX_MLIR_COMPILER
       "${_UDONCL_INSTALL_PREFIX}/share/udoncl/onnx/compile_onnx_mlir.py")
   set(_UDONCL_ONNX_MLIR_LOWER
@@ -24,8 +22,6 @@ else()
   set(_UDONCL_RUNTIME_DIR "${_UDONCL_SOURCE_HINT}/lib/Runtime/OpenCL")
   set(_UDONCL_ONNX_COMPILER
       "${_UDONCL_SOURCE_HINT}/runtime/onnx/udon_onnx.py")
-  set(_UDONCL_ONNX_HOST_COMPILER
-      "${_UDONCL_SOURCE_HINT}/runtime/onnx/udon_onnx_host.py")
   set(_UDONCL_ONNX_MLIR_COMPILER
       "${_UDONCL_SOURCE_HINT}/scripts/compile_onnx_mlir.py")
   set(_UDONCL_ONNX_MLIR_LOWER
@@ -271,49 +267,6 @@ function(udoncl_add_onnx_host_library target)
                "${_generated_mlir}")
   set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_DIMENSION_BOUNDS
                "${_ARG_DIMENSION_BOUNDS}")
-endfunction()
-
-# Temporary migration-only entry point for the two checked-in MNIST fixtures.
-# New consumers must use udoncl_add_onnx_host_library above. Delete this after
-# the generic ONNX-MLIR MNIST gate replaces the profile emitter.
-function(_udoncl_add_legacy_onnx_host_library target)
-  set(_options)
-  set(_one_value MODEL PROFILE)
-  cmake_parse_arguments(PARSE_ARGV 1 _ARG "${_options}" "${_one_value}" "")
-  if(_ARG_UNPARSED_ARGUMENTS OR NOT _ARG_MODEL OR NOT _ARG_PROFILE)
-    message(FATAL_ERROR
-      "_udoncl_add_legacy_onnx_host_library requires MODEL and PROFILE")
-  endif()
-  if(NOT _ARG_PROFILE STREQUAL "mnist" AND
-     NOT _ARG_PROFILE STREQUAL "mnist-dense")
-    message(FATAL_ERROR "Unsupported legacy ONNX Host PROFILE: ${_ARG_PROFILE}")
-  endif()
-  cmake_path(ABSOLUTE_PATH _ARG_MODEL BASE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-             NORMALIZE OUTPUT_VARIABLE _model)
-  if(NOT EXISTS "${_model}" OR NOT EXISTS "${_UDONCL_ONNX_HOST_COMPILER}")
-    message(FATAL_ERROR "Legacy ONNX Host input or compiler does not exist")
-  endif()
-  find_package(Python3 3.12 REQUIRED COMPONENTS Interpreter)
-  set(_generated_dir "${CMAKE_CURRENT_BINARY_DIR}/udoncl-onnx/${target}")
-  set(_generated_host "${_generated_dir}/host.c")
-  set(_generated_mlir "${_generated_dir}/host.mlir")
-  file(MAKE_DIRECTORY "${_generated_dir}")
-  execute_process(
-    COMMAND "${Python3_EXECUTABLE}" "${_UDONCL_ONNX_HOST_COMPILER}"
-            "${_model}" --profile "${_ARG_PROFILE}" -o "${_generated_host}"
-            --mlir-output "${_generated_mlir}"
-    RESULT_VARIABLE _result OUTPUT_VARIABLE _stdout ERROR_VARIABLE _stderr)
-  if(NOT _result EQUAL 0)
-    message(FATAL_ERROR
-      "Legacy ONNX Host generation failed for ${_model}:\n${_stdout}${_stderr}")
-  endif()
-  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-    "${_model}" "${_UDONCL_ONNX_HOST_COMPILER}")
-  udoncl_add_host_library("${target}" "${_generated_host}")
-  set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_MODEL "${_model}")
-  set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_HOST "${_generated_host}")
-  set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_HOST_MLIR
-               "${_generated_mlir}")
 endfunction()
 
 if(NOT TARGET udoncl_opencl_runtime)

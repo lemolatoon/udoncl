@@ -29,6 +29,16 @@ def initializer(shape):
     }
 
 
+def int32_initializer(shape):
+    count = math.prod(shape)
+    return {
+        "shape": list(shape),
+        "data_type_name": "int32",
+        "data_location": 0,
+        "raw": struct.pack(f"<{count}i", *range(count)),
+    }
+
+
 CANONICAL = r'''
 module {
   func.func @main_graph(%arg0: tensor<?x4xf32> {onnx.name = "input"} loc(unknown)) -> (tensor<?x2xf32> {onnx.name = "output"}) {
@@ -43,6 +53,21 @@ module {
 #loc2 = loc("Initializer_bias")
 #loc3 = loc("dense")
 #loc4 = loc("activation")
+'''
+
+
+TRANSFORMER_IO = r'''
+module {
+  func.func @main_graph(%arg0: tensor<?xi32> {onnx.name = "input_ids"} loc(unknown), %arg1: tensor<?x8xf32> {onnx.name = "past_key"} loc(unknown)) -> (tensor<?x8xf32> {onnx.name = "present_key"}, tensor<?x8xf32> {onnx.name = "logits"}) {
+    %0 = onnx.Constant dense<0.0> : tensor<8x8xf32> loc(#loc1)
+    %1 = "onnx.Add"(%arg1, %arg1) {onnx_node_name = "present_key"} : (tensor<?x8xf32>, tensor<?x8xf32>) -> tensor<?x8xf32> loc(#loc2)
+    %2 = "onnx.MatMul"(%arg1, %0) {onnx_node_name = "logits"} : (tensor<?x8xf32>, tensor<8x8xf32>) -> tensor<?x8xf32> loc(#loc3)
+    onnx.Return %1, %2 : tensor<?x8xf32>, tensor<?x8xf32> loc(unknown)
+  }
+}
+#loc1 = loc("Initializer_weight")
+#loc2 = loc("present_key")
+#loc3 = loc("logits")
 '''
 
 
@@ -129,6 +154,36 @@ class ONNXMLIRGraphTests(unittest.TestCase):
                     }
                 },
             )
+
+    def test_bounded_dynamic_transformer_io_emits_typed_multi_output_session(self):
+        graph = graph_module.parse(TRANSFORMER_IO)
+        lowering = host_graph(
+            graph,
+            {
+                "graph": {
+                    "inputs": {
+                        "input_ids": {"shape": ["sequence"]},
+                        "past_key": {"shape": ["sequence", 8]},
+                    },
+                    "initializers": {"weight": initializer((8, 8))},
+                }
+            },
+            {"sequence": 4},
+        )
+        self.assertEqual(lowering["values"]["input_ids"], [4])
+        self.assertEqual(lowering["value_types"]["input_ids"], "int32")
+        self.assertEqual(lowering["values"]["present_key"], [4, 8])
+        self.assertEqual(
+            list(lowering["session"]["outputs"]), ["present_key", "logits"]
+        )
+        source = emit_c_host(lowering)
+        self.assertIn("static int32_t storage_", source)
+        self.assertIn("udon_onnx_session_write_input_int32", source)
+        self.assertIn("udon_onnx_session_read_output_float", source)
+        self.assertIn("udon_onnx_session_get_output_count(void) { return 2; }", source)
+        self.assertIn("udon_onnx_session_bind_output_to_input", source)
+        self.assertIn("output_index == 0 && input_index == 1", source)
+        self.assertIn("udon_onnx_session_unbind_input", source)
 
 
 if __name__ == "__main__":

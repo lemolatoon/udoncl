@@ -194,7 +194,13 @@ def node_proto(
 
 def value_info_proto(name: str, shape, data_type: int = 1) -> bytes:
     dimensions = b"".join(
-        message_field(1, varint_field(1, dimension)) for dimension in shape
+        message_field(
+            1,
+            bytes_field(2, dimension)
+            if isinstance(dimension, str)
+            else varint_field(1, dimension),
+        )
+        for dimension in shape
     )
     tensor_type = varint_field(1, data_type) + message_field(2, dimensions)
     return bytes_field(1, name) + message_field(2, message_field(1, tensor_type))
@@ -2757,6 +2763,8 @@ def _emit_owned_session(lines: list[str], graph: dict, names: dict[str, str]) ->
     if not session:
         return
     initializers = session.get("initializers", {})
+    c_types = {"float32": "float", "int32": "int32_t", "int64": "int64_t"}
+    unpack_formats = {"float32": "f", "int32": "i", "int64": "q"}
 
     def capacity(name: str) -> int:
         logical = math.prod(graph["values"][name])
@@ -2764,32 +2772,49 @@ def _emit_owned_session(lines: list[str], graph: dict, names: dict[str, str]) ->
 
     lines.append("/* Generic index-based ONNX session storage and exports. */")
     for name in sorted(graph["values"]):
-        declaration = f"static float storage_{names[name]}[{capacity(name)}]"
+        value_type = graph["value_types"][name]
+        if value_type not in c_types:
+            raise ValueError(
+                f"owned ONNX session does not support value type {value_type!r}"
+            )
+        declaration = (
+            f"static {c_types[value_type]} storage_{names[name]}[{capacity(name)}]"
+        )
         initializer = initializers.get(name)
         if initializer is None:
             lines.append(declaration + ";")
             continue
-        if initializer["data_type_name"] != "float32":
+        if initializer["data_type_name"] != value_type:
             raise ValueError(
-                f"owned ONNX session does not yet support initializer type {initializer['data_type_name']!r}"
+                f"owned ONNX session initializer {name!r} type does not match its canonical value type"
             )
         if initializer["data_location"] == 1:
             raise ValueError(
                 "owned ONNX session requires external initializers to be materialized by the artifact packer"
             )
-        values = struct.unpack(f"<{len(initializer['raw']) // 4}f", initializer["raw"])
+        width = struct.calcsize(unpack_formats[value_type])
+        values = struct.unpack(
+            f"<{len(initializer['raw']) // width}{unpack_formats[value_type]}",
+            initializer["raw"],
+        )
         lines.append(declaration + " = {")
         for offset in range(0, len(values), 6):
+            formatted = [
+                _c_float(value) if value_type == "float32" else str(value)
+                for value in values[offset : offset + 6]
+            ]
             lines.append(
-                "  "
-                + ", ".join(_c_float(value) for value in values[offset : offset + 6])
-                + ","
+                "  " + ", ".join(formatted) + ","
             )
         lines.append("};")
-    lines.extend(["", "static udon_onnx_buffers_t udon_onnx_session_buffers;", ""])
-
     inputs = list(session.get("inputs", {}).items())
     outputs = list(session.get("outputs", {}).items())
+    lines.extend(["", "static udon_onnx_buffers_t udon_onnx_session_buffers;"])
+    for index, (_, value) in enumerate(inputs):
+        lines.append(
+            f"static {c_types[graph['value_types'][value]]} *udon_onnx_session_input_{index};"
+        )
+    lines.extend(["static int udon_onnx_session_has_run;", ""])
     lines.extend(
         [
             f"int udon_onnx_session_get_input_count(void) {{ return {len(inputs)}; }}",
@@ -2813,53 +2838,114 @@ def _emit_owned_session(lines: list[str], graph: dict, names: dict[str, str]) ->
             f"  if (output_index == {index}) return {math.prod(graph['values'][value])};"
         )
     lines.extend(["  return -1;", "}", ""])
+    for suffix, value_type, c_type in (
+        ("float", "float32", "float"),
+        ("int32", "int32", "int32_t"),
+        ("int64", "int64", "int64_t"),
+    ):
+        lines.append(
+            f"int udon_onnx_session_write_input_{suffix}(int input_index, int element_index, {c_type} value) {{"
+        )
+        for index, (_, value) in enumerate(inputs):
+            if graph["value_types"][value] != value_type:
+                continue
+            count = math.prod(graph["values"][value])
+            mask = capacity(value) - 1
+            lines.extend(
+                [
+                    f"  if (input_index == {index}) {{",
+                    f"    if (element_index < 0 || element_index >= {count}) return -1;",
+                    f"    if (!udon_onnx_session_input_{index}) udon_onnx_session_input_{index} = storage_{names[value]};",
+                    f"    udon_onnx_session_input_{index}[(unsigned)element_index & {mask}u] = value;",
+                    "    return 0;",
+                    "  }",
+                ]
+            )
+        lines.extend(["  return -1;", "}", ""])
+    lines.extend(["int udon_onnx_session_run(void) {"])
+    for name in sorted(graph["values"]):
+        input_index = next(
+            (index for index, (_, value) in enumerate(inputs) if value == name), None
+        )
+        source = (
+            f"udon_onnx_session_input_{input_index}"
+            if input_index is not None
+            else f"storage_{names[name]}"
+        )
+        if input_index is not None:
+            lines.append(
+                f"  if (!udon_onnx_session_input_{input_index}) udon_onnx_session_input_{input_index} = storage_{names[name]};"
+            )
+        lines.append(f"  udon_onnx_session_buffers.{names[name]} = {source};")
     lines.extend(
         [
-            "int udon_onnx_session_write_input_float(int input_index, int element_index, float value) {",
+            "  int status = udon_onnx_run(&udon_onnx_session_buffers);",
+            "  if (status == 0) udon_onnx_session_has_run = 1;",
+            "  return status;",
+            "}",
+            "",
+            "int udon_onnx_session_bind_output_to_input(int output_index, int input_index) {",
+            "  if (!udon_onnx_session_has_run) return -1;",
+        ]
+    )
+    for output_index, (_, output_value) in enumerate(outputs):
+        for input_index, (_, input_value) in enumerate(inputs):
+            if (
+                graph["value_types"][output_value]
+                != graph["value_types"][input_value]
+                or math.prod(graph["values"][output_value])
+                != math.prod(graph["values"][input_value])
+            ):
+                continue
+            lines.extend(
+                [
+                    f"  if (output_index == {output_index} && input_index == {input_index}) {{",
+                    f"    udon_onnx_session_input_{input_index} = udon_onnx_session_buffers.{names[output_value]};",
+                    "    return 0;",
+                    "  }",
+                ]
+            )
+    lines.extend(
+        [
+            "  return -1;",
+            "}",
+            "",
+            "int udon_onnx_session_unbind_input(int input_index) {",
         ]
     )
     for index, (_, value) in enumerate(inputs):
-        count = math.prod(graph["values"][value])
-        mask = capacity(value) - 1
         lines.extend(
             [
                 f"  if (input_index == {index}) {{",
-                f"    if (element_index < 0 || element_index >= {count}) return -1;",
-                f"    storage_{names[value]}[(unsigned)element_index & {mask}u] = value;",
+                f"    udon_onnx_session_input_{index} = storage_{names[value]};",
                 "    return 0;",
                 "  }",
             ]
         )
     lines.extend(["  return -1;", "}", ""])
-    lines.extend(
-        [
-            "int udon_onnx_session_run(void) {",
-        ]
-    )
-    for name in sorted(graph["values"]):
+    for suffix, value_type, c_type, zero in (
+        ("float", "float32", "float", "0.0f"),
+        ("int32", "int32", "int32_t", "0"),
+        ("int64", "int64", "int64_t", "0"),
+    ):
         lines.append(
-            f"  udon_onnx_session_buffers.{names[name]} = storage_{names[name]};"
+            f"{c_type} udon_onnx_session_read_output_{suffix}(int output_index, int element_index) {{"
         )
-    lines.extend(
-        [
-            "  return udon_onnx_run(&udon_onnx_session_buffers);",
-            "}",
-            "",
-            "float udon_onnx_session_read_output_float(int output_index, int element_index) {",
-        ]
-    )
-    for index, (_, value) in enumerate(outputs):
-        count = math.prod(graph["values"][value])
-        mask = capacity(value) - 1
-        lines.extend(
-            [
-                f"  if (output_index == {index}) {{",
-                f"    if (element_index < 0 || element_index >= {count}) return 0.0f;",
-                f"    return storage_{names[value]}[(unsigned)element_index & {mask}u];",
-                "  }",
-            ]
-        )
-    lines.extend(["  return 0.0f;", "}", ""])
+        for index, (_, value) in enumerate(outputs):
+            if graph["value_types"][value] != value_type:
+                continue
+            count = math.prod(graph["values"][value])
+            mask = capacity(value) - 1
+            lines.extend(
+                [
+                    f"  if (output_index == {index}) {{",
+                    f"    if (element_index < 0 || element_index >= {count}) return {zero};",
+                    "    if (!udon_onnx_session_has_run) return " + zero + ";",
+                    f"    return udon_onnx_session_buffers.{names[value]}[(unsigned)element_index & {mask}u];",
+                    "  }",
+                ]
+            )
+        lines.extend([f"  return {zero};", "}", ""])
 
 
 def emit_c_host(plan: dict) -> str:

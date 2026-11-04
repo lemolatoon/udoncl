@@ -177,7 +177,7 @@ struct LowerHostToUdonHLPass
               !isa<arith::AndIOp, arith::OrIOp, arith::XOrIOp, arith::ShLIOp,
                    arith::ShRSIOp, arith::ShRUIOp, arith::SelectOp,
                    arith::ExtSIOp, arith::ExtUIOp, arith::TruncIOp,
-                   arith::MaxSIOp, arith::MinSIOp>(op)) {
+                   arith::SIToFPOp, arith::MaxSIOp, arith::MinSIOp>(op)) {
             op.emitError() << "operation " << op.getName()
                            << " is outside the initial Host lowering pattern";
             signalPassFailure();

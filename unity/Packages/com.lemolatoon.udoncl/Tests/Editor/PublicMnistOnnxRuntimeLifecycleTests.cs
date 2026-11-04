@@ -204,7 +204,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 );
         }
 
-        private static int RunAsyncExport(
+        internal static int RunAsyncExport(
             IUdonVM vm,
             IUdonProgram program,
             IUdonHeap heap,
@@ -333,7 +333,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             }
         }
 
-        private static void Clear(RenderTexture destination)
+        internal static void Clear(RenderTexture destination)
         {
             RenderTexture previous = RenderTexture.active;
             try
@@ -398,7 +398,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 : Path.Combine(repository, relativeFallback);
         }
 
-        private static string ResolveRepository()
+        internal static string ResolveRepository()
         {
             UnityEditor.PackageManager.PackageInfo package =
                 UnityEditor.PackageManager.PackageInfo.FindForAssembly(
@@ -408,7 +408,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             return Path.GetFullPath(Path.Combine(package.resolvedPath, "..", "..", ".."));
         }
 
-        private static HashSet<string> SerializedProgramAssets()
+        internal static HashSet<string> SerializedProgramAssets()
         {
             HashSet<string> result = new HashSet<string>(StringComparer.Ordinal);
             foreach (
@@ -429,13 +429,13 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             return asset;
         }
 
-        private static void Execute(IUdonVM vm, IUdonProgram program, string entry)
+        internal static void Execute(IUdonVM vm, IUdonProgram program, string entry)
         {
             vm.SetProgramCounter(program.EntryPoints.GetAddressFromSymbol(entry));
             Assert.AreEqual(0u, vm.Interpret(), "SDK IUdonVM failed at " + entry);
         }
 
-        private static T Get<T>(IUdonHeap heap, IUdonProgram program, string symbol)
+        internal static T Get<T>(IUdonHeap heap, IUdonProgram program, string symbol)
         {
             return heap.GetHeapVariable<T>(program.SymbolTable.GetAddressFromSymbol(symbol));
         }
@@ -450,7 +450,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             return BitConverter.Int32BitsToSingle(bits);
         }
 
-        private static void Set<T>(IUdonHeap heap, IUdonProgram program, string symbol, T value)
+        internal static void Set<T>(IUdonHeap heap, IUdonProgram program, string symbol, T value)
         {
             heap.SetHeapVariable(program.SymbolTable.GetAddressFromSymbol(symbol), value);
         }

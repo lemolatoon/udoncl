@@ -88,7 +88,6 @@ install(FILES
   COMPONENT UdonCLCompiler)
 install(FILES
   runtime/onnx/udon_onnx.py
-  runtime/onnx/udon_onnx_host.py
   runtime/onnx/onnx_mlir_graph.py
   runtime/onnx/onnx_mlir_lower.py
   runtime/onnx/udon_pages.py

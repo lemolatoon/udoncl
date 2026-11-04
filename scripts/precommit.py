@@ -552,6 +552,12 @@ def run_unity_mcp_gate(root, unity, project, build, output):
                     / "tests/cmake-package/onnx-consumer/udoncl/onnx-host-link-probe/artifact"
                 ).resolve()
             ),
+            "UDONCL_PUBLIC_TRANSFORMER_UNITY_BUNDLE": str(
+                (
+                    build
+                    / "tests/cmake-package/onnx-transformer-consumer/udoncl/onnx-transformer-tiny/artifact"
+                ).resolve()
+            ),
             "UDONCL_ONNX_AOT_UASM": str(
                 (output / "onnx-aot/generic-host.uasm").resolve()
             ),

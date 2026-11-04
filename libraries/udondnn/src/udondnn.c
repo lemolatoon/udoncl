@@ -296,6 +296,8 @@ static void clear_objects(void) {
   queue = 0;
   context = 0;
 #elif defined(UDONDNN_AOT_LARGE_ONLY)
+  if (embedding_kernel)
+    clReleaseKernel(embedding_kernel);
   if (large_op_tensor_kernel)
     clReleaseKernel(large_op_tensor_kernel);
   if (large_pooling_kernel)
@@ -306,6 +308,10 @@ static void clear_objects(void) {
     clReleaseKernel(large_convolution_kernel);
   if (program)
     clReleaseProgram(program);
+  if (output_buffer)
+    clReleaseMemObject(output_buffer);
+  if (input_buffer)
+    clReleaseMemObject(input_buffer);
   if (arena_rms_partial_buffer)
     clReleaseMemObject(arena_rms_partial_buffer);
   if (arena_pointwise_output_buffer)
@@ -322,7 +328,9 @@ static void clear_objects(void) {
   large_activation_kernel = 0;
   large_pooling_kernel = 0;
   large_op_tensor_kernel = 0;
+  embedding_kernel = 0;
   program = 0;
+  output_buffer = input_buffer = 0;
   arena_pointwise_self_buffer = 0;
   arena_pointwise_other_buffer = 0;
   arena_pointwise_output_buffer = 0;
@@ -2134,6 +2142,29 @@ udondnnStatus_t udonatenBackendEmbedding(
   cl_int status;
   if (handle != UDONDNN_HANDLE || !context)
     return UDONDNN_STATUS_NOT_INITIALIZED;
+#ifdef UDONDNN_AOT_LARGE_ONLY
+  if (!input_buffer) {
+    input_buffer =
+        clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(packed), 0, &status);
+    if (status != CL_SUCCESS)
+      return execution_failure();
+  }
+  if (!output_buffer) {
+    output_buffer =
+        clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(packed), 0, &status);
+    if (status != CL_SUCCESS)
+      return execution_failure();
+  }
+  if (!embedding_kernel) {
+    embedding_kernel = clCreateKernel(program, "udonaten_embedding", &status);
+    if (status != CL_SUCCESS ||
+        clSetKernelArg(embedding_kernel, 0, sizeof(input_buffer),
+                       &input_buffer) != CL_SUCCESS ||
+        clSetKernelArg(embedding_kernel, 1, sizeof(output_buffer),
+                       &output_buffer) != CL_SUCCESS)
+      return execution_failure();
+  }
+#endif
   data_info = get_tensor(weight_descriptor);
   output_info = get_tensor(output_descriptor);
   if (!data_info || !data_info->configured || !output_info ||

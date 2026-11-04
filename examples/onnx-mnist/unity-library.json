@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "program": "onnx_mnist",
+  "program": "generic_onnx_mnist",
   "device_kernels": [
     {
       "schema_version": 1, "profile": "gather-f32", "words": 16384,
@@ -31,19 +31,34 @@
       "kernel": "udonblas_sgemm", "kernel_id": 1,
       "argument_kinds": ["buffer", "buffer", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "f32", "f32"],
       "global_size": [32, 32, 1], "local_size": [1, 1, 1], "global_offset": [0, 0, 0]
+    },
+    {
+      "schema_version": 1, "profile": "gather-f32", "words": 1024,
+      "kernel": "udonblas_sgemv", "kernel_id": 2,
+      "argument_kinds": ["buffer", "buffer", "i32", "i32", "i32", "i32", "i32", "i32", "f32", "f32"],
+      "global_size": [1024, 1, 1], "local_size": [1, 1, 1], "global_offset": [0, 0, 0]
     }
   ],
   "exports": [
-    {"symbol": "write_mnist_input", "public_name": "WriteMnistInput", "id": 1, "parameters": ["index", "value"]},
-    {"symbol": "run_mnist", "public_name": "RunMnist", "id": 2, "parameters": []},
-    {"symbol": "read_mnist_output", "public_name": "ReadMnistOutput", "id": 3, "parameters": ["index"]}
+    {"symbol": "udon_onnx_session_write_input_float", "public_name": "TryWriteInputFloat", "id": 1, "parameters": ["input_index", "element_index", "value"]},
+    {"symbol": "udon_onnx_session_run", "public_name": "StartRun", "id": 2, "parameters": []},
+    {"symbol": "udon_onnx_session_read_output_float", "public_name": "ReadOutputFloat", "id": 3, "parameters": ["output_index", "element_index"]}
   ],
   "buffers": [
-    {"id": 1, "name": "dnn_pointwise_self", "byte_size": 65536, "element_type": "float32", "public_access": "input"},
-    {"id": 2, "name": "dnn_pointwise_other", "byte_size": 65536},
-    {"id": 3, "name": "dnn_pointwise_output", "byte_size": 65536},
-    {"id": 4, "name": "dnn_rms_arena_partial", "byte_size": 65536},
-    {"id": 5, "name": "blas_input", "byte_size": 4096, "width": 32, "height": 32},
-    {"id": 6, "name": "blas_output", "byte_size": 4096, "width": 32, "height": 32, "element_type": "float32", "public_access": "output"}
+    {"id": 1, "name": "onnx_device_buffer_1", "byte_size": 65536},
+    {"id": 2, "name": "onnx_device_buffer_2", "byte_size": 65536},
+    {"id": 3, "name": "onnx_device_buffer_3", "byte_size": 65536},
+    {"id": 4, "name": "onnx_device_buffer_4", "byte_size": 65536},
+    {"id": 5, "name": "onnx_device_buffer_5", "byte_size": 65536},
+    {"id": 6, "name": "onnx_device_buffer_6", "byte_size": 65536},
+    {"id": 7, "name": "onnx_device_buffer_7", "byte_size": 65536},
+    {"id": 8, "name": "onnx_device_buffer_8", "byte_size": 65536},
+    {"id": 9, "name": "onnx_device_buffer_9", "byte_size": 65536},
+    {"id": 10, "name": "onnx_device_buffer_10", "byte_size": 65536},
+    {"id": 11, "name": "onnx_device_buffer_11", "byte_size": 65536},
+    {"id": 12, "name": "onnx_device_buffer_12", "byte_size": 65536},
+    {"id": 13, "name": "onnx_device_buffer_13", "byte_size": 65536},
+    {"id": 14, "name": "onnx_device_buffer_14", "byte_size": 65536},
+    {"id": 15, "name": "onnx_device_buffer_15", "byte_size": 65536}
   ]
 }

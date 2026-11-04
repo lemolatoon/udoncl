@@ -1657,6 +1657,20 @@ private:
                      "SystemConvert.__ToInt32__SystemInt64__SystemInt32");
           continue;
         }
+        if (auto cast = dyn_cast<arith::SIToFPOp>(operation)) {
+          std::string source = valueSlots.lookup(cast.getIn());
+          std::string result = valueSlots.lookup(cast.getOut());
+          if (source.empty() || result.empty() ||
+              !cast.getIn().getType().isInteger(32) ||
+              !cast.getOut().getType().isF32())
+            return cast.emitError(
+                "signed integer to float conversion supports only i32 to f32");
+          emitPush(cast.getLoc(), source);
+          emitPush(cast.getLoc(), result);
+          emitExtern(cast.getLoc(),
+                     "SystemConvert.__ToSingle__SystemInt32__SystemSingle");
+          continue;
+        }
         if (auto select = dyn_cast<arith::SelectOp>(operation)) {
           std::string condition = valueSlots.lookup(select.getCondition());
           std::string trueValue = valueSlots.lookup(select.getTrueValue());

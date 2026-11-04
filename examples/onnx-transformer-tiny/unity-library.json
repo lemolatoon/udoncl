@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "program": "generic_onnx_transformer_tiny",
+  "device_kernels": [
+    {
+      "schema_version": 1, "profile": "gather-f32", "words": 16384,
+      "kernel": "udondnn_large_convolution_forward", "kernel_id": 232,
+      "argument_kinds": ["buffer", "buffer", "buffer", "buffer", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "f32", "f32"],
+      "global_size": [8192, 2, 1], "local_size": [1, 1, 1], "global_offset": [0, 0, 0]
+    },
+    {
+      "schema_version": 1, "profile": "gather-f32", "words": 16384,
+      "kernel": "udondnn_large_pooling_forward", "kernel_id": 231,
+      "argument_kinds": ["buffer", "buffer", "buffer", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "f32", "f32"],
+      "global_size": [8192, 2, 1], "local_size": [1, 1, 1], "global_offset": [0, 0, 0]
+    },
+    {
+      "schema_version": 1, "profile": "gather-f32", "words": 1536,
+      "kernel": "udonaten_embedding", "kernel_id": 207,
+      "argument_kinds": ["buffer", "buffer", "i32", "i32", "f32", "i32", "i32", "i32"],
+      "global_size": [1536, 1, 1], "local_size": [1, 1, 1], "global_offset": [0, 0, 0]
+    },
+    {
+      "schema_version": 1, "profile": "gather-f32", "words": 16384,
+      "kernel": "udondnn_large_op_tensor", "kernel_id": 234,
+      "argument_kinds": ["buffer", "buffer", "buffer", "buffer", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "f32", "f32", "f32"],
+      "global_size": [8192, 2, 1], "local_size": [1, 1, 1], "global_offset": [0, 0, 0]
+    },
+    {
+      "schema_version": 1, "profile": "gather-f32", "words": 16384,
+      "kernel": "udondnn_large_activation_forward", "kernel_id": 233,
+      "argument_kinds": ["buffer", "buffer", "buffer", "i32", "i32", "i32", "f32", "f32", "f32"],
+      "global_size": [8192, 2, 1], "local_size": [1, 1, 1], "global_offset": [0, 0, 0]
+    },
+    {
+      "schema_version": 1, "profile": "gather-f32", "words": 1024,
+      "kernel": "udonblas_sgemm", "kernel_id": 1,
+      "argument_kinds": ["buffer", "buffer", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "f32", "f32"],
+      "global_size": [32, 32, 1], "local_size": [1, 1, 1], "global_offset": [0, 0, 0]
+    },
+    {
+      "schema_version": 1, "profile": "gather-f32", "words": 1024,
+      "kernel": "udonblas_sgemv", "kernel_id": 2,
+      "argument_kinds": ["buffer", "buffer", "i32", "i32", "i32", "i32", "i32", "i32", "f32", "f32"],
+      "global_size": [1024, 1, 1], "local_size": [1, 1, 1], "global_offset": [0, 0, 0]
+    }
+  ],
+  "exports": [
+    {"symbol": "udon_onnx_session_write_input_float", "public_name": "TryWriteInputFloat", "id": 1, "parameters": ["input_index", "element_index", "value"]},
+    {"symbol": "udon_onnx_session_write_input_int32", "public_name": "TryWriteInputInt32", "id": 2, "parameters": ["input_index", "element_index", "value"]},
+    {"symbol": "udon_onnx_session_run", "public_name": "StartRun", "id": 3, "parameters": []},
+    {"symbol": "udon_onnx_session_read_output_float", "public_name": "ReadOutputFloat", "id": 4, "parameters": ["output_index", "element_index"]},
+    {"symbol": "udon_onnx_session_bind_output_to_input", "public_name": "TryBindOutputToInput", "id": 5, "parameters": ["output_index", "input_index"]},
+    {"symbol": "udon_onnx_session_unbind_input", "public_name": "TryUnbindInput", "id": 6, "parameters": ["input_index"]}
+  ],
+  "buffers": [
+    {"id": 1, "name": "onnx_device_buffer_1", "byte_size": 65536},
+    {"id": 2, "name": "onnx_device_buffer_2", "byte_size": 65536},
+    {"id": 3, "name": "onnx_device_buffer_3", "byte_size": 65536},
+    {"id": 4, "name": "onnx_device_buffer_4", "byte_size": 65536},
+    {"id": 5, "name": "onnx_device_buffer_5", "byte_size": 65536},
+    {"id": 6, "name": "onnx_device_buffer_6", "byte_size": 65536},
+    {"id": 7, "name": "onnx_device_buffer_7", "byte_size": 65536},
+    {"id": 8, "name": "onnx_device_buffer_8", "byte_size": 65536},
+    {"id": 9, "name": "onnx_device_buffer_9", "byte_size": 65536},
+    {"id": 10, "name": "onnx_device_buffer_10", "byte_size": 65536},
+    {"id": 11, "name": "onnx_device_buffer_11", "byte_size": 65536},
+    {"id": 12, "name": "onnx_device_buffer_12", "byte_size": 65536},
+    {"id": 13, "name": "onnx_device_buffer_13", "byte_size": 65536},
+    {"id": 14, "name": "onnx_device_buffer_14", "byte_size": 65536},
+    {"id": 15, "name": "onnx_device_buffer_15", "byte_size": 65536},
+    {"id": 16, "name": "onnx_device_buffer_16", "byte_size": 65536},
+    {"id": 17, "name": "onnx_device_buffer_17", "byte_size": 65536},
+    {"id": 18, "name": "onnx_device_buffer_18", "byte_size": 65536},
+    {"id": 19, "name": "onnx_device_buffer_19", "byte_size": 65536},
+    {"id": 20, "name": "onnx_device_buffer_20", "byte_size": 65536}
+  ]
+}

@@ -52,6 +52,7 @@ struct LowerOpenCLAOTIntrinsicsPass
                    name == "__vrc_opencl_dispatch_udondnn_large_activation" ||
                    name == "__vrc_opencl_dispatch_udondnn_large_pooling" ||
                    name == "__vrc_opencl_dispatch_udondnn_large_op_tensor" ||
+                   name == "__vrc_opencl_dispatch_udonaten_embedding" ||
                    name == "__vrc_opencl_dispatch_mnist_conv" ||
                    name == "__vrc_opencl_dispatch_mnist_pool" ||
                    name == "__vrc_opencl_dispatch_mnist_dense";
@@ -90,6 +91,8 @@ struct LowerOpenCLAOTIntrinsicsPass
       else if (name == "__vrc_opencl_dispatch_udondnn_large_op_tensor")
         arguments = {i32, i32, i32, i32, i32, i32, i32, i32,
                      i32, i32, i32, i32, f32, f32, f32};
+      else if (name == "__vrc_opencl_dispatch_udonaten_embedding")
+        arguments = {i32, i32, i32, i32, f32, i32, i32, i32};
       else
         arguments = {i32, i32};
       if (!function.isExternal() ||
@@ -181,6 +184,7 @@ struct LowerOpenCLAOTIntrinsicsPass
             name == "__vrc_opencl_dispatch_udondnn_large_pooling";
         bool largeOpTensor =
             name == "__vrc_opencl_dispatch_udondnn_large_op_tensor";
+        bool embedding = name == "__vrc_opencl_dispatch_udonaten_embedding";
         unsigned bufferCount = largeConvolution || largeOpTensor ? 4
                                : largeActivation || largePooling ? 3
                                                                  : 2;
@@ -190,6 +194,7 @@ struct LowerOpenCLAOTIntrinsicsPass
                            : largeActivation                            ? 233
                            : largePooling                               ? 231
                            : largeOpTensor                              ? 234
+                           : embedding                                  ? 207
                            : name == "__vrc_opencl_dispatch_mnist_conv" ? 20
                            : name == "__vrc_opencl_dispatch_mnist_pool" ? 21
                                                                         : 22;
@@ -210,6 +215,11 @@ struct LowerOpenCLAOTIntrinsicsPass
         } else if (largeOpTensor) {
           scalarKinds.append(8, rewriter.getStringAttr("i32"));
           scalarKinds.append(3, rewriter.getStringAttr("f32"));
+        } else if (embedding) {
+          scalarKinds = {
+              rewriter.getStringAttr("i32"), rewriter.getStringAttr("i32"),
+              rewriter.getStringAttr("f32"), rewriter.getStringAttr("i32"),
+              rewriter.getStringAttr("i32"), rewriter.getStringAttr("i32")};
         }
         OperationState descriptorState(
             call.getLoc(), runtime::DispatchDescCreateOp::getOperationName());
@@ -238,9 +248,10 @@ struct LowerOpenCLAOTIntrinsicsPass
         dispatchState.addAttribute("argument_kinds",
                                    rewriter.getArrayAttr(argumentKinds));
         dispatchState.addAttribute(
-            "global_size", sgemm ? rewriter.getDenseI32ArrayAttr({32, 32, 1})
-                           : sgemv
-                               ? rewriter.getDenseI32ArrayAttr({1024, 1, 1})
+            "global_size", sgemm   ? rewriter.getDenseI32ArrayAttr({32, 32, 1})
+                           : sgemv ? rewriter.getDenseI32ArrayAttr({1024, 1, 1})
+                           : embedding
+                               ? rewriter.getDenseI32ArrayAttr({1536, 1, 1})
                                : rewriter.getDenseI32ArrayAttr({10800, 1, 1}));
         dispatchState.addAttribute("local_size",
                                    rewriter.getDenseI32ArrayAttr({1, 1, 1}));
