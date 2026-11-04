@@ -43,6 +43,12 @@
       "kernel": "udonblas_sgemv", "kernel_id": 2,
       "argument_kinds": ["buffer", "buffer", "i32", "i32", "i32", "i32", "i32", "i32", "f32", "f32"],
       "global_size": [1024, 1, 1], "local_size": [1, 1, 1], "global_offset": [0, 0, 0]
+    },
+    {
+      "schema_version": 1, "profile": "gather-f32", "words": 16384,
+      "kernel": "udononnx_matmul_nbits", "kernel_id": 219,
+      "argument_kinds": ["buffer", "buffer", "i32", "i32", "i32", "i32"],
+      "global_size": [16384, 1, 1], "local_size": [1, 1, 1], "global_offset": [0, 0, 0]
     }
   ],
   "exports": [

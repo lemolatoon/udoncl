@@ -24,6 +24,14 @@ typedef enum udononnxStatus {
   UDONONNX_STATUS_EXECUTION_FAILURE = 9
 } udononnxStatus_t;
 
+typedef uint32_t udononnxOperatorHandle_t;
+
+typedef enum udononnxZeroPointFormat {
+  UDONONNX_ZERO_POINT_NONE = 0,
+  UDONONNX_ZERO_POINT_PACKED = 1,
+  UDONONNX_ZERO_POINT_UNPACKED = 2
+} udononnxZeroPointFormat_t;
+
 /* A tensor descriptor is a non-owning logical view. The session or caller
  * owns the device allocation referenced by storage. */
 typedef struct udononnxTensor {
@@ -75,6 +83,18 @@ udononnxStatus_t udononnxGetTensorDimension(udononnxTensor_t tensor,
 udononnxStatus_t udononnxGetTensorStorage(udononnxTensor_t tensor,
                                           udonclBufferView_t *storage);
 udononnxStatus_t udononnxValidateTensor(udononnxTensor_t tensor);
+udononnxStatus_t udononnxCreateOperatorHandle(udononnxOperatorHandle_t *handle);
+udononnxStatus_t udononnxDestroyOperatorHandle(udononnxOperatorHandle_t handle);
+/* Implements com.microsoft::MatMulNBits. B and packed zero points use the
+ * ONNX Runtime block bitstream without requantization. A, scales, bias, and Y
+ * use data_type and may be float32, float16, or bfloat16. */
+udononnxStatus_t udononnxMatMulNBits(
+    udononnxOperatorHandle_t handle, udonclDataType_t data_type, const void *a,
+    int64_t m, int64_t k, const uint8_t *b, size_t b_bytes, const void *scales,
+    size_t scale_count, const uint8_t *zero_points, size_t zero_point_bytes,
+    udononnxZeroPointFormat_t zero_point_format, const int32_t *g_idx,
+    size_t g_idx_count, const void *bias, size_t bias_count, int64_t n,
+    int block_size, int bits, void *y);
 udononnxStatus_t udononnxSessionInitialize(
     udononnxSession_t *session, const udononnxTensorMetadata_t *inputs,
     size_t input_count, udononnxTensor_t *input_bindings,

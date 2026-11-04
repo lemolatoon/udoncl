@@ -39,6 +39,17 @@ def int32_initializer(shape):
     }
 
 
+def uint8_initializer(shape, values=None):
+    count = math.prod(shape)
+    return {
+        "shape": list(shape),
+        "data_type_name": "uint8",
+        "data_location": 0,
+        "raw": bytes(values if values is not None else [0] * count),
+        "logical_bytes": count,
+    }
+
+
 CANONICAL = r'''
 module {
   func.func @main_graph(%arg0: tensor<?x4xf32> {onnx.name = "input"} loc(unknown)) -> (tensor<?x2xf32> {onnx.name = "output"}) {
@@ -68,6 +79,26 @@ module {
 #loc1 = loc("Initializer_weight")
 #loc2 = loc("present_key")
 #loc3 = loc("logits")
+'''
+
+
+MATMUL_NBITS = r'''
+module {
+  func.func @main_graph(%arg0: tensor<1x16xf32> {onnx.name = "activation"} loc(unknown)) -> (tensor<1x2xf32> {onnx.name = "output"}) {
+    %0 = onnx.Constant dense<0> : tensor<2x1x8xi8> loc(#loc1)
+    %1 = onnx.Constant dense<1.0> : tensor<2x1xf32> loc(#loc2)
+    %2 = onnx.Constant dense<0> : tensor<1xi8> loc(#loc3)
+    %3 = onnx.Constant dense<0.0> : tensor<2xf32> loc(#loc4)
+    %none = "onnx.NoValue"() : () -> none loc(unknown)
+    %4 = "onnx.MatMulNBits"(%arg0, %0, %1, %2, %none, %3) <{K = 16 : si64, N = 2 : si64, bits = 4 : si64, block_size = 16 : si64}> {onnx_node_name = "quantized_projection"} : (tensor<1x16xf32>, tensor<2x1x8xi8>, tensor<2x1xf32>, tensor<1xi8>, none, tensor<2xf32>) -> tensor<1x2xf32> loc(#loc5)
+    onnx.Return %4 : tensor<1x2xf32> loc(unknown)
+  }
+}
+#loc1 = loc("Initializer_packed_weight")
+#loc2 = loc("Initializer_scales")
+#loc3 = loc("Initializer_zero_points")
+#loc4 = loc("Initializer_bias")
+#loc5 = loc("quantized_projection")
 '''
 
 
@@ -184,6 +215,48 @@ class ONNXMLIRGraphTests(unittest.TestCase):
         self.assertIn("udon_onnx_session_bind_output_to_input", source)
         self.assertIn("output_index == 0 && input_index == 1", source)
         self.assertIn("udon_onnx_session_unbind_input", source)
+
+    def test_lowers_microsoft_matmul_nbits_to_generic_operator_facade(self):
+        graph = graph_module.parse(MATMUL_NBITS)
+        model = {
+            "graph": {
+                "nodes": [
+                    {
+                        "name": "quantized_projection",
+                        "op_type": "MatMulNBits",
+                        "domain": "com.microsoft",
+                    }
+                ],
+                "initializers": {
+                    "packed_weight": uint8_initializer((2, 1, 8)),
+                    "scales": initializer((2, 1)),
+                    "zero_points": uint8_initializer((1,)),
+                    "bias": initializer((2,)),
+                },
+            }
+        }
+        lowering = host_graph(graph, model)
+        node = lowering["nodes"][0]
+        self.assertEqual(node["domain"], "com.microsoft")
+        self.assertEqual(node["provider"], "udononnxMatMulNBits")
+        self.assertIsNone(node["inputs"][4])
+        source = emit_c_host(lowering)
+        self.assertIn('#include "udononnxoperators.h"', source)
+        self.assertIn("udononnxCreateOperatorHandle", source)
+        self.assertIn("udononnxMatMulNBits(", source)
+        self.assertIn("UDONONNX_ZERO_POINT_PACKED", source)
+
+    def test_recovers_onnx_mlir_custom_extension_identity(self):
+        custom = MATMUL_NBITS.replace(
+            '"onnx.MatMulNBits"',
+            '"onnx.Custom"',
+        ).replace(
+            '<{K = 16',
+            '<{function_name = "MatMulNBits"}> {domain_name = "com.microsoft", K = 16',
+        )
+        operator = graph_module.parse(custom).operators[0]
+        self.assertEqual(operator.op_type, "MatMulNBits")
+        self.assertEqual(operator.domain, "com.microsoft")
 
 
 if __name__ == "__main__":

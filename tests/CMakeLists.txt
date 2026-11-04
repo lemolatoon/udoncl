@@ -1,20 +1,43 @@
 find_package(Python3 3.12 REQUIRED COMPONENTS Interpreter)
+file(READ
+  "${PROJECT_SOURCE_DIR}/libraries/udononnxoperators/device/matmul_nbits.cl"
+  _UDONONNX_TEST_DEVICE_SOURCE)
+string(REPLACE "\\" "\\\\" _UDONONNX_TEST_DEVICE_SOURCE
+  "${_UDONONNX_TEST_DEVICE_SOURCE}")
+string(REPLACE "\"" "\\\"" _UDONONNX_TEST_DEVICE_SOURCE
+  "${_UDONONNX_TEST_DEVICE_SOURCE}")
+string(REPLACE "\n" "\\n" _UDONONNX_TEST_DEVICE_SOURCE
+  "${_UDONONNX_TEST_DEVICE_SOURCE}")
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated")
+file(WRITE
+  "${CMAKE_CURRENT_BINARY_DIR}/generated/udononnxoperators_device_source.h"
+  "#define UDONONNX_DEVICE_SOURCE \"${_UDONONNX_TEST_DEVICE_SOURCE}\"\n")
 add_executable(opencl-aot-runtime
   runtime/opencl_aot.c
   "${PROJECT_SOURCE_DIR}/lib/Runtime/OpenCL/OpenCLAOT.c"
   "${PROJECT_SOURCE_DIR}/lib/Runtime/OpenCL/DeviceMemory.c"
-  "${PROJECT_SOURCE_DIR}/libraries/udononnxoperators/src/udononnxoperators.c")
+  "${PROJECT_SOURCE_DIR}/libraries/udononnxoperators/src/udononnxoperators.c"
+  "${PROJECT_SOURCE_DIR}/libraries/udononnxoperators/src/matmul_nbits.c")
 target_compile_features(opencl-aot-runtime PRIVATE c_std_11)
 set_target_properties(opencl-aot-runtime PROPERTIES
   C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS OFF)
 target_include_directories(opencl-aot-runtime PRIVATE
   "${PROJECT_SOURCE_DIR}/third_party/OpenCL-Headers"
   "${PROJECT_SOURCE_DIR}/include"
-  "${PROJECT_SOURCE_DIR}/libraries/udononnxoperators/include")
+  "${PROJECT_SOURCE_DIR}/libraries/udononnxoperators/include"
+  "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_compile_definitions(opencl-aot-runtime PRIVATE
   CL_TARGET_OPENCL_VERSION=120
-  UDONCL_AOT_ENABLE_MNIST=1)
+  UDONCL_AOT_ENABLE_MNIST=1
+  UDONCL_AOT_ENABLE_ONNX=1)
 add_test(NAME opencl-aot-runtime COMMAND opencl-aot-runtime)
+add_executable(udononnx-matmul-nbits-kernel
+  boundary/udononnx_matmul_nbits.cpp)
+target_compile_features(udononnx-matmul-nbits-kernel PRIVATE cxx_std_20)
+set_target_properties(udononnx-matmul-nbits-kernel PROPERTIES
+  CXX_EXTENSIONS OFF)
+add_test(NAME udononnx-matmul-nbits-kernel
+  COMMAND udononnx-matmul-nbits-kernel)
 add_executable(udondnn-large-convolution-kernel
   boundary/udondnn_large_convolution.cpp)
 target_compile_features(udondnn-large-convolution-kernel PRIVATE cxx_std_20)

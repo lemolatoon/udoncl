@@ -30,5 +30,6 @@ udoncl_add_unity_library(onnx-transformer-tiny
   CONFIG "${CMAKE_CURRENT_SOURCE_DIR}/unity-library.json"
   HOST_LIBRARIES transformer_host
   LIBRARIES
+    UdonONNXOperators::UdonONNXOperators
     UdonATen::UdonATen
     UdonBLAS::UdonBLAS)

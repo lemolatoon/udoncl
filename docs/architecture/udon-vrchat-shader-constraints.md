@@ -181,17 +181,35 @@ stay in the investigation section.
   `SystemConvert.__ToInt64`, shifts, and bitwise OR. Raw-memory masks use the
   same path.
 
-### Udon Assembly is limited to 512 heap variables
+### The standard Udon Assembly asset path has a 512-slot heap
 
-- Worlds SDK 3.10.5 rejects the 513th typed `.data` declaration with
+- Worlds SDK 3.10.5 `UdonAssemblyProgramAsset.RefreshProgram()` reaches the
+  public `UdonEditorInterface.Assemble(string)` path, whose default
+  `UdonHeapFactory.ConstructUdonHeap()` creates a 512-slot heap. There is no
+  capacity argument on this standard asset refresh path. The public lower-level
+  factories support a larger explicit capacity, but the importer does not
+  replace the SDK asset lifecycle with that route.
+- The 512 addresses include typed `.data` declarations and one anonymous
+  string slot per distinct `EXTERN` signature. Exceeding the limit reports
   `Address: '512' is larger than the UdonVM's heap size of '512'`.
 - Compiler-generated SSA values therefore cannot receive one permanent Udon
   heap variable each. UdonCL colors simultaneously live values into reusable
   type-compatible slots, uses typed scratch slots for parallel branch copies,
   and shares raw-memory/global-initialization scratch slots.
-- The linked UdonBLAS `m=1,n=10,k=144` Host artifact assembles with 430 typed
-  data slots after this allocation. The CMake package test rejects artifacts
-  above the 512-slot limit.
+- The generic Transformer acceptance artifact uses 440 declared slots and 43
+  distinct extern signatures, for 483 total assembler heap addresses after
+  module-wide immutable-constant sharing. The CMake package test rejects a
+  regression above 512.
+
+### Narrow C integers use non-negative SystemInt32 heap values
+
+- Udon has no physical `SystemByte` or `SystemUInt16` scalar heap ABI for
+  recovered Host C locals. Raw `uint8_t` and `uint16_t` loads therefore rebuild
+  one or two little-endian bytes into a non-negative `SystemInt32`; zero
+  extension to i32 is an exact copy.
+- Truncating i32 back to i8/i16 must mask with `255`/`65535` before the raw
+  byte store. Treating these operations as signed extension or a checked U#
+  numeric conversion changes C semantics and breaks packed ONNX weights.
 
 ### Compact byte payloads and raw heap binding
 

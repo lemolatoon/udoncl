@@ -911,6 +911,12 @@ private:
         }
         std::string name;
         if (kind == "c") {
+          Type constantType = operation.getResult(0).getType();
+          if (!constantType.isInteger(1) && !constantType.isInteger(64)) {
+            name = immutableSlot(*type, initial);
+            valueSlots[operation.getResult(0)] = name;
+            continue;
+          }
           std::string key = type->str() + "\n" + constantIdentity;
           // Every occurrence with this type and value materializes the same
           // immutable value. i1/i64 need runtime construction because the SDK
@@ -1574,14 +1580,11 @@ private:
             return cast.emitError("integer extension has missing heap slots");
           if (cast.getIn().getType().isInteger(8) &&
               cast.getOut().getType().isInteger(32)) {
-            constexpr StringLiteral threshold =
-                "__vrc_i8_sign_extend_threshold";
-            constexpr StringLiteral modulus = "__vrc_i8_sign_extend_modulus";
+            std::string threshold = immutableSlot("SystemInt32", "128");
+            std::string modulus = immutableSlot("SystemInt32", "256");
             constexpr StringLiteral negative = "__vrc_i8_sign_extend_negative";
             constexpr StringLiteral isNegative =
                 "__vrc_i8_sign_extend_is_negative";
-            addSlot(threshold, "SystemInt32", "128", false);
-            addSlot(modulus, "SystemInt32", "256", false);
             addSlot(negative, "SystemInt32", "0", false);
             addSlot(isNegative, "SystemBoolean", "null", false);
             emitPush(cast.getLoc(), source);
@@ -1623,13 +1626,19 @@ private:
           std::string source = valueSlots.lookup(cast.getIn());
           std::string result = valueSlots.lookup(cast.getOut());
           if (source.empty() || result.empty() ||
-              !cast.getIn().getType().isInteger(1) ||
               !cast.getOut().getType().isInteger(32))
             return cast.emitError("unsupported unsigned integer extension");
-          constexpr StringLiteral zero = "__vrc_bool_to_i32_false";
-          constexpr StringLiteral one = "__vrc_bool_to_i32_true";
-          addSlot(zero, "SystemInt32", "0", false);
-          addSlot(one, "SystemInt32", "1", false);
+          if (cast.getIn().getType().isInteger(8) ||
+              cast.getIn().getType().isInteger(16)) {
+            // Raw i8/i16 loads are represented by non-negative SystemInt32
+            // values in the Udon heap, so zero extension is an exact copy.
+            emitCopy(cast.getLoc(), source, result);
+            continue;
+          }
+          if (!cast.getIn().getType().isInteger(1))
+            return cast.emitError("unsupported unsigned integer extension");
+          std::string zero = immutableSlot("SystemInt32", "0");
+          std::string one = immutableSlot("SystemInt32", "1");
           emitPush(cast.getLoc(), source);
           Operation *useZero = create(
               cast.getLoc(), vm::JumpIfFalseOp::getOperationName(),
@@ -1647,14 +1656,29 @@ private:
         if (auto cast = dyn_cast<arith::TruncIOp>(operation)) {
           std::string source = valueSlots.lookup(cast.getIn());
           std::string result = valueSlots.lookup(cast.getOut());
-          if (source.empty() || result.empty() ||
-              !cast.getIn().getType().isInteger(64) ||
-              !cast.getOut().getType().isInteger(32))
+          if (source.empty() || result.empty())
             return cast.emitError("unsupported integer truncation");
-          emitPush(cast.getLoc(), source);
-          emitPush(cast.getLoc(), result);
-          emitExtern(cast.getLoc(),
-                     "SystemConvert.__ToInt32__SystemInt64__SystemInt32");
+          if (cast.getIn().getType().isInteger(64) &&
+              cast.getOut().getType().isInteger(32)) {
+            emitPush(cast.getLoc(), source);
+            emitPush(cast.getLoc(), result);
+            emitExtern(cast.getLoc(),
+                       "SystemConvert.__ToInt32__SystemInt64__SystemInt32");
+          } else if (cast.getIn().getType().isInteger(32) &&
+                     (cast.getOut().getType().isInteger(8) ||
+                      cast.getOut().getType().isInteger(16))) {
+            std::string mask = immutableSlot(
+                "SystemInt32",
+                cast.getOut().getType().isInteger(8) ? "255" : "65535");
+            emitPush(cast.getLoc(), source);
+            emitPush(cast.getLoc(), mask);
+            emitPush(cast.getLoc(), result);
+            emitExtern(cast.getLoc(),
+                       "SystemInt32.__op_LogicalAnd__SystemInt32_SystemInt32__"
+                       "SystemInt32");
+          } else {
+            return cast.emitError("unsupported integer truncation");
+          }
           continue;
         }
         if (auto cast = dyn_cast<arith::SIToFPOp>(operation)) {
@@ -1760,18 +1784,15 @@ private:
             return shift.emitError(
                 "logical right shift currently requires i32 operands");
 
-          constexpr StringLiteral zero = "__vrc_lshr_i32_zero";
-          constexpr StringLiteral width = "__vrc_lshr_i32_width";
-          constexpr StringLiteral allOnes = "__vrc_lshr_i32_all_ones";
+          std::string zero = immutableSlot("SystemInt32", "0");
+          std::string width = immutableSlot("SystemInt32", "32");
+          std::string allOnes = immutableSlot("SystemInt32", "-1");
           constexpr StringLiteral isZero = "__vrc_lshr_i32_is_zero";
           constexpr StringLiteral arithmetic = "__vrc_lshr_i32_arithmetic";
           constexpr StringLiteral inverseAmount =
               "__vrc_lshr_i32_inverse_amount";
           constexpr StringLiteral highMask = "__vrc_lshr_i32_high_mask";
           constexpr StringLiteral lowMask = "__vrc_lshr_i32_low_mask";
-          addSlot(zero, "SystemInt32", "0", false);
-          addSlot(width, "SystemInt32", "32", false);
-          addSlot(allOnes, "SystemInt32", "-1", false);
           addSlot(isZero, "SystemBoolean", "null", false);
           addSlot(arithmetic, "SystemInt32", "0", false);
           addSlot(inverseAmount, "SystemInt32", "0", false);
@@ -1902,6 +1923,18 @@ private:
     slots.push_back({name.str(), type.str(), initial.str(), isPublic});
   }
 
+  std::string immutableSlot(StringRef type, StringRef initial) {
+    std::string key = (type + "\n" + initial).str();
+    auto found = immutableSlots.find(key);
+    if (found != immutableSlots.end())
+      return found->second;
+    std::string name =
+        "__vrc_constant_" + std::to_string(sharedConstantIndex++);
+    addSlot(name, type, initial, false);
+    immutableSlots.try_emplace(key, name);
+    return name;
+  }
+
   std::string selectUnityBuffer(Location location, StringRef token,
                                 StringRef prefix) {
     if (unityBufferPool.empty())
@@ -1909,10 +1942,9 @@ private:
     std::string selected = (prefix + "_texture").str();
     addSlot(selected, "UnityEngineRenderTexture", "null", false);
     SmallVector<Operation *> done;
-    for (auto [index, entry] : llvm::enumerate(unityBufferPool)) {
-      std::string id = "__vrc_unity_buffer_id_" + std::to_string(index);
+    for (const auto &entry : unityBufferPool) {
+      std::string id = immutableSlot("SystemInt32", std::to_string(entry.id));
       constexpr StringLiteral matches = "__vrc_unity_buffer_matches";
-      addSlot(id, "SystemInt32", std::to_string(entry.id), false);
       addSlot(matches, "SystemBoolean", "null", false);
       emitPush(location, token);
       emitPush(location, id);
@@ -1938,11 +1970,9 @@ private:
 
   void emitI32Literal(Location location, uint64_t value, StringRef result) {
     assert(value <= UINT32_MAX && "i32 literal exceeds 32 bits");
-    constexpr StringLiteral zero = "__vrc_i32_literal_zero";
-    constexpr StringLiteral one = "__vrc_i32_literal_one";
+    std::string zero = immutableSlot("SystemInt32", "0");
+    std::string one = immutableSlot("SystemInt32", "1");
     constexpr StringLiteral scratch = "__vrc_i32_literal_scratch";
-    addSlot(zero, "SystemInt32", "0", false);
-    addSlot(one, "SystemInt32", "1", false);
     addSlot(scratch, "SystemInt32", "0", false);
     emitCopy(location, zero, result);
     if (!value)
@@ -1980,16 +2010,15 @@ private:
     addSlot(combined, "SystemInt64", "null", false);
     for (unsigned byteIndex = 0; byteIndex < 8; ++byteIndex) {
       uint64_t byteValue = value.extractBitsAsZExtValue(8, byteIndex * 8);
-      std::string seed = "__vrc_i64_constant_byte_" + std::to_string(byteValue);
-      addSlot(seed, "SystemInt32", std::to_string(byteValue), false);
+      std::string seed =
+          immutableSlot("SystemInt32", std::to_string(byteValue));
       emitPush(location, seed);
       emitPush(location, wide);
       emitExtern(location, "SystemConvert.__ToInt64__SystemInt32__SystemInt64");
       StringRef component = wide;
       if (byteIndex) {
         std::string shift =
-            "__vrc_i64_constant_shift_" + std::to_string(byteIndex);
-        addSlot(shift, "SystemInt32", std::to_string(byteIndex * 8), false);
+            immutableSlot("SystemInt32", std::to_string(byteIndex * 8));
         emitPush(location, component);
         emitPush(location, shift);
         emitPush(location, shifted);
@@ -2016,9 +2045,7 @@ private:
     uint8_t high = value >> 4;
     uint8_t low = value & 15;
     auto nibbleSlot = [&](uint8_t nibble) {
-      std::string slot = "__vrc_byte_literal_" + std::to_string(nibble);
-      addSlot(slot, "SystemInt32", std::to_string(nibble), false);
-      return slot;
+      return immutableSlot("SystemInt32", std::to_string(nibble));
     };
     std::string lowSlot = nibbleSlot(low);
     if (!high) {
@@ -2026,9 +2053,8 @@ private:
       return;
     }
     std::string highSlot = nibbleSlot(high);
-    constexpr StringLiteral shift = "__vrc_byte_literal_shift";
+    std::string shift = immutableSlot("SystemInt32", "4");
     constexpr StringLiteral shifted = "__vrc_byte_literal_shifted";
-    addSlot(shift, "SystemInt32", "4", false);
     addSlot(shifted, "SystemInt32", "0", false);
     emitPush(location, highSlot);
     emitPush(location, shift);
@@ -2048,11 +2074,14 @@ private:
 
   LogicalResult emitRawLoad(Location location, StringRef pointer,
                             StringRef result, Type type) {
-    if (!type.isInteger(8) && !type.isInteger(32) && !type.isInteger(64) &&
-        !type.isF32() && !isa<host::PtrType>(type))
+    if (!type.isInteger(8) && !type.isInteger(16) && !type.isInteger(32) &&
+        !type.isInteger(64) && !type.isF32() && !isa<host::PtrType>(type))
       return failure();
     bool wide = type.isInteger(64);
-    unsigned byteWidth = type.isInteger(8) ? 1 : wide ? 8 : 4;
+    unsigned byteWidth = type.isInteger(8)    ? 1
+                         : type.isInteger(16) ? 2
+                         : wide               ? 8
+                                              : 4;
     std::string prefix =
         wide ? "__vrc_raw_load_i64_scratch" : "__vrc_raw_load_i32_scratch";
     std::string bits = prefix + "_bits";
@@ -2065,9 +2094,9 @@ private:
     for (unsigned byteIndex = 0; byteIndex < byteWidth; ++byteIndex) {
       std::string index = pointer.str();
       if (byteIndex) {
-        std::string offset = prefix + "_offset_" + std::to_string(byteIndex);
+        std::string offset =
+            immutableSlot("SystemInt32", std::to_string(byteIndex));
         index = scratchIndex;
-        addSlot(offset, "SystemInt32", std::to_string(byteIndex), false);
         addSlot(index, "SystemInt32", "0", false);
         emitPush(location, pointer);
         emitPush(location, offset);
@@ -2092,9 +2121,9 @@ private:
                    "SystemConvert.__ToInt64__SystemInt32__SystemInt64");
       }
       if (byteIndex) {
-        std::string shift = prefix + "_shift_" + std::to_string(byteIndex);
+        std::string shift =
+            immutableSlot("SystemInt32", std::to_string(byteIndex * 8));
         std::string shifted = scratchComponent;
-        addSlot(shift, "SystemInt32", std::to_string(byteIndex * 8), false);
         addSlot(shifted, wide ? "SystemInt64" : "SystemInt32", "0", false);
         emitPush(location, component);
         emitPush(location, shift);
@@ -2136,11 +2165,14 @@ private:
 
   LogicalResult emitRawStore(Location location, StringRef pointer,
                              StringRef value, Type type) {
-    if (!type.isInteger(8) && !type.isInteger(32) && !type.isInteger(64) &&
-        !type.isF32() && !isa<host::PtrType>(type))
+    if (!type.isInteger(8) && !type.isInteger(16) && !type.isInteger(32) &&
+        !type.isInteger(64) && !type.isF32() && !isa<host::PtrType>(type))
       return failure();
     bool wide = type.isInteger(64);
-    unsigned byteWidth = type.isInteger(8) ? 1 : wide ? 8 : 4;
+    unsigned byteWidth = type.isInteger(8)    ? 1
+                         : type.isInteger(16) ? 2
+                         : wide               ? 8
+                                              : 4;
     std::string prefix =
         wide ? "__vrc_raw_store_i64_scratch" : "__vrc_raw_store_i32_scratch";
     std::string bits = prefix + "_bits";
@@ -2153,8 +2185,7 @@ private:
     addSlot(mask, wide ? "SystemInt64" : "SystemInt32", wide ? "null" : "255",
             false);
     if (wide) {
-      std::string maskSeed = mask + "_i32_seed";
-      addSlot(maskSeed, "SystemInt32", "255", false);
+      std::string maskSeed = immutableSlot("SystemInt32", "255");
       emitPush(location, maskSeed);
       emitPush(location, mask);
       emitExtern(location, "SystemConvert.__ToInt64__SystemInt32__SystemInt64");
@@ -2171,9 +2202,9 @@ private:
     for (unsigned byteIndex = 0; byteIndex < byteWidth; ++byteIndex) {
       std::string component = bits;
       if (byteIndex) {
-        std::string shift = prefix + "_shift_" + std::to_string(byteIndex);
+        std::string shift =
+            immutableSlot("SystemInt32", std::to_string(byteIndex * 8));
         component = scratchComponent;
-        addSlot(shift, "SystemInt32", std::to_string(byteIndex * 8), false);
         addSlot(component, wide ? "SystemInt64" : "SystemInt32", "0", false);
         emitPush(location, bits);
         emitPush(location, shift);
@@ -2203,9 +2234,9 @@ private:
       }
       std::string index = pointer.str();
       if (byteIndex) {
-        std::string offset = prefix + "_offset_" + std::to_string(byteIndex);
+        std::string offset =
+            immutableSlot("SystemInt32", std::to_string(byteIndex));
         index = scratchIndex;
-        addSlot(offset, "SystemInt32", std::to_string(byteIndex), false);
         addSlot(index, "SystemInt32", "0", false);
         emitPush(location, pointer);
         emitPush(location, offset);
@@ -2466,6 +2497,7 @@ private:
   llvm::DenseMap<Operation *, FunctionPlan> functionPlans;
   llvm::StringMap<GlobalPlan> globalPlans;
   llvm::StringMap<std::string> sharedConstantSlots;
+  llvm::StringMap<std::string> immutableSlots;
   unsigned sharedConstantIndex = 0;
   SmallVector<std::string> globalOrder;
   llvm::StringMap<uint64_t> rawGlobalBases;

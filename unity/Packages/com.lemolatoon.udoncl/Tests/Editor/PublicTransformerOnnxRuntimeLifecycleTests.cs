@@ -100,7 +100,10 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                     material
                 );
             }
-            CollectionAssert.AreEquivalent(new[] { 1, 2, 207, 231, 232, 233, 234 }, materials.Keys);
+            CollectionAssert.AreEquivalent(
+                new[] { 1, 2, 207, 219, 231, 232, 233, 234 },
+                materials.Keys
+            );
             Material copyMaterial = Load<Material>("Materials/buffer-copy.mat");
 
             int[] tokens = { 1, 2, 3, 4 };
@@ -362,17 +365,20 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 presentValue[index] = value[index] + pastValue[index];
                 attention[index] = (float)Math.Tanh(presentKey[index] + presentValue[index]);
             }
-            return new[] { MatMul(attention, 3), presentKey, presentValue };
+            return new[] { MatMul(attention, 3, true), presentKey, presentValue };
         }
 
-        private static float[] MatMul(float[] input, int seed)
+        private static float[] MatMul(float[] input, int seed, bool quantized = false)
         {
             float[] output = new float[32];
             for (int row = 0; row < 4; ++row)
             for (int column = 0; column < 8; ++column)
             for (int inner = 0; inner < 8; ++inner)
             {
-                float weight = ((inner * 5 + column * 3 + seed) % 17 - 8) / 32.0f;
+                int signedWeight = (inner * 5 + column * 3 + seed) % 17 - 8;
+                if (quantized)
+                    signedWeight = Mathf.Clamp(signedWeight, -8, 7);
+                float weight = signedWeight / 32.0f;
                 output[row * 8 + column] += input[row * 8 + inner] * weight;
             }
             return output;

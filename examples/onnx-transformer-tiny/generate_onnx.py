@@ -9,10 +9,12 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "runtime" / "onnx"))
 
 from udon_onnx import (  # noqa: E402
+    attribute_int,
     graph_proto,
     model_proto,
     node_proto,
     tensor_proto,
+    tensor_uint8_proto,
     value_info_proto,
 )
 
@@ -29,6 +31,24 @@ def matrix(seed):
     ]
 
 
+def quantized_projection():
+    packed = []
+    for column in range(HIDDEN):
+        values = []
+        for inner in range(16):
+            signed = (
+                max(-8, min(7, (inner * 5 + column * 3 + 3) % 17 - 8))
+                if inner < HIDDEN
+                else 0
+            )
+            values.append(signed + 8)
+        packed.extend(
+            values[index] | (values[index + 1] << 4)
+            for index in range(0, 16, 2)
+        )
+    return packed
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("-o", "--output", type=Path, required=True)
@@ -41,7 +61,10 @@ def main():
         ),
         tensor_proto("query.weight", [HIDDEN, HIDDEN], matrix(1)),
         tensor_proto("value.weight", [HIDDEN, HIDDEN], matrix(2)),
-        tensor_proto("output.weight", [HIDDEN, HIDDEN], matrix(3)),
+        tensor_uint8_proto(
+            "output.weight.q4", [HIDDEN, 1, 8], quantized_projection()
+        ),
+        tensor_proto("output.weight.scale", [HIDDEN, 1], [1.0 / 32.0] * HIDDEN),
     ]
     nodes = [
         node_proto(
@@ -58,7 +81,24 @@ def main():
         ),
         node_proto("Tanh", ["attention"], ["activated"], "activation"),
         node_proto(
-            "MatMul", ["activated", "output.weight"], ["logits"], "projection"
+            "MatMulNBits",
+            [
+                "activated",
+                "output.weight.q4",
+                "output.weight.scale",
+                "",
+                "",
+                "",
+            ],
+            ["logits"],
+            "projection",
+            attributes=(
+                attribute_int("K", HIDDEN),
+                attribute_int("N", HIDDEN),
+                attribute_int("block_size", 16),
+                attribute_int("bits", 4),
+            ),
+            domain="com.microsoft",
         ),
     ]
     dynamic_hidden = [1, "sequence", HIDDEN]
@@ -78,7 +118,9 @@ def main():
         ],
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_bytes(model_proto(graph, opset=13))
+    args.output.write_bytes(
+        model_proto(graph, opset=13, custom_opsets={"com.microsoft": 1})
+    )
     print(f"transformer_onnx_bytes={args.output.stat().st_size} nodes={len(nodes)}")
 
 

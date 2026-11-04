@@ -6,10 +6,24 @@ import argparse
 from pathlib import Path
 
 from onnx_mlir_graph import Graph, Operator, parse
-from udon_onnx import PROVIDERS, emit_c_host, parse_model, validate_external_data
+from udon_onnx import (
+    EXTENSION_PROVIDERS,
+    PROVIDERS,
+    emit_c_host,
+    parse_model,
+    validate_external_data,
+)
 
 
-_ELEMENT_TYPES = {"f32": "float32", "i32": "int32", "i64": "int64"}
+_ELEMENT_TYPES = {
+    "f16": "float16",
+    "bf16": "bfloat16",
+    "f32": "float32",
+    "i8": "uint8",
+    "ui8": "uint8",
+    "i32": "int32",
+    "i64": "int64",
+}
 
 
 def _bounded_shape(type_, context: str, dimension_bounds: dict[str, int]) -> list[int]:
@@ -68,6 +82,7 @@ def host_graph(graph: Graph, model: dict, dimension_bounds=None) -> dict:
     dimension_bounds = dimension_bounds or {}
     model_graph = model["graph"]
     model_initializers = model_graph["initializers"]
+    model_nodes = model_graph.get("nodes", [])
     ssa_names: dict[str, str] = {}
     values: dict[str, list[int]] = {}
     value_types: dict[str, str] = {}
@@ -102,15 +117,36 @@ def host_graph(graph: Graph, model: dict, dimension_bounds=None) -> dict:
             values[value.name] = _bounded_shape(
                 value.type, value.name, dimension_bounds
             )
-        value_types[value.name] = _element_type(value.type, value.name)
+        value_types[value.name] = (
+            model_initializers[value.name]["data_type_name"]
+            if value.name in model_initializers
+            else _element_type(value.type, value.name)
+        )
     canonical_initializers = {value.name for value in graph.initializers}
     missing = sorted(canonical_initializers - set(model_initializers))
     if missing:
         raise ValueError(f"canonical ONNX initializer is absent from model: {missing[0]}")
 
     nodes = []
+    matched_model_nodes: set[int] = set()
     for index, operator in enumerate(graph.operators):
-        provider = PROVIDERS.get(operator.op_type)
+        model_node = None
+        for model_index, candidate in enumerate(model_nodes):
+            if model_index in matched_model_nodes or candidate["op_type"] != operator.op_type:
+                continue
+            if operator.node_name and candidate.get("name") != operator.node_name:
+                continue
+            model_node = candidate
+            matched_model_nodes.add(model_index)
+            break
+        domain = operator.domain or (
+            "" if model_node is None else model_node.get("domain", "")
+        )
+        provider = (
+            PROVIDERS.get(operator.op_type)
+            if domain == ""
+            else EXTENSION_PROVIDERS.get((domain, operator.op_type))
+        )
         if provider is None:
             place = operator.location or operator.node_name or f"operator {index}"
             raise ValueError(
@@ -122,6 +158,8 @@ def host_graph(graph: Graph, model: dict, dimension_bounds=None) -> dict:
         for ssa in operator.inputs:
             if ssa not in ssa_names:
                 # onnx.NoValue is structural and is not an API operand.
+                if operator.op_type == "MatMulNBits":
+                    inputs.append(None)
                 continue
             inputs.append(ssa_names[ssa])
         outputs = []
@@ -143,7 +181,7 @@ def host_graph(graph: Graph, model: dict, dimension_bounds=None) -> dict:
             )
         nodes.append(
             {
-                "domain": "",
+                "domain": domain,
                 "op_type": operator.op_type,
                 "name": operator.node_name or operator.location or f"node_{index}",
                 "inputs": inputs,

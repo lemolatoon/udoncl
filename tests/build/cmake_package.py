@@ -21,6 +21,19 @@ def run_failure(command, diagnostic):
     assert diagnostic in result.stderr, (command, diagnostic, result.stderr)
 
 
+def udon_heap_slots(assembly):
+    declarations = sum(
+        line.startswith('    ') and ': %' in line
+        for line in assembly.splitlines()
+    )
+    extern_signatures = {
+        line.split(',', 1)[1].strip().strip('"')
+        for line in assembly.splitlines()
+        if line.lstrip().startswith('EXTERN,')
+    }
+    return declarations + len(extern_signatures)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', required=True, type=Path)
@@ -82,6 +95,12 @@ def main():
     assert (install / 'share/udonaten/src/udonaten.c').is_file()
     assert (
         install / 'share/udononnxoperators/src/udononnxoperators.c'
+    ).is_file()
+    assert (
+        install / 'share/udononnxoperators/src/matmul_nbits.c'
+    ).is_file()
+    assert (
+        install / 'share/udononnxoperators/device/matmul_nbits.cl'
     ).is_file()
 
     onnx_source = output / 'onnx-source'
@@ -353,6 +372,7 @@ def main():
     transformer_source = transformer_host.read_text(encoding='utf-8')
     assert 'udon_onnx_session_write_input_int32' in transformer_source
     assert 'udon_onnx_session_bind_output_to_input' in transformer_source
+    assert 'udononnxMatMulNBits(' in transformer_source
     assert 'output_index == 1 && input_index == 1' in transformer_source
     assert 'output_index == 2 && input_index == 2' in transformer_source
     transformer_mlir_source = transformer_mlir.read_text(encoding='utf-8')
@@ -367,10 +387,14 @@ def main():
     ]
     assert {
         item['kernel_id'] for item in transformer_manifest['dispatch_sites']
-    } == {1, 2, 207, 231, 232, 233, 234}
+    } == {1, 2, 207, 219, 231, 232, 233, 234}
     assert {
         item['id'] for item in transformer_manifest['device']['kernels']
-    } == {1, 2, 207, 231, 232, 233, 234}
+    } == {1, 2, 207, 219, 231, 232, 233, 234}
+    transformer_assembly = (transformer_artifact / 'host.uasm').read_text(
+        encoding='utf-8'
+    )
+    assert udon_heap_slots(transformer_assembly) <= 512
     assert not list(onnx_transformer_consumer.rglob('execution-plan.json'))
     run([
         args.cmake,

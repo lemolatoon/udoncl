@@ -31,6 +31,7 @@ class Value:
 @dataclass(frozen=True)
 class Operator:
     op_type: str
+    domain: str
     inputs: tuple[str, ...]
     outputs: tuple[str, ...]
     input_types: tuple[TensorType | None, ...]
@@ -229,9 +230,20 @@ def _parse_operator(line: str, locations: dict[str, str]) -> Operator | None:
     result_text_type = remainder[arrow + 2 :]
     result_text_type = re.sub(r"\s+loc\(.*\)\s*$", "", result_text_type).strip()
     attributes = _parse_attributes(remainder[cursor:type_marker])
+    domain = ""
+    if op_type == "Custom" and (
+        "function_name" in attributes or "domain_name" in attributes
+    ):
+        function_name = attributes.pop("function_name", None)
+        domain_name = attributes.pop("domain_name", None)
+        if not isinstance(function_name, str) or not isinstance(domain_name, str):
+            raise ValueError("canonical ONNX Custom operation lacks function_name or domain_name")
+        op_type = function_name
+        domain = domain_name
     node_name = attributes.pop("onnx_node_name", None)
     return Operator(
         op_type=op_type,
+        domain=domain,
         inputs=tuple(_VALUE_NAME.findall(operands)),
         outputs=_result_names(result_text),
         input_types=tuple(

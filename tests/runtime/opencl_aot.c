@@ -1,7 +1,11 @@
 #include <CL/cl.h>
 #include <stddef.h>
+#include <string.h>
 #include <udoncl/device_memory.h>
 #include <udononnxoperators.h>
+
+size_t udononnx_matmul_nbits_cpu_gid;
+#include "../../libraries/udononnxoperators/device/matmul_nbits.cl"
 
 #define EXPECT(condition)                                                      \
   do {                                                                         \
@@ -19,10 +23,15 @@ static cl_int dispatched_m;
 static cl_float dispatched_alpha;
 static cl_int dispatched_sgemv_trans;
 static cl_int dispatched_mnist_kernel;
+static cl_int dispatched_nbits_tile_n;
+static cl_int dispatched_nbits_finalize;
+static unsigned char physical_buffers[33][65536];
 
 cl_uint __vrc_opencl_buffer_alloc(cl_uint logical_id, size_t bytes) {
   allocated_logical_id = logical_id;
   allocated_bytes = bytes;
+  if (!logical_id || logical_id > 32 || bytes > sizeof(physical_buffers[0]))
+    return 0;
   return logical_id + 100;
 }
 
@@ -37,6 +46,7 @@ cl_int __vrc_opencl_buffer_upload(cl_uint physical_token, size_t offset,
   (void)bytes;
   (void)source;
   uploaded_token = physical_token;
+  memcpy(physical_buffers[physical_token - 100] + offset, source, bytes);
   return 7;
 }
 
@@ -45,7 +55,7 @@ cl_int __vrc_opencl_buffer_readback(cl_uint physical_token, size_t offset,
   (void)physical_token;
   (void)offset;
   (void)bytes;
-  (void)destination;
+  memcpy(destination, physical_buffers[physical_token - 100] + offset, bytes);
   return 8;
 }
 
@@ -112,7 +122,40 @@ cl_int __vrc_opencl_dispatch_mnist_dense(cl_uint input_token,
   return 14;
 }
 
-cl_int __vrc_opencl_await(cl_int event) { return event; }
+cl_int __vrc_opencl_dispatch_udononnx_matmul_nbits(cl_uint input_token,
+                                                   cl_uint output_token,
+                                                   cl_int tile_n, cl_int tile_k,
+                                                   cl_int accumulate,
+                                                   cl_int finalize) {
+  (void)tile_k;
+  (void)accumulate;
+  dispatched_input_token = input_token;
+  dispatched_output_token = output_token;
+  dispatched_nbits_tile_n = tile_n;
+  dispatched_nbits_finalize = finalize;
+  for (udononnx_matmul_nbits_cpu_gid = 0; udononnx_matmul_nbits_cpu_gid < 16384;
+       ++udononnx_matmul_nbits_cpu_gid)
+    udononnx_matmul_nbits((const float *)physical_buffers[input_token - 100],
+                          (float *)physical_buffers[output_token - 100], tile_n,
+                          tile_k, accumulate, finalize);
+  return 15;
+}
+
+cl_int __vrc_opencl_await(cl_int event) {
+  (void)event;
+  return CL_SUCCESS;
+}
+
+static void pack_nbits(uint8_t *destination, size_t bytes, size_t index,
+                       unsigned value, int bits) {
+  size_t bit = index * (size_t)bits;
+  size_t byte = bit >> 3u;
+  unsigned shift = (unsigned)(bit & 7u);
+  unsigned word = value << shift;
+  destination[byte] |= (uint8_t)word;
+  if (shift + (unsigned)bits > 8u && byte + 1u < bytes)
+    destination[byte + 1u] |= (uint8_t)(word >> 8u);
+}
 
 int main(void) {
   cl_platform_id platform;
@@ -139,6 +182,15 @@ int main(void) {
   int source = 42;
   size_t bytes, byte_offset, byte_length;
   size_t elements;
+  udononnxOperatorHandle_t operator_handle = 0;
+  float nbits_a[16], nbits_scales[2] = {0.5f, 1.0f};
+  float nbits_bias[2] = {1.0f, -2.0f}, nbits_y[2] = {0.0f, 0.0f};
+  uint8_t nbits_b[32], nbits_zero[2] = {0x88, 0};
+  uint16_t half_a[16], half_scales[2] = {0x3800, 0x3c00};
+  uint16_t half_bias[2] = {0x3c00, 0xc000}, half_y[2] = {0, 0};
+  uint16_t bfloat_a[16], bfloat_scales[2] = {0x3f00, 0x3f80};
+  uint16_t bfloat_bias[2] = {0x3f80, 0xc000}, bfloat_y[2] = {0, 0};
+  int bits;
   int64_t tensor_dimensions[2] = {2, 2};
   int64_t dynamic_dimensions[2] = {-1, 2};
   int64_t dynamic_bounds[2] = {2, 0};
@@ -312,5 +364,46 @@ int main(void) {
   EXPECT(clReleaseMemObject(first) == CL_SUCCESS);
   EXPECT(clReleaseMemObject(second) == CL_SUCCESS);
   EXPECT(released_token == 101);
+  for (index = 0; index < 16; ++index) {
+    nbits_a[index] = 1.0f;
+    half_a[index] = 0x3c00;
+    bfloat_a[index] = 0x3f80;
+  }
+  EXPECT(udononnxCreateOperatorHandle(&operator_handle) ==
+         UDONONNX_STATUS_SUCCESS);
+  for (bits = 2; bits <= 8; ++bits) {
+    size_t packed_bytes = (size_t)2 * 16u * (size_t)bits / 8u;
+    unsigned zero = 1u << ((unsigned)bits - 1u);
+    memset(nbits_b, 0, sizeof(nbits_b));
+    for (index = 0; index < 16; ++index) {
+      pack_nbits(nbits_b, packed_bytes, index, zero + 1u, bits);
+      pack_nbits(nbits_b, packed_bytes, 16u + index, zero - 1u, bits);
+    }
+    EXPECT(udononnxMatMulNBits(operator_handle, UDONCL_DATA_FLOAT32, nbits_a, 1,
+                               16, nbits_b, packed_bytes, nbits_scales, 2, 0, 0,
+                               UDONONNX_ZERO_POINT_NONE, 0, 0, nbits_bias, 2, 2,
+                               16, bits, nbits_y) == UDONONNX_STATUS_SUCCESS);
+    EXPECT(nbits_y[0] == 9.0f && nbits_y[1] == -18.0f);
+  }
+  memset(nbits_b, 0, sizeof(nbits_b));
+  for (index = 0; index < 16; ++index) {
+    pack_nbits(nbits_b, 16, index, 9, 4);
+    pack_nbits(nbits_b, 16, 16u + index, 7, 4);
+  }
+  EXPECT(udononnxMatMulNBits(operator_handle, UDONCL_DATA_FLOAT16, half_a, 1,
+                             16, nbits_b, 16, half_scales, 2, nbits_zero, 1,
+                             UDONONNX_ZERO_POINT_PACKED, 0, 0, half_bias, 2, 2,
+                             16, 4, half_y) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(half_y[0] == 0x4880 && half_y[1] == 0xcc80);
+  nbits_zero[0] = 8;
+  nbits_zero[1] = 8;
+  EXPECT(udononnxMatMulNBits(operator_handle, UDONCL_DATA_BFLOAT16, bfloat_a, 1,
+                             16, nbits_b, 16, bfloat_scales, 2, nbits_zero, 2,
+                             UDONONNX_ZERO_POINT_UNPACKED, 0, 0, bfloat_bias, 2,
+                             2, 16, 4, bfloat_y) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(bfloat_y[0] == 0x4110 && bfloat_y[1] == 0xc190);
+  EXPECT(dispatched_nbits_tile_n == 2 && dispatched_nbits_finalize == 1);
+  EXPECT(udononnxDestroyOperatorHandle(operator_handle) ==
+         UDONONNX_STATUS_SUCCESS);
   return 0;
 }

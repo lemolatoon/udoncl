@@ -130,6 +130,22 @@ assert (
     in conversion.stdout
 )
 
+zero_extension_source = r'''module attributes {vrc.host_stage = "udonhl"} {
+  func.func @zero_extend(%byte: i8, %word: i16) -> i32 attributes {
+    vrc.export_id = 1 : i32
+  } {
+    %byte32 = arith.extui %byte : i8 to i32
+    %word32 = arith.extui %word : i16 to i32
+    %result = arith.addi %byte32, %word32 : i32
+    return %result : i32
+  }
+}'''
+zero_extension = subprocess.run(
+    [opt, '--vrc-lower-udonhl-to-udonasm', '--verify-each'],
+    input=zero_extension_source, text=True, capture_output=True)
+assert zero_extension.returncode == 0, zero_extension.stderr
+assert 'arith.extui' not in zero_extension.stdout
+
 integer_bit_source = r'''module attributes {vrc.host_stage = "udonhl"} {
   func.func @integer_bits(%value: i32, %shift: i32, %mask: i32) -> i32 attributes {
     vrc.export_id = 1 : i32

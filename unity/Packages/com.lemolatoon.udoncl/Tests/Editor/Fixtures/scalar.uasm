@@ -29,15 +29,13 @@
     __2_arg1__param: %SystemSingleArray, null
     __0___0_array_sum__ret: %SystemSingle, null
     __udoncl_status_5: %SystemInt32, 0
-    __vrc_constant_4: %SystemInt32, 0
-    __vrc_constant_5: %SystemSingle, 0
+    __vrc_constant_4: %SystemSingle, 0
     __vrc_f5_r_SystemInt32_0: %SystemInt32, null
     __vrc_f5_r_SystemSingle_0: %SystemSingle, null
-    __vrc_constant_6: %SystemInt32, 4
+    __vrc_constant_5: %SystemInt32, 4
     __vrc_f5_r_SystemBoolean_0: %SystemBoolean, null
     __vrc_f5_r_SystemSingle_1: %SystemSingle, null
     __vrc_f5_r_SystemSingle_2: %SystemSingle, null
-    __vrc_constant_7: %SystemInt32, 1
     __vrc_f5_r_SystemInt32_1: %SystemInt32, null
 .data_end
 
@@ -126,15 +124,15 @@
 
     .export __0_array_sum
     __0_array_sum:
-        PUSH, __vrc_constant_4
+        PUSH, __vrc_constant_0
         PUSH, __vrc_f5_r_SystemInt32_0
         COPY
-        PUSH, __vrc_constant_5
+        PUSH, __vrc_constant_4
         PUSH, __vrc_f5_r_SystemSingle_0
         COPY
         JUMP, 0x00000230
         PUSH, __vrc_f5_r_SystemInt32_0
-        PUSH, __vrc_constant_6
+        PUSH, __vrc_constant_5
         PUSH, __vrc_f5_r_SystemBoolean_0
         EXTERN, "SystemInt32.__op_LessThan__SystemInt32_SystemInt32__SystemBoolean"
         PUSH, __vrc_f5_r_SystemBoolean_0
@@ -150,7 +148,7 @@
         PUSH, __vrc_f5_r_SystemSingle_2
         EXTERN, "SystemSingle.__op_Addition__SystemSingle_SystemSingle__SystemSingle"
         PUSH, __vrc_f5_r_SystemInt32_0
-        PUSH, __vrc_constant_7
+        PUSH, __vrc_constant_1
         PUSH, __vrc_f5_r_SystemInt32_1
         EXTERN, "SystemInt32.__op_Addition__SystemInt32_SystemInt32__SystemInt32"
         PUSH, __vrc_f5_r_SystemInt32_1
@@ -161,7 +159,7 @@
         COPY
         JUMP, 0x00000230
         PUSH, __2_arg1__param
-        PUSH, __vrc_constant_4
+        PUSH, __vrc_constant_0
         PUSH, __vrc_f5_r_SystemSingle_0
         EXTERN, "SystemSingleArray.__Set__SystemInt32_SystemSingle__SystemVoid"
         PUSH, __vrc_f5_r_SystemSingle_0

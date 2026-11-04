@@ -20,6 +20,9 @@
 #ifndef UDONCL_AOT_ENABLE_DNN
 #define UDONCL_AOT_ENABLE_DNN 0
 #endif
+#ifndef UDONCL_AOT_ENABLE_ONNX
+#define UDONCL_AOT_ENABLE_ONNX 0
+#endif
 
 /* The compiler backend returns an opaque physical-buffer token.  It is kept
  * separately from the OpenCL handle-table id: cl_mem identity and lifetime
@@ -66,6 +69,11 @@ extern cl_int __vrc_opencl_dispatch_udonaten_embedding(
     cl_uint input_token, cl_uint output_token, cl_int outer, cl_int rows,
     cl_float rows_float, cl_int inner, cl_int indices_words,
     cl_int output_words);
+#endif
+#if UDONCL_AOT_ENABLE_ONNX
+extern cl_int __vrc_opencl_dispatch_udononnx_matmul_nbits(
+    cl_uint input_token, cl_uint output_token, cl_int tile_n, cl_int tile_k,
+    cl_int accumulate, cl_int finalize);
 #endif
 #if UDONCL_AOT_ENABLE_MNIST
 extern cl_int __vrc_opencl_dispatch_mnist_conv(cl_uint input_token,
@@ -193,6 +201,10 @@ static cl_uint udoncl_kernel_id(const char *name) {
     return 233;
   if (udoncl_string_equal(name, "udondnn_large_op_tensor"))
     return 234;
+#endif
+#if UDONCL_AOT_ENABLE_ONNX
+  if (udoncl_string_equal(name, "udononnx_matmul_nbits"))
+    return 219;
 #endif
   return 0;
 }
@@ -672,6 +684,37 @@ static void udoncl_dispatch_embedding(cl_kernel kernel, cl_uint work_dim,
 }
 #endif
 
+#if UDONCL_AOT_ENABLE_ONNX
+static void udoncl_dispatch_matmul_nbits(cl_kernel kernel, cl_uint work_dim,
+                                         const size_t *global_offset) {
+  cl_mem input, output;
+  cl_int tile_n, tile_k, accumulate, finalize;
+  if (work_dim != 1) {
+    udoncl_dispatch_status = CL_INVALID_WORK_DIMENSION;
+    return;
+  }
+  if (global_offset) {
+    udoncl_dispatch_status = CL_INVALID_GLOBAL_OFFSET;
+    return;
+  }
+  if (udoncl_mem_argument(kernel, 0, &input) != CL_SUCCESS ||
+      udoncl_mem_argument(kernel, 1, &output) != CL_SUCCESS) {
+    udoncl_dispatch_status = CL_INVALID_MEM_OBJECT;
+    return;
+  }
+  if (udoncl_i32_argument(kernel, 2, &tile_n) != CL_SUCCESS ||
+      udoncl_i32_argument(kernel, 3, &tile_k) != CL_SUCCESS ||
+      udoncl_i32_argument(kernel, 4, &accumulate) != CL_SUCCESS ||
+      udoncl_i32_argument(kernel, 5, &finalize) != CL_SUCCESS) {
+    udoncl_dispatch_status = CL_INVALID_KERNEL_ARGS;
+    return;
+  }
+  (void)__vrc_opencl_dispatch_udononnx_matmul_nbits(
+      input->physical_token, output->physical_token, tile_n, tile_k, accumulate,
+      finalize);
+}
+#endif
+
 #if UDONCL_AOT_ENABLE_MNIST
 static void udoncl_dispatch_mnist(cl_kernel kernel, cl_uint work_dim,
                                   const size_t *global_offset) {
@@ -820,6 +863,13 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueNDRangeKernel(
     udoncl_dispatch_status = CL_SUCCESS;
     udoncl_dispatch_embedding(kernel, work_dim, global_offset, global_size,
                               local_size);
+    return udoncl_dispatch_status;
+  }
+#endif
+#if UDONCL_AOT_ENABLE_ONNX
+  if (kernel->id == 219) {
+    udoncl_dispatch_status = CL_SUCCESS;
+    udoncl_dispatch_matmul_nbits(kernel, work_dim, global_offset);
     return udoncl_dispatch_status;
   }
 #endif

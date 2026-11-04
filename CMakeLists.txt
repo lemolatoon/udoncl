@@ -130,8 +130,13 @@ install(FILES libraries/udonaten/src/udonaten.c
   DESTINATION "${CMAKE_INSTALL_DATADIR}/udonaten/src"
   COMPONENT UdonCLCompiler)
 install(FILES libraries/udononnxoperators/src/udononnxoperators.c
+  libraries/udononnxoperators/src/matmul_nbits.c
   DESTINATION "${CMAKE_INSTALL_DATADIR}/udononnxoperators/src"
   COMPONENT UdonCLCompiler)
+install(DIRECTORY libraries/udononnxoperators/device
+  DESTINATION "${CMAKE_INSTALL_DATADIR}/udononnxoperators"
+  COMPONENT UdonCLCompiler
+  FILES_MATCHING PATTERN "*.cl")
 install(DIRECTORY libraries/udondnn/device
   DESTINATION "${CMAKE_INSTALL_DATADIR}/udondnn"
   COMPONENT UdonCLCompiler
