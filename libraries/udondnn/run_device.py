@@ -88,7 +88,6 @@ def main():
     op_tensor_device = source / "device/op_tensor.cl"
     rms_norm_small_device = root / "libraries/udonaten/device/rms_norm_small.cl"
     embedding_device = root / "libraries/udonaten/device/embedding.cl"
-    int4_device = root / "libraries/udonaten/device/weight_int4pack_mm.cl"
     tile_device = root / "libraries/udonaten/device/tile.cl"
     aten_rms_device = root / "libraries/udonaten/device/rms_norm.cl"
     arena_pointwise_device = root / "libraries/udonaten/device/arena_pointwise.cl"
@@ -113,7 +112,6 @@ def main():
     op_tensor_text = op_tensor_device.read_text(encoding="utf-8")
     rms_norm_small_text = rms_norm_small_device.read_text(encoding="utf-8")
     embedding_text = embedding_device.read_text(encoding="utf-8")
-    int4_text = int4_device.read_text(encoding="utf-8")
     tile_text = tile_device.read_text(encoding="utf-8")
     aten_rms_text = aten_rms_device.read_text(encoding="utf-8")
     arena_pointwise_text = arena_pointwise_device.read_text(encoding="utf-8")
@@ -146,8 +144,6 @@ def main():
         + rms_norm_small_text
         + "\n"
         + embedding_text
-        + "\n"
-        + int4_text
         + "\n"
         + tile_text
         + "\n"
@@ -281,13 +277,6 @@ def main():
     )
     embedding_bundle = emit_device(
         "embedding", embedding_device, "udonaten_embedding", 207, 2048
-    )
-    int4_bundle = emit_device(
-        "weight-int4pack-mm",
-        int4_device,
-        "udonaten_weight_int4pack_mm",
-        208,
-        8192,
     )
     tile_bundle = emit_device(
         "tile",
@@ -846,24 +835,6 @@ def main():
         raise RuntimeError(
             "UdonATen Embedding integer uniforms are not Unity-compatible"
         )
-    int4_manifest = json.loads(
-        (int4_bundle / "manifest.json").read_text(encoding="utf-8")
-    )
-    int4_kernel = int4_manifest["device"]["kernels"][0]
-    if (
-        int4_kernel["name"] != "udonaten_weight_int4pack_mm"
-        or int4_kernel["global_size"] != [8192, 1, 1]
-        or [argument["required_bytes"] for argument in int4_kernel["args"][:2]]
-        != [32768, 32768]
-        or len(int4_kernel["args"]) != 6
-    ):
-        raise RuntimeError("UdonATen INT4 manifest does not match its packed ABI")
-    int4_fragment = int4_bundle / "kernels/kernel_208.hlsl"
-    int4_shaderlab = (int4_bundle / "kernels/kernel_208.shader").read_text(
-        encoding="utf-8"
-    )
-    if '_VRC_Arg5 ("Arg5", Integer)' not in int4_shaderlab:
-        raise RuntimeError("UdonATen INT4 integer uniforms are not Unity-compatible")
     tile_manifest = json.loads((tile_bundle / "manifest.json").read_text(encoding="utf-8"))
     tile_kernel = tile_manifest["device"]["kernels"][0]
     if (
@@ -889,7 +860,7 @@ def main():
         + "const std::string &pooling, const std::string &softmax, "
         + "const std::string &batchnorm, const std::string &opTensor, "
         + "const std::string &rmsNorm, const std::string &embedding, "
-        + "const std::string &int4, const std::string &tile, "
+        + "const std::string &tile, "
         + "const std::string &atenRmsReduce, const std::string &atenRmsFinalize, "
         + "const std::string &sgemm, const std::string &sgemv, "
         + "const std::string &saxpy, const std::string &sdotProduct, "
@@ -905,7 +876,6 @@ def main():
         + '{205, 2048, 8, "udondnn_op_tensor", opTensor}, '
         + '{206, 2048, 5, "udonaten_rms_norm_small", rmsNorm}, '
         + '{207, 2048, 6, "udonaten_embedding", embedding}, '
-        + '{208, 8192, 4, "udonaten_weight_int4pack_mm", int4}, '
         + '{209, 8192, 9, "udonaten_tile", tile}, '
         + '{210, 8192, 2, "udonaten_rms_norm_reduce", atenRmsReduce}, '
         + '{211, 8192, 4, "udonaten_rms_norm_finalize", atenRmsFinalize, 0, 0, 2}, '
@@ -1872,192 +1842,6 @@ def main():
             shutil.rmtree(unity_rms_bundle)
         publish_bundle(staged, unity_rms_bundle)
 
-    # Package the public ATen-shaped INT4 tile from semantic packed-weight and
-    # [group,N,2] scale/zero inputs, then expand two bounded Device weight pages.
-    # The Unity Host composes activation and prior output textures on-GPU.
-    int4_n, int4_k, int4_group, int4_tile_k = 8, 256, 32, 128
-    int4_row_stride = (int4_tile_k // int4_group) * 18
-    int4_input = [
-        ((inner * 13 + 5) % 29 - 14) * 0.0625 for inner in range(int4_k)
-    ]
-    int4_packed = [0] * (int4_n * int4_k // 2)
-    int4_qparams = [0.0] * ((int4_k // int4_group) * int4_n * 2)
-    for block in range(int4_k // int4_group):
-        for row in range(int4_n):
-            qparam = (block * int4_n + row) * 2
-            int4_qparams[qparam] = 0.03125 * (row + block + 1)
-            int4_qparams[qparam + 1] = 0.015625 * (row - block)
-    for row in range(int4_n):
-        for inner in range(0, int4_k, 2):
-            low = (row * 5 + inner * 3 + 1) % 16 - 8
-            high = (row * 7 + (inner + 1) * 5 + 3) % 16 - 8
-            int4_packed[row * (int4_k // 2) + inner // 2] = (
-                (low & 15) | ((high & 15) << 4)
-            )
-    int4_reference = [0.0] * int4_n
-    for row in range(int4_n):
-        for inner in range(int4_k):
-            packed = int4_packed[row * (int4_k // 2) + inner // 2]
-            nibble = packed >> 4 if inner % 2 else packed & 15
-            quantized = nibble - 16 if nibble >= 8 else nibble
-            block = inner // int4_group
-            qparam = (block * int4_n + row) * 2
-            int4_reference[row] += (
-                quantized * int4_qparams[qparam] + int4_qparams[qparam + 1]
-            ) * int4_input[inner]
-    int4_pages = []
-    for k_offset in range(0, int4_k, int4_tile_k):
-        page = bytearray(64 * 80)
-        for row in range(int4_n):
-            for block in range(int4_tile_k // int4_group):
-                source_block = k_offset // int4_group + block
-                packed_base = (
-                    row * (int4_k // 2) + k_offset // 2 + block * 16
-                )
-                for byte in range(16):
-                    page[row * 80 + block * 16 + byte] = int4_packed[
-                        packed_base + byte
-                    ]
-                qparam = (source_block * int4_n + row) * 2
-                qparam_base = row * 80 + 64 + block * 4
-                for value_index, value in enumerate(int4_qparams[qparam : qparam + 2]):
-                    bits = struct.unpack("<I", struct.pack("<f", value))[0]
-                    page[
-                        qparam_base + value_index * 2 : qparam_base + value_index * 2 + 2
-                    ] = struct.pack("<H", bits >> 16)
-        int4_pages.append(bytes(page))
-
-    unity_int4_bundle = output / "unity-udonaten-int4-mm-bundle"
-    with tempfile.TemporaryDirectory(
-        prefix="unity-udonaten-int4-mm-", dir=output
-    ) as staging:
-        staged = Path(staging) / "bundle"
-        (staged / "kernels").mkdir(parents=True)
-        shutil.copy2(
-            root / "libraries/udonaten/unity/weight-int4pack-mm-host.uasm",
-            staged / "host.uasm",
-        )
-        shutil.copy2(
-            root / "libraries/udonaten/unity/weight-int4pack-mm-display.shader",
-            staged / "display.shader",
-        )
-        shutil.copy2(
-            root / "libraries/udonaten/unity/weight-int4pack-mm-compose.shader",
-            staged / "compose.shader",
-        )
-        shutil.copy2(
-            root / "libraries/udonaten/unity/weight-int4pack-mm-scatter.shader",
-            staged / "scatter.shader",
-        )
-        shutil.copy2(
-            int4_bundle / "kernels/kernel_208.shader",
-            staged / "kernels/kernel_208.shader",
-        )
-        for shader_bundle, shader_name in (
-            (arena_pointwise_bundle, "kernel_215.shader"),
-            (arena_tile_bundle, "kernel_216.shader"),
-            (arena_rms_reduce_bundle, "kernel_217.shader"),
-            (arena_rms_finalize_bundle, "kernel_218.shader"),
-            (arena_sgemm_bundle, "kernel_221.shader"),
-            (arena_sgemv_product_bundle, "kernel_227.shader"),
-            (arena_sgemv_reduce_bundle, "kernel_228.shader"),
-            (arena_sgemv_finalize_bundle, "kernel_229.shader"),
-            (arena_softmax_bundle, "kernel_222.shader"),
-            (arena_broadcast_bundle, "kernel_223.shader"),
-            (arena_convolution_bundle, "kernel_224.shader"),
-            (arena_pooling_bundle, "kernel_225.shader"),
-            (arena_embedding_bundle, "kernel_226.shader"),
-        ):
-            shutil.copy2(
-                shader_bundle / "kernels" / shader_name,
-                staged / "kernels" / shader_name,
-            )
-        (staged / "fixture_weight_atlas.bytes").write_bytes(b"".join(int4_pages))
-        (staged / "fixture_activation.bytes").write_bytes(
-            struct.pack(f"<{int4_k}f", *int4_input)
-        )
-        (staged / "fixture_reference.bytes").write_bytes(
-            struct.pack(f"<{int4_n}f", *int4_reference)
-        )
-        int4_unity_manifest = {
-            "schema_version": 1,
-            "compiler_version": "0.1.0-dev",
-            "runtime_abi_version": 1,
-            "artifact_stage": "unity-udonaten-int4-mm",
-            "ready_for_unity": True,
-            "sdk_compatibility": {"sdk_version": "3.10.5", "extern_db_hash": None},
-            "target": {
-                "host_pointer_bits": 32,
-                "device_pointer_bits": 32,
-                "endianness": "little",
-                "platform": "VRChat-PC",
-            },
-            "program": {
-                "name": "udonaten_weight_int4pack_mm",
-                "assembly": "host.uasm",
-                "display_shader": "display.shader",
-            },
-            "exports": [
-                {
-                    "id": 1,
-                    "c_symbol": "udonatenWeightInt4packMm",
-                    "udon_event": "_run",
-                    "status_slot": "",
-                    "async": False,
-                }
-            ],
-            "device": {
-                "kernels": [
-                    {
-                        "id": 208,
-                        "name": "udonaten_weight_int4pack_mm",
-                        "shader": "kernels/kernel_208.shader",
-                    }
-                ]
-            },
-            "resources": [
-                {
-                    "name": "fixture_weight_atlas",
-                    "kind": "bytes",
-                    "path": "fixture_weight_atlas.bytes",
-                },
-                {
-                    "name": "fixture_activation",
-                    "kind": "bytes",
-                    "path": "fixture_activation.bytes",
-                },
-                {
-                    "name": "fixture_reference",
-                    "kind": "bytes",
-                    "path": "fixture_reference.bytes",
-                },
-                {"name": "page_compose", "kind": "shader", "path": "compose.shader"},
-                {"name": "result_scatter", "kind": "shader", "path": "scatter.shader"},
-            ],
-            "fixture": {
-                "input_shape": [1, int4_k],
-                "packed_weight_shape": [int4_n, int4_k // 2],
-                "scales_and_zeros_shape": [int4_k // int4_group, int4_n, 2],
-                "output_shape": [1, int4_n],
-                "group_size": int4_group,
-                "row_stride": int4_row_stride,
-                "k_tiles": int4_k // int4_tile_k,
-                "weight_page_encoding": "q4-bf16-row80-rgba32",
-                "weight_atlas_shape": [2, 1280],
-            },
-        }
-        (staged / "manifest.json").write_text(
-            json.dumps(int4_unity_manifest, indent=2), encoding="utf-8"
-        )
-        if unity_int4_bundle.exists():
-            previous = json.loads(
-                (unity_int4_bundle / "manifest.json").read_text(encoding="utf-8")
-            )
-            if previous.get("artifact_stage") != "unity-udonaten-int4-mm":
-                raise RuntimeError("refusing to replace a non-UdonATen INT4 Unity bundle")
-            shutil.rmtree(unity_int4_bundle)
-        publish_bundle(staged, unity_int4_bundle)
-
     tile_input_shape = (1, 2, 2, 3)
     tile_repeats = (1, 1, 2, 3)
     tile_output_shape = tuple(
@@ -2305,7 +2089,6 @@ def main():
     op_tensor_object = output / ("op-tensor-device" + object_suffix)
     rms_norm_small_object = output / ("rms-norm-small-device" + object_suffix)
     embedding_object = output / ("embedding-device" + object_suffix)
-    int4_object = output / ("weight-int4pack-mm-device" + object_suffix)
     tile_object = output / ("tile-device" + object_suffix)
     sgemm_object = output / ("sgemm-device" + object_suffix)
     sgemv_object = output / ("sgemv-device" + object_suffix)
@@ -2469,20 +2252,6 @@ def main():
             "-std=c11",
             "-ffp-contract=off",
             "-c",
-            int4_device,
-            "-o",
-            int4_object,
-        ]
-    )
-    run(
-        [
-            clang,
-            *runtime_flags,
-            "-x",
-            "c",
-            "-std=c11",
-            "-ffp-contract=off",
-            "-c",
             tile_device,
             "-o",
             tile_object,
@@ -2571,7 +2340,6 @@ def main():
                 (op_tensor_fragment, "frag", "frag"),
                 (rms_norm_small_fragment, "frag", "frag"),
                 (embedding_fragment, "frag", "frag"),
-                (int4_fragment, "frag", "frag"),
                 (tile_fragment, "frag", "frag"),
                 (aten_rms_reduce_fragment, "frag", "frag"),
                 (aten_rms_finalize_fragment, "frag", "frag"),
@@ -2619,7 +2387,6 @@ def main():
             op_tensor_fragment,
             rms_norm_small_fragment,
             embedding_fragment,
-            int4_fragment,
             tile_fragment,
             aten_rms_reduce_fragment,
             aten_rms_finalize_fragment,
@@ -2660,7 +2427,6 @@ def main():
             "-DUDONDNN_OP_TENSOR_OBJECT=" + op_tensor_object.as_posix(),
             "-DUDONATEN_RMS_NORM_SMALL_OBJECT=" + rms_norm_small_object.as_posix(),
             "-DUDONATEN_EMBEDDING_OBJECT=" + embedding_object.as_posix(),
-            "-DUDONATEN_INT4_OBJECT=" + int4_object.as_posix(),
             "-DUDONATEN_TILE_OBJECT=" + tile_object.as_posix(),
             "-DUDONBLAS_SGEMM_OBJECT=" + sgemm_object.as_posix(),
             "-DUDONBLAS_SGEMV_OBJECT=" + sgemv_object.as_posix(),
@@ -2686,7 +2452,6 @@ def main():
                 op_tensor_fragment,
                 rms_norm_small_fragment,
                 embedding_fragment,
-                int4_fragment,
                 tile_fragment,
                 aten_rms_reduce_fragment,
                 aten_rms_finalize_fragment,

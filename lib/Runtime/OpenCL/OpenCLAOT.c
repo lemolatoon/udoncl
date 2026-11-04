@@ -177,8 +177,6 @@ static cl_uint udoncl_kernel_id(const char *name) {
     return 206;
   if (udoncl_string_equal(name, "udonaten_embedding"))
     return 207;
-  if (udoncl_string_equal(name, "udonaten_weight_int4pack_mm"))
-    return 208;
   if (udoncl_string_equal(name, "udonaten_tile"))
     return 209;
   if (udoncl_string_equal(name, "udonaten_rms_norm_reduce"))

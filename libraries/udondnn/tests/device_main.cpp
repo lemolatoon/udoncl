@@ -32,8 +32,6 @@ extern "C" size_t udonaten_rms_norm_small_cpu_gid;
 size_t udonaten_rms_norm_small_cpu_gid;
 extern "C" size_t udonaten_embedding_cpu_gid;
 size_t udonaten_embedding_cpu_gid;
-extern "C" size_t udonaten_int4_cpu_gid;
-size_t udonaten_int4_cpu_gid;
 extern "C" size_t udonaten_tile_cpu_gid;
 size_t udonaten_tile_cpu_gid;
 extern "C" size_t udonaten_arena_pointwise_cpu_gid_x;
@@ -383,11 +381,11 @@ void opTensorReference(const OpTensorCase &test, const std::vector<float> &a,
 } // namespace
 
 int main(int argc, char **argv) {
-  if (argc != 23) {
+  if (argc != 22) {
     std::cerr << "usage: udondnn-device convolution-fragment "
                  "activation-fragment pooling-fragment softmax-fragment "
                  "batchnorm-fragment op-tensor-fragment rmsnorm-fragment "
-                 "gather-fragment int4-fragment tile-fragment "
+                 "gather-fragment tile-fragment "
                  "aten-rms-reduce-fragment aten-rms-finalize-fragment "
                  "sgemm-fragment sgemv-fragment saxpy-fragment "
                  "sdot-product-fragment sdot-reduce-fragment "
@@ -402,8 +400,8 @@ int main(int argc, char **argv) {
         manifestBindings(argv[1], argv[2], argv[3], argv[4], argv[5], argv[6],
                          argv[7], argv[8], argv[9], argv[10], argv[11],
                          argv[12], argv[13], argv[14], argv[15], argv[16],
-                         argv[17], argv[18], argv[19], argv[20], argv[21]),
-        argv[22]);
+                         argv[17], argv[18], argv[19], argv[20]),
+        argv[21]);
     udondnnHandle_t handle = 0;
     require(udondnnCreate(&handle), UDONDNN_STATUS_SUCCESS, "udondnnCreate");
     std::array<udondnnTensorDescriptor_t, 64> descriptorCapacity{};
@@ -1409,115 +1407,6 @@ int main(int argc, char **argv) {
     require(udondnnDestroyTensorDescriptor(tileOutputDescriptor),
             UDONDNN_STATUS_SUCCESS, "destroy Tile output descriptor");
 
-    /* K=256 forces two kernel-208 pages while the public ATen call remains a
-     * single whole-matrix operation. */
-    constexpr int int4M = 3, int4N = 32, int4K = 256, int4Group = 32;
-    std::vector<float> int4Input(int4M * int4K),
-        int4Qparams((int4K / int4Group) * int4N * 2), int4Actual(int4M * int4N),
-        int4Expected(int4M * int4N);
-    std::vector<uint8_t> int4Packed(int4N * int4K / 2);
-    for (int matrixRow = 0; matrixRow < int4M; ++matrixRow)
-      for (int inner = 0; inner < int4K; ++inner)
-        int4Input[matrixRow * int4K + inner] =
-            value(inner + matrixRow * 19, 173 + matrixRow * 7);
-    for (int block = 0; block < int4K / int4Group; ++block)
-      for (int row = 0; row < int4N; ++row) {
-        int qparams = (block * int4N + row) * 2;
-        int4Qparams[qparams] = 0.03125f * float(row + block + 1);
-        int4Qparams[qparams + 1] = 0.015625f * float(row - block);
-      }
-    for (int row = 0; row < int4N; ++row)
-      for (int inner = 0; inner < int4K; inner += 2) {
-        int low = (row * 5 + inner * 3 + 1) % 16 - 8;
-        int high = (row * 7 + (inner + 1) * 5 + 3) % 16 - 8;
-        int4Packed[row * (int4K / 2) + inner / 2] =
-            uint8_t((low & 15) | ((high & 15) << 4));
-      }
-    for (int matrixRow = 0; matrixRow < int4M; ++matrixRow)
-      for (int row = 0; row < int4N; ++row)
-        for (int inner = 0; inner < int4K; ++inner) {
-          uint8_t packed = int4Packed[row * (int4K / 2) + inner / 2];
-          int nibble = inner % 2 ? packed >> 4 : packed & 15;
-          int quantized = nibble >= 8 ? nibble - 16 : nibble;
-          int block = inner / int4Group;
-          int qparams = (block * int4N + row) * 2;
-          int4Expected[matrixRow * int4N + row] +=
-              (float(quantized) * int4Qparams[qparams] +
-               int4Qparams[qparams + 1]) *
-              int4Input[matrixRow * int4K + inner];
-        }
-    udondnnTensorDescriptor_t int4InputDescriptor = 0, int4PackedDescriptor = 0,
-                              int4QparamsDescriptor = 0,
-                              int4OutputDescriptor = 0;
-    require(udondnnCreateTensorDescriptor(&int4InputDescriptor),
-            UDONDNN_STATUS_SUCCESS, "create INT4 input descriptor");
-    require(udondnnCreateTensorDescriptor(&int4PackedDescriptor),
-            UDONDNN_STATUS_SUCCESS, "create INT4 packed descriptor");
-    require(udondnnCreateTensorDescriptor(&int4QparamsDescriptor),
-            UDONDNN_STATUS_SUCCESS, "create INT4 qparams descriptor");
-    require(udondnnCreateTensorDescriptor(&int4OutputDescriptor),
-            UDONDNN_STATUS_SUCCESS, "create INT4 output descriptor");
-    require(
-        udondnnSetTensor4dDescriptor(int4InputDescriptor, UDONDNN_TENSOR_NCHW,
-                                     UDONDNN_DATA_FLOAT, int4M, int4K, 1, 1),
-        UDONDNN_STATUS_SUCCESS, "set INT4 input descriptor");
-    require(udondnnSetTensor4dDescriptor(
-                int4PackedDescriptor, UDONDNN_TENSOR_NCHW, UDONDNN_DATA_FLOAT,
-                int4N, int4K / 2, 1, 1),
-            UDONDNN_STATUS_SUCCESS, "set INT4 packed descriptor");
-    udondnnDataType_t queriedType = UDONDNN_DATA_FLOAT;
-    int queriedN = 0, queriedC = 0, queriedH = 0, queriedW = 0;
-    int queriedNStride = 0, queriedCStride = 0, queriedHStride = 0,
-        queriedWStride = 0;
-    require(udondnnGetTensor4dDescriptor(
-                int4PackedDescriptor, &queriedType, &queriedN, &queriedC,
-                &queriedH, &queriedW, &queriedNStride, &queriedCStride,
-                &queriedHStride, &queriedWStride),
-            UDONDNN_STATUS_SUCCESS, "get INT4 packed descriptor");
-    if (queriedType != UDONDNN_DATA_FLOAT || queriedN != int4N ||
-        queriedC != int4K / 2 || queriedH != 1 || queriedW != 1 ||
-        queriedNStride != int4K / 2 || queriedCStride != 1 ||
-        queriedHStride != 1 || queriedWStride != 1)
-      throw std::runtime_error("UdonDNN tensor descriptor strides diverged");
-    require(udondnnSetTensor4dDescriptor(
-                int4QparamsDescriptor, UDONDNN_TENSOR_NCHW, UDONDNN_DATA_FLOAT,
-                int4K / int4Group, int4N, 2, 1),
-            UDONDNN_STATUS_SUCCESS, "set INT4 qparams descriptor");
-    require(
-        udondnnSetTensor4dDescriptor(int4OutputDescriptor, UDONDNN_TENSOR_NCHW,
-                                     UDONDNN_DATA_FLOAT, int4M, int4N, 1, 1),
-        UDONDNN_STATUS_SUCCESS, "set INT4 output descriptor");
-    require(udonatenWeightInt4packMm(handle, int4InputDescriptor,
-                                     int4Input.data(), int4PackedDescriptor,
-                                     int4Packed.data(), int4Group,
-                                     int4QparamsDescriptor, int4Qparams.data(),
-                                     int4OutputDescriptor, int4Actual.data()),
-            UDONDNN_STATUS_SUCCESS, "udonatenWeightInt4packMm");
-    float int4MaximumError = 0.0f;
-    for (size_t index = 0; index < int4Actual.size(); ++index)
-      int4MaximumError = std::max(
-          int4MaximumError, std::abs(int4Actual[index] - int4Expected[index]));
-    if (int4MaximumError > 0.0005f)
-      throw std::runtime_error("UdonATen INT4 results diverged");
-    require(udonatenWeightInt4packMm(handle, int4InputDescriptor,
-                                     int4Input.data(), int4PackedDescriptor,
-                                     int4Packed.data(), 16,
-                                     int4QparamsDescriptor, int4Qparams.data(),
-                                     int4OutputDescriptor, int4Actual.data()),
-            UDONDNN_STATUS_BAD_PARAM, "reject unsupported INT4 group size");
-    require(udonatenWeightInt4packMm(handle, int4InputDescriptor,
-                                     int4Input.data(), int4PackedDescriptor,
-                                     int4Packed.data(), 64,
-                                     int4QparamsDescriptor, int4Qparams.data(),
-                                     int4OutputDescriptor, int4Actual.data()),
-            UDONDNN_STATUS_NOT_SUPPORTED,
-            "report recognized but unsupported INT4 group size");
-    for (udondnnTensorDescriptor_t descriptor :
-         {int4InputDescriptor, int4PackedDescriptor, int4QparamsDescriptor,
-          int4OutputDescriptor})
-      require(udondnnDestroyTensorDescriptor(descriptor),
-              UDONDNN_STATUS_SUCCESS, "destroy INT4 descriptor");
-
     udondnnTensorDescriptor_t stale = 0, replacement = 0;
     require(udondnnCreateTensorDescriptor(&stale), UDONDNN_STATUS_SUCCESS,
             "create stale descriptor");
@@ -1812,8 +1701,6 @@ int main(int argc, char **argv) {
               << " rmsnorm_max_error=" << rmsMaximumError
               << " embedding_outputs=" << gatherActual.size()
               << " embedding_max_error=" << gatherMaximumError
-              << " int4_outputs=" << int4Actual.size()
-              << " int4_max_error=" << int4MaximumError
               << " tile_outputs=" << tileActual.size()
               << " tile_max_error=" << tileMaximumError
               << " arena_tile_outputs=" << arenaTileActual.size()

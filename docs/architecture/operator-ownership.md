@@ -13,7 +13,7 @@ cuDNN.
 | Gather/indexing | ATen CUDA scatter/gather and indexing kernels | UdonATen | ATen gather/index-select semantics; do not disguise it as cuDNN |
 | RMSNorm | ATen `rms_norm(input, normalized_shape, weight=None, eps=None)` and the fused CUDA layer-norm kernel | UdonATen | normalized shape and optional weight/epsilon semantics; no cuDNN alpha/beta |
 | Tile/repeat | ATen tensor-shape/repeat implementation | UdonATen | `tile(input, dims)` semantics |
-| INT4 weight-only linear | TorchAO quantized linear dispatch to ATen `_weight_int4pack_mm(input, packed_weight, group_size, scales_and_zeros)` | UdonATen quantized operator | separate packed weight and scale/zero metadata; not a cuBLAS extension |
+| ONNX Runtime weight-only linear | `com.microsoft::MatMulNBits` extension | UdonONNXOperators | ONNX Runtime bits/block-size, packed or unpacked zero point, optional `g_idx`/bias, and FP32/FP16/BF16 activation contract |
 
 Authoritative sources:
 
@@ -76,16 +76,11 @@ profiles are private Device backends of the existing `udonblasSgemm` and
 `udondnnSoftmaxForward` contracts; they do not add public APIs. Tile is implemented directly
 as the ATen-shaped `udonatenTile` operation. ONNX Tile uses the private
 `udonaten_arena_tile` backend to write at texture-arena offset zero, without
-adding a UdonDNN extension. INT4 AOT now uses separate
-packed-weight and `[K/group_size,N,2]` bfloat16 scale/zero inputs and the
-`udonatenWeightInt4packMm` contract. Its Device implementation remains
-an UdonATen-owned kernel, with one fragment per output feature and numerical
-coverage for non-zero zero points. External-weight paging is still required to
-execute the complete 8B plan. The public call has no beta parameter; private
-Device tiles use replace-then-add accumulation to preserve whole-operator ATen
-semantics across K pages. The superseded private `udonblasBackendSgemvQ4`
-backend and its UdonBLAS Unity artifact were removed rather than retained as a
-non-cuBLAS extension.
+adding a UdonDNN extension. ONNX Runtime extension `MatMulNBits` belongs to
+`UdonONNXOperators`; its packed weights and zero-point formats are not exposed
+as an ATen, UdonBLAS, or UdonDNN public extension. The superseded
+`udonatenWeightInt4packMm` and private `udonblasBackendSgemvQ4` paths were
+removed rather than retained as competing quantized-matrix APIs.
 
 The general ONNX MNIST path follows the same boundary: arena convolution and
 pooling are private backends of `udondnnConvolutionForward` and

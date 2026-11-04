@@ -12,7 +12,6 @@ add_executable(udondnn-device tests/device_main.cpp
   "${UDONDNN_OP_TENSOR_OBJECT}")
 target_sources(udondnn-device PRIVATE "${UDONATEN_RMS_NORM_SMALL_OBJECT}")
 target_sources(udondnn-device PRIVATE "${UDONATEN_EMBEDDING_OBJECT}")
-target_sources(udondnn-device PRIVATE "${UDONATEN_INT4_OBJECT}")
 target_sources(udondnn-device PRIVATE "${UDONATEN_TILE_OBJECT}")
 target_sources(udondnn-device PRIVATE "${UDONATEN_ARENA_POINTWISE_OBJECT}")
 target_sources(udondnn-device PRIVATE "${UDONATEN_ARENA_TILE_OBJECT}")
@@ -28,7 +27,6 @@ set_source_files_properties("${UDONDNN_HOST_OBJECT}" "${UDONDNN_DEVICE_OBJECT}"
   "${UDONDNN_OP_TENSOR_OBJECT}"
   "${UDONATEN_RMS_NORM_SMALL_OBJECT}"
   "${UDONATEN_EMBEDDING_OBJECT}"
-  "${UDONATEN_INT4_OBJECT}"
   "${UDONATEN_TILE_OBJECT}"
   "${UDONATEN_ARENA_POINTWISE_OBJECT}"
   "${UDONATEN_ARENA_TILE_OBJECT}"

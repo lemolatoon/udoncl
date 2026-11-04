@@ -209,20 +209,6 @@ the final scalar result.
 
 ## UdonATen
 
-The `unity-udonaten-int4-mm` stage creates
-`UdonAtenWeightInt4packMm.prefab` for PyTorch/TorchAO's ATen
-`_weight_int4pack_mm(input, packed_weight, group_size, scales_and_zeros)`
-operator. It deliberately does not expose this operator as a UdonBLAS or
-UdonDNN extension. The artifact manifest records separate packed-weight and
-`[K/group_size,N,2]` scale/zero shapes. Its two compact 8x128 Q4/BF16 pages
-share one texture atlas and are expanded on GPU with the runtime activation
-texture and first page's output, forming each 8,192-word active state without
-CPU readback. One Host `_run` dispatches
-the complete 8x256 operation. The IUdonVM lifecycle fixture uses non-zero zero
-points, compares all eight results, and removes generated program and prefab
-assets. Accumulation remains a private Device paging control; the public API is
-the ATen operator without a BLAS-style beta argument.
-
 The `unity-udonaten-tile` stage creates `UdonAtenTile.prefab` for ATen
 `tile(input, dims)`, which backs standard ONNX Tile without adding a cuDNN
 extension. Repeat dimensions align to the trailing tensor dimensions and one

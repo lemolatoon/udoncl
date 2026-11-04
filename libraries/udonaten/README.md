@@ -36,35 +36,12 @@ The first supported inference operators are:
   Device profile copies up to 4,096 float elements with one independent
   fragment per output element; ranks above four and zero-sized outputs return
   `NOT_SUPPORTED`.
-- `udonatenWeightInt4packMm`, corresponding exactly in semantic argument order
-  to ATen `_weight_int4pack_mm(input, packed_weight, group_size,
-  scales_and_zeros)`. Its Device kernel applies signed INT4 dequantization as
-  `value * scale + zero`; the public input/output contract is `[M,K] → [M,N]`
-  and one fragment independently owns each output feature for a matrix row.
-  Each active Device tile supports group size 32, up to 64 outputs and 128
-  input features. The private backend composes larger public calls and every M
-  row from those tiles; the first K tile replaces the output and later K tiles
-  add their partial sums without adding a non-ATen beta parameter to the public
-  API. ATen-recognized group sizes 64, 128, and 256 currently return
-  `NOT_SUPPORTED` rather than being misclassified as malformed calls.
-
-`libraries/udondnn/run_device.py` also emits the
-`unity-udonaten-int4-mm-bundle` reusable Unity artifact. Its manifest retains
-the semantic input, packed-weight, `[K/group_size,N,2]` scale/zero, and output
-shapes while the fixture packs two 8x128 Device pages into one compact
-Q4/BF16 atlas for an 8x256 public operation. A fragment compose pass expands
-the selected atlas row and copies the runtime activation slice and prior GPU
-output into each 8,192-word active state; one Host `_run` executes both pages
-without a CPU readback or a prefilled partial-sum fixture.
-The package importer creates `UdonAtenWeightInt4packMm.prefab`; the Editor
-lifecycle test executes kernel 208 through SDK IUdonVM and validates non-zero
-zero points before deleting all generated assets.
-
 Pointwise operations currently adapt validated UdonDNN backend kernels as a
 private implementation detail. Embedding and both the small packed and large
 two-pass RMSNorm Device paths are implemented and packaged directly in
 UdonATen.
-Tile and INT4 matrix multiplication have UdonATen-owned Device kernels.
+Tile has a UdonATen-owned Device kernel. ONNX Runtime extension quantized
+matrix multiplication belongs to `UdonONNXOperators`, not UdonATen.
 `libraries/udondnn/run_device.py` packages Tile as the reusable
 `unity-udonaten-tile-bundle`; the Unity importer creates
 `UdonAtenTile.prefab`, and its SDK IUdonVM lifecycle fixture validates all 72

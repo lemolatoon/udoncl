@@ -31,12 +31,6 @@ static int udonatenPointwiseTileShape(size_t remaining, int *n, int *c, int *h,
   return 0;
 }
 
-udonatenStatus_t
-udonatenBackendWeightInt4packMm(udonatenHandle_t handle, int m, int n, int k,
-                                const float *input,
-                                const uint8_t *packed_weight, int group_size,
-                                const float *scales_and_zeros, float *output);
-
 udonatenStatus_t udonatenBackendTile(udonatenHandle_t handle, int input_n,
                                      int input_c, int input_h, int input_w,
                                      const float *input, int repeat_n,
@@ -381,48 +375,4 @@ udonatenStatus_t udonatenTile(udonatenHandle_t handle,
   return udonatenBackendTile(handle, input_n, input_c, input_h, input_w, input,
                              repeats[0], repeats[1], repeats[2], repeats[3],
                              output_n * output_c * output_h * output_w, output);
-}
-
-udonatenStatus_t udonatenWeightInt4packMm(
-    udonatenHandle_t handle, udonatenTensorDescriptor_t input_descriptor,
-    const float *input, udonatenTensorDescriptor_t packed_weight_descriptor,
-    const uint8_t *packed_weight, int64_t group_size,
-    udonatenTensorDescriptor_t scales_and_zeros_descriptor,
-    const float *scales_and_zeros, udonatenTensorDescriptor_t output_descriptor,
-    float *output) {
-  udondnnDataType_t data_type;
-  int input_n, input_c, input_h, input_w;
-  int packed_n, packed_c, packed_h, packed_w;
-  int qparams_n, qparams_c, qparams_h, qparams_w;
-  int output_n, output_c, output_h, output_w;
-  int n_stride, c_stride, h_stride, w_stride;
-#define GET_TENSOR(descriptor, n, c, h, w)                                     \
-  do {                                                                         \
-    udonatenStatus_t status = udondnnGetTensor4dDescriptor(                    \
-        descriptor, &data_type, &n, &c, &h, &w, &n_stride, &c_stride,          \
-        &h_stride, &w_stride);                                                 \
-    if (status != UDONDNN_STATUS_SUCCESS)                                      \
-      return status;                                                           \
-  } while (0)
-  GET_TENSOR(input_descriptor, input_n, input_c, input_h, input_w);
-  GET_TENSOR(packed_weight_descriptor, packed_n, packed_c, packed_h, packed_w);
-  GET_TENSOR(scales_and_zeros_descriptor, qparams_n, qparams_c, qparams_h,
-             qparams_w);
-  GET_TENSOR(output_descriptor, output_n, output_c, output_h, output_w);
-#undef GET_TENSOR
-  if (group_size != 32 && group_size != 64 && group_size != 128 &&
-      group_size != 256)
-    return UDONDNN_STATUS_BAD_PARAM;
-  if (group_size != 32)
-    return UDONDNN_STATUS_NOT_SUPPORTED;
-  if (data_type != UDONDNN_DATA_FLOAT || input_n <= 0 || input_c % group_size ||
-      input_h != 1 || input_w != 1 || packed_h != 1 || packed_w != 1 ||
-      packed_c != input_c / 2 || qparams_n != input_c / group_size ||
-      qparams_c != packed_n || qparams_h != 2 || qparams_w != 1 ||
-      output_n != input_n || output_c != packed_n || output_h != 1 ||
-      output_w != 1)
-    return UDONDNN_STATUS_BAD_PARAM;
-  return udonatenBackendWeightInt4packMm(handle, input_n, packed_n, input_c,
-                                         input, packed_weight, (int)group_size,
-                                         scales_and_zeros, output);
 }

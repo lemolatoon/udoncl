@@ -231,6 +231,22 @@ Host .c / libc sources                     Device .cl sources
 8. 固定TinyLlama artifactをoracle、compiler、native、device、最後にUnityで通す。
 9. 全consumer移行後にexecution-plan JSON/material scheduler/arena/`static_inputs`/旧runtimeとsampleを削除し、Unity packageと利用者documentationを完成させる。
 
+#### 実装checkpoint（2026-11-04）
+
+- 手順6のhidden-size-8 Transformerを実ONNX Runtime extension
+  `com.microsoft::MatMulNBits`へ移し、汎用facade/kernel 219でbits 2–8、
+  block size、zero point形式、`g_idx`/bias、FP32/FP16/BF16をnative検証した。
+  Unity受入は同一sessionを2回実行して各29 async step、98/98 Editor
+  tests合格、数値誤差`<0.002`、最終Console 0件である。
+- 標準Udon Assembly assetの512-slot制約に対し、不変定数をmodule全体で
+  共有し、Transformer Hostをdata 440 + extern signature 43 = 483 slotへ
+  抑えた。CMake consumerがこの合計を回帰検査する。
+- 手順7の削除gateとして`udonatenWeightInt4packMm`公開C API、kernel 208、
+  専用Unity artifact/import入口/prefab testを削除した。旧execution-planと
+  Llama 8B sampleに残る互換生成コードは手順9の全consumer移行時に削除する。
+- 次の未完了gateは手順8の固定TinyLlama 1.1B model download/cache、oracle、
+  compiler、native/device、Unity全22-layer KV/logits検証である。
+
 ## 3. ABIとExecution Contract
 
 ### 3.1 Host C ABI

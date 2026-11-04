@@ -89,11 +89,7 @@ extern cl_int __vrc_enqueue_udondnn_large_op_tensor(
 #define UDONATEN_RMS_SMALL_RESULT_OFFSET 1536
 #define UDONATEN_EMBEDDING_INDICES_OFFSET 512
 #define UDONATEN_EMBEDDING_RESULT_OFFSET 1024
-#define UDONATEN_INT4_WORDS 8192
-#define UDONATEN_INT4_INPUT_OFFSET 6144
-#define UDONATEN_INT4_RESULT_OFFSET 7168
-#define UDONATEN_INT4_MAX_N 64
-#define UDONATEN_INT4_MAX_K 128
+#define UDONATEN_STAGING_WORDS 8192
 #define UDONATEN_TILE_RESULT_OFFSET 4096
 #define UDONATEN_RMS_WORDS 8192
 #define UDONATEN_RMS_WEIGHT_OFFSET 4096
@@ -173,7 +169,6 @@ static cl_kernel op_tensor_kernel;
 static cl_kernel large_op_tensor_kernel;
 static cl_kernel rms_norm_small_kernel;
 static cl_kernel embedding_kernel;
-static cl_kernel weight_int4pack_mm_kernel;
 static cl_kernel tile_kernel;
 static cl_kernel aten_rms_reduce_kernel;
 static cl_kernel aten_rms_finalize_kernel;
@@ -185,8 +180,8 @@ static cl_mem input_buffer;
 static cl_mem output_buffer;
 static cl_mem batchnorm_input_buffer;
 static cl_mem batchnorm_output_buffer;
-static cl_mem int4_input_buffer;
-static cl_mem int4_output_buffer;
+static cl_mem aten_input_buffer;
+static cl_mem aten_output_buffer;
 static cl_mem aten_rms_state_buffer;
 static cl_mem aten_rms_partial_buffer;
 static cl_mem aten_rms_output_buffer;
@@ -197,7 +192,7 @@ static cl_mem arena_rms_partial_buffer;
 static float packed[UDONDNN_WORDS];
 static float batchnorm_packed[UDONDNN_BATCHNORM_WORDS];
 static float result[UDONDNN_REGION_WORDS];
-static float int4_state[UDONATEN_INT4_WORDS];
+static float aten_state[UDONATEN_STAGING_WORDS];
 static float aten_rms_state[UDONATEN_RMS_WORDS];
 static float arena_pointwise_zero[UDONATEN_ARENA_POINTWISE_WORDS];
 static TensorDescriptor tensors[UDONDNN_DESCRIPTOR_SLOTS];
@@ -352,8 +347,6 @@ static void clear_objects(void) {
     clReleaseKernel(aten_rms_reduce_kernel);
   if (tile_kernel)
     clReleaseKernel(tile_kernel);
-  if (weight_int4pack_mm_kernel)
-    clReleaseKernel(weight_int4pack_mm_kernel);
   if (embedding_kernel)
     clReleaseKernel(embedding_kernel);
   if (rms_norm_small_kernel)
@@ -388,10 +381,10 @@ static void clear_objects(void) {
     clReleaseMemObject(batchnorm_output_buffer);
   if (batchnorm_input_buffer)
     clReleaseMemObject(batchnorm_input_buffer);
-  if (int4_output_buffer)
-    clReleaseMemObject(int4_output_buffer);
-  if (int4_input_buffer)
-    clReleaseMemObject(int4_input_buffer);
+  if (aten_output_buffer)
+    clReleaseMemObject(aten_output_buffer);
+  if (aten_input_buffer)
+    clReleaseMemObject(aten_input_buffer);
   if (aten_rms_output_buffer)
     clReleaseMemObject(aten_rms_output_buffer);
   if (aten_rms_partial_buffer)
@@ -422,7 +415,6 @@ static void clear_objects(void) {
   large_op_tensor_kernel = 0;
   rms_norm_small_kernel = 0;
   embedding_kernel = 0;
-  weight_int4pack_mm_kernel = 0;
   tile_kernel = 0;
   aten_rms_reduce_kernel = 0;
   aten_rms_finalize_kernel = 0;
@@ -433,7 +425,7 @@ static void clear_objects(void) {
   program = 0;
   output_buffer = input_buffer = 0;
   batchnorm_output_buffer = batchnorm_input_buffer = 0;
-  int4_output_buffer = int4_input_buffer = 0;
+  aten_output_buffer = aten_input_buffer = 0;
   aten_rms_state_buffer = aten_rms_partial_buffer = aten_rms_output_buffer = 0;
   arena_pointwise_self_buffer = arena_pointwise_other_buffer =
       arena_pointwise_output_buffer = 0;
@@ -498,12 +490,12 @@ udondnnStatus_t udondnnCreate(udondnnHandle_t *handle) {
       context, CL_MEM_READ_WRITE, sizeof(batchnorm_packed), 0, &status);
   if (status != CL_SUCCESS)
     return execution_failure();
-  int4_input_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE,
-                                     sizeof(int4_state), 0, &status);
+  aten_input_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE,
+                                     sizeof(aten_state), 0, &status);
   if (status != CL_SUCCESS)
     return execution_failure();
-  int4_output_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE,
-                                      sizeof(int4_state), 0, &status);
+  aten_output_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE,
+                                      sizeof(aten_state), 0, &status);
   if (status != CL_SUCCESS)
     return execution_failure();
   aten_rms_state_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE,
@@ -604,20 +596,12 @@ udondnnStatus_t udondnnCreate(udondnnHandle_t *handle) {
       clSetKernelArg(embedding_kernel, 1, sizeof(output_buffer),
                      &output_buffer) != CL_SUCCESS)
     return execution_failure();
-  weight_int4pack_mm_kernel =
-      clCreateKernel(program, "udonaten_weight_int4pack_mm", &status);
-  if (status != CL_SUCCESS ||
-      clSetKernelArg(weight_int4pack_mm_kernel, 0, sizeof(int4_input_buffer),
-                     &int4_input_buffer) != CL_SUCCESS ||
-      clSetKernelArg(weight_int4pack_mm_kernel, 1, sizeof(int4_output_buffer),
-                     &int4_output_buffer) != CL_SUCCESS)
-    return execution_failure();
   tile_kernel = clCreateKernel(program, "udonaten_tile", &status);
   if (status != CL_SUCCESS ||
-      clSetKernelArg(tile_kernel, 0, sizeof(int4_input_buffer),
-                     &int4_input_buffer) != CL_SUCCESS ||
-      clSetKernelArg(tile_kernel, 1, sizeof(int4_output_buffer),
-                     &int4_output_buffer) != CL_SUCCESS)
+      clSetKernelArg(tile_kernel, 0, sizeof(aten_input_buffer),
+                     &aten_input_buffer) != CL_SUCCESS ||
+      clSetKernelArg(tile_kernel, 1, sizeof(aten_output_buffer),
+                     &aten_output_buffer) != CL_SUCCESS)
     return execution_failure();
   aten_rms_reduce_kernel =
       clCreateKernel(program, "udonaten_rms_norm_reduce", &status);
@@ -2230,86 +2214,6 @@ udondnnStatus_t udonatenBackendEmbedding(
     return UDONDNN_STATUS_EXECUTION_FAILED;
   for (index = 0; index < output_words; ++index)
     output[index] = result[index];
-  return UDONDNN_STATUS_SUCCESS;
-}
-
-/* Private UdonATen backend. This symbol is intentionally absent from the
- * UdonDNN public header: ownership and validation remain in UdonATen. */
-udondnnStatus_t
-udonatenBackendWeightInt4packMm(udondnnHandle_t handle, int m, int n, int k,
-                                const float *input,
-                                const uint8_t *packed_weight, int group_size,
-                                const float *scales_and_zeros, float *output) {
-  int m_offset, n_offset, k_offset, tile_n, tile_k, blocks, row_stride, row,
-      block;
-  int byte_index, index, accumulate;
-  size_t global = UDONATEN_INT4_WORDS, local = 1;
-  cl_int status;
-  if (handle != UDONDNN_HANDLE || !context)
-    return UDONDNN_STATUS_NOT_INITIALIZED;
-  if (m <= 0 || n <= 0 || k <= 0 || group_size != 32 || k % group_size ||
-      !input || !packed_weight || !scales_and_zeros || !output)
-    return UDONDNN_STATUS_BAD_PARAM;
-#define SET_INT4_ARGUMENT(slot, value)                                         \
-  do {                                                                         \
-    status = clSetKernelArg(weight_int4pack_mm_kernel, slot, sizeof(value),    \
-                            &(value));                                         \
-    if (status != CL_SUCCESS)                                                  \
-      return UDONDNN_STATUS_EXECUTION_FAILED;                                  \
-  } while (0)
-  for (m_offset = 0; m_offset < m; ++m_offset)
-    for (n_offset = 0; n_offset < n; n_offset += UDONATEN_INT4_MAX_N) {
-      tile_n = n - n_offset;
-      if (tile_n > UDONATEN_INT4_MAX_N)
-        tile_n = UDONATEN_INT4_MAX_N;
-      for (k_offset = 0; k_offset < k; k_offset += UDONATEN_INT4_MAX_K) {
-        tile_k = k - k_offset;
-        if (tile_k > UDONATEN_INT4_MAX_K)
-          tile_k = UDONATEN_INT4_MAX_K;
-        blocks = tile_k / group_size;
-        row_stride = blocks * 18;
-        accumulate = k_offset != 0;
-        for (index = 0; index < UDONATEN_INT4_WORDS; ++index)
-          int4_state[index] = 0.0f;
-        for (row = 0; row < tile_n; ++row) {
-          int source_row = n_offset + row;
-          for (block = 0; block < blocks; ++block) {
-            int source_block = k_offset / group_size + block;
-            int destination = row * row_stride + block * 18;
-            int source = source_row * (k / 2) + k_offset / 2 + block * 16;
-            int qparams = (source_block * n + source_row) * 2;
-            for (byte_index = 0; byte_index < 16; ++byte_index)
-              int4_state[destination + byte_index] =
-                  (float)packed_weight[source + byte_index];
-            int4_state[destination + 16] = scales_and_zeros[qparams];
-            int4_state[destination + 17] = scales_and_zeros[qparams + 1];
-          }
-          if (accumulate)
-            int4_state[UDONATEN_INT4_RESULT_OFFSET + row] =
-                output[m_offset * n + n_offset + row];
-        }
-        for (index = 0; index < tile_k; ++index)
-          int4_state[UDONATEN_INT4_INPUT_OFFSET + index] =
-              input[m_offset * k + k_offset + index];
-        SET_INT4_ARGUMENT(2, tile_n);
-        SET_INT4_ARGUMENT(3, tile_k);
-        SET_INT4_ARGUMENT(4, row_stride);
-        SET_INT4_ARGUMENT(5, accumulate);
-        if (clEnqueueWriteBuffer(queue, int4_input_buffer, CL_TRUE, 0,
-                                 sizeof(int4_state), int4_state, 0, 0,
-                                 0) != CL_SUCCESS ||
-            clEnqueueNDRangeKernel(queue, weight_int4pack_mm_kernel, 1, 0,
-                                   &global, &local, 0, 0, 0) != CL_SUCCESS ||
-            clEnqueueReadBuffer(queue, int4_output_buffer, CL_TRUE,
-                                UDONATEN_INT4_RESULT_OFFSET * sizeof(float),
-                                tile_n * sizeof(float),
-                                output + m_offset * n + n_offset, 0, 0,
-                                0) != CL_SUCCESS ||
-            clFinish(queue) != CL_SUCCESS)
-          return UDONDNN_STATUS_EXECUTION_FAILED;
-      }
-    }
-#undef SET_INT4_ARGUMENT
   return UDONDNN_STATUS_SUCCESS;
 }
 
