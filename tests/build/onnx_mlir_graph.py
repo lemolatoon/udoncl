@@ -103,6 +103,17 @@ module {
 
 
 class ONNXMLIRGraphTests(unittest.TestCase):
+    def test_accepts_canonical_func_return(self):
+        graph = graph_module.parse(
+            """module {
+  func.func @main_graph(%arg0: tensor<1xf32> {onnx.name = \"input\"}) -> tensor<1xf32> {
+    return %arg0 : tensor<1xf32>
+  }
+}
+"""
+        )
+        self.assertEqual(graph.outputs[0].ssa_name, "%arg0")
+
     def test_parses_graph_without_serialized_execution_plan(self):
         graph = graph_module.parse(CANONICAL)
         self.assertEqual(graph.name, "main_graph")

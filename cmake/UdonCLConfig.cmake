@@ -186,7 +186,7 @@ endfunction()
 function(udoncl_add_onnx_host_library target)
   set(_options)
   set(_one_value MODEL)
-  set(_multi_value DIMENSION_BOUNDS)
+  set(_multi_value DIMENSION_BOUNDS INPUT_SHAPES)
   cmake_parse_arguments(PARSE_ARGV 1 _ARG "${_options}" "${_one_value}"
                         "${_multi_value}")
   if(_ARG_UNPARSED_ARGUMENTS)
@@ -203,15 +203,27 @@ function(udoncl_add_onnx_host_library target)
   endif()
   set(_bound_names)
   foreach(_bound IN LISTS _ARG_DIMENSION_BOUNDS)
-    if(NOT _bound MATCHES "^([A-Za-z_][A-Za-z0-9_.]*)=([1-9][0-9]*)$")
+    if(NOT _bound MATCHES "^([A-Za-z_][A-Za-z0-9_.]*)=(0|[1-9][0-9]*)$")
       message(FATAL_ERROR
-        "Invalid DIMENSION_BOUNDS entry '${_bound}'; expected name=positive_integer")
+        "Invalid DIMENSION_BOUNDS entry '${_bound}'; expected name=non_negative_integer")
     endif()
     set(_bound_name "${CMAKE_MATCH_1}")
     if(_bound_name IN_LIST _bound_names)
       message(FATAL_ERROR "Duplicate DIMENSION_BOUNDS entry '${_bound_name}'")
     endif()
     list(APPEND _bound_names "${_bound_name}")
+  endforeach()
+  set(_input_shape_names)
+  foreach(_shape IN LISTS _ARG_INPUT_SHAPES)
+    if(NOT _shape MATCHES "^([^=]+)=([0-9]+)(,[0-9]+)*$")
+      message(FATAL_ERROR
+        "Invalid INPUT_SHAPES entry '${_shape}'; expected input_name=d0,d1,...")
+    endif()
+    set(_input_shape_name "${CMAKE_MATCH_1}")
+    if(_input_shape_name IN_LIST _input_shape_names)
+      message(FATAL_ERROR "Duplicate INPUT_SHAPES entry '${_input_shape_name}'")
+    endif()
+    list(APPEND _input_shape_names "${_input_shape_name}")
   endforeach()
   foreach(_tool IN ITEMS UDONCL_ONNX_IMPORTER_EXECUTABLE
                          UDONCL_ONNX_OPT_EXECUTABLE)
@@ -230,11 +242,18 @@ function(udoncl_add_onnx_host_library target)
   set(_generated_mlir "${_generated_dir}/model.mlir")
   set(_generated_host "${_generated_dir}/host.c")
   file(MAKE_DIRECTORY "${_generated_dir}")
+  set(_compile_command "${Python3_EXECUTABLE}" "${_UDONCL_ONNX_MLIR_COMPILER}"
+      "${_model}" -o "${_generated_mlir}"
+      --importer "${UDONCL_ONNX_IMPORTER_EXECUTABLE}"
+      --optimizer "${UDONCL_ONNX_OPT_EXECUTABLE}")
+  foreach(_bound IN LISTS _ARG_DIMENSION_BOUNDS)
+    list(APPEND _compile_command --dimension "${_bound}")
+  endforeach()
+  foreach(_shape IN LISTS _ARG_INPUT_SHAPES)
+    list(APPEND _compile_command --input-shape "${_shape}")
+  endforeach()
   execute_process(
-    COMMAND "${Python3_EXECUTABLE}" "${_UDONCL_ONNX_MLIR_COMPILER}"
-            "${_model}" -o "${_generated_mlir}"
-            --importer "${UDONCL_ONNX_IMPORTER_EXECUTABLE}"
-            --optimizer "${UDONCL_ONNX_OPT_EXECUTABLE}"
+    COMMAND ${_compile_command}
     RESULT_VARIABLE _result
     OUTPUT_VARIABLE _stdout
     ERROR_VARIABLE _stderr)
@@ -267,6 +286,8 @@ function(udoncl_add_onnx_host_library target)
                "${_generated_mlir}")
   set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_DIMENSION_BOUNDS
                "${_ARG_DIMENSION_BOUNDS}")
+  set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_INPUT_SHAPES
+               "${_ARG_INPUT_SHAPES}")
 endfunction()
 
 if(NOT TARGET udoncl_opencl_runtime)

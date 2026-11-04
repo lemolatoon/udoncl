@@ -26,7 +26,7 @@ class CompileONNXMLIRTests(unittest.TestCase):
         self.optimizer.write_text('tool', encoding='utf-8')
         self.output = self.root / 'out/model.mlir'
 
-    def run_pipeline(self, mlir, supported=()):
+    def run_pipeline(self, mlir, supported=(), dimensions=(), input_shapes=()):
         def run(command, check):
             self.assertTrue(check)
             output = Path(command[command.index('-o') + 1])
@@ -36,7 +36,7 @@ class CompileONNXMLIRTests(unittest.TestCase):
         with mock.patch.object(compiler.subprocess, 'run', side_effect=run) as call:
             compiler.canonicalize(
                 self.model, self.output, self.importer, self.optimizer,
-                supported)
+                supported, dimensions, input_shapes)
         return call.call_args_list
 
     def test_pipeline_imports_then_canonicalizes(self):
@@ -45,9 +45,30 @@ class CompileONNXMLIRTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         optimizer = calls[1].args[0]
         self.assertIn('--shape-inference', optimizer)
+        self.assertIn('--simplify-shape-related-ops-onnx', optimizer)
+        self.assertIn('--constprop-onnx', optimizer)
+        self.assertIn('--standard-func-return', optimizer)
+        self.assertIn('--mlir-elide-elementsattrs-if-larger=64', optimizer)
         self.assertIn('--canonicalize', optimizer)
         self.assertIn('--mlir-print-debuginfo', optimizer)
         self.assertTrue(self.output.is_file())
+
+    def test_dimension_values_are_forwarded_to_the_importer(self):
+        calls = self.run_pipeline(
+            'onnx.Return\n', dimensions=['batch_size=1', 'past_sequence_length=0']
+        )
+        importer = calls[0].args[0]
+        self.assertEqual(importer.count('--dim'), 2)
+        self.assertIn('batch_size=1', importer)
+        self.assertIn('past_sequence_length=0', importer)
+
+    def test_input_shapes_are_forwarded_to_the_importer(self):
+        calls = self.run_pipeline(
+            'onnx.Return\n', input_shapes=['attention_mask=1,4']
+        )
+        importer = calls[0].args[0]
+        self.assertIn('--input-shape', importer)
+        self.assertIn('attention_mask=1,4', importer)
 
     def test_unsupported_operator_is_explicit_and_output_is_atomic(self):
         self.output.parent.mkdir(parents=True)

@@ -246,6 +246,17 @@ Host .c / libc sources                     Device .cl sources
   Llama 8B sampleに残る互換生成コードは手順9の全consumer移行時に削除する。
 - 次の未完了gateは手順8の固定TinyLlama 1.1B model download/cache、oracle、
   compiler、native/device、Unity全22-layer KV/logits検証である。
+- 手順8のfrontend/oracle checkpointとして、固定revisionの909,750,422-byte
+  modelをSHA-256検証付きcontent-addressed cacheへ取得する。ONNX-MLIR importerは
+  巨大initializerをtext化せずbytecodeでoptimizerへ渡し、symbolic dimensionと
+  明示input shapeをmodel非依存にspecializeできる。固定4-token/空KVではCPU ORT
+  oracleの128,000 logits、44個のpresent K/V、argmax
+  `[29958, 390, 17354, 1701]`を確定し、canonical frontendで155個の
+  `MatMulNBits`を保持した734,378-byte MLIRを生成済みである。
+- 未完了なのは、canonical graphに残るstandard tensor/shape operatorを
+  `UdonONNXOperators`と既存library callへlowerし、embedded initializerを巨大C配列
+  ではなくimmutable Device weight assetとしてupload/bindする部分、およびその後の
+  native/device/Unity数値比較である。ここをmodel固有fusionで回避しない。
 
 ## 3. ABIとExecution Contract
 

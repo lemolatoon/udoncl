@@ -157,6 +157,21 @@ add_test(NAME tiny-llama-native
   COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/boundary/tiny_llama.py"
     "${PROJECT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/tests/tiny-llama"
 )
+add_test(NAME tinyllama-real-onnx-oracle
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/boundary/tinyllama_real_onnx.py"
+    "${PROJECT_SOURCE_DIR}" "${PROJECT_BINARY_DIR}/tests/tinyllama-real-onnx"
+)
+set_tests_properties(tinyllama-real-onnx-oracle PROPERTIES TIMEOUT 600)
+if(VRC_TEST_ONNX_IMPORTER AND VRC_TEST_ONNX_OPT)
+  add_test(NAME tinyllama-real-onnx-frontend
+    COMMAND Python3::Interpreter
+      "${CMAKE_CURRENT_SOURCE_DIR}/boundary/tinyllama_onnx_frontend.py"
+      "${PROJECT_SOURCE_DIR}" "${PROJECT_BINARY_DIR}/tests/tinyllama-real-onnx-frontend"
+      "${VRC_TEST_ONNX_IMPORTER}" "${VRC_TEST_ONNX_OPT}"
+  )
+  set_tests_properties(tinyllama-real-onnx-frontend PROPERTIES TIMEOUT 600)
+endif()
 add_test(NAME onnx-runtime-mnist
   COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/boundary/onnx_runtime.py"
     "${PROJECT_SOURCE_DIR}" "${PROJECT_BINARY_DIR}/tests/onnx-runtime-mnist"
@@ -188,6 +203,10 @@ add_test(NAME onnx-mlir-pipeline
 )
 add_test(NAME onnx-mlir-graph
   COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/build/onnx_mlir_graph.py"
+)
+add_test(NAME tinyllama-model-cache
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/build/fetch_tinyllama_onnx.py"
 )
 add_test(NAME build-parallelism
   COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/build/parallel.py"

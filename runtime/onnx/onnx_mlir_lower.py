@@ -238,8 +238,10 @@ def main() -> None:
     bounds = {}
     for item in args.dimension_bound:
         name, separator, raw_value = item.partition("=")
-        if not separator or not name or not raw_value.isdigit() or int(raw_value) <= 0:
-            parser.error(f"invalid --dimension-bound {item!r}; expected name=positive_integer")
+        if not separator or not name or not raw_value.isdigit():
+            parser.error(
+                f"invalid --dimension-bound {item!r}; expected name=non_negative_integer"
+            )
         if name in bounds:
             parser.error(f"duplicate --dimension-bound {name!r}")
         bounds[name] = int(raw_value)

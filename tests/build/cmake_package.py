@@ -236,7 +236,7 @@ def main():
         (
             'invalid-bound',
             'udoncl_add_onnx_host_library(probe MODEL model.onnx '
-            'DIMENSION_BOUNDS sequence=0)',
+            'DIMENSION_BOUNDS sequence=-1)',
             'Invalid DIMENSION_BOUNDS entry',
         ),
         (
@@ -376,7 +376,7 @@ def main():
     assert 'output_index == 1 && input_index == 1' in transformer_source
     assert 'output_index == 2 && input_index == 2' in transformer_source
     transformer_mlir_source = transformer_mlir.read_text(encoding='utf-8')
-    assert 'tensor<1x?xi32>' in transformer_mlir_source
+    assert 'tensor<1x4xi32>' in transformer_mlir_source
     assert 'onnx.dim_params = "1:sequence"' in transformer_mlir_source
     transformer_manifest = json.loads(
         (transformer_artifact / 'manifest.json').read_text(encoding='utf-8')

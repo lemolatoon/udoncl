@@ -312,7 +312,7 @@ def parse(text: str) -> Graph:
             initializers.append(value)
             initializer_ssa[result_name] = value
             continue
-        if line.lstrip().startswith("onnx.Return"):
+        if line.lstrip().startswith(("onnx.Return", "func.return", "return ")):
             return_values = tuple(_VALUE_NAME.findall(line.split(":", 1)[0]))
             continue
         try:

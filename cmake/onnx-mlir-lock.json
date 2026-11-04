@@ -4,7 +4,8 @@
   "upstream_branch": "0.5.1.2",
   "llvm_version": "23.1.4",
   "patches": [
-    "cmake/patches/onnx-mlir-0.5.1.2-msvc-template.patch"
+    "cmake/patches/onnx-mlir-0.5.1.2-msvc-template.patch",
+    "cmake/patches/onnx-mlir-0.5.1.2-udoncl-dimensions.patch"
   ],
   "submodules": {
     "third_party/benchmark": "a4cf155615c63e019ae549e31703bf367df5b471",
