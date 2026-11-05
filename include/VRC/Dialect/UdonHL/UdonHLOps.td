@@ -98,6 +98,17 @@ def UdonHL_ArrayViewOp : Op<UdonHL_Dialect, "array_view"> {
   let results = (outs UdonHL_PtrType:$result);
   let hasVerifier = 1;
 }
+def UdonHL_SpillStoreOp : Op<UdonHL_Dialect, "spill_store"> {
+  let summary = "Store an SSA value in a statically allocated typed spill bank";
+  let arguments = (ins AnyType:$value, StrAttr:$storage_key, I32Attr:$index);
+  let assemblyFormat = "$value `[` $index `]` attr-dict `:` type($value)";
+}
+def UdonHL_SpillLoadOp : Op<UdonHL_Dialect, "spill_load"> {
+  let summary = "Load an SSA value from a statically allocated typed spill bank";
+  let arguments = (ins StrAttr:$storage_key, I32Attr:$index);
+  let results = (outs AnyType:$value);
+  let assemblyFormat = "`[` $index `]` attr-dict `:` type($value)";
+}
 def UdonHL_CallOp : Op<UdonHL_Dialect, "call", [SymbolUserOpInterface]> {
   let summary = "C call with explicit recursion/suspension policy";
   let arguments = (ins FlatSymbolRefAttr:$callee, Variadic<AnyType>:$args,
@@ -144,5 +155,27 @@ def UdonHL_SuspendOp : Op<UdonHL_Dialect, "suspend", [Terminator]> {
   let arguments = (ins UdonHL_FrameType:$frame, Optional<AnyType>:$token,
     UdonHL_SuspendReasonAttr:$reason, I32Attr:$resume_state,
     I32Attr:$completion_slot);
+  let hasVerifier = 1;
+}
+def UdonHL_AsyncResumeOp : Op<UdonHL_Dialect, "async_resume"> {
+  let summary = "Resume one statically identified Udon coroutine continuation";
+  let description = [{
+    Directly enters the generated resume trampoline for frame_id/resume_pc.
+    A zero frame_id is a no-op. This operation does not imply a scheduler,
+    queue, polling loop, or dynamic frame allocation.
+  }];
+  let arguments = (ins I32:$frame_id, I32:$resume_pc);
+}
+def UdonHL_AsyncResumePointOp : Op<UdonHL_Dialect, "async_resume_point"> {
+  let summary = "Mark one statically routed coroutine resume target";
+  let arguments = (ins I32Attr:$frame_id, I32Attr:$resume_pc);
+}
+def UdonHL_AsyncEnterOp : Op<UdonHL_Dialect, "async_enter"> {
+  let summary = "Enter one statically selected coroutine resume target";
+  let arguments = (ins I32Attr:$frame_id, I32Attr:$resume_pc);
+}
+def UdonHL_AsyncBindEventOp : Op<UdonHL_Dialect, "async_bind_event"> {
+  let summary = "Bind one VRC completion event to a canonical async object";
+  let arguments = (ins AnyType:$event, I32Attr:$object_id);
   let hasVerifier = 1;
 }

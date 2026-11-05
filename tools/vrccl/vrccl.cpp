@@ -1,4 +1,5 @@
 #include "VRC/ABI/Manifest/Boundary.h"
+#include "VRC/ABI/Manifest/BindingSource.h"
 #include "VRC/Conversion/BoundaryFrontend/Frontend.h"
 #include "VRC/Conversion/LLVMToHighLevel/Import.h"
 #include "VRC/Conversion/LLVMToHighLevel/Passes.h"
@@ -11,13 +12,14 @@
 #include "VRC/Target/UdonAssembly/Emitter.h"
 #include "mlir/Conversion/ControlFlowToSCF/ControlFlowToSCF.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Async/IR/Async.h"
+#include "mlir/Dialect/Async/Passes.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Verifier.h"
-#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassManager.h"
@@ -31,7 +33,11 @@
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/ToolOutputFile.h"
 #include "llvm/IR/DataLayout.h"
+#include "llvm/IR/Constants.h"
+#include "llvm/IR/GlobalVariable.h"
+#include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/Module.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IRReader/IRReader.h"
 #include <set>
@@ -40,6 +46,221 @@
 using namespace mlir;
 using namespace llvm;
 namespace {
+void normalizeUnityHostCallingConventions(llvm::Module &module) {
+  SmallVector<llvm::CallInst *> unsignedMultiplyOverflowCalls;
+  SmallVector<llvm::CallInst *> unsignedMaximumCalls;
+  SmallVector<llvm::CallInst *> unsignedMinimumCalls;
+  SmallVector<llvm::CallInst *> signedMaximumCalls;
+  SmallVector<llvm::CallInst *> signedMinimumCalls;
+  SmallVector<llvm::CallInst *> absoluteFloatCalls;
+  SmallVector<llvm::CallInst *> populationCountCalls;
+  SmallVector<llvm::FreezeInst *> freezes;
+  for (llvm::Function &function : module) {
+    if (function.getCallingConv() == llvm::CallingConv::Fast)
+      function.setCallingConv(llvm::CallingConv::C);
+    for (llvm::BasicBlock &block : function) {
+      for (llvm::Instruction &instruction : block) {
+        if (auto *call = llvm::dyn_cast<llvm::CallInst>(&instruction))
+          call->setTailCallKind(llvm::CallInst::TCK_None);
+        if (llvm::isa<llvm::FPMathOperator>(instruction))
+          instruction.copyFastMathFlags(llvm::FastMathFlags());
+        if (auto *disjoint =
+                llvm::dyn_cast<llvm::PossiblyDisjointInst>(&instruction))
+          disjoint->setIsDisjoint(false);
+        if (llvm::isa<llvm::ZExtInst, llvm::UIToFPInst>(instruction) &&
+            instruction.hasNonNeg())
+          instruction.setNonNeg(false);
+        if (auto *freeze = llvm::dyn_cast<llvm::FreezeInst>(&instruction))
+          freezes.push_back(freeze);
+        if (auto *call = llvm::dyn_cast<llvm::CallBase>(&instruction))
+          if (call->getCallingConv() == llvm::CallingConv::Fast)
+            call->setCallingConv(llvm::CallingConv::C);
+        if (auto *call = llvm::dyn_cast<llvm::CallInst>(&instruction))
+          call->setTailCallKind(llvm::CallInst::TCK_None);
+        auto *call = llvm::dyn_cast<llvm::CallInst>(&instruction);
+        llvm::Function *callee = call ? call->getCalledFunction() : nullptr;
+        if (callee && callee->getName() == "llvm.umul.with.overflow.i32")
+          unsignedMultiplyOverflowCalls.push_back(call);
+        if (callee && callee->getName() == "llvm.umax.i32")
+          unsignedMaximumCalls.push_back(call);
+        if (callee && callee->getName() == "llvm.umin.i32")
+          unsignedMinimumCalls.push_back(call);
+        if (callee && callee->getName() == "llvm.smax.i32")
+          signedMaximumCalls.push_back(call);
+        if (callee && callee->getName() == "llvm.smin.i32")
+          signedMinimumCalls.push_back(call);
+        if (callee && callee->getName() == "llvm.fabs.f32")
+          absoluteFloatCalls.push_back(call);
+        if (callee && callee->getName() == "llvm.ctpop.i32")
+          populationCountCalls.push_back(call);
+      }
+    }
+  }
+
+  // Freeze differs from its input only for poison/undef. The supported Host C
+  // subset already refines those undefined executions to deterministic zero,
+  // so forwarding the operand preserves every defined C execution.
+  for (llvm::FreezeInst *freeze : freezes) {
+    freeze->replaceAllUsesWith(freeze->getOperand(0));
+    freeze->eraseFromParent();
+  }
+
+  // Clang uses this intrinsic for checked allocation-size arithmetic at O1.
+  // MLIR imports its aggregate result as an LLVM struct, which cannot cross
+  // the scalar Host recovery boundary. Preserve the exact unsigned semantics
+  // using a widened product before importing the module.
+  SmallVector<llvm::Function *> deadIntrinsics;
+  for (llvm::CallInst *call : unsignedMultiplyOverflowCalls) {
+    llvm::IRBuilder<> builder(call);
+    llvm::Type *wideType = builder.getInt64Ty();
+    llvm::Value *lhs = builder.CreateZExt(call->getArgOperand(0), wideType);
+    llvm::Value *rhs = builder.CreateZExt(call->getArgOperand(1), wideType);
+    llvm::Value *wideProduct = builder.CreateMul(lhs, rhs);
+    llvm::Value *product =
+        builder.CreateTrunc(wideProduct, builder.getInt32Ty());
+    llvm::Value *overflow = builder.CreateICmpUGT(
+        wideProduct, llvm::ConstantInt::get(wideType, UINT32_MAX));
+
+    SmallVector<llvm::ExtractValueInst *> extracts;
+    for (llvm::User *user : call->users())
+      if (auto *extract = llvm::dyn_cast<llvm::ExtractValueInst>(user))
+        extracts.push_back(extract);
+    for (llvm::ExtractValueInst *extract : extracts) {
+      ArrayRef<unsigned> indices = extract->getIndices();
+      if (indices.size() != 1 || indices.front() > 1)
+        continue;
+      extract->replaceAllUsesWith(indices.front() == 0 ? product : overflow);
+      extract->eraseFromParent();
+    }
+    if (!call->use_empty())
+      continue;
+    llvm::Function *callee = call->getCalledFunction();
+    call->eraseFromParent();
+    if (callee && callee->use_empty())
+      deadIntrinsics.push_back(callee);
+  }
+  for (llvm::Function *function : deadIntrinsics)
+    if (function->use_empty())
+      function->eraseFromParent();
+
+  deadIntrinsics.clear();
+  for (llvm::CallInst *call : unsignedMaximumCalls) {
+    llvm::IRBuilder<> builder(call);
+    llvm::Value *lhs = call->getArgOperand(0);
+    llvm::Value *rhs = call->getArgOperand(1);
+    llvm::Value *maximum =
+        builder.CreateSelect(builder.CreateICmpUGT(lhs, rhs), lhs, rhs);
+    call->replaceAllUsesWith(maximum);
+    llvm::Function *callee = call->getCalledFunction();
+    call->eraseFromParent();
+    if (callee && callee->use_empty())
+      deadIntrinsics.push_back(callee);
+  }
+  for (llvm::Function *function : deadIntrinsics)
+    if (function->use_empty())
+      function->eraseFromParent();
+
+  deadIntrinsics.clear();
+  for (llvm::CallInst *call : unsignedMinimumCalls) {
+    llvm::IRBuilder<> builder(call);
+    llvm::Value *lhs = call->getArgOperand(0);
+    llvm::Value *rhs = call->getArgOperand(1);
+    llvm::Value *minimum =
+        builder.CreateSelect(builder.CreateICmpULT(lhs, rhs), lhs, rhs);
+    call->replaceAllUsesWith(minimum);
+    llvm::Function *callee = call->getCalledFunction();
+    call->eraseFromParent();
+    if (callee && callee->use_empty())
+      deadIntrinsics.push_back(callee);
+  }
+  for (llvm::Function *function : deadIntrinsics)
+    if (function->use_empty())
+      function->eraseFromParent();
+
+  deadIntrinsics.clear();
+  for (llvm::CallInst *call : signedMaximumCalls) {
+    llvm::IRBuilder<> builder(call);
+    llvm::Value *lhs = call->getArgOperand(0);
+    llvm::Value *rhs = call->getArgOperand(1);
+    llvm::Value *maximum =
+        builder.CreateSelect(builder.CreateICmpSGT(lhs, rhs), lhs, rhs);
+    call->replaceAllUsesWith(maximum);
+    llvm::Function *callee = call->getCalledFunction();
+    call->eraseFromParent();
+    if (callee && callee->use_empty())
+      deadIntrinsics.push_back(callee);
+  }
+  for (llvm::Function *function : deadIntrinsics)
+    if (function->use_empty())
+      function->eraseFromParent();
+
+  deadIntrinsics.clear();
+  for (llvm::CallInst *call : signedMinimumCalls) {
+    llvm::IRBuilder<> builder(call);
+    llvm::Value *lhs = call->getArgOperand(0);
+    llvm::Value *rhs = call->getArgOperand(1);
+    llvm::Value *minimum =
+        builder.CreateSelect(builder.CreateICmpSLT(lhs, rhs), lhs, rhs);
+    call->replaceAllUsesWith(minimum);
+    llvm::Function *callee = call->getCalledFunction();
+    call->eraseFromParent();
+    if (callee && callee->use_empty())
+      deadIntrinsics.push_back(callee);
+  }
+  for (llvm::Function *function : deadIntrinsics)
+    if (function->use_empty())
+      function->eraseFromParent();
+
+  deadIntrinsics.clear();
+  for (llvm::CallInst *call : absoluteFloatCalls) {
+    llvm::IRBuilder<> builder(call);
+    llvm::Value *bits =
+        builder.CreateBitCast(call->getArgOperand(0), builder.getInt32Ty());
+    llvm::Value *magnitude = builder.CreateAnd(
+        bits, llvm::ConstantInt::get(builder.getInt32Ty(), 0x7fffffffU));
+    llvm::Value *absolute =
+        builder.CreateBitCast(magnitude, builder.getFloatTy());
+    call->replaceAllUsesWith(absolute);
+    llvm::Function *callee = call->getCalledFunction();
+    call->eraseFromParent();
+    if (callee && callee->use_empty())
+      deadIntrinsics.push_back(callee);
+  }
+  for (llvm::Function *function : deadIntrinsics)
+    if (function->use_empty())
+      function->eraseFromParent();
+
+  deadIntrinsics.clear();
+  for (llvm::CallInst *call : populationCountCalls) {
+    llvm::IRBuilder<> builder(call);
+    auto constant = [&](uint32_t value) {
+      return llvm::ConstantInt::get(builder.getInt32Ty(), value);
+    };
+    llvm::Value *value = call->getArgOperand(0);
+    value = builder.CreateSub(
+        value, builder.CreateAnd(builder.CreateLShr(value, constant(1)),
+                                 constant(0x55555555U)));
+    value = builder.CreateAdd(
+        builder.CreateAnd(value, constant(0x33333333U)),
+        builder.CreateAnd(builder.CreateLShr(value, constant(2)),
+                          constant(0x33333333U)));
+    value = builder.CreateAnd(
+        builder.CreateAdd(value, builder.CreateLShr(value, constant(4))),
+        constant(0x0f0f0f0fU));
+    value = builder.CreateAdd(value, builder.CreateLShr(value, constant(8)));
+    value = builder.CreateAdd(value, builder.CreateLShr(value, constant(16)));
+    value = builder.CreateAnd(value, constant(0x3fU));
+    call->replaceAllUsesWith(value);
+    llvm::Function *callee = call->getCalledFunction();
+    call->eraseFromParent();
+    if (callee && callee->use_empty())
+      deadIntrinsics.push_back(callee);
+  }
+  for (llvm::Function *function : deadIntrinsics)
+    if (function->use_empty())
+      function->eraseFromParent();
+}
+
 cl::opt<bool> emitBundle(
     "emit-boundary-bundle",
     cl::desc("Compile the initial Host/Device boundary MLIR pattern"));
@@ -152,6 +373,15 @@ bool identifier(StringRef value) {
     return false;
   return llvm::all_of(value.drop_front(),
                       [](char c) { return isAlnum(c) || c == '_'; });
+}
+
+bool dottedIdentifier(StringRef value) {
+  SmallVector<StringRef> components;
+  value.split(components, '.');
+  return !components.empty() &&
+         llvm::all_of(components, [](StringRef component) {
+           return identifier(component);
+         });
 }
 
 struct UnityBuffer {
@@ -562,51 +792,298 @@ json::Array unityBufferManifest(ArrayRef<UnityBuffer> buffers) {
   return result;
 }
 
-bool configureUnityExports(ModuleOp module, const json::Object &config) {
+std::optional<json::Value> mlirAttributeToJson(mlir::Attribute attribute) {
+  if (auto dictionary = dyn_cast<DictionaryAttr>(attribute)) {
+    json::Object object;
+    for (NamedAttribute field : dictionary) {
+      auto value = mlirAttributeToJson(field.getValue());
+      if (!value)
+        return std::nullopt;
+      object[field.getName().getValue()] = std::move(*value);
+    }
+    return json::Value(std::move(object));
+  }
+  if (auto array = dyn_cast<ArrayAttr>(attribute)) {
+    json::Array values;
+    for (mlir::Attribute element : array) {
+      auto value = mlirAttributeToJson(element);
+      if (!value)
+        return std::nullopt;
+      values.push_back(std::move(*value));
+    }
+    return json::Value(std::move(values));
+  }
+  if (auto string = dyn_cast<StringAttr>(attribute))
+    return json::Value(string.getValue());
+  if (auto integer = dyn_cast<IntegerAttr>(attribute)) {
+    if (!integer.getValue().isSignedIntN(64))
+      return std::nullopt;
+    return json::Value(integer.getInt());
+  }
+  if (isa<UnitAttr>(attribute))
+    return json::Value(true);
+  return std::nullopt;
+}
+
+std::optional<json::Object> unityOnnxBindingManifest(ModuleOp module) {
+  auto binding = module->getAttrOfType<DictionaryAttr>("udoncl.onnx_binding");
+  if (!binding)
+    return std::nullopt;
+  auto abi = binding.getAs<StringAttr>("abi");
+  auto modelIndex = binding.getAs<IntegerAttr>("model_index");
+  auto modelName = binding.getAs<StringAttr>("model_name");
+  auto inputs = binding.getAs<ArrayAttr>("inputs");
+  auto outputs = binding.getAs<ArrayAttr>("outputs");
+  auto physical = binding.getAs<DictionaryAttr>("physical");
+  if (!abi || !modelIndex || !modelName || !inputs || !outputs || !physical)
+    return std::nullopt;
+  auto serializeIo = [](ArrayAttr values) -> std::optional<json::Array> {
+    json::Array result;
+    for (mlir::Attribute value : values) {
+      auto entry = dyn_cast<DictionaryAttr>(value);
+      auto index = entry ? entry.getAs<IntegerAttr>("index") : IntegerAttr();
+      auto name = entry ? entry.getAs<StringAttr>("name") : StringAttr();
+      auto dataType =
+          entry ? entry.getAs<StringAttr>("data_type") : StringAttr();
+      auto rank = entry ? entry.getAs<IntegerAttr>("rank") : IntegerAttr();
+      auto dimensions = entry ? entry.getAs<DenseI64ArrayAttr>("dimensions")
+                              : DenseI64ArrayAttr();
+      if (!index || !name || !dataType || !rank || !dimensions)
+        return std::nullopt;
+      json::Array shape;
+      for (int64_t dimension : dimensions.asArrayRef())
+        shape.push_back(dimension);
+      result.push_back(json::Object{{"index", index.getInt()},
+                                    {"name", name.getValue()},
+                                    {"data_type", dataType.getValue()},
+                                    {"rank", rank.getInt()},
+                                    {"dimensions", std::move(shape)}});
+    }
+    return result;
+  };
+  auto serializedInputs = serializeIo(inputs);
+  auto serializedOutputs = serializeIo(outputs);
+  if (!serializedInputs || !serializedOutputs)
+    return std::nullopt;
+  json::Object physicalJson;
+  for (StringRef name :
+       {"create_symbol", "bind_tensor_symbol", "enqueue_initialize_symbol",
+        "enqueue_run_symbol", "dispose_symbol"}) {
+    auto value = physical.getAs<StringAttr>(name);
+    if (!value)
+      return std::nullopt;
+    physicalJson[name] = value.getValue();
+  }
+  return json::Object{{"abi", abi.getValue()},
+                      {"model_index", modelIndex.getInt()},
+                      {"model_name", modelName.getValue()},
+                      {"inputs", std::move(*serializedInputs)},
+                      {"outputs", std::move(*serializedOutputs)},
+                      {"physical", std::move(physicalJson)}};
+}
+
+FailureOr<std::set<std::string>>
+collectUdonCLAnnotatedExports(llvm::Module &module) {
+  std::set<std::string> exports;
+  GlobalVariable *annotations =
+      module.getNamedGlobal("llvm.global.annotations");
+  if (!annotations)
+    return exports;
+  auto *entries =
+      dyn_cast_or_null<ConstantArray>(annotations->getInitializer());
+  if (!entries) {
+    errs() << "llvm.global.annotations has an unsupported initializer\n";
+    return failure();
+  }
+  for (Use &use : entries->operands()) {
+    auto *entry = dyn_cast<ConstantStruct>(use.get());
+    if (!entry || entry->getNumOperands() < 2) {
+      errs() << "llvm.global.annotations has a malformed entry\n";
+      return failure();
+    }
+    auto *function =
+        dyn_cast<Function>(entry->getOperand(0)->stripPointerCasts());
+    auto *annotationGlobal = dyn_cast<GlobalVariable>(
+        getUnderlyingObject(entry->getOperand(1), /*MaxLookup=*/6));
+    auto *annotation = annotationGlobal
+                           ? dyn_cast_or_null<ConstantDataArray>(
+                                 annotationGlobal->getInitializer())
+                           : nullptr;
+    if (!function || !annotation || !annotation->isCString()) {
+      errs() << "llvm.global.annotations entry is not a function annotation\n";
+      return failure();
+    }
+    if (annotation->getAsCString() != "udoncl.export")
+      continue;
+    if (function->isDeclaration()) {
+      errs() << "UDONCL_EXPORT requires a linked Host definition: "
+             << function->getName() << "\n";
+      return failure();
+    }
+    if (!exports.insert(function->getName().str()).second) {
+      errs() << "duplicate UDONCL_EXPORT annotation: " << function->getName()
+             << "\n";
+      return failure();
+    }
+  }
+  // The annotation has been converted to compiler-owned export metadata.  The
+  // MLIR LLVM importer otherwise preserves the appending metadata global as an
+  // ordinary llvm.mlir.global, which is not Host memory and must not reach raw
+  // memory recovery.
+  annotations->eraseFromParent();
+  return exports;
+}
+
+int32_t stableExportId(StringRef publicName, mlir::FunctionType type) {
+  std::string canonical;
+  raw_string_ostream stream(canonical);
+  stream << publicName << ':';
+  type.print(stream);
+  uint32_t hash = 2166136261u;
+  for (unsigned char byte : canonical) {
+    hash ^= byte;
+    hash *= 16777619u;
+  }
+  int32_t id = static_cast<int32_t>(hash & 0x7fffffffu);
+  return id == 0 ? 1 : id;
+}
+
+bool configureUnityExports(ModuleOp module, const json::Object &config,
+                           const std::set<std::string> &annotatedExports = {}) {
   auto program = config.getString("program");
-  auto *exports = config.getArray("exports");
-  if (config.getInteger("schema_version") != 1 || !program ||
-      !identifier(*program) || !exports || exports->empty()) {
-    errs() << "Unity library config requires schema_version 1, a safe program "
-              "name and non-empty exports\n";
+  auto schema = config.getInteger("schema_version");
+  if (!schema || (*schema != 1 && *schema != 2) || !program ||
+      !identifier(*program)) {
+    errs() << "Unity library config requires schema_version 1 or 2 and a "
+              "safe program name\n";
+    return false;
+  }
+  auto *exports =
+      config.getArray(*schema == 1 ? "exports" : "export_overrides");
+  if (*schema == 1 && (!exports || exports->empty())) {
+    errs() << "Unity library schema 1 requires non-empty exports\n";
+    return false;
+  }
+  if (*schema == 2 && annotatedExports.empty()) {
+    errs() << "Unity library schema 2 requires at least one UDONCL_EXPORT "
+              "Host definition\n";
     return false;
   }
   std::set<std::string> selected, publicNames;
   std::set<int64_t> ids;
   OpBuilder builder(module.getContext());
-  for (const json::Value &value : *exports) {
-    auto *entry = value.getAsObject();
-    auto symbol = entry ? entry->getString("symbol") : std::nullopt;
-    auto publicName = entry ? entry->getString("public_name") : std::nullopt;
-    auto id = entry ? entry->getInteger("id") : std::nullopt;
-    auto *parameters = entry ? entry->getArray("parameters") : nullptr;
-    if (!symbol || !identifier(*symbol) || !publicName ||
-        !identifier(*publicName) || !id || *id <= 0 || *id > INT32_MAX ||
-        !parameters || !selected.insert(symbol->str()).second ||
-        !publicNames.insert(publicName->str()).second ||
-        !ids.insert(*id).second) {
+  auto configure = [&](StringRef symbol, StringRef publicName, int64_t id,
+                       const json::Array *parameters) -> bool {
+    if (!identifier(symbol) || !identifier(publicName) || id <= 0 ||
+        id > INT32_MAX || !selected.insert(symbol.str()).second ||
+        !publicNames.insert(publicName.str()).second ||
+        !ids.insert(id).second) {
       errs() << "invalid or duplicate Unity library export\n";
       return false;
     }
-    auto function = module.lookupSymbol<func::FuncOp>(*symbol);
+    auto function = module.lookupSymbol<func::FuncOp>(symbol);
     if (!function || function.isExternal() || function.isPrivate() ||
-        parameters->size() != function.getNumArguments()) {
+        (parameters && parameters->size() != function.getNumArguments())) {
       errs() << "Unity library export does not resolve to a public definition: "
-             << *symbol << "\n";
+             << symbol << "\n";
       return false;
     }
     SmallVector<mlir::Attribute> names;
-    for (const json::Value &parameter : *parameters) {
-      auto name = parameter.getAsString();
-      if (!name || !identifier(*name)) {
-        errs() << "invalid Unity library parameter name\n";
+    for (unsigned index = 0; index < function.getNumArguments(); ++index) {
+      StringRef name;
+      if (parameters) {
+        auto configured = (*parameters)[index].getAsString();
+        if (!configured || !identifier(*configured)) {
+          errs() << "invalid Unity library parameter name\n";
+          return false;
+        }
+        name = *configured;
+      } else {
+        names.push_back(builder.getStringAttr("arg" + std::to_string(index)));
+        continue;
+      }
+      names.push_back(builder.getStringAttr(name));
+    }
+    function->setAttr("vrc.export_id", builder.getI32IntegerAttr(id));
+    function->setAttr("vrc.public_name", builder.getStringAttr(publicName));
+    function->setAttr("vrc.parameter_names", builder.getArrayAttr(names));
+    return true;
+  };
+  if (*schema == 1) {
+    for (const json::Value &value : *exports) {
+      auto *entry = value.getAsObject();
+      auto symbol = entry ? entry->getString("symbol") : std::nullopt;
+      auto publicName = entry ? entry->getString("public_name") : std::nullopt;
+      auto id = entry ? entry->getInteger("id") : std::nullopt;
+      auto *parameters = entry ? entry->getArray("parameters") : nullptr;
+      if (!symbol || !publicName || !id || !parameters ||
+          !configure(*symbol, *publicName, *id, parameters)) {
+        errs() << "invalid or duplicate Unity library export\n";
         return false;
       }
-      names.push_back(builder.getStringAttr(*name));
     }
-    function->setAttr("vrc.export_id", builder.getI32IntegerAttr(*id));
-    function->setAttr("vrc.public_name", builder.getStringAttr(*publicName));
-    function->setAttr("vrc.parameter_names", builder.getArrayAttr(names));
+  } else {
+    std::map<std::string, const json::Object *> overrides;
+    std::set<std::string> internalExports;
+    if (exports)
+      for (const json::Value &value : *exports) {
+        auto *entry = value.getAsObject();
+        auto symbol = entry ? entry->getString("symbol") : std::nullopt;
+        if (!symbol || !identifier(*symbol) ||
+            !overrides.emplace(symbol->str(), entry).second ||
+            !annotatedExports.count(symbol->str())) {
+          errs() << "schema 2 export override must name one annotated Host "
+                    "definition\n";
+          return false;
+        }
+      }
+    if (auto *internal = config.getArray("internal_exports"))
+      for (const json::Value &value : *internal) {
+        auto symbol = value.getAsString();
+        if (!symbol || !identifier(*symbol) ||
+            !internalExports.insert(symbol->str()).second ||
+            !annotatedExports.count(symbol->str()) ||
+            overrides.count(symbol->str())) {
+          errs() << "schema 2 internal export must name one non-overridden "
+                    "annotated Host definition\n";
+          return false;
+        }
+      }
+    for (const std::string &symbol : annotatedExports) {
+      if (internalExports.count(symbol))
+        continue;
+      auto function = module.lookupSymbol<func::FuncOp>(symbol);
+      if (!function || function.isExternal() || function.isPrivate()) {
+        errs() << "UDONCL_EXPORT does not resolve after Host recovery: "
+               << symbol << "\n";
+        return false;
+      }
+      const json::Object *entry =
+          overrides.count(symbol) ? overrides.at(symbol) : nullptr;
+      auto publicName = entry ? entry->getString("public_name") : std::nullopt;
+      StringRef resolvedName = publicName ? *publicName : StringRef(symbol);
+      auto *parameters = entry ? entry->getArray("parameters") : nullptr;
+      if (!configure(symbol, resolvedName,
+                     stableExportId(resolvedName, function.getFunctionType()),
+                     parameters))
+        return false;
+    }
+    if (selected.empty()) {
+      errs() << "Unity library schema 2 cannot hide every UDONCL_EXPORT "
+                "definition\n";
+      return false;
+    }
+  }
+  if (auto *binding = config.getObject("binding")) {
+    auto nameSpace = binding->getString("namespace");
+    auto className = binding->getString("class_name");
+    if (!nameSpace || !dottedIdentifier(*nameSpace) || !className ||
+        !identifier(*className)) {
+      errs() << "binding requires namespace and safe class_name\n";
+      return false;
+    }
+    module->setAttr("vrc.binding_namespace", builder.getStringAttr(*nameSpace));
+    module->setAttr("vrc.binding_class", builder.getStringAttr(*className));
   }
   std::set<std::string> reachable = selected;
   SmallVector<std::string> worklist(selected.begin(), selected.end());
@@ -646,70 +1123,46 @@ bool configureUnityExports(ModuleOp module, const json::Object &config) {
   return true;
 }
 
-LogicalResult inlineUnityHostCallGraph(ModuleOp module) {
-  for (func::FuncOp exportFunction : module.getOps<func::FuncOp>()) {
-    if (!exportFunction->hasAttr("vrc.export_id"))
-      continue;
-    unsigned inlineCount = 0;
-    while (true) {
-      func::CallOp call;
-      func::CallOp unresolved;
-      exportFunction.walk([&](func::CallOp candidate) {
-        auto candidateCallee =
-            module.lookupSymbol<func::FuncOp>(candidate.getCallee());
-        if (!candidateCallee || (candidateCallee.isExternal() &&
-                                 !candidateCallee->hasAttr("vrc.intrinsic"))) {
-          if (!unresolved)
-            unresolved = candidate;
-        } else if (!call && !candidateCallee.isExternal()) {
-          call = candidate;
-        }
+LogicalResult optimizeUnityHostStorage(ModuleOp module) {
+  // Keep the non-recursive Host call graph visible to async lowering and the
+  // interprocedural storage allocator.  The old pipeline cloned every helper
+  // into each export, which hid real caller/callee interference and could
+  // multiply the generated Udon instruction stream.  Promotion here is
+  // semantics-preserving and does not require wholesale inlining.
+  PassManager optimization(module.getContext());
+  optimization.addPass(createSROA());
+  optimization.addPass(createMem2Reg());
+  optimization.addPass(createCanonicalizerPass());
+  optimization.addPass(createSCCPPass());
+  optimization.addPass(createCSEPass());
+  optimization.addPass(createCanonicalizerPass());
+  optimization.addPass(createSymbolDCEPass());
+  return optimization.run(module);
+}
+
+LogicalResult propagateUnityHostAsyncEffects(ModuleOp module) {
+  bool changed;
+  do {
+    changed = false;
+    for (func::FuncOp caller : module.getOps<func::FuncOp>()) {
+      if (auto effect = caller->getAttrOfType<StringAttr>("vrc.async_effect");
+          effect && effect.getValue() == "may_suspend")
+        continue;
+      bool maySuspend = false;
+      caller.walk([&](func::CallOp call) {
+        auto callee = module.lookupSymbol<func::FuncOp>(call.getCallee());
+        auto effect =
+            callee ? callee->getAttrOfType<StringAttr>("vrc.async_effect")
+                   : StringAttr();
+        maySuspend |= effect && effect.getValue() == "may_suspend";
       });
-      if (unresolved)
-        return unresolved.emitError(
-            "Unity Host call graph contains an unresolved helper");
-      if (!call)
-        break;
-      auto callee = module.lookupSymbol<func::FuncOp>(call.getCallee());
-      if (callee == exportFunction || ++inlineCount > 10000)
-        return call.emitError(
-            "Unity Host call graph recursion cannot cross suspension");
-      Block *callerBlock = call->getBlock();
-      Block *continuation =
-          callerBlock->splitBlock(std::next(call->getIterator()));
-      for (mlir::Value result : call.getResults()) {
-        mlir::BlockArgument argument =
-            continuation->addArgument(result.getType(), call.getLoc());
-        result.replaceAllUsesWith(argument);
-      }
-      IRMapping mapping;
-      for (auto [argument, operand] :
-           llvm::zip(callee.getArguments(), call.getOperands()))
-        mapping.map(argument, operand);
-      callee.getBody().cloneInto(&exportFunction.getBody(),
-                                 continuation->getIterator(), mapping);
-      Block *entry = mapping.lookup(&callee.getBody().front());
-      for (Block &sourceBlock : callee.getBody()) {
-        Block *clonedBlock = mapping.lookup(&sourceBlock);
-        auto returnOperation =
-            dyn_cast<func::ReturnOp>(clonedBlock->getTerminator());
-        if (!returnOperation)
-          continue;
-        OpBuilder returnBuilder(returnOperation);
-        cf::BranchOp::create(returnBuilder, returnOperation.getLoc(),
-                             continuation, returnOperation.getOperands());
-        returnOperation.erase();
-      }
-      call.erase();
-      OpBuilder callerBuilder(callerBlock, callerBlock->end());
-      cf::BranchOp::create(callerBuilder, callee.getLoc(), entry);
+      if (!maySuspend)
+        continue;
+      caller->setAttr("vrc.async_effect",
+                      StringAttr::get(module.getContext(), "may_suspend"));
+      changed = true;
     }
-  }
-  for (func::FuncOp function :
-       llvm::make_early_inc_range(module.getOps<func::FuncOp>()))
-    if (!function->hasAttr("vrc.export_id") &&
-        !function->hasAttr("vrc.intrinsic"))
-      function.erase();
+  } while (changed);
   return success();
 }
 
@@ -815,10 +1268,14 @@ const llvm::Value *llvmIRStoredSlot(const llvm::Value *value) {
     if (auto store = dyn_cast<llvm::StoreInst>(user))
       if (store->getValueOperand() == value)
         return store->getPointerOperand()->stripPointerCasts();
-  return nullptr;
+  // Optimized Host IR keeps non-escaping handles in SSA instead of forcing a
+  // temporary alloca. Treat the defining value itself as its provenance root.
+  return value;
 }
 
 bool llvmIRLoadsFrom(const llvm::Value *value, const llvm::Value *slot) {
+  if (value && slot && value->stripPointerCasts() == slot->stripPointerCasts())
+    return true;
   auto load = dyn_cast<llvm::LoadInst>(value);
   return load && slot &&
          load->getPointerOperand()->stripPointerCasts() ==
@@ -1709,6 +2166,10 @@ recoverLinkedUnityHostLibrary(StringRef filename, MLIRContext &context) {
     errs() << "Unity Host library requires 32-bit little-endian SPIR input\n";
     return failure();
   }
+  normalizeUnityHostCallingConventions(*inputModule);
+  auto annotatedExports = collectUdonCLAnnotatedExports(*inputModule);
+  if (failed(annotatedExports))
+    return failure();
   if (!inputModule->getFunction("__vrc_opencl_buffer_alloc")) {
     errs() << "--host-library-llvm requires the linked OpenCL AOT runtime\n";
     return failure();
@@ -1716,7 +2177,18 @@ recoverLinkedUnityHostLibrary(StringRef filename, MLIRContext &context) {
   auto library = ::vrc::importLLVM(std::move(inputModule), context);
   if (!library || failed(verify(*library)))
     return failure();
+  for (const std::string &symbol : *annotatedExports) {
+    auto function = library->lookupSymbol<LLVM::LLVMFuncOp>(symbol);
+    if (!function) {
+      errs() << "UDONCL_EXPORT definition was lost while importing Host "
+                "library: "
+             << symbol << "\n";
+      return failure();
+    }
+    function->setAttr("udoncl.export", UnitAttr::get(&context));
+  }
   PassManager cleanup(&context);
+  cleanup.addPass(createSROA());
   cleanup.addPass(createMem2Reg());
   cleanup.addPass(createCanonicalizerPass());
   if (failed(cleanup.run(*library)))
@@ -1733,6 +2205,16 @@ recoverLinkedUnityHostLibrary(StringRef filename, MLIRContext &context) {
   recovery.addPass(::vrc::createLowerOpenCLAOTIntrinsicsPass());
   if (failed(recovery.run(*library)) || failed(verify(*library)))
     return failure();
+  for (const std::string &symbol : *annotatedExports) {
+    auto function = library->lookupSymbol<func::FuncOp>(symbol);
+    if (!function) {
+      errs() << "UDONCL_EXPORT definition was lost while recovering Host "
+                "library: "
+             << symbol << "\n";
+      return failure();
+    }
+    function->setAttr("udoncl.export", UnitAttr::get(&context));
+  }
   return library;
 }
 
@@ -1850,10 +2332,11 @@ int main(int argc, char **argv) {
     return 1;
   }
   DialectRegistry registry;
-  registry.insert<::vrc::udonasm::UdonAsmDialect, ::vrc::udonhl::UdonHLDialect,
-                  ::vrc::vrc::VRCDialect, ::vrc::vrcgpu::VRCGPUDialect,
-                  arith::ArithDialect, cf::ControlFlowDialect,
-                  func::FuncDialect, gpu::GPUDialect, memref::MemRefDialect>();
+  registry
+      .insert<::vrc::udonasm::UdonAsmDialect, ::vrc::udonhl::UdonHLDialect,
+              ::vrc::vrc::VRCDialect, ::vrc::vrcgpu::VRCGPUDialect,
+              arith::ArithDialect, async::AsyncDialect, cf::ControlFlowDialect,
+              func::FuncDialect, gpu::GPUDialect, memref::MemRefDialect>();
   MLIRContext context(registry);
   OwningOpRef<ModuleOp> module;
   std::map<std::string, std::string> files;
@@ -1865,6 +2348,7 @@ int main(int argc, char **argv) {
   SmallVector<UnityBuffer> unityBuffers;
   bool unityUsesBufferCopy = false;
   SmallVector<int32_t> unityConfiguredKernelIds;
+  std::set<std::string> annotatedHostExports;
   if (emitUnityLibrary) {
     auto input = MemoryBuffer::getFile(inputFilename);
     if (!input || (hostLLVM.empty() == hostMLIR.empty()) ||
@@ -1971,8 +2455,11 @@ int main(int argc, char **argv) {
         if (failed(library) || failed(linkUnityHostLibrary(*module, **library)))
           return 1;
       }
+      for (func::FuncOp function : module->getOps<func::FuncOp>())
+        if (function->hasAttr("udoncl.export"))
+          annotatedHostExports.insert(function.getSymName().str());
       if (failed(verify(*module)) ||
-          !configureUnityExports(*module, *unityConfig))
+          !configureUnityExports(*module, *unityConfig, annotatedHostExports))
         return 1;
     } else {
       LLVMContext llvmContext;
@@ -1982,6 +2469,11 @@ int main(int argc, char **argv) {
         diagnostic.print(argv[0], errs());
         return 1;
       }
+      normalizeUnityHostCallingConventions(*inputModule);
+      auto discoveredExports = collectUdonCLAnnotatedExports(*inputModule);
+      if (failed(discoveredExports))
+        return 1;
+      annotatedHostExports = std::move(*discoveredExports);
       if (inputModule->getTargetTriple().str() != "spir-unknown-unknown" ||
           !inputModule->getDataLayout().isLittleEndian() ||
           inputModule->getDataLayout().getPointerSizeInBits() != 32) {
@@ -2004,7 +2496,7 @@ int main(int argc, char **argv) {
                      : recoverUnityOpenCLDispatchProgram(*inputModule,
                                                          *unityConfig, context);
         if (!module || failed(verify(*module)) ||
-            !configureUnityExports(*module, *unityConfig))
+            !configureUnityExports(*module, *unityConfig, annotatedHostExports))
           return 1;
       } else {
         module = ::vrc::importLLVM(std::move(inputModule), context);
@@ -2013,6 +2505,7 @@ int main(int argc, char **argv) {
         if (!linkedOpenCLAOT && failed(normalizeUnityOpenCLHostCalls(*module)))
           return 1;
         PassManager cleanup(&context);
+        cleanup.addPass(createSROA());
         cleanup.addPass(createMem2Reg());
         cleanup.addPass(createCanonicalizerPass());
         if (failed(cleanup.run(*module)) ||
@@ -2037,7 +2530,7 @@ int main(int argc, char **argv) {
         if (failed(recovery.run(*module)) ||
             (!linkedOpenCLAOT &&
              failed(recoverUnityCBufferIntrinsics(*module))) ||
-            !configureUnityExports(*module, *unityConfig))
+            !configureUnityExports(*module, *unityConfig, annotatedHostExports))
           return 1;
       }
     }
@@ -2099,24 +2592,56 @@ int main(int argc, char **argv) {
     return 1;
   PassManager manager(&context);
   if (emitUnityLibrary) {
-    if (failed(inlineUnityHostCallGraph(*module)))
-      return 1;
-    manager.addPass(::vrc::createLowerHostToUdonHLPass());
-    manager.addPass(::vrc::createSubstituteRuntimeIntrinsicsPass());
-    if (failed(manager.run(*module)) || failed(verify(*module)))
-      return 1;
     SmallVector<int64_t> configuredKernelIds;
     for (const json::Object *deviceKernel : unityDeviceConfigs) {
       int64_t kernelId = *deviceKernel->getInteger("kernel_id");
       configuredKernelIds.push_back(kernelId);
       unityConfiguredKernelIds.push_back(static_cast<int32_t>(kernelId));
     }
+    if (failed(propagateUnityHostAsyncEffects(*module)) ||
+        failed(optimizeUnityHostStorage(*module)) || failed(verify(*module)))
+      return 1;
+    OwningOpRef<ModuleOp> asyncPreview = cast<ModuleOp>((*module)->clone());
+    PassManager asyncPipeline(&context);
+    asyncPipeline.addPass(::vrc::createInsertUdonCooperativeCheckpointsPass());
+    asyncPipeline.addPass(::vrc::createLowerHostToAsyncPass());
+    asyncPipeline.addPass(createAsyncFuncToAsyncRuntimePass());
+    asyncPipeline.addPass(::vrc::createPrepareUdonAsyncRuntimePass());
+    if (failed(asyncPipeline.run(*asyncPreview)) ||
+        failed(verify(*asyncPreview)))
+      return 1;
+    raw_string_ostream asyncIR(files["host.async-runtime.mlir"]);
+    asyncPreview->print(asyncIR);
+    asyncIR << "\n";
+
+    PassManager udonAsyncPipeline(&context);
+    udonAsyncPipeline.addPass(::vrc::createLowerUdonAsyncRuntimePass());
+    if (failed(udonAsyncPipeline.run(*asyncPreview)) ||
+        failed(verify(*asyncPreview)))
+      return 1;
+    auto asyncBufferBinding = bindUnityBufferOperations(
+        *asyncPreview, unityBuffers, configuredKernelIds);
+    if (failed(asyncBufferBinding))
+      return 1;
+    (*asyncPreview)
+        ->setAttr("vrc.external_raw_heap_initialization",
+                  UnitAttr::get(&context));
+    raw_string_ostream udonAsyncIR(files["host.udon-async.mlir"]);
+    asyncPreview->print(udonAsyncIR);
+    udonAsyncIR << "\n";
+
+    manager.addPass(::vrc::createLowerHostToUdonHLPass());
+    manager.addPass(::vrc::createSubstituteRuntimeIntrinsicsPass());
+    if (failed(manager.run(*module)) || failed(verify(*module)))
+      return 1;
     auto bufferBinding =
         bindUnityBufferOperations(*module, unityBuffers, configuredKernelIds);
     if (failed(bufferBinding))
       return 1;
     unityUsesBufferCopy = bufferBinding->usesCopy;
     auto manifest = ::vrc::buildBoundaryManifest(*module);
+    if (auto onnxBinding = unityOnnxBindingManifest(*module))
+      manifest["onnx_binding"] = std::move(*onnxBinding);
     bool usesAsyncCommands = false;
     module->walk([&](Operation *operation) {
       usesAsyncCommands |=
@@ -2125,14 +2650,20 @@ int main(int argc, char **argv) {
     });
     auto program = unityConfig->getString("program");
     manifest["artifact_stage"] = "unity-udoncl-library";
-    manifest["program"] = json::Object{{"name", *program},
-                                       {"assembly", "host.uasm"},
-                                       {"display_shader", "display.shader"},
-                                       {"ir", "host.udonasm.mlir"}};
+    manifest["program"] =
+        json::Object{{"name", *program},
+                     {"assembly", "host.uasm"},
+                     {"display_shader", "display.shader"},
+                     {"async_ir", "host.async-runtime.mlir"},
+                     {"udon_async_ir", "host.udon-async.mlir"},
+                     {"ir", "host.udonasm.mlir"}};
     if (usesAsyncCommands)
       (*manifest["program"].getAsObject())["async_commands"] = json::Object{
           {"resume_state_slot", "__udoncl_async_resume_state"},
           {"completion_status_slot", "__udoncl_async_completion_status"},
+          {"pending_object_slot", "__udoncl_async_pending_object"},
+          {"completion_object_slot", "__udoncl_async_completion_object"},
+          {"completion_event", "__udoncl_async_complete"},
           {"command_kind_slot", "__udoncl_async_command_kind"},
           {"command_buffer_slot", "__udoncl_async_command_buffer"},
           {"command_offset_slot", "__udoncl_async_command_offset"},
@@ -2142,18 +2673,40 @@ int main(int argc, char **argv) {
           {"upload_kind", 1},
           {"readback_kind", 2},
       };
-    if (unityUsesBufferCopy || !unityBuffers.empty())
-      (*manifest["program"].getAsObject())["buffer_copy_shader"] =
-          "buffer-copy.shader";
-    if (unityUsesBufferCopy)
-      (*manifest["program"].getAsObject())["buffer_copy_program_slot"] = true;
-    manifest["ready_for_unity"] = true;
     auto *device = manifest["device"].getAsObject();
     if (!device) {
       errs() << "Unity library manifest is missing its Device section\n";
       return 1;
     }
     (*device)["buffers"] = unityBufferManifest(unityBuffers);
+    if (auto bindingNamespace =
+            (*module)->getAttrOfType<StringAttr>("vrc.binding_namespace")) {
+      auto bindingClass =
+          (*module)->getAttrOfType<StringAttr>("vrc.binding_class");
+      if (!bindingClass) {
+        errs() << "binding namespace requires a binding class\n";
+        return 1;
+      }
+      auto *programManifest = manifest["program"].getAsObject();
+      (*programManifest)["binding_namespace"] =
+          bindingNamespace.getValue().str();
+      (*programManifest)["binding_class"] = bindingClass.getValue().str();
+      ::vrc::refreshPublicABIFingerprint(manifest);
+      auto binding = ::vrc::buildUdonSharpBindingSource(
+          manifest, bindingNamespace.getValue(), bindingClass.getValue());
+      if (!binding) {
+        errs() << toString(binding.takeError()) << "\n";
+        return 1;
+      }
+      files["binding.cs"] = std::move(*binding);
+      (*programManifest)["binding_source"] = "binding.cs";
+    }
+    if (unityUsesBufferCopy || !unityBuffers.empty())
+      (*manifest["program"].getAsObject())["buffer_copy_shader"] =
+          "buffer-copy.shader";
+    if (unityUsesBufferCopy)
+      (*manifest["program"].getAsObject())["buffer_copy_program_slot"] = true;
+    manifest["ready_for_unity"] = true;
     if (unityDeviceModule) {
       PassManager deviceLowering(&context);
       if (unityGatherProfile)
@@ -2186,13 +2739,18 @@ int main(int argc, char **argv) {
       }
       (*device)["kernels"] = std::move(*kernels);
     }
-    (*module)->setAttr("vrc.external_raw_heap_initialization",
-                       UnitAttr::get(&context));
+    ModuleOp physicalModule = usesAsyncCommands ? *asyncPreview : *module;
+    physicalModule->setAttr("vrc.external_raw_heap_initialization",
+                            UnitAttr::get(&context));
     PassManager udon(&context);
+    if (usesAsyncCommands) {
+      udon.addPass(::vrc::createLowerHostToUdonHLPass());
+      udon.addPass(::vrc::createSubstituteRuntimeIntrinsicsPass());
+    }
     udon.addPass(::vrc::createLowerUdonHLToUdonAsmPass());
-    if (failed(udon.run(*module)) || failed(verify(*module)))
+    if (failed(udon.run(physicalModule)) || failed(verify(physicalModule)))
       return 1;
-    if (auto initializer = (*module)->getAttrOfType<DenseI8ArrayAttr>(
+    if (auto initializer = physicalModule->getAttrOfType<DenseI8ArrayAttr>(
             "udonasm.raw_heap_initializer")) {
       ArrayRef<int8_t> bytes = initializer.asArrayRef();
       files["raw-heap.bytes"] = std::string(
@@ -2213,20 +2771,44 @@ int main(int argc, char **argv) {
           {"bytes", static_cast<int64_t>(bytes.size())},
       });
     }
-    appendUnityBufferSlots(*module, unityBuffers);
+    if (auto report = physicalModule->getAttrOfType<DictionaryAttr>(
+            "udonasm.storage_report")) {
+      auto serialized = mlirAttributeToJson(report);
+      if (!serialized) {
+        errs()
+            << "Udon Host storage report contains an unsupported attribute\n";
+        return 1;
+      }
+      std::string reportText = formatv("{0:2}\n", *serialized).str();
+      files["storage-report.json"] = reportText;
+      auto *programManifest = manifest["program"].getAsObject();
+      (*programManifest)["storage_report"] = "storage-report.json";
+      json::Array *resources = manifest.getArray("resources");
+      if (!resources) {
+        manifest["resources"] = json::Array();
+        resources = manifest.getArray("resources");
+      }
+      resources->push_back(json::Object{
+          {"name", "host_storage_report"},
+          {"kind", "json"},
+          {"path", "storage-report.json"},
+          {"bytes", static_cast<int64_t>(reportText.size())},
+      });
+    }
+    appendUnityBufferSlots(physicalModule, unityBuffers);
     if (unityUsesBufferCopy)
-      appendUnityCopyMaterialSlot(*module);
-    appendUnityDispatchMaterialSlots(*module, unityConfiguredKernelIds);
+      appendUnityCopyMaterialSlot(physicalModule);
+    appendUnityDispatchMaterialSlots(physicalModule, unityConfiguredKernelIds);
     std::string assembly;
     raw_string_ostream assemblyOut(assembly);
-    if (failed(::vrc::emitUdonAssembly(*module, assemblyOut)))
+    if (failed(::vrc::emitUdonAssembly(physicalModule, assemblyOut)))
       return 1;
     files["host.uasm"] = std::move(assembly);
     files["display.shader"] = unityLibraryDisplayShader(*program);
     if (unityUsesBufferCopy || !unityBuffers.empty())
       files["buffer-copy.shader"] = unityLibraryBufferCopyShader(*program);
     raw_string_ostream lowered(files["host.udonasm.mlir"]);
-    module->print(lowered);
+    physicalModule.print(lowered);
     lowered << "\n";
     files["manifest.json"] =
         formatv("{0:2}\n", json::Value(std::move(manifest))).str();

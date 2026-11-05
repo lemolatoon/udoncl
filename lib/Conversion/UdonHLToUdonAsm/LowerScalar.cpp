@@ -10,11 +10,15 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Builders.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallSet.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/StringSet.h"
+#include "llvm/Support/MathExtras.h"
 
 using namespace mlir;
 
@@ -42,15 +46,46 @@ struct FunctionPlan {
   std::optional<uint64_t> entryAddress;
 };
 
+struct AsyncResumeTarget {
+  int64_t frameId;
+  int64_t resumePc;
+  func::FuncOp function;
+  Block *block;
+};
+
 struct GlobalPlan {
   std::string slot;
   MemRefType type;
   ElementsAttr initialValue;
+  uint64_t base;
+};
+
+struct GlobalBankPlan {
+  std::string slot;
+  Type elementType;
+  uint64_t length = 0;
+  SmallVector<std::pair<uint64_t, ElementsAttr>> initializers;
+};
+
+struct TypedSpillBankPlan {
+  std::string slot;
+  std::string scalarType;
+  std::string arrayType;
+  unsigned length = 0;
 };
 
 struct UnityBufferPoolEntry {
   int64_t id;
   std::string heapSlot;
+};
+
+struct RawObjectPlan {
+  std::string name;
+  std::string kind;
+  std::string reason;
+  uint64_t base;
+  uint64_t bytes;
+  uint64_t alignment;
 };
 
 static FailureOr<StringRef> udonType(Type type) {
@@ -70,6 +105,8 @@ static FailureOr<StringRef> udonType(Type type) {
     return StringRef("SystemInt32");
   if (isa<::vrc::vrc::EventType>(type))
     return StringRef("SystemInt32");
+  if (isa<::vrc::vrc::DispatchDescType>(type))
+    return StringRef("SystemInt32");
   if (isa<host::FrameType>(type))
     return StringRef("SystemInt32");
   if (isa<host::PtrType>(type))
@@ -83,6 +120,21 @@ static FailureOr<StringRef> udonType(Type type) {
       return StringRef("SystemInt32Array");
   }
   return failure();
+}
+
+static FailureOr<std::string> slotStorageKey(Type type) {
+  auto physicalType = udonType(type);
+  if (failed(physicalType))
+    return failure();
+  std::string key = physicalType->str();
+  if (auto memref = dyn_cast<MemRefType>(type)) {
+    key += "_n";
+    if (memref.hasStaticShape())
+      key += std::to_string(memref.getNumElements());
+    else
+      key += "dynamic";
+  }
+  return key;
 }
 
 static StringRef arrayLoadExtern(MemRefType type) {
@@ -259,8 +311,11 @@ static StringRef comparisonExtern(arith::CmpFOp operation) {
 
 class ScalarLowering {
 public:
-  ScalarLowering(ModuleOp module)
+  ScalarLowering(ModuleOp module, unsigned materializationLimit,
+                 unsigned rawAddressCacheLimit)
       : module(module), builder(module.getContext()),
+        materializationLimit(materializationLimit),
+        rawAddressCacheLimit(rawAddressCacheLimit),
         externalRawHeapInitialization(
             module->hasAttr("vrc.external_raw_heap_initialization")) {
     builder.setInsertionPointToEnd(module.getBody());
@@ -286,7 +341,6 @@ public:
       module->setAttr("udonasm.raw_heap_initializer",
                       DenseI8ArrayAttr::get(module.getContext(), image));
     }
-    unsigned globalIndex = 0;
     for (memref::GlobalOp global : module.getOps<memref::GlobalOp>()) {
       auto type = global.getType();
       auto initial = global.getInitialValue();
@@ -301,11 +355,32 @@ public:
               static_cast<uint64_t>(type.getNumElements()))
         return global.emitError(
             "Udon global requires an initialized fixed i32/f32 array");
-      std::string slot = "__vrc_global_" + std::to_string(globalIndex++);
-      addSlot(slot, *udonType(type), "null", false);
+      std::string storageKey = type.getElementType().isF32() ? "f32" : "i32";
+      auto bank = globalBankIndices.find(storageKey);
+      unsigned bankIndex;
+      if (bank == globalBankIndices.end()) {
+        bankIndex = globalBanks.size();
+        std::string slot = "__vrc_global_bank_" + storageKey;
+        addSlot(slot,
+                type.getElementType().isF32() ? "SystemSingleArray"
+                                              : "SystemInt32Array",
+                "null", false);
+        globalBanks.push_back(
+            GlobalBankPlan{std::move(slot), type.getElementType()});
+        globalBankIndices.try_emplace(storageKey, bankIndex);
+      } else {
+        bankIndex = bank->second;
+      }
+      GlobalBankPlan &bankPlan = globalBanks[bankIndex];
+      if (static_cast<uint64_t>(type.getNumElements()) >
+          static_cast<uint64_t>(INT32_MAX) - bankPlan.length)
+        return global.emitError(
+            "packed Udon typed global bank exceeds SystemInt32 indexing");
+      uint64_t base = bankPlan.length;
+      bankPlan.length += static_cast<uint64_t>(type.getNumElements());
+      bankPlan.initializers.emplace_back(base, elements);
       globalPlans.try_emplace(global.getSymName(),
-                              GlobalPlan{std::move(slot), type, elements});
-      globalOrder.push_back(global.getSymName().str());
+                              GlobalPlan{bankPlan.slot, type, elements, base});
     }
     if (!globalPlans.empty() ||
         (rawHeapBytes && !externalRawHeapInitialization)) {
@@ -315,6 +390,18 @@ public:
     }
     for (func::FuncOp function : module.getOps<func::FuncOp>()) {
       auto exportId = function->getAttrOfType<IntegerAttr>("vrc.export_id");
+      bool compilerCompletion =
+          function->hasAttr("vrc.compiler_async_completion");
+      if (exportId && compilerCompletion)
+        return function.emitError(
+            "compiler async completion cannot be a public C export");
+      if (compilerCompletion &&
+          (function.getNumArguments() != 2 ||
+           !function.getArgumentTypes()[0].isInteger(32) ||
+           !function.getArgumentTypes()[1].isInteger(32) ||
+           function.getNumResults() != 0))
+        return function.emitError(
+            "compiler async completion requires (i32, i32) -> ()");
       if (exportId && (exportId.getInt() <= 0 ||
                        !exportIds.insert(exportId.getInt()).second))
         return function.emitError("requires a unique positive vrc.export_id");
@@ -334,15 +421,21 @@ public:
         if (failed(udonType(type)))
           return function.emitError("unsupported scalar Udon result type");
       functions.push_back(function);
-      (exportId ? exportsToLower : internalsToLower).push_back(function);
+      (exportId || compilerCompletion ? exportsToLower : internalsToLower)
+          .push_back(function);
     }
     if (exportsToLower.empty())
       return module.emitError(
           "scalar Udon lowering requires at least one export");
 
     llvm::sort(exportsToLower, [](func::FuncOp lhs, func::FuncOp rhs) {
-      return lhs->getAttrOfType<IntegerAttr>("vrc.export_id").getInt() <
-             rhs->getAttrOfType<IntegerAttr>("vrc.export_id").getInt();
+      auto left = lhs->getAttrOfType<IntegerAttr>("vrc.export_id");
+      auto right = rhs->getAttrOfType<IntegerAttr>("vrc.export_id");
+      if (bool(left) != bool(right))
+        return bool(left);
+      if (!left)
+        return lhs.getSymName() < rhs.getSymName();
+      return left.getInt() < right.getInt();
     });
     llvm::sort(internalsToLower, [](func::FuncOp lhs, func::FuncOp rhs) {
       return lhs.getSymName() < rhs.getSymName();
@@ -350,9 +443,31 @@ public:
     functions.clear();
     llvm::append_range(functions, exportsToLower);
     llvm::append_range(functions, internalsToLower);
+    planMaterializedConstants(functions);
+    bool hasAsyncTransfers = false;
+    module.walk([&](Operation *operation) {
+      hasAsyncTransfers |=
+          isa<runtime::BufferUploadOp, runtime::BufferReadbackOp>(operation);
+    });
+    if (hasAsyncTransfers) {
+      addSlot(asyncCommandKindSlot, "SystemInt32", "0", true);
+      addSlot(asyncCommandBufferSlot, "SystemInt32", "0", true);
+      addSlot(asyncCommandOffsetSlot, "SystemInt32", "0", true);
+      addSlot(asyncCommandSizeSlot, "SystemInt32", "0", true);
+      addSlot(asyncCommandPointerSlot, "SystemInt32", "0", true);
+      addSlot(asyncEventSlot, "SystemInt32", "1", false);
+    }
 
     UdonSharpABIBuilder abiBuilder;
     for (func::FuncOp function : exportsToLower) {
+      if (function->hasAttr("vrc.compiler_async_completion")) {
+        auto event = function->getAttrOfType<StringAttr>("vrc.udon_event");
+        if (!event || event.getValue().empty() ||
+            !eventNames.insert(event.getValue().str()).second)
+          return function.emitError(
+              "compiler async completion requires a unique Udon event");
+        continue;
+      }
       auto abi = methodABI(function, abiBuilder);
       if (failed(abi))
         return function.emitError(
@@ -369,6 +484,100 @@ public:
       methodABIs.try_emplace(function.getOperation(), std::move(*abi));
     }
 
+    llvm::DenseMap<Operation *, unsigned> internalSlotBanks;
+    {
+      SmallVector<func::FuncOp> bankedFunctions;
+      llvm::SmallPtrSet<Operation *, 32> bankedSet;
+      for (func::FuncOp function : internalsToLower) {
+        if (function->hasAttr("vrc.compiler_async_dispatch"))
+          continue;
+        bankedFunctions.push_back(function);
+        bankedSet.insert(function.getOperation());
+      }
+
+      llvm::DenseMap<Operation *, SmallVector<Operation *>> callees;
+      for (func::FuncOp function : bankedFunctions) {
+        function.walk([&](Operation *operation) {
+          FlatSymbolRefAttr calleeAttr;
+          if (auto call = dyn_cast<func::CallOp>(operation))
+            calleeAttr = call.getCalleeAttr();
+          else if (auto call = dyn_cast<host::CallOp>(operation))
+            calleeAttr = call.getCalleeAttr();
+          if (!calleeAttr)
+            return;
+          auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
+              operation, calleeAttr);
+          if (callee && bankedSet.contains(callee.getOperation()))
+            callees[function.getOperation()].push_back(callee.getOperation());
+        });
+      }
+
+      llvm::DenseMap<Operation *, llvm::SmallPtrSet<Operation *, 32>> reachable;
+      for (func::FuncOp function : bankedFunctions) {
+        llvm::SmallPtrSet<Operation *, 32> visited;
+        SmallVector<Operation *> worklist(
+            callees[function.getOperation()].begin(),
+            callees[function.getOperation()].end());
+        while (!worklist.empty()) {
+          Operation *callee = worklist.pop_back_val();
+          if (!visited.insert(callee).second)
+            continue;
+          llvm::append_range(worklist, callees[callee]);
+        }
+        if (visited.contains(function.getOperation())) {
+          function.emitError(
+              "recursive internal Udon call graph has no static slot plan");
+          return failure();
+        }
+        reachable.try_emplace(function.getOperation(), std::move(visited));
+      }
+
+      SmallVector<func::FuncOp> coloringOrder(bankedFunctions);
+      llvm::sort(coloringOrder, [&](func::FuncOp left, func::FuncOp right) {
+        auto conflictDegree = [&](func::FuncOp function) {
+          unsigned degree = 0;
+          for (func::FuncOp candidate : bankedFunctions)
+            if (candidate != function &&
+                (reachable[function.getOperation()].contains(
+                     candidate.getOperation()) ||
+                 reachable[candidate.getOperation()].contains(
+                     function.getOperation())))
+              ++degree;
+          return degree;
+        };
+        unsigned leftDegree = conflictDegree(left);
+        unsigned rightDegree = conflictDegree(right);
+        if (leftDegree != rightDegree)
+          return leftDegree > rightDegree;
+        return left.getSymName() < right.getSymName();
+      });
+      for (func::FuncOp function : coloringOrder) {
+        llvm::SmallSet<unsigned, 16> used;
+        for (func::FuncOp candidate : bankedFunctions) {
+          auto color = internalSlotBanks.find(candidate.getOperation());
+          if (color == internalSlotBanks.end())
+            continue;
+          if (reachable[function.getOperation()].contains(
+                  candidate.getOperation()) ||
+              reachable[candidate.getOperation()].contains(
+                  function.getOperation()))
+            used.insert(color->second);
+        }
+        unsigned color = 0;
+        while (used.contains(color))
+          ++color;
+        internalSlotBanks.try_emplace(function.getOperation(), color);
+      }
+    }
+
+    if (failed(planInterproceduralValueSlots(functions)))
+      return failure();
+    if (!typedSpillBanks.empty()) {
+      addSlot(globalInitializedSlot, "SystemInt32", "0", false);
+      addSlot(globalOneSlot, "SystemInt32", "1", false);
+      addSlot(globalReadySlot, "SystemBoolean", "null", false);
+    }
+
     for (auto [index, function] : llvm::enumerate(functions)) {
       FunctionPlan plan;
       if (auto exportId =
@@ -378,18 +587,60 @@ public:
         plan.parameterSlots.append(abi.parameterSlots.begin(),
                                    abi.parameterSlots.end());
         plan.resultSlot = abi.resultSlot;
+      } else if (function->hasAttr("vrc.compiler_async_completion")) {
+        plan.prefix = "__vrc_async_completion_";
+        plan.parameterSlots = {asyncCompletionObjectSlot.str(),
+                               asyncCompletionStatusSlot.str()};
       } else {
-        plan.prefix = "__vrc_internal_" + std::to_string(index) + "_";
-        for (unsigned argument = 0; argument < function.getNumArguments();
-             ++argument)
-          plan.parameterSlots.push_back(plan.prefix + "arg" +
-                                        std::to_string(argument));
-        if (function.getNumResults())
-          plan.resultSlot = plan.prefix + "result";
+        auto bank = internalSlotBanks.find(function.getOperation());
+        plan.prefix =
+            bank == internalSlotBanks.end()
+                ? "__vrc_internal_" + std::to_string(index) + "_"
+                : "__vrc_internal_bank_" + std::to_string(bank->second) + "_";
+        for (BlockArgument argument : function.getArguments()) {
+          auto slot = interproceduralValueSlots.find(argument);
+          if (slot == interproceduralValueSlots.end())
+            return function.emitError(
+                "internal argument has no interprocedural Udon slot");
+          plan.parameterSlots.push_back(slot->second);
+        }
+        if (function.getNumResults()) {
+          auto storageKey = slotStorageKey(function.getResultTypes().front());
+          if (failed(storageKey))
+            return function.emitError(
+                "internal result has no physical Udon type");
+          plan.resultSlot = plan.prefix + "result_" + *storageKey;
+        }
         plan.returnSlot = plan.prefix + "return";
       }
       functionPlans.try_emplace(function.getOperation(), std::move(plan));
     }
+
+    llvm::SmallSet<std::pair<int64_t, int64_t>, 16> resumeKeys;
+    bool invalidResumeRoute = false;
+    for (func::FuncOp function : functions) {
+      auto frameId = function->getAttrOfType<IntegerAttr>("vrc.async_frame_id");
+      function.walk([&](host::AsyncResumePointOp point) {
+        std::pair<int64_t, int64_t> key(point.getFrameId(),
+                                        point.getResumePc());
+        if (!frameId || frameId.getInt() != key.first || key.first <= 0 ||
+            key.second <= 0 || !resumeKeys.insert(key).second) {
+          point.emitError("requires a unique positive frame/resume route that "
+                          "matches its containing coroutine");
+          invalidResumeRoute = true;
+          return;
+        }
+        asyncResumeTargets.push_back(
+            {key.first, key.second, function, point->getBlock()});
+      });
+    }
+    if (invalidResumeRoute)
+      return failure();
+    llvm::sort(asyncResumeTargets, [](const AsyncResumeTarget &left,
+                                      const AsyncResumeTarget &right) {
+      return std::tie(left.frameId, left.resumePc) <
+             std::tie(right.frameId, right.resumePc);
+    });
 
     for (func::FuncOp function : functions)
       if (failed(lower(function)))
@@ -402,7 +653,35 @@ public:
       jump->setAttr("target", builder.getI64IntegerAttr(static_cast<int64_t>(
                                   *plan->second.entryAddress)));
     }
+    for (auto [jump, target] : asyncResumeRelocations) {
+      auto found = globalBlockAddresses.find(target);
+      if (found == globalBlockAddresses.end())
+        return jump->emitError("async resume target was not lowered");
+      jump->setAttr("target", builder.getI64IntegerAttr(
+                                  static_cast<int64_t>(found->second)));
+    }
 
+    module->setAttr("udonasm.storage_report", storageReport());
+
+    SmallVector<Attribute> functionAddressMetadata;
+    for (auto [index, function] : llvm::enumerate(functions)) {
+      const FunctionPlan &plan = functionPlans.at(function.getOperation());
+      if (!plan.entryAddress)
+        return function.emitError("lowered Udon function has no entry address");
+      uint64_t endAddress =
+          index + 1 < functions.size()
+              ? *functionPlans.at(functions[index + 1].getOperation())
+                     .entryAddress
+              : address;
+      functionAddressMetadata.push_back(DictionaryAttr::get(
+          module.getContext(),
+          {builder.getNamedAttr("name",
+                                builder.getStringAttr(function.getSymName())),
+           builder.getNamedAttr("start",
+                                builder.getI64IntegerAttr(*plan.entryAddress)),
+           builder.getNamedAttr("end",
+                                builder.getI64IntegerAttr(endAddress))}));
+    }
     for (func::FuncOp function : functions)
       function.erase();
     for (memref::GlobalOp global :
@@ -414,12 +693,351 @@ public:
     module->setAttr("udonasm.data", dataMetadata());
     module->setAttr("udonasm.exports",
                     ArrayAttr::get(module.getContext(), exports));
+    module->setAttr(
+        "udonasm.functions",
+        ArrayAttr::get(module.getContext(), functionAddressMetadata));
     module->setAttr("udonasm.stage", builder.getStringAttr("scalar-v1"));
     module->removeAttr("vrc.host_stage");
     return success();
   }
 
 private:
+  void planMaterializedConstants(ArrayRef<func::FuncOp> functions) {
+    auto stage = module->getAttrOfType<StringAttr>("vrc.async_stage");
+    if (!stage || stage.getValue() != "udon-static-v1")
+      return;
+    llvm::StringMap<unsigned> occurrences;
+    SmallVector<std::pair<std::string, arith::ConstantOp>> ordered;
+    for (func::FuncOp function : functions)
+      function.walk([&](arith::ConstantOp constant) {
+        Type type = constant.getType();
+        if (auto floating = dyn_cast<FloatAttr>(constant.getValue())) {
+          llvm::SmallString<32> text;
+          floating.getValue().toString(text);
+          size_t exponent = text.find_first_of("eE");
+          if (exponent != llvm::StringRef::npos && exponent + 1 < text.size() &&
+              text[exponent + 1] == '+')
+            materializedConstants.insert(constant.getOperation());
+          return;
+        }
+        auto integer = dyn_cast<IntegerType>(type);
+        if (integer && integer.getWidth() == 32 &&
+            cast<IntegerAttr>(constant.getValue())
+                .getValue()
+                .isMinSignedValue()) {
+          materializedConstants.insert(constant.getOperation());
+          return;
+        }
+        if ((!integer || integer.getWidth() == 1 || integer.getWidth() > 64) &&
+            !type.isIndex())
+          return;
+        std::string key;
+        llvm::raw_string_ostream output(key);
+        type.print(output);
+        output << '\n';
+        constant.getValue().print(output);
+        output.flush();
+        ++occurrences[key];
+        ordered.emplace_back(std::move(key), constant);
+      });
+    unsigned integerMaterializations = 0;
+    auto materialize = [&](bool wideOnly) {
+      for (auto &entry : ordered) {
+        if (integerMaterializations == materializationLimit)
+          return;
+        bool wide = entry.second.getType().isInteger(64);
+        if (wide != wideOnly || occurrences.lookup(entry.first) != 1)
+          continue;
+        materializedConstants.insert(entry.second.getOperation());
+        ++integerMaterializations;
+      }
+    };
+    // i64 constants cannot be encoded in Udon data declarations and otherwise
+    // each consume both an immutable Heap slot and runtime construction code.
+    // Prefer their single-use values before filling the remaining budget with
+    // i32/index values.
+    materialize(true);
+    materialize(false);
+  }
+
+  LogicalResult
+  planInterproceduralValueSlots(ArrayRef<func::FuncOp> functions) {
+    unsigned registerBudget = 16;
+    if (auto budget =
+            module->getAttrOfType<IntegerAttr>("vrc.scalar_register_budget")) {
+      if (budget.getInt() <= 0 || budget.getInt() > 256)
+        return module.emitError(
+            "vrc.scalar_register_budget must be in the range 1..256");
+      registerBudget = static_cast<unsigned>(budget.getInt());
+    }
+    requestedScalarRegisterBudget = registerBudget;
+    minimumScalarRegisterCount = registerBudget;
+    llvm::DenseMap<Operation *, SmallVector<Value>> functionValues;
+    llvm::DenseMap<Value, std::string> storageKeys;
+    llvm::DenseMap<Value, unsigned> ordinals;
+    llvm::DenseMap<Value, SmallVector<Value>> interference;
+    llvm::DenseMap<Operation *, SmallVector<Operation *>> callees;
+    llvm::SmallPtrSet<Operation *, 32> functionSet;
+    unsigned nextOrdinal = 0;
+    bool shareExportLocals =
+        module->getAttrOfType<StringAttr>("vrc.async_stage") &&
+        module->getAttrOfType<StringAttr>("vrc.async_stage").getValue() ==
+            "udon-static-v1";
+    for (func::FuncOp function : functions)
+      functionSet.insert(function.getOperation());
+
+    auto addValue = [&](func::FuncOp function, Value value) {
+      auto key = slotStorageKey(value.getType());
+      if (failed(key))
+        return;
+      functionValues[function.getOperation()].push_back(value);
+      storageKeys.try_emplace(value, std::move(*key));
+      ordinals.try_emplace(value, nextOrdinal++);
+    };
+    auto isColorableResult = [&](Operation &operation) {
+      return (!isa<arith::ConstantOp>(operation) ||
+              materializedConstants.contains(&operation)) &&
+             !isa<memref::GetGlobalOp, ::vrc::vrc::BufferAllocOp,
+                  ::vrc::vrc::DispatchDescCreateOp, host::FrameCreateOp>(
+                 operation);
+    };
+    for (func::FuncOp function : functions) {
+      bool fixedEntryArguments =
+          function->hasAttr("vrc.export_id") ||
+          function->hasAttr("vrc.compiler_async_completion");
+      bool shareFunctionLocals = !fixedEntryArguments || shareExportLocals;
+      if (!fixedEntryArguments)
+        for (BlockArgument argument : function.getArguments())
+          addValue(function, argument);
+      for (Block &block : function.getBody()) {
+        if (shareFunctionLocals && &block != &function.getBody().front())
+          for (BlockArgument argument : block.getArguments())
+            addValue(function, argument);
+        if (shareFunctionLocals)
+          for (Operation &operation : block)
+            if (isColorableResult(operation))
+              for (Value result : operation.getResults())
+                addValue(function, result);
+      }
+      function.walk([&](Operation *operation) {
+        FlatSymbolRefAttr calleeAttr;
+        if (auto call = dyn_cast<func::CallOp>(operation))
+          calleeAttr = call.getCalleeAttr();
+        else if (auto call = dyn_cast<host::CallOp>(operation))
+          calleeAttr = call.getCalleeAttr();
+        if (!calleeAttr)
+          return;
+        auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
+            operation, calleeAttr);
+        if (callee && functionSet.contains(callee.getOperation()))
+          callees[function.getOperation()].push_back(callee.getOperation());
+      });
+    }
+
+    llvm::DenseMap<Operation *, llvm::SmallPtrSet<Operation *, 32>> reachable;
+    for (func::FuncOp function : functions) {
+      llvm::SmallPtrSet<Operation *, 32> visited;
+      SmallVector<Operation *> worklist(
+          callees[function.getOperation()].begin(),
+          callees[function.getOperation()].end());
+      while (!worklist.empty()) {
+        Operation *callee = worklist.pop_back_val();
+        if (!visited.insert(callee).second)
+          continue;
+        llvm::append_range(worklist, callees[callee]);
+      }
+      if (visited.contains(function.getOperation()))
+        return function.emitError(
+            "recursive Udon call graph has no interprocedural slot plan");
+      reachable.try_emplace(function.getOperation(), std::move(visited));
+    }
+
+    auto addInterference = [&](Value left, Value right) {
+      if (left == right ||
+          storageKeys.lookup(left) != storageKeys.lookup(right))
+        return;
+      interference[left].push_back(right);
+      interference[right].push_back(left);
+    };
+    for (func::FuncOp function : functions) {
+      Liveness liveness(function);
+      function.walk([&](Operation *operation) {
+        const LivenessBlockInfo *blockInfo =
+            liveness.getLiveness(operation->getBlock());
+        if (!blockInfo)
+          return;
+        SmallVector<Value> live;
+        for (Value value : blockInfo->currentlyLiveValues(operation))
+          if (ordinals.contains(value))
+            live.push_back(value);
+        llvm::sort(live, [&](Value left, Value right) {
+          return ordinals.lookup(left) < ordinals.lookup(right);
+        });
+        live.erase(std::unique(live.begin(), live.end()), live.end());
+        for (auto [leftIndex, left] : llvm::enumerate(live))
+          for (Value right : ArrayRef<Value>(live).drop_front(leftIndex + 1))
+            addInterference(left, right);
+
+        FlatSymbolRefAttr calleeAttr;
+        if (auto call = dyn_cast<func::CallOp>(operation))
+          calleeAttr = call.getCalleeAttr();
+        else if (auto call = dyn_cast<host::CallOp>(operation))
+          calleeAttr = call.getCalleeAttr();
+        if (!calleeAttr)
+          return;
+        auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
+            operation, calleeAttr);
+        if (!callee || !functionSet.contains(callee.getOperation()))
+          return;
+        // Udon calls copy arguments into the callee's physical slots one at a
+        // time. Keep every source distinct from every destination until that
+        // copy sequence finishes, including operands whose SSA lifetime ends
+        // at the call. This preserves C's evaluate-all-arguments-before-call
+        // semantics without reserving a permanent scratch slot per argument.
+        for (Value operand : operation->getOperands())
+          if (ordinals.contains(operand))
+            for (BlockArgument argument : callee.getArguments())
+              if (ordinals.contains(argument))
+                addInterference(operand, argument);
+        SmallVector<Operation *> activations;
+        activations.push_back(callee.getOperation());
+        llvm::append_range(activations, reachable[callee.getOperation()]);
+        for (Value callerValue : live) {
+          if (callerValue.getDefiningOp() == operation ||
+              liveness.isDeadAfter(callerValue, operation))
+            continue;
+          for (Operation *activation : activations)
+            for (Value calleeValue : functionValues[activation])
+              addInterference(callerValue, calleeValue);
+        }
+      });
+    }
+    for (auto &entry : interference) {
+      SmallVector<Value> &neighbors = entry.second;
+      llvm::sort(neighbors, [&](Value left, Value right) {
+        return ordinals.lookup(left) < ordinals.lookup(right);
+      });
+      neighbors.erase(std::unique(neighbors.begin(), neighbors.end()),
+                      neighbors.end());
+    }
+
+    llvm::StringMap<SmallVector<Value>> valuesByStorage;
+    for (const auto &entry : storageKeys)
+      valuesByStorage[entry.second].push_back(entry.first);
+    struct SpillCandidate {
+      Value value;
+      std::string storageKey;
+      unsigned index;
+    };
+    SmallVector<SpillCandidate> spillCandidates;
+    for (auto &entry : valuesByStorage) {
+      SmallVector<Value> order(entry.getValue().begin(),
+                               entry.getValue().end());
+      llvm::sort(order, [&](Value left, Value right) {
+        size_t leftDegree = interference[left].size();
+        size_t rightDegree = interference[right].size();
+        if (leftDegree != rightDegree)
+          return leftDegree > rightDegree;
+        return ordinals.lookup(left) < ordinals.lookup(right);
+      });
+      llvm::DenseMap<Value, unsigned> colors;
+      for (Value value : order) {
+        llvm::SmallSet<unsigned, 16> used;
+        for (Value neighbor : interference[value]) {
+          auto color = colors.find(neighbor);
+          if (color != colors.end())
+            used.insert(color->second);
+        }
+        unsigned color = 0;
+        while (used.contains(color))
+          ++color;
+        colors.try_emplace(value, color);
+        if (color >= registerBudget) {
+          if (typedSpillsInserted) {
+            // Reloads immediately before one operation and internal-call
+            // argument copies form an unspillable simultaneous-use clique.
+            // Grow only to that proven minimum; long-lived values were
+            // already moved to typed arrays by the first allocation round.
+            minimumScalarRegisterCount =
+                std::max(minimumScalarRegisterCount, color + 1);
+          } else {
+            spillCandidates.push_back(
+                {value, entry.getKey().str(), color - registerBudget});
+            continue;
+          }
+        }
+        interproceduralValueSlots.try_emplace(
+            value, "__vrc_shared_r_" + entry.getKey().str() + "_" +
+                       std::to_string(color));
+      }
+    }
+    if (!spillCandidates.empty()) {
+      module.getContext()->getOrLoadDialect<host::UdonHLDialect>();
+      llvm::sort(spillCandidates, [&](const SpillCandidate &left,
+                                      const SpillCandidate &right) {
+        return ordinals.lookup(left.value) < ordinals.lookup(right.value);
+      });
+      for (const SpillCandidate &candidate : spillCandidates) {
+        auto scalarType = udonType(candidate.value.getType());
+        if (failed(scalarType))
+          return emitError(candidate.value.getLoc())
+                 << "typed spill has no physical Udon type";
+        auto bank = typedSpillBanks.find(candidate.storageKey);
+        if (bank == typedSpillBanks.end()) {
+          std::string slot = "__vrc_spill_bank_" + candidate.storageKey;
+          std::string arrayType = scalarType->str() + "Array";
+          addSlot(slot, arrayType, "null", false);
+          bank = typedSpillBanks
+                     .try_emplace(candidate.storageKey,
+                                  TypedSpillBankPlan{slot, scalarType->str(),
+                                                     std::move(arrayType), 0})
+                     .first;
+          typedSpillBankOrder.push_back(candidate.storageKey);
+        }
+        bank->second.length =
+            std::max(bank->second.length, candidate.index + 1);
+
+        SmallVector<OpOperand *> uses;
+        for (OpOperand &use : candidate.value.getUses())
+          uses.push_back(&use);
+        llvm::DenseMap<Operation *, Value> reloads;
+        for (OpOperand *use : uses) {
+          Operation *owner = use->getOwner();
+          auto reload = reloads.find(owner);
+          Value loaded;
+          if (reload == reloads.end()) {
+            builder.setInsertionPoint(owner);
+            loaded = builder
+                         .create<host::SpillLoadOp>(
+                             owner->getLoc(), candidate.value.getType(),
+                             builder.getStringAttr(candidate.storageKey),
+                             builder.getI32IntegerAttr(candidate.index))
+                         .getValue();
+            reloads.try_emplace(owner, loaded);
+          } else {
+            loaded = reload->second;
+          }
+          use->set(loaded);
+        }
+        if (auto argument = dyn_cast<BlockArgument>(candidate.value)) {
+          builder.setInsertionPointToStart(argument.getOwner());
+        } else {
+          Operation *definition = candidate.value.getDefiningOp();
+          builder.setInsertionPointAfter(definition);
+        }
+        builder.create<host::SpillStoreOp>(
+            candidate.value.getLoc(), candidate.value,
+            builder.getStringAttr(candidate.storageKey),
+            builder.getI32IntegerAttr(candidate.index));
+      }
+      typedSpillsInserted = true;
+      interproceduralValueSlots.clear();
+      builder.setInsertionPointToEnd(module.getBody());
+      return planInterproceduralValueSlots(functions);
+    }
+    return success();
+  }
+
   LogicalResult planUnityBufferPool() {
     auto pool = module->getAttrOfType<ArrayAttr>("vrc.unity_buffer_pool");
     if (!pool)
@@ -441,6 +1059,184 @@ private:
     return success();
   }
 
+  std::string rawFallbackReason(Value root, bool aggregateLayout) const {
+    bool volatileAccess = false;
+    bool pointerIntegerRoundTrip = false;
+    bool byteOrBulkMemory = false;
+    bool dynamicIndex = false;
+    bool pointerEscape = false;
+    SmallVector<Value> worklist{root};
+    llvm::DenseSet<Value> visited;
+    while (!worklist.empty()) {
+      Value pointer = worklist.pop_back_val();
+      if (!visited.insert(pointer).second)
+        continue;
+      for (OpOperand &use : pointer.getUses()) {
+        Operation *owner = use.getOwner();
+        if (auto load = dyn_cast<host::LoadOp>(owner)) {
+          volatileAccess |= bool(load.getVolatile_());
+          continue;
+        }
+        if (auto store = dyn_cast<host::StoreOp>(owner)) {
+          volatileAccess |= bool(store.getVolatile_());
+          continue;
+        }
+        if (isa<host::PtrToIntOp, host::IntToPtrOp>(owner)) {
+          pointerIntegerRoundTrip = true;
+          continue;
+        }
+        if (isa<host::MemcpyOp, host::MemmoveOp, host::MemsetOp>(owner)) {
+          byteOrBulkMemory = true;
+          continue;
+        }
+        if (auto add = dyn_cast<host::PtrAddOp>(owner)) {
+          if (!add.getByteOffset().getDefiningOp<arith::ConstantOp>())
+            dynamicIndex = true;
+          worklist.push_back(add.getResult());
+          continue;
+        }
+        if (isa<host::LifetimeStartOp, host::LifetimeEndOp>(owner))
+          continue;
+        pointerEscape = true;
+      }
+    }
+    if (volatileAccess)
+      return "volatile_access";
+    if (pointerIntegerRoundTrip)
+      return "pointer_integer_round_trip";
+    if (byteOrBulkMemory)
+      return "byte_or_bulk_memory";
+    if (dynamicIndex)
+      return "dynamic_index";
+    if (pointerEscape)
+      return "pointer_escape_or_alias";
+    if (aggregateLayout)
+      return "aggregate_byte_layout";
+    return "address_observable_after_promotion";
+  }
+
+  DictionaryAttr storageReport() {
+    auto entry = [&](ArrayRef<NamedAttribute> fields) {
+      return DictionaryAttr::get(module.getContext(), fields);
+    };
+    auto stringField = [&](StringRef name, StringRef value) {
+      return builder.getNamedAttr(name, builder.getStringAttr(value));
+    };
+    auto integerField = [&](StringRef name, uint64_t value) {
+      return builder.getNamedAttr(
+          name, builder.getI64IntegerAttr(static_cast<int64_t>(value)));
+    };
+
+    llvm::StringSet<> fixedNames;
+    for (const Slot &slot : slots)
+      if (slot.isPublic)
+        fixedNames.insert(slot.name);
+    for (const auto &method : methodABIs) {
+      for (const std::string &parameter : method.second.parameterSlots)
+        fixedNames.insert(parameter);
+      if (method.second.resultSlot)
+        fixedNames.insert(*method.second.resultSlot);
+      auto function = cast<func::FuncOp>(method.first);
+      if (auto exportId = function->getAttrOfType<IntegerAttr>("vrc.export_id"))
+        fixedNames.insert(udonclStatusSlot(exportId.getInt()));
+    }
+    for (const UnityBufferPoolEntry &buffer : unityBufferPool)
+      fixedNames.insert(buffer.heapSlot);
+
+    SmallVector<Attribute> fixed;
+    for (const Slot &slot : slots) {
+      if (!fixedNames.contains(slot.name))
+        continue;
+      SmallVector<NamedAttribute> fields{stringField("name", slot.name),
+                                         stringField("type", slot.type)};
+      if (slot.isPublic)
+        fields.push_back(builder.getNamedAttr("public", builder.getUnitAttr()));
+      fixed.push_back(entry(fields));
+    }
+
+    SmallVector<std::pair<std::string, std::string>> scalarSlots;
+    scalarSlots.reserve(scalarRegisterSlots.size());
+    for (const auto &slot : scalarRegisterSlots)
+      scalarSlots.emplace_back(slot.first().str(), slot.second);
+    llvm::sort(scalarSlots);
+    SmallVector<Attribute> scalars;
+    llvm::StringMap<uint64_t> scalarCountsByType;
+    for (const auto &[name, type] : scalarSlots)
+      scalars.push_back(
+          entry({stringField("name", name), stringField("type", type)})),
+          ++scalarCountsByType[type];
+    SmallVector<std::pair<std::string, uint64_t>> orderedScalarCounts;
+    for (const auto &count : scalarCountsByType)
+      orderedScalarCounts.emplace_back(count.first().str(), count.second);
+    llvm::sort(orderedScalarCounts);
+    SmallVector<Attribute> registerBanks;
+    for (const auto &[type, count] : orderedScalarCounts)
+      registerBanks.push_back(
+          entry({stringField("type", type), integerField("count", count)}));
+
+    SmallVector<std::pair<std::string, std::string>> persistentSlots;
+    persistentSlots.reserve(asyncPersistentSlots.size());
+    for (const auto &slot : asyncPersistentSlots)
+      persistentSlots.emplace_back(slot.first().str(), slot.second);
+    llvm::sort(persistentSlots);
+    SmallVector<Attribute> persistent;
+    for (const auto &[name, type] : persistentSlots)
+      persistent.push_back(
+          entry({stringField("name", name), stringField("type", type)}));
+
+    SmallVector<Attribute> spillBanks;
+    for (const std::string &key : typedSpillBankOrder) {
+      const TypedSpillBankPlan &bank = typedSpillBanks.at(key);
+      spillBanks.push_back(entry({stringField("storage_key", key),
+                                  stringField("name", bank.slot),
+                                  stringField("scalar_type", bank.scalarType),
+                                  stringField("array_type", bank.arrayType),
+                                  integerField("length", bank.length)}));
+    }
+
+    SmallVector<Attribute> globalBankAttributes;
+    for (const GlobalBankPlan &bank : globalBanks)
+      globalBankAttributes.push_back(
+          entry({stringField("name", bank.slot),
+                 stringField("element_type", bank.elementType.isF32()
+                                                 ? "SystemSingle"
+                                                 : "SystemInt32"),
+                 integerField("length", bank.length)}));
+
+    SmallVector<RawObjectPlan> raw(rawObjects.begin(), rawObjects.end());
+    llvm::sort(raw, [](const RawObjectPlan &left, const RawObjectPlan &right) {
+      return std::tie(left.base, left.name) < std::tie(right.base, right.name);
+    });
+    SmallVector<Attribute> rawAttributes;
+    for (const RawObjectPlan &object : raw)
+      rawAttributes.push_back(entry(
+          {stringField("name", object.name), stringField("kind", object.kind),
+           stringField("reason", object.reason),
+           integerField("base", object.base),
+           integerField("bytes", object.bytes),
+           integerField("alignment", object.alignment)}));
+
+    return entry(
+        {integerField("version", 2),
+         integerField("scalar_register_budget", requestedScalarRegisterBudget),
+         integerField("minimum_simultaneous_registers",
+                      minimumScalarRegisterCount),
+         builder.getNamedAttr("fixed_named_slots", builder.getArrayAttr(fixed)),
+         builder.getNamedAttr("scalar_registers",
+                              builder.getArrayAttr(scalars)),
+         builder.getNamedAttr("typed_register_banks",
+                              builder.getArrayAttr(registerBanks)),
+         builder.getNamedAttr("async_persistent_values",
+                              builder.getArrayAttr(persistent)),
+         builder.getNamedAttr("typed_spill_arrays",
+                              builder.getArrayAttr(spillBanks)),
+         builder.getNamedAttr("typed_global_arrays",
+                              builder.getArrayAttr(globalBankAttributes)),
+         builder.getNamedAttr("raw_objects",
+                              builder.getArrayAttr(rawAttributes)),
+         integerField("raw_heap_bytes", rawHeapBytes)});
+  }
+
   LogicalResult planRawMemory() {
     uint64_t cursor = 4; // Keep the null pointer unmapped.
     for (host::GlobalOp global : module.getOps<host::GlobalOp>()) {
@@ -450,15 +1246,35 @@ private:
       Type type = global.getStorageType();
       auto bytes =
           dyn_cast_or_null<DenseI8ArrayAttr>(global.getInitialValueAttr());
-      bool scalar =
-          type.isInteger(32) || type.isF32() || isa<host::PtrType>(type);
+      auto integer = dyn_cast<IntegerType>(type);
+      bool scalar = (integer &&
+                     (integer.getWidth() == 1 ||
+                      (integer.getWidth() >= 8 && integer.getWidth() <= 64))) ||
+                    type.isF32() || isa<host::PtrType>(type);
       if (!scalar && !bytes)
-        return global.emitError(
-            "aggregate raw Udon globals require a serialized byte initializer");
+        return global.emitError() << "raw Udon global '" << global.getSymName()
+                                  << "' with storage type " << type
+                                  << " requires a serialized byte initializer";
       uint64_t alignment = static_cast<uint64_t>(global.getAlignment());
       cursor = llvm::alignTo(cursor, alignment);
+      uint64_t scalarBytes = 4;
+      if (integer)
+        scalarBytes = llvm::divideCeil(integer.getWidth(), 8u);
+      uint64_t objectBytes = bytes ? bytes.size() : scalarBytes;
       rawGlobalBases.try_emplace(global.getSymName(), cursor);
-      cursor += bytes ? bytes.size() : 4;
+      host::AddressOfOp representative;
+      module.walk([&](host::AddressOfOp address) {
+        if (!representative && address.getGlobal() == global.getSymName())
+          representative = address;
+      });
+      rawObjects.push_back(
+          {global.getSymName().str(), "global",
+           representative
+               ? rawFallbackReason(representative.getResult(), !scalar)
+               : (!scalar ? "aggregate_byte_layout"
+                          : "address_observable_after_promotion"),
+           cursor, objectBytes, alignment});
+      cursor += objectBytes;
       if (bytes)
         rawGlobalInitializers.try_emplace(global.getSymName(), bytes);
       Attribute initial = global.getInitialValueAttr();
@@ -472,6 +1288,7 @@ private:
             "nonzero raw global initialization is not implemented yet");
     }
     for (func::FuncOp function : module.getOps<func::FuncOp>()) {
+      unsigned allocaIndex = 0;
       WalkResult result = function.walk([&](host::AllocaOp allocation) {
         auto constant =
             allocation.getByteSize().getDefiningOp<arith::ConstantOp>();
@@ -485,6 +1302,11 @@ private:
         uint64_t alignment = static_cast<uint64_t>(allocation.getAlignment());
         cursor = llvm::alignTo(cursor, alignment);
         rawAllocaBases.try_emplace(allocation.getOperation(), cursor);
+        rawObjects.push_back(
+            {(function.getSymName() + ":alloca" + std::to_string(allocaIndex++))
+                 .str(),
+             "alloca", rawFallbackReason(allocation.getResult(), false), cursor,
+             static_cast<uint64_t>(bytes.getInt()), alignment});
         cursor += static_cast<uint64_t>(bytes.getInt());
         return WalkResult::advance();
       });
@@ -499,6 +1321,68 @@ private:
               externalRawHeapInitialization);
       addSlot(rawHeapLengthSlot, "SystemInt32", std::to_string(rawHeapBytes),
               false);
+    }
+    llvm::StringMap<bool> fastCandidates;
+    for (host::GlobalOp global : module.getOps<host::GlobalOp>()) {
+      Type type = global.getStorageType();
+      auto initial =
+          dyn_cast_or_null<IntegerAttr>(global.getInitialValueAttr());
+      if (initial && initial.getValue().isZero() &&
+          (type.isInteger(32) || isa<host::PtrType>(type)))
+        fastCandidates.try_emplace(global.getSymName(), true);
+    }
+    module.walk([&](host::AddressOfOp address) {
+      auto candidate = fastCandidates.find(address.getGlobal());
+      if (candidate == fastCandidates.end() || !candidate->second)
+        return;
+      auto global = module.lookupSymbol<host::GlobalOp>(address.getGlobal());
+      if (!global) {
+        candidate->second = false;
+        return;
+      }
+      Type storageType = global.getStorageType();
+      for (OpOperand &use : address.getResult().getUses()) {
+        Operation *owner = use.getOwner();
+        if (auto load = dyn_cast<host::LoadOp>(owner)) {
+          if (load.getPointer() == address.getResult() &&
+              load.getResult().getType() == storageType)
+            continue;
+        }
+        if (auto store = dyn_cast<host::StoreOp>(owner)) {
+          if (store.getPointer() == address.getResult() &&
+              store.getValue().getType() == storageType)
+            continue;
+        }
+        candidate->second = false;
+        break;
+      }
+    });
+    for (const auto &candidate : fastCandidates)
+      if (candidate.second)
+        fastRawGlobals.insert(candidate.first());
+    llvm::StringMap<unsigned> addressOccurrences;
+    module.walk([&](host::AddressOfOp address) {
+      if (rawGlobalBases.contains(address.getGlobal()))
+        ++addressOccurrences[address.getGlobal()];
+    });
+    SmallVector<std::pair<std::string, unsigned>> orderedAddresses;
+    orderedAddresses.reserve(addressOccurrences.size());
+    for (const auto &entry : addressOccurrences)
+      orderedAddresses.emplace_back(entry.first().str(), entry.second);
+    llvm::sort(orderedAddresses, [](const auto &left, const auto &right) {
+      if (left.second != right.second)
+        return left.second > right.second;
+      return left.first < right.first;
+    });
+    for (const auto &[symbol, occurrences] :
+         ArrayRef(orderedAddresses)
+             .take_front(std::min<size_t>(rawAddressCacheLimit,
+                                          orderedAddresses.size()))) {
+      (void)occurrences;
+      uint64_t base = rawGlobalBases.at(symbol);
+      std::string slot = immutableSlot("SystemInt32", std::to_string(base));
+      cachedRawGlobalSlots.try_emplace(symbol, slot);
+      cachedRawGlobalBases.emplace_back(base, std::move(slot));
     }
     return success();
   }
@@ -520,9 +1404,19 @@ private:
           "function", builder.getStringAttr(function.getSymName())));
       exportFields.push_back(builder.getNamedAttr("export_id", exportId));
       exports.push_back(DictionaryAttr::get(module.getContext(), exportFields));
+    } else if (function->hasAttr("vrc.compiler_async_completion")) {
+      auto event = function->getAttrOfType<StringAttr>("vrc.udon_event");
+      SmallVector<NamedAttribute> exportFields;
+      exportFields.push_back(builder.getNamedAttr("name", event));
+      exportFields.push_back(builder.getNamedAttr(
+          "address", builder.getI64IntegerAttr(static_cast<int64_t>(address))));
+      exportFields.push_back(builder.getNamedAttr(
+          "function", builder.getStringAttr(function.getSymName())));
+      exports.push_back(DictionaryAttr::get(module.getContext(), exportFields));
     }
 
     llvm::DenseMap<Value, std::string> valueSlots;
+    llvm::DenseMap<Value, uint64_t> globalBaseOffsets;
     llvm::DenseMap<Value, unsigned> valueColors;
     llvm::DenseMap<Value, unsigned> valueOrdinals;
     llvm::DenseMap<Value, SmallVector<Value>> interference;
@@ -533,9 +1427,11 @@ private:
     SmallVector<Value> colorableValues;
     SmallVector<Value> descriptors;
     auto isColorableResult = [&](Operation &operation) {
-      return !isa<arith::ConstantOp, memref::GetGlobalOp,
-                  ::vrc::vrc::BufferAllocOp, ::vrc::vrc::DispatchDescCreateOp,
-                  host::FrameCreateOp>(operation);
+      return (!isa<arith::ConstantOp>(operation) ||
+              materializedConstants.contains(&operation)) &&
+             !isa<memref::GetGlobalOp, ::vrc::vrc::BufferAllocOp,
+                  ::vrc::vrc::DispatchDescCreateOp, host::FrameCreateOp>(
+                 operation);
     };
     for (Block &block : function.getBody()) {
       if (&block != &function.getBody().front())
@@ -659,11 +1555,16 @@ private:
     }
     auto coloredSlot = [&](Value value) -> std::string {
       auto type = udonType(value.getType());
-      if (failed(type))
+      auto storageKey = slotStorageKey(value.getType());
+      if (failed(type) || failed(storageKey))
         return {};
-      std::string name = prefix + "r_" + type->str() + "_" +
-                         std::to_string(valueColors.lookup(value));
+      auto shared = interproceduralValueSlots.find(value);
+      std::string name = shared != interproceduralValueSlots.end()
+                             ? shared->second
+                             : prefix + "r_" + *storageKey + "_" +
+                                   std::to_string(valueColors.lookup(value));
       addSlot(name, *type, "null", false);
+      scalarRegisterSlots.try_emplace(name, type->str());
       return name;
     };
     llvm::DenseMap<Operation *, SmallVector<std::string>> frameSlots;
@@ -672,7 +1573,8 @@ private:
     for (auto [index, argument] : llvm::enumerate(function.getArguments())) {
       auto type = *udonType(argument.getType());
       std::string name = plan.parameterSlots[index];
-      addSlot(name, type, "null", false);
+      bool publicSlot = function->hasAttr("vrc.compiler_async_completion");
+      addSlot(name, type, "null", publicSlot);
       valueSlots[argument] = name;
     }
     std::string resultSlot;
@@ -703,7 +1605,6 @@ private:
       addSlot(asyncCommandSizeSlot, "SystemInt32", "0", true);
       addSlot(asyncCommandPointerSlot, "SystemInt32", "0", true);
       addSlot(asyncEventSlot, "SystemInt32", "1", true);
-      addSlot(asyncZeroSlot, "SystemInt32", "0", false);
       std::string stateSlot = prefix + "await_state_value";
       addSlot(stateSlot, "SystemInt32", "0", false);
       for (auto [index, await] : llvm::enumerate(awaits)) {
@@ -724,7 +1625,8 @@ private:
             function.getLoc(), vm::JumpIfFalseOp::getOperationName(),
             {builder.getNamedAttr("target", builder.getI64IntegerAttr(0))});
         address += 8;
-        emitCopy(function.getLoc(), asyncZeroSlot, asyncResumeStateSlot);
+        emitCopy(function.getLoc(), immutableSlot("SystemInt32", "0"),
+                 asyncResumeStateSlot);
         awaitResumeJumps.try_emplace(await.getOperation(),
                                      emitJump(function.getLoc(), 0));
         next->setAttr("target",
@@ -753,6 +1655,8 @@ private:
             return getGlobal.emitError(
                 "Udon global reference does not match a defined array");
           valueSlots[getGlobal.getResult()] = found->second.slot;
+          globalBaseOffsets.try_emplace(getGlobal.getResult(),
+                                        found->second.base);
           continue;
         }
         if (auto alloca = dyn_cast<memref::AllocaOp>(operation)) {
@@ -860,6 +1764,7 @@ private:
                   "static continuation frame supports only i32/f32 slots");
             std::string slotName = frameName + "_slot_" + std::to_string(slot);
             addSlot(slotName, *udon, "0", false);
+            asyncPersistentSlots.try_emplace(slotName, udon->str());
             persistent.push_back(std::move(slotName));
           }
           frameSlots.try_emplace(frame.getOperation(), std::move(persistent));
@@ -911,6 +1816,11 @@ private:
         }
         std::string name;
         if (kind == "c") {
+          if (materializedConstants.contains(&operation)) {
+            name = coloredSlot(operation.getResult(0));
+            valueSlots[operation.getResult(0)] = name;
+            continue;
+          }
           Type constantType = operation.getResult(0).getType();
           if (!constantType.isInteger(1) && !constantType.isInteger(64)) {
             name = immutableSlot(*type, initial);
@@ -937,8 +1847,9 @@ private:
       }
     }
 
-    if (exportId && (!globalPlans.empty() ||
-                     (rawHeapBytes && !externalRawHeapInitialization)))
+    if ((exportId || function->hasAttr("vrc.compiler_async_completion")) &&
+        (!globalPlans.empty() || !typedSpillBanks.empty() ||
+         (rawHeapBytes && !externalRawHeapInitialization)))
       emitGlobalInitialization(function.getLoc());
 
     llvm::DenseMap<Block *, uint64_t> blockAddresses;
@@ -981,8 +1892,11 @@ private:
           continue;
         }
         Move &cycle = moves.front();
-        std::string scratch = "__vrc_parallel_copy_scratch_" + cycle.type;
-        addSlot(scratch, cycle.type, "null", false);
+        std::string scratch = cycle.type == "SystemInt32"
+                                  ? "__vrc_return_address_i32"
+                                  : "__vrc_parallel_copy_scratch_" + cycle.type;
+        addSlot(scratch, cycle.type, cycle.type == "SystemInt32" ? "0" : "null",
+                false);
         emitCopy(location, cycle.source, scratch);
         std::string captured = cycle.source;
         for (Move &move : moves)
@@ -995,10 +1909,70 @@ private:
       Operation *jump = emitJump(location, 0);
       relocations.emplace_back(jump, target);
     };
+    auto materializeRawGlobalAddress = [&](Value value,
+                                           Location location) -> LogicalResult {
+      auto addressOf = value.getDefiningOp<host::AddressOfOp>();
+      if (!addressOf)
+        return success();
+      auto found = rawGlobalBases.find(addressOf.getGlobal());
+      if (found == rawGlobalBases.end())
+        return addressOf.emitError("raw global has no static heap plan");
+      std::string result = valueSlots.lookup(value);
+      if (result.empty())
+        return addressOf.emitError("raw global address has no Udon slot");
+      auto cached = cachedRawGlobalSlots.find(addressOf.getGlobal());
+      if (cached != cachedRawGlobalSlots.end())
+        emitCopy(location, cached->second, result);
+      else
+        emitRawAddress(location, found->second, result);
+      return success();
+    };
+    auto rawAddressCrossesCall = [&](host::AddressOfOp addressOf,
+                                     Operation *use) {
+      Operation *cursor = addressOf->getNextNode();
+      Operation *end = addressOf->getBlock() == use->getBlock() ? use : nullptr;
+      for (; cursor && cursor != end; cursor = cursor->getNextNode())
+        if (isa<func::CallOp, host::CallOp>(cursor))
+          return true;
+      return false;
+    };
+    auto typedArrayIndex = [&](Location location, Value array,
+                               StringRef logicalIndex) -> std::string {
+      uint64_t base = globalBaseOffsets.lookup(array);
+      if (!base)
+        return logicalIndex.str();
+      constexpr StringLiteral baseSlot = "__vrc_typed_bank_base";
+      constexpr StringLiteral resultSlot = "__vrc_typed_bank_index";
+      addSlot(baseSlot, "SystemInt32", "0", false);
+      addSlot(resultSlot, "SystemInt32", "0", false);
+      emitI32Literal(location, base, baseSlot);
+      emitPush(location, logicalIndex);
+      emitPush(location, baseSlot);
+      emitPush(location, resultSlot);
+      emitExtern(location,
+                 "SystemInt32.__op_Addition__SystemInt32_SystemInt32__"
+                 "SystemInt32");
+      return resultSlot.str();
+    };
 
     for (Block &block : function.getBody()) {
       blockAddresses[&block] = address;
+      globalBlockAddresses[&block] = address;
       for (Operation &operation : block) {
+        // address_of is a pure constant in the raw-memory model. Re-materialize
+        // it at a direct use when the original value crosses an internal call,
+        // because interprocedural scalar-slot reuse need not preserve that
+        // shared slot.  Avoid doing this for ordinary uses: raw-address
+        // construction is intentionally verbose on Udon and belongs outside
+        // hot straight-line paths whenever no call can clobber the value.
+        llvm::SmallPtrSet<Operation *, 4> materializedAddresses;
+        for (Value operand : operation.getOperands()) {
+          auto addressOf = operand.getDefiningOp<host::AddressOfOp>();
+          if (addressOf && rawAddressCrossesCall(addressOf, &operation) &&
+              materializedAddresses.insert(addressOf.getOperation()).second &&
+              failed(materializeRawGlobalAddress(operand, operation.getLoc())))
+            return failure();
+        }
         if (isa<memref::GetGlobalOp>(operation))
           continue;
         if (auto alloca = dyn_cast<memref::AllocaOp>(operation)) {
@@ -1028,8 +2002,13 @@ private:
           auto found = rawGlobalBases.find(addressOf.getGlobal());
           if (found == rawGlobalBases.end())
             return addressOf.emitError("raw global has no static heap plan");
-          emitI32Literal(addressOf.getLoc(), found->second,
-                         valueSlots.lookup(addressOf.getResult()));
+          auto cached = cachedRawGlobalSlots.find(addressOf.getGlobal());
+          if (cached != cachedRawGlobalSlots.end())
+            emitCopy(addressOf.getLoc(), cached->second,
+                     valueSlots.lookup(addressOf.getResult()));
+          else
+            emitRawAddress(addressOf.getLoc(), found->second,
+                           valueSlots.lookup(addressOf.getResult()));
           continue;
         }
         if (auto cast = dyn_cast<UnrealizedConversionCastOp>(operation)) {
@@ -1044,8 +2023,32 @@ private:
           continue;
         }
         if (auto constant = dyn_cast<arith::ConstantOp>(operation)) {
-          if (constant.getType().isInteger(1) &&
-              cast<IntegerAttr>(constant.getValue()).getInt()) {
+          if (materializedConstants.contains(constant.getOperation())) {
+            if (auto floating = dyn_cast<FloatAttr>(constant.getValue())) {
+              constexpr StringLiteral bitsSlot = "__vrc_float_constant_bits";
+              addSlot(bitsSlot, "SystemInt32", "0", false);
+              emitI32Literal(
+                  constant.getLoc(),
+                  floating.getValue().bitcastToAPInt().getZExtValue(),
+                  bitsSlot);
+              emitPush(constant.getLoc(), bitsSlot);
+              emitPush(constant.getLoc(),
+                       valueSlots.lookup(constant.getResult()));
+              emitExtern(constant.getLoc(),
+                         "SystemBitConverter.__Int32BitsToSingle__SystemInt32__"
+                         "SystemSingle");
+            } else {
+              auto integer = cast<IntegerAttr>(constant.getValue());
+              if (constant.getType().isInteger(64))
+                emitI64Constant(constant.getLoc(), integer.getValue(),
+                                valueSlots.lookup(constant.getResult()));
+              else
+                emitI32Literal(constant.getLoc(),
+                               integer.getValue().getZExtValue(),
+                               valueSlots.lookup(constant.getResult()));
+            }
+          } else if (constant.getType().isInteger(1) &&
+                     cast<IntegerAttr>(constant.getValue()).getInt()) {
             std::string one = valueSlots.lookup(constant.getResult()) + "_one";
             addSlot(one, "SystemInt32", "1", false);
             emitPush(constant.getLoc(), one);
@@ -1424,6 +2427,15 @@ private:
         if (auto load = dyn_cast<host::LoadOp>(operation)) {
           std::string pointer = valueSlots.lookup(load.getPointer());
           std::string result = valueSlots.lookup(load.getResult());
+          if (isFastRawGlobalAccess(load.getPointer(),
+                                    load.getResult().getType())) {
+            emitPush(load.getLoc(), rawHeapSlot);
+            emitPush(load.getLoc(), pointer);
+            emitPush(load.getLoc(), result);
+            emitExtern(load.getLoc(),
+                       "SystemInt32Array.__Get__SystemInt32__SystemInt32");
+            continue;
+          }
           if (pointer.empty() || result.empty() ||
               failed(emitRawLoad(load.getLoc(), pointer, result,
                                  load.getResult().getType())))
@@ -1433,8 +2445,34 @@ private:
         if (auto store = dyn_cast<host::StoreOp>(operation)) {
           std::string pointer = valueSlots.lookup(store.getPointer());
           std::string value = valueSlots.lookup(store.getValue());
-          if (pointer.empty() || value.empty() ||
-              failed(emitRawStore(store.getLoc(), pointer, value,
+          if (pointer.empty() || value.empty())
+            return store.emitError("raw store operand has no Udon heap slot");
+          if (isFastRawGlobalAccess(store.getPointer(),
+                                    store.getValue().getType())) {
+            emitPush(store.getLoc(), rawHeapSlot);
+            emitPush(store.getLoc(), pointer);
+            emitPush(store.getLoc(), value);
+            emitExtern(
+                store.getLoc(),
+                "SystemInt32Array.__Set__SystemInt32_SystemInt32__SystemVoid");
+            continue;
+          }
+          if (auto constant =
+                  store.getValue().getDefiningOp<arith::ConstantOp>()) {
+            auto integer = dyn_cast<IntegerAttr>(constant.getValue());
+            if (integer && integer.getValue().isZero() &&
+                store.getValue().getType().isInteger(32)) {
+              emitPush(store.getLoc(), rawHeapSlot);
+              emitPush(store.getLoc(), pointer);
+              emitPush(store.getLoc(), immutableSlot("SystemInt32", "4"));
+              emitExtern(
+                  store.getLoc(),
+                  "SystemArray.__Clear__SystemArray_SystemInt32_SystemInt32__"
+                  "SystemVoid");
+              continue;
+            }
+          }
+          if (failed(emitRawStore(store.getLoc(), pointer, value,
                                   store.getValue().getType())))
             return store.emitError("unsupported raw Udon store");
           continue;
@@ -1446,6 +2484,116 @@ private:
           if (destination.empty() || source.empty() || byteSize.empty())
             return memcpy.emitError("memcpy pointer has no Udon heap slot");
           emitRawMemcpy(memcpy.getLoc(), destination, source, byteSize);
+          continue;
+        }
+        if (auto memset = dyn_cast<host::MemsetOp>(operation)) {
+          std::string destination = valueSlots.lookup(memset.getDestination());
+          std::string byteValue = valueSlots.lookup(memset.getByteValue());
+          std::string byteSize = valueSlots.lookup(memset.getByteSize());
+          if (destination.empty() || byteValue.empty() || byteSize.empty())
+            return memset.emitError("memset operand has no Udon heap slot");
+          bool isZero = false;
+          if (auto constant =
+                  memset.getByteValue().getDefiningOp<arith::ConstantOp>())
+            if (auto integer = dyn_cast<IntegerAttr>(constant.getValue()))
+              isZero = integer.getValue().isZero();
+          emitRawMemset(memset.getLoc(), destination, byteValue, byteSize,
+                        isZero);
+          continue;
+        }
+        if (isa<host::AsyncResumePointOp>(operation))
+          continue;
+        if (auto bind = dyn_cast<host::AsyncBindEventOp>(operation)) {
+          addSlot(asyncPendingObjectSlot, "SystemInt32", "0", true);
+          std::string object =
+              immutableSlot("SystemInt32", std::to_string(bind.getObjectId()));
+          emitCopy(bind.getLoc(), object, asyncPendingObjectSlot);
+          continue;
+        }
+        if (auto enter = dyn_cast<host::AsyncEnterOp>(operation)) {
+          auto target = llvm::find_if(
+              asyncResumeTargets, [&](const AsyncResumeTarget &candidate) {
+                return candidate.frameId == enter.getFrameId() &&
+                       candidate.resumePc == enter.getResumePc();
+              });
+          if (target == asyncResumeTargets.end())
+            return enter.emitError("static async route has no resume target");
+          auto calleePlan = functionPlans.find(target->function.getOperation());
+          if (calleePlan == functionPlans.end())
+            return enter.emitError("async route target has no function plan");
+          if (calleePlan->second.returnSlot) {
+            emitReturnAddress(enter.getLoc(), *calleePlan->second.returnSlot);
+          }
+          Operation *jump = emitJump(enter.getLoc(), 0);
+          asyncResumeRelocations.emplace_back(jump, target->block);
+          continue;
+        }
+        if (auto resume = dyn_cast<host::AsyncResumeOp>(operation)) {
+          std::string frame = valueSlots.lookup(resume.getFrameId());
+          std::string pc = valueSlots.lookup(resume.getResumePc());
+          if (frame.empty() || pc.empty())
+            return resume.emitError(
+                "async resume operands have no allocated Udon heap slots");
+          SmallVector<Operation *> done;
+          for (auto [routeIndex, target] :
+               llvm::enumerate(asyncResumeTargets)) {
+            auto calleePlan =
+                functionPlans.find(target.function.getOperation());
+            if (calleePlan == functionPlans.end())
+              return resume.emitError(
+                  "async resume target has no physical function plan");
+            bool resumesRoot = !calleePlan->second.returnSlot.has_value();
+            std::string frameConstant =
+                immutableSlot("SystemInt32", std::to_string(target.frameId));
+            std::string pcConstant =
+                immutableSlot("SystemInt32", std::to_string(target.resumePc));
+            std::string matchPrefix = prefix + "async_route_" +
+                                      std::to_string(callReturnIndex) + "_" +
+                                      std::to_string(routeIndex);
+            std::string frameMatches = matchPrefix + "_frame";
+            std::string pcMatches = matchPrefix + "_pc";
+            addSlot(frameMatches, "SystemBoolean", "null", false);
+            addSlot(pcMatches, "SystemBoolean", "null", false);
+            emitPush(resume.getLoc(), frame);
+            emitPush(resume.getLoc(), frameConstant);
+            emitPush(resume.getLoc(), frameMatches);
+            emitExtern(resume.getLoc(),
+                       "SystemInt32.__op_Equality__SystemInt32_SystemInt32__"
+                       "SystemBoolean");
+            emitPush(resume.getLoc(), frameMatches);
+            Operation *nextFrame = create(
+                resume.getLoc(), vm::JumpIfFalseOp::getOperationName(),
+                {builder.getNamedAttr("target", builder.getI64IntegerAttr(0))});
+            address += 8;
+            emitPush(resume.getLoc(), pc);
+            emitPush(resume.getLoc(), pcConstant);
+            emitPush(resume.getLoc(), pcMatches);
+            emitExtern(resume.getLoc(),
+                       "SystemInt32.__op_Equality__SystemInt32_SystemInt32__"
+                       "SystemBoolean");
+            emitPush(resume.getLoc(), pcMatches);
+            Operation *nextPc = create(
+                resume.getLoc(), vm::JumpIfFalseOp::getOperationName(),
+                {builder.getNamedAttr("target", builder.getI64IntegerAttr(0))});
+            address += 8;
+            if (resumesRoot) {
+              Operation *routeJump = emitJump(resume.getLoc(), 0);
+              asyncResumeRelocations.emplace_back(routeJump, target.block);
+            } else {
+              emitReturnAddress(resume.getLoc(),
+                                *calleePlan->second.returnSlot);
+              Operation *routeJump = emitJump(resume.getLoc(), 0);
+              asyncResumeRelocations.emplace_back(routeJump, target.block);
+              done.push_back(emitJump(resume.getLoc(), 0));
+            }
+            auto nextAddress =
+                builder.getI64IntegerAttr(static_cast<int64_t>(address));
+            nextFrame->setAttr("target", nextAddress);
+            nextPc->setAttr("target", nextAddress);
+          }
+          for (Operation *jump : done)
+            jump->setAttr("target", builder.getI64IntegerAttr(
+                                        static_cast<int64_t>(address)));
           continue;
         }
         if (auto call = dyn_cast<host::CallOp>(operation)) {
@@ -1466,14 +2614,40 @@ private:
               return call.emitError("call operand has no Udon heap slot");
             emitCopy(call.getLoc(), source, destination);
           }
-          std::string returnAddress =
-              prefix + "call_return_" + std::to_string(callReturnIndex++);
-          // Two eight-byte PUSH instructions plus four-byte COPY store the
-          // return address, then an eight-byte JUMP enters the callee.
-          addSlot(returnAddress, "SystemUInt32", std::to_string(address + 28),
-                  false);
-          emitCopy(call.getLoc(), returnAddress,
-                   *calleePlan->second.returnSlot);
+          emitReturnAddress(call.getLoc(), *calleePlan->second.returnSlot);
+          Operation *jump = emitJump(call.getLoc(), 0);
+          callRelocations.emplace_back(jump, callee);
+          if (call.getNumResults()) {
+            if (call.getNumResults() != 1 || !calleePlan->second.resultSlot)
+              return call.emitError(
+                  "normal Udon call supports at most one matching result");
+            std::string destination = valueSlots.lookup(call.getResult(0));
+            if (destination.empty())
+              return call.emitError("call result has no Udon heap slot");
+            emitCopy(call.getLoc(), *calleePlan->second.resultSlot,
+                     destination);
+          }
+          continue;
+        }
+        if (auto call = dyn_cast<func::CallOp>(operation)) {
+          auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
+              call, call.getCalleeAttr());
+          auto calleePlan = callee ? functionPlans.find(callee.getOperation())
+                                   : functionPlans.end();
+          if (!callee || calleePlan == functionPlans.end() ||
+              !calleePlan->second.returnSlot)
+            return call.emitError(
+                "normal Udon call requires a defined internal callee");
+          if (call.getNumOperands() != calleePlan->second.parameterSlots.size())
+            return call.emitError("callee argument slot count mismatch");
+          for (auto [operand, destination] : llvm::zip(
+                   call.getOperands(), calleePlan->second.parameterSlots)) {
+            std::string source = valueSlots.lookup(operand);
+            if (source.empty())
+              return call.emitError("call operand has no Udon heap slot");
+            emitCopy(call.getLoc(), source, destination);
+          }
+          emitReturnAddress(call.getLoc(), *calleePlan->second.returnSlot);
           Operation *jump = emitJump(call.getLoc(), 0);
           callRelocations.emplace_back(jump, callee);
           if (call.getNumResults()) {
@@ -1535,6 +2709,86 @@ private:
           jumpTo(branch.getLoc(), branch.getFalseDest());
           continue;
         }
+        if (auto branch = dyn_cast<cf::SwitchOp>(operation)) {
+          if (!branch.getFlag().getType().isInteger(32))
+            return branch.emitError(
+                "Udon switch lowering currently requires an i32 flag");
+          std::string flag = valueSlots.lookup(branch.getFlag());
+          if (flag.empty())
+            return branch.emitError("switch flag has no Udon heap slot");
+          auto caseValues = branch.getCaseValues();
+          if (caseValues) {
+            unsigned caseIndex = 0;
+            for (const llvm::APInt &caseValue :
+                 caseValues->getValues<llvm::APInt>()) {
+              std::string value = immutableSlot(
+                  "SystemInt32", std::to_string(caseValue.getSExtValue()));
+              std::string condition = "__vrc_switch_condition";
+              addSlot(condition, "SystemBoolean", "null", false);
+              emitPush(branch.getLoc(), flag);
+              emitPush(branch.getLoc(), value);
+              emitPush(branch.getLoc(), condition);
+              emitExtern(branch.getLoc(),
+                         "SystemInt32.__op_Equality__SystemInt32_SystemInt32__"
+                         "SystemBoolean");
+              emitPush(branch.getLoc(), condition);
+              Operation *nextCase =
+                  create(branch.getLoc(), vm::JumpIfFalseOp::getOperationName(),
+                         {builder.getNamedAttr("target",
+                                               builder.getI64IntegerAttr(0))});
+              address += 8;
+              if (failed(copies(branch.getLoc(),
+                                branch.getCaseOperands(caseIndex),
+                                branch.getCaseDestinations()[caseIndex])))
+                return failure();
+              jumpTo(branch.getLoc(), branch.getCaseDestinations()[caseIndex]);
+              nextCase->setAttr("target", builder.getI64IntegerAttr(
+                                              static_cast<int64_t>(address)));
+              ++caseIndex;
+            }
+          }
+          if (failed(copies(branch.getLoc(), branch.getDefaultOperands(),
+                            branch.getDefaultDestination())))
+            return failure();
+          jumpTo(branch.getLoc(), branch.getDefaultDestination());
+          continue;
+        }
+        if (auto store = dyn_cast<host::SpillStoreOp>(operation)) {
+          auto bank = typedSpillBanks.find(store.getStorageKey());
+          std::string value = valueSlots.lookup(store.getValue());
+          if (bank == typedSpillBanks.end() || value.empty() ||
+              store.getIndex() < 0 ||
+              static_cast<unsigned>(store.getIndex()) >= bank->second.length)
+            return store.emitError("invalid typed spill store plan");
+          constexpr StringLiteral indexSlot = "__vrc_spill_index";
+          addSlot(indexSlot, "SystemInt32", "0", false);
+          emitI32Literal(store.getLoc(), store.getIndex(), indexSlot);
+          emitPush(store.getLoc(), bank->second.slot);
+          emitPush(store.getLoc(), indexSlot);
+          emitPush(store.getLoc(), value);
+          emitExtern(store.getLoc(),
+                     bank->second.arrayType + ".__Set__SystemInt32_" +
+                         bank->second.scalarType + "__SystemVoid");
+          continue;
+        }
+        if (auto load = dyn_cast<host::SpillLoadOp>(operation)) {
+          auto bank = typedSpillBanks.find(load.getStorageKey());
+          std::string result = valueSlots.lookup(load.getValue());
+          if (bank == typedSpillBanks.end() || result.empty() ||
+              load.getIndex() < 0 ||
+              static_cast<unsigned>(load.getIndex()) >= bank->second.length)
+            return load.emitError("invalid typed spill load plan");
+          constexpr StringLiteral indexSlot = "__vrc_spill_index";
+          addSlot(indexSlot, "SystemInt32", "0", false);
+          emitI32Literal(load.getLoc(), load.getIndex(), indexSlot);
+          emitPush(load.getLoc(), bank->second.slot);
+          emitPush(load.getLoc(), indexSlot);
+          emitPush(load.getLoc(), result);
+          emitExtern(load.getLoc(), bank->second.arrayType +
+                                        ".__Get__SystemInt32__" +
+                                        bank->second.scalarType);
+          continue;
+        }
         if (auto load = dyn_cast<memref::LoadOp>(operation)) {
           if (load.getIndices().size() != 1)
             return load.emitError(
@@ -1548,6 +2802,7 @@ private:
               result.empty())
             return load.emitError(
                 "unsupported typed Udon array load or missing heap slot");
+          index = typedArrayIndex(load.getLoc(), load.getMemRef(), index);
           emitPush(load.getLoc(), array);
           emitPush(load.getLoc(), index);
           emitPush(load.getLoc(), result);
@@ -1567,6 +2822,7 @@ private:
               value.empty())
             return store.emitError(
                 "unsupported typed Udon array store or missing heap slot");
+          index = typedArrayIndex(store.getLoc(), store.getMemRef(), index);
           emitPush(store.getLoc(), array);
           emitPush(store.getLoc(), index);
           emitPush(store.getLoc(), value);
@@ -1626,8 +2882,14 @@ private:
           std::string source = valueSlots.lookup(cast.getIn());
           std::string result = valueSlots.lookup(cast.getOut());
           if (source.empty() || result.empty() ||
-              !cast.getOut().getType().isInteger(32))
-            return cast.emitError("unsupported unsigned integer extension");
+              (!cast.getOut().getType().isInteger(32) &&
+               !(cast.getIn().getType().isInteger(32) &&
+                 cast.getOut().getType().isInteger(64))))
+            return cast.emitError(
+                       "unsupported unsigned integer extension from ")
+                   << cast.getIn().getType() << " to "
+                   << cast.getOut().getType() << " in @"
+                   << cast->getParentOfType<func::FuncOp>().getSymName();
           if (cast.getIn().getType().isInteger(8) ||
               cast.getIn().getType().isInteger(16)) {
             // Raw i8/i16 loads are represented by non-negative SystemInt32
@@ -1635,8 +2897,50 @@ private:
             emitCopy(cast.getLoc(), source, result);
             continue;
           }
+          if (cast.getIn().getType().isInteger(32) &&
+              cast.getOut().getType().isInteger(64)) {
+            constexpr StringLiteral isNegative =
+                "__vrc_i32_zero_extend_is_negative";
+            constexpr StringLiteral adjusted = "__vrc_i32_zero_extend_adjusted";
+            constexpr StringLiteral modulus = "__vrc_i32_unsigned_modulus";
+            addSlot(isNegative, "SystemBoolean", "null", false);
+            addSlot(adjusted, "SystemInt64", "0", false);
+            addSlot(modulus, "SystemInt64", "null", false);
+            std::string zero = immutableSlot("SystemInt32", "0");
+            emitI64Constant(cast.getLoc(), llvm::APInt::getOneBitSet(64, 32),
+                            modulus);
+            emitPush(cast.getLoc(), source);
+            emitPush(cast.getLoc(), result);
+            emitExtern(cast.getLoc(),
+                       "SystemConvert.__ToInt64__SystemInt32__SystemInt64");
+            emitPush(cast.getLoc(), source);
+            emitPush(cast.getLoc(), zero);
+            emitPush(cast.getLoc(), isNegative);
+            emitExtern(cast.getLoc(),
+                       "SystemInt32.__op_LessThan__SystemInt32_SystemInt32__"
+                       "SystemBoolean");
+            emitPush(cast.getLoc(), isNegative);
+            Operation *done = create(
+                cast.getLoc(), vm::JumpIfFalseOp::getOperationName(),
+                {builder.getNamedAttr("target", builder.getI64IntegerAttr(0))});
+            address += 8;
+            emitPush(cast.getLoc(), result);
+            emitPush(cast.getLoc(), modulus);
+            emitPush(cast.getLoc(), adjusted);
+            emitExtern(cast.getLoc(),
+                       "SystemInt64.__op_Addition__SystemInt64_SystemInt64__"
+                       "SystemInt64");
+            emitCopy(cast.getLoc(), adjusted, result);
+            done->setAttr("target", builder.getI64IntegerAttr(
+                                        static_cast<int64_t>(address)));
+            continue;
+          }
           if (!cast.getIn().getType().isInteger(1))
-            return cast.emitError("unsupported unsigned integer extension");
+            return cast.emitError(
+                       "unsupported unsigned integer extension from ")
+                   << cast.getIn().getType() << " to "
+                   << cast.getOut().getType() << " in @"
+                   << cast->getParentOfType<func::FuncOp>().getSymName();
           std::string zero = immutableSlot("SystemInt32", "0");
           std::string one = immutableSlot("SystemInt32", "1");
           emitPush(cast.getLoc(), source);
@@ -1693,6 +2997,85 @@ private:
           emitPush(cast.getLoc(), result);
           emitExtern(cast.getLoc(),
                      "SystemConvert.__ToSingle__SystemInt32__SystemSingle");
+          continue;
+        }
+        if (auto cast = dyn_cast<arith::UIToFPOp>(operation)) {
+          std::string source = valueSlots.lookup(cast.getIn());
+          std::string result = valueSlots.lookup(cast.getOut());
+          if (source.empty() || result.empty() ||
+              !cast.getIn().getType().isInteger(32) ||
+              !cast.getOut().getType().isF32())
+            return cast.emitError(
+                "unsigned integer to float conversion supports only i32 to "
+                "f32");
+          constexpr StringLiteral widened = "__vrc_uitofp_widened";
+          constexpr StringLiteral adjusted = "__vrc_uitofp_adjusted";
+          constexpr StringLiteral offset = "__vrc_uitofp_offset";
+          constexpr StringLiteral negative = "__vrc_uitofp_negative";
+          constexpr StringLiteral unsignedValue = "__vrc_uitofp_unsigned";
+          addSlot(widened, "SystemInt64", "null", false);
+          addSlot(adjusted, "SystemInt64", "null", false);
+          addSlot(offset, "SystemInt64", "null", false);
+          addSlot(negative, "SystemBoolean", "null", false);
+          addSlot(unsignedValue, "SystemUInt32", "0", false);
+          emitI64Constant(cast.getLoc(), llvm::APInt(64, uint64_t{1} << 32),
+                          offset);
+          emitPush(cast.getLoc(), source);
+          emitPush(cast.getLoc(), widened);
+          emitExtern(cast.getLoc(),
+                     "SystemConvert.__ToInt64__SystemInt32__SystemInt64");
+          std::string zero = immutableSlot("SystemInt32", "0");
+          emitPush(cast.getLoc(), source);
+          emitPush(cast.getLoc(), zero);
+          emitPush(cast.getLoc(), negative);
+          emitExtern(cast.getLoc(),
+                     "SystemInt32.__op_LessThan__SystemInt32_SystemInt32__"
+                     "SystemBoolean");
+          emitPush(cast.getLoc(), negative);
+          Operation *nonnegative = create(
+              cast.getLoc(), vm::JumpIfFalseOp::getOperationName(),
+              {builder.getNamedAttr("target", builder.getI64IntegerAttr(0))});
+          address += 8;
+          emitPush(cast.getLoc(), widened);
+          emitPush(cast.getLoc(), offset);
+          emitPush(cast.getLoc(), adjusted);
+          emitExtern(cast.getLoc(),
+                     "SystemInt64.__op_Addition__SystemInt64_SystemInt64__"
+                     "SystemInt64");
+          emitCopy(cast.getLoc(), adjusted, widened);
+          nonnegative->setAttr("target", builder.getI64IntegerAttr(
+                                             static_cast<int64_t>(address)));
+          emitPush(cast.getLoc(), widened);
+          emitPush(cast.getLoc(), unsignedValue);
+          emitExtern(cast.getLoc(),
+                     "SystemConvert.__ToUInt32__SystemInt64__SystemUInt32");
+          emitPush(cast.getLoc(), unsignedValue);
+          emitPush(cast.getLoc(), result);
+          emitExtern(cast.getLoc(),
+                     "SystemConvert.__ToSingle__SystemUInt32__SystemSingle");
+          continue;
+        }
+        if (auto cast = dyn_cast<arith::BitcastOp>(operation)) {
+          std::string source = valueSlots.lookup(cast.getIn());
+          std::string result = valueSlots.lookup(cast.getOut());
+          if (source.empty() || result.empty())
+            return cast.emitError("bitcast has missing Udon heap slots");
+          emitPush(cast.getLoc(), source);
+          emitPush(cast.getLoc(), result);
+          if (cast.getIn().getType().isF32() &&
+              cast.getOut().getType().isInteger(32)) {
+            emitExtern(cast.getLoc(),
+                       "SystemBitConverter.__SingleToInt32Bits__SystemSingle__"
+                       "SystemInt32");
+          } else if (cast.getIn().getType().isInteger(32) &&
+                     cast.getOut().getType().isF32()) {
+            emitExtern(cast.getLoc(),
+                       "SystemBitConverter.__Int32BitsToSingle__SystemInt32__"
+                       "SystemSingle");
+          } else {
+            return cast.emitError(
+                "Udon bitcast supports only bit-exact f32/i32 casts");
+          }
           continue;
         }
         if (auto select = dyn_cast<arith::SelectOp>(operation)) {
@@ -1881,11 +3264,281 @@ private:
                      "SystemInt32");
           continue;
         }
+        if (auto bitAnd = dyn_cast<arith::AndIOp>(operation);
+            bitAnd && bitAnd.getType().isInteger(1)) {
+          std::string lhs = valueSlots.lookup(bitAnd.getLhs());
+          std::string rhs = valueSlots.lookup(bitAnd.getRhs());
+          std::string result = valueSlots.lookup(bitAnd.getResult());
+          if (lhs.empty() || rhs.empty() || result.empty())
+            return bitAnd.emitError(
+                "boolean conjunction has missing Udon heap slots");
+
+          // Udon has no SystemBoolean logical-and extern. Preserve i1
+          // semantics with short-circuit control flow instead of passing
+          // Boolean heap slots to the integer bitwise extern.
+          emitCopy(bitAnd.getLoc(), lhs, result);
+          emitPush(bitAnd.getLoc(), lhs);
+          Operation *done = create(
+              bitAnd.getLoc(), vm::JumpIfFalseOp::getOperationName(),
+              {builder.getNamedAttr("target", builder.getI64IntegerAttr(0))});
+          address += 8;
+          emitCopy(bitAnd.getLoc(), rhs, result);
+          done->setAttr("target", builder.getI64IntegerAttr(
+                                      static_cast<int64_t>(address)));
+          continue;
+        }
+        if (auto bitOr = dyn_cast<arith::OrIOp>(operation);
+            bitOr && bitOr.getType().isInteger(1)) {
+          std::string lhs = valueSlots.lookup(bitOr.getLhs());
+          std::string rhs = valueSlots.lookup(bitOr.getRhs());
+          std::string result = valueSlots.lookup(bitOr.getResult());
+          if (lhs.empty() || rhs.empty() || result.empty())
+            return bitOr.emitError(
+                "boolean disjunction has missing Udon heap slots");
+          emitCopy(bitOr.getLoc(), lhs, result);
+          emitPush(bitOr.getLoc(), lhs);
+          Operation *useRhs = create(
+              bitOr.getLoc(), vm::JumpIfFalseOp::getOperationName(),
+              {builder.getNamedAttr("target", builder.getI64IntegerAttr(0))});
+          address += 8;
+          Operation *done = emitJump(bitOr.getLoc(), 0);
+          useRhs->setAttr("target", builder.getI64IntegerAttr(
+                                        static_cast<int64_t>(address)));
+          emitCopy(bitOr.getLoc(), rhs, result);
+          done->setAttr("target", builder.getI64IntegerAttr(
+                                      static_cast<int64_t>(address)));
+          continue;
+        }
+        if (auto bitXor = dyn_cast<arith::XOrIOp>(operation);
+            bitXor && bitXor.getType().isInteger(1)) {
+          std::string lhs = valueSlots.lookup(bitXor.getLhs());
+          std::string rhs = valueSlots.lookup(bitXor.getRhs());
+          std::string result = valueSlots.lookup(bitXor.getResult());
+          if (lhs.empty() || rhs.empty() || result.empty())
+            return bitXor.emitError(
+                "boolean exclusive-or has missing Udon heap slots");
+          std::string falseValue = immutableSlot("SystemBoolean", "null");
+          std::string one = immutableSlot("SystemInt32", "1");
+          emitCopy(bitXor.getLoc(), rhs, result);
+          emitPush(bitXor.getLoc(), lhs);
+          Operation *lhsFalse = create(
+              bitXor.getLoc(), vm::JumpIfFalseOp::getOperationName(),
+              {builder.getNamedAttr("target", builder.getI64IntegerAttr(0))});
+          address += 8;
+          emitCopy(bitXor.getLoc(), falseValue, result);
+          emitPush(bitXor.getLoc(), rhs);
+          Operation *rhsFalse = create(
+              bitXor.getLoc(), vm::JumpIfFalseOp::getOperationName(),
+              {builder.getNamedAttr("target", builder.getI64IntegerAttr(0))});
+          address += 8;
+          Operation *done = emitJump(bitXor.getLoc(), 0);
+          rhsFalse->setAttr("target", builder.getI64IntegerAttr(
+                                          static_cast<int64_t>(address)));
+          emitPush(bitXor.getLoc(), one);
+          emitPush(bitXor.getLoc(), one);
+          emitPush(bitXor.getLoc(), result);
+          emitExtern(bitXor.getLoc(),
+                     "SystemInt32.__op_Equality__SystemInt32_SystemInt32__"
+                     "SystemBoolean");
+          auto doneAddress =
+              builder.getI64IntegerAttr(static_cast<int64_t>(address));
+          lhsFalse->setAttr("target", doneAddress);
+          done->setAttr("target", doneAddress);
+          continue;
+        }
+        if (auto comparison = dyn_cast<arith::CmpIOp>(operation);
+            comparison && comparison.getLhs().getType().isInteger(1)) {
+          if (comparison.getPredicate() != arith::CmpIPredicate::eq &&
+              comparison.getPredicate() != arith::CmpIPredicate::ne)
+            return comparison.emitError(
+                "boolean Udon comparison supports only equality and "
+                "inequality");
+          std::string lhs = valueSlots.lookup(comparison.getLhs());
+          std::string rhs = valueSlots.lookup(comparison.getRhs());
+          std::string result = valueSlots.lookup(comparison.getResult());
+          if (lhs.empty() || rhs.empty() || result.empty())
+            return comparison.emitError(
+                "boolean comparison has missing Udon heap slots");
+
+          // Udon has no guaranteed Boolean equality extern. Compute eq/ne
+          // with Boolean control flow, materializing true through the stable
+          // Int32 equality extern already used for i1 constants.
+          std::string falseValue = immutableSlot("SystemBoolean", "null");
+          std::string one = immutableSlot("SystemInt32", "1");
+          emitCopy(comparison.getLoc(), rhs, result);
+          emitPush(comparison.getLoc(), lhs);
+          Operation *lhsFalse = create(
+              comparison.getLoc(), vm::JumpIfFalseOp::getOperationName(),
+              {builder.getNamedAttr("target", builder.getI64IntegerAttr(0))});
+          address += 8;
+          SmallVector<Operation *> done;
+          bool equality = comparison.getPredicate() == arith::CmpIPredicate::eq;
+          if (equality) {
+            done.push_back(emitJump(comparison.getLoc(), 0));
+            lhsFalse->setAttr("target", builder.getI64IntegerAttr(
+                                            static_cast<int64_t>(address)));
+          }
+          emitCopy(comparison.getLoc(), falseValue, result);
+          emitPush(comparison.getLoc(), rhs);
+          Operation *rhsFalse = create(
+              comparison.getLoc(), vm::JumpIfFalseOp::getOperationName(),
+              {builder.getNamedAttr("target", builder.getI64IntegerAttr(0))});
+          address += 8;
+          done.push_back(emitJump(comparison.getLoc(), 0));
+          rhsFalse->setAttr("target", builder.getI64IntegerAttr(
+                                          static_cast<int64_t>(address)));
+          emitPush(comparison.getLoc(), one);
+          emitPush(comparison.getLoc(), one);
+          emitPush(comparison.getLoc(), result);
+          emitExtern(comparison.getLoc(),
+                     "SystemInt32.__op_Equality__SystemInt32_SystemInt32__"
+                     "SystemBoolean");
+          auto doneAddress =
+              builder.getI64IntegerAttr(static_cast<int64_t>(address));
+          if (!equality)
+            lhsFalse->setAttr("target", doneAddress);
+          for (Operation *jump : done)
+            jump->setAttr("target", doneAddress);
+          continue;
+        }
+        if (auto comparison = dyn_cast<arith::CmpFOp>(operation);
+            comparison &&
+            comparison.getPredicate() == arith::CmpFPredicate::UNO) {
+          std::string lhs = valueSlots.lookup(comparison.getLhs());
+          std::string rhs = valueSlots.lookup(comparison.getRhs());
+          std::string result = valueSlots.lookup(comparison.getResult());
+          if (lhs.empty() || rhs.empty() || result.empty() ||
+              !comparison.getLhs().getType().isF32())
+            return comparison.emitError(
+                "unordered float comparison requires allocated f32 slots");
+          constexpr StringLiteral lhsNan = "__vrc_cmpf_lhs_nan";
+          constexpr StringLiteral rhsNan = "__vrc_cmpf_rhs_nan";
+          addSlot(lhsNan, "SystemBoolean", "null", false);
+          addSlot(rhsNan, "SystemBoolean", "null", false);
+          auto emitIsNan = [&](StringRef value, StringRef destination) {
+            emitPush(comparison.getLoc(), value);
+            emitPush(comparison.getLoc(), value);
+            emitPush(comparison.getLoc(), destination);
+            emitExtern(comparison.getLoc(),
+                       "SystemSingle.__op_Inequality__SystemSingle_"
+                       "SystemSingle__SystemBoolean");
+          };
+          emitIsNan(lhs, lhsNan);
+          emitIsNan(rhs, rhsNan);
+          emitCopy(comparison.getLoc(), lhsNan, result);
+          emitPush(comparison.getLoc(), lhsNan);
+          Operation *useRhs = create(
+              comparison.getLoc(), vm::JumpIfFalseOp::getOperationName(),
+              {builder.getNamedAttr("target", builder.getI64IntegerAttr(0))});
+          address += 8;
+          Operation *done = emitJump(comparison.getLoc(), 0);
+          useRhs->setAttr("target", builder.getI64IntegerAttr(
+                                        static_cast<int64_t>(address)));
+          emitCopy(comparison.getLoc(), rhsNan, result);
+          done->setAttr("target", builder.getI64IntegerAttr(
+                                      static_cast<int64_t>(address)));
+          continue;
+        }
+        if (auto comparison = dyn_cast<arith::CmpIOp>(operation);
+            comparison &&
+            (comparison.getPredicate() == arith::CmpIPredicate::ult ||
+             comparison.getPredicate() == arith::CmpIPredicate::ule ||
+             comparison.getPredicate() == arith::CmpIPredicate::ugt ||
+             comparison.getPredicate() == arith::CmpIPredicate::uge)) {
+          Type type = comparison.getLhs().getType();
+          if (!type.isInteger(32) && !type.isInteger(64))
+            return comparison.emitError(
+                "unsigned Udon comparison supports only i32/i64");
+          std::string lhs = valueSlots.lookup(comparison.getLhs());
+          std::string rhs = valueSlots.lookup(comparison.getRhs());
+          std::string result = valueSlots.lookup(comparison.getResult());
+          if (lhs.empty() || rhs.empty() || result.empty())
+            return comparison.emitError(
+                "unsigned comparison has missing Udon heap slots");
+          StringRef systemType =
+              type.isInteger(64) ? "SystemInt64" : "SystemInt32";
+          std::string mask;
+          if (type.isInteger(64)) {
+            mask = "__vrc_unsigned_cmp_sign_i64";
+            addSlot(mask, systemType, "null", false);
+            emitI64Constant(comparison.getLoc(), llvm::APInt::getSignMask(64),
+                            mask);
+          } else {
+            mask = "__vrc_unsigned_cmp_sign_i32";
+            addSlot(mask, systemType, "null", false);
+            emitI32Literal(comparison.getLoc(), uint64_t{1} << 31, mask);
+          }
+          std::string adjustedLhs = type.isInteger(64)
+                                        ? "__vrc_unsigned_cmp_lhs_i64"
+                                        : "__vrc_unsigned_cmp_lhs_i32";
+          std::string adjustedRhs = type.isInteger(64)
+                                        ? "__vrc_unsigned_cmp_rhs_i64"
+                                        : "__vrc_unsigned_cmp_rhs_i32";
+          addSlot(adjustedLhs, systemType, "null", false);
+          addSlot(adjustedRhs, systemType, "null", false);
+          auto adjust = [&](StringRef source, StringRef destination) {
+            emitPush(comparison.getLoc(), source);
+            emitPush(comparison.getLoc(), mask);
+            emitPush(comparison.getLoc(), destination);
+            emitExtern(comparison.getLoc(),
+                       (systemType + ".__op_LogicalXor__" + systemType + "_" +
+                        systemType + "__" + systemType)
+                           .str());
+          };
+          adjust(lhs, adjustedLhs);
+          adjust(rhs, adjustedRhs);
+          StringRef comparisonName;
+          switch (comparison.getPredicate()) {
+          case arith::CmpIPredicate::ult:
+            comparisonName = "LessThan";
+            break;
+          case arith::CmpIPredicate::ule:
+            comparisonName = "LessThanOrEqual";
+            break;
+          case arith::CmpIPredicate::ugt:
+            comparisonName = "GreaterThan";
+            break;
+          case arith::CmpIPredicate::uge:
+            comparisonName = "GreaterThanOrEqual";
+            break;
+          default:
+            llvm_unreachable("handled unsigned comparison predicate");
+          }
+          emitPush(comparison.getLoc(), adjustedLhs);
+          emitPush(comparison.getLoc(), adjustedRhs);
+          emitPush(comparison.getLoc(), result);
+          emitExtern(comparison.getLoc(),
+                     (systemType + ".__op_" + comparisonName + "__" +
+                      systemType + "_" + systemType + "__SystemBoolean")
+                         .str());
+          continue;
+        }
+        if (isa<arith::DivUIOp, arith::RemUIOp>(operation)) {
+          if (!operation.getOperand(0).getType().isInteger(32))
+            return operation.emitError(
+                "unsigned Udon division/remainder currently requires i32");
+          std::string lhs = valueSlots.lookup(operation.getOperand(0));
+          std::string rhs = valueSlots.lookup(operation.getOperand(1));
+          std::string result = valueSlots.lookup(operation.getResult(0));
+          if (lhs.empty() || rhs.empty() || result.empty())
+            return operation.emitError(
+                "unsigned division/remainder has missing Udon heap slots");
+          if (failed(emitUnsignedDivRem(operation.getLoc(), lhs, rhs, result,
+                                        isa<arith::RemUIOp>(operation))))
+            return operation.emitError(
+                "failed to lower unsigned division/remainder");
+          continue;
+        }
         StringRef signature = binaryExtern(&operation);
         if (auto comparison = dyn_cast<arith::CmpIOp>(operation))
           signature = comparisonExtern(comparison);
         if (auto comparison = dyn_cast<arith::CmpFOp>(operation))
           signature = comparisonExtern(comparison);
+        if (signature.empty())
+          if (auto comparison = dyn_cast<arith::CmpFOp>(operation))
+            return comparison.emitError()
+                   << "unsupported floating comparison predicate "
+                   << arith::stringifyCmpFPredicate(comparison.getPredicate());
         if (signature.empty() || operation.getNumOperands() != 2 ||
             operation.getNumResults() != 1)
           return operation.emitError()
@@ -1968,43 +3621,157 @@ private:
     return selected;
   }
 
-  void emitI32Literal(Location location, uint64_t value, StringRef result) {
-    assert(value <= UINT32_MAX && "i32 literal exceeds 32 bits");
+  void emitReturnAddress(Location location, StringRef result) {
+    // Udon has no immediate PUSH. Materialize the continuation with a fixed
+    // four-byte instruction sequence so its value can account for the exact
+    // sequence length without reserving one Udon Heap slot per call site.
+    // Each byte costs four PUSH/PUSH/PUSH/EXTERN groups (128 bytes), preceded
+    // by a 20-byte zero copy and followed by a 24-byte i32 -> u32 conversion.
+    constexpr uint64_t materializationBytes = 20 + 4 * 128 + 24;
+    constexpr uint64_t jumpBytes = 8;
+    uint64_t continuation = address + materializationBytes + jumpBytes;
+    assert(continuation <= UINT32_MAX && "Udon return address exceeds 32 bits");
+
+    constexpr StringLiteral accumulator = "__vrc_return_address_i32";
+    constexpr StringLiteral highScratch = "__vrc_return_address_high";
+    constexpr StringLiteral byteScratch = "__vrc_return_address_byte";
+    constexpr StringLiteral shiftedScratch = "__vrc_return_address_shifted";
+    addSlot(accumulator, "SystemInt32", "0", false);
+    addSlot(highScratch, "SystemInt32", "0", false);
+    addSlot(byteScratch, "SystemInt32", "0", false);
+    addSlot(shiftedScratch, "SystemInt32", "0", false);
     std::string zero = immutableSlot("SystemInt32", "0");
-    std::string one = immutableSlot("SystemInt32", "1");
-    constexpr StringLiteral scratch = "__vrc_i32_literal_scratch";
-    addSlot(scratch, "SystemInt32", "0", false);
-    emitCopy(location, zero, result);
-    if (!value)
-      return;
-    unsigned highestBit = 0;
-    for (uint64_t remaining = value; remaining >>= 1;)
-      ++highestBit;
-    for (int bit = static_cast<int>(highestBit); bit >= 0; --bit) {
-      emitPush(location, result);
-      emitPush(location, result);
-      emitPush(location, scratch);
+    std::string nibbleShift = immutableSlot("SystemInt32", "4");
+    emitCopy(location, zero, accumulator);
+    for (unsigned byteIndex = 0; byteIndex < 4; ++byteIndex) {
+      uint8_t byte = static_cast<uint8_t>(continuation >> (byteIndex * 8));
+      std::string high =
+          immutableSlot("SystemInt32", std::to_string(byte >> 4));
+      std::string low = immutableSlot("SystemInt32", std::to_string(byte & 15));
+      std::string shift =
+          immutableSlot("SystemInt32", std::to_string(byteIndex * 8));
+      emitPush(location, high);
+      emitPush(location, nibbleShift);
+      emitPush(location, highScratch);
+      emitExtern(location,
+                 "SystemInt32.__op_LeftShift__SystemInt32_SystemInt32__"
+                 "SystemInt32");
+      emitPush(location, highScratch);
+      emitPush(location, low);
+      emitPush(location, byteScratch);
       emitExtern(location,
                  "SystemInt32.__op_Addition__SystemInt32_SystemInt32__"
                  "SystemInt32");
-      emitCopy(location, scratch, result);
-      if ((value >> bit) & 1) {
-        emitPush(location, result);
-        emitPush(location, one);
-        emitPush(location, scratch);
+      emitPush(location, byteScratch);
+      emitPush(location, shift);
+      emitPush(location, shiftedScratch);
+      emitExtern(location,
+                 "SystemInt32.__op_LeftShift__SystemInt32_SystemInt32__"
+                 "SystemInt32");
+      emitPush(location, accumulator);
+      emitPush(location, shiftedScratch);
+      emitPush(location, accumulator);
+      emitExtern(location,
+                 "SystemInt32.__op_LogicalOr__SystemInt32_SystemInt32__"
+                 "SystemInt32");
+    }
+    emitPush(location, accumulator);
+    emitPush(location, result);
+    emitExtern(location, "SystemConvert.__ToUInt32__SystemInt32__SystemUInt32");
+    assert(address + jumpBytes == continuation &&
+           "return address materialization length changed");
+  }
+
+  void emitI32Literal(Location location, uint64_t value, StringRef result) {
+    assert(value <= UINT32_MAX && "i32 literal exceeds 32 bits");
+    std::string zero = immutableSlot("SystemInt32", "0");
+    std::string nibbleShift = immutableSlot("SystemInt32", "4");
+    constexpr StringLiteral highScratch = "__vrc_return_address_high";
+    constexpr StringLiteral byteScratch = "__vrc_return_address_byte";
+    constexpr StringLiteral shiftedScratch = "__vrc_return_address_shifted";
+    addSlot(highScratch, "SystemInt32", "0", false);
+    addSlot(byteScratch, "SystemInt32", "0", false);
+    addSlot(shiftedScratch, "SystemInt32", "0", false);
+    emitCopy(location, zero, result);
+    for (unsigned byteIndex = 0; byteIndex < 4; ++byteIndex) {
+      uint8_t byte = static_cast<uint8_t>(value >> (byteIndex * 8));
+      if (!byte)
+        continue;
+      std::string high =
+          immutableSlot("SystemInt32", std::to_string(byte >> 4));
+      std::string low = immutableSlot("SystemInt32", std::to_string(byte & 15));
+      emitPush(location, high);
+      emitPush(location, nibbleShift);
+      emitPush(location, highScratch);
+      emitExtern(location,
+                 "SystemInt32.__op_LeftShift__SystemInt32_SystemInt32__"
+                 "SystemInt32");
+      emitPush(location, highScratch);
+      emitPush(location, low);
+      emitPush(location, byteScratch);
+      emitExtern(location,
+                 "SystemInt32.__op_Addition__SystemInt32_SystemInt32__"
+                 "SystemInt32");
+      StringRef component = byteScratch;
+      if (byteIndex) {
+        std::string shift =
+            immutableSlot("SystemInt32", std::to_string(byteIndex * 8));
+        emitPush(location, component);
+        emitPush(location, shift);
+        emitPush(location, shiftedScratch);
         emitExtern(location,
-                   "SystemInt32.__op_Addition__SystemInt32_SystemInt32__"
+                   "SystemInt32.__op_LeftShift__SystemInt32_SystemInt32__"
                    "SystemInt32");
-        emitCopy(location, scratch, result);
+        component = shiftedScratch;
+      }
+      emitPush(location, result);
+      emitPush(location, component);
+      emitPush(location, result);
+      emitExtern(location,
+                 "SystemInt32.__op_LogicalOr__SystemInt32_SystemInt32__"
+                 "SystemInt32");
+    }
+  }
+
+  void emitRawAddress(Location location, uint64_t address, StringRef result) {
+    auto closest = cachedRawGlobalBases.end();
+    uint64_t closestDistance = UINT64_MAX;
+    for (auto candidate = cachedRawGlobalBases.begin();
+         candidate != cachedRawGlobalBases.end(); ++candidate) {
+      uint64_t distance = candidate->first > address
+                              ? candidate->first - address
+                              : address - candidate->first;
+      if (distance < closestDistance) {
+        closest = candidate;
+        closestDistance = distance;
       }
     }
+    // A nearby cached address is cheaper than rebuilding a multi-byte raw
+    // address and needs no additional Udon Heap slot.
+    if (closest == cachedRawGlobalBases.end() || closestDistance > UINT16_MAX) {
+      emitI32Literal(location, address, result);
+      return;
+    }
+    constexpr StringLiteral delta = "__vrc_return_address_i32";
+    addSlot(delta, "SystemInt32", "0", false);
+    emitCopy(location, closest->second, result);
+    emitI32Literal(location, closestDistance, delta);
+    emitPush(location, result);
+    emitPush(location, delta);
+    emitPush(location, result);
+    emitExtern(location,
+               closest->first <= address
+                   ? "SystemInt32.__op_Addition__SystemInt32_SystemInt32__"
+                     "SystemInt32"
+                   : "SystemInt32.__op_Subtraction__SystemInt32_SystemInt32__"
+                     "SystemInt32");
   }
 
   void emitI64Constant(Location location, const llvm::APInt &value,
                        StringRef result) {
-    constexpr StringLiteral wide = "__vrc_i64_constant_wide";
-    constexpr StringLiteral shifted = "__vrc_i64_constant_shifted";
-    constexpr StringLiteral combined = "__vrc_i64_constant_combined";
+    constexpr StringLiteral wide = "__vrc_i64_scratch_0";
+    constexpr StringLiteral shifted = "__vrc_i64_scratch_1";
+    constexpr StringLiteral combined = "__vrc_i64_scratch_2";
     addSlot(wide, "SystemInt64", "null", false);
     addSlot(shifted, "SystemInt64", "null", false);
     addSlot(combined, "SystemInt64", "null", false);
@@ -2072,24 +3839,151 @@ private:
                          "SystemInt32");
   }
 
+  LogicalResult emitUnsignedDivRem(Location location, StringRef lhs,
+                                   StringRef rhs, StringRef result,
+                                   bool remainder) {
+    constexpr StringLiteral offset = "__vrc_unsigned_div_offset";
+    constexpr StringLiteral widened = "__vrc_unsigned_div_widened";
+    constexpr StringLiteral adjusted = "__vrc_unsigned_div_adjusted";
+    constexpr StringLiteral negative = "__vrc_unsigned_div_negative";
+    constexpr StringLiteral unsignedLhs = "__vrc_unsigned_div_lhs";
+    constexpr StringLiteral unsignedRhs = "__vrc_unsigned_div_rhs";
+    constexpr StringLiteral unsignedQuotient = "__vrc_unsigned_div_quotient";
+    constexpr StringLiteral quotientWide = "__vrc_unsigned_div_quotient_wide";
+    constexpr StringLiteral signedQuotient =
+        "__vrc_unsigned_div_signed_quotient";
+    constexpr StringLiteral aboveSignedMax =
+        "__vrc_unsigned_div_above_signed_max";
+    constexpr StringLiteral signedMaxWide =
+        "__vrc_unsigned_div_signed_max_wide";
+    addSlot(offset, "SystemInt64", "null", false);
+    addSlot(widened, "SystemInt64", "null", false);
+    addSlot(adjusted, "SystemInt64", "null", false);
+    addSlot(negative, "SystemBoolean", "null", false);
+    addSlot(unsignedLhs, "SystemUInt32", "0", false);
+    addSlot(unsignedRhs, "SystemUInt32", "0", false);
+    addSlot(unsignedQuotient, "SystemUInt32", "0", false);
+    addSlot(quotientWide, "SystemInt64", "null", false);
+    addSlot(signedQuotient, "SystemInt64", "null", false);
+    addSlot(aboveSignedMax, "SystemBoolean", "null", false);
+    addSlot(signedMaxWide, "SystemInt64", "null", false);
+    emitI64Constant(location, llvm::APInt(64, uint64_t{1} << 32), offset);
+
+    std::string zero = immutableSlot("SystemInt32", "0");
+    auto toUnsigned = [&](StringRef source, StringRef destination) {
+      emitPush(location, source);
+      emitPush(location, widened);
+      emitExtern(location, "SystemConvert.__ToInt64__SystemInt32__SystemInt64");
+      emitPush(location, source);
+      emitPush(location, zero);
+      emitPush(location, negative);
+      emitExtern(location,
+                 "SystemInt32.__op_LessThan__SystemInt32_SystemInt32__"
+                 "SystemBoolean");
+      emitPush(location, negative);
+      Operation *nonnegative = create(
+          location, vm::JumpIfFalseOp::getOperationName(),
+          {builder.getNamedAttr("target", builder.getI64IntegerAttr(0))});
+      address += 8;
+      emitPush(location, widened);
+      emitPush(location, offset);
+      emitPush(location, adjusted);
+      emitExtern(location,
+                 "SystemInt64.__op_Addition__SystemInt64_SystemInt64__"
+                 "SystemInt64");
+      emitCopy(location, adjusted, widened);
+      nonnegative->setAttr(
+          "target", builder.getI64IntegerAttr(static_cast<int64_t>(address)));
+      emitPush(location, widened);
+      emitPush(location, destination);
+      emitExtern(location,
+                 "SystemConvert.__ToUInt32__SystemInt64__SystemUInt32");
+    };
+    toUnsigned(lhs, unsignedLhs);
+    toUnsigned(rhs, unsignedRhs);
+    emitPush(location, unsignedLhs);
+    emitPush(location, unsignedRhs);
+    emitPush(location, unsignedQuotient);
+    emitExtern(location,
+               "SystemUInt32.__op_Division__SystemUInt32_SystemUInt32__"
+               "SystemUInt32");
+
+    emitPush(location, unsignedQuotient);
+    emitPush(location, quotientWide);
+    emitExtern(location, "SystemConvert.__ToInt64__SystemUInt32__SystemInt64");
+    std::string signedMax = immutableSlot("SystemInt32", "2147483647");
+    emitPush(location, signedMax);
+    emitPush(location, signedMaxWide);
+    emitExtern(location, "SystemConvert.__ToInt64__SystemInt32__SystemInt64");
+    emitPush(location, quotientWide);
+    emitPush(location, signedMaxWide);
+    emitPush(location, aboveSignedMax);
+    emitExtern(location,
+               "SystemInt64.__op_GreaterThan__SystemInt64_SystemInt64__"
+               "SystemBoolean");
+    emitCopy(location, quotientWide, signedQuotient);
+    emitPush(location, aboveSignedMax);
+    Operation *fitsSigned =
+        create(location, vm::JumpIfFalseOp::getOperationName(),
+               {builder.getNamedAttr("target", builder.getI64IntegerAttr(0))});
+    address += 8;
+    emitPush(location, quotientWide);
+    emitPush(location, offset);
+    emitPush(location, signedQuotient);
+    emitExtern(location,
+               "SystemInt64.__op_Subtraction__SystemInt64_SystemInt64__"
+               "SystemInt64");
+    fitsSigned->setAttr(
+        "target", builder.getI64IntegerAttr(static_cast<int64_t>(address)));
+    constexpr StringLiteral quotient = "__vrc_unsigned_div_quotient_i32";
+    addSlot(quotient, "SystemInt32", "0", false);
+    emitPush(location, signedQuotient);
+    emitPush(location, quotient);
+    emitExtern(location, "SystemConvert.__ToInt32__SystemInt64__SystemInt32");
+    if (!remainder) {
+      emitCopy(location, quotient, result);
+      return success();
+    }
+    constexpr StringLiteral product = "__vrc_unsigned_div_product";
+    addSlot(product, "SystemInt32", "0", false);
+    emitPush(location, quotient);
+    emitPush(location, rhs);
+    emitPush(location, product);
+    emitExtern(location,
+               "SystemInt32.__op_Multiplication__SystemInt32_SystemInt32__"
+               "SystemInt32");
+    emitPush(location, lhs);
+    emitPush(location, product);
+    emitPush(location, result);
+    emitExtern(location,
+               "SystemInt32.__op_Subtraction__SystemInt32_SystemInt32__"
+               "SystemInt32");
+    return success();
+  }
+
   LogicalResult emitRawLoad(Location location, StringRef pointer,
                             StringRef result, Type type) {
-    if (!type.isInteger(8) && !type.isInteger(16) && !type.isInteger(32) &&
-        !type.isInteger(64) && !type.isF32() && !isa<host::PtrType>(type))
+    if (!type.isInteger(1) && !type.isInteger(8) && !type.isInteger(16) &&
+        !type.isInteger(32) && !type.isInteger(64) && !type.isF32() &&
+        !isa<host::PtrType, runtime::BufferType, runtime::EventType,
+             runtime::DispatchDescType>(type))
       return failure();
     bool wide = type.isInteger(64);
-    unsigned byteWidth = type.isInteger(8)    ? 1
+    unsigned byteWidth = type.isInteger(1)    ? 1
+                         : type.isInteger(8)  ? 1
                          : type.isInteger(16) ? 2
                          : wide               ? 8
                                               : 4;
     std::string prefix =
         wide ? "__vrc_raw_load_i64_scratch" : "__vrc_raw_load_i32_scratch";
-    std::string bits = prefix + "_bits";
+    std::string bits = wide ? "__vrc_i64_scratch_0" : prefix + "_bits";
     std::string scratchIndex = prefix + "_index";
     std::string scratchByte = prefix + "_byte";
-    std::string scratchWide = prefix + "_wide";
-    std::string scratchComponent = prefix + "_component";
-    std::string scratchCombined = prefix + "_combined";
+    std::string scratchWide = wide ? "__vrc_i64_scratch_1" : prefix + "_wide";
+    std::string scratchComponent =
+        wide ? "__vrc_i64_scratch_2" : prefix + "_component";
+    std::string scratchCombined =
+        wide ? "__vrc_i64_scratch_3" : prefix + "_combined";
     addSlot(bits, wide ? "SystemInt64" : "SystemInt32", "0", false);
     for (unsigned byteIndex = 0; byteIndex < byteWidth; ++byteIndex) {
       std::string index = pointer.str();
@@ -2151,7 +4045,15 @@ private:
         emitCopy(location, combined, bits);
       }
     }
-    if (type.isF32()) {
+    if (type.isInteger(1)) {
+      std::string zero = immutableSlot("SystemInt32", "0");
+      emitPush(location, bits);
+      emitPush(location, zero);
+      emitPush(location, result);
+      emitExtern(location,
+                 "SystemInt32.__op_Inequality__SystemInt32_SystemInt32__"
+                 "SystemBoolean");
+    } else if (type.isF32()) {
       emitPush(location, bits);
       emitPush(location, result);
       emitExtern(location,
@@ -2163,23 +4065,35 @@ private:
     return success();
   }
 
+  bool isFastRawGlobalAccess(Value pointer, Type type) const {
+    if (!type.isInteger(32) && !isa<host::PtrType>(type))
+      return false;
+    auto address = pointer.getDefiningOp<host::AddressOfOp>();
+    return address && fastRawGlobals.contains(address.getGlobal());
+  }
+
   LogicalResult emitRawStore(Location location, StringRef pointer,
                              StringRef value, Type type) {
-    if (!type.isInteger(8) && !type.isInteger(16) && !type.isInteger(32) &&
-        !type.isInteger(64) && !type.isF32() && !isa<host::PtrType>(type))
+    if (!type.isInteger(1) && !type.isInteger(8) && !type.isInteger(16) &&
+        !type.isInteger(32) && !type.isInteger(64) && !type.isF32() &&
+        !isa<host::PtrType, runtime::BufferType, runtime::EventType,
+             runtime::DispatchDescType>(type))
       return failure();
     bool wide = type.isInteger(64);
-    unsigned byteWidth = type.isInteger(8)    ? 1
+    unsigned byteWidth = type.isInteger(1)    ? 1
+                         : type.isInteger(8)  ? 1
                          : type.isInteger(16) ? 2
                          : wide               ? 8
                                               : 4;
     std::string prefix =
         wide ? "__vrc_raw_store_i64_scratch" : "__vrc_raw_store_i32_scratch";
-    std::string bits = prefix + "_bits";
-    std::string mask = prefix + "_mask";
-    std::string scratchComponent = prefix + "_component";
+    std::string bits = wide ? "__vrc_i64_scratch_0" : prefix + "_bits";
+    std::string mask = wide ? "__vrc_i64_scratch_1" : prefix + "_mask";
+    std::string scratchComponent =
+        wide ? "__vrc_i64_scratch_2" : prefix + "_component";
     std::string scratchByte = prefix + "_byte";
-    std::string scratchWideByte = prefix + "_byte_wide";
+    std::string scratchWideByte =
+        wide ? "__vrc_i64_scratch_3" : prefix + "_byte_wide";
     std::string scratchIndex = prefix + "_index";
     addSlot(bits, wide ? "SystemInt64" : "SystemInt32", "0", false);
     addSlot(mask, wide ? "SystemInt64" : "SystemInt32", wide ? "null" : "255",
@@ -2190,7 +4104,19 @@ private:
       emitPush(location, mask);
       emitExtern(location, "SystemConvert.__ToInt64__SystemInt32__SystemInt64");
     }
-    if (type.isF32()) {
+    if (type.isInteger(1)) {
+      std::string zero = immutableSlot("SystemInt32", "0");
+      std::string one = immutableSlot("SystemInt32", "1");
+      emitCopy(location, zero, bits);
+      emitPush(location, value);
+      Operation *done = create(
+          location, vm::JumpIfFalseOp::getOperationName(),
+          {builder.getNamedAttr("target", builder.getI64IntegerAttr(0))});
+      address += 8;
+      emitCopy(location, one, bits);
+      done->setAttr("target",
+                    builder.getI64IntegerAttr(static_cast<int64_t>(address)));
+    } else if (type.isF32()) {
       emitPush(location, value);
       emitPush(location, bits);
       emitExtern(location,
@@ -2256,21 +4182,45 @@ private:
 
   void emitRawMemcpy(Location location, StringRef destination, StringRef source,
                      StringRef byteCount) {
-    std::string prefix = "__vrc_raw_memcpy_scratch";
-    std::string counter = prefix + "_counter";
-    std::string one = prefix + "_one";
-    std::string condition = prefix + "_condition";
-    std::string sourceIndex = prefix + "_source_index";
-    std::string destinationIndex = prefix + "_destination_index";
-    std::string byte = prefix + "_byte";
-    std::string next = prefix + "_next";
+    // The raw heap stores one logical byte per Int32 array element, so raw
+    // pointers and byte counts are already valid Array.Copy element indices.
+    // Using the SDK's range-copy extern avoids emitting an interpreted Udon
+    // loop for every C aggregate copy.
+    emitPush(location, rawHeapSlot);
+    emitPush(location, source);
+    emitPush(location, rawHeapSlot);
+    emitPush(location, destination);
+    emitPush(location, byteCount);
+    emitExtern(location,
+               "SystemArray.__Copy__SystemArray_SystemInt32_SystemArray_"
+               "SystemInt32_SystemInt32__SystemVoid");
+  }
+
+  void emitRawMemset(Location location, StringRef destination,
+                     StringRef byteValue, StringRef byteCount, bool isZero) {
+    if (isZero) {
+      emitPush(location, rawHeapSlot);
+      emitPush(location, destination);
+      emitPush(location, byteCount);
+      emitExtern(location,
+                 "SystemArray.__Clear__SystemArray_SystemInt32_SystemInt32__"
+                 "SystemVoid");
+      return;
+    }
+
+    constexpr StringLiteral counter = "__vrc_raw_memset_scratch_counter";
+    constexpr StringLiteral zero = "__vrc_raw_memset_scratch_zero";
+    constexpr StringLiteral one = "__vrc_raw_memset_scratch_one";
+    constexpr StringLiteral condition = "__vrc_raw_memset_scratch_condition";
+    constexpr StringLiteral index = "__vrc_raw_memset_scratch_index";
+    constexpr StringLiteral next = "__vrc_raw_memset_scratch_next";
     addSlot(counter, "SystemInt32", "0", false);
+    addSlot(zero, "SystemInt32", "0", false);
     addSlot(one, "SystemInt32", "1", false);
     addSlot(condition, "SystemBoolean", "null", false);
-    addSlot(sourceIndex, "SystemInt32", "0", false);
-    addSlot(destinationIndex, "SystemInt32", "0", false);
-    addSlot(byte, "SystemInt32", "0", false);
+    addSlot(index, "SystemInt32", "0", false);
     addSlot(next, "SystemInt32", "0", false);
+    emitCopy(location, zero, counter);
     uint64_t loopAddress = address;
     emitPush(location, counter);
     emitPush(location, byteCount);
@@ -2282,23 +4232,14 @@ private:
         create(location, vm::JumpIfFalseOp::getOperationName(),
                {builder.getNamedAttr("target", builder.getI64IntegerAttr(0))});
     address += 8;
-    emitPush(location, source);
-    emitPush(location, counter);
-    emitPush(location, sourceIndex);
-    emitExtern(location, "SystemInt32.__op_Addition__SystemInt32_SystemInt32__"
-                         "SystemInt32");
     emitPush(location, destination);
     emitPush(location, counter);
-    emitPush(location, destinationIndex);
+    emitPush(location, index);
     emitExtern(location, "SystemInt32.__op_Addition__SystemInt32_SystemInt32__"
                          "SystemInt32");
     emitPush(location, rawHeapSlot);
-    emitPush(location, sourceIndex);
-    emitPush(location, byte);
-    emitExtern(location, "SystemInt32Array.__Get__SystemInt32__SystemInt32");
-    emitPush(location, rawHeapSlot);
-    emitPush(location, destinationIndex);
-    emitPush(location, byte);
+    emitPush(location, index);
+    emitPush(location, byteValue);
     emitExtern(location,
                "SystemInt32Array.__Set__SystemInt32_SystemInt32__SystemVoid");
     emitPush(location, counter);
@@ -2378,55 +4319,65 @@ private:
     addSlot(globalIntValueSlot, "SystemInt32", "0", false);
     addSlot(globalFloatBitsSlot, "SystemInt32", "0", false);
     addSlot(globalFloatValueSlot, "SystemSingle", "0", false);
-    for (const std::string &name : globalOrder) {
-      const GlobalPlan &plan = globalPlans.at(name);
-      emitI32Literal(location, plan.type.getNumElements(), globalLengthSlot);
+    for (const std::string &key : typedSpillBankOrder) {
+      const TypedSpillBankPlan &bank = typedSpillBanks.at(key);
+      emitI32Literal(location, bank.length, globalLengthSlot);
       emitPush(location, globalLengthSlot);
-      emitPush(location, plan.slot);
+      emitPush(location, bank.slot);
+      emitExtern(location,
+                 bank.arrayType + ".__ctor__SystemInt32__" + bank.arrayType);
+    }
+    for (const GlobalBankPlan &bank : globalBanks) {
+      emitI32Literal(location, bank.length, globalLengthSlot);
+      emitPush(location, globalLengthSlot);
+      emitPush(location, bank.slot);
       emitExtern(
           location,
-          plan.type.getElementType().isF32()
+          bank.elementType.isF32()
               ? "SystemSingleArray.__ctor__SystemInt32__SystemSingleArray"
               : "SystemInt32Array.__ctor__SystemInt32__SystemInt32Array");
-      unsigned index = 0;
-      for (Attribute value : plan.initialValue.getValues<Attribute>()) {
-        bool zero = false;
-        bool floatingValue = false;
-        uint32_t bits = 0;
-        if (auto integer = dyn_cast<IntegerAttr>(value)) {
-          zero = integer.getValue().isZero();
-          bits = static_cast<uint32_t>(integer.getInt());
-        } else if (auto floating = dyn_cast<FloatAttr>(value)) {
-          zero = floating.getValue().isZero();
-          floatingValue = true;
-          bits = static_cast<uint32_t>(
-              floating.getValue().bitcastToAPInt().getZExtValue());
-        }
-        if (!zero) {
-          emitI32Literal(location, index, globalIndexSlot);
-          StringRef valueSlot = globalIntValueSlot;
-          if (floatingValue) {
-            emitI32Literal(location, bits, globalFloatBitsSlot);
-            emitPush(location, globalFloatBitsSlot);
-            emitPush(location, globalFloatValueSlot);
-            emitExtern(location,
-                       "SystemBitConverter.__Int32BitsToSingle__SystemInt32__"
-                       "SystemSingle");
-            valueSlot = globalFloatValueSlot;
-          } else {
-            emitI32Literal(location, bits, globalIntValueSlot);
+      for (auto [base, initializer] : bank.initializers) {
+        uint64_t index = base;
+        for (Attribute value : initializer.getValues<Attribute>()) {
+          bool zero = false;
+          bool floatingValue = false;
+          uint32_t bits = 0;
+          if (auto integer = dyn_cast<IntegerAttr>(value)) {
+            zero = integer.getValue().isZero();
+            bits = static_cast<uint32_t>(integer.getInt());
+          } else if (auto floating = dyn_cast<FloatAttr>(value)) {
+            zero = floating.getValue().isZero();
+            floatingValue = true;
+            bits = static_cast<uint32_t>(
+                floating.getValue().bitcastToAPInt().getZExtValue());
           }
-          emitPush(location, plan.slot);
-          emitPush(location, globalIndexSlot);
-          emitPush(location, valueSlot);
-          emitExtern(location,
-                     plan.type.getElementType().isF32()
-                         ? "SystemSingleArray.__Set__SystemInt32_SystemSingle__"
-                           "SystemVoid"
-                         : "SystemInt32Array.__Set__SystemInt32_SystemInt32__"
-                           "SystemVoid");
+          if (!zero) {
+            emitI32Literal(location, index, globalIndexSlot);
+            StringRef valueSlot = globalIntValueSlot;
+            if (floatingValue) {
+              emitI32Literal(location, bits, globalFloatBitsSlot);
+              emitPush(location, globalFloatBitsSlot);
+              emitPush(location, globalFloatValueSlot);
+              emitExtern(location,
+                         "SystemBitConverter.__Int32BitsToSingle__SystemInt32__"
+                         "SystemSingle");
+              valueSlot = globalFloatValueSlot;
+            } else {
+              emitI32Literal(location, bits, globalIntValueSlot);
+            }
+            emitPush(location, bank.slot);
+            emitPush(location, globalIndexSlot);
+            emitPush(location, valueSlot);
+            emitExtern(
+                location,
+                bank.elementType.isF32()
+                    ? "SystemSingleArray.__Set__SystemInt32_SystemSingle__"
+                      "SystemVoid"
+                    : "SystemInt32Array.__Set__SystemInt32_SystemInt32__"
+                      "SystemVoid");
+          }
+          ++index;
         }
-        ++index;
       }
     }
     emitCopy(location, globalOneSlot, globalInitializedSlot);
@@ -2495,18 +4446,37 @@ private:
   SmallVector<Attribute> exports;
   llvm::DenseMap<Operation *, UdonSharpMethodABI> methodABIs;
   llvm::DenseMap<Operation *, FunctionPlan> functionPlans;
+  llvm::DenseMap<Value, std::string> interproceduralValueSlots;
+  llvm::DenseSet<Operation *> materializedConstants;
+  llvm::StringMap<std::string> scalarRegisterSlots;
+  llvm::StringMap<std::string> asyncPersistentSlots;
   llvm::StringMap<GlobalPlan> globalPlans;
+  llvm::StringMap<unsigned> globalBankIndices;
+  SmallVector<GlobalBankPlan> globalBanks;
+  llvm::StringMap<TypedSpillBankPlan> typedSpillBanks;
+  SmallVector<std::string> typedSpillBankOrder;
   llvm::StringMap<std::string> sharedConstantSlots;
   llvm::StringMap<std::string> immutableSlots;
   unsigned sharedConstantIndex = 0;
-  SmallVector<std::string> globalOrder;
   llvm::StringMap<uint64_t> rawGlobalBases;
   llvm::StringMap<DenseI8ArrayAttr> rawGlobalInitializers;
+  llvm::StringMap<std::string> cachedRawGlobalSlots;
+  SmallVector<std::pair<uint64_t, std::string>> cachedRawGlobalBases;
+  llvm::StringSet<> fastRawGlobals;
   llvm::DenseMap<Operation *, uint64_t> rawAllocaBases;
+  SmallVector<RawObjectPlan> rawObjects;
   SmallVector<UnityBufferPoolEntry> unityBufferPool;
   uint64_t rawHeapBytes = 0;
+  unsigned materializationLimit = 0;
+  unsigned rawAddressCacheLimit = 0;
+  unsigned requestedScalarRegisterBudget = 16;
+  unsigned minimumScalarRegisterCount = 16;
   bool externalRawHeapInitialization = false;
+  bool typedSpillsInserted = false;
   SmallVector<std::pair<Operation *, func::FuncOp>> callRelocations;
+  SmallVector<AsyncResumeTarget> asyncResumeTargets;
+  SmallVector<std::pair<Operation *, Block *>> asyncResumeRelocations;
+  llvm::DenseMap<Block *, uint64_t> globalBlockAddresses;
   uint64_t callReturnIndex = 0;
   static constexpr StringLiteral globalInitializedSlot =
       "__vrc_globals_initialized";
@@ -2518,6 +4488,10 @@ private:
       "__udoncl_async_resume_state";
   static constexpr StringLiteral asyncCompletionStatusSlot =
       "__udoncl_async_completion_status";
+  static constexpr StringLiteral asyncCompletionObjectSlot =
+      "__udoncl_async_completion_object";
+  static constexpr StringLiteral asyncPendingObjectSlot =
+      "__udoncl_async_pending_object";
   static constexpr StringLiteral asyncCommandKindSlot =
       "__udoncl_async_command_kind";
   static constexpr StringLiteral asyncCommandBufferSlot =
@@ -2529,14 +4503,69 @@ private:
   static constexpr StringLiteral asyncCommandPointerSlot =
       "__udoncl_async_command_pointer";
   static constexpr StringLiteral asyncEventSlot = "__udoncl_async_event";
-  static constexpr StringLiteral asyncZeroSlot = "__udoncl_async_zero";
 };
 
 struct LowerUdonHLToUdonAsmPass
     : impl::LowerUdonHLToUdonAsmPassBase<LowerUdonHLToUdonAsmPass> {
+  static unsigned addressCount(ModuleOp module) {
+    auto data = module->getAttrOfType<ArrayAttr>("udonasm.data");
+    llvm::StringSet<> externs;
+    module.walk([&](vm::ExternOp operation) {
+      externs.insert(operation.getSignature());
+    });
+    return (data ? data.size() : 0) + externs.size();
+  }
+
   void runOnOperation() override {
-    if (failed(ScalarLowering(getOperation()).run()))
+    constexpr unsigned addressLimit = 512;
+    auto probe = [&](unsigned materializationLimit) -> FailureOr<unsigned> {
+      Operation *cloned = getOperation()->clone();
+      ModuleOp module = cast<ModuleOp>(cloned);
+      if (failed(ScalarLowering(module, materializationLimit, 0).run())) {
+        cloned->erase();
+        return failure();
+      }
+      unsigned count = addressCount(module);
+      cloned->erase();
+      return count;
+    };
+    auto unmaterialized = probe(0);
+    if (failed(unmaterialized)) {
       signalPassFailure();
+      return;
+    }
+    unsigned materializationLimit = 0;
+    unsigned baseAddresses = *unmaterialized;
+    if (baseAddresses > addressLimit) {
+      materializationLimit = 128;
+      auto materialized = probe(materializationLimit);
+      if (failed(materialized)) {
+        signalPassFailure();
+        return;
+      }
+      baseAddresses = *materialized;
+    }
+    // The textual UASM target contributes one runtime extern address after
+    // this MLIR-level accounting. Keep that address reserved here.
+    constexpr unsigned targetAddressReserve = 1;
+    unsigned rawAddressCacheLimit =
+        baseAddresses + targetAddressReserve < addressLimit
+            ? addressLimit - targetAddressReserve - baseAddresses
+            : 0;
+    if (failed(ScalarLowering(getOperation(), materializationLimit,
+                              rawAddressCacheLimit)
+                   .run())) {
+      signalPassFailure();
+      return;
+    }
+    unsigned addresses = addressCount(getOperation());
+    if (addresses > addressLimit) {
+      getOperation().emitError()
+          << "Udon program requires " << addresses
+          << " heap/extern addresses after constant materialization; limit is "
+          << addressLimit;
+      signalPassFailure();
+    }
   }
 };
 } // namespace

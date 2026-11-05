@@ -1,9 +1,37 @@
 # Host Storage Allocator Plan
 
-> Status: **approved design; implementation not started**
+> Status: **implementation in progress**
 > Decision date: **2026-11-05**
 > Parent architecture: [PLAN.md](PLAN.md)
 > Final acceptance target: **a user-facing compiler-generated U# binding runs MNIST end to end in Unity and its numerical test passes without the Udon 10-second watchdog**
+
+Current verified implementation state (2026-11-05):
+
+- storage classification is emitted in `host.udonasm.mlir` and as the
+  user-facing `storage-report.json` artifact;
+- the report covers fixed named slots, typed scalar registers,
+  async-persistent values, and every raw object with a fallback reason;
+- Host C now uses `-O1 -fno-inline`, followed by SROA, mem2reg,
+  canonicalization, SCCP, CSE, and symbol DCE, while the non-recursive call
+  graph remains visible to async lowering and allocation;
+- tail-position optimized C calls and SSA-promoted legacy OpenCL handles are
+  accepted without restoring forced whole-call-graph inlining;
+- same-physical-type fixed `memref.global` arrays are packed into one typed
+  array with compile-time base offsets instead of consuming one Heap slot per
+  source global;
+- the non-recursive interprocedural allocator now uses a requested 16-slot
+  scalar budget, moves longer-lived excess values into fixed typed spill
+  arrays, and grows the scalar bank only to the proven simultaneous operand
+  clique that cannot itself be spilled;
+- the allocator report now records requested/minimum scalar width, typed
+  register counts, typed spill banks/extents, and packed global banks;
+- on the current MNIST artifact this changes 135 scalar slots into 56 scalar
+  slots plus one 109-element `SystemInt32Array`; the minimum simultaneous
+  scalar width is 46 and total `.data` declarations move from 470 to 469
+  because index materialization currently adds shared constants;
+- word-packed raw memory, improved spill-index cost selection, complete
+  capacity diagnostics, benchmark tuning, and the final generated-U# MNIST
+  gate remain outstanding.
 
 ## 1. Problem and current evidence
 

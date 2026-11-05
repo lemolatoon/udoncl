@@ -156,7 +156,6 @@ struct CallPattern : OpConversionPattern<LLVM::CallOp> {
   matchAndRewrite(LLVM::CallOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     if (!op.getCallee() || op.getCConv() != LLVM::cconv::CConv::C ||
-        op.getTailCallKind() != LLVM::TailCallKind::None ||
         !op.getOpBundleSizes().empty() || op.getVarCalleeType())
       return failure();
     SmallVector<Type> results;
@@ -221,18 +220,32 @@ LogicalResult serializeAttribute(Attribute attribute, Type type,
   }
   auto elements = dyn_cast<ElementsAttr>(attribute);
   auto array = dyn_cast<LLVM::LLVMArrayType>(type);
-  if (!elements || !array ||
-      elements.getNumElements() != array.getNumElements())
+  auto vector = dyn_cast<VectorType>(type);
+  Type elementType;
+  uint64_t elementCount = 0;
+  uint64_t stride = 0;
+  if (array) {
+    elementType = array.getElementType();
+    elementCount = array.getNumElements();
+    auto elementSize = fixedSize(layout, elementType);
+    auto elementAlignment = abiAlignment(layout, elementType);
+    if (failed(elementSize) || failed(elementAlignment))
+      return failure();
+    stride = llvm::alignTo(*elementSize, *elementAlignment);
+  } else if (vector && !vector.isScalable()) {
+    elementType = vector.getElementType();
+    elementCount = vector.getNumElements();
+    auto elementSize = fixedSize(layout, elementType);
+    if (failed(elementSize))
+      return failure();
+    stride = *elementSize;
+  }
+  if (!elements || !elementType || elements.getNumElements() != elementCount)
     return failure();
-  auto elementSize = fixedSize(layout, array.getElementType());
-  auto elementAlignment = abiAlignment(layout, array.getElementType());
-  if (failed(elementSize) || failed(elementAlignment))
-    return failure();
-  uint64_t stride = llvm::alignTo(*elementSize, *elementAlignment);
   unsigned index = 0;
   for (Attribute element : elements.getValues<Attribute>()) {
-    if (failed(serializeAttribute(element, array.getElementType(), layout,
-                                  out.slice(index * stride, *elementSize))))
+    if (failed(serializeAttribute(element, elementType, layout,
+                                  out.slice(index * stride, stride))))
       return failure();
     ++index;
   }
@@ -297,8 +310,8 @@ LogicalResult serializeValue(Value value, Type type, const DataLayout &layout,
 FailureOr<Attribute> globalInitializer(LLVM::GlobalOp op, Type storageType,
                                        OpBuilder &builder,
                                        const DataLayout &layout) {
-  bool aggregate =
-      isa<LLVM::LLVMArrayType, LLVM::LLVMStructType>(op.getGlobalType());
+  bool aggregate = isa<LLVM::LLVMArrayType, LLVM::LLVMStructType, VectorType>(
+      op.getGlobalType());
   if (aggregate) {
     auto size = fixedSize(layout, op.getGlobalType());
     if (failed(size))
@@ -660,6 +673,37 @@ struct NullPointerPattern : OpConversionPattern<LLVM::ZeroOp> {
   }
 };
 
+struct UndefPointerPattern : OpConversionPattern<LLVM::UndefOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(LLVM::UndefOp op, OpAdaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto pointer = dyn_cast<LLVM::LLVMPointerType>(op.getType());
+    if (!pointer)
+      return failure();
+    Value zero = arith::ConstantIntOp::create(rewriter, op.getLoc(), 0, 32);
+    OperationState state(op.getLoc(),
+                         ::vrc::udonhl::IntToPtrOp::getOperationName());
+    state.addOperands(zero);
+    state.addTypes(pointerType(rewriter.getContext(), pointer));
+    auto *result = rewriter.create(state);
+    rewriter.replaceOp(op, result->getResults());
+    return success();
+  }
+};
+
+template <typename Op> struct EraseLifetimePattern : OpConversionPattern<Op> {
+  using OpConversionPattern<Op>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(Op op, typename Op::Adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 struct PointerComparePattern : OpConversionPattern<LLVM::ICmpOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -706,6 +750,22 @@ struct PointerComparePattern : OpConversionPattern<LLVM::ICmpOp> {
   }
 };
 
+struct PointerSelectPattern : OpConversionPattern<LLVM::SelectOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(LLVM::SelectOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (!isa<::vrc::udonhl::PtrType>(adaptor.getTrueValue().getType()) ||
+        adaptor.getTrueValue().getType() != adaptor.getFalseValue().getType())
+      return failure();
+    rewriter.replaceOpWithNewOp<arith::SelectOp>(op, adaptor.getCondition(),
+                                                 adaptor.getTrueValue(),
+                                                 adaptor.getFalseValue());
+    return success();
+  }
+};
+
 struct PointerBranchPattern : OpConversionPattern<LLVM::BrOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -732,6 +792,27 @@ struct PointerCondBranchPattern : OpConversionPattern<LLVM::CondBrOp> {
   }
 };
 
+struct PointerSwitchPattern : OpConversionPattern<LLVM::SwitchOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(LLVM::SwitchOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    SmallVector<SmallVector<Value>> caseOperandStorage;
+    SmallVector<ValueRange> caseOperands;
+    for (ValueRange operands : adaptor.getCaseOperands())
+      caseOperandStorage.emplace_back(operands.begin(), operands.end());
+    for (const SmallVector<Value> &operands : caseOperandStorage)
+      caseOperands.emplace_back(operands);
+    cf::SwitchOp::create(rewriter, op.getLoc(), adaptor.getValue(),
+                         op.getDefaultDestination(),
+                         adaptor.getDefaultOperands(), op.getCaseValuesAttr(),
+                         op.getCaseDestinations(), caseOperands);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 struct MemcpyPattern : OpConversionPattern<LLVM::MemcpyOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -751,6 +832,30 @@ struct MemcpyPattern : OpConversionPattern<LLVM::MemcpyOp> {
   }
 };
 
+struct MemsetPattern : OpConversionPattern<LLVM::MemsetOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(LLVM::MemsetOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (op.getIsVolatile())
+      return reject(op, "volatile memset is not implemented");
+    Value length = adaptor.getLen();
+    if (length.getType().isInteger(64))
+      length = arith::TruncIOp::create(rewriter, op.getLoc(),
+                                       rewriter.getI32Type(), length);
+    if (!length.getType().isInteger(32) ||
+        !adaptor.getVal().getType().isInteger(8))
+      return reject(op, "memset requires an i8 value and 32-bit Udon length");
+    OperationState state(op.getLoc(),
+                         ::vrc::udonhl::MemsetOp::getOperationName());
+    state.addOperands({adaptor.getDst(), adaptor.getVal(), length});
+    rewriter.create(state);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 struct RaiseLLVMRawMemoryPass
     : impl::RaiseLLVMRawMemoryPassBase<RaiseLLVMRawMemoryPass> {
   void runOnOperation() override {
@@ -763,22 +868,30 @@ struct RaiseLLVMRawMemoryPass
     converter.addConversion([&](LLVM::LLVMPointerType type) -> Type {
       return pointerType(&getContext(), type);
     });
-
     ConversionTarget target(getContext());
     target.addLegalOp<ModuleOp>();
-    target
-        .addLegalDialect<LLVM::LLVMDialect, arith::ArithDialect,
-                         cf::ControlFlowDialect, func::FuncDialect,
-                         memref::MemRefDialect, ::vrc::udonhl::UdonHLDialect>();
+    target.addLegalDialect<arith::ArithDialect, cf::ControlFlowDialect,
+                           func::FuncDialect, memref::MemRefDialect,
+                           ::vrc::udonhl::UdonHLDialect>();
+    target.addDynamicallyLegalDialect<LLVM::LLVMDialect>([](Operation *op) {
+      return llvm::none_of(op->getOperandTypes(), containsPointer) &&
+             llvm::none_of(op->getResultTypes(), containsPointer);
+    });
     target.addIllegalOp<LLVM::AllocaOp, LLVM::GEPOp, LLVM::LoadOp,
                         LLVM::StoreOp, LLVM::PtrToIntOp, LLVM::IntToPtrOp,
                         LLVM::GlobalOp, LLVM::AddressOfOp>();
-    target.addIllegalOp<LLVM::MemcpyOp>();
+    target.addIllegalOp<LLVM::MemcpyOp, LLVM::MemsetOp>();
     target.addDynamicallyLegalOp<LLVM::ZeroOp>([](LLVM::ZeroOp op) {
+      return !isa<LLVM::LLVMPointerType>(op.getType());
+    });
+    target.addDynamicallyLegalOp<LLVM::UndefOp>([](LLVM::UndefOp op) {
       return !isa<LLVM::LLVMPointerType>(op.getType());
     });
     target.addDynamicallyLegalOp<LLVM::ICmpOp>([](LLVM::ICmpOp op) {
       return !isa<LLVM::LLVMPointerType>(op.getLhs().getType());
+    });
+    target.addDynamicallyLegalOp<LLVM::SelectOp>([](LLVM::SelectOp op) {
+      return !isa<LLVM::LLVMPointerType>(op.getResult().getType());
     });
     target.addDynamicallyLegalOp<LLVM::BrOp>([](LLVM::BrOp op) {
       return llvm::none_of(op.getOperandTypes(), containsPointer);
@@ -792,10 +905,15 @@ struct RaiseLLVMRawMemoryPass
     patterns.add<FunctionPattern, CallPattern, ReturnPattern, GlobalPattern,
                  AllocaPattern, GEPPattern, LoadPattern, StorePattern,
                  PtrToIntPattern, IntToPtrPattern>(converter, &getContext());
-    patterns.add<NullPointerPattern, PointerComparePattern,
-                 PointerBranchPattern, PointerCondBranchPattern>(converter,
+    patterns.add<NullPointerPattern, UndefPointerPattern, PointerComparePattern,
+                 PointerSelectPattern, PointerBranchPattern,
+                 PointerCondBranchPattern, PointerSwitchPattern>(converter,
                                                                  &getContext());
     patterns.add<MemcpyPattern>(converter, &getContext());
+    patterns.add<MemsetPattern>(converter, &getContext());
+    patterns.add<EraseLifetimePattern<LLVM::LifetimeStartOp>,
+                 EraseLifetimePattern<LLVM::LifetimeEndOp>>(converter,
+                                                            &getContext());
     patterns.add<AddressPattern>(converter, &getContext(), globalAddressSpaces);
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns))))

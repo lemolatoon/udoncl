@@ -13,8 +13,6 @@ if(EXISTS "${_UDONCL_INSTALL_PREFIX}/include/udoncl/unity_buffer.h")
       "${_UDONCL_INSTALL_PREFIX}/share/udoncl/onnx/udon_onnx.py")
   set(_UDONCL_ONNX_MLIR_COMPILER
       "${_UDONCL_INSTALL_PREFIX}/share/udoncl/onnx/compile_onnx_mlir.py")
-  set(_UDONCL_ONNX_MLIR_LOWER
-      "${_UDONCL_INSTALL_PREFIX}/share/udoncl/onnx/onnx_mlir_lower.py")
 else()
   set(_UDONCL_INCLUDE_DIR "${_UDONCL_SOURCE_HINT}/include")
   set(_UDONCL_OPENCL_INCLUDE_DIR
@@ -24,8 +22,6 @@ else()
       "${_UDONCL_SOURCE_HINT}/runtime/onnx/udon_onnx.py")
   set(_UDONCL_ONNX_MLIR_COMPILER
       "${_UDONCL_SOURCE_HINT}/scripts/compile_onnx_mlir.py")
-  set(_UDONCL_ONNX_MLIR_LOWER
-      "${_UDONCL_SOURCE_HINT}/runtime/onnx/onnx_mlir_lower.py")
 endif()
 
 set(UDONCLC_EXECUTABLE "${UDONCLC_EXECUTABLE}" CACHE FILEPATH
@@ -38,6 +34,8 @@ set(UDONCL_ONNX_IMPORTER_EXECUTABLE "${UDONCL_ONNX_IMPORTER_EXECUTABLE}"
     CACHE FILEPATH "Path to the locked udoncl-onnx protobuf importer")
 set(UDONCL_ONNX_OPT_EXECUTABLE "${UDONCL_ONNX_OPT_EXECUTABLE}"
     CACHE FILEPATH "Path to the locked onnx-mlir-opt executable")
+set(UDONCL_OPT_EXECUTABLE "${UDONCL_OPT_EXECUTABLE}" CACHE FILEPATH
+    "Path to the UdonCL MLIR pass driver")
 
 if(NOT UDONCLC_EXECUTABLE)
   find_program(_UDONCLC_DISCOVERED NAMES udonclc
@@ -95,6 +93,17 @@ if(NOT UDONCL_ONNX_OPT_EXECUTABLE)
         CACHE FILEPATH "Path to the locked onnx-mlir-opt executable" FORCE)
   endif()
 endif()
+if(NOT UDONCL_OPT_EXECUTABLE)
+  find_program(_UDONCL_OPT_DISCOVERED NAMES udoncl-opt
+    HINTS
+      "${_UDONCL_INSTALL_PREFIX}/bin"
+      "${_UDONCL_SOURCE_HINT}/build/udoncl/tools/vrc-opt"
+    NO_DEFAULT_PATH)
+  if(_UDONCL_OPT_DISCOVERED)
+    set(UDONCL_OPT_EXECUTABLE "${_UDONCL_OPT_DISCOVERED}" CACHE FILEPATH
+        "Path to the UdonCL MLIR pass driver" FORCE)
+  endif()
+endif()
 
 foreach(_tool IN ITEMS UDONCLC_EXECUTABLE UDONCL_CLANG_EXECUTABLE
                        UDONCL_LLVM_LINK_EXECUTABLE)
@@ -132,7 +141,7 @@ endfunction()
 function(udoncl_add_onnx_mlir target)
   set(_options)
   set(_one_value MODEL)
-  set(_multi_value SUPPORTED_OPERATORS)
+  set(_multi_value)
   cmake_parse_arguments(PARSE_ARGV 1 _ARG "${_options}" "${_one_value}"
                         "${_multi_value}")
   if(_ARG_UNPARSED_ARGUMENTS)
@@ -165,9 +174,6 @@ function(udoncl_add_onnx_mlir target)
       "${_model}" -o "${_generated_mlir}"
       --importer "${UDONCL_ONNX_IMPORTER_EXECUTABLE}"
       --optimizer "${UDONCL_ONNX_OPT_EXECUTABLE}")
-  foreach(_operator IN LISTS _ARG_SUPPORTED_OPERATORS)
-    list(APPEND _command --supported-operator "${_operator}")
-  endforeach()
   add_custom_command(
     OUTPUT "${_generated_mlir}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${_generated_dir}"
@@ -226,26 +232,26 @@ function(udoncl_add_onnx_host_library target)
     list(APPEND _input_shape_names "${_input_shape_name}")
   endforeach()
   foreach(_tool IN ITEMS UDONCL_ONNX_IMPORTER_EXECUTABLE
-                         UDONCL_ONNX_OPT_EXECUTABLE)
+                         UDONCL_ONNX_OPT_EXECUTABLE UDONCL_OPT_EXECUTABLE)
     if(NOT ${_tool} OR NOT EXISTS "${${_tool}}")
       message(FATAL_ERROR
         "${_tool} is required by udoncl_add_onnx_host_library; run scripts/install_onnx_mlir.py or set it explicitly")
     endif()
   endforeach()
-  if(NOT EXISTS "${_UDONCL_ONNX_MLIR_COMPILER}" OR
-     NOT EXISTS "${_UDONCL_ONNX_MLIR_LOWER}")
+  if(NOT EXISTS "${_UDONCL_ONNX_MLIR_COMPILER}")
     message(FATAL_ERROR
       "Udon ONNX MLIR Host pipeline is incomplete")
   endif()
   find_package(Python3 3.12 REQUIRED COMPONENTS Interpreter)
   set(_generated_dir "${CMAKE_CURRENT_BINARY_DIR}/udoncl-onnx/${target}")
-  set(_generated_mlir "${_generated_dir}/model.mlir")
-  set(_generated_host "${_generated_dir}/host.c")
+  set(_generated_host_mlir "${_generated_dir}/host.mlir")
   file(MAKE_DIRECTORY "${_generated_dir}")
   set(_compile_command "${Python3_EXECUTABLE}" "${_UDONCL_ONNX_MLIR_COMPILER}"
-      "${_model}" -o "${_generated_mlir}"
+      "${_model}" -o "${_generated_host_mlir}"
       --importer "${UDONCL_ONNX_IMPORTER_EXECUTABLE}"
-      --optimizer "${UDONCL_ONNX_OPT_EXECUTABLE}")
+      --optimizer "${UDONCL_ONNX_OPT_EXECUTABLE}"
+      --host-optimizer "${UDONCL_OPT_EXECUTABLE}"
+      --lower-to-host)
   foreach(_bound IN LISTS _ARG_DIMENSION_BOUNDS)
     list(APPEND _compile_command --dimension "${_bound}")
   endforeach()
@@ -261,29 +267,16 @@ function(udoncl_add_onnx_host_library target)
     message(FATAL_ERROR
       "ONNX MLIR canonicalization failed for ${_model}:\n${_stdout}${_stderr}")
   endif()
-  set(_lower_command "${Python3_EXECUTABLE}" "${_UDONCL_ONNX_MLIR_LOWER}"
-      "${_model}" "${_generated_mlir}" -o "${_generated_host}")
-  foreach(_bound IN LISTS _ARG_DIMENSION_BOUNDS)
-    list(APPEND _lower_command --dimension-bound "${_bound}")
-  endforeach()
-  execute_process(
-    COMMAND ${_lower_command}
-    RESULT_VARIABLE _result
-    OUTPUT_VARIABLE _stdout
-    ERROR_VARIABLE _stderr)
-  if(NOT _result EQUAL 0)
-    message(FATAL_ERROR
-      "ONNX Host generation failed for ${_model}:\n${_stdout}${_stderr}")
-  endif()
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-    "${_model}" "${_UDONCL_ONNX_MLIR_COMPILER}"
-    "${_UDONCL_ONNX_MLIR_LOWER}")
-  udoncl_add_host_library("${target}" "${_generated_host}")
+    "${_model}" "${_UDONCL_ONNX_MLIR_COMPILER}")
+  add_library("${target}" INTERFACE)
   set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_MODEL "${_model}")
   set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_HOST
-               "${_generated_host}")
+               "${_generated_host_mlir}")
+  set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_HOST_MLIR
+               "${_generated_host_mlir}")
   set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_MLIR
-               "${_generated_mlir}")
+               "${_generated_host_mlir}")
   set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_DIMENSION_BOUNDS
                "${_ARG_DIMENSION_BOUNDS}")
   set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_INPUT_SHAPES
@@ -424,16 +417,22 @@ function(_udoncl_compile_source_target artifact kind unit sources dependencies
     if(kind STREQUAL "HOST")
       set(_language_flags -target spir-unknown-unknown -x c -std=c11
           -Xclang -fdefault-calling-conv=cdecl)
+      # Promote fixed aggregates and scalar pointer wrappers before LLVM IR is
+      # linked and imported, while preserving the call graph for Udon async
+      # lowering and interprocedural storage allocation.
+      set(_optimization_flags -O1 -fno-inline)
     else()
       set(_language_flags -target spir-unknown-unknown -x cl -cl-std=CL1.2
           -cl-kernel-arg-info)
+      set(_optimization_flags -O0 -Xclang -disable-O0-optnone)
     endif()
     add_custom_command(
       OUTPUT "${_object}"
       COMMAND "${CMAKE_COMMAND}" -E make_directory "${_object_directory}"
-      COMMAND "${UDONCL_CLANG_EXECUTABLE}" ${_language_flags} ${flags}
-              -O0 -Xclang -disable-O0-optnone -fomit-frame-pointer
-              -ffp-contract=off -emit-llvm -c "${_source}" -o "${_object}"
+      COMMAND "${UDONCL_CLANG_EXECUTABLE}" ${_language_flags}
+              ${_optimization_flags} -fomit-frame-pointer
+              -ffp-contract=off ${flags} -emit-llvm -c "${_source}"
+              -o "${_object}"
       DEPENDS "${UDONCL_CLANG_EXECUTABLE}" "${_source}" ${dependencies}
       COMMENT "Compiling ${kind} source ${_source}"
       COMMAND_EXPAND_LISTS VERBATIM)

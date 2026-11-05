@@ -115,7 +115,8 @@ LogicalResult checkFunction(LLVM::LLVMFuncOp function) {
     for (auto attr : passthrough) {
       if (auto string = dyn_cast<StringAttr>(attr)) {
         if (string.getValue() == "norecurse" ||
-            string.getValue() == "mustprogress")
+            string.getValue() == "mustprogress" ||
+            string.getValue() == "nofree" || string.getValue() == "nosync")
           continue;
       }
       if (auto pair = dyn_cast<ArrayAttr>(attr)) {
@@ -160,17 +161,21 @@ LogicalResult checkOperation(Operation *op) {
       return reject(op, "poison-generating flag has no implemented mapping");
   if (auto call = dyn_cast<LLVM::CallOp>(op)) {
     if (!call.getCallee() || call.getCConv() != LLVM::cconv::CConv::C ||
-        call.getTailCallKind() != LLVM::TailCallKind::None ||
         !call.getOpBundleSizes().empty() || call.getVarCalleeType())
-      return reject(op, "only direct nonvariadic C calls without tail/bundle "
-                        "semantics are proven");
+      return reject(op,
+                    "only direct nonvariadic C calls without operand bundles "
+                    "are proven");
     if (failed(checkArgumentAttrs(op, call.getArgAttrsAttr())) ||
         failed(checkArgumentAttrs(op, call.getResAttrsAttr())))
       return failure();
     for (NamedAttribute attr : op->getAttrs()) {
       auto name = attr.getName().getValue();
       if (!llvm::StringSwitch<bool>(name)
-               .Cases({"callee", "CConv", "TailCallKind", "fastmathFlags"},
+               // Tail position, no-unwind, and read/write summaries only
+               // constrain optimization; lowering the call as an ordinary C
+               // call preserves all observable behavior.
+               .Cases({"callee", "CConv", "TailCallKind", "fastmathFlags",
+                       "memory_effects", "no_unwind"},
                       true)
                .Cases({"arg_attrs", "res_attrs", "operandSegmentSizes",
                        "op_bundle_sizes"},
@@ -187,9 +192,9 @@ LogicalResult checkOperation(Operation *op) {
     if (!llvm::StringSwitch<bool>(name)
              .Cases({"value", "predicate", "overflowFlags", "fastmathFlags"},
                     true)
-             .Cases(
-                 {"operandSegmentSizes", "branch_weights", "loop_annotation"},
-                 true)
+             .Cases({"operandSegmentSizes", "case_operand_segments",
+                     "case_values", "branch_weights", "loop_annotation"},
+                    true)
              .Default(false))
       return op->emitError()
              << "cannot raise " << op->getName()
@@ -200,6 +205,11 @@ LogicalResult checkOperation(Operation *op) {
       return reject(op, "only scalar integer/float constants are supported");
     return success();
   }
+  // Picking zero is a valid refinement of LLVM undef. This is especially
+  // useful for optimized loop-carried values whose initial value is never
+  // observed on a defined execution.
+  if (isa<LLVM::UndefOp>(op))
+    return success();
   if (isa<LLVM::BitcastOp>(op)) {
     Type source = op->getOperand(0).getType();
     Type target = op->getResult(0).getType();
@@ -211,7 +221,7 @@ LogicalResult checkOperation(Operation *op) {
   }
   if (!raisedName(op->getName().getStringRef()).empty() ||
       isa<LLVM::FCmpOp, LLVM::ICmpOp, LLVM::BrOp, LLVM::CondBrOp,
-          LLVM::ReturnOp>(op))
+          LLVM::SwitchOp, LLVM::ReturnOp>(op))
     return success();
   return reject(op, "unsupported semantics; memory, calls, poison and GPU "
                     "recovery are pending");
@@ -287,6 +297,18 @@ struct ConstantPattern : OpConversionPattern<LLVM::ConstantOp> {
     return success();
   }
 };
+struct UndefPattern : OpConversionPattern<LLVM::UndefOp> {
+  using OpConversionPattern::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(LLVM::UndefOp op, OpAdaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    TypedAttr zero = rewriter.getZeroAttr(op.getType());
+    if (!zero)
+      return failure();
+    rewriter.replaceOpWithNewOp<arith::ConstantOp>(op, op.getType(), zero);
+    return success();
+  }
+};
 struct ComparePattern : OpConversionPattern<LLVM::ICmpOp> {
   using OpConversionPattern::OpConversionPattern;
   LogicalResult
@@ -337,6 +359,25 @@ struct CondBranchPattern : OpConversionPattern<LLVM::CondBrOp> {
     return success();
   }
 };
+struct SwitchPattern : OpConversionPattern<LLVM::SwitchOp> {
+  using OpConversionPattern::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(LLVM::SwitchOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    SmallVector<SmallVector<Value>> caseOperandStorage;
+    SmallVector<ValueRange> caseOperands;
+    for (ValueRange operands : adaptor.getCaseOperands())
+      caseOperandStorage.emplace_back(operands.begin(), operands.end());
+    for (const SmallVector<Value> &operands : caseOperandStorage)
+      caseOperands.emplace_back(operands);
+    cf::SwitchOp::create(rewriter, op.getLoc(), adaptor.getValue(),
+                         op.getDefaultDestination(),
+                         adaptor.getDefaultOperands(), op.getCaseValuesAttr(),
+                         op.getCaseDestinations(), caseOperands);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
 struct ReturnPattern : OpConversionPattern<LLVM::ReturnOp> {
   using OpConversionPattern::OpConversionPattern;
   LogicalResult
@@ -371,9 +412,9 @@ struct RaiseLLVMToScalarPass
         ::vrc::vrc::VRCDialect, ::vrc::udonhl::UdonHLDialect>();
     target.addIllegalDialect<LLVM::LLVMDialect>();
     RewritePatternSet patterns(&getContext());
-    patterns.add<FunctionPattern, ConstantPattern, ComparePattern,
+    patterns.add<FunctionPattern, ConstantPattern, UndefPattern, ComparePattern,
                  FloatComparePattern, BranchPattern, CondBranchPattern,
-                 ReturnPattern, CallPattern>(&getContext());
+                 SwitchPattern, ReturnPattern, CallPattern>(&getContext());
     for (auto source :
          {"llvm.add",    "llvm.sub",    "llvm.mul",    "llvm.sdiv",
           "llvm.udiv",   "llvm.srem",   "llvm.urem",   "llvm.and",
