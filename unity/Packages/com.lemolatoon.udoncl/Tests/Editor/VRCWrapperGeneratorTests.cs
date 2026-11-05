@@ -274,10 +274,10 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             StringAssert.Contains("FinishAsyncCommand(StatusSuccess);", source);
             StringAssert.Contains("int[] heap = (int[])rawHeap;", source);
             StringAssert.Contains("CopyHeapToPixels(pixels);", source);
-            StringAssert.Contains("pointer > heap.Length - size", source);
+            StringAssert.Contains("pointer > heap.Length * 4 - size", source);
             StringAssert.Contains("asyncCommandPointerBytes = pointer;", source);
-            StringAssert.Contains("int byteIndex = asyncCommandPointerBytes + word * 4;", source);
-            StringAssert.Contains("asyncCommandHeap[byteIndex] = pixel.r;", source);
+            StringAssert.Contains("int heapWord = asyncCommandPointerBytes / 4 + word;", source);
+            StringAssert.Contains("asyncCommandHeap[heapWord] = pixel.r", source);
             StringAssert.Contains("private void CompleteAsyncCommandReadback", source);
             StringAssert.Contains(
                 "SendCustomEventDelayedFrames(\"_ContinueAsyncCommand\", 1);",
@@ -287,6 +287,52 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             StringAssert.Contains("public int GetAddStatus()", source);
             StringAssert.Contains("public int TryGetAddResult(out int result)", source);
             StringAssert.DoesNotContain("public int TryAdd(", source);
+        }
+
+        [Test]
+        public void GeneratesStaticObjectCompletionPump()
+        {
+            string manifest = ScalarManifest
+                .Replace("\"async\":false", "\"async\":true")
+                .Replace(
+                    "\"exports\":[",
+                    "\"program\":{\"async_commands\":{"
+                        + "\"resume_state_slot\":\"__resume\","
+                        + "\"completion_status_slot\":\"__completion\","
+                        + "\"pending_object_slot\":\"__pending_object\","
+                        + "\"completion_object_slot\":\"__completion_object\","
+                        + "\"completion_event\":\"__complete_async\","
+                        + "\"command_kind_slot\":\"__kind\","
+                        + "\"command_buffer_slot\":\"__buffer\","
+                        + "\"command_offset_slot\":\"__offset\","
+                        + "\"command_size_slot\":\"__size\","
+                        + "\"command_pointer_slot\":\"__pointer\","
+                        + "\"raw_heap_slot\":\"__heap\","
+                        + "\"upload_kind\":1,\"readback_kind\":2}},"
+                        + "\"device\":{\"buffers\":[{"
+                        + "\"id\":7,\"name\":\"scratch\",\"heap_slot\":\"__device_7\","
+                        + "\"logical_bytes\":16,\"width\":4,\"height\":1,"
+                        + "\"format\":\"rgba8_unorm\"}]},"
+                        + "\"exports\":["
+                );
+            string source = VRCWrapperGenerator.GenerateFromJson(
+                manifest,
+                "Lemolatoon.Generated",
+                "AdderBinding"
+            );
+
+            StringAssert.Contains(
+                "object rawPendingObject = program.GetProgramVariable(\"__pending_object\");",
+                source
+            );
+            StringAssert.Contains("pendingAsyncObject = pendingObject;", source);
+            StringAssert.Contains("program.SetProgramVariable(\"__pending_object\", 0);", source);
+            StringAssert.Contains(
+                "program.SetProgramVariable(\"__completion_object\", pendingAsyncObject);",
+                source
+            );
+            StringAssert.Contains("program.SendCustomEvent(\"__complete_async\");", source);
+            StringAssert.DoesNotContain("object rawResume", source);
         }
 
         [Test]

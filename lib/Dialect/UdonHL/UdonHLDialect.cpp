@@ -1,4 +1,5 @@
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
+#include "VRC/Dialect/VRC/VRCDialect.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/DialectImplementation.h"
@@ -57,11 +58,13 @@ mlir::LogicalResult verifyAlignment(mlir::Operation *operation,
 }
 
 bool isMemoryAccessType(mlir::Type type) {
-  if (mlir::isa<vrc::udonhl::PtrType>(type))
+  if (mlir::isa<vrc::udonhl::PtrType, vrc::vrc::BufferType, vrc::vrc::EventType,
+                vrc::vrc::DispatchDescType>(type))
     return true;
   if (auto integer = mlir::dyn_cast<mlir::IntegerType>(type))
-    return integer.getWidth() == 8 || integer.getWidth() == 16 ||
-           integer.getWidth() == 32 || integer.getWidth() == 64;
+    return integer.getWidth() == 1 || integer.getWidth() == 8 ||
+           integer.getWidth() == 16 || integer.getWidth() == 32 ||
+           integer.getWidth() == 64;
   if (type.isF16() || type.isF32() || type.isF64())
     return true;
   if (auto vector = mlir::dyn_cast<mlir::VectorType>(type))
@@ -139,8 +142,17 @@ mlir::LogicalResult vrc::udonhl::LoadOp::verify() {
 
 mlir::LogicalResult vrc::udonhl::StoreOp::verify() {
   if (!isMemoryAccessType(getValue().getType()))
-    return emitOpError("value must be a fixed-width scalar or vector");
+    return emitOpError() << "value type " << getValue().getType()
+                         << " must be a fixed-width scalar or vector";
   return verifyAlignment(*this, getAlignment());
+}
+
+mlir::LogicalResult vrc::udonhl::AsyncBindEventOp::verify() {
+  if (!mlir::isa<::vrc::vrc::EventType>(getEvent().getType()))
+    return emitOpError("event must have !vrc.event type");
+  if (getObjectId() <= 0)
+    return emitOpError("object_id must be positive");
+  return mlir::success();
 }
 
 mlir::LogicalResult vrc::udonhl::MemcpyOp::verify() {

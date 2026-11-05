@@ -45,7 +45,7 @@ add_subdirectory(tools/vrc-opt)
 add_subdirectory(tools/vrc-translate)
 add_subdirectory(tools/vrccl)
 include(GNUInstallDirs)
-install(TARGETS vrccl RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+install(TARGETS vrccl vrc-opt RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
         COMPONENT UdonCLCompiler)
 install(FILES
   cmake/UdonCLConfig.cmake
@@ -75,8 +75,16 @@ install(FILES
   DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/UdonONNXOperators"
   COMPONENT UdonCLCompiler)
 install(FILES
+  cmake/UdonONNXRuntimeConfig.cmake
+  cmake/UdonONNXRuntimeConfigVersion.cmake
+  DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/UdonONNXRuntime"
+  COMPONENT UdonCLCompiler)
+install(FILES
+  include/udoncl/export.h
   include/udoncl/unity_buffer.h
   include/udoncl/device_memory.h
+  include/udoncl/onnx_binding_abi.h
+  include/udoncl/onnx_types.h
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/udoncl"
   COMPONENT UdonCLCompiler)
 install(FILES include/VRC/Runtime/OpenCL/Backend.h
@@ -89,8 +97,6 @@ install(FILES
   COMPONENT UdonCLCompiler)
 install(FILES
   runtime/onnx/udon_onnx.py
-  runtime/onnx/onnx_mlir_graph.py
-  runtime/onnx/onnx_mlir_lower.py
   runtime/onnx/udon_pages.py
   runtime/onnx/udon_weights.py
   scripts/compile_onnx_mlir.py
@@ -122,6 +128,7 @@ install(DIRECTORY libraries/udonblas/device
 install(FILES libraries/udondnn/include/udondnn.h
   libraries/udonaten/include/udonaten.h
   libraries/udononnxoperators/include/udononnxoperators.h
+  libraries/udononnxruntime/include/udononnxruntime.h
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
   COMPONENT UdonCLCompiler)
 install(FILES libraries/udondnn/src/udondnn.c
@@ -130,9 +137,12 @@ install(FILES libraries/udondnn/src/udondnn.c
 install(FILES libraries/udonaten/src/udonaten.c
   DESTINATION "${CMAKE_INSTALL_DATADIR}/udonaten/src"
   COMPONENT UdonCLCompiler)
-install(FILES libraries/udononnxoperators/src/udononnxoperators.c
-  libraries/udononnxoperators/src/matmul_nbits.c
+install(FILES libraries/udononnxoperators/src/matmul_nbits.c
   DESTINATION "${CMAKE_INSTALL_DATADIR}/udononnxoperators/src"
+  COMPONENT UdonCLCompiler)
+install(FILES libraries/udononnxruntime/src/udononnxruntime.c
+              libraries/udononnxruntime/src/onnx_binding_abi.c
+  DESTINATION "${CMAKE_INSTALL_DATADIR}/udononnxruntime/src"
   COMPONENT UdonCLCompiler)
 install(DIRECTORY libraries/udononnxoperators/device
   DESTINATION "${CMAKE_INSTALL_DATADIR}/udononnxoperators"

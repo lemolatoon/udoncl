@@ -73,6 +73,98 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         }
 
         [Test]
+        public void ValidateAcceptsJsonDiagnosticResource()
+        {
+            File.WriteAllText(
+                Path.Combine(_directory, "storage-report.json"),
+                "{\"version\":2}",
+                new UTF8Encoding(false)
+            );
+            AddResources(
+                "[{\"name\":\"host_storage_report\",\"kind\":\"json\","
+                    + "\"path\":\"storage-report.json\",\"bytes\":13}]"
+            );
+
+            ValidatedArtifact artifact = ArtifactManifestValidator.Validate(_directory);
+            Assert.AreEqual(1, artifact.Resources.Count);
+            Assert.AreEqual("json", artifact.Resources[0].Kind);
+        }
+
+        [Test]
+        public void ValidateAcceptsCompilerBindingAbiMetadata()
+        {
+            WriteCompilerBindingManifest(
+                "89dd22ba50e6713d0758a5c6aae2dfeeeeb64f6bc0c3754a92302c092a20c751",
+                "udonsharp-worlds-sdk-3.10.5"
+            );
+            Assert.DoesNotThrow(() => ArtifactManifestValidator.Validate(_directory));
+        }
+
+        [Test]
+        public void ValidateRejectsInvalidCompilerBindingAbiMetadata()
+        {
+            WriteCompilerBindingManifest(new string('A', 64), "udonsharp-worlds-sdk-3.10.5");
+            Assert.Throws<InvalidDataException>(() =>
+                ArtifactManifestValidator.Validate(_directory)
+            );
+
+            WriteManifest("host.uasm", "kernel.shader", "3.7.0");
+            WriteCompilerBindingManifest(new string('a', 64), "unsupported-abi");
+            Assert.Throws<InvalidDataException>(() =>
+                ArtifactManifestValidator.Validate(_directory)
+            );
+        }
+
+        [Test]
+        public void ValidateRejectsCompilerBindingSourceIdentityMismatch()
+        {
+            const string fingerprint =
+                "89dd22ba50e6713d0758a5c6aae2dfeeeeb64f6bc0c3754a92302c092a20c751";
+            WriteCompilerBindingManifest(fingerprint, "udonsharp-worlds-sdk-3.10.5");
+            string bindingPath = Path.Combine(_directory, "binding.cs");
+            File.WriteAllText(
+                bindingPath,
+                CompilerBindingSource(fingerprint, "Fixture", "WrongBinding"),
+                new UTF8Encoding(false)
+            );
+
+            Assert.Throws<InvalidDataException>(() =>
+                ArtifactManifestValidator.Validate(_directory)
+            );
+        }
+
+        [Test]
+        public void ValidateFingerprintsCompilerGeneratedPublicBufferApi()
+        {
+            WriteCompilerBindingManifest(
+                "a8300ca82e5f5b684d9fdbc28ab0c30a7a53dc924e73bccecff3216c3090607e",
+                "udonsharp-worlds-sdk-3.10.5"
+            );
+            string manifestPath = Path.Combine(_directory, "manifest.json");
+            string json = File.ReadAllText(manifestPath)
+                .Replace(
+                    "\"device\":{\"kernels\"",
+                    "\"device\":{\"buffers\":[{\"id\":7,\"name\":\"input\","
+                        + "\"heap_slot\":\"__udoncl_buffer_7\",\"logical_bytes\":16,"
+                        + "\"width\":4,\"height\":1,\"format\":\"rgba8_unorm\","
+                        + "\"srgb\":false,\"mipmaps\":false,\"filter\":\"point\","
+                        + "\"element_type\":\"float32\",\"public_access\":\"input\"}],"
+                        + "\"kernels\""
+                );
+            File.WriteAllText(manifestPath, json, new UTF8Encoding(false));
+            Assert.DoesNotThrow(() => ArtifactManifestValidator.Validate(_directory));
+
+            File.WriteAllText(
+                manifestPath,
+                json.Replace("\"logical_bytes\":16", "\"logical_bytes\":12"),
+                new UTF8Encoding(false)
+            );
+            Assert.Throws<InvalidDataException>(() =>
+                ArtifactManifestValidator.Validate(_directory)
+            );
+        }
+
+        [Test]
         public void ValidateRejectsMissingBufferCopyShader()
         {
             string manifestPath = Path.Combine(_directory, "manifest.json");
@@ -324,6 +416,64 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 json.Substring(0, json.Length - 1) + "," + property + "}",
                 new UTF8Encoding(false)
             );
+        }
+
+        private void WriteCompilerBindingManifest(string fingerprint, string physicalAbi)
+        {
+            File.WriteAllText(
+                Path.Combine(_directory, "binding.cs"),
+                CompilerBindingSource(fingerprint, "Fixture", "Binding"),
+                new UTF8Encoding(false)
+            );
+            string manifestPath = Path.Combine(_directory, "manifest.json");
+            string json = File.ReadAllText(manifestPath)
+                .Replace(
+                    "\"runtime_abi_version\":1,",
+                    "\"runtime_abi_version\":1,"
+                        + "\"public_abi_fingerprint\":\""
+                        + fingerprint
+                        + "\",\"physical_export_abi\":\""
+                        + physicalAbi
+                        + "\","
+                )
+                .Replace(
+                    "\"display_shader\":\"display.shader\"",
+                    "\"display_shader\":\"display.shader\","
+                        + "\"binding_source\":\"binding.cs\","
+                        + "\"binding_namespace\":\"Fixture\","
+                        + "\"binding_class\":\"Binding\""
+                )
+                .Replace(
+                    "\"device\":",
+                    "\"exports\":[{"
+                        + "\"id\":1,\"public_name\":\"Probe\","
+                        + "\"udon_event\":\"Probe\",\"parameters\":[],"
+                        + "\"result\":{\"kind\":\"i32\","
+                        + "\"heap_slot\":\"__0_Probe__ret\"},"
+                        + "\"status_slot\":\"__udoncl_status_1\","
+                        + "\"async\":false}],\"device\":"
+                );
+            File.WriteAllText(manifestPath, json, new UTF8Encoding(false));
+        }
+
+        private static string CompilerBindingSource(
+            string fingerprint,
+            string namespaceName,
+            string className
+        )
+        {
+            return "// <auto-generated />\n"
+                + "// udoncl-public-abi: "
+                + fingerprint
+                + "\n// udoncl-binding-namespace: "
+                + namespaceName
+                + "\n// udoncl-binding-class: "
+                + className
+                + "\nnamespace "
+                + namespaceName
+                + " { public sealed class "
+                + className
+                + " {} }";
         }
 
         private void WriteManifest(string assemblyPath, string shaderPath, string sdkVersion)

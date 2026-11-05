@@ -6,6 +6,7 @@
 
 struct udoncl_device_buffer_entry {
   cl_mem memory;
+  cl_context context;
   size_t bytes;
   uint32_t generation;
 };
@@ -51,9 +52,29 @@ size_t udonclDataTypeSize(udonclDataType_t data_type) {
 udonclStatus_t udonclDeviceBufferCreate(cl_context context, cl_mem_flags flags,
                                         size_t bytes,
                                         udonclBufferHandle_t *buffer) {
-  uint32_t index;
+  cl_mem memory;
   cl_int error = CL_SUCCESS;
   if (!buffer || !context || !bytes)
+    return UDONCL_STATUS_INVALID_VALUE;
+  buffer->slot = 0;
+  buffer->generation = 0;
+  memory = clCreateBuffer(context, flags, bytes, 0, &error);
+  if (!memory)
+    return error == CL_OUT_OF_RESOURCES || error == CL_OUT_OF_HOST_MEMORY
+               ? UDONCL_STATUS_OUT_OF_RESOURCES
+               : UDONCL_STATUS_OPENCL_ERROR;
+  udonclStatus_t status =
+      udonclDeviceBufferAdopt(context, memory, bytes, buffer);
+  if (status != UDONCL_STATUS_SUCCESS)
+    clReleaseMemObject(memory);
+  return status;
+}
+
+udonclStatus_t udonclDeviceBufferAdopt(cl_context context, cl_mem memory,
+                                       size_t bytes,
+                                       udonclBufferHandle_t *buffer) {
+  uint32_t index;
+  if (!buffer || !context || !memory || !bytes)
     return UDONCL_STATUS_INVALID_VALUE;
   buffer->slot = 0;
   buffer->generation = 0;
@@ -61,12 +82,9 @@ udonclStatus_t udonclDeviceBufferCreate(cl_context context, cl_mem_flags flags,
     struct udoncl_device_buffer_entry *entry = &udoncl_device_buffers[index];
     if (entry->memory)
       continue;
-    entry->memory = clCreateBuffer(context, flags, bytes, 0, &error);
-    if (!entry->memory)
-      return error == CL_OUT_OF_RESOURCES || error == CL_OUT_OF_HOST_MEMORY
-                 ? UDONCL_STATUS_OUT_OF_RESOURCES
-                 : UDONCL_STATUS_OPENCL_ERROR;
+    entry->memory = memory;
     entry->bytes = bytes;
+    entry->context = context;
     entry->generation = udoncl_next_generation(entry->generation);
     buffer->slot = index + 1u;
     buffer->generation = entry->generation;
@@ -88,6 +106,7 @@ udonclStatus_t udonclDeviceBufferDestroy(udonclBufferHandle_t *buffer) {
   if (error != CL_SUCCESS)
     return UDONCL_STATUS_OPENCL_ERROR;
   entry->memory = 0;
+  entry->context = 0;
   entry->bytes = 0;
   buffer->slot = 0;
   buffer->generation = 0;
@@ -118,6 +137,18 @@ udonclStatus_t udonclDeviceBufferGetRaw(udonclBufferHandle_t buffer,
   return status;
 }
 
+udonclStatus_t udonclDeviceBufferGetContext(udonclBufferHandle_t buffer,
+                                            cl_context *context) {
+  struct udoncl_device_buffer_entry *entry;
+  udonclStatus_t status;
+  if (!context)
+    return UDONCL_STATUS_INVALID_VALUE;
+  status = udoncl_device_buffer_find(buffer, &entry);
+  if (status == UDONCL_STATUS_SUCCESS)
+    *context = entry->context;
+  return status;
+}
+
 udonclStatus_t udonclDeviceBufferView(udonclBufferHandle_t buffer,
                                       size_t byte_offset, size_t elements,
                                       udonclDataType_t data_type,
@@ -127,7 +158,8 @@ udonclStatus_t udonclDeviceBufferView(udonclBufferHandle_t buffer,
   size_t element_bytes = udonclDataTypeSize(data_type);
   size_t byte_length;
   if (!view || !element_bytes || !elements ||
-      elements > SIZE_MAX / element_bytes || byte_offset % element_bytes)
+      (uint64_t)elements * element_bytes > SIZE_MAX ||
+      (byte_offset & (element_bytes - 1u)))
     return UDONCL_STATUS_INVALID_VALUE;
   byte_length = elements * element_bytes;
   status = udoncl_device_buffer_find(buffer, &entry);
@@ -149,7 +181,8 @@ udonclStatus_t udonclBufferViewResolve(udonclBufferView_t view, cl_mem *memory,
   udonclStatus_t status;
   size_t element_bytes = udonclDataTypeSize(view.data_type);
   if (!memory || !byte_offset || !byte_length || !element_bytes ||
-      view.byte_offset % element_bytes || view.byte_length % element_bytes)
+      (view.byte_offset & (element_bytes - 1u)) ||
+      (view.byte_length & (element_bytes - 1u)))
     return UDONCL_STATUS_INVALID_VALUE;
   status = udoncl_device_buffer_find(view.buffer, &entry);
   if (status != UDONCL_STATUS_SUCCESS)

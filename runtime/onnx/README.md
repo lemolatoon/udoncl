@@ -178,7 +178,9 @@ The equivalent low-level CLI sequence is:
 ```text
 python compile_onnx_mlir.py model.onnx -o model.mlir \
   --importer /path/to/udoncl-onnx --optimizer /path/to/onnx-mlir-opt
-python onnx_mlir_lower.py model.onnx model.mlir -o host.c
+python ../../scripts/compile_onnx_mlir.py model.onnx -o host.mlir \
+  --importer udoncl-onnx --optimizer udoncl-onnx-opt \
+  --host-optimizer udoncl-opt --lower-to-host
 ```
 
 Link `model_host` with the UdonBLAS, UdonDNN, and UdonATen targets required by

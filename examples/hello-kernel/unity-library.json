@@ -1,6 +1,10 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "program": "hello_kernel",
+  "binding": {
+    "namespace": "Lemolatoon.Udoncl.Generated",
+    "class_name": "UdonclHelloKernelBinding"
+  },
   "device_kernel": {
     "schema_version": 1,
     "kernel": "square_plus_one",
@@ -16,10 +20,9 @@
       "byte_size": 4
     }
   ],
-  "exports": [
+  "export_overrides": [
     {
       "symbol": "host_square_plus_one",
-      "id": 1,
       "public_name": "SquarePlusOne",
       "parameters": ["value"]
     }

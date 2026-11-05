@@ -319,6 +319,17 @@ CL_API_ENTRY cl_int CL_API_CALL clRetainCommandQueue(cl_command_queue q) {
   q->refs++;
   return CL_SUCCESS;
 }
+CL_API_ENTRY cl_int CL_API_CALL
+clGetCommandQueueInfo(cl_command_queue q, cl_command_queue_info param,
+                      size_t size, void *value, size_t *required) {
+  if (!queue_find(q))
+    return CL_INVALID_COMMAND_QUEUE;
+  if (param == CL_QUEUE_CONTEXT)
+    return info(&q->context, sizeof(q->context), size, value, required);
+  if (param == CL_QUEUE_REFERENCE_COUNT)
+    return info(&q->refs, sizeof(q->refs), size, value, required);
+  return CL_INVALID_VALUE;
+}
 CL_API_ENTRY cl_int CL_API_CALL clReleaseCommandQueue(cl_command_queue q) {
   if (!queue_find(q))
     return CL_INVALID_COMMAND_QUEUE;

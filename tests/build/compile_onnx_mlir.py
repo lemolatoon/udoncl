@@ -22,11 +22,13 @@ class CompileONNXMLIRTests(unittest.TestCase):
         self.model.write_bytes(b'onnx')
         self.importer = self.root / 'udoncl-onnx'
         self.optimizer = self.root / 'onnx-mlir-opt'
+        self.host_optimizer = self.root / 'udoncl-opt'
         self.importer.write_text('tool', encoding='utf-8')
         self.optimizer.write_text('tool', encoding='utf-8')
+        self.host_optimizer.write_text('tool', encoding='utf-8')
         self.output = self.root / 'out/model.mlir'
 
-    def run_pipeline(self, mlir, supported=(), dimensions=(), input_shapes=(),
+    def run_pipeline(self, mlir, dimensions=(), input_shapes=(),
                      lower_to_host=False):
         def run(command, check):
             self.assertTrue(check)
@@ -40,12 +42,12 @@ class CompileONNXMLIRTests(unittest.TestCase):
         with mock.patch.object(compiler.subprocess, 'run', side_effect=run) as call:
             compiler.canonicalize(
                 self.model, self.output, self.importer, self.optimizer,
-                supported, dimensions, input_shapes, lower_to_host)
+                self.host_optimizer if lower_to_host else None,
+                dimensions, input_shapes, lower_to_host)
         return call.call_args_list
 
     def test_pipeline_imports_then_canonicalizes(self):
-        calls = self.run_pipeline(
-            '"onnx.Add"() : () -> ()\nonnx.Return\n', ['Add'])
+        calls = self.run_pipeline('"onnx.Add"() : () -> ()\nonnx.Return\n')
         self.assertEqual(len(calls), 2)
         optimizer = calls[1].args[0]
         self.assertIn('--shape-inference', optimizer)
@@ -72,11 +74,11 @@ class CompileONNXMLIRTests(unittest.TestCase):
         self.assertIn('--udoncl-infer-onnx-shapes', optimizer)
         self.assertIn('--udoncl-materialize-onnx-constants', optimizer)
         self.assertIn('--udoncl-lower-onnx-to-host', optimizer)
-        self.assertIn(
-            '--one-shot-bufferize=bufferize-function-boundaries copy-before-write',
-            optimizer)
         self.assertIn('--udoncl-emit-bytecode', optimizer)
         self.assertNotIn('--mlir-elide-elementsattrs-if-larger=64', optimizer)
+        host_optimizer = calls[2].args[0]
+        self.assertIn('--udoncl-finalize-onnx-host', host_optimizer)
+        self.assertIn('--emit-bytecode', host_optimizer)
         self.assertEqual(self.output.read_bytes(), b'host bytecode')
 
     def test_input_shapes_are_forwarded_to_the_importer(self):
@@ -86,23 +88,6 @@ class CompileONNXMLIRTests(unittest.TestCase):
         importer = calls[0].args[0]
         self.assertIn('--input-shape', importer)
         self.assertIn('attention_mask=1,4', importer)
-
-    def test_unsupported_operator_is_explicit_and_output_is_atomic(self):
-        self.output.parent.mkdir(parents=True)
-        self.output.write_text('old output', encoding='utf-8')
-        with self.assertRaisesRegex(
-                RuntimeError, 'Unsupported ONNX operators.*Mystery'):
-            self.run_pipeline(
-                '"onnx.Add"() : () -> ()\n"onnx.Mystery"() : () -> ()\n',
-                ['Add'])
-        self.assertEqual(self.output.read_text(encoding='utf-8'), 'old output')
-
-    def test_operator_scan_ignores_structural_onnx_ops(self):
-        found = compiler.operators(
-            '"onnx.EntryPoint"()\nonnx.Return\nonnx.Constant\nonnx.NoValue\n'
-            '"onnx.MatMulNBits"() {onnx.name = "input"}\n')
-        self.assertEqual(found, {'MatMulNBits'})
-
 
 if __name__ == '__main__':
     unittest.main()

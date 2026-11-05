@@ -2,16 +2,8 @@
 import argparse
 import os
 from pathlib import Path
-import re
 import subprocess
 import tempfile
-
-STRUCTURAL_OPERATORS = {'Constant', 'EntryPoint', 'NoValue', 'Return'}
-OPERATOR_PATTERN = re.compile(r'(?<![A-Za-z0-9_])onnx\.([A-Z][A-Za-z0-9_]*)')
-
-
-def operators(mlir):
-    return set(OPERATOR_PATTERN.findall(mlir)) - STRUCTURAL_OPERATORS
 
 
 def canonicalize(
@@ -19,7 +11,7 @@ def canonicalize(
     output,
     importer,
     optimizer,
-    supported=(),
+    host_optimizer=None,
     dimensions=(),
     input_shapes=(),
     lower_to_host=False,
@@ -36,6 +28,7 @@ def canonicalize(
             prefix=output.name + '.onnx-mlir-', dir=output.parent) as temporary:
         temporary = Path(temporary)
         imported = temporary / 'imported.mlir'
+        portable = temporary / ('portable-' + output.name)
         transformed = temporary / output.name
         import_command = [importer, model, '-o', imported]
         for dimension in dimensions:
@@ -49,11 +42,18 @@ def canonicalize(
             '--standard-func-return', '--canonicalize',
         ]
         if lower_to_host:
+            if host_optimizer is None or not host_optimizer.is_file():
+                raise RuntimeError(
+                    f'UdonCL Host optimizer does not exist: {host_optimizer}')
             optimize_command.extend([
+                '--udoncl-canonicalize-onnx-library-patterns',
+                '--udoncl-infer-onnx-shapes',
+                '--shape-inference',
+                '--simplify-shape-related-ops-onnx',
+                '--constprop-onnx',
                 '--udoncl-infer-onnx-shapes',
                 '--udoncl-materialize-onnx-constants',
                 '--udoncl-lower-onnx-to-host',
-                '--one-shot-bufferize=bufferize-function-boundaries copy-before-write',
                 '--canonicalize',
                 '--udoncl-emit-bytecode',
             ])
@@ -62,18 +62,13 @@ def canonicalize(
                 '--mlir-print-debuginfo',
                 '--mlir-elide-elementsattrs-if-larger=64',
             ])
-        optimize_command.extend(['-o', transformed])
+        optimize_command.extend(['-o', portable if lower_to_host else transformed])
         subprocess.run(optimize_command, check=True)
         if lower_to_host:
-            os.replace(transformed, output)
-            return
-        text = transformed.read_text(encoding='utf-8')
-        if supported:
-            unsupported = sorted(operators(text) - set(supported))
-            if unsupported:
-                raise RuntimeError(
-                    'Unsupported ONNX operators after canonicalization: ' +
-                    ', '.join(unsupported))
+            subprocess.run([
+                host_optimizer, portable, '--udoncl-finalize-onnx-host',
+                '--canonicalize', '--emit-bytecode', '-o', transformed,
+            ], check=True)
         os.replace(transformed, output)
 
 
@@ -83,15 +78,17 @@ def main():
     parser.add_argument('-o', '--output', type=Path, required=True)
     parser.add_argument('--importer', type=Path, required=True)
     parser.add_argument('--optimizer', type=Path, required=True)
-    parser.add_argument('--supported-operator', action='append', default=[])
+    parser.add_argument('--host-optimizer', type=Path)
     parser.add_argument('--dimension', action='append', default=[])
     parser.add_argument('--input-shape', action='append', default=[])
     parser.add_argument('--lower-to-host', action='store_true')
     args = parser.parse_args()
     try:
         canonicalize(args.model, args.output, args.importer.resolve(),
-                     args.optimizer.resolve(), args.supported_operator,
-                     args.dimension, args.input_shape, args.lower_to_host)
+                     args.optimizer.resolve(),
+                     args.host_optimizer.resolve()
+                     if args.host_optimizer else None, args.dimension,
+                     args.input_shape, args.lower_to_host)
     except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
         parser.exit(1, f'{error}\n')
 

@@ -92,6 +92,24 @@ struct LowerHostToUdonHLPass
       poison.replaceAllUsesWith(zero.getResult());
       poison.erase();
     }
+    SmallVector<Operation *> unsignedExtrema;
+    module.walk([&](Operation *op) {
+      if (isa<arith::MaxUIOp, arith::MinUIOp>(op))
+        unsignedExtrema.push_back(op);
+    });
+    for (Operation *op : unsignedExtrema) {
+      OpBuilder builder(op);
+      Value lhs = op->getOperand(0);
+      Value rhs = op->getOperand(1);
+      auto predicate = isa<arith::MaxUIOp>(op) ? arith::CmpIPredicate::ugt
+                                               : arith::CmpIPredicate::ult;
+      auto comparison =
+          arith::CmpIOp::create(builder, op->getLoc(), predicate, lhs, rhs);
+      auto selected =
+          arith::SelectOp::create(builder, op->getLoc(), comparison, lhs, rhs);
+      op->getResult(0).replaceAllUsesWith(selected.getResult());
+      op->erase();
+    }
     if (auto abi = module->getAttrOfType<IntegerAttr>("vrc.abi_version"))
       if (abi.getInt() != 1) {
         module.emitError("unsupported Host/Device ABI version");
@@ -164,20 +182,22 @@ struct LowerHostToUdonHLPass
           bool udonHL = op.getName().getDialectNamespace() == "udonhl";
           if (!udonHL &&
               !isa<func::CallOp, func::ReturnOp, cf::BranchOp, cf::CondBranchOp,
-                   UnrealizedConversionCastOp, runtime::DispatchDescCreateOp,
-                   runtime::DispatchOp, runtime::BufferAllocOp,
-                   runtime::BufferReleaseOp, runtime::BufferCopyOp,
-                   runtime::BufferUploadOp, runtime::BufferReadbackOp,
-                   runtime::AwaitOp, runtime::EventStatusOp, memref::LoadOp,
-                   memref::StoreOp, memref::AllocaOp, memref::GetGlobalOp,
-                   arith::ConstantOp, arith::AddIOp, arith::SubIOp,
-                   arith::MulIOp, arith::AddFOp, arith::SubFOp, arith::MulFOp,
-                   arith::DivSIOp, arith::RemSIOp, arith::DivFOp, arith::CmpIOp,
+                   cf::SwitchOp, UnrealizedConversionCastOp,
+                   runtime::DispatchDescCreateOp, runtime::DispatchOp,
+                   runtime::BufferAllocOp, runtime::BufferReleaseOp,
+                   runtime::BufferCopyOp, runtime::BufferUploadOp,
+                   runtime::BufferReadbackOp, runtime::AwaitOp,
+                   runtime::EventStatusOp, memref::LoadOp, memref::StoreOp,
+                   memref::AllocaOp, memref::GetGlobalOp, arith::ConstantOp,
+                   arith::AddIOp, arith::SubIOp, arith::MulIOp, arith::AddFOp,
+                   arith::SubFOp, arith::MulFOp, arith::DivSIOp, arith::DivUIOp,
+                   arith::RemSIOp, arith::RemUIOp, arith::DivFOp, arith::CmpIOp,
                    arith::CmpFOp>(op) &&
               !isa<arith::AndIOp, arith::OrIOp, arith::XOrIOp, arith::ShLIOp,
                    arith::ShRSIOp, arith::ShRUIOp, arith::SelectOp,
                    arith::ExtSIOp, arith::ExtUIOp, arith::TruncIOp,
-                   arith::SIToFPOp, arith::MaxSIOp, arith::MinSIOp>(op)) {
+                   arith::SIToFPOp, arith::UIToFPOp, arith::BitcastOp,
+                   arith::MaxSIOp, arith::MinSIOp>(op)) {
             op.emitError() << "operation " << op.getName()
                            << " is outside the initial Host lowering pattern";
             signalPassFailure();

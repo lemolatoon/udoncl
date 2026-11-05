@@ -881,7 +881,7 @@ def main():
     raw_heap = udonblas_artifact / udonblas_manifest['program'][
         'raw_heap_initializer'
     ]
-    assert raw_heap.stat().st_size == udonblas_manifest['program'][
+    assert (raw_heap.stat().st_size + 3) // 4 == udonblas_manifest['program'][
         'raw_heap_words'
     ]
     udonblas_assembly = (udonblas_artifact / 'host.uasm').read_text(

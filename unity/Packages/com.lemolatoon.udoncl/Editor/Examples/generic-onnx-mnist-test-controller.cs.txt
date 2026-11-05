@@ -1,0 +1,121 @@
+using UdonSharp;
+using UnityEngine;
+
+namespace Lemolatoon.Udoncl.Generated
+{
+    [UdonBehaviourSyncMode(BehaviourSyncMode.None)]
+    public sealed class UdonclGenericOnnxMnistTestController : UdonSharpBehaviour
+    {
+        public UdonclGenericOnnxMnistBinding binding;
+        public float[] input;
+        public float[] logits;
+        public bool completed;
+        public int status;
+        public int libraryStatus;
+        public int phase;
+
+        public void Run()
+        {
+            completed = false;
+            status = UdonclGenericOnnxMnistBinding.StatusSuccess;
+            libraryStatus = 0;
+            phase = 1;
+            if (binding == null)
+            {
+                phase = 11;
+                status = UdonclGenericOnnxMnistBinding.StatusInvalidArgument;
+                completed = true;
+                return;
+            }
+            if (input == null)
+            {
+                phase = 12;
+                status = UdonclGenericOnnxMnistBinding.StatusInvalidArgument;
+                completed = true;
+                return;
+            }
+            if (input.Length != 784)
+            {
+                phase = 13;
+                libraryStatus = input.Length;
+                status = UdonclGenericOnnxMnistBinding.StatusInvalidArgument;
+                completed = true;
+                return;
+            }
+            phase = 2;
+            status = binding.StartInitialize(this, nameof(OnInitializeComplete));
+            if (status != UdonclGenericOnnxMnistBinding.StatusSuccess)
+                completed = true;
+        }
+
+        public void OnInitializeComplete()
+        {
+            phase = 3;
+            status = binding.GetInitializeStatus();
+            if (status != UdonclGenericOnnxMnistBinding.StatusSuccess)
+            {
+                completed = true;
+                return;
+            }
+            status = binding.TryGetInitializeResult(out libraryStatus);
+            if (
+                status != UdonclGenericOnnxMnistBinding.StatusSuccess
+                || libraryStatus != 0
+            )
+            {
+                completed = true;
+                return;
+            }
+            phase = 4;
+            status = binding.TryWriteInput(input);
+            if (status != UdonclGenericOnnxMnistBinding.StatusSuccess)
+            {
+                completed = true;
+                return;
+            }
+            phase = 5;
+            status = binding.StartRun(this, nameof(OnRunComplete));
+            if (status != UdonclGenericOnnxMnistBinding.StatusSuccess)
+                completed = true;
+        }
+
+        public void OnRunComplete()
+        {
+            phase = 6;
+            status = binding.GetRunStatus();
+            if (status != UdonclGenericOnnxMnistBinding.StatusSuccess)
+            {
+                completed = true;
+                return;
+            }
+            phase = 7;
+            status = binding.TryGetRunResult(out libraryStatus);
+            if (
+                status != UdonclGenericOnnxMnistBinding.StatusSuccess
+                || libraryStatus != 0
+            )
+            {
+                completed = true;
+                return;
+            }
+            phase = 8;
+            status = binding.StartReadOutput(logits, this, nameof(OnReadOutputComplete));
+            if (status != UdonclGenericOnnxMnistBinding.StatusSuccess)
+                completed = true;
+        }
+
+        public void OnReadOutputComplete()
+        {
+            phase = 9;
+            status = binding.GetLastReadbackStatus();
+            if (status != UdonclGenericOnnxMnistBinding.StatusSuccess)
+            {
+                completed = true;
+                return;
+            }
+            phase = 10;
+            status = binding.TryShutdown(out libraryStatus);
+            completed = true;
+        }
+    }
+}

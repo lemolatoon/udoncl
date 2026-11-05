@@ -1,6 +1,10 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "program": "generic_onnx_transformer_tiny",
+  "binding": {
+    "namespace": "Lemolatoon.Udoncl.Generated",
+    "class_name": "UdonclGenericOnnxTransformerTinyBinding"
+  },
   "device_kernels": [
     {
       "schema_version": 1, "profile": "gather-f32", "words": 16384,
@@ -49,21 +53,31 @@
       "kernel": "udononnx_matmul_nbits", "kernel_id": 219,
       "argument_kinds": ["buffer", "buffer", "i32", "i32", "i32", "i32"],
       "global_size": [16384, 1, 1], "local_size": [1, 1, 1], "global_offset": [0, 0, 0]
+    },
+    {
+      "schema_version": 1, "profile": "gather-f32", "words": 16384,
+      "kernel": "udononnx_gather_copy", "kernel_id": 220,
+      "argument_kinds": ["buffer", "buffer", "i32"],
+      "global_size": [16384, 1, 1], "local_size": [1, 1, 1], "global_offset": [0, 0, 0]
     }
   ],
-  "exports": [
-    {"symbol": "udon_onnx_session_write_input_float", "public_name": "TryWriteInputFloat", "id": 1, "parameters": ["input_index", "element_index", "value"]},
-    {"symbol": "udon_onnx_session_write_input_int32", "public_name": "TryWriteInputInt32", "id": 2, "parameters": ["input_index", "element_index", "value"]},
-    {"symbol": "udon_onnx_session_run", "public_name": "StartRun", "id": 3, "parameters": []},
-    {"symbol": "udon_onnx_session_read_output_float", "public_name": "ReadOutputFloat", "id": 4, "parameters": ["output_index", "element_index"]},
-    {"symbol": "udon_onnx_session_bind_output_to_input", "public_name": "TryBindOutputToInput", "id": 5, "parameters": ["output_index", "input_index"]},
-    {"symbol": "udon_onnx_session_unbind_input", "public_name": "TryUnbindInput", "id": 6, "parameters": ["input_index"]}
+  "export_overrides": [
+    {"symbol": "transformer_initialize", "public_name": "Initialize", "parameters": []},
+    {"symbol": "transformer_run", "public_name": "Run", "parameters": []},
+    {"symbol": "transformer_dispose", "public_name": "Shutdown", "parameters": []}
+  ],
+  "internal_exports": [
+    "udon_onnx_binding_create",
+    "udon_onnx_binding_bind_tensor",
+    "udon_onnx_binding_enqueue_initialize",
+    "udon_onnx_binding_enqueue_run",
+    "udon_onnx_binding_dispose"
   ],
   "buffers": [
-    {"id": 1, "name": "onnx_device_buffer_1", "byte_size": 65536},
-    {"id": 2, "name": "onnx_device_buffer_2", "byte_size": 65536},
-    {"id": 3, "name": "onnx_device_buffer_3", "byte_size": 65536},
-    {"id": 4, "name": "onnx_device_buffer_4", "byte_size": 65536},
+    {"id": 1, "name": "input_ids", "byte_size": 16, "element_type": "int32", "public_access": "input"},
+    {"id": 2, "name": "past_key", "byte_size": 128, "element_type": "float32", "public_access": "input"},
+    {"id": 3, "name": "past_value", "byte_size": 128, "element_type": "float32", "public_access": "input"},
+    {"id": 4, "name": "logits", "byte_size": 128, "element_type": "float32", "public_access": "output"},
     {"id": 5, "name": "onnx_device_buffer_5", "byte_size": 65536},
     {"id": 6, "name": "onnx_device_buffer_6", "byte_size": 65536},
     {"id": 7, "name": "onnx_device_buffer_7", "byte_size": 65536},

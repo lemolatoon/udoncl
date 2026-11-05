@@ -2,6 +2,11 @@ find_package(Python3 3.12 REQUIRED COMPONENTS Interpreter)
 file(READ
   "${PROJECT_SOURCE_DIR}/libraries/udononnxoperators/device/matmul_nbits.cl"
   _UDONONNX_TEST_DEVICE_SOURCE)
+file(READ
+  "${PROJECT_SOURCE_DIR}/libraries/udononnxoperators/device/gather.cl"
+  _UDONONNX_TEST_GATHER_SOURCE)
+string(APPEND _UDONONNX_TEST_DEVICE_SOURCE
+  "\n${_UDONONNX_TEST_GATHER_SOURCE}")
 string(REPLACE "\\" "\\\\" _UDONONNX_TEST_DEVICE_SOURCE
   "${_UDONONNX_TEST_DEVICE_SOURCE}")
 string(REPLACE "\"" "\\\"" _UDONONNX_TEST_DEVICE_SOURCE
@@ -16,7 +21,8 @@ add_executable(opencl-aot-runtime
   runtime/opencl_aot.c
   "${PROJECT_SOURCE_DIR}/lib/Runtime/OpenCL/OpenCLAOT.c"
   "${PROJECT_SOURCE_DIR}/lib/Runtime/OpenCL/DeviceMemory.c"
-  "${PROJECT_SOURCE_DIR}/libraries/udononnxoperators/src/udononnxoperators.c"
+  "${PROJECT_SOURCE_DIR}/libraries/udononnxruntime/src/udononnxruntime.c"
+  "${PROJECT_SOURCE_DIR}/libraries/udononnxruntime/src/onnx_binding_abi.c"
   "${PROJECT_SOURCE_DIR}/libraries/udononnxoperators/src/matmul_nbits.c")
 target_compile_features(opencl-aot-runtime PRIVATE c_std_11)
 set_target_properties(opencl-aot-runtime PROPERTIES
@@ -25,12 +31,30 @@ target_include_directories(opencl-aot-runtime PRIVATE
   "${PROJECT_SOURCE_DIR}/third_party/OpenCL-Headers"
   "${PROJECT_SOURCE_DIR}/include"
   "${PROJECT_SOURCE_DIR}/libraries/udononnxoperators/include"
+  "${PROJECT_SOURCE_DIR}/libraries/udononnxruntime/include"
   "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_compile_definitions(opencl-aot-runtime PRIVATE
   CL_TARGET_OPENCL_VERSION=120
   UDONCL_AOT_ENABLE_MNIST=1
   UDONCL_AOT_ENABLE_ONNX=1)
 add_test(NAME opencl-aot-runtime COMMAND opencl-aot-runtime)
+if(TARGET VRCOpenCLRuntime)
+  add_executable(udononnx-runtime
+    runtime/onnx_runtime.c
+    "${PROJECT_SOURCE_DIR}/libraries/udononnxruntime/src/udononnxruntime.c"
+    "${PROJECT_SOURCE_DIR}/libraries/udononnxruntime/src/onnx_binding_abi.c")
+  target_compile_features(udononnx-runtime PRIVATE c_std_11)
+  set_target_properties(udononnx-runtime PROPERTIES
+    C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS OFF)
+  target_include_directories(udononnx-runtime PRIVATE
+    "${PROJECT_SOURCE_DIR}/third_party/OpenCL-Headers"
+    "${PROJECT_SOURCE_DIR}/include"
+    "${PROJECT_SOURCE_DIR}/libraries/udononnxruntime/include")
+  target_compile_definitions(udononnx-runtime PRIVATE
+    CL_TARGET_OPENCL_VERSION=120)
+  target_link_libraries(udononnx-runtime PRIVATE VRCOpenCLRuntime)
+  add_test(NAME udononnx-runtime COMMAND udononnx-runtime)
+endif()
 add_executable(udononnx-matmul-nbits-kernel
   boundary/udononnx_matmul_nbits.cpp)
 target_compile_features(udononnx-matmul-nbits-kernel PRIVATE cxx_std_20)
@@ -83,13 +107,43 @@ endfunction()
 vrc_find_test_tool(VRC_TEST_CLANG clang)
 vrc_find_test_tool(VRC_TEST_LLVM_LINK llvm-link)
 vrc_find_test_tool(VRC_TEST_LLVM_OPT opt)
+vrc_find_test_tool(VRC_TEST_LLI lli)
 vrc_find_test_tool(VRC_TEST_MLIR_OPT mlir-opt)
 vrc_find_test_tool(VRC_TEST_MLIR_TRANSLATE mlir-translate)
+find_file(VRC_TEST_ASYNC_RUNTIME
+  NAMES mlir_async_runtime.dll libmlir_async_runtime.so
+        libmlir_async_runtime.dylib
+  HINTS "${LLVM_TOOLS_BINARY_DIR}" ${LLVM_LIBRARY_DIRS}
+  NO_DEFAULT_PATH REQUIRED)
 add_test(NAME opencl-frontend-metadata
   COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/frontend/opencl.py"
     $<TARGET_FILE:vrc-translate> $<TARGET_FILE:vrc-opt>
     "${VRC_TEST_CLANG}" "${VRC_TEST_LLVM_OPT}"
     "${PROJECT_BINARY_DIR}/tests/opencl"
+)
+add_test(NAME host-to-async-lowering
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/host_to_async.py"
+    $<TARGET_FILE:vrc-opt>
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/host_to_async.mlir"
+)
+if(WIN32)
+  add_library(native-async-support SHARED frontend/native_async_support.c)
+  set_target_properties(native-async-support PROPERTIES
+    C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS OFF)
+  set(VRC_TEST_NATIVE_ASYNC_SUPPORT $<TARGET_FILE:native-async-support>)
+else()
+  set(VRC_TEST_NATIVE_ASYNC_SUPPORT "")
+endif()
+add_test(NAME native-async-coroutine-execution
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/native_async.py"
+    $<TARGET_FILE:vrc-opt>
+    "${VRC_TEST_MLIR_OPT}" "${VRC_TEST_MLIR_TRANSLATE}"
+    "${VRC_TEST_LLVM_OPT}" "${VRC_TEST_LLI}"
+    "${VRC_TEST_ASYNC_RUNTIME}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/native_async.mlir"
+    "${VRC_TEST_NATIVE_ASYNC_SUPPORT}"
 )
 add_test(NAME llvm-high-level-recovery
   COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/recovery/raise.py"
@@ -168,6 +222,7 @@ if(VRC_TEST_ONNX_IMPORTER AND VRC_TEST_ONNX_OPT)
     COMMAND Python3::Interpreter
       "${CMAKE_CURRENT_SOURCE_DIR}/build/onnx_cpp_lowering.py"
       "${VRC_TEST_ONNX_OPT}"
+      $<TARGET_FILE:vrc-opt>
       "${CMAKE_CURRENT_SOURCE_DIR}/frontend/onnx_to_udon_host.mlir"
   )
   add_test(NAME tinyllama-real-onnx-frontend
@@ -206,9 +261,6 @@ add_test(NAME onnx-mlir-frontend-installer
 )
 add_test(NAME onnx-mlir-pipeline
   COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/build/compile_onnx_mlir.py"
-)
-add_test(NAME onnx-mlir-graph
-  COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/build/onnx_mlir_graph.py"
 )
 add_test(NAME tinyllama-model-cache
   COMMAND Python3::Interpreter

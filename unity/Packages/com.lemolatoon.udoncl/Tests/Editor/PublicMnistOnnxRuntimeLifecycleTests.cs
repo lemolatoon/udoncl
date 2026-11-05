@@ -1,9 +1,12 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using NUnit.Framework;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.TestTools;
+using VRC.Udon;
 using VRC.Udon.Common.Interfaces;
 using VRC.Udon.Editor;
 using VRC.Udon.Editor.ProgramSources;
@@ -19,7 +22,14 @@ namespace Lemolatoon.Udoncl.Editor.Tests
     public sealed class PublicMnistOnnxRuntimeLifecycleTests
     {
         private const string GeneratedRoot = "Assets/udoncl-generated/generic_onnx_mnist";
+        private const string BindingClass = "UdonclGenericOnnxMnistBinding";
+        private const string ControllerClass = "UdonclGenericOnnxMnistTestController";
+        private const string GeneratedNamespace = "Lemolatoon.Udoncl.Generated.";
         private const string RunEntry = "StartRun";
+        private const string ControllerSource =
+            "Assets/UdonclSampleValidation/" + ControllerClass + ".cs";
+        private const string ControllerProgram =
+            GeneratedRoot + "/Tests/" + ControllerClass + ".asset";
         private string repository;
         private string artifactDirectory;
         private string serializedProgramPath;
@@ -31,7 +41,6 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         {
             repository = ResolveRepository();
             serializedProgramsBefore = SerializedProgramAssets();
-            AssetDatabase.DeleteAsset(GeneratedRoot);
             artifactDirectory = ResolvePath(
                 "UDONCL_PUBLIC_MNIST_UNITY_BUNDLE",
                 Path.Combine(
@@ -39,21 +48,44 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                     "udoncl",
                     "tests",
                     "cmake-package",
-                    "onnx-consumer",
+                    "onnx-mnist-consumer",
                     "udoncl",
-                    "onnx-host-link-probe",
+                    "onnx-mnist",
                     "artifact"
                 )
             );
             Assert.That(File.Exists(Path.Combine(artifactDirectory, "manifest.json")));
             artifact = ArtifactManifestValidator.Validate(artifactDirectory);
             Assert.AreEqual("generic_onnx_mnist", artifact.ProgramName);
-            Assert.AreEqual(GeneratedRoot, UdonclArtifactImporter.Import(artifactDirectory));
+            if (!AssetDatabase.IsValidFolder(GeneratedRoot))
+                Assert.AreEqual(GeneratedRoot, UdonclArtifactImporter.Import(artifactDirectory));
+            CollectionAssert.AreEqual(
+                File.ReadAllBytes(Path.Combine(artifactDirectory, "binding.cs")),
+                File.ReadAllBytes(GeneratedRoot + "/Bindings/" + BindingClass + ".cs"),
+                "Importer must install compiler-generated binding source byte-for-byte."
+            );
 
             string programPath = GeneratedRoot + "/Programs/host_program.asset";
             string programGuid = AssetDatabase.AssetPathToGUID(programPath);
             Assert.IsFalse(string.IsNullOrEmpty(programGuid));
             serializedProgramPath = "Assets/SerializedUdonPrograms/" + programGuid + ".asset";
+            serializedProgramsBefore.Remove(serializedProgramPath);
+
+            Assert.NotNull(
+                AssetDatabase.LoadAssetAtPath<MonoScript>(ControllerSource),
+                "The pre-test MNIST U# controller source was not imported."
+            );
+            if (!AssetDatabase.IsValidFolder(GeneratedRoot + "/Tests"))
+                AssetDatabase.CreateFolder(GeneratedRoot, "Tests");
+            UdonclArtifactImporter.EnsureCompiledUdonSharpProgramAsset(
+                GeneratedRoot + "/Bindings/" + BindingClass + ".cs",
+                GeneratedRoot + "/Bindings/" + BindingClass + ".asset"
+            );
+            UdonclArtifactImporter.EnsureCompiledUdonSharpProgramAsset(
+                ControllerSource,
+                ControllerProgram
+            );
+            GeneratedBindingFinalizer.FinalizeAvailableBindings();
         }
 
         [Test]
@@ -72,9 +104,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             byte[] rawHeapBytes = File.ReadAllBytes(
                 Path.Combine(artifactDirectory, "raw-heap.bytes")
             );
-            int[] rawHeap = new int[rawHeapBytes.Length];
-            for (int index = 0; index < rawHeapBytes.Length; ++index)
-                rawHeap[index] = rawHeapBytes[index];
+            int[] rawHeap = PackRawHeap(rawHeapBytes);
             Set(heap, program, "__vrc_raw_heap", rawHeap);
 
             Dictionary<int, RenderTexture> buffers = new Dictionary<int, RenderTexture>();
@@ -179,10 +209,151 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             );
         }
 
+        [UnityTest]
+        public IEnumerator GeneratedUSharpBindingInfersMnistAndMatchesReference()
+        {
+            yield return new EnterPlayMode();
+
+            float[] input = ReadFloats(
+                ResolvePath(
+                    "UDONCL_ONNX_MNIST_INPUT",
+                    Path.Combine("build", "precommit", "onnx-aot", "unity-mnist-input.bytes")
+                )
+            );
+            float[] expected = ReadFloats(
+                ResolvePath(
+                    "UDONCL_ONNX_MNIST_REFERENCE",
+                    Path.Combine("build", "precommit", "onnx-aot", "unity-mnist-reference.bytes")
+                )
+            );
+            Assert.AreEqual(28 * 28, input.Length);
+            Assert.AreEqual(10, expected.Length);
+
+            GameObject prefab = AssetDatabase.LoadAssetAtPath<GameObject>(
+                GeneratedRoot + "/Prefabs/" + BindingClass + ".prefab"
+            );
+            Assert.NotNull(prefab);
+            GameObject instance = UnityEngine.Object.Instantiate(prefab);
+            UdonBehaviour controller = UdonclArtifactImporter.AddCompiledUdonSharpBehaviour(
+                instance,
+                ControllerProgram
+            );
+            UdonclArtifactImporter.InitializeUdonBehaviours(instance);
+            yield return null;
+
+            UdonBehaviour binding = UdonclArtifactImporter.FindUdonSharpBacking(
+                instance,
+                GeneratedNamespace + BindingClass
+            );
+            Assert.NotNull(binding);
+            Assert.NotNull(controller);
+            UdonBehaviour program = (UdonBehaviour)
+                UdonclArtifactImporter.GetUdonProgramVariable(binding, "program");
+            Assert.NotNull(program, "Generated U# binding did not retain its Host program.");
+            int[] rawHeap = (int[])
+                UdonclArtifactImporter.GetUdonProgramVariable(program, "__vrc_raw_heap");
+            byte[] expectedRawHeap = File.ReadAllBytes(
+                Path.Combine(artifactDirectory, "raw-heap.bytes")
+            );
+            Assert.NotNull(rawHeap, "Generated Host program has no initialized C raw heap.");
+            Assert.AreEqual((expectedRawHeap.Length + 3) / 4, rawHeap.Length);
+            for (int index = 0; index < expectedRawHeap.Length; ++index)
+                Assert.AreEqual(
+                    expectedRawHeap[index],
+                    (byte)(rawHeap[index / 4] >> ((index & 3) * 8)),
+                    "Generated Host raw heap differs at byte " + index + "."
+                );
+            float[] logits = new float[expected.Length];
+            UdonclArtifactImporter.SetUdonProgramVariable(controller, "binding", binding);
+            UdonclArtifactImporter.SetUdonProgramVariable(controller, "input", input);
+            UdonclArtifactImporter.SetUdonProgramVariable(controller, "logits", logits);
+            Assert.AreSame(
+                input,
+                UdonclArtifactImporter.GetUdonProgramVariable(controller, "input"),
+                "The generated U# controller did not retain the assigned ONNX input buffer."
+            );
+            Assert.AreSame(
+                logits,
+                UdonclArtifactImporter.GetUdonProgramVariable(controller, "logits"),
+                "The generated U# controller did not retain the assigned ONNX output buffer."
+            );
+            UdonclArtifactImporter.SendUdonCustomEvent(controller, "Run");
+
+            const int timeoutFrames = 1200;
+            int frame = 0;
+            bool completed = false;
+            while (frame < timeoutFrames && !completed)
+            {
+                ++frame;
+                yield return null;
+                completed = (bool)
+                    UdonclArtifactImporter.GetUdonProgramVariable(controller, "completed");
+            }
+            int status = (int)UdonclArtifactImporter.GetUdonProgramVariable(controller, "status");
+            int libraryStatus = (int)
+                UdonclArtifactImporter.GetUdonProgramVariable(controller, "libraryStatus");
+            int phase = (int)UdonclArtifactImporter.GetUdonProgramVariable(controller, "phase");
+            float[] actual = (float[])
+                UdonclArtifactImporter.GetUdonProgramVariable(controller, "logits");
+            yield return new ExitPlayMode();
+
+            TestContext.Progress.WriteLine(
+                "generated_usharp_mnist frames={0} completed={1} status={2} library_status={3} phase={4} logits=[{5}]",
+                frame,
+                completed,
+                status,
+                libraryStatus,
+                phase,
+                string.Join(",", actual)
+            );
+
+            Assert.IsTrue(
+                completed,
+                "Generated U# MNIST execution timed out after "
+                    + frame
+                    + " frames; status="
+                    + status
+                    + "; libraryStatus="
+                    + libraryStatus
+            );
+            Assert.AreEqual(
+                0,
+                status,
+                "Generated U# binding returned an API error; phase="
+                    + phase
+                    + "; libraryStatus="
+                    + libraryStatus
+            );
+            Assert.AreEqual(
+                0,
+                libraryStatus,
+                "MNIST host program returned an error at controller phase " + phase + "."
+            );
+            Assert.AreEqual(expected.Length, actual.Length);
+            float maximumError = 0.0f;
+            for (int index = 0; index < actual.Length; ++index)
+                maximumError = Mathf.Max(maximumError, Mathf.Abs(actual[index] - expected[index]));
+            TestContext.Progress.WriteLine(
+                "generated_usharp_mnist max_error={0:R} argmax={1}",
+                maximumError,
+                ArgMax(actual)
+            );
+            Assert.That(maximumError, Is.LessThan(0.002f));
+            Assert.AreEqual(8, ArgMax(expected));
+            Assert.AreEqual(ArgMax(expected), ArgMax(actual));
+        }
+
         [OneTimeTearDown]
         public void RemoveGeneratedAssets()
         {
             RenderTexture.active = null;
+            AssetDatabase.DeleteAsset(ControllerSource);
+            const string controllerDirectory = "Assets/UdonclSampleValidation";
+            if (
+                AssetDatabase.IsValidFolder(controllerDirectory)
+                && Directory.GetFileSystemEntries(controllerDirectory).Length == 0
+            )
+                AssetDatabase.DeleteAsset(controllerDirectory);
             AssetDatabase.DeleteAsset(GeneratedRoot);
             if (!string.IsNullOrEmpty(serializedProgramPath))
                 AssetDatabase.DeleteAsset(serializedProgramPath);
@@ -243,7 +414,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 Assert.AreEqual(0, offset & 3);
                 Assert.AreEqual(0, size & 3);
                 Assert.AreEqual(0, pointer & 3);
-                Assert.That(pointer, Is.LessThanOrEqualTo(rawHeap.Length - size));
+                Assert.That(pointer, Is.LessThanOrEqualTo(rawHeap.Length * 4 - size));
                 TestContext.WriteLine(
                     $"async_step iteration={iteration} resume={resume} kind={kind} buffer={bufferId} offset={offset} size={size} pointer={pointer} host_first={HeapFloat(rawHeap, pointer):R}"
                 );
@@ -282,12 +453,12 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             int words = size / 4;
             for (int word = 0; word < words; ++word)
             {
-                int byteIndex = pointer + word * 4;
+                int value = rawHeap[pointer / 4 + word];
                 pixels[offsetWords + word] = new Color32(
-                    (byte)rawHeap[byteIndex],
-                    (byte)rawHeap[byteIndex + 1],
-                    (byte)rawHeap[byteIndex + 2],
-                    (byte)rawHeap[byteIndex + 3]
+                    (byte)value,
+                    (byte)(value >> 8),
+                    (byte)(value >> 16),
+                    (byte)(value >> 24)
                 );
             }
             Texture2D staging = new Texture2D(
@@ -324,12 +495,9 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             int words = size / 4;
             for (int word = 0; word < words; ++word)
             {
-                int byteIndex = pointer + word * 4;
                 Color32 pixel = pixels[offsetWords + word];
-                rawHeap[byteIndex] = pixel.r;
-                rawHeap[byteIndex + 1] = pixel.g;
-                rawHeap[byteIndex + 2] = pixel.b;
-                rawHeap[byteIndex + 3] = pixel.a;
+                rawHeap[pointer / 4 + word] =
+                    pixel.r | (pixel.g << 8) | (pixel.b << 16) | (pixel.a << 24);
             }
         }
 
@@ -442,12 +610,15 @@ namespace Lemolatoon.Udoncl.Editor.Tests
 
         private static float HeapFloat(int[] heap, int pointer)
         {
-            int bits =
-                (heap[pointer] & 255)
-                | ((heap[pointer + 1] & 255) << 8)
-                | ((heap[pointer + 2] & 255) << 16)
-                | ((heap[pointer + 3] & 255) << 24);
-            return BitConverter.Int32BitsToSingle(bits);
+            return BitConverter.Int32BitsToSingle(heap[pointer / 4]);
+        }
+
+        internal static int[] PackRawHeap(byte[] bytes)
+        {
+            int[] words = new int[(bytes.Length + 3) / 4];
+            for (int index = 0; index < bytes.Length; ++index)
+                words[index / 4] |= bytes[index] << ((index & 3) * 8);
+            return words;
         }
 
         internal static void Set<T>(IUdonHeap heap, IUdonProgram program, string symbol, T value)

@@ -3,15 +3,53 @@
 #include <string.h>
 #include <udoncl/device_memory.h>
 #include <udononnxoperators.h>
+#include <udononnxruntime.h>
 
 size_t udononnx_matmul_nbits_cpu_gid;
 #include "../../libraries/udononnxoperators/device/matmul_nbits.cl"
+size_t udononnx_gather_cpu_gid;
+#include "../../libraries/udononnxoperators/device/gather.cl"
 
 #define EXPECT(condition)                                                      \
   do {                                                                         \
     if (!(condition))                                                          \
       return __LINE__;                                                         \
   } while (0)
+
+size_t udononnxGeneratedGetModelCount(void) { return 0; }
+
+udononnxStatus_t udononnxGeneratedGetModel(size_t index,
+                                           const udononnxModel_t **model) {
+  (void)index;
+  if (model)
+    *model = 0;
+  return UDONONNX_STATUS_INVALID_VALUE;
+}
+
+udononnxStatus_t udononnxGeneratedEnqueueInitialize(
+    uint32_t graph_id, udononnxSession_t *session, cl_command_queue queue,
+    cl_uint wait_count, const cl_event *wait_list, cl_event *completion) {
+  (void)graph_id;
+  (void)session;
+  (void)queue;
+  (void)wait_count;
+  (void)wait_list;
+  (void)completion;
+  return UDONONNX_STATUS_NOT_SUPPORTED;
+}
+
+udononnxStatus_t
+udononnxGeneratedEnqueueRun(uint32_t graph_id, udononnxSession_t *session,
+                            cl_command_queue queue, cl_uint wait_count,
+                            const cl_event *wait_list, cl_event *completion) {
+  (void)graph_id;
+  (void)session;
+  (void)queue;
+  (void)wait_count;
+  (void)wait_list;
+  (void)completion;
+  return UDONONNX_STATUS_NOT_SUPPORTED;
+}
 
 static cl_uint allocated_logical_id;
 static size_t allocated_bytes;
@@ -25,6 +63,10 @@ static cl_int dispatched_sgemv_trans;
 static cl_int dispatched_mnist_kernel;
 static cl_int dispatched_nbits_tile_n;
 static cl_int dispatched_nbits_finalize;
+static cl_int dispatched_gather_words;
+static cl_uint await_count;
+static cl_uint await_failure_call;
+static cl_int awaited_events[8];
 static unsigned char physical_buffers[33][65536];
 
 cl_uint __vrc_opencl_buffer_alloc(cl_uint logical_id, size_t bytes) {
@@ -141,8 +183,25 @@ cl_int __vrc_opencl_dispatch_udononnx_matmul_nbits(cl_uint input_token,
   return 15;
 }
 
+cl_int __vrc_opencl_dispatch_udononnx_gather_copy(cl_uint input_token,
+                                                  cl_uint output_token,
+                                                  cl_int words) {
+  dispatched_input_token = input_token;
+  dispatched_output_token = output_token;
+  dispatched_gather_words = words;
+  for (udononnx_gather_cpu_gid = 0; udononnx_gather_cpu_gid < 16384;
+       ++udononnx_gather_cpu_gid)
+    udononnx_gather_copy((const float *)physical_buffers[input_token - 100],
+                         (float *)physical_buffers[output_token - 100], words);
+  return 16;
+}
+
 cl_int __vrc_opencl_await(cl_int event) {
-  (void)event;
+  if (await_count < sizeof(awaited_events) / sizeof(awaited_events[0]))
+    awaited_events[await_count] = event;
+  ++await_count;
+  if (await_failure_call && await_count == await_failure_call)
+    return CL_INVALID_VALUE;
   return CL_SUCCESS;
 }
 
@@ -164,16 +223,15 @@ int main(void) {
   cl_command_queue queue;
   cl_program program;
   cl_kernel kernel;
+  cl_event marker_event, write_event, wait_events[2];
   cl_mem first, second;
   cl_mem resolved;
   udonclBufferHandle_t common_buffer = {0, 0}, stale_buffer, replacement;
   udonclBufferView_t view;
   udonclWorkspace_t workspace;
   udononnxTensor_t tensor;
-  udononnxTensor_t input_bindings[1], output_bindings[1];
-  udononnxSession_t session = {0};
-  udononnxRunToken_t run_token;
   cl_int error;
+  cl_int event_status;
   cl_int integer_arguments[8] = {1, 10, 16, 0, 0, 1, 16, 1};
   cl_float float_arguments[2] = {1.5f, 0.0f};
   const char *source_text = "known AOT program";
@@ -183,6 +241,10 @@ int main(void) {
   size_t bytes, byte_offset, byte_length;
   size_t elements;
   udononnxOperatorHandle_t operator_handle = 0;
+  float gather_data[6] = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
+  float gather_output[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  int64_t gather_shape[2] = {3, 2};
+  int64_t gather_indices[2] = {-1, 0};
   float nbits_a[16], nbits_scales[2] = {0.5f, 1.0f};
   float nbits_bias[2] = {1.0f, -2.0f}, nbits_y[2] = {0.0f, 0.0f};
   uint8_t nbits_b[32], nbits_zero[2] = {0x88, 0};
@@ -192,12 +254,6 @@ int main(void) {
   uint16_t bfloat_bias[2] = {0x3f80, 0xc000}, bfloat_y[2] = {0, 0};
   int bits;
   int64_t tensor_dimensions[2] = {2, 2};
-  int64_t dynamic_dimensions[2] = {-1, 2};
-  int64_t dynamic_bounds[2] = {2, 0};
-  udononnxTensorMetadata_t input_metadata[1] = {
-      {"tokens", UDONCL_DATA_FLOAT32, 2, dynamic_dimensions, dynamic_bounds}};
-  udononnxTensorMetadata_t output_metadata[1] = {
-      {"logits", UDONCL_DATA_FLOAT32, 2, tensor_dimensions, 0}};
 
   EXPECT(clGetPlatformIDs(1, &platform, 0) == CL_SUCCESS);
   EXPECT(clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &device, 0) ==
@@ -223,26 +279,6 @@ int main(void) {
   EXPECT(udononnxGetTensorElementCount(tensor, &elements) ==
              UDONONNX_STATUS_SUCCESS &&
          elements == 4);
-  EXPECT(udononnxSessionInitialize(&session, input_metadata, 1, input_bindings,
-                                   output_metadata, 1,
-                                   output_bindings) == UDONONNX_STATUS_SUCCESS);
-  EXPECT(udononnxSessionFindInput(&session, "tokens") == 0);
-  EXPECT(udononnxSessionFindOutput(&session, "logits") == 0);
-  EXPECT(udononnxSessionBindInput(&session, 0, tensor) ==
-         UDONONNX_STATUS_SUCCESS);
-  EXPECT(udononnxSessionBindOutput(&session, 0, tensor) ==
-         UDONONNX_STATUS_SUCCESS);
-  EXPECT(udononnxSessionStartRun(&session, &run_token) ==
-         UDONONNX_STATUS_SUCCESS);
-  EXPECT(udononnxSessionStartRun(&session, &run_token) == UDONONNX_STATUS_BUSY);
-  EXPECT(udononnxSessionDispose(&session) == UDONONNX_STATUS_BUSY);
-  EXPECT(udononnxSessionCompleteRun(&session, run_token,
-                                    UDONONNX_STATUS_SUCCESS) ==
-         UDONONNX_STATUS_SUCCESS);
-  EXPECT(udononnxSessionDispose(&session) == UDONONNX_STATUS_SUCCESS);
-  EXPECT(udononnxSessionCompleteRun(&session, run_token,
-                                    UDONONNX_STATUS_SUCCESS) ==
-         UDONONNX_STATUS_STALE_HANDLE);
   EXPECT(udonclDeviceBufferView(common_buffer, 2, 1, UDONCL_DATA_FLOAT32,
                                 &view) == UDONCL_STATUS_INVALID_VALUE);
   EXPECT(udonclDeviceBufferView(common_buffer, 60, 2, UDONCL_DATA_FLOAT32,
@@ -265,11 +301,38 @@ int main(void) {
          UDONCL_STATUS_STALE_HANDLE);
   EXPECT(udonclDeviceBufferDestroy(&replacement) == UDONCL_STATUS_SUCCESS);
 
+  first = clCreateBuffer(context, CL_MEM_READ_WRITE, 32, 0, &error);
+  EXPECT(first && error == CL_SUCCESS);
+  EXPECT(udonclDeviceBufferAdopt(context, first, 32, &common_buffer) ==
+         UDONCL_STATUS_SUCCESS);
+  stale_buffer = common_buffer;
+  EXPECT(udonclDeviceBufferGetRaw(common_buffer, &resolved) ==
+             UDONCL_STATUS_SUCCESS &&
+         resolved == first);
+  EXPECT(udonclDeviceBufferDestroy(&common_buffer) == UDONCL_STATUS_SUCCESS);
+  EXPECT(udonclDeviceBufferGetRaw(stale_buffer, &resolved) ==
+         UDONCL_STATUS_STALE_HANDLE);
+
   first = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(source), 0, &error);
   EXPECT(first && error == CL_SUCCESS);
   EXPECT(allocated_logical_id == 1 && allocated_bytes == sizeof(source));
   EXPECT(clEnqueueWriteBuffer(queue, first, CL_FALSE, 0, sizeof(source),
-                              &source, 0, 0, 0) == CL_SUCCESS);
+                              &source, 0, 0, &write_event) == CL_SUCCESS);
+  EXPECT(write_event);
+  EXPECT(clGetEventInfo(write_event, CL_EVENT_COMMAND_EXECUTION_STATUS,
+                        sizeof(event_status), &event_status, 0) == CL_SUCCESS &&
+         event_status == CL_SUBMITTED);
+  EXPECT(clRetainEvent(write_event) == CL_SUCCESS);
+  EXPECT(clEnqueueMarkerWithWaitList(queue, 1, &write_event, &marker_event) ==
+             CL_SUCCESS &&
+         marker_event);
+  EXPECT(clWaitForEvents(1, &marker_event) == CL_SUCCESS);
+  EXPECT(clReleaseEvent(marker_event) == CL_SUCCESS);
+  EXPECT(clGetEventInfo(write_event, CL_EVENT_COMMAND_EXECUTION_STATUS,
+                        sizeof(event_status), &event_status, 0) == CL_SUCCESS &&
+         event_status == CL_COMPLETE);
+  EXPECT(clReleaseEvent(write_event) == CL_SUCCESS);
+  EXPECT(clReleaseEvent(write_event) == CL_SUCCESS);
   EXPECT(uploaded_token == 101);
   EXPECT(clReleaseMemObject(first) == CL_SUCCESS);
   EXPECT(released_token == 101);
@@ -283,6 +346,29 @@ int main(void) {
 
   first = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(source), 0, &error);
   EXPECT(first && error == CL_SUCCESS);
+  await_count = 0;
+  await_failure_call = 0;
+  EXPECT(clEnqueueWriteBuffer(queue, first, CL_FALSE, 0, sizeof(source),
+                              &source, 0, 0, &wait_events[0]) == CL_SUCCESS);
+  EXPECT(clEnqueueWriteBuffer(queue, second, CL_FALSE, 0, sizeof(source),
+                              &source, 0, 0, &wait_events[1]) == CL_SUCCESS);
+  EXPECT(clWaitForEvents(2, wait_events) == CL_SUCCESS);
+  EXPECT(await_count == 2 && awaited_events[0] == 7 && awaited_events[1] == 7);
+  EXPECT(clReleaseEvent(wait_events[0]) == CL_SUCCESS);
+  EXPECT(clReleaseEvent(wait_events[1]) == CL_SUCCESS);
+
+  await_count = 0;
+  await_failure_call = 2;
+  EXPECT(clEnqueueWriteBuffer(queue, first, CL_FALSE, 0, sizeof(source),
+                              &source, 0, 0, &wait_events[0]) == CL_SUCCESS);
+  EXPECT(clEnqueueWriteBuffer(queue, second, CL_FALSE, 0, sizeof(source),
+                              &source, 0, 0, &wait_events[1]) == CL_SUCCESS);
+  EXPECT(clWaitForEvents(2, wait_events) == CL_INVALID_VALUE);
+  EXPECT(await_count == 2);
+  await_failure_call = 0;
+  EXPECT(clReleaseEvent(wait_events[0]) == CL_SUCCESS);
+  EXPECT(clReleaseEvent(wait_events[1]) == CL_SUCCESS);
+
   program = clCreateProgramWithSource(context, 1, &source_text, 0, &error);
   EXPECT(program && error == CL_SUCCESS);
   EXPECT(clBuildProgram(program, 0, 0, 0, 0, 0) == CL_SUCCESS);
@@ -371,6 +457,12 @@ int main(void) {
   }
   EXPECT(udononnxCreateOperatorHandle(&operator_handle) ==
          UDONONNX_STATUS_SUCCESS);
+  EXPECT(udononnxGather(operator_handle, UDONCL_DATA_FLOAT32, gather_data,
+                        gather_shape, 2, UDONCL_DATA_INT64, gather_indices, 2,
+                        0, gather_output) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(gather_output[0] == 5.0f && gather_output[1] == 6.0f &&
+         gather_output[2] == 1.0f && gather_output[3] == 2.0f);
+  EXPECT(dispatched_gather_words == 2);
   for (bits = 2; bits <= 8; ++bits) {
     size_t packed_bytes = (size_t)2 * 16u * (size_t)bits / 8u;
     unsigned zero = 1u << ((unsigned)bits - 1u);

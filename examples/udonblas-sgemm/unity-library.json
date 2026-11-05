@@ -1,6 +1,10 @@
 {
   "schema_version": 1,
   "program": "udonblas_sgemm_m1n10k144",
+  "binding": {
+    "namespace": "Lemolatoon.Udoncl.Generated",
+    "class_name": "UdonBlasSgemmBinding"
+  },
   "device_kernels": [
     {
       "schema_version": 1,

@@ -54,13 +54,18 @@ namespace Lemolatoon.Udoncl.Editor
                 )
                     continue;
 
-                string className = VRCWrapperGenerator.BindingClassName(manifest.program.name);
+                string className = string.IsNullOrEmpty(manifest.program.binding_class)
+                    ? VRCWrapperGenerator.BindingClassName(manifest.program.name)
+                    : manifest.program.binding_class;
+                string namespaceName = string.IsNullOrEmpty(manifest.program.binding_namespace)
+                    ? GeneratedNamespace
+                    : manifest.program.binding_namespace;
                 string prefabDirectory = programRoot.Replace('\\', '/') + "/Prefabs";
                 string prefabPath = prefabDirectory + "/" + className + ".prefab";
 
                 Type wrapperType = TypeCache
                     .GetTypesDerivedFrom<UdonSharpBehaviour>()
-                    .SingleOrDefault(type => type.FullName == GeneratedNamespace + "." + className);
+                    .SingleOrDefault(type => type.FullName == namespaceName + "." + className);
                 if (wrapperType == null)
                     continue;
 
@@ -181,13 +186,13 @@ namespace Lemolatoon.Udoncl.Editor
                         );
                     string rawHeapPath = programRoot + "/Sources/raw-heap.bytes";
                     byte[] rawHeapBytes = File.ReadAllBytes(rawHeapPath);
-                    if (rawHeapBytes.Length != manifest.program.raw_heap_words)
+                    if ((rawHeapBytes.Length + 3) / 4 != manifest.program.raw_heap_words)
                         throw new InvalidDataException(
                             "Generated raw heap initializer length does not match the manifest."
                         );
-                    int[] rawHeap = new int[rawHeapBytes.Length];
-                    for (int index = 0; index < rawHeapBytes.Length; ++index)
-                        rawHeap[index] = rawHeapBytes[index];
+                    int[] rawHeap = new int[manifest.program.raw_heap_words];
+                    for (int byteIndex = 0; byteIndex < rawHeapBytes.Length; ++byteIndex)
+                        rawHeap[byteIndex / 4] |= rawHeapBytes[byteIndex] << ((byteIndex & 3) * 8);
                     SetPublicVariable(program, manifest.program.raw_heap_slot, rawHeap);
                 }
                 if (

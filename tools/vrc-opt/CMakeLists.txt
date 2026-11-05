@@ -2,6 +2,6 @@ add_llvm_executable(vrc-opt vrc-opt.cpp)
 set_target_properties(vrc-opt PROPERTIES OUTPUT_NAME udoncl-opt)
 llvm_update_compile_flags(vrc-opt)
 target_link_libraries(vrc-opt PRIVATE VRCConversionUdon VRCNativeTestLowering VRCBoundaryFrontend VRCONNXToUdonHost VRCManifest VRCConversionHost VRCConversionVRC VRCConversionDevice VRCLLVMToHighLevelMLIR MLIRGPUDialect MLIROptLib MLIRDLTIDialect MLIRArithDialect MLIRFuncDialect
-  MLIRControlFlowDialect MLIRUBDialect MLIRSCFDialect MLIRMemRefDialect MLIRLLVMDialect
+  MLIRAsyncDialect MLIRAsyncTransforms MLIRControlFlowDialect MLIRUBDialect MLIRSCFDialect MLIRMemRefDialect MLIRLLVMDialect
   VRCDialectUdonHL VRCDialectUdonAsm VRCDialectVRC VRCDialectVRCGPU)
 vrc_configure_target(vrc-opt)

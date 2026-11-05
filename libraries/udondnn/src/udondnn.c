@@ -60,6 +60,12 @@ extern cl_int __vrc_enqueue_udondnn_large_op_tensor(
 #define UDONDNN_ENQUEUE_LARGE_OP clEnqueueNDRangeKernel
 #endif
 
+#ifdef UDONDNN_AOT_DIRECT_ARGUMENT_DISPATCH
+extern cl_int __vrc_enqueue_udondnn_large_convolution_args(
+    cl_command_queue, cl_mem, cl_mem, cl_mem, cl_mem, cl_int, cl_int, cl_int,
+    cl_int, cl_int, cl_int, cl_int, cl_int, cl_int, cl_int, cl_float, cl_float);
+#endif
+
 #define UDONDNN_WORDS 2048
 #define UDONDNN_REGION_WORDS 512
 #define UDONDNN_INPUT_OFFSET 0
@@ -1152,6 +1158,29 @@ udondnnStatus_t udondnnConvolutionForward(
       return UDONDNN_STATUS_EXECUTION_FAILED;
     return UDONDNN_STATUS_SUCCESS;
 #else
+#ifdef UDONDNN_AOT_DIRECT_ARGUMENT_DISPATCH
+    if (clEnqueueWriteBuffer(queue, arena_pointwise_self_buffer, CL_TRUE, 0,
+                             input_words * sizeof(float), input, 0, 0,
+                             0) != CL_SUCCESS ||
+        clEnqueueWriteBuffer(queue, arena_pointwise_other_buffer, CL_TRUE, 0,
+                             filter_words * sizeof(float), filter, 0, 0,
+                             0) != CL_SUCCESS ||
+        clEnqueueWriteBuffer(queue, arena_rms_partial_buffer, CL_TRUE, 0,
+                             output_words * sizeof(float), output, 0, 0,
+                             0) != CL_SUCCESS ||
+        __vrc_enqueue_udondnn_large_convolution_args(
+            queue, arena_pointwise_self_buffer, arena_pointwise_other_buffer,
+            arena_rms_partial_buffer, arena_pointwise_output_buffer,
+            output_words, input_ch, input_info->w, output_ch, w, filter_hw,
+            pad_hw, stride_hw, dilation_hw, mode, *alpha,
+            *beta) != CL_SUCCESS ||
+        clEnqueueReadBuffer(queue, arena_pointwise_output_buffer, CL_TRUE, 0,
+                            output_words * sizeof(float), output, 0, 0,
+                            0) != CL_SUCCESS ||
+        clFinish(queue) != CL_SUCCESS)
+      return UDONDNN_STATUS_EXECUTION_FAILED;
+    return UDONDNN_STATUS_SUCCESS;
+#else
     if (!large_convolution_kernel) {
       large_convolution_kernel = clCreateKernel(
           program, "udondnn_large_convolution_forward", &cl_status);
@@ -1207,6 +1236,7 @@ udondnnStatus_t udondnnConvolutionForward(
         clFinish(queue) != CL_SUCCESS)
       return UDONDNN_STATUS_EXECUTION_FAILED;
     return UDONDNN_STATUS_SUCCESS;
+#endif
 #endif
   }
 #ifndef UDONDNN_AOT_LARGE_ONLY

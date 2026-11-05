@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using UnityEditor;
@@ -16,6 +17,9 @@ namespace Lemolatoon.Udoncl.Editor
             string assemblyAssetPath,
             string displayShaderAssetPath,
             string bufferCopyShaderAssetPath,
+            string bindingSourceAssetPath,
+            string bindingNamespace,
+            string bindingClass,
             string artifactStage,
             string programName,
             IList<ValidatedKernel> kernels,
@@ -32,6 +36,9 @@ namespace Lemolatoon.Udoncl.Editor
             AssemblyAssetPath = assemblyAssetPath;
             DisplayShaderAssetPath = displayShaderAssetPath;
             BufferCopyShaderAssetPath = bufferCopyShaderAssetPath;
+            BindingSourceAssetPath = bindingSourceAssetPath;
+            BindingNamespace = bindingNamespace;
+            BindingClass = bindingClass;
             ArtifactStage = artifactStage;
             ProgramName = programName;
             Kernels = kernels;
@@ -48,6 +55,9 @@ namespace Lemolatoon.Udoncl.Editor
         public string AssemblyAssetPath { get; private set; }
         public string DisplayShaderAssetPath { get; private set; }
         public string BufferCopyShaderAssetPath { get; private set; }
+        public string BindingSourceAssetPath { get; private set; }
+        public string BindingNamespace { get; private set; }
+        public string BindingClass { get; private set; }
         public string ArtifactStage { get; private set; }
         public string ProgramName { get; private set; }
         public IList<ValidatedKernel> Kernels { get; private set; }
@@ -222,6 +232,10 @@ namespace Lemolatoon.Udoncl.Editor
             @"^[A-Za-z0-9_-]+$",
             RegexOptions.Compiled
         );
+        private static readonly Regex CSharpIdentifier = new Regex(
+            @"^[A-Za-z_][A-Za-z0-9_]*$",
+            RegexOptions.Compiled
+        );
 
         public static ValidatedArtifact Validate(string artifactDirectory)
         {
@@ -309,6 +323,41 @@ namespace Lemolatoon.Udoncl.Editor
                 ReadUtf8(bufferCopyShaderPath);
             }
 
+            string bindingSourcePath = null;
+            if (!string.IsNullOrEmpty(manifest.program.binding_source))
+            {
+                if (!IsSha256(manifest.public_abi_fingerprint))
+                    throw new InvalidDataException(
+                        "Compiler binding requires a lowercase SHA-256 public ABI fingerprint."
+                    );
+                if (
+                    !string.Equals(
+                        manifest.physical_export_abi,
+                        "udonsharp-worlds-sdk-3.10.5",
+                        StringComparison.Ordinal
+                    )
+                )
+                    throw new InvalidDataException(
+                        "Compiler binding uses an unsupported physical export ABI."
+                    );
+                string bindingRelativePath = ValidateRelativeFilePath(
+                    manifest.program.binding_source,
+                    ".cs"
+                );
+                if (
+                    !IsDottedIdentifier(manifest.program.binding_namespace)
+                    || !IsCSharpIdentifier(manifest.program.binding_class)
+                )
+                    throw new InvalidDataException(
+                        "Compiler binding requires valid namespace and class metadata."
+                    );
+                ValidateCompilerBindingFingerprint(manifest);
+                bindingSourcePath = ResolveExistingFile(root, bindingRelativePath);
+                if (new FileInfo(bindingSourcePath).Length == 0)
+                    throw new InvalidDataException("Compiler binding source is empty.");
+                ValidateCompilerBindingSource(manifest, ReadUtf8(bindingSourcePath));
+            }
+
             List<ValidatedKernel> kernels = new List<ValidatedKernel>();
             HashSet<int> kernelIds = new HashSet<int>();
             HashSet<string> shaderPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -365,6 +414,8 @@ namespace Lemolatoon.Udoncl.Editor
                         extension = ".shader";
                     else if (resource.kind == "bytes")
                         extension = ".bytes";
+                    else if (resource.kind == "json")
+                        extension = ".json";
                     else
                         throw new InvalidDataException(
                             "Unsupported artifact resource kind: " + resource.kind
@@ -375,6 +426,8 @@ namespace Lemolatoon.Udoncl.Editor
                         throw new InvalidDataException(
                             "Artifact resource is empty: " + relativePath
                         );
+                    if (resource.kind == "json")
+                        ReadUtf8(absolutePath);
                     resources.Add(
                         new ValidatedResource(
                             resource.name,
@@ -402,7 +455,7 @@ namespace Lemolatoon.Udoncl.Editor
                     || rawHeap.path != manifest.program.raw_heap_initializer
                     || string.IsNullOrEmpty(manifest.program.raw_heap_slot)
                     || manifest.program.raw_heap_words <= 0
-                    || rawHeap.bytes != manifest.program.raw_heap_words
+                    || (rawHeap.bytes + 3) / 4 != manifest.program.raw_heap_words
                 )
                     throw new InvalidDataException(
                         "Raw heap initializer metadata and byte resource must match."
@@ -445,6 +498,9 @@ namespace Lemolatoon.Udoncl.Editor
                 assemblyPath,
                 displayShaderPath,
                 bufferCopyShaderPath,
+                bindingSourcePath,
+                manifest.program.binding_namespace,
+                manifest.program.binding_class,
                 manifest.artifact_stage,
                 manifest.program.name,
                 kernels,
@@ -455,6 +511,14 @@ namespace Lemolatoon.Udoncl.Editor
                 onnxInputs,
                 onnxOutputs
             );
+        }
+
+        private static bool IsDottedIdentifier(string value)
+        {
+            if (string.IsNullOrEmpty(value))
+                return false;
+            string[] components = value.Split('.');
+            return Array.TrueForAll(components, IsCSharpIdentifier);
         }
 
         private static List<ValidatedOnnxIo> ValidateOnnxIo(
@@ -860,6 +924,181 @@ namespace Lemolatoon.Udoncl.Editor
         private static bool IsSafeIdentifier(string value)
         {
             return !string.IsNullOrWhiteSpace(value) && SafeIdentifier.IsMatch(value);
+        }
+
+        private static bool IsCSharpIdentifier(string value)
+        {
+            return !string.IsNullOrWhiteSpace(value) && CSharpIdentifier.IsMatch(value);
+        }
+
+        private static bool IsSha256(string value)
+        {
+            if (value == null || value.Length != 64)
+                return false;
+            for (int index = 0; index < value.Length; ++index)
+            {
+                char current = value[index];
+                if ((current < '0' || current > '9') && (current < 'a' || current > 'f'))
+                    return false;
+            }
+            return true;
+        }
+
+        private static void ValidateCompilerBindingSource(UdonclManifest manifest, string source)
+        {
+            string normalized = source.Replace("\r\n", "\n");
+            string header =
+                "// <auto-generated />\n"
+                + "// udoncl-public-abi: "
+                + manifest.public_abi_fingerprint
+                + "\n// udoncl-binding-namespace: "
+                + manifest.program.binding_namespace
+                + "\n// udoncl-binding-class: "
+                + manifest.program.binding_class
+                + "\n";
+            if (!normalized.StartsWith(header, StringComparison.Ordinal))
+                throw new InvalidDataException(
+                    "Compiler binding source identity does not match its manifest."
+                );
+        }
+
+        private static void ValidateCompilerBindingFingerprint(UdonclManifest manifest)
+        {
+            ExportInfo[] exports = manifest.exports;
+            if (exports == null || exports.Length == 0)
+                throw new InvalidDataException(
+                    "Compiler binding requires at least one typed export."
+                );
+
+            ExportInfo[] ordered = (ExportInfo[])exports.Clone();
+            Array.Sort(ordered, (left, right) => left.id.CompareTo(right.id));
+            HashSet<int> ids = new HashSet<int>();
+            HashSet<string> names = new HashSet<string>(StringComparer.Ordinal);
+            StringBuilder canonical = new StringBuilder();
+            canonical.Append("udoncl-public-abi-v2\n");
+            canonical.Append("runtime-abi|1\n");
+            canonical.Append("physical-abi|udonsharp-worlds-sdk-3.10.5\n");
+
+            foreach (ExportInfo export in ordered)
+            {
+                if (
+                    export == null
+                    || export.id <= 0
+                    || !ids.Add(export.id)
+                    || !IsCSharpIdentifier(export.public_name)
+                    || !names.Add(export.public_name)
+                    || !IsCSharpIdentifier(export.udon_event)
+                    || !IsCSharpIdentifier(export.status_slot)
+                )
+                    throw new InvalidDataException("Compiler binding export metadata is invalid.");
+
+                canonical.Append(export.id);
+                canonical.Append('|');
+                canonical.Append(export.public_name);
+                canonical.Append("|event=");
+                canonical.Append(export.udon_event);
+                canonical.Append('|');
+                ExportParameterInfo[] parameters =
+                    export.parameters ?? Array.Empty<ExportParameterInfo>();
+                HashSet<string> parameterNames = new HashSet<string>(StringComparer.Ordinal);
+                for (int index = 0; index < parameters.Length; ++index)
+                {
+                    ExportParameterInfo parameter = parameters[index];
+                    if (
+                        parameter == null
+                        || parameter.index != index
+                        || !IsCSharpIdentifier(parameter.name)
+                        || !parameterNames.Add(parameter.name)
+                        || !IsBindingKind(parameter.kind)
+                        || !IsCSharpIdentifier(parameter.heap_slot)
+                    )
+                        throw new InvalidDataException(
+                            "Compiler binding parameter metadata is invalid."
+                        );
+                    canonical.Append(index);
+                    canonical.Append(':');
+                    canonical.Append(parameter.name);
+                    canonical.Append(':');
+                    canonical.Append(parameter.kind);
+                    canonical.Append(':');
+                    canonical.Append(parameter.heap_slot);
+                    canonical.Append(',');
+                }
+                canonical.Append("->");
+                if (export.result == null)
+                {
+                    canonical.Append("void");
+                }
+                else
+                {
+                    if (
+                        !IsBindingKind(export.result.kind)
+                        || !IsCSharpIdentifier(export.result.heap_slot)
+                    )
+                        throw new InvalidDataException(
+                            "Compiler binding result metadata is invalid."
+                        );
+                    canonical.Append(export.result.kind);
+                    canonical.Append(':');
+                    canonical.Append(export.result.heap_slot);
+                }
+                canonical.Append("|status=");
+                canonical.Append(export.status_slot);
+                canonical.Append(export.async ? "|async\n" : "|sync\n");
+            }
+
+            DeviceBufferInfo[] buffers =
+                manifest.device?.buffers ?? Array.Empty<DeviceBufferInfo>();
+            DeviceBufferInfo[] publicBuffers = Array.FindAll(
+                buffers,
+                buffer =>
+                    buffer != null
+                    && !string.IsNullOrEmpty(buffer.element_type)
+                    && !string.IsNullOrEmpty(buffer.public_access)
+            );
+            Array.Sort(publicBuffers, (left, right) => left.id.CompareTo(right.id));
+            foreach (DeviceBufferInfo buffer in publicBuffers)
+            {
+                canonical.Append("buffer|");
+                canonical.Append(buffer.id);
+                canonical.Append('|');
+                canonical.Append(buffer.name);
+                canonical.Append("|bytes=");
+                canonical.Append(buffer.logical_bytes);
+                canonical.Append("|type=");
+                canonical.Append(buffer.element_type);
+                canonical.Append("|access=");
+                canonical.Append(buffer.public_access);
+                canonical.Append('\n');
+            }
+            canonical.Append("binding-namespace|");
+            canonical.Append(manifest.program.binding_namespace);
+            canonical.Append('\n');
+            canonical.Append("binding-class|");
+            canonical.Append(manifest.program.binding_class);
+            canonical.Append('\n');
+
+            byte[] digest;
+            using (SHA256 sha256 = SHA256.Create())
+                digest = sha256.ComputeHash(Encoding.UTF8.GetBytes(canonical.ToString()));
+            StringBuilder actual = new StringBuilder(64);
+            foreach (byte value in digest)
+                actual.Append(value.ToString("x2"));
+            if (
+                !string.Equals(
+                    manifest.public_abi_fingerprint,
+                    actual.ToString(),
+                    StringComparison.Ordinal
+                )
+            )
+                throw new InvalidDataException(
+                    "Compiler binding public ABI fingerprint does not match its typed exports."
+                );
+        }
+
+        private static bool IsBindingKind(string kind)
+        {
+            return kind == "i32" || kind == "f32" || kind == "i32_array" || kind == "f32_array";
         }
     }
 }

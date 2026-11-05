@@ -215,16 +215,21 @@ llvm::json::Object buildBoundaryManifest(ModuleOp module) {
     return lhs->getAttrOfType<IntegerAttr>("vrc.export_id").getInt() <
            rhs->getAttrOfType<IntegerAttr>("vrc.export_id").getInt();
   });
-  std::string canonicalABI = "udoncl-public-abi-v1\n";
+  std::string canonicalABI = "udoncl-public-abi-v2\n"
+                             "runtime-abi|1\n"
+                             "physical-abi|udonsharp-worlds-sdk-3.10.5\n";
   UdonSharpABIBuilder abiBuilder;
   for (auto function : exportedFunctions) {
     auto id = function->getAttrOfType<IntegerAttr>("vrc.export_id");
     auto abi = methodABI(function, abiBuilder);
     SmallVector<std::string> names = parameterNames(function);
-    canonicalABI += std::to_string(id.getInt()) + "|" + abi.publicName + "|";
+    canonicalABI += std::to_string(id.getInt()) + "|" + abi.publicName +
+                    "|event=" + abi.eventName + "|";
     llvm::json::Array args;
     for (auto indexed : llvm::enumerate(function.getArgumentTypes())) {
-      canonicalABI += kind(indexed.value()) + ",";
+      canonicalABI += std::to_string(indexed.index()) + ":" +
+                      names[indexed.index()] + ":" + kind(indexed.value()) +
+                      ":" + abi.parameterSlots[indexed.index()] + ",";
       args.push_back(llvm::json::Object{
           {"index", int64_t(indexed.index())},
           {"name", names[indexed.index()]},
@@ -235,16 +240,18 @@ llvm::json::Object buildBoundaryManifest(ModuleOp module) {
     canonicalABI += "->";
     llvm::json::Value result = nullptr;
     if (!function.getResultTypes().empty()) {
-      canonicalABI += kind(function.getResultTypes()[0]);
+      canonicalABI +=
+          kind(function.getResultTypes()[0]) + ":" + *abi.resultSlot;
       result = llvm::json::Object{
           {"kind", kind(function.getResultTypes()[0])},
           {"type_schema", typeSchema(function.getResultTypes()[0])},
           {"heap_slot", *abi.resultSlot}};
     } else
       canonicalABI += "void";
-    canonicalABI += "\n";
     auto asyncEffect = function->getAttrOfType<StringAttr>("vrc.async_effect");
     bool isAsync = asyncEffect && asyncEffect.getValue() == "may_suspend";
+    canonicalABI += "|status=" + udonclStatusSlot(id.getInt());
+    canonicalABI += isAsync ? "|async\n" : "|sync\n";
     exports.push_back(
         llvm::json::Object{{"id", id.getInt()},
                            {"c_symbol", function.getName().str()},
@@ -255,6 +262,13 @@ llvm::json::Object buildBoundaryManifest(ModuleOp module) {
                            {"status_slot", udonclStatusSlot(id.getInt())},
                            {"async", isAsync}});
   }
+  if (auto bindingNamespace =
+          module->getAttrOfType<StringAttr>("vrc.binding_namespace"))
+    canonicalABI +=
+        "binding-namespace|" + bindingNamespace.getValue().str() + "\n";
+  if (auto bindingClass =
+          module->getAttrOfType<StringAttr>("vrc.binding_class"))
+    canonicalABI += "binding-class|" + bindingClass.getValue().str() + "\n";
   auto publicDigest = llvm::SHA256::hash(llvm::ArrayRef<uint8_t>(
       reinterpret_cast<const uint8_t *>(canonicalABI.data()),
       canonicalABI.size()));
@@ -413,6 +427,73 @@ llvm::json::Object buildBoundaryManifest(ModuleOp module) {
       {"device", llvm::json::Object{{"kernels", std::move(kernels)}}},
       {"dispatch_sites", std::move(dispatches)},
       {"ready_for_unity", false}};
+}
+
+void refreshPublicABIFingerprint(llvm::json::Object &manifest) {
+  std::string canonicalABI = "udoncl-public-abi-v2\n"
+                             "runtime-abi|1\n"
+                             "physical-abi|udonsharp-worlds-sdk-3.10.5\n";
+  SmallVector<const llvm::json::Object *> exports;
+  if (auto *values = manifest.getArray("exports"))
+    for (const llvm::json::Value &value : *values)
+      if (const auto *entry = value.getAsObject())
+        exports.push_back(entry);
+  llvm::sort(exports,
+             [](const llvm::json::Object *lhs, const llvm::json::Object *rhs) {
+               return *lhs->getInteger("id") < *rhs->getInteger("id");
+             });
+  for (const llvm::json::Object *entry : exports) {
+    canonicalABI += std::to_string(*entry->getInteger("id")) + "|" +
+                    entry->getString("public_name")->str() +
+                    "|event=" + entry->getString("udon_event")->str() + "|";
+    if (const auto *parameters = entry->getArray("parameters"))
+      for (const llvm::json::Value &value : *parameters) {
+        const auto *parameter = value.getAsObject();
+        canonicalABI += std::to_string(*parameter->getInteger("index")) + ":" +
+                        parameter->getString("name")->str() + ":" +
+                        parameter->getString("kind")->str() + ":" +
+                        parameter->getString("heap_slot")->str() + ",";
+      }
+    canonicalABI += "->";
+    if (const auto *result = entry->getObject("result"))
+      canonicalABI += result->getString("kind")->str() + ":" +
+                      result->getString("heap_slot")->str();
+    else
+      canonicalABI += "void";
+    canonicalABI += "|status=" + entry->getString("status_slot")->str();
+    canonicalABI += *entry->getBoolean("async") ? "|async\n" : "|sync\n";
+  }
+
+  SmallVector<const llvm::json::Object *> publicBuffers;
+  if (const auto *device = manifest.getObject("device"))
+    if (const auto *buffers = device->getArray("buffers"))
+      for (const llvm::json::Value &value : *buffers)
+        if (const auto *entry = value.getAsObject();
+            entry && entry->getString("element_type") &&
+            entry->getString("public_access"))
+          publicBuffers.push_back(entry);
+  llvm::sort(publicBuffers,
+             [](const llvm::json::Object *lhs, const llvm::json::Object *rhs) {
+               return *lhs->getInteger("id") < *rhs->getInteger("id");
+             });
+  for (const llvm::json::Object *entry : publicBuffers)
+    canonicalABI +=
+        "buffer|" + std::to_string(*entry->getInteger("id")) + "|" +
+        entry->getString("name")->str() +
+        "|bytes=" + std::to_string(*entry->getInteger("logical_bytes")) +
+        "|type=" + entry->getString("element_type")->str() +
+        "|access=" + entry->getString("public_access")->str() + "\n";
+
+  if (const auto *program = manifest.getObject("program")) {
+    if (auto bindingNamespace = program->getString("binding_namespace"))
+      canonicalABI += "binding-namespace|" + bindingNamespace->str() + "\n";
+    if (auto bindingClass = program->getString("binding_class"))
+      canonicalABI += "binding-class|" + bindingClass->str() + "\n";
+  }
+  auto digest = llvm::SHA256::hash(llvm::ArrayRef<uint8_t>(
+      reinterpret_cast<const uint8_t *>(canonicalABI.data()),
+      canonicalABI.size()));
+  manifest["public_abi_fingerprint"] = llvm::toHex(digest, true);
 }
 bool validateBoundaryRequest(const llvm::json::Object &manifest,
                              const llvm::json::Object &request,

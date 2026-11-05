@@ -7,6 +7,7 @@ find_package(UdonBLAS 0.1 CONFIG REQUIRED)
 find_package(UdonDNN 0.1 CONFIG REQUIRED)
 find_package(UdonATen 0.1 CONFIG REQUIRED)
 find_package(UdonONNXOperators 0.1 CONFIG REQUIRED)
+find_package(UdonONNXRuntime 0.1 CONFIG REQUIRED)
 
 set(model "${CMAKE_CURRENT_BINARY_DIR}/transformer.onnx")
 execute_process(
@@ -26,9 +27,15 @@ target_include_directories(transformer_host INTERFACE
   "${UdonBLAS_INCLUDE_DIRS}"
   "${UdonDNN_INCLUDE_DIRS}"
   "${UdonATen_INCLUDE_DIRS}")
+udoncl_add_host_library(transformer_user_host host.c)
+target_include_directories(transformer_user_host INTERFACE
+  "${UdonONNXRuntime_INCLUDE_DIRS}")
 udoncl_add_unity_library(onnx-transformer-tiny
   CONFIG "${CMAKE_CURRENT_SOURCE_DIR}/unity-library.json"
-  HOST_LIBRARIES transformer_host
+  HOST_LIBRARIES
+    transformer_host
+    transformer_user_host
+    UdonONNXRuntime::UdonONNXRuntime
   LIBRARIES
     UdonONNXOperators::UdonONNXOperators
     UdonATen::UdonATen

@@ -472,6 +472,43 @@ for scalar in [
         parallel_call_lowered.stdout,
     ), parallel_call_lowered.stdout
 
+parallel_branch_source = r'''module attributes {
+  vrc.async_stage = "udon-static-v1",
+  vrc.host_stage = "udonhl",
+  vrc.scalar_register_budget = 1 : i32
+} {
+  func.func @swap(%left: i32, %right: i32) -> i32 attributes {
+    vrc.export_id = 9 : i32
+  } {
+    %zero = arith.constant 0 : i32
+    %left_copy = arith.addi %left, %zero : i32
+    %right_copy = arith.addi %right, %zero : i32
+    cf.br ^bb1(%right_copy, %left_copy : i32, i32)
+  ^bb1(%first: i32, %second: i32):
+    %result = arith.subi %first, %second : i32
+    return %result : i32
+  }
+}'''
+parallel_branch_lowered = subprocess.run(
+    [opt, '--vrc-lower-udonhl-to-udonasm', '--verify-each'],
+    input=parallel_branch_source,
+    text=True,
+    capture_output=True,
+)
+assert parallel_branch_lowered.returncode == 0, parallel_branch_lowered.stderr
+# Udon emits successor-argument assignments as sequential COPYs. The two
+# branch sources must therefore interfere with both successor destinations;
+# otherwise a destination COPY can overwrite the next source and violate SSA
+# parallel-copy semantics.
+for expected in [
+    'minimum_simultaneous_registers = 4 : i64',
+    'typed_spill_arrays = [{array_type = "SystemInt32Array", length = 3 : i64',
+]:
+    assert expected in parallel_branch_lowered.stdout, (
+        expected,
+        parallel_branch_lowered.stdout,
+    )
+
 typed_spill_source = r'''module attributes {
   vrc.async_stage = "udon-static-v1",
   vrc.host_stage = "udonhl",
@@ -503,6 +540,31 @@ for expected in [
     assert expected in typed_spill_lowered.stdout, (
         expected,
         typed_spill_lowered.stdout,
+    )
+
+capacity_source = typed_spill_source.replace(
+    'vrc.scalar_register_budget = 1 : i32',
+    'vrc.scalar_register_budget = 1 : i32, '
+    'vrc.data_slot_capacity = 4 : i32',
+)
+capacity_lowered = subprocess.run(
+    [opt, '--vrc-lower-udonhl-to-udonasm', '--verify-each'],
+    input=capacity_source,
+    text=True,
+    capture_output=True,
+)
+assert capacity_lowered.returncode != 0
+for expected in [
+    'final Udon data table requires',
+    'exceeding capacity 4',
+    'fixed=',
+    'scalar_registers=',
+    'typed_arrays=',
+    'constants=',
+]:
+    assert expected in capacity_lowered.stderr, (
+        expected,
+        capacity_lowered.stderr,
     )
 
 raw_address_after_call_source = r'''module attributes {vrc.async_stage = "udon-static-v1"} {
@@ -730,6 +792,7 @@ raw_memory_lowered = subprocess.run(
 assert raw_memory_lowered.returncode == 0, raw_memory_lowered.stderr
 assert 'udonasm.storage_report' in raw_memory_lowered.stdout
 assert 'raw_heap_bytes = 41 : i64' in raw_memory_lowered.stdout
+assert 'raw_heap_words = 11 : i64' in raw_memory_lowered.stdout
 assert re.search(
     r'\{alignment = 4 : i64, base = 4 : i64, bytes = 4 : i64, '
     r'kind = "global", name = "handle", '
@@ -743,7 +806,7 @@ assert re.search(
 ), raw_memory_lowered.stdout
 for expected in [
     'name = "__vrc_raw_heap"',
-    'initial = "41", name = "__vrc_raw_heap_length"',
+    'initial = "11", name = "__vrc_raw_heap_length"',
     'SystemInt32Array.__ctor__SystemInt32__SystemInt32Array',
     'SystemInt32Array.__Get__SystemInt32__SystemInt32',
     'SystemInt32Array.__Set__SystemInt32_SystemInt32__SystemVoid',
@@ -757,10 +820,8 @@ for expected in [
     'SystemInt64.__op_LogicalOr__SystemInt64_SystemInt64__SystemInt64',
     'SystemBitConverter.__SingleToInt32Bits__SystemSingle__SystemInt32',
     'SystemBitConverter.__Int32BitsToSingle__SystemInt32__SystemSingle',
-    'SystemArray.__Copy__SystemArray_SystemInt32_SystemArray_'
-    'SystemInt32_SystemInt32__SystemVoid',
-    'SystemArray.__Clear__SystemArray_SystemInt32_SystemInt32__SystemVoid',
     'SystemInt32.__op_Inequality__SystemInt32_SystemInt32__SystemBoolean',
+    'name = "__vrc_raw_memcpy_counter"',
     'name = "__vrc_raw_memset_scratch_counter"',
 ]:
     assert expected in raw_memory_lowered.stdout, (
@@ -798,11 +859,9 @@ int64_initializers = re.findall(
 )
 assert int64_initializers and set(int64_initializers) == {'null'}, \
     int64_initializers
-assert raw_memory_lowered.stdout.count(
-    'SystemArray.__Copy__SystemArray_SystemInt32_SystemArray_'
-    'SystemInt32_SystemInt32__SystemVoid') == 2, (
-        raw_memory_lowered.stdout
-    )
+assert 'SystemArray.__Copy__SystemArray_SystemInt32_SystemArray_' not in (
+    raw_memory_lowered.stdout
+)
 for forbidden in ['udonhl.global', 'udonhl.address_of', 'udonhl.alloca',
                   'udonhl.load', 'udonhl.store', 'udonhl.memcpy']:
     assert forbidden not in raw_memory_lowered.stdout, (
@@ -847,8 +906,8 @@ zero_i32_store = subprocess.run(
     input=zero_i32_store_source, text=True, capture_output=True)
 assert zero_i32_store.returncode == 0, zero_i32_store.stderr
 assert zero_i32_store.stdout.count(
-    'SystemArray.__Clear__SystemArray_SystemInt32_SystemInt32__SystemVoid') == 1
-assert 'SystemInt32.__op_RightShift__SystemInt32_SystemInt32__SystemInt32' not in zero_i32_store.stdout
+    'SystemInt32Array.__Set__SystemInt32_SystemInt32__SystemVoid') == 1
+assert '__vrc_raw_byte_store_word' not in zero_i32_store.stdout
 
 boolean_bitwise_source = r'''module {
   func.func @boolean_bitwise(%lhs: i1, %rhs: i1) -> i1 attributes {vrc.export_id = 1 : i32} {
@@ -880,9 +939,7 @@ rejected = subprocess.run(
     text=True, capture_output=True)
 assert rejected.returncode == 0, rejected.stderr
 assert 'udonhl.memcpy' not in rejected.stdout
-assert 'SystemArray.__Copy__SystemArray_SystemInt32_SystemArray_' \
-       'SystemInt32_SystemInt32__SystemVoid' \
-    in rejected.stdout
+assert 'name = "__vrc_raw_memcpy_counter"' in rejected.stdout
 
 raw_llvm_source = r'''module {
   llvm.mlir.global internal @counter(0 : i32) {addr_space = 0 : i32, alignment = 4 : i64} : i32

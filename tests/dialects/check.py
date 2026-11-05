@@ -47,7 +47,11 @@ continuation = run('''module {
     udonhl.frame_store %frame[1], %value {layout_version = 1 : i32, slot_types = [i32, f32]} : f32
     "udonhl.suspend"(%frame, %event) <{completion_slot = 0 : i32, reason = #udonhl<suspend_reason gpu>, resume_state = 1 : i32}> : (!udonhl.frame, !vrc.event) -> ()
   ^bb2:
+    "udonhl.async_resume_point"() <{frame_id = 1 : i32, resume_pc = 1 : i32}> : () -> ()
+    "udonhl.async_enter"() <{frame_id = 1 : i32, resume_pc = 1 : i32}> : () -> ()
+    "udonhl.async_bind_event"(%event) <{object_id = 1 : i32}> : (!vrc.event) -> ()
     %loaded = udonhl.frame_load %frame[1] {layout_version = 1 : i32, slot_types = [i32, f32]} : f32
+    "udonhl.async_resume"(%execution, %state) : (i32, i32) -> ()
     return
   }
 }

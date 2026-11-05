@@ -6,6 +6,8 @@
 #include "VRC/Dialect/VRC/VRCDialect.h"
 #include "VRC/Dialect/VRCGPU/VRCGPUDialect.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Async/IR/Async.h"
+#include "mlir/Dialect/Async/Passes.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -18,6 +20,7 @@
 #include "mlir/Transforms/Passes.h"
 int main(int argc, char **argv) {
   mlir::registerTransformsPasses();
+  mlir::registerAsyncPasses();
   vrc::registerCBoundaryRecoveryPipeline();
   vrc::registerVRCRecoveryPasses();
   vrc::registerHighLevelRecoveryPipeline();
@@ -26,9 +29,10 @@ int main(int argc, char **argv) {
   registry.insert<vrc::udonhl::UdonHLDialect, vrc::udonasm::UdonAsmDialect,
                   vrc::vrc::VRCDialect, vrc::vrcgpu::VRCGPUDialect,
                   mlir::gpu::GPUDialect, mlir::ub::UBDialect, mlir::DLTIDialect,
-                  mlir::arith::ArithDialect, mlir::func::FuncDialect,
-                  mlir::cf::ControlFlowDialect, mlir::scf::SCFDialect,
-                  mlir::memref::MemRefDialect, mlir::LLVM::LLVMDialect>();
+                  mlir::arith::ArithDialect, mlir::async::AsyncDialect,
+                  mlir::func::FuncDialect, mlir::cf::ControlFlowDialect,
+                  mlir::scf::SCFDialect, mlir::memref::MemRefDialect,
+                  mlir::LLVM::LLVMDialect>();
   return mlir::asMainReturnCode(
       mlir::MlirOptMain(argc, argv, "udoncl pass driver", registry));
 }

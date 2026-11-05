@@ -87,6 +87,18 @@ float_to_uint_case = '''module {
 float_to_uint = run([opt, '--vrc-raise-llvm-to-scalar'], float_to_uint_case)
 assert 'arith.fptoui' in float_to_uint and 'llvm.fptoui' not in float_to_uint
 
+# LLVM undef permits any value. Choosing zero preserves all defined behavior
+# while removing aggregate-free scalar undef introduced by optimized loops.
+undef_case = '''module {
+  llvm.func @choose_undef() -> i32 {
+    %value = llvm.mlir.undef : i32
+    llvm.return %value : i32
+  }
+}'''
+undef_result = run([opt, '--vrc-raise-llvm-to-scalar'], undef_case)
+assert 'arith.constant 0 : i32' in undef_result
+assert 'llvm.mlir.undef' not in undef_result
+
 negative = [
     ('llvm.func @pointer(%p: !llvm.ptr) { llvm.return }', 'memory/provenance'),
     ('llvm.func @exact(%a: i32, %b: i32) -> i32 { %r = llvm.lshr exact %a, %b : i32 llvm.return %r : i32 }', 'poison-generating flag'),

@@ -1,5 +1,6 @@
 #include "VRC/Dialect/VRC/VRCDialect.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/DialectImplementation.h"
@@ -34,7 +35,10 @@ void vrc::vrc::VRCDialect::initialize() {
 
 namespace {
 mlir::LogicalResult verifyHostRuntimeOperation(mlir::Operation *operation) {
-  auto function = operation->getParentOfType<mlir::func::FuncOp>();
+  mlir::Operation *function =
+      operation->getParentOfType<mlir::func::FuncOp>().getOperation();
+  if (!function)
+    function = operation->getParentOfType<mlir::async::FuncOp>().getOperation();
   if (!function || !mlir::isa<mlir::ModuleOp>(function->getParentOp()))
     return operation->emitOpError("must belong to the Host runtime path");
   return mlir::success();
@@ -159,6 +163,15 @@ mlir::LogicalResult vrc::vrc::AwaitOp::verify() {
                : mlir::StringAttr();
   if (!effect || effect.getValue() != "may_suspend")
     return emitOpError("requires a may_suspend Host function");
+  return mlir::success();
+}
+
+mlir::LogicalResult vrc::vrc::EventAsAsyncOp::verify() {
+  if (mlir::failed(verifyHostRuntimeOperation(*this)))
+    return mlir::failure();
+  auto value = mlir::dyn_cast<mlir::async::ValueType>(getValue().getType());
+  if (!value || !value.getValueType().isInteger(32))
+    return emitOpError("must produce !async.value<i32>");
   return mlir::success();
 }
 

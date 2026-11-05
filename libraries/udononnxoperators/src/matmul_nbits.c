@@ -17,12 +17,15 @@ static cl_context operator_context;
 static cl_command_queue operator_queue;
 static cl_program operator_program;
 static cl_kernel matmul_nbits_kernel;
+static cl_kernel gather_kernel;
 static cl_mem state_buffer;
 static cl_mem result_buffer;
 static float state[UDONONNX_NBITS_WORDS];
 static float result[UDONONNX_NBITS_MAX_N];
 
 static void clear_operator(void) {
+  if (gather_kernel)
+    clReleaseKernel(gather_kernel);
   if (matmul_nbits_kernel)
     clReleaseKernel(matmul_nbits_kernel);
   if (operator_program)
@@ -36,6 +39,7 @@ static void clear_operator(void) {
   if (operator_context)
     clReleaseContext(operator_context);
   matmul_nbits_kernel = 0;
+  gather_kernel = 0;
   operator_program = 0;
   result_buffer = state_buffer = 0;
   operator_queue = 0;
@@ -89,6 +93,14 @@ udononnxCreateOperatorHandle(udononnxOperatorHandle_t *handle) {
       clSetKernelArg(matmul_nbits_kernel, 1, sizeof(result_buffer),
                      &result_buffer) != CL_SUCCESS)
     return execution_failure();
+  gather_kernel =
+      clCreateKernel(operator_program, "udononnx_gather_copy", &status);
+  if (status != CL_SUCCESS ||
+      clSetKernelArg(gather_kernel, 0, sizeof(state_buffer), &state_buffer) !=
+          CL_SUCCESS ||
+      clSetKernelArg(gather_kernel, 1, sizeof(result_buffer), &result_buffer) !=
+          CL_SUCCESS)
+    return execution_failure();
   *handle = UDONONNX_OPERATOR_HANDLE;
   return UDONONNX_STATUS_SUCCESS;
 }
@@ -98,6 +110,83 @@ udononnxDestroyOperatorHandle(udononnxOperatorHandle_t handle) {
   if (handle != UDONONNX_OPERATOR_HANDLE || !operator_context)
     return UDONONNX_STATUS_NOT_INITIALIZED;
   clear_operator();
+  return UDONONNX_STATUS_SUCCESS;
+}
+
+udononnxStatus_t udononnxGather(udononnxOperatorHandle_t handle,
+                                udonclDataType_t data_type, const void *data,
+                                const int64_t *data_shape, int32_t data_rank,
+                                udonclDataType_t indices_type,
+                                const void *indices, int32_t indices_count,
+                                int64_t axis, void *output) {
+  int64_t element_bytes, outer = 1, inner = 1, axis_elements;
+  int64_t outer_index, index_position, index_count;
+  int32_t dimension;
+  if (handle != UDONONNX_OPERATOR_HANDLE || !operator_context)
+    return UDONONNX_STATUS_NOT_INITIALIZED;
+  element_bytes = (int32_t)udonclDataTypeSize(data_type);
+  if (!data || !data_shape || !data_rank ||
+      data_rank > UDONONNX_MAX_TENSOR_RANK || !indices || !indices_count ||
+      !output || !element_bytes ||
+      (indices_type != UDONCL_DATA_INT32 && indices_type != UDONCL_DATA_INT64))
+    return UDONONNX_STATUS_INVALID_VALUE;
+  index_count = (int64_t)indices_count;
+  if (axis < 0)
+    axis += data_rank;
+  if (axis < 0 || axis >= data_rank)
+    return UDONONNX_STATUS_INVALID_VALUE;
+  for (dimension = 0; dimension < data_rank; ++dimension) {
+    int64_t extent;
+    if (data_shape[dimension] <= 0 || data_shape[dimension] > INT32_MAX)
+      return UDONONNX_STATUS_INVALID_VALUE;
+    extent = data_shape[dimension];
+    if (dimension < axis) {
+      if (outer * extent > INT32_MAX)
+        return UDONONNX_STATUS_INVALID_VALUE;
+      outer *= extent;
+    } else if (dimension > axis) {
+      if (inner * extent > INT32_MAX)
+        return UDONONNX_STATUS_INVALID_VALUE;
+      inner *= extent;
+    }
+  }
+  axis_elements = data_shape[axis];
+  if (inner * element_bytes > INT32_MAX)
+    return UDONONNX_STATUS_INVALID_VALUE;
+  for (outer_index = 0; outer_index < outer; ++outer_index)
+    for (index_position = 0; index_position < index_count; ++index_position) {
+      int64_t selected =
+          indices_type == UDONCL_DATA_INT32
+              ? (int64_t)((const int32_t *)indices)[index_position]
+              : ((const int64_t *)indices)[index_position];
+      int64_t source_offset, output_offset, bytes = inner * element_bytes;
+      size_t global = UDONONNX_NBITS_WORDS, local = 1;
+      int words;
+      cl_int cl_status;
+      if (selected < 0)
+        selected += axis_elements;
+      if (selected < 0 || selected >= axis_elements)
+        return UDONONNX_STATUS_INVALID_VALUE;
+      source_offset =
+          (outer_index * axis_elements + selected) * inner * element_bytes;
+      output_offset =
+          (outer_index * index_count + index_position) * inner * element_bytes;
+      if (bytes > (int64_t)sizeof(state))
+        return UDONONNX_STATUS_INVALID_VALUE;
+      words = ((int)bytes + 3) >> 2;
+      cl_status = clSetKernelArg(gather_kernel, 2, sizeof(words), &words);
+      if (cl_status != CL_SUCCESS ||
+          clEnqueueWriteBuffer(operator_queue, state_buffer, CL_TRUE, 0, bytes,
+                               (const uint8_t *)data + source_offset, 0, 0,
+                               0) != CL_SUCCESS ||
+          clEnqueueNDRangeKernel(operator_queue, gather_kernel, 1, 0, &global,
+                                 &local, 0, 0, 0) != CL_SUCCESS ||
+          clEnqueueReadBuffer(operator_queue, result_buffer, CL_TRUE, 0, bytes,
+                              (uint8_t *)output + output_offset, 0, 0,
+                              0) != CL_SUCCESS ||
+          clFinish(operator_queue) != CL_SUCCESS)
+        return execution_failure();
+    }
   return UDONONNX_STATUS_SUCCESS;
 }
 

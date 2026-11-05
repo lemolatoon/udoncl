@@ -54,6 +54,7 @@ struct LowerOpenCLAOTIntrinsicsPass
                    name == "__vrc_opencl_dispatch_udondnn_large_op_tensor" ||
                    name == "__vrc_opencl_dispatch_udonaten_embedding" ||
                    name == "__vrc_opencl_dispatch_udononnx_matmul_nbits" ||
+                   name == "__vrc_opencl_dispatch_udononnx_gather_copy" ||
                    name == "__vrc_opencl_dispatch_mnist_conv" ||
                    name == "__vrc_opencl_dispatch_mnist_pool" ||
                    name == "__vrc_opencl_dispatch_mnist_dense";
@@ -96,6 +97,8 @@ struct LowerOpenCLAOTIntrinsicsPass
         arguments = {i32, i32, i32, i32, f32, i32, i32, i32};
       else if (name == "__vrc_opencl_dispatch_udononnx_matmul_nbits")
         arguments = {i32, i32, i32, i32, i32, i32};
+      else if (name == "__vrc_opencl_dispatch_udononnx_gather_copy")
+        arguments = {i32, i32, i32};
       else
         arguments = {i32, i32};
       if (!function.isExternal() ||
@@ -190,6 +193,7 @@ struct LowerOpenCLAOTIntrinsicsPass
         bool embedding = name == "__vrc_opencl_dispatch_udonaten_embedding";
         bool matmulNBits =
             name == "__vrc_opencl_dispatch_udononnx_matmul_nbits";
+        bool gather = name == "__vrc_opencl_dispatch_udononnx_gather_copy";
         unsigned bufferCount = largeConvolution || largeOpTensor ? 4
                                : largeActivation || largePooling ? 3
                                                                  : 2;
@@ -201,6 +205,7 @@ struct LowerOpenCLAOTIntrinsicsPass
                            : largeOpTensor                              ? 234
                            : embedding                                  ? 207
                            : matmulNBits                                ? 219
+                           : gather                                     ? 220
                            : name == "__vrc_opencl_dispatch_mnist_conv" ? 20
                            : name == "__vrc_opencl_dispatch_mnist_pool" ? 21
                                                                         : 22;
@@ -228,6 +233,8 @@ struct LowerOpenCLAOTIntrinsicsPass
               rewriter.getStringAttr("i32"), rewriter.getStringAttr("i32")};
         } else if (matmulNBits) {
           scalarKinds.append(4, rewriter.getStringAttr("i32"));
+        } else if (gather) {
+          scalarKinds.append(1, rewriter.getStringAttr("i32"));
         }
         OperationState descriptorState(
             call.getLoc(), runtime::DispatchDescCreateOp::getOperationName());

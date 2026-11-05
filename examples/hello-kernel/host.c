@@ -1,7 +1,9 @@
 // Host-visible scalar export. It mirrors the Device calculation so the
 // recovered Host IR can be inspected independently.
 #include "hello_host.h"
+#include <udoncl/export.h>
 
+UDONCL_EXPORT
 float host_square_plus_one(float x) {
   float square = 1.0f;
   for (int factor = 0; factor < 2; ++factor)

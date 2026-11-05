@@ -29,6 +29,7 @@
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/MathExtras.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/ToolOutputFile.h"
@@ -2758,7 +2759,8 @@ int main(int argc, char **argv) {
       auto *programManifest = manifest["program"].getAsObject();
       (*programManifest)["raw_heap_initializer"] = "raw-heap.bytes";
       (*programManifest)["raw_heap_slot"] = "__vrc_raw_heap";
-      (*programManifest)["raw_heap_words"] = static_cast<int64_t>(bytes.size());
+      (*programManifest)["raw_heap_words"] =
+          static_cast<int64_t>(llvm::divideCeil(bytes.size(), size_t{4}));
       json::Array *resources = manifest.getArray("resources");
       if (!resources) {
         manifest["resources"] = json::Array();

@@ -1,6 +1,8 @@
 #include "VRC/Conversion/LLVMToHighLevel/Import.h"
 #include "VRC/Dialect/UdonAsm/UdonAsmDialect.h"
 #include "VRC/Target/UdonAssembly/Emitter.h"
+#include "mlir/Dialect/DLTI/DLTI.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
 #include "llvm/IRReader/IRReader.h"
@@ -40,7 +42,8 @@ int main(int argc, char **argv) {
       return 1;
     }
     mlir::DialectRegistry registry;
-    registry.insert<vrc::udonasm::UdonAsmDialect>();
+    registry.insert<vrc::udonasm::UdonAsmDialect, mlir::DLTIDialect,
+                    mlir::LLVM::LLVMDialect>();
     mlir::MLIRContext context(registry);
     auto module =
         mlir::parseSourceFile<mlir::ModuleOp>(inputFilename, &context);

@@ -14,6 +14,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
     {
         private const string GeneratedRoot =
             "Assets/udoncl-generated/generic_onnx_transformer_tiny";
+        private const string BindingClass = "UdonclGenericOnnxTransformerTinyBinding";
         private string artifactDirectory;
         private string serializedProgramPath;
         private HashSet<string> serializedProgramsBefore;
@@ -45,6 +46,11 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             artifact = ArtifactManifestValidator.Validate(artifactDirectory);
             Assert.AreEqual("generic_onnx_transformer_tiny", artifact.ProgramName);
             Assert.AreEqual(GeneratedRoot, UdonclArtifactImporter.Import(artifactDirectory));
+            CollectionAssert.AreEqual(
+                File.ReadAllBytes(Path.Combine(artifactDirectory, "binding.cs")),
+                File.ReadAllBytes(GeneratedRoot + "/Bindings/" + BindingClass + ".cs"),
+                "Importer must install compiler-generated binding source byte-for-byte."
+            );
             string programPath = GeneratedRoot + "/Programs/host_program.asset";
             string guid = AssetDatabase.AssetPathToGUID(programPath);
             Assert.IsFalse(string.IsNullOrEmpty(guid));
@@ -101,7 +107,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 );
             }
             CollectionAssert.AreEquivalent(
-                new[] { 1, 2, 207, 219, 231, 232, 233, 234 },
+                new[] { 1, 2, 207, 219, 220, 231, 232, 233, 234 },
                 materials.Keys
             );
             Material copyMaterial = Load<Material>("Materials/buffer-copy.mat");
@@ -153,10 +159,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         private int[] ReadRawHeap()
         {
             byte[] bytes = File.ReadAllBytes(Path.Combine(artifactDirectory, "raw-heap.bytes"));
-            int[] result = new int[bytes.Length];
-            for (int index = 0; index < bytes.Length; ++index)
-                result[index] = bytes[index];
-            return result;
+            return PublicMnistOnnxRuntimeLifecycleTests.PackRawHeap(bytes);
         }
 
         private static void WriteTokens(

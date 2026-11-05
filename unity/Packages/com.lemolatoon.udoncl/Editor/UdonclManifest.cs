@@ -24,6 +24,7 @@ namespace Lemolatoon.Udoncl.Editor
         public UdonOnnxTextureArenaInfo texture_arena;
         public UdonOnnxIoInfo[] model_inputs;
         public UdonOnnxIoInfo[] model_outputs;
+        public UdonOnnxBindingInfo onnx_binding;
     }
 
     [Serializable]
@@ -60,6 +61,9 @@ namespace Lemolatoon.Udoncl.Editor
         public string raw_heap_initializer;
         public string raw_heap_slot;
         public int raw_heap_words;
+        public string binding_source;
+        public string binding_namespace;
+        public string binding_class;
         public AsyncCommandInfo async_commands;
     }
 
@@ -68,6 +72,9 @@ namespace Lemolatoon.Udoncl.Editor
     {
         public string resume_state_slot;
         public string completion_status_slot;
+        public string pending_object_slot;
+        public string completion_object_slot;
+        public string completion_event;
         public string command_kind_slot;
         public string command_buffer_slot;
         public string command_offset_slot;
@@ -281,5 +288,36 @@ namespace Lemolatoon.Udoncl.Editor
         public string data_type;
         public int words;
         public int slot;
+    }
+
+    [Serializable]
+    internal sealed class UdonOnnxBindingInfo
+    {
+        public string abi;
+        public int model_index;
+        public string model_name;
+        public UdonOnnxBindingTensorInfo[] inputs;
+        public UdonOnnxBindingTensorInfo[] outputs;
+        public UdonOnnxPhysicalBindingInfo physical;
+    }
+
+    [Serializable]
+    internal sealed class UdonOnnxBindingTensorInfo
+    {
+        public int index;
+        public string name;
+        public string data_type;
+        public int rank;
+        public long[] dimensions;
+    }
+
+    [Serializable]
+    internal sealed class UdonOnnxPhysicalBindingInfo
+    {
+        public string create_symbol;
+        public string bind_tensor_symbol;
+        public string enqueue_initialize_symbol;
+        public string enqueue_run_symbol;
+        public string dispose_symbol;
     }
 }

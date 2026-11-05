@@ -51,11 +51,18 @@ size_t udonclDataTypeSize(udonclDataType_t data_type);
 udonclStatus_t udonclDeviceBufferCreate(cl_context context, cl_mem_flags flags,
                                         size_t bytes,
                                         udonclBufferHandle_t *buffer);
+/* Registers an existing cl_mem allocation and transfers one owned reference
+ * to the returned handle. On failure ownership remains with the caller. */
+udonclStatus_t udonclDeviceBufferAdopt(cl_context context, cl_mem memory,
+                                       size_t bytes,
+                                       udonclBufferHandle_t *buffer);
 udonclStatus_t udonclDeviceBufferDestroy(udonclBufferHandle_t *buffer);
 udonclStatus_t udonclDeviceBufferGetSize(udonclBufferHandle_t buffer,
                                          size_t *bytes);
 udonclStatus_t udonclDeviceBufferGetRaw(udonclBufferHandle_t buffer,
                                         cl_mem *memory);
+udonclStatus_t udonclDeviceBufferGetContext(udonclBufferHandle_t buffer,
+                                            cl_context *context);
 udonclStatus_t udonclDeviceBufferView(udonclBufferHandle_t buffer,
                                       size_t byte_offset, size_t elements,
                                       udonclDataType_t data_type,

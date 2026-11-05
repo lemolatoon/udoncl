@@ -24,33 +24,47 @@ Current verified implementation state (2026-11-05):
   arrays, and grows the scalar bank only to the proven simultaneous operand
   clique that cannot itself be spilled;
 - the allocator report now records requested/minimum scalar width, typed
-  register counts, typed spill banks/extents, and packed global banks;
-- on the current MNIST artifact this changes 135 scalar slots into 56 scalar
-  slots plus one 109-element `SystemInt32Array`; the minimum simultaneous
-  scalar width is 46 and total `.data` declarations move from 470 to 469
-  because index materialization currently adds shared constants;
-- word-packed raw memory, improved spill-index cost selection, complete
-  capacity diagnostics, benchmark tuning, and the final generated-U# MNIST
-  gate remain outstanding.
+  register counts, typed spill banks/extents, packed global banks, and exact
+  final data-slot use/capacity;
+- lowering now rejects a final Udon data table above the SDK's 512-slot limit
+  with fixed/register/persistent/typed-array/constant/other category totals;
+- SSA successor operands now preserve parallel-copy semantics: branch-source
+  values interfere with every destination until the whole transfer completes,
+  preventing sequential Udon `COPY` operations from corrupting loop and phi
+  state;
+- the raw heap is now a little-endian word-packed `SystemInt32Array` with four
+  logical bytes per element, aligned `i32`/pointer/`f32` fast paths, and packed
+  byte fallback paths; manifests and generated/legacy Unity bindings use the
+  same ABI;
+- spill indices, raw addresses, and call return addresses now compete for the
+  measured address-cache budget, and capacity probes can measure an oversized
+  candidate before selecting constant materialization while the final lowering
+  still rejects programs above 512 slots;
+- the last Unity-tested MNIST artifact used 440 data slots, a 111-element
+  `SystemInt32Array` spill bank, and an 80,572-word raw heap; its generated UASM
+  was approximately 15.7 MB;
+- richer reduction suggestions, benchmark tuning, cooperative checkpoint
+  placement, and the final generated-U# MNIST numerical gate remain
+  outstanding.
 
 ## 1. Problem and current evidence
 
-The Host compiler currently maps C globals, fixed `alloca` objects, descriptors,
-and pointer-visible tensor storage into an emulated linear heap. The current
-implementation uses a `SystemInt32Array` with one array element per logical
-byte. A general four-byte load reconstructs the value from four array reads,
-pointer additions, shifts, and OR operations.
-
-This is correct enough as a bootstrap representation but is not the final Host
-storage model. Small C helpers such as `get_convolution` become large Udon
-instruction sequences even though they contain only a few C expressions.
+The Host compiler maps C globals, fixed `alloca` objects, descriptors, and
+pointer-visible tensor storage into an emulated linear heap. The implementation
+now uses a word-packed `SystemInt32Array`; aligned four-byte accesses use one
+array operation, while byte and unaligned accesses use shifts, masks, and
+read-modify-write. Remaining byte-oriented loops and address materialization
+can still make small C helpers large in generated Udon.
 
 The last Unity-tested MNIST artifact imported and compiled its generated U#
-binding, but its focused test finished with 0/1 passing. The SDK Udon VM hit its
-10-second limit at PC 468,832 inside the synchronous helper
-`get_convolution`; numerical comparison was not reached. Cooperative
-checkpoint insertion also underestimates synchronous callees because a call is
-currently counted as one operation without its transitive Udon expansion.
+binding, but its focused test finished with 0/1 passing. Fixing successor
+parallel-copy interference removed the previous `SystemInt32Array`
+`IndexOutOfRangeException`. The remaining failure is the SDK Udon VM's
+10-second watchdog inside `udondnnConvolutionForward`; numerical comparison was
+not reached. Cooperative checkpoint planning now accounts for the transitive
+cost of synchronous callees and places multiple checkpoints through the
+heaviest uninterrupted regions, but this revised placement still requires a
+Unity acceptance run.
 
 Static instruction evidence for the current backend is:
 
@@ -58,8 +72,8 @@ Static instruction evidence for the current backend is:
 |---|---:|---:|
 | Direct scalar slot `COPY` | 3 | 0 |
 | Typed array `Get` or `Set` | 4 | 1 |
-| Current byte-per-element raw `i32` load | 67 | 13 |
-| Current byte-per-element raw `i32` store | 59 | 14 |
+| Word-packed aligned raw `i32` load | one array `Get` plus index/bit handling | 1 array access |
+| Word-packed aligned raw `i32` store | one array `Set` plus index/bit handling | 1 array access |
 
 No defensible wall-clock comparison exists yet. Editor IUdonVM, ClientSim, and
 VRChat client measurements must be reported separately.

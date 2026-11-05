@@ -9,6 +9,10 @@ def LowerONNXToUdonHostPass : Pass<"udoncl-lower-onnx-to-host", "mlir::ModuleOp"
   let summary = "Lower typed ONNX dialect operations directly to Udon library calls";
   let dependentDialects = ["mlir::arith::ArithDialect", "mlir::func::FuncDialect"];
 }
+def FinalizeONNXHostPass : Pass<"udoncl-finalize-onnx-host", "mlir::ModuleOp"> {
+  let summary = "Lower portable ONNX library calls to the Udon Host ABI and session exports";
+  let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "mlir::arith::ArithDialect", "mlir::cf::ControlFlowDialect", "mlir::func::FuncDialect", "mlir::LLVM::LLVMDialect"];
+}
 def SubstituteRuntimeIntrinsicsPass : Pass<"vrc-substitute-runtime-intrinsics", "mlir::ModuleOp"> {
   let summary = "Replace typed __vrc_* calls after UdonHL construction; preserve C runtime ownership";
   let dependentDialects = ["::vrc::vrc::VRCDialect"];
@@ -20,6 +24,26 @@ def LowerOpenCLAOTIntrinsicsPass : Pass<"vrc-lower-opencl-aot-intrinsics", "mlir
 def LowerAwaitToContinuationsPass : Pass<"vrc-lower-await-to-continuations", "mlir::ModuleOp"> {
   let summary = "Split a single typed await into explicit UdonHL frame, suspend and resume blocks";
   let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "::vrc::vrc::VRCDialect"];
+}
+def LowerHostToAsyncPass : Pass<"vrc-lower-host-to-async", "mlir::ModuleOp"> {
+  let summary = "Convert the may-suspend Host call graph to MLIR Async without forced inlining";
+  let dependentDialects = ["::vrc::vrc::VRCDialect", "mlir::async::AsyncDialect", "mlir::cf::ControlFlowDialect", "mlir::func::FuncDialect"];
+}
+def InsertUdonCooperativeCheckpointsPass : Pass<"vrc-insert-udon-cooperative-checkpoints", "mlir::ModuleOp"> {
+  let summary = "Split long Udon-only synchronous Host regions with static cooperative checkpoints";
+  let dependentDialects = ["::vrc::vrc::VRCDialect", "mlir::arith::ArithDialect", "mlir::func::FuncDialect"];
+}
+def LowerHostAsyncToNativePass : Pass<"vrc-lower-host-async-to-native", "mlir::ModuleOp"> {
+  let summary = "Map VRC completion events in the common Host Async contract to Native async values";
+  let dependentDialects = ["mlir::async::AsyncDialect", "mlir::func::FuncDialect"];
+}
+def PrepareUdonAsyncRuntimePass : Pass<"vrc-prepare-udon-async-runtime", "mlir::ModuleOp"> {
+  let summary = "Verify the structured Async Runtime subset and assign static Udon frame/resume ids";
+  let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "mlir::arith::ArithDialect", "mlir::async::AsyncDialect", "mlir::cf::ControlFlowDialect", "mlir::func::FuncDialect"];
+}
+def LowerUdonAsyncRuntimePass : Pass<"vrc-lower-udon-async-runtime", "mlir::ModuleOp"> {
+  let summary = "Remove upstream Async/Coro scaffolding after static Udon routing is materialized";
+  let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "::vrc::vrc::VRCDialect", "mlir::cf::ControlFlowDialect", "mlir::func::FuncDialect"];
 }
 def LowerDeviceSingleInvocationPass : Pass<"vrc-lower-device-single-invocation", "mlir::ModuleOp"> {
   let summary = "Lower a proven 1-invocation scalar-output GPU kernel to fragment-safe vrcgpu";

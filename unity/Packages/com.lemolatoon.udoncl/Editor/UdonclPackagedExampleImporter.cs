@@ -14,6 +14,7 @@ namespace Lemolatoon.Udoncl.Editor
         private const string SaxpyArchive = "saxpy.zip.bytes";
         private const string TinyArchive = "onnx-tiny-llama.zip.bytes";
         private const string PoolingArchive = "average-pooling.zip.bytes";
+        private const string MnistControllerTemplate = "generic-onnx-mnist-test-controller.cs.txt";
 
         [MenuItem("Tools/udoncl/Examples/Import C and OpenCL Hello Dispatch")]
         private static void ImportHelloDispatch()
@@ -55,7 +56,100 @@ namespace Lemolatoon.Udoncl.Editor
             PrepareValidationExample(HelloArchive, "hello_dispatch");
             PrepareValidationExample(SaxpyArchive, "saxpy_demo");
             PrepareValidationExample(PoolingArchive, "average_pooling");
+            EnsureValidationSceneSaved();
             AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+        }
+
+        [MenuItem("Tools/udoncl/Internal/Ensure Validation Scene Saved")]
+        public static void EnsureValidationSceneSaved()
+        {
+            UnityEngine.SceneManagement.Scene scene =
+                UnityEditor.SceneManagement.EditorSceneManager.GetActiveScene();
+            if (!string.IsNullOrEmpty(scene.path) && File.Exists(scene.path))
+                return;
+            if (
+                !UnityEditor.SceneManagement.EditorSceneManager.SaveScene(
+                    scene,
+                    "Assets/UdonclValidationScene.unity"
+                )
+            )
+                throw new InvalidOperationException("Could not save the Unity validation scene.");
+        }
+
+        [MenuItem("Tools/udoncl/Internal/Prepare Public MNIST Validation")]
+        public static void PreparePublicMnistValidation()
+        {
+            string artifact = Environment.GetEnvironmentVariable(
+                "UDONCL_PUBLIC_MNIST_UNITY_BUNDLE"
+            );
+            if (string.IsNullOrWhiteSpace(artifact))
+            {
+                UnityEditor.PackageManager.PackageInfo package =
+                    UnityEditor.PackageManager.PackageInfo.FindForAssembly(
+                        typeof(UdonclPackagedExampleImporter).Assembly
+                    );
+                if (package == null || string.IsNullOrEmpty(package.resolvedPath))
+                    return;
+                artifact = Path.GetFullPath(
+                    Path.Combine(
+                        package.resolvedPath,
+                        "..",
+                        "..",
+                        "..",
+                        "build",
+                        "udoncl",
+                        "tests",
+                        "cmake-package",
+                        "onnx-mnist-consumer",
+                        "udoncl",
+                        "onnx-mnist",
+                        "artifact"
+                    )
+                );
+                if (!File.Exists(Path.Combine(artifact, "manifest.json")))
+                    return;
+            }
+            artifact = Path.GetFullPath(artifact);
+            if (!File.Exists(Path.Combine(artifact, "manifest.json")))
+                throw new FileNotFoundException(
+                    "The MNIST validation artifact is missing.",
+                    artifact
+                );
+            const string root = "Assets/udoncl-generated/generic_onnx_mnist";
+            AssetDatabase.DeleteAsset(root);
+            if (UdonclArtifactImporter.Import(artifact) != root)
+                throw new InvalidDataException("MNIST validation imported to an unexpected path.");
+            AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+            UnityEditor.Compilation.CompilationPipeline.RequestScriptCompilation();
+        }
+
+        [MenuItem("Tools/udoncl/Internal/Prepare Public MNIST Controller Validation")]
+        public static void PreparePublicMnistControllerValidation()
+        {
+            UnityEditor.PackageManager.PackageInfo package =
+                UnityEditor.PackageManager.PackageInfo.FindForAssembly(
+                    typeof(UdonclPackagedExampleImporter).Assembly
+                );
+            if (package == null || string.IsNullOrEmpty(package.resolvedPath))
+                throw new InvalidOperationException(
+                    "Could not resolve the installed UdonCL package."
+                );
+            string source = Path.Combine(
+                package.resolvedPath,
+                "Editor",
+                "Examples",
+                MnistControllerTemplate
+            );
+            string destinationDirectory = "Assets/UdonclSampleValidation";
+            string destination = destinationDirectory + "/UdonclGenericOnnxMnistTestController.cs";
+
+            Directory.CreateDirectory(destinationDirectory);
+            File.Copy(source, destination, true);
+            AssetDatabase.ImportAsset(
+                destination,
+                ImportAssetOptions.ForceSynchronousImport | ImportAssetOptions.ForceUpdate
+            );
+            UnityEditor.Compilation.CompilationPipeline.RequestScriptCompilation();
         }
 
         internal static string Extract(string archiveName)

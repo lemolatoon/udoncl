@@ -312,10 +312,11 @@ static StringRef comparisonExtern(arith::CmpFOp operation) {
 class ScalarLowering {
 public:
   ScalarLowering(ModuleOp module, unsigned materializationLimit,
-                 unsigned rawAddressCacheLimit)
+                 unsigned rawAddressCacheLimit, bool enforceCapacity = true)
       : module(module), builder(module.getContext()),
         materializationLimit(materializationLimit),
         rawAddressCacheLimit(rawAddressCacheLimit),
+        enforceCapacity(enforceCapacity),
         externalRawHeapInitialization(
             module->hasAttr("vrc.external_raw_heap_initialization")) {
     builder.setInsertionPointToEnd(module.getBody());
@@ -572,6 +573,7 @@ public:
 
     if (failed(planInterproceduralValueSlots(functions)))
       return failure();
+    planAddressCaches();
     if (!typedSpillBanks.empty()) {
       addSlot(globalInitializedSlot, "SystemInt32", "0", false);
       addSlot(globalOneSlot, "SystemInt32", "1", false);
@@ -661,6 +663,9 @@ public:
                                   static_cast<int64_t>(found->second)));
     }
 
+    if (enforceCapacity && failed(verifyDataSlotCapacity()))
+      return failure();
+
     module->setAttr("udonasm.storage_report", storageReport());
 
     SmallVector<Attribute> functionAddressMetadata;
@@ -702,6 +707,82 @@ public:
   }
 
 private:
+  uint64_t rawHeapWordCount() const {
+    return llvm::divideCeil(rawHeapBytes, uint64_t{4});
+  }
+
+  unsigned dataSlotCapacity() const {
+    if (auto capacity =
+            module->getAttrOfType<IntegerAttr>("vrc.data_slot_capacity"))
+      return static_cast<unsigned>(capacity.getInt());
+    return 512;
+  }
+
+  LogicalResult verifyDataSlotCapacity() {
+    unsigned capacity = dataSlotCapacity();
+    if (!capacity || capacity > 512)
+      return module.emitError(
+          "vrc.data_slot_capacity must be in the range 1..512");
+    if (slots.size() <= capacity)
+      return success();
+
+    llvm::StringSet<> fixed;
+    llvm::StringSet<> registers;
+    llvm::StringSet<> persistent;
+    llvm::StringSet<> arrays;
+    llvm::StringSet<> constants;
+    for (const Slot &slot : slots)
+      if (slot.isPublic)
+        fixed.insert(slot.name);
+    for (const auto &method : methodABIs) {
+      for (const std::string &parameter : method.second.parameterSlots)
+        fixed.insert(parameter);
+      if (method.second.resultSlot)
+        fixed.insert(*method.second.resultSlot);
+      auto function = cast<func::FuncOp>(method.first);
+      if (auto exportId = function->getAttrOfType<IntegerAttr>("vrc.export_id"))
+        fixed.insert(udonclStatusSlot(exportId.getInt()));
+    }
+    for (const auto &slot : scalarRegisterSlots)
+      registers.insert(slot.first());
+    for (const auto &slot : asyncPersistentSlots)
+      persistent.insert(slot.first());
+    for (const GlobalBankPlan &bank : globalBanks)
+      arrays.insert(bank.slot);
+    for (const std::string &key : typedSpillBankOrder)
+      arrays.insert(typedSpillBanks.at(key).slot);
+    if (rawHeapBytes)
+      arrays.insert(rawHeapSlot);
+    for (const auto &slot : immutableSlots)
+      constants.insert(slot.second);
+    for (const auto &slot : sharedConstantSlots)
+      constants.insert(slot.second);
+
+    llvm::StringSet<> categorized;
+    auto include = [&](const llvm::StringSet<> &names) {
+      for (const auto &name : names)
+        categorized.insert(name.getKey());
+    };
+    include(fixed);
+    include(registers);
+    include(persistent);
+    include(arrays);
+    include(constants);
+    unsigned other = 0;
+    for (const Slot &slot : slots)
+      if (!categorized.contains(slot.name))
+        ++other;
+    return module.emitError()
+           << "final Udon data table requires " << slots.size() << " slots, "
+           << "exceeding capacity " << capacity << "; fixed=" << fixed.size()
+           << ", scalar_registers=" << registers.size()
+           << ", async_persistent=" << persistent.size()
+           << ", typed_arrays=" << arrays.size()
+           << ", constants=" << constants.size() << ", other=" << other
+           << ". Reduce public exports/resources, scalar register pressure, "
+              "cached constants, or raw-address scratch state";
+  }
+
   void planMaterializedConstants(ArrayRef<func::FuncOp> functions) {
     auto stage = module->getAttrOfType<StringAttr>("vrc.async_stage");
     if (!stage || stage.getValue() != "udon-static-v1")
@@ -859,6 +940,18 @@ private:
       interference[left].push_back(right);
       interference[right].push_back(left);
     };
+    auto addParallelCopyInterference = [&](ValueRange sources,
+                                           Block *destination) {
+      // Branch operands conceptually update all successor block arguments at
+      // once. Udon Assembly emits those updates as sequential COPYs, so every
+      // source must remain distinct from every destination until the whole
+      // parallel copy has completed.
+      for (Value source : sources)
+        if (ordinals.contains(source))
+          for (BlockArgument argument : destination->getArguments())
+            if (ordinals.contains(argument))
+              addInterference(source, argument);
+    };
     for (func::FuncOp function : functions) {
       Liveness liveness(function);
       function.walk([&](Operation *operation) {
@@ -870,6 +963,15 @@ private:
         for (Value value : blockInfo->currentlyLiveValues(operation))
           if (ordinals.contains(value))
             live.push_back(value);
+        // currentlyLiveValues may omit operands whose SSA lifetime ends at
+        // this operation. Udon externs consume all operand slot addresses at
+        // once, so those values must still interfere with one another.
+        for (Value operand : operation->getOperands())
+          if (ordinals.contains(operand))
+            live.push_back(operand);
+        for (Value result : operation->getResults())
+          if (ordinals.contains(result))
+            live.push_back(result);
         llvm::sort(live, [&](Value left, Value right) {
           return ordinals.lookup(left) < ordinals.lookup(right);
         });
@@ -877,6 +979,23 @@ private:
         for (auto [leftIndex, left] : llvm::enumerate(live))
           for (Value right : ArrayRef<Value>(live).drop_front(leftIndex + 1))
             addInterference(left, right);
+
+        if (auto branch = dyn_cast<cf::BranchOp>(operation)) {
+          addParallelCopyInterference(branch.getDestOperands(),
+                                      branch.getDest());
+        } else if (auto branch = dyn_cast<cf::CondBranchOp>(operation)) {
+          addParallelCopyInterference(branch.getTrueDestOperands(),
+                                      branch.getTrueDest());
+          addParallelCopyInterference(branch.getFalseDestOperands(),
+                                      branch.getFalseDest());
+        } else if (auto branch = dyn_cast<cf::SwitchOp>(operation)) {
+          for (auto [caseIndex, destination] :
+               llvm::enumerate(branch.getCaseDestinations()))
+            addParallelCopyInterference(branch.getCaseOperands(caseIndex),
+                                        destination);
+          addParallelCopyInterference(branch.getDefaultOperands(),
+                                      branch.getDefaultDestination());
+        }
 
         FlatSymbolRefAttr calleeAttr;
         if (auto call = dyn_cast<func::CallOp>(operation))
@@ -978,6 +1097,7 @@ private:
         return ordinals.lookup(left.value) < ordinals.lookup(right.value);
       });
       for (const SpillCandidate &candidate : spillCandidates) {
+        unsigned spillIndex = candidate.index;
         auto scalarType = udonType(candidate.value.getType());
         if (failed(scalarType))
           return emitError(candidate.value.getLoc())
@@ -994,8 +1114,7 @@ private:
                      .first;
           typedSpillBankOrder.push_back(candidate.storageKey);
         }
-        bank->second.length =
-            std::max(bank->second.length, candidate.index + 1);
+        bank->second.length = std::max(bank->second.length, spillIndex + 1);
 
         SmallVector<OpOperand *> uses;
         for (OpOperand &use : candidate.value.getUses())
@@ -1011,7 +1130,7 @@ private:
                          .create<host::SpillLoadOp>(
                              owner->getLoc(), candidate.value.getType(),
                              builder.getStringAttr(candidate.storageKey),
-                             builder.getI32IntegerAttr(candidate.index))
+                             builder.getI32IntegerAttr(spillIndex))
                          .getValue();
             reloads.try_emplace(owner, loaded);
           } else {
@@ -1028,7 +1147,7 @@ private:
         builder.create<host::SpillStoreOp>(
             candidate.value.getLoc(), candidate.value,
             builder.getStringAttr(candidate.storageKey),
-            builder.getI32IntegerAttr(candidate.index));
+            builder.getI32IntegerAttr(spillIndex));
       }
       typedSpillsInserted = true;
       interproceduralValueSlots.clear();
@@ -1218,9 +1337,18 @@ private:
 
     return entry(
         {integerField("version", 2),
+         integerField("data_slot_count", slots.size()),
+         integerField("data_slot_capacity", dataSlotCapacity()),
          integerField("scalar_register_budget", requestedScalarRegisterBudget),
          integerField("minimum_simultaneous_registers",
                       minimumScalarRegisterCount),
+         integerField("address_cache_budget", rawAddressCacheLimit),
+         integerField("cached_spill_indices", cachedSpillIndexSlots.size()),
+         integerField("synthesized_spill_indices",
+                      plannedSpillIndexCount - cachedSpillIndexSlots.size()),
+         integerField("cached_raw_addresses", cachedRawGlobalSlots.size()),
+         integerField("cached_return_addresses",
+                      cachedReturnAddressSlots.size()),
          builder.getNamedAttr("fixed_named_slots", builder.getArrayAttr(fixed)),
          builder.getNamedAttr("scalar_registers",
                               builder.getArrayAttr(scalars)),
@@ -1234,7 +1362,8 @@ private:
                               builder.getArrayAttr(globalBankAttributes)),
          builder.getNamedAttr("raw_objects",
                               builder.getArrayAttr(rawAttributes)),
-         integerField("raw_heap_bytes", rawHeapBytes)});
+         integerField("raw_heap_bytes", rawHeapBytes),
+         integerField("raw_heap_words", rawHeapWordCount())});
   }
 
   LogicalResult planRawMemory() {
@@ -1319,47 +1448,9 @@ private:
       rawHeapBytes = cursor;
       addSlot(rawHeapSlot, "SystemInt32Array", "null",
               externalRawHeapInitialization);
-      addSlot(rawHeapLengthSlot, "SystemInt32", std::to_string(rawHeapBytes),
-              false);
+      addSlot(rawHeapLengthSlot, "SystemInt32",
+              std::to_string(rawHeapWordCount()), false);
     }
-    llvm::StringMap<bool> fastCandidates;
-    for (host::GlobalOp global : module.getOps<host::GlobalOp>()) {
-      Type type = global.getStorageType();
-      auto initial =
-          dyn_cast_or_null<IntegerAttr>(global.getInitialValueAttr());
-      if (initial && initial.getValue().isZero() &&
-          (type.isInteger(32) || isa<host::PtrType>(type)))
-        fastCandidates.try_emplace(global.getSymName(), true);
-    }
-    module.walk([&](host::AddressOfOp address) {
-      auto candidate = fastCandidates.find(address.getGlobal());
-      if (candidate == fastCandidates.end() || !candidate->second)
-        return;
-      auto global = module.lookupSymbol<host::GlobalOp>(address.getGlobal());
-      if (!global) {
-        candidate->second = false;
-        return;
-      }
-      Type storageType = global.getStorageType();
-      for (OpOperand &use : address.getResult().getUses()) {
-        Operation *owner = use.getOwner();
-        if (auto load = dyn_cast<host::LoadOp>(owner)) {
-          if (load.getPointer() == address.getResult() &&
-              load.getResult().getType() == storageType)
-            continue;
-        }
-        if (auto store = dyn_cast<host::StoreOp>(owner)) {
-          if (store.getPointer() == address.getResult() &&
-              store.getValue().getType() == storageType)
-            continue;
-        }
-        candidate->second = false;
-        break;
-      }
-    });
-    for (const auto &candidate : fastCandidates)
-      if (candidate.second)
-        fastRawGlobals.insert(candidate.first());
     llvm::StringMap<unsigned> addressOccurrences;
     module.walk([&](host::AddressOfOp address) {
       if (rawGlobalBases.contains(address.getGlobal()))
@@ -1374,17 +1465,113 @@ private:
         return left.second > right.second;
       return left.first < right.first;
     });
-    for (const auto &[symbol, occurrences] :
-         ArrayRef(orderedAddresses)
-             .take_front(std::min<size_t>(rawAddressCacheLimit,
-                                          orderedAddresses.size()))) {
-      (void)occurrences;
-      uint64_t base = rawGlobalBases.at(symbol);
-      std::string slot = immutableSlot("SystemInt32", std::to_string(base));
-      cachedRawGlobalSlots.try_emplace(symbol, slot);
-      cachedRawGlobalBases.emplace_back(base, std::move(slot));
-    }
+    rawAddressCandidates = std::move(orderedAddresses);
     return success();
+  }
+
+  static std::string spillIndexCacheKey(StringRef storageKey, unsigned index) {
+    return (storageKey + "\n" + std::to_string(index)).str();
+  }
+
+  void planAddressCaches() {
+    enum class Kind { Spill, RawAddress, ReturnAddress };
+    struct Candidate {
+      Kind kind;
+      std::string id;
+      uint64_t value;
+      unsigned score;
+      Operation *call = nullptr;
+    };
+    SmallVector<Candidate> candidates;
+    auto literalSavings = [](uint64_t value) {
+      unsigned nonzeroBytes = 0;
+      unsigned shiftedBytes = 0;
+      for (unsigned byte = 0; byte < 4; ++byte)
+        if ((value >> (byte * 8)) & 255) {
+          ++nonzeroBytes;
+          shiftedBytes += byte != 0;
+        }
+      // emitI32Literal costs a 20-byte zero COPY plus 96 bytes per nonzero
+      // byte and another 32 bytes when that byte is not the low byte. A
+      // cached constant costs one 20-byte COPY.
+      return nonzeroBytes * 96 + shiftedBytes * 32;
+    };
+    for (const auto &[symbol, occurrences] : rawAddressCandidates)
+      candidates.push_back(
+          {Kind::RawAddress, symbol, rawGlobalBases.at(symbol),
+           occurrences * literalSavings(rawGlobalBases.at(symbol))});
+
+    llvm::StringMap<unsigned> spillOccurrences;
+    module.walk([&](Operation *operation) {
+      StringRef storageKey;
+      int64_t index = -1;
+      if (auto load = dyn_cast<host::SpillLoadOp>(operation)) {
+        storageKey = load.getStorageKey();
+        index = load.getIndex();
+      } else if (auto store = dyn_cast<host::SpillStoreOp>(operation)) {
+        storageKey = store.getStorageKey();
+        index = store.getIndex();
+      }
+      if (index >= 0)
+        ++spillOccurrences[spillIndexCacheKey(storageKey,
+                                              static_cast<unsigned>(index))];
+    });
+    for (const auto &entry : spillOccurrences) {
+      StringRef key = entry.first();
+      size_t separator = key.rfind('\n');
+      uint64_t index = 0;
+      if (separator == StringRef::npos ||
+          key.drop_front(separator + 1).getAsInteger(10, index))
+        continue;
+      candidates.push_back({Kind::Spill, key.str(), index,
+                            entry.second * literalSavings(index)});
+    }
+    plannedSpillIndexCount = spillOccurrences.size();
+    unsigned callOrdinal = 0;
+    module.walk([&](Operation *operation) {
+      if (!isa<func::CallOp, host::CallOp>(operation))
+        return;
+      candidates.push_back({Kind::ReturnAddress, std::to_string(callOrdinal++),
+                            0, 536, operation});
+    });
+    llvm::sort(candidates, [](const Candidate &left, const Candidate &right) {
+      if (left.score != right.score)
+        return left.score > right.score;
+      if (left.kind != right.kind)
+        return left.kind < right.kind;
+      return std::tie(left.value, left.id) < std::tie(right.value, right.id);
+    });
+
+    unsigned addedSlots = 0;
+    for (const Candidate &candidate : candidates) {
+      if (candidate.kind == Kind::ReturnAddress) {
+        if (addedSlots == rawAddressCacheLimit)
+          continue;
+        std::string slot = "__vrc_cached_return_address_" + candidate.id;
+        cachedReturnAddressSlots.try_emplace(candidate.call, std::move(slot));
+        ++addedSlots;
+        continue;
+      }
+      std::string constantKey =
+          "SystemInt32\n" + std::to_string(candidate.value);
+      // A small value is free only when a previous lowering decision already
+      // materialized it. Caching the value can remove the literal path that
+      // would otherwise have created its nibble slot, so 0..15 cannot be
+      // assumed to exist merely because the generic materializer can use it.
+      bool exists = immutableSlots.contains(constantKey);
+      if (!exists && addedSlots == rawAddressCacheLimit)
+        continue;
+      std::string slot =
+          immutableSlot("SystemInt32", std::to_string(candidate.value));
+      if (!exists)
+        ++addedSlots;
+      if (candidate.kind == Kind::Spill) {
+        cachedSpillIndexSlots.try_emplace(candidate.id, slot);
+      } else {
+        cachedRawGlobalSlots.try_emplace(candidate.id, slot);
+        cachedRawGlobalBases.emplace_back(candidate.value, std::move(slot));
+      }
+    }
   }
 
   LogicalResult lower(func::FuncOp function) {
@@ -1464,6 +1651,12 @@ private:
       for (Value value : blockInfo->currentlyLiveValues(operation))
         if (valueOrdinals.contains(value))
           live.push_back(value);
+      for (Value operand : operation->getOperands())
+        if (valueOrdinals.contains(operand))
+          live.push_back(operand);
+      for (Value result : operation->getResults())
+        if (valueOrdinals.contains(result))
+          live.push_back(result);
       llvm::sort(live, [&](Value left, Value right) {
         return valueOrdinals.lookup(left) < valueOrdinals.lookup(right);
       });
@@ -2427,18 +2620,10 @@ private:
         if (auto load = dyn_cast<host::LoadOp>(operation)) {
           std::string pointer = valueSlots.lookup(load.getPointer());
           std::string result = valueSlots.lookup(load.getResult());
-          if (isFastRawGlobalAccess(load.getPointer(),
-                                    load.getResult().getType())) {
-            emitPush(load.getLoc(), rawHeapSlot);
-            emitPush(load.getLoc(), pointer);
-            emitPush(load.getLoc(), result);
-            emitExtern(load.getLoc(),
-                       "SystemInt32Array.__Get__SystemInt32__SystemInt32");
-            continue;
-          }
           if (pointer.empty() || result.empty() ||
               failed(emitRawLoad(load.getLoc(), pointer, result,
-                                 load.getResult().getType())))
+                                 load.getResult().getType(),
+                                 load.getAlignment())))
             return load.emitError("unsupported raw Udon load");
           continue;
         }
@@ -2447,33 +2632,9 @@ private:
           std::string value = valueSlots.lookup(store.getValue());
           if (pointer.empty() || value.empty())
             return store.emitError("raw store operand has no Udon heap slot");
-          if (isFastRawGlobalAccess(store.getPointer(),
-                                    store.getValue().getType())) {
-            emitPush(store.getLoc(), rawHeapSlot);
-            emitPush(store.getLoc(), pointer);
-            emitPush(store.getLoc(), value);
-            emitExtern(
-                store.getLoc(),
-                "SystemInt32Array.__Set__SystemInt32_SystemInt32__SystemVoid");
-            continue;
-          }
-          if (auto constant =
-                  store.getValue().getDefiningOp<arith::ConstantOp>()) {
-            auto integer = dyn_cast<IntegerAttr>(constant.getValue());
-            if (integer && integer.getValue().isZero() &&
-                store.getValue().getType().isInteger(32)) {
-              emitPush(store.getLoc(), rawHeapSlot);
-              emitPush(store.getLoc(), pointer);
-              emitPush(store.getLoc(), immutableSlot("SystemInt32", "4"));
-              emitExtern(
-                  store.getLoc(),
-                  "SystemArray.__Clear__SystemArray_SystemInt32_SystemInt32__"
-                  "SystemVoid");
-              continue;
-            }
-          }
           if (failed(emitRawStore(store.getLoc(), pointer, value,
-                                  store.getValue().getType())))
+                                  store.getValue().getType(),
+                                  store.getAlignment())))
             return store.emitError("unsupported raw Udon store");
           continue;
         }
@@ -2614,7 +2775,8 @@ private:
               return call.emitError("call operand has no Udon heap slot");
             emitCopy(call.getLoc(), source, destination);
           }
-          emitReturnAddress(call.getLoc(), *calleePlan->second.returnSlot);
+          emitReturnAddress(call.getLoc(), *calleePlan->second.returnSlot,
+                            call.getOperation());
           Operation *jump = emitJump(call.getLoc(), 0);
           callRelocations.emplace_back(jump, callee);
           if (call.getNumResults()) {
@@ -2647,7 +2809,8 @@ private:
               return call.emitError("call operand has no Udon heap slot");
             emitCopy(call.getLoc(), source, destination);
           }
-          emitReturnAddress(call.getLoc(), *calleePlan->second.returnSlot);
+          emitReturnAddress(call.getLoc(), *calleePlan->second.returnSlot,
+                            call.getOperation());
           Operation *jump = emitJump(call.getLoc(), 0);
           callRelocations.emplace_back(jump, callee);
           if (call.getNumResults()) {
@@ -2762,7 +2925,8 @@ private:
             return store.emitError("invalid typed spill store plan");
           constexpr StringLiteral indexSlot = "__vrc_spill_index";
           addSlot(indexSlot, "SystemInt32", "0", false);
-          emitI32Literal(store.getLoc(), store.getIndex(), indexSlot);
+          emitSpillIndex(store.getLoc(), store.getStorageKey(),
+                         store.getIndex(), indexSlot);
           emitPush(store.getLoc(), bank->second.slot);
           emitPush(store.getLoc(), indexSlot);
           emitPush(store.getLoc(), value);
@@ -2780,7 +2944,8 @@ private:
             return load.emitError("invalid typed spill load plan");
           constexpr StringLiteral indexSlot = "__vrc_spill_index";
           addSlot(indexSlot, "SystemInt32", "0", false);
-          emitI32Literal(load.getLoc(), load.getIndex(), indexSlot);
+          emitSpillIndex(load.getLoc(), load.getStorageKey(), load.getIndex(),
+                         indexSlot);
           emitPush(load.getLoc(), bank->second.slot);
           emitPush(load.getLoc(), indexSlot);
           emitPush(load.getLoc(), result);
@@ -3621,7 +3786,20 @@ private:
     return selected;
   }
 
-  void emitReturnAddress(Location location, StringRef result) {
+  void emitReturnAddress(Location location, StringRef result,
+                         Operation *callSite = nullptr) {
+    if (callSite) {
+      auto cached = cachedReturnAddressSlots.find(callSite);
+      if (cached != cachedReturnAddressSlots.end()) {
+        constexpr uint64_t copyBytes = 20;
+        constexpr uint64_t jumpBytes = 8;
+        uint64_t continuation = address + copyBytes + jumpBytes;
+        addSlot(cached->second, "SystemUInt32", std::to_string(continuation),
+                false);
+        emitCopy(location, cached->second, result);
+        return;
+      }
+    }
     // Udon has no immediate PUSH. Materialize the continuation with a fixed
     // four-byte instruction sequence so its value can account for the exact
     // sequence length without reserving one Udon Heap slot per call site.
@@ -3731,6 +3909,17 @@ private:
                  "SystemInt32.__op_LogicalOr__SystemInt32_SystemInt32__"
                  "SystemInt32");
     }
+  }
+
+  void emitSpillIndex(Location location, StringRef storageKey, unsigned index,
+                      StringRef result) {
+    auto cached =
+        cachedSpillIndexSlots.find(spillIndexCacheKey(storageKey, index));
+    if (cached == cachedSpillIndexSlots.end()) {
+      emitI32Literal(location, index, result);
+      return;
+    }
+    emitCopy(location, cached->second, result);
   }
 
   void emitRawAddress(Location location, uint64_t address, StringRef result) {
@@ -3961,8 +4150,133 @@ private:
     return success();
   }
 
+  void emitRawWordIndex(Location location, StringRef byteAddress,
+                        StringRef result) {
+    std::string shift = immutableSlot("SystemInt32", "2");
+    emitPush(location, byteAddress);
+    emitPush(location, shift);
+    emitPush(location, result);
+    emitExtern(location,
+               "SystemInt32.__op_RightShift__SystemInt32_SystemInt32__"
+               "SystemInt32");
+  }
+
+  void emitPackedByteLoad(Location location, StringRef byteAddress,
+                          StringRef result) {
+    constexpr StringLiteral wordIndex = "__vrc_raw_byte_load_word_index";
+    constexpr StringLiteral byteOffset = "__vrc_raw_byte_load_offset";
+    constexpr StringLiteral shift = "__vrc_raw_byte_load_shift";
+    constexpr StringLiteral word = "__vrc_raw_byte_load_word";
+    constexpr StringLiteral shifted = "__vrc_raw_byte_load_shifted";
+    addSlot(wordIndex, "SystemInt32", "0", false);
+    addSlot(byteOffset, "SystemInt32", "0", false);
+    addSlot(shift, "SystemInt32", "0", false);
+    addSlot(word, "SystemInt32", "0", false);
+    addSlot(shifted, "SystemInt32", "0", false);
+    emitRawWordIndex(location, byteAddress, wordIndex);
+    emitPush(location, byteAddress);
+    emitPush(location, immutableSlot("SystemInt32", "3"));
+    emitPush(location, byteOffset);
+    emitExtern(location,
+               "SystemInt32.__op_LogicalAnd__SystemInt32_SystemInt32__"
+               "SystemInt32");
+    emitPush(location, byteOffset);
+    emitPush(location, immutableSlot("SystemInt32", "3"));
+    emitPush(location, shift);
+    emitExtern(location, "SystemInt32.__op_LeftShift__SystemInt32_SystemInt32__"
+                         "SystemInt32");
+    emitPush(location, rawHeapSlot);
+    emitPush(location, wordIndex);
+    emitPush(location, word);
+    emitExtern(location, "SystemInt32Array.__Get__SystemInt32__SystemInt32");
+    emitPush(location, word);
+    emitPush(location, shift);
+    emitPush(location, shifted);
+    emitExtern(location,
+               "SystemInt32.__op_RightShift__SystemInt32_SystemInt32__"
+               "SystemInt32");
+    emitPush(location, shifted);
+    emitPush(location, immutableSlot("SystemInt32", "255"));
+    emitPush(location, result);
+    emitExtern(location,
+               "SystemInt32.__op_LogicalAnd__SystemInt32_SystemInt32__"
+               "SystemInt32");
+  }
+
+  void emitPackedByteStore(Location location, StringRef byteAddress,
+                           StringRef value) {
+    constexpr StringLiteral wordIndex = "__vrc_raw_byte_store_word_index";
+    constexpr StringLiteral byteOffset = "__vrc_raw_byte_store_offset";
+    constexpr StringLiteral shift = "__vrc_raw_byte_store_shift";
+    constexpr StringLiteral word = "__vrc_raw_byte_store_word";
+    constexpr StringLiteral maskedByte = "__vrc_raw_byte_store_masked_byte";
+    constexpr StringLiteral shiftedByte = "__vrc_raw_byte_store_shifted_byte";
+    constexpr StringLiteral shiftedMask = "__vrc_raw_byte_store_shifted_mask";
+    constexpr StringLiteral inverseMask = "__vrc_raw_byte_store_inverse_mask";
+    constexpr StringLiteral clearedWord = "__vrc_raw_byte_store_cleared_word";
+    constexpr StringLiteral combined = "__vrc_raw_byte_store_combined";
+    for (StringRef slot :
+         {wordIndex, byteOffset, shift, word, maskedByte, shiftedByte,
+          shiftedMask, inverseMask, clearedWord, combined})
+      addSlot(slot, "SystemInt32", "0", false);
+    emitRawWordIndex(location, byteAddress, wordIndex);
+    emitPush(location, byteAddress);
+    emitPush(location, immutableSlot("SystemInt32", "3"));
+    emitPush(location, byteOffset);
+    emitExtern(location,
+               "SystemInt32.__op_LogicalAnd__SystemInt32_SystemInt32__"
+               "SystemInt32");
+    emitPush(location, byteOffset);
+    emitPush(location, immutableSlot("SystemInt32", "3"));
+    emitPush(location, shift);
+    emitExtern(location, "SystemInt32.__op_LeftShift__SystemInt32_SystemInt32__"
+                         "SystemInt32");
+    emitPush(location, rawHeapSlot);
+    emitPush(location, wordIndex);
+    emitPush(location, word);
+    emitExtern(location, "SystemInt32Array.__Get__SystemInt32__SystemInt32");
+    emitPush(location, value);
+    emitPush(location, immutableSlot("SystemInt32", "255"));
+    emitPush(location, maskedByte);
+    emitExtern(location,
+               "SystemInt32.__op_LogicalAnd__SystemInt32_SystemInt32__"
+               "SystemInt32");
+    emitPush(location, maskedByte);
+    emitPush(location, shift);
+    emitPush(location, shiftedByte);
+    emitExtern(location, "SystemInt32.__op_LeftShift__SystemInt32_SystemInt32__"
+                         "SystemInt32");
+    emitPush(location, immutableSlot("SystemInt32", "255"));
+    emitPush(location, shift);
+    emitPush(location, shiftedMask);
+    emitExtern(location, "SystemInt32.__op_LeftShift__SystemInt32_SystemInt32__"
+                         "SystemInt32");
+    emitPush(location, shiftedMask);
+    emitPush(location, immutableSlot("SystemInt32", "-1"));
+    emitPush(location, inverseMask);
+    emitExtern(location,
+               "SystemInt32.__op_LogicalXor__SystemInt32_SystemInt32__"
+               "SystemInt32");
+    emitPush(location, word);
+    emitPush(location, inverseMask);
+    emitPush(location, clearedWord);
+    emitExtern(location,
+               "SystemInt32.__op_LogicalAnd__SystemInt32_SystemInt32__"
+               "SystemInt32");
+    emitPush(location, clearedWord);
+    emitPush(location, shiftedByte);
+    emitPush(location, combined);
+    emitExtern(location, "SystemInt32.__op_LogicalOr__SystemInt32_SystemInt32__"
+                         "SystemInt32");
+    emitPush(location, rawHeapSlot);
+    emitPush(location, wordIndex);
+    emitPush(location, combined);
+    emitExtern(location,
+               "SystemInt32Array.__Set__SystemInt32_SystemInt32__SystemVoid");
+  }
+
   LogicalResult emitRawLoad(Location location, StringRef pointer,
-                            StringRef result, Type type) {
+                            StringRef result, Type type, uint64_t alignment) {
     if (!type.isInteger(1) && !type.isInteger(8) && !type.isInteger(16) &&
         !type.isInteger(32) && !type.isInteger(64) && !type.isF32() &&
         !isa<host::PtrType, runtime::BufferType, runtime::EventType,
@@ -3974,6 +4288,28 @@ private:
                          : type.isInteger(16) ? 2
                          : wide               ? 8
                                               : 4;
+    bool wordType = type.isInteger(32) || type.isF32() ||
+                    isa<host::PtrType, runtime::BufferType, runtime::EventType,
+                        runtime::DispatchDescType>(type);
+    if (alignment >= 4 && wordType) {
+      constexpr StringLiteral wordIndex = "__vrc_raw_load_word_index";
+      constexpr StringLiteral word = "__vrc_raw_load_word";
+      addSlot(wordIndex, "SystemInt32", "0", false);
+      addSlot(word, "SystemInt32", "0", false);
+      emitRawWordIndex(location, pointer, wordIndex);
+      emitPush(location, rawHeapSlot);
+      emitPush(location, wordIndex);
+      emitPush(location, type.isF32() ? word : result);
+      emitExtern(location, "SystemInt32Array.__Get__SystemInt32__SystemInt32");
+      if (type.isF32()) {
+        emitPush(location, word);
+        emitPush(location, result);
+        emitExtern(location,
+                   "SystemBitConverter.__Int32BitsToSingle__SystemInt32__"
+                   "SystemSingle");
+      }
+      return success();
+    }
     std::string prefix =
         wide ? "__vrc_raw_load_i64_scratch" : "__vrc_raw_load_i32_scratch";
     std::string bits = wide ? "__vrc_i64_scratch_0" : prefix + "_bits";
@@ -4001,10 +4337,7 @@ private:
       }
       std::string byte = scratchByte;
       addSlot(byte, "SystemInt32", "0", false);
-      emitPush(location, rawHeapSlot);
-      emitPush(location, index);
-      emitPush(location, byte);
-      emitExtern(location, "SystemInt32Array.__Get__SystemInt32__SystemInt32");
+      emitPackedByteLoad(location, index, byte);
       std::string component = byte;
       if (wide) {
         component = scratchWide;
@@ -4065,15 +4398,8 @@ private:
     return success();
   }
 
-  bool isFastRawGlobalAccess(Value pointer, Type type) const {
-    if (!type.isInteger(32) && !isa<host::PtrType>(type))
-      return false;
-    auto address = pointer.getDefiningOp<host::AddressOfOp>();
-    return address && fastRawGlobals.contains(address.getGlobal());
-  }
-
   LogicalResult emitRawStore(Location location, StringRef pointer,
-                             StringRef value, Type type) {
+                             StringRef value, Type type, uint64_t alignment) {
     if (!type.isInteger(1) && !type.isInteger(8) && !type.isInteger(16) &&
         !type.isInteger(32) && !type.isInteger(64) && !type.isF32() &&
         !isa<host::PtrType, runtime::BufferType, runtime::EventType,
@@ -4085,6 +4411,31 @@ private:
                          : type.isInteger(16) ? 2
                          : wide               ? 8
                                               : 4;
+    bool wordType = type.isInteger(32) || type.isF32() ||
+                    isa<host::PtrType, runtime::BufferType, runtime::EventType,
+                        runtime::DispatchDescType>(type);
+    if (alignment >= 4 && wordType) {
+      constexpr StringLiteral wordIndex = "__vrc_raw_store_word_index";
+      constexpr StringLiteral word = "__vrc_raw_store_word";
+      addSlot(wordIndex, "SystemInt32", "0", false);
+      addSlot(word, "SystemInt32", "0", false);
+      emitRawWordIndex(location, pointer, wordIndex);
+      StringRef stored = value;
+      if (type.isF32()) {
+        emitPush(location, value);
+        emitPush(location, word);
+        emitExtern(location,
+                   "SystemBitConverter.__SingleToInt32Bits__SystemSingle__"
+                   "SystemInt32");
+        stored = word;
+      }
+      emitPush(location, rawHeapSlot);
+      emitPush(location, wordIndex);
+      emitPush(location, stored);
+      emitExtern(location,
+                 "SystemInt32Array.__Set__SystemInt32_SystemInt32__SystemVoid");
+      return success();
+    }
     std::string prefix =
         wide ? "__vrc_raw_store_i64_scratch" : "__vrc_raw_store_i32_scratch";
     std::string bits = wide ? "__vrc_i64_scratch_0" : prefix + "_bits";
@@ -4171,43 +4522,68 @@ private:
                    "SystemInt32.__op_Addition__SystemInt32_SystemInt32__"
                    "SystemInt32");
       }
-      emitPush(location, rawHeapSlot);
-      emitPush(location, index);
-      emitPush(location, byte);
-      emitExtern(location,
-                 "SystemInt32Array.__Set__SystemInt32_SystemInt32__SystemVoid");
+      emitPackedByteStore(location, index, byte);
     }
     return success();
   }
 
   void emitRawMemcpy(Location location, StringRef destination, StringRef source,
                      StringRef byteCount) {
-    // The raw heap stores one logical byte per Int32 array element, so raw
-    // pointers and byte counts are already valid Array.Copy element indices.
-    // Using the SDK's range-copy extern avoids emitting an interpreted Udon
-    // loop for every C aggregate copy.
-    emitPush(location, rawHeapSlot);
-    emitPush(location, source);
-    emitPush(location, rawHeapSlot);
-    emitPush(location, destination);
+    constexpr StringLiteral counter = "__vrc_raw_memcpy_counter";
+    constexpr StringLiteral zero = "__vrc_raw_memcpy_zero";
+    constexpr StringLiteral one = "__vrc_raw_memcpy_one";
+    constexpr StringLiteral condition = "__vrc_raw_memcpy_condition";
+    constexpr StringLiteral sourceIndex = "__vrc_raw_memcpy_source_index";
+    constexpr StringLiteral destinationIndex =
+        "__vrc_raw_memcpy_destination_index";
+    constexpr StringLiteral byte = "__vrc_raw_memcpy_byte";
+    constexpr StringLiteral next = "__vrc_raw_memcpy_next";
+    addSlot(counter, "SystemInt32", "0", false);
+    addSlot(zero, "SystemInt32", "0", false);
+    addSlot(one, "SystemInt32", "1", false);
+    addSlot(condition, "SystemBoolean", "null", false);
+    addSlot(sourceIndex, "SystemInt32", "0", false);
+    addSlot(destinationIndex, "SystemInt32", "0", false);
+    addSlot(byte, "SystemInt32", "0", false);
+    addSlot(next, "SystemInt32", "0", false);
+    emitCopy(location, zero, counter);
+    uint64_t loopAddress = address;
+    emitPush(location, counter);
     emitPush(location, byteCount);
-    emitExtern(location,
-               "SystemArray.__Copy__SystemArray_SystemInt32_SystemArray_"
-               "SystemInt32_SystemInt32__SystemVoid");
+    emitPush(location, condition);
+    emitExtern(location, "SystemInt32.__op_LessThan__SystemInt32_SystemInt32__"
+                         "SystemBoolean");
+    emitPush(location, condition);
+    Operation *done =
+        create(location, vm::JumpIfFalseOp::getOperationName(),
+               {builder.getNamedAttr("target", builder.getI64IntegerAttr(0))});
+    address += 8;
+    emitPush(location, source);
+    emitPush(location, counter);
+    emitPush(location, sourceIndex);
+    emitExtern(location, "SystemInt32.__op_Addition__SystemInt32_SystemInt32__"
+                         "SystemInt32");
+    emitPush(location, destination);
+    emitPush(location, counter);
+    emitPush(location, destinationIndex);
+    emitExtern(location, "SystemInt32.__op_Addition__SystemInt32_SystemInt32__"
+                         "SystemInt32");
+    emitPackedByteLoad(location, sourceIndex, byte);
+    emitPackedByteStore(location, destinationIndex, byte);
+    emitPush(location, counter);
+    emitPush(location, one);
+    emitPush(location, next);
+    emitExtern(location, "SystemInt32.__op_Addition__SystemInt32_SystemInt32__"
+                         "SystemInt32");
+    emitCopy(location, next, counter);
+    emitJump(location, static_cast<int64_t>(loopAddress));
+    done->setAttr("target",
+                  builder.getI64IntegerAttr(static_cast<int64_t>(address)));
   }
 
   void emitRawMemset(Location location, StringRef destination,
                      StringRef byteValue, StringRef byteCount, bool isZero) {
-    if (isZero) {
-      emitPush(location, rawHeapSlot);
-      emitPush(location, destination);
-      emitPush(location, byteCount);
-      emitExtern(location,
-                 "SystemArray.__Clear__SystemArray_SystemInt32_SystemInt32__"
-                 "SystemVoid");
-      return;
-    }
-
+    (void)isZero;
     constexpr StringLiteral counter = "__vrc_raw_memset_scratch_counter";
     constexpr StringLiteral zero = "__vrc_raw_memset_scratch_zero";
     constexpr StringLiteral one = "__vrc_raw_memset_scratch_one";
@@ -4237,11 +4613,7 @@ private:
     emitPush(location, index);
     emitExtern(location, "SystemInt32.__op_Addition__SystemInt32_SystemInt32__"
                          "SystemInt32");
-    emitPush(location, rawHeapSlot);
-    emitPush(location, index);
-    emitPush(location, byteValue);
-    emitExtern(location,
-               "SystemInt32Array.__Set__SystemInt32_SystemInt32__SystemVoid");
+    emitPackedByteStore(location, index, byteValue);
     emitPush(location, counter);
     emitPush(location, one);
     emitPush(location, next);
@@ -4291,12 +4663,7 @@ private:
         for (int8_t byte : initial->second.asArrayRef()) {
           if (byte) {
             emitByteLiteral(location, static_cast<uint8_t>(byte), rawValueSlot);
-            emitPush(location, rawHeapSlot);
-            emitPush(location, rawIndexSlot);
-            emitPush(location, rawValueSlot);
-            emitExtern(
-                location,
-                "SystemInt32Array.__Set__SystemInt32_SystemInt32__SystemVoid");
+            emitPackedByteStore(location, rawIndexSlot, rawValueSlot);
           }
           emitPush(location, rawIndexSlot);
           emitPush(location, rawOneSlot);
@@ -4460,17 +4827,21 @@ private:
   unsigned sharedConstantIndex = 0;
   llvm::StringMap<uint64_t> rawGlobalBases;
   llvm::StringMap<DenseI8ArrayAttr> rawGlobalInitializers;
+  SmallVector<std::pair<std::string, unsigned>> rawAddressCandidates;
   llvm::StringMap<std::string> cachedRawGlobalSlots;
   SmallVector<std::pair<uint64_t, std::string>> cachedRawGlobalBases;
-  llvm::StringSet<> fastRawGlobals;
+  llvm::StringMap<std::string> cachedSpillIndexSlots;
+  llvm::DenseMap<Operation *, std::string> cachedReturnAddressSlots;
   llvm::DenseMap<Operation *, uint64_t> rawAllocaBases;
   SmallVector<RawObjectPlan> rawObjects;
   SmallVector<UnityBufferPoolEntry> unityBufferPool;
   uint64_t rawHeapBytes = 0;
   unsigned materializationLimit = 0;
   unsigned rawAddressCacheLimit = 0;
+  bool enforceCapacity = true;
   unsigned requestedScalarRegisterBudget = 16;
   unsigned minimumScalarRegisterCount = 16;
+  unsigned plannedSpillIndexCount = 0;
   bool externalRawHeapInitialization = false;
   bool typedSpillsInserted = false;
   SmallVector<std::pair<Operation *, func::FuncOp>> callRelocations;
@@ -4521,7 +4892,9 @@ struct LowerUdonHLToUdonAsmPass
     auto probe = [&](unsigned materializationLimit) -> FailureOr<unsigned> {
       Operation *cloned = getOperation()->clone();
       ModuleOp module = cast<ModuleOp>(cloned);
-      if (failed(ScalarLowering(module, materializationLimit, 0).run())) {
+      if (failed(ScalarLowering(module, materializationLimit, 0,
+                                /*enforceCapacity=*/false)
+                     .run())) {
         cloned->erase();
         return failure();
       }

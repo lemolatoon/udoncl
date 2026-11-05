@@ -14,6 +14,7 @@
 #include "mlir/Transforms/Passes.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/DerivedTypes.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/Support/SourceMgr.h"
 using namespace mlir;
@@ -559,6 +560,20 @@ OwningOpRef<ModuleOp> importCBoundary(llvm::StringRef hostFile,
                    "pointer/index layout");
         return {};
       }
+    }
+    // Clang lowers source annotations to this appending metadata global.  The
+    // Unity-library frontend consumes udoncl.export before import; the older
+    // paired Host/Device boundary has an explicit export contract and must
+    // discard the same metadata rather than recover it as program memory.
+    if (auto *annotations = input->getNamedGlobal("llvm.global.annotations"))
+      annotations->eraseFromParent();
+    for (llvm::GlobalVariable &global :
+         llvm::make_early_inc_range(input->globals())) {
+      if (global.getSection() != "llvm.metadata")
+        continue;
+      global.removeDeadConstantUsers();
+      if (global.use_empty())
+        global.eraseFromParent();
     }
     auto imported = importLLVM(std::move(input), context);
     if (!imported)

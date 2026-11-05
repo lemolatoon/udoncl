@@ -341,17 +341,20 @@ def wait_for_instance_reconnect(client: McpClient, timeout=600):
     )
 
 
-def start_unity_tests(client: McpClient):
+def start_unity_tests(client: McpClient, test_names=()):
     for reconnect_attempt in range(3):
         try:
+            arguments = {
+                "mode": "EditMode",
+                "assembly_names": [TEST_ASSEMBLY],
+                "include_failed_tests": True,
+                "include_details": True,
+            }
+            if test_names:
+                arguments["test_names"] = list(test_names)
             return client.tool(
                 "run_tests",
-                {
-                    "mode": "EditMode",
-                    "assembly_names": [TEST_ASSEMBLY],
-                    "include_failed_tests": True,
-                    "include_details": True,
-                },
+                arguments,
                 timeout=300,
             )
         except RuntimeError as error:
@@ -365,7 +368,7 @@ def start_unity_tests(client: McpClient):
     raise AssertionError("unreachable")
 
 
-def validate_test_payload(payload):
+def validate_test_payload(payload, require_lowering=True):
     data = payload.get("data", payload)
     if data.get("status") != "succeeded":
         raise RuntimeError(f"Unity tests did not succeed: {payload}")
@@ -377,6 +380,8 @@ def validate_test_payload(payload):
     skipped = int(summary.get("skipped", -1))
     if total <= 0 or passed != total or failed != 0 or skipped != 0:
         raise RuntimeError(f"Unity test summary is not clean: {summary}")
+    if not require_lowering:
+        return total
     results = result.get("results") or []
     observed = {
         method: sum(
@@ -491,7 +496,15 @@ def wait_for_test_job(client: McpClient, job_id: str, timeout=1260):
     raise TimeoutError(f"Unity test job did not finish: {last_error}")
 
 
-def run_unity_mcp_gate(root, unity, project, build, output):
+def run_unity_mcp_gate(
+    root,
+    unity,
+    project,
+    build,
+    output,
+    test_names=(),
+    mnist_artifact=None,
+):
     require_unity_mcp(project)
     output.mkdir(parents=True, exist_ok=True)
     status_dir = output / "mcp-status"
@@ -504,8 +517,12 @@ def run_unity_mcp_gate(root, unity, project, build, output):
     serialized = project / "Assets/SerializedUdonPrograms"
     sample_validation = project / "Assets/UdonclSampleValidation"
     sample_validation_meta = sample_validation.with_suffix(".meta")
+    validation_scene = project / "Assets/UdonclValidationScene.unity"
+    validation_scene_meta = validation_scene.with_suffix(".unity.meta")
     if sample_validation.exists() or sample_validation_meta.exists():
         raise RuntimeError(f"Unity sample validation path already exists: {sample_validation}")
+    if validation_scene.exists() or validation_scene_meta.exists():
+        raise RuntimeError(f"Unity validation scene path already exists: {validation_scene}")
     generated_before = tree_snapshot(generated)
     serialized_before = tree_snapshot(serialized)
     unity_library = prepare_cmake_unity_library(build)
@@ -548,8 +565,10 @@ def run_unity_mcp_gate(root, unity, project, build, output):
             "UDONCL_UNITY_LIBRARY_ARTIFACT": str(unity_library),
             "UDONCL_PUBLIC_MNIST_UNITY_BUNDLE": str(
                 (
-                    build
-                    / "tests/cmake-package/onnx-consumer/udoncl/onnx-host-link-probe/artifact"
+                    mnist_artifact
+                    if mnist_artifact is not None
+                    else build
+                    / "tests/cmake-package/onnx-mnist-consumer/udoncl/onnx-mnist/artifact"
                 ).resolve()
             ),
             "UDONCL_PUBLIC_TRANSFORMER_UNITY_BUNDLE": str(
@@ -596,6 +615,8 @@ def run_unity_mcp_gate(root, unity, project, build, output):
     unity_log = output / "unity.log"
     unity_process = None
     client = None
+    passed = 0
+    failure = None
     try:
         sample_validation.mkdir()
         sample_sources = sorted(
@@ -648,14 +669,40 @@ def run_unity_mcp_gate(root, unity, project, build, output):
             "execute_menu_item",
             {
                 "menu_path": (
+                    "Tools/udoncl/Internal/Prepare Public MNIST Validation"
+                )
+            },
+            timeout=300,
+        )
+        instance = wait_for_instance_reconnect(client, timeout=600)
+        client.tool(
+            "execute_menu_item",
+            {
+                "menu_path": (
+                    "Tools/udoncl/Internal/Prepare Public MNIST Controller Validation"
+                )
+            },
+            timeout=300,
+        )
+        instance = wait_for_instance_reconnect(client, timeout=600)
+        client.tool(
+            "execute_menu_item",
+            {
+                "menu_path": (
                     "Tools/udoncl/Internal/Prepare Packaged Example Validation"
                 )
             },
             timeout=300,
         )
         instance = wait_for_instance_reconnect(client, timeout=600)
+        client.tool(
+            "execute_menu_item",
+            {"menu_path": "Tools/udoncl/Internal/Ensure Validation Scene Saved"},
+            timeout=300,
+        )
+        wait_for_editor(client)
         for attempt in range(4):
-            started = start_unity_tests(client)
+            started = start_unity_tests(client, test_names)
             job_id = (started.get("data") or started).get("job_id")
             if not job_id:
                 raise RuntimeError(f"Unity MCP did not return a test job id: {started}")
@@ -679,7 +726,6 @@ def run_unity_mcp_gate(root, unity, project, build, output):
         (output / "unity-mcp-results.json").write_text(
             json.dumps(finished, indent=2) + "\n", encoding="utf-8"
         )
-        passed = validate_test_payload(finished)
         wait_for_editor(client)
         console = client.tool(
             "read_console",
@@ -707,6 +753,9 @@ def run_unity_mcp_gate(root, unity, project, build, output):
             messages = unity_console_messages(console)
         if messages:
             raise RuntimeError(f"Unity console contains {len(messages)} error(s): {messages}")
+        passed = validate_test_payload(finished, require_lowering=not test_names)
+    except Exception as error:
+        failure = error
     finally:
         if client is not None:
             client.close()
@@ -717,7 +766,12 @@ def run_unity_mcp_gate(root, unity, project, build, output):
             except subprocess.TimeoutExpired:
                 unity_process.kill()
                 unity_process.wait(timeout=30)
-        for program_name in ("hello_dispatch", "saxpy_demo", "average_pooling"):
+        for program_name in (
+            "hello_dispatch",
+            "saxpy_demo",
+            "average_pooling",
+            "generic_onnx_mnist",
+        ):
             program_root = generated / program_name
             shutil.rmtree(program_root, ignore_errors=True)
             program_root.with_suffix(".meta").unlink(missing_ok=True)
@@ -743,13 +797,19 @@ def run_unity_mcp_gate(root, unity, project, build, output):
             lock_path.write_bytes(lock_original)
         shutil.rmtree(sample_validation, ignore_errors=True)
         sample_validation_meta.unlink(missing_ok=True)
+        validation_scene.unlink(missing_ok=True)
+        validation_scene_meta.unlink(missing_ok=True)
     leaked = project / "Library/UdonclLoweringIntegration"
     if leaked.exists():
         raise RuntimeError(f"Unity lowering fixture leaked its setup directory: {leaked}")
     if sample_validation.exists() or sample_validation_meta.exists():
         raise RuntimeError("Unity sample validation source was not cleaned up")
+    if validation_scene.exists() or validation_scene_meta.exists():
+        raise RuntimeError("Unity validation scene was not cleaned up")
     if tree_snapshot(generated) != generated_before or tree_snapshot(serialized) != serialized_before:
         raise RuntimeError("Unity tests changed lifecycle-managed assets")
+    if failure is not None:
+        raise failure.with_traceback(failure.__traceback__)
     print(f"unity_mcp_tests=passed tests={passed} cleanup=passed")
 
 
@@ -771,6 +831,22 @@ def main():
     )
     parser.add_argument("--build-dir", type=Path, default=root / "build/udoncl")
     parser.add_argument("--output", type=Path, default=root / "build/precommit")
+    parser.add_argument(
+        "--unity-only",
+        action="store_true",
+        help="run only the MCP-driven Unity gate without the native pre-commit steps",
+    )
+    parser.add_argument(
+        "--unity-test",
+        action="append",
+        default=[],
+        help="fully qualified Unity test name; may be repeated",
+    )
+    parser.add_argument(
+        "--mnist-artifact",
+        type=Path,
+        help="override the public C++ ONNX MNIST Unity artifact",
+    )
     args = parser.parse_args()
     if args.unity is None:
         parser.error("set UNITY_EDITOR_PATH in .env or pass --unity")
@@ -780,48 +856,61 @@ def main():
     project = args.project.resolve()
     if not unity.is_file():
         parser.error(f"Unity executable does not exist: {unity}")
-    staged = subprocess.check_output(
-        ["git", "diff", "--cached", "--name-only", "-z"], cwd=root
-    ).decode("utf-8").rstrip("\0").split("\0")
-    staged = [path for path in staged if path]
-    if not staged:
-        parser.error("stage the intended commit before running the pre-commit gate")
-    run([sys.executable, root / "scripts/validate_vpm_package.py"], cwd=root)
+    staged = []
     ensure_cmake_toolchain_on_path()
     ensure_msvc_environment(args.build_dir.resolve())
-    run(
-        [
-            sys.executable,
-            root / "scripts/build.py",
-            "--build-dir",
-            args.build_dir.resolve(),
-        ],
-        cwd=root,
-    )
-    run(
-        [
-            "ctest",
-            "--test-dir",
-            args.build_dir.resolve(),
-            "--output-on-failure",
-            "-j",
-            "1",
-        ],
-        cwd=root,
-    )
-    run(
-        [
-            sys.executable,
-            root / "tests/boundary/md_crystal.py",
-            args.build_dir.resolve(),
-            args.output.resolve() / "md-crystal",
-        ],
-        cwd=root,
-        timeout=1200,
-    )
+    if not args.unity_only:
+        staged = subprocess.check_output(
+            ["git", "diff", "--cached", "--name-only", "-z"], cwd=root
+        ).decode("utf-8").rstrip("\0").split("\0")
+        staged = [path for path in staged if path]
+        if not staged:
+            parser.error("stage the intended commit before running the pre-commit gate")
+        run([sys.executable, root / "scripts/validate_vpm_package.py"], cwd=root)
+        run(
+            [
+                sys.executable,
+                root / "scripts/build.py",
+                "--build-dir",
+                args.build_dir.resolve(),
+            ],
+            cwd=root,
+        )
+        run(
+            [
+                "ctest",
+                "--test-dir",
+                args.build_dir.resolve(),
+                "--output-on-failure",
+                "-j",
+                "1",
+            ],
+            cwd=root,
+        )
+        run(
+            [
+                sys.executable,
+                root / "tests/boundary/md_crystal.py",
+                args.build_dir.resolve(),
+                args.output.resolve() / "md-crystal",
+            ],
+            cwd=root,
+            timeout=1200,
+        )
     run_unity_mcp_gate(
-        root, unity, project, args.build_dir.resolve(), args.output.resolve()
+        root,
+        unity,
+        project,
+        args.build_dir.resolve(),
+        args.output.resolve(),
+        test_names=args.unity_test,
+        mnist_artifact=(
+            args.mnist_artifact.resolve() if args.mnist_artifact else None
+        ),
     )
+    if args.unity_only:
+        print("unity_validation=passed")
+        return
     run([sys.executable, root / "scripts/format.py"], cwd=root)
     restage_original_paths(root, staged)
     run([sys.executable, root / "scripts/format.py", "--check"], cwd=root)

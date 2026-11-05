@@ -15,6 +15,8 @@ StringRef providerFor(StringRef operation, StringRef domain,
   if (operation == "Custom") {
     if (domain == "com.microsoft" && functionName == "MatMulNBits")
       return "udononnxMatMulNBits";
+    if (domain == "com.lemolatoon.udoncl" && functionName == "RmsNorm")
+      return "udonatenRmsNorm";
     return {};
   }
   if (!domain.empty())
@@ -136,9 +138,12 @@ LogicalResult lowerONNXToUdonHost(ModuleOp module) {
                       << (domain.empty() ? "" : " in domain ") << domain;
       return failure();
     }
-    std::string provider = concreteProvider(family, operation);
-    std::string symbol =
-        "__udon_onnx_" + operation.lower() + "_" + std::to_string(thunkIndex++);
+    StringRef semanticOperation = operation == "Custom" && !functionName.empty()
+                                      ? functionName
+                                      : operation;
+    std::string provider = concreteProvider(family, semanticOperation);
+    std::string symbol = "__udon_onnx_" + semanticOperation.lower() + "_" +
+                         std::to_string(thunkIndex++);
     auto functionType =
         builder.getFunctionType(op->getOperandTypes(), op->getResultTypes());
     OpBuilder::InsertionGuard guard(builder);
@@ -148,7 +153,7 @@ LogicalResult lowerONNXToUdonHost(ModuleOp module) {
     declaration.setPrivate();
     declaration->setAttr("udon.onnx.provider", builder.getStringAttr(provider));
     declaration->setAttr("udon.onnx.operation",
-                         builder.getStringAttr(operation));
+                         builder.getStringAttr(semanticOperation));
     if (!domain.empty())
       declaration->setAttr("udon.onnx.domain", builder.getStringAttr(domain));
     builder.setInsertionPoint(op);

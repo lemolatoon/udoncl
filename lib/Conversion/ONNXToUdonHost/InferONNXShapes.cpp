@@ -1,10 +1,13 @@
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassRegistry.h"
+#include "src/Dialect/ONNX/ElementsAttr/DisposableElementsAttr.hpp"
 #include "src/Interface/ResultTypeInferenceOpInterface.hpp"
 #include "llvm/ADT/StringSwitch.h"
 
+#include <algorithm>
 #include <optional>
 
 using namespace mlir;
@@ -52,6 +55,24 @@ bool inferMatMulNBits(Operation *op) {
   return true;
 }
 
+bool inferRmsNorm(Operation *op) {
+  if (op->getName().getStringRef() != "onnx.Custom" ||
+      op->getNumOperands() < 1 || op->getNumResults() != 1)
+    return false;
+  auto domain = op->getAttrOfType<StringAttr>("domain_name");
+  auto function = op->getAttrOfType<StringAttr>("function_name");
+  auto input = dyn_cast<RankedTensorType>(op->getOperand(0).getType());
+  if (!domain || domain.getValue() != "com.lemolatoon.udoncl" || !function ||
+      function.getValue() != "RmsNorm" || !input)
+    return false;
+  Type inferred =
+      RankedTensorType::get(input.getShape(), input.getElementType());
+  if (!isBetterShapedType(op->getResult(0).getType(), inferred))
+    return false;
+  op->getResult(0).setType(inferred);
+  return true;
+}
+
 std::optional<SmallVector<int64_t>> broadcastShape(Operation *op) {
   SmallVector<int64_t> shape;
   for (Value operand : op->getOperands()) {
@@ -79,6 +100,93 @@ std::optional<SmallVector<int64_t>> broadcastShape(Operation *op) {
     shape = std::move(merged);
   }
   return shape;
+}
+
+std::optional<SmallVector<int64_t>> evaluateIntegerTensor(Value value,
+                                                          unsigned depth = 0) {
+  if (depth > 64)
+    return std::nullopt;
+  Operation *op = value.getDefiningOp();
+  if (!op)
+    return std::nullopt;
+  StringRef name = op->getName().getStringRef();
+  if (name == "onnx.Constant" || name == "arith.constant") {
+    auto dense = op->getAttrOfType<DenseElementsAttr>("value");
+    if (!dense)
+      if (auto disposable = op->getAttrOfType<DisposableElementsAttr>("value"))
+        if (isa<IntegerType>(disposable.getElementType()))
+          dense = disposable.toDenseElementsAttr();
+    if (!dense || !isa<IntegerType>(dense.getElementType()))
+      return std::nullopt;
+    SmallVector<int64_t> result;
+    for (APInt integer : dense.getValues<APInt>())
+      result.push_back(integer.getSExtValue());
+    return result;
+  }
+  if (name == "onnx.Dim" && op->getNumOperands() == 1) {
+    auto input = dyn_cast<RankedTensorType>(op->getOperand(0).getType());
+    auto axis = op->getAttrOfType<IntegerAttr>("axis");
+    if (!input || !axis)
+      return std::nullopt;
+    int64_t index = axis.getInt();
+    if (index < 0)
+      index += input.getRank();
+    if (index < 0 || index >= input.getRank() || input.isDynamicDim(index))
+      return std::nullopt;
+    return SmallVector<int64_t>{input.getDimSize(index)};
+  }
+  if (name == "onnx.Shape" && op->getNumOperands() == 1) {
+    auto input = dyn_cast<RankedTensorType>(op->getOperand(0).getType());
+    if (!input || !input.hasStaticShape())
+      return std::nullopt;
+    int64_t start = 0;
+    int64_t end = input.getRank();
+    if (auto attribute = op->getAttrOfType<IntegerAttr>("start"))
+      start = attribute.getInt();
+    if (auto attribute = op->getAttrOfType<IntegerAttr>("end"))
+      end = attribute.getInt();
+    if (start < 0)
+      start += input.getRank();
+    if (end < 0)
+      end += input.getRank();
+    start = std::clamp<int64_t>(start, 0, input.getRank());
+    end = std::clamp<int64_t>(end, start, input.getRank());
+    return SmallVector<int64_t>(input.getShape().slice(start, end - start));
+  }
+  if (name == "onnx.Gather" && op->getNumOperands() == 2 &&
+      (!op->getAttrOfType<IntegerAttr>("axis") ||
+       op->getAttrOfType<IntegerAttr>("axis").getInt() == 0)) {
+    auto data = evaluateIntegerTensor(op->getOperand(0), depth + 1);
+    auto indices = evaluateIntegerTensor(op->getOperand(1), depth + 1);
+    if (!data || !indices)
+      return std::nullopt;
+    SmallVector<int64_t> result;
+    for (int64_t index : *indices) {
+      if (index < 0)
+        index += data->size();
+      if (index < 0 || index >= static_cast<int64_t>(data->size()))
+        return std::nullopt;
+      result.push_back((*data)[index]);
+    }
+    return result;
+  }
+  if ((name == "onnx.Unsqueeze" || name == "onnx.Squeeze" ||
+       name == "onnx.Identity" || name == "onnx.Cast") &&
+      op->getNumOperands() >= 1)
+    return evaluateIntegerTensor(op->getOperand(0), depth + 1);
+  if (name == "onnx.Concat" &&
+      (!op->getAttrOfType<IntegerAttr>("axis") ||
+       op->getAttrOfType<IntegerAttr>("axis").getInt() == 0)) {
+    SmallVector<int64_t> result;
+    for (Value operand : op->getOperands()) {
+      auto values = evaluateIntegerTensor(operand, depth + 1);
+      if (!values)
+        return std::nullopt;
+      llvm::append_range(result, *values);
+    }
+    return result;
+  }
+  return std::nullopt;
 }
 
 std::optional<Type> inferGenericResultType(Operation *op) {
@@ -123,8 +231,25 @@ std::optional<Type> inferGenericResultType(Operation *op) {
     auto left = rankedOperand(0);
     auto right = rankedOperand(1);
     if (left && right && left.getRank() >= 2 && right.getRank() >= 2) {
+      if (right.getRank() == 2) {
+        SmallVector<int64_t> shape(left.getShape());
+        shape.back() = right.getDimSize(1);
+        return RankedTensorType::get(shape, current.getElementType());
+      }
       int64_t rank = std::max(left.getRank(), right.getRank());
       SmallVector<int64_t> shape(rank, ShapedType::kDynamic);
+      int64_t leftOffset = rank - left.getRank();
+      int64_t rightOffset = rank - right.getRank();
+      for (int64_t axis = 0; axis < rank - 2; ++axis) {
+        int64_t leftDimension =
+            axis < leftOffset ? 1 : left.getDimSize(axis - leftOffset);
+        int64_t rightDimension =
+            axis < rightOffset ? 1 : right.getDimSize(axis - rightOffset);
+        if (leftDimension == 1)
+          shape[axis] = rightDimension;
+        else if (rightDimension == 1 || leftDimension == rightDimension)
+          shape[axis] = leftDimension;
+      }
       shape[rank - 2] = left.getDimSize(left.getRank() - 2);
       shape[rank - 1] = right.getDimSize(right.getRank() - 1);
       return RankedTensorType::get(shape, current.getElementType());
@@ -157,6 +282,37 @@ std::optional<Type> inferGenericResultType(Operation *op) {
       return dynamicTensor(rank);
   }
   if (name == "Reshape" || name == "Expand") {
+    if (op->getNumOperands() >= 2)
+      if (auto dimensions = evaluateIntegerTensor(op->getOperand(1))) {
+        SmallVector<int64_t> shape(*dimensions);
+        auto input = rankedOperand(0);
+        int64_t inferredIndex = -1;
+        int64_t knownElements = 1;
+        for (auto [index, dimension] : llvm::enumerate(shape)) {
+          auto allowZero = op->getAttrOfType<IntegerAttr>("allowzero");
+          if (dimension == 0 && name == "Reshape" && input &&
+              index < static_cast<size_t>(input.getRank()) &&
+              (!allowZero || allowZero.getInt() == 0))
+            dimension = input.getDimSize(index);
+          shape[index] = dimension;
+          if (dimension == -1) {
+            if (inferredIndex >= 0)
+              return std::nullopt;
+            inferredIndex = index;
+          } else if (dimension < 0) {
+            return std::nullopt;
+          } else {
+            knownElements *= dimension;
+          }
+        }
+        if (inferredIndex >= 0 && input && input.hasStaticShape() &&
+            knownElements > 0 && input.getNumElements() % knownElements == 0)
+          shape[inferredIndex] = input.getNumElements() / knownElements;
+        if (llvm::none_of(shape, [](int64_t dimension) {
+              return ShapedType::isDynamic(dimension);
+            }))
+          return RankedTensorType::get(shape, current.getElementType());
+      }
     auto shape = rankedOperand(1);
     if (shape && shape.getRank() == 1 &&
         !ShapedType::isDynamic(shape.getDimSize(0)))
@@ -240,20 +396,50 @@ struct InferONNXShapesPass
 
   void runOnOperation() override {
     ModuleOp module = getOperation();
+    auto materializeShapeValues = [&] {
+      SmallVector<Operation *> erase;
+      module.walk([&](Operation *op) {
+        if (!op->getName().getStringRef().starts_with("onnx.") ||
+            op->getName().getStringRef() == "onnx.Constant" ||
+            op->getNumResults() != 1)
+          return;
+        auto type = dyn_cast<RankedTensorType>(op->getResult(0).getType());
+        if (!type || !type.hasStaticShape() ||
+            !isa<IntegerType>(type.getElementType()))
+          return;
+        auto values = evaluateIntegerTensor(op->getResult(0));
+        if (!values ||
+            values->size() != static_cast<size_t>(type.getNumElements()))
+          return;
+        unsigned width = type.getElementTypeBitWidth();
+        SmallVector<APInt> integers;
+        for (int64_t value : *values)
+          integers.emplace_back(width, value, true);
+        OpBuilder builder(op);
+        Value constant = builder.create<arith::ConstantOp>(
+            op->getLoc(), DenseElementsAttr::get(type, integers));
+        op->getResult(0).replaceAllUsesWith(constant);
+        erase.push_back(op);
+      });
+      for (Operation *op : llvm::reverse(erase))
+        op->erase();
+    };
     auto updateFunctionResults = [&] {
       for (auto function : module.getOps<func::FuncOp>()) {
         if (function.isDeclaration())
           continue;
-        func::ReturnOp returnOp;
-        function.walk([&](func::ReturnOp candidate) {
-          if (!returnOp)
+        Operation *returnOp = nullptr;
+        function.walk([&](Operation *candidate) {
+          StringRef name = candidate->getName().getStringRef();
+          if (!returnOp && (name == func::ReturnOp::getOperationName() ||
+                            name == "onnx.Return"))
             returnOp = candidate;
         });
         if (!returnOp)
           continue;
         function.setType(FunctionType::get(module.getContext(),
                                            function.getArgumentTypes(),
-                                           returnOp.getOperandTypes()));
+                                           returnOp->getOperandTypes()));
       }
     };
     unsigned operationCount = 0;
@@ -263,6 +449,10 @@ struct InferONNXShapesPass
       module.walk([&](Operation *op) {
         if (!op->getName().getStringRef().starts_with("onnx."))
           return;
+        if (inferRmsNorm(op)) {
+          changed = true;
+          return;
+        }
         if (inferMatMulNBits(op)) {
           changed = true;
           return;
@@ -287,6 +477,7 @@ struct InferONNXShapesPass
         }
       });
       if (!changed) {
+        materializeShapeValues();
         updateFunctionResults();
         return;
       }

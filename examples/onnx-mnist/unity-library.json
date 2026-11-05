@@ -1,6 +1,10 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "program": "generic_onnx_mnist",
+  "binding": {
+    "namespace": "Lemolatoon.Udoncl.Generated",
+    "class_name": "UdonclGenericOnnxMnistBinding"
+  },
   "device_kernels": [
     {
       "schema_version": 1, "profile": "gather-f32", "words": 16384,
@@ -39,14 +43,21 @@
       "global_size": [1024, 1, 1], "local_size": [1, 1, 1], "global_offset": [0, 0, 0]
     }
   ],
-  "exports": [
-    {"symbol": "udon_onnx_session_write_input_float", "public_name": "TryWriteInputFloat", "id": 1, "parameters": ["input_index", "element_index", "value"]},
-    {"symbol": "udon_onnx_session_run", "public_name": "StartRun", "id": 2, "parameters": []},
-    {"symbol": "udon_onnx_session_read_output_float", "public_name": "ReadOutputFloat", "id": 3, "parameters": ["output_index", "element_index"]}
+  "export_overrides": [
+    {"symbol": "mnist_initialize", "public_name": "Initialize", "parameters": []},
+    {"symbol": "mnist_run", "public_name": "Run", "parameters": []},
+    {"symbol": "mnist_dispose", "public_name": "Shutdown", "parameters": []}
+  ],
+  "internal_exports": [
+    "udon_onnx_binding_create",
+    "udon_onnx_binding_bind_tensor",
+    "udon_onnx_binding_enqueue_initialize",
+    "udon_onnx_binding_enqueue_run",
+    "udon_onnx_binding_dispose"
   ],
   "buffers": [
-    {"id": 1, "name": "onnx_device_buffer_1", "byte_size": 65536},
-    {"id": 2, "name": "onnx_device_buffer_2", "byte_size": 65536},
+    {"id": 1, "name": "input", "byte_size": 3136, "element_type": "float32", "public_access": "input"},
+    {"id": 2, "name": "output", "byte_size": 40, "element_type": "float32", "public_access": "output"},
     {"id": 3, "name": "onnx_device_buffer_3", "byte_size": 65536},
     {"id": 4, "name": "onnx_device_buffer_4", "byte_size": 65536},
     {"id": 5, "name": "onnx_device_buffer_5", "byte_size": 65536},
@@ -59,6 +70,8 @@
     {"id": 12, "name": "onnx_device_buffer_12", "byte_size": 65536},
     {"id": 13, "name": "onnx_device_buffer_13", "byte_size": 65536},
     {"id": 14, "name": "onnx_device_buffer_14", "byte_size": 65536},
-    {"id": 15, "name": "onnx_device_buffer_15", "byte_size": 65536}
+    {"id": 15, "name": "onnx_device_buffer_15", "byte_size": 65536},
+    {"id": 16, "name": "onnx_device_buffer_16", "byte_size": 65536},
+    {"id": 17, "name": "onnx_device_buffer_17", "byte_size": 65536}
   ]
 }

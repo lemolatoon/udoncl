@@ -64,6 +64,13 @@ def VRC_AwaitOp : Op<VRC_Dialect, "await", [MemoryEffects<[MemWrite]>]> {
   let assemblyFormat = "$event attr-dict `:` functional-type(operands, results)";
   let hasVerifier = 1;
 }
+def VRC_EventAsAsyncOp : Op<VRC_Dialect, "event_as_async", [MemoryEffects<[MemWrite]>]> {
+  let summary = "Bind an external Device event to an MLIR Async value";
+  let arguments = (ins VRC_EventType:$event);
+  let results = (outs AnyType:$value);
+  let assemblyFormat = "$event attr-dict `:` functional-type(operands, results)";
+  let hasVerifier = 1;
+}
 def VRC_EventStatusOp : Op<VRC_Dialect, "event_status", [MemoryEffects<[MemWrite]>]> {
   let summary = "Read the current completion status of an owned Device event";
   let arguments = (ins VRC_EventType:$event);

@@ -1,5 +1,5 @@
 add_llvm_executable(vrc-translate vrc-translate.cpp)
 set_target_properties(vrc-translate PROPERTIES OUTPUT_NAME udoncl-translate)
 llvm_update_compile_flags(vrc-translate)
-target_link_libraries(vrc-translate PRIVATE VRCTargetUdon VRCDialectUdonAsm VRCLLVMToHighLevelMLIR MLIRParser MLIRIR LLVMIRReader)
+target_link_libraries(vrc-translate PRIVATE VRCTargetUdon VRCDialectUdonAsm VRCLLVMToHighLevelMLIR MLIRParser MLIRIR MLIRDLTIDialect MLIRLLVMDialect LLVMIRReader)
 vrc_configure_target(vrc-translate)

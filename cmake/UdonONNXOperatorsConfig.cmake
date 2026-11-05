@@ -7,7 +7,7 @@ get_filename_component(_UDONONNX_CONFIG_DIR "${CMAKE_CURRENT_LIST_FILE}" DIRECTO
 get_filename_component(_UDONONNX_INSTALL_PREFIX "${_UDONONNX_CONFIG_DIR}/../../.." ABSOLUTE)
 get_filename_component(_UDONONNX_SOURCE_HINT "${_UDONONNX_CONFIG_DIR}/.." ABSOLUTE)
 
-if(EXISTS "${_UDONONNX_INSTALL_PREFIX}/share/udononnxoperators/src/udononnxoperators.c")
+if(EXISTS "${_UDONONNX_INSTALL_PREFIX}/share/udononnxoperators/src/matmul_nbits.c")
   set(_UDONONNX_ROOT "${_UDONONNX_INSTALL_PREFIX}/share/udononnxoperators")
   set(_UDONONNX_INCLUDE_DIR "${_UDONONNX_INSTALL_PREFIX}/include")
 else()
@@ -16,9 +16,15 @@ else()
 endif()
 
 if(NOT TARGET udononnxoperators_host)
-  set(_UDONONNX_DEVICE_FILE
-    "${_UDONONNX_ROOT}/device/matmul_nbits.cl")
-  file(READ "${_UDONONNX_DEVICE_FILE}" _UDONONNX_DEVICE_SOURCE)
+  set(_UDONONNX_DEVICE_FILES
+    "${_UDONONNX_ROOT}/device/matmul_nbits.cl"
+    "${_UDONONNX_ROOT}/device/gather.cl")
+  set(_UDONONNX_DEVICE_SOURCE "")
+  foreach(_UDONONNX_DEVICE_FILE IN LISTS _UDONONNX_DEVICE_FILES)
+    file(READ "${_UDONONNX_DEVICE_FILE}" _UDONONNX_DEVICE_PART)
+    string(APPEND _UDONONNX_DEVICE_SOURCE
+      "${_UDONONNX_DEVICE_PART}\n")
+  endforeach()
   string(REPLACE "\\" "\\\\" _UDONONNX_DEVICE_SOURCE
     "${_UDONONNX_DEVICE_SOURCE}")
   string(REPLACE "\"" "\\\"" _UDONONNX_DEVICE_SOURCE
@@ -32,7 +38,6 @@ if(NOT TARGET udononnxoperators_host)
     "${_UDONONNX_GENERATED_DIR}/udononnxoperators_device_source.h"
     "#define UDONONNX_DEVICE_SOURCE \"${_UDONONNX_DEVICE_SOURCE}\"\n")
   udoncl_add_host_library(udononnxoperators_host
-    "${_UDONONNX_ROOT}/src/udononnxoperators.c"
     "${_UDONONNX_ROOT}/src/matmul_nbits.c")
   target_include_directories(udononnxoperators_host INTERFACE
     "${_UDONONNX_INCLUDE_DIR}"
@@ -41,7 +46,7 @@ endif()
 
 if(NOT TARGET udononnxoperators_device)
   udoncl_add_device_library(udononnxoperators_device
-    "${_UDONONNX_ROOT}/device/matmul_nbits.cl")
+    ${_UDONONNX_DEVICE_FILES})
 endif()
 
 if(NOT TARGET udononnxoperators_opencl_runtime)

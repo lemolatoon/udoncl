@@ -9,6 +9,7 @@
 
 #define UDONCL_AOT_BUFFER_CAPACITY 32
 #define UDONCL_AOT_KERNEL_CAPACITY 32
+#define UDONCL_AOT_EVENT_CAPACITY 32
 #define UDONCL_AOT_ARGUMENT_BYTES 8
 
 #ifndef UDONCL_AOT_ENABLE_BLAS
@@ -74,6 +75,9 @@ extern cl_int __vrc_opencl_dispatch_udonaten_embedding(
 extern cl_int __vrc_opencl_dispatch_udononnx_matmul_nbits(
     cl_uint input_token, cl_uint output_token, cl_int tile_n, cl_int tile_k,
     cl_int accumulate, cl_int finalize);
+extern cl_int __vrc_opencl_dispatch_udononnx_gather_copy(cl_uint input_token,
+                                                         cl_uint output_token,
+                                                         cl_int words);
 #endif
 #if UDONCL_AOT_ENABLE_MNIST
 extern cl_int __vrc_opencl_dispatch_mnist_conv(cl_uint input_token,
@@ -96,6 +100,7 @@ struct _cl_context {
 };
 struct _cl_command_queue {
   cl_uint active;
+  cl_uint refs;
   cl_context context;
 };
 struct _cl_program {
@@ -119,6 +124,14 @@ struct _cl_kernel {
                          [UDONCL_AOT_ARGUMENT_BYTES];
   cl_uint argument_sizes[UDONCL_AOT_KERNEL_CAPACITY];
 };
+struct _cl_event {
+  cl_uint active;
+  cl_uint refs;
+  cl_command_queue queue;
+  cl_command_type command_type;
+  cl_int pending;
+  cl_int execution_status;
+};
 
 static struct _cl_platform_id udoncl_platform = {1};
 static struct _cl_device_id udoncl_device = {1};
@@ -127,7 +140,9 @@ static struct _cl_command_queue udoncl_queue;
 static struct _cl_program udoncl_program;
 static struct _cl_mem udoncl_buffers[UDONCL_AOT_BUFFER_CAPACITY];
 static struct _cl_kernel udoncl_kernels[UDONCL_AOT_KERNEL_CAPACITY];
+static struct _cl_event udoncl_events[UDONCL_AOT_EVENT_CAPACITY];
 static cl_int udoncl_dispatch_status;
+static cl_int udoncl_dispatch_event;
 
 static int udoncl_string_equal(const char *left, const char *right) {
   if (!left || !right)
@@ -203,6 +218,8 @@ static cl_uint udoncl_kernel_id(const char *name) {
 #if UDONCL_AOT_ENABLE_ONNX
   if (udoncl_string_equal(name, "udononnx_matmul_nbits"))
     return 219;
+  if (udoncl_string_equal(name, "udononnx_gather_copy"))
+    return 220;
 #endif
   return 0;
 }
@@ -266,9 +283,45 @@ clCreateCommandQueue(cl_context context, cl_device_id device,
     return 0;
   }
   udoncl_queue.active = 1;
+  udoncl_queue.refs = 1;
   udoncl_queue.context = context;
   udoncl_error(error, CL_SUCCESS);
   return &udoncl_queue;
+}
+
+CL_API_ENTRY cl_int CL_API_CALL
+clGetCommandQueueInfo(cl_command_queue queue, cl_command_queue_info param,
+                      size_t value_size, void *value, size_t *required_size) {
+  if (queue != &udoncl_queue || !queue->active)
+    return CL_INVALID_COMMAND_QUEUE;
+  if (param == CL_QUEUE_CONTEXT) {
+    if (required_size)
+      *required_size = sizeof(queue->context);
+    if (!value)
+      return value_size ? CL_INVALID_VALUE : CL_SUCCESS;
+    if (value_size < sizeof(queue->context))
+      return CL_INVALID_VALUE;
+    *(cl_context *)value = queue->context;
+    return CL_SUCCESS;
+  }
+  if (param == CL_QUEUE_REFERENCE_COUNT) {
+    if (required_size)
+      *required_size = sizeof(queue->refs);
+    if (!value)
+      return value_size ? CL_INVALID_VALUE : CL_SUCCESS;
+    if (value_size < sizeof(queue->refs))
+      return CL_INVALID_VALUE;
+    *(cl_uint *)value = queue->refs;
+    return CL_SUCCESS;
+  }
+  return CL_INVALID_VALUE;
+}
+
+CL_API_ENTRY cl_int CL_API_CALL clRetainCommandQueue(cl_command_queue queue) {
+  if (queue != &udoncl_queue || !queue->active)
+    return CL_INVALID_COMMAND_QUEUE;
+  ++queue->refs;
+  return CL_SUCCESS;
 }
 
 CL_API_ENTRY cl_mem CL_API_CALL clCreateBuffer(cl_context context,
@@ -446,7 +499,7 @@ static void udoncl_dispatch_sgemm(cl_kernel kernel, cl_uint work_dim,
     udoncl_dispatch_status = CL_INVALID_KERNEL_ARGS;
     return;
   }
-  (void)__vrc_opencl_dispatch_udonblas_sgemm(
+  udoncl_dispatch_event = __vrc_opencl_dispatch_udonblas_sgemm(
       input->physical_token, output->physical_token, values[0], values[1],
       values[2], values[3], values[4], values[5], values[6], values[7], alpha,
       beta);
@@ -486,7 +539,7 @@ static void udoncl_dispatch_sgemv(cl_kernel kernel, cl_uint work_dim,
     udoncl_dispatch_status = CL_INVALID_KERNEL_ARGS;
     return;
   }
-  (void)__vrc_opencl_dispatch_udonblas_sgemv(
+  udoncl_dispatch_event = __vrc_opencl_dispatch_udonblas_sgemv(
       input->physical_token, output->physical_token, values[0], values[1],
       values[2], values[3], values[4], values[5], alpha, beta);
 }
@@ -538,7 +591,7 @@ static void udoncl_dispatch_large_convolution(cl_kernel kernel,
     udoncl_dispatch_status = CL_INVALID_KERNEL_ARGS;
     return;
   }
-  (void)__vrc_opencl_dispatch_udondnn_large_convolution(
+  udoncl_dispatch_event = __vrc_opencl_dispatch_udondnn_large_convolution(
       buffers[0]->physical_token, buffers[1]->physical_token,
       buffers[2]->physical_token, buffers[3]->physical_token, values[0],
       values[1], values[2], values[3], values[4], values[5], values[6],
@@ -572,7 +625,7 @@ static void udoncl_dispatch_large_activation(cl_kernel kernel, cl_uint work_dim,
     udoncl_dispatch_status = CL_INVALID_KERNEL_ARGS;
     return;
   }
-  (void)__vrc_opencl_dispatch_udondnn_large_activation(
+  udoncl_dispatch_event = __vrc_opencl_dispatch_udondnn_large_activation(
       buffers[0]->physical_token, buffers[1]->physical_token,
       buffers[2]->physical_token, values[0], values[1], values[2], coefficient,
       alpha, beta);
@@ -604,7 +657,7 @@ static void udoncl_dispatch_large_pooling(cl_kernel kernel, cl_uint work_dim,
     udoncl_dispatch_status = CL_INVALID_KERNEL_ARGS;
     return;
   }
-  (void)__vrc_opencl_dispatch_udondnn_large_pooling(
+  udoncl_dispatch_event = __vrc_opencl_dispatch_udondnn_large_pooling(
       buffers[0]->physical_token, buffers[1]->physical_token,
       buffers[2]->physical_token, values[0], values[1], values[2], values[3],
       values[4], values[5], values[6], values[7], values[8], values[9], alpha,
@@ -638,7 +691,7 @@ static void udoncl_dispatch_large_op_tensor(cl_kernel kernel, cl_uint work_dim,
     udoncl_dispatch_status = CL_INVALID_KERNEL_ARGS;
     return;
   }
-  (void)__vrc_opencl_dispatch_udondnn_large_op_tensor(
+  udoncl_dispatch_event = __vrc_opencl_dispatch_udondnn_large_op_tensor(
       buffers[0]->physical_token, buffers[1]->physical_token,
       buffers[2]->physical_token, buffers[3]->physical_token, values[0],
       values[1], values[2], values[3], values[4], values[5], values[6],
@@ -676,7 +729,7 @@ static void udoncl_dispatch_embedding(cl_kernel kernel, cl_uint work_dim,
     udoncl_dispatch_status = CL_INVALID_KERNEL_ARGS;
     return;
   }
-  (void)__vrc_opencl_dispatch_udonaten_embedding(
+  udoncl_dispatch_event = __vrc_opencl_dispatch_udonaten_embedding(
       input->physical_token, output->physical_token, outer, rows, rows_float,
       inner, indices_words, output_words);
 }
@@ -707,9 +760,34 @@ static void udoncl_dispatch_matmul_nbits(cl_kernel kernel, cl_uint work_dim,
     udoncl_dispatch_status = CL_INVALID_KERNEL_ARGS;
     return;
   }
-  (void)__vrc_opencl_dispatch_udononnx_matmul_nbits(
+  udoncl_dispatch_event = __vrc_opencl_dispatch_udononnx_matmul_nbits(
       input->physical_token, output->physical_token, tile_n, tile_k, accumulate,
       finalize);
+}
+
+static void udoncl_dispatch_gather(cl_kernel kernel, cl_uint work_dim,
+                                   const size_t *global_offset) {
+  cl_mem input, output;
+  cl_int words;
+  if (work_dim != 1) {
+    udoncl_dispatch_status = CL_INVALID_WORK_DIMENSION;
+    return;
+  }
+  if (global_offset) {
+    udoncl_dispatch_status = CL_INVALID_GLOBAL_OFFSET;
+    return;
+  }
+  if (udoncl_mem_argument(kernel, 0, &input) != CL_SUCCESS ||
+      udoncl_mem_argument(kernel, 1, &output) != CL_SUCCESS) {
+    udoncl_dispatch_status = CL_INVALID_MEM_OBJECT;
+    return;
+  }
+  if (udoncl_i32_argument(kernel, 2, &words) != CL_SUCCESS) {
+    udoncl_dispatch_status = CL_INVALID_KERNEL_ARGS;
+    return;
+  }
+  udoncl_dispatch_event = __vrc_opencl_dispatch_udononnx_gather_copy(
+      input->physical_token, output->physical_token, words);
 }
 #endif
 
@@ -731,20 +809,132 @@ static void udoncl_dispatch_mnist(cl_kernel kernel, cl_uint work_dim,
     return;
   }
   if (kernel->id == 20)
-    (void)__vrc_opencl_dispatch_mnist_conv(input->physical_token,
-                                           output->physical_token);
+    udoncl_dispatch_event = __vrc_opencl_dispatch_mnist_conv(
+        input->physical_token, output->physical_token);
   else if (kernel->id == 21)
-    (void)__vrc_opencl_dispatch_mnist_pool(input->physical_token,
-                                           output->physical_token);
+    udoncl_dispatch_event = __vrc_opencl_dispatch_mnist_pool(
+        input->physical_token, output->physical_token);
   else
-    (void)__vrc_opencl_dispatch_mnist_dense(input->physical_token,
-                                            output->physical_token);
+    udoncl_dispatch_event = __vrc_opencl_dispatch_mnist_dense(
+        input->physical_token, output->physical_token);
 }
 #endif
 
-static cl_int udoncl_wait_list(cl_uint count, const cl_event *events) {
-  return (!count && !events) ? CL_SUCCESS : CL_INVALID_EVENT_WAIT_LIST;
+static cl_event udoncl_event_find(cl_event event) {
+  cl_uint index;
+  if (!event)
+    return 0;
+  for (index = 0; index < UDONCL_AOT_EVENT_CAPACITY; ++index)
+    if (event == &udoncl_events[index] && event->active)
+      return event;
+  return 0;
 }
+
+static cl_int udoncl_event_wait(cl_event event) {
+  cl_int status;
+  event = udoncl_event_find(event);
+  if (!event)
+    return CL_INVALID_EVENT;
+  if (event->execution_status == CL_COMPLETE)
+    return CL_SUCCESS;
+  status = __vrc_opencl_await(event->pending);
+  event->execution_status = status == CL_SUCCESS ? CL_COMPLETE : status;
+  return status;
+}
+
+static cl_int udoncl_event_create(cl_command_queue queue,
+                                  cl_command_type command_type, cl_int pending,
+                                  cl_event *output) {
+  cl_uint index;
+  if (pending < CL_SUCCESS)
+    return pending;
+  if (!output)
+    return CL_SUCCESS;
+  *output = 0;
+  for (index = 0; index < UDONCL_AOT_EVENT_CAPACITY; ++index) {
+    cl_event event = &udoncl_events[index];
+    if (event->active)
+      continue;
+    event->active = 1;
+    event->refs = 1;
+    event->queue = queue;
+    event->command_type = command_type;
+    event->pending = pending;
+    event->execution_status =
+        pending == CL_SUCCESS ? CL_COMPLETE : CL_SUBMITTED;
+    ++queue->refs;
+    *output = event;
+    return CL_SUCCESS;
+  }
+  return CL_OUT_OF_RESOURCES;
+}
+
+static cl_int udoncl_wait_list(cl_command_queue queue, cl_uint count,
+                               const cl_event *events) {
+  cl_uint index;
+  cl_context context = 0;
+  if ((!count && events) || (count && !events))
+    return CL_INVALID_EVENT_WAIT_LIST;
+  for (index = 0; index < count; ++index) {
+    cl_event event = udoncl_event_find(events[index]);
+    cl_int status;
+    if (!event)
+      return CL_INVALID_EVENT_WAIT_LIST;
+    if (event->queue->context != queue->context)
+      return CL_INVALID_CONTEXT;
+    if (!context)
+      context = event->queue->context;
+    else if (context != event->queue->context)
+      return CL_INVALID_CONTEXT;
+    status = udoncl_event_wait(event);
+    if (status != CL_SUCCESS)
+      return status;
+  }
+  return CL_SUCCESS;
+}
+
+static cl_int udoncl_finish_enqueue(cl_command_queue queue,
+                                    cl_command_type command_type,
+                                    cl_int pending, cl_bool blocking,
+                                    cl_event *event) {
+  cl_int status = udoncl_event_create(queue, command_type, pending, event);
+  if (status != CL_SUCCESS)
+    return status;
+  if (!blocking)
+    return CL_SUCCESS;
+  return event && *event ? udoncl_event_wait(*event)
+                         : __vrc_opencl_await(pending);
+}
+
+static cl_int udoncl_finish_dispatch(cl_command_queue queue, cl_event *event) {
+  if (udoncl_dispatch_status != CL_SUCCESS)
+    return udoncl_dispatch_status;
+  return udoncl_finish_enqueue(queue, CL_COMMAND_NDRANGE_KERNEL,
+                               udoncl_dispatch_event, CL_FALSE, event);
+}
+
+#if UDONCL_AOT_ENABLE_DNN
+cl_int __vrc_enqueue_udondnn_large_convolution_args(
+    cl_command_queue queue, cl_mem input, cl_mem filter, cl_mem previous,
+    cl_mem output, cl_int output_words, cl_int input_ch, cl_int input_w,
+    cl_int output_ch, cl_int output_w, cl_int filter_hw, cl_int pad_hw,
+    cl_int stride_hw, cl_int dilation_hw, cl_int mode, cl_float alpha,
+    cl_float beta) {
+  cl_int pending;
+  if (queue != &udoncl_queue || !queue->active || !input || !input->active ||
+      !filter || !filter->active || !previous || !previous->active || !output ||
+      !output->active || input->context != queue->context ||
+      filter->context != queue->context ||
+      previous->context != queue->context || output->context != queue->context)
+    return CL_INVALID_VALUE;
+  pending = __vrc_opencl_dispatch_udondnn_large_convolution(
+      input->physical_token, filter->physical_token, previous->physical_token,
+      output->physical_token, output_words, input_ch, input_w, output_ch,
+      output_w, filter_hw, pad_hw, stride_hw, dilation_hw, mode, alpha, beta);
+  return udoncl_finish_enqueue(queue, CL_COMMAND_NDRANGE_KERNEL, pending,
+                               CL_FALSE, 0);
+}
+#endif
 
 #define UDONCL_DEFINE_DIRECT_ENQUEUE(function_name, expected_id, dispatcher)   \
   CL_API_ENTRY cl_int CL_API_CALL function_name(                               \
@@ -754,12 +944,13 @@ static cl_int udoncl_wait_list(cl_uint count, const cl_event *events) {
       cl_event *event) {                                                       \
     if (queue != &udoncl_queue || !queue->active || !kernel ||                 \
         !kernel->active || kernel->id != expected_id || !global_size ||        \
-        !local_size || event ||                                                \
-        udoncl_wait_list(wait_count, wait_list) != CL_SUCCESS)                 \
+        !local_size ||                                                         \
+        udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)          \
       return CL_INVALID_VALUE;                                                 \
     udoncl_dispatch_status = CL_SUCCESS;                                       \
+    udoncl_dispatch_event = CL_SUCCESS;                                        \
     dispatcher(kernel, work_dim, global_offset, global_size, local_size);      \
-    return udoncl_dispatch_status;                                             \
+    return udoncl_finish_dispatch(queue, event);                               \
   }
 
 #if UDONCL_AOT_ENABLE_BLAS
@@ -787,11 +978,12 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueWriteBuffer(
   cl_int pending;
   if (queue != &udoncl_queue || !queue->active || !buffer || !buffer->active ||
       !source || offset > buffer->bytes || bytes > buffer->bytes - offset ||
-      event || udoncl_wait_list(wait_count, wait_list) != CL_SUCCESS)
+      udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
   pending =
       __vrc_opencl_buffer_upload(buffer->physical_token, offset, bytes, source);
-  return blocking ? __vrc_opencl_await(pending) : CL_SUCCESS;
+  return udoncl_finish_enqueue(queue, CL_COMMAND_WRITE_BUFFER, pending,
+                               blocking, event);
 }
 
 CL_API_ENTRY cl_int CL_API_CALL clEnqueueReadBuffer(
@@ -801,12 +993,13 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueReadBuffer(
   cl_int pending;
   if (queue != &udoncl_queue || !queue->active || !buffer || !buffer->active ||
       !destination || offset > buffer->bytes ||
-      bytes > buffer->bytes - offset || event ||
-      udoncl_wait_list(wait_count, wait_list) != CL_SUCCESS)
+      bytes > buffer->bytes - offset ||
+      udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
   pending = __vrc_opencl_buffer_readback(buffer->physical_token, offset, bytes,
                                          destination);
-  return blocking ? __vrc_opencl_await(pending) : CL_SUCCESS;
+  return udoncl_finish_enqueue(queue, CL_COMMAND_READ_BUFFER, pending, blocking,
+                               event);
 }
 
 CL_API_ENTRY cl_int CL_API_CALL clEnqueueNDRangeKernel(
@@ -815,21 +1008,22 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueNDRangeKernel(
     const size_t *local_size, cl_uint wait_count, const cl_event *wait_list,
     cl_event *event) {
   if (queue != &udoncl_queue || !queue->active || !kernel || !kernel->active ||
-      !global_size || !local_size || work_dim < 1 || work_dim > 3 || event ||
-      udoncl_wait_list(wait_count, wait_list) != CL_SUCCESS)
+      !global_size || !local_size || work_dim < 1 || work_dim > 3 ||
+      udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
+  udoncl_dispatch_event = CL_SUCCESS;
 #if UDONCL_AOT_ENABLE_BLAS
   if (kernel->id == 1) {
     udoncl_dispatch_status = CL_SUCCESS;
     udoncl_dispatch_sgemm(kernel, work_dim, global_offset, global_size,
                           local_size);
-    return udoncl_dispatch_status;
+    return udoncl_finish_dispatch(queue, event);
   }
   if (kernel->id == 2) {
     udoncl_dispatch_status = CL_SUCCESS;
     udoncl_dispatch_sgemv(kernel, work_dim, global_offset, global_size,
                           local_size);
-    return udoncl_dispatch_status;
+    return udoncl_finish_dispatch(queue, event);
   }
 #endif
 #if UDONCL_AOT_ENABLE_DNN
@@ -837,53 +1031,172 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueNDRangeKernel(
     udoncl_dispatch_status = CL_SUCCESS;
     udoncl_dispatch_large_pooling(kernel, work_dim, global_offset, global_size,
                                   local_size);
-    return udoncl_dispatch_status;
+    return udoncl_finish_dispatch(queue, event);
   }
   if (kernel->id == 232) {
     udoncl_dispatch_status = CL_SUCCESS;
     udoncl_dispatch_large_convolution(kernel, work_dim, global_offset,
                                       global_size, local_size);
-    return udoncl_dispatch_status;
+    return udoncl_finish_dispatch(queue, event);
   }
   if (kernel->id == 233) {
     udoncl_dispatch_status = CL_SUCCESS;
     udoncl_dispatch_large_activation(kernel, work_dim, global_offset,
                                      global_size, local_size);
-    return udoncl_dispatch_status;
+    return udoncl_finish_dispatch(queue, event);
   }
   if (kernel->id == 234) {
     udoncl_dispatch_status = CL_SUCCESS;
     udoncl_dispatch_large_op_tensor(kernel, work_dim, global_offset,
                                     global_size, local_size);
-    return udoncl_dispatch_status;
+    return udoncl_finish_dispatch(queue, event);
   }
   if (kernel->id == 207) {
     udoncl_dispatch_status = CL_SUCCESS;
     udoncl_dispatch_embedding(kernel, work_dim, global_offset, global_size,
                               local_size);
-    return udoncl_dispatch_status;
+    return udoncl_finish_dispatch(queue, event);
   }
 #endif
 #if UDONCL_AOT_ENABLE_ONNX
   if (kernel->id == 219) {
     udoncl_dispatch_status = CL_SUCCESS;
     udoncl_dispatch_matmul_nbits(kernel, work_dim, global_offset);
-    return udoncl_dispatch_status;
+    return udoncl_finish_dispatch(queue, event);
+  }
+  if (kernel->id == 220) {
+    udoncl_dispatch_status = CL_SUCCESS;
+    udoncl_dispatch_gather(kernel, work_dim, global_offset);
+    return udoncl_finish_dispatch(queue, event);
   }
 #endif
 #if UDONCL_AOT_ENABLE_MNIST
   if (kernel->id >= 20 && kernel->id <= 22) {
     udoncl_dispatch_status = CL_SUCCESS;
     udoncl_dispatch_mnist(kernel, work_dim, global_offset);
-    return udoncl_dispatch_status;
+    return udoncl_finish_dispatch(queue, event);
   }
 #endif
   return CL_INVALID_KERNEL;
 }
 
 CL_API_ENTRY cl_int CL_API_CALL clFinish(cl_command_queue queue) {
+  cl_uint index;
+  if (queue != &udoncl_queue || !queue->active)
+    return CL_INVALID_COMMAND_QUEUE;
+  for (index = 0; index < UDONCL_AOT_EVENT_CAPACITY; ++index) {
+    cl_event event = &udoncl_events[index];
+    cl_int status;
+    if (!event->active || event->queue != queue)
+      continue;
+    status = udoncl_event_wait(event);
+    if (status != CL_SUCCESS)
+      return status;
+  }
+  return CL_SUCCESS;
+}
+
+CL_API_ENTRY cl_int CL_API_CALL clFlush(cl_command_queue queue) {
   return queue == &udoncl_queue && queue->active ? CL_SUCCESS
                                                  : CL_INVALID_COMMAND_QUEUE;
+}
+
+CL_API_ENTRY cl_int CL_API_CALL
+clEnqueueMarkerWithWaitList(cl_command_queue queue, cl_uint wait_count,
+                            const cl_event *wait_list, cl_event *event) {
+  cl_int status;
+  if (queue != &udoncl_queue || !queue->active || !event)
+    return CL_INVALID_VALUE;
+  status = udoncl_wait_list(queue, wait_count, wait_list);
+  if (status != CL_SUCCESS)
+    return status;
+  return udoncl_event_create(queue, CL_COMMAND_MARKER, CL_SUCCESS, event);
+}
+
+CL_API_ENTRY cl_int CL_API_CALL clWaitForEvents(cl_uint count,
+                                                const cl_event *events) {
+  cl_uint index;
+  cl_context context = 0;
+  if (!count || !events)
+    return CL_INVALID_VALUE;
+  for (index = 0; index < count; ++index) {
+    cl_event event = udoncl_event_find(events[index]);
+    cl_int status;
+    if (!event)
+      return CL_INVALID_EVENT;
+    if (!context)
+      context = event->queue->context;
+    else if (context != event->queue->context)
+      return CL_INVALID_CONTEXT;
+    status = udoncl_event_wait(event);
+    if (status != CL_SUCCESS)
+      return status;
+  }
+  return CL_SUCCESS;
+}
+
+CL_API_ENTRY cl_int CL_API_CALL clRetainEvent(cl_event event) {
+  event = udoncl_event_find(event);
+  if (!event)
+    return CL_INVALID_EVENT;
+  ++event->refs;
+  return CL_SUCCESS;
+}
+
+CL_API_ENTRY cl_int CL_API_CALL clReleaseEvent(cl_event event) {
+  event = udoncl_event_find(event);
+  if (!event)
+    return CL_INVALID_EVENT;
+  if (--event->refs)
+    return CL_SUCCESS;
+  if (event->queue->refs)
+    --event->queue->refs;
+  event->active = 0;
+  event->queue = 0;
+  event->pending = 0;
+  event->execution_status = CL_COMPLETE;
+  return CL_SUCCESS;
+}
+
+CL_API_ENTRY cl_int CL_API_CALL clGetEventInfo(cl_event event,
+                                               cl_event_info param,
+                                               size_t value_size, void *value,
+                                               size_t *required_size) {
+  size_t bytes;
+  const void *source;
+  cl_context context;
+  size_t index;
+  event = udoncl_event_find(event);
+  if (!event)
+    return CL_INVALID_EVENT;
+  if (param == CL_EVENT_COMMAND_QUEUE) {
+    source = &event->queue;
+    bytes = sizeof(event->queue);
+  } else if (param == CL_EVENT_CONTEXT) {
+    context = event->queue->context;
+    source = &context;
+    bytes = sizeof(context);
+  } else if (param == CL_EVENT_COMMAND_TYPE) {
+    source = &event->command_type;
+    bytes = sizeof(event->command_type);
+  } else if (param == CL_EVENT_COMMAND_EXECUTION_STATUS) {
+    source = &event->execution_status;
+    bytes = sizeof(event->execution_status);
+  } else if (param == CL_EVENT_REFERENCE_COUNT) {
+    source = &event->refs;
+    bytes = sizeof(event->refs);
+  } else {
+    return CL_INVALID_VALUE;
+  }
+  if (required_size)
+    *required_size = bytes;
+  if (!value)
+    return value_size ? CL_INVALID_VALUE : CL_SUCCESS;
+  if (value_size < bytes)
+    return CL_INVALID_VALUE;
+  for (index = 0; index < bytes; ++index)
+    ((unsigned char *)value)[index] = ((const unsigned char *)source)[index];
+  return CL_SUCCESS;
 }
 
 CL_API_ENTRY cl_int CL_API_CALL clReleaseKernel(cl_kernel kernel) {
@@ -913,7 +1226,8 @@ CL_API_ENTRY cl_int CL_API_CALL clReleaseMemObject(cl_mem buffer) {
 CL_API_ENTRY cl_int CL_API_CALL clReleaseCommandQueue(cl_command_queue queue) {
   if (queue != &udoncl_queue || !queue->active)
     return CL_INVALID_COMMAND_QUEUE;
-  queue->active = 0;
+  if (--queue->refs == 0)
+    queue->active = 0;
   return CL_SUCCESS;
 }
 

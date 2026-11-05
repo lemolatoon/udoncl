@@ -38,7 +38,7 @@ namespace Lemolatoon.Udoncl.Editor
                         artifacts.ManifestAssetPath,
                         programRoot + "/manifest.json"
                     );
-                    GenerateTypedWrapper(transaction, artifacts, programRoot);
+                    InstallTypedBinding(transaction, artifacts, programRoot);
                     string sourceDirectory = programRoot + "/Sources";
                     EnsureFolders(sourceDirectory);
                     string assemblySourcePath =
@@ -48,11 +48,20 @@ namespace Lemolatoon.Udoncl.Editor
                         + ".txt";
                     transaction.CopyFile(artifacts.AssemblyAssetPath, assemblySourcePath);
                     foreach (ValidatedResource resource in artifacts.Resources)
+                    {
                         if (resource.Name == "raw_heap_initializer" && resource.Kind == "bytes")
                             transaction.CopyFile(
                                 resource.AbsolutePath,
                                 sourceDirectory + "/raw-heap.bytes"
                             );
+                        else if (resource.Kind == "json")
+                        {
+                            string resourcePath =
+                                programRoot + "/Resources/" + resource.RelativePath;
+                            EnsureFolders(Path.GetDirectoryName(resourcePath).Replace('\\', '/'));
+                            transaction.CopyFile(resource.AbsolutePath, resourcePath);
+                        }
+                    }
                     UdonAssemblyProgramAsset programAsset = CreateOrUpdateProgramAsset(
                         transaction,
                         programRoot,
@@ -411,22 +420,40 @@ namespace Lemolatoon.Udoncl.Editor
             return programRoot;
         }
 
-        private static void GenerateTypedWrapper(
+        private static void InstallTypedBinding(
             AssetImportTransaction transaction,
             ValidatedArtifact artifacts,
             string programRoot
         )
         {
+            if (!string.IsNullOrEmpty(artifacts.BindingSourceAssetPath))
+            {
+                string compilerBindingRoot = programRoot + "/Bindings";
+                EnsureFolders(compilerBindingRoot);
+                string compilerBindingPath =
+                    compilerBindingRoot + "/" + artifacts.BindingClass + ".cs";
+                transaction.CopyFile(artifacts.BindingSourceAssetPath, compilerBindingPath);
+                CreateOrUpdateUdonSharpProgramAsset(
+                    transaction,
+                    compilerBindingPath,
+                    compilerBindingRoot + "/" + artifacts.BindingClass + ".asset"
+                );
+                return;
+            }
+
             string manifestJson = File.ReadAllText(artifacts.ManifestAssetPath);
             UdonclManifest manifest = JsonUtility.FromJson<UdonclManifest>(manifestJson);
             if (manifest == null || string.IsNullOrEmpty(manifest.physical_export_abi))
                 return;
 
-            string className = VRCWrapperGenerator.BindingClassName(artifacts.ProgramName);
+            string className = string.IsNullOrEmpty(artifacts.BindingClass)
+                ? VRCWrapperGenerator.BindingClassName(artifacts.ProgramName)
+                : artifacts.BindingClass;
             string bindingRoot = programRoot + "/Bindings";
             EnsureFolders(bindingRoot);
+            string bindingPath = bindingRoot + "/" + className + ".cs";
             transaction.WriteText(
-                bindingRoot + "/" + className + ".cs",
+                bindingPath,
                 VRCWrapperGenerator.GenerateFromJson(
                     manifestJson,
                     "Lemolatoon.Udoncl.Generated",
@@ -435,7 +462,7 @@ namespace Lemolatoon.Udoncl.Editor
             );
             CreateOrUpdateUdonSharpProgramAsset(
                 transaction,
-                bindingRoot + "/" + className + ".cs",
+                bindingPath,
                 bindingRoot + "/" + className + ".asset"
             );
         }
