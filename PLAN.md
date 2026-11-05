@@ -1,7 +1,7 @@
 # PLAN.md — VRChat向け C / OpenCL C → Udon / HLSL コンパイラ
 
-> Status: **Host MLIR/continuation completion and public UdonBLAS Unity gate next**
-> Design cut-off: **2026-11-03**
+> Status: **Udon/Native Async and compiler-generated U# binding implemented; Host storage allocator + Unity MNIST gate next**
+> Design cut-off: **2026-11-05**
 > Implementation amendments (user): **LLVM/MLIR 23 baseline; Windows host builds supported by design.**
 > Initial toolchain pin: **LLVM/MLIR/Clang 23.1.4** (see `cmake/llvm-lock.json`).  
 > Audience: Codex / compiler・runtime・Unity integration 実装担当  
@@ -25,8 +25,8 @@
 
 ```text
 User-written UdonSharp (entrypoint, app orchestration, optional libc service)
-  └─ generated typed U# Wrapper  [Unity Editor Importer generates]
-       └─ generated C library UdonBehaviour (per-instance globals / heap / call stack)
+  └─ compiler-generated low-level typed U# export binding
+       └─ generated C host UdonBehaviour (per-instance globals / heap / frames)
             └─ C OpenCL runtime (Picolibc-compatible C + __vrc_* intrinsics)
                  └─ Udon/VRChat GPU APIs → GPU RenderTextures → AsyncGPUReadback
 
@@ -46,26 +46,26 @@ Host .c / libc sources                     Device .cl sources
    func/cf/scf/arith     gpu/scf/memref/affine/arith
    + udonhl + vrc       + OpenCL semantic & dependence analyses
          │                 │
-   continuation/       barrier elimination / cost-aware phase splitting
-   recursion lowering     │
+   MLIR Async +        barrier elimination / cost-aware phase splitting
+   backend coroutine      │
          │              vrcgpu (fragment-safe passes)
       udonasm              │
          │             direct HLSL + ShaderLab
       .uasm                │
          └───────────┬─────┘
                      ▼
-           manifest.json + debug/dumps
+        manifest.json + binding.cs + debug/dumps
                      ▼
     Unity Editor Importer (UPM package)
     - Udon Program Asset / Behaviour binding
     - Shader / Material / Texture configs
-    - typed UdonSharp Wrapper generation
+    - compiler-produced U# binding import / compilation
     - asset GUID preservation + ABI validation
                      ▼
          VRChat PC World (Build & Test)
 ```
 
-**Compiler/Unity責務**: CLIが生成するのは`.uasm`, `.shader`, `manifest.json`, diagnostics/debug dumpsであり、Unityの`.asset`の内部形式には依存しない。Editor Importerが`.asset`、Material、U# wrapper C#、Bindingを生成する。Wrapper自体をMLIRで生成しない。
+**Compiler/Unity責務**: CLIは`.uasm`, `.shader`, `manifest.json`, compiler-generated `binding.cs`, diagnostics/debug dumpsを自己完結artifactとして生成する。physical export adapter、Manifest、低水準U# bindingは同じMLIR export ABIから生成する。Editor Importerは`.asset`、Material、C# import/compile、参照接続、GUID保持を担当し、binding sourceを再生成しない。高水準ONNX Session U# wrapperは初期scope外とする。
 
 **MLIRパイプラインにおける共存**: `func`, `arith`, `math`, `scf`, `cf`, `memref`, `gpu`, `affine`, `llvm`など標準Dialectを積極的に使う。`vrc`, `udonhl`, `udonasm`, `vrcgpu`は固有意味論に必要な操作だけを定義する。以下のOperation名・署名は**これから実装する独自仕様**であり、既存MLIR本体やVRChatに実装済みという意味ではない。
 
@@ -88,8 +88,10 @@ Host .c / libc sources                     Device .cl sources
 ### 2.2 Host、OpenCL Runtime、libc
 
 - Hostは**32-bit ILP32, little-endian**を固定ターゲットABIとする。Udonの内部値型への変換・byte memory・構造体alignmentは明示。GPU ABIとは別。
-- Host C pointerは32-bit flat byte virtual address。SSA scalarはHeap Slot。確実なprovenanceを持つ配列はNative Udon typed arrayへ直接lowering、混合alias/byte再解釈はallocation単位でraw linear memoryへ戻す。Cのポインタ/構造体/unionの意味論を保つ。
-- 再帰（相互再帰含む）はUdonSharp `[RecursiveMethod]`相当の手動stack save/restore（call graph SCC解析）。`udonasm`に擬似CALLは追加しない。UdonSharp出力AssemblyのGolden Testで参照。
+- Host C pointerは32-bit flat byte virtual addressとし、Cのpointer identity、alias、構造体、union、byte layoutを保つ。ただし物理storageはpointer ABIそのものではない。全Host moduleをlinkして公開export以外を内部化し、SROA、mem2reg、inlining、定数伝播、descriptor specialization、DCEを行った後でstorageを決める。
+- addressを観測されないSSA scalar、引数、戻り値、一時値、local、global scalarは、少数の型付きscalar Udon Heap slotを物理レジスタとしてinterprocedural coloringする。収まらない値は物理Udon型ごとの固定長typed arrayへspillする。固定公開ABI slotとUnity resource slotはallocator外とし、入口/出口だけregisterとcopyする。
+- pointer identity、dynamic indexing、byte alias、`memcpy`等が最適化後も残るobjectだけをraw linear memoryへ置く。raw memoryはlittle-endianのword-packed `SystemInt32Array`（1 element = 4 logical bytes）とし、aligned `i32`/`f32`を1回のarray accessへ、byte/unaligned accessをshift/mask/read-modify-writeへlowerする。現在の1 element = 1 logical byte方式は移行実装であり最終方式にしない。
+- 初期Host backendは非再帰call graphだけを許可し、再帰SCCを明示errorにする。将来の再帰対応は型別spill array内のdynamic frameまたはUdonSharp `[RecursiveMethod]`相当のsave/restoreとして別段階で設計し、非再帰の静的coloringへ混ぜない。`udonasm`に擬似CALLは追加しない。
 - 1 library instance = 1 Host Execution Context; 1 in-order OpenCL Command Queue。複数pending GPU requestsを管理できる構造にするがrequest識別が不確実ならMVPは直列化。別C呼び出しがbusy中はBusy拒否。完了callbackはbusy解除後にU#へ通知し、再呼び出し可。
 - `cl_mem`は32-bit handle table。`clSetKernelArg`の引数は**設定時にコピー**。OpenCL 1.2 AOT互換サブセット。`clCreateProgramWithSource`は静的に既知のKernel Manifestを解決し、`clBuildProgram`は既存Assetと対応付けるだけ。実行時の任意OpenCL C source生成は未対応。
 - OpenCL APIの契約・エラー処理は**C Runtime**。Udon/VRChat GPU操作・Service呼出・同期は`__vrc_*` compiler intrinsics → `vrc`へ。Host + Runtime LLVM IRを静的リンク。
@@ -99,32 +101,32 @@ Host .c / libc sources                     Device .cl sources
 
 ### 2.3 U# API、Unity、デバッグ
 
-- **アプリのエントリーポイントはユーザーのUdonSharp**。`main()`自動実行ではない。Cはリンク可能なライブラリ。Export属性（例`annotate("vrc_export")`）を付けたC関数のみ公開。
-- ExportごとにManifestから**型付きU# wrapper**をUnity Editor Importerが生成。同期呼出：予約Heap変数へのSetProgramVariable →公開Custom Event → GetProgramVariable。非同期：Start +完了通知Event/Status。論理API名とexport IDは安定化する一方、実際のevent/slot名は対象SDKのUdonSharp compiler出力へ一致させ、Manifestで物理ABI versionを固定する。
-- 同期/非同期はCall Graph解析で自動判定し、GPU待機可能性が呼出元まで伝播。U#には`async/await`を要求しない。
+- **アプリのエントリーポイントはユーザーのUdonSharp**。`main()`自動実行ではない。Cはリンク可能なHost libraryであり、`UDONCL_EXPORT`を付けた定義だけを公開する。注釈がexport発見の正本で、schema-v2 configは公開名・parameter表示名・binding namespace/class・callback契約などをoverrideする。
+- Exportごとのphysical entry adapter、Manifest、**低水準型付きU# binding**を同じMLIR export ABIからcompilerが生成する。同期呼出は予約Heap変数へのSetProgramVariable →公開Custom Event → GetProgramVariable、非同期はStart +完了通知Event/Statusを用いる。Editorはcompiler artifact内の`binding.cs`をimport/compileするだけで再生成しない。
+- 同期/非同期はCall Graph解析で自動判定し、GPU待機可能性が呼出元まで伝播する。C/OpenCL semanticsを保ったままMLIR Async dialectへ変換し、上流`async-func-to-async-runtime`にcoroutine CFGを生成させる。U#には`async/await`を要求しない。
 - 文字列はUTF-8 null終端C byte buffer ↔ U# stringをコピー。基本型・Udon typed arraysは直接、構造体はWrapperマーシャリング、生ポインタをpublic APIに出さない。共有配列は同一Udon array objectを参照できると実機検証されたときだけzero-copy、実行中の参照/寿命条件を明示。
 - 1 UdonBehaviour instanceごとにGlobals/Heap/Stack/VFS/サービスBindingが独立。`Initialize()`, `Reset()`, `Dispose()`とgeneration counterで古いGPU callbackを無視。未完了commandのTextureは安全になるまで保持。
 - 非同期失敗も完了Eventで通知＋Status（成功と区別）。Debug watchdogは診断のみで誤判定を避ける。
-- Unity統合は**外部Clang/MLIR CLI + Unity Editor Importer**、UPM package。Shader/Material/Udon Program Asset生成、wrapper C#生成とscript reload後のBindingの2段階処理。GUID保持・トランザクション的Import（失敗時既存正常Asset維持）。ManifestにCompiler/Runtime/SDK/ABI versionを記録し検証。
+- Unity統合は**外部Clang/MLIR CLI + Unity Editor Importer**、UPM package。Compilerがbinding C#まで生成し、ImporterはShader/Material/Udon Program Asset生成、C# import、script reload後のBindingを行う。GUID保持・トランザクション的Import（失敗時既存正常Asset維持）。ManifestにCompiler/Runtime/SDK/ABI versionを記録し検証する。
 - Udon ExternデータベースはインストールSDKの公開情報から生成/検証。`udonasm`は実opcode 1:1、TableGenで4 Dialectのop/type/attrを定義し、各々独立CMake library。**LLVM IR→High-level MLIR復元はそれ自体が独立CMake library**。
 - 開発時は、利用可能な**SDK付属Udon VM**を第一に利用。Unity Test Runner / ClientSim、実VRChat Build & Test。スタンドアロンVMが実証できれば活用するが、独自VMやFastUdonVMのみで正しさを断言しない。Compiler自体はmacOS/Linux上でUnityなしでもbuild/test可。
 
 ### 2.4 U# Host API・Binding実装の確定事項（Grilling 135以降）
 
 - 対象を当面 Unity 2022.3.22f1 / VRChat Worlds SDK 3.10.5 に固定する。論理export ID・公開名・TypeSchemaはUdonCLの安定ABI、event/parameter/result slotは当該UdonSharp compilerに合わせたversioned physical ABIとする。
-- ユーザー向け入口はImporter生成の型付きU# wrapperであり、raw event/slot ABIは内部実装とする。C HostとU# OpenCL Host APIは同じDevice artifact/runtimeを利用する二つのHost記述方式とする。
+- ユーザー向け入口はcompiler生成の低水準型付きU# export bindingであり、raw event/slot ABIは内部実装とする。公開APIの形はユーザーがC Hostのexportとして設計する。高水準ONNX Session U# wrapperは後続機能とする。
 - U#からCへ渡すprimitive arrayは安全性と寿命を証明できる場合に同一Udon arrayを借用してzero-copyとする。Unity Device memoryは明示的な固定allocationと全量CopyBufferを検証済み。次は一般Host MLIR/continuationと公開UdonBLAS SGEMM Unity gateを最優先し、その後ONNX MLIRへ進む。Map/SubBufferとhost-backed bufferは後回しとする。
 - 公開handleは一意なUdonSharpBehaviour instanceとし、物理GPU resourceは内部poolで再利用する。handleのgeneration/lifetime検査と物理resource所有権を分離する。
-- Importer生成U# bindingはlibrary-instance handleとして`IsInitialized()`、再入中の`StatusBusy`、`TryDispose()`後の`StatusDisposed`を実装する。`TryBindProgram`は非nullのraw programから新しいbinding lifetimeを開始し、内部RenderTexture/materialを公開handle ABIにしない。同期`i32`/`f32`に加えて1次元`int[]`/`float[]`を同一Udon array参照のままraw Host heapへ渡すphysical ABIを実装済み。固定Device bufferについてはbuffer ID指定の全量`TryWriteFloatBuffer`/`TryWriteIntBuffer`と、完了eventを指定する`StartReadFloatBuffer`/`StartReadIntBuffer`を生成し、RGBA8へbyte-exact packingして`Texture2D.SetPixels32`/`VRCGraphics.Blit`、`VRCAsyncGPUReadback`へ接続する。binding lifetimeごとのgenerationをreadback requestにsnapshotし、世代不一致の古いcallbackは通知せず破棄する。これは公開U# transfer面であり、Cのblocking OpenCL callをHost continuationへ接続する作業、async export wrapper、物理pool再利用は後続。
+- Compiler生成bindingは同期/非同期exportを同じMLIR export ABIから扱い、`binding.cs`、binding path/namespace/class、ABI fingerprintを生成する。設定の`public_name`は`Try`/`Start`を含まない論理名とし、生成規則から同期`TryX`・非同期`StartX`・status/result accessorを一意に作る。Manifestの`element_type`/`public_access`からdtypeどおりのwhole-buffer `TryWrite<Name>(float[]|int[])` / callback-first `StartRead<Name>(float[]|int[], receiver, event)`もcompilerが生成する。利用者readbackとC Host内部command readbackは一つのcallbackでmode分岐し、generationと`busy`/`readbackBusy`で寿命・再入を検査する。公開buffer APIを決めるID・名前・論理byte長・要素型・入出力accessもcanonical ABI fingerprintへ含め、Importerが独立に再計算する。Importerはcompiler sourceを配置するだけで再生成しない。旧Editor generatorはUnity removal gateまで互換経路としてだけ保持する。初期対応型は`int`、`float`、`int[]`、`float[]`とcallbackに必要なUdon型で、未対応型はboxingせずcompile errorにする。
 - 現行の一般ONNX Unity bundle、`UdonOnnxRuntimeBehaviour`、`UdonOnnxModelAsset`、texture arena、`static_inputs`、Material直接schedule、execution-plan JSONは、Arena AddとTiny LlamaをEditor/D3D11で実行できた**旧経路の検証資産**である。最終設計の実行基盤とはせず、新Host MLIR経路でMNISTが合格した時点で関連generator/parser/runtime/importerを一括削除する。
 - 現行Llama 3.1 8Bのplan-only preflight（546 node、225 Q4 call、322 direct Device pass、64 view、232 atlas、4,690,411,520 bytes）とexternal weight検査は容量・入力検証の事実として保持するが、execution planを新経路へ持ち込まない。ライセンス済み実重みがないため、全weight artifact、Unity import、数値推論は未検証のままである。
 - 現行Arena Add/Tiny Llama package sampleとscene配置UIは移行回帰用として、新Host MLIR経路の同等artifactが成立するまで保持する。移行後はexecution-plan依存を除去し、共通generated U# bindingだけを使用する。
 - packaged C/OpenCL Hello DispatchとSAXPYはimport時にgenerated typed bindingだけでなく、その公開`Try*`/named Write/async Read APIだけを使うU# controllerも生成する。domain reload後にcontrollerをbinding prefabへ自動添付し、binding参照を設定することで、配置したprefabをInteractしてend-to-end実行できる。raw event/heap slotはsampleへ露出しない。
 - 同じExamples menuは標準OpenCL Host APIのhello dispatchとSAXPY artifactも同梱し、compiler checkoutなしのimportからgenerated U# binding/prefab完成まで試せる。source CMake workflowは編集・再生成経路として維持する。
-- 固定Device bufferは`element_type`と`public_access`をOpenCLの実型・read/write flagに照合し、Importerが物理buffer IDを隠した`TryWrite<InputName>` / `StartRead<OutputName>` U# APIを生成する。buffer ID指定APIは低レベル互換面として残す。
-- C/OpenCL artifactのimport時にscene配置を選択でき、generated U# wrapperのcompile/domain reload後にprogram-scopedな一回限りのrequestを消費してbinding prefabのlinked instanceをactive sceneへ配置する。
-- 非同期IRの最初の境界として`vrc.await`と`vrc.event_status`をTableGen Op・Verifier・typed runtime intrinsic置換まで実装済み。`vrc.buffer_upload`と`vrc.buffer_readback`もILP32 Host pointerを受け取るtyped command/event境界まで実装済み。`vrc.await`は`may_suspend` Host関数内だけで合法とし、Unity upload/readback、Udon callback/frameへのloweringは後続。
-- `udonhl.frame_create` / `frame_store` / `frame_load` / `resume_dispatch` / `suspend`と`!udonhl.frame`を追加し、layout version、persist可能slot型、resume state、completion slot、suspend reason/token、`may_suspend`関数境界をVerifierで固定した。単一block・単一`vrc.await`についてi32/f32 live-valueをframeへ退避し、initial/resume CFGへ分割するpassを実装済み。1 library instanceで直列化するMVPとしてframeを静的Udon heap slotへlowerし、`suspend`のevent return後に別IUdonVM invocationからstate=1でlive valueとcompletion statusを復元できる。複数await/一般CFG/array slot、GPU callbackによるcompletion slot書込と自動resumeは後続。
+- 固定Device bufferは`element_type`と`public_access`をOpenCLの実型・read/write flagに照合し、compilerが物理buffer IDを隠した`TryWrite<InputName>` / `StartRead<OutputName>` U# APIを生成する。Importerは生成sourceとfingerprintを検証・配置する。buffer ID指定APIは低レベル互換面として残す。
+- C/OpenCL artifactのimport時にscene配置を選択でき、compiler-generated low-level U# bindingのcompile/domain reload後にprogram-scopedな一回限りのrequestを消費してbinding prefabのlinked instanceをactive sceneへ配置する。
+- `vrc.await`/event境界からmay-suspend call graphを固定点解析し、helperをinlineせず`async.func`/`async.call`/`async.await`へ変換した後、上流`async-func-to-async-runtime`まで通すC++ passを実装済み。Nativeでは同じ共通Async IRをLLVM coroutine/runtimeへlowerし、外部完了による親子call、同期点を挟んだ2回の連続suspend/resume、呼出し前に完了済みの即時経路を`lli`で実行して結果を検証済み。実UdonBLAS SGEMM call graphでも親子coroutineを分離した`host.async-runtime.mlir`をartifactへ出力できる。対応するRuntime/Coro op集合を検証し、symbol順のstatic frame IDと各suspendのresume PCを付与するUdon準備passも接続済みで、同artifactでは10 frame・17 suspendを計画できる。MLIR livenessによるtyped slot coloringと、PC/spill/async-object state・waiter・payloadのcompiler-private `udonhl.global` materialization、suspend前のPC/live-value保存、resume block先頭の型付き復元も実装済み。復元値はdominanceに基づいて各useへ接続するため分岐CFGを直列化せず、`i64`も8-byte slotとして保持する。direct call/returnを横断してcalleeのreturn objectとcallerのcall resultを同一canonical objectへ統合し、その領域へpending reset、waiter frame/PC、payload store/load、available/error state書込みを接続した。state encodingはpending=0/available=1/error=-1に固定し、ready/error判定をUdonHL load/compareへ変換してready済みobjectはsuspendを迂回する。最終Udon Async passは残る`async.runtime.*`/`async.coro.*`を除去し、event objectを`udonhl.async_bind_event`へ変換し、全resume requestを1個の`__udoncl_async_resume_dispatch`へ集約する。scalar UdonASM loweringはその17個の`udonhl.async_enter`をresume blockへの直接entryと静的return slotへ変換する。外部event用にはcanonical object ID公開slotとcompiler-private `__udoncl_async_complete(object_id,status)`も生成し、payload/state更新、waiter clear、dispatcher呼出しまで接続済み。SGEMMの最終IRは10 frame、17 resume point、127組のspill/reload、12 canonical object、17 waiter登録、22 dispatcher call（外部completion 2 branchを含む）、17 static entry、2 event bindingを持ち、動的`udonhl.async_resume`、Async Runtime/Coro、`vrc.event_as_async`の残存は0である。再帰、`async.execute`、may-suspend関数内のindirect callは明示errorにする。この最終経路はproduction assemblyへ接続済みであり、残るgateはUnity MCP上のcompiler-generated callback pump検証である。
+- 既存の`udonhl.frame_*`/`suspend`による単一await直接変換は、過去の実行検証を保持する移行用production経路であり、機能拡張先ではない。新Async backendがcompiler/Native/Unity/MNIST gateを通過した時点で、forced inline、手動effect propagation、Editor binding generatorと一緒に削除する。
 - CMakeは通常の複数source/target記述を入力とし、preset対応は後回しとする。Windows向けcompiler/toolchainはruntime packageと分離したVPM packageとして配布し、将来は`udonclc`を同梱してUnity UIからCMake directoryを指定できるようにする。
 - CMake-toolchain MVPは`find_package(UdonCL CONFIG)`とHost/Device source-library target、artifact targetとして実装済み。各targetの複数translation unitをClangでLLVM bitcode化し、target固有usage requirementsを保ったまま`llvm-link`でHost/Deviceごとに結合してから`udonclc`へ渡す。外部consumer CTestが各3 source・各2 targetと生成bundleを検証する。preset、Unity UI、compiler VPMへの実バイナリ同梱は後続。
 - `udoncl_add_unity_library`も`DEVICE_LIBRARIES`を受け取り、複数Device targetをlinkして選択したAOT kernelのShaderLab/HLSLとmanifestをUnity artifactへ同梱する。public CMake→Importer経路では、標準OpenCL Host APIで書いた固定AOT dispatchをtyped dispatchへ回復し、ordered read-only input buffer群 + 1 write-only output buffer + copied f32/i32 scalar群を生成materialへ束縛できる。`examples/saxpy`が2 buffer + i32/f32 scalarを通す。複数kernel、任意argument順、dynamic NDRangeは後続。
@@ -141,7 +143,7 @@ Host .c / libc sources                     Device .cl sources
 - 公開CMake target `hello-dispatch-unity-library`は標準OpenCL 1.2 Host Cの直線的なsetup/build/setarg/enqueue/release列を、固定1-output buffer + copied f32 + 1 work-itemのtyped dispatchへ回復する。Unity 2022.3.22f1でartifactをimport/reimportし、両回ともshader supported / 1 pass、material・output RT・VM heapの参照一致、SDK IUdonVM `DispatchSquare(3.0f)` Interpret/status 0、readback `[0,0,32,65]` = exactly `10.0f`、最終console error/warning 0、cleanup完了を確認済み（Client実機ではない）。同じ経路の`hello-int-dispatch-unity-library`もimport/reimport両回でinteger property/material/RT/VM heap参照一致、SDK IUdonVM `DispatchSquareInt(3)` Interpret/status 0、readback `[10,0,0,0]` = little-endian i32 `10`、最終console 0、cleanup完了を確認済み。
 - ONNXは同じ基盤上の別AOT packageとし、生成C Host orchestrationからUdonBLAS/UdonDNN/UdonATenを呼ぶ。PyTorch operatorを追加する前に、実際のPyTorch/CUDA実装が属するcomponentとinterfaceを確認して合わせる。
 - U# physical ABI、scalar C→UASM、typed wrapper/Importer、初期CMake/toolchain、固定Device buffer、straight-line GPU dispatchは段階的に実装済みである。以後の順序は§2.5およびP3.5/P6を正本とする。各段階は単独でtest可能にし、commit前は`python scripts/precommit.py`だけを主agentが実行する。
-- 公開CMake packageは複数Host/Device sourceを通常のCMake targetとして扱い、`udoncl_add_unity_library`でImporter入力（`manifest.json`、`host.uasm`、`display.shader`）を生成する。helper callをinlineできる同期scalar Host exportに加え、上記固定f32/i32 GPU dispatch artifactをUnity-readyとして生成する。一般buffer transfer、動的launch、非同期readback/continuationを含むartifactは未対応のままUnity-readyと表示しない。
+- 公開CMake packageは複数Host/Device sourceを通常のCMake targetとして扱い、`udoncl_add_unity_library`で自己完結Importer入力を生成する。binding指定artifactは`manifest.json`、`host.uasm`、shader/resourcesに加えて同期/非同期対応のcompiler生成`binding.cs`を含む。Async productionも静的frame/trampoline backendを使用する。
 
 ### 2.5 Host MLIR・UdonBLAS・ONNX移行の確定事項（Grilling 2026-11-03）
 
@@ -152,20 +154,24 @@ Host .c / libc sources                     Device .cl sources
 - CompilerはUdonBLAS固有patternを持たない。direct non-recursive call graph、internal/private global scalar・固定長配列、fixed local配列、typed pointer、GEP、証明済み範囲のmemory operationを一般C機能として回復する。型・範囲・aliasを証明できる配列はtyped memory、byte pointer/再解釈はraw memoryとする。未対応意味論は元location付きerrorにする。
 - OpenCL APIのhandle、queue、event、status、範囲検査、argument copyは共有C runtimeが所有する。Compilerが`cl*`関数名を直接GPU opへ置換せず、runtime内部の`__vrc_*`境界だけを`vrc.*`へsubstituteする。NativeとUnityは同じC runtime契約と非同期状態遷移を使用する。
 
-#### OpenCL非同期契約とRust型continuation frame
+#### OpenCL非同期契約とMLIR Async lowering
 
-- `clEnqueueWriteBuffer`/`ReadBuffer`の`CL_TRUE`と`CL_FALSE`を区別する。Non-blocking commandはenqueue後にCへ戻り、Host pointerの有効性・未変更はOpenCL契約どおりプログラマ責任とする。Compilerの必須borrow/lifetime lintは今回実装せず、将来の任意診断とする。Blocking write/read、`clWaitForEvents`、`clFinish`は共通`vrc.await(event)`へloweringする。
-- 1 instanceは1 Host execution contextと1 in-order queueを持つ。Command/eventには単調増加sequenceを与え、queue順をcallback到着順より優先する。Pending commandはqueue、buffer、event、参照allocationとgenerationを完了までretainする。Non-blocking commandだけが残ってC exportがreturnした場合はHost busyを解除し、suspended continuationがある間だけ新exportを`BUSY`で拒否する。
-- Native Udon backendもcommandをpendingにし、決定的な`PumpOneCommand`/`PumpUntilIdle`で`enqueue → suspend/return → completion → resume`を実行する。Unityだけを非同期化しない。数値oracleはこのbackendと独立したCPU referenceを用いる。
-- Suspend可能性はcall graphへ推移伝播し、High-level MLIR段階でlivenessを解析する。SuspendをまたぐC local scalar/配列はC上のlocal ownershipを維持したまま、Rustの`async fn`/pinned Futureに相当するinvocation frame fieldへ配置する。awaitをまたがないlocalはframeへ入れず、pending pointerがあるframeは移動しない。再帰なしcall graphから最大subframe深度を静的に確保し、正常・error・cancel後に決定的に再初期化する。
-- Continuation frameはlibrary public ABIではない。Suspend siteごとに内部PCを生成し、元関数・変数・scope・locationとのdebug mapを保持する。GPU/readback、budget、将来service待機で同じframe/state machineを使用する。Unity callbackは結果とgenerationを保存してresume eventを送り、callbackのC# stack内でUdon VMへ直接再入しない。完了時はstatus/result確定、frame解放、`busy=false`の後にU# callbackを通知する。
-- `cl_mem`は固定物理poolとは独立したgeneration付き論理handleとする。Buffer capacityはcompile/import時に事前確保し、runtime dimensionが容量を超えれば明示statusを返す。部分ReadBufferを意味論どおり扱い、初期Unity backendが全Textureをreadbackして要求範囲だけcopyすることは許可する。Write commandはborrow元を安全に再利用でき、後続in-order dispatchが転送後を観測できる時点で完了する。
+- `clEnqueueWriteBuffer`/`ReadBuffer`の`CL_TRUE`と`CL_FALSE`を区別する。Non-blocking commandはenqueue後にCへ戻り、Host pointerの有効性・未変更はOpenCL契約どおりプログラマ責任とする。Blocking write/read、`clWaitForEvents`、`clFinish`だけをsource固有`vrc.await`へ変換する。
+- `vrc.await`へ到達する関数をC++ MLIR passで固定点解析し、affected function/call/return/waitを`async.func`/`async.call`/`async.await`へ変換する。通常のC callはcallee完了を直後にawaitし、最適化が意味保持を証明した場合だけ移動・削除する。helperを強制inlineしない。
+- Canonicalizeと必要なSCF→CFの後、上流`async-func-to-async-runtime`へ渡す。ここまでをNative/Udonで共有し、Nativeは標準Async Runtime + LLVM coroutine、Udonは生成されたAsync Runtime/Coro CFGを静的Heap frameとresume trampolineへlegalizeする。
+- Udonにthread pool、CPU task scheduler、polling、time slicing、fairness policy、汎用ready queueを作らない。GPU/event completionが一意なcontinuationを選び、generated switchでresumeする。child完了は同じtrampolineでparent continuationへ進む。複数event待ちはcounterの最後の完了だけがcontinuationを起こす。
+- 初期Udon backendは1 component instanceにつき1 active root、pending async objectにつき1 waiter、structured direct call、非再帰call graphだけを許可する。`async.execute`、並行async function、escaping coroutine result、indirect async call、複数waiterは明示errorにする。GPU command/event自体の並行性は保持する。
+- Suspendをまたぐlive SSA値、PC、async object state/waiter/payloadを静的logical frameへ保存し、callee resultとcaller call resultを同一canonical objectへ統合するAsync runtime legalizationは実装済みである。現行実装はこれらを個別compiler-private `udonhl.global`へmaterializeするが、最終storageでは§2.7の物理型別persistent spill arrayへ集約する。liveness、resume PC、ready/error fast path、共有dispatcher、外部completion entryの意味論は維持し、保存先だけを新allocatorへ置換する。
+- 通常のOpenCL/runtime failureは`cl_int` payloadとして伝播し、Async infrastructure errorと区別する。上流が生成するrefcount/lifetime opはwhole-program ownership解析で静的解決し、証明できない形は初期backendで拒否する。
+- `cl_mem`は固定物理poolとは独立したgeneration付き論理handleとする。Buffer capacityはcompile/import時に事前確保し、runtime dimensionが容量を超えれば明示statusを返す。部分ReadBufferを意味論どおり扱い、初期Unity backendが全Textureをreadbackして要求範囲だけcopyすることは許可する。
 
 #### Manifest、CMake、U# binding
 
-- C exportはsource annotation（例`UDONCL_EXPORT(stable_id, public_name)`）からLLVM metadata、MLIR attribute、Manifestへ伝播する。Async性と型はcompilerが推論する。現在の`unity-library.json`にあるkernel、buffer、argument kindの重複記述は廃止し、残す場合もprogram表示名など導出不能なpackage policyだけに縮小する。
-- Manifestはexport、buffer、kernel、Materialのstable ABI IDを持つ。各kernel operandについて元index、property、buffer/scalar source、access、formatを完全なbinding tableとして生成し、Importerによるstatic/dynamic filter後の再採番を禁止する。raw heap slot、Material property、RenderTexture slot、continuation PCはgenerated U# wrapper内部に隠す。
-- Suspendしないexportは型付き`TryX(..., out result)`、suspend可能exportは受付statusを返す`StartX(..., completionEvent)`と最終status/outputに分ける。公開pointerはelement type、direction、extentまたはlength引数との関係を証明できる1次元arrayだけにする。
+- C exportは`UDONCL_EXPORT` source annotationからLLVM metadata、MLIR attributeへ伝播する。Annotationがexport発見の唯一の正本であり、schema-v2 `unity-library.json`はpublic name、parameter表示名、binding namespace/class、callback、package policyだけをoverrideする。Stable export IDはpublic signatureからcompilerが生成し、衝突はerrorにする。Async性はcompilerが推論する。
+- Physical export adapter、Manifest、低水準U# `binding.cs`を同一MLIR export ABIから生成する。Manifest fingerprintはexport ID/name/order、parameter name/type、result、may-suspend effect、callback、binding namespace/class、runtime/physical ABIを含む。Compiler artifactはUASM/shader/manifest/binding source/resourcesだけでUnity import可能にする。
+- Importerはcompiler bindingを受け入れる前にtyped exportとbinding metadataからcanonical v2 ABIを再構築し、SHA-256 fingerprintを再計算して完全一致を要求する。形式だけの検査にはしない。physical ABIも固定値と完全一致を要求する。
+- Suspendしないexportは型付き`TryX(..., out result)`、suspend可能exportはreceiverとcompletion event名を受けるcallback-firstの`StartX(...)`とstatus/result accessorに分ける。これはU#がblocking waitできないための共通transportであり、model固有Session/request APIではない。公開Host pointerは対応U# arrayへ写し、extentは明示C引数とする。`cl_mem`はopaque handleのままでarrayにしない。
+- Editor Importerはcompiler生成`binding.cs`を配置・compile・接続し、Manifestからsourceを再生成しない。新規公開APIの正本はschema v2とし、schema v1のbinding指定は既存example移行用の明示的な互換入力としてだけ保持する。
 - Installed CMake packageは通常のtarget graphを使う。利用者は`find_package(UdonBLAS CONFIG)`後に`UdonBLAS::UdonBLAS`をlinkし、Host source、header、全Device kernel、runtime依存を推移的に得る。UdonCL内部metadataはHost/Device source種別を保持する。Acceptanceはsource tree hintでなく一時install prefixだけから独立projectをconfigure/buildする。
 - Editor Pluginの現段階の入口はONNX file pickerではなくCMake project directoryである。Editorは管理build directory（`Library/UdonCL/Builds/<project-hash>`）へconfigureし、CMake File API等からartifact targetを列挙し、選択targetをbuild、Manifest検証、transactional importする。Preset UIは後回し。ONNX model、external weights、dynamic capacityはユーザーCMake project側で宣言する。
 
@@ -174,8 +180,8 @@ Host .c / libc sources                     Device .cl sources
 - 最初の公開gateは独立CMake exampleから通常の`udonblasCreate`/`udonblasSgemm`/`udonblasDestroy`を呼び、`m=1,n=10,k=144`をUnity SDK IUdonVM上で実行すること。全144要素・10列に非ゼロ値を持たせ、CPU referenceとの10出力、最大誤差、9 tileのdispatch/readback/resume、reimport、console error 0、cleanupを検証する。UdonBLAS Unity専用`#ifdef`、SGEMM-only create、手書きUASMへ逃げない。
 - UdonBLAS programは複数kernelを含むAOT programとしてManifest/Importerが扱う。`clCreateProgramWithSource`はlinked Device libraryの既知programを解決し、未知kernelを拒否する。`m/n/k`等はruntime値のまま維持し、libraryのprofile制限・tilingをONNX専用kernelで回避しない。最初は現在のC実装どおりtileごとにblocking readback/resumeして意味保存を優先し、GPU内累積は後続最適化とする。
 - ONNXはexecution-plan JSONを生成・解釈しない。ONNX MLIRから直接`func.call`でUdonBLAS/UdonDNN/UdonATenを呼び、対応libraryがないoperatorだけcustom OpenCL Host/Device callへloweringする。所属component/interfaceはPyTorch/CUDA実装を確認して選ぶ。生成Host call graphを共通Host MLIR/continuation/Manifest経路へ通し、ONNX専用Material scheduler、texture arena binding、`static_inputs`を持たない。
-- Dynamic ONNX dimensionは可能な限りruntime valueとしてlibrary APIとshape Host MLIRへ渡す。物理bufferだけ最大capacityを事前確保する。Initializer weightはmodel initializationで一度uploadし、immutable物理assetは共有可能だがlogical handle/queue/stateはinstanceごとに持つ。Generated `RunModel`は内部library/custom kernel callをまとめたasync exportとし、U#にはtyped input/output、受付status、完了eventだけを公開する。
-- 実装順は、(1) 既存high-level recoveryをmulti-block Host/UdonHLまで接続、(2) pointer/global/memoryとcall graph、(3) 共通async runtimeとpinned continuation frame、(4) installed CMake `UdonBLAS::UdonBLAS`、(5) public SGEMM Unity gate、(6) ONNX MLIR→library calls、(7) MNIST Denseを公開SGEMMで実行、(8) UdonDNN/UdonATenとLlama 8B、(9) 旧execution-plan経路削除、とする。
+- Dynamic ONNX dimensionは可能な限りruntime valueとしてlibrary APIとshape Host MLIRへ渡す。物理bufferだけ最大capacityを事前確保する。Initializer weightはmodel initializationで一度uploadし、immutable物理assetは共有可能だがlogical handle/queue/stateはinstanceごとに持つ。最初のMNIST Hostはユーザーが設計できる通常のCとして`Initialize`、`WriteInput`、`Run`、`ReadOutput`をexportし、compiler-generated low-level U# bindingから呼ぶ。高水準ONNX Session U# APIをcompilerが固定しない。
+- 実装順は、(1) `UDONCL_EXPORT`とschema v2、(2) `vrc` eventからMLIR Asyncへのcall graph変換、(3) upstream Async Runtime/Native LLVM coroutine、(4) Udon static frame/resume trampoline、(5) physical adapter/Manifest/低水準U# bindingのcompiler生成、(6) CMake/Importer統合、(7) MNIST C Host Unity gate、(8) 旧直接await/強制inline/Editor generator削除、(9) TinyLlama汎用経路、とする。
 - 2026-11-03 checkpoint: installed CMakeにexecution-plan JSONを生成しない`udoncl_add_onnx_host_library`を追加し、MNIST ONNXのDense tailを`udonblasSgemm(m=1,n=10,k=144)`へ直接生成した。Unity 2022.3.22f1 / Worlds SDK 3.10.5の生成U# bindingで144入力、async完了、10出力を実行し、status 0、最大絶対誤差`3.814697e-6`、cleanup完了を確認済み。これはDense受入checkpointであり、MNIST全graphのmulti-kernel Host call graphとONNX MLIR lowering、Llama 8Bは未完了である。
 - 同checkpointでinstalled `UdonDNN::UdonDNN` / `UdonATen::UdonATen` targetも追加し、生成MNIST Host C、UdonBLAS、UdonDNN、UdonATen、OpenCL AOT runtimeを重複定義なしに一つのHost LLVM moduleへlinkできることを外部CMake consumerで確認済み。次の阻害要因は複数Device kernelを一つのUnity library config/Manifestへ導出するcompiler側の対応である。
 - `device_kernels`配列から同一Device LLVM module内の複数gather kernelを個別回復し、一つのUnity artifactへ複数Shader/HLSL/Manifest entryとして生成するcompiler対応まで実装済み。UdonBLAS SGEMM+SGEMVの2-kernel artifactで検証した。full MNISTの次の阻害要因はOpenCL AOT runtimeのkernel-id/argument ABIがSGEMM dispatch一つに固定されている点である。
@@ -196,6 +202,7 @@ Host .c / libc sources                     Device .cl sources
 - ONNX-MLIRは`0.5.1.2` branchのcommit `7cc4a17af7bc7202b14e9b839ac87e9bdf81b8be`へ固定し、既存のprebuilt LLVM/MLIR 23.1.4 SDKを使う。LLVM自体は再buildしない。ONNX-MLIRのtests、StableHLO、Java、acceleratorは無効化する。小さなAPI差はversioned patchで吸収するが、大規模なLLVM portが必要なら実装を止めて依存戦略を再評価する。
 - ONNX frontend binaryはOS・architecture・ONNX-MLIR commit・LLVM versionをkeyにしたversioned artifact/cacheとする。core build/runtimeはnetwork accessを行わず、model downloadはexample/test helperだけが担う。
 - `udoncl-opt`へONNX dialectとONNX canonicalization/lowering passを登録する。`udoncl-onnx`はprotobuf importと標準pipelineを実行するdriverとし、個別passは`udoncl-opt`から直接実行可能にする。対応operatorはregistry/schemaから生成し、standard ONNXとONNX Runtime extension domainを別registryにする。未対応operator/domain/opsetはimport直後にmodel/source location付きで明示的に失敗させる。
+- Pythonはmodel取得・cacheとC++ driver起動だけに限定する。protobufをONNX Dialectへimportした後の検証、canonicalize、shape/constant処理、operator選択、bufferize、library ABI生成はすべてC++のMLIR passで行い、PythonによるMLIR text解析やHost C/MLIR生成へfallbackしない。
 - Canonicalizationはmodel profileを持たないONNX→ONNX/標準MLIR変換とする。ONNX execution-plan JSON、profile固有Host emitter、ONNX専用Material scheduler、texture arena binding、`static_inputs`は新経路合格後に削除する。
 
 #### UdonONNXOperatorsと共通Device memory
@@ -204,9 +211,10 @@ Host .c / libc sources                     Device .cl sources
 - `com.microsoft::MatMulNBits`はgeneric operatorとして実装する。`bits=2..8`、2の冪かつ16以上のblock size、packed/unpacked zero point、任意の`g_idx`/bias、論理FP32/FP16/BF16、妥当な任意K/N tilingを扱う。量子化済みONNX initializerをlosslessにrepackし、runtime内で再量子化しない。generic実装が合格した時点で`udonatenWeightInt4packMm`のpublic C API、kernel、Unity prefab/import logic、専用testを削除する。
 - Device allocationはcallerまたはsessionが所有する。全libraryは共通のgeneration付きbuffer handle、byte offset、typed viewを受け取り、一つのcontextとin-order queueを共有する。descriptorはstorageを所有せず、CUDA device pointer/cuBLAS/cuDNN descriptorと同様に外部storageを参照する。workspaceは明示し、livenessによりintermediate allocationを再利用し、KV cacheはrun間で永続化する。
 
-#### Session API、CMake、model input
+#### C Runtime、CMake、model input
 
-- `UdonOnnxSession`はmodel固有methodでなくtensor metadataとindex/nameに基づく汎用APIを公開する。入力は`TryWriteInputInt32/Int64/Float`、出力は`StartReadOutputInt32/Int64/Float`、実行はasync `StartRun`とし、busy/status、completion event、session/buffer generation、破棄後callback拒否を共通runtime契約に従って扱う。
+- `UdonONNXRuntime`のC APIはtensor metadataとindex/nameに基づく汎用session/buffer操作を提供してよいが、初期U#公開面をSession形に固定しない。利用者が通常のC Hostに`Initialize`、`WriteInput`、`Run`、`ReadOutput`または統合`Infer`を`UDONCL_EXPORT`し、compilerはその低水準bindingだけを生成する。
+- C++ ONNX Host finalizerが生成するmodel非依存の5個の物理binding関数には`udoncl.export`を付与し、schema-v2 `export_overrides`だけで外部CMake artifactを生成できる。stable export IDは署名から導出しJSONへ重複記載しない。通常C Host wrapperを持つartifactはschema-v2 `internal_exports`でこの5関数を非公開にでき、未注釈・重複・overrideとの競合をcompiler errorにする。この16 scalarへflattenした物理adapterはcompiler-generated binding内部面であり、利用者向けtensor APIにはしない。MNISTとbounded Transformer fixtureは通常C Hostが明示`clCreateBuffer` allocationを`udonclDeviceBufferAdopt`でgeneration付きhandleへ所有権移譲し、`udonclBufferView_t` tensorをsessionへbindする経路へ移行済みである。公開U#面は`Initialize`/dtype付きwhole-buffer input/`Run`/callback readback/`Shutdown`だけとし、Transformerのpresent key/valueはpast key/valueのdevice bufferへ直接bindしてrun間で再利用する。
 - Operator間のtensorはDevice bufferのまま渡し、readbackは選択したgraph outputだけに限定する。output bufferを次runのinputへbindできるI/O bindingを提供し、KV cacheをCPUへ往復させない。
 - `udoncl_add_onnx_host_library`は`MODEL`を必須、genericな`DIMENSION_BOUNDS`を任意とする。`PROFILE`、`EXECUTION_PROVIDER`、weight overrideは廃止する。ONNX initializerを唯一のweight sourceとし、embedded dataとmodel directory以下の標準external dataを扱う。path traversal、offset/length、重複・欠落・size/hash不整合をconfigure/build時に検証する。
 - Editor Pluginは引き続きユーザーのCMake directoryを選択してtargetをbuild/importする。ONNX model pickerやcompiler同梱UIは後続とし、model、dimension bounds、artifact targetは通常のCMakeで宣言する。
@@ -257,14 +265,69 @@ Host .c / libc sources                     Device .cl sources
   `UdonONNXOperators`と既存library callへlowerし、embedded initializerを巨大C配列
   ではなくimmutable Device weight assetとしてupload/bindする部分、およびその後の
   native/device/Unity数値比較である。ここをmodel固有fusionで回避しない。
+- ONNX Dialect import後の新経路からPython graph parser/Host emitterを除去し、shape
+  tensor評価、extension shape inference、constant materialization、provider選択、typed
+  session ABI、I/O binding、Host MLIR生成をC++ passへ統合した。MNISTとhidden-size-8
+  Transformerは公開CMake consumerから実library callをlinkしたUnity artifact生成まで
+  合格した。固定TinyLlamaは22層のshapeをC++ passで静的化でき、次の阻害点は既存の
+  INT32・小容量`udonatenEmbedding`では代替できないINT64・大容量generic Gatherである。
+- C HostのAsync→Udon静的frame経路にcall-site livenessを考慮した既存の個別Heap
+  slot coloring、再帰拒否、call-siteごとのHeap slotを使わない固定長return-address
+  materialization、単一使用定数の直接materializeを実装し、production `host.uasm`を
+  最終Async経路へ切り替えた。これは新storage allocator導入前のbaselineである。
+  現在の物理address合計は汎用MNISTがdata 471 + extern 41 = 512、schema-v2 C Hostを
+  含むbounded Transformerが462 + 49 = 511で、UdonBLAS SGEMMも512以下である。
+  Compiler生成`binding.cs`は同期exportに加えてAsyncの`Start`/status/result、callback、
+  upload/readback command pumpを生成し、UdonBLAS SGEMM、MNIST、hidden-size-8
+  TransformerのCMake artifactで回帰検査する。公開whole-buffer APIのID・名前・byte長・
+  element type・accessもcanonical ABI fingerprintに含め、compiler生成値と独立Python再計算が
+  UdonBLAS artifactで一致し、公開buffer名変更でhashが変わることを検証する。Unity validatorも
+  同じrecordを再計算し、byte長だけを改変したartifactを拒否するEditor testを持つ。生成
+  `binding.cs`はfingerprint・namespace・classのidentity headerも持ち、ImporterはManifestとの
+  完全一致をcopy前に検査するため、生成型の不一致をprefab finalizerの待機ではなくartifact
+  validation errorとして報告する。検証済みcompiler bindingは旧generatorと分離したImporter
+  branchでbyte-for-byte copyされ、MNIST/TransformerのUnity lifecycle testも同一性を要求する。
+  Nativeは共通Host Async契約のVRC eventを`async.value<i32>`へ変換し、
+  upstream Async Runtime→LLVM coroutine split/cleanup→`lli`で親子callを実行するCTestを
+  追加した。event payload 7で中断中の計算が再開し35+7=42になることを検証する。
+  MNISTは通常C Hostの`UDONCL_EXPORT`をHost MLIRへlink後も保持し、explicit OpenCL
+  input/output allocationをwhole-buffer公開APIへ結び付けるschema-v2 artifactへ移行した。
+  physical 5関数は`internal_exports`で隠し、CMake consumerは公開3 exportとflattened
+  adapter非露出を検査する。bounded Transformer fixtureも同じschema-v2 C Hostへ移行し、
+  input IDs/past key/past valueをdtype付きwhole-buffer入力、logitsをcallback readback出力とする。
+  present key/valueはpast key/valueのdevice bufferに直接bindし、旧要素単位APIと手動bind APIは
+  公開bindingから除去した。MNIST、bounded Transformer、UdonBLASのCMake回帰はfinal
+  `host.udon-async.mlir`から`vrc.await`、Async Runtime/Coro、dynamic `udonhl.async_resume`が
+  消え、共有resume dispatcherだけが残ること、およびassemblyが旧resume-state slotを持たず
+  compiler-private completion entryをexportすることを共通検査する。
+  Luna/xhigh Unity MCP経路ではcompiler生成MNIST bindingのbyte-for-byte importとC# compile
+  まで成功した。最後にUnity実行済みのartifactはfocused test 0/1で、SDK Udon VMの10秒
+  制限によりPC 468,832、同期helper `get_convolution`内で停止し、数値比較には未到達である。
+  C上では小さいdescriptor accessが現行byte raw heapで多数のarray/shift externへ展開され、
+  cooperative checkpointの既存cost modelも同期calleeの推移的コストを数えないことを確認した。
+  checkpoint増加だけを最終解とせず、§2.7のwhole-program scalar promotionとstorage allocatorで
+  descriptor/一時pointerを通常経路から除去してから、残る長い同期区間へcheckpointを配置する。
+
+### 2.7 Host storage allocator（Grilling 2026-11-05）
+
+詳細な実装仕様・コスト根拠・段階・テスト・受入条件の正本は
+[HOST_STORAGE_ALLOCATOR_PLAN.md](HOST_STORAGE_ALLOCATOR_PLAN.md) とする。
+
+- Whole-program promotion後に、固定公開slot、typed scalar register、物理型別typed spill array、
+  word-packed raw memoryの4層へ分類する。初期backendは非再帰・1 active rootに限定する。
+- Suspendをまたぐ値はpersistent typed spillへ保存し、register、spill index cache、raw fallback、
+  externを含む最終address数を512以下にする。超過時は内訳付きcompile errorにする。
+- 最初のgateは利用者向けgenerated U# APIだけでMNISTのinitialize、784要素input write、callback-first
+  run、10 logits read、shutdownを行うUnity Test Runner数値試験の合格と10秒watchdog解消である。
+  checkpoint追加だけをbyte raw heap中心のHost経路の最終解にしない。
 
 ## 3. ABIとExecution Contract
 
 ### 3.1 Host C ABI
 
 - Target `vrc-udon-unknown`（仮名）。整数のサイズ、bitfield layout、struct packing、long double、`va_list`, `setjmp`などは**Clang TargetInfo/DataLayoutでテストベースに確定**すること。`int/long/pointer=32`, little-endianは決定済みであり、host tripleを偽の既存ターゲットに紛れ込ませない。
-- Heapのbyte addressing、effective type、strict aliasing、volatile、`memcpy`, unaligned access、signed/unsigned conversionをC仕様に沿って実装。native arraysは最適化手段でありABIの公開型ではない。
-- メモリ領域の割当表は`base: u32`, `size: u32`, `kind: raw|typed`, `generation`, `backing`, `permissions`を持つ。`ptrtoint`/`inttoptr`後のprovenanceが曖昧ならallocation lookup + byte-oriented semanticsへ。uintptr overflow/invalid memory accessはDebug診断と必要なRelease安全チェック。
+- Heapのbyte addressing、effective type、strict aliasing、volatile、`memcpy`, unaligned access、signed/unsigned conversionをC仕様に沿って実装する。SSA promotionとtyped register/spillは物理最適化でありABIの公開型ではない。observable byte memoryが必要なobjectはlittle-endian word-packed raw heapへ戻す。
+- メモリ領域の割当表は`base: u32`, `size: u32`, `kind: raw|typed`, `generation`, `backing`, `permissions`を持つ。`ptrtoint`/`inttoptr`後のprovenanceが曖昧ならallocation lookup + byte-oriented semanticsへ戻し、aligned word fast pathとunaligned byte head/tailを区別する。uintptr overflow/invalid memory accessはDebug診断と必要なRelease安全チェック。
 - `cl_mem` / `cl_kernel` / `cl_program` / `cl_event` opaque handlesは各tableでタイプ検証（ゼロやstale IDは無効）。Host flat pointerとGPU virtual pointerとhandleを混同しない。Entry/return framesは同一library instanceに属する。
 
 ### 3.2 U#↔C Export ABI
@@ -297,9 +360,9 @@ Grilling 12の決定は**方式C：LLVM IRからHigh-level MLIRへの包括的�
 
 ### 4.2 Host pipeline
 
-`Clang → LLVM IR (host + C Runtime + libc static link) → Import → Common High-level Recovery → ABI/alias analysis → udonhl (with func/scf/cf/arith) → vrc intrinsic substitution → SCC recursion lowering → Continuation liveness and frame lowering → typed-array/raw-memory selection → safepoint insertion → Udon extern legalization → udonasm → verifier → .uasm + export ABI manifest`。
+`Clang → LLVM IR (host + C Runtime + libraries static link) → Import → Common High-level Recovery → export-aware internalization → whole-program SROA/mem2reg/inlining/constant propagation/descriptor specialization/DCE → ABI/alias analysis → vrc intrinsic substitution → may-suspend call graph to MLIR Async → SCF-to-CF/canonicalize → upstream async-func-to-async-runtime → Native LLVM coroutine or Udon static-frame/trampoline legalization → udonhl → 4-layer storage planning/register allocation → Udon extern legalization → udonasm → verifier → .uasm + export ABI manifest + binding.cs + allocator report`。
 
-順序上、非同期Call Graphとlive-value analysisは再帰stack frame layout・slot allocationと連携し、**GPU callbackで従来のUdon event stackは残らない**ことを前提にする。Static slot/inliningは普通のcall向けに最適化する。
+順序上、promotionとwhole-program specializationをstorage planningより先に完了し、非同期Call Graphとlive-value analysisを非再帰interprocedural register/spill allocationへ渡す。**GPU callbackで従来のUdon event stackは残らない**ことを前提にし、再帰SCCは初期backendで拒否する。
 
 ### 4.3 Device pipeline
 
@@ -352,8 +415,8 @@ Grilling 12の決定は**方式C：LLVM IRからHigh-level MLIRへの包括的�
 
 ### `udonhl`の重要不変条件
 
-1. `udonhl.load/store`は完全なC byte memory modelに従う。Typed native arrayは最後のloweringの最適化であり、strict aliasing未証明を理由に結果を変えない。
-2. 全`udonhl.suspend`は対応するresume stateを持ち、live scalarと再帰stackを保存済み。永続化不可能なUdon object handleを持ち越すケースはVerifierで拒否。
+1. `udonhl.load/store`は完全なC byte memory modelに従う。Scalar promotion、typed register、typed spill arrayは最後のloweringの物理最適化であり、strict aliasing未証明を理由に結果を変えない。
+2. 全`udonhl.suspend`は対応するresume stateを持ち、live scalarをpersistent typed spillへ保存済みである。永続化不可能なUdon object handleを持ち越すケースはVerifierで拒否し、再帰stackは初期backendの対象外とする。
 3. 非同期関数のcallee/callerには`may_suspend`が伝播、同期Export wrapperが待機する関数を誤って呼ばない。
 4. 32-bit pointerでC ABIを表現するが、`i32`とptrを型として分ける。任意ポインタを最適化専用typed addressへ誤変換しない。
 
@@ -374,9 +437,9 @@ Grilling 12の決定は**方式C：LLVM IRからHigh-level MLIRへの包括的�
 | 9 | `udonasm.copy` | 9 | none | `PUSH src_slot; PUSH dst_slot; COPY`でsource value→destination。順序をVerifier/Golden Testで保証。 |
 
 **補足（Opcode 1:1に必要な設計）**:
-- Udon VMにnative function call/return/localsはない。High-levelのcallは`JUMP` + 戻り先`SystemUInt32` + `JUMP_INDIRECT` + Heap保存にLowering。相互再帰はSCCでstack framesを構成する。
+- Udon VMにnative function call/return/localsはない。High-levelの非再帰callは`JUMP` + 戻り先`SystemUInt32` + `JUMP_INDIRECT`へlowerし、call graph全体の静的interferenceでregister/spillを割り当てる。再帰SCCは初期backendで拒否し、将来のdynamic frame対応まで通常callへ混ぜない。
 - 値計算・配列操作はSDK Externを使い、`PUSH` sequence→`EXTERN`へ。`udonasm.extern`は**単一のVM命令**であり、引数PUSHを隠すHigh-level pseudo-opにはしない。
-- `.data` declarations: name / Udon type（例`SystemInt32Array`）/ initial value / visibility/sync mode。Static Slot Allocator・Global Init・Export ABI stubが生成する。labelsとcode addressesはAssembler/relocation passが付ける。`udonasm`はSSA型の値レジスタを導入しない。
+- `.data` declarations: name / Udon type（例`SystemInt32Array`）/ initial value / visibility/sync mode。固定公開slot、型付きscalar register bank、物理型別spill array、word-packed raw heap、Global Init、Export ABI stubをstorage plannerが生成する。labelsとcode addressesはAssembler/relocation passが付ける。`udonasm`自体はSSA型の値レジスタを導入しない。
 - Verifier: 全jumpのアドレス整列/範囲、data/Extern slots、stack effects、Extern signature、Export名衝突、同位置label aliasing、Return sentinel、安全なcallback resume入口。
 
 ## 8. `vrc` Dialect — 全Operation一覧（13 Op）
@@ -438,7 +501,7 @@ Grilling 12の決定は**方式C：LLVM IRからHigh-level MLIRへの包括的�
 - 独自Dialect v0.1の完全一覧: `udonhl` **22**, `udonasm` **9**, `vrc` **13**, `vrcgpu` **13**、合計**57 Op**。この文書で明記しない独自Opは**初期仕様に存在しない**。新規追加は設計改訂＋対応するlowering/Verifier/Testを必須とする。
 - 標準MLIR Op全体を57に数えない（`func`, `arith`, `math`, `cf`, `scf`, `gpu`, `memref`, `affine`, `llvm`, 必要なら`vector`等）。自前再定義はしない。Importer/Raising中の標準Dialect OpについてもLegalization/Passごとのallowlistを設ける。
 - `udonhl.call` + `func.func` → Udon static call slots / recursive frame code → `udonasm.push`, `udonasm.copy`, `udonasm.jump`, `udonasm.jump_indirect`、data/metaはExport directiveへ。
-- `udonhl.load/store/memory` → typed array Externまたはraw memory Extern/IR sequences（provenanceに基づく）。`udonhl.suspend/frame_*` → heap slots / return state / `udonasm.jump` event returnと`jump_indirect` resume等。
+- promotion後に残る`udonhl.load/store/memory`は、物理型別spill array Externまたはword-packed raw memory sequenceへprovenanceに基づいてlowerする。`udonhl.suspend/frame_*`はpersistent typed spill、return state、`udonasm.jump` event return、`jump_indirect` resumeへlowerする。
 - `vrc.*` → available SDK Externs + Udon heap/control-flow、またはgen C helper→udonhl。GPU Callback event stubもdata/metadataに。`vrcgpu.*` → HLSL fragments + ShaderLab + Manifest、Udon命令にはならない。
 - **独自LLVM IR → High-levelライブラリ**はDialectではなくConversion/Analysis/Pass群。独自Opを強制追加しない。
 
@@ -487,17 +550,17 @@ Grilling 12の決定は**方式C：LLVM IRからHigh-level MLIRへの包括的�
 
 - Runtime Cはprogram name/known source idをAOT manifestに照合。`clCreateProgramWithSource`が静的既知Kernelに対応することを**コンパイル時検証**し、実行時のソース変更は拒否または明確なbuild failure。
 - `clSetKernelArg`はサイズ/型を検査して呼出時copy、pointer to `cl_mem`のvalueをHandle Tableへ保存。`clEnqueueNDRangeKernel`はrequest構築/manifest validationをし、`vrc.dispatch`に移る。
-- `clFinish`とblocking read/writeの継続は`vrc.await`→`udonhl.suspend`で再開。`cl_event`全APIは初期対象外でも内部event token/command sequenceを持つ。外部event wait listは未対応なら明示エラー。
+- `clFinish`とblocking read/writeは`vrc.await`からMLIR Asyncへ変換し、上流Async Runtime/Coro CFGをNative coroutineまたはUdon static-frame/trampolineへlegalizeして再開する。`cl_event`全APIは初期対象外でも内部event token/command sequenceを持ち、外部event wait listが未対応なら明示エラーにする。
 
-## 12. U# WrapperとUnity Importer
+## 12. 低水準U# BindingとUnity Importer
 
-1. CompilerはExport signature、Heap slots、イベント名、sync/async、Service requirementsとGPU pass metadataをManifestへ。
-2. Editor Importerの独立したC#ライブラリ **`VRCWrapperGenerator`** がManifestからU# C#クラスを生成。`Editor`の本体はProgram Asset/Shader/Material生成とGUID保持、binding、validationを担当。
-3. U# Wrapperは`UdonBehaviour`参照を持ち、`SetProgramVariable`, `SendCustomEvent`, `GetProgramVariable`で通信。UdonSharpで実際に認められたvalue type、array、event名か、最小End-to-Endで検証。
-4. 同期メソッドは戻り値型とStatusを保証。Asyncメソッドは`StartX(args)`＋`OnXCompleted()`、`GetXResult()`＋`GetXStatus()`など明確なAPIを生成。U#側がイベントを明示登録できるようにする。
-5. `Initialize/Reset/Dispose`、Busy、Generation、failed readback、reentrant callbackの振る舞いをGeneratorとRuntimeで一致させる。
-6. `.shader` import→`Material` generation→U# script compile/domain reload→Post-import Asset/Program Bindingという複数フェーズ。中間状態をLibrary/Editor metadataで管理し、失敗時既存Assetを保持。Asset pathの安定性、GUID/scene referenceの保持をテスト。
-7. Public SDK APIだけでのcustom Udon Program Asset生成の可否を検証。公開APIで不可能なら**最初の実装Spikeで修正方針を決める**。SDK private Reflectionへの黙った依存は禁止。
+1. CompilerはMLIR export ABIからphysical Udon entry、Manifest、型付き`binding.cs`を同時生成する。
+2. Bindingは`UdonBehaviour`参照を持ち、`SetProgramVariable`, `SendCustomEvent`, `GetProgramVariable`で通信する。物理event/slot名はprivate generated constantsとする。
+3. 同期exportは`TryX`、suspend可能exportはreceiver/eventを受けるcallback-firstの`StartX`とstatus/result accessorを生成する。ONNX固有request/session APIは勝手に追加しない。
+4. Editor Importerはcompiler artifact内のC#を配置・compileし、Program Asset/Shader/Material生成、GUID保持、参照接続、ABI validationを担当する。Manifestからbinding sourceを再生成しない。
+5. `.shader` import→`Material` generation→U# script compile/domain reload→Post-import Asset/Program Bindingという複数フェーズをtransactionalに管理し、失敗時既存Assetを保持する。
+6. Fingerprint、runtime/physical ABI、SDK compatibility、binding path/class、target、ready stateをImporterで検証する。Schema v1 artifactは再buildを要求する。
+7. Public SDK APIだけでのcustom Udon Program Asset生成の可否を検証し、SDK private Reflectionへ黙って依存しない。
 8. Versioned UPM package (`package.json`, `Editor`, `Runtime`, `Tests`, asmdef, samples)。Compiler本体はUnityにリンクしない。
 
 ## 13. テスト戦略
@@ -520,7 +583,7 @@ Grilling 12の決定は**方式C：LLVM IRからHigh-level MLIRへの包括的�
 
 ### 13.3 性能・Profiling
 
-- Per-operation CPU Udon execution cost, native typed array vs raw byte memory, array pin/zero copy, texture upload, dispatch/passes, readback latency, total frame time、memory pressure。Reportに環境/SDK/graphics API/device/texture formatを記録。
+- Direct scalar slot、固定/dynamic typed-array index、旧byte-per-element raw memory、word-packed raw memoryのload/store microbenchmarkをSDK IUdonVMで測り、opcode/extern数とwall-clockを分けて記録する。さらにarray pin/zero copy、texture upload、dispatch/passes、readback latency、total frame time、memory pressureを測り、環境/SDK/graphics API/device/texture formatをReportへ含める。
 - Compeito相当手書きShaderとの比較、Udon-only、Native OpenCL。推定値を実測値と偽らない。
 - Cost modelによるwarning/expensive rejectionをテストし、MRT/partial readback最適化はMVP後に評価。
 
@@ -580,11 +643,11 @@ repo/
 - `VRCLLVMToHighLevelMLIR`独立ライブラリ、IR import sidecar、最小loop/CFG/memory recovery。
 - Manifest schema, ABI/export symbol bindingの生成器。単体テストとCLI scaffolding。
 
-### P2. Host scalar C → Udon library + generated U# Wrapper
+### P2. Host scalar C → Udon library + generated low-level U# binding
 
 - Udon Runtimeのslots, pointer ABI, basic arithmetic, flow, array/raw memory, functions, library initialization and export stubs。
-- LLVM IR static link of small C runtime, `__vrc_*` substitution、SCC recursion、frame/continuation lowering。
-- `VRCWrapperGenerator`、Unity Asset Importer、同期export `Add`をU#から呼び出す。実Udon VMでint/f32/arrayをテスト。
+- LLVM IR static link of small C runtime、export-aware whole-program optimization、`__vrc_*` substitution、非再帰interprocedural register/spill allocation、frame/continuation lowering。再帰SCCは後続機能として明示errorにする。
+- Compiler-generated physical entry/Manifest/low-level `binding.cs`、Unity Asset Importer、同期export `Add`をU#から呼び出す。実Udon VMでint/f32/arrayをテストする。
 
 ### P3. GPU single-pass / Memory transfer / OpenCL API
 
@@ -595,7 +658,7 @@ repo/
 ### P3.5. General Host MLIR + public UdonBLAS Unity gate
 
 - Legacy straight-line matcherではなく、既存`func/cf/scf/memref` recoveryからmulti-block UdonHL/UdonAsmまでを接続する。Direct call graph、固定local/global配列、typed pointer、部分buffer transferを通す。
-- Native/Unity共通のpending command scheduler、event sequence、blocking APIの`vrc.await`、Rust型pinned invocation frame、generation/cancel/cleanupを実装する。Nativeでは明示pumpで全suspend/resumeを検証する。
+- Blocking APIの`vrc.await`をcall graphごとMLIR Asyncへ変換し、上流`async-func-to-async-runtime`のcoroutine CFGをNativeではLLVM coroutine、Udonでは静的Heap frame + event-driven resume trampolineへlowerする。Udonにpending command schedulerやworker queueを作らない。Nativeも実event callbackでsuspend/resumeを検証する。
 - Installed CMake packageから`UdonBLAS::UdonBLAS`をlinkする独立exampleを生成し、通常の`udonblasSgemm(m=1,n=10,k=144)`を9 tileすべて非ゼロのfixtureでUnity SDK IUdonVM実行する。これをONNX移行前の必須gateとする。
 
 ### P4. Reduction + barrier lowering (MVP合格条件)
@@ -607,13 +670,13 @@ repo/
 ### P5. libc C11 / optimization / extended tests
 
 - Picolibc移植とU# I/O/VFS/time adapters。全ISO C11 APIごとのstatus matrix (implemented/restricted/unavailable) と例題。
-- Struct/union/varargs/long double/locale/stdio/`setjmp`等の仕様と実装をABI testで拡張。大規模Host C対応、provenance+typed arrays最適化、frame budgeting、Cost model tuning。
+- Struct/union/varargs/long double/locale/stdio/`setjmp`等の仕様と実装をABI testで拡張。大規模Host C対応、再帰dynamic frame、word-packed raw memory、register/spill/index-cache cost modelを拡張・調整する。
 - Test matrix, performance regression, SDK upgrades, doc generation, UPM packaging, reproducible builds。
 
 ### P6. ONNX MLIR → library Host calls
 
 - §2.6で固定したONNX-MLIR frontendを`udoncl-opt`/`udoncl-onnx`へ統合し、ONNXを`UdonONNXOperators`およびUdonBLAS/UdonDNN/UdonATenの公開`func.call`へloweringする。Runtime shapeは保持し、物理capacityだけをgeneric `DIMENSION_BOUNDS`で上限化する。
-- 共通Device buffer/view/workspace、汎用`UdonOnnxSession`、I/O bindingを先に成立させ、MNIST、hidden-size-8 Transformer、generic `MatMulNBits`、固定TinyLlama 1.1Bの順に数値検証する。EditorはCMake directory→artifact target build/importのみを担当する。
+- 共通Device buffer/view/workspaceと汎用C Runtime session/I/O bindingを先に成立させ、C Host export + compiler-generated low-level U# bindingからMNIST、hidden-size-8 Transformer、generic `MatMulNBits`、固定TinyLlama 1.1Bの順に数値検証する。EditorはCMake directory→artifact target build/importのみを担当する。
 - MNIST新経路合格後にprofile固有emitterを、generic MatMulNBits合格後に旧int4 API/kernelを、全consumer移行後にexecution-plan JSON、ONNX専用Material/arena scheduler、`static_inputs`と旧runtime/sampleを削除する。
 
 **開発優先度**: 早くEnd-to-Endを通すことを優先するが、将来ISO C11 libc全体へ伸ばす前提でTarget ABIとmemory semanticsを最初に固定する。未対応機能を無言でスキップしない。
@@ -624,13 +687,14 @@ repo/
 |---|---|---|
 | G0: SDK | Program Asset生成、Udon event ABI、Readback callback、Blit順序/formatをPC実クライアントで再現 | fence保証・高速uploadを断言すること |
 | G1: Dialect | 57 Op全てのTableGen定義とVerifier/parse-print、9 opcodeをSDK実VM goldenで一致 | pseudo Udon命令を追加すること |
-| G2: Host | U#→Cの同期export、再帰、typed/raw memory、ILP32 ABI、errorsが実VMで動く | CとU#のABIを暗黙のC# object castに頼ること |
+| G2: Host | U#→Cの同期export、非再帰call、typed register/spill、word-packed raw memory、ILP32 ABI、errorsが実VMで動く | CとU#のABIを暗黙のC# object castに頼ること |
 | G3: Async | `clFinish`/readbackでstateが保たれ、古いcallbackを拒否しfailure callbackを返せる | イベント間でVM call stackが残ると想定すること |
 | G4: SAXPY | OpenCL C→fragment→GPU→readbackがReference結果と一致 | native Compute Shaderを使えたと主張すること |
 | G5: Reduction | `__local` + barriers + multi-work-groupを変換しfloat32総和をU#に返す | unsupported scatter/atomicsをsilent compileすること |
 | G6: libc | 各C11標準APIについてテスト/対応状況を明示、移植不能機能に診断 | 「完全libc対応」をテストなしに掲げること |
 | G7: UdonBLAS | installed packageを`find_package`した独立exampleの`udonblasSgemm(1,10,144)`がNative async backendとUnity SDK IUdonVMでCPU referenceに一致し、9 tileのresume、reimport、cleanup、console 0を満たす | 手書きUASM、Unity専用SGEMM、source-tree-only packageで代替すること |
 | G8: ONNX MLIR | 固定ONNX-MLIR frontendからexecution planなしで汎用operator/library call→共通Host/Udon binding/sessionを生成し、MNIST、合成Transformer、固定TinyLlama 1.1Bの全logits・22-layer KVがORT oracleと規定誤差内で一致 | model profile、ONNX専用Material scheduler、arena SGEMV、旧int4特殊化へfallbackすること |
+| G9: Host storage / MNIST | descriptor・一時pointerの一般raw accessを除去し、allocator reportと512-address exact probeを通し、generated U#経由のUnity MNISTがnative oracleと一致して10秒watchdogを発火しない | checkpoint追加だけでbyte raw heap中心のHostを最終化すること |
 
 ## 17. 未確定・検証待ちの設計リスク（ユーザーへの未回答質問ではない）
 
@@ -657,7 +721,7 @@ repo/
 2. `CMakeLists.txt`とLLVM/MLIR pinned環境の最小構成を作り、4 DialectのTableGen + 9 Udon opcodeのparsing/printing testを最初に通す。**`VRCLLVMToHighLevelMLIR`を独立CMake target**にする。
 3. 同時にSDK P0 spikes用Unity Test Worldを作り、`UdonBehaviour`のProgram Asset/CustomEvent/Readbackを**実SDKとPC Clientで**検証する。ベンチ結果を`docs/validation.md`に保存。
 4. 全57 OpsのVerifier/LoweringをTDDで追加し、IR dump可能なCLI `vrc-opt`を作る。未知Opを黙って通さない。
-5. Sync `add` library + generated U# Wrapper → SAXPY → Reductionの順にG2〜G5を満たす。各段階にGolden tests/End-to-End testを追加。
+5. Sync `add` library + compiler-generated low-level U# binding → SAXPY → Reductionの順にG2〜G5を満たす。各段階にGolden tests/End-to-End testを追加。
 6. Picolibc portの技術調査とC11 API coverage matrixを並行着手するが、OpenCL MVPの実装完了をlibc全面対応で遅らせない。
 7. 未検証事項は`TODO: verify on target SDK/client`とTest IDを残す。「動作した」と記録するには実行ログと環境を付ける。
 8. README、法的な依存ライセンス、Unity Package version pin、再現可能なbuild/test手順を維持する。
