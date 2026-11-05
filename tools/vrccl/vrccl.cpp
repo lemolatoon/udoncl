@@ -2606,7 +2606,6 @@ int main(int argc, char **argv) {
       return 1;
     OwningOpRef<ModuleOp> asyncPreview = cast<ModuleOp>((*module)->clone());
     PassManager asyncPipeline(&context);
-    asyncPipeline.addPass(::vrc::createInsertUdonCooperativeCheckpointsPass());
     asyncPipeline.addPass(::vrc::createLowerHostToAsyncPass());
     asyncPipeline.addPass(createAsyncFuncToAsyncRuntimePass());
     asyncPipeline.addPass(::vrc::createPrepareUdonAsyncRuntimePass());

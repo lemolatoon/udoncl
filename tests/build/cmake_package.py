@@ -102,8 +102,10 @@ def assert_static_async_artifact(artifact, assembly):
         'async.runtime.',
         'async.coro.',
         '"udonhl.async_resume"(',
+        'vrc.cooperative_checkpoint',
     ]:
         assert legacy not in lowered, legacy
+    assert 'vrc.async_checkpoint_routes = []' in lowered
     assert '__udoncl_async_resume_dispatch' in lowered
     assert 'vrc.async_public_result_load' in lowered
 
