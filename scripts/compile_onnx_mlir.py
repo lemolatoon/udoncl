@@ -1,4 +1,4 @@
-"""Import an ONNX protobuf and run the locked ONNX-to-ONNX MLIR pipeline."""
+"""Orchestrate the locked C++ ONNX import and MLIR pass pipeline."""
 import argparse
 import os
 from pathlib import Path
@@ -22,6 +22,7 @@ def canonicalize(
     supported=(),
     dimensions=(),
     input_shapes=(),
+    lower_to_host=False,
 ):
     model = model.resolve()
     output = output.resolve()
@@ -42,13 +43,30 @@ def canonicalize(
         for input_shape in input_shapes:
             import_command.extend(['--input-shape', input_shape])
         subprocess.run(import_command, check=True)
-        subprocess.run([
+        optimize_command = [
             optimizer, imported, '--verify-each=false', '--shape-inference',
             '--simplify-shape-related-ops-onnx', '--constprop-onnx',
             '--standard-func-return', '--canonicalize',
-            '--mlir-print-debuginfo',
-            '--mlir-elide-elementsattrs-if-larger=64', '-o', transformed],
-            check=True)
+        ]
+        if lower_to_host:
+            optimize_command.extend([
+                '--udoncl-infer-onnx-shapes',
+                '--udoncl-materialize-onnx-constants',
+                '--udoncl-lower-onnx-to-host',
+                '--one-shot-bufferize=bufferize-function-boundaries copy-before-write',
+                '--canonicalize',
+                '--udoncl-emit-bytecode',
+            ])
+        else:
+            optimize_command.extend([
+                '--mlir-print-debuginfo',
+                '--mlir-elide-elementsattrs-if-larger=64',
+            ])
+        optimize_command.extend(['-o', transformed])
+        subprocess.run(optimize_command, check=True)
+        if lower_to_host:
+            os.replace(transformed, output)
+            return
         text = transformed.read_text(encoding='utf-8')
         if supported:
             unsupported = sorted(operators(text) - set(supported))
@@ -68,11 +86,12 @@ def main():
     parser.add_argument('--supported-operator', action='append', default=[])
     parser.add_argument('--dimension', action='append', default=[])
     parser.add_argument('--input-shape', action='append', default=[])
+    parser.add_argument('--lower-to-host', action='store_true')
     args = parser.parse_args()
     try:
         canonicalize(args.model, args.output, args.importer.resolve(),
                      args.optimizer.resolve(), args.supported_operator,
-                     args.dimension, args.input_shape)
+                     args.dimension, args.input_shape, args.lower_to_host)
     except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
         parser.exit(1, f'{error}\n')
 

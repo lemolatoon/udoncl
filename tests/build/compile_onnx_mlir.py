@@ -26,17 +26,21 @@ class CompileONNXMLIRTests(unittest.TestCase):
         self.optimizer.write_text('tool', encoding='utf-8')
         self.output = self.root / 'out/model.mlir'
 
-    def run_pipeline(self, mlir, supported=(), dimensions=(), input_shapes=()):
+    def run_pipeline(self, mlir, supported=(), dimensions=(), input_shapes=(),
+                     lower_to_host=False):
         def run(command, check):
             self.assertTrue(check)
             output = Path(command[command.index('-o') + 1])
-            output.write_text(mlir, encoding='utf-8')
+            if isinstance(mlir, bytes):
+                output.write_bytes(mlir)
+            else:
+                output.write_text(mlir, encoding='utf-8')
             return mock.Mock(returncode=0)
 
         with mock.patch.object(compiler.subprocess, 'run', side_effect=run) as call:
             compiler.canonicalize(
                 self.model, self.output, self.importer, self.optimizer,
-                supported, dimensions, input_shapes)
+                supported, dimensions, input_shapes, lower_to_host)
         return call.call_args_list
 
     def test_pipeline_imports_then_canonicalizes(self):
@@ -61,6 +65,19 @@ class CompileONNXMLIRTests(unittest.TestCase):
         self.assertEqual(importer.count('--dim'), 2)
         self.assertIn('batch_size=1', importer)
         self.assertIn('past_sequence_length=0', importer)
+
+    def test_host_lowering_is_entirely_in_the_cpp_pass_pipeline(self):
+        calls = self.run_pipeline(b'host bytecode', lower_to_host=True)
+        optimizer = calls[1].args[0]
+        self.assertIn('--udoncl-infer-onnx-shapes', optimizer)
+        self.assertIn('--udoncl-materialize-onnx-constants', optimizer)
+        self.assertIn('--udoncl-lower-onnx-to-host', optimizer)
+        self.assertIn(
+            '--one-shot-bufferize=bufferize-function-boundaries copy-before-write',
+            optimizer)
+        self.assertIn('--udoncl-emit-bytecode', optimizer)
+        self.assertNotIn('--mlir-elide-elementsattrs-if-larger=64', optimizer)
+        self.assertEqual(self.output.read_bytes(), b'host bytecode')
 
     def test_input_shapes_are_forwarded_to_the_importer(self):
         calls = self.run_pipeline(

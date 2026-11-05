@@ -85,7 +85,7 @@ if(NOT UDONCL_ONNX_IMPORTER_EXECUTABLE)
   endif()
 endif()
 if(NOT UDONCL_ONNX_OPT_EXECUTABLE)
-  find_program(_UDONCL_ONNX_OPT_DISCOVERED NAMES onnx-mlir-opt
+  find_program(_UDONCL_ONNX_OPT_DISCOVERED NAMES udoncl-onnx-opt onnx-mlir-opt
     HINTS
       "${_UDONCL_INSTALL_PREFIX}/bin"
       "${_UDONCL_SOURCE_HINT}/.deps/onnx-mlir/bin"

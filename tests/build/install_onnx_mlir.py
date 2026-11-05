@@ -34,7 +34,8 @@ class InstallONNXMLIRTests(unittest.TestCase):
         prefix = self.publish()
         installer.validate(prefix, self.lock, 'linux')
         self.assertEqual(self.lock['targets'],
-                         ['onnx-mlir-opt', 'udoncl-onnx'])
+                         ['onnx-mlir-opt', 'udoncl-onnx',
+                          'udoncl-onnx-opt'])
 
     def test_changed_revision_rejects_cached_frontend(self):
         prefix = self.publish()
@@ -57,6 +58,9 @@ class InstallONNXMLIRTests(unittest.TestCase):
         self.assertIn('-DCMAKE_CXX_FLAGS=/D_USE_MATH_DEFINES', command)
         self.assertIn('-DONNX_MLIR_ENABLE_STABLEHLO=OFF', command)
         self.assertIn('-DONNX_MLIR_BUILD_TESTS=OFF', command)
+        self.assertTrue(any(
+            str(part).startswith('-DUDONCL_ONNX_EXTENSION_SOURCE_DIR=')
+            for part in command))
 
     def test_linux_configuration_does_not_use_msvc_flag(self):
         command = installer.configure_command(

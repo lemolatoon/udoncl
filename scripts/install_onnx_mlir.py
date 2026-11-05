@@ -78,6 +78,16 @@ def patch_digest(lock):
     return digest.hexdigest()
 
 
+def extension_digest(lock):
+    digest = hashlib.sha256()
+    for relative in lock.get('extension_sources', []):
+        digest.update(relative.encode())
+        digest.update(b'\0')
+        digest.update((ROOT / relative).read_bytes())
+        digest.update(b'\0')
+    return digest.hexdigest()
+
+
 def lock_digest(lock):
     encoded = json.dumps(lock, sort_keys=True, separators=(',', ':')).encode()
     return hashlib.sha256(encoded).hexdigest()
@@ -91,6 +101,7 @@ def expected_receipt(lock, host):
         'platform': host,
         'lock_sha256': lock_digest(lock),
         'patch_sha256': patch_digest(lock),
+        'extension_sha256': extension_digest(lock),
         'targets': lock['targets'],
     }
 
@@ -163,6 +174,7 @@ def ensure_source(lock, source):
 def configure_command(lock, source, build, llvm_prefix, host, cmake):
     command = [cmake, '-S', source, '-B', build, '-G', 'Ninja',
                f'-DMLIR_DIR={llvm_prefix / "lib/cmake/mlir"}',
+               f'-DUDONCL_ONNX_EXTENSION_SOURCE_DIR={ROOT / "lib/Conversion/ONNXToUdonHost"}',
                '-DCMAKE_BUILD_TYPE=Release']
     command += [f'-D{name}={value}'
                 for name, value in lock['cmake_options'].items()]

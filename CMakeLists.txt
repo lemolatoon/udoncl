@@ -27,6 +27,7 @@ add_subdirectory(include/VRC/Conversion)
 add_subdirectory(lib/Dialect)
 add_subdirectory(lib/Conversion/LLVMToHighLevel)
 add_subdirectory(lib/Conversion/BoundaryFrontend)
+add_subdirectory(lib/Conversion/ONNXToUdonHost)
 add_subdirectory(lib/Conversion/HighLevelToUdonHL)
 add_subdirectory(lib/Conversion/VRCToUdonHL)
 add_subdirectory(lib/Conversion/HighLevelToVRCGPU)
@@ -102,7 +103,7 @@ find_program(VRC_TEST_ONNX_IMPORTER NAMES udoncl-onnx
     "${PROJECT_SOURCE_DIR}/.deps/onnx-mlir/bin"
     "${PROJECT_SOURCE_DIR}/.deps/onnx-mlir-complete/bin"
   NO_DEFAULT_PATH)
-find_program(VRC_TEST_ONNX_OPT NAMES onnx-mlir-opt
+find_program(VRC_TEST_ONNX_OPT NAMES udoncl-onnx-opt onnx-mlir-opt
   HINTS
     "${PROJECT_SOURCE_DIR}/build/onnx-mlir-probe/Release/bin"
     "${PROJECT_SOURCE_DIR}/.deps/onnx-mlir/bin"

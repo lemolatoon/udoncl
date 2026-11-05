@@ -5,7 +5,10 @@
   "llvm_version": "23.1.4",
   "patches": [
     "cmake/patches/onnx-mlir-0.5.1.2-msvc-template.patch",
-    "cmake/patches/onnx-mlir-0.5.1.2-udoncl-dimensions.patch"
+    "cmake/patches/onnx-mlir-0.5.1.2-udoncl-dimensions.patch",
+    "cmake/patches/onnx-mlir-0.5.1.2-matmul-nbits-shape.patch",
+    "cmake/patches/onnx-mlir-0.5.1.2-udoncl-bytecode.patch",
+    "cmake/patches/onnx-mlir-0.5.1.2-udoncl-plugin.patch"
   ],
   "submodules": {
     "third_party/benchmark": "a4cf155615c63e019ae549e31703bf367df5b471",
@@ -22,6 +25,15 @@
   },
   "targets": [
     "onnx-mlir-opt",
-    "udoncl-onnx"
+    "udoncl-onnx",
+    "udoncl-onnx-opt"
+  ],
+  "extension_sources": [
+    "lib/Conversion/ONNXToUdonHost/CMakeLists.txt",
+    "lib/Conversion/ONNXToUdonHost/InferONNXShapes.cpp",
+    "lib/Conversion/ONNXToUdonHost/MaterializeONNXConstants.cpp",
+    "lib/Conversion/ONNXToUdonHost/ONNXToUdonHost.h",
+    "lib/Conversion/ONNXToUdonHost/ONNXToUdonHostCore.cpp",
+    "lib/Conversion/ONNXToUdonHost/ONNXToUdonHostStandalone.cpp"
   ]
 }

@@ -5,6 +5,10 @@ def LowerHostToUdonHLPass : Pass<"vrc-lower-host-to-udonhl", "mlir::ModuleOp"> {
   let summary = "Lower recovered structured Host control flow and direct C calls to UdonHL";
   let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "::vrc::vrc::VRCDialect", "mlir::cf::ControlFlowDialect", "mlir::arith::ArithDialect"];
 }
+def LowerONNXToUdonHostPass : Pass<"udoncl-lower-onnx-to-host", "mlir::ModuleOp"> {
+  let summary = "Lower typed ONNX dialect operations directly to Udon library calls";
+  let dependentDialects = ["mlir::arith::ArithDialect", "mlir::func::FuncDialect"];
+}
 def SubstituteRuntimeIntrinsicsPass : Pass<"vrc-substitute-runtime-intrinsics", "mlir::ModuleOp"> {
   let summary = "Replace typed __vrc_* calls after UdonHL construction; preserve C runtime ownership";
   let dependentDialects = ["::vrc::vrc::VRCDialect"];

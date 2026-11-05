@@ -164,6 +164,12 @@ add_test(NAME tinyllama-real-onnx-oracle
 )
 set_tests_properties(tinyllama-real-onnx-oracle PROPERTIES TIMEOUT 600)
 if(VRC_TEST_ONNX_IMPORTER AND VRC_TEST_ONNX_OPT)
+  add_test(NAME onnx-cpp-lowering
+    COMMAND Python3::Interpreter
+      "${CMAKE_CURRENT_SOURCE_DIR}/build/onnx_cpp_lowering.py"
+      "${VRC_TEST_ONNX_OPT}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/frontend/onnx_to_udon_host.mlir"
+  )
   add_test(NAME tinyllama-real-onnx-frontend
     COMMAND Python3::Interpreter
       "${CMAKE_CURRENT_SOURCE_DIR}/boundary/tinyllama_onnx_frontend.py"
