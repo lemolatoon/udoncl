@@ -25,7 +25,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         private const string BindingClass = "UdonclGenericOnnxMnistBinding";
         private const string ControllerClass = "UdonclGenericOnnxMnistTestController";
         private const string GeneratedNamespace = "Lemolatoon.Udoncl.Generated.";
-        private const string RunEntry = "StartRun";
+        private const string RunEntry = "Run";
         private const string ControllerSource =
             "Assets/UdonclSampleValidation/" + ControllerClass + ".cs";
         private const string ControllerProgram =
@@ -108,7 +108,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             Set(heap, program, "__vrc_raw_heap", rawHeap);
 
             Dictionary<int, RenderTexture> buffers = new Dictionary<int, RenderTexture>();
-            Assert.AreEqual(15, artifact.DeviceBuffers.Count);
+            Assert.AreEqual(17, artifact.DeviceBuffers.Count);
             foreach (ValidatedDeviceBuffer descriptor in artifact.DeviceBuffers)
             {
                 RenderTexture buffer = Load<RenderTexture>(
@@ -142,18 +142,23 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 )
             );
             Assert.AreEqual(28 * 28, input.Length);
-            for (int index = 0; index < input.Length; ++index)
-            {
-                Set(heap, program, "__0_input_index__param", 0);
-                Set(heap, program, "__0_element_index__param", index);
-                Set(heap, program, "__0_value__param", input[index]);
-                Execute(vm, program, "__0_TryWriteInputFloat");
-                Assert.AreEqual(0, Get<int>(heap, program, "__udoncl_status_1"));
-                Assert.AreEqual(0, Get<int>(heap, program, "__0___0_TryWriteInputFloat__ret"));
-            }
+            int initializeCommands = RunAsyncExport(
+                vm,
+                program,
+                heap,
+                rawHeap,
+                buffers,
+                materials,
+                copyMaterial,
+                "Initialize"
+            );
+            int initializeStatus = Get<int>(heap, program, "__udoncl_status_562720017");
+            int initializeResult = Get<int>(heap, program, "__0_Initialize__ret");
+            Assert.AreEqual(0, initializeStatus, "MNIST initialization returned an ABI error.");
+            Assert.AreEqual(0, initializeResult, "MNIST initialization failed.");
+            Assert.Greater(initializeCommands, 0, "MNIST initialization emitted no transfers.");
 
-            Set(heap, program, "__udoncl_async_resume_state", 0);
-            Set(heap, program, "__udoncl_async_command_kind", 0);
+            UploadFloats(buffers[1], input, copyMaterial);
             int commands = RunAsyncExport(
                 vm,
                 program,
@@ -161,26 +166,19 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 rawHeap,
                 buffers,
                 materials,
-                copyMaterial
+                copyMaterial,
+                RunEntry
             );
-            int runStatus = Get<int>(heap, program, "__udoncl_status_2");
-            int runResult = Get<int>(heap, program, "__0_StartRun__ret");
+            int runStatus = Get<int>(heap, program, "__udoncl_status_483499420");
+            int runResult = Get<int>(heap, program, "__0_Run__ret");
             TestContext.WriteLine(
-                $"commands={commands} status={runStatus} result={runResult} resume={Get<int>(heap, program, "__udoncl_async_resume_state")}"
+                $"initialize_commands={initializeCommands} commands={commands} status={runStatus} result={runResult}"
             );
             Assert.AreEqual(0, runStatus, "MNIST inference returned an OpenCL error status.");
             Assert.AreEqual(0, runResult, "RunMnist returned an error.");
             Assert.Greater(commands, 0, "MNIST inference emitted no transfer commands.");
 
-            float[] actual = new float[10];
-            for (int index = 0; index < actual.Length; ++index)
-            {
-                Set(heap, program, "__0_output_index__param", 0);
-                Set(heap, program, "__1_element_index__param", index);
-                Execute(vm, program, "__0_ReadOutputFloat");
-                Assert.AreEqual(0, Get<int>(heap, program, "__udoncl_status_3"));
-                actual[index] = Get<float>(heap, program, "__0___0_ReadOutputFloat__ret");
-            }
+            float[] actual = ReadFloats(buffers[2], 10);
 
             float[] expected = ReadFloats(
                 ResolvePath(
@@ -382,26 +380,37 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             int[] rawHeap,
             IReadOnlyDictionary<int, RenderTexture> buffers,
             IReadOnlyDictionary<int, Material> materials,
-            Material copyMaterial
+            Material copyMaterial,
+            string entry = RunEntry
         )
         {
             int commands = 0;
+            Set(heap, program, "__udoncl_async_pending_object", 0);
+            Set(heap, program, "__udoncl_async_completion_object", 0);
+            Set(heap, program, "__udoncl_async_command_kind", 0);
+            Execute(vm, program, entry);
             for (int iteration = 0; iteration < 128; ++iteration)
             {
-                Execute(vm, program, RunEntry);
                 int kind = Get<int>(heap, program, "__udoncl_async_command_kind");
-                int resume = Get<int>(heap, program, "__udoncl_async_resume_state");
+                int pending = Get<int>(heap, program, "__udoncl_async_pending_object");
+                if (pending == 0)
+                {
+                    Assert.AreEqual(0, kind, "Completed async export retained a command kind.");
+                    return commands;
+                }
+                Set(heap, program, "__udoncl_async_pending_object", 0);
+
+                TestContext.WriteLine(
+                    $"async_step iteration={iteration} pending={pending} kind={kind}"
+                );
                 if (kind == 0)
                 {
-                    if (resume != 0)
-                    {
-                        TestContext.WriteLine(
-                            $"async_step iteration={iteration} resume={resume} kind=immediate"
-                        );
-                        Set(heap, program, "__udoncl_async_completion_status", 0);
-                        continue;
-                    }
-                    return commands;
+                    ++commands;
+                    Set(heap, program, "__udoncl_async_completion_object", pending);
+                    Set(heap, program, "__udoncl_async_completion_status", 0);
+                    Execute(vm, program, "__udoncl_async_complete");
+                    Set(heap, program, "__udoncl_async_completion_object", 0);
+                    continue;
                 }
 
                 int bufferId = Get<int>(heap, program, "__udoncl_async_command_buffer");
@@ -416,7 +425,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 Assert.AreEqual(0, pointer & 3);
                 Assert.That(pointer, Is.LessThanOrEqualTo(rawHeap.Length * 4 - size));
                 TestContext.WriteLine(
-                    $"async_step iteration={iteration} resume={resume} kind={kind} buffer={bufferId} offset={offset} size={size} pointer={pointer} host_first={HeapFloat(rawHeap, pointer):R}"
+                    $"async_transfer iteration={iteration} pending={pending} kind={kind} buffer={bufferId} offset={offset} size={size} pointer={pointer} host_first={HeapFloat(rawHeap, pointer):R}"
                 );
                 if (kind == 1)
                 {
@@ -432,8 +441,11 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 else
                     Assert.Fail("Unknown MNIST async command kind " + kind);
                 ++commands;
-                Set(heap, program, "__udoncl_async_completion_status", 0);
                 Set(heap, program, "__udoncl_async_command_kind", 0);
+                Set(heap, program, "__udoncl_async_completion_object", pending);
+                Set(heap, program, "__udoncl_async_completion_status", 0);
+                Execute(vm, program, "__udoncl_async_complete");
+                Set(heap, program, "__udoncl_async_completion_object", 0);
             }
             Assert.Fail("MNIST async export did not complete within 128 commands.");
             return -1;
@@ -459,6 +471,48 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                     (byte)(value >> 8),
                     (byte)(value >> 16),
                     (byte)(value >> 24)
+                );
+            }
+            Texture2D staging = new Texture2D(
+                destination.width,
+                destination.height,
+                TextureFormat.RGBA32,
+                false,
+                true
+            );
+            try
+            {
+                staging.filterMode = FilterMode.Point;
+                staging.wrapMode = TextureWrapMode.Clamp;
+                staging.SetPixels32(pixels);
+                staging.Apply(false, false);
+                Graphics.Blit(staging, destination, copyMaterial);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(staging);
+            }
+        }
+
+        private static void UploadFloats(
+            RenderTexture destination,
+            float[] values,
+            Material copyMaterial
+        )
+        {
+            Assert.That(
+                values.Length,
+                Is.LessThanOrEqualTo(destination.width * destination.height)
+            );
+            Color32[] pixels = new Color32[destination.width * destination.height];
+            for (int index = 0; index < values.Length; ++index)
+            {
+                int word = BitConverter.SingleToInt32Bits(values[index]);
+                pixels[index] = new Color32(
+                    (byte)word,
+                    (byte)(word >> 8),
+                    (byte)(word >> 16),
+                    (byte)(word >> 24)
                 );
             }
             Texture2D staging = new Texture2D(
@@ -549,6 +603,20 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             return result;
         }
 
+        private static float[] ReadFloats(RenderTexture source, int count)
+        {
+            Color32[] pixels = ReadPixels(source);
+            Assert.That(count, Is.LessThanOrEqualTo(pixels.Length));
+            float[] result = new float[count];
+            for (int index = 0; index < count; ++index)
+            {
+                Color32 pixel = pixels[index];
+                int word = pixel.r | (pixel.g << 8) | (pixel.b << 16) | (pixel.a << 24);
+                result[index] = BitConverter.Int32BitsToSingle(word);
+            }
+            return result;
+        }
+
         private static int ArgMax(float[] values)
         {
             int result = 0;
@@ -600,7 +668,27 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         internal static void Execute(IUdonVM vm, IUdonProgram program, string entry)
         {
             vm.SetProgramCounter(program.EntryPoints.GetAddressFromSymbol(entry));
-            Assert.AreEqual(0u, vm.Interpret(), "SDK IUdonVM failed at " + entry);
+            try
+            {
+                Assert.AreEqual(0u, vm.Interpret(), "SDK IUdonVM failed at " + entry);
+            }
+            catch (Exception exception)
+            {
+                IUdonHeap heap = vm.InspectHeap();
+                int[] rawHeap = Get<int[]>(heap, program, "__vrc_raw_heap");
+                Assert.Fail(
+                    "SDK IUdonVM threw at "
+                        + entry
+                        + " PC "
+                        + vm.GetProgramCounter()
+                        + "; raw_word_index="
+                        + Get<int>(heap, program, "__vrc_raw_byte_load_word_index")
+                        + "; raw_heap_length="
+                        + rawHeap.Length
+                        + ": "
+                        + exception
+                );
+            }
         }
 
         internal static T Get<T>(IUdonHeap heap, IUdonProgram program, string symbol)

@@ -184,10 +184,10 @@ aggregate_raw_source = r'''module {
   }
   llvm.func @copy(%condition: i1, %source: !llvm.ptr) -> i1 {
     %one = llvm.mlir.constant(1 : i32) : i32
-    %bytes = llvm.mlir.constant(16 : i32) : i32
+    %bytes = llvm.mlir.constant(16 : i64) : i64
     %destination = llvm.alloca %one x !llvm.array<4 x i32> {alignment = 4 : i64} : (i32) -> !llvm.ptr
     %selected = llvm.call @choose(%condition, %source) : (i1, !llvm.ptr) -> !llvm.ptr
-    "llvm.intr.memcpy"(%destination, %selected, %bytes) <{isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i32) -> ()
+    "llvm.intr.memcpy"(%destination, %selected, %bytes) <{isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i64) -> ()
     %null = llvm.mlir.zero : !llvm.ptr
     %nonnull = llvm.icmp "ne" %selected, %null : !llvm.ptr
     llvm.return %nonnull : i1

@@ -51,9 +51,6 @@ if(NOT TARGET udondnn_host)
     UDONDNN_AOT_DIRECT_ARGUMENT_DISPATCH=1
     UDONDNN_AOT_DIRECT_DISPATCH=1
     UDONDNN_AOT_LARGE_ONLY=1)
-  # Keep the Async call graph explicit while letting Clang eliminate the large
-  # amount of descriptor-validation and argument-packing scaffolding that is
-  # otherwise interpreted literally by Udon.
   target_compile_options(udondnn_host INTERFACE -O1 -fno-inline)
 endif()
 

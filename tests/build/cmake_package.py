@@ -646,6 +646,58 @@ def main():
     assert 'public int TryGetRunResult(out int result)' in mnist_binding
     assert 'public int StartReadOutput(' in mnist_binding
     assert 'public int GetLastReadbackStatus()' in mnist_binding
+    ensure_buffers = mnist_binding.split(
+        'private int EnsureDeviceBuffersCreated()', 1
+    )[1].split('private int UploadWords(', 1)[0]
+    assert 'if (deviceBuffers == null)' in ensure_buffers
+    assert 'if (buffer == null)' in ensure_buffers
+    assert '!buffer.IsCreated() && !buffer.Create() && !buffer.IsCreated()' in (
+        ensure_buffers
+    )
+    assert 'return StatusExecutionFailure;' in ensure_buffers
+    validate_transfer = mnist_binding.split(
+        'private int ValidateTransfer(', 1
+    )[1].split('private Color32 PackWord(', 1)[0]
+    assert 'EnsureDeviceBuffersCreated();' in validate_transfer
+    for method, next_method in [
+        ('public int StartRun(', 'public int GetRunStatus()'),
+        ('public int StartInitialize(', 'public int GetInitializeStatus()'),
+    ]:
+        async_start = mnist_binding.split(method, 1)[1].split(next_method, 1)[0]
+        ensure_position = async_start.index('EnsureDeviceBuffersCreated();')
+        busy_position = async_start.index('busy = true;')
+        send_position = async_start.index('program.SendCustomEvent(')
+        assert ensure_position < busy_position < send_position
+        assert 'return __udonclDeviceBufferStatus;' in async_start
+    assert 'SendCustomEventDelayedFrames("_StartPublicReadback"' not in (
+        mnist_binding
+    )
+    assert 'diagnosticReadback' not in mnist_binding
+    masked_heap_word = (
+        'new Color32((byte)(value & 255), '
+        '(byte)((value >> 8) & 255), '
+        '(byte)((value >> 16) & 255), '
+        '(byte)((value >> 24) & 255));'
+    )
+    assert masked_heap_word in mnist_binding
+    assert (
+        'new Color32((byte)value, (byte)(value >> 8), '
+        '(byte)(value >> 16), (byte)(value >> 24));'
+        not in mnist_binding
+    )
+    complete_readback = mnist_binding.split(
+        'private void CompletePublicReadback(', 1
+    )[1].split('public int StartReadFloatBuffer(', 1)[0]
+    for cleanup in [
+        'readbackBusy = false;',
+        'pendingFloatReadback = null;',
+        'pendingIntReadback = null;',
+        'pendingReadbackReceiver = null;',
+        'pendingReadbackEvent = null;',
+        'pendingReadbackGeneration = 0;',
+        'receiver.SendCustomEvent(completionEvent);',
+    ]:
+        assert cleanup in complete_readback
     assert 'public int TryShutdown(out int result)' in mnist_binding
     assert 'BindOnnxTensorPhysical' not in mnist_binding
     assert 'udon_onnx_binding_bind_tensor' not in mnist_binding
@@ -779,7 +831,7 @@ def main():
     assert 'VRCWrapperGenerator' not in transformer_binding
     assert {
         item['kernel_id'] for item in transformer_manifest['dispatch_sites']
-    } == {1, 2, 207, 219, 220, 231, 232, 233, 234}
+    } == {1, 2, 207, 219, 220, 233, 234}
     assert {
         item['id'] for item in transformer_manifest['device']['kernels']
     } == {1, 2, 207, 219, 220, 231, 232, 233, 234}
@@ -1010,10 +1062,10 @@ def main():
     assert '.export __0_SquarePlusOne' in assembly
     assert '.export __udoncl_buffer_1' in assembly
     assert '__udoncl_buffer_1: %UnityEngineRenderTexture, null' in assembly
-    # Keep the non-recursive C helper call graph visible to the Host storage
-    # allocator instead of cloning every helper into every export.
-    assert 'JUMP_INDIRECT, __vrc_internal_bank_0_return' in assembly
-    assert '__vrc_internal_bank_0_return: %SystemUInt32, 0' in assembly
+    # Whole-program Host optimization inlines this fixed helper graph, so the
+    # generated export no longer needs the generic indirect-return protocol.
+    assert 'JUMP_INDIRECT, __vrc_internal_bank_0_return' not in assembly
+    assert '__vrc_internal_bank_0_return: %SystemUInt32, 0' not in assembly
     assert 'SystemSingleArray.__ctor__SystemInt32__SystemSingleArray' not in assembly
     storage_report = json.loads(
         (unity_artifact / 'storage-report.json').read_text(encoding='utf-8')

@@ -108,12 +108,12 @@ for fragment in [
     'vrc.async_object_state_encoding = {available = 1 : i32, error = -1 : i32, pending = 0 : i32}',
     'vrc.async_frame_id',
     'vrc.async_resume_pc',
-    'vrc.async_spill_slot_count = 2 : i32',
+    'vrc.async_spill_slot_count = 3 : i32',
     'vrc.async_object_count = 3 : i32',
     'vrc.async_live_object_ids',
     'object_id = 4 : i32',
     'vrc.async_live_spill_slots = array<i32: 0, 1>',
-    'resume_pcs = array<i32: 2>, slot = 1 : i32, symbol = @__udoncl_async_frame_3_spill_1, type = "i32"',
+    'resume_pcs = array<i32: 2>, slot = 2 : i32, symbol = @__udoncl_async_frame_3_spill_2, type = "i32"',
     'vrc.async_pc_symbol = @__udoncl_async_frame_3_pc',
     'sym_name = "__udoncl_async_frame_3_pc"',
     'sym_name = "__udoncl_async_frame_3_spill_1"',
@@ -121,7 +121,8 @@ for fragment in [
     'waiter_frame_symbol = @__udoncl_async_object_',
     'waiter_pc_symbol = @__udoncl_async_object_',
     'payload_symbol = @__udoncl_async_object_',
-    'call @wait_leaf(%arg0) {vrc.async_result_object_ids = array<i32: 4>}',
+    'call @wait_leaf(',
+    'vrc.async_result_object_ids = array<i32: 4>',
     'async.runtime.create {vrc.async_result_object_ids = array<i32: 4>} : !async.token',
     'call @wait_middle(%arg0, %arg1) {vrc.async_result_object_ids = array<i32: 2>}',
     'vrc.async_object_state_reset',
@@ -139,8 +140,8 @@ for fragment in [
     'vrc.async_object_set_error',
     'vrc.async_object_ready_state_load',
     'vrc.async_object_state_load',
-    'vrc.async_spill_pc = 2 : i32',
-    'vrc.async_reload_pc = 2 : i32',
+    'vrc.async_frame_store',
+    'vrc.async_frame_load',
     'vrc.async_pc_store = 2 : i32',
     ': (i32, !udonhl.ptr<0>) -> ()',
     ': (!udonhl.ptr<0>) -> !vrc.event',
@@ -155,6 +156,28 @@ assert 'async.runtime.await_and_resume ' not in runtime.stdout
 assert 'async.runtime.is_error ' not in runtime.stdout
 assert 'async.runtime.set_available ' not in runtime.stdout
 assert 'async.runtime.set_error ' not in runtime.stdout
+assert 'vrc.async_spill_pc' not in runtime.stdout
+assert 'vrc.async_reload_pc' not in runtime.stdout
+
+# wait_colored contains both the already-ready fast path and suspend/resume
+# path, followed by success/error merges.  Its live argument must have exactly
+# one direct use in the definition-time frame store; every semantic use after
+# that point must consume an explicit frame load rather than the pre-suspend
+# SSA value.
+wait_colored = runtime.stdout.split(
+    'func.func private @wait_colored', 1)[1].split('\n  }', 1)[0]
+assert wait_colored.count('%arg1') == 2, wait_colored
+assert wait_colored.count('vrc.async_frame_store') >= 3, wait_colored
+assert wait_colored.count('vrc.async_frame_load') >= 4, wait_colored
+for stored_value in re.findall(
+        r'"udonhl\.store"\((%[A-Za-z0-9_]+),[^\n]*'
+        r'\{vrc\.async_frame_store\}', wait_colored):
+    # One occurrence defines the SSA value (or names the block argument), and
+    # one stores its copy into the frame.  Any third occurrence would mean a
+    # pre-suspend SSA value escaped the full demotion across a later merge.
+    occurrences = re.findall(
+        re.escape(stored_value) + r'(?![A-Za-z0-9_])', wait_colored)
+    assert len(occurrences) == 2, (stored_value, wait_colored)
 
 lowered = subprocess.run(
     [

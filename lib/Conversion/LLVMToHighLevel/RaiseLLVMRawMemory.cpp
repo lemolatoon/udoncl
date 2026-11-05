@@ -821,11 +821,18 @@ struct MemcpyPattern : OpConversionPattern<LLVM::MemcpyOp> {
                   ConversionPatternRewriter &rewriter) const override {
     if (op.getIsVolatile())
       return reject(op, "volatile memcpy is not implemented");
-    if (!adaptor.getLen().getType().isInteger(32))
+    Value length = adaptor.getLen();
+    // SPIR C represents size_t as i64, while the Udon raw address space is
+    // deliberately limited to signed i32. Any copy representable by that
+    // address space therefore has an exactly representable i32 byte count.
+    if (length.getType().isInteger(64))
+      length = arith::TruncIOp::create(rewriter, op.getLoc(),
+                                       rewriter.getI32Type(), length);
+    if (!length.getType().isInteger(32))
       return reject(op, "memcpy length must use the 32-bit Udon ABI");
     OperationState state(op.getLoc(),
                          ::vrc::udonhl::MemcpyOp::getOperationName());
-    state.addOperands({adaptor.getDst(), adaptor.getSrc(), adaptor.getLen()});
+    state.addOperands({adaptor.getDst(), adaptor.getSrc(), length});
     rewriter.create(state);
     rewriter.eraseOp(op);
     return success();

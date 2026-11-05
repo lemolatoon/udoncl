@@ -417,9 +417,10 @@ function(_udoncl_compile_source_target artifact kind unit sources dependencies
     if(kind STREQUAL "HOST")
       set(_language_flags -target spir-unknown-unknown -x c -std=c11
           -Xclang -fdefault-calling-conv=cdecl)
-      # Promote fixed aggregates and scalar pointer wrappers before LLVM IR is
-      # linked and imported, while preserving the call graph for Udon async
-      # lowering and interprocedural storage allocation.
+      # Promote fixed aggregates and scalar pointer wrappers while keeping a
+      # stable LLVM form for recovery. Whole-program inlining runs only after
+      # all Host modules have been linked and raised to MLIR, where library
+      # calls can be specialized together with the user Host.
       set(_optimization_flags -O1 -fno-inline)
     else()
       set(_language_flags -target spir-unknown-unknown -x cl -cl-std=CL1.2

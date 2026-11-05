@@ -220,13 +220,19 @@ int main(void) {
   cl_platform_id platform;
   cl_device_id device;
   cl_context context;
+  cl_context context_alias;
+  cl_context context_alias2;
   cl_command_queue queue;
+  cl_command_queue queue_alias;
+  cl_command_queue queue_alias2;
   cl_program program;
   cl_kernel kernel;
   cl_event marker_event, write_event, wait_events[2];
-  cl_mem first, second;
+  cl_mem first, second, nested_buffer, nested_buffer2;
   cl_mem resolved;
   udonclBufferHandle_t common_buffer = {0, 0}, stale_buffer, replacement;
+  udonclBufferHandle_t host_input_buffer = {0, 0};
+  udonclBufferHandle_t host_output_buffer = {0, 0};
   udonclBufferView_t view;
   udonclWorkspace_t workspace;
   udononnxTensor_t tensor;
@@ -262,6 +268,18 @@ int main(void) {
   EXPECT(context && error == CL_SUCCESS);
   queue = clCreateCommandQueue(context, device, 0, &error);
   EXPECT(queue && error == CL_SUCCESS);
+
+  /* The AOT runtime represents equivalent OpenCL contexts and queues with
+   * singleton objects.  Independent library clients must receive retained
+   * aliases so one client's teardown cannot invalidate another's handle. */
+  context_alias = clCreateContext(0, 1, &device, 0, 0, &error);
+  EXPECT(context_alias == context && error == CL_SUCCESS);
+  queue_alias = clCreateCommandQueue(context_alias, device, 0, &error);
+  EXPECT(queue_alias == queue && error == CL_SUCCESS);
+  EXPECT(clReleaseCommandQueue(queue_alias) == CL_SUCCESS);
+  EXPECT(clFlush(queue) == CL_SUCCESS);
+  EXPECT(clReleaseContext(context_alias) == CL_SUCCESS);
+  EXPECT(clFlush(queue) == CL_SUCCESS);
 
   EXPECT(udonclDeviceBufferCreate(context, CL_MEM_READ_WRITE, 64,
                                   &common_buffer) == UDONCL_STATUS_SUCCESS);
@@ -455,6 +473,33 @@ int main(void) {
     half_a[index] = 0x3c00;
     bfloat_a[index] = 0x3f80;
   }
+  EXPECT(udonclDeviceBufferCreate(context, CL_MEM_READ_ONLY, 64,
+                                  &host_input_buffer) == UDONCL_STATUS_SUCCESS);
+  EXPECT(udonclDeviceBufferCreate(context, CL_MEM_WRITE_ONLY, 64,
+                                  &host_output_buffer) ==
+         UDONCL_STATUS_SUCCESS);
+  context_alias = clCreateContext(0, 1, &device, 0, 0, &error);
+  EXPECT(context_alias == context && error == CL_SUCCESS);
+  queue_alias = clCreateCommandQueue(context_alias, device, 0, &error);
+  EXPECT(queue_alias == queue && error == CL_SUCCESS);
+  nested_buffer =
+      clCreateBuffer(context_alias, CL_MEM_READ_WRITE, 64, 0, &error);
+  EXPECT(nested_buffer && error == CL_SUCCESS);
+  context_alias2 = clCreateContext(0, 1, &device, 0, 0, &error);
+  EXPECT(context_alias2 == context && error == CL_SUCCESS);
+  queue_alias2 = clCreateCommandQueue(context_alias2, device, 0, &error);
+  EXPECT(queue_alias2 == queue && error == CL_SUCCESS);
+  nested_buffer2 =
+      clCreateBuffer(context_alias2, CL_MEM_READ_WRITE, 64, 0, &error);
+  EXPECT(nested_buffer2 && error == CL_SUCCESS);
+  EXPECT(clReleaseMemObject(nested_buffer) == CL_SUCCESS);
+  EXPECT(clReleaseCommandQueue(queue_alias) == CL_SUCCESS);
+  EXPECT(clReleaseContext(context_alias) == CL_SUCCESS);
+  EXPECT(clFlush(queue) == CL_SUCCESS);
+  EXPECT(clReleaseMemObject(nested_buffer2) == CL_SUCCESS);
+  EXPECT(clReleaseCommandQueue(queue_alias2) == CL_SUCCESS);
+  EXPECT(clReleaseContext(context_alias2) == CL_SUCCESS);
+  EXPECT(clFlush(queue) == CL_SUCCESS);
   EXPECT(udononnxCreateOperatorHandle(&operator_handle) ==
          UDONONNX_STATUS_SUCCESS);
   EXPECT(udononnxGather(operator_handle, UDONCL_DATA_FLOAT32, gather_data,
@@ -497,5 +542,14 @@ int main(void) {
   EXPECT(dispatched_nbits_tile_n == 2 && dispatched_nbits_finalize == 1);
   EXPECT(udononnxDestroyOperatorHandle(operator_handle) ==
          UDONONNX_STATUS_SUCCESS);
+  /* Nested ONNX operator clients repeatedly create and release aliases of the
+   * AOT singleton context and queue.  The outer host must still be able to
+   * destroy its device buffers and finally release its queue and context. */
+  EXPECT(udonclDeviceBufferDestroy(&host_input_buffer) ==
+         UDONCL_STATUS_SUCCESS);
+  EXPECT(udonclDeviceBufferDestroy(&host_output_buffer) ==
+         UDONCL_STATUS_SUCCESS);
+  EXPECT(clReleaseCommandQueue(queue) == CL_SUCCESS);
+  EXPECT(clReleaseContext(context) == CL_SUCCESS);
   return 0;
 }

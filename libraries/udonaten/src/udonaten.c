@@ -343,7 +343,14 @@ udonatenStatus_t udonatenTile(udonatenHandle_t handle,
   int input_n, input_c, input_h, input_w;
   int output_n, output_c, output_h, output_w;
   int n_stride, c_stride, h_stride, w_stride;
-  int repeats[4] = {1, 1, 1, 1};
+  // Keep this as scalar stores. Clang otherwise lowers the aggregate
+  // initializer to llvm.memcpy from a private constant, obscuring the four
+  // independent values from SROA and the Udon host-storage allocator.
+  int repeats[4];
+  repeats[0] = 1;
+  repeats[1] = 1;
+  repeats[2] = 1;
+  repeats[3] = 1;
   size_t index;
   if (dimensions > 4)
     return UDONDNN_STATUS_NOT_SUPPORTED;

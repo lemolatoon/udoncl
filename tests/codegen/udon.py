@@ -1082,6 +1082,35 @@ assert re.search(
     r'udonasm\.push "[^"]+"\s+udonasm\.copy',
     buffer_lowered.stdout), buffer_lowered.stdout
 
+release_source = r'''module attributes {
+  vrc.host_stage = "udonhl",
+  vrc.unity_buffer_pool = [
+    {id = 1 : i32, logical_bytes = 4 : i32, heap_slot = "__udoncl_buffer_1"}
+  ]
+} {
+  func.func @release_status() -> i32 attributes {vrc.export_id = 61 : i32} {
+    %id = arith.constant 1 : i32
+    %bytes = arith.constant 4 : i32
+    %buffer, %allocation_status = vrc.buffer_alloc %id, %bytes {
+      format = "rgba8_unorm", usage = "storage"
+    } : (i32, i32) -> (!vrc.buffer, i32)
+    %release_status = vrc.buffer_release %buffer : (!vrc.buffer) -> i32
+    return %release_status : i32
+  }
+}'''
+release_lowered = subprocess.run(
+    [opt, '--vrc-lower-udonhl-to-udonasm', '--verify-each'],
+    input=release_source, text=True, capture_output=True)
+assert release_lowered.returncode == 0, release_lowered.stderr
+zero_slots = re.findall(
+    r'initial = "0", name = "([^"]+)", type = "SystemInt32"',
+    release_lowered.stdout)
+assert zero_slots, release_lowered.stdout
+assert any(re.search(
+    r'udonasm\.push "' + re.escape(zero) + r'"\s+'
+    r'udonasm\.push "[^"]+"\s+udonasm\.copy',
+    release_lowered.stdout) for zero in zero_slots), release_lowered.stdout
+
 async_buffer_source = r'''module attributes {
   vrc.host_stage = "udonhl",
   vrc.unity_buffer_pool = [

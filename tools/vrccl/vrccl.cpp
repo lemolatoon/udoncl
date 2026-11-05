@@ -16,6 +16,7 @@
 #include "mlir/Dialect/Async/Passes.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Func/Extensions/InlinerExtension.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -1125,12 +1126,12 @@ bool configureUnityExports(ModuleOp module, const json::Object &config,
 }
 
 LogicalResult optimizeUnityHostStorage(ModuleOp module) {
-  // Keep the non-recursive Host call graph visible to async lowering and the
-  // interprocedural storage allocator.  The old pipeline cloned every helper
-  // into each export, which hid real caller/callee interference and could
-  // multiply the generated Udon instruction stream.  Promotion here is
-  // semantics-preserving and does not require wholesale inlining.
+  // All Host modules are linked at this point. Inline before scalar promotion
+  // so fixed buffers, descriptors, shapes, OpenCL objects and wrapper calls
+  // become visible to whole-program constant propagation and dead-code
+  // elimination instead of surviving as generic Udon runtime work.
   PassManager optimization(module.getContext());
+  optimization.addPass(createInlinerPass());
   optimization.addPass(createSROA());
   optimization.addPass(createMem2Reg());
   optimization.addPass(createCanonicalizerPass());
@@ -2333,6 +2334,7 @@ int main(int argc, char **argv) {
     return 1;
   }
   DialectRegistry registry;
+  func::registerInlinerExtension(registry);
   registry
       .insert<::vrc::udonasm::UdonAsmDialect, ::vrc::udonhl::UdonHLDialect,
               ::vrc::vrc::VRCDialect, ::vrc::vrcgpu::VRCGPUDialect,

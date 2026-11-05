@@ -2284,12 +2284,18 @@ private:
           emitCopy(allocation.getLoc(), logicalId, token);
           continue;
         }
-        if (isa<::vrc::vrc::BufferReleaseOp>(operation))
+        if (auto release = dyn_cast<::vrc::vrc::BufferReleaseOp>(operation)) {
           // Unity buffers belong to the fixed physical pool. The C runtime
-          // has already released its logical cl_mem reference; retaining the
-          // RenderTexture backing and the result slot's initial zero models a
-          // successful backend release without destroying the pool asset.
+          // has already released its logical cl_mem reference, so retain the
+          // RenderTexture backing. Explicitly materialize success because an
+          // SSA result may reuse a non-zero slot left by an earlier value.
+          std::string status = valueSlots.lookup(release.getStatus());
+          if (status.empty())
+            return release.emitError(
+                "Unity buffer release has no allocated status slot");
+          emitCopy(release.getLoc(), immutableSlot("SystemInt32", "0"), status);
           continue;
+        }
         if (auto transfer = dyn_cast<runtime::BufferUploadOp>(operation)) {
           std::string buffer = valueSlots.lookup(transfer.getDestination());
           std::string offset =

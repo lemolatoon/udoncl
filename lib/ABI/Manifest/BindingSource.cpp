@@ -305,6 +305,21 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
             return -1;
         }
 
+        private int EnsureDeviceBuffersCreated()
+        {
+            if (deviceBuffers == null)
+                return StatusNotInitialized;
+            for (int index = 0; index < deviceBuffers.Length; ++index)
+            {
+                RenderTexture buffer = deviceBuffers[index];
+                if (buffer == null)
+                    return StatusNotInitialized;
+                if (!buffer.IsCreated() && !buffer.Create() && !buffer.IsCreated())
+                    return StatusExecutionFailure;
+            }
+            return StatusSuccess;
+        }
+
         private int UploadWords(int index, Color32[] pixels)
         {
             if (bufferCopyMaterial == null || deviceBuffers[index] == null)
@@ -334,6 +349,9 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
                 return StatusBusy;
             if (program == null || bufferCopyMaterial == null)
                 return StatusNotInitialized;
+            int deviceBufferStatus = EnsureDeviceBuffersCreated();
+            if (deviceBufferStatus != StatusSuccess)
+                return deviceBufferStatus;
             int index = FindDeviceBuffer(bufferId);
             if (index < 0 || deviceBuffers[index] == null || words < 0 || words != deviceBufferLogicalBytes[index] / 4)
                 return StatusInvalidArgument;
@@ -401,6 +419,21 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
             lastReadbackStatus = StatusBusy;
             VRCAsyncGPUReadback.Request(deviceBuffers[index], 0, TextureFormat.RGBA32, this);
             return StatusSuccess;
+        }
+
+        private void CompletePublicReadback(int status)
+        {
+            lastReadbackStatus = status;
+            readbackBusy = false;
+            pendingFloatReadback = null;
+            pendingIntReadback = null;
+            UdonSharpBehaviour receiver = pendingReadbackReceiver;
+            string completionEvent = pendingReadbackEvent;
+            pendingReadbackReceiver = null;
+            pendingReadbackEvent = null;
+            pendingReadbackGeneration = 0;
+            if (receiver != null)
+                receiver.SendCustomEvent(completionEvent);
         }
 
         public int StartReadFloatBuffer(int bufferId, float[] destination, UdonSharpBehaviour receiver, string completionEvent)
@@ -525,6 +558,9 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
     }
 
     if (*isAsync) {
+      std::string deviceBufferStatusLocal = "__udonclDeviceBufferStatus";
+      while (parameterNames.count(deviceBufferStatusLocal))
+        deviceBufferStatusLocal += '_';
       std::string statusMethod = (Twine("Get") + *publicName + "Status").str();
       if (!methods.insert(statusMethod).second)
         return invalid(Twine("generated U# method collision: ") + statusMethod);
@@ -556,8 +592,16 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
              << "                return StatusBusy;\n"
                 "            if (receiver == null || "
                 "string.IsNullOrEmpty(completionEvent))\n"
-                "                return StatusInvalidArgument;\n"
-                "            busy = true;\n"
+                "                return StatusInvalidArgument;\n";
+      if (hasBuffers)
+        output << "            int " << deviceBufferStatusLocal
+               << " = EnsureDeviceBuffersCreated();\n"
+                  "            if ("
+               << deviceBufferStatusLocal
+               << " != StatusSuccess)\n"
+                  "                return "
+               << deviceBufferStatusLocal << ";\n";
+      output << "            busy = true;\n"
                 "            pendingAsyncReceiver = receiver;\n"
                 "            pendingAsyncCompletionEvent = completionEvent;\n"
              << "            pendingAsyncExportId = " << *exportId
@@ -778,7 +822,7 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
                 int heapWord = asyncCommandPointerBytes / 4 + word;
                 int pixelIndex = asyncCommandOffsetWords + word;
                 int value = asyncCommandHeap[heapWord];
-                pixels[pixelIndex] = new Color32((byte)value, (byte)(value >> 8), (byte)(value >> 16), (byte)(value >> 24));
+                pixels[pixelIndex] = new Color32((byte)(value & 255), (byte)((value >> 8) & 255), (byte)((value >> 16) & 255), (byte)((value >> 24) & 255));
             }
         }
 
@@ -935,17 +979,7 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
                         pendingIntReadback[word] = bits;
                 }
             }
-            lastReadbackStatus = success ? StatusSuccess : StatusExecutionFailure;
-            readbackBusy = false;
-            pendingFloatReadback = null;
-            pendingIntReadback = null;
-            UdonSharpBehaviour receiver = pendingReadbackReceiver;
-            string completionEvent = pendingReadbackEvent;
-            pendingReadbackReceiver = null;
-            pendingReadbackEvent = null;
-            pendingReadbackGeneration = 0;
-            if (receiver != null)
-                receiver.SendCustomEvent(completionEvent);
+            CompletePublicReadback(success ? StatusSuccess : StatusExecutionFailure);
 )";
     else
       output << "            return;\n";

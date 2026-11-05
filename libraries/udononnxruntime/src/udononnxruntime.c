@@ -20,6 +20,29 @@ static int udononnxStringEqual(const char *left, const char *right) {
 static udononnxStatus_t udononnxRecordFailure(udononnxSession_t *session,
                                               udononnxStatus_t status);
 
+static void udononnxCopyBufferView(udonclBufferView_t *destination,
+                                   const udonclBufferView_t *source) {
+  destination->buffer.slot = source->buffer.slot;
+  destination->buffer.generation = source->buffer.generation;
+  destination->byte_offset = source->byte_offset;
+  destination->byte_length = source->byte_length;
+  destination->data_type = source->data_type;
+}
+
+static void udononnxCopyTensor(udononnxTensor_t *destination,
+                               const udononnxTensor_t *source) {
+  udononnxCopyBufferView(&destination->storage, &source->storage);
+  destination->rank = source->rank;
+  destination->dimensions[0] = source->dimensions[0];
+  destination->dimensions[1] = source->dimensions[1];
+  destination->dimensions[2] = source->dimensions[2];
+  destination->dimensions[3] = source->dimensions[3];
+  destination->dimensions[4] = source->dimensions[4];
+  destination->dimensions[5] = source->dimensions[5];
+  destination->dimensions[6] = source->dimensions[6];
+  destination->dimensions[7] = source->dimensions[7];
+}
+
 static udononnxStatus_t udononnxElementCount(uint32_t rank,
                                              const int64_t *dimensions,
                                              size_t *elements) {
@@ -57,7 +80,7 @@ udononnxStatus_t udononnxCreateTensor(udonclBufferView_t storage, uint32_t rank,
   if (!element_bytes || (uint64_t)elements * element_bytes > SIZE_MAX ||
       storage.byte_length != elements * element_bytes)
     return UDONONNX_STATUS_TYPE_MISMATCH;
-  tensor->storage = storage;
+  udononnxCopyBufferView(&tensor->storage, &storage);
   tensor->rank = rank;
   for (axis = 0; axis < UDONONNX_MAX_TENSOR_RANK; ++axis)
     tensor->dimensions[axis] = axis < rank ? dimensions[axis] : 0;
@@ -85,7 +108,7 @@ udononnxStatus_t udononnxGetTensorStorage(udononnxTensor_t tensor,
     return UDONONNX_STATUS_INVALID_VALUE;
   status = udononnxValidateTensor(tensor);
   if (status == UDONONNX_STATUS_SUCCESS)
-    *storage = tensor.storage;
+    udononnxCopyBufferView(storage, &tensor.storage);
   return status;
 }
 
@@ -340,7 +363,7 @@ udononnxSessionBind(udononnxSession_t *session, size_t index,
     return UDONONNX_STATUS_INVALID_VALUE;
   status = udononnxValidateBinding(&metadata[index], &tensor, session->context);
   if (status == UDONONNX_STATUS_SUCCESS)
-    bindings[index] = tensor;
+    udononnxCopyTensor(&bindings[index], &tensor);
   return status;
 }
 

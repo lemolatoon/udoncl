@@ -97,6 +97,7 @@ struct _cl_device_id {
 };
 struct _cl_context {
   cl_uint active;
+  cl_uint refs;
 };
 struct _cl_command_queue {
   cl_uint active;
@@ -269,7 +270,14 @@ CL_API_ENTRY cl_context CL_API_CALL clCreateContext(
     udoncl_error(error, CL_INVALID_VALUE);
     return 0;
   }
-  udoncl_context.active = 1;
+  /* Separate library clients share the AOT singleton, so every successful
+   * create owns one reference to the same logical object. */
+  if (udoncl_context.active) {
+    ++udoncl_context.refs;
+  } else {
+    udoncl_context.active = 1;
+    udoncl_context.refs = 1;
+  }
   udoncl_error(error, CL_SUCCESS);
   return &udoncl_context;
 }
@@ -282,9 +290,19 @@ clCreateCommandQueue(cl_context context, cl_device_id device,
     udoncl_error(error, CL_INVALID_VALUE);
     return 0;
   }
-  udoncl_queue.active = 1;
-  udoncl_queue.refs = 1;
-  udoncl_queue.context = context;
+  /* Match the context aliasing rule above; resetting refs here lets one
+   * library's teardown invalidate every other client's queue. */
+  if (udoncl_queue.active) {
+    if (udoncl_queue.context != context) {
+      udoncl_error(error, CL_INVALID_CONTEXT);
+      return 0;
+    }
+    ++udoncl_queue.refs;
+  } else {
+    udoncl_queue.active = 1;
+    udoncl_queue.refs = 1;
+    udoncl_queue.context = context;
+  }
   udoncl_error(error, CL_SUCCESS);
   return &udoncl_queue;
 }
@@ -1234,6 +1252,7 @@ CL_API_ENTRY cl_int CL_API_CALL clReleaseCommandQueue(cl_command_queue queue) {
 CL_API_ENTRY cl_int CL_API_CALL clReleaseContext(cl_context context) {
   if (context != &udoncl_context || !context->active)
     return CL_INVALID_CONTEXT;
-  context->active = 0;
+  if (--context->refs == 0)
+    context->active = 0;
   return CL_SUCCESS;
 }
