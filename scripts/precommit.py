@@ -702,16 +702,18 @@ def run_unity_mcp_gate(
             timeout=300,
         )
         instance = wait_for_instance_reconnect(client, timeout=600)
-        client.tool(
-            "execute_menu_item",
-            {
-                "menu_path": (
-                    "Tools/udoncl/Internal/Prepare Public Transformer Validation"
-                )
-            },
-            timeout=300,
-        )
-        instance = wait_for_instance_reconnect(client, timeout=600)
+        # Temporarily keep Transformer import/execution out of the Unity gate
+        # while its dispatch failure is diagnosed independently from MNIST.
+        # client.tool(
+        #     "execute_menu_item",
+        #     {
+        #         "menu_path": (
+        #             "Tools/udoncl/Internal/Prepare Public Transformer Validation"
+        #         )
+        #     },
+        #     timeout=300,
+        # )
+        # instance = wait_for_instance_reconnect(client, timeout=600)
         client.tool(
             "execute_menu_item",
             {

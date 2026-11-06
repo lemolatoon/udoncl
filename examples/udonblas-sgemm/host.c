@@ -24,20 +24,12 @@ static int last_phase;
 
 int run_udonblas_sgemm(void) {
   udonblasHandle_t handle = 0;
-  cl_command_queue stream = 0;
   const float alpha = 1.0f;
   const float beta = 0.0f;
   udonblasStatus_t status;
 
   last_phase = 1;
   status = udonblasCreate(&handle);
-  if (status != UDONBLAS_STATUS_SUCCESS)
-    return status;
-  status = udonblasGetStream(handle, &stream);
-  if (status != UDONBLAS_STATUS_SUCCESS || !stream)
-    return status != UDONBLAS_STATUS_SUCCESS ? status
-                                             : UDONBLAS_STATUS_NOT_INITIALIZED;
-  status = udonblasSetStream(handle, stream);
   if (status != UDONBLAS_STATUS_SUCCESS)
     return status;
   last_phase = 2;

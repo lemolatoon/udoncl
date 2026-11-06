@@ -41,6 +41,7 @@ extern cl_int __vrc_enqueue_udonblas_sgemv(cl_command_queue, cl_kernel, cl_uint,
 #define UDONBLAS_HANDLE 1u
 static cl_context context;
 static cl_command_queue queue;
+static int owns_context_reference;
 static cl_program program;
 static cl_kernel sgemm_kernel;
 static cl_kernel sgemv_kernel;
@@ -80,7 +81,7 @@ static void clear_objects(void) {
     clReleaseMemObject(input_buffer);
   if (queue)
     clReleaseCommandQueue(queue);
-  if (context)
+  if (context && owns_context_reference)
     clReleaseContext(context);
   sgemm_kernel = 0;
   sgemv_kernel = 0;
@@ -91,6 +92,7 @@ static void clear_objects(void) {
   output_buffer = input_buffer = 0;
   queue = 0;
   context = 0;
+  owns_context_reference = 0;
 #endif
 }
 
@@ -99,32 +101,10 @@ static udonblasStatus_t execution_failure(void) {
   return UDONBLAS_STATUS_EXECUTION_FAILED;
 }
 
-udonblasStatus_t udonblasCreate(udonblasHandle_t *handle) {
-  cl_platform_id platform;
-  cl_device_id device;
+#ifndef UDONBLAS_AOT_RAW_INTRINSICS
+static udonblasStatus_t initialize_resources(void) {
   const char *source = UDONBLAS_DEVICE_SOURCE;
   cl_int status;
-  if (!handle)
-    return UDONBLAS_STATUS_INVALID_VALUE;
-  clear_objects();
-#ifdef UDONBLAS_AOT_RAW_INTRINSICS
-  input_buffer = (cl_mem)(size_t)__vrc_opencl_buffer_alloc(5, sizeof(packed));
-  output_buffer = (cl_mem)(size_t)__vrc_opencl_buffer_alloc(6, sizeof(packed));
-  context = (cl_context)(size_t)1;
-  queue = (cl_command_queue)(size_t)1;
-  *handle = UDONBLAS_HANDLE;
-  return UDONBLAS_STATUS_SUCCESS;
-#else
-  if (clGetPlatformIDs(1, &platform, 0) != CL_SUCCESS ||
-      clGetDeviceIDs(platform, CL_DEVICE_TYPE_DEFAULT, 1, &device, 0) !=
-          CL_SUCCESS)
-    return execution_failure();
-  context = clCreateContext(0, 1, &device, 0, 0, &status);
-  if (status != CL_SUCCESS)
-    return execution_failure();
-  queue = clCreateCommandQueue(context, device, 0, &status);
-  if (status != CL_SUCCESS)
-    return execution_failure();
   input_buffer =
       clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(packed), 0, &status);
   if (status != CL_SUCCESS)
@@ -167,8 +147,38 @@ udonblasStatus_t udonblasCreate(udonblasHandle_t *handle) {
                      &output_buffer) != CL_SUCCESS)
     return execution_failure();
   sdot_reduce_kernel = clCreateKernel(program, "udonblas_sdot_reduce", &status);
+  return status == CL_SUCCESS ? UDONBLAS_STATUS_SUCCESS : execution_failure();
+}
+#endif
+
+udonblasStatus_t udonblasCreate(udonblasHandle_t *handle) {
+  cl_platform_id platform;
+  cl_device_id device;
+  cl_int status;
+  if (!handle)
+    return UDONBLAS_STATUS_INVALID_VALUE;
+  clear_objects();
+#ifdef UDONBLAS_AOT_RAW_INTRINSICS
+  input_buffer = (cl_mem)(size_t)__vrc_opencl_buffer_alloc(5, sizeof(packed));
+  output_buffer = (cl_mem)(size_t)__vrc_opencl_buffer_alloc(6, sizeof(packed));
+  context = (cl_context)(size_t)1;
+  queue = (cl_command_queue)(size_t)1;
+  *handle = UDONBLAS_HANDLE;
+  return UDONBLAS_STATUS_SUCCESS;
+#else
+  if (clGetPlatformIDs(1, &platform, 0) != CL_SUCCESS ||
+      clGetDeviceIDs(platform, CL_DEVICE_TYPE_DEFAULT, 1, &device, 0) !=
+          CL_SUCCESS)
+    return execution_failure();
+  context = clCreateContext(0, 1, &device, 0, 0, &status);
   if (status != CL_SUCCESS)
     return execution_failure();
+  owns_context_reference = 1;
+  queue = clCreateCommandQueue(context, device, 0, &status);
+  if (status != CL_SUCCESS)
+    return execution_failure();
+  if (initialize_resources() != UDONBLAS_STATUS_SUCCESS)
+    return UDONBLAS_STATUS_EXECUTION_FAILED;
   *handle = UDONBLAS_HANDLE;
   return UDONBLAS_STATUS_SUCCESS;
 #endif
@@ -391,17 +401,15 @@ udonblasStatus_t udonblasSetStream(udonblasHandle_t handle,
   return UDONBLAS_STATUS_NOT_SUPPORTED;
 #else
   if (clGetCommandQueueInfo(stream, CL_QUEUE_CONTEXT, sizeof(stream_context),
-                            &stream_context, 0) != CL_SUCCESS ||
-      stream_context != context)
+                            &stream_context, 0) != CL_SUCCESS)
     return UDONBLAS_STATUS_INVALID_VALUE;
   if (clRetainCommandQueue(stream) != CL_SUCCESS)
     return UDONBLAS_STATUS_EXECUTION_FAILED;
-  if (clReleaseCommandQueue(queue) != CL_SUCCESS) {
-    clReleaseCommandQueue(stream);
-    return UDONBLAS_STATUS_EXECUTION_FAILED;
-  }
+  clear_objects();
+  context = stream_context;
   queue = stream;
-  return UDONBLAS_STATUS_SUCCESS;
+  owns_context_reference = 0;
+  return initialize_resources();
 #endif
 }
 

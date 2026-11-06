@@ -162,6 +162,7 @@ typedef struct OpTensorDescriptor {
 
 static cl_context context;
 static cl_command_queue queue;
+static int owns_context_reference;
 static cl_program program;
 static cl_kernel convolution_kernel;
 static cl_kernel large_convolution_kernel;
@@ -323,7 +324,7 @@ static void clear_objects(void) {
     clReleaseMemObject(arena_pointwise_self_buffer);
   if (queue)
     clReleaseCommandQueue(queue);
-  if (context)
+  if (context && owns_context_reference)
     clReleaseContext(context);
   large_convolution_kernel = 0;
   large_activation_kernel = 0;
@@ -438,6 +439,7 @@ static void clear_objects(void) {
   arena_rms_partial_buffer = 0;
   queue = 0;
   context = 0;
+  owns_context_reference = 0;
 #endif
 }
 
@@ -446,7 +448,9 @@ static udondnnStatus_t execution_failure(void) {
   return UDONDNN_STATUS_EXECUTION_FAILED;
 }
 
-udondnnStatus_t udondnnCreate(udondnnHandle_t *handle) {
+static udondnnStatus_t create_bound(udondnnHandle_t *handle,
+                                    cl_context bound_context,
+                                    cl_command_queue bound_queue) {
   cl_platform_id platform;
   cl_device_id device;
   const char *source = UDONDNN_DEVICE_SOURCE;
@@ -456,6 +460,8 @@ udondnnStatus_t udondnnCreate(udondnnHandle_t *handle) {
   if (context)
     return UDONDNN_STATUS_NOT_SUPPORTED;
 #ifdef UDONDNN_AOT_RAW_INTRINSICS
+  if (bound_context || bound_queue)
+    return UDONDNN_STATUS_NOT_SUPPORTED;
   arena_pointwise_self_buffer =
       (cl_mem)(size_t)__vrc_opencl_buffer_alloc(1, 65536);
   arena_pointwise_other_buffer =
@@ -469,16 +475,24 @@ udondnnStatus_t udondnnCreate(udondnnHandle_t *handle) {
   *handle = UDONDNN_HANDLE;
   return UDONDNN_STATUS_SUCCESS;
 #else
-  if (clGetPlatformIDs(1, &platform, 0) != CL_SUCCESS ||
-      clGetDeviceIDs(platform, CL_DEVICE_TYPE_DEFAULT, 1, &device, 0) !=
-          CL_SUCCESS)
-    return execution_failure();
-  context = clCreateContext(0, 1, &device, 0, 0, &status);
-  if (status != CL_SUCCESS)
-    return execution_failure();
-  queue = clCreateCommandQueue(context, device, 0, &status);
-  if (status != CL_SUCCESS)
-    return execution_failure();
+  if (bound_context && bound_queue) {
+    context = bound_context;
+    queue = bound_queue;
+    owns_context_reference = 0;
+  } else {
+    if (bound_context || bound_queue ||
+        clGetPlatformIDs(1, &platform, 0) != CL_SUCCESS ||
+        clGetDeviceIDs(platform, CL_DEVICE_TYPE_DEFAULT, 1, &device, 0) !=
+            CL_SUCCESS)
+      return execution_failure();
+    context = clCreateContext(0, 1, &device, 0, 0, &status);
+    if (status != CL_SUCCESS)
+      return execution_failure();
+    owns_context_reference = 1;
+    queue = clCreateCommandQueue(context, device, 0, &status);
+    if (status != CL_SUCCESS)
+      return execution_failure();
+  }
 #ifndef UDONDNN_AOT_LARGE_ONLY
   input_buffer =
       clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(packed), 0, &status);
@@ -682,6 +696,10 @@ udondnnStatus_t udondnnCreate(udondnnHandle_t *handle) {
 #endif
 }
 
+udondnnStatus_t udondnnCreate(udondnnHandle_t *handle) {
+  return create_bound(handle, 0, 0);
+}
+
 udondnnStatus_t udondnnDestroy(udondnnHandle_t handle) {
   if (handle != UDONDNN_HANDLE || !context)
     return UDONDNN_STATUS_NOT_INITIALIZED;
@@ -702,17 +720,22 @@ udondnnStatus_t udondnnSetStream(udondnnHandle_t handle,
   return UDONDNN_STATUS_NOT_SUPPORTED;
 #else
   if (clGetCommandQueueInfo(stream, CL_QUEUE_CONTEXT, sizeof(stream_context),
-                            &stream_context, 0) != CL_SUCCESS ||
-      stream_context != context)
+                            &stream_context, 0) != CL_SUCCESS)
     return UDONDNN_STATUS_BAD_PARAM;
+  if (stream_context == context) {
+    if (clRetainCommandQueue(stream) != CL_SUCCESS)
+      return UDONDNN_STATUS_EXECUTION_FAILED;
+    if (clReleaseCommandQueue(queue) != CL_SUCCESS) {
+      clReleaseCommandQueue(stream);
+      return UDONDNN_STATUS_EXECUTION_FAILED;
+    }
+    queue = stream;
+    return UDONDNN_STATUS_SUCCESS;
+  }
   if (clRetainCommandQueue(stream) != CL_SUCCESS)
     return UDONDNN_STATUS_EXECUTION_FAILED;
-  if (clReleaseCommandQueue(queue) != CL_SUCCESS) {
-    clReleaseCommandQueue(stream);
-    return UDONDNN_STATUS_EXECUTION_FAILED;
-  }
-  queue = stream;
-  return UDONDNN_STATUS_SUCCESS;
+  clear_objects();
+  return create_bound(&handle, stream_context, stream);
 #endif
 }
 

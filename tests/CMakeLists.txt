@@ -23,6 +23,26 @@ file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated")
 file(WRITE
   "${CMAKE_CURRENT_BINARY_DIR}/generated/udononnxoperators_device_source.h"
   "#define UDONONNX_DEVICE_SOURCE \"${_UDONONNX_TEST_DEVICE_SOURCE}\"\n")
+set(_UDONBLAS_TEST_DEVICE_SOURCE "")
+foreach(_source sgemm.cl sgemv.cl saxpy.cl sdot.cl)
+  file(READ
+    "${PROJECT_SOURCE_DIR}/libraries/udonblas/device/${_source}"
+    _UDONBLAS_TEST_DEVICE_PART)
+  string(APPEND _UDONBLAS_TEST_DEVICE_SOURCE
+    "${_UDONBLAS_TEST_DEVICE_PART}\n")
+endforeach()
+string(REPLACE "\\" "\\\\" _UDONBLAS_TEST_DEVICE_SOURCE
+  "${_UDONBLAS_TEST_DEVICE_SOURCE}")
+string(REPLACE "\"" "\\\"" _UDONBLAS_TEST_DEVICE_SOURCE
+  "${_UDONBLAS_TEST_DEVICE_SOURCE}")
+string(REPLACE "\n" "\\n" _UDONBLAS_TEST_DEVICE_SOURCE
+  "${_UDONBLAS_TEST_DEVICE_SOURCE}")
+file(WRITE
+  "${CMAKE_CURRENT_BINARY_DIR}/generated/udonblas_device_source.h"
+  "#define UDONBLAS_DEVICE_SOURCE \"${_UDONBLAS_TEST_DEVICE_SOURCE}\"\n")
+file(WRITE
+  "${CMAKE_CURRENT_BINARY_DIR}/generated/udondnn_device_source.h"
+  "#define UDONDNN_DEVICE_SOURCE \"udondnn-stream-runtime\"\n")
 add_executable(opencl-aot-runtime
   runtime/opencl_aot.c
   "${PROJECT_SOURCE_DIR}/lib/Runtime/OpenCL/OpenCLAOT.c"
@@ -46,6 +66,38 @@ target_compile_definitions(opencl-aot-runtime PRIVATE
   UDONCL_AOT_ENABLE_ONNX=1)
 add_test(NAME opencl-aot-runtime COMMAND opencl-aot-runtime)
 if(TARGET VRCOpenCLRuntime)
+  add_executable(udonblas-stream-runtime
+    runtime/udonblas_stream.c
+    "${PROJECT_SOURCE_DIR}/libraries/udonblas/src/udonblas.c")
+  target_compile_features(udonblas-stream-runtime PRIVATE c_std_11)
+  set_target_properties(udonblas-stream-runtime PROPERTIES
+    C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS OFF)
+  target_include_directories(udonblas-stream-runtime PRIVATE
+    "${PROJECT_SOURCE_DIR}/third_party/OpenCL-Headers"
+    "${PROJECT_SOURCE_DIR}/include"
+    "${PROJECT_SOURCE_DIR}/libraries/udonblas/include"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated")
+  target_compile_definitions(udonblas-stream-runtime PRIVATE
+    CL_TARGET_OPENCL_VERSION=120)
+  target_link_libraries(udonblas-stream-runtime PRIVATE VRCOpenCLRuntime)
+  add_test(NAME udonblas-stream-runtime COMMAND udonblas-stream-runtime)
+
+  add_executable(udondnn-stream-runtime
+    runtime/udondnn_stream.c
+    "${PROJECT_SOURCE_DIR}/libraries/udondnn/src/udondnn.c")
+  target_compile_features(udondnn-stream-runtime PRIVATE c_std_11)
+  set_target_properties(udondnn-stream-runtime PROPERTIES
+    C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS OFF)
+  target_include_directories(udondnn-stream-runtime PRIVATE
+    "${PROJECT_SOURCE_DIR}/third_party/OpenCL-Headers"
+    "${PROJECT_SOURCE_DIR}/include"
+    "${PROJECT_SOURCE_DIR}/libraries/udondnn/include"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated")
+  target_compile_definitions(udondnn-stream-runtime PRIVATE
+    CL_TARGET_OPENCL_VERSION=120 UDONDNN_AOT_LARGE_ONLY=1)
+  target_link_libraries(udondnn-stream-runtime PRIVATE VRCOpenCLRuntime)
+  add_test(NAME udondnn-stream-runtime COMMAND udondnn-stream-runtime)
+
   add_executable(udononnx-runtime
     runtime/onnx_runtime.c
     "${PROJECT_SOURCE_DIR}/libraries/udononnxruntime/src/udononnxruntime.c"

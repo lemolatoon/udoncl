@@ -325,15 +325,26 @@ elimination and dynamic Device addressing therefore remain Phase B work.
 Stream-API migration checkpoint (2026-11-07): the CUDA-compatible
 `udonblasSetStream`/`udonblasGetStream` and
 `udondnnSetStream`/`udondnnGetStream` entry points are public. On the Native
-runtime a handle may switch to a caller queue from the handle's current
-context; the library retains the replacement and releases the prior queue.
-Null, foreign-context, and invalid queues fail without changing association.
-The AOT singleton accepts its existing queue and rejects replacement rather
-than pretending that an arbitrary handle is usable. This is deliberately a
-transition checkpoint: `Create` still owns a private context/queue and the
-baseline operations still stage Host arrays. Phase B is not accepted until
-creation is caller-context based and every baseline tensor pointer has Device
-semantics with no internal transfer or finish.
+runtime both libraries can switch to a caller queue from either the current or
+a new context: they retain the replacement queue, borrow its queue-owned
+context, destroy every old context-owned program, kernel, and staging buffer,
+and reconstruct their resources on the replacement context. Native ownership
+tests cover both
+transitions, caller reference release, final teardown, and zero leaked OpenCL
+objects. Null and invalid queues fail without changing association. The AOT
+singleton accepts its existing queue and rejects replacement rather than
+pretending that an arbitrary handle is usable. This is deliberately a
+transition checkpoint: `Create` still initially owns a private context/queue and
+the baseline operations still stage Host arrays. Phase B is not accepted until
+both libraries bind caller contexts directly and every baseline tensor pointer
+has Device semantics with no internal transfer or finish.
+
+The current Device-graph path still lowers through
+`createRuntimeDispatchers` to direct `__vrc_opencl_dispatch_*` intrinsics. The
+legacy `createRunExport` path is only emitted for non-Device graphs, so wiring
+stream association there would not migrate MNIST or Transformer. Phase C must
+replace the actual Device-graph dispatcher route with public Device-library
+calls; the legacy fallback is not the migration target.
 
 ### Phase C: ONNX and MNIST schedule
 
