@@ -64,8 +64,9 @@ aliasing are allowed.
   words removes every `Cos`/`Sin`/`Neg`, `Add`, `Mul`, `Sigmoid`, and `Tanh`
   node from the unsupported set. After the Device Q4, RmsNorm, and Softmax
   checkpoints below and the generic Device reindex/Gather checkpoints
-  described below, the remaining measured set is Equal 1, ScatterND 1, and
-  Where 1.
+  described below, plus generic rank-zero-through-four FP32 Equal/Where
+  broadcast kernels with word-addressable FP32 0/1 Device masks, the remaining
+  measured set is ScatterND 1.
 - The generic correctness-oriented `MatMulNBits` path still uses small
   Host-managed tiles. A first Device-resident specialization now covers the
   pinned model's three-input unsigned Q4 form (`bits=4`, `block_size=32`,

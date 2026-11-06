@@ -25,6 +25,41 @@ extern size_t udononnx_reindex_cpu_gid;
     ((uint)((axis) & 1) * 16u)) &                                              \
    65535u)
 
+#define UDONONNX_BROADCAST_INDEX(                                              \
+    result, output_index, input_rank, input_shape01, input_shape23,            \
+    input_shape4, output_rank, output_shape01, output_shape23, output_shape4)  \
+  do {                                                                         \
+    size_t broadcast_input_index = 0u;                                         \
+    size_t broadcast_input_stride = 1u;                                        \
+    size_t broadcast_output_stride = 1u;                                       \
+    int broadcast_rank_offset = (output_rank) - (input_rank);                  \
+    for (int broadcast_reverse_axis = 0; broadcast_reverse_axis < 5;           \
+         ++broadcast_reverse_axis) {                                           \
+      int broadcast_output_axis = 4 - broadcast_reverse_axis;                  \
+      if (broadcast_output_axis < (output_rank)) {                             \
+        uint broadcast_output_dimension =                                      \
+            UDONONNX_REINDEX_U16(broadcast_output_axis, output_shape01,        \
+                                 output_shape23, output_shape4);               \
+        size_t broadcast_coordinate =                                          \
+            ((output_index) / broadcast_output_stride) %                       \
+            (size_t)broadcast_output_dimension;                                \
+        int broadcast_input_axis =                                             \
+            broadcast_output_axis - broadcast_rank_offset;                     \
+        if (broadcast_input_axis >= 0) {                                       \
+          uint broadcast_input_dimension =                                     \
+              UDONONNX_REINDEX_U16(broadcast_input_axis, input_shape01,        \
+                                   input_shape23, input_shape4);               \
+          if (broadcast_input_dimension != 1u)                                 \
+            broadcast_input_index +=                                           \
+                broadcast_coordinate * broadcast_input_stride;                 \
+          broadcast_input_stride *= broadcast_input_dimension;                 \
+        }                                                                      \
+        broadcast_output_stride *= broadcast_output_dimension;                 \
+      }                                                                        \
+    }                                                                          \
+    (result) = broadcast_input_index;                                          \
+  } while (0)
+
 /* Generic contiguous transpose materialization. Shapes use five packed u16
  * dimensions and permutation uses one three-bit input-axis index per output
  * axis. The Host facade validates the complete descriptor before dispatch. */
@@ -136,6 +171,78 @@ __kernel void udononnx_cast_i64_f32(__global const uint *input,
         magnitude_high += 1u;
       value = -((float)magnitude_high * 4294967296.0f + (float)magnitude_low);
     }
+  }
+  output[gid] = value;
+}
+
+/* Boolean tensors use FP32 0/1 words in Device storage. This keeps fragment
+ * shader resources word-addressable while preserving ONNX i1 in the graph. */
+__kernel void
+udononnx_equal_f32(__global const float *left, __global const float *right,
+                   __global float *output, int words, int ranks_value,
+                   int left_shape01_value, int left_shape23_value,
+                   int right_shape01_value, int right_shape23_value,
+                   int output_shape01_value, int output_shape23_value) {
+  size_t gid = UDONONNX_REINDEX_GID();
+  float value = 0.0f;
+  if (gid < (size_t)words) {
+    uint ranks = (uint)ranks_value;
+    int left_rank = (int)(ranks & 7u);
+    int right_rank = (int)((ranks >> 3u) & 7u);
+    int output_rank = (int)((ranks >> 6u) & 7u);
+    uint output_shape01 = (uint)output_shape01_value;
+    uint output_shape23 = (uint)output_shape23_value;
+    size_t left_index;
+    size_t right_index;
+    UDONONNX_BROADCAST_INDEX(left_index, gid, left_rank,
+                             (uint)left_shape01_value, (uint)left_shape23_value,
+                             1u, output_rank, output_shape01, output_shape23,
+                             1u);
+    UDONONNX_BROADCAST_INDEX(right_index, gid, right_rank,
+                             (uint)right_shape01_value,
+                             (uint)right_shape23_value, 1u, output_rank,
+                             output_shape01, output_shape23, 1u);
+    if (left[left_index & 16383u] == right[right_index & 16383u])
+      value = 1.0f;
+  }
+  output[gid] = value;
+}
+
+__kernel void udononnx_where_f32(
+    __global const float *condition, __global const float *when_true,
+    __global const float *when_false, __global float *output, int words,
+    int ranks_value, int condition_shape01_value, int condition_shape23_value,
+    int true_shape01_value, int true_shape23_value, int false_shape01_value,
+    int false_shape23_value, int output_shape01_value,
+    int output_shape23_value) {
+  size_t gid = UDONONNX_REINDEX_GID();
+  float value = 0.0f;
+  if (gid < (size_t)words) {
+    uint ranks = (uint)ranks_value;
+    int condition_rank = (int)(ranks & 7u);
+    int true_rank = (int)((ranks >> 3u) & 7u);
+    int false_rank = (int)((ranks >> 6u) & 7u);
+    int output_rank = (int)((ranks >> 9u) & 7u);
+    uint output_shape01 = (uint)output_shape01_value;
+    uint output_shape23 = (uint)output_shape23_value;
+    size_t condition_index;
+    size_t true_index;
+    size_t false_index;
+    UDONONNX_BROADCAST_INDEX(condition_index, gid, condition_rank,
+                             (uint)condition_shape01_value,
+                             (uint)condition_shape23_value, 1u, output_rank,
+                             output_shape01, output_shape23, 1u);
+    UDONONNX_BROADCAST_INDEX(true_index, gid, true_rank,
+                             (uint)true_shape01_value, (uint)true_shape23_value,
+                             1u, output_rank, output_shape01, output_shape23,
+                             1u);
+    UDONONNX_BROADCAST_INDEX(false_index, gid, false_rank,
+                             (uint)false_shape01_value,
+                             (uint)false_shape23_value, 1u, output_rank,
+                             output_shape01, output_shape23, 1u);
+    value = when_false[false_index & 16383u];
+    if (condition[condition_index & 16383u] != 0.0f)
+      value = when_true[true_index & 16383u];
   }
   output[gid] = value;
 }

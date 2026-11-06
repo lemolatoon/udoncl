@@ -546,8 +546,12 @@ where_host = subprocess.run(
     capture_output=True,
 )
 assert where_host.returncode == 0, (where_host.stdout, where_host.stderr)
-assert "call @udononnxEqual" in where_host.stdout
-assert "call @udononnxWhere" in where_host.stdout
+assert "udoncl.onnx_device_graph = true" in where_host.stdout
+assert "udoncl.onnx_device_unsupported = []" in where_host.stdout
+assert where_host.stdout.count("call @__vrc_enqueue_udononnx_equal_f32_device_args") == 1
+assert where_host.stdout.count("call @__vrc_enqueue_udononnx_where_f32_device_args") == 1
+assert "call @udononnxEqual" not in where_host.stdout
+assert "call @udononnxWhere" not in where_host.stdout
 
 integer_add_source = source.with_name("onnx_integer_add.mlir")
 integer_add_portable = subprocess.run(

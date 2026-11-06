@@ -262,6 +262,42 @@ static float runCastCase() {
   return maximumError;
 }
 
+static float runEqualWhereCase() {
+  constexpr int surfaceWords = 16384;
+  constexpr int words = 6;
+  std::vector<float> left = {0.0f, 2.0f};
+  std::vector<float> sentinel = {0.0f};
+  std::vector<float> condition(surfaceWords, -17.0f);
+  std::vector<float> whenTrue = {9.0f};
+  std::vector<float> whenFalse = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
+  std::vector<float> output(surfaceWords, -17.0f);
+  std::vector<int> leftShape = {2, 1};
+  std::vector<int> scalarShape;
+  std::vector<int> outputShape = {2, 3};
+  for (udononnx_reindex_cpu_gid = 0; udononnx_reindex_cpu_gid < surfaceWords;
+       ++udononnx_reindex_cpu_gid)
+    udononnx_equal_f32(
+        left.data(), sentinel.data(), condition.data(), words, 2 | (2 << 6),
+        packDimensions(leftShape, 0), packDimensions(leftShape, 2),
+        packDimensions(scalarShape, 0), packDimensions(scalarShape, 2),
+        packDimensions(outputShape, 0), packDimensions(outputShape, 2));
+  for (udononnx_reindex_cpu_gid = 0; udononnx_reindex_cpu_gid < surfaceWords;
+       ++udononnx_reindex_cpu_gid)
+    udononnx_where_f32(
+        condition.data(), whenTrue.data(), whenFalse.data(), output.data(),
+        words, 2 | (2 << 6) | (2 << 9), packDimensions(outputShape, 0),
+        packDimensions(outputShape, 2), packDimensions(scalarShape, 0),
+        packDimensions(scalarShape, 2), packDimensions(outputShape, 0),
+        packDimensions(outputShape, 2), packDimensions(outputShape, 0),
+        packDimensions(outputShape, 2));
+  const float expected[words] = {9.0f, 9.0f, 9.0f, 4.0f, 5.0f, 6.0f};
+  float maximumError = 0.0f;
+  for (int index = 0; index < words; ++index)
+    maximumError =
+        std::max(maximumError, std::abs(output[index] - expected[index]));
+  return maximumError;
+}
+
 int main() {
   float headsError = runCase({1, 4, 32, 64}, {0, 2, 1, 3});
   float attentionError = runCase({1, 32, 4, 64}, {0, 1, 3, 2});
@@ -277,11 +313,12 @@ int main() {
   float gatherI32Error = runGatherCase(1);
   float gatherI64Error = runGatherCase(2);
   float castError = runCastCase();
+  float equalWhereError = runEqualWhereCase();
   maximumError =
       std::max({maximumError, halfError, stridedError, repeatHeadsError,
                 leadingBroadcastError, rotaryConcatError, cacheConcatError,
-                gatherI32Error, gatherI64Error, castError});
-  std::cout << "reindex_cases=12\n";
+                gatherI32Error, gatherI64Error, castError, equalWhereError});
+  std::cout << "reindex_cases=13\n";
   std::cout << "reindex_max_error=" << maximumError << '\n';
   return maximumError == 0.0f ? 0 : 1;
 }

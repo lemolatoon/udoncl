@@ -71,6 +71,8 @@ struct LowerOpenCLAOTIntrinsicsPass
           name == "__vrc_opencl_dispatch_udononnx_concat2_f32" ||
           name == "__vrc_opencl_dispatch_udononnx_gather_axis0_f32" ||
           name == "__vrc_opencl_dispatch_udononnx_cast_i64_f32" ||
+          name == "__vrc_opencl_dispatch_udononnx_equal_f32" ||
+          name == "__vrc_opencl_dispatch_udononnx_where_f32" ||
           name == "__vrc_opencl_dispatch_mnist_conv" ||
           name == "__vrc_opencl_dispatch_mnist_pool" ||
           name == "__vrc_opencl_dispatch_mnist_dense";
@@ -148,6 +150,11 @@ struct LowerOpenCLAOTIntrinsicsPass
         arguments = {i32, i32, i32, i32, i32, i32, i32};
       else if (name == "__vrc_opencl_dispatch_udononnx_cast_i64_f32")
         arguments = {i32, i32, i32};
+      else if (name == "__vrc_opencl_dispatch_udononnx_equal_f32")
+        arguments = {i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32};
+      else if (name == "__vrc_opencl_dispatch_udononnx_where_f32")
+        arguments = {i32, i32, i32, i32, i32, i32, i32,
+                     i32, i32, i32, i32, i32, i32, i32};
       else
         arguments = {i32, i32};
       if (!function.isExternal() ||
@@ -294,13 +301,17 @@ struct LowerOpenCLAOTIntrinsicsPass
         bool axis0Gather =
             name == "__vrc_opencl_dispatch_udononnx_gather_axis0_f32";
         bool castI64F32 = name == "__vrc_opencl_dispatch_udononnx_cast_i64_f32";
-        unsigned bufferCount =
-            matmulNBitsQ4                                              ? 5
-            : rmsFinalize                                              ? 4
-            : largeConvolution || largeOpTensor                        ? 4
-            : arenaSgemm || arenaBatchedSgemm || concat || axis0Gather ? 3
-            : largeActivation || largePooling                          ? 3
-                                                                       : 2;
+        bool equalF32 = name == "__vrc_opencl_dispatch_udononnx_equal_f32";
+        bool whereF32 = name == "__vrc_opencl_dispatch_udononnx_where_f32";
+        unsigned bufferCount = matmulNBitsQ4                       ? 5
+                               : rmsFinalize                       ? 4
+                               : whereF32                          ? 4
+                               : largeConvolution || largeOpTensor ? 4
+                               : arenaSgemm || arenaBatchedSgemm || concat ||
+                                       axis0Gather || equalF32
+                                   ? 3
+                               : largeActivation || largePooling ? 3
+                                                                 : 2;
         int32_t kernelId = sgemm                                        ? 1
                            : arenaSgemm                                 ? 221
                            : arenaBatchedSgemm                          ? 237
@@ -323,6 +334,8 @@ struct LowerOpenCLAOTIntrinsicsPass
                            : concat                                     ? 241
                            : axis0Gather                                ? 242
                            : castI64F32                                 ? 243
+                           : equalF32                                   ? 244
+                           : whereF32                                   ? 245
                            : name == "__vrc_opencl_dispatch_mnist_conv" ? 20
                            : name == "__vrc_opencl_dispatch_mnist_pool" ? 21
                                                                         : 22;
@@ -382,6 +395,10 @@ struct LowerOpenCLAOTIntrinsicsPass
           scalarKinds.append(4, rewriter.getStringAttr("i32"));
         } else if (castI64F32) {
           scalarKinds.append(1, rewriter.getStringAttr("i32"));
+        } else if (equalF32) {
+          scalarKinds.append(8, rewriter.getStringAttr("i32"));
+        } else if (whereF32) {
+          scalarKinds.append(10, rewriter.getStringAttr("i32"));
         }
         OperationState descriptorState(
             call.getLoc(), runtime::DispatchDescCreateOp::getOperationName());
@@ -424,7 +441,7 @@ struct LowerOpenCLAOTIntrinsicsPass
         else if (matmulNBitsQ4)
           globalSize = rewriter.getDenseI32ArrayAttr({8192, 16, 1});
         else if (matmulNBits || unary || transpose || slice || expand ||
-                 concat || axis0Gather || castI64F32)
+                 concat || axis0Gather || castI64F32 || equalF32 || whereF32)
           globalSize = rewriter.getDenseI32ArrayAttr({16384, 1, 1});
         else
           globalSize = rewriter.getDenseI32ArrayAttr({10800, 1, 1});

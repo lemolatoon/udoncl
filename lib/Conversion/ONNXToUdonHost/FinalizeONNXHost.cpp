@@ -906,6 +906,62 @@ bool isDeviceCastI64F32Node(const GraphRecord &graph, const NodeRecord &node) {
          output.type.getNumElements() <= 16384;
 }
 
+bool isDeviceBroadcast(ArrayRef<const TensorRecord *> inputs,
+                       const TensorRecord &output) {
+  int64_t outputRank = output.type.getRank();
+  if (outputRank < 0 || outputRank > 4 || output.type.getNumElements() < 1 ||
+      output.type.getNumElements() > 16384)
+    return false;
+  for (int64_t extent : output.type.getShape())
+    if (extent < 1 || extent > 65535)
+      return false;
+  for (const TensorRecord *input : inputs) {
+    int64_t inputRank = input->type.getRank();
+    if (inputRank < 0 || inputRank > outputRank ||
+        input->type.getNumElements() < 1 ||
+        input->type.getNumElements() > 16384)
+      return false;
+    int64_t offset = outputRank - inputRank;
+    for (int64_t axis = 0; axis < inputRank; ++axis) {
+      int64_t inputExtent = input->type.getDimSize(axis);
+      int64_t outputExtent = output.type.getDimSize(axis + offset);
+      if (inputExtent < 1 || inputExtent > 65535 ||
+          (inputExtent != 1 && inputExtent != outputExtent))
+        return false;
+    }
+  }
+  return true;
+}
+
+bool isDeviceEqualNode(const GraphRecord &graph, const NodeRecord &node) {
+  if (node.operation != "Equal" || node.provider != "udononnxEqual" ||
+      node.inputs.size() != 2 || node.inputs[0] < 0 || node.inputs[1] < 0)
+    return false;
+  const TensorRecord &left = graph.tensors[node.inputs[0]];
+  const TensorRecord &right = graph.tensors[node.inputs[1]];
+  const TensorRecord &output = graph.tensors[node.output];
+  return left.type.getElementType().isF32() &&
+         right.type.getElementType().isF32() &&
+         output.type.getElementType().isInteger(1) &&
+         isDeviceBroadcast({&left, &right}, output);
+}
+
+bool isDeviceWhereNode(const GraphRecord &graph, const NodeRecord &node) {
+  if (node.operation != "Where" || node.provider != "udononnxWhere" ||
+      node.inputs.size() != 3 || node.inputs[0] < 0 || node.inputs[1] < 0 ||
+      node.inputs[2] < 0)
+    return false;
+  const TensorRecord &condition = graph.tensors[node.inputs[0]];
+  const TensorRecord &whenTrue = graph.tensors[node.inputs[1]];
+  const TensorRecord &whenFalse = graph.tensors[node.inputs[2]];
+  const TensorRecord &output = graph.tensors[node.output];
+  return condition.type.getElementType().isInteger(1) &&
+         whenTrue.type.getElementType().isF32() &&
+         whenFalse.type.getElementType().isF32() &&
+         output.type.getElementType().isF32() &&
+         isDeviceBroadcast({&condition, &whenTrue, &whenFalse}, output);
+}
+
 bool isDeviceRmsNormNode(const GraphRecord &graph, const NodeRecord &node) {
   if (node.operation != "RmsNorm" || node.provider != "udonatenRmsNorm" ||
       node.inputs.size() != 3 || node.inputs[0] < 0 || node.inputs[1] < 0 ||
@@ -1078,8 +1134,10 @@ bool needsQ4Surface(const GraphRecord &graph, unsigned tensorIndex) {
 
 int64_t deviceAllocationBytes(const GraphRecord &graph, unsigned tensorIndex) {
   const TensorRecord &tensor = graph.tensors[tensorIndex];
-  int64_t bytes = tensor.type.getNumElements() *
-                  elementByteSize(tensor.type.getElementType());
+  int64_t elementBytes = tensor.type.getElementType().isInteger(1)
+                             ? 4
+                             : elementByteSize(tensor.type.getElementType());
+  int64_t bytes = tensor.type.getNumElements() * elementBytes;
   return needsQ4Surface(graph, tensorIndex) ? std::max(bytes, q4SurfaceBytes)
                                             : bytes;
 }
@@ -1167,6 +1225,10 @@ bool supportsDeviceNode(const GraphRecord &graph, const NodeRecord &node) {
     return deviceGatherShape(graph, node).has_value();
   if (node.operation == "Cast")
     return isDeviceCastI64F32Node(graph, node);
+  if (node.operation == "Equal")
+    return isDeviceEqualNode(graph, node);
+  if (node.operation == "Where")
+    return isDeviceWhereNode(graph, node);
   if (node.operation == "MatMul")
     return deviceMatMulShape(graph, node).has_value();
   if (node.operation == "Gemm") {
@@ -3411,6 +3473,71 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                 constant(graph.tensors[node.output].type.getNumElements())});
         continue;
       }
+      if (node.operation == "Equal") {
+        if (!isDeviceEqualNode(graph, node))
+          return emitError(location)
+                 << "Device Equal requires broadcast-compatible static FP32 "
+                    "inputs and at most 16384 boolean outputs";
+        auto packShape = [](ArrayRef<int64_t> shape, int64_t first) {
+          int64_t low =
+              first < static_cast<int64_t>(shape.size()) ? shape[first] : 1;
+          int64_t high = first + 1 < static_cast<int64_t>(shape.size())
+                             ? shape[first + 1]
+                             : 1;
+          return (low & 65535) | ((high & 65535) << 16);
+        };
+        const RankedTensorType left = graph.tensors[node.inputs[0]].type;
+        const RankedTensorType right = graph.tensors[node.inputs[1]].type;
+        const RankedTensorType result = graph.tensors[node.output].type;
+        dispatch("__vrc_enqueue_udononnx_equal_f32_device_args",
+                 ValueRange{entry->getArgument(2), buffer(node.inputs[0]),
+                            buffer(node.inputs[1]), output,
+                            constant(result.getNumElements()),
+                            constant(left.getRank() | (right.getRank() << 3) |
+                                     (result.getRank() << 6)),
+                            constant(packShape(left.getShape(), 0)),
+                            constant(packShape(left.getShape(), 2)),
+                            constant(packShape(right.getShape(), 0)),
+                            constant(packShape(right.getShape(), 2)),
+                            constant(packShape(result.getShape(), 0)),
+                            constant(packShape(result.getShape(), 2))});
+        continue;
+      }
+      if (node.operation == "Where") {
+        if (!isDeviceWhereNode(graph, node))
+          return emitError(location)
+                 << "Device Where requires a broadcast-compatible boolean "
+                    "condition, static FP32 values, and at most 16384 outputs";
+        auto packShape = [](ArrayRef<int64_t> shape, int64_t first) {
+          int64_t low =
+              first < static_cast<int64_t>(shape.size()) ? shape[first] : 1;
+          int64_t high = first + 1 < static_cast<int64_t>(shape.size())
+                             ? shape[first + 1]
+                             : 1;
+          return (low & 65535) | ((high & 65535) << 16);
+        };
+        const RankedTensorType condition = graph.tensors[node.inputs[0]].type;
+        const RankedTensorType whenTrue = graph.tensors[node.inputs[1]].type;
+        const RankedTensorType whenFalse = graph.tensors[node.inputs[2]].type;
+        const RankedTensorType result = graph.tensors[node.output].type;
+        dispatch(
+            "__vrc_enqueue_udononnx_where_f32_device_args",
+            ValueRange{
+                entry->getArgument(2), buffer(node.inputs[0]),
+                buffer(node.inputs[1]), buffer(node.inputs[2]), output,
+                constant(result.getNumElements()),
+                constant(condition.getRank() | (whenTrue.getRank() << 3) |
+                         (whenFalse.getRank() << 6) | (result.getRank() << 9)),
+                constant(packShape(condition.getShape(), 0)),
+                constant(packShape(condition.getShape(), 2)),
+                constant(packShape(whenTrue.getShape(), 0)),
+                constant(packShape(whenTrue.getShape(), 2)),
+                constant(packShape(whenFalse.getShape(), 0)),
+                constant(packShape(whenFalse.getShape(), 2)),
+                constant(packShape(result.getShape(), 0)),
+                constant(packShape(result.getShape(), 2))});
+        continue;
+      }
       if (isDeviceQ4Node(graph, node)) {
         const TensorRecord &activation = graph.tensors[node.inputs[0]];
         int64_t k = integerAttribute(node, "K", 0);
@@ -3650,6 +3777,14 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                 {i32});
     declaration(module, "__vrc_enqueue_udononnx_cast_i64_f32_device_args",
                 {pointer, pointer, pointer, i32, i32, pointer, pointer}, {i32});
+    declaration(module, "__vrc_enqueue_udononnx_equal_f32_device_args",
+                {pointer, pointer, pointer, pointer, i32, i32, i32, i32, i32,
+                 i32, i32, i32, i32, pointer, pointer},
+                {i32});
+    declaration(module, "__vrc_enqueue_udononnx_where_f32_device_args",
+                {pointer, pointer, pointer, pointer, pointer, i32, i32, i32,
+                 i32, i32, i32, i32, i32, i32, i32, i32, pointer, pointer},
+                {i32});
     declaration(module, "__vrc_enqueue_udononnx_matmul_nbits_q4_device_args",
                 {pointer, pointer, pointer, pointer, pointer, pointer, i32, i32,
                  i32, i32, i32, i32, i32, i32, i32, i32, pointer, pointer},
