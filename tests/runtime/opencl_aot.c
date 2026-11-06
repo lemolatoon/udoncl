@@ -211,6 +211,13 @@ extern cl_int __vrc_enqueue_udononnx_transpose_device_args(
     cl_int rank, cl_int shape01, cl_int shape23, cl_int shape4,
     cl_int permutation, cl_uint wait_count, const cl_event *wait_list,
     cl_event *event);
+extern cl_int __vrc_enqueue_udononnx_slice_device_args(
+    cl_command_queue queue, cl_mem input, cl_mem output, cl_int words,
+    cl_int rank, cl_int input_shape01, cl_int input_shape23,
+    cl_int input_shape4, cl_int output_shape01, cl_int output_shape23,
+    cl_int output_shape4, cl_int starts01, cl_int starts23, cl_int starts4,
+    cl_int steps01, cl_int steps23, cl_int steps4, cl_uint wait_count,
+    const cl_event *wait_list, cl_event *event);
 extern cl_int __vrc_enqueue_udononnx_matmul_nbits_q4_device_args(
     cl_command_queue queue, cl_mem activation, cl_mem packed_weight,
     cl_mem scales, cl_mem previous, cl_mem output, cl_int m, cl_int n, cl_int k,
@@ -341,6 +348,22 @@ cl_int __vrc_opencl_dispatch_udononnx_transpose_f32(
                            (float *)physical_buffers[output_token - 100], words,
                            rank, shape01, shape23, shape4, permutation);
   return 21;
+}
+
+cl_int __vrc_opencl_dispatch_udononnx_slice_f32(
+    cl_uint input_token, cl_uint output_token, cl_int words, cl_int rank,
+    cl_int input_shape01, cl_int input_shape23, cl_int input_shape4,
+    cl_int output_shape01, cl_int output_shape23, cl_int output_shape4,
+    cl_int starts01, cl_int starts23, cl_int starts4, cl_int steps01,
+    cl_int steps23, cl_int steps4) {
+  for (udononnx_reindex_cpu_gid = 0; udononnx_reindex_cpu_gid < 16384;
+       ++udononnx_reindex_cpu_gid)
+    udononnx_slice_f32((const float *)physical_buffers[input_token - 100],
+                       (float *)physical_buffers[output_token - 100], words,
+                       rank, input_shape01, input_shape23, input_shape4,
+                       output_shape01, output_shape23, output_shape4, starts01,
+                       starts23, starts4, steps01, steps23, steps4);
+  return 22;
 }
 
 cl_int __vrc_opencl_await(cl_int event) {
@@ -676,6 +699,19 @@ int main(void) {
   EXPECT(((float *)physical_buffers[5])[3] == 5.0f);
   EXPECT(((float *)physical_buffers[5])[4] == 3.0f);
   EXPECT(((float *)physical_buffers[5])[5] == 6.0f);
+  EXPECT(clReleaseEvent(marker_event) == CL_SUCCESS);
+  await_count = 0;
+  EXPECT(__vrc_enqueue_udononnx_slice_device_args(
+             queue, transpose_input_buffer, transpose_output_buffer, 4, 2,
+             2 | (3 << 16), 1 | (1 << 16), 1, 2 | (2 << 16), 1 | (1 << 16), 1,
+             0, 0, 0, 1 | (2 << 16), 1 | (1 << 16), 1, 0, 0,
+             &marker_event) == CL_SUCCESS);
+  EXPECT(marker_event && clWaitForEvents(1, &marker_event) == CL_SUCCESS);
+  EXPECT(await_count == 1 && awaited_events[0] == 22);
+  EXPECT(((float *)physical_buffers[5])[0] == 1.0f);
+  EXPECT(((float *)physical_buffers[5])[1] == 3.0f);
+  EXPECT(((float *)physical_buffers[5])[2] == 4.0f);
+  EXPECT(((float *)physical_buffers[5])[3] == 6.0f);
   EXPECT(clReleaseEvent(marker_event) == CL_SUCCESS);
   EXPECT(clReleaseMemObject(transpose_output_buffer) == CL_SUCCESS);
   EXPECT(clReleaseMemObject(transpose_input_buffer) == CL_SUCCESS);

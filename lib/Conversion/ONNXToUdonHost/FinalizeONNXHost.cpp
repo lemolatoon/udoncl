@@ -673,6 +673,106 @@ std::optional<float> scalarF32(const TensorRecord &tensor) {
   return value.convertToFloat();
 }
 
+std::optional<SmallVector<int64_t>>
+staticI64Values(const TensorRecord &tensor) {
+  if (!tensor.initialValue || !tensor.type.getElementType().isInteger(64))
+    return std::nullopt;
+  SmallVector<int64_t> result;
+  result.reserve(tensor.type.getNumElements());
+  for (APInt value : tensor.initialValue.getValues<APInt>())
+    result.push_back(value.getSExtValue());
+  return result;
+}
+
+struct DeviceSliceShape {
+  SmallVector<int64_t> starts;
+  SmallVector<int64_t> steps;
+};
+
+std::optional<DeviceSliceShape> deviceSliceShape(const GraphRecord &graph,
+                                                 const NodeRecord &node) {
+  if (node.operation != "Slice" || node.provider != "udononnxSlice" ||
+      node.inputs.size() < 3 || node.inputs[0] < 0 || node.inputs[1] < 0 ||
+      node.inputs[2] < 0)
+    return std::nullopt;
+  const TensorRecord &input = graph.tensors[node.inputs[0]];
+  const TensorRecord &output = graph.tensors[node.output];
+  int64_t rank = input.type.getRank();
+  if (!input.type.getElementType().isF32() ||
+      !output.type.getElementType().isF32() || rank < 1 || rank > 5 ||
+      output.type.getRank() != rank || input.type.getNumElements() < 1 ||
+      input.type.getNumElements() > 16384 || output.type.getNumElements() < 1 ||
+      output.type.getNumElements() > 16384)
+    return std::nullopt;
+  auto starts = staticI64Values(graph.tensors[node.inputs[1]]);
+  auto ends = staticI64Values(graph.tensors[node.inputs[2]]);
+  if (!starts || !ends || starts->size() != ends->size() || starts->empty() ||
+      starts->size() > static_cast<size_t>(rank))
+    return std::nullopt;
+  SmallVector<int64_t> axes;
+  if (node.inputs.size() >= 4 && node.inputs[3] >= 0) {
+    auto values = staticI64Values(graph.tensors[node.inputs[3]]);
+    if (!values || values->size() != starts->size())
+      return std::nullopt;
+    axes = std::move(*values);
+  } else {
+    for (int64_t axis = 0; axis < static_cast<int64_t>(starts->size()); ++axis)
+      axes.push_back(axis);
+  }
+  SmallVector<int64_t> specifiedSteps(starts->size(), 1);
+  if (node.inputs.size() >= 5 && node.inputs[4] >= 0) {
+    auto values = staticI64Values(graph.tensors[node.inputs[4]]);
+    if (!values || values->size() != starts->size())
+      return std::nullopt;
+    specifiedSteps = std::move(*values);
+  }
+  DeviceSliceShape result{SmallVector<int64_t>(rank, 0),
+                          SmallVector<int64_t>(rank, 1)};
+  SmallVector<bool> sliced(rank, false);
+  for (auto [startValue, endValue, axisValue, stepValue] :
+       llvm::zip_equal(*starts, *ends, axes, specifiedSteps)) {
+    int64_t axis = axisValue < 0 ? axisValue + rank : axisValue;
+    if (axis < 0 || axis >= rank || sliced[axis] || !stepValue)
+      return std::nullopt;
+    sliced[axis] = true;
+    int64_t extent = input.type.getDimSize(axis);
+    int64_t start = startValue;
+    int64_t end = endValue;
+    int64_t expected;
+    if (stepValue > 0) {
+      start = start < 0 ? (start < -extent ? 0 : start + extent)
+                        : std::min(start, extent);
+      end =
+          end < 0 ? (end < -extent ? 0 : end + extent) : std::min(end, extent);
+      expected = end > start ? (end - start + stepValue - 1) / stepValue : 0;
+    } else {
+      int64_t magnitude = -stepValue;
+      start = start < 0 ? (start < -extent ? -1 : start + extent)
+                        : std::min(start, extent - 1);
+      if (end == std::numeric_limits<int64_t>::min())
+        end = -1;
+      else
+        end = end < 0 ? (end < -extent ? -1 : end + extent)
+                      : std::min(end, extent - 1);
+      expected = start > end ? (start - end + magnitude - 1) / magnitude : 0;
+    }
+    if (expected != output.type.getDimSize(axis) || start < 0 ||
+        start > 65535 || stepValue < 1 || stepValue > 65535)
+      return std::nullopt;
+    result.starts[axis] = start;
+    result.steps[axis] = stepValue;
+  }
+  for (int64_t axis = 0; axis < rank; ++axis)
+    if ((!sliced[axis] &&
+         input.type.getDimSize(axis) != output.type.getDimSize(axis)) ||
+        input.type.getDimSize(axis) < 1 ||
+        input.type.getDimSize(axis) > 65535 ||
+        output.type.getDimSize(axis) < 1 ||
+        output.type.getDimSize(axis) > 65535)
+      return std::nullopt;
+  return result;
+}
+
 bool isDeviceRmsNormNode(const GraphRecord &graph, const NodeRecord &node) {
   if (node.operation != "RmsNorm" || node.provider != "udonatenRmsNorm" ||
       node.inputs.size() != 3 || node.inputs[0] < 0 || node.inputs[1] < 0 ||
@@ -924,6 +1024,8 @@ bool supportsDeviceNode(const GraphRecord &graph, const NodeRecord &node) {
     return isDeviceSoftmaxNode(graph, node);
   if (node.operation == "Transpose")
     return deviceTransposePermutation(graph, node).has_value();
+  if (node.operation == "Slice")
+    return deviceSliceShape(graph, node).has_value();
   if (node.operation == "MatMul")
     return deviceMatMulShape(graph, node).has_value();
   if (node.operation == "Gemm") {
@@ -3053,6 +3155,46 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                      constant(packedPermutation)});
         continue;
       }
+      if (node.operation == "Slice") {
+        std::optional<DeviceSliceShape> slice = deviceSliceShape(graph, node);
+        if (!slice)
+          return emitError(location)
+                 << "Device Slice requires static FP32 tensors of rank one "
+                    "through five, static slice parameters, and at most "
+                    "16384 elements";
+        ArrayRef<int64_t> inputShape =
+            graph.tensors[node.inputs[0]].type.getShape();
+        ArrayRef<int64_t> outputShape =
+            graph.tensors[node.output].type.getShape();
+        auto packUnsigned = [](ArrayRef<int64_t> values, int64_t first,
+                               int64_t fallback) {
+          int64_t low = first < static_cast<int64_t>(values.size())
+                            ? values[first]
+                            : fallback;
+          int64_t high = first + 1 < static_cast<int64_t>(values.size())
+                             ? values[first + 1]
+                             : fallback;
+          return (low & 65535) | ((high & 65535) << 16);
+        };
+        dispatch("__vrc_enqueue_udononnx_slice_device_args",
+                 ValueRange{
+                     entry->getArgument(2), buffer(node.inputs[0]), output,
+                     constant(graph.tensors[node.output].type.getNumElements()),
+                     constant(inputShape.size()),
+                     constant(packUnsigned(inputShape, 0, 1)),
+                     constant(packUnsigned(inputShape, 2, 1)),
+                     constant(packUnsigned(inputShape, 4, 1)),
+                     constant(packUnsigned(outputShape, 0, 1)),
+                     constant(packUnsigned(outputShape, 2, 1)),
+                     constant(packUnsigned(outputShape, 4, 1)),
+                     constant(packUnsigned(slice->starts, 0, 0)),
+                     constant(packUnsigned(slice->starts, 2, 0)),
+                     constant(packUnsigned(slice->starts, 4, 0)),
+                     constant(packUnsigned(slice->steps, 0, 1)),
+                     constant(packUnsigned(slice->steps, 2, 1)),
+                     constant(packUnsigned(slice->steps, 4, 1))});
+        continue;
+      }
       if (isDeviceQ4Node(graph, node)) {
         const TensorRecord &activation = graph.tensors[node.inputs[0]];
         int64_t k = integerAttribute(node, "K", 0);
@@ -3272,6 +3414,11 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
     declaration(module, "__vrc_enqueue_udononnx_transpose_device_args",
                 {pointer, pointer, pointer, i32, i32, i32, i32, i32, i32, i32,
                  pointer, pointer},
+                {i32});
+    declaration(module, "__vrc_enqueue_udononnx_slice_device_args",
+                {pointer, pointer, pointer, i32, i32,     i32,    i32,
+                 i32,     i32,     i32,     i32, i32,     i32,    i32,
+                 i32,     i32,     i32,     i32, pointer, pointer},
                 {i32});
     declaration(module, "__vrc_enqueue_udononnx_matmul_nbits_q4_device_args",
                 {pointer, pointer, pointer, pointer, pointer, pointer, i32, i32,

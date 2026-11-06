@@ -65,7 +65,7 @@ aliasing are allowed.
   node from the unsupported set. After the Device Q4, RmsNorm, and Softmax
   checkpoints below, and the generic Device Transpose checkpoint described
   below, the remaining measured set is Cast 2, Concat 45, Equal 1, Expand 46,
-  Gather 1, ScatterND 1, Slice 111, and Where 1.
+  Gather 1, ScatterND 1, and Where 1.
 - The generic correctness-oriented `MatMulNBits` path still uses small
   Host-managed tiles. A first Device-resident specialization now covers the
   pinned model's three-input unsigned Q4 form (`bits=4`, `block_size=32`,
@@ -106,6 +106,15 @@ aliasing are allowed.
   validates shape/permutation/buffer bounds, fragment recovery succeeds, and
   all 111 Transpose nodes disappear from the pinned graph's measured
   unsupported set.
+- The same generic UdonONNXOperators reindex facility now materializes static
+  contiguous FP32 Slice tensors of rank one through five and at most 16,384
+  elements. The C++ pass normalizes ONNX starts/ends/axes/steps, proves the
+  inferred output shape and every input coordinate, and packs nonnegative
+  starts and positive steps into the dispatch ABI. Other valid Slice forms,
+  including negative steps, retain public Host semantics but fail the fully
+  Device-resident gate. Native positive/strided numerical tests, OpenCL facade
+  bounds checks, fragment recovery, and the pinned graph verify the path; all
+  111 pinned Slice nodes disappear from the measured unsupported set.
 - Production-sized diagnostic bundles may omit intermediate textual MLIR with
   `--omit-intermediate-ir`; assembly, manifest, binding, static tensors, and the
   storage report remain. This avoids publishing several model-sized debug

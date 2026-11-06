@@ -230,6 +230,31 @@ assert (
 )
 assert "call @udononnxTranspose" not in transpose_host.stdout
 
+slice_source = source.with_name("onnx_slice_device.mlir")
+slice_portable = subprocess.run(
+    [
+        opt,
+        "--udoncl-infer-onnx-shapes",
+        "--udoncl-materialize-onnx-constants",
+        "--udoncl-lower-onnx-to-host",
+        slice_source,
+    ],
+    text=True,
+    capture_output=True,
+    check=True,
+).stdout
+slice_host = subprocess.run(
+    [host_opt, "--udoncl-finalize-onnx-host", "-"],
+    input=slice_portable,
+    text=True,
+    capture_output=True,
+)
+assert slice_host.returncode == 0, (slice_host.stdout, slice_host.stderr)
+assert "udoncl.onnx_device_graph = true" in slice_host.stdout
+assert "udoncl.onnx_device_unsupported = []" in slice_host.stdout
+assert slice_host.stdout.count("call @__vrc_enqueue_udononnx_slice_device_args") == 1
+assert "call @udononnxSlice" not in slice_host.stdout
+
 large_pointwise_source = source.with_name("onnx_large_pointwise.mlir")
 large_pointwise_portable = subprocess.run(
     [
@@ -417,7 +442,9 @@ slice_host = subprocess.run(
     capture_output=True,
 )
 assert slice_host.returncode == 0, (slice_host.stdout, slice_host.stderr)
-assert "call @udononnxSlice" in slice_host.stdout
+assert "udoncl.onnx_device_graph = true" in slice_host.stdout
+assert slice_host.stdout.count("call @__vrc_enqueue_udononnx_slice_device_args") == 1
+assert "call @udononnxSlice" not in slice_host.stdout
 
 where_source = source.with_name("onnx_equal_where.mlir")
 where_portable = subprocess.run(

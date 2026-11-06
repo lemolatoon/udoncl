@@ -112,6 +112,12 @@ extern cl_int __vrc_opencl_dispatch_udononnx_unary_f32(cl_uint input_token,
 extern cl_int __vrc_opencl_dispatch_udononnx_transpose_f32(
     cl_uint input_token, cl_uint output_token, cl_int words, cl_int rank,
     cl_int shape01, cl_int shape23, cl_int shape4, cl_int permutation);
+extern cl_int __vrc_opencl_dispatch_udononnx_slice_f32(
+    cl_uint input_token, cl_uint output_token, cl_int words, cl_int rank,
+    cl_int input_shape01, cl_int input_shape23, cl_int input_shape4,
+    cl_int output_shape01, cl_int output_shape23, cl_int output_shape4,
+    cl_int starts01, cl_int starts23, cl_int starts4, cl_int steps01,
+    cl_int steps23, cl_int steps4);
 #endif
 #if UDONCL_AOT_ENABLE_MNIST
 extern cl_int __vrc_opencl_dispatch_mnist_conv(cl_uint input_token,
@@ -261,6 +267,8 @@ static cl_uint udoncl_kernel_id(const char *name) {
     return 222;
   if (udoncl_string_equal(name, "udononnx_transpose_f32"))
     return 238;
+  if (udoncl_string_equal(name, "udononnx_slice_f32"))
+    return 239;
 #endif
   return 0;
 }
@@ -1328,6 +1336,70 @@ cl_int __vrc_enqueue_udononnx_transpose_device_args(
   pending = __vrc_opencl_dispatch_udononnx_transpose_f32(
       input->physical_token, output->physical_token, words, rank, shape01,
       shape23, shape4, permutation);
+  return udoncl_finish_enqueue(queue, CL_COMMAND_NDRANGE_KERNEL, pending,
+                               CL_FALSE, event);
+}
+
+cl_int __vrc_enqueue_udononnx_slice_device_args(
+    cl_command_queue queue, cl_mem input, cl_mem output, cl_int words,
+    cl_int rank, cl_int input_shape01, cl_int input_shape23,
+    cl_int input_shape4, cl_int output_shape01, cl_int output_shape23,
+    cl_int output_shape4, cl_int starts01, cl_int starts23, cl_int starts4,
+    cl_int steps01, cl_int steps23, cl_int steps4, cl_uint wait_count,
+    const cl_event *wait_list, cl_event *event) {
+  cl_int pending;
+  cl_uint input_shapes[3];
+  cl_uint output_shapes[3];
+  cl_uint packed_starts[3];
+  cl_uint packed_steps[3];
+  size_t input_elements = 1u;
+  size_t output_elements = 1u;
+  cl_int axis;
+  input_shapes[0] = (cl_uint)input_shape01;
+  input_shapes[1] = (cl_uint)input_shape23;
+  input_shapes[2] = (cl_uint)input_shape4;
+  output_shapes[0] = (cl_uint)output_shape01;
+  output_shapes[1] = (cl_uint)output_shape23;
+  output_shapes[2] = (cl_uint)output_shape4;
+  packed_starts[0] = (cl_uint)starts01;
+  packed_starts[1] = (cl_uint)starts23;
+  packed_starts[2] = (cl_uint)starts4;
+  packed_steps[0] = (cl_uint)steps01;
+  packed_steps[1] = (cl_uint)steps23;
+  packed_steps[2] = (cl_uint)steps4;
+  if (queue != &udoncl_queue || !queue->active || !input || !input->active ||
+      !output || !output->active || input->context != queue->context ||
+      output->context != queue->context || words < 1 || words > 16384 ||
+      rank < 1 || rank > 5 ||
+      udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
+    return CL_INVALID_VALUE;
+  for (axis = 0; axis < rank; ++axis) {
+    cl_uint shift = (cl_uint)(axis & 1) * 16u;
+    cl_uint input_extent = (input_shapes[(cl_uint)axis / 2u] >> shift) & 65535u;
+    cl_uint output_extent =
+        (output_shapes[(cl_uint)axis / 2u] >> shift) & 65535u;
+    cl_uint start = (packed_starts[(cl_uint)axis / 2u] >> shift) & 65535u;
+    cl_uint step = (packed_steps[(cl_uint)axis / 2u] >> shift) & 65535u;
+    size_t last;
+    if (!input_extent || !output_extent || !step ||
+        input_elements > 16384u / input_extent ||
+        output_elements > 16384u / output_extent)
+      return CL_INVALID_VALUE;
+    last = (size_t)start + ((size_t)output_extent - 1u) * (size_t)step;
+    if (start >= input_extent || last >= input_extent)
+      return CL_INVALID_VALUE;
+    input_elements *= input_extent;
+    output_elements *= output_extent;
+  }
+  if (output_elements != (size_t)words)
+    return CL_INVALID_VALUE;
+  if (input->bytes < input_elements * 4u ||
+      output->bytes < output_elements * 4u)
+    return CL_INVALID_BUFFER_SIZE;
+  pending = __vrc_opencl_dispatch_udononnx_slice_f32(
+      input->physical_token, output->physical_token, words, rank, input_shape01,
+      input_shape23, input_shape4, output_shape01, output_shape23,
+      output_shape4, starts01, starts23, starts4, steps01, steps23, steps4);
   return udoncl_finish_enqueue(queue, CL_COMMAND_NDRANGE_KERNEL, pending,
                                CL_FALSE, event);
 }
