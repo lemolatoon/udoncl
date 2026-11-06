@@ -1,10 +1,10 @@
 # Device Resource Alias and Device Library Migration Plan
 
-> Status: **Access-aware IR/static validation, optional physical-token runtime
-> validation, CMake/CLI configuration, manifest audit, and Native MNIST pass;
-> standard region sub-buffer ownership/transfers are implemented in both
-> runtimes; generated enqueue checks, sub-buffer Device addressing, Device API
-> migration, and generated-U# Unity MNIST acceptance remain**
+> Status: **Phase A access-aware validation is complete, including
+> metadata-derived Debug checks and Release code-elision proof; standard region
+> sub-buffer ownership/transfers are implemented in both runtimes; sub-buffer
+> Device addressing, Device API migration, and generated-U# Unity MNIST
+> acceptance remain**
 >
 > Scope: UdonCL VRC fragment dispatch resource aliasing, Debug validation,
 > standard `cl_mem`/sub-buffer semantics, and the UdonBLAS/UdonDNN migration
@@ -267,16 +267,19 @@ remaining design frontier is closed as follows:
 - Generate Debug physical-token checks before dispatch.
 - Cover generic enqueue, direct intrinsic dispatch, and static-buffer adoption.
 
-Implemented checkpoint (2026-11-07): `vrc.dispatch` carries access metadata;
+Completed (2026-11-07): `vrc.dispatch` carries access metadata;
 same-SSA and known-heap-slot read/write conflicts fail statically; AOT direct
 helpers reject same-token conflicts when compiled with validation; CMake
 supports `RUNTIME_VALIDATION AUTO|ON|OFF`; direct `udonclc` supports the two
 explicit validation flags; and manifests record `validation.read_write_alias`.
 The Unity importer requires that audit field, its rejection path is covered,
-and packaged examples have been regenerated. The AOT runtime,
-installed-package consumer, and Native MNIST tests pass. The remaining Phase A
-work is to derive every generated enqueue check directly from dispatch metadata
-and prove Release check code is absent.
+and packaged examples have been regenerated. Udon Assembly lowering now emits
+one physical-token comparison for every `read` named by dispatch metadata and
+branches around the Blit with `CL_INVALID_OPERATION` on a match. The whole block
+is absent when validation is disabled. Codegen tests cover both profiles, and
+installed-package tests require checks in a validation-enabled ONNX artifact and
+their absence from a Release UdonBLAS artifact. The AOT runtime,
+installed-package consumer, and Native MNIST tests pass.
 
 ### Phase B: `cl_mem` and asynchronous library APIs
 

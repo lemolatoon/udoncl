@@ -1171,6 +1171,67 @@ cast_store = re.search(
 assert cast_store is not None, cast_store_lowered.stdout
 assert cast_store.group('pointer') != cast_store.group('value'), cast_store_lowered.stdout
 
+runtime_alias_source = r'''module attributes {
+  vrc.host_stage = "udonhl",
+  vrc.runtime_validation.read_write_alias = true,
+  vrc.unity_buffer_pool = [
+    {id = 1 : i32, logical_bytes = 4 : i32, heap_slot = "__udoncl_buffer_1"},
+    {id = 2 : i32, logical_bytes = 4 : i32, heap_slot = "__udoncl_buffer_2"}
+  ]
+} {
+  func.func @validated_dispatch() attributes {vrc.export_id = 63 : i32} {
+    %input_id = arith.constant 1 : i32
+    %output_id = arith.constant 2 : i32
+    %bytes = arith.constant 4 : i32
+    %input, %input_status = vrc.buffer_alloc %input_id, %bytes {
+      format = "rgba8_unorm", usage = "storage"
+    } : (i32, i32) -> (!vrc.buffer, i32)
+    %output, %output_status = vrc.buffer_alloc %output_id, %bytes {
+      format = "rgba8_unorm", usage = "storage"
+    } : (i32, i32) -> (!vrc.buffer, i32)
+    %desc = vrc.dispatch_desc_create {
+      kernel_id = 1 : i32, scalar_kinds = []
+    } : () -> !vrc.dispatch_desc
+    %event = vrc.dispatch %desc(%input, %output) {
+      argument_kinds = ["buffer", "buffer"],
+      resource_accesses = ["read", "write"],
+      global_offset = array<i32: 0, 0, 0>,
+      global_size = array<i32: 1, 1, 1>,
+      kernel_id = 1 : i32,
+      local_size = array<i32: 1, 1, 1>,
+      vrc.unity_dispatch_material_slot = "__udoncl_kernel_material_1",
+      vrc.unity_output_resource_index = 1 : i32,
+      vrc.unity_resource_heap_slots = ["", ""]
+    } : (!vrc.dispatch_desc, !vrc.buffer, !vrc.buffer) -> !vrc.event
+    return
+  }
+}'''
+runtime_alias_debug = subprocess.run(
+    [opt, '--vrc-lower-udonhl-to-udonasm', '--verify-each'],
+    input=runtime_alias_source, text=True, capture_output=True)
+assert runtime_alias_debug.returncode == 0, runtime_alias_debug.stderr
+assert len(re.findall(
+    r'name = "[^"]*dispatch_alias_match_[^"]*"',
+    runtime_alias_debug.stdout,
+)) == 1, runtime_alias_debug.stdout
+assert 'initial = "-59"' in runtime_alias_debug.stdout, runtime_alias_debug.stdout
+assert runtime_alias_debug.stdout.index('dispatch_alias_match_') < (
+    runtime_alias_debug.stdout.index('VRCSDKBaseVRCGraphics.__Blit__'))
+
+runtime_alias_release = subprocess.run(
+    [opt, '--vrc-lower-udonhl-to-udonasm', '--verify-each'],
+    input=runtime_alias_source.replace(
+        'vrc.runtime_validation.read_write_alias = true',
+        'vrc.runtime_validation.read_write_alias = false'),
+    text=True,
+    capture_output=True,
+)
+assert runtime_alias_release.returncode == 0, runtime_alias_release.stderr
+assert 'dispatch_alias_match_' not in runtime_alias_release.stdout, (
+    runtime_alias_release.stdout)
+assert 'initial = "-59"' not in runtime_alias_release.stdout, (
+    runtime_alias_release.stdout)
+
 static_buffer_source = r'''module attributes {
   vrc.host_stage = "udonhl",
   vrc.unity_buffer_pool = [

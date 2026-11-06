@@ -444,8 +444,11 @@ def main():
     assert not list(onnx_consumer.rglob('plan.json'))
     run([args.cmake, '--build', onnx_consumer, '--target', 'onnx-host-link-probe'])
     generic_artifact = onnx_consumer / 'udoncl/onnx-host-link-probe/artifact'
-    with (generic_artifact / 'host.uasm').open(encoding='utf-8') as stream:
-        assert sum(': %' in line for line in stream) <= 480
+    generic_assembly = (generic_artifact / 'host.uasm').read_text(
+        encoding='utf-8'
+    )
+    assert sum(': %' in line for line in generic_assembly.splitlines()) <= 480
+    assert 'dispatch_alias_match_' in generic_assembly
     generic_manifest = json.loads(
         (generic_artifact / 'manifest.json').read_text(encoding='utf-8'))
     assert generic_manifest['validation']['read_write_alias'] is True
@@ -1118,6 +1121,7 @@ def main():
     assert (udonblas_artifact / 'kernels/kernel_2.shader').is_file()
     assert '.export __udoncl_kernel_material_1' in udonblas_assembly
     assert '.export __udoncl_kernel_material_2' in udonblas_assembly
+    assert 'dispatch_alias_match_' not in udonblas_assembly
 
     build_root = consumer / 'udoncl/hello-artifact'
     artifact = build_root / 'artifact'

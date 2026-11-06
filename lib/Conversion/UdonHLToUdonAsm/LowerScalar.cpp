@@ -2548,11 +2548,12 @@ private:
               output >= 0 && size_t(output) < dispatch.getResources().size()
                   ? valueSlots.lookup(dispatch.getResources()[output])
                   : std::string();
+          std::string event = valueSlots.lookup(dispatch.getEvent());
           if (!descriptor || !materialSlot || materialSlot.getValue().empty() ||
-              destinationToken.empty())
+              destinationToken.empty() || event.empty())
             return dispatch.emitError(
                 "Unity dispatch requires a bound output, a copied scalar "
-                "descriptor and a kernel material slot");
+                "descriptor, an event and a kernel material slot");
           auto physicalBuffer = [&](size_t index, StringRef token,
                                     StringRef dynamicPrefix) {
             if (resourceHeapSlots && index < resourceHeapSlots.size())
@@ -2581,6 +2582,44 @@ private:
               staticResourceId(dispatch.getResources()[output]))
             return dispatch.emitError(
                 "immutable static tensor cannot be a dispatch output");
+          SmallVector<Operation *> runtimeAliasExitJumps;
+          auto runtimeValidation = module->getAttrOfType<BoolAttr>(
+              "vrc.runtime_validation.read_write_alias");
+          if (runtimeValidation && runtimeValidation.getValue()) {
+            for (auto [resourceIndex, accessValue] :
+                 llvm::enumerate(dispatch.getResourceAccesses())) {
+              auto access = dyn_cast<StringAttr>(accessValue);
+              if (!access || access.getValue() != "read")
+                continue;
+              Value resource = dispatch.getResources()[resourceIndex];
+              if (staticResourceId(resource))
+                continue;
+              std::string sourceToken = valueSlots.lookup(resource);
+              if (sourceToken.empty())
+                return dispatch.emitError(
+                    "runtime alias validation requires a resource token");
+              std::string matches = prefix + "dispatch_alias_match_" +
+                                    std::to_string(valueIndex++);
+              addSlot(matches, "SystemBoolean", "null", false);
+              emitPush(dispatch.getLoc(), sourceToken);
+              emitPush(dispatch.getLoc(), destinationToken);
+              emitPush(dispatch.getLoc(), matches);
+              emitExtern(dispatch.getLoc(),
+                         "SystemInt32.__op_Equality__SystemInt32_"
+                         "SystemInt32__SystemBoolean");
+              emitPush(dispatch.getLoc(), matches);
+              Operation *next = create(
+                  dispatch.getLoc(), vm::JumpIfFalseOp::getOperationName(),
+                  {builder.getNamedAttr("target",
+                                        builder.getI64IntegerAttr(0))});
+              address += 8;
+              emitCopy(dispatch.getLoc(), immutableSlot("SystemInt32", "-59"),
+                       event);
+              runtimeAliasExitJumps.push_back(emitJump(dispatch.getLoc(), 0));
+              next->setAttr("target", builder.getI64IntegerAttr(
+                                          static_cast<int64_t>(address)));
+            }
+          }
           std::string destination = physicalBuffer(
               static_cast<size_t>(output), destinationToken,
               prefix + "dispatch_" + std::to_string(dispatch.getKernelId()) +
@@ -2677,11 +2716,11 @@ private:
               dispatch.getLoc(),
               "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_"
               "UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid");
-          std::string event = valueSlots.lookup(dispatch.getEvent());
-          if (event.empty())
-            return dispatch.emitError("Unity dispatch has no event slot");
           addSlot("__udoncl_completed_event", "SystemInt32", "0", false);
           emitCopy(dispatch.getLoc(), "__udoncl_completed_event", event);
+          for (Operation *jump : runtimeAliasExitJumps)
+            jump->setAttr("target", builder.getI64IntegerAttr(
+                                        static_cast<int64_t>(address)));
           continue;
         }
         if (auto copy = dyn_cast<::vrc::vrc::BufferCopyOp>(operation)) {
