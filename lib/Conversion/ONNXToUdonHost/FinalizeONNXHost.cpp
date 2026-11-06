@@ -720,6 +720,49 @@ bool isDeviceSoftmaxNode(const GraphRecord &graph, const NodeRecord &node) {
          input.type.getDimSize(axis) >= 1 && input.type.getDimSize(axis) <= 512;
 }
 
+struct DeviceMatMulShape {
+  int64_t m;
+  int64_t n;
+  int64_t k;
+  int64_t leftBatches;
+  int64_t rightBatches;
+  int64_t outputBatches;
+};
+
+std::optional<DeviceMatMulShape> deviceMatMulShape(const GraphRecord &graph,
+                                                   const NodeRecord &node) {
+  if (node.operation != "MatMul" || node.provider != "udonblasSgemm" ||
+      node.inputs.size() != 2 || node.inputs[0] < 0 || node.inputs[1] < 0)
+    return std::nullopt;
+  const TensorRecord &leftTensor = graph.tensors[node.inputs[0]];
+  const TensorRecord &rightTensor = graph.tensors[node.inputs[1]];
+  const TensorRecord &outputTensor = graph.tensors[node.output];
+  ArrayRef<int64_t> left = leftTensor.type.getShape();
+  ArrayRef<int64_t> right = rightTensor.type.getShape();
+  ArrayRef<int64_t> output = outputTensor.type.getShape();
+  if (!leftTensor.type.getElementType().isF32() ||
+      !rightTensor.type.getElementType().isF32() ||
+      !outputTensor.type.getElementType().isF32() || left.size() < 2 ||
+      right.size() < 2 || output.size() < 2 ||
+      left.back() != right[right.size() - 2])
+    return std::nullopt;
+  int64_t m = left[left.size() - 2];
+  int64_t k = left.back();
+  int64_t n = right.back();
+  if (m < 1 || n < 1 || k < 1 || k > 256 || output[output.size() - 2] != m ||
+      output.back() != n || leftTensor.type.getNumElements() > 16384 ||
+      rightTensor.type.getNumElements() > 16384 ||
+      outputTensor.type.getNumElements() > 16384)
+    return std::nullopt;
+  int64_t leftBatches = leftTensor.type.getNumElements() / (m * k);
+  int64_t rightBatches = rightTensor.type.getNumElements() / (k * n);
+  int64_t outputBatches = outputTensor.type.getNumElements() / (m * n);
+  if (outputBatches < 1 || (leftBatches != 1 && leftBatches != outputBatches) ||
+      (rightBatches != 1 && rightBatches != outputBatches))
+    return std::nullopt;
+  return DeviceMatMulShape{m, n, k, leftBatches, rightBatches, outputBatches};
+}
+
 bool isDeviceQ4Node(const GraphRecord &graph, const NodeRecord &node) {
   if (node.operation != "MatMulNBits" ||
       node.provider != "udononnxMatMulNBits" || node.inputs.size() < 3 ||
@@ -848,7 +891,9 @@ bool supportsDeviceNode(const GraphRecord &graph, const NodeRecord &node) {
     return isDeviceRmsNormNode(graph, node);
   if (node.operation == "Softmax")
     return isDeviceSoftmaxNode(graph, node);
-  if (node.operation == "Gemm" || node.operation == "MatMul") {
+  if (node.operation == "MatMul")
+    return deviceMatMulShape(graph, node).has_value();
+  if (node.operation == "Gemm") {
     if (node.provider != "udonblasSgemm" || !hasF32InputsAndOutput(2))
       return false;
     const TensorRecord &left = graph.tensors[node.inputs[0]];
@@ -3006,7 +3051,34 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                             constant(inner), constant(0), constant(1)});
         continue;
       }
-      if (node.operation == "Gemm" || node.operation == "MatMul") {
+      if (node.operation == "MatMul") {
+        std::optional<DeviceMatMulShape> shape = deviceMatMulShape(graph, node);
+        if (!shape)
+          return emitError(location)
+                 << "Device MatMul requires a supported contiguous static "
+                    "batch shape";
+        if (shape->outputBatches == 1) {
+          dispatch("__vrc_enqueue_udonblas_arena_sgemm_device_args",
+                   ValueRange{entry->getArgument(2), buffer(node.inputs[0]),
+                              buffer(node.inputs[1]), output,
+                              constant(shape->m), constant(shape->n),
+                              constant(shape->k), constant(0), constant(0),
+                              floating(1.0f)});
+        } else {
+          dispatch(
+              "__vrc_enqueue_udonblas_arena_sgemm_strided_batched_device_args",
+              ValueRange{
+                  entry->getArgument(2), buffer(node.inputs[0]),
+                  buffer(node.inputs[1]), output, constant(shape->m),
+                  constant(shape->n), constant(shape->k),
+                  constant(shape->leftBatches == 1 ? 0 : shape->m * shape->k),
+                  constant(shape->rightBatches == 1 ? 0 : shape->k * shape->n),
+                  constant(shape->m * shape->n), constant(shape->outputBatches),
+                  constant(0), constant(0), floating(1.0f)});
+        }
+        continue;
+      }
+      if (node.operation == "Gemm") {
         ArrayRef<int64_t> left = graph.tensors[node.inputs[0]].type.getShape();
         ArrayRef<int64_t> right = graph.tensors[node.inputs[1]].type.getShape();
         if (left.size() != 2 || right.size() != 2 || left[1] != right[0])
@@ -3127,6 +3199,12 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                 {pointer, pointer, pointer, pointer, i32, i32, i32, i32, i32,
                  builder.getF32Type(), i32, pointer, pointer},
                 {i32});
+    declaration(
+        module,
+        "__vrc_enqueue_udonblas_arena_sgemm_strided_batched_device_args",
+        {pointer, pointer, pointer, pointer, i32, i32, i32, i32, i32, i32, i32,
+         i32, i32, builder.getF32Type(), i32, pointer, pointer},
+        {i32});
     declaration(module, "__vrc_enqueue_udononnx_unary_device_args",
                 {pointer, pointer, pointer, i32, i32, i32, pointer, pointer},
                 {i32});

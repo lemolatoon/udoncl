@@ -71,6 +71,9 @@ static cl_uint dispatched_output_token;
 static cl_uint dispatched_arena_a_token;
 static cl_uint dispatched_arena_b_token;
 static cl_uint dispatched_arena_output_token;
+static cl_int dispatched_arena_stride_a;
+static cl_int dispatched_arena_stride_b;
+static cl_int dispatched_arena_batch_count;
 static cl_int dispatched_m;
 static cl_float dispatched_alpha;
 static cl_int dispatched_sgemv_trans;
@@ -165,12 +168,37 @@ cl_int __vrc_opencl_dispatch_udonblas_arena_sgemm(
   return 11;
 }
 
+cl_int __vrc_opencl_dispatch_udonblas_arena_sgemm_strided_batched(
+    cl_uint a_token, cl_uint b_token, cl_uint output_token, cl_int m, cl_int n,
+    cl_int k, cl_int stride_a, cl_int stride_b, cl_int stride_c,
+    cl_int batch_count, cl_int transa, cl_int transb, cl_float alpha) {
+  (void)m;
+  (void)n;
+  (void)k;
+  (void)stride_c;
+  (void)transa;
+  (void)transb;
+  (void)alpha;
+  dispatched_arena_a_token = a_token;
+  dispatched_arena_b_token = b_token;
+  dispatched_arena_output_token = output_token;
+  dispatched_arena_stride_a = stride_a;
+  dispatched_arena_stride_b = stride_b;
+  dispatched_arena_batch_count = batch_count;
+  return 20;
+}
+
 extern cl_int __vrc_enqueue_udonblas_arena_sgemm_args(
     cl_command_queue queue, cl_mem a, cl_mem b, cl_mem output, cl_int m,
     cl_int n, cl_int k, cl_int transa, cl_int transb, cl_float alpha);
 extern cl_int __vrc_enqueue_udonblas_arena_sgemm_device_args(
     cl_command_queue queue, cl_mem a, cl_mem b, cl_mem output, cl_int m,
     cl_int n, cl_int k, cl_int transa, cl_int transb, cl_float alpha,
+    cl_uint wait_count, const cl_event *wait_list, cl_event *event);
+extern cl_int __vrc_enqueue_udonblas_arena_sgemm_strided_batched_device_args(
+    cl_command_queue queue, cl_mem a, cl_mem b, cl_mem output, cl_int m,
+    cl_int n, cl_int k, cl_int stride_a, cl_int stride_b, cl_int stride_c,
+    cl_int batch_count, cl_int transa, cl_int transb, cl_float alpha,
     cl_uint wait_count, const cl_event *wait_list, cl_event *event);
 extern cl_int __vrc_enqueue_udononnx_unary_device_args(
     cl_command_queue queue, cl_mem input, cl_mem output, cl_int operation,
@@ -330,6 +358,7 @@ int main(void) {
   cl_kernel kernel;
   cl_event marker_event, write_event, wait_events[2];
   cl_mem first, second, nested_buffer, nested_buffer2, static_buffer;
+  cl_mem batched_a, batched_b, batched_c;
   cl_mem q4_activation, q4_packed, q4_scales, q4_previous, q4_output;
   cl_mem resolved;
   udonclBufferHandle_t common_buffer = {0, 0}, stale_buffer, replacement;
@@ -604,6 +633,28 @@ int main(void) {
          ((float *)physical_buffers[3])[1] < 1.000001f);
   EXPECT(clReleaseEvent(marker_event) == CL_SUCCESS);
   EXPECT(clReleaseMemObject(nested_buffer) == CL_SUCCESS);
+
+  batched_a = udonclCreateBufferForQueue(queue, CL_MEM_READ_WRITE,
+                                         8 * sizeof(float), &error);
+  EXPECT(batched_a && error == CL_SUCCESS);
+  batched_b = udonclCreateBufferForQueue(queue, CL_MEM_READ_WRITE,
+                                         4 * sizeof(float), &error);
+  EXPECT(batched_b && error == CL_SUCCESS);
+  batched_c = udonclCreateBufferForQueue(queue, CL_MEM_READ_WRITE,
+                                         8 * sizeof(float), &error);
+  EXPECT(batched_c && error == CL_SUCCESS);
+  await_count = 0;
+  EXPECT(__vrc_enqueue_udonblas_arena_sgemm_strided_batched_device_args(
+             queue, batched_a, batched_b, batched_c, 2, 2, 2, 4, 0, 4, 2, 0, 0,
+             1.0f, 0, 0, &marker_event) == CL_SUCCESS);
+  EXPECT(marker_event && clWaitForEvents(1, &marker_event) == CL_SUCCESS);
+  EXPECT(await_count == 1 && awaited_events[0] == 20);
+  EXPECT(dispatched_arena_stride_a == 4 && dispatched_arena_stride_b == 0 &&
+         dispatched_arena_batch_count == 2);
+  EXPECT(clReleaseEvent(marker_event) == CL_SUCCESS);
+  EXPECT(clReleaseMemObject(batched_c) == CL_SUCCESS);
+  EXPECT(clReleaseMemObject(batched_b) == CL_SUCCESS);
+  EXPECT(clReleaseMemObject(batched_a) == CL_SUCCESS);
 
   q4_activation = udonclAdoptStaticBuffer(
       queue, 8, 90112, __vrc_opencl_static_tensor(8, 90112), &error);

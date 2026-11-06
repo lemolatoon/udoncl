@@ -327,6 +327,7 @@ batched_matmul_portable = subprocess.run(
     [
         opt,
         "--udoncl-materialize-onnx-constants",
+        "--udoncl-externalize-onnx-initializers",
         "--udoncl-lower-onnx-to-host",
         batched_matmul_source,
     ],
@@ -344,7 +345,15 @@ assert batched_matmul_host.returncode == 0, (
     batched_matmul_host.stdout,
     batched_matmul_host.stderr,
 )
-assert "call @udonblasSgemmStridedBatched" in batched_matmul_host.stdout
+assert "udoncl.onnx_device_graph = true" in batched_matmul_host.stdout
+assert "udoncl.onnx_device_unsupported = []" in batched_matmul_host.stdout
+assert (
+    batched_matmul_host.stdout.count(
+        "call @__vrc_enqueue_udonblas_arena_sgemm_strided_batched_device_args"
+    )
+    == 1
+)
+assert "call @udonblasSgemmStridedBatched" not in batched_matmul_host.stdout
 
 concat_source = source.with_name("onnx_concat.mlir")
 concat_portable = subprocess.run(

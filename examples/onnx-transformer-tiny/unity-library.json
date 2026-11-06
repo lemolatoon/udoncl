@@ -119,6 +119,24 @@
       ],
       "argument_kinds": ["buffer", "buffer", "i32", "i32", "i32", "i32", "i32", "i32"],
       "global_size": [8192, 2, 1], "local_size": [1, 1, 1], "global_offset": [0, 0, 0]
+    },
+    {
+      "schema_version": 1, "profile": "gather-f32", "words": 16384,
+      "kernel": "udonblas_arena_sgemm_strided_batched", "kernel_id": 237,
+      "input_words": [16384, 16384],
+      "argument_bounds": [
+        {"index": 3, "min": 1, "max": 16384},
+        {"index": 4, "min": 1, "max": 16384},
+        {"index": 5, "min": 1, "max": 256},
+        {"index": 6, "min": 0, "max": 16384},
+        {"index": 7, "min": 0, "max": 16384},
+        {"index": 8, "min": 1, "max": 16384},
+        {"index": 9, "min": 1, "max": 16384},
+        {"index": 10, "min": 0, "max": 1},
+        {"index": 11, "min": 0, "max": 1}
+      ],
+      "argument_kinds": ["buffer", "buffer", "buffer", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "f32"],
+      "global_size": [8192, 2, 1], "local_size": [1, 1, 1], "global_offset": [0, 0, 0]
     }
   ],
   "export_overrides": [

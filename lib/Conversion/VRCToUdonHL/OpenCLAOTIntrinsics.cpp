@@ -50,6 +50,8 @@ struct LowerOpenCLAOTIntrinsicsPass
           name == "__vrc_opencl_buffer_copy" || name == "__vrc_opencl_await" ||
           name == "__vrc_opencl_dispatch_udonblas_sgemm" ||
           name == "__vrc_opencl_dispatch_udonblas_arena_sgemm" ||
+          name ==
+              "__vrc_opencl_dispatch_udonblas_arena_sgemm_strided_batched" ||
           name == "__vrc_opencl_dispatch_udonblas_sgemv" ||
           name == "__vrc_opencl_dispatch_udondnn_large_convolution" ||
           name == "__vrc_opencl_dispatch_udondnn_large_activation" ||
@@ -93,6 +95,10 @@ struct LowerOpenCLAOTIntrinsicsPass
                      i32, i32, i32, i32, f32, f32};
       else if (name == "__vrc_opencl_dispatch_udonblas_arena_sgemm")
         arguments = {i32, i32, i32, i32, i32, i32, i32, i32, f32};
+      else if (name ==
+               "__vrc_opencl_dispatch_udonblas_arena_sgemm_strided_batched")
+        arguments = {i32, i32, i32, i32, i32, i32, i32,
+                     i32, i32, i32, i32, i32, f32};
       else if (name == "__vrc_opencl_dispatch_udonblas_sgemv")
         arguments = {i32, i32, i32, i32, i32, i32, i32, i32, f32, f32};
       else if (name == "__vrc_opencl_dispatch_udondnn_large_convolution")
@@ -237,6 +243,9 @@ struct LowerOpenCLAOTIntrinsicsPass
       } else {
         bool sgemm = name == "__vrc_opencl_dispatch_udonblas_sgemm";
         bool arenaSgemm = name == "__vrc_opencl_dispatch_udonblas_arena_sgemm";
+        bool arenaBatchedSgemm =
+            name ==
+            "__vrc_opencl_dispatch_udonblas_arena_sgemm_strided_batched";
         bool sgemv = name == "__vrc_opencl_dispatch_udonblas_sgemv";
         bool largeConvolution =
             name == "__vrc_opencl_dispatch_udondnn_large_convolution";
@@ -262,11 +271,12 @@ struct LowerOpenCLAOTIntrinsicsPass
         unsigned bufferCount = matmulNBitsQ4                       ? 5
                                : rmsFinalize                       ? 4
                                : largeConvolution || largeOpTensor ? 4
-                               : arenaSgemm                        ? 3
+                               : arenaSgemm || arenaBatchedSgemm   ? 3
                                : largeActivation || largePooling   ? 3
                                                                    : 2;
         int32_t kernelId = sgemm                                        ? 1
                            : arenaSgemm                                 ? 221
+                           : arenaBatchedSgemm                          ? 237
                            : sgemv                                      ? 2
                            : largeConvolution                           ? 232
                            : largeActivation                            ? 233
@@ -285,7 +295,10 @@ struct LowerOpenCLAOTIntrinsicsPass
                                                                         : 22;
         SmallVector<Value> scalars(call.getOperands().drop_front(bufferCount));
         SmallVector<Attribute> scalarKinds;
-        if (arenaSgemm) {
+        if (arenaBatchedSgemm) {
+          scalarKinds.append(9, rewriter.getStringAttr("i32"));
+          scalarKinds.push_back(rewriter.getStringAttr("f32"));
+        } else if (arenaSgemm) {
           scalarKinds.append(5, rewriter.getStringAttr("i32"));
           scalarKinds.push_back(rewriter.getStringAttr("f32"));
         } else if (sgemm || sgemv) {
@@ -354,8 +367,8 @@ struct LowerOpenCLAOTIntrinsicsPass
         DenseI32ArrayAttr globalSize;
         if (sgemm)
           globalSize = rewriter.getDenseI32ArrayAttr({32, 32, 1});
-        else if (arenaSgemm || largeConvolution || largePooling || rmsReduce ||
-                 rmsFinalize || arenaSoftmax)
+        else if (arenaSgemm || arenaBatchedSgemm || largeConvolution ||
+                 largePooling || rmsReduce || rmsFinalize || arenaSoftmax)
           globalSize = rewriter.getDenseI32ArrayAttr({8192, 2, 1});
         else if (largeActivation || largeOpTensor)
           globalSize = rewriter.getDenseI32ArrayAttr({8192, 4, 1});

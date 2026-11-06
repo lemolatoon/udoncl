@@ -65,6 +65,13 @@ set_target_properties(udononnx-matmul-nbits-kernel PROPERTIES
   CXX_EXTENSIONS OFF)
 add_test(NAME udononnx-matmul-nbits-kernel
   COMMAND udononnx-matmul-nbits-kernel)
+add_executable(udonblas-arena-sgemm-kernel
+  boundary/udonblas_arena_sgemm.cpp)
+target_compile_features(udonblas-arena-sgemm-kernel PRIVATE cxx_std_20)
+set_target_properties(udonblas-arena-sgemm-kernel PROPERTIES
+  CXX_EXTENSIONS OFF)
+add_test(NAME udonblas-arena-sgemm-kernel
+  COMMAND udonblas-arena-sgemm-kernel)
 add_executable(udondnn-large-convolution-kernel
   boundary/udondnn_large_convolution.cpp)
 target_compile_features(udondnn-large-convolution-kernel PRIVATE cxx_std_20)

@@ -246,8 +246,11 @@ TinyLlamaの現行設計、実装順序、受入条件の正本は
   immutable weight、共有operator scratchへ接続し、実graphの45 nodeすべてをHost readbackなしで
   対応した。さらにUdonDNN arena Softmaxを`outer x axis x inner`へ汎用的に写像し、
   16,384 word以下・reduction 512要素以下のstatic FP32 tensorを対応した。standalone Device
-  数値suiteと実graphの22 nodeを検証済みである。現在の実測未対応集合はCast 2、Concat 45、
-  Equal 1、Expand 46、Gather 1、MatMul 45、ScatterND 1、Slice 111、Transpose 111、Where 1である。
+  数値suiteと実graphの22 nodeを検証済みである。UdonBLASにはさらに16,384 word以下・
+  K<=256のstatic FP32 strided-batched SGEMM Device backendを追加し、input stride 0のbroadcast、
+  contiguous output、実attention形状をNative数値testで検証した。実graphのMatMul 45 nodeも
+  すべてこの契約へ入る。現在の実測未対応集合はCast 2、Concat 45、Equal 1、Expand 46、
+  Gather 1、ScatterND 1、Slice 111、Transpose 111、Where 1である。
 - TinyLlama tokenizerはONNXではない。独立したC `UdonTokenizers` componentとして
   build-time tableとUTF-16/byte-fallback BPEを実装し、C Hostの会話APIをcompiler生成
   U# bindingから利用する。

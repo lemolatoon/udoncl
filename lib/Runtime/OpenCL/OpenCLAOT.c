@@ -49,6 +49,10 @@ extern cl_int __vrc_opencl_dispatch_udonblas_sgemm(
 extern cl_int __vrc_opencl_dispatch_udonblas_arena_sgemm(
     cl_uint a_token, cl_uint b_token, cl_uint output_token, cl_int m, cl_int n,
     cl_int k, cl_int transa, cl_int transb, cl_float alpha);
+extern cl_int __vrc_opencl_dispatch_udonblas_arena_sgemm_strided_batched(
+    cl_uint a_token, cl_uint b_token, cl_uint output_token, cl_int m, cl_int n,
+    cl_int k, cl_int stride_a, cl_int stride_b, cl_int stride_c,
+    cl_int batch_count, cl_int transa, cl_int transb, cl_float alpha);
 extern cl_int __vrc_opencl_dispatch_udonblas_sgemv(
     cl_uint input_token, cl_uint output_token, cl_int trans, cl_int m, cl_int n,
     cl_int lda, cl_int incx, cl_int incy, cl_float alpha, cl_float beta);
@@ -1318,6 +1322,49 @@ cl_int __vrc_enqueue_udonblas_arena_sgemm_device_args(
   pending = __vrc_opencl_dispatch_udonblas_arena_sgemm(
       a->physical_token, b->physical_token, output->physical_token, m, n, k,
       transa, transb, alpha);
+  return udoncl_finish_enqueue(queue, CL_COMMAND_NDRANGE_KERNEL, pending,
+                               CL_FALSE, event);
+}
+
+cl_int __vrc_enqueue_udonblas_arena_sgemm_strided_batched_device_args(
+    cl_command_queue queue, cl_mem a, cl_mem b, cl_mem output, cl_int m,
+    cl_int n, cl_int k, cl_int stride_a, cl_int stride_b, cl_int stride_c,
+    cl_int batch_count, cl_int transa, cl_int transb, cl_float alpha,
+    cl_uint wait_count, const cl_event *wait_list, cl_event *event) {
+  cl_int pending;
+  size_t matrix_a;
+  size_t matrix_b;
+  size_t matrix_c;
+  size_t required_a;
+  size_t required_b;
+  size_t required_c;
+  if (queue != &udoncl_queue || !queue->active || !a || !a->active || !b ||
+      !b->active || !output || !output->active ||
+      a->context != queue->context || b->context != queue->context ||
+      output->context != queue->context || m < 1 || n < 1 || k < 1 || k > 256 ||
+      stride_a < 0 || stride_b < 0 || stride_c < 1 || batch_count < 1 ||
+      transa < 0 || transa > 1 || transb < 0 || transb > 1 ||
+      udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
+    return CL_INVALID_VALUE;
+  matrix_a = (size_t)m * (size_t)k;
+  matrix_b = (size_t)k * (size_t)n;
+  matrix_c = (size_t)m * (size_t)n;
+  if (matrix_a > 16384u || matrix_b > 16384u || matrix_c > 16384u ||
+      (size_t)batch_count > 16384u / matrix_c || (size_t)stride_c != matrix_c)
+    return CL_INVALID_VALUE;
+  required_a =
+      matrix_a + (stride_a ? (size_t)(batch_count - 1) * (size_t)stride_a : 0u);
+  required_b =
+      matrix_b + (stride_b ? (size_t)(batch_count - 1) * (size_t)stride_b : 0u);
+  required_c = (size_t)batch_count * matrix_c;
+  if (required_a > 16384u || required_b > 16384u || required_c > 16384u)
+    return CL_INVALID_VALUE;
+  if (a->bytes < required_a * 4u || b->bytes < required_b * 4u ||
+      output->bytes < required_c * 4u)
+    return CL_INVALID_BUFFER_SIZE;
+  pending = __vrc_opencl_dispatch_udonblas_arena_sgemm_strided_batched(
+      a->physical_token, b->physical_token, output->physical_token, m, n, k,
+      stride_a, stride_b, stride_c, batch_count, transa, transb, alpha);
   return udoncl_finish_enqueue(queue, CL_COMMAND_NDRANGE_KERNEL, pending,
                                CL_FALSE, event);
 }

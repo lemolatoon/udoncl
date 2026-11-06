@@ -64,8 +64,7 @@ aliasing are allowed.
   words removes every `Cos`/`Sin`/`Neg`, `Add`, `Mul`, `Sigmoid`, and `Tanh`
   node from the unsupported set. After the Device Q4, RmsNorm, and Softmax
   checkpoints below, the remaining measured set is Cast 2, Concat 45, Equal 1,
-  Expand 46, Gather 1, MatMul 45, ScatterND 1, Slice 111, Transpose 111, and
-  Where 1.
+  Expand 46, Gather 1, ScatterND 1, Slice 111, Transpose 111, and Where 1.
 - The generic correctness-oriented `MatMulNBits` path still uses small
   Host-managed tiles. A first Device-resident specialization now covers the
   pinned model's three-input unsigned Q4 form (`bits=4`, `block_size=32`,
@@ -91,6 +90,13 @@ aliasing are allowed.
   mapped generically to `outer x axis x inner`; no model shape is embedded in
   the compiler. The standalone Device numerical suite passes, and all 22
   Softmax nodes disappear from the pinned graph's measured unsupported set.
+- UdonBLAS now has a Device-resident strided-batched SGEMM arena backend for
+  contiguous static FP32 tensors up to 16,384 words and K up to 256. Zero input
+  stride implements whole-matrix broadcast; equal batches use ordinary matrix
+  strides, while output remains contiguous as required by ONNX bufferization
+  and the fragment proof. Native numerical tests cover the pinned attention
+  shape and broadcast. All 45 MatMul nodes in the pinned sequence-4 graph now
+  satisfy this generic UdonBLAS contract.
 - Production-sized diagnostic bundles may omit intermediate textual MLIR with
   `--omit-intermediate-ir`; assembly, manifest, binding, static tensors, and the
   storage report remain. This avoids publishing several model-sized debug
