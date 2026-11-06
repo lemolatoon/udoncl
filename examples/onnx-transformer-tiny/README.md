@@ -12,3 +12,9 @@ Configure the directory like any external UdonCL CMake project, then build the
 session API provides typed input writes and output reads plus
 `udon_onnx_session_bind_output_to_input`, which aliases a compatible cache
 output as the corresponding input for the next run without a Host copy.
+
+Set `UDONCL_TINYLLAMA_ONNX_MODEL` to a real TinyLlama-compatible ONNX file to
+run the same CMake and C++ lowering path against that model. The repository's
+pinned acceptance model can be downloaded and verified with
+`scripts/fetch_tinyllama_onnx.py`; the synthetic model remains the default so a
+normal package smoke test does not download a 909 MB model.

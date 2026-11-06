@@ -889,8 +889,8 @@ def main():
     assert {
         item['id'] for item in transformer_manifest['device']['kernels']
     } == {
-        1, 2, 207, 217, 218, 219, 220, 222, 231, 232, 233, 234, 235, 236,
-        237, 238, 239, 240, 241, 242, 243, 244, 245, 246,
+        1, 2, 207, 217, 218, 219, 220, 221, 222, 231, 232, 233, 234, 235,
+        236, 237, 238, 239, 240, 241, 242, 243, 244, 245, 246,
     }
     q4_kernel = next(
         item for item in transformer_manifest['device']['kernels']
