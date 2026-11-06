@@ -339,6 +339,21 @@ int main(void) {
   EXPECT(udonclDeviceBufferDestroy(&input_buffer) == UDONCL_STATUS_SUCCESS);
   EXPECT(udonclDeviceBufferDestroy(&output_buffer) == UDONCL_STATUS_SUCCESS);
   EXPECT(udonclDeviceBufferDestroy(&foreign_buffer) == UDONCL_STATUS_SUCCESS);
+  {
+    /* The pinned TinyLlama graph uses 920 immutable tensors and 31 dynamic
+     * activation/workspace allocations after liveness reuse.  Keep this a
+     * real allocation test so the runtime table cannot silently regress to
+     * the former 64-handle limit. */
+    udonclBufferHandle_t model_buffers[951] = {{0, 0}};
+    size_t index;
+    for (index = 0; index < 951; ++index)
+      EXPECT(udonclDeviceBufferCreate(context, CL_MEM_READ_WRITE, 4,
+                                      &model_buffers[index]) ==
+             UDONCL_STATUS_SUCCESS);
+    for (index = 951; index > 0; --index)
+      EXPECT(udonclDeviceBufferDestroy(&model_buffers[index - 1]) ==
+             UDONCL_STATUS_SUCCESS);
+  }
   EXPECT(initialization_buffer == 0);
   EXPECT(clReleaseCommandQueue(queue) == CL_SUCCESS);
   EXPECT(clReleaseContext(other_context) == CL_SUCCESS);
