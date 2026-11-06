@@ -70,7 +70,7 @@ __kernel void udonaten_arena_rms_norm_finalize(
         1.0f / sqrt(square_sum / (float)normalized_words + epsilon);
     float weight = 1.0f;
     if (has_weight)
-      weight = weight_input[(gid % (uint)normalized_words) & 16383u];
+      weight = weight_input[gid % (uint)normalized_words];
     value = input[gid & 16383u] * inverse_rms * weight;
   }
   output[gid] = value;

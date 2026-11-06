@@ -266,7 +266,7 @@ assert (
     == 1
 )
 assert "call @udononnxMatMulNBits" not in q4_host.stdout
-assert "@__udon_onnx_q4_scratch" in q4_host.stdout
+assert "@__udon_onnx_operator_scratch" in q4_host.stdout
 assert q4_host.stdout.count("arith.constant 524288 : i32") >= 2
 assert "call @clEnqueueCopyBuffer" in q4_host.stdout
 assert "arith.constant 128 : i32" in q4_host.stdout
@@ -280,6 +280,47 @@ rmsnorm_canonical = subprocess.run(
 ).stdout
 assert 'function_name = "RmsNorm"' in rmsnorm_canonical
 assert 'domain_name = "com.lemolatoon.udoncl"' in rmsnorm_canonical
+
+rmsnorm_device_source = source.with_name("onnx_rmsnorm_device.mlir")
+rmsnorm_device_portable = subprocess.run(
+    [
+        opt,
+        "--udoncl-materialize-onnx-constants",
+        "--udoncl-externalize-onnx-initializers",
+        "--udoncl-lower-onnx-to-host",
+        rmsnorm_device_source,
+    ],
+    text=True,
+    capture_output=True,
+    check=True,
+).stdout
+rmsnorm_device_host = subprocess.run(
+    [host_opt, "--udoncl-finalize-onnx-host", "-"],
+    input=rmsnorm_device_portable,
+    text=True,
+    capture_output=True,
+)
+assert rmsnorm_device_host.returncode == 0, (
+    rmsnorm_device_host.stdout,
+    rmsnorm_device_host.stderr,
+)
+assert "udoncl.onnx_device_graph = true" in rmsnorm_device_host.stdout
+assert "udoncl.onnx_device_unsupported = []" in rmsnorm_device_host.stdout
+assert (
+    rmsnorm_device_host.stdout.count(
+        "call @__vrc_enqueue_udonaten_arena_rms_norm_reduce_device_args"
+    )
+    == 1
+)
+assert (
+    rmsnorm_device_host.stdout.count(
+        "call @__vrc_enqueue_udonaten_arena_rms_norm_finalize_device_args"
+    )
+    == 1
+)
+assert "call @udonatenRmsNorm" not in rmsnorm_device_host.stdout
+assert "@__udon_onnx_operator_scratch" in rmsnorm_device_host.stdout
+assert "arith.constant 65536 : i32" in rmsnorm_device_host.stdout
 
 batched_matmul_source = source.with_name("onnx_batched_matmul.mlir")
 batched_matmul_portable = subprocess.run(

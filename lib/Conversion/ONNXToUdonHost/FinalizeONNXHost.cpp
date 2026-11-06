@@ -12,6 +12,7 @@
 #include <cstring>
 #include <limits>
 #include <numeric>
+#include <optional>
 
 using namespace mlir;
 
@@ -658,9 +659,50 @@ bool isDeviceAlias(const GraphRecord &graph, const NodeRecord &node) {
          input.type.getNumElements() == output.type.getNumElements();
 }
 
-constexpr StringLiteral q4ScratchSymbol = "__udon_onnx_q4_scratch";
+constexpr StringLiteral operatorScratchSymbol = "__udon_onnx_operator_scratch";
 constexpr int64_t q4SurfaceWords = 131072;
 constexpr int64_t q4SurfaceBytes = q4SurfaceWords * 4;
+constexpr int64_t rmsScratchBytes = 16384 * 4;
+
+std::optional<float> scalarF32(const TensorRecord &tensor) {
+  if (!tensor.initialValue || !tensor.type.getElementType().isF32() ||
+      tensor.type.getNumElements() != 1)
+    return std::nullopt;
+  auto values = tensor.initialValue.getValues<APFloat>();
+  APFloat value = *values.begin();
+  return value.convertToFloat();
+}
+
+bool isDeviceRmsNormNode(const GraphRecord &graph, const NodeRecord &node) {
+  if (node.operation != "RmsNorm" || node.provider != "udonatenRmsNorm" ||
+      node.inputs.size() != 3 || node.inputs[0] < 0 || node.inputs[1] < 0 ||
+      node.inputs[2] < 0)
+    return false;
+  const TensorRecord &input = graph.tensors[node.inputs[0]];
+  const TensorRecord &weight = graph.tensors[node.inputs[1]];
+  const TensorRecord &epsilon = graph.tensors[node.inputs[2]];
+  const TensorRecord &output = graph.tensors[node.output];
+  int64_t words = input.type.getNumElements();
+  int64_t normalizedWords = weight.type.getNumElements();
+  std::optional<float> epsilonValue = scalarF32(epsilon);
+  if (!input.type.getElementType().isF32() ||
+      !weight.type.getElementType().isF32() || input.type != output.type ||
+      weight.type.getRank() != 1 || weight.staticResourceId < 0 ||
+      !epsilonValue || *epsilonValue < 0.0f || words < 1 || words > 16384 ||
+      normalizedWords < 1 || normalizedWords > 4096 ||
+      words % normalizedWords != 0 ||
+      input.type.getShape().back() != normalizedWords)
+    return false;
+  int64_t rows = words / normalizedWords;
+  int64_t partialsPerRow = (normalizedWords + 63) / 64;
+  return rows * partialsPerRow <= 16384;
+}
+
+bool hasDeviceRmsNorm(const GraphRecord &graph) {
+  return llvm::any_of(graph.nodes, [&](const NodeRecord &node) {
+    return isDeviceRmsNormNode(graph, node);
+  });
+}
 
 bool isDeviceQ4Node(const GraphRecord &graph, const NodeRecord &node) {
   if (node.operation != "MatMulNBits" ||
@@ -697,6 +739,12 @@ bool hasDeviceQ4(const GraphRecord &graph) {
   return llvm::any_of(graph.nodes, [&](const NodeRecord &node) {
     return isDeviceQ4Node(graph, node);
   });
+}
+
+int64_t operatorScratchBytes(const GraphRecord &graph) {
+  if (hasDeviceQ4(graph))
+    return q4SurfaceBytes;
+  return hasDeviceRmsNorm(graph) ? rmsScratchBytes : 0;
 }
 
 bool needsQ4Surface(const GraphRecord &graph, unsigned tensorIndex) {
@@ -780,6 +828,8 @@ bool supportsDeviceNode(const GraphRecord &graph, const NodeRecord &node) {
            graph.tensors[node.output].type.getNumElements() <= 16384;
   if (node.operation == "MatMulNBits")
     return isDeviceQ4Node(graph, node);
+  if (node.operation == "RmsNorm")
+    return isDeviceRmsNormNode(graph, node);
   if (node.operation == "Gemm" || node.operation == "MatMul") {
     if (node.provider != "udonblasSgemm" || !hasF32InputsAndOutput(2))
       return false;
@@ -2519,8 +2569,8 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
       allocateDeviceBuffer(deviceBufferSymbol(tensorIndex),
                            deviceAllocationBytes(graph, tensorIndex));
     }
-    if (hasDeviceQ4(graph))
-      allocateDeviceBuffer(q4ScratchSymbol, q4SurfaceBytes);
+    if (int64_t bytes = operatorScratchBytes(graph))
+      allocateDeviceBuffer(operatorScratchSymbol, bytes);
   }
   auto marker = func::CallOp::create(
       builder, location, "clEnqueueMarkerWithWaitList", TypeRange{i32},
@@ -2590,8 +2640,8 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
       continue;
     releaseDeviceBuffer(deviceBufferSymbol(tensorIndex));
   }
-  if (supportsDeviceGraph(graph) && hasDeviceQ4(graph))
-    releaseDeviceBuffer(q4ScratchSymbol);
+  if (supportsDeviceGraph(graph) && operatorScratchBytes(graph))
+    releaseDeviceBuffer(operatorScratchSymbol);
   func::ReturnOp::create(builder, location,
                          loadI32(builder, location, disposeStatus));
   declaration(module, "clReleaseMemObject", {pointer}, {i32});
@@ -2749,12 +2799,12 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
     auto buffer = [&](int64_t tensorIndex) -> Value {
       return buffers[storage[static_cast<unsigned>(tensorIndex)]];
     };
-    Value q4Scratch;
-    if (hasDeviceQ4(graph))
-      q4Scratch =
-          intToPointer(builder, location,
-                       loadI32(builder, location,
-                               addressOf(builder, location, q4ScratchSymbol)));
+    Value operatorScratch;
+    if (operatorScratchBytes(graph))
+      operatorScratch = intToPointer(
+          builder, location,
+          loadI32(builder, location,
+                  addressOf(builder, location, operatorScratchSymbol)));
     for (const NodeRecord &node : graph.nodes) {
       if (isDeviceAlias(graph, node)) {
         buffers[node.output] = buffer(node.inputs[0]);
@@ -2886,8 +2936,8 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
         int64_t m = activation.type.getNumElements() / k;
         int64_t kPasses = (k + 127) / 128;
         int64_t passCount = kPasses;
-        Value previous = passCount & 1 ? q4Scratch : output;
-        Value destination = passCount & 1 ? output : q4Scratch;
+        Value previous = passCount & 1 ? operatorScratch : output;
+        Value destination = passCount & 1 ? output : operatorScratch;
         for (int64_t kBase = 0; kBase < k; kBase += 128) {
           int64_t tileK = std::min<int64_t>(128, k - kBase);
           dispatch("__vrc_enqueue_udononnx_matmul_nbits_q4_device_args",
@@ -2902,6 +2952,22 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
         if (previous != output)
           return emitError(location)
                  << "Q4 ping-pong schedule did not finish in output storage";
+        continue;
+      }
+      if (isDeviceRmsNormNode(graph, node)) {
+        int64_t words = graph.tensors[node.inputs[0]].type.getNumElements();
+        int64_t normalizedWords =
+            graph.tensors[node.inputs[1]].type.getNumElements();
+        float epsilon = *scalarF32(graph.tensors[node.inputs[2]]);
+        dispatch("__vrc_enqueue_udonaten_arena_rms_norm_reduce_device_args",
+                 ValueRange{entry->getArgument(2), buffer(node.inputs[0]),
+                            operatorScratch, constant(words),
+                            constant(normalizedWords)});
+        dispatch("__vrc_enqueue_udonaten_arena_rms_norm_finalize_device_args",
+                 ValueRange{entry->getArgument(2), buffer(node.inputs[0]),
+                            operatorScratch, buffer(node.inputs[1]), output,
+                            constant(words), constant(normalizedWords),
+                            floating(epsilon), constant(1)});
         continue;
       }
       if (node.operation == "Gemm" || node.operation == "MatMul") {
@@ -3031,6 +3097,14 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
     declaration(module, "__vrc_enqueue_udononnx_matmul_nbits_q4_device_args",
                 {pointer, pointer, pointer, pointer, pointer, pointer, i32, i32,
                  i32, i32, i32, i32, i32, i32, i32, i32, pointer, pointer},
+                {i32});
+    declaration(
+        module, "__vrc_enqueue_udonaten_arena_rms_norm_reduce_device_args",
+        {pointer, pointer, pointer, i32, i32, i32, pointer, pointer}, {i32});
+    declaration(module,
+                "__vrc_enqueue_udonaten_arena_rms_norm_finalize_device_args",
+                {pointer, pointer, pointer, pointer, pointer, i32, i32,
+                 builder.getF32Type(), i32, i32, pointer, pointer},
                 {i32});
     declaration(module, "udononnxSessionResolveInput",
                 {pointer, i32, pointer, pointer, pointer}, {i32});
@@ -3210,8 +3284,8 @@ struct FinalizeONNXHostPass
             needsQ4Surface(*graph, tensorIndex)) &&
            deviceStorageMap[tensorIndex] == tensorIndex))
         createI32Global(module, deviceBufferSymbol(tensorIndex));
-    if (deviceGraph && hasDeviceQ4(*graph))
-      createI32Global(module, q4ScratchSymbol);
+    if (deviceGraph && operatorScratchBytes(*graph))
+      createI32Global(module, operatorScratchSymbol);
     Builder builder(module.getContext());
     if (!deviceGraph) {
       createWriteExport(module, *graph, builder.getF32Type(), "float");
