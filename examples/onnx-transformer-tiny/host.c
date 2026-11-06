@@ -8,6 +8,7 @@
 #define TRANSFORMER_HIDDEN 8u
 #define TRANSFORMER_INPUT_COUNT 3u
 #define TRANSFORMER_OUTPUT_COUNT 3u
+#define TRANSFORMER_Q4_SURFACE_ELEMENTS 131072u
 
 static cl_context context;
 static cl_command_queue queue;
@@ -62,12 +63,13 @@ static udononnxStatus_t complete(cl_event event,
 }
 
 static udononnxStatus_t create_tensor(cl_mem_flags flags, size_t elements,
+                                      size_t allocation_elements,
                                       udonclDataType_t data_type, uint32_t rank,
                                       const int64_t *dimensions,
                                       udononnxTensor_t *tensor) {
   size_t element_bytes =
       data_type == UDONCL_DATA_INT32 ? sizeof(int32_t) : sizeof(float);
-  size_t bytes = elements * element_bytes;
+  size_t bytes = allocation_elements * element_bytes;
   udonclBufferView_t view;
   udonclBufferHandle_t *handle;
   udononnxStatus_t status;
@@ -122,23 +124,25 @@ UDONCL_EXPORT udononnxStatus_t transformer_initialize(void) {
   if (!queue || error != CL_SUCCESS)
     goto fail;
   status = create_tensor(CL_MEM_READ_ONLY, TRANSFORMER_SEQUENCE,
-                         UDONCL_DATA_INT32, model->inputs[0].rank,
-                         model->inputs[0].dimensions, &input_tensors[0]);
+                         TRANSFORMER_SEQUENCE, UDONCL_DATA_INT32,
+                         model->inputs[0].rank, model->inputs[0].dimensions,
+                         &input_tensors[0]);
   if (status != UDONONNX_STATUS_SUCCESS)
     goto fail;
-  status = create_tensor(CL_MEM_READ_WRITE, hidden_elements,
+  status = create_tensor(CL_MEM_READ_WRITE, hidden_elements, hidden_elements,
                          UDONCL_DATA_FLOAT32, model->inputs[1].rank,
                          model->inputs[1].dimensions, &input_tensors[1]);
   if (status != UDONONNX_STATUS_SUCCESS)
     goto fail;
-  status = create_tensor(CL_MEM_READ_WRITE, hidden_elements,
+  status = create_tensor(CL_MEM_READ_WRITE, hidden_elements, hidden_elements,
                          UDONCL_DATA_FLOAT32, model->inputs[2].rank,
                          model->inputs[2].dimensions, &input_tensors[2]);
   if (status != UDONONNX_STATUS_SUCCESS)
     goto fail;
   status = create_tensor(CL_MEM_WRITE_ONLY, hidden_elements,
-                         UDONCL_DATA_FLOAT32, model->outputs[0].rank,
-                         model->outputs[0].dimensions, &output_tensors[0]);
+                         TRANSFORMER_Q4_SURFACE_ELEMENTS, UDONCL_DATA_FLOAT32,
+                         model->outputs[0].rank, model->outputs[0].dimensions,
+                         &output_tensors[0]);
   if (status != UDONONNX_STATUS_SUCCESS)
     goto fail;
   output_tensors[1] = input_tensors[1];

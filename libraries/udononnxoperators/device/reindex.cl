@@ -247,6 +247,60 @@ __kernel void udononnx_where_f32(
   output[gid] = value;
 }
 
+/* ScatterND without render-target reads or atomics. Each fragment owns one
+ * output element, starts from data, and scans update tuples in ONNX order so
+ * duplicate indices retain the last update. */
+__kernel void udononnx_scatter_nd_f32(
+    __global const float *data, __global const uint *indices,
+    __global const float *updates, __global float *output, int words, int rank,
+    int shape01_value, int shape23_value, int tuple_rank, int update_count,
+    int slice_words, int index_words) {
+  size_t gid = UDONONNX_REINDEX_GID();
+  float value = 0.0f;
+  if (gid < (size_t)words) {
+    uint shape01 = (uint)shape01_value;
+    uint shape23 = (uint)shape23_value;
+    value = data[gid];
+    for (int update = 0; update < 256; ++update) {
+      if (update < update_count) {
+        size_t base = 0u;
+        int valid = 1;
+        for (int axis = 0; axis < 4; ++axis) {
+          if (axis < tuple_rank) {
+            uint extent = UDONONNX_REINDEX_U16(axis, shape01, shape23, 1u);
+            size_t index_offset =
+                ((size_t)update * (size_t)tuple_rank + (size_t)axis) *
+                (size_t)index_words;
+            uint low = indices[index_offset & 2047u];
+            uint high = 0u;
+            if (index_words == 2)
+              high = indices[(index_offset + 1u) & 2047u];
+            int selected = (int)low;
+            int representable =
+                index_words == 1 || high == 0u || high == 0xffffffffu;
+            if (representable && selected < 0)
+              selected += (int)extent;
+            if (!representable || selected < 0 || selected >= (int)extent)
+              valid = 0;
+            uint safe_selected = (uint)selected % extent;
+            size_t stride = 1u;
+            for (int candidate = 0; candidate < 4; ++candidate)
+              if (candidate > axis && candidate < rank)
+                stride *= UDONONNX_REINDEX_U16(candidate, shape01, shape23, 1u);
+            base += (size_t)safe_selected * stride;
+          }
+        }
+        if (valid && gid >= base && gid < base + (size_t)slice_words) {
+          size_t update_index =
+              (size_t)update * (size_t)slice_words + gid - base;
+          value = updates[update_index & 16383u];
+        }
+      }
+    }
+  }
+  output[gid] = value;
+}
+
 /* Generic static Slice materialization. The Host facade normalizes ONNX
  * starts/ends/axes/steps and validates that every generated coordinate is in
  * bounds. Normalized nonnegative starts and positive steps use packed u16

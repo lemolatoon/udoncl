@@ -586,7 +586,10 @@ scatter_host = subprocess.run(
     capture_output=True,
 )
 assert scatter_host.returncode == 0, (scatter_host.stdout, scatter_host.stderr)
-assert "call @udononnxScatterND" in scatter_host.stdout
+assert "udoncl.onnx_device_graph = true" in scatter_host.stdout
+assert "udoncl.onnx_device_unsupported = []" in scatter_host.stdout
+assert scatter_host.stdout.count("call @__vrc_enqueue_udononnx_scatter_nd_f32_device_args") == 1
+assert "call @udononnxScatterND" not in scatter_host.stdout
 
 softmax_source = source.with_name("onnx_softmax.mlir")
 softmax_portable = subprocess.run(

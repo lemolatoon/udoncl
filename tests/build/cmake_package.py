@@ -858,7 +858,7 @@ def main():
         ('input_ids', 16, 'int32', 'input'),
         ('past_key', 128, 'float32', 'input'),
         ('past_value', 128, 'float32', 'input'),
-        ('logits', 128, 'float32', 'output'),
+        ('logits', 524288, 'float32', 'output'),
     ]
     assert transformer_manifest['program']['binding_source'] == 'binding.cs'
     transformer_binding = (transformer_artifact / 'binding.cs').read_text(
@@ -890,7 +890,7 @@ def main():
         item['id'] for item in transformer_manifest['device']['kernels']
     } == {
         1, 2, 207, 217, 218, 219, 220, 222, 231, 232, 233, 234, 235, 236,
-        237, 238, 239, 240, 241, 242, 243, 244, 245,
+        237, 238, 239, 240, 241, 242, 243, 244, 245, 246,
     }
     q4_kernel = next(
         item for item in transformer_manifest['device']['kernels']

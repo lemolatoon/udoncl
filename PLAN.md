@@ -262,7 +262,14 @@ TinyLlamaの現行設計、実装順序、受入条件の正本は
   汎用Device kernelへlowerし、実graphの2 nodeを対応した。FP32 EqualとFP32 Whereも
   rank 0..4のright-aligned broadcastを行う汎用Device kernelへlowerする。論理的なONNX
   BOOL dtypeは維持しつつ、Device上ではword-addressableなFP32 0/1 maskとして物理化する。
-  実graphのEqual 1 nodeとWhere 1 nodeを対応し、現在の実測未対応集合はScatterND 1だけである。
+  実graphのEqual 1 nodeとWhere 1 nodeを対応した。最後にreduction=none、rank 1..4、最大256
+  update tupleのFP32 ScatterNDを、各fragmentが1出力を所有してupdateをONNX順に走査する
+  汎用Device kernelへlowerした。atomicやrender-target readを使わず、重複indexは後勝ちになる。
+  これによりsequence=4 / past=0の実graphはunsupported Device operator 0になった。full artifact
+  生成はDevice graph gateと35 mutable allocation siteのpool gateまで通過し、現在の阻害はtoy C Hostの
+  3-input/3-output bindingと実modelの47-input/45-output bindingの不一致、およびalias outputの
+  full-surface CopyBuffer契約である。Q4 logitsの公開bufferは131,072-word物理surface上の論理viewとして
+  扱う方針に更新済みである。
 - TinyLlama tokenizerはONNXではない。独立したC `UdonTokenizers` componentとして
   build-time tableとUTF-16/byte-fallback BPEを実装し、C Hostの会話APIをcompiler生成
   U# bindingから利用する。

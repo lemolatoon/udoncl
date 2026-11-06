@@ -962,6 +962,58 @@ bool isDeviceWhereNode(const GraphRecord &graph, const NodeRecord &node) {
          isDeviceBroadcast({&condition, &whenTrue, &whenFalse}, output);
 }
 
+struct DeviceScatterNDShape {
+  int64_t tupleRank;
+  int64_t updateCount;
+  int64_t sliceWords;
+  int64_t indexWords;
+};
+
+std::optional<DeviceScatterNDShape>
+deviceScatterNDShape(const GraphRecord &graph, const NodeRecord &node) {
+  if (node.operation != "ScatterND" || node.provider != "udononnxScatterND" ||
+      node.inputs.size() != 3 || node.inputs[0] < 0 || node.inputs[1] < 0 ||
+      node.inputs[2] < 0)
+    return std::nullopt;
+  const TensorRecord &data = graph.tensors[node.inputs[0]];
+  const TensorRecord &indices = graph.tensors[node.inputs[1]];
+  const TensorRecord &updates = graph.tensors[node.inputs[2]];
+  const TensorRecord &output = graph.tensors[node.output];
+  auto reduction = node.attributes
+                       ? node.attributes.getAs<StringAttr>("reduction")
+                       : StringAttr();
+  int64_t rank = data.type.getRank();
+  int64_t indicesRank = indices.type.getRank();
+  int64_t tupleRank = indicesRank ? indices.type.getShape().back() : 0;
+  if (!data.type.getElementType().isF32() || data.type != output.type ||
+      !updates.type.getElementType().isF32() || rank < 1 || rank > 4 ||
+      indicesRank < 1 || tupleRank < 1 || tupleRank > rank ||
+      (!indices.type.getElementType().isInteger(32) &&
+       !indices.type.getElementType().isInteger(64)) ||
+      data.type.getNumElements() < 1 || data.type.getNumElements() > 16384 ||
+      (reduction && reduction.getValue() != "none"))
+    return std::nullopt;
+  int64_t updateCount = indices.type.getNumElements() / tupleRank;
+  int64_t sliceWords = 1;
+  for (int64_t extent : data.type.getShape().drop_front(tupleRank))
+    sliceWords *= extent;
+  if (updateCount < 1 || updateCount > 256 || sliceWords < 1 ||
+      updateCount > 16384 / sliceWords ||
+      updates.type.getNumElements() != updateCount * sliceWords)
+    return std::nullopt;
+  SmallVector<int64_t> expectedUpdates(indices.type.getShape().drop_back());
+  llvm::append_range(expectedUpdates,
+                     data.type.getShape().drop_front(tupleRank));
+  if (updates.type.getShape() != ArrayRef<int64_t>(expectedUpdates))
+    return std::nullopt;
+  for (int64_t extent : data.type.getShape())
+    if (extent < 1 || extent > 65535)
+      return std::nullopt;
+  return DeviceScatterNDShape{tupleRank, updateCount, sliceWords,
+                              indices.type.getElementType().isInteger(64) ? 2
+                                                                          : 1};
+}
+
 bool isDeviceRmsNormNode(const GraphRecord &graph, const NodeRecord &node) {
   if (node.operation != "RmsNorm" || node.provider != "udonatenRmsNorm" ||
       node.inputs.size() != 3 || node.inputs[0] < 0 || node.inputs[1] < 0 ||
@@ -1229,6 +1281,8 @@ bool supportsDeviceNode(const GraphRecord &graph, const NodeRecord &node) {
     return isDeviceEqualNode(graph, node);
   if (node.operation == "Where")
     return isDeviceWhereNode(graph, node);
+  if (node.operation == "ScatterND")
+    return deviceScatterNDShape(graph, node).has_value();
   if (node.operation == "MatMul")
     return deviceMatMulShape(graph, node).has_value();
   if (node.operation == "Gemm") {
@@ -3083,7 +3137,7 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
     builder.setInsertionPointToEnd(next);
   };
   auto requireBytes = [&](Value actual, int64_t expected) -> LogicalResult {
-    if (expected <= 0 || expected > std::numeric_limits<int32_t>::max())
+    if (expected < 0 || expected > std::numeric_limits<int32_t>::max())
       return emitError(location) << "ONNX tensor byte size exceeds Host ABI";
     Block *next = run.addBlock();
     Block *failure = run.addBlock();
@@ -3144,8 +3198,7 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
           builder, location, loadI32(builder, location, memorySlot));
       if (output)
         publicOutputBuffers[tensorIndex] = resolvedBuffer;
-      if (!output || !needsQ4Surface(graph, tensorIndex))
-        buffers[tensorIndex] = resolvedBuffer;
+      buffers[tensorIndex] = resolvedBuffer;
       return success();
     };
     for (auto [inputIndex, tensorIndex] : llvm::enumerate(graph.inputs))
@@ -3538,6 +3591,34 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                 constant(packShape(result.getShape(), 2))});
         continue;
       }
+      if (node.operation == "ScatterND") {
+        std::optional<DeviceScatterNDShape> shape =
+            deviceScatterNDShape(graph, node);
+        if (!shape)
+          return emitError(location)
+                 << "Device ScatterND requires reduction=none, static FP32 "
+                    "data/updates of rank one through four, INT32/INT64 "
+                    "indices, and at most 256 update tuples";
+        auto packShape = [](ArrayRef<int64_t> values, int64_t first) {
+          int64_t low =
+              first < static_cast<int64_t>(values.size()) ? values[first] : 1;
+          int64_t high = first + 1 < static_cast<int64_t>(values.size())
+                             ? values[first + 1]
+                             : 1;
+          return (low & 65535) | ((high & 65535) << 16);
+        };
+        const RankedTensorType data = graph.tensors[node.inputs[0]].type;
+        dispatch("__vrc_enqueue_udononnx_scatter_nd_f32_device_args",
+                 ValueRange{
+                     entry->getArgument(2), buffer(node.inputs[0]),
+                     buffer(node.inputs[1]), buffer(node.inputs[2]), output,
+                     constant(data.getNumElements()), constant(data.getRank()),
+                     constant(packShape(data.getShape(), 0)),
+                     constant(packShape(data.getShape(), 2)),
+                     constant(shape->tupleRank), constant(shape->updateCount),
+                     constant(shape->sliceWords), constant(shape->indexWords)});
+        continue;
+      }
       if (isDeviceQ4Node(graph, node)) {
         const TensorRecord &activation = graph.tensors[node.inputs[0]];
         int64_t k = integerAttribute(node, "K", 0);
@@ -3784,6 +3865,10 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
     declaration(module, "__vrc_enqueue_udononnx_where_f32_device_args",
                 {pointer, pointer, pointer, pointer, pointer, i32, i32, i32,
                  i32, i32, i32, i32, i32, i32, i32, i32, pointer, pointer},
+                {i32});
+    declaration(module, "__vrc_enqueue_udononnx_scatter_nd_f32_device_args",
+                {pointer, pointer, pointer, pointer, pointer, i32, i32, i32,
+                 i32, i32, i32, i32, i32, i32, pointer, pointer},
                 {i32});
     declaration(module, "__vrc_enqueue_udononnx_matmul_nbits_q4_device_args",
                 {pointer, pointer, pointer, pointer, pointer, pointer, i32, i32,

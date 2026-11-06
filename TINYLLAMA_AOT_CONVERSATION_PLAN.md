@@ -65,8 +65,14 @@ aliasing are allowed.
   node from the unsupported set. After the Device Q4, RmsNorm, and Softmax
   checkpoints below and the generic Device reindex/Gather checkpoints
   described below, plus generic rank-zero-through-four FP32 Equal/Where
-  broadcast kernels with word-addressable FP32 0/1 Device masks, the remaining
-  measured set is ScatterND 1.
+  broadcast kernels with word-addressable FP32 0/1 Device masks and a generic
+  rank-one-through-four ScatterND kernel, the remaining measured unsupported
+  Device operator set is empty. Full artifact emission now reaches the public
+  output-copy stage; the remaining blocker is replacing the toy three-input,
+  three-output C Host binding with the real model's 47-input, 45-output binding
+  and matching alias-output surfaces. The mutable Device pool is provisioned
+  for the measured 35 allocation sites, and public Q4 logits use a logical view
+  over a padded 131,072-word physical surface.
 - The generic correctness-oriented `MatMulNBits` path still uses small
   Host-managed tiles. A first Device-resident specialization now covers the
   pinned model's three-input unsigned Q4 form (`bits=4`, `block_size=32`,

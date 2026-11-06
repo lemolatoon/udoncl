@@ -143,6 +143,11 @@ extern cl_int __vrc_opencl_dispatch_udononnx_where_f32(
     cl_int condition_shape23, cl_int true_shape01, cl_int true_shape23,
     cl_int false_shape01, cl_int false_shape23, cl_int output_shape01,
     cl_int output_shape23);
+extern cl_int __vrc_opencl_dispatch_udononnx_scatter_nd_f32(
+    cl_uint data_token, cl_uint indices_token, cl_uint updates_token,
+    cl_uint output_token, cl_int words, cl_int rank, cl_int shape01,
+    cl_int shape23, cl_int tuple_rank, cl_int update_count, cl_int slice_words,
+    cl_int index_words);
 #endif
 #if UDONCL_AOT_ENABLE_MNIST
 extern cl_int __vrc_opencl_dispatch_mnist_conv(cl_uint input_token,
@@ -306,6 +311,8 @@ static cl_uint udoncl_kernel_id(const char *name) {
     return 244;
   if (udoncl_string_equal(name, "udononnx_where_f32"))
     return 245;
+  if (udoncl_string_equal(name, "udononnx_scatter_nd_f32"))
+    return 246;
 #endif
   return 0;
 }
@@ -1712,6 +1719,44 @@ cl_int __vrc_enqueue_udononnx_where_f32_device_args(
       when_false->physical_token, output->physical_token, words, ranks,
       condition_shape01, condition_shape23, true_shape01, true_shape23,
       false_shape01, false_shape23, output_shape01, output_shape23);
+  return udoncl_finish_enqueue(queue, CL_COMMAND_NDRANGE_KERNEL, pending,
+                               CL_FALSE, event);
+}
+
+cl_int __vrc_enqueue_udononnx_scatter_nd_f32_device_args(
+    cl_command_queue queue, cl_mem data, cl_mem indices, cl_mem updates,
+    cl_mem output, cl_int words, cl_int rank, cl_int shape01, cl_int shape23,
+    cl_int tuple_rank, cl_int update_count, cl_int slice_words,
+    cl_int index_words, cl_uint wait_count, const cl_event *wait_list,
+    cl_event *event) {
+  cl_int pending;
+  const cl_uint shapes[3] = {(cl_uint)shape01, (cl_uint)shape23, 1u};
+  size_t index_elements;
+  size_t update_elements;
+  if (rank < 1 || rank > 4 || tuple_rank < 1 || tuple_rank > rank ||
+      update_count < 1 || update_count > 256 || slice_words < 1 ||
+      (index_words != 1 && index_words != 2) ||
+      (size_t)update_count > 16384u / (size_t)slice_words)
+    return CL_INVALID_VALUE;
+  index_elements = (size_t)update_count * (size_t)tuple_rank;
+  update_elements = (size_t)update_count * (size_t)slice_words;
+  if (queue != &udoncl_queue || !queue->active || !data || !data->active ||
+      !indices || !indices->active || !updates || !updates->active || !output ||
+      !output->active || data->context != queue->context ||
+      indices->context != queue->context ||
+      updates->context != queue->context || output->context != queue->context ||
+      words < 1 || words > 16384 ||
+      udoncl_packed_shape_elements(rank, shapes) != (size_t)words ||
+      data->bytes < (size_t)words * 4u ||
+      indices->bytes < index_elements * (size_t)index_words * 4u ||
+      updates->bytes < update_elements * 4u ||
+      output->bytes < (size_t)words * 4u ||
+      udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
+    return CL_INVALID_VALUE;
+  pending = __vrc_opencl_dispatch_udononnx_scatter_nd_f32(
+      data->physical_token, indices->physical_token, updates->physical_token,
+      output->physical_token, words, rank, shape01, shape23, tuple_rank,
+      update_count, slice_words, index_words);
   return udoncl_finish_enqueue(queue, CL_COMMAND_NDRANGE_KERNEL, pending,
                                CL_FALSE, event);
 }

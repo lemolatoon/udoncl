@@ -200,6 +200,21 @@
     },
     {
       "schema_version": 1, "profile": "gather-f32", "words": 16384,
+      "kernel": "udononnx_scatter_nd_f32", "kernel_id": 246,
+      "input_words": [16384, 2048, 16384],
+      "argument_bounds": [
+        {"index": 4, "min": 1, "max": 16384},
+        {"index": 5, "min": 1, "max": 4},
+        {"index": 8, "min": 1, "max": 4},
+        {"index": 9, "min": 1, "max": 256},
+        {"index": 10, "min": 1, "max": 16384},
+        {"index": 11, "min": 1, "max": 2}
+      ],
+      "argument_kinds": ["buffer", "buffer", "buffer", "buffer", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "i32"],
+      "global_size": [16384, 1, 1], "local_size": [1, 1, 1], "global_offset": [0, 0, 0]
+    },
+    {
+      "schema_version": 1, "profile": "gather-f32", "words": 16384,
       "kernel": "udondnn_arena_softmax_forward", "kernel_id": 236,
       "argument_bounds": [
         {"index": 2, "min": 1, "max": 16384},
@@ -247,7 +262,7 @@
     {"id": 1, "name": "input_ids", "byte_size": 16, "element_type": "int32", "public_access": "input"},
     {"id": 2, "name": "past_key", "byte_size": 128, "element_type": "float32", "public_access": "input"},
     {"id": 3, "name": "past_value", "byte_size": 128, "element_type": "float32", "public_access": "input"},
-    {"id": 4, "name": "logits", "byte_size": 128, "element_type": "float32", "public_access": "output"},
+    {"id": 4, "name": "logits", "byte_size": 524288, "element_type": "float32", "public_access": "output"},
     {"id": 5, "name": "onnx_device_buffer_5", "byte_size": 131072},
     {"id": 6, "name": "onnx_device_buffer_6", "byte_size": 131072},
     {"id": 7, "name": "onnx_device_buffer_7", "byte_size": 131072},
@@ -263,6 +278,21 @@
     {"id": 17, "name": "onnx_device_buffer_17", "byte_size": 131072},
     {"id": 18, "name": "onnx_device_buffer_18", "byte_size": 131072},
     {"id": 19, "name": "onnx_device_buffer_19", "byte_size": 131072},
-    {"id": 20, "name": "onnx_device_buffer_20", "byte_size": 131072}
+    {"id": 20, "name": "onnx_device_buffer_20", "byte_size": 131072},
+    {"id": 21, "name": "onnx_device_buffer_21", "byte_size": 131072},
+    {"id": 22, "name": "onnx_device_buffer_22", "byte_size": 131072},
+    {"id": 23, "name": "onnx_device_buffer_23", "byte_size": 131072},
+    {"id": 24, "name": "onnx_device_buffer_24", "byte_size": 131072},
+    {"id": 25, "name": "onnx_device_buffer_25", "byte_size": 131072},
+    {"id": 26, "name": "onnx_device_buffer_26", "byte_size": 131072},
+    {"id": 27, "name": "onnx_device_buffer_27", "byte_size": 131072},
+    {"id": 28, "name": "onnx_device_buffer_28", "byte_size": 131072},
+    {"id": 29, "name": "onnx_device_buffer_29", "byte_size": 131072},
+    {"id": 30, "name": "onnx_device_buffer_30", "byte_size": 131072},
+    {"id": 31, "name": "onnx_device_buffer_31", "byte_size": 131072},
+    {"id": 32, "name": "onnx_device_buffer_32", "byte_size": 131072},
+    {"id": 33, "name": "onnx_device_buffer_33", "byte_size": 131072},
+    {"id": 34, "name": "onnx_device_buffer_34", "byte_size": 131072},
+    {"id": 35, "name": "onnx_device_buffer_35", "byte_size": 131072}
   ]
 }

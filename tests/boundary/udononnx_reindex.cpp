@@ -298,6 +298,39 @@ static float runEqualWhereCase() {
   return maximumError;
 }
 
+static float runScatterNDCase(int indexWords) {
+  constexpr int surfaceWords = 16384;
+  constexpr int words = 6;
+  constexpr int updateCount = 3;
+  constexpr int tupleRank = 1;
+  constexpr int sliceWords = 3;
+  std::vector<float> data = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
+  std::vector<unsigned> indices(updateCount * tupleRank * indexWords, 0u);
+  std::vector<float> updates = {10.0f, 11.0f, 12.0f, 20.0f, 21.0f,
+                                22.0f, 30.0f, 31.0f, 32.0f};
+  std::vector<float> output(surfaceWords, -17.0f);
+  const int selected[updateCount] = {1, -1, 0};
+  for (int update = 0; update < updateCount; ++update) {
+    unsigned long long bits = static_cast<unsigned long long>(
+        static_cast<long long>(selected[update]));
+    indices[update * indexWords] = static_cast<unsigned>(bits);
+    if (indexWords == 2)
+      indices[update * indexWords + 1] = static_cast<unsigned>(bits >> 32u);
+  }
+  for (udononnx_reindex_cpu_gid = 0; udononnx_reindex_cpu_gid < surfaceWords;
+       ++udononnx_reindex_cpu_gid)
+    udononnx_scatter_nd_f32(data.data(), indices.data(), updates.data(),
+                            output.data(), words, 2, 2 | (3 << 16),
+                            1 | (1 << 16), tupleRank, updateCount, sliceWords,
+                            indexWords);
+  const float expected[words] = {30.0f, 31.0f, 32.0f, 20.0f, 21.0f, 22.0f};
+  float maximumError = 0.0f;
+  for (int index = 0; index < words; ++index)
+    maximumError =
+        std::max(maximumError, std::abs(output[index] - expected[index]));
+  return maximumError;
+}
+
 int main() {
   float headsError = runCase({1, 4, 32, 64}, {0, 2, 1, 3});
   float attentionError = runCase({1, 32, 4, 64}, {0, 1, 3, 2});
@@ -314,11 +347,14 @@ int main() {
   float gatherI64Error = runGatherCase(2);
   float castError = runCastCase();
   float equalWhereError = runEqualWhereCase();
+  float scatterI32Error = runScatterNDCase(1);
+  float scatterI64Error = runScatterNDCase(2);
   maximumError =
       std::max({maximumError, halfError, stridedError, repeatHeadsError,
                 leadingBroadcastError, rotaryConcatError, cacheConcatError,
-                gatherI32Error, gatherI64Error, castError, equalWhereError});
-  std::cout << "reindex_cases=13\n";
+                gatherI32Error, gatherI64Error, castError, equalWhereError,
+                scatterI32Error, scatterI64Error});
+  std::cout << "reindex_cases=15\n";
   std::cout << "reindex_max_error=" << maximumError << '\n';
   return maximumError == 0.0f ? 0 : 1;
 }
