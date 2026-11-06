@@ -63,6 +63,30 @@ __kernel void udononnx_transpose_f32(__global const float *input,
   output[gid] = value;
 }
 
+/* Generic contiguous two-input Concat. The Host facade folds the static shape
+ * into the number of words inside one concat-axis element and both axis
+ * extents, so the Device kernel does not need model-specific rank handling. */
+__kernel void udononnx_concat2_f32(__global const float *left,
+                                   __global const float *right,
+                                   __global float *output, int words,
+                                   int inner_words, int left_extent,
+                                   int right_extent) {
+  size_t gid = UDONONNX_REINDEX_GID();
+  float value = 0.0f;
+  if (gid < (size_t)words) {
+    size_t left_block = (size_t)inner_words * (size_t)left_extent;
+    size_t right_block = (size_t)inner_words * (size_t)right_extent;
+    size_t output_block = left_block + right_block;
+    size_t outer = gid / output_block;
+    size_t offset = gid % output_block;
+    if (offset < left_block)
+      value = left[(outer * left_block + offset) & 16383u];
+    else
+      value = right[(outer * right_block + offset - left_block) & 16383u];
+  }
+  output[gid] = value;
+}
+
 /* Generic static Slice materialization. The Host facade normalizes ONNX
  * starts/ends/axes/steps and validates that every generated coordinate is in
  * bounds. Normalized nonnegative starts and positive steps use packed u16

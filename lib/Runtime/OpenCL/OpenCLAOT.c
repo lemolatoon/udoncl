@@ -123,6 +123,9 @@ extern cl_int __vrc_opencl_dispatch_udononnx_expand_f32(
     cl_int input_shape01, cl_int input_shape23, cl_int input_shape4,
     cl_int output_rank, cl_int output_shape01, cl_int output_shape23,
     cl_int output_shape4);
+extern cl_int __vrc_opencl_dispatch_udononnx_concat2_f32(
+    cl_uint left_token, cl_uint right_token, cl_uint output_token, cl_int words,
+    cl_int inner_words, cl_int left_extent, cl_int right_extent);
 #endif
 #if UDONCL_AOT_ENABLE_MNIST
 extern cl_int __vrc_opencl_dispatch_mnist_conv(cl_uint input_token,
@@ -276,6 +279,8 @@ static cl_uint udoncl_kernel_id(const char *name) {
     return 239;
   if (udoncl_string_equal(name, "udononnx_expand_f32"))
     return 240;
+  if (udoncl_string_equal(name, "udononnx_concat2_f32"))
+    return 241;
 #endif
   return 0;
 }
@@ -1466,6 +1471,43 @@ cl_int __vrc_enqueue_udononnx_expand_device_args(
       input->physical_token, output->physical_token, words, input_rank,
       input_shape01, input_shape23, input_shape4, output_rank, output_shape01,
       output_shape23, output_shape4);
+  return udoncl_finish_enqueue(queue, CL_COMMAND_NDRANGE_KERNEL, pending,
+                               CL_FALSE, event);
+}
+
+cl_int __vrc_enqueue_udononnx_concat2_device_args(
+    cl_command_queue queue, cl_mem left, cl_mem right, cl_mem output,
+    cl_int words, cl_int inner_words, cl_int left_extent, cl_int right_extent,
+    cl_uint wait_count, const cl_event *wait_list, cl_event *event) {
+  cl_int pending;
+  size_t left_block;
+  size_t right_block;
+  size_t output_block;
+  size_t outer;
+  if (queue != &udoncl_queue || !queue->active || !left || !left->active ||
+      !right || !right->active || !output || !output->active ||
+      left->context != queue->context || right->context != queue->context ||
+      output->context != queue->context || words < 1 || words > 16384 ||
+      inner_words < 1 || left_extent < 1 || right_extent < 1 ||
+      (size_t)inner_words > 16384u / (size_t)left_extent ||
+      (size_t)inner_words > 16384u / (size_t)right_extent ||
+      udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
+    return CL_INVALID_VALUE;
+  left_block = (size_t)inner_words * (size_t)left_extent;
+  right_block = (size_t)inner_words * (size_t)right_extent;
+  if (left_block > 16384u - right_block)
+    return CL_INVALID_VALUE;
+  output_block = left_block + right_block;
+  if ((size_t)words % output_block)
+    return CL_INVALID_VALUE;
+  outer = (size_t)words / output_block;
+  if (left->bytes < outer * left_block * 4u ||
+      right->bytes < outer * right_block * 4u ||
+      output->bytes < (size_t)words * 4u)
+    return CL_INVALID_BUFFER_SIZE;
+  pending = __vrc_opencl_dispatch_udononnx_concat2_f32(
+      left->physical_token, right->physical_token, output->physical_token,
+      words, inner_words, left_extent, right_extent);
   return udoncl_finish_enqueue(queue, CL_COMMAND_NDRANGE_KERNEL, pending,
                                CL_FALSE, event);
 }

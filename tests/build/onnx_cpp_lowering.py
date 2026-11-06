@@ -426,7 +426,36 @@ concat_host = subprocess.run(
     capture_output=True,
 )
 assert concat_host.returncode == 0, (concat_host.stdout, concat_host.stderr)
-assert concat_host.stdout.count("call @udononnxConcat") == 2
+assert "udoncl.onnx_device_graph = true" in concat_host.stdout
+assert concat_host.stdout.count("call @__vrc_enqueue_udononnx_concat2_device_args") == 1
+assert "call @udononnxConcat" not in concat_host.stdout
+
+concat_device_source = source.with_name("onnx_concat_device.mlir")
+concat_device_portable = subprocess.run(
+    [opt, "--udoncl-lower-onnx-to-host", concat_device_source],
+    text=True,
+    capture_output=True,
+    check=True,
+).stdout
+concat_device_host = subprocess.run(
+    [host_opt, "--udoncl-finalize-onnx-host", "-"],
+    input=concat_device_portable,
+    text=True,
+    capture_output=True,
+)
+assert concat_device_host.returncode == 0, (
+    concat_device_host.stdout,
+    concat_device_host.stderr,
+)
+assert "udoncl.onnx_device_graph = true" in concat_device_host.stdout
+assert "udoncl.onnx_device_unsupported = []" in concat_device_host.stdout
+assert (
+    concat_device_host.stdout.count(
+        "call @__vrc_enqueue_udononnx_concat2_device_args"
+    )
+    == 1
+)
+assert "call @udononnxConcat" not in concat_device_host.stdout
 
 slice_source = source.with_name("onnx_slice.mlir")
 slice_portable = subprocess.run(

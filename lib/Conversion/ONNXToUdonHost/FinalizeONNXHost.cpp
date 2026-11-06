@@ -803,6 +803,51 @@ bool isDeviceExpandNode(const GraphRecord &graph, const NodeRecord &node) {
   return true;
 }
 
+struct DeviceConcatShape {
+  int64_t innerWords;
+  int64_t leftExtent;
+  int64_t rightExtent;
+};
+
+std::optional<DeviceConcatShape> deviceConcatShape(const GraphRecord &graph,
+                                                   const NodeRecord &node) {
+  if (node.operation != "Concat" || node.provider != "udononnxConcat" ||
+      node.inputs.size() != 2 || node.inputs[0] < 0 || node.inputs[1] < 0)
+    return std::nullopt;
+  const TensorRecord &left = graph.tensors[node.inputs[0]];
+  const TensorRecord &right = graph.tensors[node.inputs[1]];
+  const TensorRecord &output = graph.tensors[node.output];
+  int64_t rank = output.type.getRank();
+  int64_t axis = integerAttribute(node, "axis", 0);
+  if (axis < 0)
+    axis += rank;
+  if (!left.type.getElementType().isF32() ||
+      !right.type.getElementType().isF32() ||
+      !output.type.getElementType().isF32() || rank < 1 || rank > 5 ||
+      left.type.getRank() != rank || right.type.getRank() != rank || axis < 0 ||
+      axis >= rank || left.type.getNumElements() < 1 ||
+      left.type.getNumElements() > 16384 || right.type.getNumElements() < 1 ||
+      right.type.getNumElements() > 16384 || output.type.getNumElements() < 1 ||
+      output.type.getNumElements() > 16384)
+    return std::nullopt;
+  int64_t innerWords = 1;
+  for (int64_t dimension = 0; dimension < rank; ++dimension) {
+    int64_t leftExtent = left.type.getDimSize(dimension);
+    int64_t rightExtent = right.type.getDimSize(dimension);
+    int64_t outputExtent = output.type.getDimSize(dimension);
+    if (leftExtent < 1 || leftExtent > 65535 || rightExtent < 1 ||
+        rightExtent > 65535 || outputExtent < 1 || outputExtent > 65535 ||
+        (dimension == axis
+             ? outputExtent != leftExtent + rightExtent
+             : leftExtent != outputExtent || rightExtent != outputExtent))
+      return std::nullopt;
+    if (dimension > axis)
+      innerWords *= outputExtent;
+  }
+  return DeviceConcatShape{innerWords, left.type.getDimSize(axis),
+                           right.type.getDimSize(axis)};
+}
+
 bool isDeviceRmsNormNode(const GraphRecord &graph, const NodeRecord &node) {
   if (node.operation != "RmsNorm" || node.provider != "udonatenRmsNorm" ||
       node.inputs.size() != 3 || node.inputs[0] < 0 || node.inputs[1] < 0 ||
@@ -1058,6 +1103,8 @@ bool supportsDeviceNode(const GraphRecord &graph, const NodeRecord &node) {
     return deviceSliceShape(graph, node).has_value();
   if (node.operation == "Expand")
     return isDeviceExpandNode(graph, node);
+  if (node.operation == "Concat")
+    return deviceConcatShape(graph, node).has_value();
   if (node.operation == "MatMul")
     return deviceMatMulShape(graph, node).has_value();
   if (node.operation == "Gemm") {
@@ -3259,6 +3306,22 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                      constant(packDimensions(outputShape, 4))});
         continue;
       }
+      if (node.operation == "Concat") {
+        std::optional<DeviceConcatShape> shape = deviceConcatShape(graph, node);
+        if (!shape)
+          return emitError(location)
+                 << "Device Concat requires two compatible contiguous static "
+                    "FP32 tensors of rank one through five and at most 16384 "
+                    "output elements";
+        dispatch("__vrc_enqueue_udononnx_concat2_device_args",
+                 ValueRange{
+                     entry->getArgument(2), buffer(node.inputs[0]),
+                     buffer(node.inputs[1]), output,
+                     constant(graph.tensors[node.output].type.getNumElements()),
+                     constant(shape->innerWords), constant(shape->leftExtent),
+                     constant(shape->rightExtent)});
+        continue;
+      }
       if (isDeviceQ4Node(graph, node)) {
         const TensorRecord &activation = graph.tensors[node.inputs[0]];
         int64_t k = integerAttribute(node, "K", 0);
@@ -3487,6 +3550,10 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
     declaration(module, "__vrc_enqueue_udononnx_expand_device_args",
                 {pointer, pointer, pointer, i32, i32, i32, i32, i32, i32, i32,
                  i32, i32, i32, pointer, pointer},
+                {i32});
+    declaration(module, "__vrc_enqueue_udononnx_concat2_device_args",
+                {pointer, pointer, pointer, pointer, i32, i32, i32, i32, i32,
+                 pointer, pointer},
                 {i32});
     declaration(module, "__vrc_enqueue_udononnx_matmul_nbits_q4_device_args",
                 {pointer, pointer, pointer, pointer, pointer, pointer, i32, i32,

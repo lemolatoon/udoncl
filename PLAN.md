@@ -254,8 +254,9 @@ TinyLlamaの現行設計、実装順序、受入条件の正本は
   static parameter、正規化後startが非負かつstepが正のFP32 Sliceも同じ汎用Device
   reindexへlowerし、実graphの111 nodeすべてを対応した。さらにrank 0..5、16,384要素以下の
   static FP32 Expandをright-aligned broadcastの汎用Device reindexへlowerし、実graphの46 nodeを
-  すべて対応した。現在の実測未対応集合はCast 2、Concat 45、Equal 1、Gather 1、
-  ScatterND 1、Where 1である。
+  すべて対応した。2入力のstatic contiguous FP32 Concatも単一の汎用Device dispatchへlowerし、
+  render targetを読み戻さず実graphの45 nodeをすべて対応した。現在の実測未対応集合は
+  Cast 2、Equal 1、Gather 1、ScatterND 1、Where 1である。
 - TinyLlama tokenizerはONNXではない。独立したC `UdonTokenizers` componentとして
   build-time tableとUTF-16/byte-fallback BPEを実装し、C Hostの会話APIをcompiler生成
   U# bindingから利用する。

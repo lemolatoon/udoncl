@@ -224,6 +224,10 @@ extern cl_int __vrc_enqueue_udononnx_expand_device_args(
     cl_int input_shape4, cl_int output_rank, cl_int output_shape01,
     cl_int output_shape23, cl_int output_shape4, cl_uint wait_count,
     const cl_event *wait_list, cl_event *event);
+extern cl_int __vrc_enqueue_udononnx_concat2_device_args(
+    cl_command_queue queue, cl_mem left, cl_mem right, cl_mem output,
+    cl_int words, cl_int inner_words, cl_int left_extent, cl_int right_extent,
+    cl_uint wait_count, const cl_event *wait_list, cl_event *event);
 extern cl_int __vrc_enqueue_udononnx_matmul_nbits_q4_device_args(
     cl_command_queue queue, cl_mem activation, cl_mem packed_weight,
     cl_mem scales, cl_mem previous, cl_mem output, cl_int m, cl_int n, cl_int k,
@@ -387,6 +391,18 @@ cl_int __vrc_opencl_dispatch_udononnx_expand_f32(
   return 23;
 }
 
+cl_int __vrc_opencl_dispatch_udononnx_concat2_f32(
+    cl_uint left_token, cl_uint right_token, cl_uint output_token, cl_int words,
+    cl_int inner_words, cl_int left_extent, cl_int right_extent) {
+  for (udononnx_reindex_cpu_gid = 0; udononnx_reindex_cpu_gid < 16384;
+       ++udononnx_reindex_cpu_gid)
+    udononnx_concat2_f32((const float *)physical_buffers[left_token - 100],
+                         (const float *)physical_buffers[right_token - 100],
+                         (float *)physical_buffers[output_token - 100], words,
+                         inner_words, left_extent, right_extent);
+  return 24;
+}
+
 cl_int __vrc_opencl_await(cl_int event) {
   if (await_count < sizeof(awaited_events) / sizeof(awaited_events[0]))
     awaited_events[await_count] = event;
@@ -421,7 +437,7 @@ int main(void) {
   cl_event marker_event, write_event, wait_events[2];
   cl_mem first, second, nested_buffer, nested_buffer2, static_buffer;
   cl_mem batched_a, batched_b, batched_c;
-  cl_mem transpose_input_buffer, transpose_output_buffer;
+  cl_mem transpose_input_buffer, transpose_output_buffer, concat_left_buffer;
   cl_mem q4_activation, q4_packed, q4_scales, q4_previous, q4_output;
   cl_mem resolved;
   udonclBufferHandle_t common_buffer = {0, 0}, stale_buffer, replacement;
@@ -701,6 +717,9 @@ int main(void) {
   transpose_output_buffer = udonclCreateBufferForQueue(
       queue, CL_MEM_READ_WRITE, 6 * sizeof(float), &error);
   EXPECT(transpose_output_buffer && error == CL_SUCCESS);
+  concat_left_buffer = udonclCreateBufferForQueue(queue, CL_MEM_READ_WRITE,
+                                                  2 * sizeof(float), &error);
+  EXPECT(concat_left_buffer && error == CL_SUCCESS);
   ((float *)physical_buffers[4])[0] = 1.0f;
   ((float *)physical_buffers[4])[1] = 2.0f;
   ((float *)physical_buffers[4])[2] = 3.0f;
@@ -750,6 +769,27 @@ int main(void) {
   EXPECT(((float *)physical_buffers[5])[4] == 7.0f);
   EXPECT(((float *)physical_buffers[5])[5] == 7.0f);
   EXPECT(clReleaseEvent(marker_event) == CL_SUCCESS);
+  ((float *)physical_buffers[6])[0] = 1.0f;
+  ((float *)physical_buffers[6])[1] = 2.0f;
+  ((float *)physical_buffers[4])[0] = 3.0f;
+  ((float *)physical_buffers[4])[1] = 4.0f;
+  ((float *)physical_buffers[4])[2] = 5.0f;
+  ((float *)physical_buffers[4])[3] = 6.0f;
+  await_count = 0;
+  EXPECT(__vrc_enqueue_udononnx_concat2_device_args(
+             queue, concat_left_buffer, transpose_input_buffer,
+             transpose_output_buffer, 6, 1, 2, 4, 0, 0,
+             &marker_event) == CL_SUCCESS);
+  EXPECT(marker_event && clWaitForEvents(1, &marker_event) == CL_SUCCESS);
+  EXPECT(await_count == 1 && awaited_events[0] == 24);
+  EXPECT(((float *)physical_buffers[5])[0] == 1.0f);
+  EXPECT(((float *)physical_buffers[5])[1] == 2.0f);
+  EXPECT(((float *)physical_buffers[5])[2] == 3.0f);
+  EXPECT(((float *)physical_buffers[5])[3] == 4.0f);
+  EXPECT(((float *)physical_buffers[5])[4] == 5.0f);
+  EXPECT(((float *)physical_buffers[5])[5] == 6.0f);
+  EXPECT(clReleaseEvent(marker_event) == CL_SUCCESS);
+  EXPECT(clReleaseMemObject(concat_left_buffer) == CL_SUCCESS);
   EXPECT(clReleaseMemObject(transpose_output_buffer) == CL_SUCCESS);
   EXPECT(clReleaseMemObject(transpose_input_buffer) == CL_SUCCESS);
   EXPECT(clReleaseMemObject(nested_buffer) == CL_SUCCESS);

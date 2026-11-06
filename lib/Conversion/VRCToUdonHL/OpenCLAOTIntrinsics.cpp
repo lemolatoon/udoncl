@@ -68,6 +68,7 @@ struct LowerOpenCLAOTIntrinsicsPass
           name == "__vrc_opencl_dispatch_udononnx_transpose_f32" ||
           name == "__vrc_opencl_dispatch_udononnx_slice_f32" ||
           name == "__vrc_opencl_dispatch_udononnx_expand_f32" ||
+          name == "__vrc_opencl_dispatch_udononnx_concat2_f32" ||
           name == "__vrc_opencl_dispatch_mnist_conv" ||
           name == "__vrc_opencl_dispatch_mnist_pool" ||
           name == "__vrc_opencl_dispatch_mnist_dense";
@@ -139,6 +140,8 @@ struct LowerOpenCLAOTIntrinsicsPass
                      i32, i32, i32, i32, i32, i32, i32, i32};
       else if (name == "__vrc_opencl_dispatch_udononnx_expand_f32")
         arguments = {i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32};
+      else if (name == "__vrc_opencl_dispatch_udononnx_concat2_f32")
+        arguments = {i32, i32, i32, i32, i32, i32, i32};
       else
         arguments = {i32, i32};
       if (!function.isExternal() ||
@@ -281,12 +284,13 @@ struct LowerOpenCLAOTIntrinsicsPass
         bool transpose = name == "__vrc_opencl_dispatch_udononnx_transpose_f32";
         bool slice = name == "__vrc_opencl_dispatch_udononnx_slice_f32";
         bool expand = name == "__vrc_opencl_dispatch_udononnx_expand_f32";
-        unsigned bufferCount = matmulNBitsQ4                       ? 5
-                               : rmsFinalize                       ? 4
-                               : largeConvolution || largeOpTensor ? 4
-                               : arenaSgemm || arenaBatchedSgemm   ? 3
-                               : largeActivation || largePooling   ? 3
-                                                                   : 2;
+        bool concat = name == "__vrc_opencl_dispatch_udononnx_concat2_f32";
+        unsigned bufferCount = matmulNBitsQ4                               ? 5
+                               : rmsFinalize                               ? 4
+                               : largeConvolution || largeOpTensor         ? 4
+                               : arenaSgemm || arenaBatchedSgemm || concat ? 3
+                               : largeActivation || largePooling           ? 3
+                                                                           : 2;
         int32_t kernelId = sgemm                                        ? 1
                            : arenaSgemm                                 ? 221
                            : arenaBatchedSgemm                          ? 237
@@ -306,6 +310,7 @@ struct LowerOpenCLAOTIntrinsicsPass
                            : transpose                                  ? 238
                            : slice                                      ? 239
                            : expand                                     ? 240
+                           : concat                                     ? 241
                            : name == "__vrc_opencl_dispatch_mnist_conv" ? 20
                            : name == "__vrc_opencl_dispatch_mnist_pool" ? 21
                                                                         : 22;
@@ -359,6 +364,8 @@ struct LowerOpenCLAOTIntrinsicsPass
           scalarKinds.append(14, rewriter.getStringAttr("i32"));
         } else if (expand) {
           scalarKinds.append(9, rewriter.getStringAttr("i32"));
+        } else if (concat) {
+          scalarKinds.append(4, rewriter.getStringAttr("i32"));
         }
         OperationState descriptorState(
             call.getLoc(), runtime::DispatchDescCreateOp::getOperationName());

@@ -168,6 +168,47 @@ static float runExpandCase(const std::vector<int> &inputShape,
   return maximumError;
 }
 
+static float runConcatCase(const std::vector<int> &leftShape,
+                           const std::vector<int> &rightShape, int axis) {
+  constexpr int surfaceWords = 16384;
+  int leftWords = 1;
+  int rightWords = 1;
+  int innerWords = 1;
+  for (int dimension : leftShape)
+    leftWords *= dimension;
+  for (int dimension : rightShape)
+    rightWords *= dimension;
+  for (int dimension = axis + 1; dimension < static_cast<int>(leftShape.size());
+       ++dimension)
+    innerWords *= leftShape[dimension];
+  int outputWords = leftWords + rightWords;
+  std::vector<float> left(leftWords);
+  std::vector<float> right(rightWords);
+  std::vector<float> output(surfaceWords, -17.0f);
+  for (int index = 0; index < leftWords; ++index)
+    left[index] = static_cast<float>(index + 1);
+  for (int index = 0; index < rightWords; ++index)
+    right[index] = static_cast<float>(101 + index);
+  for (udononnx_reindex_cpu_gid = 0; udononnx_reindex_cpu_gid < surfaceWords;
+       ++udononnx_reindex_cpu_gid)
+    udononnx_concat2_f32(left.data(), right.data(), output.data(), outputWords,
+                         innerWords, leftShape[axis], rightShape[axis]);
+  int leftBlock = innerWords * leftShape[axis];
+  int rightBlock = innerWords * rightShape[axis];
+  int outputBlock = leftBlock + rightBlock;
+  float maximumError = 0.0f;
+  for (int outputIndex = 0; outputIndex < outputWords; ++outputIndex) {
+    int outer = outputIndex / outputBlock;
+    int offset = outputIndex % outputBlock;
+    float expected = offset < leftBlock
+                         ? left[outer * leftBlock + offset]
+                         : right[outer * rightBlock + offset - leftBlock];
+    maximumError =
+        std::max(maximumError, std::abs(output[outputIndex] - expected));
+  }
+  return maximumError;
+}
+
 int main() {
   float headsError = runCase({1, 4, 32, 64}, {0, 2, 1, 3});
   float attentionError = runCase({1, 32, 4, 64}, {0, 1, 3, 2});
@@ -178,9 +219,12 @@ int main() {
   float stridedError = runSliceCase({2, 3, 4}, {2, 3, 2}, {0, 0, 0}, {1, 1, 2});
   float repeatHeadsError = runExpandCase({1, 4, 1, 4, 64}, {1, 4, 8, 4, 64});
   float leadingBroadcastError = runExpandCase({2, 1}, {3, 2, 5});
-  maximumError = std::max({maximumError, halfError, stridedError,
-                           repeatHeadsError, leadingBroadcastError});
-  std::cout << "reindex_cases=7\n";
+  float rotaryConcatError = runConcatCase({1, 32, 4, 32}, {1, 32, 4, 32}, 3);
+  float cacheConcatError = runConcatCase({1, 4, 2, 64}, {1, 4, 4, 64}, 2);
+  maximumError =
+      std::max({maximumError, halfError, stridedError, repeatHeadsError,
+                leadingBroadcastError, rotaryConcatError, cacheConcatError});
+  std::cout << "reindex_cases=9\n";
   std::cout << "reindex_max_error=" << maximumError << '\n';
   return maximumError == 0.0f ? 0 : 1;
 }

@@ -64,8 +64,8 @@ aliasing are allowed.
   words removes every `Cos`/`Sin`/`Neg`, `Add`, `Mul`, `Sigmoid`, and `Tanh`
   node from the unsupported set. After the Device Q4, RmsNorm, and Softmax
   checkpoints below, and the generic Device Transpose checkpoint described
-  below, the remaining measured set is Cast 2, Concat 45, Equal 1, Gather 1,
-  ScatterND 1, and Where 1.
+  below, the remaining measured set is Cast 2, Equal 1, Gather 1, ScatterND 1,
+  and Where 1.
 - The generic correctness-oriented `MatMulNBits` path still uses small
   Host-managed tiles. A first Device-resident specialization now covers the
   pinned model's three-input unsigned Q4 form (`bits=4`, `block_size=32`,
@@ -123,6 +123,15 @@ aliasing are allowed.
   leading-axis broadcast tests, AOT runtime execution, C++ lowering, fragment
   recovery, and the real sequence-4 graph pass; all 46 pinned Expand nodes
   disappear from the measured unsupported set.
+- Static contiguous two-input FP32 Concat tensors of rank one through five and
+  at most 16,384 output elements now use one generic Device dispatch. The C++
+  pass folds the axis into inner-word and left/right extent scalars; the kernel
+  selects either input without reading or preserving the render target. Native
+  last-axis and KV-axis numerical tests, AOT facade bounds checks, C++
+  lowering, fragment recovery, and the real graph pass; all 45 pinned Concat
+  nodes disappear from the measured unsupported set. Other valid variadic
+  Concat forms retain the public Host implementation until a fragment-safe
+  generic schedule is added.
 - Production-sized diagnostic bundles may omit intermediate textual MLIR with
   `--omit-intermediate-ir`; assembly, manifest, binding, static tensors, and the
   storage report remain. This avoids publishing several model-sized debug
