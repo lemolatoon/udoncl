@@ -569,7 +569,8 @@ struct UnityBufferBinding {
 
 FailureOr<UnityBufferBinding>
 bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
-                          ArrayRef<int64_t> configuredKernelIds) {
+                          ArrayRef<int64_t> configuredKernelIds,
+                          ArrayAttr staticTensors = {}) {
   SmallVector<::vrc::vrc::BufferAllocOp> allocations;
   SmallVector<::vrc::vrc::BufferCopyOp> copies;
   SmallVector<::vrc::vrc::DispatchOp> dispatches;
@@ -665,8 +666,6 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
   }
   UnityBufferBinding result;
   result.usesCopy = !copies.empty();
-  auto staticTensors =
-      module->getAttrOfType<ArrayAttr>("udoncl.static_tensors");
   auto staticTensorMatches = [&](int64_t id, int64_t bytes) {
     if (!staticTensors)
       return false;
@@ -2681,6 +2680,15 @@ int main(int argc, char **argv) {
     return 1;
   PassManager manager(&context);
   if (emitUnityLibrary) {
+    // Immutable tensor payloads can be hundreds of megabytes. StaticBufferOps
+    // already carry the IDs and sizes required by Host lowering, so retaining
+    // DenseElementsAttr payloads through module cloning, async passes and
+    // textual intermediate-IR emission only multiplies memory and compile
+    // time. Keep the uniqued attribute for validation and final artifact
+    // packing, but remove it from the executable IR before those operations.
+    ArrayAttr unityStaticTensors =
+        (*module)->getAttrOfType<ArrayAttr>("udoncl.static_tensors");
+    (*module)->removeAttr("udoncl.static_tensors");
     SmallVector<int64_t> configuredKernelIds;
     for (const json::Object *deviceKernel : unityDeviceConfigs) {
       int64_t kernelId = *deviceKernel->getInteger("kernel_id");
@@ -2710,7 +2718,7 @@ int main(int argc, char **argv) {
         failed(verify(*asyncPreview)))
       return 1;
     auto asyncBufferBinding = bindUnityBufferOperations(
-        *asyncPreview, unityBuffers, configuredKernelIds);
+        *asyncPreview, unityBuffers, configuredKernelIds, unityStaticTensors);
     if (failed(asyncBufferBinding))
       return 1;
     (*asyncPreview)
@@ -2726,8 +2734,8 @@ int main(int argc, char **argv) {
     manager.addPass(::vrc::createSubstituteRuntimeIntrinsicsPass());
     if (failed(manager.run(*module)) || failed(verify(*module)))
       return 1;
-    auto bufferBinding =
-        bindUnityBufferOperations(*module, unityBuffers, configuredKernelIds);
+    auto bufferBinding = bindUnityBufferOperations(
+        *module, unityBuffers, configuredKernelIds, unityStaticTensors);
     if (failed(bufferBinding))
       return 1;
     unityUsesBufferCopy = bufferBinding->usesCopy;
@@ -2866,8 +2874,7 @@ int main(int argc, char **argv) {
           {"bytes", static_cast<int64_t>(bytes.size())},
       });
     }
-    if (auto tensors =
-            physicalModule->getAttrOfType<ArrayAttr>("udoncl.static_tensors")) {
+    if (ArrayAttr tensors = unityStaticTensors) {
       if (auto data =
               physicalModule->getAttrOfType<ArrayAttr>("udonasm.data")) {
         bool hasStaticTensorTable =

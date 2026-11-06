@@ -475,6 +475,13 @@ cl_mem udonclCreateBufferForQueue(cl_command_queue queue, cl_mem_flags flags,
   return clCreateBuffer(queue->context, flags, bytes, 0, error);
 }
 
+cl_int udonclResolvePhysicalBuffer(cl_mem buffer, cl_uint *physical_token) {
+  if (!buffer || !buffer->active || !physical_token)
+    return CL_INVALID_MEM_OBJECT;
+  *physical_token = buffer->physical_token;
+  return *physical_token ? CL_SUCCESS : CL_INVALID_MEM_OBJECT;
+}
+
 cl_mem udonclAdoptStaticBuffer(cl_command_queue queue, cl_uint resource_id,
                                size_t bytes, cl_uint physical_token,
                                cl_int *error) {

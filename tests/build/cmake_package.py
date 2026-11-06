@@ -620,6 +620,21 @@ def main():
     onnx_mnist_manifest = json.loads(
         (onnx_mnist_artifact / 'manifest.json').read_text(encoding='utf-8')
     )
+    for intermediate_name in [
+        'host.async-runtime.mlir',
+        'host.udon-async.mlir',
+    ]:
+        intermediate = onnx_mnist_artifact / intermediate_name
+        assert intermediate.is_file()
+        assert b'udoncl.static_tensors' not in intermediate.read_bytes()
+    udon_async = (onnx_mnist_artifact / 'host.udon-async.mlir').read_bytes()
+    assert udon_async.count(b'"vrc.static_buffer"') == 4
+    host_uasm = (onnx_mnist_artifact / 'host.uasm').read_text(encoding='utf-8')
+    assert host_uasm.count(
+        'UnityEngineTexture2DArray.__Get__SystemInt32__UnityEngineTexture2D'
+    ) == 4
+    assert '__udoncl_static_tensors' in host_uasm
+    assert 'udoncl_static_buffers' not in host_uasm
     mnist_static_tensors = onnx_mnist_manifest['static_tensors']
     assert [
         (tensor['id'], tensor['name'], tensor['data_type'],

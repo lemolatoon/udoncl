@@ -63,7 +63,7 @@ assert "func.func @udon_onnx_binding_dispose" in host.stdout
 assert "call @udononnxSessionResolveInput" in host.stdout
 assert "call @udononnxSessionResolveOutput" in host.stdout
 assert "call @clEnqueueMarkerWithWaitList" in host.stdout
-assert "call @__vrc_enqueue_udondnn_large_op_tensor_device_args" in host.stdout
+assert "call @__vrc_opencl_dispatch_udondnn_large_op_tensor" in host.stdout
 assert "udoncl.onnx_lowering = \"library-calls-v2\"" in host.stdout
 assert "udoncl.onnx_device_graph = true" in host.stdout
 assert "udoncl.onnx_device_unsupported = []" in host.stdout
@@ -101,11 +101,11 @@ static_host = subprocess.run(
 assert static_host.returncode == 0, (static_host.stdout, static_host.stderr)
 assert "udoncl.static_tensors" in static_host.stdout
 assert "__udon_onnx_static_1" not in static_host.stdout
-assert "call @__vrc_opencl_static_tensor" in static_host.stdout
-assert "call @udonclAdoptStaticBuffer" in static_host.stdout
-assert "@__udon_onnx_device_buffer_1" in static_host.stdout
+assert "call @__vrc_opencl_static_tensor" not in static_host.stdout
+assert "call @udonclAdoptStaticBuffer" not in static_host.stdout
+assert "@__udon_onnx_device_buffer_1" not in static_host.stdout
 assert "func.func @udononnxGeneratedDispose" in static_host.stdout
-assert "call @clReleaseMemObject" in static_host.stdout
+assert "call @clReleaseMemObject" not in static_host.stdout
 
 expand_source = source.with_name("onnx_expand_shape.mlir")
 expand_inferred = subprocess.run(
@@ -161,7 +161,7 @@ cast_host = subprocess.run(
     capture_output=True,
 )
 assert cast_host.returncode == 0, (cast_host.stdout, cast_host.stderr)
-assert "call @__vrc_enqueue_udononnx_cast_i64_f32_device_args" in cast_host.stdout
+assert "call @__vrc_opencl_dispatch_udononnx_cast_i64_f32" in cast_host.stdout
 assert "call @udononnxCast" not in cast_host.stdout
 assert "udoncl.onnx_device_graph = true" in cast_host.stdout
 assert "udoncl.onnx_device_unsupported = []" in cast_host.stdout
@@ -182,10 +182,10 @@ unary_host = subprocess.run(
 assert unary_host.returncode == 0, (unary_host.stdout, unary_host.stderr)
 assert "udoncl.onnx_device_graph = true" in unary_host.stdout
 assert "udoncl.onnx_device_unsupported = []" in unary_host.stdout
-assert unary_host.stdout.count("call @__vrc_enqueue_udondnn_large_op_tensor_device_args") == 1
-assert unary_host.stdout.count("call @__vrc_enqueue_udondnn_large_activation_device_args") == 2
+assert unary_host.stdout.count("call @__vrc_opencl_dispatch_udondnn_large_op_tensor") == 1
+assert unary_host.stdout.count("call @__vrc_opencl_dispatch_udondnn_large_activation") == 2
 assert unary_host.stdout.count("@__udon_onnx_device_buffer_") == 6
-assert unary_host.stdout.count("call @__vrc_enqueue_udononnx_unary_device_args") == 3
+assert unary_host.stdout.count("call @__vrc_opencl_dispatch_udononnx_unary_f32") == 3
 assert "call @udononnxCos" not in unary_host.stdout
 assert "call @udononnxSin" not in unary_host.stdout
 assert "call @udononnxNeg" not in unary_host.stdout
@@ -216,7 +216,7 @@ assert "udoncl.onnx_device_graph = true" in transpose_host.stdout
 assert "udoncl.onnx_device_unsupported = []" in transpose_host.stdout
 assert (
     transpose_host.stdout.count(
-        "call @__vrc_enqueue_udononnx_transpose_device_args"
+        "call @__vrc_opencl_dispatch_udononnx_transpose_f32"
     )
     == 1
 )
@@ -244,7 +244,7 @@ slice_host = subprocess.run(
 assert slice_host.returncode == 0, (slice_host.stdout, slice_host.stderr)
 assert "udoncl.onnx_device_graph = true" in slice_host.stdout
 assert "udoncl.onnx_device_unsupported = []" in slice_host.stdout
-assert slice_host.stdout.count("call @__vrc_enqueue_udononnx_slice_device_args") == 1
+assert slice_host.stdout.count("call @__vrc_opencl_dispatch_udononnx_slice_f32") == 1
 assert "call @udononnxSlice" not in slice_host.stdout
 
 large_pointwise_source = source.with_name("onnx_large_pointwise.mlir")
@@ -273,13 +273,13 @@ assert "udoncl.onnx_device_graph = true" in large_pointwise_host.stdout
 assert "udoncl.onnx_device_unsupported = []" in large_pointwise_host.stdout
 assert (
     large_pointwise_host.stdout.count(
-        "call @__vrc_enqueue_udondnn_large_op_tensor_device_args"
+        "call @__vrc_opencl_dispatch_udondnn_large_op_tensor"
     )
     == 1
 )
 assert (
     large_pointwise_host.stdout.count(
-        "call @__vrc_enqueue_udondnn_large_activation_device_args"
+        "call @__vrc_opencl_dispatch_udondnn_large_activation"
     )
     == 2
 )
@@ -310,7 +310,7 @@ assert "udoncl.onnx_device_graph = true" in q4_host.stdout
 assert "udoncl.onnx_device_unsupported = []" in q4_host.stdout
 assert (
     q4_host.stdout.count(
-        "call @__vrc_enqueue_udononnx_matmul_nbits_q4_device_args"
+        "call @__vrc_opencl_dispatch_udononnx_matmul_nbits_q4"
     )
     == 1
 )
@@ -357,13 +357,13 @@ assert "udoncl.onnx_device_graph = true" in rmsnorm_device_host.stdout
 assert "udoncl.onnx_device_unsupported = []" in rmsnorm_device_host.stdout
 assert (
     rmsnorm_device_host.stdout.count(
-        "call @__vrc_enqueue_udonaten_arena_rms_norm_reduce_device_args"
+        "call @__vrc_opencl_dispatch_udonaten_arena_rms_norm_reduce"
     )
     == 1
 )
 assert (
     rmsnorm_device_host.stdout.count(
-        "call @__vrc_enqueue_udonaten_arena_rms_norm_finalize_device_args"
+        "call @__vrc_opencl_dispatch_udonaten_arena_rms_norm_finalize"
     )
     == 1
 )
@@ -398,7 +398,7 @@ assert "udoncl.onnx_device_graph = true" in batched_matmul_host.stdout
 assert "udoncl.onnx_device_unsupported = []" in batched_matmul_host.stdout
 assert (
     batched_matmul_host.stdout.count(
-        "call @__vrc_enqueue_udonblas_arena_sgemm_strided_batched_device_args"
+        "call @__vrc_opencl_dispatch_udonblas_arena_sgemm_strided_batched"
     )
     == 1
 )
@@ -419,7 +419,7 @@ concat_host = subprocess.run(
 )
 assert concat_host.returncode == 0, (concat_host.stdout, concat_host.stderr)
 assert "udoncl.onnx_device_graph = true" in concat_host.stdout
-assert concat_host.stdout.count("call @__vrc_enqueue_udononnx_concat2_device_args") == 1
+assert concat_host.stdout.count("call @__vrc_opencl_dispatch_udononnx_concat2_f32") == 1
 assert "call @udononnxConcat" not in concat_host.stdout
 
 concat_device_source = source.with_name("onnx_concat_device.mlir")
@@ -443,7 +443,7 @@ assert "udoncl.onnx_device_graph = true" in concat_device_host.stdout
 assert "udoncl.onnx_device_unsupported = []" in concat_device_host.stdout
 assert (
     concat_device_host.stdout.count(
-        "call @__vrc_enqueue_udononnx_concat2_device_args"
+        "call @__vrc_opencl_dispatch_udononnx_concat2_f32"
     )
     == 1
 )
@@ -476,7 +476,7 @@ assert "udoncl.onnx_device_graph = true" in gather_device_host.stdout
 assert "udoncl.onnx_device_unsupported = []" in gather_device_host.stdout
 assert (
     gather_device_host.stdout.count(
-        "call @__vrc_enqueue_udononnx_gather_axis0_device_args"
+        "call @__vrc_opencl_dispatch_udononnx_gather_axis0_f32"
     )
     == 1
 )
@@ -497,7 +497,7 @@ slice_host = subprocess.run(
 )
 assert slice_host.returncode == 0, (slice_host.stdout, slice_host.stderr)
 assert "udoncl.onnx_device_graph = true" in slice_host.stdout
-assert slice_host.stdout.count("call @__vrc_enqueue_udononnx_slice_device_args") == 1
+assert slice_host.stdout.count("call @__vrc_opencl_dispatch_udononnx_slice_f32") == 1
 assert "call @udononnxSlice" not in slice_host.stdout
 
 expand_device_source = source.with_name("onnx_expand_device.mlir")
@@ -526,7 +526,7 @@ assert "udoncl.onnx_device_graph = true" in expand_device_host.stdout
 assert "udoncl.onnx_device_unsupported = []" in expand_device_host.stdout
 assert (
     expand_device_host.stdout.count(
-        "call @__vrc_enqueue_udononnx_expand_device_args"
+        "call @__vrc_opencl_dispatch_udononnx_expand_f32"
     )
     == 1
 )
@@ -548,8 +548,8 @@ where_host = subprocess.run(
 assert where_host.returncode == 0, (where_host.stdout, where_host.stderr)
 assert "udoncl.onnx_device_graph = true" in where_host.stdout
 assert "udoncl.onnx_device_unsupported = []" in where_host.stdout
-assert where_host.stdout.count("call @__vrc_enqueue_udononnx_equal_f32_device_args") == 1
-assert where_host.stdout.count("call @__vrc_enqueue_udononnx_where_f32_device_args") == 1
+assert where_host.stdout.count("call @__vrc_opencl_dispatch_udononnx_equal_f32") == 1
+assert where_host.stdout.count("call @__vrc_opencl_dispatch_udononnx_where_f32") == 1
 assert "call @udononnxEqual" not in where_host.stdout
 assert "call @udononnxWhere" not in where_host.stdout
 
@@ -588,7 +588,7 @@ scatter_host = subprocess.run(
 assert scatter_host.returncode == 0, (scatter_host.stdout, scatter_host.stderr)
 assert "udoncl.onnx_device_graph = true" in scatter_host.stdout
 assert "udoncl.onnx_device_unsupported = []" in scatter_host.stdout
-assert scatter_host.stdout.count("call @__vrc_enqueue_udononnx_scatter_nd_f32_device_args") == 1
+assert scatter_host.stdout.count("call @__vrc_opencl_dispatch_udononnx_scatter_nd_f32") == 1
 assert "call @udononnxScatterND" not in scatter_host.stdout
 
 softmax_source = source.with_name("onnx_softmax.mlir")
@@ -609,7 +609,7 @@ assert "udoncl.onnx_device_graph = true" in softmax_host.stdout
 assert "udoncl.onnx_device_unsupported = []" in softmax_host.stdout
 assert (
     softmax_host.stdout.count(
-        "call @__vrc_enqueue_udondnn_arena_softmax_device_args"
+        "call @__vrc_opencl_dispatch_udondnn_arena_softmax"
     )
     == 1
 )

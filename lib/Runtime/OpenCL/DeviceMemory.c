@@ -2,11 +2,7 @@
 
 #include <limits.h>
 
-/* AOT models keep immutable weights as individual Device textures.  The
- * pinned TinyLlama graph owns 920 static textures plus 31 liveness-reused
- * activation/workspace allocations, so the handle table must describe the
- * full linked graph rather than only small interactive examples. */
-#define UDONCL_DEVICE_BUFFER_CAPACITY 2048
+#define UDONCL_DEVICE_BUFFER_CAPACITY 64
 
 struct udoncl_device_buffer_entry {
   cl_mem memory;

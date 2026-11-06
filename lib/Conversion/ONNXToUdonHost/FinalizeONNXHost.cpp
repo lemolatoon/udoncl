@@ -2955,39 +2955,6 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
   builder.setInsertionPointToEnd(initializeInvalid);
   func::ReturnOp::create(builder, location, onnxStatus(1));
   builder.setInsertionPointToEnd(initializeValid);
-  Value staticError = allocaI32(builder, location);
-  for (auto [tensorIndex, tensor] : llvm::enumerate(graph.tensors)) {
-    if (tensor.staticResourceId < 0)
-      continue;
-    Value resourceId = arith::ConstantIntOp::create(
-        builder, location, tensor.staticResourceId, 32);
-    Value byteLength = arith::ConstantIntOp::create(
-        builder, location, tensor.staticByteLength, 32);
-    auto physical = func::CallOp::create(
-        builder, location, "__vrc_opencl_static_tensor", TypeRange{i32},
-        ValueRange{resourceId, byteLength});
-    auto created = func::CallOp::create(
-        builder, location, "udonclAdoptStaticBuffer", TypeRange{pointer},
-        ValueRange{initializeEntry->getArgument(2), resourceId, byteLength,
-                   physical.getResult(0), staticError});
-    Value handle = pointerToInt(builder, location, created.getResult(0));
-    Value errorSucceeded = arith::CmpIOp::create(
-        builder, location, arith::CmpIPredicate::eq,
-        loadI32(builder, location, staticError), onnxStatus(0));
-    Value handleValid = arith::CmpIOp::create(
-        builder, location, arith::CmpIPredicate::ne, handle, onnxStatus(0));
-    Value succeeded =
-        arith::AndIOp::create(builder, location, errorSucceeded, handleValid);
-    Block *next = initialize.addBlock();
-    Block *failure = initialize.addBlock();
-    cf::CondBranchOp::create(builder, location, succeeded, next, ValueRange{},
-                             failure, ValueRange{});
-    builder.setInsertionPointToEnd(failure);
-    func::ReturnOp::create(builder, location, onnxStatus(5));
-    builder.setInsertionPointToEnd(next);
-    store(builder, location, handle,
-          addressOf(builder, location, deviceBufferSymbol(tensorIndex)));
-  }
   if (supportsDeviceGraph(graph)) {
     SmallVector<unsigned> storage = deviceStorage(graph);
     auto allocateDeviceBuffer = [&](StringRef symbol, int64_t bytes) {
@@ -3085,12 +3052,12 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
     builder.setInsertionPointToEnd(next);
   };
   for (auto [tensorIndex, tensor] : llvm::enumerate(graph.tensors)) {
-    bool ownsDeviceBuffer = tensor.staticResourceId >= 0 ||
-                            (supportsDeviceGraph(graph) &&
-                             !llvm::is_contained(graph.inputs, tensorIndex) &&
-                             (!llvm::is_contained(graph.outputs, tensorIndex) ||
-                              needsQ4Surface(graph, tensorIndex)) &&
-                             disposeStorage[tensorIndex] == tensorIndex);
+    bool ownsDeviceBuffer = supportsDeviceGraph(graph) &&
+                            !llvm::is_contained(graph.inputs, tensorIndex) &&
+                            (!llvm::is_contained(graph.outputs, tensorIndex) ||
+                             needsQ4Surface(graph, tensorIndex)) &&
+                            disposeStorage[tensorIndex] == tensorIndex &&
+                            tensor.staticResourceId < 0;
     if (!ownsDeviceBuffer)
       continue;
     releaseDeviceBuffer(deviceBufferSymbol(tensorIndex));
@@ -3175,6 +3142,14 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
     SmallVector<unsigned> storage = deviceStorage(graph);
     SmallVector<Value> buffers(graph.tensors.size());
     SmallVector<Value> publicOutputBuffers(graph.tensors.size());
+    auto resolvePhysicalBuffer = [&](Value handle) {
+      Value tokenSlot = allocaI32(builder, location);
+      auto resolved =
+          func::CallOp::create(builder, location, "udonclResolvePhysicalBuffer",
+                               TypeRange{i32}, ValueRange{handle, tokenSlot});
+      returnOpenCLErrorIfNonzero(resolved.getResult(0));
+      return loadI32(builder, location, tokenSlot);
+    };
     auto resolve = [&](bool output, unsigned bindingIndex,
                        unsigned tensorIndex) -> LogicalResult {
       const TensorRecord &tensor = graph.tensors[tensorIndex];
@@ -3196,9 +3171,13 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
       requireZero(loadI32(builder, location, offsetSlot));
       Value resolvedBuffer = intToPointer(
           builder, location, loadI32(builder, location, memorySlot));
-      if (output)
-        publicOutputBuffers[tensorIndex] = resolvedBuffer;
-      buffers[tensorIndex] = resolvedBuffer;
+      if (output) {
+        publicOutputBuffers[tensorIndex] =
+            resolvePhysicalBuffer(resolvedBuffer);
+        buffers[tensorIndex] = publicOutputBuffers[tensorIndex];
+      } else {
+        buffers[tensorIndex] = resolvePhysicalBuffer(resolvedBuffer);
+      }
       return success();
     };
     for (auto [inputIndex, tensorIndex] : llvm::enumerate(graph.inputs))
@@ -3210,15 +3189,18 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
     for (auto [tensorIndex, tensor] : llvm::enumerate(graph.tensors)) {
       if (buffers[tensorIndex] || storage[tensorIndex] != tensorIndex)
         continue;
-      if (tensor.staticResourceId >= 0 ||
-          (!llvm::is_contained(graph.inputs, tensorIndex) &&
-           (!llvm::is_contained(graph.outputs, tensorIndex) ||
-            needsQ4Surface(graph, tensorIndex))))
-        buffers[tensorIndex] =
+      if (tensor.staticResourceId >= 0) {
+        continue;
+      } else if (!llvm::is_contained(graph.inputs, tensorIndex) &&
+                 (!llvm::is_contained(graph.outputs, tensorIndex) ||
+                  needsQ4Surface(graph, tensorIndex))) {
+        Value handle =
             intToPointer(builder, location,
                          loadI32(builder, location,
                                  addressOf(builder, location,
                                            deviceBufferSymbol(tensorIndex))));
+        buffers[tensorIndex] = resolvePhysicalBuffer(handle);
+      }
     }
 
     Value dispatchEvent = allocaI32(builder, location);
@@ -3241,27 +3223,36 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
     };
     waitAndRelease();
     auto dispatch = [&](StringRef callee, ValueRange arguments) {
-      SmallVector<Value> values(arguments);
-      values.push_back(constant(0));
-      values.push_back(nullPointer(builder, location));
-      values.push_back(dispatchEvent);
       auto enqueued = func::CallOp::create(builder, location, callee,
-                                           TypeRange{i32}, values);
-      returnOpenCLErrorIfNonzero(enqueued.getResult(0));
-      waitAndRelease();
+                                           TypeRange{i32}, arguments);
+      auto waited =
+          func::CallOp::create(builder, location, "__vrc_opencl_await",
+                               TypeRange{i32}, enqueued.getResult(0));
+      returnOpenCLErrorIfNonzero(waited.getResult(0));
     };
     auto buffer = [&](int64_t tensorIndex) -> Value {
-      return buffers[storage[static_cast<unsigned>(tensorIndex)]];
+      unsigned storageIndex = storage[static_cast<unsigned>(tensorIndex)];
+      if (buffers[storageIndex])
+        return buffers[storageIndex];
+      const TensorRecord &tensor = graph.tensors[storageIndex];
+      if (tensor.staticResourceId < 0)
+        return {};
+      auto physical = func::CallOp::create(
+          builder, location, "__vrc_opencl_static_tensor", TypeRange{i32},
+          ValueRange{constant(tensor.staticResourceId),
+                     constant(tensor.staticByteLength)});
+      return physical.getResult(0);
     };
     Value operatorScratch;
-    if (operatorScratchBytes(graph))
-      operatorScratch = intToPointer(
+    if (operatorScratchBytes(graph)) {
+      Value handle = intToPointer(
           builder, location,
           loadI32(builder, location,
                   addressOf(builder, location, operatorScratchSymbol)));
+      operatorScratch = resolvePhysicalBuffer(handle);
+    }
     for (const NodeRecord &node : graph.nodes) {
       if (isDeviceAlias(graph, node)) {
-        buffers[node.output] = buffer(node.inputs[0]);
         continue;
       }
       Value output = buffer(node.output);
@@ -3287,10 +3278,10 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
             dilations.size() != 2 || pads[0] != pads[2] || pads[1] != pads[3])
           return emitError(location)
                  << "Device Conv requires symmetric 2D attributes";
-        dispatch("__vrc_enqueue_udondnn_large_convolution_device_args",
+        dispatch("__vrc_opencl_dispatch_udondnn_large_convolution",
                  ValueRange{
-                     entry->getArgument(2), buffer(node.inputs[0]),
-                     buffer(node.inputs[1]), output, output,
+                     buffer(node.inputs[0]), buffer(node.inputs[1]), output,
+                     output,
                      constant(graph.tensors[node.output].type.getNumElements()),
                      constant(inputShape[1] | (inputShape[2] << 16)),
                      constant(inputShape[3]),
@@ -3314,10 +3305,9 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
             broadcastTensor4d(graph.tensors[node.output].type);
         int64_t operation = node.operation == "Mul" ? 1 : 0;
         dispatch(
-            "__vrc_enqueue_udondnn_large_op_tensor_device_args",
+            "__vrc_opencl_dispatch_udondnn_large_op_tensor",
             ValueRange{
-                entry->getArgument(2), buffer(node.inputs[0]),
-                buffer(node.inputs[1]), output, output,
+                buffer(node.inputs[0]), buffer(node.inputs[1]), output, output,
                 constant(graph.tensors[node.output].type.getNumElements()),
                 constant(a[0] | (a[1] << 16)), constant(a[2] | (a[3] << 16)),
                 constant(b[0] | (b[1] << 16)), constant(b[2] | (b[3] << 16)),
@@ -3331,10 +3321,9 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
         int32_t mode = node.operation == "Sigmoid" ? 0
                        : node.operation == "Relu"  ? 1
                                                    : 2;
-        dispatch("__vrc_enqueue_udondnn_large_activation_device_args",
+        dispatch("__vrc_opencl_dispatch_udondnn_large_activation",
                  ValueRange{
-                     entry->getArgument(2), buffer(node.inputs[0]), output,
-                     output,
+                     buffer(node.inputs[0]), output, output,
                      constant(graph.tensors[node.output].type.getNumElements()),
                      constant(mode), constant(1), floating(0.0f),
                      floating(1.0f), floating(0.0f)});
@@ -3356,18 +3345,18 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
           return emitError(location)
                  << "Device AveragePool requires symmetric 2D attributes";
         int64_t mode = integerAttribute(node, "count_include_pad", 0) ? 1 : 2;
-        dispatch(
-            "__vrc_enqueue_udondnn_large_pooling_device_args",
-            ValueRange{
-                entry->getArgument(2), buffer(node.inputs[0]), output, output,
-                constant(graph.tensors[node.output].type.getNumElements()),
-                constant(inputShape[1]), constant(inputShape[2]),
-                constant(inputShape[3]), constant(outputShape[2]),
-                constant(outputShape[3]),
-                constant(kernel[0] | (kernel[1] << 16)),
-                constant(pads[0] | (pads[1] << 16)),
-                constant(strides[0] | (strides[1] << 16)),
-                constant(mode | (1 << 8)), floating(1.0f), floating(0.0f)});
+        dispatch("__vrc_opencl_dispatch_udondnn_large_pooling",
+                 ValueRange{
+                     buffer(node.inputs[0]), output, output,
+                     constant(graph.tensors[node.output].type.getNumElements()),
+                     constant(inputShape[1]), constant(inputShape[2]),
+                     constant(inputShape[3]), constant(outputShape[2]),
+                     constant(outputShape[3]),
+                     constant(kernel[0] | (kernel[1] << 16)),
+                     constant(pads[0] | (pads[1] << 16)),
+                     constant(strides[0] | (strides[1] << 16)),
+                     constant(mode | (1 << 8)), floating(1.0f),
+                     floating(0.0f)});
         continue;
       }
       if (node.operation == "Cos" || node.operation == "Sin" ||
@@ -3376,10 +3365,9 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                             : node.operation == "Sin" ? 2
                                                       : 3;
         dispatch(
-            "__vrc_enqueue_udononnx_unary_device_args",
+            "__vrc_opencl_dispatch_udononnx_unary_f32",
             ValueRange{
-                entry->getArgument(2), buffer(node.inputs[0]), output,
-                constant(operation),
+                buffer(node.inputs[0]), output, constant(operation),
                 constant(graph.tensors[node.output].type.getNumElements())});
         continue;
       }
@@ -3402,9 +3390,9 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
         int64_t packedPermutation = 0;
         for (auto [outputAxis, inputAxis] : llvm::enumerate(*permutation))
           packedPermutation |= inputAxis << (outputAxis * 3);
-        dispatch("__vrc_enqueue_udononnx_transpose_device_args",
+        dispatch("__vrc_opencl_dispatch_udononnx_transpose_f32",
                  ValueRange{
-                     entry->getArgument(2), buffer(node.inputs[0]), output,
+                     buffer(node.inputs[0]), output,
                      constant(graph.tensors[node.output].type.getNumElements()),
                      constant(shape.size()), constant(packDimensions(0)),
                      constant(packDimensions(2)), constant(packDimensions(4)),
@@ -3432,9 +3420,9 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                              : fallback;
           return (low & 65535) | ((high & 65535) << 16);
         };
-        dispatch("__vrc_enqueue_udononnx_slice_device_args",
+        dispatch("__vrc_opencl_dispatch_udononnx_slice_f32",
                  ValueRange{
-                     entry->getArgument(2), buffer(node.inputs[0]), output,
+                     buffer(node.inputs[0]), output,
                      constant(graph.tensors[node.output].type.getNumElements()),
                      constant(inputShape.size()),
                      constant(packUnsigned(inputShape, 0, 1)),
@@ -3469,9 +3457,9 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                              : 1;
           return (low & 65535) | ((high & 65535) << 16);
         };
-        dispatch("__vrc_enqueue_udononnx_expand_device_args",
+        dispatch("__vrc_opencl_dispatch_udononnx_expand_f32",
                  ValueRange{
-                     entry->getArgument(2), buffer(node.inputs[0]), output,
+                     buffer(node.inputs[0]), output,
                      constant(graph.tensors[node.output].type.getNumElements()),
                      constant(inputShape.size()),
                      constant(packDimensions(inputShape, 0)),
@@ -3490,10 +3478,9 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                  << "Device Concat requires two compatible contiguous static "
                     "FP32 tensors of rank one through five and at most 16384 "
                     "output elements";
-        dispatch("__vrc_enqueue_udononnx_concat2_device_args",
+        dispatch("__vrc_opencl_dispatch_udononnx_concat2_f32",
                  ValueRange{
-                     entry->getArgument(2), buffer(node.inputs[0]),
-                     buffer(node.inputs[1]), output,
+                     buffer(node.inputs[0]), buffer(node.inputs[1]), output,
                      constant(graph.tensors[node.output].type.getNumElements()),
                      constant(shape->innerWords), constant(shape->leftExtent),
                      constant(shape->rightExtent)});
@@ -3505,10 +3492,9 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
           return emitError(location)
                  << "Device Gather requires immutable FP32 axis-zero data, "
                     "INT32 or INT64 indices, and at most 16384 output words";
-        dispatch("__vrc_enqueue_udononnx_gather_axis0_device_args",
+        dispatch("__vrc_opencl_dispatch_udononnx_gather_axis0_f32",
                  ValueRange{
-                     entry->getArgument(2), buffer(node.inputs[0]),
-                     buffer(node.inputs[1]), output,
+                     buffer(node.inputs[0]), buffer(node.inputs[1]), output,
                      constant(graph.tensors[node.output].type.getNumElements()),
                      constant(shape->innerWords), constant(shape->axisExtent),
                      constant(shape->indexWords)});
@@ -3520,9 +3506,9 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                  << "Device Cast requires matching INT64 input and FP32 "
                     "output shapes of at most 16384 elements";
         dispatch(
-            "__vrc_enqueue_udononnx_cast_i64_f32_device_args",
+            "__vrc_opencl_dispatch_udononnx_cast_i64_f32",
             ValueRange{
-                entry->getArgument(2), buffer(node.inputs[0]), output,
+                buffer(node.inputs[0]), output,
                 constant(graph.tensors[node.output].type.getNumElements())});
         continue;
       }
@@ -3542,10 +3528,9 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
         const RankedTensorType left = graph.tensors[node.inputs[0]].type;
         const RankedTensorType right = graph.tensors[node.inputs[1]].type;
         const RankedTensorType result = graph.tensors[node.output].type;
-        dispatch("__vrc_enqueue_udononnx_equal_f32_device_args",
-                 ValueRange{entry->getArgument(2), buffer(node.inputs[0]),
-                            buffer(node.inputs[1]), output,
-                            constant(result.getNumElements()),
+        dispatch("__vrc_opencl_dispatch_udononnx_equal_f32",
+                 ValueRange{buffer(node.inputs[0]), buffer(node.inputs[1]),
+                            output, constant(result.getNumElements()),
                             constant(left.getRank() | (right.getRank() << 3) |
                                      (result.getRank() << 6)),
                             constant(packShape(left.getShape(), 0)),
@@ -3574,10 +3559,10 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
         const RankedTensorType whenFalse = graph.tensors[node.inputs[2]].type;
         const RankedTensorType result = graph.tensors[node.output].type;
         dispatch(
-            "__vrc_enqueue_udononnx_where_f32_device_args",
+            "__vrc_opencl_dispatch_udononnx_where_f32",
             ValueRange{
-                entry->getArgument(2), buffer(node.inputs[0]),
-                buffer(node.inputs[1]), buffer(node.inputs[2]), output,
+                buffer(node.inputs[0]), buffer(node.inputs[1]),
+                buffer(node.inputs[2]), output,
                 constant(result.getNumElements()),
                 constant(condition.getRank() | (whenTrue.getRank() << 3) |
                          (whenFalse.getRank() << 6) | (result.getRank() << 9)),
@@ -3608,10 +3593,10 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
           return (low & 65535) | ((high & 65535) << 16);
         };
         const RankedTensorType data = graph.tensors[node.inputs[0]].type;
-        dispatch("__vrc_enqueue_udononnx_scatter_nd_f32_device_args",
+        dispatch("__vrc_opencl_dispatch_udononnx_scatter_nd_f32",
                  ValueRange{
-                     entry->getArgument(2), buffer(node.inputs[0]),
-                     buffer(node.inputs[1]), buffer(node.inputs[2]), output,
+                     buffer(node.inputs[0]), buffer(node.inputs[1]),
+                     buffer(node.inputs[2]), output,
                      constant(data.getNumElements()), constant(data.getRank()),
                      constant(packShape(data.getShape(), 0)),
                      constant(packShape(data.getShape(), 2)),
@@ -3630,12 +3615,12 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
         Value destination = passCount & 1 ? output : operatorScratch;
         for (int64_t kBase = 0; kBase < k; kBase += 128) {
           int64_t tileK = std::min<int64_t>(128, k - kBase);
-          dispatch("__vrc_enqueue_udononnx_matmul_nbits_q4_device_args",
-                   ValueRange{entry->getArgument(2), buffer(node.inputs[0]),
-                              buffer(node.inputs[1]), buffer(node.inputs[2]),
-                              previous, destination, constant(m), constant(n),
-                              constant(k), constant(32), constant(0),
-                              constant(kBase), constant(n), constant(tileK),
+          dispatch("__vrc_opencl_dispatch_udononnx_matmul_nbits_q4",
+                   ValueRange{buffer(node.inputs[0]), buffer(node.inputs[1]),
+                              buffer(node.inputs[2]), previous, destination,
+                              constant(m), constant(n), constant(k),
+                              constant(32), constant(0), constant(kBase),
+                              constant(n), constant(tileK),
                               constant(kBase ? 1 : 0)});
           std::swap(previous, destination);
         }
@@ -3649,15 +3634,14 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
         int64_t normalizedWords =
             graph.tensors[node.inputs[1]].type.getNumElements();
         float epsilon = *scalarF32(graph.tensors[node.inputs[2]]);
-        dispatch("__vrc_enqueue_udonaten_arena_rms_norm_reduce_device_args",
-                 ValueRange{entry->getArgument(2), buffer(node.inputs[0]),
-                            operatorScratch, constant(words),
-                            constant(normalizedWords)});
-        dispatch("__vrc_enqueue_udonaten_arena_rms_norm_finalize_device_args",
-                 ValueRange{entry->getArgument(2), buffer(node.inputs[0]),
-                            operatorScratch, buffer(node.inputs[1]), output,
-                            constant(words), constant(normalizedWords),
-                            floating(epsilon), constant(1)});
+        dispatch("__vrc_opencl_dispatch_udonaten_arena_rms_norm_reduce",
+                 ValueRange{buffer(node.inputs[0]), operatorScratch,
+                            constant(words), constant(normalizedWords)});
+        dispatch("__vrc_opencl_dispatch_udonaten_arena_rms_norm_finalize",
+                 ValueRange{buffer(node.inputs[0]), operatorScratch,
+                            buffer(node.inputs[1]), output, constant(words),
+                            constant(normalizedWords), floating(epsilon),
+                            constant(1)});
         continue;
       }
       if (isDeviceSoftmaxNode(graph, node)) {
@@ -3671,9 +3655,8 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
           outer *= extent;
         for (int64_t extent : input.type.getShape().drop_front(axis + 1))
           inner *= extent;
-        dispatch("__vrc_enqueue_udondnn_arena_softmax_device_args",
-                 ValueRange{entry->getArgument(2), buffer(node.inputs[0]),
-                            output, constant(outer),
+        dispatch("__vrc_opencl_dispatch_udondnn_arena_softmax",
+                 ValueRange{buffer(node.inputs[0]), output, constant(outer),
                             constant(input.type.getDimSize(axis)), constant(1),
                             constant(inner), constant(0), constant(1)});
         continue;
@@ -3685,19 +3668,17 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                  << "Device MatMul requires a supported contiguous static "
                     "batch shape";
         if (shape->outputBatches == 1) {
-          dispatch("__vrc_enqueue_udonblas_arena_sgemm_device_args",
-                   ValueRange{entry->getArgument(2), buffer(node.inputs[0]),
-                              buffer(node.inputs[1]), output,
-                              constant(shape->m), constant(shape->n),
+          dispatch("__vrc_opencl_dispatch_udonblas_arena_sgemm",
+                   ValueRange{buffer(node.inputs[0]), buffer(node.inputs[1]),
+                              output, constant(shape->m), constant(shape->n),
                               constant(shape->k), constant(0), constant(0),
                               floating(1.0f)});
         } else {
           dispatch(
-              "__vrc_enqueue_udonblas_arena_sgemm_strided_batched_device_args",
+              "__vrc_opencl_dispatch_udonblas_arena_sgemm_strided_batched",
               ValueRange{
-                  entry->getArgument(2), buffer(node.inputs[0]),
-                  buffer(node.inputs[1]), output, constant(shape->m),
-                  constant(shape->n), constant(shape->k),
+                  buffer(node.inputs[0]), buffer(node.inputs[1]), output,
+                  constant(shape->m), constant(shape->n), constant(shape->k),
                   constant(shape->leftBatches == 1 ? 0 : shape->m * shape->k),
                   constant(shape->rightBatches == 1 ? 0 : shape->k * shape->n),
                   constant(shape->m * shape->n), constant(shape->outputBatches),
@@ -3718,12 +3699,11 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                 ? static_cast<float>(node.attributes.getAs<FloatAttr>("alpha")
                                          .getValueAsDouble())
                 : 1.0f;
-        dispatch("__vrc_enqueue_udonblas_arena_sgemm_device_args",
-                 ValueRange{entry->getArgument(2), buffer(node.inputs[0]),
-                            buffer(node.inputs[1]), output, constant(left[0]),
-                            constant(right[1]), constant(left[1]),
-                            constant(transA), constant(transB),
-                            floating(alpha)});
+        dispatch("__vrc_opencl_dispatch_udonblas_arena_sgemm",
+                 ValueRange{buffer(node.inputs[0]), buffer(node.inputs[1]),
+                            output, constant(left[0]), constant(right[1]),
+                            constant(left[1]), constant(transA),
+                            constant(transB), floating(alpha)});
         if (node.operation == "Gemm" && node.inputs.size() >= 3 &&
             node.inputs[2] >= 0) {
           SmallVector<int64_t, 4> a = tensor4d(graph.tensors[node.output].type);
@@ -3735,10 +3715,9 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                                            .getValueAsDouble())
                   : 1.0f;
           dispatch(
-              "__vrc_enqueue_udondnn_large_op_tensor_device_args",
+              "__vrc_opencl_dispatch_udondnn_large_op_tensor",
               ValueRange{
-                  entry->getArgument(2), output, buffer(node.inputs[2]), output,
-                  output,
+                  output, buffer(node.inputs[2]), output, output,
                   constant(graph.tensors[node.output].type.getNumElements()),
                   constant(a[0] | (a[1] << 16)), constant(a[2] | (a[3] << 16)),
                   constant(b[0] | (b[1] << 16)), constant(b[2] | (b[3] << 16)),
@@ -3755,10 +3734,8 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
       if (!source || !destination)
         return emitError(location)
                << "Device ONNX graph output lacks a public buffer";
-      Value sameBuffer =
-          arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
-                                pointerToInt(builder, location, source),
-                                pointerToInt(builder, location, destination));
+      Value sameBuffer = arith::CmpIOp::create(
+          builder, location, arith::CmpIPredicate::eq, source, destination);
       Block *next = run.addBlock();
       Block *copy = run.addBlock();
       cf::CondBranchOp::create(builder, location, sameBuffer, next,
@@ -3768,12 +3745,13 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
           graph.tensors[tensorIndex].type.getNumElements() *
           elementByteSize(graph.tensors[tensorIndex].type.getElementType());
       auto copied = func::CallOp::create(
-          builder, location, "clEnqueueCopyBuffer", TypeRange{i32},
-          ValueRange{entry->getArgument(2), source, destination, constant(0),
-                     constant(0), constant(bytes), constant(0),
-                     nullPointer(builder, location), dispatchEvent});
-      returnOpenCLErrorIfNonzero(copied.getResult(0));
-      waitAndRelease();
+          builder, location, "__vrc_opencl_buffer_copy", TypeRange{i32},
+          ValueRange{source, destination, constant(0), constant(0),
+                     constant(bytes)});
+      auto copyWaited =
+          func::CallOp::create(builder, location, "__vrc_opencl_await",
+                               TypeRange{i32}, copied.getResult(0));
+      returnOpenCLErrorIfNonzero(copyWaited.getResult(0));
       cf::BranchOp::create(builder, location, next);
       builder.setInsertionPointToEnd(next);
     }
@@ -3784,121 +3762,75 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
     returnOpenCLErrorIfNonzero(completed.getResult(0));
     func::ReturnOp::create(builder, location, onnxStatus(0));
 
-    declaration(module, "__vrc_enqueue_udondnn_large_convolution_device_args",
-                {pointer,
-                 pointer,
-                 pointer,
-                 pointer,
-                 pointer,
-                 i32,
-                 i32,
-                 i32,
-                 i32,
-                 i32,
-                 i32,
-                 i32,
-                 i32,
-                 i32,
-                 i32,
-                 builder.getF32Type(),
-                 builder.getF32Type(),
-                 i32,
-                 pointer,
-                 pointer},
+    Type f32 = builder.getF32Type();
+    declaration(module, "__vrc_opencl_dispatch_udondnn_large_convolution",
+                {i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32,
+                 i32, i32, f32, f32},
                 {i32});
-    declaration(module, "__vrc_enqueue_udondnn_large_activation_device_args",
-                {pointer, pointer, pointer, pointer, i32, i32, i32,
-                 builder.getF32Type(), builder.getF32Type(),
-                 builder.getF32Type(), i32, pointer, pointer},
+    declaration(module, "__vrc_opencl_dispatch_udondnn_large_activation",
+                {i32, i32, i32, i32, i32, i32, f32, f32, f32}, {i32});
+    declaration(module, "__vrc_opencl_dispatch_udondnn_large_pooling",
+                {i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32,
+                 i32, f32, f32},
                 {i32});
-    declaration(module, "__vrc_enqueue_udondnn_large_pooling_device_args",
-                {pointer, pointer, pointer, pointer, i32, i32, i32, i32, i32,
-                 i32, i32, i32, i32, i32, builder.getF32Type(),
-                 builder.getF32Type(), i32, pointer, pointer},
+    declaration(module, "__vrc_opencl_dispatch_udondnn_large_op_tensor",
+                {i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32,
+                 f32, f32, f32},
                 {i32});
-    declaration(module, "__vrc_enqueue_udondnn_large_op_tensor_device_args",
-                {pointer, pointer, pointer, pointer, pointer, i32, i32, i32,
-                 i32, i32, i32, i32, i32, builder.getF32Type(),
-                 builder.getF32Type(), builder.getF32Type(), i32, pointer,
-                 pointer},
-                {i32});
-    declaration(module, "__vrc_enqueue_udonblas_arena_sgemm_device_args",
-                {pointer, pointer, pointer, pointer, i32, i32, i32, i32, i32,
-                 builder.getF32Type(), i32, pointer, pointer},
-                {i32});
+    declaration(module, "__vrc_opencl_dispatch_udonblas_arena_sgemm",
+                {i32, i32, i32, i32, i32, i32, i32, i32, f32}, {i32});
     declaration(
-        module,
-        "__vrc_enqueue_udonblas_arena_sgemm_strided_batched_device_args",
-        {pointer, pointer, pointer, pointer, i32, i32, i32, i32, i32, i32, i32,
-         i32, i32, builder.getF32Type(), i32, pointer, pointer},
+        module, "__vrc_opencl_dispatch_udonblas_arena_sgemm_strided_batched",
+        {i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, f32},
         {i32});
-    declaration(module, "__vrc_enqueue_udononnx_unary_device_args",
-                {pointer, pointer, pointer, i32, i32, i32, pointer, pointer},
+    declaration(module, "__vrc_opencl_dispatch_udononnx_unary_f32",
+                {i32, i32, i32, i32}, {i32});
+    declaration(module, "__vrc_opencl_dispatch_udononnx_transpose_f32",
+                {i32, i32, i32, i32, i32, i32, i32, i32}, {i32});
+    declaration(module, "__vrc_opencl_dispatch_udononnx_slice_f32",
+                {i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32,
+                 i32, i32, i32, i32},
                 {i32});
-    declaration(module, "__vrc_enqueue_udononnx_transpose_device_args",
-                {pointer, pointer, pointer, i32, i32, i32, i32, i32, i32, i32,
-                 pointer, pointer},
-                {i32});
-    declaration(module, "__vrc_enqueue_udononnx_slice_device_args",
-                {pointer, pointer, pointer, i32, i32,     i32,    i32,
-                 i32,     i32,     i32,     i32, i32,     i32,    i32,
-                 i32,     i32,     i32,     i32, pointer, pointer},
-                {i32});
-    declaration(module, "__vrc_enqueue_udononnx_expand_device_args",
-                {pointer, pointer, pointer, i32, i32, i32, i32, i32, i32, i32,
-                 i32, i32, i32, pointer, pointer},
-                {i32});
-    declaration(module, "__vrc_enqueue_udononnx_concat2_device_args",
-                {pointer, pointer, pointer, pointer, i32, i32, i32, i32, i32,
-                 pointer, pointer},
-                {i32});
-    declaration(module, "__vrc_enqueue_udononnx_gather_axis0_device_args",
-                {pointer, pointer, pointer, pointer, i32, i32, i32, i32, i32,
-                 pointer, pointer},
-                {i32});
-    declaration(module, "__vrc_enqueue_udononnx_cast_i64_f32_device_args",
-                {pointer, pointer, pointer, i32, i32, pointer, pointer}, {i32});
-    declaration(module, "__vrc_enqueue_udononnx_equal_f32_device_args",
-                {pointer, pointer, pointer, pointer, i32, i32, i32, i32, i32,
-                 i32, i32, i32, i32, pointer, pointer},
-                {i32});
-    declaration(module, "__vrc_enqueue_udononnx_where_f32_device_args",
-                {pointer, pointer, pointer, pointer, pointer, i32, i32, i32,
-                 i32, i32, i32, i32, i32, i32, i32, i32, pointer, pointer},
-                {i32});
-    declaration(module, "__vrc_enqueue_udononnx_scatter_nd_f32_device_args",
-                {pointer, pointer, pointer, pointer, pointer, i32, i32, i32,
-                 i32, i32, i32, i32, i32, i32, pointer, pointer},
-                {i32});
-    declaration(module, "__vrc_enqueue_udononnx_matmul_nbits_q4_device_args",
-                {pointer, pointer, pointer, pointer, pointer, pointer, i32, i32,
-                 i32, i32, i32, i32, i32, i32, i32, i32, pointer, pointer},
+    declaration(module, "__vrc_opencl_dispatch_udononnx_expand_f32",
+                {i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32}, {i32});
+    declaration(module, "__vrc_opencl_dispatch_udononnx_concat2_f32",
+                {i32, i32, i32, i32, i32, i32, i32}, {i32});
+    declaration(module, "__vrc_opencl_dispatch_udononnx_gather_axis0_f32",
+                {i32, i32, i32, i32, i32, i32, i32}, {i32});
+    declaration(module, "__vrc_opencl_dispatch_udononnx_cast_i64_f32",
+                {i32, i32, i32}, {i32});
+    declaration(module, "__vrc_opencl_dispatch_udononnx_equal_f32",
+                {i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32}, {i32});
+    declaration(
+        module, "__vrc_opencl_dispatch_udononnx_where_f32",
+        {i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32},
+        {i32});
+    declaration(module, "__vrc_opencl_dispatch_udononnx_scatter_nd_f32",
+                {i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32},
                 {i32});
     declaration(
-        module, "__vrc_enqueue_udonaten_arena_rms_norm_reduce_device_args",
-        {pointer, pointer, pointer, i32, i32, i32, pointer, pointer}, {i32});
+        module, "__vrc_opencl_dispatch_udononnx_matmul_nbits_q4",
+        {i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32},
+        {i32});
+    declaration(module, "__vrc_opencl_dispatch_udonaten_arena_rms_norm_reduce",
+                {i32, i32, i32, i32}, {i32});
     declaration(module,
-                "__vrc_enqueue_udonaten_arena_rms_norm_finalize_device_args",
-                {pointer, pointer, pointer, pointer, pointer, i32, i32,
-                 builder.getF32Type(), i32, i32, pointer, pointer},
-                {i32});
-    declaration(module, "__vrc_enqueue_udondnn_arena_softmax_device_args",
-                {pointer, pointer, pointer, i32, i32, i32, i32, i32, i32, i32,
-                 pointer, pointer},
-                {i32});
+                "__vrc_opencl_dispatch_udonaten_arena_rms_norm_finalize",
+                {i32, i32, i32, i32, i32, i32, f32, i32}, {i32});
+    declaration(module, "__vrc_opencl_dispatch_udondnn_arena_softmax",
+                {i32, i32, i32, i32, i32, i32, i32, i32}, {i32});
     declaration(module, "udononnxSessionResolveInput",
                 {pointer, i32, pointer, pointer, pointer}, {i32});
     declaration(module, "udononnxSessionResolveOutput",
                 {pointer, i32, pointer, pointer, pointer}, {i32});
     declaration(module, "clEnqueueMarkerWithWaitList",
                 {pointer, i32, pointer, pointer}, {i32});
-    declaration(
-        module, "clEnqueueCopyBuffer",
-        {pointer, pointer, pointer, i32, i32, i32, i32, pointer, pointer},
-        {i32});
+    declaration(module, "udonclResolvePhysicalBuffer", {pointer, pointer},
+                {i32});
+    declaration(module, "__vrc_opencl_buffer_copy", {i32, i32, i32, i32, i32},
+                {i32});
+    declaration(module, "__vrc_opencl_await", {i32}, {i32});
     declaration(module, "__vrc_opencl_static_tensor", {i32, i32}, {i32});
-    declaration(module, "udonclAdoptStaticBuffer",
-                {pointer, i32, i32, i32, pointer}, {pointer});
     declaration(module, "udonclCreateBufferForQueue",
                 {pointer, builder.getI64Type(), i32, pointer}, {pointer});
     return success();
@@ -4026,8 +3958,6 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
   declaration(module, "clEnqueueMarkerWithWaitList",
               {pointer, i32, pointer, pointer}, {i32});
   declaration(module, "__vrc_opencl_static_tensor", {i32, i32}, {i32});
-  declaration(module, "udonclAdoptStaticBuffer",
-              {pointer, i32, i32, i32, pointer}, {pointer});
   declaration(module, "udonclCreateBufferForQueue",
               {pointer, builder.getI64Type(), i32, pointer}, {pointer});
   return success();
@@ -4058,11 +3988,11 @@ struct FinalizeONNXHostPass
     }
     SmallVector<unsigned> deviceStorageMap = deviceStorage(*graph);
     for (auto [tensorIndex, tensor] : llvm::enumerate(graph->tensors))
-      if (tensor.staticResourceId >= 0 ||
-          (deviceGraph && !llvm::is_contained(graph->inputs, tensorIndex) &&
-           (!llvm::is_contained(graph->outputs, tensorIndex) ||
-            needsQ4Surface(*graph, tensorIndex)) &&
-           deviceStorageMap[tensorIndex] == tensorIndex))
+      if (deviceGraph && tensor.staticResourceId < 0 &&
+          !llvm::is_contained(graph->inputs, tensorIndex) &&
+          (!llvm::is_contained(graph->outputs, tensorIndex) ||
+           needsQ4Surface(*graph, tensorIndex)) &&
+          deviceStorageMap[tensorIndex] == tensorIndex)
         createI32Global(module, deviceBufferSymbol(tensorIndex));
     if (deviceGraph && operatorScratchBytes(*graph))
       createI32Global(module, operatorScratchSymbol);
