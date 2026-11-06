@@ -1,6 +1,7 @@
 #include "VRC/Conversion/Passes.h"
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
 #include "VRC/Dialect/VRC/VRCDialect.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/PatternMatch.h"
 using namespace mlir;
@@ -51,6 +52,11 @@ struct SubstituteRuntimeIntrinsicsPass
                                       IntegerType::get(&getContext(), 32)} &&
             prototype->getAttrOfType<StringAttr>("vrc.format") &&
             prototype->getAttrOfType<StringAttr>("vrc.usage");
+      else if (name == "static_buffer")
+        valid =
+            args == ArrayRef<Type>{IntegerType::get(&getContext(), 32),
+                                   IntegerType::get(&getContext(), 32)} &&
+            results == ArrayRef<Type>{runtime::BufferType::get(&getContext())};
       else if (name == "buffer_release")
         valid =
             args == ArrayRef<Type>{runtime::BufferType::get(&getContext())} &&
@@ -117,6 +123,8 @@ struct SubstituteRuntimeIntrinsicsPass
       StringRef operationName =
           name == "dispatch"       ? runtime::DispatchOp::getOperationName()
           : name == "buffer_alloc" ? runtime::BufferAllocOp::getOperationName()
+          : name == "static_buffer"
+              ? runtime::StaticBufferOp::getOperationName()
           : name == "buffer_release"
               ? runtime::BufferReleaseOp::getOperationName()
           : name == "buffer_copy" ? runtime::BufferCopyOp::getOperationName()
@@ -127,7 +135,8 @@ struct SubstituteRuntimeIntrinsicsPass
           : name == "await" ? runtime::AwaitOp::getOperationName()
                             : runtime::EventStatusOp::getOperationName();
       OperationState state(call.getLoc(), operationName);
-      state.addOperands(call.getArgs());
+      if (name != "static_buffer")
+        state.addOperands(call.getArgs());
       state.addTypes(call.getResultTypes());
       if (name == "dispatch")
         for (StringRef attribute :
@@ -139,6 +148,20 @@ struct SubstituteRuntimeIntrinsicsPass
         for (StringRef attribute : {"format", "usage"})
           state.addAttribute(attribute,
                              callee->getAttr(("vrc." + attribute).str()));
+      else if (name == "static_buffer") {
+        auto id = call.getArgs()[0].getDefiningOp<arith::ConstantIntOp>();
+        auto bytes = call.getArgs()[1].getDefiningOp<arith::ConstantIntOp>();
+        if (!id || id.value() < 0 || !bytes || bytes.value() <= 0) {
+          call.emitError(
+              "immutable static buffer requires constant id and byte size");
+          signalPassFailure();
+          return;
+        }
+        state.addAttribute("resource_id",
+                           rewriter.getI32IntegerAttr(id.value()));
+        state.addAttribute("byte_size",
+                           rewriter.getI32IntegerAttr(bytes.value()));
+      }
       auto *dispatch = rewriter.create(state);
       rewriter.replaceOp(call, dispatch->getResults());
     }

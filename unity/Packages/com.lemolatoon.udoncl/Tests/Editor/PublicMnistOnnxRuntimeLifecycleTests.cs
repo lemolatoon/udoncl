@@ -89,6 +89,54 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         }
 
         [Test]
+        public void ImportedStaticTensorsPreserveBytesAndBindingTable()
+        {
+            Assert.AreEqual(4, artifact.StaticTensors.Count);
+            Texture2D[] imported = new Texture2D[artifact.StaticTensors.Count];
+            foreach (ValidatedStaticTensor tensor in artifact.StaticTensors)
+            {
+                Texture2D texture = Load<Texture2D>(
+                    "Textures/"
+                        + UdonclArtifactImporter.StaticTensorFileName(tensor.Id, tensor.Name)
+                );
+                Assert.AreEqual(tensor.Width, texture.width);
+                Assert.AreEqual(tensor.Height, texture.height);
+                Assert.AreEqual(TextureFormat.RGBA32, texture.format);
+                byte[] expected = File.ReadAllBytes(tensor.AbsolutePath);
+                var actual = texture.GetRawTextureData<byte>();
+                Assert.AreEqual(tensor.Width * tensor.Height * 4, actual.Length);
+                for (int index = 0; index < expected.Length; ++index)
+                    Assert.AreEqual(expected[index], actual[index], "Static tensor byte " + index);
+                for (int index = expected.Length; index < actual.Length; ++index)
+                    Assert.AreEqual(0, actual[index], "Static tensor padding byte " + index);
+                imported[tensor.Id] = texture;
+            }
+
+            GameObject prefab = AssetDatabase.LoadAssetAtPath<GameObject>(
+                GeneratedRoot + "/Prefabs/" + BindingClass + ".prefab"
+            );
+            Assert.NotNull(prefab);
+            GameObject instance = UnityEngine.Object.Instantiate(prefab);
+            try
+            {
+                UdonclArtifactImporter.InitializeUdonBehaviours(instance);
+                UdonBehaviour binding = UdonclArtifactImporter.FindUdonSharpBacking(
+                    instance,
+                    GeneratedNamespace + BindingClass
+                );
+                Assert.NotNull(binding);
+                Texture2D[] table = (Texture2D[])
+                    UdonclArtifactImporter.GetUdonProgramVariable(binding, "staticTensors");
+                Assert.NotNull(table);
+                CollectionAssert.AreEqual(imported, table);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(instance);
+            }
+        }
+
+        [Test]
         public void PublicOnnxRuntimeInfersMnistAndMatchesReference()
         {
             UdonAssemblyProgramAsset asset = Load<UdonAssemblyProgramAsset>(

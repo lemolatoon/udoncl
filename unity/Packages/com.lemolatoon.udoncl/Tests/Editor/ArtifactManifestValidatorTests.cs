@@ -254,6 +254,73 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         }
 
         [Test]
+        public void ValidateAcceptsImmutableStaticTensor()
+        {
+            File.WriteAllBytes(Path.Combine(_directory, "weight.bytes"), new byte[] { 1, 0, 0, 0 });
+            AddResources(
+                "[{\"name\":\"static_tensor_0\",\"kind\":\"bytes\","
+                    + "\"path\":\"weight.bytes\",\"bytes\":4}]"
+            );
+            AddManifestProperty(
+                "\"static_tensors\":[{\"id\":0,\"name\":\"weight\","
+                    + "\"resource\":\"static_tensor_0\",\"data_type\":\"int32\","
+                    + "\"shape\":[1],\"layout\":\"row_major_contiguous\","
+                    + "\"alignment\":4,\"byte_strides\":[4],\"byte_length\":4,"
+                    + "\"sha256\":\"67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450\","
+                    + "\"texture\":{\"abi\":\"udoncl-static-rgba32-v1\","
+                    + "\"width\":1,\"height\":1,\"format\":\"rgba32\","
+                    + "\"srgb\":false,\"mipmaps\":false,\"filter\":\"point\"}}]"
+            );
+            AddProgramProperty("\"static_tensor_table_slot\":\"__udoncl_static_tensors\"");
+
+            ValidatedArtifact artifact = ArtifactManifestValidator.Validate(_directory);
+            Assert.AreEqual(1, artifact.StaticTensors.Count);
+            Assert.AreEqual("weight", artifact.StaticTensors[0].Name);
+            Assert.AreEqual("int32", artifact.StaticTensors[0].DataType);
+            Assert.AreEqual(4, artifact.StaticTensors[0].ByteLength);
+            Assert.AreEqual(4, artifact.StaticTensors[0].Alignment);
+            CollectionAssert.AreEqual(new long[] { 4 }, artifact.StaticTensors[0].ByteStrides);
+            Assert.AreEqual(1, artifact.StaticTensors[0].Width);
+            Assert.AreEqual(1, artifact.StaticTensors[0].Height);
+        }
+
+        [Test]
+        public void ValidateRejectsStaticTensorTableSlotWithoutTensors()
+        {
+            AddProgramProperty("\"static_tensor_table_slot\":\"__udoncl_static_tensors\"");
+
+            Assert.Throws<InvalidDataException>(() =>
+                ArtifactManifestValidator.Validate(_directory)
+            );
+        }
+
+        [Test]
+        public void ValidateRejectsImmutableStaticTensorHashMismatch()
+        {
+            File.WriteAllBytes(Path.Combine(_directory, "weight.bytes"), new byte[] { 1, 0, 0, 0 });
+            AddResources(
+                "[{\"name\":\"static_tensor_0\",\"kind\":\"bytes\","
+                    + "\"path\":\"weight.bytes\",\"bytes\":4}]"
+            );
+            AddManifestProperty(
+                "\"static_tensors\":[{\"id\":0,\"name\":\"weight\","
+                    + "\"resource\":\"static_tensor_0\",\"data_type\":\"int32\","
+                    + "\"shape\":[1],\"layout\":\"row_major_contiguous\","
+                    + "\"alignment\":4,\"byte_strides\":[4],"
+                    + "\"byte_length\":4,\"sha256\":\""
+                    + new string('0', 64)
+                    + "\",\"texture\":{"
+                    + "\"abi\":\"udoncl-static-rgba32-v1\",\"width\":1,"
+                    + "\"height\":1,\"format\":\"rgba32\",\"srgb\":false,"
+                    + "\"mipmaps\":false,\"filter\":\"point\"}}]"
+            );
+
+            Assert.Throws<InvalidDataException>(() =>
+                ArtifactManifestValidator.Validate(_directory)
+            );
+        }
+
+        [Test]
         public void ValidateAcceptsOnnxInt4ChildCall()
         {
             string child = Path.Combine(_directory, "calls", "call-0003");
@@ -416,6 +483,17 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 json.Substring(0, json.Length - 1) + "," + property + "}",
                 new UTF8Encoding(false)
             );
+        }
+
+        private void AddProgramProperty(string property)
+        {
+            string manifestPath = Path.Combine(_directory, "manifest.json");
+            string json = File.ReadAllText(manifestPath)
+                .Replace(
+                    "\"display_shader\":\"display.shader\"",
+                    "\"display_shader\":\"display.shader\"," + property
+                );
+            File.WriteAllText(manifestPath, json, new UTF8Encoding(false));
         }
 
         private void WriteCompilerBindingManifest(string fingerprint, string physicalAbi)

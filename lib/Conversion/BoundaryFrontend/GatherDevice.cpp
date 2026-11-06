@@ -30,8 +30,11 @@ struct Proof {
   int64_t words, width, height;
   DominanceInfo dominance;
   Value gid[2];
-  Proof(LLVM::LLVMFuncOp f, int64_t w, int64_t x, int64_t y)
-      : function(f), words(w), width(x), height(y), dominance(f) {}
+  llvm::DenseMap<Value, Range> argumentRanges;
+  Proof(LLVM::LLVMFuncOp f, int64_t w, int64_t x, int64_t y,
+        llvm::DenseMap<Value, Range> ranges)
+      : function(f), words(w), width(x), height(y), dominance(f),
+        argumentRanges(std::move(ranges)) {}
   std::optional<Range> induction(BlockArgument iv, Operation *at) {
     auto *header = iv.getOwner();
     if (header->isEntryBlock() || !iv.getType().isInteger(32))
@@ -45,7 +48,7 @@ struct Proof {
          cmp.getPredicate() != LLVM::ICmpPredicate::slt))
       return std::nullopt;
     auto bound = constant(cmp.getRhs());
-    if (!bound || *bound < 1 || *bound > 16384 ||
+    if (!bound || *bound < 1 || *bound > 131072 ||
         (at && !dominance.dominates(branch.getTrueDest(), at->getBlock())))
       return std::nullopt;
     int edges = 0;
@@ -83,8 +86,12 @@ struct Proof {
       return Range{0, height - 1};
     if (auto c = constant(value))
       return Range{*c, *c};
-    if (auto arg = dyn_cast<BlockArgument>(value))
+    if (auto arg = dyn_cast<BlockArgument>(value)) {
+      auto known = argumentRanges.find(arg);
+      if (known != argumentRanges.end())
+        return known->second;
       return induction(arg, at);
+    }
     auto *op = value.getDefiningOp();
     if (!op)
       return std::nullopt;
@@ -107,10 +114,39 @@ struct Proof {
       result = {a->min + b->min, a->max + b->max};
     else if (isa<LLVM::MulOp>(op))
       result = {a->min * b->min, a->max * b->max};
-    else if (isa<LLVM::UDivOp>(op) && b->min == b->max && b->min > 0)
-      result = {a->min / b->min, a->max / b->min};
-    else if (isa<LLVM::URemOp>(op) && b->min == b->max && b->min > 0)
-      result = {0, std::min(a->max, b->min - 1)};
+    else if (auto division = dyn_cast<LLVM::UDivOp>(op);
+             division && b->min > 0) {
+      result = {a->min / b->max, a->max / b->min};
+      // Recover the common row = linear / columns relation under a
+      // dominating `linear < rows * columns` guard. Interval arithmetic alone
+      // loses the correlation between the divisor and guarded numerator and
+      // would incorrectly infer up to the complete output surface height.
+      if (at)
+        for (Block &block : function.getBody()) {
+          auto branch = dyn_cast<LLVM::CondBrOp>(block.getTerminator());
+          auto compare =
+              branch ? branch.getCondition().getDefiningOp<LLVM::ICmpOp>()
+                     : LLVM::ICmpOp();
+          if (!compare || compare.getPredicate() != LLVM::ICmpPredicate::ult ||
+              compare.getLhs() != division.getLhs() ||
+              !dominance.dominates(branch.getTrueDest(), at->getBlock()))
+            continue;
+          auto multiply = compare.getRhs().getDefiningOp<LLVM::MulOp>();
+          if (!multiply)
+            continue;
+          Value factor;
+          if (multiply.getLhs() == division.getRhs())
+            factor = multiply.getRhs();
+          else if (multiply.getRhs() == division.getRhs())
+            factor = multiply.getLhs();
+          if (!factor)
+            continue;
+          auto factorRange = range(factor, at, depth + 1);
+          if (factorRange && factorRange->min > 0)
+            result.max = std::min(result.max, factorRange->max - 1);
+        }
+    } else if (isa<LLVM::URemOp>(op) && b->min > 0)
+      result = {0, std::min(a->max, b->max - 1)};
     else if (isa<LLVM::LShrOp>(op) && b->min == b->max && b->max < 31)
       result = {a->min >> b->min, a->max >> b->max};
     else if (isa<LLVM::ShlOp>(op) && b->min == b->max && b->max < 31)
@@ -173,7 +209,7 @@ struct RaiseGatherDevicePass
       module.emitError() << "gather proof: " << message;
       signalPassFailure();
     };
-    if (!wordsAttr || wordsAttr.getInt() < 4 || wordsAttr.getInt() > 16384 ||
+    if (!wordsAttr || wordsAttr.getInt() < 4 || wordsAttr.getInt() > 131072 ||
         !source || source.isExternal() ||
         source.getCConv() != LLVM::cconv::CConv::SPIR_KERNEL ||
         source.getNumArguments() < 2 || source.getNumArguments() > 16 ||
@@ -223,17 +259,20 @@ struct RaiseGatherDevicePass
             valid = false;
             break;
           }
-          if (*sourceType == "float*") {
+          if (*sourceType == "float*" || *sourceType == "uint*") {
             auto pointer = dyn_cast<LLVM::LLVMPointerType>(llvmType);
             if (sawScalar || !pointer || pointer.getAddressSpace() != 1) {
               valid = false;
               break;
             }
-            recoveredTypes.push_back(
-                MemRefType::get({words}, Float32Type::get(&getContext())));
+            Type elementType = *sourceType == "float*"
+                                   ? Type(Float32Type::get(&getContext()))
+                                   : Type(IntegerType::get(&getContext(), 32));
+            recoveredTypes.push_back(MemRefType::get({words}, elementType));
             if (*qualifier == "const")
               recoveredInputs.push_back(i);
-            else if (qualifier->empty() && !recoveredOutput)
+            else if (*sourceType == "float*" && qualifier->empty() &&
+                     !recoveredOutput)
               recoveredOutput = i;
             else {
               valid = false;
@@ -260,6 +299,24 @@ struct RaiseGatherDevicePass
       fail("requires one or more metadata-proven const float inputs and "
            "exactly one trailing float output before scalar arguments");
       return;
+    }
+    SmallVector<int32_t> inputWords(inputArguments.size(),
+                                    static_cast<int32_t>(words));
+    if (auto configured = config.getAs<DenseI32ArrayAttr>("input_words")) {
+      if (configured.size() != inputArguments.size() ||
+          llvm::any_of(configured.asArrayRef(),
+                       [](int32_t value) { return value <= 0; })) {
+        fail("input_words must provide one positive capacity per input");
+        return;
+      }
+      llvm::copy(configured.asArrayRef(), inputWords.begin());
+    }
+    SmallVector<int64_t> argumentWords(source.getNumArguments(), words);
+    for (auto [inputIndex, argument] : llvm::enumerate(inputArguments)) {
+      argumentWords[argument] = inputWords[inputIndex];
+      types[argument] =
+          MemRefType::get({static_cast<int64_t>(inputWords[inputIndex])},
+                          cast<MemRefType>(types[argument]).getElementType());
     }
     // Preserve the original function contract but do not discard unknown FP,
     // target, ABI or argument attributes while changing its representation.
@@ -308,7 +365,27 @@ struct RaiseGatherDevicePass
         fail("unproven kernel argument attribute");
         return;
       }
-    Proof proof(source, words, width, height);
+    llvm::DenseMap<Value, Range> argumentRanges;
+    if (auto bounds = config.getAs<ArrayAttr>("argument_bounds")) {
+      llvm::SmallDenseSet<int64_t> indices;
+      for (Attribute attribute : bounds) {
+        auto entry = dyn_cast<DictionaryAttr>(attribute);
+        auto index = entry ? entry.getAs<IntegerAttr>("index") : IntegerAttr();
+        auto minimum = entry ? entry.getAs<IntegerAttr>("min") : IntegerAttr();
+        auto maximum = entry ? entry.getAs<IntegerAttr>("max") : IntegerAttr();
+        if (!index || !minimum || !maximum || index.getInt() < 0 ||
+            index.getInt() >= source.getNumArguments() ||
+            !source.getArgument(index.getInt()).getType().isInteger(32) ||
+            minimum.getInt() > maximum.getInt() ||
+            !indices.insert(index.getInt()).second) {
+          fail("argument_bounds must uniquely describe i32 scalar arguments");
+          return;
+        }
+        argumentRanges[source.getArgument(index.getInt())] = {minimum.getInt(),
+                                                              maximum.getInt()};
+      }
+    }
+    Proof proof(source, words, width, height, std::move(argumentRanges));
     SmallVector<LLVM::CallOp> calls;
     for (auto call : source.getOps<LLVM::CallOp>()) {
       StringRef callee = call.getCallee().value_or("");
@@ -358,7 +435,10 @@ struct RaiseGatherDevicePass
         if (auto gep = dyn_cast<LLVM::GEPOp>(op)) {
           auto found = pointers.find(gep.getBase());
           if (found == pointers.end() || found->second.index ||
-              !gep.getElemType().isF32() || gep.getIndices().size() != 1) {
+              gep.getElemType() !=
+                  cast<MemRefType>(types[found->second.argument])
+                      .getElementType() ||
+              gep.getIndices().size() != 1) {
             fail("buffer pointers require direct scalar f32 GEPs");
             return;
           }
@@ -370,9 +450,20 @@ struct RaiseGatherDevicePass
             p.index = cast<Value>(index);
           auto r = p.index ? proof.range(p.index, gep)
                            : std::optional<Range>(Range{p.offset, p.offset});
-          if (!r || r->min < 0 || r->max >= words) {
-            fail("buffer index bounds are not proven within the declared "
-                 "extent");
+          if (!r) {
+            fail(("buffer index bounds are not proven within the declared "
+                  "extent for argument " +
+                  Twine(p.argument))
+                     .str());
+            return;
+          }
+          if (r->min < 0 || r->max >= argumentWords[p.argument]) {
+            fail(("buffer index bounds are not proven within the declared "
+                  "extent for argument " +
+                  Twine(p.argument) + ": inferred [" + Twine(r->min) + ", " +
+                  Twine(r->max) + "] but capacity is " +
+                  Twine(argumentWords[p.argument]))
+                     .str());
             return;
           }
           pointers[gep.getResult()] = p;
@@ -380,7 +471,9 @@ struct RaiseGatherDevicePass
         } else if (auto load = dyn_cast<LLVM::LoadOp>(op)) {
           auto p = pointers.find(load.getAddr());
           if (p == pointers.end() || p->second.argument == *outputArgument ||
-              !load.getType().isF32() || load.getVolatile_() ||
+              load.getType() != cast<MemRefType>(types[p->second.argument])
+                                    .getElementType() ||
+              load.getVolatile_() ||
               load.getOrdering() != LLVM::AtomicOrdering::not_atomic ||
               load.getAlignment().value_or(4) > 4) {
             fail("only non-atomic reads of the input allocation are legal");

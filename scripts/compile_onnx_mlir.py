@@ -53,6 +53,7 @@ def canonicalize(
                 '--constprop-onnx',
                 '--udoncl-infer-onnx-shapes',
                 '--udoncl-materialize-onnx-constants',
+                '--udoncl-externalize-onnx-initializers',
                 '--udoncl-lower-onnx-to-host',
                 '--canonicalize',
                 '--udoncl-emit-bytecode',

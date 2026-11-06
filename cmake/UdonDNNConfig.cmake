@@ -66,12 +66,17 @@ if(NOT TARGET udondnn_opencl_runtime)
   if(EXISTS "${_UDONDNN_INSTALL_PREFIX}/share/udoncl/runtime/OpenCLAOT.c")
     set(_UDONDNN_OPENCL_RUNTIME
       "${_UDONDNN_INSTALL_PREFIX}/share/udoncl/runtime/OpenCLAOT.c")
+    set(_UDONDNN_DEVICE_MEMORY_RUNTIME
+      "${_UDONDNN_INSTALL_PREFIX}/share/udoncl/runtime/DeviceMemory.c")
   else()
     set(_UDONDNN_OPENCL_RUNTIME
       "${_UDONDNN_SOURCE_HINT}/lib/Runtime/OpenCL/OpenCLAOT.c")
+    set(_UDONDNN_DEVICE_MEMORY_RUNTIME
+      "${_UDONDNN_SOURCE_HINT}/lib/Runtime/OpenCL/DeviceMemory.c")
   endif()
   udoncl_add_host_library(udondnn_opencl_runtime
-    "${_UDONDNN_OPENCL_RUNTIME}")
+    "${_UDONDNN_OPENCL_RUNTIME}"
+    "${_UDONDNN_DEVICE_MEMORY_RUNTIME}")
   target_compile_definitions(udondnn_opencl_runtime INTERFACE
     CL_TARGET_OPENCL_VERSION=120
     UDONCL_AOT_ENABLE_DNN=1)
@@ -85,6 +90,12 @@ if(NOT TARGET udondnn)
 endif()
 if(NOT TARGET UdonDNN::UdonDNN)
   add_library(UdonDNN::UdonDNN ALIAS udondnn)
+endif()
+if(NOT TARGET UdonDNN::Device)
+  add_library(UdonDNN::Device ALIAS udondnn_device)
+endif()
+if(NOT TARGET UdonDNN::OpenCLRuntime)
+  add_library(UdonDNN::OpenCLRuntime ALIAS udondnn_opencl_runtime)
 endif()
 
 set(UdonDNN_VERSION 0.1.0)

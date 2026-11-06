@@ -25,6 +25,7 @@ namespace Lemolatoon.Udoncl.Editor
             IList<ValidatedKernel> kernels,
             IList<ValidatedDeviceBuffer> deviceBuffers,
             IList<ValidatedResource> resources,
+            IList<ValidatedStaticTensor> staticTensors,
             IList<ValidatedOnnxStaticInput> onnxStaticInputs,
             IList<ValidatedOnnxInt4Call> onnxInt4Calls,
             IList<ValidatedOnnxIo> onnxInputs,
@@ -44,6 +45,7 @@ namespace Lemolatoon.Udoncl.Editor
             Kernels = kernels;
             DeviceBuffers = deviceBuffers;
             Resources = resources;
+            StaticTensors = staticTensors;
             OnnxStaticInputs = onnxStaticInputs;
             OnnxInt4Calls = onnxInt4Calls;
             OnnxInputs = onnxInputs;
@@ -63,10 +65,53 @@ namespace Lemolatoon.Udoncl.Editor
         public IList<ValidatedKernel> Kernels { get; private set; }
         public IList<ValidatedDeviceBuffer> DeviceBuffers { get; private set; }
         public IList<ValidatedResource> Resources { get; private set; }
+        public IList<ValidatedStaticTensor> StaticTensors { get; private set; }
         public IList<ValidatedOnnxStaticInput> OnnxStaticInputs { get; private set; }
         public IList<ValidatedOnnxInt4Call> OnnxInt4Calls { get; private set; }
         public IList<ValidatedOnnxIo> OnnxInputs { get; private set; }
         public IList<ValidatedOnnxIo> OnnxOutputs { get; private set; }
+    }
+
+    public sealed class ValidatedStaticTensor
+    {
+        internal ValidatedStaticTensor(
+            int id,
+            string name,
+            string absolutePath,
+            string dataType,
+            long[] shape,
+            int alignment,
+            long[] byteStrides,
+            int byteLength,
+            string sha256,
+            int width,
+            int height
+        )
+        {
+            Id = id;
+            Name = name;
+            AbsolutePath = absolutePath;
+            DataType = dataType;
+            Shape = shape;
+            Alignment = alignment;
+            ByteStrides = byteStrides;
+            ByteLength = byteLength;
+            Sha256 = sha256;
+            Width = width;
+            Height = height;
+        }
+
+        public int Id { get; private set; }
+        public string Name { get; private set; }
+        public string AbsolutePath { get; private set; }
+        public string DataType { get; private set; }
+        public long[] Shape { get; private set; }
+        public int Alignment { get; private set; }
+        public long[] ByteStrides { get; private set; }
+        public int ByteLength { get; private set; }
+        public string Sha256 { get; private set; }
+        public int Width { get; private set; }
+        public int Height { get; private set; }
     }
 
     public sealed class ValidatedOnnxIo
@@ -462,6 +507,20 @@ namespace Lemolatoon.Udoncl.Editor
                     );
             }
             ValidateOnnxResources(resources);
+            List<ValidatedStaticTensor> staticTensors = ValidateStaticTensors(
+                manifest.static_tensors,
+                resources
+            );
+            if (
+                !string.IsNullOrEmpty(manifest.program.static_tensor_table_slot)
+                && (
+                    !IsSafeIdentifier(manifest.program.static_tensor_table_slot)
+                    || staticTensors.Count == 0
+                )
+            )
+                throw new InvalidDataException(
+                    "Static tensor table slot requires static tensors and a safe Udon symbol."
+                );
             List<ValidatedOnnxStaticInput> onnxStaticInputs = ValidateOnnxStaticInputs(
                 root,
                 manifest.static_inputs
@@ -506,6 +565,7 @@ namespace Lemolatoon.Udoncl.Editor
                 kernels,
                 deviceBuffers,
                 resources,
+                staticTensors,
                 onnxStaticInputs,
                 onnxInt4Calls,
                 onnxInputs,
@@ -820,6 +880,142 @@ namespace Lemolatoon.Udoncl.Editor
                             "ONNX Device pass provider names must be safe identifiers."
                         );
             }
+        }
+
+        private static List<ValidatedStaticTensor> ValidateStaticTensors(
+            StaticTensorInfo[] tensors,
+            IList<ValidatedResource> resources
+        )
+        {
+            List<ValidatedStaticTensor> validated = new List<ValidatedStaticTensor>();
+            HashSet<int> ids = new HashSet<int>();
+            HashSet<string> names = new HashSet<string>(StringComparer.Ordinal);
+            foreach (StaticTensorInfo tensor in tensors ?? Array.Empty<StaticTensorInfo>())
+            {
+                StaticTensorTextureInfo texture = tensor?.texture;
+                ValidatedResource resource = null;
+                if (tensor != null)
+                    foreach (ValidatedResource candidate in resources)
+                        if (candidate.Name == tensor.resource)
+                        {
+                            resource = candidate;
+                            break;
+                        }
+                int elementBytes = StaticTensorElementBytes(tensor?.data_type);
+                if (
+                    tensor == null
+                    || tensor.id < 0
+                    || !ids.Add(tensor.id)
+                    || string.IsNullOrWhiteSpace(tensor.name)
+                    || !names.Add(tensor.name)
+                    || resource == null
+                    || resource.Kind != "bytes"
+                    || elementBytes == 0
+                    || tensor.shape == null
+                    || tensor.layout != "row_major_contiguous"
+                    || tensor.alignment != elementBytes
+                    || tensor.byte_strides == null
+                    || tensor.byte_strides.Length != tensor.shape.Length
+                    || tensor.byte_length <= 0
+                    || !IsSha256(tensor.sha256)
+                    || texture == null
+                    || texture.abi != "udoncl-static-rgba32-v1"
+                    || texture.width <= 0
+                    || texture.width > 8192
+                    || texture.height <= 0
+                    || texture.height > 8192
+                    || texture.format != "rgba32"
+                    || texture.srgb
+                    || texture.mipmaps
+                    || texture.filter != "point"
+                )
+                    throw new InvalidDataException("Immutable static tensor metadata is invalid.");
+                long elements = 1;
+                long expectedStride = elementBytes;
+                for (int dimension = tensor.shape.Length - 1; dimension >= 0; --dimension)
+                {
+                    long size = tensor.shape[dimension];
+                    if (tensor.byte_strides[dimension] != expectedStride)
+                        throw new InvalidDataException(
+                            "Immutable static tensor byte strides are invalid."
+                        );
+                    if (
+                        size <= 0
+                        || expectedStride > long.MaxValue / size
+                        || elements > long.MaxValue / size
+                    )
+                        throw new InvalidDataException("Immutable static tensor shape is invalid.");
+                    expectedStride *= size;
+                    elements *= size;
+                }
+                long pixels = (tensor.byte_length + 3L) / 4;
+                int expectedWidth = (int)Math.Min(pixels, 8192L);
+                int expectedHeight = (int)((pixels + expectedWidth - 1) / expectedWidth);
+                if (
+                    texture.width != expectedWidth
+                    || texture.height != expectedHeight
+                    || (long)texture.width * texture.height * 4 < tensor.byte_length
+                    || (long)texture.width * texture.height * 4 - tensor.byte_length >= 4
+                    || elements > long.MaxValue / elementBytes
+                    || elements * elementBytes != tensor.byte_length
+                    || new FileInfo(resource.AbsolutePath).Length != tensor.byte_length
+                    || !string.Equals(
+                        FileSha256(resource.AbsolutePath),
+                        tensor.sha256,
+                        StringComparison.Ordinal
+                    )
+                )
+                    throw new InvalidDataException(
+                        "Immutable static tensor bytes, shape, or hash do not match."
+                    );
+                validated.Add(
+                    new ValidatedStaticTensor(
+                        tensor.id,
+                        tensor.name,
+                        resource.AbsolutePath,
+                        tensor.data_type,
+                        (long[])tensor.shape.Clone(),
+                        tensor.alignment,
+                        (long[])tensor.byte_strides.Clone(),
+                        tensor.byte_length,
+                        tensor.sha256,
+                        texture.width,
+                        texture.height
+                    )
+                );
+            }
+            validated.Sort((left, right) => left.Id.CompareTo(right.Id));
+            for (int index = 0; index < validated.Count; ++index)
+                if (validated[index].Id != index)
+                    throw new InvalidDataException(
+                        "Immutable static tensor ids must be contiguous from zero."
+                    );
+            return validated;
+        }
+
+        private static int StaticTensorElementBytes(string dataType)
+        {
+            if (dataType == "int8")
+                return 1;
+            if (dataType == "float16" || dataType == "bfloat16")
+                return 2;
+            if (dataType == "int32" || dataType == "float32")
+                return 4;
+            if (dataType == "int64")
+                return 8;
+            return 0;
+        }
+
+        private static string FileSha256(string path)
+        {
+            byte[] digest;
+            using (FileStream stream = File.OpenRead(path))
+            using (SHA256 sha256 = SHA256.Create())
+                digest = sha256.ComputeHash(stream);
+            StringBuilder result = new StringBuilder(64);
+            foreach (byte value in digest)
+                result.Append(value.ToString("x2"));
+            return result.ToString();
         }
 
         private static void ValidateSdk(SdkCompatibility compatibility)

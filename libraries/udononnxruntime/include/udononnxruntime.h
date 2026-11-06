@@ -105,6 +105,8 @@ udononnxStatus_t
 udononnxGeneratedEnqueueRun(uint32_t graph_id, udononnxSession_t *session,
                             cl_command_queue queue, cl_uint wait_count,
                             const cl_event *wait_list, cl_event *completion);
+udononnxStatus_t udononnxGeneratedDispose(uint32_t graph_id,
+                                          udononnxSession_t *session);
 
 udononnxStatus_t udononnxEnqueueInitialize(udononnxSession_t *session,
                                            cl_command_queue queue,

@@ -107,7 +107,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 );
             }
             CollectionAssert.AreEquivalent(
-                new[] { 1, 2, 207, 219, 220, 231, 232, 233, 234 },
+                new[] { 1, 2, 207, 219, 220, 222, 231, 232, 233, 234 },
                 materials.Keys
             );
             Material copyMaterial = Load<Material>("Materials/buffer-copy.mat");

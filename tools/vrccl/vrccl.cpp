@@ -48,6 +48,29 @@
 using namespace mlir;
 using namespace llvm;
 namespace {
+FailureOr<std::string> denseTensorBytes(DenseElementsAttr value) {
+  auto type = cast<ShapedType>(value.getType());
+  mlir::Type element = type.getElementType();
+  unsigned bits = element.getIntOrFloatBitWidth();
+  if (!bits || bits % 8)
+    return failure();
+  size_t elementBytes = bits / 8;
+  if (!value.isSplat()) {
+    ArrayRef<char> raw = value.getRawData();
+    return std::string(raw.begin(), raw.end());
+  }
+  std::string result;
+  result.reserve(value.getNumElements() * elementBytes);
+  APInt splat = element.isIntOrIndex()
+                    ? value.getSplatValue<APInt>()
+                    : value.getSplatValue<APFloat>().bitcastToAPInt();
+  for (int64_t index = 0; index < value.getNumElements(); ++index)
+    for (size_t byte = 0; byte < elementBytes; ++byte)
+      result.push_back(
+          static_cast<char>(splat.extractBitsAsZExtValue(8, byte * 8)));
+  return result;
+}
+
 void normalizeUnityHostCallingConventions(llvm::Module &module) {
   SmallVector<llvm::CallInst *> unsignedMultiplyOverflowCalls;
   SmallVector<llvm::CallInst *> unsignedMaximumCalls;
@@ -277,6 +300,9 @@ cl::opt<bool> emitNativeDevice(
 cl::opt<bool> emitUnityLibrary(
     "emit-unity-library-bundle",
     cl::desc("Compile scalar Host C exports into an importable Unity bundle"));
+cl::opt<bool> omitIntermediateIR(
+    "omit-intermediate-ir",
+    cl::desc("Omit diagnostic MLIR snapshots from a Unity library bundle"));
 cl::opt<std::string> hostLLVM("host-llvm", cl::desc("Host LLVM IR from C"));
 cl::opt<std::string>
     hostMLIR("host-mlir", cl::desc("Typed Host MLIR for compiler validation"));
@@ -319,17 +345,20 @@ bool publish(const std::map<std::string, std::string> &files) {
   sys::path::remove_filename(parent);
   if (!parent.empty())
     if (auto error = sys::fs::create_directories(parent)) {
-      errs() << error.message() << "\n";
+      errs() << "cannot create Unity bundle parent '" << parent
+             << "': " << error.message() << "\n";
       return false;
     }
   SmallString<256> temporary, absolute(outputDirectory);
   if (auto error = sys::fs::make_absolute(absolute)) {
-    errs() << error.message() << "\n";
+    errs() << "cannot resolve Unity bundle output '" << outputDirectory
+           << "': " << error.message() << "\n";
     return false;
   }
   if (auto error =
           sys::fs::createUniqueDirectory(Twine(absolute) + ".tmp", temporary)) {
-    errs() << error.message() << "\n";
+    errs() << "cannot create temporary Unity bundle directory for '" << absolute
+           << "': " << error.message() << "\n";
     return false;
   }
   bool ok = true;
@@ -339,20 +368,23 @@ bool publish(const std::map<std::string, std::string> &files) {
     SmallString<256> directory(path);
     sys::path::remove_filename(directory);
     if (auto error = sys::fs::create_directories(directory)) {
-      errs() << error.message() << "\n";
+      errs() << "cannot create Unity bundle resource directory '" << directory
+             << "': " << error.message() << "\n";
       ok = false;
       break;
     }
     std::error_code error;
     ToolOutputFile out(path, error, sys::fs::OF_None);
     if (error) {
-      errs() << error.message() << "\n";
+      errs() << "cannot open Unity bundle resource '" << path
+             << "': " << error.message() << "\n";
       ok = false;
       break;
     }
     out.os() << file.second;
     out.os().flush();
     if (out.os().has_error()) {
+      errs() << "cannot write Unity bundle resource '" << path << "'\n";
       out.os().clear_error();
       ok = false;
       break;
@@ -361,7 +393,8 @@ bool publish(const std::map<std::string, std::string> &files) {
   }
   if (ok) {
     if (auto error = sys::fs::rename(temporary, outputDirectory)) {
-      errs() << error.message() << "\n";
+      errs() << "cannot publish Unity bundle '" << temporary << "' to '"
+             << outputDirectory << "': " << error.message() << "\n";
       ok = false;
     }
   }
@@ -632,6 +665,21 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
   }
   UnityBufferBinding result;
   result.usesCopy = !copies.empty();
+  auto staticTensors =
+      module->getAttrOfType<ArrayAttr>("udoncl.static_tensors");
+  auto staticTensorMatches = [&](int64_t id, int64_t bytes) {
+    if (!staticTensors)
+      return false;
+    for (mlir::Attribute attribute : staticTensors) {
+      auto tensor = dyn_cast<DictionaryAttr>(attribute);
+      auto tensorId = tensor ? tensor.getAs<IntegerAttr>("id") : IntegerAttr();
+      auto byteLength =
+          tensor ? tensor.getAs<IntegerAttr>("byte_length") : IntegerAttr();
+      if (tensorId && tensorId.getInt() == id)
+        return byteLength && byteLength.getInt() == bytes;
+    }
+    return false;
+  };
   for (auto dispatch : dispatches) {
     auto descriptor =
         dispatch.getDesc().getDefiningOp<::vrc::vrc::DispatchDescCreateOp>();
@@ -659,6 +707,7 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
     SmallVector<mlir::Attribute> resourceHeapSlots;
     for (mlir::Value resource : dispatch.getResources()) {
       auto allocation = resource.getDefiningOp<::vrc::vrc::BufferAllocOp>();
+      auto staticBuffer = resource.getDefiningOp<::vrc::vrc::StaticBufferOp>();
       const UnityBuffer *constantBuffer = nullptr;
       mlir::Value token = resource;
       while (auto cast = token.getDefiningOp<UnrealizedConversionCastOp>()) {
@@ -666,13 +715,19 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
           break;
         token = cast.getInputs().front();
       }
+      if (!staticBuffer)
+        staticBuffer = token.getDefiningOp<::vrc::vrc::StaticBufferOp>();
       if (auto logicalId = token.getDefiningOp<arith::ConstantIntOp>())
         for (const UnityBuffer &candidate : buffers)
           if (candidate.id == logicalId.value()) {
             constantBuffer = &candidate;
             break;
           }
-      if (allocation) {
+      if (staticBuffer) {
+        resourcesMatch &= staticTensorMatches(staticBuffer.getResourceId(),
+                                              staticBuffer.getByteSize());
+        resourceHeapSlots.push_back(builder.getStringAttr(""));
+      } else if (allocation) {
         resourcesMatch &= bound.contains(allocation.getOperation());
         auto found = bound.find(allocation.getOperation());
         resourceHeapSlots.push_back(builder.getStringAttr(
@@ -1543,7 +1598,7 @@ recoverUnityOpenCLGatherDispatchProgram(const llvm::Module &input,
       !exports || exports->size() != 1 || !buffers || buffers->empty() ||
       !argumentKinds || argumentKinds->size() < 3 ||
       argumentKinds->size() > 16 || !kernelName || !kernelId || !words ||
-      *words < 4 || *words > 16384) {
+      *words < 4 || *words > 32768) {
     errs() << "Unity OpenCL gather dispatch requires one configured export, "
               "kernel, and 3-16 arguments\n";
     return {};
@@ -2242,7 +2297,10 @@ LogicalResult linkUnityHostLibrary(ModuleOp destination, ModuleOp library) {
         if (existingFunction.getFunctionType() !=
             libraryFunction.getFunctionType())
           return existingFunction.emitError(
-              "Host library definition has a mismatched ABI");
+                     "Host library definition has a mismatched ABI for ")
+                 << symbol.getName() << ": expected "
+                 << existingFunction.getFunctionType() << ", recovered "
+                 << libraryFunction.getFunctionType();
         symbols.erase(existingFunction);
       } else {
         operation.erase();
@@ -2453,9 +2511,35 @@ int main(int argc, char **argv) {
       module = parseSourceFile<ModuleOp>(hostMLIR, &context);
       if (!module || failed(verify(*module)))
         return 1;
+      if (unityConfig->getBoolean("require_device_graph").value_or(false)) {
+        auto deviceGraph =
+            (*module)->getAttrOfType<BoolAttr>("udoncl.onnx_device_graph");
+        if (!deviceGraph || !deviceGraph.getValue()) {
+          errs() << "Unity library config requires a fully device-resident "
+                    "ONNX graph";
+          if (auto unsupported = (*module)->getAttrOfType<ArrayAttr>(
+                  "udoncl.onnx_device_unsupported"))
+            for (mlir::Attribute attribute : unsupported) {
+              auto entry = cast<DictionaryAttr>(attribute);
+              errs() << "\n  "
+                     << entry.getAs<StringAttr>("operation").getValue() << "@"
+                     << entry.getAs<StringAttr>("provider").getValue() << ": "
+                     << entry.getAs<IntegerAttr>("count").getInt();
+            }
+          errs() << "\n";
+          return 1;
+        }
+      }
       if (!hostLibraryLLVM.empty()) {
         auto library = recoverLinkedUnityHostLibrary(hostLibraryLLVM, context);
         if (failed(library) || failed(linkUnityHostLibrary(*module, **library)))
+          return 1;
+      }
+      {
+        PassManager linkedHostRecovery(&context);
+        linkedHostRecovery.enableVerifier(false);
+        linkedHostRecovery.addPass(::vrc::createLowerOpenCLAOTIntrinsicsPass());
+        if (failed(linkedHostRecovery.run(*module)) || failed(verify(*module)))
           return 1;
       }
       for (func::FuncOp function : module->getOps<func::FuncOp>())
@@ -2537,9 +2621,11 @@ int main(int argc, char **argv) {
           return 1;
       }
     }
-    raw_string_ostream recovered(files["frontend.recovered.mlir"]);
-    module->print(recovered);
-    recovered << "\n";
+    if (!omitIntermediateIR) {
+      raw_string_ostream recovered(files["frontend.recovered.mlir"]);
+      module->print(recovered);
+      recovered << "\n";
+    }
   } else if (emitLLVMBundle || emitNativeDevice) {
     auto input = MemoryBuffer::getFile(inputFilename);
     if (!input || (!emitNativeDevice && hostLLVM.empty()) ||
@@ -2612,9 +2698,11 @@ int main(int argc, char **argv) {
     if (failed(asyncPipeline.run(*asyncPreview)) ||
         failed(verify(*asyncPreview)))
       return 1;
-    raw_string_ostream asyncIR(files["host.async-runtime.mlir"]);
-    asyncPreview->print(asyncIR);
-    asyncIR << "\n";
+    if (!omitIntermediateIR) {
+      raw_string_ostream asyncIR(files["host.async-runtime.mlir"]);
+      asyncPreview->print(asyncIR);
+      asyncIR << "\n";
+    }
 
     PassManager udonAsyncPipeline(&context);
     udonAsyncPipeline.addPass(::vrc::createLowerUdonAsyncRuntimePass());
@@ -2628,9 +2716,11 @@ int main(int argc, char **argv) {
     (*asyncPreview)
         ->setAttr("vrc.external_raw_heap_initialization",
                   UnitAttr::get(&context));
-    raw_string_ostream udonAsyncIR(files["host.udon-async.mlir"]);
-    asyncPreview->print(udonAsyncIR);
-    udonAsyncIR << "\n";
+    if (!omitIntermediateIR) {
+      raw_string_ostream udonAsyncIR(files["host.udon-async.mlir"]);
+      asyncPreview->print(udonAsyncIR);
+      udonAsyncIR << "\n";
+    }
 
     manager.addPass(::vrc::createLowerHostToUdonHLPass());
     manager.addPass(::vrc::createSubstituteRuntimeIntrinsicsPass());
@@ -2652,13 +2742,15 @@ int main(int argc, char **argv) {
     });
     auto program = unityConfig->getString("program");
     manifest["artifact_stage"] = "unity-udoncl-library";
-    manifest["program"] =
-        json::Object{{"name", *program},
-                     {"assembly", "host.uasm"},
-                     {"display_shader", "display.shader"},
-                     {"async_ir", "host.async-runtime.mlir"},
-                     {"udon_async_ir", "host.udon-async.mlir"},
-                     {"ir", "host.udonasm.mlir"}};
+    json::Object programManifest{{"name", *program},
+                                 {"assembly", "host.uasm"},
+                                 {"display_shader", "display.shader"}};
+    if (!omitIntermediateIR) {
+      programManifest["async_ir"] = "host.async-runtime.mlir";
+      programManifest["udon_async_ir"] = "host.udon-async.mlir";
+      programManifest["ir"] = "host.udonasm.mlir";
+    }
+    manifest["program"] = std::move(programManifest);
     if (usesAsyncCommands)
       (*manifest["program"].getAsObject())["async_commands"] = json::Object{
           {"resume_state_slot", "__udoncl_async_resume_state"},
@@ -2774,6 +2866,108 @@ int main(int argc, char **argv) {
           {"bytes", static_cast<int64_t>(bytes.size())},
       });
     }
+    if (auto tensors =
+            physicalModule->getAttrOfType<ArrayAttr>("udoncl.static_tensors")) {
+      if (auto data =
+              physicalModule->getAttrOfType<ArrayAttr>("udonasm.data")) {
+        bool hasStaticTensorTable =
+            llvm::any_of(data, [](mlir::Attribute attribute) {
+              auto entry = dyn_cast<DictionaryAttr>(attribute);
+              auto name =
+                  entry ? entry.getAs<StringAttr>("name") : StringAttr();
+              return name && name.getValue() == "__udoncl_static_tensors";
+            });
+        if (hasStaticTensorTable) {
+          auto *programManifest = manifest["program"].getAsObject();
+          (*programManifest)["static_tensor_table_slot"] =
+              "__udoncl_static_tensors";
+        }
+      }
+      json::Array tensorManifest;
+      json::Array *resources = manifest.getArray("resources");
+      if (!resources) {
+        manifest["resources"] = json::Array();
+        resources = manifest.getArray("resources");
+      }
+      for (mlir::Attribute attribute : tensors) {
+        auto tensor = dyn_cast<DictionaryAttr>(attribute);
+        auto id = tensor ? tensor.getAs<IntegerAttr>("id") : IntegerAttr();
+        auto name = tensor ? tensor.getAs<StringAttr>("name") : StringAttr();
+        auto dataType =
+            tensor ? tensor.getAs<StringAttr>("data_type") : StringAttr();
+        auto shape = tensor ? tensor.getAs<DenseI64ArrayAttr>("shape")
+                            : DenseI64ArrayAttr();
+        auto layout =
+            tensor ? tensor.getAs<StringAttr>("layout") : StringAttr();
+        auto alignment =
+            tensor ? tensor.getAs<IntegerAttr>("alignment") : IntegerAttr();
+        auto byteStrides = tensor
+                               ? tensor.getAs<DenseI64ArrayAttr>("byte_strides")
+                               : DenseI64ArrayAttr();
+        auto byteLength =
+            tensor ? tensor.getAs<IntegerAttr>("byte_length") : IntegerAttr();
+        auto sha256 =
+            tensor ? tensor.getAs<StringAttr>("sha256") : StringAttr();
+        auto data = tensor ? tensor.getAs<DenseElementsAttr>("data")
+                           : DenseElementsAttr();
+        auto bytes =
+            data ? denseTensorBytes(data) : FailureOr<std::string>(failure());
+        if (!id || !name || !dataType || !shape || !layout || !alignment ||
+            !byteStrides || !byteLength || !sha256 || failed(bytes) ||
+            layout.getValue() != "row_major_contiguous" ||
+            alignment.getInt() < 1 || byteStrides.size() != shape.size() ||
+            byteLength.getInt() < 1 ||
+            static_cast<uint64_t>(byteLength.getInt()) != bytes->size()) {
+          errs() << "immutable static tensor metadata is malformed\n";
+          return 1;
+        }
+        int64_t tensorId = id.getInt();
+        std::string resourceName = "static_tensor_" + std::to_string(tensorId);
+        std::string path =
+            "static-tensors/tensor_" + std::to_string(tensorId) + ".bytes";
+        files[path] = std::move(*bytes);
+        int64_t pixels = llvm::divideCeil(byteLength.getInt(), int64_t{4});
+        int64_t width = std::min<int64_t>(pixels, 8192);
+        int64_t height = llvm::divideCeil(pixels, width);
+        if (height > 8192) {
+          errs() << "immutable static tensor " << tensorId
+                 << " exceeds one 8192x8192 RGBA32 texture\n";
+          return 1;
+        }
+        json::Array dimensions;
+        for (int64_t dimension : shape.asArrayRef())
+          dimensions.push_back(dimension);
+        json::Array strides;
+        for (int64_t stride : byteStrides.asArrayRef())
+          strides.push_back(stride);
+        tensorManifest.push_back(json::Object{
+            {"id", tensorId},
+            {"name", name.getValue().str()},
+            {"resource", resourceName},
+            {"data_type", dataType.getValue().str()},
+            {"shape", std::move(dimensions)},
+            {"layout", layout.getValue().str()},
+            {"alignment", alignment.getInt()},
+            {"byte_strides", std::move(strides)},
+            {"byte_length", byteLength.getInt()},
+            {"sha256", sha256.getValue().str()},
+            {"texture", json::Object{{"abi", "udoncl-static-rgba32-v1"},
+                                     {"width", width},
+                                     {"height", height},
+                                     {"format", "rgba32"},
+                                     {"srgb", false},
+                                     {"mipmaps", false},
+                                     {"filter", "point"}}},
+        });
+        resources->push_back(json::Object{
+            {"name", resourceName},
+            {"kind", "bytes"},
+            {"path", path},
+            {"bytes", byteLength.getInt()},
+        });
+      }
+      manifest["static_tensors"] = std::move(tensorManifest);
+    }
     if (auto report = physicalModule->getAttrOfType<DictionaryAttr>(
             "udonasm.storage_report")) {
       auto serialized = mlirAttributeToJson(report);
@@ -2810,9 +3004,11 @@ int main(int argc, char **argv) {
     files["display.shader"] = unityLibraryDisplayShader(*program);
     if (unityUsesBufferCopy || !unityBuffers.empty())
       files["buffer-copy.shader"] = unityLibraryBufferCopyShader(*program);
-    raw_string_ostream lowered(files["host.udonasm.mlir"]);
-    physicalModule.print(lowered);
-    lowered << "\n";
+    if (!omitIntermediateIR) {
+      raw_string_ostream lowered(files["host.udonasm.mlir"]);
+      physicalModule.print(lowered);
+      lowered << "\n";
+    }
     files["manifest.json"] =
         formatv("{0:2}\n", json::Value(std::move(manifest))).str();
     if (!publish(files))

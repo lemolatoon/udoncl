@@ -8,6 +8,12 @@ def VRC_BufferAllocOp : Op<VRC_Dialect, "buffer_alloc", [MemoryEffects<[MemWrite
   let assemblyFormat = "$logical_id `,` $byte_size attr-dict `:` functional-type(operands, results)";
   let hasVerifier = 1;
 }
+def VRC_StaticBufferOp : Op<VRC_Dialect, "static_buffer", [Pure]> {
+  let summary = "Reference an immutable artifact Device texture by resource id";
+  let arguments = (ins I32Attr:$resource_id, I32Attr:$byte_size);
+  let results = (outs VRC_BufferType:$buffer);
+  let hasVerifier = 1;
+}
 def VRC_BufferReleaseOp : Op<VRC_Dialect, "buffer_release", [MemoryEffects<[MemWrite]>]> {
   let summary = "Release a logical reference to a fixed Device buffer";
   let arguments = (ins VRC_BufferType:$buffer);

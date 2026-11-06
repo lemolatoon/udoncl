@@ -27,6 +27,8 @@ struct TensorRecord {
   DenseElementsAttr initialValue;
   std::string symbol;
   std::string name;
+  int64_t staticResourceId = -1;
+  int64_t staticByteLength = 0;
 };
 
 struct NodeRecord {
@@ -57,7 +59,7 @@ unsigned elementByteSize(Type type) {
 }
 
 int32_t udonclDataType(Type type) {
-  if (type.isInteger(8))
+  if (type.isInteger(1) || type.isInteger(8))
     return 1;
   if (type.isInteger(32))
     return 2;
@@ -73,8 +75,10 @@ int32_t udonclDataType(Type type) {
 }
 
 StringRef udonclDataTypeName(Type type) {
+  if (type.isInteger(1))
+    return "bool";
   if (type.isInteger(8))
-    return "int8";
+    return "uint8";
   if (type.isInteger(32))
     return "int32";
   if (type.isInteger(64))
@@ -97,7 +101,9 @@ FailureOr<GraphRecord> readGraph(ModuleOp module) {
   GraphRecord result;
   llvm::DenseMap<Value, unsigned> values;
   auto addTensor = [&](Value value, StringRef stem,
-                       DenseElementsAttr initial = {}) -> FailureOr<unsigned> {
+                       DenseElementsAttr initial = {},
+                       int64_t staticResourceId = -1,
+                       int64_t staticByteLength = 0) -> FailureOr<unsigned> {
     auto type = dyn_cast<RankedTensorType>(value.getType());
     if (!type || !type.hasStaticShape() || type.getNumElements() < 0)
       return emitError(value.getLoc())
@@ -110,8 +116,12 @@ FailureOr<GraphRecord> readGraph(ModuleOp module) {
              << "ONNX Host ABI does not support tensor element type "
              << type.getElementType();
     unsigned id = result.tensors.size();
-    result.tensors.push_back(
-        {type, initial, ("__udon_onnx_" + stem + "_" + Twine(id)).str(), {}});
+    result.tensors.push_back({type,
+                              initial,
+                              ("__udon_onnx_" + stem + "_" + Twine(id)).str(),
+                              {},
+                              staticResourceId,
+                              staticByteLength});
     values.try_emplace(value, id);
     return id;
   };
@@ -140,6 +150,26 @@ FailureOr<GraphRecord> readGraph(ModuleOp module) {
     }
     if (auto call = dyn_cast<func::CallOp>(operation)) {
       auto declaration = module.lookupSymbol<func::FuncOp>(call.getCallee());
+      auto staticTensor = declaration
+                              ? declaration->getAttrOfType<DictionaryAttr>(
+                                    "udoncl.static_tensor")
+                              : DictionaryAttr();
+      if (staticTensor) {
+        auto dense = staticTensor.getAs<DenseElementsAttr>("data");
+        auto resourceId = staticTensor.getAs<IntegerAttr>("id");
+        auto byteLength = staticTensor.getAs<IntegerAttr>("byte_length");
+        if (!dense || call.getNumOperands() != 0 || call.getNumResults() != 1 ||
+            dense.getType() != call.getResult(0).getType() || !resourceId ||
+            !byteLength || resourceId.getInt() < 0 ||
+            byteLength.getInt() <= 0) {
+          call.emitError("immutable static tensor symbol has an invalid ABI");
+          return failure();
+        }
+        if (failed(addTensor(call.getResult(0), "static", dense,
+                             resourceId.getInt(), byteLength.getInt())))
+          return failure();
+        continue;
+      }
       auto operationName =
           declaration
               ? declaration->getAttrOfType<StringAttr>("udon.onnx.operation")
@@ -423,6 +453,10 @@ std::string inputBindingSymbol(unsigned index) {
   return ("__udon_onnx_input_binding_" + Twine(index)).str();
 }
 
+std::string deviceBufferSymbol(unsigned index) {
+  return ("__udon_onnx_device_buffer_" + Twine(index)).str();
+}
+
 constexpr StringLiteral hasRunSymbol = "__udon_onnx_has_run";
 
 Value addressOf(OpBuilder &builder, Location location, StringRef symbol) {
@@ -572,6 +606,20 @@ SmallVector<int64_t, 4> tensor4d(RankedTensorType type) {
   return shape;
 }
 
+SmallVector<int64_t, 4> broadcastTensor4d(RankedTensorType type) {
+  SmallVector<int64_t, 4> shape(4, 1);
+  ArrayRef<int64_t> source = type.getShape();
+  if (source.size() > 4) {
+    shape[0] = 1;
+    for (int64_t dimension : source.drop_back(3))
+      shape[0] *= dimension;
+    llvm::copy(source.take_back(3), shape.begin() + 1);
+  } else {
+    llvm::copy(source, shape.end() - source.size());
+  }
+  return shape;
+}
+
 int64_t integerAttribute(const NodeRecord &node, StringRef name,
                          int64_t fallback) {
   if (!node.attributes)
@@ -593,6 +641,259 @@ SmallVector<int64_t> integerArrayAttribute(const NodeRecord &node,
     for (Attribute value : array)
       result.push_back(cast<IntegerAttr>(value).getInt());
   return result.empty() ? SmallVector<int64_t>(fallback) : result;
+}
+
+bool isMetadataOnlyAlias(const NodeRecord &node) {
+  return node.operation == "Flatten" || node.operation == "Reshape" ||
+         node.operation == "Identity" || node.operation == "Squeeze" ||
+         node.operation == "Unsqueeze";
+}
+
+bool isDeviceAlias(const GraphRecord &graph, const NodeRecord &node) {
+  if (!isMetadataOnlyAlias(node) || node.inputs.empty() || node.inputs[0] < 0)
+    return false;
+  const TensorRecord &input = graph.tensors[node.inputs[0]];
+  const TensorRecord &output = graph.tensors[node.output];
+  return input.type.getElementType() == output.type.getElementType() &&
+         input.type.getNumElements() == output.type.getNumElements();
+}
+
+constexpr StringLiteral q4ScratchSymbol = "__udon_onnx_q4_scratch";
+constexpr int64_t q4SurfaceWords = 131072;
+constexpr int64_t q4SurfaceBytes = q4SurfaceWords * 4;
+
+bool isDeviceQ4Node(const GraphRecord &graph, const NodeRecord &node) {
+  if (node.operation != "MatMulNBits" ||
+      node.provider != "udononnxMatMulNBits" || node.inputs.size() < 3 ||
+      node.inputs[0] < 0 || node.inputs[1] < 0 || node.inputs[2] < 0 ||
+      llvm::any_of(
+          ArrayRef<int64_t>(node.inputs).drop_front(3),
+          [](int64_t input) { return input >= 0; }))
+    return false;
+  const TensorRecord &activation = graph.tensors[node.inputs[0]];
+  const TensorRecord &packed = graph.tensors[node.inputs[1]];
+  const TensorRecord &scales = graph.tensors[node.inputs[2]];
+  const TensorRecord &output = graph.tensors[node.output];
+  int64_t k = integerAttribute(node, "K", 0);
+  int64_t n = integerAttribute(node, "N", 0);
+  int64_t blockSize = integerAttribute(node, "block_size", 0);
+  int64_t bits = integerAttribute(node, "bits", 0);
+  if (!activation.type.getElementType().isF32() ||
+      !packed.type.getElementType().isInteger(8) ||
+      !scales.type.getElementType().isF32() ||
+      !output.type.getElementType().isF32() || packed.staticResourceId < 0 ||
+      scales.staticResourceId < 0 || k < 1 || k > 5632 || n < 1 || n > 32000 ||
+      blockSize != 32 || bits != 4 || activation.type.getNumElements() % k)
+    return false;
+  int64_t m = activation.type.getNumElements() / k;
+  int64_t blocks = (k + 31) / 32;
+  return m >= 1 && m <= 4 && m * n <= q4SurfaceWords &&
+         output.type.getNumElements() == m * n &&
+         packed.type.getNumElements() == n * blocks * 16 &&
+         scales.type.getNumElements() == n * blocks;
+}
+
+bool hasDeviceQ4(const GraphRecord &graph) {
+  return llvm::any_of(graph.nodes, [&](const NodeRecord &node) {
+    return isDeviceQ4Node(graph, node);
+  });
+}
+
+bool needsQ4Surface(const GraphRecord &graph, unsigned tensorIndex) {
+  return llvm::any_of(graph.nodes, [&](const NodeRecord &node) {
+    return isDeviceQ4Node(graph, node) && node.output == tensorIndex;
+  });
+}
+
+int64_t deviceAllocationBytes(const GraphRecord &graph, unsigned tensorIndex) {
+  const TensorRecord &tensor = graph.tensors[tensorIndex];
+  int64_t bytes = tensor.type.getNumElements() *
+                  elementByteSize(tensor.type.getElementType());
+  return needsQ4Surface(graph, tensorIndex) ? std::max(bytes, q4SurfaceBytes)
+                                            : bytes;
+}
+
+bool supportsDeviceNode(const GraphRecord &graph, const NodeRecord &node) {
+  auto isF32 = [&](int64_t index) {
+    return index >= 0 && static_cast<size_t>(index) < graph.tensors.size() &&
+           graph.tensors[static_cast<unsigned>(index)]
+               .type.getElementType()
+               .isF32();
+  };
+  auto hasF32InputsAndOutput = [&](unsigned inputCount) {
+    return node.inputs.size() >= inputCount &&
+           llvm::all_of(ArrayRef<int64_t>(node.inputs).take_front(inputCount),
+                        isF32) &&
+           isF32(node.output);
+  };
+  auto supportsLargePointwise = [&]() {
+    if (!hasF32InputsAndOutput(2))
+      return false;
+    SmallVector<int64_t, 4> output =
+        broadcastTensor4d(graph.tensors[node.output].type);
+    if (graph.tensors[node.output].type.getNumElements() > 32768)
+      return false;
+    for (int64_t inputIndex : ArrayRef<int64_t>(node.inputs).take_front(2)) {
+      const TensorRecord &input = graph.tensors[inputIndex];
+      if (input.type.getNumElements() > 32768)
+        return false;
+      SmallVector<int64_t, 4> inputShape = broadcastTensor4d(input.type);
+      for (auto [inputDimension, outputDimension] :
+           llvm::zip_equal(inputShape, output))
+        if (inputDimension != 1 && inputDimension != outputDimension)
+          return false;
+    }
+    return llvm::all_of(output, [](int64_t dimension) {
+      return dimension > 0 && dimension <= 65535;
+    });
+  };
+  auto supportsLargeActivation = [&]() {
+    if (!hasF32InputsAndOutput(1))
+      return false;
+    const TensorRecord &input = graph.tensors[node.inputs[0]];
+    const TensorRecord &output = graph.tensors[node.output];
+    return input.type.getNumElements() == output.type.getNumElements() &&
+           output.type.getNumElements() > 0 &&
+           output.type.getNumElements() <= 32768;
+  };
+  if (isMetadataOnlyAlias(node))
+    return isDeviceAlias(graph, node);
+  if (node.operation == "Conv")
+    return node.provider == "udondnnConvolutionForward" &&
+           hasF32InputsAndOutput(2);
+  if (node.operation == "Add")
+    return node.provider == "udonatenAdd" && supportsLargePointwise();
+  if (node.operation == "Mul")
+    return node.provider == "udonatenMul" && supportsLargePointwise();
+  if (node.operation == "Relu")
+    return node.provider == "udonatenRelu" && supportsLargeActivation();
+  if (node.operation == "Sigmoid")
+    return node.provider == "udonatenSigmoid" && supportsLargeActivation();
+  if (node.operation == "Tanh")
+    return node.provider == "udonatenTanh" && supportsLargeActivation();
+  if (node.operation == "AveragePool")
+    return node.provider == "udondnnPoolingForward" && hasF32InputsAndOutput(1);
+  if (node.operation == "Cos" || node.operation == "Sin" ||
+      node.operation == "Neg")
+    return node.provider == "udononnx" + node.operation &&
+           supportsLargeActivation() &&
+           graph.tensors[node.output].type.getNumElements() <= 16384;
+  if (node.operation == "MatMulNBits")
+    return isDeviceQ4Node(graph, node);
+  if (node.operation == "Gemm" || node.operation == "MatMul") {
+    if (node.provider != "udonblasSgemm" || !hasF32InputsAndOutput(2))
+      return false;
+    const TensorRecord &left = graph.tensors[node.inputs[0]];
+    const TensorRecord &right = graph.tensors[node.inputs[1]];
+    return left.type.getRank() == 2 && right.type.getRank() == 2;
+  }
+  return false;
+}
+
+bool supportsDeviceGraph(const GraphRecord &graph) {
+  return llvm::all_of(graph.nodes, [&](const NodeRecord &node) {
+    return supportsDeviceNode(graph, node);
+  });
+}
+
+void attachDeviceGraphMetadata(ModuleOp module, const GraphRecord &graph,
+                               bool deviceGraph) {
+  Builder builder(module.getContext());
+  llvm::StringMap<int64_t> counts;
+  llvm::StringMap<int64_t> unsupported;
+  for (const NodeRecord &node : graph.nodes) {
+    ++counts[node.operation];
+    if (!supportsDeviceNode(graph, node))
+      ++unsupported[node.operation + "\n" + node.provider];
+  }
+  SmallVector<NamedAttribute> countAttributes;
+  for (const auto &entry : counts)
+    countAttributes.push_back(builder.getNamedAttr(
+        entry.first(), builder.getI64IntegerAttr(entry.second)));
+  llvm::sort(countAttributes, [](NamedAttribute left, NamedAttribute right) {
+    return left.getName().strref() < right.getName().strref();
+  });
+  SmallVector<Attribute> unsupportedAttributes;
+  for (const auto &entry : unsupported) {
+    StringRef key = entry.first();
+    size_t separator = key.find('\n');
+    unsupportedAttributes.push_back(builder.getDictionaryAttr({
+        builder.getNamedAttr("operation",
+                             builder.getStringAttr(key.take_front(separator))),
+        builder.getNamedAttr(
+            "provider", builder.getStringAttr(key.drop_front(separator + 1))),
+        builder.getNamedAttr("count", builder.getI64IntegerAttr(entry.second)),
+    }));
+  }
+  llvm::sort(unsupportedAttributes, [](Attribute left, Attribute right) {
+    auto lhs = cast<DictionaryAttr>(left);
+    auto rhs = cast<DictionaryAttr>(right);
+    return std::make_pair(lhs.getAs<StringAttr>("operation").getValue(),
+                          lhs.getAs<StringAttr>("provider").getValue()) <
+           std::make_pair(rhs.getAs<StringAttr>("operation").getValue(),
+                          rhs.getAs<StringAttr>("provider").getValue());
+  });
+  module->setAttr("udoncl.onnx_device_graph", builder.getBoolAttr(deviceGraph));
+  module->setAttr("udoncl.onnx_operator_counts",
+                  builder.getDictionaryAttr(countAttributes));
+  module->setAttr("udoncl.onnx_device_unsupported",
+                  builder.getArrayAttr(unsupportedAttributes));
+}
+
+SmallVector<unsigned> deviceStorage(const GraphRecord &graph) {
+  SmallVector<unsigned> storage(graph.tensors.size());
+  std::iota(storage.begin(), storage.end(), 0u);
+  for (const NodeRecord &node : graph.nodes)
+    if (isDeviceAlias(graph, node))
+      storage[node.output] = storage[static_cast<unsigned>(node.inputs[0])];
+
+  // Assign non-overlapping intermediate lifetimes to the same physical
+  // allocation. A dispatch may read every input while writing its output, so
+  // a slot becomes reusable only after the last input use, never at that same
+  // node. Graph outputs remain live through the final public-buffer copy.
+  SmallVector<int64_t> lastUse(graph.tensors.size(), -1);
+  for (auto [nodeIndex, node] : llvm::enumerate(graph.nodes))
+    for (int64_t input : node.inputs)
+      if (input >= 0) {
+        unsigned root = storage[static_cast<unsigned>(input)];
+        lastUse[root] =
+            std::max(lastUse[root], static_cast<int64_t>(nodeIndex));
+      }
+  for (unsigned output : graph.outputs)
+    lastUse[storage[output]] = static_cast<int64_t>(graph.nodes.size());
+
+  struct Slot {
+    unsigned root;
+    int64_t bytes;
+    int64_t availableAfter;
+  };
+  SmallVector<Slot> slots;
+  for (auto [nodeIndex, node] : llvm::enumerate(graph.nodes)) {
+    if (isDeviceAlias(graph, node))
+      continue;
+    unsigned output = node.output;
+    const TensorRecord &tensor = graph.tensors[output];
+    if (tensor.staticResourceId >= 0 ||
+        llvm::is_contained(graph.inputs, output) ||
+        llvm::is_contained(graph.outputs, output))
+      continue;
+    int64_t bytes = deviceAllocationBytes(graph, output);
+    Slot *best = nullptr;
+    for (Slot &slot : slots)
+      if (slot.availableAfter < static_cast<int64_t>(nodeIndex) &&
+          slot.bytes >= bytes && (!best || slot.bytes < best->bytes))
+        best = &slot;
+    if (best) {
+      storage[output] = best->root;
+      best->availableAfter = lastUse[output];
+    } else {
+      slots.push_back({output, bytes, lastUse[output]});
+    }
+  }
+  for (unsigned &root : storage)
+    while (storage[root] != root)
+      root = storage[root];
+  return storage;
 }
 
 void createWriteExport(ModuleOp module, const GraphRecord &graph,
@@ -893,12 +1194,24 @@ LogicalResult createRunExport(ModuleOp module, const GraphRecord &graph) {
   llvm::DenseMap<unsigned, Value> filterSlots;
   llvm::DenseMap<unsigned, Value> convolutionSlots;
   llvm::DenseMap<unsigned, Value> poolingSlots;
+  llvm::DenseMap<unsigned, Value> softmaxSlots;
   bool usesBlas = false;
   bool usesONNXOperators = false;
   for (auto [index, node] : llvm::enumerate(graph.nodes)) {
     usesBlas |= node.operation == "Gemm" || node.operation == "MatMul";
     usesONNXOperators |=
-        node.operation == "MatMulNBits" || node.operation == "Gather";
+        node.operation == "MatMulNBits" || node.operation == "Gather" ||
+        node.operation == "Cast" || node.operation == "Expand" ||
+        node.operation == "Transpose" || node.operation == "Concat";
+    usesONNXOperators |= node.operation == "Cos" || node.operation == "Sin" ||
+                         node.operation == "Neg";
+    usesONNXOperators |= node.operation == "Slice";
+    usesONNXOperators |= node.operation == "Equal" || node.operation == "Where";
+    usesONNXOperators |= node.operation == "ScatterND";
+    if (node.operation == "Add" && node.inputs.size() == 2 &&
+        node.inputs[0] >= 0 && node.inputs[1] >= 0 &&
+        !graph.tensors[node.output].type.getElementType().isF32())
+      usesONNXOperators = true;
     if (node.operation == "Conv") {
       filterSlots[index] = allocaI32(builder, module.getLoc());
       convolutionSlots[index] = allocaI32(builder, module.getLoc());
@@ -907,6 +1220,9 @@ LogicalResult createRunExport(ModuleOp module, const GraphRecord &graph) {
     } else if (node.operation == "AveragePool") {
       poolingSlots[index] = allocaI32(builder, module.getLoc());
       store(builder, module.getLoc(), zero, poolingSlots[index]);
+    } else if (node.operation == "Softmax") {
+      softmaxSlots[index] = allocaI32(builder, module.getLoc());
+      store(builder, module.getLoc(), zero, softmaxSlots[index]);
     }
   }
 
@@ -958,20 +1274,100 @@ LogicalResult createRunExport(ModuleOp module, const GraphRecord &graph) {
     auto tensorPointer = [&](int64_t index) -> Value {
       return tensorPointers[static_cast<unsigned>(index)];
     };
-    if ((node.operation == "Flatten" || node.operation == "Reshape" ||
-         node.operation == "Identity") &&
-        node.inputs.size() >= 1 && node.inputs[0] >= 0) {
+    if (isMetadataOnlyAlias(node) && node.inputs.size() >= 1 &&
+        node.inputs[0] >= 0) {
       tensorPointers[node.output] = tensorPointer(node.inputs[0]);
       continue;
     }
     if (node.operation == "Add" && node.provider == "udonatenAdd" &&
-        node.inputs.size() == 2 && node.inputs[0] >= 0 && node.inputs[1] >= 0) {
+        node.inputs.size() == 2 && node.inputs[0] >= 0 && node.inputs[1] >= 0 &&
+        tensor(node.inputs[0]).type.getElementType().isF32() &&
+        tensor(node.inputs[1]).type.getElementType().isF32() &&
+        tensor(node.output).type.getElementType().isF32()) {
       checked("udonatenAdd",
               ValueRange{dnn, descriptor(node.inputs[0]),
                          tensorPointer(node.inputs[0]),
                          descriptor(node.inputs[1]),
                          tensorPointer(node.inputs[1]), one,
                          descriptor(node.output), tensorPointers[node.output]});
+      continue;
+    }
+    if (node.operation == "ScatterND" && node.provider == "udononnxScatterND" &&
+        node.inputs.size() == 3 && node.inputs[0] >= 0 && node.inputs[1] >= 0 &&
+        node.inputs[2] >= 0) {
+      const TensorRecord &data = tensor(node.inputs[0]);
+      const TensorRecord &indices = tensor(node.inputs[1]);
+      const TensorRecord &updates = tensor(node.inputs[2]);
+      const TensorRecord &output = tensor(node.output);
+      int32_t dataType = udonclDataType(data.type.getElementType());
+      int32_t indicesType = udonclDataType(indices.type.getElementType());
+      auto reduction = node.attributes
+                           ? node.attributes.getAs<StringAttr>("reduction")
+                           : StringAttr();
+      int64_t depth =
+          indices.type.getRank() ? indices.type.getShape().back() : 0;
+      int64_t expectedUpdates = 1;
+      if (depth > 0 && depth <= data.type.getRank()) {
+        expectedUpdates = indices.type.getNumElements() / depth;
+        for (int64_t axis = depth; axis < data.type.getRank(); ++axis)
+          expectedUpdates *= data.type.getDimSize(axis);
+      }
+      if (!dataType || (indicesType != 2 && indicesType != 3) || depth <= 0 ||
+          depth > data.type.getRank() ||
+          data.type.getElementType() != updates.type.getElementType() ||
+          data.type != output.type ||
+          updates.type.getNumElements() != expectedUpdates ||
+          (reduction && reduction.getValue() != "none"))
+        return emitError(module.getLoc())
+               << "ONNX ScatterND requires reduction=none, INT32/INT64 "
+                  "indices, and compatible static data/updates/output shapes";
+      Value dataShape =
+          allocaI64Array(builder, module.getLoc(), data.type.getShape());
+      Value indicesShape =
+          allocaI64Array(builder, module.getLoc(), indices.type.getShape());
+      checked("udononnxScatterND",
+              ValueRange{
+                  onnx, constant(dataType), tensorPointer(node.inputs[0]),
+                  dataShape, constant(data.type.getRank()),
+                  constant(indicesType), tensorPointer(node.inputs[1]),
+                  indicesShape, constant(indices.type.getRank()),
+                  tensorPointer(node.inputs[2]), tensorPointers[node.output]});
+      continue;
+    }
+    if (node.operation == "Add" && node.provider == "udonatenAdd" &&
+        node.inputs.size() == 2 && node.inputs[0] >= 0 && node.inputs[1] >= 0) {
+      const TensorRecord &left = tensor(node.inputs[0]);
+      const TensorRecord &right = tensor(node.inputs[1]);
+      const TensorRecord &output = tensor(node.output);
+      int32_t dataType = udonclDataType(left.type.getElementType());
+      if (!dataType ||
+          left.type.getElementType() != right.type.getElementType() ||
+          left.type.getElementType() != output.type.getElementType())
+        return emitError(module.getLoc())
+               << "ONNX Add requires matching supported scalar types";
+      Value leftShape =
+          allocaI64Array(builder, module.getLoc(), left.type.getShape());
+      Value rightShape =
+          allocaI64Array(builder, module.getLoc(), right.type.getShape());
+      Value outputShape =
+          allocaI64Array(builder, module.getLoc(), output.type.getShape());
+      checked("udononnxAdd",
+              ValueRange{
+                  onnx, constant(dataType), tensorPointer(node.inputs[0]),
+                  leftShape, constant(left.type.getRank()),
+                  tensorPointer(node.inputs[1]), rightShape,
+                  constant(right.type.getRank()), tensorPointers[node.output],
+                  outputShape, constant(output.type.getRank())});
+      continue;
+    }
+    if (node.operation == "Mul" && node.provider == "udonatenMul" &&
+        node.inputs.size() == 2 && node.inputs[0] >= 0 && node.inputs[1] >= 0) {
+      checked("udonatenMul",
+              ValueRange{dnn, descriptor(node.inputs[0]),
+                         tensorPointer(node.inputs[0]),
+                         descriptor(node.inputs[1]),
+                         tensorPointer(node.inputs[1]), descriptor(node.output),
+                         tensorPointers[node.output]});
       continue;
     }
     if (node.operation == "Relu" && node.provider == "udonatenRelu" &&
@@ -985,6 +1381,14 @@ LogicalResult createRunExport(ModuleOp module, const GraphRecord &graph) {
     if (node.operation == "Tanh" && node.provider == "udonatenTanh" &&
         node.inputs.size() == 1 && node.inputs[0] >= 0) {
       checked("udonatenTanh",
+              ValueRange{dnn, descriptor(node.inputs[0]),
+                         tensorPointer(node.inputs[0]), descriptor(node.output),
+                         tensorPointers[node.output]});
+      continue;
+    }
+    if (node.operation == "Sigmoid" && node.provider == "udonatenSigmoid" &&
+        node.inputs.size() == 1 && node.inputs[0] >= 0) {
+      checked("udonatenSigmoid",
               ValueRange{dnn, descriptor(node.inputs[0]),
                          tensorPointer(node.inputs[0]), descriptor(node.output),
                          tensorPointers[node.output]});
@@ -1061,6 +1465,277 @@ LogicalResult createRunExport(ModuleOp module, const GraphRecord &graph) {
               tensorPointers[node.output]});
       continue;
     }
+    if (node.operation == "Cast" && node.provider == "udononnxCast" &&
+        node.inputs.size() == 1 && node.inputs[0] >= 0) {
+      const TensorRecord &input = tensor(node.inputs[0]);
+      const TensorRecord &output = tensor(node.output);
+      int32_t inputType = udonclDataType(input.type.getElementType());
+      int32_t outputType = udonclDataType(output.type.getElementType());
+      if (!inputType || !outputType ||
+          input.type.getNumElements() != output.type.getNumElements())
+        return emitError(module.getLoc())
+               << "ONNX Cast requires supported scalar types and matching "
+                  "input/output element counts";
+      checked("udononnxCast",
+              ValueRange{onnx, constant(inputType),
+                         tensorPointer(node.inputs[0]), constant(outputType),
+                         tensorPointers[node.output],
+                         constant(output.type.getNumElements())});
+      continue;
+    }
+    if (node.operation == "Expand" && node.provider == "udononnxExpand" &&
+        node.inputs.size() >= 1 && node.inputs[0] >= 0) {
+      const TensorRecord &input = tensor(node.inputs[0]);
+      const TensorRecord &output = tensor(node.output);
+      int32_t dataType = udonclDataType(input.type.getElementType());
+      if (!dataType ||
+          input.type.getElementType() != output.type.getElementType() ||
+          output.type.getRank() < input.type.getRank())
+        return emitError(module.getLoc())
+               << "ONNX Expand requires a supported matching scalar type "
+                  "and output rank at least input rank";
+      int64_t rankOffset = output.type.getRank() - input.type.getRank();
+      for (int64_t axis = 0; axis < input.type.getRank(); ++axis) {
+        int64_t inputExtent = input.type.getDimSize(axis);
+        int64_t outputExtent = output.type.getDimSize(axis + rankOffset);
+        if (inputExtent != 1 && inputExtent != outputExtent)
+          return emitError(module.getLoc())
+                 << "ONNX Expand input shape is not broadcast-compatible "
+                    "with its output shape";
+      }
+      Value inputShape =
+          allocaI64Array(builder, module.getLoc(), input.type.getShape());
+      Value outputShape =
+          allocaI64Array(builder, module.getLoc(), output.type.getShape());
+      checked("udononnxExpand",
+              ValueRange{onnx, constant(dataType),
+                         tensorPointer(node.inputs[0]), inputShape,
+                         constant(input.type.getRank()),
+                         tensorPointers[node.output], outputShape,
+                         constant(output.type.getRank())});
+      continue;
+    }
+    if (node.operation == "Transpose" && node.provider == "udononnxTranspose" &&
+        node.inputs.size() == 1 && node.inputs[0] >= 0) {
+      const TensorRecord &input = tensor(node.inputs[0]);
+      const TensorRecord &output = tensor(node.output);
+      int32_t dataType = udonclDataType(input.type.getElementType());
+      SmallVector<int64_t> permutation =
+          integerArrayAttribute(node, "perm", {});
+      if (permutation.empty())
+        for (int64_t axis = input.type.getRank(); axis-- > 0;)
+          permutation.push_back(axis);
+      SmallVector<bool> seen(input.type.getRank(), false);
+      bool valid =
+          dataType &&
+          input.type.getElementType() == output.type.getElementType() &&
+          input.type.getRank() == output.type.getRank() &&
+          permutation.size() == static_cast<size_t>(input.type.getRank());
+      for (auto [outputAxis, inputAxis] : llvm::enumerate(permutation)) {
+        valid &= inputAxis >= 0 && inputAxis < input.type.getRank() &&
+                 !seen[inputAxis];
+        if (!valid)
+          break;
+        seen[inputAxis] = true;
+        valid &= output.type.getDimSize(outputAxis) ==
+                 input.type.getDimSize(inputAxis);
+      }
+      if (!valid)
+        return emitError(module.getLoc())
+               << "ONNX Transpose requires a valid static permutation and "
+                  "matching input/output scalar types";
+      Value inputShape =
+          allocaI64Array(builder, module.getLoc(), input.type.getShape());
+      Value permutationValue =
+          allocaI64Array(builder, module.getLoc(), permutation);
+      checked("udononnxTranspose",
+              ValueRange{onnx, constant(dataType),
+                         tensorPointer(node.inputs[0]), inputShape,
+                         constant(input.type.getRank()), permutationValue,
+                         tensorPointers[node.output]});
+      continue;
+    }
+    if (node.operation == "Concat" && node.provider == "udononnxConcat" &&
+        !node.inputs.empty()) {
+      const TensorRecord &output = tensor(node.output);
+      int32_t dataType = udonclDataType(output.type.getElementType());
+      int64_t axis = integerAttribute(node, "axis", 0);
+      if (axis < 0)
+        axis += output.type.getRank();
+      if (!dataType || axis < 0 || axis >= output.type.getRank())
+        return emitError(module.getLoc())
+               << "ONNX Concat requires a supported scalar type and valid "
+                  "axis";
+      Value outputShape =
+          allocaI64Array(builder, module.getLoc(), output.type.getShape());
+      int64_t axisOffset = 0;
+      for (int64_t inputIndex : node.inputs) {
+        if (inputIndex < 0)
+          return emitError(module.getLoc())
+                 << "ONNX Concat does not accept absent inputs";
+        const TensorRecord &input = tensor(inputIndex);
+        bool compatible =
+            input.type.getElementType() == output.type.getElementType() &&
+            input.type.getRank() == output.type.getRank();
+        for (int64_t dimension = 0;
+             compatible && dimension < output.type.getRank(); ++dimension)
+          compatible =
+              dimension == axis || input.type.getDimSize(dimension) ==
+                                       output.type.getDimSize(dimension);
+        if (!compatible)
+          return emitError(module.getLoc())
+                 << "ONNX Concat input shape or scalar type does not match "
+                    "its output";
+        Value inputShape =
+            allocaI64Array(builder, module.getLoc(), input.type.getShape());
+        checked("udononnxConcat",
+                ValueRange{onnx, constant(dataType), tensorPointer(inputIndex),
+                           inputShape, constant(input.type.getRank()),
+                           constant(axis),
+                           arith::ConstantIntOp::create(
+                               builder, module.getLoc(), axisOffset, 64),
+                           tensorPointers[node.output], outputShape});
+        axisOffset += input.type.getDimSize(axis);
+      }
+      if (axisOffset != output.type.getDimSize(axis))
+        return emitError(module.getLoc())
+               << "ONNX Concat input extents do not fill the output axis";
+      continue;
+    }
+    if ((node.operation == "Cos" || node.operation == "Sin" ||
+         node.operation == "Neg") &&
+        node.provider == "udononnx" + node.operation &&
+        node.inputs.size() == 1 && node.inputs[0] >= 0) {
+      const TensorRecord &input = tensor(node.inputs[0]);
+      const TensorRecord &output = tensor(node.output);
+      if (!input.type.getElementType().isF32() || input.type != output.type)
+        return emitError(module.getLoc())
+               << "ONNX " << node.operation
+               << " requires matching static FP32 input/output tensors";
+      checked(node.provider, ValueRange{onnx, tensorPointer(node.inputs[0]),
+                                        constant(input.type.getNumElements()),
+                                        tensorPointers[node.output]});
+      continue;
+    }
+    if (node.operation == "Slice" && node.provider == "udononnxSlice" &&
+        node.inputs.size() >= 3 && node.inputs[0] >= 0 && node.inputs[1] >= 0 &&
+        node.inputs[2] >= 0) {
+      const TensorRecord &input = tensor(node.inputs[0]);
+      const TensorRecord &starts = tensor(node.inputs[1]);
+      const TensorRecord &ends = tensor(node.inputs[2]);
+      const TensorRecord &output = tensor(node.output);
+      int32_t dataType = udonclDataType(input.type.getElementType());
+      int64_t sliceRank = starts.type.getNumElements();
+      if (!dataType ||
+          input.type.getElementType() != output.type.getElementType() ||
+          input.type.getRank() != output.type.getRank() ||
+          !starts.type.getElementType().isInteger(64) ||
+          !ends.type.getElementType().isInteger(64) ||
+          ends.type.getNumElements() != sliceRank || sliceRank <= 0 ||
+          sliceRank > input.type.getRank())
+        return emitError(module.getLoc())
+               << "ONNX Slice requires static-rank tensors and equally sized "
+                  "INT64 starts/ends";
+      Value axes;
+      if (node.inputs.size() >= 4 && node.inputs[3] >= 0) {
+        const TensorRecord &axesTensor = tensor(node.inputs[3]);
+        if (!axesTensor.type.getElementType().isInteger(64) ||
+            axesTensor.type.getNumElements() != sliceRank)
+          return emitError(module.getLoc())
+                 << "ONNX Slice axes must be INT64 and match starts";
+        axes = tensorPointer(node.inputs[3]);
+      } else {
+        SmallVector<int64_t> defaultAxes;
+        for (int64_t axis = 0; axis < sliceRank; ++axis)
+          defaultAxes.push_back(axis);
+        axes = allocaI64Array(builder, module.getLoc(), defaultAxes);
+      }
+      Value steps;
+      if (node.inputs.size() >= 5 && node.inputs[4] >= 0) {
+        const TensorRecord &stepsTensor = tensor(node.inputs[4]);
+        if (!stepsTensor.type.getElementType().isInteger(64) ||
+            stepsTensor.type.getNumElements() != sliceRank)
+          return emitError(module.getLoc())
+                 << "ONNX Slice steps must be INT64 and match starts";
+        steps = tensorPointer(node.inputs[4]);
+      } else {
+        steps = allocaI64Array(builder, module.getLoc(),
+                               SmallVector<int64_t>(sliceRank, 1));
+      }
+      Value inputShape =
+          allocaI64Array(builder, module.getLoc(), input.type.getShape());
+      Value outputShape =
+          allocaI64Array(builder, module.getLoc(), output.type.getShape());
+      checked("udononnxSlice",
+              ValueRange{
+                  onnx, constant(dataType), tensorPointer(node.inputs[0]),
+                  inputShape, constant(input.type.getRank()),
+                  tensorPointer(node.inputs[1]), tensorPointer(node.inputs[2]),
+                  axes, steps, constant(sliceRank), tensorPointers[node.output],
+                  outputShape});
+      continue;
+    }
+    if (node.operation == "Equal" && node.provider == "udononnxEqual" &&
+        node.inputs.size() == 2 && node.inputs[0] >= 0 && node.inputs[1] >= 0) {
+      const TensorRecord &left = tensor(node.inputs[0]);
+      const TensorRecord &right = tensor(node.inputs[1]);
+      const TensorRecord &output = tensor(node.output);
+      int32_t dataType = udonclDataType(left.type.getElementType());
+      if (!dataType ||
+          left.type.getElementType() != right.type.getElementType() ||
+          !output.type.getElementType().isInteger(1))
+        return emitError(module.getLoc())
+               << "ONNX Equal requires matching supported input scalar types "
+                  "and a boolean output";
+      Value leftShape =
+          allocaI64Array(builder, module.getLoc(), left.type.getShape());
+      Value rightShape =
+          allocaI64Array(builder, module.getLoc(), right.type.getShape());
+      Value outputShape =
+          allocaI64Array(builder, module.getLoc(), output.type.getShape());
+      checked("udononnxEqual",
+              ValueRange{
+                  onnx, constant(dataType), tensorPointer(node.inputs[0]),
+                  leftShape, constant(left.type.getRank()),
+                  tensorPointer(node.inputs[1]), rightShape,
+                  constant(right.type.getRank()), tensorPointers[node.output],
+                  outputShape, constant(output.type.getRank())});
+      continue;
+    }
+    if (node.operation == "Where" && node.provider == "udononnxWhere" &&
+        node.inputs.size() == 3 && node.inputs[0] >= 0 && node.inputs[1] >= 0 &&
+        node.inputs[2] >= 0) {
+      const TensorRecord &condition = tensor(node.inputs[0]);
+      const TensorRecord &whenTrue = tensor(node.inputs[1]);
+      const TensorRecord &whenFalse = tensor(node.inputs[2]);
+      const TensorRecord &output = tensor(node.output);
+      int32_t dataType = udonclDataType(output.type.getElementType());
+      if (!condition.type.getElementType().isInteger(1) || !dataType ||
+          whenTrue.type.getElementType() != output.type.getElementType() ||
+          whenFalse.type.getElementType() != output.type.getElementType())
+        return emitError(module.getLoc())
+               << "ONNX Where requires a boolean condition and matching "
+                  "supported value/output scalar types";
+      Value conditionShape =
+          allocaI64Array(builder, module.getLoc(), condition.type.getShape());
+      Value trueShape =
+          allocaI64Array(builder, module.getLoc(), whenTrue.type.getShape());
+      Value falseShape =
+          allocaI64Array(builder, module.getLoc(), whenFalse.type.getShape());
+      Value outputShape =
+          allocaI64Array(builder, module.getLoc(), output.type.getShape());
+      checked("udononnxWhere",
+              ValueRange{onnx, constant(dataType),
+                         tensorPointer(node.inputs[0]), conditionShape,
+                         constant(condition.type.getRank()),
+                         tensorPointer(node.inputs[1]), trueShape,
+                         constant(whenTrue.type.getRank()),
+                         tensorPointer(node.inputs[2]), falseShape,
+                         constant(whenFalse.type.getRank()),
+                         tensorPointers[node.output], outputShape,
+                         constant(output.type.getRank())});
+      continue;
+    }
     if (node.operation == "Conv" &&
         node.provider == "udondnnConvolutionForward" &&
         node.inputs.size() >= 2 && node.inputs[0] >= 0 && node.inputs[1] >= 0) {
@@ -1133,6 +1808,40 @@ LogicalResult createRunExport(ModuleOp module, const GraphRecord &graph) {
                          descriptor(node.output), tensorPointers[node.output]});
       continue;
     }
+    if (node.operation == "Softmax" &&
+        node.provider == "udondnnSoftmaxForward" && node.inputs.size() == 1 &&
+        node.inputs[0] >= 0) {
+      const TensorRecord &input = tensor(node.inputs[0]);
+      const TensorRecord &output = tensor(node.output);
+      int64_t axis = integerAttribute(node, "axis", -1);
+      if (axis < 0)
+        axis += input.type.getRank();
+      if (!input.type.getElementType().isF32() || input.type != output.type ||
+          axis < 0 || axis >= input.type.getRank())
+        return emitError(module.getLoc())
+               << "ONNX Softmax requires matching static FP32 tensors and a "
+                  "valid axis";
+      int64_t outer = 1;
+      int64_t inner = 1;
+      for (int64_t dimension : input.type.getShape().take_front(axis))
+        outer *= dimension;
+      for (int64_t dimension : input.type.getShape().drop_front(axis + 1))
+        inner *= dimension;
+      Value slot = softmaxSlots.lookup(nodeIndex);
+      checked("udondnnCreateTensorDescriptor", slot);
+      checked("udondnnSetTensor4dDescriptor",
+              ValueRange{loadI32(builder, module.getLoc(), slot), constant(0),
+                         constant(0), constant(outer),
+                         constant(input.type.getDimSize(axis)), constant(inner),
+                         constant(1)});
+      checked("udondnnSoftmaxForward",
+              ValueRange{dnn, constant(1), constant(1), onePointer,
+                         loadI32(builder, module.getLoc(), slot),
+                         tensorPointer(node.inputs[0]), zeroPointer,
+                         loadI32(builder, module.getLoc(), slot),
+                         tensorPointers[node.output]});
+      continue;
+    }
     if (node.operation == "Gemm" && node.provider == "udonblasSgemm" &&
         node.inputs.size() >= 2 && node.inputs[0] >= 0 && node.inputs[1] >= 0) {
       ArrayRef<int64_t> left = tensor(node.inputs[0]).type.getShape();
@@ -1177,16 +1886,56 @@ LogicalResult createRunExport(ModuleOp module, const GraphRecord &graph) {
         node.inputs.size() == 2 && node.inputs[0] >= 0 && node.inputs[1] >= 0) {
       const TensorRecord &leftTensor = tensor(node.inputs[0]);
       const TensorRecord &rightTensor = tensor(node.inputs[1]);
+      const TensorRecord &outputTensor = tensor(node.output);
       ArrayRef<int64_t> left = leftTensor.type.getShape();
       ArrayRef<int64_t> right = rightTensor.type.getShape();
-      if (left.empty() || right.size() != 2 || left.back() != right.front() ||
+      ArrayRef<int64_t> output = outputTensor.type.getShape();
+      if (left.size() < 2 || right.size() < 2 ||
+          left.back() != right[right.size() - 2] ||
           !leftTensor.type.getElementType().isF32() ||
-          !rightTensor.type.getElementType().isF32())
+          !rightTensor.type.getElementType().isF32() ||
+          !outputTensor.type.getElementType().isF32())
         return emitError(module.getLoc())
-               << "ONNX MatMul currently requires FP32 [..., K] x [K, N]";
+               << "ONNX MatMul requires FP32 [..., M, K] x [..., K, N]";
       int64_t k = left.back();
-      int64_t m = leftTensor.type.getNumElements() / k;
+      int64_t m = left[left.size() - 2];
       int64_t n = right.back();
+      int64_t leftBatches = leftTensor.type.getNumElements() / (m * k);
+      int64_t rightBatches = rightTensor.type.getNumElements() / (k * n);
+      int64_t outputBatches = outputTensor.type.getNumElements() / (m * n);
+      if (output.size() < 2 || output[output.size() - 2] != m ||
+          output.back() != n ||
+          (leftBatches != 1 && leftBatches != outputBatches) ||
+          (rightBatches != 1 && rightBatches != outputBatches))
+        return emitError(module.getLoc())
+               << "ONNX MatMul batch dimensions require contiguous equal or "
+                  "whole-tensor broadcast batches";
+      if (outputBatches > 1) {
+        func::CallOp call = func::CallOp::create(
+            builder, module.getLoc(), "udonblasSgemmStridedBatched",
+            TypeRange{i32},
+            ValueRange{
+                blas, constant(0), constant(0), constant(n), constant(m),
+                constant(k), onePointer, tensorPointer(node.inputs[1]),
+                constant(n),
+                arith::ConstantIntOp::create(builder, module.getLoc(),
+                                             rightBatches == 1 ? 0 : k * n, 64),
+                tensorPointer(node.inputs[0]), constant(k),
+                arith::ConstantIntOp::create(builder, module.getLoc(),
+                                             leftBatches == 1 ? 0 : m * k, 64),
+                zeroPointer, tensorPointers[node.output], constant(n),
+                arith::ConstantIntOp::create(builder, module.getLoc(), m * n,
+                                             64),
+                constant(outputBatches)});
+        Block *next = run.addBlock();
+        Value succeeded = arith::CmpIOp::create(builder, module.getLoc(),
+                                                arith::CmpIPredicate::eq,
+                                                call.getResult(0), zero);
+        cf::CondBranchOp::create(builder, module.getLoc(), succeeded, next,
+                                 ValueRange{}, cleanup, call.getResults());
+        builder.setInsertionPointToEnd(next);
+        continue;
+      }
       checked(
           "udonblasSgemm",
           ValueRange{blas, constant(0), constant(0), constant(n), constant(m),
@@ -1266,6 +2015,10 @@ LogicalResult createRunExport(ModuleOp module, const GraphRecord &graph) {
     func::CallOp::create(builder, module.getLoc(),
                          "udondnnDestroyPoolingDescriptor", TypeRange{i32},
                          loadI32(builder, module.getLoc(), slot));
+  for (Value slot : softmaxSlots.values())
+    func::CallOp::create(builder, module.getLoc(),
+                         "udondnnDestroyTensorDescriptor", TypeRange{i32},
+                         loadI32(builder, module.getLoc(), slot));
   for (Value slot : convolutionSlots.values())
     func::CallOp::create(builder, module.getLoc(),
                          "udondnnDestroyConvolutionDescriptor", TypeRange{i32},
@@ -1324,8 +2077,12 @@ LogicalResult createRunExport(ModuleOp module, const GraphRecord &graph) {
       module, "udonatenAdd",
       {i32, i32, pointer, i32, pointer, builder.getF32Type(), i32, pointer},
       {i32});
+  declaration(module, "udonatenMul",
+              {i32, i32, pointer, i32, pointer, i32, pointer}, {i32});
   declaration(module, "udonatenRelu", {i32, i32, pointer, i32, pointer}, {i32});
   declaration(module, "udonatenTanh", {i32, i32, pointer, i32, pointer}, {i32});
+  declaration(module, "udonatenSigmoid", {i32, i32, pointer, i32, pointer},
+              {i32});
   declaration(
       module, "udonatenRmsNorm",
       {i32, i32, pointer, pointer, i32, i32, pointer, pointer, i32, pointer},
@@ -1334,11 +2091,52 @@ LogicalResult createRunExport(ModuleOp module, const GraphRecord &graph) {
               {i32, i32, pointer, pointer, i32, i32, pointer, i32,
                builder.getI64Type(), pointer},
               {i32});
+  declaration(module, "udondnnSoftmaxForward",
+              {i32, i32, i32, pointer, i32, pointer, pointer, i32, pointer},
+              {i32});
+  declaration(module, "udononnxCast", {i32, i32, pointer, i32, pointer, i32},
+              {i32});
+  declaration(module, "udononnxExpand",
+              {i32, i32, pointer, pointer, i32, pointer, pointer, i32}, {i32});
+  declaration(module, "udononnxTranspose",
+              {i32, i32, pointer, pointer, i32, pointer, pointer}, {i32});
+  declaration(module, "udononnxConcat",
+              {i32, i32, pointer, pointer, i32, i32, builder.getI64Type(),
+               pointer, pointer},
+              {i32});
+  declaration(module, "udononnxCos", {i32, pointer, i32, pointer}, {i32});
+  declaration(module, "udononnxSin", {i32, pointer, i32, pointer}, {i32});
+  declaration(module, "udononnxNeg", {i32, pointer, i32, pointer}, {i32});
+  declaration(module, "udononnxSlice",
+              {i32, i32, pointer, pointer, i32, pointer, pointer, pointer,
+               pointer, i32, pointer, pointer},
+              {i32});
+  declaration(module, "udononnxEqual",
+              {i32, i32, pointer, pointer, i32, pointer, pointer, i32, pointer,
+               pointer, i32},
+              {i32});
+  declaration(module, "udononnxWhere",
+              {i32, i32, pointer, pointer, i32, pointer, pointer, i32, pointer,
+               pointer, i32, pointer, pointer, i32},
+              {i32});
+  declaration(module, "udononnxAdd",
+              {i32, i32, pointer, pointer, i32, pointer, pointer, i32, pointer,
+               pointer, i32},
+              {i32});
+  declaration(module, "udononnxScatterND",
+              {i32, i32, pointer, pointer, i32, i32, pointer, pointer, i32,
+               pointer, pointer},
+              {i32});
   declaration(module, "udonblasCreate", {pointer}, {i32});
   declaration(module, "udonblasDestroy", {i32}, {i32});
   declaration(module, "udonblasSgemm",
               {i32, i32, i32, i32, i32, i32, pointer, pointer, i32, pointer,
                i32, pointer, pointer, i32},
+              {i32});
+  declaration(module, "udonblasSgemmStridedBatched",
+              {i32, i32, i32, i32, i32, i32, pointer, pointer, i32,
+               builder.getI64Type(), pointer, i32, builder.getI64Type(),
+               pointer, pointer, i32, builder.getI64Type(), i32},
               {i32});
   declaration(module, "udononnxCreateOperatorHandle", {pointer}, {i32});
   declaration(module, "udononnxDestroyOperatorHandle", {i32}, {i32});
@@ -1652,6 +2450,78 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
   builder.setInsertionPointToEnd(initializeInvalid);
   func::ReturnOp::create(builder, location, onnxStatus(1));
   builder.setInsertionPointToEnd(initializeValid);
+  Value staticError = allocaI32(builder, location);
+  for (auto [tensorIndex, tensor] : llvm::enumerate(graph.tensors)) {
+    if (tensor.staticResourceId < 0)
+      continue;
+    Value resourceId = arith::ConstantIntOp::create(
+        builder, location, tensor.staticResourceId, 32);
+    Value byteLength = arith::ConstantIntOp::create(
+        builder, location, tensor.staticByteLength, 32);
+    auto physical = func::CallOp::create(
+        builder, location, "__vrc_opencl_static_tensor", TypeRange{i32},
+        ValueRange{resourceId, byteLength});
+    auto created = func::CallOp::create(
+        builder, location, "udonclAdoptStaticBuffer", TypeRange{pointer},
+        ValueRange{initializeEntry->getArgument(2), resourceId, byteLength,
+                   physical.getResult(0), staticError});
+    Value handle = pointerToInt(builder, location, created.getResult(0));
+    Value errorSucceeded = arith::CmpIOp::create(
+        builder, location, arith::CmpIPredicate::eq,
+        loadI32(builder, location, staticError), onnxStatus(0));
+    Value handleValid = arith::CmpIOp::create(
+        builder, location, arith::CmpIPredicate::ne, handle, onnxStatus(0));
+    Value succeeded =
+        arith::AndIOp::create(builder, location, errorSucceeded, handleValid);
+    Block *next = initialize.addBlock();
+    Block *failure = initialize.addBlock();
+    cf::CondBranchOp::create(builder, location, succeeded, next, ValueRange{},
+                             failure, ValueRange{});
+    builder.setInsertionPointToEnd(failure);
+    func::ReturnOp::create(builder, location, onnxStatus(5));
+    builder.setInsertionPointToEnd(next);
+    store(builder, location, handle,
+          addressOf(builder, location, deviceBufferSymbol(tensorIndex)));
+  }
+  if (supportsDeviceGraph(graph)) {
+    SmallVector<unsigned> storage = deviceStorage(graph);
+    auto allocateDeviceBuffer = [&](StringRef symbol, int64_t bytes) {
+      auto created = func::CallOp::create(
+          builder, location, "udonclCreateBufferForQueue", TypeRange{pointer},
+          ValueRange{initializeEntry->getArgument(2),
+                     arith::ConstantIntOp::create(builder, location, 1, 64),
+                     arith::ConstantIntOp::create(builder, location, bytes, 32),
+                     staticError});
+      Value handle = pointerToInt(builder, location, created.getResult(0));
+      Value errorSucceeded = arith::CmpIOp::create(
+          builder, location, arith::CmpIPredicate::eq,
+          loadI32(builder, location, staticError), onnxStatus(0));
+      Value handleValid = arith::CmpIOp::create(
+          builder, location, arith::CmpIPredicate::ne, handle, onnxStatus(0));
+      Value succeeded =
+          arith::AndIOp::create(builder, location, errorSucceeded, handleValid);
+      Block *next = initialize.addBlock();
+      Block *failure = initialize.addBlock();
+      cf::CondBranchOp::create(builder, location, succeeded, next, ValueRange{},
+                               failure, ValueRange{});
+      builder.setInsertionPointToEnd(failure);
+      func::ReturnOp::create(builder, location, onnxStatus(5));
+      builder.setInsertionPointToEnd(next);
+      store(builder, location, handle, addressOf(builder, location, symbol));
+    };
+    for (auto [tensorIndex, tensor] : llvm::enumerate(graph.tensors)) {
+      if (tensor.staticResourceId >= 0 ||
+          llvm::is_contained(graph.inputs, tensorIndex) ||
+          (llvm::is_contained(graph.outputs, tensorIndex) &&
+           !needsQ4Surface(graph, tensorIndex)) ||
+          storage[tensorIndex] != tensorIndex)
+        continue;
+      allocateDeviceBuffer(deviceBufferSymbol(tensorIndex),
+                           deviceAllocationBytes(graph, tensorIndex));
+    }
+    if (hasDeviceQ4(graph))
+      allocateDeviceBuffer(q4ScratchSymbol, q4SurfaceBytes);
+  }
   auto marker = func::CallOp::create(
       builder, location, "clEnqueueMarkerWithWaitList", TypeRange{i32},
       ValueRange{
@@ -1663,6 +2533,68 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
   Value markerStatus = arith::SelectOp::create(
       builder, location, markerSucceeded, onnxStatus(0), onnxStatus(5));
   func::ReturnOp::create(builder, location, markerStatus);
+
+  builder.setInsertionPointToEnd(module.getBody());
+  auto disposeSignature =
+      FunctionType::get(module.getContext(), {i32, pointer}, {i32});
+  auto dispose = func::FuncOp::create(
+      builder, location, "udononnxGeneratedDispose", disposeSignature);
+  Block *disposeEntry = dispose.addEntryBlock();
+  Block *disposeBody = dispose.addBlock();
+  Block *disposeInvalid = dispose.addBlock();
+  builder.setInsertionPointToEnd(disposeEntry);
+  Value expectedGraph = arith::ConstantIntOp::create(builder, location, 0, 32);
+  Value validGraph =
+      arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
+                            disposeEntry->getArgument(0), expectedGraph);
+  cf::CondBranchOp::create(builder, location, validGraph, disposeBody,
+                           ValueRange{}, disposeInvalid, ValueRange{});
+  builder.setInsertionPointToEnd(disposeInvalid);
+  func::ReturnOp::create(builder, location, onnxStatus(1));
+  builder.setInsertionPointToEnd(disposeBody);
+  Value disposeStatus = allocaI32(builder, location);
+  store(builder, location, onnxStatus(0), disposeStatus);
+  SmallVector<unsigned> disposeStorage = deviceStorage(graph);
+  auto releaseDeviceBuffer = [&](StringRef symbol) {
+    Value address = addressOf(builder, location, symbol);
+    Value handle = loadI32(builder, location, address);
+    Value active = arith::CmpIOp::create(
+        builder, location, arith::CmpIPredicate::ne, handle, onnxStatus(0));
+    Block *release = dispose.addBlock();
+    Block *next = dispose.addBlock();
+    cf::CondBranchOp::create(builder, location, active, release, ValueRange{},
+                             next, ValueRange{});
+    builder.setInsertionPointToEnd(release);
+    auto released = func::CallOp::create(
+        builder, location, "clReleaseMemObject", TypeRange{i32},
+        intToPointer(builder, location, handle));
+    Value releaseSucceeded =
+        arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
+                              released.getResult(0), onnxStatus(0));
+    Value updatedStatus = arith::SelectOp::create(
+        builder, location, releaseSucceeded,
+        loadI32(builder, location, disposeStatus), onnxStatus(5));
+    store(builder, location, updatedStatus, disposeStatus);
+    store(builder, location, onnxStatus(0), address);
+    cf::BranchOp::create(builder, location, next);
+    builder.setInsertionPointToEnd(next);
+  };
+  for (auto [tensorIndex, tensor] : llvm::enumerate(graph.tensors)) {
+    bool ownsDeviceBuffer = tensor.staticResourceId >= 0 ||
+                            (supportsDeviceGraph(graph) &&
+                             !llvm::is_contained(graph.inputs, tensorIndex) &&
+                             (!llvm::is_contained(graph.outputs, tensorIndex) ||
+                              needsQ4Surface(graph, tensorIndex)) &&
+                             disposeStorage[tensorIndex] == tensorIndex);
+    if (!ownsDeviceBuffer)
+      continue;
+    releaseDeviceBuffer(deviceBufferSymbol(tensorIndex));
+  }
+  if (supportsDeviceGraph(graph) && hasDeviceQ4(graph))
+    releaseDeviceBuffer(q4ScratchSymbol);
+  func::ReturnOp::create(builder, location,
+                         loadI32(builder, location, disposeStatus));
+  declaration(module, "clReleaseMemObject", {pointer}, {i32});
 
   builder.setInsertionPointToEnd(module.getBody());
   auto run = func::FuncOp::create(builder, location,
@@ -1716,10 +2648,414 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
     return success();
   };
 
+  if (supportsDeviceGraph(graph)) {
+    auto constant = [&](int64_t value) -> Value {
+      return arith::ConstantIntOp::create(builder, location, value, 32);
+    };
+    auto floating = [&](float value) -> Value {
+      return arith::ConstantFloatOp::create(
+          builder, location, builder.getF32Type(), APFloat(value));
+    };
+    auto requireZero = [&](Value actual) {
+      Block *next = run.addBlock();
+      Block *failure = run.addBlock();
+      Value matches = arith::CmpIOp::create(
+          builder, location, arith::CmpIPredicate::eq, actual, onnxStatus(0));
+      cf::CondBranchOp::create(builder, location, matches, next, ValueRange{},
+                               failure, ValueRange{});
+      builder.setInsertionPointToEnd(failure);
+      func::ReturnOp::create(builder, location, onnxStatus(2));
+      builder.setInsertionPointToEnd(next);
+    };
+    SmallVector<unsigned> storage = deviceStorage(graph);
+    SmallVector<Value> buffers(graph.tensors.size());
+    SmallVector<Value> publicOutputBuffers(graph.tensors.size());
+    auto resolve = [&](bool output, unsigned bindingIndex,
+                       unsigned tensorIndex) -> LogicalResult {
+      const TensorRecord &tensor = graph.tensors[tensorIndex];
+      int64_t bytes = tensor.type.getNumElements() *
+                      elementByteSize(tensor.type.getElementType());
+      Value memorySlot = allocaI32(builder, location);
+      Value offsetSlot = allocaI32(builder, location);
+      Value lengthSlot = allocaI32(builder, location);
+      auto resolved = func::CallOp::create(
+          builder, location,
+          output ? "udononnxSessionResolveOutput"
+                 : "udononnxSessionResolveInput",
+          TypeRange{i32},
+          ValueRange{entry->getArgument(1), constant(bindingIndex), memorySlot,
+                     offsetSlot, lengthSlot});
+      returnIfNonzero(resolved.getResult(0));
+      if (failed(requireBytes(loadI32(builder, location, lengthSlot), bytes)))
+        return failure();
+      requireZero(loadI32(builder, location, offsetSlot));
+      Value resolvedBuffer = intToPointer(
+          builder, location, loadI32(builder, location, memorySlot));
+      if (output)
+        publicOutputBuffers[tensorIndex] = resolvedBuffer;
+      if (!output || !needsQ4Surface(graph, tensorIndex))
+        buffers[tensorIndex] = resolvedBuffer;
+      return success();
+    };
+    for (auto [inputIndex, tensorIndex] : llvm::enumerate(graph.inputs))
+      if (failed(resolve(false, inputIndex, tensorIndex)))
+        return failure();
+    for (auto [outputIndex, tensorIndex] : llvm::enumerate(graph.outputs))
+      if (failed(resolve(true, outputIndex, tensorIndex)))
+        return failure();
+    for (auto [tensorIndex, tensor] : llvm::enumerate(graph.tensors)) {
+      if (buffers[tensorIndex] || storage[tensorIndex] != tensorIndex)
+        continue;
+      if (tensor.staticResourceId >= 0 ||
+          (!llvm::is_contained(graph.inputs, tensorIndex) &&
+           (!llvm::is_contained(graph.outputs, tensorIndex) ||
+            needsQ4Surface(graph, tensorIndex))))
+        buffers[tensorIndex] =
+            intToPointer(builder, location,
+                         loadI32(builder, location,
+                                 addressOf(builder, location,
+                                           deviceBufferSymbol(tensorIndex))));
+    }
+
+    Value dispatchEvent = allocaI32(builder, location);
+    auto initialWait = func::CallOp::create(
+        builder, location, "clEnqueueMarkerWithWaitList", TypeRange{i32},
+        ValueRange{entry->getArgument(2), entry->getArgument(3),
+                   entry->getArgument(4), dispatchEvent});
+    returnOpenCLErrorIfNonzero(initialWait.getResult(0));
+    auto waitAndRelease = [&]() {
+      auto waited = func::CallOp::create(
+          builder, location, "clWaitForEvents", TypeRange{i32},
+          ValueRange{constant(1), dispatchEvent});
+      returnOpenCLErrorIfNonzero(waited.getResult(0));
+      auto released = func::CallOp::create(
+          builder, location, "clReleaseEvent", TypeRange{i32},
+          intToPointer(builder, location,
+                       loadI32(builder, location, dispatchEvent)));
+      returnOpenCLErrorIfNonzero(released.getResult(0));
+      store(builder, location, constant(0), dispatchEvent);
+    };
+    waitAndRelease();
+    auto dispatch = [&](StringRef callee, ValueRange arguments) {
+      SmallVector<Value> values(arguments);
+      values.push_back(constant(0));
+      values.push_back(nullPointer(builder, location));
+      values.push_back(dispatchEvent);
+      auto enqueued = func::CallOp::create(builder, location, callee,
+                                           TypeRange{i32}, values);
+      returnOpenCLErrorIfNonzero(enqueued.getResult(0));
+      waitAndRelease();
+    };
+    auto buffer = [&](int64_t tensorIndex) -> Value {
+      return buffers[storage[static_cast<unsigned>(tensorIndex)]];
+    };
+    Value q4Scratch;
+    if (hasDeviceQ4(graph))
+      q4Scratch =
+          intToPointer(builder, location,
+                       loadI32(builder, location,
+                               addressOf(builder, location, q4ScratchSymbol)));
+    for (const NodeRecord &node : graph.nodes) {
+      if (isDeviceAlias(graph, node)) {
+        buffers[node.output] = buffer(node.inputs[0]);
+        continue;
+      }
+      Value output = buffer(node.output);
+      if (!output)
+        return emitError(location)
+               << "Device ONNX graph output lacks physical storage";
+      if (node.operation == "Conv") {
+        if (node.inputs.size() < 2 || node.inputs[0] < 0 || node.inputs[1] < 0)
+          return emitError(location) << "Device Conv requires input and filter";
+        SmallVector<int64_t, 4> inputShape =
+            tensor4d(graph.tensors[node.inputs[0]].type);
+        SmallVector<int64_t, 4> outputShape =
+            tensor4d(graph.tensors[node.output].type);
+        ArrayRef<int64_t> filter =
+            graph.tensors[node.inputs[1]].type.getShape();
+        SmallVector<int64_t> pads =
+            integerArrayAttribute(node, "pads", {0, 0, 0, 0});
+        SmallVector<int64_t> strides =
+            integerArrayAttribute(node, "strides", {1, 1});
+        SmallVector<int64_t> dilations =
+            integerArrayAttribute(node, "dilations", {1, 1});
+        if (filter.size() != 4 || pads.size() != 4 || strides.size() != 2 ||
+            dilations.size() != 2 || pads[0] != pads[2] || pads[1] != pads[3])
+          return emitError(location)
+                 << "Device Conv requires symmetric 2D attributes";
+        dispatch("__vrc_enqueue_udondnn_large_convolution_device_args",
+                 ValueRange{
+                     entry->getArgument(2), buffer(node.inputs[0]),
+                     buffer(node.inputs[1]), output, output,
+                     constant(graph.tensors[node.output].type.getNumElements()),
+                     constant(inputShape[1] | (inputShape[2] << 16)),
+                     constant(inputShape[3]),
+                     constant(outputShape[1] | (outputShape[2] << 16)),
+                     constant(outputShape[3]),
+                     constant(filter[2] | (filter[3] << 16)),
+                     constant(pads[0] | (pads[1] << 16)),
+                     constant(strides[0] | (strides[1] << 16)),
+                     constant(dilations[0] | (dilations[1] << 16)), constant(1),
+                     floating(1.0f), floating(0.0f)});
+        continue;
+      }
+      if (node.operation == "Add" || node.operation == "Mul") {
+        if (node.inputs.size() != 2 || node.inputs[0] < 0 || node.inputs[1] < 0)
+          return emitError(location) << "Device Add requires two inputs";
+        SmallVector<int64_t, 4> a =
+            broadcastTensor4d(graph.tensors[node.inputs[0]].type);
+        SmallVector<int64_t, 4> b =
+            broadcastTensor4d(graph.tensors[node.inputs[1]].type);
+        SmallVector<int64_t, 4> c =
+            broadcastTensor4d(graph.tensors[node.output].type);
+        int64_t operation = node.operation == "Mul" ? 1 : 0;
+        dispatch(
+            "__vrc_enqueue_udondnn_large_op_tensor_device_args",
+            ValueRange{
+                entry->getArgument(2), buffer(node.inputs[0]),
+                buffer(node.inputs[1]), output, output,
+                constant(graph.tensors[node.output].type.getNumElements()),
+                constant(a[0] | (a[1] << 16)), constant(a[2] | (a[3] << 16)),
+                constant(b[0] | (b[1] << 16)), constant(b[2] | (b[3] << 16)),
+                constant(c[0] | (c[1] << 16)), constant(c[2] | (c[3] << 16)),
+                constant(operation | (1 << 8)), floating(1.0f), floating(1.0f),
+                floating(0.0f)});
+        continue;
+      }
+      if (node.operation == "Relu" || node.operation == "Sigmoid" ||
+          node.operation == "Tanh") {
+        int32_t mode = node.operation == "Sigmoid" ? 0
+                       : node.operation == "Relu"  ? 1
+                                                   : 2;
+        dispatch("__vrc_enqueue_udondnn_large_activation_device_args",
+                 ValueRange{
+                     entry->getArgument(2), buffer(node.inputs[0]), output,
+                     output,
+                     constant(graph.tensors[node.output].type.getNumElements()),
+                     constant(mode), constant(1), floating(0.0f),
+                     floating(1.0f), floating(0.0f)});
+        continue;
+      }
+      if (node.operation == "AveragePool") {
+        SmallVector<int64_t, 4> inputShape =
+            tensor4d(graph.tensors[node.inputs[0]].type);
+        SmallVector<int64_t, 4> outputShape =
+            tensor4d(graph.tensors[node.output].type);
+        SmallVector<int64_t> kernel =
+            integerArrayAttribute(node, "kernel_shape", {});
+        SmallVector<int64_t> pads =
+            integerArrayAttribute(node, "pads", {0, 0, 0, 0});
+        SmallVector<int64_t> strides =
+            integerArrayAttribute(node, "strides", {1, 1});
+        if (kernel.size() != 2 || pads.size() != 4 || strides.size() != 2 ||
+            pads[0] != pads[2] || pads[1] != pads[3])
+          return emitError(location)
+                 << "Device AveragePool requires symmetric 2D attributes";
+        int64_t mode = integerAttribute(node, "count_include_pad", 0) ? 1 : 2;
+        dispatch(
+            "__vrc_enqueue_udondnn_large_pooling_device_args",
+            ValueRange{
+                entry->getArgument(2), buffer(node.inputs[0]), output, output,
+                constant(graph.tensors[node.output].type.getNumElements()),
+                constant(inputShape[1]), constant(inputShape[2]),
+                constant(inputShape[3]), constant(outputShape[2]),
+                constant(outputShape[3]),
+                constant(kernel[0] | (kernel[1] << 16)),
+                constant(pads[0] | (pads[1] << 16)),
+                constant(strides[0] | (strides[1] << 16)),
+                constant(mode | (1 << 8)), floating(1.0f), floating(0.0f)});
+        continue;
+      }
+      if (node.operation == "Cos" || node.operation == "Sin" ||
+          node.operation == "Neg") {
+        int32_t operation = node.operation == "Cos"   ? 1
+                            : node.operation == "Sin" ? 2
+                                                      : 3;
+        dispatch(
+            "__vrc_enqueue_udononnx_unary_device_args",
+            ValueRange{
+                entry->getArgument(2), buffer(node.inputs[0]), output,
+                constant(operation),
+                constant(graph.tensors[node.output].type.getNumElements())});
+        continue;
+      }
+      if (isDeviceQ4Node(graph, node)) {
+        const TensorRecord &activation = graph.tensors[node.inputs[0]];
+        int64_t k = integerAttribute(node, "K", 0);
+        int64_t n = integerAttribute(node, "N", 0);
+        int64_t m = activation.type.getNumElements() / k;
+        int64_t kPasses = (k + 127) / 128;
+        int64_t passCount = kPasses;
+        Value previous = passCount & 1 ? q4Scratch : output;
+        Value destination = passCount & 1 ? output : q4Scratch;
+        for (int64_t kBase = 0; kBase < k; kBase += 128) {
+          int64_t tileK = std::min<int64_t>(128, k - kBase);
+          dispatch("__vrc_enqueue_udononnx_matmul_nbits_q4_device_args",
+                   ValueRange{entry->getArgument(2), buffer(node.inputs[0]),
+                              buffer(node.inputs[1]), buffer(node.inputs[2]),
+                              previous, destination, constant(m), constant(n),
+                              constant(k), constant(32), constant(0),
+                              constant(kBase), constant(n), constant(tileK),
+                              constant(kBase ? 1 : 0)});
+          std::swap(previous, destination);
+        }
+        if (previous != output)
+          return emitError(location)
+                 << "Q4 ping-pong schedule did not finish in output storage";
+        continue;
+      }
+      if (node.operation == "Gemm" || node.operation == "MatMul") {
+        ArrayRef<int64_t> left = graph.tensors[node.inputs[0]].type.getShape();
+        ArrayRef<int64_t> right = graph.tensors[node.inputs[1]].type.getShape();
+        if (left.size() != 2 || right.size() != 2 || left[1] != right[0])
+          return emitError(location) << "Device matrix product requires "
+                                        "compatible rank-two tensors";
+        int64_t transA = integerAttribute(node, "transA", 0);
+        int64_t transB = integerAttribute(node, "transB", 0);
+        float alpha =
+            node.attributes && node.attributes.getAs<FloatAttr>("alpha")
+                ? static_cast<float>(node.attributes.getAs<FloatAttr>("alpha")
+                                         .getValueAsDouble())
+                : 1.0f;
+        dispatch("__vrc_enqueue_udonblas_arena_sgemm_device_args",
+                 ValueRange{entry->getArgument(2), buffer(node.inputs[0]),
+                            buffer(node.inputs[1]), output, constant(left[0]),
+                            constant(right[1]), constant(left[1]),
+                            constant(transA), constant(transB),
+                            floating(alpha)});
+        if (node.operation == "Gemm" && node.inputs.size() >= 3 &&
+            node.inputs[2] >= 0) {
+          SmallVector<int64_t, 4> a = tensor4d(graph.tensors[node.output].type);
+          SmallVector<int64_t, 4> b =
+              tensor4d(graph.tensors[node.inputs[2]].type);
+          float beta =
+              node.attributes && node.attributes.getAs<FloatAttr>("beta")
+                  ? static_cast<float>(node.attributes.getAs<FloatAttr>("beta")
+                                           .getValueAsDouble())
+                  : 1.0f;
+          dispatch(
+              "__vrc_enqueue_udondnn_large_op_tensor_device_args",
+              ValueRange{
+                  entry->getArgument(2), output, buffer(node.inputs[2]), output,
+                  output,
+                  constant(graph.tensors[node.output].type.getNumElements()),
+                  constant(a[0] | (a[1] << 16)), constant(a[2] | (a[3] << 16)),
+                  constant(b[0] | (b[1] << 16)), constant(b[2] | (b[3] << 16)),
+                  constant(a[0] | (a[1] << 16)), constant(a[2] | (a[3] << 16)),
+                  constant(1 << 8), floating(1.0f), floating(beta),
+                  floating(0.0f)});
+        }
+        continue;
+      }
+    }
+    for (unsigned tensorIndex : graph.outputs) {
+      Value source = buffer(tensorIndex);
+      Value destination = publicOutputBuffers[tensorIndex];
+      if (!source || !destination)
+        return emitError(location)
+               << "Device ONNX graph output lacks a public buffer";
+      Value sameBuffer =
+          arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
+                                pointerToInt(builder, location, source),
+                                pointerToInt(builder, location, destination));
+      Block *next = run.addBlock();
+      Block *copy = run.addBlock();
+      cf::CondBranchOp::create(builder, location, sameBuffer, next,
+                               ValueRange{}, copy, ValueRange{});
+      builder.setInsertionPointToEnd(copy);
+      int64_t bytes =
+          graph.tensors[tensorIndex].type.getNumElements() *
+          elementByteSize(graph.tensors[tensorIndex].type.getElementType());
+      auto copied = func::CallOp::create(
+          builder, location, "clEnqueueCopyBuffer", TypeRange{i32},
+          ValueRange{entry->getArgument(2), source, destination, constant(0),
+                     constant(0), constant(bytes), constant(0),
+                     nullPointer(builder, location), dispatchEvent});
+      returnOpenCLErrorIfNonzero(copied.getResult(0));
+      waitAndRelease();
+      cf::BranchOp::create(builder, location, next);
+      builder.setInsertionPointToEnd(next);
+    }
+    auto completed = func::CallOp::create(
+        builder, location, "clEnqueueMarkerWithWaitList", TypeRange{i32},
+        ValueRange{entry->getArgument(2), constant(0),
+                   nullPointer(builder, location), entry->getArgument(5)});
+    returnOpenCLErrorIfNonzero(completed.getResult(0));
+    func::ReturnOp::create(builder, location, onnxStatus(0));
+
+    declaration(module, "__vrc_enqueue_udondnn_large_convolution_device_args",
+                {pointer,
+                 pointer,
+                 pointer,
+                 pointer,
+                 pointer,
+                 i32,
+                 i32,
+                 i32,
+                 i32,
+                 i32,
+                 i32,
+                 i32,
+                 i32,
+                 i32,
+                 i32,
+                 builder.getF32Type(),
+                 builder.getF32Type(),
+                 i32,
+                 pointer,
+                 pointer},
+                {i32});
+    declaration(module, "__vrc_enqueue_udondnn_large_activation_device_args",
+                {pointer, pointer, pointer, pointer, i32, i32, i32,
+                 builder.getF32Type(), builder.getF32Type(),
+                 builder.getF32Type(), i32, pointer, pointer},
+                {i32});
+    declaration(module, "__vrc_enqueue_udondnn_large_pooling_device_args",
+                {pointer, pointer, pointer, pointer, i32, i32, i32, i32, i32,
+                 i32, i32, i32, i32, i32, builder.getF32Type(),
+                 builder.getF32Type(), i32, pointer, pointer},
+                {i32});
+    declaration(module, "__vrc_enqueue_udondnn_large_op_tensor_device_args",
+                {pointer, pointer, pointer, pointer, pointer, i32, i32, i32,
+                 i32, i32, i32, i32, i32, builder.getF32Type(),
+                 builder.getF32Type(), builder.getF32Type(), i32, pointer,
+                 pointer},
+                {i32});
+    declaration(module, "__vrc_enqueue_udonblas_arena_sgemm_device_args",
+                {pointer, pointer, pointer, pointer, i32, i32, i32, i32, i32,
+                 builder.getF32Type(), i32, pointer, pointer},
+                {i32});
+    declaration(module, "__vrc_enqueue_udononnx_unary_device_args",
+                {pointer, pointer, pointer, i32, i32, i32, pointer, pointer},
+                {i32});
+    declaration(module, "__vrc_enqueue_udononnx_matmul_nbits_q4_device_args",
+                {pointer, pointer, pointer, pointer, pointer, pointer, i32, i32,
+                 i32, i32, i32, i32, i32, i32, i32, i32, pointer, pointer},
+                {i32});
+    declaration(module, "udononnxSessionResolveInput",
+                {pointer, i32, pointer, pointer, pointer}, {i32});
+    declaration(module, "udononnxSessionResolveOutput",
+                {pointer, i32, pointer, pointer, pointer}, {i32});
+    declaration(module, "clEnqueueMarkerWithWaitList",
+                {pointer, i32, pointer, pointer}, {i32});
+    declaration(
+        module, "clEnqueueCopyBuffer",
+        {pointer, pointer, pointer, i32, i32, i32, i32, pointer, pointer},
+        {i32});
+    declaration(module, "__vrc_opencl_static_tensor", {i32, i32}, {i32});
+    declaration(module, "udonclAdoptStaticBuffer",
+                {pointer, i32, i32, i32, pointer}, {pointer});
+    declaration(module, "udonclCreateBufferForQueue",
+                {pointer, builder.getI64Type(), i32, pointer}, {pointer});
+    return success();
+  }
+
   for (auto [inputIndex, tensorIndex] : llvm::enumerate(graph.inputs)) {
     const TensorRecord &tensor = graph.tensors[tensorIndex];
     int64_t bytes = tensor.type.getNumElements() *
                     elementByteSize(tensor.type.getElementType());
+    if (!bytes)
+      continue;
     Value memorySlot = allocaI32(builder, location);
     Value offsetSlot = allocaI32(builder, location);
     Value lengthSlot = allocaI32(builder, location);
@@ -1761,15 +3097,16 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
   SmallVector<unsigned> storage(graph.tensors.size());
   std::iota(storage.begin(), storage.end(), 0u);
   for (const NodeRecord &node : graph.nodes)
-    if ((node.operation == "Flatten" || node.operation == "Reshape" ||
-         node.operation == "Identity") &&
-        !node.inputs.empty() && node.inputs[0] >= 0)
+    if (isMetadataOnlyAlias(node) && !node.inputs.empty() &&
+        node.inputs[0] >= 0)
       storage[node.output] = storage[static_cast<unsigned>(node.inputs[0])];
 
   for (auto [outputIndex, tensorIndex] : llvm::enumerate(graph.outputs)) {
     const TensorRecord &tensor = graph.tensors[tensorIndex];
     int64_t bytes = tensor.type.getNumElements() *
                     elementByteSize(tensor.type.getElementType());
+    if (!bytes)
+      continue;
     Value memorySlot = allocaI32(builder, location);
     Value offsetSlot = allocaI32(builder, location);
     Value lengthSlot = allocaI32(builder, location);
@@ -1834,6 +3171,11 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
               {i32});
   declaration(module, "clEnqueueMarkerWithWaitList",
               {pointer, i32, pointer, pointer}, {i32});
+  declaration(module, "__vrc_opencl_static_tensor", {i32, i32}, {i32});
+  declaration(module, "udonclAdoptStaticBuffer",
+              {pointer, i32, i32, i32, pointer}, {pointer});
+  declaration(module, "udonclCreateBufferForQueue",
+              {pointer, builder.getI64Type(), i32, pointer}, {pointer});
   return success();
 }
 
@@ -1847,26 +3189,42 @@ struct FinalizeONNXHostPass
       return;
     }
     module.getBody()->getOperations().clear();
-    for (const TensorRecord &tensor : graph->tensors)
-      createGlobal(module, tensor);
+    bool deviceGraph = supportsDeviceGraph(*graph);
+    if (!deviceGraph)
+      for (const TensorRecord &tensor : graph->tensors)
+        createGlobal(module, tensor);
     createModelMetadataGlobals(module, *graph);
-    for (auto [inputIndex, tensorIndex] : llvm::enumerate(graph->inputs)) {
-      (void)tensorIndex;
-      createI32Global(module,
-                      inputBindingSymbol(static_cast<unsigned>(inputIndex)));
+    if (!deviceGraph) {
+      for (auto [inputIndex, tensorIndex] : llvm::enumerate(graph->inputs)) {
+        (void)tensorIndex;
+        createI32Global(module,
+                        inputBindingSymbol(static_cast<unsigned>(inputIndex)));
+      }
+      createI32Global(module, hasRunSymbol);
     }
-    createI32Global(module, hasRunSymbol);
+    SmallVector<unsigned> deviceStorageMap = deviceStorage(*graph);
+    for (auto [tensorIndex, tensor] : llvm::enumerate(graph->tensors))
+      if (tensor.staticResourceId >= 0 ||
+          (deviceGraph && !llvm::is_contained(graph->inputs, tensorIndex) &&
+           (!llvm::is_contained(graph->outputs, tensorIndex) ||
+            needsQ4Surface(*graph, tensorIndex)) &&
+           deviceStorageMap[tensorIndex] == tensorIndex))
+        createI32Global(module, deviceBufferSymbol(tensorIndex));
+    if (deviceGraph && hasDeviceQ4(*graph))
+      createI32Global(module, q4ScratchSymbol);
     Builder builder(module.getContext());
-    createWriteExport(module, *graph, builder.getF32Type(), "float");
-    createWriteExport(module, *graph, builder.getI32Type(), "int32");
-    createWriteExport(module, *graph, builder.getI64Type(), "int64");
-    createReadExport(module, *graph, builder.getF32Type(), "float");
-    createReadExport(module, *graph, builder.getI32Type(), "int32");
-    createReadExport(module, *graph, builder.getI64Type(), "int64");
-    createBindingExports(module, *graph);
+    if (!deviceGraph) {
+      createWriteExport(module, *graph, builder.getF32Type(), "float");
+      createWriteExport(module, *graph, builder.getI32Type(), "int32");
+      createWriteExport(module, *graph, builder.getI64Type(), "int64");
+      createReadExport(module, *graph, builder.getF32Type(), "float");
+      createReadExport(module, *graph, builder.getI32Type(), "int32");
+      createReadExport(module, *graph, builder.getI64Type(), "int64");
+      createBindingExports(module, *graph);
+    }
     createGeneratedModelExports(module, *graph);
     createPhysicalBindingExports(module, *graph);
-    if (failed(createRunExport(module, *graph))) {
+    if (!deviceGraph && failed(createRunExport(module, *graph))) {
       signalPassFailure();
       return;
     }
@@ -1875,6 +3233,7 @@ struct FinalizeONNXHostPass
       return;
     }
     attachBindingMetadata(module, *graph);
+    attachDeviceGraphMetadata(module, *graph, deviceGraph);
     module->setAttr("udoncl.onnx_lowering",
                     StringAttr::get(module.getContext(), "library-calls-v2"));
   }

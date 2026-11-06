@@ -224,7 +224,8 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
             "        public const int StatusAbiMismatch = -4;\n"
             "        public const int StatusExecutionFailure = -5;\n"
             "        public const int StatusDisposed = -6;\n\n"
-            "        [SerializeField] private UdonBehaviour program;\n";
+            "        [SerializeField] private UdonBehaviour program;\n"
+            "        [SerializeField] private Texture2D[] staticTensors;\n";
   if (hasBuffers)
     output
         << "        [SerializeField] private int[] deviceBufferIds;\n"

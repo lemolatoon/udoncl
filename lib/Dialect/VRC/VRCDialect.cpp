@@ -66,6 +66,14 @@ mlir::LogicalResult vrc::vrc::BufferAllocOp::verify() {
   return mlir::success();
 }
 
+mlir::LogicalResult vrc::vrc::StaticBufferOp::verify() {
+  if (getResourceId() < 0)
+    return emitOpError("resource id must be nonnegative");
+  if (getByteSize() <= 0)
+    return emitOpError("byte size must be positive");
+  return mlir::success();
+}
+
 mlir::LogicalResult vrc::vrc::BufferReleaseOp::verify() {
   return verifyHostRuntimeOperation(*this);
 }

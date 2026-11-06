@@ -52,7 +52,12 @@ StringRef raisedName(StringRef name) {
       .Case("llvm.fdiv", "arith.divf")
       .Case("llvm.uitofp", "arith.uitofp")
       .Case("llvm.sitofp", "arith.sitofp")
+      .Case("llvm.fptosi", "arith.fptosi")
       .Case("llvm.fptoui", "arith.fptoui")
+      .Case("llvm.intr.smin", "arith.minsi")
+      .Case("llvm.intr.smax", "arith.maxsi")
+      .Case("llvm.intr.umin", "arith.minui")
+      .Case("llvm.intr.umax", "arith.maxui")
       .Case("llvm.bitcast", "arith.bitcast")
       .Case("llvm.select", "arith.select")
       .Default("");
@@ -415,14 +420,17 @@ struct RaiseLLVMToScalarPass
     patterns.add<FunctionPattern, ConstantPattern, UndefPattern, ComparePattern,
                  FloatComparePattern, BranchPattern, CondBranchPattern,
                  SwitchPattern, ReturnPattern, CallPattern>(&getContext());
-    for (auto source :
-         {"llvm.add",    "llvm.sub",    "llvm.mul",    "llvm.sdiv",
-          "llvm.udiv",   "llvm.srem",   "llvm.urem",   "llvm.and",
-          "llvm.or",     "llvm.xor",    "llvm.shl",    "llvm.lshr",
-          "llvm.ashr",   "llvm.zext",   "llvm.sext",   "llvm.trunc",
-          "llvm.fadd",   "llvm.fsub",   "llvm.fmul",   "llvm.fneg",
-          "llvm.select", "llvm.fdiv",   "llvm.uitofp", "llvm.sitofp",
-          "llvm.fptoui", "llvm.bitcast"})
+    for (auto source : {"llvm.add",       "llvm.sub",       "llvm.mul",
+                        "llvm.sdiv",      "llvm.udiv",      "llvm.srem",
+                        "llvm.urem",      "llvm.and",       "llvm.or",
+                        "llvm.xor",       "llvm.shl",       "llvm.lshr",
+                        "llvm.ashr",      "llvm.zext",      "llvm.sext",
+                        "llvm.trunc",     "llvm.fadd",      "llvm.fsub",
+                        "llvm.fmul",      "llvm.fneg",      "llvm.select",
+                        "llvm.fdiv",      "llvm.uitofp",    "llvm.sitofp",
+                        "llvm.fptosi",    "llvm.fptoui",    "llvm.intr.smin",
+                        "llvm.intr.smax", "llvm.intr.umin", "llvm.intr.umax",
+                        "llvm.bitcast"})
       patterns.add<ScalarPattern>(source, raisedName(source), &getContext());
     if (failed(applyFullConversion(module, target, std::move(patterns))))
       signalPassFailure();

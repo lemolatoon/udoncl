@@ -12,6 +12,7 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/Passes.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/ADT/STLExtras.h"
@@ -43,7 +44,7 @@ bool profile(const llvm::json::Object &config) {
                                              : std::optional<int64_t>();
   auto height = global && global->size() == 3 ? (*global)[1].getAsInteger()
                                               : std::optional<int64_t>();
-  bool launch = gather ? words && *words >= 4 && *words <= 16384 && width &&
+  bool launch = gather ? words && *words >= 4 && *words <= 131072 && width &&
                              height && *width > 0 && *height > 0 &&
                              *width <= 16384 && *height <= 16384 &&
                              *width * *height == *words &&
@@ -73,7 +74,7 @@ bool validContract(DictionaryAttr config) {
             StringAttr::get(config.getContext(), "gather-f32")) {
       auto words = config.getAs<IntegerAttr>("words");
       auto values = attr ? attr.asArrayRef() : ArrayRef<int32_t>();
-      if (!words || words.getInt() < 4 || words.getInt() > 16384 || !attr ||
+      if (!words || words.getInt() < 4 || words.getInt() > 131072 || !attr ||
           values.size() != 3 || values[0] <= 0 || values[1] <= 0 ||
           values[2] != 1 || int64_t(values[0]) * values[1] != words.getInt())
         return false;
@@ -324,6 +325,8 @@ struct PrepareNativeDevicePass
     if (auto profile = config.getAs<StringAttr>("profile")) {
       gpuKernel->setAttr("vrc.profile", profile);
       gpuKernel->setAttr("vrc.words", config.get("words"));
+      if (auto bounds = config.get("argument_bounds"))
+        gpuKernel->setAttr("vrc.argument_bounds", bounds);
       if (kernel->hasAttr("vrc.gather_proven"))
         gpuKernel->setAttr("vrc.gather_proven", builder.getUnitAttr());
     }
@@ -459,6 +462,8 @@ struct LinkCBoundaryPass : impl::LinkCBoundaryPassBase<LinkCBoundaryPass> {
     if (auto profile = config.getAs<StringAttr>("profile")) {
       gpuKernel->setAttr("vrc.profile", profile);
       gpuKernel->setAttr("vrc.words", config.get("words"));
+      if (auto bounds = config.get("argument_bounds"))
+        gpuKernel->setAttr("vrc.argument_bounds", bounds);
     }
     gpuKernel.getBody().takeBody(kernel.getBody());
     auto ret =
@@ -529,6 +534,41 @@ OwningOpRef<ModuleOp> importCBoundary(llvm::StringRef hostFile,
     attrs.append("profile", builder.getStringAttr("gather-f32"));
     attrs.append("words",
                  builder.getI32IntegerAttr(*config.getInteger("words")));
+    if (auto *inputWords = config.getArray("input_words")) {
+      SmallVector<int32_t> values;
+      for (const llvm::json::Value &value : *inputWords) {
+        auto words = value.getAsInteger();
+        if (!words || *words <= 0 || *words > INT32_MAX) {
+          fail(root, "invalid gather input_words capacity");
+          return {};
+        }
+        values.push_back(static_cast<int32_t>(*words));
+      }
+      attrs.append("input_words", builder.getDenseI32ArrayAttr(values));
+    }
+    if (auto *argumentBounds = config.getArray("argument_bounds")) {
+      SmallVector<Attribute> values;
+      llvm::SmallDenseSet<int64_t> indices;
+      for (const llvm::json::Value &value : *argumentBounds) {
+        const auto *entry = value.getAsObject();
+        auto index = entry ? entry->getInteger("index") : std::nullopt;
+        auto minimum = entry ? entry->getInteger("min") : std::nullopt;
+        auto maximum = entry ? entry->getInteger("max") : std::nullopt;
+        if (!index || !minimum || !maximum || *index < 0 ||
+            *index > INT32_MAX || *minimum < INT32_MIN ||
+            *maximum > INT32_MAX || *minimum > *maximum ||
+            !indices.insert(*index).second) {
+          fail(root, "invalid gather argument_bounds entry");
+          return {};
+        }
+        values.push_back(builder.getDictionaryAttr({
+            builder.getNamedAttr("index", builder.getI32IntegerAttr(*index)),
+            builder.getNamedAttr("min", builder.getI32IntegerAttr(*minimum)),
+            builder.getNamedAttr("max", builder.getI32IntegerAttr(*maximum)),
+        }));
+      }
+      attrs.append("argument_bounds", builder.getArrayAttr(values));
+    }
   }
   root->setAttr("vrc.c_boundary", attrs.getDictionary(&context));
   for (auto entry : {std::make_pair(hostFile, StringRef("host")),

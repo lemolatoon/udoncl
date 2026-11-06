@@ -221,6 +221,11 @@ def main():
         '  (void)wait_list; (void)completion;\n'
         '  return UDONONNX_STATUS_NOT_SUPPORTED;\n'
         '}\n'
+        'udononnxStatus_t udononnxGeneratedDispose(\n'
+        '    uint32_t graph_id, udononnxSession_t *value) {\n'
+        '  (void)graph_id; (void)value;\n'
+        '  return UDONONNX_STATUS_SUCCESS;\n'
+        '}\n'
         'int onnx_runtime_contract_probe(int context_value) {\n'
         '  udononnxTensorMetadata_t inputs[1];\n'
         '  udononnxTensorMetadata_t outputs[1];\n'
@@ -478,20 +483,20 @@ def main():
     assert len(generic_manifest['device']['buffers']) == 15
     assert {
         item['id'] for item in generic_manifest['device']['kernels']
-    } == {1, 2, 231, 232, 233, 234}
+    } == {221, 231, 232, 233, 234}
     generic_gemm = next(
         item for item in generic_manifest['device']['kernels']
-        if item['id'] == 1
+        if item['id'] == 221
     )
-    assert generic_gemm['global_size'] == [32, 32, 1]
+    assert generic_gemm['global_size'] == [8192, 2, 1]
     assert generic_gemm['target_texture']['width'] == 8192
     assert generic_gemm['target_texture']['height'] == 2
     generic_gemm_hlsl = (
-        generic_artifact / 'kernels/kernel_1.hlsl'
+        generic_artifact / 'kernels/kernel_221.hlsl'
     ).read_text(encoding='utf-8')
     assert 'uint(position.y) *' in generic_gemm_hlsl
     assert '8192u' in generic_gemm_hlsl
-    assert '32u' in generic_gemm_hlsl
+    assert '256' in generic_gemm_hlsl
     assert len(generic_manifest['dispatch_sites']) > 0
 
     annotated_symbols = [
@@ -615,18 +620,53 @@ def main():
     onnx_mnist_manifest = json.loads(
         (onnx_mnist_artifact / 'manifest.json').read_text(encoding='utf-8')
     )
+    mnist_static_tensors = onnx_mnist_manifest['static_tensors']
+    assert [
+        (tensor['id'], tensor['name'], tensor['data_type'],
+         tensor['shape'], tensor['byte_length'])
+        for tensor in mnist_static_tensors
+    ] == [
+        (0, 'conv.weight', 'float32', [16, 1, 5, 5], 1600),
+        (1, 'conv.bias', 'float32', [1, 16, 1, 1], 64),
+        (2, 'dense.weight', 'float32', [144, 10], 5760),
+        (3, 'dense.bias', 'float32', [10], 40),
+    ]
+    for tensor in mnist_static_tensors:
+        assert tensor['layout'] == 'row_major_contiguous'
+        assert tensor['alignment'] == 4
+        expected_strides = []
+        stride = tensor['alignment']
+        for dimension in reversed(tensor['shape']):
+            expected_strides.append(stride)
+            stride *= dimension
+        assert tensor['byte_strides'] == list(reversed(expected_strides))
+        resource = next(
+            resource for resource in onnx_mnist_manifest['resources']
+            if resource['name'] == tensor['resource']
+        )
+        payload = onnx_mnist_artifact / resource['path']
+        assert resource['kind'] == 'bytes'
+        assert payload.stat().st_size == tensor['byte_length']
+        assert hashlib.sha256(payload.read_bytes()).hexdigest() == tensor['sha256']
+        texture = tensor['texture']
+        assert texture['abi'] == 'udoncl-static-rgba32-v1'
+        assert texture['format'] == 'rgba32'
+        assert texture['srgb'] is False
+        assert texture['mipmaps'] is False
+        assert texture['filter'] == 'point'
+        assert texture['width'] * texture['height'] * 4 >= tensor['byte_length']
+        assert texture['width'] * texture['height'] * 4 - tensor['byte_length'] < 4
     assert [item['name'] for item in onnx_mnist_manifest['device']['kernels']] == [
         'udondnn_large_convolution_forward',
         'udondnn_large_op_tensor',
         'udondnn_large_activation_forward',
         'udondnn_large_pooling_forward',
-        'udonblas_sgemm',
-        'udonblas_sgemv',
+        'udonblas_arena_sgemm',
     ]
     mnist_dispatch_ids = [
         item['kernel_id'] for item in onnx_mnist_manifest['dispatch_sites']
     ]
-    assert set(mnist_dispatch_ids) == {1, 231, 232, 233, 234}
+    assert set(mnist_dispatch_ids) == {221, 231, 232, 233, 234}
     assert {
         item['c_symbol']: item['public_name']
         for item in onnx_mnist_manifest['exports']
@@ -641,6 +681,7 @@ def main():
     )
     assert_binding_identity(onnx_mnist_manifest, mnist_binding)
     assert 'public sealed class UdonclGenericOnnxMnistBinding' in mnist_binding
+    assert '[SerializeField] private Texture2D[] staticTensors;' in mnist_binding
     assert 'public int StartInitialize(' in mnist_binding
     assert 'public int TryWriteInput(float[] source)' in mnist_binding
     assert 'public int StartRun(' in mnist_binding
@@ -738,7 +779,7 @@ def main():
         (buffer['width'], buffer['height'])
         for buffer in onnx_mnist_manifest['device']['buffers'][2:]
     ] == [(8192, 2)] * 15
-    for kernel_id in [1, 2, 231, 232, 233, 234]:
+    for kernel_id in [221, 231, 232, 233, 234]:
         assert (
             onnx_mnist_artifact / f'kernels/kernel_{kernel_id}.shader'
         ).is_file()
@@ -746,6 +787,17 @@ def main():
         encoding='utf-8'
     )
     assert_static_async_artifact(onnx_mnist_artifact, onnx_mnist_assembly)
+    mnist_storage = json.loads(
+        (onnx_mnist_artifact / 'storage-report.json').read_text(
+            encoding='utf-8'
+        )
+    )
+    assert mnist_storage['raw_heap_bytes'] <= 32768
+    mnist_raw_names = {item['name'] for item in mnist_storage['raw_objects']}
+    assert not any(name.startswith('__udon_onnx_static_')
+                   for name in mnist_raw_names)
+    assert not any(name.startswith('udonblas_') for name in mnist_raw_names)
+    assert not any(name.startswith('udondnn_') for name in mnist_raw_names)
     assert sum(': %' in line for line in onnx_mnist_assembly.splitlines()) <= 480
     assert udon_heap_slots(onnx_mnist_assembly) <= 512
     assert 'E+' not in onnx_mnist_assembly
@@ -833,10 +885,20 @@ def main():
     assert 'VRCWrapperGenerator' not in transformer_binding
     assert {
         item['kernel_id'] for item in transformer_manifest['dispatch_sites']
-    } == {1, 2, 207, 219, 220, 233, 234}
+    } == {1, 2, 207, 219, 220, 222, 233, 234}
     assert {
         item['id'] for item in transformer_manifest['device']['kernels']
-    } == {1, 2, 207, 219, 220, 231, 232, 233, 234}
+    } == {1, 2, 207, 219, 220, 222, 231, 232, 233, 234, 235}
+    q4_kernel = next(
+        item for item in transformer_manifest['device']['kernels']
+        if item['id'] == 235
+    )
+    assert [item['element_type'] for item in q4_kernel['args'][:5]] == [
+        'float32', 'uint32', 'float32', 'float32', 'float32',
+    ]
+    assert [item['required_bytes'] for item in q4_kernel['args'][:5]] == [
+        90112, 90112000, 22528000, 524288, 524288,
+    ]
     transformer_assembly = (transformer_artifact / 'host.uasm').read_text(
         encoding='utf-8'
     )

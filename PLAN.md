@@ -193,120 +193,66 @@ Host .c / libc sources                     Device .cl sources
 - 公開`udondnnConvolutionForward`も512 wordsを超えるtensor/filter/outputを16,384-word固定Device bufferへ転送し、通常のOpenCL C backendを呼ぶ。MNISTの`1x1x28x28`入力、`16x1x5x5` filter、`1x16x24x24`出力について、公開APIのalpha/beta、convolution mode、stride/pad/dilationを16 kernel引数へpackし、9,216出力のCPU reference一致とUdonCL Device bundle lowering（8192x2）を検証済み。残るFull MNISTのoperator容量阻害は大容量op-tensorとactivationである。
 - 公開`udondnnOpTensor`と`udondnnActivationForward`にも16,384-word backendを追加した。OpTensorはNCHW各座標をsource dimensionで剰余するため、MNISTの`1x16x1x1` channel biasを`1x16x24x24`へ正しくbroadcastし、ADD/MUL/MIN/MAX、NaN propagation、alpha/betaを保持する。Activationは全公開modeとNaN propagation、coefficient、alpha/betaを保持する。9,216-word Add→ReLUのCPU reference一致と、2 kernelのUdonCL Device bundle lowering（8192x2）を検証済み。これでFull MNISTのoperator容量阻害は解消し、残件は公開call graphのmulti-kernel Host continuationとUnity数値gateである。
 
-### 2.6 汎用ONNX MLIR runtimeとTinyLlama 1.1B（Grilling 2026-11-04）
+### 2.6 汎用ONNX MLIR runtimeとTinyLlama 1.1B
 
-この節はONNX実装の正本であり、§2.5のprofile固有generator・execution-plan・Llama 8Bという移行途中の記述を置き換える。個別modelをcompiler/runtimeで特別扱いせず、MNISTとTinyLlamaを同一の汎用経路の受入fixtureとして扱う。
+TinyLlamaの現行設計、実装順序、受入条件の正本は
+[`TINYLLAMA_AOT_CONVERSATION_PLAN.md`](TINYLLAMA_AOT_CONVERSATION_PLAN.md)とする。
+この節の古いsequence=4固定、tokenizer対象外、INT64 Gather阻害という記述は廃止した。
 
-#### ONNX-MLIR frontend
-
-- ONNX-MLIRは`0.5.1.2` branchのcommit `7cc4a17af7bc7202b14e9b839ac87e9bdf81b8be`へ固定し、既存のprebuilt LLVM/MLIR 23.1.4 SDKを使う。LLVM自体は再buildしない。ONNX-MLIRのtests、StableHLO、Java、acceleratorは無効化する。小さなAPI差はversioned patchで吸収するが、大規模なLLVM portが必要なら実装を止めて依存戦略を再評価する。
-- ONNX frontend binaryはOS・architecture・ONNX-MLIR commit・LLVM versionをkeyにしたversioned artifact/cacheとする。core build/runtimeはnetwork accessを行わず、model downloadはexample/test helperだけが担う。
-- `udoncl-opt`へONNX dialectとONNX canonicalization/lowering passを登録する。`udoncl-onnx`はprotobuf importと標準pipelineを実行するdriverとし、個別passは`udoncl-opt`から直接実行可能にする。対応operatorはregistry/schemaから生成し、standard ONNXとONNX Runtime extension domainを別registryにする。未対応operator/domain/opsetはimport直後にmodel/source location付きで明示的に失敗させる。
-- Pythonはmodel取得・cacheとC++ driver起動だけに限定する。protobufをONNX Dialectへimportした後の検証、canonicalize、shape/constant処理、operator選択、bufferize、library ABI生成はすべてC++のMLIR passで行い、PythonによるMLIR text解析やHost C/MLIR生成へfallbackしない。
-- Canonicalizationはmodel profileを持たないONNX→ONNX/標準MLIR変換とする。ONNX execution-plan JSON、profile固有Host emitter、ONNX専用Material scheduler、texture arena binding、`static_inputs`は新経路合格後に削除する。
-
-#### UdonONNXOperatorsと共通Device memory
-
-- `UdonONNXOperators`を独立CMake/Unity packageとして新設し、ONNX operator facadeとONNX Runtime extensionを所有する。実装はUdonBLAS/UdonDNN/UdonATenの公開APIへ委譲してよいが、旧profile固有kernel/APIを公開面に残さない。
-- `com.microsoft::MatMulNBits`はgeneric operatorとして実装する。`bits=2..8`、2の冪かつ16以上のblock size、packed/unpacked zero point、任意の`g_idx`/bias、論理FP32/FP16/BF16、妥当な任意K/N tilingを扱う。量子化済みONNX initializerをlosslessにrepackし、runtime内で再量子化しない。generic実装が合格した時点で`udonatenWeightInt4packMm`のpublic C API、kernel、Unity prefab/import logic、専用testを削除する。
-- Device allocationはcallerまたはsessionが所有する。全libraryは共通のgeneration付きbuffer handle、byte offset、typed viewを受け取り、一つのcontextとin-order queueを共有する。descriptorはstorageを所有せず、CUDA device pointer/cuBLAS/cuDNN descriptorと同様に外部storageを参照する。workspaceは明示し、livenessによりintermediate allocationを再利用し、KV cacheはrun間で永続化する。
-
-#### C Runtime、CMake、model input
-
-- `UdonONNXRuntime`のC APIはtensor metadataとindex/nameに基づく汎用session/buffer操作を提供してよいが、初期U#公開面をSession形に固定しない。利用者が通常のC Hostに`Initialize`、`WriteInput`、`Run`、`ReadOutput`または統合`Infer`を`UDONCL_EXPORT`し、compilerはその低水準bindingだけを生成する。
-- C++ ONNX Host finalizerが生成するmodel非依存の5個の物理binding関数には`udoncl.export`を付与し、schema-v2 `export_overrides`だけで外部CMake artifactを生成できる。stable export IDは署名から導出しJSONへ重複記載しない。通常C Host wrapperを持つartifactはschema-v2 `internal_exports`でこの5関数を非公開にでき、未注釈・重複・overrideとの競合をcompiler errorにする。この16 scalarへflattenした物理adapterはcompiler-generated binding内部面であり、利用者向けtensor APIにはしない。MNISTとbounded Transformer fixtureは通常C Hostが明示`clCreateBuffer` allocationを`udonclDeviceBufferAdopt`でgeneration付きhandleへ所有権移譲し、`udonclBufferView_t` tensorをsessionへbindする経路へ移行済みである。公開U#面は`Initialize`/dtype付きwhole-buffer input/`Run`/callback readback/`Shutdown`だけとし、Transformerのpresent key/valueはpast key/valueのdevice bufferへ直接bindしてrun間で再利用する。
-- Operator間のtensorはDevice bufferのまま渡し、readbackは選択したgraph outputだけに限定する。output bufferを次runのinputへbindできるI/O bindingを提供し、KV cacheをCPUへ往復させない。
-- `udoncl_add_onnx_host_library`は`MODEL`を必須、genericな`DIMENSION_BOUNDS`を任意とする。`PROFILE`、`EXECUTION_PROVIDER`、weight overrideは廃止する。ONNX initializerを唯一のweight sourceとし、embedded dataとmodel directory以下の標準external dataを扱う。path traversal、offset/length、重複・欠落・size/hash不整合をconfigure/build時に検証する。
-- Editor Pluginは引き続きユーザーのCMake directoryを選択してtargetをbuild/importする。ONNX model pickerやcompiler同梱UIは後続とし、model、dimension bounds、artifact targetは通常のCMakeで宣言する。
-
-#### MNISTとTinyLlama acceptance
-
-- MNISTを最初に汎用ONNX-MLIR→`UdonONNXOperators`/公開library call→共通Host MLIR/session経路へ移し、既存のprofile固有emitterとexecution-plan testを置換する。続いてhidden size 8の合成Transformer fixtureでdynamic shape、KV、MatMulNBits、I/O bindingを小さく検証する。
-- 実model gateはHugging Face `onnx-community/TinyLlama-1.1B-Chat-v1.0-ONNX`、revision `cb463df0db21d713728366575b5a71f80de7adb2`、file `onnx/model_q4.onnx`、size `909750422`、SHA-256 `399360b3b9174b505eedfc71a305f48b98207c51fff4c4643c722b7e37f137eb`に固定する。このmodelはembedded Q4 block-32 weight、FP32 activation、155個の`com.microsoft::MatMulNBits`、dynamic sequence/KVを持つ。
-- 最初のdeployment boundsはbatch 1、sequence length 4以下とする。空の22-layer KVから固定4-token full-causal runを行う。tokenizer/chat templateはruntime責務に含めずtest fixtureがtoken IDsを供給する。
-- ONNX Runtime CPUをoracleとし、32,000 logits全要素、argmax/top-k、finite、全22 layerのpresent K/Vを比較する。許容誤差は最初の正しいend-to-end runで測定後に固定する。performance、dispatch数、texture/buffer/workspace/heap使用量は記録するが初期gateにはしない。
-- Test helperはmodelを初回downloadしてcontent-addressed cacheへ置き、以後再利用する。local precommitとGitHub Actionsはcache miss時にdownloadし、常に実modelのoracle/compiler/native/device testを実行する。Unity SDK IUdonVM gateはlocal precommitのみとする。cache keyにはmodel revision/hash、ONNX-MLIR/LLVM/compiler version、operator schema versionを含める。
-
-#### 実装順序と削除gate
-
-1. この計画をcommitする。
-2. ONNX-MLIR dependency/frontendと`udoncl-opt`/`udoncl-onnx`の最小import/canonicalizeを通す。
-3. 共通Device buffer/view/workspaceとsession ownershipを実装する。
-4. `UdonONNXOperators`、汎用session API、CMake APIを追加する。
-5. MNISTを汎用pipelineへ移し、数値gate合格後にMNIST profile emitterを削除する。
-6. hidden-size-8 Transformer fixtureを汎用pipelineで通す。
-7. generic `MatMulNBits`を実装し、旧int4特殊化を削除する。
-8. 固定TinyLlama artifactをoracle、compiler、native、device、最後にUnityで通す。
-9. 全consumer移行後にexecution-plan JSON/material scheduler/arena/`static_inputs`/旧runtimeとsampleを削除し、Unity packageと利用者documentationを完成させる。
-
-#### 実装checkpoint（2026-11-04）
-
-- 手順6のhidden-size-8 Transformerを実ONNX Runtime extension
-  `com.microsoft::MatMulNBits`へ移し、汎用facade/kernel 219でbits 2–8、
-  block size、zero point形式、`g_idx`/bias、FP32/FP16/BF16をnative検証した。
-  Unity受入は同一sessionを2回実行して各29 async step、98/98 Editor
-  tests合格、数値誤差`<0.002`、最終Console 0件である。
-- 標準Udon Assembly assetの512-slot制約に対し、不変定数をmodule全体で
-  共有し、Transformer Hostをdata 440 + extern signature 43 = 483 slotへ
-  抑えた。CMake consumerがこの合計を回帰検査する。
-- 手順7の削除gateとして`udonatenWeightInt4packMm`公開C API、kernel 208、
-  専用Unity artifact/import入口/prefab testを削除した。旧execution-planと
-  Llama 8B sampleに残る互換生成コードは手順9の全consumer移行時に削除する。
-- 次の未完了gateは手順8の固定TinyLlama 1.1B model download/cache、oracle、
-  compiler、native/device、Unity全22-layer KV/logits検証である。
-- 手順8のfrontend/oracle checkpointとして、固定revisionの909,750,422-byte
-  modelをSHA-256検証付きcontent-addressed cacheへ取得する。ONNX-MLIR importerは
-  巨大initializerをtext化せずbytecodeでoptimizerへ渡し、symbolic dimensionと
-  明示input shapeをmodel非依存にspecializeできる。固定4-token/空KVではCPU ORT
-  oracleの128,000 logits、44個のpresent K/V、argmax
-  `[29958, 390, 17354, 1701]`を確定し、canonical frontendで155個の
-  `MatMulNBits`を保持した734,378-byte MLIRを生成済みである。
-- 未完了なのは、canonical graphに残るstandard tensor/shape operatorを
-  `UdonONNXOperators`と既存library callへlowerし、embedded initializerを巨大C配列
-  ではなくimmutable Device weight assetとしてupload/bindする部分、およびその後の
-  native/device/Unity数値比較である。ここをmodel固有fusionで回避しない。
-- ONNX Dialect import後の新経路からPython graph parser/Host emitterを除去し、shape
-  tensor評価、extension shape inference、constant materialization、provider選択、typed
-  session ABI、I/O binding、Host MLIR生成をC++ passへ統合した。MNISTとhidden-size-8
-  Transformerは公開CMake consumerから実library callをlinkしたUnity artifact生成まで
-  合格した。固定TinyLlamaは22層のshapeをC++ passで静的化でき、次の阻害点は既存の
-  INT32・小容量`udonatenEmbedding`では代替できないINT64・大容量generic Gatherである。
-- C HostのAsync→Udon静的frame経路にcall-site livenessを考慮した既存の個別Heap
-  slot coloring、再帰拒否、call-siteごとのHeap slotを使わない固定長return-address
-  materialization、単一使用定数の直接materializeを実装し、production `host.uasm`を
-  最終Async経路へ切り替えた。これは新storage allocator導入前のbaselineである。
-  現在の物理address合計は汎用MNISTがdata 471 + extern 41 = 512、schema-v2 C Hostを
-  含むbounded Transformerが462 + 49 = 511で、UdonBLAS SGEMMも512以下である。
-  Compiler生成`binding.cs`は同期exportに加えてAsyncの`Start`/status/result、callback、
-  upload/readback command pumpを生成し、UdonBLAS SGEMM、MNIST、hidden-size-8
-  TransformerのCMake artifactで回帰検査する。公開whole-buffer APIのID・名前・byte長・
-  element type・accessもcanonical ABI fingerprintに含め、compiler生成値と独立Python再計算が
-  UdonBLAS artifactで一致し、公開buffer名変更でhashが変わることを検証する。Unity validatorも
-  同じrecordを再計算し、byte長だけを改変したartifactを拒否するEditor testを持つ。生成
-  `binding.cs`はfingerprint・namespace・classのidentity headerも持ち、ImporterはManifestとの
-  完全一致をcopy前に検査するため、生成型の不一致をprefab finalizerの待機ではなくartifact
-  validation errorとして報告する。検証済みcompiler bindingは旧generatorと分離したImporter
-  branchでbyte-for-byte copyされ、MNIST/TransformerのUnity lifecycle testも同一性を要求する。
-  Nativeは共通Host Async契約のVRC eventを`async.value<i32>`へ変換し、
-  upstream Async Runtime→LLVM coroutine split/cleanup→`lli`で親子callを実行するCTestを
-  追加した。event payload 7で中断中の計算が再開し35+7=42になることを検証する。
-  MNISTは通常C Hostの`UDONCL_EXPORT`をHost MLIRへlink後も保持し、explicit OpenCL
-  input/output allocationをwhole-buffer公開APIへ結び付けるschema-v2 artifactへ移行した。
-  physical 5関数は`internal_exports`で隠し、CMake consumerは公開3 exportとflattened
-  adapter非露出を検査する。bounded Transformer fixtureも同じschema-v2 C Hostへ移行し、
-  input IDs/past key/past valueをdtype付きwhole-buffer入力、logitsをcallback readback出力とする。
-  present key/valueはpast key/valueのdevice bufferに直接bindし、旧要素単位APIと手動bind APIは
-  公開bindingから除去した。MNIST、bounded Transformer、UdonBLASのCMake回帰はfinal
-  `host.udon-async.mlir`から`vrc.await`、Async Runtime/Coro、dynamic `udonhl.async_resume`が
-  消え、共有resume dispatcherだけが残ること、およびassemblyが旧resume-state slotを持たず
-  compiler-private completion entryをexportすることを共通検査する。
-  Luna/xhigh Unity MCP経路ではcompiler生成MNIST bindingのbyte-for-byte importとC# compile
-  まで成功した。最後にUnity実行済みのartifactはfocused test 0/1で、SDK Udon VMの10秒
-  制限によりPC 468,832、同期helper `get_convolution`内で停止し、数値比較には未到達である。
-  C上では小さいdescriptor accessが現行byte raw heapで多数のarray/shift externへ展開され、
-  cooperative checkpointの既存cost modelも同期calleeの推移的コストを数えないことを確認した。
-  checkpoint増加だけを最終解とせず、§2.7のwhole-program scalar promotionとstorage allocatorで
-  descriptor/一時pointerを通常経路から除去してから、残る長い同期区間へcheckpointを配置する。
+- ONNX Dialect import後のgraph検証、canonicalize、shape処理、operator選択、
+  bufferize、Host/library call生成はC++ MLIR passで行う。Python graph parser、
+  execution-plan JSON、model profileへfallbackしない。
+- 実modelは固定revisionの
+  `onnx-community/TinyLlama-1.1B-Chat-v1.0-ONNX/onnx/model_q4.onnx`
+  （909750422 bytes、SHA-256
+  `399360b3b9174b505eedfc71a305f48b98207c51fff4c4643c722b7e37f137eb`）とする。
+- 次の阻害点はGatherではない。最優先は、MNISTとTinyLlamaで共通に使う
+  immutable static Device tensor AOT、Device-resident `MatMulNBits`、workspace/KV
+  bufferizationである。
+- `gather-f32`の現行証明view上限は32,768 word（128 KiB）だが、immutable
+  texture自体は8192x8192 RGBA32まで検証済みである。論理/物理static tensorを
+  分割せず、resource byte length・texture width・base/lengthを持つtyped tile viewを
+  導入する。`MatMulNBits`はweight/scale/zero viewとDevice partial/outputを
+  複数dispatchで処理し、Hostでのweight repackとpartial readbackは禁止する。
+- 実TinyLlamaはONNX Dialect→portable Host MLIR→finalized Host MLIR→compact Unity
+  bundle生成まで到達し、Host data slotは442/512、immutable tensorは1,033個・約909 MB
+  になった。ただし完全Device graph未対応のためHost fallbackとなり、raw heapへ約939 MBを
+  重複しており推論成功とは扱わない。compilerはoperator countと未対応providerを記録し、
+  `require_device_graph`指定時はこのfallbackを早期errorにする。
+- ONNX initializerは原則1 initializer＝1 lossless Device textureとしてartifactへ
+  生成し、Host raw heapやsession初期化uploadへ複製しない。activation、intermediate、
+  KV、logitsもoperator間でDevice residentに保つ。
+- Device intermediateはcompile-time livenessと必要byte容量でallocationを再利用し、
+  同一dispatchの入力slotは出力に再利用しない。large convolution/poolingのlaunchは
+  8192x2、large activation/op-tensorは8192x4としてDevice configとHost loweringを一致させる。
+- gather-profileはread-only inputごとに独立した証明済みword容量を持ち、memref、
+  Texture幅、HLSL座標、manifestの`required_bytes`へ保持する。Q4向けtyped viewの
+  read-only inputごとのcapacityに加え、i32 scalarのinclusive min/maxを
+  Device index証明へ渡し、`base + gid`がcapacity内であることをcompile時に
+  検証する。証明済みminimum/maximumはmanifestのscalar argumentにも保持し、
+  生成dispatch側のruntime検証契約とする。dynamic length、manifest rangeの
+  runtime enforcementに先立ち、`const uint*` inputをRGBA8のlittle-endian
+  byte列から`uint32`へ復元するraw typed viewを実装済みで、Q4 bit extractionを
+  floatへの誤変換なしでshader内に保持できる。さらに実modelの3-input
+  unsigned Q4形（bits=4、block=32、implicit zero=8、FP32、M<=4、K<=5632、
+  N<=32000）向けに、immutable packed/scalesを直接読むkernel 235と、全N列を
+  1 dispatchで処理するK=128 compile-time tile、131,072-word ping-pong surface、
+  動的resource byte検証、最終public output copyを
+  実装済みである。小型static-initializer ONNX graphでHost生成・allocation・dispatch・
+  disposalを検証し、実sequence-4 graphの155個すべて（N=32000のlm_headを含む）が
+  Device Q4契約へ入ることも確認した。full graphの他operator、dynamic sequence、zero-point付き、
+  bits 2-8/FP16/BF16/g_idx/biasのgeneric Device対応、sub-word/unaligned viewは未完了である。
+- TinyLlama tokenizerはONNXではない。独立したC `UdonTokenizers` componentとして
+  build-time tableとUTF-16/byte-fallback BPEを実装し、C Hostの会話APIをcompiler生成
+  U# bindingから利用する。
+- 最初のdeploymentはPC/D3D11、batch 1、context capacity 128、最大32生成tokenとし、
+  2-turn対話でKV再利用を検証する。全decode stepの32,000 logitsと22層K/VをORTと
+  比較する。
+- 実modelはcontent-addressed cacheを使うが、最終precheckは毎回oracle、Native、
+  Device、generated-U# Unity testを実行する。Unityはlocal precheck、非Unity gateは
+  GitHub Actionsでも実行する。
+- 新経路合格後に旧execution-plan、ONNX専用Material/arena scheduler、
+  `static_inputs`、toy TinyLlama consumerを削除する。
 
 ### 2.7 Host storage allocator（Grilling 2026-11-05）
 

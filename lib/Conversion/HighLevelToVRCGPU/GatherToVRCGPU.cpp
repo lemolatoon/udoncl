@@ -5,6 +5,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
+#include <algorithm>
 using namespace mlir;
 namespace vrc {
 #define GEN_PASS_DEF_LOWERGATHERDEVICEPASS
@@ -107,6 +108,8 @@ struct LowerGatherDevicePass
             b.getNamedAttr("vrc.profile", b.getStringAttr("gather-f32")),
             b.getNamedAttr("vrc.words", words),
             b.getNamedAttr("vrc.gather_proven", b.getUnitAttr())};
+        if (auto bounds = source->getAttr("vrc.argument_bounds"))
+          kernelAttrs.push_back(b.getNamedAttr("vrc.argument_bounds", bounds));
         if (textureShape)
           kernelAttrs.push_back(
               b.getNamedAttr("vrc.texture_shape", textureShape));
@@ -133,8 +136,10 @@ struct LowerGatherDevicePass
               b.getNamedAttr("binding", b.getI32IntegerAttr(i)),
               b.getNamedAttr(
                   "value_type",
-                  TypeAttr::get(buffer ? b.getF32Type()
-                                       : source.getArgument(i).getType()))};
+                  TypeAttr::get(
+                      buffer ? cast<MemRefType>(source.getArgument(i).getType())
+                                   .getElementType()
+                             : source.getArgument(i).getType()))};
           if (buffer)
             attrs.push_back(
                 b.getNamedAttr("format", b.getStringAttr("rgba8_unorm")));
@@ -217,8 +222,12 @@ struct LowerGatherDevicePass
           b.setInsertionPoint(op);
           Value x = arith::IndexCastOp::create(b, op.getLoc(), b.getI32Type(),
                                                op.getIndices()[0]);
+          int64_t inputElements =
+              cast<MemRefType>(op.getMemref().getType()).getNumElements();
+          int32_t inputWidth =
+              static_cast<int32_t>(std::min<int64_t>(inputElements, 8192));
           auto width =
-              arith::ConstantIntOp::create(b, op.getLoc(), physicalWidth, 32);
+              arith::ConstantIntOp::create(b, op.getLoc(), inputWidth, 32);
           Value y = arith::DivUIOp::create(b, op.getLoc(), x, width);
           x = arith::RemUIOp::create(b, op.getLoc(), x, width);
           auto *texel = make(
@@ -228,12 +237,15 @@ struct LowerGatherDevicePass
                    "resource",
                    FlatSymbolRefAttr::get(
                        &getContext(), "arg" + std::to_string(*inputArgument))),
-               b.getNamedAttr("element_count", words)});
-          auto *value =
-              make(b, op.getLoc(), fragment::RawUnpackOp::getOperationName(),
-                   TypeRange{b.getF32Type()}, texel->getResults(),
-                   {b.getNamedAttr("byte_offset", b.getI32IntegerAttr(0)),
-                    b.getNamedAttr("format", b.getStringAttr("rgba8_unorm"))});
+               b.getNamedAttr("element_count",
+                              b.getI32IntegerAttr(inputElements))});
+          auto *value = make(
+              b, op.getLoc(), fragment::RawUnpackOp::getOperationName(),
+              TypeRange{
+                  cast<MemRefType>(op.getMemref().getType()).getElementType()},
+              texel->getResults(),
+              {b.getNamedAttr("byte_offset", b.getI32IntegerAttr(0)),
+               b.getNamedAttr("format", b.getStringAttr("rgba8_unorm"))});
           SmallVector<Value> keys;
           for (const auto &entry : mapping.getValueMap())
             if (entry.second == op.getResult())

@@ -41,28 +41,36 @@ struct LowerOpenCLAOTIntrinsicsPass
     };
     for (func::FuncOp function : module.getOps<func::FuncOp>()) {
       StringRef name = function.getSymName();
-      bool known = name == "__vrc_opencl_buffer_alloc" ||
-                   name == "__vrc_opencl_buffer_release" ||
-                   name == "__vrc_opencl_buffer_upload" ||
-                   name == "__vrc_opencl_buffer_readback" ||
-                   name == "__vrc_opencl_await" ||
-                   name == "__vrc_opencl_dispatch_udonblas_sgemm" ||
-                   name == "__vrc_opencl_dispatch_udonblas_sgemv" ||
-                   name == "__vrc_opencl_dispatch_udondnn_large_convolution" ||
-                   name == "__vrc_opencl_dispatch_udondnn_large_activation" ||
-                   name == "__vrc_opencl_dispatch_udondnn_large_pooling" ||
-                   name == "__vrc_opencl_dispatch_udondnn_large_op_tensor" ||
-                   name == "__vrc_opencl_dispatch_udonaten_embedding" ||
-                   name == "__vrc_opencl_dispatch_udononnx_matmul_nbits" ||
-                   name == "__vrc_opencl_dispatch_udononnx_gather_copy" ||
-                   name == "__vrc_opencl_dispatch_mnist_conv" ||
-                   name == "__vrc_opencl_dispatch_mnist_pool" ||
-                   name == "__vrc_opencl_dispatch_mnist_dense";
+      bool known =
+          name == "__vrc_opencl_static_tensor" ||
+          name == "__vrc_opencl_buffer_alloc" ||
+          name == "__vrc_opencl_buffer_release" ||
+          name == "__vrc_opencl_buffer_upload" ||
+          name == "__vrc_opencl_buffer_readback" ||
+          name == "__vrc_opencl_buffer_copy" || name == "__vrc_opencl_await" ||
+          name == "__vrc_opencl_dispatch_udonblas_sgemm" ||
+          name == "__vrc_opencl_dispatch_udonblas_arena_sgemm" ||
+          name == "__vrc_opencl_dispatch_udonblas_sgemv" ||
+          name == "__vrc_opencl_dispatch_udondnn_large_convolution" ||
+          name == "__vrc_opencl_dispatch_udondnn_large_activation" ||
+          name == "__vrc_opencl_dispatch_udondnn_large_pooling" ||
+          name == "__vrc_opencl_dispatch_udondnn_large_op_tensor" ||
+          name == "__vrc_opencl_dispatch_udonaten_embedding" ||
+          name == "__vrc_opencl_dispatch_udonaten_arena_rms_norm_reduce" ||
+          name == "__vrc_opencl_dispatch_udonaten_arena_rms_norm_finalize" ||
+          name == "__vrc_opencl_dispatch_udononnx_matmul_nbits" ||
+          name == "__vrc_opencl_dispatch_udononnx_matmul_nbits_q4" ||
+          name == "__vrc_opencl_dispatch_udononnx_gather_copy" ||
+          name == "__vrc_opencl_dispatch_udononnx_unary_f32" ||
+          name == "__vrc_opencl_dispatch_mnist_conv" ||
+          name == "__vrc_opencl_dispatch_mnist_pool" ||
+          name == "__vrc_opencl_dispatch_mnist_dense";
       if (!known)
         continue;
       SmallVector<Type> arguments;
       SmallVector<Type> results = {i32};
-      if (name == "__vrc_opencl_buffer_alloc")
+      if (name == "__vrc_opencl_static_tensor" ||
+          name == "__vrc_opencl_buffer_alloc")
         arguments = {i32, i32};
       else if (name == "__vrc_opencl_buffer_release" ||
                name == "__vrc_opencl_await")
@@ -77,9 +85,13 @@ struct LowerOpenCLAOTIntrinsicsPass
           signalPassFailure();
           return;
         }
+      } else if (name == "__vrc_opencl_buffer_copy") {
+        arguments = {i32, i32, i32, i32, i32};
       } else if (name == "__vrc_opencl_dispatch_udonblas_sgemm")
         arguments = {i32, i32, i32, i32, i32, i32,
                      i32, i32, i32, i32, f32, f32};
+      else if (name == "__vrc_opencl_dispatch_udonblas_arena_sgemm")
+        arguments = {i32, i32, i32, i32, i32, i32, i32, i32, f32};
       else if (name == "__vrc_opencl_dispatch_udonblas_sgemv")
         arguments = {i32, i32, i32, i32, i32, i32, i32, i32, f32, f32};
       else if (name == "__vrc_opencl_dispatch_udondnn_large_convolution")
@@ -95,10 +107,19 @@ struct LowerOpenCLAOTIntrinsicsPass
                      i32, i32, i32, i32, f32, f32, f32};
       else if (name == "__vrc_opencl_dispatch_udonaten_embedding")
         arguments = {i32, i32, i32, i32, f32, i32, i32, i32};
+      else if (name == "__vrc_opencl_dispatch_udonaten_arena_rms_norm_reduce")
+        arguments = {i32, i32, i32, i32};
+      else if (name == "__vrc_opencl_dispatch_udonaten_arena_rms_norm_finalize")
+        arguments = {i32, i32, i32, i32, i32, i32, f32, i32};
       else if (name == "__vrc_opencl_dispatch_udononnx_matmul_nbits")
         arguments = {i32, i32, i32, i32, i32, i32};
+      else if (name == "__vrc_opencl_dispatch_udononnx_matmul_nbits_q4")
+        arguments = {i32, i32, i32, i32, i32, i32, i32,
+                     i32, i32, i32, i32, i32, i32, i32};
       else if (name == "__vrc_opencl_dispatch_udononnx_gather_copy")
         arguments = {i32, i32, i32};
+      else if (name == "__vrc_opencl_dispatch_udononnx_unary_f32")
+        arguments = {i32, i32, i32, i32};
       else
         arguments = {i32, i32};
       if (!function.isExternal() ||
@@ -128,6 +149,27 @@ struct LowerOpenCLAOTIntrinsicsPass
       func::CallOp call = site.call;
       StringRef name = site.callee.getSymName();
       rewriter.setInsertionPoint(call);
+      if (name == "__vrc_opencl_static_tensor") {
+        auto id = call.getOperand(0).getDefiningOp<arith::ConstantIntOp>();
+        auto bytes = call.getOperand(1).getDefiningOp<arith::ConstantIntOp>();
+        if (!id || id.value() < 0 || !bytes || bytes.value() <= 0) {
+          call.emitError(
+              "immutable static tensor requires constant id and byte size");
+          signalPassFailure();
+          return;
+        }
+        OperationState state(call.getLoc(),
+                             runtime::StaticBufferOp::getOperationName());
+        state.addTypes(buffer);
+        state.addAttribute("resource_id",
+                           rewriter.getI32IntegerAttr(id.value()));
+        state.addAttribute("byte_size",
+                           rewriter.getI32IntegerAttr(bytes.value()));
+        Value token =
+            cast(call.getLoc(), i32, rewriter.create(state)->getResult(0));
+        rewriter.replaceOp(call, token);
+        continue;
+      }
       if (name == "__vrc_opencl_buffer_alloc") {
         OperationState state(call.getLoc(),
                              runtime::BufferAllocOp::getOperationName());
@@ -169,6 +211,16 @@ struct LowerOpenCLAOTIntrinsicsPass
         Value token =
             cast(call.getLoc(), i32, rewriter.create(state)->getResult(0));
         rewriter.replaceOp(call, token);
+      } else if (name == "__vrc_opencl_buffer_copy") {
+        Value destination = cast(call.getLoc(), buffer, call.getOperand(1));
+        OperationState state(call.getLoc(),
+                             runtime::BufferCopyOp::getOperationName());
+        state.addOperands({typedBuffer, destination, call.getOperand(2),
+                           call.getOperand(3), call.getOperand(4)});
+        state.addTypes(event);
+        Value token =
+            cast(call.getLoc(), i32, rewriter.create(state)->getResult(0));
+        rewriter.replaceOp(call, token);
       } else if (name == "__vrc_opencl_await") {
         auto function = call->getParentOfType<func::FuncOp>();
         Value typedEvent = cast(call.getLoc(), event, call.getOperand(0));
@@ -181,6 +233,7 @@ struct LowerOpenCLAOTIntrinsicsPass
           suspendFunctions.insert(function);
       } else {
         bool sgemm = name == "__vrc_opencl_dispatch_udonblas_sgemm";
+        bool arenaSgemm = name == "__vrc_opencl_dispatch_udonblas_arena_sgemm";
         bool sgemv = name == "__vrc_opencl_dispatch_udonblas_sgemv";
         bool largeConvolution =
             name == "__vrc_opencl_dispatch_udondnn_large_convolution";
@@ -191,27 +244,45 @@ struct LowerOpenCLAOTIntrinsicsPass
         bool largeOpTensor =
             name == "__vrc_opencl_dispatch_udondnn_large_op_tensor";
         bool embedding = name == "__vrc_opencl_dispatch_udonaten_embedding";
+        bool rmsReduce =
+            name == "__vrc_opencl_dispatch_udonaten_arena_rms_norm_reduce";
+        bool rmsFinalize =
+            name == "__vrc_opencl_dispatch_udonaten_arena_rms_norm_finalize";
         bool matmulNBits =
             name == "__vrc_opencl_dispatch_udononnx_matmul_nbits";
+        bool matmulNBitsQ4 =
+            name == "__vrc_opencl_dispatch_udononnx_matmul_nbits_q4";
         bool gather = name == "__vrc_opencl_dispatch_udononnx_gather_copy";
-        unsigned bufferCount = largeConvolution || largeOpTensor ? 4
-                               : largeActivation || largePooling ? 3
-                                                                 : 2;
+        bool unary = name == "__vrc_opencl_dispatch_udononnx_unary_f32";
+        unsigned bufferCount = matmulNBitsQ4                       ? 5
+                               : rmsFinalize                       ? 4
+                               : largeConvolution || largeOpTensor ? 4
+                               : arenaSgemm                        ? 3
+                               : largeActivation || largePooling   ? 3
+                                                                   : 2;
         int32_t kernelId = sgemm                                        ? 1
+                           : arenaSgemm                                 ? 221
                            : sgemv                                      ? 2
                            : largeConvolution                           ? 232
                            : largeActivation                            ? 233
                            : largePooling                               ? 231
                            : largeOpTensor                              ? 234
                            : embedding                                  ? 207
+                           : rmsReduce                                  ? 217
+                           : rmsFinalize                                ? 218
                            : matmulNBits                                ? 219
+                           : matmulNBitsQ4                              ? 235
                            : gather                                     ? 220
+                           : unary                                      ? 222
                            : name == "__vrc_opencl_dispatch_mnist_conv" ? 20
                            : name == "__vrc_opencl_dispatch_mnist_pool" ? 21
                                                                         : 22;
         SmallVector<Value> scalars(call.getOperands().drop_front(bufferCount));
         SmallVector<Attribute> scalarKinds;
-        if (sgemm || sgemv) {
+        if (arenaSgemm) {
+          scalarKinds.append(5, rewriter.getStringAttr("i32"));
+          scalarKinds.push_back(rewriter.getStringAttr("f32"));
+        } else if (sgemm || sgemv) {
           scalarKinds.append(sgemm ? 8 : 6, rewriter.getStringAttr("i32"));
           scalarKinds.append(2, rewriter.getStringAttr("f32"));
         } else if (largeConvolution) {
@@ -231,10 +302,20 @@ struct LowerOpenCLAOTIntrinsicsPass
               rewriter.getStringAttr("i32"), rewriter.getStringAttr("i32"),
               rewriter.getStringAttr("f32"), rewriter.getStringAttr("i32"),
               rewriter.getStringAttr("i32"), rewriter.getStringAttr("i32")};
+        } else if (rmsReduce) {
+          scalarKinds.append(2, rewriter.getStringAttr("i32"));
+        } else if (rmsFinalize) {
+          scalarKinds.append(2, rewriter.getStringAttr("i32"));
+          scalarKinds.push_back(rewriter.getStringAttr("f32"));
+          scalarKinds.push_back(rewriter.getStringAttr("i32"));
+        } else if (matmulNBitsQ4) {
+          scalarKinds.append(9, rewriter.getStringAttr("i32"));
         } else if (matmulNBits) {
           scalarKinds.append(4, rewriter.getStringAttr("i32"));
         } else if (gather) {
           scalarKinds.append(1, rewriter.getStringAttr("i32"));
+        } else if (unary) {
+          scalarKinds.append(2, rewriter.getStringAttr("i32"));
         }
         OperationState descriptorState(
             call.getLoc(), runtime::DispatchDescCreateOp::getOperationName());
@@ -262,13 +343,25 @@ struct LowerOpenCLAOTIntrinsicsPass
                                    rewriter.getI32IntegerAttr(kernelId));
         dispatchState.addAttribute("argument_kinds",
                                    rewriter.getArrayAttr(argumentKinds));
-        dispatchState.addAttribute(
-            "global_size",
-            sgemm         ? rewriter.getDenseI32ArrayAttr({32, 32, 1})
-            : sgemv       ? rewriter.getDenseI32ArrayAttr({1024, 1, 1})
-            : embedding   ? rewriter.getDenseI32ArrayAttr({1536, 1, 1})
-            : matmulNBits ? rewriter.getDenseI32ArrayAttr({16384, 1, 1})
-                          : rewriter.getDenseI32ArrayAttr({10800, 1, 1}));
+        DenseI32ArrayAttr globalSize;
+        if (sgemm)
+          globalSize = rewriter.getDenseI32ArrayAttr({32, 32, 1});
+        else if (arenaSgemm || largeConvolution || largePooling || rmsReduce ||
+                 rmsFinalize)
+          globalSize = rewriter.getDenseI32ArrayAttr({8192, 2, 1});
+        else if (largeActivation || largeOpTensor)
+          globalSize = rewriter.getDenseI32ArrayAttr({8192, 4, 1});
+        else if (sgemv)
+          globalSize = rewriter.getDenseI32ArrayAttr({1024, 1, 1});
+        else if (embedding)
+          globalSize = rewriter.getDenseI32ArrayAttr({1536, 1, 1});
+        else if (matmulNBitsQ4)
+          globalSize = rewriter.getDenseI32ArrayAttr({8192, 16, 1});
+        else if (matmulNBits || unary)
+          globalSize = rewriter.getDenseI32ArrayAttr({16384, 1, 1});
+        else
+          globalSize = rewriter.getDenseI32ArrayAttr({10800, 1, 1});
+        dispatchState.addAttribute("global_size", globalSize);
         dispatchState.addAttribute("local_size",
                                    rewriter.getDenseI32ArrayAttr({1, 1, 1}));
         dispatchState.addAttribute("global_offset",

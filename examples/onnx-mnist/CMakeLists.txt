@@ -36,6 +36,7 @@ udoncl_add_unity_library(onnx-mnist
     mnist_host
     mnist_user_host
     UdonONNXRuntime::UdonONNXRuntime
-  LIBRARIES
-    UdonATen::UdonATen
-    UdonBLAS::UdonBLAS)
+    UdonDNN::OpenCLRuntime
+  DEVICE_LIBRARIES
+    UdonATen::Device
+    UdonBLAS::Device)

@@ -169,6 +169,27 @@ assert (
     in unsigned_conversion.stdout
 )
 
+float_to_int_source = r'''module attributes {vrc.host_stage = "udonhl"} {
+  func.func @to_int(%value: f32) -> i32 attributes {
+    vrc.export_id = 1 : i32
+  } {
+    %result = arith.fptosi %value : f32 to i32
+    return %result : i32
+  }
+}'''
+float_to_int = subprocess.run(
+    [opt, '--vrc-lower-udonhl-to-udonasm', '--verify-each'],
+    input=float_to_int_source, text=True, capture_output=True)
+assert float_to_int.returncode == 0, float_to_int.stderr
+assert (
+    'UnityEngineMathf.__FloorToInt__SystemSingle__SystemInt32'
+    in float_to_int.stdout
+)
+assert (
+    'UnityEngineMathf.__CeilToInt__SystemSingle__SystemInt32'
+    in float_to_int.stdout
+)
+
 large_float_source = r'''module attributes {
   vrc.async_stage = "udon-static-v1",
   vrc.host_stage = "udonhl"
@@ -1082,6 +1103,53 @@ assert re.search(
     r'udonasm\.push "[^"]+"\s+udonasm\.copy',
     buffer_lowered.stdout), buffer_lowered.stdout
 
+static_buffer_source = r'''module attributes {
+  vrc.host_stage = "udonhl",
+  vrc.unity_buffer_pool = [
+    {id = 1 : i32, logical_bytes = 4 : i32, heap_slot = "__udoncl_buffer_1"}
+  ]
+} {
+  func.func @static_dispatch() attributes {vrc.export_id = 62 : i32} {
+    %id = arith.constant 1 : i32
+    %bytes = arith.constant 4 : i32
+    %output, %status = vrc.buffer_alloc %id, %bytes {
+      format = "rgba8_unorm", usage = "storage"
+    } : (i32, i32) -> (!vrc.buffer, i32)
+    %weight = "vrc.static_buffer"() {
+      byte_size = 4 : i32, resource_id = 0 : i32
+    } : () -> !vrc.buffer
+    %desc = vrc.dispatch_desc_create {
+      kernel_id = 1 : i32, scalar_kinds = []
+    } : () -> !vrc.dispatch_desc
+    %event = vrc.dispatch %desc(%weight, %output) {
+      argument_kinds = ["buffer", "buffer"],
+      global_offset = array<i32: 0, 0, 0>,
+      global_size = array<i32: 1, 1, 1>,
+      kernel_id = 1 : i32,
+      local_size = array<i32: 1, 1, 1>,
+      vrc.unity_dispatch_material_slot = "__udoncl_kernel_material_1",
+      vrc.unity_output_resource_index = 1 : i32,
+      vrc.unity_resource_heap_slots = ["", "__udoncl_buffer_1"]
+    } : (!vrc.dispatch_desc, !vrc.buffer, !vrc.buffer) -> !vrc.event
+    return
+  }
+}'''
+static_buffer_lowered = subprocess.run(
+    [opt, '--vrc-lower-udonhl-to-udonasm', '--verify-each'],
+    input=static_buffer_source, text=True, capture_output=True)
+assert static_buffer_lowered.returncode == 0, static_buffer_lowered.stderr
+for expected in [
+    'name = "__udoncl_static_tensors"',
+    'type = "UnityEngineTexture2DArray"',
+    'UnityEngineTexture2DArray.__Get__SystemInt32__UnityEngineTexture2D',
+    'UnityEngineMaterial.__SetTexture__SystemString_'
+    'UnityEngineTexture__SystemVoid',
+    'VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_'
+    'UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid',
+]:
+    assert expected in static_buffer_lowered.stdout, (
+        expected, static_buffer_lowered.stdout)
+
 release_source = r'''module attributes {
   vrc.host_stage = "udonhl",
   vrc.unity_buffer_pool = [
@@ -1151,13 +1219,14 @@ for expected in [
     'name = "__udoncl_async_command_offset"',
     'name = "__udoncl_async_command_size"',
     'name = "__udoncl_async_command_pointer"',
-    'name = "__vrc_f7_buffer_',
+    'name = "__vrc_f7_r_SystemInt32_0"',
     'initial = "1", name = "__vrc_f7_upload_command"',
     'initial = "2", name = "__vrc_f7_readback_command"',
     'udonasm.jump 4294967292',
 ]:
     assert expected in async_buffer_lowered.stdout, (
         expected, async_buffer_lowered.stdout)
+assert 'name = "__vrc_f7_buffer_' not in async_buffer_lowered.stdout
 assert async_buffer_lowered.stdout.count('udonasm.jump 4294967292') == 3
 command_buffer_copy = re.search(
     r'udonasm\.push "([^"]+)"\s+'

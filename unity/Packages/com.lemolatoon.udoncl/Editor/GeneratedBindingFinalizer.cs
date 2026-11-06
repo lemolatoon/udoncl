@@ -270,6 +270,7 @@ namespace Lemolatoon.Udoncl.Editor
                 int[] bufferIds = null;
                 int[] bufferLogicalBytes = null;
                 RenderTexture[] bufferTextures = null;
+                Texture2D[] staticTensorTextures = null;
                 Material bufferCopyMaterial = null;
                 if (
                     manifest.device != null
@@ -328,12 +329,51 @@ namespace Lemolatoon.Udoncl.Editor
                             "Generated Device buffer transfer material is missing: " + materialPath
                         );
                 }
+                if (manifest.static_tensors != null && manifest.static_tensors.Length != 0)
+                {
+                    staticTensorTextures = new Texture2D[manifest.static_tensors.Length];
+                    SerializedProperty staticTensors = serializedWrapper.FindProperty(
+                        "staticTensors"
+                    );
+                    if (staticTensors == null)
+                        throw new InvalidDataException(
+                            "Generated wrapper does not contain its static tensor table."
+                        );
+                    staticTensors.arraySize = staticTensorTextures.Length;
+                    for (int index = 0; index < manifest.static_tensors.Length; ++index)
+                    {
+                        StaticTensorInfo tensor = manifest.static_tensors[index];
+                        string texturePath =
+                            programRoot
+                            + "/Textures/"
+                            + UdonclArtifactImporter.StaticTensorFileName(tensor.id, tensor.name);
+                        Texture2D texture = AssetDatabase.LoadAssetAtPath<Texture2D>(texturePath);
+                        if (texture == null)
+                            throw new InvalidDataException(
+                                "Generated static tensor texture is missing: " + texturePath
+                            );
+                        staticTensorTextures[tensor.id] = texture;
+                        staticTensors.GetArrayElementAtIndex(tensor.id).objectReferenceValue =
+                            texture;
+                    }
+                    if (
+                        manifest.program != null
+                        && !string.IsNullOrEmpty(manifest.program.static_tensor_table_slot)
+                    )
+                        SetPublicVariable(
+                            program,
+                            manifest.program.static_tensor_table_slot,
+                            staticTensorTextures
+                        );
+                }
                 serializedWrapper.ApplyModifiedPropertiesWithoutUndo();
                 UdonSharpEditorUtility.CopyProxyToUdon(wrapper, ProxySerializationPolicy.All);
                 UdonBehaviour wrapperBacking = UdonSharpEditorUtility.GetBackingUdonBehaviour(
                     wrapper
                 );
                 SetPublicVariable(wrapperBacking, "program", program);
+                if (staticTensorTextures != null)
+                    SetPublicVariable(wrapperBacking, "staticTensors", staticTensorTextures);
                 if (bufferIds != null)
                 {
                     SetPublicVariable(wrapperBacking, "deviceBufferIds", bufferIds);

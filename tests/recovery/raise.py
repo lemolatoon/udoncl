@@ -87,6 +87,28 @@ float_to_uint_case = '''module {
 float_to_uint = run([opt, '--vrc-raise-llvm-to-scalar'], float_to_uint_case)
 assert 'arith.fptoui' in float_to_uint and 'llvm.fptoui' not in float_to_uint
 
+float_to_int_case = '''module {
+  llvm.func @float_to_int(%value: f32) -> i32 {
+    %result = llvm.fptosi %value : f32 to i32
+    llvm.return %result : i32
+  }
+}'''
+float_to_int = run([opt, '--vrc-raise-llvm-to-scalar'], float_to_int_case)
+assert 'arith.fptosi' in float_to_int and 'llvm.fptosi' not in float_to_int
+
+integer_extrema_case = '''module {
+  llvm.func @integer_extrema(%lhs: i32, %rhs: i32) -> i32 {
+    %minimum = "llvm.intr.smin"(%lhs, %rhs) : (i32, i32) -> i32
+    %maximum = "llvm.intr.umax"(%minimum, %rhs) : (i32, i32) -> i32
+    llvm.return %maximum : i32
+  }
+}'''
+integer_extrema = run(
+    [opt, '--vrc-raise-llvm-to-scalar'], integer_extrema_case)
+assert 'arith.minsi' in integer_extrema
+assert 'arith.maxui' in integer_extrema
+assert 'llvm.intr.' not in integer_extrema
+
 # LLVM undef permits any value. Choosing zero preserves all defined behavior
 # while removing aggregate-free scalar undef introduced by optimized loops.
 undef_case = '''module {

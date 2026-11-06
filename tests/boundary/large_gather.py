@@ -232,6 +232,7 @@ run(
 multi_config = dict(
     config,
     words=16,
+    input_words=[32, 64],
     kernel="add_scaled",
     kernel_id=25,
     global_size=[16, 1, 1],
@@ -253,6 +254,11 @@ run(
 )
 multi_manifest = json.loads((multi_bundle / "manifest.json").read_text())
 multi_kernel = multi_manifest["device"]["kernels"][0]
+assert [argument["required_bytes"] for argument in multi_kernel["args"][:3]] == [
+    128,
+    256,
+    64,
+]
 assert [argument["access"] for argument in multi_kernel["args"][:3]] == [
     "read",
     "read",
@@ -281,6 +287,171 @@ assert "_VRC_Input.Load" in multi_hlsl and "_VRC_Input1.Load" in multi_hlsl
 assert "float _VRC_Arg3;" in multi_hlsl
 multi_shader = (multi_bundle / "kernels/kernel_25.shader").read_text()
 assert '_VRC_Input1 ("Input 1", 2D)' in multi_shader
+
+bad_input_words = dict(multi_config, input_words=[32])
+config_path.write_text(json.dumps(bad_input_words), encoding="utf-8")
+run(
+    [
+        compiler,
+        "--emit-native-device-bundle",
+        config_path,
+        "--device-llvm",
+        multi_ir,
+        "-o",
+        output / "bad-input-words",
+    ],
+    error="input_words must provide one positive capacity per input",
+)
+
+subview_source = output / "subview.cl"
+subview_source.write_text(
+    "__kernel void subview(__global const float *input, "
+    "__global float *output, int base) {\n"
+    "  uint gid = get_global_id(0);\n"
+    "  output[gid] = input[base + gid];\n"
+    "}\n",
+    encoding="utf-8",
+)
+subview_ir = output / "subview.ll"
+run(
+    [
+        clang,
+        "-target",
+        "spir-unknown-unknown",
+        "-x",
+        "cl",
+        "-cl-std=CL1.2",
+        "-cl-kernel-arg-info",
+        "-O0",
+        "-Xclang",
+        "-disable-O0-optnone",
+        "-fomit-frame-pointer",
+        "-ffp-contract=off",
+        "-S",
+        "-emit-llvm",
+        subview_source,
+        "-o",
+        subview_ir,
+    ]
+)
+subview_config = dict(
+    config,
+    words=16,
+    input_words=[64],
+    argument_bounds=[{"index": 2, "min": 8, "max": 16}],
+    kernel="subview",
+    kernel_id=26,
+    global_size=[16, 1, 1],
+)
+config_path.write_text(json.dumps(subview_config), encoding="utf-8")
+subview_bundle = output / "subview-bundle"
+if subview_bundle.exists():
+    shutil.rmtree(subview_bundle)
+run(
+    [
+        compiler,
+        "--emit-native-device-bundle",
+        config_path,
+        "--device-llvm",
+        subview_ir,
+        "-o",
+        subview_bundle,
+    ]
+)
+subview_kernel = json.loads(
+    (subview_bundle / "manifest.json").read_text(encoding="utf-8")
+)["device"]["kernels"][0]
+assert [argument["required_bytes"] for argument in subview_kernel["args"][:2]] == [
+    256,
+    64,
+]
+assert subview_kernel["args"][2]["minimum"] == 8
+assert subview_kernel["args"][2]["maximum"] == 16
+subview_hlsl = (subview_bundle / "kernels/kernel_26.hlsl").read_text(
+    encoding="utf-8"
+)
+assert "64u;" in subview_hlsl
+
+bad_subview_config = dict(
+    subview_config,
+    argument_bounds=[{"index": 2, "min": 8, "max": 60}],
+)
+config_path.write_text(json.dumps(bad_subview_config), encoding="utf-8")
+run(
+    [
+        compiler,
+        "--emit-native-device-bundle",
+        config_path,
+        "--device-llvm",
+        subview_ir,
+        "-o",
+        output / "bad-subview-bounds",
+    ],
+    error="buffer index bounds are not proven within the declared extent",
+)
+
+packed_source = output / "packed.cl"
+packed_source.write_text(
+    "__kernel void packed(__global const uint *input, "
+    "__global float *output, int base) {\n"
+    "  uint gid = get_global_id(0);\n"
+    "  uint word = input[base + gid];\n"
+    "  output[gid] = (float)(word & 15u);\n"
+    "}\n",
+    encoding="utf-8",
+)
+packed_ir = output / "packed.ll"
+run(
+    [
+        clang,
+        "-target",
+        "spir-unknown-unknown",
+        "-x",
+        "cl",
+        "-cl-std=CL1.2",
+        "-cl-kernel-arg-info",
+        "-O0",
+        "-Xclang",
+        "-disable-O0-optnone",
+        "-fomit-frame-pointer",
+        "-ffp-contract=off",
+        "-S",
+        "-emit-llvm",
+        packed_source,
+        "-o",
+        packed_ir,
+    ]
+)
+packed_config = dict(
+    subview_config,
+    kernel="packed",
+    kernel_id=27,
+)
+config_path.write_text(json.dumps(packed_config), encoding="utf-8")
+packed_bundle = output / "packed-bundle"
+if packed_bundle.exists():
+    shutil.rmtree(packed_bundle)
+run(
+    [
+        compiler,
+        "--emit-native-device-bundle",
+        config_path,
+        "--device-llvm",
+        packed_ir,
+        "-o",
+        packed_bundle,
+    ]
+)
+packed_kernel = json.loads(
+    (packed_bundle / "manifest.json").read_text(encoding="utf-8")
+)["device"]["kernels"][0]
+assert packed_kernel["args"][0]["element_type"] == "uint32"
+assert packed_kernel["args"][1]["element_type"] == "float32"
+packed_hlsl = (packed_bundle / "kernels/kernel_27.hlsl").read_text(
+    encoding="utf-8"
+)
+assert "asfloat(bytes" not in packed_hlsl
+assert " = bytes" in packed_hlsl and " = float(" in packed_hlsl
 
 two_outputs_source = output / "two-outputs.cl"
 two_outputs_source.write_text(
@@ -374,13 +545,73 @@ run(
     error="requires exactly one complete output[global_id] store",
 )
 
-too_large = dict(config, words=16385, global_size=[16385, 1, 1])
+large_2d_source = output / "large-2d.cl"
+large_2d_source.write_text(
+    "__kernel void large_2d(__global const float *input, __global float *output) {\n"
+    "  uint x = get_global_id(0);\n"
+    "  uint y = get_global_id(1);\n"
+    "  uint gid = y * 8192u + x;\n"
+    "  output[gid] = input[gid];\n"
+    "}\n",
+    encoding="utf-8",
+)
+large_2d_ir = output / "large-2d.ll"
+run(
+    [
+        clang,
+        "-target",
+        "spir-unknown-unknown",
+        "-x",
+        "cl",
+        "-cl-std=CL1.2",
+        "-cl-kernel-arg-info",
+        "-O0",
+        "-Xclang",
+        "-disable-O0-optnone",
+        "-fomit-frame-pointer",
+        "-ffp-contract=off",
+        "-S",
+        "-emit-llvm",
+        large_2d_source,
+        "-o",
+        large_2d_ir,
+    ]
+)
+large_2d_config = dict(
+    config,
+    words=32768,
+    kernel="large_2d",
+    kernel_id=25,
+    global_size=[8192, 4, 1],
+)
+config_path.write_text(json.dumps(large_2d_config), encoding="utf-8")
+large_2d_bundle = output / "large-2d-bundle"
+if large_2d_bundle.exists():
+    shutil.rmtree(large_2d_bundle)
+run(
+    [
+        compiler,
+        "--emit-native-device-bundle",
+        config_path,
+        "--device-llvm",
+        large_2d_ir,
+        "-o",
+        large_2d_bundle,
+    ]
+)
+large_2d_kernel = json.loads(
+    (large_2d_bundle / "manifest.json").read_text(encoding="utf-8")
+)["device"]["kernels"][0]
+assert large_2d_kernel["global_size"] == [8192, 4, 1]
+assert large_2d_kernel["target_texture"]["height"] == 4
+
+too_large = dict(config, words=32769, global_size=[8192, 4, 1])
 config_path.write_text(json.dumps(too_large), encoding="utf-8")
 run(
     [compiler, "--emit-native-device-bundle", config_path, "--device-llvm", ir, "-o", output / "too-large"],
     error="unsupported config version or launch profile",
 )
 print(
-    "large_gather_words=10800 tile_2d=8x4 multi_input=2 "
+    "large_gather_words=10800 max_words=32768 tile_2d=8x4 multi_input=2 "
     "upper_bound_rejection=passed"
 )

@@ -115,6 +115,20 @@ udononnxGeneratedEnqueueRun(uint32_t graph_id, udononnxSession_t *session,
                              : UDONONNX_STATUS_OPENCL_ERROR;
 }
 
+udononnxStatus_t udononnxGeneratedDispose(uint32_t graph_id,
+                                          udononnxSession_t *session) {
+  cl_int error;
+  if (graph_id != 7 || !session)
+    return UDONONNX_STATUS_INVALID_VALUE;
+  if (!initialization_buffer)
+    return UDONONNX_STATUS_SUCCESS;
+  error = clReleaseMemObject(initialization_buffer);
+  if (error != CL_SUCCESS)
+    return UDONONNX_STATUS_OPENCL_ERROR;
+  initialization_buffer = 0;
+  return UDONONNX_STATUS_SUCCESS;
+}
+
 int main(void) {
   cl_platform_id platform;
   cl_device_id device;
@@ -292,8 +306,7 @@ int main(void) {
   EXPECT(udonclDeviceBufferDestroy(&input_buffer) == UDONCL_STATUS_SUCCESS);
   EXPECT(udonclDeviceBufferDestroy(&output_buffer) == UDONCL_STATUS_SUCCESS);
   EXPECT(udonclDeviceBufferDestroy(&foreign_buffer) == UDONCL_STATUS_SUCCESS);
-  EXPECT(clReleaseMemObject(initialization_buffer) == CL_SUCCESS);
-  initialization_buffer = 0;
+  EXPECT(initialization_buffer == 0);
   EXPECT(clReleaseCommandQueue(queue) == CL_SUCCESS);
   EXPECT(clReleaseContext(other_context) == CL_SUCCESS);
   EXPECT(clReleaseContext(context) == CL_SUCCESS);

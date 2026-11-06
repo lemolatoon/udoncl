@@ -616,6 +616,7 @@ udononnxStatus_t udononnxSessionCompleteEvent(udononnxSession_t *session,
 }
 
 udononnxStatus_t udononnxSessionDispose(udononnxSession_t *session) {
+  udononnxStatus_t status;
   if (!session)
     return UDONONNX_STATUS_INVALID_VALUE;
   if (session->state == UDONONNX_SESSION_DISPOSED)
@@ -623,6 +624,11 @@ udononnxStatus_t udononnxSessionDispose(udononnxSession_t *session) {
   if (session->state == UDONONNX_SESSION_INITIALIZING ||
       session->state == UDONONNX_SESSION_RUNNING)
     return UDONONNX_STATUS_BUSY;
+  if (session->model) {
+    status = udononnxGeneratedDispose(session->model->graph_id, session);
+    if (status != UDONONNX_STATUS_SUCCESS)
+      return udononnxRecordFailure(session, status);
+  }
   session->generation = udononnxNextGeneration(session->generation);
   session->active_event = 0;
   session->state = UDONONNX_SESSION_DISPOSED;

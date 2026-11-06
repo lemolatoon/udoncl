@@ -9,6 +9,8 @@ size_t udononnx_matmul_nbits_cpu_gid;
 #include "../../libraries/udononnxoperators/device/matmul_nbits.cl"
 size_t udononnx_gather_cpu_gid;
 #include "../../libraries/udononnxoperators/device/gather.cl"
+size_t udononnx_unary_cpu_gid;
+#include "../../libraries/udononnxoperators/device/unary.cl"
 
 #define EXPECT(condition)                                                      \
   do {                                                                         \
@@ -51,12 +53,24 @@ udononnxGeneratedEnqueueRun(uint32_t graph_id, udononnxSession_t *session,
   return UDONONNX_STATUS_NOT_SUPPORTED;
 }
 
+udononnxStatus_t udononnxGeneratedDispose(uint32_t graph_id,
+                                          udononnxSession_t *session) {
+  (void)graph_id;
+  (void)session;
+  return UDONONNX_STATUS_SUCCESS;
+}
+
 static cl_uint allocated_logical_id;
 static size_t allocated_bytes;
+static cl_uint static_resource_id;
+static size_t static_resource_bytes;
 static cl_uint uploaded_token;
 static cl_uint released_token;
 static cl_uint dispatched_input_token;
 static cl_uint dispatched_output_token;
+static cl_uint dispatched_arena_a_token;
+static cl_uint dispatched_arena_b_token;
+static cl_uint dispatched_arena_output_token;
 static cl_int dispatched_m;
 static cl_float dispatched_alpha;
 static cl_int dispatched_sgemv_trans;
@@ -67,7 +81,7 @@ static cl_int dispatched_gather_words;
 static cl_uint await_count;
 static cl_uint await_failure_call;
 static cl_int awaited_events[8];
-static unsigned char physical_buffers[33][65536];
+static unsigned char physical_buffers[33][524288];
 
 cl_uint __vrc_opencl_buffer_alloc(cl_uint logical_id, size_t bytes) {
   allocated_logical_id = logical_id;
@@ -75,6 +89,12 @@ cl_uint __vrc_opencl_buffer_alloc(cl_uint logical_id, size_t bytes) {
   if (!logical_id || logical_id > 32 || bytes > sizeof(physical_buffers[0]))
     return 0;
   return logical_id + 100;
+}
+
+cl_uint __vrc_opencl_static_tensor(cl_uint resource_id, size_t bytes) {
+  static_resource_id = resource_id;
+  static_resource_bytes = bytes;
+  return resource_id + 1000;
 }
 
 cl_int __vrc_opencl_buffer_release(cl_uint physical_token) {
@@ -101,6 +121,14 @@ cl_int __vrc_opencl_buffer_readback(cl_uint physical_token, size_t offset,
   return 8;
 }
 
+cl_int __vrc_opencl_buffer_copy(cl_uint source_token, cl_uint destination_token,
+                                size_t source_offset, size_t destination_offset,
+                                size_t bytes) {
+  memmove(physical_buffers[destination_token - 100] + destination_offset,
+          physical_buffers[source_token - 100] + source_offset, bytes);
+  return 19;
+}
+
 cl_int __vrc_opencl_dispatch_udonblas_sgemm(cl_uint input_token,
                                             cl_uint output_token, cl_int m,
                                             cl_int n, cl_int k, cl_int transa,
@@ -121,6 +149,45 @@ cl_int __vrc_opencl_dispatch_udonblas_sgemm(cl_uint input_token,
   dispatched_alpha = alpha;
   return 10;
 }
+
+cl_int __vrc_opencl_dispatch_udonblas_arena_sgemm(
+    cl_uint a_token, cl_uint b_token, cl_uint output_token, cl_int m, cl_int n,
+    cl_int k, cl_int transa, cl_int transb, cl_float alpha) {
+  (void)m;
+  (void)n;
+  (void)k;
+  (void)transa;
+  (void)transb;
+  (void)alpha;
+  dispatched_arena_a_token = a_token;
+  dispatched_arena_b_token = b_token;
+  dispatched_arena_output_token = output_token;
+  return 11;
+}
+
+extern cl_int __vrc_enqueue_udonblas_arena_sgemm_args(
+    cl_command_queue queue, cl_mem a, cl_mem b, cl_mem output, cl_int m,
+    cl_int n, cl_int k, cl_int transa, cl_int transb, cl_float alpha);
+extern cl_int __vrc_enqueue_udonblas_arena_sgemm_device_args(
+    cl_command_queue queue, cl_mem a, cl_mem b, cl_mem output, cl_int m,
+    cl_int n, cl_int k, cl_int transa, cl_int transb, cl_float alpha,
+    cl_uint wait_count, const cl_event *wait_list, cl_event *event);
+extern cl_int __vrc_enqueue_udononnx_unary_device_args(
+    cl_command_queue queue, cl_mem input, cl_mem output, cl_int operation,
+    cl_int words, cl_uint wait_count, const cl_event *wait_list,
+    cl_event *event);
+extern cl_int __vrc_enqueue_udononnx_matmul_nbits_q4_device_args(
+    cl_command_queue queue, cl_mem activation, cl_mem packed_weight,
+    cl_mem scales, cl_mem previous, cl_mem output, cl_int m, cl_int n, cl_int k,
+    cl_int block_size, cl_int n_base, cl_int k_base, cl_int tile_n,
+    cl_int tile_k, cl_int accumulate, cl_uint wait_count,
+    const cl_event *wait_list, cl_event *event);
+extern cl_mem udonclAdoptStaticBuffer(cl_command_queue queue,
+                                      cl_uint resource_id, size_t bytes,
+                                      cl_uint physical_token, cl_int *error);
+extern cl_mem udonclCreateBufferForQueue(cl_command_queue queue,
+                                         cl_mem_flags flags, size_t bytes,
+                                         cl_int *error);
 
 cl_int __vrc_opencl_dispatch_udonblas_sgemv(cl_uint input_token,
                                             cl_uint output_token, cl_int trans,
@@ -183,6 +250,28 @@ cl_int __vrc_opencl_dispatch_udononnx_matmul_nbits(cl_uint input_token,
   return 15;
 }
 
+cl_int __vrc_opencl_dispatch_udononnx_matmul_nbits_q4(
+    cl_uint activation_token, cl_uint packed_weight_token, cl_uint scales_token,
+    cl_uint previous_token, cl_uint output_token, cl_int m, cl_int n, cl_int k,
+    cl_int block_size, cl_int n_base, cl_int k_base, cl_int tile_n,
+    cl_int tile_k, cl_int accumulate) {
+  (void)activation_token;
+  (void)packed_weight_token;
+  (void)scales_token;
+  (void)previous_token;
+  (void)output_token;
+  (void)m;
+  (void)n;
+  (void)k;
+  (void)block_size;
+  (void)n_base;
+  (void)k_base;
+  (void)tile_n;
+  (void)tile_k;
+  (void)accumulate;
+  return CL_SUCCESS;
+}
+
 cl_int __vrc_opencl_dispatch_udononnx_gather_copy(cl_uint input_token,
                                                   cl_uint output_token,
                                                   cl_int words) {
@@ -194,6 +283,18 @@ cl_int __vrc_opencl_dispatch_udononnx_gather_copy(cl_uint input_token,
     udononnx_gather_copy((const float *)physical_buffers[input_token - 100],
                          (float *)physical_buffers[output_token - 100], words);
   return 16;
+}
+
+cl_int __vrc_opencl_dispatch_udononnx_unary_f32(cl_uint input_token,
+                                                cl_uint output_token,
+                                                cl_int operation,
+                                                cl_int words) {
+  for (udononnx_unary_cpu_gid = 0; udononnx_unary_cpu_gid < 16384;
+       ++udononnx_unary_cpu_gid)
+    udononnx_unary_f32((const float *)physical_buffers[input_token - 100],
+                       (float *)physical_buffers[output_token - 100], operation,
+                       words);
+  return 17;
 }
 
 cl_int __vrc_opencl_await(cl_int event) {
@@ -228,7 +329,8 @@ int main(void) {
   cl_program program;
   cl_kernel kernel;
   cl_event marker_event, write_event, wait_events[2];
-  cl_mem first, second, nested_buffer, nested_buffer2;
+  cl_mem first, second, nested_buffer, nested_buffer2, static_buffer;
+  cl_mem q4_activation, q4_packed, q4_scales, q4_previous, q4_output;
   cl_mem resolved;
   udonclBufferHandle_t common_buffer = {0, 0}, stale_buffer, replacement;
   udonclBufferHandle_t host_input_buffer = {0, 0};
@@ -251,6 +353,40 @@ int main(void) {
   float gather_output[4] = {0.0f, 0.0f, 0.0f, 0.0f};
   int64_t gather_shape[2] = {3, 2};
   int64_t gather_indices[2] = {-1, 0};
+  int64_t cast_input[4] = {0, 1, -2, 16777217};
+  float cast_output[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  int64_t expand_input_shape[3] = {1, 2, 1};
+  int64_t expand_output_shape[3] = {1, 2, 3};
+  float expand_input[2] = {4.0f, 7.0f};
+  float expand_output[6] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+  int64_t transpose_shape[2] = {2, 3};
+  int64_t transpose_permutation[2] = {1, 0};
+  int32_t transpose_input[6] = {1, 2, 3, 4, 5, 6};
+  int32_t transpose_output[6] = {0, 0, 0, 0, 0, 0};
+  int64_t concat_left_shape[2] = {2, 1};
+  int64_t concat_right_shape[2] = {2, 2};
+  int64_t concat_output_shape[2] = {2, 3};
+  int32_t concat_left[2] = {1, 4};
+  int32_t concat_right[4] = {2, 3, 5, 6};
+  int32_t concat_output[6] = {0, 0, 0, 0, 0, 0};
+  float unary_input[2] = {0.0f, 1.5707963267948966f};
+  float unary_output[2] = {0.0f, 0.0f};
+  int64_t slice_input_shape[2] = {2, 4};
+  int64_t slice_output_shape[2] = {2, 2};
+  int64_t slice_starts[1] = {1}, slice_ends[1] = {4};
+  int64_t slice_axes[1] = {1}, slice_steps[1] = {2};
+  int32_t slice_input[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+  int32_t slice_output[4] = {0, 0, 0, 0};
+  int64_t comparison_shape[2] = {2, 2}, scalar_shape[1] = {1};
+  int64_t comparison_left[4] = {1, 2, 1, 3}, comparison_right[1] = {1};
+  uint8_t comparison_output[4] = {0, 0, 0, 0};
+  int64_t where_true[1] = {9}, where_false[4] = {4, 5, 6, 7};
+  int64_t where_output[4] = {0, 0, 0, 0};
+  int64_t add_output[4] = {0, 0, 0, 0};
+  int64_t scatter_data_shape[1] = {4}, scatter_indices_shape[2] = {2, 1};
+  int64_t scatter_indices[2] = {1, 3};
+  int32_t scatter_data[4] = {1, 2, 3, 4}, scatter_updates[2] = {9, 8};
+  int32_t scatter_output[4] = {0, 0, 0, 0};
   float nbits_a[16], nbits_scales[2] = {0.5f, 1.0f};
   float nbits_bias[2] = {1.0f, -2.0f}, nbits_y[2] = {0.0f, 0.0f};
   uint8_t nbits_b[32], nbits_zero[2] = {0x88, 0};
@@ -260,7 +396,6 @@ int main(void) {
   uint16_t bfloat_bias[2] = {0x3f80, 0xc000}, bfloat_y[2] = {0, 0};
   int bits;
   int64_t tensor_dimensions[2] = {2, 2};
-
   EXPECT(clGetPlatformIDs(1, &platform, 0) == CL_SUCCESS);
   EXPECT(clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &device, 0) ==
          CL_SUCCESS);
@@ -418,6 +553,92 @@ int main(void) {
          CL_SUCCESS);
   EXPECT(dispatched_m == 2 && dispatched_alpha == 2.5f);
 
+  nested_buffer =
+      clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(source), 0, &error);
+  EXPECT(nested_buffer && error == CL_SUCCESS);
+  EXPECT(__vrc_enqueue_udonblas_arena_sgemm_args(queue, first, second,
+                                                 nested_buffer, 1, 1, 1, 0, 0,
+                                                 1.0f) == CL_SUCCESS);
+  EXPECT(dispatched_arena_a_token == 102 && dispatched_arena_b_token == 101 &&
+         dispatched_arena_output_token == 103);
+  EXPECT(clReleaseMemObject(nested_buffer) == CL_SUCCESS);
+
+  /* AOT weights have their own immutable table.  They use the same cl_mem
+   * ABI as mutable buffers without consuming a mutable allocation slot. */
+  allocated_logical_id = 0;
+  released_token = 0;
+  static_buffer = udonclAdoptStaticBuffer(
+      queue, 7, 5760, __vrc_opencl_static_tensor(7, 5760), &error);
+  EXPECT(static_buffer && error == CL_SUCCESS);
+  EXPECT(static_resource_id == 7 && static_resource_bytes == 5760);
+  EXPECT(allocated_logical_id == 0);
+  EXPECT(clEnqueueWriteBuffer(queue, static_buffer, CL_FALSE, 0, sizeof(source),
+                              &source, 0, 0, 0) == CL_INVALID_VALUE);
+  nested_buffer = udonclCreateBufferForQueue(queue, CL_MEM_READ_WRITE,
+                                             sizeof(source), &error);
+  EXPECT(nested_buffer && error == CL_SUCCESS);
+  EXPECT(__vrc_enqueue_udonblas_arena_sgemm_args(queue, first, static_buffer,
+                                                 nested_buffer, 1, 10, 144, 0,
+                                                 0, 1.0f) == CL_SUCCESS);
+  EXPECT(dispatched_arena_a_token == 102 && dispatched_arena_b_token == 1007 &&
+         dispatched_arena_output_token == 103);
+  await_count = 0;
+  EXPECT(__vrc_enqueue_udonblas_arena_sgemm_device_args(
+             queue, first, static_buffer, nested_buffer, 1, 10, 144, 0, 0, 1.0f,
+             0, 0, &marker_event) == CL_SUCCESS);
+  EXPECT(marker_event);
+  EXPECT(clWaitForEvents(1, &marker_event) == CL_SUCCESS);
+  EXPECT(await_count == 1 && awaited_events[0] == 11);
+  EXPECT(clReleaseEvent(marker_event) == CL_SUCCESS);
+  ((float *)physical_buffers[2])[0] = 0.0f;
+  ((float *)physical_buffers[2])[1] = 1.57079632679f;
+  await_count = 0;
+  EXPECT(__vrc_enqueue_udononnx_unary_device_args(queue, first, nested_buffer,
+                                                  2, 2, 0, 0,
+                                                  &marker_event) == CL_SUCCESS);
+  EXPECT(marker_event);
+  EXPECT(clWaitForEvents(1, &marker_event) == CL_SUCCESS);
+  EXPECT(await_count == 1 && awaited_events[0] == 17);
+  EXPECT(((float *)physical_buffers[3])[0] == 0.0f);
+  EXPECT(((float *)physical_buffers[3])[1] > 0.999999f &&
+         ((float *)physical_buffers[3])[1] < 1.000001f);
+  EXPECT(clReleaseEvent(marker_event) == CL_SUCCESS);
+  EXPECT(clReleaseMemObject(nested_buffer) == CL_SUCCESS);
+
+  q4_activation = udonclAdoptStaticBuffer(
+      queue, 8, 90112, __vrc_opencl_static_tensor(8, 90112), &error);
+  EXPECT(q4_activation && error == CL_SUCCESS);
+  q4_packed = udonclAdoptStaticBuffer(
+      queue, 9, 90112000, __vrc_opencl_static_tensor(9, 90112000), &error);
+  EXPECT(q4_packed && error == CL_SUCCESS);
+  q4_scales = udonclAdoptStaticBuffer(
+      queue, 10, 22528000, __vrc_opencl_static_tensor(10, 22528000), &error);
+  EXPECT(q4_scales && error == CL_SUCCESS);
+  q4_previous =
+      udonclCreateBufferForQueue(queue, CL_MEM_READ_WRITE, 524288, &error);
+  EXPECT(q4_previous && error == CL_SUCCESS);
+  q4_output =
+      udonclCreateBufferForQueue(queue, CL_MEM_READ_WRITE, 524288, &error);
+  EXPECT(q4_output && error == CL_SUCCESS);
+  EXPECT(__vrc_enqueue_udononnx_matmul_nbits_q4_device_args(
+             queue, q4_activation, q4_packed, q4_scales, q4_previous, q4_output,
+             4, 32000, 5632, 32, 0, 5504, 32000, 128, 1, 0, 0,
+             &marker_event) == CL_SUCCESS);
+  EXPECT(marker_event && clWaitForEvents(1, &marker_event) == CL_SUCCESS);
+  EXPECT(clReleaseEvent(marker_event) == CL_SUCCESS);
+  EXPECT(__vrc_enqueue_udononnx_matmul_nbits_q4_device_args(
+             queue, q4_activation, q4_packed, q4_scales, q4_previous, q4_output,
+             4, 32000, 5632, 32, 1, 5504, 31999, 128, 1, 0, 0,
+             0) == CL_INVALID_VALUE);
+  EXPECT(clReleaseMemObject(q4_output) == CL_SUCCESS);
+  EXPECT(clReleaseMemObject(q4_previous) == CL_SUCCESS);
+  EXPECT(clReleaseMemObject(q4_scales) == CL_SUCCESS);
+  EXPECT(clReleaseMemObject(q4_packed) == CL_SUCCESS);
+  EXPECT(clReleaseMemObject(q4_activation) == CL_SUCCESS);
+  released_token = 0;
+  EXPECT(clReleaseMemObject(static_buffer) == CL_SUCCESS);
+  EXPECT(released_token == 0);
+
   EXPECT(clReleaseKernel(kernel) == CL_SUCCESS);
   kernel = clCreateKernel(program, "udonblas_sgemv", &error);
   EXPECT(kernel && error == CL_SUCCESS);
@@ -508,6 +729,75 @@ int main(void) {
   EXPECT(gather_output[0] == 5.0f && gather_output[1] == 6.0f &&
          gather_output[2] == 1.0f && gather_output[3] == 2.0f);
   EXPECT(dispatched_gather_words == 2);
+  EXPECT(udononnxCast(operator_handle, UDONCL_DATA_INT64, cast_input,
+                      UDONCL_DATA_FLOAT32, cast_output,
+                      4) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(cast_output[0] == 0.0f && cast_output[1] == 1.0f &&
+         cast_output[2] == -2.0f && cast_output[3] == 16777216.0f);
+  EXPECT(udononnxExpand(operator_handle, UDONCL_DATA_FLOAT32, expand_input,
+                        expand_input_shape, 3, expand_output,
+                        expand_output_shape, 3) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(expand_output[0] == 4.0f && expand_output[1] == 4.0f &&
+         expand_output[2] == 4.0f && expand_output[3] == 7.0f &&
+         expand_output[4] == 7.0f && expand_output[5] == 7.0f);
+  EXPECT(udononnxTranspose(operator_handle, UDONCL_DATA_INT32, transpose_input,
+                           transpose_shape, 2, transpose_permutation,
+                           transpose_output) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(transpose_output[0] == 1 && transpose_output[1] == 4 &&
+         transpose_output[2] == 2 && transpose_output[3] == 5 &&
+         transpose_output[4] == 3 && transpose_output[5] == 6);
+  EXPECT(udononnxConcat(operator_handle, UDONCL_DATA_INT32, concat_left,
+                        concat_left_shape, 2, 1, 0, concat_output,
+                        concat_output_shape) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(udononnxConcat(operator_handle, UDONCL_DATA_INT32, concat_right,
+                        concat_right_shape, 2, 1, 1, concat_output,
+                        concat_output_shape) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(concat_output[0] == 1 && concat_output[1] == 2 &&
+         concat_output[2] == 3 && concat_output[3] == 4 &&
+         concat_output[4] == 5 && concat_output[5] == 6);
+  EXPECT(udononnxCos(operator_handle, unary_input, 2, unary_output) ==
+         UDONONNX_STATUS_SUCCESS);
+  EXPECT(unary_output[0] == 1.0f && unary_output[1] > -0.000001f &&
+         unary_output[1] < 0.000001f);
+  EXPECT(udononnxSin(operator_handle, unary_input, 2, unary_output) ==
+         UDONONNX_STATUS_SUCCESS);
+  EXPECT(unary_output[0] == 0.0f && unary_output[1] > 0.999999f &&
+         unary_output[1] < 1.000001f);
+  EXPECT(udononnxNeg(operator_handle, unary_input, 2, unary_output) ==
+         UDONONNX_STATUS_SUCCESS);
+  EXPECT(unary_output[0] == 0.0f && unary_output[1] < -1.570796f &&
+         unary_output[1] > -1.570797f);
+  EXPECT(udononnxSlice(operator_handle, UDONCL_DATA_INT32, slice_input,
+                       slice_input_shape, 2, slice_starts, slice_ends,
+                       slice_axes, slice_steps, 1, slice_output,
+                       slice_output_shape) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(slice_output[0] == 2 && slice_output[1] == 4 && slice_output[2] == 6 &&
+         slice_output[3] == 8);
+  EXPECT(udononnxEqual(operator_handle, UDONCL_DATA_INT64, comparison_left,
+                       comparison_shape, 2, comparison_right, scalar_shape, 1,
+                       comparison_output, comparison_shape,
+                       2) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(comparison_output[0] == 1 && comparison_output[1] == 0 &&
+         comparison_output[2] == 1 && comparison_output[3] == 0);
+  EXPECT(udononnxWhere(operator_handle, UDONCL_DATA_INT64, comparison_output,
+                       comparison_shape, 2, where_true, scalar_shape, 1,
+                       where_false, comparison_shape, 2, where_output,
+                       comparison_shape, 2) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(where_output[0] == 9 && where_output[1] == 5 && where_output[2] == 9 &&
+         where_output[3] == 7);
+  EXPECT(udononnxAdd(operator_handle, UDONCL_DATA_INT64, comparison_left,
+                     comparison_shape, 2, comparison_right, scalar_shape, 1,
+                     add_output, comparison_shape,
+                     2) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(add_output[0] == 2 && add_output[1] == 3 && add_output[2] == 2 &&
+         add_output[3] == 4);
+  EXPECT(udononnxScatterND(operator_handle, UDONCL_DATA_INT32, scatter_data,
+                           scatter_data_shape, 1, UDONCL_DATA_INT64,
+                           scatter_indices, scatter_indices_shape, 2,
+                           scatter_updates,
+                           scatter_output) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(scatter_output[0] == 1 && scatter_output[1] == 9 &&
+         scatter_output[2] == 3 && scatter_output[3] == 8);
   for (bits = 2; bits <= 8; ++bits) {
     size_t packed_bytes = (size_t)2 * 16u * (size_t)bits / 8u;
     unsigned zero = 1u << ((unsigned)bits - 1u);

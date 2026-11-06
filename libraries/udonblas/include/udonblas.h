@@ -71,6 +71,16 @@ udonblasStatus_t udonblasSgemm(udonblasHandle_t handle,
                                const float *b, int ldb, const float *beta,
                                float *c, int ldc);
 
+/* CUDA cublasSgemmStridedBatched-shaped extension. Strides are measured in
+ * elements; a zero input stride broadcasts one matrix across all batches. */
+udonblasStatus_t
+udonblasSgemmStridedBatched(udonblasHandle_t handle, udonblasOperation_t transa,
+                            udonblasOperation_t transb, int m, int n, int k,
+                            const float *alpha, const float *a, int lda,
+                            int64_t stride_a, const float *b, int ldb,
+                            int64_t stride_b, const float *beta, float *c,
+                            int ldc, int64_t stride_c, int batch_count);
+
 #ifdef __cplusplus
 }
 #endif

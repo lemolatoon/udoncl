@@ -99,9 +99,11 @@ struct Emitter {
       auto bytes = "bytes" + std::to_string(next++);
       line("uint4 " + bytes + " = uint4(round(" + get(unpack.getTexel()) +
            " * 255.0));");
-      declare(unpack.getValue(), "asfloat(" + bytes + ".x | (" + bytes +
-                                     ".y << 8u) | (" + bytes +
-                                     ".z << 16u) | (" + bytes + ".w << 24u))");
+      auto word = bytes + ".x | (" + bytes + ".y << 8u) | (" + bytes +
+                  ".z << 16u) | (" + bytes + ".w << 24u)";
+      declare(unpack.getValue(), unpack.getValue().getType().isF32()
+                                     ? "asfloat(" + word + ")"
+                                     : word);
     } else if (auto pack = dyn_cast<fragment::RawPackOp>(op)) {
       auto word = "bits" + std::to_string(next++);
       line("uint " + word + " = asuint(" + get(pack.getValue()) + ");");

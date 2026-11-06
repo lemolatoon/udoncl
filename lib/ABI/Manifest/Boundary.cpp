@@ -10,6 +10,7 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/SHA256.h"
+#include <algorithm>
 using namespace mlir;
 namespace vrc {
 #define GEN_PASS_DEF_VERIFYHOSTDEVICEBOUNDARYPASS
@@ -334,26 +335,50 @@ llvm::json::Object buildBoundaryManifest(ModuleOp module) {
     auto global = kernel.getGlobalSize();
     llvm::json::Array args;
     llvm::DenseMap<unsigned, fragment::ResourceOp> resources;
+    llvm::DenseMap<unsigned, int64_t> resourceWords;
     for (auto resource :
          kernel.getBody().front().getOps<fragment::ResourceOp>())
       resources[resource.getArgIndex()] = resource;
+    kernel.walk([&](fragment::TextureLoadOp load) {
+      auto resource =
+          SymbolTable::lookupNearestSymbolFrom<fragment::ResourceOp>(
+              load, load.getResourceAttr());
+      if (resource)
+        resourceWords[resource.getArgIndex()] =
+            std::max<int64_t>(resourceWords.lookup(resource.getArgIndex()),
+                              load.getElementCount());
+    });
     llvm::json::Array resourceOrder, reads, writes;
     std::optional<unsigned> outputArgument;
     unsigned scalarOffset = 0;
+    llvm::DenseMap<unsigned, std::pair<int64_t, int64_t>> argumentBounds;
+    if (auto bounds = kernel->getAttrOfType<ArrayAttr>("vrc.argument_bounds"))
+      for (Attribute attribute : bounds) {
+        auto entry = cast<DictionaryAttr>(attribute);
+        auto index = entry.getAs<IntegerAttr>("index").getInt();
+        argumentBounds[static_cast<unsigned>(index)] = {
+            entry.getAs<IntegerAttr>("min").getInt(),
+            entry.getAs<IntegerAttr>("max").getInt()};
+      }
     for (unsigned i = 0; i < kernel.getArgumentKinds().size(); ++i) {
       auto resource = resources.lookup(i);
       if (resource && resource.getKind() != "uniform") {
         bool output = resource.getKind() == "target";
+        int64_t requiredWords =
+            output ? words : resourceWords.lookup(resource.getArgIndex());
         std::string binding = output   ? "SV_Target"
                               : i == 0 ? "_VRC_Input"
                                        : "_VRC_Input" + std::to_string(i);
-        args.push_back(llvm::json::Object{{"index", i},
-                                          {"kind", "buffer"},
-                                          {"access", output ? "write" : "read"},
-                                          {"resource_index", i},
-                                          {"required_bytes", words * 4},
-                                          {"alignment", 4},
-                                          {"binding", std::move(binding)}});
+        args.push_back(llvm::json::Object{
+            {"index", i},
+            {"kind", "buffer"},
+            {"element_type",
+             resource.getValueType().isF32() ? "float32" : "uint32"},
+            {"access", output ? "write" : "read"},
+            {"resource_index", i},
+            {"required_bytes", requiredWords * 4},
+            {"alignment", 4},
+            {"binding", std::move(binding)}});
         resourceOrder.push_back(i);
         if (output) {
           outputArgument = i;
@@ -361,13 +386,19 @@ llvm::json::Object buildBoundaryManifest(ModuleOp module) {
         } else
           reads.push_back(i);
       } else {
-        args.push_back(llvm::json::Object{
+        llvm::json::Object argument{
             {"index", i},
             {"kind",
              cast<StringAttr>(kernel.getArgumentKinds()[i]).getValue().str()},
             {"scalar_payload_offset", scalarOffset},
             {"byte_size", 4},
-            {"binding", "_VRC_Arg" + std::to_string(i)}});
+            {"binding", "_VRC_Arg" + std::to_string(i)}};
+        if (auto found = argumentBounds.find(i);
+            found != argumentBounds.end()) {
+          argument["minimum"] = found->second.first;
+          argument["maximum"] = found->second.second;
+        }
+        args.push_back(std::move(argument));
         scalarOffset += 4;
       }
     }

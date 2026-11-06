@@ -8,6 +8,7 @@
 #include "llvm/ADT/StringSwitch.h"
 
 #include <algorithm>
+#include <limits>
 #include <optional>
 
 using namespace mlir;
@@ -102,6 +103,53 @@ std::optional<SmallVector<int64_t>> broadcastShape(Operation *op) {
   return shape;
 }
 
+std::optional<SmallVector<int64_t>>
+sliceIndices(int64_t dimension, int64_t start, int64_t end, int64_t step) {
+  if (dimension < 0 || !step)
+    return std::nullopt;
+  SmallVector<int64_t> result;
+  constexpr size_t maximumElements = 1u << 20;
+  if (step > 0) {
+    if (start < 0)
+      start = start < -dimension ? 0 : start + dimension;
+    else
+      start = std::min(start, dimension);
+    if (end < 0)
+      end = end < -dimension ? 0 : end + dimension;
+    else
+      end = std::min(end, dimension);
+    for (int64_t index = start; index < end; index += step) {
+      if (result.size() >= maximumElements ||
+          index > std::numeric_limits<int64_t>::max() - step)
+        return std::nullopt;
+      result.push_back(index);
+    }
+    return result;
+  }
+  if (start < 0)
+    start = start < -dimension ? -1 : start + dimension;
+  else
+    start = std::min(start, dimension - 1);
+  if (end == std::numeric_limits<int64_t>::min())
+    end = -1;
+  else if (end < 0)
+    end = end < -dimension ? -1 : end + dimension;
+  else
+    end = std::min(end, dimension - 1);
+  for (int64_t index = start; index > end; index += step) {
+    if (result.size() >= maximumElements ||
+        index < std::numeric_limits<int64_t>::min() - step)
+      return std::nullopt;
+    result.push_back(index);
+  }
+  return result;
+}
+
+bool isONNXNoValue(Value value) {
+  Operation *definition = value.getDefiningOp();
+  return definition && definition->getName().getStringRef() == "onnx.NoValue";
+}
+
 std::optional<SmallVector<int64_t>> evaluateIntegerTensor(Value value,
                                                           unsigned depth = 0) {
   if (depth > 64)
@@ -119,6 +167,11 @@ std::optional<SmallVector<int64_t>> evaluateIntegerTensor(Value value,
     if (!dense || !isa<IntegerType>(dense.getElementType()))
       return std::nullopt;
     SmallVector<int64_t> result;
+    if (dense.isSplat()) {
+      result.assign(dense.getNumElements(),
+                    dense.getSplatValue<APInt>().getSExtValue());
+      return result;
+    }
     for (APInt integer : dense.getValues<APInt>())
       result.push_back(integer.getSExtValue());
     return result;
@@ -170,8 +223,182 @@ std::optional<SmallVector<int64_t>> evaluateIntegerTensor(Value value,
     }
     return result;
   }
+  if ((name == "onnx.Equal" || name == "onnx.Greater") &&
+      op->getNumOperands() == 2 && op->getNumResults() == 1) {
+    auto left = evaluateIntegerTensor(op->getOperand(0), depth + 1);
+    auto right = evaluateIntegerTensor(op->getOperand(1), depth + 1);
+    auto leftType = dyn_cast<RankedTensorType>(op->getOperand(0).getType());
+    auto rightType = dyn_cast<RankedTensorType>(op->getOperand(1).getType());
+    auto resultType = dyn_cast<RankedTensorType>(op->getResult(0).getType());
+    if (!left || !right || !leftType || !rightType || !resultType ||
+        !leftType.hasStaticShape() || !rightType.hasStaticShape() ||
+        !resultType.hasStaticShape() ||
+        left->size() != static_cast<size_t>(leftType.getNumElements()) ||
+        right->size() != static_cast<size_t>(rightType.getNumElements()) ||
+        resultType.getNumElements() > (1u << 20))
+      return std::nullopt;
+    auto inputOffset =
+        [&](RankedTensorType type,
+            ArrayRef<int64_t> coordinates) -> std::optional<size_t> {
+      if (type.getRank() > static_cast<int64_t>(coordinates.size()))
+        return std::nullopt;
+      size_t offset = 0;
+      size_t stride = 1;
+      int64_t rankOffset = coordinates.size() - type.getRank();
+      for (int64_t axis = type.getRank(); axis-- > 0;) {
+        int64_t dimension = type.getDimSize(axis);
+        int64_t coordinate = coordinates[rankOffset + axis];
+        if (dimension != 1 &&
+            dimension != resultType.getDimSize(rankOffset + axis))
+          return std::nullopt;
+        if (dimension != 1)
+          offset += static_cast<size_t>(coordinate) * stride;
+        stride *= static_cast<size_t>(dimension);
+      }
+      return offset;
+    };
+    SmallVector<int64_t> result;
+    result.reserve(resultType.getNumElements());
+    for (int64_t flat = 0; flat < resultType.getNumElements(); ++flat) {
+      int64_t remaining = flat;
+      SmallVector<int64_t> coordinates(resultType.getRank());
+      for (int64_t axis = resultType.getRank(); axis-- > 0;) {
+        coordinates[axis] = remaining % resultType.getDimSize(axis);
+        remaining /= resultType.getDimSize(axis);
+      }
+      auto leftOffset = inputOffset(leftType, coordinates);
+      auto rightOffset = inputOffset(rightType, coordinates);
+      if (!leftOffset || !rightOffset)
+        return std::nullopt;
+      result.push_back(name == "onnx.Equal"
+                           ? (*left)[*leftOffset] == (*right)[*rightOffset]
+                           : (*left)[*leftOffset] > (*right)[*rightOffset]);
+    }
+    return result;
+  }
+  if (name == "onnx.Where" && op->getNumOperands() == 3 &&
+      op->getNumResults() == 1) {
+    auto condition = evaluateIntegerTensor(op->getOperand(0), depth + 1);
+    auto whenTrue = evaluateIntegerTensor(op->getOperand(1), depth + 1);
+    auto whenFalse = evaluateIntegerTensor(op->getOperand(2), depth + 1);
+    auto resultType = dyn_cast<RankedTensorType>(op->getResult(0).getType());
+    if (!condition || !whenTrue || !whenFalse || !resultType ||
+        !resultType.hasStaticShape() ||
+        resultType.getNumElements() > (1u << 20))
+      return std::nullopt;
+    size_t count = resultType.getNumElements();
+    auto compatible = [&](ArrayRef<int64_t> values) {
+      return values.size() == 1 || values.size() == count;
+    };
+    if (!compatible(*condition) || !compatible(*whenTrue) ||
+        !compatible(*whenFalse))
+      return std::nullopt;
+    SmallVector<int64_t> result;
+    result.reserve(count);
+    for (size_t index = 0; index < count; ++index) {
+      bool selected = (*condition)[condition->size() == 1 ? 0 : index] != 0;
+      ArrayRef<int64_t> values = selected ? *whenTrue : *whenFalse;
+      result.push_back(values[values.size() == 1 ? 0 : index]);
+    }
+    return result;
+  }
+  if ((name == "onnx.Add" || name == "onnx.Sub" || name == "onnx.Mul" ||
+       name == "onnx.Div") &&
+      op->getNumOperands() == 2) {
+    auto left = evaluateIntegerTensor(op->getOperand(0), depth + 1);
+    auto right = evaluateIntegerTensor(op->getOperand(1), depth + 1);
+    if (!left || !right || left->empty() || right->empty())
+      return std::nullopt;
+    size_t count = std::max(left->size(), right->size());
+    if ((left->size() != 1 && left->size() != count) ||
+        (right->size() != 1 && right->size() != count))
+      return std::nullopt;
+    SmallVector<int64_t> result;
+    result.reserve(count);
+    for (size_t index = 0; index < count; ++index) {
+      int64_t lhs = (*left)[left->size() == 1 ? 0 : index];
+      int64_t rhs = (*right)[right->size() == 1 ? 0 : index];
+      APInt leftValue(64, lhs, true);
+      APInt rightValue(64, rhs, true);
+      APInt value(64, 0);
+      bool overflow = false;
+      if (name == "onnx.Add")
+        value = leftValue.sadd_ov(rightValue, overflow);
+      else if (name == "onnx.Sub")
+        value = leftValue.ssub_ov(rightValue, overflow);
+      else if (name == "onnx.Mul")
+        value = leftValue.smul_ov(rightValue, overflow);
+      else {
+        if (!rhs || (lhs == std::numeric_limits<int64_t>::min() && rhs == -1))
+          return std::nullopt;
+        value = leftValue.sdiv(rightValue);
+      }
+      if (overflow)
+        return std::nullopt;
+      result.push_back(value.getSExtValue());
+    }
+    return result;
+  }
+  if (name == "onnx.Range" && op->getNumOperands() == 3) {
+    auto starts = evaluateIntegerTensor(op->getOperand(0), depth + 1);
+    auto limits = evaluateIntegerTensor(op->getOperand(1), depth + 1);
+    auto deltas = evaluateIntegerTensor(op->getOperand(2), depth + 1);
+    if (!starts || starts->size() != 1 || !limits || limits->size() != 1 ||
+        !deltas || deltas->size() != 1 || (*deltas)[0] == 0)
+      return std::nullopt;
+    int64_t current = (*starts)[0];
+    int64_t limit = (*limits)[0];
+    int64_t delta = (*deltas)[0];
+    SmallVector<int64_t> result;
+    constexpr size_t maximumElements = 1u << 20;
+    while ((delta > 0 && current < limit) || (delta < 0 && current > limit)) {
+      if (result.size() >= maximumElements)
+        return std::nullopt;
+      result.push_back(current);
+      if ((delta > 0 &&
+           current > std::numeric_limits<int64_t>::max() - delta) ||
+          (delta < 0 && current < std::numeric_limits<int64_t>::min() - delta))
+        return std::nullopt;
+      current += delta;
+    }
+    return result;
+  }
+  if (name == "onnx.Slice" && op->getNumOperands() >= 3) {
+    auto type = dyn_cast<RankedTensorType>(op->getOperand(0).getType());
+    auto data = evaluateIntegerTensor(op->getOperand(0), depth + 1);
+    auto starts = evaluateIntegerTensor(op->getOperand(1), depth + 1);
+    auto ends = evaluateIntegerTensor(op->getOperand(2), depth + 1);
+    if (!type || type.getRank() != 1 || !type.hasStaticShape() || !data ||
+        !starts || !ends || starts->size() != 1 || ends->size() != 1)
+      return std::nullopt;
+    SmallVector<int64_t> axes{0};
+    SmallVector<int64_t> steps{1};
+    if (op->getNumOperands() >= 4 && !isONNXNoValue(op->getOperand(3))) {
+      auto values = evaluateIntegerTensor(op->getOperand(3), depth + 1);
+      if (!values)
+        return std::nullopt;
+      axes = std::move(*values);
+    }
+    if (op->getNumOperands() >= 5 && !isONNXNoValue(op->getOperand(4))) {
+      auto values = evaluateIntegerTensor(op->getOperand(4), depth + 1);
+      if (!values)
+        return std::nullopt;
+      steps = std::move(*values);
+    }
+    if (axes.size() != 1 || axes[0] != 0 || steps.size() != 1)
+      return std::nullopt;
+    auto indices =
+        sliceIndices(type.getDimSize(0), (*starts)[0], (*ends)[0], steps[0]);
+    if (!indices)
+      return std::nullopt;
+    SmallVector<int64_t> result;
+    for (int64_t index : *indices)
+      result.push_back((*data)[index]);
+    return result;
+  }
   if ((name == "onnx.Unsqueeze" || name == "onnx.Squeeze" ||
-       name == "onnx.Identity" || name == "onnx.Cast") &&
+       name == "onnx.Reshape" || name == "onnx.Identity" ||
+       name == "onnx.Cast") &&
       op->getNumOperands() >= 1)
     return evaluateIntegerTensor(op->getOperand(0), depth + 1);
   if (name == "onnx.Concat" &&
@@ -227,6 +454,15 @@ std::optional<Type> inferGenericResultType(Operation *op) {
                                    current.getElementType());
     }
   }
+  if (name == "ConstantOfShape" && op->getNumOperands() == 1)
+    if (auto shape = evaluateIntegerTensor(op->getOperand(0)))
+      if (llvm::all_of(*shape,
+                       [](int64_t dimension) { return dimension >= 0; }))
+        return RankedTensorType::get(*shape, current.getElementType());
+  if (name == "Range")
+    if (auto values = evaluateIntegerTensor(op->getResult(0)))
+      return RankedTensorType::get({static_cast<int64_t>(values->size())},
+                                   current.getElementType());
   if (name == "MatMul") {
     auto left = rankedOperand(0);
     auto right = rankedOperand(1);
@@ -258,30 +494,97 @@ std::optional<Type> inferGenericResultType(Operation *op) {
   if (name == "Gather") {
     auto data = rankedOperand(0);
     auto indices = rankedOperand(1);
-    if (data && indices)
-      return dynamicTensor(data.getRank() + indices.getRank() - 1);
+    if (data && indices) {
+      int64_t axis = 0;
+      if (auto attribute = op->getAttrOfType<IntegerAttr>("axis"))
+        axis = attribute.getInt();
+      if (axis < 0)
+        axis += data.getRank();
+      if (axis < 0 || axis >= data.getRank())
+        return std::nullopt;
+      SmallVector<int64_t> shape;
+      llvm::append_range(shape, data.getShape().take_front(axis));
+      llvm::append_range(shape, indices.getShape());
+      llvm::append_range(shape, data.getShape().drop_front(axis + 1));
+      return RankedTensorType::get(shape, current.getElementType());
+    }
   }
   if (name == "Concat") {
     int64_t rank = -1;
-    int64_t oneDimensionalSize = 0;
-    bool staticOneDimensionalSize = true;
+    SmallVector<int64_t> shape;
+    int64_t axis = 0;
+    if (auto attribute = op->getAttrOfType<IntegerAttr>("axis"))
+      axis = attribute.getInt();
     for (Value operand : op->getOperands()) {
       auto tensor = dyn_cast<RankedTensorType>(operand.getType());
       if (!tensor || (rank >= 0 && tensor.getRank() != rank))
         return std::nullopt;
-      rank = tensor.getRank();
-      if (rank == 1 && !ShapedType::isDynamic(tensor.getDimSize(0)))
-        oneDimensionalSize += tensor.getDimSize(0);
-      else
-        staticOneDimensionalSize = false;
+      if (rank < 0) {
+        rank = tensor.getRank();
+        if (axis < 0)
+          axis += rank;
+        if (axis < 0 || axis >= rank)
+          return std::nullopt;
+        shape.assign(tensor.getShape().begin(), tensor.getShape().end());
+        continue;
+      }
+      for (int64_t dimension = 0; dimension < rank; ++dimension) {
+        if (dimension == axis) {
+          if (ShapedType::isDynamic(shape[dimension]) ||
+              tensor.isDynamicDim(dimension))
+            shape[dimension] = ShapedType::kDynamic;
+          else
+            shape[dimension] += tensor.getDimSize(dimension);
+        } else if (shape[dimension] != tensor.getDimSize(dimension)) {
+          if (ShapedType::isDynamic(shape[dimension]))
+            shape[dimension] = tensor.getDimSize(dimension);
+          else if (!tensor.isDynamicDim(dimension))
+            return std::nullopt;
+        }
+      }
     }
-    if (rank == 1 && staticOneDimensionalSize)
-      return RankedTensorType::get({oneDimensionalSize},
-                                   current.getElementType());
     if (rank >= 0)
-      return dynamicTensor(rank);
+      return RankedTensorType::get(shape, current.getElementType());
   }
-  if (name == "Reshape" || name == "Expand") {
+  if (name == "Expand") {
+    if (op->getNumOperands() >= 2)
+      if (auto dimensions = evaluateIntegerTensor(op->getOperand(1))) {
+        auto input = rankedOperand(0);
+        if (input) {
+          size_t rank = std::max<size_t>(input.getRank(), dimensions->size());
+          SmallVector<int64_t> shape(rank, 1);
+          for (size_t offset = 0; offset < rank; ++offset) {
+            int64_t inputDimension =
+                offset < static_cast<size_t>(input.getRank())
+                    ? input.getDimSize(input.getRank() - 1 - offset)
+                    : 1;
+            int64_t requestedDimension =
+                offset < dimensions->size()
+                    ? (*dimensions)[dimensions->size() - 1 - offset]
+                    : 1;
+            if (requestedDimension < 0)
+              return std::nullopt;
+            int64_t dimension;
+            if (inputDimension == 1)
+              dimension = requestedDimension;
+            else if (requestedDimension == 1 ||
+                     inputDimension == requestedDimension)
+              dimension = inputDimension;
+            else if (ShapedType::isDynamic(inputDimension))
+              dimension = requestedDimension;
+            else
+              return std::nullopt;
+            shape[rank - 1 - offset] = dimension;
+          }
+          return RankedTensorType::get(shape, current.getElementType());
+        }
+      }
+    auto shape = rankedOperand(1);
+    if (shape && shape.getRank() == 1 &&
+        !ShapedType::isDynamic(shape.getDimSize(0)))
+      return dynamicTensor(shape.getDimSize(0));
+  }
+  if (name == "Reshape") {
     if (op->getNumOperands() >= 2)
       if (auto dimensions = evaluateIntegerTensor(op->getOperand(1))) {
         SmallVector<int64_t> shape(*dimensions);
@@ -308,6 +611,8 @@ std::optional<Type> inferGenericResultType(Operation *op) {
         if (inferredIndex >= 0 && input && input.hasStaticShape() &&
             knownElements > 0 && input.getNumElements() % knownElements == 0)
           shape[inferredIndex] = input.getNumElements() / knownElements;
+        else if (inferredIndex >= 0)
+          shape[inferredIndex] = ShapedType::kDynamic;
         if (llvm::none_of(shape, [](int64_t dimension) {
               return ShapedType::isDynamic(dimension);
             }))
@@ -320,22 +625,114 @@ std::optional<Type> inferGenericResultType(Operation *op) {
   }
   if (name == "Unsqueeze") {
     auto input = rankedOperand(0);
-    auto axes = rankedOperand(1);
-    if (input && input.getRank() == 0 && axes && axes.hasStaticShape() &&
-        axes.getNumElements() == 1)
-      return RankedTensorType::get({1}, current.getElementType());
-    if (input && axes && axes.hasStaticShape())
-      return dynamicTensor(input.getRank() + axes.getNumElements());
+    if (input && op->getNumOperands() >= 2)
+      if (auto axes = evaluateIntegerTensor(op->getOperand(1))) {
+        int64_t outputRank = input.getRank() + axes->size();
+        SmallVector<bool> inserted(outputRank, false);
+        for (int64_t axis : *axes) {
+          if (axis < 0)
+            axis += outputRank;
+          if (axis < 0 || axis >= outputRank || inserted[axis])
+            return std::nullopt;
+          inserted[axis] = true;
+        }
+        SmallVector<int64_t> shape;
+        shape.reserve(outputRank);
+        size_t inputAxis = 0;
+        for (int64_t axis = 0; axis < outputRank; ++axis)
+          shape.push_back(inserted[axis] ? 1 : input.getDimSize(inputAxis++));
+        return RankedTensorType::get(shape, current.getElementType());
+      }
   }
   if (name == "Squeeze") {
     auto input = rankedOperand(0);
-    auto axes = rankedOperand(1);
-    if (input && axes && axes.hasStaticShape())
-      return dynamicTensor(input.getRank() - axes.getNumElements());
+    if (input) {
+      SmallVector<bool> removed(input.getRank(), false);
+      if (op->getNumOperands() >= 2 && !isONNXNoValue(op->getOperand(1))) {
+        auto axes = evaluateIntegerTensor(op->getOperand(1));
+        if (!axes)
+          return std::nullopt;
+        for (int64_t axis : *axes) {
+          if (axis < 0)
+            axis += input.getRank();
+          if (axis < 0 || axis >= input.getRank() || removed[axis] ||
+              input.getDimSize(axis) != 1)
+            return std::nullopt;
+          removed[axis] = true;
+        }
+      } else {
+        for (int64_t axis = 0; axis < input.getRank(); ++axis)
+          removed[axis] = input.getDimSize(axis) == 1;
+      }
+      SmallVector<int64_t> shape;
+      for (auto [axis, dimension] : llvm::enumerate(input.getShape()))
+        if (!removed[axis])
+          shape.push_back(dimension);
+      return RankedTensorType::get(shape, current.getElementType());
+    }
   }
-  if (name == "Transpose" || name == "Slice") {
-    if (auto input = rankedOperand(0))
-      return dynamicTensor(input.getRank());
+  if (name == "Slice" && op->getNumOperands() >= 3) {
+    auto input = rankedOperand(0);
+    auto starts = evaluateIntegerTensor(op->getOperand(1));
+    auto ends = evaluateIntegerTensor(op->getOperand(2));
+    if (input && input.hasStaticShape() && starts && ends &&
+        starts->size() == ends->size()) {
+      SmallVector<int64_t> axes;
+      SmallVector<int64_t> steps(starts->size(), 1);
+      if (op->getNumOperands() >= 4 && !isONNXNoValue(op->getOperand(3))) {
+        auto values = evaluateIntegerTensor(op->getOperand(3));
+        if (!values)
+          return std::nullopt;
+        axes = std::move(*values);
+      } else {
+        for (size_t index = 0; index < starts->size(); ++index)
+          axes.push_back(index);
+      }
+      if (op->getNumOperands() >= 5 && !isONNXNoValue(op->getOperand(4))) {
+        auto values = evaluateIntegerTensor(op->getOperand(4));
+        if (!values)
+          return std::nullopt;
+        steps = std::move(*values);
+      }
+      if (axes.size() == starts->size() && steps.size() == starts->size()) {
+        SmallVector<int64_t> shape(input.getShape());
+        for (size_t index = 0; index < starts->size(); ++index) {
+          int64_t axis = axes[index];
+          if (axis < 0)
+            axis += input.getRank();
+          if (axis < 0 || axis >= input.getRank())
+            return std::nullopt;
+          auto indices = sliceIndices(input.getDimSize(axis), (*starts)[index],
+                                      (*ends)[index], steps[index]);
+          if (!indices)
+            return std::nullopt;
+          shape[axis] = indices->size();
+        }
+        return RankedTensorType::get(shape, current.getElementType());
+      }
+    }
+  }
+  if (name == "Transpose") {
+    if (auto input = rankedOperand(0)) {
+      SmallVector<int64_t> permutation;
+      if (auto attribute = op->getAttrOfType<ArrayAttr>("perm"))
+        for (Attribute value : attribute)
+          permutation.push_back(cast<IntegerAttr>(value).getInt());
+      else
+        for (int64_t axis = input.getRank(); axis-- > 0;)
+          permutation.push_back(axis);
+      if (permutation.size() != static_cast<size_t>(input.getRank()))
+        return std::nullopt;
+      SmallVector<int64_t> shape;
+      SmallVector<bool> seen(input.getRank(), false);
+      for (int64_t axis : permutation) {
+        if (axis < 0 || axis >= input.getRank() || seen[axis])
+          return std::nullopt;
+        seen[axis] = true;
+        shape.push_back(input.getDimSize(axis));
+      }
+      return RankedTensorType::get(shape, current.getElementType());
+    }
   }
   if (name == "ScatterND") {
     if (auto input = rankedOperand(0))
@@ -346,6 +743,7 @@ std::optional<Type> inferGenericResultType(Operation *op) {
   if (llvm::StringSwitch<bool>(name)
           .Cases({"Cast", "Cos", "Identity", "Neg"}, true)
           .Cases({"Relu", "Sigmoid", "Sin", "Softmax", "Sqrt", "Tanh"}, true)
+          .Case("Trilu", true)
           .Default(false)) {
     if (op->getNumOperands() >= 1)
       if (auto input = dyn_cast<RankedTensorType>(op->getOperand(0).getType()))
@@ -403,6 +801,44 @@ struct InferONNXShapesPass
             op->getName().getStringRef() == "onnx.Constant" ||
             op->getNumResults() != 1)
           return;
+        if (op->getName().getStringRef() == "onnx.ConstantOfShape" &&
+            op->getNumOperands() == 1) {
+          auto shape = evaluateIntegerTensor(op->getOperand(0));
+          auto current = dyn_cast<TensorType>(op->getResult(0).getType());
+          DenseElementsAttr value =
+              op->getAttrOfType<DenseElementsAttr>("value");
+          if (!value)
+            if (auto disposable =
+                    op->getAttrOfType<DisposableElementsAttr>("value"))
+              value = disposable.toDenseElementsAttr();
+          if (!shape || !current || !value || !value.isSplat() ||
+              value.getElementType() != current.getElementType() ||
+              llvm::any_of(*shape,
+                           [](int64_t dimension) { return dimension < 0; }))
+            return;
+          uint64_t elements = 1;
+          for (int64_t dimension : *shape) {
+            if (dimension && elements > (1u << 20) / dimension)
+              return;
+            elements *= dimension;
+          }
+          auto type = RankedTensorType::get(*shape, current.getElementType());
+          DenseElementsAttr dense;
+          if (isa<FloatType>(current.getElementType()))
+            dense =
+                DenseElementsAttr::get(type, value.getSplatValue<APFloat>());
+          else if (isa<IntegerType>(current.getElementType()))
+            dense = DenseElementsAttr::get(type, value.getSplatValue<APInt>());
+          else
+            return;
+          op->getResult(0).setType(type);
+          OpBuilder builder(op);
+          Value constant =
+              builder.create<arith::ConstantOp>(op->getLoc(), dense);
+          op->getResult(0).replaceAllUsesWith(constant);
+          erase.push_back(op);
+          return;
+        }
         auto type = dyn_cast<RankedTensorType>(op->getResult(0).getType());
         if (!type || !type.hasStaticShape() ||
             !isa<IntegerType>(type.getElementType()))

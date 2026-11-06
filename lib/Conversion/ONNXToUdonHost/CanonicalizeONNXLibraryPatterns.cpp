@@ -56,6 +56,16 @@ bool hasLastAxisReduction(Operation *operation) {
   return false;
 }
 
+bool isSquareOf(Operation *operation, Value input) {
+  if (named(operation, "onnx.Mul"))
+    return operation->getNumOperands() == 2 &&
+           operation->getOperand(0) == input &&
+           operation->getOperand(1) == input;
+  return named(operation, "onnx.Pow") && operation->getNumOperands() == 2 &&
+         operation->getOperand(0) == input &&
+         isScalarFloatConstant(operation->getOperand(1), 2.0);
+}
+
 struct RMSNormMatch {
   Value input;
   Value weight;
@@ -103,8 +113,7 @@ std::optional<RMSNormMatch> matchRMSNorm(Operation *root) {
       if (!mean || mean->getNumOperands() != 1)
         continue;
       Operation *square = mean->getOperand(0).getDefiningOp();
-      if (!named(square, "onnx.Mul") || square->getNumOperands() != 2 ||
-          square->getOperand(0) != input || square->getOperand(1) != input)
+      if (!isSquareOf(square, input))
         continue;
       return RMSNormMatch{input, weight, epsilon};
     }

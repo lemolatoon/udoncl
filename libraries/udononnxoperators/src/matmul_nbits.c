@@ -18,12 +18,15 @@ static cl_command_queue operator_queue;
 static cl_program operator_program;
 static cl_kernel matmul_nbits_kernel;
 static cl_kernel gather_kernel;
+static cl_kernel unary_kernel;
 static cl_mem state_buffer;
 static cl_mem result_buffer;
 static float state[UDONONNX_NBITS_WORDS];
 static float result[UDONONNX_NBITS_MAX_N];
 
 static void clear_operator(void) {
+  if (unary_kernel)
+    clReleaseKernel(unary_kernel);
   if (gather_kernel)
     clReleaseKernel(gather_kernel);
   if (matmul_nbits_kernel)
@@ -40,6 +43,7 @@ static void clear_operator(void) {
     clReleaseContext(operator_context);
   matmul_nbits_kernel = 0;
   gather_kernel = 0;
+  unary_kernel = 0;
   operator_program = 0;
   result_buffer = state_buffer = 0;
   operator_queue = 0;
@@ -99,6 +103,14 @@ udononnxCreateOperatorHandle(udononnxOperatorHandle_t *handle) {
       clSetKernelArg(gather_kernel, 0, sizeof(state_buffer), &state_buffer) !=
           CL_SUCCESS ||
       clSetKernelArg(gather_kernel, 1, sizeof(result_buffer), &result_buffer) !=
+          CL_SUCCESS)
+    return execution_failure();
+  unary_kernel =
+      clCreateKernel(operator_program, "udononnx_unary_f32", &status);
+  if (status != CL_SUCCESS ||
+      clSetKernelArg(unary_kernel, 0, sizeof(state_buffer), &state_buffer) !=
+          CL_SUCCESS ||
+      clSetKernelArg(unary_kernel, 1, sizeof(result_buffer), &result_buffer) !=
           CL_SUCCESS)
     return execution_failure();
   *handle = UDONONNX_OPERATOR_HANDLE;
@@ -280,6 +292,578 @@ static void store_value(void *data, size_t index, udonclDataType_t type,
     ((uint16_t *)data)[index] = float_to_half(value);
   else
     ((uint16_t *)data)[index] = float_to_bfloat16(value);
+}
+
+static int cast_type_supported(udonclDataType_t type) {
+  return type == UDONCL_DATA_UINT8 || type == UDONCL_DATA_INT32 ||
+         type == UDONCL_DATA_INT64 || type == UDONCL_DATA_FLOAT16 ||
+         type == UDONCL_DATA_BFLOAT16 || type == UDONCL_DATA_FLOAT32;
+}
+
+static float load_cast_value(const void *data, size_t index,
+                             udonclDataType_t type) {
+  if (type == UDONCL_DATA_UINT8)
+    return (float)((const uint8_t *)data)[index];
+  if (type == UDONCL_DATA_INT32)
+    return (float)((const int32_t *)data)[index];
+  if (type == UDONCL_DATA_INT64)
+    return (float)((const int64_t *)data)[index];
+  return load_value(data, index, type);
+}
+
+static void store_cast_value(void *data, size_t index, udonclDataType_t type,
+                             float value) {
+  if (type == UDONCL_DATA_UINT8)
+    ((uint8_t *)data)[index] = (uint8_t)value;
+  else if (type == UDONCL_DATA_INT32)
+    ((int32_t *)data)[index] = (int32_t)value;
+  else if (type == UDONCL_DATA_INT64)
+    ((int64_t *)data)[index] = (int64_t)value;
+  else
+    store_value(data, index, type, value);
+}
+
+udononnxStatus_t udononnxCast(udononnxOperatorHandle_t handle,
+                              udonclDataType_t input_type, const void *input,
+                              udonclDataType_t output_type, void *output,
+                              size_t element_count) {
+  size_t index;
+  if (handle != UDONONNX_OPERATOR_HANDLE || !operator_context)
+    return UDONONNX_STATUS_NOT_INITIALIZED;
+  if (!input || !output || !element_count || !cast_type_supported(input_type) ||
+      !cast_type_supported(output_type))
+    return UDONONNX_STATUS_INVALID_VALUE;
+  for (index = 0; index < element_count; ++index)
+    store_cast_value(output, index, output_type,
+                     load_cast_value(input, index, input_type));
+  return UDONONNX_STATUS_SUCCESS;
+}
+
+udononnxStatus_t udononnxExpand(udononnxOperatorHandle_t handle,
+                                udonclDataType_t data_type, const void *input,
+                                const int64_t *input_shape, int32_t input_rank,
+                                void *output, const int64_t *output_shape,
+                                int32_t output_rank) {
+  size_t element_bytes, output_elements = 1, output_index;
+  int32_t axis;
+  if (handle != UDONONNX_OPERATOR_HANDLE || !operator_context)
+    return UDONONNX_STATUS_NOT_INITIALIZED;
+  element_bytes = udonclDataTypeSize(data_type);
+  if (!input || !input_shape || !output || !output_shape || !element_bytes ||
+      input_rank < 0 || output_rank < input_rank ||
+      output_rank > UDONONNX_MAX_TENSOR_RANK)
+    return UDONONNX_STATUS_INVALID_VALUE;
+  for (axis = 0; axis < output_rank; ++axis) {
+    int64_t output_extent = output_shape[axis];
+    int32_t input_axis = axis - (output_rank - input_rank);
+    int64_t input_extent = input_axis < 0 ? 1 : input_shape[input_axis];
+    if (output_extent <= 0 || input_extent <= 0 ||
+        (input_extent != 1 && input_extent != output_extent) ||
+        output_elements > SIZE_MAX / (size_t)output_extent)
+      return UDONONNX_STATUS_INVALID_VALUE;
+    output_elements *= (size_t)output_extent;
+  }
+  for (output_index = 0; output_index < output_elements; ++output_index) {
+    size_t remaining = output_index;
+    size_t input_index = 0;
+    size_t input_stride = 1;
+    size_t byte;
+    for (axis = output_rank; axis-- > 0;) {
+      size_t coordinate = remaining % (size_t)output_shape[axis];
+      int32_t input_axis = axis - (output_rank - input_rank);
+      remaining /= (size_t)output_shape[axis];
+      if (input_axis >= 0) {
+        size_t input_extent = (size_t)input_shape[input_axis];
+        if (input_extent != 1)
+          input_index += coordinate * input_stride;
+        input_stride *= input_extent;
+      }
+    }
+    for (byte = 0; byte < element_bytes; ++byte)
+      ((uint8_t *)output)[output_index * element_bytes + byte] =
+          ((const uint8_t *)input)[input_index * element_bytes + byte];
+  }
+  return UDONONNX_STATUS_SUCCESS;
+}
+
+udononnxStatus_t udononnxTranspose(udononnxOperatorHandle_t handle,
+                                   udonclDataType_t data_type,
+                                   const void *input,
+                                   const int64_t *input_shape, int32_t rank,
+                                   const int64_t *permutation, void *output) {
+  size_t element_bytes, elements = 1, output_index;
+  int32_t axis;
+  uint8_t seen[UDONONNX_MAX_TENSOR_RANK] = {0};
+  if (handle != UDONONNX_OPERATOR_HANDLE || !operator_context)
+    return UDONONNX_STATUS_NOT_INITIALIZED;
+  element_bytes = udonclDataTypeSize(data_type);
+  if (!input || !input_shape || !permutation || !output || !element_bytes ||
+      rank <= 0 || rank > UDONONNX_MAX_TENSOR_RANK)
+    return UDONONNX_STATUS_INVALID_VALUE;
+  for (axis = 0; axis < rank; ++axis) {
+    int64_t extent = input_shape[axis];
+    int64_t source_axis = permutation[axis];
+    if (extent <= 0 || elements > SIZE_MAX / (size_t)extent ||
+        source_axis < 0 || source_axis >= rank || seen[source_axis])
+      return UDONONNX_STATUS_INVALID_VALUE;
+    elements *= (size_t)extent;
+    seen[source_axis] = 1;
+  }
+  for (output_index = 0; output_index < elements; ++output_index) {
+    size_t remaining = output_index;
+    size_t input_index = 0;
+    size_t input_stride = 1;
+    size_t coordinates[UDONONNX_MAX_TENSOR_RANK];
+    size_t byte;
+    for (axis = rank; axis-- > 0;) {
+      size_t output_extent = (size_t)input_shape[permutation[axis]];
+      coordinates[axis] = remaining % output_extent;
+      remaining /= output_extent;
+    }
+    for (axis = rank; axis-- > 0;) {
+      int32_t output_axis;
+      for (output_axis = 0; output_axis < rank; ++output_axis)
+        if (permutation[output_axis] == axis)
+          break;
+      input_index += coordinates[output_axis] * input_stride;
+      input_stride *= (size_t)input_shape[axis];
+    }
+    for (byte = 0; byte < element_bytes; ++byte)
+      ((uint8_t *)output)[output_index * element_bytes + byte] =
+          ((const uint8_t *)input)[input_index * element_bytes + byte];
+  }
+  return UDONONNX_STATUS_SUCCESS;
+}
+
+udononnxStatus_t udononnxConcat(udononnxOperatorHandle_t handle,
+                                udonclDataType_t data_type, const void *input,
+                                const int64_t *input_shape, int32_t rank,
+                                int32_t axis, int64_t axis_offset, void *output,
+                                const int64_t *output_shape) {
+  size_t element_bytes, outer = 1, inner = 1, outer_index, element;
+  int32_t dimension;
+  if (handle != UDONONNX_OPERATOR_HANDLE || !operator_context)
+    return UDONONNX_STATUS_NOT_INITIALIZED;
+  element_bytes = udonclDataTypeSize(data_type);
+  if (!input || !input_shape || !output || !output_shape || !element_bytes ||
+      rank <= 0 || rank > UDONONNX_MAX_TENSOR_RANK)
+    return UDONONNX_STATUS_INVALID_VALUE;
+  if (axis < 0)
+    axis += rank;
+  if (axis < 0 || axis >= rank || axis_offset < 0)
+    return UDONONNX_STATUS_INVALID_VALUE;
+  for (dimension = 0; dimension < rank; ++dimension) {
+    int64_t input_extent = input_shape[dimension];
+    int64_t output_extent = output_shape[dimension];
+    if (input_extent <= 0 || output_extent <= 0 ||
+        (dimension != axis && input_extent != output_extent))
+      return UDONONNX_STATUS_INVALID_VALUE;
+    if (dimension < axis) {
+      if (outer > SIZE_MAX / (size_t)input_extent)
+        return UDONONNX_STATUS_INVALID_VALUE;
+      outer *= (size_t)input_extent;
+    } else if (dimension > axis) {
+      if (inner > SIZE_MAX / (size_t)input_extent)
+        return UDONONNX_STATUS_INVALID_VALUE;
+      inner *= (size_t)input_extent;
+    }
+  }
+  if (axis_offset + input_shape[axis] > output_shape[axis])
+    return UDONONNX_STATUS_INVALID_VALUE;
+  for (outer_index = 0; outer_index < outer; ++outer_index) {
+    size_t input_elements = (size_t)input_shape[axis] * inner;
+    size_t input_base = outer_index * input_elements;
+    size_t output_base =
+        (outer_index * (size_t)output_shape[axis] + (size_t)axis_offset) *
+        inner;
+    for (element = 0; element < input_elements; ++element) {
+      size_t byte;
+      for (byte = 0; byte < element_bytes; ++byte)
+        ((uint8_t *)output)[(output_base + element) * element_bytes + byte] =
+            ((const uint8_t *)
+                 input)[(input_base + element) * element_bytes + byte];
+    }
+  }
+  return UDONONNX_STATUS_SUCCESS;
+}
+
+static udononnxStatus_t unary_f32(udononnxOperatorHandle_t handle,
+                                  const float *input, size_t element_count,
+                                  float *output, int operation) {
+  size_t global = UDONONNX_NBITS_WORDS, local = 1;
+  int words;
+  if (handle != UDONONNX_OPERATOR_HANDLE || !operator_context)
+    return UDONONNX_STATUS_NOT_INITIALIZED;
+  if (!input || !output || !element_count ||
+      element_count > UDONONNX_NBITS_WORDS)
+    return UDONONNX_STATUS_INVALID_VALUE;
+  words = (int)element_count;
+  if (clSetKernelArg(unary_kernel, 2, sizeof(operation), &operation) !=
+          CL_SUCCESS ||
+      clSetKernelArg(unary_kernel, 3, sizeof(words), &words) != CL_SUCCESS ||
+      clEnqueueWriteBuffer(operator_queue, state_buffer, CL_TRUE, 0,
+                           element_count * sizeof(float), input, 0, 0,
+                           0) != CL_SUCCESS ||
+      clEnqueueNDRangeKernel(operator_queue, unary_kernel, 1, 0, &global,
+                             &local, 0, 0, 0) != CL_SUCCESS ||
+      clEnqueueReadBuffer(operator_queue, result_buffer, CL_TRUE, 0,
+                          element_count * sizeof(float), output, 0, 0,
+                          0) != CL_SUCCESS ||
+      clFinish(operator_queue) != CL_SUCCESS)
+    return execution_failure();
+  return UDONONNX_STATUS_SUCCESS;
+}
+
+udononnxStatus_t udononnxCos(udononnxOperatorHandle_t handle,
+                             const float *input, size_t element_count,
+                             float *output) {
+  return unary_f32(handle, input, element_count, output, 1);
+}
+
+udononnxStatus_t udononnxSin(udononnxOperatorHandle_t handle,
+                             const float *input, size_t element_count,
+                             float *output) {
+  return unary_f32(handle, input, element_count, output, 2);
+}
+
+udononnxStatus_t udononnxNeg(udononnxOperatorHandle_t handle,
+                             const float *input, size_t element_count,
+                             float *output) {
+  return unary_f32(handle, input, element_count, output, 3);
+}
+
+udononnxStatus_t udononnxSlice(udononnxOperatorHandle_t handle,
+                               udonclDataType_t data_type, const void *input,
+                               const int64_t *input_shape, int32_t rank,
+                               const int64_t *starts, const int64_t *ends,
+                               const int64_t *axes, const int64_t *steps,
+                               int32_t slice_rank, void *output,
+                               const int64_t *output_shape) {
+  size_t element_bytes, output_elements = 1, output_index;
+  int64_t normalized_starts[UDONONNX_MAX_TENSOR_RANK] = {0};
+  int64_t normalized_steps[UDONONNX_MAX_TENSOR_RANK];
+  uint8_t sliced[UDONONNX_MAX_TENSOR_RANK] = {0};
+  int32_t dimension, specification;
+  if (handle != UDONONNX_OPERATOR_HANDLE || !operator_context)
+    return UDONONNX_STATUS_NOT_INITIALIZED;
+  element_bytes = udonclDataTypeSize(data_type);
+  if (!input || !input_shape || !starts || !ends || !axes || !steps ||
+      !output || !output_shape || !element_bytes || rank <= 0 ||
+      rank > UDONONNX_MAX_TENSOR_RANK || slice_rank < 0 || slice_rank > rank)
+    return UDONONNX_STATUS_INVALID_VALUE;
+  for (dimension = 0; dimension < rank; ++dimension) {
+    if (input_shape[dimension] <= 0 || output_shape[dimension] <= 0 ||
+        output_elements > SIZE_MAX / (size_t)output_shape[dimension])
+      return UDONONNX_STATUS_INVALID_VALUE;
+    normalized_steps[dimension] = 1;
+    output_elements *= (size_t)output_shape[dimension];
+  }
+  for (specification = 0; specification < slice_rank; ++specification) {
+    int64_t axis = axes[specification];
+    int64_t extent, start = starts[specification], end = ends[specification];
+    int64_t step = steps[specification], expected;
+    if (axis < 0)
+      axis += rank;
+    if (axis < 0 || axis >= rank || sliced[axis] || !step)
+      return UDONONNX_STATUS_INVALID_VALUE;
+    sliced[axis] = 1;
+    extent = input_shape[axis];
+    if (step > 0) {
+      if (start < 0)
+        start = start < -extent ? 0 : start + extent;
+      else if (start > extent)
+        start = extent;
+      if (end < 0)
+        end = end < -extent ? 0 : end + extent;
+      else if (end > extent)
+        end = extent;
+      expected = end > start ? (end - start + step - 1) / step : 0;
+    } else {
+      int64_t magnitude = 0 - step;
+      if (start < 0)
+        start = start < -extent ? -1 : start + extent;
+      else if (start >= extent)
+        start = extent - 1;
+      if (end == INT64_MIN)
+        end = -1;
+      else if (end < 0)
+        end = end < -extent ? -1 : end + extent;
+      else if (end >= extent)
+        end = extent - 1;
+      expected = start > end ? (start - end + magnitude - 1) / magnitude : 0;
+    }
+    if (expected != output_shape[axis])
+      return UDONONNX_STATUS_INVALID_VALUE;
+    normalized_starts[axis] = start;
+    normalized_steps[axis] = step;
+  }
+  for (dimension = 0; dimension < rank; ++dimension)
+    if (!sliced[dimension] && input_shape[dimension] != output_shape[dimension])
+      return UDONONNX_STATUS_INVALID_VALUE;
+  for (output_index = 0; output_index < output_elements; ++output_index) {
+    size_t remaining = output_index;
+    size_t input_index = 0, input_stride = 1, byte;
+    for (dimension = rank; dimension-- > 0;) {
+      int64_t coordinate =
+          (int64_t)(remaining % (size_t)output_shape[dimension]);
+      int64_t input_coordinate = normalized_starts[dimension] +
+                                 coordinate * normalized_steps[dimension];
+      remaining /= (size_t)output_shape[dimension];
+      input_index += (size_t)input_coordinate * input_stride;
+      input_stride *= (size_t)input_shape[dimension];
+    }
+    for (byte = 0; byte < element_bytes; ++byte)
+      ((uint8_t *)output)[output_index * element_bytes + byte] =
+          ((const uint8_t *)input)[input_index * element_bytes + byte];
+  }
+  return UDONONNX_STATUS_SUCCESS;
+}
+
+static int broadcast_shape_valid(const int64_t *input_shape, int32_t input_rank,
+                                 const int64_t *output_shape,
+                                 int32_t output_rank) {
+  int32_t offset = output_rank - input_rank, axis;
+  if (!input_shape || !output_shape || input_rank < 0 ||
+      output_rank < input_rank)
+    return 0;
+  for (axis = 0; axis < output_rank; ++axis) {
+    int64_t output_extent = output_shape[axis];
+    int64_t input_extent = axis < offset ? 1 : input_shape[axis - offset];
+    if (output_extent <= 0 || input_extent <= 0 ||
+        (input_extent != 1 && input_extent != output_extent))
+      return 0;
+  }
+  return 1;
+}
+
+static size_t broadcast_offset(size_t output_index, const int64_t *input_shape,
+                               int32_t input_rank, const int64_t *output_shape,
+                               int32_t output_rank) {
+  size_t remaining = output_index, input_offset = 0, input_stride = 1;
+  int32_t offset = output_rank - input_rank, axis;
+  for (axis = output_rank; axis-- > 0;) {
+    size_t coordinate = remaining % (size_t)output_shape[axis];
+    remaining /= (size_t)output_shape[axis];
+    if (axis >= offset) {
+      size_t extent = (size_t)input_shape[axis - offset];
+      if (extent != 1)
+        input_offset += coordinate * input_stride;
+      input_stride *= extent;
+    }
+  }
+  return input_offset;
+}
+
+static size_t shape_elements(const int64_t *shape, int32_t rank, int *valid) {
+  size_t elements = 1;
+  int32_t axis;
+  for (axis = 0; axis < rank; ++axis) {
+    if (shape[axis] <= 0 || elements > SIZE_MAX / (size_t)shape[axis]) {
+      *valid = 0;
+      return 0;
+    }
+    elements *= (size_t)shape[axis];
+  }
+  return elements;
+}
+
+static int equal_value(udonclDataType_t type, const void *left,
+                       size_t left_index, const void *right,
+                       size_t right_index) {
+  if (type == UDONCL_DATA_UINT8)
+    return ((const uint8_t *)left)[left_index] ==
+           ((const uint8_t *)right)[right_index];
+  if (type == UDONCL_DATA_INT32)
+    return ((const int32_t *)left)[left_index] ==
+           ((const int32_t *)right)[right_index];
+  if (type == UDONCL_DATA_INT64)
+    return ((const int64_t *)left)[left_index] ==
+           ((const int64_t *)right)[right_index];
+  if (type == UDONCL_DATA_FLOAT32)
+    return ((const float *)left)[left_index] ==
+           ((const float *)right)[right_index];
+  if (type == UDONCL_DATA_FLOAT16 || type == UDONCL_DATA_BFLOAT16)
+    return load_cast_value(left, left_index, type) ==
+           load_cast_value(right, right_index, type);
+  return 0;
+}
+
+udononnxStatus_t udononnxEqual(udononnxOperatorHandle_t handle,
+                               udonclDataType_t data_type, const void *left,
+                               const int64_t *left_shape, int32_t left_rank,
+                               const void *right, const int64_t *right_shape,
+                               int32_t right_rank, uint8_t *output,
+                               const int64_t *output_shape,
+                               int32_t output_rank) {
+  int valid = 1;
+  size_t elements, index;
+  if (handle != UDONONNX_OPERATOR_HANDLE || !operator_context)
+    return UDONONNX_STATUS_NOT_INITIALIZED;
+  if (!left || !right || !output || !cast_type_supported(data_type) ||
+      output_rank < 0 || output_rank > UDONONNX_MAX_TENSOR_RANK ||
+      !broadcast_shape_valid(left_shape, left_rank, output_shape,
+                             output_rank) ||
+      !broadcast_shape_valid(right_shape, right_rank, output_shape,
+                             output_rank))
+    return UDONONNX_STATUS_INVALID_VALUE;
+  elements = shape_elements(output_shape, output_rank, &valid);
+  if (!valid)
+    return UDONONNX_STATUS_INVALID_VALUE;
+  for (index = 0; index < elements; ++index)
+    output[index] =
+        (uint8_t)equal_value(data_type, left,
+                             broadcast_offset(index, left_shape, left_rank,
+                                              output_shape, output_rank),
+                             right,
+                             broadcast_offset(index, right_shape, right_rank,
+                                              output_shape, output_rank));
+  return UDONONNX_STATUS_SUCCESS;
+}
+
+udononnxStatus_t
+udononnxWhere(udononnxOperatorHandle_t handle, udonclDataType_t data_type,
+              const uint8_t *condition, const int64_t *condition_shape,
+              int32_t condition_rank, const void *when_true,
+              const int64_t *true_shape, int32_t true_rank,
+              const void *when_false, const int64_t *false_shape,
+              int32_t false_rank, void *output, const int64_t *output_shape,
+              int32_t output_rank) {
+  int valid = 1;
+  size_t element_bytes, elements, index;
+  if (handle != UDONONNX_OPERATOR_HANDLE || !operator_context)
+    return UDONONNX_STATUS_NOT_INITIALIZED;
+  element_bytes = udonclDataTypeSize(data_type);
+  if (!condition || !when_true || !when_false || !output || !element_bytes ||
+      output_rank < 0 || output_rank > UDONONNX_MAX_TENSOR_RANK ||
+      !broadcast_shape_valid(condition_shape, condition_rank, output_shape,
+                             output_rank) ||
+      !broadcast_shape_valid(true_shape, true_rank, output_shape,
+                             output_rank) ||
+      !broadcast_shape_valid(false_shape, false_rank, output_shape,
+                             output_rank))
+    return UDONONNX_STATUS_INVALID_VALUE;
+  elements = shape_elements(output_shape, output_rank, &valid);
+  if (!valid)
+    return UDONONNX_STATUS_INVALID_VALUE;
+  for (index = 0; index < elements; ++index) {
+    size_t condition_index = broadcast_offset(
+        index, condition_shape, condition_rank, output_shape, output_rank);
+    const void *selected = condition[condition_index] ? when_true : when_false;
+    const int64_t *selected_shape =
+        condition[condition_index] ? true_shape : false_shape;
+    int32_t selected_rank = condition[condition_index] ? true_rank : false_rank;
+    size_t selected_index = broadcast_offset(
+        index, selected_shape, selected_rank, output_shape, output_rank);
+    size_t byte;
+    for (byte = 0; byte < element_bytes; ++byte)
+      ((uint8_t *)output)[index * element_bytes + byte] =
+          ((const uint8_t *)selected)[selected_index * element_bytes + byte];
+  }
+  return UDONONNX_STATUS_SUCCESS;
+}
+
+udononnxStatus_t udononnxAdd(udononnxOperatorHandle_t handle,
+                             udonclDataType_t data_type, const void *left,
+                             const int64_t *left_shape, int32_t left_rank,
+                             const void *right, const int64_t *right_shape,
+                             int32_t right_rank, void *output,
+                             const int64_t *output_shape, int32_t output_rank) {
+  int valid = 1;
+  size_t elements, index;
+  if (handle != UDONONNX_OPERATOR_HANDLE || !operator_context)
+    return UDONONNX_STATUS_NOT_INITIALIZED;
+  if (!left || !right || !output ||
+      (data_type != UDONCL_DATA_INT32 && data_type != UDONCL_DATA_INT64 &&
+       data_type != UDONCL_DATA_FLOAT32) ||
+      output_rank < 0 || output_rank > UDONONNX_MAX_TENSOR_RANK ||
+      !broadcast_shape_valid(left_shape, left_rank, output_shape,
+                             output_rank) ||
+      !broadcast_shape_valid(right_shape, right_rank, output_shape,
+                             output_rank))
+    return UDONONNX_STATUS_INVALID_VALUE;
+  elements = shape_elements(output_shape, output_rank, &valid);
+  if (!valid)
+    return UDONONNX_STATUS_INVALID_VALUE;
+  for (index = 0; index < elements; ++index) {
+    size_t left_index = broadcast_offset(index, left_shape, left_rank,
+                                         output_shape, output_rank);
+    size_t right_index = broadcast_offset(index, right_shape, right_rank,
+                                          output_shape, output_rank);
+    if (data_type == UDONCL_DATA_INT32)
+      ((int32_t *)output)[index] = ((const int32_t *)left)[left_index] +
+                                   ((const int32_t *)right)[right_index];
+    else if (data_type == UDONCL_DATA_INT64)
+      ((int64_t *)output)[index] = ((const int64_t *)left)[left_index] +
+                                   ((const int64_t *)right)[right_index];
+    else
+      ((float *)output)[index] = ((const float *)left)[left_index] +
+                                 ((const float *)right)[right_index];
+  }
+  return UDONONNX_STATUS_SUCCESS;
+}
+
+udononnxStatus_t
+udononnxScatterND(udononnxOperatorHandle_t handle, udonclDataType_t data_type,
+                  const void *data, const int64_t *data_shape,
+                  int32_t data_rank, udonclDataType_t indices_type,
+                  const void *indices, const int64_t *indices_shape,
+                  int32_t indices_rank, const void *updates, void *output) {
+  size_t element_bytes, data_elements = 1, tuple_count = 1, slice_elements = 1;
+  size_t tuple, element, byte;
+  int32_t axis;
+  if (handle != UDONONNX_OPERATOR_HANDLE || !operator_context)
+    return UDONONNX_STATUS_NOT_INITIALIZED;
+  element_bytes = udonclDataTypeSize(data_type);
+  if (!data || !data_shape || !indices || !indices_shape || !updates ||
+      !output || !element_bytes || data_rank <= 0 ||
+      data_rank > UDONONNX_MAX_TENSOR_RANK || indices_rank <= 0 ||
+      indices_rank > UDONONNX_MAX_TENSOR_RANK ||
+      (indices_type != UDONCL_DATA_INT32 && indices_type != UDONCL_DATA_INT64))
+    return UDONONNX_STATUS_INVALID_VALUE;
+  for (axis = 0; axis < data_rank; ++axis) {
+    if (data_shape[axis] <= 0 ||
+        data_elements > SIZE_MAX / (size_t)data_shape[axis])
+      return UDONONNX_STATUS_INVALID_VALUE;
+    data_elements *= (size_t)data_shape[axis];
+  }
+  if (indices_shape[indices_rank - 1] <= 0 ||
+      indices_shape[indices_rank - 1] > data_rank)
+    return UDONONNX_STATUS_INVALID_VALUE;
+  for (axis = 0; axis < indices_rank - 1; ++axis) {
+    if (indices_shape[axis] <= 0 ||
+        tuple_count > SIZE_MAX / (size_t)indices_shape[axis])
+      return UDONONNX_STATUS_INVALID_VALUE;
+    tuple_count *= (size_t)indices_shape[axis];
+  }
+  for (axis = (int32_t)indices_shape[indices_rank - 1]; axis < data_rank;
+       ++axis)
+    slice_elements *= (size_t)data_shape[axis];
+  for (byte = 0; byte < data_elements * element_bytes; ++byte)
+    ((uint8_t *)output)[byte] = ((const uint8_t *)data)[byte];
+  for (tuple = 0; tuple < tuple_count; ++tuple) {
+    size_t base = 0;
+    size_t stride = data_elements;
+    int32_t depth = (int32_t)indices_shape[indices_rank - 1];
+    for (axis = 0; axis < depth; ++axis) {
+      int64_t coordinate =
+          indices_type == UDONCL_DATA_INT32
+              ? (int64_t)((const int32_t *)indices)[tuple * depth + axis]
+              : ((const int64_t *)indices)[tuple * depth + axis];
+      stride /= (size_t)data_shape[axis];
+      if (coordinate < 0)
+        coordinate += data_shape[axis];
+      if (coordinate < 0 || coordinate >= data_shape[axis])
+        return UDONONNX_STATUS_INVALID_VALUE;
+      base += (size_t)coordinate * stride;
+    }
+    for (element = 0; element < slice_elements; ++element)
+      for (byte = 0; byte < element_bytes; ++byte)
+        ((uint8_t *)output)[(base + element) * element_bytes + byte] =
+            ((const uint8_t *)
+                 updates)[(tuple * slice_elements + element) * element_bytes +
+                          byte];
+  }
+  return UDONONNX_STATUS_SUCCESS;
 }
 
 static unsigned packed_value(const uint8_t *data, size_t bytes,

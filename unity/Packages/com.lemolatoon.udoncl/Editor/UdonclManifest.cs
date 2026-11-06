@@ -19,6 +19,7 @@ namespace Lemolatoon.Udoncl.Editor
         public DeviceInfo device;
         public DispatchSiteInfo[] dispatch_sites;
         public ArtifactResourceInfo[] resources;
+        public StaticTensorInfo[] static_tensors;
         public UdonOnnxStaticInputInfo[] static_inputs;
         public UdonOnnxCallArtifactInfo[] call_artifacts;
         public UdonOnnxTextureArenaInfo texture_arena;
@@ -61,6 +62,7 @@ namespace Lemolatoon.Udoncl.Editor
         public string raw_heap_initializer;
         public string raw_heap_slot;
         public int raw_heap_words;
+        public string static_tensor_table_slot;
         public string binding_source;
         public string binding_namespace;
         public string binding_class;
@@ -169,6 +171,34 @@ namespace Lemolatoon.Udoncl.Editor
         public int width;
         public int height;
         public int bytes;
+    }
+
+    [Serializable]
+    internal sealed class StaticTensorInfo
+    {
+        public int id;
+        public string name;
+        public string resource;
+        public string data_type;
+        public long[] shape;
+        public string layout;
+        public int alignment;
+        public long[] byte_strides;
+        public int byte_length;
+        public string sha256;
+        public StaticTensorTextureInfo texture;
+    }
+
+    [Serializable]
+    internal sealed class StaticTensorTextureInfo
+    {
+        public string abi;
+        public int width;
+        public int height;
+        public string format;
+        public bool srgb;
+        public bool mipmaps;
+        public string filter;
     }
 
     [Serializable]

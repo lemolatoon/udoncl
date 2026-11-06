@@ -7,6 +7,7 @@
 #include "mlir/IR/OpImplementation.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/TypeSwitch.h"
+#include <algorithm>
 #define GET_TYPEDEF_CLASSES
 #include "VRC/Dialect/VRCGPU/VRCGPUDialect.cpp.inc"
 #include "VRC/Dialect/VRCGPU/VRCGPUTypes.cpp.inc"
@@ -61,7 +62,7 @@ LogicalResult KernelOp::verify() {
     auto global = getGlobalSize();
     auto textureShape =
         (*this)->getAttrOfType<DenseI32ArrayAttr>("vrc.texture_shape");
-    if (!words || words.getInt() < 4 || words.getInt() > 16384 ||
+    if (!words || words.getInt() < 4 || words.getInt() > 131072 ||
         getKernelId() <= 0 || getArgumentKinds().size() < 2 ||
         getArgumentKinds().size() > 16 || global.size() != 3 ||
         global[0] <= 0 || global[1] <= 0 || global[2] != 1 ||
@@ -157,7 +158,9 @@ LogicalResult ResourceOp::verify() {
       return emitOpError("invalid gather argument binding");
     auto argumentKind = kernel.getArgumentKinds()[i];
     if (argumentKind == StringAttr::get(getContext(), "buffer")) {
-      if (!getValueType().isF32() ||
+      bool target = getKind() == "target";
+      if ((!getValueType().isF32() && !getValueType().isInteger(32)) ||
+          (target && !getValueType().isF32()) ||
           (getKind() != "texture" && getKind() != "target") || !getFormat() ||
           *getFormat() != "rgba8_unorm")
         return emitOpError("invalid input/target format");
@@ -306,21 +309,18 @@ LogicalResult TextureLoadOp::verify() {
       x ? x.getRhs().getDefiningOp<arith::ConstantOp>() : arith::ConstantOp();
   auto widthValue =
       width ? dyn_cast<IntegerAttr>(width.getValue()) : IntegerAttr();
-  auto words = k ? k->getAttrOfType<IntegerAttr>("vrc.words") : IntegerAttr();
-  auto textureShape =
-      k ? k->getAttrOfType<DenseI32ArrayAttr>("vrc.texture_shape")
-        : DenseI32ArrayAttr();
-  int64_t expectedWidth = textureShape ? textureShape.asArrayRef()[0]
-                                       : (k ? k.getGlobalSize()[0] : 0);
-  if (!k || !gather(k) || !r || r.getKind() != "texture" || !words ||
-      words.getInt() != getElementCount() || !x || !y ||
-      x.getLhs() != y.getLhs() || x.getRhs() != y.getRhs() || !widthValue ||
+  int64_t elements = getElementCount();
+  int64_t expectedWidth = std::min<int64_t>(elements, 8192);
+  if (!k || !gather(k) || !r || r.getKind() != "texture" || elements <= 0 ||
+      elements > int64_t{8192} * 8192 || !x || !y || x.getLhs() != y.getLhs() ||
+      x.getRhs() != y.getRhs() || !widthValue ||
       widthValue.getInt() != expectedWidth)
     return emitOpError("load must address the read-only 2D input extent");
   return success();
 }
 LogicalResult RawUnpackOp::verify() {
   if (getByteOffset() != 0 || getFormat() != "rgba8_unorm" ||
+      (!getValue().getType().isF32() && !getValue().getType().isInteger(32)) ||
       !getTexel().getDefiningOp<TextureLoadOp>())
     return emitOpError(
         "raw_unpack requires a complete point-loaded RGBA8 word");

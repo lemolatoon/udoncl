@@ -481,3 +481,23 @@ udonblasStatus_t udonblasSgemm(udonblasHandle_t handle,
   }
   return UDONBLAS_STATUS_SUCCESS;
 }
+
+udonblasStatus_t
+udonblasSgemmStridedBatched(udonblasHandle_t handle, udonblasOperation_t transa,
+                            udonblasOperation_t transb, int m, int n, int k,
+                            const float *alpha, const float *a, int lda,
+                            int64_t stride_a, const float *b, int ldb,
+                            int64_t stride_b, const float *beta, float *c,
+                            int ldc, int64_t stride_c, int batch_count) {
+  int batch;
+  if (batch_count < 0 || stride_a < 0 || stride_b < 0 || stride_c < 0)
+    return UDONBLAS_STATUS_INVALID_VALUE;
+  for (batch = 0; batch < batch_count; ++batch) {
+    udonblasStatus_t status = udonblasSgemm(
+        handle, transa, transb, m, n, k, alpha, a + batch * stride_a, lda,
+        b + batch * stride_b, ldb, beta, c + batch * stride_c, ldc);
+    if (status != UDONBLAS_STATUS_SUCCESS)
+      return status;
+  }
+  return UDONBLAS_STATUS_SUCCESS;
+}

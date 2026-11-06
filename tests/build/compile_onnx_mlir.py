@@ -73,6 +73,7 @@ class CompileONNXMLIRTests(unittest.TestCase):
         optimizer = calls[1].args[0]
         self.assertIn('--udoncl-infer-onnx-shapes', optimizer)
         self.assertIn('--udoncl-materialize-onnx-constants', optimizer)
+        self.assertIn('--udoncl-externalize-onnx-initializers', optimizer)
         self.assertIn('--udoncl-lower-onnx-to-host', optimizer)
         self.assertIn('--udoncl-emit-bytecode', optimizer)
         self.assertNotIn('--mlir-elide-elementsattrs-if-larger=64', optimizer)

@@ -39,7 +39,7 @@ Session::Session(const std::string &text, std::vector<GatherBinding> kernels,
   for (const auto &binding : gatherBindings) {
     uint32_t width = binding.width ? binding.width : binding.words;
     uint32_t height = binding.height ? binding.height : 1;
-    if (!binding.id || binding.words < 4 || binding.words > 16384 ||
+    if (!binding.id || binding.words < 4 || binding.words > 131072 ||
         !binding.inputCount || binding.inputCount > 13 ||
         binding.scalarCount > 15 - binding.inputCount || !width || !height ||
         uint64_t(width) * height != binding.words)

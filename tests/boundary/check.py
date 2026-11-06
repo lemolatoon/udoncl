@@ -15,7 +15,9 @@ opt, compiler, output = sys.argv[1:]
 output = Path(output)
 output.mkdir(parents=True, exist_ok=True)
 # These are disposable test-owned bundle directories, not user assets.
-for directory in ['bundle', 'variant-bundle', 'unity-buffer-copy']:
+for directory in [
+        'bundle', 'variant-bundle', 'unity-buffer-copy',
+        'unity-static-tensor']:
     if (output / directory).exists():
         shutil.rmtree(output / directory)
 root = Path(__file__).resolve().parents[2]
@@ -104,22 +106,32 @@ assert 'func.call ' not in typed_buffer_ops and 'udonhl.call ' not in typed_buff
 
 opencl_aot_runtime = r'''
 module {
+  func.func private @__vrc_opencl_static_tensor(i32, i32) -> i32
   func.func private @__vrc_opencl_buffer_alloc(i32, i32) -> i32
   func.func private @__vrc_opencl_buffer_release(i32) -> i32
   func.func private @__vrc_opencl_buffer_upload(i32, i32, i32, i32) -> i32
   func.func private @__vrc_opencl_buffer_readback(i32, i32, i32, i32) -> i32
   func.func private @__vrc_opencl_await(i32) -> i32
   func.func private @__vrc_opencl_dispatch_udonblas_sgemm(i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, f32, f32) -> i32
+  func.func private @__vrc_opencl_dispatch_udonblas_arena_sgemm(i32, i32, i32, i32, i32, i32, i32, i32, f32) -> i32
+  func.func private @__vrc_opencl_dispatch_udondnn_large_activation(i32, i32, i32, i32, i32, i32, f32, f32, f32) -> i32
+  func.func private @__vrc_opencl_dispatch_udondnn_large_op_tensor(i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, f32, f32, f32) -> i32
   func.func private @blocking_transfer(%token: i32, %offset: i32, %bytes: i32, %pointer: i32) -> i32 {
     %event = func.call @__vrc_opencl_buffer_readback(%token, %offset, %bytes, %pointer) : (i32, i32, i32, i32) -> i32
     %status = func.call @__vrc_opencl_await(%event) : (i32) -> i32
     return %status : i32
   }
   func.func @run(%bytes: i32, %zero: i32, %pointer: i32, %one: i32, %scalar: f32) -> i32 {
+    %static_id = arith.constant 0 : i32
+    %static_bytes = arith.constant 4 : i32
+    %static = func.call @__vrc_opencl_static_tensor(%static_id, %static_bytes) : (i32, i32) -> i32
     %input = func.call @__vrc_opencl_buffer_alloc(%one, %bytes) : (i32, i32) -> i32
     %output = func.call @__vrc_opencl_buffer_alloc(%one, %bytes) : (i32, i32) -> i32
     %upload = func.call @__vrc_opencl_buffer_upload(%input, %zero, %bytes, %pointer) : (i32, i32, i32, i32) -> i32
     %dispatch = func.call @__vrc_opencl_dispatch_udonblas_sgemm(%input, %output, %one, %one, %one, %zero, %zero, %one, %one, %one, %scalar, %scalar) : (i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, f32, f32) -> i32
+    %arena = func.call @__vrc_opencl_dispatch_udonblas_arena_sgemm(%static, %input, %output, %one, %one, %one, %zero, %zero, %scalar) : (i32, i32, i32, i32, i32, i32, i32, i32, f32) -> i32
+    %activation = func.call @__vrc_opencl_dispatch_udondnn_large_activation(%input, %output, %output, %bytes, %zero, %one, %scalar, %scalar, %scalar) : (i32, i32, i32, i32, i32, i32, f32, f32, f32) -> i32
+    %pointwise = func.call @__vrc_opencl_dispatch_udondnn_large_op_tensor(%input, %static, %output, %output, %bytes, %one, %one, %one, %one, %one, %one, %zero, %scalar, %scalar, %scalar) : (i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, f32, f32, f32) -> i32
     %status = func.call @blocking_transfer(%output, %zero, %bytes, %pointer) : (i32, i32, i32, i32) -> i32
     %released = func.call @__vrc_opencl_buffer_release(%output) : (i32) -> i32
     return %status : i32
@@ -129,13 +141,17 @@ module {
 opencl_aot_ops = run(
     [opt, '--pass-pipeline=builtin.module(' + opencl_aot_pass + ')',
      '--verify-each'], opencl_aot_runtime)
-for operation in ['vrc.buffer_alloc ', 'vrc.buffer_release ',
+for operation in ['vrc.static_buffer', 'vrc.buffer_alloc ', 'vrc.buffer_release ',
                   'vrc.buffer_upload ', 'vrc.buffer_readback ',
                   'vrc.dispatch_desc_create ', 'vrc.dispatch ', 'vrc.await ']:
     assert operation in opencl_aot_ops
 assert 'vrc.async_effect = "may_suspend"' in opencl_aot_ops
 assert '@__vrc_opencl_' not in opencl_aot_ops
 assert 'scalar_kinds = ["i32", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "f32", "f32"]' in opencl_aot_ops
+assert 'kernel_id = 221 : i32' in opencl_aot_ops
+assert opencl_aot_ops.count('global_size = array<i32: 8192, 4, 1>') == 2
+assert 'kernel_id = 233 : i32' in opencl_aot_ops
+assert 'kernel_id = 234 : i32' in opencl_aot_ops
 
 # Recovered C control flow remains in cf form on the Host path. Keep the public
 # ABI narrow while allowing internal booleans, index values, block arguments,
@@ -333,6 +349,22 @@ for expected in [
 ]:
     assert expected in copy_assembly, (expected, copy_assembly)
 assert (copy_artifact / 'buffer-copy.shader').is_file()
+
+static_artifact = output / 'unity-static-tensor'
+run([
+    compiler, '--emit-unity-library-bundle',
+    root / 'tests/boundary/static_tensor_table.json',
+    '--host-mlir', root / 'tests/boundary/static_tensor_table.mlir',
+    '-o', static_artifact,
+])
+static_manifest = json.loads((static_artifact / 'manifest.json').read_text())
+assert static_manifest['program']['static_tensor_table_slot'] == (
+    '__udoncl_static_tensors')
+assert static_manifest['static_tensors'][0]['name'] == 'weight'
+assert (static_artifact / 'static-tensors/tensor_0.bytes').read_bytes() == (
+    b'\x00\x00\x80\x3f')
+static_assembly = (static_artifact / 'host.uasm').read_text()
+assert '.export __udoncl_static_tensors' in static_assembly
 nested = source.replace('  gpu.module @device {', '''  gpu.module @device {
     func.func private @device_helper(%x: f32) -> f32 { return %x : f32 }
     func.func private @device_caller(%x: f32) -> f32 {

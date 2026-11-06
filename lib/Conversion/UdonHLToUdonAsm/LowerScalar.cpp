@@ -769,9 +769,34 @@ private:
     include(arrays);
     include(constants);
     unsigned other = 0;
+    llvm::StringMap<unsigned> constantTypes;
+    llvm::StringMap<unsigned> otherTypes;
     for (const Slot &slot : slots)
-      if (!categorized.contains(slot.name))
+      if (constants.contains(slot.name))
+        ++constantTypes[slot.type];
+      else if (!categorized.contains(slot.name)) {
         ++other;
+        ++otherTypes[slot.type];
+      }
+    std::string detail;
+    llvm::raw_string_ostream detailStream(detail);
+    auto printTypes = [&](StringRef label,
+                          const llvm::StringMap<unsigned> &types) {
+      SmallVector<std::pair<std::string, unsigned>> ordered;
+      for (const auto &entry : types)
+        ordered.emplace_back(entry.first().str(), entry.second);
+      llvm::sort(ordered);
+      detailStream << "; " << label << "={";
+      for (auto [index, entry] : llvm::enumerate(ordered)) {
+        if (index)
+          detailStream << ",";
+        detailStream << entry.first << ":" << entry.second;
+      }
+      detailStream << "}";
+    };
+    printTypes("constant_types", constantTypes);
+    printTypes("other_types", otherTypes);
+    detailStream.flush();
     return module.emitError()
            << "final Udon data table requires " << slots.size() << " slots, "
            << "exceeding capacity " << capacity << "; fixed=" << fixed.size()
@@ -779,6 +804,7 @@ private:
            << ", async_persistent=" << persistent.size()
            << ", typed_arrays=" << arrays.size()
            << ", constants=" << constants.size() << ", other=" << other
+           << detail
            << ". Reduce public exports/resources, scalar register pressure, "
               "cached constants, or raw-address scratch state";
   }
@@ -878,9 +904,8 @@ private:
     auto isColorableResult = [&](Operation &operation) {
       return (!isa<arith::ConstantOp>(operation) ||
               materializedConstants.contains(&operation)) &&
-             !isa<memref::GetGlobalOp, ::vrc::vrc::BufferAllocOp,
-                  ::vrc::vrc::DispatchDescCreateOp, host::FrameCreateOp>(
-                 operation);
+             !isa<memref::GetGlobalOp, ::vrc::vrc::DispatchDescCreateOp,
+                  host::FrameCreateOp>(operation);
     };
     for (func::FuncOp function : functions) {
       bool fixedEntryArguments =
@@ -1616,9 +1641,8 @@ private:
     auto isColorableResult = [&](Operation &operation) {
       return (!isa<arith::ConstantOp>(operation) ||
               materializedConstants.contains(&operation)) &&
-             !isa<memref::GetGlobalOp, ::vrc::vrc::BufferAllocOp,
-                  ::vrc::vrc::DispatchDescCreateOp, host::FrameCreateOp>(
-                 operation);
+             !isa<memref::GetGlobalOp, ::vrc::vrc::DispatchDescCreateOp,
+                  host::FrameCreateOp>(operation);
     };
     for (Block &block : function.getBody()) {
       if (&block != &function.getBody().front())
@@ -1931,12 +1955,18 @@ private:
           if (logicalId.empty())
             return allocation.emitError(
                 "Unity buffer allocation requires a logical-id slot");
-          std::string token = prefix + "buffer_" + std::to_string(valueIndex++);
-          addSlot(token, "SystemInt32", "0", false);
-          valueSlots[allocation.getBuffer()] = token;
-          std::string status = prefix + "v" + std::to_string(valueIndex++);
-          addSlot(status, "SystemInt32", "0", false);
-          valueSlots[allocation.getStatus()] = status;
+          valueSlots[allocation.getBuffer()] =
+              coloredSlot(allocation.getBuffer());
+          valueSlots[allocation.getStatus()] =
+              coloredSlot(allocation.getStatus());
+          continue;
+        }
+        if (auto staticBuffer =
+                dyn_cast<::vrc::vrc::StaticBufferOp>(operation)) {
+          addSlot("__udoncl_static_tensors", "UnityEngineTexture2DArray",
+                  "null", true);
+          valueSlots[staticBuffer.getBuffer()] =
+              coloredSlot(staticBuffer.getBuffer());
           continue;
         }
         if (auto frame = dyn_cast<host::FrameCreateOp>(operation)) {
@@ -2278,10 +2308,24 @@ private:
         if (auto allocation = dyn_cast<::vrc::vrc::BufferAllocOp>(operation)) {
           std::string logicalId = valueSlots.lookup(allocation.getLogicalId());
           std::string token = valueSlots.lookup(allocation.getBuffer());
-          if (logicalId.empty() || token.empty())
+          std::string status = valueSlots.lookup(allocation.getStatus());
+          if (logicalId.empty() || token.empty() || status.empty())
             return allocation.emitError(
                 "Unity buffer allocation has missing handle slots");
           emitCopy(allocation.getLoc(), logicalId, token);
+          emitCopy(allocation.getLoc(), immutableSlot("SystemInt32", "0"),
+                   status);
+          continue;
+        }
+        if (auto staticBuffer =
+                dyn_cast<::vrc::vrc::StaticBufferOp>(operation)) {
+          std::string token = valueSlots.lookup(staticBuffer.getBuffer());
+          if (token.empty())
+            return staticBuffer.emitError(
+                "static tensor buffer has no allocated token slot");
+          emitI32Literal(staticBuffer.getLoc(),
+                         static_cast<uint32_t>(staticBuffer.getResourceId()),
+                         token);
           continue;
         }
         if (auto release = dyn_cast<::vrc::vrc::BufferReleaseOp>(operation)) {
@@ -2478,6 +2522,26 @@ private:
                 return slot.getValue().str();
             return selectUnityBuffer(dispatch.getLoc(), token, dynamicPrefix);
           };
+          auto staticResourceId =
+              [&](Value resource) -> std::optional<int64_t> {
+            llvm::SmallPtrSet<Operation *, 4> visited;
+            while (Operation *definition = resource.getDefiningOp()) {
+              if (!visited.insert(definition).second)
+                break;
+              if (auto staticBuffer =
+                      dyn_cast<::vrc::vrc::StaticBufferOp>(definition))
+                return staticBuffer.getResourceId();
+              auto cast = dyn_cast<UnrealizedConversionCastOp>(definition);
+              if (!cast || cast.getInputs().size() != 1)
+                break;
+              resource = cast.getInputs().front();
+            }
+            return std::nullopt;
+          };
+          if (output >= 0 && size_t(output) < dispatch.getResources().size() &&
+              staticResourceId(dispatch.getResources()[output]))
+            return dispatch.emitError(
+                "immutable static tensor cannot be a dispatch output");
           std::string destination = physicalBuffer(
               static_cast<size_t>(output), destinationToken,
               prefix + "dispatch_" + std::to_string(dispatch.getKernelId()) +
@@ -2499,18 +2563,34 @@ private:
               if (bufferIndex >= dispatch.getResources().size())
                 return dispatch.emitError(
                     "dispatch buffer descriptor is incomplete");
-              std::string texture =
-                  valueSlots.lookup(dispatch.getResources()[bufferIndex]);
+              size_t resourceIndex = bufferIndex++;
+              Value resource = dispatch.getResources()[resourceIndex];
+              std::string texture = valueSlots.lookup(resource);
               if (texture.empty())
                 return dispatch.emitError(
                     "dispatch buffer has no allocated Udon heap slot");
-              if (bufferIndex++ == size_t(output))
+              if (resourceIndex == size_t(output))
                 continue;
-              texture =
-                  physicalBuffer(bufferIndex - 1, texture,
-                                 prefix + "dispatch_" +
+              if (auto id = staticResourceId(resource)) {
+                std::string loaded = prefix + "dispatch_" +
                                      std::to_string(dispatch.getKernelId()) +
-                                     "_input_" + std::to_string(argumentIndex));
+                                     "_static_" + std::to_string(argumentIndex);
+                addSlot(loaded, "UnityEngineTexture2D", "null", false);
+                emitPush(dispatch.getLoc(), "__udoncl_static_tensors");
+                emitPush(dispatch.getLoc(),
+                         immutableSlot("SystemInt32", std::to_string(*id)));
+                emitPush(dispatch.getLoc(), loaded);
+                emitExtern(dispatch.getLoc(),
+                           "UnityEngineTexture2DArray.__Get__SystemInt32__"
+                           "UnityEngineTexture2D");
+                texture = loaded;
+              } else {
+                texture = physicalBuffer(
+                    resourceIndex, texture,
+                    prefix + "dispatch_" +
+                        std::to_string(dispatch.getKernelId()) + "_input_" +
+                        std::to_string(argumentIndex));
+              }
               if (texture.empty())
                 return dispatch.emitError(
                     "Unity dispatch has no physical pool");
@@ -3224,6 +3304,46 @@ private:
           emitPush(cast.getLoc(), result);
           emitExtern(cast.getLoc(),
                      "SystemConvert.__ToSingle__SystemUInt32__SystemSingle");
+          continue;
+        }
+        if (auto cast = dyn_cast<arith::FPToSIOp>(operation)) {
+          std::string source = valueSlots.lookup(cast.getIn());
+          std::string result = valueSlots.lookup(cast.getOut());
+          if (source.empty() || result.empty() ||
+              !cast.getIn().getType().isF32() ||
+              !cast.getOut().getType().isInteger(32))
+            return cast.emitError(
+                "float to signed integer conversion supports only f32 to "
+                "i32");
+          constexpr StringLiteral nonnegative = "__vrc_fptosi_i32_nonnegative";
+          addSlot(nonnegative, "SystemBoolean", "null", false);
+          std::string zero = immutableSlot("SystemSingle", "0");
+          emitPush(cast.getLoc(), source);
+          emitPush(cast.getLoc(), zero);
+          emitPush(cast.getLoc(), nonnegative);
+          emitExtern(cast.getLoc(),
+                     "SystemSingle.__op_GreaterThanOrEqual__SystemSingle_"
+                     "SystemSingle__SystemBoolean");
+          emitPush(cast.getLoc(), nonnegative);
+          Operation *useCeiling = create(
+              cast.getLoc(), vm::JumpIfFalseOp::getOperationName(),
+              {builder.getNamedAttr("target", builder.getI64IntegerAttr(0))});
+          address += 8;
+          emitPush(cast.getLoc(), source);
+          emitPush(cast.getLoc(), result);
+          emitExtern(cast.getLoc(),
+                     "UnityEngineMathf.__FloorToInt__SystemSingle__"
+                     "SystemInt32");
+          Operation *done = emitJump(cast.getLoc(), 0);
+          useCeiling->setAttr("target", builder.getI64IntegerAttr(
+                                            static_cast<int64_t>(address)));
+          emitPush(cast.getLoc(), source);
+          emitPush(cast.getLoc(), result);
+          emitExtern(cast.getLoc(),
+                     "UnityEngineMathf.__CeilToInt__SystemSingle__"
+                     "SystemInt32");
+          done->setAttr("target", builder.getI64IntegerAttr(
+                                      static_cast<int64_t>(address)));
           continue;
         }
         if (auto cast = dyn_cast<arith::BitcastOp>(operation)) {
@@ -4916,7 +5036,12 @@ struct LowerUdonHLToUdonAsmPass
     unsigned materializationLimit = 0;
     unsigned baseAddresses = *unmaterialized;
     if (baseAddresses > addressLimit) {
-      materializationLimit = 128;
+      // A fixed cap leaves large, otherwise valid Host programs with one Udon
+      // Heap slot per single-use scalar literal. Let the existing
+      // interprocedural coloring and typed-spill allocator own every eligible
+      // single-use constant once direct materialization exceeds the target
+      // address space. Repeated constants remain shared immutable slots.
+      materializationLimit = baseAddresses;
       auto materialized = probe(materializationLimit);
       if (failed(materialized)) {
         signalPassFailure();

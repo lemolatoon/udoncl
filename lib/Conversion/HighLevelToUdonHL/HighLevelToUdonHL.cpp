@@ -144,9 +144,10 @@ struct LowerHostToUdonHLPass
         auto intrinsic = function->getAttrOfType<StringAttr>("vrc.intrinsic");
         if (!intrinsic ||
             (intrinsic != "dispatch" && intrinsic != "buffer_alloc" &&
-             intrinsic != "buffer_release" && intrinsic != "buffer_copy" &&
-             intrinsic != "buffer_upload" && intrinsic != "buffer_readback" &&
-             intrinsic != "await" && intrinsic != "event_status") ||
+             intrinsic != "static_buffer" && intrinsic != "buffer_release" &&
+             intrinsic != "buffer_copy" && intrinsic != "buffer_upload" &&
+             intrinsic != "buffer_readback" && intrinsic != "await" &&
+             intrinsic != "event_status") ||
             function->hasAttr("vrc.export_id")) {
           fail("external Host calls require a recognized internal runtime "
                "intrinsic");
@@ -184,20 +185,21 @@ struct LowerHostToUdonHLPass
               !isa<func::CallOp, func::ReturnOp, cf::BranchOp, cf::CondBranchOp,
                    cf::SwitchOp, UnrealizedConversionCastOp,
                    runtime::DispatchDescCreateOp, runtime::DispatchOp,
-                   runtime::BufferAllocOp, runtime::BufferReleaseOp,
-                   runtime::BufferCopyOp, runtime::BufferUploadOp,
-                   runtime::BufferReadbackOp, runtime::AwaitOp,
-                   runtime::EventStatusOp, memref::LoadOp, memref::StoreOp,
-                   memref::AllocaOp, memref::GetGlobalOp, arith::ConstantOp,
-                   arith::AddIOp, arith::SubIOp, arith::MulIOp, arith::AddFOp,
-                   arith::SubFOp, arith::MulFOp, arith::DivSIOp, arith::DivUIOp,
-                   arith::RemSIOp, arith::RemUIOp, arith::DivFOp, arith::CmpIOp,
-                   arith::CmpFOp>(op) &&
+                   runtime::BufferAllocOp, runtime::StaticBufferOp,
+                   runtime::BufferReleaseOp, runtime::BufferCopyOp,
+                   runtime::BufferUploadOp, runtime::BufferReadbackOp,
+                   runtime::AwaitOp, runtime::EventStatusOp, memref::LoadOp,
+                   memref::StoreOp, memref::AllocaOp, memref::GetGlobalOp,
+                   arith::ConstantOp, arith::AddIOp, arith::SubIOp,
+                   arith::MulIOp, arith::AddFOp, arith::SubFOp, arith::MulFOp,
+                   arith::DivSIOp, arith::DivUIOp, arith::RemSIOp,
+                   arith::RemUIOp, arith::DivFOp, arith::CmpIOp, arith::CmpFOp>(
+                  op) &&
               !isa<arith::AndIOp, arith::OrIOp, arith::XOrIOp, arith::ShLIOp,
                    arith::ShRSIOp, arith::ShRUIOp, arith::SelectOp,
                    arith::ExtSIOp, arith::ExtUIOp, arith::TruncIOp,
-                   arith::SIToFPOp, arith::UIToFPOp, arith::BitcastOp,
-                   arith::MaxSIOp, arith::MinSIOp>(op)) {
+                   arith::SIToFPOp, arith::UIToFPOp, arith::FPToSIOp,
+                   arith::BitcastOp, arith::MaxSIOp, arith::MinSIOp>(op)) {
             op.emitError() << "operation " << op.getName()
                            << " is outside the initial Host lowering pattern";
             signalPassFailure();

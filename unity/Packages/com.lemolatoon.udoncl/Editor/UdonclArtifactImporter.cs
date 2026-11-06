@@ -153,6 +153,19 @@ namespace Lemolatoon.Udoncl.Editor
                             buffer.Width,
                             buffer.Height
                         );
+                    foreach (ValidatedStaticTensor tensor in artifacts.StaticTensors)
+                    {
+                        byte[] bytes = File.ReadAllBytes(tensor.AbsolutePath);
+                        Array.Resize(ref bytes, tensor.Width * tensor.Height * 4);
+                        CreateOrUpdateByteTexture(
+                            transaction,
+                            programRoot,
+                            StaticTensorFileName(tensor.Id, tensor.Name),
+                            tensor.Width,
+                            tensor.Height,
+                            bytes
+                        );
+                    }
                     ImportOnnxRuntimeResources(
                         transaction,
                         artifacts,
@@ -2348,6 +2361,20 @@ namespace Lemolatoon.Udoncl.Editor
         internal static string DeviceBufferFileName(int id, string name)
         {
             return "udoncl_buffer_" + id + "_" + name + ".asset";
+        }
+
+        internal static string StaticTensorFileName(int id, string name)
+        {
+            return "udoncl_static_tensor_" + id + "_" + SanitizeFileComponent(name) + ".asset";
+        }
+
+        private static string SanitizeFileComponent(string value)
+        {
+            char[] characters = value.ToCharArray();
+            for (int index = 0; index < characters.Length; ++index)
+                if (!char.IsLetterOrDigit(characters[index]) && characters[index] != '_')
+                    characters[index] = '_';
+            return new string(characters);
         }
 
         private static Texture2D CreateOrUpdateParticleTexture(
