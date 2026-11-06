@@ -161,6 +161,10 @@ aliasing are allowed.
 - The AOT OpenCL runtime now implements `clEnqueueCopyBuffer` through the typed
   `vrc.buffer_copy` intrinsic. This is required when an output view cannot alias
   the public output buffer and fixes the previously missing Host link symbol.
+- Device allocations can now expose zero-length typed views, and ONNX Runtime
+  accepts static zero tensor dimensions. This represents the real model's
+  initial `[1, 4, 0, 64]` past K/V inputs without inventing a non-empty tensor,
+  while the owning allocation may retain capacity for later decode steps.
 - Device intermediate storage now uses compile-time liveness and capacity
   matching. A slot is never reused by the dispatch that still reads it, graph
   outputs remain live through the final public-buffer copy, and a six-stage

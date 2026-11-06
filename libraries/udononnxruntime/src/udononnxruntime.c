@@ -53,7 +53,7 @@ static udononnxStatus_t udononnxElementCount(uint32_t rank,
   for (axis = 0; axis < rank; ++axis) {
     size_t dimension;
     uint64_t product;
-    if (dimensions[axis] <= 0 || (uint64_t)dimensions[axis] > SIZE_MAX)
+    if (dimensions[axis] < 0 || (uint64_t)dimensions[axis] > SIZE_MAX)
       return UDONONNX_STATUS_INVALID_VALUE;
     dimension = (size_t)dimensions[axis];
     product = (uint64_t)count * (uint64_t)dimension;
@@ -149,7 +149,7 @@ udononnxValidateMetadata(const udononnxTensorMetadata_t *metadata) {
       !udonclDataTypeSize(metadata->data_type))
     return UDONONNX_STATUS_INVALID_VALUE;
   for (axis = 0; axis < metadata->rank; ++axis) {
-    if (metadata->dimensions[axis] > 0)
+    if (metadata->dimensions[axis] >= 0)
       continue;
     if (metadata->dimensions[axis] != -1 || !metadata->dimension_bounds ||
         metadata->dimension_bounds[axis] <= 0)

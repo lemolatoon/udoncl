@@ -141,8 +141,9 @@ int main(void) {
   udonclBufferHandle_t input_buffer = {0, 0}, output_buffer = {0, 0},
                        foreign_buffer = {0, 0};
   udonclBufferView_t input_view, output_view, foreign_view;
+  udonclBufferView_t empty_view;
   udononnxTensor_t input_tensor = {0}, output_tensor = {0},
-                   foreign_tensor = {0};
+                   foreign_tensor = {0}, empty_tensor = {0};
   udononnxTensor_t input_bindings[1], output_bindings[2];
   udononnxSession_t session = {0};
   const udononnxModel_t *selected = 0;
@@ -160,6 +161,7 @@ int main(void) {
   cl_context binding_context = 0;
   cl_command_queue binding_queue = 0;
   int64_t dimensions[2] = {2, 2};
+  int64_t empty_dimensions[4] = {1, 4, 0, 64};
   int32_t binding_dimensions[2] = {2, 2};
   const udononnxTensorMetadata_t inputs[1] = {
       {"input", UDONCL_DATA_FLOAT32, 2, dimensions, 0}};
@@ -168,6 +170,9 @@ int main(void) {
       {"optional_aux", UDONCL_DATA_FLOAT32, 2, dimensions, 0}};
   const udononnxModel_t models[1] = {
       {"synthetic-copy", 7, inputs, 1, outputs, 2}};
+  const udononnxTensorMetadata_t empty_inputs[1] = {
+      {"past_key_values.0.key", UDONCL_DATA_FLOAT32, 4, empty_dimensions, 0}};
+  const udononnxModel_t empty_model = {"empty-past", 7, empty_inputs, 1, 0, 0};
   const float source[4] = {1.0f, -2.0f, 3.5f, 9.0f};
   float result[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 
@@ -235,11 +240,20 @@ int main(void) {
                                 &output_view) == UDONCL_STATUS_SUCCESS);
   EXPECT(udonclDeviceBufferView(foreign_buffer, 0, 4, UDONCL_DATA_FLOAT32,
                                 &foreign_view) == UDONCL_STATUS_SUCCESS);
+  EXPECT(udonclDeviceBufferView(input_buffer, sizeof(source), 0,
+                                UDONCL_DATA_FLOAT32,
+                                &empty_view) == UDONCL_STATUS_SUCCESS);
+  EXPECT(udonclBufferViewResolve(empty_view, &resolved_memory, &resolved_offset,
+                                 &resolved_bytes) == UDONCL_STATUS_SUCCESS &&
+         resolved_memory && resolved_offset == sizeof(source) &&
+         resolved_bytes == 0);
   EXPECT(udononnxCreateTensor(input_view, 2, dimensions, &input_tensor) ==
          UDONONNX_STATUS_SUCCESS);
   EXPECT(udononnxCreateTensor(output_view, 2, dimensions, &output_tensor) ==
          UDONONNX_STATUS_SUCCESS);
   EXPECT(udononnxCreateTensor(foreign_view, 2, dimensions, &foreign_tensor) ==
+         UDONONNX_STATUS_SUCCESS);
+  EXPECT(udononnxCreateTensor(empty_view, 4, empty_dimensions, &empty_tensor) ==
          UDONONNX_STATUS_SUCCESS);
   EXPECT(udononnxSessionBindInput(&session, 0, foreign_tensor) ==
          UDONONNX_STATUS_CONTEXT_MISMATCH);
@@ -302,6 +316,25 @@ int main(void) {
   EXPECT(udononnxSessionDispose(&session) == UDONONNX_STATUS_SUCCESS);
   EXPECT(udononnxSessionCompleteEvent(&session, run, UDONONNX_STATUS_SUCCESS) ==
          UDONONNX_STATUS_STALE_HANDLE);
+
+  EXPECT(udononnxCreateSession(&session, &empty_model, context, input_bindings,
+                               0) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(udononnxEnqueueInitialize(&session, queue, 0, 0, &completion) ==
+             UDONONNX_STATUS_SUCCESS &&
+         completion);
+  EXPECT(clWaitForEvents(1, &completion) == CL_SUCCESS);
+  EXPECT(udononnxSessionCompleteEvent(&session, completion,
+                                      UDONONNX_STATUS_SUCCESS) ==
+         UDONONNX_STATUS_SUCCESS);
+  EXPECT(clReleaseEvent(completion) == CL_SUCCESS);
+  EXPECT(udononnxSessionBindInput(&session, 0, empty_tensor) ==
+         UDONONNX_STATUS_SUCCESS);
+  EXPECT(udononnxSessionResolveInput(&session, 0, &resolved_memory,
+                                     &resolved_offset, &resolved_bytes) ==
+             UDONONNX_STATUS_SUCCESS &&
+         resolved_memory && resolved_offset == sizeof(source) &&
+         resolved_bytes == 0);
+  EXPECT(udononnxSessionDispose(&session) == UDONONNX_STATUS_SUCCESS);
 
   EXPECT(udonclDeviceBufferDestroy(&input_buffer) == UDONCL_STATUS_SUCCESS);
   EXPECT(udonclDeviceBufferDestroy(&output_buffer) == UDONCL_STATUS_SUCCESS);

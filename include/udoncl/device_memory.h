@@ -33,7 +33,8 @@ typedef struct udonclBufferHandle {
   uint32_t generation;
 } udonclBufferHandle_t;
 
-/* Views never own storage. Offsets and sizes are bytes in the parent buffer. */
+/* Views never own storage. Offsets and sizes are bytes in the parent buffer.
+ * A zero-length view is valid when its offset is within the allocation. */
 typedef struct udonclBufferView {
   udonclBufferHandle_t buffer;
   size_t byte_offset;

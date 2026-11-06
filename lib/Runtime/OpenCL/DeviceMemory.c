@@ -34,7 +34,7 @@ udoncl_device_buffer_find(udonclBufferHandle_t buffer,
 }
 
 static int udoncl_range_fits(size_t capacity, size_t offset, size_t bytes) {
-  return bytes && offset <= capacity && bytes <= capacity - offset;
+  return offset <= capacity && bytes <= capacity - offset;
 }
 
 size_t udonclDataTypeSize(udonclDataType_t data_type) {
@@ -157,7 +157,7 @@ udonclStatus_t udonclDeviceBufferView(udonclBufferHandle_t buffer,
   udonclStatus_t status;
   size_t element_bytes = udonclDataTypeSize(data_type);
   size_t byte_length;
-  if (!view || !element_bytes || !elements ||
+  if (!view || !element_bytes ||
       (uint64_t)elements * element_bytes > SIZE_MAX ||
       (byte_offset & (element_bytes - 1u)))
     return UDONCL_STATUS_INVALID_VALUE;
