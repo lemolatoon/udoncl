@@ -58,6 +58,7 @@ struct LowerOpenCLAOTIntrinsicsPass
           name == "__vrc_opencl_dispatch_udonaten_embedding" ||
           name == "__vrc_opencl_dispatch_udonaten_arena_rms_norm_reduce" ||
           name == "__vrc_opencl_dispatch_udonaten_arena_rms_norm_finalize" ||
+          name == "__vrc_opencl_dispatch_udondnn_arena_softmax" ||
           name == "__vrc_opencl_dispatch_udononnx_matmul_nbits" ||
           name == "__vrc_opencl_dispatch_udononnx_matmul_nbits_q4" ||
           name == "__vrc_opencl_dispatch_udononnx_gather_copy" ||
@@ -111,6 +112,8 @@ struct LowerOpenCLAOTIntrinsicsPass
         arguments = {i32, i32, i32, i32};
       else if (name == "__vrc_opencl_dispatch_udonaten_arena_rms_norm_finalize")
         arguments = {i32, i32, i32, i32, i32, i32, f32, i32};
+      else if (name == "__vrc_opencl_dispatch_udondnn_arena_softmax")
+        arguments = {i32, i32, i32, i32, i32, i32, i32, i32};
       else if (name == "__vrc_opencl_dispatch_udononnx_matmul_nbits")
         arguments = {i32, i32, i32, i32, i32, i32};
       else if (name == "__vrc_opencl_dispatch_udononnx_matmul_nbits_q4")
@@ -248,6 +251,8 @@ struct LowerOpenCLAOTIntrinsicsPass
             name == "__vrc_opencl_dispatch_udonaten_arena_rms_norm_reduce";
         bool rmsFinalize =
             name == "__vrc_opencl_dispatch_udonaten_arena_rms_norm_finalize";
+        bool arenaSoftmax =
+            name == "__vrc_opencl_dispatch_udondnn_arena_softmax";
         bool matmulNBits =
             name == "__vrc_opencl_dispatch_udononnx_matmul_nbits";
         bool matmulNBitsQ4 =
@@ -270,6 +275,7 @@ struct LowerOpenCLAOTIntrinsicsPass
                            : embedding                                  ? 207
                            : rmsReduce                                  ? 217
                            : rmsFinalize                                ? 218
+                           : arenaSoftmax                               ? 236
                            : matmulNBits                                ? 219
                            : matmulNBitsQ4                              ? 235
                            : gather                                     ? 220
@@ -308,6 +314,8 @@ struct LowerOpenCLAOTIntrinsicsPass
           scalarKinds.append(2, rewriter.getStringAttr("i32"));
           scalarKinds.push_back(rewriter.getStringAttr("f32"));
           scalarKinds.push_back(rewriter.getStringAttr("i32"));
+        } else if (arenaSoftmax) {
+          scalarKinds.append(6, rewriter.getStringAttr("i32"));
         } else if (matmulNBitsQ4) {
           scalarKinds.append(9, rewriter.getStringAttr("i32"));
         } else if (matmulNBits) {
@@ -347,7 +355,7 @@ struct LowerOpenCLAOTIntrinsicsPass
         if (sgemm)
           globalSize = rewriter.getDenseI32ArrayAttr({32, 32, 1});
         else if (arenaSgemm || largeConvolution || largePooling || rmsReduce ||
-                 rmsFinalize)
+                 rmsFinalize || arenaSoftmax)
           globalSize = rewriter.getDenseI32ArrayAttr({8192, 2, 1});
         else if (largeActivation || largeOpTensor)
           globalSize = rewriter.getDenseI32ArrayAttr({8192, 4, 1});

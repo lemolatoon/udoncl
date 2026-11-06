@@ -85,6 +85,9 @@ extern cl_int __vrc_opencl_dispatch_udonaten_arena_rms_norm_finalize(
     cl_uint input_token, cl_uint partials_token, cl_uint weight_token,
     cl_uint output_token, cl_int words, cl_int normalized_words,
     cl_float epsilon, cl_int has_weight);
+extern cl_int __vrc_opencl_dispatch_udondnn_arena_softmax(
+    cl_uint input_token, cl_uint output_token, cl_int input_n, cl_int input_c,
+    cl_int input_h, cl_int input_w, cl_int algorithm, cl_int mode);
 #endif
 #if UDONCL_AOT_ENABLE_ONNX
 extern cl_int __vrc_opencl_dispatch_udononnx_matmul_nbits(
@@ -1190,6 +1193,36 @@ cl_int __vrc_enqueue_udonaten_arena_rms_norm_finalize_device_args(
   pending = __vrc_opencl_dispatch_udonaten_arena_rms_norm_finalize(
       input->physical_token, partials->physical_token, weight->physical_token,
       output->physical_token, words, normalized_words, epsilon, has_weight);
+  return udoncl_finish_enqueue(queue, CL_COMMAND_NDRANGE_KERNEL, pending,
+                               CL_FALSE, event);
+}
+
+cl_int __vrc_enqueue_udondnn_arena_softmax_device_args(
+    cl_command_queue queue, cl_mem input, cl_mem output, cl_int input_n,
+    cl_int input_c, cl_int input_h, cl_int input_w, cl_int algorithm,
+    cl_int mode, cl_uint wait_count, const cl_event *wait_list,
+    cl_event *event) {
+  cl_int pending;
+  size_t words;
+  if (queue != &udoncl_queue || !queue->active || !input || !input->active ||
+      !output || !output->active || input->context != queue->context ||
+      output->context != queue->context || input_n < 1 || input_c < 1 ||
+      input_c > 512 || input_h < 1 || input_w < 1 || algorithm < 0 ||
+      algorithm > 2 || mode < 0 || mode > 1 ||
+      udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
+    return CL_INVALID_VALUE;
+  words = (size_t)input_n * (size_t)input_c;
+  if (words > 16384u / (size_t)input_h)
+    return CL_INVALID_VALUE;
+  words *= (size_t)input_h;
+  if (words > 16384u / (size_t)input_w)
+    return CL_INVALID_VALUE;
+  words *= (size_t)input_w;
+  if (input->bytes < words * 4u || output->bytes < words * 4u)
+    return CL_INVALID_BUFFER_SIZE;
+  pending = __vrc_opencl_dispatch_udondnn_arena_softmax(
+      input->physical_token, output->physical_token, input_n, input_c, input_h,
+      input_w, algorithm, mode);
   return udoncl_finish_enqueue(queue, CL_COMMAND_NDRANGE_KERNEL, pending,
                                CL_FALSE, event);
 }

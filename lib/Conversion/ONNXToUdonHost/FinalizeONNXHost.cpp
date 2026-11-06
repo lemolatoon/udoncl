@@ -704,6 +704,22 @@ bool hasDeviceRmsNorm(const GraphRecord &graph) {
   });
 }
 
+bool isDeviceSoftmaxNode(const GraphRecord &graph, const NodeRecord &node) {
+  if (node.operation != "Softmax" || node.provider != "udondnnSoftmaxForward" ||
+      node.inputs.size() != 1 || node.inputs[0] < 0)
+    return false;
+  const TensorRecord &input = graph.tensors[node.inputs[0]];
+  const TensorRecord &output = graph.tensors[node.output];
+  int64_t rank = input.type.getRank();
+  int64_t axis = integerAttribute(node, "axis", -1);
+  if (axis < 0)
+    axis += rank;
+  return input.type.getElementType().isF32() && input.type == output.type &&
+         axis >= 0 && axis < rank && input.type.getNumElements() >= 1 &&
+         input.type.getNumElements() <= 16384 &&
+         input.type.getDimSize(axis) >= 1 && input.type.getDimSize(axis) <= 512;
+}
+
 bool isDeviceQ4Node(const GraphRecord &graph, const NodeRecord &node) {
   if (node.operation != "MatMulNBits" ||
       node.provider != "udononnxMatMulNBits" || node.inputs.size() < 3 ||
@@ -830,6 +846,8 @@ bool supportsDeviceNode(const GraphRecord &graph, const NodeRecord &node) {
     return isDeviceQ4Node(graph, node);
   if (node.operation == "RmsNorm")
     return isDeviceRmsNormNode(graph, node);
+  if (node.operation == "Softmax")
+    return isDeviceSoftmaxNode(graph, node);
   if (node.operation == "Gemm" || node.operation == "MatMul") {
     if (node.provider != "udonblasSgemm" || !hasF32InputsAndOutput(2))
       return false;
@@ -2970,6 +2988,24 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                             floating(epsilon), constant(1)});
         continue;
       }
+      if (isDeviceSoftmaxNode(graph, node)) {
+        const TensorRecord &input = graph.tensors[node.inputs[0]];
+        int64_t axis = integerAttribute(node, "axis", -1);
+        if (axis < 0)
+          axis += input.type.getRank();
+        int64_t outer = 1;
+        int64_t inner = 1;
+        for (int64_t extent : input.type.getShape().take_front(axis))
+          outer *= extent;
+        for (int64_t extent : input.type.getShape().drop_front(axis + 1))
+          inner *= extent;
+        dispatch("__vrc_enqueue_udondnn_arena_softmax_device_args",
+                 ValueRange{entry->getArgument(2), buffer(node.inputs[0]),
+                            output, constant(outer),
+                            constant(input.type.getDimSize(axis)), constant(1),
+                            constant(inner), constant(0), constant(1)});
+        continue;
+      }
       if (node.operation == "Gemm" || node.operation == "MatMul") {
         ArrayRef<int64_t> left = graph.tensors[node.inputs[0]].type.getShape();
         ArrayRef<int64_t> right = graph.tensors[node.inputs[1]].type.getShape();
@@ -3105,6 +3141,10 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                 "__vrc_enqueue_udonaten_arena_rms_norm_finalize_device_args",
                 {pointer, pointer, pointer, pointer, pointer, i32, i32,
                  builder.getF32Type(), i32, i32, pointer, pointer},
+                {i32});
+    declaration(module, "__vrc_enqueue_udondnn_arena_softmax_device_args",
+                {pointer, pointer, pointer, i32, i32, i32, i32, i32, i32, i32,
+                 pointer, pointer},
                 {i32});
     declaration(module, "udononnxSessionResolveInput",
                 {pointer, i32, pointer, pointer, pointer}, {i32});

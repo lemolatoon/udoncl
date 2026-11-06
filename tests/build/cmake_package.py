@@ -888,7 +888,7 @@ def main():
     } == {1, 2, 207, 219, 220, 222, 233, 234}
     assert {
         item['id'] for item in transformer_manifest['device']['kernels']
-    } == {1, 2, 207, 217, 218, 219, 220, 222, 231, 232, 233, 234, 235}
+    } == {1, 2, 207, 217, 218, 219, 220, 222, 231, 232, 233, 234, 235, 236}
     q4_kernel = next(
         item for item in transformer_manifest['device']['kernels']
         if item['id'] == 235

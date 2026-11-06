@@ -444,8 +444,15 @@ softmax_host = subprocess.run(
     capture_output=True,
 )
 assert softmax_host.returncode == 0, (softmax_host.stdout, softmax_host.stderr)
-assert "call @udondnnSoftmaxForward" in softmax_host.stdout
-assert "call @udondnnSetTensor4dDescriptor" in softmax_host.stdout
+assert "udoncl.onnx_device_graph = true" in softmax_host.stdout
+assert "udoncl.onnx_device_unsupported = []" in softmax_host.stdout
+assert (
+    softmax_host.stdout.count(
+        "call @__vrc_enqueue_udondnn_arena_softmax_device_args"
+    )
+    == 1
+)
+assert "call @udondnnSoftmaxForward" not in softmax_host.stdout
 
 unsupported = source.with_name("onnx_unsupported.mlir")
 result = subprocess.run(

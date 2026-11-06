@@ -62,9 +62,10 @@ aliasing are allowed.
   activation, rank-two matrix product, Add, and metadata aliases. On the pinned
   sequence-4 specialization, expanding the proven pointwise view to 32,768
   words removes every `Cos`/`Sin`/`Neg`, `Add`, `Mul`, `Sigmoid`, and `Tanh`
-  node from the unsupported set. The remaining measured set is Cast 3,
-  Concat 46, Equal 1, Expand 51, Gather 1, MatMul 45, MatMulNBits 155,
-  RmsNorm 45, ScatterND 1, Slice 111, Softmax 22, Transpose 111, and Where 1.
+  node from the unsupported set. After the Device Q4, RmsNorm, and Softmax
+  checkpoints below, the remaining measured set is Cast 2, Concat 45, Equal 1,
+  Expand 46, Gather 1, MatMul 45, ScatterND 1, Slice 111, Transpose 111, and
+  Where 1.
 - The generic correctness-oriented `MatMulNBits` path still uses small
   Host-managed tiles. A first Device-resident specialization now covers the
   pinned model's three-input unsigned Q4 form (`bits=4`, `block_size=32`,
@@ -79,6 +80,17 @@ aliasing are allowed.
   the real sequence-4 graph confirms that all 155 `MatMulNBits` nodes,
   including the 32,000-column `lm_head`, now satisfy this Device contract;
   `MatMulNBits` is absent from the measured unsupported set.
+- The existing UdonATen two-pass arena RMSNorm backend is now used directly by
+  the generated Device graph. Static epsilon and normalized extent are folded
+  by the C++ finalization pass, the immutable weight stays Device resident, and
+  reduce/finalize share the generic operator scratch allocation with Q4. The
+  pinned sequence-4 graph accepts all 45 RmsNorm nodes without Host tensor
+  readback.
+- Static FP32 Softmax tensors up to 16,384 words and 512 values per reduction
+  group now use the existing UdonDNN arena backend. Any static ONNX axis is
+  mapped generically to `outer x axis x inner`; no model shape is embedded in
+  the compiler. The standalone Device numerical suite passes, and all 22
+  Softmax nodes disappear from the pinned graph's measured unsupported set.
 - Production-sized diagnostic bundles may omit intermediate textual MLIR with
   `--omit-intermediate-ir`; assembly, manifest, binding, static tensors, and the
   storage report remain. This avoids publishing several model-sized debug

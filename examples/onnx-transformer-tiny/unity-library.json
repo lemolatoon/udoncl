@@ -105,6 +105,20 @@
       "kernel": "udononnx_unary_f32", "kernel_id": 222,
       "argument_kinds": ["buffer", "buffer", "i32", "i32"],
       "global_size": [16384, 1, 1], "local_size": [1, 1, 1], "global_offset": [0, 0, 0]
+    },
+    {
+      "schema_version": 1, "profile": "gather-f32", "words": 16384,
+      "kernel": "udondnn_arena_softmax_forward", "kernel_id": 236,
+      "argument_bounds": [
+        {"index": 2, "min": 1, "max": 16384},
+        {"index": 3, "min": 1, "max": 512},
+        {"index": 4, "min": 1, "max": 16384},
+        {"index": 5, "min": 1, "max": 16384},
+        {"index": 6, "min": 0, "max": 2},
+        {"index": 7, "min": 0, "max": 1}
+      ],
+      "argument_kinds": ["buffer", "buffer", "i32", "i32", "i32", "i32", "i32", "i32"],
+      "global_size": [8192, 2, 1], "local_size": [1, 1, 1], "global_offset": [0, 0, 0]
     }
   ],
   "export_overrides": [

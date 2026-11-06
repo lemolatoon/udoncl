@@ -186,7 +186,9 @@ def main():
         encoding="utf-8",
     )
 
-    def emit_device(name, device, kernel_name, kernel_id, words, shape=None):
+    def emit_device(
+        name, device, kernel_name, kernel_id, words, shape=None, config_extra=None
+    ):
         global_size = [words, 1, 1] if shape is None else [*shape, 1]
         device_ir = output / f"{name}.ll"
         run(
@@ -211,19 +213,20 @@ def main():
             ]
         )
         config = output / f"{name}.json"
+        config_data = {
+            "schema_version": 1,
+            "profile": "gather-f32",
+            "words": words,
+            "kernel": kernel_name,
+            "kernel_id": kernel_id,
+            "global_size": global_size,
+            "local_size": [1, 1, 1],
+            "global_offset": [0, 0, 0],
+        }
+        if config_extra:
+            config_data.update(config_extra)
         config.write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "profile": "gather-f32",
-                    "words": words,
-                    "kernel": kernel_name,
-                    "kernel_id": kernel_id,
-                    "global_size": global_size,
-                    "local_size": [1, 1, 1],
-                    "global_offset": [0, 0, 0],
-                }
-            ),
+            json.dumps(config_data),
             encoding="utf-8",
         )
         bundle = output / f"{name}-bundle"
@@ -337,6 +340,12 @@ def main():
         217,
         16384,
         (8192, 2),
+        config_extra={
+            "argument_bounds": [
+                {"index": 2, "min": 1, "max": 16384},
+                {"index": 3, "min": 1, "max": 4096},
+            ]
+        },
     )
     arena_rms_finalize_bundle = emit_device(
         "aten-arena-rms-finalize",
@@ -345,6 +354,14 @@ def main():
         218,
         16384,
         (8192, 2),
+        config_extra={
+            "input_words": [16384, 16384, 4096],
+            "argument_bounds": [
+                {"index": 4, "min": 1, "max": 16384},
+                {"index": 5, "min": 1, "max": 4096},
+                {"index": 7, "min": 1, "max": 1},
+            ],
+        },
     )
     arena_sgemm_bundle = emit_device(
         "udonblas-arena-sgemm",
@@ -385,6 +402,16 @@ def main():
         222,
         16384,
         (8192, 2),
+        config_extra={
+            "argument_bounds": [
+                {"index": 2, "min": 1, "max": 16384},
+                {"index": 3, "min": 1, "max": 512},
+                {"index": 4, "min": 1, "max": 16384},
+                {"index": 5, "min": 1, "max": 16384},
+                {"index": 6, "min": 0, "max": 2},
+                {"index": 7, "min": 0, "max": 1},
+            ]
+        },
     )
     arena_broadcast_bundle = emit_device(
         "udonaten-arena-broadcast-pointwise",
