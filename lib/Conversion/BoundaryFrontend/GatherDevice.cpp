@@ -106,6 +106,11 @@ struct Proof {
       if (c && *c >= 0 && *c < INT32_MAX)
         return Range{0, *c};
     }
+    // Unsigned remainder bounds its result using only the positive divisor.
+    // The dividend may intentionally come from a texture load, as in a
+    // bounds-safe dynamic Gather address normalized before sampling.
+    if (isa<LLVM::URemOp>(op) && b && b->min > 0 && b->max <= INT32_MAX)
+      return Range{0, b->max - 1};
     if (!a || !b || a->min < 0 || b->min < 0 || a->max > INT32_MAX ||
         b->max > INT32_MAX)
       return std::nullopt;
@@ -145,9 +150,7 @@ struct Proof {
           if (factorRange && factorRange->min > 0)
             result.max = std::min(result.max, factorRange->max - 1);
         }
-    } else if (isa<LLVM::URemOp>(op) && b->min > 0)
-      result = {0, std::min(a->max, b->max - 1)};
-    else if (isa<LLVM::LShrOp>(op) && b->min == b->max && b->max < 31)
+    } else if (isa<LLVM::LShrOp>(op) && b->min == b->max && b->max < 31)
       result = {a->min >> b->min, a->max >> b->max};
     else if (isa<LLVM::ShlOp>(op) && b->min == b->max && b->max < 31)
       result = {a->min << b->min, a->max << b->max};

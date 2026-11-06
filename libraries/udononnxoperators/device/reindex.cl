@@ -87,6 +87,36 @@ __kernel void udononnx_concat2_f32(__global const float *left,
   output[gid] = value;
 }
 
+/* Generic axis-zero Gather for immutable FP32 tables. Indices are raw
+ * little-endian words so the same kernel accepts ONNX INT32 and INT64 without
+ * requiring 64-bit shader arithmetic. Negative indices follow ONNX semantics;
+ * out-of-range indices produce zero instead of reading outside the texture. */
+__kernel void udononnx_gather_axis0_f32(__global const float *data,
+                                        __global const uint *indices,
+                                        __global float *output, int words,
+                                        int inner_words, int axis_extent,
+                                        int index_words) {
+  size_t gid = UDONONNX_REINDEX_GID();
+  float value = 0.0f;
+  if (gid < (size_t)words) {
+    size_t index_offset = (gid / (size_t)inner_words) * (size_t)index_words;
+    uint low = indices[index_offset];
+    uint high = index_words == 2 ? indices[index_offset + 1u] : 0u;
+    int selected = (int)low;
+    int representable = index_words == 1 || high == 0u || high == 0xffffffffu;
+    if (representable && selected < 0)
+      selected += axis_extent;
+    int valid = representable && selected >= 0 && selected < axis_extent;
+    uint safe_selected = (uint)selected % (uint)axis_extent;
+    size_t source =
+        (size_t)safe_selected * (size_t)inner_words + gid % (size_t)inner_words;
+    float gathered = data[source];
+    if (valid)
+      value = gathered;
+  }
+  output[gid] = value;
+}
+
 /* Generic static Slice materialization. The Host facade normalizes ONNX
  * starts/ends/axes/steps and validates that every generated coordinate is in
  * bounds. Normalized nonnegative starts and positive steps use packed u16

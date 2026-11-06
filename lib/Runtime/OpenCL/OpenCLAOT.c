@@ -126,6 +126,9 @@ extern cl_int __vrc_opencl_dispatch_udononnx_expand_f32(
 extern cl_int __vrc_opencl_dispatch_udononnx_concat2_f32(
     cl_uint left_token, cl_uint right_token, cl_uint output_token, cl_int words,
     cl_int inner_words, cl_int left_extent, cl_int right_extent);
+extern cl_int __vrc_opencl_dispatch_udononnx_gather_axis0_f32(
+    cl_uint data_token, cl_uint indices_token, cl_uint output_token,
+    cl_int words, cl_int inner_words, cl_int axis_extent, cl_int index_words);
 #endif
 #if UDONCL_AOT_ENABLE_MNIST
 extern cl_int __vrc_opencl_dispatch_mnist_conv(cl_uint input_token,
@@ -281,6 +284,8 @@ static cl_uint udoncl_kernel_id(const char *name) {
     return 240;
   if (udoncl_string_equal(name, "udononnx_concat2_f32"))
     return 241;
+  if (udoncl_string_equal(name, "udononnx_gather_axis0_f32"))
+    return 242;
 #endif
   return 0;
 }
@@ -1508,6 +1513,35 @@ cl_int __vrc_enqueue_udononnx_concat2_device_args(
   pending = __vrc_opencl_dispatch_udononnx_concat2_f32(
       left->physical_token, right->physical_token, output->physical_token,
       words, inner_words, left_extent, right_extent);
+  return udoncl_finish_enqueue(queue, CL_COMMAND_NDRANGE_KERNEL, pending,
+                               CL_FALSE, event);
+}
+
+cl_int __vrc_enqueue_udononnx_gather_axis0_device_args(
+    cl_command_queue queue, cl_mem data, cl_mem indices, cl_mem output,
+    cl_int words, cl_int inner_words, cl_int axis_extent, cl_int index_words,
+    cl_uint wait_count, const cl_event *wait_list, cl_event *event) {
+  cl_int pending;
+  size_t index_count;
+  size_t data_words;
+  if (queue != &udoncl_queue || !queue->active || !data || !data->active ||
+      !indices || !indices->active || !output || !output->active ||
+      data->context != queue->context || indices->context != queue->context ||
+      output->context != queue->context || words < 1 || words > 16384 ||
+      inner_words < 1 || axis_extent < 1 ||
+      (index_words != 1 && index_words != 2) || words % inner_words ||
+      (size_t)axis_extent > (size_t)-1 / (size_t)inner_words ||
+      udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
+    return CL_INVALID_VALUE;
+  index_count = (size_t)words / (size_t)inner_words;
+  data_words = (size_t)axis_extent * (size_t)inner_words;
+  if (data_words > (size_t)-1 / 4u || data->bytes < data_words * 4u ||
+      indices->bytes < index_count * (size_t)index_words * 4u ||
+      output->bytes < (size_t)words * 4u)
+    return CL_INVALID_BUFFER_SIZE;
+  pending = __vrc_opencl_dispatch_udononnx_gather_axis0_f32(
+      data->physical_token, indices->physical_token, output->physical_token,
+      words, inner_words, axis_extent, index_words);
   return udoncl_finish_enqueue(queue, CL_COMMAND_NDRANGE_KERNEL, pending,
                                CL_FALSE, event);
 }

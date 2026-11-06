@@ -63,9 +63,9 @@ aliasing are allowed.
   sequence-4 specialization, expanding the proven pointwise view to 32,768
   words removes every `Cos`/`Sin`/`Neg`, `Add`, `Mul`, `Sigmoid`, and `Tanh`
   node from the unsupported set. After the Device Q4, RmsNorm, and Softmax
-  checkpoints below, and the generic Device Transpose checkpoint described
-  below, the remaining measured set is Cast 2, Equal 1, Gather 1, ScatterND 1,
-  and Where 1.
+  checkpoints below and the generic Device reindex/Gather checkpoints
+  described below, the remaining measured set is Cast 2, Equal 1, ScatterND
+  1, and Where 1.
 - The generic correctness-oriented `MatMulNBits` path still uses small
   Host-managed tiles. A first Device-resident specialization now covers the
   pinned model's three-input unsigned Q4 form (`bits=4`, `block_size=32`,
@@ -132,6 +132,15 @@ aliasing are allowed.
   nodes disappear from the measured unsupported set. Other valid variadic
   Concat forms retain the public Host implementation until a fragment-safe
   generic schedule is added.
+- Immutable FP32 axis-zero Gather now uses a generic Device kernel rather than
+  the old 512-element embedding staging path. INT32 and INT64 indices are read
+  as one or two little-endian uint32 words, so fragment HLSL does not require
+  64-bit integer arithmetic; negative ONNX indices are normalized and every
+  texture address is made safe before sampling. Native INT32/INT64 numerical
+  tests, the AOT facade, C++ lowering, fragment recovery, and the real
+  sequence-4 graph pass. The single pinned embedding Gather is absent from the
+  measured unsupported set. Other axes and mutable/non-FP32 data retain the
+  public Host implementation.
 - Production-sized diagnostic bundles may omit intermediate textual MLIR with
   `--omit-intermediate-ir`; assembly, manifest, binding, static tensors, and the
   storage report remain. This avoids publishing several model-sized debug

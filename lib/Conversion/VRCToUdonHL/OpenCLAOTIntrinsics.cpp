@@ -69,6 +69,7 @@ struct LowerOpenCLAOTIntrinsicsPass
           name == "__vrc_opencl_dispatch_udononnx_slice_f32" ||
           name == "__vrc_opencl_dispatch_udononnx_expand_f32" ||
           name == "__vrc_opencl_dispatch_udononnx_concat2_f32" ||
+          name == "__vrc_opencl_dispatch_udononnx_gather_axis0_f32" ||
           name == "__vrc_opencl_dispatch_mnist_conv" ||
           name == "__vrc_opencl_dispatch_mnist_pool" ||
           name == "__vrc_opencl_dispatch_mnist_dense";
@@ -141,6 +142,8 @@ struct LowerOpenCLAOTIntrinsicsPass
       else if (name == "__vrc_opencl_dispatch_udononnx_expand_f32")
         arguments = {i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32};
       else if (name == "__vrc_opencl_dispatch_udononnx_concat2_f32")
+        arguments = {i32, i32, i32, i32, i32, i32, i32};
+      else if (name == "__vrc_opencl_dispatch_udononnx_gather_axis0_f32")
         arguments = {i32, i32, i32, i32, i32, i32, i32};
       else
         arguments = {i32, i32};
@@ -285,12 +288,15 @@ struct LowerOpenCLAOTIntrinsicsPass
         bool slice = name == "__vrc_opencl_dispatch_udononnx_slice_f32";
         bool expand = name == "__vrc_opencl_dispatch_udononnx_expand_f32";
         bool concat = name == "__vrc_opencl_dispatch_udononnx_concat2_f32";
-        unsigned bufferCount = matmulNBitsQ4                               ? 5
-                               : rmsFinalize                               ? 4
-                               : largeConvolution || largeOpTensor         ? 4
-                               : arenaSgemm || arenaBatchedSgemm || concat ? 3
-                               : largeActivation || largePooling           ? 3
-                                                                           : 2;
+        bool axis0Gather =
+            name == "__vrc_opencl_dispatch_udononnx_gather_axis0_f32";
+        unsigned bufferCount =
+            matmulNBitsQ4                                              ? 5
+            : rmsFinalize                                              ? 4
+            : largeConvolution || largeOpTensor                        ? 4
+            : arenaSgemm || arenaBatchedSgemm || concat || axis0Gather ? 3
+            : largeActivation || largePooling                          ? 3
+                                                                       : 2;
         int32_t kernelId = sgemm                                        ? 1
                            : arenaSgemm                                 ? 221
                            : arenaBatchedSgemm                          ? 237
@@ -311,6 +317,7 @@ struct LowerOpenCLAOTIntrinsicsPass
                            : slice                                      ? 239
                            : expand                                     ? 240
                            : concat                                     ? 241
+                           : axis0Gather                                ? 242
                            : name == "__vrc_opencl_dispatch_mnist_conv" ? 20
                            : name == "__vrc_opencl_dispatch_mnist_pool" ? 21
                                                                         : 22;
@@ -366,6 +373,8 @@ struct LowerOpenCLAOTIntrinsicsPass
           scalarKinds.append(9, rewriter.getStringAttr("i32"));
         } else if (concat) {
           scalarKinds.append(4, rewriter.getStringAttr("i32"));
+        } else if (axis0Gather) {
+          scalarKinds.append(4, rewriter.getStringAttr("i32"));
         }
         OperationState descriptorState(
             call.getLoc(), runtime::DispatchDescCreateOp::getOperationName());
@@ -407,7 +416,8 @@ struct LowerOpenCLAOTIntrinsicsPass
           globalSize = rewriter.getDenseI32ArrayAttr({1536, 1, 1});
         else if (matmulNBitsQ4)
           globalSize = rewriter.getDenseI32ArrayAttr({8192, 16, 1});
-        else if (matmulNBits || unary || transpose || slice)
+        else if (matmulNBits || unary || transpose || slice || expand ||
+                 concat || axis0Gather)
           globalSize = rewriter.getDenseI32ArrayAttr({16384, 1, 1});
         else
           globalSize = rewriter.getDenseI32ArrayAttr({10800, 1, 1});

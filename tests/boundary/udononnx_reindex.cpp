@@ -209,6 +209,37 @@ static float runConcatCase(const std::vector<int> &leftShape,
   return maximumError;
 }
 
+static float runGatherCase(int indexWords) {
+  constexpr int surfaceWords = 16384;
+  constexpr int axisExtent = 5;
+  constexpr int innerWords = 3;
+  constexpr int outputWords = 9;
+  std::vector<float> data(axisExtent * innerWords);
+  std::vector<unsigned> indices(indexWords * 3, 0u);
+  std::vector<float> output(surfaceWords, -17.0f);
+  for (int index = 0; index < static_cast<int>(data.size()); ++index)
+    data[index] = static_cast<float>(index + 1);
+  indices[0] = 4u;
+  indices[indexWords] = 1u;
+  indices[indexWords * 2] = 0xffffffffu;
+  if (indexWords == 2)
+    indices[indexWords * 2 + 1] = 0xffffffffu;
+  for (udononnx_reindex_cpu_gid = 0; udononnx_reindex_cpu_gid < surfaceWords;
+       ++udononnx_reindex_cpu_gid)
+    udononnx_gather_axis0_f32(data.data(), indices.data(), output.data(),
+                              outputWords, innerWords, axisExtent, indexWords);
+  const int selected[] = {4, 1, 4};
+  float maximumError = 0.0f;
+  for (int index = 0; index < outputWords; ++index) {
+    int row = index / innerWords;
+    int column = index % innerWords;
+    maximumError = std::max(
+        maximumError,
+        std::abs(output[index] - data[selected[row] * innerWords + column]));
+  }
+  return maximumError;
+}
+
 int main() {
   float headsError = runCase({1, 4, 32, 64}, {0, 2, 1, 3});
   float attentionError = runCase({1, 32, 4, 64}, {0, 1, 3, 2});
@@ -221,10 +252,13 @@ int main() {
   float leadingBroadcastError = runExpandCase({2, 1}, {3, 2, 5});
   float rotaryConcatError = runConcatCase({1, 32, 4, 32}, {1, 32, 4, 32}, 3);
   float cacheConcatError = runConcatCase({1, 4, 2, 64}, {1, 4, 4, 64}, 2);
+  float gatherI32Error = runGatherCase(1);
+  float gatherI64Error = runGatherCase(2);
   maximumError =
       std::max({maximumError, halfError, stridedError, repeatHeadsError,
-                leadingBroadcastError, rotaryConcatError, cacheConcatError});
-  std::cout << "reindex_cases=9\n";
+                leadingBroadcastError, rotaryConcatError, cacheConcatError,
+                gatherI32Error, gatherI64Error});
+  std::cout << "reindex_cases=11\n";
   std::cout << "reindex_max_error=" << maximumError << '\n';
   return maximumError == 0.0f ? 0 : 1;
 }

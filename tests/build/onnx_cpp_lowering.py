@@ -457,6 +457,39 @@ assert (
 )
 assert "call @udononnxConcat" not in concat_device_host.stdout
 
+gather_device_source = source.with_name("onnx_gather_device.mlir")
+gather_device_portable = subprocess.run(
+    [
+        opt,
+        "--udoncl-materialize-onnx-constants",
+        "--udoncl-externalize-onnx-initializers",
+        "--udoncl-lower-onnx-to-host",
+        gather_device_source,
+    ],
+    text=True,
+    capture_output=True,
+    check=True,
+).stdout
+gather_device_host = subprocess.run(
+    [host_opt, "--udoncl-finalize-onnx-host", "-"],
+    input=gather_device_portable,
+    text=True,
+    capture_output=True,
+)
+assert gather_device_host.returncode == 0, (
+    gather_device_host.stdout,
+    gather_device_host.stderr,
+)
+assert "udoncl.onnx_device_graph = true" in gather_device_host.stdout
+assert "udoncl.onnx_device_unsupported = []" in gather_device_host.stdout
+assert (
+    gather_device_host.stdout.count(
+        "call @__vrc_enqueue_udononnx_gather_axis0_device_args"
+    )
+    == 1
+)
+assert "call @udononnxGather" not in gather_device_host.stdout
+
 slice_source = source.with_name("onnx_slice.mlir")
 slice_portable = subprocess.run(
     [opt, "--udoncl-materialize-onnx-constants", "--udoncl-lower-onnx-to-host", slice_source],

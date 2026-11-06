@@ -848,6 +848,51 @@ std::optional<DeviceConcatShape> deviceConcatShape(const GraphRecord &graph,
                            right.type.getDimSize(axis)};
 }
 
+struct DeviceGatherShape {
+  int64_t innerWords;
+  int64_t axisExtent;
+  int64_t indexWords;
+};
+
+std::optional<DeviceGatherShape> deviceGatherShape(const GraphRecord &graph,
+                                                   const NodeRecord &node) {
+  if (node.operation != "Gather" || node.provider != "udononnxGather" ||
+      node.inputs.size() != 2 || node.inputs[0] < 0 || node.inputs[1] < 0)
+    return std::nullopt;
+  const TensorRecord &data = graph.tensors[node.inputs[0]];
+  const TensorRecord &indices = graph.tensors[node.inputs[1]];
+  const TensorRecord &output = graph.tensors[node.output];
+  int64_t axis = integerAttribute(node, "axis", 0);
+  if (axis < 0)
+    axis += data.type.getRank();
+  if (!data.type.getElementType().isF32() ||
+      !output.type.getElementType().isF32() || data.staticResourceId < 0 ||
+      axis != 0 || data.type.getRank() < 1 || data.type.getRank() > 5 ||
+      (!indices.type.getElementType().isInteger(32) &&
+       !indices.type.getElementType().isInteger(64)) ||
+      output.type.getNumElements() < 1 ||
+      output.type.getNumElements() > 16384 || data.type.getDimSize(0) < 1 ||
+      data.type.getDimSize(0) > std::numeric_limits<int32_t>::max())
+    return std::nullopt;
+  int64_t innerWords = 1;
+  for (int64_t extent : data.type.getShape().drop_front()) {
+    if (extent < 1 || innerWords > 16384 / extent)
+      return std::nullopt;
+    innerWords *= extent;
+  }
+  if (indices.type.getNumElements() < 1 ||
+      indices.type.getNumElements() > 16384 / innerWords ||
+      output.type.getNumElements() !=
+          indices.type.getNumElements() * innerWords)
+    return std::nullopt;
+  SmallVector<int64_t> expectedShape(indices.type.getShape());
+  llvm::append_range(expectedShape, data.type.getShape().drop_front());
+  if (output.type.getShape() != ArrayRef<int64_t>(expectedShape))
+    return std::nullopt;
+  return DeviceGatherShape{innerWords, data.type.getDimSize(0),
+                           indices.type.getElementType().isInteger(64) ? 2 : 1};
+}
+
 bool isDeviceRmsNormNode(const GraphRecord &graph, const NodeRecord &node) {
   if (node.operation != "RmsNorm" || node.provider != "udonatenRmsNorm" ||
       node.inputs.size() != 3 || node.inputs[0] < 0 || node.inputs[1] < 0 ||
@@ -1105,6 +1150,8 @@ bool supportsDeviceNode(const GraphRecord &graph, const NodeRecord &node) {
     return isDeviceExpandNode(graph, node);
   if (node.operation == "Concat")
     return deviceConcatShape(graph, node).has_value();
+  if (node.operation == "Gather")
+    return deviceGatherShape(graph, node).has_value();
   if (node.operation == "MatMul")
     return deviceMatMulShape(graph, node).has_value();
   if (node.operation == "Gemm") {
@@ -3322,6 +3369,21 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                      constant(shape->rightExtent)});
         continue;
       }
+      if (node.operation == "Gather") {
+        std::optional<DeviceGatherShape> shape = deviceGatherShape(graph, node);
+        if (!shape)
+          return emitError(location)
+                 << "Device Gather requires immutable FP32 axis-zero data, "
+                    "INT32 or INT64 indices, and at most 16384 output words";
+        dispatch("__vrc_enqueue_udononnx_gather_axis0_device_args",
+                 ValueRange{
+                     entry->getArgument(2), buffer(node.inputs[0]),
+                     buffer(node.inputs[1]), output,
+                     constant(graph.tensors[node.output].type.getNumElements()),
+                     constant(shape->innerWords), constant(shape->axisExtent),
+                     constant(shape->indexWords)});
+        continue;
+      }
       if (isDeviceQ4Node(graph, node)) {
         const TensorRecord &activation = graph.tensors[node.inputs[0]];
         int64_t k = integerAttribute(node, "K", 0);
@@ -3552,6 +3614,10 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                  i32, i32, i32, pointer, pointer},
                 {i32});
     declaration(module, "__vrc_enqueue_udononnx_concat2_device_args",
+                {pointer, pointer, pointer, pointer, i32, i32, i32, i32, i32,
+                 pointer, pointer},
+                {i32});
+    declaration(module, "__vrc_enqueue_udononnx_gather_axis0_device_args",
                 {pointer, pointer, pointer, pointer, i32, i32, i32, i32, i32,
                  pointer, pointer},
                 {i32});
