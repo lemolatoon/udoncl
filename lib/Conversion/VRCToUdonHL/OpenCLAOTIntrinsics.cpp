@@ -65,6 +65,7 @@ struct LowerOpenCLAOTIntrinsicsPass
           name == "__vrc_opencl_dispatch_udononnx_matmul_nbits_q4" ||
           name == "__vrc_opencl_dispatch_udononnx_gather_copy" ||
           name == "__vrc_opencl_dispatch_udononnx_unary_f32" ||
+          name == "__vrc_opencl_dispatch_udononnx_transpose_f32" ||
           name == "__vrc_opencl_dispatch_mnist_conv" ||
           name == "__vrc_opencl_dispatch_mnist_pool" ||
           name == "__vrc_opencl_dispatch_mnist_dense";
@@ -129,6 +130,8 @@ struct LowerOpenCLAOTIntrinsicsPass
         arguments = {i32, i32, i32};
       else if (name == "__vrc_opencl_dispatch_udononnx_unary_f32")
         arguments = {i32, i32, i32, i32};
+      else if (name == "__vrc_opencl_dispatch_udononnx_transpose_f32")
+        arguments = {i32, i32, i32, i32, i32, i32, i32, i32};
       else
         arguments = {i32, i32};
       if (!function.isExternal() ||
@@ -268,6 +271,7 @@ struct LowerOpenCLAOTIntrinsicsPass
             name == "__vrc_opencl_dispatch_udononnx_matmul_nbits_q4";
         bool gather = name == "__vrc_opencl_dispatch_udononnx_gather_copy";
         bool unary = name == "__vrc_opencl_dispatch_udononnx_unary_f32";
+        bool transpose = name == "__vrc_opencl_dispatch_udononnx_transpose_f32";
         unsigned bufferCount = matmulNBitsQ4                       ? 5
                                : rmsFinalize                       ? 4
                                : largeConvolution || largeOpTensor ? 4
@@ -290,6 +294,7 @@ struct LowerOpenCLAOTIntrinsicsPass
                            : matmulNBitsQ4                              ? 235
                            : gather                                     ? 220
                            : unary                                      ? 222
+                           : transpose                                  ? 238
                            : name == "__vrc_opencl_dispatch_mnist_conv" ? 20
                            : name == "__vrc_opencl_dispatch_mnist_pool" ? 21
                                                                         : 22;
@@ -337,6 +342,8 @@ struct LowerOpenCLAOTIntrinsicsPass
           scalarKinds.append(1, rewriter.getStringAttr("i32"));
         } else if (unary) {
           scalarKinds.append(2, rewriter.getStringAttr("i32"));
+        } else if (transpose) {
+          scalarKinds.append(6, rewriter.getStringAttr("i32"));
         }
         OperationState descriptorState(
             call.getLoc(), runtime::DispatchDescCreateOp::getOperationName());
@@ -378,7 +385,7 @@ struct LowerOpenCLAOTIntrinsicsPass
           globalSize = rewriter.getDenseI32ArrayAttr({1536, 1, 1});
         else if (matmulNBitsQ4)
           globalSize = rewriter.getDenseI32ArrayAttr({8192, 16, 1});
-        else if (matmulNBits || unary)
+        else if (matmulNBits || unary || transpose)
           globalSize = rewriter.getDenseI32ArrayAttr({16384, 1, 1});
         else
           globalSize = rewriter.getDenseI32ArrayAttr({10800, 1, 1});

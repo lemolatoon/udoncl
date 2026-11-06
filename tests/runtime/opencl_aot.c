@@ -11,6 +11,8 @@ size_t udononnx_gather_cpu_gid;
 #include "../../libraries/udononnxoperators/device/gather.cl"
 size_t udononnx_unary_cpu_gid;
 #include "../../libraries/udononnxoperators/device/unary.cl"
+size_t udononnx_reindex_cpu_gid;
+#include "../../libraries/udononnxoperators/device/reindex.cl"
 
 #define EXPECT(condition)                                                      \
   do {                                                                         \
@@ -204,6 +206,11 @@ extern cl_int __vrc_enqueue_udononnx_unary_device_args(
     cl_command_queue queue, cl_mem input, cl_mem output, cl_int operation,
     cl_int words, cl_uint wait_count, const cl_event *wait_list,
     cl_event *event);
+extern cl_int __vrc_enqueue_udononnx_transpose_device_args(
+    cl_command_queue queue, cl_mem input, cl_mem output, cl_int words,
+    cl_int rank, cl_int shape01, cl_int shape23, cl_int shape4,
+    cl_int permutation, cl_uint wait_count, const cl_event *wait_list,
+    cl_event *event);
 extern cl_int __vrc_enqueue_udononnx_matmul_nbits_q4_device_args(
     cl_command_queue queue, cl_mem activation, cl_mem packed_weight,
     cl_mem scales, cl_mem previous, cl_mem output, cl_int m, cl_int n, cl_int k,
@@ -325,6 +332,17 @@ cl_int __vrc_opencl_dispatch_udononnx_unary_f32(cl_uint input_token,
   return 17;
 }
 
+cl_int __vrc_opencl_dispatch_udononnx_transpose_f32(
+    cl_uint input_token, cl_uint output_token, cl_int words, cl_int rank,
+    cl_int shape01, cl_int shape23, cl_int shape4, cl_int permutation) {
+  for (udononnx_reindex_cpu_gid = 0; udononnx_reindex_cpu_gid < 16384;
+       ++udononnx_reindex_cpu_gid)
+    udononnx_transpose_f32((const float *)physical_buffers[input_token - 100],
+                           (float *)physical_buffers[output_token - 100], words,
+                           rank, shape01, shape23, shape4, permutation);
+  return 21;
+}
+
 cl_int __vrc_opencl_await(cl_int event) {
   if (await_count < sizeof(awaited_events) / sizeof(awaited_events[0]))
     awaited_events[await_count] = event;
@@ -359,6 +377,7 @@ int main(void) {
   cl_event marker_event, write_event, wait_events[2];
   cl_mem first, second, nested_buffer, nested_buffer2, static_buffer;
   cl_mem batched_a, batched_b, batched_c;
+  cl_mem transpose_input_buffer, transpose_output_buffer;
   cl_mem q4_activation, q4_packed, q4_scales, q4_previous, q4_output;
   cl_mem resolved;
   udonclBufferHandle_t common_buffer = {0, 0}, stale_buffer, replacement;
@@ -632,6 +651,34 @@ int main(void) {
   EXPECT(((float *)physical_buffers[3])[1] > 0.999999f &&
          ((float *)physical_buffers[3])[1] < 1.000001f);
   EXPECT(clReleaseEvent(marker_event) == CL_SUCCESS);
+  transpose_input_buffer = udonclCreateBufferForQueue(
+      queue, CL_MEM_READ_WRITE, 6 * sizeof(float), &error);
+  EXPECT(transpose_input_buffer && error == CL_SUCCESS);
+  transpose_output_buffer = udonclCreateBufferForQueue(
+      queue, CL_MEM_READ_WRITE, 6 * sizeof(float), &error);
+  EXPECT(transpose_output_buffer && error == CL_SUCCESS);
+  ((float *)physical_buffers[4])[0] = 1.0f;
+  ((float *)physical_buffers[4])[1] = 2.0f;
+  ((float *)physical_buffers[4])[2] = 3.0f;
+  ((float *)physical_buffers[4])[3] = 4.0f;
+  ((float *)physical_buffers[4])[4] = 5.0f;
+  ((float *)physical_buffers[4])[5] = 6.0f;
+  await_count = 0;
+  EXPECT(__vrc_enqueue_udononnx_transpose_device_args(
+             queue, transpose_input_buffer, transpose_output_buffer, 6, 2,
+             2 | (3 << 16), 1 | (1 << 16), 1, 1, 0, 0,
+             &marker_event) == CL_SUCCESS);
+  EXPECT(marker_event && clWaitForEvents(1, &marker_event) == CL_SUCCESS);
+  EXPECT(await_count == 1 && awaited_events[0] == 21);
+  EXPECT(((float *)physical_buffers[5])[0] == 1.0f);
+  EXPECT(((float *)physical_buffers[5])[1] == 4.0f);
+  EXPECT(((float *)physical_buffers[5])[2] == 2.0f);
+  EXPECT(((float *)physical_buffers[5])[3] == 5.0f);
+  EXPECT(((float *)physical_buffers[5])[4] == 3.0f);
+  EXPECT(((float *)physical_buffers[5])[5] == 6.0f);
+  EXPECT(clReleaseEvent(marker_event) == CL_SUCCESS);
+  EXPECT(clReleaseMemObject(transpose_output_buffer) == CL_SUCCESS);
+  EXPECT(clReleaseMemObject(transpose_input_buffer) == CL_SUCCESS);
   EXPECT(clReleaseMemObject(nested_buffer) == CL_SUCCESS);
 
   batched_a = udonclCreateBufferForQueue(queue, CL_MEM_READ_WRITE,

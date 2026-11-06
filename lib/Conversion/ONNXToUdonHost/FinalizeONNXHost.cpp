@@ -720,6 +720,37 @@ bool isDeviceSoftmaxNode(const GraphRecord &graph, const NodeRecord &node) {
          input.type.getDimSize(axis) >= 1 && input.type.getDimSize(axis) <= 512;
 }
 
+std::optional<SmallVector<int64_t>>
+deviceTransposePermutation(const GraphRecord &graph, const NodeRecord &node) {
+  if (node.operation != "Transpose" || node.provider != "udononnxTranspose" ||
+      node.inputs.size() != 1 || node.inputs[0] < 0)
+    return std::nullopt;
+  const TensorRecord &input = graph.tensors[node.inputs[0]];
+  const TensorRecord &output = graph.tensors[node.output];
+  int64_t rank = input.type.getRank();
+  if (!input.type.getElementType().isF32() || rank < 1 || rank > 5 ||
+      output.type.getRank() != rank || input.type.getNumElements() < 1 ||
+      input.type.getNumElements() > 16384 ||
+      input.type.getNumElements() != output.type.getNumElements())
+    return std::nullopt;
+  SmallVector<int64_t> permutation = integerArrayAttribute(node, "perm", {});
+  if (permutation.empty())
+    for (int64_t axis = rank; axis-- > 0;)
+      permutation.push_back(axis);
+  if (permutation.size() != static_cast<size_t>(rank))
+    return std::nullopt;
+  SmallVector<bool> seen(rank, false);
+  for (auto [outputAxis, inputAxis] : llvm::enumerate(permutation)) {
+    if (inputAxis < 0 || inputAxis >= rank || seen[inputAxis] ||
+        input.type.getDimSize(inputAxis) < 1 ||
+        input.type.getDimSize(inputAxis) > 65535 ||
+        output.type.getDimSize(outputAxis) != input.type.getDimSize(inputAxis))
+      return std::nullopt;
+    seen[inputAxis] = true;
+  }
+  return permutation;
+}
+
 struct DeviceMatMulShape {
   int64_t m;
   int64_t n;
@@ -891,6 +922,8 @@ bool supportsDeviceNode(const GraphRecord &graph, const NodeRecord &node) {
     return isDeviceRmsNormNode(graph, node);
   if (node.operation == "Softmax")
     return isDeviceSoftmaxNode(graph, node);
+  if (node.operation == "Transpose")
+    return deviceTransposePermutation(graph, node).has_value();
   if (node.operation == "MatMul")
     return deviceMatMulShape(graph, node).has_value();
   if (node.operation == "Gemm") {
@@ -2992,6 +3025,34 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                 constant(graph.tensors[node.output].type.getNumElements())});
         continue;
       }
+      if (node.operation == "Transpose") {
+        std::optional<SmallVector<int64_t>> permutation =
+            deviceTransposePermutation(graph, node);
+        if (!permutation)
+          return emitError(location)
+                 << "Device Transpose requires a static FP32 tensor of rank "
+                    "one through five and at most 16384 elements";
+        ArrayRef<int64_t> shape = graph.tensors[node.inputs[0]].type.getShape();
+        auto packDimensions = [&](int64_t first) {
+          int64_t low =
+              first < static_cast<int64_t>(shape.size()) ? shape[first] : 1;
+          int64_t high = first + 1 < static_cast<int64_t>(shape.size())
+                             ? shape[first + 1]
+                             : 1;
+          return low | (high << 16);
+        };
+        int64_t packedPermutation = 0;
+        for (auto [outputAxis, inputAxis] : llvm::enumerate(*permutation))
+          packedPermutation |= inputAxis << (outputAxis * 3);
+        dispatch("__vrc_enqueue_udononnx_transpose_device_args",
+                 ValueRange{
+                     entry->getArgument(2), buffer(node.inputs[0]), output,
+                     constant(graph.tensors[node.output].type.getNumElements()),
+                     constant(shape.size()), constant(packDimensions(0)),
+                     constant(packDimensions(2)), constant(packDimensions(4)),
+                     constant(packedPermutation)});
+        continue;
+      }
       if (isDeviceQ4Node(graph, node)) {
         const TensorRecord &activation = graph.tensors[node.inputs[0]];
         int64_t k = integerAttribute(node, "K", 0);
@@ -3207,6 +3268,10 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
         {i32});
     declaration(module, "__vrc_enqueue_udononnx_unary_device_args",
                 {pointer, pointer, pointer, i32, i32, i32, pointer, pointer},
+                {i32});
+    declaration(module, "__vrc_enqueue_udononnx_transpose_device_args",
+                {pointer, pointer, pointer, i32, i32, i32, i32, i32, i32, i32,
+                 pointer, pointer},
                 {i32});
     declaration(module, "__vrc_enqueue_udononnx_matmul_nbits_q4_device_args",
                 {pointer, pointer, pointer, pointer, pointer, pointer, i32, i32,

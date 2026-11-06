@@ -249,8 +249,10 @@ TinyLlamaの現行設計、実装順序、受入条件の正本は
   数値suiteと実graphの22 nodeを検証済みである。UdonBLASにはさらに16,384 word以下・
   K<=256のstatic FP32 strided-batched SGEMM Device backendを追加し、input stride 0のbroadcast、
   contiguous output、実attention形状をNative数値testで検証した。実graphのMatMul 45 nodeも
-  すべてこの契約へ入る。現在の実測未対応集合はCast 2、Concat 45、Equal 1、Expand 46、
-  Gather 1、ScatterND 1、Slice 111、Transpose 111、Where 1である。
+  すべてこの契約へ入る。さらにstatic contiguous FP32、rank 1..5、16,384要素以下の
+  Transposeを汎用Device reindex kernelへlowerし、実graphの111 nodeすべてを対応した。
+  現在の実測未対応集合はCast 2、Concat 45、Equal 1、Expand 46、Gather 1、
+  ScatterND 1、Slice 111、Where 1である。
 - TinyLlama tokenizerはONNXではない。独立したC `UdonTokenizers` componentとして
   build-time tableとUTF-16/byte-fallback BPEを実装し、C Hostの会話APIをcompiler生成
   U# bindingから利用する。

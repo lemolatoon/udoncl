@@ -19,7 +19,8 @@ if(NOT TARGET udononnxoperators_host)
   set(_UDONONNX_DEVICE_FILES
     "${_UDONONNX_ROOT}/device/matmul_nbits.cl"
     "${_UDONONNX_ROOT}/device/gather.cl"
-    "${_UDONONNX_ROOT}/device/unary.cl")
+    "${_UDONONNX_ROOT}/device/unary.cl"
+    "${_UDONONNX_ROOT}/device/reindex.cl")
   set(_UDONONNX_DEVICE_SOURCE "")
   foreach(_UDONONNX_DEVICE_FILE IN LISTS _UDONONNX_DEVICE_FILES)
     file(READ "${_UDONONNX_DEVICE_FILE}" _UDONONNX_DEVICE_PART)

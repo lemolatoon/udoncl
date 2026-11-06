@@ -8,8 +8,11 @@ file(READ
 file(READ
   "${PROJECT_SOURCE_DIR}/libraries/udononnxoperators/device/unary.cl"
   _UDONONNX_TEST_UNARY_SOURCE)
+file(READ
+  "${PROJECT_SOURCE_DIR}/libraries/udononnxoperators/device/reindex.cl"
+  _UDONONNX_TEST_REINDEX_SOURCE)
 string(APPEND _UDONONNX_TEST_DEVICE_SOURCE
-  "\n${_UDONONNX_TEST_GATHER_SOURCE}\n${_UDONONNX_TEST_UNARY_SOURCE}")
+  "\n${_UDONONNX_TEST_GATHER_SOURCE}\n${_UDONONNX_TEST_UNARY_SOURCE}\n${_UDONONNX_TEST_REINDEX_SOURCE}")
 string(REPLACE "\\" "\\\\" _UDONONNX_TEST_DEVICE_SOURCE
   "${_UDONONNX_TEST_DEVICE_SOURCE}")
 string(REPLACE "\"" "\\\"" _UDONONNX_TEST_DEVICE_SOURCE
@@ -72,6 +75,13 @@ set_target_properties(udonblas-arena-sgemm-kernel PROPERTIES
   CXX_EXTENSIONS OFF)
 add_test(NAME udonblas-arena-sgemm-kernel
   COMMAND udonblas-arena-sgemm-kernel)
+add_executable(udononnx-reindex-kernel
+  boundary/udononnx_reindex.cpp)
+target_compile_features(udononnx-reindex-kernel PRIVATE cxx_std_20)
+set_target_properties(udononnx-reindex-kernel PROPERTIES
+  CXX_EXTENSIONS OFF)
+add_test(NAME udononnx-reindex-kernel
+  COMMAND udononnx-reindex-kernel)
 add_executable(udondnn-large-convolution-kernel
   boundary/udondnn_large_convolution.cpp)
 target_compile_features(udondnn-large-convolution-kernel PRIVATE cxx_std_20)

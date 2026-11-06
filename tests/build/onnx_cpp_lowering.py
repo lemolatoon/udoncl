@@ -198,6 +198,38 @@ assert "call @udononnxCos" not in unary_host.stdout
 assert "call @udononnxSin" not in unary_host.stdout
 assert "call @udononnxNeg" not in unary_host.stdout
 
+transpose_source = source.with_name("onnx_transpose_device.mlir")
+transpose_portable = subprocess.run(
+    [
+        opt,
+        "--udoncl-infer-onnx-shapes",
+        "--udoncl-lower-onnx-to-host",
+        transpose_source,
+    ],
+    text=True,
+    capture_output=True,
+    check=True,
+).stdout
+transpose_host = subprocess.run(
+    [host_opt, "--udoncl-finalize-onnx-host", "-"],
+    input=transpose_portable,
+    text=True,
+    capture_output=True,
+)
+assert transpose_host.returncode == 0, (
+    transpose_host.stdout,
+    transpose_host.stderr,
+)
+assert "udoncl.onnx_device_graph = true" in transpose_host.stdout
+assert "udoncl.onnx_device_unsupported = []" in transpose_host.stdout
+assert (
+    transpose_host.stdout.count(
+        "call @__vrc_enqueue_udononnx_transpose_device_args"
+    )
+    == 1
+)
+assert "call @udononnxTranspose" not in transpose_host.stdout
+
 large_pointwise_source = source.with_name("onnx_large_pointwise.mlir")
 large_pointwise_portable = subprocess.run(
     [

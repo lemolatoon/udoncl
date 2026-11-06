@@ -63,8 +63,9 @@ aliasing are allowed.
   sequence-4 specialization, expanding the proven pointwise view to 32,768
   words removes every `Cos`/`Sin`/`Neg`, `Add`, `Mul`, `Sigmoid`, and `Tanh`
   node from the unsupported set. After the Device Q4, RmsNorm, and Softmax
-  checkpoints below, the remaining measured set is Cast 2, Concat 45, Equal 1,
-  Expand 46, Gather 1, ScatterND 1, Slice 111, Transpose 111, and Where 1.
+  checkpoints below, and the generic Device Transpose checkpoint described
+  below, the remaining measured set is Cast 2, Concat 45, Equal 1, Expand 46,
+  Gather 1, ScatterND 1, Slice 111, and Where 1.
 - The generic correctness-oriented `MatMulNBits` path still uses small
   Host-managed tiles. A first Device-resident specialization now covers the
   pinned model's three-input unsigned Q4 form (`bits=4`, `block_size=32`,
@@ -97,6 +98,14 @@ aliasing are allowed.
   and the fragment proof. Native numerical tests cover the pinned attention
   shape and broadcast. All 45 MatMul nodes in the pinned sequence-4 graph now
   satisfy this generic UdonBLAS contract.
+- UdonONNXOperators now materializes static contiguous FP32 Transpose tensors
+  of rank one through five and at most 16,384 elements with a generic Device
+  reindex kernel. Shape and permutation are packed as validated dispatch
+  scalars; the compiler contains no attention- or model-specific case. Native
+  numerical tests cover the pinned attention layouts, the OpenCL AOT facade
+  validates shape/permutation/buffer bounds, fragment recovery succeeds, and
+  all 111 Transpose nodes disappear from the pinned graph's measured
+  unsupported set.
 - Production-sized diagnostic bundles may omit intermediate textual MLIR with
   `--omit-intermediate-ir`; assembly, manifest, binding, static tensors, and the
   storage report remain. This avoids publishing several model-sized debug
