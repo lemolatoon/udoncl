@@ -64,8 +64,8 @@ aliasing are allowed.
   words removes every `Cos`/`Sin`/`Neg`, `Add`, `Mul`, `Sigmoid`, and `Tanh`
   node from the unsupported set. After the Device Q4, RmsNorm, and Softmax
   checkpoints below and the generic Device reindex/Gather checkpoints
-  described below, the remaining measured set is Cast 2, Equal 1, ScatterND
-  1, and Where 1.
+  described below, the remaining measured set is Equal 1, ScatterND 1, and
+  Where 1.
 - The generic correctness-oriented `MatMulNBits` path still uses small
   Host-managed tiles. A first Device-resident specialization now covers the
   pinned model's three-input unsigned Q4 form (`bits=4`, `block_size=32`,
@@ -141,6 +141,12 @@ aliasing are allowed.
   sequence-4 graph pass. The single pinned embedding Gather is absent from the
   measured unsupported set. Other axes and mutable/non-FP32 data retain the
   public Host implementation.
+- INT64-to-FP32 Cast now uses a generic Device conversion kernel. It reads two
+  little-endian uint32 words, handles positive and negative two's-complement
+  values, and performs the final conversion in FP32 without requiring shader
+  int64 support. Native numerical tests, the AOT facade, C++ lowering,
+  fragment recovery, and the real graph pass cover the path; both pinned Cast
+  nodes are absent from the measured unsupported set.
 - Production-sized diagnostic bundles may omit intermediate textual MLIR with
   `--omit-intermediate-ir`; assembly, manifest, binding, static tensors, and the
   storage report remain. This avoids publishing several model-sized debug

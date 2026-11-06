@@ -161,18 +161,10 @@ cast_host = subprocess.run(
     capture_output=True,
 )
 assert cast_host.returncode == 0, (cast_host.stdout, cast_host.stderr)
-assert "call @udononnxCast" in cast_host.stdout
-assert "func.func private @udononnxCast" in cast_host.stdout
-assert "call @udonatenMul" in cast_host.stdout
-assert "call @udononnxExpand" in cast_host.stdout
-assert "call @udononnxTranspose" in cast_host.stdout
-assert "call @udononnxCos" in cast_host.stdout
-assert "call @udononnxSin" in cast_host.stdout
-assert "call @udononnxNeg" in cast_host.stdout
-assert "call @udonatenSigmoid" in cast_host.stdout
-assert "udoncl.onnx_device_graph = false" in cast_host.stdout
-assert 'operation = "Cast"' in cast_host.stdout
-assert 'provider = "udononnxCast"' in cast_host.stdout
+assert "call @__vrc_enqueue_udononnx_cast_i64_f32_device_args" in cast_host.stdout
+assert "call @udononnxCast" not in cast_host.stdout
+assert "udoncl.onnx_device_graph = true" in cast_host.stdout
+assert "udoncl.onnx_device_unsupported = []" in cast_host.stdout
 
 unary_source = source.with_name("onnx_unary_device.mlir")
 unary_portable = subprocess.run(

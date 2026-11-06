@@ -129,6 +129,9 @@ extern cl_int __vrc_opencl_dispatch_udononnx_concat2_f32(
 extern cl_int __vrc_opencl_dispatch_udononnx_gather_axis0_f32(
     cl_uint data_token, cl_uint indices_token, cl_uint output_token,
     cl_int words, cl_int inner_words, cl_int axis_extent, cl_int index_words);
+extern cl_int __vrc_opencl_dispatch_udononnx_cast_i64_f32(cl_uint input_token,
+                                                          cl_uint output_token,
+                                                          cl_int words);
 #endif
 #if UDONCL_AOT_ENABLE_MNIST
 extern cl_int __vrc_opencl_dispatch_mnist_conv(cl_uint input_token,
@@ -286,6 +289,8 @@ static cl_uint udoncl_kernel_id(const char *name) {
     return 241;
   if (udoncl_string_equal(name, "udononnx_gather_axis0_f32"))
     return 242;
+  if (udoncl_string_equal(name, "udononnx_cast_i64_f32"))
+    return 243;
 #endif
   return 0;
 }
@@ -1542,6 +1547,22 @@ cl_int __vrc_enqueue_udononnx_gather_axis0_device_args(
   pending = __vrc_opencl_dispatch_udononnx_gather_axis0_f32(
       data->physical_token, indices->physical_token, output->physical_token,
       words, inner_words, axis_extent, index_words);
+  return udoncl_finish_enqueue(queue, CL_COMMAND_NDRANGE_KERNEL, pending,
+                               CL_FALSE, event);
+}
+
+cl_int __vrc_enqueue_udononnx_cast_i64_f32_device_args(
+    cl_command_queue queue, cl_mem input, cl_mem output, cl_int words,
+    cl_uint wait_count, const cl_event *wait_list, cl_event *event) {
+  cl_int pending;
+  if (queue != &udoncl_queue || !queue->active || !input || !input->active ||
+      !output || !output->active || input->context != queue->context ||
+      output->context != queue->context || words < 1 || words > 16384 ||
+      input->bytes < (size_t)words * 8u || output->bytes < (size_t)words * 4u ||
+      udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
+    return CL_INVALID_VALUE;
+  pending = __vrc_opencl_dispatch_udononnx_cast_i64_f32(
+      input->physical_token, output->physical_token, words);
   return udoncl_finish_enqueue(queue, CL_COMMAND_NDRANGE_KERNEL, pending,
                                CL_FALSE, event);
 }

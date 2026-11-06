@@ -893,6 +893,19 @@ std::optional<DeviceGatherShape> deviceGatherShape(const GraphRecord &graph,
                            indices.type.getElementType().isInteger(64) ? 2 : 1};
 }
 
+bool isDeviceCastI64F32Node(const GraphRecord &graph, const NodeRecord &node) {
+  if (node.operation != "Cast" || node.provider != "udononnxCast" ||
+      node.inputs.size() != 1 || node.inputs[0] < 0)
+    return false;
+  const TensorRecord &input = graph.tensors[node.inputs[0]];
+  const TensorRecord &output = graph.tensors[node.output];
+  return input.type.getElementType().isInteger(64) &&
+         output.type.getElementType().isF32() &&
+         input.type.getShape() == output.type.getShape() &&
+         output.type.getNumElements() >= 1 &&
+         output.type.getNumElements() <= 16384;
+}
+
 bool isDeviceRmsNormNode(const GraphRecord &graph, const NodeRecord &node) {
   if (node.operation != "RmsNorm" || node.provider != "udonatenRmsNorm" ||
       node.inputs.size() != 3 || node.inputs[0] < 0 || node.inputs[1] < 0 ||
@@ -1152,6 +1165,8 @@ bool supportsDeviceNode(const GraphRecord &graph, const NodeRecord &node) {
     return deviceConcatShape(graph, node).has_value();
   if (node.operation == "Gather")
     return deviceGatherShape(graph, node).has_value();
+  if (node.operation == "Cast")
+    return isDeviceCastI64F32Node(graph, node);
   if (node.operation == "MatMul")
     return deviceMatMulShape(graph, node).has_value();
   if (node.operation == "Gemm") {
@@ -3384,6 +3399,18 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                      constant(shape->indexWords)});
         continue;
       }
+      if (node.operation == "Cast") {
+        if (!isDeviceCastI64F32Node(graph, node))
+          return emitError(location)
+                 << "Device Cast requires matching INT64 input and FP32 "
+                    "output shapes of at most 16384 elements";
+        dispatch(
+            "__vrc_enqueue_udononnx_cast_i64_f32_device_args",
+            ValueRange{
+                entry->getArgument(2), buffer(node.inputs[0]), output,
+                constant(graph.tensors[node.output].type.getNumElements())});
+        continue;
+      }
       if (isDeviceQ4Node(graph, node)) {
         const TensorRecord &activation = graph.tensors[node.inputs[0]];
         int64_t k = integerAttribute(node, "K", 0);
@@ -3621,6 +3648,8 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                 {pointer, pointer, pointer, pointer, i32, i32, i32, i32, i32,
                  pointer, pointer},
                 {i32});
+    declaration(module, "__vrc_enqueue_udononnx_cast_i64_f32_device_args",
+                {pointer, pointer, pointer, i32, i32, pointer, pointer}, {i32});
     declaration(module, "__vrc_enqueue_udononnx_matmul_nbits_q4_device_args",
                 {pointer, pointer, pointer, pointer, pointer, pointer, i32, i32,
                  i32, i32, i32, i32, i32, i32, i32, i32, pointer, pointer},

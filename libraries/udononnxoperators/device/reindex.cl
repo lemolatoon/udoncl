@@ -117,6 +117,29 @@ __kernel void udononnx_gather_axis0_f32(__global const float *data,
   output[gid] = value;
 }
 
+/* ONNX INT64-to-FP32 conversion without requiring 64-bit fragment integers.
+ * The two's-complement source is reconstructed from little-endian uint32
+ * words and converted with the rounding behavior of FP32 arithmetic. */
+__kernel void udononnx_cast_i64_f32(__global const uint *input,
+                                    __global float *output, int words) {
+  size_t gid = UDONONNX_REINDEX_GID();
+  float value = 0.0f;
+  if (gid < (size_t)words) {
+    uint low = input[gid * 2u];
+    uint high = input[gid * 2u + 1u];
+    if ((high & 0x80000000u) == 0u)
+      value = (float)high * 4294967296.0f + (float)low;
+    else {
+      uint magnitude_low = ~low + 1u;
+      uint magnitude_high = ~high;
+      if (magnitude_low == 0u)
+        magnitude_high += 1u;
+      value = -((float)magnitude_high * 4294967296.0f + (float)magnitude_low);
+    }
+  }
+  output[gid] = value;
+}
+
 /* Generic static Slice materialization. The Host facade normalizes ONNX
  * starts/ends/axes/steps and validates that every generated coordinate is in
  * bounds. Normalized nonnegative starts and positive steps use packed u16

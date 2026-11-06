@@ -258,7 +258,9 @@ TinyLlamaの現行設計、実装順序、受入条件の正本は
   render targetを読み戻さず実graphの45 nodeをすべて対応した。immutable FP32 tableの
   axis-0 GatherはINT32/INT64 indexをraw wordとして読み、負indexも含めて安全なtexture addressへ
   正規化する汎用Device kernelへlowerする。実graphのembedding Gather 1 nodeも対応済みで、
-  現在の実測未対応集合はCast 2、Equal 1、ScatterND 1、Where 1である。
+  INT64→FP32 Castもlittle-endian raw wordから64-bit shader arithmeticなしで変換する
+  汎用Device kernelへlowerし、実graphの2 nodeを対応した。現在の実測未対応集合は
+  Equal 1、ScatterND 1、Where 1である。
 - TinyLlama tokenizerはONNXではない。独立したC `UdonTokenizers` componentとして
   build-time tableとUTF-16/byte-fallback BPEを実装し、C Hostの会話APIをcompiler生成
   U# bindingから利用する。

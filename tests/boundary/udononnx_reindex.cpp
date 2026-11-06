@@ -240,6 +240,28 @@ static float runGatherCase(int indexWords) {
   return maximumError;
 }
 
+static float runCastCase() {
+  constexpr int surfaceWords = 16384;
+  constexpr int words = 5;
+  const long long values[words] = {0, 1, -2, 4294967297LL, -4294967297LL};
+  std::vector<unsigned> input(words * 2);
+  std::vector<float> output(surfaceWords, -17.0f);
+  for (int index = 0; index < words; ++index) {
+    unsigned long long bits = static_cast<unsigned long long>(values[index]);
+    input[index * 2] = static_cast<unsigned>(bits);
+    input[index * 2 + 1] = static_cast<unsigned>(bits >> 32u);
+  }
+  for (udononnx_reindex_cpu_gid = 0; udononnx_reindex_cpu_gid < surfaceWords;
+       ++udononnx_reindex_cpu_gid)
+    udononnx_cast_i64_f32(input.data(), output.data(), words);
+  float maximumError = 0.0f;
+  for (int index = 0; index < words; ++index)
+    maximumError =
+        std::max(maximumError,
+                 std::abs(output[index] - static_cast<float>(values[index])));
+  return maximumError;
+}
+
 int main() {
   float headsError = runCase({1, 4, 32, 64}, {0, 2, 1, 3});
   float attentionError = runCase({1, 32, 4, 64}, {0, 1, 3, 2});
@@ -254,11 +276,12 @@ int main() {
   float cacheConcatError = runConcatCase({1, 4, 2, 64}, {1, 4, 4, 64}, 2);
   float gatherI32Error = runGatherCase(1);
   float gatherI64Error = runGatherCase(2);
+  float castError = runCastCase();
   maximumError =
       std::max({maximumError, halfError, stridedError, repeatHeadsError,
                 leadingBroadcastError, rotaryConcatError, cacheConcatError,
-                gatherI32Error, gatherI64Error});
-  std::cout << "reindex_cases=11\n";
+                gatherI32Error, gatherI64Error, castError});
+  std::cout << "reindex_cases=12\n";
   std::cout << "reindex_max_error=" << maximumError << '\n';
   return maximumError == 0.0f ? 0 : 1;
 }
