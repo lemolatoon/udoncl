@@ -269,8 +269,8 @@
     {"id": 2, "name": "past_key", "byte_size": 128, "element_type": "float32", "public_access": "input"},
     {"id": 3, "name": "past_value", "byte_size": 128, "element_type": "float32", "public_access": "input"},
     {"id": 4, "name": "logits", "byte_size": 524288, "element_type": "float32", "public_access": "output"},
-    {"id": 5, "name": "onnx_device_buffer_5", "byte_size": 131072},
-    {"id": 6, "name": "onnx_device_buffer_6", "byte_size": 131072},
+    {"id": 5, "name": "present_key", "byte_size": 128, "element_type": "float32", "public_access": "output"},
+    {"id": 6, "name": "present_value", "byte_size": 128, "element_type": "float32", "public_access": "output"},
     {"id": 7, "name": "onnx_device_buffer_7", "byte_size": 131072},
     {"id": 8, "name": "onnx_device_buffer_8", "byte_size": 131072},
     {"id": 9, "name": "onnx_device_buffer_9", "byte_size": 131072},
@@ -299,6 +299,8 @@
     {"id": 32, "name": "onnx_device_buffer_32", "byte_size": 131072},
     {"id": 33, "name": "onnx_device_buffer_33", "byte_size": 131072},
     {"id": 34, "name": "onnx_device_buffer_34", "byte_size": 131072},
-    {"id": 35, "name": "onnx_device_buffer_35", "byte_size": 131072}
+    {"id": 35, "name": "onnx_device_buffer_35", "byte_size": 131072},
+    {"id": 36, "name": "onnx_device_buffer_36", "byte_size": 131072},
+    {"id": 37, "name": "onnx_device_buffer_37", "byte_size": 131072}
   ]
 }

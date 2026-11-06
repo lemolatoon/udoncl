@@ -597,17 +597,6 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
     return failure();
   }
   OpBuilder builder(module.getContext());
-  std::optional<size_t> semanticOutput;
-  for (auto [index, buffer] : llvm::enumerate(buffers)) {
-    if (buffer.publicAccess != "output")
-      continue;
-    if (semanticOutput) {
-      module.emitError(
-          "Unity dispatch currently requires exactly one output buffer");
-      return failure();
-    }
-    semanticOutput = index;
-  }
   SmallVector<mlir::Attribute> poolEntries;
   for (const UnityBuffer &buffer : buffers)
     poolEntries.push_back(builder.getDictionaryAttr(
@@ -2480,6 +2469,15 @@ int main(int argc, char **argv) {
     unityBuffers = std::move(*parsedBuffers);
     if (!deviceLLVM.empty()) {
       unityDeviceModule = ModuleOp::create(UnknownLoc::get(&context));
+      if (!unityBuffers.empty() &&
+          llvm::all_of(unityBuffers, [&](const UnityBuffer &buffer) {
+            return buffer.width == unityBuffers.front().width;
+          }))
+        (*unityDeviceModule)
+            ->setAttr("vrc.texture_row_pitch",
+                      mlir::IntegerAttr::get(
+                          mlir::IntegerType::get(&context, 32),
+                          static_cast<int32_t>(unityBuffers.front().width)));
       if (!unityBuffers.empty() &&
           llvm::all_of(unityBuffers, [&](const UnityBuffer &buffer) {
             return buffer.width == unityBuffers.front().width &&

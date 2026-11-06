@@ -30,9 +30,17 @@ struct LowerGatherDevicePass
     IRRewriter b(&getContext());
     auto textureShape =
         root->getAttrOfType<DenseI32ArrayAttr>("vrc.texture_shape");
+    auto textureRowPitch =
+        root->getAttrOfType<IntegerAttr>("vrc.texture_row_pitch");
     if (textureShape && (textureShape.size() != 2 || textureShape[0] <= 0 ||
                          textureShape[1] <= 0)) {
       root.emitError("invalid physical texture shape");
+      signalPassFailure();
+      return;
+    }
+    if (textureRowPitch &&
+        (textureRowPitch.getInt() <= 0 || textureRowPitch.getInt() > 8192)) {
+      root.emitError("invalid physical texture row pitch");
       signalPassFailure();
       return;
     }
@@ -91,6 +99,10 @@ struct LowerGatherDevicePass
         if (textureShape) {
           physicalWidth = textureShape.asArrayRef()[0];
           physicalHeight = textureShape.asArrayRef()[1];
+        } else if (textureRowPitch) {
+          physicalWidth = static_cast<int32_t>(textureRowPitch.getInt());
+          physicalHeight = static_cast<int32_t>(
+              llvm::divideCeil(wordCount, int64_t{physicalWidth}));
         } else if (grid.asArrayRef()[0] <= 8192 &&
                    grid.asArrayRef()[1] <= 8192 &&
                    int64_t{grid.asArrayRef()[0]} * grid.asArrayRef()[1] >=
@@ -129,6 +141,10 @@ struct LowerGatherDevicePass
                 "vrc.texture_shape",
                 b.getDenseI32ArrayAttr({physicalWidth, physicalHeight})),
             b.getNamedAttr("vrc.gather_proven", b.getUnitAttr())};
+        if (textureRowPitch)
+          kernelAttrs.push_back(
+              b.getNamedAttr("vrc.texture_row_pitch",
+                             b.getI32IntegerAttr(textureRowPitch.getInt())));
         if (auto bounds = source->getAttr("vrc.argument_bounds"))
           kernelAttrs.push_back(b.getNamedAttr("vrc.argument_bounds", bounds));
         auto *kernel = make(b, loc, fragment::KernelOp::getOperationName(), {},
@@ -240,10 +256,12 @@ struct LowerGatherDevicePass
                                                op.getIndices()[0]);
           int64_t inputElements =
               cast<MemRefType>(op.getMemref().getType()).getNumElements();
-          int32_t inputWidth = inputElements == wordCount
-                                   ? physicalWidth
-                                   : static_cast<int32_t>(std::min<int64_t>(
-                                         inputElements, int64_t{8192}));
+          int32_t inputWidth =
+              textureRowPitch ? static_cast<int32_t>(textureRowPitch.getInt())
+              : inputElements == wordCount
+                  ? physicalWidth
+                  : static_cast<int32_t>(
+                        std::min<int64_t>(inputElements, int64_t{8192}));
           auto width =
               arith::ConstantIntOp::create(b, op.getLoc(), inputWidth, 32);
           Value y = arith::DivUIOp::create(b, op.getLoc(), x, width);

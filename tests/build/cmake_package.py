@@ -864,14 +864,14 @@ def main():
         install / 'bin' / f'udoncl-opt{suffix}', transformer_host,
     ])
     assert '@udon_onnx_session_write_input_int32' in transformer_source
-    assert '@udon_onnx_session_bind_output_to_input' in transformer_source
+    assert 'call @udon_onnx_session_bind_output_to_input' not in transformer_source
     assert 'call @udononnxMatMulNBits' in transformer_source
     assert 'call @udononnxGather' in transformer_source
     assert 'call @udonblasSgemm' in transformer_source
     transformer_manifest = json.loads(
         (transformer_artifact / 'manifest.json').read_text(encoding='utf-8')
     )
-    assert len(transformer_manifest['device']['buffers']) == 35
+    assert len(transformer_manifest['device']['buffers']) == 37
     assert {
         item['c_symbol']: item['public_name']
         for item in transformer_manifest['exports']
@@ -883,12 +883,14 @@ def main():
     assert [
         (item['name'], item.get('logical_bytes'),
          item.get('element_type'), item.get('public_access'))
-        for item in transformer_manifest['device']['buffers'][:4]
+        for item in transformer_manifest['device']['buffers'][:6]
     ] == [
         ('input_ids', 16, 'int32', 'input'),
         ('past_key', 128, 'float32', 'input'),
         ('past_value', 128, 'float32', 'input'),
         ('logits', 524288, 'float32', 'output'),
+        ('present_key', 128, 'float32', 'output'),
+        ('present_value', 128, 'float32', 'output'),
     ]
     assert transformer_manifest['program']['binding_source'] == 'binding.cs'
     transformer_binding = (transformer_artifact / 'binding.cs').read_text(
@@ -905,6 +907,8 @@ def main():
     assert 'public int TryWritePastValue(float[] source)' in transformer_binding
     assert 'public int StartRun(' in transformer_binding
     assert 'public int StartReadLogits(' in transformer_binding
+    assert 'public int StartReadPresentKey(' in transformer_binding
+    assert 'public int StartReadPresentValue(' in transformer_binding
     assert 'public int TryShutdown(out int result)' in transformer_binding
     assert transformer_binding.count('if (busy || readbackBusy)') >= 2
     assert 'return StatusBusy;' in transformer_binding
@@ -922,6 +926,19 @@ def main():
         1, 2, 207, 217, 218, 219, 220, 221, 222, 231, 232, 233, 234, 235,
         236, 237, 238, 239, 240, 241, 242, 243, 244, 245, 246,
     }
+    sgemm_kernel = next(
+        item for item in transformer_manifest['device']['kernels']
+        if item['id'] == 1
+    )
+    assert sgemm_kernel['global_size'] == [32, 32, 1]
+    assert sgemm_kernel['target_texture']['width'] == 8192
+    assert sgemm_kernel['target_texture']['height'] == 1
+    matmul_nbits_kernel = next(
+        item for item in transformer_manifest['device']['kernels']
+        if item['id'] == 219
+    )
+    assert matmul_nbits_kernel['target_texture']['width'] == 8192
+    assert matmul_nbits_kernel['target_texture']['height'] == 2
     q4_kernel = next(
         item for item in transformer_manifest['device']['kernels']
         if item['id'] == 235

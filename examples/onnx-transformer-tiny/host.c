@@ -12,7 +12,7 @@
 
 static cl_context context;
 static cl_command_queue queue;
-static udonclBufferHandle_t buffers[4];
+static udonclBufferHandle_t buffers[6];
 static int buffer_count;
 static udononnxTensor_t input_bindings[TRANSFORMER_INPUT_COUNT];
 static udononnxTensor_t output_bindings[TRANSFORMER_OUTPUT_COUNT];
@@ -75,7 +75,7 @@ static udononnxStatus_t create_tensor(cl_mem_flags flags, size_t elements,
   udononnxStatus_t status;
   cl_int error = CL_SUCCESS;
   cl_mem memory;
-  if (buffer_count >= 4)
+  if (buffer_count >= 6)
     return UDONONNX_STATUS_INVALID_VALUE;
   handle = &buffers[buffer_count];
   memory = clCreateBuffer(context, flags, bytes, 0, &error);
@@ -145,8 +145,16 @@ UDONCL_EXPORT udononnxStatus_t transformer_initialize(void) {
                          &output_tensors[0]);
   if (status != UDONONNX_STATUS_SUCCESS)
     goto fail;
-  output_tensors[1] = input_tensors[1];
-  output_tensors[2] = input_tensors[2];
+  status = create_tensor(CL_MEM_WRITE_ONLY, hidden_elements, hidden_elements,
+                         UDONCL_DATA_FLOAT32, model->outputs[1].rank,
+                         model->outputs[1].dimensions, &output_tensors[1]);
+  if (status != UDONONNX_STATUS_SUCCESS)
+    goto fail;
+  status = create_tensor(CL_MEM_WRITE_ONLY, hidden_elements, hidden_elements,
+                         UDONCL_DATA_FLOAT32, model->outputs[2].rank,
+                         model->outputs[2].dimensions, &output_tensors[2]);
+  if (status != UDONONNX_STATUS_SUCCESS)
+    goto fail;
   status = udononnxCreateSession(&session, model, context, input_bindings,
                                  output_bindings);
   if (status != UDONONNX_STATUS_SUCCESS)

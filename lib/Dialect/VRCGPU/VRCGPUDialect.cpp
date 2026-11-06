@@ -62,6 +62,8 @@ LogicalResult KernelOp::verify() {
     auto global = getGlobalSize();
     auto textureShape =
         (*this)->getAttrOfType<DenseI32ArrayAttr>("vrc.texture_shape");
+    auto textureRowPitch =
+        (*this)->getAttrOfType<IntegerAttr>("vrc.texture_row_pitch");
     if (!words || words.getInt() < 4 || words.getInt() > 131072 ||
         getKernelId() <= 0 || getArgumentKinds().size() < 2 ||
         getArgumentKinds().size() > 16 || global.size() != 3 ||
@@ -76,6 +78,10 @@ LogicalResult KernelOp::verify() {
          textureShape[1] <= 0 ||
          int64_t(textureShape[0]) * textureShape[1] < words.getInt()))
       return emitOpError("invalid physical texture shape");
+    if (textureRowPitch &&
+        (textureRowPitch.getInt() <= 0 || textureRowPitch.getInt() > 8192 ||
+         (textureShape && textureRowPitch.getInt() != textureShape[0])))
+      return emitOpError("invalid physical texture row pitch");
     unsigned bufferCount = 0;
     bool sawScalar = false;
     for (auto kind : getArgumentKinds().getValue()) {
@@ -316,6 +322,9 @@ LogicalResult TextureLoadOp::verify() {
   auto globalSize = k ? k->getAttrOfType<DenseI32ArrayAttr>("global_size")
                       : DenseI32ArrayAttr();
   auto words = k ? k->getAttrOfType<IntegerAttr>("vrc.words") : IntegerAttr();
+  auto textureRowPitch =
+      k ? k->getAttrOfType<IntegerAttr>("vrc.texture_row_pitch")
+        : IntegerAttr();
   int64_t targetWidth =
       textureShape && textureShape.size() == 2 ? textureShape.asArrayRef()[0]
       : globalSize && globalSize.size() == 3   ? globalSize.asArrayRef()[0]
@@ -324,7 +333,8 @@ LogicalResult TextureLoadOp::verify() {
       textureShape && textureShape.size() == 2 ? textureShape.asArrayRef()[1]
       : globalSize && globalSize.size() == 3   ? globalSize.asArrayRef()[1]
                                                : 0;
-  int64_t expectedWidth = words && words.getInt() == elements
+  int64_t expectedWidth = textureRowPitch ? textureRowPitch.getInt()
+                          : words && words.getInt() == elements
                               ? targetWidth
                               : std::min<int64_t>(elements, int64_t{8192});
   if (!k || !gather(k) || !r || r.getKind() != "texture" || elements <= 0 ||

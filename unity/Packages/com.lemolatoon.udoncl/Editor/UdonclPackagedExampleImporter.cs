@@ -123,6 +123,55 @@ namespace Lemolatoon.Udoncl.Editor
             UnityEditor.Compilation.CompilationPipeline.RequestScriptCompilation();
         }
 
+        [MenuItem("Tools/udoncl/Internal/Prepare Public Transformer Validation")]
+        public static void PreparePublicTransformerValidation()
+        {
+            string artifact = Environment.GetEnvironmentVariable(
+                "UDONCL_PUBLIC_TRANSFORMER_UNITY_BUNDLE"
+            );
+            if (string.IsNullOrWhiteSpace(artifact))
+            {
+                UnityEditor.PackageManager.PackageInfo package =
+                    UnityEditor.PackageManager.PackageInfo.FindForAssembly(
+                        typeof(UdonclPackagedExampleImporter).Assembly
+                    );
+                if (package == null || string.IsNullOrEmpty(package.resolvedPath))
+                    return;
+                artifact = Path.GetFullPath(
+                    Path.Combine(
+                        package.resolvedPath,
+                        "..",
+                        "..",
+                        "..",
+                        "build",
+                        "udoncl",
+                        "tests",
+                        "cmake-package",
+                        "onnx-transformer-consumer",
+                        "udoncl",
+                        "onnx-transformer-tiny",
+                        "artifact"
+                    )
+                );
+                if (!File.Exists(Path.Combine(artifact, "manifest.json")))
+                    return;
+            }
+            artifact = Path.GetFullPath(artifact);
+            if (!File.Exists(Path.Combine(artifact, "manifest.json")))
+                throw new FileNotFoundException(
+                    "The Transformer validation artifact is missing.",
+                    artifact
+                );
+            const string root = "Assets/udoncl-generated/generic_onnx_transformer_tiny";
+            AssetDatabase.DeleteAsset(root);
+            if (UdonclArtifactImporter.Import(artifact) != root)
+                throw new InvalidDataException(
+                    "Transformer validation imported to an unexpected path."
+                );
+            AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+            UnityEditor.Compilation.CompilationPipeline.RequestScriptCompilation();
+        }
+
         [MenuItem("Tools/udoncl/Internal/Prepare Public MNIST Controller Validation")]
         public static void PreparePublicMnistControllerValidation()
         {

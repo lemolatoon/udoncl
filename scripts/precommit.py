@@ -399,7 +399,7 @@ def validate_test_payload(payload, require_lowering=True):
     return total
 
 
-def is_transient_unity_project_file_lock(payload):
+def is_transient_unity_import_failure(payload):
     data = payload.get("data", payload)
     result = data.get("result") or {}
     progress = data.get("progress") or {}
@@ -412,10 +412,23 @@ def is_transient_unity_project_file_lock(payload):
     ]
     if not failed:
         return False
+    messages = [case.get("message") or "" for case in failed]
+    runtime_compile_failures = [
+        "Unity could not compile the Udon ONNX runtime U# program asset"
+        in message
+        for message in messages
+    ]
+    project_locks = [
+        "Sharing violation on path" in message and ".csproj" in message
+        for message in messages
+    ]
+    if not any(project_locks):
+        return False
     return all(
-        "Sharing violation on path" in (case.get("message") or "")
-        and ".csproj" in (case.get("message") or "")
-        for case in failed
+        project_lock or runtime_compile_failure
+        for project_lock, runtime_compile_failure in zip(
+            project_locks, runtime_compile_failures
+        )
     )
 
 
@@ -679,6 +692,16 @@ def run_unity_mcp_gate(
             "execute_menu_item",
             {
                 "menu_path": (
+                    "Tools/udoncl/Internal/Prepare Public Transformer Validation"
+                )
+            },
+            timeout=300,
+        )
+        instance = wait_for_instance_reconnect(client, timeout=600)
+        client.tool(
+            "execute_menu_item",
+            {
+                "menu_path": (
                     "Tools/udoncl/Internal/Prepare Public MNIST Controller Validation"
                 )
             },
@@ -710,13 +733,13 @@ def run_unity_mcp_gate(
             (output / f"unity-mcp-results-attempt-{attempt + 1}.json").write_text(
                 json.dumps(finished, indent=2) + "\n", encoding="utf-8"
             )
-            project_lock = is_transient_unity_project_file_lock(finished)
+            import_failure = is_transient_unity_import_failure(finished)
             start_failure = is_transient_unity_test_start_failure(finished)
-            if (not project_lock and not start_failure) or attempt == 3:
+            if (not import_failure and not start_failure) or attempt == 3:
                 break
             reason = (
-                "transient_csproj_sharing_violation"
-                if project_lock
+                "transient_unity_import_compile"
+                if import_failure
                 else "transient_test_start_timeout"
             )
             print(f"unity_mcp_tests=retry reason={reason}", flush=True)
@@ -771,6 +794,7 @@ def run_unity_mcp_gate(
             "saxpy_demo",
             "average_pooling",
             "generic_onnx_mnist",
+            "generic_onnx_transformer_tiny",
         ):
             program_root = generated / program_name
             shutil.rmtree(program_root, ignore_errors=True)
