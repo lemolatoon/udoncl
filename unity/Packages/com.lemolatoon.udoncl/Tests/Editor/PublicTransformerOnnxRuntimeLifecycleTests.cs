@@ -56,9 +56,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             GeneratedBindingFinalizer.FinalizeAvailableBindings();
         }
 
-        // Temporarily disabled while the Transformer dispatch failure is
-        // isolated independently from the green generated-U# MNIST gate.
-        // [Test]
+        [Test]
         public void DynamicTransformerMatchesOracleWithSeparateKvOutputs()
         {
             UdonAssemblyProgramAsset asset = Load<UdonAssemblyProgramAsset>(
