@@ -130,6 +130,18 @@
     },
     {
       "schema_version": 1, "profile": "gather-f32", "words": 16384,
+      "kernel": "udononnx_expand_f32", "kernel_id": 240,
+      "input_words": [16384],
+      "argument_bounds": [
+        {"index": 2, "min": 1, "max": 16384},
+        {"index": 3, "min": 0, "max": 5},
+        {"index": 7, "min": 1, "max": 5}
+      ],
+      "argument_kinds": ["buffer", "buffer", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "i32"],
+      "global_size": [16384, 1, 1], "local_size": [1, 1, 1], "global_offset": [0, 0, 0]
+    },
+    {
+      "schema_version": 1, "profile": "gather-f32", "words": 16384,
       "kernel": "udondnn_arena_softmax_forward", "kernel_id": 236,
       "argument_bounds": [
         {"index": 2, "min": 1, "max": 16384},

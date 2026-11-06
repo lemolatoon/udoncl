@@ -64,8 +64,8 @@ aliasing are allowed.
   words removes every `Cos`/`Sin`/`Neg`, `Add`, `Mul`, `Sigmoid`, and `Tanh`
   node from the unsupported set. After the Device Q4, RmsNorm, and Softmax
   checkpoints below, and the generic Device Transpose checkpoint described
-  below, the remaining measured set is Cast 2, Concat 45, Equal 1, Expand 46,
-  Gather 1, ScatterND 1, and Where 1.
+  below, the remaining measured set is Cast 2, Concat 45, Equal 1, Gather 1,
+  ScatterND 1, and Where 1.
 - The generic correctness-oriented `MatMulNBits` path still uses small
   Host-managed tiles. A first Device-resident specialization now covers the
   pinned model's three-input unsigned Q4 form (`bits=4`, `block_size=32`,
@@ -115,6 +115,14 @@ aliasing are allowed.
   Device-resident gate. Native positive/strided numerical tests, OpenCL facade
   bounds checks, fragment recovery, and the pinned graph verify the path; all
   111 pinned Slice nodes disappear from the measured unsupported set.
+- Static broadcast-compatible FP32 Expand tensors of rank zero through five
+  and at most 16,384 elements now use a generic Device reindex kernel. Input
+  dimensions are right-aligned with output dimensions and only extent-one
+  axes broadcast; the OpenCL facade revalidates ranks, extents, logical buffer
+  sizes, and the inferred output product. Native rank-five repeated-head and
+  leading-axis broadcast tests, AOT runtime execution, C++ lowering, fragment
+  recovery, and the real sequence-4 graph pass; all 46 pinned Expand nodes
+  disappear from the measured unsupported set.
 - Production-sized diagnostic bundles may omit intermediate textual MLIR with
   `--omit-intermediate-ir`; assembly, manifest, binding, static tensors, and the
   storage report remain. This avoids publishing several model-sized debug

@@ -113,3 +113,46 @@ __kernel void udononnx_slice_f32(
   }
   output[gid] = value;
 }
+
+/* Generic static Expand materialization. Input dimensions are right-aligned
+ * with the output dimensions; an input extent of one broadcasts that axis. */
+__kernel void
+udononnx_expand_f32(__global const float *input, __global float *output,
+                    int words, int input_rank, int input_shape01_value,
+                    int input_shape23_value, int input_shape4_value,
+                    int output_rank, int output_shape01_value,
+                    int output_shape23_value, int output_shape4_value) {
+  size_t gid = UDONONNX_REINDEX_GID();
+  uint input_shape01 = (uint)input_shape01_value;
+  uint input_shape23 = (uint)input_shape23_value;
+  uint input_shape4 = (uint)input_shape4_value;
+  uint output_shape01 = (uint)output_shape01_value;
+  uint output_shape23 = (uint)output_shape23_value;
+  uint output_shape4 = (uint)output_shape4_value;
+  float value = 0.0f;
+  if (gid < (size_t)words) {
+    size_t input_index = 0u;
+    size_t input_stride = 1u;
+    size_t output_stride = 1u;
+    int rank_offset = output_rank - input_rank;
+    for (int reverse_axis = 0; reverse_axis < 5; ++reverse_axis) {
+      int output_axis = 4 - reverse_axis;
+      if (output_axis < output_rank) {
+        uint output_dimension = UDONONNX_REINDEX_U16(
+            output_axis, output_shape01, output_shape23, output_shape4);
+        size_t coordinate = (gid / output_stride) % output_dimension;
+        int input_axis = output_axis - rank_offset;
+        if (input_axis >= 0) {
+          uint input_dimension = UDONONNX_REINDEX_U16(
+              input_axis, input_shape01, input_shape23, input_shape4);
+          if (input_dimension != 1u)
+            input_index += coordinate * input_stride;
+          input_stride *= input_dimension;
+        }
+        output_stride *= output_dimension;
+      }
+    }
+    value = input[input_index & 16383u];
+  }
+  output[gid] = value;
+}

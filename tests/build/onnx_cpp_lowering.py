@@ -446,6 +446,38 @@ assert "udoncl.onnx_device_graph = true" in slice_host.stdout
 assert slice_host.stdout.count("call @__vrc_enqueue_udononnx_slice_device_args") == 1
 assert "call @udononnxSlice" not in slice_host.stdout
 
+expand_device_source = source.with_name("onnx_expand_device.mlir")
+expand_device_portable = subprocess.run(
+    [
+        opt,
+        "--udoncl-materialize-onnx-constants",
+        "--udoncl-lower-onnx-to-host",
+        expand_device_source,
+    ],
+    text=True,
+    capture_output=True,
+    check=True,
+).stdout
+expand_device_host = subprocess.run(
+    [host_opt, "--udoncl-finalize-onnx-host", "-"],
+    input=expand_device_portable,
+    text=True,
+    capture_output=True,
+)
+assert expand_device_host.returncode == 0, (
+    expand_device_host.stdout,
+    expand_device_host.stderr,
+)
+assert "udoncl.onnx_device_graph = true" in expand_device_host.stdout
+assert "udoncl.onnx_device_unsupported = []" in expand_device_host.stdout
+assert (
+    expand_device_host.stdout.count(
+        "call @__vrc_enqueue_udononnx_expand_device_args"
+    )
+    == 1
+)
+assert "call @udononnxExpand" not in expand_device_host.stdout
+
 where_source = source.with_name("onnx_equal_where.mlir")
 where_portable = subprocess.run(
     [opt, "--udoncl-materialize-onnx-constants", "--udoncl-lower-onnx-to-host", where_source],

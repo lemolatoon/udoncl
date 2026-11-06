@@ -773,6 +773,36 @@ std::optional<DeviceSliceShape> deviceSliceShape(const GraphRecord &graph,
   return result;
 }
 
+bool isDeviceExpandNode(const GraphRecord &graph, const NodeRecord &node) {
+  if (node.operation != "Expand" || node.provider != "udononnxExpand" ||
+      node.inputs.empty() || node.inputs[0] < 0)
+    return false;
+  const TensorRecord &input = graph.tensors[node.inputs[0]];
+  const TensorRecord &output = graph.tensors[node.output];
+  int64_t inputRank = input.type.getRank();
+  int64_t outputRank = output.type.getRank();
+  if (!input.type.getElementType().isF32() ||
+      !output.type.getElementType().isF32() || inputRank < 0 || inputRank > 5 ||
+      outputRank < std::max<int64_t>(inputRank, 1) || outputRank > 5 ||
+      input.type.getNumElements() < 1 || input.type.getNumElements() > 16384 ||
+      output.type.getNumElements() < 1 || output.type.getNumElements() > 16384)
+    return false;
+  int64_t rankOffset = outputRank - inputRank;
+  for (int64_t outputAxis = 0; outputAxis < outputRank; ++outputAxis) {
+    int64_t outputExtent = output.type.getDimSize(outputAxis);
+    if (outputExtent < 1 || outputExtent > 65535)
+      return false;
+    int64_t inputAxis = outputAxis - rankOffset;
+    if (inputAxis < 0)
+      continue;
+    int64_t inputExtent = input.type.getDimSize(inputAxis);
+    if (inputExtent < 1 || inputExtent > 65535 ||
+        (inputExtent != 1 && inputExtent != outputExtent))
+      return false;
+  }
+  return true;
+}
+
 bool isDeviceRmsNormNode(const GraphRecord &graph, const NodeRecord &node) {
   if (node.operation != "RmsNorm" || node.provider != "udonatenRmsNorm" ||
       node.inputs.size() != 3 || node.inputs[0] < 0 || node.inputs[1] < 0 ||
@@ -1026,6 +1056,8 @@ bool supportsDeviceNode(const GraphRecord &graph, const NodeRecord &node) {
     return deviceTransposePermutation(graph, node).has_value();
   if (node.operation == "Slice")
     return deviceSliceShape(graph, node).has_value();
+  if (node.operation == "Expand")
+    return isDeviceExpandNode(graph, node);
   if (node.operation == "MatMul")
     return deviceMatMulShape(graph, node).has_value();
   if (node.operation == "Gemm") {
@@ -3195,6 +3227,38 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                      constant(packUnsigned(slice->steps, 4, 1))});
         continue;
       }
+      if (node.operation == "Expand") {
+        if (!isDeviceExpandNode(graph, node))
+          return emitError(location)
+                 << "Device Expand requires broadcast-compatible static FP32 "
+                    "tensors of rank zero through five and at most 16384 "
+                    "elements";
+        ArrayRef<int64_t> inputShape =
+            graph.tensors[node.inputs[0]].type.getShape();
+        ArrayRef<int64_t> outputShape =
+            graph.tensors[node.output].type.getShape();
+        auto packDimensions = [](ArrayRef<int64_t> shape, int64_t first) {
+          int64_t low =
+              first < static_cast<int64_t>(shape.size()) ? shape[first] : 1;
+          int64_t high = first + 1 < static_cast<int64_t>(shape.size())
+                             ? shape[first + 1]
+                             : 1;
+          return (low & 65535) | ((high & 65535) << 16);
+        };
+        dispatch("__vrc_enqueue_udononnx_expand_device_args",
+                 ValueRange{
+                     entry->getArgument(2), buffer(node.inputs[0]), output,
+                     constant(graph.tensors[node.output].type.getNumElements()),
+                     constant(inputShape.size()),
+                     constant(packDimensions(inputShape, 0)),
+                     constant(packDimensions(inputShape, 2)),
+                     constant(packDimensions(inputShape, 4)),
+                     constant(outputShape.size()),
+                     constant(packDimensions(outputShape, 0)),
+                     constant(packDimensions(outputShape, 2)),
+                     constant(packDimensions(outputShape, 4))});
+        continue;
+      }
       if (isDeviceQ4Node(graph, node)) {
         const TensorRecord &activation = graph.tensors[node.inputs[0]];
         int64_t k = integerAttribute(node, "K", 0);
@@ -3419,6 +3483,10 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                 {pointer, pointer, pointer, i32, i32,     i32,    i32,
                  i32,     i32,     i32,     i32, i32,     i32,    i32,
                  i32,     i32,     i32,     i32, pointer, pointer},
+                {i32});
+    declaration(module, "__vrc_enqueue_udononnx_expand_device_args",
+                {pointer, pointer, pointer, i32, i32, i32, i32, i32, i32, i32,
+                 i32, i32, i32, pointer, pointer},
                 {i32});
     declaration(module, "__vrc_enqueue_udononnx_matmul_nbits_q4_device_args",
                 {pointer, pointer, pointer, pointer, pointer, pointer, i32, i32,

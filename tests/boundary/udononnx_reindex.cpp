@@ -120,6 +120,54 @@ static float runSliceCase(const std::vector<int> &inputShape,
   return maximumError;
 }
 
+static float runExpandCase(const std::vector<int> &inputShape,
+                           const std::vector<int> &outputShape) {
+  constexpr int surfaceWords = 16384;
+  int inputWords = 1;
+  int outputWords = 1;
+  for (int dimension : inputShape)
+    inputWords *= dimension;
+  for (int dimension : outputShape)
+    outputWords *= dimension;
+  std::vector<float> input(inputWords);
+  std::vector<float> output(surfaceWords, -17.0f);
+  std::vector<float> expected(outputWords);
+  for (int index = 0; index < inputWords; ++index)
+    input[index] = static_cast<float>((index * 19) % 47 - 23) / 9.0f;
+  int rankOffset = static_cast<int>(outputShape.size()) -
+                   static_cast<int>(inputShape.size());
+  for (int outputIndex = 0; outputIndex < outputWords; ++outputIndex) {
+    int remaining = outputIndex;
+    int inputIndex = 0;
+    int inputStride = 1;
+    for (int outputAxis = static_cast<int>(outputShape.size()) - 1;
+         outputAxis >= 0; --outputAxis) {
+      int coordinate = remaining % outputShape[outputAxis];
+      remaining /= outputShape[outputAxis];
+      int inputAxis = outputAxis - rankOffset;
+      if (inputAxis >= 0) {
+        if (inputShape[inputAxis] != 1)
+          inputIndex += coordinate * inputStride;
+        inputStride *= inputShape[inputAxis];
+      }
+    }
+    expected[outputIndex] = input[inputIndex];
+  }
+  for (udononnx_reindex_cpu_gid = 0; udononnx_reindex_cpu_gid < surfaceWords;
+       ++udononnx_reindex_cpu_gid)
+    udononnx_expand_f32(
+        input.data(), output.data(), outputWords,
+        static_cast<int>(inputShape.size()), packDimensions(inputShape, 0),
+        packDimensions(inputShape, 2), packDimensions(inputShape, 4),
+        static_cast<int>(outputShape.size()), packDimensions(outputShape, 0),
+        packDimensions(outputShape, 2), packDimensions(outputShape, 4));
+  float maximumError = 0.0f;
+  for (int index = 0; index < outputWords; ++index)
+    maximumError =
+        std::max(maximumError, std::abs(output[index] - expected[index]));
+  return maximumError;
+}
+
 int main() {
   float headsError = runCase({1, 4, 32, 64}, {0, 2, 1, 3});
   float attentionError = runCase({1, 32, 4, 64}, {0, 1, 3, 2});
@@ -128,8 +176,11 @@ int main() {
   float halfError =
       runSliceCase({1, 32, 4, 64}, {1, 32, 4, 32}, {0, 0, 0, 32}, {1, 1, 1, 1});
   float stridedError = runSliceCase({2, 3, 4}, {2, 3, 2}, {0, 0, 0}, {1, 1, 2});
-  maximumError = std::max({maximumError, halfError, stridedError});
-  std::cout << "reindex_cases=5\n";
+  float repeatHeadsError = runExpandCase({1, 4, 1, 4, 64}, {1, 4, 8, 4, 64});
+  float leadingBroadcastError = runExpandCase({2, 1}, {3, 2, 5});
+  maximumError = std::max({maximumError, halfError, stridedError,
+                           repeatHeadsError, leadingBroadcastError});
+  std::cout << "reindex_cases=7\n";
   std::cout << "reindex_max_error=" << maximumError << '\n';
   return maximumError == 0.0f ? 0 : 1;
 }
