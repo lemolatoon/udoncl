@@ -1463,6 +1463,7 @@ def _materialize_model(
         manifest = {
             "schema_version": 1,
             "artifact_stage": artifact_stage,
+            "validation": {"read_write_alias": False},
             "runtime": "udon-onnx",
             "graph": plan.get("graph"),
             "execution_provider": plan.get("execution_provider"),

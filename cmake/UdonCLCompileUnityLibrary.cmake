@@ -1,9 +1,16 @@
 foreach(_required IN ITEMS UDONCL_COMPILER UDONCL_CONFIG UDONCL_HOST_MODULE
-                           UDONCL_OUTPUT_DIRECTORY UDONCL_BUILD_ROOT)
+                           UDONCL_OUTPUT_DIRECTORY UDONCL_BUILD_ROOT
+                           UDONCL_RUNTIME_VALIDATION)
   if(NOT DEFINED ${_required} OR "${${_required}}" STREQUAL "")
     message(FATAL_ERROR "${_required} is required")
   endif()
 endforeach()
+
+if(UDONCL_RUNTIME_VALIDATION)
+  set(_runtime_validation_argument --runtime-validation)
+else()
+  set(_runtime_validation_argument --no-runtime-validation)
+endif()
 cmake_path(IS_PREFIX UDONCL_BUILD_ROOT "${UDONCL_OUTPUT_DIRECTORY}" NORMALIZE
            _output_is_in_build_tree)
 if(NOT _output_is_in_build_tree OR
@@ -27,6 +34,7 @@ file(REMOVE_RECURSE "${UDONCL_OUTPUT_DIRECTORY}")
 execute_process(
   COMMAND "${UDONCL_COMPILER}" --emit-unity-library-bundle "${UDONCL_CONFIG}"
           ${_host_arguments} ${_device_argument}
+          ${_runtime_validation_argument}
           -o "${UDONCL_OUTPUT_DIRECTORY}"
   RESULT_VARIABLE _result
   OUTPUT_VARIABLE _stdout

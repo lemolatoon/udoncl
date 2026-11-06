@@ -41,6 +41,7 @@ target_include_directories(opencl-aot-runtime PRIVATE
   "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_compile_definitions(opencl-aot-runtime PRIVATE
   CL_TARGET_OPENCL_VERSION=120
+  UDONCL_AOT_RUNTIME_VALIDATION=1
   UDONCL_AOT_ENABLE_MNIST=1
   UDONCL_AOT_ENABLE_ONNX=1)
 add_test(NAME opencl-aot-runtime COMMAND opencl-aot-runtime)

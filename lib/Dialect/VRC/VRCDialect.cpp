@@ -151,6 +151,26 @@ mlir::LogicalResult vrc::vrc::DispatchOp::verify() {
   }
   if (buffers != getResources().size())
     return emitOpError("ordered resource count must match buffer arguments");
+  if (getResourceAccesses().size() != getResources().size())
+    return emitOpError("resource access count must match ordered resources");
+  std::optional<size_t> output;
+  for (auto [index, value] : llvm::enumerate(getResourceAccesses())) {
+    auto access = mlir::dyn_cast<mlir::StringAttr>(value);
+    if (!access || (access != "read" && access != "write"))
+      return emitOpError("resource access must be read or write");
+    if (access == "write") {
+      if (output)
+        return emitOpError("VRC fragment dispatch requires one write resource");
+      output = index;
+    }
+  }
+  if (!output)
+    return emitOpError("VRC fragment dispatch requires one write resource");
+  for (auto [index, resource] : llvm::enumerate(getResources()))
+    if (index != *output && resource == getResources()[*output])
+      return emitOpError() << "resource " << index
+                           << " reads the same SSA value written by "
+                           << "resource " << *output;
   auto global = getGlobalSize(), local = getLocalSize(),
        offset = getGlobalOffset();
   if (global.size() != 3 || local.size() != 3 || offset.size() != 3)

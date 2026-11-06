@@ -39,10 +39,14 @@ Session::Session(const std::string &text, std::vector<GatherBinding> kernels,
   for (const auto &binding : gatherBindings) {
     uint32_t width = binding.width ? binding.width : binding.words;
     uint32_t height = binding.height ? binding.height : 1;
+    uint32_t globalWidth = binding.globalWidth ? binding.globalWidth : width;
+    uint32_t globalHeight =
+        binding.globalHeight ? binding.globalHeight : height;
     if (!binding.id || binding.words < 4 || binding.words > 131072 ||
         !binding.inputCount || binding.inputCount > 13 ||
         binding.scalarCount > 15 - binding.inputCount || !width || !height ||
-        uint64_t(width) * height != binding.words)
+        uint64_t(width) * height < binding.words || !globalWidth ||
+        !globalHeight || uint64_t(globalWidth) * globalHeight != binding.words)
       throw std::runtime_error("invalid gather binding");
     for (const auto &other : gatherBindings)
       if (&other != &binding &&
@@ -73,8 +77,12 @@ bool Session::gatherProfile(const char *name,
     if (binding.name == name) {
       uint32_t width = binding.width ? binding.width : binding.words;
       uint32_t height = binding.height ? binding.height : 1;
+      uint32_t globalWidth = binding.globalWidth ? binding.globalWidth : width;
+      uint32_t globalHeight =
+          binding.globalHeight ? binding.globalHeight : height;
       *profile = {binding.id,         binding.words, binding.scalarCount,
-                  binding.inputCount, width,         height};
+                  binding.inputCount, width,         height,
+                  globalWidth,        globalHeight};
       return true;
     }
   return false;
@@ -91,15 +99,19 @@ int Session::drawGather(uint32_t id, const unsigned char *const *inputs,
       if (inputCount != binding.inputCount || bytes != binding.words * 4 ||
           scalarBytes != binding.scalarCount * 4)
         return 0;
-      std::vector<uint8_t> packedInputs(bytes * inputCount);
+      size_t textureBytes =
+          size_t(binding.width ? binding.width : binding.words) *
+          (binding.height ? binding.height : 1) * 4;
+      std::vector<uint8_t> packedInputs(textureBytes * inputCount);
       for (size_t input = 0; input < inputCount; ++input) {
         if (!inputs[input])
           return 0;
-        std::memcpy(packedInputs.data() + bytes * input, inputs[input], bytes);
+        std::memcpy(packedInputs.data() + textureBytes * input, inputs[input],
+                    bytes);
       }
       auto result =
           gatherRenderers[i]->drawWords(packedInputs, {scalars, scalarBytes});
-      if (result.size() != bytes)
+      if (result.size() < bytes)
         return 0;
       std::memcpy(output, result.data(), bytes);
       ++gatherDraws;

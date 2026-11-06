@@ -534,10 +534,11 @@ int main(void) {
   cl_kernel kernel;
   cl_event marker_event, write_event, wait_events[2];
   cl_mem first, second, nested_buffer, nested_buffer2, static_buffer;
+  cl_mem same_physical_buffer;
   cl_mem batched_a, batched_b, batched_c;
   cl_mem transpose_input_buffer, transpose_output_buffer, concat_left_buffer;
   cl_mem gather_indices_buffer;
-  cl_mem cast_input_buffer, scatter_output_buffer;
+  cl_mem cast_input_buffer, scatter_output_buffer, where_output_buffer;
   cl_mem q4_activation, q4_packed, q4_scales, q4_previous, q4_output;
   cl_mem resolved;
   udonclBufferHandle_t common_buffer = {0, 0}, stale_buffer, replacement;
@@ -677,6 +678,8 @@ int main(void) {
   first = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(source), 0, &error);
   EXPECT(first && error == CL_SUCCESS);
   EXPECT(allocated_logical_id == 1 && allocated_bytes == sizeof(source));
+  EXPECT(clRetainMemObject(first) == CL_SUCCESS);
+  EXPECT(clReleaseMemObject(first) == CL_SUCCESS);
   EXPECT(clEnqueueWriteBuffer(queue, first, CL_FALSE, 0, sizeof(source),
                               &source, 0, 0, &write_event) == CL_SUCCESS);
   EXPECT(write_event);
@@ -770,6 +773,7 @@ int main(void) {
   EXPECT(dispatched_arena_a_token == 102 && dispatched_arena_b_token == 101 &&
          dispatched_arena_output_token == 103);
   EXPECT(clReleaseMemObject(nested_buffer) == CL_SUCCESS);
+  EXPECT(clFinish(queue) == CL_SUCCESS);
 
   /* AOT weights have their own immutable table.  They use the same cl_mem
    * ABI as mutable buffers without consuming a mutable allocation slot. */
@@ -798,6 +802,17 @@ int main(void) {
   EXPECT(clWaitForEvents(1, &marker_event) == CL_SUCCESS);
   EXPECT(await_count == 1 && awaited_events[0] == 11);
   EXPECT(clReleaseEvent(marker_event) == CL_SUCCESS);
+  EXPECT(__vrc_enqueue_udonblas_arena_sgemm_device_args(
+             queue, first, static_buffer, first, 1, 1, 1, 0, 0, 1.0f, 0, 0,
+             0) == CL_INVALID_OPERATION);
+  same_physical_buffer =
+      udonclAdoptStaticBuffer(queue, 63, sizeof(source), 102, &error);
+  EXPECT(same_physical_buffer && same_physical_buffer != first &&
+         error == CL_SUCCESS);
+  EXPECT(__vrc_enqueue_udonblas_arena_sgemm_device_args(
+             queue, same_physical_buffer, static_buffer, first, 1, 1, 1, 0, 0,
+             1.0f, 0, 0, 0) == CL_INVALID_OPERATION);
+  EXPECT(clReleaseMemObject(same_physical_buffer) == CL_SUCCESS);
   ((float *)physical_buffers[2])[0] = 0.0f;
   ((float *)physical_buffers[2])[1] = 1.57079632679f;
   await_count = 0;
@@ -873,6 +888,9 @@ int main(void) {
   EXPECT(((float *)physical_buffers[9])[5] == 22.0f);
   EXPECT(clReleaseEvent(marker_event) == CL_SUCCESS);
   EXPECT(clReleaseMemObject(scatter_output_buffer) == CL_SUCCESS);
+  where_output_buffer = udonclCreateBufferForQueue(queue, CL_MEM_READ_WRITE,
+                                                   6 * sizeof(float), &error);
+  EXPECT(where_output_buffer && error == CL_SUCCESS);
   await_count = 0;
   EXPECT(__vrc_enqueue_udononnx_slice_device_args(
              queue, transpose_input_buffer, transpose_output_buffer, 4, 2,
@@ -977,17 +995,18 @@ int main(void) {
   await_count = 0;
   EXPECT(__vrc_enqueue_udononnx_where_f32_device_args(
              queue, transpose_output_buffer, concat_left_buffer,
-             transpose_input_buffer, transpose_output_buffer, 6,
+             transpose_input_buffer, where_output_buffer, 6,
              2 | (2 << 6) | (2 << 9), 2 | (3 << 16), 1 | (1 << 16),
              1 | (1 << 16), 1 | (1 << 16), 2 | (3 << 16), 1 | (1 << 16),
              2 | (3 << 16), 1 | (1 << 16), 0, 0, &marker_event) == CL_SUCCESS);
   EXPECT(marker_event && clWaitForEvents(1, &marker_event) == CL_SUCCESS);
   EXPECT(await_count == 1 && awaited_events[0] == 28);
-  EXPECT(((float *)physical_buffers[5])[0] == 9.0f);
-  EXPECT(((float *)physical_buffers[5])[2] == 9.0f);
-  EXPECT(((float *)physical_buffers[5])[3] == 4.0f);
-  EXPECT(((float *)physical_buffers[5])[5] == 6.0f);
+  EXPECT(((float *)physical_buffers[9])[0] == 9.0f);
+  EXPECT(((float *)physical_buffers[9])[2] == 9.0f);
+  EXPECT(((float *)physical_buffers[9])[3] == 4.0f);
+  EXPECT(((float *)physical_buffers[9])[5] == 6.0f);
   EXPECT(clReleaseEvent(marker_event) == CL_SUCCESS);
+  EXPECT(clReleaseMemObject(where_output_buffer) == CL_SUCCESS);
   EXPECT(clReleaseMemObject(cast_input_buffer) == CL_SUCCESS);
   EXPECT(clReleaseMemObject(gather_indices_buffer) == CL_SUCCESS);
   EXPECT(clReleaseMemObject(concat_left_buffer) == CL_SUCCESS);
@@ -1098,8 +1117,11 @@ int main(void) {
 
   EXPECT(clReleaseKernel(kernel) == CL_SUCCESS);
   EXPECT(clReleaseProgram(program) == CL_SUCCESS);
+  released_token = 0;
   EXPECT(clReleaseMemObject(first) == CL_SUCCESS);
   EXPECT(clReleaseMemObject(second) == CL_SUCCESS);
+  EXPECT(released_token == 0);
+  EXPECT(clFinish(queue) == CL_SUCCESS);
   EXPECT(released_token == 101);
   for (index = 0; index < 16; ++index) {
     nbits_a[index] = 1.0f;

@@ -12,7 +12,9 @@ size_t udoncl_cl_live_objects(void);
  * kernel with input_count read-only buffers, one output buffer, and
  * scalar_count four-byte scalar arguments. */
 struct udoncl_cl_gather_profile {
-  uint32_t id, words, scalar_count, input_count, width, height;
+  uint32_t id, words, scalar_count, input_count;
+  uint32_t texture_width, texture_height;
+  uint32_t global_width, global_height;
 };
 size_t udoncl_cl_buffer_limit(void);
 int udoncl_cl_gather_profile(const char *name,

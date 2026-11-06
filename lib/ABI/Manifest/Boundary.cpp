@@ -208,6 +208,10 @@ LogicalResult verifyHostDeviceBoundary(ModuleOp module) {
 }
 llvm::json::Object buildBoundaryManifest(ModuleOp module) {
   llvm::json::Array exports, kernels, dispatches;
+  bool readWriteAliasValidation = false;
+  if (auto enabled = module->getAttrOfType<BoolAttr>(
+          "vrc.runtime_validation.read_write_alias"))
+    readWriteAliasValidation = enabled.getValue();
   SmallVector<func::FuncOp> exportedFunctions;
   for (auto function : module.getOps<func::FuncOp>())
     if (function->hasAttr("vrc.export_id"))
@@ -429,11 +433,15 @@ llvm::json::Object buildBoundaryManifest(ModuleOp module) {
                                        {"scratch_bytes", 0}};
   }
   module.walk([&](runtime::DispatchOp dispatch) {
+    llvm::json::Array accesses;
+    for (Attribute attribute : dispatch.getResourceAccesses())
+      accesses.push_back(cast<StringAttr>(attribute).getValue().str());
     dispatches.push_back(llvm::json::Object{
         {"function", dispatch->getParentOfType<func::FuncOp>().getName().str()},
         {"kernel_id", dispatch.getKernelId()},
         {"descriptor_abi", 1},
         {"resources", static_cast<int64_t>(dispatch.getResources().size())},
+        {"resource_accesses", std::move(accesses)},
         {"completion", "pending_event"}});
   });
   return llvm::json::Object{
@@ -457,6 +465,8 @@ llvm::json::Object buildBoundaryManifest(ModuleOp module) {
       {"exports", std::move(exports)},
       {"device", llvm::json::Object{{"kernels", std::move(kernels)}}},
       {"dispatch_sites", std::move(dispatches)},
+      {"validation",
+       llvm::json::Object{{"read_write_alias", readWriteAliasValidation}}},
       {"ready_for_unity", false}};
 }
 

@@ -310,10 +310,28 @@ LogicalResult TextureLoadOp::verify() {
   auto widthValue =
       width ? dyn_cast<IntegerAttr>(width.getValue()) : IntegerAttr();
   int64_t elements = getElementCount();
-  int64_t expectedWidth = std::min<int64_t>(elements, 8192);
+  auto textureShape =
+      k ? k->getAttrOfType<DenseI32ArrayAttr>("vrc.texture_shape")
+        : DenseI32ArrayAttr();
+  auto globalSize = k ? k->getAttrOfType<DenseI32ArrayAttr>("global_size")
+                      : DenseI32ArrayAttr();
+  auto words = k ? k->getAttrOfType<IntegerAttr>("vrc.words") : IntegerAttr();
+  int64_t targetWidth =
+      textureShape && textureShape.size() == 2 ? textureShape.asArrayRef()[0]
+      : globalSize && globalSize.size() == 3   ? globalSize.asArrayRef()[0]
+                                               : 0;
+  int64_t targetHeight =
+      textureShape && textureShape.size() == 2 ? textureShape.asArrayRef()[1]
+      : globalSize && globalSize.size() == 3   ? globalSize.asArrayRef()[1]
+                                               : 0;
+  int64_t expectedWidth = words && words.getInt() == elements
+                              ? targetWidth
+                              : std::min<int64_t>(elements, int64_t{8192});
   if (!k || !gather(k) || !r || r.getKind() != "texture" || elements <= 0 ||
       elements > int64_t{8192} * 8192 || !x || !y || x.getLhs() != y.getLhs() ||
-      x.getRhs() != y.getRhs() || !widthValue ||
+      x.getRhs() != y.getRhs() || !widthValue || !words || targetWidth <= 0 ||
+      targetWidth > 8192 || targetHeight <= 0 || targetHeight > 8192 ||
+      targetWidth * targetHeight < words.getInt() || expectedWidth <= 0 ||
       widthValue.getInt() != expectedWidth)
     return emitOpError("load must address the read-only 2D input extent");
   return success();

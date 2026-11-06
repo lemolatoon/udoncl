@@ -56,7 +56,7 @@ def VRC_DispatchDescCreateOp : Op<VRC_Dialect, "dispatch_desc_create"> {
 def VRC_DispatchOp : Op<VRC_Dialect, "dispatch", [MemoryEffects<[MemWrite]>]> {
   let summary = "Enqueue a Manifest-defined kernel; C runtime owns OpenCL API contracts";
   let arguments = (ins VRC_DispatchDescType:$desc, Variadic<VRC_BufferType>:$resources,
-    I32Attr:$kernel_id, ArrayAttr:$argument_kinds,
+    I32Attr:$kernel_id, ArrayAttr:$argument_kinds, ArrayAttr:$resource_accesses,
     DenseI32ArrayAttr:$global_size, DenseI32ArrayAttr:$local_size,
     DenseI32ArrayAttr:$global_offset);
   let results = (outs VRC_EventType:$event);

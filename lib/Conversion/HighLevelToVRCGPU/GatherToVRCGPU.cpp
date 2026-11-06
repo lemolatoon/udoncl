@@ -85,6 +85,24 @@ struct LowerGatherDevicePass
           signalPassFailure();
           return;
         }
+        int64_t wordCount = words.getInt();
+        int32_t physicalWidth;
+        int32_t physicalHeight;
+        if (textureShape) {
+          physicalWidth = textureShape.asArrayRef()[0];
+          physicalHeight = textureShape.asArrayRef()[1];
+        } else if (grid.asArrayRef()[0] <= 8192 &&
+                   grid.asArrayRef()[1] <= 8192 &&
+                   int64_t{grid.asArrayRef()[0]} * grid.asArrayRef()[1] >=
+                       wordCount) {
+          physicalWidth = grid.asArrayRef()[0];
+          physicalHeight = grid.asArrayRef()[1];
+        } else {
+          physicalWidth =
+              static_cast<int32_t>(std::min<int64_t>(wordCount, int64_t{8192}));
+          physicalHeight = static_cast<int32_t>(
+              llvm::divideCeil(wordCount, int64_t{physicalWidth}));
+        }
         b.setInsertionPoint(module);
         auto loc = source.getLoc();
         SmallVector<Attribute> kinds;
@@ -107,12 +125,12 @@ struct LowerGatherDevicePass
             b.getNamedAttr("global_offset", b.getDenseI32ArrayAttr({0, 0, 0})),
             b.getNamedAttr("vrc.profile", b.getStringAttr("gather-f32")),
             b.getNamedAttr("vrc.words", words),
+            b.getNamedAttr(
+                "vrc.texture_shape",
+                b.getDenseI32ArrayAttr({physicalWidth, physicalHeight})),
             b.getNamedAttr("vrc.gather_proven", b.getUnitAttr())};
         if (auto bounds = source->getAttr("vrc.argument_bounds"))
           kernelAttrs.push_back(b.getNamedAttr("vrc.argument_bounds", bounds));
-        if (textureShape)
-          kernelAttrs.push_back(
-              b.getNamedAttr("vrc.texture_shape", textureShape));
         auto *kernel = make(b, loc, fragment::KernelOp::getOperationName(), {},
                             {}, kernelAttrs, 1);
         auto *body = new Block;
@@ -174,8 +192,6 @@ struct LowerGatherDevicePass
         auto *coord =
             make(b, loc, fragment::FragmentCoordOp::getOperationName(),
                  TypeRange{b.getI32Type(), b.getI32Type()}, {}, {});
-        int32_t physicalWidth =
-            textureShape ? textureShape.asArrayRef()[0] : grid.asArrayRef()[0];
         auto physicalWidthValue =
             arith::ConstantIntOp::create(b, loc, physicalWidth, 32);
         Value physicalLinear = arith::AddIOp::create(
@@ -224,8 +240,10 @@ struct LowerGatherDevicePass
                                                op.getIndices()[0]);
           int64_t inputElements =
               cast<MemRefType>(op.getMemref().getType()).getNumElements();
-          int32_t inputWidth =
-              static_cast<int32_t>(std::min<int64_t>(inputElements, 8192));
+          int32_t inputWidth = inputElements == wordCount
+                                   ? physicalWidth
+                                   : static_cast<int32_t>(std::min<int64_t>(
+                                         inputElements, int64_t{8192}));
           auto width =
               arith::ConstantIntOp::create(b, op.getLoc(), inputWidth, 32);
           Value y = arith::DivUIOp::create(b, op.getLoc(), x, width);

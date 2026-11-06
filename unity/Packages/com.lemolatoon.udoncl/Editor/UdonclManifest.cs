@@ -18,6 +18,7 @@ namespace Lemolatoon.Udoncl.Editor
         public ExportInfo[] exports;
         public DeviceInfo device;
         public DispatchSiteInfo[] dispatch_sites;
+        public ValidationInfo validation;
         public ArtifactResourceInfo[] resources;
         public StaticTensorInfo[] static_tensors;
         public UdonOnnxStaticInputInfo[] static_inputs;
@@ -26,6 +27,12 @@ namespace Lemolatoon.Udoncl.Editor
         public UdonOnnxIoInfo[] model_inputs;
         public UdonOnnxIoInfo[] model_outputs;
         public UdonOnnxBindingInfo onnx_binding;
+    }
+
+    [Serializable]
+    internal sealed class ValidationInfo
+    {
+        public bool read_write_alias;
     }
 
     [Serializable]

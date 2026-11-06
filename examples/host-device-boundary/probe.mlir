@@ -33,6 +33,7 @@ module {
   func.func private @__vrc_dispatch(!vrc.dispatch_desc, !vrc.buffer) -> !vrc.event attributes {
     vrc.intrinsic = "dispatch", vrc.kernel_id = 7 : i32,
     vrc.argument_kinds = ["buffer", "f32"],
+    vrc.resource_accesses = ["write"],
     vrc.global_size = array<i32: 1, 1, 1>, vrc.local_size = array<i32: 1, 1, 1>,
     vrc.global_offset = array<i32: 0, 0, 0>
   }

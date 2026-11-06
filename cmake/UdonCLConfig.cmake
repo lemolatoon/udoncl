@@ -471,8 +471,26 @@ function(_udoncl_link_module_set artifact kind modules output_var)
   set(${output_var} "${_module}" PARENT_SCOPE)
 endfunction()
 
+function(_udoncl_resolve_runtime_validation requested output_var)
+  if(NOT requested)
+    set(requested AUTO)
+  endif()
+  string(TOUPPER "${requested}" _mode)
+  if(_mode STREQUAL "AUTO")
+    set(_value "$<IF:$<CONFIG:Debug>,1,0>")
+  elseif(_mode STREQUAL "ON")
+    set(_value 1)
+  elseif(_mode STREQUAL "OFF")
+    set(_value 0)
+  else()
+    message(FATAL_ERROR
+      "RUNTIME_VALIDATION must be AUTO, ON, or OFF; got '${requested}'")
+  endif()
+  set(${output_var} "${_value}" PARENT_SCOPE)
+endfunction()
+
 function(udoncl_add_artifact target)
-  set(_one_value CONFIG OUTPUT_DIRECTORY)
+  set(_one_value CONFIG OUTPUT_DIRECTORY RUNTIME_VALIDATION)
   set(_multi_value LIBRARIES HOST_LIBRARIES DEVICE_LIBRARIES)
   cmake_parse_arguments(PARSE_ARGV 1 ARG "" "${_one_value}" "${_multi_value}")
   if(ARG_UNPARSED_ARGUMENTS)
@@ -488,6 +506,8 @@ function(udoncl_add_artifact target)
   if(TARGET "${target}")
     message(FATAL_ERROR "UdonCL artifact target '${target}' already exists")
   endif()
+  _udoncl_resolve_runtime_validation("${ARG_RUNTIME_VALIDATION}"
+                                     _runtime_validation)
 
   cmake_path(ABSOLUTE_PATH ARG_CONFIG BASE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
              NORMALIZE OUTPUT_VARIABLE _config)
@@ -502,6 +522,8 @@ function(udoncl_add_artifact target)
     set(_host_flags)
     _udoncl_append_target_usage("${_library}" HOST _host_sources
                                 _host_dependencies _host_flags)
+    list(APPEND _host_flags
+         "-DUDONCL_AOT_RUNTIME_VALIDATION=${_runtime_validation}")
     list(REMOVE_DUPLICATES _host_sources)
     list(REMOVE_DUPLICATES _host_dependencies)
     if(_host_seen_sources)
@@ -568,6 +590,7 @@ function(udoncl_add_artifact target)
             "-DUDONCL_DEVICE_MODULE=${_device_module}"
             "-DUDONCL_OUTPUT_DIRECTORY=${_artifact_directory}"
             "-DUDONCL_BUILD_ROOT=${CMAKE_BINARY_DIR}"
+            "-DUDONCL_RUNTIME_VALIDATION=${_runtime_validation}"
             -P "${_UDONCL_CONFIG_DIR}/UdonCLCompileArtifact.cmake"
     COMMAND "${CMAKE_COMMAND}" -E touch "${_stamp}"
     DEPENDS "${UDONCLC_EXECUTABLE}" "${_config}" "${_host_module}"
@@ -581,7 +604,7 @@ function(udoncl_add_artifact target)
 endfunction()
 
 function(udoncl_add_unity_library target)
-  set(_one_value CONFIG OUTPUT_DIRECTORY)
+  set(_one_value CONFIG OUTPUT_DIRECTORY RUNTIME_VALIDATION)
   set(_multi_value LIBRARIES HOST_LIBRARIES DEVICE_LIBRARIES)
   cmake_parse_arguments(PARSE_ARGV 1 ARG "" "${_one_value}" "${_multi_value}")
   list(APPEND ARG_HOST_LIBRARIES ${ARG_LIBRARIES})
@@ -593,6 +616,8 @@ function(udoncl_add_unity_library target)
   if(TARGET "${target}")
     message(FATAL_ERROR "UdonCL Unity library target '${target}' already exists")
   endif()
+  _udoncl_resolve_runtime_validation("${ARG_RUNTIME_VALIDATION}"
+                                     _runtime_validation)
   cmake_path(ABSOLUTE_PATH ARG_CONFIG BASE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
              NORMALIZE OUTPUT_VARIABLE _config)
   if(NOT EXISTS "${_config}")
@@ -617,6 +642,8 @@ function(udoncl_add_unity_library target)
     set(_dependencies)
     set(_flags)
     _udoncl_append_target_usage("${_library}" HOST _sources _dependencies _flags)
+    list(APPEND _flags
+         "-DUDONCL_AOT_RUNTIME_VALIDATION=${_runtime_validation}")
     list(REMOVE_DUPLICATES _sources)
     list(REMOVE_DUPLICATES _dependencies)
     if(_host_seen_sources)
@@ -688,6 +715,7 @@ function(udoncl_add_unity_library target)
             "-DUDONCL_DEVICE_MODULE=${_device_module}"
             "-DUDONCL_OUTPUT_DIRECTORY=${_artifact_directory}"
             "-DUDONCL_BUILD_ROOT=${CMAKE_BINARY_DIR}"
+            "-DUDONCL_RUNTIME_VALIDATION=${_runtime_validation}"
             -P "${_UDONCL_CONFIG_DIR}/UdonCLCompileUnityLibrary.cmake"
     COMMAND "${CMAKE_COMMAND}" -E touch "${_stamp}"
     DEPENDS "${UDONCLC_EXECUTABLE}" "${_config}" "${_host_module}"

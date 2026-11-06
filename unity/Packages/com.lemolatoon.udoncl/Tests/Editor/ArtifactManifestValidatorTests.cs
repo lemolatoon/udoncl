@@ -50,6 +50,24 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         }
 
         [Test]
+        public void ValidateRejectsMissingRuntimeValidationAudit()
+        {
+            string manifestPath = Path.Combine(_directory, "manifest.json");
+            string json = File.ReadAllText(manifestPath)
+                .Replace(
+                    "\"artifact_stage\":\"unity-lj-prototype\"",
+                    "\"artifact_stage\":\"unity-udoncl-library\""
+                )
+                .Replace("\"validation\":{\"read_write_alias\":false},", string.Empty);
+            File.WriteAllText(manifestPath, json, new UTF8Encoding(false));
+
+            InvalidDataException exception = Assert.Throws<InvalidDataException>(() =>
+                ArtifactManifestValidator.Validate(_directory)
+            );
+            StringAssert.Contains("validation.read_write_alias", exception.Message);
+        }
+
+        [Test]
         public void ValidateAcceptsOptionalBufferCopyShader()
         {
             File.WriteAllText(
@@ -563,6 +581,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 + "\"runtime_abi_version\":1,"
                 + "\"artifact_stage\":\"unity-lj-prototype\","
                 + "\"ready_for_unity\":true,"
+                + "\"validation\":{\"read_write_alias\":false},"
                 + "\"sdk_compatibility\":{\"sdk_version\":\""
                 + sdkVersion
                 + "\"},"

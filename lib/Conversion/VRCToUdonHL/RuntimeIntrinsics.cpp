@@ -41,6 +41,7 @@ struct SubstituteRuntimeIntrinsicsPass
             results.size() == 1 && isa<runtime::EventType>(results[0]) &&
             prototype->getAttrOfType<IntegerAttr>("vrc.kernel_id") &&
             prototype->getAttrOfType<ArrayAttr>("vrc.argument_kinds") &&
+            prototype->getAttrOfType<ArrayAttr>("vrc.resource_accesses") &&
             prototype->getAttrOfType<DenseI32ArrayAttr>("vrc.global_size") &&
             prototype->getAttrOfType<DenseI32ArrayAttr>("vrc.local_size") &&
             prototype->getAttrOfType<DenseI32ArrayAttr>("vrc.global_offset");
@@ -140,8 +141,8 @@ struct SubstituteRuntimeIntrinsicsPass
       state.addTypes(call.getResultTypes());
       if (name == "dispatch")
         for (StringRef attribute :
-             {"kernel_id", "argument_kinds", "global_size", "local_size",
-              "global_offset"})
+             {"kernel_id", "argument_kinds", "resource_accesses", "global_size",
+              "local_size", "global_offset"})
           state.addAttribute(attribute,
                              callee->getAttr(("vrc." + attribute).str()));
       else if (name == "buffer_alloc")

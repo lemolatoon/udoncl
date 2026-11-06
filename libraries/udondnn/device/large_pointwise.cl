@@ -67,7 +67,9 @@ __kernel void udondnn_large_activation_forward(
       activated = sample > 0.0f ? sample : coefficient * (exp(sample) - 1.0f);
     else
       activated = sample;
-    value = alpha * activated + beta * previous[gid];
+    value = alpha * activated;
+    if (beta != 0.0f)
+      value += beta * previous[gid];
   }
   output[gid] = value;
 }
@@ -136,7 +138,9 @@ __kernel void udondnn_large_op_tensor(
           combined = a;
       }
     }
-    value = combined + beta * previous[gid];
+    value = combined;
+    if (beta != 0.0f)
+      value += beta * previous[gid];
   }
   output[gid] = value;
 }

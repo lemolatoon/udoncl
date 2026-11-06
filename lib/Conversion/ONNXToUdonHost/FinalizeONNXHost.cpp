@@ -1172,10 +1172,17 @@ bool hasDeviceQ4(const GraphRecord &graph) {
   });
 }
 
+int64_t deviceAllocationBytes(const GraphRecord &graph, unsigned tensorIndex);
+
 int64_t operatorScratchBytes(const GraphRecord &graph) {
-  if (hasDeviceQ4(graph))
-    return q4SurfaceBytes;
-  return hasDeviceRmsNorm(graph) ? rmsScratchBytes : 0;
+  int64_t bytes = hasDeviceQ4(graph) ? q4SurfaceBytes : 0;
+  if (hasDeviceRmsNorm(graph))
+    bytes = std::max(bytes, rmsScratchBytes);
+  for (const NodeRecord &node : graph.nodes)
+    if (node.operation == "Gemm" && node.inputs.size() >= 3 &&
+        node.inputs[2] >= 0)
+      bytes = std::max(bytes, deviceAllocationBytes(graph, node.output));
+  return bytes;
 }
 
 bool needsQ4Surface(const GraphRecord &graph, unsigned tensorIndex) {
@@ -2956,6 +2963,7 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
   func::ReturnOp::create(builder, location, onnxStatus(1));
   builder.setInsertionPointToEnd(initializeValid);
   if (supportsDeviceGraph(graph)) {
+    Value bufferError = allocaI32(builder, location);
     SmallVector<unsigned> storage = deviceStorage(graph);
     auto allocateDeviceBuffer = [&](StringRef symbol, int64_t bytes) {
       auto created = func::CallOp::create(
@@ -2963,11 +2971,11 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
           ValueRange{initializeEntry->getArgument(2),
                      arith::ConstantIntOp::create(builder, location, 1, 64),
                      arith::ConstantIntOp::create(builder, location, bytes, 32),
-                     staticError});
+                     bufferError});
       Value handle = pointerToInt(builder, location, created.getResult(0));
       Value errorSucceeded = arith::CmpIOp::create(
           builder, location, arith::CmpIPredicate::eq,
-          loadI32(builder, location, staticError), onnxStatus(0));
+          loadI32(builder, location, bufferError), onnxStatus(0));
       Value handleValid = arith::CmpIOp::create(
           builder, location, arith::CmpIPredicate::ne, handle, onnxStatus(0));
       Value succeeded =
@@ -3280,8 +3288,8 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                  << "Device Conv requires symmetric 2D attributes";
         dispatch("__vrc_opencl_dispatch_udondnn_large_convolution",
                  ValueRange{
-                     buffer(node.inputs[0]), buffer(node.inputs[1]), output,
-                     output,
+                     buffer(node.inputs[0]), buffer(node.inputs[1]),
+                     buffer(node.inputs[0]), output,
                      constant(graph.tensors[node.output].type.getNumElements()),
                      constant(inputShape[1] | (inputShape[2] << 16)),
                      constant(inputShape[3]),
@@ -3307,7 +3315,8 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
         dispatch(
             "__vrc_opencl_dispatch_udondnn_large_op_tensor",
             ValueRange{
-                buffer(node.inputs[0]), buffer(node.inputs[1]), output, output,
+                buffer(node.inputs[0]), buffer(node.inputs[1]),
+                buffer(node.inputs[0]), output,
                 constant(graph.tensors[node.output].type.getNumElements()),
                 constant(a[0] | (a[1] << 16)), constant(a[2] | (a[3] << 16)),
                 constant(b[0] | (b[1] << 16)), constant(b[2] | (b[3] << 16)),
@@ -3323,7 +3332,7 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                                                    : 2;
         dispatch("__vrc_opencl_dispatch_udondnn_large_activation",
                  ValueRange{
-                     buffer(node.inputs[0]), output, output,
+                     buffer(node.inputs[0]), buffer(node.inputs[0]), output,
                      constant(graph.tensors[node.output].type.getNumElements()),
                      constant(mode), constant(1), floating(0.0f),
                      floating(1.0f), floating(0.0f)});
@@ -3347,7 +3356,7 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
         int64_t mode = integerAttribute(node, "count_include_pad", 0) ? 1 : 2;
         dispatch("__vrc_opencl_dispatch_udondnn_large_pooling",
                  ValueRange{
-                     buffer(node.inputs[0]), output, output,
+                     buffer(node.inputs[0]), buffer(node.inputs[0]), output,
                      constant(graph.tensors[node.output].type.getNumElements()),
                      constant(inputShape[1]), constant(inputShape[2]),
                      constant(inputShape[3]), constant(outputShape[2]),
@@ -3699,13 +3708,17 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                 ? static_cast<float>(node.attributes.getAs<FloatAttr>("alpha")
                                          .getValueAsDouble())
                 : 1.0f;
+        bool hasBias = node.inputs.size() >= 3 && node.inputs[2] >= 0;
+        Value product = hasBias ? operatorScratch : output;
+        if (!product)
+          return emitError(location)
+                 << "Device Gemm with bias lacks operator scratch storage";
         dispatch("__vrc_opencl_dispatch_udonblas_arena_sgemm",
                  ValueRange{buffer(node.inputs[0]), buffer(node.inputs[1]),
-                            output, constant(left[0]), constant(right[1]),
+                            product, constant(left[0]), constant(right[1]),
                             constant(left[1]), constant(transA),
                             constant(transB), floating(alpha)});
-        if (node.operation == "Gemm" && node.inputs.size() >= 3 &&
-            node.inputs[2] >= 0) {
+        if (hasBias) {
           SmallVector<int64_t, 4> a = tensor4d(graph.tensors[node.output].type);
           SmallVector<int64_t, 4> b =
               tensor4d(graph.tensors[node.inputs[2]].type);
@@ -3717,7 +3730,7 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
           dispatch(
               "__vrc_opencl_dispatch_udondnn_large_op_tensor",
               ValueRange{
-                  output, buffer(node.inputs[2]), output, output,
+                  product, buffer(node.inputs[2]), product, output,
                   constant(graph.tensors[node.output].type.getNumElements()),
                   constant(a[0] | (a[1] << 16)), constant(a[2] | (a[3] << 16)),
                   constant(b[0] | (b[1] << 16)), constant(b[2] | (b[3] << 16)),

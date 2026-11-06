@@ -150,6 +150,7 @@ def main():
     ]
     bundles = {}
     fragments = []
+    texture_shapes = {}
     for name, identifier, define in kernels:
         device_ir = output / f"{name}.ll"
         run(
@@ -217,21 +218,30 @@ def main():
         if (
             kernel["name"] != name
             or kernel["global_size"] != [10800, 1, 1]
+            or kernel["target_texture"]["width"] != 8192
+            or kernel["target_texture"]["height"] != 2
             or [argument["required_bytes"] for argument in kernel["args"][:2]]
             != [43200, 43200]
         ):
             raise RuntimeError("MNIST gather manifest does not match its packed ABI")
         bundles[identifier] = bundle
         fragments.append(bundle / f"kernels/kernel_{identifier}.hlsl")
+        texture = kernel["target_texture"]
+        texture_shapes[name] = (texture["width"], texture["height"])
+    conv_width, conv_height = texture_shapes["mnist_conv"]
+    pool_width, pool_height = texture_shapes["mnist_pool"]
+    dense_width, dense_height = texture_shapes["mnist_dense"]
+    if len(set(texture_shapes.values())) != 1:
+        raise RuntimeError("MNIST ping-pong buffers require one physical texture layout")
     (output / "Bindings.h").write_text(
         "inline const char *deviceSource() { return "
         + json.dumps(device_text)
         + "; }\n"
         + "inline std::vector<native_opencl::GatherBinding> manifestBindings("
         + "const std::string &conv, const std::string &pool, const std::string &dense) { "
-        + 'return {{20, 10800, 0, "mnist_conv", conv}, '
-        + '{21, 10800, 0, "mnist_pool", pool}, '
-        + '{22, 10800, 0, "mnist_dense", dense}}; }\n',
+        + f'return {{{{20, 10800, 0, "mnist_conv", conv, {conv_width}, {conv_height}, 1, 10800, 1}}, '
+        + f'{{21, 10800, 0, "mnist_pool", pool, {pool_width}, {pool_height}, 1, 10800, 1}}, '
+        + f'{{22, 10800, 0, "mnist_dense", dense, {dense_width}, {dense_height}, 1, 10800, 1}}}}; }}\n',
         encoding="utf-8",
     )
 
@@ -312,7 +322,33 @@ def main():
                 "kernels": [
                     {"id": identifier, "name": name, "shader": f"kernels/kernel_{identifier}.shader"}
                     for name, identifier, _ in kernels
-                ]
+                ],
+                "buffers": [
+                    {
+                        "id": 1,
+                        "name": "mnist_state_a",
+                        "heap_slot": "__udoncl_buffer_1",
+                        "logical_bytes": 10800 * 4,
+                        "width": conv_width,
+                        "height": conv_height,
+                        "format": "rgba8_unorm",
+                        "srgb": False,
+                        "mipmaps": False,
+                        "filter": "point",
+                    },
+                    {
+                        "id": 2,
+                        "name": "mnist_state_b",
+                        "heap_slot": "__udoncl_buffer_2",
+                        "logical_bytes": 10800 * 4,
+                        "width": conv_width,
+                        "height": conv_height,
+                        "format": "rgba8_unorm",
+                        "srgb": False,
+                        "mipmaps": False,
+                        "filter": "point",
+                    },
+                ],
             },
             "resources": [
                 {"name": "pack_input", "kind": "shader", "path": "pack.shader"},

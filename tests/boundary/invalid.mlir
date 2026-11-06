@@ -21,7 +21,16 @@ module {
 module {
   func.func @bad(%d: !vrc.dispatch_desc, %b: !vrc.buffer) {
     // expected-error @below {{ordered resource count must match buffer arguments}}
-    %e = vrc.dispatch %d(%b) {kernel_id = 7 : i32, argument_kinds = ["buffer", "buffer"], global_size = array<i32: 1, 1, 1>, local_size = array<i32: 1, 1, 1>, global_offset = array<i32: 0, 0, 0>} : (!vrc.dispatch_desc, !vrc.buffer) -> !vrc.event
+    %e = vrc.dispatch %d(%b) {kernel_id = 7 : i32, argument_kinds = ["buffer", "buffer"], resource_accesses = ["write"], global_size = array<i32: 1, 1, 1>, local_size = array<i32: 1, 1, 1>, global_offset = array<i32: 0, 0, 0>} : (!vrc.dispatch_desc, !vrc.buffer) -> !vrc.event
+    return
+  }
+}
+
+// -----
+module {
+  func.func @bad(%d: !vrc.dispatch_desc, %b: !vrc.buffer) {
+    // expected-error @below {{resource 0 reads the same SSA value written by resource 1}}
+    %e = vrc.dispatch %d(%b, %b) {kernel_id = 7 : i32, argument_kinds = ["buffer", "buffer"], resource_accesses = ["read", "write"], global_size = array<i32: 1, 1, 1>, local_size = array<i32: 1, 1, 1>, global_offset = array<i32: 0, 0, 0>} : (!vrc.dispatch_desc, !vrc.buffer, !vrc.buffer) -> !vrc.event
     return
   }
 }
@@ -53,7 +62,7 @@ module {
 module {
   func.func @bad(%d: !vrc.dispatch_desc, %b: !vrc.buffer) {
     // expected-error @below {{NDRange must contain three dimensions}}
-    %e = vrc.dispatch %d(%b) {kernel_id = 7 : i32, argument_kinds = ["buffer", "f32"], global_size = array<i32: 1>, local_size = array<i32: 1, 1, 1>, global_offset = array<i32: 0, 0, 0>} : (!vrc.dispatch_desc, !vrc.buffer) -> !vrc.event
+    %e = vrc.dispatch %d(%b) {kernel_id = 7 : i32, argument_kinds = ["buffer", "f32"], resource_accesses = ["write"], global_size = array<i32: 1>, local_size = array<i32: 1, 1, 1>, global_offset = array<i32: 0, 0, 0>} : (!vrc.dispatch_desc, !vrc.buffer) -> !vrc.event
     return
   }
 }

@@ -1,6 +1,12 @@
 # PLAN.md — VRChat向け C / OpenCL C → Udon / HLSL コンパイラ
 
 > Status: **Udon/Native Async and compiler-generated U# binding implemented; Host storage allocator + Unity MNIST gate next**
+
+The current read/write resource-alias contract, `cl_mem` Device API migration,
+and MNIST acceptance work are specified separately in
+[`DEVICE_RESOURCE_ALIAS_PLAN.md`](DEVICE_RESOURCE_ALIAS_PLAN.md). That plan is
+the authoritative implementation order for this checkpoint; this file keeps
+the longer-term architecture and historical checkpoints.
 > Design cut-off: **2026-11-05**
 > Implementation amendments (user): **LLVM/MLIR 23 baseline; Windows host builds supported by design.**
 > Initial toolchain pin: **LLVM/MLIR/Clang 23.1.4** (see `cmake/llvm-lock.json`).  

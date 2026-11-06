@@ -303,6 +303,14 @@ cl::opt<bool> emitUnityLibrary(
 cl::opt<bool> omitIntermediateIR(
     "omit-intermediate-ir",
     cl::desc("Omit diagnostic MLIR snapshots from a Unity library bundle"));
+cl::opt<bool> runtimeValidation(
+    "runtime-validation",
+    cl::desc("Record that read/write physical-resource alias validation is "
+             "compiled into the Host runtime"));
+cl::opt<bool> noRuntimeValidation(
+    "no-runtime-validation",
+    cl::desc("Record that read/write physical-resource alias validation is "
+             "compiled out of the Host runtime"));
 cl::opt<std::string> hostLLVM("host-llvm", cl::desc("Host LLVM IR from C"));
 cl::opt<std::string>
     hostMLIR("host-mlir", cl::desc("Typed Host MLIR for compiler validation"));
@@ -739,6 +747,30 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
         resourceHeapSlots.push_back(builder.getStringAttr(""));
       }
     }
+    std::optional<size_t> writeResource;
+    for (auto [index, attribute] :
+         llvm::enumerate(dispatch.getResourceAccesses())) {
+      auto access = dyn_cast<StringAttr>(attribute);
+      if (access && access.getValue() == "write")
+        writeResource = index;
+    }
+    if (writeResource) {
+      auto writeSlot = dyn_cast<StringAttr>(resourceHeapSlots[*writeResource]);
+      for (auto [index, attribute] :
+           llvm::enumerate(dispatch.getResourceAccesses())) {
+        auto access = dyn_cast<StringAttr>(attribute);
+        auto readSlot = dyn_cast<StringAttr>(resourceHeapSlots[index]);
+        if (index != *writeResource && access && access.getValue() == "read" &&
+            writeSlot && readSlot && !writeSlot.getValue().empty() &&
+            writeSlot == readSlot) {
+          dispatch.emitError()
+              << "kernel " << dispatch.getKernelId() << " resource " << index
+              << " reads Unity heap slot " << readSlot.getValue()
+              << " also written by resource " << *writeResource;
+          return failure();
+        }
+      }
+    }
     if (!llvm::is_contained(configuredKernelIds, dispatch.getKernelId()) ||
         !descriptorMatches || dispatch.getArgumentKinds().empty() ||
         !isa<StringAttr>(*dispatch.getArgumentKinds().begin()) ||
@@ -760,21 +792,13 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
                                             std::to_string(kernelId)));
     dispatch->setAttr("vrc.unity_resource_heap_slots",
                       builder.getArrayAttr(resourceHeapSlots));
-    if (!dispatch->hasAttr("vrc.unity_output_resource_index")) {
-      if (dispatch.getResources().empty()) {
-        dispatch.emitError(
-            "Unity output buffer does not match a kernel resource");
-        return failure();
-      }
-      // Gather kernels use their final buffer argument as the write target.
-      // The configured public output identifies the final user-visible pool
-      // buffer; its pool index is unrelated to a particular dispatch's
-      // resource-argument index.
-      size_t output = dispatch.getResources().size() - 1;
-      dispatch->setAttr(
-          "vrc.unity_output_resource_index",
-          builder.getI32IntegerAttr(static_cast<int32_t>(output)));
+    if (!writeResource) {
+      dispatch.emitError("Unity dispatch requires one write resource");
+      return failure();
     }
+    dispatch->setAttr(
+        "vrc.unity_output_resource_index",
+        builder.getI32IntegerAttr(static_cast<int32_t>(*writeResource)));
     result.dispatchKernelIds.push_back(kernelId);
   }
   return result;
@@ -1568,6 +1592,8 @@ recoverUnityOpenCLDispatchProgram(const llvm::Module &input,
       "argument_kinds",
       builder.getArrayAttr({builder.getStringAttr("buffer"),
                             builder.getStringAttr(*scalarKind)}));
+  dispatch.addAttribute("resource_accesses",
+                        builder.getArrayAttr({builder.getStringAttr("write")}));
   dispatch.addAttribute("global_size",
                         builder.getDenseI32ArrayAttr(configuredGlobal));
   dispatch.addAttribute("local_size",
@@ -1880,6 +1906,11 @@ recoverUnityOpenCLGatherDispatchProgram(const llvm::Module &input,
   dispatch.addTypes(::vrc::vrc::EventType::get(&context));
   dispatch.addAttribute("kernel_id", builder.getI32IntegerAttr(*kernelId));
   dispatch.addAttribute("argument_kinds", builder.getArrayAttr(kindAttrs));
+  SmallVector<mlir::Attribute> resourceAccesses(allocatedBuffers.size(),
+                                                builder.getStringAttr("read"));
+  resourceAccesses[*outputBuffer] = builder.getStringAttr("write");
+  dispatch.addAttribute("resource_accesses",
+                        builder.getArrayAttr(resourceAccesses));
   dispatch.addAttribute(
       "vrc.unity_output_resource_index",
       builder.getI32IntegerAttr(static_cast<int32_t>(*outputBuffer)));
@@ -2359,6 +2390,11 @@ int main(int argc, char **argv) {
     errs() << "select exactly one boundary mode\n";
     return 1;
   }
+  if (runtimeValidation && noRuntimeValidation) {
+    errs() << "--runtime-validation and --no-runtime-validation are mutually "
+              "exclusive\n";
+    return 1;
+  }
   if (checkRequest) {
     auto manifest = MemoryBuffer::getFile(inputFilename),
          request = MemoryBuffer::getFile(requestFilename);
@@ -2678,6 +2714,8 @@ int main(int argc, char **argv) {
     module = parseSourceFile<ModuleOp>(inputFilename, &context);
   if (!module || failed(verify(*module)))
     return 1;
+  (*module)->setAttr("vrc.runtime_validation.read_write_alias",
+                     BoolAttr::get(&context, runtimeValidation));
   PassManager manager(&context);
   if (emitUnityLibrary) {
     // Immutable tensor payloads can be hundreds of megabytes. StaticBufferOps
@@ -2761,7 +2799,6 @@ int main(int argc, char **argv) {
     manifest["program"] = std::move(programManifest);
     if (usesAsyncCommands)
       (*manifest["program"].getAsObject())["async_commands"] = json::Object{
-          {"resume_state_slot", "__udoncl_async_resume_state"},
           {"completion_status_slot", "__udoncl_async_completion_status"},
           {"pending_object_slot", "__udoncl_async_pending_object"},
           {"completion_object_slot", "__udoncl_async_completion_object"},

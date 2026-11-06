@@ -8,6 +8,7 @@ struct GatherBinding {
   uint32_t id, words, scalarCount;
   std::string name, fragment;
   uint32_t width = 0, height = 0, inputCount = 1;
+  uint32_t globalWidth = 0, globalHeight = 0;
 };
 class Session {
 public:

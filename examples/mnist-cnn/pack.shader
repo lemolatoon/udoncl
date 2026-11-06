@@ -19,9 +19,12 @@ float4 encodeFloat(float value) {
 }
 
 float4 frag(float4 position : SV_POSITION) : SV_Target {
-    uint index = uint(position.x);
+    uint width;
+    uint height;
+    _Weights.GetDimensions(width, height);
+    uint index = uint(position.y) * width + uint(position.x);
     if (index >= 784u)
-        return _Weights.Load(int3(index, 0, 0));
+        return _Weights.Load(int3(index % width, index / width, 0));
     uint x = index % 28u;
     uint y = index / 28u;
     float ink = _MainTex.Load(int3(x, 27u - y, 0)).r;

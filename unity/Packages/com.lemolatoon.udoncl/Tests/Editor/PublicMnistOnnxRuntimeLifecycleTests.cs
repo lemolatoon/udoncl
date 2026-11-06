@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using NUnit.Framework;
+using UdonSharp;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.TestTools;
@@ -32,15 +33,12 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             GeneratedRoot + "/Tests/" + ControllerClass + ".asset";
         private string repository;
         private string artifactDirectory;
-        private string serializedProgramPath;
-        private HashSet<string> serializedProgramsBefore;
         private ValidatedArtifact artifact;
 
         [OneTimeSetUp]
         public void ImportPublicMnistArtifact()
         {
             repository = ResolveRepository();
-            serializedProgramsBefore = SerializedProgramAssets();
             artifactDirectory = ResolvePath(
                 "UDONCL_PUBLIC_MNIST_UNITY_BUNDLE",
                 Path.Combine(
@@ -68,8 +66,6 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             string programPath = GeneratedRoot + "/Programs/host_program.asset";
             string programGuid = AssetDatabase.AssetPathToGUID(programPath);
             Assert.IsFalse(string.IsNullOrEmpty(programGuid));
-            serializedProgramPath = "Assets/SerializedUdonPrograms/" + programGuid + ".asset";
-            serializedProgramsBefore.Remove(serializedProgramPath);
 
             Assert.NotNull(
                 AssetDatabase.LoadAssetAtPath<MonoScript>(ControllerSource),
@@ -116,24 +112,19 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 GeneratedRoot + "/Prefabs/" + BindingClass + ".prefab"
             );
             Assert.NotNull(prefab);
-            GameObject instance = UnityEngine.Object.Instantiate(prefab);
-            try
-            {
-                UdonclArtifactImporter.InitializeUdonBehaviours(instance);
-                UdonBehaviour binding = UdonclArtifactImporter.FindUdonSharpBacking(
-                    instance,
-                    GeneratedNamespace + BindingClass
+            UdonSharpBehaviour proxy = null;
+            foreach (UdonSharpBehaviour candidate in prefab.GetComponents<UdonSharpBehaviour>())
+                if (candidate.GetType().FullName == GeneratedNamespace + BindingClass)
+                    proxy = candidate;
+            Assert.NotNull(proxy);
+            SerializedProperty table = new SerializedObject(proxy).FindProperty("staticTensors");
+            Assert.NotNull(table);
+            Assert.AreEqual(imported.Length, table.arraySize);
+            for (int index = 0; index < imported.Length; ++index)
+                Assert.AreEqual(
+                    imported[index],
+                    table.GetArrayElementAtIndex(index).objectReferenceValue
                 );
-                Assert.NotNull(binding);
-                Texture2D[] table = (Texture2D[])
-                    UdonclArtifactImporter.GetUdonProgramVariable(binding, "staticTensors");
-                Assert.NotNull(table);
-                CollectionAssert.AreEqual(imported, table);
-            }
-            finally
-            {
-                UnityEngine.Object.DestroyImmediate(instance);
-            }
         }
 
         [Test]
@@ -154,6 +145,14 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             );
             int[] rawHeap = PackRawHeap(rawHeapBytes);
             Set(heap, program, "__vrc_raw_heap", rawHeap);
+
+            Texture2D[] staticTensors = new Texture2D[artifact.StaticTensors.Count];
+            foreach (ValidatedStaticTensor tensor in artifact.StaticTensors)
+                staticTensors[tensor.Id] = Load<Texture2D>(
+                    "Textures/"
+                        + UdonclArtifactImporter.StaticTensorFileName(tensor.Id, tensor.Name)
+                );
+            Set(heap, program, artifact.StaticTensorTableSlot, staticTensors);
 
             Dictionary<int, RenderTexture> buffers = new Dictionary<int, RenderTexture>();
             Assert.AreEqual(17, artifact.DeviceBuffers.Count);
@@ -180,7 +179,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 materials.Add(kernel.Id, material);
                 Set(heap, program, "__udoncl_kernel_material_" + kernel.Id, material);
             }
-            CollectionAssert.AreEquivalent(new[] { 1, 2, 231, 232, 233, 234 }, materials.Keys);
+            CollectionAssert.AreEquivalent(new[] { 221, 231, 232, 233, 234 }, materials.Keys);
             Material copyMaterial = Load<Material>("Materials/buffer-copy.mat");
 
             float[] input = ReadFloats(
@@ -204,7 +203,11 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             int initializeResult = Get<int>(heap, program, "__0_Initialize__ret");
             Assert.AreEqual(0, initializeStatus, "MNIST initialization returned an ABI error.");
             Assert.AreEqual(0, initializeResult, "MNIST initialization failed.");
-            Assert.Greater(initializeCommands, 0, "MNIST initialization emitted no transfers.");
+            Assert.AreEqual(
+                0,
+                initializeCommands,
+                "Static-tensor MNIST initialization unexpectedly emitted an async transfer."
+            );
 
             UploadFloats(buffers[1], input, copyMaterial);
             int commands = RunAsyncExport(
@@ -393,32 +396,10 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         public void RemoveGeneratedAssets()
         {
             RenderTexture.active = null;
-            AssetDatabase.DeleteAsset(ControllerSource);
-            const string controllerDirectory = "Assets/UdonclSampleValidation";
-            if (
-                AssetDatabase.IsValidFolder(controllerDirectory)
-                && Directory.GetFileSystemEntries(controllerDirectory).Length == 0
-            )
-                AssetDatabase.DeleteAsset(controllerDirectory);
-            AssetDatabase.DeleteAsset(GeneratedRoot);
-            if (!string.IsNullOrEmpty(serializedProgramPath))
-                AssetDatabase.DeleteAsset(serializedProgramPath);
-            if (serializedProgramsBefore != null)
-                foreach (string path in SerializedProgramAssets())
-                    if (!serializedProgramsBefore.Contains(path))
-                        AssetDatabase.DeleteAsset(path);
-            AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
-            Assert.IsNull(AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(GeneratedRoot));
-            if (!string.IsNullOrEmpty(serializedProgramPath))
-                Assert.IsNull(
-                    AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(serializedProgramPath)
-                );
-            if (serializedProgramsBefore != null)
-                CollectionAssert.AreEquivalent(
-                    serializedProgramsBefore,
-                    SerializedProgramAssets(),
-                    "Public MNIST test leaked a serialized Udon program."
-                );
+            // Generated U# sources remain valid until Unity exits. Deleting them from a
+            // fixture teardown races UdonSharp's asynchronous whole-assembly compiler.
+            // scripts/precommit.py restores the generated/source/serialized snapshots
+            // after the Editor process has stopped.
         }
 
         internal static int RunAsyncExport(
@@ -542,7 +523,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             }
         }
 
-        private static void UploadFloats(
+        internal static void UploadFloats(
             RenderTexture destination,
             float[] values,
             Material copyMaterial
@@ -556,6 +537,48 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             for (int index = 0; index < values.Length; ++index)
             {
                 int word = BitConverter.SingleToInt32Bits(values[index]);
+                pixels[index] = new Color32(
+                    (byte)word,
+                    (byte)(word >> 8),
+                    (byte)(word >> 16),
+                    (byte)(word >> 24)
+                );
+            }
+            Texture2D staging = new Texture2D(
+                destination.width,
+                destination.height,
+                TextureFormat.RGBA32,
+                false,
+                true
+            );
+            try
+            {
+                staging.filterMode = FilterMode.Point;
+                staging.wrapMode = TextureWrapMode.Clamp;
+                staging.SetPixels32(pixels);
+                staging.Apply(false, false);
+                Graphics.Blit(staging, destination, copyMaterial);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(staging);
+            }
+        }
+
+        internal static void UploadInts(
+            RenderTexture destination,
+            int[] values,
+            Material copyMaterial
+        )
+        {
+            Assert.That(
+                values.Length,
+                Is.LessThanOrEqualTo(destination.width * destination.height)
+            );
+            Color32[] pixels = new Color32[destination.width * destination.height];
+            for (int index = 0; index < values.Length; ++index)
+            {
+                int word = values[index];
                 pixels[index] = new Color32(
                     (byte)word,
                     (byte)(word >> 8),
@@ -617,7 +640,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             }
         }
 
-        private static Color32[] ReadPixels(RenderTexture source)
+        internal static Color32[] ReadPixels(RenderTexture source)
         {
             RenderTexture previous = RenderTexture.active;
             Texture2D staging = new Texture2D(

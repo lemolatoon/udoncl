@@ -120,6 +120,12 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             }
             Assert.IsEmpty(modelAsset.StaticInputTextures);
             Assert.IsNull(modelAsset.RuntimePrefab);
+            RenderTexture packed = Load<RenderTexture>("mnist_packed.asset");
+            RenderTexture logits = Load<RenderTexture>("mnist_logits.asset");
+            Assert.AreEqual(8192, packed.width);
+            Assert.AreEqual(2, packed.height);
+            Assert.AreEqual(8192, logits.width);
+            Assert.AreEqual(2, logits.height);
         }
 
         [Test]
@@ -216,17 +222,29 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             float maximumError = 0.0f;
             int expectedDigit = 0;
             int actualDigit = 0;
+            float[] expectedLogits = new float[10];
+            float[] actualLogits = new float[10];
             for (int digit = 0; digit < 10; ++digit)
             {
                 float expectedValue = Decode(expected[digit]);
                 float actualValue = Decode(actual[digit]);
+                expectedLogits[digit] = expectedValue;
+                actualLogits[digit] = actualValue;
                 maximumError = Mathf.Max(maximumError, Mathf.Abs(expectedValue - actualValue));
                 if (expectedValue > Decode(expected[expectedDigit]))
                     expectedDigit = digit;
                 if (actualValue > Decode(actual[actualDigit]))
                     actualDigit = digit;
             }
-            Assert.That(maximumError, Is.LessThan(0.02f));
+            Assert.That(
+                maximumError,
+                Is.LessThan(0.02f),
+                "expected=["
+                    + string.Join(", ", expectedLogits)
+                    + "] actual=["
+                    + string.Join(", ", actualLogits)
+                    + "]"
+            );
             Assert.AreEqual(expectedDigit, actualDigit);
         }
 
@@ -251,11 +269,17 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         private static Color32[] ReadPixels(RenderTexture source)
         {
             RenderTexture previous = RenderTexture.active;
-            Texture2D pixels = new Texture2D(10800, 1, TextureFormat.RGBA32, false, true);
+            Texture2D pixels = new Texture2D(
+                source.width,
+                source.height,
+                TextureFormat.RGBA32,
+                false,
+                true
+            );
             try
             {
                 RenderTexture.active = source;
-                pixels.ReadPixels(new Rect(0, 0, 10800, 1), 0, 0);
+                pixels.ReadPixels(new Rect(0, 0, source.width, source.height), 0, 0);
                 pixels.Apply(false, false);
                 return pixels.GetPixels32();
             }

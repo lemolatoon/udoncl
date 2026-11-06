@@ -73,7 +73,9 @@ __kernel void udondnn_large_convolution_forward(
           sum += input[input_index & 16383u] * filter[filter_index & 16383u];
         }
       }
-    value = alpha * sum + beta * previous[gid];
+    value = alpha * sum;
+    if (beta != 0.0f)
+      value += beta * previous[gid];
   }
   output[gid] = value;
 }

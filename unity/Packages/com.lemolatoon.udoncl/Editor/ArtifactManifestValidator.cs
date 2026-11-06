@@ -20,6 +20,7 @@ namespace Lemolatoon.Udoncl.Editor
             string bindingSourceAssetPath,
             string bindingNamespace,
             string bindingClass,
+            string staticTensorTableSlot,
             string artifactStage,
             string programName,
             IList<ValidatedKernel> kernels,
@@ -40,6 +41,7 @@ namespace Lemolatoon.Udoncl.Editor
             BindingSourceAssetPath = bindingSourceAssetPath;
             BindingNamespace = bindingNamespace;
             BindingClass = bindingClass;
+            StaticTensorTableSlot = staticTensorTableSlot;
             ArtifactStage = artifactStage;
             ProgramName = programName;
             Kernels = kernels;
@@ -60,6 +62,7 @@ namespace Lemolatoon.Udoncl.Editor
         public string BindingSourceAssetPath { get; private set; }
         public string BindingNamespace { get; private set; }
         public string BindingClass { get; private set; }
+        public string StaticTensorTableSlot { get; private set; }
         public string ArtifactStage { get; private set; }
         public string ProgramName { get; private set; }
         public IList<ValidatedKernel> Kernels { get; private set; }
@@ -295,10 +298,12 @@ namespace Lemolatoon.Udoncl.Editor
             if (!File.Exists(manifestPath))
                 throw new InvalidDataException("Artifact directory must contain manifest.json.");
 
+            string manifestSource = ReadUtf8(manifestPath);
+
             UdonclManifest manifest;
             try
             {
-                manifest = JsonUtility.FromJson<UdonclManifest>(ReadUtf8(manifestPath));
+                manifest = JsonUtility.FromJson<UdonclManifest>(manifestSource);
             }
             catch (Exception ex)
             {
@@ -312,6 +317,17 @@ namespace Lemolatoon.Udoncl.Editor
                 throw new InvalidDataException(
                     "Unsupported or missing manifest schema_version; expected 1."
                 );
+            bool requiresValidationAudit =
+                manifest.artifact_stage == "unity-udoncl-library"
+                || manifest.artifact_stage == "unity-udon-onnx-model";
+            if (
+                requiresValidationAudit
+                && (
+                    manifestSource.IndexOf("\"validation\"", StringComparison.Ordinal) < 0
+                    || manifestSource.IndexOf("\"read_write_alias\"", StringComparison.Ordinal) < 0
+                )
+            )
+                throw new InvalidDataException("manifest.validation.read_write_alias is required.");
             if (string.IsNullOrWhiteSpace(manifest.compiler_version))
                 throw new InvalidDataException("manifest.compiler_version is required.");
             if (manifest.runtime_abi_version != 1)
@@ -322,6 +338,8 @@ namespace Lemolatoon.Udoncl.Editor
                 throw new InvalidDataException(
                     "Importer requires a ready_for_unity artifact with a safe artifact_stage."
                 );
+            if (requiresValidationAudit && manifest.validation == null)
+                throw new InvalidDataException("manifest.validation.read_write_alias is required.");
 
             ValidateSdk(manifest.sdk_compatibility);
             ValidateTarget(manifest.target);
@@ -560,6 +578,7 @@ namespace Lemolatoon.Udoncl.Editor
                 bindingSourcePath,
                 manifest.program.binding_namespace,
                 manifest.program.binding_class,
+                manifest.program.static_tensor_table_slot,
                 manifest.artifact_stage,
                 manifest.program.name,
                 kernels,

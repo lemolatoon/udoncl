@@ -74,6 +74,16 @@ struct TypedSpillBankPlan {
   unsigned length = 0;
 };
 
+struct ConstantBankPlan {
+  std::string slot;
+  SmallVector<uint32_t> values;
+};
+
+struct ConstantPoolLocation {
+  unsigned bank = 0;
+  unsigned index = 0;
+};
+
 struct UnityBufferPoolEntry {
   int64_t id;
   std::string heapSlot;
@@ -329,6 +339,7 @@ public:
     llvm::SmallSet<int64_t, 8> exportIds;
     llvm::SmallSet<std::string, 8> eventNames;
     llvm::SmallSet<std::string, 8> publicNames;
+    bool hasCompilerAsyncABI = false;
     if (failed(planUnityBufferPool()) || failed(planRawMemory()))
       return failure();
     if (externalRawHeapInitialization && rawHeapBytes) {
@@ -393,6 +404,7 @@ public:
       auto exportId = function->getAttrOfType<IntegerAttr>("vrc.export_id");
       bool compilerCompletion =
           function->hasAttr("vrc.compiler_async_completion");
+      hasCompilerAsyncABI |= compilerCompletion;
       if (exportId && compilerCompletion)
         return function.emitError(
             "compiler async completion cannot be a public C export");
@@ -450,7 +462,10 @@ public:
       hasAsyncTransfers |=
           isa<runtime::BufferUploadOp, runtime::BufferReadbackOp>(operation);
     });
-    if (hasAsyncTransfers) {
+    if (hasAsyncTransfers || hasCompilerAsyncABI) {
+      addSlot(asyncCompletionStatusSlot, "SystemInt32", "0", true);
+      addSlot(asyncCompletionObjectSlot, "SystemInt32", "0", true);
+      addSlot(asyncPendingObjectSlot, "SystemInt32", "0", true);
       addSlot(asyncCommandKindSlot, "SystemInt32", "0", true);
       addSlot(asyncCommandBufferSlot, "SystemInt32", "0", true);
       addSlot(asyncCommandOffsetSlot, "SystemInt32", "0", true);
@@ -751,6 +766,8 @@ private:
       arrays.insert(bank.slot);
     for (const std::string &key : typedSpillBankOrder)
       arrays.insert(typedSpillBanks.at(key).slot);
+    for (const ConstantBankPlan &bank : constantBanks)
+      arrays.insert(bank.slot);
     if (rawHeapBytes)
       arrays.insert(rawHeapSlot);
     for (const auto &slot : immutableSlots)
@@ -813,8 +830,8 @@ private:
     auto stage = module->getAttrOfType<StringAttr>("vrc.async_stage");
     if (!stage || stage.getValue() != "udon-static-v1")
       return;
-    llvm::StringMap<unsigned> occurrences;
-    SmallVector<std::pair<std::string, arith::ConstantOp>> ordered;
+    llvm::DenseMap<uint32_t, ConstantPoolLocation> locations;
+    constexpr unsigned bankCapacity = 32;
     for (func::FuncOp function : functions)
       function.walk([&](arith::ConstantOp constant) {
         Type type = constant.getType();
@@ -835,36 +852,35 @@ private:
           materializedConstants.insert(constant.getOperation());
           return;
         }
-        if ((!integer || integer.getWidth() == 1 || integer.getWidth() > 64) &&
-            !type.isIndex())
+        if (!materializationLimit ||
+            ((!integer || integer.getWidth() != 32) && !type.isIndex()))
           return;
-        std::string key;
-        llvm::raw_string_ostream output(key);
-        type.print(output);
-        output << '\n';
-        constant.getValue().print(output);
-        output.flush();
-        ++occurrences[key];
-        ordered.emplace_back(std::move(key), constant);
+        uint32_t value = static_cast<uint32_t>(
+            cast<IntegerAttr>(constant.getValue()).getValue().getZExtValue());
+        auto found = locations.find(value);
+        ConstantPoolLocation location;
+        if (found == locations.end()) {
+          if (constantBanks.empty() ||
+              constantBanks.back().values.size() == bankCapacity) {
+            unsigned bank = constantBanks.size();
+            std::string slot = "__vrc_constant_bank_" + std::to_string(bank);
+            addSlot(slot, "SystemInt32Array", "null", false);
+            constantBanks.push_back({std::move(slot), {}});
+          }
+          location.bank = constantBanks.size() - 1;
+          location.index = constantBanks.back().values.size();
+          constantBanks.back().values.push_back(value);
+          locations.try_emplace(value, location);
+        } else {
+          location = found->second;
+        }
+        pooledConstants.try_emplace(constant.getOperation(), location);
       });
-    unsigned integerMaterializations = 0;
-    auto materialize = [&](bool wideOnly) {
-      for (auto &entry : ordered) {
-        if (integerMaterializations == materializationLimit)
-          return;
-        bool wide = entry.second.getType().isInteger(64);
-        if (wide != wideOnly || occurrences.lookup(entry.first) != 1)
-          continue;
-        materializedConstants.insert(entry.second.getOperation());
-        ++integerMaterializations;
-      }
-    };
-    // i64 constants cannot be encoded in Udon data declarations and otherwise
-    // each consume both an immutable Heap slot and runtime construction code.
-    // Prefer their single-use values before filling the remaining budget with
-    // i32/index values.
-    materialize(true);
-    materialize(false);
+    if (!constantBanks.empty()) {
+      addSlot(globalInitializedSlot, "SystemInt32", "0", false);
+      addSlot(globalOneSlot, "SystemInt32", "1", false);
+      addSlot(globalReadySlot, "SystemBoolean", "null", false);
+    }
   }
 
   LogicalResult
@@ -903,7 +919,8 @@ private:
     };
     auto isColorableResult = [&](Operation &operation) {
       return (!isa<arith::ConstantOp>(operation) ||
-              materializedConstants.contains(&operation)) &&
+              materializedConstants.contains(&operation) ||
+              pooledConstants.contains(&operation)) &&
              !isa<memref::GetGlobalOp, ::vrc::vrc::DispatchDescCreateOp,
                   host::FrameCreateOp>(operation);
     };
@@ -1938,16 +1955,18 @@ private:
           std::string source = valueSlots.lookup(cast.getInputs().front());
           if (source.empty())
             return cast.emitError("Udon token conversion has no source slot");
-          Type outputType = cast.getOutputs().front().getType();
-          if (isa<::vrc::vrc::BufferType, ::vrc::vrc::EventType>(outputType)) {
-            std::string token = coloredSlot(cast.getOutputs().front());
-            if (token.empty())
-              return cast.emitError(
-                  "Udon token conversion has no colorable output slot");
-            valueSlots[cast.getOutputs().front()] = token;
-          } else {
-            valueSlots[cast.getOutputs().front()] = source;
-          }
+          std::string output = coloredSlot(cast.getOutputs().front());
+          if (output.empty())
+            return cast.emitError(
+                "Udon token conversion has no colorable output slot");
+          // A conversion is an SSA definition, even when both sides share the
+          // same physical Udon type. Aliasing the result to the input's slot
+          // shortens the result's effective live range to that of the input.
+          // A later definition may then overwrite the slot before the result
+          // is consumed by a multi-operand operation. Keep the result in its
+          // own colored value; graph coloring can coalesce it only after the
+          // combined live range is represented explicitly.
+          valueSlots[cast.getOutputs().front()] = output;
           continue;
         }
         if (auto allocation = dyn_cast<::vrc::vrc::BufferAllocOp>(operation)) {
@@ -2039,7 +2058,8 @@ private:
         }
         std::string name;
         if (kind == "c") {
-          if (materializedConstants.contains(&operation)) {
+          if (materializedConstants.contains(&operation) ||
+              pooledConstants.contains(&operation)) {
             name = coloredSlot(operation.getResult(0));
             valueSlots[operation.getResult(0)] = name;
             continue;
@@ -2072,6 +2092,7 @@ private:
 
     if ((exportId || function->hasAttr("vrc.compiler_async_completion")) &&
         (!globalPlans.empty() || !typedSpillBanks.empty() ||
+         !constantBanks.empty() ||
          (rawHeapBytes && !externalRawHeapInitialization)))
       emitGlobalInitialization(function.getLoc());
 
@@ -2235,18 +2256,36 @@ private:
           continue;
         }
         if (auto cast = dyn_cast<UnrealizedConversionCastOp>(operation)) {
-          Type outputType = cast.getOutputs().front().getType();
-          if (isa<::vrc::vrc::BufferType, ::vrc::vrc::EventType>(outputType)) {
-            std::string source = valueSlots.lookup(cast.getInputs().front());
-            std::string token = valueSlots.lookup(cast.getOutputs().front());
-            if (source.empty() || token.empty())
-              return cast.emitError("Udon token conversion has missing slots");
-            emitCopy(cast.getLoc(), source, token);
-          }
+          std::string source = valueSlots.lookup(cast.getInputs().front());
+          std::string output = valueSlots.lookup(cast.getOutputs().front());
+          if (source.empty() || output.empty())
+            return cast.emitError("Udon token conversion has missing slots");
+          emitCopy(cast.getLoc(), source, output);
           continue;
         }
         if (auto constant = dyn_cast<arith::ConstantOp>(operation)) {
-          if (materializedConstants.contains(constant.getOperation())) {
+          auto pooled = pooledConstants.find(constant.getOperation());
+          if (pooled != pooledConstants.end()) {
+            const ConstantBankPlan &bank = constantBanks[pooled->second.bank];
+            std::string index;
+            if (pooled->second.index < 16) {
+              index = immutableSlot("SystemInt32",
+                                    std::to_string(pooled->second.index));
+            } else {
+              constexpr StringLiteral indexScratch =
+                  "__vrc_constant_bank_index";
+              addSlot(indexScratch, "SystemInt32", "0", false);
+              emitI32Literal(constant.getLoc(), pooled->second.index,
+                             indexScratch);
+              index = indexScratch.str();
+            }
+            emitPush(constant.getLoc(), bank.slot);
+            emitPush(constant.getLoc(), index);
+            emitPush(constant.getLoc(),
+                     valueSlots.lookup(constant.getResult()));
+            emitExtern(constant.getLoc(),
+                       "SystemInt32Array.__Get__SystemInt32__SystemInt32");
+          } else if (materializedConstants.contains(constant.getOperation())) {
             if (auto floating = dyn_cast<FloatAttr>(constant.getValue())) {
               constexpr StringLiteral bitsSlot = "__vrc_float_constant_bits";
               addSlot(bitsSlot, "SystemInt32", "0", false);
@@ -4812,6 +4851,30 @@ private:
     addSlot(globalIntValueSlot, "SystemInt32", "0", false);
     addSlot(globalFloatBitsSlot, "SystemInt32", "0", false);
     addSlot(globalFloatValueSlot, "SystemSingle", "0", false);
+    for (const ConstantBankPlan &bank : constantBanks) {
+      emitI32Literal(location, bank.values.size(), globalLengthSlot);
+      emitPush(location, globalLengthSlot);
+      emitPush(location, bank.slot);
+      emitExtern(location,
+                 "SystemInt32Array.__ctor__SystemInt32__SystemInt32Array");
+      for (auto [index, value] : llvm::enumerate(bank.values)) {
+        if (!value)
+          continue;
+        std::string indexSlot;
+        if (index < 16) {
+          indexSlot = immutableSlot("SystemInt32", std::to_string(index));
+        } else {
+          emitI32Literal(location, index, globalIndexSlot);
+          indexSlot = globalIndexSlot.str();
+        }
+        emitI32Literal(location, value, globalIntValueSlot);
+        emitPush(location, bank.slot);
+        emitPush(location, indexSlot);
+        emitPush(location, globalIntValueSlot);
+        emitExtern(location, "SystemInt32Array.__Set__SystemInt32_SystemInt32__"
+                             "SystemVoid");
+      }
+    }
     for (const std::string &key : typedSpillBankOrder) {
       const TypedSpillBankPlan &bank = typedSpillBanks.at(key);
       emitI32Literal(location, bank.length, globalLengthSlot);
@@ -4941,6 +5004,8 @@ private:
   llvm::DenseMap<Operation *, FunctionPlan> functionPlans;
   llvm::DenseMap<Value, std::string> interproceduralValueSlots;
   llvm::DenseSet<Operation *> materializedConstants;
+  llvm::DenseMap<Operation *, ConstantPoolLocation> pooledConstants;
+  SmallVector<ConstantBankPlan> constantBanks;
   llvm::StringMap<std::string> scalarRegisterSlots;
   llvm::StringMap<std::string> asyncPersistentSlots;
   llvm::StringMap<GlobalPlan> globalPlans;
@@ -5037,10 +5102,9 @@ struct LowerUdonHLToUdonAsmPass
     unsigned baseAddresses = *unmaterialized;
     if (baseAddresses > addressLimit) {
       // A fixed cap leaves large, otherwise valid Host programs with one Udon
-      // Heap slot per single-use scalar literal. Let the existing
-      // interprocedural coloring and typed-spill allocator own every eligible
-      // single-use constant once direct materialization exceeds the target
-      // address space. Repeated constants remain shared immutable slots.
+      // Heap slot per scalar identity. Let the existing interprocedural
+      // coloring and typed-spill allocator own every eligible integer
+      // constant once direct declarations exceed the target address space.
       materializationLimit = baseAddresses;
       auto materialized = probe(materializationLimit);
       if (failed(materialized)) {

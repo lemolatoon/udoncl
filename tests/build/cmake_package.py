@@ -91,8 +91,20 @@ def assert_binding_identity(manifest, source):
 def assert_static_async_artifact(artifact, assembly):
     assert '.export __udoncl_async_complete' in assembly
     assert '__udoncl_async_resume_state' not in assembly
+    for slot in [
+        '__udoncl_async_pending_object',
+        '__udoncl_async_completion_object',
+        '__udoncl_async_completion_status',
+        '__udoncl_async_command_kind',
+        '__udoncl_async_command_buffer',
+        '__udoncl_async_command_offset',
+        '__udoncl_async_command_size',
+        '__udoncl_async_command_pointer',
+    ]:
+        assert f'.export {slot}' in assembly
     manifest = json.loads((artifact / 'manifest.json').read_text(
         encoding='utf-8'))
+    assert 'resume_state_slot' not in manifest['program']['async_commands']
     for export in manifest['exports']:
         if export.get('async') and export.get('result'):
             assert export['result']['heap_slot'] in assembly
@@ -383,6 +395,7 @@ def main():
         'endforeach()\n'
         'udoncl_add_unity_library(onnx-host-link-probe\n'
         '  CONFIG probe.json\n'
+        '  RUNTIME_VALIDATION ON\n'
         '  HOST_LIBRARIES mnist_host UdonONNXRuntime::UdonONNXRuntime\n'
         '  LIBRARIES UdonATen::UdonATen UdonBLAS::UdonBLAS)\n'
         'get_target_property(generated mnist_host UDONCL_ONNX_HOST)\n'
@@ -435,6 +448,7 @@ def main():
         assert sum(': %' in line for line in stream) <= 480
     generic_manifest = json.loads(
         (generic_artifact / 'manifest.json').read_text(encoding='utf-8'))
+    assert generic_manifest['validation']['read_write_alias'] is True
     assert {
         item['c_symbol']: item['public_name']
         for item in generic_manifest['exports']
@@ -857,6 +871,7 @@ def main():
     transformer_manifest = json.loads(
         (transformer_artifact / 'manifest.json').read_text(encoding='utf-8')
     )
+    assert len(transformer_manifest['device']['buffers']) == 35
     assert {
         item['c_symbol']: item['public_name']
         for item in transformer_manifest['exports']
@@ -1091,6 +1106,7 @@ def main():
     artifact = build_root / 'artifact'
     manifest = json.loads((artifact / 'manifest.json').read_text(encoding='utf-8'))
     assert manifest['artifact_stage'] == 'boundary-prototype', manifest
+    assert manifest['validation']['read_write_alias'] is False
     assert manifest['exports'][0]['c_symbol'] == 'host_square_plus_one', manifest
     assert len(list((build_root / 'objects/host').rglob('*.bc'))) == 3
     assert len(list((build_root / 'objects/device').rglob('*.bc'))) == 3
@@ -1103,6 +1119,7 @@ def main():
         (unity_artifact / 'manifest.json').read_text(encoding='utf-8')
     )
     assert unity_manifest['artifact_stage'] == 'unity-udoncl-library'
+    assert unity_manifest['validation']['read_write_alias'] is False
     assert unity_manifest['ready_for_unity'] is True
     assert unity_manifest['program']['assembly'] == 'host.uasm'
     assert unity_manifest['program']['display_shader'] == 'display.shader'
@@ -1180,16 +1197,19 @@ def main():
         '--host-mlir', args.source.resolve().parents[1]
         / 'tests/boundary/unity_dispatch.mlir',
         '--device-llvm', consumer / 'udoncl/hello-unity-library/device.bc',
+        '--runtime-validation',
         '-o', dispatch_artifact,
     ])
     dispatch_manifest = json.loads(
         (dispatch_artifact / 'manifest.json').read_text(encoding='utf-8')
     )
+    assert dispatch_manifest['validation']['read_write_alias'] is True
     assert dispatch_manifest['dispatch_sites'] == [{
         'function': 'dispatch_square',
         'kernel_id': 1,
         'descriptor_abi': 1,
         'resources': 1,
+        'resource_accesses': ['write'],
         'completion': 'pending_event',
     }]
     dispatch_assembly = (dispatch_artifact / 'host.uasm').read_text(
@@ -1198,6 +1218,15 @@ def main():
     assert '.export __udoncl_kernel_material_1' in dispatch_assembly
     assert 'UnityEngineMaterial.__SetFloat__' in dispatch_assembly
     assert dispatch_assembly.count('VRCSDKBaseVRCGraphics.__Blit__') == 1
+    run_failure([
+        installed_compiler, '--emit-unity-library-bundle',
+        args.source.resolve() / 'dispatch-library.json',
+        '--host-mlir', args.source.resolve().parents[1]
+        / 'tests/boundary/unity_dispatch.mlir',
+        '--device-llvm', consumer / 'udoncl/hello-unity-library/device.bc',
+        '--runtime-validation', '--no-runtime-validation',
+        '-o', output / 'conflicting-runtime-validation-artifact',
+    ], '--runtime-validation and --no-runtime-validation are mutually exclusive')
     opencl_dispatch_artifact = (
         consumer / 'udoncl/hello-dispatch-unity-library/artifact'
     )
@@ -1209,6 +1238,7 @@ def main():
         'kernel_id': 1,
         'descriptor_abi': 1,
         'resources': 1,
+        'resource_accesses': ['write'],
         'completion': 'pending_event',
     }]
     assert opencl_dispatch_manifest['device']['buffers'][0][
@@ -1308,6 +1338,7 @@ def main():
         'kernel_id': 10,
         'descriptor_abi': 1,
         'resources': 2,
+        'resource_accesses': ['read', 'write'],
         'completion': 'pending_event',
     }]
     assert [
@@ -1374,6 +1405,7 @@ def main():
         'kernel_id': 11,
         'descriptor_abi': 1,
         'resources': 2,
+        'resource_accesses': ['read', 'write'],
         'completion': 'pending_event',
     }]
     assert [

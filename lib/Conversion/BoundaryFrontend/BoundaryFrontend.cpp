@@ -444,6 +444,8 @@ struct LinkCBoundaryPass : impl::LinkCBoundaryPassBase<LinkCBoundaryPass> {
     intrinsic->setAttr("vrc.argument_kinds",
                        builder.getArrayAttr({builder.getStringAttr("buffer"),
                                              builder.getStringAttr("f32")}));
+    intrinsic->setAttr("vrc.resource_accesses",
+                       builder.getArrayAttr({builder.getStringAttr("write")}));
     for (StringRef key : {"global_size", "local_size", "global_offset"})
       intrinsic->setAttr(("vrc." + key).str(), config.get(key));
     exported->setAttr("vrc.export_id", config.get("export_id"));

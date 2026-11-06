@@ -435,6 +435,11 @@ struct LowerOpenCLAOTIntrinsicsPass
                                    rewriter.getI32IntegerAttr(kernelId));
         dispatchState.addAttribute("argument_kinds",
                                    rewriter.getArrayAttr(argumentKinds));
+        SmallVector<Attribute> resourceAccesses(bufferCount,
+                                                rewriter.getStringAttr("read"));
+        resourceAccesses.back() = rewriter.getStringAttr("write");
+        dispatchState.addAttribute("resource_accesses",
+                                   rewriter.getArrayAttr(resourceAccesses));
         DenseI32ArrayAttr globalSize;
         if (sgemm)
           globalSize = rewriter.getDenseI32ArrayAttr({32, 32, 1});

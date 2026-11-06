@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -144,7 +145,9 @@ alias_host = subprocess.run(
 )
 assert alias_host.returncode == 0, (alias_host.stdout, alias_host.stderr)
 assert "func.func @udon_onnx_session_run" not in alias_host.stdout
-assert "call @clEnqueueCopyBuffer" in alias_host.stdout
+assert "call @__vrc_opencl_buffer_copy" in alias_host.stdout
+assert "call @__vrc_opencl_await" in alias_host.stdout
+assert "call @clEnqueueCopyBuffer" not in alias_host.stdout
 assert "call @__vrc_enqueue_udondnn" not in alias_host.stdout
 
 cast_source = source.with_name("onnx_cast.mlir")
@@ -284,6 +287,63 @@ assert (
     == 2
 )
 
+
+def call_arguments(mlir, callee):
+    return [
+        [argument.strip() for argument in match.group(1).split(",")]
+        for match in re.finditer(rf"call @{callee}\(([^)]*)\)", mlir)
+    ]
+
+
+pointwise_calls = call_arguments(
+    large_pointwise_host.stdout,
+    "__vrc_opencl_dispatch_udondnn_large_op_tensor",
+)
+activation_calls = call_arguments(
+    large_pointwise_host.stdout,
+    "__vrc_opencl_dispatch_udondnn_large_activation",
+)
+assert len(pointwise_calls) == 1
+assert len(activation_calls) == 2
+assert pointwise_calls[0][2] != pointwise_calls[0][3]
+assert all(arguments[1] != arguments[2] for arguments in activation_calls)
+
+gemm_bias_source = source.with_name("onnx_gemm_bias_device.mlir")
+gemm_bias_portable = subprocess.run(
+    [
+        opt,
+        "--udoncl-infer-onnx-shapes",
+        "--udoncl-lower-onnx-to-host",
+        gemm_bias_source,
+    ],
+    text=True,
+    capture_output=True,
+    check=True,
+).stdout
+gemm_bias_host = subprocess.run(
+    [host_opt, "--udoncl-finalize-onnx-host", "-"],
+    input=gemm_bias_portable,
+    text=True,
+    capture_output=True,
+)
+assert gemm_bias_host.returncode == 0, (
+    gemm_bias_host.stdout,
+    gemm_bias_host.stderr,
+)
+gemm_calls = call_arguments(
+    gemm_bias_host.stdout, "__vrc_opencl_dispatch_udonblas_arena_sgemm"
+)
+gemm_bias_calls = call_arguments(
+    gemm_bias_host.stdout,
+    "__vrc_opencl_dispatch_udondnn_large_op_tensor",
+)
+assert len(gemm_calls) == 1
+assert len(gemm_bias_calls) == 1
+assert "@__udon_onnx_operator_scratch" in gemm_bias_host.stdout
+assert gemm_calls[0][2] == gemm_bias_calls[0][0]
+assert gemm_bias_calls[0][0] == gemm_bias_calls[0][2]
+assert gemm_bias_calls[0][2] != gemm_bias_calls[0][3]
+
 q4_source = source.with_name("onnx_matmul_nbits_device.mlir")
 q4_portable = subprocess.run(
     [
@@ -317,7 +377,9 @@ assert (
 assert "call @udononnxMatMulNBits" not in q4_host.stdout
 assert "@__udon_onnx_operator_scratch" in q4_host.stdout
 assert q4_host.stdout.count("arith.constant 524288 : i32") >= 2
-assert "call @clEnqueueCopyBuffer" in q4_host.stdout
+assert "call @__vrc_opencl_buffer_copy" in q4_host.stdout
+assert "call @__vrc_opencl_await" in q4_host.stdout
+assert "call @clEnqueueCopyBuffer" not in q4_host.stdout
 assert "arith.constant 128 : i32" in q4_host.stdout
 
 rmsnorm_source = source.with_name("onnx_rmsnorm_pattern.mlir")

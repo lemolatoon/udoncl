@@ -85,7 +85,9 @@ __kernel void udondnn_large_pooling_forward(
       pooled = 0.0f;
     if (has_nan != 0)
       pooled = nan_value;
-    result = alpha * pooled + beta * previous[gid];
+    result = alpha * pooled;
+    if (beta != 0.0f)
+      result += beta * previous[gid];
   }
   output[gid] = result;
 }

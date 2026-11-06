@@ -588,6 +588,37 @@ for expected in [
         capacity_lowered.stderr,
     )
 
+# Repeated identities must also leave the immutable data table when it exceeds
+# the Udon address space. Materializing only one occurrence of a value would
+# keep its shared constant slot alive for the other occurrence.
+repeated_constant_lines = [
+    'module attributes {vrc.async_stage = "udon-static-v1"} {',
+    '  func.func @many_constants() -> i32 attributes {vrc.export_id = 1 : i32} {',
+    '    %acc0 = arith.constant 0 : i32',
+]
+for index in range(1, 521):
+    repeated_constant_lines.extend([
+        f'    %left{index} = arith.constant {index} : i32',
+        f'    %right{index} = arith.constant {index} : i32',
+        f'    %pair{index} = arith.addi %left{index}, %right{index} : i32',
+        f'    %acc{index} = arith.addi %acc{index - 1}, %pair{index} : i32',
+    ])
+repeated_constant_lines.extend([
+    '    return %acc520 : i32',
+    '  }',
+    '}',
+])
+repeated_constants_lowered = subprocess.run(
+    [opt, '--vrc-lower-udonhl-to-udonasm', '--verify-each'],
+    input='\n'.join(repeated_constant_lines),
+    text=True,
+    capture_output=True,
+)
+assert repeated_constants_lowered.returncode == 0, (
+    repeated_constants_lowered.stderr
+)
+assert 'SystemInt32.__op_LeftShift' in repeated_constants_lowered.stdout
+
 raw_address_after_call_source = r'''module attributes {vrc.async_stage = "udon-static-v1"} {
   "udonhl.global"() <{sym_name = "value", storage_type = i32, initial_value = 0 : i32, linkage = "internal", address_space = 0 : i32, alignment = 4 : i64}> : () -> ()
   func.func @run() -> i32 attributes {
@@ -1103,6 +1134,43 @@ assert re.search(
     r'udonasm\.push "[^"]+"\s+udonasm\.copy',
     buffer_lowered.stdout), buffer_lowered.stdout
 
+cast_store_source = r'''module attributes {
+  vrc.host_stage = "udonhl",
+  vrc.unity_buffer_pool = [
+    {id = 1 : i32, logical_bytes = 4 : i32, heap_slot = "__udoncl_buffer_1"}
+  ]
+} {
+  func.func @cast_store(%logical_id: i32, %base: i32) attributes {
+    vrc.export_id = 77 : i32
+  } {
+    %bytes = arith.constant 4 : i32
+    %buffer, %status = vrc.buffer_alloc %logical_id, %bytes {
+      format = "rgba8_unorm", usage = "storage"
+    } : (i32, i32) -> (!vrc.buffer, i32)
+    %token = builtin.unrealized_conversion_cast %buffer : !vrc.buffer to i32
+    %destination = builtin.unrealized_conversion_cast %base : i32 to !udonhl.ptr<0>
+    "udonhl.store"(%token, %destination) <{alignment = 4 : i64}> :
+      (i32, !udonhl.ptr<0>) -> ()
+    return
+  }
+}'''
+cast_store_lowered = subprocess.run(
+    [opt, '--vrc-lower-udonhl-to-udonasm', '--verify-each'],
+    input=cast_store_source, text=True, capture_output=True)
+assert cast_store_lowered.returncode == 0, cast_store_lowered.stderr
+assert cast_store_lowered.stdout.count('udonasm.copy') == 4, cast_store_lowered.stdout
+cast_store = re.search(
+    r'udonasm\.push "(?P<pointer>__vrc_f77_r_SystemInt32_\d+)"\s+'
+    r'udonasm\.push "__vrc_constant_2"\s+'
+    r'udonasm\.push "__vrc_raw_store_word_index".*?'
+    r'udonasm\.push "(?P<value>__vrc_f77_r_SystemInt32_\d+)"\s+'
+    r'udonasm\.extern "SystemInt32Array\.__Set__SystemInt32_SystemInt32__SystemVoid"',
+    cast_store_lowered.stdout,
+    re.DOTALL,
+)
+assert cast_store is not None, cast_store_lowered.stdout
+assert cast_store.group('pointer') != cast_store.group('value'), cast_store_lowered.stdout
+
 static_buffer_source = r'''module attributes {
   vrc.host_stage = "udonhl",
   vrc.unity_buffer_pool = [
@@ -1123,6 +1191,7 @@ static_buffer_source = r'''module attributes {
     } : () -> !vrc.dispatch_desc
     %event = vrc.dispatch %desc(%weight, %output) {
       argument_kinds = ["buffer", "buffer"],
+      resource_accesses = ["read", "write"],
       global_offset = array<i32: 0, 0, 0>,
       global_size = array<i32: 1, 1, 1>,
       kernel_id = 1 : i32,
@@ -1357,6 +1426,12 @@ for expected in [
     'name = "__vrc_return_address_i32"',
     'name = "__udoncl_async_completion_object"',
     'name = "__udoncl_async_completion_status"',
+    'name = "__udoncl_async_pending_object"',
+    'name = "__udoncl_async_command_kind"',
+    'name = "__udoncl_async_command_buffer"',
+    'name = "__udoncl_async_command_offset"',
+    'name = "__udoncl_async_command_size"',
+    'name = "__udoncl_async_command_pointer"',
     'name = "__udoncl_async_complete"',
     'SystemInt32.__op_Equality__SystemInt32_SystemInt32__SystemBoolean',
     'SystemConvert.__ToUInt32__SystemInt32__SystemUInt32',

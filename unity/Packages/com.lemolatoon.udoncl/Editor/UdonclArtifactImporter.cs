@@ -716,6 +716,26 @@ namespace Lemolatoon.Udoncl.Editor
                 "reference_blank_logits",
                 "bytes"
             );
+            ValidatedDeviceBuffer stateA = null;
+            ValidatedDeviceBuffer stateB = null;
+            foreach (ValidatedDeviceBuffer buffer in artifacts.DeviceBuffers)
+            {
+                if (buffer.Name == "mnist_state_a")
+                    stateA = buffer;
+                else if (buffer.Name == "mnist_state_b")
+                    stateB = buffer;
+            }
+            if (
+                stateA == null
+                || stateB == null
+                || stateA.LogicalBytes != 10800 * 4
+                || stateB.LogicalBytes != 10800 * 4
+                || stateA.Width != stateB.Width
+                || stateA.Height != stateB.Height
+            )
+                throw new InvalidDataException(
+                    "MNIST demo requires two equal manifest-declared 10,800-word Device buffers."
+                );
             string packShaderPath = programRoot + "/Shaders/pack.shader";
             transaction.CopyFile(packShaderResource.AbsolutePath, packShaderPath);
             Shader packShader = AssetDatabase.LoadAssetAtPath<Shader>(packShaderPath);
@@ -746,9 +766,12 @@ namespace Lemolatoon.Udoncl.Editor
                 transaction,
                 programRoot,
                 "mnist_weights.asset",
-                10800,
-                1,
-                File.ReadAllBytes(weightsResource.AbsolutePath)
+                stateA.Width,
+                stateA.Height,
+                PadBytes(
+                    File.ReadAllBytes(weightsResource.AbsolutePath),
+                    stateA.Width * stateA.Height * 4
+                )
             );
             CreateOrUpdateByteTexture(
                 transaction,
@@ -772,8 +795,8 @@ namespace Lemolatoon.Udoncl.Editor
                 transaction,
                 programRoot,
                 "mnist_packed.asset",
-                10800,
-                1
+                stateA.Width,
+                stateA.Height
             );
             RenderTexture drawingScratch = CreateOrUpdateRgbaRenderTexture(
                 transaction,
@@ -786,8 +809,8 @@ namespace Lemolatoon.Udoncl.Editor
                 transaction,
                 programRoot,
                 "mnist_logits.asset",
-                10800,
-                1
+                stateB.Width,
+                stateB.Height
             );
             displayMaterial.SetTexture("_MainTex", drawing);
             displayMaterial.SetTexture("_Logits", logits);
@@ -3575,6 +3598,15 @@ namespace Lemolatoon.Udoncl.Editor
                         "Could not bind Udon public variable: " + symbol
                     );
             }
+        }
+
+        private static byte[] PadBytes(byte[] bytes, int length)
+        {
+            if (bytes.Length > length)
+                throw new InvalidDataException("Texture payload exceeds its manifest layout.");
+            if (bytes.Length != length)
+                Array.Resize(ref bytes, length);
+            return bytes;
         }
 
         private static void EnsureFolders(string assetPath)

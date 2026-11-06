@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using NUnit.Framework;
+using UnityEngine;
 using VRC.Udon.Common.Interfaces;
 using VRC.Udon.Editor;
 
@@ -46,10 +47,20 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             );
             vm.SetProgramCounter(program.EntryPoints.GetAddressFromSymbol("__0_SquarePlusOne"));
             Assert.AreEqual(0u, vm.Interpret(), "SDK VM failed to execute SquarePlusOne.");
+            UdonclManifest manifest = JsonUtility.FromJson<UdonclManifest>(
+                File.ReadAllText(Path.Combine(artifact.RootDirectory, "manifest.json"))
+            );
+            Assert.NotNull(manifest);
+            ExportInfo export = Array.Find(
+                manifest.exports,
+                candidate => candidate.public_name == "SquarePlusOne"
+            );
+            Assert.NotNull(export);
+            Assert.IsFalse(string.IsNullOrEmpty(export.status_slot));
             Assert.AreEqual(
                 0,
                 heap.GetHeapVariable<int>(
-                    program.SymbolTable.GetAddressFromSymbol("__udoncl_status_1")
+                    program.SymbolTable.GetAddressFromSymbol(export.status_slot)
                 )
             );
             Assert.AreEqual(

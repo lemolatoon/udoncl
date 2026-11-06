@@ -130,8 +130,8 @@ module {
     %upload = func.call @__vrc_opencl_buffer_upload(%input, %zero, %bytes, %pointer) : (i32, i32, i32, i32) -> i32
     %dispatch = func.call @__vrc_opencl_dispatch_udonblas_sgemm(%input, %output, %one, %one, %one, %zero, %zero, %one, %one, %one, %scalar, %scalar) : (i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, f32, f32) -> i32
     %arena = func.call @__vrc_opencl_dispatch_udonblas_arena_sgemm(%static, %input, %output, %one, %one, %one, %zero, %zero, %scalar) : (i32, i32, i32, i32, i32, i32, i32, i32, f32) -> i32
-    %activation = func.call @__vrc_opencl_dispatch_udondnn_large_activation(%input, %output, %output, %bytes, %zero, %one, %scalar, %scalar, %scalar) : (i32, i32, i32, i32, i32, i32, f32, f32, f32) -> i32
-    %pointwise = func.call @__vrc_opencl_dispatch_udondnn_large_op_tensor(%input, %static, %output, %output, %bytes, %one, %one, %one, %one, %one, %one, %zero, %scalar, %scalar, %scalar) : (i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, f32, f32, f32) -> i32
+    %activation = func.call @__vrc_opencl_dispatch_udondnn_large_activation(%input, %input, %output, %bytes, %zero, %one, %scalar, %scalar, %scalar) : (i32, i32, i32, i32, i32, i32, f32, f32, f32) -> i32
+    %pointwise = func.call @__vrc_opencl_dispatch_udondnn_large_op_tensor(%input, %static, %input, %output, %bytes, %one, %one, %one, %one, %one, %one, %zero, %scalar, %scalar, %scalar) : (i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, f32, f32, f32) -> i32
     %status = func.call @blocking_transfer(%output, %zero, %bytes, %pointer) : (i32, i32, i32, i32) -> i32
     %released = func.call @__vrc_opencl_buffer_release(%output) : (i32) -> i32
     return %status : i32
@@ -152,6 +152,8 @@ assert 'kernel_id = 221 : i32' in opencl_aot_ops
 assert opencl_aot_ops.count('global_size = array<i32: 8192, 4, 1>') == 2
 assert 'kernel_id = 233 : i32' in opencl_aot_ops
 assert 'kernel_id = 234 : i32' in opencl_aot_ops
+assert 'resource_accesses = ["read", "read", "write"]' in opencl_aot_ops
+assert 'resource_accesses = ["read", "read", "read", "write"]' in opencl_aot_ops
 
 # Recovered C control flow remains in cf form on the Host path. Keep the public
 # ABI narrow while allowing internal booleans, index values, block arguments,

@@ -545,8 +545,12 @@ CL_API_ENTRY cl_kernel CL_API_CALL clCreateKernel(cl_program p,
       (k->gather.words < 4 || k->gather.words > 16384 ||
        !k->gather.input_count || k->gather.input_count > 13 ||
        k->gather.scalar_count > 15 - k->gather.input_count ||
-       !k->gather.width || !k->gather.height ||
-       (size_t)k->gather.width * k->gather.height != k->gather.words)) {
+       !k->gather.texture_width || !k->gather.texture_height ||
+       (size_t)k->gather.texture_width * k->gather.texture_height <
+           k->gather.words ||
+       !k->gather.global_width || !k->gather.global_height ||
+       (size_t)k->gather.global_width * k->gather.global_height !=
+           k->gather.words)) {
     free(k);
     ERROR(CL_INVALID_KERNEL_DEFINITION);
   }
@@ -626,14 +630,14 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueNDRangeKernel(
   if ((status = waits(q->context, count, list)))
     return status;
   if (!dims || dims > 3 ||
-      (k->gather.id && dims != (k->gather.height > 1 ? 2u : 1u)))
+      (k->gather.id && dims != (k->gather.global_height > 1 ? 2u : 1u)))
     return CL_INVALID_WORK_DIMENSION;
   if (!global)
     return CL_INVALID_GLOBAL_WORK_SIZE;
   for (i = 0; i < dims; i++) {
     size_t expected = 1;
     if (k->gather.id)
-      expected = i == 0 ? k->gather.width : k->gather.height;
+      expected = i == 0 ? k->gather.global_width : k->gather.global_height;
     if (global[i] != expected)
       return CL_INVALID_GLOBAL_WORK_SIZE;
     if (offset && offset[i])
@@ -656,16 +660,13 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueNDRangeKernel(
     size_t byte;
     for (i = 0; i < k->gather.input_count; ++i) {
       cl_mem input = buffer_find(k->inputs[i]);
-      cl_uint other;
       if (!input || input->generation != k->input_generations[i])
         return CL_INVALID_MEM_OBJECT;
       if (input->context != q->context)
         return CL_INVALID_CONTEXT;
-      if (input == m || (input->flags & CL_MEM_WRITE_ONLY))
+      if (input->generation == m->generation ||
+          (input->flags & CL_MEM_WRITE_ONLY))
         return CL_INVALID_OPERATION;
-      for (other = 0; other < i; ++other)
-        if (input == k->inputs[other])
-          return CL_INVALID_OPERATION;
       if (input->size != m->size)
         return CL_INVALID_MEM_OBJECT;
       for (byte = 0; byte < input->size; ++byte)
