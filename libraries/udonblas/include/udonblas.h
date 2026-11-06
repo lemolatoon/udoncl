@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 
+typedef struct _cl_command_queue *cl_command_queue;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -36,6 +38,10 @@ enum {
 
 udonblasStatus_t udonblasCreate(udonblasHandle_t *handle);
 udonblasStatus_t udonblasDestroy(udonblasHandle_t handle);
+udonblasStatus_t udonblasSetStream(udonblasHandle_t handle,
+                                   cl_command_queue stream);
+udonblasStatus_t udonblasGetStream(udonblasHandle_t handle,
+                                   cl_command_queue *stream);
 
 /* Level-1 vector update with the cuBLAS contract: y = alpha * x + y.
  * Positive and negative non-zero increments are supported. */

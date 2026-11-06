@@ -322,6 +322,19 @@ its retained resources. AOT kernel argument recovery still rejects a runtime
 sub-buffer until origin-aware Device dispatch is implemented; constant-view
 elimination and dynamic Device addressing therefore remain Phase B work.
 
+Stream-API migration checkpoint (2026-11-07): the CUDA-compatible
+`udonblasSetStream`/`udonblasGetStream` and
+`udondnnSetStream`/`udondnnGetStream` entry points are public. On the Native
+runtime a handle may switch to a caller queue from the handle's current
+context; the library retains the replacement and releases the prior queue.
+Null, foreign-context, and invalid queues fail without changing association.
+The AOT singleton accepts its existing queue and rejects replacement rather
+than pretending that an arbitrary handle is usable. This is deliberately a
+transition checkpoint: `Create` still owns a private context/queue and the
+baseline operations still stage Host arrays. Phase B is not accepted until
+creation is caller-context based and every baseline tensor pointer has Device
+semantics with no internal transfer or finish.
+
 ### Phase C: ONNX and MNIST schedule
 
 - Update ONNX C++ lowering and generated Host calls to the Device APIs.

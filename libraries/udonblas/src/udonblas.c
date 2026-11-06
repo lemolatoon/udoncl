@@ -378,6 +378,43 @@ udonblasStatus_t udonblasDestroy(udonblasHandle_t handle) {
   return UDONBLAS_STATUS_SUCCESS;
 }
 
+udonblasStatus_t udonblasSetStream(udonblasHandle_t handle,
+                                   cl_command_queue stream) {
+  cl_context stream_context = 0;
+  if (handle != UDONBLAS_HANDLE || !context || !queue)
+    return UDONBLAS_STATUS_NOT_INITIALIZED;
+  if (!stream)
+    return UDONBLAS_STATUS_INVALID_VALUE;
+  if (stream == queue)
+    return UDONBLAS_STATUS_SUCCESS;
+#ifdef UDONBLAS_AOT_RAW_INTRINSICS
+  return UDONBLAS_STATUS_NOT_SUPPORTED;
+#else
+  if (clGetCommandQueueInfo(stream, CL_QUEUE_CONTEXT, sizeof(stream_context),
+                            &stream_context, 0) != CL_SUCCESS ||
+      stream_context != context)
+    return UDONBLAS_STATUS_INVALID_VALUE;
+  if (clRetainCommandQueue(stream) != CL_SUCCESS)
+    return UDONBLAS_STATUS_EXECUTION_FAILED;
+  if (clReleaseCommandQueue(queue) != CL_SUCCESS) {
+    clReleaseCommandQueue(stream);
+    return UDONBLAS_STATUS_EXECUTION_FAILED;
+  }
+  queue = stream;
+  return UDONBLAS_STATUS_SUCCESS;
+#endif
+}
+
+udonblasStatus_t udonblasGetStream(udonblasHandle_t handle,
+                                   cl_command_queue *stream) {
+  if (handle != UDONBLAS_HANDLE || !context || !queue)
+    return UDONBLAS_STATUS_NOT_INITIALIZED;
+  if (!stream)
+    return UDONBLAS_STATUS_INVALID_VALUE;
+  *stream = queue;
+  return UDONBLAS_STATUS_SUCCESS;
+}
+
 udonblasStatus_t udonblasSgemm(udonblasHandle_t handle,
                                udonblasOperation_t transa,
                                udonblasOperation_t transb, int m, int n, int k,

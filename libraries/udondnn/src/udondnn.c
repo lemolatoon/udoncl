@@ -689,6 +689,43 @@ udondnnStatus_t udondnnDestroy(udondnnHandle_t handle) {
   return UDONDNN_STATUS_SUCCESS;
 }
 
+udondnnStatus_t udondnnSetStream(udondnnHandle_t handle,
+                                 cl_command_queue stream) {
+  cl_context stream_context = 0;
+  if (handle != UDONDNN_HANDLE || !context || !queue)
+    return UDONDNN_STATUS_NOT_INITIALIZED;
+  if (!stream)
+    return UDONDNN_STATUS_BAD_PARAM;
+  if (stream == queue)
+    return UDONDNN_STATUS_SUCCESS;
+#ifdef UDONDNN_AOT_RAW_INTRINSICS
+  return UDONDNN_STATUS_NOT_SUPPORTED;
+#else
+  if (clGetCommandQueueInfo(stream, CL_QUEUE_CONTEXT, sizeof(stream_context),
+                            &stream_context, 0) != CL_SUCCESS ||
+      stream_context != context)
+    return UDONDNN_STATUS_BAD_PARAM;
+  if (clRetainCommandQueue(stream) != CL_SUCCESS)
+    return UDONDNN_STATUS_EXECUTION_FAILED;
+  if (clReleaseCommandQueue(queue) != CL_SUCCESS) {
+    clReleaseCommandQueue(stream);
+    return UDONDNN_STATUS_EXECUTION_FAILED;
+  }
+  queue = stream;
+  return UDONDNN_STATUS_SUCCESS;
+#endif
+}
+
+udondnnStatus_t udondnnGetStream(udondnnHandle_t handle,
+                                 cl_command_queue *stream) {
+  if (handle != UDONDNN_HANDLE || !context || !queue)
+    return UDONDNN_STATUS_NOT_INITIALIZED;
+  if (!stream)
+    return UDONDNN_STATUS_BAD_PARAM;
+  *stream = queue;
+  return UDONDNN_STATUS_SUCCESS;
+}
+
 udondnnStatus_t
 udondnnCreateTensorDescriptor(udondnnTensorDescriptor_t *descriptor) {
   int slot;

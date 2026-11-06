@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+typedef struct _cl_command_queue *cl_command_queue;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -85,6 +87,10 @@ enum {
 
 udondnnStatus_t udondnnCreate(udondnnHandle_t *handle);
 udondnnStatus_t udondnnDestroy(udondnnHandle_t handle);
+udondnnStatus_t udondnnSetStream(udondnnHandle_t handle,
+                                 cl_command_queue stream);
+udondnnStatus_t udondnnGetStream(udondnnHandle_t handle,
+                                 cl_command_queue *stream);
 
 udondnnStatus_t
 udondnnCreateTensorDescriptor(udondnnTensorDescriptor_t *descriptor);

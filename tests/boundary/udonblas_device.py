@@ -7,6 +7,11 @@ import sys
 
 build, output = (Path(value).resolve() for value in sys.argv[1:])
 root = Path(__file__).resolve().parents[2]
+udonblas_header = (root / "libraries/udonblas/include/udonblas.h").read_text(
+    encoding="utf-8"
+)
+assert "udonblasSetStream(udonblasHandle_t handle," in udonblas_header
+assert "udonblasGetStream(udonblasHandle_t handle," in udonblas_header
 result = subprocess.run(
     [
         sys.executable,

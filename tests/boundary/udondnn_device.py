@@ -12,6 +12,8 @@ udondnn_header = (root / "libraries/udondnn/include/udondnn.h").read_text(
     encoding="utf-8"
 )
 assert "udondnnExt" not in udondnn_header
+assert "udondnnSetStream(udondnnHandle_t handle," in udondnn_header
+assert "udondnnGetStream(udondnnHandle_t handle," in udondnn_header
 result = subprocess.run(
     [
         sys.executable,
