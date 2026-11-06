@@ -2,8 +2,9 @@
 
 > Status: **Access-aware IR/static validation, optional physical-token runtime
 > validation, CMake/CLI configuration, manifest audit, and Native MNIST pass;
-> generated enqueue checks, Device API migration, and generated-U# Unity MNIST
-> acceptance remain**
+> standard region sub-buffer ownership/transfers are implemented in both
+> runtimes; generated enqueue checks, sub-buffer Device addressing, Device API
+> migration, and generated-U# Unity MNIST acceptance remain**
 >
 > Scope: UdonCL VRC fragment dispatch resource aliasing, Debug validation,
 > standard `cl_mem`/sub-buffer semantics, and the UdonBLAS/UdonDNN migration
@@ -225,6 +226,38 @@ mechanism. Host resource separation and validation are authoritative.
 
 ## 7. Implementation phases
 
+### Autonomous grilling closure (2026-11-07)
+
+The user explicitly accepted every remaining recommended answer, so the
+remaining design frontier is closed as follows:
+
+1. Finish correctness infrastructure before changing library semantics. Phase
+   A metadata-derived validation and Release code-elision proof precede the
+   destructive UdonBLAS/UdonDNN migration.
+2. Implement standard `cl_mem` region views before typed Device-pointer
+   provenance. A runtime view owns a parent reference and records origin and
+   length; a constant compiler-proven view is folded later without changing
+   observable OpenCL lifetime or bounds behavior.
+3. Never silently dispatch a dynamic sub-buffer as origin zero. Until Device
+   addressing carries its origin, AOT kernel argument resolution rejects that
+   path. Upload, readback, copy, alias identity, and deferred release may be
+   implemented and accepted independently.
+4. Keep the CUDA-compatible typed-pointer declarations. The compiler recovers
+   their originating `cl_mem` and constant byte origin; no public cast helper,
+   library-specific Device-view replacement, or Host-pointer dual meaning is
+   introduced.
+5. Make library calls asynchronous on the caller's queue. Upload/readback,
+   event/callback handling, and final synchronization remain caller/generated
+   Host responsibilities. Library-owned temporaries are command-retained and
+   released by the terminal command.
+6. Treat the currently green generated-U# MNIST test as a regression baseline,
+   not Phase C acceptance. It must pass again after ONNX lowering and every
+   UdonBLAS/UdonDNN operation use the new Device API without internal Host
+   staging or `clFinish`.
+7. Do not begin the real TinyLlama conversation gate until the same Device API
+   contract passes MNIST. This preserves one generic implementation route
+   instead of adding a model-specific escape hatch.
+
 ### Phase A: access-aware dispatch and validation
 
 - Add access metadata to dispatch IR and verifiers.
@@ -274,6 +307,17 @@ by the current generated kernels; exceeding that bound fails before dispatch
 instead of silently dropping a retain. This keeps the generated MNIST raw heap
 within its 32 KiB budget. Sub-buffers and the public UdonBLAS/UdonDNN Device-API
 migration remain Phase B work.
+
+Implemented region-view checkpoint (2026-11-07): Native and AOT
+`clCreateSubBuffer` validate the OpenCL region form, access compatibility,
+four-byte backend alignment, non-empty in-bounds ranges, and reject nested
+sub-buffers. Views retain their parent, share physical identity, translate
+upload/readback/copy offsets, detect same-backing overlap, and defer root
+physical release until view commands and references are gone. Blocking AOT
+transfers without a caller event now complete their internal event and release
+its retained resources. AOT kernel argument recovery still rejects a runtime
+sub-buffer until origin-aware Device dispatch is implemented; constant-view
+elimination and dynamic Device addressing therefore remain Phase B work.
 
 ### Phase C: ONNX and MNIST schedule
 

@@ -449,10 +449,12 @@ Implement in this order, keeping each gate independently testable:
    generated-U# Unity numerical tests with no weight upload.
 3. Externalize the pinned TinyLlama initializers and import its static resource
    table without placing bytes in Host globals.
-   The pinned graph currently has 920 immutable textures, but their resource
-   IDs and dispatch uses are fixed by AOT lowering. They bypass the dynamic
-   OpenCL Device-memory handle table entirely; only the 31 liveness-reused
-   activation/workspace allocations and public buffers use runtime handles.
+   The earlier 920-immutable/31-mutable estimate is superseded by the later
+   recorded 1,033-static/35-mutable checkpoint in §2.2. Re-run the canonical
+   real-model pipeline after the Device API migration and replace both with one
+   measured artifact report; do not encode either historical count as a
+   compiler limit. Static resource IDs and dispatch uses remain fixed by AOT
+   lowering and bypass the dynamic OpenCL Device-memory handle table.
 4. Implement static shape/view canonicalization and Device workspace planning.
 5. Replace `MatMulNBits` with the Device-resident implementation.
 6. Implement and test every remaining generic operator required by the

@@ -245,6 +245,20 @@ static cl_int udoncl_pending_resource_add(cl_mem buffer) {
   return CL_SUCCESS;
 }
 
+static int udoncl_mem_is_subbuffer(cl_mem buffer) {
+  return buffer && buffer->immutable >= 2u;
+}
+
+static cl_mem udoncl_mem_parent(cl_mem buffer) {
+  return udoncl_mem_is_subbuffer(buffer)
+             ? &udoncl_buffers[buffer->immutable - 2u]
+             : 0;
+}
+
+static size_t udoncl_mem_origin(cl_mem buffer) {
+  return udoncl_mem_is_subbuffer(buffer) ? (size_t)buffer->id : 0u;
+}
+
 static cl_int udoncl_prepare_resources(cl_mem output, const cl_mem *reads,
                                        cl_uint read_count) {
   cl_uint index;
@@ -542,6 +556,72 @@ CL_API_ENTRY cl_mem CL_API_CALL clCreateBuffer(cl_context context,
   return 0;
 }
 
+CL_API_ENTRY cl_mem CL_API_CALL clCreateSubBuffer(cl_mem parent,
+                                                  cl_mem_flags flags,
+                                                  cl_buffer_create_type type,
+                                                  const void *creation_info,
+                                                  cl_int *error) {
+  const cl_buffer_region *region = (const cl_buffer_region *)creation_info;
+  cl_mem_flags access =
+      flags & (CL_MEM_READ_WRITE | CL_MEM_WRITE_ONLY | CL_MEM_READ_ONLY);
+  cl_mem_flags parent_access;
+  cl_uint index;
+  cl_uint parent_index;
+  for (parent_index = 0; parent_index < UDONCL_AOT_BUFFER_CAPACITY;
+       ++parent_index)
+    if (parent == &udoncl_buffers[parent_index])
+      break;
+  if (parent_index == UDONCL_AOT_BUFFER_CAPACITY || !parent->active ||
+      parent->immutable) {
+    udoncl_error(error, CL_INVALID_MEM_OBJECT);
+    return 0;
+  }
+  if (type != CL_BUFFER_CREATE_TYPE_REGION || !region ||
+      (flags & ~(CL_MEM_READ_WRITE | CL_MEM_WRITE_ONLY | CL_MEM_READ_ONLY)) ||
+      (access != 0 && access != CL_MEM_READ_WRITE &&
+       access != CL_MEM_WRITE_ONLY && access != CL_MEM_READ_ONLY)) {
+    udoncl_error(error, CL_INVALID_VALUE);
+    return 0;
+  }
+  parent_access = parent->flags &
+                  (CL_MEM_READ_WRITE | CL_MEM_WRITE_ONLY | CL_MEM_READ_ONLY);
+  if ((parent_access == CL_MEM_WRITE_ONLY && access != 0 &&
+       access != CL_MEM_WRITE_ONLY) ||
+      (parent_access == CL_MEM_READ_ONLY && access != 0 &&
+       access != CL_MEM_READ_ONLY)) {
+    udoncl_error(error, CL_INVALID_VALUE);
+    return 0;
+  }
+  if (region->origin & 3u) {
+    udoncl_error(error, CL_MISALIGNED_SUB_BUFFER_OFFSET);
+    return 0;
+  }
+  if (!region->size || region->origin > parent->bytes ||
+      region->size > parent->bytes - region->origin) {
+    udoncl_error(error, CL_INVALID_VALUE);
+    return 0;
+  }
+  for (index = 0; index < UDONCL_AOT_BUFFER_CAPACITY; ++index) {
+    cl_mem buffer = &udoncl_buffers[index];
+    if (buffer->active || buffer->command_refs || buffer->physical_token)
+      continue;
+    buffer->active = 1;
+    buffer->id = (cl_uint)region->origin;
+    buffer->physical_token = parent->physical_token;
+    buffer->immutable = parent_index + 2u;
+    buffer->refs = 1;
+    buffer->command_refs = 0;
+    buffer->context = parent->context;
+    buffer->flags = access ? access : parent->flags;
+    buffer->bytes = region->size;
+    ++parent->refs;
+    udoncl_error(error, CL_SUCCESS);
+    return buffer;
+  }
+  udoncl_error(error, CL_OUT_OF_RESOURCES);
+  return 0;
+}
+
 cl_mem udonclCreateBufferForQueue(cl_command_queue queue, cl_mem_flags flags,
                                   size_t bytes, cl_int *error) {
   if (queue != &udoncl_queue || !queue->active) {
@@ -701,7 +781,7 @@ static cl_int udoncl_mem_argument(cl_kernel kernel, cl_uint index,
     return CL_INVALID_KERNEL_ARGS;
   for (cursor = 0; cursor < sizeof(*value); ++cursor)
     destination[cursor] = kernel->arguments[index][cursor];
-  if (!*value || !(*value)->active)
+  if (!*value || !(*value)->active || udoncl_mem_is_subbuffer(*value))
     return CL_INVALID_MEM_OBJECT;
   return udoncl_pending_resource_add(*value);
 }
@@ -1103,16 +1183,31 @@ static cl_event udoncl_event_find(cl_event event) {
 
 static cl_int udoncl_mem_finalize(cl_mem buffer) {
   cl_int status = CL_SUCCESS;
+  cl_mem parent;
   if (!buffer || buffer->refs || buffer->command_refs ||
       !buffer->physical_token)
     return CL_SUCCESS;
-  if (!buffer->immutable)
+  parent = udoncl_mem_parent(buffer);
+  if (!parent && buffer->immutable == 0)
     status = __vrc_opencl_buffer_release(buffer->physical_token);
   buffer->physical_token = 0;
   buffer->context = 0;
   buffer->flags = 0;
   buffer->bytes = 0;
   buffer->immutable = 0;
+  if (parent) {
+    if (parent->refs && --parent->refs == 0)
+      parent->active = 0;
+    if (!parent->refs && !parent->command_refs && parent->physical_token) {
+      if (!parent->immutable)
+        status = __vrc_opencl_buffer_release(parent->physical_token);
+      parent->physical_token = 0;
+      parent->context = 0;
+      parent->flags = 0;
+      parent->bytes = 0;
+      parent->immutable = 0;
+    }
+  }
   return status;
 }
 
@@ -1254,7 +1349,8 @@ static cl_int udoncl_finish_enqueue(cl_command_queue queue,
   if (!blocking)
     return CL_SUCCESS;
   return event && *event ? udoncl_event_wait(*event)
-                         : __vrc_opencl_await(pending);
+         : queue->tail   ? udoncl_event_wait(queue->tail)
+                         : CL_SUCCESS;
 }
 
 static cl_int udoncl_finish_dispatch(cl_command_queue queue, cl_event *event) {
@@ -2075,14 +2171,15 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueWriteBuffer(
     const cl_event *wait_list, cl_event *event) {
   cl_int pending;
   if (queue != &udoncl_queue || !queue->active || !buffer || !buffer->active ||
-      buffer->immutable || !source || offset > buffer->bytes ||
+      buffer->immutable == 1u || !source || offset > buffer->bytes ||
       bytes > buffer->bytes - offset ||
       udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
   udoncl_pending_resources_reset();
   udoncl_pending_resource_add(buffer);
-  pending =
-      __vrc_opencl_buffer_upload(buffer->physical_token, offset, bytes, source);
+  pending = __vrc_opencl_buffer_upload(buffer->physical_token,
+                                       udoncl_mem_origin(buffer) + offset,
+                                       bytes, source);
   return udoncl_finish_enqueue(queue, CL_COMMAND_WRITE_BUFFER, pending,
                                blocking, event);
 }
@@ -2099,8 +2196,9 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueReadBuffer(
     return CL_INVALID_VALUE;
   udoncl_pending_resources_reset();
   udoncl_pending_resource_add(buffer);
-  pending = __vrc_opencl_buffer_readback(buffer->physical_token, offset, bytes,
-                                         destination);
+  pending = __vrc_opencl_buffer_readback(buffer->physical_token,
+                                         udoncl_mem_origin(buffer) + offset,
+                                         bytes, destination);
   return udoncl_finish_enqueue(queue, CL_COMMAND_READ_BUFFER, pending, blocking,
                                event);
 }
@@ -2117,12 +2215,19 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueCopyBuffer(
       source_offset > source->bytes || bytes > source->bytes - source_offset ||
       destination_offset > destination->bytes ||
       bytes > destination->bytes - destination_offset ||
-      (source == destination && source_offset < destination_offset + bytes &&
-       destination_offset < source_offset + bytes) ||
+      (source->physical_token == destination->physical_token &&
+       udoncl_mem_origin(source) + source_offset <
+           udoncl_mem_origin(destination) + destination_offset + bytes &&
+       udoncl_mem_origin(destination) + destination_offset <
+           udoncl_mem_origin(source) + source_offset + bytes) ||
       udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
-    return source == destination &&
-                   source_offset < destination_offset + bytes &&
-                   destination_offset < source_offset + bytes
+    return source && destination &&
+                   source->physical_token == destination->physical_token &&
+                   udoncl_mem_origin(source) + source_offset <
+                       udoncl_mem_origin(destination) + destination_offset +
+                           bytes &&
+                   udoncl_mem_origin(destination) + destination_offset <
+                       udoncl_mem_origin(source) + source_offset + bytes
                ? CL_MEM_COPY_OVERLAP
                : CL_INVALID_VALUE;
   if (source->context != destination->context)
@@ -2130,9 +2235,10 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueCopyBuffer(
   udoncl_pending_resources_reset();
   udoncl_pending_resource_add(source);
   udoncl_pending_resource_add(destination);
-  pending = __vrc_opencl_buffer_copy(source->physical_token,
-                                     destination->physical_token, source_offset,
-                                     destination_offset, bytes);
+  pending = __vrc_opencl_buffer_copy(
+      source->physical_token, destination->physical_token,
+      udoncl_mem_origin(source) + source_offset,
+      udoncl_mem_origin(destination) + destination_offset, bytes);
   return udoncl_finish_enqueue(queue, CL_COMMAND_COPY_BUFFER, pending, CL_FALSE,
                                event);
 }

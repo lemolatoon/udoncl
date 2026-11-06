@@ -1,6 +1,6 @@
 # Host Storage Allocator Plan
 
-> Status: **implementation in progress**
+> Status: **implemented and accepted by the generated-U# Unity MNIST gate**
 > Decision date: **2026-11-05**
 > Parent architecture: [PLAN.md](PLAN.md)
 > Final acceptance target: **a user-facing compiler-generated U# binding runs MNIST end to end in Unity and its numerical test passes without the Udon 10-second watchdog**
@@ -40,12 +40,11 @@ Current verified implementation state (2026-11-05):
   measured address-cache budget, and capacity probes can measure an oversized
   candidate before selecting constant materialization while the final lowering
   still rejects programs above 512 slots;
-- the last Unity-tested MNIST artifact used 440 data slots, a 111-element
-  `SystemInt32Array` spill bank, and an 80,572-word raw heap; its generated UASM
-  was approximately 15.7 MB;
-- richer reduction suggestions, benchmark tuning, cooperative checkpoint
-  placement, and the final generated-U# MNIST numerical gate remain
-  outstanding.
+- the generated-U# MNIST path now completes initialize, one 784-element upload,
+  callback-first inference, one 10-logit readback, oracle comparison, and
+  shutdown without the SDK watchdog;
+- richer reduction suggestions and benchmark tuning remain optional follow-up;
+  they are not blockers for the accepted storage allocator.
 
 ## 1. Problem and current evidence
 
@@ -56,15 +55,11 @@ array operation, while byte and unaligned accesses use shifts, masks, and
 read-modify-write. Remaining byte-oriented loops and address materialization
 can still make small C helpers large in generated Udon.
 
-The last Unity-tested MNIST artifact imported and compiled its generated U#
-binding, but its focused test finished with 0/1 passing. Fixing successor
-parallel-copy interference removed the previous `SystemInt32Array`
-`IndexOutOfRangeException`. The remaining failure is the SDK Udon VM's
-10-second watchdog inside `udondnnConvolutionForward`; numerical comparison was
-not reached. Cooperative checkpoint planning now accounts for the transitive
-cost of synchronous callees and places multiple checkpoints through the
-heaviest uninterrupted regions, but this revised placement still requires a
-Unity acceptance run.
+The accepted MNIST artifact imports and compiles its generated U# binding and
+passes the focused numerical test. Successor parallel-copy interference and
+the earlier `SystemInt32Array` `IndexOutOfRangeException` are fixed. Static
+continuation/checkpoint placement keeps every resumed Host segment below the
+SDK Udon VM watchdog without changing OpenCL-visible semantics.
 
 Static instruction evidence for the current backend is:
 

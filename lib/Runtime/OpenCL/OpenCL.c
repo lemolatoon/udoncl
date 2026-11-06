@@ -49,7 +49,8 @@ struct _cl_mem {
   cl_mem_flags flags;
   uint32_t id, generation;
   unsigned char *data, *initialized;
-  size_t size;
+  size_t size, origin;
+  cl_mem parent;
   struct _cl_mem *next;
 };
 struct _cl_event {
@@ -387,12 +388,52 @@ CL_API_ENTRY cl_mem CL_API_CALL clCreateSubBuffer(cl_mem m, cl_mem_flags flags,
                                                   cl_buffer_create_type type,
                                                   const void *info,
                                                   cl_int *errcode_ret) {
-  (void)flags;
-  (void)type;
-  (void)info;
+  const cl_buffer_region *region = (const cl_buffer_region *)info;
+  cl_mem_flags access =
+      flags & (CL_MEM_READ_WRITE | CL_MEM_WRITE_ONLY | CL_MEM_READ_ONLY);
+  cl_mem_flags parent_access;
+  cl_mem child;
   if (!buffer_find(m))
     ERROR(CL_INVALID_MEM_OBJECT);
-  ERROR(CL_INVALID_OPERATION);
+  if (m->parent)
+    ERROR(CL_INVALID_MEM_OBJECT);
+  if (type != CL_BUFFER_CREATE_TYPE_REGION || !region)
+    ERROR(CL_INVALID_VALUE);
+  if (flags & ~(CL_MEM_READ_WRITE | CL_MEM_WRITE_ONLY | CL_MEM_READ_ONLY))
+    ERROR(CL_INVALID_VALUE);
+  if (access && (access & (access - 1)))
+    ERROR(CL_INVALID_VALUE);
+  parent_access =
+      m->flags & (CL_MEM_READ_WRITE | CL_MEM_WRITE_ONLY | CL_MEM_READ_ONLY);
+  if ((parent_access == CL_MEM_WRITE_ONLY && access != 0 &&
+       access != CL_MEM_WRITE_ONLY) ||
+      (parent_access == CL_MEM_READ_ONLY && access != 0 &&
+       access != CL_MEM_READ_ONLY))
+    ERROR(CL_INVALID_VALUE);
+  if (region->origin & 3u)
+    ERROR(CL_MISALIGNED_SUB_BUFFER_OFFSET);
+  if (!region->size || region->origin > m->size ||
+      region->size > m->size - region->origin)
+    ERROR(CL_INVALID_VALUE);
+  child = (cl_mem)calloc(1, sizeof(*child));
+  if (!child)
+    ERROR(CL_OUT_OF_HOST_MEMORY);
+  child->refs = 1;
+  child->context = m->context;
+  child->flags = access ? access : m->flags;
+  child->id = m->id;
+  child->generation = m->generation;
+  child->data = m->data + region->origin;
+  child->initialized = m->initialized + region->origin;
+  child->size = region->size;
+  child->origin = region->origin;
+  child->parent = m;
+  ++m->refs;
+  child->next = buffers;
+  buffers = child;
+  if (errcode_ret)
+    *errcode_ret = CL_SUCCESS;
+  return child;
 }
 CL_API_ENTRY cl_int CL_API_CALL clRetainMemObject(cl_mem m) {
   if (!buffer_find(m))
@@ -405,11 +446,17 @@ CL_API_ENTRY cl_int CL_API_CALL clReleaseMemObject(cl_mem m) {
     return CL_INVALID_MEM_OBJECT;
   if (!--m->refs) {
     cl_context c = m->context;
+    cl_mem parent = m->parent;
     UNLINK(cl_mem, m, buffers);
-    free(m->data);
-    free(m->initialized);
+    if (!parent) {
+      free(m->data);
+      free(m->initialized);
+    }
     free(m);
-    clReleaseContext(c);
+    if (parent)
+      clReleaseMemObject(parent);
+    else
+      clReleaseContext(c);
   }
   return CL_SUCCESS;
 }
@@ -760,8 +807,13 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueCopyBuffer(
       destination_offset > destination->size ||
       bytes > destination->size - destination_offset)
     return CL_INVALID_VALUE;
-  if (source == destination && source_offset < destination_offset + bytes &&
-      destination_offset < source_offset + bytes)
+  if ((source == destination ||
+       (source->parent ? source->parent : source) ==
+           (destination->parent ? destination->parent : destination)) &&
+      source->origin + source_offset <
+          destination->origin + destination_offset + bytes &&
+      destination->origin + destination_offset <
+          source->origin + source_offset + bytes)
     return CL_MEM_COPY_OVERLAP;
   if ((status = waits(q->context, count, list)))
     return status;

@@ -534,6 +534,7 @@ int main(void) {
   cl_kernel kernel;
   cl_event marker_event, write_event, wait_events[2];
   cl_mem first, second, nested_buffer, nested_buffer2, static_buffer;
+  cl_mem sub_parent, sub_buffer;
   cl_mem same_physical_buffer;
   cl_mem batched_a, batched_b, batched_c;
   cl_mem transpose_input_buffer, transpose_output_buffer, concat_left_buffer;
@@ -555,6 +556,8 @@ int main(void) {
   size_t global[2] = {32, 32}, local[2] = {1, 1};
   cl_uint index;
   int source = 42;
+  int sub_source = 91, sub_result = 0;
+  cl_buffer_region sub_region = {4, sizeof(sub_source)};
   size_t bytes, byte_offset, byte_length;
   size_t elements;
   udononnxOperatorHandle_t operator_handle = 0;
@@ -699,6 +702,28 @@ int main(void) {
   EXPECT(clReleaseEvent(write_event) == CL_SUCCESS);
   EXPECT(uploaded_token == 101);
   EXPECT(clReleaseMemObject(first) == CL_SUCCESS);
+  EXPECT(released_token == 101);
+
+  released_token = 0;
+  sub_parent = clCreateBuffer(context, CL_MEM_READ_WRITE, 16, 0, &error);
+  EXPECT(sub_parent && error == CL_SUCCESS);
+  sub_buffer = clCreateSubBuffer(sub_parent, 0, CL_BUFFER_CREATE_TYPE_REGION,
+                                 &sub_region, &error);
+  EXPECT(sub_buffer && error == CL_SUCCESS);
+  EXPECT(!clCreateSubBuffer(sub_buffer, 0, CL_BUFFER_CREATE_TYPE_REGION,
+                            &sub_region, &error) &&
+         error == CL_INVALID_MEM_OBJECT);
+  EXPECT(__vrc_enqueue_udonblas_arena_sgemm_device_args(
+             queue, sub_buffer, sub_buffer, sub_parent, 1, 1, 1, 0, 0, 1.0f, 0,
+             0, 0) == CL_INVALID_OPERATION);
+  EXPECT(clReleaseMemObject(sub_parent) == CL_SUCCESS);
+  EXPECT(released_token == 0);
+  EXPECT(clEnqueueWriteBuffer(queue, sub_buffer, CL_TRUE, 0, sizeof(sub_source),
+                              &sub_source, 0, 0, 0) == CL_SUCCESS);
+  EXPECT(clEnqueueReadBuffer(queue, sub_buffer, CL_TRUE, 0, sizeof(sub_result),
+                             &sub_result, 0, 0, 0) == CL_SUCCESS);
+  EXPECT(sub_result == sub_source);
+  EXPECT(clReleaseMemObject(sub_buffer) == CL_SUCCESS);
   EXPECT(released_token == 101);
 
   /* Reusing the logical table slot must request a new physical token rather

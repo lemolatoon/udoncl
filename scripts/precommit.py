@@ -625,6 +625,20 @@ def run_unity_mcp_gate(
             "GIT_CONFIG_VALUE_0": "true",
         }
     )
+    lifecycle_backup = output / "unity-lifecycle-backup"
+    shutil.rmtree(lifecycle_backup, ignore_errors=True)
+    lifecycle_backup.mkdir()
+    lifecycle_state = []
+    for lifecycle_root in (generated, serialized):
+        backup_root = lifecycle_backup / lifecycle_root.name
+        root_existed = lifecycle_root.is_dir()
+        if root_existed:
+            shutil.copytree(lifecycle_root, backup_root)
+        root_meta = lifecycle_root.with_suffix(".meta")
+        meta_original = root_meta.read_bytes() if root_meta.is_file() else None
+        lifecycle_state.append(
+            (lifecycle_root, backup_root, root_existed, root_meta, meta_original)
+        )
     unity_log = output / "unity.log"
     unity_process = None
     client = None
@@ -789,31 +803,21 @@ def run_unity_mcp_gate(
             except subprocess.TimeoutExpired:
                 unity_process.kill()
                 unity_process.wait(timeout=30)
-        for program_name in (
-            "hello_dispatch",
-            "saxpy_demo",
-            "average_pooling",
-            "generic_onnx_mnist",
-            "generic_onnx_transformer_tiny",
-        ):
-            program_root = generated / program_name
-            shutil.rmtree(program_root, ignore_errors=True)
-            program_root.with_suffix(".meta").unlink(missing_ok=True)
-        if serialized.exists():
-            additions = [
-                path
-                for path in serialized.rglob("*")
-                if path.relative_to(serialized).as_posix() not in serialized_before
-            ]
-            for path in sorted(
-                additions,
-                key=lambda candidate: len(candidate.relative_to(serialized).parts),
-                reverse=True,
-            ):
-                if path.is_dir():
-                    path.rmdir()
-                else:
-                    path.unlink(missing_ok=True)
+        for (
+            lifecycle_root,
+            backup_root,
+            root_existed,
+            root_meta,
+            meta_original,
+        ) in lifecycle_state:
+            shutil.rmtree(lifecycle_root, ignore_errors=True)
+            if root_existed:
+                shutil.copytree(backup_root, lifecycle_root)
+            if meta_original is None:
+                root_meta.unlink(missing_ok=True)
+            else:
+                root_meta.write_bytes(meta_original)
+        shutil.rmtree(lifecycle_backup, ignore_errors=True)
         manifest_path.write_bytes(manifest_original)
         if lock_original is None:
             lock_path.unlink(missing_ok=True)

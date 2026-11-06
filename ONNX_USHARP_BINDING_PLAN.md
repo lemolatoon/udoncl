@@ -470,9 +470,10 @@ Completed and verified:
   MNIST and the bounded Transformer fixture now use such a C Host to
   create/adopt explicit OpenCL input/output buffers, form
   `udonclBufferView_t` tensors, bind a generic session, and export only
-  `Initialize`, `Run`, and `Shutdown`. The Transformer maps present key/value
-  outputs onto the past key/value device buffers so cache state remains on the
-  device between runs. Compiler-generated bindings
+  `Initialize`, `Run`, and `Shutdown`. The Transformer uses distinct past and
+  present key/value Device buffers so a fragment pass never reads its own
+  render target. Queue-ordered copy/swap orchestration will reuse completed KV
+  state without a Host round trip. Compiler-generated bindings
   now consume Manifest `element_type`/`public_access` and emit dtype-correct
   whole-buffer APIs such as `TryWriteInputBuffer(float[])` and callback-first
   `StartReadOutputBuffer(float[], receiver, event)`. User readback and the C
@@ -521,10 +522,9 @@ Completed and verified:
   compiler-private completion entry without the legacy resume-state slot.
   The complete non-Unity CTest suite, including Native coroutine execution and
   all three compiler-generated Async bindings, passes 46/46.
-  The required Luna/xhigh Unity MCP route is now connected and has imported the
-  compiler-generated MNIST binding byte-for-byte without C# errors. Unity
-  execution exposed SDK parser-unsafe literals and then a 10-second Udon VM
-  performance limit before numerical comparison. Scalar lowering now forces
+  The required Luna/xhigh Unity MCP route imports the compiler-generated MNIST
+  binding byte-for-byte without C# errors. Earlier Unity execution exposed SDK
+  parser-unsafe literals and a 10-second Udon VM performance limit. Scalar lowering now forces
   large-exponent `f32` values and `INT32_MIN` through runtime bit
   materialization, uses direct aligned `SystemInt32Array` access for proven
   non-aliased zero-initialized internal `i32`/pointer globals, selects constant
@@ -538,24 +538,20 @@ Completed and verified:
   upload/readback boundaries. Boolean `i1` and/or/xor lower through Boolean
   control flow rather than Int32 externs. These changes reduced the MNIST
   assembly from 619,565 lines to 200,621 while retaining 512 total addresses;
-  the bounded Transformer remains within 511 addresses. The focused Unity
-  test still failed 0/1 at the SDK VM's 10-second limit. The last completed run
-  stopped at PC 1,393,292 inside `udononnxGeneratedEnqueueRun`; generated U# source and
-  Host assembly imported successfully, but logits and the numerical comparison
-  were not reached. Cleanup restored the Unity Assets tree exactly to its
-  pre-test baseline and left the Editor idle with a clear console.
+  the bounded Transformer remains within the address gate. Static continuation
+  placement subsequently removed the watchdog failure. The generated-U# MNIST
+  controller now passes initialize, 784-element upload, callback-first run,
+  10-logit readback, oracle comparison, and shutdown. The bounded Transformer
+  numerical fixture also passes with separate present K/V outputs after fixing
+  physical Texture row-pitch propagation; its remaining acceptance item is the
+  user-facing generated-U# route rather than direct IUdonVM execution. Cleanup
+  restores the Unity Assets tree and leaves the Editor console clear.
 
 Still required before removing compatibility paths:
 
-- bring each resumed Host segment under the SDK Udon VM's 10-second execution
-  limit without changing OpenCL blocking/non-blocking semantics. Operator-local
-  packing has been reduced, but a static Udon-only cooperative checkpoint is now
-  required for long synchronous Host segments; it must reuse the existing
-  compiler-generated continuation state machine, not introduce a dynamic
-  scheduler or alter Native/OpenCL observable semantics;
-- pass the generated-U# MNIST numerical acceptance test and the full repository
-  gate, then remove the direct-await production path and Editor binding-source
-  generator. Keep the compatibility code until that Unity evidence exists.
+- migrate UdonBLAS/UdonDNN from Host staging to the asynchronous caller-owned
+  Device API in `DEVICE_RESOURCE_ALIAS_PLAN.md`, then rerun the same generated-U#
+  MNIST numerical acceptance path;
 - validate the schema-v2 Transformer whole-buffer binding and Device-resident
   KV reuse through the required Luna/xhigh Unity MCP route. Its old schema-v1
   element access compatibility exports have been removed, and the flattened

@@ -17,6 +17,7 @@ int run_opencl_runtime_tests(void) {
   cl_program program, bad;
   cl_kernel kernel;
   cl_mem buffer, copy_buffer, foreign, saved;
+  cl_mem sub_parent, sub_first, sub_second;
   cl_event copied_event, done, read, foreign_event;
   cl_int error, status;
   cl_uint count;
@@ -26,6 +27,8 @@ int run_opencl_runtime_tests(void) {
              *unknown = "__kernel void unknown(){}";
   char *copy = (char *)malloc(strlen(text) + 1);
   unsigned char bytes[4] = {1, 2, 3, 4}, copied[4] = {0};
+  unsigned char sub_bytes[4] = {0, 1, 2, 3};
+  cl_buffer_region sub_region;
   EXPECT(copy != NULL);
   strcpy(copy, text);
   EXPECT(clGetPlatformIDs(0, NULL, NULL) == CL_INVALID_VALUE);
@@ -91,7 +94,39 @@ int run_opencl_runtime_tests(void) {
   EXPECT(foreign && !error);
   EXPECT(!clCreateSubBuffer(buffer, 0, CL_BUFFER_CREATE_TYPE_REGION, NULL,
                             &error) &&
-         error == CL_INVALID_OPERATION);
+         error == CL_INVALID_VALUE);
+  sub_parent = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(sub_bytes),
+                              NULL, &error);
+  EXPECT(sub_parent && !error);
+  sub_region.origin = 1;
+  sub_region.size = 4;
+  EXPECT(!clCreateSubBuffer(sub_parent, 0, CL_BUFFER_CREATE_TYPE_REGION,
+                            &sub_region, &error) &&
+         error == CL_MISALIGNED_SUB_BUFFER_OFFSET);
+  sub_region.origin = 0;
+  sub_region.size = 4;
+  sub_first =
+      clCreateSubBuffer(sub_parent, CL_MEM_READ_ONLY,
+                        CL_BUFFER_CREATE_TYPE_REGION, &sub_region, &error);
+  EXPECT(sub_first && !error);
+  EXPECT(!clCreateSubBuffer(sub_first, 0, CL_BUFFER_CREATE_TYPE_REGION,
+                            &sub_region, &error) &&
+         error == CL_INVALID_MEM_OBJECT);
+  sub_region.origin = 0;
+  sub_second = clCreateSubBuffer(sub_parent, 0, CL_BUFFER_CREATE_TYPE_REGION,
+                                 &sub_region, &error);
+  EXPECT(sub_second && !error);
+  OK(clEnqueueWriteBuffer(queue, sub_parent, CL_TRUE, 0, sizeof(sub_bytes),
+                          sub_bytes, 0, NULL, NULL));
+  EXPECT(clEnqueueCopyBuffer(queue, sub_parent, sub_first, 0, 0, 4, 0, NULL,
+                             NULL) == CL_MEM_COPY_OVERLAP);
+  OK(clReleaseMemObject(sub_parent));
+  memset(copied, 0, sizeof(copied));
+  OK(clEnqueueReadBuffer(queue, sub_first, CL_TRUE, 0, 4, copied, 0, NULL,
+                         NULL));
+  EXPECT(!memcmp(sub_bytes, copied, 4));
+  OK(clReleaseMemObject(sub_first));
+  OK(clReleaseMemObject(sub_second));
   EXPECT(!clEnqueueMapBuffer(queue, buffer, CL_TRUE, CL_MAP_READ, 0, 4, 0, NULL,
                              NULL, &error) &&
          error == CL_INVALID_OPERATION);

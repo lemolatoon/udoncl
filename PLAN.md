@@ -1,6 +1,8 @@
 # PLAN.md — VRChat向け C / OpenCL C → Udon / HLSL コンパイラ
 
-> Status: **Udon/Native Async and compiler-generated U# binding implemented; Host storage allocator + Unity MNIST gate next**
+> Status: **Udon/Native Async, Host storage allocation, compiler-generated U#,
+> and Unity MNIST numerical gate implemented; CUDA-shaped asynchronous Device
+> library migration is next**
 
 The current read/write resource-alias contract, `cl_mem` Device API migration,
 and MNIST acceptance work are specified separately in
@@ -297,9 +299,10 @@ TinyLlamaの現行設計、実装順序、受入条件の正本は
   word-packed raw memoryの4層へ分類する。初期backendは非再帰・1 active rootに限定する。
 - Suspendをまたぐ値はpersistent typed spillへ保存し、register、spill index cache、raw fallback、
   externを含む最終address数を512以下にする。超過時は内訳付きcompile errorにする。
-- 最初のgateは利用者向けgenerated U# APIだけでMNISTのinitialize、784要素input write、callback-first
-  run、10 logits read、shutdownを行うUnity Test Runner数値試験の合格と10秒watchdog解消である。
-  checkpoint追加だけをbyte raw heap中心のHost経路の最終解にしない。
+- generated U# APIだけでMNISTのinitialize、784要素input write、callback-first
+  run、10 logits read、shutdownを行うUnity Test Runner数値試験は合格し、10秒watchdogも解消した。
+  次のgateは`DEVICE_RESOURCE_ALIAS_PLAN.md`に従い、同じ試験をHost stagingのない
+  CUDA-shaped asynchronous Device library APIへ移行した後にも通すことである。
 
 ## 3. ABIとExecution Contract
 
