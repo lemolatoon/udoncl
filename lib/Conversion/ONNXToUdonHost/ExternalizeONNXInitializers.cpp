@@ -4,6 +4,10 @@
 #include "mlir/Pass/PassRegistry.h"
 #include "src/Dialect/ONNX/ElementsAttr/DisposableElementsAttr.hpp"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
+#include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/SHA256.h"
 
 using namespace mlir;
@@ -76,6 +80,18 @@ struct ExternalizeONNXInitializersPass
     : PassWrapper<ExternalizeONNXInitializersPass, OperationPass<ModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ExternalizeONNXInitializersPass)
 
+  ExternalizeONNXInitializersPass() = default;
+  ExternalizeONNXInitializersPass(const ExternalizeONNXInitializersPass &pass)
+      : PassWrapper<ExternalizeONNXInitializersPass,
+                    OperationPass<ModuleOp>>() {
+    staticDataDirectory = pass.staticDataDirectory.getValue();
+  }
+
+  Pass::Option<std::string> staticDataDirectory{
+      *this, "static-data-directory",
+      llvm::cl::desc("Directory receiving external static tensor payloads"),
+      llvm::cl::init("")};
+
   StringRef getArgument() const final {
     return "udoncl-externalize-onnx-initializers";
   }
@@ -86,6 +102,16 @@ struct ExternalizeONNXInitializersPass
 
   void runOnOperation() override {
     ModuleOp module = getOperation();
+    if (!staticDataDirectory.empty()) {
+      std::error_code error =
+          llvm::sys::fs::create_directories(staticDataDirectory);
+      if (error) {
+        module.emitError() << "cannot create static tensor directory "
+                           << staticDataDirectory << ": " << error.message();
+        signalPassFailure();
+        return;
+      }
+    }
     SmallVector<Operation *> initializers;
     module.walk([&](Operation *operation) {
       if (operation->getName().getStringRef() == "onnx.Constant" &&
@@ -134,7 +160,28 @@ struct ExternalizeONNXInitializersPass
         byteStrides[dimension] = stride;
         stride *= type.getDimSize(dimension);
       }
-      DictionaryAttr record = builder.getDictionaryAttr({
+      if (!staticDataDirectory.empty()) {
+        llvm::SmallString<256> path(staticDataDirectory);
+        llvm::sys::path::append(path,
+                                "tensor_" + std::to_string(index) + ".bytes");
+        std::error_code error;
+        llvm::raw_fd_ostream stream(path, error, llvm::sys::fs::OF_None);
+        if (error) {
+          operation->emitError() << "cannot write static tensor payload "
+                                 << path << ": " << error.message();
+          signalPassFailure();
+          return;
+        }
+        stream.write(bytes->data(), bytes->size());
+        stream.close();
+        if (stream.has_error()) {
+          operation->emitError()
+              << "failed to write static tensor payload " << path;
+          signalPassFailure();
+          return;
+        }
+      }
+      SmallVector<NamedAttribute> fields{
           builder.getNamedAttr("id", builder.getI32IntegerAttr(index)),
           builder.getNamedAttr("symbol", builder.getStringAttr(symbol)),
           builder.getNamedAttr("name", builder.getStringAttr(initializerName(
@@ -151,8 +198,14 @@ struct ExternalizeONNXInitializersPass
           builder.getNamedAttr("byte_length",
                                builder.getI64IntegerAttr(bytes->size())),
           builder.getNamedAttr("sha256", builder.getStringAttr(hash)),
-          builder.getNamedAttr("data", value),
-      });
+      };
+      // Finalization needs scalar/shape constants, but carrying model weights
+      // through another MLIR parse multiplies peak memory. Large payloads live
+      // only in the sidecar directory and are validated by length and SHA-256
+      // when the Unity artifact is packed.
+      if (staticDataDirectory.empty() || bytes->size() <= 4096)
+        fields.push_back(builder.getNamedAttr("data", value));
+      DictionaryAttr record = builder.getDictionaryAttr(fields);
       records.push_back(record);
 
       OpBuilder declarationBuilder(module.getBodyRegion());

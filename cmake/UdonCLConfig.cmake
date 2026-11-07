@@ -83,14 +83,14 @@ if(NOT UDONCL_ONNX_IMPORTER_EXECUTABLE)
   endif()
 endif()
 if(NOT UDONCL_ONNX_OPT_EXECUTABLE)
-  find_program(_UDONCL_ONNX_OPT_DISCOVERED NAMES udoncl-onnx-opt onnx-mlir-opt
+  find_program(_UDONCL_ONNX_OPT_DISCOVERED NAMES udoncl-onnx-opt
     HINTS
       "${_UDONCL_INSTALL_PREFIX}/bin"
       "${_UDONCL_SOURCE_HINT}/.deps/onnx-mlir/bin"
     NO_DEFAULT_PATH)
   if(_UDONCL_ONNX_OPT_DISCOVERED)
     set(UDONCL_ONNX_OPT_EXECUTABLE "${_UDONCL_ONNX_OPT_DISCOVERED}"
-        CACHE FILEPATH "Path to the locked onnx-mlir-opt executable" FORCE)
+        CACHE FILEPATH "Path to the locked UdonCL ONNX optimizer" FORCE)
   endif()
 endif()
 if(NOT UDONCL_OPT_EXECUTABLE)
@@ -245,13 +245,15 @@ function(udoncl_add_onnx_host_library target)
   find_package(Python3 3.12 REQUIRED COMPONENTS Interpreter)
   set(_generated_dir "${CMAKE_CURRENT_BINARY_DIR}/udoncl-onnx/${target}")
   set(_generated_host_mlir "${_generated_dir}/host.mlir")
+  set(_generated_static_data "${_generated_dir}/static-tensors")
   file(MAKE_DIRECTORY "${_generated_dir}")
   set(_compile_command "${Python3_EXECUTABLE}" "${_UDONCL_ONNX_MLIR_COMPILER}"
       "${_model}" -o "${_generated_host_mlir}"
       --importer "${UDONCL_ONNX_IMPORTER_EXECUTABLE}"
       --optimizer "${UDONCL_ONNX_OPT_EXECUTABLE}"
       --host-optimizer "${UDONCL_OPT_EXECUTABLE}"
-      --lower-to-host)
+      --lower-to-host
+      --static-data-directory "${_generated_static_data}")
   foreach(_bound IN LISTS _ARG_DIMENSION_BOUNDS)
     list(APPEND _compile_command --dimension "${_bound}")
   endforeach()
@@ -275,6 +277,8 @@ function(udoncl_add_onnx_host_library target)
                "${_generated_host_mlir}")
   set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_HOST_MLIR
                "${_generated_host_mlir}")
+  set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_STATIC_DATA_DIRECTORY
+               "${_generated_static_data}")
   set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_MLIR
                "${_generated_host_mlir}")
   set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_DIMENSION_BOUNDS
@@ -627,6 +631,7 @@ function(udoncl_add_unity_library target)
   set(_host_modules)
   set(_host_seen_sources)
   set(_host_mlir)
+  set(_static_tensor_directory)
   foreach(_library IN LISTS ARG_HOST_LIBRARIES)
     get_target_property(_library_host_mlir "${_library}"
                         UDONCL_ONNX_HOST_MLIR)
@@ -636,6 +641,8 @@ function(udoncl_add_unity_library target)
           "UdonCL Unity libraries currently support one Host MLIR module")
       endif()
       set(_host_mlir "${_library_host_mlir}")
+      get_target_property(_static_tensor_directory "${_library}"
+                          UDONCL_ONNX_STATIC_DATA_DIRECTORY)
       continue()
     endif()
     set(_sources)
@@ -712,6 +719,7 @@ function(udoncl_add_unity_library target)
             "-DUDONCL_CONFIG=${_config}"
             "-DUDONCL_HOST_MODULE=${_host_module}"
             "-DUDONCL_HOST_MLIR=${_host_mlir}"
+            "-DUDONCL_STATIC_TENSOR_DIRECTORY=${_static_tensor_directory}"
             "-DUDONCL_DEVICE_MODULE=${_device_module}"
             "-DUDONCL_OUTPUT_DIRECTORY=${_artifact_directory}"
             "-DUDONCL_BUILD_ROOT=${CMAKE_BINARY_DIR}"
@@ -719,7 +727,7 @@ function(udoncl_add_unity_library target)
             -P "${_UDONCL_CONFIG_DIR}/UdonCLCompileUnityLibrary.cmake"
     COMMAND "${CMAKE_COMMAND}" -E touch "${_stamp}"
     DEPENDS "${UDONCLC_EXECUTABLE}" "${_config}" "${_host_module}"
-            ${_host_mlir}
+            ${_host_mlir} ${_static_tensor_directory}
             ${_device_module}
     BYPRODUCTS "${_artifact_directory}/manifest.json"
                "${_artifact_directory}/host.uasm"

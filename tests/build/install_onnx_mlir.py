@@ -2,6 +2,7 @@
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 
@@ -36,6 +37,12 @@ class InstallONNXMLIRTests(unittest.TestCase):
         self.assertEqual(self.lock['targets'],
                          ['onnx-mlir-opt', 'udoncl-onnx',
                           'udoncl-onnx-opt'])
+        self.assertIn(
+            'lib/Conversion/ONNXToUdonHost/CanonicalizeONNXLibraryPatterns.cpp',
+            self.lock['extension_sources'])
+        self.assertIn(
+            'lib/Conversion/ONNXToUdonHost/ExternalizeONNXInitializers.cpp',
+            self.lock['extension_sources'])
 
     def test_changed_revision_rejects_cached_frontend(self):
         prefix = self.publish()
@@ -49,6 +56,13 @@ class InstallONNXMLIRTests(unittest.TestCase):
         installer.executable(prefix, 'windows', 'udoncl-onnx').unlink()
         with self.assertRaisesRegex(RuntimeError, 'missing'):
             installer.validate(prefix, self.lock, 'windows')
+
+    def test_locked_patches_are_well_formed(self):
+        for relative in self.lock['patches']:
+            result = subprocess.run(
+                ['git', 'apply', '--numstat', ROOT / relative],
+                text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, (relative, result.stderr))
 
     def test_windows_configuration_has_required_compatibility_flag(self):
         command = installer.configure_command(

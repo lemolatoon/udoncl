@@ -144,6 +144,13 @@ def ensure_source(lock, source):
             raise RuntimeError(
                 f'{source} does not match locked ONNX-MLIR {lock["revision"]}')
 
+    # The source checkout is a disposable cache. Recreate the complete locked
+    # patch stack from its pinned revision instead of trying to recognize each
+    # patch independently in a tree modified by later patches.
+    run(['git', 'config', 'core.autocrlf', 'false'], cwd=source)
+    run(['git', 'reset', '--hard', lock['revision']], cwd=source)
+    run(['git', 'clean', '-ffd'], cwd=source)
+
     paths = list(lock['submodules'])
     run(['git', 'submodule', 'sync', '--', *paths], cwd=source)
     run(['git', 'submodule', 'update', '--init', '--depth', '1', '--', *paths],
@@ -159,16 +166,11 @@ def ensure_source(lock, source):
     for relative in lock['patches']:
         patch = ROOT / relative
         check = subprocess.run(
-            ['git', 'apply', '--check', patch], cwd=source,
+            ['git', 'apply', '-C0', '--check', patch], cwd=source,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        if check.returncode == 0:
-            run(['git', 'apply', patch], cwd=source)
-            continue
-        reverse = subprocess.run(
-            ['git', 'apply', '--reverse', '--check', patch], cwd=source,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        if reverse.returncode != 0:
+        if check.returncode != 0:
             raise RuntimeError(f'Cannot apply locked ONNX-MLIR patch {patch}')
+        run(['git', 'apply', '-C0', patch], cwd=source)
 
 
 def configure_command(lock, source, build, llvm_prefix, host, cmake):

@@ -2,6 +2,7 @@
 import argparse
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 
@@ -15,6 +16,7 @@ def canonicalize(
     dimensions=(),
     input_shapes=(),
     lower_to_host=False,
+    static_data_directory=None,
 ):
     model = model.resolve()
     output = output.resolve()
@@ -30,6 +32,7 @@ def canonicalize(
         imported = temporary / 'imported.mlir'
         portable = temporary / ('portable-' + output.name)
         transformed = temporary / output.name
+        temporary_static_data = temporary / 'static-tensors'
         import_command = [importer, model, '-o', imported]
         for dimension in dimensions:
             import_command.extend(['--dim', dimension])
@@ -53,7 +56,8 @@ def canonicalize(
                 '--constprop-onnx',
                 '--udoncl-infer-onnx-shapes',
                 '--udoncl-materialize-onnx-constants',
-                '--udoncl-externalize-onnx-initializers',
+                '--udoncl-externalize-onnx-initializers=' +
+                f'static-data-directory={temporary_static_data}',
                 '--udoncl-lower-onnx-to-host',
                 '--canonicalize',
                 '--udoncl-emit-bytecode',
@@ -70,6 +74,12 @@ def canonicalize(
                 host_optimizer, portable, '--udoncl-finalize-onnx-host',
                 '--canonicalize', '--emit-bytecode', '-o', transformed,
             ], check=True)
+            if static_data_directory is not None:
+                static_data_directory = static_data_directory.resolve()
+                static_data_directory.parent.mkdir(parents=True, exist_ok=True)
+                if static_data_directory.exists():
+                    shutil.rmtree(static_data_directory)
+                os.replace(temporary_static_data, static_data_directory)
         os.replace(transformed, output)
 
 
@@ -83,13 +93,15 @@ def main():
     parser.add_argument('--dimension', action='append', default=[])
     parser.add_argument('--input-shape', action='append', default=[])
     parser.add_argument('--lower-to-host', action='store_true')
+    parser.add_argument('--static-data-directory', type=Path)
     args = parser.parse_args()
     try:
         canonicalize(args.model, args.output, args.importer.resolve(),
                      args.optimizer.resolve(),
                      args.host_optimizer.resolve()
                      if args.host_optimizer else None, args.dimension,
-                     args.input_shape, args.lower_to_host)
+                     args.input_shape, args.lower_to_host,
+                     args.static_data_directory)
     except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
         parser.exit(1, f'{error}\n')
 

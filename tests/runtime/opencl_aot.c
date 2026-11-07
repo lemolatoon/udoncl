@@ -106,7 +106,7 @@ cl_uint __vrc_opencl_buffer_alloc(cl_uint logical_id, size_t bytes) {
 cl_uint __vrc_opencl_static_tensor(cl_uint resource_id, size_t bytes) {
   static_resource_id = resource_id;
   static_resource_bytes = bytes;
-  return resource_id + 1000;
+  return 0u - resource_id - 1u;
 }
 
 cl_int __vrc_opencl_buffer_release(cl_uint physical_token) {
@@ -721,7 +721,7 @@ int main(void) {
   cl_float float_arguments[2] = {1.5f, 0.0f};
   const char *source_text = "known AOT program";
   size_t global[2] = {32, 32}, local[2] = {1, 1};
-  cl_uint index;
+  cl_uint index, physical_token;
   cl_uint blas_input_token, blas_output_token;
   cl_uint dnn_input_token, dnn_filter_token, dnn_output_token, dnn_other_token;
   cl_uint dnn_temporary_token;
@@ -971,8 +971,8 @@ int main(void) {
   EXPECT(clReleaseMemObject(nested_buffer) == CL_SUCCESS);
   EXPECT(clFinish(queue) == CL_SUCCESS);
 
-  /* AOT weights have their own immutable table.  They use the same cl_mem
-   * ABI as mutable buffers without consuming a mutable allocation slot. */
+  /* AOT weights are deterministic tagged cl_mem handles.  They do not consume
+   * either mutable allocation slots or a runtime static-handle table. */
   allocated_logical_id = 0;
   released_token = 0;
   static_buffer = udonclAdoptStaticBuffer(
@@ -988,7 +988,8 @@ int main(void) {
   EXPECT(__vrc_enqueue_udonblas_arena_sgemm_args(queue, first, static_buffer,
                                                  nested_buffer, 1, 10, 144, 0,
                                                  0, 1.0f) == CL_SUCCESS);
-  EXPECT(dispatched_arena_a_token == 102 && dispatched_arena_b_token == 1007 &&
+  EXPECT(dispatched_arena_a_token == 102 &&
+         dispatched_arena_b_token == 0xfffffff8u &&
          dispatched_arena_output_token == 103);
   await_count = 0;
   EXPECT(__vrc_enqueue_udonblas_arena_sgemm_device_args(
@@ -1028,7 +1029,7 @@ int main(void) {
                        (float *)blas_output, 10) == UDONBLAS_STATUS_SUCCESS);
   EXPECT(await_count == 0);
   EXPECT(dispatched_arena_a_token == blas_input_token &&
-         dispatched_arena_b_token == 1007 &&
+         dispatched_arena_b_token == 0xfffffff8u &&
          dispatched_arena_output_token == blas_output_token);
   released_token = 0;
   EXPECT(clReleaseMemObject(blas_input) == CL_SUCCESS);
@@ -1194,13 +1195,19 @@ int main(void) {
   EXPECT(clReleaseMemObject(dnn_input) == CL_SUCCESS);
   EXPECT(clFinish(queue) == CL_SUCCESS);
 
-  same_physical_buffer =
-      udonclAdoptStaticBuffer(queue, 63, sizeof(source), 102, &error);
-  EXPECT(same_physical_buffer && same_physical_buffer != first &&
-         error == CL_SUCCESS);
+  /* The tagged representation has no fixed resource-count ceiling. */
+  same_physical_buffer = udonclAdoptStaticBuffer(
+      queue, 1024, sizeof(source),
+      __vrc_opencl_static_tensor(1024, sizeof(source)), &error);
+  EXPECT(same_physical_buffer && error == CL_SUCCESS);
+  EXPECT(udonclResolvePhysicalBuffer(same_physical_buffer, &physical_token) ==
+         CL_SUCCESS);
+  EXPECT(physical_token == 0xfffffbffu);
+  /* Read/write aliasing is still rejected when a tagged static handle is
+   * accidentally selected as both an input and an output. */
   EXPECT(__vrc_enqueue_udonblas_arena_sgemm_device_args(
-             queue, same_physical_buffer, static_buffer, first, 1, 1, 1, 0, 0,
-             1.0f, 0, 0, 0) == CL_INVALID_OPERATION);
+             queue, same_physical_buffer, static_buffer, same_physical_buffer,
+             1, 1, 1, 0, 0, 1.0f, 0, 0, 0) == CL_INVALID_OPERATION);
   EXPECT(clReleaseMemObject(same_physical_buffer) == CL_SUCCESS);
   ((float *)physical_buffers[2])[0] = 0.0f;
   ((float *)physical_buffers[2])[1] = 1.57079632679f;

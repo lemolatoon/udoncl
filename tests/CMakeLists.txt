@@ -400,8 +400,4 @@ if(VRC_ENABLE_NATIVE_FRAGMENT_TESTS)
     COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/boundary/udondnn_device.py"
       "${PROJECT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/tests/udondnn-device")
   set_tests_properties(udondnn-device-execution PROPERTIES TIMEOUT 600)
-  set_tests_properties(onnx-runtime-mnist PROPERTIES
-    DEPENDS udondnn-device-execution
-    ENVIRONMENT
-      "UDONCL_ONNX_UNITY_TEMPLATE=${PROJECT_BINARY_DIR}/tests/udondnn-device/unity-udonaten-int4-mm-bundle")
 endif()

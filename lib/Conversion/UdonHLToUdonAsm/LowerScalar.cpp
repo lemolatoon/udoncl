@@ -2850,9 +2850,8 @@ private:
           continue;
         if (auto bind = dyn_cast<host::AsyncBindEventOp>(operation)) {
           addSlot(asyncPendingObjectSlot, "SystemInt32", "0", true);
-          std::string object =
-              immutableSlot("SystemInt32", std::to_string(bind.getObjectId()));
-          emitCopy(bind.getLoc(), object, asyncPendingObjectSlot);
+          emitI32Literal(bind.getLoc(), bind.getObjectId(),
+                         asyncPendingObjectSlot);
           continue;
         }
         if (auto enter = dyn_cast<host::AsyncEnterOp>(operation)) {
@@ -2880,6 +2879,12 @@ private:
             return resume.emitError(
                 "async resume operands have no allocated Udon heap slots");
           SmallVector<Operation *> done;
+          constexpr StringLiteral frameConstant =
+              "__udoncl_async_route_frame_constant";
+          constexpr StringLiteral pcConstant =
+              "__udoncl_async_route_pc_constant";
+          addSlot(frameConstant, "SystemInt32", "0", false);
+          addSlot(pcConstant, "SystemInt32", "0", false);
           for (auto [routeIndex, target] :
                llvm::enumerate(asyncResumeTargets)) {
             auto calleePlan =
@@ -2888,10 +2893,8 @@ private:
               return resume.emitError(
                   "async resume target has no physical function plan");
             bool resumesRoot = !calleePlan->second.returnSlot.has_value();
-            std::string frameConstant =
-                immutableSlot("SystemInt32", std::to_string(target.frameId));
-            std::string pcConstant =
-                immutableSlot("SystemInt32", std::to_string(target.resumePc));
+            emitI32Literal(resume.getLoc(), target.frameId, frameConstant);
+            emitI32Literal(resume.getLoc(), target.resumePc, pcConstant);
             std::string matchPrefix = prefix + "async_route_" +
                                       std::to_string(callReturnIndex) + "_" +
                                       std::to_string(routeIndex);
@@ -3066,14 +3069,16 @@ private:
           auto caseValues = branch.getCaseValues();
           if (caseValues) {
             unsigned caseIndex = 0;
+            constexpr StringLiteral caseConstant = "__vrc_switch_case_constant";
+            addSlot(caseConstant, "SystemInt32", "0", false);
             for (const llvm::APInt &caseValue :
                  caseValues->getValues<llvm::APInt>()) {
-              std::string value = immutableSlot(
-                  "SystemInt32", std::to_string(caseValue.getSExtValue()));
+              emitI32Literal(branch.getLoc(), caseValue.getZExtValue(),
+                             caseConstant);
               std::string condition = "__vrc_switch_condition";
               addSlot(condition, "SystemBoolean", "null", false);
               emitPush(branch.getLoc(), flag);
-              emitPush(branch.getLoc(), value);
+              emitPush(branch.getLoc(), caseConstant);
               emitPush(branch.getLoc(), condition);
               emitExtern(branch.getLoc(),
                          "SystemInt32.__op_Equality__SystemInt32_SystemInt32__"

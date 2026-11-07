@@ -45,7 +45,7 @@ new file mode 100644
 index 00000000..02a44346
 --- /dev/null
 +++ b/src/Tools/udoncl-onnx/udoncl-onnx.cpp
-@@ -0,0 +1,62 @@
+@@ -0,0 +1,64 @@
 +// SPDX-License-Identifier: Apache-2.0
 +
 +#include "src/Builder/FrontendDialectTransformer.hpp"

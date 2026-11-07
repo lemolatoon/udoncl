@@ -14,6 +14,12 @@ unity_template_value = os.environ.get("UDONCL_ONNX_UNITY_TEMPLATE")
 unity_template_directory = (
     Path(unity_template_value).resolve() if unity_template_value else None
 )
+legacy_int4_unity_template = (
+    unity_template_directory is not None
+    and (unity_template_directory / "compose.shader").is_file()
+    and (unity_template_directory / "scatter.shader").is_file()
+    and (unity_template_directory / "kernels/kernel_208.shader").is_file()
+)
 c_compiler = root / ".deps/llvm23/bin" / (
     "clang.exe" if sys.platform == "win32" else "clang"
 )
@@ -871,7 +877,7 @@ unity_int4_plan["passes"] = [unity_int4_plan["passes"][0]]
 unity_int4_plan["outputs"] = {"projection_a": [1, int4_n]}
 unity_int4_bundle = output / "unity-int4-model-bundle"
 unity_int4_manifest = None
-if unity_template_directory is not None:
+if legacy_int4_unity_template:
     unity_int4_manifest = materialize_int4_model(
         unity_int4_plan,
         output,
@@ -997,7 +1003,7 @@ assert sum(
 ) == 2
 assert mixed_int4_plan["aot"]["calls"][-1]["function"] == "udonatenAdd"
 assert mixed_int4_plan["passes"][-1]["shader"] == "kernel_215.shader"
-if unity_template_directory is not None:
+if legacy_int4_unity_template:
     mixed_int4_bundle = output / "unity-mixed-int4-model-bundle"
     mixed_int4_manifest = materialize_model(
         mixed_int4_plan,

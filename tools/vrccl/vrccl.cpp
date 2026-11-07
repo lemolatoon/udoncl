@@ -25,6 +25,7 @@
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/Passes.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/FormatVariadic.h"
@@ -32,6 +33,7 @@
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/SHA256.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/ToolOutputFile.h"
 #include "llvm/IR/DataLayout.h"
@@ -317,6 +319,9 @@ cl::opt<std::string>
 cl::opt<std::string> hostLibraryLLVM(
     "host-library-llvm",
     cl::desc("Linked Host library LLVM IR used to resolve Host MLIR calls"));
+cl::opt<std::string> staticTensorDirectory(
+    "static-tensor-directory",
+    cl::desc("Directory containing external ONNX static tensor payloads"));
 cl::opt<std::string> deviceLLVM("device-llvm",
                                 cl::desc("Device LLVM IR from OpenCL C"));
 cl::opt<bool> checkRequest(
@@ -2952,14 +2957,27 @@ int main(int argc, char **argv) {
             tensor ? tensor.getAs<StringAttr>("sha256") : StringAttr();
         auto data = tensor ? tensor.getAs<DenseElementsAttr>("data")
                            : DenseElementsAttr();
-        auto bytes =
-            data ? denseTensorBytes(data) : FailureOr<std::string>(failure());
+        FailureOr<std::string> bytes = failure();
+        if (data) {
+          bytes = denseTensorBytes(data);
+        } else if (id && !staticTensorDirectory.empty()) {
+          SmallString<256> sourcePath(staticTensorDirectory);
+          sys::path::append(sourcePath,
+                            "tensor_" + std::to_string(id.getInt()) + ".bytes");
+          auto source = MemoryBuffer::getFile(sourcePath, false, false);
+          if (source)
+            bytes = std::string((*source)->getBuffer());
+        }
         if (!id || !name || !dataType || !shape || !layout || !alignment ||
             !byteStrides || !byteLength || !sha256 || failed(bytes) ||
             layout.getValue() != "row_major_contiguous" ||
             alignment.getInt() < 1 || byteStrides.size() != shape.size() ||
             byteLength.getInt() < 1 ||
-            static_cast<uint64_t>(byteLength.getInt()) != bytes->size()) {
+            static_cast<uint64_t>(byteLength.getInt()) != bytes->size() ||
+            llvm::toHex(llvm::SHA256::hash(ArrayRef<uint8_t>(
+                            reinterpret_cast<const uint8_t *>(bytes->data()),
+                            bytes->size())),
+                        true) != sha256.getValue()) {
           errs() << "immutable static tensor metadata is malformed\n";
           return 1;
         }

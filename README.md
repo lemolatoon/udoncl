@@ -62,13 +62,50 @@ compiler, Windows SDK include paths and libraries once per terminal:
 The locked SDK uses newer MSVC STL symbols unavailable in Visual Studio 2022;
 a VS 2022 source build must use an SDK built with that toolset instead.
 
+Install the pinned toolchains and model fixtures before configuring UdonCL:
+
 ```text
 python -m pip install -r scripts/requirements-llvm.txt
+python -m pip install -r scripts/requirements-onnx.txt
+python -m pip install -r scripts/requirements-format.txt
 python scripts/install_llvm.py
+python scripts/install_llvm.py --check
+python scripts/install_onnx_mlir.py --jobs 2
+python scripts/install_onnx_mlir.py --check
+python scripts/fetch_tinyllama_onnx.py
 cmake --preset udoncl
-cmake --build --preset udoncl
+python scripts/build.py
 ctest --preset udoncl
 ```
+
+The repository keeps installed dependencies separate from build products:
+
+- `.deps/llvm23` is the verified LLVM/MLIR/Clang SDK.
+- `.deps/onnx-mlir` is the single supported installed ONNX-MLIR frontend prefix.
+  It must contain `onnx-mlir-opt`, `udoncl-onnx`, and `udoncl-onnx-opt`.
+- `.deps/onnx-mlir-src` is a disposable checkout managed by the installer.
+- `.deps/models` contains checksum-addressed downloaded model fixtures.
+- `build/onnx-mlir` contains ONNX-MLIR intermediate build products.
+- `build/udoncl` contains UdonCL build and test products.
+
+Do not combine tools from older prefixes. In particular,
+`.deps/onnx-mlir-complete` is not a supported discovery location. The ONNX-MLIR
+installer validates an immutable receipt and does not overwrite an existing
+prefix. When the lock, patches, or embedded UdonCL conversion sources change,
+remove only the installed frontend prefix and rebuild it:
+
+```powershell
+Remove-Item -LiteralPath .\.deps\onnx-mlir -Recurse -Force
+python scripts/install_onnx_mlir.py --jobs 2
+python scripts/install_onnx_mlir.py --check
+cmake --fresh --preset udoncl
+```
+
+The installer resets its disposable source checkout to the pinned ONNX-MLIR
+commit, reapplies the complete locked patch stack, and publishes the three
+verified executables together. `--jobs 2` is recommended on developer machines
+to bound peak memory use. Use `cmake --fresh --preset udoncl` after replacing a
+toolchain so an older CMake program path cannot survive in the cache.
 
 The prebuilt installer verifies pinned SHA256 checksums and installs into
 `.deps/llvm23`; it never builds LLVM. Linux uses the official LLVM SDK archive.
@@ -84,7 +121,7 @@ On Ubuntu, install the SDK's system libraries before configuring:
 sudo apt-get install zlib1g-dev libzstd-dev libxml2-dev glslang-tools libvulkan-dev mesa-vulkan-drivers
 ```
 
-Once installed, subsequent builds only need the last three commands above.
+Once installed, subsequent builds only need configure, build, and test.
 CMake automatically prefers this repository-local SDK, including when
 configuring without presets:
 
@@ -134,17 +171,40 @@ above; Windows uses D3D11. `scripts/build.py` remains available for automation
 that needs an explicit process-aware parallel job count. The CMake build preset
 has no fixed job limit, so direct Ninja builds use its native parallelism.
 
-Before every commit, format C/C++/OpenCL C with LLVM style and C# with the
-repository-pinned CSharpier tool:
+Before committing, create or select a dedicated Unity 2022.3 project containing
+the VRChat Worlds SDK and Unity for MCP. It must be a real Unity project with
+`Packages/manifest.json`; do not point the setting at a temporary directory under
+`build`. Record the editor and project paths in the repository-local `.env`:
 
-```text
-python -m pip install -r scripts/requirements-format.txt
-python scripts/format.py
-python scripts/format.py --check
+```dotenv
+UNITY_EDITOR_PATH=C:\Program Files\Unity\Hub\Editor\2022.3.22f1\Editor\Unity.exe
+UDONCL_UNITY_TEST_PROJECT=C:\path\to\dedicated\udoncl-test
 ```
 
-The check mode is non-mutating and runs as a separate CI job. Formatter
-versions are pinned in `scripts/requirements-format.txt` and
+Close that Unity project, stage the intended change, and run the single
+authoritative gate:
+
+```text
+git add <paths>
+python scripts/precommit.py
+```
+
+The gate first formats and re-stages only the originally staged paths, then
+validates the installed ONNX-MLIR receipt, builds and runs the native tests,
+generates fixtures, runs the complete `Udoncl.Editor.Tests` assembly through
+Unity MCP, rejects skipped tests and console errors, and checks Git whitespace.
+Commit only after it prints
+`precommit=passed`. If a checked-in Unity example archive is reported as stale,
+regenerate it from the already generated fixtures, stage the updated archives,
+and rerun the gate:
+
+```text
+python scripts/package_example_artifacts.py
+git add unity/Packages/com.lemolatoon.udoncl/Editor/Examples
+python scripts/precommit.py
+```
+
+Formatter versions are pinned in `scripts/requirements-format.txt` and
 `.config/dotnet-tools.json`; a different `clang-format` version is rejected.
 
 The MNIST CNN reference lives in `examples/mnist-cnn`. Its compact

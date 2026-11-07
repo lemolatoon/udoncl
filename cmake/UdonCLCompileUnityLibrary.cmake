@@ -24,6 +24,12 @@ set(_device_argument)
 if(DEFINED UDONCL_DEVICE_MODULE AND NOT "${UDONCL_DEVICE_MODULE}" STREQUAL "")
   set(_device_argument --device-llvm "${UDONCL_DEVICE_MODULE}")
 endif()
+set(_static_tensor_argument)
+if(DEFINED UDONCL_STATIC_TENSOR_DIRECTORY AND
+   NOT "${UDONCL_STATIC_TENSOR_DIRECTORY}" STREQUAL "")
+  set(_static_tensor_argument --static-tensor-directory
+      "${UDONCL_STATIC_TENSOR_DIRECTORY}")
+endif()
 if(DEFINED UDONCL_HOST_MLIR AND NOT "${UDONCL_HOST_MLIR}" STREQUAL "")
   set(_host_arguments --host-mlir "${UDONCL_HOST_MLIR}"
                       --host-library-llvm "${UDONCL_HOST_MODULE}")
@@ -33,7 +39,7 @@ endif()
 file(REMOVE_RECURSE "${UDONCL_OUTPUT_DIRECTORY}")
 execute_process(
   COMMAND "${UDONCL_COMPILER}" --emit-unity-library-bundle "${UDONCL_CONFIG}"
-          ${_host_arguments} ${_device_argument}
+          ${_host_arguments} ${_device_argument} ${_static_tensor_argument}
           ${_runtime_validation_argument}
           -o "${UDONCL_OUTPUT_DIRECTORY}"
   RESULT_VARIABLE _result

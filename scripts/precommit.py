@@ -894,6 +894,16 @@ def main():
         staged = [path for path in staged if path]
         if not staged:
             parser.error("stage the intended commit before running the pre-commit gate")
+        run([sys.executable, root / "scripts/format.py"], cwd=root)
+        restage_original_paths(root, staged)
+        run(
+            [
+                sys.executable,
+                root / "scripts/install_onnx_mlir.py",
+                "--check",
+            ],
+            cwd=root,
+        )
         run([sys.executable, root / "scripts/validate_vpm_package.py"], cwd=root)
         run(
             [
@@ -939,8 +949,6 @@ def main():
     if args.unity_only:
         print("unity_validation=passed")
         return
-    run([sys.executable, root / "scripts/format.py"], cwd=root)
-    restage_original_paths(root, staged)
     run([sys.executable, root / "scripts/format.py", "--check"], cwd=root)
     run(["git", "diff", "--cached", "--check"], cwd=root)
     print("precommit=passed")

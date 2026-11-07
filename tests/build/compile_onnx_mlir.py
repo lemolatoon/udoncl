@@ -29,9 +29,16 @@ class CompileONNXMLIRTests(unittest.TestCase):
         self.output = self.root / 'out/model.mlir'
 
     def run_pipeline(self, mlir, dimensions=(), input_shapes=(),
-                     lower_to_host=False):
+                     lower_to_host=False, static_data_directory=None):
         def run(command, check):
             self.assertTrue(check)
+            for argument in command:
+                prefix = ('--udoncl-externalize-onnx-initializers='
+                          'static-data-directory=')
+                if str(argument).startswith(prefix):
+                    sidecar = Path(str(argument)[len(prefix):])
+                    sidecar.mkdir(parents=True)
+                    (sidecar / 'tensor_0.bytes').write_bytes(b'weights')
             output = Path(command[command.index('-o') + 1])
             if isinstance(mlir, bytes):
                 output.write_bytes(mlir)
@@ -43,7 +50,8 @@ class CompileONNXMLIRTests(unittest.TestCase):
             compiler.canonicalize(
                 self.model, self.output, self.importer, self.optimizer,
                 self.host_optimizer if lower_to_host else None,
-                dimensions, input_shapes, lower_to_host)
+                dimensions, input_shapes, lower_to_host,
+                static_data_directory)
         return call.call_args_list
 
     def test_pipeline_imports_then_canonicalizes(self):
@@ -73,7 +81,10 @@ class CompileONNXMLIRTests(unittest.TestCase):
         optimizer = calls[1].args[0]
         self.assertIn('--udoncl-infer-onnx-shapes', optimizer)
         self.assertIn('--udoncl-materialize-onnx-constants', optimizer)
-        self.assertIn('--udoncl-externalize-onnx-initializers', optimizer)
+        self.assertTrue(any(
+            str(argument).startswith(
+                '--udoncl-externalize-onnx-initializers=')
+            for argument in optimizer))
         self.assertIn('--udoncl-lower-onnx-to-host', optimizer)
         self.assertIn('--udoncl-emit-bytecode', optimizer)
         self.assertNotIn('--mlir-elide-elementsattrs-if-larger=64', optimizer)
@@ -81,6 +92,12 @@ class CompileONNXMLIRTests(unittest.TestCase):
         self.assertIn('--udoncl-finalize-onnx-host', host_optimizer)
         self.assertIn('--emit-bytecode', host_optimizer)
         self.assertEqual(self.output.read_bytes(), b'host bytecode')
+
+    def test_host_lowering_moves_static_payloads_to_the_requested_sidecar(self):
+        sidecar = self.root / 'out/static-tensors'
+        self.run_pipeline(b'host bytecode', lower_to_host=True,
+                          static_data_directory=sidecar)
+        self.assertEqual((sidecar / 'tensor_0.bytes').read_bytes(), b'weights')
 
     def test_input_shapes_are_forwarded_to_the_importer(self):
         calls = self.run_pipeline(

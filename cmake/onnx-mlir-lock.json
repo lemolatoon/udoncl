@@ -30,6 +30,8 @@
   ],
   "extension_sources": [
     "lib/Conversion/ONNXToUdonHost/CMakeLists.txt",
+    "lib/Conversion/ONNXToUdonHost/CanonicalizeONNXLibraryPatterns.cpp",
+    "lib/Conversion/ONNXToUdonHost/ExternalizeONNXInitializers.cpp",
     "lib/Conversion/ONNXToUdonHost/InferONNXShapes.cpp",
     "lib/Conversion/ONNXToUdonHost/MaterializeONNXConstants.cpp",
     "lib/Conversion/ONNXToUdonHost/ONNXToUdonHost.h",

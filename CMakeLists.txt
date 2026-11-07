@@ -103,17 +103,15 @@ install(FILES
   DESTINATION "${CMAKE_INSTALL_DATADIR}/udoncl/onnx"
   COMPONENT UdonCLCompiler)
 
+unset(VRC_TEST_ONNX_IMPORTER CACHE)
+unset(VRC_TEST_ONNX_OPT CACHE)
 find_program(VRC_TEST_ONNX_IMPORTER NAMES udoncl-onnx
   HINTS
-    "${PROJECT_SOURCE_DIR}/build/onnx-mlir-probe/Release/bin"
     "${PROJECT_SOURCE_DIR}/.deps/onnx-mlir/bin"
-    "${PROJECT_SOURCE_DIR}/.deps/onnx-mlir-complete/bin"
   NO_DEFAULT_PATH)
-find_program(VRC_TEST_ONNX_OPT NAMES udoncl-onnx-opt onnx-mlir-opt
+find_program(VRC_TEST_ONNX_OPT NAMES udoncl-onnx-opt
   HINTS
-    "${PROJECT_SOURCE_DIR}/build/onnx-mlir-probe/Release/bin"
     "${PROJECT_SOURCE_DIR}/.deps/onnx-mlir/bin"
-    "${PROJECT_SOURCE_DIR}/.deps/onnx-mlir-complete/bin"
   NO_DEFAULT_PATH)
 install(FILES libraries/udonblas/include/udonblas.h
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"

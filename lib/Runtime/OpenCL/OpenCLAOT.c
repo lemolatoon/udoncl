@@ -8,7 +8,6 @@
 #include <CL/cl.h>
 
 #define UDONCL_AOT_BUFFER_CAPACITY 32
-#define UDONCL_AOT_STATIC_BUFFER_CAPACITY 256
 #define UDONCL_AOT_KERNEL_CAPACITY 32
 #define UDONCL_AOT_EVENT_CAPACITY 32
 #define UDONCL_AOT_ARGUMENT_BYTES 8
@@ -220,7 +219,6 @@ static struct _cl_context udoncl_context;
 static struct _cl_command_queue udoncl_queue;
 static struct _cl_program udoncl_program;
 static struct _cl_mem udoncl_buffers[UDONCL_AOT_BUFFER_CAPACITY];
-static struct _cl_mem udoncl_static_buffers[UDONCL_AOT_STATIC_BUFFER_CAPACITY];
 static struct _cl_kernel udoncl_kernels[UDONCL_AOT_KERNEL_CAPACITY];
 static struct _cl_event udoncl_events[UDONCL_AOT_EVENT_CAPACITY];
 static cl_int udoncl_dispatch_status;
@@ -232,9 +230,42 @@ static void udoncl_pending_resources_reset(void) {
   udoncl_pending_resource_count = 0;
 }
 
+/* Immutable artifact resources use odd integer cl_mem tags, while mutable
+ * handles are aligned pointers into udoncl_buffers.  The tag encodes
+ * resource_id + 1; its physical token remains -(resource_id + 1).  This avoids
+ * both a per-weight _cl_mem table and pointer ordering comparisons, which are
+ * not part of the recoverable Udon Host ABI. */
+static int udoncl_mem_is_static(cl_mem buffer) {
+  return buffer && (((size_t)buffer & 1u) != 0);
+}
+
+static int udoncl_mem_is_active(cl_mem buffer) {
+  return udoncl_mem_is_static(buffer) ? udoncl_context.active != 0
+                                      : buffer && buffer->active != 0;
+}
+
+static cl_context udoncl_mem_context(cl_mem buffer) {
+  return udoncl_mem_is_static(buffer) ? &udoncl_context : buffer->context;
+}
+
+static cl_uint udoncl_mem_physical_token(cl_mem buffer) {
+  return udoncl_mem_is_static(buffer) ? 0u - ((cl_uint)(size_t)buffer >> 1u)
+                                      : buffer->physical_token;
+}
+
+static size_t udoncl_mem_bytes(cl_mem buffer) {
+  return udoncl_mem_is_static(buffer) ? (size_t)-1 : buffer->bytes;
+}
+
+static cl_mem_flags udoncl_mem_flags(cl_mem buffer) {
+  return udoncl_mem_is_static(buffer) ? CL_MEM_READ_ONLY : buffer->flags;
+}
+
 static cl_int udoncl_pending_resource_add(cl_mem buffer) {
   cl_uint index;
   if (!buffer)
+    return CL_SUCCESS;
+  if (udoncl_mem_is_static(buffer))
     return CL_SUCCESS;
   for (index = 0; index < udoncl_pending_resource_count; ++index)
     if (udoncl_pending_resources[index] == buffer)
@@ -246,7 +277,7 @@ static cl_int udoncl_pending_resource_add(cl_mem buffer) {
 }
 
 static int udoncl_mem_is_subbuffer(cl_mem buffer) {
-  return buffer && buffer->immutable >= 2u;
+  return buffer && !udoncl_mem_is_static(buffer) && buffer->immutable >= 2u;
 }
 
 static cl_mem udoncl_mem_parent(cl_mem buffer) {
@@ -279,7 +310,8 @@ static cl_int udoncl_validate_read_write_alias(cl_mem output,
 #if UDONCL_AOT_RUNTIME_VALIDATION
   cl_uint index;
   for (index = 0; index < read_count; ++index)
-    if (reads[index]->physical_token == output->physical_token)
+    if (udoncl_mem_physical_token(reads[index]) ==
+        udoncl_mem_physical_token(output))
       return CL_INVALID_OPERATION;
 #else
   (void)output;
@@ -632,9 +664,9 @@ cl_mem udonclCreateBufferForQueue(cl_command_queue queue, cl_mem_flags flags,
 }
 
 cl_int udonclResolvePhysicalBuffer(cl_mem buffer, cl_uint *physical_token) {
-  if (!buffer || !buffer->active || !physical_token)
+  if (!udoncl_mem_is_active(buffer) || !physical_token)
     return CL_INVALID_MEM_OBJECT;
-  *physical_token = buffer->physical_token;
+  *physical_token = udoncl_mem_physical_token(buffer);
   return *physical_token ? CL_SUCCESS : CL_INVALID_MEM_OBJECT;
 }
 
@@ -642,42 +674,21 @@ cl_mem udonclAdoptStaticBuffer(cl_command_queue queue, cl_uint resource_id,
                                size_t bytes, cl_uint physical_token,
                                cl_int *error) {
   cl_context context;
-  cl_mem buffer;
+  cl_uint expected_token;
   if (queue != &udoncl_queue || !queue->active) {
     udoncl_error(error, CL_INVALID_COMMAND_QUEUE);
     return 0;
   }
   context = queue->context;
-  if (context != &udoncl_context || !context->active ||
-      resource_id >= UDONCL_AOT_STATIC_BUFFER_CAPACITY || !bytes) {
+  expected_token = 0u - resource_id - 1u;
+  if (context != &udoncl_context || !context->active || !bytes ||
+      resource_id >= 0x7ffffffeu || !(expected_token & 0x80000000u) ||
+      physical_token != expected_token) {
     udoncl_error(error, CL_INVALID_VALUE);
     return 0;
   }
-  buffer = &udoncl_static_buffers[resource_id];
-  if (buffer->active) {
-    if (buffer->context != context || buffer->bytes != bytes) {
-      udoncl_error(error, CL_INVALID_VALUE);
-      return 0;
-    }
-    ++buffer->refs;
-    udoncl_error(error, CL_SUCCESS);
-    return buffer;
-  }
-  if (!physical_token) {
-    udoncl_error(error, CL_OUT_OF_RESOURCES);
-    return 0;
-  }
-  buffer->active = 1;
-  buffer->id = resource_id + 1u;
-  buffer->physical_token = physical_token;
-  buffer->immutable = 1;
-  buffer->refs = 1;
-  buffer->command_refs = 0;
-  buffer->context = context;
-  buffer->flags = CL_MEM_READ_ONLY;
-  buffer->bytes = bytes;
   udoncl_error(error, CL_SUCCESS);
-  return buffer;
+  return (cl_mem)(size_t)(((resource_id + 1u) << 1u) | 1u);
 }
 
 CL_API_ENTRY cl_program CL_API_CALL clCreateProgramWithSource(
@@ -781,7 +792,7 @@ static cl_int udoncl_mem_argument(cl_kernel kernel, cl_uint index,
     return CL_INVALID_KERNEL_ARGS;
   for (cursor = 0; cursor < sizeof(*value); ++cursor)
     destination[cursor] = kernel->arguments[index][cursor];
-  if (!*value || !(*value)->active || udoncl_mem_is_subbuffer(*value))
+  if (!udoncl_mem_is_active(*value) || udoncl_mem_is_subbuffer(*value))
     return CL_INVALID_MEM_OBJECT;
   return udoncl_pending_resource_add(*value);
 }
@@ -825,9 +836,9 @@ static void udoncl_dispatch_sgemm(cl_kernel kernel, cl_uint work_dim,
     return;
   }
   udoncl_dispatch_event = __vrc_opencl_dispatch_udonblas_sgemm(
-      input->physical_token, output->physical_token, values[0], values[1],
-      values[2], values[3], values[4], values[5], values[6], values[7], alpha,
-      beta);
+      udoncl_mem_physical_token(input), udoncl_mem_physical_token(output),
+      values[0], values[1], values[2], values[3], values[4], values[5],
+      values[6], values[7], alpha, beta);
   return;
 }
 
@@ -865,8 +876,9 @@ static void udoncl_dispatch_sgemv(cl_kernel kernel, cl_uint work_dim,
     return;
   }
   udoncl_dispatch_event = __vrc_opencl_dispatch_udonblas_sgemv(
-      input->physical_token, output->physical_token, values[0], values[1],
-      values[2], values[3], values[4], values[5], alpha, beta);
+      udoncl_mem_physical_token(input), udoncl_mem_physical_token(output),
+      values[0], values[1], values[2], values[3], values[4], values[5], alpha,
+      beta);
 }
 #endif
 
@@ -917,10 +929,12 @@ static void udoncl_dispatch_large_convolution(cl_kernel kernel,
     return;
   }
   udoncl_dispatch_event = __vrc_opencl_dispatch_udondnn_large_convolution(
-      buffers[0]->physical_token, buffers[1]->physical_token,
-      buffers[2]->physical_token, buffers[3]->physical_token, values[0],
-      values[1], values[2], values[3], values[4], values[5], values[6],
-      values[7], values[8], values[9], alpha, beta);
+      udoncl_mem_physical_token(buffers[0]),
+      udoncl_mem_physical_token(buffers[1]),
+      udoncl_mem_physical_token(buffers[2]),
+      udoncl_mem_physical_token(buffers[3]), values[0], values[1], values[2],
+      values[3], values[4], values[5], values[6], values[7], values[8],
+      values[9], alpha, beta);
 }
 
 static void udoncl_dispatch_large_activation(cl_kernel kernel, cl_uint work_dim,
@@ -951,9 +965,10 @@ static void udoncl_dispatch_large_activation(cl_kernel kernel, cl_uint work_dim,
     return;
   }
   udoncl_dispatch_event = __vrc_opencl_dispatch_udondnn_large_activation(
-      buffers[0]->physical_token, buffers[1]->physical_token,
-      buffers[2]->physical_token, values[0], values[1], values[2], coefficient,
-      alpha, beta);
+      udoncl_mem_physical_token(buffers[0]),
+      udoncl_mem_physical_token(buffers[1]),
+      udoncl_mem_physical_token(buffers[2]), values[0], values[1], values[2],
+      coefficient, alpha, beta);
 }
 
 static void udoncl_dispatch_large_pooling(cl_kernel kernel, cl_uint work_dim,
@@ -983,10 +998,11 @@ static void udoncl_dispatch_large_pooling(cl_kernel kernel, cl_uint work_dim,
     return;
   }
   udoncl_dispatch_event = __vrc_opencl_dispatch_udondnn_large_pooling(
-      buffers[0]->physical_token, buffers[1]->physical_token,
-      buffers[2]->physical_token, values[0], values[1], values[2], values[3],
-      values[4], values[5], values[6], values[7], values[8], values[9], alpha,
-      beta);
+      udoncl_mem_physical_token(buffers[0]),
+      udoncl_mem_physical_token(buffers[1]),
+      udoncl_mem_physical_token(buffers[2]), values[0], values[1], values[2],
+      values[3], values[4], values[5], values[6], values[7], values[8],
+      values[9], alpha, beta);
 }
 
 static void udoncl_dispatch_large_op_tensor(cl_kernel kernel, cl_uint work_dim,
@@ -1017,10 +1033,12 @@ static void udoncl_dispatch_large_op_tensor(cl_kernel kernel, cl_uint work_dim,
     return;
   }
   udoncl_dispatch_event = __vrc_opencl_dispatch_udondnn_large_op_tensor(
-      buffers[0]->physical_token, buffers[1]->physical_token,
-      buffers[2]->physical_token, buffers[3]->physical_token, values[0],
-      values[1], values[2], values[3], values[4], values[5], values[6],
-      values[7], alpha_a, alpha_b, beta);
+      udoncl_mem_physical_token(buffers[0]),
+      udoncl_mem_physical_token(buffers[1]),
+      udoncl_mem_physical_token(buffers[2]),
+      udoncl_mem_physical_token(buffers[3]), values[0], values[1], values[2],
+      values[3], values[4], values[5], values[6], values[7], alpha_a, alpha_b,
+      beta);
 }
 
 static void udoncl_dispatch_embedding(cl_kernel kernel, cl_uint work_dim,
@@ -1055,8 +1073,8 @@ static void udoncl_dispatch_embedding(cl_kernel kernel, cl_uint work_dim,
     return;
   }
   udoncl_dispatch_event = __vrc_opencl_dispatch_udonaten_embedding(
-      input->physical_token, output->physical_token, outer, rows, rows_float,
-      inner, indices_words, output_words);
+      udoncl_mem_physical_token(input), udoncl_mem_physical_token(output),
+      outer, rows, rows_float, inner, indices_words, output_words);
 }
 #endif
 
@@ -1086,8 +1104,8 @@ static void udoncl_dispatch_matmul_nbits(cl_kernel kernel, cl_uint work_dim,
     return;
   }
   udoncl_dispatch_event = __vrc_opencl_dispatch_udononnx_matmul_nbits(
-      input->physical_token, output->physical_token, tile_n, tile_k, accumulate,
-      finalize);
+      udoncl_mem_physical_token(input), udoncl_mem_physical_token(output),
+      tile_n, tile_k, accumulate, finalize);
 }
 
 static void udoncl_dispatch_gather(cl_kernel kernel, cl_uint work_dim,
@@ -1112,7 +1130,8 @@ static void udoncl_dispatch_gather(cl_kernel kernel, cl_uint work_dim,
     return;
   }
   udoncl_dispatch_event = __vrc_opencl_dispatch_udononnx_gather_copy(
-      input->physical_token, output->physical_token, words);
+      udoncl_mem_physical_token(input), udoncl_mem_physical_token(output),
+      words);
 }
 
 static void udoncl_dispatch_unary(cl_kernel kernel, cl_uint work_dim,
@@ -1138,7 +1157,8 @@ static void udoncl_dispatch_unary(cl_kernel kernel, cl_uint work_dim,
     return;
   }
   udoncl_dispatch_event = __vrc_opencl_dispatch_udononnx_unary_f32(
-      input->physical_token, output->physical_token, operation, words);
+      udoncl_mem_physical_token(input), udoncl_mem_physical_token(output),
+      operation, words);
 }
 #endif
 
@@ -1161,13 +1181,13 @@ static void udoncl_dispatch_mnist(cl_kernel kernel, cl_uint work_dim,
   }
   if (kernel->id == 20)
     udoncl_dispatch_event = __vrc_opencl_dispatch_mnist_conv(
-        input->physical_token, output->physical_token);
+        udoncl_mem_physical_token(input), udoncl_mem_physical_token(output));
   else if (kernel->id == 21)
     udoncl_dispatch_event = __vrc_opencl_dispatch_mnist_pool(
-        input->physical_token, output->physical_token);
+        udoncl_mem_physical_token(input), udoncl_mem_physical_token(output));
   else
     udoncl_dispatch_event = __vrc_opencl_dispatch_mnist_dense(
-        input->physical_token, output->physical_token);
+        udoncl_mem_physical_token(input), udoncl_mem_physical_token(output));
 }
 #endif
 
@@ -1371,19 +1391,23 @@ cl_int __vrc_enqueue_udondnn_large_convolution_device_args(
     cl_float beta, cl_uint wait_count, const cl_event *wait_list,
     cl_event *event) {
   cl_int pending;
-  if (queue != &udoncl_queue || !queue->active || !input || !input->active ||
-      !filter || !filter->active || !previous || !previous->active || !output ||
-      !output->active || input->context != queue->context ||
-      filter->context != queue->context ||
-      previous->context != queue->context ||
-      output->context != queue->context ||
+  if (queue != &udoncl_queue || !queue->active || !input ||
+      !udoncl_mem_is_active(input) || !filter ||
+      !udoncl_mem_is_active(filter) || !previous ||
+      !udoncl_mem_is_active(previous) || !output ||
+      !udoncl_mem_is_active(output) ||
+      udoncl_mem_context(input) != queue->context ||
+      udoncl_mem_context(filter) != queue->context ||
+      udoncl_mem_context(previous) != queue->context ||
+      udoncl_mem_context(output) != queue->context ||
       udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
   UDONCL_RETURN_IF_READ_WRITE_ALIAS(output, input, filter, previous);
   pending = __vrc_opencl_dispatch_udondnn_large_convolution(
-      input->physical_token, filter->physical_token, previous->physical_token,
-      output->physical_token, output_words, input_ch, input_w, output_ch,
-      output_w, filter_hw, pad_hw, stride_hw, dilation_hw, mode, alpha, beta);
+      udoncl_mem_physical_token(input), udoncl_mem_physical_token(filter),
+      udoncl_mem_physical_token(previous), udoncl_mem_physical_token(output),
+      output_words, input_ch, input_w, output_ch, output_w, filter_hw, pad_hw,
+      stride_hw, dilation_hw, mode, alpha, beta);
   return udoncl_finish_enqueue(queue, CL_COMMAND_NDRANGE_KERNEL, pending,
                                CL_FALSE, event);
 }
@@ -1395,17 +1419,22 @@ cl_int __vrc_enqueue_udondnn_large_convolution_args(
     cl_int stride_hw, cl_int dilation_hw, cl_int mode, cl_float alpha,
     cl_float beta) {
   cl_int pending;
-  if (queue != &udoncl_queue || !queue->active || !input || !input->active ||
-      !filter || !filter->active || !previous || !previous->active || !output ||
-      !output->active || input->context != queue->context ||
-      filter->context != queue->context ||
-      previous->context != queue->context || output->context != queue->context)
+  if (queue != &udoncl_queue || !queue->active || !input ||
+      !udoncl_mem_is_active(input) || !filter ||
+      !udoncl_mem_is_active(filter) || !previous ||
+      !udoncl_mem_is_active(previous) || !output ||
+      !udoncl_mem_is_active(output) ||
+      udoncl_mem_context(input) != queue->context ||
+      udoncl_mem_context(filter) != queue->context ||
+      udoncl_mem_context(previous) != queue->context ||
+      udoncl_mem_context(output) != queue->context)
     return CL_INVALID_VALUE;
   UDONCL_RETURN_IF_READ_WRITE_ALIAS(output, input, filter, previous);
   pending = __vrc_opencl_dispatch_udondnn_large_convolution(
-      input->physical_token, filter->physical_token, previous->physical_token,
-      output->physical_token, output_words, input_ch, input_w, output_ch,
-      output_w, filter_hw, pad_hw, stride_hw, dilation_hw, mode, alpha, beta);
+      udoncl_mem_physical_token(input), udoncl_mem_physical_token(filter),
+      udoncl_mem_physical_token(previous), udoncl_mem_physical_token(output),
+      output_words, input_ch, input_w, output_ch, output_w, filter_hw, pad_hw,
+      stride_hw, dilation_hw, mode, alpha, beta);
   return udoncl_finish_enqueue(queue, CL_COMMAND_NDRANGE_KERNEL, pending,
                                CL_FALSE, 0);
 }
@@ -1416,16 +1445,20 @@ cl_int __vrc_enqueue_udondnn_large_activation_device_args(
     cl_float alpha, cl_float beta, cl_uint wait_count,
     const cl_event *wait_list, cl_event *event) {
   cl_int pending;
-  if (queue != &udoncl_queue || !queue->active || !input || !input->active ||
-      !previous || !previous->active || !output || !output->active ||
-      input->context != queue->context || previous->context != queue->context ||
-      output->context != queue->context ||
+  if (queue != &udoncl_queue || !queue->active || !input ||
+      !udoncl_mem_is_active(input) || !previous ||
+      !udoncl_mem_is_active(previous) || !output ||
+      !udoncl_mem_is_active(output) ||
+      udoncl_mem_context(input) != queue->context ||
+      udoncl_mem_context(previous) != queue->context ||
+      udoncl_mem_context(output) != queue->context ||
       udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
   UDONCL_RETURN_IF_READ_WRITE_ALIAS(output, input, previous);
   pending = __vrc_opencl_dispatch_udondnn_large_activation(
-      input->physical_token, previous->physical_token, output->physical_token,
-      words, mode, nan_propagation, coefficient, alpha, beta);
+      udoncl_mem_physical_token(input), udoncl_mem_physical_token(previous),
+      udoncl_mem_physical_token(output), words, mode, nan_propagation,
+      coefficient, alpha, beta);
   return udoncl_finish_enqueue(queue, CL_COMMAND_NDRANGE_KERNEL, pending,
                                CL_FALSE, event);
 }
@@ -1437,17 +1470,21 @@ cl_int __vrc_enqueue_udondnn_large_pooling_device_args(
     cl_int stride_shape, cl_int options, cl_float alpha, cl_float beta,
     cl_uint wait_count, const cl_event *wait_list, cl_event *event) {
   cl_int pending;
-  if (queue != &udoncl_queue || !queue->active || !input || !input->active ||
-      !previous || !previous->active || !output || !output->active ||
-      input->context != queue->context || previous->context != queue->context ||
-      output->context != queue->context ||
+  if (queue != &udoncl_queue || !queue->active || !input ||
+      !udoncl_mem_is_active(input) || !previous ||
+      !udoncl_mem_is_active(previous) || !output ||
+      !udoncl_mem_is_active(output) ||
+      udoncl_mem_context(input) != queue->context ||
+      udoncl_mem_context(previous) != queue->context ||
+      udoncl_mem_context(output) != queue->context ||
       udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
   UDONCL_RETURN_IF_READ_WRITE_ALIAS(output, input, previous);
   pending = __vrc_opencl_dispatch_udondnn_large_pooling(
-      input->physical_token, previous->physical_token, output->physical_token,
-      output_words, input_c, input_h, input_w, output_h, output_w, window_shape,
-      pad_shape, stride_shape, options, alpha, beta);
+      udoncl_mem_physical_token(input), udoncl_mem_physical_token(previous),
+      udoncl_mem_physical_token(output), output_words, input_c, input_h,
+      input_w, output_h, output_w, window_shape, pad_shape, stride_shape,
+      options, alpha, beta);
   return udoncl_finish_enqueue(queue, CL_COMMAND_NDRANGE_KERNEL, pending,
                                CL_FALSE, event);
 }
@@ -1459,18 +1496,22 @@ cl_int __vrc_enqueue_udondnn_large_op_tensor_device_args(
     cl_float alpha_b, cl_float beta, cl_uint wait_count,
     const cl_event *wait_list, cl_event *event) {
   cl_int pending;
-  if (queue != &udoncl_queue || !queue->active || !a || !a->active || !b ||
-      !b->active || !previous || !previous->active || !output ||
-      !output->active || a->context != queue->context ||
-      b->context != queue->context || previous->context != queue->context ||
-      output->context != queue->context ||
+  if (queue != &udoncl_queue || !queue->active || !a ||
+      !udoncl_mem_is_active(a) || !b || !udoncl_mem_is_active(b) || !previous ||
+      !udoncl_mem_is_active(previous) || !output ||
+      !udoncl_mem_is_active(output) ||
+      udoncl_mem_context(a) != queue->context ||
+      udoncl_mem_context(b) != queue->context ||
+      udoncl_mem_context(previous) != queue->context ||
+      udoncl_mem_context(output) != queue->context ||
       udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
   UDONCL_RETURN_IF_READ_WRITE_ALIAS(output, a, b, previous);
   pending = __vrc_opencl_dispatch_udondnn_large_op_tensor(
-      a->physical_token, b->physical_token, previous->physical_token,
-      output->physical_token, words, a_nc, a_hw, b_nc, b_hw, c_nc, c_hw,
-      options, alpha_a, alpha_b, beta);
+      udoncl_mem_physical_token(a), udoncl_mem_physical_token(b),
+      udoncl_mem_physical_token(previous), udoncl_mem_physical_token(output),
+      words, a_nc, a_hw, b_nc, b_hw, c_nc, c_hw, options, alpha_a, alpha_b,
+      beta);
   return udoncl_finish_enqueue(queue, CL_COMMAND_NDRANGE_KERNEL, pending,
                                CL_FALSE, event);
 }
@@ -1481,10 +1522,12 @@ cl_int __vrc_enqueue_udonaten_arena_rms_norm_reduce_device_args(
     cl_event *event) {
   cl_int pending;
   size_t rows, partials_per_row;
-  if (queue != &udoncl_queue || !queue->active || !input || !input->active ||
-      !partials || !partials->active || input->context != queue->context ||
-      partials->context != queue->context || words < 1 || words > 16384 ||
-      normalized_words < 1 || normalized_words > 4096 ||
+  if (queue != &udoncl_queue || !queue->active || !input ||
+      !udoncl_mem_is_active(input) || !partials ||
+      !udoncl_mem_is_active(partials) ||
+      udoncl_mem_context(input) != queue->context ||
+      udoncl_mem_context(partials) != queue->context || words < 1 ||
+      words > 16384 || normalized_words < 1 || normalized_words > 4096 ||
       words % normalized_words != 0 ||
       udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
@@ -1492,11 +1535,13 @@ cl_int __vrc_enqueue_udonaten_arena_rms_norm_reduce_device_args(
   partials_per_row = ((size_t)normalized_words + 63u) / 64u;
   if (rows * partials_per_row > 16384u)
     return CL_INVALID_VALUE;
-  if (input->bytes < (size_t)words * 4u || partials->bytes < 65536u)
+  if (udoncl_mem_bytes(input) < (size_t)words * 4u ||
+      udoncl_mem_bytes(partials) < 65536u)
     return CL_INVALID_BUFFER_SIZE;
   UDONCL_RETURN_IF_READ_WRITE_ALIAS(partials, input);
   pending = __vrc_opencl_dispatch_udonaten_arena_rms_norm_reduce(
-      input->physical_token, partials->physical_token, words, normalized_words);
+      udoncl_mem_physical_token(input), udoncl_mem_physical_token(partials),
+      words, normalized_words);
   return udoncl_finish_enqueue(queue, CL_COMMAND_NDRANGE_KERNEL, pending,
                                CL_FALSE, event);
 }
@@ -1507,24 +1552,29 @@ cl_int __vrc_enqueue_udonaten_arena_rms_norm_finalize_device_args(
     cl_int has_weight, cl_uint wait_count, const cl_event *wait_list,
     cl_event *event) {
   cl_int pending;
-  if (queue != &udoncl_queue || !queue->active || !input || !input->active ||
-      !partials || !partials->active || !weight || !weight->active || !output ||
-      !output->active || input->context != queue->context ||
-      partials->context != queue->context ||
-      weight->context != queue->context || output->context != queue->context ||
-      words < 1 || words > 16384 || normalized_words < 1 ||
-      normalized_words > 4096 || words % normalized_words != 0 ||
-      epsilon < 0.0f || has_weight != 1 ||
+  if (queue != &udoncl_queue || !queue->active || !input ||
+      !udoncl_mem_is_active(input) || !partials ||
+      !udoncl_mem_is_active(partials) || !weight ||
+      !udoncl_mem_is_active(weight) || !output ||
+      !udoncl_mem_is_active(output) ||
+      udoncl_mem_context(input) != queue->context ||
+      udoncl_mem_context(partials) != queue->context ||
+      udoncl_mem_context(weight) != queue->context ||
+      udoncl_mem_context(output) != queue->context || words < 1 ||
+      words > 16384 || normalized_words < 1 || normalized_words > 4096 ||
+      words % normalized_words != 0 || epsilon < 0.0f || has_weight != 1 ||
       udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
-  if (input->bytes < (size_t)words * 4u || partials->bytes < 65536u ||
-      weight->bytes < (size_t)normalized_words * 4u ||
-      output->bytes < (size_t)words * 4u)
+  if (udoncl_mem_bytes(input) < (size_t)words * 4u ||
+      udoncl_mem_bytes(partials) < 65536u ||
+      udoncl_mem_bytes(weight) < (size_t)normalized_words * 4u ||
+      udoncl_mem_bytes(output) < (size_t)words * 4u)
     return CL_INVALID_BUFFER_SIZE;
   UDONCL_RETURN_IF_READ_WRITE_ALIAS(output, input, partials, weight);
   pending = __vrc_opencl_dispatch_udonaten_arena_rms_norm_finalize(
-      input->physical_token, partials->physical_token, weight->physical_token,
-      output->physical_token, words, normalized_words, epsilon, has_weight);
+      udoncl_mem_physical_token(input), udoncl_mem_physical_token(partials),
+      udoncl_mem_physical_token(weight), udoncl_mem_physical_token(output),
+      words, normalized_words, epsilon, has_weight);
   return udoncl_finish_enqueue(queue, CL_COMMAND_NDRANGE_KERNEL, pending,
                                CL_FALSE, event);
 }
@@ -1536,11 +1586,13 @@ cl_int __vrc_enqueue_udondnn_arena_softmax_device_args(
     cl_event *event) {
   cl_int pending;
   size_t words;
-  if (queue != &udoncl_queue || !queue->active || !input || !input->active ||
-      !output || !output->active || input->context != queue->context ||
-      output->context != queue->context || input_n < 1 || input_c < 1 ||
-      input_c > 512 || input_h < 1 || input_w < 1 || algorithm < 0 ||
-      algorithm > 2 || mode < 0 || mode > 1 ||
+  if (queue != &udoncl_queue || !queue->active || !input ||
+      !udoncl_mem_is_active(input) || !output ||
+      !udoncl_mem_is_active(output) ||
+      udoncl_mem_context(input) != queue->context ||
+      udoncl_mem_context(output) != queue->context || input_n < 1 ||
+      input_c < 1 || input_c > 512 || input_h < 1 || input_w < 1 ||
+      algorithm < 0 || algorithm > 2 || mode < 0 || mode > 1 ||
       udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
   words = (size_t)input_n * (size_t)input_c;
@@ -1550,12 +1602,13 @@ cl_int __vrc_enqueue_udondnn_arena_softmax_device_args(
   if (words > 16384u / (size_t)input_w)
     return CL_INVALID_VALUE;
   words *= (size_t)input_w;
-  if (input->bytes < words * 4u || output->bytes < words * 4u)
+  if (udoncl_mem_bytes(input) < words * 4u ||
+      udoncl_mem_bytes(output) < words * 4u)
     return CL_INVALID_BUFFER_SIZE;
   UDONCL_RETURN_IF_READ_WRITE_ALIAS(output, input);
   pending = __vrc_opencl_dispatch_udondnn_arena_softmax(
-      input->physical_token, output->physical_token, input_n, input_c, input_h,
-      input_w, algorithm, mode);
+      udoncl_mem_physical_token(input), udoncl_mem_physical_token(output),
+      input_n, input_c, input_h, input_w, algorithm, mode);
   return udoncl_finish_enqueue(queue, CL_COMMAND_NDRANGE_KERNEL, pending,
                                CL_FALSE, event);
 }
@@ -1571,13 +1624,16 @@ cl_int __vrc_enqueue_udononnx_matmul_nbits_q4_device_args(
   cl_int pending;
   size_t blocks;
   if (queue != &udoncl_queue || !queue->active || !activation ||
-      !activation->active || !packed_weight || !packed_weight->active ||
-      !scales || !scales->active || !previous || !previous->active || !output ||
-      !output->active || activation->context != queue->context ||
-      packed_weight->context != queue->context ||
-      scales->context != queue->context ||
-      previous->context != queue->context ||
-      output->context != queue->context || m < 1 || m > 4 || n < 1 ||
+      !udoncl_mem_is_active(activation) || !packed_weight ||
+      !udoncl_mem_is_active(packed_weight) || !scales ||
+      !udoncl_mem_is_active(scales) || !previous ||
+      !udoncl_mem_is_active(previous) || !output ||
+      !udoncl_mem_is_active(output) ||
+      udoncl_mem_context(activation) != queue->context ||
+      udoncl_mem_context(packed_weight) != queue->context ||
+      udoncl_mem_context(scales) != queue->context ||
+      udoncl_mem_context(previous) != queue->context ||
+      udoncl_mem_context(output) != queue->context || m < 1 || m > 4 || n < 1 ||
       n > 32000 || k < 1 || k > 5632 || block_size != 32 || n_base != 0 ||
       k_base < 0 || k_base > 5504 || tile_n < 1 || tile_n > 32000 ||
       tile_k < 1 || tile_k > 128 || accumulate < 0 || accumulate > 1 ||
@@ -1585,17 +1641,20 @@ cl_int __vrc_enqueue_udononnx_matmul_nbits_q4_device_args(
       udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
   blocks = ((size_t)k + 31u) / 32u;
-  if (activation->bytes < (size_t)m * (size_t)k * 4u ||
-      packed_weight->bytes < (size_t)n * blocks * 16u ||
-      scales->bytes < (size_t)n * blocks * 4u ||
-      previous->bytes < 131072u * 4u || output->bytes < 131072u * 4u)
+  if (udoncl_mem_bytes(activation) < (size_t)m * (size_t)k * 4u ||
+      udoncl_mem_bytes(packed_weight) < (size_t)n * blocks * 16u ||
+      udoncl_mem_bytes(scales) < (size_t)n * blocks * 4u ||
+      udoncl_mem_bytes(previous) < 131072u * 4u ||
+      udoncl_mem_bytes(output) < 131072u * 4u)
     return CL_INVALID_BUFFER_SIZE;
   UDONCL_RETURN_IF_READ_WRITE_ALIAS(output, activation, packed_weight, scales,
                                     previous);
   pending = __vrc_opencl_dispatch_udononnx_matmul_nbits_q4(
-      activation->physical_token, packed_weight->physical_token,
-      scales->physical_token, previous->physical_token, output->physical_token,
-      m, n, k, block_size, n_base, k_base, tile_n, tile_k, accumulate);
+      udoncl_mem_physical_token(activation),
+      udoncl_mem_physical_token(packed_weight),
+      udoncl_mem_physical_token(scales), udoncl_mem_physical_token(previous),
+      udoncl_mem_physical_token(output), m, n, k, block_size, n_base, k_base,
+      tile_n, tile_k, accumulate);
   return udoncl_finish_enqueue(queue, CL_COMMAND_NDRANGE_KERNEL, pending,
                                CL_FALSE, event);
 }
@@ -1607,15 +1666,18 @@ cl_int __vrc_enqueue_udononnx_unary_device_args(cl_command_queue queue,
                                                 const cl_event *wait_list,
                                                 cl_event *event) {
   cl_int pending;
-  if (queue != &udoncl_queue || !queue->active || !input || !input->active ||
-      !output || !output->active || input->context != queue->context ||
-      output->context != queue->context || operation < 1 || operation > 3 ||
-      words <= 0 || words > 16384 ||
+  if (queue != &udoncl_queue || !queue->active || !input ||
+      !udoncl_mem_is_active(input) || !output ||
+      !udoncl_mem_is_active(output) ||
+      udoncl_mem_context(input) != queue->context ||
+      udoncl_mem_context(output) != queue->context || operation < 1 ||
+      operation > 3 || words <= 0 || words > 16384 ||
       udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
   UDONCL_RETURN_IF_READ_WRITE_ALIAS(output, input);
   pending = __vrc_opencl_dispatch_udononnx_unary_f32(
-      input->physical_token, output->physical_token, operation, words);
+      udoncl_mem_physical_token(input), udoncl_mem_physical_token(output),
+      operation, words);
   return udoncl_finish_enqueue(queue, CL_COMMAND_NDRANGE_KERNEL, pending,
                                CL_FALSE, event);
 }
@@ -1633,10 +1695,12 @@ cl_int __vrc_enqueue_udononnx_transpose_device_args(
   packed_shapes[0] = (cl_uint)shape01;
   packed_shapes[1] = (cl_uint)shape23;
   packed_shapes[2] = (cl_uint)shape4;
-  if (queue != &udoncl_queue || !queue->active || !input || !input->active ||
-      !output || !output->active || input->context != queue->context ||
-      output->context != queue->context || words < 1 || words > 16384 ||
-      rank < 1 || rank > 5 ||
+  if (queue != &udoncl_queue || !queue->active || !input ||
+      !udoncl_mem_is_active(input) || !output ||
+      !udoncl_mem_is_active(output) ||
+      udoncl_mem_context(input) != queue->context ||
+      udoncl_mem_context(output) != queue->context || words < 1 ||
+      words > 16384 || rank < 1 || rank > 5 ||
       udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
   for (axis = 0; axis < rank; ++axis) {
@@ -1649,13 +1713,13 @@ cl_int __vrc_enqueue_udononnx_transpose_device_args(
     seen |= 1u << input_axis;
     elements *= extent;
   }
-  if (elements != (size_t)words || input->bytes < elements * 4u ||
-      output->bytes < elements * 4u)
+  if (elements != (size_t)words || udoncl_mem_bytes(input) < elements * 4u ||
+      udoncl_mem_bytes(output) < elements * 4u)
     return CL_INVALID_BUFFER_SIZE;
   UDONCL_RETURN_IF_READ_WRITE_ALIAS(output, input);
   pending = __vrc_opencl_dispatch_udononnx_transpose_f32(
-      input->physical_token, output->physical_token, words, rank, shape01,
-      shape23, shape4, permutation);
+      udoncl_mem_physical_token(input), udoncl_mem_physical_token(output),
+      words, rank, shape01, shape23, shape4, permutation);
   return udoncl_finish_enqueue(queue, CL_COMMAND_NDRANGE_KERNEL, pending,
                                CL_FALSE, event);
 }
@@ -1687,10 +1751,12 @@ cl_int __vrc_enqueue_udononnx_slice_device_args(
   packed_steps[0] = (cl_uint)steps01;
   packed_steps[1] = (cl_uint)steps23;
   packed_steps[2] = (cl_uint)steps4;
-  if (queue != &udoncl_queue || !queue->active || !input || !input->active ||
-      !output || !output->active || input->context != queue->context ||
-      output->context != queue->context || words < 1 || words > 16384 ||
-      rank < 1 || rank > 5 ||
+  if (queue != &udoncl_queue || !queue->active || !input ||
+      !udoncl_mem_is_active(input) || !output ||
+      !udoncl_mem_is_active(output) ||
+      udoncl_mem_context(input) != queue->context ||
+      udoncl_mem_context(output) != queue->context || words < 1 ||
+      words > 16384 || rank < 1 || rank > 5 ||
       udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
   for (axis = 0; axis < rank; ++axis) {
@@ -1713,14 +1779,15 @@ cl_int __vrc_enqueue_udononnx_slice_device_args(
   }
   if (output_elements != (size_t)words)
     return CL_INVALID_VALUE;
-  if (input->bytes < input_elements * 4u ||
-      output->bytes < output_elements * 4u)
+  if (udoncl_mem_bytes(input) < input_elements * 4u ||
+      udoncl_mem_bytes(output) < output_elements * 4u)
     return CL_INVALID_BUFFER_SIZE;
   UDONCL_RETURN_IF_READ_WRITE_ALIAS(output, input);
   pending = __vrc_opencl_dispatch_udononnx_slice_f32(
-      input->physical_token, output->physical_token, words, rank, input_shape01,
-      input_shape23, input_shape4, output_shape01, output_shape23,
-      output_shape4, starts01, starts23, starts4, steps01, steps23, steps4);
+      udoncl_mem_physical_token(input), udoncl_mem_physical_token(output),
+      words, rank, input_shape01, input_shape23, input_shape4, output_shape01,
+      output_shape23, output_shape4, starts01, starts23, starts4, steps01,
+      steps23, steps4);
   return udoncl_finish_enqueue(queue, CL_COMMAND_NDRANGE_KERNEL, pending,
                                CL_FALSE, event);
 }
@@ -1744,11 +1811,13 @@ cl_int __vrc_enqueue_udononnx_expand_device_args(
   output_shapes[0] = (cl_uint)output_shape01;
   output_shapes[1] = (cl_uint)output_shape23;
   output_shapes[2] = (cl_uint)output_shape4;
-  if (queue != &udoncl_queue || !queue->active || !input || !input->active ||
-      !output || !output->active || input->context != queue->context ||
-      output->context != queue->context || words < 1 || words > 16384 ||
-      input_rank < 0 || input_rank > 5 || output_rank < input_rank ||
-      output_rank < 1 || output_rank > 5 ||
+  if (queue != &udoncl_queue || !queue->active || !input ||
+      !udoncl_mem_is_active(input) || !output ||
+      !udoncl_mem_is_active(output) ||
+      udoncl_mem_context(input) != queue->context ||
+      udoncl_mem_context(output) != queue->context || words < 1 ||
+      words > 16384 || input_rank < 0 || input_rank > 5 ||
+      output_rank < input_rank || output_rank < 1 || output_rank > 5 ||
       udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
   rank_offset = output_rank - input_rank;
@@ -1773,14 +1842,14 @@ cl_int __vrc_enqueue_udononnx_expand_device_args(
   }
   if (output_elements != (size_t)words)
     return CL_INVALID_VALUE;
-  if (input->bytes < input_elements * 4u ||
-      output->bytes < output_elements * 4u)
+  if (udoncl_mem_bytes(input) < input_elements * 4u ||
+      udoncl_mem_bytes(output) < output_elements * 4u)
     return CL_INVALID_BUFFER_SIZE;
   UDONCL_RETURN_IF_READ_WRITE_ALIAS(output, input);
   pending = __vrc_opencl_dispatch_udononnx_expand_f32(
-      input->physical_token, output->physical_token, words, input_rank,
-      input_shape01, input_shape23, input_shape4, output_rank, output_shape01,
-      output_shape23, output_shape4);
+      udoncl_mem_physical_token(input), udoncl_mem_physical_token(output),
+      words, input_rank, input_shape01, input_shape23, input_shape4,
+      output_rank, output_shape01, output_shape23, output_shape4);
   return udoncl_finish_enqueue(queue, CL_COMMAND_NDRANGE_KERNEL, pending,
                                CL_FALSE, event);
 }
@@ -1794,11 +1863,13 @@ cl_int __vrc_enqueue_udononnx_concat2_device_args(
   size_t right_block;
   size_t output_block;
   size_t outer;
-  if (queue != &udoncl_queue || !queue->active || !left || !left->active ||
-      !right || !right->active || !output || !output->active ||
-      left->context != queue->context || right->context != queue->context ||
-      output->context != queue->context || words < 1 || words > 16384 ||
-      inner_words < 1 || left_extent < 1 || right_extent < 1 ||
+  if (queue != &udoncl_queue || !queue->active || !left ||
+      !udoncl_mem_is_active(left) || !right || !udoncl_mem_is_active(right) ||
+      !output || !udoncl_mem_is_active(output) ||
+      udoncl_mem_context(left) != queue->context ||
+      udoncl_mem_context(right) != queue->context ||
+      udoncl_mem_context(output) != queue->context || words < 1 ||
+      words > 16384 || inner_words < 1 || left_extent < 1 || right_extent < 1 ||
       (size_t)inner_words > 16384u / (size_t)left_extent ||
       (size_t)inner_words > 16384u / (size_t)right_extent ||
       udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
@@ -1811,14 +1882,15 @@ cl_int __vrc_enqueue_udononnx_concat2_device_args(
   if ((size_t)words % output_block)
     return CL_INVALID_VALUE;
   outer = (size_t)words / output_block;
-  if (left->bytes < outer * left_block * 4u ||
-      right->bytes < outer * right_block * 4u ||
-      output->bytes < (size_t)words * 4u)
+  if (udoncl_mem_bytes(left) < outer * left_block * 4u ||
+      udoncl_mem_bytes(right) < outer * right_block * 4u ||
+      udoncl_mem_bytes(output) < (size_t)words * 4u)
     return CL_INVALID_BUFFER_SIZE;
   UDONCL_RETURN_IF_READ_WRITE_ALIAS(output, left, right);
   pending = __vrc_opencl_dispatch_udononnx_concat2_f32(
-      left->physical_token, right->physical_token, output->physical_token,
-      words, inner_words, left_extent, right_extent);
+      udoncl_mem_physical_token(left), udoncl_mem_physical_token(right),
+      udoncl_mem_physical_token(output), words, inner_words, left_extent,
+      right_extent);
   return udoncl_finish_enqueue(queue, CL_COMMAND_NDRANGE_KERNEL, pending,
                                CL_FALSE, event);
 }
@@ -1830,25 +1902,30 @@ cl_int __vrc_enqueue_udononnx_gather_axis0_device_args(
   cl_int pending;
   size_t index_count;
   size_t data_words;
-  if (queue != &udoncl_queue || !queue->active || !data || !data->active ||
-      !indices || !indices->active || !output || !output->active ||
-      data->context != queue->context || indices->context != queue->context ||
-      output->context != queue->context || words < 1 || words > 16384 ||
-      inner_words < 1 || axis_extent < 1 ||
+  if (queue != &udoncl_queue || !queue->active || !data ||
+      !udoncl_mem_is_active(data) || !indices ||
+      !udoncl_mem_is_active(indices) || !output ||
+      !udoncl_mem_is_active(output) ||
+      udoncl_mem_context(data) != queue->context ||
+      udoncl_mem_context(indices) != queue->context ||
+      udoncl_mem_context(output) != queue->context || words < 1 ||
+      words > 16384 || inner_words < 1 || axis_extent < 1 ||
       (index_words != 1 && index_words != 2) || words % inner_words ||
       (size_t)axis_extent > (size_t)-1 / (size_t)inner_words ||
       udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
   index_count = (size_t)words / (size_t)inner_words;
   data_words = (size_t)axis_extent * (size_t)inner_words;
-  if (data_words > (size_t)-1 / 4u || data->bytes < data_words * 4u ||
-      indices->bytes < index_count * (size_t)index_words * 4u ||
-      output->bytes < (size_t)words * 4u)
+  if (data_words > (size_t)-1 / 4u ||
+      udoncl_mem_bytes(data) < data_words * 4u ||
+      udoncl_mem_bytes(indices) < index_count * (size_t)index_words * 4u ||
+      udoncl_mem_bytes(output) < (size_t)words * 4u)
     return CL_INVALID_BUFFER_SIZE;
   UDONCL_RETURN_IF_READ_WRITE_ALIAS(output, data, indices);
   pending = __vrc_opencl_dispatch_udononnx_gather_axis0_f32(
-      data->physical_token, indices->physical_token, output->physical_token,
-      words, inner_words, axis_extent, index_words);
+      udoncl_mem_physical_token(data), udoncl_mem_physical_token(indices),
+      udoncl_mem_physical_token(output), words, inner_words, axis_extent,
+      index_words);
   return udoncl_finish_enqueue(queue, CL_COMMAND_NDRANGE_KERNEL, pending,
                                CL_FALSE, event);
 }
@@ -1857,15 +1934,19 @@ cl_int __vrc_enqueue_udononnx_cast_i64_f32_device_args(
     cl_command_queue queue, cl_mem input, cl_mem output, cl_int words,
     cl_uint wait_count, const cl_event *wait_list, cl_event *event) {
   cl_int pending;
-  if (queue != &udoncl_queue || !queue->active || !input || !input->active ||
-      !output || !output->active || input->context != queue->context ||
-      output->context != queue->context || words < 1 || words > 16384 ||
-      input->bytes < (size_t)words * 8u || output->bytes < (size_t)words * 4u ||
+  if (queue != &udoncl_queue || !queue->active || !input ||
+      !udoncl_mem_is_active(input) || !output ||
+      !udoncl_mem_is_active(output) ||
+      udoncl_mem_context(input) != queue->context ||
+      udoncl_mem_context(output) != queue->context || words < 1 ||
+      words > 16384 || udoncl_mem_bytes(input) < (size_t)words * 8u ||
+      udoncl_mem_bytes(output) < (size_t)words * 4u ||
       udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
   UDONCL_RETURN_IF_READ_WRITE_ALIAS(output, input);
   pending = __vrc_opencl_dispatch_udononnx_cast_i64_f32(
-      input->physical_token, output->physical_token, words);
+      udoncl_mem_physical_token(input), udoncl_mem_physical_token(output),
+      words);
   return udoncl_finish_enqueue(queue, CL_COMMAND_NDRANGE_KERNEL, pending,
                                CL_FALSE, event);
 }
@@ -1934,22 +2015,26 @@ cl_int __vrc_enqueue_udononnx_equal_f32_device_args(
                                                    output_rank, output_shapes);
   size_t right_elements = udoncl_broadcast_elements(right_rank, right_shapes,
                                                     output_rank, output_shapes);
-  if (queue != &udoncl_queue || !queue->active || !left || !left->active ||
-      !right || !right->active || !output || !output->active ||
-      left->context != queue->context || right->context != queue->context ||
-      output->context != queue->context || words < 1 || words > 16384 ||
-      !left_elements || !right_elements ||
+  if (queue != &udoncl_queue || !queue->active || !left ||
+      !udoncl_mem_is_active(left) || !right || !udoncl_mem_is_active(right) ||
+      !output || !udoncl_mem_is_active(output) ||
+      udoncl_mem_context(left) != queue->context ||
+      udoncl_mem_context(right) != queue->context ||
+      udoncl_mem_context(output) != queue->context || words < 1 ||
+      words > 16384 || !left_elements || !right_elements ||
       udoncl_packed_shape_elements(output_rank, output_shapes) !=
           (size_t)words ||
-      left->bytes < left_elements * 4u || right->bytes < right_elements * 4u ||
-      output->bytes < (size_t)words * 4u ||
+      udoncl_mem_bytes(left) < left_elements * 4u ||
+      udoncl_mem_bytes(right) < right_elements * 4u ||
+      udoncl_mem_bytes(output) < (size_t)words * 4u ||
       udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
   UDONCL_RETURN_IF_READ_WRITE_ALIAS(output, left, right);
   pending = __vrc_opencl_dispatch_udononnx_equal_f32(
-      left->physical_token, right->physical_token, output->physical_token,
-      words, ranks, left_shape01, left_shape23, right_shape01, right_shape23,
-      output_shape01, output_shape23);
+      udoncl_mem_physical_token(left), udoncl_mem_physical_token(right),
+      udoncl_mem_physical_token(output), words, ranks, left_shape01,
+      left_shape23, right_shape01, right_shape23, output_shape01,
+      output_shape23);
   return udoncl_finish_enqueue(queue, CL_COMMAND_NDRANGE_KERNEL, pending,
                                CL_FALSE, event);
 }
@@ -1981,27 +2066,32 @@ cl_int __vrc_enqueue_udononnx_where_f32_device_args(
   size_t false_elements = udoncl_broadcast_elements(false_rank, false_shapes,
                                                     output_rank, output_shapes);
   if (queue != &udoncl_queue || !queue->active || !condition ||
-      !condition->active || !when_true || !when_true->active || !when_false ||
-      !when_false->active || !output || !output->active ||
-      condition->context != queue->context ||
-      when_true->context != queue->context ||
-      when_false->context != queue->context ||
-      output->context != queue->context || words < 1 || words > 16384 ||
-      !condition_elements || !true_elements || !false_elements ||
+      !udoncl_mem_is_active(condition) || !when_true ||
+      !udoncl_mem_is_active(when_true) || !when_false ||
+      !udoncl_mem_is_active(when_false) || !output ||
+      !udoncl_mem_is_active(output) ||
+      udoncl_mem_context(condition) != queue->context ||
+      udoncl_mem_context(when_true) != queue->context ||
+      udoncl_mem_context(when_false) != queue->context ||
+      udoncl_mem_context(output) != queue->context || words < 1 ||
+      words > 16384 || !condition_elements || !true_elements ||
+      !false_elements ||
       udoncl_packed_shape_elements(output_rank, output_shapes) !=
           (size_t)words ||
-      condition->bytes < condition_elements * 4u ||
-      when_true->bytes < true_elements * 4u ||
-      when_false->bytes < false_elements * 4u ||
-      output->bytes < (size_t)words * 4u ||
+      udoncl_mem_bytes(condition) < condition_elements * 4u ||
+      udoncl_mem_bytes(when_true) < true_elements * 4u ||
+      udoncl_mem_bytes(when_false) < false_elements * 4u ||
+      udoncl_mem_bytes(output) < (size_t)words * 4u ||
       udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
   UDONCL_RETURN_IF_READ_WRITE_ALIAS(output, condition, when_true, when_false);
   pending = __vrc_opencl_dispatch_udononnx_where_f32(
-      condition->physical_token, when_true->physical_token,
-      when_false->physical_token, output->physical_token, words, ranks,
-      condition_shape01, condition_shape23, true_shape01, true_shape23,
-      false_shape01, false_shape23, output_shape01, output_shape23);
+      udoncl_mem_physical_token(condition),
+      udoncl_mem_physical_token(when_true),
+      udoncl_mem_physical_token(when_false), udoncl_mem_physical_token(output),
+      words, ranks, condition_shape01, condition_shape23, true_shape01,
+      true_shape23, false_shape01, false_shape23, output_shape01,
+      output_shape23);
   return udoncl_finish_enqueue(queue, CL_COMMAND_NDRANGE_KERNEL, pending,
                                CL_FALSE, event);
 }
@@ -2023,24 +2113,29 @@ cl_int __vrc_enqueue_udononnx_scatter_nd_f32_device_args(
     return CL_INVALID_VALUE;
   index_elements = (size_t)update_count * (size_t)tuple_rank;
   update_elements = (size_t)update_count * (size_t)slice_words;
-  if (queue != &udoncl_queue || !queue->active || !data || !data->active ||
-      !indices || !indices->active || !updates || !updates->active || !output ||
-      !output->active || data->context != queue->context ||
-      indices->context != queue->context ||
-      updates->context != queue->context || output->context != queue->context ||
-      words < 1 || words > 16384 ||
+  if (queue != &udoncl_queue || !queue->active || !data ||
+      !udoncl_mem_is_active(data) || !indices ||
+      !udoncl_mem_is_active(indices) || !updates ||
+      !udoncl_mem_is_active(updates) || !output ||
+      !udoncl_mem_is_active(output) ||
+      udoncl_mem_context(data) != queue->context ||
+      udoncl_mem_context(indices) != queue->context ||
+      udoncl_mem_context(updates) != queue->context ||
+      udoncl_mem_context(output) != queue->context || words < 1 ||
+      words > 16384 ||
       udoncl_packed_shape_elements(rank, shapes) != (size_t)words ||
-      data->bytes < (size_t)words * 4u ||
-      indices->bytes < index_elements * (size_t)index_words * 4u ||
-      updates->bytes < update_elements * 4u ||
-      output->bytes < (size_t)words * 4u ||
+      udoncl_mem_bytes(data) < (size_t)words * 4u ||
+      udoncl_mem_bytes(indices) < index_elements * (size_t)index_words * 4u ||
+      udoncl_mem_bytes(updates) < update_elements * 4u ||
+      udoncl_mem_bytes(output) < (size_t)words * 4u ||
       udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
   UDONCL_RETURN_IF_READ_WRITE_ALIAS(output, data, indices, updates);
   pending = __vrc_opencl_dispatch_udononnx_scatter_nd_f32(
-      data->physical_token, indices->physical_token, updates->physical_token,
-      output->physical_token, words, rank, shape01, shape23, tuple_rank,
-      update_count, slice_words, index_words);
+      udoncl_mem_physical_token(data), udoncl_mem_physical_token(indices),
+      udoncl_mem_physical_token(updates), udoncl_mem_physical_token(output),
+      words, rank, shape01, shape23, tuple_rank, update_count, slice_words,
+      index_words);
   return udoncl_finish_enqueue(queue, CL_COMMAND_NDRANGE_KERNEL, pending,
                                CL_FALSE, event);
 }
@@ -2074,20 +2169,23 @@ cl_int __vrc_enqueue_udonblas_arena_sgemm_device_args(
   size_t a_words;
   size_t b_words;
   size_t output_words;
-  if (queue != &udoncl_queue || !queue->active || !a || !a->active || !b ||
-      !b->active || !output || !output->active ||
-      a->context != queue->context || b->context != queue->context ||
-      output->context != queue->context || udoncl_mem_is_subbuffer(a) ||
-      udoncl_mem_is_subbuffer(b) || udoncl_mem_is_subbuffer(output) || m <= 0 ||
-      n <= 0 || k <= 0 || k > 256 ||
-      udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
+  if (queue != &udoncl_queue || !queue->active || !a ||
+      !udoncl_mem_is_active(a) || !b || !udoncl_mem_is_active(b) || !output ||
+      !udoncl_mem_is_active(output) ||
+      udoncl_mem_context(a) != queue->context ||
+      udoncl_mem_context(b) != queue->context ||
+      udoncl_mem_context(output) != queue->context ||
+      udoncl_mem_is_subbuffer(a) || udoncl_mem_is_subbuffer(b) ||
+      udoncl_mem_is_subbuffer(output) || m <= 0 || n <= 0 || k <= 0 ||
+      k > 256 || udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
   a_words = (size_t)m * (size_t)k;
   b_words = (size_t)k * (size_t)n;
   output_words = (size_t)m * (size_t)n;
   if (a_words > 16384u || b_words > 16384u || output_words > 16384u ||
-      a->bytes < a_words * 4u || b->bytes < b_words * 4u ||
-      output->bytes < output_words * 4u)
+      udoncl_mem_bytes(a) < a_words * 4u ||
+      udoncl_mem_bytes(b) < b_words * 4u ||
+      udoncl_mem_bytes(output) < output_words * 4u)
     return CL_INVALID_BUFFER_SIZE;
   UDONCL_RETURN_IF_READ_WRITE_ALIAS(output, a, b);
   udoncl_pending_resources_reset();
@@ -2095,8 +2193,8 @@ cl_int __vrc_enqueue_udonblas_arena_sgemm_device_args(
   udoncl_pending_resource_add(b);
   udoncl_pending_resource_add(output);
   pending = __vrc_opencl_dispatch_udonblas_arena_sgemm(
-      a->physical_token, b->physical_token, output->physical_token, m, n, k,
-      transa, transb, alpha);
+      udoncl_mem_physical_token(a), udoncl_mem_physical_token(b),
+      udoncl_mem_physical_token(output), m, n, k, transa, transb, alpha);
   return udoncl_finish_enqueue(queue, CL_COMMAND_NDRANGE_KERNEL, pending,
                                CL_FALSE, event);
 }
@@ -2113,14 +2211,16 @@ cl_int __vrc_enqueue_udonblas_arena_sgemm_strided_batched_device_args(
   size_t required_a;
   size_t required_b;
   size_t required_c;
-  if (queue != &udoncl_queue || !queue->active || !a || !a->active || !b ||
-      !b->active || !output || !output->active ||
-      a->context != queue->context || b->context != queue->context ||
-      output->context != queue->context || udoncl_mem_is_subbuffer(a) ||
-      udoncl_mem_is_subbuffer(b) || udoncl_mem_is_subbuffer(output) || m < 1 ||
-      n < 1 || k < 1 || k > 256 || stride_a < 0 || stride_b < 0 ||
-      stride_c < 1 || batch_count < 1 || transa < 0 || transa > 1 ||
-      transb < 0 || transb > 1 ||
+  if (queue != &udoncl_queue || !queue->active || !a ||
+      !udoncl_mem_is_active(a) || !b || !udoncl_mem_is_active(b) || !output ||
+      !udoncl_mem_is_active(output) ||
+      udoncl_mem_context(a) != queue->context ||
+      udoncl_mem_context(b) != queue->context ||
+      udoncl_mem_context(output) != queue->context ||
+      udoncl_mem_is_subbuffer(a) || udoncl_mem_is_subbuffer(b) ||
+      udoncl_mem_is_subbuffer(output) || m < 1 || n < 1 || k < 1 || k > 256 ||
+      stride_a < 0 || stride_b < 0 || stride_c < 1 || batch_count < 1 ||
+      transa < 0 || transa > 1 || transb < 0 || transb > 1 ||
       udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
   matrix_a = (size_t)m * (size_t)k;
@@ -2136,8 +2236,9 @@ cl_int __vrc_enqueue_udonblas_arena_sgemm_strided_batched_device_args(
   required_c = (size_t)batch_count * matrix_c;
   if (required_a > 16384u || required_b > 16384u || required_c > 16384u)
     return CL_INVALID_VALUE;
-  if (a->bytes < required_a * 4u || b->bytes < required_b * 4u ||
-      output->bytes < required_c * 4u)
+  if (udoncl_mem_bytes(a) < required_a * 4u ||
+      udoncl_mem_bytes(b) < required_b * 4u ||
+      udoncl_mem_bytes(output) < required_c * 4u)
     return CL_INVALID_BUFFER_SIZE;
   UDONCL_RETURN_IF_READ_WRITE_ALIAS(output, a, b);
   udoncl_pending_resources_reset();
@@ -2145,8 +2246,9 @@ cl_int __vrc_enqueue_udonblas_arena_sgemm_strided_batched_device_args(
   udoncl_pending_resource_add(b);
   udoncl_pending_resource_add(output);
   pending = __vrc_opencl_dispatch_udonblas_arena_sgemm_strided_batched(
-      a->physical_token, b->physical_token, output->physical_token, m, n, k,
-      stride_a, stride_b, stride_c, batch_count, transa, transb, alpha);
+      udoncl_mem_physical_token(a), udoncl_mem_physical_token(b),
+      udoncl_mem_physical_token(output), m, n, k, stride_a, stride_b, stride_c,
+      batch_count, transa, transb, alpha);
   return udoncl_finish_enqueue(queue, CL_COMMAND_NDRANGE_KERNEL, pending,
                                CL_FALSE, event);
 }
@@ -2157,15 +2259,18 @@ cl_int __vrc_enqueue_udonblas_arena_sgemm_args(cl_command_queue queue, cl_mem a,
                                                cl_int transa, cl_int transb,
                                                cl_float alpha) {
   cl_int pending;
-  if (queue != &udoncl_queue || !queue->active || !a || !a->active || !b ||
-      !b->active || !output || !output->active ||
-      a->context != queue->context || b->context != queue->context ||
-      output->context != queue->context || m <= 0 || n <= 0 || k <= 0)
+  if (queue != &udoncl_queue || !queue->active || !a ||
+      !udoncl_mem_is_active(a) || !b || !udoncl_mem_is_active(b) || !output ||
+      !udoncl_mem_is_active(output) ||
+      udoncl_mem_context(a) != queue->context ||
+      udoncl_mem_context(b) != queue->context ||
+      udoncl_mem_context(output) != queue->context || m <= 0 || n <= 0 ||
+      k <= 0)
     return CL_INVALID_VALUE;
   UDONCL_RETURN_IF_READ_WRITE_ALIAS(output, a, b);
   pending = __vrc_opencl_dispatch_udonblas_arena_sgemm(
-      a->physical_token, b->physical_token, output->physical_token, m, n, k,
-      transa, transb, alpha);
+      udoncl_mem_physical_token(a), udoncl_mem_physical_token(b),
+      udoncl_mem_physical_token(output), m, n, k, transa, transb, alpha);
   return udoncl_finish_enqueue(queue, CL_COMMAND_NDRANGE_KERNEL, pending,
                                CL_FALSE, 0);
 }
@@ -2192,14 +2297,16 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueWriteBuffer(
     size_t bytes, const void *source, cl_uint wait_count,
     const cl_event *wait_list, cl_event *event) {
   cl_int pending;
-  if (queue != &udoncl_queue || !queue->active || !buffer || !buffer->active ||
-      buffer->immutable == 1u || !source || offset > buffer->bytes ||
-      bytes > buffer->bytes - offset ||
+  if (queue != &udoncl_queue || !queue->active ||
+      !udoncl_mem_is_active(buffer) ||
+      (udoncl_mem_flags(buffer) & CL_MEM_READ_ONLY) || !source ||
+      offset > udoncl_mem_bytes(buffer) ||
+      bytes > udoncl_mem_bytes(buffer) - offset ||
       udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
   udoncl_pending_resources_reset();
   udoncl_pending_resource_add(buffer);
-  pending = __vrc_opencl_buffer_upload(buffer->physical_token,
+  pending = __vrc_opencl_buffer_upload(udoncl_mem_physical_token(buffer),
                                        udoncl_mem_origin(buffer) + offset,
                                        bytes, source);
   return udoncl_finish_enqueue(queue, CL_COMMAND_WRITE_BUFFER, pending,
@@ -2211,14 +2318,15 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueReadBuffer(
     size_t bytes, void *destination, cl_uint wait_count,
     const cl_event *wait_list, cl_event *event) {
   cl_int pending;
-  if (queue != &udoncl_queue || !queue->active || !buffer || !buffer->active ||
-      !destination || offset > buffer->bytes ||
-      bytes > buffer->bytes - offset ||
+  if (queue != &udoncl_queue || !queue->active ||
+      !udoncl_mem_is_active(buffer) || !destination ||
+      offset > udoncl_mem_bytes(buffer) ||
+      bytes > udoncl_mem_bytes(buffer) - offset ||
       udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
   udoncl_pending_resources_reset();
   udoncl_pending_resource_add(buffer);
-  pending = __vrc_opencl_buffer_readback(buffer->physical_token,
+  pending = __vrc_opencl_buffer_readback(udoncl_mem_physical_token(buffer),
                                          udoncl_mem_origin(buffer) + offset,
                                          bytes, destination);
   return udoncl_finish_enqueue(queue, CL_COMMAND_READ_BUFFER, pending, blocking,
@@ -2230,21 +2338,26 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueCopyBuffer(
     size_t source_offset, size_t destination_offset, size_t bytes,
     cl_uint wait_count, const cl_event *wait_list, cl_event *event) {
   cl_int pending;
-  if (queue != &udoncl_queue || !queue->active || !source || !source->active ||
-      !destination || !destination->active ||
-      source->context != queue->context ||
-      destination->context != queue->context || !bytes ||
-      source_offset > source->bytes || bytes > source->bytes - source_offset ||
-      destination_offset > destination->bytes ||
-      bytes > destination->bytes - destination_offset ||
-      (source->physical_token == destination->physical_token &&
+  if (queue != &udoncl_queue || !queue->active || !source ||
+      !udoncl_mem_is_active(source) || !destination ||
+      !udoncl_mem_is_active(destination) ||
+      udoncl_mem_context(source) != queue->context ||
+      udoncl_mem_context(destination) != queue->context ||
+      (udoncl_mem_flags(destination) & CL_MEM_READ_ONLY) || !bytes ||
+      source_offset > udoncl_mem_bytes(source) ||
+      bytes > udoncl_mem_bytes(source) - source_offset ||
+      destination_offset > udoncl_mem_bytes(destination) ||
+      bytes > udoncl_mem_bytes(destination) - destination_offset ||
+      (udoncl_mem_physical_token(source) ==
+           udoncl_mem_physical_token(destination) &&
        udoncl_mem_origin(source) + source_offset <
            udoncl_mem_origin(destination) + destination_offset + bytes &&
        udoncl_mem_origin(destination) + destination_offset <
            udoncl_mem_origin(source) + source_offset + bytes) ||
       udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
     return source && destination &&
-                   source->physical_token == destination->physical_token &&
+                   udoncl_mem_physical_token(source) ==
+                       udoncl_mem_physical_token(destination) &&
                    udoncl_mem_origin(source) + source_offset <
                        udoncl_mem_origin(destination) + destination_offset +
                            bytes &&
@@ -2252,13 +2365,13 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueCopyBuffer(
                        udoncl_mem_origin(source) + source_offset + bytes
                ? CL_MEM_COPY_OVERLAP
                : CL_INVALID_VALUE;
-  if (source->context != destination->context)
+  if (udoncl_mem_context(source) != udoncl_mem_context(destination))
     return CL_INVALID_CONTEXT;
   udoncl_pending_resources_reset();
   udoncl_pending_resource_add(source);
   udoncl_pending_resource_add(destination);
   pending = __vrc_opencl_buffer_copy(
-      source->physical_token, destination->physical_token,
+      udoncl_mem_physical_token(source), udoncl_mem_physical_token(destination),
       udoncl_mem_origin(source) + source_offset,
       udoncl_mem_origin(destination) + destination_offset, bytes);
   return udoncl_finish_enqueue(queue, CL_COMMAND_COPY_BUFFER, pending, CL_FALSE,
@@ -2474,16 +2587,20 @@ CL_API_ENTRY cl_int CL_API_CALL clReleaseProgram(cl_program program) {
 }
 
 CL_API_ENTRY cl_int CL_API_CALL clReleaseMemObject(cl_mem buffer) {
-  if (!buffer || !buffer->active)
+  if (!udoncl_mem_is_active(buffer))
     return CL_INVALID_MEM_OBJECT;
+  if (udoncl_mem_is_static(buffer))
+    return CL_SUCCESS;
   if (--buffer->refs == 0)
     buffer->active = 0;
   return udoncl_mem_finalize(buffer);
 }
 
 CL_API_ENTRY cl_int CL_API_CALL clRetainMemObject(cl_mem buffer) {
-  if (!buffer || !buffer->active)
+  if (!udoncl_mem_is_active(buffer))
     return CL_INVALID_MEM_OBJECT;
+  if (udoncl_mem_is_static(buffer))
+    return CL_SUCCESS;
   ++buffer->refs;
   return CL_SUCCESS;
 }

@@ -2,17 +2,13 @@ diff --git a/src/Tools/onnx-mlir-opt/onnx-mlir-opt.cpp b/src/Tools/onnx-mlir-opt
 index 962c3f55..d1aa094b 100644
 --- a/src/Tools/onnx-mlir-opt/onnx-mlir-opt.cpp
 +++ b/src/Tools/onnx-mlir-opt/onnx-mlir-opt.cpp
-@@ -47,5 +47,9 @@
+@@ -47,2 +47,5 @@
  using namespace mlir;
  using namespace onnx_mlir;
 +static llvm::cl::opt<bool> udonclEmitBytecode("udoncl-emit-bytecode",
 +    llvm::cl::desc("Emit MLIR bytecode while preserving model initializers"),
 +    llvm::cl::init(false), llvm::cl::cat(OnnxMlirOptOptions));
-+
- void scanAndSetOptLevel(int argc, char **argv) {
-   // In decreasing order, so we pick the last one if there are many.
-   for (int i = argc - 1; i > 0; --i) {
-@@ -217,5 +221,5 @@ int main(int argc, char **argv) {
+@@ -217,5 +220,5 @@ int main(int argc, char **argv) {
                : mlir::SourceMgrDiagnosticVerifierHandler::Level::None)
        .verifyPasses(verify_passes)
        .allowUnregisteredDialects(allowUnregisteredDialects)
