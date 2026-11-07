@@ -102,11 +102,11 @@ static_host = subprocess.run(
 assert static_host.returncode == 0, (static_host.stdout, static_host.stderr)
 assert "udoncl.static_tensors" in static_host.stdout
 assert "__udon_onnx_static_1" not in static_host.stdout
-assert "call @__vrc_opencl_static_tensor" not in static_host.stdout
-assert "call @udonclAdoptStaticBuffer" not in static_host.stdout
-assert "@__udon_onnx_device_buffer_1" not in static_host.stdout
+assert static_host.stdout.count("call @__vrc_opencl_static_tensor") == 1
+assert static_host.stdout.count("call @udonclAdoptStaticBuffer") == 1
+assert "@__udon_onnx_device_buffer_1" in static_host.stdout
 assert "func.func @udononnxGeneratedDispose" in static_host.stdout
-assert "call @clReleaseMemObject" not in static_host.stdout
+assert static_host.stdout.count("call @clReleaseMemObject") == 1
 
 expand_source = source.with_name("onnx_expand_shape.mlir")
 expand_inferred = subprocess.run(

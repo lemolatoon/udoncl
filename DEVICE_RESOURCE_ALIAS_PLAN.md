@@ -1,10 +1,11 @@
 # Device Resource Alias and Device Library Migration Plan
 
-> Status: **Phase A access-aware validation is complete, including
-> metadata-derived Debug checks and Release code-elision proof; standard region
-> sub-buffer ownership/transfers are implemented in both runtimes; sub-buffer
-> Device addressing, Device API migration, and generated-U# Unity MNIST
-> acceptance remain**
+> Status: **Phase A is complete. Region sub-buffer ownership/transfers, queue
+> tails, deferred resource release, stream association, UdonBLAS SGEMM Device
+> pointers, and generated static-tensor `cl_mem` adoption are implemented.
+> Remaining Phase B/C work is constant/dynamic sub-buffer Device addressing,
+> the rest of UdonBLAS/UdonDNN Device-pointer migration, ONNX queue-tail library
+> calls, and final generated-U# MNIST acceptance after those migrations.**
 >
 > Scope: UdonCL VRC fragment dispatch resource aliasing, Debug validation,
 > standard `cl_mem`/sub-buffer semantics, and the UdonBLAS/UdonDNN migration
@@ -383,17 +384,23 @@ transitions, caller reference release, final teardown, and zero leaked OpenCL
 objects. Null and invalid queues fail without changing association. The AOT
 singleton accepts its existing queue and rejects replacement rather than
 pretending that an arbitrary handle is usable. This is deliberately a
-transition checkpoint: `Create` still initially owns a private context/queue and
-the baseline operations still stage Host arrays. Phase B is not accepted until
-both libraries bind caller contexts directly and every baseline tensor pointer
-has Device semantics with no internal transfer or finish.
+transition checkpoint. Installed UdonBLAS SGEMM now uses caller-owned Device
+pointers, the associated queue, and the asynchronous `*_device_args` helper
+without an internal transfer or finish. Other UdonBLAS operations and UdonDNN
+still contain Host-staging paths, so Phase B remains incomplete until those
+baseline tensor pointers are migrated too.
 
-The current Device-graph path still lowers through
-`createRuntimeDispatchers` to direct `__vrc_opencl_dispatch_*` intrinsics. The
-legacy `createRunExport` path is only emitted for non-Device graphs, so wiring
-stream association there would not migrate MNIST or Transformer. Phase C must
-replace the actual Device-graph dispatcher route with public Device-library
-calls; the legacy fallback is not the migration target.
+The current Device-graph path still lowers through `createRuntimeDispatchers`
+to direct `__vrc_opencl_dispatch_*` intrinsics. Its generated initialize export
+now adopts every root static tensor as an immutable `cl_mem`, stores that handle
+for the session, and releases it during dispose. Static physical tokens use the
+negative encoding `-(resource_id + 1)`, keeping them disjoint from positive
+RenderTexture-pool ids after a C-runtime round trip. Udon lowering dynamically
+selects Texture2DArray resources for negative readable tokens and shares the
+selection scratch slots across all dispatches to stay within the 512-slot Udon
+Heap limit. Phase C must next replace the actual Device-graph dispatcher route
+with public queue-tail Device-library calls; the legacy fallback is not the
+migration target.
 
 ### Phase C: ONNX and MNIST schedule
 

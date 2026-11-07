@@ -647,9 +647,16 @@ def main():
     udon_async = (onnx_mnist_artifact / 'host.udon-async.mlir').read_bytes()
     assert udon_async.count(b'"vrc.static_buffer"') == 4
     host_uasm = (onnx_mnist_artifact / 'host.uasm').read_text(encoding='utf-8')
+    # Every unresolved readable physical token emits a tagged-static branch;
+    # the four immutable tensors must therefore remain selectable even after
+    # their tokens have round-tripped through the linked C OpenCL runtime.
     assert host_uasm.count(
         'UnityEngineTexture2DArray.__Get__SystemInt32__UnityEngineTexture2D'
-    ) == 4
+    ) >= 4
+    assert (
+        'SystemInt32.__op_LessThan__SystemInt32_SystemInt32__SystemBoolean'
+        in host_uasm
+    )
     assert '__udoncl_static_tensors' in host_uasm
     assert 'udoncl_static_buffers' not in host_uasm
     mnist_static_tensors = onnx_mnist_manifest['static_tensors']

@@ -2362,9 +2362,15 @@ private:
           if (token.empty())
             return staticBuffer.emitError(
                 "static tensor buffer has no allocated token slot");
-          emitI32Literal(staticBuffer.getLoc(),
-                         static_cast<uint32_t>(staticBuffer.getResourceId()),
-                         token);
+          // Physical buffer tokens cross the C runtime as plain i32 values.
+          // Keep immutable artifact resources disjoint from the positive
+          // RenderTexture-pool ids so their origin survives that round trip.
+          // Resource zero therefore becomes -1, resource one becomes -2, and
+          // so on. selectUnityReadableBuffer decodes the tagged value when a
+          // dispatch can no longer recover the defining StaticBufferOp.
+          uint32_t tagged = static_cast<uint32_t>(
+              -static_cast<int64_t>(staticBuffer.getResourceId()) - 1);
+          emitI32Literal(staticBuffer.getLoc(), tagged, token);
           continue;
         }
         if (auto release = dyn_cast<::vrc::vrc::BufferReleaseOp>(operation)) {
@@ -2663,11 +2669,25 @@ private:
                            "UnityEngineTexture2D");
                 texture = loaded;
               } else {
-                texture = physicalBuffer(
-                    resourceIndex, texture,
-                    prefix + "dispatch_" +
-                        std::to_string(dispatch.getKernelId()) + "_input_" +
-                        std::to_string(argumentIndex));
+                if (resourceHeapSlots &&
+                    resourceIndex < resourceHeapSlots.size()) {
+                  if (auto slot = dyn_cast<StringAttr>(
+                          resourceHeapSlots[resourceIndex]);
+                      slot && !slot.getValue().empty())
+                    texture = slot.getValue().str();
+                  else
+                    texture = selectUnityReadableBuffer(
+                        dispatch.getLoc(), texture,
+                        prefix + "dispatch_" +
+                            std::to_string(dispatch.getKernelId()) + "_input_" +
+                            std::to_string(argumentIndex));
+                } else {
+                  texture = selectUnityReadableBuffer(
+                      dispatch.getLoc(), texture,
+                      prefix + "dispatch_" +
+                          std::to_string(dispatch.getKernelId()) + "_input_" +
+                          std::to_string(argumentIndex));
+                }
               }
               if (texture.empty())
                 return dispatch.emitError(
@@ -2734,7 +2754,7 @@ private:
             return copy.emitError(
                 "Unity buffer copy requires distinct bound buffers and a copy "
                 "material slot");
-          std::string source = selectUnityBuffer(
+          std::string source = selectUnityReadableBuffer(
               copy.getLoc(), sourceToken,
               prefix + "copy_source_" + std::to_string(valueIndex++));
           std::string destination = selectUnityBuffer(
@@ -3988,6 +4008,58 @@ private:
       jump->setAttr("target",
                     builder.getI64IntegerAttr(static_cast<int64_t>(address)));
     return selected;
+  }
+
+  std::string selectUnityReadableBuffer(Location location, StringRef token,
+                                        StringRef prefix) {
+    if (unityBufferPool.empty())
+      return {};
+    (void)prefix;
+    constexpr StringLiteral selected = "__udoncl_readable_texture";
+    constexpr StringLiteral isStatic = "__udoncl_readable_is_static";
+    addSlot("__udoncl_static_tensors", "UnityEngineTexture2DArray", "null",
+            true);
+    addSlot(selected, "UnityEngineTexture", "null", false);
+    addSlot(isStatic, "SystemBoolean", "null", false);
+    emitPush(location, token);
+    emitPush(location, immutableSlot("SystemInt32", "0"));
+    emitPush(location, isStatic);
+    emitExtern(location, "SystemInt32.__op_LessThan__SystemInt32_SystemInt32__"
+                         "SystemBoolean");
+    emitPush(location, isStatic);
+    Operation *dynamic =
+        create(location, vm::JumpIfFalseOp::getOperationName(),
+               {builder.getNamedAttr("target", builder.getI64IntegerAttr(0))});
+    address += 8;
+
+    constexpr StringLiteral index = "__udoncl_readable_static_index";
+    constexpr StringLiteral loaded = "__udoncl_readable_static_texture";
+    addSlot(index, "SystemInt32", "0", false);
+    addSlot(loaded, "UnityEngineTexture2D", "null", false);
+    emitPush(location, immutableSlot("SystemInt32", "-1"));
+    emitPush(location, token);
+    emitPush(location, index);
+    emitExtern(location,
+               "SystemInt32.__op_Subtraction__SystemInt32_SystemInt32__"
+               "SystemInt32");
+    emitPush(location, "__udoncl_static_tensors");
+    emitPush(location, index);
+    emitPush(location, loaded);
+    emitExtern(location, "UnityEngineTexture2DArray.__Get__SystemInt32__"
+                         "UnityEngineTexture2D");
+    emitCopy(location, loaded, selected);
+    Operation *done = emitJump(location, 0);
+
+    dynamic->setAttr("target",
+                     builder.getI64IntegerAttr(static_cast<int64_t>(address)));
+    std::string dynamicTexture =
+        selectUnityBuffer(location, token, "__udoncl_readable_dynamic");
+    if (dynamicTexture.empty())
+      return {};
+    emitCopy(location, dynamicTexture, selected);
+    done->setAttr("target",
+                  builder.getI64IntegerAttr(static_cast<int64_t>(address)));
+    return selected.str();
   }
 
   void emitReturnAddress(Location location, StringRef result,

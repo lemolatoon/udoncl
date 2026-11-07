@@ -2965,14 +2965,8 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
   if (supportsDeviceGraph(graph)) {
     Value bufferError = allocaI32(builder, location);
     SmallVector<unsigned> storage = deviceStorage(graph);
-    auto allocateDeviceBuffer = [&](StringRef symbol, int64_t bytes) {
-      auto created = func::CallOp::create(
-          builder, location, "udonclCreateBufferForQueue", TypeRange{pointer},
-          ValueRange{initializeEntry->getArgument(2),
-                     arith::ConstantIntOp::create(builder, location, 1, 64),
-                     arith::ConstantIntOp::create(builder, location, bytes, 32),
-                     bufferError});
-      Value handle = pointerToInt(builder, location, created.getResult(0));
+    auto storeDeviceBuffer = [&](StringRef symbol, Value created) {
+      Value handle = pointerToInt(builder, location, created);
       Value errorSucceeded = arith::CmpIOp::create(
           builder, location, arith::CmpIPredicate::eq,
           loadI32(builder, location, bufferError), onnxStatus(0));
@@ -2989,12 +2983,40 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
       builder.setInsertionPointToEnd(next);
       store(builder, location, handle, addressOf(builder, location, symbol));
     };
+    auto allocateDeviceBuffer = [&](StringRef symbol, int64_t bytes) {
+      auto created = func::CallOp::create(
+          builder, location, "udonclCreateBufferForQueue", TypeRange{pointer},
+          ValueRange{initializeEntry->getArgument(2),
+                     arith::ConstantIntOp::create(builder, location, 1, 64),
+                     arith::ConstantIntOp::create(builder, location, bytes, 32),
+                     bufferError});
+      storeDeviceBuffer(symbol, created.getResult(0));
+    };
+    auto adoptStaticBuffer = [&](unsigned tensorIndex,
+                                 const TensorRecord &tensor) {
+      Value resourceId = arith::ConstantIntOp::create(
+          builder, location, tensor.staticResourceId, 32);
+      Value bytes = arith::ConstantIntOp::create(builder, location,
+                                                 tensor.staticByteLength, 32);
+      auto physical =
+          func::CallOp::create(builder, location, "__vrc_opencl_static_tensor",
+                               TypeRange{i32}, ValueRange{resourceId, bytes});
+      auto adopted = func::CallOp::create(
+          builder, location, "udonclAdoptStaticBuffer", TypeRange{pointer},
+          ValueRange{initializeEntry->getArgument(2), resourceId, bytes,
+                     physical.getResult(0), bufferError});
+      storeDeviceBuffer(deviceBufferSymbol(tensorIndex), adopted.getResult(0));
+    };
     for (auto [tensorIndex, tensor] : llvm::enumerate(graph.tensors)) {
-      if (tensor.staticResourceId >= 0 ||
-          llvm::is_contained(graph.inputs, tensorIndex) ||
+      if (storage[tensorIndex] != tensorIndex)
+        continue;
+      if (tensor.staticResourceId >= 0) {
+        adoptStaticBuffer(tensorIndex, tensor);
+        continue;
+      }
+      if (llvm::is_contained(graph.inputs, tensorIndex) ||
           (llvm::is_contained(graph.outputs, tensorIndex) &&
-           !needsQ4Surface(graph, tensorIndex)) ||
-          storage[tensorIndex] != tensorIndex)
+           !needsQ4Surface(graph, tensorIndex)))
         continue;
       allocateDeviceBuffer(deviceBufferSymbol(tensorIndex),
                            deviceAllocationBytes(graph, tensorIndex));
@@ -3060,12 +3082,13 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
     builder.setInsertionPointToEnd(next);
   };
   for (auto [tensorIndex, tensor] : llvm::enumerate(graph.tensors)) {
-    bool ownsDeviceBuffer = supportsDeviceGraph(graph) &&
-                            !llvm::is_contained(graph.inputs, tensorIndex) &&
-                            (!llvm::is_contained(graph.outputs, tensorIndex) ||
-                             needsQ4Surface(graph, tensorIndex)) &&
-                            disposeStorage[tensorIndex] == tensorIndex &&
-                            tensor.staticResourceId < 0;
+    bool ownsDeviceBuffer =
+        supportsDeviceGraph(graph) &&
+        disposeStorage[tensorIndex] == tensorIndex &&
+        (tensor.staticResourceId >= 0 ||
+         (!llvm::is_contained(graph.inputs, tensorIndex) &&
+          (!llvm::is_contained(graph.outputs, tensorIndex) ||
+           needsQ4Surface(graph, tensorIndex))));
     if (!ownsDeviceBuffer)
       continue;
     releaseDeviceBuffer(deviceBufferSymbol(tensorIndex));
@@ -3198,7 +3221,12 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
       if (buffers[tensorIndex] || storage[tensorIndex] != tensorIndex)
         continue;
       if (tensor.staticResourceId >= 0) {
-        continue;
+        Value handle =
+            intToPointer(builder, location,
+                         loadI32(builder, location,
+                                 addressOf(builder, location,
+                                           deviceBufferSymbol(tensorIndex))));
+        buffers[tensorIndex] = resolvePhysicalBuffer(handle);
       } else if (!llvm::is_contained(graph.inputs, tensorIndex) &&
                  (!llvm::is_contained(graph.outputs, tensorIndex) ||
                   needsQ4Surface(graph, tensorIndex))) {
@@ -3242,14 +3270,7 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
       unsigned storageIndex = storage[static_cast<unsigned>(tensorIndex)];
       if (buffers[storageIndex])
         return buffers[storageIndex];
-      const TensorRecord &tensor = graph.tensors[storageIndex];
-      if (tensor.staticResourceId < 0)
-        return {};
-      auto physical = func::CallOp::create(
-          builder, location, "__vrc_opencl_static_tensor", TypeRange{i32},
-          ValueRange{constant(tensor.staticResourceId),
-                     constant(tensor.staticByteLength)});
-      return physical.getResult(0);
+      return {};
     };
     Value operatorScratch;
     if (operatorScratchBytes(graph)) {
@@ -3846,6 +3867,8 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
     declaration(module, "__vrc_opencl_static_tensor", {i32, i32}, {i32});
     declaration(module, "udonclCreateBufferForQueue",
                 {pointer, builder.getI64Type(), i32, pointer}, {pointer});
+    declaration(module, "udonclAdoptStaticBuffer",
+                {pointer, i32, i32, i32, pointer}, {pointer});
     return success();
   }
 
@@ -4012,11 +4035,11 @@ struct FinalizeONNXHostPass
     }
     SmallVector<unsigned> deviceStorageMap = deviceStorage(*graph);
     for (auto [tensorIndex, tensor] : llvm::enumerate(graph->tensors))
-      if (deviceGraph && tensor.staticResourceId < 0 &&
-          !llvm::is_contained(graph->inputs, tensorIndex) &&
-          (!llvm::is_contained(graph->outputs, tensorIndex) ||
-           needsQ4Surface(*graph, tensorIndex)) &&
-          deviceStorageMap[tensorIndex] == tensorIndex)
+      if (deviceGraph && deviceStorageMap[tensorIndex] == tensorIndex &&
+          (tensor.staticResourceId >= 0 ||
+           (!llvm::is_contained(graph->inputs, tensorIndex) &&
+            (!llvm::is_contained(graph->outputs, tensorIndex) ||
+             needsQ4Surface(*graph, tensorIndex)))))
         createI32Global(module, deviceBufferSymbol(tensorIndex));
     if (deviceGraph && operatorScratchBytes(*graph))
       createI32Global(module, operatorScratchSymbol);

@@ -1241,16 +1241,20 @@ static_buffer_source = r'''module attributes {
   func.func @static_dispatch() attributes {vrc.export_id = 62 : i32} {
     %id = arith.constant 1 : i32
     %bytes = arith.constant 4 : i32
+    %zero = arith.constant 0 : i32
     %output, %status = vrc.buffer_alloc %id, %bytes {
       format = "rgba8_unorm", usage = "storage"
     } : (i32, i32) -> (!vrc.buffer, i32)
     %weight = "vrc.static_buffer"() {
       byte_size = 4 : i32, resource_id = 0 : i32
     } : () -> !vrc.buffer
+    %weight_token = builtin.unrealized_conversion_cast %weight : !vrc.buffer to i32
+    %recovered_token = arith.addi %weight_token, %zero : i32
+    %recovered_weight = builtin.unrealized_conversion_cast %recovered_token : i32 to !vrc.buffer
     %desc = vrc.dispatch_desc_create {
       kernel_id = 1 : i32, scalar_kinds = []
     } : () -> !vrc.dispatch_desc
-    %event = vrc.dispatch %desc(%weight, %output) {
+    %event = vrc.dispatch %desc(%recovered_weight, %output) {
       argument_kinds = ["buffer", "buffer"],
       resource_accesses = ["read", "write"],
       global_offset = array<i32: 0, 0, 0>,
@@ -1272,6 +1276,8 @@ for expected in [
     'name = "__udoncl_static_tensors"',
     'type = "UnityEngineTexture2DArray"',
     'UnityEngineTexture2DArray.__Get__SystemInt32__UnityEngineTexture2D',
+    'SystemInt32.__op_LessThan__SystemInt32_SystemInt32__SystemBoolean',
+    'SystemInt32.__op_Subtraction__SystemInt32_SystemInt32__SystemInt32',
     'UnityEngineMaterial.__SetTexture__SystemString_'
     'UnityEngineTexture__SystemVoid',
     'VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_'
