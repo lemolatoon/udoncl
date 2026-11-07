@@ -46,6 +46,7 @@ file(WRITE
 add_executable(opencl-aot-runtime
   runtime/opencl_aot.c
   "${PROJECT_SOURCE_DIR}/libraries/udonblas/src/udonblas.c"
+  "${PROJECT_SOURCE_DIR}/libraries/udondnn/src/udondnn.c"
   "${PROJECT_SOURCE_DIR}/lib/Runtime/OpenCL/OpenCLAOT.c"
   "${PROJECT_SOURCE_DIR}/lib/Runtime/OpenCL/DeviceMemory.c"
   "${PROJECT_SOURCE_DIR}/libraries/udononnxruntime/src/udononnxruntime.c"
@@ -58,6 +59,7 @@ target_include_directories(opencl-aot-runtime PRIVATE
   "${PROJECT_SOURCE_DIR}/third_party/OpenCL-Headers"
   "${PROJECT_SOURCE_DIR}/include"
   "${PROJECT_SOURCE_DIR}/libraries/udonblas/include"
+  "${PROJECT_SOURCE_DIR}/libraries/udondnn/include"
   "${PROJECT_SOURCE_DIR}/libraries/udononnxoperators/include"
   "${PROJECT_SOURCE_DIR}/libraries/udononnxruntime/include"
   "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -65,7 +67,10 @@ target_compile_definitions(opencl-aot-runtime PRIVATE
   CL_TARGET_OPENCL_VERSION=120
   UDONBLAS_AOT_DIRECT_DISPATCH=1
   UDONBLAS_DEVICE_POINTERS=1
+  UDONDNN_AOT_LARGE_ONLY=1
+  UDONDNN_DEVICE_POINTERS=1
   UDONCL_AOT_RUNTIME_VALIDATION=1
+  UDONCL_AOT_ENABLE_DNN=1
   UDONCL_AOT_ENABLE_MNIST=1
   UDONCL_AOT_ENABLE_ONNX=1)
 add_test(NAME opencl-aot-runtime COMMAND opencl-aot-runtime)

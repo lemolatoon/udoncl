@@ -402,6 +402,23 @@ Heap limit. Phase C must next replace the actual Device-graph dispatcher route
 with public queue-tail Device-library calls; the legacy fallback is not the
 migration target.
 
+UdonDNN Device-pointer checkpoint (2026-11-07): the installed Device profile
+now creates a logical handle without a private context, queue, program, kernel,
+or staging allocation. `udondnnSetStream` retains the caller queue. The
+cuDNN-shaped ConvolutionForward, ActivationForward, PoolingForward, and
+OpTensor entry points interpret tensor/filter/output pointers as caller-owned
+`cl_mem`-backed Device pointers and enqueue only through the queue-tail
+`*_device_args` helpers. `beta == 0` writes directly to a distinct caller
+output; `beta != 0` dispatches into a temporary, enqueues copy-back, and drops
+the library reference immediately so command completion performs final
+release. Physical read/write alias rejection maps to `NOT_SUPPORTED`, while
+temporary allocation failure maps to `ALLOC_FAILED`. The AOT runtime test
+covers all four public calls, no internal wait, marker-after-call completion,
+temporary deferred release, alias rejection, and stream lifetime. Softmax,
+BatchNorm, and the shared private UdonATen backends return explicit
+`NOT_SUPPORTED` in this profile instead of touching absent legacy staging
+resources. They remain Phase B work and no Host-array fallback is permitted.
+
 ### Phase C: ONNX and MNIST schedule
 
 - Update ONNX C++ lowering and generated Host calls to the Device APIs.

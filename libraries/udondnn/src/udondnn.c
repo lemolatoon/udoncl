@@ -3,6 +3,24 @@
 #include <CL/cl.h>
 #include <float.h>
 
+#ifdef UDONDNN_DEVICE_POINTERS
+extern cl_int __vrc_enqueue_udondnn_large_convolution_device_args(
+    cl_command_queue, cl_mem, cl_mem, cl_mem, cl_mem, cl_int, cl_int, cl_int,
+    cl_int, cl_int, cl_int, cl_int, cl_int, cl_int, cl_int, cl_float, cl_float,
+    cl_uint, const cl_event *, cl_event *);
+extern cl_int __vrc_enqueue_udondnn_large_activation_device_args(
+    cl_command_queue, cl_mem, cl_mem, cl_mem, cl_int, cl_int, cl_int, cl_float,
+    cl_float, cl_float, cl_uint, const cl_event *, cl_event *);
+extern cl_int __vrc_enqueue_udondnn_large_pooling_device_args(
+    cl_command_queue, cl_mem, cl_mem, cl_mem, cl_int, cl_int, cl_int, cl_int,
+    cl_int, cl_int, cl_int, cl_int, cl_int, cl_int, cl_float, cl_float, cl_uint,
+    const cl_event *, cl_event *);
+extern cl_int __vrc_enqueue_udondnn_large_op_tensor_device_args(
+    cl_command_queue, cl_mem, cl_mem, cl_mem, cl_mem, cl_int, cl_int, cl_int,
+    cl_int, cl_int, cl_int, cl_int, cl_int, cl_float, cl_float, cl_float,
+    cl_uint, const cl_event *, cl_event *);
+#endif
+
 #ifdef UDONDNN_AOT_RAW_INTRINSICS
 extern int __vrc_opencl_buffer_alloc(int, int);
 extern int __vrc_opencl_buffer_release(int);
@@ -162,6 +180,7 @@ typedef struct OpTensorDescriptor {
 
 static cl_context context;
 static cl_command_queue queue;
+static int handle_active;
 static int owns_context_reference;
 static cl_program program;
 static cl_kernel convolution_kernel;
@@ -282,7 +301,13 @@ get_op_tensor(udondnnOpTensorDescriptor_t descriptor) {
 }
 
 static void clear_objects(void) {
-#ifdef UDONDNN_AOT_RAW_INTRINSICS
+#ifdef UDONDNN_DEVICE_POINTERS
+  if (queue)
+    clReleaseCommandQueue(queue);
+  queue = 0;
+  context = 0;
+  owns_context_reference = 0;
+#elif defined(UDONDNN_AOT_RAW_INTRINSICS)
   if (arena_rms_partial_buffer)
     __vrc_opencl_buffer_release(AOT_RMS_PARTIAL_TOKEN);
   if (arena_pointwise_output_buffer)
@@ -445,8 +470,48 @@ static void clear_objects(void) {
 
 static udondnnStatus_t execution_failure(void) {
   clear_objects();
+  handle_active = 0;
   return UDONDNN_STATUS_EXECUTION_FAILED;
 }
+
+#ifdef UDONDNN_DEVICE_POINTERS
+static udondnnStatus_t device_status(cl_int status) {
+  if (status == CL_SUCCESS)
+    return UDONDNN_STATUS_SUCCESS;
+  if (status == CL_MEM_OBJECT_ALLOCATION_FAILURE ||
+      status == CL_OUT_OF_RESOURCES || status == CL_OUT_OF_HOST_MEMORY)
+    return UDONDNN_STATUS_ALLOC_FAILED;
+  if (status == CL_INVALID_OPERATION)
+    return UDONDNN_STATUS_NOT_SUPPORTED;
+  if (status == CL_INVALID_VALUE || status == CL_INVALID_MEM_OBJECT ||
+      status == CL_INVALID_COMMAND_QUEUE || status == CL_INVALID_CONTEXT)
+    return UDONDNN_STATUS_BAD_PARAM;
+  return UDONDNN_STATUS_EXECUTION_FAILED;
+}
+
+static cl_mem device_result_buffer(float *output, size_t bytes, float beta,
+                                   cl_int *status) {
+  if (beta == 0.0f) {
+    *status = CL_SUCCESS;
+    return (cl_mem)output;
+  }
+  return clCreateBuffer(context, CL_MEM_READ_WRITE, bytes, 0, status);
+}
+
+static udondnnStatus_t finish_device_operation(cl_mem result, float *output,
+                                               size_t bytes,
+                                               cl_int enqueue_status) {
+  cl_int status = enqueue_status;
+  if (result != (cl_mem)output) {
+    if (status == CL_SUCCESS)
+      status = clEnqueueCopyBuffer(queue, result, (cl_mem)output, 0, 0, bytes,
+                                   0, 0, 0);
+    if (clReleaseMemObject(result) != CL_SUCCESS && status == CL_SUCCESS)
+      status = CL_OUT_OF_RESOURCES;
+  }
+  return device_status(status);
+}
+#endif
 
 static udondnnStatus_t create_bound(udondnnHandle_t *handle,
                                     cl_context bound_context,
@@ -457,6 +522,14 @@ static udondnnStatus_t create_bound(udondnnHandle_t *handle,
   cl_int status;
   if (!handle)
     return UDONDNN_STATUS_BAD_PARAM;
+#ifdef UDONDNN_DEVICE_POINTERS
+  if (handle_active || bound_context || bound_queue)
+    return UDONDNN_STATUS_NOT_SUPPORTED;
+  clear_objects();
+  handle_active = 1;
+  *handle = UDONDNN_HANDLE;
+  return UDONDNN_STATUS_SUCCESS;
+#endif
   if (context)
     return UDONDNN_STATUS_NOT_SUPPORTED;
 #ifdef UDONDNN_AOT_RAW_INTRINSICS
@@ -697,25 +770,44 @@ static udondnnStatus_t create_bound(udondnnHandle_t *handle,
 }
 
 udondnnStatus_t udondnnCreate(udondnnHandle_t *handle) {
-  return create_bound(handle, 0, 0);
+  udondnnStatus_t status = create_bound(handle, 0, 0);
+  if (status == UDONDNN_STATUS_SUCCESS)
+    handle_active = 1;
+  return status;
 }
 
 udondnnStatus_t udondnnDestroy(udondnnHandle_t handle) {
-  if (handle != UDONDNN_HANDLE || !context)
+  if (handle != UDONDNN_HANDLE || !handle_active)
     return UDONDNN_STATUS_NOT_INITIALIZED;
   clear_objects();
+  handle_active = 0;
   return UDONDNN_STATUS_SUCCESS;
 }
 
 udondnnStatus_t udondnnSetStream(udondnnHandle_t handle,
                                  cl_command_queue stream) {
   cl_context stream_context = 0;
-  if (handle != UDONDNN_HANDLE || !context || !queue)
+  if (handle != UDONDNN_HANDLE || !handle_active)
     return UDONDNN_STATUS_NOT_INITIALIZED;
   if (!stream)
     return UDONDNN_STATUS_BAD_PARAM;
   if (stream == queue)
     return UDONDNN_STATUS_SUCCESS;
+#ifdef UDONDNN_DEVICE_POINTERS
+  if (clGetCommandQueueInfo(stream, CL_QUEUE_CONTEXT, sizeof(stream_context),
+                            &stream_context, 0) != CL_SUCCESS)
+    return UDONDNN_STATUS_BAD_PARAM;
+  if (clRetainCommandQueue(stream) != CL_SUCCESS)
+    return UDONDNN_STATUS_EXECUTION_FAILED;
+  if (queue && clReleaseCommandQueue(queue) != CL_SUCCESS) {
+    clReleaseCommandQueue(stream);
+    return UDONDNN_STATUS_EXECUTION_FAILED;
+  }
+  context = stream_context;
+  queue = stream;
+  owns_context_reference = 0;
+  return UDONDNN_STATUS_SUCCESS;
+#endif
 #ifdef UDONDNN_AOT_RAW_INTRINSICS
   return UDONDNN_STATUS_NOT_SUPPORTED;
 #else
@@ -741,7 +833,7 @@ udondnnStatus_t udondnnSetStream(udondnnHandle_t handle,
 
 udondnnStatus_t udondnnGetStream(udondnnHandle_t handle,
                                  cl_command_queue *stream) {
-  if (handle != UDONDNN_HANDLE || !context || !queue)
+  if (handle != UDONDNN_HANDLE || !handle_active || !queue)
     return UDONDNN_STATUS_NOT_INITIALIZED;
   if (!stream)
     return UDONDNN_STATUS_BAD_PARAM;
@@ -1197,7 +1289,22 @@ udondnnStatus_t udondnnConvolutionForward(
     dilation_hw =
         convolution_info->dilation_h | (convolution_info->dilation_w << 16);
     mode = (int)convolution_info->mode;
-#ifdef UDONDNN_AOT_RAW_INTRINSICS
+#ifdef UDONDNN_DEVICE_POINTERS
+    {
+      cl_mem previous = *beta == 0.0f ? (cl_mem)input : (cl_mem)output;
+      cl_mem device_result = device_result_buffer(
+          output, (size_t)output_words * sizeof(float), *beta, &cl_status);
+      if (!device_result || cl_status != CL_SUCCESS)
+        return device_status(cl_status);
+      cl_status = __vrc_enqueue_udondnn_large_convolution_device_args(
+          queue, (cl_mem)input, (cl_mem)filter, previous, device_result,
+          output_words, input_ch, input_info->w, output_ch, w, filter_hw,
+          pad_hw, stride_hw, dilation_hw, mode, *alpha, *beta, 0, 0, 0);
+      return finish_device_operation(device_result, output,
+                                     (size_t)output_words * sizeof(float),
+                                     cl_status);
+    }
+#elif defined(UDONDNN_AOT_RAW_INTRINSICS)
     if (aot_wait(__vrc_opencl_buffer_upload(AOT_POINTWISE_SELF_TOKEN, 0,
                                             input_words * sizeof(float),
                                             input)) != CL_SUCCESS ||
@@ -1219,83 +1326,82 @@ udondnnStatus_t udondnnConvolutionForward(
     return UDONDNN_STATUS_SUCCESS;
 #else
 #ifdef UDONDNN_AOT_DIRECT_ARGUMENT_DISPATCH
-    if (clEnqueueWriteBuffer(queue, arena_pointwise_self_buffer, CL_TRUE, 0,
-                             input_words * sizeof(float), input, 0, 0,
-                             0) != CL_SUCCESS ||
-        clEnqueueWriteBuffer(queue, arena_pointwise_other_buffer, CL_TRUE, 0,
-                             filter_words * sizeof(float), filter, 0, 0,
-                             0) != CL_SUCCESS ||
-        clEnqueueWriteBuffer(queue, arena_rms_partial_buffer, CL_TRUE, 0,
-                             output_words * sizeof(float), output, 0, 0,
-                             0) != CL_SUCCESS ||
-        __vrc_enqueue_udondnn_large_convolution_args(
-            queue, arena_pointwise_self_buffer, arena_pointwise_other_buffer,
-            arena_rms_partial_buffer, arena_pointwise_output_buffer,
-            output_words, input_ch, input_info->w, output_ch, w, filter_hw,
-            pad_hw, stride_hw, dilation_hw, mode, *alpha,
-            *beta) != CL_SUCCESS ||
-        clEnqueueReadBuffer(queue, arena_pointwise_output_buffer, CL_TRUE, 0,
-                            output_words * sizeof(float), output, 0, 0,
-                            0) != CL_SUCCESS ||
-        clFinish(queue) != CL_SUCCESS)
-      return UDONDNN_STATUS_EXECUTION_FAILED;
-    return UDONDNN_STATUS_SUCCESS;
+  if (clEnqueueWriteBuffer(queue, arena_pointwise_self_buffer, CL_TRUE, 0,
+                           input_words * sizeof(float), input, 0, 0,
+                           0) != CL_SUCCESS ||
+      clEnqueueWriteBuffer(queue, arena_pointwise_other_buffer, CL_TRUE, 0,
+                           filter_words * sizeof(float), filter, 0, 0,
+                           0) != CL_SUCCESS ||
+      clEnqueueWriteBuffer(queue, arena_rms_partial_buffer, CL_TRUE, 0,
+                           output_words * sizeof(float), output, 0, 0,
+                           0) != CL_SUCCESS ||
+      __vrc_enqueue_udondnn_large_convolution_args(
+          queue, arena_pointwise_self_buffer, arena_pointwise_other_buffer,
+          arena_rms_partial_buffer, arena_pointwise_output_buffer, output_words,
+          input_ch, input_info->w, output_ch, w, filter_hw, pad_hw, stride_hw,
+          dilation_hw, mode, *alpha, *beta) != CL_SUCCESS ||
+      clEnqueueReadBuffer(queue, arena_pointwise_output_buffer, CL_TRUE, 0,
+                          output_words * sizeof(float), output, 0, 0,
+                          0) != CL_SUCCESS ||
+      clFinish(queue) != CL_SUCCESS)
+    return UDONDNN_STATUS_EXECUTION_FAILED;
+  return UDONDNN_STATUS_SUCCESS;
 #else
-    if (!large_convolution_kernel) {
-      large_convolution_kernel = clCreateKernel(
-          program, "udondnn_large_convolution_forward", &cl_status);
-      if (cl_status != CL_SUCCESS ||
-          clSetKernelArg(large_convolution_kernel, 0,
-                         sizeof(arena_pointwise_self_buffer),
-                         &arena_pointwise_self_buffer) != CL_SUCCESS ||
-          clSetKernelArg(large_convolution_kernel, 1,
-                         sizeof(arena_pointwise_other_buffer),
-                         &arena_pointwise_other_buffer) != CL_SUCCESS ||
-          clSetKernelArg(large_convolution_kernel, 2,
-                         sizeof(arena_rms_partial_buffer),
-                         &arena_rms_partial_buffer) != CL_SUCCESS ||
-          clSetKernelArg(large_convolution_kernel, 3,
-                         sizeof(arena_pointwise_output_buffer),
-                         &arena_pointwise_output_buffer) != CL_SUCCESS)
-        return UDONDNN_STATUS_EXECUTION_FAILED;
-    }
+  if (!large_convolution_kernel) {
+    large_convolution_kernel = clCreateKernel(
+        program, "udondnn_large_convolution_forward", &cl_status);
+    if (cl_status != CL_SUCCESS ||
+        clSetKernelArg(large_convolution_kernel, 0,
+                       sizeof(arena_pointwise_self_buffer),
+                       &arena_pointwise_self_buffer) != CL_SUCCESS ||
+        clSetKernelArg(large_convolution_kernel, 1,
+                       sizeof(arena_pointwise_other_buffer),
+                       &arena_pointwise_other_buffer) != CL_SUCCESS ||
+        clSetKernelArg(large_convolution_kernel, 2,
+                       sizeof(arena_rms_partial_buffer),
+                       &arena_rms_partial_buffer) != CL_SUCCESS ||
+        clSetKernelArg(large_convolution_kernel, 3,
+                       sizeof(arena_pointwise_output_buffer),
+                       &arena_pointwise_output_buffer) != CL_SUCCESS)
+      return UDONDNN_STATUS_EXECUTION_FAILED;
+  }
 #define SET_LARGE_CONV_ARGUMENT(slot, value)                                   \
   do {                                                                         \
     if (clSetKernelArg(large_convolution_kernel, slot, sizeof(value),          \
                        &(value)) != CL_SUCCESS)                                \
       return UDONDNN_STATUS_EXECUTION_FAILED;                                  \
   } while (0)
-    SET_LARGE_CONV_ARGUMENT(4, output_words);
-    SET_LARGE_CONV_ARGUMENT(5, input_ch);
-    SET_LARGE_CONV_ARGUMENT(6, input_info->w);
-    SET_LARGE_CONV_ARGUMENT(7, output_ch);
-    SET_LARGE_CONV_ARGUMENT(8, w);
-    SET_LARGE_CONV_ARGUMENT(9, filter_hw);
-    SET_LARGE_CONV_ARGUMENT(10, pad_hw);
-    SET_LARGE_CONV_ARGUMENT(11, stride_hw);
-    SET_LARGE_CONV_ARGUMENT(12, dilation_hw);
-    SET_LARGE_CONV_ARGUMENT(13, mode);
-    SET_LARGE_CONV_ARGUMENT(14, *alpha);
-    SET_LARGE_CONV_ARGUMENT(15, *beta);
+  SET_LARGE_CONV_ARGUMENT(4, output_words);
+  SET_LARGE_CONV_ARGUMENT(5, input_ch);
+  SET_LARGE_CONV_ARGUMENT(6, input_info->w);
+  SET_LARGE_CONV_ARGUMENT(7, output_ch);
+  SET_LARGE_CONV_ARGUMENT(8, w);
+  SET_LARGE_CONV_ARGUMENT(9, filter_hw);
+  SET_LARGE_CONV_ARGUMENT(10, pad_hw);
+  SET_LARGE_CONV_ARGUMENT(11, stride_hw);
+  SET_LARGE_CONV_ARGUMENT(12, dilation_hw);
+  SET_LARGE_CONV_ARGUMENT(13, mode);
+  SET_LARGE_CONV_ARGUMENT(14, *alpha);
+  SET_LARGE_CONV_ARGUMENT(15, *beta);
 #undef SET_LARGE_CONV_ARGUMENT
-    if (clEnqueueWriteBuffer(queue, arena_pointwise_self_buffer, CL_TRUE, 0,
-                             input_words * sizeof(float), input, 0, 0,
-                             0) != CL_SUCCESS ||
-        clEnqueueWriteBuffer(queue, arena_pointwise_other_buffer, CL_TRUE, 0,
-                             filter_words * sizeof(float), filter, 0, 0,
-                             0) != CL_SUCCESS ||
-        clEnqueueWriteBuffer(queue, arena_rms_partial_buffer, CL_TRUE, 0,
-                             output_words * sizeof(float), output, 0, 0,
-                             0) != CL_SUCCESS ||
-        UDONDNN_ENQUEUE_LARGE_CONV(queue, large_convolution_kernel, 2, 0,
-                                   large_global, large_local, 0, 0,
-                                   0) != CL_SUCCESS ||
-        clEnqueueReadBuffer(queue, arena_pointwise_output_buffer, CL_TRUE, 0,
-                            output_words * sizeof(float), output, 0, 0,
-                            0) != CL_SUCCESS ||
-        clFinish(queue) != CL_SUCCESS)
-      return UDONDNN_STATUS_EXECUTION_FAILED;
-    return UDONDNN_STATUS_SUCCESS;
+  if (clEnqueueWriteBuffer(queue, arena_pointwise_self_buffer, CL_TRUE, 0,
+                           input_words * sizeof(float), input, 0, 0,
+                           0) != CL_SUCCESS ||
+      clEnqueueWriteBuffer(queue, arena_pointwise_other_buffer, CL_TRUE, 0,
+                           filter_words * sizeof(float), filter, 0, 0,
+                           0) != CL_SUCCESS ||
+      clEnqueueWriteBuffer(queue, arena_rms_partial_buffer, CL_TRUE, 0,
+                           output_words * sizeof(float), output, 0, 0,
+                           0) != CL_SUCCESS ||
+      UDONDNN_ENQUEUE_LARGE_CONV(queue, large_convolution_kernel, 2, 0,
+                                 large_global, large_local, 0, 0,
+                                 0) != CL_SUCCESS ||
+      clEnqueueReadBuffer(queue, arena_pointwise_output_buffer, CL_TRUE, 0,
+                          output_words * sizeof(float), output, 0, 0,
+                          0) != CL_SUCCESS ||
+      clFinish(queue) != CL_SUCCESS)
+    return UDONDNN_STATUS_EXECUTION_FAILED;
+  return UDONDNN_STATUS_SUCCESS;
 #endif
 #endif
   }
@@ -1394,7 +1500,20 @@ udondnnStatus_t udondnnActivationForward(
     size_t large_local[2] = {1, 1};
     if (words > UDONATEN_ARENA_POINTWISE_WORDS)
       return UDONDNN_STATUS_NOT_SUPPORTED;
-#ifdef UDONDNN_AOT_RAW_INTRINSICS
+#ifdef UDONDNN_DEVICE_POINTERS
+    {
+      cl_mem previous = *beta == 0.0f ? (cl_mem)input : (cl_mem)output;
+      cl_mem device_result = device_result_buffer(
+          output, (size_t)words * sizeof(float), *beta, &cl_status);
+      if (!device_result || cl_status != CL_SUCCESS)
+        return device_status(cl_status);
+      cl_status = __vrc_enqueue_udondnn_large_activation_device_args(
+          queue, (cl_mem)input, previous, device_result, words, mode,
+          nan_propagation, coefficient, *alpha, *beta, 0, 0, 0);
+      return finish_device_operation(device_result, output,
+                                     (size_t)words * sizeof(float), cl_status);
+    }
+#elif defined(UDONDNN_AOT_RAW_INTRINSICS)
     if (aot_wait(__vrc_opencl_buffer_upload(AOT_POINTWISE_SELF_TOKEN, 0,
                                             words * sizeof(float), input)) !=
             CL_SUCCESS ||
@@ -1411,49 +1530,49 @@ udondnnStatus_t udondnnActivationForward(
       return UDONDNN_STATUS_EXECUTION_FAILED;
     return UDONDNN_STATUS_SUCCESS;
 #else
-    if (!large_activation_kernel) {
-      large_activation_kernel = clCreateKernel(
-          program, "udondnn_large_activation_forward", &cl_status);
-      if (cl_status != CL_SUCCESS ||
-          clSetKernelArg(large_activation_kernel, 0,
-                         sizeof(arena_pointwise_self_buffer),
-                         &arena_pointwise_self_buffer) != CL_SUCCESS ||
-          clSetKernelArg(large_activation_kernel, 1,
-                         sizeof(arena_pointwise_other_buffer),
-                         &arena_pointwise_other_buffer) != CL_SUCCESS ||
-          clSetKernelArg(large_activation_kernel, 2,
-                         sizeof(arena_pointwise_output_buffer),
-                         &arena_pointwise_output_buffer) != CL_SUCCESS)
-        return UDONDNN_STATUS_EXECUTION_FAILED;
-    }
+  if (!large_activation_kernel) {
+    large_activation_kernel =
+        clCreateKernel(program, "udondnn_large_activation_forward", &cl_status);
+    if (cl_status != CL_SUCCESS ||
+        clSetKernelArg(large_activation_kernel, 0,
+                       sizeof(arena_pointwise_self_buffer),
+                       &arena_pointwise_self_buffer) != CL_SUCCESS ||
+        clSetKernelArg(large_activation_kernel, 1,
+                       sizeof(arena_pointwise_other_buffer),
+                       &arena_pointwise_other_buffer) != CL_SUCCESS ||
+        clSetKernelArg(large_activation_kernel, 2,
+                       sizeof(arena_pointwise_output_buffer),
+                       &arena_pointwise_output_buffer) != CL_SUCCESS)
+      return UDONDNN_STATUS_EXECUTION_FAILED;
+  }
 #define SET_LARGE_ACTIVATION_ARGUMENT(slot, value)                             \
   do {                                                                         \
     if (clSetKernelArg(large_activation_kernel, slot, sizeof(value),           \
                        &(value)) != CL_SUCCESS)                                \
       return UDONDNN_STATUS_EXECUTION_FAILED;                                  \
   } while (0)
-    SET_LARGE_ACTIVATION_ARGUMENT(3, words);
-    SET_LARGE_ACTIVATION_ARGUMENT(4, mode);
-    SET_LARGE_ACTIVATION_ARGUMENT(5, nan_propagation);
-    SET_LARGE_ACTIVATION_ARGUMENT(6, coefficient);
-    SET_LARGE_ACTIVATION_ARGUMENT(7, *alpha);
-    SET_LARGE_ACTIVATION_ARGUMENT(8, *beta);
+  SET_LARGE_ACTIVATION_ARGUMENT(3, words);
+  SET_LARGE_ACTIVATION_ARGUMENT(4, mode);
+  SET_LARGE_ACTIVATION_ARGUMENT(5, nan_propagation);
+  SET_LARGE_ACTIVATION_ARGUMENT(6, coefficient);
+  SET_LARGE_ACTIVATION_ARGUMENT(7, *alpha);
+  SET_LARGE_ACTIVATION_ARGUMENT(8, *beta);
 #undef SET_LARGE_ACTIVATION_ARGUMENT
-    if (clEnqueueWriteBuffer(queue, arena_pointwise_self_buffer, CL_TRUE, 0,
-                             words * sizeof(float), input, 0, 0,
-                             0) != CL_SUCCESS ||
-        clEnqueueWriteBuffer(queue, arena_pointwise_other_buffer, CL_TRUE, 0,
-                             words * sizeof(float), output, 0, 0,
-                             0) != CL_SUCCESS ||
-        UDONDNN_ENQUEUE_LARGE_ACTIVATION(queue, large_activation_kernel, 2, 0,
-                                         large_global, large_local, 0, 0,
-                                         0) != CL_SUCCESS ||
-        clEnqueueReadBuffer(queue, arena_pointwise_output_buffer, CL_TRUE, 0,
-                            words * sizeof(float), output, 0, 0,
-                            0) != CL_SUCCESS ||
-        clFinish(queue) != CL_SUCCESS)
-      return UDONDNN_STATUS_EXECUTION_FAILED;
-    return UDONDNN_STATUS_SUCCESS;
+  if (clEnqueueWriteBuffer(queue, arena_pointwise_self_buffer, CL_TRUE, 0,
+                           words * sizeof(float), input, 0, 0,
+                           0) != CL_SUCCESS ||
+      clEnqueueWriteBuffer(queue, arena_pointwise_other_buffer, CL_TRUE, 0,
+                           words * sizeof(float), output, 0, 0,
+                           0) != CL_SUCCESS ||
+      UDONDNN_ENQUEUE_LARGE_ACTIVATION(queue, large_activation_kernel, 2, 0,
+                                       large_global, large_local, 0, 0,
+                                       0) != CL_SUCCESS ||
+      clEnqueueReadBuffer(queue, arena_pointwise_output_buffer, CL_TRUE, 0,
+                          words * sizeof(float), output, 0, 0,
+                          0) != CL_SUCCESS ||
+      clFinish(queue) != CL_SUCCESS)
+    return UDONDNN_STATUS_EXECUTION_FAILED;
+  return UDONDNN_STATUS_SUCCESS;
 #endif
   }
 #ifndef UDONDNN_AOT_LARGE_ONLY
@@ -1575,7 +1694,22 @@ udondnnStatus_t udondnnPoolingForward(
     pad_shape = pooling->pad_h | (pooling->pad_w << 16);
     stride_shape = pooling->stride_h | (pooling->stride_w << 16);
     pooling_options = pooling_mode | (nan_propagation << 8);
-#ifdef UDONDNN_AOT_RAW_INTRINSICS
+#ifdef UDONDNN_DEVICE_POINTERS
+    {
+      cl_mem previous = *beta == 0.0f ? (cl_mem)input : (cl_mem)output;
+      cl_mem device_result = device_result_buffer(
+          output, (size_t)output_words * sizeof(float), *beta, &cl_status);
+      if (!device_result || cl_status != CL_SUCCESS)
+        return device_status(cl_status);
+      cl_status = __vrc_enqueue_udondnn_large_pooling_device_args(
+          queue, (cl_mem)input, previous, device_result, output_words,
+          input_info->c, input_info->h, input_info->w, h, w, window_shape,
+          pad_shape, stride_shape, pooling_options, *alpha, *beta, 0, 0, 0);
+      return finish_device_operation(device_result, output,
+                                     (size_t)output_words * sizeof(float),
+                                     cl_status);
+    }
+#elif defined(UDONDNN_AOT_RAW_INTRINSICS)
     if (aot_wait(__vrc_opencl_buffer_upload(AOT_POINTWISE_SELF_TOKEN, 0,
                                             input_words * sizeof(float),
                                             input)) != CL_SUCCESS ||
@@ -1593,21 +1727,21 @@ udondnnStatus_t udondnnPoolingForward(
       return UDONDNN_STATUS_EXECUTION_FAILED;
     return UDONDNN_STATUS_SUCCESS;
 #else
-    if (!large_pooling_kernel) {
-      large_pooling_kernel =
-          clCreateKernel(program, "udondnn_large_pooling_forward", &cl_status);
-      if (cl_status != CL_SUCCESS ||
-          clSetKernelArg(large_pooling_kernel, 0,
-                         sizeof(arena_pointwise_self_buffer),
-                         &arena_pointwise_self_buffer) != CL_SUCCESS ||
-          clSetKernelArg(large_pooling_kernel, 1,
-                         sizeof(arena_pointwise_other_buffer),
-                         &arena_pointwise_other_buffer) != CL_SUCCESS ||
-          clSetKernelArg(large_pooling_kernel, 2,
-                         sizeof(arena_pointwise_output_buffer),
-                         &arena_pointwise_output_buffer) != CL_SUCCESS)
-        return UDONDNN_STATUS_EXECUTION_FAILED;
-    }
+  if (!large_pooling_kernel) {
+    large_pooling_kernel =
+        clCreateKernel(program, "udondnn_large_pooling_forward", &cl_status);
+    if (cl_status != CL_SUCCESS ||
+        clSetKernelArg(large_pooling_kernel, 0,
+                       sizeof(arena_pointwise_self_buffer),
+                       &arena_pointwise_self_buffer) != CL_SUCCESS ||
+        clSetKernelArg(large_pooling_kernel, 1,
+                       sizeof(arena_pointwise_other_buffer),
+                       &arena_pointwise_other_buffer) != CL_SUCCESS ||
+        clSetKernelArg(large_pooling_kernel, 2,
+                       sizeof(arena_pointwise_output_buffer),
+                       &arena_pointwise_output_buffer) != CL_SUCCESS)
+      return UDONDNN_STATUS_EXECUTION_FAILED;
+  }
 #define SET_LARGE_POOLING_ARGUMENT(slot, value)                                \
   do {                                                                         \
     cl_status =                                                                \
@@ -1615,33 +1749,33 @@ udondnnStatus_t udondnnPoolingForward(
     if (cl_status != CL_SUCCESS)                                               \
       return UDONDNN_STATUS_EXECUTION_FAILED;                                  \
   } while (0)
-    SET_LARGE_POOLING_ARGUMENT(3, output_words);
-    SET_LARGE_POOLING_ARGUMENT(4, input_info->c);
-    SET_LARGE_POOLING_ARGUMENT(5, input_info->h);
-    SET_LARGE_POOLING_ARGUMENT(6, input_info->w);
-    SET_LARGE_POOLING_ARGUMENT(7, h);
-    SET_LARGE_POOLING_ARGUMENT(8, w);
-    SET_LARGE_POOLING_ARGUMENT(9, window_shape);
-    SET_LARGE_POOLING_ARGUMENT(10, pad_shape);
-    SET_LARGE_POOLING_ARGUMENT(11, stride_shape);
-    SET_LARGE_POOLING_ARGUMENT(12, pooling_options);
-    SET_LARGE_POOLING_ARGUMENT(13, *alpha);
-    SET_LARGE_POOLING_ARGUMENT(14, *beta);
+  SET_LARGE_POOLING_ARGUMENT(3, output_words);
+  SET_LARGE_POOLING_ARGUMENT(4, input_info->c);
+  SET_LARGE_POOLING_ARGUMENT(5, input_info->h);
+  SET_LARGE_POOLING_ARGUMENT(6, input_info->w);
+  SET_LARGE_POOLING_ARGUMENT(7, h);
+  SET_LARGE_POOLING_ARGUMENT(8, w);
+  SET_LARGE_POOLING_ARGUMENT(9, window_shape);
+  SET_LARGE_POOLING_ARGUMENT(10, pad_shape);
+  SET_LARGE_POOLING_ARGUMENT(11, stride_shape);
+  SET_LARGE_POOLING_ARGUMENT(12, pooling_options);
+  SET_LARGE_POOLING_ARGUMENT(13, *alpha);
+  SET_LARGE_POOLING_ARGUMENT(14, *beta);
 #undef SET_LARGE_POOLING_ARGUMENT
-    if (clEnqueueWriteBuffer(queue, arena_pointwise_self_buffer, CL_TRUE, 0,
-                             input_words * sizeof(float), input, 0, 0,
-                             0) != CL_SUCCESS ||
-        clEnqueueWriteBuffer(queue, arena_pointwise_other_buffer, CL_TRUE, 0,
-                             output_words * sizeof(float), output, 0, 0,
-                             0) != CL_SUCCESS ||
-        UDONDNN_ENQUEUE_LARGE_POOLING(queue, large_pooling_kernel, 2, 0, global,
-                                      local, 0, 0, 0) != CL_SUCCESS ||
-        clEnqueueReadBuffer(queue, arena_pointwise_output_buffer, CL_TRUE, 0,
-                            output_words * sizeof(float), output, 0, 0,
-                            0) != CL_SUCCESS ||
-        clFinish(queue) != CL_SUCCESS)
-      return UDONDNN_STATUS_EXECUTION_FAILED;
-    return UDONDNN_STATUS_SUCCESS;
+  if (clEnqueueWriteBuffer(queue, arena_pointwise_self_buffer, CL_TRUE, 0,
+                           input_words * sizeof(float), input, 0, 0,
+                           0) != CL_SUCCESS ||
+      clEnqueueWriteBuffer(queue, arena_pointwise_other_buffer, CL_TRUE, 0,
+                           output_words * sizeof(float), output, 0, 0,
+                           0) != CL_SUCCESS ||
+      UDONDNN_ENQUEUE_LARGE_POOLING(queue, large_pooling_kernel, 2, 0, global,
+                                    local, 0, 0, 0) != CL_SUCCESS ||
+      clEnqueueReadBuffer(queue, arena_pointwise_output_buffer, CL_TRUE, 0,
+                          output_words * sizeof(float), output, 0, 0,
+                          0) != CL_SUCCESS ||
+      clFinish(queue) != CL_SUCCESS)
+    return UDONDNN_STATUS_EXECUTION_FAILED;
+  return UDONDNN_STATUS_SUCCESS;
 #endif
   }
 #ifndef UDONDNN_AOT_LARGE_ONLY
@@ -1709,6 +1843,9 @@ udondnnStatus_t udondnnSoftmaxForward(
   cl_int cl_status;
   if (handle != UDONDNN_HANDLE || !context)
     return UDONDNN_STATUS_NOT_INITIALIZED;
+#ifdef UDONDNN_DEVICE_POINTERS
+  return UDONDNN_STATUS_NOT_SUPPORTED;
+#endif
   input_info = get_tensor(input_descriptor);
   output_info = get_tensor(output_descriptor);
   if (algorithm < UDONDNN_SOFTMAX_FAST || algorithm > UDONDNN_SOFTMAX_LOG ||
@@ -1792,6 +1929,9 @@ udondnnStatus_t udondnnBatchNormalizationForwardInference(
   cl_int cl_status;
   if (handle != UDONDNN_HANDLE || !context)
     return UDONDNN_STATUS_NOT_INITIALIZED;
+#ifdef UDONDNN_DEVICE_POINTERS
+  return UDONDNN_STATUS_NOT_SUPPORTED;
+#endif
   input_info = get_tensor(input_descriptor);
   output_info = get_tensor(output_descriptor);
   parameter_info = get_tensor(parameter_descriptor);
@@ -1929,7 +2069,21 @@ udondnnStatus_t udondnnOpTensor(
     operation = (int)operation_info->operation;
     nan_propagation = (int)operation_info->nan_propagation;
     options = operation | (nan_propagation << 8);
-#ifdef UDONDNN_AOT_RAW_INTRINSICS
+#ifdef UDONDNN_DEVICE_POINTERS
+    {
+      cl_mem previous = *beta == 0.0f ? (cl_mem)a : (cl_mem)c;
+      cl_mem device_result = device_result_buffer(
+          c, (size_t)c_words * sizeof(float), *beta, &cl_status);
+      if (!device_result || cl_status != CL_SUCCESS)
+        return device_status(cl_status);
+      cl_status = __vrc_enqueue_udondnn_large_op_tensor_device_args(
+          queue, (cl_mem)a, (cl_mem)b, previous, device_result, c_words, a_nc,
+          a_hw, b_nc, b_hw, c_nc, c_hw, options, *alpha_a, *alpha_b, *beta, 0,
+          0, 0);
+      return finish_device_operation(
+          device_result, c, (size_t)c_words * sizeof(float), cl_status);
+    }
+#elif defined(UDONDNN_AOT_RAW_INTRINSICS)
     if (aot_wait(__vrc_opencl_buffer_upload(AOT_POINTWISE_SELF_TOKEN, 0,
                                             a_words * sizeof(float), a)) !=
             CL_SUCCESS ||
@@ -1950,60 +2104,56 @@ udondnnStatus_t udondnnOpTensor(
       return UDONDNN_STATUS_EXECUTION_FAILED;
     return UDONDNN_STATUS_SUCCESS;
 #else
-    if (!large_op_tensor_kernel) {
-      large_op_tensor_kernel =
-          clCreateKernel(program, "udondnn_large_op_tensor", &cl_status);
-      if (cl_status != CL_SUCCESS ||
-          clSetKernelArg(large_op_tensor_kernel, 0,
-                         sizeof(arena_pointwise_self_buffer),
-                         &arena_pointwise_self_buffer) != CL_SUCCESS ||
-          clSetKernelArg(large_op_tensor_kernel, 1,
-                         sizeof(arena_pointwise_other_buffer),
-                         &arena_pointwise_other_buffer) != CL_SUCCESS ||
-          clSetKernelArg(large_op_tensor_kernel, 2,
-                         sizeof(arena_rms_partial_buffer),
-                         &arena_rms_partial_buffer) != CL_SUCCESS ||
-          clSetKernelArg(large_op_tensor_kernel, 3,
-                         sizeof(arena_pointwise_output_buffer),
-                         &arena_pointwise_output_buffer) != CL_SUCCESS)
-        return UDONDNN_STATUS_EXECUTION_FAILED;
-    }
+  if (!large_op_tensor_kernel) {
+    large_op_tensor_kernel =
+        clCreateKernel(program, "udondnn_large_op_tensor", &cl_status);
+    if (cl_status != CL_SUCCESS ||
+        clSetKernelArg(large_op_tensor_kernel, 0,
+                       sizeof(arena_pointwise_self_buffer),
+                       &arena_pointwise_self_buffer) != CL_SUCCESS ||
+        clSetKernelArg(large_op_tensor_kernel, 1,
+                       sizeof(arena_pointwise_other_buffer),
+                       &arena_pointwise_other_buffer) != CL_SUCCESS ||
+        clSetKernelArg(large_op_tensor_kernel, 2,
+                       sizeof(arena_rms_partial_buffer),
+                       &arena_rms_partial_buffer) != CL_SUCCESS ||
+        clSetKernelArg(large_op_tensor_kernel, 3,
+                       sizeof(arena_pointwise_output_buffer),
+                       &arena_pointwise_output_buffer) != CL_SUCCESS)
+      return UDONDNN_STATUS_EXECUTION_FAILED;
+  }
 #define SET_LARGE_OP_ARGUMENT(slot, value)                                     \
   do {                                                                         \
     if (clSetKernelArg(large_op_tensor_kernel, slot, sizeof(value),            \
                        &(value)) != CL_SUCCESS)                                \
       return UDONDNN_STATUS_EXECUTION_FAILED;                                  \
   } while (0)
-    SET_LARGE_OP_ARGUMENT(4, c_words);
-    SET_LARGE_OP_ARGUMENT(5, a_nc);
-    SET_LARGE_OP_ARGUMENT(6, a_hw);
-    SET_LARGE_OP_ARGUMENT(7, b_nc);
-    SET_LARGE_OP_ARGUMENT(8, b_hw);
-    SET_LARGE_OP_ARGUMENT(9, c_nc);
-    SET_LARGE_OP_ARGUMENT(10, c_hw);
-    SET_LARGE_OP_ARGUMENT(11, options);
-    SET_LARGE_OP_ARGUMENT(12, *alpha_a);
-    SET_LARGE_OP_ARGUMENT(13, *alpha_b);
-    SET_LARGE_OP_ARGUMENT(14, *beta);
+  SET_LARGE_OP_ARGUMENT(4, c_words);
+  SET_LARGE_OP_ARGUMENT(5, a_nc);
+  SET_LARGE_OP_ARGUMENT(6, a_hw);
+  SET_LARGE_OP_ARGUMENT(7, b_nc);
+  SET_LARGE_OP_ARGUMENT(8, b_hw);
+  SET_LARGE_OP_ARGUMENT(9, c_nc);
+  SET_LARGE_OP_ARGUMENT(10, c_hw);
+  SET_LARGE_OP_ARGUMENT(11, options);
+  SET_LARGE_OP_ARGUMENT(12, *alpha_a);
+  SET_LARGE_OP_ARGUMENT(13, *alpha_b);
+  SET_LARGE_OP_ARGUMENT(14, *beta);
 #undef SET_LARGE_OP_ARGUMENT
-    if (clEnqueueWriteBuffer(queue, arena_pointwise_self_buffer, CL_TRUE, 0,
-                             a_words * sizeof(float), a, 0, 0,
-                             0) != CL_SUCCESS ||
-        clEnqueueWriteBuffer(queue, arena_pointwise_other_buffer, CL_TRUE, 0,
-                             b_words * sizeof(float), b, 0, 0,
-                             0) != CL_SUCCESS ||
-        clEnqueueWriteBuffer(queue, arena_rms_partial_buffer, CL_TRUE, 0,
-                             c_words * sizeof(float), c, 0, 0,
-                             0) != CL_SUCCESS ||
-        UDONDNN_ENQUEUE_LARGE_OP(queue, large_op_tensor_kernel, 2, 0,
-                                 large_global, large_local, 0, 0,
-                                 0) != CL_SUCCESS ||
-        clEnqueueReadBuffer(queue, arena_pointwise_output_buffer, CL_TRUE, 0,
-                            c_words * sizeof(float), c, 0, 0,
-                            0) != CL_SUCCESS ||
-        clFinish(queue) != CL_SUCCESS)
-      return UDONDNN_STATUS_EXECUTION_FAILED;
-    return UDONDNN_STATUS_SUCCESS;
+  if (clEnqueueWriteBuffer(queue, arena_pointwise_self_buffer, CL_TRUE, 0,
+                           a_words * sizeof(float), a, 0, 0, 0) != CL_SUCCESS ||
+      clEnqueueWriteBuffer(queue, arena_pointwise_other_buffer, CL_TRUE, 0,
+                           b_words * sizeof(float), b, 0, 0, 0) != CL_SUCCESS ||
+      clEnqueueWriteBuffer(queue, arena_rms_partial_buffer, CL_TRUE, 0,
+                           c_words * sizeof(float), c, 0, 0, 0) != CL_SUCCESS ||
+      UDONDNN_ENQUEUE_LARGE_OP(queue, large_op_tensor_kernel, 2, 0,
+                               large_global, large_local, 0, 0,
+                               0) != CL_SUCCESS ||
+      clEnqueueReadBuffer(queue, arena_pointwise_output_buffer, CL_TRUE, 0,
+                          c_words * sizeof(float), c, 0, 0, 0) != CL_SUCCESS ||
+      clFinish(queue) != CL_SUCCESS)
+    return UDONDNN_STATUS_EXECUTION_FAILED;
+  return UDONDNN_STATUS_SUCCESS;
 #endif
   }
 #ifndef UDONDNN_AOT_LARGE_ONLY
@@ -2071,6 +2221,9 @@ udondnnStatus_t udonatenBackendRmsNorm(udondnnHandle_t handle, int words,
   cl_int status;
   if (handle != UDONDNN_HANDLE || !context)
     return UDONDNN_STATUS_NOT_INITIALIZED;
+#ifdef UDONDNN_DEVICE_POINTERS
+  return UDONDNN_STATUS_NOT_SUPPORTED;
+#endif
   if (!input || !output || words <= 0 ||
       words > UDONATEN_ARENA_POINTWISE_WORDS || normalized_words <= 0 ||
       normalized_words > 4096 || words % normalized_words != 0 ||
@@ -2166,6 +2319,9 @@ udondnnStatus_t udonatenBackendArenaPointwise(udondnnHandle_t handle, int words,
   cl_int status;
   if (handle != UDONDNN_HANDLE || !context)
     return UDONDNN_STATUS_NOT_INITIALIZED;
+#ifdef UDONDNN_DEVICE_POINTERS
+  return UDONDNN_STATUS_NOT_SUPPORTED;
+#endif
   if (!self || !other || !output || words <= 0 ||
       words > UDONATEN_ARENA_POINTWISE_WORDS || operation < 0 || operation > 5)
     return UDONDNN_STATUS_BAD_PARAM;
@@ -2216,6 +2372,9 @@ udondnnStatus_t udonatenBackendEmbedding(
   cl_int status;
   if (handle != UDONDNN_HANDLE || !context)
     return UDONDNN_STATUS_NOT_INITIALIZED;
+#ifdef UDONDNN_DEVICE_POINTERS
+  return UDONDNN_STATUS_NOT_SUPPORTED;
+#endif
 #ifdef UDONDNN_AOT_LARGE_ONLY
   if (!input_buffer) {
     input_buffer =
@@ -2320,6 +2479,9 @@ udondnnStatus_t udonatenBackendTile(udondnnHandle_t handle, int input_n,
   cl_int status;
   if (handle != UDONDNN_HANDLE || !context)
     return UDONDNN_STATUS_NOT_INITIALIZED;
+#ifdef UDONDNN_DEVICE_POINTERS
+  return UDONDNN_STATUS_NOT_SUPPORTED;
+#endif
   if (!input || !output || input_n <= 0 || input_c <= 0 || input_h <= 0 ||
       input_w <= 0 || repeat_n <= 0 || repeat_c <= 0 || repeat_h <= 0 ||
       repeat_w <= 0 || input_words > UDONATEN_ARENA_POINTWISE_WORDS ||

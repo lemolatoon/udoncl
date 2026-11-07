@@ -3,6 +3,7 @@
 #include <string.h>
 #include <udoncl/device_memory.h>
 #include <udonblas.h>
+#include <udondnn.h>
 #include <udononnxoperators.h>
 #include <udononnxruntime.h>
 
@@ -84,6 +85,11 @@ static cl_int dispatched_mnist_kernel;
 static cl_int dispatched_nbits_tile_n;
 static cl_int dispatched_nbits_finalize;
 static cl_int dispatched_gather_words;
+static cl_int dispatched_dnn_operation;
+static cl_uint dispatched_dnn_input_token;
+static cl_uint dispatched_dnn_other_token;
+static cl_uint dispatched_dnn_previous_token;
+static cl_uint dispatched_dnn_output_token;
 static cl_uint await_count;
 static cl_uint await_failure_call;
 static cl_int awaited_events[8];
@@ -189,6 +195,153 @@ cl_int __vrc_opencl_dispatch_udonblas_arena_sgemm_strided_batched(
   dispatched_arena_stride_b = stride_b;
   dispatched_arena_batch_count = batch_count;
   return 20;
+}
+
+cl_int __vrc_opencl_dispatch_udondnn_large_convolution(
+    cl_uint input_token, cl_uint filter_token, cl_uint previous_token,
+    cl_uint output_token, cl_int output_words, cl_int input_ch, cl_int input_w,
+    cl_int output_ch, cl_int output_w, cl_int filter_hw, cl_int pad_hw,
+    cl_int stride_hw, cl_int dilation_hw, cl_int mode, cl_float alpha,
+    cl_float beta) {
+  (void)output_words;
+  (void)input_ch;
+  (void)input_w;
+  (void)output_ch;
+  (void)output_w;
+  (void)filter_hw;
+  (void)pad_hw;
+  (void)stride_hw;
+  (void)dilation_hw;
+  (void)mode;
+  (void)alpha;
+  (void)beta;
+  dispatched_dnn_operation = 1;
+  dispatched_dnn_input_token = input_token;
+  dispatched_dnn_other_token = filter_token;
+  dispatched_dnn_previous_token = previous_token;
+  dispatched_dnn_output_token = output_token;
+  return 30;
+}
+
+cl_int __vrc_opencl_dispatch_udondnn_large_activation(
+    cl_uint input_token, cl_uint previous_token, cl_uint output_token,
+    cl_int words, cl_int mode, cl_int nan_propagation, cl_float coefficient,
+    cl_float alpha, cl_float beta) {
+  (void)words;
+  (void)mode;
+  (void)nan_propagation;
+  (void)coefficient;
+  (void)alpha;
+  (void)beta;
+  dispatched_dnn_operation = 2;
+  dispatched_dnn_input_token = input_token;
+  dispatched_dnn_other_token = 0;
+  dispatched_dnn_previous_token = previous_token;
+  dispatched_dnn_output_token = output_token;
+  return 31;
+}
+
+cl_int __vrc_opencl_dispatch_udondnn_large_pooling(
+    cl_uint input_token, cl_uint previous_token, cl_uint output_token,
+    cl_int output_words, cl_int input_c, cl_int input_h, cl_int input_w,
+    cl_int output_h, cl_int output_w, cl_int window_shape, cl_int pad_shape,
+    cl_int stride_shape, cl_int options, cl_float alpha, cl_float beta) {
+  (void)output_words;
+  (void)input_c;
+  (void)input_h;
+  (void)input_w;
+  (void)output_h;
+  (void)output_w;
+  (void)window_shape;
+  (void)pad_shape;
+  (void)stride_shape;
+  (void)options;
+  (void)alpha;
+  (void)beta;
+  dispatched_dnn_operation = 3;
+  dispatched_dnn_input_token = input_token;
+  dispatched_dnn_other_token = 0;
+  dispatched_dnn_previous_token = previous_token;
+  dispatched_dnn_output_token = output_token;
+  return 32;
+}
+
+cl_int __vrc_opencl_dispatch_udondnn_large_op_tensor(
+    cl_uint a_token, cl_uint b_token, cl_uint previous_token,
+    cl_uint output_token, cl_int output_words, cl_int a_nc, cl_int a_hw,
+    cl_int b_nc, cl_int b_hw, cl_int output_nc, cl_int output_hw,
+    cl_int options, cl_float alpha_a, cl_float alpha_b, cl_float beta) {
+  (void)output_words;
+  (void)a_nc;
+  (void)a_hw;
+  (void)b_nc;
+  (void)b_hw;
+  (void)output_nc;
+  (void)output_hw;
+  (void)options;
+  (void)alpha_a;
+  (void)alpha_b;
+  (void)beta;
+  dispatched_dnn_operation = 4;
+  dispatched_dnn_input_token = a_token;
+  dispatched_dnn_other_token = b_token;
+  dispatched_dnn_previous_token = previous_token;
+  dispatched_dnn_output_token = output_token;
+  return 33;
+}
+
+cl_int __vrc_opencl_dispatch_udonaten_embedding(
+    cl_uint input_token, cl_uint output_token, cl_int outer, cl_int rows,
+    cl_float rows_float, cl_int inner, cl_int indices_words,
+    cl_int output_words) {
+  (void)input_token;
+  (void)output_token;
+  (void)outer;
+  (void)rows;
+  (void)rows_float;
+  (void)inner;
+  (void)indices_words;
+  (void)output_words;
+  return 34;
+}
+
+cl_int __vrc_opencl_dispatch_udonaten_arena_rms_norm_reduce(
+    cl_uint input_token, cl_uint partials_token, cl_int words,
+    cl_int normalized_words) {
+  (void)input_token;
+  (void)partials_token;
+  (void)words;
+  (void)normalized_words;
+  return 35;
+}
+
+cl_int __vrc_opencl_dispatch_udonaten_arena_rms_norm_finalize(
+    cl_uint input_token, cl_uint partials_token, cl_uint weight_token,
+    cl_uint output_token, cl_int words, cl_int normalized_words,
+    cl_float epsilon, cl_int has_weight) {
+  (void)input_token;
+  (void)partials_token;
+  (void)weight_token;
+  (void)output_token;
+  (void)words;
+  (void)normalized_words;
+  (void)epsilon;
+  (void)has_weight;
+  return 36;
+}
+
+cl_int __vrc_opencl_dispatch_udondnn_arena_softmax(
+    cl_uint input_token, cl_uint output_token, cl_int input_n, cl_int input_c,
+    cl_int input_h, cl_int input_w, cl_int algorithm, cl_int mode) {
+  (void)input_token;
+  (void)output_token;
+  (void)input_n;
+  (void)input_c;
+  (void)input_h;
+  (void)input_w;
+  (void)algorithm;
+  (void)mode;
+  return 37;
 }
 
 extern cl_int __vrc_enqueue_udonblas_arena_sgemm_args(
@@ -538,6 +691,7 @@ int main(void) {
   cl_mem sub_parent, sub_buffer;
   cl_mem same_physical_buffer;
   cl_mem blas_input, blas_output;
+  cl_mem dnn_input, dnn_filter, dnn_output, dnn_other;
   cl_mem batched_a, batched_b, batched_c;
   cl_mem transpose_input_buffer, transpose_output_buffer, concat_left_buffer;
   cl_mem gather_indices_buffer;
@@ -552,6 +706,15 @@ int main(void) {
   udononnxTensor_t tensor;
   udonblasHandle_t blas_handle = 0;
   cl_command_queue blas_stream = 0;
+  udondnnHandle_t dnn_handle = 0;
+  udondnnTensorDescriptor_t dnn_input_descriptor = 0;
+  udondnnTensorDescriptor_t dnn_output_descriptor = 0;
+  udondnnFilterDescriptor_t dnn_filter_descriptor = 0;
+  udondnnConvolutionDescriptor_t dnn_convolution_descriptor = 0;
+  udondnnActivationDescriptor_t dnn_activation_descriptor = 0;
+  udondnnPoolingDescriptor_t dnn_pooling_descriptor = 0;
+  udondnnOpTensorDescriptor_t dnn_op_tensor_descriptor = 0;
+  cl_command_queue dnn_stream = 0;
   cl_int error;
   cl_int event_status;
   cl_int integer_arguments[8] = {1, 10, 16, 0, 0, 1, 16, 1};
@@ -560,6 +723,9 @@ int main(void) {
   size_t global[2] = {32, 32}, local[2] = {1, 1};
   cl_uint index;
   cl_uint blas_input_token, blas_output_token;
+  cl_uint dnn_input_token, dnn_filter_token, dnn_output_token, dnn_other_token;
+  cl_uint dnn_temporary_token;
+  float dnn_alpha = 1.0f, dnn_beta_zero = 0.0f, dnn_beta_one = 1.0f;
   int source = 42;
   int sub_source = 91, sub_result = 0;
   cl_buffer_region sub_region = {4, sizeof(sub_source)};
@@ -873,6 +1039,161 @@ int main(void) {
   EXPECT(clReleaseEvent(marker_event) == CL_SUCCESS);
   EXPECT(clReleaseMemObject(blas_output) == CL_SUCCESS);
   EXPECT(udonblasDestroy(blas_handle) == UDONBLAS_STATUS_SUCCESS);
+
+  /* The cuDNN-shaped API uses caller-owned cl_mem values as device pointers.
+   * beta == 0 dispatches directly into the caller's output.  beta != 0 uses
+   * a temporary device buffer and enqueues an asynchronous copy-back so the
+   * fragment never binds the same physical resource for read and write. */
+  EXPECT(udondnnCreate(&dnn_handle) == UDONDNN_STATUS_SUCCESS);
+  EXPECT(udondnnGetStream(dnn_handle, &dnn_stream) ==
+         UDONDNN_STATUS_NOT_INITIALIZED);
+  EXPECT(udondnnSetStream(dnn_handle, queue) == UDONDNN_STATUS_SUCCESS);
+  EXPECT(udondnnGetStream(dnn_handle, &dnn_stream) == UDONDNN_STATUS_SUCCESS &&
+         dnn_stream == queue);
+  EXPECT(udondnnCreateTensorDescriptor(&dnn_input_descriptor) ==
+         UDONDNN_STATUS_SUCCESS);
+  EXPECT(udondnnCreateTensorDescriptor(&dnn_output_descriptor) ==
+         UDONDNN_STATUS_SUCCESS);
+  EXPECT(udondnnSetTensor4dDescriptor(dnn_input_descriptor, UDONDNN_TENSOR_NCHW,
+                                      UDONDNN_DATA_FLOAT, 1, 1, 2,
+                                      2) == UDONDNN_STATUS_SUCCESS);
+  EXPECT(udondnnSetTensor4dDescriptor(dnn_output_descriptor,
+                                      UDONDNN_TENSOR_NCHW, UDONDNN_DATA_FLOAT,
+                                      1, 1, 2, 2) == UDONDNN_STATUS_SUCCESS);
+  EXPECT(udondnnCreateFilterDescriptor(&dnn_filter_descriptor) ==
+         UDONDNN_STATUS_SUCCESS);
+  EXPECT(udondnnSetFilter4dDescriptor(dnn_filter_descriptor, UDONDNN_DATA_FLOAT,
+                                      UDONDNN_TENSOR_NCHW, 1, 1, 1,
+                                      1) == UDONDNN_STATUS_SUCCESS);
+  EXPECT(udondnnCreateConvolutionDescriptor(&dnn_convolution_descriptor) ==
+         UDONDNN_STATUS_SUCCESS);
+  EXPECT(udondnnSetConvolution2dDescriptor(dnn_convolution_descriptor, 0, 0, 1,
+                                           1, 1, 1, UDONDNN_CROSS_CORRELATION,
+                                           UDONDNN_DATA_FLOAT) ==
+         UDONDNN_STATUS_SUCCESS);
+  EXPECT(udondnnCreateActivationDescriptor(&dnn_activation_descriptor) ==
+         UDONDNN_STATUS_SUCCESS);
+  EXPECT(udondnnSetActivationDescriptor(
+             dnn_activation_descriptor, UDONDNN_ACTIVATION_RELU,
+             UDONDNN_NOT_PROPAGATE_NAN, 0.0f) == UDONDNN_STATUS_SUCCESS);
+  EXPECT(udondnnCreatePoolingDescriptor(&dnn_pooling_descriptor) ==
+         UDONDNN_STATUS_SUCCESS);
+  EXPECT(udondnnSetPooling2dDescriptor(dnn_pooling_descriptor,
+                                       UDONDNN_POOLING_MAX,
+                                       UDONDNN_NOT_PROPAGATE_NAN, 1, 1, 0, 0, 1,
+                                       1) == UDONDNN_STATUS_SUCCESS);
+  EXPECT(udondnnCreateOpTensorDescriptor(&dnn_op_tensor_descriptor) ==
+         UDONDNN_STATUS_SUCCESS);
+  EXPECT(udondnnSetOpTensorDescriptor(dnn_op_tensor_descriptor,
+                                      UDONDNN_OP_TENSOR_ADD, UDONDNN_DATA_FLOAT,
+                                      UDONDNN_NOT_PROPAGATE_NAN) ==
+         UDONDNN_STATUS_SUCCESS);
+  dnn_input =
+      clCreateBuffer(context, CL_MEM_READ_WRITE, 4 * sizeof(float), 0, &error);
+  EXPECT(dnn_input && error == CL_SUCCESS);
+  dnn_input_token = 100 + allocated_logical_id;
+  dnn_filter =
+      clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(float), 0, &error);
+  EXPECT(dnn_filter && error == CL_SUCCESS);
+  dnn_filter_token = 100 + allocated_logical_id;
+  dnn_output =
+      clCreateBuffer(context, CL_MEM_READ_WRITE, 4 * sizeof(float), 0, &error);
+  EXPECT(dnn_output && error == CL_SUCCESS);
+  dnn_output_token = 100 + allocated_logical_id;
+  dnn_other =
+      clCreateBuffer(context, CL_MEM_READ_WRITE, 4 * sizeof(float), 0, &error);
+  EXPECT(dnn_other && error == CL_SUCCESS);
+  dnn_other_token = 100 + allocated_logical_id;
+
+  await_count = 0;
+  EXPECT(udondnnConvolutionForward(
+             dnn_handle, &dnn_alpha, dnn_input_descriptor,
+             (const float *)dnn_input, dnn_filter_descriptor,
+             (const float *)dnn_filter, dnn_convolution_descriptor,
+             UDONDNN_CONVOLUTION_FWD_ALGO_IMPLICIT_GEMM, 0, 0, &dnn_beta_zero,
+             dnn_output_descriptor,
+             (float *)dnn_output) == UDONDNN_STATUS_SUCCESS);
+  EXPECT(await_count == 0 && dispatched_dnn_operation == 1);
+  EXPECT(dispatched_dnn_input_token == dnn_input_token &&
+         dispatched_dnn_other_token == dnn_filter_token &&
+         dispatched_dnn_previous_token == dnn_input_token &&
+         dispatched_dnn_output_token == dnn_output_token);
+  EXPECT(udondnnActivationForward(dnn_handle, dnn_activation_descriptor,
+                                  &dnn_alpha, dnn_input_descriptor,
+                                  (const float *)dnn_input, &dnn_beta_zero,
+                                  dnn_input_descriptor, (float *)dnn_input) ==
+         UDONDNN_STATUS_NOT_SUPPORTED);
+
+  released_token = 0;
+  EXPECT(udondnnActivationForward(dnn_handle, dnn_activation_descriptor,
+                                  &dnn_alpha, dnn_input_descriptor,
+                                  (const float *)dnn_input, &dnn_beta_one,
+                                  dnn_output_descriptor, (float *)dnn_output) ==
+         UDONDNN_STATUS_SUCCESS);
+  dnn_temporary_token = dispatched_dnn_output_token;
+  EXPECT(await_count == 0 && dispatched_dnn_operation == 2);
+  EXPECT(dispatched_dnn_input_token == dnn_input_token &&
+         dispatched_dnn_previous_token == dnn_output_token &&
+         dnn_temporary_token != dnn_output_token && released_token == 0);
+  EXPECT(clEnqueueMarkerWithWaitList(queue, 0, 0, &marker_event) == CL_SUCCESS);
+  EXPECT(clWaitForEvents(1, &marker_event) == CL_SUCCESS);
+  EXPECT(await_count == 1 && awaited_events[0] == 19 &&
+         released_token == dnn_temporary_token);
+  EXPECT(clReleaseEvent(marker_event) == CL_SUCCESS);
+
+  EXPECT(udondnnPoolingForward(dnn_handle, dnn_pooling_descriptor, &dnn_alpha,
+                               dnn_input_descriptor, (const float *)dnn_input,
+                               &dnn_beta_zero, dnn_output_descriptor,
+                               (float *)dnn_output) == UDONDNN_STATUS_SUCCESS);
+  EXPECT(dispatched_dnn_operation == 3 &&
+         dispatched_dnn_input_token == dnn_input_token &&
+         dispatched_dnn_previous_token == dnn_input_token &&
+         dispatched_dnn_output_token == dnn_output_token);
+  EXPECT(udondnnOpTensor(dnn_handle, dnn_op_tensor_descriptor, &dnn_alpha,
+                         dnn_input_descriptor, (const float *)dnn_input,
+                         &dnn_alpha, dnn_input_descriptor,
+                         (const float *)dnn_other, &dnn_beta_zero,
+                         dnn_output_descriptor,
+                         (float *)dnn_output) == UDONDNN_STATUS_SUCCESS);
+  EXPECT(dispatched_dnn_operation == 4 &&
+         dispatched_dnn_input_token == dnn_input_token &&
+         dispatched_dnn_other_token == dnn_other_token &&
+         dispatched_dnn_previous_token == dnn_input_token &&
+         dispatched_dnn_output_token == dnn_output_token);
+  EXPECT(udondnnSoftmaxForward(
+             dnn_handle, UDONDNN_SOFTMAX_ACCURATE, UDONDNN_SOFTMAX_MODE_CHANNEL,
+             &dnn_alpha, dnn_input_descriptor, (const float *)dnn_input,
+             &dnn_beta_zero, dnn_output_descriptor,
+             (float *)dnn_output) == UDONDNN_STATUS_NOT_SUPPORTED);
+  EXPECT(udondnnBatchNormalizationForwardInference(
+             dnn_handle, UDONDNN_BATCHNORM_PER_ACTIVATION, &dnn_alpha,
+             &dnn_beta_zero, dnn_input_descriptor, (const float *)dnn_input,
+             dnn_output_descriptor, (float *)dnn_output, dnn_input_descriptor,
+             (const float *)dnn_other, (const float *)dnn_other,
+             (const float *)dnn_other, (const float *)dnn_other,
+             UDONDNN_BN_MIN_EPSILON) == UDONDNN_STATUS_NOT_SUPPORTED);
+
+  EXPECT(udondnnDestroyOpTensorDescriptor(dnn_op_tensor_descriptor) ==
+         UDONDNN_STATUS_SUCCESS);
+  EXPECT(udondnnDestroyPoolingDescriptor(dnn_pooling_descriptor) ==
+         UDONDNN_STATUS_SUCCESS);
+  EXPECT(udondnnDestroyActivationDescriptor(dnn_activation_descriptor) ==
+         UDONDNN_STATUS_SUCCESS);
+  EXPECT(udondnnDestroyConvolutionDescriptor(dnn_convolution_descriptor) ==
+         UDONDNN_STATUS_SUCCESS);
+  EXPECT(udondnnDestroyFilterDescriptor(dnn_filter_descriptor) ==
+         UDONDNN_STATUS_SUCCESS);
+  EXPECT(udondnnDestroyTensorDescriptor(dnn_output_descriptor) ==
+         UDONDNN_STATUS_SUCCESS);
+  EXPECT(udondnnDestroyTensorDescriptor(dnn_input_descriptor) ==
+         UDONDNN_STATUS_SUCCESS);
+  EXPECT(udondnnDestroy(dnn_handle) == UDONDNN_STATUS_SUCCESS);
+  EXPECT(clReleaseMemObject(dnn_other) == CL_SUCCESS);
+  EXPECT(clReleaseMemObject(dnn_output) == CL_SUCCESS);
+  EXPECT(clReleaseMemObject(dnn_filter) == CL_SUCCESS);
+  EXPECT(clReleaseMemObject(dnn_input) == CL_SUCCESS);
+  EXPECT(clFinish(queue) == CL_SUCCESS);
+
   same_physical_buffer =
       udonclAdoptStaticBuffer(queue, 63, sizeof(source), 102, &error);
   EXPECT(same_physical_buffer && same_physical_buffer != first &&

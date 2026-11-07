@@ -126,25 +126,26 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             AssertRuntimeBinding(hello, helloController, "UdonclHelloDispatchBinding");
             AssertRuntimeBinding(saxpy, saxpyController, "UdonclSaxpyDemoBinding");
             AssertRuntimeBinding(pooling, poolingController, "UdonclAveragePoolingBinding");
-            UdonclArtifactImporter.SendUdonCustomEvent(helloController, "Run");
-            UdonclArtifactImporter.SendUdonCustomEvent(saxpyController, "Run");
 
             const int timeoutFrames = 300;
-            int frame = 0;
+            UdonclArtifactImporter.SendUdonCustomEvent(helloController, "Run");
+            int helloFrame = 0;
             float helloResult = 0.0f;
-            float saxpyResult = 0.0f;
-            while (
-                frame < timeoutFrames
-                && (
-                    Math.Abs(helloResult - 10.0f) > 0.0001f
-                    || Math.Abs(saxpyResult - 102.0f) > 0.0001f
-                )
-            )
+            while (helloFrame < timeoutFrames && Math.Abs(helloResult - 10.0f) > 0.0001f)
             {
-                ++frame;
+                ++helloFrame;
                 yield return null;
                 helloResult = (float)
                     UdonclArtifactImporter.GetUdonProgramVariable(helloController, "result");
+            }
+
+            UdonclArtifactImporter.SendUdonCustomEvent(saxpyController, "Run");
+            int saxpyFrame = 0;
+            float saxpyResult = 0.0f;
+            while (saxpyFrame < timeoutFrames && Math.Abs(saxpyResult - 102.0f) > 0.0001f)
+            {
+                ++saxpyFrame;
+                yield return null;
                 saxpyResult = (float)
                     UdonclArtifactImporter.GetUdonProgramVariable(saxpyController, "firstResult");
             }
@@ -168,16 +169,14 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             yield return new ExitPlayMode();
 
             Assert.Less(
-                frame,
+                helloFrame,
                 timeoutFrames,
-                "Hello/SAXPY readback timed out; status="
-                    + helloStatus
-                    + "/"
-                    + saxpyStatus
-                    + "; results="
-                    + helloResult
-                    + "/"
-                    + saxpyResult
+                "Hello readback timed out; status=" + helloStatus + "; result=" + helloResult
+            );
+            Assert.Less(
+                saxpyFrame,
+                timeoutFrames,
+                "SAXPY readback timed out; status=" + saxpyStatus + "; result=" + saxpyResult
             );
             Assert.Less(
                 poolingFrame,

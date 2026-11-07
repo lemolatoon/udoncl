@@ -50,7 +50,8 @@ if(NOT TARGET udondnn_host)
   target_compile_definitions(udondnn_host INTERFACE
     UDONDNN_AOT_DIRECT_ARGUMENT_DISPATCH=1
     UDONDNN_AOT_DIRECT_DISPATCH=1
-    UDONDNN_AOT_LARGE_ONLY=1)
+    UDONDNN_AOT_LARGE_ONLY=1
+    UDONDNN_DEVICE_POINTERS=1)
   target_compile_options(udondnn_host INTERFACE -O1 -fno-inline)
 endif()
 
