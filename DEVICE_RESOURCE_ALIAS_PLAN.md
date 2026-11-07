@@ -258,6 +258,55 @@ remaining design frontier is closed as follows:
    contract passes MNIST. This preserves one generic implementation route
    instead of adding a model-specific escape hatch.
 
+### Device-pointer and queue-tail grilling closure (2026-11-07)
+
+The remaining Phase B representation questions are closed with the recommended
+answers below. These are implementation requirements, not optional variants.
+
+1. A CUDA-compatible typed tensor pointer has one meaning: it is an opaque
+   Device address whose provenance resolves to a `cl_mem` and byte origin. At
+   an ABI boundary its base value is the corresponding opaque `cl_mem`; Host
+   arrays are never accepted by the same parameter.
+2. The compiler must not execute ordinary integer pointer arithmetic on a
+   `cl_mem`. It traces constant GEPs, validates the byte range, and either folds
+   the origin into the generated dispatch or materializes a standard OpenCL
+   sub-buffer. A dynamic origin remains rejected until the runtime Device
+   address representation carries it.
+3. `alpha` and `beta` remain Host scalar pointers, matching cuBLAS/cuDNN Host
+   pointer mode. Tensor and workspace parameters are Device pointers. Argument
+   position, not runtime guessing, determines which contract applies.
+4. Generated static tensors are adopted during initialize as immutable
+   `cl_mem` objects with `udonclAdoptStaticBuffer`, retained for the session,
+   and released during dispose. Operators do not receive raw physical texture
+   tokens as typed pointers.
+5. Public UdonBLAS/UdonDNN calls enqueue through the existing
+   `*_device_args` runtime helpers. Those helpers validate queue/context,
+   retain command resources, and update the in-order queue tail. Library calls
+   do not call `__vrc_opencl_await`, `clFinish`, upload, or readback.
+6. Handle creation in the Device-pointer profile creates an unbound logical
+   handle. `SetStream` performs the first caller-queue binding and retains that
+   queue. It must not allocate a private context, queue, staging texture, or
+   program first. The legacy Host-array profile is not linked into installed
+   artifacts once an operation migrates.
+7. Calls with `beta == 0` use a direct disjoint-output fast path. Calls that
+   require reading the prior destination use a distinct temporary and enqueue
+   copy-back; the terminal command owns the temporary until completion. They
+   never rely on binding the same physical texture for read and write.
+8. The ONNX Device graph is migrated at `createRuntimeDispatchers`, because
+   that is the active MNIST/Transformer route. The unused non-Device
+   `createRunExport` fallback is not modified as a substitute. Generated code
+   must call public library APIs, while direct dispatch intrinsics remain
+   implementation details of the libraries/runtime.
+9. Once a public library operation uses Device-pointer semantics, an ONNX
+   graph must not silently fall back to `createRunExport` and pass Host tensor
+   addresses to that operation. The canonical synthetic Transformer uses the
+   supported generic Q4 `block_size=32` contract and therefore remains a full
+   Device graph. A fallback graph that would cross a migrated Device-pointer
+   library boundary receives a lowering-time diagnostic until all of its
+   operators have Device implementations; Host-only operators may retain
+   their existing fallback meanwhile. Pointer guessing and model-specific
+   runtime branches are forbidden.
+
 ### Phase A: access-aware dispatch and validation
 
 - Add access metadata to dispatch IR and verifiers.

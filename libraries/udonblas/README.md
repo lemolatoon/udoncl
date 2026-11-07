@@ -15,15 +15,20 @@ Device passes reduce up to 256 products as a balanced binary tree. Unit,
 non-unit, and negative increments are supported when both physical spans fit
 their 256-word gather partitions; `n <= 0` writes a zero result.
 
-`udonblasSgemm` is the first Level-3 primitive. One fragment owns each
-output matrix element, so an M×N multiplication exposes M×N independent Device
-invocations. Its UdonCL state is dispatched as a 32×32 two-dimensional fragment
-grid; `get_global_id(0/1)` is preserved through the AOT manifest, HLSL pixel
-coordinates, OpenCL NDRange validation, and the native D3D11/Vulkan adapters.
-The initial `gather-f32` profile accepts M, N, and K up to 16 and
-one serialized handle per UdonBehaviour instance. These are profile limits,
-not intended API limits; tiled multi-pass kernels will lift them without
-changing the function signature.
+The installed `udonblasSgemm` is the first Device-pointer baseline operation.
+Its `A`, `B`, and `C` parameters are opaque `cl_mem`-backed Device pointers;
+Host arrays are not accepted. The caller creates and transfers buffers with
+OpenCL, binds its queue with `udonblasSetStream`, and performs any final wait or
+readback. The call itself only enqueues work on that queue. The current arena
+profile supports contiguous matrices, `beta == 0`, at most 16,384 words per
+operand/result, and `K <= 256`. Unsupported valid CUDA layouts return
+`UDONBLAS_STATUS_NOT_SUPPORTED` without changing the public signature.
+
+The Level-1 and Level-2 implementations below are still covered by the Native
+backend harness, but are not exposed by the installed Device-pointer profile
+until their staging paths are migrated. They return
+`UDONBLAS_STATUS_NOT_SUPPORTED` there instead of guessing whether a pointer is
+Host or Device memory.
 
 `udonblasSgemv` is the first Level-2 primitive and matches the CUDA 13.0
 `cublasSgemv` signature. One fragment owns each output vector element. N, T,

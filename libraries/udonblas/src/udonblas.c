@@ -2,6 +2,16 @@
 #include "udonblas_device_source.h"
 #include <CL/cl.h>
 
+#ifdef UDONBLAS_DEVICE_POINTERS
+extern cl_int __vrc_enqueue_udonblas_arena_sgemm_device_args(
+    cl_command_queue, cl_mem, cl_mem, cl_mem, cl_int, cl_int, cl_int, cl_int,
+    cl_int, cl_float, cl_uint, const cl_event *, cl_event *);
+extern cl_int __vrc_enqueue_udonblas_arena_sgemm_strided_batched_device_args(
+    cl_command_queue, cl_mem, cl_mem, cl_mem, cl_int, cl_int, cl_int, cl_int,
+    cl_int, cl_int, cl_int, cl_int, cl_int, cl_float, cl_uint, const cl_event *,
+    cl_event *);
+#endif
+
 #ifdef UDONBLAS_AOT_RAW_INTRINSICS
 extern int __vrc_opencl_buffer_alloc(int, int);
 extern int __vrc_opencl_buffer_release(int);
@@ -41,6 +51,7 @@ extern cl_int __vrc_enqueue_udonblas_sgemv(cl_command_queue, cl_kernel, cl_uint,
 #define UDONBLAS_HANDLE 1u
 static cl_context context;
 static cl_command_queue queue;
+static int handle_active;
 static int owns_context_reference;
 static cl_program program;
 static cl_kernel sgemm_kernel;
@@ -98,10 +109,11 @@ static void clear_objects(void) {
 
 static udonblasStatus_t execution_failure(void) {
   clear_objects();
+  handle_active = 0;
   return UDONBLAS_STATUS_EXECUTION_FAILED;
 }
 
-#ifndef UDONBLAS_AOT_RAW_INTRINSICS
+#if !defined(UDONBLAS_AOT_RAW_INTRINSICS) && !defined(UDONBLAS_DEVICE_POINTERS)
 static udonblasStatus_t initialize_resources(void) {
   const char *source = UDONBLAS_DEVICE_SOURCE;
   cl_int status;
@@ -158,12 +170,18 @@ udonblasStatus_t udonblasCreate(udonblasHandle_t *handle) {
   if (!handle)
     return UDONBLAS_STATUS_INVALID_VALUE;
   clear_objects();
+#ifdef UDONBLAS_DEVICE_POINTERS
+  handle_active = 1;
+  *handle = UDONBLAS_HANDLE;
+  return UDONBLAS_STATUS_SUCCESS;
+#else
 #ifdef UDONBLAS_AOT_RAW_INTRINSICS
   input_buffer = (cl_mem)(size_t)__vrc_opencl_buffer_alloc(5, sizeof(packed));
   output_buffer = (cl_mem)(size_t)__vrc_opencl_buffer_alloc(6, sizeof(packed));
   context = (cl_context)(size_t)1;
   queue = (cl_command_queue)(size_t)1;
   *handle = UDONBLAS_HANDLE;
+  handle_active = 1;
   return UDONBLAS_STATUS_SUCCESS;
 #else
   if (clGetPlatformIDs(1, &platform, 0) != CL_SUCCESS ||
@@ -180,7 +198,9 @@ udonblasStatus_t udonblasCreate(udonblasHandle_t *handle) {
   if (initialize_resources() != UDONBLAS_STATUS_SUCCESS)
     return UDONBLAS_STATUS_EXECUTION_FAILED;
   *handle = UDONBLAS_HANDLE;
+  handle_active = 1;
   return UDONBLAS_STATUS_SUCCESS;
+#endif
 #endif
 }
 
@@ -193,6 +213,15 @@ udonblasStatus_t udonblasSdot(udonblasHandle_t handle, int n, const float *x,
   cl_int status;
   if (handle != UDONBLAS_HANDLE || !context)
     return UDONBLAS_STATUS_NOT_INITIALIZED;
+#ifdef UDONBLAS_DEVICE_POINTERS
+  (void)n;
+  (void)x;
+  (void)incx;
+  (void)y;
+  (void)incy;
+  (void)dot_result;
+  return UDONBLAS_STATUS_NOT_SUPPORTED;
+#endif
   if (!dot_result)
     return UDONBLAS_STATUS_INVALID_VALUE;
   if (n <= 0) {
@@ -262,6 +291,15 @@ udonblasStatus_t udonblasSaxpy(udonblasHandle_t handle, int n,
   cl_int status;
   if (handle != UDONBLAS_HANDLE || !context)
     return UDONBLAS_STATUS_NOT_INITIALIZED;
+#ifdef UDONBLAS_DEVICE_POINTERS
+  (void)n;
+  (void)alpha;
+  (void)x;
+  (void)incx;
+  (void)y;
+  (void)incy;
+  return UDONBLAS_STATUS_NOT_SUPPORTED;
+#endif
   if (n < 0 || !alpha || !x || !y || incx == 0 || incy == 0)
     return UDONBLAS_STATUS_INVALID_VALUE;
   if (n > UDONBLAS_SAXPY_MAX_N)
@@ -319,6 +357,20 @@ udonblasStatus_t udonblasSgemv(udonblasHandle_t handle,
   cl_int status;
   if (handle != UDONBLAS_HANDLE || !context)
     return UDONBLAS_STATUS_NOT_INITIALIZED;
+#ifdef UDONBLAS_DEVICE_POINTERS
+  (void)trans;
+  (void)m;
+  (void)n;
+  (void)alpha;
+  (void)a;
+  (void)lda;
+  (void)x;
+  (void)incx;
+  (void)beta;
+  (void)y;
+  (void)incy;
+  return UDONBLAS_STATUS_NOT_SUPPORTED;
+#endif
   if ((trans != UDONBLAS_OP_N && trans != UDONBLAS_OP_T &&
        trans != UDONBLAS_OP_C) ||
       m < 0 || n < 0 || !alpha || !a || !x || !beta || !y ||
@@ -382,21 +434,37 @@ udonblasStatus_t udonblasSgemv(udonblasHandle_t handle,
 }
 
 udonblasStatus_t udonblasDestroy(udonblasHandle_t handle) {
-  if (handle != UDONBLAS_HANDLE || !context)
+  if (handle != UDONBLAS_HANDLE || !handle_active)
     return UDONBLAS_STATUS_NOT_INITIALIZED;
   clear_objects();
+  handle_active = 0;
   return UDONBLAS_STATUS_SUCCESS;
 }
 
 udonblasStatus_t udonblasSetStream(udonblasHandle_t handle,
                                    cl_command_queue stream) {
   cl_context stream_context = 0;
-  if (handle != UDONBLAS_HANDLE || !context || !queue)
+  if (handle != UDONBLAS_HANDLE || !handle_active)
     return UDONBLAS_STATUS_NOT_INITIALIZED;
   if (!stream)
     return UDONBLAS_STATUS_INVALID_VALUE;
   if (stream == queue)
     return UDONBLAS_STATUS_SUCCESS;
+#ifdef UDONBLAS_DEVICE_POINTERS
+  if (clGetCommandQueueInfo(stream, CL_QUEUE_CONTEXT, sizeof(stream_context),
+                            &stream_context, 0) != CL_SUCCESS)
+    return UDONBLAS_STATUS_INVALID_VALUE;
+  if (clRetainCommandQueue(stream) != CL_SUCCESS)
+    return UDONBLAS_STATUS_EXECUTION_FAILED;
+  if (queue && clReleaseCommandQueue(queue) != CL_SUCCESS) {
+    clReleaseCommandQueue(stream);
+    return UDONBLAS_STATUS_EXECUTION_FAILED;
+  }
+  context = stream_context;
+  queue = stream;
+  owns_context_reference = 0;
+  return UDONBLAS_STATUS_SUCCESS;
+#else
 #ifdef UDONBLAS_AOT_RAW_INTRINSICS
   return UDONBLAS_STATUS_NOT_SUPPORTED;
 #else
@@ -411,11 +479,12 @@ udonblasStatus_t udonblasSetStream(udonblasHandle_t handle,
   owns_context_reference = 0;
   return initialize_resources();
 #endif
+#endif
 }
 
 udonblasStatus_t udonblasGetStream(udonblasHandle_t handle,
                                    cl_command_queue *stream) {
-  if (handle != UDONBLAS_HANDLE || !context || !queue)
+  if (handle != UDONBLAS_HANDLE || !handle_active || !queue)
     return UDONBLAS_STATUS_NOT_INITIALIZED;
   if (!stream)
     return UDONBLAS_STATUS_INVALID_VALUE;
@@ -437,7 +506,7 @@ udonblasStatus_t udonblasSgemm(udonblasHandle_t handle,
   float tile_beta;
   size_t global[2] = {32, 32}, local[2] = {1, 1};
   cl_int status;
-  if (handle != UDONBLAS_HANDLE || !context)
+  if (handle != UDONBLAS_HANDLE || !handle_active || !queue)
     return UDONBLAS_STATUS_NOT_INITIALIZED;
   if ((transa != UDONBLAS_OP_N && transa != UDONBLAS_OP_T &&
        transa != UDONBLAS_OP_C) ||
@@ -449,6 +518,15 @@ udonblasStatus_t udonblasSgemm(udonblasHandle_t handle,
     return UDONBLAS_STATUS_INVALID_VALUE;
   if (m == 0 || n == 0)
     return UDONBLAS_STATUS_SUCCESS;
+#ifdef UDONBLAS_DEVICE_POINTERS
+  if (*beta != 0.0f || lda != a_rows || ldb != b_rows || ldc != m)
+    return UDONBLAS_STATUS_NOT_SUPPORTED;
+  status = __vrc_enqueue_udonblas_arena_sgemm_device_args(
+      queue, (cl_mem)b, (cl_mem)a, (cl_mem)c, n, m, k, transb, transa, *alpha,
+      0, 0, 0);
+  return status == CL_SUCCESS ? UDONBLAS_STATUS_SUCCESS
+                              : UDONBLAS_STATUS_EXECUTION_FAILED;
+#endif
   if (m > UDONBLAS_SGEMM_MAX_M || n > UDONBLAS_SGEMM_MAX_N)
     return UDONBLAS_STATUS_NOT_SUPPORTED;
   for (k_offset = 0;; k_offset += UDONBLAS_SGEMM_TILE_K) {
@@ -537,6 +615,28 @@ udonblasSgemmStridedBatched(udonblasHandle_t handle, udonblasOperation_t transa,
   int batch;
   if (batch_count < 0 || stride_a < 0 || stride_b < 0 || stride_c < 0)
     return UDONBLAS_STATUS_INVALID_VALUE;
+#ifdef UDONBLAS_DEVICE_POINTERS
+  if (handle != UDONBLAS_HANDLE || !handle_active || !queue)
+    return UDONBLAS_STATUS_NOT_INITIALIZED;
+  if (!alpha || !beta || !a || !b || !c || m < 0 || n < 0 || k < 0 ||
+      (transa != UDONBLAS_OP_N && transa != UDONBLAS_OP_T &&
+       transa != UDONBLAS_OP_C) ||
+      (transb != UDONBLAS_OP_N && transb != UDONBLAS_OP_T &&
+       transb != UDONBLAS_OP_C))
+    return UDONBLAS_STATUS_INVALID_VALUE;
+  if (!batch_count || !m || !n)
+    return UDONBLAS_STATUS_SUCCESS;
+  if (*beta != 0.0f || lda != (transa == UDONBLAS_OP_N ? m : k) ||
+      ldb != (transb == UDONBLAS_OP_N ? k : n) || ldc != m ||
+      stride_a > INT32_MAX || stride_b > INT32_MAX || stride_c > INT32_MAX)
+    return UDONBLAS_STATUS_NOT_SUPPORTED;
+  return __vrc_enqueue_udonblas_arena_sgemm_strided_batched_device_args(
+             queue, (cl_mem)b, (cl_mem)a, (cl_mem)c, n, m, k, (cl_int)stride_b,
+             (cl_int)stride_a, (cl_int)stride_c, batch_count, transb, transa,
+             *alpha, 0, 0, 0) == CL_SUCCESS
+             ? UDONBLAS_STATUS_SUCCESS
+             : UDONBLAS_STATUS_EXECUTION_FAILED;
+#endif
   for (batch = 0; batch < batch_count; ++batch) {
     udonblasStatus_t status = udonblasSgemm(
         handle, transa, transb, m, n, k, alpha, a + batch * stride_a, lda,

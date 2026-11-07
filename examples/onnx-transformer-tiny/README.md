@@ -4,7 +4,9 @@ This fixture exercises the public generic ONNX-MLIR Host pipeline with a
 hidden-size-8 Transformer-style graph. It has `int32` token IDs, a dynamic
 sequence dimension bounded to four elements, key/value cache inputs and
 outputs, three graph outputs, embedding, pointwise operations, and batched
-matrix multiplication.
+matrix multiplication. Its quantized projection uses the generic Device Q4
+contract (`bits=4`, `block_size=32`) so the complete fixture lowers as one
+Device graph instead of entering the Host-tensor fallback.
 
 Configure the directory like any external UdonCL CMake project, then build the
 `onnx-transformer-tiny` target to create the Unity artifact. The

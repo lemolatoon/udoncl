@@ -2071,13 +2071,29 @@ cl_int __vrc_enqueue_udonblas_arena_sgemm_device_args(
     cl_int n, cl_int k, cl_int transa, cl_int transb, cl_float alpha,
     cl_uint wait_count, const cl_event *wait_list, cl_event *event) {
   cl_int pending;
+  size_t a_words;
+  size_t b_words;
+  size_t output_words;
   if (queue != &udoncl_queue || !queue->active || !a || !a->active || !b ||
       !b->active || !output || !output->active ||
       a->context != queue->context || b->context != queue->context ||
-      output->context != queue->context || m <= 0 || n <= 0 || k <= 0 ||
+      output->context != queue->context || udoncl_mem_is_subbuffer(a) ||
+      udoncl_mem_is_subbuffer(b) || udoncl_mem_is_subbuffer(output) || m <= 0 ||
+      n <= 0 || k <= 0 || k > 256 ||
       udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
+  a_words = (size_t)m * (size_t)k;
+  b_words = (size_t)k * (size_t)n;
+  output_words = (size_t)m * (size_t)n;
+  if (a_words > 16384u || b_words > 16384u || output_words > 16384u ||
+      a->bytes < a_words * 4u || b->bytes < b_words * 4u ||
+      output->bytes < output_words * 4u)
+    return CL_INVALID_BUFFER_SIZE;
   UDONCL_RETURN_IF_READ_WRITE_ALIAS(output, a, b);
+  udoncl_pending_resources_reset();
+  udoncl_pending_resource_add(a);
+  udoncl_pending_resource_add(b);
+  udoncl_pending_resource_add(output);
   pending = __vrc_opencl_dispatch_udonblas_arena_sgemm(
       a->physical_token, b->physical_token, output->physical_token, m, n, k,
       transa, transb, alpha);
@@ -2100,9 +2116,11 @@ cl_int __vrc_enqueue_udonblas_arena_sgemm_strided_batched_device_args(
   if (queue != &udoncl_queue || !queue->active || !a || !a->active || !b ||
       !b->active || !output || !output->active ||
       a->context != queue->context || b->context != queue->context ||
-      output->context != queue->context || m < 1 || n < 1 || k < 1 || k > 256 ||
-      stride_a < 0 || stride_b < 0 || stride_c < 1 || batch_count < 1 ||
-      transa < 0 || transa > 1 || transb < 0 || transb > 1 ||
+      output->context != queue->context || udoncl_mem_is_subbuffer(a) ||
+      udoncl_mem_is_subbuffer(b) || udoncl_mem_is_subbuffer(output) || m < 1 ||
+      n < 1 || k < 1 || k > 256 || stride_a < 0 || stride_b < 0 ||
+      stride_c < 1 || batch_count < 1 || transa < 0 || transa > 1 ||
+      transb < 0 || transb > 1 ||
       udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
   matrix_a = (size_t)m * (size_t)k;
@@ -2122,6 +2140,10 @@ cl_int __vrc_enqueue_udonblas_arena_sgemm_strided_batched_device_args(
       output->bytes < required_c * 4u)
     return CL_INVALID_BUFFER_SIZE;
   UDONCL_RETURN_IF_READ_WRITE_ALIAS(output, a, b);
+  udoncl_pending_resources_reset();
+  udoncl_pending_resource_add(a);
+  udoncl_pending_resource_add(b);
+  udoncl_pending_resource_add(output);
   pending = __vrc_opencl_dispatch_udonblas_arena_sgemm_strided_batched(
       a->physical_token, b->physical_token, output->physical_token, m, n, k,
       stride_a, stride_b, stride_c, batch_count, transa, transb, alpha);

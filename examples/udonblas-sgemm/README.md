@@ -5,8 +5,16 @@ This example is the user-facing reproduction for importing UdonBLAS with
 
 ```c
 udonblasSgemm(handle, UDONBLAS_OP_N, UDONBLAS_OP_N, 1, 10, 144,
-              &alpha, matrix_a, 1, matrix_b, 144, &beta, matrix_c, 1);
+              &alpha, (const float *)device_a, 1,
+              (const float *)device_b, 144, &beta,
+              (float *)device_c, 1);
 ```
+
+The example creates `device_a`, `device_b`, and `device_c` with
+`clCreateBuffer`, uploads the two inputs, associates the UdonBLAS handle with
+the caller queue through `udonblasSetStream`, and reads `device_c` only after
+the library enqueue. UdonBLAS does not perform implicit upload, readback, or
+`clFinish`.
 
 `UdonBLAS::UdonBLAS` supplies the public header, Host implementation, and all
 Device kernels through the ordinary UdonCL target graph.

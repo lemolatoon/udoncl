@@ -45,6 +45,7 @@ file(WRITE
   "#define UDONDNN_DEVICE_SOURCE \"udondnn-stream-runtime\"\n")
 add_executable(opencl-aot-runtime
   runtime/opencl_aot.c
+  "${PROJECT_SOURCE_DIR}/libraries/udonblas/src/udonblas.c"
   "${PROJECT_SOURCE_DIR}/lib/Runtime/OpenCL/OpenCLAOT.c"
   "${PROJECT_SOURCE_DIR}/lib/Runtime/OpenCL/DeviceMemory.c"
   "${PROJECT_SOURCE_DIR}/libraries/udononnxruntime/src/udononnxruntime.c"
@@ -56,11 +57,14 @@ set_target_properties(opencl-aot-runtime PROPERTIES
 target_include_directories(opencl-aot-runtime PRIVATE
   "${PROJECT_SOURCE_DIR}/third_party/OpenCL-Headers"
   "${PROJECT_SOURCE_DIR}/include"
+  "${PROJECT_SOURCE_DIR}/libraries/udonblas/include"
   "${PROJECT_SOURCE_DIR}/libraries/udononnxoperators/include"
   "${PROJECT_SOURCE_DIR}/libraries/udononnxruntime/include"
   "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_compile_definitions(opencl-aot-runtime PRIVATE
   CL_TARGET_OPENCL_VERSION=120
+  UDONBLAS_AOT_DIRECT_DISPATCH=1
+  UDONBLAS_DEVICE_POINTERS=1
   UDONCL_AOT_RUNTIME_VALIDATION=1
   UDONCL_AOT_ENABLE_MNIST=1
   UDONCL_AOT_ENABLE_ONNX=1)

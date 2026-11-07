@@ -70,6 +70,18 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             IUdonHeap heap = vm.InspectHeap();
             int[] rawHeap = ReadRawHeap();
             PublicMnistOnnxRuntimeLifecycleTests.Set(heap, program, "__vrc_raw_heap", rawHeap);
+            Texture2D[] staticTensors = new Texture2D[artifact.StaticTensors.Count];
+            foreach (ValidatedStaticTensor tensor in artifact.StaticTensors)
+                staticTensors[tensor.Id] = Load<Texture2D>(
+                    "Textures/"
+                        + UdonclArtifactImporter.StaticTensorFileName(tensor.Id, tensor.Name)
+                );
+            PublicMnistOnnxRuntimeLifecycleTests.Set(
+                heap,
+                program,
+                artifact.StaticTensorTableSlot,
+                staticTensors
+            );
 
             Dictionary<int, RenderTexture> buffers = new Dictionary<int, RenderTexture>();
             Assert.AreEqual(37, artifact.DeviceBuffers.Count);

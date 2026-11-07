@@ -866,11 +866,21 @@ def main():
     transformer_source = run([
         install / 'bin' / f'udoncl-opt{suffix}', transformer_host,
     ])
-    assert '@udon_onnx_session_write_input_int32' in transformer_source
+    assert 'func.func @udon_onnx_binding_create()' in transformer_source
+    assert 'func.func @udon_onnx_binding_bind_tensor(' in transformer_source
+    assert 'func.func @udon_onnx_binding_enqueue_run()' in transformer_source
     assert 'call @udon_onnx_session_bind_output_to_input' not in transformer_source
-    assert 'call @udononnxMatMulNBits' in transformer_source
-    assert 'call @udononnxGather' in transformer_source
-    assert 'call @udonblasSgemm' in transformer_source
+    assert 'udoncl.onnx_device_graph = true' in transformer_source
+    assert 'udoncl.onnx_device_unsupported = []' in transformer_source
+    assert 'call @udononnxMatMulNBits' not in transformer_source
+    assert 'call @udononnxGather' not in transformer_source
+    assert 'call @udonblasSgemm' not in transformer_source
+    assert (
+        transformer_source.count(
+            'call @__vrc_opencl_dispatch_udononnx_matmul_nbits_q4'
+        )
+        == 1
+    )
     transformer_manifest = json.loads(
         (transformer_artifact / 'manifest.json').read_text(encoding='utf-8')
     )
@@ -922,7 +932,7 @@ def main():
     assert 'VRCWrapperGenerator' not in transformer_binding
     assert {
         item['kernel_id'] for item in transformer_manifest['dispatch_sites']
-    } == {1, 2, 207, 219, 220, 222, 233, 234}
+    } == {221, 233, 234, 235, 242}
     assert {
         item['id'] for item in transformer_manifest['device']['kernels']
     } == {
@@ -931,11 +941,11 @@ def main():
     }
     sgemm_kernel = next(
         item for item in transformer_manifest['device']['kernels']
-        if item['id'] == 1
+        if item['id'] == 221
     )
-    assert sgemm_kernel['global_size'] == [32, 32, 1]
+    assert sgemm_kernel['global_size'] == [8192, 2, 1]
     assert sgemm_kernel['target_texture']['width'] == 8192
-    assert sgemm_kernel['target_texture']['height'] == 1
+    assert sgemm_kernel['target_texture']['height'] == 2
     matmul_nbits_kernel = next(
         item for item in transformer_manifest['device']['kernels']
         if item['id'] == 219
@@ -1046,7 +1056,7 @@ def main():
     assert [
         (buffer['width'], buffer['height'])
         for buffer in udonblas_manifest['device']['buffers']
-    ] == [(32, 32), (32, 32)]
+    ] == [(8192, 2), (8192, 2), (8192, 2)]
     raw_heap = udonblas_artifact / udonblas_manifest['program'][
         'raw_heap_initializer'
     ]
@@ -1064,7 +1074,8 @@ def main():
     # section. Keep a margin below the Udon VM's 512-address hard limit.
     assert sum(': %' in line for line in udonblas_data.splitlines()) <= 480
     assert ': %SystemString, "_VRC_Input"' in udonblas_data
-    assert ': %SystemString, "_VRC_Input1"' not in udonblas_data
+    assert ': %SystemString, "_VRC_Input1"' in udonblas_data
+    assert ': %SystemString, "_VRC_Input2"' not in udonblas_data
     assert '__udoncl_completed_event: %SystemInt32, 0' in udonblas_data
     for slot in [
         '__udoncl_async_pending_object',
@@ -1097,11 +1108,13 @@ def main():
     assert '__udoncl_async_completion_object' in udonblas_binding
     assert '[SerializeField] private RenderTexture[] deviceBuffers;' in (
         udonblas_binding)
-    assert 'public int TryWriteInputBuffer(float[] source)' in udonblas_binding
+    assert 'public int TryWriteMatrixA(float[] source)' in udonblas_binding
     assert 'return TryWriteFloatBuffer(1, source);' in udonblas_binding
-    assert 'public int StartReadOutputBuffer(' in udonblas_binding
+    assert 'public int TryWriteMatrixB(float[] source)' in udonblas_binding
+    assert 'return TryWriteFloatBuffer(2, source);' in udonblas_binding
+    assert 'public int StartReadMatrixC(' in udonblas_binding
     assert (
-        'return StartReadFloatBuffer(2, destination, receiver, completionEvent);'
+        'return StartReadFloatBuffer(3, destination, receiver, completionEvent);'
         in udonblas_binding
     )
     assert 'public int GetLastReadbackStatus()' in udonblas_binding
@@ -1114,13 +1127,10 @@ def main():
     assert 'VRCWrapperGenerator' not in udonblas_binding
 
     assert [item['name'] for item in udonblas_manifest['device']['kernels']] == [
-        'udonblas_sgemm',
-        'udonblas_sgemv',
+        'udonblas_arena_sgemm',
     ]
-    assert (udonblas_artifact / 'kernels/kernel_1.shader').is_file()
-    assert (udonblas_artifact / 'kernels/kernel_2.shader').is_file()
-    assert '.export __udoncl_kernel_material_1' in udonblas_assembly
-    assert '.export __udoncl_kernel_material_2' in udonblas_assembly
+    assert (udonblas_artifact / 'kernels/kernel_221.shader').is_file()
+    assert '.export __udoncl_kernel_material_221' in udonblas_assembly
     assert 'dispatch_alias_match_' not in udonblas_assembly
 
     build_root = consumer / 'udoncl/hello-artifact'

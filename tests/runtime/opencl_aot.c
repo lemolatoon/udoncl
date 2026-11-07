@@ -2,6 +2,7 @@
 #include <stddef.h>
 #include <string.h>
 #include <udoncl/device_memory.h>
+#include <udonblas.h>
 #include <udononnxoperators.h>
 #include <udononnxruntime.h>
 
@@ -536,6 +537,7 @@ int main(void) {
   cl_mem first, second, nested_buffer, nested_buffer2, static_buffer;
   cl_mem sub_parent, sub_buffer;
   cl_mem same_physical_buffer;
+  cl_mem blas_input, blas_output;
   cl_mem batched_a, batched_b, batched_c;
   cl_mem transpose_input_buffer, transpose_output_buffer, concat_left_buffer;
   cl_mem gather_indices_buffer;
@@ -548,6 +550,8 @@ int main(void) {
   udonclBufferView_t view;
   udonclWorkspace_t workspace;
   udononnxTensor_t tensor;
+  udonblasHandle_t blas_handle = 0;
+  cl_command_queue blas_stream = 0;
   cl_int error;
   cl_int event_status;
   cl_int integer_arguments[8] = {1, 10, 16, 0, 0, 1, 16, 1};
@@ -555,6 +559,7 @@ int main(void) {
   const char *source_text = "known AOT program";
   size_t global[2] = {32, 32}, local[2] = {1, 1};
   cl_uint index;
+  cl_uint blas_input_token, blas_output_token;
   int source = 42;
   int sub_source = 91, sub_result = 0;
   cl_buffer_region sub_region = {4, sizeof(sub_source)};
@@ -715,7 +720,7 @@ int main(void) {
          error == CL_INVALID_MEM_OBJECT);
   EXPECT(__vrc_enqueue_udonblas_arena_sgemm_device_args(
              queue, sub_buffer, sub_buffer, sub_parent, 1, 1, 1, 0, 0, 1.0f, 0,
-             0, 0) == CL_INVALID_OPERATION);
+             0, 0) == CL_INVALID_VALUE);
   EXPECT(clReleaseMemObject(sub_parent) == CL_SUCCESS);
   EXPECT(released_token == 0);
   EXPECT(clEnqueueWriteBuffer(queue, sub_buffer, CL_TRUE, 0, sizeof(sub_source),
@@ -821,8 +826,8 @@ int main(void) {
          dispatched_arena_output_token == 103);
   await_count = 0;
   EXPECT(__vrc_enqueue_udonblas_arena_sgemm_device_args(
-             queue, first, static_buffer, nested_buffer, 1, 10, 144, 0, 0, 1.0f,
-             0, 0, &marker_event) == CL_SUCCESS);
+             queue, first, static_buffer, nested_buffer, 1, 1, 1, 0, 0, 1.0f, 0,
+             0, &marker_event) == CL_SUCCESS);
   EXPECT(marker_event);
   EXPECT(clWaitForEvents(1, &marker_event) == CL_SUCCESS);
   EXPECT(await_count == 1 && awaited_events[0] == 11);
@@ -830,6 +835,44 @@ int main(void) {
   EXPECT(__vrc_enqueue_udonblas_arena_sgemm_device_args(
              queue, first, static_buffer, first, 1, 1, 1, 0, 0, 1.0f, 0, 0,
              0) == CL_INVALID_OPERATION);
+
+  /* The installed cuBLAS-shaped API receives opaque cl_mem-backed Device
+   * pointers.  It binds the caller queue without creating private resources,
+   * enqueues asynchronously on that queue's tail, and performs the
+   * row-major/column-major operand mapping inside the library. */
+  EXPECT(udonblasCreate(&blas_handle) == UDONBLAS_STATUS_SUCCESS);
+  EXPECT(udonblasGetStream(blas_handle, &blas_stream) ==
+         UDONBLAS_STATUS_NOT_INITIALIZED);
+  EXPECT(udonblasSetStream(blas_handle, queue) == UDONBLAS_STATUS_SUCCESS);
+  EXPECT(udonblasGetStream(blas_handle, &blas_stream) ==
+             UDONBLAS_STATUS_SUCCESS &&
+         blas_stream == queue);
+  blas_input =
+      clCreateBuffer(context, CL_MEM_READ_ONLY, 144 * sizeof(float), 0, &error);
+  EXPECT(blas_input && error == CL_SUCCESS);
+  blas_input_token = 100 + allocated_logical_id;
+  blas_output =
+      clCreateBuffer(context, CL_MEM_WRITE_ONLY, 10 * sizeof(float), 0, &error);
+  EXPECT(blas_output && error == CL_SUCCESS);
+  blas_output_token = 100 + allocated_logical_id;
+  await_count = 0;
+  EXPECT(udonblasSgemm(blas_handle, UDONBLAS_OP_N, UDONBLAS_OP_N, 10, 1, 144,
+                       &float_arguments[0], (const float *)static_buffer, 10,
+                       (const float *)blas_input, 144, &float_arguments[1],
+                       (float *)blas_output, 10) == UDONBLAS_STATUS_SUCCESS);
+  EXPECT(await_count == 0);
+  EXPECT(dispatched_arena_a_token == blas_input_token &&
+         dispatched_arena_b_token == 1007 &&
+         dispatched_arena_output_token == blas_output_token);
+  released_token = 0;
+  EXPECT(clReleaseMemObject(blas_input) == CL_SUCCESS);
+  EXPECT(released_token == 0);
+  EXPECT(clEnqueueMarkerWithWaitList(queue, 0, 0, &marker_event) == CL_SUCCESS);
+  EXPECT(clWaitForEvents(1, &marker_event) == CL_SUCCESS);
+  EXPECT(await_count == 1 && released_token == blas_input_token);
+  EXPECT(clReleaseEvent(marker_event) == CL_SUCCESS);
+  EXPECT(clReleaseMemObject(blas_output) == CL_SUCCESS);
+  EXPECT(udonblasDestroy(blas_handle) == UDONBLAS_STATUS_SUCCESS);
   same_physical_buffer =
       udonclAdoptStaticBuffer(queue, 63, sizeof(source), 102, &error);
   EXPECT(same_physical_buffer && same_physical_buffer != first &&

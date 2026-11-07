@@ -3987,6 +3987,17 @@ struct FinalizeONNXHostPass
     }
     module.getBody()->getOperations().clear();
     bool deviceGraph = supportsDeviceGraph(*graph);
+    if (!deviceGraph) {
+      for (const NodeRecord &node : graph->nodes) {
+        if (!StringRef(node.provider).starts_with("udonblas"))
+          continue;
+        module.emitError()
+            << "ONNX Host fallback cannot call Device-pointer provider "
+            << node.provider << " for " << node.operation;
+        signalPassFailure();
+        return;
+      }
+    }
     if (!deviceGraph)
       for (const TensorRecord &tensor : graph->tensors)
         createGlobal(module, tensor);

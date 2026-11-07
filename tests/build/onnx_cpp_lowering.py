@@ -634,6 +634,28 @@ assert integer_add_host.returncode == 0, (
 )
 assert "call @udononnxAdd" in integer_add_host.stdout
 
+device_pointer_fallback_source = source.with_name(
+    "onnx_device_pointer_fallback.mlir"
+)
+device_pointer_fallback_portable = subprocess.run(
+    [opt, "--udoncl-lower-onnx-to-host", device_pointer_fallback_source],
+    text=True,
+    capture_output=True,
+    check=True,
+).stdout
+device_pointer_fallback_host = subprocess.run(
+    [host_opt, "--udoncl-finalize-onnx-host", "-"],
+    input=device_pointer_fallback_portable,
+    text=True,
+    capture_output=True,
+)
+assert device_pointer_fallback_host.returncode != 0
+assert (
+    "ONNX Host fallback cannot call Device-pointer provider udonblasSgemm "
+    "for MatMul"
+    in device_pointer_fallback_host.stderr
+), device_pointer_fallback_host.stderr
+
 scatter_source = source.with_name("onnx_scatter_nd.mlir")
 scatter_portable = subprocess.run(
     [opt, "--udoncl-materialize-onnx-constants", "--udoncl-lower-onnx-to-host", scatter_source],

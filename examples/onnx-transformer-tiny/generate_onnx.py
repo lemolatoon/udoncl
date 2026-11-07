@@ -35,7 +35,7 @@ def quantized_projection():
     packed = []
     for column in range(HIDDEN):
         values = []
-        for inner in range(16):
+        for inner in range(32):
             signed = (
                 max(-8, min(7, (inner * 5 + column * 3 + 3) % 17 - 8))
                 if inner < HIDDEN
@@ -44,7 +44,7 @@ def quantized_projection():
             values.append(signed + 8)
         packed.extend(
             values[index] | (values[index + 1] << 4)
-            for index in range(0, 16, 2)
+            for index in range(0, 32, 2)
         )
     return packed
 
@@ -62,7 +62,7 @@ def main():
         tensor_proto("query.weight", [HIDDEN, HIDDEN], matrix(1)),
         tensor_proto("value.weight", [HIDDEN, HIDDEN], matrix(2)),
         tensor_uint8_proto(
-            "output.weight.q4", [HIDDEN, 1, 8], quantized_projection()
+            "output.weight.q4", [HIDDEN, 1, 16], quantized_projection()
         ),
         tensor_proto("output.weight.scale", [HIDDEN, 1], [1.0 / 32.0] * HIDDEN),
     ]
@@ -95,7 +95,7 @@ def main():
             attributes=(
                 attribute_int("K", HIDDEN),
                 attribute_int("N", HIDDEN),
-                attribute_int("block_size", 16),
+                attribute_int("block_size", 32),
                 attribute_int("bits", 4),
             ),
             domain="com.microsoft",
