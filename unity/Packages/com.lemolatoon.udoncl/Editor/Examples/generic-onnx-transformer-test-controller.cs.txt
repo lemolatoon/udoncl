@@ -8,15 +8,20 @@ namespace Lemolatoon.Udoncl.Generated
     {
         public UdonclGenericOnnxTransformerTinyBinding binding;
         public long[] inputIds;
+        public long[] secondInputIds;
         public float[] pastKey;
         public float[] pastValue;
         public float[] logits;
         public float[] presentKey;
         public float[] presentValue;
+        public float[] firstLogits;
+        public float[] firstPresentKey;
+        public float[] firstPresentValue;
         public bool completed;
         public int status;
         public int libraryStatus;
         public int phase;
+        public int turn;
 
         public void Run()
         {
@@ -27,17 +32,22 @@ namespace Lemolatoon.Udoncl.Generated
             if (
                 binding == null
                 || inputIds == null
+                || secondInputIds == null
                 || pastKey == null
                 || pastValue == null
                 || logits == null
                 || presentKey == null
                 || presentValue == null
+                || firstLogits == null
+                || firstPresentKey == null
+                || firstPresentValue == null
             )
             {
                 status = UdonclGenericOnnxTransformerTinyBinding.StatusInvalidArgument;
                 completed = true;
                 return;
             }
+            turn = 0;
             status = binding.StartInitialize(this, nameof(OnInitializeComplete));
             if (status != UdonclGenericOnnxTransformerTinyBinding.StatusSuccess)
                 completed = true;
@@ -57,11 +67,16 @@ namespace Lemolatoon.Udoncl.Generated
                 completed = true;
                 return;
             }
-            status = binding.TryWriteInputIds(inputIds);
+            StartTurn(inputIds, pastKey, pastValue);
+        }
+
+        private void StartTurn(long[] tokens, float[] key, float[] value)
+        {
+            status = binding.TryWriteInputIds(tokens);
             if (status == UdonclGenericOnnxTransformerTinyBinding.StatusSuccess)
-                status = binding.TryWritePastKey(pastKey);
+                status = binding.TryWritePastKey(key);
             if (status == UdonclGenericOnnxTransformerTinyBinding.StatusSuccess)
-                status = binding.TryWritePastValue(pastValue);
+                status = binding.TryWritePastValue(value);
             if (status == UdonclGenericOnnxTransformerTinyBinding.StatusSuccess)
                 status = binding.StartRun(this, nameof(OnRunComplete));
             if (status != UdonclGenericOnnxTransformerTinyBinding.StatusSuccess)
@@ -119,8 +134,26 @@ namespace Lemolatoon.Udoncl.Generated
         {
             phase = 6;
             status = binding.GetLastReadbackStatus();
-            if (status == UdonclGenericOnnxTransformerTinyBinding.StatusSuccess)
-                status = binding.TryShutdown(out libraryStatus);
+            if (status != UdonclGenericOnnxTransformerTinyBinding.StatusSuccess)
+            {
+                completed = true;
+                return;
+            }
+            if (turn == 0)
+            {
+                for (int index = 0; index < logits.Length; ++index)
+                    firstLogits[index] = logits[index];
+                for (int index = 0; index < presentKey.Length; ++index)
+                    firstPresentKey[index] = presentKey[index];
+                for (int index = 0; index < presentValue.Length; ++index)
+                    firstPresentValue[index] = presentValue[index];
+                turn = 1;
+                phase = 7;
+                StartTurn(secondInputIds, presentKey, presentValue);
+                return;
+            }
+            phase = 8;
+            status = binding.TryShutdown(out libraryStatus);
             completed = true;
         }
     }

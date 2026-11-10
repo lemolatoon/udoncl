@@ -208,14 +208,20 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         {
             yield return new EnterPlayMode();
 
-            int[] tokens = { 1, 2, 3, 4 };
-            long[] inputIds = Array.ConvertAll(tokens, value => (long)value);
+            int[] firstTokens = { 1, 2, 3, 4 };
+            int[] secondTokens = { 5, 6, 7, 8 };
+            long[] inputIds = Array.ConvertAll(firstTokens, value => (long)value);
+            long[] secondInputIds = Array.ConvertAll(secondTokens, value => (long)value);
             float[] pastKey = new float[32];
             float[] pastValue = new float[32];
-            float[][] expected = Oracle(tokens, pastKey, pastValue);
+            float[][] firstExpected = Oracle(firstTokens, pastKey, pastValue);
+            float[][] secondExpected = Oracle(secondTokens, firstExpected[1], firstExpected[2]);
             float[] logits = new float[32];
             float[] presentKey = new float[32];
             float[] presentValue = new float[32];
+            float[] firstLogits = new float[32];
+            float[] firstPresentKey = new float[32];
+            float[] firstPresentValue = new float[32];
 
             GameObject prefab = AssetDatabase.LoadAssetAtPath<GameObject>(
                 GeneratedRoot + "/Prefabs/" + BindingClass + ".prefab"
@@ -237,11 +243,27 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             Assert.NotNull(controller);
             UdonclArtifactImporter.SetUdonProgramVariable(controller, "binding", binding);
             UdonclArtifactImporter.SetUdonProgramVariable(controller, "inputIds", inputIds);
+            UdonclArtifactImporter.SetUdonProgramVariable(
+                controller,
+                "secondInputIds",
+                secondInputIds
+            );
             UdonclArtifactImporter.SetUdonProgramVariable(controller, "pastKey", pastKey);
             UdonclArtifactImporter.SetUdonProgramVariable(controller, "pastValue", pastValue);
             UdonclArtifactImporter.SetUdonProgramVariable(controller, "logits", logits);
             UdonclArtifactImporter.SetUdonProgramVariable(controller, "presentKey", presentKey);
             UdonclArtifactImporter.SetUdonProgramVariable(controller, "presentValue", presentValue);
+            UdonclArtifactImporter.SetUdonProgramVariable(controller, "firstLogits", firstLogits);
+            UdonclArtifactImporter.SetUdonProgramVariable(
+                controller,
+                "firstPresentKey",
+                firstPresentKey
+            );
+            UdonclArtifactImporter.SetUdonProgramVariable(
+                controller,
+                "firstPresentValue",
+                firstPresentValue
+            );
             UdonclArtifactImporter.SendUdonCustomEvent(controller, "Run");
 
             const int timeoutFrames = 1200;
@@ -264,6 +286,13 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 UdonclArtifactImporter.GetUdonProgramVariable(controller, "presentKey");
             float[] actualPresentValue = (float[])
                 UdonclArtifactImporter.GetUdonProgramVariable(controller, "presentValue");
+            float[] actualFirstLogits = (float[])
+                UdonclArtifactImporter.GetUdonProgramVariable(controller, "firstLogits");
+            float[] actualFirstPresentKey = (float[])
+                UdonclArtifactImporter.GetUdonProgramVariable(controller, "firstPresentKey");
+            float[] actualFirstPresentValue = (float[])
+                UdonclArtifactImporter.GetUdonProgramVariable(controller, "firstPresentValue");
+            int turn = (int)UdonclArtifactImporter.GetUdonProgramVariable(controller, "turn");
             yield return new ExitPlayMode();
 
             Assert.IsTrue(
@@ -276,11 +305,15 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 libraryStatus,
                 "Transformer Host returned an error at phase " + phase + "."
             );
-            AssertClose(actualLogits, expected[0], "logits");
-            AssertClose(actualPresentKey, expected[1], "present_key");
-            AssertClose(actualPresentValue, expected[2], "present_value");
+            Assert.AreEqual(1, turn, "Generated U# binding did not execute both turns.");
+            AssertClose(actualFirstLogits, firstExpected[0], "turn1_logits");
+            AssertClose(actualFirstPresentKey, firstExpected[1], "turn1_present_key");
+            AssertClose(actualFirstPresentValue, firstExpected[2], "turn1_present_value");
+            AssertClose(actualLogits, secondExpected[0], "turn2_logits");
+            AssertClose(actualPresentKey, secondExpected[1], "turn2_present_key");
+            AssertClose(actualPresentValue, secondExpected[2], "turn2_present_value");
             TestContext.Progress.WriteLine(
-                "generated_usharp_transformer frames={0} phase={1} values=96",
+                "generated_usharp_transformer frames={0} phase={1} turns=2 values=192",
                 frame,
                 phase
             );

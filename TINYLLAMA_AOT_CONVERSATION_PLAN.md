@@ -190,6 +190,13 @@ aliasing are allowed.
   OpenCL facade, and tiles N/K while keeping partials on Device. Dynamic
   sequence-length specialization, generic packed/unpacked zero points,
   sub-word/unaligned views, and integration with the full real graph remain.
+- The bounded Transformer fixture now executes through the compiler-generated
+  U# binding in Unity Play Mode rather than only through direct `IUdonVM`
+  calls. Its two-turn acceptance test compares both turns' logits and present
+  K/V values. This checkpoint feeds first-turn K/V back through the public
+  whole-buffer API; replacing that Host readback/reupload with queue-ordered
+  Device copy or proven aliasing remains required for the real conversation
+  path.
 
 ### 2.3 Initial target
 
