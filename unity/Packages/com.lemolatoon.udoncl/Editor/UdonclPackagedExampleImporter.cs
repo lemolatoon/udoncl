@@ -15,6 +15,8 @@ namespace Lemolatoon.Udoncl.Editor
         private const string TinyArchive = "onnx-tiny-llama.zip.bytes";
         private const string PoolingArchive = "average-pooling.zip.bytes";
         private const string MnistControllerTemplate = "generic-onnx-mnist-test-controller.cs.txt";
+        private const string TransformerControllerTemplate =
+            "generic-onnx-transformer-test-controller.cs.txt";
 
         [MenuItem("Tools/udoncl/Examples/Import C and OpenCL Hello Dispatch")]
         private static void ImportHelloDispatch()
@@ -194,8 +196,18 @@ namespace Lemolatoon.Udoncl.Editor
 
             Directory.CreateDirectory(destinationDirectory);
             File.Copy(source, destination, true);
+            File.Copy(
+                Path.Combine(
+                    package.resolvedPath,
+                    "Editor",
+                    "Examples",
+                    TransformerControllerTemplate
+                ),
+                destinationDirectory + "/UdonclGenericOnnxTransformerTinyTestController.cs",
+                true
+            );
             AssetDatabase.ImportAsset(
-                destination,
+                destinationDirectory,
                 ImportAssetOptions.ForceSynchronousImport | ImportAssetOptions.ForceUpdate
             );
             UnityEditor.Compilation.CompilationPipeline.RequestScriptCompilation();

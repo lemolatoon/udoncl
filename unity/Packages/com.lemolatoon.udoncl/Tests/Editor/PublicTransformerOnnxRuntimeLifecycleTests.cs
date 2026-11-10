@@ -1,9 +1,13 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using NUnit.Framework;
+using UdonSharp;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.TestTools;
+using VRC.Udon;
 using VRC.Udon.Common.Interfaces;
 using VRC.Udon.Editor;
 using VRC.Udon.Editor.ProgramSources;
@@ -15,6 +19,12 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         private const string GeneratedRoot =
             "Assets/udoncl-generated/generic_onnx_transformer_tiny";
         private const string BindingClass = "UdonclGenericOnnxTransformerTinyBinding";
+        private const string ControllerClass = "UdonclGenericOnnxTransformerTinyTestController";
+        private const string GeneratedNamespace = "Lemolatoon.Udoncl.Generated.";
+        private const string ControllerSource =
+            "Assets/UdonclSampleValidation/" + ControllerClass + ".cs";
+        private const string ControllerProgram =
+            GeneratedRoot + "/Tests/" + ControllerClass + ".asset";
         private string artifactDirectory;
         private ValidatedArtifact artifact;
 
@@ -49,9 +59,19 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             );
             string programPath = GeneratedRoot + "/Programs/host_program.asset";
             Assert.IsFalse(string.IsNullOrEmpty(AssetDatabase.AssetPathToGUID(programPath)));
+            Assert.NotNull(
+                AssetDatabase.LoadAssetAtPath<MonoScript>(ControllerSource),
+                "The pre-test Transformer U# controller source was not imported."
+            );
+            if (!AssetDatabase.IsValidFolder(GeneratedRoot + "/Tests"))
+                AssetDatabase.CreateFolder(GeneratedRoot, "Tests");
             UdonclArtifactImporter.EnsureCompiledUdonSharpProgramAsset(
                 GeneratedRoot + "/Bindings/" + BindingClass + ".cs",
                 GeneratedRoot + "/Bindings/" + BindingClass + ".asset"
+            );
+            UdonclArtifactImporter.EnsureCompiledUdonSharpProgramAsset(
+                ControllerSource,
+                ControllerProgram
             );
             GeneratedBindingFinalizer.FinalizeAvailableBindings();
         }
@@ -183,6 +203,89 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             );
         }
 
+        [UnityTest]
+        public IEnumerator GeneratedUSharpBindingMatchesTransformerOracle()
+        {
+            yield return new EnterPlayMode();
+
+            int[] tokens = { 1, 2, 3, 4 };
+            long[] inputIds = Array.ConvertAll(tokens, value => (long)value);
+            float[] pastKey = new float[32];
+            float[] pastValue = new float[32];
+            float[][] expected = Oracle(tokens, pastKey, pastValue);
+            float[] logits = new float[32];
+            float[] presentKey = new float[32];
+            float[] presentValue = new float[32];
+
+            GameObject prefab = AssetDatabase.LoadAssetAtPath<GameObject>(
+                GeneratedRoot + "/Prefabs/" + BindingClass + ".prefab"
+            );
+            Assert.NotNull(prefab);
+            GameObject instance = UnityEngine.Object.Instantiate(prefab);
+            UdonBehaviour controller = UdonclArtifactImporter.AddCompiledUdonSharpBehaviour(
+                instance,
+                ControllerProgram
+            );
+            UdonclArtifactImporter.InitializeUdonBehaviours(instance);
+            yield return null;
+
+            UdonBehaviour binding = UdonclArtifactImporter.FindUdonSharpBacking(
+                instance,
+                GeneratedNamespace + BindingClass
+            );
+            Assert.NotNull(binding);
+            Assert.NotNull(controller);
+            UdonclArtifactImporter.SetUdonProgramVariable(controller, "binding", binding);
+            UdonclArtifactImporter.SetUdonProgramVariable(controller, "inputIds", inputIds);
+            UdonclArtifactImporter.SetUdonProgramVariable(controller, "pastKey", pastKey);
+            UdonclArtifactImporter.SetUdonProgramVariable(controller, "pastValue", pastValue);
+            UdonclArtifactImporter.SetUdonProgramVariable(controller, "logits", logits);
+            UdonclArtifactImporter.SetUdonProgramVariable(controller, "presentKey", presentKey);
+            UdonclArtifactImporter.SetUdonProgramVariable(controller, "presentValue", presentValue);
+            UdonclArtifactImporter.SendUdonCustomEvent(controller, "Run");
+
+            const int timeoutFrames = 1200;
+            int frame = 0;
+            bool completed = false;
+            while (frame < timeoutFrames && !completed)
+            {
+                ++frame;
+                yield return null;
+                completed = (bool)
+                    UdonclArtifactImporter.GetUdonProgramVariable(controller, "completed");
+            }
+            int status = (int)UdonclArtifactImporter.GetUdonProgramVariable(controller, "status");
+            int libraryStatus = (int)
+                UdonclArtifactImporter.GetUdonProgramVariable(controller, "libraryStatus");
+            int phase = (int)UdonclArtifactImporter.GetUdonProgramVariable(controller, "phase");
+            float[] actualLogits = (float[])
+                UdonclArtifactImporter.GetUdonProgramVariable(controller, "logits");
+            float[] actualPresentKey = (float[])
+                UdonclArtifactImporter.GetUdonProgramVariable(controller, "presentKey");
+            float[] actualPresentValue = (float[])
+                UdonclArtifactImporter.GetUdonProgramVariable(controller, "presentValue");
+            yield return new ExitPlayMode();
+
+            Assert.IsTrue(
+                completed,
+                "Generated U# Transformer execution timed out at phase " + phase + "."
+            );
+            Assert.AreEqual(0, status, "Generated U# binding failed at phase " + phase + ".");
+            Assert.AreEqual(
+                0,
+                libraryStatus,
+                "Transformer Host returned an error at phase " + phase + "."
+            );
+            AssertClose(actualLogits, expected[0], "logits");
+            AssertClose(actualPresentKey, expected[1], "present_key");
+            AssertClose(actualPresentValue, expected[2], "present_value");
+            TestContext.Progress.WriteLine(
+                "generated_usharp_transformer frames={0} phase={1} values=96",
+                frame,
+                phase
+            );
+        }
+
         [OneTimeTearDown]
         public void RemoveGeneratedAssets()
         {
@@ -286,6 +389,20 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 attention[index] = (float)Math.Tanh(presentKey[index] + presentValue[index]);
             }
             return new[] { MatMul(attention, 3, true), presentKey, presentValue };
+        }
+
+        private static void AssertClose(float[] actual, float[] expected, string name)
+        {
+            Assert.AreEqual(expected.Length, actual.Length, name + " length");
+            float maximumError = 0.0f;
+            for (int index = 0; index < expected.Length; ++index)
+                maximumError = Mathf.Max(maximumError, Mathf.Abs(actual[index] - expected[index]));
+            TestContext.Progress.WriteLine(
+                "generated_usharp_transformer output={0} max_error={1:R}",
+                name,
+                maximumError
+            );
+            Assert.That(maximumError, Is.LessThan(0.002f), name + " mismatched.");
         }
 
         private static float[] MatMul(float[] input, int seed, bool quantized = false)
