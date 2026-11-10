@@ -1,339 +1,406 @@
-# Host Storage Allocator Plan
+# Unified Host Storage Allocator Plan
 
-> Status: **implemented and accepted by the generated-U# Unity MNIST gate**
-> Decision date: **2026-11-05**
+> Status: **approved design; implementation in progress**
+> Decision dates: **2026-11-05 through 2026-11-11**
 > Parent architecture: [PLAN.md](PLAN.md)
-> Final acceptance target: **a user-facing compiler-generated U# binding runs MNIST end to end in Unity and its numerical test passes without the Udon 10-second watchdog**
+> Acceptance targets: generated-U# MNIST remains green, the real TinyLlama
+> artifact remains generatable, and the mandatory pre-commit gate passes.
 
-Current verified implementation state (2026-11-05):
+Current implementation checkpoint (2026-11-11):
 
-- storage classification is emitted in `host.udonasm.mlir` and as the
-  user-facing `storage-report.json` artifact;
-- the report covers fixed named slots, typed scalar registers,
-  async-persistent values, and every raw object with a fallback reason;
-- Host C now uses `-O1 -fno-inline`, followed by SROA, mem2reg,
-  canonicalization, SCCP, CSE, and symbol DCE, while the non-recursive call
-  graph remains visible to async lowering and allocation;
-- tail-position optimized C calls and SSA-promoted legacy OpenCL handles are
-  accepted without restoring forced whole-call-graph inlining;
-- same-physical-type fixed `memref.global` arrays are packed into one typed
-  array with compile-time base offsets instead of consuming one Heap slot per
-  source global;
-- the non-recursive interprocedural allocator now uses a requested 16-slot
-  scalar budget, moves longer-lived excess values into fixed typed spill
-  arrays, and grows the scalar bank only to the proven simultaneous operand
-  clique that cannot itself be spilled;
-- the allocator report now records requested/minimum scalar width, typed
-  register counts, typed spill banks/extents, packed global banks, and exact
-  final data-slot use/capacity;
-- lowering now rejects a final Udon data table above the SDK's 512-slot limit
-  with fixed/register/persistent/typed-array/constant/other category totals;
-- SSA successor operands now preserve parallel-copy semantics: branch-source
-  values interfere with every destination until the whole transfer completes,
-  preventing sequential Udon `COPY` operations from corrupting loop and phi
-  state;
-- the raw heap is now a little-endian word-packed `SystemInt32Array` with four
-  logical bytes per element, aligned `i32`/pointer/`f32` fast paths, and packed
-  byte fallback paths; manifests and generated/legacy Unity bindings use the
-  same ABI;
-- spill indices, raw addresses, and call return addresses now compete for the
-  measured address-cache budget, and capacity probes can measure an oversized
-  candidate before selecting constant materialization while the final lowering
-  still rejects programs above 512 slots;
-- the generated-U# MNIST path now completes initialize, one 784-element upload,
-  callback-first inference, one 10-logit readback, oracle comparison, and
-  shutdown without the SDK watchdog;
-- richer reduction suggestions and benchmark tuning remain optional follow-up;
-  they are not blockers for the accepted storage allocator.
+- deterministic async placement metadata is emitted by the independent
+  `AnalyzeHostStorage` pass;
+- the ordinary interprocedural liveness/interference construction has been
+  extracted from `LowerScalar.cpp` into reusable `HostStorageLiveness` analysis;
+- live-across-suspend scalar values use the existing physical-type typed spill
+  arrays instead of one `__udoncl_async_frame_*_spill_*` raw global per value;
+- declared persistent spills and allocator-created transient spills share one
+  bank per physical type without index collision;
+- async resume PCs and async object state/waiter/payload fields still use the
+  legacy raw-global path and remain migration work;
+- persistent spill indices are currently unique; liveness-based reuse and
+  direct-slot promotion remain migration work.
 
-## 1. Problem and current evidence
+## 1. Why this work remains
 
-The Host compiler maps C globals, fixed `alloca` objects, descriptors, and
-pointer-visible tensor storage into an emulated linear heap. The implementation
-now uses a word-packed `SystemInt32Array`; aligned four-byte accesses use one
-array operation, while byte and unaligned accesses use shifts, masks, and
-read-modify-write. Remaining byte-oriented loops and address materialization
-can still make small C helpers large in generated Udon.
+The current compiler has two different allocation models:
 
-The accepted MNIST artifact imports and compiles its generated U# binding and
-passes the focused numerical test. Successor parallel-copy interference and
-the earlier `SystemInt32Array` `IndexOutOfRangeException` are fixed. Static
-continuation/checkpoint placement keeps every resumed Host segment below the
-SDK Udon VM watchdog without changing OpenCL-visible semantics.
+- ordinary scalar SSA values use interprocedural liveness, physical-type
+  coloring, a requested 16-slot scalar bank, and typed spill arrays;
+- values live across `async.coro.suspend`, resume PCs, and async object fields
+  are converted earlier into individually addressed raw globals by
+  `PrepareUdonAsyncRuntime`.
 
-Static instruction evidence for the current backend is:
+The ordinary allocator already preserves branch parallel-copy semantics and
+checks the exact 512-address Udon limit. The async path is correct enough to
+run MNIST, but it bypasses that allocator. In the real TinyLlama artifact this
+produces thousands of raw objects and avoidable address calculation,
+load/store, IR, and Udon Assembly overhead.
 
-| Operation | Udon opcodes | Extern calls |
-|---|---:|---:|
-| Direct scalar slot `COPY` | 3 | 0 |
-| Typed array `Get` or `Set` | 4 | 1 |
-| Word-packed aligned raw `i32` load | one array `Get` plus index/bit handling | 1 array access |
-| Word-packed aligned raw `i32` store | one array `Set` plus index/bit handling | 1 array access |
+This plan replaces the split policy with one allocator. Ordinary SSA,
+live-across-suspend values, resume PCs, and internal async object fields are
+all logical variables. Liveness and cost decide whether each live segment is
+placed in a direct typed Udon slot or a typed spill array.
 
-No defensible wall-clock comparison exists yet. Editor IUdonVM, ClientSim, and
-VRChat client measurements must be reported separately.
+The change must preserve C/OpenCL semantics. It must not make scalar arguments
+reference-like, expose allocator details in the public ABI, or introduce a
+runtime frame allocator for the currently supported non-recursive execution
+model.
 
-## 2. Required compilation order
+## 2. Existing facts to preserve
 
-Storage planning must not preserve address-taking artifacts that whole-program
-optimization can remove. The required Host order is:
+The accepted implementation already provides:
+
+- a non-recursive interprocedural liveness/interference analysis for ordinary
+  SSA values;
+- typed scalar banks and one typed spill array per physical Udon type;
+- correct simultaneous-operand and branch parallel-copy interference;
+- exact final Udon data-address accounting and a hard 512-address check;
+- a little-endian word-packed raw heap for genuinely address-observable data;
+- generated-U# MNIST execution through whole-buffer write, callback-first run,
+  whole-buffer read, and shutdown;
+- a real TinyLlama artifact with 155 Q4 nodes and two Q4 dispatch call sites
+  per node.
+
+These are regression constraints, not reasons to retain the current raw async
+frame representation.
+
+## 3. Storage contract
+
+### 3.1 Logical variables
+
+All internal values enter the same allocation model:
+
+- ordinary SSA results, arguments, locals, and temporaries;
+- values live across one or more suspend points;
+- resume PCs and other internal coroutine state;
+- internal async object state, waiter frame/PC, and payload fields;
+- scalarized fields of fixed-layout aggregates.
+
+Logical types remain available for verification. Values with the same
+physical Udon type may share physical storage when their live segments do not
+interfere.
+
+### 3.2 Fixed and externally observable storage
+
+The unified allocator does not relocate storage whose identity is externally
+observable:
+
+- public U#/Unity ABI parameter, result, status, and callback slots;
+- named `Material`, `RenderTexture`, and `UdonBehaviour` resource bindings;
+- public async command/completion communication slots;
+- objects whose address, pointer identity, byte representation, aliasing, or
+  volatility remains observable after whole-program optimization.
+
+ABI boundary pack/unpack operations remain until linking and canonicalization
+prove that the boundary is internal and removable.
+
+### 3.3 Aggregate scalarization
+
+By-value, non-escaping, fixed-layout structs are split into field scalar
+values. Nested fixed aggregates are recursively scalarized when every access
+can be expressed as a fixed field access.
+
+An aggregate remains in raw observable storage only when required by semantics,
+including address escape, pointer identity, union or cross-type aliasing,
+volatile access, observable byte layout, `memcpy`/`memmove`, or a dynamic
+offset that cannot be reduced to field selection.
+
+Public C and U# ABI shapes are preserved. Scalarization is an internal
+representation decision.
+
+### 3.4 Direct typed slots
+
+A direct slot is a typed Udon Heap location used as a physical register.
+Non-interfering live segments may share the same slot. Caller values live
+across a call interfere with callee values, and values live across nested
+may-suspend caller/callee execution interfere.
+
+There is no fixed semantic boundary at 16 registers. Direct-slot count is a
+capacity- and cost-based allocator decision. The allocator must still reserve
+enough direct storage for any simultaneous operand clique that cannot be
+spilled.
+
+### 3.5 Typed spill arrays
+
+There is at most one compile-time-sized spill array per physical Udon type in
+a module/behaviour instance. There is no runtime spill allocator in the
+initial implementation.
+
+Non-interfering live segments share spill indices regardless of whether they
+originated as ordinary SSA, coroutine state, or async object state. Array
+indices are compile-time constants except where the program genuinely selects
+an async object by a dynamic ID.
+
+For a dynamic object ID, fields of one physical type occupy a statically
+strided region:
 
 ```text
-Clang Host/runtime/library LLVM IR
-  → static link
-  → MLIR import and high-level recovery
-  → export-aware internalization
-  → SROA / mem2reg / inlining / constant propagation
-  → descriptor specialization / aggregate scalar replacement / DCE
-  → ABI, alias, and address-observability analysis
-  → MLIR Async lowering and Udon static-frame legalization
-  → Host storage planning and register allocation
-  → Udon extern legalization
-  → Udon Assembly + allocator report
+base + object_id * stride + field_offset
 ```
 
-Only `UDONCL_EXPORT` functions and required physical boundaries remain externally
-observable. Optimization must preserve C semantics and emit a remark when an
-object cannot be promoted.
+Static IDs and constant fields are folded. A statically unique object is
+returned to the ordinary scalar allocation model. The initial implementation
+does not replace a dynamic array access with a large selector branch merely to
+use direct slots.
 
-For the generated MNIST graph, descriptor creation/configuration/use, fixed
-handles, and `alpha`/`beta` pointer wrappers should normally specialize to SSA
-values. Model input/output storage and genuinely observable memory remain
-memory objects.
+### 3.6 Raw linear memory
 
-## 3. Four physical storage classes
+The word-packed raw `SystemInt32Array` remains only for data whose address or
+byte layout is observable after optimization. Supported internal scalar,
+coroutine, and async object state must not silently fall back to raw globals.
 
-Every surviving Host value belongs to exactly one class.
+Every remaining raw object records a reason in `storage-report.json`.
 
-### 3.1 Fixed named Udon Heap slots
+## 4. Liveness and live-range splitting
 
-These are outside register allocation because Unity or U# accesses them by
-name:
+One analysis framework covers ordinary and persistent values. Suspend-to-resume
+edges are part of the control-flow model. Callback/resume values and nested
+may-suspend caller/callee frames interfere whenever they can coexist.
 
-- exported parameter, result, and status slots;
-- `Material`, `RenderTexture`, and `UdonBehaviour` resource bindings;
-- async command/completion ABI slots;
-- other event-visible public state.
+Live ranges may be split at suspend boundaries and other profitable points. A
+value can therefore use a direct slot before suspend, occupy a typed spill
+index only while suspended, and be reloaded into a direct slot after resume.
+The ready/fast path must not execute spill traffic needed only by the suspended
+path.
 
-Entry code copies inputs from fixed slots into internal registers. Exit or
-completion code copies results back.
+Stores are placed on the suspend edge and loads at the corresponding resume
+entry when that preserves SSA semantics. Fast, ready, and error merge paths
+must receive the same C-observable value without converting copy semantics to
+reference semantics.
 
-### 3.2 Typed scalar register bank
+Constants and cheap pure expressions may be rematerialized instead of stored
+when legal and cheaper.
 
-A small number of typed scalar Udon Heap slots act as physical registers.
-Address-unobservable SSA values, arguments, results, locals, globals, and
-temporaries are candidates.
+## 5. Small-pass pipeline
 
-Allocation is interprocedural over the complete non-recursive call graph.
-Caller values live across a call interfere with callee values. Ordinary calls
-must not add runtime caller-save or callee-save traffic merely to simplify the
-allocator.
-
-### 3.3 Per-physical-type typed spill arrays
-
-Values that do not fit in the scalar register bank spill into one fixed-length
-array per physical Udon type, for example:
+Each transformation pass has one narrow responsibility and normally one
+implementation file. Passes exchange explicit UdonHL operations or attributes,
+not symbol-name conventions.
 
 ```text
-SystemInt32Array
-SystemInt64Array
-SystemSingleArray
-SystemBooleanArray
-UnityEngineRenderTextureArray
-VRCUdonUdonBehaviourArray
+Async runtime and coroutine CFG legalization
+  -> ScalarizeHostStorage
+  -> MarkAsyncPersistence
+  -> SplitHostLiveRanges
+  -> AllocateHostStorage
+  -> MaterializeHostStorage
+  -> VerifyHostStorageCapacity
+  -> UdonHL scalar/extern lowering
+  -> Udon Assembly
 ```
 
-Do not unify spills into `object[]`; boxing, casts, and runtime type checks are
-not part of the design. Logical types may share an array when they lower to the
-same physical Udon type, but the compiler retains logical storage keys for
-verification.
+### 5.1 `ScalarizeHostStorage`
 
-Array extents are the compile-time maximum simultaneous spill count after
-liveness coloring. There is no runtime spill allocator in the initial
-non-recursive backend.
+Splits eligible fixed-layout aggregates into scalar logical values. It does not
+choose physical storage.
 
-Values live across a suspend are forced into a persistent spill-frame region.
-Nested may-suspend caller/callee live ranges interfere. The initial runtime
-continues to allow one active root and one waiter per pending async object.
+### 5.2 `MarkAsyncPersistence`
 
-### 3.4 Word-packed raw linear memory
+Identifies live-across-suspend values, resume state, and async object fields.
+It emits logical persistence and object-identity information only. It must not
+create one raw global per value.
 
-Only objects whose address or byte layout remains observable after optimization
-use raw memory. Reasons include:
+### 5.3 `SplitHostLiveRanges`
 
-- pointer identity or escaping pointers;
-- dynamic indexing that cannot be scalarized;
-- cross-type or byte aliasing;
-- `ptrtoint`/`inttoptr`;
-- volatile access;
-- `memcpy`, `memmove`, or byte-oriented library semantics;
-- unaligned loads and stores.
+Creates live segments and explicit logical save/restore points. It does not
+assign slots or spill indices.
 
-The final raw representation is a little-endian word-packed
-`SystemInt32Array`, with four logical bytes per array element. The existing
-one-element-per-byte representation is a migration implementation, not a
-target ABI.
+### 5.4 `AllocateHostStorage`
 
-Required fast paths are:
+Consumes common liveness/interference analyses and assigns each segment a
+direct color, typed spill index, fixed ABI placement, or justified raw
+placement. It emits placement IR/attributes and does not materialize Udon
+loads/stores.
 
-- aligned `i32`, pointer, and `f32` load/store with one array access plus any
-  required bitcast;
-- aligned word bulk copy and clear;
-- byte/unaligned head and tail using shifts, masks, and read-modify-write;
-- correct cross-word unaligned access;
-- exact overlap semantics for `memcpy` versus `memmove`.
+### 5.5 `MaterializeHostStorage`
 
-Every raw object and the reason it could not be promoted appears in the
-allocator report.
+Mechanically converts placement decisions into direct storage and existing
+`udonhl.spill_store`/`udonhl.spill_load` operations. It creates the fixed-size
+typed arrays and performs no allocation policy.
 
-## 4. Spill-index materialization
+### 5.6 `VerifyHostStorageCapacity`
 
-Udon has no immediate-value `PUSH`. Giving every spill index its own constant
-slot would reproduce the Heap-slot problem that typed arrays are intended to
-solve.
+Counts the exact final address representation. If materialization changes
+index constants, scratch, extern signatures, or other address costs, the
+driver may rerun allocation with the measured totals. Generated placement is
+tagged so a retry replaces only compiler-generated materialization.
 
-The allocator therefore treats index materialization as part of the same cost
-problem:
+The process normally converges in one allocation. At the 512 boundary it may
+iterate until stable. Failure reports category totals and actionable placement
+candidates; it never silently selects a semantically different fallback.
 
-- hot indices may receive immutable scalar cache slots;
-- other indices are materialized into shared scratch using the module-wide
-  `0..15` nibble constants;
-- scalar registers, index-cache slots, scratch slots, and array-access count
-  compete within the same address budget;
-- no policy allocates one permanent constant slot for every spill index.
+## 6. Allocation policy
 
-The register count and hot-index cache size are selected from measurements, not
-hard-coded as an unverified performance claim.
+The allocator optimizes in this strict order:
 
-## 5. Recursion and concurrency boundary
+1. remain within the exact 512-address Udon limit;
+2. preserve liveness, copy, call, and suspend semantics;
+3. reduce typed-array accesses on statically hot paths;
+4. reduce generated code size;
+5. reduce spill-array extent.
 
-The initial allocator accepts only a structured direct, non-recursive call
-graph. Recursive SCCs, indirect may-suspend calls, concurrent roots, escaping
-coroutine results, and multiple waiters are explicit compile errors.
+The initial deterministic heuristic begins with spill placement and promotes
+the most profitable live segments to direct slots. Non-interfering segments
+that share a color can be promoted together.
 
-Future recursion support requires a separate dynamic-frame design using typed
-spill-array frame bases or UdonSharp-style save/restore. It must not be
-simulated by corrupting the static non-recursive coloring model.
+Static cost considers:
 
-GPU commands may remain concurrently pending within the in-order queue even
-though the C Host execution context admits one active root.
+- direct address count and exact fixed/extern/resource/scratch costs;
+- array index materialization and scratch requirements;
+- static load/store frequency;
+- loop nesting weight;
+- dispatch and descriptor hot paths;
+- suspend crossings;
+- call-graph frequency estimates;
+- rematerialization cost;
+- the unspillable simultaneous-operand clique.
 
-## 6. Capacity and diagnostics
+Weights live in one configuration definition and are reported for diagnostics.
+No profile data is required initially.
 
-The SDK address limit is checked with the exact final program representation.
-The count includes:
+Ties are resolved by physical type, stable function symbol order, block order,
+operation order, and result number. Placement must not depend on pointer values,
+hash-map enumeration, platform, or Debug/Release mode.
 
-- fixed public and resource slots;
-- scalar registers and scratch;
-- hot-index constants;
-- one slot for each typed spill array;
-- the raw heap and its control state;
-- async runtime state;
-- extern signatures and all other addressable data.
+## 7. Placement representation and reporting
 
-If the program exceeds 512 addresses, compilation fails with:
+For every logical live segment, allocator output records:
 
-- category totals;
-- maximum live set by physical type;
-- register and spill counts;
-- cached and synthesized index counts;
-- raw objects and fallback reasons;
-- the largest async frame;
-- actionable slot-reduction candidates.
+- logical and physical type;
+- direct color or typed spill index;
+- live-segment identity;
+- suspend save and resume restore positions;
+- estimated cost and placement reason;
+- any fixed ABI or raw-observability exclusion reason.
 
-The compiler must not silently switch to a slower representation to hide a
-capacity failure.
+`storage-report.json` reports at least:
 
-## 7. Implementation phases
+- direct slots by physical type;
+- direct-color reuse count;
+- typed spill-array extent by physical type;
+- spill-index reuse count;
+- suspend-crossing segment count;
+- rematerialized value count;
+- raw objects and individual reasons;
+- final Udon address count out of 512;
+- estimated hot-path load/store count.
 
-1. Add a storage-analysis report without changing code generation. Classify
-   fixed slots, promotable SSA values, async-persistent values, and raw objects.
-2. Add export-aware internalization and the whole-program promotion pipeline.
-   Verify that MNIST descriptors and scalar pointer wrappers disappear where
-   legal.
-3. Introduce physical-type register banks and non-recursive interprocedural
-   interference coloring. Keep existing storage as a differential oracle.
-4. Add typed spill arrays, fixed extents, persistent async frame regions, and
-   spill-index materialization/caching.
-5. Replace the byte-per-element raw heap with word-packed raw memory and add
-   aligned/unaligned/memcpy/memmove tests.
-6. Integrate the exact 512-address capacity check and allocator diagnostics.
-7. Tune register and index-cache budgets using the benchmark matrix.
-8. Regenerate MNIST and run native, compiler, Unity import, generated-U#, and
-   numerical acceptance tests.
-9. Remove superseded byte-raw optimizations, unnecessary cooperative-checkpoint
-   experiments, legacy direct-await code, and the old Editor binding generator
-   only after the acceptance gate passes.
+Allocator tests consume placement results directly rather than inferring all
+decisions from final Udon Assembly text.
 
-## 8. Tests and benchmarks
+## 8. Supported execution boundary
 
-Compiler tests must cover:
+The initial backend retains the current structured, direct, non-recursive call
+graph, one active root, and one waiter per pending async object. These limits
+are explicit analysis inputs and diagnostics, not undocumented assumptions.
 
-- scalar promotion and non-promotion with an explicit reason;
-- fixed structs and arrays scalarized into SSA;
-- address escape, alias, volatile, and pointer-int round trips;
-- interprocedural interference across nested calls;
-- typed spill coloring and array extent;
-- values live across one and multiple suspend points;
-- hot-index cache versus synthesized index paths;
-- aligned and unaligned integer/float/pointer raw accesses;
-- cross-word loads/stores and little-endian layout;
-- `memcpy`, overlapping `memmove`, clear, and aggregate initialization;
-- deterministic allocator output and detailed 512-address failure.
+Recursive SCCs, indirect may-suspend calls, concurrent roots, escaping
+coroutine results, and multiple waiters require a separate dynamic-frame
+design. GPU commands may remain concurrently pending in the in-order queue;
+the single-root restriction concerns Host execution state.
 
-The SDK IUdonVM microbenchmark compares:
+## 9. Migration sequence
 
-1. direct scalar slot `COPY`;
-2. typed array fixed-index `Get/Set`;
-3. typed array dynamic-index `Get/Set`;
-4. existing byte-per-element raw `i32/f32` load/store;
-5. word-packed aligned and unaligned raw `i32/f32` load/store.
+1. Introduce placement IR and update the storage report without changing code
+   generation.
+2. Add fixed-layout struct scalarization.
+3. Extract common liveness/interference analyses used by normal and async
+   values.
+4. Add live-range splitting and suspend-edge save/resume-entry restore markers.
+5. Add allocation decisions and deterministic diagnostics.
+6. Materialize ordinary transient SSA through the new allocator and compare
+   with the existing implementation.
+7. Move live-across-suspend values and resume PCs off raw async globals.
+8. Move internal async object fields into the unified model.
+9. Delete superseded `__udoncl_async_frame_*_spill_*` generation and tests that
+   require those names.
+10. Remove or narrowly repurpose dormant continuation-frame code so the main
+    pipeline has one implementation of each responsibility.
+11. Run native/compiler integration, generated-U# MNIST, real TinyLlama
+    artifact, and mandatory pre-commit validation.
 
-Reports include opcode count, extern count, iteration count, elapsed time,
-Unity version, Worlds SDK version, execution environment, and warmup policy.
-Editor results do not substitute for ClientSim or VRChat client measurements.
+Each step must build and pass its relevant focused tests. Do not accumulate a
+large knowingly broken pipeline between steps.
 
-## 9. MNIST acceptance gate
+## 10. Tests
 
-This plan does not finish when the allocator compiles an artifact. It finishes
-only when the same public generated U# surface available to a package user runs
-MNIST end to end. The Unity acceptance test must:
+Focused compiler tests cover:
 
-1. import the CMake-produced MNIST artifact and its compiler-generated
-   `binding.cs` without an Editor-regenerated wrapper;
-2. create and initialize the linked UdonCL/UdonONNX library instance through
-   the generated U# API;
-3. pass the complete 784-element FP32 MNIST input through the generated
-   whole-buffer U# write API, not through direct IUdonVM heap manipulation or a
-   test-only generated source initializer;
-4. start inference through the generated callback-first U# `Run` export;
-5. wait for exactly one completion callback and read status/result only through
-   the generated U# API;
-6. read all 10 FP32 logits through the generated whole-buffer U# readback API;
-7. compare every logit and the predicted class with the native/ORT reference;
-8. shut down or dispose the instance through the generated U# lifecycle API;
-9. verify console errors, callback/busy state, temporary assets, and lifecycle
-   cleanup.
+- non-interfering values sharing a direct slot;
+- interfering values receiving different placements;
+- direct capacity pressure spilling to a typed array;
+- non-interfering spills sharing an index;
+- simultaneous operands and branch parallel-copy semantics;
+- caller/callee and nested may-suspend interference;
+- suspend live-range splitting and save/restore placement;
+- no suspended-path spill access on the ready path;
+- one and multiple suspend points;
+- dynamic async object IDs and statically unique objects;
+- struct field scalarization and every raw-observability exclusion;
+- logical types sharing a compatible physical type;
+- deterministic output across repeated builds;
+- exact 512-address success and detailed overflow failure.
 
-Direct Udon Assembly entry invocation, direct program-variable injection,
-Editor-only IUdonVM slot reads, model-specific handwritten U# wrappers, and
-test-only changes to the generated Host or binding are not acceptable
-substitutes for this gate.
+Integration proceeds through:
 
-The plan is complete only when all of the following also hold:
+1. native/Udon result equality for small C Hosts;
+2. a multiple-kernel, multiple-suspend Host;
+3. generated-U# MNIST numerical execution;
+4. real TinyLlama ONNX artifact generation;
+5. `python scripts/precommit.py`.
 
-- general raw accesses for descriptors and temporary scalar pointer wrappers
-  are absent from the generated MNIST Host path;
-- the allocator report explains every remaining raw object;
-- the exact final address count is at most 512;
-- compiler and native differential tests pass;
-- the compiler-generated U# binding imports, compiles, and is the only public
-  Host API used by the Unity numerical test;
-- the Unity Test Runner MNIST test passes through that generated U# path and
-  matches the native/ORT oracle within the specified error;
-- no Udon 10-second watchdog fires;
-- console inspection and temporary-asset cleanup pass;
-- Transformer and UdonBLAS capacity/correctness regressions remain green.
+Tests assert placement and behavior, not incidental diagnostic wording or raw
+symbol names.
 
-Only after this gate may the project remove the legacy direct-await path, the
-old Editor binding generator, and storage-specific checkpoint experiments.
+## 11. Acceptance gates
+
+### 11.1 MNIST
+
+The existing user-facing generated-U# test remains authoritative. It imports
+the CMake-produced binding, writes all 784 FP32 inputs through the whole-buffer
+API, starts callback-first inference, reads all 10 logits through the generated
+API, compares against the native/ORT oracle, and shuts down without direct
+IUdonVM heap manipulation, test-only source generation, console errors,
+cleanup leaks, or the Udon watchdog.
+
+### 11.2 TinyLlama
+
+The allocator change must preserve:
+
+- real ONNX-to-artifact generation;
+- no more than 512 final Udon addresses;
+- 155 Q4 nodes with two Q4 dispatch call sites per node;
+- deterministic placement;
+- no dependency on `__udoncl_async_frame_*_spill_*` raw globals;
+- no major regression from the currently observed approximately 818 MB
+  `host.uasm` without an explained architectural reason.
+
+The first allocator milestone ends at artifact generation. Completing the
+interactive U# conversation path remains governed by the dedicated TinyLlama
+plan and depends on this allocator rather than duplicating it.
+
+### 11.3 Repository gate
+
+After staging the intended final change, run exactly:
+
+```text
+python scripts/precommit.py
+```
+
+The change is not committable until the command prints `precommit=passed`.
+
+## 12. Completion definition
+
+This plan is complete only when:
+
+- normal and async internal values use the unified allocator;
+- fixed-layout structs are scalarized where legal;
+- direct slots and typed spill indices are reused by liveness;
+- supported async state no longer becomes individual raw globals;
+- remaining raw objects have observable-semantics reasons;
+- exact capacity and deterministic placement tests pass;
+- generated-U# MNIST passes;
+- the real TinyLlama artifact satisfies its gate;
+- stale allocator paths and tests are removed;
+- the mandatory pre-commit gate passes.

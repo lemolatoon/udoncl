@@ -2979,7 +2979,9 @@ int main(int argc, char **argv) {
         failed(runAsyncStage("async-func-to-runtime",
                              createAsyncFuncToAsyncRuntimePass())) ||
         failed(runAsyncStage("prepare-udon-async-runtime",
-                             ::vrc::createPrepareUdonAsyncRuntimePass())))
+                             ::vrc::createPrepareUdonAsyncRuntimePass())) ||
+        failed(runAsyncStage("analyze-host-storage",
+                             ::vrc::createAnalyzeHostStoragePass())))
       return 1;
     if (!omitIntermediateIR) {
       raw_string_ostream asyncIR(files["host.async-runtime.mlir"]);

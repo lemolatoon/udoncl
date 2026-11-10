@@ -90,6 +90,7 @@ runtime = subprocess.run(
         '--vrc-lower-host-to-async',
         '--async-func-to-async-runtime',
         '--vrc-prepare-udon-async-runtime',
+        '--vrc-analyze-host-storage',
         source,
     ],
     text=True,
@@ -113,10 +114,10 @@ for fragment in [
     'vrc.async_live_object_ids',
     'object_id = 4 : i32',
     'vrc.async_live_spill_slots = array<i32: 0, 1>',
-    'resume_pcs = array<i32: 2>, slot = 2 : i32, symbol = @__udoncl_async_frame_3_spill_2, type = "i32"',
+    'placement = "typed_spill_array"',
     'vrc.async_pc_symbol = @__udoncl_async_frame_3_pc',
     'sym_name = "__udoncl_async_frame_3_pc"',
-    'sym_name = "__udoncl_async_frame_3_spill_1"',
+    'storage_key = "SystemInt64"',
     'state_symbol = @__udoncl_async_object_',
     'waiter_frame_symbol = @__udoncl_async_object_',
     'waiter_pc_symbol = @__udoncl_async_object_',
@@ -142,12 +143,15 @@ for fragment in [
     'vrc.async_object_state_load',
     'vrc.async_frame_store',
     'vrc.async_frame_load',
+    'vrc.host_storage_placement_version = 1 : i32',
+    'classification = "async_persistent"',
+    'classification = "async_object"',
+    'placement = "legacy_raw"',
     'vrc.async_pc_store = 2 : i32',
     ': (i32, !udonhl.ptr<0>) -> ()',
-    ': (!udonhl.ptr<0>) -> !vrc.event',
+    'udonhl.spill_load',
     'alignment = 8 : i64, initial_value = 0 : i64',
     ': (i64, !udonhl.ptr<0>) -> ()',
-    ': (!udonhl.ptr<0>) -> i64',
 ]:
     assert fragment in runtime.stdout, (fragment, runtime.stdout)
 assert 'async.runtime.store ' not in runtime.stdout
@@ -158,20 +162,21 @@ assert 'async.runtime.set_available ' not in runtime.stdout
 assert 'async.runtime.set_error ' not in runtime.stdout
 assert 'vrc.async_spill_pc' not in runtime.stdout
 assert 'vrc.async_reload_pc' not in runtime.stdout
+assert re.search(r'__udoncl_async_frame_[0-9]+_spill_', runtime.stdout) is None
 
 # wait_colored contains both the already-ready fast path and suspend/resume
 # path, followed by success/error merges.  Its live argument must have exactly
-# one direct use in the definition-time frame store; every semantic use after
-# that point must consume an explicit frame load rather than the pre-suspend
-# SSA value.
+# one direct use in the definition-time typed spill store; every semantic use
+# after that point must consume an explicit typed spill load rather than the
+# pre-suspend SSA value.
 wait_colored = runtime.stdout.split(
     'func.func private @wait_colored', 1)[1].split('\n  }', 1)[0]
 assert wait_colored.count('%arg1') == 2, wait_colored
 assert wait_colored.count('vrc.async_frame_store') >= 3, wait_colored
 assert wait_colored.count('vrc.async_frame_load') >= 4, wait_colored
 for stored_value in re.findall(
-        r'"udonhl\.store"\((%[A-Za-z0-9_]+),[^\n]*'
-        r'\{vrc\.async_frame_store\}', wait_colored):
+        r'udonhl\.spill_store (%[A-Za-z0-9_]+)\[[0-9]+\][^\n]*'
+        r'vrc\.async_frame_store', wait_colored):
     # One occurrence defines the SSA value (or names the block argument), and
     # one stores its copy into the frame.  Any third occurrence would mean a
     # pre-suspend SSA value escaped the full demotion across a later merge.

@@ -69,6 +69,20 @@ Type physicalFrameType(Type type, MLIRContext *context) {
   return type;
 }
 
+std::string physicalFrameStorageKey(Type type, MLIRContext *context) {
+  type = physicalFrameType(type, context);
+  if (auto integer = dyn_cast<IntegerType>(type)) {
+    if (integer.getWidth() == 1)
+      return "SystemBoolean";
+    return integer.getWidth() > 32 ? "SystemInt64" : "SystemInt32";
+  }
+  if (type.isF32())
+    return "SystemSingle";
+  if (isa<::vrc::udonhl::PtrType>(type))
+    return "SystemInt32";
+  return {};
+}
+
 Attribute zeroFrameValue(Type type, Builder &builder) {
   if (auto integer = dyn_cast<IntegerType>(type))
     return builder.getIntegerAttr(integer, 0);
@@ -380,6 +394,7 @@ struct PrepareUdonAsyncRuntimePass
              builder.getNamedAttr("available", builder.getI32IntegerAttr(1)),
              builder.getNamedAttr("error", builder.getI32IntegerAttr(-1))}));
     std::map<int32_t, ObjectStorage> objectStorage;
+    std::map<std::string, int32_t> nextPersistentSpillIndex;
     SmallVector<Attribute> resumeRoutes;
     SmallVector<Attribute> checkpointRoutes;
     SmallVector<Attribute> objectResumeRoutes;
@@ -495,8 +510,6 @@ struct PrepareUdonAsyncRuntimePass
                      return left.valueId < right.valueId;
                    });
         int32_t slotCount = 0;
-        SmallVector<Type> slotTypes;
-        SmallVector<std::string> primarySymbols;
         if (!annotateResultIds) {
           // A live-across-suspend SSA value owns one stable frame slot for
           // the entire coroutine invocation.  Sharing slots merely because
@@ -505,20 +518,16 @@ struct PrepareUdonAsyncRuntimePass
           // suspend, and a later definition must never overwrite a value
           // still selected by a control-flow merge.
           slotCount = static_cast<int32_t>(values.size());
-          slotTypes.resize(slotCount);
-          primarySymbols.resize(slotCount);
-          for (auto indexed : llvm::enumerate(values)) {
-            PlannedValue &value = indexed.value();
-            value.slot = static_cast<int32_t>(indexed.index());
-            slotTypes[value.slot] = value.value.getType();
-          }
-          for (int32_t slot = 0; slot < slotCount; ++slot) {
-            std::string base = "__udoncl_async_frame_" +
-                               std::to_string(frameId) + "_spill_" +
-                               std::to_string(slot);
-            primarySymbols[slot] = base;
-            createGlobal(
-                base, physicalFrameType(slotTypes[slot], module.getContext()));
+          for (PlannedValue &value : values) {
+            std::string storageKey = physicalFrameStorageKey(
+                value.value.getType(), module.getContext());
+            if (storageKey.empty()) {
+              function.emitError("cannot assign async persistent storage for ")
+                  << value.value.getType();
+              invalid = true;
+              continue;
+            }
+            value.slot = nextPersistentSpillIndex[storageKey]++;
           }
         } else {
           std::set<int32_t> functionObjectIds;
@@ -578,11 +587,13 @@ struct PrepareUdonAsyncRuntimePass
           attributes.append(
               "type", builder.getStringAttr(typeName(value.value.getType())));
           attributes.append("resume_pcs", builder.getDenseI32ArrayAttr(pcs));
-          if (!annotateResultIds)
-            attributes.append(
-                "symbol", FlatSymbolRefAttr::get(module.getContext(),
-                                                 primarySymbols[value.slot]));
-          else {
+          if (!annotateResultIds) {
+            attributes.append("storage_key",
+                              builder.getStringAttr(physicalFrameStorageKey(
+                                  value.value.getType(), module.getContext())));
+            attributes.append("placement",
+                              builder.getStringAttr("typed_spill_array"));
+          } else {
             if (checkpointObjectIds.count(value.slot)) {
               attributes.append("cooperative_checkpoint",
                                 builder.getUnitAttr());
@@ -624,7 +635,6 @@ struct PrepareUdonAsyncRuntimePass
         }
 
         if (!annotateResultIds) {
-          Type pointer = ::vrc::udonhl::PtrType::get(module.getContext(), 0);
           for (const PlannedValue &value : values) {
             SmallVector<OpOperand *> uses;
             for (OpOperand &use : value.value.getUses())
@@ -648,14 +658,12 @@ struct PrepareUdonAsyncRuntimePass
               }
               storeBuilder.setInsertionPointAfter(definition);
             }
-            auto storeAddress = ::vrc::udonhl::AddressOfOp::create(
-                storeBuilder, value.value.getLoc(), pointer,
-                primarySymbols[value.slot]);
-            auto store = ::vrc::udonhl::StoreOp::create(
+            std::string storageKey = physicalFrameStorageKey(
+                value.value.getType(), module.getContext());
+            auto store = ::vrc::udonhl::SpillStoreOp::create(
                 storeBuilder, value.value.getLoc(), value.value,
-                storeAddress.getResult(),
-                frameAlignment(physicalFrameType(value.value.getType(),
-                                                 module.getContext())));
+                builder.getStringAttr(storageKey),
+                builder.getI32IntegerAttr(value.slot));
             store->setAttr("vrc.async_frame_store", builder.getUnitAttr());
 
             // Reload at every original use.  This is a real demotion to the
@@ -671,14 +679,10 @@ struct PrepareUdonAsyncRuntimePass
                 loaded = existing->second;
               } else {
                 OpBuilder loadBuilder(owner);
-                auto loadAddress = ::vrc::udonhl::AddressOfOp::create(
-                    loadBuilder, owner->getLoc(), pointer,
-                    primarySymbols[value.slot]);
-                auto load = ::vrc::udonhl::LoadOp::create(
+                auto load = ::vrc::udonhl::SpillLoadOp::create(
                     loadBuilder, owner->getLoc(), value.value.getType(),
-                    loadAddress.getResult(),
-                    frameAlignment(physicalFrameType(value.value.getType(),
-                                                     module.getContext())));
+                    builder.getStringAttr(storageKey),
+                    builder.getI32IntegerAttr(value.slot));
                 load->setAttr("vrc.async_frame_load", builder.getUnitAttr());
                 loaded = load.getResult();
                 loads.try_emplace(owner, loaded);
