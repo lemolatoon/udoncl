@@ -376,7 +376,7 @@ assert (
     q4_host.stdout.count(
         "call @__vrc_opencl_dispatch_udononnx_matmul_nbits_q4"
     )
-    == 1
+    == 2
 )
 assert "call @udononnxMatMulNBits" not in q4_host.stdout
 assert "@__udon_onnx_operator_scratch" in q4_host.stdout
@@ -385,6 +385,9 @@ assert "call @__vrc_opencl_buffer_copy" in q4_host.stdout
 assert "call @__vrc_opencl_await" in q4_host.stdout
 assert "call @clEnqueueCopyBuffer" not in q4_host.stdout
 assert "arith.constant 128 : i32" in q4_host.stdout
+assert "arith.constant 256 : i32" in q4_host.stdout
+assert "cf.br ^" in q4_host.stdout
+assert "cf.cond_br" in q4_host.stdout
 
 rmsnorm_source = source.with_name("onnx_rmsnorm_pattern.mlir")
 rmsnorm_canonical = subprocess.run(

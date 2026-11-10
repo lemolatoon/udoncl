@@ -3787,23 +3787,56 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
         int64_t n = integerAttribute(node, "N", 0);
         int64_t m = activation.type.getNumElements() / k;
         int64_t kPasses = (k + 127) / 128;
-        int64_t passCount = kPasses;
-        Value previous = passCount & 1 ? operatorScratch : output;
-        Value destination = passCount & 1 ? output : operatorScratch;
-        for (int64_t kBase = 0; kBase < k; kBase += 128) {
-          int64_t tileK = std::min<int64_t>(128, k - kBase);
+        int64_t loopStart = 0;
+        if (kPasses & 1) {
+          int64_t tileK = std::min<int64_t>(128, k);
           dispatch("__vrc_opencl_dispatch_udononnx_matmul_nbits_q4",
                    ValueRange{buffer(node.inputs[0]), buffer(node.inputs[1]),
-                              buffer(node.inputs[2]), previous, destination,
+                              buffer(node.inputs[2]), operatorScratch, output,
                               constant(m), constant(n), constant(k),
-                              constant(32), constant(0), constant(kBase),
-                              constant(n), constant(tileK),
-                              constant(kBase ? 1 : 0)});
-          std::swap(previous, destination);
+                              constant(32), constant(0), constant(0),
+                              constant(n), constant(tileK), constant(0)});
+          loopStart = 128;
         }
-        if (previous != output)
-          return emitError(location)
-                 << "Q4 ping-pong schedule did not finish in output storage";
+        if (loopStart < k) {
+          Block *loop = run.addBlock();
+          Block *body = run.addBlock();
+          Block *done = run.addBlock();
+          BlockArgument kBase = loop->addArgument(i32, location);
+          cf::BranchOp::create(builder, location, loop,
+                               ValueRange{constant(loopStart)});
+
+          builder.setInsertionPointToEnd(loop);
+          Value keepGoing = arith::CmpIOp::create(
+              builder, location, arith::CmpIPredicate::slt, kBase, constant(k));
+          cf::CondBranchOp::create(builder, location, keepGoing, body,
+                                   ValueRange{}, done, ValueRange{});
+
+          builder.setInsertionPointToEnd(body);
+          Value hasPrevious = arith::CmpIOp::create(
+              builder, location, arith::CmpIPredicate::ne, kBase, constant(0));
+          Value accumulate = arith::SelectOp::create(
+              builder, location, hasPrevious, constant(1), constant(0));
+          dispatch("__vrc_opencl_dispatch_udononnx_matmul_nbits_q4",
+                   ValueRange{buffer(node.inputs[0]), buffer(node.inputs[1]),
+                              buffer(node.inputs[2]), output, operatorScratch,
+                              constant(m), constant(n), constant(k),
+                              constant(32), constant(0), kBase, constant(n),
+                              constant(128), accumulate});
+
+          Value secondBase =
+              arith::AddIOp::create(builder, location, kBase, constant(128));
+          dispatch("__vrc_opencl_dispatch_udononnx_matmul_nbits_q4",
+                   ValueRange{buffer(node.inputs[0]), buffer(node.inputs[1]),
+                              buffer(node.inputs[2]), operatorScratch, output,
+                              constant(m), constant(n), constant(k),
+                              constant(32), constant(0), secondBase,
+                              constant(n), constant(128), constant(1)});
+          Value nextBase =
+              arith::AddIOp::create(builder, location, kBase, constant(256));
+          cf::BranchOp::create(builder, location, loop, ValueRange{nextBase});
+          builder.setInsertionPointToEnd(done);
+        }
         continue;
       }
       if (isDeviceRmsNormNode(graph, node)) {
