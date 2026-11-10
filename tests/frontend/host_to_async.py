@@ -90,6 +90,7 @@ runtime = subprocess.run(
         '--vrc-lower-host-to-async',
         '--async-func-to-async-runtime',
         '--vrc-prepare-udon-async-runtime',
+        '--vrc-allocate-host-storage',
         '--vrc-analyze-host-storage',
         source,
     ],
@@ -115,6 +116,8 @@ for fragment in [
     'object_id = 4 : i32',
     'vrc.async_live_spill_slots = array<i32: 0, 1>',
     'placement = "typed_spill_array"',
+    'allocation = "liveness_colored"',
+    'interferes_with = array<i32:',
     'vrc.async_pc_symbol = @__udoncl_async_frame_3_pc',
     'sym_name = "__udoncl_async_frame_3_pc"',
     'storage_key = "SystemInt64"',
@@ -163,6 +166,37 @@ assert 'async.runtime.set_error ' not in runtime.stdout
 assert 'vrc.async_spill_pc' not in runtime.stdout
 assert 'vrc.async_reload_pc' not in runtime.stdout
 assert re.search(r'__udoncl_async_frame_[0-9]+_spill_', runtime.stdout) is None
+
+allocation_source = r'''module {
+  func.func @reuse(%a: i32, %b: i32, %c: i32) attributes {
+    vrc.async_spill_slots = [
+      {value_id = 0 : i32, slot = 0 : i32, storage_key = "SystemInt32",
+       placement = "typed_spill_array", interferes_with = array<i32: 1>},
+      {value_id = 1 : i32, slot = 1 : i32, storage_key = "SystemInt32",
+       placement = "typed_spill_array", interferes_with = array<i32: 0>},
+      {value_id = 2 : i32, slot = 2 : i32, storage_key = "SystemInt32",
+       placement = "typed_spill_array", interferes_with = array<i32>}
+    ]
+  } {
+    udonhl.spill_store %a[0] {storage_key = "SystemInt32",
+      vrc.async_frame_store} : i32
+    udonhl.spill_store %b[1] {storage_key = "SystemInt32",
+      vrc.async_frame_store} : i32
+    udonhl.spill_store %c[2] {storage_key = "SystemInt32",
+      vrc.async_frame_store} : i32
+    return
+  }
+}'''
+allocated = subprocess.run(
+    [optimizer, '--vrc-allocate-host-storage'],
+    input=allocation_source,
+    text=True,
+    capture_output=True,
+)
+assert allocated.returncode == 0, (allocated.stdout, allocated.stderr)
+assert allocated.stdout.count('slot = 0 : i32') == 2, allocated.stdout
+assert allocated.stdout.count('slot = 1 : i32') == 1, allocated.stdout
+assert allocated.stdout.count('spill_store %arg2[0]') == 1, allocated.stdout
 
 # wait_colored contains both the already-ready fast path and suspend/resume
 # path, followed by success/error merges.  Its live argument must have exactly

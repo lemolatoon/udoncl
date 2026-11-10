@@ -52,6 +52,10 @@ def AnalyzeHostStoragePass : Pass<"vrc-analyze-host-storage", "mlir::ModuleOp"> 
   let summary = "Record deterministic logical Host storage placements before physical allocation";
   let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "mlir::func::FuncDialect"];
 }
+def AllocateHostStoragePass : Pass<"vrc-allocate-host-storage", "mlir::ModuleOp"> {
+  let summary = "Assign deterministic physical storage to planned Host live ranges";
+  let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "mlir::func::FuncDialect"];
+}
 def LowerUdonAsyncRuntimePass : Pass<"vrc-lower-udon-async-runtime", "mlir::ModuleOp"> {
   let summary = "Remove upstream Async/Coro scaffolding after static Udon routing is materialized";
   let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "::vrc::vrc::VRCDialect", "mlir::cf::ControlFlowDialect", "mlir::func::FuncDialect"];

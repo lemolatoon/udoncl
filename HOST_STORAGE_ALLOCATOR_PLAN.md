@@ -18,8 +18,10 @@ Current implementation checkpoint (2026-11-11):
   bank per physical type without index collision;
 - async resume PCs and async object state/waiter/payload fields still use the
   legacy raw-global path and remain migration work;
-- persistent spill indices are currently unique; liveness-based reuse and
-  direct-slot promotion remain migration work.
+- persistent spill indices are colored from preserved full SSA interference,
+  so non-interfering values in one coroutine reuse typed-array indices;
+- persistent direct-slot promotion and cross-coroutine reuse remain migration
+  work.
 
 ## 1. Why this work remains
 

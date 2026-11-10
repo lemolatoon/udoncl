@@ -9,6 +9,7 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/SymbolTable.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
 #include <cstdint>
@@ -509,6 +510,46 @@ struct PrepareUdonAsyncRuntimePass
                    [](const PlannedValue &left, const PlannedValue &right) {
                      return left.valueId < right.valueId;
                    });
+        DenseMap<Value, llvm::DenseSet<Value>> interference;
+        if (!annotateResultIds) {
+          llvm::DenseSet<Value> planned;
+          for (const PlannedValue &value : values)
+            planned.insert(value.value);
+          function.walk([&](Operation *operation) {
+            const LivenessBlockInfo *blockInfo =
+                liveness.getLiveness(operation->getBlock());
+            if (!blockInfo)
+              return;
+            SmallVector<Value> simultaneous;
+            for (Value value : blockInfo->currentlyLiveValues(operation))
+              if (planned.contains(value))
+                simultaneous.push_back(value);
+            for (Value operand : operation->getOperands())
+              if (planned.contains(operand))
+                simultaneous.push_back(operand);
+            for (Value result : operation->getResults())
+              if (planned.contains(result))
+                simultaneous.push_back(result);
+            llvm::sort(simultaneous, [&](Value left, Value right) {
+              return valueIds.lookup(left) < valueIds.lookup(right);
+            });
+            simultaneous.erase(
+                std::unique(simultaneous.begin(), simultaneous.end()),
+                simultaneous.end());
+            for (auto [leftIndex, left] : llvm::enumerate(simultaneous)) {
+              std::string leftKey =
+                  physicalFrameStorageKey(left.getType(), module.getContext());
+              for (Value right :
+                   ArrayRef<Value>(simultaneous).drop_front(leftIndex + 1)) {
+                if (leftKey != physicalFrameStorageKey(right.getType(),
+                                                       module.getContext()))
+                  continue;
+                interference[left].insert(right);
+                interference[right].insert(left);
+              }
+            }
+          });
+        }
         int32_t slotCount = 0;
         if (!annotateResultIds) {
           // A live-across-suspend SSA value owns one stable frame slot for
@@ -593,6 +634,12 @@ struct PrepareUdonAsyncRuntimePass
                                   value.value.getType(), module.getContext())));
             attributes.append("placement",
                               builder.getStringAttr("typed_spill_array"));
+            SmallVector<int32_t> conflicts;
+            for (Value conflict : interference[value.value])
+              conflicts.push_back(valueIds.lookup(conflict));
+            llvm::sort(conflicts);
+            attributes.append("interferes_with",
+                              builder.getDenseI32ArrayAttr(conflicts));
           } else {
             if (checkpointObjectIds.count(value.slot)) {
               attributes.append("cooperative_checkpoint",

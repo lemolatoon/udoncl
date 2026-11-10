@@ -1,4 +1,4 @@
-add_mlir_library(VRCConversionVRC DISABLE_INSTALL RuntimeIntrinsics.cpp OpenCLAOTIntrinsics.cpp ContinuationFrames.cpp AsyncHost.cpp PrepareUdonAsyncRuntime.cpp AnalyzeHostStorage.cpp
+add_mlir_library(VRCConversionVRC DISABLE_INSTALL RuntimeIntrinsics.cpp OpenCLAOTIntrinsics.cpp ContinuationFrames.cpp AsyncHost.cpp PrepareUdonAsyncRuntime.cpp AllocateHostStorage.cpp AnalyzeHostStorage.cpp
   DEPENDS VRCBoundaryPassIncGen
   LINK_LIBS PUBLIC VRCDialectUdonHL VRCDialectVRC MLIRAsyncDialect MLIRFuncDialect MLIRPass MLIRTransformUtils)
 vrc_configure_target(VRCConversionVRC)
