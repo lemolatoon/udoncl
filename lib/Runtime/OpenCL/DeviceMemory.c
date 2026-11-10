@@ -2,7 +2,9 @@
 
 #include <limits.h>
 
+#ifndef UDONCL_DEVICE_BUFFER_CAPACITY
 #define UDONCL_DEVICE_BUFFER_CAPACITY 64
+#endif
 
 struct udoncl_device_buffer_entry {
   cl_mem memory;

@@ -155,7 +155,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             Set(heap, program, artifact.StaticTensorTableSlot, staticTensors);
 
             Dictionary<int, RenderTexture> buffers = new Dictionary<int, RenderTexture>();
-            Assert.AreEqual(17, artifact.DeviceBuffers.Count);
+            Assert.AreEqual(5, artifact.DeviceBuffers.Count);
             foreach (ValidatedDeviceBuffer descriptor in artifact.DeviceBuffers)
             {
                 RenderTexture buffer = Load<RenderTexture>(
@@ -584,6 +584,56 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                     (byte)(word >> 8),
                     (byte)(word >> 16),
                     (byte)(word >> 24)
+                );
+            }
+            Texture2D staging = new Texture2D(
+                destination.width,
+                destination.height,
+                TextureFormat.RGBA32,
+                false,
+                true
+            );
+            try
+            {
+                staging.filterMode = FilterMode.Point;
+                staging.wrapMode = TextureWrapMode.Clamp;
+                staging.SetPixels32(pixels);
+                staging.Apply(false, false);
+                Graphics.Blit(staging, destination, copyMaterial);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(staging);
+            }
+        }
+
+        internal static void UploadLongs(
+            RenderTexture destination,
+            long[] values,
+            Material copyMaterial
+        )
+        {
+            Assert.That(
+                values.Length * 2,
+                Is.LessThanOrEqualTo(destination.width * destination.height)
+            );
+            Color32[] pixels = new Color32[destination.width * destination.height];
+            for (int index = 0; index < values.Length; ++index)
+            {
+                long value = values[index];
+                int low = (int)value;
+                int high = (int)(value >> 32);
+                pixels[index * 2] = new Color32(
+                    (byte)low,
+                    (byte)(low >> 8),
+                    (byte)(low >> 16),
+                    (byte)(low >> 24)
+                );
+                pixels[index * 2 + 1] = new Color32(
+                    (byte)high,
+                    (byte)(high >> 8),
+                    (byte)(high >> 16),
+                    (byte)(high >> 24)
                 );
             }
             Texture2D staging = new Texture2D(

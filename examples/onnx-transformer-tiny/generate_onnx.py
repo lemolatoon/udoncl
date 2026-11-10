@@ -107,7 +107,7 @@ def main():
         nodes,
         initializers,
         [
-            value_info_proto("input_ids", [1, "sequence"], 6),
+            value_info_proto("input_ids", [1, "sequence"], 7),
             value_info_proto("past_key", dynamic_hidden),
             value_info_proto("past_value", dynamic_hidden),
         ],

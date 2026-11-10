@@ -74,13 +74,7 @@ struct TypedSpillBankPlan {
   unsigned length = 0;
 };
 
-struct ConstantBankPlan {
-  std::string slot;
-  SmallVector<uint32_t> values;
-};
-
 struct ConstantPoolLocation {
-  unsigned bank = 0;
   unsigned index = 0;
 };
 
@@ -342,16 +336,10 @@ public:
     bool hasCompilerAsyncABI = false;
     if (failed(planUnityBufferPool()) || failed(planRawMemory()))
       return failure();
-    if (externalRawHeapInitialization && rawHeapBytes) {
-      SmallVector<int8_t> image(rawHeapBytes, 0);
-      for (auto &entry : rawGlobalInitializers) {
-        auto base = rawGlobalBases.find(entry.getKey());
-        if (base == rawGlobalBases.end())
-          return module.emitError("raw global initializer has no heap base");
-        llvm::copy(entry.getValue().asArrayRef(), image.begin() + base->second);
-      }
-      module->setAttr("udonasm.raw_heap_initializer",
-                      DenseI8ArrayAttr::get(module.getContext(), image));
+    if (module->hasAttr("vrc.debug_compiler_phases")) {
+      llvm::errs() << "udonclc-scalar-lowering=raw-memory-planned"
+                   << " raw_heap_bytes=" << rawHeapBytes << "\n";
+      llvm::errs().flush();
     }
     for (memref::GlobalOp global : module.getOps<memref::GlobalOp>()) {
       auto type = global.getType();
@@ -457,6 +445,24 @@ public:
     llvm::append_range(functions, exportsToLower);
     llvm::append_range(functions, internalsToLower);
     planMaterializedConstants(functions);
+    if (externalRawHeapInitialization && rawHeapBytes) {
+      SmallVector<int8_t> image(rawHeapBytes, 0);
+      for (auto &entry : rawGlobalInitializers) {
+        auto base = rawGlobalBases.find(entry.getKey());
+        if (base == rawGlobalBases.end())
+          return module.emitError("raw global initializer has no heap base");
+        llvm::copy(entry.getValue().asArrayRef(), image.begin() + base->second);
+      }
+      for (auto [index, value] : llvm::enumerate(constantPoolValues)) {
+        uint64_t byteOffset =
+            (constantPoolWordBase + static_cast<uint64_t>(index)) * 4;
+        for (unsigned byte = 0; byte < 4; ++byte)
+          image[byteOffset + byte] =
+              static_cast<int8_t>((value >> (byte * 8)) & 0xff);
+      }
+      module->setAttr("udonasm.raw_heap_initializer",
+                      DenseI8ArrayAttr::get(module.getContext(), image));
+    }
     bool hasAsyncTransfers = false;
     module.walk([&](Operation *operation) {
       hasAsyncTransfers |=
@@ -588,6 +594,7 @@ public:
 
     if (failed(planInterproceduralValueSlots(functions)))
       return failure();
+    compactSpillIndices();
     planAddressCaches();
     if (!typedSpillBanks.empty()) {
       addSlot(globalInitializedSlot, "SystemInt32", "0", false);
@@ -766,8 +773,6 @@ private:
       arrays.insert(bank.slot);
     for (const std::string &key : typedSpillBankOrder)
       arrays.insert(typedSpillBanks.at(key).slot);
-    for (const ConstantBankPlan &bank : constantBanks)
-      arrays.insert(bank.slot);
     if (rawHeapBytes)
       arrays.insert(rawHeapSlot);
     for (const auto &slot : immutableSlots)
@@ -831,7 +836,8 @@ private:
     if (!stage || stage.getValue() != "udon-static-v1")
       return;
     llvm::DenseMap<uint32_t, ConstantPoolLocation> locations;
-    constexpr unsigned bankCapacity = 32;
+    llvm::DenseMap<uint32_t, unsigned> occurrences;
+    SmallVector<std::pair<Operation *, uint32_t>> candidates;
     for (func::FuncOp function : functions)
       function.walk([&](arith::ConstantOp constant) {
         Type type = constant.getType();
@@ -845,6 +851,10 @@ private:
           return;
         }
         auto integer = dyn_cast<IntegerType>(type);
+        if (materializationLimit && integer && integer.getWidth() == 64) {
+          materializedConstants.insert(constant.getOperation());
+          return;
+        }
         if (integer && integer.getWidth() == 32 &&
             cast<IntegerAttr>(constant.getValue())
                 .getValue()
@@ -857,29 +867,51 @@ private:
           return;
         uint32_t value = static_cast<uint32_t>(
             cast<IntegerAttr>(constant.getValue()).getValue().getZExtValue());
-        auto found = locations.find(value);
-        ConstantPoolLocation location;
-        if (found == locations.end()) {
-          if (constantBanks.empty() ||
-              constantBanks.back().values.size() == bankCapacity) {
-            unsigned bank = constantBanks.size();
-            std::string slot = "__vrc_constant_bank_" + std::to_string(bank);
-            addSlot(slot, "SystemInt32Array", "null", false);
-            constantBanks.push_back({std::move(slot), {}});
-          }
-          location.bank = constantBanks.size() - 1;
-          location.index = constantBanks.back().values.size();
-          constantBanks.back().values.push_back(value);
-          locations.try_emplace(value, location);
-        } else {
-          location = found->second;
-        }
-        pooledConstants.try_emplace(constant.getOperation(), location);
+        ++occurrences[value];
+        candidates.emplace_back(constant.getOperation(), value);
       });
-    if (!constantBanks.empty()) {
-      addSlot(globalInitializedSlot, "SystemInt32", "0", false);
-      addSlot(globalOneSlot, "SystemInt32", "1", false);
-      addSlot(globalReadySlot, "SystemBoolean", "null", false);
+    SmallVector<uint32_t> orderedValues;
+    orderedValues.reserve(occurrences.size());
+    for (const auto &entry : occurrences)
+      orderedValues.push_back(entry.first);
+    llvm::sort(orderedValues, [&](uint32_t left, uint32_t right) {
+      if (occurrences.lookup(left) != occurrences.lookup(right))
+        return occurrences.lookup(left) > occurrences.lookup(right);
+      return left < right;
+    });
+    for (uint32_t value : orderedValues) {
+      ConstantPoolLocation location;
+      location.index = constantPoolValues.size();
+      constantPoolValues.push_back(value);
+      locations.try_emplace(value, location);
+    }
+    for (auto [operation, value] : candidates)
+      pooledConstants.try_emplace(operation, locations.lookup(value));
+    if (!constantPoolValues.empty()) {
+      bool hadRawHeap = rawHeapBytes != 0;
+      uint64_t base = llvm::alignTo(std::max<uint64_t>(rawHeapBytes, 4), 4);
+      constantPoolWordBase = base / 4;
+      uint64_t poolBytes = constantPoolValues.size() * uint64_t{4};
+      if (poolBytes > INT32_MAX || base > INT32_MAX - poolBytes) {
+        module.emitError("constant pool exceeds signed i32 raw heap capacity");
+        return;
+      }
+      rawHeapBytes = base + poolBytes;
+      rawObjects.push_back({"__vrc_constant_pool", "constant_pool",
+                            "aot_initialized_i32_constants", base, poolBytes,
+                            4});
+      if (!hadRawHeap) {
+        addSlot(rawHeapSlot, "SystemInt32Array", "null",
+                externalRawHeapInitialization);
+        addSlot(rawHeapLengthSlot, "SystemInt32",
+                std::to_string(rawHeapWordCount()), false);
+      } else {
+        for (Slot &slot : slots)
+          if (slot.name == rawHeapLengthSlot) {
+            slot.initial = std::to_string(rawHeapWordCount());
+            break;
+          }
+      }
     }
   }
 
@@ -898,7 +930,7 @@ private:
     llvm::DenseMap<Operation *, SmallVector<Value>> functionValues;
     llvm::DenseMap<Value, std::string> storageKeys;
     llvm::DenseMap<Value, unsigned> ordinals;
-    llvm::DenseMap<Value, SmallVector<Value>> interference;
+    llvm::DenseMap<Value, llvm::DenseSet<Value>> interference;
     llvm::DenseMap<Operation *, SmallVector<Operation *>> callees;
     llvm::SmallPtrSet<Operation *, 32> functionSet;
     unsigned nextOrdinal = 0;
@@ -979,8 +1011,8 @@ private:
       if (left == right ||
           storageKeys.lookup(left) != storageKeys.lookup(right))
         return;
-      interference[left].push_back(right);
-      interference[right].push_back(left);
+      interference[left].insert(right);
+      interference[right].insert(left);
     };
     auto addParallelCopyInterference = [&](ValueRange sources,
                                            Block *destination) {
@@ -1073,15 +1105,6 @@ private:
         }
       });
     }
-    for (auto &entry : interference) {
-      SmallVector<Value> &neighbors = entry.second;
-      llvm::sort(neighbors, [&](Value left, Value right) {
-        return ordinals.lookup(left) < ordinals.lookup(right);
-      });
-      neighbors.erase(std::unique(neighbors.begin(), neighbors.end()),
-                      neighbors.end());
-    }
-
     llvm::StringMap<SmallVector<Value>> valuesByStorage;
     for (const auto &entry : storageKeys)
       valuesByStorage[entry.second].push_back(entry.first);
@@ -1410,6 +1433,10 @@ private:
 
   LogicalResult planRawMemory() {
     uint64_t cursor = 4; // Keep the null pointer unmapped.
+    llvm::StringMap<host::AddressOfOp> representativeAddresses;
+    module.walk([&](host::AddressOfOp address) {
+      representativeAddresses.try_emplace(address.getGlobal(), address);
+    });
     for (host::GlobalOp global : module.getOps<host::GlobalOp>()) {
       if (global.getAddressSpace() != 0 || global.getLinkage() != "internal")
         return global.emitError(
@@ -1433,11 +1460,8 @@ private:
         scalarBytes = llvm::divideCeil(integer.getWidth(), 8u);
       uint64_t objectBytes = bytes ? bytes.size() : scalarBytes;
       rawGlobalBases.try_emplace(global.getSymName(), cursor);
-      host::AddressOfOp representative;
-      module.walk([&](host::AddressOfOp address) {
-        if (!representative && address.getGlobal() == global.getSymName())
-          representative = address;
-      });
+      host::AddressOfOp representative =
+          representativeAddresses.lookup(global.getSymName());
       rawObjects.push_back(
           {global.getSymName().str(), "global",
            representative
@@ -1513,6 +1537,52 @@ private:
 
   static std::string spillIndexCacheKey(StringRef storageKey, unsigned index) {
     return (storageKey + "\n" + std::to_string(index)).str();
+  }
+
+  void compactSpillIndices() {
+    llvm::StringMap<llvm::DenseMap<unsigned, unsigned>> occurrences;
+    module.walk([&](Operation *operation) {
+      StringRef storageKey;
+      int64_t index = -1;
+      if (auto load = dyn_cast<host::SpillLoadOp>(operation)) {
+        storageKey = load.getStorageKey();
+        index = load.getIndex();
+      } else if (auto store = dyn_cast<host::SpillStoreOp>(operation)) {
+        storageKey = store.getStorageKey();
+        index = store.getIndex();
+      }
+      if (index >= 0)
+        ++occurrences[storageKey][static_cast<unsigned>(index)];
+    });
+    llvm::StringMap<llvm::DenseMap<unsigned, unsigned>> remapped;
+    for (auto &storage : occurrences) {
+      SmallVector<unsigned> indices;
+      indices.reserve(storage.second.size());
+      for (const auto &entry : storage.second)
+        indices.push_back(entry.first);
+      llvm::sort(indices, [&](unsigned left, unsigned right) {
+        unsigned leftCount = storage.second.lookup(left);
+        unsigned rightCount = storage.second.lookup(right);
+        if (leftCount != rightCount)
+          return leftCount > rightCount;
+        return left < right;
+      });
+      for (auto [newIndex, oldIndex] : llvm::enumerate(indices))
+        remapped[storage.first()][oldIndex] = newIndex;
+    }
+    module.walk([&](Operation *operation) {
+      if (auto load = dyn_cast<host::SpillLoadOp>(operation)) {
+        unsigned index = static_cast<unsigned>(load.getIndex());
+        load->setAttr("index",
+                      builder.getI32IntegerAttr(
+                          remapped[load.getStorageKey()].lookup(index)));
+      } else if (auto store = dyn_cast<host::SpillStoreOp>(operation)) {
+        unsigned index = static_cast<unsigned>(store.getIndex());
+        store->setAttr("index",
+                       builder.getI32IntegerAttr(
+                           remapped[store.getStorageKey()].lookup(index)));
+      }
+    });
   }
 
   void planAddressCaches() {
@@ -1648,11 +1718,11 @@ private:
     llvm::DenseMap<Value, uint64_t> globalBaseOffsets;
     llvm::DenseMap<Value, unsigned> valueColors;
     llvm::DenseMap<Value, unsigned> valueOrdinals;
-    llvm::DenseMap<Value, SmallVector<Value>> interference;
+    llvm::DenseMap<Value, llvm::DenseSet<Value>> interference;
     llvm::DenseMap<Value, std::string> valueUdonTypes;
     llvm::DenseMap<Value, unsigned> descriptorColors;
     llvm::DenseMap<Value, unsigned> descriptorOrdinals;
-    llvm::DenseMap<Value, SmallVector<Value>> descriptorInterference;
+    llvm::DenseMap<Value, llvm::DenseSet<Value>> descriptorInterference;
     SmallVector<Value> colorableValues;
     SmallVector<Value> descriptors;
     auto isColorableResult = [&](Operation &operation) {
@@ -1705,8 +1775,8 @@ private:
       for (auto [leftIndex, left] : llvm::enumerate(live))
         for (Value right : ArrayRef<Value>(live).drop_front(leftIndex + 1))
           if (valueUdonTypes.lookup(left) == valueUdonTypes.lookup(right)) {
-            interference[left].push_back(right);
-            interference[right].push_back(left);
+            interference[left].insert(right);
+            interference[right].insert(left);
           }
 
       SmallVector<Value> liveDescriptors;
@@ -1726,27 +1796,10 @@ private:
       for (auto [leftIndex, left] : llvm::enumerate(liveDescriptors))
         for (Value right :
              ArrayRef<Value>(liveDescriptors).drop_front(leftIndex + 1)) {
-          descriptorInterference[left].push_back(right);
-          descriptorInterference[right].push_back(left);
+          descriptorInterference[left].insert(right);
+          descriptorInterference[right].insert(left);
         }
     });
-    for (auto &entry : interference) {
-      SmallVector<Value> &neighbors = entry.second;
-      llvm::sort(neighbors, [&](Value left, Value right) {
-        return valueOrdinals.lookup(left) < valueOrdinals.lookup(right);
-      });
-      neighbors.erase(std::unique(neighbors.begin(), neighbors.end()),
-                      neighbors.end());
-    }
-    for (auto &entry : descriptorInterference) {
-      SmallVector<Value> &neighbors = entry.second;
-      llvm::sort(neighbors, [&](Value left, Value right) {
-        return descriptorOrdinals.lookup(left) <
-               descriptorOrdinals.lookup(right);
-      });
-      neighbors.erase(std::unique(neighbors.begin(), neighbors.end()),
-                      neighbors.end());
-    }
     SmallVector<Value> coloringOrder(colorableValues);
     llvm::sort(coloringOrder, [&](Value left, Value right) {
       size_t leftDegree = interference[left].size();
@@ -2092,7 +2145,6 @@ private:
 
     if ((exportId || function->hasAttr("vrc.compiler_async_completion")) &&
         (!globalPlans.empty() || !typedSpillBanks.empty() ||
-         !constantBanks.empty() ||
          (rawHeapBytes && !externalRawHeapInitialization)))
       emitGlobalInitialization(function.getLoc());
 
@@ -2266,20 +2318,18 @@ private:
         if (auto constant = dyn_cast<arith::ConstantOp>(operation)) {
           auto pooled = pooledConstants.find(constant.getOperation());
           if (pooled != pooledConstants.end()) {
-            const ConstantBankPlan &bank = constantBanks[pooled->second.bank];
+            uint64_t poolIndex = constantPoolWordBase + pooled->second.index;
             std::string index;
-            if (pooled->second.index < 16) {
-              index = immutableSlot("SystemInt32",
-                                    std::to_string(pooled->second.index));
+            if (poolIndex < 16) {
+              index = immutableSlot("SystemInt32", std::to_string(poolIndex));
             } else {
               constexpr StringLiteral indexScratch =
                   "__vrc_constant_bank_index";
               addSlot(indexScratch, "SystemInt32", "0", false);
-              emitI32Literal(constant.getLoc(), pooled->second.index,
-                             indexScratch);
+              emitI32Literal(constant.getLoc(), poolIndex, indexScratch);
               index = indexScratch.str();
             }
-            emitPush(constant.getLoc(), bank.slot);
+            emitPush(constant.getLoc(), rawHeapSlot);
             emitPush(constant.getLoc(), index);
             emitPush(constant.getLoc(),
                      valueSlots.lookup(constant.getResult()));
@@ -4929,11 +4979,11 @@ private:
     constexpr StringLiteral rawValueSlot = "__vrc_raw_global_init_value";
     constexpr StringLiteral rawNextSlot = "__vrc_raw_global_init_next";
     constexpr StringLiteral rawOneSlot = "__vrc_raw_global_init_one";
-    addSlot(rawIndexSlot, "SystemInt32", "0", false);
-    addSlot(rawValueSlot, "SystemInt32", "0", false);
-    addSlot(rawNextSlot, "SystemInt32", "0", false);
-    addSlot(rawOneSlot, "SystemInt32", "1", false);
-    if (!externalRawHeapInitialization)
+    if (!externalRawHeapInitialization) {
+      addSlot(rawIndexSlot, "SystemInt32", "0", false);
+      addSlot(rawValueSlot, "SystemInt32", "0", false);
+      addSlot(rawNextSlot, "SystemInt32", "0", false);
+      addSlot(rawOneSlot, "SystemInt32", "1", false);
       for (host::GlobalOp global : module.getOps<host::GlobalOp>()) {
         auto initial = rawGlobalInitializers.find(global.getSymName());
         auto base = rawGlobalBases.find(global.getSymName());
@@ -4955,6 +5005,7 @@ private:
           emitCopy(location, rawNextSlot, rawIndexSlot);
         }
       }
+    }
     constexpr StringLiteral globalLengthSlot = "__vrc_global_init_length";
     constexpr StringLiteral globalIndexSlot = "__vrc_global_init_index";
     constexpr StringLiteral globalIntValueSlot = "__vrc_global_init_int_value";
@@ -4967,30 +5018,6 @@ private:
     addSlot(globalIntValueSlot, "SystemInt32", "0", false);
     addSlot(globalFloatBitsSlot, "SystemInt32", "0", false);
     addSlot(globalFloatValueSlot, "SystemSingle", "0", false);
-    for (const ConstantBankPlan &bank : constantBanks) {
-      emitI32Literal(location, bank.values.size(), globalLengthSlot);
-      emitPush(location, globalLengthSlot);
-      emitPush(location, bank.slot);
-      emitExtern(location,
-                 "SystemInt32Array.__ctor__SystemInt32__SystemInt32Array");
-      for (auto [index, value] : llvm::enumerate(bank.values)) {
-        if (!value)
-          continue;
-        std::string indexSlot;
-        if (index < 16) {
-          indexSlot = immutableSlot("SystemInt32", std::to_string(index));
-        } else {
-          emitI32Literal(location, index, globalIndexSlot);
-          indexSlot = globalIndexSlot.str();
-        }
-        emitI32Literal(location, value, globalIntValueSlot);
-        emitPush(location, bank.slot);
-        emitPush(location, indexSlot);
-        emitPush(location, globalIntValueSlot);
-        emitExtern(location, "SystemInt32Array.__Set__SystemInt32_SystemInt32__"
-                             "SystemVoid");
-      }
-    }
     for (const std::string &key : typedSpillBankOrder) {
       const TypedSpillBankPlan &bank = typedSpillBanks.at(key);
       emitI32Literal(location, bank.length, globalLengthSlot);
@@ -5121,7 +5148,8 @@ private:
   llvm::DenseMap<Value, std::string> interproceduralValueSlots;
   llvm::DenseSet<Operation *> materializedConstants;
   llvm::DenseMap<Operation *, ConstantPoolLocation> pooledConstants;
-  SmallVector<ConstantBankPlan> constantBanks;
+  SmallVector<uint32_t> constantPoolValues;
+  uint64_t constantPoolWordBase = 0;
   llvm::StringMap<std::string> scalarRegisterSlots;
   llvm::StringMap<std::string> asyncPersistentSlots;
   llvm::StringMap<GlobalPlan> globalPlans;
@@ -5229,9 +5257,11 @@ struct LowerUdonHLToUdonAsmPass
       }
       baseAddresses = *materialized;
     }
-    // The textual UASM target contributes one runtime extern address after
-    // this MLIR-level accounting. Keep that address reserved here.
-    constexpr unsigned targetAddressReserve = 1;
+    // Final Unity material slots and textual-UASM legalization contribute
+    // data/extern addresses after this MLIR-level accounting. Keep optional
+    // address caches away from the hard 512-address ceiling; semantic slots
+    // still receive an explicit capacity diagnostic below.
+    constexpr unsigned targetAddressReserve = 64;
     unsigned rawAddressCacheLimit =
         baseAddresses + targetAddressReserve < addressLimit
             ? addressLimit - targetAddressReserve - baseAddresses

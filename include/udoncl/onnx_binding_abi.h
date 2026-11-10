@@ -60,6 +60,10 @@ udononnxStatus_t udononnxBindingStateBindOutput(
     uint32_t buffer_generation, uint32_t byte_offset, uint32_t byte_length,
     udonclDataType_t data_type, uint32_t rank, const int32_t *dimensions);
 udononnxStatus_t
+udononnxBindingStateAllocateBuffer(void *state_storage, uint32_t output,
+                                   uint32_t byte_capacity,
+                                   udonclBufferHandle_t *buffer);
+udononnxStatus_t
 udononnxBindingStateBindTensor(void *state_storage, uint32_t output,
                                uint32_t tensor_index, uint32_t buffer_slot,
                                uint32_t buffer_generation, uint32_t byte_offset,

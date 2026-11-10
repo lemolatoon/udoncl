@@ -13,6 +13,13 @@ def FinalizeONNXHostPass : Pass<"udoncl-finalize-onnx-host", "mlir::ModuleOp"> {
   let summary = "Lower portable ONNX library calls to the Udon Host ABI and session exports";
   let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "mlir::arith::ArithDialect", "mlir::cf::ControlFlowDialect", "mlir::func::FuncDialect", "mlir::LLVM::LLVMDialect"];
 }
+def EmitONNXHostMetadataPass : Pass<"udoncl-emit-onnx-host-metadata", "mlir::ModuleOp"> {
+  let summary = "Write compact compiler-owned ONNX Host artifact metadata";
+  let options = [
+    Option<"outputPath", "output", "std::string", /*default=*/"",
+           "Metadata JSON output path">
+  ];
+}
 def SubstituteRuntimeIntrinsicsPass : Pass<"vrc-substitute-runtime-intrinsics", "mlir::ModuleOp"> {
   let summary = "Replace typed __vrc_* calls after UdonHL construction; preserve C runtime ownership";
   let dependentDialects = ["::vrc::vrc::VRCDialect"];

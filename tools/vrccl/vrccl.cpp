@@ -305,6 +305,9 @@ cl::opt<bool> emitUnityLibrary(
 cl::opt<bool> omitIntermediateIR(
     "omit-intermediate-ir",
     cl::desc("Omit diagnostic MLIR snapshots from a Unity library bundle"));
+cl::opt<bool> debugCompilerPhases(
+    "debug-compiler-phases",
+    cl::desc("Print coarse compiler phase boundaries for diagnostics"));
 cl::opt<bool> runtimeValidation(
     "runtime-validation",
     cl::desc("Record that read/write physical-resource alias validation is "
@@ -340,13 +343,26 @@ cl::opt<std::string> outputDirectory("o",
 // Validate and generate all content before touching existing assets. A fresh
 // directory is published with one rename; identical existing bundles are
 // reused.
-bool publish(const std::map<std::string, std::string> &files) {
+bool publish(const std::map<std::string, std::string> &files,
+             const std::map<std::string, std::string> &externalFiles = {}) {
   if (sys::fs::exists(outputDirectory)) {
     for (const auto &file : files) {
       SmallString<256> path(outputDirectory);
       sys::path::append(path, file.first);
       auto existing = MemoryBuffer::getFile(path);
       if (!existing || (*existing)->getBuffer() != file.second) {
+        errs() << "output directory already exists with different content; "
+                  "choose a new -o directory\n";
+        return false;
+      }
+    }
+    for (const auto &file : externalFiles) {
+      SmallString<256> path(outputDirectory);
+      sys::path::append(path, file.first);
+      auto existing = MemoryBuffer::getFile(path, false, false);
+      auto source = MemoryBuffer::getFile(file.second, false, false);
+      if (!existing || !source ||
+          (*existing)->getBuffer() != (*source)->getBuffer()) {
         errs() << "output directory already exists with different content; "
                   "choose a new -o directory\n";
         return false;
@@ -404,6 +420,26 @@ bool publish(const std::map<std::string, std::string> &files) {
     }
     out.keep();
   }
+  for (const auto &file : externalFiles) {
+    if (!ok)
+      break;
+    SmallString<256> path(temporary);
+    sys::path::append(path, file.first);
+    SmallString<256> directory(path);
+    sys::path::remove_filename(directory);
+    if (auto error = sys::fs::create_directories(directory)) {
+      errs() << "cannot create Unity bundle resource directory '" << directory
+             << "': " << error.message() << "\n";
+      ok = false;
+      break;
+    }
+    if (auto error = sys::fs::copy_file(file.second, path)) {
+      errs() << "cannot copy Unity bundle resource '" << file.second << "' to '"
+             << path << "': " << error.message() << "\n";
+      ok = false;
+      break;
+    }
+  }
   if (ok) {
     if (auto error = sys::fs::rename(temporary, outputDirectory)) {
       errs() << "cannot publish Unity bundle '" << temporary << "' to '"
@@ -432,8 +468,28 @@ bool dottedIdentifier(StringRef value) {
          });
 }
 
+std::string onnxPublicBufferName(StringRef name, bool output, int64_t index,
+                                 std::set<std::string> &used) {
+  std::string result;
+  result.reserve(name.size());
+  for (char character : name) {
+    bool valid = isAlnum(character) || character == '_';
+    result.push_back(valid ? character : '_');
+  }
+  if (result.empty() || !(isAlpha(result.front()) || result.front() == '_'))
+    result = "tensor_" + result;
+  if (used.insert(result).second)
+    return result;
+  result += output ? "_output_" : "_input_";
+  result += std::to_string(index);
+  if (!used.insert(result).second)
+    return {};
+  return result;
+}
+
 struct UnityBuffer {
   int64_t id;
+  int64_t allocationBytes;
   int64_t logicalBytes;
   int64_t width;
   int64_t height;
@@ -472,6 +528,8 @@ parseUnityBuffers(const json::Object &config) {
     auto id = entry ? entry->getInteger("id") : std::nullopt;
     auto name = entry ? entry->getString("name") : std::nullopt;
     auto bytes = entry ? entry->getInteger("byte_size") : std::nullopt;
+    auto logicalBytes =
+        entry ? entry->getInteger("logical_byte_size") : std::nullopt;
     auto explicitWidth = entry ? entry->getInteger("width") : std::nullopt;
     auto explicitHeight = entry ? entry->getInteger("height") : std::nullopt;
     auto elementType = entry ? entry->getString("element_type") : std::nullopt;
@@ -480,10 +538,12 @@ parseUnityBuffers(const json::Object &config) {
     constexpr int64_t maximumBytes = 8192LL * 8192LL * 4LL;
     bool semanticBinding =
         elementType && publicAccess &&
-        (*elementType == "float32" || *elementType == "int32") &&
+        (*elementType == "float32" || *elementType == "int32" ||
+         *elementType == "int64") &&
         (*publicAccess == "input" || *publicAccess == "output");
     if (!id || *id <= 0 || *id > INT32_MAX || !name || !identifier(*name) ||
         !bytes || *bytes <= 0 || *bytes > maximumBytes ||
+        (logicalBytes && (*logicalBytes < 0 || *logicalBytes > *bytes)) ||
         (explicitWidth.has_value() != explicitHeight.has_value()) ||
         !ids.insert(*id).second || !names.insert(name->str()).second ||
         ((elementType || publicAccess) && !semanticBinding)) {
@@ -505,12 +565,108 @@ parseUnityBuffers(const json::Object &config) {
     int64_t height = explicitHeight ? *explicitHeight
                      : shapeFits    ? dispatchShape->second
                                     : (pixels + width - 1) / width;
-    result.push_back({*id, *bytes, width, height, name->str(),
-                      "__udoncl_buffer_" + std::to_string(*id),
+    result.push_back({*id, *bytes, logicalBytes.value_or(*bytes), width, height,
+                      name->str(), "__udoncl_buffer_" + std::to_string(*id),
                       elementType ? elementType->str() : "",
                       publicAccess ? publicAccess->str() : ""});
   }
   return result;
+}
+
+LogicalResult generateOnnxPublicBufferConfig(ModuleOp module,
+                                             json::Object &config) {
+  if (!config.getBoolean("generate_onnx_public_buffers").value_or(false))
+    return success();
+  auto binding = module->getAttrOfType<DictionaryAttr>("udoncl.onnx_binding");
+  auto inputs = binding ? binding.getAs<ArrayAttr>("inputs") : ArrayAttr();
+  auto outputs = binding ? binding.getAs<ArrayAttr>("outputs") : ArrayAttr();
+  if (!binding || !inputs || !outputs) {
+    module.emitError(
+        "generate_onnx_public_buffers requires ONNX binding metadata");
+    return failure();
+  }
+
+  json::Array generated;
+  std::set<std::string> names;
+  std::map<int64_t, int64_t> publicBytes;
+  int64_t nextId = 1;
+  auto append = [&](ArrayAttr values, bool output) -> LogicalResult {
+    for (mlir::Attribute value : values) {
+      auto entry = dyn_cast<DictionaryAttr>(value);
+      auto index = entry ? entry.getAs<IntegerAttr>("index") : IntegerAttr();
+      auto name = entry ? entry.getAs<StringAttr>("name") : StringAttr();
+      auto dataType =
+          entry ? entry.getAs<StringAttr>("data_type") : StringAttr();
+      auto logicalBytes =
+          entry ? entry.getAs<IntegerAttr>("logical_bytes") : IntegerAttr();
+      auto capacityBytes =
+          entry ? entry.getAs<IntegerAttr>("capacity_bytes") : IntegerAttr();
+      if (!index || !name || !dataType || !logicalBytes || !capacityBytes ||
+          logicalBytes.getInt() < 0 || capacityBytes.getInt() <= 0 ||
+          logicalBytes.getInt() > capacityBytes.getInt() ||
+          (dataType.getValue() != "float32" && dataType.getValue() != "int32" &&
+           dataType.getValue() != "int64")) {
+        module.emitError("ONNX public tensor has an unsupported binding ABI");
+        return failure();
+      }
+      std::string bufferName =
+          onnxPublicBufferName(name.getValue(), output, index.getInt(), names);
+      if (bufferName.empty()) {
+        module.emitError("ONNX public tensor names are not uniquely mappable");
+        return failure();
+      }
+      int64_t id = nextId++;
+      publicBytes[id] = capacityBytes.getInt();
+      generated.push_back(json::Object{
+          {"id", id},
+          {"name", std::move(bufferName)},
+          {"byte_size", capacityBytes.getInt()},
+          {"logical_byte_size", logicalBytes.getInt()},
+          {"element_type", dataType.getValue()},
+          {"public_access", output ? "output" : "input"},
+      });
+    }
+    return success();
+  };
+  if (failed(append(inputs, false)) || failed(append(outputs, true)))
+    return failure();
+
+  auto handleCapacity =
+      module->getAttrOfType<IntegerAttr>("udoncl.mutable_handle_capacity");
+  auto mutableBufferBytes =
+      module->getAttrOfType<DenseI64ArrayAttr>("udoncl.mutable_buffer_bytes");
+  if (!handleCapacity || !mutableBufferBytes ||
+      handleCapacity.getInt() !=
+          static_cast<int64_t>(mutableBufferBytes.size()) ||
+      handleCapacity.getInt() < nextId - 1) {
+    module.emitError("ONNX mutable handle capacity is inconsistent with I/O");
+    return failure();
+  }
+  for (int64_t id = 1; id <= handleCapacity.getInt(); ++id) {
+    int64_t allocationBytes = mutableBufferBytes.asArrayRef()[id - 1];
+    if (allocationBytes <= 0) {
+      module.emitError("generated ONNX buffer has a non-positive capacity");
+      return failure();
+    }
+    auto publicBuffer = publicBytes.find(id);
+    if (publicBuffer != publicBytes.end()) {
+      if (publicBuffer->second != allocationBytes) {
+        module.emitError() << "generated ONNX public buffer " << id
+                           << " has inconsistent physical capacity";
+        return failure();
+      }
+      continue;
+    }
+    std::string name = "private_" + std::to_string(id);
+    if (!names.insert(name).second) {
+      module.emitError("generated ONNX private buffer name collision");
+      return failure();
+    }
+    generated.push_back(json::Object{
+        {"id", id}, {"name", std::move(name)}, {"byte_size", allocationBytes}});
+  }
+  config["buffers"] = std::move(generated);
+  return success();
 }
 
 FailureOr<SmallVector<const json::Object *>>
@@ -606,8 +762,8 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
   for (const UnityBuffer &buffer : buffers)
     poolEntries.push_back(builder.getDictionaryAttr(
         {builder.getNamedAttr("id", builder.getI32IntegerAttr(buffer.id)),
-         builder.getNamedAttr("logical_bytes",
-                              builder.getI32IntegerAttr(buffer.logicalBytes)),
+         builder.getNamedAttr("logical_bytes", builder.getI32IntegerAttr(
+                                                   buffer.allocationBytes)),
          builder.getNamedAttr("heap_slot",
                               builder.getStringAttr(buffer.heapSlot))}));
   module->setAttr("vrc.unity_buffer_pool", builder.getArrayAttr(poolEntries));
@@ -626,7 +782,7 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
         }
     if (!logicalId)
       continue;
-    if (!buffer || !constant || constant.value() != buffer->logicalBytes)
+    if (!buffer || !constant || constant.value() != buffer->allocationBytes)
       return allocation.emitError(
           "constant Unity buffer allocation must match its configured logical "
           "id and byte size");
@@ -635,7 +791,7 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
     allocation->setAttr("vrc.unity_heap_slot",
                         builder.getStringAttr(buffer->heapSlot));
     allocation->setAttr("vrc.unity_logical_bytes",
-                        builder.getI32IntegerAttr(buffer->logicalBytes));
+                        builder.getI32IntegerAttr(buffer->allocationBytes));
     bound.try_emplace(allocation.getOperation(), buffer);
   }
   for (auto copy : copies) {
@@ -655,8 +811,8 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
         sourceBuffer == bound.end() || destinationBuffer == bound.end() ||
         !sourceOffset || sourceOffset.value() != 0 || !destinationOffset ||
         destinationOffset.value() != 0 || !byteSize ||
-        byteSize.value() != sourceBuffer->second->logicalBytes ||
-        byteSize.value() != destinationBuffer->second->logicalBytes ||
+        byteSize.value() != sourceBuffer->second->allocationBytes ||
+        byteSize.value() != destinationBuffer->second->allocationBytes ||
         sourceBuffer->second->width != destinationBuffer->second->width ||
         sourceBuffer->second->height != destinationBuffer->second->height) {
       copy.emitError("initial Unity CopyBuffer requires distinct direct "
@@ -850,6 +1006,7 @@ json::Array unityBufferManifest(ArrayRef<UnityBuffer> buffers) {
         {"name", buffer.name},
         {"heap_slot", buffer.heapSlot},
         {"logical_bytes", buffer.logicalBytes},
+        {"capacity_bytes", buffer.allocationBytes},
         {"width", buffer.width},
         {"height", buffer.height},
         {"format", "rgba8_unorm"},
@@ -922,16 +1079,24 @@ std::optional<json::Object> unityOnnxBindingManifest(ModuleOp module) {
       auto rank = entry ? entry.getAs<IntegerAttr>("rank") : IntegerAttr();
       auto dimensions = entry ? entry.getAs<DenseI64ArrayAttr>("dimensions")
                               : DenseI64ArrayAttr();
-      if (!index || !name || !dataType || !rank || !dimensions)
+      auto logicalBytes =
+          entry ? entry.getAs<IntegerAttr>("logical_bytes") : IntegerAttr();
+      auto capacityBytes =
+          entry ? entry.getAs<IntegerAttr>("capacity_bytes") : IntegerAttr();
+      if (!index || !name || !dataType || !rank || !dimensions ||
+          !logicalBytes || !capacityBytes)
         return std::nullopt;
       json::Array shape;
       for (int64_t dimension : dimensions.asArrayRef())
         shape.push_back(dimension);
-      result.push_back(json::Object{{"index", index.getInt()},
-                                    {"name", name.getValue()},
-                                    {"data_type", dataType.getValue()},
-                                    {"rank", rank.getInt()},
-                                    {"dimensions", std::move(shape)}});
+      result.push_back(
+          json::Object{{"index", index.getInt()},
+                       {"name", name.getValue()},
+                       {"data_type", dataType.getValue()},
+                       {"rank", rank.getInt()},
+                       {"dimensions", std::move(shape)},
+                       {"logical_bytes", logicalBytes.getInt()},
+                       {"capacity_bytes", capacityBytes.getInt()}});
     }
     return result;
   };
@@ -942,7 +1107,7 @@ std::optional<json::Object> unityOnnxBindingManifest(ModuleOp module) {
   json::Object physicalJson;
   for (StringRef name :
        {"create_symbol", "bind_tensor_symbol", "enqueue_initialize_symbol",
-        "enqueue_run_symbol", "dispose_symbol"}) {
+        "bind_all_symbol", "enqueue_run_symbol", "dispose_symbol"}) {
     auto value = physical.getAs<StringAttr>(name);
     if (!value)
       return std::nullopt;
@@ -1198,10 +1363,22 @@ bool configureUnityExports(ModuleOp module, const json::Object &config,
 }
 
 LogicalResult optimizeUnityHostStorage(ModuleOp module) {
-  // All Host modules are linked at this point. Inline before scalar promotion
-  // so fixed buffers, descriptors, shapes, OpenCL objects and wrapper calls
-  // become visible to whole-program constant propagation and dead-code
-  // elimination instead of surviving as generic Udon runtime work.
+  // Preserve may-suspend call boundaries for distinct static coroutine frames.
+  // Synchronous helpers remain available to whole-program scalar promotion.
+  // The Func inliner honors no_inline on the callable.
+  SmallVector<std::string> protectedFunctions;
+  const bool debugCompilerPhases = module->hasAttr("vrc.debug_compiler_phases");
+  for (func::FuncOp function : module.getOps<func::FuncOp>()) {
+    auto effect = function->getAttrOfType<StringAttr>("vrc.async_effect");
+    const bool maySuspend = effect && effect.getValue() == "may_suspend";
+    if (maySuspend && !function.getNoInline()) {
+      function.setNoInline(true);
+      protectedFunctions.push_back(function.getSymName().str());
+      if (debugCompilerPhases)
+        llvm::errs() << "udonclc-inline=preserve function="
+                     << function.getSymName() << " reason=may-suspend\n";
+    }
+  }
   PassManager optimization(module.getContext());
   optimization.addPass(createInlinerPass());
   optimization.addPass(createSROA());
@@ -1211,7 +1388,31 @@ LogicalResult optimizeUnityHostStorage(ModuleOp module) {
   optimization.addPass(createCSEPass());
   optimization.addPass(createCanonicalizerPass());
   optimization.addPass(createSymbolDCEPass());
-  return optimization.run(module);
+  LogicalResult result = optimization.run(module);
+  for (const std::string &name : protectedFunctions)
+    if (auto function = module.lookupSymbol<func::FuncOp>(name))
+      function.setNoInline(false);
+  return result;
+}
+
+void printCompilerIRStats(ModuleOp module, StringRef stage) {
+  if (!module->hasAttr("vrc.debug_compiler_phases"))
+    return;
+  uint64_t operations = 0;
+  uint64_t blocks = 0;
+  uint64_t functions = 0;
+  uint64_t asyncFunctions = 0;
+  module.walk([&](Operation *operation) {
+    ++operations;
+    for (Region &region : operation->getRegions())
+      blocks += region.getBlocks().size();
+    functions += isa<func::FuncOp>(operation);
+    asyncFunctions += isa<async::FuncOp>(operation);
+  });
+  llvm::errs() << "udonclc-ir-stats stage=" << stage
+               << " operations=" << operations << " blocks=" << blocks
+               << " functions=" << functions
+               << " async_functions=" << asyncFunctions << '\n';
 }
 
 LogicalResult propagateUnityHostAsyncEffects(ModuleOp module) {
@@ -2378,6 +2579,12 @@ int main(int argc, char **argv) {
   InitLLVM init(argc, argv);
   cl::ParseCommandLineOptions(argc, argv,
                               "udoncl C/OpenCL C artifact compiler\n");
+  auto phase = [](StringRef name) {
+    if (debugCompilerPhases) {
+      errs() << "udonclc-phase=" << name << "\n";
+      errs().flush();
+    }
+  };
   if (int(emitBundle) + int(emitLLVMBundle) + int(checkRequest) +
           int(emitNativeDevice) + int(emitUnityLibrary) !=
       1) {
@@ -2430,6 +2637,7 @@ int main(int argc, char **argv) {
   MLIRContext context(registry);
   OwningOpRef<ModuleOp> module;
   std::map<std::string, std::string> files;
+  std::map<std::string, std::string> externalFiles;
   bool gatherProfile = false;
   bool unityGatherProfile = false;
   std::optional<json::Object> unityConfig;
@@ -2440,6 +2648,7 @@ int main(int argc, char **argv) {
   SmallVector<int32_t> unityConfiguredKernelIds;
   std::set<std::string> annotatedHostExports;
   if (emitUnityLibrary) {
+    phase("unity-prepare");
     auto input = MemoryBuffer::getFile(inputFilename);
     if (!input || (hostLLVM.empty() == hostMLIR.empty()) ||
         (!hostLibraryLLVM.empty() && hostMLIR.empty())) {
@@ -2459,6 +2668,8 @@ int main(int argc, char **argv) {
       return 1;
     }
     unityConfig = *object;
+    if (unityConfig->getBoolean("omit_intermediate_ir").value_or(false))
+      omitIntermediateIR = true;
     auto parsedDeviceConfigs = parseUnityDeviceKernels(*unityConfig);
     if (failed(parsedDeviceConfigs))
       return 1;
@@ -2659,6 +2870,12 @@ int main(int argc, char **argv) {
           return 1;
       }
     }
+    if (failed(generateOnnxPublicBufferConfig(*module, *unityConfig)))
+      return 1;
+    auto generatedBuffers = parseUnityBuffers(*unityConfig);
+    if (failed(generatedBuffers))
+      return 1;
+    unityBuffers = std::move(*generatedBuffers);
     if (!omitIntermediateIR) {
       raw_string_ostream recovered(files["frontend.recovered.mlir"]);
       module->print(recovered);
@@ -2719,6 +2936,8 @@ int main(int argc, char **argv) {
     return 1;
   (*module)->setAttr("vrc.runtime_validation.read_write_alias",
                      BoolAttr::get(&context, runtimeValidation));
+  if (debugCompilerPhases)
+    (*module)->setAttr("vrc.debug_compiler_phases", UnitAttr::get(&context));
   PassManager manager(&context);
   if (emitUnityLibrary) {
     // Immutable tensor payloads can be hundreds of megabytes. StaticBufferOps
@@ -2736,16 +2955,31 @@ int main(int argc, char **argv) {
       configuredKernelIds.push_back(kernelId);
       unityConfiguredKernelIds.push_back(static_cast<int32_t>(kernelId));
     }
-    if (failed(propagateUnityHostAsyncEffects(*module)) ||
-        failed(optimizeUnityHostStorage(*module)) || failed(verify(*module)))
+    phase("host-effects");
+    if (failed(propagateUnityHostAsyncEffects(*module)))
       return 1;
+    phase("host-storage");
+    if (failed(optimizeUnityHostStorage(*module)) || failed(verify(*module)))
+      return 1;
+    phase("async-clone");
     OwningOpRef<ModuleOp> asyncPreview = cast<ModuleOp>((*module)->clone());
-    PassManager asyncPipeline(&context);
-    asyncPipeline.addPass(::vrc::createLowerHostToAsyncPass());
-    asyncPipeline.addPass(createAsyncFuncToAsyncRuntimePass());
-    asyncPipeline.addPass(::vrc::createPrepareUdonAsyncRuntimePass());
-    if (failed(asyncPipeline.run(*asyncPreview)) ||
-        failed(verify(*asyncPreview)))
+    printCompilerIRStats(*asyncPreview, "host-storage");
+    auto runAsyncStage = [&](StringRef name,
+                             std::unique_ptr<Pass> pass) -> LogicalResult {
+      phase(name);
+      PassManager stage(&context);
+      stage.addPass(std::move(pass));
+      if (failed(stage.run(*asyncPreview)) || failed(verify(*asyncPreview)))
+        return failure();
+      printCompilerIRStats(*asyncPreview, name);
+      return success();
+    };
+    if (failed(runAsyncStage("host-to-async",
+                             ::vrc::createLowerHostToAsyncPass())) ||
+        failed(runAsyncStage("async-func-to-runtime",
+                             createAsyncFuncToAsyncRuntimePass())) ||
+        failed(runAsyncStage("prepare-udon-async-runtime",
+                             ::vrc::createPrepareUdonAsyncRuntimePass())))
       return 1;
     if (!omitIntermediateIR) {
       raw_string_ostream asyncIR(files["host.async-runtime.mlir"]);
@@ -2755,9 +2989,11 @@ int main(int argc, char **argv) {
 
     PassManager udonAsyncPipeline(&context);
     udonAsyncPipeline.addPass(::vrc::createLowerUdonAsyncRuntimePass());
+    phase("async-to-udon-runtime");
     if (failed(udonAsyncPipeline.run(*asyncPreview)) ||
         failed(verify(*asyncPreview)))
       return 1;
+    phase("bind-async-buffers");
     auto asyncBufferBinding = bindUnityBufferOperations(
         *asyncPreview, unityBuffers, configuredKernelIds, unityStaticTensors);
     if (failed(asyncBufferBinding))
@@ -2771,10 +3007,12 @@ int main(int argc, char **argv) {
       udonAsyncIR << "\n";
     }
 
+    phase("host-to-udon-hl");
     manager.addPass(::vrc::createLowerHostToUdonHLPass());
     manager.addPass(::vrc::createSubstituteRuntimeIntrinsicsPass());
     if (failed(manager.run(*module)) || failed(verify(*module)))
       return 1;
+    phase("bind-sync-buffers");
     auto bufferBinding = bindUnityBufferOperations(
         *module, unityBuffers, configuredKernelIds, unityStaticTensors);
     if (failed(bufferBinding))
@@ -2821,6 +3059,9 @@ int main(int argc, char **argv) {
       return 1;
     }
     (*device)["buffers"] = unityBufferManifest(unityBuffers);
+    if (auto capacity = (*module)->getAttrOfType<IntegerAttr>(
+            "udoncl.mutable_handle_capacity"))
+      (*device)["mutable_handle_capacity"] = capacity.getInt();
     if (auto bindingNamespace =
             (*module)->getAttrOfType<StringAttr>("vrc.binding_namespace")) {
       auto bindingClass =
@@ -2850,6 +3091,7 @@ int main(int argc, char **argv) {
       (*manifest["program"].getAsObject())["buffer_copy_program_slot"] = true;
     manifest["ready_for_unity"] = true;
     if (unityDeviceModule) {
+      phase("device-lowering");
       PassManager deviceLowering(&context);
       if (unityGatherProfile)
         deviceLowering.addPass(::vrc::createLowerGatherDevicePass());
@@ -2889,6 +3131,7 @@ int main(int argc, char **argv) {
       udon.addPass(::vrc::createLowerHostToUdonHLPass());
       udon.addPass(::vrc::createSubstituteRuntimeIntrinsicsPass());
     }
+    phase("udon-hl-to-asm");
     udon.addPass(::vrc::createLowerUdonHLToUdonAsmPass());
     if (failed(udon.run(physicalModule)) || failed(verify(physicalModule)))
       return 1;
@@ -2915,6 +3158,7 @@ int main(int argc, char **argv) {
       });
     }
     if (ArrayAttr tensors = unityStaticTensors) {
+      phase("static-tensor-packaging");
       if (auto data =
               physicalModule->getAttrOfType<ArrayAttr>("udonasm.data")) {
         bool hasStaticTensorTable =
@@ -2957,26 +3201,34 @@ int main(int argc, char **argv) {
             tensor ? tensor.getAs<StringAttr>("sha256") : StringAttr();
         auto data = tensor ? tensor.getAs<DenseElementsAttr>("data")
                            : DenseElementsAttr();
-        FailureOr<std::string> bytes = failure();
+        FailureOr<std::string> inlineBytes = failure();
+        std::unique_ptr<MemoryBuffer> externalBuffer;
+        std::string externalPath;
+        StringRef bytes;
         if (data) {
-          bytes = denseTensorBytes(data);
+          inlineBytes = denseTensorBytes(data);
+          if (succeeded(inlineBytes))
+            bytes = *inlineBytes;
         } else if (id && !staticTensorDirectory.empty()) {
           SmallString<256> sourcePath(staticTensorDirectory);
           sys::path::append(sourcePath,
                             "tensor_" + std::to_string(id.getInt()) + ".bytes");
           auto source = MemoryBuffer::getFile(sourcePath, false, false);
-          if (source)
-            bytes = std::string((*source)->getBuffer());
+          if (source) {
+            externalBuffer = std::move(*source);
+            externalPath = sourcePath.str().str();
+            bytes = externalBuffer->getBuffer();
+          }
         }
         if (!id || !name || !dataType || !shape || !layout || !alignment ||
-            !byteStrides || !byteLength || !sha256 || failed(bytes) ||
+            !byteStrides || !byteLength || !sha256 || bytes.empty() ||
             layout.getValue() != "row_major_contiguous" ||
             alignment.getInt() < 1 || byteStrides.size() != shape.size() ||
             byteLength.getInt() < 1 ||
-            static_cast<uint64_t>(byteLength.getInt()) != bytes->size() ||
+            static_cast<uint64_t>(byteLength.getInt()) != bytes.size() ||
             llvm::toHex(llvm::SHA256::hash(ArrayRef<uint8_t>(
-                            reinterpret_cast<const uint8_t *>(bytes->data()),
-                            bytes->size())),
+                            reinterpret_cast<const uint8_t *>(bytes.data()),
+                            bytes.size())),
                         true) != sha256.getValue()) {
           errs() << "immutable static tensor metadata is malformed\n";
           return 1;
@@ -2985,7 +3237,10 @@ int main(int argc, char **argv) {
         std::string resourceName = "static_tensor_" + std::to_string(tensorId);
         std::string path =
             "static-tensors/tensor_" + std::to_string(tensorId) + ".bytes";
-        files[path] = std::move(*bytes);
+        if (externalBuffer)
+          externalFiles[path] = std::move(externalPath);
+        else
+          files[path] = std::move(*inlineBytes);
         int64_t pixels = llvm::divideCeil(byteLength.getInt(), int64_t{4});
         int64_t width = std::min<int64_t>(pixels, 8192);
         int64_t height = llvm::divideCeil(pixels, width);
@@ -3056,6 +3311,7 @@ int main(int argc, char **argv) {
     if (unityUsesBufferCopy)
       appendUnityCopyMaterialSlot(physicalModule);
     appendUnityDispatchMaterialSlots(physicalModule, unityConfiguredKernelIds);
+    phase("emit-udon-assembly");
     std::string assembly;
     raw_string_ostream assemblyOut(assembly);
     if (failed(::vrc::emitUdonAssembly(physicalModule, assemblyOut)))
@@ -3071,7 +3327,8 @@ int main(int argc, char **argv) {
     }
     files["manifest.json"] =
         formatv("{0:2}\n", json::Value(std::move(manifest))).str();
-    if (!publish(files))
+    phase("publish");
+    if (!publish(files, externalFiles))
       return 1;
     outs() << "Unity Host library emitted to " << outputDirectory << "\n";
     return 0;

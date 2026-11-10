@@ -73,6 +73,7 @@ struct AsyncExportBinding {
 struct PublicBufferBinding {
   int64_t id = 0;
   int64_t words = 0;
+  int64_t elements = 0;
   std::string suffix;
   std::string elementType;
   std::string access;
@@ -178,7 +179,7 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
       const json::Object *buffer = value.getAsObject();
       auto id = buffer ? buffer->getInteger("id") : std::nullopt;
       auto bytes = buffer ? buffer->getInteger("logical_bytes") : std::nullopt;
-      if (!id || !bytes || *id <= 0 || *bytes <= 0 || (*bytes & 3) != 0)
+      if (!id || !bytes || *id <= 0 || *bytes < 0 || (*bytes & 3) != 0)
         return invalid("binding manifest contains an invalid Device buffer");
       auto elementType = buffer->getString("element_type");
       auto access = buffer->getString("public_access");
@@ -188,10 +189,14 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
       if (!elementType)
         continue;
       auto name = buffer->getString("name");
-      if (!name || (*elementType != "float32" && *elementType != "int32") ||
+      int64_t elementBytes = *elementType == "int64" ? 8 : 4;
+      if (!name ||
+          (*elementType != "float32" && *elementType != "int32" &&
+           *elementType != "int64") ||
+          (*bytes % elementBytes) != 0 ||
           (*access != "input" && *access != "output"))
         return invalid("Device buffer has an unsupported public transfer ABI");
-      publicBuffers.push_back({*id, *bytes / 4,
+      publicBuffers.push_back({*id, *bytes / 4, *bytes / elementBytes,
                                publicIoName(*name, indexed.index()),
                                elementType->str(), access->str()});
       hasPublicInput |= *access == "input";
@@ -252,6 +257,7 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
     output
         << "        private float[] pendingFloatReadback;\n"
            "        private int[] pendingIntReadback;\n"
+           "        private long[] pendingLongReadback;\n"
            "        private UdonSharpBehaviour pendingReadbackReceiver;\n"
            "        private string pendingReadbackEvent;\n"
            "        private int pendingReadbackIndex;\n"
@@ -372,6 +378,7 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
   if (hasPublicInput) {
     methods.insert("TryWriteFloatBuffer");
     methods.insert("TryWriteIntBuffer");
+    methods.insert("TryWriteLongBuffer");
     output << R"(
         public int TryWriteFloatBuffer(int bufferId, float[] source)
         {
@@ -398,11 +405,29 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
                 pixels[word] = PackWord(source[word]);
             return UploadWords(index, pixels);
         }
+
+        public int TryWriteLongBuffer(int bufferId, long[] source)
+        {
+            if (source == null)
+                return StatusInvalidArgument;
+            int index = ValidateTransfer(bufferId, source.Length * 2);
+            if (index < 0)
+                return index;
+            Color32[] pixels = new Color32[deviceBuffers[index].width * deviceBuffers[index].height];
+            for (int element = 0; element < source.Length; ++element)
+            {
+                long value = source[element];
+                pixels[element * 2] = PackWord((int)value);
+                pixels[element * 2 + 1] = PackWord((int)(value >> 32));
+            }
+            return UploadWords(index, pixels);
+        }
 )";
   }
   if (hasPublicOutput) {
     methods.insert("StartReadFloatBuffer");
     methods.insert("StartReadIntBuffer");
+    methods.insert("StartReadLongBuffer");
     methods.insert("GetLastReadbackStatus");
     output << R"(
         private int StartReadback(int bufferId, int words, UdonSharpBehaviour receiver, string completionEvent)
@@ -428,6 +453,7 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
             readbackBusy = false;
             pendingFloatReadback = null;
             pendingIntReadback = null;
+            pendingLongReadback = null;
             UdonSharpBehaviour receiver = pendingReadbackReceiver;
             string completionEvent = pendingReadbackEvent;
             pendingReadbackReceiver = null;
@@ -445,6 +471,7 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
                 return StatusBusy;
             pendingFloatReadback = destination;
             pendingIntReadback = null;
+            pendingLongReadback = null;
             int status = StartReadback(bufferId, destination.Length, receiver, completionEvent);
             if (status != StatusSuccess)
                 pendingFloatReadback = null;
@@ -459,9 +486,25 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
                 return StatusBusy;
             pendingIntReadback = destination;
             pendingFloatReadback = null;
+            pendingLongReadback = null;
             int status = StartReadback(bufferId, destination.Length, receiver, completionEvent);
             if (status != StatusSuccess)
                 pendingIntReadback = null;
+            return status;
+        }
+
+        public int StartReadLongBuffer(int bufferId, long[] destination, UdonSharpBehaviour receiver, string completionEvent)
+        {
+            if (destination == null)
+                return StatusInvalidArgument;
+            if (readbackBusy)
+                return StatusBusy;
+            pendingLongReadback = destination;
+            pendingFloatReadback = null;
+            pendingIntReadback = null;
+            int status = StartReadback(bufferId, destination.Length * 2, receiver, completionEvent);
+            if (status != StatusSuccess)
+                pendingLongReadback = null;
             return status;
         }
 
@@ -480,23 +523,29 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
       return invalid(Twine("generated U# method collision: ") + method);
     if (buffer.access == "input")
       output << "\n        public int " << method << '('
-             << (buffer.elementType == "float32" ? "float[]" : "int[]")
+             << (buffer.elementType == "float32" ? "float[]"
+                 : buffer.elementType == "int64" ? "long[]"
+                                                 : "int[]")
              << " source)\n"
                 "        {\n"
                 "            return "
              << (buffer.elementType == "float32" ? "TryWriteFloatBuffer("
+                 : buffer.elementType == "int64" ? "TryWriteLongBuffer("
                                                  : "TryWriteIntBuffer(")
              << buffer.id
              << ", source);\n"
                 "        }\n";
     else
       output << "\n        public int " << method << '('
-             << (buffer.elementType == "float32" ? "float[]" : "int[]")
+             << (buffer.elementType == "float32" ? "float[]"
+                 : buffer.elementType == "int64" ? "long[]"
+                                                 : "int[]")
              << " destination, UdonSharpBehaviour receiver, string "
                 "completionEvent)\n"
                 "        {\n"
                 "            return "
              << (buffer.elementType == "float32" ? "StartReadFloatBuffer("
+                 : buffer.elementType == "int64" ? "StartReadLongBuffer("
                                                  : "StartReadIntBuffer(")
              << buffer.id
              << ", destination, receiver, completionEvent);\n"
@@ -960,6 +1009,7 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
                 readbackBusy = false;
                 pendingFloatReadback = null;
                 pendingIntReadback = null;
+                pendingLongReadback = null;
                 pendingReadbackReceiver = null;
                 pendingReadbackEvent = null;
                 pendingReadbackGeneration = 0;
@@ -970,15 +1020,22 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
             bool success = request.TryGetData(pixels, 0);
             if (success)
             {
-                int words = pendingFloatReadback != null ? pendingFloatReadback.Length : pendingIntReadback.Length;
+                int words = pendingFloatReadback != null ? pendingFloatReadback.Length : pendingIntReadback != null ? pendingIntReadback.Length : pendingLongReadback.Length * 2;
                 for (int word = 0; word < words; ++word)
                 {
                     int bits = UnpackWord(pixels[word]);
                     if (pendingFloatReadback != null)
                         pendingFloatReadback[word] = System.BitConverter.Int32BitsToSingle(bits);
-                    else
+                    else if (pendingIntReadback != null)
                         pendingIntReadback[word] = bits;
                 }
+                if (pendingLongReadback != null)
+                    for (int element = 0; element < pendingLongReadback.Length; ++element)
+                    {
+                        long low = (long)UnpackWord(pixels[element * 2]) & 4294967295L;
+                        long high = (long)UnpackWord(pixels[element * 2 + 1]) << 32;
+                        pendingLongReadback[element] = low | high;
+                    }
             }
             CompletePublicReadback(success ? StatusSuccess : StatusExecutionFailure);
 )";

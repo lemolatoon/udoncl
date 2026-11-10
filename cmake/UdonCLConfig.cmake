@@ -245,6 +245,7 @@ function(udoncl_add_onnx_host_library target)
   find_package(Python3 3.12 REQUIRED COMPONENTS Interpreter)
   set(_generated_dir "${CMAKE_CURRENT_BINARY_DIR}/udoncl-onnx/${target}")
   set(_generated_host_mlir "${_generated_dir}/host.mlir")
+  set(_generated_host_metadata "${_generated_dir}/host-metadata.json")
   set(_generated_static_data "${_generated_dir}/static-tensors")
   file(MAKE_DIRECTORY "${_generated_dir}")
   set(_compile_command "${Python3_EXECUTABLE}" "${_UDONCL_ONNX_MLIR_COMPILER}"
@@ -253,7 +254,8 @@ function(udoncl_add_onnx_host_library target)
       --optimizer "${UDONCL_ONNX_OPT_EXECUTABLE}"
       --host-optimizer "${UDONCL_OPT_EXECUTABLE}"
       --lower-to-host
-      --static-data-directory "${_generated_static_data}")
+      --static-data-directory "${_generated_static_data}"
+      --host-metadata "${_generated_host_metadata}")
   foreach(_bound IN LISTS _ARG_DIMENSION_BOUNDS)
     list(APPEND _compile_command --dimension "${_bound}")
   endforeach()
@@ -269,6 +271,19 @@ function(udoncl_add_onnx_host_library target)
     message(FATAL_ERROR
       "ONNX MLIR canonicalization failed for ${_model}:\n${_stdout}${_stderr}")
   endif()
+  if(NOT EXISTS "${_generated_host_metadata}")
+    message(FATAL_ERROR
+      "ONNX Host compiler did not emit ${_generated_host_metadata}")
+  endif()
+  file(READ "${_generated_host_metadata}" _generated_host_metadata_json)
+  string(JSON _metadata_schema GET "${_generated_host_metadata_json}"
+         schema_version)
+  string(JSON _mutable_handle_capacity GET "${_generated_host_metadata_json}"
+         mutable_handle_capacity)
+  if(NOT _metadata_schema EQUAL 1 OR
+     NOT _mutable_handle_capacity MATCHES "^[1-9][0-9]*$")
+    message(FATAL_ERROR "ONNX Host compiler emitted invalid metadata")
+  endif()
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${_model}" "${_UDONCL_ONNX_MLIR_COMPILER}")
   add_library("${target}" INTERFACE)
@@ -279,12 +294,16 @@ function(udoncl_add_onnx_host_library target)
                "${_generated_host_mlir}")
   set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_STATIC_DATA_DIRECTORY
                "${_generated_static_data}")
+  set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_HOST_METADATA
+               "${_generated_host_metadata}")
   set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_MLIR
                "${_generated_host_mlir}")
   set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_DIMENSION_BOUNDS
                "${_ARG_DIMENSION_BOUNDS}")
   set_property(TARGET "${target}" PROPERTY UDONCL_ONNX_INPUT_SHAPES
                "${_ARG_INPUT_SHAPES}")
+  set_property(TARGET "${target}" PROPERTY UDONCL_MUTABLE_HANDLE_CAPACITY
+               "${_mutable_handle_capacity}")
 endfunction()
 
 if(NOT TARGET udoncl_opencl_runtime)
@@ -608,9 +627,10 @@ function(udoncl_add_artifact target)
 endfunction()
 
 function(udoncl_add_unity_library target)
+  set(_options OMIT_INTERMEDIATE_IR)
   set(_one_value CONFIG OUTPUT_DIRECTORY RUNTIME_VALIDATION)
   set(_multi_value LIBRARIES HOST_LIBRARIES DEVICE_LIBRARIES)
-  cmake_parse_arguments(PARSE_ARGV 1 ARG "" "${_one_value}" "${_multi_value}")
+  cmake_parse_arguments(PARSE_ARGV 1 ARG "${_options}" "${_one_value}" "${_multi_value}")
   list(APPEND ARG_HOST_LIBRARIES ${ARG_LIBRARIES})
   list(APPEND ARG_DEVICE_LIBRARIES ${ARG_LIBRARIES})
   if(ARG_UNPARSED_ARGUMENTS OR NOT ARG_CONFIG OR NOT ARG_HOST_LIBRARIES)
@@ -632,6 +652,19 @@ function(udoncl_add_unity_library target)
   set(_host_seen_sources)
   set(_host_mlir)
   set(_static_tensor_directory)
+  set(_mutable_handle_capacity)
+  foreach(_library IN LISTS ARG_HOST_LIBRARIES)
+    get_target_property(_library_capacity "${_library}"
+                        UDONCL_MUTABLE_HANDLE_CAPACITY)
+    if(_library_capacity)
+      if(_mutable_handle_capacity AND
+         NOT _mutable_handle_capacity EQUAL _library_capacity)
+        message(FATAL_ERROR
+          "UdonCL Unity library contains incompatible mutable handle capacities")
+      endif()
+      set(_mutable_handle_capacity "${_library_capacity}")
+    endif()
+  endforeach()
   foreach(_library IN LISTS ARG_HOST_LIBRARIES)
     get_target_property(_library_host_mlir "${_library}"
                         UDONCL_ONNX_HOST_MLIR)
@@ -651,6 +684,11 @@ function(udoncl_add_unity_library target)
     _udoncl_append_target_usage("${_library}" HOST _sources _dependencies _flags)
     list(APPEND _flags
          "-DUDONCL_AOT_RUNTIME_VALIDATION=${_runtime_validation}")
+    if(_mutable_handle_capacity)
+      list(APPEND _flags
+        "-DUDONCL_AOT_BUFFER_CAPACITY=${_mutable_handle_capacity}"
+        "-DUDONCL_DEVICE_BUFFER_CAPACITY=${_mutable_handle_capacity}")
+    endif()
     list(REMOVE_DUPLICATES _sources)
     list(REMOVE_DUPLICATES _dependencies)
     if(_host_seen_sources)
@@ -724,6 +762,7 @@ function(udoncl_add_unity_library target)
             "-DUDONCL_OUTPUT_DIRECTORY=${_artifact_directory}"
             "-DUDONCL_BUILD_ROOT=${CMAKE_BINARY_DIR}"
             "-DUDONCL_RUNTIME_VALIDATION=${_runtime_validation}"
+            "-DUDONCL_OMIT_INTERMEDIATE_IR=${ARG_OMIT_INTERMEDIATE_IR}"
             -P "${_UDONCL_CONFIG_DIR}/UdonCLCompileUnityLibrary.cmake"
     COMMAND "${CMAKE_COMMAND}" -E touch "${_stamp}"
     DEPENDS "${UDONCLC_EXECUTABLE}" "${_config}" "${_host_module}"

@@ -330,6 +330,7 @@ def main():
     ).read_text(encoding='utf-8'))
     probe['schema_version'] = 2
     probe['program'] = 'generic_onnx_mnist'
+    probe['generate_onnx_public_buffers'] = True
     probe.pop('exports', None)
     probe.pop('internal_exports', None)
     probe['export_overrides'] = [
@@ -347,6 +348,11 @@ def main():
                 'dimension_0', 'dimension_1', 'dimension_2', 'dimension_3',
                 'dimension_4', 'dimension_5', 'dimension_6', 'dimension_7',
             ],
+        },
+        {
+            'symbol': 'udon_onnx_binding_bind_all',
+            'public_name': 'BindAllOnnxTensors',
+            'parameters': [],
         },
         {
             'symbol': 'udon_onnx_binding_enqueue_initialize',
@@ -431,10 +437,11 @@ def main():
     generated_onnx_host_text = run([
         install / 'bin' / f'udoncl-opt{suffix}', generated_onnx_host,
     ])
-    assert generated_onnx_host_text.count('udoncl.export') == 5
+    assert generated_onnx_host_text.count('udoncl.export') == 6
     for symbol in [
         'udon_onnx_binding_create',
         'udon_onnx_binding_bind_tensor',
+        'udon_onnx_binding_bind_all',
         'udon_onnx_binding_enqueue_initialize',
         'udon_onnx_binding_enqueue_run',
         'udon_onnx_binding_dispose',
@@ -458,6 +465,7 @@ def main():
     } == {
         'udon_onnx_binding_create': 'CreateOnnxBinding',
         'udon_onnx_binding_bind_tensor': 'BindOnnxTensorPhysical',
+        'udon_onnx_binding_bind_all': 'BindAllOnnxTensors',
         'udon_onnx_binding_enqueue_initialize': 'EnqueueOnnxInitialize',
         'udon_onnx_binding_enqueue_run': 'EnqueueOnnxRun',
         'udon_onnx_binding_dispose': 'DisposeOnnxBinding',
@@ -481,6 +489,8 @@ def main():
         'data_type': 'float32',
         'rank': 4,
         'dimensions': [1, 1, 28, 28],
+        'logical_bytes': 3136,
+        'capacity_bytes': 3136,
     }]
     assert onnx_binding['outputs'] == [{
         'index': 0,
@@ -488,16 +498,20 @@ def main():
         'data_type': 'float32',
         'rank': 2,
         'dimensions': [1, 10],
+        'logical_bytes': 40,
+        'capacity_bytes': 40,
     }]
     assert onnx_binding['physical'] == {
         'create_symbol': 'udon_onnx_binding_create',
         'bind_tensor_symbol': 'udon_onnx_binding_bind_tensor',
+        'bind_all_symbol': 'udon_onnx_binding_bind_all',
         'enqueue_initialize_symbol':
             'udon_onnx_binding_enqueue_initialize',
         'enqueue_run_symbol': 'udon_onnx_binding_enqueue_run',
         'dispose_symbol': 'udon_onnx_binding_dispose',
     }
-    assert len(generic_manifest['device']['buffers']) == 15
+    assert len(generic_manifest['device']['buffers']) == 5
+    assert generic_manifest['device']['mutable_handle_capacity'] == 5
     assert {
         item['id'] for item in generic_manifest['device']['kernels']
     } == {221, 231, 232, 233, 234}
@@ -519,6 +533,7 @@ def main():
     annotated_symbols = [
         'udon_onnx_binding_create',
         'udon_onnx_binding_bind_tensor',
+        'udon_onnx_binding_bind_all',
         'udon_onnx_binding_enqueue_initialize',
         'udon_onnx_binding_enqueue_run',
         'udon_onnx_binding_dispose',
@@ -722,11 +737,11 @@ def main():
     assert 'public sealed class UdonclGenericOnnxMnistBinding' in mnist_binding
     assert '[SerializeField] private Texture2D[] staticTensors;' in mnist_binding
     assert 'public int StartInitialize(' in mnist_binding
-    assert 'public int TryWriteInput(float[] source)' in mnist_binding
+    assert 'public int TryWriteImage(float[] source)' in mnist_binding
     assert 'public int StartRun(' in mnist_binding
     assert 'public int GetRunStatus()' in mnist_binding
     assert 'public int TryGetRunResult(out int result)' in mnist_binding
-    assert 'public int StartReadOutput(' in mnist_binding
+    assert 'public int StartReadLogits(' in mnist_binding
     assert 'public int GetLastReadbackStatus()' in mnist_binding
     ensure_buffers = mnist_binding.split(
         'private int EnsureDeviceBuffersCreated()', 1
@@ -792,11 +807,11 @@ def main():
     ).read_text(encoding='utf-8')
     for call in [
         'binding.StartInitialize(',
-        'binding.TryWriteInput(',
+        'binding.TryWriteImage(',
         'binding.StartRun(',
         'binding.GetRunStatus()',
         'binding.TryGetRunResult(',
-        'binding.StartReadOutput(',
+        'binding.StartReadLogits(',
         'binding.GetLastReadbackStatus()',
         'binding.TryShutdown(',
     ]:
@@ -811,13 +826,14 @@ def main():
         )
         for buffer in onnx_mnist_manifest['device']['buffers'][:2]
     ] == [
-        ('input', 3136, 'float32', 'input', 8192, 2),
-        ('output', 40, 'float32', 'output', 8192, 2),
+        ('image', 3136, 'float32', 'input', 8192, 2),
+        ('logits', 40, 'float32', 'output', 8192, 2),
     ]
     assert [
         (buffer['width'], buffer['height'])
         for buffer in onnx_mnist_manifest['device']['buffers'][2:]
-    ] == [(8192, 2)] * 15
+    ] == [(8192, 2)] * 3
+    assert onnx_mnist_manifest['device']['mutable_handle_capacity'] == 5
     for kernel_id in [221, 231, 232, 233, 234]:
         assert (
             onnx_mnist_artifact / f'kernels/kernel_{kernel_id}.shader'
@@ -875,6 +891,7 @@ def main():
     ])
     assert 'func.func @udon_onnx_binding_create()' in transformer_source
     assert 'func.func @udon_onnx_binding_bind_tensor(' in transformer_source
+    assert 'func.func @udon_onnx_binding_bind_all()' in transformer_source
     assert 'func.func @udon_onnx_binding_enqueue_run()' in transformer_source
     assert 'call @udon_onnx_session_bind_output_to_input' not in transformer_source
     assert 'udoncl.onnx_device_graph = true' in transformer_source
@@ -891,7 +908,8 @@ def main():
     transformer_manifest = json.loads(
         (transformer_artifact / 'manifest.json').read_text(encoding='utf-8')
     )
-    assert len(transformer_manifest['device']['buffers']) == 37
+    assert len(transformer_manifest['device']['buffers']) == 10
+    assert transformer_manifest['device']['mutable_handle_capacity'] == 10
     assert {
         item['c_symbol']: item['public_name']
         for item in transformer_manifest['exports']
@@ -902,15 +920,16 @@ def main():
     }
     assert [
         (item['name'], item.get('logical_bytes'),
-         item.get('element_type'), item.get('public_access'))
+         item.get('capacity_bytes'), item.get('element_type'),
+         item.get('public_access'))
         for item in transformer_manifest['device']['buffers'][:6]
     ] == [
-        ('input_ids', 16, 'int32', 'input'),
-        ('past_key', 128, 'float32', 'input'),
-        ('past_value', 128, 'float32', 'input'),
-        ('logits', 524288, 'float32', 'output'),
-        ('present_key', 128, 'float32', 'output'),
-        ('present_value', 128, 'float32', 'output'),
+        ('input_ids', 32, 32, 'int64', 'input'),
+        ('past_key', 128, 128, 'float32', 'input'),
+        ('past_value', 128, 128, 'float32', 'input'),
+        ('logits', 128, 524288, 'float32', 'output'),
+        ('present_key', 128, 128, 'float32', 'output'),
+        ('present_value', 128, 128, 'float32', 'output'),
     ]
     assert transformer_manifest['program']['binding_source'] == 'binding.cs'
     transformer_binding = (transformer_artifact / 'binding.cs').read_text(
@@ -922,7 +941,17 @@ def main():
         in transformer_binding
     )
     assert 'public int StartInitialize(' in transformer_binding
-    assert 'public int TryWriteInputIds(int[] source)' in transformer_binding
+    assert 'public int TryWriteInputIds(long[] source)' in transformer_binding
+    assert 'return TryWriteLongBuffer(1, source);' in transformer_binding
+    assert 'pixels[element * 2] = PackWord((int)value);' in transformer_binding
+    assert (
+        'pixels[element * 2 + 1] = PackWord((int)(value >> 32));'
+        in transformer_binding
+    )
+    assert (
+        'pendingLongReadback[element] = low | high;'
+        in transformer_binding
+    )
     assert 'public int TryWritePastKey(float[] source)' in transformer_binding
     assert 'public int TryWritePastValue(float[] source)' in transformer_binding
     assert 'public int StartRun(' in transformer_binding
@@ -1181,6 +1210,7 @@ def main():
         'name': 'scratch',
         'heap_slot': '__udoncl_buffer_1',
         'logical_bytes': 4,
+        'capacity_bytes': 4,
         'width': 1,
         'height': 1,
         'format': 'rgba8_unorm',
@@ -1199,8 +1229,8 @@ def main():
     assert '.export __0_SquarePlusOne' in assembly
     assert '.export __udoncl_buffer_1' in assembly
     assert '__udoncl_buffer_1: %UnityEngineRenderTexture, null' in assembly
-    # Whole-program Host optimization inlines this fixed helper graph, so the
-    # generated export no longer needs the generic indirect-return protocol.
+    # This helper is synchronous, so selective Host inlining removes its
+    # generic indirect-return protocol. May-suspend helpers remain separate.
     assert 'JUMP_INDIRECT, __vrc_internal_bank_0_return' not in assembly
     assert '__vrc_internal_bank_0_return: %SystemUInt32, 0' not in assembly
     assert 'SystemSingleArray.__ctor__SystemInt32__SystemSingleArray' not in assembly

@@ -139,7 +139,7 @@ int main(void) {
   cl_mem resolved_memory = 0;
   size_t resolved_offset = 0, resolved_bytes = 0;
   udonclBufferHandle_t input_buffer = {0, 0}, output_buffer = {0, 0},
-                       foreign_buffer = {0, 0};
+                       foreign_buffer = {0, 0}, binding_buffer = {0, 0};
   udonclBufferView_t input_view, output_view, foreign_view;
   udonclBufferView_t empty_view;
   udononnxTensor_t input_tensor = {0}, output_tensor = {0},
@@ -353,6 +353,16 @@ int main(void) {
   EXPECT(udononnxBindingStateGetCommandQueue(binding_state, &binding_queue) ==
              UDONONNX_STATUS_SUCCESS &&
          binding_queue);
+  EXPECT(udononnxBindingStateAllocateBuffer(binding_state, 2, sizeof(source),
+                                            &binding_buffer) ==
+         UDONONNX_STATUS_INVALID_VALUE);
+  EXPECT(udononnxBindingStateAllocateBuffer(binding_state, 0, sizeof(source),
+                                            &binding_buffer) ==
+         UDONONNX_STATUS_SUCCESS);
+  EXPECT(udonclDeviceBufferGetSize(binding_buffer, &resolved_bytes) ==
+             UDONCL_STATUS_SUCCESS &&
+         resolved_bytes == sizeof(source));
+  EXPECT(udonclDeviceBufferDestroy(&binding_buffer) == UDONCL_STATUS_SUCCESS);
   EXPECT(udononnxBindingStateBindTensor(binding_state, 2, 0, 0, 0, 0, 0,
                                         UDONCL_DATA_FLOAT32, 0,
                                         0) == UDONONNX_STATUS_INVALID_VALUE);

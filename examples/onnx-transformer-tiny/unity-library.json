@@ -1,6 +1,7 @@
 {
   "schema_version": 2,
   "program": "generic_onnx_transformer_tiny",
+  "generate_onnx_public_buffers": true,
   "binding": {
     "namespace": "Lemolatoon.Udoncl.Generated",
     "class_name": "UdonclGenericOnnxTransformerTinyBinding"
@@ -260,12 +261,13 @@
   "internal_exports": [
     "udon_onnx_binding_create",
     "udon_onnx_binding_bind_tensor",
+    "udon_onnx_binding_bind_all",
     "udon_onnx_binding_enqueue_initialize",
     "udon_onnx_binding_enqueue_run",
     "udon_onnx_binding_dispose"
   ],
   "buffers": [
-    {"id": 1, "name": "input_ids", "byte_size": 16, "element_type": "int32", "public_access": "input"},
+    {"id": 1, "name": "input_ids", "byte_size": 32, "element_type": "int64", "public_access": "input"},
     {"id": 2, "name": "past_key", "byte_size": 128, "element_type": "float32", "public_access": "input"},
     {"id": 3, "name": "past_value", "byte_size": 128, "element_type": "float32", "public_access": "input"},
     {"id": 4, "name": "logits", "byte_size": 524288, "element_type": "float32", "public_access": "output"},

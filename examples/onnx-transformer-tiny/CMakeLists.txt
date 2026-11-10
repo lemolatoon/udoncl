@@ -48,8 +48,13 @@ target_include_directories(transformer_host INTERFACE
 udoncl_add_host_library(transformer_user_host host.c)
 target_include_directories(transformer_user_host INTERFACE
   "${UdonONNXRuntime_INCLUDE_DIRS}")
+set(unity_library_arguments)
+if(UDONCL_TINYLLAMA_ONNX_MODEL)
+  list(APPEND unity_library_arguments OMIT_INTERMEDIATE_IR)
+endif()
 udoncl_add_unity_library(onnx-transformer-tiny
   CONFIG "${CMAKE_CURRENT_SOURCE_DIR}/unity-library.json"
+  ${unity_library_arguments}
   HOST_LIBRARIES
     transformer_host
     transformer_user_host

@@ -194,6 +194,25 @@ udononnxStatus_t udononnxBindingStateBindOutput(
 }
 
 udononnxStatus_t
+udononnxBindingStateAllocateBuffer(void *state_storage, uint32_t output,
+                                   uint32_t byte_capacity,
+                                   udonclBufferHandle_t *buffer) {
+  struct udononnxBindingState *state = udononnxBindingStateGet(state_storage);
+  udonclStatus_t status;
+  if (!state)
+    return UDONONNX_STATUS_NOT_INITIALIZED;
+  if (output > 1u || !byte_capacity || !buffer)
+    return UDONONNX_STATUS_INVALID_VALUE;
+  status = udonclDeviceBufferCreate(
+      state->context, output ? CL_MEM_WRITE_ONLY : CL_MEM_READ_ONLY,
+      byte_capacity, buffer);
+  if (status == UDONCL_STATUS_OUT_OF_RESOURCES)
+    return UDONONNX_STATUS_OPENCL_ERROR;
+  return status == UDONCL_STATUS_SUCCESS ? UDONONNX_STATUS_SUCCESS
+                                         : UDONONNX_STATUS_INVALID_VALUE;
+}
+
+udononnxStatus_t
 udononnxBindingStateBindTensor(void *state_storage, uint32_t output,
                                uint32_t tensor_index, uint32_t buffer_slot,
                                uint32_t buffer_generation, uint32_t byte_offset,

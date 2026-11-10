@@ -28,6 +28,7 @@ add_subdirectory(lib/Dialect)
 add_subdirectory(lib/Conversion/LLVMToHighLevel)
 add_subdirectory(lib/Conversion/BoundaryFrontend)
 add_subdirectory(lib/Conversion/ONNXToUdonHost)
+add_subdirectory(lib/Conversion/ONNXHostMetadata)
 add_subdirectory(lib/Conversion/HighLevelToUdonHL)
 add_subdirectory(lib/Conversion/VRCToUdonHL)
 add_subdirectory(lib/Conversion/HighLevelToVRCGPU)
@@ -84,6 +85,7 @@ install(FILES
   include/udoncl/unity_buffer.h
   include/udoncl/device_memory.h
   include/udoncl/onnx_binding_abi.h
+  include/udoncl/onnx_generated_binding.h
   include/udoncl/onnx_types.h
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/udoncl"
   COMPONENT UdonCLCompiler)

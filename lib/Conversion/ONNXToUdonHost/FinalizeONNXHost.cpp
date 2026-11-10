@@ -47,6 +47,8 @@ struct GraphRecord {
   SmallVector<NodeRecord> nodes;
 };
 
+int64_t deviceAllocationBytes(const GraphRecord &graph, unsigned tensorIndex);
+
 unsigned elementByteSize(Type type) {
   if (type.isInteger(1) || type.isInteger(8))
     return 1;
@@ -247,6 +249,12 @@ FailureOr<GraphRecord> readGraph(ModuleOp module) {
   return result;
 }
 
+int64_t bindingCapacityBytes(const GraphRecord &graph, unsigned tensorIndex) {
+  const TensorRecord &tensor = graph.tensors[tensorIndex];
+  return std::max<int64_t>(elementByteSize(tensor.type.getElementType()),
+                           deviceAllocationBytes(graph, tensorIndex));
+}
+
 void attachBindingMetadata(ModuleOp module, const GraphRecord &graph) {
   Builder builder(module.getContext());
   auto ioMetadata = [&](ArrayRef<unsigned> tensors) {
@@ -264,6 +272,14 @@ void attachBindingMetadata(ModuleOp module, const GraphRecord &graph) {
               "rank", builder.getI32IntegerAttr(tensor.type.getRank())),
           builder.getNamedAttr("dimensions", builder.getDenseI64ArrayAttr(
                                                  tensor.type.getShape())),
+          builder.getNamedAttr(
+              "logical_bytes",
+              builder.getI64IntegerAttr(
+                  tensor.type.getNumElements() *
+                  elementByteSize(tensor.type.getElementType()))),
+          builder.getNamedAttr("capacity_bytes",
+                               builder.getI64IntegerAttr(
+                                   bindingCapacityBytes(graph, tensorIndex))),
       }));
     }
     return builder.getArrayAttr(entries);
@@ -274,6 +290,8 @@ void attachBindingMetadata(ModuleOp module, const GraphRecord &graph) {
       builder.getNamedAttr(
           "bind_tensor_symbol",
           builder.getStringAttr("udon_onnx_binding_bind_tensor")),
+      builder.getNamedAttr("bind_all_symbol",
+                           builder.getStringAttr("udon_onnx_binding_bind_all")),
       builder.getNamedAttr(
           "enqueue_initialize_symbol",
           builder.getStringAttr("udon_onnx_binding_enqueue_initialize")),
@@ -410,10 +428,13 @@ constexpr StringLiteral bindingStateSymbol = "__udon_onnx_binding_state";
 constexpr StringLiteral bindingInputSymbol = "__udon_onnx_binding_inputs";
 constexpr StringLiteral bindingOutputSymbol = "__udon_onnx_binding_outputs";
 constexpr StringLiteral bindingEventSymbol = "__udon_onnx_binding_event";
+constexpr StringLiteral bindingIoHandlesSymbol = "__udon_onnx_io_handles";
 constexpr int32_t metadataStorageBytes = 64;
 constexpr int32_t modelStorageBytes = 64;
 constexpr int32_t bindingStateStorageBytes = 256;
 constexpr int32_t bindingTensorStorageBytes = 128;
+constexpr int32_t bindingBufferHandleBytes = 8;
+constexpr int32_t maximumTensorRank = 8;
 
 std::string ioNameSymbol(bool output, unsigned index) {
   return (Twine("__udon_onnx_") + (output ? "output" : "input") + "_name_" +
@@ -443,6 +464,11 @@ void createModelMetadataGlobals(ModuleOp module, const GraphRecord &graph) {
   createZeroGlobal(module, bindingOutputSymbol,
                    std::max<size_t>(graph.outputs.size(), 1) *
                        bindingTensorStorageBytes);
+  createZeroGlobal(
+      module, bindingIoHandlesSymbol,
+      std::max<size_t>(graph.inputs.size() + graph.outputs.size(), 1) *
+          bindingBufferHandleBytes,
+      4);
   createI32Global(module, bindingEventSymbol);
   for (auto [index, tensorIndex] : llvm::enumerate(graph.inputs)) {
     const TensorRecord &tensor = graph.tensors[tensorIndex];
@@ -1180,8 +1206,6 @@ bool hasDeviceQ4(const GraphRecord &graph) {
   });
 }
 
-int64_t deviceAllocationBytes(const GraphRecord &graph, unsigned tensorIndex);
-
 int64_t operatorScratchBytes(const GraphRecord &graph) {
   int64_t bytes = hasDeviceQ4(graph) ? q4SurfaceBytes : 0;
   if (hasDeviceRmsNorm(graph))
@@ -1414,6 +1438,33 @@ SmallVector<unsigned> deviceStorage(const GraphRecord &graph) {
     while (storage[root] != root)
       root = storage[root];
   return storage;
+}
+
+constexpr int64_t maximumMutableHandleCapacity = 512;
+
+SmallVector<int64_t> mutableBufferBytes(const GraphRecord &graph,
+                                        bool deviceGraph) {
+  SmallVector<int64_t> bytes;
+  bytes.reserve(graph.inputs.size() + graph.outputs.size());
+  for (unsigned tensorIndex : graph.inputs)
+    bytes.push_back(bindingCapacityBytes(graph, tensorIndex));
+  for (unsigned tensorIndex : graph.outputs)
+    bytes.push_back(bindingCapacityBytes(graph, tensorIndex));
+  if (!deviceGraph)
+    return bytes;
+
+  SmallVector<unsigned> storage = deviceStorage(graph);
+  for (auto [tensorIndex, tensor] : llvm::enumerate(graph.tensors)) {
+    if (storage[tensorIndex] != tensorIndex || tensor.staticResourceId >= 0 ||
+        llvm::is_contained(graph.inputs, tensorIndex) ||
+        (llvm::is_contained(graph.outputs, tensorIndex) &&
+         !needsQ4Surface(graph, tensorIndex)))
+      continue;
+    bytes.push_back(deviceAllocationBytes(graph, tensorIndex));
+  }
+  if (int64_t scratchBytes = operatorScratchBytes(graph))
+    bytes.push_back(scratchBytes);
+  return bytes;
 }
 
 void createWriteExport(ModuleOp module, const GraphRecord &graph,
@@ -2805,7 +2856,40 @@ void createPhysicalBindingExports(ModuleOp module, const GraphRecord &graph) {
                  addressOf(builder, location, bindingOutputSymbol),
                  constant(std::max<size_t>(graph.outputs.size(), 1) *
                           bindingTensorStorageBytes)});
-  func::ReturnOp::create(builder, location, createCall.getResult(0));
+  auto returnIfNonzero = [&](func::FuncOp function, Value status) {
+    Block *next = function.addBlock();
+    Block *failure = function.addBlock();
+    Value succeeded = arith::CmpIOp::create(
+        builder, location, arith::CmpIPredicate::eq, status, constant(0));
+    cf::CondBranchOp::create(builder, location, succeeded, next, ValueRange{},
+                             failure, ValueRange{});
+    builder.setInsertionPointToEnd(failure);
+    func::ReturnOp::create(builder, location, status);
+    builder.setInsertionPointToEnd(next);
+  };
+  returnIfNonzero(create, createCall.getResult(0));
+  auto handleAddress = [&](size_t index) {
+    return pointerAdd(builder, location,
+                      addressOf(builder, location, bindingIoHandlesSymbol),
+                      constant(index * bindingBufferHandleBytes));
+  };
+  auto allocate = [&](bool output, size_t tensorIndex, size_t handleIndex) {
+    const TensorRecord &tensor = graph.tensors[tensorIndex];
+    auto allocated = func::CallOp::create(
+        builder, location, "udononnxBindingStateAllocateBuffer", TypeRange{i32},
+        ValueRange{state(), constant(output),
+                   constant(std::max<int64_t>(
+                       elementByteSize(tensor.type.getElementType()),
+                       deviceAllocationBytes(graph, tensorIndex))),
+                   handleAddress(handleIndex)});
+    returnIfNonzero(create, allocated.getResult(0));
+  };
+  size_t handleIndex = 0;
+  for (unsigned tensorIndex : graph.inputs)
+    allocate(false, tensorIndex, handleIndex++);
+  for (unsigned tensorIndex : graph.outputs)
+    allocate(true, tensorIndex, handleIndex++);
+  func::ReturnOp::create(builder, location, constant(0));
 
   builder.setInsertionPointToEnd(module.getBody());
   SmallVector<Type> bindArguments(16, i32);
@@ -2831,6 +2915,49 @@ void createPhysicalBindingExports(ModuleOp module, const GraphRecord &graph) {
       func::CallOp::create(builder, location, "udononnxBindingStateBindTensor",
                            TypeRange{i32}, bindValues);
   func::ReturnOp::create(builder, location, bindCall.getResult(0));
+
+  builder.setInsertionPointToEnd(module.getBody());
+  auto bindAll =
+      func::FuncOp::create(builder, location, "udon_onnx_binding_bind_all",
+                           FunctionType::get(module.getContext(), {}, {i32}));
+  markExport(bindAll);
+  entry = bindAll.addEntryBlock();
+  builder.setInsertionPointToEnd(entry);
+  auto bindOne = [&](bool output, size_t publicIndex, unsigned tensorIndex,
+                     size_t ioHandleIndex) {
+    const TensorRecord &tensor = graph.tensors[tensorIndex];
+    Value dimensionBytes = constant(maximumTensorRank * 4);
+    OperationState allocation(location, host::AllocaOp::getOperationName());
+    allocation.addOperands(dimensionBytes);
+    allocation.addTypes(pointer);
+    allocation.addAttribute("alignment", builder.getI64IntegerAttr(4));
+    Value dimensions = builder.create(allocation)->getResult(0);
+    for (int64_t axis = 0; axis != maximumTensorRank; ++axis) {
+      int64_t dimension =
+          axis < tensor.type.getRank() ? tensor.type.getShape()[axis] : 0;
+      store(builder, location, constant(dimension),
+            pointerAdd(builder, location, dimensions, constant(axis * 4)));
+    }
+    Value handle = handleAddress(ioHandleIndex);
+    auto bound = func::CallOp::create(
+        builder, location, "udononnxBindingStateBindTensor", TypeRange{i32},
+        ValueRange{state(), constant(output), constant(publicIndex),
+                   loadI32(builder, location, handle),
+                   loadI32(builder, location,
+                           pointerAdd(builder, location, handle, constant(4))),
+                   constant(0),
+                   constant(tensor.type.getNumElements() *
+                            elementByteSize(tensor.type.getElementType())),
+                   constant(udonclDataType(tensor.type.getElementType())),
+                   constant(tensor.type.getRank()), dimensions});
+    returnIfNonzero(bindAll, bound.getResult(0));
+  };
+  handleIndex = 0;
+  for (auto [index, tensorIndex] : llvm::enumerate(graph.inputs))
+    bindOne(false, index, tensorIndex, handleIndex++);
+  for (auto [index, tensorIndex] : llvm::enumerate(graph.outputs))
+    bindOne(true, index, tensorIndex, handleIndex++);
+  func::ReturnOp::create(builder, location, constant(0));
 
   auto createEnqueue = [&](StringRef name, StringRef callee) {
     builder.setInsertionPointToEnd(module.getBody());
@@ -2920,10 +3047,36 @@ void createPhysicalBindingExports(ModuleOp module, const GraphRecord &graph) {
   auto disposed =
       func::CallOp::create(builder, location, "udononnxBindingStateDispose",
                            TypeRange{i32}, state());
-  func::ReturnOp::create(builder, location, disposed.getResult(0));
+  returnIfNonzero(dispose, disposed.getResult(0));
+  for (size_t index = 0; index != graph.inputs.size() + graph.outputs.size();
+       ++index) {
+    Value handle = handleAddress(index);
+    Value allocated =
+        arith::CmpIOp::create(builder, location, arith::CmpIPredicate::ne,
+                              loadI32(builder, location, handle), constant(0));
+    Block *release = dispose.addBlock();
+    Block *next = dispose.addBlock();
+    cf::CondBranchOp::create(builder, location, allocated, release,
+                             ValueRange{}, next, ValueRange{});
+    builder.setInsertionPointToEnd(release);
+    auto released = func::CallOp::create(
+        builder, location, "udonclDeviceBufferDestroy", TypeRange{i32}, handle);
+    Value releaseSucceeded =
+        arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
+                              released.getResult(0), constant(0));
+    Block *releaseFailure = dispose.addBlock();
+    cf::CondBranchOp::create(builder, location, releaseSucceeded, next,
+                             ValueRange{}, releaseFailure, ValueRange{});
+    builder.setInsertionPointToEnd(releaseFailure);
+    func::ReturnOp::create(builder, location, constant(5));
+    builder.setInsertionPointToEnd(next);
+  }
+  func::ReturnOp::create(builder, location, constant(0));
 
   declaration(module, "udononnxBindingStateCreate",
               {pointer, i32, i32, pointer, i32, pointer, i32}, {i32});
+  declaration(module, "udononnxBindingStateAllocateBuffer",
+              {pointer, i32, i32, pointer}, {i32});
   declaration(module, "udononnxBindingStateBindTensor",
               {pointer, i32, i32, i32, i32, i32, i32, i32, i32, pointer},
               {i32});
@@ -2934,6 +3087,7 @@ void createPhysicalBindingExports(ModuleOp module, const GraphRecord &graph) {
   declaration(module, "udononnxBindingStateCompleteEvent",
               {pointer, pointer, i32}, {i32});
   declaration(module, "udononnxBindingStateDispose", {pointer}, {i32});
+  declaration(module, "udonclDeviceBufferDestroy", {pointer}, {i32});
   declaration(module, "clWaitForEvents", {i32, pointer}, {i32});
   declaration(module, "clReleaseEvent", {pointer}, {i32});
 }
@@ -4054,8 +4208,23 @@ struct FinalizeONNXHostPass
       signalPassFailure();
       return;
     }
+    SmallVector<int64_t> bufferBytes = mutableBufferBytes(*graph, deviceGraph);
+    int64_t handleCapacity = bufferBytes.size();
+    if (handleCapacity <= 0 || handleCapacity > maximumMutableHandleCapacity) {
+      module.emitError()
+          << "ONNX graph requires " << handleCapacity
+          << " simultaneously live mutable handles; backend limit is "
+          << maximumMutableHandleCapacity;
+      signalPassFailure();
+      return;
+    }
     attachBindingMetadata(module, *graph);
     attachDeviceGraphMetadata(module, *graph, deviceGraph);
+    module->setAttr("udoncl.mutable_handle_capacity",
+                    IntegerAttr::get(IntegerType::get(module.getContext(), 64),
+                                     handleCapacity));
+    module->setAttr("udoncl.mutable_buffer_bytes",
+                    DenseI64ArrayAttr::get(module.getContext(), bufferBytes));
     module->setAttr("udoncl.onnx_lowering",
                     StringAttr::get(module.getContext(), "library-calls-v2"));
   }

@@ -84,7 +84,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             );
 
             Dictionary<int, RenderTexture> buffers = new Dictionary<int, RenderTexture>();
-            Assert.AreEqual(37, artifact.DeviceBuffers.Count);
+            Assert.AreEqual(10, artifact.DeviceBuffers.Count);
             foreach (ValidatedDeviceBuffer descriptor in artifact.DeviceBuffers)
             {
                 RenderTexture buffer = Load<RenderTexture>(
@@ -166,7 +166,11 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             );
 
             int[] tokens = { 1, 2, 3, 4 };
-            PublicMnistOnnxRuntimeLifecycleTests.UploadInts(buffers[1], tokens, copyMaterial);
+            PublicMnistOnnxRuntimeLifecycleTests.UploadLongs(
+                buffers[1],
+                Array.ConvertAll(tokens, value => (long)value),
+                copyMaterial
+            );
             float[] emptyCache = new float[32];
             PublicMnistOnnxRuntimeLifecycleTests.UploadFloats(buffers[2], emptyCache, copyMaterial);
             PublicMnistOnnxRuntimeLifecycleTests.UploadFloats(buffers[3], emptyCache, copyMaterial);

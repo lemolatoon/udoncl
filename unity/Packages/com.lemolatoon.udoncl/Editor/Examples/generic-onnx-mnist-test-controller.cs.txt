@@ -67,7 +67,7 @@ namespace Lemolatoon.Udoncl.Generated
                 return;
             }
             phase = 4;
-            status = binding.TryWriteInput(input);
+            status = binding.TryWriteImage(input);
             if (status != UdonclGenericOnnxMnistBinding.StatusSuccess)
             {
                 completed = true;
@@ -99,7 +99,7 @@ namespace Lemolatoon.Udoncl.Generated
                 return;
             }
             phase = 8;
-            status = binding.StartReadOutput(logits, this, nameof(OnReadOutputComplete));
+            status = binding.StartReadLogits(logits, this, nameof(OnReadOutputComplete));
             if (status != UdonclGenericOnnxMnistBinding.StatusSuccess)
                 completed = true;
         }

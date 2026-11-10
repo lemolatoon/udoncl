@@ -656,8 +656,11 @@ namespace Lemolatoon.Udoncl.Editor
                 bool validPublicBinding =
                     !hasPublicBinding
                     || (
-                        (buffer.element_type == "float32" || buffer.element_type == "int32")
-                        && (buffer.public_access == "input" || buffer.public_access == "output")
+                        (
+                            buffer.element_type == "float32"
+                            || buffer.element_type == "int32"
+                            || buffer.element_type == "int64"
+                        ) && (buffer.public_access == "input" || buffer.public_access == "output")
                     );
                 if (
                     buffer.id <= 0

@@ -57,6 +57,7 @@ assert "call @udononnxBindingInitializeTensorMetadata" in host.stdout
 assert "call @udononnxBindingInitializeModel" in host.stdout
 assert "func.func @udon_onnx_binding_create" in host.stdout
 assert "func.func @udon_onnx_binding_bind_tensor" in host.stdout
+assert "func.func @udon_onnx_binding_bind_all" in host.stdout
 assert "func.func @udon_onnx_binding_enqueue_initialize" in host.stdout
 assert "func.func @udon_onnx_binding_enqueue_run" in host.stdout
 assert "func.func @udon_onnx_binding_wait_active_event" not in host.stdout
@@ -69,6 +70,9 @@ assert "udoncl.onnx_lowering = \"library-calls-v2\"" in host.stdout
 assert "udoncl.onnx_device_graph = true" in host.stdout
 assert "udoncl.onnx_device_unsupported = []" in host.stdout
 assert "udoncl.onnx_operator_counts" in host.stdout
+assert "logical_bytes" in host.stdout
+assert "capacity_bytes" in host.stdout
+assert "udoncl.mutable_handle_capacity" in host.stdout
 
 static_source = source.parents[1] / "fixtures" / "onnx-static-initializer.mlir"
 static_portable = subprocess.run(

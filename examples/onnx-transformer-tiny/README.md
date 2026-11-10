@@ -1,7 +1,7 @@
 # Bounded dynamic ONNX Transformer fixture
 
 This fixture exercises the public generic ONNX-MLIR Host pipeline with a
-hidden-size-8 Transformer-style graph. It has `int32` token IDs, a dynamic
+hidden-size-8 Transformer-style graph. It has ONNX-standard `int64` token IDs, a dynamic
 sequence dimension bounded to four elements, key/value cache inputs and
 outputs, three graph outputs, embedding, pointwise operations, and batched
 matrix multiplication. Its quantized projection uses the generic Device Q4

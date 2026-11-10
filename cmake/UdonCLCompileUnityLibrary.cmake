@@ -11,6 +11,10 @@ if(UDONCL_RUNTIME_VALIDATION)
 else()
   set(_runtime_validation_argument --no-runtime-validation)
 endif()
+set(_intermediate_ir_argument)
+if(UDONCL_OMIT_INTERMEDIATE_IR)
+  set(_intermediate_ir_argument --omit-intermediate-ir)
+endif()
 cmake_path(IS_PREFIX UDONCL_BUILD_ROOT "${UDONCL_OUTPUT_DIRECTORY}" NORMALIZE
            _output_is_in_build_tree)
 if(NOT _output_is_in_build_tree OR
@@ -40,7 +44,7 @@ file(REMOVE_RECURSE "${UDONCL_OUTPUT_DIRECTORY}")
 execute_process(
   COMMAND "${UDONCL_COMPILER}" --emit-unity-library-bundle "${UDONCL_CONFIG}"
           ${_host_arguments} ${_device_argument} ${_static_tensor_argument}
-          ${_runtime_validation_argument}
+          ${_runtime_validation_argument} ${_intermediate_ir_argument}
           -o "${UDONCL_OUTPUT_DIRECTORY}"
   RESULT_VARIABLE _result
   OUTPUT_VARIABLE _stdout
