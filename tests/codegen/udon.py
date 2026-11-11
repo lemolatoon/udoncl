@@ -729,6 +729,48 @@ for expected in [
 assert 'memref.global' not in global_lowered.stdout
 assert 'memref.get_global' not in global_lowered.stdout
 
+index_cast_source = r'''module {
+  memref.global "private" @values : memref<4xi32> = dense<[4, 5, 6, 7]>
+  func.func @indexed(%position: i32) -> i32 attributes {vrc.export_id = 1 : i32} {
+    %values = memref.get_global @values : memref<4xi32>
+    %index = arith.index_cast %position : i32 to index
+    %value = memref.load %values[%index] : memref<4xi32>
+    %roundtrip = arith.index_cast %index : index to i32
+    %result = arith.addi %value, %roundtrip : i32
+    return %result : i32
+  }
+}'''
+index_cast_lowered = subprocess.run(
+    [
+        opt,
+        '--pass-pipeline=builtin.module(vrc-lower-host-to-udonhl,'
+        'vrc-lower-udonhl-to-udonasm)',
+        '--verify-each',
+    ],
+    input=index_cast_source,
+    text=True,
+    capture_output=True,
+)
+assert index_cast_lowered.returncode == 0, index_cast_lowered.stderr
+assert 'arith.index_cast' not in index_cast_lowered.stdout
+assert 'SystemInt32Array.__Get__SystemInt32__SystemInt32' in (
+    index_cast_lowered.stdout
+)
+assert index_cast_lowered.stdout.count('udonasm.copy') >= 2
+
+unsupported_index_cast = subprocess.run(
+    [opt, '--vrc-lower-host-to-udonhl', '--verify-each'],
+    input=r'''module {
+  func.func @wide_index(%value: i64) -> index {
+    %index = arith.index_cast %value : i64 to index
+    return %index : index
+  }
+}''',
+    text=True,
+    capture_output=True,
+)
+assert unsupported_index_cast.returncode != 0
+
 integer_ops_source = r'''module {
   func.func @integer_ops(%value: i32, %other: i32) -> i32 attributes {vrc.export_id = 8 : i32} {
     %wide = arith.extsi %value : i32 to i64
@@ -942,6 +984,49 @@ for forbidden in ['udonhl.global', 'udonhl.address_of', 'udonhl.alloca',
                   'udonhl.load', 'udonhl.store', 'udonhl.memcpy']:
     assert forbidden not in raw_memory_lowered.stdout, (
         forbidden, raw_memory_lowered.stdout)
+
+raw_scalar_initializers = r'''module attributes {
+  vrc.external_raw_heap_initialization
+} {
+  "udonhl.global"() <{sym_name = "one", storage_type = i64, initial_value = 1 : i64, linkage = "internal", address_space = 0 : i32, alignment = 8 : i64}> : () -> ()
+  "udonhl.global"() <{sym_name = "negative", storage_type = i64, initial_value = -2 : i64, linkage = "internal", address_space = 0 : i32, alignment = 8 : i64}> : () -> ()
+  "udonhl.global"() <{sym_name = "fraction", storage_type = f32, initial_value = 1.500000e+00 : f32, linkage = "internal", address_space = 0 : i32, alignment = 4 : i64}> : () -> ()
+  func.func @read_one() -> i64 attributes {vrc.export_id = 1 : i32} {
+    %address = udonhl.address_of @one : !udonhl.ptr<0>
+    %value = "udonhl.load"(%address) <{alignment = 8 : i64}> : (!udonhl.ptr<0>) -> i64
+    return %value : i64
+  }
+}'''
+raw_scalars = subprocess.run(
+    [opt, '--vrc-lower-udonhl-to-udonasm', '--verify-each'],
+    input=raw_scalar_initializers, text=True, capture_output=True)
+assert raw_scalars.returncode == 0, raw_scalars.stderr
+initializer = re.search(
+    r'udonasm.raw_heap_initializer = array<i8: ([^>]*)>',
+    raw_scalars.stdout,
+)
+assert initializer, raw_scalars.stdout
+raw_bytes = [int(value) & 0xff for value in initializer.group(1).split(', ')]
+assert raw_bytes[8:16] == [1, 0, 0, 0, 0, 0, 0, 0], raw_bytes
+assert raw_bytes[16:24] == [0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff], (
+    raw_bytes
+)
+assert raw_bytes[24:28] == [0, 0, 0xc0, 0x3f], raw_bytes
+
+internal_raw_scalar = subprocess.run(
+    [opt, '--vrc-lower-udonhl-to-udonasm', '--verify-each'],
+    input=raw_scalar_initializers.replace(
+        ' attributes {\n  vrc.external_raw_heap_initialization\n}', ''),
+    text=True,
+    capture_output=True,
+)
+assert internal_raw_scalar.returncode == 0, internal_raw_scalar.stderr
+assert 'SystemInt32Array.__ctor__SystemInt32__SystemInt32Array' in (
+    internal_raw_scalar.stdout
+)
+assert 'SystemInt32Array.__Set__SystemInt32_SystemInt32__SystemVoid' in (
+    internal_raw_scalar.stdout
+)
 
 fast_direct_global_source = r'''module {
   "udonhl.global"() <{sym_name = "ordinary_internal_state", storage_type = i32, initial_value = 0 : i32, linkage = "internal", address_space = 0 : i32, alignment = 4 : i64}> : () -> ()

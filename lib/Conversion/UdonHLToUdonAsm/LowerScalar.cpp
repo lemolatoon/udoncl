@@ -1473,17 +1473,40 @@ private:
                           : "address_observable_after_promotion"),
            cursor, objectBytes, alignment});
       cursor += objectBytes;
-      if (bytes)
-        rawGlobalInitializers.try_emplace(global.getSymName(), bytes);
       Attribute initial = global.getInitialValueAttr();
-      bool zero = !initial || isa<UnitAttr, DenseI8ArrayAttr>(initial);
-      if (auto integer = dyn_cast_or_null<IntegerAttr>(initial))
-        zero = integer.getValue().isZero();
-      if (auto floating = dyn_cast_or_null<FloatAttr>(initial))
-        zero = floating.getValue().isZero();
-      if (!zero)
-        return global.emitError(
-            "nonzero raw global initialization is not implemented yet");
+      SmallVector<int8_t> serialized(objectBytes, 0);
+      if (bytes) {
+        llvm::copy(bytes.asArrayRef(), serialized.begin());
+      } else if (auto value = dyn_cast_or_null<IntegerAttr>(initial)) {
+        APInt bits = value.getValue();
+        if (isa<host::PtrType>(type)) {
+          if (!bits.isZero())
+            return global.emitError(
+                "raw pointer initializer requires a null value");
+        } else if (!integer || bits.getBitWidth() != integer.getWidth()) {
+          return global.emitError("raw integer initializer type mismatch");
+        } else {
+          uint64_t raw = bits.getZExtValue();
+          for (uint64_t byte = 0; byte < objectBytes; ++byte)
+            serialized[byte] = static_cast<int8_t>((raw >> (byte * 8)) & 0xff);
+        }
+      } else if (auto value = dyn_cast_or_null<FloatAttr>(initial)) {
+        if (!type.isF32() || !value.getType().isF32())
+          return global.emitError(
+              "raw floating initializer currently requires f32 storage");
+        APInt bits = value.getValue().bitcastToAPInt();
+        for (uint64_t byte = 0; byte < objectBytes; ++byte)
+          serialized[byte] = static_cast<int8_t>(
+              bits.extractBitsAsZExtValue(8, static_cast<unsigned>(byte * 8)));
+      } else if (initial && !isa<UnitAttr>(initial)) {
+        return global.emitError()
+               << "raw global initializer is not serializable for @"
+               << global.getSymName() << " with storage type " << type;
+      }
+      if (llvm::any_of(serialized, [](int8_t byte) { return byte != 0; }))
+        rawGlobalInitializers.try_emplace(
+            global.getSymName(),
+            DenseI8ArrayAttr::get(module.getContext(), serialized));
     }
     for (func::FuncOp function : module.getOps<func::FuncOp>()) {
       unsigned allocaIndex = 0;
@@ -2315,6 +2338,20 @@ private:
           std::string output = valueSlots.lookup(cast.getOutputs().front());
           if (source.empty() || output.empty())
             return cast.emitError("Udon token conversion has missing slots");
+          emitCopy(cast.getLoc(), source, output);
+          continue;
+        }
+        if (auto cast = dyn_cast<arith::IndexCastOp>(operation)) {
+          Type inputType = cast.getOperand().getType();
+          Type outputType = cast.getResult().getType();
+          if (!((inputType.isInteger(32) && outputType.isIndex()) ||
+                (inputType.isIndex() && outputType.isInteger(32))))
+            return cast.emitError(
+                "vrc-pc index casts support only i32 and index");
+          std::string source = valueSlots.lookup(cast.getOperand());
+          std::string output = valueSlots.lookup(cast.getResult());
+          if (source.empty() || output.empty())
+            return cast.emitError("index cast has missing heap slots");
           emitCopy(cast.getLoc(), source, output);
           continue;
         }

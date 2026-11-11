@@ -6,6 +6,7 @@
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/SymbolTable.h"
 #include "llvm/ADT/DenseMap.h"
@@ -40,6 +41,16 @@ bool isRecomputableAcrossSuspend(Value value) {
   // conceptually recomputable too, but this pass does not clone it after each
   // resume; it must therefore be demoted like every other live pointer.
   return name == "arith.constant";
+}
+
+bool isFixedStorageReferenceAcrossSuspend(Value value) {
+  auto result = dyn_cast<OpResult>(value);
+  // memref.get_global is a symbolic reference to a fixed global array bank.
+  // Final scalar lowering maps every use directly to the same bank and base,
+  // so neither a descriptor nor the array contents belong in a coroutine
+  // frame.  Local allocations and arbitrary memrefs still require an explicit
+  // lifetime and aliasing model and remain unsupported here.
+  return result && isa<memref::GetGlobalOp>(result.getOwner());
 }
 
 bool isCoroutineBookkeeping(Value value) {
@@ -480,6 +491,7 @@ struct PrepareUdonAsyncRuntimePass
         }
         for (Value value : blockInfo->currentlyLiveValues(operation)) {
           if (isRecomputableAcrossSuspend(value) ||
+              isFixedStorageReferenceAcrossSuspend(value) ||
               isCoroutineBookkeeping(value))
             continue;
           if (isAsyncObjectType(value.getType())) {

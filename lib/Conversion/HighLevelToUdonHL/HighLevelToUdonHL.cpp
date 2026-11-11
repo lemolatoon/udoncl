@@ -24,6 +24,12 @@ bool internalScalar(Type type) {
   return scalar(type) || type.isInteger(1) || type.isInteger(8) ||
          type.isInteger(16) || type.isInteger(64) || type.isIndex();
 }
+bool supportedIndexCast(arith::IndexCastOp cast) {
+  Type input = cast.getOperand().getType();
+  Type output = cast.getResult().getType();
+  return (input.isInteger(32) && output.isIndex()) ||
+         (input.isIndex() && output.isInteger(32));
+}
 bool publicArray(Type type) {
   auto memref = dyn_cast<MemRefType>(type);
   return memref && memref.getRank() == 1 && memref.getLayout().isIdentity() &&
@@ -194,6 +200,13 @@ struct LowerHostToUdonHLPass
           return;
         }
         for (Operation &op : block) {
+          if (auto cast = dyn_cast<arith::IndexCastOp>(op))
+            if (!supportedIndexCast(cast)) {
+              cast.emitError(
+                  "vrc-pc Host index casts support only i32 and index");
+              signalPassFailure();
+              return;
+            }
           bool udonHL = op.getName().getDialectNamespace() == "udonhl";
           if (!udonHL &&
               !isa<func::CallOp, func::ReturnOp, cf::BranchOp, cf::CondBranchOp,
@@ -211,9 +224,10 @@ struct LowerHostToUdonHLPass
                   op) &&
               !isa<arith::AndIOp, arith::OrIOp, arith::XOrIOp, arith::ShLIOp,
                    arith::ShRSIOp, arith::ShRUIOp, arith::SelectOp,
-                   arith::ExtSIOp, arith::ExtUIOp, arith::TruncIOp,
-                   arith::SIToFPOp, arith::UIToFPOp, arith::FPToSIOp,
-                   arith::BitcastOp, arith::MaxSIOp, arith::MinSIOp>(op)) {
+                   arith::IndexCastOp, arith::ExtSIOp, arith::ExtUIOp,
+                   arith::TruncIOp, arith::SIToFPOp, arith::UIToFPOp,
+                   arith::FPToSIOp, arith::BitcastOp, arith::MaxSIOp,
+                   arith::MinSIOp>(op)) {
             op.emitError() << "operation " << op.getName()
                            << " is outside the initial Host lowering pattern";
             signalPassFailure();

@@ -167,6 +167,85 @@ assert 'vrc.async_spill_pc' not in runtime.stdout
 assert 'vrc.async_reload_pc' not in runtime.stdout
 assert re.search(r'__udoncl_async_frame_[0-9]+_spill_', runtime.stdout) is None
 
+global_array_source = r'''module {
+  memref.global "private" @prompt : memref<64xi32>
+  memref.global "private" @generated : memref<32xi32>
+  func.func @global_arrays(%event: !vrc.event) -> i32 attributes {
+    vrc.async_effect = "may_suspend"
+  } {
+    %index = arith.constant 0 : index
+    %prompt = memref.get_global @prompt : memref<64xi32>
+    %generated = memref.get_global @generated : memref<32xi32>
+    %value = memref.load %prompt[%index] : memref<64xi32>
+    %first = vrc.await %event : (!vrc.event) -> i32
+    memref.store %value, %generated[%index] : memref<32xi32>
+    %second = vrc.await %event : (!vrc.event) -> i32
+    %again = memref.load %prompt[%index] : memref<64xi32>
+    %result = arith.addi %again, %second : i32
+    return %result : i32
+  }
+}'''
+global_arrays = subprocess.run(
+    [
+        optimizer,
+        '--vrc-lower-host-to-async',
+        '--async-func-to-async-runtime',
+        '--vrc-prepare-udon-async-runtime',
+        '--vrc-allocate-host-storage',
+        '--vrc-analyze-host-storage',
+    ],
+    input=global_array_source,
+    text=True,
+    capture_output=True,
+)
+assert global_arrays.returncode == 0, (
+    global_arrays.stdout, global_arrays.stderr)
+assert global_arrays.stdout.count('memref.get_global') == 2
+assert 'memref.load' in global_arrays.stdout
+assert 'memref.store' in global_arrays.stdout
+assert 'udonhl.spill_store' in global_arrays.stdout
+assert 'memref<' not in '\n'.join(
+    line for line in global_arrays.stdout.splitlines()
+    if 'udonhl.spill_' in line
+)
+
+for unsupported_memref in [
+    r'''module {
+  func.func @local_array(%event: !vrc.event) -> i32 attributes {
+    vrc.async_effect = "may_suspend"
+  } {
+    %local = memref.alloca() : memref<4xi32>
+    %index = arith.constant 0 : index
+    %status = vrc.await %event : (!vrc.event) -> i32
+    %value = memref.load %local[%index] : memref<4xi32>
+    return %value : i32
+  }
+}''',
+    r'''module {
+  func.func @passed_array(%event: !vrc.event,
+                          %buffer: memref<4xi32>) -> i32 attributes {
+    vrc.async_effect = "may_suspend"
+  } {
+    %index = arith.constant 0 : index
+    %status = vrc.await %event : (!vrc.event) -> i32
+    %value = memref.load %buffer[%index] : memref<4xi32>
+    return %value : i32
+  }
+}''',
+]:
+    unsupported = subprocess.run(
+        [
+            optimizer,
+            '--vrc-lower-host-to-async',
+            '--async-func-to-async-runtime',
+            '--vrc-prepare-udon-async-runtime',
+        ],
+        input=unsupported_memref,
+        text=True,
+        capture_output=True,
+    )
+    assert unsupported.returncode != 0, unsupported.stdout
+
 allocation_source = r'''module {
   func.func @reuse(%a: i32, %b: i32, %c: i32) attributes {
     vrc.async_spill_slots = [
