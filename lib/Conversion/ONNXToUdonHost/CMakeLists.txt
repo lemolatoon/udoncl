@@ -2,6 +2,7 @@ if(TARGET OMONNXOps)
   target_sources(onnx-mlir-opt PRIVATE
     CanonicalizeONNXLibraryPatterns.cpp
     ExternalizeONNXInitializers.cpp
+    IdentifyONNXSequenceState.cpp
     InferONNXShapes.cpp
     MaterializeONNXConstants.cpp
     ONNXToUdonHostCore.cpp

@@ -74,6 +74,26 @@ assert "logical_bytes" in host.stdout
 assert "capacity_bytes" in host.stdout
 assert "udoncl.mutable_handle_capacity" in host.stdout
 
+sequence_state_source = source.with_name("onnx_sequence_state.mlir")
+sequence_state = subprocess.run(
+    [opt, "--udoncl-identify-onnx-sequence-state", sequence_state_source],
+    text=True,
+    capture_output=True,
+)
+assert sequence_state.returncode == 0, (
+    sequence_state.stdout,
+    sequence_state.stderr,
+)
+assert "udoncl.onnx_sequence_states" in sequence_state.stdout
+assert "input_index = 1 : i64" in sequence_state.stdout
+assert "output_index = 0 : i64" in sequence_state.stdout
+assert "input_index = 2 : i64" in sequence_state.stdout
+assert "output_index = 2 : i64" in sequence_state.stdout
+assert sequence_state.stdout.count("axis = 2 : i64") == 2
+assert sequence_state.stdout.count("step = 1 : i64") == 2
+assert sequence_state.stdout.count("capacity = 8 : i64") == 2
+assert "input_index = 3 : i64" not in sequence_state.stdout
+
 static_source = source.parents[1] / "fixtures" / "onnx-static-initializer.mlir"
 static_portable = subprocess.run(
     [

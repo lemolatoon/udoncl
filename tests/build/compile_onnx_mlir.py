@@ -85,6 +85,7 @@ class CompileONNXMLIRTests(unittest.TestCase):
             str(argument).startswith(
                 '--udoncl-externalize-onnx-initializers=')
             for argument in optimizer))
+        self.assertIn('--udoncl-identify-onnx-sequence-state', optimizer)
         self.assertIn('--udoncl-lower-onnx-to-host', optimizer)
         self.assertIn('--udoncl-emit-bytecode', optimizer)
         self.assertNotIn('--mlir-elide-elementsattrs-if-larger=64', optimizer)

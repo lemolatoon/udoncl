@@ -60,6 +60,7 @@ def canonicalize(
                 '--udoncl-materialize-onnx-constants',
                 '--udoncl-externalize-onnx-initializers=' +
                 f'static-data-directory={temporary_static_data}',
+                '--udoncl-identify-onnx-sequence-state',
                 '--udoncl-lower-onnx-to-host',
                 '--canonicalize',
                 '--udoncl-emit-bytecode',
