@@ -321,14 +321,28 @@ static StringRef comparisonExtern(arith::CmpFOp operation) {
   return signature;
 }
 
+struct ScalarLoweringOptions {
+  unsigned materializationLimit = 0;
+  unsigned rawAddressCacheLimit = 0;
+  unsigned unityBufferIdRematerializationCount = 0;
+  unsigned unityBufferIdRematerializationAddressDelta = 0;
+  unsigned unityBufferIdRematerializationAttempts = 0;
+  bool enforceCapacity = true;
+};
+
 class ScalarLowering {
 public:
-  ScalarLowering(ModuleOp module, unsigned materializationLimit,
-                 unsigned rawAddressCacheLimit, bool enforceCapacity = true)
+  ScalarLowering(ModuleOp module, ScalarLoweringOptions options)
       : module(module), builder(module.getContext()),
-        materializationLimit(materializationLimit),
-        rawAddressCacheLimit(rawAddressCacheLimit),
-        enforceCapacity(enforceCapacity),
+        materializationLimit(options.materializationLimit),
+        rawAddressCacheLimit(options.rawAddressCacheLimit),
+        unityBufferIdRematerializationCount(
+            options.unityBufferIdRematerializationCount),
+        unityBufferIdRematerializationAddressDelta(
+            options.unityBufferIdRematerializationAddressDelta),
+        unityBufferIdRematerializationAttempts(
+            options.unityBufferIdRematerializationAttempts),
+        enforceCapacity(options.enforceCapacity),
         externalRawHeapInitialization(
             module->hasAttr("vrc.external_raw_heap_initialization")) {
     builder.setInsertionPointToEnd(module.getBody());
@@ -694,10 +708,11 @@ public:
                                   static_cast<int64_t>(found->second)));
     }
 
-    if (enforceCapacity && failed(verifyDataSlotCapacity()))
+    StorageSlotClassification storage = classifyStorageSlots();
+    if (enforceCapacity && failed(verifyDataSlotCapacity(storage)))
       return failure();
 
-    module->setAttr("udonasm.storage_report", storageReport());
+    module->setAttr("udonasm.storage_report", storageReport(storage));
 
     SmallVector<Attribute> functionAddressMetadata;
     for (auto [index, function] : llvm::enumerate(functions)) {
@@ -749,7 +764,75 @@ private:
     return 512;
   }
 
-  LogicalResult verifyDataSlotCapacity() {
+  struct StorageSlotClassification {
+    llvm::StringSet<> fixed;
+    llvm::StringSet<> scalarRegisters;
+    llvm::StringSet<> asyncPersistent;
+    llvm::StringSet<> arrays;
+    llvm::StringSet<> constants;
+    llvm::StringSet<> other;
+    llvm::StringMap<unsigned> constantTypes;
+    llvm::StringMap<unsigned> otherTypes;
+  };
+
+  StorageSlotClassification classifyStorageSlots() const {
+    StorageSlotClassification result;
+    llvm::StringSet<> fixedCandidates;
+    llvm::StringSet<> registerCandidates;
+    llvm::StringSet<> persistentCandidates;
+    llvm::StringSet<> arrayCandidates;
+    llvm::StringSet<> constantCandidates;
+    for (const Slot &slot : slots)
+      if (slot.isPublic)
+        fixedCandidates.insert(slot.name);
+    for (const auto &method : methodABIs) {
+      for (const std::string &parameter : method.second.parameterSlots)
+        fixedCandidates.insert(parameter);
+      if (method.second.resultSlot)
+        fixedCandidates.insert(*method.second.resultSlot);
+      auto function = cast<func::FuncOp>(method.first);
+      if (auto exportId = function->getAttrOfType<IntegerAttr>("vrc.export_id"))
+        fixedCandidates.insert(udonclStatusSlot(exportId.getInt()));
+    }
+    for (const UnityBufferPoolEntry &buffer : unityBufferPool)
+      fixedCandidates.insert(buffer.heapSlot);
+    for (const auto &slot : scalarRegisterSlots)
+      registerCandidates.insert(slot.first());
+    for (const auto &slot : asyncPersistentSlots)
+      persistentCandidates.insert(slot.first());
+    for (const GlobalBankPlan &bank : globalBanks)
+      arrayCandidates.insert(bank.slot);
+    for (const std::string &key : typedSpillBankOrder)
+      arrayCandidates.insert(typedSpillBanks.at(key).slot);
+    if (rawHeapBytes)
+      arrayCandidates.insert(rawHeapSlot);
+    for (const auto &slot : immutableSlots)
+      constantCandidates.insert(slot.second);
+    for (const auto &slot : sharedConstantSlots)
+      constantCandidates.insert(slot.second);
+
+    for (const Slot &slot : slots) {
+      if (fixedCandidates.contains(slot.name))
+        result.fixed.insert(slot.name);
+      else if (registerCandidates.contains(slot.name))
+        result.scalarRegisters.insert(slot.name);
+      else if (persistentCandidates.contains(slot.name))
+        result.asyncPersistent.insert(slot.name);
+      else if (arrayCandidates.contains(slot.name))
+        result.arrays.insert(slot.name);
+      else if (constantCandidates.contains(slot.name)) {
+        result.constants.insert(slot.name);
+        ++result.constantTypes[slot.type];
+      } else {
+        result.other.insert(slot.name);
+        ++result.otherTypes[slot.type];
+      }
+    }
+    return result;
+  }
+
+  LogicalResult
+  verifyDataSlotCapacity(const StorageSlotClassification &storage) {
     unsigned capacity = dataSlotCapacity();
     if (!capacity || capacity > 512)
       return module.emitError(
@@ -757,58 +840,6 @@ private:
     if (slots.size() <= capacity)
       return success();
 
-    llvm::StringSet<> fixed;
-    llvm::StringSet<> registers;
-    llvm::StringSet<> persistent;
-    llvm::StringSet<> arrays;
-    llvm::StringSet<> constants;
-    for (const Slot &slot : slots)
-      if (slot.isPublic)
-        fixed.insert(slot.name);
-    for (const auto &method : methodABIs) {
-      for (const std::string &parameter : method.second.parameterSlots)
-        fixed.insert(parameter);
-      if (method.second.resultSlot)
-        fixed.insert(*method.second.resultSlot);
-      auto function = cast<func::FuncOp>(method.first);
-      if (auto exportId = function->getAttrOfType<IntegerAttr>("vrc.export_id"))
-        fixed.insert(udonclStatusSlot(exportId.getInt()));
-    }
-    for (const auto &slot : scalarRegisterSlots)
-      registers.insert(slot.first());
-    for (const auto &slot : asyncPersistentSlots)
-      persistent.insert(slot.first());
-    for (const GlobalBankPlan &bank : globalBanks)
-      arrays.insert(bank.slot);
-    for (const std::string &key : typedSpillBankOrder)
-      arrays.insert(typedSpillBanks.at(key).slot);
-    if (rawHeapBytes)
-      arrays.insert(rawHeapSlot);
-    for (const auto &slot : immutableSlots)
-      constants.insert(slot.second);
-    for (const auto &slot : sharedConstantSlots)
-      constants.insert(slot.second);
-
-    llvm::StringSet<> categorized;
-    auto include = [&](const llvm::StringSet<> &names) {
-      for (const auto &name : names)
-        categorized.insert(name.getKey());
-    };
-    include(fixed);
-    include(registers);
-    include(persistent);
-    include(arrays);
-    include(constants);
-    unsigned other = 0;
-    llvm::StringMap<unsigned> constantTypes;
-    llvm::StringMap<unsigned> otherTypes;
-    for (const Slot &slot : slots)
-      if (constants.contains(slot.name))
-        ++constantTypes[slot.type];
-      else if (!categorized.contains(slot.name)) {
-        ++other;
-        ++otherTypes[slot.type];
-      }
     std::string detail;
     llvm::raw_string_ostream detailStream(detail);
     auto printTypes = [&](StringRef label,
@@ -825,17 +856,18 @@ private:
       }
       detailStream << "}";
     };
-    printTypes("constant_types", constantTypes);
-    printTypes("other_types", otherTypes);
+    printTypes("constant_types", storage.constantTypes);
+    printTypes("other_types", storage.otherTypes);
     detailStream.flush();
     return module.emitError()
            << "final Udon data table requires " << slots.size() << " slots, "
-           << "exceeding capacity " << capacity << "; fixed=" << fixed.size()
-           << ", scalar_registers=" << registers.size()
-           << ", async_persistent=" << persistent.size()
-           << ", typed_arrays=" << arrays.size()
-           << ", constants=" << constants.size() << ", other=" << other
-           << detail
+           << "exceeding capacity " << capacity
+           << "; fixed=" << storage.fixed.size()
+           << ", scalar_registers=" << storage.scalarRegisters.size()
+           << ", async_persistent=" << storage.asyncPersistent.size()
+           << ", typed_arrays=" << storage.arrays.size()
+           << ", constants=" << storage.constants.size()
+           << ", other=" << storage.other.size() << detail
            << ". Reduce public exports/resources, scalar register pressure, "
               "cached constants, or raw-address scratch state";
   }
@@ -1133,6 +1165,39 @@ private:
       unityBufferPool.push_back({id.getInt(), heapSlot.getValue().str()});
       addSlot(heapSlot.getValue(), "UnityEngineRenderTexture", "null", true);
     }
+    struct Candidate {
+      int64_t id;
+      bool commonlyShared;
+      unsigned nonzeroBytes;
+      unsigned shiftedBytes;
+    };
+    SmallVector<Candidate> candidates;
+    candidates.reserve(unityBufferPool.size());
+    for (const UnityBufferPoolEntry &entry : unityBufferPool) {
+      unsigned nonzeroBytes = 0;
+      unsigned shiftedBytes = 0;
+      for (unsigned byte = 0; byte < 4; ++byte)
+        if ((static_cast<uint32_t>(entry.id) >> (byte * 8)) & 255) {
+          ++nonzeroBytes;
+          shiftedBytes += byte != 0;
+        }
+      candidates.push_back(
+          {entry.id, entry.id <= 15, nonzeroBytes, shiftedBytes});
+    }
+    llvm::sort(candidates, [](const Candidate &left, const Candidate &right) {
+      if (left.commonlyShared != right.commonlyShared)
+        return !left.commonlyShared;
+      if (left.nonzeroBytes != right.nonzeroBytes)
+        return left.nonzeroBytes < right.nonzeroBytes;
+      if (left.shiftedBytes != right.shiftedBytes)
+        return left.shiftedBytes < right.shiftedBytes;
+      return left.id > right.id;
+    });
+    for (const Candidate &candidate :
+         llvm::ArrayRef(candidates)
+             .take_front(std::min<size_t>(unityBufferIdRematerializationCount,
+                                          candidates.size())))
+      rematerializedUnityBufferIds.insert(candidate.id);
     return success();
   }
 
@@ -1192,7 +1257,7 @@ private:
     return "address_observable_after_promotion";
   }
 
-  DictionaryAttr storageReport() {
+  DictionaryAttr storageReport(const StorageSlotClassification &storage) {
     auto entry = [&](ArrayRef<NamedAttribute> fields) {
       return DictionaryAttr::get(module.getContext(), fields);
     };
@@ -1204,25 +1269,9 @@ private:
           name, builder.getI64IntegerAttr(static_cast<int64_t>(value)));
     };
 
-    llvm::StringSet<> fixedNames;
-    for (const Slot &slot : slots)
-      if (slot.isPublic)
-        fixedNames.insert(slot.name);
-    for (const auto &method : methodABIs) {
-      for (const std::string &parameter : method.second.parameterSlots)
-        fixedNames.insert(parameter);
-      if (method.second.resultSlot)
-        fixedNames.insert(*method.second.resultSlot);
-      auto function = cast<func::FuncOp>(method.first);
-      if (auto exportId = function->getAttrOfType<IntegerAttr>("vrc.export_id"))
-        fixedNames.insert(udonclStatusSlot(exportId.getInt()));
-    }
-    for (const UnityBufferPoolEntry &buffer : unityBufferPool)
-      fixedNames.insert(buffer.heapSlot);
-
     SmallVector<Attribute> fixed;
     for (const Slot &slot : slots) {
-      if (!fixedNames.contains(slot.name))
+      if (!storage.fixed.contains(slot.name))
         continue;
       SmallVector<NamedAttribute> fields{stringField("name", slot.name),
                                          stringField("type", slot.type)};
@@ -1293,6 +1342,46 @@ private:
            integerField("bytes", object.bytes),
            integerField("alignment", object.alignment)}));
 
+    auto classifiedSlots = [&](const llvm::StringSet<> &names) {
+      SmallVector<std::pair<std::string, std::string>> ordered;
+      for (const Slot &slot : slots)
+        if (names.contains(slot.name))
+          ordered.emplace_back(slot.name, slot.type);
+      llvm::sort(ordered);
+      SmallVector<Attribute> attributes;
+      attributes.reserve(ordered.size());
+      for (const auto &[name, type] : ordered)
+        attributes.push_back(
+            entry({stringField("name", name), stringField("type", type)}));
+      return builder.getArrayAttr(attributes);
+    };
+    auto typeCounts = [&](const llvm::StringMap<unsigned> &counts) {
+      SmallVector<std::pair<std::string, unsigned>> ordered;
+      for (const auto &count : counts)
+        ordered.emplace_back(count.first().str(), count.second);
+      llvm::sort(ordered);
+      SmallVector<Attribute> attributes;
+      attributes.reserve(ordered.size());
+      for (const auto &[type, count] : ordered)
+        attributes.push_back(
+            entry({stringField("type", type), integerField("count", count)}));
+      return builder.getArrayAttr(attributes);
+    };
+    DictionaryAttr categoryCounts =
+        entry({integerField("fixed", storage.fixed.size()),
+               integerField("scalar_register", storage.scalarRegisters.size()),
+               integerField("async_persistent", storage.asyncPersistent.size()),
+               integerField("array", storage.arrays.size()),
+               integerField("constant", storage.constants.size()),
+               integerField("other", storage.other.size())});
+    SmallVector<int64_t> orderedRematerializedIds;
+    for (int64_t id : rematerializedUnityBufferIds)
+      orderedRematerializedIds.push_back(id);
+    llvm::sort(orderedRematerializedIds);
+    SmallVector<Attribute> rematerializedIds;
+    for (int64_t id : orderedRematerializedIds)
+      rematerializedIds.push_back(builder.getI64IntegerAttr(id));
+
     return entry(
         {integerField("version", 2),
          integerField("data_slot_count", slots.size()),
@@ -1307,6 +1396,19 @@ private:
          integerField("cached_raw_addresses", cachedRawGlobalSlots.size()),
          integerField("cached_return_addresses",
                       cachedReturnAddressSlots.size()),
+         integerField("unity_buffer_id_direct_count",
+                      unityBufferPool.size() -
+                          rematerializedUnityBufferIds.size()),
+         integerField("unity_buffer_id_rematerialized_count",
+                      rematerializedUnityBufferIds.size()),
+         integerField("unity_buffer_id_rematerialization_address_delta",
+                      unityBufferIdRematerializationAddressDelta),
+         integerField("unity_buffer_id_rematerialization_attempts",
+                      unityBufferIdRematerializationAttempts),
+         integerField("unity_buffer_id_requested_rematerialization_count",
+                      unityBufferIdRematerializationCount),
+         builder.getNamedAttr("unity_buffer_id_rematerialized_ids",
+                              builder.getArrayAttr(rematerializedIds)),
          builder.getNamedAttr("fixed_named_slots", builder.getArrayAttr(fixed)),
          builder.getNamedAttr("scalar_registers",
                               builder.getArrayAttr(scalars)),
@@ -1318,6 +1420,14 @@ private:
                               builder.getArrayAttr(spillBanks)),
          builder.getNamedAttr("typed_global_arrays",
                               builder.getArrayAttr(globalBankAttributes)),
+         builder.getNamedAttr("slot_category_counts", categoryCounts),
+         builder.getNamedAttr("constant_slots",
+                              classifiedSlots(storage.constants)),
+         builder.getNamedAttr("other_slots", classifiedSlots(storage.other)),
+         builder.getNamedAttr("constant_slot_types",
+                              typeCounts(storage.constantTypes)),
+         builder.getNamedAttr("other_slot_types",
+                              typeCounts(storage.otherTypes)),
          builder.getNamedAttr("raw_objects",
                               builder.getArrayAttr(rawAttributes)),
          integerField("raw_heap_bytes", rawHeapBytes),
@@ -3988,7 +4098,15 @@ private:
     addSlot(selected, "UnityEngineRenderTexture", "null", false);
     SmallVector<Operation *> done;
     for (const auto &entry : unityBufferPool) {
-      std::string id = immutableSlot("SystemInt32", std::to_string(entry.id));
+      std::string id;
+      if (rematerializedUnityBufferIds.contains(entry.id)) {
+        constexpr StringLiteral accumulator = "__vrc_return_address_i32";
+        addSlot(accumulator, "SystemInt32", "0", false);
+        emitI32Literal(location, static_cast<uint32_t>(entry.id), accumulator);
+        id = accumulator.str();
+      } else {
+        id = immutableSlot("SystemInt32", std::to_string(entry.id));
+      }
       constexpr StringLiteral matches = "__vrc_unity_buffer_matches";
       addSlot(matches, "SystemBoolean", "null", false);
       emitPush(location, token);
@@ -5118,9 +5236,13 @@ private:
   llvm::DenseMap<Operation *, uint64_t> rawAllocaBases;
   SmallVector<RawObjectPlan> rawObjects;
   SmallVector<UnityBufferPoolEntry> unityBufferPool;
+  llvm::SmallSet<int64_t, 8> rematerializedUnityBufferIds;
   uint64_t rawHeapBytes = 0;
   unsigned materializationLimit = 0;
   unsigned rawAddressCacheLimit = 0;
+  unsigned unityBufferIdRematerializationCount = 0;
+  unsigned unityBufferIdRematerializationAddressDelta = 0;
+  unsigned unityBufferIdRematerializationAttempts = 0;
   bool enforceCapacity = true;
   unsigned requestedScalarRegisterBudget = 16;
   unsigned minimumScalarRegisterCount = 16;
@@ -5172,60 +5294,240 @@ struct LowerUdonHLToUdonAsmPass
 
   void runOnOperation() override {
     constexpr unsigned addressLimit = 512;
-    auto probe = [&](unsigned materializationLimit) -> FailureOr<unsigned> {
+    struct ProbeResult {
+      unsigned addresses;
+      unsigned dataSlots;
+      bool hasLiteralAccumulator;
+    };
+    unsigned dataSlotCapacity = addressLimit;
+    if (auto configured = getOperation()->getAttrOfType<IntegerAttr>(
+            "vrc.data_slot_capacity"))
+      if (configured.getInt() > 0 && configured.getInt() <= addressLimit)
+        dataSlotCapacity = static_cast<unsigned>(configured.getInt());
+    unsigned scalarRegisterBudget = 16;
+    if (auto configured = getOperation()->getAttrOfType<IntegerAttr>(
+            "vrc.scalar_register_budget"))
+      scalarRegisterBudget = static_cast<unsigned>(configured.getInt());
+    auto probe =
+        [&](unsigned materializationLimit, unsigned registerBudget,
+            unsigned rematerializationCount) -> FailureOr<ProbeResult> {
       Operation *cloned = getOperation()->clone();
       ModuleOp module = cast<ModuleOp>(cloned);
-      if (failed(ScalarLowering(module, materializationLimit, 0,
-                                /*enforceCapacity=*/false)
-                     .run())) {
+      module->setAttr(
+          "vrc.scalar_register_budget",
+          IntegerAttr::get(IntegerType::get(module.getContext(), 32),
+                           registerBudget));
+      ScalarLoweringOptions options;
+      options.materializationLimit = materializationLimit;
+      options.unityBufferIdRematerializationCount = rematerializationCount;
+      options.enforceCapacity = false;
+      if (failed(ScalarLowering(module, options).run())) {
         cloned->erase();
         return failure();
       }
       unsigned count = addressCount(module);
+      unsigned dataSlots = 0;
+      bool hasLiteralAccumulator = false;
+      if (auto data = module->getAttrOfType<ArrayAttr>("udonasm.data")) {
+        dataSlots = data.size();
+        for (Attribute attribute : data) {
+          auto slot = dyn_cast<DictionaryAttr>(attribute);
+          auto name = slot ? slot.getAs<StringAttr>("name") : StringAttr();
+          hasLiteralAccumulator |=
+              name && name.getValue() == "__vrc_return_address_i32";
+        }
+      }
       cloned->erase();
-      return count;
+      return ProbeResult{count, dataSlots, hasLiteralAccumulator};
     };
-    auto unmaterialized = probe(0);
+    auto pressure = [&](const ProbeResult &result) {
+      unsigned totalOverflow =
+          result.addresses > addressLimit ? result.addresses - addressLimit : 0;
+      unsigned dataOverflow = result.dataSlots > dataSlotCapacity
+                                  ? result.dataSlots - dataSlotCapacity
+                                  : 0;
+      return std::make_tuple(std::max(totalOverflow, dataOverflow),
+                             totalOverflow + dataOverflow, result.addresses,
+                             result.dataSlots);
+    };
+    auto requiredReduction = [&](const ProbeResult &result) {
+      return std::get<0>(pressure(result));
+    };
+    auto unmaterialized = probe(0, scalarRegisterBudget, 0);
     if (failed(unmaterialized)) {
       signalPassFailure();
       return;
     }
     unsigned materializationLimit = 0;
-    unsigned baseAddresses = *unmaterialized;
-    if (baseAddresses > addressLimit) {
+    ProbeResult best = *unmaterialized;
+    if (requiredReduction(best)) {
       // A fixed cap leaves large, otherwise valid Host programs with one Udon
       // Heap slot per scalar identity. Let the existing interprocedural
       // coloring and typed-spill allocator own every eligible integer
       // constant once direct declarations exceed the target address space.
-      materializationLimit = baseAddresses;
-      auto materialized = probe(materializationLimit);
+      materializationLimit = best.addresses;
+      auto materialized = probe(materializationLimit, scalarRegisterBudget, 0);
       if (failed(materialized)) {
         signalPassFailure();
         return;
       }
-      baseAddresses = *materialized;
+      best = *materialized;
     }
+    if (requiredReduction(best) && scalarRegisterBudget > 1) {
+      unsigned overflow = requiredReduction(best);
+      unsigned reduction = std::min(overflow, scalarRegisterBudget - 1);
+      unsigned reducedBudget = scalarRegisterBudget - reduction;
+      auto reduced = probe(materializationLimit, reducedBudget, 0);
+      if (failed(reduced)) {
+        signalPassFailure();
+        return;
+      }
+      if (pressure(*reduced) < pressure(best)) {
+        scalarRegisterBudget = reducedBudget;
+        best = *reduced;
+        getOperation()->setAttr(
+            "vrc.scalar_register_budget",
+            IntegerAttr::get(IntegerType::get(getOperation().getContext(), 32),
+                             reducedBudget));
+      }
+    }
+    unsigned unityBufferIdRematerializationCount = 0;
+    unsigned unityBufferIdRematerializationAddressDelta = 0;
+    unsigned unityBufferIdRematerializationAttempts = 0;
+    unsigned selectorBaselineAddresses = best.addresses;
+    auto pool =
+        getOperation()->getAttrOfType<ArrayAttr>("vrc.unity_buffer_pool");
+    unsigned poolSize = pool ? pool.size() : 0;
+    while (requiredReduction(best) &&
+           unityBufferIdRematerializationAttempts < 2 &&
+           unityBufferIdRematerializationCount < poolSize) {
+      unsigned extra = requiredReduction(best);
+      if (!unityBufferIdRematerializationCount && !best.hasLiteralAccumulator)
+        ++extra;
+      unsigned candidateCount =
+          std::min(poolSize, unityBufferIdRematerializationCount + extra);
+      if (candidateCount == unityBufferIdRematerializationCount)
+        break;
+      auto rematerialized =
+          probe(materializationLimit, scalarRegisterBudget, candidateCount);
+      ++unityBufferIdRematerializationAttempts;
+      if (failed(rematerialized)) {
+        signalPassFailure();
+        return;
+      }
+      if (pressure(*rematerialized) < pressure(best)) {
+        unityBufferIdRematerializationCount = candidateCount;
+        best = *rematerialized;
+      } else
+        break;
+    }
+    unityBufferIdRematerializationAddressDelta =
+        selectorBaselineAddresses > best.addresses
+            ? selectorBaselineAddresses - best.addresses
+            : 0;
+    unsigned baseAddresses = best.addresses;
     // Final Unity material slots and textual-UASM legalization contribute
     // data/extern addresses after this MLIR-level accounting. Keep optional
     // address caches away from the hard 512-address ceiling; semantic slots
     // still receive an explicit capacity diagnostic below.
     constexpr unsigned targetAddressReserve = 64;
+    // Large programs that required constant pooling are already address
+    // constrained. Optional literal/return-address caches add helper scratch
+    // and extern signatures beyond their nominal one-slot cache, so omit them
+    // rather than risking the semantic allocation. Smaller programs retain
+    // the existing code-size optimization.
     unsigned rawAddressCacheLimit =
-        baseAddresses + targetAddressReserve < addressLimit
+        materializationLimit == 0 &&
+                baseAddresses + targetAddressReserve < addressLimit
             ? addressLimit - targetAddressReserve - baseAddresses
             : 0;
-    if (failed(ScalarLowering(getOperation(), materializationLimit,
-                              rawAddressCacheLimit)
-                   .run())) {
+    ScalarLoweringOptions options;
+    options.materializationLimit = materializationLimit;
+    options.rawAddressCacheLimit = rawAddressCacheLimit;
+    options.unityBufferIdRematerializationCount =
+        unityBufferIdRematerializationCount;
+    options.unityBufferIdRematerializationAddressDelta =
+        unityBufferIdRematerializationAddressDelta;
+    options.unityBufferIdRematerializationAttempts =
+        unityBufferIdRematerializationAttempts;
+    if (failed(ScalarLowering(getOperation(), options).run())) {
       signalPassFailure();
       return;
     }
     unsigned addresses = addressCount(getOperation());
     if (addresses > addressLimit) {
+      auto data = getOperation()->getAttrOfType<ArrayAttr>("udonasm.data");
+      llvm::StringSet<> externs;
+      getOperation().walk([&](vm::ExternOp operation) {
+        externs.insert(operation.getSignature());
+      });
+      auto report = getOperation()->getAttrOfType<DictionaryAttr>(
+          "udonasm.storage_report");
+      auto arraySize = [&](StringRef name) -> size_t {
+        auto value = report ? report.getAs<ArrayAttr>(name) : ArrayAttr();
+        return value ? value.size() : 0;
+      };
+      auto categoryCounts =
+          report ? report.getAs<DictionaryAttr>("slot_category_counts")
+                 : DictionaryAttr();
+      auto categoryCount = [&](StringRef name) -> int64_t {
+        auto value = categoryCounts ? categoryCounts.getAs<IntegerAttr>(name)
+                                    : IntegerAttr();
+        return value ? value.getInt() : 0;
+      };
+      auto typeCounts = [&](StringRef name) {
+        std::string text;
+        llvm::raw_string_ostream stream(text);
+        stream << "{";
+        auto values = report ? report.getAs<ArrayAttr>(name) : ArrayAttr();
+        if (values) {
+          for (auto [index, value] : llvm::enumerate(values)) {
+            auto item = dyn_cast<DictionaryAttr>(value);
+            if (!item)
+              continue;
+            if (index)
+              stream << ",";
+            stream << item.getAs<StringAttr>("type").getValue() << ":"
+                   << item.getAs<IntegerAttr>("count").getInt();
+          }
+        }
+        stream << "}";
+        stream.flush();
+        return text;
+      };
+      if (getOperation()->hasAttr("vrc.debug_compiler_phases") && report) {
+        auto dumpSlots = [&](StringRef category, StringRef name) {
+          auto values = report.getAs<ArrayAttr>(name);
+          if (!values)
+            return;
+          for (Attribute value : values) {
+            auto item = dyn_cast<DictionaryAttr>(value);
+            if (!item)
+              continue;
+            llvm::errs() << "udonclc-storage-slot category=" << category
+                         << " name="
+                         << item.getAs<StringAttr>("name").getValue()
+                         << " type="
+                         << item.getAs<StringAttr>("type").getValue() << "\n";
+          }
+        };
+        dumpSlots("constant", "constant_slots");
+        dumpSlots("other", "other_slots");
+      }
       getOperation().emitError()
           << "Udon program requires " << addresses
           << " heap/extern addresses after constant materialization; limit is "
-          << addressLimit;
+          << addressLimit << " (data=" << (data ? data.size() : 0)
+          << ", externs=" << externs.size()
+          << ", fixed=" << arraySize("fixed_named_slots")
+          << ", scalar_registers=" << arraySize("scalar_registers")
+          << ", async_persistent=" << arraySize("async_persistent_values")
+          << ", typed_spill_arrays=" << arraySize("typed_spill_arrays")
+          << ", typed_global_arrays=" << arraySize("typed_global_arrays")
+          << ", constants=" << categoryCount("constant")
+          << ", other=" << categoryCount("other")
+          << ", constant_types=" << typeCounts("constant_slot_types")
+          << ", other_types=" << typeCounts("other_slot_types") << ")";
       signalPassFailure();
     }
   }

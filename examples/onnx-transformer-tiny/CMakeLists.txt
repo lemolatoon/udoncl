@@ -8,7 +8,6 @@ find_package(UdonDNN 0.1 CONFIG REQUIRED)
 find_package(UdonATen 0.1 CONFIG REQUIRED)
 find_package(UdonONNXOperators 0.1 CONFIG REQUIRED)
 find_package(UdonONNXRuntime 0.1 CONFIG REQUIRED)
-find_package(UdonTokenizers 0.1 CONFIG REQUIRED)
 
 set(UDONCL_TINYLLAMA_ONNX_MODEL "" CACHE FILEPATH
   "Use an external TinyLlama-compatible ONNX model instead of the fast synthetic fixture")
@@ -48,18 +47,20 @@ target_include_directories(transformer_host INTERFACE
   "${UdonBLAS_INCLUDE_DIRS}"
   "${UdonDNN_INCLUDE_DIRS}"
   "${UdonATen_INCLUDE_DIRS}")
-udoncl_add_host_library(transformer_user_host host.c conversation_input.c)
+udoncl_add_host_library(transformer_user_host host.c)
 target_include_directories(transformer_user_host INTERFACE
-  "${UdonONNXRuntime_INCLUDE_DIRS}"
-  "${UdonTokenizers_INCLUDE_DIRS}")
-set(conversation_host_libraries)
+  "${UdonONNXRuntime_INCLUDE_DIRS}")
 if(UDONCL_TINYLLAMA_TOKENIZER_DIRECTORY)
+  find_package(UdonTokenizers 0.1 CONFIG REQUIRED)
+  udoncl_add_host_library(transformer_conversation_input_host
+    conversation_input.c)
+  target_include_directories(transformer_conversation_input_host INTERFACE
+    "${UdonONNXRuntime_INCLUDE_DIRS}"
+    "${UdonTokenizers_INCLUDE_DIRS}")
   udontokenizers_add_huggingface_model(transformer_conversation_tokenizer
     TOKENIZER_DIRECTORY "${UDONCL_TINYLLAMA_TOKENIZER_DIRECTORY}"
     SYMBOL tinyllama_tokenizer
     SOURCES conversation_tokenizer.c)
-  list(APPEND conversation_host_libraries
-    transformer_conversation_tokenizer)
 endif()
 set(unity_library_arguments)
 if(UDONCL_TINYLLAMA_ONNX_MODEL)
@@ -71,10 +72,28 @@ udoncl_add_unity_library(onnx-transformer-tiny
   HOST_LIBRARIES
     transformer_host
     transformer_user_host
-    ${conversation_host_libraries}
     UdonONNXRuntime::UdonONNXRuntime
-    UdonTokenizers::UdonTokenizers
   LIBRARIES
     UdonONNXOperators::UdonONNXOperators
     UdonATen::UdonATen
     UdonBLAS::UdonBLAS)
+
+# Keep tokenizer/input preparation out of the prefill validation artifact. The
+# final Conversation Artifact is a separate target; this small synthetic target
+# only proves that the same C helpers and generated tables lower to Udon.
+if(UDONCL_TINYLLAMA_TOKENIZER_DIRECTORY AND
+   NOT UDONCL_TINYLLAMA_ONNX_MODEL)
+  udoncl_add_unity_library(onnx-transformer-conversation-input
+    CONFIG "${CMAKE_CURRENT_SOURCE_DIR}/unity-library.json"
+    HOST_LIBRARIES
+      transformer_host
+      transformer_user_host
+      transformer_conversation_input_host
+      transformer_conversation_tokenizer
+      UdonONNXRuntime::UdonONNXRuntime
+      UdonTokenizers::UdonTokenizers
+    LIBRARIES
+      UdonONNXOperators::UdonONNXOperators
+      UdonATen::UdonATen
+      UdonBLAS::UdonBLAS)
+endif()

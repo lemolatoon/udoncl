@@ -916,11 +916,19 @@ def main():
         args.cmake, '--build', onnx_transformer_consumer,
         '--target', 'onnx-transformer-tiny',
     ])
+    run([
+        args.cmake, '--build', onnx_transformer_consumer,
+        '--target', 'onnx-transformer-conversation-input',
+    ])
     transformer_host = (
         onnx_transformer_consumer / 'udoncl-onnx/transformer_host/host.mlir'
     )
     transformer_artifact = (
         onnx_transformer_consumer / 'udoncl/onnx-transformer-tiny/artifact'
+    )
+    conversation_input_artifact = (
+        onnx_transformer_consumer
+        / 'udoncl/onnx-transformer-conversation-input/artifact'
     )
     transformer_source = run([
         install / 'bin' / f'udoncl-opt{suffix}', transformer_host,
@@ -1051,9 +1059,14 @@ def main():
     transformer_async = (
         transformer_artifact / 'host.async-runtime.mlir'
     ).read_text(encoding='utf-8')
-    assert 'tinyllamaPrepareFixedPrefillInputs' in transformer_async
-    assert 'tinyllamaPrepareGeneratedFixedPrefillInputs' in transformer_async
-    assert 'clEnqueueWriteBuffer' in transformer_async
+    assert 'tinyllamaPrepareFixedPrefillInputs' not in transformer_async
+    assert 'tinyllamaPrepareGeneratedFixedPrefillInputs' not in transformer_async
+    conversation_input_async = (
+        conversation_input_artifact / 'host.async-runtime.mlir'
+    ).read_text(encoding='utf-8')
+    assert 'tinyllamaPrepareFixedPrefillInputs' in conversation_input_async
+    assert 'tinyllamaPrepareGeneratedFixedPrefillInputs' in conversation_input_async
+    assert 'clEnqueueWriteBuffer' in conversation_input_async
     transformer_tokenizer_manifest = json.loads(
         (
             onnx_transformer_consumer
@@ -1062,6 +1075,13 @@ def main():
     )
     assert transformer_tokenizer_manifest['vocab_count'] == 32_000
     assert_static_async_artifact(transformer_artifact, transformer_assembly)
+    conversation_input_assembly = (
+        conversation_input_artifact / 'host.uasm'
+    ).read_text(encoding='utf-8')
+    assert_static_async_artifact(
+        conversation_input_artifact, conversation_input_assembly
+    )
+    assert udon_heap_slots(conversation_input_assembly) <= 512
     assert udon_heap_slots(transformer_assembly) <= 512
     assert not list(onnx_transformer_consumer.rglob('execution-plan.json'))
     run([

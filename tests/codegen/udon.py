@@ -845,6 +845,30 @@ assert raw_memory_lowered.returncode == 0, raw_memory_lowered.stderr
 assert 'udonasm.storage_report' in raw_memory_lowered.stdout
 assert 'raw_heap_bytes = 41 : i64' in raw_memory_lowered.stdout
 assert 'raw_heap_words = 11 : i64' in raw_memory_lowered.stdout
+slot_count = int(re.search(
+    r'data_slot_count = (\d+) : i64', raw_memory_lowered.stdout
+).group(1))
+category_text = re.search(
+    r'slot_category_counts = \{([^}]*)\}', raw_memory_lowered.stdout
+).group(1)
+category_counts = {
+    name: int(count)
+    for name, count in re.findall(r'(\w+) = (\d+) : i64', category_text)
+}
+assert set(category_counts) == {
+    'array', 'async_persistent', 'constant', 'fixed', 'other',
+    'scalar_register',
+}, category_counts
+assert sum(category_counts.values()) == slot_count, (
+    category_counts, slot_count
+)
+for expected in [
+    'constant_slots = [',
+    'constant_slot_types = [',
+    'other_slots = [',
+    'other_slot_types = [',
+]:
+    assert expected in raw_memory_lowered.stdout, raw_memory_lowered.stdout
 assert re.search(
     r'\{alignment = 4 : i64, base = 4 : i64, bytes = 4 : i64, '
     r'kind = "global", name = "handle", '
@@ -1211,7 +1235,7 @@ runtime_alias_debug = subprocess.run(
     input=runtime_alias_source, text=True, capture_output=True)
 assert runtime_alias_debug.returncode == 0, runtime_alias_debug.stderr
 assert len(re.findall(
-    r'name = "[^"]*dispatch_alias_match_[^"]*"',
+    r'initial = "null", name = "[^"]*dispatch_alias_match_[^"]*"',
     runtime_alias_debug.stdout,
 )) == 1, runtime_alias_debug.stdout
 assert 'initial = "-59"' in runtime_alias_debug.stdout, runtime_alias_debug.stdout
@@ -1231,6 +1255,101 @@ assert 'dispatch_alias_match_' not in runtime_alias_release.stdout, (
     runtime_alias_release.stdout)
 assert 'initial = "-59"' not in runtime_alias_release.stdout, (
     runtime_alias_release.stdout)
+
+# A large dynamic Unity buffer pool must stay within the shared 512-address
+# data/extern limit without materializing every selector ID as a direct slot.
+selector_buffer_count = 260
+selector_pool = ',\n    '.join(
+    '{id = %d : i32, logical_bytes = 4 : i32, '
+    'heap_slot = "__udoncl_selector_buffer_%d"}' % (index, index)
+    for index in range(1, selector_buffer_count + 1)
+)
+selector_pressure_source = r'''module attributes {
+  vrc.host_stage = "udonhl",
+  vrc.unity_buffer_pool = [
+    %s
+  ]
+} {
+  func.func @selector_pressure(%%output_id: i32) attributes {
+    vrc.export_id = 64 : i32
+  } {
+    %%bytes = arith.constant 4 : i32
+    %%output, %%status = vrc.buffer_alloc %%output_id, %%bytes {
+      format = "rgba8_unorm", usage = "storage"
+    } : (i32, i32) -> (!vrc.buffer, i32)
+    %%desc = vrc.dispatch_desc_create {
+      kernel_id = 1 : i32, scalar_kinds = []
+    } : () -> !vrc.dispatch_desc
+    %%event = vrc.dispatch %%desc(%%output) {
+      argument_kinds = ["buffer"],
+      resource_accesses = ["write"],
+      global_offset = array<i32: 0, 0, 0>,
+      global_size = array<i32: 1, 1, 1>,
+      kernel_id = 1 : i32,
+      local_size = array<i32: 1, 1, 1>,
+      vrc.unity_dispatch_material_slot = "__udoncl_kernel_material_1",
+      vrc.unity_output_resource_index = 0 : i32,
+      vrc.unity_resource_heap_slots = [""]
+    } : (!vrc.dispatch_desc, !vrc.buffer) -> !vrc.event
+    return
+  }
+}''' % selector_pool
+selector_pressure_lowered = subprocess.run(
+    [opt, '--vrc-lower-udonhl-to-udonasm', '--verify-each'],
+    input=selector_pressure_source, text=True, capture_output=True)
+assert selector_pressure_lowered.returncode == 0, (
+    selector_pressure_lowered.stderr)
+selector_output = selector_pressure_lowered.stdout
+selector_data_count = int(re.search(
+    r'data_slot_count = (\d+) : i64', selector_output
+).group(1))
+selector_extern_count = len(set(re.findall(
+    r'udonasm\.extern "([^"]+)"', selector_output
+)))
+assert selector_data_count + selector_extern_count <= 512, (
+    selector_data_count, selector_extern_count)
+selector_direct_count = int(re.search(
+    r'unity_buffer_id_direct_count = (\d+) : i64', selector_output
+).group(1))
+selector_rematerialized_count = int(re.search(
+    r'unity_buffer_id_rematerialized_count = (\d+) : i64', selector_output
+).group(1))
+selector_address_delta = int(re.search(
+    r'unity_buffer_id_rematerialization_address_delta = (\d+) : i64',
+    selector_output,
+).group(1))
+selector_attempts = int(re.search(
+    r'unity_buffer_id_rematerialization_attempts = (\d+) : i64',
+    selector_output,
+).group(1))
+selector_requested_count = int(re.search(
+    r'unity_buffer_id_requested_rematerialization_count = (\d+) : i64',
+    selector_output,
+).group(1))
+selector_ids_text = re.search(
+    r'unity_buffer_id_rematerialized_ids = \[([^]]*)\]', selector_output
+).group(1)
+selector_ids = [
+    int(value) for value in re.findall(r'\d+', selector_ids_text)
+]
+assert selector_direct_count + selector_rematerialized_count == (
+    selector_buffer_count)
+assert selector_rematerialized_count > 0, (
+    selector_data_count, selector_extern_count, selector_direct_count)
+assert selector_address_delta > 0, (
+    selector_data_count, selector_extern_count, selector_rematerialized_count)
+assert selector_attempts == 2, selector_attempts
+assert selector_requested_count == selector_rematerialized_count
+assert len(selector_ids) == selector_rematerialized_count, (
+    selector_ids_text, selector_ids, selector_rematerialized_count)
+assert selector_ids == sorted(selector_ids), selector_ids
+assert all(value > 15 for value in selector_ids), selector_ids
+for index in [1, selector_buffer_count // 2, selector_buffer_count]:
+    assert re.search(
+        r'udonasm\.push "__udoncl_selector_buffer_%d"\s+'
+        r'udonasm\.push "[^"]+output_texture"\s+udonasm\.copy' % index,
+        selector_output,
+    ), (index, selector_output)
 
 static_buffer_source = r'''module attributes {
   vrc.host_stage = "udonhl",

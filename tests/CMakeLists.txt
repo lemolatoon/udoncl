@@ -380,6 +380,11 @@ add_test(NAME tinyllama-tokenizer-cache
   COMMAND Python3::Interpreter
     "${CMAKE_CURRENT_SOURCE_DIR}/build/fetch_tinyllama_tokenizer.py"
 )
+add_test(NAME tinyllama-prefill-artifact-validator
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/build/validate_tinyllama_prefill_artifact.py"
+    "${PROJECT_SOURCE_DIR}"
+)
 add_test(NAME tokenizer-table-compiler
   COMMAND Python3::Interpreter
     "${CMAKE_CURRENT_SOURCE_DIR}/build/compile_tokenizer_tables.py"

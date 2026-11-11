@@ -47,13 +47,18 @@ aliasing are allowed.
   slices. The old statement that INT64/large Gather is the next blocker is
   stale.
 - The real model now completes ONNX Dialect -> portable Host MLIR -> finalized
-  Host MLIR and can be emitted as a Unity bundle. Host scalar allocation uses
-  442 of 512 data slots after buffer handles and single-use constants are
-  colored/spilled instead of receiving permanent slots.
-- The emitted bundle contains 1,033 immutable static tensors totaling about
-  909 MB. It is not yet an inference success: the graph fails the fully
-  Device-resident gate and falls back to Host tensor storage, duplicating about
-  939 MB into `raw-heap.bytes` and producing zero whole-graph dispatch sites.
+  Host MLIR and emits the Prefill Validation Artifact. The validated artifact
+  has the model's generic 47-input/45-output binding, 123 public Device
+  buffers, and 920 immutable static tensors totaling 909,029,428 bytes. Static
+  weights remain external resources; the Udon raw heap is 200,256 bytes.
+- Exact final Host allocation uses 472 data slots. Together with 40 unique
+  extern signatures this reaches the 512-address limit. The generic allocator
+  lowers the scalar-register budget under measured pressure and rematerializes
+  four dynamically selected Unity buffer IDs instead of reserving permanent
+  constant slots. A synthetic 260-buffer regression covers bounded measured
+  retries, deterministic candidate selection, and first/middle/last selector
+  behavior. Artifact generation is no longer the blocker, but this is not yet
+  a numerical prefill success through the generated U# surface.
 - The compiler records operator counts and unsupported Device operator/provider
   pairs. A Unity config can set `require_device_graph` so this fallback fails
   immediately instead of producing a misleading large artifact. Persistent
@@ -67,10 +72,10 @@ aliasing are allowed.
   described below, plus generic rank-zero-through-four FP32 Equal/Where
   broadcast kernels with word-addressable FP32 0/1 Device masks and a generic
   rank-one-through-four ScatterND kernel, the remaining measured unsupported
-  Device operator set is empty. Full artifact emission now reaches the public
-  output-copy stage; the remaining blocker is replacing the toy three-input,
-  three-output C Host binding with the real model's 47-input, 45-output binding
-  and matching alias-output surfaces. The mutable Device pool is provisioned
+  Device operator set is empty. Full artifact emission and the real generic
+  47-input/45-output public binding now pass structural validation. The next
+  gate is numerical prefill through the ordinary C Host exports and generated
+  U# binding. The mutable Device pool is provisioned
   for the measured 35 allocation sites, and public Q4 logits use a logical view
   over a padded 131,072-word physical surface.
 - The generic correctness-oriented `MatMulNBits` path still uses small
@@ -662,8 +667,13 @@ Implement in this order, keeping each gate independently testable:
     binding, and enqueues one ordinary OpenCL write per input. Native tests
     verify all three Device buffers and capacity failure, while the installed
     CMake consumer links the real generated TinyLlama tokenizer tables and
-    lowers the helper through the Udon backend. It does not yet run the real
-    prefill graph or implement conversation state.
+    lowers the helper through a separate small synthetic artifact. The Prefill
+    Validation Artifact deliberately excludes tokenizer/conversation code and
+    accepts already-tokenized low-level input. Its real 47-input/45-output
+    artifact now passes structural, static-weight, raw-heap, and generated-U#
+    binding validation. Combining tokenizer and prefill remains intentionally
+    deferred to the separate Conversation Artifact. This does not yet execute
+    numerical prefill through U# or implement conversation state.
 12. Add the example C conversation Host, exact lifecycle/status contract, and
     generated async U# binding.
 13. Pass the Unity two-turn, 32-token, full-logit/full-KV debug gate and the
