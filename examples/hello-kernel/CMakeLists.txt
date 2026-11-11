@@ -15,6 +15,9 @@ udoncl_add_host_library(hello_dispatch_host dispatch.c)
 udoncl_add_host_library(hello_tokenizer_host tokenizer.c)
 target_include_directories(hello_tokenizer_host INTERFACE
   "${UdonTokenizers_INCLUDE_DIRS}")
+udoncl_add_host_library(hello_tokenizer_raw_host tokenizer_raw.c)
+target_include_directories(hello_tokenizer_raw_host INTERFACE
+  "${UdonTokenizers_INCLUDE_DIRS}")
 udoncl_add_device_library(hello_device
   kernel.cl
   kernel_support.cl
@@ -36,6 +39,10 @@ udoncl_add_unity_library(hello-unity-library
 udoncl_add_unity_library(hello-tokenizer-unity-library
   CONFIG tokenizer-library.json
   HOST_LIBRARIES hello_tokenizer_host UdonTokenizers::UdonTokenizers)
+
+udoncl_add_unity_library(hello-tokenizer-raw-unity-library
+  CONFIG tokenizer-raw-library.json
+  HOST_LIBRARIES hello_tokenizer_raw_host UdonTokenizers::UdonTokenizers)
 
 if(UDONCL_TINYLLAMA_TOKENIZER_DIRECTORY)
   udontokenizers_add_huggingface_model(tinyllama_tokenizer_model

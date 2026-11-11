@@ -503,6 +503,11 @@ the caller-owned workspace and result storage; `result` is the number of valid
 token IDs, while negative values in the small fixture facade encode tokenizer
 status. The conversation Host will map the independent tokenizer status enum
 to its public status contract instead of exposing that fixture convention.
+The C conversation Host uses the same encode core through
+`udontokenizersEncodeRaw`, writing directly into its build-time-bounded
+`int32_t` workspace. A C array is not cast to `udon_int32_array_t`; the two
+entry points share tokenization and BPE logic but use their own storage
+accessors.
 
 ### 6.6 Generated prefill binding and physical storage
 
@@ -647,8 +652,10 @@ Implement in this order, keeping each gate independently testable:
     them, and produces the real TinyLlama tokenizer Unity artifact. Its
     generated U# `TryTokenize(string, int[], out int)` binding is executed in
     Play Mode and matches the same real token IDs without direct heap/event
-    manipulation. Next add decode, special-token recognition, and chat-template
-    compilation.
+    manipulation. The fixed-C-workspace `udontokenizersEncodeRaw` path is also
+    implemented and covered by both Native value tests and an installed CMake
+    consumer that lowers a fixed token array through the Udon backend. Next add
+    decode, special-token recognition, and chat-template compilation.
 12. Add the example C conversation Host, exact lifecycle/status contract, and
     generated async U# binding.
 13. Pass the Unity two-turn, 32-token, full-logit/full-KV debug gate and the

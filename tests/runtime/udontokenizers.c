@@ -25,6 +25,7 @@ int main(void) {
   const uint16_t text_data[] = {0x65e5, 0x672c, 0x8a9e, 0x20, 0xd83c, 0xdf5c};
   udon_string_native_t text = {text_data, 6};
   int32_t token_data[8] = {0};
+  int32_t raw_token_data[8] = {0};
   udon_int32_array_native_t tokens = {token_data, 8};
   int32_t token_count = -1;
   int32_t index;
@@ -54,6 +55,17 @@ int main(void) {
   EXPECT(token_data[3] == 1159);
   EXPECT(token_data[4] == 1141);
   EXPECT(token_data[5] == 1156);
+
+  token_count = -1;
+  EXPECT(
+      udontokenizersEncodeRaw(&model, &text, raw_token_data, 8, &token_count) ==
+      UDONTOKENIZERS_STATUS_SUCCESS);
+  EXPECT(token_count == 6);
+  for (index = 0; index < token_count; ++index)
+    EXPECT(raw_token_data[index] == token_data[index]);
+  EXPECT(
+      udontokenizersEncodeRaw(&model, &text, raw_token_data, 5, &token_count) ==
+      UDONTOKENIZERS_STATUS_OUTPUT_TOO_SMALL);
 
   EXPECT(udontokenizersEncode(&model, &text, &tokens, 5, &token_count) ==
          UDONTOKENIZERS_STATUS_OUTPUT_TOO_SMALL);

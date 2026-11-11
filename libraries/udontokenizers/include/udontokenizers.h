@@ -40,6 +40,11 @@ udontokenizersStatus_t udontokenizersEncode(const udontokenizers_model_t *model,
                                             int32_t output_capacity,
                                             int32_t *output_count);
 
+udontokenizersStatus_t
+udontokenizersEncodeRaw(const udontokenizers_model_t *model,
+                        udon_string_t input, int32_t *output,
+                        int32_t output_capacity, int32_t *output_count);
+
 #ifdef __cplusplus
 }
 #endif

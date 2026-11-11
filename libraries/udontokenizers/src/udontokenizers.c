@@ -16,19 +16,35 @@ static int32_t scalar_token(const udontokenizers_model_t *model,
   return -1;
 }
 
-static udontokenizersStatus_t append_token(udon_int32_array_t output,
+static int32_t output_get(udon_int32_array_t managed_output,
+                          int32_t *raw_output, int32_t use_raw, int32_t index) {
+  return use_raw ? raw_output[index] : udonInt32ArrayGet(managed_output, index);
+}
+
+static void output_set(udon_int32_array_t managed_output, int32_t *raw_output,
+                       int32_t use_raw, int32_t index, int32_t value) {
+  if (use_raw)
+    raw_output[index] = value;
+  else
+    udonInt32ArraySet(managed_output, index, value);
+}
+
+static udontokenizersStatus_t append_token(udon_int32_array_t managed_output,
+                                           int32_t *raw_output, int32_t use_raw,
                                            int32_t capacity, int32_t *count,
                                            int32_t token) {
   if (*count >= capacity)
     return UDONTOKENIZERS_STATUS_OUTPUT_TOO_SMALL;
-  udonInt32ArraySet(output, *count, token);
+  output_set(managed_output, raw_output, use_raw, *count, token);
   ++*count;
   return UDONTOKENIZERS_STATUS_SUCCESS;
 }
 
 static udontokenizersStatus_t
-append_fallback(const udontokenizers_model_t *model, udon_int32_array_t output,
-                int32_t capacity, int32_t *count, uint32_t scalar) {
+append_fallback(const udontokenizers_model_t *model,
+                udon_int32_array_t managed_output, int32_t *raw_output,
+                int32_t use_raw, int32_t capacity, int32_t *count,
+                uint32_t scalar) {
   uint8_t bytes[4];
   int32_t length;
   int32_t index;
@@ -52,8 +68,9 @@ append_fallback(const udontokenizers_model_t *model, udon_int32_array_t output,
     length = 4;
   }
   for (index = 0; index < length; ++index) {
-    udontokenizersStatus_t status = append_token(
-        output, capacity, count, model->byte_token_ids[bytes[index]]);
+    udontokenizersStatus_t status =
+        append_token(managed_output, raw_output, use_raw, capacity, count,
+                     model->byte_token_ids[bytes[index]]);
     if (status != UDONTOKENIZERS_STATUS_SUCCESS)
       return status;
   }
@@ -61,12 +78,15 @@ append_fallback(const udontokenizers_model_t *model, udon_int32_array_t output,
 }
 
 static udontokenizersStatus_t append_scalar(const udontokenizers_model_t *model,
-                                            udon_int32_array_t output,
-                                            int32_t capacity, int32_t *count,
-                                            uint32_t scalar) {
+                                            udon_int32_array_t managed_output,
+                                            int32_t *raw_output,
+                                            int32_t use_raw, int32_t capacity,
+                                            int32_t *count, uint32_t scalar) {
   int32_t token = scalar_token(model, scalar);
-  return token >= 0 ? append_token(output, capacity, count, token)
-                    : append_fallback(model, output, capacity, count, scalar);
+  return token >= 0 ? append_token(managed_output, raw_output, use_raw,
+                                   capacity, count, token)
+                    : append_fallback(model, managed_output, raw_output,
+                                      use_raw, capacity, count, scalar);
 }
 
 static int32_t find_merge(const udontokenizers_model_t *model, int32_t left,
@@ -92,7 +112,8 @@ static int32_t find_merge(const udontokenizers_model_t *model, int32_t left,
 }
 
 static udontokenizersStatus_t merge_tokens(const udontokenizers_model_t *model,
-                                           udon_int32_array_t output,
+                                           udon_int32_array_t managed_output,
+                                           int32_t *raw_output, int32_t use_raw,
                                            int32_t first, int32_t *count) {
   for (;;) {
     int32_t best_index = -1;
@@ -100,8 +121,9 @@ static udontokenizersStatus_t merge_tokens(const udontokenizers_model_t *model,
     int32_t best_token = -1;
     int32_t index;
     for (index = first; index + 1 < *count; ++index) {
-      int32_t left = udonInt32ArrayGet(output, index);
-      int32_t right = udonInt32ArrayGet(output, index + 1);
+      int32_t left = output_get(managed_output, raw_output, use_raw, index);
+      int32_t right =
+          output_get(managed_output, raw_output, use_raw, index + 1);
       int32_t candidate = find_merge(model, left, right);
       if (candidate >= 0 && model->merge_ranks[candidate] < best_rank) {
         best_index = index;
@@ -111,27 +133,26 @@ static udontokenizersStatus_t merge_tokens(const udontokenizers_model_t *model,
     }
     if (best_index < 0)
       return UDONTOKENIZERS_STATUS_SUCCESS;
-    udonInt32ArraySet(output, best_index, best_token);
+    output_set(managed_output, raw_output, use_raw, best_index, best_token);
     for (index = best_index + 1; index + 1 < *count; ++index)
-      udonInt32ArraySet(output, index, udonInt32ArrayGet(output, index + 1));
+      output_set(managed_output, raw_output, use_raw, index,
+                 output_get(managed_output, raw_output, use_raw, index + 1));
     --*count;
   }
 }
 
-udontokenizersStatus_t udontokenizersEncode(const udontokenizers_model_t *model,
-                                            udon_string_t input,
-                                            udon_int32_array_t output,
-                                            int32_t output_capacity,
-                                            int32_t *output_count) {
+static udontokenizersStatus_t
+encode(const udontokenizers_model_t *model, udon_string_t input,
+       udon_int32_array_t managed_output, int32_t *raw_output, int32_t use_raw,
+       int32_t output_capacity, int32_t *output_count) {
   int32_t input_length;
   int32_t position;
   int32_t first_token;
   int32_t count = 0;
-  if (!model || !output_count || output_capacity < 0 ||
-      output_capacity > udonInt32ArrayLength(output))
+  if (!model || !output_count || output_capacity < 0)
     return UDONTOKENIZERS_STATUS_INVALID_ARGUMENT;
 #if !(defined(__clang__) && defined(__SPIR__))
-  if (!input || !output)
+  if (!input || (use_raw ? !raw_output : !managed_output))
     return UDONTOKENIZERS_STATUS_INVALID_ARGUMENT;
 #endif
   if (model->scalar_count < 0 || model->merge_count < 0 ||
@@ -153,15 +174,16 @@ udontokenizersStatus_t udontokenizersEncode(const udontokenizers_model_t *model,
   input_length = udonStringLength(input);
   if (model->bos_token_id >= 0) {
     udontokenizersStatus_t status =
-        append_token(output, output_capacity, &count, model->bos_token_id);
+        append_token(managed_output, raw_output, use_raw, output_capacity,
+                     &count, model->bos_token_id);
     if (status != UDONTOKENIZERS_STATUS_SUCCESS)
       return status;
   }
   first_token = count;
   if (input_length > 0 && model->normalizer_prepend_scalar >= 0) {
-    udontokenizersStatus_t status =
-        append_scalar(model, output, output_capacity, &count,
-                      (uint32_t)model->normalizer_prepend_scalar);
+    udontokenizersStatus_t status = append_scalar(
+        model, managed_output, raw_output, use_raw, output_capacity, &count,
+        (uint32_t)model->normalizer_prepend_scalar);
     if (status != UDONTOKENIZERS_STATUS_SUCCESS)
       return status;
   }
@@ -182,10 +204,30 @@ udontokenizersStatus_t udontokenizersEncode(const udontokenizers_model_t *model,
     if (model->normalizer_replace_from_scalar >= 0 &&
         scalar == (uint32_t)model->normalizer_replace_from_scalar)
       scalar = (uint32_t)model->normalizer_replace_to_scalar;
-    status = append_scalar(model, output, output_capacity, &count, scalar);
+    status = append_scalar(model, managed_output, raw_output, use_raw,
+                           output_capacity, &count, scalar);
     if (status != UDONTOKENIZERS_STATUS_SUCCESS)
       return status;
   }
   *output_count = count;
-  return merge_tokens(model, output, first_token, output_count);
+  return merge_tokens(model, managed_output, raw_output, use_raw, first_token,
+                      output_count);
+}
+
+udontokenizersStatus_t udontokenizersEncode(const udontokenizers_model_t *model,
+                                            udon_string_t input,
+                                            udon_int32_array_t output,
+                                            int32_t output_capacity,
+                                            int32_t *output_count) {
+  if (output_capacity < 0 || output_capacity > udonInt32ArrayLength(output))
+    return UDONTOKENIZERS_STATUS_INVALID_ARGUMENT;
+  return encode(model, input, output, 0, 0, output_capacity, output_count);
+}
+
+udontokenizersStatus_t
+udontokenizersEncodeRaw(const udontokenizers_model_t *model,
+                        udon_string_t input, int32_t *output,
+                        int32_t output_capacity, int32_t *output_count) {
+  return encode(model, input, (udon_int32_array_t)0, output, 1, output_capacity,
+                output_count);
 }

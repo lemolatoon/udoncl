@@ -1069,6 +1069,10 @@ def main():
     ])
     run([
         args.cmake, '--build', str(consumer),
+        '--target', 'hello-tokenizer-raw-unity-library',
+    ])
+    run([
+        args.cmake, '--build', str(consumer),
         '--target', 'tinyllama-tokenizer-unity-library',
     ])
     run([
@@ -1332,6 +1336,31 @@ def main():
         'SystemString.__ToCharArray__SystemInt32_SystemInt32__SystemCharArray'
         in tokenizer_assembly)
     assert 'SystemInt32Array.__Get__SystemInt32__SystemInt32' in tokenizer_assembly
+
+    raw_tokenizer_artifact = (
+        consumer / 'udoncl/hello-tokenizer-raw-unity-library/artifact'
+    )
+    raw_tokenizer_manifest = json.loads(
+        (raw_tokenizer_artifact / 'manifest.json').read_text(encoding='utf-8')
+    )
+    assert [item['public_name'] for item in raw_tokenizer_manifest['exports']] == [
+        'TokenizeFirst'
+    ]
+    raw_tokenizer_assembly = (raw_tokenizer_artifact / 'host.uasm').read_text(
+        encoding='utf-8'
+    )
+    assert '.export __0_TokenizeFirst' in raw_tokenizer_assembly
+    raw_tokenizer_storage = json.loads(
+        (raw_tokenizer_artifact / 'storage-report.json').read_text(
+            encoding='utf-8'
+        )
+    )
+    assert any(
+        item['kind'] == 'alloca'
+        and item['bytes'] == 16
+        and item['name'].startswith('tokenizer_raw_first:')
+        for item in raw_tokenizer_storage['raw_objects']
+    )
 
     tinyllama_tokenizer_artifact = (
         consumer / 'udoncl/tinyllama-tokenizer-unity-library/artifact'
