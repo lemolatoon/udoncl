@@ -26,6 +26,13 @@ if(UDONCL_TINYLLAMA_ONNX_MODEL)
       past_sequence_length=0
     INPUT_SHAPES
       attention_mask=1,4)
+  file(READ "${CMAKE_CURRENT_SOURCE_DIR}/unity-library.json" real_unity_config)
+  string(JSON real_unity_config SET "${real_unity_config}"
+    program "\"tinyllama_real_prefill\"")
+  string(JSON real_unity_config SET "${real_unity_config}"
+    binding class_name "\"UdonclTinyLlamaPrefillBinding\"")
+  set(unity_config "${CMAKE_CURRENT_BINARY_DIR}/unity-library-real.json")
+  file(WRITE "${unity_config}" "${real_unity_config}\n")
 else()
   set(model "${CMAKE_CURRENT_BINARY_DIR}/transformer.onnx")
   execute_process(
@@ -39,6 +46,7 @@ else()
     message(FATAL_ERROR "Transformer ONNX generation failed:\n${stdout}${stderr}")
   endif()
   set(model_shape_arguments DIMENSION_BOUNDS sequence=4)
+  set(unity_config "${CMAKE_CURRENT_SOURCE_DIR}/unity-library.json")
 endif()
 
 udoncl_add_onnx_host_library(transformer_host MODEL "${model}"
@@ -67,7 +75,7 @@ if(UDONCL_TINYLLAMA_ONNX_MODEL)
   list(APPEND unity_library_arguments OMIT_INTERMEDIATE_IR)
 endif()
 udoncl_add_unity_library(onnx-transformer-tiny
-  CONFIG "${CMAKE_CURRENT_SOURCE_DIR}/unity-library.json"
+  CONFIG "${unity_config}"
   ${unity_library_arguments}
   HOST_LIBRARIES
     transformer_host
@@ -84,7 +92,7 @@ udoncl_add_unity_library(onnx-transformer-tiny
 if(UDONCL_TINYLLAMA_TOKENIZER_DIRECTORY AND
    NOT UDONCL_TINYLLAMA_ONNX_MODEL)
   udoncl_add_unity_library(onnx-transformer-conversation-input
-    CONFIG "${CMAKE_CURRENT_SOURCE_DIR}/unity-library.json"
+    CONFIG "${unity_config}"
     HOST_LIBRARIES
       transformer_host
       transformer_user_host

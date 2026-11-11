@@ -1029,7 +1029,7 @@ def main():
     prefill_controller = prefill_controller_path.read_text(encoding='utf-8')
     for source_contract in [
         'class UdonclTinyLlamaPrefillTestController',
-        'UdonclGenericOnnxTransformerTinyBinding binding',
+        'UdonclTinyLlamaPrefillBinding binding',
         'binding.StartInitialize(',
         'binding.GetInitializeStatus()',
         'binding.TryGetInitializeResult(',

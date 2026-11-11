@@ -57,7 +57,8 @@ class TinyLlamaPrefillArtifactValidatorTests(unittest.TestCase):
                        "mutable_handle_capacity": len(buffers)},
             "static_tensors": [{"name": "weight",
                                 "byte_length": 900_000_001}],
-            "program": {"binding_class": "UdonclGenericOnnxTransformerTinyBinding",
+            "program": {"name": "tinyllama_real_prefill",
+                        "binding_class": "UdonclTinyLlamaPrefillBinding",
                         "binding_source": "binding.cs",
                         "storage_report": "storage-report.json"},
         }
@@ -101,6 +102,16 @@ class TinyLlamaPrefillArtifactValidatorTests(unittest.TestCase):
             manifest["program"]["binding_class"] = "OtherBinding"
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "unexpected generated U# binding class"):
+                VALIDATOR.validate_artifact(artifact)
+
+    def test_rejects_unexpected_program_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = self.make_artifact(Path(directory))
+            manifest_path = artifact / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["program"]["name"] = "generic_onnx_transformer_tiny"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "unexpected program identity"):
                 VALIDATOR.validate_artifact(artifact)
 
     def test_rejects_static_weight_in_raw_heap(self):

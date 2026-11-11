@@ -40,7 +40,11 @@ def validate_artifact(artifact: Path) -> dict[str, int]:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     program = manifest.get("program", {})
     require(
-        program.get("binding_class") == "UdonclGenericOnnxTransformerTinyBinding",
+        program.get("name") == "tinyllama_real_prefill",
+        "artifact has an unexpected program identity",
+    )
+    require(
+        program.get("binding_class") == "UdonclTinyLlamaPrefillBinding",
         "artifact has an unexpected generated U# binding class",
     )
     binding = manifest.get("onnx_binding")

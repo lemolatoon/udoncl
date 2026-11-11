@@ -9,7 +9,7 @@ namespace Lemolatoon.Udoncl.Generated
         private const int PresentCount = 44;
         private const int PresentValues = 1024;
 
-        public UdonclGenericOnnxTransformerTinyBinding binding;
+        public UdonclTinyLlamaPrefillBinding binding;
         public long[] inputIds;
         public long[] attentionMask;
         public long[] positionIds;
@@ -25,7 +25,7 @@ namespace Lemolatoon.Udoncl.Generated
         public void Run()
         {
             completed = false;
-            status = UdonclGenericOnnxTransformerTinyBinding.StatusSuccess;
+            status = UdonclTinyLlamaPrefillBinding.StatusSuccess;
             libraryStatus = 0;
             phase = 1;
             presentIndex = 0;
@@ -45,12 +45,12 @@ namespace Lemolatoon.Udoncl.Generated
                 || presentKv.Length != PresentCount * PresentValues
             )
             {
-                status = UdonclGenericOnnxTransformerTinyBinding.StatusInvalidArgument;
+                status = UdonclTinyLlamaPrefillBinding.StatusInvalidArgument;
                 completed = true;
                 return;
             }
             status = binding.StartInitialize(this, nameof(OnInitializeComplete));
-            if (status != UdonclGenericOnnxTransformerTinyBinding.StatusSuccess)
+            if (status != UdonclTinyLlamaPrefillBinding.StatusSuccess)
                 completed = true;
         }
 
@@ -58,20 +58,20 @@ namespace Lemolatoon.Udoncl.Generated
         {
             phase = 2;
             status = binding.GetInitializeStatus();
-            if (status == UdonclGenericOnnxTransformerTinyBinding.StatusSuccess)
+            if (status == UdonclTinyLlamaPrefillBinding.StatusSuccess)
                 status = binding.TryGetInitializeResult(out libraryStatus);
             if (
-                status == UdonclGenericOnnxTransformerTinyBinding.StatusSuccess
+                status == UdonclTinyLlamaPrefillBinding.StatusSuccess
                 && libraryStatus == 0
             )
                 status = binding.TryWriteInputIds(inputIds);
-            if (status == UdonclGenericOnnxTransformerTinyBinding.StatusSuccess)
+            if (status == UdonclTinyLlamaPrefillBinding.StatusSuccess)
                 status = binding.TryWriteAttentionMask(attentionMask);
-            if (status == UdonclGenericOnnxTransformerTinyBinding.StatusSuccess)
+            if (status == UdonclTinyLlamaPrefillBinding.StatusSuccess)
                 status = binding.TryWritePositionIds(positionIds);
-            if (status == UdonclGenericOnnxTransformerTinyBinding.StatusSuccess)
+            if (status == UdonclTinyLlamaPrefillBinding.StatusSuccess)
                 status = binding.StartRun(this, nameof(OnRunComplete));
-            if (status != UdonclGenericOnnxTransformerTinyBinding.StatusSuccess)
+            if (status != UdonclTinyLlamaPrefillBinding.StatusSuccess)
                 completed = true;
         }
 
@@ -79,10 +79,10 @@ namespace Lemolatoon.Udoncl.Generated
         {
             phase = 3;
             status = binding.GetRunStatus();
-            if (status == UdonclGenericOnnxTransformerTinyBinding.StatusSuccess)
+            if (status == UdonclTinyLlamaPrefillBinding.StatusSuccess)
                 status = binding.TryGetRunResult(out libraryStatus);
             if (
-                status != UdonclGenericOnnxTransformerTinyBinding.StatusSuccess
+                status != UdonclTinyLlamaPrefillBinding.StatusSuccess
                 || libraryStatus != 0
             )
             {
@@ -90,7 +90,7 @@ namespace Lemolatoon.Udoncl.Generated
                 return;
             }
             status = binding.StartReadLogits(logits, this, nameof(OnLogitsComplete));
-            if (status != UdonclGenericOnnxTransformerTinyBinding.StatusSuccess)
+            if (status != UdonclTinyLlamaPrefillBinding.StatusSuccess)
                 completed = true;
         }
 
@@ -98,7 +98,7 @@ namespace Lemolatoon.Udoncl.Generated
         {
             phase = 4;
             status = binding.GetLastReadbackStatus();
-            if (status != UdonclGenericOnnxTransformerTinyBinding.StatusSuccess)
+            if (status != UdonclTinyLlamaPrefillBinding.StatusSuccess)
             {
                 completed = true;
                 return;
@@ -110,7 +110,7 @@ namespace Lemolatoon.Udoncl.Generated
         private void StartNextPresent()
         {
             status = binding.StartReadFloatBuffer(49 + presentIndex, presentScratch, this, nameof(OnPresentComplete));
-            if (status != UdonclGenericOnnxTransformerTinyBinding.StatusSuccess)
+            if (status != UdonclTinyLlamaPrefillBinding.StatusSuccess)
                 completed = true;
         }
 
@@ -118,7 +118,7 @@ namespace Lemolatoon.Udoncl.Generated
         {
             phase = 5 + presentIndex;
             status = binding.GetLastReadbackStatus();
-            if (status != UdonclGenericOnnxTransformerTinyBinding.StatusSuccess)
+            if (status != UdonclTinyLlamaPrefillBinding.StatusSuccess)
             {
                 completed = true;
                 return;

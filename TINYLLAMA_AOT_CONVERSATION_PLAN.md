@@ -677,6 +677,12 @@ Implement in this order, keeping each gate independently testable:
     test-only U# controller is structurally covered: it writes the three
     fixed-prefill INT64 inputs, runs the ordinary generated lifecycle, and
     serially reads logits plus all 44 present K/V buffers through callbacks.
+    The real-model target has the distinct artifact identity
+    `tinyllama_real_prefill` and generated class
+    `UdonclTinyLlamaPrefillBinding`; the bounded synthetic Transformer keeps
+    `generic_onnx_transformer_tiny` and its existing binding class. Both may
+    therefore be imported without duplicate C# types or generated-root
+    collisions.
     Combining tokenizer and prefill remains intentionally deferred to the
     separate Conversation Artifact. The next gate is importing the real
     artifact and oracle into the focused Unity test and comparing all values;
