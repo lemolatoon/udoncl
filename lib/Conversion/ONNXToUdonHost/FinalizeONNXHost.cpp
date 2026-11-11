@@ -298,6 +298,10 @@ void attachBindingMetadata(ModuleOp module, const GraphRecord &graph) {
       builder.getNamedAttr(
           "enqueue_run_symbol",
           builder.getStringAttr("udon_onnx_binding_enqueue_run")),
+      builder.getNamedAttr(
+          "enqueue_copy_output_to_input_symbol",
+          builder.getStringAttr(
+              "udon_onnx_binding_enqueue_copy_output_to_input")),
       builder.getNamedAttr("dispose_symbol",
                            builder.getStringAttr("udon_onnx_binding_dispose")),
   });
@@ -3027,6 +3031,79 @@ void createPhysicalBindingExports(ModuleOp module, const GraphRecord &graph) {
                 "udononnxBindingStateEnqueueRun");
 
   builder.setInsertionPointToEnd(module.getBody());
+  auto copyOutputToInput = func::FuncOp::create(
+      builder, location, "udon_onnx_binding_enqueue_copy_output_to_input",
+      FunctionType::get(module.getContext(), {i32, i32}, {i32}));
+  markExport(copyOutputToInput);
+  Block *copyEntry = copyOutputToInput.addEntryBlock();
+  builder.setInsertionPointToEnd(copyEntry);
+  auto copyReturnIfNonzero = [&](Value status, int64_t failureStatus = -1) {
+    Block *next = copyOutputToInput.addBlock();
+    Block *failure = copyOutputToInput.addBlock();
+    Value succeeded = arith::CmpIOp::create(
+        builder, location, arith::CmpIPredicate::eq, status, constant(0));
+    cf::CondBranchOp::create(builder, location, succeeded, next, ValueRange{},
+                             failure, ValueRange{});
+    builder.setInsertionPointToEnd(failure);
+    func::ReturnOp::create(builder, location,
+                           failureStatus < 0 ? status
+                                             : constant(failureStatus));
+    builder.setInsertionPointToEnd(next);
+  };
+  Value sessionSlot = allocaI32(builder, location);
+  auto gotSession =
+      func::CallOp::create(builder, location, "udononnxBindingStateGetSession",
+                           TypeRange{i32}, ValueRange{state(), sessionSlot});
+  copyReturnIfNonzero(gotSession.getResult(0));
+  auto physicalBuffer = [&](size_t logicalId, int64_t bytes) -> Value {
+    return func::CallOp::create(
+               builder, location, "__vrc_opencl_buffer_alloc", TypeRange{i32},
+               ValueRange{constant(logicalId), constant(bytes)})
+        .getResult(0);
+  };
+  for (auto [outputIndex, outputTensorIndex] : llvm::enumerate(graph.outputs)) {
+    const TensorRecord &output = graph.tensors[outputTensorIndex];
+    int64_t outputBytes =
+        std::max<int64_t>(elementByteSize(output.type.getElementType()),
+                          deviceAllocationBytes(graph, outputTensorIndex));
+    for (auto [inputIndex, inputTensorIndex] : llvm::enumerate(graph.inputs)) {
+      const TensorRecord &input = graph.tensors[inputTensorIndex];
+      int64_t inputBytes =
+          std::max<int64_t>(elementByteSize(input.type.getElementType()),
+                            deviceAllocationBytes(graph, inputTensorIndex));
+      if (output.type != input.type || outputBytes != inputBytes)
+        continue;
+      Block *copy = copyOutputToInput.addBlock();
+      Block *next = copyOutputToInput.addBlock();
+      Value outputMatches = arith::CmpIOp::create(
+          builder, location, arith::CmpIPredicate::eq,
+          copyEntry->getArgument(0), constant(outputIndex));
+      Value inputMatches = arith::CmpIOp::create(
+          builder, location, arith::CmpIPredicate::eq,
+          copyEntry->getArgument(1), constant(inputIndex));
+      Value pairMatches =
+          arith::AndIOp::create(builder, location, outputMatches, inputMatches);
+      cf::CondBranchOp::create(builder, location, pairMatches, copy,
+                               ValueRange{}, next, ValueRange{});
+      builder.setInsertionPointToEnd(copy);
+      Value source =
+          physicalBuffer(graph.inputs.size() + outputIndex + 1, outputBytes);
+      Value destination = physicalBuffer(inputIndex + 1, inputBytes);
+      auto copied = func::CallOp::create(
+          builder, location, "__vrc_opencl_buffer_copy", TypeRange{i32},
+          ValueRange{source, destination, constant(0), constant(0),
+                     constant(outputBytes)});
+      auto awaited =
+          func::CallOp::create(builder, location, "__vrc_opencl_await",
+                               TypeRange{i32}, copied.getResult(0));
+      copyReturnIfNonzero(awaited.getResult(0), 5);
+      func::ReturnOp::create(builder, location, constant(0));
+      builder.setInsertionPointToEnd(next);
+    }
+  }
+  func::ReturnOp::create(builder, location, constant(1));
+
+  builder.setInsertionPointToEnd(module.getBody());
   auto dispose =
       func::FuncOp::create(builder, location, "udon_onnx_binding_dispose",
                            FunctionType::get(module.getContext(), {}, {i32}));
@@ -3084,6 +3161,17 @@ void createPhysicalBindingExports(ModuleOp module, const GraphRecord &graph) {
               {pointer, i32, pointer, pointer}, {i32});
   declaration(module, "udononnxBindingStateEnqueueRun",
               {pointer, i32, pointer, pointer}, {i32});
+  declaration(module, "udononnxBindingStateGetSession", {pointer, pointer},
+              {i32});
+  declaration(module, "udononnxSessionResolveInput",
+              {pointer, i32, pointer, pointer, pointer}, {i32});
+  declaration(module, "udononnxSessionResolveOutput",
+              {pointer, i32, pointer, pointer, pointer}, {i32});
+  declaration(module, "udonclResolvePhysicalBuffer", {pointer, pointer}, {i32});
+  declaration(module, "__vrc_opencl_buffer_copy", {i32, i32, i32, i32, i32},
+              {i32});
+  declaration(module, "__vrc_opencl_buffer_alloc", {i32, i32}, {i32});
+  declaration(module, "__vrc_opencl_await", {i32}, {i32});
   declaration(module, "udononnxBindingStateCompleteEvent",
               {pointer, pointer, i32}, {i32});
   declaration(module, "udononnxBindingStateDispose", {pointer}, {i32});
@@ -4033,17 +4121,8 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                 {i32, i32, i32, i32, i32, i32, f32, i32}, {i32});
     declaration(module, "__vrc_opencl_dispatch_udondnn_arena_softmax",
                 {i32, i32, i32, i32, i32, i32, i32, i32}, {i32});
-    declaration(module, "udononnxSessionResolveInput",
-                {pointer, i32, pointer, pointer, pointer}, {i32});
-    declaration(module, "udononnxSessionResolveOutput",
-                {pointer, i32, pointer, pointer, pointer}, {i32});
     declaration(module, "clEnqueueMarkerWithWaitList",
                 {pointer, i32, pointer, pointer}, {i32});
-    declaration(module, "udonclResolvePhysicalBuffer", {pointer, pointer},
-                {i32});
-    declaration(module, "__vrc_opencl_buffer_copy", {i32, i32, i32, i32, i32},
-                {i32});
-    declaration(module, "__vrc_opencl_await", {i32}, {i32});
     declaration(module, "__vrc_opencl_static_tensor", {i32, i32}, {i32});
     declaration(module, "udonclCreateBufferForQueue",
                 {pointer, builder.getI64Type(), i32, pointer}, {pointer});
@@ -4159,10 +4238,6 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
   returnOpenCLErrorIfNonzero(marker.getResult(0));
   func::ReturnOp::create(builder, location, onnxStatus(0));
 
-  declaration(module, "udononnxSessionResolveInput",
-              {pointer, i32, pointer, pointer, pointer}, {i32});
-  declaration(module, "udononnxSessionResolveOutput",
-              {pointer, i32, pointer, pointer, pointer}, {i32});
   declaration(module, "clEnqueueReadBuffer",
               {pointer, pointer, i32, i32, i32, pointer, i32, pointer, pointer},
               {i32});

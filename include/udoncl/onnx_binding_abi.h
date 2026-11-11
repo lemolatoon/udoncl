@@ -77,6 +77,8 @@ udononnxStatus_t udononnxBindingStateEnqueueRun(void *state_storage,
                                                 uint32_t wait_count,
                                                 const cl_event *wait_list,
                                                 cl_event *completion);
+udononnxStatus_t udononnxBindingStateGetSession(void *state_storage,
+                                                udononnxSession_t **session);
 udononnxStatus_t udononnxBindingStateCompleteEvent(void *state_storage,
                                                    cl_event completion,
                                                    udononnxStatus_t result);

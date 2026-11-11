@@ -193,10 +193,11 @@ aliasing are allowed.
 - The bounded Transformer fixture now executes through the compiler-generated
   U# binding in Unity Play Mode rather than only through direct `IUdonVM`
   calls. Its two-turn acceptance test compares both turns' logits and present
-  K/V values. This checkpoint feeds first-turn K/V back through the public
-  whole-buffer API; replacing that Host readback/reupload with queue-ordered
-  Device copy or proven aliasing remains required for the real conversation
-  path.
+  K/V values. The C Host's `CommitKv` export uses the model-independent
+  generated binding ABI to enqueue whole-buffer output-to-input Device copies;
+  the second turn writes only its token input and does not re-upload K/V from
+  Host memory. The test still reads present K/V solely as an acceptance oracle.
+  Dynamic append/slice handling for the real model remains required.
 
 ### 2.3 Initial target
 

@@ -139,7 +139,8 @@ int main(void) {
   cl_mem resolved_memory = 0;
   size_t resolved_offset = 0, resolved_bytes = 0;
   udonclBufferHandle_t input_buffer = {0, 0}, output_buffer = {0, 0},
-                       foreign_buffer = {0, 0}, binding_buffer = {0, 0};
+                       foreign_buffer = {0, 0}, binding_input = {0, 0},
+                       binding_output = {0, 0};
   udonclBufferView_t input_view, output_view, foreign_view;
   udonclBufferView_t empty_view;
   udononnxTensor_t input_tensor = {0}, output_tensor = {0},
@@ -160,6 +161,7 @@ int main(void) {
       binding_outputs[UDONONNX_BINDING_TENSOR_STORAGE_BYTES] = {0};
   cl_context binding_context = 0;
   cl_command_queue binding_queue = 0;
+  udononnxSession_t *binding_session = 0;
   int64_t dimensions[2] = {2, 2};
   int64_t empty_dimensions[4] = {1, 4, 0, 64};
   int32_t binding_dimensions[2] = {2, 2};
@@ -354,18 +356,25 @@ int main(void) {
              UDONONNX_STATUS_SUCCESS &&
          binding_queue);
   EXPECT(udononnxBindingStateAllocateBuffer(binding_state, 2, sizeof(source),
-                                            &binding_buffer) ==
+                                            &binding_input) ==
          UDONONNX_STATUS_INVALID_VALUE);
-  EXPECT(udononnxBindingStateAllocateBuffer(binding_state, 0, sizeof(source),
-                                            &binding_buffer) ==
+  EXPECT(udononnxBindingStateAllocateBuffer(binding_state, 0, sizeof(float),
+                                            &binding_input) ==
          UDONONNX_STATUS_SUCCESS);
-  EXPECT(udonclDeviceBufferGetSize(binding_buffer, &resolved_bytes) ==
+  EXPECT(udononnxBindingStateAllocateBuffer(binding_state, 1, sizeof(float),
+                                            &binding_output) ==
+         UDONONNX_STATUS_SUCCESS);
+  EXPECT(udonclDeviceBufferGetSize(binding_input, &resolved_bytes) ==
              UDONCL_STATUS_SUCCESS &&
-         resolved_bytes == sizeof(source));
-  EXPECT(udonclDeviceBufferDestroy(&binding_buffer) == UDONCL_STATUS_SUCCESS);
+         resolved_bytes == sizeof(float));
   EXPECT(udononnxBindingStateBindTensor(binding_state, 2, 0, 0, 0, 0, 0,
                                         UDONCL_DATA_FLOAT32, 0,
                                         0) == UDONONNX_STATUS_INVALID_VALUE);
+  EXPECT(udononnxBindingStateGetSession(binding_state, &binding_session) ==
+             UDONONNX_STATUS_SUCCESS &&
+         binding_session);
+  EXPECT(udonclDeviceBufferDestroy(&binding_input) == UDONCL_STATUS_SUCCESS);
+  EXPECT(udonclDeviceBufferDestroy(&binding_output) == UDONCL_STATUS_SUCCESS);
   EXPECT(udononnxBindingStateDispose(binding_state) == UDONONNX_STATUS_SUCCESS);
   return 0;
 }

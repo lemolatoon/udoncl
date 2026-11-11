@@ -35,6 +35,16 @@ UDONCL_EXPORT udononnxStatus_t transformer_run(void) {
   return udon_onnx_binding_enqueue_run();
 }
 
+UDONCL_EXPORT udononnxStatus_t transformer_commit_kv(void) {
+  udononnxStatus_t status;
+  if (!transformer_initialized)
+    return UDONONNX_STATUS_NOT_INITIALIZED;
+  status = udon_onnx_binding_enqueue_copy_output_to_input(1, 1);
+  if (status != UDONONNX_STATUS_SUCCESS)
+    return status;
+  return udon_onnx_binding_enqueue_copy_output_to_input(2, 2);
+}
+
 UDONCL_EXPORT udononnxStatus_t transformer_dispose(void) {
   udononnxStatus_t status;
   if (!transformer_initialized)

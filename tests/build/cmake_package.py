@@ -365,6 +365,11 @@ def main():
             'parameters': [],
         },
         {
+            'symbol': 'udon_onnx_binding_enqueue_copy_output_to_input',
+            'public_name': 'EnqueueCopyOnnxOutputToInput',
+            'parameters': ['output_index', 'input_index'],
+        },
+        {
             'symbol': 'udon_onnx_binding_dispose',
             'public_name': 'DisposeOnnxBinding',
             'parameters': [],
@@ -437,13 +442,14 @@ def main():
     generated_onnx_host_text = run([
         install / 'bin' / f'udoncl-opt{suffix}', generated_onnx_host,
     ])
-    assert generated_onnx_host_text.count('udoncl.export') == 6
+    assert generated_onnx_host_text.count('udoncl.export') == 7
     for symbol in [
         'udon_onnx_binding_create',
         'udon_onnx_binding_bind_tensor',
         'udon_onnx_binding_bind_all',
         'udon_onnx_binding_enqueue_initialize',
         'udon_onnx_binding_enqueue_run',
+        'udon_onnx_binding_enqueue_copy_output_to_input',
         'udon_onnx_binding_dispose',
     ]:
         assert f'func.func @{symbol}' in generated_onnx_host_text
@@ -468,6 +474,8 @@ def main():
         'udon_onnx_binding_bind_all': 'BindAllOnnxTensors',
         'udon_onnx_binding_enqueue_initialize': 'EnqueueOnnxInitialize',
         'udon_onnx_binding_enqueue_run': 'EnqueueOnnxRun',
+        'udon_onnx_binding_enqueue_copy_output_to_input':
+            'EnqueueCopyOnnxOutputToInput',
         'udon_onnx_binding_dispose': 'DisposeOnnxBinding',
     }
     physical_bind = next(
@@ -508,6 +516,8 @@ def main():
         'enqueue_initialize_symbol':
             'udon_onnx_binding_enqueue_initialize',
         'enqueue_run_symbol': 'udon_onnx_binding_enqueue_run',
+        'enqueue_copy_output_to_input_symbol':
+            'udon_onnx_binding_enqueue_copy_output_to_input',
         'dispose_symbol': 'udon_onnx_binding_dispose',
     }
     assert len(generic_manifest['device']['buffers']) == 5
@@ -536,6 +546,7 @@ def main():
         'udon_onnx_binding_bind_all',
         'udon_onnx_binding_enqueue_initialize',
         'udon_onnx_binding_enqueue_run',
+        'udon_onnx_binding_enqueue_copy_output_to_input',
         'udon_onnx_binding_dispose',
     ]
     internal_export_cases = [
@@ -893,6 +904,10 @@ def main():
     assert 'func.func @udon_onnx_binding_bind_tensor(' in transformer_source
     assert 'func.func @udon_onnx_binding_bind_all()' in transformer_source
     assert 'func.func @udon_onnx_binding_enqueue_run()' in transformer_source
+    assert (
+        'func.func @udon_onnx_binding_enqueue_copy_output_to_input('
+        in transformer_source
+    )
     assert 'call @udon_onnx_session_bind_output_to_input' not in transformer_source
     assert 'udoncl.onnx_device_graph = true' in transformer_source
     assert 'udoncl.onnx_device_unsupported = []' in transformer_source
@@ -916,6 +931,7 @@ def main():
     } == {
         'transformer_initialize': 'Initialize',
         'transformer_run': 'Run',
+        'transformer_commit_kv': 'CommitKv',
         'transformer_dispose': 'Shutdown',
     }
     assert [
@@ -955,6 +971,7 @@ def main():
     assert 'public int TryWritePastKey(float[] source)' in transformer_binding
     assert 'public int TryWritePastValue(float[] source)' in transformer_binding
     assert 'public int StartRun(' in transformer_binding
+    assert 'public int StartCommitKv(' in transformer_binding
     assert 'public int StartReadLogits(' in transformer_binding
     assert 'public int StartReadPresentKey(' in transformer_binding
     assert 'public int StartReadPresentValue(' in transformer_binding

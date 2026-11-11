@@ -751,10 +751,23 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
   module.walk([&](::vrc::vrc::DispatchOp operation) {
     dispatches.push_back(operation);
   });
-  if (allocations.size() > buffers.size()) {
-    module.emitError() << "Unity library has " << allocations.size()
-                       << " buffer allocation sites but only " << buffers.size()
-                       << " configured Device buffers";
+  // Multiple functions may acquire the same statically configured Unity
+  // buffer. Count constant logical identities rather than allocation ops so
+  // those acquisitions do not look like distinct resources. Dynamic logical
+  // ids select from this same configured pool at runtime and therefore do not
+  // imply an additional physical buffer per call site.
+  std::set<int64_t> constantAllocationIds;
+  for (auto allocation : allocations) {
+    auto logicalId =
+        allocation.getLogicalId().getDefiningOp<arith::ConstantIntOp>();
+    if (logicalId)
+      constantAllocationIds.insert(logicalId.value());
+  }
+  size_t requiredBuffers = constantAllocationIds.size();
+  if (requiredBuffers > buffers.size()) {
+    module.emitError() << "Unity library requires " << requiredBuffers
+                       << " distinct buffer identities but only "
+                       << buffers.size() << " configured Device buffers";
     return failure();
   }
   OpBuilder builder(module.getContext());
@@ -1107,7 +1120,8 @@ std::optional<json::Object> unityOnnxBindingManifest(ModuleOp module) {
   json::Object physicalJson;
   for (StringRef name :
        {"create_symbol", "bind_tensor_symbol", "enqueue_initialize_symbol",
-        "bind_all_symbol", "enqueue_run_symbol", "dispose_symbol"}) {
+        "bind_all_symbol", "enqueue_run_symbol",
+        "enqueue_copy_output_to_input_symbol", "dispose_symbol"}) {
     auto value = physical.getAs<StringAttr>(name);
     if (!value)
       return std::nullopt;

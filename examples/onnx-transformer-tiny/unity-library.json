@@ -256,6 +256,7 @@
   "export_overrides": [
     {"symbol": "transformer_initialize", "public_name": "Initialize", "parameters": []},
     {"symbol": "transformer_run", "public_name": "Run", "parameters": []},
+    {"symbol": "transformer_commit_kv", "public_name": "CommitKv", "parameters": []},
     {"symbol": "transformer_dispose", "public_name": "Shutdown", "parameters": []}
   ],
   "internal_exports": [
@@ -264,6 +265,7 @@
     "udon_onnx_binding_bind_all",
     "udon_onnx_binding_enqueue_initialize",
     "udon_onnx_binding_enqueue_run",
+    "udon_onnx_binding_enqueue_copy_output_to_input",
     "udon_onnx_binding_dispose"
   ],
   "buffers": [

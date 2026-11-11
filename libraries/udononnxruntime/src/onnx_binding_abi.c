@@ -252,6 +252,17 @@ udononnxStatus_t udononnxBindingStateEnqueueRun(void *state_storage,
                : UDONONNX_STATUS_NOT_INITIALIZED;
 }
 
+udononnxStatus_t udononnxBindingStateGetSession(void *state_storage,
+                                                udononnxSession_t **session) {
+  struct udononnxBindingState *state = udononnxBindingStateGet(state_storage);
+  if (!state)
+    return UDONONNX_STATUS_NOT_INITIALIZED;
+  if (!session)
+    return UDONONNX_STATUS_INVALID_VALUE;
+  *session = &state->session;
+  return UDONONNX_STATUS_SUCCESS;
+}
+
 udononnxStatus_t udononnxBindingStateCompleteEvent(void *state_storage,
                                                    cl_event completion,
                                                    udononnxStatus_t result) {

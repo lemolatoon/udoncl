@@ -67,16 +67,22 @@ namespace Lemolatoon.Udoncl.Generated
                 completed = true;
                 return;
             }
-            StartTurn(inputIds, pastKey, pastValue);
+            StartTurn(inputIds, true);
         }
 
-        private void StartTurn(long[] tokens, float[] key, float[] value)
+        private void StartTurn(long[] tokens, bool writeCache)
         {
             status = binding.TryWriteInputIds(tokens);
-            if (status == UdonclGenericOnnxTransformerTinyBinding.StatusSuccess)
-                status = binding.TryWritePastKey(key);
-            if (status == UdonclGenericOnnxTransformerTinyBinding.StatusSuccess)
-                status = binding.TryWritePastValue(value);
+            if (
+                writeCache
+                && status == UdonclGenericOnnxTransformerTinyBinding.StatusSuccess
+            )
+                status = binding.TryWritePastKey(pastKey);
+            if (
+                writeCache
+                && status == UdonclGenericOnnxTransformerTinyBinding.StatusSuccess
+            )
+                status = binding.TryWritePastValue(pastValue);
             if (status == UdonclGenericOnnxTransformerTinyBinding.StatusSuccess)
                 status = binding.StartRun(this, nameof(OnRunComplete));
             if (status != UdonclGenericOnnxTransformerTinyBinding.StatusSuccess)
@@ -147,14 +153,33 @@ namespace Lemolatoon.Udoncl.Generated
                     firstPresentKey[index] = presentKey[index];
                 for (int index = 0; index < presentValue.Length; ++index)
                     firstPresentValue[index] = presentValue[index];
-                turn = 1;
                 phase = 7;
-                StartTurn(secondInputIds, presentKey, presentValue);
+                status = binding.StartCommitKv(this, nameof(OnCommitKvComplete));
+                if (status != UdonclGenericOnnxTransformerTinyBinding.StatusSuccess)
+                    completed = true;
                 return;
             }
-            phase = 8;
+            phase = 9;
             status = binding.TryShutdown(out libraryStatus);
             completed = true;
+        }
+
+        public void OnCommitKvComplete()
+        {
+            phase = 8;
+            status = binding.GetCommitKvStatus();
+            if (status == UdonclGenericOnnxTransformerTinyBinding.StatusSuccess)
+                status = binding.TryGetCommitKvResult(out libraryStatus);
+            if (
+                status != UdonclGenericOnnxTransformerTinyBinding.StatusSuccess
+                || libraryStatus != 0
+            )
+            {
+                completed = true;
+                return;
+            }
+            turn = 1;
+            StartTurn(secondInputIds, false);
         }
     }
 }

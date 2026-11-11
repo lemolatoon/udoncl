@@ -355,6 +355,7 @@ namespace Lemolatoon.Udoncl.Editor
         public string bind_tensor_symbol;
         public string enqueue_initialize_symbol;
         public string enqueue_run_symbol;
+        public string enqueue_copy_output_to_input_symbol;
         public string dispose_symbol;
     }
 }

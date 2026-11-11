@@ -49,6 +49,7 @@
     "udon_onnx_binding_bind_all",
     "udon_onnx_binding_enqueue_initialize",
     "udon_onnx_binding_enqueue_run",
+    "udon_onnx_binding_enqueue_copy_output_to_input",
     "udon_onnx_binding_dispose"
   ],
   "buffers": [
