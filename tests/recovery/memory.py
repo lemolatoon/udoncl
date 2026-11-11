@@ -137,6 +137,177 @@ for forbidden in ['llvm.mlir.global', 'llvm.mlir.addressof',
                   'llvm.getelementptr', 'llvm.load']:
     assert forbidden not in global_memory, (forbidden, global_memory)
 
+# LLVM 23 may spell one typed scalar stride as a same-width byte array under
+# opaque pointers. Recover the byte stride in allocation elements without
+# allowing the eventual load/store type to change.
+byte_stride_gep = run([
+    opt, '--vrc-raise-llvm-memory', '--verify-each'
+], r'''module {
+  llvm.func @byte_stride_gep() -> i64 {
+    %one = llvm.mlir.constant(1 : i32) : i32
+    %i32_value = llvm.mlir.constant(7 : i32) : i32
+    %i32_storage = llvm.alloca %one x !llvm.array<4 x i32> {alignment = 4 : i64} : (i32) -> !llvm.ptr
+    %i32_element = llvm.getelementptr %i32_storage[2] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<4 x i8>
+    llvm.store %i32_value, %i32_element {alignment = 4 : i64} : i32, !llvm.ptr
+    %i32_result = llvm.load %i32_element {alignment = 4 : i64} : !llvm.ptr -> i32
+    %i64_value = llvm.mlir.constant(9 : i64) : i64
+    %i64_storage = llvm.alloca %one x !llvm.array<2 x i64> {alignment = 8 : i64} : (i32) -> !llvm.ptr
+    %i64_element = llvm.getelementptr %i64_storage[1] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<8 x i8>
+    llvm.store %i64_value, %i64_element {alignment = 8 : i64} : i64, !llvm.ptr
+    %i64_result = llvm.load %i64_element {alignment = 8 : i64} : !llvm.ptr -> i64
+    llvm.return %i64_result : i64
+  }
+}''')
+for expected in ['memref<4xi32>', 'memref<2xi64>', 'memref.store',
+                 'memref.load']:
+    assert expected in byte_stride_gep, (expected, byte_stride_gep)
+for forbidden in ['llvm.alloca', 'llvm.getelementptr', 'llvm.load',
+                  'llvm.store']:
+    assert forbidden not in byte_stride_gep, (forbidden, byte_stride_gep)
+
+bounded_runtime_copy_source = r'''module {
+  llvm.func @bounded_runtime_copy(%count: i32, %value: i32) {
+    %zero = llvm.mlir.constant(0 : i32) : i32
+    %one = llvm.mlir.constant(1 : i32) : i32
+    %capacity = llvm.mlir.constant(64 : i32) : i32
+    %storage = llvm.alloca %one x !llvm.array<64 x i32> {alignment = 4 : i64} : (i32) -> !llvm.ptr
+    %nonzero = llvm.icmp "ne" %count, %zero : i32
+    llvm.cond_br %nonzero, ^upper, ^exit
+  ^upper:
+    %too_large = llvm.icmp "ugt" %count, %capacity : i32
+    llvm.cond_br %too_large, ^exit, ^loop(%zero : i32)
+  ^loop(%index: i32):
+    %element = llvm.getelementptr inbounds|nuw %storage[%index] : (!llvm.ptr, i32) -> !llvm.ptr, !llvm.array<4 x i8>
+    llvm.store %value, %element {alignment = 4 : i64} : i32, !llvm.ptr
+    %next = llvm.add %index, %one overflow<nsw, nuw> : i32
+    %more = llvm.icmp "ult" %next, %count : i32
+    llvm.cond_br %more, ^latch, ^exit
+  ^latch:
+    %continue = llvm.icmp "eq" %zero, %zero : i32
+    llvm.cond_br %continue, ^loop(%next : i32), ^exit
+  ^exit:
+    llvm.return
+  }
+}'''
+bounded_runtime_copy = run([
+    opt, '--vrc-raise-llvm-memory', '--verify-each'
+], bounded_runtime_copy_source)
+assert 'memref<64xi32>' in bounded_runtime_copy
+assert 'memref.store' in bounded_runtime_copy
+assert 'llvm.getelementptr' not in bounded_runtime_copy
+
+post_increment_copy = run([
+    opt, '--vrc-raise-llvm-memory', '--verify-each'
+], bounded_runtime_copy_source.replace(
+    '!llvm.array<64 x i32>', '!llvm.array<65 x i32>'
+).replace(
+    '%more = llvm.icmp "ult" %next, %count : i32',
+    '%more = llvm.icmp "ult" %index, %count : i32'
+).replace(
+    '''    llvm.cond_br %more, ^latch, ^exit
+  ^latch:
+    %continue = llvm.icmp "eq" %zero, %zero : i32
+    llvm.cond_br %continue, ^loop(%next : i32), ^exit''',
+    '    llvm.cond_br %more, ^loop(%next : i32), ^exit'
+))
+assert 'memref<65xi32>' in post_increment_copy
+assert 'memref.store' in post_increment_copy
+assert 'llvm.getelementptr' not in post_increment_copy
+
+# A dominating unsigned no-wrap subtraction `capacity - count` proves the same
+# upper bound after LLVM folds an explicit source-level capacity guard.
+bounded_nuw_sub_copy = run([
+    opt, '--vrc-raise-llvm-memory', '--verify-each'
+], bounded_runtime_copy_source.replace(
+    '''  ^upper:
+    %too_large = llvm.icmp "ugt" %count, %capacity : i32
+    llvm.cond_br %too_large, ^exit, ^loop(%zero : i32)''',
+    '''  ^upper:
+    %remaining = llvm.sub %capacity, %count overflow<nuw> : i32
+    %fits = llvm.icmp "uge" %remaining, %zero : i32
+    llvm.cond_br %fits, ^loop(%zero : i32), ^exit'''
+))
+assert 'memref<64xi32>' in bounded_nuw_sub_copy
+assert 'memref.store' in bounded_nuw_sub_copy
+assert 'llvm.getelementptr' not in bounded_nuw_sub_copy
+
+bounded_umin_copy = run([
+    opt, '--vrc-raise-llvm-memory', '--verify-each'
+], bounded_runtime_copy_source.replace(
+    '''  ^upper:
+    %too_large = llvm.icmp "ugt" %count, %capacity : i32
+    llvm.cond_br %too_large, ^exit, ^loop(%zero : i32)''',
+    '''  ^upper:
+    %bound = llvm.intr.umin(%count, %capacity) : (i32, i32) -> i32
+    llvm.br ^loop(%zero : i32)'''
+).replace(
+    '%more = llvm.icmp "ult" %next, %count : i32',
+    '%more = llvm.icmp "ult" %next, %bound : i32'
+))
+assert 'memref<64xi32>' in bounded_umin_copy
+assert 'memref.store' in bounded_umin_copy
+assert 'llvm.getelementptr' not in bounded_umin_copy
+
+bounded_umin_select_copy = run([
+    opt, '--vrc-raise-llvm-memory', '--verify-each'
+], bounded_runtime_copy_source.replace(
+    '''  ^upper:
+    %too_large = llvm.icmp "ugt" %count, %capacity : i32
+    llvm.cond_br %too_large, ^exit, ^loop(%zero : i32)''',
+    '''  ^upper:
+    %below = llvm.icmp "ult" %count, %capacity : i32
+    %bound = llvm.select %below, %count, %capacity : i1, i32
+    llvm.br ^loop(%zero : i32)'''
+).replace(
+    '%more = llvm.icmp "ult" %next, %count : i32',
+    '%more = llvm.icmp "ult" %next, %bound : i32'
+))
+assert 'memref<64xi32>' in bounded_umin_select_copy
+assert 'memref.store' in bounded_umin_select_copy
+assert 'llvm.getelementptr' not in bounded_umin_select_copy
+
+unused_nuw_sub_copy = subprocess.run([
+    opt, '--vrc-raise-llvm-memory', '--verify-each'
+], input=bounded_runtime_copy_source.replace(
+    '''  ^upper:
+    %too_large = llvm.icmp "ugt" %count, %capacity : i32
+    llvm.cond_br %too_large, ^exit, ^loop(%zero : i32)''',
+    '''  ^upper:
+    %remaining = llvm.sub %capacity, %count overflow<nuw> : i32
+    llvm.br ^loop(%zero : i32)'''
+), text=True, capture_output=True, timeout=60)
+assert unused_nuw_sub_copy.returncode != 0
+
+unbounded_runtime_copy = subprocess.run([
+    opt, '--vrc-raise-llvm-memory', '--verify-each'
+], input=bounded_runtime_copy_source.replace(
+    'constant(64 : i32)', 'constant(65 : i32)'
+), text=True, capture_output=True, timeout=60)
+assert unbounded_runtime_copy.returncode != 0
+
+tbaa_source = output / 'typed-tbaa.ll'
+tbaa_source.write_text(r'''define i32 @typed_alias_metadata(i32 %value) {
+entry:
+  %storage = alloca [4 x i32], align 4
+  %element = getelementptr [4 x i32], ptr %storage, i32 0, i32 1
+  store i32 %value, ptr %element, align 4, !tbaa !3
+  %result = load i32, ptr %element, align 4, !tbaa !3
+  ret i32 %result
+}
+!0 = !{!"Simple C/C++ TBAA"}
+!1 = !{!"omnipotent char", !0, i64 0}
+!2 = !{!"int", !1, i64 0}
+!3 = !{!2, !2, i64 0}
+''')
+tbaa_imported = run([translate, '--import-llvm', tbaa_source])
+tbaa_recovered = run([
+    opt, '--vrc-raise-llvm-memory', '--verify-each'
+], tbaa_imported)
+for expected in ['memref<4xi32>', 'memref.store', 'memref.load']:
+    assert expected in tbaa_recovered, (expected, tbaa_recovered)
+for forbidden in ['tbaa', 'llvm.getelementptr', 'llvm.load', 'llvm.store']:
+    assert forbidden not in tbaa_recovered, (forbidden, tbaa_recovered)
+
 raw_memory_source = r'''module {
   llvm.mlir.global internal @handle() {addr_space = 0 : i32, alignment = 4 : i64} : !llvm.ptr {
     %zero = llvm.mlir.zero : !llvm.ptr
@@ -244,6 +415,7 @@ cases = [
     ('one-past-dereference', allocation + '%p = getelementptr [4 x i32], ptr %a, i32 0, i32 4\n%v = load i32, ptr %p, align 4\n', 'load/store bounds'),
     ('mixed-load', allocation + '%v = load float, ptr %a, align 4\n', 'mixed access types'),
     ('mixed-gep', allocation + '%p = getelementptr i8, ptr %a, i32 0\n', 'reinterpretation'),
+    ('nonintegral-byte-stride', allocation + '%p = getelementptr [3 x i8], ptr %a, i32 0\n', 'reinterpretation'),
     ('volatile', allocation + '%v = load volatile i32, ptr %a, align 4\n', 'volatile and atomic'),
     ('atomic', allocation + '%v = load atomic i32, ptr %a monotonic, align 4\n', 'volatile and atomic'),
     ('alignment', allocation + '%p = getelementptr [4 x i32], ptr %a, i32 0, i32 1\n%v = load i32, ptr %p, align 8\n', 'access alignment'),

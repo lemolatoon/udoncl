@@ -228,7 +228,7 @@ static udononnxStatus_t select_token(uint32_t *token) {
 }
 
 UDONCL_EXPORT udononnxStatus_t tinyllama_generate(uint32_t max_new_tokens) {
-  uint32_t index, token = 0;
+  uint32_t index, output_index, token = 0, prompt_tokens;
   udononnxStatus_t status = UDONONNX_STATUS_SUCCESS;
   if (disposed)
     return UDONONNX_STATUS_DISPOSED;
@@ -238,35 +238,38 @@ UDONCL_EXPORT udononnxStatus_t tinyllama_generate(uint32_t max_new_tokens) {
     return UDONONNX_STATUS_BUSY;
   if (failed || completed)
     return UDONONNX_STATUS_INVALID_STATE;
-  if (!prompt_count || !max_new_tokens)
+  prompt_tokens = prompt_count;
+  if (!prompt_tokens || !max_new_tokens)
     return UDONONNX_STATUS_INVALID_VALUE;
-  if (max_new_tokens > TINYLLAMA_GENERATED_CAPACITY ||
-      prompt_count + max_new_tokens - 1u > TINYLLAMA_CONTEXT_CAPACITY)
+  if (prompt_tokens > TINYLLAMA_CONTEXT_CAPACITY ||
+      max_new_tokens > TINYLLAMA_GENERATED_CAPACITY ||
+      max_new_tokens - 1u > TINYLLAMA_CONTEXT_CAPACITY - prompt_tokens)
     return UDONONNX_STATUS_CAPACITY_EXCEEDED;
   busy = 1;
   generated_count = 0;
-  for (index = 0; index < prompt_count; ++index) {
+  for (index = 0; index < prompt_tokens; ++index) {
     status = enqueue_step(prompt[index], index);
     if (status != UDONONNX_STATUS_SUCCESS)
       break;
-    if (index + 1u < prompt_count) {
+    if (index + 1u < prompt_tokens) {
       status = udon_onnx_binding_enqueue_advance_sequence_state();
       if (status != UDONONNX_STATUS_SUCCESS)
         break;
     }
   }
-  while (status == UDONONNX_STATUS_SUCCESS &&
-         generated_count < max_new_tokens) {
+  for (output_index = 0; output_index < max_new_tokens; ++output_index) {
     status = select_token(&token);
     if (status != UDONONNX_STATUS_SUCCESS)
       break;
-    generated[generated_count++] = (int32_t)token;
-    if (token == TINYLLAMA_EOS_TOKEN || generated_count == max_new_tokens)
+    generated[output_index] = (int32_t)token;
+    generated_count = output_index + 1u;
+    if (token == TINYLLAMA_EOS_TOKEN || output_index + 1u == max_new_tokens)
       break;
     status = udon_onnx_binding_enqueue_advance_sequence_state();
     if (status == UDONONNX_STATUS_SUCCESS)
-      status =
-          enqueue_step((int32_t)token, prompt_count + generated_count - 1u);
+      status = enqueue_step((int32_t)token, prompt_tokens + output_index);
+    if (status != UDONONNX_STATUS_SUCCESS)
+      break;
   }
   if (status == UDONONNX_STATUS_SUCCESS) {
     completed = 1;
@@ -285,7 +288,7 @@ UDONCL_EXPORT uint32_t tinyllama_generated_token_count(void) {
 
 UDONCL_EXPORT udononnxStatus_t
 tinyllama_read_generated_tokens(udon_int32_array_t destination) {
-  uint32_t index;
+  uint32_t index, token_count;
   if (disposed)
     return UDONONNX_STATUS_DISPOSED;
   if (!initialized)
@@ -294,11 +297,16 @@ tinyllama_read_generated_tokens(udon_int32_array_t destination) {
     return UDONONNX_STATUS_BUSY;
   if (!completed)
     return UDONONNX_STATUS_INVALID_STATE;
-  if (!destination ||
-      udonInt32ArrayLength(destination) < (int32_t)generated_count)
+  token_count = generated_count;
+  if (token_count > TINYLLAMA_GENERATED_CAPACITY)
+    return UDONONNX_STATUS_EXECUTION_FAILURE;
+  if (!destination || udonInt32ArrayLength(destination) < (int32_t)token_count)
     return UDONONNX_STATUS_INVALID_VALUE;
-  for (index = 0; index < generated_count; ++index)
+  for (index = 0; index < TINYLLAMA_GENERATED_CAPACITY; ++index) {
+    if (index >= token_count)
+      break;
     udonInt32ArraySet(destination, (int32_t)index, generated[index]);
+  }
   return UDONONNX_STATUS_SUCCESS;
 }
 

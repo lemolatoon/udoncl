@@ -25,8 +25,12 @@ namespace vrc {
 
 namespace {
 LogicalResult reject(Operation *op, StringRef reason) {
-  return op->emitError() << "cannot recover memory for " << op->getName()
-                         << ": " << reason;
+  auto diagnostic = op->emitError()
+                    << "cannot recover memory for " << op->getName();
+  if (auto function = op->getParentOfType<LLVM::LLVMFuncOp>())
+    diagnostic << " in @" << function.getSymName();
+  diagnostic << ": " << reason;
+  return failure();
 }
 std::optional<int64_t> constant(Value value) {
   auto op = value.getDefiningOp<LLVM::ConstantOp>();
@@ -96,6 +100,10 @@ private:
                                  unsigned depth = 0);
   FailureOr<int64_t> leafCount(Type type, Type &leaf);
   std::optional<CountedLoop> countedLoop(BlockArgument iv);
+  std::optional<Interval> boundedLatchLoop(BlockArgument iv, Operation *at,
+                                           unsigned depth);
+  std::optional<int64_t>
+  dominatingUnsignedUpperBound(Value value, Operation *at, unsigned depth);
   std::optional<Interval> range(Value value, Operation *at, unsigned depth = 0);
   std::optional<Interval> range(const PointerInfo &info, Operation *at);
   LogicalResult checkAccess(Operation *op, Value pointer, Type type,
@@ -339,6 +347,204 @@ std::optional<CountedLoop> MemoryPlan::countedLoop(BlockArgument iv) {
                      *bound,   branch.getTrueDest(),
                      backedge, branch.getFalseDest()};
 }
+
+std::optional<int64_t>
+MemoryPlan::dominatingUnsignedUpperBound(Value value, Operation *at,
+                                         unsigned depth) {
+  auto function =
+      at ? at->getParentOfType<LLVM::LLVMFuncOp>() : LLVM::LLVMFuncOp();
+  if (!function)
+    return std::nullopt;
+  std::optional<int64_t> result;
+  auto canReach = [](Block *start, Block *target) {
+    SmallVector<Block *> worklist{start};
+    llvm::SmallPtrSet<Block *, 16> visited;
+    while (!worklist.empty()) {
+      Block *block = worklist.pop_back_val();
+      if (!visited.insert(block).second)
+        continue;
+      if (block == target)
+        return true;
+      llvm::append_range(worklist, block->getSuccessors());
+    }
+    return false;
+  };
+  for (Block &block : function.getBody()) {
+    for (Operation &operation : block) {
+      auto subtract = dyn_cast<LLVM::SubOp>(operation);
+      if (!subtract || subtract.getRhs() != value ||
+          !dominance.dominates(&operation, at))
+        continue;
+      auto flags = cast<LLVM::IntegerOverflowFlagsInterface>(&operation)
+                       .getOverflowFlags();
+      if (!LLVM::bitEnumContainsAll(flags, LLVM::IntegerOverflowFlags::nuw))
+        continue;
+      bool poisonObserved = false;
+      for (Operation *user : subtract.getRes().getUsers()) {
+        auto compare = dyn_cast<LLVM::ICmpOp>(user);
+        if (!compare)
+          continue;
+        for (Operation *compareUser : compare.getRes().getUsers()) {
+          auto branch = dyn_cast<LLVM::CondBrOp>(compareUser);
+          if (branch && branch.getCondition() == compare.getRes() &&
+              dominance.dominates(branch.getOperation(), at)) {
+            poisonObserved = true;
+            break;
+          }
+        }
+        if (poisonObserved)
+          break;
+      }
+      if (!poisonObserved)
+        continue;
+      auto upper = constant(subtract.getLhs());
+      if (!upper || *upper < 0 || *upper >= INT32_MAX)
+        continue;
+      result = result ? std::min(*result, *upper) : upper;
+    }
+    auto branch = dyn_cast<LLVM::CondBrOp>(block.getTerminator());
+    auto compare = branch ? branch.getCondition().getDefiningOp<LLVM::ICmpOp>()
+                          : LLVM::ICmpOp();
+    if (!compare || !dominance.dominates(branch.getOperation(), at))
+      continue;
+    auto consider = [&](Block *successor, Block *other, bool trueEdge,
+                        LLVM::ICmpPredicate predicate, Value lhs, Value rhs) {
+      if (!dominance.dominates(successor, at->getBlock()) ||
+          canReach(other, at->getBlock()) || lhs != value)
+        return;
+      auto bound = range(rhs, branch.getOperation(), depth + 1);
+      if (!bound || bound->max < 0 || bound->max >= INT32_MAX)
+        return;
+      std::optional<int64_t> upper;
+      if ((trueEdge && predicate == LLVM::ICmpPredicate::ule) ||
+          (!trueEdge && predicate == LLVM::ICmpPredicate::ugt))
+        upper = bound->max;
+      else if ((trueEdge && predicate == LLVM::ICmpPredicate::ult) ||
+               (!trueEdge && predicate == LLVM::ICmpPredicate::uge))
+        upper = bound->max - 1;
+      if (upper && *upper >= 0)
+        result = result ? std::min(*result, *upper) : upper;
+    };
+    consider(branch.getTrueDest(), branch.getFalseDest(), true,
+             compare.getPredicate(), compare.getLhs(), compare.getRhs());
+    consider(branch.getFalseDest(), branch.getTrueDest(), false,
+             compare.getPredicate(), compare.getLhs(), compare.getRhs());
+    auto swapped = LLVM::ICmpPredicate::eq;
+    switch (compare.getPredicate()) {
+    case LLVM::ICmpPredicate::ult:
+      swapped = LLVM::ICmpPredicate::ugt;
+      break;
+    case LLVM::ICmpPredicate::ule:
+      swapped = LLVM::ICmpPredicate::uge;
+      break;
+    case LLVM::ICmpPredicate::ugt:
+      swapped = LLVM::ICmpPredicate::ult;
+      break;
+    case LLVM::ICmpPredicate::uge:
+      swapped = LLVM::ICmpPredicate::ule;
+      break;
+    default:
+      continue;
+    }
+    consider(branch.getTrueDest(), branch.getFalseDest(), true, swapped,
+             compare.getRhs(), compare.getLhs());
+    consider(branch.getFalseDest(), branch.getTrueDest(), false, swapped,
+             compare.getRhs(), compare.getLhs());
+  }
+  return result;
+}
+
+std::optional<Interval>
+MemoryPlan::boundedLatchLoop(BlockArgument iv, Operation *at, unsigned depth) {
+  auto type = dyn_cast<IntegerType>(iv.getType());
+  if (!type || type.getWidth() < 2 || type.getWidth() > 64)
+    return std::nullopt;
+  Block *header = iv.getOwner();
+  if (!dominance.dominates(header, at->getBlock()))
+    return std::nullopt;
+  std::optional<int64_t> start;
+  Value next;
+  Value explicitBound;
+  int64_t explicitAdjustment = 0;
+  unsigned edges = 0;
+  Block *backedge = nullptr;
+  for (Block &block : *header->getParent()) {
+    auto *terminator = block.getTerminator();
+    for (auto [index, successor] :
+         llvm::enumerate(terminator->getSuccessors())) {
+      if (successor != header)
+        continue;
+      ++edges;
+      Value incoming;
+      if (auto direct = dyn_cast<LLVM::BrOp>(terminator))
+        incoming = direct.getDestOperands()[iv.getArgNumber()];
+      else if (auto conditional = dyn_cast<LLVM::CondBrOp>(terminator))
+        incoming =
+            (index == 0
+                 ? conditional.getTrueDestOperands()
+                 : conditional.getFalseDestOperands())[iv.getArgNumber()];
+      else
+        return std::nullopt;
+      auto initial = constant(incoming);
+      if (initial) {
+        if (start || dominance.dominates(header, &block))
+          return std::nullopt;
+        start = *initial;
+        continue;
+      }
+      if (backedge || !dominance.dominates(header, &block))
+        return std::nullopt;
+      auto increment = incoming.getDefiningOp<LLVM::AddOp>();
+      if (!increment ||
+          !((increment.getLhs() == iv && constant(increment.getRhs()) == 1) ||
+            (increment.getRhs() == iv && constant(increment.getLhs()) == 1)) ||
+          !dominance.dominates(increment.getOperation(), terminator))
+        return std::nullopt;
+      auto flags =
+          cast<LLVM::IntegerOverflowFlagsInterface>(increment.getOperation())
+              .getOverflowFlags();
+      if (!LLVM::bitEnumContainsAll(flags, LLVM::IntegerOverflowFlags::nuw))
+        return std::nullopt;
+      next = incoming;
+      if (auto branch = dyn_cast<LLVM::CondBrOp>(terminator)) {
+        if (auto compare =
+                branch.getCondition().getDefiningOp<LLVM::ICmpOp>()) {
+          bool trueEdge = index == 0;
+          Value compared, candidateBound;
+          if ((trueEdge &&
+               compare.getPredicate() == LLVM::ICmpPredicate::ult) ||
+              (!trueEdge &&
+               compare.getPredicate() == LLVM::ICmpPredicate::uge)) {
+            compared = compare.getLhs();
+            candidateBound = compare.getRhs();
+          } else if ((trueEdge &&
+                      compare.getPredicate() == LLVM::ICmpPredicate::ugt) ||
+                     (!trueEdge &&
+                      compare.getPredicate() == LLVM::ICmpPredicate::ule)) {
+            compared = compare.getRhs();
+            candidateBound = compare.getLhs();
+          }
+          if (compared == incoming || compared == iv) {
+            explicitBound = candidateBound;
+            explicitAdjustment = compared == incoming ? -1 : 0;
+          }
+        }
+      }
+      backedge = &block;
+    }
+  }
+  if (edges != 2 || !start || !backedge || !next || *start < 0)
+    return std::nullopt;
+  auto upper = range(explicitBound ? explicitBound : next,
+                     backedge->getTerminator(), depth + 1);
+  if (!upper || upper->min < 0 || upper->max >= INT32_MAX)
+    return std::nullopt;
+  int64_t maximum = upper->max + explicitAdjustment;
+  if (maximum < *start)
+    return std::nullopt;
+  return Interval{*start, maximum};
+}
+
 std::optional<Interval> MemoryPlan::range(Value value, Operation *at,
                                           unsigned depth) {
   if (depth > 16)
@@ -349,6 +555,44 @@ std::optional<Interval> MemoryPlan::range(Value value, Operation *at,
     if (auto loop = countedLoop(arg))
       if (dominance.dominates(loop->body, at->getBlock()))
         return Interval{loop->start, loop->bound - 1};
+    if (auto loop = boundedLatchLoop(arg, at, depth))
+      return loop;
+  }
+  if (auto upper = dominatingUnsignedUpperBound(value, at, depth))
+    return Interval{0, *upper};
+  if (Operation *definition = value.getDefiningOp();
+      definition && definition->getName().getStringRef() == "llvm.intr.umin") {
+    std::optional<int64_t> upper;
+    for (Value operand : definition->getOperands()) {
+      auto bounds = range(operand, at, depth + 1);
+      if (bounds && bounds->min >= 0)
+        upper = upper ? std::min(*upper, bounds->max) : bounds->max;
+    }
+    if (upper)
+      return Interval{0, *upper};
+  }
+  if (auto select = value.getDefiningOp<LLVM::SelectOp>()) {
+    if (auto compare = select.getCondition().getDefiningOp<LLVM::ICmpOp>()) {
+      bool unsignedMinimum =
+          ((compare.getPredicate() == LLVM::ICmpPredicate::ult ||
+            compare.getPredicate() == LLVM::ICmpPredicate::ule) &&
+           select.getTrueValue() == compare.getLhs() &&
+           select.getFalseValue() == compare.getRhs()) ||
+          ((compare.getPredicate() == LLVM::ICmpPredicate::ugt ||
+            compare.getPredicate() == LLVM::ICmpPredicate::uge) &&
+           select.getTrueValue() == compare.getRhs() &&
+           select.getFalseValue() == compare.getLhs());
+      if (unsignedMinimum) {
+        std::optional<int64_t> upper;
+        for (Value operand : {select.getTrueValue(), select.getFalseValue()}) {
+          auto bounds = range(operand, at, depth + 1);
+          if (bounds && bounds->min >= 0)
+            upper = upper ? std::min(*upper, bounds->max) : bounds->max;
+        }
+        if (upper)
+          return Interval{0, *upper};
+      }
+    }
   }
   if (auto mask = value.getDefiningOp<LLVM::AndOp>()) {
     auto c = constant(mask.getRhs());
@@ -407,10 +651,27 @@ FailureOr<PointerInfo> MemoryPlan::resolve(Value pointer, Operation *at,
     return failure();
   PointerInfo info = *base;
   Type type = gep.getElemType(), leaf;
-  auto size = leafCount(type, leaf);
   auto &allocation = allocations[info.allocation];
-  if (failed(size) || leaf != allocation.type.getElementType() ||
-      byteStride(type) != static_cast<uint64_t>(*size) * allocation.bytes)
+  auto allocationUnits = [&](Type current) -> FailureOr<int64_t> {
+    auto leaves = leafCount(current, leaf);
+    if (failed(leaves))
+      return failure();
+    uint64_t leafBytes = byteStride(leaf);
+    uint64_t currentBytes = byteStride(current);
+    if (!leafBytes || leafBytes > INT64_MAX)
+      return failure();
+    auto denseBytes =
+        llvm::checkedMul(*leaves, static_cast<int64_t>(leafBytes));
+    if (!denseBytes || currentBytes != static_cast<uint64_t>(*denseBytes) ||
+        currentBytes % allocation.bytes)
+      return failure();
+    uint64_t units = currentBytes / allocation.bytes;
+    if (!units || units > INT32_MAX)
+      return failure();
+    return static_cast<int64_t>(units);
+  };
+  auto size = allocationUnits(type);
+  if (failed(size))
     return reject(gep,
                   "GEP type reinterpretation or padded layout is unsupported");
   uint64_t abi = abiAlignment(type);
@@ -423,7 +684,10 @@ FailureOr<PointerInfo> MemoryPlan::resolve(Value pointer, Operation *at,
       if (!array)
         return reject(gep, "GEP descent requires an array type");
       type = array.getElementType();
-      size = leafCount(type, leaf);
+      size = allocationUnits(type);
+      if (failed(size))
+        return reject(
+            gep, "GEP type reinterpretation or padded layout is unsupported");
     }
     first = false;
     std::optional<int64_t> c;
@@ -464,7 +728,13 @@ LogicalResult MemoryPlan::checkAccess(Operation *op, Value pointer, Type type,
         op, "volatile and atomic accesses require explicit memory semantics");
   for (NamedAttribute attr : op->getAttrs())
     if (!llvm::StringSwitch<bool>(attr.getName())
-             .Cases({"alignment", "ordering"}, true)
+             // Alias-analysis metadata only enables more aggressive LLVM
+             // optimization. Dropping it after provenance, type, bounds and
+             // alignment have been proven is conservative. Observable memory
+             // semantics and unknown attributes remain rejected.
+             .Cases({"alignment", "ordering", "tbaa", "alias_scopes",
+                     "noalias_scopes", "access_groups"},
+                    true)
              .Default(false))
       return reject(op, "unproven memory access attribute");
   auto info = resolve(pointer, op);
