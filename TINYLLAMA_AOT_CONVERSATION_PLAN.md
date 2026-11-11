@@ -3,11 +3,19 @@
 ## 1. Purpose and completion boundary
 
 This file is the source of truth for running the pinned real TinyLlama 1.1B Q4
-model through the generic UdonCL ONNX path. The implementation is complete only
-when a generated U# binding can accept text in Unity, preserve and reuse KV
-cache across two conversation turns, and produce numerically verified output.
-Generating an artifact, completing one prefill, or running the synthetic
-hidden-size-8 Transformer does not by itself complete this plan.
+model through the generic UdonCL ONNX path. The current completion boundary is
+one externally-tokenized prompt: a generated U# binding accepts token IDs,
+runs the same statically specialized `M=1` artifact once per prompt token,
+reuses bounded Device-resident K/V, then greedily decodes until EOS or the
+requested limit and returns generated token IDs. Generating an artifact,
+completing one fixed batch prefill, or running the synthetic hidden-size-8
+Transformer does not by itself complete this plan.
+
+Tokenization, chat-template application, token-to-text decoding, multi-turn
+history, and transactional rollback are outside this milestone. Existing
+`UdonTokenizers` work remains available as an independent package, but the
+Conversation Artifact does not link it and the compiler/runtime must not
+depend on it.
 
 The implementation must remain model-independent below the example C Host.
 Model names, 22-layer structure, hidden sizes, and TinyLlama graph patterns must
@@ -208,11 +216,22 @@ aliasing are allowed.
 
 - Unity 2022.3, VRChat Worlds, PC, D3D11 only.
 - Batch size 1.
-- Build-time configurable maximum context length. The first example uses 128
-  tokens and generates at most 32 new tokens per call. The design must permit a
-  later build with the model maximum of 2048.
-- The final acceptance fixture performs two conversation turns. It must append
-  new K/V rather than recomputing the first turn.
+- Query length `M=1` for both prefill and decode. Prompt length is arbitrary up
+  to a build-time configurable Context Capacity; the Host loops over the
+  externally supplied token IDs.
+- The ONNX graph is specialized to `past_sequence_length = capacity - 1` and
+  `attention_mask = [1, capacity]`. Before capacity is full, unused past rows
+  are left-padded and masked with zero. Two capacity-sized K/V banks ping-pong:
+  the current bank's suffix view is `past`, the other bank is `present`, and a
+  generated unrolled helper swaps all semantic K/V bindings after each run.
+  This keeps every model tensor shape static without same-dispatch read/write
+  aliasing, partial Texture writes, or a whole-K/V Device copy.
+- The first example uses capacity 128 and generates at most 32 new tokens;
+  later builds may use the model maximum. Reaching capacity fails explicitly;
+  this milestone does not silently apply a sliding-window policy.
+- The final acceptance fixture performs one complete externally-tokenized
+  prompt and greedy decode through the generated U# API. It must stop at EOS
+  or the requested limit and must not recompute prior prompt positions.
 - Quest/Android, WebGL, and other graphics APIs are outside this plan.
 
 ## 3. Immutable AOT static tensors
@@ -344,7 +363,7 @@ Dispatch count and time are then measured. Attention or other fusions may be
 added only as model-independent MLIR optimization passes. Native tests retain
 an unfused reference path and compare fused, unfused, and ORT results.
 
-## 6. Tokenizer and conversation Host
+## 6. External token boundary and generation Host
 
 ### 6.1 Tokenizer component
 
@@ -400,74 +419,49 @@ enter the raw C byte-memory model.
 
 ### 6.3 C Host and generated binding
 
-The example C Host, not handwritten U#, owns initialization, chat-template
-application, tokenization, prefill, decode loop, KV state, greedy token
-selection, and result decoding. It exports operations equivalent to:
-
-- initialize and validate resources;
-- reset conversation;
-- append user text;
-- generate up to the requested token count;
-- read the response.
-
-The exact C signatures follow normal `UDONCL_EXPORT` rules and use
-`udon_string_t` for U# strings. May-suspend exports become the normal generated
-`Start*`/callback binding surface. The Unity test calls that generated binding;
-it does not implement a second decode loop or KV manager in U#.
+The example C Host, not handwritten U#, owns initialization, bounded prompt
+token storage, the `M=1` prefill/decode loop, K/V state, greedy token selection,
+EOS handling, and generated-token storage. Tokenization and text decoding are
+caller concerns for this milestone. The Unity test calls only the generated
+binding; it does not implement another decode loop or K/V manager in U#.
 
 The first gate uses deterministic greedy selection. ArgMax runs on Device and
 only the selected token is returned during normal conversation. Test/debug
 mode can read all logits. Streaming callbacks, cancellation, top-k/top-p, and
 temperature sampling are later work.
 
-For the second turn, incremental chat-template tokens are appended only when
-their sequence equals a full official-tokenizer re-encode of the conversation.
-Otherwise the Host explicitly resets and performs a full prefill rather than
-silently reusing invalid K/V.
+### 6.4 Agreed generation lifecycle and C ABI
 
-### 6.4 Agreed conversation lifecycle and C ABI
-
-One generated Behaviour owns one Conversation Instance: one ONNX session, one
-Conversation History, and one K/V state. The API has no conversation handle;
-multiple conversations require multiple Behaviour instances. The example C
-Host exports the following ordinary C surface:
+One generated Behaviour owns one generation instance: one ONNX session, one
+bounded prompt workspace, one generated-token workspace, and one K/V state.
+The API has no instance handle; multiple concurrent generations require
+multiple Behaviour instances. The example C Host exports the following
+ordinary C surface:
 
 ```c
 UDONCL_EXPORT udononnxStatus_t tinyllama_initialize(void);
-UDONCL_EXPORT udononnxStatus_t tinyllama_reset_conversation(void);
-UDONCL_EXPORT udononnxStatus_t
-tinyllama_append_user_text(udon_string_t text);
+UDONCL_EXPORT udononnxStatus_t tinyllama_reset(void);
+UDONCL_EXPORT udononnxStatus_t tinyllama_set_prompt_tokens(
+    udon_int32_array_t token_ids, uint32_t token_count);
 UDONCL_EXPORT udononnxStatus_t
 tinyllama_generate(uint32_t max_new_tokens); /* may suspend */
-UDONCL_EXPORT udononnxStatus_t
-tinyllama_read_response(udon_string_t *response);
+UDONCL_EXPORT uint32_t tinyllama_generated_token_count(void);
+UDONCL_EXPORT udononnxStatus_t tinyllama_read_generated_tokens(
+    udon_int32_array_t destination);
 UDONCL_EXPORT udononnxStatus_t tinyllama_dispose(void);
 ```
 
 The compiler adapts `tinyllama_generate` to the normal generated
-`StartGenerate(maxNewTokens, receiver, completionEvent)` surface and adapts
-response retrieval to `TryReadResponse(out string)`. C exports never contain
-U# receiver or event parameters.
+`StartGenerate(maxNewTokens, receiver, completionEvent)` surface. The other
+exports become synchronous generated `int[]`/scalar methods. C exports never
+contain U# receiver or event parameters.
 
-`AppendUserText` synchronously records one Pending User Turn. Only one pending
-turn is allowed, and append is rejected while generation or completion commit
-is active. Chat-template application, tokenization, K/V reuse validation,
-prefill/decode, greedy selection, and response decoding all belong to the
-may-suspend `Generate` operation. `ReadResponse` returns only the Latest
-Assistant Response, not a transcript; it may be repeated until a later
-successful generation replaces the response or reset clears it.
-
-Each successful turn atomically promotes a Working Turn to Committed
-Conversation State. A failure preserves the prior token history, K/V, and
-response and retains the Pending User Turn for retry. The implementation keeps
-the committed K/V bank intact while two working banks ping-pong between decode
-steps. A later proven append-only alias optimization may reduce the three-bank
-physical storage without changing this transaction boundary.
-
-Conversation History retains bounded immutable `udon_string_t` references for
-committed user and assistant turns rather than one concatenated transcript.
-Reset clears history, tokens, K/V length, pending text, and response while
-retaining initialized model resources. Dispose releases the complete instance.
+`SetPromptTokens` synchronously copies the caller-owned `int[]` into the
+build-time-bounded Host workspace. `Generate` runs one model invocation per
+prompt token, then feeds each greedy result into the next invocation until EOS
+or `max_new_tokens`. Reset clears prompt/generated tokens, K/V logical length,
+position, masks, and both K/V banks while retaining initialized immutable model
+resources. Dispose releases the complete instance.
 
 Extend `udononnxStatus_t` with `INVALID_STATE` and `CAPACITY_EXCEEDED`.
 `INVALID_VALUE` is reserved for malformed arguments, `INVALID_STATE` for a
@@ -476,13 +470,16 @@ flight, `CAPACITY_EXCEEDED` for a request beyond the artifact's build-time
 Context Capacity, and `DISPOSED` for use after disposal. Capacity failure never
 truncates history or silently selects a sliding-window policy.
 
-Initialize is valid only for an empty instance. Reset and dispose are rejected
-with `BUSY` while generation is active. Reset is otherwise reusable and keeps
-immutable model/tokenizer resources initialized; dispose is terminal. Generate
-requires one Pending User Turn and a positive token count. ReadResponse requires
-a completed response and is rejected while a new response is being committed.
+Initialize is valid only for an empty instance. Reset, prompt replacement, and
+dispose are rejected with `BUSY` while generation is active. Reset is otherwise
+reusable and keeps immutable model resources initialized; dispose is terminal.
+Generate requires a nonempty prompt and a positive token limit. Reading tokens
+requires successful completion.
 
-### 6.5 Tokenizer C contract
+### 6.5 Deferred tokenizer C contract
+
+This section documents the independent `UdonTokenizers` package only. It is
+not part of the current Conversation Artifact or its completion gate.
 
 `UdonTokenizers` owns its independent status enum because encoding and table
 validation are not ONNX session states. Its generated Tokenizer Model is
@@ -557,7 +554,7 @@ the physical upload packs each element as two little-endian 32-bit words in
 one bulk transfer rather than exposing an `int[]` pair ABI.
 
 The compiler computes the maximum simultaneously live mutable handles from
-public I/O, internal liveness slots, operator scratch, and the three K/V banks.
+public I/O, internal liveness slots, operator scratch, and the two K/V banks.
 It emits an artifact-specific runtime capacity and fails compilation if the
 proven requirement exceeds the backend limit. Fixed global increases and
 model-name capacity branches are forbidden. Physical sharing and slot reuse
@@ -568,27 +565,28 @@ liveness, and fragment read/write legality.
 
 ### 7.1 Numerical acceptance
 
-For prefill and every one of 32 decode steps, Native, Device, and Unity paths
-compare all 32,000 logits and all 22 layers of K/V with ORT. Tests also require
-finite values, exact greedy token IDs, argmax/top-k agreement, and recorded
-absolute/relative error. Tolerances are fixed from the first independently
-correct end-to-end run and are not loosened per backend for convenience.
+For every `M=1` prompt and decode step, Native and Device debug paths compare
+all 32,000 logits and all 22 layers of K/V with ORT. Unity runs the same public
+generated-token sequence through the generated binding and compares exact
+greedy token IDs. Tests also require finite values, argmax agreement, and
+recorded absolute/relative error. Tolerances are fixed from the first
+independently correct end-to-end run and are not loosened per backend for
+convenience.
 
 Greedy ArgMax selects the lowest token ID when finite values tie and treats a
 non-finite comparison domain as execution failure. Generation stops at the
-requested token count or the tokenizer's configured EOS token, whichever comes
-first. BOS/EOS and chat-control tokens update token/K/V history as required but
-are not appended to the Latest Assistant Response.
+requested token count or the configured EOS token, whichever comes first. EOS
+participates in the token/K/V sequence and terminates generation.
 
-The Unity fixture performs two turns through generated U# bindings and checks
-that K/V capacity and length advance without recomputing the previous turn.
-Console errors, callback status, temporary asset cleanup, and lifecycle cleanup
-are mandatory.
+The Unity fixture supplies external prompt token IDs, generates one bounded
+completion through the generated U# binding, and checks that K/V position
+advances without recomputing prior prompt tokens. Console errors, callback
+status, temporary asset cleanup, and lifecycle cleanup are mandatory.
 
 ### 7.2 Performance observations
 
 Initial correctness is not gated on a guessed tokens/second value. Every run
-records initialization, tokenization, prefill, per-token decode time, dispatch
+records initialization, prefill, per-token decode time, dispatch
 count, Device/workspace/KV memory, artifact size, and maximum continuous Udon
 execution time. GPU waits must yield frames from the beginning. A measured
 baseline establishes a later timeout that distinguishes hangs from slow runs;
@@ -639,8 +637,11 @@ Implement in this order, keeping each gate independently testable:
 9. Add the ordinary prefill C Host lifecycle over model-independent generated
    physical helpers, then pass full-model Native and Device prefill against all
    ORT logits and K/V outputs.
-10. Add three-bank transactional K/V planning, iterative decode, Device ArgMax,
-    EOS handling, and failure rollback; compare every decode step with ORT.
+10. Identify semantic ONNX past/present pairs generically, generate the two-bank
+    fixed-capacity suffix-view binding and unrolled bank-swap helper, and prove
+    the static left-padded `M=1` profile against variable-length ORT execution.
+    Add iterative decode, Device ArgMax, and EOS handling; compare every decode
+    step with ORT.
 11. `udon_string_t`, caller-owned `udon_int32_array_t`, the allocation-free
     UdonTokenizers encode core, the dedicated compiler lowering, package
     target, generated `string`/`int[]` U# binding, and a Unity VM value test are
@@ -683,16 +684,15 @@ Implement in this order, keeping each gate independently testable:
     `generic_onnx_transformer_tiny` and its existing binding class. Both may
     therefore be imported without duplicate C# types or generated-root
     collisions.
-    Combining tokenizer and prefill remains intentionally deferred to the
-    separate Conversation Artifact. The next gate is importing the real
-    artifact and oracle into the focused Unity test and comparing all values;
-    numerical prefill through U# and conversation state are not yet complete.
-12. Add the example C conversation Host, exact lifecycle/status contract, and
-    generated async U# binding.
-13. Pass the Unity two-turn, 32-token, full-logit/full-KV debug gate and the
-    normal conversation-only generated-U# gate. Record the first performance
-    and resource baseline, then integrate deterministic cached inference into
-    the mandatory precheck.
+    The tokenizer remains independent of the Conversation Artifact. The next
+    gate is importing the real artifact and oracle into the focused Unity test
+    and comparing all values; numerical prefill through U# and generation
+    state are not yet complete.
+12. Add the example token-array generation Host, exact lifecycle/status
+    contract, and generated async U# binding.
+13. Pass the Unity external-token prompt and bounded-completion gate. Record
+    the first performance and resource baseline, then integrate deterministic
+    cached inference into the mandatory precheck.
 14. After all consumers pass, remove the old ONNX execution-plan JSON,
     Material/arena scheduler, `static_inputs`, old runtime, and toy TinyLlama
     sample. Do not remove the only working comparison path earlier.
@@ -705,10 +705,12 @@ The work is complete only when all of the following are true:
   model-profile fallback;
 - MNIST and TinyLlama use the same immutable AOT Device tensor facility;
 - Q4 weights, activations, intermediates, and K/V remain Device resident;
-- K/V is reused across decode steps and two conversation turns;
-- the independent C tokenizer/chat-template path matches Hugging Face;
-- the C conversation Host is exposed through compiler-generated U# bindings;
-- Unity accepts text and returns a two-turn response;
+- K/V is reused across every prompt/decode step through two statically sized
+  banks without a whole-cache copy or same-dispatch read/write alias;
+- the C generation Host accepts and returns token ID arrays through
+  compiler-generated U# bindings;
+- Unity accepts an external prompt token array and returns the exact greedy
+  token completion through EOS or the configured limit;
 - every prefill/decode logit and K/V comparison passes against ORT;
 - the real-model gate runs on every final precheck with cache reuse only for
   inputs and compilation;
