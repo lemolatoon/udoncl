@@ -327,6 +327,12 @@ add_test(NAME tinyllama-real-onnx-oracle
     "${PROJECT_SOURCE_DIR}" "${PROJECT_BINARY_DIR}/tests/tinyllama-real-onnx"
 )
 set_tests_properties(tinyllama-real-onnx-oracle PROPERTIES TIMEOUT 600)
+
+add_test(NAME onnx-oracle-sidecar
+  COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/build/onnx_oracle_sidecar.py"
+    "${PROJECT_SOURCE_DIR}" "${PROJECT_BINARY_DIR}/tests/onnx-oracle-sidecar"
+)
 if(VRC_TEST_ONNX_IMPORTER AND VRC_TEST_ONNX_OPT)
   add_test(NAME onnx-cpp-lowering
     COMMAND Python3::Interpreter

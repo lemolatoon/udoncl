@@ -15,6 +15,11 @@ import onnxruntime as ort
 root = Path(sys.argv[1]).resolve()
 output = Path(sys.argv[2]).resolve()
 output.mkdir(parents=True, exist_ok=True)
+sys.path.insert(0, str(root / "scripts"))
+
+from write_onnx_oracle import write_float32_oracle  # noqa: E402
+
+
 spec = importlib.util.spec_from_file_location(
     "fetch_tinyllama_onnx", root / "scripts" / "fetch_tinyllama_onnx.py"
 )
@@ -51,19 +56,27 @@ for index, value in enumerate(results[1:]):
     assert value.shape == (1, 4, 4, 64), (index, value.shape)
     assert np.isfinite(value).all(), index
 
-np.savez(output / "oracle.npz", **{item.name: value for item, value in zip(session.get_outputs(), results)})
-summary = {
-    "model_sha256": fetch.MODEL_SHA256,
-    "tokens": tokens.tolist(),
-    "logits": int(logits.size),
-    "argmax": argmax,
-    "kv_outputs": 44,
-    "kv_values": sum(int(value.size) for value in results[1:]),
-    "seconds": elapsed,
-}
-(output / "oracle.json").write_text(
-    json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+named_results = [
+    (item.name, value) for item, value in zip(session.get_outputs(), results)
+]
+np.savez(output / "oracle.npz", **dict(named_results))
+write_float32_oracle(
+    output,
+    model_sha256=fetch.MODEL_SHA256,
+    inputs=feed,
+    outputs=named_results,
+    metadata={
+        "logits": int(logits.size),
+        "argmax": argmax,
+        "kv_outputs": 44,
+        "kv_values": sum(int(value.size) for value in results[1:]),
+        "seconds": elapsed,
+    },
 )
+manifest = json.loads((output / "oracle.json").read_text(encoding="utf-8"))
+assert len(manifest["outputs"]) == 45
+assert manifest["outputs"][0]["element_count"] == 128000
+assert all(item["element_count"] == 1024 for item in manifest["outputs"][1:])
 print(
     f"tinyllama_oracle_logits={logits.size} kv_outputs=44 "
     f"argmax={argmax[0]} seconds={elapsed:.6f}"
