@@ -671,9 +671,16 @@ Implement in this order, keeping each gate independently testable:
     Validation Artifact deliberately excludes tokenizer/conversation code and
     accepts already-tokenized low-level input. Its real 47-input/45-output
     artifact now passes structural, static-weight, raw-heap, and generated-U#
-    binding validation. Combining tokenizer and prefill remains intentionally
-    deferred to the separate Conversation Artifact. This does not yet execute
-    numerical prefill through U# or implement conversation state.
+    binding validation. The independent ORT oracle now emits a model-hash and
+    typed-shape manifest plus 45 little-endian FP32 raw outputs, so Unity does
+    not need an NPZ parser or compiler-embedded expectations. A dedicated
+    test-only U# controller is structurally covered: it writes the three
+    fixed-prefill INT64 inputs, runs the ordinary generated lifecycle, and
+    serially reads logits plus all 44 present K/V buffers through callbacks.
+    Combining tokenizer and prefill remains intentionally deferred to the
+    separate Conversation Artifact. The next gate is importing the real
+    artifact and oracle into the focused Unity test and comparing all values;
+    numerical prefill through U# and conversation state are not yet complete.
 12. Add the example C conversation Host, exact lifecycle/status contract, and
     generated async U# binding.
 13. Pass the Unity two-turn, 32-token, full-logit/full-KV debug gate and the

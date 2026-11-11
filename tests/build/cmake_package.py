@@ -1021,6 +1021,43 @@ def main():
     assert 'TryUnbindInput' not in transformer_binding
     assert 'public void _ContinueAsyncCommand()' in transformer_binding
     assert 'VRCWrapperGenerator' not in transformer_binding
+    prefill_controller_path = (
+        args.source.resolve().parents[1]
+        / 'unity/Packages/com.lemolatoon.udoncl/Editor/Examples/'
+        'tinyllama-prefill-test-controller.cs.txt'
+    )
+    prefill_controller = prefill_controller_path.read_text(encoding='utf-8')
+    for source_contract in [
+        'class UdonclTinyLlamaPrefillTestController',
+        'UdonclGenericOnnxTransformerTinyBinding binding',
+        'binding.StartInitialize(',
+        'binding.GetInitializeStatus()',
+        'binding.TryGetInitializeResult(',
+        'binding.TryWriteInputIds(',
+        'binding.TryWriteAttentionMask(',
+        'binding.TryWritePositionIds(',
+        'binding.StartRun(',
+        'binding.GetRunStatus()',
+        'binding.TryGetRunResult(',
+        'binding.StartReadLogits(',
+        'binding.StartReadFloatBuffer(49 + presentIndex,',
+        'binding.GetLastReadbackStatus()',
+        'presentKv[presentIndex * PresentValues + index]',
+        'binding.TryShutdown(',
+    ]:
+        assert source_contract in prefill_controller, source_contract
+    assert 'const int PresentCount = 44;' in prefill_controller
+    assert 'const int PresentValues = 1024;' in prefill_controller
+    assert 'new float[45056]' not in prefill_controller
+    for forbidden in [
+        'TryWritePastKeyValues',
+        'IUdonVM',
+        'InspectHeap',
+        'GetProgramVariable',
+        'SetProgramVariable',
+        '29958',
+    ]:
+        assert forbidden not in prefill_controller, forbidden
     assert {
         item['kernel_id'] for item in transformer_manifest['dispatch_sites']
     } == {221, 233, 234, 235, 242}

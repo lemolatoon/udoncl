@@ -38,6 +38,11 @@ def validate_artifact(artifact: Path) -> dict[str, int]:
     manifest_path = artifact / "manifest.json"
     require(manifest_path.is_file(), f"artifact has no manifest: {manifest_path}")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    program = manifest.get("program", {})
+    require(
+        program.get("binding_class") == "UdonclGenericOnnxTransformerTinyBinding",
+        "artifact has an unexpected generated U# binding class",
+    )
     binding = manifest.get("onnx_binding")
     require(isinstance(binding, dict), "artifact has no generated ONNX binding")
     inputs = binding.get("inputs")
@@ -87,9 +92,7 @@ def validate_artifact(artifact: Path) -> dict[str, int]:
     static_bytes = sum(item["byte_length"] for item in static_tensors)
     require(static_bytes > 900_000_000, "static tensor payload is unexpectedly small")
 
-    storage_path = artifact / manifest.get("program", {}).get(
-        "storage_report", "storage-report.json"
-    )
+    storage_path = artifact / program.get("storage_report", "storage-report.json")
     require(storage_path.is_file(), "artifact has no storage report")
     storage = json.loads(storage_path.read_text(encoding="utf-8"))
     require(storage.get("raw_heap_bytes", 1_000_001) <= 1_000_000,
@@ -98,9 +101,7 @@ def validate_artifact(artifact: Path) -> dict[str, int]:
     require(not any(name.startswith("__udon_onnx_static_") for name in raw_names),
             "static ONNX tensor is present in the Udon raw heap")
 
-    binding_source = artifact / manifest.get("program", {}).get(
-        "binding_source", "binding.cs"
-    )
+    binding_source = artifact / program.get("binding_source", "binding.cs")
     require(binding_source.is_file(), "artifact has no generated U# binding")
     source = binding_source.read_text(encoding="utf-8")
     required_methods = [

@@ -1,0 +1,139 @@
+using UdonSharp;
+using UnityEngine;
+
+namespace Lemolatoon.Udoncl.Generated
+{
+    [UdonBehaviourSyncMode(BehaviourSyncMode.None)]
+    public sealed class UdonclTinyLlamaPrefillTestController : UdonSharpBehaviour
+    {
+        private const int PresentCount = 44;
+        private const int PresentValues = 1024;
+
+        public UdonclGenericOnnxTransformerTinyBinding binding;
+        public long[] inputIds;
+        public long[] attentionMask;
+        public long[] positionIds;
+        public float[] logits;
+        public float[] presentScratch;
+        public float[] presentKv;
+        public bool completed;
+        public int status;
+        public int libraryStatus;
+        public int phase;
+        public int presentIndex;
+
+        public void Run()
+        {
+            completed = false;
+            status = UdonclGenericOnnxTransformerTinyBinding.StatusSuccess;
+            libraryStatus = 0;
+            phase = 1;
+            presentIndex = 0;
+            if (
+                binding == null
+                || inputIds == null
+                || inputIds.Length != 4
+                || attentionMask == null
+                || attentionMask.Length != 4
+                || positionIds == null
+                || positionIds.Length != 4
+                || logits == null
+                || logits.Length != 128000
+                || presentScratch == null
+                || presentScratch.Length != PresentValues
+                || presentKv == null
+                || presentKv.Length != PresentCount * PresentValues
+            )
+            {
+                status = UdonclGenericOnnxTransformerTinyBinding.StatusInvalidArgument;
+                completed = true;
+                return;
+            }
+            status = binding.StartInitialize(this, nameof(OnInitializeComplete));
+            if (status != UdonclGenericOnnxTransformerTinyBinding.StatusSuccess)
+                completed = true;
+        }
+
+        public void OnInitializeComplete()
+        {
+            phase = 2;
+            status = binding.GetInitializeStatus();
+            if (status == UdonclGenericOnnxTransformerTinyBinding.StatusSuccess)
+                status = binding.TryGetInitializeResult(out libraryStatus);
+            if (
+                status == UdonclGenericOnnxTransformerTinyBinding.StatusSuccess
+                && libraryStatus == 0
+            )
+                status = binding.TryWriteInputIds(inputIds);
+            if (status == UdonclGenericOnnxTransformerTinyBinding.StatusSuccess)
+                status = binding.TryWriteAttentionMask(attentionMask);
+            if (status == UdonclGenericOnnxTransformerTinyBinding.StatusSuccess)
+                status = binding.TryWritePositionIds(positionIds);
+            if (status == UdonclGenericOnnxTransformerTinyBinding.StatusSuccess)
+                status = binding.StartRun(this, nameof(OnRunComplete));
+            if (status != UdonclGenericOnnxTransformerTinyBinding.StatusSuccess)
+                completed = true;
+        }
+
+        public void OnRunComplete()
+        {
+            phase = 3;
+            status = binding.GetRunStatus();
+            if (status == UdonclGenericOnnxTransformerTinyBinding.StatusSuccess)
+                status = binding.TryGetRunResult(out libraryStatus);
+            if (
+                status != UdonclGenericOnnxTransformerTinyBinding.StatusSuccess
+                || libraryStatus != 0
+            )
+            {
+                completed = true;
+                return;
+            }
+            status = binding.StartReadLogits(logits, this, nameof(OnLogitsComplete));
+            if (status != UdonclGenericOnnxTransformerTinyBinding.StatusSuccess)
+                completed = true;
+        }
+
+        public void OnLogitsComplete()
+        {
+            phase = 4;
+            status = binding.GetLastReadbackStatus();
+            if (status != UdonclGenericOnnxTransformerTinyBinding.StatusSuccess)
+            {
+                completed = true;
+                return;
+            }
+            presentIndex = 0;
+            StartNextPresent();
+        }
+
+        private void StartNextPresent()
+        {
+            status = binding.StartReadFloatBuffer(49 + presentIndex, presentScratch, this, nameof(OnPresentComplete));
+            if (status != UdonclGenericOnnxTransformerTinyBinding.StatusSuccess)
+                completed = true;
+        }
+
+        public void OnPresentComplete()
+        {
+            phase = 5 + presentIndex;
+            status = binding.GetLastReadbackStatus();
+            if (status != UdonclGenericOnnxTransformerTinyBinding.StatusSuccess)
+            {
+                completed = true;
+                return;
+            }
+            for (int index = 0; index < PresentValues; ++index)
+                presentKv[presentIndex * PresentValues + index] = presentScratch[index];
+            ++presentIndex;
+            if (presentIndex < PresentCount)
+            {
+                StartNextPresent();
+                return;
+            }
+            phase = 49;
+            status = binding.TryShutdown(out libraryStatus);
+            completed = true;
+        }
+    }
+}
