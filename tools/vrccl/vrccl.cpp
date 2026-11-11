@@ -1853,7 +1853,7 @@ recoverUnityOpenCLGatherDispatchProgram(const llvm::Module &input,
       !exports || exports->size() != 1 || !buffers || buffers->empty() ||
       !argumentKinds || argumentKinds->size() < 3 ||
       argumentKinds->size() > 16 || !kernelName || !kernelId || !words ||
-      *words < 4 || *words > 32768) {
+      *words < 1 || *words > 32768) {
     errs() << "Unity OpenCL gather dispatch requires one configured export, "
               "kernel, and 3-16 arguments\n";
     return {};

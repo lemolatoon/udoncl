@@ -44,7 +44,7 @@ bool profile(const llvm::json::Object &config) {
                                              : std::optional<int64_t>();
   auto height = global && global->size() == 3 ? (*global)[1].getAsInteger()
                                               : std::optional<int64_t>();
-  bool launch = gather ? words && *words >= 4 && *words <= 131072 && width &&
+  bool launch = gather ? words && *words >= 1 && *words <= 131072 && width &&
                              height && *width > 0 && *height > 0 &&
                              *width <= 16384 && *height <= 16384 &&
                              *width * *height == *words &&
@@ -74,7 +74,7 @@ bool validContract(DictionaryAttr config) {
             StringAttr::get(config.getContext(), "gather-f32")) {
       auto words = config.getAs<IntegerAttr>("words");
       auto values = attr ? attr.asArrayRef() : ArrayRef<int32_t>();
-      if (!words || words.getInt() < 4 || words.getInt() > 131072 || !attr ||
+      if (!words || words.getInt() < 1 || words.getInt() > 131072 || !attr ||
           values.size() != 3 || values[0] <= 0 || values[1] <= 0 ||
           values[2] != 1 || int64_t(values[0]) * values[1] != words.getInt())
         return false;

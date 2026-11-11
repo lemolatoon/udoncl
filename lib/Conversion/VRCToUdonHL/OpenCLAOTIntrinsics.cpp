@@ -60,6 +60,8 @@ struct LowerOpenCLAOTIntrinsicsPass
           name == "__vrc_opencl_dispatch_udonaten_embedding" ||
           name == "__vrc_opencl_dispatch_udonaten_arena_rms_norm_reduce" ||
           name == "__vrc_opencl_dispatch_udonaten_arena_rms_norm_finalize" ||
+          name == "__vrc_opencl_dispatch_udonaten_argmax_reduce" ||
+          name == "__vrc_opencl_dispatch_udonaten_argmax_finalize" ||
           name == "__vrc_opencl_dispatch_udondnn_arena_softmax" ||
           name == "__vrc_opencl_dispatch_udononnx_matmul_nbits" ||
           name == "__vrc_opencl_dispatch_udononnx_matmul_nbits_q4" ||
@@ -127,6 +129,10 @@ struct LowerOpenCLAOTIntrinsicsPass
         arguments = {i32, i32, i32, i32};
       else if (name == "__vrc_opencl_dispatch_udonaten_arena_rms_norm_finalize")
         arguments = {i32, i32, i32, i32, i32, i32, f32, i32};
+      else if (name == "__vrc_opencl_dispatch_udonaten_argmax_reduce")
+        arguments = {i32, i32, i32, i32};
+      else if (name == "__vrc_opencl_dispatch_udonaten_argmax_finalize")
+        arguments = {i32, i32, i32, i32, i32, i32};
       else if (name == "__vrc_opencl_dispatch_udondnn_arena_softmax")
         arguments = {i32, i32, i32, i32, i32, i32, i32, i32};
       else if (name == "__vrc_opencl_dispatch_udononnx_matmul_nbits")
@@ -290,6 +296,10 @@ struct LowerOpenCLAOTIntrinsicsPass
             name == "__vrc_opencl_dispatch_udonaten_arena_rms_norm_reduce";
         bool rmsFinalize =
             name == "__vrc_opencl_dispatch_udonaten_arena_rms_norm_finalize";
+        bool argmaxReduce =
+            name == "__vrc_opencl_dispatch_udonaten_argmax_reduce";
+        bool argmaxFinalize =
+            name == "__vrc_opencl_dispatch_udonaten_argmax_finalize";
         bool arenaSoftmax =
             name == "__vrc_opencl_dispatch_udondnn_arena_softmax";
         bool matmulNBits =
@@ -313,6 +323,7 @@ struct LowerOpenCLAOTIntrinsicsPass
                                : rmsFinalize                       ? 4
                                : whereF32 || scatterNDF32          ? 4
                                : largeConvolution || largeOpTensor ? 4
+                               : argmaxFinalize                    ? 3
                                : arenaSgemm || arenaBatchedSgemm || concat ||
                                        axis0Gather || equalF32
                                    ? 3
@@ -329,6 +340,8 @@ struct LowerOpenCLAOTIntrinsicsPass
                            : embedding                                  ? 207
                            : rmsReduce                                  ? 217
                            : rmsFinalize                                ? 218
+                           : argmaxReduce                               ? 247
+                           : argmaxFinalize                             ? 248
                            : arenaSoftmax                               ? 236
                            : matmulNBits                                ? 219
                            : matmulNBitsQ4                              ? 235
@@ -380,6 +393,10 @@ struct LowerOpenCLAOTIntrinsicsPass
           scalarKinds.append(2, rewriter.getStringAttr("i32"));
           scalarKinds.push_back(rewriter.getStringAttr("f32"));
           scalarKinds.push_back(rewriter.getStringAttr("i32"));
+        } else if (argmaxReduce) {
+          scalarKinds.append(2, rewriter.getStringAttr("i32"));
+        } else if (argmaxFinalize) {
+          scalarKinds.append(3, rewriter.getStringAttr("i32"));
         } else if (arenaSoftmax) {
           scalarKinds.append(6, rewriter.getStringAttr("i32"));
         } else if (matmulNBitsQ4) {
@@ -443,6 +460,10 @@ struct LowerOpenCLAOTIntrinsicsPass
         DenseI32ArrayAttr globalSize;
         if (sgemm)
           globalSize = rewriter.getDenseI32ArrayAttr({32, 32, 1});
+        else if (argmaxReduce)
+          globalSize = rewriter.getDenseI32ArrayAttr({512, 1, 1});
+        else if (argmaxFinalize)
+          globalSize = rewriter.getDenseI32ArrayAttr({1, 1, 1});
         else if (arenaSgemm || arenaBatchedSgemm || largeConvolution ||
                  largePooling || rmsReduce || rmsFinalize || arenaSoftmax)
           globalSize = rewriter.getDenseI32ArrayAttr({8192, 2, 1});

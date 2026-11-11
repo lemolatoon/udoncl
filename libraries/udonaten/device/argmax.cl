@@ -73,8 +73,6 @@ __kernel void udonaten_argmax_finalize(__global const float *input,
   uint best_index = UDONATEN_ARGMAX_INDEX_MASK;
   float best = 0.0f;
   uint nonfinite = 0u;
-  if (UDONATEN_ARGMAX_GID() != 0u)
-    return;
   for (uint partial = 0u; partial < UDONATEN_ARGMAX_PARTIALS; ++partial) {
     uint encoded = partials[partial];
     uint index = encoded & UDONATEN_ARGMAX_INDEX_MASK;
@@ -88,5 +86,6 @@ __kernel void udonaten_argmax_finalize(__global const float *input,
       }
     }
   }
-  result[0] = reject_nonfinite && nonfinite ? 0xffffffffu : best_index;
+  result[(uint)UDONATEN_ARGMAX_GID()] =
+      reject_nonfinite && nonfinite ? 0xffffffffu : best_index;
 }

@@ -116,6 +116,8 @@ module {
   func.func private @__vrc_opencl_dispatch_udonblas_arena_sgemm(i32, i32, i32, i32, i32, i32, i32, i32, f32) -> i32
   func.func private @__vrc_opencl_dispatch_udondnn_large_activation(i32, i32, i32, i32, i32, i32, f32, f32, f32) -> i32
   func.func private @__vrc_opencl_dispatch_udondnn_large_op_tensor(i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, f32, f32, f32) -> i32
+  func.func private @__vrc_opencl_dispatch_udonaten_argmax_reduce(i32, i32, i32, i32) -> i32
+  func.func private @__vrc_opencl_dispatch_udonaten_argmax_finalize(i32, i32, i32, i32, i32, i32) -> i32
   func.func private @blocking_transfer(%token: i32, %offset: i32, %bytes: i32, %pointer: i32) -> i32 {
     %event = func.call @__vrc_opencl_buffer_readback(%token, %offset, %bytes, %pointer) : (i32, i32, i32, i32) -> i32
     %status = func.call @__vrc_opencl_await(%event) : (i32) -> i32
@@ -132,6 +134,8 @@ module {
     %arena = func.call @__vrc_opencl_dispatch_udonblas_arena_sgemm(%static, %input, %output, %one, %one, %one, %zero, %zero, %scalar) : (i32, i32, i32, i32, i32, i32, i32, i32, f32) -> i32
     %activation = func.call @__vrc_opencl_dispatch_udondnn_large_activation(%input, %input, %output, %bytes, %zero, %one, %scalar, %scalar, %scalar) : (i32, i32, i32, i32, i32, i32, f32, f32, f32) -> i32
     %pointwise = func.call @__vrc_opencl_dispatch_udondnn_large_op_tensor(%input, %static, %input, %output, %bytes, %one, %one, %one, %one, %one, %one, %zero, %scalar, %scalar, %scalar) : (i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, f32, f32, f32) -> i32
+    %argmax_reduce = func.call @__vrc_opencl_dispatch_udonaten_argmax_reduce(%input, %output, %zero, %bytes) : (i32, i32, i32, i32) -> i32
+    %argmax_finalize = func.call @__vrc_opencl_dispatch_udonaten_argmax_finalize(%input, %output, %static, %zero, %bytes, %one) : (i32, i32, i32, i32, i32, i32) -> i32
     %status = func.call @blocking_transfer(%output, %zero, %bytes, %pointer) : (i32, i32, i32, i32) -> i32
     %released = func.call @__vrc_opencl_buffer_release(%output) : (i32) -> i32
     return %status : i32
@@ -153,6 +157,10 @@ assert opencl_aot_ops.count('global_size = array<i32: 8192, 4, 1>') == 1
 assert opencl_aot_ops.count('global_size = array<i32: 8192, 16, 1>') == 1
 assert 'kernel_id = 233 : i32' in opencl_aot_ops
 assert 'kernel_id = 234 : i32' in opencl_aot_ops
+assert 'kernel_id = 247 : i32' in opencl_aot_ops
+assert 'kernel_id = 248 : i32' in opencl_aot_ops
+assert opencl_aot_ops.count('global_size = array<i32: 512, 1, 1>') == 1
+assert opencl_aot_ops.count('global_size = array<i32: 1, 1, 1>') >= 1
 assert 'resource_accesses = ["read", "read", "write"]' in opencl_aot_ops
 assert 'resource_accesses = ["read", "read", "read", "write"]' in opencl_aot_ops
 

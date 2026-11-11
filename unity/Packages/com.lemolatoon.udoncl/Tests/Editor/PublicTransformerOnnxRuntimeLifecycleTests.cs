@@ -165,6 +165,8 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                     244,
                     245,
                     246,
+                    247,
+                    248,
                 },
                 materials.Keys
             );

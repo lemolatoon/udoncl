@@ -15,6 +15,8 @@ size_t udononnx_unary_cpu_gid;
 #include "../../libraries/udononnxoperators/device/unary.cl"
 size_t udononnx_reindex_cpu_gid;
 #include "../../libraries/udononnxoperators/device/reindex.cl"
+size_t udonaten_argmax_cpu_gid;
+#include "../../libraries/udonaten/device/argmax.cl"
 
 #define EXPECT(condition)                                                      \
   do {                                                                         \
@@ -330,6 +332,30 @@ cl_int __vrc_opencl_dispatch_udonaten_arena_rms_norm_finalize(
   return 36;
 }
 
+cl_int __vrc_opencl_dispatch_udonaten_argmax_reduce(cl_uint input_token,
+                                                    cl_uint partials_token,
+                                                    cl_int input_word_offset,
+                                                    cl_int words) {
+  for (udonaten_argmax_cpu_gid = 0; udonaten_argmax_cpu_gid < 512;
+       ++udonaten_argmax_cpu_gid)
+    udonaten_argmax_reduce((const float *)physical_buffers[input_token - 100],
+                           (cl_uint *)physical_buffers[partials_token - 100],
+                           input_word_offset, words);
+  return 40;
+}
+
+cl_int __vrc_opencl_dispatch_udonaten_argmax_finalize(
+    cl_uint input_token, cl_uint partials_token, cl_uint result_token,
+    cl_int input_word_offset, cl_int words, cl_int reject_nonfinite) {
+  udonaten_argmax_cpu_gid = 0;
+  udonaten_argmax_finalize(
+      (const float *)physical_buffers[input_token - 100],
+      (const cl_uint *)physical_buffers[partials_token - 100],
+      (cl_uint *)physical_buffers[result_token - 100], input_word_offset, words,
+      reject_nonfinite);
+  return 41;
+}
+
 cl_int __vrc_opencl_dispatch_udondnn_arena_softmax(
     cl_uint input_token, cl_uint output_token, cl_int input_n, cl_int input_c,
     cl_int input_h, cl_int input_w, cl_int algorithm, cl_int mode) {
@@ -414,6 +440,14 @@ extern cl_int __vrc_enqueue_udononnx_scatter_nd_f32_device_args(
     cl_int tuple_rank, cl_int update_count, cl_int slice_words,
     cl_int index_words, cl_uint wait_count, const cl_event *wait_list,
     cl_event *event);
+extern cl_int __vrc_enqueue_udonaten_argmax_reduce_device_args(
+    cl_command_queue queue, cl_mem input, cl_mem partials,
+    cl_int input_word_offset, cl_int words, cl_uint wait_count,
+    const cl_event *wait_list, cl_event *event);
+extern cl_int __vrc_enqueue_udonaten_argmax_finalize_device_args(
+    cl_command_queue queue, cl_mem input, cl_mem partials, cl_mem result,
+    cl_int input_word_offset, cl_int words, cl_int reject_nonfinite,
+    cl_uint wait_count, const cl_event *wait_list, cl_event *event);
 extern cl_int __vrc_enqueue_udononnx_matmul_nbits_q4_device_args(
     cl_command_queue queue, cl_mem activation, cl_mem packed_weight,
     cl_mem scales, cl_mem previous, cl_mem output, cl_int m, cl_int n, cl_int k,
@@ -693,6 +727,7 @@ int main(void) {
   cl_program program;
   cl_kernel kernel;
   cl_event marker_event, write_event, wait_events[2];
+  cl_event argmax_reduce_event, argmax_finalize_event, argmax_read_event;
   cl_event read_only_write_event = 0;
   cl_mem first, second, nested_buffer, nested_buffer2, static_buffer;
   cl_mem sub_parent, sub_buffer;
@@ -705,6 +740,7 @@ int main(void) {
   cl_mem gather_indices_buffer;
   cl_mem cast_input_buffer, scatter_output_buffer, where_output_buffer;
   cl_mem q4_activation, q4_packed, q4_scales, q4_previous, q4_output;
+  cl_mem argmax_input, argmax_partials, argmax_result;
   cl_mem resolved;
   udonclBufferHandle_t common_buffer = {0, 0}, stale_buffer, replacement;
   udonclBufferHandle_t host_input_buffer = {0, 0};
@@ -733,6 +769,8 @@ int main(void) {
   cl_uint blas_input_token, blas_output_token;
   cl_uint dnn_input_token, dnn_filter_token, dnn_output_token, dnn_other_token;
   cl_uint dnn_temporary_token;
+  cl_uint argmax_input_token, argmax_partials_token, argmax_result_token;
+  cl_uint argmax_result_value = 0xffffffffu;
   float dnn_alpha = 1.0f, dnn_beta_zero = 0.0f, dnn_beta_one = 1.0f;
   int source = 42;
   int sub_source = 91, sub_result = 0;
@@ -1636,6 +1674,57 @@ int main(void) {
   EXPECT(clReleaseCommandQueue(queue_alias2) == CL_SUCCESS);
   EXPECT(clReleaseContext(context_alias2) == CL_SUCCESS);
   EXPECT(clFlush(queue) == CL_SUCCESS);
+
+  argmax_input = udonclCreateBufferForQueue(queue, CL_MEM_READ_WRITE,
+                                            32016u * sizeof(float), &error);
+  EXPECT(argmax_input && error == CL_SUCCESS);
+  argmax_partials = udonclCreateBufferForQueue(queue, CL_MEM_READ_WRITE,
+                                               512u * sizeof(cl_uint), &error);
+  EXPECT(argmax_partials && error == CL_SUCCESS);
+  argmax_result = udonclCreateBufferForQueue(queue, CL_MEM_READ_WRITE,
+                                             sizeof(cl_uint), &error);
+  EXPECT(argmax_result && error == CL_SUCCESS);
+  EXPECT(udonclResolvePhysicalBuffer(argmax_input, &argmax_input_token) ==
+         CL_SUCCESS);
+  EXPECT(udonclResolvePhysicalBuffer(argmax_partials, &argmax_partials_token) ==
+         CL_SUCCESS);
+  EXPECT(udonclResolvePhysicalBuffer(argmax_result, &argmax_result_token) ==
+         CL_SUCCESS);
+  for (index = 0; index < 32000u; ++index)
+    ((float *)physical_buffers[argmax_input_token - 100])[16u + index] =
+        -(float)index;
+  ((float *)physical_buffers[argmax_input_token - 100])[16u + 29958u] = 4.0f;
+  EXPECT(__vrc_enqueue_udonaten_argmax_reduce_device_args(
+             queue, argmax_input, argmax_partials, 16, 32000, 0, 0,
+             &argmax_reduce_event) == CL_SUCCESS);
+  EXPECT(__vrc_enqueue_udonaten_argmax_finalize_device_args(
+             queue, argmax_input, argmax_partials, argmax_result, 16, 32000, 1,
+             1, &argmax_reduce_event, &argmax_finalize_event) == CL_SUCCESS);
+  EXPECT(clEnqueueReadBuffer(queue, argmax_result, CL_FALSE, 0,
+                             sizeof(argmax_result_value), &argmax_result_value,
+                             1, &argmax_finalize_event,
+                             &argmax_read_event) == CL_SUCCESS);
+  EXPECT(clWaitForEvents(1, &argmax_read_event) == CL_SUCCESS);
+  EXPECT(argmax_result_value == 29958u);
+  EXPECT(__vrc_enqueue_udonaten_argmax_reduce_device_args(
+             queue, argmax_input, argmax_partials, -1, 32000, 0, 0, 0) ==
+         CL_INVALID_VALUE);
+  EXPECT(__vrc_enqueue_udonaten_argmax_reduce_device_args(
+             queue, argmax_input, argmax_partials, 17, 32000, 0, 0, 0) ==
+         CL_INVALID_BUFFER_SIZE);
+  EXPECT(__vrc_enqueue_udonaten_argmax_finalize_device_args(
+             queue, argmax_input, argmax_partials, argmax_result, 16, 32000, 2,
+             0, 0, 0) == CL_INVALID_VALUE);
+  EXPECT(__vrc_enqueue_udonaten_argmax_finalize_device_args(
+             queue, argmax_input, argmax_partials, argmax_input, 16, 32000, 1,
+             0, 0, 0) == CL_INVALID_OPERATION);
+  EXPECT(clReleaseEvent(argmax_read_event) == CL_SUCCESS);
+  EXPECT(clReleaseEvent(argmax_finalize_event) == CL_SUCCESS);
+  EXPECT(clReleaseEvent(argmax_reduce_event) == CL_SUCCESS);
+  EXPECT(clReleaseMemObject(argmax_result) == CL_SUCCESS);
+  EXPECT(clReleaseMemObject(argmax_partials) == CL_SUCCESS);
+  EXPECT(clReleaseMemObject(argmax_input) == CL_SUCCESS);
+
   EXPECT(udononnxCreateOperatorHandle(&operator_handle) ==
          UDONONNX_STATUS_SUCCESS);
   EXPECT(udononnxGather(operator_handle, UDONCL_DATA_FLOAT32, gather_data,

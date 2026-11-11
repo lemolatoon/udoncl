@@ -170,7 +170,7 @@ createFragmentRenderer(const std::string &shader, const std::string &) {
 std::unique_ptr<FragmentRenderer>
 createGatherRenderer(const std::string &shader, const std::string &,
                      uint32_t width, uint32_t height, uint32_t inputCount) {
-  if (!width || !height || uint64_t(width) * height < 4 || !inputCount)
+  if (!width || !height || uint64_t(width) * height < 1 || !inputCount)
     throw std::runtime_error("invalid gather extent");
   return std::make_unique<Renderer>(shader, width, height, inputCount);
 }

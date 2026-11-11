@@ -224,6 +224,9 @@ struct Emitter {
       declare(select.getResult(), "(" + get(select.getCondition()) + " ? " +
                                       get(select.getTrueValue()) + " : " +
                                       get(select.getFalseValue()) + ")");
+    } else if (auto minimum = dyn_cast<arith::MinUIOp>(op)) {
+      declare(minimum.getResult(), "min(" + get(minimum.getLhs()) + ", " +
+                                       get(minimum.getRhs()) + ")");
     } else if (isa<arith::IndexCastOp, arith::IndexCastUIOp>(op))
       declare(op->getResult(0), get(op->getOperand(0)));
     else if (auto trunc = dyn_cast<arith::TruncIOp>(op)) {

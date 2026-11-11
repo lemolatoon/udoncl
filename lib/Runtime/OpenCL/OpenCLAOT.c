@@ -91,6 +91,12 @@ extern cl_int __vrc_opencl_dispatch_udonaten_arena_rms_norm_finalize(
     cl_uint input_token, cl_uint partials_token, cl_uint weight_token,
     cl_uint output_token, cl_int words, cl_int normalized_words,
     cl_float epsilon, cl_int has_weight);
+extern cl_int __vrc_opencl_dispatch_udonaten_argmax_reduce(
+    cl_uint input_token, cl_uint partials_token, cl_int input_word_offset,
+    cl_int words);
+extern cl_int __vrc_opencl_dispatch_udonaten_argmax_finalize(
+    cl_uint input_token, cl_uint partials_token, cl_uint result_token,
+    cl_int input_word_offset, cl_int words, cl_int reject_nonfinite);
 extern cl_int __vrc_opencl_dispatch_udondnn_arena_softmax(
     cl_uint input_token, cl_uint output_token, cl_int input_n, cl_int input_c,
     cl_int input_h, cl_int input_w, cl_int algorithm, cl_int mode);
@@ -399,6 +405,10 @@ static cl_uint udoncl_kernel_id(const char *name) {
     return 217;
   if (udoncl_string_equal(name, "udonaten_arena_rms_norm_finalize"))
     return 218;
+  if (udoncl_string_equal(name, "udonaten_argmax_reduce"))
+    return 247;
+  if (udoncl_string_equal(name, "udonaten_argmax_finalize"))
+    return 248;
   if (udoncl_string_equal(name, "udondnn_large_pooling_forward"))
     return 231;
   if (udoncl_string_equal(name, "udondnn_large_convolution_forward"))
@@ -1622,6 +1632,64 @@ cl_int __vrc_enqueue_udonaten_arena_rms_norm_finalize_device_args(
       udoncl_mem_physical_token(input), udoncl_mem_physical_token(partials),
       udoncl_mem_physical_token(weight), udoncl_mem_physical_token(output),
       words, normalized_words, epsilon, has_weight);
+  return udoncl_finish_enqueue(queue, CL_COMMAND_NDRANGE_KERNEL, pending,
+                               CL_FALSE, event);
+}
+
+cl_int __vrc_enqueue_udonaten_argmax_reduce_device_args(
+    cl_command_queue queue, cl_mem input, cl_mem partials,
+    cl_int input_word_offset, cl_int words, cl_uint wait_count,
+    const cl_event *wait_list, cl_event *event) {
+  cl_int pending;
+  size_t end;
+  if (queue != &udoncl_queue || !queue->active || !input ||
+      !udoncl_mem_is_active(input) || !partials ||
+      !udoncl_mem_is_active(partials) ||
+      udoncl_mem_context(input) != queue->context ||
+      udoncl_mem_context(partials) != queue->context || input_word_offset < 0 ||
+      words < 1 || words > 131072 ||
+      udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
+    return CL_INVALID_VALUE;
+  end = (size_t)input_word_offset + (size_t)words;
+  if (end < (size_t)input_word_offset || end > (size_t)-1 / 4u ||
+      udoncl_mem_bytes(input) < end * 4u ||
+      udoncl_mem_bytes(partials) < 512u * 4u)
+    return CL_INVALID_BUFFER_SIZE;
+  UDONCL_RETURN_IF_READ_WRITE_ALIAS(partials, input);
+  pending = __vrc_opencl_dispatch_udonaten_argmax_reduce(
+      udoncl_mem_physical_token(input), udoncl_mem_physical_token(partials),
+      input_word_offset, words);
+  return udoncl_finish_enqueue(queue, CL_COMMAND_NDRANGE_KERNEL, pending,
+                               CL_FALSE, event);
+}
+
+cl_int __vrc_enqueue_udonaten_argmax_finalize_device_args(
+    cl_command_queue queue, cl_mem input, cl_mem partials, cl_mem result,
+    cl_int input_word_offset, cl_int words, cl_int reject_nonfinite,
+    cl_uint wait_count, const cl_event *wait_list, cl_event *event) {
+  cl_int pending;
+  size_t end;
+  if (queue != &udoncl_queue || !queue->active || !input ||
+      !udoncl_mem_is_active(input) || !partials ||
+      !udoncl_mem_is_active(partials) || !result ||
+      !udoncl_mem_is_active(result) ||
+      udoncl_mem_context(input) != queue->context ||
+      udoncl_mem_context(partials) != queue->context ||
+      udoncl_mem_context(result) != queue->context || input_word_offset < 0 ||
+      words < 1 || words > 131072 ||
+      (reject_nonfinite != 0 && reject_nonfinite != 1) ||
+      udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
+    return CL_INVALID_VALUE;
+  end = (size_t)input_word_offset + (size_t)words;
+  if (end < (size_t)input_word_offset || end > (size_t)-1 / 4u ||
+      udoncl_mem_bytes(input) < end * 4u ||
+      udoncl_mem_bytes(partials) < 512u * 4u || udoncl_mem_bytes(result) < 4u)
+    return CL_INVALID_BUFFER_SIZE;
+  UDONCL_RETURN_IF_READ_WRITE_ALIAS(result, input, partials);
+  pending = __vrc_opencl_dispatch_udonaten_argmax_finalize(
+      udoncl_mem_physical_token(input), udoncl_mem_physical_token(partials),
+      udoncl_mem_physical_token(result), input_word_offset, words,
+      reject_nonfinite);
   return udoncl_finish_enqueue(queue, CL_COMMAND_NDRANGE_KERNEL, pending,
                                CL_FALSE, event);
 }

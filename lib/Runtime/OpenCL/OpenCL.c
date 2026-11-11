@@ -589,7 +589,7 @@ CL_API_ENTRY cl_kernel CL_API_CALL clCreateKernel(cl_program p,
     ERROR(CL_OUT_OF_HOST_MEMORY);
   udoncl_cl_gather_profile(name, &k->gather);
   if (k->gather.id &&
-      (k->gather.words < 4 || k->gather.words > 16384 ||
+      (k->gather.words < 1 || k->gather.words > 16384 ||
        !k->gather.input_count || k->gather.input_count > 13 ||
        k->gather.scalar_count > 15 - k->gather.input_count ||
        !k->gather.texture_width || !k->gather.texture_height ||

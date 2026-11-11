@@ -36,17 +36,18 @@ static bool scalar(Type t) {
 static bool legalArithmetic(Operation *op) {
   return llvm::is_contained(
              ArrayRef<StringRef>{
-                 "arith.constant",     "arith.addf",   "arith.subf",
-                 "arith.mulf",         "arith.divf",   "arith.negf",
-                 "arith.addi",         "arith.subi",   "arith.muli",
-                 "arith.divui",        "arith.remui",  "arith.andi",
-                 "arith.ori",          "arith.xori",   "arith.shli",
-                 "arith.shrui",        "arith.shrsi",  "arith.cmpi",
-                 "arith.cmpf",         "arith.select", "arith.uitofp",
-                 "arith.sitofp",       "arith.fptoui", "arith.index_cast",
-                 "arith.index_castui", "arith.trunci", "arith.bitcast",
-                 "math.floor",         "math.sqrt",    "math.cos",
-                 "math.sin",           "math.exp",     "math.log"},
+                 "arith.constant",   "arith.addf",         "arith.subf",
+                 "arith.mulf",       "arith.divf",         "arith.negf",
+                 "arith.addi",       "arith.subi",         "arith.muli",
+                 "arith.divui",      "arith.remui",        "arith.minui",
+                 "arith.andi",       "arith.ori",          "arith.xori",
+                 "arith.shli",       "arith.shrui",        "arith.shrsi",
+                 "arith.cmpi",       "arith.cmpf",         "arith.select",
+                 "arith.uitofp",     "arith.sitofp",       "arith.fptoui",
+                 "arith.index_cast", "arith.index_castui", "arith.trunci",
+                 "arith.bitcast",    "math.floor",         "math.sqrt",
+                 "math.cos",         "math.sin",           "math.exp",
+                 "math.log"},
              op->getName().getStringRef()) &&
          llvm::all_of(op->getResultTypes(), scalar);
 }
@@ -64,7 +65,7 @@ LogicalResult KernelOp::verify() {
         (*this)->getAttrOfType<DenseI32ArrayAttr>("vrc.texture_shape");
     auto textureRowPitch =
         (*this)->getAttrOfType<IntegerAttr>("vrc.texture_row_pitch");
-    if (!words || words.getInt() < 4 || words.getInt() > 131072 ||
+    if (!words || words.getInt() < 1 || words.getInt() > 131072 ||
         getKernelId() <= 0 || getArgumentKinds().size() < 2 ||
         getArgumentKinds().size() > 16 || global.size() != 3 ||
         global[0] <= 0 || global[1] <= 0 || global[2] != 1 ||
@@ -164,9 +165,7 @@ LogicalResult ResourceOp::verify() {
       return emitOpError("invalid gather argument binding");
     auto argumentKind = kernel.getArgumentKinds()[i];
     if (argumentKind == StringAttr::get(getContext(), "buffer")) {
-      bool target = getKind() == "target";
       if ((!getValueType().isF32() && !getValueType().isInteger(32)) ||
-          (target && !getValueType().isF32()) ||
           (getKind() != "texture" && getKind() != "target") || !getFormat() ||
           *getFormat() != "rgba8_unorm")
         return emitOpError("invalid input/target format");

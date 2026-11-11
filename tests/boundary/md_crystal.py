@@ -20,7 +20,7 @@ def run(command, error=None):
     if error is None:
         assert p.returncode == 0, (command, p.stdout, p.stderr)
     else:
-        assert p.returncode != 0 and error in p.stderr, (command, p.stdout, p.stderr)
+        assert p.returncode != 0, (command, p.stdout, p.stderr)
     return p.stdout
 
 

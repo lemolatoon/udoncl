@@ -80,6 +80,24 @@ struct Proof {
   std::optional<Range> range(Value value, Operation *at, unsigned depth = 0) {
     if (depth > 32)
       return std::nullopt;
+    // A successful unsigned comparison proves the compared SSA value is
+    // bounded only in the true region. Recover that fact before inspecting
+    // the value's definition so data loaded from an input can still be used
+    // as a guarded index without trusting the input contents globally.
+    if (at)
+      for (Block &block : function.getBody()) {
+        auto branch = dyn_cast<LLVM::CondBrOp>(block.getTerminator());
+        auto compare = branch
+                           ? branch.getCondition().getDefiningOp<LLVM::ICmpOp>()
+                           : LLVM::ICmpOp();
+        if (!compare || compare.getPredicate() != LLVM::ICmpPredicate::ult ||
+            compare.getLhs() != value ||
+            !dominance.dominates(branch.getTrueDest(), at->getBlock()))
+          continue;
+        auto bound = range(compare.getRhs(), branch, depth + 1);
+        if (bound && bound->min > 0 && bound->max <= INT32_MAX)
+          return Range{0, bound->max - 1};
+      }
     if (value == gid[0])
       return Range{0, width - 1};
     if (value == gid[1])
@@ -212,7 +230,7 @@ struct RaiseGatherDevicePass
       module.emitError() << "gather proof: " << message;
       signalPassFailure();
     };
-    if (!wordsAttr || wordsAttr.getInt() < 4 || wordsAttr.getInt() > 131072 ||
+    if (!wordsAttr || wordsAttr.getInt() < 1 || wordsAttr.getInt() > 131072 ||
         !source || source.isExternal() ||
         source.getCConv() != LLVM::cconv::CConv::SPIR_KERNEL ||
         source.getNumArguments() < 2 || source.getNumArguments() > 16 ||
@@ -274,8 +292,7 @@ struct RaiseGatherDevicePass
             recoveredTypes.push_back(MemRefType::get({words}, elementType));
             if (*qualifier == "const")
               recoveredInputs.push_back(i);
-            else if (*sourceType == "float*" && qualifier->empty() &&
-                     !recoveredOutput)
+            else if (qualifier->empty() && !recoveredOutput)
               recoveredOutput = i;
             else {
               valid = false;
@@ -299,8 +316,8 @@ struct RaiseGatherDevicePass
         }
       }
     if (!metadata) {
-      fail("requires one or more metadata-proven const float inputs and "
-           "exactly one trailing float output before scalar arguments");
+      fail("requires one or more metadata-proven const 32-bit inputs and "
+           "exactly one trailing 32-bit output before scalar arguments");
       return;
     }
     SmallVector<int32_t> inputWords(inputArguments.size(),
@@ -442,7 +459,7 @@ struct RaiseGatherDevicePass
                   cast<MemRefType>(types[found->second.argument])
                       .getElementType() ||
               gep.getIndices().size() != 1) {
-            fail("buffer pointers require direct scalar f32 GEPs");
+            fail("buffer pointers require direct scalar 32-bit GEPs");
             return;
           }
           Pointer p = found->second;
@@ -488,7 +505,9 @@ struct RaiseGatherDevicePass
           if (output || p == pointers.end() ||
               p->second.argument != *outputArgument || !p->second.index ||
               !proof.linearOutput(p->second.index) ||
-              !store.getValue().getType().isF32() || store.getVolatile_() ||
+              store.getValue().getType() !=
+                  cast<MemRefType>(types[*outputArgument]).getElementType() ||
+              store.getVolatile_() ||
               store.getOrdering() != LLVM::AtomicOrdering::not_atomic ||
               store.getAlignment().value_or(4) > 4) {
             fail("requires exactly one complete output[global_id] store");

@@ -390,6 +390,119 @@ run(
     error="buffer index bounds are not proven within the declared extent",
 )
 
+guarded_source = output / "guarded-index.cl"
+guarded_source.write_text(
+    "__kernel void guarded_index(__global const float *input, "
+    "__global const uint *indices, __global float *output, int base, "
+    "int input_words) {\n"
+    "  uint gid = get_global_id(0);\n"
+    "  uint index = indices[gid];\n"
+    "  float value = 0.0f;\n"
+    "  if (index < (uint)input_words)\n"
+    "    value = input[(uint)base + index];\n"
+    "  output[gid] = value;\n"
+    "}\n",
+    encoding="utf-8",
+)
+guarded_ir = output / "guarded-index.ll"
+run(
+    [
+        clang,
+        "-target",
+        "spir-unknown-unknown",
+        "-x",
+        "cl",
+        "-cl-std=CL1.2",
+        "-cl-kernel-arg-info",
+        "-O0",
+        "-Xclang",
+        "-disable-O0-optnone",
+        "-fomit-frame-pointer",
+        "-ffp-contract=off",
+        "-S",
+        "-emit-llvm",
+        guarded_source,
+        "-o",
+        guarded_ir,
+    ]
+)
+guarded_config = dict(
+    config,
+    words=16,
+    input_words=[64, 16],
+    argument_bounds=[
+        {"index": 3, "min": 0, "max": 0},
+        {"index": 4, "min": 1, "max": 64},
+    ],
+    kernel="guarded_index",
+    kernel_id=27,
+    global_size=[16, 1, 1],
+)
+config_path.write_text(json.dumps(guarded_config), encoding="utf-8")
+guarded_bundle = output / "guarded-index-bundle"
+if guarded_bundle.exists():
+    shutil.rmtree(guarded_bundle)
+run(
+    [
+        compiler,
+        "--emit-native-device-bundle",
+        config_path,
+        "--device-llvm",
+        guarded_ir,
+        "-o",
+        guarded_bundle,
+    ]
+)
+
+unguarded_source = output / "unguarded-index.cl"
+unguarded_source.write_text(
+    "__kernel void unguarded_index(__global const float *input, "
+    "__global const uint *indices, __global float *output, int base, "
+    "int input_words) {\n"
+    "  uint gid = get_global_id(0);\n"
+    "  uint index = indices[gid];\n"
+    "  if (index < (uint)input_words) index = index;\n"
+    "  output[gid] = input[(uint)base + index];\n"
+    "}\n",
+    encoding="utf-8",
+)
+unguarded_ir = output / "unguarded-index.ll"
+run(
+    [
+        clang,
+        "-target",
+        "spir-unknown-unknown",
+        "-x",
+        "cl",
+        "-cl-std=CL1.2",
+        "-cl-kernel-arg-info",
+        "-O0",
+        "-Xclang",
+        "-disable-O0-optnone",
+        "-fomit-frame-pointer",
+        "-ffp-contract=off",
+        "-S",
+        "-emit-llvm",
+        unguarded_source,
+        "-o",
+        unguarded_ir,
+    ]
+)
+unguarded_config = dict(guarded_config, kernel="unguarded_index", kernel_id=28)
+config_path.write_text(json.dumps(unguarded_config), encoding="utf-8")
+run(
+    [
+        compiler,
+        "--emit-native-device-bundle",
+        config_path,
+        "--device-llvm",
+        unguarded_ir,
+        "-o",
+        output / "unguarded-index-bundle",
+    ],
+    error="buffer index bounds are not proven within the declared extent",
+)
+
 packed_source = output / "packed.cl"
 packed_source.write_text(
     "__kernel void packed(__global const uint *input, "
@@ -503,7 +616,7 @@ run(
         "-o",
         output / "two-outputs-bundle",
     ],
-    error="exactly one trailing float output",
+    error="exactly one trailing 32-bit output",
 )
 
 invalid_tile = tile_source.read_text().replace("output[gid]", "output[x]")
