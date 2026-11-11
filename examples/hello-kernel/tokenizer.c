@@ -26,6 +26,10 @@ UDONCL_EXPORT int32_t tokenizer_encode(udon_string_t text,
   model.merges = merges;
   model.merge_count = 2;
   model.byte_token_ids = byte_tokens;
+  model.normalizer_prepend_scalar = -1;
+  model.normalizer_replace_from_scalar = -1;
+  model.normalizer_replace_to_scalar = -1;
+  model.bos_token_id = -1;
   status = udontokenizersEncode(&model, text, token_ids,
                                 udonInt32ArrayLength(token_ids), &count);
   return status == UDONTOKENIZERS_STATUS_SUCCESS ? count : -(int32_t)status;

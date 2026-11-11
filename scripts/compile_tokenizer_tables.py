@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 
 
-COMPILER_ABI = 1
+COMPILER_ABI = 2
 REQUIRED_ASSETS = (
     "special_tokens_map.json",
     "tokenizer.json",
@@ -182,6 +182,8 @@ def _write_source(
     scalars: list[tuple[int, int]],
     byte_ids: list[int],
     merges: list[tuple[int, int, int, int]],
+    normalizer: dict[str, str],
+    special_ids: dict[str, int],
 ) -> None:
     lines = [f'#include "{symbol}.h"', ""]
     lines.append(f"const uint32_t {symbol}_scalar_values[] = {{")
@@ -206,6 +208,10 @@ def _write_source(
             f"  {symbol}_merges,",
             f"  {len(merges)},",
             f"  {symbol}_byte_token_ids,",
+            f"  {ord(normalizer['prepend'])},",
+            f"  {ord(normalizer['replace_from'])},",
+            f"  {ord(normalizer['replace_to'])},",
+            f"  {special_ids['bos']},",
             "};",
             "",
         ]
@@ -246,7 +252,10 @@ def compile_bundle(bundle: Path, output: Path, *, symbol: str) -> Path:
         for piece, token_id in vocab.items()
         if len(piece) == 1 and not 0xD800 <= ord(piece) <= 0xDFFF
     )
-    merges = [_parse_merge(value, rank, vocab) for rank, value in enumerate(merges_json)]
+    merges = sorted(
+        (_parse_merge(value, rank, vocab) for rank, value in enumerate(merges_json)),
+        key=lambda merge: (merge[0], merge[1]),
+    )
 
     asset_hashes = {name: _digest(bundle / name) for name in sorted(REQUIRED_ASSETS)}
     cache_key_payload = json.dumps(
@@ -270,7 +279,15 @@ def compile_bundle(bundle: Path, output: Path, *, symbol: str) -> Path:
     }
     output.mkdir(parents=True, exist_ok=True)
     _write_header(output / f"{symbol}.h", symbol)
-    _write_source(output / f"{symbol}.c", symbol, scalars, byte_ids, merges)
+    _write_source(
+        output / f"{symbol}.c",
+        symbol,
+        scalars,
+        byte_ids,
+        merges,
+        normalizer,
+        special_ids,
+    )
     manifest_path = output / "manifest.json"
     manifest_path.write_text(
         json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n",

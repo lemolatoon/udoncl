@@ -14,8 +14,8 @@
   } while (0)
 
 int main(void) {
-  static const uint32_t scalars[] = {0x65e5, 0x672c, 0x8a9e, 0x20};
-  static const int32_t scalar_tokens[] = {10, 11, 12, 13};
+  static const uint32_t scalars[] = {0x20, 0x65e5, 0x672c, 0x8a9e};
+  static const int32_t scalar_tokens[] = {13, 10, 11, 12};
   static const udontokenizers_merge_t merges[] = {
       {10, 11, 20, 0},
       {20, 12, 30, 1},
@@ -37,6 +37,10 @@ int main(void) {
   model.merges = merges;
   model.merge_count = 2;
   model.byte_token_ids = byte_tokens;
+  model.normalizer_prepend_scalar = -1;
+  model.normalizer_replace_from_scalar = -1;
+  model.normalizer_replace_to_scalar = -1;
+  model.bos_token_id = -1;
 
   EXPECT(udontokenizersEncode(&model, &text, &tokens, 8, &token_count) ==
          UDONTOKENIZERS_STATUS_SUCCESS);

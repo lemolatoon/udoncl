@@ -25,12 +25,17 @@ typedef struct udontokenizers_merge {
 } udontokenizers_merge_t;
 
 typedef struct udontokenizers_model {
+  /* scalar_values and merges are sorted for deterministic binary lookup. */
   const uint32_t *scalar_values;
   const int32_t *scalar_token_ids;
   int32_t scalar_count;
   const udontokenizers_merge_t *merges;
   int32_t merge_count;
   const int32_t *byte_token_ids;
+  int32_t normalizer_prepend_scalar;
+  int32_t normalizer_replace_from_scalar;
+  int32_t normalizer_replace_to_scalar;
+  int32_t bos_token_id;
 } udontokenizers_model_t;
 
 udontokenizersStatus_t udontokenizersEncode(const udontokenizers_model_t *model,

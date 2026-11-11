@@ -2,10 +2,17 @@
 
 static int32_t scalar_token(const udontokenizers_model_t *model,
                             uint32_t scalar) {
-  int32_t index;
-  for (index = 0; index < model->scalar_count; ++index)
-    if (model->scalar_values[index] == scalar)
-      return model->scalar_token_ids[index];
+  int32_t begin = 0;
+  int32_t end = model->scalar_count;
+  while (begin < end) {
+    int32_t middle = begin + (end - begin) / 2;
+    if (model->scalar_values[middle] < scalar)
+      begin = middle + 1;
+    else
+      end = middle;
+  }
+  if (begin < model->scalar_count && model->scalar_values[begin] == scalar)
+    return model->scalar_token_ids[begin];
   return -1;
 }
 
@@ -53,26 +60,53 @@ append_fallback(const udontokenizers_model_t *model, udon_int32_array_t output,
   return UDONTOKENIZERS_STATUS_SUCCESS;
 }
 
+static udontokenizersStatus_t append_scalar(const udontokenizers_model_t *model,
+                                            udon_int32_array_t output,
+                                            int32_t capacity, int32_t *count,
+                                            uint32_t scalar) {
+  int32_t token = scalar_token(model, scalar);
+  return token >= 0 ? append_token(output, capacity, count, token)
+                    : append_fallback(model, output, capacity, count, scalar);
+}
+
+static const udontokenizers_merge_t *
+find_merge(const udontokenizers_model_t *model, int32_t left, int32_t right) {
+  int32_t begin = 0;
+  int32_t end = model->merge_count;
+  while (begin < end) {
+    int32_t middle = begin + (end - begin) / 2;
+    const udontokenizers_merge_t *candidate = &model->merges[middle];
+    if (candidate->left_token_id < left ||
+        (candidate->left_token_id == left &&
+         candidate->right_token_id < right)) {
+      begin = middle + 1;
+    } else {
+      end = middle;
+    }
+  }
+  if (begin < model->merge_count &&
+      model->merges[begin].left_token_id == left &&
+      model->merges[begin].right_token_id == right)
+    return &model->merges[begin];
+  return 0;
+}
+
 static udontokenizersStatus_t merge_tokens(const udontokenizers_model_t *model,
                                            udon_int32_array_t output,
-                                           int32_t *count) {
+                                           int32_t first, int32_t *count) {
   for (;;) {
     int32_t best_index = -1;
     int32_t best_rank = 0x7fffffff;
     int32_t best_token = -1;
     int32_t index;
-    int32_t merge;
-    for (index = 0; index + 1 < *count; ++index) {
+    for (index = first; index + 1 < *count; ++index) {
       int32_t left = udonInt32ArrayGet(output, index);
       int32_t right = udonInt32ArrayGet(output, index + 1);
-      for (merge = 0; merge < model->merge_count; ++merge) {
-        const udontokenizers_merge_t *candidate = &model->merges[merge];
-        if (candidate->left_token_id == left &&
-            candidate->right_token_id == right && candidate->rank < best_rank) {
-          best_index = index;
-          best_rank = candidate->rank;
-          best_token = candidate->result_token_id;
-        }
+      const udontokenizers_merge_t *candidate = find_merge(model, left, right);
+      if (candidate && candidate->rank < best_rank) {
+        best_index = index;
+        best_rank = candidate->rank;
+        best_token = candidate->result_token_id;
       }
     }
     if (best_index < 0)
@@ -91,6 +125,7 @@ udontokenizersStatus_t udontokenizersEncode(const udontokenizers_model_t *model,
                                             int32_t *output_count) {
   int32_t input_length;
   int32_t position;
+  int32_t first_token;
   int32_t count = 0;
   if (!model || !output_count || output_capacity < 0 ||
       output_capacity > udonInt32ArrayLength(output))
@@ -101,13 +136,35 @@ udontokenizersStatus_t udontokenizersEncode(const udontokenizers_model_t *model,
 #endif
   if (model->scalar_count < 0 || model->merge_count < 0 ||
       !model->scalar_values || !model->scalar_token_ids ||
-      (model->merge_count && !model->merges) || !model->byte_token_ids)
+      (model->merge_count && !model->merges) || !model->byte_token_ids ||
+      model->normalizer_prepend_scalar < -1 ||
+      model->normalizer_replace_from_scalar < -1 ||
+      model->normalizer_replace_to_scalar < -1 ||
+      model->normalizer_prepend_scalar > 0x10ffff ||
+      model->normalizer_replace_from_scalar > 0x10ffff ||
+      model->normalizer_replace_to_scalar > 0x10ffff ||
+      (model->normalizer_replace_from_scalar >= 0 &&
+       model->normalizer_replace_to_scalar < 0) ||
+      model->bos_token_id < -1)
     return UDONTOKENIZERS_STATUS_INVALID_MODEL;
 
   input_length = udonStringLength(input);
+  if (model->bos_token_id >= 0) {
+    udontokenizersStatus_t status =
+        append_token(output, output_capacity, &count, model->bos_token_id);
+    if (status != UDONTOKENIZERS_STATUS_SUCCESS)
+      return status;
+  }
+  first_token = count;
+  if (input_length > 0 && model->normalizer_prepend_scalar >= 0) {
+    udontokenizersStatus_t status =
+        append_scalar(model, output, output_capacity, &count,
+                      (uint32_t)model->normalizer_prepend_scalar);
+    if (status != UDONTOKENIZERS_STATUS_SUCCESS)
+      return status;
+  }
   for (position = 0; position < input_length; ++position) {
     uint32_t scalar = (uint32_t)udonStringCodeUnitAt(input, position);
-    int32_t token;
     udontokenizersStatus_t status;
     if (scalar >= 0xd800 && scalar <= 0xdbff) {
       uint32_t low;
@@ -120,13 +177,13 @@ udontokenizersStatus_t udontokenizersEncode(const udontokenizers_model_t *model,
     } else if (scalar >= 0xdc00 && scalar <= 0xdfff) {
       return UDONTOKENIZERS_STATUS_INVALID_UTF16;
     }
-    token = scalar_token(model, scalar);
-    status = token >= 0 ? append_token(output, output_capacity, &count, token)
-                        : append_fallback(model, output, output_capacity,
-                                          &count, scalar);
+    if (model->normalizer_replace_from_scalar >= 0 &&
+        scalar == (uint32_t)model->normalizer_replace_from_scalar)
+      scalar = (uint32_t)model->normalizer_replace_to_scalar;
+    status = append_scalar(model, output, output_capacity, &count, scalar);
     if (status != UDONTOKENIZERS_STATUS_SUCCESS)
       return status;
   }
   *output_count = count;
-  return merge_tokens(model, output, output_count);
+  return merge_tokens(model, output, first_token, output_count);
 }

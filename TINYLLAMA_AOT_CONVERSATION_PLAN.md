@@ -621,10 +621,13 @@ Implement in this order, keeping each gate independently testable:
     content-addressed, receipt-verified cache. The generic build-time compiler
     validates the supported byte-fallback BPE schema and deterministically
     emits the real 32,000-entry vocabulary projection, 256 byte IDs, and 61,249
-    merge records as project-local C tables. Next connect those tables through
-    CMake, add indexed merge lookup plus normalizer/BOS encode behavior, then
-    add decode, special-token/chat-template compilation, and official-tokenizer
-    conformance tests.
+    merge records as project-local C tables. The generic runtime consumes the
+    compiled normalizer/BOS metadata, uses binary scalar/pair lookup, and its
+    real-table Native output matches the pinned Hugging Face `tokenizers`
+    implementation for empty, ASCII, Japanese/BMP, emoji/surrogate, combining,
+    whitespace, newline, and byte-fallback cases. Next connect generated tables
+    through the public CMake package and the Udon/U# artifact, then add decode,
+    special-token recognition, and chat-template compilation.
 12. Add the example C conversation Host, exact lifecycle/status contract, and
     generated async U# binding.
 13. Pass the Unity two-turn, 32-token, full-logit/full-KV debug gate and the
