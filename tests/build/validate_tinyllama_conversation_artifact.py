@@ -26,6 +26,19 @@ def tensor(index, name, data_type, dimensions, logical_bytes, capacity_bytes=Non
     }
 
 
+def export(public_name, symbol, parameter_kinds=(), is_async=False):
+    return {
+        "async": is_async,
+        "c_symbol": symbol,
+        "parameters": [
+            {"index": index, "kind": kind}
+            for index, kind in enumerate(parameter_kinds)
+        ],
+        "public_name": public_name,
+        "result": {"kind": "i32"},
+    }
+
+
 class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
     def make_artifact(self, root: Path) -> Path:
         inputs = [
@@ -45,6 +58,18 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
                 outputs.append(tensor(len(outputs), f"present.{layer}.{kind}",
                                       "float32", [1, 4, 64, 64], 65536))
         manifest = {
+            "exports": [
+                export("Initialize", "tinyllama_initialize", is_async=True),
+                export("Reset", "tinyllama_reset", is_async=True),
+                export("SetPromptTokens", "tinyllama_set_prompt_tokens",
+                       ("i32_array", "i32")),
+                export("Generate", "tinyllama_generate", ("i32",), True),
+                export("GeneratedTokenCount",
+                       "tinyllama_generated_token_count"),
+                export("ReadGeneratedTokens",
+                       "tinyllama_read_generated_tokens", ("i32_array",)),
+                export("Shutdown", "tinyllama_dispose"),
+            ],
             "onnx_binding": {
                 "inputs": inputs,
                 "outputs": outputs,
@@ -58,9 +83,10 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
             "device": {
                 "buffers": [
                     {"id": index, "name": f"private_{index}"}
-                    for index in range(1, 125)
+                    for index in range(1, 127)
                 ],
-                "mutable_handle_capacity": 124,
+                "kernels": [{"id": 247}, {"id": 248}],
+                "mutable_handle_capacity": 126,
             },
             "program": {
                 "name": "tinyllama_real_conversation",
@@ -70,7 +96,17 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
         }
         (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         (root / "binding.cs").write_text(
-            "Initialize();\nRun();\nShutdown();\n", encoding="utf-8")
+            "\n".join((
+                "StartInitialize(", "GetInitializeStatus(",
+                "TryGetInitializeResult(", "StartReset(", "GetResetStatus(",
+                "TryGetResetResult(",
+                "TrySetPromptTokens(int[] tokenIds, int tokenCount, out int result)",
+                "StartGenerate(int maxNewTokens, UdonSharpBehaviour receiver,",
+                "GetGenerateStatus(", "TryGetGenerateResult(",
+                "TryGeneratedTokenCount(out int result)",
+                "TryReadGeneratedTokens(int[] destination, out int result)",
+                "TryShutdown(out int result)",
+            )) + "\n", encoding="utf-8")
         return root
 
     def test_accepts_private_m1_profile(self):
@@ -120,6 +156,31 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
                 "enqueue_reset_sequence_state_symbol"]
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "sequence-state reset helper"):
+                VALIDATOR.validate_artifact(artifact)
+
+    def test_rejects_old_three_export_surface(self):
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = self.make_artifact(Path(directory))
+            manifest_path = artifact / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["exports"] = [
+                export("Initialize", "tinyllama_conversation_initialize",
+                       is_async=True),
+                export("Run", "tinyllama_conversation_run", is_async=True),
+                export("Shutdown", "tinyllama_conversation_dispose"),
+            ]
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "unexpected public API"):
+                VALIDATOR.validate_artifact(artifact)
+
+    def test_rejects_missing_device_argmax(self):
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = self.make_artifact(Path(directory))
+            manifest_path = artifact / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["device"]["kernels"] = [{"id": 247}]
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "ArgMax kernels"):
                 VALIDATOR.validate_artifact(artifact)
 
 
