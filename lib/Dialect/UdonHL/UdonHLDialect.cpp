@@ -1,5 +1,7 @@
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
 #include "VRC/Dialect/VRC/VRCDialect.h"
+#include "udoncl/array.h"
+#include "udoncl/string.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/DialectImplementation.h"
@@ -171,6 +173,37 @@ mlir::LogicalResult vrc::udonhl::ArrayViewOp::verify() {
   if (getMemoryKind() == MemoryKind::Raw)
     return emitOpError("an Udon typed array view cannot declare raw backing");
   return mlir::success();
+}
+
+namespace {
+mlir::LogicalResult verifyObjectAddressSpace(mlir::Operation *operation,
+                                             vrc::udonhl::PtrType pointer,
+                                             uint32_t expected) {
+  if (pointer.getAddressSpace() != expected)
+    return operation->emitOpError("object has the wrong address space");
+  return mlir::success();
+}
+} // namespace
+
+mlir::LogicalResult vrc::udonhl::StringLengthOp::verify() {
+  return verifyObjectAddressSpace(*this, getString().getType(),
+                                  UDONCL_STRING_ADDRESS_SPACE);
+}
+mlir::LogicalResult vrc::udonhl::StringCodeUnitOp::verify() {
+  return verifyObjectAddressSpace(*this, getString().getType(),
+                                  UDONCL_STRING_ADDRESS_SPACE);
+}
+mlir::LogicalResult vrc::udonhl::Int32ArrayLengthOp::verify() {
+  return verifyObjectAddressSpace(*this, getArray().getType(),
+                                  UDONCL_INT32_ARRAY_ADDRESS_SPACE);
+}
+mlir::LogicalResult vrc::udonhl::Int32ArrayGetOp::verify() {
+  return verifyObjectAddressSpace(*this, getArray().getType(),
+                                  UDONCL_INT32_ARRAY_ADDRESS_SPACE);
+}
+mlir::LogicalResult vrc::udonhl::Int32ArraySetOp::verify() {
+  return verifyObjectAddressSpace(*this, getArray().getType(),
+                                  UDONCL_INT32_ARRAY_ADDRESS_SPACE);
 }
 
 mlir::LogicalResult vrc::udonhl::CallOp::verify() {

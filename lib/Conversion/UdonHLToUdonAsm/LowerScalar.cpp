@@ -4,6 +4,7 @@
 #include "VRC/Dialect/UdonAsm/UdonAsmDialect.h"
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
 #include "VRC/Dialect/VRC/VRCDialect.h"
+#include "udoncl/array.h"
 #include "udoncl/string.h"
 #include "mlir/Analysis/Liveness.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -115,10 +116,13 @@ static FailureOr<StringRef> udonType(Type type) {
     return StringRef("SystemInt32");
   if (isa<host::FrameType>(type))
     return StringRef("SystemInt32");
-  if (auto pointer = dyn_cast<host::PtrType>(type))
-    return pointer.getAddressSpace() == UDONCL_STRING_ADDRESS_SPACE
-               ? StringRef("SystemString")
-               : StringRef("SystemInt32");
+  if (auto pointer = dyn_cast<host::PtrType>(type)) {
+    if (pointer.getAddressSpace() == UDONCL_STRING_ADDRESS_SPACE)
+      return StringRef("SystemString");
+    if (pointer.getAddressSpace() == UDONCL_INT32_ARRAY_ADDRESS_SPACE)
+      return StringRef("SystemInt32Array");
+    return StringRef("SystemInt32");
+  }
   if (auto memref = dyn_cast<MemRefType>(type)) {
     if (memref.getRank() != 1 || !memref.getLayout().isIdentity())
       return failure();
@@ -2714,6 +2718,61 @@ private:
             return copy.emitError("Unity buffer copy has no event slot");
           addSlot("__udoncl_completed_event", "SystemInt32", "0", false);
           emitCopy(copy.getLoc(), "__udoncl_completed_event", event);
+          continue;
+        }
+        if (auto length = dyn_cast<host::StringLengthOp>(operation)) {
+          emitPush(length.getLoc(), valueSlots.lookup(length.getString()));
+          emitPush(length.getLoc(), valueSlots.lookup(length.getResult()));
+          emitExtern(length.getLoc(), "SystemString.__get_Length__SystemInt32");
+          continue;
+        }
+        if (auto codeUnit = dyn_cast<host::StringCodeUnitOp>(operation)) {
+          std::string chars =
+              prefix + "string_chars_" + std::to_string(valueIndex++);
+          std::string character =
+              prefix + "string_char_" + std::to_string(valueIndex++);
+          addSlot(chars, "SystemCharArray", "null", false);
+          addSlot(character, "SystemChar", "null", false);
+          emitPush(codeUnit.getLoc(), valueSlots.lookup(codeUnit.getString()));
+          emitPush(codeUnit.getLoc(), valueSlots.lookup(codeUnit.getIndex()));
+          emitPush(codeUnit.getLoc(), immutableSlot("SystemInt32", "1"));
+          emitPush(codeUnit.getLoc(), chars);
+          emitExtern(codeUnit.getLoc(),
+                     "SystemString.__ToCharArray__SystemInt32_SystemInt32__"
+                     "SystemCharArray");
+          emitPush(codeUnit.getLoc(), chars);
+          emitPush(codeUnit.getLoc(), immutableSlot("SystemInt32", "0"));
+          emitPush(codeUnit.getLoc(), character);
+          emitExtern(codeUnit.getLoc(),
+                     "SystemCharArray.__Get__SystemInt32__SystemChar");
+          emitPush(codeUnit.getLoc(), character);
+          emitPush(codeUnit.getLoc(), valueSlots.lookup(codeUnit.getResult()));
+          emitExtern(codeUnit.getLoc(),
+                     "SystemConvert.__ToInt32__SystemChar__SystemInt32");
+          continue;
+        }
+        if (auto length = dyn_cast<host::Int32ArrayLengthOp>(operation)) {
+          emitPush(length.getLoc(), valueSlots.lookup(length.getArray()));
+          emitPush(length.getLoc(), valueSlots.lookup(length.getResult()));
+          emitExtern(length.getLoc(),
+                     "SystemInt32Array.__get_Length__SystemInt32");
+          continue;
+        }
+        if (auto get = dyn_cast<host::Int32ArrayGetOp>(operation)) {
+          emitPush(get.getLoc(), valueSlots.lookup(get.getArray()));
+          emitPush(get.getLoc(), valueSlots.lookup(get.getIndex()));
+          emitPush(get.getLoc(), valueSlots.lookup(get.getResult()));
+          emitExtern(get.getLoc(),
+                     "SystemInt32Array.__Get__SystemInt32__SystemInt32");
+          continue;
+        }
+        if (auto set = dyn_cast<host::Int32ArraySetOp>(operation)) {
+          emitPush(set.getLoc(), valueSlots.lookup(set.getArray()));
+          emitPush(set.getLoc(), valueSlots.lookup(set.getIndex()));
+          emitPush(set.getLoc(), valueSlots.lookup(set.getValue()));
+          emitExtern(set.getLoc(),
+                     "SystemInt32Array.__Set__SystemInt32_SystemInt32__"
+                     "SystemVoid");
           continue;
         }
         if (auto pointer = dyn_cast<host::PtrAddOp>(operation)) {

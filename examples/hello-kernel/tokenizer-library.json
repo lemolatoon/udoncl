@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "program": "hello_tokenizer",
+  "binding": {
+    "namespace": "Lemolatoon.Udoncl.Generated",
+    "class_name": "UdonclHelloTokenizerBinding"
+  },
+  "export_overrides": [
+    {
+      "symbol": "tokenizer_encode",
+      "public_name": "Tokenize",
+      "parameters": ["text", "tokenIds"]
+    }
+  ]
+}

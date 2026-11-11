@@ -172,6 +172,7 @@ def main():
     udonaten_package = install / 'lib/cmake/UdonATen'
     udononnxoperators_package = install / 'lib/cmake/UdonONNXOperators'
     udononnxruntime_package = install / 'lib/cmake/UdonONNXRuntime'
+    udontokenizers_package = install / 'lib/cmake/UdonTokenizers'
     assert (udonblas_package / 'UdonBLASConfig.cmake').is_file()
     assert (udondnn_package / 'UdonDNNConfig.cmake').is_file()
     assert (udonaten_package / 'UdonATenConfig.cmake').is_file()
@@ -181,12 +182,17 @@ def main():
     assert (
         udononnxruntime_package / 'UdonONNXRuntimeConfig.cmake'
     ).is_file()
+    assert (
+        udontokenizers_package / 'UdonTokenizersConfig.cmake'
+    ).is_file()
     assert (install / 'include/udondnn.h').is_file()
     assert (install / 'include/udonaten.h').is_file()
     assert (install / 'include/udononnxoperators.h').is_file()
     assert (install / 'include/udononnxruntime.h').is_file()
     assert (install / 'include/udoncl/onnx_types.h').is_file()
     assert (install / 'include/udoncl/export.h').is_file()
+    assert (install / 'include/udoncl/array.h').is_file()
+    assert (install / 'include/udontokenizers.h').is_file()
     assert (install / 'share/udondnn/src/udondnn.c').is_file()
     assert (install / 'share/udonaten/src/udonaten.c').is_file()
     assert (
@@ -194,6 +200,9 @@ def main():
     ).is_file()
     assert (
         install / 'share/udononnxruntime/src/udononnxruntime.c'
+    ).is_file()
+    assert (
+        install / 'share/udontokenizers/src/udontokenizers.c'
     ).is_file()
     assert (
         install / 'share/udononnxoperators/device/matmul_nbits.cl'
@@ -1028,11 +1037,16 @@ def main():
         '-G', args.generator,
         f'-DCMAKE_MAKE_PROGRAM={args.make_program}',
         f'-DUdonCL_DIR={package}',
+        f'-DUdonTokenizers_DIR={udontokenizers_package}',
         f'-DUDONCL_CLANG_EXECUTABLE={Path(args.clang).resolve()}',
         f'-DUDONCL_LLVM_LINK_EXECUTABLE={Path(args.llvm_link).resolve()}',
     ])
     run([args.cmake, '--build', str(consumer), '--target', 'hello-artifact'])
     run([args.cmake, '--build', str(consumer), '--target', 'hello-unity-library'])
+    run([
+        args.cmake, '--build', str(consumer),
+        '--target', 'hello-tokenizer-unity-library',
+    ])
     run([
         args.cmake, '--build', str(consumer),
         '--target', 'hello-buffer-copy-unity-library',
@@ -1261,6 +1275,42 @@ def main():
         echo_export['parameters'][0]['heap_slot']
         + ': %SystemString, null') in assembly
     assert (echo_export['result']['heap_slot'] + ': %SystemString, null') in assembly
+
+    tokenizer_artifact = (
+        consumer / 'udoncl/hello-tokenizer-unity-library/artifact'
+    )
+    tokenizer_manifest = json.loads(
+        (tokenizer_artifact / 'manifest.json').read_text(encoding='utf-8')
+    )
+    tokenizer_export = tokenizer_manifest['exports'][0]
+    assert tokenizer_export['public_name'] == 'Tokenize'
+    assert [item['kind'] for item in tokenizer_export['parameters']] == [
+        'string', 'i32_array']
+    assert tokenizer_export['parameters'][1]['type_schema'] == {
+        'category': 'array',
+        'element_category': 'signed-integer',
+        'element_bits': 32,
+        'rank': 1,
+        'elements': -1,
+        'ownership': 'caller-owned-reference',
+    }
+    assert tokenizer_export['result']['kind'] == 'i32'
+    tokenizer_binding = (tokenizer_artifact / 'binding.cs').read_text(
+        encoding='utf-8')
+    assert (
+        'public int TryTokenize(string text, int[] tokenIds, out int result)'
+        in tokenizer_binding)
+    tokenizer_assembly = (tokenizer_artifact / 'host.uasm').read_text(
+        encoding='utf-8')
+    assert '.export __0_Tokenize' in tokenizer_assembly
+    assert 'SystemString.__get_Length__SystemInt32' in tokenizer_assembly
+    assert (
+        'SystemString.__ToCharArray__SystemInt32_SystemInt32__SystemCharArray'
+        in tokenizer_assembly)
+    assert 'SystemInt32Array.__Get__SystemInt32__SystemInt32' in tokenizer_assembly
+    assert (
+        'SystemInt32Array.__Set__SystemInt32_SystemInt32__SystemVoid'
+        in tokenizer_assembly)
     assert '.export __udoncl_buffer_1' in assembly
     assert '__udoncl_buffer_1: %UnityEngineRenderTexture, null' in assembly
     # This helper is synchronous, so selective Host inlining removes its

@@ -1409,6 +1409,15 @@ LogicalResult optimizeUnityHostStorage(ModuleOp module) {
   return result;
 }
 
+LogicalResult lowerUnityHostObjectIntrinsics(ModuleOp module,
+                                             MLIRContext &context) {
+  PassManager manager(&context);
+  manager.addPass(::vrc::createLowerHostObjectIntrinsicsPass());
+  if (failed(manager.run(module)))
+    return failure();
+  return verify(module);
+}
+
 void printCompilerIRStats(ModuleOp module, StringRef stage) {
   if (!module->hasAttr("vrc.debug_compiler_phases"))
     return;
@@ -2808,7 +2817,7 @@ int main(int argc, char **argv) {
       for (func::FuncOp function : module->getOps<func::FuncOp>())
         if (function->hasAttr("udoncl.export"))
           annotatedHostExports.insert(function.getSymName().str());
-      if (failed(verify(*module)) ||
+      if (failed(lowerUnityHostObjectIntrinsics(*module, context)) ||
           !configureUnityExports(*module, *unityConfig, annotatedHostExports))
         return 1;
     } else {
@@ -2846,6 +2855,7 @@ int main(int argc, char **argv) {
                      : recoverUnityOpenCLDispatchProgram(*inputModule,
                                                          *unityConfig, context);
         if (!module || failed(verify(*module)) ||
+            failed(lowerUnityHostObjectIntrinsics(*module, context)) ||
             !configureUnityExports(*module, *unityConfig, annotatedHostExports))
           return 1;
       } else {
@@ -2880,6 +2890,7 @@ int main(int argc, char **argv) {
         if (failed(recovery.run(*module)) ||
             (!linkedOpenCLAOT &&
              failed(recoverUnityCBufferIntrinsics(*module))) ||
+            failed(lowerUnityHostObjectIntrinsics(*module, context)) ||
             !configureUnityExports(*module, *unityConfig, annotatedHostExports))
           return 1;
       }
@@ -2968,6 +2979,13 @@ int main(int argc, char **argv) {
       int64_t kernelId = *deviceKernel->getInteger("kernel_id");
       configuredKernelIds.push_back(kernelId);
       unityConfiguredKernelIds.push_back(static_cast<int32_t>(kernelId));
+    }
+    phase("host-object-intrinsics");
+    {
+      PassManager hostObjects(&context);
+      hostObjects.addPass(::vrc::createLowerHostObjectIntrinsicsPass());
+      if (failed(hostObjects.run(*module)) || failed(verify(*module)))
+        return 1;
     }
     phase("host-effects");
     if (failed(propagateUnityHostAsyncEffects(*module)))
@@ -3352,6 +3370,7 @@ int main(int argc, char **argv) {
     return 0;
   }
   if (!emitNativeDevice) {
+    manager.addPass(::vrc::createLowerHostObjectIntrinsicsPass());
     manager.addPass(::vrc::createLowerHostToUdonHLPass());
     manager.addPass(::vrc::createSubstituteRuntimeIntrinsicsPass());
   }

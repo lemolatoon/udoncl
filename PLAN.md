@@ -112,7 +112,7 @@ Host .c / libc sources                     Device .cl sources
 - **アプリのエントリーポイントはユーザーのUdonSharp**。`main()`自動実行ではない。Cはリンク可能なHost libraryであり、`UDONCL_EXPORT`を付けた定義だけを公開する。注釈がexport発見の正本で、schema-v2 configは公開名・parameter表示名・binding namespace/class・callback契約などをoverrideする。
 - Exportごとのphysical entry adapter、Manifest、**低水準型付きU# binding**を同じMLIR export ABIからcompilerが生成する。同期呼出は予約Heap変数へのSetProgramVariable →公開Custom Event → GetProgramVariable、非同期はStart +完了通知Event/Statusを用いる。Editorはcompiler artifact内の`binding.cs`をimport/compileするだけで再生成しない。
 - 同期/非同期はCall Graph解析で自動判定し、GPU待機可能性が呼出元まで伝播する。C/OpenCL semanticsを保ったままMLIR Async dialectへ変換し、上流`async-func-to-async-runtime`にcoroutine CFGを生成させる。U#には`async/await`を要求しない。
-- 文字列はUTF-8 null終端C byte buffer ↔ U# stringをコピー。基本型・Udon typed arraysは直接、構造体はWrapperマーシャリング、生ポインタをpublic APIに出さない。共有配列は同一Udon array objectを参照できると実機検証されたときだけzero-copy、実行中の参照/寿命条件を明示。
+- `char *`は通常のC byte pointerのまま維持し、U# stringへ暗黙変換しない。U# stringは明示的な`udon_string_t` immutable UTF-16 referenceとして公開し、C Hostはlength/code-unit/scalar accessorで全体コピーなしに読む。基本型・Udon typed arraysは同一Udon objectをcaller-owned storageとして直接参照し、構造体はWrapperマーシャリング、生ポインタはpublic APIに出さない。
 - 1 UdonBehaviour instanceごとにGlobals/Heap/Stack/VFS/サービスBindingが独立。`Initialize()`, `Reset()`, `Dispose()`とgeneration counterで古いGPU callbackを無視。未完了commandのTextureは安全になるまで保持。
 - 非同期失敗も完了Eventで通知＋Status（成功と区別）。Debug watchdogは診断のみで誤判定を避ける。
 - Unity統合は**外部Clang/MLIR CLI + Unity Editor Importer**、UPM package。Compilerがbinding C#まで生成し、ImporterはShader/Material/Udon Program Asset生成、C# import、script reload後のBindingを行う。GUID保持・トランザクション的Import（失敗時既存正常Asset維持）。ManifestにCompiler/Runtime/SDK/ABI versionを記録し検証する。
@@ -278,9 +278,12 @@ TinyLlamaの現行設計、実装順序、受入条件の正本は
   3-input/3-output bindingと実modelの47-input/45-output bindingの不一致、およびalias outputの
   full-surface CopyBuffer契約である。Q4 logitsの公開bufferは131,072-word物理surface上の論理viewとして
   扱う方針に更新済みである。
-- TinyLlama tokenizerはONNXではない。独立したC `UdonTokenizers` componentとして
-  build-time tableとUTF-16/byte-fallback BPEを実装し、C Hostの会話APIをcompiler生成
-  U# bindingから利用する。
+- TinyLlama tokenizerはONNXではない。独立したC `UdonTokenizers` component、
+  `udon_string_t`/caller-owned `udon_int32_array_t` ABI、allocation-freeな
+  UTF-16/byte-fallback BPE encode core、専用Host-object lowering、CMake package、
+  compiler生成`string`/`int[]` U# bindingまで実装済み。次はbuild-time TinyLlama
+  table生成、decode、special token/chat templateと公式tokenizer conformanceを追加し、
+  C Hostの会話APIから利用する。
 - 最初のdeploymentはPC/D3D11、batch 1、context capacity 128、最大32生成tokenとし、
   2-turn対話でKV再利用を検証する。全decode stepの32,000 logitsと22層K/VをORTと
   比較する。

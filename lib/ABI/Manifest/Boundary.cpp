@@ -4,6 +4,7 @@
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
 #include "VRC/Dialect/VRC/VRCDialect.h"
 #include "VRC/Dialect/VRCGPU/VRCGPUDialect.h"
+#include "udoncl/array.h"
 #include "udoncl/string.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -27,6 +28,9 @@ std::string kind(Type type) {
   if (auto pointer = dyn_cast<::vrc::udonhl::PtrType>(type);
       pointer && pointer.getAddressSpace() == UDONCL_STRING_ADDRESS_SPACE)
     return "string";
+  if (auto pointer = dyn_cast<::vrc::udonhl::PtrType>(type);
+      pointer && pointer.getAddressSpace() == UDONCL_INT32_ARRAY_ADDRESS_SPACE)
+    return "i32_array";
   auto memref = dyn_cast<MemRefType>(type);
   if (!memref || memref.getRank() != 1 || !memref.getLayout().isIdentity())
     return "unsupported";
@@ -78,6 +82,12 @@ llvm::json::Object typeSchema(Type type) {
     return llvm::json::Object{{"category", "string"},
                               {"encoding", "utf-16"},
                               {"ownership", "immutable-reference"}};
+  if (auto pointer = dyn_cast<::vrc::udonhl::PtrType>(type);
+      pointer && pointer.getAddressSpace() == UDONCL_INT32_ARRAY_ADDRESS_SPACE)
+    return llvm::json::Object{
+        {"category", "array"}, {"element_category", "signed-integer"},
+        {"element_bits", 32},  {"rank", 1},
+        {"elements", -1},      {"ownership", "caller-owned-reference"}};
   auto memref = dyn_cast<MemRefType>(type);
   if (memref && memref.getRank() == 1 && memref.getLayout().isIdentity() &&
       (memref.getElementType().isInteger(32) ||

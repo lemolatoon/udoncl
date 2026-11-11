@@ -74,6 +74,16 @@ target_compile_definitions(opencl-aot-runtime PRIVATE
   UDONCL_AOT_ENABLE_MNIST=1
   UDONCL_AOT_ENABLE_ONNX=1)
 add_test(NAME opencl-aot-runtime COMMAND opencl-aot-runtime)
+add_executable(udontokenizers-runtime
+  runtime/udontokenizers.c
+  "${PROJECT_SOURCE_DIR}/libraries/udontokenizers/src/udontokenizers.c")
+target_compile_features(udontokenizers-runtime PRIVATE c_std_11)
+set_target_properties(udontokenizers-runtime PROPERTIES
+  C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS OFF)
+target_include_directories(udontokenizers-runtime PRIVATE
+  "${PROJECT_SOURCE_DIR}/include"
+  "${PROJECT_SOURCE_DIR}/libraries/udontokenizers/include")
+add_test(NAME udontokenizers-runtime COMMAND udontokenizers-runtime)
 if(TARGET VRCOpenCLRuntime)
   add_executable(udonblas-stream-runtime
     runtime/udonblas_stream.c

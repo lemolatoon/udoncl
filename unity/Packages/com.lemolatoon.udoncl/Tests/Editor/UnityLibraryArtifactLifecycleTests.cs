@@ -95,9 +95,71 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             );
         }
 
-        private static string ResolveArtifactDirectory()
+        [Test]
+        public void CTokenizerAcceptsUdonStringAndWritesCallerTokenArray()
         {
-            string configured = Environment.GetEnvironmentVariable("UDONCL_UNITY_LIBRARY_ARTIFACT");
+            string artifactDirectory = ResolveArtifactDirectory(
+                "hello-tokenizer-unity-library",
+                "UDONCL_UNITY_TOKENIZER_ARTIFACT"
+            );
+            ValidatedArtifact artifact = ArtifactManifestValidator.Validate(artifactDirectory);
+            string assemblyPath = Path.Combine(artifact.RootDirectory, "host.uasm");
+            IUdonProgram program = UdonEditorManager.Instance.Assemble(
+                File.ReadAllText(assemblyPath)
+            );
+            Assert.NotNull(program, "SDK assembler rejected the tokenizer library.");
+            IUdonVM vm = UdonEditorManager.Instance.ConstructUdonVM();
+            Assert.IsTrue(vm.LoadProgram(program), "SDK VM rejected the tokenizer library.");
+            IUdonHeap heap = vm.InspectHeap();
+            UdonclManifest manifest = JsonUtility.FromJson<UdonclManifest>(
+                File.ReadAllText(Path.Combine(artifact.RootDirectory, "manifest.json"))
+            );
+            byte[] rawHeapBytes = File.ReadAllBytes(
+                Path.Combine(artifact.RootDirectory, manifest.program.raw_heap_initializer)
+            );
+            heap.SetHeapVariable(
+                program.SymbolTable.GetAddressFromSymbol(manifest.program.raw_heap_slot),
+                PublicMnistOnnxRuntimeLifecycleTests.PackRawHeap(rawHeapBytes)
+            );
+            ExportInfo tokenizer = Array.Find(
+                manifest.exports,
+                candidate => candidate.public_name == "Tokenize"
+            );
+            Assert.NotNull(tokenizer);
+            Assert.AreEqual(2, tokenizer.parameters.Length);
+            Assert.AreEqual("string", tokenizer.parameters[0].kind);
+            Assert.AreEqual("i32_array", tokenizer.parameters[1].kind);
+            Assert.AreEqual("i32", tokenizer.result.kind);
+            int[] tokenIds = new int[8];
+            heap.SetHeapVariable(
+                program.SymbolTable.GetAddressFromSymbol(tokenizer.parameters[0].heap_slot),
+                "日本語 🍜"
+            );
+            heap.SetHeapVariable(
+                program.SymbolTable.GetAddressFromSymbol(tokenizer.parameters[1].heap_slot),
+                tokenIds
+            );
+            vm.SetProgramCounter(program.EntryPoints.GetAddressFromSymbol(tokenizer.udon_event));
+            Assert.AreEqual(0u, vm.Interpret(), "SDK VM failed to execute Tokenize.");
+            Assert.AreEqual(
+                6,
+                heap.GetHeapVariable<int>(
+                    program.SymbolTable.GetAddressFromSymbol(tokenizer.result.heap_slot)
+                )
+            );
+            CollectionAssert.AreEqual(
+                new[] { 30, 13, 1240, 1159, 1141, 1156 },
+                new ArraySegment<int>(tokenIds, 0, 6),
+                "C tokenizer did not preserve UTF-16 scalar decoding, byte fallback, and BPE merge semantics."
+            );
+        }
+
+        private static string ResolveArtifactDirectory(
+            string artifactName = "hello-unity-library",
+            string environmentVariable = "UDONCL_UNITY_LIBRARY_ARTIFACT"
+        )
+        {
+            string configured = Environment.GetEnvironmentVariable(environmentVariable);
             if (!string.IsNullOrWhiteSpace(configured))
                 return Path.GetFullPath(configured);
 
@@ -117,7 +179,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 "cmake-package",
                 "consumer",
                 "udoncl",
-                "hello-unity-library",
+                artifactName,
                 "artifact"
             );
         }

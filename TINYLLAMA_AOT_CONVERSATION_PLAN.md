@@ -348,9 +348,12 @@ described by `tokenizer.json`, `tokenizer.model`, `tokenizer_config.json`, and
 `special_tokens_map.json`: vocabulary 32,000, 61,249 BPE merges, byte fallback,
 and a chat template.
 
-Create an independent `UdonTokenizers` C library/package. It contains a generic
-byte-fallback BPE engine and consumes model-specific generated tables. It is
-not part of UdonONNXOperators or the generic ONNX runtime.
+`UdonTokenizers` is an independent C library/package. Its first TDD slice now
+contains the allocation-free generic byte-fallback BPE encode engine and
+consumes model-specific immutable tables. It is not part of
+UdonONNXOperators or the generic ONNX runtime. The remaining table compiler,
+decode engine, special-token handling, and chat-template compiler build on
+this package rather than introducing another runtime.
 
 At build time, tokenizer JSON/config is compiled to compact arrays containing:
 
@@ -372,6 +375,10 @@ ASCII, Japanese/BMP input, surrogate pairs/emoji, combining characters,
 whitespace/newlines, fallback input, special tokens, chat templates, and
 multi-byte sequences split across tokens.
 
+The first executable acceptance fixture uses Japanese BMP input, a surrogate
+pair/emoji, UTF-8 byte fallback, and ranked BPE merges. It is intentionally a
+small generic-model fixture, not a TinyLlama-specific tokenizer shortcut.
+
 ### 6.2 String ABI
 
 `char *` retains ordinary C byte-pointer semantics and is never silently
@@ -381,6 +388,10 @@ and by an equivalent Native runtime object. Generated U# bindings expose it as
 `string`. Its reference is kept live in the coroutine frame across suspension.
 Tokenizer accessors expose UTF-16 length/code units/scalars without copying the
 whole string. Native and Udon targets must produce identical results.
+`udon_int32_array_t` similarly denotes the caller-owned Udon `int[]` object;
+Host C reads and writes it only through typed accessors. Reserved object
+references are lowered by a dedicated Host-object-intrinsics pass and never
+enter the raw C byte-memory model.
 
 ### 6.3 C Host and generated binding
 
@@ -485,6 +496,13 @@ The table compiler also derives bounded token, turn-reference, and UTF-16
 response workspace capacities from Context Capacity, the configured maximum
 new tokens, and the concrete Tokenizer Model. Exhaustion is explicit and never
 falls back to dynamic allocation or repeated string concatenation.
+
+The current generated low-level U# surface for encode is
+`TryTokenize(string text, int[] tokenIds, out int result)`. `tokenIds` is both
+the caller-owned workspace and result storage; `result` is the number of valid
+token IDs, while negative values in the small fixture facade encode tokenizer
+status. The conversation Host will map the independent tokenizer status enum
+to its public status contract instead of exposing that fixture convention.
 
 ### 6.6 Generated prefill binding and physical storage
 
@@ -596,9 +614,11 @@ Implement in this order, keeping each gate independently testable:
    ORT logits and K/V outputs.
 10. Add three-bank transactional K/V planning, iterative decode, Device ArgMax,
     EOS handling, and failure rollback; compare every decode step with ORT.
-11. Add `udon_string_t`, caller-owned UdonTokenizers workspaces, generated
-    tokenizer tables, chat-template compilation, and official tokenizer
-    conformance tests.
+11. `udon_string_t`, caller-owned `udon_int32_array_t`, the allocation-free
+    UdonTokenizers encode core, the dedicated compiler lowering, package
+    target, generated `string`/`int[]` U# binding, and a Unity VM value test are
+    implemented. Next add generated TinyLlama tables, decode, special tokens,
+    chat-template compilation, and official-tokenizer conformance tests.
 12. Add the example C conversation Host, exact lifecycle/status contract, and
     generated async U# binding.
 13. Pass the Unity two-turn, 32-token, full-logit/full-KV debug gate and the

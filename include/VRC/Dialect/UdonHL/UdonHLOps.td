@@ -98,6 +98,35 @@ def UdonHL_ArrayViewOp : Op<UdonHL_Dialect, "array_view"> {
   let results = (outs UdonHL_PtrType:$result);
   let hasVerifier = 1;
 }
+def UdonHL_StringLengthOp : Op<UdonHL_Dialect, "string_length", [Pure]> {
+  let summary = "Read the UTF-16 code-unit length of an immutable Udon string";
+  let arguments = (ins UdonHL_PtrType:$string);
+  let results = (outs I32:$result);
+  let hasVerifier = 1;
+}
+def UdonHL_StringCodeUnitOp : Op<UdonHL_Dialect, "string_code_unit", [Pure]> {
+  let summary = "Read one UTF-16 code unit from an immutable Udon string";
+  let arguments = (ins UdonHL_PtrType:$string, I32:$index);
+  let results = (outs I32:$result);
+  let hasVerifier = 1;
+}
+def UdonHL_Int32ArrayLengthOp : Op<UdonHL_Dialect, "i32_array_length", [Pure]> {
+  let summary = "Read the length of a caller-owned Udon int array";
+  let arguments = (ins UdonHL_PtrType:$array);
+  let results = (outs I32:$result);
+  let hasVerifier = 1;
+}
+def UdonHL_Int32ArrayGetOp : Op<UdonHL_Dialect, "i32_array_get", [Pure]> {
+  let summary = "Read one element from a caller-owned Udon int array";
+  let arguments = (ins UdonHL_PtrType:$array, I32:$index);
+  let results = (outs I32:$result);
+  let hasVerifier = 1;
+}
+def UdonHL_Int32ArraySetOp : Op<UdonHL_Dialect, "i32_array_set"> {
+  let summary = "Write one element of a caller-owned Udon int array";
+  let arguments = (ins UdonHL_PtrType:$array, I32:$index, I32:$value);
+  let hasVerifier = 1;
+}
 def UdonHL_SpillStoreOp : Op<UdonHL_Dialect, "spill_store"> {
   let summary = "Store an SSA value in a statically allocated typed spill bank";
   let arguments = (ins AnyType:$value, StrAttr:$storage_key, I32Attr:$index);

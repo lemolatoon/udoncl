@@ -81,7 +81,13 @@ install(FILES
   DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/UdonONNXRuntime"
   COMPONENT UdonCLCompiler)
 install(FILES
+  cmake/UdonTokenizersConfig.cmake
+  cmake/UdonTokenizersConfigVersion.cmake
+  DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/UdonTokenizers"
+  COMPONENT UdonCLCompiler)
+install(FILES
   include/udoncl/export.h
+  include/udoncl/array.h
   include/udoncl/string.h
   include/udoncl/unity_buffer.h
   include/udoncl/device_memory.h
@@ -131,6 +137,12 @@ install(FILES libraries/udondnn/include/udondnn.h
   libraries/udononnxoperators/include/udononnxoperators.h
   libraries/udononnxruntime/include/udononnxruntime.h
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+  COMPONENT UdonCLCompiler)
+install(FILES libraries/udontokenizers/include/udontokenizers.h
+  DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+  COMPONENT UdonCLCompiler)
+install(FILES libraries/udontokenizers/src/udontokenizers.c
+  DESTINATION "${CMAKE_INSTALL_DATADIR}/udontokenizers/src"
   COMPONENT UdonCLCompiler)
 install(FILES libraries/udondnn/src/udondnn.c
   DESTINATION "${CMAKE_INSTALL_DATADIR}/udondnn/src"
