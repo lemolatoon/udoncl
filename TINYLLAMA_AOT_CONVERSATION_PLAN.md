@@ -219,16 +219,21 @@ aliasing are allowed.
 - Query length `M=1` for both prefill and decode. Prompt length is arbitrary up
   to a build-time configurable Context Capacity; the Host loops over the
   externally supplied token IDs.
-- The ONNX graph is specialized to `past_sequence_length = capacity - 1` and
-  `attention_mask = [1, capacity]`. Before capacity is full, unused past rows
-  are left-padded and masked with zero. Two capacity-sized K/V banks ping-pong:
-  the current bank's suffix view is `past`, the other bank is `present`, and a
-  generated unrolled helper swaps all semantic K/V bindings after each run.
-  This keeps every model tensor shape static without same-dispatch read/write
-  aliasing, partial Texture writes, or a whole-K/V Device copy.
-- The first example uses capacity 128 and generates at most 32 new tokens;
-  later builds may use the model maximum. Reaching capacity fails explicitly;
-  this milestone does not silently apply a sliding-window policy.
+- The first conversation artifact specializes the ONNX graph to
+  `past_sequence_length = 63` and `attention_mask = [1, 64]`. Before the
+  logical sequence fills the capacity, unused past rows are zero-filled on the
+  left and masked with zero.
+- Every semantic past/present pair has distinct physical storage. After each
+  successful run that has a following step, a compiler-generated unrolled
+  helper materializes `present[:, :, 1:64, :]` into the paired past buffer with
+  the generic Device Slice kernel. In row-major `[1, H, C, D]` layout this
+  axis-two suffix is one segment per head, so it is not a single-offset view or
+  a contiguous buffer copy. The separate Slice dispatch reads present and
+  writes past without same-dispatch resource aliasing.
+- The first example uses capacity 64 and generates at most 32 new tokens.
+  Before every run the Host requires `prompt_count + generated_count <= 64`;
+  reaching capacity before EOS fails explicitly instead of silently applying
+  a sliding-window policy.
 - The final acceptance fixture performs one complete externally-tokenized
   prompt and greedy decode through the generated U# API. It must stop at EOS
   or the requested limit and must not recompute prior prompt positions.
@@ -298,13 +303,15 @@ reimport, console checks, and cleanup are part of this gate.
 - C++ MLIR bufferization performs liveness analysis and assigns intermediates
   to a bounded Device workspace. Non-overlapping tensors reuse storage. Public
   I/O and K/V are persistent.
-- ONNX past and present K/V remain distinct at the semantic level. When alias
-  analysis proves it safe, bufferization aliases them to one capacity-sized
-  allocation and appends only the new slice. No TinyLlama-specific KV kernel is
-  permitted.
+- ONNX past and present K/V remain distinct semantically and physically for
+  this milestone. The generic sequence-state analysis identifies their
+  relationship, and bufferization generates a generic Slice materialization
+  after a successful run. No TinyLlama-specific KV kernel is permitted.
 - `Reshape`, `Flatten`, `Unsqueeze`, `Squeeze`, and compatible `Slice` or
   `Transpose` operations become metadata-only views. A generic materialization
-  is inserted only when a consumer cannot support the proven strides/layout.
+  is inserted when a consumer cannot support the proven strides/layout. In
+  particular, `present[:, :, 1:capacity, :]` is non-contiguous across heads in
+  row-major `[1, H, C, D]` and is materialized into contiguous past storage.
 - Static shape expressions are folded before kernel selection. Truly dynamic
   shapes remain Host scalar IR bounded by the configured capacity.
 - All actual GPU waits use the existing may-suspend/MLIR Async/Udon continuation
@@ -460,8 +467,9 @@ contain U# receiver or event parameters.
 build-time-bounded Host workspace. `Generate` runs one model invocation per
 prompt token, then feeds each greedy result into the next invocation until EOS
 or `max_new_tokens`. Reset clears prompt/generated tokens, K/V logical length,
-position, masks, and both K/V banks while retaining initialized immutable model
-resources. Dispose releases the complete instance.
+position, masks, and the distinct past buffers while retaining initialized
+immutable model resources. Present outputs are overwritten by the next run.
+Dispose releases the complete instance.
 
 Extend `udononnxStatus_t` with `INVALID_STATE` and `CAPACITY_EXCEEDED`.
 `INVALID_VALUE` is reserved for malformed arguments, `INVALID_STATE` for a
@@ -546,15 +554,18 @@ methods may still use the Unity bulk texture upload/readback transport for
 public validation buffers, but they address the same bound physical buffers and
 do not change the C/OpenCL ownership contract.
 
-Logical tensor shape and physical capacity are distinct metadata. Empty past
-K/V inputs have a zero-length logical view over nonzero capacity-sized storage.
-Padded logits similarly expose their exact logical length over a larger Device
-surface. Public INT64 tensors use generated U# `long[]` whole-buffer methods;
+Logical tensor shape and physical capacity are distinct metadata. The fixed
+four-token Prefill Validation Artifact has empty past K/V inputs with a
+zero-length logical view over nonzero storage. The Conversation Artifact
+instead has static `[1, H, 63, D]` past tensors whose unused prefix is zero and
+masked. Padded logits similarly expose their exact logical length over a larger
+Device surface. Public INT64 tensors use generated U# `long[]` whole-buffer methods;
 the physical upload packs each element as two little-endian 32-bit words in
 one bulk transfer rather than exposing an `int[]` pair ABI.
 
 The compiler computes the maximum simultaneously live mutable handles from
-public I/O, internal liveness slots, operator scratch, and the two K/V banks.
+public I/O, internal liveness slots, operator scratch, and distinct past and
+present sequence-state allocations plus their Slice dispatch resources.
 It emits an artifact-specific runtime capacity and fails compilation if the
 proven requirement exceeds the backend limit. Fixed global increases and
 model-name capacity branches are forbidden. Physical sharing and slot reuse
@@ -637,11 +648,12 @@ Implement in this order, keeping each gate independently testable:
 9. Add the ordinary prefill C Host lifecycle over model-independent generated
    physical helpers, then pass full-model Native and Device prefill against all
    ORT logits and K/V outputs.
-10. Identify semantic ONNX past/present pairs generically, generate the two-bank
-    fixed-capacity suffix-view binding and unrolled bank-swap helper, and prove
-    the static left-padded `M=1` profile against variable-length ORT execution.
-    Add iterative decode, Device ArgMax, and EOS handling; compare every decode
-    step with ORT.
+10. Identify semantic ONNX past/present pairs generically, generate an unrolled
+    helper that materializes each
+    `present[:, :, step:capacity, ...] -> past` with the generic Slice kernel,
+    and prove the capacity-64, left-padded `M=1` profile against variable-length
+    ORT execution. Add iterative decode, Device ArgMax, and EOS handling;
+    compare every decode step with ORT.
 11. `udon_string_t`, caller-owned `udon_int32_array_t`, the allocation-free
     UdonTokenizers encode core, the dedicated compiler lowering, package
     target, generated `string`/`int[]` U# binding, and a Unity VM value test are
@@ -705,8 +717,9 @@ The work is complete only when all of the following are true:
   model-profile fallback;
 - MNIST and TinyLlama use the same immutable AOT Device tensor facility;
 - Q4 weights, activations, intermediates, and K/V remain Device resident;
-- K/V is reused across every prompt/decode step through two statically sized
-  banks without a whole-cache copy or same-dispatch read/write alias;
+- K/V is reused across every prompt/decode step by materializing each present
+  suffix into distinct past storage with the generated generic Slice helper,
+  without same-dispatch read/write aliasing;
 - the C generation Host accepts and returns token ID arrays through
   compiler-generated U# bindings;
 - Unity accepts an external prompt token array and returns the exact greedy
