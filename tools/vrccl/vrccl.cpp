@@ -575,14 +575,19 @@ parseUnityBuffers(const json::Object &config) {
 
 LogicalResult generateOnnxPublicBufferConfig(ModuleOp module,
                                              json::Object &config) {
-  if (!config.getBoolean("generate_onnx_public_buffers").value_or(false))
-    return success();
+  bool exposePublicIo =
+      config.getBoolean("generate_onnx_public_buffers").value_or(false);
   auto binding = module->getAttrOfType<DictionaryAttr>("udoncl.onnx_binding");
+  if (!binding) {
+    if (exposePublicIo)
+      module.emitError(
+          "generate_onnx_public_buffers requires ONNX binding metadata");
+    return exposePublicIo ? failure() : success();
+  }
   auto inputs = binding ? binding.getAs<ArrayAttr>("inputs") : ArrayAttr();
   auto outputs = binding ? binding.getAs<ArrayAttr>("outputs") : ArrayAttr();
-  if (!binding || !inputs || !outputs) {
-    module.emitError(
-        "generate_onnx_public_buffers requires ONNX binding metadata");
+  if (!inputs || !outputs) {
+    module.emitError("ONNX binding has no input/output metadata");
     return failure();
   }
 
@@ -628,8 +633,9 @@ LogicalResult generateOnnxPublicBufferConfig(ModuleOp module,
     }
     return success();
   };
-  if (failed(append(inputs, false)) || failed(append(outputs, true)))
-    return failure();
+  if (exposePublicIo)
+    if (failed(append(inputs, false)) || failed(append(outputs, true)))
+      return failure();
 
   auto handleCapacity =
       module->getAttrOfType<IntegerAttr>("udoncl.mutable_handle_capacity");
@@ -1128,10 +1134,11 @@ std::optional<json::Object> unityOnnxBindingManifest(ModuleOp module) {
       return std::nullopt;
     physicalJson[name] = value.getValue();
   }
-  if (auto advance =
-          physical.getAs<StringAttr>("enqueue_advance_sequence_state_symbol");
-      advance && !advance.getValue().empty())
-    physicalJson["enqueue_advance_sequence_state_symbol"] = advance.getValue();
+  for (StringRef name : {"enqueue_advance_sequence_state_symbol",
+                         "enqueue_reset_sequence_state_symbol"})
+    if (auto value = physical.getAs<StringAttr>(name);
+        value && !value.getValue().empty())
+      physicalJson[name] = value.getValue();
   return json::Object{{"abi", abi.getValue()},
                       {"model_index", modelIndex.getInt()},
                       {"model_name", modelName.getValue()},

@@ -24,6 +24,7 @@ udononnxStatus_t udon_onnx_binding_resolve_output(uint32_t output_index,
                                                   size_t *byte_length);
 udononnxStatus_t udon_onnx_binding_enqueue_initialize(void);
 udononnxStatus_t udon_onnx_binding_enqueue_run(void);
+udononnxStatus_t udon_onnx_binding_enqueue_reset_sequence_state(void);
 udononnxStatus_t
 udon_onnx_binding_enqueue_copy_output_to_input(uint32_t output_index,
                                                uint32_t input_index);

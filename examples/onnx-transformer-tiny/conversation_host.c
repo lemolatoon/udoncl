@@ -60,6 +60,9 @@ UDONCL_EXPORT udononnxStatus_t tinyllama_conversation_initialize(void) {
   status = udon_onnx_binding_bind_all();
   if (status != UDONONNX_STATUS_SUCCESS)
     return cleanup_after_failure(status);
+  status = udon_onnx_binding_enqueue_reset_sequence_state();
+  if (status != UDONONNX_STATUS_SUCCESS)
+    return cleanup_after_failure(status);
   conversation_initialized = 1;
   return UDONONNX_STATUS_SUCCESS;
 }

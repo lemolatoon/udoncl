@@ -78,8 +78,14 @@ def validate_artifact(artifact: Path) -> dict[str, int]:
     require(physical.get("enqueue_advance_sequence_state_symbol") ==
             "udon_onnx_binding_enqueue_advance_sequence_state",
             "artifact has no generated sequence-state advance helper")
+    require(physical.get("enqueue_reset_sequence_state_symbol") ==
+            "udon_onnx_binding_enqueue_reset_sequence_state",
+            "artifact has no generated sequence-state reset helper")
     buffers = manifest.get("device", {}).get("buffers")
+    mutable_capacity = manifest.get("device", {}).get("mutable_handle_capacity")
     require(isinstance(buffers, list), "artifact has no Device buffers")
+    require(mutable_capacity == len(buffers) == 124,
+            "conversation Device buffer pool does not match compiler metadata")
     require(not any(item.get("public_access") for item in buffers),
             "conversation tensors must remain private")
 

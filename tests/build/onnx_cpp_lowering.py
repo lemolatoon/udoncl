@@ -140,6 +140,19 @@ assert sequence_state_host.returncode == 0, (
 assert "func.func @udon_onnx_binding_enqueue_advance_sequence_state" in (
     sequence_state_host.stdout
 )
+assert "func.func @udon_onnx_binding_enqueue_reset_sequence_state" in (
+    sequence_state_host.stdout
+)
+reset_body = sequence_state_host.stdout.split(
+    "func.func @udon_onnx_binding_enqueue_reset_sequence_state", 1
+)[1].split("func.func", 1)[0]
+assert reset_body.count("call @__vrc_opencl_buffer_upload") == 2
+assert reset_body.count("call @__vrc_opencl_await") == 2
+assert "call @__vrc_opencl_buffer_copy" not in reset_body
+assert "call @__vrc_opencl_buffer_readback" not in reset_body
+assert "arith.constant 7168 : i32" in reset_body
+assert "arith.constant 7 : i32" in reset_body
+assert "arith.constant 12 : i32" in reset_body
 advance_body = sequence_state_host.stdout.split(
     "func.func @udon_onnx_binding_enqueue_advance_sequence_state", 1
 )[1].split("func.func", 1)[0]

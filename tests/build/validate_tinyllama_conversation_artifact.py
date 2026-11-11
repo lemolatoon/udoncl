@@ -51,9 +51,17 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
                 "physical": {
                     "enqueue_advance_sequence_state_symbol":
                         "udon_onnx_binding_enqueue_advance_sequence_state",
+                    "enqueue_reset_sequence_state_symbol":
+                        "udon_onnx_binding_enqueue_reset_sequence_state",
                 },
             },
-            "device": {"buffers": [{"name": "private_0"}]},
+            "device": {
+                "buffers": [
+                    {"id": index, "name": f"private_{index}"}
+                    for index in range(1, 125)
+                ],
+                "mutable_handle_capacity": 124,
+            },
             "program": {
                 "name": "tinyllama_real_conversation",
                 "binding_class": "UdonclTinyLlamaConversationBinding",
@@ -101,6 +109,17 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
                 "enqueue_advance_sequence_state_symbol"]
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "sequence-state advance helper"):
+                VALIDATOR.validate_artifact(artifact)
+
+    def test_rejects_missing_sequence_reset_helper(self):
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = self.make_artifact(Path(directory))
+            manifest_path = artifact / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            del manifest["onnx_binding"]["physical"][
+                "enqueue_reset_sequence_state_symbol"]
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "sequence-state reset helper"):
                 VALIDATOR.validate_artifact(artifact)
 
 

@@ -410,6 +410,12 @@ void attachBindingMetadata(ModuleOp module, const GraphRecord &graph) {
               graph.sequenceStates.empty()
                   ? ""
                   : "udon_onnx_binding_enqueue_advance_sequence_state")),
+      builder.getNamedAttr(
+          "enqueue_reset_sequence_state_symbol",
+          builder.getStringAttr(
+              graph.sequenceStates.empty()
+                  ? ""
+                  : "udon_onnx_binding_enqueue_reset_sequence_state")),
       builder.getNamedAttr("dispose_symbol",
                            builder.getStringAttr("udon_onnx_binding_dispose")),
   });
@@ -547,6 +553,8 @@ constexpr StringLiteral sequenceStatePendingSymbol =
     "__udon_onnx_sequence_state_pending";
 constexpr StringLiteral sequenceStatePoisonedSymbol =
     "__udon_onnx_sequence_state_poisoned";
+constexpr StringLiteral sequenceStateZeroSymbol =
+    "__udon_onnx_sequence_state_zero";
 constexpr int32_t metadataStorageBytes = 64;
 constexpr int32_t modelStorageBytes = 64;
 constexpr int32_t bindingStateStorageBytes = 256;
@@ -592,6 +600,15 @@ void createModelMetadataGlobals(ModuleOp module, const GraphRecord &graph) {
     createI32Global(module, sequenceStateOwnedSymbol);
     createI32Global(module, sequenceStatePendingSymbol);
     createI32Global(module, sequenceStatePoisonedSymbol);
+    size_t zeroBytes = 1;
+    for (const SequenceStateRecord &sequence : graph.sequenceStates) {
+      const TensorRecord &input =
+          graph.tensors[graph.inputs[sequence.inputIndex]];
+      zeroBytes = std::max<size_t>(
+          zeroBytes, input.type.getNumElements() *
+                         elementByteSize(input.type.getElementType()));
+    }
+    createZeroGlobal(module, sequenceStateZeroSymbol, zeroBytes);
   }
   for (auto [index, tensorIndex] : llvm::enumerate(graph.inputs)) {
     const TensorRecord &tensor = graph.tensors[tensorIndex];
@@ -3347,6 +3364,78 @@ void createPhysicalBindingExports(ModuleOp module, const GraphRecord &graph) {
 
   if (!graph.sequenceStates.empty()) {
     builder.setInsertionPointToEnd(module.getBody());
+    auto reset = func::FuncOp::create(
+        builder, location, "udon_onnx_binding_enqueue_reset_sequence_state",
+        FunctionType::get(module.getContext(), {}, {i32}));
+    markExport(reset);
+    reset->setAttr("vrc.async_effect", builder.getStringAttr("may_suspend"));
+    Block *resetEntry = reset.addEntryBlock();
+    Block *resetReady = reset.addBlock();
+    Block *resetBusy = reset.addBlock();
+    Block *resetInvalid = reset.addBlock();
+    Block *resetCheckState = reset.addBlock();
+    builder.setInsertionPointToEnd(resetEntry);
+    Value resetActive = loadI32(
+        builder, location, addressOf(builder, location, bindingEventSymbol));
+    Value resetIdle = arith::CmpIOp::create(
+        builder, location, arith::CmpIPredicate::eq, resetActive, constant(0));
+    cf::CondBranchOp::create(builder, location, resetIdle, resetCheckState,
+                             ValueRange{}, resetBusy, ValueRange{});
+    builder.setInsertionPointToEnd(resetBusy);
+    func::ReturnOp::create(builder, location, constant(7));
+    builder.setInsertionPointToEnd(resetCheckState);
+    Value resetOwned =
+        loadI32(builder, location,
+                addressOf(builder, location, sequenceStateOwnedSymbol));
+    Value resetValid = arith::CmpIOp::create(
+        builder, location, arith::CmpIPredicate::eq, resetOwned, constant(1));
+    cf::CondBranchOp::create(builder, location, resetValid, resetReady,
+                             ValueRange{}, resetInvalid, ValueRange{});
+    builder.setInsertionPointToEnd(resetInvalid);
+    func::ReturnOp::create(builder, location, constant(12));
+    builder.setInsertionPointToEnd(resetReady);
+    auto resetReturnIfFailed = [&](Value status) {
+      Block *next = reset.addBlock();
+      Block *failure = reset.addBlock();
+      Value succeeded = arith::CmpIOp::create(
+          builder, location, arith::CmpIPredicate::eq, status, constant(0));
+      cf::CondBranchOp::create(builder, location, succeeded, next, ValueRange{},
+                               failure, ValueRange{});
+      builder.setInsertionPointToEnd(failure);
+      store(builder, location, constant(1),
+            addressOf(builder, location, sequenceStatePoisonedSymbol));
+      func::ReturnOp::create(builder, location, constant(5));
+      builder.setInsertionPointToEnd(next);
+    };
+    auto resetPhysicalBuffer = [&](size_t logicalId, int64_t bytes) -> Value {
+      return func::CallOp::create(
+                 builder, location, "__vrc_opencl_buffer_alloc", TypeRange{i32},
+                 ValueRange{constant(logicalId), constant(bytes)})
+          .getResult(0);
+    };
+    for (const SequenceStateRecord &sequence : graph.sequenceStates) {
+      unsigned inputTensorIndex = graph.inputs[sequence.inputIndex];
+      const TensorRecord &input = graph.tensors[inputTensorIndex];
+      int64_t inputBytes = input.type.getNumElements() *
+                           elementByteSize(input.type.getElementType());
+      Value destination =
+          resetPhysicalBuffer(sequence.inputIndex + 1, inputBytes);
+      auto uploaded = func::CallOp::create(
+          builder, location, "__vrc_opencl_buffer_upload", TypeRange{i32},
+          ValueRange{destination, constant(0), constant(inputBytes),
+                     addressOf(builder, location, sequenceStateZeroSymbol)});
+      auto awaited =
+          func::CallOp::create(builder, location, "__vrc_opencl_await",
+                               TypeRange{i32}, uploaded.getResult(0));
+      resetReturnIfFailed(awaited.getResult(0));
+    }
+    store(builder, location, constant(0),
+          addressOf(builder, location, sequenceStatePendingSymbol));
+    store(builder, location, constant(0),
+          addressOf(builder, location, sequenceStatePoisonedSymbol));
+    func::ReturnOp::create(builder, location, constant(0));
+
+    builder.setInsertionPointToEnd(module.getBody());
     auto advance = func::FuncOp::create(
         builder, location, "udon_onnx_binding_enqueue_advance_sequence_state",
         FunctionType::get(module.getContext(), {}, {i32}));
@@ -3547,6 +3636,8 @@ void createPhysicalBindingExports(ModuleOp module, const GraphRecord &graph) {
               {pointer, i32, pointer, pointer, pointer}, {i32});
   declaration(module, "udonclResolvePhysicalBuffer", {pointer, pointer}, {i32});
   declaration(module, "__vrc_opencl_buffer_copy", {i32, i32, i32, i32, i32},
+              {i32});
+  declaration(module, "__vrc_opencl_buffer_upload", {i32, i32, i32, pointer},
               {i32});
   declaration(module, "__vrc_opencl_buffer_alloc", {i32, i32}, {i32});
   declaration(module, "__vrc_opencl_await", {i32}, {i32});

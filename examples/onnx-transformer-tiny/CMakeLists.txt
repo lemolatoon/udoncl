@@ -50,24 +50,6 @@ if(UDONCL_TINYLLAMA_ONNX_MODEL)
     "\"UdonclTinyLlamaConversationBinding\"")
   string(JSON conversation_unity_config_json SET
     "${conversation_unity_config_json}" generate_onnx_public_buffers false)
-  string(JSON conversation_buffer_count LENGTH
-    "${conversation_unity_config_json}" buffers)
-  if(conversation_buffer_count GREATER 0)
-    math(EXPR conversation_buffer_last "${conversation_buffer_count} - 1")
-    foreach(buffer_index RANGE ${conversation_buffer_last})
-      string(JSON buffer_public_access ERROR_VARIABLE buffer_access_error GET
-        "${conversation_unity_config_json}" buffers ${buffer_index}
-        public_access)
-      if(buffer_access_error STREQUAL "NOTFOUND")
-        string(JSON conversation_unity_config_json REMOVE
-          "${conversation_unity_config_json}" buffers ${buffer_index}
-          public_access)
-        string(JSON conversation_unity_config_json REMOVE
-          "${conversation_unity_config_json}" buffers ${buffer_index}
-          element_type)
-      endif()
-    endforeach()
-  endif()
   string(JSON conversation_unity_config_json SET
     "${conversation_unity_config_json}" export_overrides 0 symbol
     "\"tinyllama_conversation_initialize\"")
@@ -88,6 +70,11 @@ if(UDONCL_TINYLLAMA_ONNX_MODEL)
     "${conversation_unity_config_json}" internal_exports
     ${internal_export_count}
     "\"udon_onnx_binding_enqueue_advance_sequence_state\"")
+  math(EXPR internal_export_count "${internal_export_count} + 1")
+  string(JSON conversation_unity_config_json SET
+    "${conversation_unity_config_json}" internal_exports
+    ${internal_export_count}
+    "\"udon_onnx_binding_enqueue_reset_sequence_state\"")
   set(conversation_unity_config
     "${CMAKE_CURRENT_BINARY_DIR}/unity-library-conversation.json")
   file(WRITE "${conversation_unity_config}"
