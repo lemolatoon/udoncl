@@ -687,6 +687,7 @@ int main(void) {
   cl_program program;
   cl_kernel kernel;
   cl_event marker_event, write_event, wait_events[2];
+  cl_event read_only_write_event = 0;
   cl_mem first, second, nested_buffer, nested_buffer2, static_buffer;
   cl_mem sub_parent, sub_buffer;
   cl_mem same_physical_buffer;
@@ -848,6 +849,17 @@ int main(void) {
   EXPECT(udonclDeviceBufferDestroy(&common_buffer) == UDONCL_STATUS_SUCCESS);
   EXPECT(udonclDeviceBufferGetRaw(stale_buffer, &resolved) ==
          UDONCL_STATUS_STALE_HANDLE);
+
+  /* CL_MEM_READ_ONLY constrains kernel access, not Host transfers. ONNX
+   * inputs therefore remain writable through clEnqueueWriteBuffer. */
+  first = clCreateBuffer(context, CL_MEM_READ_ONLY, sizeof(source), 0, &error);
+  EXPECT(first && error == CL_SUCCESS);
+  EXPECT(clEnqueueWriteBuffer(queue, first, CL_FALSE, 0, sizeof(source),
+                              &source, 0, 0,
+                              &read_only_write_event) == CL_SUCCESS);
+  EXPECT(clWaitForEvents(1, &read_only_write_event) == CL_SUCCESS);
+  EXPECT(clReleaseEvent(read_only_write_event) == CL_SUCCESS);
+  EXPECT(clReleaseMemObject(first) == CL_SUCCESS);
 
   first = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(source), 0, &error);
   EXPECT(first && error == CL_SUCCESS);

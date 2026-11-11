@@ -116,19 +116,23 @@ udononnxStatus_t udononnxBindingBindOutput(
 
 udononnxStatus_t
 udononnxBindingStateCreate(void *state_storage, uint32_t state_storage_bytes,
+                           cl_context context, cl_command_queue queue,
                            uint32_t model_index, void *input_bindings,
                            uint32_t input_binding_bytes, void *output_bindings,
                            uint32_t output_binding_bytes) {
   struct udononnxBindingState *state;
   const udononnxModel_t *model = 0;
-  cl_platform_id platform = 0;
-  cl_device_id device = 0;
-  cl_int error = CL_SUCCESS;
+  cl_context queue_context = 0;
   udononnxStatus_t status;
-  if (!state_storage ||
+  if (!state_storage || !context || !queue ||
       state_storage_bytes < sizeof(struct udononnxBindingState) ||
       udononnxBindingStateGet(state_storage))
     return UDONONNX_STATUS_INVALID_VALUE;
+  if (clGetCommandQueueInfo(queue, CL_QUEUE_CONTEXT, sizeof(queue_context),
+                            &queue_context, 0) != CL_SUCCESS)
+    return UDONONNX_STATUS_OPENCL_ERROR;
+  if (queue_context != context)
+    return UDONONNX_STATUS_CONTEXT_MISMATCH;
   status = udononnxGetModel(model_index, &model);
   if (status != UDONONNX_STATUS_SUCCESS)
     return status;
@@ -141,26 +145,14 @@ udononnxBindingStateCreate(void *state_storage, uint32_t state_storage_bytes,
         model->output_count > UINT32_MAX / sizeof(udononnxTensor_t) ||
         model->output_count * sizeof(udononnxTensor_t) > output_binding_bytes)))
     return UDONONNX_STATUS_INVALID_VALUE;
-  if (clGetPlatformIDs(1, &platform, 0) != CL_SUCCESS ||
-      clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &device, 0) != CL_SUCCESS)
-    return UDONONNX_STATUS_OPENCL_ERROR;
   state = (struct udononnxBindingState *)state_storage;
   state->magic = 0;
-  state->context = clCreateContext(0, 1, &device, 0, 0, &error);
-  if (!state->context || error != CL_SUCCESS)
-    return UDONONNX_STATUS_OPENCL_ERROR;
-  state->queue = clCreateCommandQueue(state->context, device, 0, &error);
-  if (!state->queue || error != CL_SUCCESS) {
-    clReleaseContext(state->context);
-    state->context = 0;
-    return UDONONNX_STATUS_OPENCL_ERROR;
-  }
+  state->context = context;
+  state->queue = queue;
   status = udononnxCreateSession(&state->session, model, state->context,
                                  (udononnxTensor_t *)input_bindings,
                                  (udononnxTensor_t *)output_bindings);
   if (status != UDONONNX_STATUS_SUCCESS) {
-    clReleaseCommandQueue(state->queue);
-    clReleaseContext(state->context);
     state->queue = 0;
     state->context = 0;
     return status;
@@ -263,6 +255,28 @@ udononnxStatus_t udononnxBindingStateGetSession(void *state_storage,
   return UDONONNX_STATUS_SUCCESS;
 }
 
+udononnxStatus_t udononnxBindingStateResolveInput(void *state_storage,
+                                                  uint32_t input_index,
+                                                  cl_mem *memory,
+                                                  size_t *byte_offset,
+                                                  size_t *byte_length) {
+  struct udononnxBindingState *state = udononnxBindingStateGet(state_storage);
+  return state ? udononnxSessionResolveInput(&state->session, input_index,
+                                             memory, byte_offset, byte_length)
+               : UDONONNX_STATUS_NOT_INITIALIZED;
+}
+
+udononnxStatus_t udononnxBindingStateResolveOutput(void *state_storage,
+                                                   uint32_t output_index,
+                                                   cl_mem *memory,
+                                                   size_t *byte_offset,
+                                                   size_t *byte_length) {
+  struct udononnxBindingState *state = udononnxBindingStateGet(state_storage);
+  return state ? udononnxSessionResolveOutput(&state->session, output_index,
+                                              memory, byte_offset, byte_length)
+               : UDONONNX_STATUS_NOT_INITIALIZED;
+}
+
 udononnxStatus_t udononnxBindingStateCompleteEvent(void *state_storage,
                                                    cl_event completion,
                                                    udononnxStatus_t result) {
@@ -297,18 +311,13 @@ udononnxStatus_t udononnxBindingStateGetCommandQueue(void *state_storage,
 udononnxStatus_t udononnxBindingStateDispose(void *state_storage) {
   struct udononnxBindingState *state = udononnxBindingStateGet(state_storage);
   udononnxStatus_t status;
-  cl_int queue_status, context_status;
   if (!state)
     return UDONONNX_STATUS_NOT_INITIALIZED;
   status = udononnxSessionDispose(&state->session);
   if (status != UDONONNX_STATUS_SUCCESS)
     return status;
-  queue_status = clReleaseCommandQueue(state->queue);
-  context_status = clReleaseContext(state->context);
   state->queue = 0;
   state->context = 0;
   state->magic = 0;
-  return queue_status == CL_SUCCESS && context_status == CL_SUCCESS
-             ? UDONONNX_STATUS_SUCCESS
-             : UDONONNX_STATUS_OPENCL_ERROR;
+  return UDONONNX_STATUS_SUCCESS;
 }

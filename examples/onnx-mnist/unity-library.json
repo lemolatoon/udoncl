@@ -47,6 +47,8 @@
     "udon_onnx_binding_create",
     "udon_onnx_binding_bind_tensor",
     "udon_onnx_binding_bind_all",
+    "udon_onnx_binding_resolve_input",
+    "udon_onnx_binding_resolve_output",
     "udon_onnx_binding_enqueue_initialize",
     "udon_onnx_binding_enqueue_run",
     "udon_onnx_binding_enqueue_copy_output_to_input",

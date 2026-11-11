@@ -293,6 +293,12 @@ void attachBindingMetadata(ModuleOp module, const GraphRecord &graph) {
       builder.getNamedAttr("bind_all_symbol",
                            builder.getStringAttr("udon_onnx_binding_bind_all")),
       builder.getNamedAttr(
+          "resolve_input_symbol",
+          builder.getStringAttr("udon_onnx_binding_resolve_input")),
+      builder.getNamedAttr(
+          "resolve_output_symbol",
+          builder.getStringAttr("udon_onnx_binding_resolve_output")),
+      builder.getNamedAttr(
           "enqueue_initialize_symbol",
           builder.getStringAttr("udon_onnx_binding_enqueue_initialize")),
       builder.getNamedAttr(
@@ -309,7 +315,7 @@ void attachBindingMetadata(ModuleOp module, const GraphRecord &graph) {
       "udoncl.onnx_binding",
       builder.getDictionaryAttr({
           builder.getNamedAttr("abi",
-                               builder.getStringAttr("udononnx-runtime-v1")),
+                               builder.getStringAttr("udononnx-runtime-v2")),
           builder.getNamedAttr("model_index", builder.getI32IntegerAttr(0)),
           builder.getNamedAttr("model_name", builder.getStringAttr("model_0")),
           builder.getNamedAttr("inputs", ioMetadata(graph.inputs)),
@@ -2845,15 +2851,16 @@ void createPhysicalBindingExports(ModuleOp module, const GraphRecord &graph) {
   };
 
   builder.setInsertionPointToEnd(module.getBody());
-  auto create =
-      func::FuncOp::create(builder, location, "udon_onnx_binding_create",
-                           FunctionType::get(module.getContext(), {}, {i32}));
+  auto create = func::FuncOp::create(
+      builder, location, "udon_onnx_binding_create",
+      FunctionType::get(module.getContext(), {pointer, pointer}, {i32}));
   markExport(create);
   Block *entry = create.addEntryBlock();
   builder.setInsertionPointToEnd(entry);
   auto createCall = func::CallOp::create(
       builder, location, "udononnxBindingStateCreate", TypeRange{i32},
-      ValueRange{state(), constant(bindingStateStorageBytes), constant(0),
+      ValueRange{state(), constant(bindingStateStorageBytes),
+                 entry->getArgument(0), entry->getArgument(1), constant(0),
                  addressOf(builder, location, bindingInputSymbol),
                  constant(std::max<size_t>(graph.inputs.size(), 1) *
                           bindingTensorStorageBytes),
@@ -2962,6 +2969,27 @@ void createPhysicalBindingExports(ModuleOp module, const GraphRecord &graph) {
   for (auto [index, tensorIndex] : llvm::enumerate(graph.outputs))
     bindOne(true, index, tensorIndex, handleIndex++);
   func::ReturnOp::create(builder, location, constant(0));
+
+  auto createResolve = [&](StringRef name, StringRef callee) {
+    builder.setInsertionPointToEnd(module.getBody());
+    auto resolve = func::FuncOp::create(
+        builder, location, name,
+        FunctionType::get(module.getContext(), {i32, pointer, pointer, pointer},
+                          {i32}));
+    markExport(resolve);
+    Block *resolveEntry = resolve.addEntryBlock();
+    builder.setInsertionPointToEnd(resolveEntry);
+    auto resolved = func::CallOp::create(
+        builder, location, callee, TypeRange{i32},
+        ValueRange{state(), resolveEntry->getArgument(0),
+                   resolveEntry->getArgument(1), resolveEntry->getArgument(2),
+                   resolveEntry->getArgument(3)});
+    func::ReturnOp::create(builder, location, resolved.getResult(0));
+  };
+  createResolve("udon_onnx_binding_resolve_input",
+                "udononnxBindingStateResolveInput");
+  createResolve("udon_onnx_binding_resolve_output",
+                "udononnxBindingStateResolveOutput");
 
   auto createEnqueue = [&](StringRef name, StringRef callee) {
     builder.setInsertionPointToEnd(module.getBody());
@@ -3151,7 +3179,8 @@ void createPhysicalBindingExports(ModuleOp module, const GraphRecord &graph) {
   func::ReturnOp::create(builder, location, constant(0));
 
   declaration(module, "udononnxBindingStateCreate",
-              {pointer, i32, i32, pointer, i32, pointer, i32}, {i32});
+              {pointer, i32, pointer, pointer, i32, pointer, i32, pointer, i32},
+              {i32});
   declaration(module, "udononnxBindingStateAllocateBuffer",
               {pointer, i32, i32, pointer}, {i32});
   declaration(module, "udononnxBindingStateBindTensor",
@@ -3163,6 +3192,10 @@ void createPhysicalBindingExports(ModuleOp module, const GraphRecord &graph) {
               {pointer, i32, pointer, pointer}, {i32});
   declaration(module, "udononnxBindingStateGetSession", {pointer, pointer},
               {i32});
+  declaration(module, "udononnxBindingStateResolveInput",
+              {pointer, i32, pointer, pointer, pointer}, {i32});
+  declaration(module, "udononnxBindingStateResolveOutput",
+              {pointer, i32, pointer, pointer, pointer}, {i32});
   declaration(module, "udononnxSessionResolveInput",
               {pointer, i32, pointer, pointer, pointer}, {i32});
   declaration(module, "udononnxSessionResolveOutput",

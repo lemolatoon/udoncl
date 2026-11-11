@@ -48,6 +48,7 @@ udononnxStatus_t udononnxBindingBindOutput(
 
 udononnxStatus_t
 udononnxBindingStateCreate(void *state_storage, uint32_t state_storage_bytes,
+                           cl_context context, cl_command_queue queue,
                            uint32_t model_index, void *input_bindings,
                            uint32_t input_binding_bytes, void *output_bindings,
                            uint32_t output_binding_bytes);
@@ -79,6 +80,16 @@ udononnxStatus_t udononnxBindingStateEnqueueRun(void *state_storage,
                                                 cl_event *completion);
 udononnxStatus_t udononnxBindingStateGetSession(void *state_storage,
                                                 udononnxSession_t **session);
+udononnxStatus_t udononnxBindingStateResolveInput(void *state_storage,
+                                                  uint32_t input_index,
+                                                  cl_mem *memory,
+                                                  size_t *byte_offset,
+                                                  size_t *byte_length);
+udononnxStatus_t udononnxBindingStateResolveOutput(void *state_storage,
+                                                   uint32_t output_index,
+                                                   cl_mem *memory,
+                                                   size_t *byte_offset,
+                                                   size_t *byte_length);
 udononnxStatus_t udononnxBindingStateCompleteEvent(void *state_storage,
                                                    cl_event completion,
                                                    udononnxStatus_t result);

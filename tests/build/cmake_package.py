@@ -350,12 +350,12 @@ def main():
     probe['generate_onnx_public_buffers'] = True
     probe.pop('exports', None)
     probe.pop('internal_exports', None)
+    probe['internal_exports'] = [
+        'udon_onnx_binding_create',
+        'udon_onnx_binding_resolve_input',
+        'udon_onnx_binding_resolve_output',
+    ]
     probe['export_overrides'] = [
-        {
-            'symbol': 'udon_onnx_binding_create',
-            'public_name': 'CreateOnnxBinding',
-            'parameters': [],
-        },
         {
             'symbol': 'udon_onnx_binding_bind_tensor',
             'public_name': 'BindOnnxTensorPhysical',
@@ -459,11 +459,13 @@ def main():
     generated_onnx_host_text = run([
         install / 'bin' / f'udoncl-opt{suffix}', generated_onnx_host,
     ])
-    assert generated_onnx_host_text.count('udoncl.export') == 7
+    assert generated_onnx_host_text.count('udoncl.export') == 9
     for symbol in [
         'udon_onnx_binding_create',
         'udon_onnx_binding_bind_tensor',
         'udon_onnx_binding_bind_all',
+        'udon_onnx_binding_resolve_input',
+        'udon_onnx_binding_resolve_output',
         'udon_onnx_binding_enqueue_initialize',
         'udon_onnx_binding_enqueue_run',
         'udon_onnx_binding_enqueue_copy_output_to_input',
@@ -486,7 +488,6 @@ def main():
         item['c_symbol']: item['public_name']
         for item in generic_manifest['exports']
     } == {
-        'udon_onnx_binding_create': 'CreateOnnxBinding',
         'udon_onnx_binding_bind_tensor': 'BindOnnxTensorPhysical',
         'udon_onnx_binding_bind_all': 'BindAllOnnxTensors',
         'udon_onnx_binding_enqueue_initialize': 'EnqueueOnnxInitialize',
@@ -505,7 +506,7 @@ def main():
         for parameter in physical_bind['parameters']
     )
     onnx_binding = generic_manifest['onnx_binding']
-    assert onnx_binding['abi'] == 'udononnx-runtime-v1'
+    assert onnx_binding['abi'] == 'udononnx-runtime-v2'
     assert onnx_binding['model_index'] == 0
     assert onnx_binding['model_name'] == 'model_0'
     assert onnx_binding['inputs'] == [{
@@ -530,6 +531,8 @@ def main():
         'create_symbol': 'udon_onnx_binding_create',
         'bind_tensor_symbol': 'udon_onnx_binding_bind_tensor',
         'bind_all_symbol': 'udon_onnx_binding_bind_all',
+        'resolve_input_symbol': 'udon_onnx_binding_resolve_input',
+        'resolve_output_symbol': 'udon_onnx_binding_resolve_output',
         'enqueue_initialize_symbol':
             'udon_onnx_binding_enqueue_initialize',
         'enqueue_run_symbol': 'udon_onnx_binding_enqueue_run',
@@ -561,24 +564,31 @@ def main():
         'udon_onnx_binding_create',
         'udon_onnx_binding_bind_tensor',
         'udon_onnx_binding_bind_all',
+        'udon_onnx_binding_resolve_input',
+        'udon_onnx_binding_resolve_output',
         'udon_onnx_binding_enqueue_initialize',
         'udon_onnx_binding_enqueue_run',
         'udon_onnx_binding_enqueue_copy_output_to_input',
         'udon_onnx_binding_dispose',
     ]
+    required_internal_symbols = [
+        'udon_onnx_binding_create',
+        'udon_onnx_binding_resolve_input',
+        'udon_onnx_binding_resolve_output',
+    ]
     internal_export_cases = [
         (
-            'unknown', ['not_an_annotated_export'],
+            'unknown', required_internal_symbols + ['not_an_annotated_export'],
             'schema 2 internal export must name one non-overridden '
             'annotated Host definition',
         ),
         (
-            'duplicate', [annotated_symbols[0], annotated_symbols[0]],
+            'duplicate', required_internal_symbols + [annotated_symbols[0]],
             'schema 2 internal export must name one non-overridden '
             'annotated Host definition',
         ),
         (
-            'overridden', [annotated_symbols[0]],
+            'overridden', required_internal_symbols + [annotated_symbols[1]],
             'schema 2 internal export must name one non-overridden '
             'annotated Host definition',
         ),
@@ -594,10 +604,6 @@ def main():
         invalid_document['internal_exports'] = internal_exports
         if case == 'all':
             invalid_document['export_overrides'] = []
-        elif case == 'duplicate':
-            invalid_document['export_overrides'] = (
-                invalid_document['export_overrides'][1:]
-            )
         invalid_config.write_text(
             json.dumps(invalid_document), encoding='utf-8'
         )
@@ -917,9 +923,14 @@ def main():
     transformer_source = run([
         install / 'bin' / f'udoncl-opt{suffix}', transformer_host,
     ])
-    assert 'func.func @udon_onnx_binding_create()' in transformer_source
+    assert (
+        'func.func @udon_onnx_binding_create(%arg0: !udonhl.ptr<0>, '
+        '%arg1: !udonhl.ptr<0>)' in transformer_source
+    )
     assert 'func.func @udon_onnx_binding_bind_tensor(' in transformer_source
     assert 'func.func @udon_onnx_binding_bind_all()' in transformer_source
+    assert 'func.func @udon_onnx_binding_resolve_input(' in transformer_source
+    assert 'func.func @udon_onnx_binding_resolve_output(' in transformer_source
     assert 'func.func @udon_onnx_binding_enqueue_run()' in transformer_source
     assert (
         'func.func @udon_onnx_binding_enqueue_copy_output_to_input('

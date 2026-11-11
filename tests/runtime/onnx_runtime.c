@@ -133,7 +133,7 @@ int main(void) {
   cl_platform_id platform;
   cl_device_id device;
   cl_context context, other_context;
-  cl_command_queue queue;
+  cl_command_queue queue, other_queue;
   cl_int error;
   cl_event completion = 0, write = 0, run = 0;
   cl_mem resolved_memory = 0;
@@ -165,6 +165,7 @@ int main(void) {
   int64_t dimensions[2] = {2, 2};
   int64_t empty_dimensions[4] = {1, 4, 0, 64};
   int32_t binding_dimensions[2] = {2, 2};
+  int32_t generated_binding_dimensions[1] = {1};
   const udononnxTensorMetadata_t inputs[1] = {
       {"input", UDONCL_DATA_FLOAT32, 2, dimensions, 0}};
   const udononnxTensorMetadata_t outputs[2] = {
@@ -187,6 +188,8 @@ int main(void) {
   EXPECT(other_context && error == CL_SUCCESS);
   queue = clCreateCommandQueue(context, device, 0, &error);
   EXPECT(queue && error == CL_SUCCESS);
+  other_queue = clCreateCommandQueue(other_context, device, 0, &error);
+  EXPECT(other_queue && error == CL_SUCCESS);
   EXPECT(udononnxSessionBindInput(&session, 0, input_tensor) ==
          UDONONNX_STATUS_NOT_INITIALIZED);
   EXPECT(udononnxGetModelCount() == 1);
@@ -342,19 +345,33 @@ int main(void) {
   EXPECT(udonclDeviceBufferDestroy(&output_buffer) == UDONCL_STATUS_SUCCESS);
   EXPECT(udonclDeviceBufferDestroy(&foreign_buffer) == UDONCL_STATUS_SUCCESS);
   EXPECT(initialization_buffer == 0);
-  EXPECT(clReleaseCommandQueue(queue) == CL_SUCCESS);
-  EXPECT(clReleaseContext(other_context) == CL_SUCCESS);
-  EXPECT(clReleaseContext(context) == CL_SUCCESS);
-  EXPECT(udononnxBindingStateCreate(binding_state, sizeof(binding_state), 0,
-                                    binding_inputs, sizeof(binding_inputs),
-                                    binding_outputs, sizeof(binding_outputs)) ==
-         UDONONNX_STATUS_SUCCESS);
+  EXPECT(udononnxBindingStateCreate(
+             binding_state, sizeof(binding_state), 0, queue, 0, binding_inputs,
+             sizeof(binding_inputs), binding_outputs,
+             sizeof(binding_outputs)) == UDONONNX_STATUS_INVALID_VALUE);
+  EXPECT(udononnxBindingStateCreate(
+             binding_state, sizeof(binding_state), context, other_queue, 0,
+             binding_inputs, sizeof(binding_inputs), binding_outputs,
+             sizeof(binding_outputs)) == UDONONNX_STATUS_CONTEXT_MISMATCH);
+  EXPECT(udononnxBindingStateCreate(
+             binding_state, sizeof(binding_state), context, queue, 0,
+             binding_inputs, sizeof(binding_inputs), binding_outputs,
+             sizeof(binding_outputs)) == UDONONNX_STATUS_SUCCESS);
   EXPECT(udononnxBindingStateGetContext(binding_state, &binding_context) ==
              UDONONNX_STATUS_SUCCESS &&
-         binding_context);
+         binding_context == context);
   EXPECT(udononnxBindingStateGetCommandQueue(binding_state, &binding_queue) ==
              UDONONNX_STATUS_SUCCESS &&
-         binding_queue);
+         binding_queue == queue);
+  completion = 0;
+  EXPECT(udononnxBindingStateEnqueueInitialize(
+             binding_state, 0, 0, &completion) == UDONONNX_STATUS_SUCCESS &&
+         completion);
+  EXPECT(clWaitForEvents(1, &completion) == CL_SUCCESS);
+  EXPECT(udononnxBindingStateCompleteEvent(binding_state, completion,
+                                           UDONONNX_STATUS_SUCCESS) ==
+         UDONONNX_STATUS_SUCCESS);
+  EXPECT(clReleaseEvent(completion) == CL_SUCCESS);
   EXPECT(udononnxBindingStateAllocateBuffer(binding_state, 2, sizeof(source),
                                             &binding_input) ==
          UDONONNX_STATUS_INVALID_VALUE);
@@ -367,6 +384,24 @@ int main(void) {
   EXPECT(udonclDeviceBufferGetSize(binding_input, &resolved_bytes) ==
              UDONCL_STATUS_SUCCESS &&
          resolved_bytes == sizeof(float));
+  EXPECT(udononnxBindingStateBindTensor(
+             binding_state, 0, 0, binding_input.slot, binding_input.generation,
+             0, sizeof(float), UDONCL_DATA_FLOAT32, 1,
+             generated_binding_dimensions) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(udononnxBindingStateBindTensor(
+             binding_state, 1, 0, binding_output.slot,
+             binding_output.generation, 0, sizeof(float), UDONCL_DATA_FLOAT32,
+             1, generated_binding_dimensions) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(udononnxBindingStateResolveInput(binding_state, 0, &resolved_memory,
+                                          &resolved_offset, &resolved_bytes) ==
+             UDONONNX_STATUS_SUCCESS &&
+         resolved_memory && resolved_offset == 0 &&
+         resolved_bytes == sizeof(float));
+  EXPECT(udononnxBindingStateResolveOutput(binding_state, 0, &resolved_memory,
+                                           &resolved_offset, &resolved_bytes) ==
+             UDONONNX_STATUS_SUCCESS &&
+         resolved_memory && resolved_offset == 0 &&
+         resolved_bytes == sizeof(float));
   EXPECT(udononnxBindingStateBindTensor(binding_state, 2, 0, 0, 0, 0, 0,
                                         UDONCL_DATA_FLOAT32, 0,
                                         0) == UDONONNX_STATUS_INVALID_VALUE);
@@ -376,5 +411,10 @@ int main(void) {
   EXPECT(udonclDeviceBufferDestroy(&binding_input) == UDONCL_STATUS_SUCCESS);
   EXPECT(udonclDeviceBufferDestroy(&binding_output) == UDONCL_STATUS_SUCCESS);
   EXPECT(udononnxBindingStateDispose(binding_state) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(clFinish(queue) == CL_SUCCESS);
+  EXPECT(clReleaseCommandQueue(queue) == CL_SUCCESS);
+  EXPECT(clReleaseCommandQueue(other_queue) == CL_SUCCESS);
+  EXPECT(clReleaseContext(other_context) == CL_SUCCESS);
+  EXPECT(clReleaseContext(context) == CL_SUCCESS);
   return 0;
 }

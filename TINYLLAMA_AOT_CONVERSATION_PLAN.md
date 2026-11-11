@@ -516,11 +516,28 @@ not part of the normal conversation ABI.
 After ONNX import, the C++ pipeline is the sole owner of model I/O names,
 dtypes, logical shapes, byte lengths, capacity bounds, and indices. It emits
 unrolled physical allocation/bind operations and the public binding metadata;
-Python and handwritten 47/45 C or JSON tables are forbidden. The ordinary C
-Host calls model-independent generated physical helpers for session creation,
-I/O allocation and binding, initialize, run, and dispose. Thus the public
+Python and handwritten 47/45 C or JSON tables are forbidden. As with the MNIST
+Host, the ordinary C Host selects the OpenCL platform/device and owns the
+`cl_context` and in-order `cl_command_queue`. It passes both to a
+model-independent generated physical create helper, which borrows them and
+uses the Host context for session creation and generated I/O allocation. The
+generated helpers own only their generated buffers and model/session state;
+they never release the Host queue or context. Initialize, bind, run, and
+generated-buffer disposal remain unrolled compiler output, so the public
 lifecycle is authored in C while model-specific tensor enumeration remains in
-generated MLIR.
+generated MLIR. The Host disposes generated ONNX state before releasing its
+queue and context.
+
+Input upload, output readback, and Device-to-Device copies use ordinary OpenCL
+operations on `cl_mem`. No ONNX-specific WriteBuffer/ReadBuffer facade is
+introduced. Model-independent generated resolve helpers expose each bound
+input/output as a borrowed `cl_mem`, byte offset, and logical byte length to
+the C Host; the handles remain generated-buffer-owned. `CL_MEM_READ_ONLY` and
+`CL_MEM_WRITE_ONLY` retain their OpenCL
+kernel-access meaning and do not block Host transfers. Generated U# whole-array
+methods may still use the Unity bulk texture upload/readback transport for
+public validation buffers, but they address the same bound physical buffers and
+do not change the C/OpenCL ownership contract.
 
 Logical tensor shape and physical capacity are distinct metadata. Empty past
 K/V inputs have a zero-length logical view over nonzero capacity-sized storage.

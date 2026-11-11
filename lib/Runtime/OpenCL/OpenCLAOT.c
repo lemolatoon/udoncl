@@ -2300,9 +2300,8 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueWriteBuffer(
     const cl_event *wait_list, cl_event *event) {
   cl_int pending;
   if (queue != &udoncl_queue || !queue->active ||
-      !udoncl_mem_is_active(buffer) ||
-      (udoncl_mem_flags(buffer) & CL_MEM_READ_ONLY) || !source ||
-      offset > udoncl_mem_bytes(buffer) ||
+      !udoncl_mem_is_active(buffer) || udoncl_mem_is_static(buffer) ||
+      !source || offset > udoncl_mem_bytes(buffer) ||
       bytes > udoncl_mem_bytes(buffer) - offset ||
       udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;

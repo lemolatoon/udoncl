@@ -118,6 +118,31 @@ The initial required U# surface is `int`, `float`, `int[]`, `float[]`, and the
 types needed for UdonBehaviour/custom-event callbacks. Additional types become
 supported only after their physical ABI lowering exists.
 
+### 3.4 OpenCL ownership at the ONNX boundary
+
+ONNX is a generic OpenCL client, not the owner of an application-wide device
+lifecycle. The ordinary C Host creates and owns its `cl_context` and
+`cl_command_queue`, then passes both to the generated physical ONNX binding.
+The binding borrows these handles until its dispose operation returns: it does
+not select a platform/device, retain or release the handles, or substitute an
+ONNX-specific transfer API. The queue must belong to the supplied context.
+
+Generated code may allocate and own model-derived default input/output buffers
+on the borrowed context and enumerate/bind them from compiler-owned metadata.
+The C Host performs transfers and Device-to-Device copies with normal OpenCL
+operations. Model-independent generated resolve functions return a borrowed
+`cl_mem` together with its byte offset and logical byte length; returning a
+bare `cl_mem` without the view range is forbidden. `CL_MEM_READ_ONLY` and
+`CL_MEM_WRITE_ONLY` describe kernel access;
+they do not prohibit the corresponding Host transfer. Any externally allocated
+buffer remains owned by the C Host. Disposal order is ONNX session/generated
+buffers first, followed by the Host-owned queue and context.
+
+The physical create/bind functions are internal cross-library exports. Opaque
+OpenCL handles are not exposed as public U# parameters. A higher-level C Host
+chooses its public exports and the compiler generates U# bindings for those
+exports only.
+
 ## 4. Async semantics
 
 ### 4.1 Source behavior

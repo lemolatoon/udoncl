@@ -8,9 +8,20 @@ extern "C" {
 #endif
 
 /* Model-independent physical entry points emitted by the C++ ONNX Host
- * finalizer. User-facing C Hosts wrap these with their own lifecycle API. */
-udononnxStatus_t udon_onnx_binding_create(void);
+ * finalizer. User-facing C Hosts own the OpenCL context and queue and wrap
+ * these with their own lifecycle API. The binding borrows both handles until
+ * udon_onnx_binding_dispose returns. */
+udononnxStatus_t udon_onnx_binding_create(cl_context context,
+                                          cl_command_queue queue);
 udononnxStatus_t udon_onnx_binding_bind_all(void);
+udononnxStatus_t udon_onnx_binding_resolve_input(uint32_t input_index,
+                                                 cl_mem *memory,
+                                                 size_t *byte_offset,
+                                                 size_t *byte_length);
+udononnxStatus_t udon_onnx_binding_resolve_output(uint32_t output_index,
+                                                  cl_mem *memory,
+                                                  size_t *byte_offset,
+                                                  size_t *byte_length);
 udononnxStatus_t udon_onnx_binding_enqueue_initialize(void);
 udononnxStatus_t udon_onnx_binding_enqueue_run(void);
 udononnxStatus_t
