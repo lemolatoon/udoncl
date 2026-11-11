@@ -554,6 +554,29 @@ assert (
 )
 assert "call @udonblasSgemmStridedBatched" not in batched_matmul_host.stdout
 
+m1_attention_matmul_source = source.with_name("onnx_m1_attention_matmul.mlir")
+m1_attention_matmul_portable = subprocess.run(
+    [opt, "--udoncl-lower-onnx-to-host", m1_attention_matmul_source],
+    text=True,
+    capture_output=True,
+    check=True,
+).stdout
+m1_attention_matmul_host = subprocess.run(
+    [host_opt, "--udoncl-finalize-onnx-host", "-"],
+    input=m1_attention_matmul_portable,
+    text=True,
+    capture_output=True,
+)
+assert m1_attention_matmul_host.returncode == 0, (
+    m1_attention_matmul_host.stdout,
+    m1_attention_matmul_host.stderr,
+)
+assert "udoncl.onnx_device_graph = true" in m1_attention_matmul_host.stdout
+assert (
+    "call @__vrc_opencl_dispatch_udonblas_arena_sgemm_strided_batched"
+    in m1_attention_matmul_host.stdout
+)
+
 concat_source = source.with_name("onnx_concat.mlir")
 concat_portable = subprocess.run(
     [opt, "--udoncl-lower-onnx-to-host", concat_source],

@@ -2228,7 +2228,7 @@ cl_int __vrc_enqueue_udonblas_arena_sgemm_strided_batched_device_args(
   matrix_a = (size_t)m * (size_t)k;
   matrix_b = (size_t)k * (size_t)n;
   matrix_c = (size_t)m * (size_t)n;
-  if (matrix_a > 16384u || matrix_b > 16384u || matrix_c > 16384u ||
+  if (matrix_a > 131072u || matrix_b > 131072u || matrix_c > 16384u ||
       (size_t)batch_count > 16384u / matrix_c || (size_t)stride_c != matrix_c)
     return CL_INVALID_VALUE;
   required_a =
@@ -2236,7 +2236,7 @@ cl_int __vrc_enqueue_udonblas_arena_sgemm_strided_batched_device_args(
   required_b =
       matrix_b + (stride_b ? (size_t)(batch_count - 1) * (size_t)stride_b : 0u);
   required_c = (size_t)batch_count * matrix_c;
-  if (required_a > 16384u || required_b > 16384u || required_c > 16384u)
+  if (required_a > 131072u || required_b > 131072u || required_c > 16384u)
     return CL_INVALID_VALUE;
   if (udoncl_mem_bytes(a) < required_a * 4u ||
       udoncl_mem_bytes(b) < required_b * 4u ||

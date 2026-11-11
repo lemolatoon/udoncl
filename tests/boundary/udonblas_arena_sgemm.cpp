@@ -50,10 +50,16 @@ static float runCase(int batches, int m, int n, int k, bool broadcastB) {
 
 int main() {
   float attentionError = runCase(32, 4, 64, 4, false);
+  float m1AttentionError = runCase(32, 1, 64, 64, false);
   float broadcastError = runCase(2, 2, 4, 3, true);
   std::cout << "arena_sgemm_attention_outputs=" << 32 * 4 * 64 << '\n';
+  std::cout << "arena_sgemm_m1_attention_outputs=" << 32 * 1 * 64 << '\n';
   std::cout << "arena_sgemm_broadcast_outputs=" << 2 * 2 * 4 << '\n';
   std::cout << "arena_sgemm_max_error="
-            << std::max(attentionError, broadcastError) << '\n';
-  return attentionError < 0.0001f && broadcastError < 0.0001f ? 0 : 1;
+            << std::max({attentionError, m1AttentionError, broadcastError})
+            << '\n';
+  return attentionError < 0.0001f && m1AttentionError < 0.0001f &&
+                 broadcastError < 0.0001f
+             ? 0
+             : 1;
 }

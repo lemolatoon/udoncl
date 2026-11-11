@@ -1279,8 +1279,8 @@ std::optional<DeviceMatMulShape> deviceMatMulShape(const GraphRecord &graph,
   int64_t k = left.back();
   int64_t n = right.back();
   if (m < 1 || n < 1 || k < 1 || k > 256 || output[output.size() - 2] != m ||
-      output.back() != n || leftTensor.type.getNumElements() > 16384 ||
-      rightTensor.type.getNumElements() > 16384 ||
+      output.back() != n || leftTensor.type.getNumElements() > 131072 ||
+      rightTensor.type.getNumElements() > 131072 ||
       outputTensor.type.getNumElements() > 16384)
     return std::nullopt;
   int64_t leftBatches = leftTensor.type.getNumElements() / (m * k);

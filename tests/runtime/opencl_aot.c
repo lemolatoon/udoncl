@@ -694,6 +694,7 @@ int main(void) {
   cl_mem blas_input, blas_output;
   cl_mem dnn_input, dnn_filter, dnn_output, dnn_other;
   cl_mem batched_a, batched_b, batched_c;
+  cl_mem m1_batched_a, m1_batched_b, m1_batched_c;
   cl_mem transpose_input_buffer, transpose_output_buffer, concat_left_buffer;
   cl_mem gather_indices_buffer;
   cl_mem cast_input_buffer, scatter_output_buffer, where_output_buffer;
@@ -1443,6 +1444,29 @@ int main(void) {
   EXPECT(clReleaseMemObject(batched_c) == CL_SUCCESS);
   EXPECT(clReleaseMemObject(batched_b) == CL_SUCCESS);
   EXPECT(clReleaseMemObject(batched_a) == CL_SUCCESS);
+
+  m1_batched_a = udonclCreateBufferForQueue(queue, CL_MEM_READ_WRITE,
+                                            2048 * sizeof(float), &error);
+  EXPECT(m1_batched_a && error == CL_SUCCESS);
+  m1_batched_b = udonclCreateBufferForQueue(queue, CL_MEM_READ_WRITE,
+                                            131072 * sizeof(float), &error);
+  EXPECT(m1_batched_b && error == CL_SUCCESS);
+  m1_batched_c = udonclCreateBufferForQueue(queue, CL_MEM_READ_WRITE,
+                                            2048 * sizeof(float), &error);
+  EXPECT(m1_batched_c && error == CL_SUCCESS);
+  EXPECT(__vrc_enqueue_udonblas_arena_sgemm_strided_batched_device_args(
+             queue, m1_batched_a, m1_batched_b, m1_batched_c, 1, 64, 64, 64,
+             4096, 64, 32, 0, 0, 1.0f, 0, 0, &marker_event) == CL_SUCCESS);
+  EXPECT(marker_event && clWaitForEvents(1, &marker_event) == CL_SUCCESS);
+  EXPECT(dispatched_arena_stride_a == 64 && dispatched_arena_stride_b == 4096 &&
+         dispatched_arena_batch_count == 32);
+  EXPECT(clReleaseEvent(marker_event) == CL_SUCCESS);
+  EXPECT(__vrc_enqueue_udonblas_arena_sgemm_strided_batched_device_args(
+             queue, m1_batched_a, m1_batched_b, m1_batched_c, 1, 64, 64, 64,
+             4096, 64, 33, 0, 0, 1.0f, 0, 0, 0) == CL_INVALID_VALUE);
+  EXPECT(clReleaseMemObject(m1_batched_c) == CL_SUCCESS);
+  EXPECT(clReleaseMemObject(m1_batched_b) == CL_SUCCESS);
+  EXPECT(clReleaseMemObject(m1_batched_a) == CL_SUCCESS);
 
   q4_activation = udonclAdoptStaticBuffer(
       queue, 8, 90112, __vrc_opencl_static_tensor(8, 90112), &error);

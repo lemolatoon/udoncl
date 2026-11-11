@@ -62,8 +62,8 @@ __kernel void udonblas_arena_sgemm_strided_batched(
       if (inner < k) {
         int a_index = transa ? inner * m + row : row * k + inner;
         int b_index = transb ? column * k + inner : inner * n + column;
-        sum += a[(a_base + (size_t)a_index) & 16383u] *
-               b[(b_base + (size_t)b_index) & 16383u];
+        sum += a[(a_base + (size_t)a_index) & 131071u] *
+               b[(b_base + (size_t)b_index) & 131071u];
       }
     }
     value = alpha * sum;
