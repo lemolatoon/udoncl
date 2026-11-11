@@ -673,5 +673,9 @@ const char *udononnxStatusString(udononnxStatus_t status) {
     return "context mismatch";
   if (status == UDONONNX_STATUS_MISSING_BINDING)
     return "missing binding";
+  if (status == UDONONNX_STATUS_INVALID_STATE)
+    return "invalid state";
+  if (status == UDONONNX_STATUS_CAPACITY_EXCEEDED)
+    return "capacity exceeded";
   return "unknown status";
 }

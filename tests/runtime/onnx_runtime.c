@@ -179,6 +179,11 @@ int main(void) {
   const float source[4] = {1.0f, -2.0f, 3.5f, 9.0f};
   float result[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 
+  EXPECT(strcmp(udononnxStatusString(UDONONNX_STATUS_INVALID_STATE),
+                "invalid state") == 0);
+  EXPECT(strcmp(udononnxStatusString(UDONONNX_STATUS_CAPACITY_EXCEEDED),
+                "capacity exceeded") == 0);
+
   EXPECT(clGetPlatformIDs(1, &platform, 0) == CL_SUCCESS);
   EXPECT(clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &device, 0) ==
          CL_SUCCESS);
