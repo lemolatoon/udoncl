@@ -618,6 +618,16 @@ assert repeated_constants_lowered.returncode == 0, (
     repeated_constants_lowered.stderr
 )
 assert 'SystemInt32.__op_LeftShift' in repeated_constants_lowered.stdout
+assert 'SystemInt32.__op_LogicalOr' in repeated_constants_lowered.stdout
+for obsolete_literal_scratch in [
+    '__vrc_return_address_high',
+    '__vrc_return_address_byte',
+    '__vrc_return_address_shifted',
+]:
+    assert obsolete_literal_scratch not in repeated_constants_lowered.stdout, (
+        obsolete_literal_scratch,
+        repeated_constants_lowered.stdout,
+    )
 
 raw_address_after_call_source = r'''module attributes {vrc.async_stage = "udon-static-v1"} {
   "udonhl.global"() <{sym_name = "value", storage_type = i32, initial_value = 0 : i32, linkage = "internal", address_space = 0 : i32, alignment = 4 : i64}> : () -> ()

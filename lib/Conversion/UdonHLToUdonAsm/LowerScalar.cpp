@@ -1622,17 +1622,17 @@ private:
     };
     SmallVector<Candidate> candidates;
     auto literalSavings = [](uint64_t value) {
-      unsigned nonzeroBytes = 0;
-      unsigned shiftedBytes = 0;
-      for (unsigned byte = 0; byte < 4; ++byte)
-        if ((value >> (byte * 8)) & 255) {
-          ++nonzeroBytes;
-          shiftedBytes += byte != 0;
-        }
-      // emitI32Literal costs a 20-byte zero COPY plus 96 bytes per nonzero
-      // byte and another 32 bytes when that byte is not the low byte. A
-      // cached constant costs one 20-byte COPY.
-      return nonzeroBytes * 96 + shiftedBytes * 32;
+      unsigned highestNibble = 0;
+      for (unsigned nibble = 1; nibble < 8; ++nibble)
+        if ((value >> (nibble * 4)) & 15)
+          highestNibble = nibble;
+      unsigned nonzeroLowerNibbles = 0;
+      for (unsigned nibble = 0; nibble < highestNibble; ++nibble)
+        nonzeroLowerNibbles += ((value >> (nibble * 4)) & 15) != 0;
+      // emitI32Literal copies the highest nibble, then uses one 32-byte shift
+      // per lower nibble and one 32-byte OR for each nonzero lower nibble. A
+      // cached constant replaces that whole tail with the same 20-byte COPY.
+      return (highestNibble + nonzeroLowerNibbles) * 32;
     };
     for (const auto &[symbol, occurrences] : rawAddressCandidates)
       candidates.push_back(
@@ -4296,48 +4296,27 @@ private:
 
   void emitI32Literal(Location location, uint64_t value, StringRef result) {
     assert(value <= UINT32_MAX && "i32 literal exceeds 32 bits");
-    std::string zero = immutableSlot("SystemInt32", "0");
     std::string nibbleShift = immutableSlot("SystemInt32", "4");
-    constexpr StringLiteral highScratch = "__vrc_return_address_high";
-    constexpr StringLiteral byteScratch = "__vrc_return_address_byte";
-    constexpr StringLiteral shiftedScratch = "__vrc_return_address_shifted";
-    addSlot(highScratch, "SystemInt32", "0", false);
-    addSlot(byteScratch, "SystemInt32", "0", false);
-    addSlot(shiftedScratch, "SystemInt32", "0", false);
-    emitCopy(location, zero, result);
-    for (unsigned byteIndex = 0; byteIndex < 4; ++byteIndex) {
-      uint8_t byte = static_cast<uint8_t>(value >> (byteIndex * 8));
-      if (!byte)
-        continue;
-      std::string high =
-          immutableSlot("SystemInt32", std::to_string(byte >> 4));
-      std::string low = immutableSlot("SystemInt32", std::to_string(byte & 15));
-      emitPush(location, high);
+    unsigned highestNibble = 0;
+    for (unsigned nibble = 1; nibble < 8; ++nibble)
+      if ((value >> (nibble * 4)) & 15)
+        highestNibble = nibble;
+    emitCopy(location,
+             immutableSlot("SystemInt32",
+                           std::to_string((value >> (highestNibble * 4)) & 15)),
+             result);
+    for (unsigned nibble = highestNibble; nibble-- > 0;) {
+      emitPush(location, result);
       emitPush(location, nibbleShift);
-      emitPush(location, highScratch);
+      emitPush(location, result);
       emitExtern(location,
                  "SystemInt32.__op_LeftShift__SystemInt32_SystemInt32__"
                  "SystemInt32");
-      emitPush(location, highScratch);
-      emitPush(location, low);
-      emitPush(location, byteScratch);
-      emitExtern(location,
-                 "SystemInt32.__op_Addition__SystemInt32_SystemInt32__"
-                 "SystemInt32");
-      StringRef component = byteScratch;
-      if (byteIndex) {
-        std::string shift =
-            immutableSlot("SystemInt32", std::to_string(byteIndex * 8));
-        emitPush(location, component);
-        emitPush(location, shift);
-        emitPush(location, shiftedScratch);
-        emitExtern(location,
-                   "SystemInt32.__op_LeftShift__SystemInt32_SystemInt32__"
-                   "SystemInt32");
-        component = shiftedScratch;
-      }
+      uint64_t digit = (value >> (nibble * 4)) & 15;
+      if (!digit)
+        continue;
       emitPush(location, result);
-      emitPush(location, component);
+      emitPush(location, immutableSlot("SystemInt32", std::to_string(digit)));
       emitPush(location, result);
       emitExtern(location,
                  "SystemInt32.__op_LogicalOr__SystemInt32_SystemInt32__"
