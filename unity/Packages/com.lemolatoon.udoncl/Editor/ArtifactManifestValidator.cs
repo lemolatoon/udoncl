@@ -456,6 +456,14 @@ namespace Lemolatoon.Udoncl.Editor
             List<ValidatedDeviceBuffer> deviceBuffers = ValidateDeviceBuffers(
                 manifest.device == null ? null : manifest.device.buffers
             );
+            if (
+                deviceBuffers.Count != 0
+                && manifest.artifact_stage == "unity-udoncl-library"
+                && manifest.program.buffer_pool_slot != "__udoncl_buffer_pool"
+            )
+                throw new InvalidDataException(
+                    "Device buffers require the compiler-owned program buffer pool slot."
+                );
 
             List<ValidatedResource> resources = new List<ValidatedResource>();
             HashSet<string> resourceNames = new HashSet<string>(StringComparer.Ordinal);

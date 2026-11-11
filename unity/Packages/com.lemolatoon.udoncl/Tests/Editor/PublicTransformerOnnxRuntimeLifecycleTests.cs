@@ -105,8 +105,10 @@ namespace Lemolatoon.Udoncl.Editor.Tests
 
             Dictionary<int, RenderTexture> buffers = new Dictionary<int, RenderTexture>();
             Assert.AreEqual(10, artifact.DeviceBuffers.Count);
-            foreach (ValidatedDeviceBuffer descriptor in artifact.DeviceBuffers)
+            RenderTexture[] bufferPool = new RenderTexture[artifact.DeviceBuffers.Count];
+            for (int index = 0; index < artifact.DeviceBuffers.Count; ++index)
             {
+                ValidatedDeviceBuffer descriptor = artifact.DeviceBuffers[index];
                 RenderTexture buffer = Load<RenderTexture>(
                     "RenderTextures/"
                         + UdonclArtifactImporter.DeviceBufferFileName(
@@ -115,14 +117,15 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                         )
                 );
                 buffers.Add(descriptor.Id, buffer);
-                PublicMnistOnnxRuntimeLifecycleTests.Set(
-                    heap,
-                    program,
-                    descriptor.HeapSlot,
-                    buffer
-                );
+                bufferPool[index] = buffer;
                 PublicMnistOnnxRuntimeLifecycleTests.Clear(buffer);
             }
+            PublicMnistOnnxRuntimeLifecycleTests.Set(
+                heap,
+                program,
+                "__udoncl_buffer_pool",
+                bufferPool
+            );
             Dictionary<int, Material> materials = new Dictionary<int, Material>();
             foreach (ValidatedKernel kernel in artifact.Kernels)
             {

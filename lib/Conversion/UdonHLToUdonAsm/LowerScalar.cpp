@@ -84,6 +84,7 @@ struct ConstantPoolLocation {
 struct UnityBufferPoolEntry {
   int64_t id;
   std::string heapSlot;
+  unsigned index;
 };
 
 struct RawObjectPlan {
@@ -794,8 +795,8 @@ private:
       if (auto exportId = function->getAttrOfType<IntegerAttr>("vrc.export_id"))
         fixedCandidates.insert(udonclStatusSlot(exportId.getInt()));
     }
-    for (const UnityBufferPoolEntry &buffer : unityBufferPool)
-      fixedCandidates.insert(buffer.heapSlot);
+    if (!unityBufferPool.empty())
+      fixedCandidates.insert("__udoncl_buffer_pool");
     for (const auto &slot : scalarRegisterSlots)
       registerCandidates.insert(slot.first());
     for (const auto &slot : asyncPersistentSlots)
@@ -1162,9 +1163,12 @@ private:
           !ids.insert(id.getInt()).second ||
           !slots.insert(heapSlot.getValue().str()).second)
         return module.emitError("invalid Unity buffer pool metadata");
-      unityBufferPool.push_back({id.getInt(), heapSlot.getValue().str()});
-      addSlot(heapSlot.getValue(), "UnityEngineRenderTexture", "null", true);
+      unityBufferPool.push_back(
+          {id.getInt(), heapSlot.getValue().str(),
+           static_cast<unsigned>(unityBufferPool.size())});
     }
+    addSlot("__udoncl_buffer_pool", "UnityEngineRenderTextureArray", "null",
+            true);
     struct Candidate {
       int64_t id;
       bool commonlyShared;
@@ -2441,7 +2445,21 @@ private:
           if (logicalId.empty() || token.empty() || status.empty())
             return allocation.emitError(
                 "Unity buffer allocation has missing handle slots");
-          emitCopy(allocation.getLoc(), logicalId, token);
+          if (auto id = allocation->getAttrOfType<IntegerAttr>(
+                  "vrc.unity_buffer_id")) {
+            auto entry = llvm::find_if(unityBufferPool, [&](const auto &item) {
+              return item.id == id.getInt();
+            });
+            if (entry == unityBufferPool.end())
+              return allocation.emitError(
+                  "Unity buffer allocation references a missing pool id");
+            emitCopy(
+                allocation.getLoc(),
+                immutableSlot("SystemInt32", std::to_string(entry->index + 1)),
+                token);
+          } else {
+            emitUnityBufferToken(allocation.getLoc(), logicalId, token);
+          }
           emitCopy(allocation.getLoc(), immutableSlot("SystemInt32", "0"),
                    status);
           continue;
@@ -2655,7 +2673,8 @@ private:
             if (resourceHeapSlots && index < resourceHeapSlots.size())
               if (auto slot = dyn_cast<StringAttr>(resourceHeapSlots[index]);
                   slot && !slot.getValue().empty())
-                return slot.getValue().str();
+                return loadUnityBufferFromHeapSlot(
+                    dispatch.getLoc(), slot.getValue(), dynamicPrefix);
             return selectUnityBuffer(dispatch.getLoc(), token, dynamicPrefix);
           };
           auto staticResourceId =
@@ -2764,7 +2783,11 @@ private:
                   if (auto slot = dyn_cast<StringAttr>(
                           resourceHeapSlots[resourceIndex]);
                       slot && !slot.getValue().empty())
-                    texture = slot.getValue().str();
+                    texture = loadUnityBufferFromHeapSlot(
+                        dispatch.getLoc(), slot.getValue(),
+                        prefix + "dispatch_" +
+                            std::to_string(dispatch.getKernelId()) + "_input_" +
+                            std::to_string(argumentIndex));
                   else
                     texture = selectUnityReadableBuffer(
                         dispatch.getLoc(), texture,
@@ -4127,12 +4150,49 @@ private:
     return name;
   }
 
-  std::string selectUnityBuffer(Location location, StringRef token,
-                                StringRef prefix) {
+  std::string loadUnityBufferAtIndex(Location location, StringRef index,
+                                     StringRef prefix) {
     if (unityBufferPool.empty())
       return {};
     std::string selected = (prefix + "_texture").str();
     addSlot(selected, "UnityEngineRenderTexture", "null", false);
+    emitPush(location, "__udoncl_buffer_pool");
+    emitPush(location, index);
+    emitPush(location, selected);
+    emitExtern(location, "SystemObjectArray.__Get__SystemInt32__SystemObject");
+    return selected;
+  }
+
+  std::string loadUnityBufferFromHeapSlot(Location location, StringRef heapSlot,
+                                          StringRef prefix) {
+    auto entry = llvm::find_if(unityBufferPool, [&](const auto &candidate) {
+      return candidate.heapSlot == heapSlot;
+    });
+    if (entry == unityBufferPool.end())
+      return {};
+    return loadUnityBufferAtIndex(
+        location, immutableSlot("SystemInt32", std::to_string(entry->index)),
+        prefix);
+  }
+
+  std::string selectUnityBuffer(Location location, StringRef token,
+                                StringRef prefix) {
+    if (unityBufferPool.empty())
+      return {};
+    std::string index = (prefix + "_index").str();
+    addSlot(index, "SystemInt32", "-1", false);
+    emitPush(location, token);
+    emitPush(location, immutableSlot("SystemInt32", "1"));
+    emitPush(location, index);
+    emitExtern(location,
+               "SystemInt32.__op_Subtraction__SystemInt32_SystemInt32__"
+               "SystemInt32");
+    return loadUnityBufferAtIndex(location, index, prefix);
+  }
+
+  void emitUnityBufferToken(Location location, StringRef logicalId,
+                            StringRef token) {
+    emitCopy(location, immutableSlot("SystemInt32", "0"), token);
     SmallVector<Operation *> done;
     for (const auto &entry : unityBufferPool) {
       std::string id;
@@ -4146,7 +4206,7 @@ private:
       }
       constexpr StringLiteral matches = "__vrc_unity_buffer_matches";
       addSlot(matches, "SystemBoolean", "null", false);
-      emitPush(location, token);
+      emitPush(location, logicalId);
       emitPush(location, id);
       emitPush(location, matches);
       emitExtern(location,
@@ -4157,7 +4217,9 @@ private:
           location, vm::JumpIfFalseOp::getOperationName(),
           {builder.getNamedAttr("target", builder.getI64IntegerAttr(0))});
       address += 8;
-      emitCopy(location, entry.heapSlot, selected);
+      emitCopy(location,
+               immutableSlot("SystemInt32", std::to_string(entry.index + 1)),
+               token);
       done.push_back(emitJump(location, 0));
       next->setAttr("target",
                     builder.getI64IntegerAttr(static_cast<int64_t>(address)));
@@ -4165,7 +4227,6 @@ private:
     for (Operation *jump : done)
       jump->setAttr("target",
                     builder.getI64IntegerAttr(static_cast<int64_t>(address)));
-    return selected;
   }
 
   std::string selectUnityReadableBuffer(Location location, StringRef token,

@@ -354,6 +354,13 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             );
             Assert.AreEqual(deviceBufferIds.Length, deviceBuffers.Length);
             Assert.IsTrue(
+                hostProgram.publicVariables.TryGetVariableValue(
+                    "__udoncl_buffer_pool",
+                    out RenderTexture[] programBufferPool
+                )
+            );
+            CollectionAssert.AreEqual(deviceBuffers, programBufferPool);
+            Assert.IsTrue(
                 bindingBacking.publicVariables.TryGetVariableValue(
                     "bufferCopyMaterial",
                     out Material bufferCopyMaterial

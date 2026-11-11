@@ -833,6 +833,9 @@ def main():
     assert 'BindOnnxTensorPhysical' not in mnist_binding
     assert 'udon_onnx_binding_bind_tensor' not in mnist_binding
     assert 'public void _ContinueAsyncCommand()' in mnist_binding
+    assert 'int physicalBufferToken = (int)rawBuffer;' in mnist_binding
+    assert 'int index = physicalBufferToken - 1;' in mnist_binding
+    assert 'int bufferId = (int)rawBuffer;' not in mnist_binding
     assert 'VRCWrapperGenerator' not in mnist_binding
     mnist_controller = (
         args.source.resolve().parents[1]
@@ -1465,8 +1468,9 @@ def main():
     assert (
         'SystemInt32Array.__Set__SystemInt32_SystemInt32__SystemVoid'
         in tokenizer_assembly)
-    assert '.export __udoncl_buffer_1' in assembly
-    assert '__udoncl_buffer_1: %UnityEngineRenderTexture, null' in assembly
+    assert '.export __udoncl_buffer_pool' in assembly
+    assert '__udoncl_buffer_pool: %UnityEngineRenderTextureArray, null' in assembly
+    assert unity_manifest['program']['buffer_pool_slot'] == '__udoncl_buffer_pool'
     # This helper is synchronous, so selective Host inlining removes its
     # generic indirect-return protocol. May-suspend helpers remain separate.
     assert 'JUMP_INDIRECT, __vrc_internal_bank_0_return' not in assembly
@@ -1602,13 +1606,12 @@ def main():
     copy_assembly = (copy_artifact / 'host.uasm').read_text(encoding='utf-8')
     assert '.export CopyFull' in copy_assembly
     assert copy_assembly.count('VRCSDKBaseVRCGraphics.__Blit__') == 2
-    first_copy = copy_assembly.index('PUSH, __udoncl_buffer_1')
-    intermediate_write = copy_assembly.index('PUSH, __udoncl_buffer_2', first_copy)
-    intermediate_read = copy_assembly.index(
-        'PUSH, __udoncl_buffer_2', intermediate_write + 1
-    )
-    final_write = copy_assembly.index('PUSH, __udoncl_buffer_3', intermediate_read)
-    assert first_copy < intermediate_write < intermediate_read < final_write
+    assert copy_manifest['program']['buffer_pool_slot'] == '__udoncl_buffer_pool'
+    assert '.export __udoncl_buffer_pool' in copy_assembly
+    assert '__udoncl_buffer_pool: %UnityEngineRenderTextureArray, null' in copy_assembly
+    assert copy_assembly.count(
+        'SystemObjectArray.__Get__SystemInt32__SystemObject'
+    ) == 4
     assert (copy_artifact / 'buffer-copy.shader').is_file()
     assert (install / 'include/udoncl/unity_buffer.h').is_file()
     copy_recovered = (copy_artifact / 'frontend.recovered.mlir').read_text(

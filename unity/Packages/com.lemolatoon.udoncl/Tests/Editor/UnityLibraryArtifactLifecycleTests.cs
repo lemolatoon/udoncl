@@ -51,6 +51,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 File.ReadAllText(Path.Combine(artifact.RootDirectory, "manifest.json"))
             );
             Assert.NotNull(manifest);
+            Assert.AreEqual("__udoncl_buffer_pool", manifest.program.buffer_pool_slot);
             ExportInfo export = Array.Find(
                 manifest.exports,
                 candidate => candidate.public_name == "SquarePlusOne"

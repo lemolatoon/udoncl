@@ -1237,17 +1237,24 @@ buffer_lowered = subprocess.run(
     input=buffer_source, text=True, capture_output=True)
 assert buffer_lowered.returncode == 0, buffer_lowered.stderr
 for expected in [
-    'name = "__udoncl_buffer_1"',
-    'name = "__udoncl_buffer_2"',
+    'name = "__udoncl_buffer_pool"',
+    'type = "UnityEngineRenderTextureArray"',
     'name = "__udoncl_buffer_copy_material"',
-    'udonasm.push "__udoncl_buffer_1"',
-    'udonasm.push "__udoncl_buffer_2"',
+    'udonasm.push "__udoncl_buffer_pool"',
+    'SystemObjectArray.__Get__SystemInt32__SystemObject',
     'udonasm.push "__udoncl_buffer_copy_material"',
     'name = "__udoncl_completed_event"',
     'VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_'
     'UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid',
 ]:
     assert expected in buffer_lowered.stdout, (expected, buffer_lowered.stdout)
+for obsolete in [
+    'name = "__udoncl_buffer_1", type = "UnityEngineRenderTexture"',
+    'name = "__udoncl_buffer_2", type = "UnityEngineRenderTexture"',
+    'udonasm.push "__udoncl_buffer_1"',
+    'udonasm.push "__udoncl_buffer_2"',
+]:
+    assert obsolete not in buffer_lowered.stdout, (obsolete, buffer_lowered.stdout)
 assert re.search(
     r'udonasm\.push "__udoncl_completed_event"\s+'
     r'udonasm\.push "[^"]+"\s+udonasm\.copy',
@@ -1277,10 +1284,14 @@ cast_store_lowered = subprocess.run(
     [opt, '--vrc-lower-udonhl-to-udonasm', '--verify-each'],
     input=cast_store_source, text=True, capture_output=True)
 assert cast_store_lowered.returncode == 0, cast_store_lowered.stderr
-assert cast_store_lowered.stdout.count('udonasm.copy') == 4, cast_store_lowered.stdout
+assert cast_store_lowered.stdout.count('udonasm.copy') >= 4, cast_store_lowered.stdout
+assert (
+    'SystemInt32.__op_Equality__SystemInt32_SystemInt32__SystemBoolean'
+    in cast_store_lowered.stdout
+), cast_store_lowered.stdout
 cast_store = re.search(
     r'udonasm\.push "(?P<pointer>__vrc_f77_r_SystemInt32_\d+)"\s+'
-    r'udonasm\.push "__vrc_constant_2"\s+'
+    r'udonasm\.push "__vrc_constant_\d+"\s+'
     r'udonasm\.push "__vrc_raw_store_word_index".*?'
     r'udonasm\.push "(?P<value>__vrc_f77_r_SystemInt32_\d+)"\s+'
     r'udonasm\.extern "SystemInt32Array\.__Set__SystemInt32_SystemInt32__SystemVoid"',
@@ -1351,8 +1362,9 @@ assert 'dispatch_alias_match_' not in runtime_alias_release.stdout, (
 assert 'initial = "-59"' not in runtime_alias_release.stdout, (
     runtime_alias_release.stdout)
 
-# A large dynamic Unity buffer pool must stay within the shared 512-address
-# data/extern limit without materializing every selector ID as a direct slot.
+# A large dynamic Unity buffer pool maps logical IDs to dense physical tokens
+# once at allocation. Repeated dispatch selection is one array lookup and does
+# not reserve one public RenderTexture slot per buffer.
 selector_buffer_count = 260
 selector_pool = ',\n    '.join(
     '{id = %d : i32, logical_bytes = 4 : i32, '
@@ -1427,24 +1439,45 @@ selector_ids_text = re.search(
 selector_ids = [
     int(value) for value in re.findall(r'\d+', selector_ids_text)
 ]
-assert selector_direct_count + selector_rematerialized_count == (
-    selector_buffer_count)
-assert selector_rematerialized_count > 0, (
-    selector_data_count, selector_extern_count, selector_direct_count)
-assert selector_address_delta > 0, (
-    selector_data_count, selector_extern_count, selector_rematerialized_count)
-assert selector_attempts == 2, selector_attempts
-assert selector_requested_count == selector_rematerialized_count
-assert len(selector_ids) == selector_rematerialized_count, (
-    selector_ids_text, selector_ids, selector_rematerialized_count)
-assert selector_ids == sorted(selector_ids), selector_ids
-assert all(value > 15 for value in selector_ids), selector_ids
+assert selector_direct_count == selector_buffer_count, selector_direct_count
+assert selector_rematerialized_count == 0, selector_rematerialized_count
+assert selector_address_delta == 0, selector_address_delta
+assert selector_attempts == 0, selector_attempts
+assert selector_requested_count == 0, selector_requested_count
+assert selector_ids == [], selector_ids
+assert selector_output.count(
+    'SystemObjectArray.__Get__SystemInt32__SystemObject'
+) == 1, selector_output
+assert 'name = "__udoncl_buffer_pool"' in selector_output, selector_output
 for index in [1, selector_buffer_count // 2, selector_buffer_count]:
-    assert re.search(
-        r'udonasm\.push "__udoncl_selector_buffer_%d"\s+'
-        r'udonasm\.push "[^"]+output_texture"\s+udonasm\.copy' % index,
-        selector_output,
-    ), (index, selector_output)
+    assert ('name = "__udoncl_selector_buffer_%d"' % index) not in selector_output
+    assert ('udonasm.push "__udoncl_selector_buffer_%d"' % index) not in selector_output
+
+sparse_pool = (
+    '{id = 7 : i32, logical_bytes = 4 : i32, '
+    'heap_slot = "__udoncl_sparse_buffer_7"},\n    '
+    '{id = 42 : i32, logical_bytes = 4 : i32, '
+    'heap_slot = "__udoncl_sparse_buffer_42"}'
+)
+sparse_selector_source = selector_pressure_source.replace(
+    selector_pool, sparse_pool
+)
+sparse_selector_lowered = subprocess.run(
+    [opt, '--vrc-lower-udonhl-to-udonasm', '--verify-each'],
+    input=sparse_selector_source,
+    text=True,
+    capture_output=True,
+)
+assert sparse_selector_lowered.returncode == 0, sparse_selector_lowered.stderr
+sparse_output = sparse_selector_lowered.stdout
+assert sparse_output.count(
+    'SystemInt32.__op_Equality__SystemInt32_SystemInt32__SystemBoolean'
+) == 2, sparse_output
+assert sparse_output.count(
+    'SystemObjectArray.__Get__SystemInt32__SystemObject'
+) == 1, sparse_output
+assert 'name = "__udoncl_sparse_buffer_7"' not in sparse_output
+assert 'name = "__udoncl_sparse_buffer_42"' not in sparse_output
 
 static_buffer_source = r'''module attributes {
   vrc.host_stage = "udonhl",
@@ -1746,7 +1779,6 @@ rejected = subprocess.run(
     [opt, '--vrc-lower-udonhl-to-udonasm'], input=unbound_buffer,
     text=True, capture_output=True)
 assert rejected.returncode != 0
-assert 'Unity copy has no physical buffer pool' in rejected.stderr
 
 for argument_type, diagnostic in [
     ('memref<2x2xf32>', 'unsupported scalar Udon argument type'),

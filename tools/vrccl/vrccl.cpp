@@ -715,25 +715,25 @@ parseUnityDeviceKernels(const json::Object &config) {
   return result;
 }
 
-void appendUnityBufferSlots(ModuleOp module, ArrayRef<UnityBuffer> buffers) {
+void appendUnityBufferPoolSlot(ModuleOp module, ArrayRef<UnityBuffer> buffers) {
+  if (buffers.empty())
+    return;
   auto data = module->getAttrOfType<ArrayAttr>("udonasm.data");
   SmallVector<mlir::Attribute> entries(data.begin(), data.end());
   OpBuilder builder(module.getContext());
-  for (const UnityBuffer &buffer : buffers) {
-    bool exists = llvm::any_of(entries, [&](mlir::Attribute attribute) {
-      auto entry = dyn_cast<DictionaryAttr>(attribute);
-      auto name = entry ? entry.getAs<StringAttr>("name") : StringAttr();
-      return name && name.getValue() == buffer.heapSlot;
-    });
-    if (exists)
-      continue;
+  bool exists = llvm::any_of(entries, [&](mlir::Attribute attribute) {
+    auto entry = dyn_cast<DictionaryAttr>(attribute);
+    auto name = entry ? entry.getAs<StringAttr>("name") : StringAttr();
+    return name && name.getValue() == "__udoncl_buffer_pool";
+  });
+  if (!exists)
     entries.push_back(builder.getDictionaryAttr(
-        {builder.getNamedAttr("name", builder.getStringAttr(buffer.heapSlot)),
+        {builder.getNamedAttr("name",
+                              builder.getStringAttr("__udoncl_buffer_pool")),
          builder.getNamedAttr(
-             "type", builder.getStringAttr("UnityEngineRenderTexture")),
+             "type", builder.getStringAttr("UnityEngineRenderTextureArray")),
          builder.getNamedAttr("initial", builder.getStringAttr("null")),
          builder.getNamedAttr("public", builder.getUnitAttr())}));
-  }
   module->setAttr("udonasm.data", builder.getArrayAttr(entries));
 }
 
@@ -3128,6 +3128,9 @@ int main(int argc, char **argv) {
       return 1;
     }
     (*device)["buffers"] = unityBufferManifest(unityBuffers);
+    if (!unityBuffers.empty())
+      (*manifest["program"].getAsObject())["buffer_pool_slot"] =
+          "__udoncl_buffer_pool";
     if (auto capacity = (*module)->getAttrOfType<IntegerAttr>(
             "udoncl.mutable_handle_capacity"))
       (*device)["mutable_handle_capacity"] = capacity.getInt();
@@ -3376,7 +3379,7 @@ int main(int argc, char **argv) {
           {"bytes", static_cast<int64_t>(reportText.size())},
       });
     }
-    appendUnityBufferSlots(physicalModule, unityBuffers);
+    appendUnityBufferPoolSlot(physicalModule, unityBuffers);
     if (unityUsesBufferCopy)
       appendUnityCopyMaterialSlot(physicalModule);
     appendUnityDispatchMaterialSlots(physicalModule, unityConfiguredKernelIds);

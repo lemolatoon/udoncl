@@ -348,12 +348,14 @@ copy_manifest = json.loads((copy_artifact / 'manifest.json').read_text())
 assert copy_manifest['artifact_stage'] == 'unity-udoncl-library'
 assert copy_manifest['program']['buffer_copy_shader'] == 'buffer-copy.shader'
 assert copy_manifest['program']['buffer_copy_program_slot'] is True
+assert copy_manifest['program']['buffer_pool_slot'] == '__udoncl_buffer_pool'
 assert [buffer['logical_bytes'] for buffer in copy_manifest['device']['buffers']] == [4, 4]
 copy_assembly = (copy_artifact / 'host.uasm').read_text()
 for expected in [
     '.export CopyFull',
-    '.export __udoncl_buffer_1',
-    '.export __udoncl_buffer_2',
+    '.export __udoncl_buffer_pool',
+    '__udoncl_buffer_pool: %UnityEngineRenderTextureArray, null',
+    'SystemObjectArray.__Get__SystemInt32__SystemObject',
     '.export __udoncl_buffer_copy_material',
     'VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_'
     'UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid',

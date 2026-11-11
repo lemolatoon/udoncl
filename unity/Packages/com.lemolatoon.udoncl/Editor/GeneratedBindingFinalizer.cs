@@ -196,26 +196,6 @@ namespace Lemolatoon.Udoncl.Editor
                     SetPublicVariable(program, manifest.program.raw_heap_slot, rawHeap);
                 }
                 if (
-                    manifest.device != null
-                    && manifest.device.buffers != null
-                    && manifest.device.buffers.Length != 0
-                )
-                    foreach (DeviceBufferInfo buffer in manifest.device.buffers)
-                    {
-                        string texturePath =
-                            programRoot
-                            + "/RenderTextures/"
-                            + UdonclArtifactImporter.DeviceBufferFileName(buffer.id, buffer.name);
-                        RenderTexture texture = AssetDatabase.LoadAssetAtPath<RenderTexture>(
-                            texturePath
-                        );
-                        if (texture == null)
-                            throw new InvalidDataException(
-                                "Generated Device buffer is missing: " + texturePath
-                            );
-                        SetPublicVariable(program, buffer.heap_slot, texture);
-                    }
-                if (
                     manifest.program != null
                     && !string.IsNullOrEmpty(manifest.program.buffer_copy_shader)
                     && manifest.program.buffer_copy_program_slot
@@ -314,6 +294,10 @@ namespace Lemolatoon.Udoncl.Editor
                         bufferTextures[index] = AssetDatabase.LoadAssetAtPath<RenderTexture>(
                             texturePath
                         );
+                        if (bufferTextures[index] == null)
+                            throw new InvalidDataException(
+                                "Generated Device buffer is missing: " + texturePath
+                            );
                         ids.GetArrayElementAtIndex(index).intValue = bufferIds[index];
                         logicalBytes.GetArrayElementAtIndex(index).intValue = bufferLogicalBytes[
                             index
@@ -321,6 +305,14 @@ namespace Lemolatoon.Udoncl.Editor
                         textures.GetArrayElementAtIndex(index).objectReferenceValue =
                             bufferTextures[index];
                     }
+                    if (
+                        manifest.program == null
+                        || string.IsNullOrEmpty(manifest.program.buffer_pool_slot)
+                    )
+                        throw new InvalidDataException(
+                            "Generated Device buffer pool metadata is missing."
+                        );
+                    SetPublicVariable(program, manifest.program.buffer_pool_slot, bufferTextures);
                     string materialPath = programRoot + "/Materials/buffer-copy.mat";
                     bufferCopyMaterial = AssetDatabase.LoadAssetAtPath<Material>(materialPath);
                     copyMaterial.objectReferenceValue = bufferCopyMaterial;
