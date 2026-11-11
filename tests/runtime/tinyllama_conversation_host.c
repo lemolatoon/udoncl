@@ -1,5 +1,6 @@
 #include <CL/cl.h>
 #include <stdint.h>
+#include <string.h>
 #include <udoncl/array.h>
 #include <udoncl/onnx_generated_binding.h>
 #include <VRC/Runtime/OpenCL/Backend.h>
@@ -22,8 +23,20 @@ extern udononnxStatus_t tinyllama_dispose(void);
 static cl_context binding_context;
 static cl_command_queue binding_queue;
 static cl_mem input[3], output;
-static int64_t seen_tokens[4], seen_positions[4];
+static int64_t seen_tokens[128], seen_positions[128];
+static uint32_t scheduled_tokens[32];
+static char trace[512];
+static int trace_size, mask_valid = 1;
 static int runs, advances, resets, reduce_calls, finalize_calls;
+static int fail_advance_call = -1, fail_finalize_call = -1;
+
+static void record(char operation) { trace[trace_size++] = operation; }
+
+static void clear_trace(void) {
+  runs = advances = reduce_calls = finalize_calls = trace_size = 0;
+  mask_valid = 1;
+  fail_advance_call = fail_finalize_call = -1;
+}
 
 size_t udoncl_cl_buffer_limit(void) { return 1024 * 1024; }
 int udoncl_cl_gather_profile(const char *n,
@@ -100,14 +113,27 @@ udononnxStatus_t udon_onnx_binding_enqueue_reset_sequence_state(void) {
   return 0;
 }
 udononnxStatus_t udon_onnx_binding_enqueue_advance_sequence_state(void) {
+  record('A');
+  if (advances == fail_advance_call)
+    return UDONONNX_STATUS_EXECUTION_FAILURE;
   ++advances;
   return 0;
 }
 udononnxStatus_t udon_onnx_binding_enqueue_run(void) {
+  int64_t mask[64];
+  int index;
+  record('R');
   clEnqueueReadBuffer(binding_queue, input[0], CL_TRUE, 8, 8,
                       &seen_tokens[runs], 0, 0, 0);
   clEnqueueReadBuffer(binding_queue, input[2], CL_TRUE, 8, 8,
                       &seen_positions[runs], 0, 0, 0);
+  clEnqueueReadBuffer(binding_queue, input[1], CL_TRUE, 8, sizeof(mask), mask,
+                      0, 0, 0);
+  for (index = 0; index < 64; ++index) {
+    int64_t expected = index + seen_positions[runs] >= 63 ? 1 : 0;
+    if (mask[index] != expected)
+      mask_valid = 0;
+  }
   ++runs;
   return 0;
 }
@@ -128,13 +154,14 @@ cl_int __vrc_enqueue_udonaten_argmax_reduce_device_args(
   (void)n;
   (void)l;
   (void)e;
+  record('D');
   ++reduce_calls;
   return a == output && o == 4 && w == 32000 ? CL_SUCCESS : CL_INVALID_VALUE;
 }
 cl_int __vrc_enqueue_udonaten_argmax_finalize_device_args(
     cl_command_queue q, cl_mem a, cl_mem p, cl_mem r, cl_int o, cl_int w,
     cl_int reject, cl_uint n, const cl_event *l, cl_event *e) {
-  uint32_t token = 1701;
+  uint32_t *token = &scheduled_tokens[finalize_calls];
   (void)a;
   (void)p;
   (void)o;
@@ -142,28 +169,119 @@ cl_int __vrc_enqueue_udonaten_argmax_finalize_device_args(
   (void)n;
   (void)l;
   (void)e;
+  record('F');
+  if (finalize_calls == fail_finalize_call)
+    return CL_INVALID_OPERATION;
   ++finalize_calls;
   return reject == 1
-             ? clEnqueueWriteBuffer(q, r, CL_FALSE, 0, 4, &token, 0, 0, 0)
+             ? clEnqueueWriteBuffer(q, r, CL_FALSE, 0, 4, token, 0, 0, 0)
              : CL_INVALID_VALUE;
 }
 
 int main(void) {
-  int32_t prompt_data[] = {1, 450, 4996, 17354}, result_data[] = {0};
+  static const uint32_t expected_tokens[] = {1701, 29916, 432, 17204};
+  int32_t prompt_data[] = {1, 450, 4996, 17354};
+  int32_t long_prompt_data[64], result_data[32] = {0};
   udon_int32_array_native_t prompt = {prompt_data, 4},
-                            result = {result_data, 1};
+                            result = {result_data, 32},
+                            long_prompt = {long_prompt_data, 64};
   int i;
+  for (i = 0; i < 64; ++i)
+    long_prompt_data[i] = i;
   EXPECT(tinyllama_initialize() == UDONONNX_STATUS_SUCCESS);
+
+  clear_trace();
+  for (i = 0; i < 4; ++i)
+    scheduled_tokens[i] = expected_tokens[i];
+  prompt_data[0] = -1;
+  EXPECT(tinyllama_set_prompt_tokens(&prompt, 4) ==
+         UDONONNX_STATUS_INVALID_VALUE);
+  prompt_data[0] = 32000;
+  EXPECT(tinyllama_set_prompt_tokens(&prompt, 4) ==
+         UDONONNX_STATUS_INVALID_VALUE);
+  prompt_data[0] = 1;
   EXPECT(tinyllama_set_prompt_tokens(&prompt, 4) == UDONONNX_STATUS_SUCCESS);
-  EXPECT(tinyllama_generate(2) == UDONONNX_STATUS_NOT_SUPPORTED);
-  EXPECT(tinyllama_generate(1) == UDONONNX_STATUS_SUCCESS);
-  EXPECT(runs == 4 && advances == 3 && reduce_calls == 1 &&
-         finalize_calls == 1);
+  EXPECT(tinyllama_generate(4) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(runs == 7 && advances == 6 && reduce_calls == 4 &&
+         finalize_calls == 4 && mask_valid);
+  EXPECT(trace_size == 21 &&
+         !memcmp(trace, "RARARARDFARDFARDFARDF", (size_t)trace_size));
   for (i = 0; i < 4; ++i)
     EXPECT(seen_tokens[i] == prompt_data[i] && seen_positions[i] == i);
-  EXPECT(tinyllama_generated_token_count() == 1);
+  for (i = 0; i < 3; ++i)
+    EXPECT(seen_tokens[i + 4] == (int64_t)expected_tokens[i] &&
+           seen_positions[i + 4] == i + 4);
+  EXPECT(tinyllama_generated_token_count() == 4);
   EXPECT(tinyllama_read_generated_tokens(&result) == UDONONNX_STATUS_SUCCESS);
-  EXPECT(result_data[0] == 1701 && resets == 1);
+  for (i = 0; i < 4; ++i)
+    EXPECT(result_data[i] == (int32_t)expected_tokens[i]);
+  EXPECT(tinyllama_generate(1) == UDONONNX_STATUS_INVALID_STATE);
+
+  EXPECT(tinyllama_reset() == UDONONNX_STATUS_SUCCESS);
+  clear_trace();
+  scheduled_tokens[0] = 1701;
+  scheduled_tokens[1] = 2;
+  scheduled_tokens[2] = 999;
+  EXPECT(tinyllama_set_prompt_tokens(&prompt, 4) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(tinyllama_generate(3) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(tinyllama_generated_token_count() == 2);
+  EXPECT(tinyllama_read_generated_tokens(&result) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(result_data[0] == 1701 && result_data[1] == 2);
+  EXPECT(runs == 5 && advances == 4 && finalize_calls == 2 && mask_valid);
+  EXPECT(trace_size == 13 &&
+         !memcmp(trace, "RARARARDFARDF", (size_t)trace_size));
+
+  EXPECT(tinyllama_reset() == UDONONNX_STATUS_SUCCESS);
+  clear_trace();
+  scheduled_tokens[0] = 2;
+  EXPECT(tinyllama_set_prompt_tokens(&long_prompt, 64) ==
+         UDONONNX_STATUS_SUCCESS);
+  EXPECT(tinyllama_generate(2) == UDONONNX_STATUS_CAPACITY_EXCEEDED);
+  EXPECT(tinyllama_generate(33) == UDONONNX_STATUS_CAPACITY_EXCEEDED);
+  EXPECT(tinyllama_generate(1) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(runs == 64 && advances == 63 && mask_valid);
+
+  EXPECT(tinyllama_reset() == UDONONNX_STATUS_SUCCESS);
+  long_prompt.length = 33;
+  clear_trace();
+  scheduled_tokens[0] = 2;
+  EXPECT(tinyllama_set_prompt_tokens(&long_prompt, 33) ==
+         UDONONNX_STATUS_SUCCESS);
+  EXPECT(tinyllama_generate(32) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(tinyllama_reset() == UDONONNX_STATUS_SUCCESS);
+  long_prompt.length = 34;
+  EXPECT(tinyllama_set_prompt_tokens(&long_prompt, 34) ==
+         UDONONNX_STATUS_SUCCESS);
+  EXPECT(tinyllama_generate(32) == UDONONNX_STATUS_CAPACITY_EXCEEDED);
+
+  EXPECT(tinyllama_reset() == UDONONNX_STATUS_SUCCESS);
+  clear_trace();
+  scheduled_tokens[0] = 1701;
+  fail_finalize_call = 0;
+  EXPECT(tinyllama_set_prompt_tokens(&prompt, 4) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(tinyllama_generate(2) == UDONONNX_STATUS_OPENCL_ERROR);
+  EXPECT(tinyllama_generated_token_count() == 0);
+  EXPECT(tinyllama_read_generated_tokens(&result) ==
+         UDONONNX_STATUS_INVALID_STATE);
+  EXPECT(tinyllama_generate(1) == UDONONNX_STATUS_INVALID_STATE);
+  EXPECT(tinyllama_set_prompt_tokens(&prompt, 4) ==
+         UDONONNX_STATUS_INVALID_STATE);
+  EXPECT(tinyllama_reset() == UDONONNX_STATUS_SUCCESS);
+
+  clear_trace();
+  scheduled_tokens[0] = 1701;
+  fail_advance_call = 3;
+  EXPECT(tinyllama_set_prompt_tokens(&prompt, 4) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(tinyllama_generate(2) == UDONONNX_STATUS_EXECUTION_FAILURE);
+  EXPECT(tinyllama_generated_token_count() == 0);
+  EXPECT(tinyllama_generate(1) == UDONONNX_STATUS_INVALID_STATE);
+  EXPECT(tinyllama_reset() == UDONONNX_STATUS_SUCCESS);
+
+  clear_trace();
+  scheduled_tokens[0] = 2;
+  EXPECT(tinyllama_set_prompt_tokens(&prompt, 4) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(tinyllama_generate(1) == UDONONNX_STATUS_SUCCESS);
+
   EXPECT(tinyllama_dispose() == UDONONNX_STATUS_SUCCESS);
   EXPECT(tinyllama_initialize() == UDONONNX_STATUS_DISPOSED);
   return 0;

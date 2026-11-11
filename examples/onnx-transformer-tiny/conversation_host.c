@@ -10,6 +10,7 @@
 #define TINYLLAMA_LOGIT_WORDS 32000
 #define TINYLLAMA_ARGMAX_PARTIAL_WORDS 512u
 #define TINYLLAMA_ARGMAX_FAILURE 0xffffffffu
+#define TINYLLAMA_EOS_TOKEN 2u
 
 /* Private backend entry points. The public ATen ArgMax contract also needs
  * dim/keepdim and an int64 result, so this uint32 reduction stays private. */
@@ -28,8 +29,12 @@ static cl_mem inputs[3], logits, partials, result;
 static size_t input_offsets[3], logits_offset;
 static int32_t prompt[TINYLLAMA_CONTEXT_CAPACITY];
 static int32_t generated[TINYLLAMA_GENERATED_CAPACITY];
+static int64_t staged_tokens[TINYLLAMA_CONTEXT_CAPACITY];
+static int64_t staged_positions[TINYLLAMA_CONTEXT_CAPACITY];
+static const int64_t zero_attention_mask[TINYLLAMA_CONTEXT_CAPACITY];
+static const int64_t one = 1;
 static uint32_t prompt_count, generated_count;
-static int initialized, disposed, busy, completed;
+static int initialized, disposed, busy, completed, failed;
 
 static udononnxStatus_t release_opencl(void) {
   int failed = 0;
@@ -81,6 +86,17 @@ static udononnxStatus_t resolve_buffers(void) {
   return UDONONNX_STATUS_SUCCESS;
 }
 
+static udononnxStatus_t enqueue_clear_sequence_state(void) {
+  udononnxStatus_t status = udon_onnx_binding_enqueue_reset_sequence_state();
+  if (status != UDONONNX_STATUS_SUCCESS)
+    return status;
+  if (clEnqueueWriteBuffer(queue, inputs[1], CL_FALSE, input_offsets[1],
+                           sizeof(zero_attention_mask), zero_attention_mask, 0,
+                           0, 0) != CL_SUCCESS)
+    return UDONONNX_STATUS_OPENCL_ERROR;
+  return UDONONNX_STATUS_SUCCESS;
+}
+
 UDONCL_EXPORT udononnxStatus_t tinyllama_initialize(void) {
   cl_platform_id platform = 0;
   cl_device_id device = 0;
@@ -119,11 +135,11 @@ UDONCL_EXPORT udononnxStatus_t tinyllama_initialize(void) {
       clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(uint32_t), 0, &error);
   if (!result || error != CL_SUCCESS)
     return cleanup(UDONONNX_STATUS_OPENCL_ERROR);
-  status = udon_onnx_binding_enqueue_reset_sequence_state();
+  status = enqueue_clear_sequence_state();
   if (status != UDONONNX_STATUS_SUCCESS)
     return cleanup(status);
   prompt_count = generated_count = 0;
-  completed = 0;
+  completed = failed = 0;
   initialized = 1;
   return UDONONNX_STATUS_SUCCESS;
 }
@@ -136,10 +152,16 @@ UDONCL_EXPORT udononnxStatus_t tinyllama_reset(void) {
     return UDONONNX_STATUS_NOT_INITIALIZED;
   if (busy)
     return UDONONNX_STATUS_BUSY;
-  status = udon_onnx_binding_enqueue_reset_sequence_state();
+  if (clFinish(queue) != CL_SUCCESS) {
+    failed = 1;
+    return UDONONNX_STATUS_OPENCL_ERROR;
+  }
+  status = enqueue_clear_sequence_state();
   if (status == UDONONNX_STATUS_SUCCESS) {
     prompt_count = generated_count = 0;
-    completed = 0;
+    completed = failed = 0;
+  } else {
+    failed = 1;
   }
   return status;
 }
@@ -153,6 +175,8 @@ UDONCL_EXPORT udononnxStatus_t tinyllama_set_prompt_tokens(
     return UDONONNX_STATUS_NOT_INITIALIZED;
   if (busy)
     return UDONONNX_STATUS_BUSY;
+  if (failed)
+    return UDONONNX_STATUS_INVALID_STATE;
   if (!token_ids || !token_count ||
       udonInt32ArrayLength(token_ids) < (int32_t)token_count)
     return UDONONNX_STATUS_INVALID_VALUE;
@@ -160,6 +184,11 @@ UDONCL_EXPORT udononnxStatus_t tinyllama_set_prompt_tokens(
     return UDONONNX_STATUS_CAPACITY_EXCEEDED;
   if (generated_count || completed)
     return UDONONNX_STATUS_INVALID_STATE;
+  for (index = 0; index < token_count; ++index) {
+    int32_t token = udonInt32ArrayGet(token_ids, (int32_t)index);
+    if (token < 0 || token >= TINYLLAMA_LOGIT_WORDS)
+      return UDONONNX_STATUS_INVALID_VALUE;
+  }
   for (index = 0; index < token_count; ++index)
     prompt[index] = udonInt32ArrayGet(token_ids, (int32_t)index);
   prompt_count = token_count;
@@ -167,16 +196,18 @@ UDONCL_EXPORT udononnxStatus_t tinyllama_set_prompt_tokens(
 }
 
 static udononnxStatus_t enqueue_step(int32_t token, uint32_t position) {
-  int64_t token64 = token, position64 = position, one = 1;
   size_t mask = TINYLLAMA_CONTEXT_CAPACITY - position - 1u;
+  staged_tokens[position] = token;
+  staged_positions[position] = position;
   if (clEnqueueWriteBuffer(queue, inputs[0], CL_FALSE, input_offsets[0],
-                           sizeof(token64), &token64, 0, 0, 0) != CL_SUCCESS ||
+                           sizeof(staged_tokens[position]),
+                           &staged_tokens[position], 0, 0, 0) != CL_SUCCESS ||
       clEnqueueWriteBuffer(queue, inputs[1], CL_FALSE,
                            input_offsets[1] + mask * sizeof(int64_t),
                            sizeof(one), &one, 0, 0, 0) != CL_SUCCESS ||
       clEnqueueWriteBuffer(queue, inputs[2], CL_FALSE, input_offsets[2],
-                           sizeof(position64), &position64, 0, 0,
-                           0) != CL_SUCCESS)
+                           sizeof(staged_positions[position]),
+                           &staged_positions[position], 0, 0, 0) != CL_SUCCESS)
     return UDONONNX_STATUS_OPENCL_ERROR;
   return udon_onnx_binding_enqueue_run();
 }
@@ -205,11 +236,12 @@ UDONCL_EXPORT udononnxStatus_t tinyllama_generate(uint32_t max_new_tokens) {
     return UDONONNX_STATUS_NOT_INITIALIZED;
   if (busy)
     return UDONONNX_STATUS_BUSY;
+  if (failed || completed)
+    return UDONONNX_STATUS_INVALID_STATE;
   if (!prompt_count || !max_new_tokens)
     return UDONONNX_STATUS_INVALID_VALUE;
-  if (max_new_tokens != 1)
-    return UDONONNX_STATUS_NOT_SUPPORTED;
-  if (prompt_count + max_new_tokens > TINYLLAMA_CONTEXT_CAPACITY)
+  if (max_new_tokens > TINYLLAMA_GENERATED_CAPACITY ||
+      prompt_count + max_new_tokens - 1u > TINYLLAMA_CONTEXT_CAPACITY)
     return UDONONNX_STATUS_CAPACITY_EXCEEDED;
   busy = 1;
   generated_count = 0;
@@ -223,12 +255,25 @@ UDONCL_EXPORT udononnxStatus_t tinyllama_generate(uint32_t max_new_tokens) {
         break;
     }
   }
-  if (status == UDONONNX_STATUS_SUCCESS)
+  while (status == UDONONNX_STATUS_SUCCESS &&
+         generated_count < max_new_tokens) {
     status = select_token(&token);
+    if (status != UDONONNX_STATUS_SUCCESS)
+      break;
+    generated[generated_count++] = (int32_t)token;
+    if (token == TINYLLAMA_EOS_TOKEN || generated_count == max_new_tokens)
+      break;
+    status = udon_onnx_binding_enqueue_advance_sequence_state();
+    if (status == UDONONNX_STATUS_SUCCESS)
+      status =
+          enqueue_step((int32_t)token, prompt_count + generated_count - 1u);
+  }
   if (status == UDONONNX_STATUS_SUCCESS) {
-    generated[0] = (int32_t)token;
-    generated_count = 1;
     completed = 1;
+  } else {
+    failed = 1;
+    completed = 0;
+    generated_count = 0;
   }
   busy = 0;
   return status;
