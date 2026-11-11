@@ -132,7 +132,7 @@ public:
            uint32_t x = 0, uint32_t y = 1, uint32_t inputsRequested = 1)
       : width(x ? x : 1), height(y), inputCount(x ? inputsRequested : 0),
         gather(x != 0) {
-    if (!height || uint64_t(width) * height > 16384 || inputCount > 13 ||
+    if (!height || uint64_t(width) * height > 131072 || inputCount > 13 ||
         (gather && !inputCount))
       throw std::runtime_error("gather extent exceeds supported profile");
     auto application =

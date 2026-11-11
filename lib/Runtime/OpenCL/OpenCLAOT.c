@@ -1491,6 +1491,22 @@ cl_int __vrc_enqueue_udondnn_large_pooling_device_args(
                                CL_FALSE, event);
 }
 
+static cl_int udoncl_large_tensor_shape(cl_int nc, cl_int hw,
+                                        size_t *elements) {
+  cl_uint n = (cl_uint)nc & 65535u;
+  cl_uint c = ((cl_uint)nc >> 16u) & 65535u;
+  cl_uint h = (cl_uint)hw & 65535u;
+  cl_uint w = ((cl_uint)hw >> 16u) & 65535u;
+  size_t product;
+  if (!n || !c || !h || !w)
+    return CL_INVALID_VALUE;
+  product = (size_t)n * c * h * w;
+  if (product > 131072u)
+    return CL_INVALID_VALUE;
+  *elements = product;
+  return CL_SUCCESS;
+}
+
 cl_int __vrc_enqueue_udondnn_large_op_tensor_device_args(
     cl_command_queue queue, cl_mem a, cl_mem b, cl_mem previous, cl_mem output,
     cl_int words, cl_int a_nc, cl_int a_hw, cl_int b_nc, cl_int b_hw,
@@ -1498,6 +1514,19 @@ cl_int __vrc_enqueue_udondnn_large_op_tensor_device_args(
     cl_float alpha_b, cl_float beta, cl_uint wait_count,
     const cl_event *wait_list, cl_event *event) {
   cl_int pending;
+  size_t a_elements;
+  size_t b_elements;
+  size_t c_elements;
+  cl_uint a_dimensions[4] = {
+      (cl_uint)a_nc & 65535u, ((cl_uint)a_nc >> 16u) & 65535u,
+      (cl_uint)a_hw & 65535u, ((cl_uint)a_hw >> 16u) & 65535u};
+  cl_uint b_dimensions[4] = {
+      (cl_uint)b_nc & 65535u, ((cl_uint)b_nc >> 16u) & 65535u,
+      (cl_uint)b_hw & 65535u, ((cl_uint)b_hw >> 16u) & 65535u};
+  cl_uint c_dimensions[4] = {
+      (cl_uint)c_nc & 65535u, ((cl_uint)c_nc >> 16u) & 65535u,
+      (cl_uint)c_hw & 65535u, ((cl_uint)c_hw >> 16u) & 65535u};
+  cl_uint axis;
   if (queue != &udoncl_queue || !queue->active || !a ||
       !udoncl_mem_is_active(a) || !b || !udoncl_mem_is_active(b) || !previous ||
       !udoncl_mem_is_active(previous) || !output ||
@@ -1505,9 +1534,25 @@ cl_int __vrc_enqueue_udondnn_large_op_tensor_device_args(
       udoncl_mem_context(a) != queue->context ||
       udoncl_mem_context(b) != queue->context ||
       udoncl_mem_context(previous) != queue->context ||
-      udoncl_mem_context(output) != queue->context ||
+      udoncl_mem_context(output) != queue->context || words < 1 ||
+      words > 131072 || (options & 255) > 3 ||
       udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
+  if (udoncl_large_tensor_shape(a_nc, a_hw, &a_elements) != CL_SUCCESS ||
+      udoncl_large_tensor_shape(b_nc, b_hw, &b_elements) != CL_SUCCESS ||
+      udoncl_large_tensor_shape(c_nc, c_hw, &c_elements) != CL_SUCCESS ||
+      c_elements != (size_t)words)
+    return CL_INVALID_VALUE;
+  for (axis = 0; axis < 4; ++axis)
+    if ((a_dimensions[axis] != 1u &&
+         a_dimensions[axis] != c_dimensions[axis]) ||
+        (b_dimensions[axis] != 1u && b_dimensions[axis] != c_dimensions[axis]))
+      return CL_INVALID_VALUE;
+  if (udoncl_mem_bytes(a) < a_elements * 4u ||
+      udoncl_mem_bytes(b) < b_elements * 4u ||
+      udoncl_mem_bytes(output) < c_elements * 4u ||
+      (beta != 0.0f && udoncl_mem_bytes(previous) < c_elements * 4u))
+    return CL_INVALID_BUFFER_SIZE;
   UDONCL_RETURN_IF_READ_WRITE_ALIAS(output, a, b, previous);
   pending = __vrc_opencl_dispatch_udondnn_large_op_tensor(
       udoncl_mem_physical_token(a), udoncl_mem_physical_token(b),
@@ -1702,7 +1747,7 @@ cl_int __vrc_enqueue_udononnx_transpose_device_args(
       !udoncl_mem_is_active(output) ||
       udoncl_mem_context(input) != queue->context ||
       udoncl_mem_context(output) != queue->context || words < 1 ||
-      words > 16384 || rank < 1 || rank > 5 ||
+      words > 131072 || rank < 1 || rank > 5 ||
       udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
   for (axis = 0; axis < rank; ++axis) {
@@ -1710,7 +1755,7 @@ cl_int __vrc_enqueue_udononnx_transpose_device_args(
         (packed_shapes[(cl_uint)axis / 2u] >> ((axis & 1) * 16)) & 65535u;
     cl_uint input_axis = ((cl_uint)permutation >> (axis * 3)) & 7u;
     if (!extent || input_axis >= (cl_uint)rank || (seen & (1u << input_axis)) ||
-        elements > 16384u / extent)
+        elements > 131072u / extent)
       return CL_INVALID_VALUE;
     seen |= 1u << input_axis;
     elements *= extent;
@@ -1818,7 +1863,7 @@ cl_int __vrc_enqueue_udononnx_expand_device_args(
       !udoncl_mem_is_active(output) ||
       udoncl_mem_context(input) != queue->context ||
       udoncl_mem_context(output) != queue->context || words < 1 ||
-      words > 16384 || input_rank < 0 || input_rank > 5 ||
+      words > 131072 || input_rank < 0 || input_rank > 5 ||
       output_rank < input_rank || output_rank < 1 || output_rank > 5 ||
       udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
@@ -1828,7 +1873,7 @@ cl_int __vrc_enqueue_udononnx_expand_device_args(
     cl_uint output_extent =
         (output_shapes[(cl_uint)output_axis / 2u] >> shift) & 65535u;
     cl_int input_axis = output_axis - rank_offset;
-    if (!output_extent || output_elements > 16384u / output_extent)
+    if (!output_extent || output_elements > 131072u / output_extent)
       return CL_INVALID_VALUE;
     output_elements *= output_extent;
     if (input_axis >= 0) {

@@ -942,7 +942,7 @@ bool isDeviceExpandNode(const GraphRecord &graph, const NodeRecord &node) {
       !output.type.getElementType().isF32() || inputRank < 0 || inputRank > 5 ||
       outputRank < std::max<int64_t>(inputRank, 1) || outputRank > 5 ||
       input.type.getNumElements() < 1 || input.type.getNumElements() > 16384 ||
-      output.type.getNumElements() < 1 || output.type.getNumElements() > 16384)
+      output.type.getNumElements() < 1 || output.type.getNumElements() > 131072)
     return false;
   int64_t rankOffset = outputRank - inputRank;
   for (int64_t outputAxis = 0; outputAxis < outputRank; ++outputAxis) {
@@ -1228,7 +1228,7 @@ deviceTransposePermutation(const GraphRecord &graph, const NodeRecord &node) {
   int64_t rank = input.type.getRank();
   if (!input.type.getElementType().isF32() || rank < 1 || rank > 5 ||
       output.type.getRank() != rank || input.type.getNumElements() < 1 ||
-      input.type.getNumElements() > 16384 ||
+      input.type.getNumElements() > 131072 ||
       input.type.getNumElements() != output.type.getNumElements())
     return std::nullopt;
   SmallVector<int64_t> permutation = integerArrayAttribute(node, "perm", {});
@@ -1374,11 +1374,11 @@ bool supportsDeviceNode(const GraphRecord &graph, const NodeRecord &node) {
       return false;
     SmallVector<int64_t, 4> output =
         broadcastTensor4d(graph.tensors[node.output].type);
-    if (graph.tensors[node.output].type.getNumElements() > 32768)
+    if (graph.tensors[node.output].type.getNumElements() > 131072)
       return false;
     for (int64_t inputIndex : ArrayRef<int64_t>(node.inputs).take_front(2)) {
       const TensorRecord &input = graph.tensors[inputIndex];
-      if (input.type.getNumElements() > 32768)
+      if (input.type.getNumElements() > 131072)
         return false;
       SmallVector<int64_t, 4> inputShape = broadcastTensor4d(input.type);
       for (auto [inputDimension, outputDimension] :

@@ -2709,9 +2709,27 @@ int main(int argc, char **argv) {
     unityBuffers = std::move(*parsedBuffers);
     if (!deviceLLVM.empty()) {
       unityDeviceModule = ModuleOp::create(UnknownLoc::get(&context));
-      if (!unityBuffers.empty() &&
+      int64_t maximumKernelWords = 0;
+      std::optional<int64_t> commonKernelWidth;
+      bool commonKernelWidthValid = true;
+      for (const json::Object *deviceConfig : unityDeviceConfigs) {
+        if (auto words = deviceConfig->getInteger("words"))
+          maximumKernelWords = std::max(maximumKernelWords, *words);
+        auto *global = deviceConfig->getArray("global_size");
+        auto width = global && global->size() == 3 ? (*global)[0].getAsInteger()
+                                                   : std::optional<int64_t>();
+        if (!width)
+          commonKernelWidthValid = false;
+        else if (!commonKernelWidth)
+          commonKernelWidth = *width;
+        else if (*commonKernelWidth != *width)
+          commonKernelWidthValid = false;
+      }
+      if (!unityBuffers.empty() && commonKernelWidthValid &&
+          commonKernelWidth &&
           llvm::all_of(unityBuffers, [&](const UnityBuffer &buffer) {
-            return buffer.width == unityBuffers.front().width;
+            return buffer.width == unityBuffers.front().width &&
+                   buffer.width == *commonKernelWidth;
           }))
         (*unityDeviceModule)
             ->setAttr("vrc.texture_row_pitch",
@@ -2719,10 +2737,13 @@ int main(int argc, char **argv) {
                           mlir::IntegerType::get(&context, 32),
                           static_cast<int32_t>(unityBuffers.front().width)));
       if (!unityBuffers.empty() &&
-          llvm::all_of(unityBuffers, [&](const UnityBuffer &buffer) {
-            return buffer.width == unityBuffers.front().width &&
-                   buffer.height == unityBuffers.front().height;
-          }))
+          llvm::all_of(unityBuffers,
+                       [&](const UnityBuffer &buffer) {
+                         return buffer.width == unityBuffers.front().width &&
+                                buffer.height == unityBuffers.front().height;
+                       }) &&
+          unityBuffers.front().width * unityBuffers.front().height >=
+              maximumKernelWords)
         (*unityDeviceModule)
             ->setAttr("vrc.texture_shape",
                       DenseI32ArrayAttr::get(

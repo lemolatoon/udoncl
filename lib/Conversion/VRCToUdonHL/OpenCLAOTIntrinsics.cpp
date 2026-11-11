@@ -446,17 +446,16 @@ struct LowerOpenCLAOTIntrinsicsPass
         else if (arenaSgemm || arenaBatchedSgemm || largeConvolution ||
                  largePooling || rmsReduce || rmsFinalize || arenaSoftmax)
           globalSize = rewriter.getDenseI32ArrayAttr({8192, 2, 1});
-        else if (largeActivation || largeOpTensor)
+        else if (largeActivation)
           globalSize = rewriter.getDenseI32ArrayAttr({8192, 4, 1});
         else if (sgemv)
           globalSize = rewriter.getDenseI32ArrayAttr({1024, 1, 1});
         else if (embedding)
           globalSize = rewriter.getDenseI32ArrayAttr({1536, 1, 1});
-        else if (matmulNBitsQ4)
+        else if (matmulNBitsQ4 || largeOpTensor || transpose || expand)
           globalSize = rewriter.getDenseI32ArrayAttr({8192, 16, 1});
-        else if (matmulNBits || unary || transpose || slice || expand ||
-                 concat || axis0Gather || castI64F32 || equalF32 || whereF32 ||
-                 scatterNDF32)
+        else if (matmulNBits || unary || slice || concat || axis0Gather ||
+                 castI64F32 || equalF32 || whereF32 || scatterNDF32)
           globalSize = rewriter.getDenseI32ArrayAttr({16384, 1, 1});
         else
           globalSize = rewriter.getDenseI32ArrayAttr({10800, 1, 1});

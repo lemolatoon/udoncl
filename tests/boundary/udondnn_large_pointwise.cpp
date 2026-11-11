@@ -61,7 +61,31 @@ int main() {
   for (int index = words; index < arenaWords; ++index)
     maximumError = std::max(maximumError, std::max(std::abs(combined[index]),
                                                    std::abs(activated[index])));
+
+  constexpr int attentionWords = 1 * 32 * 64 * 64;
+  std::vector<float> attention(attentionWords);
+  std::vector<float> attentionOutput(attentionWords, -1.0f);
+  std::vector<float> unusedPrevious(1, 0.0f);
+  std::vector<float> scale(1, 0.125f);
+  for (int index = 0; index < attentionWords; ++index)
+    attention[index] = static_cast<float>((index % 41) - 20) / 13.0f;
+  for (udondnn_large_pointwise_cpu_gid_y = 0;
+       udondnn_large_pointwise_cpu_gid_y < 16;
+       ++udondnn_large_pointwise_cpu_gid_y)
+    for (udondnn_large_pointwise_cpu_gid_x = 0;
+         udondnn_large_pointwise_cpu_gid_x < 8192;
+         ++udondnn_large_pointwise_cpu_gid_x)
+      udondnn_large_op_tensor(attention.data(), scale.data(),
+                              unusedPrevious.data(), attentionOutput.data(),
+                              attentionWords, 1 | (32 << 16), 64 | (64 << 16),
+                              1 | (1 << 16), 1 | (1 << 16), 1 | (32 << 16),
+                              64 | (64 << 16), 1, 1.0f, 1.0f, 0.0f);
+  for (int index = 0; index < attentionWords; ++index)
+    maximumError =
+        std::max(maximumError, std::abs(attentionOutput[index] -
+                                        attention[index] * scale[0]));
   std::cout << "large_pointwise_outputs=" << words << '\n';
+  std::cout << "large_pointwise_attention_outputs=" << attentionWords << '\n';
   std::cout << "large_pointwise_max_error=" << maximumError << '\n';
   return maximumError < 0.00001f ? 0 : 1;
 }

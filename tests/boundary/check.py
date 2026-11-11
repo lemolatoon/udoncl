@@ -149,7 +149,8 @@ assert 'vrc.async_effect = "may_suspend"' in opencl_aot_ops
 assert '@__vrc_opencl_' not in opencl_aot_ops
 assert 'scalar_kinds = ["i32", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "f32", "f32"]' in opencl_aot_ops
 assert 'kernel_id = 221 : i32' in opencl_aot_ops
-assert opencl_aot_ops.count('global_size = array<i32: 8192, 4, 1>') == 2
+assert opencl_aot_ops.count('global_size = array<i32: 8192, 4, 1>') == 1
+assert opencl_aot_ops.count('global_size = array<i32: 8192, 16, 1>') == 1
 assert 'kernel_id = 233 : i32' in opencl_aot_ops
 assert 'kernel_id = 234 : i32' in opencl_aot_ops
 assert 'resource_accesses = ["read", "read", "write"]' in opencl_aot_ops

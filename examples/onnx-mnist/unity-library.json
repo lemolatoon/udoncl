@@ -14,10 +14,11 @@
       "global_size": [8192, 2, 1], "local_size": [1, 1, 1], "global_offset": [0, 0, 0]
     },
     {
-      "schema_version": 1, "profile": "gather-f32", "words": 16384,
+      "schema_version": 1, "profile": "gather-f32", "words": 131072,
       "kernel": "udondnn_large_op_tensor", "kernel_id": 234,
+      "input_words": [131072, 131072, 131072],
       "argument_kinds": ["buffer", "buffer", "buffer", "buffer", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "f32", "f32", "f32"],
-      "global_size": [8192, 2, 1], "local_size": [1, 1, 1], "global_offset": [0, 0, 0]
+      "global_size": [8192, 16, 1], "local_size": [1, 1, 1], "global_offset": [0, 0, 0]
     },
     {
       "schema_version": 1, "profile": "gather-f32", "words": 16384,

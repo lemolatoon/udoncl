@@ -786,6 +786,32 @@ assert "udoncl.onnx_device_unsupported = []" in scatter_host.stdout
 assert scatter_host.stdout.count("call @__vrc_opencl_dispatch_udononnx_scatter_nd_f32") == 1
 assert "call @udononnxScatterND" not in scatter_host.stdout
 
+gqa_source = source.with_name("onnx_m1_gqa_materialization.mlir")
+gqa_portable = subprocess.run(
+    [opt, "--udoncl-lower-onnx-to-host", gqa_source],
+    text=True,
+    capture_output=True,
+    check=True,
+).stdout
+gqa_host = subprocess.run(
+    [host_opt, "--udoncl-finalize-onnx-host", "-"],
+    input=gqa_portable,
+    text=True,
+    capture_output=True,
+)
+assert gqa_host.returncode == 0, (gqa_host.stdout, gqa_host.stderr)
+assert "udoncl.onnx_device_graph = true" in gqa_host.stdout
+assert "udoncl.onnx_device_unsupported = []" in gqa_host.stdout
+assert gqa_host.stdout.count(
+    "call @__vrc_opencl_dispatch_udononnx_expand_f32"
+) == 1
+assert gqa_host.stdout.count(
+    "call @__vrc_opencl_dispatch_udononnx_transpose_f32"
+) == 1
+assert gqa_host.stdout.count(
+    "call @__vrc_opencl_dispatch_udondnn_large_op_tensor"
+) == 1
+
 softmax_source = source.with_name("onnx_softmax.mlir")
 softmax_portable = subprocess.run(
     [opt, "--udoncl-lower-onnx-to-host", softmax_source],

@@ -1,10 +1,13 @@
 #ifdef __OPENCL_C_VERSION__
 #define UDONONNX_REINDEX_GID() ((size_t)get_global_id(0))
+#define UDONONNX_REINDEX_GID_2D()                                              \
+  ((size_t)get_global_id(1) * 8192u + (size_t)get_global_id(0))
 #else
 #include <stddef.h>
 typedef unsigned int uint;
 extern size_t udononnx_reindex_cpu_gid;
 #define UDONONNX_REINDEX_GID() (udononnx_reindex_cpu_gid)
+#define UDONONNX_REINDEX_GID_2D() (udononnx_reindex_cpu_gid)
 #define __kernel
 #define __global
 #endif
@@ -68,7 +71,7 @@ __kernel void udononnx_transpose_f32(__global const float *input,
                                      int rank, int shape01_value,
                                      int shape23_value, int shape4_value,
                                      int permutation_value) {
-  size_t gid = UDONONNX_REINDEX_GID();
+  size_t gid = UDONONNX_REINDEX_GID_2D();
   uint shape01 = (uint)shape01_value;
   uint shape23 = (uint)shape23_value;
   uint shape4 = (uint)shape4_value;
@@ -93,7 +96,7 @@ __kernel void udononnx_transpose_f32(__global const float *input,
         output_stride *= output_dimension;
       }
     }
-    value = input[input_index & 16383u];
+    value = input[input_index & 131071u];
   }
   output[gid] = value;
 }
@@ -360,7 +363,7 @@ udononnx_expand_f32(__global const float *input, __global float *output,
                     int input_shape23_value, int input_shape4_value,
                     int output_rank, int output_shape01_value,
                     int output_shape23_value, int output_shape4_value) {
-  size_t gid = UDONONNX_REINDEX_GID();
+  size_t gid = UDONONNX_REINDEX_GID_2D();
   uint input_shape01 = (uint)input_shape01_value;
   uint input_shape23 = (uint)input_shape23_value;
   uint input_shape4 = (uint)input_shape4_value;

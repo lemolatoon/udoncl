@@ -33,10 +33,10 @@ static int packSigned(const std::vector<int> &values, int first, int fallback) {
 
 static float runCase(const std::vector<int> &shape,
                      const std::vector<int> &permutation) {
-  constexpr int surfaceWords = 16384;
   int words = 1;
   for (int dimension : shape)
     words *= dimension;
+  int surfaceWords = std::max(16384, words);
   std::vector<float> input(words);
   std::vector<float> output(surfaceWords, -17.0f);
   std::vector<float> expected(words);
@@ -122,13 +122,13 @@ static float runSliceCase(const std::vector<int> &inputShape,
 
 static float runExpandCase(const std::vector<int> &inputShape,
                            const std::vector<int> &outputShape) {
-  constexpr int surfaceWords = 16384;
   int inputWords = 1;
   int outputWords = 1;
   for (int dimension : inputShape)
     inputWords *= dimension;
   for (int dimension : outputShape)
     outputWords *= dimension;
+  int surfaceWords = std::max(16384, outputWords);
   std::vector<float> input(inputWords);
   std::vector<float> output(surfaceWords, -17.0f);
   std::vector<float> expected(outputWords);
@@ -334,12 +334,16 @@ static float runScatterNDCase(int indexWords) {
 int main() {
   float headsError = runCase({1, 4, 32, 64}, {0, 2, 1, 3});
   float attentionError = runCase({1, 32, 4, 64}, {0, 1, 3, 2});
+  float m1AttentionError = runCase({1, 32, 64, 64}, {0, 1, 3, 2});
   float rotaryError = runCase({1, 32, 4}, {0, 2, 1});
-  float maximumError = std::max({headsError, attentionError, rotaryError});
+  float maximumError =
+      std::max({headsError, attentionError, m1AttentionError, rotaryError});
   float halfError =
       runSliceCase({1, 32, 4, 64}, {1, 32, 4, 32}, {0, 0, 0, 32}, {1, 1, 1, 1});
   float stridedError = runSliceCase({2, 3, 4}, {2, 3, 2}, {0, 0, 0}, {1, 1, 2});
   float repeatHeadsError = runExpandCase({1, 4, 1, 4, 64}, {1, 4, 8, 4, 64});
+  float m1RepeatHeadsError =
+      runExpandCase({1, 4, 1, 64, 64}, {1, 4, 8, 64, 64});
   float leadingBroadcastError = runExpandCase({2, 1}, {3, 2, 5});
   float rotaryConcatError = runConcatCase({1, 32, 4, 32}, {1, 32, 4, 32}, 3);
   float cacheConcatError = runConcatCase({1, 4, 2, 64}, {1, 4, 4, 64}, 2);
@@ -351,10 +355,10 @@ int main() {
   float scatterI64Error = runScatterNDCase(2);
   maximumError =
       std::max({maximumError, halfError, stridedError, repeatHeadsError,
-                leadingBroadcastError, rotaryConcatError, cacheConcatError,
-                gatherI32Error, gatherI64Error, castError, equalWhereError,
-                scatterI32Error, scatterI64Error});
-  std::cout << "reindex_cases=15\n";
+                m1RepeatHeadsError, leadingBroadcastError, rotaryConcatError,
+                cacheConcatError, gatherI32Error, gatherI64Error, castError,
+                equalWhereError, scatterI32Error, scatterI64Error});
+  std::cout << "reindex_cases=17\n";
   std::cout << "reindex_max_error=" << maximumError << '\n';
   return maximumError == 0.0f ? 0 : 1;
 }

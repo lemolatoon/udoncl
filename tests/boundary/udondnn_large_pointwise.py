@@ -48,16 +48,18 @@ for kernel_id, name, argument_count, scalar_bytes in [
     (233, "udondnn_large_activation_forward", 9, 24),
     (234, "udondnn_large_op_tensor", 15, 44),
 ]:
+    words = 131072 if kernel_id == 234 else 16384
+    global_size = [8192, 16, 1] if kernel_id == 234 else [8192, 2, 1]
     config = output / f"{name}.json"
     config.write_text(
         json.dumps(
             {
                 "schema_version": 1,
                 "profile": "gather-f32",
-                "words": 16384,
+                "words": words,
                 "kernel": name,
                 "kernel_id": kernel_id,
-                "global_size": [8192, 2, 1],
+                "global_size": global_size,
                 "local_size": [1, 1, 1],
                 "global_offset": [0, 0, 0],
             }
@@ -81,7 +83,7 @@ for kernel_id, name, argument_count, scalar_bytes in [
     manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
     kernel = manifest["device"]["kernels"][0]
     assert kernel["name"] == name
-    assert kernel["global_size"] == [8192, 2, 1]
+    assert kernel["global_size"] == global_size
     assert len(kernel["args"]) == argument_count
     assert kernel["descriptor"]["scalar_payload_bytes"] == scalar_bytes
-print("large_pointwise_bundles=2 dimensions=8192x2")
+print("large_pointwise_bundles=2 max_dimensions=8192x16")

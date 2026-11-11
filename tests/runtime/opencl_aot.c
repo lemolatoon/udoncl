@@ -378,6 +378,12 @@ extern cl_int __vrc_enqueue_udononnx_expand_device_args(
     cl_int input_shape4, cl_int output_rank, cl_int output_shape01,
     cl_int output_shape23, cl_int output_shape4, cl_uint wait_count,
     const cl_event *wait_list, cl_event *event);
+extern cl_int __vrc_enqueue_udondnn_large_op_tensor_device_args(
+    cl_command_queue queue, cl_mem a, cl_mem b, cl_mem previous, cl_mem output,
+    cl_int words, cl_int a_nc, cl_int a_hw, cl_int b_nc, cl_int b_hw,
+    cl_int c_nc, cl_int c_hw, cl_int options, cl_float alpha_a,
+    cl_float alpha_b, cl_float beta, cl_uint wait_count,
+    const cl_event *wait_list, cl_event *event);
 extern cl_int __vrc_enqueue_udononnx_concat2_device_args(
     cl_command_queue queue, cl_mem left, cl_mem right, cl_mem output,
     cl_int words, cl_int inner_words, cl_int left_extent, cl_int right_extent,
@@ -532,7 +538,7 @@ cl_int __vrc_opencl_dispatch_udononnx_unary_f32(cl_uint input_token,
 cl_int __vrc_opencl_dispatch_udononnx_transpose_f32(
     cl_uint input_token, cl_uint output_token, cl_int words, cl_int rank,
     cl_int shape01, cl_int shape23, cl_int shape4, cl_int permutation) {
-  for (udononnx_reindex_cpu_gid = 0; udononnx_reindex_cpu_gid < 16384;
+  for (udononnx_reindex_cpu_gid = 0; udononnx_reindex_cpu_gid < 131072;
        ++udononnx_reindex_cpu_gid)
     udononnx_transpose_f32((const float *)physical_buffers[input_token - 100],
                            (float *)physical_buffers[output_token - 100], words,
@@ -561,7 +567,7 @@ cl_int __vrc_opencl_dispatch_udononnx_expand_f32(
     cl_int input_shape01, cl_int input_shape23, cl_int input_shape4,
     cl_int output_rank, cl_int output_shape01, cl_int output_shape23,
     cl_int output_shape4) {
-  for (udononnx_reindex_cpu_gid = 0; udononnx_reindex_cpu_gid < 16384;
+  for (udononnx_reindex_cpu_gid = 0; udononnx_reindex_cpu_gid < 131072;
        ++udononnx_reindex_cpu_gid)
     udononnx_expand_f32((const float *)physical_buffers[input_token - 100],
                         (float *)physical_buffers[output_token - 100], words,
@@ -1417,6 +1423,49 @@ int main(void) {
   EXPECT(clReleaseEvent(marker_event) == CL_SUCCESS);
   EXPECT(clReleaseMemObject(where_output_buffer) == CL_SUCCESS);
   EXPECT(clReleaseMemObject(cast_input_buffer) == CL_SUCCESS);
+  EXPECT(clReleaseMemObject(gather_indices_buffer) == CL_SUCCESS);
+  EXPECT(clReleaseMemObject(concat_left_buffer) == CL_SUCCESS);
+  EXPECT(clReleaseMemObject(transpose_output_buffer) == CL_SUCCESS);
+  EXPECT(clReleaseMemObject(transpose_input_buffer) == CL_SUCCESS);
+
+  transpose_input_buffer = udonclCreateBufferForQueue(
+      queue, CL_MEM_READ_WRITE, 131072 * sizeof(float), &error);
+  EXPECT(transpose_input_buffer && error == CL_SUCCESS);
+  transpose_output_buffer = udonclCreateBufferForQueue(
+      queue, CL_MEM_READ_WRITE, 131072 * sizeof(float), &error);
+  EXPECT(transpose_output_buffer && error == CL_SUCCESS);
+  concat_left_buffer = udonclCreateBufferForQueue(queue, CL_MEM_READ_WRITE,
+                                                  sizeof(float), &error);
+  EXPECT(concat_left_buffer && error == CL_SUCCESS);
+  gather_indices_buffer = udonclCreateBufferForQueue(queue, CL_MEM_READ_WRITE,
+                                                     sizeof(float), &error);
+  EXPECT(gather_indices_buffer && error == CL_SUCCESS);
+  await_count = 0;
+  EXPECT(__vrc_enqueue_udononnx_transpose_device_args(
+             queue, transpose_input_buffer, transpose_output_buffer, 131072, 4,
+             1 | (32 << 16), 64 | (64 << 16), 1, 1224, 0, 0,
+             &marker_event) == CL_SUCCESS);
+  EXPECT(marker_event && clWaitForEvents(1, &marker_event) == CL_SUCCESS);
+  EXPECT(await_count == 1 && awaited_events[0] == 21);
+  EXPECT(clReleaseEvent(marker_event) == CL_SUCCESS);
+  await_count = 0;
+  EXPECT(__vrc_enqueue_udononnx_expand_device_args(
+             queue, transpose_input_buffer, transpose_output_buffer, 131072, 5,
+             1 | (4 << 16), 1 | (64 << 16), 64, 5, 1 | (4 << 16),
+             8 | (64 << 16), 64, 0, 0, &marker_event) == CL_SUCCESS);
+  EXPECT(marker_event && clWaitForEvents(1, &marker_event) == CL_SUCCESS);
+  EXPECT(await_count == 1 && awaited_events[0] == 23);
+  EXPECT(clReleaseEvent(marker_event) == CL_SUCCESS);
+  await_count = 0;
+  EXPECT(__vrc_enqueue_udondnn_large_op_tensor_device_args(
+             queue, transpose_input_buffer, concat_left_buffer,
+             gather_indices_buffer, transpose_output_buffer, 131072,
+             1 | (32 << 16), 64 | (64 << 16), 1 | (1 << 16), 1 | (1 << 16),
+             1 | (32 << 16), 64 | (64 << 16), 1, 1.0f, 1.0f, 0.0f, 0, 0,
+             &marker_event) == CL_SUCCESS);
+  EXPECT(marker_event && clWaitForEvents(1, &marker_event) == CL_SUCCESS);
+  EXPECT(await_count == 1 && awaited_events[0] == 33);
+  EXPECT(clReleaseEvent(marker_event) == CL_SUCCESS);
   EXPECT(clReleaseMemObject(gather_indices_buffer) == CL_SUCCESS);
   EXPECT(clReleaseMemObject(concat_left_buffer) == CL_SUCCESS);
   EXPECT(clReleaseMemObject(transpose_output_buffer) == CL_SUCCESS);

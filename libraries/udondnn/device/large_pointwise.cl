@@ -36,7 +36,7 @@ udondnn_large_broadcast_index(size_t gid, int source_nc, int source_hw,
            coordinate_h % source_h) *
               source_w +
           coordinate_w % source_w) &
-         16383u;
+         131071u;
 }
 
 __kernel void udondnn_large_activation_forward(
