@@ -94,6 +94,28 @@ assert sequence_state.stdout.count("step = 1 : i64") == 2
 assert sequence_state.stdout.count("capacity = 8 : i64") == 2
 assert "input_index = 3 : i64" not in sequence_state.stdout
 
+sequence_state_after_standard_return = subprocess.run(
+    [
+        opt,
+        "--standard-func-return",
+        "--udoncl-identify-onnx-sequence-state",
+        sequence_state_source,
+    ],
+    text=True,
+    capture_output=True,
+)
+assert sequence_state_after_standard_return.returncode == 0, (
+    sequence_state_after_standard_return.stdout,
+    sequence_state_after_standard_return.stderr,
+)
+assert "input_index = 1 : i64" in sequence_state_after_standard_return.stdout
+assert "output_index = 0 : i64" in sequence_state_after_standard_return.stdout
+assert "input_index = 2 : i64" in sequence_state_after_standard_return.stdout
+assert "output_index = 2 : i64" in sequence_state_after_standard_return.stdout
+assert sequence_state_after_standard_return.stdout.count("axis = 2 : i64") == 2
+assert sequence_state_after_standard_return.stdout.count("step = 1 : i64") == 2
+assert sequence_state_after_standard_return.stdout.count("capacity = 8 : i64") == 2
+
 sequence_state_portable = subprocess.run(
     [
         opt,

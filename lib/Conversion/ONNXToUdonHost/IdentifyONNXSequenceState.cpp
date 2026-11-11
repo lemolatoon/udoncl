@@ -30,7 +30,8 @@ struct IdentifyONNXSequenceStatePass
       if (function.isDeclaration() || !function.getBody().hasOneBlock())
         continue;
       Operation *returnOp = function.getBody().front().getTerminator();
-      if (!returnOp || returnOp->getName().getStringRef() != "onnx.Return")
+      if (!returnOp || (returnOp->getName().getStringRef() != "onnx.Return" &&
+                        returnOp->getName().getStringRef() != "func.return"))
         continue;
 
       for (auto [outputIndex, output] :
