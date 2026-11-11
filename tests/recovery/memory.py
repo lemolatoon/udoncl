@@ -94,6 +94,28 @@ located = run([opt, '--vrc-raise-llvm-memory', '--mlir-print-debuginfo', '--veri
 }''')
 assert 'memref.load' in located and 'memory.c' in located and ':17:3' in located
 
+null_address_space = run([
+    opt, '--vrc-raise-llvm-raw-memory', '--verify-each'
+], r'''module {
+  llvm.func @managed_null() -> !llvm.ptr<201> {
+    %null = llvm.mlir.zero : !llvm.ptr<4>
+    %managed = llvm.addrspacecast %null : !llvm.ptr<4> to !llvm.ptr<201>
+    llvm.return %managed : !llvm.ptr<201>
+  }
+}''')
+assert 'llvm.addrspacecast' not in null_address_space
+assert '!udonhl.ptr<201>' in null_address_space
+
+non_null_address_space = subprocess.run([
+    opt, '--vrc-raise-llvm-raw-memory', '--verify-each'
+], input=r'''module {
+  llvm.func @invalid_managed_cast(%raw: !llvm.ptr<4>) -> !llvm.ptr<201> {
+    %managed = llvm.addrspacecast %raw : !llvm.ptr<4> to !llvm.ptr<201>
+    llvm.return %managed : !llvm.ptr<201>
+  }
+}''', text=True, capture_output=True, timeout=60)
+assert non_null_address_space.returncode != 0, non_null_address_space
+
 global_memory = run([
     opt, '--vrc-raise-llvm-memory', '--verify-each'
 ], r'''module {

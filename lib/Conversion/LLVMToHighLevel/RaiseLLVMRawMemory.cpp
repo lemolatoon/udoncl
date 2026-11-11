@@ -673,6 +673,29 @@ struct NullPointerPattern : OpConversionPattern<LLVM::ZeroOp> {
   }
 };
 
+struct NullAddressSpaceCastPattern
+    : OpConversionPattern<LLVM::AddrSpaceCastOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(LLVM::AddrSpaceCastOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto target = dyn_cast<LLVM::LLVMPointerType>(op.getType());
+    if (!target || !isa_and_nonnull<LLVM::ZeroOp>(op.getArg().getDefiningOp()))
+      return reject(op, "only null pointer address-space casts are supported");
+    // The Udon ABI represents a null logical pointer in every address space as
+    // the same 32-bit zero.  Do not generalize this to non-null casts: those
+    // would change which storage model the pointer is allowed to address.
+    Value zero = arith::ConstantIntOp::create(rewriter, op.getLoc(), 0, 32);
+    OperationState state(op.getLoc(),
+                         ::vrc::udonhl::IntToPtrOp::getOperationName());
+    state.addOperands(zero);
+    state.addTypes(pointerType(rewriter.getContext(), target));
+    rewriter.replaceOp(op, rewriter.create(state)->getResults());
+    return success();
+  }
+};
+
 struct UndefPointerPattern : OpConversionPattern<LLVM::UndefOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -913,9 +936,9 @@ struct RaiseLLVMRawMemoryPass
                  AllocaPattern, GEPPattern, LoadPattern, StorePattern,
                  PtrToIntPattern, IntToPtrPattern>(converter, &getContext());
     patterns.add<NullPointerPattern, UndefPointerPattern, PointerComparePattern,
-                 PointerSelectPattern, PointerBranchPattern,
-                 PointerCondBranchPattern, PointerSwitchPattern>(converter,
-                                                                 &getContext());
+                 NullAddressSpaceCastPattern, PointerSelectPattern,
+                 PointerBranchPattern, PointerCondBranchPattern,
+                 PointerSwitchPattern>(converter, &getContext());
     patterns.add<MemcpyPattern>(converter, &getContext());
     patterns.add<MemsetPattern>(converter, &getContext());
     patterns.add<EraseLifetimePattern<LLVM::LifetimeStartOp>,
