@@ -716,6 +716,16 @@ def run_unity_mcp_gate(
             "execute_menu_item",
             {
                 "menu_path": (
+                    "Tools/udoncl/Internal/Prepare Public Tokenizer Validation"
+                )
+            },
+            timeout=300,
+        )
+        instance = wait_for_instance_reconnect(client, timeout=600)
+        client.tool(
+            "execute_menu_item",
+            {
+                "menu_path": (
                     "Tools/udoncl/Internal/Prepare Public MNIST Controller Validation"
                 )
             },

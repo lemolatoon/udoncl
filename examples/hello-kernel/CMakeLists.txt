@@ -37,6 +37,16 @@ udoncl_add_unity_library(hello-tokenizer-unity-library
   CONFIG tokenizer-library.json
   HOST_LIBRARIES hello_tokenizer_host UdonTokenizers::UdonTokenizers)
 
+if(UDONCL_TINYLLAMA_TOKENIZER_DIRECTORY)
+  udontokenizers_add_huggingface_model(tinyllama_tokenizer_model
+    TOKENIZER_DIRECTORY "${UDONCL_TINYLLAMA_TOKENIZER_DIRECTORY}"
+    SYMBOL tinyllama_tokenizer
+    SOURCES tinyllama_tokenizer.c)
+  udoncl_add_unity_library(tinyllama-tokenizer-unity-library
+    CONFIG tinyllama-tokenizer-library.json
+    HOST_LIBRARIES tinyllama_tokenizer_model UdonTokenizers::UdonTokenizers)
+endif()
+
 udoncl_add_unity_library(hello-buffer-copy-unity-library
   CONFIG buffer-copy-library.json
   HOST_LIBRARIES hello_buffer_copy_host)

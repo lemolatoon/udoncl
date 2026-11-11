@@ -1,0 +1,30 @@
+using UdonSharp;
+using UnityEngine;
+
+namespace Lemolatoon.Udoncl.Generated
+{
+    [UdonBehaviourSyncMode(BehaviourSyncMode.None)]
+    public sealed class UdonclTinyLlamaTokenizerTestController : UdonSharpBehaviour
+    {
+        public UdonclTinyLlamaTokenizerBinding binding;
+        public string text;
+        public int[] tokenIds;
+        public bool completed;
+        public int status;
+        public int result;
+
+        public void Run()
+        {
+            completed = false;
+            result = 0;
+            if (binding == null || text == null || tokenIds == null)
+            {
+                status = UdonclTinyLlamaTokenizerBinding.StatusInvalidArgument;
+                completed = true;
+                return;
+            }
+            status = binding.TryTokenize(text, tokenIds, out result);
+            completed = true;
+        }
+    }
+}

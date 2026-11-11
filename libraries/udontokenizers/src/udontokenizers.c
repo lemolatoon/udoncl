@@ -69,26 +69,26 @@ static udontokenizersStatus_t append_scalar(const udontokenizers_model_t *model,
                     : append_fallback(model, output, capacity, count, scalar);
 }
 
-static const udontokenizers_merge_t *
-find_merge(const udontokenizers_model_t *model, int32_t left, int32_t right) {
+static int32_t find_merge(const udontokenizers_model_t *model, int32_t left,
+                          int32_t right) {
   int32_t begin = 0;
   int32_t end = model->merge_count;
   while (begin < end) {
     int32_t middle = begin + (end - begin) / 2;
-    const udontokenizers_merge_t *candidate = &model->merges[middle];
-    if (candidate->left_token_id < left ||
-        (candidate->left_token_id == left &&
-         candidate->right_token_id < right)) {
+    int32_t candidate_left = model->merge_left_token_ids[middle];
+    int32_t candidate_right = model->merge_right_token_ids[middle];
+    if (candidate_left < left ||
+        (candidate_left == left && candidate_right < right)) {
       begin = middle + 1;
     } else {
       end = middle;
     }
   }
   if (begin < model->merge_count &&
-      model->merges[begin].left_token_id == left &&
-      model->merges[begin].right_token_id == right)
-    return &model->merges[begin];
-  return 0;
+      model->merge_left_token_ids[begin] == left &&
+      model->merge_right_token_ids[begin] == right)
+    return begin;
+  return -1;
 }
 
 static udontokenizersStatus_t merge_tokens(const udontokenizers_model_t *model,
@@ -102,11 +102,11 @@ static udontokenizersStatus_t merge_tokens(const udontokenizers_model_t *model,
     for (index = first; index + 1 < *count; ++index) {
       int32_t left = udonInt32ArrayGet(output, index);
       int32_t right = udonInt32ArrayGet(output, index + 1);
-      const udontokenizers_merge_t *candidate = find_merge(model, left, right);
-      if (candidate && candidate->rank < best_rank) {
+      int32_t candidate = find_merge(model, left, right);
+      if (candidate >= 0 && model->merge_ranks[candidate] < best_rank) {
         best_index = index;
-        best_rank = candidate->rank;
-        best_token = candidate->result_token_id;
+        best_rank = model->merge_ranks[candidate];
+        best_token = model->merge_result_token_ids[candidate];
       }
     }
     if (best_index < 0)
@@ -136,8 +136,10 @@ udontokenizersStatus_t udontokenizersEncode(const udontokenizers_model_t *model,
 #endif
   if (model->scalar_count < 0 || model->merge_count < 0 ||
       !model->scalar_values || !model->scalar_token_ids ||
-      (model->merge_count && !model->merges) || !model->byte_token_ids ||
-      model->normalizer_prepend_scalar < -1 ||
+      (model->merge_count &&
+       (!model->merge_left_token_ids || !model->merge_right_token_ids ||
+        !model->merge_result_token_ids || !model->merge_ranks)) ||
+      !model->byte_token_ids || model->normalizer_prepend_scalar < -1 ||
       model->normalizer_replace_from_scalar < -1 ||
       model->normalizer_replace_to_scalar < -1 ||
       model->normalizer_prepend_scalar > 0x10ffff ||

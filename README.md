@@ -88,6 +88,22 @@ directly:
 python scripts/compile_tokenizer_tables.py <printed-tokenizer-directory> --output build/tinyllama-tokenizer-tables
 ```
 
+Projects normally generate and link those tables through the public CMake API:
+
+```cmake
+find_package(UdonTokenizers 0.1 REQUIRED CONFIG)
+udontokenizers_add_huggingface_model(my_tokenizer
+  TOKENIZER_DIRECTORY "${tokenizer_directory}"
+  SYMBOL my_tokenizer
+  SOURCES tokenizer_host.c)
+udoncl_add_unity_library(my-tokenizer-unity-library
+  CONFIG tokenizer-library.json
+  HOST_LIBRARIES my_tokenizer UdonTokenizers::UdonTokenizers)
+```
+
+`TOKENIZER_DIRECTORY` contains the four verified Hugging Face assets. Generated
+`.c`, `.h`, and manifest files remain in the consumer build tree.
+
 The repository keeps installed dependencies separate from build products:
 
 - `.deps/llvm23` is the verified LLVM/MLIR/Clang SDK.

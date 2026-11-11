@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "program": "tinyllama_tokenizer",
+  "binding": {
+    "namespace": "Lemolatoon.Udoncl.Generated",
+    "class_name": "UdonclTinyLlamaTokenizerBinding"
+  },
+  "export_overrides": [
+    {
+      "symbol": "tinyllama_tokenizer_encode",
+      "public_name": "Tokenize",
+      "parameters": ["text", "tokenIds"]
+    }
+  ]
+}

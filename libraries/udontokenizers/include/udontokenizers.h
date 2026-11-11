@@ -17,19 +17,15 @@ typedef enum udontokenizersStatus {
   UDONTOKENIZERS_STATUS_OUTPUT_TOO_SMALL = 4
 } udontokenizersStatus_t;
 
-typedef struct udontokenizers_merge {
-  int32_t left_token_id;
-  int32_t right_token_id;
-  int32_t result_token_id;
-  int32_t rank;
-} udontokenizers_merge_t;
-
 typedef struct udontokenizers_model {
   /* scalar_values and merges are sorted for deterministic binary lookup. */
   const uint32_t *scalar_values;
   const int32_t *scalar_token_ids;
   int32_t scalar_count;
-  const udontokenizers_merge_t *merges;
+  const int32_t *merge_left_token_ids;
+  const int32_t *merge_right_token_ids;
+  const int32_t *merge_result_token_ids;
+  const int32_t *merge_ranks;
   int32_t merge_count;
   const int32_t *byte_token_ids;
   int32_t normalizer_prepend_scalar;

@@ -135,7 +135,8 @@ class TokenizerTableCompilerTests(unittest.TestCase):
             })
             source = (first / "tinyllama_tokenizer.c").read_text(encoding="utf-8")
             self.assertIn("tinyllama_tokenizer_byte_token_ids[256]", source)
-            self.assertIn("{260, 261, 262, 0}", source)
+            self.assertIn("tinyllama_tokenizer_merge_left_token_ids[]", source)
+            self.assertIn("tinyllama_tokenizer_merge_ranks[]", source)
 
     def test_rejects_unsupported_normalizer_instead_of_approximating(self):
         with tempfile.TemporaryDirectory() as temporary:

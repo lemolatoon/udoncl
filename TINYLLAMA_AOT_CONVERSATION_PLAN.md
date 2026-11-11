@@ -625,9 +625,13 @@ Implement in this order, keeping each gate independently testable:
     compiled normalizer/BOS metadata, uses binary scalar/pair lookup, and its
     real-table Native output matches the pinned Hugging Face `tokenizers`
     implementation for empty, ASCII, Japanese/BMP, emoji/surrogate, combining,
-    whitespace, newline, and byte-fallback cases. Next connect generated tables
-    through the public CMake package and the Udon/U# artifact, then add decode,
-    special-token recognition, and chat-template compilation.
+    whitespace, newline, and byte-fallback cases. The public CMake package now
+    generates project-local flat tables, links the user's Host sources with
+    them, and produces the real TinyLlama tokenizer Unity artifact. Its
+    generated U# `TryTokenize(string, int[], out int)` binding is executed in
+    Play Mode and matches the same real token IDs without direct heap/event
+    manipulation. Next add decode, special-token recognition, and chat-template
+    compilation.
 12. Add the example C conversation Host, exact lifecycle/status contract, and
     generated async U# binding.
 13. Pass the Unity two-turn, 32-token, full-logit/full-KV debug gate and the

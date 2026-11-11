@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 
 
-COMPILER_ABI = 2
+COMPILER_ABI = 5
 REQUIRED_ASSETS = (
     "special_tokens_map.json",
     "tokenizer.json",
@@ -163,11 +163,7 @@ def _write_header(path: Path, symbol: str) -> None:
 #include <stdint.h>
 #include <udontokenizers.h>
 
-extern const uint32_t {symbol}_scalar_values[];
-extern const int32_t {symbol}_scalar_token_ids[];
-extern const int32_t {symbol}_byte_token_ids[256];
-extern const udontokenizers_merge_t {symbol}_merges[];
-extern const udontokenizers_model_t {symbol}_model;
+void {symbol}InitializeModel(udontokenizers_model_t *model);
 
 #endif
 """,
@@ -186,33 +182,50 @@ def _write_source(
     special_ids: dict[str, int],
 ) -> None:
     lines = [f'#include "{symbol}.h"', ""]
-    lines.append(f"const uint32_t {symbol}_scalar_values[] = {{")
+    lines.append(f"static const uint32_t {symbol}_scalar_values[] = {{")
     lines.extend(f"  0x{scalar:08x}u," for scalar, _token in scalars)
     lines.extend(["};", ""])
-    lines.append(f"const int32_t {symbol}_scalar_token_ids[] = {{")
+    lines.append(f"static const int32_t {symbol}_scalar_token_ids[] = {{")
     lines.extend(f"  {token}," for _scalar, token in scalars)
     lines.extend(["};", ""])
-    lines.append(f"const int32_t {symbol}_byte_token_ids[256] = {{")
+    lines.append(f"static const int32_t {symbol}_byte_token_ids[256] = {{")
     for offset in range(0, 256, 8):
         lines.append("  " + ", ".join(str(value) for value in byte_ids[offset : offset + 8]) + ",")
     lines.extend(["};", ""])
-    lines.append(f"const udontokenizers_merge_t {symbol}_merges[] = {{")
-    lines.extend(f"  {{{left}, {right}, {result}, {rank}}}," for left, right, result, rank in merges)
-    lines.extend(["};", ""])
+    for suffix, value_index in (
+        ("merge_left_token_ids", 0),
+        ("merge_right_token_ids", 1),
+        ("merge_result_token_ids", 2),
+        ("merge_ranks", 3),
+    ):
+        lines.append(f"static const int32_t {symbol}_{suffix}[] = {{")
+        for offset in range(0, len(merges), 12):
+            lines.append(
+                "  "
+                + ", ".join(
+                    str(merge[value_index])
+                    for merge in merges[offset : offset + 12]
+                )
+                + ","
+            )
+        lines.extend(["};", ""])
     lines.extend(
         [
-            f"const udontokenizers_model_t {symbol}_model = {{",
-            f"  {symbol}_scalar_values,",
-            f"  {symbol}_scalar_token_ids,",
-            f"  {len(scalars)},",
-            f"  {symbol}_merges,",
-            f"  {len(merges)},",
-            f"  {symbol}_byte_token_ids,",
-            f"  {ord(normalizer['prepend'])},",
-            f"  {ord(normalizer['replace_from'])},",
-            f"  {ord(normalizer['replace_to'])},",
-            f"  {special_ids['bos']},",
-            "};",
+            f"void {symbol}InitializeModel(udontokenizers_model_t *model) {{",
+            f"  model->scalar_values = {symbol}_scalar_values;",
+            f"  model->scalar_token_ids = {symbol}_scalar_token_ids;",
+            f"  model->scalar_count = {len(scalars)};",
+            f"  model->merge_left_token_ids = {symbol}_merge_left_token_ids;",
+            f"  model->merge_right_token_ids = {symbol}_merge_right_token_ids;",
+            f"  model->merge_result_token_ids = {symbol}_merge_result_token_ids;",
+            f"  model->merge_ranks = {symbol}_merge_ranks;",
+            f"  model->merge_count = {len(merges)};",
+            f"  model->byte_token_ids = {symbol}_byte_token_ids;",
+            f"  model->normalizer_prepend_scalar = {ord(normalizer['prepend'])};",
+            f"  model->normalizer_replace_from_scalar = {ord(normalizer['replace_from'])};",
+            f"  model->normalizer_replace_to_scalar = {ord(normalizer['replace_to'])};",
+            f"  model->bos_token_id = {special_ids['bos']};",
+            "}",
             "",
         ]
     )

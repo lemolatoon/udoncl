@@ -49,6 +49,8 @@ lines = [
     '#include "tinyllama_tokenizer.h"',
     "",
     "int main(void) {",
+    "  udontokenizers_model_t model;",
+    "  tinyllama_tokenizerInitializeModel(&model);",
 ]
 for case_index, (units, expected) in enumerate(oracle):
     unit_values = ", ".join(f"0x{value:04x}" for value in units) or "0"
@@ -61,7 +63,7 @@ for case_index, (units, expected) in enumerate(oracle):
             f"  int32_t values_{case_index}[128] = {{0}};",
             f"  udon_int32_array_native_t output_{case_index} = {{values_{case_index}, 128}};",
             f"  int32_t count_{case_index} = -1;",
-            f"  if (udontokenizersEncode(&tinyllama_tokenizer_model, &string_{case_index}, &output_{case_index}, 128, &count_{case_index}) != UDONTOKENIZERS_STATUS_SUCCESS)",
+            f"  if (udontokenizersEncode(&model, &string_{case_index}, &output_{case_index}, 128, &count_{case_index}) != UDONTOKENIZERS_STATUS_SUCCESS)",
             f"    return {case_index * 3 + 1};",
             f"  if (count_{case_index} != {len(expected)}) return {case_index * 3 + 2};",
             f"  for (int32_t index = 0; index < count_{case_index}; ++index)",

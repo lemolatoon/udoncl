@@ -17,6 +17,8 @@ namespace Lemolatoon.Udoncl.Editor
         private const string MnistControllerTemplate = "generic-onnx-mnist-test-controller.cs.txt";
         private const string TransformerControllerTemplate =
             "generic-onnx-transformer-test-controller.cs.txt";
+        private const string TokenizerControllerTemplate =
+            "tinyllama-tokenizer-test-controller.cs.txt";
 
         [MenuItem("Tools/udoncl/Examples/Import C and OpenCL Hello Dispatch")]
         private static void ImportHelloDispatch()
@@ -174,6 +176,50 @@ namespace Lemolatoon.Udoncl.Editor
             UnityEditor.Compilation.CompilationPipeline.RequestScriptCompilation();
         }
 
+        [MenuItem("Tools/udoncl/Internal/Prepare Public Tokenizer Validation")]
+        public static void PreparePublicTokenizerValidation()
+        {
+            UnityEditor.PackageManager.PackageInfo package =
+                UnityEditor.PackageManager.PackageInfo.FindForAssembly(
+                    typeof(UdonclPackagedExampleImporter).Assembly
+                );
+            if (package == null || string.IsNullOrEmpty(package.resolvedPath))
+                return;
+            string artifact = Environment.GetEnvironmentVariable(
+                "UDONCL_PUBLIC_TOKENIZER_UNITY_BUNDLE"
+            );
+            if (string.IsNullOrWhiteSpace(artifact))
+                artifact = Path.GetFullPath(
+                    Path.Combine(
+                        package.resolvedPath,
+                        "..",
+                        "..",
+                        "..",
+                        "build",
+                        "udoncl",
+                        "tests",
+                        "cmake-package",
+                        "consumer",
+                        "udoncl",
+                        "tinyllama-tokenizer-unity-library",
+                        "artifact"
+                    )
+                );
+            if (!File.Exists(Path.Combine(artifact, "manifest.json")))
+                throw new FileNotFoundException(
+                    "The TinyLlama tokenizer validation artifact is missing.",
+                    artifact
+                );
+            const string root = "Assets/udoncl-generated/tinyllama_tokenizer";
+            AssetDatabase.DeleteAsset(root);
+            if (UdonclArtifactImporter.Import(artifact) != root)
+                throw new InvalidDataException(
+                    "TinyLlama tokenizer validation imported to an unexpected path."
+                );
+            AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+            UnityEditor.Compilation.CompilationPipeline.RequestScriptCompilation();
+        }
+
         [MenuItem("Tools/udoncl/Internal/Prepare Public MNIST Controller Validation")]
         public static void PreparePublicMnistControllerValidation()
         {
@@ -204,6 +250,16 @@ namespace Lemolatoon.Udoncl.Editor
                     TransformerControllerTemplate
                 ),
                 destinationDirectory + "/UdonclGenericOnnxTransformerTinyTestController.cs",
+                true
+            );
+            File.Copy(
+                Path.Combine(
+                    package.resolvedPath,
+                    "Editor",
+                    "Examples",
+                    TokenizerControllerTemplate
+                ),
+                destinationDirectory + "/UdonclTinyLlamaTokenizerTestController.cs",
                 true
             );
             AssetDatabase.ImportAsset(

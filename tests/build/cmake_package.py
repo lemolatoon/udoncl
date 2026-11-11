@@ -205,6 +205,9 @@ def main():
         install / 'share/udontokenizers/src/udontokenizers.c'
     ).is_file()
     assert (
+        install / 'share/udontokenizers/compile_tokenizer_tables.py'
+    ).is_file()
+    assert (
         install / 'share/udononnxoperators/device/matmul_nbits.cl'
     ).is_file()
     assert (
@@ -304,6 +307,11 @@ def main():
         '    UdonONNXRuntime::UdonONNXRuntime UdonCL::OpenCLRuntime)\n',
         encoding='utf-8',
     )
+    repository = args.source.resolve().parents[1]
+    tokenizer_directory = Path(run([
+        sys.executable,
+        repository / 'scripts/fetch_tinyllama_tokenizer.py',
+    ]).strip()).resolve()
     run([
         args.cmake,
         '-S', runtime_source,
@@ -1040,12 +1048,17 @@ def main():
         f'-DUdonTokenizers_DIR={udontokenizers_package}',
         f'-DUDONCL_CLANG_EXECUTABLE={Path(args.clang).resolve()}',
         f'-DUDONCL_LLVM_LINK_EXECUTABLE={Path(args.llvm_link).resolve()}',
+        f'-DUDONCL_TINYLLAMA_TOKENIZER_DIRECTORY={tokenizer_directory}',
     ])
     run([args.cmake, '--build', str(consumer), '--target', 'hello-artifact'])
     run([args.cmake, '--build', str(consumer), '--target', 'hello-unity-library'])
     run([
         args.cmake, '--build', str(consumer),
         '--target', 'hello-tokenizer-unity-library',
+    ])
+    run([
+        args.cmake, '--build', str(consumer),
+        '--target', 'tinyllama-tokenizer-unity-library',
     ])
     run([
         args.cmake, '--build', str(consumer),
@@ -1308,6 +1321,35 @@ def main():
         'SystemString.__ToCharArray__SystemInt32_SystemInt32__SystemCharArray'
         in tokenizer_assembly)
     assert 'SystemInt32Array.__Get__SystemInt32__SystemInt32' in tokenizer_assembly
+
+    tinyllama_tokenizer_artifact = (
+        consumer / 'udoncl/tinyllama-tokenizer-unity-library/artifact'
+    )
+    tinyllama_tokenizer_manifest = json.loads(
+        (tinyllama_tokenizer_artifact / 'manifest.json').read_text(
+            encoding='utf-8'
+        )
+    )
+    assert tinyllama_tokenizer_manifest['program']['binding_class'] == (
+        'UdonclTinyLlamaTokenizerBinding'
+    )
+    assert [item['public_name'] for item in tinyllama_tokenizer_manifest['exports']] == [
+        'Tokenize'
+    ]
+    tinyllama_tokenizer_binding = (
+        tinyllama_tokenizer_artifact / 'binding.cs'
+    ).read_text(encoding='utf-8')
+    assert 'public int TryTokenize(string text, int[] tokenIds, out int result)' in (
+        tinyllama_tokenizer_binding
+    )
+    generated_tokenizer_manifest = json.loads(
+        (
+            consumer
+            / 'udontokenizers/tinyllama_tokenizer_model/manifest.json'
+        ).read_text(encoding='utf-8')
+    )
+    assert generated_tokenizer_manifest['vocab_count'] == 32_000
+    assert generated_tokenizer_manifest['merge_count'] == 61_249
     assert (
         'SystemInt32Array.__Set__SystemInt32_SystemInt32__SystemVoid'
         in tokenizer_assembly)
