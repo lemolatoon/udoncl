@@ -144,6 +144,9 @@ install(FILES libraries/udontokenizers/include/udontokenizers.h
 install(FILES libraries/udontokenizers/src/udontokenizers.c
   DESTINATION "${CMAKE_INSTALL_DATADIR}/udontokenizers/src"
   COMPONENT UdonCLCompiler)
+install(FILES scripts/compile_tokenizer_tables.py
+  DESTINATION "${CMAKE_INSTALL_DATADIR}/udontokenizers"
+  COMPONENT UdonCLCompiler)
 install(FILES libraries/udondnn/src/udondnn.c
   DESTINATION "${CMAKE_INSTALL_DATADIR}/udondnn/src"
   COMPONENT UdonCLCompiler)

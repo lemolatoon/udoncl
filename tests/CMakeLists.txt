@@ -358,6 +358,20 @@ add_test(NAME tinyllama-model-cache
   COMMAND Python3::Interpreter
     "${CMAKE_CURRENT_SOURCE_DIR}/build/fetch_tinyllama_onnx.py"
 )
+add_test(NAME tinyllama-tokenizer-cache
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/build/fetch_tinyllama_tokenizer.py"
+)
+add_test(NAME tokenizer-table-compiler
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/build/compile_tokenizer_tables.py"
+)
+add_test(NAME tinyllama-tokenizer-tables
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/boundary/tinyllama_tokenizer_tables.py"
+    "${PROJECT_SOURCE_DIR}"
+    "${PROJECT_BINARY_DIR}/tests/tinyllama-tokenizer-tables"
+)
 add_test(NAME build-parallelism
   COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/build/parallel.py"
 )

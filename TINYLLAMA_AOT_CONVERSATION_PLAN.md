@@ -617,8 +617,14 @@ Implement in this order, keeping each gate independently testable:
 11. `udon_string_t`, caller-owned `udon_int32_array_t`, the allocation-free
     UdonTokenizers encode core, the dedicated compiler lowering, package
     target, generated `string`/`int[]` U# binding, and a Unity VM value test are
-    implemented. Next add generated TinyLlama tables, decode, special tokens,
-    chat-template compilation, and official-tokenizer conformance tests.
+    implemented. The four pinned tokenizer assets now have an atomic,
+    content-addressed, receipt-verified cache. The generic build-time compiler
+    validates the supported byte-fallback BPE schema and deterministically
+    emits the real 32,000-entry vocabulary projection, 256 byte IDs, and 61,249
+    merge records as project-local C tables. Next connect those tables through
+    CMake, add indexed merge lookup plus normalizer/BOS encode behavior, then
+    add decode, special-token/chat-template compilation, and official-tokenizer
+    conformance tests.
 12. Add the example C conversation Host, exact lifecycle/status contract, and
     generated async U# binding.
 13. Pass the Unity two-turn, 32-token, full-logit/full-KV debug gate and the

@@ -73,9 +73,19 @@ python scripts/install_llvm.py --check
 python scripts/install_onnx_mlir.py --jobs 2
 python scripts/install_onnx_mlir.py --check
 python scripts/fetch_tinyllama_onnx.py
+python scripts/fetch_tinyllama_tokenizer.py
 cmake --preset udoncl
 python scripts/build.py
 ctest --preset udoncl
+```
+
+The TinyLlama tokenizer command verifies and atomically caches the pinned
+`tokenizer.json`, `tokenizer.model`, `tokenizer_config.json`, and
+`special_tokens_map.json` in `.deps/models`. To inspect the generated C tables
+directly:
+
+```text
+python scripts/compile_tokenizer_tables.py <printed-tokenizer-directory> --output build/tinyllama-tokenizer-tables
 ```
 
 The repository keeps installed dependencies separate from build products:
