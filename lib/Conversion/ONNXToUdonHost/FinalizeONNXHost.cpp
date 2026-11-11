@@ -541,6 +541,12 @@ constexpr StringLiteral bindingInputSymbol = "__udon_onnx_binding_inputs";
 constexpr StringLiteral bindingOutputSymbol = "__udon_onnx_binding_outputs";
 constexpr StringLiteral bindingEventSymbol = "__udon_onnx_binding_event";
 constexpr StringLiteral bindingIoHandlesSymbol = "__udon_onnx_io_handles";
+constexpr StringLiteral sequenceStateOwnedSymbol =
+    "__udon_onnx_sequence_state_owned";
+constexpr StringLiteral sequenceStatePendingSymbol =
+    "__udon_onnx_sequence_state_pending";
+constexpr StringLiteral sequenceStatePoisonedSymbol =
+    "__udon_onnx_sequence_state_poisoned";
 constexpr int32_t metadataStorageBytes = 64;
 constexpr int32_t modelStorageBytes = 64;
 constexpr int32_t bindingStateStorageBytes = 256;
@@ -582,6 +588,11 @@ void createModelMetadataGlobals(ModuleOp module, const GraphRecord &graph) {
           bindingBufferHandleBytes,
       4);
   createI32Global(module, bindingEventSymbol);
+  if (!graph.sequenceStates.empty()) {
+    createI32Global(module, sequenceStateOwnedSymbol);
+    createI32Global(module, sequenceStatePendingSymbol);
+    createI32Global(module, sequenceStatePoisonedSymbol);
+  }
   for (auto [index, tensorIndex] : llvm::enumerate(graph.inputs)) {
     const TensorRecord &tensor = graph.tensors[tensorIndex];
     createStringGlobal(module, ioNameSymbol(false, index), tensor.name);
@@ -3004,6 +3015,14 @@ void createPhysicalBindingExports(ModuleOp module, const GraphRecord &graph) {
   for (auto [index, tensorIndex] : llvm::enumerate(graph.outputs))
     allocate(isSequenceStateOutput(graph, index) ? 2 : 1, tensorIndex,
              handleIndex++);
+  if (!graph.sequenceStates.empty()) {
+    store(builder, location, constant(0),
+          addressOf(builder, location, sequenceStateOwnedSymbol));
+    store(builder, location, constant(0),
+          addressOf(builder, location, sequenceStatePendingSymbol));
+    store(builder, location, constant(0),
+          addressOf(builder, location, sequenceStatePoisonedSymbol));
+  }
   func::ReturnOp::create(builder, location, constant(0));
 
   builder.setInsertionPointToEnd(module.getBody());
@@ -3029,6 +3048,38 @@ void createPhysicalBindingExports(ModuleOp module, const GraphRecord &graph) {
   auto bindCall =
       func::CallOp::create(builder, location, "udononnxBindingStateBindTensor",
                            TypeRange{i32}, bindValues);
+  if (!graph.sequenceStates.empty()) {
+    Value affected = arith::ConstantIntOp::create(builder, location, 0, 1);
+    for (const SequenceStateRecord &sequence : graph.sequenceStates) {
+      Value input = arith::AndIOp::create(
+          builder, location,
+          arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
+                                bindEntry->getArgument(0), constant(0)),
+          arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
+                                bindEntry->getArgument(1),
+                                constant(sequence.inputIndex)));
+      Value output = arith::AndIOp::create(
+          builder, location,
+          arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
+                                bindEntry->getArgument(0), constant(1)),
+          arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
+                                bindEntry->getArgument(1),
+                                constant(sequence.outputIndex)));
+      affected = arith::OrIOp::create(
+          builder, location, affected,
+          arith::OrIOp::create(builder, location, input, output));
+    }
+    Value succeeded =
+        arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
+                              bindCall.getResult(0), constant(0));
+    Value invalidate =
+        arith::AndIOp::create(builder, location, succeeded, affected);
+    Value owned = addressOf(builder, location, sequenceStateOwnedSymbol);
+    store(builder, location,
+          arith::SelectOp::create(builder, location, invalidate, constant(0),
+                                  loadI32(builder, location, owned)),
+          owned);
+  }
   func::ReturnOp::create(builder, location, bindCall.getResult(0));
 
   builder.setInsertionPointToEnd(module.getBody());
@@ -3072,6 +3123,12 @@ void createPhysicalBindingExports(ModuleOp module, const GraphRecord &graph) {
     bindOne(false, index, tensorIndex, handleIndex++);
   for (auto [index, tensorIndex] : llvm::enumerate(graph.outputs))
     bindOne(true, index, tensorIndex, handleIndex++);
+  if (!graph.sequenceStates.empty()) {
+    store(builder, location, constant(1),
+          addressOf(builder, location, sequenceStateOwnedSymbol));
+    store(builder, location, constant(0),
+          addressOf(builder, location, sequenceStatePendingSymbol));
+  }
   func::ReturnOp::create(builder, location, constant(0));
 
   auto createResolve = [&](StringRef name, StringRef callee) {
@@ -3095,7 +3152,7 @@ void createPhysicalBindingExports(ModuleOp module, const GraphRecord &graph) {
   createResolve("udon_onnx_binding_resolve_output",
                 "udononnxBindingStateResolveOutput");
 
-  auto createEnqueue = [&](StringRef name, StringRef callee) {
+  auto createEnqueue = [&](StringRef name, StringRef callee, bool run) {
     builder.setInsertionPointToEnd(module.getBody());
     auto function =
         func::FuncOp::create(builder, location, name,
@@ -3108,6 +3165,33 @@ void createPhysicalBindingExports(ModuleOp module, const GraphRecord &graph) {
     Block *waitEvent = function.addBlock();
     Block *enqueueFailed = function.addBlock();
     builder.setInsertionPointToEnd(enqueueEntry);
+    if (run && !graph.sequenceStates.empty()) {
+      Block *stateReady = function.addBlock();
+      Block *invalidState = function.addBlock();
+      Value owned =
+          loadI32(builder, location,
+                  addressOf(builder, location, sequenceStateOwnedSymbol));
+      Value pending =
+          loadI32(builder, location,
+                  addressOf(builder, location, sequenceStatePendingSymbol));
+      Value poisoned =
+          loadI32(builder, location,
+                  addressOf(builder, location, sequenceStatePoisonedSymbol));
+      Value isOwned = arith::CmpIOp::create(
+          builder, location, arith::CmpIPredicate::eq, owned, constant(1));
+      Value hasNoPending = arith::CmpIOp::create(
+          builder, location, arith::CmpIPredicate::eq, pending, constant(0));
+      Value isHealthy = arith::CmpIOp::create(
+          builder, location, arith::CmpIPredicate::eq, poisoned, constant(0));
+      Value valid = arith::AndIOp::create(
+          builder, location, isOwned,
+          arith::AndIOp::create(builder, location, hasNoPending, isHealthy));
+      cf::CondBranchOp::create(builder, location, valid, stateReady,
+                               ValueRange{}, invalidState, ValueRange{});
+      builder.setInsertionPointToEnd(invalidState);
+      func::ReturnOp::create(builder, location, constant(12));
+      builder.setInsertionPointToEnd(stateReady);
+    }
     Value active = loadI32(builder, location,
                            addressOf(builder, location, bindingEventSymbol));
     Value available = arith::CmpIOp::create(
@@ -3155,12 +3239,38 @@ void createPhysicalBindingExports(ModuleOp module, const GraphRecord &graph) {
     Value finalStatus =
         arith::SelectOp::create(builder, location, releaseSucceeded,
                                 completed.getResult(0), constant(5));
+    if (!graph.sequenceStates.empty()) {
+      Value succeeded =
+          arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
+                                finalStatus, constant(0));
+      if (run) {
+        Value pending =
+            addressOf(builder, location, sequenceStatePendingSymbol);
+        store(builder, location,
+              arith::SelectOp::create(builder, location, succeeded, constant(1),
+                                      loadI32(builder, location, pending)),
+              pending);
+      } else {
+        Value pending =
+            addressOf(builder, location, sequenceStatePendingSymbol);
+        store(builder, location,
+              arith::SelectOp::create(builder, location, succeeded, constant(0),
+                                      loadI32(builder, location, pending)),
+              pending);
+        Value poisoned =
+            addressOf(builder, location, sequenceStatePoisonedSymbol);
+        store(builder, location,
+              arith::SelectOp::create(builder, location, succeeded, constant(0),
+                                      loadI32(builder, location, poisoned)),
+              poisoned);
+      }
+    }
     func::ReturnOp::create(builder, location, finalStatus);
   };
   createEnqueue("udon_onnx_binding_enqueue_initialize",
-                "udononnxBindingStateEnqueueInitialize");
+                "udononnxBindingStateEnqueueInitialize", false);
   createEnqueue("udon_onnx_binding_enqueue_run",
-                "udononnxBindingStateEnqueueRun");
+                "udononnxBindingStateEnqueueRun", true);
 
   builder.setInsertionPointToEnd(module.getBody());
   auto copyOutputToInput = func::FuncOp::create(
@@ -3244,6 +3354,43 @@ void createPhysicalBindingExports(ModuleOp module, const GraphRecord &graph) {
     advance->setAttr("vrc.async_effect", builder.getStringAttr("may_suspend"));
     Block *advanceEntry = advance.addEntryBlock();
     builder.setInsertionPointToEnd(advanceEntry);
+    Block *advanceReady = advance.addBlock();
+    Block *advanceBusy = advance.addBlock();
+    Block *advanceInvalid = advance.addBlock();
+    Value active = loadI32(builder, location,
+                           addressOf(builder, location, bindingEventSymbol));
+    Value idle = arith::CmpIOp::create(
+        builder, location, arith::CmpIPredicate::eq, active, constant(0));
+    Value owned =
+        loadI32(builder, location,
+                addressOf(builder, location, sequenceStateOwnedSymbol));
+    Value pending =
+        loadI32(builder, location,
+                addressOf(builder, location, sequenceStatePendingSymbol));
+    Value poisoned =
+        loadI32(builder, location,
+                addressOf(builder, location, sequenceStatePoisonedSymbol));
+    Value valid = arith::AndIOp::create(
+        builder, location,
+        arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
+                              owned, constant(1)),
+        arith::AndIOp::create(
+            builder, location,
+            arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
+                                  pending, constant(1)),
+            arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
+                                  poisoned, constant(0))));
+    Block *checkState = advance.addBlock();
+    cf::CondBranchOp::create(builder, location, idle, checkState, ValueRange{},
+                             advanceBusy, ValueRange{});
+    builder.setInsertionPointToEnd(advanceBusy);
+    func::ReturnOp::create(builder, location, constant(7));
+    builder.setInsertionPointToEnd(checkState);
+    cf::CondBranchOp::create(builder, location, valid, advanceReady,
+                             ValueRange{}, advanceInvalid, ValueRange{});
+    builder.setInsertionPointToEnd(advanceInvalid);
+    func::ReturnOp::create(builder, location, constant(12));
+    builder.setInsertionPointToEnd(advanceReady);
     auto advanceReturnIfNonzero = [&](Value status,
                                       int64_t failureStatus = -1) {
       Block *next = advance.addBlock();
@@ -3253,6 +3400,9 @@ void createPhysicalBindingExports(ModuleOp module, const GraphRecord &graph) {
       cf::CondBranchOp::create(builder, location, succeeded, next, ValueRange{},
                                failure, ValueRange{});
       builder.setInsertionPointToEnd(failure);
+      if (failureStatus == 5)
+        store(builder, location, constant(1),
+              addressOf(builder, location, sequenceStatePoisonedSymbol));
       func::ReturnOp::create(builder, location,
                              failureStatus < 0 ? status
                                                : constant(failureStatus));
@@ -3313,6 +3463,8 @@ void createPhysicalBindingExports(ModuleOp module, const GraphRecord &graph) {
                                TypeRange{i32}, dispatched.getResult(0));
       advanceReturnIfNonzero(awaited.getResult(0), 5);
     }
+    store(builder, location, constant(0),
+          addressOf(builder, location, sequenceStatePendingSymbol));
     func::ReturnOp::create(builder, location, constant(0));
   }
 
@@ -3338,6 +3490,14 @@ void createPhysicalBindingExports(ModuleOp module, const GraphRecord &graph) {
       func::CallOp::create(builder, location, "udononnxBindingStateDispose",
                            TypeRange{i32}, state());
   returnIfNonzero(dispose, disposed.getResult(0));
+  if (!graph.sequenceStates.empty()) {
+    store(builder, location, constant(0),
+          addressOf(builder, location, sequenceStateOwnedSymbol));
+    store(builder, location, constant(0),
+          addressOf(builder, location, sequenceStatePendingSymbol));
+    store(builder, location, constant(0),
+          addressOf(builder, location, sequenceStatePoisonedSymbol));
+  }
   for (size_t index = 0; index != graph.inputs.size() + graph.outputs.size();
        ++index) {
     Value handle = handleAddress(index);

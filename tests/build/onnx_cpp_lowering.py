@@ -127,6 +127,11 @@ assert "call @__vrc_opencl_buffer_copy" not in advance_body
 assert "1792" in advance_body
 assert "4194312" in advance_body
 assert "4194311" in advance_body
+assert "__udon_onnx_sequence_state_owned" in sequence_state_host.stdout
+assert "__udon_onnx_sequence_state_pending" in sequence_state_host.stdout
+assert "__udon_onnx_sequence_state_poisoned" in sequence_state_host.stdout
+assert "arith.constant 7 : i32" in advance_body
+assert "arith.constant 12 : i32" in advance_body
 
 static_source = source.parents[1] / "fixtures" / "onnx-static-initializer.mlir"
 static_portable = subprocess.run(
