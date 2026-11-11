@@ -656,6 +656,14 @@ Implement in this order, keeping each gate independently testable:
     implemented and covered by both Native value tests and an installed CMake
     consumer that lowers a fixed token array through the Udon backend. Next add
     decode, special-token recognition, and chat-template compilation.
+    The first fixed-four-token prefill input helper is also implemented: it
+    widens tokenizer output to ONNX INT64, constructs attention-mask and
+    position-ID arrays, resolves inputs 0--2 through the generated generic
+    binding, and enqueues one ordinary OpenCL write per input. Native tests
+    verify all three Device buffers and capacity failure, while the installed
+    CMake consumer links the real generated TinyLlama tokenizer tables and
+    lowers the helper through the Udon backend. It does not yet run the real
+    prefill graph or implement conversation state.
 12. Add the example C conversation Host, exact lifecycle/status contract, and
     generated async U# binding.
 13. Pass the Unity two-turn, 32-token, full-logit/full-KV debug gate and the

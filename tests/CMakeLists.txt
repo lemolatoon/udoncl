@@ -132,6 +132,24 @@ if(TARGET VRCOpenCLRuntime)
     CL_TARGET_OPENCL_VERSION=120)
   target_link_libraries(udononnx-runtime PRIVATE VRCOpenCLRuntime)
   add_test(NAME udononnx-runtime COMMAND udononnx-runtime)
+
+  add_executable(tinyllama-conversation-input
+    runtime/tinyllama_conversation_input.c
+    "${PROJECT_SOURCE_DIR}/examples/onnx-transformer-tiny/conversation_input.c"
+    "${PROJECT_SOURCE_DIR}/libraries/udontokenizers/src/udontokenizers.c")
+  target_compile_features(tinyllama-conversation-input PRIVATE c_std_11)
+  set_target_properties(tinyllama-conversation-input PROPERTIES
+    C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS OFF)
+  target_include_directories(tinyllama-conversation-input PRIVATE
+    "${PROJECT_SOURCE_DIR}/third_party/OpenCL-Headers"
+    "${PROJECT_SOURCE_DIR}/include"
+    "${PROJECT_SOURCE_DIR}/examples/onnx-transformer-tiny"
+    "${PROJECT_SOURCE_DIR}/libraries/udontokenizers/include")
+  target_compile_definitions(tinyllama-conversation-input PRIVATE
+    CL_TARGET_OPENCL_VERSION=120)
+  target_link_libraries(tinyllama-conversation-input PRIVATE VRCOpenCLRuntime)
+  add_test(NAME tinyllama-conversation-input
+    COMMAND tinyllama-conversation-input)
 endif()
 add_executable(udononnx-matmul-nbits-kernel
   boundary/udononnx_matmul_nbits.cpp)

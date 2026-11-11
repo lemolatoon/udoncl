@@ -8,9 +8,12 @@ find_package(UdonDNN 0.1 CONFIG REQUIRED)
 find_package(UdonATen 0.1 CONFIG REQUIRED)
 find_package(UdonONNXOperators 0.1 CONFIG REQUIRED)
 find_package(UdonONNXRuntime 0.1 CONFIG REQUIRED)
+find_package(UdonTokenizers 0.1 CONFIG REQUIRED)
 
 set(UDONCL_TINYLLAMA_ONNX_MODEL "" CACHE FILEPATH
   "Use an external TinyLlama-compatible ONNX model instead of the fast synthetic fixture")
+set(UDONCL_TINYLLAMA_TOKENIZER_DIRECTORY "" CACHE PATH
+  "Compile the pinned TinyLlama tokenizer tables for conversation Host input")
 if(UDONCL_TINYLLAMA_ONNX_MODEL)
   cmake_path(ABSOLUTE_PATH UDONCL_TINYLLAMA_ONNX_MODEL NORMALIZE
              OUTPUT_VARIABLE model)
@@ -45,9 +48,19 @@ target_include_directories(transformer_host INTERFACE
   "${UdonBLAS_INCLUDE_DIRS}"
   "${UdonDNN_INCLUDE_DIRS}"
   "${UdonATen_INCLUDE_DIRS}")
-udoncl_add_host_library(transformer_user_host host.c)
+udoncl_add_host_library(transformer_user_host host.c conversation_input.c)
 target_include_directories(transformer_user_host INTERFACE
-  "${UdonONNXRuntime_INCLUDE_DIRS}")
+  "${UdonONNXRuntime_INCLUDE_DIRS}"
+  "${UdonTokenizers_INCLUDE_DIRS}")
+set(conversation_host_libraries)
+if(UDONCL_TINYLLAMA_TOKENIZER_DIRECTORY)
+  udontokenizers_add_huggingface_model(transformer_conversation_tokenizer
+    TOKENIZER_DIRECTORY "${UDONCL_TINYLLAMA_TOKENIZER_DIRECTORY}"
+    SYMBOL tinyllama_tokenizer
+    SOURCES conversation_tokenizer.c)
+  list(APPEND conversation_host_libraries
+    transformer_conversation_tokenizer)
+endif()
 set(unity_library_arguments)
 if(UDONCL_TINYLLAMA_ONNX_MODEL)
   list(APPEND unity_library_arguments OMIT_INTERMEDIATE_IR)
@@ -58,7 +71,9 @@ udoncl_add_unity_library(onnx-transformer-tiny
   HOST_LIBRARIES
     transformer_host
     transformer_user_host
+    ${conversation_host_libraries}
     UdonONNXRuntime::UdonONNXRuntime
+    UdonTokenizers::UdonTokenizers
   LIBRARIES
     UdonONNXOperators::UdonONNXOperators
     UdonATen::UdonATen

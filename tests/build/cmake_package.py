@@ -905,6 +905,8 @@ def main():
         f'-DUdonATen_DIR={udonaten_package}',
         f'-DUdonONNXOperators_DIR={udononnxoperators_package}',
         f'-DUdonONNXRuntime_DIR={udononnxruntime_package}',
+        f'-DUdonTokenizers_DIR={udontokenizers_package}',
+        f'-DUDONCL_TINYLLAMA_TOKENIZER_DIRECTORY={tokenizer_directory}',
         f'-DUDONCL_CLANG_EXECUTABLE={Path(args.clang).resolve()}',
         f'-DUDONCL_LLVM_LINK_EXECUTABLE={Path(args.llvm_link).resolve()}',
         f'-DUDONCL_ONNX_IMPORTER_EXECUTABLE={Path(args.onnx_importer).resolve()}',
@@ -1046,6 +1048,19 @@ def main():
     transformer_assembly = (transformer_artifact / 'host.uasm').read_text(
         encoding='utf-8'
     )
+    transformer_async = (
+        transformer_artifact / 'host.async-runtime.mlir'
+    ).read_text(encoding='utf-8')
+    assert 'tinyllamaPrepareFixedPrefillInputs' in transformer_async
+    assert 'tinyllamaPrepareGeneratedFixedPrefillInputs' in transformer_async
+    assert 'clEnqueueWriteBuffer' in transformer_async
+    transformer_tokenizer_manifest = json.loads(
+        (
+            onnx_transformer_consumer
+            / 'udontokenizers/transformer_conversation_tokenizer/manifest.json'
+        ).read_text(encoding='utf-8')
+    )
+    assert transformer_tokenizer_manifest['vocab_count'] == 32_000
     assert_static_async_artifact(transformer_artifact, transformer_assembly)
     assert udon_heap_slots(transformer_assembly) <= 512
     assert not list(onnx_transformer_consumer.rglob('execution-plan.json'))
