@@ -150,6 +150,18 @@ if(TARGET VRCOpenCLRuntime)
   target_link_libraries(tinyllama-conversation-input PRIVATE VRCOpenCLRuntime)
   add_test(NAME tinyllama-conversation-input
     COMMAND tinyllama-conversation-input)
+
+  add_executable(tinyllama-conversation-host
+    runtime/tinyllama_conversation_host.c
+    "${PROJECT_SOURCE_DIR}/examples/onnx-transformer-tiny/conversation_host.c")
+  target_compile_features(tinyllama-conversation-host PRIVATE c_std_11)
+  target_include_directories(tinyllama-conversation-host PRIVATE
+    "${PROJECT_SOURCE_DIR}/third_party/OpenCL-Headers"
+    "${PROJECT_SOURCE_DIR}/include")
+  target_compile_definitions(tinyllama-conversation-host PRIVATE
+    CL_TARGET_OPENCL_VERSION=120)
+  target_link_libraries(tinyllama-conversation-host PRIVATE VRCOpenCLRuntime)
+  add_test(NAME tinyllama-conversation-host COMMAND tinyllama-conversation-host)
 endif()
 add_executable(udononnx-matmul-nbits-kernel
   boundary/udononnx_matmul_nbits.cpp)

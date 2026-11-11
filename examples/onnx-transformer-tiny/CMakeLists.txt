@@ -50,20 +50,21 @@ if(UDONCL_TINYLLAMA_ONNX_MODEL)
     "\"UdonclTinyLlamaConversationBinding\"")
   string(JSON conversation_unity_config_json SET
     "${conversation_unity_config_json}" generate_onnx_public_buffers false)
-  string(JSON conversation_unity_config_json SET
-    "${conversation_unity_config_json}" export_overrides 0 symbol
-    "\"tinyllama_conversation_initialize\"")
-  string(JSON conversation_unity_config_json SET
-    "${conversation_unity_config_json}" export_overrides 1 symbol
-    "\"tinyllama_conversation_run\"")
-  string(JSON conversation_unity_config_json SET
-    "${conversation_unity_config_json}" export_overrides 2 symbol
-    "\"tinyllama_conversation_dispose\"")
-  string(JSON conversation_unity_config_json SET
-    "${conversation_unity_config_json}" export_overrides 2 public_name
-    "\"Shutdown\"")
-  string(JSON conversation_unity_config_json REMOVE
-    "${conversation_unity_config_json}" export_overrides 3)
+  set(conversation_exports
+    [[{"symbol":"tinyllama_initialize","public_name":"Initialize","parameters":[]}]]
+    [[{"symbol":"tinyllama_reset","public_name":"Reset","parameters":[]}]]
+    [[{"symbol":"tinyllama_set_prompt_tokens","public_name":"SetPromptTokens","parameters":["tokenIds","tokenCount"]}]]
+    [[{"symbol":"tinyllama_generate","public_name":"Generate","parameters":["maxNewTokens"]}]]
+    [[{"symbol":"tinyllama_generated_token_count","public_name":"GeneratedTokenCount","parameters":[]}]]
+    [[{"symbol":"tinyllama_read_generated_tokens","public_name":"ReadGeneratedTokens","parameters":["destination"]}]]
+    [[{"symbol":"tinyllama_dispose","public_name":"Shutdown","parameters":[]}]]
+  )
+  foreach(export RANGE 0 6)
+    list(GET conversation_exports ${export} export_json)
+    string(JSON conversation_unity_config_json SET
+      "${conversation_unity_config_json}" export_overrides ${export}
+      "${export_json}")
+  endforeach()
   string(JSON internal_export_count LENGTH
     "${conversation_unity_config_json}" internal_exports)
   string(JSON conversation_unity_config_json SET
