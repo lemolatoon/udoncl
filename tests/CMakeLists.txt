@@ -172,6 +172,13 @@ set_target_properties(udononnx-reindex-kernel PROPERTIES
   CXX_EXTENSIONS OFF)
 add_test(NAME udononnx-reindex-kernel
   COMMAND udononnx-reindex-kernel)
+add_executable(udonaten-argmax-kernel
+  boundary/udonaten_argmax.cpp)
+target_compile_features(udonaten-argmax-kernel PRIVATE cxx_std_20)
+set_target_properties(udonaten-argmax-kernel PROPERTIES
+  CXX_EXTENSIONS OFF)
+add_test(NAME udonaten-argmax-kernel
+  COMMAND udonaten-argmax-kernel)
 add_executable(udondnn-large-convolution-kernel
   boundary/udondnn_large_convolution.cpp)
 target_compile_features(udondnn-large-convolution-kernel PRIVATE cxx_std_20)

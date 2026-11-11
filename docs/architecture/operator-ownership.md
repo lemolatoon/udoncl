@@ -87,3 +87,12 @@ pooling are private backends of `udondnnConvolutionForward` and
 `udondnnPoolingForward`, while coordinate-aware broadcast Add remains an
 UdonATen backend. These kernels only expand physical texture capacity; they do
 not define alternate public signatures.
+# ArgMax
+
+`ArgMax` is owned by ATen native reduction, not cuBLAS, cuDNN, or TorchAO.
+UdonATen follows PyTorch's CUDA `argmax_kernel_cuda` comparison semantics from
+`aten/src/ATen/native/cuda/ReduceArgMaxKernel.cu` and
+`aten/src/ATen/native/SharedReduceOps.h`: NaN wins over non-NaN and ties select
+the lowest index.  The Udon backend may separately request rejection of any
+non-finite input for conversation-result validation; that policy does not alter
+the public ATen-compatible operation.
