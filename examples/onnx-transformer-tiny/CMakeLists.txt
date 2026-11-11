@@ -33,6 +33,65 @@ if(UDONCL_TINYLLAMA_ONNX_MODEL)
     binding class_name "\"UdonclTinyLlamaPrefillBinding\"")
   set(unity_config "${CMAKE_CURRENT_BINARY_DIR}/unity-library-real.json")
   file(WRITE "${unity_config}" "${real_unity_config}\n")
+
+  set(conversation_shape_arguments
+    DIMENSION_BOUNDS
+      batch_size=1
+      sequence_length=1
+      past_sequence_length=63
+    INPUT_SHAPES
+      attention_mask=1,64)
+  set(conversation_unity_config_json "${real_unity_config}")
+  string(JSON conversation_unity_config_json SET
+    "${conversation_unity_config_json}" program
+    "\"tinyllama_real_conversation\"")
+  string(JSON conversation_unity_config_json SET
+    "${conversation_unity_config_json}" binding class_name
+    "\"UdonclTinyLlamaConversationBinding\"")
+  string(JSON conversation_unity_config_json SET
+    "${conversation_unity_config_json}" generate_onnx_public_buffers false)
+  string(JSON conversation_buffer_count LENGTH
+    "${conversation_unity_config_json}" buffers)
+  if(conversation_buffer_count GREATER 0)
+    math(EXPR conversation_buffer_last "${conversation_buffer_count} - 1")
+    foreach(buffer_index RANGE ${conversation_buffer_last})
+      string(JSON buffer_public_access ERROR_VARIABLE buffer_access_error GET
+        "${conversation_unity_config_json}" buffers ${buffer_index}
+        public_access)
+      if(buffer_access_error STREQUAL "NOTFOUND")
+        string(JSON conversation_unity_config_json REMOVE
+          "${conversation_unity_config_json}" buffers ${buffer_index}
+          public_access)
+        string(JSON conversation_unity_config_json REMOVE
+          "${conversation_unity_config_json}" buffers ${buffer_index}
+          element_type)
+      endif()
+    endforeach()
+  endif()
+  string(JSON conversation_unity_config_json SET
+    "${conversation_unity_config_json}" export_overrides 0 symbol
+    "\"tinyllama_conversation_initialize\"")
+  string(JSON conversation_unity_config_json SET
+    "${conversation_unity_config_json}" export_overrides 1 symbol
+    "\"tinyllama_conversation_run\"")
+  string(JSON conversation_unity_config_json SET
+    "${conversation_unity_config_json}" export_overrides 2 symbol
+    "\"tinyllama_conversation_dispose\"")
+  string(JSON conversation_unity_config_json SET
+    "${conversation_unity_config_json}" export_overrides 2 public_name
+    "\"Shutdown\"")
+  string(JSON conversation_unity_config_json REMOVE
+    "${conversation_unity_config_json}" export_overrides 3)
+  string(JSON internal_export_count LENGTH
+    "${conversation_unity_config_json}" internal_exports)
+  string(JSON conversation_unity_config_json SET
+    "${conversation_unity_config_json}" internal_exports
+    ${internal_export_count}
+    "\"udon_onnx_binding_enqueue_advance_sequence_state\"")
+  set(conversation_unity_config
+    "${CMAKE_CURRENT_BINARY_DIR}/unity-library-conversation.json")
+  file(WRITE "${conversation_unity_config}"
+    "${conversation_unity_config_json}\n")
 else()
   set(model "${CMAKE_CURRENT_BINARY_DIR}/transformer.onnx")
   execute_process(
@@ -58,6 +117,19 @@ target_include_directories(transformer_host INTERFACE
 udoncl_add_host_library(transformer_user_host host.c)
 target_include_directories(transformer_user_host INTERFACE
   "${UdonONNXRuntime_INCLUDE_DIRS}")
+if(UDONCL_TINYLLAMA_ONNX_MODEL)
+  udoncl_add_onnx_host_library(transformer_conversation_model_host
+    MODEL "${model}"
+    ${conversation_shape_arguments})
+  target_include_directories(transformer_conversation_model_host INTERFACE
+    "${UdonBLAS_INCLUDE_DIRS}"
+    "${UdonDNN_INCLUDE_DIRS}"
+    "${UdonATen_INCLUDE_DIRS}")
+  udoncl_add_host_library(transformer_conversation_user_host
+    conversation_host.c)
+  target_include_directories(transformer_conversation_user_host INTERFACE
+    "${UdonONNXRuntime_INCLUDE_DIRS}")
+endif()
 if(UDONCL_TINYLLAMA_TOKENIZER_DIRECTORY)
   find_package(UdonTokenizers 0.1 CONFIG REQUIRED)
   udoncl_add_host_library(transformer_conversation_input_host
@@ -85,6 +157,20 @@ udoncl_add_unity_library(onnx-transformer-tiny
     UdonONNXOperators::UdonONNXOperators
     UdonATen::UdonATen
     UdonBLAS::UdonBLAS)
+
+if(UDONCL_TINYLLAMA_ONNX_MODEL)
+  udoncl_add_unity_library(onnx-transformer-tiny-conversation
+    CONFIG "${conversation_unity_config}"
+    OMIT_INTERMEDIATE_IR
+    HOST_LIBRARIES
+      transformer_conversation_model_host
+      transformer_conversation_user_host
+      UdonONNXRuntime::UdonONNXRuntime
+    LIBRARIES
+      UdonONNXOperators::UdonONNXOperators
+      UdonATen::UdonATen
+      UdonBLAS::UdonBLAS)
+endif()
 
 # Keep tokenizer/input preparation out of the prefill validation artifact. The
 # final Conversation Artifact is a separate target; this small synthetic target

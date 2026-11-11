@@ -1128,6 +1128,10 @@ std::optional<json::Object> unityOnnxBindingManifest(ModuleOp module) {
       return std::nullopt;
     physicalJson[name] = value.getValue();
   }
+  if (auto advance =
+          physical.getAs<StringAttr>("enqueue_advance_sequence_state_symbol");
+      advance && !advance.getValue().empty())
+    physicalJson["enqueue_advance_sequence_state_symbol"] = advance.getValue();
   return json::Object{{"abi", abi.getValue()},
                       {"model_index", modelIndex.getInt()},
                       {"model_name", modelName.getValue()},
