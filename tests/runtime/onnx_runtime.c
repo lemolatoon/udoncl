@@ -140,7 +140,7 @@ int main(void) {
   size_t resolved_offset = 0, resolved_bytes = 0;
   udonclBufferHandle_t input_buffer = {0, 0}, output_buffer = {0, 0},
                        foreign_buffer = {0, 0}, binding_input = {0, 0},
-                       binding_output = {0, 0};
+                       binding_output = {0, 0}, binding_read_write = {0, 0};
   udonclBufferView_t input_view, output_view, foreign_view;
   udonclBufferView_t empty_view;
   udononnxTensor_t input_tensor = {0}, output_tensor = {0},
@@ -377,7 +377,7 @@ int main(void) {
                                            UDONONNX_STATUS_SUCCESS) ==
          UDONONNX_STATUS_SUCCESS);
   EXPECT(clReleaseEvent(completion) == CL_SUCCESS);
-  EXPECT(udononnxBindingStateAllocateBuffer(binding_state, 2, sizeof(source),
+  EXPECT(udononnxBindingStateAllocateBuffer(binding_state, 3, sizeof(source),
                                             &binding_input) ==
          UDONONNX_STATUS_INVALID_VALUE);
   EXPECT(udononnxBindingStateAllocateBuffer(binding_state, 0, sizeof(float),
@@ -386,6 +386,17 @@ int main(void) {
   EXPECT(udononnxBindingStateAllocateBuffer(binding_state, 1, sizeof(float),
                                             &binding_output) ==
          UDONONNX_STATUS_SUCCESS);
+  EXPECT(udononnxBindingStateAllocateBuffer(binding_state, 2, sizeof(source),
+                                            &binding_read_write) ==
+         UDONONNX_STATUS_SUCCESS);
+  EXPECT(udonclDeviceBufferGetRaw(binding_read_write, &resolved_memory) ==
+         UDONCL_STATUS_SUCCESS);
+  EXPECT(clEnqueueWriteBuffer(queue, resolved_memory, CL_TRUE, 0,
+                              sizeof(source), source, 0, 0, 0) == CL_SUCCESS);
+  memset(result, 0, sizeof(result));
+  EXPECT(clEnqueueReadBuffer(queue, resolved_memory, CL_TRUE, 0, sizeof(source),
+                             result, 0, 0, 0) == CL_SUCCESS);
+  EXPECT(memcmp(source, result, sizeof(source)) == 0);
   EXPECT(udonclDeviceBufferGetSize(binding_input, &resolved_bytes) ==
              UDONCL_STATUS_SUCCESS &&
          resolved_bytes == sizeof(float));
@@ -415,6 +426,8 @@ int main(void) {
          binding_session);
   EXPECT(udonclDeviceBufferDestroy(&binding_input) == UDONCL_STATUS_SUCCESS);
   EXPECT(udonclDeviceBufferDestroy(&binding_output) == UDONCL_STATUS_SUCCESS);
+  EXPECT(udonclDeviceBufferDestroy(&binding_read_write) ==
+         UDONCL_STATUS_SUCCESS);
   EXPECT(udononnxBindingStateDispose(binding_state) == UDONONNX_STATUS_SUCCESS);
   EXPECT(clFinish(queue) == CL_SUCCESS);
   EXPECT(clReleaseCommandQueue(queue) == CL_SUCCESS);

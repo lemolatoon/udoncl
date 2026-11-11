@@ -40,11 +40,20 @@ struct NodeRecord {
   DictionaryAttr attributes;
 };
 
+struct SequenceStateRecord {
+  unsigned inputIndex;
+  unsigned outputIndex;
+  int64_t axis;
+  int64_t step;
+  int64_t capacity;
+};
+
 struct GraphRecord {
   SmallVector<TensorRecord> tensors;
   SmallVector<unsigned> inputs;
   SmallVector<unsigned> outputs;
   SmallVector<NodeRecord> nodes;
+  SmallVector<SequenceStateRecord> sequenceStates;
 };
 
 int64_t deviceAllocationBytes(const GraphRecord &graph, unsigned tensorIndex);
@@ -246,7 +255,94 @@ FailureOr<GraphRecord> readGraph(ModuleOp module) {
   }
   if (result.inputs.empty() || result.outputs.empty())
     return graph.emitError("ONNX Host session requires inputs and outputs");
+
+  auto sequenceStates =
+      module->getAttrOfType<ArrayAttr>("udoncl.onnx_sequence_states");
+  if (!sequenceStates)
+    return result;
+  for (Attribute entry : sequenceStates) {
+    auto dictionary = dyn_cast<DictionaryAttr>(entry);
+    auto inputIndex = dictionary ? dictionary.getAs<IntegerAttr>("input_index")
+                                 : IntegerAttr();
+    auto outputIndex = dictionary
+                           ? dictionary.getAs<IntegerAttr>("output_index")
+                           : IntegerAttr();
+    auto axis =
+        dictionary ? dictionary.getAs<IntegerAttr>("axis") : IntegerAttr();
+    auto step =
+        dictionary ? dictionary.getAs<IntegerAttr>("step") : IntegerAttr();
+    auto capacity =
+        dictionary ? dictionary.getAs<IntegerAttr>("capacity") : IntegerAttr();
+    if (!inputIndex || !outputIndex || !axis || !step || !capacity)
+      return module.emitError("ONNX sequence-state metadata is malformed");
+    int64_t input = inputIndex.getInt();
+    int64_t output = outputIndex.getInt();
+    int64_t sequenceAxis = axis.getInt();
+    int64_t sequenceStep = step.getInt();
+    int64_t sequenceCapacity = capacity.getInt();
+    if (input < 0 || input >= static_cast<int64_t>(result.inputs.size()) ||
+        output < 0 || output >= static_cast<int64_t>(result.outputs.size()))
+      return module.emitError("ONNX sequence-state index is out of range");
+    if (llvm::any_of(result.sequenceStates,
+                     [&](const SequenceStateRecord &old) {
+                       return old.inputIndex == static_cast<unsigned>(input) ||
+                              old.outputIndex == static_cast<unsigned>(output);
+                     }))
+      return module.emitError("ONNX sequence-state indices must be unique");
+
+    unsigned inputTensorIndex = result.inputs[input];
+    unsigned outputTensorIndex = result.outputs[output];
+    RankedTensorType inputType = result.tensors[inputTensorIndex].type;
+    RankedTensorType outputType = result.tensors[outputTensorIndex].type;
+    if (!inputType.getElementType().isF32() ||
+        outputType.getElementType() != inputType.getElementType() ||
+        inputType.getRank() < 1 || inputType.getRank() > 5 ||
+        outputType.getRank() != inputType.getRank() || sequenceAxis < 0 ||
+        sequenceAxis >= inputType.getRank() || sequenceStep <= 0 ||
+        sequenceCapacity <= 0 ||
+        outputType.getDimSize(sequenceAxis) != sequenceCapacity ||
+        inputType.getDimSize(sequenceAxis) + sequenceStep != sequenceCapacity ||
+        inputType.getNumElements() <= 0 || inputType.getNumElements() > 16384)
+      return module.emitError("ONNX sequence-state shape is not supported");
+    for (int64_t dimension = 0; dimension < inputType.getRank(); ++dimension) {
+      if (inputType.getDimSize(dimension) > 65535 ||
+          outputType.getDimSize(dimension) > 65535 ||
+          (dimension != sequenceAxis &&
+           inputType.getDimSize(dimension) != outputType.getDimSize(dimension)))
+        return module.emitError("ONNX sequence-state extent is not supported");
+    }
+
+    const NodeRecord *concat = nullptr;
+    for (const NodeRecord &node : result.nodes)
+      if (node.output == outputTensorIndex)
+        concat = &node;
+    auto concatAxis = concat && concat->attributes
+                          ? concat->attributes.getAs<IntegerAttr>("axis")
+                          : IntegerAttr();
+    if (!concat || concat->operation != "Concat" || concat->inputs.empty() ||
+        concat->inputs[0] != static_cast<int64_t>(inputTensorIndex) ||
+        !concatAxis || concatAxis.getInt() != sequenceAxis)
+      return module.emitError(
+          "ONNX sequence-state metadata does not match a Concat output");
+    result.sequenceStates.push_back(
+        {static_cast<unsigned>(input), static_cast<unsigned>(output),
+         sequenceAxis, sequenceStep, sequenceCapacity});
+  }
   return result;
+}
+
+bool isSequenceStateInput(const GraphRecord &graph, size_t index) {
+  return llvm::any_of(graph.sequenceStates,
+                      [&](const SequenceStateRecord &state) {
+                        return state.inputIndex == index;
+                      });
+}
+
+bool isSequenceStateOutput(const GraphRecord &graph, size_t index) {
+  return llvm::any_of(graph.sequenceStates,
+                      [&](const SequenceStateRecord &state) {
+                        return state.outputIndex == index;
+                      });
 }
 
 int64_t bindingCapacityBytes(const GraphRecord &graph, unsigned tensorIndex) {
@@ -308,6 +404,12 @@ void attachBindingMetadata(ModuleOp module, const GraphRecord &graph) {
           "enqueue_copy_output_to_input_symbol",
           builder.getStringAttr(
               "udon_onnx_binding_enqueue_copy_output_to_input")),
+      builder.getNamedAttr(
+          "enqueue_advance_sequence_state_symbol",
+          builder.getStringAttr(
+              graph.sequenceStates.empty()
+                  ? ""
+                  : "udon_onnx_binding_enqueue_advance_sequence_state")),
       builder.getNamedAttr("dispose_symbol",
                            builder.getStringAttr("udon_onnx_binding_dispose")),
   });
@@ -2884,11 +2986,11 @@ void createPhysicalBindingExports(ModuleOp module, const GraphRecord &graph) {
                       addressOf(builder, location, bindingIoHandlesSymbol),
                       constant(index * bindingBufferHandleBytes));
   };
-  auto allocate = [&](bool output, size_t tensorIndex, size_t handleIndex) {
+  auto allocate = [&](uint32_t access, size_t tensorIndex, size_t handleIndex) {
     const TensorRecord &tensor = graph.tensors[tensorIndex];
     auto allocated = func::CallOp::create(
         builder, location, "udononnxBindingStateAllocateBuffer", TypeRange{i32},
-        ValueRange{state(), constant(output),
+        ValueRange{state(), constant(access),
                    constant(std::max<int64_t>(
                        elementByteSize(tensor.type.getElementType()),
                        deviceAllocationBytes(graph, tensorIndex))),
@@ -2896,10 +2998,12 @@ void createPhysicalBindingExports(ModuleOp module, const GraphRecord &graph) {
     returnIfNonzero(create, allocated.getResult(0));
   };
   size_t handleIndex = 0;
-  for (unsigned tensorIndex : graph.inputs)
-    allocate(false, tensorIndex, handleIndex++);
-  for (unsigned tensorIndex : graph.outputs)
-    allocate(true, tensorIndex, handleIndex++);
+  for (auto [index, tensorIndex] : llvm::enumerate(graph.inputs))
+    allocate(isSequenceStateInput(graph, index) ? 2 : 0, tensorIndex,
+             handleIndex++);
+  for (auto [index, tensorIndex] : llvm::enumerate(graph.outputs))
+    allocate(isSequenceStateOutput(graph, index) ? 2 : 1, tensorIndex,
+             handleIndex++);
   func::ReturnOp::create(builder, location, constant(0));
 
   builder.setInsertionPointToEnd(module.getBody());
@@ -3130,6 +3234,87 @@ void createPhysicalBindingExports(ModuleOp module, const GraphRecord &graph) {
     }
   }
   func::ReturnOp::create(builder, location, constant(1));
+
+  if (!graph.sequenceStates.empty()) {
+    builder.setInsertionPointToEnd(module.getBody());
+    auto advance = func::FuncOp::create(
+        builder, location, "udon_onnx_binding_enqueue_advance_sequence_state",
+        FunctionType::get(module.getContext(), {}, {i32}));
+    markExport(advance);
+    advance->setAttr("vrc.async_effect", builder.getStringAttr("may_suspend"));
+    Block *advanceEntry = advance.addEntryBlock();
+    builder.setInsertionPointToEnd(advanceEntry);
+    auto advanceReturnIfNonzero = [&](Value status,
+                                      int64_t failureStatus = -1) {
+      Block *next = advance.addBlock();
+      Block *failure = advance.addBlock();
+      Value succeeded = arith::CmpIOp::create(
+          builder, location, arith::CmpIPredicate::eq, status, constant(0));
+      cf::CondBranchOp::create(builder, location, succeeded, next, ValueRange{},
+                               failure, ValueRange{});
+      builder.setInsertionPointToEnd(failure);
+      func::ReturnOp::create(builder, location,
+                             failureStatus < 0 ? status
+                                               : constant(failureStatus));
+      builder.setInsertionPointToEnd(next);
+    };
+    Value sessionSlot = allocaI32(builder, location);
+    auto gotSession = func::CallOp::create(
+        builder, location, "udononnxBindingStateGetSession", TypeRange{i32},
+        ValueRange{state(), sessionSlot});
+    advanceReturnIfNonzero(gotSession.getResult(0));
+    auto physicalBuffer = [&](size_t logicalId, int64_t bytes) -> Value {
+      return func::CallOp::create(
+                 builder, location, "__vrc_opencl_buffer_alloc", TypeRange{i32},
+                 ValueRange{constant(logicalId), constant(bytes)})
+          .getResult(0);
+    };
+    auto packUnsigned = [](ArrayRef<int64_t> values, int64_t first,
+                           int64_t fallback) {
+      int64_t low = first < static_cast<int64_t>(values.size()) ? values[first]
+                                                                : fallback;
+      int64_t high = first + 1 < static_cast<int64_t>(values.size())
+                         ? values[first + 1]
+                         : fallback;
+      return (low & 65535) | ((high & 65535) << 16);
+    };
+    for (const SequenceStateRecord &sequence : graph.sequenceStates) {
+      unsigned inputTensorIndex = graph.inputs[sequence.inputIndex];
+      unsigned outputTensorIndex = graph.outputs[sequence.outputIndex];
+      const TensorRecord &input = graph.tensors[inputTensorIndex];
+      const TensorRecord &output = graph.tensors[outputTensorIndex];
+      int64_t inputBytes = input.type.getNumElements() * sizeof(float);
+      int64_t outputBytes = output.type.getNumElements() * sizeof(float);
+      Value source = physicalBuffer(
+          graph.inputs.size() + sequence.outputIndex + 1, outputBytes);
+      Value destination = physicalBuffer(sequence.inputIndex + 1, inputBytes);
+      SmallVector<int64_t> starts(input.type.getRank(), 0);
+      SmallVector<int64_t> steps(input.type.getRank(), 1);
+      starts[sequence.axis] = sequence.step;
+      auto dispatched = func::CallOp::create(
+          builder, location, "__vrc_opencl_dispatch_udononnx_slice_f32",
+          TypeRange{i32},
+          ValueRange{source, destination, constant(input.type.getNumElements()),
+                     constant(input.type.getRank()),
+                     constant(packUnsigned(output.type.getShape(), 0, 1)),
+                     constant(packUnsigned(output.type.getShape(), 2, 1)),
+                     constant(packUnsigned(output.type.getShape(), 4, 1)),
+                     constant(packUnsigned(input.type.getShape(), 0, 1)),
+                     constant(packUnsigned(input.type.getShape(), 2, 1)),
+                     constant(packUnsigned(input.type.getShape(), 4, 1)),
+                     constant(packUnsigned(starts, 0, 0)),
+                     constant(packUnsigned(starts, 2, 0)),
+                     constant(packUnsigned(starts, 4, 0)),
+                     constant(packUnsigned(steps, 0, 1)),
+                     constant(packUnsigned(steps, 2, 1)),
+                     constant(packUnsigned(steps, 4, 1))});
+      auto awaited =
+          func::CallOp::create(builder, location, "__vrc_opencl_await",
+                               TypeRange{i32}, dispatched.getResult(0));
+      advanceReturnIfNonzero(awaited.getResult(0), 5);
+    }
+    func::ReturnOp::create(builder, location, constant(0));
+  }
 
   builder.setInsertionPointToEnd(module.getBody());
   auto dispose =

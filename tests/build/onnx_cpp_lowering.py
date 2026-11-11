@@ -94,6 +94,40 @@ assert sequence_state.stdout.count("step = 1 : i64") == 2
 assert sequence_state.stdout.count("capacity = 8 : i64") == 2
 assert "input_index = 3 : i64" not in sequence_state.stdout
 
+sequence_state_portable = subprocess.run(
+    [
+        opt,
+        "--udoncl-identify-onnx-sequence-state",
+        "--udoncl-lower-onnx-to-host",
+        sequence_state_source,
+    ],
+    text=True,
+    capture_output=True,
+    check=True,
+).stdout
+sequence_state_host = subprocess.run(
+    [host_opt, "--udoncl-finalize-onnx-host", "-"],
+    input=sequence_state_portable,
+    text=True,
+    capture_output=True,
+)
+assert sequence_state_host.returncode == 0, (
+    sequence_state_host.stdout,
+    sequence_state_host.stderr,
+)
+assert "func.func @udon_onnx_binding_enqueue_advance_sequence_state" in (
+    sequence_state_host.stdout
+)
+advance_body = sequence_state_host.stdout.split(
+    "func.func @udon_onnx_binding_enqueue_advance_sequence_state", 1
+)[1].split("func.func", 1)[0]
+assert advance_body.count("call @__vrc_opencl_dispatch_udononnx_slice_f32") == 2
+assert advance_body.count("call @__vrc_opencl_await") == 2
+assert "call @__vrc_opencl_buffer_copy" not in advance_body
+assert "1792" in advance_body
+assert "4194312" in advance_body
+assert "4194311" in advance_body
+
 static_source = source.parents[1] / "fixtures" / "onnx-static-initializer.mlir"
 static_portable = subprocess.run(
     [
