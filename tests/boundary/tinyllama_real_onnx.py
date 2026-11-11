@@ -57,9 +57,11 @@ for index, value in enumerate(results[1:]):
     assert np.isfinite(value).all(), index
 
 # Prove the fixed-shape conversation profile independently of the compiler.
-# A capacity-sized present tensor is rolled by one row into the next fixed
-# past tensor. Unused left-padding rows are hidden by the ONNX attention mask.
-capacity = 8
+# A capacity-sized present tensor is materialized by slicing away its first
+# sequence row into the next fixed past tensor. Unused left-padding rows are
+# hidden by the ONNX attention mask. Capacity 64 is the first compiler profile:
+# 4 * 63 * 64 = 16128 FP32 words remains within the generic Slice limit.
+capacity = 64
 rolling_past = [
     np.zeros((1, 4, capacity - 1, 64), dtype=np.float32) for _ in range(44)
 ]
