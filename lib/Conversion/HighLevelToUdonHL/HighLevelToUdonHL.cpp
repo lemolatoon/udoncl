@@ -1,6 +1,7 @@
 #include "VRC/Conversion/Passes.h"
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
 #include "VRC/Dialect/VRC/VRCDialect.h"
+#include "udoncl/string.h"
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
@@ -28,7 +29,13 @@ bool publicArray(Type type) {
          (memref.getElementType().isInteger(32) ||
           memref.getElementType().isF32());
 }
-bool publicType(Type type) { return scalar(type) || publicArray(type); }
+bool publicString(Type type) {
+  auto pointer = dyn_cast<host::PtrType>(type);
+  return pointer && pointer.getAddressSpace() == UDONCL_STRING_ADDRESS_SPACE;
+}
+bool publicType(Type type) {
+  return scalar(type) || publicArray(type) || publicString(type);
+}
 bool internalType(Type type) {
   return internalScalar(type) || publicArray(type) ||
          isa<runtime::BufferType, runtime::DispatchDescType, runtime::EventType,

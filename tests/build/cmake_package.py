@@ -1216,6 +1216,16 @@ def main():
         'storage-report.json')
     assert unity_manifest['exports'][0]['public_name'] == 'SquarePlusOne'
     assert unity_manifest['exports'][0]['id'] == 975981362
+    echo_export = next(
+        item for item in unity_manifest['exports']
+        if item['public_name'] == 'EchoString')
+    assert [item['kind'] for item in echo_export['parameters']] == ['string']
+    assert echo_export['parameters'][0]['type_schema'] == {
+        'category': 'string',
+        'encoding': 'utf-16',
+        'ownership': 'immutable-reference',
+    }
+    assert echo_export['result']['kind'] == 'string'
     assert [kernel['name'] for kernel in unity_manifest['device']['kernels']] == [
         'square_plus_one'
     ]
@@ -1240,10 +1250,17 @@ def main():
     assert 'public sealed class UdonclHelloKernelBinding' in binding_source
     assert 'public int TrySquarePlusOne(float value, out float result)' in (
         binding_source)
+    assert 'public int TryEchoString(string value, out string result)' in (
+        binding_source)
     assert 'program.SendCustomEvent("__0_SquarePlusOne")' in binding_source
     assert 'VRCWrapperGenerator' not in binding_source
     assembly = (unity_artifact / 'host.uasm').read_text(encoding='utf-8')
     assert '.export __0_SquarePlusOne' in assembly
+    assert '.export __0_EchoString' in assembly
+    assert (
+        echo_export['parameters'][0]['heap_slot']
+        + ': %SystemString, null') in assembly
+    assert (echo_export['result']['heap_slot'] + ': %SystemString, null') in assembly
     assert '.export __udoncl_buffer_1' in assembly
     assert '__udoncl_buffer_1: %UnityEngineRenderTexture, null' in assembly
     # This helper is synchronous, so selective Host inlining removes its

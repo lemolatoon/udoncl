@@ -25,6 +25,11 @@
       "symbol": "host_square_plus_one",
       "public_name": "SquarePlusOne",
       "parameters": ["value"]
+    },
+    {
+      "symbol": "host_echo_string",
+      "public_name": "EchoString",
+      "parameters": ["value"]
     }
   ]
 }

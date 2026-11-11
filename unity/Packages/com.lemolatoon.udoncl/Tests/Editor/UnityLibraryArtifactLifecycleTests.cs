@@ -70,6 +70,29 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 ),
                 1e-6f
             );
+
+            const string text = "UdonCL 日本語 🍜";
+            ExportInfo echo = Array.Find(
+                manifest.exports,
+                candidate => candidate.public_name == "EchoString"
+            );
+            Assert.NotNull(echo);
+            Assert.AreEqual(1, echo.parameters.Length);
+            Assert.AreEqual("string", echo.parameters[0].kind);
+            Assert.AreEqual("string", echo.result.kind);
+            heap.SetHeapVariable(
+                program.SymbolTable.GetAddressFromSymbol(echo.parameters[0].heap_slot),
+                text
+            );
+            vm.SetProgramCounter(program.EntryPoints.GetAddressFromSymbol(echo.udon_event));
+            Assert.AreEqual(0u, vm.Interpret(), "SDK VM failed to execute EchoString.");
+            Assert.AreSame(
+                text,
+                heap.GetHeapVariable<string>(
+                    program.SymbolTable.GetAddressFromSymbol(echo.result.heap_slot)
+                ),
+                "udon_string_t did not preserve the immutable string reference."
+            );
         }
 
         private static string ResolveArtifactDirectory()

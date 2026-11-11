@@ -137,6 +137,40 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         }
 
         [Test]
+        public void GeneratesImmutableStringReferenceParametersAndResults()
+        {
+            string manifest = ScalarManifest
+                .Replace("\"public_name\":\"Add\"", "\"public_name\":\"EchoString\"")
+                .Replace("\"udon_event\":\"__0_Add\"", "\"udon_event\":\"__0_EchoString\"")
+                .Replace(
+                    "\"parameters\":["
+                        + "{\"index\":0,\"name\":\"left\",\"kind\":\"i32\",\"heap_slot\":\"__0_left__param\"},"
+                        + "{\"index\":1,\"name\":\"right\",\"kind\":\"i32\",\"heap_slot\":\"__0_right__param\"}]",
+                    "\"parameters\":["
+                        + "{\"index\":0,\"name\":\"value\",\"kind\":\"string\",\"heap_slot\":\"__0_value__param\"}]"
+                )
+                .Replace(
+                    "\"result\":{\"kind\":\"i32\",\"heap_slot\":\"__0___0_Add__ret\"}",
+                    "\"result\":{\"kind\":\"string\",\"heap_slot\":\"__0___0_EchoString__ret\"}"
+                );
+            string source = VRCWrapperGenerator.GenerateFromJson(
+                manifest,
+                "Lemolatoon.Generated",
+                "StringBinding"
+            );
+
+            StringAssert.Contains(
+                "public int TryEchoString(string value, out string result)",
+                source
+            );
+            StringAssert.Contains(
+                "program.SetProgramVariable(\"__0_value__param\", value);",
+                source
+            );
+            StringAssert.Contains("result = (string)rawResult;", source);
+        }
+
+        [Test]
         public void GeneratesByteExactDeviceBufferTransferApi()
         {
             string manifest = ScalarManifest.Replace(

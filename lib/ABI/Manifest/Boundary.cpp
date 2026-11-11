@@ -4,6 +4,7 @@
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
 #include "VRC/Dialect/VRC/VRCDialect.h"
 #include "VRC/Dialect/VRCGPU/VRCGPUDialect.h"
+#include "udoncl/string.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "llvm/ADT/DenseSet.h"
@@ -23,6 +24,9 @@ std::string kind(Type type) {
     return "i32";
   if (type.isF32())
     return "f32";
+  if (auto pointer = dyn_cast<::vrc::udonhl::PtrType>(type);
+      pointer && pointer.getAddressSpace() == UDONCL_STRING_ADDRESS_SPACE)
+    return "string";
   auto memref = dyn_cast<MemRefType>(type);
   if (!memref || memref.getRank() != 1 || !memref.getLayout().isIdentity())
     return "unsupported";
@@ -69,6 +73,11 @@ llvm::json::Object typeSchema(Type type) {
     return llvm::json::Object{{"category", "signed-integer"}, {"bits", 32}};
   if (type.isF32())
     return llvm::json::Object{{"category", "float"}, {"bits", 32}};
+  if (auto pointer = dyn_cast<::vrc::udonhl::PtrType>(type);
+      pointer && pointer.getAddressSpace() == UDONCL_STRING_ADDRESS_SPACE)
+    return llvm::json::Object{{"category", "string"},
+                              {"encoding", "utf-16"},
+                              {"ownership", "immutable-reference"}};
   auto memref = dyn_cast<MemRefType>(type);
   if (memref && memref.getRank() == 1 && memref.getLayout().isIdentity() &&
       (memref.getElementType().isInteger(32) ||

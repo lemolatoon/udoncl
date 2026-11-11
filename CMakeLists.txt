@@ -82,6 +82,7 @@ install(FILES
   COMPONENT UdonCLCompiler)
 install(FILES
   include/udoncl/export.h
+  include/udoncl/string.h
   include/udoncl/unity_buffer.h
   include/udoncl/device_memory.h
   include/udoncl/onnx_binding_abi.h

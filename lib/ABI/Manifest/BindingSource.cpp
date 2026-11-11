@@ -37,6 +37,8 @@ Expected<StringRef> csharpType(StringRef kind) {
     return StringRef("int[]");
   if (kind == "f32_array")
     return StringRef("float[]");
+  if (kind == "string")
+    return StringRef("string");
   return invalid(Twine("unsupported U# export kind: ") + kind);
 }
 

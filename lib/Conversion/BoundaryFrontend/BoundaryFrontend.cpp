@@ -630,7 +630,10 @@ OwningOpRef<ModuleOp> importCBoundary(llvm::StringRef hostFile,
 void buildCBoundaryRecoveryPipeline(OpPassManager &manager) {
   manager.addNestedPass<ModuleOp>(createMem2Reg());
   manager.addNestedPass<ModuleOp>(createRaiseLLVMBoundaryDevicePass());
-  manager.addNestedPass<ModuleOp>(createRaiseLLVMMemoryPass());
+  RaiseLLVMMemoryPassOptions memoryOptions;
+  memoryOptions.allowRawFallback = true;
+  manager.addNestedPass<ModuleOp>(createRaiseLLVMMemoryPass(memoryOptions));
+  manager.addNestedPass<ModuleOp>(createRaiseLLVMRawMemoryPass());
   manager.addNestedPass<ModuleOp>(createRaiseLLVMToScalarPass());
   manager.addNestedPass<ModuleOp>(createCanonicalizerPass());
   manager.addPass(createLinkCBoundaryPass());

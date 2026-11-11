@@ -1376,6 +1376,8 @@ namespace Lemolatoon.Udoncl.Editor
                     return "int[]";
                 case "f32_array":
                     return "float[]";
+                case "string":
+                    return "string";
                 default:
                     throw new ArgumentException("Unsupported generated wrapper type: " + kind);
             }

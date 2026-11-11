@@ -1316,7 +1316,11 @@ namespace Lemolatoon.Udoncl.Editor
 
         private static bool IsBindingKind(string kind)
         {
-            return kind == "i32" || kind == "f32" || kind == "i32_array" || kind == "f32_array";
+            return kind == "i32"
+                || kind == "f32"
+                || kind == "string"
+                || kind == "i32_array"
+                || kind == "f32_array";
         }
     }
 }

@@ -4,6 +4,7 @@
 #include "VRC/Dialect/UdonAsm/UdonAsmDialect.h"
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
 #include "VRC/Dialect/VRC/VRCDialect.h"
+#include "udoncl/string.h"
 #include "mlir/Analysis/Liveness.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
@@ -114,8 +115,10 @@ static FailureOr<StringRef> udonType(Type type) {
     return StringRef("SystemInt32");
   if (isa<host::FrameType>(type))
     return StringRef("SystemInt32");
-  if (isa<host::PtrType>(type))
-    return StringRef("SystemInt32");
+  if (auto pointer = dyn_cast<host::PtrType>(type))
+    return pointer.getAddressSpace() == UDONCL_STRING_ADDRESS_SPACE
+               ? StringRef("SystemString")
+               : StringRef("SystemInt32");
   if (auto memref = dyn_cast<MemRefType>(type)) {
     if (memref.getRank() != 1 || !memref.getLayout().isIdentity())
       return failure();
