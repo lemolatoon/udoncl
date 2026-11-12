@@ -1,4 +1,5 @@
 #include "VRC/Conversion/Passes.h"
+#include "VRC/Dialect/UdonHL/UdonHLDialect.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -70,6 +71,14 @@ struct Fact {
   }
 };
 
+struct CellState {
+  bool hasPath = false;
+  bool initializedOnAllPaths = false;
+  Fact fact;
+};
+
+using CellMap = llvm::DenseMap<Value, CellState>;
+
 bool operator==(const Fact &left, const Fact &right) {
   return left.initialized == right.initialized &&
          left.resource == right.resource && left.unknown == right.unknown &&
@@ -99,6 +108,25 @@ Fact joinFacts(Fact left, const Fact &right) {
   llvm::sort(left.ids);
   left.ids.erase(std::unique(left.ids.begin(), left.ids.end()), left.ids.end());
   return left;
+}
+
+bool operator==(const CellState &left, const CellState &right) {
+  return left.hasPath == right.hasPath &&
+         left.initializedOnAllPaths == right.initializedOnAllPaths &&
+         left.fact == right.fact;
+}
+
+CellState joinCellState(const CellState &left, const CellState &right) {
+  if (!left.hasPath)
+    return right;
+  if (!right.hasPath)
+    return left;
+  CellState joined;
+  joined.hasPath = true;
+  joined.initializedOnAllPaths =
+      left.initializedOnAllPaths && right.initializedOnAllPaths;
+  joined.fact = joinFacts(left.fact, right.fact);
+  return joined;
 }
 
 struct Invocation {
@@ -140,6 +168,44 @@ bool isKnownConsumer(StringRef name) {
   return name == "clReleaseMemObject" || name == "clEnqueueWriteBuffer" ||
          name == "clEnqueueReadBuffer" || name == "clEnqueueCopyBuffer" ||
          name == "clSetKernelArg";
+}
+
+bool isConstantI32(Value value, int32_t expected) {
+  auto constant = value.getDefiningOp<arith::ConstantIntOp>();
+  return constant && constant.value() == expected;
+}
+
+bool hasAlignment(Operation *operation, int64_t expected) {
+  auto alignment = operation->getAttrOfType<IntegerAttr>("alignment");
+  return alignment && alignment.getInt() == expected;
+}
+
+bool isHandleType(Type type) {
+  auto pointer = dyn_cast<::vrc::udonhl::PtrType>(type);
+  return pointer && pointer.getAddressSpace() == 0;
+}
+
+bool isExactCellAccess(OpOperand &use, Value cell) {
+  Operation *operation = use.getOwner();
+  if (auto load = dyn_cast<::vrc::udonhl::LoadOp>(operation))
+    return use.getOperandNumber() == 0 && load.getPointer() == cell &&
+           isHandleType(load.getType()) && hasAlignment(load, 4) &&
+           !load->hasAttr("volatile") && !load->hasAttr("volatile_");
+  if (auto store = dyn_cast<::vrc::udonhl::StoreOp>(operation))
+    return use.getOperandNumber() == 1 && store.getPointer() == cell &&
+           isHandleType(store.getValue().getType()) && hasAlignment(store, 4) &&
+           !store->hasAttr("volatile") && !store->hasAttr("volatile_");
+  return false;
+}
+
+bool isSingletonCell(::vrc::udonhl::AllocaOp allocation) {
+  auto pointer = dyn_cast<::vrc::udonhl::PtrType>(allocation.getType());
+  return pointer && pointer.getAddressSpace() == 0 &&
+         isConstantI32(allocation.getByteSize(), 4) &&
+         hasAlignment(allocation, 4) &&
+         llvm::all_of(allocation.getResult().getUses(), [&](OpOperand &use) {
+           return isExactCellAccess(use, allocation.getResult());
+         });
 }
 
 struct PropagateDeviceResourceProvenancePass
@@ -230,6 +296,11 @@ struct PropagateDeviceResourceProvenancePass
       return {};
     }
     llvm::DenseMap<Value, Fact> facts;
+    llvm::DenseSet<Value> eligibleCells;
+    function.walk([&](::vrc::udonhl::AllocaOp allocation) {
+      if (isSingletonCell(allocation))
+        eligibleCells.insert(allocation.getResult());
+    });
     for (auto [index, argument] : llvm::enumerate(function.getArguments())) {
       Fact fact = index < arguments.size() ? arguments[index] : Fact::scalar();
       facts[argument] = fact;
@@ -240,10 +311,15 @@ struct PropagateDeviceResourceProvenancePass
     SmallVector<Block *> worklist;
     llvm::DenseSet<Block *> queued;
     llvm::DenseSet<Block *> reached;
+    llvm::DenseMap<Block *, CellMap> memoryInputs;
+    llvm::DenseMap<std::pair<Block *, Block *>, CellMap> edgeMemory;
+    llvm::DenseSet<Value> resourceCells;
     if (!function.empty()) {
       worklist.push_back(&function.front());
       queued.insert(&function.front());
       reached.insert(&function.front());
+      for (Value cell : eligibleCells)
+        memoryInputs[&function.front()][cell] = {true, false, Fact()};
     }
     unsigned iterations = 0;
     while (!worklist.empty() && !invalid) {
@@ -254,12 +330,64 @@ struct PropagateDeviceResourceProvenancePass
       }
       Block *block = worklist.pop_back_val();
       queued.erase(block);
+      CellMap localMemory = memoryInputs[block];
       for (Operation &operation : *block) {
         for (auto [index, operand] : llvm::enumerate(operation.getOperands()))
           recordCase(operandCases, &operation, invocation, index,
                      valueFact(operand, facts));
 
-        if (auto call = dyn_cast<func::CallOp>(operation)) {
+        if (auto store = dyn_cast<::vrc::udonhl::StoreOp>(operation)) {
+          Fact stored = valueFact(store.getValue(), facts);
+          Value cell = store.getPointer();
+          Fact pointer = valueFact(cell, facts);
+          if (eligibleCells.contains(cell)) {
+            if (resourceCells.contains(cell) && !stored.resource) {
+              if (stored.zero) {
+                stored = Fact::nullHandle();
+              } else {
+                stored.initialized = true;
+                stored.resource = true;
+                stored.unknown = true;
+              }
+            }
+            localMemory[cell] = {true, true, stored};
+            if (stored.resource && resourceCells.insert(cell).second)
+              for (Operation *user : cell.getUsers())
+                if (reached.contains(user->getBlock()) &&
+                    queued.insert(user->getBlock()).second)
+                  worklist.push_back(user->getBlock());
+          } else {
+            if (stored.resource) {
+              store.emitError("static device resource stored through a "
+                              "non-singleton or escaping local cell");
+              invalid = true;
+            }
+            if (pointer.resource) {
+              store.emitError(
+                  "static device resource used as a Host memory address");
+              invalid = true;
+            }
+          }
+        } else if (auto load = dyn_cast<::vrc::udonhl::LoadOp>(operation)) {
+          Value cell = load.getPointer();
+          if (eligibleCells.contains(cell)) {
+            CellState state = localMemory.lookup(cell);
+            Fact loaded =
+                state.initializedOnAllPaths ? state.fact : Fact::scalar();
+            if (!state.initializedOnAllPaths && resourceCells.contains(cell)) {
+              loaded = state.fact;
+              loaded.initialized = true;
+              loaded.resource = true;
+              loaded.unknown = true;
+            }
+            updateFact(load.getResult(), loaded, facts, worklist, queued,
+                       reached);
+          } else if (valueFact(cell, facts).resource) {
+            load.emitError(
+                "static device resource used as a Host memory address");
+            invalid = true;
+          }
+        } else if (auto call = dyn_cast<func::CallOp>(operation)) {
           StringRef calleeName = call.getCallee();
           if (isAllocation(calleeName)) {
             if (call.getNumResults() != 1) {
@@ -315,6 +443,12 @@ struct PropagateDeviceResourceProvenancePass
                      constant.value() == 0 ? Fact::zeroScalar()
                                            : Fact::scalar(),
                      facts, worklist, queued, reached);
+        } else if (auto intToPtr =
+                       dyn_cast<::vrc::udonhl::IntToPtrOp>(operation)) {
+          Fact address = valueFact(intToPtr.getAddress(), facts);
+          updateFact(intToPtr.getResult(),
+                     address.zero ? Fact::zeroScalar() : Fact::scalar(), facts,
+                     worklist, queued, reached);
         } else if (auto select = dyn_cast<arith::SelectOp>(operation)) {
           updateFact(select.getResult(),
                      joinFacts(valueFact(select.getTrueValue(), facts),
@@ -322,12 +456,15 @@ struct PropagateDeviceResourceProvenancePass
                      facts, worklist, queued, reached);
         } else if (auto branch = dyn_cast<cf::BranchOp>(operation)) {
           mergeSuccessor(branch.getDest(), branch.getDestOperands(), facts,
-                         worklist, queued, reached);
+                         worklist, queued, reached, block, localMemory,
+                         memoryInputs, edgeMemory, eligibleCells);
         } else if (auto branch = dyn_cast<cf::CondBranchOp>(operation)) {
           mergeSuccessor(branch.getTrueDest(), branch.getTrueDestOperands(),
-                         facts, worklist, queued, reached);
+                         facts, worklist, queued, reached, block, localMemory,
+                         memoryInputs, edgeMemory, eligibleCells);
           mergeSuccessor(branch.getFalseDest(), branch.getFalseDestOperands(),
-                         facts, worklist, queued, reached);
+                         facts, worklist, queued, reached, block, localMemory,
+                         memoryInputs, edgeMemory, eligibleCells);
         } else if (auto returned = dyn_cast<func::ReturnOp>(operation)) {
           bool exported = function->hasAttr("udoncl.export") ||
                           function->hasAttr("vrc.export_id");
@@ -391,11 +528,14 @@ struct PropagateDeviceResourceProvenancePass
     return true;
   }
 
-  void mergeSuccessor(Block *destination, ValueRange operands,
-                      llvm::DenseMap<Value, Fact> &facts,
-                      SmallVectorImpl<Block *> &worklist,
-                      llvm::DenseSet<Block *> &queued,
-                      llvm::DenseSet<Block *> &reached) {
+  void mergeSuccessor(
+      Block *destination, ValueRange operands,
+      llvm::DenseMap<Value, Fact> &facts, SmallVectorImpl<Block *> &worklist,
+      llvm::DenseSet<Block *> &queued, llvm::DenseSet<Block *> &reached,
+      Block *source, const CellMap &sourceMemory,
+      llvm::DenseMap<Block *, CellMap> &memoryInputs,
+      llvm::DenseMap<std::pair<Block *, Block *>, CellMap> &edgeMemory,
+      const llvm::DenseSet<Value> &eligibleCells) {
     bool changed = false;
     for (auto [argument, operand] :
          llvm::zip(destination->getArguments(), operands)) {
@@ -404,6 +544,24 @@ struct PropagateDeviceResourceProvenancePass
         changed = true;
       }
     }
+    edgeMemory[{source, destination}] = sourceMemory;
+    CellMap recomputed;
+    for (Value cell : eligibleCells) {
+      CellState joined;
+      for (Block *predecessor : destination->getPredecessors()) {
+        auto edge = edgeMemory.find({predecessor, destination});
+        if (edge == edgeMemory.end())
+          continue;
+        CellState incoming = edge->second.lookup(cell);
+        if (!incoming.hasPath)
+          incoming = {true, false, Fact()};
+        joined = joinCellState(joined, incoming);
+      }
+      recomputed[cell] = joined;
+      if (!(memoryInputs[destination].lookup(cell) == joined))
+        changed = true;
+    }
+    memoryInputs[destination] = std::move(recomputed);
     bool firstReach = reached.insert(destination).second;
     if ((changed || firstReach) && queued.insert(destination).second)
       worklist.push_back(destination);
