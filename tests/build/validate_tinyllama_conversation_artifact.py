@@ -40,6 +40,34 @@ def export(public_name, symbol, parameter_kinds=(), is_async=False):
 
 
 class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
+    def test_controller_uses_only_generated_conversation_api(self):
+        source = (
+            ROOT
+            / "unity/Packages/com.lemolatoon.udoncl/Editor/Examples"
+            / "tinyllama-conversation-test-controller.cs.txt"
+        ).read_text(encoding="utf-8")
+        for required in (
+            "StartInitialize(",
+            "GetLastAsyncDiagnostic(",
+            "TrySetPromptTokens(",
+            "StartGenerate(",
+            "TryGeneratedTokenCount(",
+            "TryReadGeneratedTokens(",
+            "TryShutdown(",
+        ):
+            self.assertIn(required, source)
+        for forbidden in (
+            "IUdonVM",
+            "IUdonHeap",
+            "GetProgramVariable",
+            "SetProgramVariable",
+            "RenderTexture",
+            "__vrc_",
+            "__udoncl_",
+            "udon_onnx_binding_",
+        ):
+            self.assertNotIn(forbidden, source)
+
     def make_artifact(self, root: Path) -> Path:
         inputs = [
             tensor(0, "input_ids", "int64", [1, 1], 8),

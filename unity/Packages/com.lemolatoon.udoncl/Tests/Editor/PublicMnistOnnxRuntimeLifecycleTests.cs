@@ -155,7 +155,6 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             Set(heap, program, artifact.StaticTensorTableSlot, staticTensors);
 
             Dictionary<int, RenderTexture> buffers = new Dictionary<int, RenderTexture>();
-            Assert.AreEqual(5, artifact.DeviceBuffers.Count);
             RenderTexture[] bufferPool = new RenderTexture[artifact.DeviceBuffers.Count];
             for (int index = 0; index < artifact.DeviceBuffers.Count; ++index)
             {

@@ -1,0 +1,103 @@
+using UdonSharp;
+using UnityEngine;
+
+namespace Lemolatoon.Udoncl.Generated
+{
+    [UdonBehaviourSyncMode(BehaviourSyncMode.None)]
+    public sealed class UdonclTinyLlamaConversationTestController : UdonSharpBehaviour
+    {
+        public UdonclTinyLlamaConversationBinding binding;
+        public int[] promptTokens;
+        public int[] generatedTokens;
+        public int maxNewTokens;
+        public bool completed;
+        public int status;
+        public int libraryStatus;
+        public int generatedCount;
+        public int asyncDiagnostic;
+        public int phase;
+
+        public void Run()
+        {
+            completed = false;
+            status = UdonclTinyLlamaConversationBinding.StatusSuccess;
+            libraryStatus = 0;
+            generatedCount = 0;
+            asyncDiagnostic = UdonclTinyLlamaConversationBinding.AsyncDiagnosticNone;
+            phase = 1;
+            if (
+                binding == null
+                || promptTokens == null
+                || promptTokens.Length == 0
+                || generatedTokens == null
+                || maxNewTokens <= 0
+            )
+            {
+                status = UdonclTinyLlamaConversationBinding.StatusInvalidArgument;
+                completed = true;
+                return;
+            }
+            status = binding.StartInitialize(this, nameof(OnInitializeComplete));
+            if (status != UdonclTinyLlamaConversationBinding.StatusSuccess)
+                completed = true;
+        }
+
+        public void OnInitializeComplete()
+        {
+            phase = 2;
+            status = binding.GetInitializeStatus();
+            if (status == UdonclTinyLlamaConversationBinding.StatusSuccess)
+                status = binding.TryGetInitializeResult(out libraryStatus);
+            if (
+                status != UdonclTinyLlamaConversationBinding.StatusSuccess
+                || libraryStatus != 0
+            )
+            {
+                asyncDiagnostic = binding.GetLastAsyncDiagnostic();
+                completed = true;
+                return;
+            }
+            phase = 3;
+            status = binding.TrySetPromptTokens(
+                promptTokens,
+                promptTokens.Length,
+                out libraryStatus
+            );
+            if (
+                status == UdonclTinyLlamaConversationBinding.StatusSuccess
+                && libraryStatus == 0
+            )
+                status = binding.StartGenerate(
+                    maxNewTokens,
+                    this,
+                    nameof(OnGenerateComplete)
+                );
+            if (status != UdonclTinyLlamaConversationBinding.StatusSuccess)
+                completed = true;
+        }
+
+        public void OnGenerateComplete()
+        {
+            phase = 4;
+            status = binding.GetGenerateStatus();
+            if (status == UdonclTinyLlamaConversationBinding.StatusSuccess)
+                status = binding.TryGetGenerateResult(out libraryStatus);
+            if (
+                status == UdonclTinyLlamaConversationBinding.StatusSuccess
+                && libraryStatus == 0
+            )
+                status = binding.TryGeneratedTokenCount(out generatedCount);
+            if (status == UdonclTinyLlamaConversationBinding.StatusSuccess)
+                status = binding.TryReadGeneratedTokens(generatedTokens, out libraryStatus);
+            if (
+                status == UdonclTinyLlamaConversationBinding.StatusSuccess
+                && libraryStatus == 0
+            )
+            {
+                phase = 5;
+                status = binding.TryShutdown(out libraryStatus);
+            }
+            completed = true;
+        }
+    }
+}

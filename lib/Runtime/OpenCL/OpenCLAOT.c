@@ -191,6 +191,7 @@ struct _cl_program {
 };
 struct _cl_mem {
   cl_uint active;
+  cl_int slot;
   cl_uint id;
   cl_uint physical_token;
   cl_uint immutable;
@@ -210,6 +211,7 @@ struct _cl_kernel {
 };
 struct _cl_event {
   cl_uint active;
+  cl_int slot;
   cl_uint refs;
   cl_uint internal;
   cl_command_queue queue;
@@ -227,8 +229,14 @@ static struct _cl_context udoncl_context;
 static struct _cl_command_queue udoncl_queue;
 static struct _cl_program udoncl_program;
 static struct _cl_mem udoncl_buffers[UDONCL_AOT_BUFFER_CAPACITY];
+static cl_int udoncl_buffer_next_unused;
+static cl_int udoncl_buffer_free_head = -1;
+static cl_int udoncl_buffer_free_next[UDONCL_AOT_BUFFER_CAPACITY];
 static struct _cl_kernel udoncl_kernels[UDONCL_AOT_KERNEL_CAPACITY];
 static struct _cl_event udoncl_events[UDONCL_AOT_EVENT_CAPACITY];
+static cl_int udoncl_event_next_unused;
+static cl_int udoncl_event_free_head = -1;
+static cl_int udoncl_event_free_next[UDONCL_AOT_EVENT_CAPACITY];
 static cl_int udoncl_dispatch_status;
 static cl_int udoncl_dispatch_event;
 static cl_uint udoncl_pending_resource_count;
@@ -292,6 +300,37 @@ static cl_mem udoncl_mem_parent(cl_mem buffer) {
   return udoncl_mem_is_subbuffer(buffer)
              ? &udoncl_buffers[buffer->immutable - 2u]
              : 0;
+}
+
+static cl_mem udoncl_buffer_take_slot(void) {
+  cl_int index;
+  cl_mem buffer;
+  if (udoncl_buffer_free_head != -1) {
+    if (udoncl_buffer_free_head < 0 ||
+        udoncl_buffer_free_head >= UDONCL_AOT_BUFFER_CAPACITY)
+      return 0;
+    index = udoncl_buffer_free_head;
+    udoncl_buffer_free_head = udoncl_buffer_free_next[index];
+    udoncl_buffer_free_next[index] = -1;
+  } else {
+    if (udoncl_buffer_next_unused < 0 ||
+        udoncl_buffer_next_unused >= UDONCL_AOT_BUFFER_CAPACITY)
+      return 0;
+    index = udoncl_buffer_next_unused++;
+  }
+  buffer = &udoncl_buffers[index];
+  buffer->slot = index;
+  return buffer;
+}
+
+static void udoncl_buffer_recycle(cl_mem buffer) {
+  cl_int index;
+  if (!buffer || buffer->slot < 0 || buffer->slot >= UDONCL_AOT_BUFFER_CAPACITY)
+    return;
+  index = buffer->slot;
+  udoncl_buffer_free_next[index] = udoncl_buffer_free_head;
+  udoncl_buffer_free_head = index;
+  buffer->slot = -1;
 }
 
 static size_t udoncl_mem_origin(cl_mem buffer) {
@@ -569,17 +608,15 @@ CL_API_ENTRY cl_int CL_API_CALL clRetainCommandQueue(cl_command_queue queue) {
 CL_API_ENTRY cl_mem CL_API_CALL clCreateBuffer(cl_context context,
                                                cl_mem_flags flags, size_t bytes,
                                                void *host, cl_int *error) {
-  cl_uint index;
+  cl_mem buffer;
   if (context != &udoncl_context || !context->active || !bytes || host) {
     udoncl_error(error, CL_INVALID_VALUE);
     return 0;
   }
-  for (index = 0; index < UDONCL_AOT_BUFFER_CAPACITY; ++index) {
-    cl_mem buffer = &udoncl_buffers[index];
-    if (buffer->active || buffer->command_refs || buffer->physical_token)
-      continue;
+  buffer = udoncl_buffer_take_slot();
+  if (buffer) {
     buffer->active = 1;
-    buffer->id = index + 1;
+    buffer->id = (cl_uint)(buffer->slot + 1);
     buffer->refs = 1;
     buffer->command_refs = 0;
     buffer->context = context;
@@ -590,6 +627,7 @@ CL_API_ENTRY cl_mem CL_API_CALL clCreateBuffer(cl_context context,
         __vrc_opencl_buffer_alloc(buffer->id, buffer->bytes);
     if (!buffer->physical_token) {
       buffer->active = 0;
+      udoncl_buffer_recycle(buffer);
       udoncl_error(error, CL_OUT_OF_RESOURCES);
       return 0;
     }
@@ -609,17 +647,16 @@ CL_API_ENTRY cl_mem CL_API_CALL clCreateSubBuffer(cl_mem parent,
   cl_mem_flags access =
       flags & (CL_MEM_READ_WRITE | CL_MEM_WRITE_ONLY | CL_MEM_READ_ONLY);
   cl_mem_flags parent_access;
-  cl_uint index;
+  cl_mem buffer;
   cl_uint parent_index;
-  for (parent_index = 0; parent_index < UDONCL_AOT_BUFFER_CAPACITY;
-       ++parent_index)
-    if (parent == &udoncl_buffers[parent_index])
-      break;
-  if (parent_index == UDONCL_AOT_BUFFER_CAPACITY || !parent->active ||
+  if (!parent || parent->slot < 0 ||
+      parent->slot >= UDONCL_AOT_BUFFER_CAPACITY ||
+      parent != &udoncl_buffers[parent->slot] || !parent->active ||
       parent->immutable) {
     udoncl_error(error, CL_INVALID_MEM_OBJECT);
     return 0;
   }
+  parent_index = (cl_uint)parent->slot;
   if (type != CL_BUFFER_CREATE_TYPE_REGION || !region ||
       (flags & ~(CL_MEM_READ_WRITE | CL_MEM_WRITE_ONLY | CL_MEM_READ_ONLY)) ||
       (access != 0 && access != CL_MEM_READ_WRITE &&
@@ -645,10 +682,8 @@ CL_API_ENTRY cl_mem CL_API_CALL clCreateSubBuffer(cl_mem parent,
     udoncl_error(error, CL_INVALID_VALUE);
     return 0;
   }
-  for (index = 0; index < UDONCL_AOT_BUFFER_CAPACITY; ++index) {
-    cl_mem buffer = &udoncl_buffers[index];
-    if (buffer->active || buffer->command_refs || buffer->physical_token)
-      continue;
+  buffer = udoncl_buffer_take_slot();
+  if (buffer) {
     buffer->active = 1;
     buffer->id = (cl_uint)region->origin;
     buffer->physical_token = parent->physical_token;
@@ -1227,6 +1262,7 @@ static cl_int udoncl_mem_finalize(cl_mem buffer) {
   buffer->flags = 0;
   buffer->bytes = 0;
   buffer->immutable = 0;
+  udoncl_buffer_recycle(buffer);
   if (parent) {
     if (parent->refs && --parent->refs == 0)
       parent->active = 0;
@@ -1238,9 +1274,41 @@ static cl_int udoncl_mem_finalize(cl_mem buffer) {
       parent->flags = 0;
       parent->bytes = 0;
       parent->immutable = 0;
+      udoncl_buffer_recycle(parent);
     }
   }
   return status;
+}
+
+static cl_event udoncl_event_take_slot(void) {
+  cl_int index;
+  cl_event event;
+  if (udoncl_event_free_head != -1) {
+    if (udoncl_event_free_head < 0 ||
+        udoncl_event_free_head >= UDONCL_AOT_EVENT_CAPACITY)
+      return 0;
+    index = udoncl_event_free_head;
+    udoncl_event_free_head = udoncl_event_free_next[index];
+    udoncl_event_free_next[index] = -1;
+  } else {
+    if (udoncl_event_next_unused < 0 ||
+        udoncl_event_next_unused >= UDONCL_AOT_EVENT_CAPACITY)
+      return 0;
+    index = udoncl_event_next_unused++;
+  }
+  event = &udoncl_events[index];
+  event->slot = index;
+  return event;
+}
+
+static void udoncl_event_recycle(cl_event event) {
+  cl_int index;
+  if (!event || event->slot < 0 || event->slot >= UDONCL_AOT_EVENT_CAPACITY)
+    return;
+  index = event->slot;
+  udoncl_event_free_next[index] = udoncl_event_free_head;
+  udoncl_event_free_head = index;
+  event->slot = -1;
 }
 
 static void udoncl_event_destroy(cl_event event) {
@@ -1257,6 +1325,7 @@ static void udoncl_event_destroy(cl_event event) {
   event->execution_status = CL_COMPLETE;
   event->sequence = 0;
   event->resource_count = 0;
+  udoncl_event_recycle(event);
 }
 
 static void udoncl_event_release_resources(cl_event event) {
@@ -1304,47 +1373,43 @@ static cl_int udoncl_event_wait(cl_event event) {
 static cl_int udoncl_event_create(cl_command_queue queue,
                                   cl_command_type command_type, cl_int pending,
                                   cl_event *output) {
-  cl_uint index;
-  cl_event event = 0;
+  cl_event event;
   if (pending < CL_SUCCESS) {
     udoncl_pending_resources_reset();
     return pending;
   }
   if (output)
     *output = 0;
-  for (index = 0; index < UDONCL_AOT_EVENT_CAPACITY; ++index) {
-    if (udoncl_events[index].active)
-      continue;
-    event = &udoncl_events[index];
-    event->active = 1;
-    event->refs = output ? 1 : 0;
-    event->internal = 1;
-    event->queue = queue;
-    event->command_type = command_type;
-    event->pending = pending;
-    event->execution_status =
-        pending == CL_SUCCESS ? CL_COMPLETE : CL_SUBMITTED;
-    event->sequence = ++queue->sequence;
-    event->resource_count = udoncl_pending_resource_count;
-    for (cl_uint resource = 0; resource < event->resource_count; ++resource) {
-      event->resources[resource] = udoncl_pending_resources[resource];
-      ++event->resources[resource]->command_refs;
-    }
+  event = udoncl_event_take_slot();
+  if (!event) {
     udoncl_pending_resources_reset();
-    ++queue->refs;
-    queue->tail = event;
-    if (output)
-      *output = event;
-    if (pending == CL_SUCCESS) {
-      udoncl_event_release_resources(event);
-      event->internal = 0;
-      if (!event->refs)
-        udoncl_event_destroy(event);
-    }
-    return CL_SUCCESS;
+    return CL_OUT_OF_RESOURCES;
+  }
+  event->active = 1;
+  event->refs = output ? 1 : 0;
+  event->internal = 1;
+  event->queue = queue;
+  event->command_type = command_type;
+  event->pending = pending;
+  event->execution_status = pending == CL_SUCCESS ? CL_COMPLETE : CL_SUBMITTED;
+  event->sequence = ++queue->sequence;
+  event->resource_count = udoncl_pending_resource_count;
+  for (cl_uint resource = 0; resource < event->resource_count; ++resource) {
+    event->resources[resource] = udoncl_pending_resources[resource];
+    ++event->resources[resource]->command_refs;
   }
   udoncl_pending_resources_reset();
-  return CL_OUT_OF_RESOURCES;
+  ++queue->refs;
+  queue->tail = event;
+  if (output)
+    *output = event;
+  if (pending == CL_SUCCESS) {
+    udoncl_event_release_resources(event);
+    event->internal = 0;
+    if (!event->refs)
+      udoncl_event_destroy(event);
+  }
+  return CL_SUCCESS;
 }
 
 static cl_int udoncl_wait_list(cl_command_queue queue, cl_uint count,

@@ -53,6 +53,13 @@ def UdonHL_IntToPtrOp : Op<UdonHL_Dialect, "inttoptr", [Pure]> {
   let arguments = (ins I32:$address);
   let results = (outs UdonHL_PtrType:$result);
 }
+def UdonHL_RefCmpOp : Op<UdonHL_Dialect, "ref_cmp", [Pure]> {
+  let summary = "Compare two managed Udon object references";
+  let arguments = (ins UdonHL_PtrType:$lhs, UdonHL_PtrType:$rhs,
+    StrAttr:$predicate);
+  let results = (outs I1:$result);
+  let hasVerifier = 1;
+}
 def UdonHL_LoadOp : Op<UdonHL_Dialect, "load"> {
   let summary = "Load a scalar or vector through the C byte memory model";
   let arguments = (ins UdonHL_PtrType:$pointer, I64Attr:$alignment,

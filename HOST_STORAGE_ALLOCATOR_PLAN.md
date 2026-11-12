@@ -6,7 +6,7 @@
 > Acceptance targets: generated-U# MNIST remains green, the real TinyLlama
 > artifact remains generatable, and the mandatory pre-commit gate passes.
 
-Current implementation checkpoint (2026-11-11):
+Current implementation checkpoint (2026-11-12):
 
 - deterministic async placement metadata is emitted by the independent
   `AnalyzeHostStorage` pass;
@@ -20,6 +20,19 @@ Current implementation checkpoint (2026-11-11):
   legacy raw-global path and remain migration work;
 - persistent spill indices are colored from preserved full SSA interference,
   so non-interfering values in one coroutine reuse typed-array indices;
+- address-cache capacity is now selected from exact post-allocation data and
+  total-address probes even when constant pooling is active, and natural-loop
+  depth weights hot spill indices ahead of cold duplicated accesses;
+- the OpenCL AOT buffer and event tables use O(1) next-unused/free-list slot
+  allocation, so enqueue does not linearly scan handle capacity inside one
+  Udon invocation;
+- feeding the discovered minimum simultaneous register count back into a fresh
+  allocation remains migration work: a naive fixed-point retry was rejected
+  because the post-spill required width grows again on each fresh allocation
+  and exceeds the 256-slot compiler limit for the real TinyLlama Host;
+- large `cf.switch` operations, including the async resume dispatcher, lower
+  to a signed-i32 balanced decision tree while preserving case/default edge
+  copies; runtime selection is logarithmic rather than a linear equality scan;
 - persistent direct-slot promotion and cross-coroutine reuse remain migration
   work.
 

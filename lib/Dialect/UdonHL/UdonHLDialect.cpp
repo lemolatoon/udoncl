@@ -136,6 +136,18 @@ mlir::LogicalResult vrc::udonhl::PtrAddOp::verify() {
   return mlir::success();
 }
 
+mlir::LogicalResult vrc::udonhl::RefCmpOp::verify() {
+  if (getLhs().getType() != getRhs().getType())
+    return emitOpError("operands must have the same reference type");
+  uint32_t addressSpace = getLhs().getType().getAddressSpace();
+  if (addressSpace != UDONCL_STRING_ADDRESS_SPACE &&
+      addressSpace != UDONCL_INT32_ARRAY_ADDRESS_SPACE)
+    return emitOpError("operands must use a managed object address space");
+  if (getPredicate() != "eq" && getPredicate() != "ne")
+    return emitOpError("predicate must be 'eq' or 'ne'");
+  return mlir::success();
+}
+
 mlir::LogicalResult vrc::udonhl::LoadOp::verify() {
   if (!isMemoryAccessType(getResult().getType()))
     return emitOpError("result must be a fixed-width scalar or vector");

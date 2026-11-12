@@ -1,5 +1,7 @@
 #include "VRC/Conversion/LLVMToHighLevel/Passes.h"
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
+#include "udoncl/array.h"
+#include "udoncl/string.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -624,6 +626,11 @@ struct PtrToIntPattern : OpConversionPattern<LLVM::PtrToIntOp> {
                   ConversionPatternRewriter &rewriter) const override {
     if (!op.getType().isInteger(32))
       return reject(op, "ptrtoint result must use the 32-bit Udon ABI");
+    auto pointer = cast<::vrc::udonhl::PtrType>(adaptor.getArg().getType());
+    if (pointer.getAddressSpace() == UDONCL_STRING_ADDRESS_SPACE ||
+        pointer.getAddressSpace() == UDONCL_INT32_ARRAY_ADDRESS_SPACE)
+      return reject(op, "object reference cannot be converted to an integer "
+                        "address");
     OperationState state(op.getLoc(),
                          ::vrc::udonhl::PtrToIntOp::getOperationName());
     state.addOperands(adaptor.getArg());
@@ -642,6 +649,11 @@ struct IntToPtrPattern : OpConversionPattern<LLVM::IntToPtrOp> {
                   ConversionPatternRewriter &rewriter) const override {
     if (!adaptor.getArg().getType().isInteger(32))
       return reject(op, "inttoptr input must use the 32-bit Udon ABI");
+    auto target = cast<LLVM::LLVMPointerType>(op.getType());
+    if (target.getAddressSpace() == UDONCL_STRING_ADDRESS_SPACE ||
+        target.getAddressSpace() == UDONCL_INT32_ARRAY_ADDRESS_SPACE)
+      return reject(op, "integer address cannot be converted to an object "
+                        "reference");
     OperationState state(op.getLoc(),
                          ::vrc::udonhl::IntToPtrOp::getOperationName());
     state.addOperands(adaptor.getArg());
@@ -736,6 +748,30 @@ struct PointerComparePattern : OpConversionPattern<LLVM::ICmpOp> {
     if (!isa<::vrc::udonhl::PtrType>(adaptor.getLhs().getType()) ||
         !isa<::vrc::udonhl::PtrType>(adaptor.getRhs().getType()))
       return failure();
+    auto lhsType = cast<::vrc::udonhl::PtrType>(adaptor.getLhs().getType());
+    auto rhsType = cast<::vrc::udonhl::PtrType>(adaptor.getRhs().getType());
+    if (lhsType.getAddressSpace() != rhsType.getAddressSpace())
+      return reject(op, "pointer comparison address spaces must match");
+    bool managed =
+        lhsType.getAddressSpace() == UDONCL_STRING_ADDRESS_SPACE ||
+        lhsType.getAddressSpace() == UDONCL_INT32_ARRAY_ADDRESS_SPACE;
+    if (managed) {
+      StringRef predicate;
+      if (op.getPredicate() == LLVM::ICmpPredicate::eq)
+        predicate = "eq";
+      else if (op.getPredicate() == LLVM::ICmpPredicate::ne)
+        predicate = "ne";
+      else
+        return reject(op, "managed object references support only equality and "
+                          "inequality");
+      OperationState state(op.getLoc(),
+                           ::vrc::udonhl::RefCmpOp::getOperationName());
+      state.addOperands({adaptor.getLhs(), adaptor.getRhs()});
+      state.addTypes(rewriter.getI1Type());
+      state.addAttribute("predicate", rewriter.getStringAttr(predicate));
+      rewriter.replaceOp(op, rewriter.create(state)->getResults());
+      return success();
+    }
     arith::CmpIPredicate predicate;
     switch (op.getPredicate()) {
     case LLVM::ICmpPredicate::eq:

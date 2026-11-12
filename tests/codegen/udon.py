@@ -93,6 +93,40 @@ for expected in [
     assert expected in text, (expected, text)
 assert 'func.func' not in text and 'arith.' not in text
 
+large_switch_cases = ',\n'.join(
+    f'      {case}: ^case{case}' for case in range(16)
+)
+large_switch_blocks = '\n'.join(
+    f'''  ^case{case}:
+    return''' for case in range(16)
+)
+large_switch_source = f'''module attributes {{vrc.host_stage = "udonhl"}} {{
+  func.func @resume_dispatch(%state: i32) attributes {{
+    vrc.export_id = 6 : i32
+  }} {{
+    cf.switch %state : i32, [
+      default: ^default,
+{large_switch_cases}
+    ]
+{large_switch_blocks}
+  ^default:
+    return
+  }}
+}}'''
+large_switch = subprocess.run(
+    [opt, '--vrc-lower-udonhl-to-udonasm', '--verify-each'],
+    input=large_switch_source,
+    text=True,
+    capture_output=True,
+)
+assert large_switch.returncode == 0, large_switch.stderr
+assert large_switch.stdout.count(
+    'SystemInt32.__op_LessThan__SystemInt32_SystemInt32__SystemBoolean'
+) == 15, large_switch.stdout
+assert large_switch.stdout.count(
+    'SystemInt32.__op_Equality__SystemInt32_SystemInt32__SystemBoolean'
+) == 16, large_switch.stdout
+
 remainder_source = r'''module attributes {vrc.host_stage = "udonhl"} {
   func.func @remainder(%x: i32, %divisor: i32) -> i32 attributes {
     vrc.export_id = 1 : i32
@@ -210,6 +244,31 @@ assert (
     'SystemBitConverter.__Int32BitsToSingle__SystemInt32__SystemSingle'
     in large_float.stdout
 )
+
+small_float_source = r'''module attributes {
+  vrc.async_stage = "udon-static-v1",
+  vrc.host_stage = "udonhl"
+} {
+  func.func @small_float() -> f32 attributes {
+    vrc.export_id = 1 : i32
+  } {
+    %value = arith.constant 9.99999974E-6 : f32
+    return %value : f32
+  }
+}'''
+small_float = subprocess.run(
+    [opt, '--vrc-lower-udonhl-to-udonasm', '--verify-each'],
+    input=small_float_source, text=True, capture_output=True)
+assert small_float.returncode == 0, small_float.stderr
+small_float_literal = re.search(
+    r'initial = "([^"]+)", name = "__vrc_constant_\d+", '
+    r'type = "SystemSingle"',
+    small_float.stdout,
+)
+assert small_float_literal is not None, small_float.stdout
+assert 'E-' not in small_float_literal.group(1), small_float_literal.group(1)
+assert 'e-' not in small_float_literal.group(1), small_float_literal.group(1)
+assert small_float_literal.group(1).startswith('0.00000'), small_float_literal.group(1)
 
 int_min_source = r'''module attributes {
   vrc.async_stage = "udon-static-v1",
@@ -954,6 +1013,67 @@ for expected in [
 ]:
     assert expected in raw_memory_lowered.stdout, (
         expected, raw_memory_lowered.stdout)
+
+# Spill-index caching is capacity-driven and loop-aware.  Twenty-five cold
+# indices have more static operations than the one hot index, but the latter
+# is used by a natural CFG loop and must win the first newly available cache
+# slot.  Discover the semantic minimum capacity so this remains independent
+# of unrelated fixed-slot changes in the lowering.
+cold_spill_ops = []
+for index in range(25):
+    cold_spill_ops.append(
+        f'    udonhl.spill_store %value[{index}] '
+        '{storage_key = "SystemInt32"} : i32')
+    cold_spill_ops.extend([
+        f'    %cold_{index}_{use} = udonhl.spill_load [{index}] '
+        '{storage_key = "SystemInt32"} : i32'
+        for use in range(2)
+    ])
+loop_weighted_cache_source = r'''module attributes {
+  vrc.data_slot_capacity = @CAPACITY@ : i64
+} {
+  func.func @loop_weighted_cache(%value: i32, %again: i1) attributes {
+    vrc.export_id = 91 : i32
+  } {
+@OPS@
+    udonhl.spill_store %value[100] {storage_key = "SystemInt32"} : i32
+    cf.br ^loop
+  ^loop:
+    %hot = udonhl.spill_load [100] {storage_key = "SystemInt32"} : i32
+    cf.cond_br %again, ^loop, ^exit
+  ^exit:
+    return
+  }
+}'''.replace('@OPS@', '\n'.join(cold_spill_ops))
+
+def lower_loop_weighted_cache(capacity):
+    return subprocess.run(
+        [opt, '--vrc-lower-udonhl-to-udonasm', '--verify-each'],
+        input=loop_weighted_cache_source.replace(
+            '@CAPACITY@', str(capacity)),
+        text=True,
+        capture_output=True,
+    )
+
+minimum = 1
+maximum = 512
+while minimum < maximum:
+    middle = (minimum + maximum) // 2
+    candidate = lower_loop_weighted_cache(middle)
+    if candidate.returncode == 0:
+        maximum = middle
+    else:
+        minimum = middle + 1
+minimum_cache = lower_loop_weighted_cache(minimum)
+assert minimum_cache.returncode == 0, minimum_cache.stderr
+one_cache = lower_loop_weighted_cache(minimum + 1)
+assert one_cache.returncode == 0, one_cache.stderr
+assert 'index = 25 : i64, storage_key = "SystemInt32"' not in (
+    minimum_cache.stdout)
+assert 'index = 25 : i64, storage_key = "SystemInt32"' in one_cache.stdout, (
+    minimum, one_cache.stdout)
+assert 'address_cache_loop_weight_base = 8 : i64' in one_cache.stdout
+assert 'address_cache_maximum_loop_weight = 4096 : i64' in one_cache.stdout
 for forbidden in ['__op_BitwiseAnd__', '__op_BitwiseOr__', '__op_Multiply__']:
     assert forbidden not in raw_memory_lowered.stdout, (
         forbidden, raw_memory_lowered.stdout)
@@ -1561,6 +1681,28 @@ assert any(re.search(
     r'udonasm\.push "' + re.escape(zero) + r'"\s+'
     r'udonasm\.push "[^"]+"\s+udonasm\.copy',
     release_lowered.stdout) for zero in zero_slots), release_lowered.stdout
+
+reference_compare_source = r'''module attributes {
+  vrc.host_stage = "udonhl"
+} {
+  func.func @references_differ(%lhs: !udonhl.ptr<201>,
+                               %rhs: !udonhl.ptr<201>) -> i1 attributes {
+    vrc.export_id = 63 : i32
+  } {
+    %different = "udonhl.ref_cmp"(%lhs, %rhs) <{predicate = "ne"}> :
+      (!udonhl.ptr<201>, !udonhl.ptr<201>) -> i1
+    return %different : i1
+  }
+}'''
+reference_compare_lowered = subprocess.run(
+    [opt, '--vrc-lower-udonhl-to-udonasm', '--verify-each'],
+    input=reference_compare_source, text=True, capture_output=True)
+assert reference_compare_lowered.returncode == 0, (
+    reference_compare_lowered.stderr)
+assert (
+    'SystemObject.__op_Inequality__SystemObject_SystemObject__SystemBoolean'
+    in reference_compare_lowered.stdout)
+assert 'SystemInt32.__op_Inequality__' not in reference_compare_lowered.stdout
 
 async_buffer_source = r'''module attributes {
   vrc.host_stage = "udonhl",

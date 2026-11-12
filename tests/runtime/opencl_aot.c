@@ -726,7 +726,7 @@ int main(void) {
   cl_command_queue queue_alias2;
   cl_program program;
   cl_kernel kernel;
-  cl_event marker_event, write_event, wait_events[2];
+  cl_event marker_event, write_event, wait_events[2], recycled_event;
   cl_event argmax_reduce_event, argmax_finalize_event, argmax_read_event;
   cl_event read_only_write_event = 0;
   cl_mem first, second, nested_buffer, nested_buffer2, static_buffer;
@@ -741,6 +741,7 @@ int main(void) {
   cl_mem cast_input_buffer, scatter_output_buffer, where_output_buffer;
   cl_mem q4_activation, q4_packed, q4_scales, q4_previous, q4_output;
   cl_mem argmax_input, argmax_partials, argmax_result;
+  cl_mem capacity_buffers[32];
   cl_mem resolved;
   udonclBufferHandle_t common_buffer = {0, 0}, stale_buffer, replacement;
   udonclBufferHandle_t host_input_buffer = {0, 0};
@@ -766,10 +767,14 @@ int main(void) {
   const char *source_text = "known AOT program";
   size_t global[2] = {32, 32}, local[2] = {1, 1};
   cl_uint index, physical_token;
+  cl_uint sub_parent_logical_id;
   cl_uint blas_input_token, blas_output_token;
   cl_uint dnn_input_token, dnn_filter_token, dnn_output_token, dnn_other_token;
   cl_uint dnn_temporary_token;
   cl_uint argmax_input_token, argmax_partials_token, argmax_result_token;
+  cl_uint unary_input_token, unary_output_token;
+  cl_uint transpose_input_token, transpose_output_token, concat_left_token;
+  cl_uint gather_indices_token, cast_input_token, scatter_output_token;
   cl_uint argmax_result_value = 0xffffffffu;
   float dnn_alpha = 1.0f, dnn_beta_zero = 0.0f, dnn_beta_one = 1.0f;
   int source = 42;
@@ -908,7 +913,8 @@ int main(void) {
 
   first = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(source), 0, &error);
   EXPECT(first && error == CL_SUCCESS);
-  EXPECT(allocated_logical_id == 1 && allocated_bytes == sizeof(source));
+  EXPECT(allocated_logical_id >= 1 && allocated_logical_id <= 32 &&
+         allocated_bytes == sizeof(source));
   EXPECT(clRetainMemObject(first) == CL_SUCCESS);
   EXPECT(clReleaseMemObject(first) == CL_SUCCESS);
   EXPECT(clEnqueueWriteBuffer(queue, first, CL_FALSE, 0, sizeof(source),
@@ -928,13 +934,14 @@ int main(void) {
          event_status == CL_COMPLETE);
   EXPECT(clReleaseEvent(write_event) == CL_SUCCESS);
   EXPECT(clReleaseEvent(write_event) == CL_SUCCESS);
-  EXPECT(uploaded_token == 101);
+  EXPECT(uploaded_token == allocated_logical_id + 100);
   EXPECT(clReleaseMemObject(first) == CL_SUCCESS);
-  EXPECT(released_token == 101);
+  EXPECT(released_token == allocated_logical_id + 100);
 
   released_token = 0;
   sub_parent = clCreateBuffer(context, CL_MEM_READ_WRITE, 16, 0, &error);
   EXPECT(sub_parent && error == CL_SUCCESS);
+  sub_parent_logical_id = allocated_logical_id;
   sub_buffer = clCreateSubBuffer(sub_parent, 0, CL_BUFFER_CREATE_TYPE_REGION,
                                  &sub_region, &error);
   EXPECT(sub_buffer && error == CL_SUCCESS);
@@ -952,14 +959,14 @@ int main(void) {
                              &sub_result, 0, 0, 0) == CL_SUCCESS);
   EXPECT(sub_result == sub_source);
   EXPECT(clReleaseMemObject(sub_buffer) == CL_SUCCESS);
-  EXPECT(released_token == 101);
+  EXPECT(released_token == sub_parent_logical_id + 100);
 
   /* Reusing the logical table slot must request a new physical token rather
    * than retaining the released backing-resource identity. */
   second =
       clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(source), 0, &error);
   EXPECT(second && error == CL_SUCCESS);
-  EXPECT(allocated_logical_id == 1);
+  EXPECT(allocated_logical_id == sub_parent_logical_id);
 
   first = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(source), 0, &error);
   EXPECT(first && error == CL_SUCCESS);
@@ -973,6 +980,11 @@ int main(void) {
   EXPECT(await_count == 2 && awaited_events[0] == 7 && awaited_events[1] == 7);
   EXPECT(clReleaseEvent(wait_events[0]) == CL_SUCCESS);
   EXPECT(clReleaseEvent(wait_events[1]) == CL_SUCCESS);
+  EXPECT(clEnqueueWriteBuffer(queue, first, CL_FALSE, 0, sizeof(source),
+                              &source, 0, 0, &recycled_event) == CL_SUCCESS);
+  EXPECT(recycled_event == wait_events[1]);
+  EXPECT(clWaitForEvents(1, &recycled_event) == CL_SUCCESS);
+  EXPECT(clReleaseEvent(recycled_event) == CL_SUCCESS);
 
   await_count = 0;
   await_failure_call = 2;
@@ -1266,8 +1278,11 @@ int main(void) {
              queue, same_physical_buffer, static_buffer, same_physical_buffer,
              1, 1, 1, 0, 0, 1.0f, 0, 0, 0) == CL_INVALID_OPERATION);
   EXPECT(clReleaseMemObject(same_physical_buffer) == CL_SUCCESS);
-  ((float *)physical_buffers[2])[0] = 0.0f;
-  ((float *)physical_buffers[2])[1] = 1.57079632679f;
+  EXPECT(udonclResolvePhysicalBuffer(first, &unary_input_token) == CL_SUCCESS);
+  EXPECT(udonclResolvePhysicalBuffer(nested_buffer, &unary_output_token) ==
+         CL_SUCCESS);
+  ((float *)physical_buffers[unary_input_token - 100])[0] = 0.0f;
+  ((float *)physical_buffers[unary_input_token - 100])[1] = 1.57079632679f;
   await_count = 0;
   EXPECT(__vrc_enqueue_udononnx_unary_device_args(queue, first, nested_buffer,
                                                   2, 2, 0, 0,
@@ -1275,9 +1290,9 @@ int main(void) {
   EXPECT(marker_event);
   EXPECT(clWaitForEvents(1, &marker_event) == CL_SUCCESS);
   EXPECT(await_count == 1 && awaited_events[0] == 17);
-  EXPECT(((float *)physical_buffers[3])[0] == 0.0f);
-  EXPECT(((float *)physical_buffers[3])[1] > 0.999999f &&
-         ((float *)physical_buffers[3])[1] < 1.000001f);
+  EXPECT(((float *)physical_buffers[unary_output_token - 100])[0] == 0.0f);
+  EXPECT(((float *)physical_buffers[unary_output_token - 100])[1] > 0.999999f &&
+         ((float *)physical_buffers[unary_output_token - 100])[1] < 1.000001f);
   EXPECT(clReleaseEvent(marker_event) == CL_SUCCESS);
   transpose_input_buffer = udonclCreateBufferForQueue(
       queue, CL_MEM_READ_WRITE, 6 * sizeof(float), &error);
@@ -1297,12 +1312,24 @@ int main(void) {
   scatter_output_buffer = udonclCreateBufferForQueue(queue, CL_MEM_READ_WRITE,
                                                      6 * sizeof(float), &error);
   EXPECT(scatter_output_buffer && error == CL_SUCCESS);
-  ((float *)physical_buffers[4])[0] = 1.0f;
-  ((float *)physical_buffers[4])[1] = 2.0f;
-  ((float *)physical_buffers[4])[2] = 3.0f;
-  ((float *)physical_buffers[4])[3] = 4.0f;
-  ((float *)physical_buffers[4])[4] = 5.0f;
-  ((float *)physical_buffers[4])[5] = 6.0f;
+  EXPECT(udonclResolvePhysicalBuffer(transpose_input_buffer,
+                                     &transpose_input_token) == CL_SUCCESS);
+  EXPECT(udonclResolvePhysicalBuffer(transpose_output_buffer,
+                                     &transpose_output_token) == CL_SUCCESS);
+  EXPECT(udonclResolvePhysicalBuffer(concat_left_buffer, &concat_left_token) ==
+         CL_SUCCESS);
+  EXPECT(udonclResolvePhysicalBuffer(gather_indices_buffer,
+                                     &gather_indices_token) == CL_SUCCESS);
+  EXPECT(udonclResolvePhysicalBuffer(cast_input_buffer, &cast_input_token) ==
+         CL_SUCCESS);
+  EXPECT(udonclResolvePhysicalBuffer(scatter_output_buffer,
+                                     &scatter_output_token) == CL_SUCCESS);
+  ((float *)physical_buffers[transpose_input_token - 100])[0] = 1.0f;
+  ((float *)physical_buffers[transpose_input_token - 100])[1] = 2.0f;
+  ((float *)physical_buffers[transpose_input_token - 100])[2] = 3.0f;
+  ((float *)physical_buffers[transpose_input_token - 100])[3] = 4.0f;
+  ((float *)physical_buffers[transpose_input_token - 100])[4] = 5.0f;
+  ((float *)physical_buffers[transpose_input_token - 100])[5] = 6.0f;
   await_count = 0;
   EXPECT(__vrc_enqueue_udononnx_transpose_device_args(
              queue, transpose_input_buffer, transpose_output_buffer, 6, 2,
@@ -1310,23 +1337,24 @@ int main(void) {
              &marker_event) == CL_SUCCESS);
   EXPECT(marker_event && clWaitForEvents(1, &marker_event) == CL_SUCCESS);
   EXPECT(await_count == 1 && awaited_events[0] == 21);
-  EXPECT(((float *)physical_buffers[5])[0] == 1.0f);
-  EXPECT(((float *)physical_buffers[5])[1] == 4.0f);
-  EXPECT(((float *)physical_buffers[5])[2] == 2.0f);
-  EXPECT(((float *)physical_buffers[5])[3] == 5.0f);
-  EXPECT(((float *)physical_buffers[5])[4] == 3.0f);
-  EXPECT(((float *)physical_buffers[5])[5] == 6.0f);
+  EXPECT(((float *)physical_buffers[transpose_output_token - 100])[0] == 1.0f);
+  EXPECT(((float *)physical_buffers[transpose_output_token - 100])[1] == 4.0f);
+  EXPECT(((float *)physical_buffers[transpose_output_token - 100])[2] == 2.0f);
+  EXPECT(((float *)physical_buffers[transpose_output_token - 100])[3] == 5.0f);
+  EXPECT(((float *)physical_buffers[transpose_output_token - 100])[4] == 3.0f);
+  EXPECT(((float *)physical_buffers[transpose_output_token - 100])[5] == 6.0f);
   EXPECT(clReleaseEvent(marker_event) == CL_SUCCESS);
   for (index = 0; index < 6; ++index)
-    ((float *)physical_buffers[4])[index] = (float)(index + 1);
-  ((cl_uint *)physical_buffers[8])[0] = 1u;
-  ((cl_uint *)physical_buffers[8])[1] = 0xffffffffu;
-  ((float *)physical_buffers[5])[0] = 10.0f;
-  ((float *)physical_buffers[5])[1] = 11.0f;
-  ((float *)physical_buffers[5])[2] = 12.0f;
-  ((float *)physical_buffers[5])[3] = 20.0f;
-  ((float *)physical_buffers[5])[4] = 21.0f;
-  ((float *)physical_buffers[5])[5] = 22.0f;
+    ((float *)physical_buffers[transpose_input_token - 100])[index] =
+        (float)(index + 1);
+  ((cl_uint *)physical_buffers[cast_input_token - 100])[0] = 1u;
+  ((cl_uint *)physical_buffers[cast_input_token - 100])[1] = 0xffffffffu;
+  ((float *)physical_buffers[transpose_output_token - 100])[0] = 10.0f;
+  ((float *)physical_buffers[transpose_output_token - 100])[1] = 11.0f;
+  ((float *)physical_buffers[transpose_output_token - 100])[2] = 12.0f;
+  ((float *)physical_buffers[transpose_output_token - 100])[3] = 20.0f;
+  ((float *)physical_buffers[transpose_output_token - 100])[4] = 21.0f;
+  ((float *)physical_buffers[transpose_output_token - 100])[5] = 22.0f;
   await_count = 0;
   EXPECT(__vrc_enqueue_udononnx_scatter_nd_f32_device_args(
              queue, transpose_input_buffer, cast_input_buffer,
@@ -1335,15 +1363,17 @@ int main(void) {
              &marker_event) == CL_SUCCESS);
   EXPECT(marker_event && clWaitForEvents(1, &marker_event) == CL_SUCCESS);
   EXPECT(await_count == 1 && awaited_events[0] == 29);
-  EXPECT(((float *)physical_buffers[9])[0] == 1.0f);
-  EXPECT(((float *)physical_buffers[9])[2] == 3.0f);
-  EXPECT(((float *)physical_buffers[9])[3] == 20.0f);
-  EXPECT(((float *)physical_buffers[9])[5] == 22.0f);
+  EXPECT(((float *)physical_buffers[scatter_output_token - 100])[0] == 1.0f);
+  EXPECT(((float *)physical_buffers[scatter_output_token - 100])[2] == 3.0f);
+  EXPECT(((float *)physical_buffers[scatter_output_token - 100])[3] == 20.0f);
+  EXPECT(((float *)physical_buffers[scatter_output_token - 100])[5] == 22.0f);
   EXPECT(clReleaseEvent(marker_event) == CL_SUCCESS);
   EXPECT(clReleaseMemObject(scatter_output_buffer) == CL_SUCCESS);
   where_output_buffer = udonclCreateBufferForQueue(queue, CL_MEM_READ_WRITE,
                                                    6 * sizeof(float), &error);
   EXPECT(where_output_buffer && error == CL_SUCCESS);
+  EXPECT(udonclResolvePhysicalBuffer(where_output_buffer,
+                                     &scatter_output_token) == CL_SUCCESS);
   await_count = 0;
   EXPECT(__vrc_enqueue_udononnx_slice_device_args(
              queue, transpose_input_buffer, transpose_output_buffer, 4, 2,
@@ -1352,13 +1382,13 @@ int main(void) {
              &marker_event) == CL_SUCCESS);
   EXPECT(marker_event && clWaitForEvents(1, &marker_event) == CL_SUCCESS);
   EXPECT(await_count == 1 && awaited_events[0] == 22);
-  EXPECT(((float *)physical_buffers[5])[0] == 1.0f);
-  EXPECT(((float *)physical_buffers[5])[1] == 3.0f);
-  EXPECT(((float *)physical_buffers[5])[2] == 4.0f);
-  EXPECT(((float *)physical_buffers[5])[3] == 6.0f);
+  EXPECT(((float *)physical_buffers[transpose_output_token - 100])[0] == 1.0f);
+  EXPECT(((float *)physical_buffers[transpose_output_token - 100])[1] == 3.0f);
+  EXPECT(((float *)physical_buffers[transpose_output_token - 100])[2] == 4.0f);
+  EXPECT(((float *)physical_buffers[transpose_output_token - 100])[3] == 6.0f);
   EXPECT(clReleaseEvent(marker_event) == CL_SUCCESS);
-  ((float *)physical_buffers[4])[0] = 4.0f;
-  ((float *)physical_buffers[4])[1] = 7.0f;
+  ((float *)physical_buffers[transpose_input_token - 100])[0] = 4.0f;
+  ((float *)physical_buffers[transpose_input_token - 100])[1] = 7.0f;
   await_count = 0;
   EXPECT(__vrc_enqueue_udononnx_expand_device_args(
              queue, transpose_input_buffer, transpose_output_buffer, 6, 3,
@@ -1366,19 +1396,19 @@ int main(void) {
              1, 0, 0, &marker_event) == CL_SUCCESS);
   EXPECT(marker_event && clWaitForEvents(1, &marker_event) == CL_SUCCESS);
   EXPECT(await_count == 1 && awaited_events[0] == 23);
-  EXPECT(((float *)physical_buffers[5])[0] == 4.0f);
-  EXPECT(((float *)physical_buffers[5])[1] == 4.0f);
-  EXPECT(((float *)physical_buffers[5])[2] == 4.0f);
-  EXPECT(((float *)physical_buffers[5])[3] == 7.0f);
-  EXPECT(((float *)physical_buffers[5])[4] == 7.0f);
-  EXPECT(((float *)physical_buffers[5])[5] == 7.0f);
+  EXPECT(((float *)physical_buffers[transpose_output_token - 100])[0] == 4.0f);
+  EXPECT(((float *)physical_buffers[transpose_output_token - 100])[1] == 4.0f);
+  EXPECT(((float *)physical_buffers[transpose_output_token - 100])[2] == 4.0f);
+  EXPECT(((float *)physical_buffers[transpose_output_token - 100])[3] == 7.0f);
+  EXPECT(((float *)physical_buffers[transpose_output_token - 100])[4] == 7.0f);
+  EXPECT(((float *)physical_buffers[transpose_output_token - 100])[5] == 7.0f);
   EXPECT(clReleaseEvent(marker_event) == CL_SUCCESS);
-  ((float *)physical_buffers[6])[0] = 1.0f;
-  ((float *)physical_buffers[6])[1] = 2.0f;
-  ((float *)physical_buffers[4])[0] = 3.0f;
-  ((float *)physical_buffers[4])[1] = 4.0f;
-  ((float *)physical_buffers[4])[2] = 5.0f;
-  ((float *)physical_buffers[4])[3] = 6.0f;
+  ((float *)physical_buffers[concat_left_token - 100])[0] = 1.0f;
+  ((float *)physical_buffers[concat_left_token - 100])[1] = 2.0f;
+  ((float *)physical_buffers[transpose_input_token - 100])[0] = 3.0f;
+  ((float *)physical_buffers[transpose_input_token - 100])[1] = 4.0f;
+  ((float *)physical_buffers[transpose_input_token - 100])[2] = 5.0f;
+  ((float *)physical_buffers[transpose_input_token - 100])[3] = 6.0f;
   await_count = 0;
   EXPECT(__vrc_enqueue_udononnx_concat2_device_args(
              queue, concat_left_buffer, transpose_input_buffer,
@@ -1386,21 +1416,21 @@ int main(void) {
              &marker_event) == CL_SUCCESS);
   EXPECT(marker_event && clWaitForEvents(1, &marker_event) == CL_SUCCESS);
   EXPECT(await_count == 1 && awaited_events[0] == 24);
-  EXPECT(((float *)physical_buffers[5])[0] == 1.0f);
-  EXPECT(((float *)physical_buffers[5])[1] == 2.0f);
-  EXPECT(((float *)physical_buffers[5])[2] == 3.0f);
-  EXPECT(((float *)physical_buffers[5])[3] == 4.0f);
-  EXPECT(((float *)physical_buffers[5])[4] == 5.0f);
-  EXPECT(((float *)physical_buffers[5])[5] == 6.0f);
+  EXPECT(((float *)physical_buffers[transpose_output_token - 100])[0] == 1.0f);
+  EXPECT(((float *)physical_buffers[transpose_output_token - 100])[1] == 2.0f);
+  EXPECT(((float *)physical_buffers[transpose_output_token - 100])[2] == 3.0f);
+  EXPECT(((float *)physical_buffers[transpose_output_token - 100])[3] == 4.0f);
+  EXPECT(((float *)physical_buffers[transpose_output_token - 100])[4] == 5.0f);
+  EXPECT(((float *)physical_buffers[transpose_output_token - 100])[5] == 6.0f);
   EXPECT(clReleaseEvent(marker_event) == CL_SUCCESS);
-  ((float *)physical_buffers[4])[0] = 10.0f;
-  ((float *)physical_buffers[4])[1] = 11.0f;
-  ((float *)physical_buffers[4])[2] = 20.0f;
-  ((float *)physical_buffers[4])[3] = 21.0f;
-  ((float *)physical_buffers[4])[4] = 30.0f;
-  ((float *)physical_buffers[4])[5] = 31.0f;
-  ((cl_uint *)physical_buffers[7])[0] = 2u;
-  ((cl_uint *)physical_buffers[7])[1] = 0u;
+  ((float *)physical_buffers[transpose_input_token - 100])[0] = 10.0f;
+  ((float *)physical_buffers[transpose_input_token - 100])[1] = 11.0f;
+  ((float *)physical_buffers[transpose_input_token - 100])[2] = 20.0f;
+  ((float *)physical_buffers[transpose_input_token - 100])[3] = 21.0f;
+  ((float *)physical_buffers[transpose_input_token - 100])[4] = 30.0f;
+  ((float *)physical_buffers[transpose_input_token - 100])[5] = 31.0f;
+  ((cl_uint *)physical_buffers[gather_indices_token - 100])[0] = 2u;
+  ((cl_uint *)physical_buffers[gather_indices_token - 100])[1] = 0u;
   await_count = 0;
   EXPECT(__vrc_enqueue_udononnx_gather_axis0_device_args(
              queue, transpose_input_buffer, gather_indices_buffer,
@@ -1408,27 +1438,27 @@ int main(void) {
              &marker_event) == CL_SUCCESS);
   EXPECT(marker_event && clWaitForEvents(1, &marker_event) == CL_SUCCESS);
   EXPECT(await_count == 1 && awaited_events[0] == 25);
-  EXPECT(((float *)physical_buffers[5])[0] == 30.0f);
-  EXPECT(((float *)physical_buffers[5])[1] == 31.0f);
-  EXPECT(((float *)physical_buffers[5])[2] == 10.0f);
-  EXPECT(((float *)physical_buffers[5])[3] == 11.0f);
+  EXPECT(((float *)physical_buffers[transpose_output_token - 100])[0] == 30.0f);
+  EXPECT(((float *)physical_buffers[transpose_output_token - 100])[1] == 31.0f);
+  EXPECT(((float *)physical_buffers[transpose_output_token - 100])[2] == 10.0f);
+  EXPECT(((float *)physical_buffers[transpose_output_token - 100])[3] == 11.0f);
   EXPECT(clReleaseEvent(marker_event) == CL_SUCCESS);
-  ((cl_uint *)physical_buffers[8])[0] = 7u;
-  ((cl_uint *)physical_buffers[8])[1] = 0u;
-  ((cl_uint *)physical_buffers[8])[2] = 0xfffffffeu;
-  ((cl_uint *)physical_buffers[8])[3] = 0xffffffffu;
+  ((cl_uint *)physical_buffers[cast_input_token - 100])[0] = 7u;
+  ((cl_uint *)physical_buffers[cast_input_token - 100])[1] = 0u;
+  ((cl_uint *)physical_buffers[cast_input_token - 100])[2] = 0xfffffffeu;
+  ((cl_uint *)physical_buffers[cast_input_token - 100])[3] = 0xffffffffu;
   await_count = 0;
   EXPECT(__vrc_enqueue_udononnx_cast_i64_f32_device_args(
              queue, cast_input_buffer, transpose_output_buffer, 2, 0, 0,
              &marker_event) == CL_SUCCESS);
   EXPECT(marker_event && clWaitForEvents(1, &marker_event) == CL_SUCCESS);
   EXPECT(await_count == 1 && awaited_events[0] == 26);
-  EXPECT(((float *)physical_buffers[5])[0] == 7.0f);
-  EXPECT(((float *)physical_buffers[5])[1] == -2.0f);
+  EXPECT(((float *)physical_buffers[transpose_output_token - 100])[0] == 7.0f);
+  EXPECT(((float *)physical_buffers[transpose_output_token - 100])[1] == -2.0f);
   EXPECT(clReleaseEvent(marker_event) == CL_SUCCESS);
-  ((float *)physical_buffers[6])[0] = 0.0f;
-  ((float *)physical_buffers[6])[1] = 2.0f;
-  ((float *)physical_buffers[8])[0] = 0.0f;
+  ((float *)physical_buffers[concat_left_token - 100])[0] = 0.0f;
+  ((float *)physical_buffers[concat_left_token - 100])[1] = 2.0f;
+  ((float *)physical_buffers[cast_input_token - 100])[0] = 0.0f;
   await_count = 0;
   EXPECT(__vrc_enqueue_udononnx_equal_f32_device_args(
              queue, concat_left_buffer, cast_input_buffer,
@@ -1437,14 +1467,15 @@ int main(void) {
              1 | (1 << 16), 0, 0, &marker_event) == CL_SUCCESS);
   EXPECT(marker_event && clWaitForEvents(1, &marker_event) == CL_SUCCESS);
   EXPECT(await_count == 1 && awaited_events[0] == 27);
-  EXPECT(((float *)physical_buffers[5])[0] == 1.0f);
-  EXPECT(((float *)physical_buffers[5])[2] == 1.0f);
-  EXPECT(((float *)physical_buffers[5])[3] == 0.0f);
-  EXPECT(((float *)physical_buffers[5])[5] == 0.0f);
+  EXPECT(((float *)physical_buffers[transpose_output_token - 100])[0] == 1.0f);
+  EXPECT(((float *)physical_buffers[transpose_output_token - 100])[2] == 1.0f);
+  EXPECT(((float *)physical_buffers[transpose_output_token - 100])[3] == 0.0f);
+  EXPECT(((float *)physical_buffers[transpose_output_token - 100])[5] == 0.0f);
   EXPECT(clReleaseEvent(marker_event) == CL_SUCCESS);
-  ((float *)physical_buffers[6])[0] = 9.0f;
+  ((float *)physical_buffers[concat_left_token - 100])[0] = 9.0f;
   for (index = 0; index < 6; ++index)
-    ((float *)physical_buffers[4])[index] = (float)(index + 1);
+    ((float *)physical_buffers[transpose_input_token - 100])[index] =
+        (float)(index + 1);
   await_count = 0;
   EXPECT(__vrc_enqueue_udononnx_where_f32_device_args(
              queue, transpose_output_buffer, concat_left_buffer,
@@ -1454,10 +1485,10 @@ int main(void) {
              2 | (3 << 16), 1 | (1 << 16), 0, 0, &marker_event) == CL_SUCCESS);
   EXPECT(marker_event && clWaitForEvents(1, &marker_event) == CL_SUCCESS);
   EXPECT(await_count == 1 && awaited_events[0] == 28);
-  EXPECT(((float *)physical_buffers[9])[0] == 9.0f);
-  EXPECT(((float *)physical_buffers[9])[2] == 9.0f);
-  EXPECT(((float *)physical_buffers[9])[3] == 4.0f);
-  EXPECT(((float *)physical_buffers[9])[5] == 6.0f);
+  EXPECT(((float *)physical_buffers[scatter_output_token - 100])[0] == 9.0f);
+  EXPECT(((float *)physical_buffers[scatter_output_token - 100])[2] == 9.0f);
+  EXPECT(((float *)physical_buffers[scatter_output_token - 100])[3] == 4.0f);
+  EXPECT(((float *)physical_buffers[scatter_output_token - 100])[5] == 6.0f);
   EXPECT(clReleaseEvent(marker_event) == CL_SUCCESS);
   EXPECT(clReleaseMemObject(where_output_buffer) == CL_SUCCESS);
   EXPECT(clReleaseMemObject(cast_input_buffer) == CL_SUCCESS);
@@ -1843,6 +1874,20 @@ int main(void) {
          UDONCL_STATUS_SUCCESS);
   EXPECT(udonclDeviceBufferDestroy(&host_output_buffer) ==
          UDONCL_STATUS_SUCCESS);
+  for (index = 0; index < 32; ++index) {
+    capacity_buffers[index] =
+        clCreateBuffer(context, CL_MEM_READ_WRITE, 4, 0, &error);
+    EXPECT(capacity_buffers[index] && error == CL_SUCCESS);
+  }
+  EXPECT(!clCreateBuffer(context, CL_MEM_READ_WRITE, 4, 0, &error) &&
+         error == CL_OUT_OF_RESOURCES);
+  EXPECT(clReleaseMemObject(capacity_buffers[11]) == CL_SUCCESS);
+  capacity_buffers[11] =
+      clCreateBuffer(context, CL_MEM_READ_WRITE, 4, 0, &error);
+  EXPECT(capacity_buffers[11] && error == CL_SUCCESS &&
+         allocated_logical_id == 12);
+  for (index = 0; index < 32; ++index)
+    EXPECT(clReleaseMemObject(capacity_buffers[index]) == CL_SUCCESS);
   EXPECT(clReleaseCommandQueue(queue) == CL_SUCCESS);
   EXPECT(clReleaseContext(context) == CL_SUCCESS);
   return 0;

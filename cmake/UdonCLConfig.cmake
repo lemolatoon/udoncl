@@ -539,6 +539,9 @@ function(udoncl_add_artifact target)
   endif()
   set(_host_modules)
   set(_host_seen_sources)
+  set(_runtime_sources)
+  set(_runtime_dependencies)
+  set(_runtime_flags)
   foreach(_library IN LISTS ARG_HOST_LIBRARIES)
     set(_host_sources)
     set(_host_dependencies)
@@ -684,11 +687,6 @@ function(udoncl_add_unity_library target)
     _udoncl_append_target_usage("${_library}" HOST _sources _dependencies _flags)
     list(APPEND _flags
          "-DUDONCL_AOT_RUNTIME_VALIDATION=${_runtime_validation}")
-    if(_mutable_handle_capacity)
-      list(APPEND _flags
-        "-DUDONCL_AOT_BUFFER_CAPACITY=${_mutable_handle_capacity}"
-        "-DUDONCL_DEVICE_BUFFER_CAPACITY=${_mutable_handle_capacity}")
-    endif()
     list(REMOVE_DUPLICATES _sources)
     list(REMOVE_DUPLICATES _dependencies)
     if(_host_seen_sources)
@@ -698,11 +696,62 @@ function(udoncl_add_unity_library target)
       continue()
     endif()
     list(APPEND _host_seen_sources ${_sources})
-    _udoncl_compile_source_target("${target}" HOST "${_library}"
-                                  "${_sources}" "${_dependencies}" "${_flags}"
-                                  _library_module)
-    list(APPEND _host_modules "${_library_module}")
+    set(_ordinary_sources)
+    foreach(_source IN LISTS _sources)
+      get_filename_component(_source_name "${_source}" NAME)
+      if(_source_name STREQUAL "OpenCLAOT.c" OR
+         _source_name STREQUAL "DeviceMemory.c")
+        list(APPEND _runtime_sources "${_source}")
+        list(APPEND _runtime_dependencies ${_dependencies})
+        list(APPEND _runtime_flags ${_flags})
+      else()
+        list(APPEND _ordinary_sources "${_source}")
+      endif()
+    endforeach()
+    if(_ordinary_sources)
+      _udoncl_compile_source_target("${target}" HOST "${_library}"
+                                    "${_ordinary_sources}" "${_dependencies}"
+                                    "${_flags}" _library_module)
+      list(APPEND _host_modules "${_library_module}")
+    endif()
   endforeach()
+  set(_host_buffer_plan)
+  if(_runtime_sources)
+    list(REMOVE_DUPLICATES _runtime_sources)
+    list(REMOVE_DUPLICATES _runtime_dependencies)
+    list(REMOVE_DUPLICATES _runtime_flags)
+    if(_mutable_handle_capacity AND _host_modules)
+      _udoncl_link_module_set("${target}-buffer-plan" HOST "${_host_modules}"
+                              _host_plan_module)
+      set(_host_buffer_plan
+          "${CMAKE_CURRENT_BINARY_DIR}/udoncl/${target}/host-buffer-plan.json")
+      set(_capacity_header
+          "${CMAKE_CURRENT_BINARY_DIR}/udoncl/${target}/host-buffer-capacity.h")
+      add_custom_command(
+        OUTPUT "${_host_buffer_plan}" "${_capacity_header}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory
+                "${CMAKE_CURRENT_BINARY_DIR}/udoncl/${target}"
+        COMMAND "${UDONCLC_EXECUTABLE}" --plan-host-buffer-capacity
+                "${_host_plan_module}"
+                --base-mutable-handle-capacity "${_mutable_handle_capacity}"
+                --capacity-header "${_capacity_header}"
+                -o "${_host_buffer_plan}"
+        DEPENDS "${UDONCLC_EXECUTABLE}" "${_host_plan_module}"
+        COMMENT "Planning final Host cl_mem capacity for ${target}"
+        VERBATIM)
+      list(APPEND _runtime_dependencies "${_capacity_header}")
+      list(APPEND _runtime_flags -include "${_capacity_header}")
+    elseif(_mutable_handle_capacity)
+      list(APPEND _runtime_flags
+        "-DUDONCL_AOT_BUFFER_CAPACITY=${_mutable_handle_capacity}"
+        "-DUDONCL_DEVICE_BUFFER_CAPACITY=${_mutable_handle_capacity}")
+    endif()
+    _udoncl_compile_source_target("${target}" HOST "capacity-runtime"
+                                  "${_runtime_sources}"
+                                  "${_runtime_dependencies}"
+                                  "${_runtime_flags}" _runtime_module)
+    list(APPEND _host_modules "${_runtime_module}")
+  endif()
   _udoncl_link_module_set("${target}" HOST "${_host_modules}" _host_module)
 
   set(_device_module)
@@ -757,6 +806,7 @@ function(udoncl_add_unity_library target)
             "-DUDONCL_CONFIG=${_config}"
             "-DUDONCL_HOST_MODULE=${_host_module}"
             "-DUDONCL_HOST_MLIR=${_host_mlir}"
+            "-DUDONCL_HOST_BUFFER_PLAN=${_host_buffer_plan}"
             "-DUDONCL_STATIC_TENSOR_DIRECTORY=${_static_tensor_directory}"
             "-DUDONCL_DEVICE_MODULE=${_device_module}"
             "-DUDONCL_OUTPUT_DIRECTORY=${_artifact_directory}"
@@ -766,7 +816,7 @@ function(udoncl_add_unity_library target)
             -P "${_UDONCL_CONFIG_DIR}/UdonCLCompileUnityLibrary.cmake"
     COMMAND "${CMAKE_COMMAND}" -E touch "${_stamp}"
     DEPENDS "${UDONCLC_EXECUTABLE}" "${_config}" "${_host_module}"
-            ${_host_mlir} ${_static_tensor_directory}
+            ${_host_mlir} ${_host_buffer_plan} ${_static_tensor_directory}
             ${_device_module}
     BYPRODUCTS "${_artifact_directory}/manifest.json"
                "${_artifact_directory}/host.uasm"

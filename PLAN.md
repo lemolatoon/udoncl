@@ -368,7 +368,7 @@ Grilling 12の決定は**方式C：LLVM IRからHigh-level MLIRへの包括的�
 - 各OpはTableGen ODSで**operand/result、attributes/properties、memory effects、traits、region/verifier、assemblyFormat**を定義。`mlir-tblgen`のMarkdown documentationも生成する。
 - below `!` types/`#` attributesは**設計する独自構文（説明用略記）**。完全なパーサ実装済みを意味しない。表のLoweringは特定のBackendへの責務を示す。Verifierでは`IsolatedFromAbove`、symbol table、pass program order、memory accesses、SSA legality、resource bindingなどを検査。
 
-## 6. `udonhl` Dialect — 全Operation一覧（22 Op）
+## 6. `udonhl` Dialect — 全Operation一覧（23 Op）
 
 **位置付け**: Cとして意味のあるメモリ/ポインタ/関数/非同期フレームとUdon最適化の接点。`func.func`, `func.return`, `arith.*`, `math.*`, `cf.*`, `scf.*`は**再利用**し、独自定義しない。`!udonhl.ptr<addrspace>`は意味論上u32のbyte addressであり、provenanceはOp/Valueの属性・分析サイドテーブルに置く。`!udonhl.frame`はContinuation実装のstate object。`#udonhl.memkind<raw|typed|unknown>`、`#udonhl.suspend_reason<gpu|budget|service>`、`#udonhl.call_policy<normal|recursive|may_suspend>`を定義する。
 
@@ -396,6 +396,7 @@ Grilling 12の決定は**方式C：LLVM IRからHigh-level MLIRへの包括的�
 | 20 | `udonhl.frame_load` | frame, slot → value | Resume時復元。未初期化slot禁止。 |
 | 21 | `udonhl.resume_dispatch` | frame/state → successor blocks | **terminator**。state idからResume先を選択、`cf.switch`やUdon jumpsにlower。 |
 | 22 | `udonhl.suspend` | frame, reason, resume_state, event/budget token? → none | **terminator**。Udon eventを終了し次callback/frameで再開。必ずlive state永続化済み、destinationは対応resume dispatchに登録。 |
+| 23 | `udonhl.ref_cmp` | managed lhs, rhs; `eq`/`ne` → i1 | Address space 200/201のUdon object参照を型を保ったまま比較する。Udonでは`SystemObject`参照比較へlowerし、`ptrtoint`や整数slotへのCOPYを禁止する。順序比較は明示error。 |
 
 **補足**: `udonhl`には独自`add/mul/if/for/return/branch/function definition`を作らない。`udonhl.trap`も初期Opではなく、必要な診断/停止はRuntime service + `cf` loweringで表現する。U# Export entry stubは`func.func`の`vrc.export_id`, `udon_event`等の属性で示す。`array_view`の一貫したC byte semanticsを証明できない場合はzero-copyしない。
 
@@ -484,7 +485,7 @@ Grilling 12の決定は**方式C：LLVM IRからHigh-level MLIRへの包括的�
 
 ## 10. Operationカタログの境界・Loweringと「全Op」の解釈
 
-- 独自Dialect v0.1の完全一覧: `udonhl` **22**, `udonasm` **9**, `vrc` **13**, `vrcgpu` **13**、合計**57 Op**。この文書で明記しない独自Opは**初期仕様に存在しない**。新規追加は設計改訂＋対応するlowering/Verifier/Testを必須とする。
+- 独自Dialect v0.1の完全一覧: `udonhl` **23**, `udonasm` **9**, `vrc` **13**, `vrcgpu` **13**、合計**58 Op**。この文書で明記しない独自Opは**初期仕様に存在しない**。新規追加は設計改訂＋対応するlowering/Verifier/Testを必須とする。
 - 標準MLIR Op全体を57に数えない（`func`, `arith`, `math`, `cf`, `scf`, `gpu`, `memref`, `affine`, `llvm`, 必要なら`vector`等）。自前再定義はしない。Importer/Raising中の標準Dialect OpについてもLegalization/Passごとのallowlistを設ける。
 - `udonhl.call` + `func.func` → Udon static call slots / recursive frame code → `udonasm.push`, `udonasm.copy`, `udonasm.jump`, `udonasm.jump_indirect`、data/metaはExport directiveへ。
 - promotion後に残る`udonhl.load/store/memory`は、物理型別spill array Externまたはword-packed raw memory sequenceへprovenanceに基づいてlowerする。`udonhl.suspend/frame_*`はpersistent typed spill、return state、`udonasm.jump` event return、`jump_indirect` resumeへlowerする。
@@ -553,7 +554,7 @@ Grilling 12の決定は**方式C：LLVM IRからHigh-level MLIRへの包括的�
 
 ### 13.1 Compiler単体
 
-- TableGen全57 Opに対してparse/print round-trip、Verifier positive/negative、invalid operands/types、Region/Terminator、symbol/format、memory effect tests。`--verify-each`、`mlir-opt`類似のPass driver。
+- TableGen全58 Opに対してparse/print round-trip、Verifier positive/negative、invalid operands/types、Region/Terminator、symbol/format、memory effect tests。`--verify-each`、`mlir-opt`類似のPass driver。
 - LLVM→MLIR recovery: scalar/loop/CFG/affine/non-affine/GEP/complex alias/bitfield/union/`__local`/OpenCL kernel metadata/conditional barrier。復元成功と**意味保持不能の明示error**の両方をGolden化。
 - C ABIs: primitive sizes, `offsetof`, struct/union/bitfield/packed, pointers, pointers-int roundtrip, memcpy overlap distinction, malloc/free, UTF-8, varargs, recursion, mutual recursion, long loops。未対応libc APIは明確なfail list。
 - `udonasm` 9 opcode semantics: stack source/dest order, EXTERN args/out, recursion save/return, jumps/sentinel。UdonSharp `[RecursiveMethod]`出力と照合。
@@ -625,7 +626,7 @@ repo/
 
 ### P1. Dialects + Verifiers + Compiler plumbing
 
-- 4 TableGen Dialectsと**57 Opすべての定義・Verifier・parse/print tests**を作成。UdonAsm 9 opcodeについてはテキストEmitterと逆Assembler goldenも。
+- 4 TableGen Dialectsと**58 Opすべての定義・Verifier・parse/print tests**を作成。UdonAsm 9 opcodeについてはテキストEmitterと逆Assembler goldenも。
 - `VRCLLVMToHighLevelMLIR`独立ライブラリ、IR import sidecar、最小loop/CFG/memory recovery。
 - Manifest schema, ABI/export symbol bindingの生成器。単体テストとCLI scaffolding。
 
@@ -672,7 +673,7 @@ repo/
 | Gate | 成功の判定 | 合格前にしてはならないこと |
 |---|---|---|
 | G0: SDK | Program Asset生成、Udon event ABI、Readback callback、Blit順序/formatをPC実クライアントで再現 | fence保証・高速uploadを断言すること |
-| G1: Dialect | 57 Op全てのTableGen定義とVerifier/parse-print、9 opcodeをSDK実VM goldenで一致 | pseudo Udon命令を追加すること |
+| G1: Dialect | 58 Op全てのTableGen定義とVerifier/parse-print、9 opcodeをSDK実VM goldenで一致 | pseudo Udon命令を追加すること |
 | G2: Host | U#→Cの同期export、非再帰call、typed register/spill、word-packed raw memory、ILP32 ABI、errorsが実VMで動く | CとU#のABIを暗黙のC# object castに頼ること |
 | G3: Async | `clFinish`/readbackでstateが保たれ、古いcallbackを拒否しfailure callbackを返せる | イベント間でVM call stackが残ると想定すること |
 | G4: SAXPY | OpenCL C→fragment→GPU→readbackがReference結果と一致 | native Compute Shaderを使えたと主張すること |
@@ -706,7 +707,7 @@ repo/
 1. このPLAN.mdを読み、`docs/decisions.md`に決定事項を転記する。勝手にQ12をselective-onlyへ縮小したり、Cライブラリのentryを`main()`に変更したりしない。
 2. `CMakeLists.txt`とLLVM/MLIR pinned環境の最小構成を作り、4 DialectのTableGen + 9 Udon opcodeのparsing/printing testを最初に通す。**`VRCLLVMToHighLevelMLIR`を独立CMake target**にする。
 3. 同時にSDK P0 spikes用Unity Test Worldを作り、`UdonBehaviour`のProgram Asset/CustomEvent/Readbackを**実SDKとPC Clientで**検証する。ベンチ結果を`docs/validation.md`に保存。
-4. 全57 OpsのVerifier/LoweringをTDDで追加し、IR dump可能なCLI `vrc-opt`を作る。未知Opを黙って通さない。
+4. 全58 OpsのVerifier/LoweringをTDDで追加し、IR dump可能なCLI `vrc-opt`を作る。未知Opを黙って通さない。
 5. Sync `add` library + compiler-generated low-level U# binding → SAXPY → Reductionの順にG2〜G5を満たす。各段階にGolden tests/End-to-End testを追加。
 6. Picolibc portの技術調査とC11 API coverage matrixを並行着手するが、OpenCL MVPの実装完了をlibc全面対応で遅らせない。
 7. 未検証事項は`TODO: verify on target SDK/client`とTest IDを残す。「動作した」と記録するには実行ログと環境を付ける。
@@ -767,5 +768,5 @@ vrccl validate build/saxpy --sdk-extern-db path/to/externs.json
 ## 21. 最後の実装指針
 
 - **すべての設計が実装されたと偽らない**。本PLANは仕様と実装手順であって完成レポートではない。
-- ユーザーとの合意で優先されたことは、**U# entry → C library**、包括的**LLVM IR→High-level MLIR復元の独立CMake library**、**実Udon VMでの開発・テスト**、**Reduction込みMVP**、**4 Dialectと全57 Opの明示的なcatalog**。
+- ユーザーとの合意で優先されたことは、**U# entry → C library**、包括的**LLVM IR→High-level MLIR復元の独立CMake library**、**実Udon VMでの開発・テスト**、**Reduction込みMVP**、**4 Dialectと全58 Opの明示的なcatalog**。
 - 最初に実機制約を測り、不可能な前提が見つかれば、それに依存する工程だけ止める。すでに確定した設計と安全性を黙って変えない。

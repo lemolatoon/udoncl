@@ -128,6 +128,72 @@ def run(command, **kwargs):
     return subprocess.run([str(item) for item in command], check=True, **kwargs)
 
 
+def prepare_tinyllama_conversation_artifact(root: Path, build: Path):
+    fetched = run(
+        [sys.executable, root / "scripts/fetch_tinyllama_onnx.py"],
+        cwd=root,
+        text=True,
+        capture_output=True,
+    )
+    model = Path(fetched.stdout.strip().splitlines()[-1]).resolve()
+    conversation_build = root / "build/tinyllama-real-binding"
+    install = build / "tests/cmake-package/install"
+    executable_suffix = ".exe" if sys.platform == "win32" else ""
+    llvm = root / ".deps/llvm23/bin"
+    onnx_mlir = root / ".deps/onnx-mlir/bin"
+    run(
+        [
+            "cmake",
+            "-S",
+            root / "examples/onnx-transformer-tiny",
+            "-B",
+            conversation_build,
+            "-G",
+            "Ninja",
+            f"-DCMAKE_PREFIX_PATH={install.resolve()}",
+            f"-DUDONCL_CLANG_EXECUTABLE={llvm / ('clang' + executable_suffix)}",
+            f"-DUDONCL_LLVM_LINK_EXECUTABLE={llvm / ('llvm-link' + executable_suffix)}",
+            f"-DUDONCL_ONNX_IMPORTER_EXECUTABLE={onnx_mlir / ('udoncl-onnx' + executable_suffix)}",
+            f"-DUDONCL_ONNX_OPT_EXECUTABLE={onnx_mlir / ('udoncl-onnx-opt' + executable_suffix)}",
+            f"-DUDONCL_TINYLLAMA_ONNX_MODEL={model}",
+        ],
+        cwd=root,
+    )
+    run(
+        [
+            "cmake",
+            "--build",
+            conversation_build,
+            "--target",
+            "onnx-transformer-tiny-conversation",
+            "--parallel",
+            str(os.cpu_count() or 1),
+        ],
+        cwd=root,
+        timeout=1800,
+    )
+    artifact = (
+        conversation_build
+        / "udoncl/onnx-transformer-tiny-conversation/artifact"
+    ).resolve()
+    oracle = (build / "tests/tinyllama-real-onnx/m1-oracle.json").resolve()
+    if not (artifact / "manifest.json").is_file():
+        raise RuntimeError(f"TinyLlama conversation artifact is missing: {artifact}")
+    if not oracle.is_file():
+        oracle.parent.mkdir(parents=True, exist_ok=True)
+        run(
+            [
+                sys.executable,
+                root / "tests/boundary/tinyllama_real_onnx.py",
+                root,
+                oracle.parent,
+            ],
+            cwd=root,
+            timeout=1200,
+        )
+    return artifact, oracle
+
+
 def extract_payload(result):
     structured = result.get("structuredContent")
     if structured is not None:
@@ -341,12 +407,39 @@ def wait_for_instance_reconnect(client: McpClient, timeout=600):
     )
 
 
-def start_unity_tests(client: McpClient, test_names=()):
+def execute_menu_after_reload(
+    client: McpClient, menu_path: str, *, timeout=300, reconnect_timeout=600
+):
+    for attempt in range(3):
+        try:
+            client.tool(
+                "execute_menu_item",
+                {"menu_path": menu_path},
+                timeout=timeout,
+            )
+            return wait_for_instance_reconnect(client, timeout=reconnect_timeout)
+        except RuntimeError as error:
+            transient = (
+                "Could not connect to Unity" in str(error)
+                or "No Unity Editor instances found" in str(error)
+                or "Timeout receiving Unity response" in str(error)
+            )
+            if not transient or attempt == 2:
+                raise
+            print(
+                f"unity_mcp_menu=reconnecting menu={menu_path!r}",
+                flush=True,
+            )
+            wait_for_instance_reconnect(client, timeout=reconnect_timeout)
+    raise AssertionError("unreachable")
+
+
+def start_unity_tests(client: McpClient, test_names=(), assembly_names=(TEST_ASSEMBLY,)):
     for reconnect_attempt in range(3):
         try:
             arguments = {
                 "mode": "EditMode",
-                "assembly_names": [TEST_ASSEMBLY],
+                "assembly_names": list(assembly_names),
                 "include_failed_tests": True,
                 "include_details": True,
             }
@@ -516,7 +609,10 @@ def run_unity_mcp_gate(
     build,
     output,
     test_names=(),
+    test_assemblies=(TEST_ASSEMBLY,),
     mnist_artifact=None,
+    tinyllama_conversation_artifact=None,
+    tinyllama_conversation_oracle=None,
 ):
     require_unity_mcp(project)
     output.mkdir(parents=True, exist_ok=True)
@@ -625,6 +721,13 @@ def run_unity_mcp_gate(
             "GIT_CONFIG_VALUE_0": "true",
         }
     )
+    if tinyllama_conversation_artifact is not None:
+        environment["UDONCL_PUBLIC_TINYLLAMA_CONVERSATION_UNITY_BUNDLE"] = str(
+            tinyllama_conversation_artifact
+        )
+        environment["UDONCL_PUBLIC_TINYLLAMA_CONVERSATION_ORACLE"] = str(
+            tinyllama_conversation_oracle
+        )
     lifecycle_backup = output / "unity-lifecycle-backup"
     shutil.rmtree(lifecycle_backup, ignore_errors=True)
     lifecycle_backup.mkdir()
@@ -692,64 +795,60 @@ def run_unity_mcp_gate(
         client.tool("set_active_instance", {"instance": instance})
         wait_for_editor(client)
         client.tool("read_console", {"action": "clear"})
-        client.tool(
-            "execute_menu_item",
-            {
-                "menu_path": (
-                    "Tools/udoncl/Internal/Prepare Public MNIST Validation"
-                )
-            },
-            timeout=300,
+        execute_menu_after_reload(
+            client,
+            "Tools/udoncl/Internal/Prepare Public MNIST Validation",
         )
-        instance = wait_for_instance_reconnect(client, timeout=600)
-        client.tool(
-            "execute_menu_item",
-            {
-                "menu_path": (
-                    "Tools/udoncl/Internal/Prepare Public Transformer Validation"
+        if tinyllama_conversation_artifact is not None:
+            execute_menu_after_reload(
+                client,
+                "Tools/udoncl/Internal/Prepare Public TinyLlama Conversation Validation",
+                timeout=900,
+                reconnect_timeout=900,
+            )
+            focused_test = (
+                Path(project)
+                / "Assets/UdonclSampleValidation/Editor/"
+                "PublicTinyLlamaConversationLifecycleTests.cs"
+            )
+            imported_program = (
+                Path(project)
+                / "Assets/udoncl-generated/tinyllama_real_conversation/Programs/"
+                "host_program.asset"
+            )
+            missing = [
+                str(path)
+                for path in (focused_test, imported_program)
+                if not path.is_file()
+            ]
+            if missing:
+                raise RuntimeError(
+                    "TinyLlama conversation preparation did not complete: "
+                    + ", ".join(missing)
                 )
-            },
-            timeout=300,
+        execute_menu_after_reload(
+            client,
+            "Tools/udoncl/Internal/Prepare Public Transformer Validation",
         )
-        instance = wait_for_instance_reconnect(client, timeout=600)
-        client.tool(
-            "execute_menu_item",
-            {
-                "menu_path": (
-                    "Tools/udoncl/Internal/Prepare Public Tokenizer Validation"
-                )
-            },
-            timeout=300,
+        execute_menu_after_reload(
+            client,
+            "Tools/udoncl/Internal/Prepare Public Tokenizer Validation",
         )
-        instance = wait_for_instance_reconnect(client, timeout=600)
-        client.tool(
-            "execute_menu_item",
-            {
-                "menu_path": (
-                    "Tools/udoncl/Internal/Prepare Public MNIST Controller Validation"
-                )
-            },
-            timeout=300,
+        execute_menu_after_reload(
+            client,
+            "Tools/udoncl/Internal/Prepare Public MNIST Controller Validation",
         )
-        instance = wait_for_instance_reconnect(client, timeout=600)
-        client.tool(
-            "execute_menu_item",
-            {
-                "menu_path": (
-                    "Tools/udoncl/Internal/Prepare Packaged Example Validation"
-                )
-            },
-            timeout=300,
+        execute_menu_after_reload(
+            client,
+            "Tools/udoncl/Internal/Prepare Packaged Example Validation",
         )
-        instance = wait_for_instance_reconnect(client, timeout=600)
-        client.tool(
-            "execute_menu_item",
-            {"menu_path": "Tools/udoncl/Internal/Ensure Validation Scene Saved"},
-            timeout=300,
+        execute_menu_after_reload(
+            client,
+            "Tools/udoncl/Internal/Ensure Validation Scene Saved",
         )
         wait_for_editor(client)
         for attempt in range(4):
-            started = start_unity_tests(client, test_names)
+            started = start_unity_tests(client, test_names, test_assemblies)
             job_id = (started.get("data") or started).get("job_id")
             if not job_id:
                 raise RuntimeError(f"Unity MCP did not return a test job id: {started}")
@@ -885,6 +984,19 @@ def main():
         type=Path,
         help="override the public C++ ONNX MNIST Unity artifact",
     )
+    parser.add_argument(
+        "--tinyllama-conversation",
+        action="store_true",
+        help="build and run the focused real TinyLlama conversation Unity test",
+    )
+    parser.add_argument(
+        "--reuse-tinyllama-conversation-artifact",
+        type=Path,
+        help=(
+            "focused diagnosis only: reuse an already generated TinyLlama "
+            "conversation artifact instead of rebuilding it"
+        ),
+    )
     args = parser.parse_args()
     if args.unity is None:
         parser.error("set UNITY_EDITOR_PATH in .env or pass --unity")
@@ -945,16 +1057,55 @@ def main():
             cwd=root,
             timeout=1200,
         )
+    tinyllama_conversation_artifact = None
+    tinyllama_conversation_oracle = None
+    unity_tests = list(args.unity_test)
+    unity_test_assemblies = [TEST_ASSEMBLY]
+    if args.tinyllama_conversation:
+        if args.reuse_tinyllama_conversation_artifact:
+            tinyllama_conversation_artifact = (
+                args.reuse_tinyllama_conversation_artifact.resolve()
+            )
+            tinyllama_conversation_oracle = (
+                args.build_dir.resolve()
+                / "tests/tinyllama-real-onnx/m1-oracle.json"
+            )
+            if not (tinyllama_conversation_artifact / "manifest.json").is_file():
+                parser.error(
+                    "reused TinyLlama conversation artifact has no manifest: "
+                    f"{tinyllama_conversation_artifact}"
+                )
+            if not tinyllama_conversation_oracle.is_file():
+                parser.error(
+                    "reused TinyLlama conversation oracle is missing: "
+                    f"{tinyllama_conversation_oracle}"
+                )
+        else:
+            tinyllama_conversation_artifact, tinyllama_conversation_oracle = (
+                prepare_tinyllama_conversation_artifact(
+                    root, args.build_dir.resolve()
+                )
+            )
+        if not unity_tests:
+            unity_tests.append(
+                "Lemolatoon.Udoncl.Editor.Tests."
+                "PublicTinyLlamaConversationLifecycleTests."
+                "GeneratedUSharpBindingGeneratesFirstRealToken"
+            )
+            unity_test_assemblies = ["Udoncl.TinyLlama.Focused.Tests"]
     run_unity_mcp_gate(
         root,
         unity,
         project,
         args.build_dir.resolve(),
         args.output.resolve(),
-        test_names=args.unity_test,
+        test_names=unity_tests,
+        test_assemblies=unity_test_assemblies,
         mnist_artifact=(
             args.mnist_artifact.resolve() if args.mnist_artifact else None
         ),
+        tinyllama_conversation_artifact=tinyllama_conversation_artifact,
+        tinyllama_conversation_oracle=tinyllama_conversation_oracle,
     )
     if args.unity_only:
         print("unity_validation=passed")

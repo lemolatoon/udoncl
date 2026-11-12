@@ -1,0 +1,159 @@
+using System;
+using System.Collections;
+using System.IO;
+using NUnit.Framework;
+using UnityEditor;
+using UnityEngine;
+using UnityEngine.TestTools;
+using VRC.Udon;
+
+namespace Lemolatoon.Udoncl.Editor.Tests
+{
+    public sealed class PublicTinyLlamaConversationLifecycleTests
+    {
+        private const string GeneratedRoot = "Assets/udoncl-generated/tinyllama_real_conversation";
+        private const string BindingClass = "UdonclTinyLlamaConversationBinding";
+        private const string ControllerClass = "UdonclTinyLlamaConversationTestController";
+        private const string GeneratedNamespace = "Lemolatoon.Udoncl.Generated.";
+        private const string ControllerSource =
+            "Assets/UdonclSampleValidation/" + ControllerClass + ".cs";
+        private const string ControllerProgram =
+            GeneratedRoot + "/Tests/" + ControllerClass + ".asset";
+        private string artifactDirectory;
+        private int[] promptTokens;
+        private int expectedToken;
+
+        [OneTimeSetUp]
+        public void ImportConversationArtifact()
+        {
+            artifactDirectory = Environment.GetEnvironmentVariable(
+                "UDONCL_PUBLIC_TINYLLAMA_CONVERSATION_UNITY_BUNDLE"
+            );
+            Assert.IsFalse(
+                string.IsNullOrWhiteSpace(artifactDirectory),
+                "The real TinyLlama conversation artifact path is required."
+            );
+            artifactDirectory = Path.GetFullPath(artifactDirectory);
+            ValidatedArtifact artifact = ArtifactManifestValidator.Validate(artifactDirectory);
+            Assert.AreEqual("tinyllama_real_conversation", artifact.ProgramName);
+            if (!AssetDatabase.IsValidFolder(GeneratedRoot))
+                Assert.AreEqual(GeneratedRoot, UdonclArtifactImporter.Import(artifactDirectory));
+            CollectionAssert.AreEqual(
+                File.ReadAllBytes(Path.Combine(artifactDirectory, "binding.cs")),
+                File.ReadAllBytes(GeneratedRoot + "/Bindings/" + BindingClass + ".cs")
+            );
+            Assert.NotNull(AssetDatabase.LoadAssetAtPath<MonoScript>(ControllerSource));
+            if (!AssetDatabase.IsValidFolder(GeneratedRoot + "/Tests"))
+                AssetDatabase.CreateFolder(GeneratedRoot, "Tests");
+            UdonclArtifactImporter.EnsureCompiledUdonSharpProgramAsset(
+                GeneratedRoot + "/Bindings/" + BindingClass + ".cs",
+                GeneratedRoot + "/Bindings/" + BindingClass + ".asset"
+            );
+            UdonclArtifactImporter.EnsureCompiledUdonSharpProgramAsset(
+                ControllerSource,
+                ControllerProgram
+            );
+            GeneratedBindingFinalizer.FinalizeAvailableBindings();
+
+            string oracle = Environment.GetEnvironmentVariable(
+                "UDONCL_PUBLIC_TINYLLAMA_CONVERSATION_ORACLE"
+            );
+            Assert.IsFalse(
+                string.IsNullOrWhiteSpace(oracle),
+                "The M=1 TinyLlama oracle path is required."
+            );
+            Assert.IsTrue(File.Exists(oracle), "The M=1 TinyLlama oracle is required.");
+            string json = File.ReadAllText(oracle);
+            TinyLlamaConversationOracle parsed = JsonUtility.FromJson<TinyLlamaConversationOracle>(
+                json
+            );
+            Assert.NotNull(parsed);
+            Assert.NotNull(parsed.prompt_tokens);
+            Assert.NotNull(parsed.generated_tokens);
+            Assert.Greater(parsed.generated_tokens.Length, 0);
+            promptTokens = parsed.prompt_tokens;
+            expectedToken = parsed.generated_tokens[0];
+        }
+
+        [UnityTest]
+        public IEnumerator GeneratedUSharpBindingGeneratesFirstRealToken()
+        {
+            yield return new EnterPlayMode();
+
+            GameObject prefab = AssetDatabase.LoadAssetAtPath<GameObject>(
+                GeneratedRoot + "/Prefabs/" + BindingClass + ".prefab"
+            );
+            Assert.NotNull(prefab);
+            GameObject instance = UnityEngine.Object.Instantiate(prefab);
+            UdonBehaviour controller = UdonclArtifactImporter.AddCompiledUdonSharpBehaviour(
+                instance,
+                ControllerProgram
+            );
+            UdonclArtifactImporter.InitializeUdonBehaviours(instance);
+            yield return null;
+
+            UdonBehaviour binding = UdonclArtifactImporter.FindUdonSharpBacking(
+                instance,
+                GeneratedNamespace + BindingClass
+            );
+            Assert.NotNull(binding);
+            Assert.NotNull(controller);
+            int[] generated = new int[1];
+            UdonclArtifactImporter.SetUdonProgramVariable(controller, "binding", binding);
+            UdonclArtifactImporter.SetUdonProgramVariable(controller, "promptTokens", promptTokens);
+            UdonclArtifactImporter.SetUdonProgramVariable(controller, "generatedTokens", generated);
+            UdonclArtifactImporter.SetUdonProgramVariable(controller, "maxNewTokens", 1);
+            UdonclArtifactImporter.SendUdonCustomEvent(controller, "Run");
+
+            const int timeoutFrames = 36000;
+            int frame = 0;
+            bool completed = false;
+            while (frame < timeoutFrames && !completed)
+            {
+                ++frame;
+                yield return null;
+                completed = (bool)
+                    UdonclArtifactImporter.GetUdonProgramVariable(controller, "completed");
+            }
+            int phase = (int)UdonclArtifactImporter.GetUdonProgramVariable(controller, "phase");
+            int status = (int)UdonclArtifactImporter.GetUdonProgramVariable(controller, "status");
+            int libraryStatus = (int)
+                UdonclArtifactImporter.GetUdonProgramVariable(controller, "libraryStatus");
+            int asyncDiagnostic = (int)
+                UdonclArtifactImporter.GetUdonProgramVariable(controller, "asyncDiagnostic");
+            int count = (int)
+                UdonclArtifactImporter.GetUdonProgramVariable(controller, "generatedCount");
+            int[] actual = (int[])
+                UdonclArtifactImporter.GetUdonProgramVariable(controller, "generatedTokens");
+            UnityEngine.Object.Destroy(instance);
+            yield return new ExitPlayMode();
+
+            Assert.IsTrue(completed, "TinyLlama generation timed out at phase " + phase + ".");
+            Assert.AreEqual(
+                0,
+                status,
+                "Generated binding failed at phase "
+                    + phase
+                    + " (async diagnostic "
+                    + asyncDiagnostic
+                    + ")."
+            );
+            Assert.AreEqual(0, libraryStatus, "C Host failed at phase " + phase + ".");
+            Assert.AreEqual(1, count);
+            Assert.AreEqual(expectedToken, actual[0]);
+            TestContext.Progress.WriteLine(
+                "tinyllama_conversation frames={0} prompt={1} generated={2}",
+                frame,
+                promptTokens.Length,
+                actual[0]
+            );
+        }
+
+        [Serializable]
+        private sealed class TinyLlamaConversationOracle
+        {
+            public int[] prompt_tokens;
+            public int[] generated_tokens;
+        }
+    }
+}

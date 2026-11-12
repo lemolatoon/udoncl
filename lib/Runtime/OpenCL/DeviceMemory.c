@@ -15,6 +15,33 @@ struct udoncl_device_buffer_entry {
 
 static struct udoncl_device_buffer_entry
     udoncl_device_buffers[UDONCL_DEVICE_BUFFER_CAPACITY];
+static int32_t udoncl_device_buffer_next_unused;
+static int32_t udoncl_device_buffer_free_head = -1;
+static int32_t udoncl_device_buffer_free_next[UDONCL_DEVICE_BUFFER_CAPACITY];
+
+static int32_t udoncl_device_buffer_take_slot(void) {
+  int32_t index;
+  if (udoncl_device_buffer_free_head != -1) {
+    if (udoncl_device_buffer_free_head < 0 ||
+        udoncl_device_buffer_free_head >= UDONCL_DEVICE_BUFFER_CAPACITY)
+      return -1;
+    index = udoncl_device_buffer_free_head;
+    udoncl_device_buffer_free_head = udoncl_device_buffer_free_next[index];
+    udoncl_device_buffer_free_next[index] = -1;
+    return index;
+  }
+  if (udoncl_device_buffer_next_unused < 0 ||
+      udoncl_device_buffer_next_unused >= UDONCL_DEVICE_BUFFER_CAPACITY)
+    return -1;
+  return udoncl_device_buffer_next_unused++;
+}
+
+static void udoncl_device_buffer_recycle(int32_t index) {
+  if (index < 0 || index >= UDONCL_DEVICE_BUFFER_CAPACITY)
+    return;
+  udoncl_device_buffer_free_next[index] = udoncl_device_buffer_free_head;
+  udoncl_device_buffer_free_head = index;
+}
 
 static uint32_t udoncl_next_generation(uint32_t generation) {
   ++generation;
@@ -75,24 +102,23 @@ udonclStatus_t udonclDeviceBufferCreate(cl_context context, cl_mem_flags flags,
 udonclStatus_t udonclDeviceBufferAdopt(cl_context context, cl_mem memory,
                                        size_t bytes,
                                        udonclBufferHandle_t *buffer) {
-  uint32_t index;
+  int32_t index;
+  struct udoncl_device_buffer_entry *entry;
   if (!buffer || !context || !memory || !bytes)
     return UDONCL_STATUS_INVALID_VALUE;
   buffer->slot = 0;
   buffer->generation = 0;
-  for (index = 0; index < UDONCL_DEVICE_BUFFER_CAPACITY; ++index) {
-    struct udoncl_device_buffer_entry *entry = &udoncl_device_buffers[index];
-    if (entry->memory)
-      continue;
-    entry->memory = memory;
-    entry->bytes = bytes;
-    entry->context = context;
-    entry->generation = udoncl_next_generation(entry->generation);
-    buffer->slot = index + 1u;
-    buffer->generation = entry->generation;
-    return UDONCL_STATUS_SUCCESS;
-  }
-  return UDONCL_STATUS_OUT_OF_RESOURCES;
+  index = udoncl_device_buffer_take_slot();
+  if (index < 0)
+    return UDONCL_STATUS_OUT_OF_RESOURCES;
+  entry = &udoncl_device_buffers[index];
+  entry->memory = memory;
+  entry->bytes = bytes;
+  entry->context = context;
+  entry->generation = udoncl_next_generation(entry->generation);
+  buffer->slot = (uint32_t)(index + 1);
+  buffer->generation = entry->generation;
+  return UDONCL_STATUS_SUCCESS;
 }
 
 udonclStatus_t udonclDeviceBufferDestroy(udonclBufferHandle_t *buffer) {
@@ -110,6 +136,7 @@ udonclStatus_t udonclDeviceBufferDestroy(udonclBufferHandle_t *buffer) {
   entry->memory = 0;
   entry->context = 0;
   entry->bytes = 0;
+  udoncl_device_buffer_recycle((int32_t)buffer->slot - 1);
   buffer->slot = 0;
   buffer->generation = 0;
   return UDONCL_STATUS_SUCCESS;

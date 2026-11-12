@@ -120,6 +120,16 @@ def assert_static_async_artifact(artifact, assembly):
     assert 'vrc.async_checkpoint_routes = []' in lowered
     assert '__udoncl_async_resume_dispatch' in lowered
     assert 'vrc.async_public_result_load' in lowered
+    storage = json.loads(
+        (artifact / 'storage-report.json').read_text(encoding='utf-8')
+    )
+    reserve = storage['final_data_slot_reserve']
+    declarations = sum(
+        line.startswith('    ') and ': %' in line
+        for line in assembly.splitlines()
+    )
+    assert storage['data_slot_count'] + reserve == declarations
+    assert storage['data_slot_capacity'] + reserve <= 512
 
 
 def main():
@@ -804,6 +814,17 @@ def main():
         mnist_binding
     )
     assert 'diagnosticReadback' not in mnist_binding
+    async_pump = mnist_binding.split(
+        'private void PumpAsyncCommand()', 1
+    )[1].split('private void CopyHeapToPixels(', 1)[0]
+    assert 'if (pendingObject == 0 && kind == 0)' in async_pump
+    assert 'pendingAsyncObject = pendingObject;' in async_pump
+    assert 'AsyncDiagnosticInconsistentIdleState' not in async_pump
+    async_continue = mnist_binding.split(
+        'public void _ContinueAsyncCommand()', 1
+    )[1].split('private void CompleteAsyncExportFromProgram()', 1)[0]
+    assert 'if (pendingAsyncObject != 0)' in async_continue
+    assert 'program.SendCustomEvent(' in async_continue
     masked_heap_word = (
         'new Color32((byte)(value & 255), '
         '(byte)((value >> 8) & 255), '
@@ -869,8 +890,12 @@ def main():
     assert [
         (buffer['width'], buffer['height'])
         for buffer in onnx_mnist_manifest['device']['buffers'][2:]
-    ] == [(8192, 2)] * 3
-    assert onnx_mnist_manifest['device']['mutable_handle_capacity'] == 5
+    ] == [(8192, 2)] * 5
+    assert onnx_mnist_manifest['device']['mutable_handle_capacity'] == 7
+    assert [
+        item['capacity_bytes']
+        for item in onnx_mnist_manifest['device']['buffers'][-2:]
+    ] == [3136, 40]
     for kernel_id in [221, 231, 232, 233, 234]:
         assert (
             onnx_mnist_artifact / f'kernels/kernel_{kernel_id}.shader'

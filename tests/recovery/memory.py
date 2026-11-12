@@ -106,6 +106,32 @@ null_address_space = run([
 assert 'llvm.addrspacecast' not in null_address_space
 assert '!udonhl.ptr<201>' in null_address_space
 
+managed_reference_compare = run([
+    opt, '--vrc-raise-llvm-raw-memory', '--verify-each'
+], r'''module {
+  llvm.func @managed_nonnull(%array: !llvm.ptr<201>) -> i1 {
+    %null = llvm.mlir.zero : !llvm.ptr<201>
+    %nonnull = llvm.icmp "ne" %array, %null : !llvm.ptr<201>
+    llvm.return %nonnull : i1
+  }
+}''')
+assert 'udonhl.ref_cmp' in managed_reference_compare
+assert 'predicate = "ne"' in managed_reference_compare
+assert 'udonhl.ptrtoint' not in managed_reference_compare
+assert 'arith.cmpi' not in managed_reference_compare
+
+managed_ptrtoint = subprocess.run([
+    opt, '--vrc-raise-llvm-raw-memory', '--verify-each'
+], input=r'''module {
+  llvm.func @invalid_managed_ptrtoint(%array: !llvm.ptr<201>) -> i32 {
+    %integer = llvm.ptrtoint %array : !llvm.ptr<201> to i32
+    llvm.return %integer : i32
+  }
+}''', text=True, capture_output=True, timeout=60)
+assert managed_ptrtoint.returncode != 0, managed_ptrtoint.stdout
+assert 'object reference cannot be converted to an integer address' in (
+    managed_ptrtoint.stderr)
+
 non_null_address_space = subprocess.run([
     opt, '--vrc-raise-llvm-raw-memory', '--verify-each'
 ], input=r'''module {

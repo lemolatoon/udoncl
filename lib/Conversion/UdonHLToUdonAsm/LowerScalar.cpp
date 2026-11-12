@@ -6,6 +6,7 @@
 #include "VRC/Dialect/VRC/VRCDialect.h"
 #include "udoncl/array.h"
 #include "udoncl/string.h"
+#include "mlir/Analysis/CFGLoopInfo.h"
 #include "mlir/Analysis/Liveness.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
@@ -1385,16 +1386,42 @@ private:
     SmallVector<Attribute> rematerializedIds;
     for (int64_t id : orderedRematerializedIds)
       rematerializedIds.push_back(builder.getI64IntegerAttr(id));
+    SmallVector<std::pair<std::string, unsigned>> orderedCachedSpillIndices;
+    for (const auto &cached : cachedSpillIndexSlots) {
+      StringRef key = cached.first();
+      size_t separator = key.rfind('\n');
+      uint64_t index = 0;
+      if (separator == StringRef::npos ||
+          key.drop_front(separator + 1).getAsInteger(10, index))
+        continue;
+      orderedCachedSpillIndices.emplace_back(key.take_front(separator).str(),
+                                             static_cast<unsigned>(index));
+    }
+    llvm::sort(orderedCachedSpillIndices);
+    SmallVector<Attribute> cachedSpillIndexEntries;
+    for (const auto &[storageKey, index] : orderedCachedSpillIndices)
+      cachedSpillIndexEntries.push_back(
+          entry({stringField("storage_key", storageKey),
+                 integerField("index", index)}));
+    int64_t finalDataSlotReserve = 0;
+    if (auto reserve =
+            module->getAttrOfType<IntegerAttr>("vrc.final_data_slot_reserve"))
+      finalDataSlotReserve = reserve.getInt();
 
     return entry(
         {integerField("version", 2),
          integerField("data_slot_count", slots.size()),
          integerField("data_slot_capacity", dataSlotCapacity()),
+         integerField("final_data_slot_reserve", finalDataSlotReserve),
          integerField("scalar_register_budget", requestedScalarRegisterBudget),
          integerField("minimum_simultaneous_registers",
                       minimumScalarRegisterCount),
          integerField("address_cache_budget", rawAddressCacheLimit),
+         integerField("address_cache_loop_weight_base", 8),
+         integerField("address_cache_maximum_loop_weight", 4096),
          integerField("cached_spill_indices", cachedSpillIndexSlots.size()),
+         builder.getNamedAttr("cached_spill_index_entries",
+                              builder.getArrayAttr(cachedSpillIndexEntries)),
          integerField("synthesized_spill_indices",
                       plannedSpillIndexCount - cachedSpillIndexSlots.size()),
          integerField("cached_raw_addresses", cachedRawGlobalSlots.size()),
@@ -1616,12 +1643,14 @@ private:
   }
 
   void planAddressCaches() {
+    constexpr uint64_t loopWeightBase = 8;
+    constexpr uint64_t maximumLoopWeight = 4096;
     enum class Kind { Spill, RawAddress, ReturnAddress };
     struct Candidate {
       Kind kind;
       std::string id;
       uint64_t value;
-      unsigned score;
+      uint64_t score;
       Operation *call = nullptr;
     };
     SmallVector<Candidate> candidates;
@@ -1643,7 +1672,23 @@ private:
           {Kind::RawAddress, symbol, rawGlobalBases.at(symbol),
            occurrences * literalSavings(rawGlobalBases.at(symbol))});
 
-    llvm::StringMap<unsigned> spillOccurrences;
+    llvm::DenseMap<Block *, uint64_t> blockWeights;
+    DominanceInfo dominance(module);
+    for (func::FuncOp function : module.getOps<func::FuncOp>()) {
+      Region &body = function.getBody();
+      if (body.hasOneBlock()) {
+        blockWeights.try_emplace(&body.front(), 1);
+        continue;
+      }
+      CFGLoopInfo loops(dominance.getDomTree(&body));
+      for (Block &block : body) {
+        uint64_t weight = 1;
+        for (unsigned depth = loops.getLoopDepth(&block); depth > 0; --depth)
+          weight = std::min(maximumLoopWeight, weight * loopWeightBase);
+        blockWeights.try_emplace(&block, weight);
+      }
+    }
+    llvm::StringMap<uint64_t> spillOccurrences;
     module.walk([&](Operation *operation) {
       StringRef storageKey;
       int64_t index = -1;
@@ -1654,9 +1699,12 @@ private:
         storageKey = store.getStorageKey();
         index = store.getIndex();
       }
-      if (index >= 0)
-        ++spillOccurrences[spillIndexCacheKey(storageKey,
-                                              static_cast<unsigned>(index))];
+      if (index >= 0) {
+        uint64_t weight = blockWeights.lookup(operation->getBlock());
+        spillOccurrences[spillIndexCacheKey(storageKey,
+                                            static_cast<unsigned>(index))] +=
+            std::max<uint64_t>(1, weight);
+      }
     });
     for (const auto &entry : spillOccurrences) {
       StringRef key = entry.first();
@@ -1665,8 +1713,9 @@ private:
       if (separator == StringRef::npos ||
           key.drop_front(separator + 1).getAsInteger(10, index))
         continue;
-      candidates.push_back({Kind::Spill, key.str(), index,
-                            entry.second * literalSavings(index)});
+      candidates.push_back(
+          {Kind::Spill, key.str(), index,
+           entry.second * static_cast<uint64_t>(literalSavings(index))});
     }
     plannedSpillIndexCount = spillOccurrences.size();
     unsigned callOrdinal = 0;
@@ -2123,13 +2172,12 @@ private:
             llvm::SmallString<32> text;
             floating.getValue().toString(text);
             initial = text.str().str();
-            // The Worlds SDK assembler does not accept APFloat's positive
-            // scientific exponent spelling (E+NN or ENN). Reformat only
-            // those large finite values with enough padding to force an
-            // equivalent fixed-decimal literal.
+            // The Worlds SDK assembler does not accept scientific notation.
+            // Reformat every finite exponent spelling as an equivalent
+            // fixed-decimal literal, including small values with a negative
+            // exponent.
             size_t exponent = initial.find_first_of("eE");
-            if (exponent != std::string::npos &&
-                exponent + 1 < initial.size() && initial[exponent + 1] == '+') {
+            if (exponent != std::string::npos) {
               text.clear();
               floating.getValue().toString(text, 50, 400);
               initial = text.str().str();
@@ -3236,15 +3284,31 @@ private:
             return branch.emitError("switch flag has no Udon heap slot");
           auto caseValues = branch.getCaseValues();
           if (caseValues) {
-            unsigned caseIndex = 0;
             constexpr StringLiteral caseConstant = "__vrc_switch_case_constant";
+            constexpr StringLiteral condition = "__vrc_switch_condition";
             addSlot(caseConstant, "SystemInt32", "0", false);
-            for (const llvm::APInt &caseValue :
-                 caseValues->getValues<llvm::APInt>()) {
-              emitI32Literal(branch.getLoc(), caseValue.getZExtValue(),
+            addSlot(condition, "SystemBoolean", "null", false);
+            struct SwitchCase {
+              llvm::APInt value;
+              unsigned originalIndex;
+            };
+            SmallVector<SwitchCase> cases;
+            for (auto [caseIndex, caseValue] :
+                 llvm::enumerate(caseValues->getValues<llvm::APInt>()))
+              cases.push_back({caseValue, static_cast<unsigned>(caseIndex)});
+            llvm::sort(cases,
+                       [](const SwitchCase &left, const SwitchCase &right) {
+                         return left.value.slt(right.value);
+                       });
+            for (auto [left, right] : llvm::zip(cases, llvm::drop_begin(cases)))
+              if (left.value == right.value)
+                return branch.emitError("switch case values must be unique");
+
+            auto emitEquality =
+                [&](const SwitchCase &switchCase,
+                    SmallVectorImpl<Operation *> &defaults) -> LogicalResult {
+              emitI32Literal(branch.getLoc(), switchCase.value.getZExtValue(),
                              caseConstant);
-              std::string condition = "__vrc_switch_condition";
-              addSlot(condition, "SystemBoolean", "null", false);
               emitPush(branch.getLoc(), flag);
               emitPush(branch.getLoc(), caseConstant);
               emitPush(branch.getLoc(), condition);
@@ -3257,14 +3321,62 @@ private:
                          {builder.getNamedAttr("target",
                                                builder.getI64IntegerAttr(0))});
               address += 8;
-              if (failed(copies(branch.getLoc(),
-                                branch.getCaseOperands(caseIndex),
-                                branch.getCaseDestinations()[caseIndex])))
+              defaults.push_back(nextCase);
+              if (failed(copies(
+                      branch.getLoc(),
+                      branch.getCaseOperands(switchCase.originalIndex),
+                      branch.getCaseDestinations()[switchCase.originalIndex])))
                 return failure();
-              jumpTo(branch.getLoc(), branch.getCaseDestinations()[caseIndex]);
-              nextCase->setAttr("target", builder.getI64IntegerAttr(
-                                              static_cast<int64_t>(address)));
-              ++caseIndex;
+              jumpTo(branch.getLoc(),
+                     branch.getCaseDestinations()[switchCase.originalIndex]);
+              return success();
+            };
+
+            SmallVector<Operation *> defaultJumps;
+            if (cases.size() < 5) {
+              for (const SwitchCase &switchCase : cases) {
+                if (failed(emitEquality(switchCase, defaultJumps)))
+                  return failure();
+                defaultJumps.back()->setAttr(
+                    "target",
+                    builder.getI64IntegerAttr(static_cast<int64_t>(address)));
+                defaultJumps.pop_back();
+              }
+            } else {
+              auto emitTree = [&](auto &&self, unsigned begin,
+                                  unsigned end) -> LogicalResult {
+                if (end - begin == 1)
+                  return emitEquality(cases[begin], defaultJumps);
+                unsigned middle = begin + (end - begin) / 2;
+                emitI32Literal(branch.getLoc(),
+                               cases[middle].value.getZExtValue(),
+                               caseConstant);
+                emitPush(branch.getLoc(), flag);
+                emitPush(branch.getLoc(), caseConstant);
+                emitPush(branch.getLoc(), condition);
+                emitExtern(
+                    branch.getLoc(),
+                    "SystemInt32.__op_LessThan__SystemInt32_SystemInt32__"
+                    "SystemBoolean");
+                emitPush(branch.getLoc(), condition);
+                Operation *rightTree = create(
+                    branch.getLoc(), vm::JumpIfFalseOp::getOperationName(),
+                    {builder.getNamedAttr("target",
+                                          builder.getI64IntegerAttr(0))});
+                address += 8;
+                if (failed(self(self, begin, middle)))
+                  return failure();
+                rightTree->setAttr(
+                    "target",
+                    builder.getI64IntegerAttr(static_cast<int64_t>(address)));
+                return self(self, middle, end);
+              };
+              if (failed(emitTree(emitTree, 0, cases.size())))
+                return failure();
+              for (Operation *defaultJump : defaultJumps)
+                defaultJump->setAttr(
+                    "target",
+                    builder.getI64IntegerAttr(static_cast<int64_t>(address)));
             }
           }
           if (failed(copies(branch.getLoc(), branch.getDefaultOperands(),
@@ -4092,6 +4204,12 @@ private:
           continue;
         }
         StringRef signature = binaryExtern(&operation);
+        if (auto comparison = dyn_cast<host::RefCmpOp>(operation))
+          signature = comparison.getPredicate() == "eq"
+                          ? "SystemObject.__op_Equality__SystemObject_"
+                            "SystemObject__SystemBoolean"
+                          : "SystemObject.__op_Inequality__SystemObject_"
+                            "SystemObject__SystemBoolean";
         if (auto comparison = dyn_cast<arith::CmpIOp>(operation))
           signature = comparisonExtern(comparison);
         if (auto comparison = dyn_cast<arith::CmpFOp>(operation))
@@ -5370,7 +5488,20 @@ struct LowerUdonHLToUdonAsmPass
   }
 
   void runOnOperation() override {
-    constexpr unsigned addressLimit = 512;
+    constexpr unsigned physicalAddressLimit = 512;
+    unsigned finalDataSlotReserve = 0;
+    if (auto configured = getOperation()->getAttrOfType<IntegerAttr>(
+            "vrc.final_data_slot_reserve")) {
+      if (configured.getInt() < 0 ||
+          configured.getInt() >= physicalAddressLimit) {
+        getOperation().emitError(
+            "vrc.final_data_slot_reserve must be in the range 0..511");
+        signalPassFailure();
+        return;
+      }
+      finalDataSlotReserve = static_cast<unsigned>(configured.getInt());
+    }
+    unsigned addressLimit = physicalAddressLimit - finalDataSlotReserve;
     struct ProbeResult {
       unsigned addresses;
       unsigned dataSlots;
@@ -5379,15 +5510,21 @@ struct LowerUdonHLToUdonAsmPass
     unsigned dataSlotCapacity = addressLimit;
     if (auto configured = getOperation()->getAttrOfType<IntegerAttr>(
             "vrc.data_slot_capacity"))
-      if (configured.getInt() > 0 && configured.getInt() <= addressLimit)
-        dataSlotCapacity = static_cast<unsigned>(configured.getInt());
+      if (configured.getInt() > 0 &&
+          configured.getInt() <= physicalAddressLimit)
+        dataSlotCapacity =
+            std::min(addressLimit, static_cast<unsigned>(configured.getInt()));
+    getOperation()->setAttr(
+        "vrc.data_slot_capacity",
+        IntegerAttr::get(IntegerType::get(getOperation().getContext(), 32),
+                         dataSlotCapacity));
     unsigned scalarRegisterBudget = 16;
     if (auto configured = getOperation()->getAttrOfType<IntegerAttr>(
             "vrc.scalar_register_budget"))
       scalarRegisterBudget = static_cast<unsigned>(configured.getInt());
-    auto probe =
-        [&](unsigned materializationLimit, unsigned registerBudget,
-            unsigned rematerializationCount) -> FailureOr<ProbeResult> {
+    auto probe = [&](unsigned materializationLimit, unsigned registerBudget,
+                     unsigned rematerializationCount,
+                     unsigned addressCacheLimit = 0) -> FailureOr<ProbeResult> {
       Operation *cloned = getOperation()->clone();
       ModuleOp module = cast<ModuleOp>(cloned);
       module->setAttr(
@@ -5396,6 +5533,7 @@ struct LowerUdonHLToUdonAsmPass
                            registerBudget));
       ScalarLoweringOptions options;
       options.materializationLimit = materializationLimit;
+      options.rawAddressCacheLimit = addressCacheLimit;
       options.unityBufferIdRematerializationCount = rematerializationCount;
       options.enforceCapacity = false;
       if (failed(ScalarLowering(module, options).run())) {
@@ -5502,22 +5640,43 @@ struct LowerUdonHLToUdonAsmPass
         selectorBaselineAddresses > best.addresses
             ? selectorBaselineAddresses - best.addresses
             : 0;
-    unsigned baseAddresses = best.addresses;
-    // Final Unity material slots and textual-UASM legalization contribute
-    // data/extern addresses after this MLIR-level accounting. Keep optional
-    // address caches away from the hard 512-address ceiling; semantic slots
-    // still receive an explicit capacity diagnostic below.
-    constexpr unsigned targetAddressReserve = 64;
-    // Large programs that required constant pooling are already address
-    // constrained. Optional literal/return-address caches add helper scratch
-    // and extern signatures beyond their nominal one-slot cache, so omit them
-    // rather than risking the semantic allocation. Smaller programs retain
-    // the existing code-size optimization.
-    unsigned rawAddressCacheLimit =
-        materializationLimit == 0 &&
-                baseAddresses + targetAddressReserve < addressLimit
-            ? addressLimit - targetAddressReserve - baseAddresses
-            : 0;
+    // Optional address caches consume Udon Heap addresses but can also remove
+    // literal-synthesis EXTERN signatures. Trial the exact remaining capacity
+    // after semantic placement instead of disabling caches for programs that
+    // needed constant pooling or relying on a fixed reserve.
+    unsigned rawAddressCacheLimit = std::min(
+        best.dataSlots < dataSlotCapacity ? dataSlotCapacity - best.dataSlots
+                                          : 0,
+        best.addresses < addressLimit ? addressLimit - best.addresses : 0);
+    if (rawAddressCacheLimit) {
+      auto cached =
+          probe(materializationLimit, scalarRegisterBudget,
+                unityBufferIdRematerializationCount, rawAddressCacheLimit);
+      if (failed(cached)) {
+        signalPassFailure();
+        return;
+      }
+      // Helper scratch introduced by a selected cache may make the nominal
+      // slot headroom optimistic. Retry with the measured overflow removed.
+      for (unsigned retry = 0; requiredReduction(*cached) && retry < 2;
+           ++retry) {
+        unsigned reduction = requiredReduction(*cached);
+        rawAddressCacheLimit = reduction >= rawAddressCacheLimit
+                                   ? 0
+                                   : rawAddressCacheLimit - reduction;
+        cached =
+            probe(materializationLimit, scalarRegisterBudget,
+                  unityBufferIdRematerializationCount, rawAddressCacheLimit);
+        if (failed(cached)) {
+          signalPassFailure();
+          return;
+        }
+      }
+      if (requiredReduction(*cached))
+        rawAddressCacheLimit = 0;
+      else
+        best = *cached;
+    }
     ScalarLoweringOptions options;
     options.materializationLimit = materializationLimit;
     options.rawAddressCacheLimit = rawAddressCacheLimit;
