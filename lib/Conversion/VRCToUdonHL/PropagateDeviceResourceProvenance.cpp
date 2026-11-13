@@ -636,6 +636,7 @@ struct PropagateDeviceResourceProvenancePass
   std::map<std::tuple<std::string, std::string, Operation *>, ObjectId>
       localHandleObjects;
   ObjectId nextObjectId = 0;
+  bool hasConfiguredRoots = false;
   bool invalid = false;
 
   std::string invocationPathKey(ArrayAttr path) {
@@ -1666,8 +1667,9 @@ struct PropagateDeviceResourceProvenancePass
                            localPointerCells, pointerInputs, edgePointers,
                            edgeIntegerArguments);
         } else if (auto returned = dyn_cast<func::ReturnOp>(operation)) {
-          bool exported = function->hasAttr("udoncl.export") ||
-                          function->hasAttr("vrc.export_id");
+          bool exported = hasConfiguredRoots
+                              ? function->hasAttr("vrc.export_id")
+                              : function->hasAttr("udoncl.export");
           for (auto [index, operand] :
                llvm::enumerate(returned.getOperands())) {
             Fact fact = valueFact(operand, facts);
@@ -2021,6 +2023,10 @@ struct PropagateDeviceResourceProvenancePass
 
   void runOnOperation() override {
     module = getOperation();
+    hasConfiguredRoots =
+        llvm::any_of(module.getOps<func::FuncOp>(), [](func::FuncOp function) {
+          return !function.isExternal() && function->hasAttr("vrc.export_id");
+        });
     Builder localBuilder(module.getContext());
     builder = &localBuilder;
     auto discovery = module->getAttrOfType<DictionaryAttr>(discoveryAttribute);
@@ -2125,8 +2131,9 @@ struct PropagateDeviceResourceProvenancePass
       globalFacts[name] = Fact::scalar();
     SmallVector<func::FuncOp> roots;
     for (func::FuncOp function : module.getOps<func::FuncOp>())
-      if (!function.isExternal() && (function->hasAttr("udoncl.export") ||
-                                     function->hasAttr("vrc.export_id")))
+      if (!function.isExternal() &&
+          (hasConfiguredRoots ? function->hasAttr("vrc.export_id")
+                              : function->hasAttr("udoncl.export")))
         roots.push_back(function);
     llvm::sort(roots, [](func::FuncOp left, func::FuncOp right) {
       return left.getSymName() < right.getSymName();

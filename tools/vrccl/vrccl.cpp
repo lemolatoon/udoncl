@@ -1239,7 +1239,8 @@ int32_t stableExportId(StringRef publicName, mlir::FunctionType type) {
 }
 
 bool configureUnityExports(ModuleOp module, const json::Object &config,
-                           const std::set<std::string> &annotatedExports = {}) {
+                           const std::set<std::string> &annotatedExports = {},
+                           bool finalizeReachability = true) {
   auto program = config.getString("program");
   auto schema = config.getInteger("schema_version");
   if (!schema || (*schema != 1 && *schema != 2) || !program ||
@@ -1375,6 +1376,8 @@ bool configureUnityExports(ModuleOp module, const json::Object &config,
     module->setAttr("vrc.binding_namespace", builder.getStringAttr(*nameSpace));
     module->setAttr("vrc.binding_class", builder.getStringAttr(*className));
   }
+  if (!finalizeReachability)
+    return true;
   std::set<std::string> reachable = selected;
   SmallVector<std::string> worklist(selected.begin(), selected.end());
   while (!worklist.empty()) {
@@ -2910,7 +2913,12 @@ int main(int argc, char **argv) {
         if (failed(program) || failed(linkUnityHostLibrary(*module, **program)))
           return 1;
       }
-      if (failed(discoverStaticDeviceResources(*module)))
+      for (func::FuncOp function : module->getOps<func::FuncOp>())
+        if (function->hasAttr("udoncl.export"))
+          annotatedHostExports.insert(function.getSymName().str());
+      if (!configureUnityExports(*module, *unityConfig, annotatedHostExports,
+                                 /*finalizeReachability=*/false) ||
+          failed(discoverStaticDeviceResources(*module)))
         return 1;
       if (!hostLibraryLLVM.empty()) {
         auto library = recoverLinkedUnityHostLibrary(hostLibraryLLVM, context);
@@ -2935,7 +2943,12 @@ int main(int argc, char **argv) {
       if (failed(program))
         return 1;
       module = std::move(*program);
-      if (failed(discoverStaticDeviceResources(*module)))
+      for (func::FuncOp function : module->getOps<func::FuncOp>())
+        if (function->hasAttr("udoncl.export"))
+          annotatedHostExports.insert(function.getSymName().str());
+      if (!configureUnityExports(*module, *unityConfig, annotatedHostExports,
+                                 /*finalizeReachability=*/false) ||
+          failed(discoverStaticDeviceResources(*module)))
         return 1;
       auto library = recoverLinkedUnityHostLibrary(hostLibraryLLVM, context);
       if (failed(library) || failed(linkUnityHostLibrary(*module, **library)))

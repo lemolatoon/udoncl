@@ -54,7 +54,7 @@ module {
     return
   }
 
-  func.func @RunNested() attributes {udoncl.export} {
+  func.func @RunNested() attributes {udoncl.export, vrc.export_id = 5 : i32} {
     %buffer = func.call @nested_allocate() : () -> i32
     return
   }

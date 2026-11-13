@@ -72,7 +72,7 @@ module {
     return %forwarded : i32
   }
 
-  func.func @Run() attributes {udoncl.export} {
+  func.func @Run() attributes {udoncl.export, vrc.export_id = 1 : i32} {
     %zero = arith.constant 0 : i32
     %four = arith.constant 4 : i32
     %eight = arith.constant 8 : i32
@@ -114,6 +114,34 @@ module {
     %resolved = func.call @udonclBufferViewResolve(%tensor, %raw_cell, %offset_cell, %length_cell) : (!udonhl.ptr<0>, !udonhl.ptr<0>, !udonhl.ptr<0>, !udonhl.ptr<0>) -> i32
     %raw = "udonhl.load"(%raw_cell) <{alignment = 4 : i64}> : (!udonhl.ptr<0>) -> !udonhl.ptr<0>
     %released = func.call @clReleaseMemObject(%raw) : (!udonhl.ptr<0>) -> i32
+    return
+  }
+
+  // Unity export selection hides this low-level dynamic binding entry point.
+  // It is deliberately not statically resolvable and must not become an
+  // analysis root merely because its source definition is annotated.
+  func.func @HiddenDynamicBinding(%slot: i32, %generation: i32) attributes {udoncl.export} {
+    %zero = arith.constant 0 : i32
+    %four = arith.constant 4 : i32
+    %eight = arith.constant 8 : i32
+    %twelve = arith.constant 12 : i32
+    %sixteen = arith.constant 16 : i32
+    %twenty = arith.constant 20 : i32
+    %eighty_eight = arith.constant 88 : i32
+    %bytes = arith.constant 64 : i32
+    %dtype = arith.constant 6 : i32
+    %view = "udonhl.alloca"(%twenty) <{alignment = 4 : i64}> : (i32) -> !udonhl.ptr<0>
+    "udonhl.store"(%slot, %view) <{alignment = 4 : i64}> : (i32, !udonhl.ptr<0>) -> ()
+    %view4 = "udonhl.ptr_add"(%view, %four) : (!udonhl.ptr<0>, i32) -> !udonhl.ptr<0>
+    "udonhl.store"(%generation, %view4) <{alignment = 4 : i64}> : (i32, !udonhl.ptr<0>) -> ()
+    %view8 = "udonhl.ptr_add"(%view, %eight) : (!udonhl.ptr<0>, i32) -> !udonhl.ptr<0>
+    "udonhl.store"(%zero, %view8) <{alignment = 4 : i64}> : (i32, !udonhl.ptr<0>) -> ()
+    %view12 = "udonhl.ptr_add"(%view, %twelve) : (!udonhl.ptr<0>, i32) -> !udonhl.ptr<0>
+    "udonhl.store"(%bytes, %view12) <{alignment = 4 : i64}> : (i32, !udonhl.ptr<0>) -> ()
+    %view16 = "udonhl.ptr_add"(%view, %sixteen) : (!udonhl.ptr<0>, i32) -> !udonhl.ptr<0>
+    "udonhl.store"(%dtype, %view16) <{alignment = 4 : i64}> : (i32, !udonhl.ptr<0>) -> ()
+    %tensor = "udonhl.alloca"(%eighty_eight) <{alignment = 8 : i64}> : (i32) -> !udonhl.ptr<0>
+    func.call @udononnxCopyBufferView(%tensor, %view) : (!udonhl.ptr<0>, !udonhl.ptr<0>) -> ()
     return
   }
 }

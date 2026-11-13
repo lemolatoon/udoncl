@@ -254,10 +254,15 @@ struct DiscoverStaticDeviceResourcesPass
       }
     }
 
+    const bool hasConfiguredRoots =
+        llvm::any_of(module.getOps<func::FuncOp>(), [](func::FuncOp function) {
+          return !function.isExternal() && function->hasAttr("vrc.export_id");
+        });
     SmallVector<func::FuncOp> roots;
     for (func::FuncOp function : module.getOps<func::FuncOp>())
-      if (!function.isExternal() && (function->hasAttr("udoncl.export") ||
-                                     function->hasAttr("vrc.export_id")))
+      if (!function.isExternal() &&
+          (hasConfiguredRoots ? function->hasAttr("vrc.export_id")
+                              : function->hasAttr("udoncl.export")))
         roots.push_back(function);
     llvm::sort(roots, [](func::FuncOp left, func::FuncOp right) {
       return left.getSymName() < right.getSymName();

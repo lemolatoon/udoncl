@@ -38,6 +38,7 @@ for callee in (
 copy_lines = [
     line for line in first.splitlines()
     if "call @udononnxCopyBufferView" in line
+    and "vrc.static_device_operand_provenance" in line
 ]
 resolve_lines = [
     line for line in first.splitlines()
@@ -47,6 +48,8 @@ assert len(copy_lines) == 2 and all(
     "resource_ids = [0 : i32]" in line for line in copy_lines), copy_lines
 assert len(resolve_lines) == 2 and all(
     "resource_ids = [0 : i32]" in line for line in resolve_lines), resolve_lines
+hidden = first.split("func.func @HiddenDynamicBinding", 1)[1]
+assert "vrc.static_device_operand_provenance" not in hidden, hidden
 
 print(
     "static_device_resource_buffer_view=passed contexts=1 "
