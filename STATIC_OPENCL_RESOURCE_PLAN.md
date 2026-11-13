@@ -1,8 +1,9 @@
 # Static OpenCL Resource Specialization Plan
 
-> Status: implementation in progress; Gate 1 is integrated at the runtime-free
-> Host boundary. Gate 2 has pass-level coverage but is not integrated until the
-> DeviceMemory alias/view APIs have a sound provenance model.
+> Status: implementation in progress; Gates 1 and 2 are integrated at the
+> runtime-free Host boundary. Gate 3 has a standalone first slice for immutable
+> call-by-value Device dispatch snapshots; production integration and generic
+> `clSetKernelArg` recovery remain.
 > Decision date: 2026-11-12
 > Parent architecture: [PLAN.md](PLAN.md)
 > Related execution plan:
@@ -251,8 +252,10 @@ Status: complete and enforced for split runtime-free Unity Host builds.
 
 ### Gate 2: provenance analysis
 
-Status: standalone pass and tests complete; production integration blocked on
-explicit provenance semantics for DeviceMemory adopt, view, and resolve APIs.
+Status: complete and integrated. DeviceMemory adopt, view, resolve, local/global
+cell, aggregate pointer, output-cell, call-context, and nullable-handle paths
+have focused coverage. The production pipeline emits the versioned provenance
+schema into real MNIST and TinyLlama artifacts.
 
 - Track handles through arguments, results, PHIs/selects, and supported memory
   promotion.
@@ -260,6 +263,12 @@ explicit provenance semantics for DeviceMemory adopt, view, and resolve APIs.
 - Do not allocate Textures.
 
 ### Gate 3: kernel snapshots
+
+Status: first standalone slice implemented for structured call-by-value Device
+dispatch contracts. It records versioned immutable resource identities, access
+modes, scalar operand positions, kernel identity, and profile at each call.
+Production contract attachment/integration and generic `clSetKernelArg` copied
+byte-state recovery remain separate work.
 
 - Resolve kernel identity and copied argument state at every enqueue.
 - Test reconfiguration between two enqueues, missing arguments, branches, and

@@ -284,6 +284,19 @@ add_test(NAME static-device-resource-provenance-missing-discovery
     --split-input-file --verify-diagnostics
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_provenance_missing_discovery.mlir"
 )
+add_test(NAME static-kernel-bindings
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_kernel_bindings.py"
+    $<TARGET_FILE:vrc-opt>
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_kernel_bindings.mlir"
+)
+add_test(NAME static-kernel-bindings-diagnostics
+  COMMAND vrc-opt --vrc-discover-static-device-resources
+    --vrc-propagate-device-resource-provenance
+    --vrc-resolve-static-kernel-bindings --split-input-file
+    --verify-diagnostics
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_kernel_bindings_invalid.mlir"
+)
 add_test(NAME static-device-resource-switch
   COMMAND Python3::Interpreter
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_switch.py"
