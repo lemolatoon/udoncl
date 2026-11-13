@@ -738,6 +738,54 @@ struct PropagateDeviceResourceProvenancePass
     return recognized;
   }
 
+  void copyViewSubobjects(Value destination, Value source, Value byteSize,
+                          llvm::DenseMap<Value, ObjectRefSet> &objectValues,
+                          llvm::DenseMap<Value, int64_t> &integerValues,
+                          ViewMap &views) {
+    auto destinationObjects = objectValues.find(destination);
+    auto sourceObjects = objectValues.find(source);
+    auto bytes = integerValues.find(byteSize);
+    if (destinationObjects == objectValues.end() ||
+        sourceObjects == objectValues.end() || bytes == integerValues.end() ||
+        bytes->second <= 0)
+      return;
+    auto exactDestination = exactObject(destinationObjects->second);
+    auto exactSource = exactObject(sourceObjects->second);
+    if (!exactDestination || !exactSource)
+      return;
+    int64_t sourceBegin = exactSource->offset;
+    int64_t sourceEnd = sourceBegin + bytes->second;
+    int64_t destinationBegin = exactDestination->offset;
+    int64_t destinationEnd = destinationBegin + bytes->second;
+    SmallVector<std::pair<ObjectRef, ViewState>> copied;
+    for (const auto &[view, state] : views) {
+      int64_t viewBegin = view.offset;
+      int64_t viewEnd = viewBegin + 20;
+      if (view.base != exactSource->base || viewBegin < sourceBegin ||
+          viewEnd > sourceEnd)
+        continue;
+      int64_t copiedOffset = destinationBegin + (viewBegin - sourceBegin);
+      if (copiedOffset < std::numeric_limits<int32_t>::min() ||
+          copiedOffset > std::numeric_limits<int32_t>::max())
+        continue;
+      ObjectRef copiedView{exactDestination->base,
+                           static_cast<int32_t>(copiedOffset)};
+      if (canHoldView(copiedView))
+        copied.push_back({copiedView, state});
+    }
+    for (auto iterator = views.begin(); iterator != views.end();) {
+      int64_t viewBegin = iterator->first.offset;
+      int64_t viewEnd = viewBegin + 20;
+      if (iterator->first.base == exactDestination->base &&
+          viewBegin < destinationEnd && destinationBegin < viewEnd)
+        iterator = views.erase(iterator);
+      else
+        ++iterator;
+    }
+    for (auto &[view, state] : copied)
+      views[view] = std::move(state);
+  }
+
   ::vrc::udonhl::GlobalOp globalCell(Value pointer) {
     auto address = pointer.getDefiningOp<::vrc::udonhl::AddressOfOp>();
     if (!address)
@@ -1147,6 +1195,15 @@ struct PropagateDeviceResourceProvenancePass
               objectValues[load.getResult()] = pointerCell->second.objects;
             }
           }
+        } else if (auto memcpy = dyn_cast<::vrc::udonhl::MemcpyOp>(operation)) {
+          copyViewSubobjects(memcpy.getDestination(), memcpy.getSource(),
+                             memcpy.getByteSize(), objectValues, integerValues,
+                             localViews);
+        } else if (auto memmove =
+                       dyn_cast<::vrc::udonhl::MemmoveOp>(operation)) {
+          copyViewSubobjects(memmove.getDestination(), memmove.getSource(),
+                             memmove.getByteSize(), objectValues, integerValues,
+                             localViews);
         } else if (auto call = dyn_cast<func::CallOp>(operation)) {
           StringRef calleeName = call.getCallee();
           if (calleeName == "udonclResolvePhysicalBuffer") {

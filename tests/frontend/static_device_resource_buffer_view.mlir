@@ -89,6 +89,8 @@ module {
     %viewed = func.call @udonclDeviceBufferView(%handle, %zero, %elements, %dtype, %view) : (!udonhl.ptr<0>, i32, i32, i32, !udonhl.ptr<0>) -> i32
     %tensor = "udonhl.alloca"(%eighty_eight) <{alignment = 8 : i64}> : (i32) -> !udonhl.ptr<0>
     func.call @udononnxCopyBufferView(%tensor, %view) : (!udonhl.ptr<0>, !udonhl.ptr<0>) -> ()
+    %copied_tensor = "udonhl.alloca"(%eighty_eight) <{alignment = 8 : i64}> : (i32) -> !udonhl.ptr<0>
+    "udonhl.memcpy"(%copied_tensor, %tensor, %eighty_eight) : (!udonhl.ptr<0>, !udonhl.ptr<0>, i32) -> ()
     %slot = "udonhl.load"(%handle) <{alignment = 4 : i64}> : (!udonhl.ptr<0>) -> i32
     %handle4 = "udonhl.ptr_add"(%handle, %four) : (!udonhl.ptr<0>, i32) -> !udonhl.ptr<0>
     %generation = "udonhl.load"(%handle4) <{alignment = 4 : i64}> : (!udonhl.ptr<0>) -> i32
@@ -111,6 +113,7 @@ module {
   ^bb2:
     cf.br ^bb3
   ^bb3:
+    %copied_resolved = func.call @udonclBufferViewResolve(%copied_tensor, %raw_cell, %offset_cell, %length_cell) : (!udonhl.ptr<0>, !udonhl.ptr<0>, !udonhl.ptr<0>, !udonhl.ptr<0>) -> i32
     %resolved = func.call @udonclBufferViewResolve(%tensor, %raw_cell, %offset_cell, %length_cell) : (!udonhl.ptr<0>, !udonhl.ptr<0>, !udonhl.ptr<0>, !udonhl.ptr<0>) -> i32
     %raw = "udonhl.load"(%raw_cell) <{alignment = 4 : i64}> : (!udonhl.ptr<0>) -> !udonhl.ptr<0>
     %released = func.call @clReleaseMemObject(%raw) : (!udonhl.ptr<0>) -> i32

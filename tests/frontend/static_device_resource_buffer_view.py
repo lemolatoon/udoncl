@@ -26,6 +26,13 @@ rejected = subprocess.run(
     command[:-1] + [invalid], text=True, capture_output=True
 )
 assert rejected.returncode != 0, rejected.stdout
+partial_copy = source.with_name(
+    "static_device_resource_buffer_view_memcpy_invalid.mlir"
+)
+rejected = subprocess.run(
+    command[:-1] + [partial_copy], text=True, capture_output=True
+)
+assert rejected.returncode != 0, rejected.stdout
 for callee in (
     "udonclDeviceBufferView",
     "udononnxCopyBufferView",
@@ -46,7 +53,7 @@ resolve_lines = [
 ]
 assert len(copy_lines) == 2 and all(
     "resource_ids = [0 : i32]" in line for line in copy_lines), copy_lines
-assert len(resolve_lines) == 2 and all(
+assert len(resolve_lines) == 3 and all(
     "resource_ids = [0 : i32]" in line for line in resolve_lines), resolve_lines
 hidden = first.split("func.func @HiddenDynamicBinding", 1)[1]
 assert "vrc.static_device_operand_provenance" not in hidden, hidden
