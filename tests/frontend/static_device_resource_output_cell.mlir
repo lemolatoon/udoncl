@@ -33,6 +33,9 @@ module {
     %dtype = arith.constant 6 : i32
     %context = "udonhl.inttoptr"(%zero) : (i32) -> !udonhl.ptr<0>
     %resource = func.call @clCreateBuffer() : () -> !udonhl.ptr<0>
+    %resource_address = "udonhl.ptrtoint"(%resource) : (!udonhl.ptr<0>) -> i32
+    %null_address = "udonhl.ptrtoint"(%context) : (!udonhl.ptr<0>) -> i32
+    %resource_is_null = arith.cmpi eq, %resource_address, %null_address : i32
     %handle = "udonhl.alloca"(%eight) <{alignment = 4 : i64}> : (i32) -> !udonhl.ptr<0>
     %adopted = func.call @udonclDeviceBufferAdopt(%context, %resource, %bytes, %handle) : (!udonhl.ptr<0>, !udonhl.ptr<0>, i32, !udonhl.ptr<0>) -> i32
     %view = "udonhl.alloca"(%twenty) <{alignment = 4 : i64}> : (i32) -> !udonhl.ptr<0>

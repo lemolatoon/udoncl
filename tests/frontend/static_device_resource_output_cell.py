@@ -33,4 +33,7 @@ assert view_ids.group(1) == physical_ids.group(1), (
     resolve_view,
     resolve_physical,
 )
+invalid = source.with_name("static_device_resource_output_cell_invalid.mlir")
+rejected = subprocess.run(command[:-1] + [invalid], text=True, capture_output=True)
+assert rejected.returncode != 0, rejected.stdout
 print("static_device_resource_output_cell=passed wrappers=2 status=refined")

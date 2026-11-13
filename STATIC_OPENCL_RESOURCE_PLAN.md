@@ -84,6 +84,9 @@ The first implementation rejects with precise diagnostics:
 - dynamic allocation capacity or unsupported Host-pointer initialization;
 - handle escape through an unknown call, integer conversion, comparison,
   query API, public ABI, or unresolved memory alias;
+- canonical `eq`/`ne` null checks are the sole comparison exception when the
+  compiler proves a finite, non-null static allocation identity and folds the
+  result; this does not permit dynamic handle comparison;
 - multiple or out-of-order queues whose ordering cannot be proven;
 - nested or unbounded dynamic sub-buffer views;
 - incomplete or ambiguous kernel argument state at enqueue;

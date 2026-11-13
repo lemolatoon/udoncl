@@ -1736,7 +1736,8 @@ struct PropagateDeviceResourceProvenancePass
                 });
             if (hasUnknown) {
               call.emitError(
-                  "resource use has unresolved non-handle provenance");
+                  "resource use has unresolved non-handle provenance in call ")
+                  << calleeName << " from @" << function.getSymName();
               invalid = true;
             }
             if (hasResource && !isKnownConsumer(calleeName)) {
@@ -1766,8 +1767,10 @@ struct PropagateDeviceResourceProvenancePass
                        dyn_cast<::vrc::udonhl::PtrToIntOp>(operation)) {
           Fact pointer = valueFact(pointerToInt.getPointer(), facts);
           updateFact(pointerToInt.getResult(),
-                     pointer.resource ? pointer : Fact::scalar(), facts,
-                     worklist, queued, reached);
+                     pointer.resource
+                         ? pointer
+                         : (pointer.zero ? Fact::zeroScalar() : Fact::scalar()),
+                     facts, worklist, queued, reached);
         } else if (auto pointerAdd =
                        dyn_cast<::vrc::udonhl::PtrAddOp>(operation)) {
           auto base = objectValues.find(pointerAdd.getPointer());
@@ -1794,7 +1797,8 @@ struct PropagateDeviceResourceProvenancePass
           if (valueFact(add.getLhs(), facts).resource ||
               valueFact(add.getRhs(), facts).resource) {
             add.emitError(
-                "unsupported operation consumes a static device resource");
+                "unsupported operation consumes a static device resource: ")
+                << add.getOperationName() << " in @" << function.getSymName();
             invalid = true;
           }
           auto left = integerValues.find(add.getLhs());
@@ -1814,7 +1818,9 @@ struct PropagateDeviceResourceProvenancePass
           if (valueFact(subtract.getLhs(), facts).resource ||
               valueFact(subtract.getRhs(), facts).resource) {
             subtract.emitError(
-                "unsupported operation consumes a static device resource");
+                "unsupported operation consumes a static device resource: ")
+                << subtract.getOperationName() << " in @"
+                << function.getSymName();
             invalid = true;
           }
           auto left = integerValues.find(subtract.getLhs());
@@ -1834,7 +1840,9 @@ struct PropagateDeviceResourceProvenancePass
           if (valueFact(multiply.getLhs(), facts).resource ||
               valueFact(multiply.getRhs(), facts).resource) {
             multiply.emitError(
-                "unsupported operation consumes a static device resource");
+                "unsupported operation consumes a static device resource: ")
+                << multiply.getOperationName() << " in @"
+                << function.getSymName();
             invalid = true;
           }
           auto left = integerValues.find(multiply.getLhs());
@@ -1851,12 +1859,29 @@ struct PropagateDeviceResourceProvenancePass
           updateFact(multiply.getResult(), Fact::scalar(), facts, worklist,
                      queued, reached);
         } else if (auto compare = dyn_cast<arith::CmpIOp>(operation)) {
-          if (valueFact(compare.getLhs(), facts).resource ||
-              valueFact(compare.getRhs(), facts).resource) {
+          Fact leftFact = valueFact(compare.getLhs(), facts);
+          Fact rightFact = valueFact(compare.getRhs(), facts);
+          bool comparesResource = leftFact.resource || rightFact.resource;
+          bool equality = compare.getPredicate() == arith::CmpIPredicate::eq ||
+                          compare.getPredicate() == arith::CmpIPredicate::ne;
+          auto isExactNonNullResource = [](const Fact &fact) {
+            return fact.resource && fact.initialized && !fact.unknown &&
+                   !fact.mayBeNull && !fact.ids.empty();
+          };
+          bool comparesResourceIdentity =
+              equality &&
+              ((isExactNonNullResource(leftFact) && rightFact.zero) ||
+               (isExactNonNullResource(rightFact) && leftFact.zero));
+          if (comparesResource && !comparesResourceIdentity) {
             compare.emitError(
-                "unsupported operation consumes a static device resource");
+                "unsupported operation consumes a static device resource: ")
+                << compare.getOperationName() << " in @"
+                << function.getSymName();
             invalid = true;
           }
+          if (comparesResourceIdentity)
+            integerValues[compare.getResult()] =
+                compare.getPredicate() == arith::CmpIPredicate::ne ? 1 : 0;
           if (compare.getPredicate() == arith::CmpIPredicate::eq ||
               compare.getPredicate() == arith::CmpIPredicate::ne) {
             Value subject;
@@ -2210,7 +2235,7 @@ struct PropagateDeviceResourceProvenancePass
           if (consumesResource) {
             operation.emitError(
                 "unsupported operation consumes a static device resource: ")
-                << operation;
+                << operation.getName() << " in @" << function.getSymName();
             invalid = true;
           }
           for (Value result : operation.getResults())
