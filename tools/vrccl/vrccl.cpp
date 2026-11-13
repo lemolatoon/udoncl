@@ -320,12 +320,15 @@ cl::opt<bool> noRuntimeValidation(
     "no-runtime-validation",
     cl::desc("Record that read/write physical-resource alias validation is "
              "compiled out of the Host runtime"));
-cl::opt<std::string> hostLLVM("host-llvm", cl::desc("Host LLVM IR from C"));
+cl::opt<std::string>
+    hostLLVM("host-llvm",
+             cl::desc("Host LLVM IR from C; runtime-free when paired with "
+                      "--host-library-llvm"));
 cl::opt<std::string>
     hostMLIR("host-mlir", cl::desc("Typed Host MLIR for compiler validation"));
 cl::opt<std::string> hostLibraryLLVM(
     "host-library-llvm",
-    cl::desc("Linked Host library LLVM IR used to resolve Host MLIR calls"));
+    cl::desc("OpenCL AOT runtime LLVM IR linked after Host analysis"));
 cl::opt<std::string>
     hostBufferPlan("host-buffer-plan",
                    cl::desc("Final linked Host mutable-buffer plan JSON"));
@@ -2490,8 +2493,9 @@ LogicalResult recoverUnityOpenCLBufferCalls(ModuleOp module) {
   return success();
 }
 
-FailureOr<OwningOpRef<ModuleOp>>
-recoverLinkedUnityHostLibrary(StringRef filename, MLIRContext &context) {
+FailureOr<OwningOpRef<ModuleOp>> recoverUnityHostLLVM(StringRef filename,
+                                                      MLIRContext &context,
+                                                      bool linkedRuntime) {
   LLVMContext llvmContext;
   SMDiagnostic diagnostic;
   auto inputModule = parseIRFile(filename, diagnostic, llvmContext);
@@ -2509,8 +2513,15 @@ recoverLinkedUnityHostLibrary(StringRef filename, MLIRContext &context) {
   auto annotatedExports = collectUdonCLAnnotatedExports(*inputModule);
   if (failed(annotatedExports))
     return failure();
-  if (!inputModule->getFunction("__vrc_opencl_buffer_alloc")) {
+  bool hasRuntime =
+      inputModule->getFunction("__vrc_opencl_buffer_alloc") != nullptr;
+  if (linkedRuntime && !hasRuntime) {
     errs() << "--host-library-llvm requires the linked OpenCL AOT runtime\n";
+    return failure();
+  }
+  if (!linkedRuntime && hasRuntime) {
+    errs() << "--host-llvm must be runtime-free when "
+              "--host-library-llvm is provided\n";
     return failure();
   }
   auto library = ::vrc::importLLVM(std::move(inputModule), context);
@@ -2541,7 +2552,8 @@ recoverLinkedUnityHostLibrary(StringRef filename, MLIRContext &context) {
   recovery.addPass(::vrc::createRaiseLLVMRawMemoryPass());
   recovery.addPass(::vrc::createRaiseLLVMToScalarPass());
   recovery.addPass(createCanonicalizerPass());
-  recovery.addPass(::vrc::createLowerOpenCLAOTIntrinsicsPass());
+  if (linkedRuntime)
+    recovery.addPass(::vrc::createLowerOpenCLAOTIntrinsicsPass());
   if (failed(recovery.run(*library)) || failed(verify(*library)))
     return failure();
   for (const std::string &symbol : *annotatedExports) {
@@ -2555,6 +2567,16 @@ recoverLinkedUnityHostLibrary(StringRef filename, MLIRContext &context) {
     function->setAttr("udoncl.export", UnitAttr::get(&context));
   }
   return library;
+}
+
+FailureOr<OwningOpRef<ModuleOp>>
+recoverLinkedUnityHostLibrary(StringRef filename, MLIRContext &context) {
+  return recoverUnityHostLLVM(filename, context, true);
+}
+
+FailureOr<OwningOpRef<ModuleOp>>
+recoverRuntimeFreeUnityHost(StringRef filename, MLIRContext &context) {
+  return recoverUnityHostLLVM(filename, context, false);
 }
 
 LogicalResult linkUnityHostLibrary(ModuleOp destination, ModuleOp library) {
@@ -2728,11 +2750,10 @@ int main(int argc, char **argv) {
   if (emitUnityLibrary) {
     phase("unity-prepare");
     auto input = MemoryBuffer::getFile(inputFilename);
-    if (!input || (hostLLVM.empty() == hostMLIR.empty()) ||
-        (!hostLibraryLLVM.empty() && hostMLIR.empty())) {
-      errs() << "Unity library mode requires a JSON config and exactly one of "
-                "--host-llvm or --host-mlir; --host-library-llvm is valid "
-                "with --host-mlir; --device-llvm is optional\n";
+    if (!input || (hostLLVM.empty() && hostMLIR.empty())) {
+      errs() << "Unity library mode requires a JSON config and at least one "
+                "of --host-llvm or --host-mlir; --host-library-llvm supplies "
+                "the separately linked OpenCL AOT runtime\n";
       return 1;
     }
     auto parsed = json::parse((*input)->getBuffer());
@@ -2878,11 +2899,37 @@ int main(int argc, char **argv) {
           return 1;
         }
       }
+      if (!hostLLVM.empty()) {
+        auto program = recoverRuntimeFreeUnityHost(hostLLVM, context);
+        if (failed(program) || failed(linkUnityHostLibrary(*module, **program)))
+          return 1;
+      }
       if (!hostLibraryLLVM.empty()) {
         auto library = recoverLinkedUnityHostLibrary(hostLibraryLLVM, context);
         if (failed(library) || failed(linkUnityHostLibrary(*module, **library)))
           return 1;
       }
+      {
+        PassManager linkedHostRecovery(&context);
+        linkedHostRecovery.enableVerifier(false);
+        linkedHostRecovery.addPass(::vrc::createLowerOpenCLAOTIntrinsicsPass());
+        if (failed(linkedHostRecovery.run(*module)) || failed(verify(*module)))
+          return 1;
+      }
+      for (func::FuncOp function : module->getOps<func::FuncOp>())
+        if (function->hasAttr("udoncl.export"))
+          annotatedHostExports.insert(function.getSymName().str());
+      if (failed(lowerUnityHostObjectIntrinsics(*module, context)) ||
+          !configureUnityExports(*module, *unityConfig, annotatedHostExports))
+        return 1;
+    } else if (!hostLibraryLLVM.empty()) {
+      auto program = recoverRuntimeFreeUnityHost(hostLLVM, context);
+      if (failed(program))
+        return 1;
+      module = std::move(*program);
+      auto library = recoverLinkedUnityHostLibrary(hostLibraryLLVM, context);
+      if (failed(library) || failed(linkUnityHostLibrary(*module, **library)))
+        return 1;
       {
         PassManager linkedHostRecovery(&context);
         linkedHostRecovery.enableVerifier(false);

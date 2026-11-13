@@ -1,10 +1,14 @@
-foreach(_required IN ITEMS UDONCL_COMPILER UDONCL_CONFIG UDONCL_HOST_MODULE
+foreach(_required IN ITEMS UDONCL_COMPILER UDONCL_CONFIG
                            UDONCL_OUTPUT_DIRECTORY UDONCL_BUILD_ROOT
                            UDONCL_RUNTIME_VALIDATION)
   if(NOT DEFINED ${_required} OR "${${_required}}" STREQUAL "")
     message(FATAL_ERROR "${_required} is required")
   endif()
 endforeach()
+if((NOT DEFINED UDONCL_HOST_MODULE OR "${UDONCL_HOST_MODULE}" STREQUAL "") AND
+   (NOT DEFINED UDONCL_HOST_MLIR OR "${UDONCL_HOST_MLIR}" STREQUAL ""))
+  message(FATAL_ERROR "UDONCL_HOST_MODULE or UDONCL_HOST_MLIR is required")
+endif()
 
 if(UDONCL_RUNTIME_VALIDATION)
   set(_runtime_validation_argument --runtime-validation)
@@ -40,11 +44,17 @@ if(DEFINED UDONCL_HOST_BUFFER_PLAN AND
   set(_host_buffer_plan_argument --host-buffer-plan
       "${UDONCL_HOST_BUFFER_PLAN}")
 endif()
+set(_host_arguments)
 if(DEFINED UDONCL_HOST_MLIR AND NOT "${UDONCL_HOST_MLIR}" STREQUAL "")
-  set(_host_arguments --host-mlir "${UDONCL_HOST_MLIR}"
-                      --host-library-llvm "${UDONCL_HOST_MODULE}")
-else()
-  set(_host_arguments --host-llvm "${UDONCL_HOST_MODULE}")
+  list(APPEND _host_arguments --host-mlir "${UDONCL_HOST_MLIR}")
+endif()
+if(DEFINED UDONCL_HOST_MODULE AND NOT "${UDONCL_HOST_MODULE}" STREQUAL "")
+  list(APPEND _host_arguments --host-llvm "${UDONCL_HOST_MODULE}")
+endif()
+if(DEFINED UDONCL_HOST_RUNTIME_MODULE AND
+   NOT "${UDONCL_HOST_RUNTIME_MODULE}" STREQUAL "")
+  list(APPEND _host_arguments --host-library-llvm
+       "${UDONCL_HOST_RUNTIME_MODULE}")
 endif()
 file(REMOVE_RECURSE "${UDONCL_OUTPUT_DIRECTORY}")
 execute_process(

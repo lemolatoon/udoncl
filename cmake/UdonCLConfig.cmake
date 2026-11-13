@@ -654,6 +654,7 @@ function(udoncl_add_unity_library target)
   set(_host_modules)
   set(_host_seen_sources)
   set(_host_mlir)
+  set(_runtime_module)
   set(_static_tensor_directory)
   set(_mutable_handle_capacity)
   foreach(_library IN LISTS ARG_HOST_LIBRARIES)
@@ -750,9 +751,11 @@ function(udoncl_add_unity_library target)
                                   "${_runtime_sources}"
                                   "${_runtime_dependencies}"
                                   "${_runtime_flags}" _runtime_module)
-    list(APPEND _host_modules "${_runtime_module}")
   endif()
-  _udoncl_link_module_set("${target}" HOST "${_host_modules}" _host_module)
+  set(_host_module)
+  if(_host_modules)
+    _udoncl_link_module_set("${target}" HOST "${_host_modules}" _host_module)
+  endif()
 
   set(_device_module)
   if(ARG_DEVICE_LIBRARIES)
@@ -805,6 +808,7 @@ function(udoncl_add_unity_library target)
             "-DUDONCL_COMPILER=${UDONCLC_EXECUTABLE}"
             "-DUDONCL_CONFIG=${_config}"
             "-DUDONCL_HOST_MODULE=${_host_module}"
+            "-DUDONCL_HOST_RUNTIME_MODULE=${_runtime_module}"
             "-DUDONCL_HOST_MLIR=${_host_mlir}"
             "-DUDONCL_HOST_BUFFER_PLAN=${_host_buffer_plan}"
             "-DUDONCL_STATIC_TENSOR_DIRECTORY=${_static_tensor_directory}"
@@ -815,7 +819,8 @@ function(udoncl_add_unity_library target)
             "-DUDONCL_OMIT_INTERMEDIATE_IR=${ARG_OMIT_INTERMEDIATE_IR}"
             -P "${_UDONCL_CONFIG_DIR}/UdonCLCompileUnityLibrary.cmake"
     COMMAND "${CMAKE_COMMAND}" -E touch "${_stamp}"
-    DEPENDS "${UDONCLC_EXECUTABLE}" "${_config}" "${_host_module}"
+    DEPENDS "${UDONCLC_EXECUTABLE}" "${_config}" ${_host_module}
+            ${_runtime_module}
             ${_host_mlir} ${_host_buffer_plan} ${_static_tensor_directory}
             ${_device_module}
     BYPRODUCTS "${_artifact_directory}/manifest.json"

@@ -485,6 +485,23 @@ def main():
     assert not list(onnx_consumer.rglob('execution-plan.json'))
     assert not list(onnx_consumer.rglob('plan.json'))
     run([args.cmake, '--build', onnx_consumer, '--target', 'onnx-host-link-probe'])
+    onnx_build_root = onnx_consumer / 'udoncl/onnx-host-link-probe'
+    onnx_runtime_module = onnx_build_root / 'modules/host/capacity_runtime.bc'
+    assert onnx_runtime_module.is_file()
+    onnx_runtime_free_ir = run([
+        args.clang, '-S', '-emit-llvm', onnx_build_root / 'host.bc', '-o', '-'
+    ])
+    onnx_runtime_ir = run([
+        args.clang, '-S', '-emit-llvm', onnx_runtime_module, '-o', '-'
+    ])
+    assert not any(
+        'define ' in line and '@clCreateBuffer' in line
+        for line in onnx_runtime_free_ir.splitlines()
+    )
+    assert any(
+        'define ' in line and '@clCreateBuffer' in line
+        for line in onnx_runtime_ir.splitlines()
+    )
     generic_artifact = onnx_consumer / 'udoncl/onnx-host-link-probe/artifact'
     generic_assembly = (generic_artifact / 'host.uasm').read_text(
         encoding='utf-8'
@@ -1208,12 +1225,33 @@ def main():
     udonblas_root = udonblas_consumer / 'udoncl/udonblas-sgemm-example'
     assert (udonblas_root / 'host.bc').is_file()
     assert (udonblas_root / 'device.bc').is_file()
-    assert len(list((udonblas_root / 'objects/host').rglob('*.bc'))) == 4
+    # The public Host module is intentionally runtime-free. OpenCLAOT and
+    # DeviceMemory are compiled only when the Unity artifact target is built.
+    assert len(list((udonblas_root / 'objects/host').rglob('*.bc'))) == 2
     assert len(list((udonblas_root / 'objects/device').rglob('*.bc'))) == 6
     run([
         args.cmake, '--build', str(udonblas_consumer), '--target',
         'udonblas-sgemm-example',
     ])
+    runtime_module = udonblas_root / 'modules/host/capacity_runtime.bc'
+    assert runtime_module.is_file()
+    assert len(
+        list((udonblas_root / 'objects/host/capacity_runtime').glob('*.bc'))
+    ) == 2
+    runtime_free_ir = run([
+        args.clang, '-S', '-emit-llvm', udonblas_root / 'host.bc', '-o', '-'
+    ])
+    runtime_ir = run([
+        args.clang, '-S', '-emit-llvm', runtime_module, '-o', '-'
+    ])
+    assert not any(
+        'define ' in line and '@clCreateBuffer' in line
+        for line in runtime_free_ir.splitlines()
+    )
+    assert any(
+        'define ' in line and '@clCreateBuffer' in line
+        for line in runtime_ir.splitlines()
+    )
     udonblas_artifact = udonblas_root / 'artifact'
     udonblas_manifest = json.loads(
         (udonblas_artifact / 'manifest.json').read_text(encoding='utf-8')
