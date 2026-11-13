@@ -33,4 +33,7 @@ invalid = source.with_name("static_device_resource_aggregate_pointer_invalid.mli
 rejected = subprocess.run(command[:-1] + [invalid], text=True, capture_output=True)
 assert rejected.returncode != 0
 
-print("static_device_resource_aggregate_pointer=passed index=1 stride=88 cfg_join=checked")
+print(
+    "static_device_resource_aggregate_pointer=passed "
+    "index=1 stride=88 cfg_join=checked status_refinement=checked"
+)

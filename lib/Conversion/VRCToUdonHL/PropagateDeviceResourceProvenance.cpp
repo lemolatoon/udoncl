@@ -149,6 +149,11 @@ struct PointerCellState {
 
 using PointerCellMap = std::map<ObjectRef, PointerCellState>;
 
+struct PointerExitCases {
+  std::map<int64_t, PointerCellMap> exact;
+  std::optional<PointerCellMap> unknown;
+};
+
 bool operator==(const PointerCellState &left, const PointerCellState &right) {
   return left.hasPath == right.hasPath &&
          left.initializedOnAllPaths == right.initializedOnAllPaths &&
@@ -161,6 +166,7 @@ struct AnalysisResult {
   HandleMap handles;
   ViewMap views;
   PointerCellMap pointerCells;
+  PointerExitCases pointerExitCases;
 };
 
 PointerCellState joinPointerCells(PointerCellState left,
@@ -190,6 +196,43 @@ PointerCellMap joinPointerMaps(const PointerCellMap &left,
     joined[object] = joinPointerCells(PointerCellState{true, false, {}}, state);
   }
   return joined;
+}
+
+void addPointerExitCase(PointerExitCases &cases, std::optional<int64_t> status,
+                        const PointerCellMap &pointerCells) {
+  constexpr size_t maxExactCases = 16;
+  if (!status ||
+      (!cases.exact.count(*status) && cases.exact.size() >= maxExactCases)) {
+    cases.unknown = cases.unknown
+                        ? joinPointerMaps(*cases.unknown, pointerCells)
+                        : std::optional<PointerCellMap>(pointerCells);
+    return;
+  }
+  auto found = cases.exact.find(*status);
+  if (found == cases.exact.end())
+    cases.exact.emplace(*status, pointerCells);
+  else
+    found->second = joinPointerMaps(found->second, pointerCells);
+}
+
+PointerCellMap selectPointerExitCases(const PointerExitCases &cases,
+                                      int64_t constant, bool equal,
+                                      const PointerCellMap &fallback) {
+  PointerCellMap selected;
+  bool hasSelected = false;
+  for (const auto &[status, pointerCells] : cases.exact) {
+    if ((status == constant) != equal)
+      continue;
+    selected =
+        hasSelected ? joinPointerMaps(selected, pointerCells) : pointerCells;
+    hasSelected = true;
+  }
+  if (cases.unknown) {
+    selected = hasSelected ? joinPointerMaps(selected, *cases.unknown)
+                           : *cases.unknown;
+    hasSelected = true;
+  }
+  return hasSelected ? selected : fallback;
 }
 
 template <typename Combine>
@@ -256,6 +299,17 @@ CellState joinCellState(const CellState &left, const CellState &right) {
 struct Invocation {
   FlatSymbolRefAttr root;
   ArrayAttr path;
+};
+
+struct PendingPointerEffect {
+  Operation *call = nullptr;
+  PointerExitCases cases;
+};
+
+struct ComparisonRefinement {
+  Value subject;
+  int64_t constant = 0;
+  bool equalOnTrue = true;
 };
 
 struct Case {
@@ -580,12 +634,16 @@ struct PropagateDeviceResourceProvenancePass
                                   Fact::scalar()),
                 SmallVector<std::optional<int64_t>>(
                     function.getFunctionType().getNumResults(), std::nullopt),
-                incomingHandles, incomingViews, incomingPointerCells};
+                incomingHandles,
+                incomingViews,
+                incomingPointerCells,
+                {}};
       function.emitError(
           "resource provenance through recursion is unsupported");
       invalid = true;
       return {SmallVector<Fact>(), SmallVector<std::optional<int64_t>>(),
-              HandleMap(), ViewMap(), PointerCellMap()};
+              HandleMap(),         ViewMap(),
+              PointerCellMap(),    {}};
     }
     llvm::DenseMap<Value, Fact> facts;
     llvm::DenseMap<Value, int64_t> integerValues;
@@ -634,7 +692,13 @@ struct PropagateDeviceResourceProvenancePass
     llvm::DenseMap<std::pair<Block *, Block *>, CellMap> edgeMemory;
     llvm::DenseMap<Block *, PointerCellMap> pointerInputs;
     llvm::DenseMap<std::pair<Block *, Block *>, PointerCellMap> edgePointers;
+    llvm::DenseMap<std::pair<Block *, Block *>,
+                   SmallVector<std::optional<int64_t>>>
+        edgeIntegerArguments;
+    llvm::DenseMap<Value, PendingPointerEffect> pendingPointerEffects;
+    llvm::DenseMap<Value, ComparisonRefinement> comparisonRefinements;
     PointerCellMap returnedPointerCells;
+    PointerExitCases pointerExitCases;
     bool sawReturn = false;
     llvm::DenseSet<Value> resourceCells;
     if (!function.empty()) {
@@ -1032,6 +1096,11 @@ struct PropagateDeviceResourceProvenancePass
             handles = std::move(nestedResult.handles);
             views = std::move(nestedResult.views);
             localPointerCells = std::move(nestedResult.pointerCells);
+            if (call.getNumResults() == 1 &&
+                (!nestedResult.pointerExitCases.exact.empty() ||
+                 nestedResult.pointerExitCases.unknown))
+              pendingPointerEffects[call.getResult(0)] = {
+                  call, std::move(nestedResult.pointerExitCases)};
             for (auto [index, result] : llvm::enumerate(call.getResults()))
               updateFact(result,
                          index < nestedResult.results.size()
@@ -1164,6 +1233,35 @@ struct PropagateDeviceResourceProvenancePass
           }
           updateFact(multiply.getResult(), Fact::scalar(), facts, worklist,
                      queued, reached);
+        } else if (auto compare = dyn_cast<arith::CmpIOp>(operation)) {
+          if (valueFact(compare.getLhs(), facts).resource ||
+              valueFact(compare.getRhs(), facts).resource) {
+            compare.emitError(
+                "unsupported operation consumes a static device resource");
+            invalid = true;
+          }
+          if (compare.getPredicate() == arith::CmpIPredicate::eq ||
+              compare.getPredicate() == arith::CmpIPredicate::ne) {
+            Value subject;
+            std::optional<int64_t> constant;
+            if (pendingPointerEffects.contains(compare.getLhs())) {
+              subject = compare.getLhs();
+              auto found = integerValues.find(compare.getRhs());
+              if (found != integerValues.end())
+                constant = found->second;
+            } else if (pendingPointerEffects.contains(compare.getRhs())) {
+              subject = compare.getRhs();
+              auto found = integerValues.find(compare.getLhs());
+              if (found != integerValues.end())
+                constant = found->second;
+            }
+            if (subject && constant)
+              comparisonRefinements[compare.getResult()] = {
+                  subject, *constant,
+                  compare.getPredicate() == arith::CmpIPredicate::eq};
+          }
+          updateFact(compare.getResult(), Fact::scalar(), facts, worklist,
+                     queued, reached);
         } else if (auto select = dyn_cast<arith::SelectOp>(operation)) {
           auto trueObject = objectValues.find(select.getTrueValue());
           auto falseObject = objectValues.find(select.getFalseValue());
@@ -1196,32 +1294,60 @@ struct PropagateDeviceResourceProvenancePass
                          worklist, queued, reached, block, localMemory,
                          memoryInputs, edgeMemory, eligibleCells, objectValues,
                          integerValues, ambiguousIntegers, localPointerCells,
-                         pointerInputs, edgePointers);
+                         pointerInputs, edgePointers, edgeIntegerArguments);
         } else if (auto branch = dyn_cast<cf::CondBranchOp>(operation)) {
+          PointerCellMap truePointers = localPointerCells;
+          PointerCellMap falsePointers = localPointerCells;
+          auto refinement = comparisonRefinements.find(branch.getCondition());
+          if (refinement != comparisonRefinements.end()) {
+            auto effect =
+                pendingPointerEffects.find(refinement->second.subject);
+            Operation *comparison = branch.getCondition().getDefiningOp();
+            bool direct = effect != pendingPointerEffects.end() && comparison &&
+                          effect->second.call->getBlock() == block &&
+                          comparison->getBlock() == block;
+            if (direct)
+              for (Operation *between = effect->second.call->getNextNode();
+                   between && between != &operation;
+                   between = between->getNextNode())
+                if (between != comparison) {
+                  direct = false;
+                  break;
+                }
+            if (direct) {
+              truePointers = selectPointerExitCases(
+                  effect->second.cases, refinement->second.constant,
+                  refinement->second.equalOnTrue, localPointerCells);
+              falsePointers = selectPointerExitCases(
+                  effect->second.cases, refinement->second.constant,
+                  !refinement->second.equalOnTrue, localPointerCells);
+            }
+          }
           mergeSuccessor(branch.getTrueDest(), branch.getTrueDestOperands(),
                          facts, worklist, queued, reached, block, localMemory,
                          memoryInputs, edgeMemory, eligibleCells, objectValues,
-                         integerValues, ambiguousIntegers, localPointerCells,
-                         pointerInputs, edgePointers);
+                         integerValues, ambiguousIntegers, truePointers,
+                         pointerInputs, edgePointers, edgeIntegerArguments);
           mergeSuccessor(branch.getFalseDest(), branch.getFalseDestOperands(),
                          facts, worklist, queued, reached, block, localMemory,
                          memoryInputs, edgeMemory, eligibleCells, objectValues,
-                         integerValues, ambiguousIntegers, localPointerCells,
-                         pointerInputs, edgePointers);
+                         integerValues, ambiguousIntegers, falsePointers,
+                         pointerInputs, edgePointers, edgeIntegerArguments);
         } else if (auto branch = dyn_cast<cf::SwitchOp>(operation)) {
           mergeSuccessor(branch.getDefaultDestination(),
                          branch.getDefaultOperands(), facts, worklist, queued,
                          reached, block, localMemory, memoryInputs, edgeMemory,
                          eligibleCells, objectValues, integerValues,
                          ambiguousIntegers, localPointerCells, pointerInputs,
-                         edgePointers);
+                         edgePointers, edgeIntegerArguments);
           for (auto [index, destination] :
                llvm::enumerate(branch.getCaseDestinations()))
             mergeSuccessor(destination, branch.getCaseOperands(index), facts,
                            worklist, queued, reached, block, localMemory,
                            memoryInputs, edgeMemory, eligibleCells,
                            objectValues, integerValues, ambiguousIntegers,
-                           localPointerCells, pointerInputs, edgePointers);
+                           localPointerCells, pointerInputs, edgePointers,
+                           edgeIntegerArguments);
         } else if (auto returned = dyn_cast<func::ReturnOp>(operation)) {
           bool exported = function->hasAttr("udoncl.export") ||
                           function->hasAttr("vrc.export_id");
@@ -1251,6 +1377,43 @@ struct PropagateDeviceResourceProvenancePass
           } else {
             returnedPointerCells =
                 joinPointerMaps(returnedPointerCells, localPointerCells);
+          }
+          if (returned.getNumOperands() == 1 &&
+              function.getFunctionType().getNumResults() == 1 &&
+              function.getFunctionType().getResult(0).isIntOrIndex()) {
+            Value status = returned.getOperand(0);
+            auto pending = pendingPointerEffects.find(status);
+            if (pending != pendingPointerEffects.end() &&
+                pending->second.call->getBlock() == block &&
+                pending->second.call->getNextNode() == &operation) {
+              for (const auto &[value, pointerCells] :
+                   pending->second.cases.exact)
+                addPointerExitCase(pointerExitCases, value, pointerCells);
+              if (pending->second.cases.unknown)
+                addPointerExitCase(pointerExitCases, std::nullopt,
+                                   *pending->second.cases.unknown);
+            } else if (auto integer = integerValues.find(status);
+                       integer != integerValues.end()) {
+              addPointerExitCase(pointerExitCases, integer->second,
+                                 localPointerCells);
+            } else if (auto argument = dyn_cast<BlockArgument>(status);
+                       argument && argument.getOwner() == block &&
+                       llvm::hasSingleElement(*block)) {
+              for (Block *predecessor : block->getPredecessors()) {
+                auto integers = edgeIntegerArguments.find({predecessor, block});
+                auto pointers = edgePointers.find({predecessor, block});
+                if (pointers == edgePointers.end())
+                  continue;
+                std::optional<int64_t> value;
+                if (integers != edgeIntegerArguments.end() &&
+                    argument.getArgNumber() < integers->second.size())
+                  value = integers->second[argument.getArgNumber()];
+                addPointerExitCase(pointerExitCases, value, pointers->second);
+              }
+            } else {
+              addPointerExitCase(pointerExitCases, std::nullopt,
+                                 localPointerCells);
+            }
           }
         } else {
           if (operation.getNumRegions() != 0 ||
@@ -1283,8 +1446,12 @@ struct PropagateDeviceResourceProvenancePass
     active.erase(function);
     for (auto [index, fact] : llvm::enumerate(returns))
       recordCase(functionResultCases, function, invocation, index, fact);
-    return {std::move(returns), std::move(integerReturns), std::move(handles),
-            std::move(views), std::move(returnedPointerCells)};
+    return {std::move(returns),
+            std::move(integerReturns),
+            std::move(handles),
+            std::move(views),
+            std::move(returnedPointerCells),
+            std::move(pointerExitCases)};
   }
 
   bool updateFact(Value value, const Fact &incoming,
@@ -1317,9 +1484,12 @@ struct PropagateDeviceResourceProvenancePass
       llvm::DenseSet<Value> &ambiguousIntegers,
       const PointerCellMap &sourcePointers,
       llvm::DenseMap<Block *, PointerCellMap> &pointerInputs,
-      llvm::DenseMap<std::pair<Block *, Block *>, PointerCellMap>
-          &edgePointers) {
+      llvm::DenseMap<std::pair<Block *, Block *>, PointerCellMap> &edgePointers,
+      llvm::DenseMap<std::pair<Block *, Block *>,
+                     SmallVector<std::optional<int64_t>>>
+          &edgeIntegerArguments) {
     bool changed = false;
+    SmallVector<std::optional<int64_t>> incomingIntegers;
     for (auto [argument, operand] :
          llvm::zip(destination->getArguments(), operands)) {
       if (updateFact(argument, valueFact(operand, facts), facts, worklist,
@@ -1337,8 +1507,12 @@ struct PropagateDeviceResourceProvenancePass
       } else {
         objectValues[argument].unknown = true;
       }
+      auto incomingInteger = integerValues.find(operand);
+      incomingIntegers.push_back(
+          incomingInteger == integerValues.end()
+              ? std::nullopt
+              : std::optional<int64_t>(incomingInteger->second));
       if (!ambiguousIntegers.contains(argument)) {
-        auto incomingInteger = integerValues.find(operand);
         auto existingInteger = integerValues.find(argument);
         if (incomingInteger == integerValues.end()) {
           integerValues.erase(argument);
@@ -1351,6 +1525,7 @@ struct PropagateDeviceResourceProvenancePass
         }
       }
     }
+    edgeIntegerArguments[{source, destination}] = std::move(incomingIntegers);
     edgeMemory[{source, destination}] = sourceMemory;
     CellMap recomputed;
     for (Value cell : eligibleCells) {

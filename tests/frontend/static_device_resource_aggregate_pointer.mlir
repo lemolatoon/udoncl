@@ -12,18 +12,19 @@ module {
     return
   }
 
-  func.func private @initializeSession(%condition: i1, %session: !udonhl.ptr<0>, %bindings: !udonhl.ptr<0>) {
+  func.func private @initializeSession(%fail: i1, %session: !udonhl.ptr<0>, %bindings: !udonhl.ptr<0>) -> i32 {
+    %zero = arith.constant 0 : i32
+    %error = arith.constant 7 : i32
     %eight = arith.constant 8 : i32
     %bindings_cell = "udonhl.ptr_add"(%session, %eight) : (!udonhl.ptr<0>, i32) -> !udonhl.ptr<0>
-    cf.cond_br %condition, ^left, ^right
-  ^left:
+    cf.cond_br %fail, ^failure, ^success
+  ^success:
     "udonhl.store"(%bindings, %bindings_cell) <{alignment = 4 : i64}> : (!udonhl.ptr<0>, !udonhl.ptr<0>) -> ()
-    cf.br ^done
-  ^right:
-    "udonhl.store"(%bindings, %bindings_cell) <{alignment = 4 : i64}> : (!udonhl.ptr<0>, !udonhl.ptr<0>) -> ()
-    cf.br ^done
-  ^done:
-    return
+    cf.br ^done(%zero : i32)
+  ^failure:
+    cf.br ^done(%error : i32)
+  ^done(%status: i32):
+    return %status : i32
   }
 
   func.func private @copyTensorView(%session: !udonhl.ptr<0>, %index: i32, %source: !udonhl.ptr<0>) {
@@ -56,7 +57,11 @@ module {
 
     %session = udonhl.address_of @session : !udonhl.ptr<0>
     %bindings = udonhl.address_of @bindings : !udonhl.ptr<0>
-    func.call @initializeSession(%condition, %session, %bindings) : (i1, !udonhl.ptr<0>, !udonhl.ptr<0>) -> ()
+    %status = func.call @initializeSession(%condition, %session, %bindings) : (i1, !udonhl.ptr<0>, !udonhl.ptr<0>) -> i32
+    %initialized = arith.cmpi eq, %status, %zero : i32
+    cf.cond_br %initialized, ^use, ^failure
+
+  ^use:
     func.call @copyTensorView(%session, %one, %view) : (!udonhl.ptr<0>, i32, !udonhl.ptr<0>) -> ()
 
     %tensor = "udonhl.ptr_add"(%bindings, %eighty_eight) : (!udonhl.ptr<0>, i32) -> !udonhl.ptr<0>
@@ -68,6 +73,8 @@ module {
     %resolved = func.call @udonclBufferViewResolve(%tensor, %raw_cell, %offset_cell, %length_cell) : (!udonhl.ptr<0>, !udonhl.ptr<0>, !udonhl.ptr<0>, !udonhl.ptr<0>) -> i32
     %raw = "udonhl.load"(%raw_cell) <{alignment = 4 : i64}> : (!udonhl.ptr<0>) -> !udonhl.ptr<0>
     %released = func.call @clReleaseMemObject(%raw) : (!udonhl.ptr<0>) -> i32
+    return
+  ^failure:
     return
   }
 }
