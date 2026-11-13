@@ -326,6 +326,12 @@ add_test(NAME static-device-resource-buffer-view
     $<TARGET_FILE:vrc-opt>
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_buffer_view.mlir"
 )
+add_test(NAME static-device-resource-output-cell
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_output_cell.py"
+    $<TARGET_FILE:vrc-opt>
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_output_cell.mlir"
+)
 add_test(NAME static-device-resource-aggregate-pointer
   COMMAND Python3::Interpreter
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_aggregate_pointer.py"
