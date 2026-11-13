@@ -286,6 +286,13 @@ work.
 
 ### Gate 4: one-to-one Texture assignment
 
+Status: standalone allocator implemented against a versioned keyed inventory.
+It assigns deterministic one-based Texture IDs to allocation contexts while
+preserving capacity, format, public access, and persistence. The producer that
+derives this inventory from allocation call contexts and ONNX bindings, fixes
+the current duplicate public-buffer capacities, and integrates the result into
+manifest generation remains separate work.
+
 - Assign one physical Texture per allocation context.
 - Emit stable resource IDs, capacities, formats, and public/persistent flags.
 - Test deterministic output and manifest/importer compatibility.
@@ -301,7 +308,9 @@ work.
 
 ### Gate 6: MNIST numerical acceptance
 
-- Keep the current seven physical Textures initially.
+- Use five mutable Textures for the five discovered allocation contexts; the
+  current seven-entry list duplicates the public input/output capacities and is
+  not the assignment contract.
 - Pass Native, Device, direct SDK VM, and generated-U# numerical tests.
 - Assert generated IR/UASM has no reachable dynamic buffer table, free-list,
   `clCreateBuffer`, `clReleaseMemObject`, `udonclResolvePhysicalBuffer`, or
@@ -360,8 +369,10 @@ The artifact may and normally will retain:
 - Do not change public OpenCL, UdonBLAS, UdonDNN, or ONNX Runtime semantics.
 - Do not require a runtime scheduler for the known in-order command stream.
 - Do not make U# responsible for Device allocation or buffer-ID selection.
-- Do not preserve a dynamic fallback in Unity merely to accept programs outside
-  the documented static subset; emit a diagnostic instead.
+- Incremental analysis gates may leave explicitly counted unresolved operations
+  on the existing path. Gate 5 verification must reject that fallback in a
+  completed static Unity artifact rather than silently accepting programs
+  outside the documented static subset.
 - Do not couple resource provenance, command lifetime, physical coloring, and
   scalar Host storage allocation into one pass.
 - Do not specialize the design around MNIST or TinyLlama. They are numerical
