@@ -18,8 +18,10 @@
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
+#include <iterator>
 #include <limits>
 #include <map>
+#include <set>
 #include <tuple>
 
 using namespace mlir;
@@ -239,14 +241,27 @@ struct PointerCellState {
 
 using PointerCellMap = std::map<ObjectRef, PointerCellState>;
 
+using StatusExclusions = std::set<int64_t>;
+using StatusConstraintMap = llvm::DenseMap<Value, StatusExclusions>;
+
+struct UnknownPointerExitCase {
+  StatusExclusions excluded;
+  PointerCellMap pointerCells;
+};
+
 struct PointerExitCases {
   std::map<int64_t, PointerCellMap> exact;
-  std::optional<PointerCellMap> unknown;
+  SmallVector<UnknownPointerExitCase> unknown;
+};
+
+struct UnknownViewExitCase {
+  StatusExclusions excluded;
+  ViewMap views;
 };
 
 struct ViewExitCases {
   std::map<int64_t, ViewMap> exact;
-  std::optional<ViewMap> unknown;
+  SmallVector<UnknownViewExitCase> unknown;
 };
 
 bool operator==(const PointerCellState &left, const PointerCellState &right) {
@@ -303,13 +318,19 @@ PointerCellMap joinPointerMaps(const PointerCellMap &left,
 
 void addPointerExitCase(PointerExitCases &cases, std::optional<int64_t> status,
                         const PointerCellMap &pointerCells,
-                        const llvm::DenseSet<ObjectId> &zeroObjects) {
+                        const llvm::DenseSet<ObjectId> &zeroObjects,
+                        const StatusExclusions &excluded = {}) {
   constexpr size_t maxExactCases = 16;
   if (!status ||
       (!cases.exact.count(*status) && cases.exact.size() >= maxExactCases)) {
-    cases.unknown = cases.unknown ? joinPointerMaps(*cases.unknown,
-                                                    pointerCells, zeroObjects)
-                                  : std::optional<PointerCellMap>(pointerCells);
+    auto found = llvm::find_if(cases.unknown, [&](const auto &candidate) {
+      return candidate.excluded == excluded;
+    });
+    if (found == cases.unknown.end())
+      cases.unknown.push_back({excluded, pointerCells});
+    else
+      found->pointerCells =
+          joinPointerMaps(found->pointerCells, pointerCells, zeroObjects);
     return;
   }
   auto found = cases.exact.find(*status);
@@ -333,22 +354,30 @@ selectPointerExitCases(const PointerExitCases &cases, int64_t constant,
                    : pointerCells;
     hasSelected = true;
   }
-  if (cases.unknown) {
-    selected = hasSelected
-                   ? joinPointerMaps(selected, *cases.unknown, zeroObjects)
-                   : *cases.unknown;
+  for (const UnknownPointerExitCase &unknown : cases.unknown) {
+    if (equal && unknown.excluded.count(constant))
+      continue;
+    selected = hasSelected ? joinPointerMaps(selected, unknown.pointerCells,
+                                             zeroObjects)
+                           : unknown.pointerCells;
     hasSelected = true;
   }
   return hasSelected ? selected : fallback;
 }
 
 void addViewExitCase(ViewExitCases &cases, std::optional<int64_t> status,
-                     const ViewMap &views) {
+                     const ViewMap &views,
+                     const StatusExclusions &excluded = {}) {
   constexpr size_t maxExactCases = 16;
   if (!status ||
       (!cases.exact.count(*status) && cases.exact.size() >= maxExactCases)) {
-    cases.unknown = cases.unknown ? joinViewMaps(*cases.unknown, views)
-                                  : std::optional<ViewMap>(views);
+    auto found = llvm::find_if(cases.unknown, [&](const auto &candidate) {
+      return candidate.excluded == excluded;
+    });
+    if (found == cases.unknown.end())
+      cases.unknown.push_back({excluded, views});
+    else
+      found->views = joinViewMaps(found->views, views);
     return;
   }
   auto found = cases.exact.find(*status);
@@ -368,9 +397,11 @@ ViewMap selectViewExitCases(const ViewExitCases &cases, int64_t constant,
     selected = hasSelected ? joinViewMaps(selected, views) : views;
     hasSelected = true;
   }
-  if (cases.unknown) {
+  for (const UnknownViewExitCase &unknown : cases.unknown) {
+    if (equal && unknown.excluded.count(constant))
+      continue;
     selected =
-        hasSelected ? joinViewMaps(selected, *cases.unknown) : *cases.unknown;
+        hasSelected ? joinViewMaps(selected, unknown.views) : unknown.views;
     hasSelected = true;
   }
   return hasSelected ? selected : fallback;
@@ -1017,6 +1048,9 @@ struct PropagateDeviceResourceProvenancePass
         edgeIntegerArguments;
     llvm::DenseMap<Block *, ViewMap> viewInputs;
     llvm::DenseMap<std::pair<Block *, Block *>, ViewMap> edgeViews;
+    llvm::DenseMap<Block *, StatusConstraintMap> statusConstraintInputs;
+    llvm::DenseMap<std::pair<Block *, Block *>, StatusConstraintMap>
+        edgeStatusConstraints;
     llvm::DenseMap<Value, PendingMemoryEffect> pendingMemoryEffects;
     llvm::DenseMap<Value, ComparisonRefinement> comparisonRefinements;
     PointerCellMap returnedPointerCells;
@@ -1031,6 +1065,7 @@ struct PropagateDeviceResourceProvenancePass
       reached.insert(&function.front());
       pointerInputs[&function.front()] = incomingPointerCells;
       viewInputs[&function.front()] = incomingViews;
+      statusConstraintInputs[&function.front()] = StatusConstraintMap();
       for (Value cell : eligibleCells)
         memoryInputs[&function.front()][cell] = {true, false, Fact()};
     }
@@ -1046,6 +1081,8 @@ struct PropagateDeviceResourceProvenancePass
       CellMap localMemory = memoryInputs[block];
       PointerCellMap localPointerCells = pointerInputs[block];
       ViewMap localViews = viewInputs[block];
+      StatusConstraintMap localStatusConstraints =
+          statusConstraintInputs[block];
       for (Operation &operation : *block) {
         for (auto [index, operand] : llvm::enumerate(operation.getOperands()))
           recordCase(operandCases, &operation, invocation, index,
@@ -1491,9 +1528,9 @@ struct PropagateDeviceResourceProvenancePass
             localPointerCells = std::move(nestedResult.pointerCells);
             if (call.getNumResults() == 1 &&
                 (!nestedResult.pointerExitCases.exact.empty() ||
-                 nestedResult.pointerExitCases.unknown ||
+                 !nestedResult.pointerExitCases.unknown.empty() ||
                  !nestedResult.viewExitCases.exact.empty() ||
-                 nestedResult.viewExitCases.unknown))
+                 !nestedResult.viewExitCases.unknown.empty()))
               pendingMemoryEffects[call.getResult(0)] = {
                   call, std::move(nestedResult.pointerExitCases),
                   std::move(nestedResult.viewExitCases)};
@@ -1706,14 +1743,23 @@ struct PropagateDeviceResourceProvenancePass
                          memoryInputs, edgeMemory, eligibleCells, objectValues,
                          integerValues, ambiguousIntegers, handleFieldValues,
                          localViews, viewInputs, edgeViews, localPointerCells,
-                         pointerInputs, edgePointers, edgeIntegerArguments);
+                         pointerInputs, edgePointers, localStatusConstraints,
+                         statusConstraintInputs, edgeStatusConstraints,
+                         edgeIntegerArguments);
         } else if (auto branch = dyn_cast<cf::CondBranchOp>(operation)) {
           PointerCellMap truePointers = localPointerCells;
           PointerCellMap falsePointers = localPointerCells;
           ViewMap trueViews = localViews;
           ViewMap falseViews = localViews;
+          StatusConstraintMap trueStatusConstraints = localStatusConstraints;
+          StatusConstraintMap falseStatusConstraints = localStatusConstraints;
           auto refinement = comparisonRefinements.find(branch.getCondition());
           if (refinement != comparisonRefinements.end()) {
+            StatusConstraintMap &notEqualConstraints =
+                refinement->second.equalOnTrue ? falseStatusConstraints
+                                               : trueStatusConstraints;
+            notEqualConstraints[refinement->second.subject].insert(
+                refinement->second.constant);
             auto effect = pendingMemoryEffects.find(refinement->second.subject);
             Operation *comparison = branch.getCondition().getDefiningOp();
             bool direct = effect != pendingMemoryEffects.end() && comparison &&
@@ -1749,21 +1795,26 @@ struct PropagateDeviceResourceProvenancePass
                          memoryInputs, edgeMemory, eligibleCells, objectValues,
                          integerValues, ambiguousIntegers, handleFieldValues,
                          trueViews, viewInputs, edgeViews, truePointers,
-                         pointerInputs, edgePointers, edgeIntegerArguments);
+                         pointerInputs, edgePointers, trueStatusConstraints,
+                         statusConstraintInputs, edgeStatusConstraints,
+                         edgeIntegerArguments);
           mergeSuccessor(branch.getFalseDest(), branch.getFalseDestOperands(),
                          facts, worklist, queued, reached, block, localMemory,
                          memoryInputs, edgeMemory, eligibleCells, objectValues,
                          integerValues, ambiguousIntegers, handleFieldValues,
                          falseViews, viewInputs, edgeViews, falsePointers,
-                         pointerInputs, edgePointers, edgeIntegerArguments);
+                         pointerInputs, edgePointers, falseStatusConstraints,
+                         statusConstraintInputs, edgeStatusConstraints,
+                         edgeIntegerArguments);
         } else if (auto branch = dyn_cast<cf::SwitchOp>(operation)) {
-          mergeSuccessor(branch.getDefaultDestination(),
-                         branch.getDefaultOperands(), facts, worklist, queued,
-                         reached, block, localMemory, memoryInputs, edgeMemory,
-                         eligibleCells, objectValues, integerValues,
-                         ambiguousIntegers, handleFieldValues, localViews,
-                         viewInputs, edgeViews, localPointerCells,
-                         pointerInputs, edgePointers, edgeIntegerArguments);
+          mergeSuccessor(
+              branch.getDefaultDestination(), branch.getDefaultOperands(),
+              facts, worklist, queued, reached, block, localMemory,
+              memoryInputs, edgeMemory, eligibleCells, objectValues,
+              integerValues, ambiguousIntegers, handleFieldValues, localViews,
+              viewInputs, edgeViews, localPointerCells, pointerInputs,
+              edgePointers, localStatusConstraints, statusConstraintInputs,
+              edgeStatusConstraints, edgeIntegerArguments);
           for (auto [index, destination] :
                llvm::enumerate(branch.getCaseDestinations()))
             mergeSuccessor(destination, branch.getCaseOperands(index), facts,
@@ -1772,7 +1823,8 @@ struct PropagateDeviceResourceProvenancePass
                            objectValues, integerValues, ambiguousIntegers,
                            handleFieldValues, localViews, viewInputs, edgeViews,
                            localPointerCells, pointerInputs, edgePointers,
-                           edgeIntegerArguments);
+                           localStatusConstraints, statusConstraintInputs,
+                           edgeStatusConstraints, edgeIntegerArguments);
         } else if (auto returned = dyn_cast<func::ReturnOp>(operation)) {
           bool exported = hasConfiguredRoots
                               ? function->hasAttr("vrc.export_id")
@@ -1847,15 +1899,15 @@ struct PropagateDeviceResourceProvenancePass
                    pending->second.pointerCases.exact)
                 addPointerExitCase(pointerExitCases, value, pointerCells,
                                    zeroInitializedGlobalObjectIds);
-              if (pending->second.pointerCases.unknown)
-                addPointerExitCase(pointerExitCases, std::nullopt,
-                                   *pending->second.pointerCases.unknown,
-                                   zeroInitializedGlobalObjectIds);
+              for (const auto &unknown : pending->second.pointerCases.unknown)
+                addPointerExitCase(
+                    pointerExitCases, std::nullopt, unknown.pointerCells,
+                    zeroInitializedGlobalObjectIds, unknown.excluded);
               for (const auto &[value, views] : pending->second.viewCases.exact)
                 addViewExitCase(viewExitCases, value, views);
-              if (pending->second.viewCases.unknown)
-                addViewExitCase(viewExitCases, std::nullopt,
-                                *pending->second.viewCases.unknown);
+              for (const auto &unknown : pending->second.viewCases.unknown)
+                addViewExitCase(viewExitCases, std::nullopt, unknown.views,
+                                unknown.excluded);
             } else if (auto integer = integerValues.find(status);
                        integer != integerValues.end()) {
               addPointerExitCase(pointerExitCases, integer->second,
@@ -1877,38 +1929,53 @@ struct PropagateDeviceResourceProvenancePass
                        incomingPending->second.pointerCases.exact)
                     addPointerExitCase(pointerExitCases, value, pointers,
                                        zeroInitializedGlobalObjectIds);
-                  if (incomingPending->second.pointerCases.unknown)
+                  for (const auto &unknown :
+                       incomingPending->second.pointerCases.unknown)
                     addPointerExitCase(
-                        pointerExitCases, std::nullopt,
-                        *incomingPending->second.pointerCases.unknown,
-                        zeroInitializedGlobalObjectIds);
+                        pointerExitCases, std::nullopt, unknown.pointerCells,
+                        zeroInitializedGlobalObjectIds, unknown.excluded);
                   for (const auto &[value, views] :
                        incomingPending->second.viewCases.exact)
                     addViewExitCase(viewExitCases, value, views);
-                  if (incomingPending->second.viewCases.unknown)
-                    addViewExitCase(viewExitCases, std::nullopt,
-                                    *incomingPending->second.viewCases.unknown);
+                  for (const auto &unknown :
+                       incomingPending->second.viewCases.unknown)
+                    addViewExitCase(viewExitCases, std::nullopt, unknown.views,
+                                    unknown.excluded);
                   continue;
                 }
                 auto integers = edgeIntegerArguments.find({predecessor, block});
                 auto pointers = edgePointers.find({predecessor, block});
                 auto views = edgeViews.find({predecessor, block});
+                auto constraints =
+                    edgeStatusConstraints.find({predecessor, block});
                 if (pointers == edgePointers.end())
                   continue;
                 std::optional<int64_t> value;
                 if (integers != edgeIntegerArguments.end() &&
                     argument.getArgNumber() < integers->second.size())
                   value = integers->second[argument.getArgNumber()];
+                StatusExclusions excluded;
+                if (constraints != edgeStatusConstraints.end()) {
+                  auto found = constraints->second.find(argument);
+                  if (found != constraints->second.end())
+                    excluded = found->second;
+                }
                 addPointerExitCase(pointerExitCases, value, pointers->second,
-                                   zeroInitializedGlobalObjectIds);
+                                   zeroInitializedGlobalObjectIds, excluded);
                 if (views != edgeViews.end())
-                  addViewExitCase(viewExitCases, value, views->second);
+                  addViewExitCase(viewExitCases, value, views->second,
+                                  excluded);
               }
             } else {
+              StatusExclusions excluded;
+              auto constraints = localStatusConstraints.find(status);
+              if (constraints != localStatusConstraints.end())
+                excluded = constraints->second;
               addPointerExitCase(pointerExitCases, std::nullopt,
                                  localPointerCells,
-                                 zeroInitializedGlobalObjectIds);
-              addViewExitCase(viewExitCases, std::nullopt, localViews);
+                                 zeroInitializedGlobalObjectIds, excluded);
+              addViewExitCase(viewExitCases, std::nullopt, localViews,
+                              excluded);
             }
           }
         } else {
@@ -1987,6 +2054,10 @@ struct PropagateDeviceResourceProvenancePass
       const PointerCellMap &sourcePointers,
       llvm::DenseMap<Block *, PointerCellMap> &pointerInputs,
       llvm::DenseMap<std::pair<Block *, Block *>, PointerCellMap> &edgePointers,
+      const StatusConstraintMap &sourceStatusConstraints,
+      llvm::DenseMap<Block *, StatusConstraintMap> &statusConstraintInputs,
+      llvm::DenseMap<std::pair<Block *, Block *>, StatusConstraintMap>
+          &edgeStatusConstraints,
       llvm::DenseMap<std::pair<Block *, Block *>,
                      SmallVector<std::optional<int64_t>>>
           &edgeIntegerArguments) {
@@ -2045,6 +2116,63 @@ struct PropagateDeviceResourceProvenancePass
         changed = true;
     }
     edgeIntegerArguments[{source, destination}] = std::move(incomingIntegers);
+    StatusConstraintMap incomingStatusConstraints = sourceStatusConstraints;
+    for (auto [argument, operand] :
+         llvm::zip(destination->getArguments(), operands)) {
+      auto incoming = sourceStatusConstraints.find(operand);
+      if (incoming == sourceStatusConstraints.end())
+        incomingStatusConstraints.erase(argument);
+      else
+        incomingStatusConstraints[argument] = incoming->second;
+    }
+    edgeStatusConstraints[{source, destination}] =
+        std::move(incomingStatusConstraints);
+    StatusConstraintMap recomputedStatusConstraints;
+    bool hasStatusConstraintEdge = false;
+    for (Block *predecessor : destination->getPredecessors()) {
+      auto edge = edgeStatusConstraints.find({predecessor, destination});
+      if (edge == edgeStatusConstraints.end())
+        continue;
+      if (!hasStatusConstraintEdge) {
+        recomputedStatusConstraints = edge->second;
+        hasStatusConstraintEdge = true;
+        continue;
+      }
+      for (auto iterator = recomputedStatusConstraints.begin();
+           iterator != recomputedStatusConstraints.end();) {
+        auto incoming = edge->second.find(iterator->first);
+        if (incoming == edge->second.end()) {
+          auto erased = iterator++;
+          recomputedStatusConstraints.erase(erased);
+          continue;
+        }
+        StatusExclusions intersection;
+        std::set_intersection(iterator->second.begin(), iterator->second.end(),
+                              incoming->second.begin(), incoming->second.end(),
+                              std::inserter(intersection, intersection.end()));
+        if (intersection.empty()) {
+          auto erased = iterator++;
+          recomputedStatusConstraints.erase(erased);
+        } else {
+          iterator->second = std::move(intersection);
+          ++iterator;
+        }
+      }
+    }
+    auto statusConstraintsEqual = [](const StatusConstraintMap &left,
+                                     const StatusConstraintMap &right) {
+      if (left.size() != right.size())
+        return false;
+      return llvm::all_of(left, [&](const auto &entry) {
+        auto found = right.find(entry.first);
+        return found != right.end() && found->second == entry.second;
+      });
+    };
+    if (!statusConstraintsEqual(statusConstraintInputs[destination],
+                                recomputedStatusConstraints))
+      changed = true;
+    statusConstraintInputs[destination] =
+        std::move(recomputedStatusConstraints);
     edgeMemory[{source, destination}] = sourceMemory;
     CellMap recomputed;
     for (Value cell : eligibleCells) {

@@ -66,9 +66,18 @@ module {
   }
 
   func.func private @forwardConditionalView(%fail: i1, %destination: !udonhl.ptr<0>, %source: !udonhl.ptr<0>) -> i32 {
+    %zero = arith.constant 0 : i32
     %status = func.call @createConditionalView(%fail, %destination, %source) : (i1, !udonhl.ptr<0>, !udonhl.ptr<0>) -> i32
-    cf.br ^bb1(%status : i32)
-  ^bb1(%forwarded: i32):
+    %succeeded = arith.cmpi eq, %status, %zero : i32
+    cf.cond_br %succeeded, ^bb1, ^bb2
+  ^bb1:
+    cf.br ^bb3(%zero : i32)
+  ^bb2:
+    // Model cleanup between the call and the joined return. The failure edge
+    // still proves that the original status cannot be zero.
+    %cleanup = arith.addi %status, %zero : i32
+    cf.br ^bb3(%status : i32)
+  ^bb3(%forwarded: i32):
     return %forwarded : i32
   }
 
