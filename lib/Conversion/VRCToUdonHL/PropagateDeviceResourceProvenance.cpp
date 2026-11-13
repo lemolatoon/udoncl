@@ -10,6 +10,7 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
@@ -220,7 +221,20 @@ struct PropagateDeviceResourceProvenancePass
   CaseMap argumentCases;
   CaseMap functionResultCases;
   llvm::DenseSet<Operation *> active;
+  llvm::StringMap<::vrc::udonhl::GlobalOp> eligibleGlobals;
+  llvm::StringMap<Fact> globalFacts;
+  llvm::StringMap<Fact> globalWrites;
+  llvm::StringSet<> resourceGlobals;
   bool invalid = false;
+
+  ::vrc::udonhl::GlobalOp globalCell(Value pointer) {
+    auto address = pointer.getDefiningOp<::vrc::udonhl::AddressOfOp>();
+    if (!address)
+      return {};
+    auto found = eligibleGlobals.find(address.getGlobalAttr().getValue());
+    return found == eligibleGlobals.end() ? ::vrc::udonhl::GlobalOp()
+                                          : found->getValue();
+  }
 
   Fact valueFact(Value value, llvm::DenseMap<Value, Fact> &facts) {
     auto found = facts.find(value);
@@ -340,7 +354,24 @@ struct PropagateDeviceResourceProvenancePass
           Fact stored = valueFact(store.getValue(), facts);
           Value cell = store.getPointer();
           Fact pointer = valueFact(cell, facts);
-          if (eligibleCells.contains(cell)) {
+          if (auto global = globalCell(cell)) {
+            StringRef name = global.getSymName();
+            bool classified = resourceGlobals.contains(name);
+            if (!classified && stored.resource) {
+              resourceGlobals.insert(name);
+              classified = true;
+            }
+            if (classified && !stored.resource) {
+              if (stored.zero)
+                stored = Fact::nullHandle();
+              else {
+                stored.initialized = true;
+                stored.resource = true;
+                stored.unknown = true;
+              }
+            }
+            globalWrites[name] = joinFacts(globalWrites[name], stored);
+          } else if (eligibleCells.contains(cell)) {
             if (resourceCells.contains(cell) && !stored.resource) {
               if (stored.zero) {
                 stored = Fact::nullHandle();
@@ -358,8 +389,12 @@ struct PropagateDeviceResourceProvenancePass
                   worklist.push_back(user->getBlock());
           } else {
             if (stored.resource) {
-              store.emitError("static device resource stored through a "
-                              "non-singleton or escaping local cell");
+              if (cell.getDefiningOp<::vrc::udonhl::AddressOfOp>())
+                store.emitError("static device resource stored through an "
+                                "unsupported or escaping global cell");
+              else
+                store.emitError("static device resource stored through a "
+                                "non-singleton or escaping local cell");
               invalid = true;
             }
             if (pointer.resource) {
@@ -370,7 +405,10 @@ struct PropagateDeviceResourceProvenancePass
           }
         } else if (auto load = dyn_cast<::vrc::udonhl::LoadOp>(operation)) {
           Value cell = load.getPointer();
-          if (eligibleCells.contains(cell)) {
+          if (auto global = globalCell(cell)) {
+            updateFact(load.getResult(), globalFacts[global.getSymName()],
+                       facts, worklist, queued, reached);
+          } else if (eligibleCells.contains(cell)) {
             CellState state = localMemory.lookup(cell);
             Fact loaded =
                 state.initializedOnAllPaths ? state.fact : Fact::scalar();
@@ -644,8 +682,40 @@ struct PropagateDeviceResourceProvenancePass
       operation->removeAttr(functionResultAttribute);
     });
     module->removeAttr(provenanceAttribute);
+    functions.clear();
+    eligibleGlobals.clear();
+    globalFacts.clear();
+    globalWrites.clear();
+    resourceGlobals.clear();
+    operandCases.clear();
+    resultCases.clear();
+    argumentCases.clear();
+    functionResultCases.clear();
+    active.clear();
+    invalid = false;
     for (func::FuncOp function : module.getOps<func::FuncOp>())
       functions.try_emplace(function.getSymName(), function);
+    for (auto global : module.getOps<::vrc::udonhl::GlobalOp>()) {
+      auto initial =
+          dyn_cast_or_null<IntegerAttr>(global.getInitialValueAttr());
+      auto pointer = dyn_cast<::vrc::udonhl::PtrType>(global.getStorageType());
+      if (global.getLinkage() == "internal" && !global.getConstant() &&
+          global.getAddressSpace() == 0 && global.getAlignment() == 4 &&
+          pointer && pointer.getAddressSpace() == 0 && initial &&
+          initial.getInt() == 0)
+        eligibleGlobals.try_emplace(global.getSymName(), global);
+    }
+    module.walk([&](::vrc::udonhl::AddressOfOp address) {
+      StringRef name = address.getGlobalAttr().getValue();
+      if (!eligibleGlobals.contains(name))
+        return;
+      if (!llvm::all_of(address.getResult().getUses(), [&](OpOperand &use) {
+            return isExactCellAccess(use, address.getResult());
+          }))
+        eligibleGlobals.erase(name);
+    });
+    for (auto &[name, global] : eligibleGlobals)
+      globalFacts[name] = Fact::scalar();
     SmallVector<func::FuncOp> roots;
     for (func::FuncOp function : module.getOps<func::FuncOp>())
       if (!function.isExternal() && (function->hasAttr("udoncl.export") ||
@@ -654,14 +724,38 @@ struct PropagateDeviceResourceProvenancePass
     llvm::sort(roots, [](func::FuncOp left, func::FuncOp right) {
       return left.getSymName() < right.getSymName();
     });
-    for (func::FuncOp root : roots) {
-      SmallVector<Fact> arguments(root.getNumArguments(), Fact::scalar());
-      analyze(root,
-              {FlatSymbolRefAttr::get(module.getContext(), root.getSymName()),
-               builder->getArrayAttr({})},
-              arguments);
+    bool converged = false;
+    for (unsigned iteration = 0; iteration != 100 && !invalid; ++iteration) {
+      globalWrites.clear();
+      for (auto &[name, global] : eligibleGlobals)
+        globalWrites[name] = Fact();
+      for (func::FuncOp root : roots) {
+        SmallVector<Fact> arguments(root.getNumArguments(), Fact::scalar());
+        analyze(root,
+                {FlatSymbolRefAttr::get(module.getContext(), root.getSymName()),
+                 builder->getArrayAttr({})},
+                arguments);
+        if (invalid)
+          break;
+      }
       if (invalid)
         break;
+      converged = true;
+      for (auto &[name, global] : eligibleGlobals) {
+        Fact next = resourceGlobals.contains(name)
+                        ? joinFacts(Fact::nullHandle(), globalWrites[name])
+                        : Fact::scalar();
+        if (!(globalFacts[name] == next)) {
+          globalFacts[name] = next;
+          converged = false;
+        }
+      }
+      if (converged)
+        break;
+    }
+    if (!invalid && !converged) {
+      module.emitError("global device resource provenance did not converge");
+      invalid = true;
     }
     if (invalid) {
       signalPassFailure();

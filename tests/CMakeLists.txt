@@ -296,6 +296,18 @@ add_test(NAME static-device-resource-local-cell-diagnostics
     --verify-diagnostics
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_local_cells_invalid.mlir"
 )
+add_test(NAME static-device-resource-global-cells
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_global_cells.py"
+    $<TARGET_FILE:vrc-opt>
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_global_cells.mlir"
+)
+add_test(NAME static-device-resource-global-cell-diagnostics
+  COMMAND vrc-opt --vrc-discover-static-device-resources
+    --vrc-propagate-device-resource-provenance --split-input-file
+    --verify-diagnostics
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_global_cells_invalid.mlir"
+)
 if(WIN32)
   add_library(native-async-support SHARED frontend/native_async_support.c)
   set_target_properties(native-async-support PROPERTIES
