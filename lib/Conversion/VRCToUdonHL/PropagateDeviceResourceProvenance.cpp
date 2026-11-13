@@ -244,6 +244,11 @@ struct PointerExitCases {
   std::optional<PointerCellMap> unknown;
 };
 
+struct ViewExitCases {
+  std::map<int64_t, ViewMap> exact;
+  std::optional<ViewMap> unknown;
+};
+
 bool operator==(const PointerCellState &left, const PointerCellState &right) {
   return left.hasPath == right.hasPath &&
          left.initializedOnAllPaths == right.initializedOnAllPaths &&
@@ -258,6 +263,7 @@ struct AnalysisResult {
   ViewMap views;
   PointerCellMap pointerCells;
   PointerExitCases pointerExitCases;
+  ViewExitCases viewExitCases;
 };
 
 PointerCellState joinPointerCells(PointerCellState left,
@@ -321,6 +327,40 @@ PointerCellMap selectPointerExitCases(const PointerExitCases &cases,
   if (cases.unknown) {
     selected = hasSelected ? joinPointerMaps(selected, *cases.unknown)
                            : *cases.unknown;
+    hasSelected = true;
+  }
+  return hasSelected ? selected : fallback;
+}
+
+void addViewExitCase(ViewExitCases &cases, std::optional<int64_t> status,
+                     const ViewMap &views) {
+  constexpr size_t maxExactCases = 16;
+  if (!status ||
+      (!cases.exact.count(*status) && cases.exact.size() >= maxExactCases)) {
+    cases.unknown = cases.unknown ? joinViewMaps(*cases.unknown, views)
+                                  : std::optional<ViewMap>(views);
+    return;
+  }
+  auto found = cases.exact.find(*status);
+  if (found == cases.exact.end())
+    cases.exact.emplace(*status, views);
+  else
+    found->second = joinViewMaps(found->second, views);
+}
+
+ViewMap selectViewExitCases(const ViewExitCases &cases, int64_t constant,
+                            bool equal, const ViewMap &fallback) {
+  ViewMap selected;
+  bool hasSelected = false;
+  for (const auto &[status, views] : cases.exact) {
+    if ((status == constant) != equal)
+      continue;
+    selected = hasSelected ? joinViewMaps(selected, views) : views;
+    hasSelected = true;
+  }
+  if (cases.unknown) {
+    selected =
+        hasSelected ? joinViewMaps(selected, *cases.unknown) : *cases.unknown;
     hasSelected = true;
   }
   return hasSelected ? selected : fallback;
@@ -392,9 +432,10 @@ struct Invocation {
   ArrayAttr path;
 };
 
-struct PendingPointerEffect {
+struct PendingMemoryEffect {
   Operation *call = nullptr;
-  PointerExitCases cases;
+  PointerExitCases pointerCases;
+  ViewExitCases viewCases;
 };
 
 struct ComparisonRefinement {
@@ -402,6 +443,35 @@ struct ComparisonRefinement {
   int64_t constant = 0;
   bool equalOnTrue = true;
 };
+
+Value successorOperand(Block *predecessor, Block *destination, unsigned index) {
+  Operation *terminator = predecessor->getTerminator();
+  if (auto branch = dyn_cast<cf::BranchOp>(terminator))
+    return branch.getDest() == destination &&
+                   index < branch.getDestOperands().size()
+               ? branch.getDestOperands()[index]
+               : Value();
+  if (auto branch = dyn_cast<cf::CondBranchOp>(terminator)) {
+    if (branch.getTrueDest() == destination &&
+        index < branch.getTrueDestOperands().size())
+      return branch.getTrueDestOperands()[index];
+    if (branch.getFalseDest() == destination &&
+        index < branch.getFalseDestOperands().size())
+      return branch.getFalseDestOperands()[index];
+    return {};
+  }
+  if (auto branch = dyn_cast<cf::SwitchOp>(terminator)) {
+    if (branch.getDefaultDestination() == destination &&
+        index < branch.getDefaultOperands().size())
+      return branch.getDefaultOperands()[index];
+    for (auto [caseIndex, successor] :
+         llvm::enumerate(branch.getCaseDestinations()))
+      if (successor == destination &&
+          index < branch.getCaseOperands(caseIndex).size())
+        return branch.getCaseOperands(caseIndex)[index];
+  }
+  return {};
+}
 
 struct Case {
   Invocation invocation;
@@ -788,6 +858,7 @@ struct PropagateDeviceResourceProvenancePass
                 incomingHandles,
                 incomingViews,
                 incomingPointerCells,
+                {},
                 {}};
       function.emitError(
           "resource provenance through recursion is unsupported");
@@ -798,6 +869,7 @@ struct PropagateDeviceResourceProvenancePass
               HandleMap(),
               ViewMap(),
               PointerCellMap(),
+              {},
               {}};
     }
     llvm::DenseMap<Value, Fact> facts;
@@ -860,11 +932,12 @@ struct PropagateDeviceResourceProvenancePass
         edgeIntegerArguments;
     llvm::DenseMap<Block *, ViewMap> viewInputs;
     llvm::DenseMap<std::pair<Block *, Block *>, ViewMap> edgeViews;
-    llvm::DenseMap<Value, PendingPointerEffect> pendingPointerEffects;
+    llvm::DenseMap<Value, PendingMemoryEffect> pendingMemoryEffects;
     llvm::DenseMap<Value, ComparisonRefinement> comparisonRefinements;
     PointerCellMap returnedPointerCells;
     ViewMap returnedViews;
     PointerExitCases pointerExitCases;
+    ViewExitCases viewExitCases;
     bool sawReturn = false;
     llvm::DenseSet<Value> resourceCells;
     if (!function.empty()) {
@@ -1205,7 +1278,8 @@ struct PropagateDeviceResourceProvenancePass
                 !localViews[*exactSource].resource.resource ||
                 localViews[*exactSource].resource.unknown) {
               call.emitError("udononnxCopyBufferView requires an initialized "
-                             "source view subobject");
+                             "source view subobject in @")
+                  << function.getSymName() << ": " << call.getOperand(1);
               invalid = true;
               continue;
             }
@@ -1239,7 +1313,9 @@ struct PropagateDeviceResourceProvenancePass
                 !localViews[*exactView].resource.resource ||
                 localViews[*exactView].resource.unknown) {
               call.emitError("udonclBufferViewResolve requires an initialized "
-                             "view subobject");
+                             "view subobject in @")
+                  << function.getSymName() << " from root @"
+                  << invocation.root.getValue() << ": " << call.getOperand(0);
               invalid = true;
               continue;
             }
@@ -1301,9 +1377,12 @@ struct PropagateDeviceResourceProvenancePass
             localPointerCells = std::move(nestedResult.pointerCells);
             if (call.getNumResults() == 1 &&
                 (!nestedResult.pointerExitCases.exact.empty() ||
-                 nestedResult.pointerExitCases.unknown))
-              pendingPointerEffects[call.getResult(0)] = {
-                  call, std::move(nestedResult.pointerExitCases)};
+                 nestedResult.pointerExitCases.unknown ||
+                 !nestedResult.viewExitCases.exact.empty() ||
+                 nestedResult.viewExitCases.unknown))
+              pendingMemoryEffects[call.getResult(0)] = {
+                  call, std::move(nestedResult.pointerExitCases),
+                  std::move(nestedResult.viewExitCases)};
             for (auto [index, result] : llvm::enumerate(call.getResults()))
               updateFact(result,
                          index < nestedResult.results.size()
@@ -1453,12 +1532,12 @@ struct PropagateDeviceResourceProvenancePass
               compare.getPredicate() == arith::CmpIPredicate::ne) {
             Value subject;
             std::optional<int64_t> constant;
-            if (pendingPointerEffects.contains(compare.getLhs())) {
+            if (pendingMemoryEffects.contains(compare.getLhs())) {
               subject = compare.getLhs();
               auto found = integerValues.find(compare.getRhs());
               if (found != integerValues.end())
                 constant = found->second;
-            } else if (pendingPointerEffects.contains(compare.getRhs())) {
+            } else if (pendingMemoryEffects.contains(compare.getRhs())) {
               subject = compare.getRhs();
               auto found = integerValues.find(compare.getLhs());
               if (found != integerValues.end())
@@ -1525,12 +1604,13 @@ struct PropagateDeviceResourceProvenancePass
         } else if (auto branch = dyn_cast<cf::CondBranchOp>(operation)) {
           PointerCellMap truePointers = localPointerCells;
           PointerCellMap falsePointers = localPointerCells;
+          ViewMap trueViews = localViews;
+          ViewMap falseViews = localViews;
           auto refinement = comparisonRefinements.find(branch.getCondition());
           if (refinement != comparisonRefinements.end()) {
-            auto effect =
-                pendingPointerEffects.find(refinement->second.subject);
+            auto effect = pendingMemoryEffects.find(refinement->second.subject);
             Operation *comparison = branch.getCondition().getDefiningOp();
-            bool direct = effect != pendingPointerEffects.end() && comparison &&
+            bool direct = effect != pendingMemoryEffects.end() && comparison &&
                           effect->second.call->getBlock() == block &&
                           comparison->getBlock() == block;
             if (direct)
@@ -1543,24 +1623,30 @@ struct PropagateDeviceResourceProvenancePass
                 }
             if (direct) {
               truePointers = selectPointerExitCases(
-                  effect->second.cases, refinement->second.constant,
+                  effect->second.pointerCases, refinement->second.constant,
                   refinement->second.equalOnTrue, localPointerCells);
               falsePointers = selectPointerExitCases(
-                  effect->second.cases, refinement->second.constant,
+                  effect->second.pointerCases, refinement->second.constant,
                   !refinement->second.equalOnTrue, localPointerCells);
+              trueViews = selectViewExitCases(
+                  effect->second.viewCases, refinement->second.constant,
+                  refinement->second.equalOnTrue, localViews);
+              falseViews = selectViewExitCases(
+                  effect->second.viewCases, refinement->second.constant,
+                  !refinement->second.equalOnTrue, localViews);
             }
           }
           mergeSuccessor(branch.getTrueDest(), branch.getTrueDestOperands(),
                          facts, worklist, queued, reached, block, localMemory,
                          memoryInputs, edgeMemory, eligibleCells, objectValues,
                          integerValues, ambiguousIntegers, handleFieldValues,
-                         localViews, viewInputs, edgeViews, truePointers,
+                         trueViews, viewInputs, edgeViews, truePointers,
                          pointerInputs, edgePointers, edgeIntegerArguments);
           mergeSuccessor(branch.getFalseDest(), branch.getFalseDestOperands(),
                          facts, worklist, queued, reached, block, localMemory,
                          memoryInputs, edgeMemory, eligibleCells, objectValues,
                          integerValues, ambiguousIntegers, handleFieldValues,
-                         localViews, viewInputs, edgeViews, falsePointers,
+                         falseViews, viewInputs, edgeViews, falsePointers,
                          pointerInputs, edgePointers, edgeIntegerArguments);
         } else if (auto branch = dyn_cast<cf::SwitchOp>(operation)) {
           mergeSuccessor(branch.getDefaultDestination(),
@@ -1632,26 +1718,55 @@ struct PropagateDeviceResourceProvenancePass
               function.getFunctionType().getNumResults() == 1 &&
               function.getFunctionType().getResult(0).isIntOrIndex()) {
             Value status = returned.getOperand(0);
-            auto pending = pendingPointerEffects.find(status);
-            if (pending != pendingPointerEffects.end() &&
+            auto pending = pendingMemoryEffects.find(status);
+            if (pending != pendingMemoryEffects.end() &&
                 pending->second.call->getBlock() == block &&
                 pending->second.call->getNextNode() == &operation) {
               for (const auto &[value, pointerCells] :
-                   pending->second.cases.exact)
+                   pending->second.pointerCases.exact)
                 addPointerExitCase(pointerExitCases, value, pointerCells);
-              if (pending->second.cases.unknown)
+              if (pending->second.pointerCases.unknown)
                 addPointerExitCase(pointerExitCases, std::nullopt,
-                                   *pending->second.cases.unknown);
+                                   *pending->second.pointerCases.unknown);
+              for (const auto &[value, views] : pending->second.viewCases.exact)
+                addViewExitCase(viewExitCases, value, views);
+              if (pending->second.viewCases.unknown)
+                addViewExitCase(viewExitCases, std::nullopt,
+                                *pending->second.viewCases.unknown);
             } else if (auto integer = integerValues.find(status);
                        integer != integerValues.end()) {
               addPointerExitCase(pointerExitCases, integer->second,
                                  localPointerCells);
+              addViewExitCase(viewExitCases, integer->second, localViews);
             } else if (auto argument = dyn_cast<BlockArgument>(status);
                        argument && argument.getOwner() == block &&
                        llvm::hasSingleElement(*block)) {
               for (Block *predecessor : block->getPredecessors()) {
+                Value incoming = successorOperand(predecessor, block,
+                                                  argument.getArgNumber());
+                auto incomingPending = pendingMemoryEffects.find(incoming);
+                if (incomingPending != pendingMemoryEffects.end() &&
+                    incomingPending->second.call->getBlock() == predecessor &&
+                    incomingPending->second.call->getNextNode() ==
+                        predecessor->getTerminator()) {
+                  for (const auto &[value, pointers] :
+                       incomingPending->second.pointerCases.exact)
+                    addPointerExitCase(pointerExitCases, value, pointers);
+                  if (incomingPending->second.pointerCases.unknown)
+                    addPointerExitCase(
+                        pointerExitCases, std::nullopt,
+                        *incomingPending->second.pointerCases.unknown);
+                  for (const auto &[value, views] :
+                       incomingPending->second.viewCases.exact)
+                    addViewExitCase(viewExitCases, value, views);
+                  if (incomingPending->second.viewCases.unknown)
+                    addViewExitCase(viewExitCases, std::nullopt,
+                                    *incomingPending->second.viewCases.unknown);
+                  continue;
+                }
                 auto integers = edgeIntegerArguments.find({predecessor, block});
                 auto pointers = edgePointers.find({predecessor, block});
+                auto views = edgeViews.find({predecessor, block});
                 if (pointers == edgePointers.end())
                   continue;
                 std::optional<int64_t> value;
@@ -1659,10 +1774,13 @@ struct PropagateDeviceResourceProvenancePass
                     argument.getArgNumber() < integers->second.size())
                   value = integers->second[argument.getArgNumber()];
                 addPointerExitCase(pointerExitCases, value, pointers->second);
+                if (views != edgeViews.end())
+                  addViewExitCase(viewExitCases, value, views->second);
               }
             } else {
               addPointerExitCase(pointerExitCases, std::nullopt,
                                  localPointerCells);
+              addViewExitCase(viewExitCases, std::nullopt, localViews);
             }
           }
         } else {
@@ -1702,7 +1820,8 @@ struct PropagateDeviceResourceProvenancePass
             std::move(handles),
             std::move(returnedViews),
             std::move(returnedPointerCells),
-            std::move(pointerExitCases)};
+            std::move(pointerExitCases),
+            std::move(viewExitCases)};
   }
 
   bool updateFact(Value value, const Fact &incoming,
