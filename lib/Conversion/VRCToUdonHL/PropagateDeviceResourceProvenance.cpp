@@ -243,6 +243,41 @@ struct PropagateDeviceResourceProvenancePass
     return Fact::scalar();
   }
 
+  void analyzePhysicalBufferResolver(func::CallOp call,
+                                     llvm::DenseMap<Value, Fact> &facts) {
+    auto found = functions.find(call.getCallee());
+    if (found == functions.end() || !found->getValue().isExternal()) {
+      call.emitError("udonclResolvePhysicalBuffer requires an unlinked "
+                     "external declaration during static resource analysis");
+      invalid = true;
+      return;
+    }
+    Type pointer = ::vrc::udonhl::PtrType::get(module.getContext(), 0);
+    Type i32 = builder->getI32Type();
+    auto expected = builder->getFunctionType({pointer, pointer}, {i32});
+    bool callMatches = call.getNumOperands() == 2 &&
+                       call.getNumResults() == 1 &&
+                       call.getOperand(0).getType() == pointer &&
+                       call.getOperand(1).getType() == pointer &&
+                       call.getResult(0).getType() == i32;
+    if (found->getValue().getFunctionType() != expected || !callMatches) {
+      call.emitError("udonclResolvePhysicalBuffer requires signature "
+                     "(!udonhl.ptr<0>, !udonhl.ptr<0>) -> i32");
+      invalid = true;
+      return;
+    }
+    Fact handle = valueFact(call.getOperand(0), facts);
+    if (handle.resource && handle.unknown) {
+      call.emitError("resource use has unresolved non-handle provenance");
+      invalid = true;
+    }
+    if (valueFact(call.getOperand(1), facts).resource) {
+      call.emitError("static device resource passed as "
+                     "udonclResolvePhysicalBuffer output cell");
+      invalid = true;
+    }
+  }
+
   std::optional<int32_t> allocationIdentity(const Invocation &invocation,
                                             func::CallOp call) {
     auto site = call->getAttrOfType<DictionaryAttr>(allocationSiteAttribute);
@@ -427,7 +462,12 @@ struct PropagateDeviceResourceProvenancePass
           }
         } else if (auto call = dyn_cast<func::CallOp>(operation)) {
           StringRef calleeName = call.getCallee();
-          if (isAllocation(calleeName)) {
+          if (calleeName == "udonclResolvePhysicalBuffer") {
+            analyzePhysicalBufferResolver(call, facts);
+            for (Value result : call.getResults())
+              updateFact(result, Fact::scalar(), facts, worklist, queued,
+                         reached);
+          } else if (isAllocation(calleeName)) {
             if (call.getNumResults() != 1) {
               call.emitError(
                   "static device allocation must return exactly one handle");

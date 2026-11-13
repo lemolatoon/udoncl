@@ -55,4 +55,36 @@ loop = subprocess.run(command[:-1] + [loop_source], text=True, capture_output=Tr
 assert loop.returncode == 0, (loop.stdout, loop.stderr)
 release = next(line for line in loop.stdout.splitlines() if "call @clReleaseMemObject" in line)
 assert "resource_ids = [0 : i32, 1 : i32]" in release, release
+
+resolve_source = source.with_name("static_device_resource_resolve.mlir")
+resolve = subprocess.run(command[:-1] + [resolve_source], text=True, capture_output=True)
+assert resolve.returncode == 0, (resolve.stdout, resolve.stderr)
+resolve_second = subprocess.run(
+    command[:-1] + [resolve_source], text=True, capture_output=True
+)
+assert resolve_second.returncode == 0, (
+    resolve_second.stdout,
+    resolve_second.stderr,
+)
+assert resolve_second.stdout == resolve.stdout
+resolve_rerun = subprocess.run(
+    command[:-1] + ["--vrc-propagate-device-resource-provenance", resolve_source],
+    text=True,
+    capture_output=True,
+)
+assert resolve_rerun.returncode == 0, (
+    resolve_rerun.stdout,
+    resolve_rerun.stderr,
+)
+assert resolve_rerun.stdout == resolve.stdout
+resolve_call = next(
+    line
+    for line in resolve.stdout.splitlines()
+    if "call @udonclResolvePhysicalBuffer" in line
+)
+assert "vrc.static_device_operand_provenance" in resolve_call, resolve_call
+assert "index = 0 : i32" in resolve_call, resolve_call
+assert "resource_ids = [0 : i32]" in resolve_call, resolve_call
+assert "index = 1 : i32" not in resolve_call, resolve_call
+assert "vrc.static_device_result_provenance" not in resolve_call, resolve_call
 print("static_device_resource_provenance=passed contexts=2 join=finite")
