@@ -297,6 +297,17 @@ add_test(NAME static-kernel-bindings-diagnostics
     --verify-diagnostics
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_kernel_bindings_invalid.mlir"
 )
+add_test(NAME static-dispatch-bindings
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_dispatch_bindings.py"
+    $<TARGET_FILE:vrc-opt>
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_dispatch_bindings.mlir"
+)
+add_test(NAME static-dispatch-bindings-diagnostics
+  COMMAND vrc-opt --vrc-resolve-static-kernel-bindings --split-input-file
+    --verify-diagnostics
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_dispatch_bindings_invalid.mlir"
+)
 add_test(NAME static-device-resource-switch
   COMMAND Python3::Interpreter
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_switch.py"

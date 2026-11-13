@@ -42,7 +42,7 @@ def PropagateDeviceResourceProvenancePass : Pass<"vrc-propagate-device-resource-
 }
 def ResolveStaticKernelBindingsPass : Pass<"vrc-resolve-static-kernel-bindings", "mlir::ModuleOp"> {
   let summary = "Capture immutable call-by-value Device dispatch bindings";
-  let dependentDialects = ["mlir::func::FuncDialect"];
+  let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "::vrc::vrc::VRCDialect", "mlir::arith::ArithDialect", "mlir::cf::ControlFlowDialect", "mlir::func::FuncDialect"];
 }
 def LowerAwaitToContinuationsPass : Pass<"vrc-lower-await-to-continuations", "mlir::ModuleOp"> {
   let summary = "Split a single typed await into explicit UdonHL frame, suspend and resume blocks";

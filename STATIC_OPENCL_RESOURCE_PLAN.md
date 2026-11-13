@@ -1,9 +1,9 @@
 # Static OpenCL Resource Specialization Plan
 
 > Status: implementation in progress; Gates 1 and 2 are integrated at the
-> runtime-free Host boundary. Gate 3 has a standalone first slice for immutable
-> call-by-value Device dispatch snapshots; production integration and generic
-> `clSetKernelArg` recovery remain.
+> runtime-free Host boundary. Gate 3 has standalone slices for immutable
+> call-by-value and typed `vrc.dispatch` snapshots; production integration and
+> generic `clSetKernelArg` recovery remain.
 > Decision date: 2026-11-12
 > Parent architecture: [PLAN.md](PLAN.md)
 > Related execution plan:
@@ -264,11 +264,13 @@ schema into real MNIST and TinyLlama artifacts.
 
 ### Gate 3: kernel snapshots
 
-Status: first standalone slice implemented for structured call-by-value Device
-dispatch contracts. It records versioned immutable resource identities, access
-modes, scalar operand positions, kernel identity, and profile at each call.
-Production contract attachment/integration and generic `clSetKernelArg` copied
-byte-state recovery remain separate work.
+Status: standalone slices implemented for structured call-by-value Device
+dispatch contracts and surviving typed `vrc.dispatch` operations. They record
+versioned immutable allocation/static-tensor identities, access modes, copied
+scalar positions, and kernel identity. Typed dispatch recovery proves the
+successful `udonclResolvePhysicalBuffer` path that produced each physical
+token. Production integration and generic `clSetKernelArg` copied byte-state
+recovery remain separate work.
 
 - Resolve kernel identity and copied argument state at every enqueue.
 - Test reconfiguration between two enqueues, missing arguments, branches, and
