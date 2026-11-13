@@ -2579,6 +2579,12 @@ recoverRuntimeFreeUnityHost(StringRef filename, MLIRContext &context) {
   return recoverUnityHostLLVM(filename, context, false);
 }
 
+LogicalResult discoverStaticDeviceResources(ModuleOp module) {
+  PassManager discovery(module.getContext());
+  discovery.addPass(::vrc::createDiscoverStaticDeviceResourcesPass());
+  return failure(failed(discovery.run(module)) || failed(verify(module)));
+}
+
 LogicalResult linkUnityHostLibrary(ModuleOp destination, ModuleOp library) {
   for (NamedAttribute attribute : library->getAttrs())
     if (!destination->hasAttr(attribute.getName()))
@@ -2904,6 +2910,8 @@ int main(int argc, char **argv) {
         if (failed(program) || failed(linkUnityHostLibrary(*module, **program)))
           return 1;
       }
+      if (failed(discoverStaticDeviceResources(*module)))
+        return 1;
       if (!hostLibraryLLVM.empty()) {
         auto library = recoverLinkedUnityHostLibrary(hostLibraryLLVM, context);
         if (failed(library) || failed(linkUnityHostLibrary(*module, **library)))
@@ -2927,6 +2935,8 @@ int main(int argc, char **argv) {
       if (failed(program))
         return 1;
       module = std::move(*program);
+      if (failed(discoverStaticDeviceResources(*module)))
+        return 1;
       auto library = recoverLinkedUnityHostLibrary(hostLibraryLLVM, context);
       if (failed(library) || failed(linkUnityHostLibrary(*module, **library)))
         return 1;

@@ -1,6 +1,8 @@
 # Static OpenCL Resource Specialization Plan
 
-> Status: approved design; implementation pending
+> Status: implementation in progress; Gate 1 is integrated at the runtime-free
+> Host boundary. Gate 2 has pass-level coverage but is not integrated until the
+> DeviceMemory alias/view APIs have a sound provenance model.
 > Decision date: 2026-11-12
 > Parent architecture: [PLAN.md](PLAN.md)
 > Related execution plan:
@@ -237,12 +239,17 @@ with an already passing earlier component.
 
 ### Gate 1: discovery analysis
 
+Status: complete and enforced for split runtime-free Unity Host builds.
+
 - Add a standalone allocation-context analysis/pass.
 - Test direct calls, repeated helper calls, branches, recursion diagnostics,
   indirect calls, and loop allocation diagnostics.
 - Do not change generated artifacts or runtime behavior.
 
 ### Gate 2: provenance analysis
+
+Status: standalone pass and tests complete; production integration blocked on
+explicit provenance semantics for DeviceMemory adopt, view, and resolve APIs.
 
 - Track handles through arguments, results, PHIs/selects, and supported memory
   promotion.

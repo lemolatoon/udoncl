@@ -503,6 +503,11 @@ def main():
         for line in onnx_runtime_ir.splitlines()
     )
     generic_artifact = onnx_consumer / 'udoncl/onnx-host-link-probe/artifact'
+    generic_recovered = (generic_artifact / 'frontend.recovered.mlir').read_text(
+        encoding='utf-8'
+    )
+    assert 'vrc.static_device_resource_discovery' in generic_recovered
+    assert 'vrc.static_device_allocation_site' in generic_recovered
     generic_assembly = (generic_artifact / 'host.uasm').read_text(
         encoding='utf-8'
     )
@@ -1253,6 +1258,13 @@ def main():
         for line in runtime_ir.splitlines()
     )
     udonblas_artifact = udonblas_root / 'artifact'
+    udonblas_recovered = (
+        udonblas_artifact / 'frontend.recovered.mlir'
+    ).read_text(encoding='utf-8')
+    assert 'vrc.static_device_resource_discovery' in udonblas_recovered
+    assert udonblas_recovered.count(
+        'vrc.static_device_allocation_site'
+    ) == 3
     udonblas_manifest = json.loads(
         (udonblas_artifact / 'manifest.json').read_text(encoding='utf-8')
     )
