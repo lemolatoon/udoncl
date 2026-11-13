@@ -19,6 +19,16 @@ def global_definition(text, symbol):
     )
 
 
+def function_definition(text, symbol):
+    match = re.search(
+        rf"(?:^|\n)  func\.func @{re.escape(symbol)}\b.*?(?=\n  func\.func |\n}})",
+        text,
+        re.S,
+    )
+    assert match is not None, symbol
+    return match.group(0)
+
+
 def assert_pointer_global_accesses(text, symbol):
     loads = []
     stores = []
@@ -42,6 +52,68 @@ def assert_pointer_global_accesses(text, symbol):
     assert all(
         "(!udonhl.ptr<0>, !udonhl.ptr<0>) -> ()" in line for line in stores
     ), stores
+
+
+def assert_owned_global_lifecycle(text, symbol):
+    initialize = function_definition(text, "udononnxGeneratedEnqueueInitialize")
+    dispose = function_definition(text, "udononnxGeneratedDispose")
+    initialize_addresses = re.findall(
+        rf"(%[A-Za-z0-9_.$]+) = udonhl\.address_of @{re.escape(symbol)} ",
+        initialize,
+    )
+    dispose_addresses = re.findall(
+        rf"(%[A-Za-z0-9_.$]+) = udonhl\.address_of @{re.escape(symbol)} ",
+        dispose,
+    )
+    assert initialize_addresses and dispose_addresses, symbol
+
+    initialize_stores = re.findall(
+        r'"udonhl\.store"\((%[A-Za-z0-9_.$]+), (%[A-Za-z0-9_.$]+)\)',
+        initialize,
+    )
+    initialize_values = [
+        value for value, address in initialize_stores if address in initialize_addresses
+    ]
+    assert initialize_values, symbol
+    assert any(
+        re.search(
+            rf"{re.escape(value)} = arith\.constant 1 : i32\b", initialize
+        )
+        for value in initialize_values
+    ), symbol
+
+    dispose_loads = []
+    for address in dispose_addresses:
+        dispose_loads.extend(
+            re.findall(
+                rf'(%[A-Za-z0-9_.$]+) = "udonhl\.load"\({re.escape(address)}\).*?-> i32',
+                dispose,
+            )
+        )
+    assert dispose_loads, symbol
+    compare_results = []
+    for loaded in dispose_loads:
+        compare_results.extend(
+            re.findall(
+                rf"(%[A-Za-z0-9_.$]+) = arith\.cmpi ne, {re.escape(loaded)}, ",
+                dispose,
+            )
+        )
+    assert compare_results, symbol
+    assert any(f"cf.cond_br {result}" in dispose for result in compare_results), symbol
+
+    dispose_stores = re.findall(
+        r'"udonhl\.store"\((%[A-Za-z0-9_.$]+), (%[A-Za-z0-9_.$]+)\)',
+        dispose,
+    )
+    dispose_values = [
+        value for value, address in dispose_stores if address in dispose_addresses
+    ]
+    assert dispose_values, symbol
+    assert any(
+        re.search(rf"{re.escape(value)} = arith\.constant 0 : i32\b", dispose)
+        for value in dispose_values
+    ), symbol
 
 
 result = subprocess.run(
@@ -238,6 +310,8 @@ assert "__udon_onnx_static_1" not in static_host.stdout
 assert "call @__vrc_opencl_static_tensor" not in static_host.stdout
 assert "call @udonclAdoptStaticBuffer" not in static_host.stdout
 assert "@__udon_onnx_device_buffer_1" not in static_host.stdout
+assert "__udon_onnx_device_buffer_owned_" not in static_host.stdout
+assert "__udon_onnx_operator_scratch_owned" not in static_host.stdout
 assert "func.func @udononnxGeneratedDispose" in static_host.stdout
 assert "call @clReleaseMemObject" not in static_host.stdout
 
@@ -320,16 +394,40 @@ assert "udoncl.onnx_device_graph = true" in unary_host.stdout
 assert "udoncl.onnx_device_unsupported = []" in unary_host.stdout
 assert unary_host.stdout.count("call @__vrc_opencl_dispatch_udondnn_large_op_tensor") == 1
 assert unary_host.stdout.count("call @__vrc_opencl_dispatch_udondnn_large_activation") == 2
-assert unary_host.stdout.count("@__udon_onnx_device_buffer_") == 6
 device_symbols = re.findall(
     r'sym_name = "(__udon_onnx_device_buffer_[0-9]+)"', unary_host.stdout
 )
 assert len(device_symbols) == 2
+owned_symbols = re.findall(
+    r'sym_name = "(__udon_onnx_device_buffer_owned_[0-9]+)"', unary_host.stdout
+)
+expected_owned_symbols = {
+    symbol.replace(
+        "__udon_onnx_device_buffer_", "__udon_onnx_device_buffer_owned_"
+    )
+    for symbol in device_symbols
+}
+assert set(owned_symbols) == expected_owned_symbols
+initialize_body = function_definition(
+    unary_host.stdout, "udononnxGeneratedEnqueueInitialize"
+)
+dispose_body = function_definition(unary_host.stdout, "udononnxGeneratedDispose")
+assert "udonhl.ptrtoint" not in initialize_body
+assert "udonhl.ptrtoint" not in dispose_body
 for symbol in device_symbols:
     definition = global_definition(unary_host.stdout, symbol)
     assert "storage_type = !udonhl.ptr<0>" in definition
     assert "initial_value = 0 : i32" in definition
     assert_pointer_global_accesses(unary_host.stdout, symbol)
+    owned_symbol = symbol.replace(
+        "__udon_onnx_device_buffer_", "__udon_onnx_device_buffer_owned_"
+    )
+    owned_definition = global_definition(unary_host.stdout, owned_symbol)
+    assert "storage_type = i32" in owned_definition
+    assert "initial_value = 0 : i32" in owned_definition
+    assert owned_symbol in initialize_body
+    assert owned_symbol in dispose_body
+    assert_owned_global_lifecycle(unary_host.stdout, owned_symbol)
 assert "storage_type = i32" in global_definition(
     unary_host.stdout, "__udon_onnx_binding_event"
 )
@@ -488,6 +586,12 @@ assert "@__udon_onnx_operator_scratch" in gemm_bias_host.stdout
 assert_pointer_global_accesses(
     gemm_bias_host.stdout, "__udon_onnx_operator_scratch"
 )
+assert "storage_type = i32" in global_definition(
+    gemm_bias_host.stdout, "__udon_onnx_operator_scratch_owned"
+)
+assert_owned_global_lifecycle(
+    gemm_bias_host.stdout, "__udon_onnx_operator_scratch_owned"
+)
 assert gemm_calls[0][2] == gemm_bias_calls[0][0]
 assert gemm_bias_calls[0][0] == gemm_bias_calls[0][2]
 assert gemm_bias_calls[0][2] != gemm_bias_calls[0][3]
@@ -530,6 +634,20 @@ scratch_definition = global_definition(
 assert "storage_type = !udonhl.ptr<0>" in scratch_definition
 assert "initial_value = 0 : i32" in scratch_definition
 assert_pointer_global_accesses(q4_host.stdout, "__udon_onnx_operator_scratch")
+scratch_owned_definition = global_definition(
+    q4_host.stdout, "__udon_onnx_operator_scratch_owned"
+)
+assert "storage_type = i32" in scratch_owned_definition
+assert "initial_value = 0 : i32" in scratch_owned_definition
+q4_initialize_body = function_definition(
+    q4_host.stdout, "udononnxGeneratedEnqueueInitialize"
+)
+q4_dispose_body = function_definition(q4_host.stdout, "udononnxGeneratedDispose")
+assert "__udon_onnx_operator_scratch_owned" in q4_initialize_body
+assert "__udon_onnx_operator_scratch_owned" in q4_dispose_body
+assert "udonhl.ptrtoint" not in q4_initialize_body
+assert "udonhl.ptrtoint" not in q4_dispose_body
+assert_owned_global_lifecycle(q4_host.stdout, "__udon_onnx_operator_scratch_owned")
 assert q4_host.stdout.count("arith.constant 524288 : i32") >= 2
 assert "call @__vrc_opencl_buffer_copy" in q4_host.stdout
 assert "call @__vrc_opencl_await" in q4_host.stdout
@@ -590,6 +708,12 @@ assert "call @udonatenRmsNorm" not in rmsnorm_device_host.stdout
 assert "@__udon_onnx_operator_scratch" in rmsnorm_device_host.stdout
 assert_pointer_global_accesses(
     rmsnorm_device_host.stdout, "__udon_onnx_operator_scratch"
+)
+assert "storage_type = i32" in global_definition(
+    rmsnorm_device_host.stdout, "__udon_onnx_operator_scratch_owned"
+)
+assert_owned_global_lifecycle(
+    rmsnorm_device_host.stdout, "__udon_onnx_operator_scratch_owned"
 )
 assert "arith.constant 65536 : i32" in rmsnorm_device_host.stdout
 

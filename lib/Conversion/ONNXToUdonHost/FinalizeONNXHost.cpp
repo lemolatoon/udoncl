@@ -646,6 +646,10 @@ std::string deviceBufferSymbol(unsigned index) {
   return ("__udon_onnx_device_buffer_" + Twine(index)).str();
 }
 
+std::string deviceBufferOwnedSymbol(unsigned index) {
+  return ("__udon_onnx_device_buffer_owned_" + Twine(index)).str();
+}
+
 constexpr StringLiteral hasRunSymbol = "__udon_onnx_has_run";
 
 Value addressOf(OpBuilder &builder, Location location, StringRef symbol) {
@@ -856,6 +860,8 @@ bool isDeviceAlias(const GraphRecord &graph, const NodeRecord &node) {
 }
 
 constexpr StringLiteral operatorScratchSymbol = "__udon_onnx_operator_scratch";
+constexpr StringLiteral operatorScratchOwnedSymbol =
+    "__udon_onnx_operator_scratch_owned";
 constexpr int64_t q4SurfaceWords = 131072;
 constexpr int64_t q4SurfaceBytes = q4SurfaceWords * 4;
 constexpr int64_t rmsScratchBytes = 16384 * 4;
@@ -3706,32 +3712,31 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
   if (supportsDeviceGraph(graph)) {
     Value bufferError = allocaI32(builder, location);
     SmallVector<unsigned> storage = deviceStorage(graph);
-    auto storeDeviceBuffer = [&](StringRef symbol, Value created) {
+    auto storeDeviceBuffer = [&](StringRef symbol, StringRef ownedSymbol,
+                                 Value created) {
       Value errorSucceeded = arith::CmpIOp::create(
           builder, location, arith::CmpIPredicate::eq,
           loadI32(builder, location, bufferError), onnxStatus(0));
-      Value handleValid = arith::CmpIOp::create(
-          builder, location, arith::CmpIPredicate::ne,
-          pointerToInt(builder, location, created), onnxStatus(0));
-      Value succeeded =
-          arith::AndIOp::create(builder, location, errorSucceeded, handleValid);
       Block *next = initialize.addBlock();
       Block *failure = initialize.addBlock();
-      cf::CondBranchOp::create(builder, location, succeeded, next, ValueRange{},
-                               failure, ValueRange{});
+      cf::CondBranchOp::create(builder, location, errorSucceeded, next,
+                               ValueRange{}, failure, ValueRange{});
       builder.setInsertionPointToEnd(failure);
       func::ReturnOp::create(builder, location, onnxStatus(5));
       builder.setInsertionPointToEnd(next);
       store(builder, location, created, addressOf(builder, location, symbol));
+      store(builder, location, onnxStatus(1),
+            addressOf(builder, location, ownedSymbol));
     };
-    auto allocateDeviceBuffer = [&](StringRef symbol, int64_t bytes) {
+    auto allocateDeviceBuffer = [&](StringRef symbol, StringRef ownedSymbol,
+                                    int64_t bytes) {
       auto created = func::CallOp::create(
           builder, location, "udonclCreateBufferForQueue", TypeRange{pointer},
           ValueRange{initializeEntry->getArgument(2),
                      arith::ConstantIntOp::create(builder, location, 1, 64),
                      arith::ConstantIntOp::create(builder, location, bytes, 32),
                      bufferError});
-      storeDeviceBuffer(symbol, created.getResult(0));
+      storeDeviceBuffer(symbol, ownedSymbol, created.getResult(0));
     };
     for (auto [tensorIndex, tensor] : llvm::enumerate(graph.tensors)) {
       if (storage[tensorIndex] != tensorIndex)
@@ -3743,10 +3748,12 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
            !needsQ4Surface(graph, tensorIndex)))
         continue;
       allocateDeviceBuffer(deviceBufferSymbol(tensorIndex),
+                           deviceBufferOwnedSymbol(tensorIndex),
                            deviceAllocationBytes(graph, tensorIndex));
     }
     if (int64_t bytes = operatorScratchBytes(graph))
-      allocateDeviceBuffer(operatorScratchSymbol, bytes);
+      allocateDeviceBuffer(operatorScratchSymbol, operatorScratchOwnedSymbol,
+                           bytes);
   }
   auto marker = func::CallOp::create(
       builder, location, "clEnqueueMarkerWithWaitList", TypeRange{i32},
@@ -3781,17 +3788,18 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
   Value disposeStatus = allocaI32(builder, location);
   store(builder, location, onnxStatus(0), disposeStatus);
   SmallVector<unsigned> disposeStorage = deviceStorage(graph);
-  auto releaseDeviceBuffer = [&](StringRef symbol) {
+  auto releaseDeviceBuffer = [&](StringRef symbol, StringRef ownedSymbol) {
     Value address = addressOf(builder, location, symbol);
-    Value handle = loadPointer(builder, location, address);
     Value active = arith::CmpIOp::create(
         builder, location, arith::CmpIPredicate::ne,
-        pointerToInt(builder, location, handle), onnxStatus(0));
+        loadI32(builder, location, addressOf(builder, location, ownedSymbol)),
+        onnxStatus(0));
     Block *release = dispose.addBlock();
     Block *next = dispose.addBlock();
     cf::CondBranchOp::create(builder, location, active, release, ValueRange{},
                              next, ValueRange{});
     builder.setInsertionPointToEnd(release);
+    Value handle = loadPointer(builder, location, address);
     auto released = func::CallOp::create(
         builder, location, "clReleaseMemObject", TypeRange{i32}, handle);
     Value releaseSucceeded =
@@ -3802,6 +3810,8 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
         loadI32(builder, location, disposeStatus), onnxStatus(5));
     store(builder, location, updatedStatus, disposeStatus);
     store(builder, location, nullPointer(builder, location), address);
+    store(builder, location, onnxStatus(0),
+          addressOf(builder, location, ownedSymbol));
     cf::BranchOp::create(builder, location, next);
     builder.setInsertionPointToEnd(next);
   };
@@ -3814,10 +3824,11 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                              needsQ4Surface(graph, tensorIndex));
     if (!ownsDeviceBuffer)
       continue;
-    releaseDeviceBuffer(deviceBufferSymbol(tensorIndex));
+    releaseDeviceBuffer(deviceBufferSymbol(tensorIndex),
+                        deviceBufferOwnedSymbol(tensorIndex));
   }
   if (supportsDeviceGraph(graph) && operatorScratchBytes(graph))
-    releaseDeviceBuffer(operatorScratchSymbol);
+    releaseDeviceBuffer(operatorScratchSymbol, operatorScratchOwnedSymbol);
   func::ReturnOp::create(builder, location,
                          loadI32(builder, location, disposeStatus));
   declaration(module, "clReleaseMemObject", {pointer}, {i32});
@@ -4775,15 +4786,20 @@ struct FinalizeONNXHostPass
       createI32Global(module, hasRunSymbol);
     }
     SmallVector<unsigned> deviceStorageMap = deviceStorage(*graph);
-    for (auto [tensorIndex, tensor] : llvm::enumerate(graph->tensors))
+    for (auto [tensorIndex, tensor] : llvm::enumerate(graph->tensors)) {
       if (deviceGraph && deviceStorageMap[tensorIndex] == tensorIndex &&
           tensor.staticResourceId < 0 &&
           !llvm::is_contained(graph->inputs, tensorIndex) &&
           (!llvm::is_contained(graph->outputs, tensorIndex) ||
-           needsQ4Surface(*graph, tensorIndex)))
+           needsQ4Surface(*graph, tensorIndex))) {
         createPointerGlobal(module, deviceBufferSymbol(tensorIndex));
-    if (deviceGraph && operatorScratchBytes(*graph))
+        createI32Global(module, deviceBufferOwnedSymbol(tensorIndex));
+      }
+    }
+    if (deviceGraph && operatorScratchBytes(*graph)) {
       createPointerGlobal(module, operatorScratchSymbol);
+      createI32Global(module, operatorScratchOwnedSymbol);
+    }
     Builder builder(module.getContext());
     if (!deviceGraph) {
       createWriteExport(module, *graph, builder.getF32Type(), "float");
