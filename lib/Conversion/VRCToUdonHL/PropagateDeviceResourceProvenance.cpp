@@ -2466,9 +2466,15 @@ struct PropagateDeviceResourceProvenancePass
         }
         for (const auto &[view, state] : result.views) {
           if (!globalObjectIds.contains(view.base) || !state.hasPath ||
-              !canHoldView(view))
+              !canHoldView(view) || !state.resource.resource ||
+              state.resource.unknown)
             continue;
           ViewState persistent = state;
+          // Cross-export summaries describe the resource identity a global
+          // view may hold. Runtime lifecycle checks still reject a view that
+          // was not initialized on the concrete execution path.
+          persistent.initialized = true;
+          persistent.mayBeInvalid = true;
           auto filterOrigins = [&](HandleFieldOriginSet &origins) {
             auto firstRemoved = std::remove_if(
                 origins.refs.begin(), origins.refs.end(),

@@ -1,3 +1,4 @@
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -40,7 +41,8 @@ for callee in (
     "clReleaseMemObject",
 ):
     line = next(line for line in first.splitlines() if f"call @{callee}" in line)
-    assert "resource_ids = [0 : i32]" in line, line
+    assert re.search(r"resource_ids = \[\d+ : i32\]", line), line
+    assert "unknown = false" in line, line
 
 copy_lines = [
     line for line in first.splitlines()
@@ -52,9 +54,11 @@ resolve_lines = [
     if "call @udonclBufferViewResolve" in line
 ]
 assert len(copy_lines) == 2 and all(
-    "resource_ids = [0 : i32]" in line for line in copy_lines), copy_lines
-assert len(resolve_lines) == 3 and all(
-    "resource_ids = [0 : i32]" in line for line in resolve_lines), resolve_lines
+    re.search(r"resource_ids = \[\d+ : i32\]", line) for line in copy_lines
+), copy_lines
+assert len(resolve_lines) == 4 and all(
+    re.search(r"resource_ids = \[\d+ : i32\]", line) for line in resolve_lines
+), resolve_lines
 hidden = first.split("func.func @HiddenDynamicBinding", 1)[1]
 assert "vrc.static_device_operand_provenance" not in hidden, hidden
 
