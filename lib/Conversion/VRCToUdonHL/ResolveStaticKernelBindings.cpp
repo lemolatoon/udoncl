@@ -29,9 +29,9 @@ constexpr StringLiteral snapshotAttribute =
     "vrc.static_kernel_binding_snapshot";
 constexpr StringLiteral summaryAttribute = "vrc.static_kernel_bindings";
 
-FailureOr<int32_t> resolveSingletonResource(func::CallOp call,
-                                            int32_t operandIndex,
-                                            bool requireNonNull = true) {
+FailureOr<std::optional<int32_t>>
+resolveSingletonResource(func::CallOp call, int32_t operandIndex,
+                         bool requireNonNull = true) {
   auto provenance = call->getAttrOfType<ArrayAttr>(operandProvenanceAttribute);
   if (!provenance)
     return call.emitError("static dispatch resource operand lacks provenance");
@@ -53,6 +53,7 @@ FailureOr<int32_t> resolveSingletonResource(func::CallOp call,
   if (!cases || cases.empty())
     return call.emitError(
         "static dispatch resource has no reachable provenance");
+  bool unresolved = false;
   for (Attribute attribute : cases) {
     auto resourceCase = dyn_cast<DictionaryAttr>(attribute);
     auto unknown =
@@ -62,7 +63,14 @@ FailureOr<int32_t> resolveSingletonResource(func::CallOp call,
     auto ids =
         resourceCase ? resourceCase.getAs<ArrayAttr>("resource_ids") : nullptr;
     if (!resourceCase || !unknown || !nullable || !ids || unknown.getValue() ||
-        (requireNonNull && nullable.getValue()) || ids.size() != 1)
+        ids.size() > 1)
+      return call.emitError("static dispatch requires one non-null resource "
+                            "identity per operand");
+    if (ids.empty()) {
+      unresolved = true;
+      continue;
+    }
+    if (requireNonNull && nullable.getValue())
       return call.emitError("static dispatch requires one non-null resource "
                             "identity per operand");
     auto id = dyn_cast<IntegerAttr>(ids[0]);
@@ -74,7 +82,9 @@ FailureOr<int32_t> resolveSingletonResource(func::CallOp call,
                             "across call contexts");
     identity = value;
   }
-  return *identity;
+  if (unresolved)
+    return std::optional<int32_t>();
+  return identity;
 }
 
 bool isZero(Value value) {
@@ -107,25 +117,106 @@ bool successPathDominates(func::CallOp resolve, Operation *consumer,
   return false;
 }
 
-FailureOr<DictionaryAttr>
+FailureOr<std::optional<int32_t>>
+resolveFunctionArgumentResource(::vrc::vrc::DispatchOp dispatch,
+                                BlockArgument argument) {
+  auto function = dyn_cast<func::FuncOp>(argument.getOwner()->getParentOp());
+  if (!function || argument.getArgNumber() >= function.getNumArguments())
+    return dispatch.emitError("static dispatch resource block argument is "
+                              "not a function argument");
+  auto module = function->getParentOfType<ModuleOp>();
+  SmallVector<func::CallOp> callers;
+  module.walk([&](func::CallOp call) {
+    if (call.getCallee() == function.getSymName() &&
+        argument.getArgNumber() < call.getNumOperands())
+      callers.push_back(call);
+  });
+  if (callers.empty())
+    return dispatch.emitError(
+        "static dispatch function argument has no direct callers");
+
+  std::optional<int32_t> identity;
+  bool unresolved = false;
+  for (func::CallOp call : callers) {
+    auto candidate = resolveSingletonResource(
+        call, static_cast<int32_t>(argument.getArgNumber()), false);
+    if (failed(candidate))
+      return failure();
+    if (!*candidate) {
+      unresolved = true;
+      continue;
+    }
+    if (identity && *identity != **candidate)
+      return dispatch.emitError(
+          "static dispatch function argument identity is ambiguous");
+    identity = **candidate;
+  }
+  if (unresolved)
+    return std::optional<int32_t>();
+  if (!identity)
+    return dispatch.emitError(
+        "static dispatch function argument has no resource identity");
+  return identity;
+}
+
+FailureOr<std::optional<DictionaryAttr>>
 resolveDispatchResource(::vrc::vrc::DispatchOp dispatch, Value value,
                         int32_t operandIndex, StringAttr access,
                         DominanceInfo &dominance, Builder &builder) {
   llvm::DenseSet<Value> visited;
   while (visited.insert(value).second) {
+    if (auto allocation = value.getDefiningOp<::vrc::vrc::BufferAllocOp>()) {
+      auto logicalId =
+          allocation.getLogicalId().getDefiningOp<arith::ConstantIntOp>();
+      if (!logicalId)
+        return std::optional<DictionaryAttr>();
+      if (logicalId.value() <= 0)
+        return allocation.emitError(
+            "static dispatch logical buffer id must be positive");
+      return std::optional<DictionaryAttr>(builder.getDictionaryAttr({
+          builder.getNamedAttr("access", access),
+          builder.getNamedAttr("kind", builder.getStringAttr("logical_buffer")),
+          builder.getNamedAttr("operand_index",
+                               builder.getI32IntegerAttr(operandIndex)),
+          builder.getNamedAttr("resource_id",
+                               builder.getI32IntegerAttr(logicalId.value())),
+      }));
+    }
     if (auto staticBuffer = value.getDefiningOp<::vrc::vrc::StaticBufferOp>())
-      return builder.getDictionaryAttr({
+      return std::optional<DictionaryAttr>(builder.getDictionaryAttr({
           builder.getNamedAttr("access", access),
           builder.getNamedAttr("kind", builder.getStringAttr("static_tensor")),
           builder.getNamedAttr("operand_index",
                                builder.getI32IntegerAttr(operandIndex)),
           builder.getNamedAttr("resource_id", staticBuffer.getResourceIdAttr()),
-      });
+      }));
     if (auto cast = value.getDefiningOp<UnrealizedConversionCastOp>()) {
       if (cast.getInputs().size() != 1)
         break;
       value = cast.getInputs().front();
       continue;
+    }
+    if (auto physicalToken = value.getDefiningOp<func::CallOp>()) {
+      if (physicalToken.getCallee() != "udoncl_mem_physical_token" ||
+          physicalToken.getNumOperands() != 1)
+        break;
+      value = physicalToken.getOperand(0);
+      continue;
+    }
+    if (auto argument = dyn_cast<BlockArgument>(value)) {
+      auto identity = resolveFunctionArgumentResource(dispatch, argument);
+      if (failed(identity))
+        return failure();
+      if (!*identity)
+        return std::optional<DictionaryAttr>();
+      return std::optional<DictionaryAttr>(builder.getDictionaryAttr({
+          builder.getNamedAttr("access", access),
+          builder.getNamedAttr("kind", builder.getStringAttr("allocation")),
+          builder.getNamedAttr("operand_index",
+                               builder.getI32IntegerAttr(operandIndex)),
+          builder.getNamedAttr("resource_id",
+                               builder.getI32IntegerAttr(**identity)),
+      }));
     }
     auto load = value.getDefiningOp<::vrc::udonhl::LoadOp>();
     if (!load)
@@ -147,14 +238,16 @@ resolveDispatchResource(::vrc::vrc::DispatchOp dispatch, Value value,
     auto identity = resolveSingletonResource(resolve, 0, false);
     if (failed(identity))
       return failure();
-    return builder.getDictionaryAttr({
+    if (!*identity)
+      return std::optional<DictionaryAttr>();
+    return std::optional<DictionaryAttr>(builder.getDictionaryAttr({
         builder.getNamedAttr("access", access),
         builder.getNamedAttr("kind", builder.getStringAttr("allocation")),
         builder.getNamedAttr("operand_index",
                              builder.getI32IntegerAttr(operandIndex)),
         builder.getNamedAttr("resource_id",
-                             builder.getI32IntegerAttr(*identity)),
-    });
+                             builder.getI32IntegerAttr(**identity)),
+    }));
   }
   return dispatch.emitError(
       "static dispatch resource is not a proven allocation or static tensor");
@@ -192,6 +285,8 @@ struct ResolveStaticKernelBindingsPass
       return;
     }
 
+    size_t snapshotCount = 0;
+    size_t unresolvedCount = 0;
     for (func::CallOp call : callDispatches) {
       auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
           call, call.getCalleeAttr());
@@ -210,6 +305,7 @@ struct ResolveStaticKernelBindingsPass
 
       llvm::DenseSet<int32_t> claimed;
       SmallVector<Attribute> resourceSnapshots;
+      bool unresolved = false;
       for (Attribute attribute : resources) {
         auto resource = dyn_cast<DictionaryAttr>(attribute);
         auto index = resource ? resource.getAs<IntegerAttr>("index") : nullptr;
@@ -229,6 +325,10 @@ struct ResolveStaticKernelBindingsPass
           signalPassFailure();
           return;
         }
+        if (!*identity) {
+          unresolved = true;
+          continue;
+        }
         resourceSnapshots.push_back(builder.getDictionaryAttr({
             builder.getNamedAttr("access", access),
             builder.getNamedAttr("kind", builder.getStringAttr("allocation")),
@@ -236,7 +336,7 @@ struct ResolveStaticKernelBindingsPass
                                  builder.getI32IntegerAttr(
                                      static_cast<int32_t>(index.getInt()))),
             builder.getNamedAttr("resource_id",
-                                 builder.getI32IntegerAttr(*identity)),
+                                 builder.getI32IntegerAttr(**identity)),
         }));
       }
 
@@ -257,6 +357,11 @@ struct ResolveStaticKernelBindingsPass
         }));
       }
 
+      if (unresolved) {
+        ++unresolvedCount;
+        continue;
+      }
+
       call->setAttr(
           snapshotAttribute,
           builder.getDictionaryAttr({
@@ -269,6 +374,7 @@ struct ResolveStaticKernelBindingsPass
               builder.getNamedAttr("schema_version",
                                    builder.getI32IntegerAttr(1)),
           }));
+      ++snapshotCount;
     }
 
     for (::vrc::vrc::DispatchOp dispatch : typedDispatches) {
@@ -282,6 +388,7 @@ struct ResolveStaticKernelBindingsPass
       }
       DominanceInfo dominance(dispatch->getParentOfType<func::FuncOp>());
       SmallVector<Attribute> resourceSnapshots;
+      bool unresolved = false;
       for (auto [index, resourceAndAccess] : llvm::enumerate(llvm::zip(
                dispatch.getResources(), dispatch.getResourceAccesses()))) {
         auto [resource, accessAttribute] = resourceAndAccess;
@@ -298,7 +405,11 @@ struct ResolveStaticKernelBindingsPass
           signalPassFailure();
           return;
         }
-        resourceSnapshots.push_back(*snapshot);
+        if (!*snapshot) {
+          unresolved = true;
+          continue;
+        }
+        resourceSnapshots.push_back(**snapshot);
       }
       SmallVector<Attribute> scalarSnapshots;
       for (auto [index, scalar] : llvm::enumerate(descriptor.getScalars()))
@@ -308,6 +419,10 @@ struct ResolveStaticKernelBindingsPass
                 builder.getI32IntegerAttr(static_cast<int32_t>(index))),
             builder.getNamedAttr("type", TypeAttr::get(scalar.getType())),
         }));
+      if (unresolved) {
+        ++unresolvedCount;
+        continue;
+      }
       dispatch->setAttr(
           snapshotAttribute,
           builder.getDictionaryAttr({
@@ -319,17 +434,24 @@ struct ResolveStaticKernelBindingsPass
               builder.getNamedAttr("schema_version",
                                    builder.getI32IntegerAttr(1)),
           }));
+      ++snapshotCount;
     }
 
-    size_t snapshotCount = callDispatches.size() + typedDispatches.size();
+    size_t candidateCount = callDispatches.size() + typedDispatches.size();
     module->setAttr(
         summaryAttribute,
         builder.getDictionaryAttr({
+            builder.getNamedAttr("candidate_count",
+                                 builder.getI32IntegerAttr(
+                                     static_cast<int32_t>(candidateCount))),
             builder.getNamedAttr(
                 "snapshot_count",
                 builder.getI32IntegerAttr(static_cast<int32_t>(snapshotCount))),
             builder.getNamedAttr("schema_version",
                                  builder.getI32IntegerAttr(1)),
+            builder.getNamedAttr("unresolved_count",
+                                 builder.getI32IntegerAttr(
+                                     static_cast<int32_t>(unresolvedCount))),
         }));
   }
 };

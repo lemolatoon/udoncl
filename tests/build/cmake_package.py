@@ -542,6 +542,16 @@ def main():
     ).read_text(encoding='utf-8')
     assert 'vrc.static_device_resource_discovery' in onnx_mnist_recovered
     assert 'vrc.static_device_resource_provenance' in onnx_mnist_recovered
+    assert 'vrc.static_kernel_bindings' in onnx_mnist_recovered
+    assert 'snapshot_count = 6 : i32' in onnx_mnist_recovered
+    assert onnx_mnist_recovered.count(
+        'vrc.static_kernel_binding_snapshot'
+    ) == 6
+    for kernel_id in [221, 231, 232, 233, 234]:
+        assert (
+            f'vrc.static_kernel_binding_snapshot = {{kernel_id = '
+            f'{kernel_id} : i32'
+        ) in onnx_mnist_recovered
     onnx_mnist_manifest = json.loads(
         (onnx_mnist_artifact / 'manifest.json').read_text(encoding='utf-8')
     )
@@ -806,6 +816,22 @@ def main():
     conversation_input_artifact = (
         onnx_transformer_consumer
         / 'udoncl/onnx-transformer-conversation-input/artifact'
+    )
+    transformer_recovered = (
+        transformer_artifact / 'frontend.recovered.mlir'
+    ).read_text(encoding='utf-8')
+    assert 'candidate_count = 8 : i32' in transformer_recovered
+    assert 'snapshot_count = 3 : i32' in transformer_recovered
+    assert 'unresolved_count = 5 : i32' in transformer_recovered
+    assert transformer_recovered.count(
+        'vrc.static_kernel_binding_snapshot'
+    ) == 3
+    assert transformer_recovered.count(
+        'vrc.static_kernel_binding_snapshot = {kernel_id = 221 : i32'
+    ) == 2
+    assert (
+        'vrc.static_kernel_binding_snapshot = {kernel_id = 233 : i32'
+        in transformer_recovered
     )
     transformer_source = run([
         install / 'bin' / f'udoncl-opt{suffix}', transformer_host,

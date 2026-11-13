@@ -2,8 +2,8 @@
 
 > Status: implementation in progress; Gates 1 and 2 are integrated at the
 > runtime-free Host boundary. Gate 3 has standalone slices for immutable
-> call-by-value and typed `vrc.dispatch` snapshots; production integration and
-> generic `clSetKernelArg` recovery remain.
+> call-by-value and typed `vrc.dispatch` snapshots. The typed path is integrated
+> for production artifacts; generic `clSetKernelArg` recovery remains.
 > Decision date: 2026-11-12
 > Parent architecture: [PLAN.md](PLAN.md)
 > Related execution plan:
@@ -269,8 +269,15 @@ dispatch contracts and surviving typed `vrc.dispatch` operations. They record
 versioned immutable allocation/static-tensor identities, access modes, copied
 scalar positions, and kernel identity. Typed dispatch recovery proves the
 successful `udonclResolvePhysicalBuffer` path that produced each physical
-token. Production integration and generic `clSetKernelArg` copied byte-state
-recovery remain separate work.
+token. The typed path is integrated after OpenCL intrinsic recovery and before
+the existing Host-to-Async pipeline. Dispatches with structurally valid but
+currently identity-less public/session resources remain on the existing
+dynamic path as whole dispatches; the summary records candidate, resolved, and
+unresolved counts. Existing typed `vrc.buffer_alloc` operations use a distinct
+`logical_buffer` identity namespace, and physical-token helpers are traced
+through direct caller provenance. Recovering persistent identities across
+exports and generic `clSetKernelArg` copied byte-state recovery remain separate
+work.
 
 - Resolve kernel identity and copied argument state at every enqueue.
 - Test reconfiguration between two enqueues, missing arguments, branches, and

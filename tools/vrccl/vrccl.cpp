@@ -3096,6 +3096,12 @@ int main(int argc, char **argv) {
           return 1;
       }
     }
+    if ((*module)->hasAttr("vrc.static_device_resource_provenance")) {
+      PassManager kernelBindings(&context);
+      kernelBindings.addPass(::vrc::createResolveStaticKernelBindingsPass());
+      if (failed(kernelBindings.run(*module)) || failed(verify(*module)))
+        return 1;
+    }
     if (!hostBufferPlan.empty() &&
         failed(udoncl::applyHostBufferPlan(*module, hostBufferPlan)))
       return 1;
