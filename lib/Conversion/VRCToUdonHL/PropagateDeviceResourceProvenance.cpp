@@ -644,6 +644,8 @@ struct PropagateDeviceResourceProvenancePass
   llvm::DenseSet<ObjectId> zeroInitializedGlobalObjectIds;
   HandleMap globalHandleFacts;
   HandleMap globalHandleWrites;
+  ViewMap globalViewFacts;
+  ViewMap globalViewWrites;
   PointerCellMap globalPointerFacts;
   PointerCellMap globalPointerWrites;
   llvm::DenseMap<ObjectId, uint32_t> objectSizes;
@@ -2127,6 +2129,8 @@ struct PropagateDeviceResourceProvenancePass
     zeroInitializedGlobalObjectIds.clear();
     globalHandleFacts.clear();
     globalHandleWrites.clear();
+    globalViewFacts.clear();
+    globalViewWrites.clear();
     globalPointerFacts.clear();
     globalPointerWrites.clear();
     localHandleObjects.clear();
@@ -2223,6 +2227,7 @@ struct PropagateDeviceResourceProvenancePass
     for (unsigned iteration = 0; iteration != 100 && !invalid; ++iteration) {
       globalWrites.clear();
       globalHandleWrites.clear();
+      globalViewWrites.clear();
       globalPointerWrites.clear();
       for (auto &[name, global] : eligibleGlobals)
         globalWrites[name] = Fact();
@@ -2235,7 +2240,7 @@ struct PropagateDeviceResourceProvenancePass
         SmallVector<HandleFieldOriginSet> argumentHandleFields(
             root.getNumArguments());
         HandleMap handles;
-        ViewMap views;
+        ViewMap views = globalViewFacts;
         PointerCellMap pointerCells = globalPointerFacts;
         handles = globalHandleFacts;
         AnalysisResult result = analyze(
@@ -2274,6 +2279,31 @@ struct PropagateDeviceResourceProvenancePass
                 joinObjectRefs(std::move(write.objects), persistentTargets);
           }
         }
+        for (const auto &[view, state] : result.views) {
+          if (!globalObjectIds.contains(view.base) || !state.hasPath ||
+              !canHoldView(view))
+            continue;
+          ViewState persistent = state;
+          auto filterOrigins = [&](HandleFieldOriginSet &origins) {
+            auto firstRemoved = std::remove_if(
+                origins.refs.begin(), origins.refs.end(),
+                [&](const HandleFieldOrigin &origin) {
+                  return !globalObjectIds.contains(origin.handle.base);
+                });
+            if (firstRemoved != origins.refs.end()) {
+              origins.refs.erase(firstRemoved, origins.refs.end());
+              origins.unknown = true;
+            }
+          };
+          filterOrigins(persistent.slotOrigins);
+          filterOrigins(persistent.generationOrigins);
+          auto write = globalViewWrites.find(view);
+          if (write == globalViewWrites.end())
+            globalViewWrites.emplace(view, std::move(persistent));
+          else
+            write->second =
+                joinViewStates(std::move(write->second), persistent);
+        }
         if (invalid)
           break;
       }
@@ -2306,6 +2336,16 @@ struct PropagateDeviceResourceProvenancePass
         }
         if (current == globalPointerFacts.end() || !(current->second == next)) {
           globalPointerFacts[cell] = std::move(next);
+          converged = false;
+        }
+      }
+      for (const auto &[view, write] : globalViewWrites) {
+        auto current = globalViewFacts.find(view);
+        ViewState next = current == globalViewFacts.end()
+                             ? write
+                             : joinViewStates(current->second, write);
+        if (current == globalViewFacts.end() || !(current->second == next)) {
+          globalViewFacts[view] = std::move(next);
           converged = false;
         }
       }

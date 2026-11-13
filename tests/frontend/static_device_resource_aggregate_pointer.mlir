@@ -87,18 +87,7 @@ module {
 
   func.func @AInitializePersistentPointer() attributes {udoncl.export} {
     %true = arith.constant true
-    %eight = arith.constant 8 : i32
-    %session = udonhl.address_of @persistent_session : !udonhl.ptr<0>
-    %opaque = func.call @loadUnrelatedOpaquePointer(%session, %true) : (!udonhl.ptr<0>, i1) -> !udonhl.ptr<0>
-    %binding = udonhl.address_of @persistent_binding : !udonhl.ptr<0>
-    %initialized = func.call @initializeNullablePointer(%session, %binding, %true) : (!udonhl.ptr<0>, !udonhl.ptr<0>, i1) -> !udonhl.ptr<0>
-    return
-  }
-
-  func.func @BUsePersistentPointer() attributes {udoncl.export} {
-    %true = arith.constant true
     %zero = arith.constant 0 : i32
-    %four = arith.constant 4 : i32
     %eight = arith.constant 8 : i32
     %twenty = arith.constant 20 : i32
     %elements = arith.constant 16 : i32
@@ -111,11 +100,23 @@ module {
     %view = "udonhl.alloca"(%twenty) <{alignment = 4 : i64}> : (i32) -> !udonhl.ptr<0>
     %viewed = func.call @udonclDeviceBufferView(%handle, %zero, %elements, %dtype, %view) : (!udonhl.ptr<0>, i32, i32, i32, !udonhl.ptr<0>) -> i32
     %session = udonhl.address_of @persistent_session : !udonhl.ptr<0>
+    %opaque = func.call @loadUnrelatedOpaquePointer(%session, %true) : (!udonhl.ptr<0>, i1) -> !udonhl.ptr<0>
+    %binding = udonhl.address_of @persistent_binding : !udonhl.ptr<0>
+    %initialized = func.call @initializeNullablePointer(%session, %binding, %true) : (!udonhl.ptr<0>, !udonhl.ptr<0>, i1) -> !udonhl.ptr<0>
+    func.call @udononnxCopyBufferView(%binding, %view) : (!udonhl.ptr<0>, !udonhl.ptr<0>) -> ()
+    return
+  }
+
+  func.func @BUsePersistentPointer() attributes {udoncl.export} {
+    %true = arith.constant true
+    %zero = arith.constant 0 : i32
+    %four = arith.constant 4 : i32
+    %eight = arith.constant 8 : i32
+    %session = udonhl.address_of @persistent_session : !udonhl.ptr<0>
     %selected_session = func.call @selectNullableState(%session, %true) : (!udonhl.ptr<0>, i1) -> !udonhl.ptr<0>
     %merged_session = func.call @mergeNullableState(%selected_session, %true) : (!udonhl.ptr<0>, i1) -> !udonhl.ptr<0>
     %bindings_cell = "udonhl.ptr_add"(%merged_session, %eight) : (!udonhl.ptr<0>, i32) -> !udonhl.ptr<0>
     %binding = "udonhl.load"(%bindings_cell) <{alignment = 4 : i64}> : (!udonhl.ptr<0>) -> !udonhl.ptr<0>
-    func.call @udononnxCopyBufferView(%binding, %view) : (!udonhl.ptr<0>, !udonhl.ptr<0>) -> ()
     %raw_cell = "udonhl.alloca"(%four) <{alignment = 4 : i64}> : (i32) -> !udonhl.ptr<0>
     %null = "udonhl.inttoptr"(%zero) : (i32) -> !udonhl.ptr<0>
     "udonhl.store"(%null, %raw_cell) <{alignment = 4 : i64}> : (!udonhl.ptr<0>, !udonhl.ptr<0>) -> ()
