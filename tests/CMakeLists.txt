@@ -284,6 +284,12 @@ add_test(NAME static-device-resource-provenance-missing-discovery
     --split-input-file --verify-diagnostics
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_provenance_missing_discovery.mlir"
 )
+add_test(NAME static-device-resource-switch
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_switch.py"
+    $<TARGET_FILE:vrc-opt>
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_switch.mlir"
+)
 add_test(NAME static-device-resource-local-cells
   COMMAND Python3::Interpreter
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_local_cells.py"

@@ -543,6 +543,16 @@ struct PropagateDeviceResourceProvenancePass
           mergeSuccessor(branch.getFalseDest(), branch.getFalseDestOperands(),
                          facts, worklist, queued, reached, block, localMemory,
                          memoryInputs, edgeMemory, eligibleCells);
+        } else if (auto branch = dyn_cast<cf::SwitchOp>(operation)) {
+          mergeSuccessor(branch.getDefaultDestination(),
+                         branch.getDefaultOperands(), facts, worklist, queued,
+                         reached, block, localMemory, memoryInputs, edgeMemory,
+                         eligibleCells);
+          for (auto [index, destination] :
+               llvm::enumerate(branch.getCaseDestinations()))
+            mergeSuccessor(destination, branch.getCaseOperands(index), facts,
+                           worklist, queued, reached, block, localMemory,
+                           memoryInputs, edgeMemory, eligibleCells);
         } else if (auto returned = dyn_cast<func::ReturnOp>(operation)) {
           bool exported = function->hasAttr("udoncl.export") ||
                           function->hasAttr("vrc.export_id");
