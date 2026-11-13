@@ -320,6 +320,12 @@ add_test(NAME static-device-resource-device-memory
     $<TARGET_FILE:vrc-opt>
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_device_memory.mlir"
 )
+add_test(NAME static-device-resource-buffer-view
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_buffer_view.py"
+    $<TARGET_FILE:vrc-opt>
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_buffer_view.mlir"
+)
 if(WIN32)
   add_library(native-async-support SHARED frontend/native_async_support.c)
   set_target_properties(native-async-support PROPERTIES

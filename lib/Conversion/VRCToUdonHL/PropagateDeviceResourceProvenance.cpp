@@ -15,6 +15,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
+#include <limits>
 #include <map>
 #include <tuple>
 
@@ -85,9 +86,27 @@ using CellMap = llvm::DenseMap<Value, CellState>;
 using ObjectId = uint32_t;
 using HandleMap = llvm::DenseMap<ObjectId, Fact>;
 
+struct ObjectRef {
+  ObjectId base = 0;
+  int32_t offset = 0;
+
+  bool operator<(const ObjectRef &other) const {
+    return std::tie(base, offset) < std::tie(other.base, other.offset);
+  }
+};
+
+struct ViewState {
+  bool initialized = false;
+  bool mayBeInvalid = false;
+  Fact resource;
+};
+
+using ViewMap = std::map<ObjectRef, ViewState>;
+
 struct AnalysisResult {
   SmallVector<Fact> results;
   HandleMap handles;
+  ViewMap views;
 };
 
 bool operator==(const Fact &left, const Fact &right) {
@@ -218,7 +237,9 @@ bool isSingletonCell(::vrc::udonhl::AllocaOp allocation) {
            if (isExactCellAccess(use, allocation.getResult()))
              return true;
            auto call = dyn_cast<func::CallOp>(use.getOwner());
-           return call && call.getCallee() == "udonclDeviceBufferGetRaw" &&
+           return call &&
+                  (call.getCallee() == "udonclDeviceBufferGetRaw" ||
+                   call.getCallee() == "udonclBufferViewResolve") &&
                   use.getOperandNumber() == 1;
          });
 }
@@ -229,6 +250,16 @@ bool isHandleObject(::vrc::udonhl::AllocaOp allocation) {
   return pointer && pointer.getAddressSpace() == 0 &&
          isConstantI32(allocation.getByteSize(), 8) && alignment &&
          alignment.getInt() >= 4;
+}
+
+std::optional<uint32_t>
+constantAllocationBytes(::vrc::udonhl::AllocaOp allocation) {
+  auto constant =
+      allocation.getByteSize().getDefiningOp<arith::ConstantIntOp>();
+  if (!constant || constant.value() < 0 ||
+      constant.value() > std::numeric_limits<uint32_t>::max())
+    return std::nullopt;
+  return static_cast<uint32_t>(constant.value());
 }
 
 struct PropagateDeviceResourceProvenancePass
@@ -251,6 +282,7 @@ struct PropagateDeviceResourceProvenancePass
   llvm::StringMap<ObjectId> globalHandleObjects;
   llvm::StringMap<Fact> globalHandleFacts;
   llvm::StringMap<Fact> globalHandleWrites;
+  llvm::DenseMap<ObjectId, uint32_t> objectSizes;
   std::map<std::tuple<std::string, std::string, Operation *>, ObjectId>
       localHandleObjects;
   ObjectId nextObjectId = 0;
@@ -263,15 +295,22 @@ struct PropagateDeviceResourceProvenancePass
     return storage;
   }
 
-  ObjectId localHandleObject(const Invocation &invocation,
-                             Operation *allocation) {
+  ObjectId localObject(const Invocation &invocation, Operation *allocation,
+                       uint32_t bytes) {
     auto key = std::make_tuple(invocation.root.getValue().str(),
                                invocationPathKey(invocation.path), allocation);
     auto [position, inserted] =
         localHandleObjects.try_emplace(std::move(key), nextObjectId);
     if (inserted)
       ++nextObjectId;
+    objectSizes[position->second] = bytes;
     return position->second;
+  }
+
+  bool canHoldView(const ObjectRef &object) const {
+    auto found = objectSizes.find(object.base);
+    return found != objectSizes.end() && object.offset >= 0 &&
+           static_cast<uint64_t>(object.offset) + 20 <= found->second;
   }
 
   ::vrc::udonhl::GlobalOp globalCell(Value pointer) {
@@ -394,36 +433,40 @@ struct PropagateDeviceResourceProvenancePass
 
   AnalysisResult analyze(func::FuncOp function, const Invocation &invocation,
                          ArrayRef<Fact> arguments,
-                         ArrayRef<std::optional<ObjectId>> argumentObjects,
-                         const HandleMap &incomingHandles) {
+                         ArrayRef<std::optional<ObjectRef>> argumentObjects,
+                         const HandleMap &incomingHandles,
+                         const ViewMap &incomingViews) {
     if (!active.insert(function).second) {
       if (llvm::none_of(arguments,
                         [](const Fact &fact) { return fact.resource; }))
         return {SmallVector<Fact>(function.getFunctionType().getNumResults(),
                                   Fact::scalar()),
-                incomingHandles};
+                incomingHandles, incomingViews};
       function.emitError(
           "resource provenance through recursion is unsupported");
       invalid = true;
-      return {SmallVector<Fact>(), HandleMap()};
+      return {SmallVector<Fact>(), HandleMap(), ViewMap()};
     }
     llvm::DenseMap<Value, Fact> facts;
-    llvm::DenseMap<Value, ObjectId> objectValues;
+    llvm::DenseMap<Value, ObjectRef> objectValues;
     HandleMap handles = incomingHandles;
+    ViewMap views = incomingViews;
     llvm::DenseSet<Value> eligibleCells;
     function.walk([&](::vrc::udonhl::AllocaOp allocation) {
       if (isSingletonCell(allocation))
         eligibleCells.insert(allocation.getResult());
-      if (isHandleObject(allocation)) {
-        ObjectId object = localHandleObject(invocation, allocation);
-        objectValues[allocation.getResult()] = object;
-        handles.try_emplace(object, Fact::nullHandle());
+      auto bytes = constantAllocationBytes(allocation);
+      if (bytes && (*bytes == 8 || *bytes >= 20)) {
+        ObjectId object = localObject(invocation, allocation, *bytes);
+        objectValues[allocation.getResult()] = {object, 0};
+        if (*bytes == 8)
+          handles.try_emplace(object, Fact::nullHandle());
       }
     });
     function.walk([&](::vrc::udonhl::AddressOfOp address) {
       auto found = globalHandleObjects.find(address.getGlobalAttr().getValue());
       if (found != globalHandleObjects.end())
-        objectValues[address.getResult()] = found->getValue();
+        objectValues[address.getResult()] = {found->getValue(), 0};
     });
     for (auto [index, argument] : llvm::enumerate(function.getArguments())) {
       Fact fact = index < arguments.size() ? arguments[index] : Fact::scalar();
@@ -562,7 +605,8 @@ struct PropagateDeviceResourceProvenancePass
               continue;
             }
             auto object = objectValues.find(call.getOperand(3));
-            if (object == objectValues.end()) {
+            if (object == objectValues.end() || object->second.offset != 0 ||
+                !handles.contains(object->second.base)) {
               call.emitError("udonclDeviceBufferAdopt requires an exact "
                              "8-byte handle object");
               invalid = true;
@@ -575,9 +619,10 @@ struct PropagateDeviceResourceProvenancePass
               invalid = true;
               continue;
             }
-            Fact state = joinFacts(handles[object->second], Fact::nullHandle());
+            Fact state =
+                joinFacts(handles[object->second.base], Fact::nullHandle());
             state = joinFacts(state, resource);
-            updateHandle(object->second, state, handles, worklist, queued,
+            updateHandle(object->second.base, state, handles, worklist, queued,
                          reached);
             recordCase(operandCases, call, invocation, 3, state);
             for (Value result : call.getResults())
@@ -590,13 +635,14 @@ struct PropagateDeviceResourceProvenancePass
               continue;
             }
             auto object = objectValues.find(call.getOperand(0));
-            if (object == objectValues.end()) {
+            if (object == objectValues.end() || object->second.offset != 0 ||
+                !handles.contains(object->second.base)) {
               call.emitError("udonclDeviceBufferGetRaw requires an exact "
                              "8-byte handle object");
               invalid = true;
               continue;
             }
-            Fact state = handles[object->second];
+            Fact state = handles[object->second.base];
             if (!state.initialized)
               state = Fact::nullHandle();
             recordCase(operandCases, call, invocation, 0, state);
@@ -634,18 +680,121 @@ struct PropagateDeviceResourceProvenancePass
               continue;
             }
             auto object = objectValues.find(call.getOperand(0));
-            if (object == objectValues.end()) {
+            if (object == objectValues.end() || object->second.offset != 0 ||
+                !handles.contains(object->second.base)) {
               call.emitError("udonclDeviceBufferDestroy requires an exact "
                              "8-byte handle object");
               invalid = true;
               continue;
             }
-            Fact state = handles[object->second];
+            Fact state = handles[object->second.base];
             if (!state.initialized)
               state = Fact::nullHandle();
             recordCase(operandCases, call, invocation, 0, state);
-            updateHandle(object->second, Fact::nullHandle(), handles, worklist,
-                         queued, reached);
+            updateHandle(object->second.base, Fact::nullHandle(), handles,
+                         worklist, queued, reached);
+            for (Value result : call.getResults())
+              updateFact(result, Fact::scalar(), facts, worklist, queued,
+                         reached);
+          } else if (calleeName == "udonclDeviceBufferView") {
+            if (call.getNumOperands() != 5) {
+              call.emitError("udonclDeviceBufferView requires five operands");
+              invalid = true;
+              continue;
+            }
+            auto handle = objectValues.find(call.getOperand(0));
+            auto output = objectValues.find(call.getOperand(4));
+            if (handle == objectValues.end() || handle->second.offset != 0 ||
+                !handles.contains(handle->second.base)) {
+              call.emitError("udonclDeviceBufferView requires an exact "
+                             "8-byte handle object");
+              invalid = true;
+              continue;
+            }
+            if (output == objectValues.end() || !canHoldView(output->second)) {
+              call.emitError("udonclDeviceBufferView requires an exact "
+                             "20-byte view subobject");
+              invalid = true;
+              continue;
+            }
+            Fact resource = handles[handle->second.base];
+            ViewState previous = views[output->second];
+            ViewState next;
+            next.initialized = true;
+            next.mayBeInvalid = true;
+            next.resource = previous.initialized
+                                ? joinFacts(previous.resource, resource)
+                                : resource;
+            views[output->second] = next;
+            recordCase(operandCases, call, invocation, 0, resource);
+            recordCase(operandCases, call, invocation, 4, next.resource);
+            for (Value result : call.getResults())
+              updateFact(result, Fact::scalar(), facts, worklist, queued,
+                         reached);
+          } else if (calleeName == "udononnxCopyBufferView") {
+            if (call.getNumOperands() != 2) {
+              call.emitError("udononnxCopyBufferView requires two operands");
+              invalid = true;
+              continue;
+            }
+            auto destination = objectValues.find(call.getOperand(0));
+            auto source = objectValues.find(call.getOperand(1));
+            if (source == objectValues.end() || !canHoldView(source->second) ||
+                !views[source->second].initialized) {
+              call.emitError("udononnxCopyBufferView requires an initialized "
+                             "source view subobject");
+              invalid = true;
+              continue;
+            }
+            if (destination == objectValues.end() ||
+                !canHoldView(destination->second)) {
+              call.emitError("udononnxCopyBufferView requires an exact "
+                             "destination view subobject");
+              invalid = true;
+              continue;
+            }
+            views[destination->second] = views[source->second];
+            recordCase(operandCases, call, invocation, 0,
+                       views[destination->second].resource);
+            recordCase(operandCases, call, invocation, 1,
+                       views[source->second].resource);
+            for (Value result : call.getResults())
+              updateFact(result, Fact::scalar(), facts, worklist, queued,
+                         reached);
+          } else if (calleeName == "udonclBufferViewResolve") {
+            if (call.getNumOperands() != 4) {
+              call.emitError("udonclBufferViewResolve requires four operands");
+              invalid = true;
+              continue;
+            }
+            auto view = objectValues.find(call.getOperand(0));
+            if (view == objectValues.end() || !canHoldView(view->second) ||
+                !views[view->second].initialized) {
+              call.emitError("udonclBufferViewResolve requires an initialized "
+                             "view subobject");
+              invalid = true;
+              continue;
+            }
+            Fact resource = views[view->second].resource;
+            recordCase(operandCases, call, invocation, 0, resource);
+            Value cell = call.getOperand(1);
+            if (auto global = globalCell(cell)) {
+              StringRef name = global.getSymName();
+              resourceGlobals.insert(name);
+              globalWrites[name] = joinFacts(globalWrites[name], resource);
+            } else if (eligibleCells.contains(cell)) {
+              CellState previous = localMemory.lookup(cell);
+              Fact output = previous.initializedOnAllPaths
+                                ? joinFacts(previous.fact, resource)
+                                : resource;
+              localMemory[cell] = {true, true, output};
+              resourceCells.insert(cell);
+            } else {
+              call.emitError("udonclBufferViewResolve requires an exact "
+                             "4-byte cl_mem output cell");
+              invalid = true;
+              continue;
+            }
             for (Value result : call.getResults())
               updateFact(result, Fact::scalar(), facts, worklist, queued,
                          reached);
@@ -653,19 +802,21 @@ struct PropagateDeviceResourceProvenancePass
                      found != functions.end() &&
                      !found->getValue().isExternal()) {
             SmallVector<Fact> actuals;
-            SmallVector<std::optional<ObjectId>> actualObjects;
+            SmallVector<std::optional<ObjectRef>> actualObjects;
             for (Value operand : call.getOperands()) {
               actuals.push_back(valueFact(operand, facts));
               auto object = objectValues.find(operand);
               actualObjects.push_back(
                   object == objectValues.end()
                       ? std::nullopt
-                      : std::optional<ObjectId>(object->second));
+                      : std::optional<ObjectRef>(object->second));
             }
             Invocation nested = calleeInvocation(invocation, function, call);
-            AnalysisResult nestedResult = analyze(
-                found->getValue(), nested, actuals, actualObjects, handles);
+            AnalysisResult nestedResult =
+                analyze(found->getValue(), nested, actuals, actualObjects,
+                        handles, views);
             handles = std::move(nestedResult.handles);
+            views = std::move(nestedResult.views);
             for (auto [index, result] : llvm::enumerate(call.getResults()))
               updateFact(result,
                          index < nestedResult.results.size()
@@ -707,6 +858,21 @@ struct PropagateDeviceResourceProvenancePass
           updateFact(intToPtr.getResult(),
                      address.zero ? Fact::zeroScalar() : Fact::scalar(), facts,
                      worklist, queued, reached);
+        } else if (auto pointerAdd =
+                       dyn_cast<::vrc::udonhl::PtrAddOp>(operation)) {
+          auto base = objectValues.find(pointerAdd.getPointer());
+          auto offset =
+              pointerAdd.getByteOffset().getDefiningOp<arith::ConstantIntOp>();
+          if (base != objectValues.end() && offset) {
+            int64_t combined =
+                static_cast<int64_t>(base->second.offset) + offset.value();
+            if (combined >= std::numeric_limits<int32_t>::min() &&
+                combined <= std::numeric_limits<int32_t>::max())
+              objectValues[pointerAdd.getResult()] = {
+                  base->second.base, static_cast<int32_t>(combined)};
+          }
+          updateFact(pointerAdd.getResult(), Fact::scalar(), facts, worklist,
+                     queued, reached);
         } else if (auto select = dyn_cast<arith::SelectOp>(operation)) {
           updateFact(select.getResult(),
                      joinFacts(valueFact(select.getTrueValue(), facts),
@@ -776,7 +942,7 @@ struct PropagateDeviceResourceProvenancePass
     active.erase(function);
     for (auto [index, fact] : llvm::enumerate(returns))
       recordCase(functionResultCases, function, invocation, index, fact);
-    return {std::move(returns), std::move(handles)};
+    return {std::move(returns), std::move(handles), std::move(views)};
   }
 
   bool updateFact(Value value, const Fact &incoming,
@@ -912,6 +1078,7 @@ struct PropagateDeviceResourceProvenancePass
     globalHandleFacts.clear();
     globalHandleWrites.clear();
     localHandleObjects.clear();
+    objectSizes.clear();
     nextObjectId = 0;
     globalFacts.clear();
     globalWrites.clear();
@@ -945,6 +1112,7 @@ struct PropagateDeviceResourceProvenancePass
                        [](int8_t byte) { return byte == 0; })) {
         eligibleHandleGlobals.try_emplace(global.getSymName(), global);
         globalHandleObjects[global.getSymName()] = nextObjectId++;
+        objectSizes[globalHandleObjects[global.getSymName()]] = 8;
         globalHandleFacts[global.getSymName()] = Fact::nullHandle();
       }
     }
@@ -977,16 +1145,17 @@ struct PropagateDeviceResourceProvenancePass
         globalHandleWrites[name] = Fact();
       for (func::FuncOp root : roots) {
         SmallVector<Fact> arguments(root.getNumArguments(), Fact::scalar());
-        SmallVector<std::optional<ObjectId>> argumentObjects(
+        SmallVector<std::optional<ObjectRef>> argumentObjects(
             root.getNumArguments(), std::nullopt);
         HandleMap handles;
+        ViewMap views;
         for (auto &[name, global] : eligibleHandleGlobals)
           handles[globalHandleObjects[name]] = globalHandleFacts[name];
         AnalysisResult result = analyze(
             root,
             {FlatSymbolRefAttr::get(module.getContext(), root.getSymName()),
              builder->getArrayAttr({})},
-            arguments, argumentObjects, handles);
+            arguments, argumentObjects, handles, views);
         for (auto &[name, global] : eligibleHandleGlobals) {
           ObjectId object = globalHandleObjects[name];
           globalHandleWrites[name] =
