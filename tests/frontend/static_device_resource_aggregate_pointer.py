@@ -29,4 +29,8 @@ for callee in (
     line = next(line for line in first.splitlines() if f"call @{callee}" in line)
     assert "resource_ids = [0 : i32]" in line, line
 
-print("static_device_resource_aggregate_pointer=passed index=1 stride=88")
+invalid = source.with_name("static_device_resource_aggregate_pointer_invalid.mlir")
+rejected = subprocess.run(command[:-1] + [invalid], text=True, capture_output=True)
+assert rejected.returncode != 0
+
+print("static_device_resource_aggregate_pointer=passed index=1 stride=88 cfg_join=checked")

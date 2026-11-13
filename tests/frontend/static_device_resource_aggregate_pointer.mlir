@@ -12,6 +12,20 @@ module {
     return
   }
 
+  func.func private @initializeSession(%condition: i1, %session: !udonhl.ptr<0>, %bindings: !udonhl.ptr<0>) {
+    %eight = arith.constant 8 : i32
+    %bindings_cell = "udonhl.ptr_add"(%session, %eight) : (!udonhl.ptr<0>, i32) -> !udonhl.ptr<0>
+    cf.cond_br %condition, ^left, ^right
+  ^left:
+    "udonhl.store"(%bindings, %bindings_cell) <{alignment = 4 : i64}> : (!udonhl.ptr<0>, !udonhl.ptr<0>) -> ()
+    cf.br ^done
+  ^right:
+    "udonhl.store"(%bindings, %bindings_cell) <{alignment = 4 : i64}> : (!udonhl.ptr<0>, !udonhl.ptr<0>) -> ()
+    cf.br ^done
+  ^done:
+    return
+  }
+
   func.func private @copyTensorView(%session: !udonhl.ptr<0>, %index: i32, %source: !udonhl.ptr<0>) {
     %eight = arith.constant 8 : i32
     %stride = arith.constant 88 : i32
@@ -23,7 +37,7 @@ module {
     return
   }
 
-  func.func @Run() attributes {udoncl.export} {
+  func.func @Run(%condition: i1) attributes {udoncl.export} {
     %zero = arith.constant 0 : i32
     %one = arith.constant 1 : i32
     %four = arith.constant 4 : i32
@@ -42,8 +56,7 @@ module {
 
     %session = udonhl.address_of @session : !udonhl.ptr<0>
     %bindings = udonhl.address_of @bindings : !udonhl.ptr<0>
-    %bindings_cell = "udonhl.ptr_add"(%session, %eight) : (!udonhl.ptr<0>, i32) -> !udonhl.ptr<0>
-    "udonhl.store"(%bindings, %bindings_cell) <{alignment = 4 : i64}> : (!udonhl.ptr<0>, !udonhl.ptr<0>) -> ()
+    func.call @initializeSession(%condition, %session, %bindings) : (i1, !udonhl.ptr<0>, !udonhl.ptr<0>) -> ()
     func.call @copyTensorView(%session, %one, %view) : (!udonhl.ptr<0>, i32, !udonhl.ptr<0>) -> ()
 
     %tensor = "udonhl.ptr_add"(%bindings, %eighty_eight) : (!udonhl.ptr<0>, i32) -> !udonhl.ptr<0>
