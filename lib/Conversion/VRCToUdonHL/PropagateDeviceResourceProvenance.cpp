@@ -279,55 +279,64 @@ PointerCellState joinPointerCells(PointerCellState left,
 }
 
 PointerCellMap joinPointerMaps(const PointerCellMap &left,
-                               const PointerCellMap &right) {
+                               const PointerCellMap &right,
+                               const llvm::DenseSet<ObjectId> &zeroObjects) {
+  auto missingState = [&](ObjectRef object) {
+    return zeroObjects.contains(object.base)
+               ? PointerCellState{true, true, {}}
+               : PointerCellState{true, false, {}};
+  };
   PointerCellMap joined;
   for (const auto &[object, state] : left) {
     auto found = right.find(object);
-    PointerCellState other = found == right.end()
-                                 ? PointerCellState{true, false, {}}
-                                 : found->second;
+    PointerCellState other =
+        found == right.end() ? missingState(object) : found->second;
     joined[object] = joinPointerCells(state, other);
   }
   for (const auto &[object, state] : right) {
     if (left.count(object))
       continue;
-    joined[object] = joinPointerCells(PointerCellState{true, false, {}}, state);
+    joined[object] = joinPointerCells(missingState(object), state);
   }
   return joined;
 }
 
 void addPointerExitCase(PointerExitCases &cases, std::optional<int64_t> status,
-                        const PointerCellMap &pointerCells) {
+                        const PointerCellMap &pointerCells,
+                        const llvm::DenseSet<ObjectId> &zeroObjects) {
   constexpr size_t maxExactCases = 16;
   if (!status ||
       (!cases.exact.count(*status) && cases.exact.size() >= maxExactCases)) {
-    cases.unknown = cases.unknown
-                        ? joinPointerMaps(*cases.unknown, pointerCells)
-                        : std::optional<PointerCellMap>(pointerCells);
+    cases.unknown = cases.unknown ? joinPointerMaps(*cases.unknown,
+                                                    pointerCells, zeroObjects)
+                                  : std::optional<PointerCellMap>(pointerCells);
     return;
   }
   auto found = cases.exact.find(*status);
   if (found == cases.exact.end())
     cases.exact.emplace(*status, pointerCells);
   else
-    found->second = joinPointerMaps(found->second, pointerCells);
+    found->second = joinPointerMaps(found->second, pointerCells, zeroObjects);
 }
 
-PointerCellMap selectPointerExitCases(const PointerExitCases &cases,
-                                      int64_t constant, bool equal,
-                                      const PointerCellMap &fallback) {
+PointerCellMap
+selectPointerExitCases(const PointerExitCases &cases, int64_t constant,
+                       bool equal, const PointerCellMap &fallback,
+                       const llvm::DenseSet<ObjectId> &zeroObjects) {
   PointerCellMap selected;
   bool hasSelected = false;
   for (const auto &[status, pointerCells] : cases.exact) {
     if ((status == constant) != equal)
       continue;
-    selected =
-        hasSelected ? joinPointerMaps(selected, pointerCells) : pointerCells;
+    selected = hasSelected
+                   ? joinPointerMaps(selected, pointerCells, zeroObjects)
+                   : pointerCells;
     hasSelected = true;
   }
   if (cases.unknown) {
-    selected = hasSelected ? joinPointerMaps(selected, *cases.unknown)
-                           : *cases.unknown;
+    selected = hasSelected
+                   ? joinPointerMaps(selected, *cases.unknown, zeroObjects)
+                   : *cases.unknown;
     hasSelected = true;
   }
   return hasSelected ? selected : fallback;
@@ -632,6 +641,7 @@ struct PropagateDeviceResourceProvenancePass
   llvm::StringMap<ObjectId> globalObjects;
   llvm::StringMap<ObjectId> globalHandleObjects;
   llvm::DenseSet<ObjectId> globalObjectIds;
+  llvm::DenseSet<ObjectId> zeroInitializedGlobalObjectIds;
   HandleMap globalHandleFacts;
   HandleMap globalHandleWrites;
   PointerCellMap globalPointerFacts;
@@ -1008,16 +1018,27 @@ struct PropagateDeviceResourceProvenancePass
                 origins == handleFieldValues.end() ? nullptr : &origins->second,
                 localViews, handles);
           }
-          if (exactCell && isHandleType(store.getValue().getType()) &&
-              !stored.resource) {
+          bool existingObjectPointer = false;
+          if (exactCell) {
+            auto existing = localPointerCells.find(*exactCell);
+            existingObjectPointer = existing != localPointerCells.end();
+          }
+          bool trackedObjectPointer =
+              exactCell && (storedObjects != objectValues.end() ||
+                            stored.zero || existingObjectPointer);
+          if (trackedObjectPointer &&
+              isHandleType(store.getValue().getType()) && !stored.resource) {
             PointerCellState incoming;
             incoming.hasPath = true;
             incoming.initializedOnAllPaths = true;
-            if (storedObjects == objectValues.end())
-              incoming.objects.unknown = true;
-            else
+            if (storedObjects != objectValues.end())
               incoming.objects = storedObjects->second;
+            else if (!stored.zero)
+              incoming.objects.unknown = true;
             localPointerCells[*exactCell] = std::move(incoming);
+          } else if (exactCell && isHandleType(store.getValue().getType()) &&
+                     !stored.resource) {
+            localPointerCells.erase(*exactCell);
           }
           if (auto global = globalCell(cell)) {
             StringRef name = global.getSymName();
@@ -1115,7 +1136,9 @@ struct PropagateDeviceResourceProvenancePass
                 pointerCell->second.hasPath) {
               if (!pointerCell->second.initializedOnAllPaths) {
                 load.emitError("aggregate object pointer is not initialized "
-                               "on every reaching path");
+                               "on every reaching path at object ")
+                    << exactCell->base << " offset " << exactCell->offset
+                    << " in @" << function.getSymName();
                 invalid = true;
                 continue;
               }
@@ -1648,10 +1671,12 @@ struct PropagateDeviceResourceProvenancePass
             if (direct) {
               truePointers = selectPointerExitCases(
                   effect->second.pointerCases, refinement->second.constant,
-                  refinement->second.equalOnTrue, localPointerCells);
+                  refinement->second.equalOnTrue, localPointerCells,
+                  zeroInitializedGlobalObjectIds);
               falsePointers = selectPointerExitCases(
                   effect->second.pointerCases, refinement->second.constant,
-                  !refinement->second.equalOnTrue, localPointerCells);
+                  !refinement->second.equalOnTrue, localPointerCells,
+                  zeroInitializedGlobalObjectIds);
               trueViews = selectViewExitCases(
                   effect->second.viewCases, refinement->second.constant,
                   refinement->second.equalOnTrue, localViews);
@@ -1747,7 +1772,8 @@ struct PropagateDeviceResourceProvenancePass
             sawReturn = true;
           } else {
             returnedPointerCells =
-                joinPointerMaps(returnedPointerCells, localPointerCells);
+                joinPointerMaps(returnedPointerCells, localPointerCells,
+                                zeroInitializedGlobalObjectIds);
             returnedViews = joinViewMaps(returnedViews, localViews);
           }
           if (returned.getNumOperands() == 1 &&
@@ -1760,10 +1786,12 @@ struct PropagateDeviceResourceProvenancePass
                 pending->second.call->getNextNode() == &operation) {
               for (const auto &[value, pointerCells] :
                    pending->second.pointerCases.exact)
-                addPointerExitCase(pointerExitCases, value, pointerCells);
+                addPointerExitCase(pointerExitCases, value, pointerCells,
+                                   zeroInitializedGlobalObjectIds);
               if (pending->second.pointerCases.unknown)
                 addPointerExitCase(pointerExitCases, std::nullopt,
-                                   *pending->second.pointerCases.unknown);
+                                   *pending->second.pointerCases.unknown,
+                                   zeroInitializedGlobalObjectIds);
               for (const auto &[value, views] : pending->second.viewCases.exact)
                 addViewExitCase(viewExitCases, value, views);
               if (pending->second.viewCases.unknown)
@@ -1772,7 +1800,8 @@ struct PropagateDeviceResourceProvenancePass
             } else if (auto integer = integerValues.find(status);
                        integer != integerValues.end()) {
               addPointerExitCase(pointerExitCases, integer->second,
-                                 localPointerCells);
+                                 localPointerCells,
+                                 zeroInitializedGlobalObjectIds);
               addViewExitCase(viewExitCases, integer->second, localViews);
             } else if (auto argument = dyn_cast<BlockArgument>(status);
                        argument && argument.getOwner() == block &&
@@ -1787,11 +1816,13 @@ struct PropagateDeviceResourceProvenancePass
                         predecessor->getTerminator()) {
                   for (const auto &[value, pointers] :
                        incomingPending->second.pointerCases.exact)
-                    addPointerExitCase(pointerExitCases, value, pointers);
+                    addPointerExitCase(pointerExitCases, value, pointers,
+                                       zeroInitializedGlobalObjectIds);
                   if (incomingPending->second.pointerCases.unknown)
                     addPointerExitCase(
                         pointerExitCases, std::nullopt,
-                        *incomingPending->second.pointerCases.unknown);
+                        *incomingPending->second.pointerCases.unknown,
+                        zeroInitializedGlobalObjectIds);
                   for (const auto &[value, views] :
                        incomingPending->second.viewCases.exact)
                     addViewExitCase(viewExitCases, value, views);
@@ -1809,13 +1840,15 @@ struct PropagateDeviceResourceProvenancePass
                 if (integers != edgeIntegerArguments.end() &&
                     argument.getArgNumber() < integers->second.size())
                   value = integers->second[argument.getArgNumber()];
-                addPointerExitCase(pointerExitCases, value, pointers->second);
+                addPointerExitCase(pointerExitCases, value, pointers->second,
+                                   zeroInitializedGlobalObjectIds);
                 if (views != edgeViews.end())
                   addViewExitCase(viewExitCases, value, views->second);
               }
             } else {
               addPointerExitCase(pointerExitCases, std::nullopt,
-                                 localPointerCells);
+                                 localPointerCells,
+                                 zeroInitializedGlobalObjectIds);
               addViewExitCase(viewExitCases, std::nullopt, localViews);
             }
           }
@@ -1999,7 +2032,8 @@ struct PropagateDeviceResourceProvenancePass
         recomputedPointers = edge->second;
         hasPointerEdge = true;
       } else {
-        recomputedPointers = joinPointerMaps(recomputedPointers, edge->second);
+        recomputedPointers = joinPointerMaps(recomputedPointers, edge->second,
+                                             zeroInitializedGlobalObjectIds);
       }
     }
     if (pointerInputs[destination] != recomputedPointers)
@@ -2090,6 +2124,7 @@ struct PropagateDeviceResourceProvenancePass
     globalObjects.clear();
     globalHandleObjects.clear();
     globalObjectIds.clear();
+    zeroInitializedGlobalObjectIds.clear();
     globalHandleFacts.clear();
     globalHandleWrites.clear();
     globalPointerFacts.clear();
@@ -2112,6 +2147,12 @@ struct PropagateDeviceResourceProvenancePass
     for (auto global : module.getOps<::vrc::udonhl::GlobalOp>()) {
       auto initial =
           dyn_cast_or_null<IntegerAttr>(global.getInitialValueAttr());
+      auto bytes =
+          dyn_cast_or_null<DenseI8ArrayAttr>(global.getInitialValueAttr());
+      bool zeroInitialized =
+          (initial && initial.getInt() == 0) ||
+          (bytes && llvm::all_of(bytes.asArrayRef(),
+                                 [](int8_t byte) { return byte == 0; }));
       auto pointer = dyn_cast<::vrc::udonhl::PtrType>(global.getStorageType());
       if (global.getLinkage() == "internal" && !global.getConstant() &&
           global.getAddressSpace() == 0 && global.getAlignment() == 4 &&
@@ -2119,8 +2160,6 @@ struct PropagateDeviceResourceProvenancePass
           initial.getInt() == 0)
         eligibleGlobals.try_emplace(global.getSymName(), global);
 
-      auto bytes =
-          dyn_cast_or_null<DenseI8ArrayAttr>(global.getInitialValueAttr());
       auto array = dyn_cast<LLVM::LLVMArrayType>(global.getStorageType());
       auto structure = dyn_cast<LLVM::LLVMStructType>(global.getStorageType());
       bool handleStructure = structure && structure.getBody().size() == 2 &&
@@ -2139,6 +2178,9 @@ struct PropagateDeviceResourceProvenancePass
         objectSizes[globalObjects[global.getSymName()]] =
             static_cast<uint32_t>(*objectBytes);
         globalObjectIds.insert(globalObjects[global.getSymName()]);
+        if (zeroInitialized)
+          zeroInitializedGlobalObjectIds.insert(
+              globalObjects[global.getSymName()]);
       }
       if (global.getLinkage() == "internal" && !global.getConstant() &&
           global.getAddressSpace() == 0 && global.getAlignment() >= 4 &&

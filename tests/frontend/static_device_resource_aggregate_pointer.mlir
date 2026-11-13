@@ -1,11 +1,12 @@
 module {
   "udonhl.global"() <{address_space = 0 : i32, alignment = 8 : i64, linkage = "internal", storage_type = !llvm.array<40 x i8>, sym_name = "session"}> : () -> ()
   "udonhl.global"() <{address_space = 0 : i32, alignment = 8 : i64, linkage = "internal", storage_type = !llvm.array<176 x i8>, sym_name = "bindings"}> : () -> ()
-  "udonhl.global"() <{address_space = 0 : i32, alignment = 8 : i64, linkage = "internal", storage_type = !llvm.array<40 x i8>, sym_name = "persistent_session"}> : () -> ()
+  "udonhl.global"() <{address_space = 0 : i32, alignment = 8 : i64, initial_value = array<i8: 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0>, linkage = "internal", storage_type = !llvm.array<40 x i8>, sym_name = "persistent_session"}> : () -> ()
   "udonhl.global"() <{address_space = 0 : i32, alignment = 8 : i64, linkage = "internal", storage_type = !llvm.array<88 x i8>, sym_name = "persistent_binding"}> : () -> ()
 
   func.func private @clCreateBuffer() -> !udonhl.ptr<0>
   func.func private @clReleaseMemObject(!udonhl.ptr<0>) -> i32
+  func.func private @getOpaquePointer() -> !udonhl.ptr<0>
   func.func private @udonclDeviceBufferAdopt(!udonhl.ptr<0>, !udonhl.ptr<0>, i32, !udonhl.ptr<0>) -> i32
   func.func private @udonclDeviceBufferView(!udonhl.ptr<0>, i32, i32, i32, !udonhl.ptr<0>) -> i32
   func.func private @udonclBufferViewResolve(!udonhl.ptr<0>, !udonhl.ptr<0>, !udonhl.ptr<0>, !udonhl.ptr<0>) -> i32
@@ -59,12 +60,38 @@ module {
     return %merged : !udonhl.ptr<0>
   }
 
+  func.func private @loadUnrelatedOpaquePointer(%state: !udonhl.ptr<0>, %condition: i1) -> !udonhl.ptr<0> {
+    %offset = arith.constant 32 : i32
+    %cell = "udonhl.ptr_add"(%state, %offset) : (!udonhl.ptr<0>, i32) -> !udonhl.ptr<0>
+    cf.cond_br %condition, ^write, ^done
+  ^write:
+    %opaque = func.call @getOpaquePointer() : () -> !udonhl.ptr<0>
+    "udonhl.store"(%opaque, %cell) <{alignment = 4 : i64}> : (!udonhl.ptr<0>, !udonhl.ptr<0>) -> ()
+    cf.br ^done
+  ^done:
+    %loaded = "udonhl.load"(%cell) <{alignment = 4 : i64}> : (!udonhl.ptr<0>) -> !udonhl.ptr<0>
+    return %loaded : !udonhl.ptr<0>
+  }
+
+  func.func private @initializeNullablePointer(%state: !udonhl.ptr<0>, %target: !udonhl.ptr<0>, %condition: i1) -> !udonhl.ptr<0> {
+    %offset = arith.constant 8 : i32
+    %cell = "udonhl.ptr_add"(%state, %offset) : (!udonhl.ptr<0>, i32) -> !udonhl.ptr<0>
+    cf.cond_br %condition, ^write, ^done
+  ^write:
+    "udonhl.store"(%target, %cell) <{alignment = 4 : i64}> : (!udonhl.ptr<0>, !udonhl.ptr<0>) -> ()
+    cf.br ^done
+  ^done:
+    %loaded = "udonhl.load"(%cell) <{alignment = 4 : i64}> : (!udonhl.ptr<0>) -> !udonhl.ptr<0>
+    return %loaded : !udonhl.ptr<0>
+  }
+
   func.func @AInitializePersistentPointer() attributes {udoncl.export} {
+    %true = arith.constant true
     %eight = arith.constant 8 : i32
     %session = udonhl.address_of @persistent_session : !udonhl.ptr<0>
+    %opaque = func.call @loadUnrelatedOpaquePointer(%session, %true) : (!udonhl.ptr<0>, i1) -> !udonhl.ptr<0>
     %binding = udonhl.address_of @persistent_binding : !udonhl.ptr<0>
-    %bindings_cell = "udonhl.ptr_add"(%session, %eight) : (!udonhl.ptr<0>, i32) -> !udonhl.ptr<0>
-    "udonhl.store"(%binding, %bindings_cell) <{alignment = 4 : i64}> : (!udonhl.ptr<0>, !udonhl.ptr<0>) -> ()
+    %initialized = func.call @initializeNullablePointer(%session, %binding, %true) : (!udonhl.ptr<0>, !udonhl.ptr<0>, i1) -> !udonhl.ptr<0>
     return
   }
 
