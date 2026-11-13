@@ -362,20 +362,11 @@ def main():
     probe.pop('internal_exports', None)
     probe['internal_exports'] = [
         'udon_onnx_binding_create',
+        'udon_onnx_binding_bind_tensor',
         'udon_onnx_binding_resolve_input',
         'udon_onnx_binding_resolve_output',
     ]
     probe['export_overrides'] = [
-        {
-            'symbol': 'udon_onnx_binding_bind_tensor',
-            'public_name': 'BindOnnxTensorPhysical',
-            'parameters': [
-                'output', 'tensor_index', 'buffer_slot', 'buffer_generation',
-                'byte_offset', 'byte_length', 'data_type', 'rank',
-                'dimension_0', 'dimension_1', 'dimension_2', 'dimension_3',
-                'dimension_4', 'dimension_5', 'dimension_6', 'dimension_7',
-            ],
-        },
         {
             'symbol': 'udon_onnx_binding_bind_all',
             'public_name': 'BindAllOnnxTensors',
@@ -520,7 +511,6 @@ def main():
         item['c_symbol']: item['public_name']
         for item in generic_manifest['exports']
     } == {
-        'udon_onnx_binding_bind_tensor': 'BindOnnxTensorPhysical',
         'udon_onnx_binding_bind_all': 'BindAllOnnxTensors',
         'udon_onnx_binding_enqueue_initialize': 'EnqueueOnnxInitialize',
         'udon_onnx_binding_enqueue_run': 'EnqueueOnnxRun',
@@ -528,15 +518,6 @@ def main():
             'EnqueueCopyOnnxOutputToInput',
         'udon_onnx_binding_dispose': 'DisposeOnnxBinding',
     }
-    physical_bind = next(
-        item for item in generic_manifest['exports']
-        if item['public_name'] == 'BindOnnxTensorPhysical'
-    )
-    assert len(physical_bind['parameters']) == 16
-    assert all(
-        parameter['kind'] == 'i32'
-        for parameter in physical_bind['parameters']
-    )
     onnx_binding = generic_manifest['onnx_binding']
     assert onnx_binding['abi'] == 'udononnx-runtime-v2'
     assert onnx_binding['model_index'] == 0
@@ -605,6 +586,7 @@ def main():
     ]
     required_internal_symbols = [
         'udon_onnx_binding_create',
+        'udon_onnx_binding_bind_tensor',
         'udon_onnx_binding_resolve_input',
         'udon_onnx_binding_resolve_output',
     ]
@@ -620,7 +602,7 @@ def main():
             'annotated Host definition',
         ),
         (
-            'overridden', required_internal_symbols + [annotated_symbols[1]],
+            'overridden', required_internal_symbols + [annotated_symbols[2]],
             'schema 2 internal export must name one non-overridden '
             'annotated Host definition',
         ),
