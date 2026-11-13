@@ -1008,12 +1008,8 @@ struct PropagateDeviceResourceProvenancePass
             }
             if (!kind && canHoldHandle(handle) && handles.count(handle))
               kind = HandleFieldKind::Slot;
-            if (kind) {
+            if (kind)
               handleFieldValues[load.getResult()] = {false, {{handle, *kind}}};
-              if (*kind == HandleFieldKind::Slot)
-                updateFact(load.getResult(), handles[handle], facts, worklist,
-                           queued, reached);
-            }
           }
           if (exactCell && isHandleType(load.getType())) {
             auto pointerCell = localPointerCells.find(*exactCell);

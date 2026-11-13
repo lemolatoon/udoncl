@@ -74,7 +74,7 @@ module {
     %handle4 = "udonhl.ptr_add"(%handle, %four) : (!udonhl.ptr<0>, i32) -> !udonhl.ptr<0>
     %generation = "udonhl.load"(%handle4) <{alignment = 4 : i64}> : (!udonhl.ptr<0>) -> i32
     %direct_view = "udonhl.alloca"(%twenty) <{alignment = 4 : i64}> : (i32) -> !udonhl.ptr<0>
-    %condition = arith.constant true
+    %condition = arith.cmpi ne, %slot, %zero : i32
     func.call @initializeDirectViewBranch(%condition, %slot, %generation, %direct_view) : (i1, i32, i32, !udonhl.ptr<0>) -> ()
     %direct_tensor = "udonhl.alloca"(%eighty_eight) <{alignment = 8 : i64}> : (i32) -> !udonhl.ptr<0>
     func.call @udononnxCopyBufferView(%direct_tensor, %direct_view) : (!udonhl.ptr<0>, !udonhl.ptr<0>) -> ()
