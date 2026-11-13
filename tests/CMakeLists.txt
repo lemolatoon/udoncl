@@ -267,6 +267,18 @@ add_test(NAME static-device-resource-discovery-diagnostics
     --verify-diagnostics
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resources_invalid.mlir"
 )
+add_test(NAME static-device-resource-requirements
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_requirements.py"
+    $<TARGET_FILE:vrc-opt>
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_requirements.mlir"
+)
+add_test(NAME static-device-resource-requirements-diagnostics
+  COMMAND vrc-opt --vrc-discover-static-device-resources
+    --vrc-infer-static-device-resource-requirements --split-input-file
+    --verify-diagnostics
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_requirements_invalid.mlir"
+)
 add_test(NAME static-device-resource-provenance
   COMMAND Python3::Interpreter
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_provenance.py"

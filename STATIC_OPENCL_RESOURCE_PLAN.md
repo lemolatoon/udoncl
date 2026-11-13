@@ -289,9 +289,11 @@ work.
 Status: standalone allocator implemented against a versioned keyed inventory.
 It assigns deterministic one-based Texture IDs to allocation contexts while
 preserving capacity, format, public access, and persistence. The producer that
-derives this inventory from allocation call contexts and ONNX bindings, fixes
-the current duplicate public-buffer capacities, and integrates the result into
-manifest generation remains separate work.
+derives this inventory is split by responsibility: a standalone requirements
+pass now reconstructs keyed capacity, memory flags, format, and usage through
+discovery call paths. Public/persistent classification from ONNX binding state,
+the current duplicate public-buffer capacities, and manifest integration remain
+separate work.
 
 - Assign one physical Texture per allocation context.
 - Emit stable resource IDs, capacities, formats, and public/persistent flags.

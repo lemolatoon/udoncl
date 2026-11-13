@@ -36,6 +36,10 @@ def DiscoverStaticDeviceResourcesPass : Pass<"vrc-discover-static-device-resourc
   let summary = "Discover deterministic OpenCL allocation contexts without lowering them";
   let dependentDialects = ["mlir::func::FuncDialect", "mlir::cf::ControlFlowDialect", "mlir::scf::SCFDialect"];
 }
+def InferStaticDeviceResourceRequirementsPass : Pass<"vrc-infer-static-device-resource-requirements", "mlir::ModuleOp"> {
+  let summary = "Infer keyed capacity and memory requirements for static allocation contexts";
+  let dependentDialects = ["mlir::arith::ArithDialect", "mlir::func::FuncDialect"];
+}
 def PropagateDeviceResourceProvenancePass : Pass<"vrc-propagate-device-resource-provenance", "mlir::ModuleOp"> {
   let summary = "Propagate context-sensitive static device resource identities through Host SSA";
   let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "mlir::func::FuncDialect", "mlir::cf::ControlFlowDialect", "mlir::arith::ArithDialect", "mlir::memref::MemRefDialect", "mlir::scf::SCFDialect"];
