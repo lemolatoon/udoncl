@@ -79,6 +79,9 @@ struct Fact {
   }
 };
 
+Fact joinFacts(Fact left, const Fact &right);
+bool operator==(const Fact &left, const Fact &right);
+
 struct CellState {
   bool hasPath = false;
   bool initializedOnAllPaths = false;
@@ -112,6 +115,48 @@ struct ObjectRefSet {
   }
 };
 
+enum class HandleFieldKind : uint8_t { Slot, Generation };
+
+struct HandleFieldOrigin {
+  ObjectRef handle;
+  HandleFieldKind kind = HandleFieldKind::Slot;
+
+  bool operator<(const HandleFieldOrigin &other) const {
+    return std::tie(handle, kind) < std::tie(other.handle, other.kind);
+  }
+
+  bool operator==(const HandleFieldOrigin &other) const {
+    return handle == other.handle && kind == other.kind;
+  }
+};
+
+struct HandleFieldOriginSet {
+  bool unknown = false;
+  SmallVector<HandleFieldOrigin> refs;
+};
+
+bool operator==(const HandleFieldOriginSet &left,
+                const HandleFieldOriginSet &right) {
+  return left.unknown == right.unknown && left.refs == right.refs;
+}
+
+HandleFieldOriginSet joinHandleFieldOrigins(HandleFieldOriginSet left,
+                                            const HandleFieldOriginSet &right) {
+  left.unknown |= right.unknown;
+  left.refs.append(right.refs);
+  llvm::sort(left.refs);
+  left.refs.erase(std::unique(left.refs.begin(), left.refs.end()),
+                  left.refs.end());
+  return left;
+}
+
+std::optional<HandleFieldOrigin>
+exactHandleFieldOrigin(const HandleFieldOriginSet &origins) {
+  if (origins.unknown || origins.refs.size() != 1)
+    return std::nullopt;
+  return origins.refs.front();
+}
+
 bool operator==(const ObjectRefSet &left, const ObjectRefSet &right) {
   return left.unknown == right.unknown && left.refs == right.refs;
 }
@@ -134,12 +179,57 @@ std::optional<ObjectRef> exactObject(const ObjectRefSet &objects) {
 using HandleMap = std::map<ObjectRef, Fact>;
 
 struct ViewState {
+  bool hasPath = false;
   bool initialized = false;
   bool mayBeInvalid = false;
+  uint8_t directFieldMask = 0;
+  HandleFieldOriginSet slotOrigins;
+  HandleFieldOriginSet generationOrigins;
   Fact resource;
 };
 
+bool operator==(const ViewState &left, const ViewState &right) {
+  return left.hasPath == right.hasPath &&
+         left.initialized == right.initialized &&
+         left.mayBeInvalid == right.mayBeInvalid &&
+         left.directFieldMask == right.directFieldMask &&
+         left.slotOrigins == right.slotOrigins &&
+         left.generationOrigins == right.generationOrigins &&
+         left.resource == right.resource;
+}
+
 using ViewMap = std::map<ObjectRef, ViewState>;
+
+ViewState joinViewStates(ViewState left, const ViewState &right) {
+  if (!left.hasPath)
+    return right;
+  if (!right.hasPath)
+    return left;
+  left.initialized &= right.initialized;
+  left.mayBeInvalid |= right.mayBeInvalid;
+  left.directFieldMask &= right.directFieldMask;
+  left.slotOrigins =
+      joinHandleFieldOrigins(std::move(left.slotOrigins), right.slotOrigins);
+  left.generationOrigins = joinHandleFieldOrigins(
+      std::move(left.generationOrigins), right.generationOrigins);
+  left.resource = joinFacts(std::move(left.resource), right.resource);
+  return left;
+}
+
+ViewMap joinViewMaps(const ViewMap &left, const ViewMap &right) {
+  ViewMap joined;
+  for (const auto &[object, state] : left) {
+    auto found = right.find(object);
+    ViewState other = found == right.end() ? ViewState{true} : found->second;
+    joined[object] = joinViewStates(state, other);
+  }
+  for (const auto &[object, state] : right) {
+    if (left.count(object))
+      continue;
+    joined[object] = joinViewStates(ViewState{true}, state);
+  }
+  return joined;
+}
 
 struct PointerCellState {
   bool hasPath = false;
@@ -163,6 +253,7 @@ bool operator==(const PointerCellState &left, const PointerCellState &right) {
 struct AnalysisResult {
   SmallVector<Fact> results;
   SmallVector<std::optional<int64_t>> integerResults;
+  SmallVector<HandleFieldOriginSet> handleFieldResults;
   HandleMap handles;
   ViewMap views;
   PointerCellMap pointerCells;
@@ -502,6 +593,63 @@ struct PropagateDeviceResourceProvenancePass
            static_cast<uint64_t>(object.offset) + 20 <= found->second;
   }
 
+  bool canHoldHandle(const ObjectRef &object) const {
+    auto found = objectSizes.find(object.base);
+    return found != objectSizes.end() && object.offset >= 0 &&
+           static_cast<uint64_t>(object.offset) + 8 <= found->second;
+  }
+
+  void completeDirectView(ViewState &state, const HandleMap &handles) {
+    constexpr uint8_t allFields = 0x1f;
+    state.initialized = false;
+    if (state.directFieldMask != allFields)
+      return;
+    auto slot = exactHandleFieldOrigin(state.slotOrigins);
+    auto generation = exactHandleFieldOrigin(state.generationOrigins);
+    if (!slot || !generation || slot->kind != HandleFieldKind::Slot ||
+        generation->kind != HandleFieldKind::Generation ||
+        !(slot->handle == generation->handle))
+      return;
+    auto resource = handles.find(slot->handle);
+    if (resource == handles.end() || !resource->second.resource ||
+        resource->second.unknown)
+      return;
+    state.resource = resource->second;
+    state.initialized = true;
+    state.mayBeInvalid = true;
+  }
+
+  bool recordDirectViewField(const ObjectRef &field, Type storedType,
+                             const HandleFieldOriginSet *storedOrigins,
+                             ViewMap &views, const HandleMap &handles) {
+    auto integer = dyn_cast<IntegerType>(storedType);
+    if (!integer || integer.getWidth() != 32)
+      return false;
+    constexpr int32_t offsets[] = {0, 4, 8, 12, 16};
+    bool recognized = false;
+    for (auto [index, offset] : llvm::enumerate(offsets)) {
+      int64_t baseOffset = static_cast<int64_t>(field.offset) - offset;
+      if (baseOffset < std::numeric_limits<int32_t>::min() ||
+          baseOffset > std::numeric_limits<int32_t>::max())
+        continue;
+      ObjectRef view{field.base, static_cast<int32_t>(baseOffset)};
+      if (!canHoldView(view))
+        continue;
+      recognized = true;
+      ViewState &state = views[view];
+      state.hasPath = true;
+      state.directFieldMask |= static_cast<uint8_t>(1u << index);
+      if (offset == 0)
+        state.slotOrigins =
+            storedOrigins ? *storedOrigins : HandleFieldOriginSet{true};
+      else if (offset == 4)
+        state.generationOrigins =
+            storedOrigins ? *storedOrigins : HandleFieldOriginSet{true};
+      completeDirectView(state, handles);
+    }
+    return recognized;
+  }
+
   ::vrc::udonhl::GlobalOp globalCell(Value pointer) {
     auto address = pointer.getDefiningOp<::vrc::udonhl::AddressOfOp>();
     if (!address)
@@ -624,6 +772,7 @@ struct PropagateDeviceResourceProvenancePass
                          ArrayRef<Fact> arguments,
                          ArrayRef<std::optional<int64_t>> argumentIntegers,
                          ArrayRef<std::optional<ObjectRefSet>> argumentObjects,
+                         ArrayRef<HandleFieldOriginSet> argumentHandleFields,
                          const HandleMap &incomingHandles,
                          const ViewMap &incomingViews,
                          const PointerCellMap &incomingPointerCells) {
@@ -634,6 +783,8 @@ struct PropagateDeviceResourceProvenancePass
                                   Fact::scalar()),
                 SmallVector<std::optional<int64_t>>(
                     function.getFunctionType().getNumResults(), std::nullopt),
+                SmallVector<HandleFieldOriginSet>(
+                    function.getFunctionType().getNumResults()),
                 incomingHandles,
                 incomingViews,
                 incomingPointerCells,
@@ -641,16 +792,20 @@ struct PropagateDeviceResourceProvenancePass
       function.emitError(
           "resource provenance through recursion is unsupported");
       invalid = true;
-      return {SmallVector<Fact>(), SmallVector<std::optional<int64_t>>(),
-              HandleMap(),         ViewMap(),
-              PointerCellMap(),    {}};
+      return {SmallVector<Fact>(),
+              SmallVector<std::optional<int64_t>>(),
+              SmallVector<HandleFieldOriginSet>(),
+              HandleMap(),
+              ViewMap(),
+              PointerCellMap(),
+              {}};
     }
     llvm::DenseMap<Value, Fact> facts;
     llvm::DenseMap<Value, int64_t> integerValues;
     llvm::DenseSet<Value> ambiguousIntegers;
     llvm::DenseMap<Value, ObjectRefSet> objectValues;
+    llvm::DenseMap<Value, HandleFieldOriginSet> handleFieldValues;
     HandleMap handles = incomingHandles;
-    ViewMap views = incomingViews;
     llvm::DenseSet<Value> eligibleCells;
     function.walk([&](::vrc::udonhl::AllocaOp allocation) {
       if (isSingletonCell(allocation))
@@ -677,12 +832,20 @@ struct PropagateDeviceResourceProvenancePass
         integerValues[argument] = *argumentIntegers[index];
       if (index < argumentObjects.size() && argumentObjects[index])
         objectValues[argument] = *argumentObjects[index];
+      if (index < argumentHandleFields.size() &&
+          (!argumentHandleFields[index].refs.empty() ||
+           argumentHandleFields[index].unknown))
+        handleFieldValues[argument] = argumentHandleFields[index];
       recordCase(argumentCases, function, invocation, index, fact);
     }
 
     SmallVector<Fact> returns(function.getFunctionType().getNumResults());
     SmallVector<std::optional<int64_t>> integerReturns(
         function.getFunctionType().getNumResults(), std::nullopt);
+    SmallVector<HandleFieldOriginSet> handleFieldReturns(
+        function.getFunctionType().getNumResults());
+    SmallVector<bool> handleFieldReturnSeen(
+        function.getFunctionType().getNumResults(), false);
     SmallVector<bool> integerReturnSeen(
         function.getFunctionType().getNumResults(), false);
     SmallVector<Block *> worklist;
@@ -695,9 +858,12 @@ struct PropagateDeviceResourceProvenancePass
     llvm::DenseMap<std::pair<Block *, Block *>,
                    SmallVector<std::optional<int64_t>>>
         edgeIntegerArguments;
+    llvm::DenseMap<Block *, ViewMap> viewInputs;
+    llvm::DenseMap<std::pair<Block *, Block *>, ViewMap> edgeViews;
     llvm::DenseMap<Value, PendingPointerEffect> pendingPointerEffects;
     llvm::DenseMap<Value, ComparisonRefinement> comparisonRefinements;
     PointerCellMap returnedPointerCells;
+    ViewMap returnedViews;
     PointerExitCases pointerExitCases;
     bool sawReturn = false;
     llvm::DenseSet<Value> resourceCells;
@@ -706,6 +872,7 @@ struct PropagateDeviceResourceProvenancePass
       queued.insert(&function.front());
       reached.insert(&function.front());
       pointerInputs[&function.front()] = incomingPointerCells;
+      viewInputs[&function.front()] = incomingViews;
       for (Value cell : eligibleCells)
         memoryInputs[&function.front()][cell] = {true, false, Fact()};
     }
@@ -720,6 +887,7 @@ struct PropagateDeviceResourceProvenancePass
       queued.erase(block);
       CellMap localMemory = memoryInputs[block];
       PointerCellMap localPointerCells = pointerInputs[block];
+      ViewMap localViews = viewInputs[block];
       for (Operation &operation : *block) {
         for (auto [index, operand] : llvm::enumerate(operation.getOperands()))
           recordCase(operandCases, &operation, invocation, index,
@@ -734,6 +902,14 @@ struct PropagateDeviceResourceProvenancePass
           auto exactCell = cellObjects == objectValues.end()
                                ? std::nullopt
                                : exactObject(cellObjects->second);
+          bool directViewField = false;
+          if (exactCell) {
+            auto origins = handleFieldValues.find(store.getValue());
+            directViewField = recordDirectViewField(
+                *exactCell, store.getValue().getType(),
+                origins == handleFieldValues.end() ? nullptr : &origins->second,
+                localViews, handles);
+          }
           if (exactCell && isHandleType(store.getValue().getType()) &&
               !stored.resource) {
             PointerCellState incoming;
@@ -779,7 +955,7 @@ struct PropagateDeviceResourceProvenancePass
                     queued.insert(user->getBlock()).second)
                   worklist.push_back(user->getBlock());
           } else {
-            if (stored.resource) {
+            if (stored.resource && !directViewField) {
               if (cell.getDefiningOp<::vrc::udonhl::AddressOfOp>())
                 store.emitError("static device resource stored through an "
                                 "unsupported or escaping global cell");
@@ -820,6 +996,25 @@ struct PropagateDeviceResourceProvenancePass
           auto exactCell = cellObjects == objectValues.end()
                                ? std::nullopt
                                : exactObject(cellObjects->second);
+          if (exactCell && load.getType().isInteger(32)) {
+            ObjectRef handle = *exactCell;
+            std::optional<HandleFieldKind> kind;
+            if (handle.offset >= 4) {
+              ObjectRef generation{handle.base, handle.offset - 4};
+              if (canHoldHandle(generation) && handles.count(generation)) {
+                handle = generation;
+                kind = HandleFieldKind::Generation;
+              }
+            }
+            if (!kind && canHoldHandle(handle) && handles.count(handle))
+              kind = HandleFieldKind::Slot;
+            if (kind) {
+              handleFieldValues[load.getResult()] = {false, {{handle, *kind}}};
+              if (*kind == HandleFieldKind::Slot)
+                updateFact(load.getResult(), handles[handle], facts, worklist,
+                           queued, reached);
+            }
+          }
           if (exactCell && isHandleType(load.getType())) {
             auto pointerCell = localPointerCells.find(*exactCell);
             if (pointerCell != localPointerCells.end() &&
@@ -981,14 +1176,15 @@ struct PropagateDeviceResourceProvenancePass
               continue;
             }
             Fact resource = handles[*exactHandle];
-            ViewState previous = views[*exactOutput];
+            ViewState previous = localViews[*exactOutput];
             ViewState next;
+            next.hasPath = true;
             next.initialized = true;
             next.mayBeInvalid = true;
             next.resource = previous.initialized
                                 ? joinFacts(previous.resource, resource)
                                 : resource;
-            views[*exactOutput] = next;
+            localViews[*exactOutput] = next;
             recordCase(operandCases, call, invocation, 0, resource);
             recordCase(operandCases, call, invocation, 4, next.resource);
             for (Value result : call.getResults())
@@ -1009,7 +1205,9 @@ struct PropagateDeviceResourceProvenancePass
                                    ? std::nullopt
                                    : exactObject(source->second);
             if (!exactSource || !canHoldView(*exactSource) ||
-                !views[*exactSource].initialized) {
+                !localViews[*exactSource].initialized ||
+                !localViews[*exactSource].resource.resource ||
+                localViews[*exactSource].resource.unknown) {
               call.emitError("udononnxCopyBufferView requires an initialized "
                              "source view subobject");
               invalid = true;
@@ -1022,11 +1220,11 @@ struct PropagateDeviceResourceProvenancePass
               invalid = true;
               continue;
             }
-            views[*exactDestination] = views[*exactSource];
+            localViews[*exactDestination] = localViews[*exactSource];
             recordCase(operandCases, call, invocation, 0,
-                       views[*exactDestination].resource);
+                       localViews[*exactDestination].resource);
             recordCase(operandCases, call, invocation, 1,
-                       views[*exactSource].resource);
+                       localViews[*exactSource].resource);
             for (Value result : call.getResults())
               updateFact(result, Fact::scalar(), facts, worklist, queued,
                          reached);
@@ -1041,13 +1239,15 @@ struct PropagateDeviceResourceProvenancePass
                                  ? std::nullopt
                                  : exactObject(view->second);
             if (!exactView || !canHoldView(*exactView) ||
-                !views[*exactView].initialized) {
+                !localViews[*exactView].initialized ||
+                !localViews[*exactView].resource.resource ||
+                localViews[*exactView].resource.unknown) {
               call.emitError("udonclBufferViewResolve requires an initialized "
                              "view subobject");
               invalid = true;
               continue;
             }
-            Fact resource = views[*exactView].resource;
+            Fact resource = localViews[*exactView].resource;
             recordCase(operandCases, call, invocation, 0, resource);
             Value cell = call.getOperand(1);
             if (auto global = globalCell(cell)) {
@@ -1076,6 +1276,7 @@ struct PropagateDeviceResourceProvenancePass
             SmallVector<Fact> actuals;
             SmallVector<std::optional<int64_t>> actualIntegers;
             SmallVector<std::optional<ObjectRefSet>> actualObjects;
+            SmallVector<HandleFieldOriginSet> actualHandleFields;
             for (Value operand : call.getOperands()) {
               actuals.push_back(valueFact(operand, facts));
               auto integer = integerValues.find(operand);
@@ -1088,13 +1289,19 @@ struct PropagateDeviceResourceProvenancePass
                   object == objectValues.end()
                       ? std::nullopt
                       : std::optional<ObjectRefSet>(object->second));
+              auto handleField = handleFieldValues.find(operand);
+              actualHandleFields.push_back(handleField ==
+                                                   handleFieldValues.end()
+                                               ? HandleFieldOriginSet()
+                                               : handleField->second);
             }
             Invocation nested = calleeInvocation(invocation, function, call);
             AnalysisResult nestedResult =
                 analyze(found->getValue(), nested, actuals, actualIntegers,
-                        actualObjects, handles, views, localPointerCells);
+                        actualObjects, actualHandleFields, handles, localViews,
+                        localPointerCells);
             handles = std::move(nestedResult.handles);
-            views = std::move(nestedResult.views);
+            localViews = std::move(nestedResult.views);
             localPointerCells = std::move(nestedResult.pointerCells);
             if (call.getNumResults() == 1 &&
                 (!nestedResult.pointerExitCases.exact.empty() ||
@@ -1111,6 +1318,12 @@ struct PropagateDeviceResourceProvenancePass
               if (index < nestedResult.integerResults.size() &&
                   nestedResult.integerResults[index])
                 integerValues[result] = *nestedResult.integerResults[index];
+            for (auto [index, result] : llvm::enumerate(call.getResults()))
+              if (index < nestedResult.handleFieldResults.size() &&
+                  (!nestedResult.handleFieldResults[index].refs.empty() ||
+                   nestedResult.handleFieldResults[index].unknown))
+                handleFieldValues[result] =
+                    nestedResult.handleFieldResults[index];
           } else {
             bool hasResource =
                 llvm::any_of(call.getOperands(), [&](Value value) {
@@ -1285,6 +1498,23 @@ struct PropagateDeviceResourceProvenancePass
               falseInteger != integerValues.end() &&
               trueInteger->second == falseInteger->second)
             integerValues[select.getResult()] = trueInteger->second;
+          auto trueHandleField = handleFieldValues.find(select.getTrueValue());
+          auto falseHandleField =
+              handleFieldValues.find(select.getFalseValue());
+          if (trueHandleField != handleFieldValues.end() ||
+              falseHandleField != handleFieldValues.end()) {
+            HandleFieldOriginSet selected;
+            if (trueHandleField != handleFieldValues.end())
+              selected = trueHandleField->second;
+            else
+              selected.unknown = true;
+            if (falseHandleField != handleFieldValues.end())
+              selected = joinHandleFieldOrigins(std::move(selected),
+                                                falseHandleField->second);
+            else
+              selected.unknown = true;
+            handleFieldValues[select.getResult()] = std::move(selected);
+          }
           updateFact(select.getResult(),
                      joinFacts(valueFact(select.getTrueValue(), facts),
                                valueFact(select.getFalseValue(), facts)),
@@ -1293,7 +1523,8 @@ struct PropagateDeviceResourceProvenancePass
           mergeSuccessor(branch.getDest(), branch.getDestOperands(), facts,
                          worklist, queued, reached, block, localMemory,
                          memoryInputs, edgeMemory, eligibleCells, objectValues,
-                         integerValues, ambiguousIntegers, localPointerCells,
+                         integerValues, ambiguousIntegers, handleFieldValues,
+                         localViews, viewInputs, edgeViews, localPointerCells,
                          pointerInputs, edgePointers, edgeIntegerArguments);
         } else if (auto branch = dyn_cast<cf::CondBranchOp>(operation)) {
           PointerCellMap truePointers = localPointerCells;
@@ -1326,26 +1557,30 @@ struct PropagateDeviceResourceProvenancePass
           mergeSuccessor(branch.getTrueDest(), branch.getTrueDestOperands(),
                          facts, worklist, queued, reached, block, localMemory,
                          memoryInputs, edgeMemory, eligibleCells, objectValues,
-                         integerValues, ambiguousIntegers, truePointers,
+                         integerValues, ambiguousIntegers, handleFieldValues,
+                         localViews, viewInputs, edgeViews, truePointers,
                          pointerInputs, edgePointers, edgeIntegerArguments);
           mergeSuccessor(branch.getFalseDest(), branch.getFalseDestOperands(),
                          facts, worklist, queued, reached, block, localMemory,
                          memoryInputs, edgeMemory, eligibleCells, objectValues,
-                         integerValues, ambiguousIntegers, falsePointers,
+                         integerValues, ambiguousIntegers, handleFieldValues,
+                         localViews, viewInputs, edgeViews, falsePointers,
                          pointerInputs, edgePointers, edgeIntegerArguments);
         } else if (auto branch = dyn_cast<cf::SwitchOp>(operation)) {
           mergeSuccessor(branch.getDefaultDestination(),
                          branch.getDefaultOperands(), facts, worklist, queued,
                          reached, block, localMemory, memoryInputs, edgeMemory,
                          eligibleCells, objectValues, integerValues,
-                         ambiguousIntegers, localPointerCells, pointerInputs,
-                         edgePointers, edgeIntegerArguments);
+                         ambiguousIntegers, handleFieldValues, localViews,
+                         viewInputs, edgeViews, localPointerCells,
+                         pointerInputs, edgePointers, edgeIntegerArguments);
           for (auto [index, destination] :
                llvm::enumerate(branch.getCaseDestinations()))
             mergeSuccessor(destination, branch.getCaseOperands(index), facts,
                            worklist, queued, reached, block, localMemory,
                            memoryInputs, edgeMemory, eligibleCells,
                            objectValues, integerValues, ambiguousIntegers,
+                           handleFieldValues, localViews, viewInputs, edgeViews,
                            localPointerCells, pointerInputs, edgePointers,
                            edgeIntegerArguments);
         } else if (auto returned = dyn_cast<func::ReturnOp>(operation)) {
@@ -1370,13 +1605,32 @@ struct PropagateDeviceResourceProvenancePass
             } else if (integerReturns[index] != returnedInteger) {
               integerReturns[index] = std::nullopt;
             }
+            auto handleField = handleFieldValues.find(operand);
+            HandleFieldOriginSet returnedHandleField;
+            if (handleField != handleFieldValues.end())
+              returnedHandleField = handleField->second;
+            if (!handleFieldReturnSeen[index]) {
+              handleFieldReturnSeen[index] = true;
+              handleFieldReturns[index] = std::move(returnedHandleField);
+            } else {
+              if (returnedHandleField.refs.empty() &&
+                  !returnedHandleField.unknown)
+                returnedHandleField.unknown = true;
+              if (handleFieldReturns[index].refs.empty() &&
+                  !handleFieldReturns[index].unknown)
+                handleFieldReturns[index].unknown = true;
+              handleFieldReturns[index] = joinHandleFieldOrigins(
+                  std::move(handleFieldReturns[index]), returnedHandleField);
+            }
           }
           if (!sawReturn) {
             returnedPointerCells = localPointerCells;
+            returnedViews = localViews;
             sawReturn = true;
           } else {
             returnedPointerCells =
                 joinPointerMaps(returnedPointerCells, localPointerCells);
+            returnedViews = joinViewMaps(returnedViews, localViews);
           }
           if (returned.getNumOperands() == 1 &&
               function.getFunctionType().getNumResults() == 1 &&
@@ -1448,8 +1702,9 @@ struct PropagateDeviceResourceProvenancePass
       recordCase(functionResultCases, function, invocation, index, fact);
     return {std::move(returns),
             std::move(integerReturns),
+            std::move(handleFieldReturns),
             std::move(handles),
-            std::move(views),
+            std::move(returnedViews),
             std::move(returnedPointerCells),
             std::move(pointerExitCases)};
   }
@@ -1482,6 +1737,9 @@ struct PropagateDeviceResourceProvenancePass
       llvm::DenseMap<Value, ObjectRefSet> &objectValues,
       llvm::DenseMap<Value, int64_t> &integerValues,
       llvm::DenseSet<Value> &ambiguousIntegers,
+      llvm::DenseMap<Value, HandleFieldOriginSet> &handleFieldValues,
+      const ViewMap &sourceViews, llvm::DenseMap<Block *, ViewMap> &viewInputs,
+      llvm::DenseMap<std::pair<Block *, Block *>, ViewMap> &edgeViews,
       const PointerCellMap &sourcePointers,
       llvm::DenseMap<Block *, PointerCellMap> &pointerInputs,
       llvm::DenseMap<std::pair<Block *, Block *>, PointerCellMap> &edgePointers,
@@ -1524,6 +1782,24 @@ struct PropagateDeviceResourceProvenancePass
           ambiguousIntegers.insert(argument);
         }
       }
+      auto incomingHandleField = handleFieldValues.find(operand);
+      auto existingHandleField = handleFieldValues.find(argument);
+      HandleFieldOriginSet previousHandleField =
+          existingHandleField == handleFieldValues.end()
+              ? HandleFieldOriginSet()
+              : existingHandleField->second;
+      if (incomingHandleField == handleFieldValues.end()) {
+        HandleFieldOriginSet &origins = handleFieldValues[argument];
+        origins.unknown = true;
+      } else if (existingHandleField == handleFieldValues.end()) {
+        handleFieldValues[argument] = incomingHandleField->second;
+      } else {
+        existingHandleField->second =
+            joinHandleFieldOrigins(std::move(existingHandleField->second),
+                                   incomingHandleField->second);
+      }
+      if (!(previousHandleField == handleFieldValues[argument]))
+        changed = true;
     }
     edgeIntegerArguments[{source, destination}] = std::move(incomingIntegers);
     edgeMemory[{source, destination}] = sourceMemory;
@@ -1544,6 +1820,23 @@ struct PropagateDeviceResourceProvenancePass
         changed = true;
     }
     memoryInputs[destination] = std::move(recomputed);
+    edgeViews[{source, destination}] = sourceViews;
+    ViewMap recomputedViews;
+    bool hasViewEdge = false;
+    for (Block *predecessor : destination->getPredecessors()) {
+      auto edge = edgeViews.find({predecessor, destination});
+      if (edge == edgeViews.end())
+        continue;
+      if (!hasViewEdge) {
+        recomputedViews = edge->second;
+        hasViewEdge = true;
+      } else {
+        recomputedViews = joinViewMaps(recomputedViews, edge->second);
+      }
+    }
+    if (viewInputs[destination] != recomputedViews)
+      changed = true;
+    viewInputs[destination] = std::move(recomputedViews);
     edgePointers[{source, destination}] = sourcePointers;
     PointerCellMap recomputedPointers;
     bool hasPointerEdge = false;
@@ -1735,6 +2028,8 @@ struct PropagateDeviceResourceProvenancePass
             root.getNumArguments(), std::nullopt);
         SmallVector<std::optional<ObjectRefSet>> argumentObjects(
             root.getNumArguments(), std::nullopt);
+        SmallVector<HandleFieldOriginSet> argumentHandleFields(
+            root.getNumArguments());
         HandleMap handles;
         ViewMap views;
         PointerCellMap pointerCells;
@@ -1743,8 +2038,8 @@ struct PropagateDeviceResourceProvenancePass
             root,
             {FlatSymbolRefAttr::get(module.getContext(), root.getSymName()),
              builder->getArrayAttr({})},
-            arguments, argumentIntegers, argumentObjects, handles, views,
-            pointerCells);
+            arguments, argumentIntegers, argumentObjects, argumentHandleFields,
+            handles, views, pointerCells);
         for (auto &[name, global] : eligibleHandleGlobals) {
           ObjectId object = globalHandleObjects[name];
           uint32_t bytes = objectSizes[object];

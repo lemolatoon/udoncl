@@ -21,6 +21,38 @@ module {
     return
   }
 
+  func.func private @initializeDirectView(%slot: i32, %generation: i32, %view: !udonhl.ptr<0>) {
+    %zero = arith.constant 0 : i32
+    %four = arith.constant 4 : i32
+    %eight = arith.constant 8 : i32
+    %twelve = arith.constant 12 : i32
+    %sixteen = arith.constant 16 : i32
+    %bytes = arith.constant 64 : i32
+    %dtype = arith.constant 6 : i32
+    "udonhl.store"(%slot, %view) <{alignment = 4 : i64}> : (i32, !udonhl.ptr<0>) -> ()
+    %view4 = "udonhl.ptr_add"(%view, %four) : (!udonhl.ptr<0>, i32) -> !udonhl.ptr<0>
+    "udonhl.store"(%generation, %view4) <{alignment = 4 : i64}> : (i32, !udonhl.ptr<0>) -> ()
+    %view8 = "udonhl.ptr_add"(%view, %eight) : (!udonhl.ptr<0>, i32) -> !udonhl.ptr<0>
+    "udonhl.store"(%zero, %view8) <{alignment = 4 : i64}> : (i32, !udonhl.ptr<0>) -> ()
+    %view12 = "udonhl.ptr_add"(%view, %twelve) : (!udonhl.ptr<0>, i32) -> !udonhl.ptr<0>
+    "udonhl.store"(%bytes, %view12) <{alignment = 4 : i64}> : (i32, !udonhl.ptr<0>) -> ()
+    %view16 = "udonhl.ptr_add"(%view, %sixteen) : (!udonhl.ptr<0>, i32) -> !udonhl.ptr<0>
+    "udonhl.store"(%dtype, %view16) <{alignment = 4 : i64}> : (i32, !udonhl.ptr<0>) -> ()
+    return
+  }
+
+  func.func private @initializeDirectViewBranch(%condition: i1, %slot: i32, %generation: i32, %view: !udonhl.ptr<0>) {
+    cf.cond_br %condition, ^bb1, ^bb2
+  ^bb1:
+    func.call @initializeDirectView(%slot, %generation, %view) : (i32, i32, !udonhl.ptr<0>) -> ()
+    cf.br ^bb3
+  ^bb2:
+    func.call @initializeDirectView(%slot, %generation, %view) : (i32, i32, !udonhl.ptr<0>) -> ()
+    cf.br ^bb3
+  ^bb3:
+    return
+  }
+
   func.func @Run() attributes {udoncl.export} {
     %zero = arith.constant 0 : i32
     %four = arith.constant 4 : i32
@@ -38,12 +70,21 @@ module {
     %viewed = func.call @udonclDeviceBufferView(%handle, %zero, %elements, %dtype, %view) : (!udonhl.ptr<0>, i32, i32, i32, !udonhl.ptr<0>) -> i32
     %tensor = "udonhl.alloca"(%eighty_eight) <{alignment = 8 : i64}> : (i32) -> !udonhl.ptr<0>
     func.call @udononnxCopyBufferView(%tensor, %view) : (!udonhl.ptr<0>, !udonhl.ptr<0>) -> ()
+    %slot = "udonhl.load"(%handle) <{alignment = 4 : i64}> : (!udonhl.ptr<0>) -> i32
+    %handle4 = "udonhl.ptr_add"(%handle, %four) : (!udonhl.ptr<0>, i32) -> !udonhl.ptr<0>
+    %generation = "udonhl.load"(%handle4) <{alignment = 4 : i64}> : (!udonhl.ptr<0>) -> i32
+    %direct_view = "udonhl.alloca"(%twenty) <{alignment = 4 : i64}> : (i32) -> !udonhl.ptr<0>
+    %condition = arith.constant true
+    func.call @initializeDirectViewBranch(%condition, %slot, %generation, %direct_view) : (i1, i32, i32, !udonhl.ptr<0>) -> ()
+    %direct_tensor = "udonhl.alloca"(%eighty_eight) <{alignment = 8 : i64}> : (i32) -> !udonhl.ptr<0>
+    func.call @udononnxCopyBufferView(%direct_tensor, %direct_view) : (!udonhl.ptr<0>, !udonhl.ptr<0>) -> ()
     %raw_cell = "udonhl.alloca"(%four) <{alignment = 4 : i64}> : (i32) -> !udonhl.ptr<0>
     %null = "udonhl.inttoptr"(%zero) : (i32) -> !udonhl.ptr<0>
     "udonhl.store"(%null, %raw_cell) <{alignment = 4 : i64}> : (!udonhl.ptr<0>, !udonhl.ptr<0>) -> ()
     %offset_cell = "udonhl.alloca"(%four) <{alignment = 4 : i64}> : (i32) -> !udonhl.ptr<0>
     %length_cell = "udonhl.alloca"(%four) <{alignment = 4 : i64}> : (i32) -> !udonhl.ptr<0>
     %resolved = func.call @udonclBufferViewResolve(%tensor, %raw_cell, %offset_cell, %length_cell) : (!udonhl.ptr<0>, !udonhl.ptr<0>, !udonhl.ptr<0>, !udonhl.ptr<0>) -> i32
+    %direct_resolved = func.call @udonclBufferViewResolve(%direct_tensor, %raw_cell, %offset_cell, %length_cell) : (!udonhl.ptr<0>, !udonhl.ptr<0>, !udonhl.ptr<0>, !udonhl.ptr<0>) -> i32
     %raw = "udonhl.load"(%raw_cell) <{alignment = 4 : i64}> : (!udonhl.ptr<0>) -> !udonhl.ptr<0>
     %released = func.call @clReleaseMemObject(%raw) : (!udonhl.ptr<0>) -> i32
     return
