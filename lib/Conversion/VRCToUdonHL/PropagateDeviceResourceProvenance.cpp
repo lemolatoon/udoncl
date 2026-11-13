@@ -630,13 +630,17 @@ struct PropagateDeviceResourceProvenancePass
   llvm::StringMap<::vrc::udonhl::GlobalOp> eligibleHandleGlobals;
   llvm::StringMap<ObjectId> globalObjects;
   llvm::StringMap<ObjectId> globalHandleObjects;
+  llvm::DenseSet<ObjectId> globalObjectIds;
   HandleMap globalHandleFacts;
   HandleMap globalHandleWrites;
+  PointerCellMap globalPointerFacts;
+  PointerCellMap globalPointerWrites;
   llvm::DenseMap<ObjectId, uint32_t> objectSizes;
   std::map<std::tuple<std::string, std::string, Operation *>, ObjectId>
       localHandleObjects;
   ObjectId nextObjectId = 0;
   bool hasConfiguredRoots = false;
+  bool collectingGlobalSummaries = false;
   bool invalid = false;
 
   std::string invocationPathKey(ArrayAttr path) {
@@ -1278,6 +1282,8 @@ struct PropagateDeviceResourceProvenancePass
                 !localViews[*exactSource].initialized ||
                 !localViews[*exactSource].resource.resource ||
                 localViews[*exactSource].resource.unknown) {
+              if (collectingGlobalSummaries)
+                continue;
               call.emitError("udononnxCopyBufferView requires an initialized "
                              "source view subobject in @")
                   << function.getSymName() << ": " << call.getOperand(1);
@@ -1285,9 +1291,12 @@ struct PropagateDeviceResourceProvenancePass
               continue;
             }
             if (!exactDestination || !canHoldView(*exactDestination)) {
+              if (collectingGlobalSummaries)
+                continue;
               call.emitError("udononnxCopyBufferView requires an exact "
-                             "destination view subobject: ")
-                  << call.getOperand(0);
+                             "destination view subobject in @")
+                  << function.getSymName() << " from root @"
+                  << invocation.root.getValue() << ": " << call.getOperand(0);
               invalid = true;
               continue;
             }
@@ -1313,6 +1322,8 @@ struct PropagateDeviceResourceProvenancePass
                 !localViews[*exactView].initialized ||
                 !localViews[*exactView].resource.resource ||
                 localViews[*exactView].resource.unknown) {
+              if (collectingGlobalSummaries)
+                continue;
               call.emitError("udonclBufferViewResolve requires an initialized "
                              "view subobject in @")
                   << function.getSymName() << " from root @"
@@ -2055,8 +2066,11 @@ struct PropagateDeviceResourceProvenancePass
     eligibleHandleGlobals.clear();
     globalObjects.clear();
     globalHandleObjects.clear();
+    globalObjectIds.clear();
     globalHandleFacts.clear();
     globalHandleWrites.clear();
+    globalPointerFacts.clear();
+    globalPointerWrites.clear();
     localHandleObjects.clear();
     objectSizes.clear();
     nextObjectId = 0;
@@ -2101,6 +2115,7 @@ struct PropagateDeviceResourceProvenancePass
         globalObjects[global.getSymName()] = nextObjectId++;
         objectSizes[globalObjects[global.getSymName()]] =
             static_cast<uint32_t>(*objectBytes);
+        globalObjectIds.insert(globalObjects[global.getSymName()]);
       }
       if (global.getLinkage() == "internal" && !global.getConstant() &&
           global.getAddressSpace() == 0 && global.getAlignment() >= 4 &&
@@ -2139,9 +2154,11 @@ struct PropagateDeviceResourceProvenancePass
       return left.getSymName() < right.getSymName();
     });
     bool converged = false;
+    collectingGlobalSummaries = true;
     for (unsigned iteration = 0; iteration != 100 && !invalid; ++iteration) {
       globalWrites.clear();
       globalHandleWrites.clear();
+      globalPointerWrites.clear();
       for (auto &[name, global] : eligibleGlobals)
         globalWrites[name] = Fact();
       for (func::FuncOp root : roots) {
@@ -2154,7 +2171,7 @@ struct PropagateDeviceResourceProvenancePass
             root.getNumArguments());
         HandleMap handles;
         ViewMap views;
-        PointerCellMap pointerCells;
+        PointerCellMap pointerCells = globalPointerFacts;
         handles = globalHandleFacts;
         AnalysisResult result = analyze(
             root,
@@ -2169,6 +2186,27 @@ struct PropagateDeviceResourceProvenancePass
             ObjectRef handle{object, static_cast<int32_t>(offset)};
             globalHandleWrites[handle] =
                 joinFacts(globalHandleWrites[handle], result.handles[handle]);
+          }
+        }
+        for (const auto &[cell, state] : result.pointerCells) {
+          if (!globalObjectIds.contains(cell.base) || !state.hasPath ||
+              (state.objects.refs.empty() && !state.objects.unknown))
+            continue;
+          ObjectRefSet persistentTargets;
+          persistentTargets.unknown = state.objects.unknown;
+          for (ObjectRef target : state.objects.refs)
+            if (globalObjectIds.contains(target.base))
+              persistentTargets.refs.push_back(target);
+            else
+              persistentTargets.unknown = true;
+          PointerCellState &write = globalPointerWrites[cell];
+          if (!write.hasPath) {
+            write = state;
+            write.objects = std::move(persistentTargets);
+            write.initializedOnAllPaths = true;
+          } else {
+            write.objects =
+                joinObjectRefs(std::move(write.objects), persistentTargets);
           }
         }
         if (invalid)
@@ -2193,8 +2231,27 @@ struct PropagateDeviceResourceProvenancePass
           converged = false;
         }
       }
-      if (converged)
+      for (const auto &[cell, write] : globalPointerWrites) {
+        PointerCellState next = write;
+        auto current = globalPointerFacts.find(cell);
+        if (current != globalPointerFacts.end()) {
+          next.objects = joinObjectRefs(current->second.objects, next.objects);
+          next.hasPath = true;
+          next.initializedOnAllPaths = true;
+        }
+        if (current == globalPointerFacts.end() || !(current->second == next)) {
+          globalPointerFacts[cell] = std::move(next);
+          converged = false;
+        }
+      }
+      if (converged) {
+        if (collectingGlobalSummaries) {
+          collectingGlobalSummaries = false;
+          converged = false;
+          continue;
+        }
         break;
+      }
     }
     if (!invalid && !converged) {
       module.emitError("global device resource provenance did not converge");
