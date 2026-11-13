@@ -40,6 +40,25 @@ module {
     return
   }
 
+  func.func private @selectNullableState(%state: !udonhl.ptr<0>, %condition: i1) -> !udonhl.ptr<0> {
+    %zero = arith.constant 0 : i32
+    %null = "udonhl.inttoptr"(%zero) : (i32) -> !udonhl.ptr<0>
+    %selected = arith.select %condition, %state, %null : !udonhl.ptr<0>
+    return %selected : !udonhl.ptr<0>
+  }
+
+  func.func private @mergeNullableState(%state: !udonhl.ptr<0>, %condition: i1) -> !udonhl.ptr<0> {
+    %zero = arith.constant 0 : i32
+    %null = "udonhl.inttoptr"(%zero) : (i32) -> !udonhl.ptr<0>
+    cf.cond_br %condition, ^present, ^absent
+  ^present:
+    cf.br ^done(%state : !udonhl.ptr<0>)
+  ^absent:
+    cf.br ^done(%null : !udonhl.ptr<0>)
+  ^done(%merged: !udonhl.ptr<0>):
+    return %merged : !udonhl.ptr<0>
+  }
+
   func.func @AInitializePersistentPointer() attributes {udoncl.export} {
     %eight = arith.constant 8 : i32
     %session = udonhl.address_of @persistent_session : !udonhl.ptr<0>
@@ -50,6 +69,7 @@ module {
   }
 
   func.func @BUsePersistentPointer() attributes {udoncl.export} {
+    %true = arith.constant true
     %zero = arith.constant 0 : i32
     %four = arith.constant 4 : i32
     %eight = arith.constant 8 : i32
@@ -64,7 +84,9 @@ module {
     %view = "udonhl.alloca"(%twenty) <{alignment = 4 : i64}> : (i32) -> !udonhl.ptr<0>
     %viewed = func.call @udonclDeviceBufferView(%handle, %zero, %elements, %dtype, %view) : (!udonhl.ptr<0>, i32, i32, i32, !udonhl.ptr<0>) -> i32
     %session = udonhl.address_of @persistent_session : !udonhl.ptr<0>
-    %bindings_cell = "udonhl.ptr_add"(%session, %eight) : (!udonhl.ptr<0>, i32) -> !udonhl.ptr<0>
+    %selected_session = func.call @selectNullableState(%session, %true) : (!udonhl.ptr<0>, i1) -> !udonhl.ptr<0>
+    %merged_session = func.call @mergeNullableState(%selected_session, %true) : (!udonhl.ptr<0>, i1) -> !udonhl.ptr<0>
+    %bindings_cell = "udonhl.ptr_add"(%merged_session, %eight) : (!udonhl.ptr<0>, i32) -> !udonhl.ptr<0>
     %binding = "udonhl.load"(%bindings_cell) <{alignment = 4 : i64}> : (!udonhl.ptr<0>) -> !udonhl.ptr<0>
     func.call @udononnxCopyBufferView(%binding, %view) : (!udonhl.ptr<0>, !udonhl.ptr<0>) -> ()
     %raw_cell = "udonhl.alloca"(%four) <{alignment = 4 : i64}> : (i32) -> !udonhl.ptr<0>

@@ -258,6 +258,7 @@ bool operator==(const PointerCellState &left, const PointerCellState &right) {
 struct AnalysisResult {
   SmallVector<Fact> results;
   SmallVector<std::optional<int64_t>> integerResults;
+  SmallVector<std::optional<ObjectRefSet>> objectResults;
   SmallVector<HandleFieldOriginSet> handleFieldResults;
   HandleMap handles;
   ViewMap views;
@@ -741,6 +742,18 @@ struct PropagateDeviceResourceProvenancePass
     return Fact::scalar();
   }
 
+  ObjectRefSet
+  objectAlternative(Value value, llvm::DenseMap<Value, Fact> &facts,
+                    llvm::DenseMap<Value, ObjectRefSet> &objectValues) {
+    auto object = objectValues.find(value);
+    if (object != objectValues.end())
+      return object->second;
+    ObjectRefSet alternative;
+    if (!valueFact(value, facts).zero)
+      alternative.unknown = true;
+    return alternative;
+  }
+
   void updateHandle(ObjectRef object, const Fact &incoming, HandleMap &handles,
                     SmallVectorImpl<Block *> &worklist,
                     llvm::DenseSet<Block *> &queued,
@@ -858,6 +871,8 @@ struct PropagateDeviceResourceProvenancePass
                                   Fact::scalar()),
                 SmallVector<std::optional<int64_t>>(
                     function.getFunctionType().getNumResults(), std::nullopt),
+                SmallVector<std::optional<ObjectRefSet>>(
+                    function.getFunctionType().getNumResults(), std::nullopt),
                 SmallVector<HandleFieldOriginSet>(
                     function.getFunctionType().getNumResults()),
                 incomingHandles,
@@ -870,6 +885,7 @@ struct PropagateDeviceResourceProvenancePass
       invalid = true;
       return {SmallVector<Fact>(),
               SmallVector<std::optional<int64_t>>(),
+              SmallVector<std::optional<ObjectRefSet>>(),
               SmallVector<HandleFieldOriginSet>(),
               HandleMap(),
               ViewMap(),
@@ -919,6 +935,10 @@ struct PropagateDeviceResourceProvenancePass
     SmallVector<Fact> returns(function.getFunctionType().getNumResults());
     SmallVector<std::optional<int64_t>> integerReturns(
         function.getFunctionType().getNumResults(), std::nullopt);
+    SmallVector<std::optional<ObjectRefSet>> objectReturns(
+        function.getFunctionType().getNumResults(), std::nullopt);
+    SmallVector<bool> objectReturnSeen(
+        function.getFunctionType().getNumResults(), false);
     SmallVector<HandleFieldOriginSet> handleFieldReturns(
         function.getFunctionType().getNumResults());
     SmallVector<bool> handleFieldReturnSeen(
@@ -1406,6 +1426,10 @@ struct PropagateDeviceResourceProvenancePass
                   nestedResult.integerResults[index])
                 integerValues[result] = *nestedResult.integerResults[index];
             for (auto [index, result] : llvm::enumerate(call.getResults()))
+              if (index < nestedResult.objectResults.size() &&
+                  nestedResult.objectResults[index])
+                objectValues[result] = *nestedResult.objectResults[index];
+            for (auto [index, result] : llvm::enumerate(call.getResults()))
               if (index < nestedResult.handleFieldResults.size() &&
                   (!nestedResult.handleFieldResults[index].refs.empty() ||
                    nestedResult.handleFieldResults[index].unknown))
@@ -1563,22 +1587,10 @@ struct PropagateDeviceResourceProvenancePass
           updateFact(compare.getResult(), Fact::scalar(), facts, worklist,
                      queued, reached);
         } else if (auto select = dyn_cast<arith::SelectOp>(operation)) {
-          auto trueObject = objectValues.find(select.getTrueValue());
-          auto falseObject = objectValues.find(select.getFalseValue());
-          if (trueObject != objectValues.end() ||
-              falseObject != objectValues.end()) {
-            ObjectRefSet selected;
-            if (trueObject != objectValues.end())
-              selected = trueObject->second;
-            else
-              selected.unknown = true;
-            if (falseObject != objectValues.end())
-              selected =
-                  joinObjectRefs(std::move(selected), falseObject->second);
-            else
-              selected.unknown = true;
-            objectValues[select.getResult()] = std::move(selected);
-          }
+          if (isHandleType(select.getType()))
+            objectValues[select.getResult()] = joinObjectRefs(
+                objectAlternative(select.getTrueValue(), facts, objectValues),
+                objectAlternative(select.getFalseValue(), facts, objectValues));
           auto trueInteger = integerValues.find(select.getTrueValue());
           auto falseInteger = integerValues.find(select.getFalseValue());
           if (trueInteger != integerValues.end() &&
@@ -1690,6 +1702,17 @@ struct PropagateDeviceResourceProvenancePass
               invalid = true;
             }
             returns[index] = joinFacts(returns[index], fact);
+            if (isHandleType(operand.getType())) {
+              ObjectRefSet returnedObject =
+                  objectAlternative(operand, facts, objectValues);
+              if (!objectReturnSeen[index]) {
+                objectReturnSeen[index] = true;
+                objectReturns[index] = std::move(returnedObject);
+              } else {
+                objectReturns[index] = joinObjectRefs(
+                    std::move(*objectReturns[index]), returnedObject);
+              }
+            }
             std::optional<int64_t> returnedInteger;
             auto integer = integerValues.find(operand);
             if (integer != integerValues.end())
@@ -1829,6 +1852,7 @@ struct PropagateDeviceResourceProvenancePass
       recordCase(functionResultCases, function, invocation, index, fact);
     return {std::move(returns),
             std::move(integerReturns),
+            std::move(objectReturns),
             std::move(handleFieldReturns),
             std::move(handles),
             std::move(returnedViews),
@@ -1882,16 +1906,15 @@ struct PropagateDeviceResourceProvenancePass
                      queued, reached)) {
         changed = true;
       }
-      auto incomingObject = objectValues.find(operand);
-      if (incomingObject != objectValues.end()) {
+      if (isHandleType(argument.getType())) {
+        ObjectRefSet incomingObject =
+            objectAlternative(operand, facts, objectValues);
         auto existingObject = objectValues.find(argument);
         if (existingObject == objectValues.end())
-          objectValues[argument] = incomingObject->second;
+          objectValues[argument] = std::move(incomingObject);
         else
-          existingObject->second = joinObjectRefs(
-              std::move(existingObject->second), incomingObject->second);
-      } else {
-        objectValues[argument].unknown = true;
+          existingObject->second =
+              joinObjectRefs(std::move(existingObject->second), incomingObject);
       }
       auto incomingInteger = integerValues.find(operand);
       incomingIntegers.push_back(
