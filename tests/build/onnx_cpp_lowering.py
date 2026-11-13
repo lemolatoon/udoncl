@@ -9,6 +9,41 @@ import sys
 opt = Path(sys.argv[1])
 host_opt = Path(sys.argv[2])
 source = Path(sys.argv[3])
+
+
+def global_definition(text, symbol):
+    return next(
+        line
+        for line in text.splitlines()
+        if '"udonhl.global"' in line and f'sym_name = "{symbol}"' in line
+    )
+
+
+def assert_pointer_global_accesses(text, symbol):
+    loads = []
+    stores = []
+    address_count = 0
+    for function in re.split(r"(?=  func\.func )", text):
+        addresses = re.findall(
+            rf"(%[A-Za-z0-9_.$]+) = udonhl\.address_of @{re.escape(symbol)} ",
+            function,
+        )
+        address_count += len(addresses)
+        for line in function.splitlines():
+            if any(f'"udonhl.load"({address})' in line for address in addresses):
+                loads.append(line)
+            if any(
+                '"udonhl.store"' in line and f", {address})" in line
+                for address in addresses
+            ):
+                stores.append(line)
+    assert address_count and loads and stores, (symbol, address_count)
+    assert all("-> !udonhl.ptr<0>" in line for line in loads), loads
+    assert all(
+        "(!udonhl.ptr<0>, !udonhl.ptr<0>) -> ()" in line for line in stores
+    ), stores
+
+
 result = subprocess.run(
     [
         opt,
@@ -286,6 +321,18 @@ assert "udoncl.onnx_device_unsupported = []" in unary_host.stdout
 assert unary_host.stdout.count("call @__vrc_opencl_dispatch_udondnn_large_op_tensor") == 1
 assert unary_host.stdout.count("call @__vrc_opencl_dispatch_udondnn_large_activation") == 2
 assert unary_host.stdout.count("@__udon_onnx_device_buffer_") == 6
+device_symbols = re.findall(
+    r'sym_name = "(__udon_onnx_device_buffer_[0-9]+)"', unary_host.stdout
+)
+assert len(device_symbols) == 2
+for symbol in device_symbols:
+    definition = global_definition(unary_host.stdout, symbol)
+    assert "storage_type = !udonhl.ptr<0>" in definition
+    assert "initial_value = 0 : i32" in definition
+    assert_pointer_global_accesses(unary_host.stdout, symbol)
+assert "storage_type = i32" in global_definition(
+    unary_host.stdout, "__udon_onnx_binding_event"
+)
 assert unary_host.stdout.count("call @__vrc_opencl_dispatch_udononnx_unary_f32") == 3
 assert "call @udononnxCos" not in unary_host.stdout
 assert "call @udononnxSin" not in unary_host.stdout
@@ -438,6 +485,9 @@ gemm_bias_calls = call_arguments(
 assert len(gemm_calls) == 1
 assert len(gemm_bias_calls) == 1
 assert "@__udon_onnx_operator_scratch" in gemm_bias_host.stdout
+assert_pointer_global_accesses(
+    gemm_bias_host.stdout, "__udon_onnx_operator_scratch"
+)
 assert gemm_calls[0][2] == gemm_bias_calls[0][0]
 assert gemm_bias_calls[0][0] == gemm_bias_calls[0][2]
 assert gemm_bias_calls[0][2] != gemm_bias_calls[0][3]
@@ -474,6 +524,12 @@ assert (
 )
 assert "call @udononnxMatMulNBits" not in q4_host.stdout
 assert "@__udon_onnx_operator_scratch" in q4_host.stdout
+scratch_definition = global_definition(
+    q4_host.stdout, "__udon_onnx_operator_scratch"
+)
+assert "storage_type = !udonhl.ptr<0>" in scratch_definition
+assert "initial_value = 0 : i32" in scratch_definition
+assert_pointer_global_accesses(q4_host.stdout, "__udon_onnx_operator_scratch")
 assert q4_host.stdout.count("arith.constant 524288 : i32") >= 2
 assert "call @__vrc_opencl_buffer_copy" in q4_host.stdout
 assert "call @__vrc_opencl_await" in q4_host.stdout
@@ -532,6 +588,9 @@ assert (
 )
 assert "call @udonatenRmsNorm" not in rmsnorm_device_host.stdout
 assert "@__udon_onnx_operator_scratch" in rmsnorm_device_host.stdout
+assert_pointer_global_accesses(
+    rmsnorm_device_host.stdout, "__udon_onnx_operator_scratch"
+)
 assert "arith.constant 65536 : i32" in rmsnorm_device_host.stdout
 
 batched_matmul_source = source.with_name("onnx_batched_matmul.mlir")

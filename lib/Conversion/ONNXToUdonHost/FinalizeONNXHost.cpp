@@ -492,6 +492,20 @@ void createI32Global(ModuleOp module, StringRef symbol) {
   builder.create(state);
 }
 
+void createPointerGlobal(ModuleOp module, StringRef symbol) {
+  OpBuilder builder(module.getBodyRegion());
+  builder.setInsertionPointToEnd(module.getBody());
+  OperationState state(module.getLoc(), host::GlobalOp::getOperationName());
+  state.addAttribute("sym_name", builder.getStringAttr(symbol));
+  state.addAttribute("storage_type",
+                     TypeAttr::get(host::PtrType::get(module.getContext(), 0)));
+  state.addAttribute("initial_value", builder.getI32IntegerAttr(0));
+  state.addAttribute("linkage", builder.getStringAttr("internal"));
+  state.addAttribute("address_space", builder.getI32IntegerAttr(0));
+  state.addAttribute("alignment", builder.getI64IntegerAttr(4));
+  builder.create(state);
+}
+
 void createByteGlobal(ModuleOp module, StringRef symbol, ArrayRef<int8_t> bytes,
                       int64_t alignment = 1) {
   OpBuilder builder(module.getBodyRegion());
@@ -741,6 +755,14 @@ Value loadI32(OpBuilder &builder, Location location, Value pointer) {
   OperationState state(location, host::LoadOp::getOperationName());
   state.addOperands(pointer);
   state.addTypes(builder.getI32Type());
+  state.addAttribute("alignment", builder.getI64IntegerAttr(4));
+  return builder.create(state)->getResult(0);
+}
+
+Value loadPointer(OpBuilder &builder, Location location, Value pointer) {
+  OperationState state(location, host::LoadOp::getOperationName());
+  state.addOperands(pointer);
+  state.addTypes(host::PtrType::get(builder.getContext(), 0));
   state.addAttribute("alignment", builder.getI64IntegerAttr(4));
   return builder.create(state)->getResult(0);
 }
@@ -3685,12 +3707,12 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
     Value bufferError = allocaI32(builder, location);
     SmallVector<unsigned> storage = deviceStorage(graph);
     auto storeDeviceBuffer = [&](StringRef symbol, Value created) {
-      Value handle = pointerToInt(builder, location, created);
       Value errorSucceeded = arith::CmpIOp::create(
           builder, location, arith::CmpIPredicate::eq,
           loadI32(builder, location, bufferError), onnxStatus(0));
       Value handleValid = arith::CmpIOp::create(
-          builder, location, arith::CmpIPredicate::ne, handle, onnxStatus(0));
+          builder, location, arith::CmpIPredicate::ne,
+          pointerToInt(builder, location, created), onnxStatus(0));
       Value succeeded =
           arith::AndIOp::create(builder, location, errorSucceeded, handleValid);
       Block *next = initialize.addBlock();
@@ -3700,7 +3722,7 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
       builder.setInsertionPointToEnd(failure);
       func::ReturnOp::create(builder, location, onnxStatus(5));
       builder.setInsertionPointToEnd(next);
-      store(builder, location, handle, addressOf(builder, location, symbol));
+      store(builder, location, created, addressOf(builder, location, symbol));
     };
     auto allocateDeviceBuffer = [&](StringRef symbol, int64_t bytes) {
       auto created = func::CallOp::create(
@@ -3761,17 +3783,17 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
   SmallVector<unsigned> disposeStorage = deviceStorage(graph);
   auto releaseDeviceBuffer = [&](StringRef symbol) {
     Value address = addressOf(builder, location, symbol);
-    Value handle = loadI32(builder, location, address);
+    Value handle = loadPointer(builder, location, address);
     Value active = arith::CmpIOp::create(
-        builder, location, arith::CmpIPredicate::ne, handle, onnxStatus(0));
+        builder, location, arith::CmpIPredicate::ne,
+        pointerToInt(builder, location, handle), onnxStatus(0));
     Block *release = dispose.addBlock();
     Block *next = dispose.addBlock();
     cf::CondBranchOp::create(builder, location, active, release, ValueRange{},
                              next, ValueRange{});
     builder.setInsertionPointToEnd(release);
     auto released = func::CallOp::create(
-        builder, location, "clReleaseMemObject", TypeRange{i32},
-        intToPointer(builder, location, handle));
+        builder, location, "clReleaseMemObject", TypeRange{i32}, handle);
     Value releaseSucceeded =
         arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
                               released.getResult(0), onnxStatus(0));
@@ -3779,7 +3801,7 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
         builder, location, releaseSucceeded,
         loadI32(builder, location, disposeStatus), onnxStatus(5));
     store(builder, location, updatedStatus, disposeStatus);
-    store(builder, location, onnxStatus(0), address);
+    store(builder, location, nullPointer(builder, location), address);
     cf::BranchOp::create(builder, location, next);
     builder.setInsertionPointToEnd(next);
   };
@@ -3934,11 +3956,9 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
       } else if (!llvm::is_contained(graph.inputs, tensorIndex) &&
                  (!llvm::is_contained(graph.outputs, tensorIndex) ||
                   needsQ4Surface(graph, tensorIndex))) {
-        Value handle =
-            intToPointer(builder, location,
-                         loadI32(builder, location,
-                                 addressOf(builder, location,
-                                           deviceBufferSymbol(tensorIndex))));
+        Value handle = loadPointer(
+            builder, location,
+            addressOf(builder, location, deviceBufferSymbol(tensorIndex)));
         buffers[tensorIndex] = resolvePhysicalBuffer(handle);
       }
     }
@@ -3978,10 +3998,9 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
     };
     Value operatorScratch;
     if (operatorScratchBytes(graph)) {
-      Value handle = intToPointer(
-          builder, location,
-          loadI32(builder, location,
-                  addressOf(builder, location, operatorScratchSymbol)));
+      Value handle =
+          loadPointer(builder, location,
+                      addressOf(builder, location, operatorScratchSymbol));
       operatorScratch = resolvePhysicalBuffer(handle);
     }
     for (const NodeRecord &node : graph.nodes) {
@@ -4762,9 +4781,9 @@ struct FinalizeONNXHostPass
           !llvm::is_contained(graph->inputs, tensorIndex) &&
           (!llvm::is_contained(graph->outputs, tensorIndex) ||
            needsQ4Surface(*graph, tensorIndex)))
-        createI32Global(module, deviceBufferSymbol(tensorIndex));
+        createPointerGlobal(module, deviceBufferSymbol(tensorIndex));
     if (deviceGraph && operatorScratchBytes(*graph))
-      createI32Global(module, operatorScratchSymbol);
+      createPointerGlobal(module, operatorScratchSymbol);
     Builder builder(module.getContext());
     if (!deviceGraph) {
       createWriteExport(module, *graph, builder.getF32Type(), "float");
