@@ -554,6 +554,53 @@ struct PendingMemoryEffect {
   ViewExitCases viewCases;
 };
 
+PendingMemoryEffect transformPendingComparison(
+    Operation *operation, const PendingMemoryEffect &source, int64_t constant,
+    bool equal, const llvm::DenseSet<ObjectId> &zeroObjects) {
+  PendingMemoryEffect transformed;
+  transformed.call = operation;
+  auto resultFor = [&](int64_t status) {
+    return static_cast<int64_t>((status == constant) == equal);
+  };
+  for (const auto &[status, cells] : source.resourceCellCases.exact)
+    addResourceCellExitCase(transformed.resourceCellCases, resultFor(status),
+                            cells);
+  for (const auto &unknown : source.resourceCellCases.unknown) {
+    if (unknown.excluded.count(constant)) {
+      addResourceCellExitCase(transformed.resourceCellCases, equal ? 0 : 1,
+                              unknown.cells);
+    } else {
+      addResourceCellExitCase(transformed.resourceCellCases, 0, unknown.cells);
+      addResourceCellExitCase(transformed.resourceCellCases, 1, unknown.cells);
+    }
+  }
+  for (const auto &[status, cells] : source.pointerCases.exact)
+    addPointerExitCase(transformed.pointerCases, resultFor(status), cells,
+                       zeroObjects);
+  for (const auto &unknown : source.pointerCases.unknown) {
+    if (unknown.excluded.count(constant)) {
+      addPointerExitCase(transformed.pointerCases, equal ? 0 : 1,
+                         unknown.pointerCells, zeroObjects);
+    } else {
+      addPointerExitCase(transformed.pointerCases, 0, unknown.pointerCells,
+                         zeroObjects);
+      addPointerExitCase(transformed.pointerCases, 1, unknown.pointerCells,
+                         zeroObjects);
+    }
+  }
+  for (const auto &[status, views] : source.viewCases.exact)
+    addViewExitCase(transformed.viewCases, resultFor(status), views);
+  for (const auto &unknown : source.viewCases.unknown) {
+    if (unknown.excluded.count(constant)) {
+      addViewExitCase(transformed.viewCases, equal ? 0 : 1, unknown.views);
+    } else {
+      addViewExitCase(transformed.viewCases, 0, unknown.views);
+      addViewExitCase(transformed.viewCases, 1, unknown.views);
+    }
+  }
+  return transformed;
+}
+
 struct ComparisonRefinement {
   Value subject;
   int64_t constant = 0;
@@ -965,7 +1012,8 @@ struct PropagateDeviceResourceProvenancePass
     }
     Fact handle = valueFact(call.getOperand(0), facts);
     if (handle.resource && handle.unknown) {
-      call.emitError("resource use has unresolved non-handle provenance");
+      call.emitError("resource use has unresolved non-handle provenance in @")
+          << call->getParentOfType<func::FuncOp>().getSymName();
       invalid = true;
     }
     if (valueFact(call.getOperand(1), facts).resource) {
@@ -1897,13 +1945,31 @@ struct PropagateDeviceResourceProvenancePass
               if (found != integerValues.end())
                 constant = found->second;
             }
-            if (subject && constant)
+            if (subject && constant) {
               comparisonRefinements[compare.getResult()] = {
                   subject, *constant,
                   compare.getPredicate() == arith::CmpIPredicate::eq};
+              pendingMemoryEffects[compare.getResult()] =
+                  transformPendingComparison(
+                      compare, pendingMemoryEffects[subject], *constant,
+                      compare.getPredicate() == arith::CmpIPredicate::eq,
+                      zeroInitializedGlobalObjectIds);
+            }
           }
           updateFact(compare.getResult(), Fact::scalar(), facts, worklist,
                      queued, reached);
+        } else if (auto extend = dyn_cast<arith::ExtUIOp>(operation)) {
+          auto integer = integerValues.find(extend.getIn());
+          if (integer != integerValues.end())
+            integerValues[extend.getOut()] = integer->second;
+          auto pending = pendingMemoryEffects.find(extend.getIn());
+          if (pending != pendingMemoryEffects.end()) {
+            PendingMemoryEffect forwarded = pending->second;
+            forwarded.call = extend;
+            pendingMemoryEffects[extend.getOut()] = std::move(forwarded);
+          }
+          updateFact(extend.getOut(), Fact::scalar(), facts, worklist, queued,
+                     reached);
         } else if (auto select = dyn_cast<arith::SelectOp>(operation)) {
           if (isHandleType(select.getType()))
             objectValues[select.getResult()] = joinObjectRefs(

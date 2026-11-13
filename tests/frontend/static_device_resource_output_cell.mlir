@@ -12,13 +12,16 @@ module {
 
   func.func private @resolve_outer(%view: !udonhl.ptr<0>, %raw: !udonhl.ptr<0>, %offset: !udonhl.ptr<0>, %length: !udonhl.ptr<0>) -> i32 {
     %zero = arith.constant 0 : i32
+    %three = arith.constant 3 : i32
     %status = func.call @resolve_inner(%view, %raw, %offset, %length) : (!udonhl.ptr<0>, !udonhl.ptr<0>, !udonhl.ptr<0>, !udonhl.ptr<0>) -> i32
-    %ok = arith.cmpi eq, %status, %zero : i32
-    cf.cond_br %ok, ^success, ^failure
-  ^success:
-    cf.br ^done(%zero : i32)
-  ^failure:
-    cf.br ^done(%status : i32)
+    %invalid = arith.cmpi eq, %status, %three : i32
+    cf.cond_br %invalid, ^invalid, ^normalize
+  ^invalid:
+    cf.br ^done(%three : i32)
+  ^normalize:
+    %failed = arith.cmpi ne, %status, %zero : i32
+    %normalized = arith.extui %failed : i1 to i32
+    cf.br ^done(%normalized : i32)
   ^done(%result: i32):
     return %result : i32
   }
