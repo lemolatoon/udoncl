@@ -46,6 +46,8 @@ constexpr StringLiteral argumentAttribute =
     "vrc.static_device_argument_provenance";
 constexpr StringLiteral functionResultAttribute =
     "vrc.static_device_function_result_provenance";
+constexpr StringLiteral resourceOperandContractAttribute =
+    "vrc.device_resource_operands";
 
 struct Fact {
   bool initialized = false;
@@ -648,7 +650,7 @@ bool sameInvocation(const Invocation &left, const Invocation &right) {
   return left.root == right.root && left.path == right.path;
 }
 
-void recordCase(CaseMap &map, Operation *operation,
+void appendCase(CaseMap &map, Operation *operation,
                 const Invocation &invocation, unsigned index,
                 const Fact &fact) {
   if (!fact.resource)
@@ -666,7 +668,7 @@ bool isAllocation(StringRef name) {
   return name == "clCreateBuffer" || name == "udonclCreateBufferForQueue";
 }
 
-bool isKnownConsumer(StringRef name) {
+bool isKnownOpenCLConsumer(StringRef name) {
   return name == "clReleaseMemObject" || name == "clEnqueueWriteBuffer" ||
          name == "clEnqueueReadBuffer" || name == "clEnqueueCopyBuffer" ||
          name == "clSetKernelArg";
@@ -809,11 +811,157 @@ struct PropagateDeviceResourceProvenancePass
   bool collectingGlobalSummaries = false;
   bool invalid = false;
 
+  struct AnalysisCacheEntry {
+    SmallVector<Fact> arguments;
+    SmallVector<std::optional<int64_t>> argumentIntegers;
+    SmallVector<std::optional<ObjectRefSet>> argumentObjects;
+    SmallVector<HandleFieldOriginSet> argumentHandleFields;
+    HandleMap handles;
+    ViewMap views;
+    ResourceCellMap resourceCells;
+    PointerCellMap pointerCells;
+    AnalysisResult result;
+    bool complete = false;
+  };
+  std::map<std::string, AnalysisCacheEntry> analysisCache;
+
+  void recordCase(CaseMap &map, Operation *operation,
+                  const Invocation &invocation, unsigned index,
+                  const Fact &fact) {
+    if (!collectingGlobalSummaries)
+      appendCase(map, operation, invocation, index, fact);
+  }
+
+  template <typename Map>
+  static void
+  eraseLocalObjectEntries(Map &map,
+                          const llvm::DenseSet<ObjectId> &localObjects) {
+    for (auto iterator = map.begin(); iterator != map.end();) {
+      if (localObjects.contains(iterator->first.base))
+        iterator = map.erase(iterator);
+      else
+        ++iterator;
+    }
+  }
+
+  static void
+  eraseLocalObjectEntries(ResourceCellExitCases &cases,
+                          const llvm::DenseSet<ObjectId> &localObjects) {
+    for (auto &[status, cells] : cases.exact)
+      eraseLocalObjectEntries(cells, localObjects);
+    for (auto &entry : cases.unknown)
+      eraseLocalObjectEntries(entry.cells, localObjects);
+  }
+
+  static void
+  eraseLocalObjectEntries(PointerExitCases &cases,
+                          const llvm::DenseSet<ObjectId> &localObjects) {
+    for (auto &[status, cells] : cases.exact)
+      eraseLocalObjectEntries(cells, localObjects);
+    for (auto &entry : cases.unknown)
+      eraseLocalObjectEntries(entry.pointerCells, localObjects);
+  }
+
+  static void
+  eraseLocalObjectEntries(ViewExitCases &cases,
+                          const llvm::DenseSet<ObjectId> &localObjects) {
+    for (auto &[status, views] : cases.exact)
+      eraseLocalObjectEntries(views, localObjects);
+    for (auto &entry : cases.unknown)
+      eraseLocalObjectEntries(entry.views, localObjects);
+  }
+
+  static bool
+  referencesLocalObject(const ObjectRefSet &objects,
+                        const llvm::DenseSet<ObjectId> &localObjects) {
+    return llvm::any_of(objects.refs, [&](ObjectRef object) {
+      return localObjects.contains(object.base);
+    });
+  }
+
+  static bool
+  referencesLocalObject(const HandleFieldOriginSet &origins,
+                        const llvm::DenseSet<ObjectId> &localObjects) {
+    return llvm::any_of(origins.refs, [&](const HandleFieldOrigin &origin) {
+      return localObjects.contains(origin.handle.base);
+    });
+  }
+
+  static bool
+  referencesLocalObject(const PointerCellMap &cells,
+                        const llvm::DenseSet<ObjectId> &localObjects) {
+    return llvm::any_of(cells, [&](const auto &entry) {
+      return !localObjects.contains(entry.first.base) &&
+             referencesLocalObject(entry.second.objects, localObjects);
+    });
+  }
+
+  static bool
+  referencesLocalObject(const ViewMap &views,
+                        const llvm::DenseSet<ObjectId> &localObjects) {
+    return llvm::any_of(views, [&](const auto &entry) {
+      return !localObjects.contains(entry.first.base) &&
+             (referencesLocalObject(entry.second.slotOrigins, localObjects) ||
+              referencesLocalObject(entry.second.generationOrigins,
+                                    localObjects));
+    });
+  }
+
+  static bool
+  referencesLocalObject(const PointerExitCases &cases,
+                        const llvm::DenseSet<ObjectId> &localObjects) {
+    return llvm::any_of(cases.exact,
+                        [&](const auto &entry) {
+                          return referencesLocalObject(entry.second,
+                                                       localObjects);
+                        }) ||
+           llvm::any_of(cases.unknown, [&](const auto &entry) {
+             return referencesLocalObject(entry.pointerCells, localObjects);
+           });
+  }
+
+  static bool
+  referencesLocalObject(const ViewExitCases &cases,
+                        const llvm::DenseSet<ObjectId> &localObjects) {
+    return llvm::any_of(cases.exact,
+                        [&](const auto &entry) {
+                          return referencesLocalObject(entry.second,
+                                                       localObjects);
+                        }) ||
+           llvm::any_of(cases.unknown, [&](const auto &entry) {
+             return referencesLocalObject(entry.views, localObjects);
+           });
+  }
+
   std::string invocationPathKey(ArrayAttr path) {
     std::string storage;
     llvm::raw_string_ostream stream(storage);
     path.print(stream);
     return storage;
+  }
+
+  std::string analysisCacheKey(func::FuncOp function,
+                               const Invocation &invocation) {
+    return (function.getSymName() + "|" + invocation.root.getValue() + "|" +
+            invocationPathKey(invocation.path))
+        .str();
+  }
+
+  static bool
+  sameAnalysisInputs(const AnalysisCacheEntry &entry, ArrayRef<Fact> arguments,
+                     ArrayRef<std::optional<int64_t>> argumentIntegers,
+                     ArrayRef<std::optional<ObjectRefSet>> argumentObjects,
+                     ArrayRef<HandleFieldOriginSet> argumentHandleFields,
+                     const HandleMap &handles, const ViewMap &views,
+                     const ResourceCellMap &resourceCells,
+                     const PointerCellMap &pointerCells) {
+    return llvm::equal(entry.arguments, arguments) &&
+           llvm::equal(entry.argumentIntegers, argumentIntegers) &&
+           llvm::equal(entry.argumentObjects, argumentObjects) &&
+           llvm::equal(entry.argumentHandleFields, argumentHandleFields) &&
+           entry.handles == handles && entry.views == views &&
+           entry.resourceCells == resourceCells &&
+           entry.pointerCells == pointerCells;
   }
 
   ObjectId localObject(const Invocation &invocation, Operation *allocation,
@@ -845,6 +993,37 @@ struct PropagateDeviceResourceProvenancePass
     return found != objectSizes.end() && object.offset >= 0 &&
            object.offset % 4 == 0 &&
            static_cast<uint64_t>(object.offset) + 4 <= found->second;
+  }
+
+  bool hasResourceOperandContract(func::CallOp call,
+                                  llvm::DenseMap<Value, Fact> &facts) {
+    auto found = functions.find(call.getCallee());
+    if (found == functions.end() || !found->getValue().isExternal() ||
+        call.getNumResults() != 1 || !call.getResult(0).getType().isInteger(32))
+      return false;
+    auto contract = found->getValue()->getAttrOfType<ArrayAttr>(
+        resourceOperandContractAttribute);
+    if (!contract)
+      return false;
+    llvm::DenseSet<unsigned> allowed;
+    for (Attribute attribute : contract) {
+      auto entry = dyn_cast<DictionaryAttr>(attribute);
+      auto index = entry ? entry.getAs<IntegerAttr>("index") : IntegerAttr();
+      auto access = entry ? entry.getAs<StringAttr>("access") : StringAttr();
+      auto capture = entry ? entry.getAs<StringAttr>("capture") : StringAttr();
+      if (!index || index.getInt() < 0 ||
+          static_cast<uint64_t>(index.getInt()) >= call.getNumOperands() ||
+          !access ||
+          (access.getValue() != "read" && access.getValue() != "write" &&
+           access.getValue() != "readwrite") ||
+          !capture || capture.getValue() != "none" ||
+          !allowed.insert(static_cast<unsigned>(index.getInt())).second)
+        return false;
+    }
+    return llvm::all_of(llvm::enumerate(call.getOperands()), [&](auto item) {
+      return !valueFact(item.value(), facts).resource ||
+             allowed.contains(item.index());
+    });
   }
 
   void completeDirectView(ViewState &state, const HandleMap &handles) {
@@ -1119,6 +1298,33 @@ struct PropagateDeviceResourceProvenancePass
               {},
               {}};
     }
+    std::string cacheKey;
+    if (collectingGlobalSummaries) {
+      cacheKey = analysisCacheKey(function, invocation);
+      auto cached = analysisCache.find(cacheKey);
+      if (cached != analysisCache.end() &&
+          sameAnalysisInputs(cached->second, arguments, argumentIntegers,
+                             argumentObjects, argumentHandleFields,
+                             incomingHandles, incomingViews,
+                             incomingResourceCells, incomingPointerCells)) {
+        active.erase(function);
+        if (cached->second.complete)
+          return cached->second.result;
+        return {cached->second.result.results,
+                cached->second.result.integerResults,
+                SmallVector<std::optional<ObjectRefSet>>(
+                    function.getFunctionType().getNumResults(), std::nullopt),
+                SmallVector<HandleFieldOriginSet>(
+                    function.getFunctionType().getNumResults()),
+                incomingHandles,
+                incomingViews,
+                incomingResourceCells,
+                incomingPointerCells,
+                {},
+                {},
+                {}};
+      }
+    }
     llvm::DenseMap<Value, Fact> facts;
     llvm::DenseMap<Value, int64_t> integerValues;
     llvm::DenseSet<Value> ambiguousIntegers;
@@ -1127,12 +1333,14 @@ struct PropagateDeviceResourceProvenancePass
     HandleMap handles = incomingHandles;
     ResourceCellMap initialResourceCells = incomingResourceCells;
     llvm::DenseSet<Value> eligibleCells;
+    llvm::DenseSet<ObjectId> localObjects;
     function.walk([&](::vrc::udonhl::AllocaOp allocation) {
       if (isSingletonCell(allocation))
         eligibleCells.insert(allocation.getResult());
       auto bytes = constantAllocationBytes(allocation);
       if (bytes && (*bytes == 4 || *bytes == 8 || *bytes >= 20)) {
         ObjectId object = localObject(invocation, allocation, *bytes);
+        localObjects.insert(object);
         objectValues[allocation.getResult()] =
             ObjectRefSet::singleton({object, 0});
         if (*bytes == 8)
@@ -1788,9 +1996,11 @@ struct PropagateDeviceResourceProvenancePass
                   << calleeName << " from @" << function.getSymName();
               invalid = true;
             }
-            if (hasResource && !isKnownConsumer(calleeName)) {
+            if (hasResource && !isKnownOpenCLConsumer(calleeName) &&
+                !hasResourceOperandContract(call, facts)) {
               call.emitError(
-                  "static device resource escapes to an unknown external call");
+                  "static device resource escapes to unknown external call ")
+                  << calleeName << " from @" << function.getSymName();
               invalid = true;
             }
             for (Value result : call.getResults())
@@ -1912,22 +2122,22 @@ struct PropagateDeviceResourceProvenancePass
           bool comparesResource = leftFact.resource || rightFact.resource;
           bool equality = compare.getPredicate() == arith::CmpIPredicate::eq ||
                           compare.getPredicate() == arith::CmpIPredicate::ne;
-          auto isExactNonNullResource = [](const Fact &fact) {
+          auto isFiniteResource = [](const Fact &fact) {
             return fact.resource && fact.initialized && !fact.unknown &&
-                   !fact.mayBeNull && !fact.ids.empty();
+                   !fact.ids.empty();
           };
-          bool comparesResourceIdentity =
-              equality &&
-              ((isExactNonNullResource(leftFact) && rightFact.zero) ||
-               (isExactNonNullResource(rightFact) && leftFact.zero));
-          if (comparesResource && !comparesResourceIdentity) {
+          bool comparesResourceWithNull =
+              equality && ((isFiniteResource(leftFact) && rightFact.zero) ||
+                           (isFiniteResource(rightFact) && leftFact.zero));
+          if (comparesResource && !comparesResourceWithNull) {
             compare.emitError(
                 "unsupported operation consumes a static device resource: ")
                 << compare.getOperationName() << " in @"
                 << function.getSymName();
             invalid = true;
           }
-          if (comparesResourceIdentity)
+          const Fact &resourceFact = leftFact.resource ? leftFact : rightFact;
+          if (comparesResourceWithNull && !resourceFact.mayBeNull)
             integerValues[compare.getResult()] =
                 compare.getPredicate() == arith::CmpIPredicate::ne ? 1 : 0;
           if (compare.getPredicate() == arith::CmpIPredicate::eq ||
@@ -2317,17 +2527,77 @@ struct PropagateDeviceResourceProvenancePass
     active.erase(function);
     for (auto [index, fact] : llvm::enumerate(returns))
       recordCase(functionResultCases, function, invocation, index, fact);
-    return {std::move(returns),
-            std::move(integerReturns),
-            std::move(objectReturns),
-            std::move(handleFieldReturns),
-            std::move(handles),
-            std::move(returnedViews),
-            std::move(returnedResourceCells),
-            std::move(returnedPointerCells),
-            std::move(resourceCellExitCases),
-            std::move(pointerExitCases),
-            std::move(viewExitCases)};
+    bool localObjectEscapes =
+        llvm::any_of(objectReturns,
+                     [&](const auto &result) {
+                       return result &&
+                              referencesLocalObject(*result, localObjects);
+                     }) ||
+        llvm::any_of(handleFieldReturns,
+                     [&](const auto &origins) {
+                       return referencesLocalObject(origins, localObjects);
+                     }) ||
+        referencesLocalObject(returnedPointerCells, localObjects) ||
+        referencesLocalObject(returnedViews, localObjects) ||
+        referencesLocalObject(pointerExitCases, localObjects) ||
+        referencesLocalObject(viewExitCases, localObjects);
+    if (localObjectEscapes) {
+      function.emitError("address of a local object escapes its function "
+                         "during static device resource analysis in @")
+          << function.getSymName();
+      invalid = true;
+    }
+    eraseLocalObjectEntries(handles, localObjects);
+    eraseLocalObjectEntries(returnedViews, localObjects);
+    eraseLocalObjectEntries(returnedResourceCells, localObjects);
+    eraseLocalObjectEntries(returnedPointerCells, localObjects);
+    eraseLocalObjectEntries(resourceCellExitCases, localObjects);
+    eraseLocalObjectEntries(pointerExitCases, localObjects);
+    eraseLocalObjectEntries(viewExitCases, localObjects);
+    AnalysisResult result{std::move(returns),
+                          std::move(integerReturns),
+                          std::move(objectReturns),
+                          std::move(handleFieldReturns),
+                          std::move(handles),
+                          std::move(returnedViews),
+                          std::move(returnedResourceCells),
+                          std::move(returnedPointerCells),
+                          std::move(resourceCellExitCases),
+                          std::move(pointerExitCases),
+                          std::move(viewExitCases)};
+    bool scalarTransparent =
+        result.handles == incomingHandles && result.views == incomingViews &&
+        result.resourceCells == incomingResourceCells &&
+        result.pointerCells == incomingPointerCells &&
+        result.resourceCellExitCases.exact.empty() &&
+        result.resourceCellExitCases.unknown.empty() &&
+        result.pointerExitCases.exact.empty() &&
+        result.pointerExitCases.unknown.empty() &&
+        result.viewExitCases.exact.empty() &&
+        result.viewExitCases.unknown.empty() &&
+        llvm::none_of(result.results,
+                      [](const Fact &fact) { return fact.resource; }) &&
+        llvm::all_of(result.objectResults,
+                     [](const auto &value) { return !value; }) &&
+        llvm::all_of(result.handleFieldResults, [](const auto &origins) {
+          return origins.refs.empty() && !origins.unknown;
+        });
+    bool cacheComplete = localObjects.empty();
+    if (collectingGlobalSummaries && !invalid &&
+        (cacheComplete || scalarTransparent))
+      analysisCache[cacheKey] = {
+          SmallVector<Fact>(arguments),
+          SmallVector<std::optional<int64_t>>(argumentIntegers),
+          SmallVector<std::optional<ObjectRefSet>>(argumentObjects),
+          SmallVector<HandleFieldOriginSet>(argumentHandleFields),
+          incomingHandles,
+          incomingViews,
+          incomingResourceCells,
+          incomingPointerCells,
+          result,
+          cacheComplete,
+      };
+    return result;
   }
 
   bool updateFact(Value value, const Fact &incoming,
@@ -2452,26 +2722,26 @@ struct PropagateDeviceResourceProvenancePass
         hasStatusConstraintEdge = true;
         continue;
       }
-      for (auto iterator = recomputedStatusConstraints.begin();
-           iterator != recomputedStatusConstraints.end();) {
-        auto incoming = edge->second.find(iterator->first);
+      SmallVector<Value> constraintsToErase;
+      for (auto &entry : recomputedStatusConstraints) {
+        Value value = entry.first;
+        StatusExclusions &exclusions = entry.second;
+        auto incoming = edge->second.find(value);
         if (incoming == edge->second.end()) {
-          auto erased = iterator++;
-          recomputedStatusConstraints.erase(erased);
+          constraintsToErase.push_back(value);
           continue;
         }
         StatusExclusions intersection;
-        std::set_intersection(iterator->second.begin(), iterator->second.end(),
+        std::set_intersection(exclusions.begin(), exclusions.end(),
                               incoming->second.begin(), incoming->second.end(),
                               std::inserter(intersection, intersection.end()));
-        if (intersection.empty()) {
-          auto erased = iterator++;
-          recomputedStatusConstraints.erase(erased);
-        } else {
-          iterator->second = std::move(intersection);
-          ++iterator;
-        }
+        if (intersection.empty())
+          constraintsToErase.push_back(value);
+        else
+          exclusions = std::move(intersection);
       }
+      for (Value value : constraintsToErase)
+        recomputedStatusConstraints.erase(value);
     }
     auto statusConstraintsEqual = [](const StatusConstraintMap &left,
                                      const StatusConstraintMap &right) {
@@ -2742,6 +3012,7 @@ struct PropagateDeviceResourceProvenancePass
     bool converged = false;
     collectingGlobalSummaries = true;
     for (unsigned iteration = 0; iteration != 100 && !invalid; ++iteration) {
+      analysisCache.clear();
       globalWrites.clear();
       globalHandleWrites.clear();
       globalViewWrites.clear();

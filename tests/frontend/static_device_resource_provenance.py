@@ -87,4 +87,10 @@ assert "index = 0 : i32" in resolve_call, resolve_call
 assert "resource_ids = [0 : i32]" in resolve_call, resolve_call
 assert "index = 1 : i32" not in resolve_call, resolve_call
 assert "vrc.static_device_result_provenance" not in resolve_call, resolve_call
+dispatch = next(
+    line for line in first.splitlines()
+    if "call @__vrc_enqueue_probe_device_args" in line
+)
+assert "vrc.static_device_operand_provenance" in dispatch, dispatch
+assert "resource_ids = [0 : i32]" in dispatch, dispatch
 print("static_device_resource_provenance=passed contexts=2 join=finite")

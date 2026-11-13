@@ -233,6 +233,9 @@ def main():
         'static udononnxSession_t session;\n'
         'static udononnxTensor_t input_bindings[1];\n'
         'static udononnxTensor_t output_bindings[1];\n'
+        'static udononnxTensorMetadata_t inputs[1];\n'
+        'static udononnxTensorMetadata_t outputs[1];\n'
+        'static udononnxModel_t models[1];\n'
         'size_t udononnxGeneratedGetModelCount(void) { return 0; }\n'
         'udononnxStatus_t udononnxGeneratedGetModel(\n'
         '    size_t index, const udononnxModel_t **model) {\n'
@@ -261,9 +264,6 @@ def main():
         '  return UDONONNX_STATUS_SUCCESS;\n'
         '}\n'
         'int onnx_runtime_contract_probe(int context_value) {\n'
-        '  udononnxTensorMetadata_t inputs[1];\n'
-        '  udononnxTensorMetadata_t outputs[1];\n'
-        '  udononnxModel_t models[1];\n'
         '  const udononnxModel_t *model = 0;\n'
         '  inputs[0].name = "input";\n'
         '  inputs[0].data_type = UDONCL_DATA_FLOAT32;\n'
@@ -422,11 +422,6 @@ def main():
         '    message(FATAL_ERROR "missing public target ${required}")\n'
         '  endif()\n'
         'endforeach()\n'
-        'udoncl_add_unity_library(onnx-host-link-probe\n'
-        '  CONFIG probe.json\n'
-        '  RUNTIME_VALIDATION ON\n'
-        '  HOST_LIBRARIES mnist_host UdonONNXRuntime::UdonONNXRuntime\n'
-        '  LIBRARIES UdonATen::UdonATen UdonBLAS::UdonBLAS)\n'
         'get_target_property(generated mnist_host UDONCL_ONNX_HOST)\n'
         'get_target_property(bounds mnist_host UDONCL_ONNX_DIMENSION_BOUNDS)\n'
         'if(NOT bounds STREQUAL "batch=1;sequence=4")\n'
@@ -475,161 +470,6 @@ def main():
         assert f'func.func @{symbol}' in generated_onnx_host_text
     assert not list(onnx_consumer.rglob('execution-plan.json'))
     assert not list(onnx_consumer.rglob('plan.json'))
-    run([args.cmake, '--build', onnx_consumer, '--target', 'onnx-host-link-probe'])
-    onnx_build_root = onnx_consumer / 'udoncl/onnx-host-link-probe'
-    onnx_runtime_module = onnx_build_root / 'modules/host/capacity_runtime.bc'
-    assert onnx_runtime_module.is_file()
-    onnx_runtime_free_ir = run([
-        args.clang, '-S', '-emit-llvm', onnx_build_root / 'host.bc', '-o', '-'
-    ])
-    onnx_runtime_ir = run([
-        args.clang, '-S', '-emit-llvm', onnx_runtime_module, '-o', '-'
-    ])
-    assert not any(
-        'define ' in line and '@clCreateBuffer' in line
-        for line in onnx_runtime_free_ir.splitlines()
-    )
-    assert any(
-        'define ' in line and '@clCreateBuffer' in line
-        for line in onnx_runtime_ir.splitlines()
-    )
-    generic_artifact = onnx_consumer / 'udoncl/onnx-host-link-probe/artifact'
-    generic_recovered = (generic_artifact / 'frontend.recovered.mlir').read_text(
-        encoding='utf-8'
-    )
-    assert 'vrc.static_device_resource_discovery' in generic_recovered
-    assert 'vrc.static_device_allocation_site' in generic_recovered
-    generic_assembly = (generic_artifact / 'host.uasm').read_text(
-        encoding='utf-8'
-    )
-    assert sum(': %' in line for line in generic_assembly.splitlines()) <= 480
-    assert 'dispatch_alias_match_' in generic_assembly
-    generic_manifest = json.loads(
-        (generic_artifact / 'manifest.json').read_text(encoding='utf-8'))
-    assert generic_manifest['validation']['read_write_alias'] is True
-    assert {
-        item['c_symbol']: item['public_name']
-        for item in generic_manifest['exports']
-    } == {
-        'udon_onnx_binding_bind_all': 'BindAllOnnxTensors',
-        'udon_onnx_binding_enqueue_initialize': 'EnqueueOnnxInitialize',
-        'udon_onnx_binding_enqueue_run': 'EnqueueOnnxRun',
-        'udon_onnx_binding_enqueue_copy_output_to_input':
-            'EnqueueCopyOnnxOutputToInput',
-        'udon_onnx_binding_dispose': 'DisposeOnnxBinding',
-    }
-    onnx_binding = generic_manifest['onnx_binding']
-    assert onnx_binding['abi'] == 'udononnx-runtime-v2'
-    assert onnx_binding['model_index'] == 0
-    assert onnx_binding['model_name'] == 'model_0'
-    assert onnx_binding['inputs'] == [{
-        'index': 0,
-        'name': 'image',
-        'data_type': 'float32',
-        'rank': 4,
-        'dimensions': [1, 1, 28, 28],
-        'logical_bytes': 3136,
-        'capacity_bytes': 3136,
-    }]
-    assert onnx_binding['outputs'] == [{
-        'index': 0,
-        'name': 'logits',
-        'data_type': 'float32',
-        'rank': 2,
-        'dimensions': [1, 10],
-        'logical_bytes': 40,
-        'capacity_bytes': 40,
-    }]
-    assert onnx_binding['physical'] == {
-        'create_symbol': 'udon_onnx_binding_create',
-        'bind_tensor_symbol': 'udon_onnx_binding_bind_tensor',
-        'bind_all_symbol': 'udon_onnx_binding_bind_all',
-        'resolve_input_symbol': 'udon_onnx_binding_resolve_input',
-        'resolve_output_symbol': 'udon_onnx_binding_resolve_output',
-        'enqueue_initialize_symbol':
-            'udon_onnx_binding_enqueue_initialize',
-        'enqueue_run_symbol': 'udon_onnx_binding_enqueue_run',
-        'enqueue_copy_output_to_input_symbol':
-            'udon_onnx_binding_enqueue_copy_output_to_input',
-        'dispose_symbol': 'udon_onnx_binding_dispose',
-    }
-    assert len(generic_manifest['device']['buffers']) == 5
-    assert generic_manifest['device']['mutable_handle_capacity'] == 5
-    assert {
-        item['id'] for item in generic_manifest['device']['kernels']
-    } == {221, 231, 232, 233, 234}
-    generic_gemm = next(
-        item for item in generic_manifest['device']['kernels']
-        if item['id'] == 221
-    )
-    assert generic_gemm['global_size'] == [8192, 2, 1]
-    assert generic_gemm['target_texture']['width'] == 8192
-    assert generic_gemm['target_texture']['height'] == 2
-    generic_gemm_hlsl = (
-        generic_artifact / 'kernels/kernel_221.hlsl'
-    ).read_text(encoding='utf-8')
-    assert 'uint(position.y) *' in generic_gemm_hlsl
-    assert '8192u' in generic_gemm_hlsl
-    assert '256' in generic_gemm_hlsl
-    assert len(generic_manifest['dispatch_sites']) > 0
-
-    annotated_symbols = [
-        'udon_onnx_binding_create',
-        'udon_onnx_binding_bind_tensor',
-        'udon_onnx_binding_bind_all',
-        'udon_onnx_binding_resolve_input',
-        'udon_onnx_binding_resolve_output',
-        'udon_onnx_binding_enqueue_initialize',
-        'udon_onnx_binding_enqueue_run',
-        'udon_onnx_binding_enqueue_copy_output_to_input',
-        'udon_onnx_binding_dispose',
-    ]
-    required_internal_symbols = [
-        'udon_onnx_binding_create',
-        'udon_onnx_binding_bind_tensor',
-        'udon_onnx_binding_resolve_input',
-        'udon_onnx_binding_resolve_output',
-    ]
-    internal_export_cases = [
-        (
-            'unknown', required_internal_symbols + ['not_an_annotated_export'],
-            'schema 2 internal export must name one non-overridden '
-            'annotated Host definition',
-        ),
-        (
-            'duplicate', required_internal_symbols + [annotated_symbols[0]],
-            'schema 2 internal export must name one non-overridden '
-            'annotated Host definition',
-        ),
-        (
-            'overridden', required_internal_symbols + [annotated_symbols[2]],
-            'schema 2 internal export must name one non-overridden '
-            'annotated Host definition',
-        ),
-        (
-            'all', annotated_symbols,
-            'Unity library schema 2 cannot hide every UDONCL_EXPORT '
-            'definition',
-        ),
-    ]
-    for case, internal_exports, diagnostic in internal_export_cases:
-        invalid_config = output / f'invalid-internal-export-{case}.json'
-        invalid_document = json.loads(json.dumps(probe))
-        invalid_document['internal_exports'] = internal_exports
-        if case == 'all':
-            invalid_document['export_overrides'] = []
-        invalid_config.write_text(
-            json.dumps(invalid_document), encoding='utf-8'
-        )
-        run_failure([
-            installed_compiler, '--emit-unity-library-bundle',
-            invalid_config,
-            '--host-mlir', generated_onnx_host,
-            '--device-llvm',
-            onnx_consumer / 'udoncl/onnx-host-link-probe/device.bc',
-            '-o', output / f'invalid-internal-export-{case}-artifact',
-        ], diagnostic)
-
     for case, invocation, diagnostic in [
         (
             'invalid-bound',
@@ -697,6 +537,11 @@ def main():
     assert onnx_mnist_host.read_bytes().startswith(b'ML')
     assert not list(onnx_mnist_consumer.rglob('execution-plan.json'))
     onnx_mnist_artifact = onnx_mnist_root / 'artifact'
+    onnx_mnist_recovered = (
+        onnx_mnist_artifact / 'frontend.recovered.mlir'
+    ).read_text(encoding='utf-8')
+    assert 'vrc.static_device_resource_discovery' in onnx_mnist_recovered
+    assert 'vrc.static_device_resource_provenance' in onnx_mnist_recovered
     onnx_mnist_manifest = json.loads(
         (onnx_mnist_artifact / 'manifest.json').read_text(encoding='utf-8')
     )

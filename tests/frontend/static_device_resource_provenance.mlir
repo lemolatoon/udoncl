@@ -1,6 +1,9 @@
 module {
   func.func private @clCreateBuffer() -> i32
   func.func private @clReleaseMemObject(i32) -> i32
+  func.func private @__vrc_enqueue_probe_device_args(i32) -> i32 attributes {
+    vrc.device_resource_operands = [{access = "read", capture = "none", index = 0 : i32}]
+  }
 
   func.func @make() -> i32 {
     %buffer = func.call @clCreateBuffer() : () -> i32
@@ -19,6 +22,7 @@ module {
     %selected = arith.select %condition, %first_alias, %second_alias : i32
     %null = arith.constant 0 : i32
     %nullable = arith.select %condition, %first_alias, %null : i32
+    %nullable_is_null = arith.cmpi eq, %nullable, %null : i32
     cf.cond_br %condition, ^left, ^right
   ^left:
     cf.br ^merge(%first_alias : i32)
@@ -28,6 +32,7 @@ module {
     %status0 = func.call @clReleaseMemObject(%selected) : (i32) -> i32
     %status1 = func.call @clReleaseMemObject(%joined) : (i32) -> i32
     %status2 = func.call @clReleaseMemObject(%nullable) : (i32) -> i32
+    %status3 = func.call @__vrc_enqueue_probe_device_args(%first_alias) : (i32) -> i32
     return
   }
 

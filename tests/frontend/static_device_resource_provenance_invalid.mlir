@@ -3,8 +3,26 @@ module {
   func.func private @unknown(i32)
   func.func @Run() attributes {udoncl.export} {
     %buffer = func.call @clCreateBuffer() : () -> i32
-    // expected-error @below {{static device resource escapes to an unknown external call}}
+    // expected-error @below {{static device resource escapes to unknown external call}}
     func.call @unknown(%buffer) : (i32) -> ()
+    return
+  }
+}
+
+// -----
+
+module {
+  // expected-error @below {{address of a local object escapes its function during static device resource analysis}}
+  func.func private @escape_local(%out: !udonhl.ptr<0>) {
+    %four = arith.constant 4 : i32
+    %local = "udonhl.alloca"(%four) <{alignment = 4 : i64}> : (i32) -> !udonhl.ptr<0>
+    "udonhl.store"(%local, %out) <{alignment = 4 : i64}> : (!udonhl.ptr<0>, !udonhl.ptr<0>) -> ()
+    return
+  }
+  func.func @Run() attributes {udoncl.export} {
+    %four = arith.constant 4 : i32
+    %out = "udonhl.alloca"(%four) <{alignment = 4 : i64}> : (i32) -> !udonhl.ptr<0>
+    func.call @escape_local(%out) : (!udonhl.ptr<0>) -> ()
     return
   }
 }
