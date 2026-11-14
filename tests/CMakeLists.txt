@@ -409,6 +409,17 @@ add_test(NAME static-unity-buffer-reconciliation-diagnostics
     --verify-diagnostics
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_unity_buffer_reconciliation_invalid.mlir"
 )
+add_test(NAME static-unity-buffer-layout-plan
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_unity_buffer_layout_plan.py"
+    $<TARGET_FILE:vrc-opt>
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_unity_buffer_layout_plan.mlir"
+)
+add_test(NAME static-unity-buffer-layout-plan-diagnostics
+  COMMAND vrc-opt --vrc-plan-static-unity-buffer-layout --split-input-file
+    --verify-diagnostics
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_unity_buffer_layout_plan_invalid.mlir"
+)
 add_test(NAME unity-texture-assignment
   COMMAND Python3::Interpreter
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/unity_texture_assignment.py"

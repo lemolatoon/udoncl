@@ -588,6 +588,9 @@ def main():
     mnist_reconciliation = mlir_module_attribute(
         onnx_mnist_recovered, 'vrc.static_unity_buffer_reconciliation'
     )
+    mnist_layout = mlir_module_attribute(
+        onnx_mnist_recovered, 'vrc.static_unity_buffer_layout_plan'
+    )
     assert mnist_inventory.count('resource_kind = "allocation"') == 5
     assert 'context_count = 5 : i32' in mnist_context_plan
     assert 'allocation_site_count = 5 : i32' in mnist_context_plan
@@ -612,6 +615,12 @@ def main():
     assert 'resolved_alias_count = 2 : i32' in mnist_reconciliation
     assert 'unresolved_public_count = 0 : i32' in mnist_reconciliation
     assert 'unresolved_private_count = 5 : i32' in mnist_reconciliation
+    assert 'planned_count = 5 : i32' in mnist_layout
+    assert 'legacy_configured_count = 7 : i32' in mnist_layout
+    assert 'removable_legacy_count = 2 : i32' in mnist_layout
+    assert 'blocker_count = 0 : i32' in mnist_layout
+    assert 'ready = true' in mnist_layout
+    assert mnist_layout.count('resource_kind = "allocation"') == 5
     assert 'vrc.static_kernel_bindings' in onnx_mnist_recovered
     assert 'snapshot_count = 6 : i32' in onnx_mnist_recovered
     assert onnx_mnist_recovered.count(
@@ -920,6 +929,9 @@ def main():
     transformer_reconciliation = mlir_module_attribute(
         transformer_recovered, 'vrc.static_unity_buffer_reconciliation'
     )
+    transformer_layout = mlir_module_attribute(
+        transformer_recovered, 'vrc.static_unity_buffer_layout_plan'
+    )
     assert transformer_inventory.count('resource_kind = "allocation"') == 4
     assert 'context_count = 4 : i32' in transformer_context_plan
     assert 'allocation_site_count = 4 : i32' in transformer_context_plan
@@ -943,6 +955,11 @@ def main():
     assert 'resolved_alias_count = 0 : i32' in transformer_reconciliation
     assert 'unresolved_public_count = 6 : i32' in transformer_reconciliation
     assert 'unresolved_private_count = 4 : i32' in transformer_reconciliation
+    assert 'planned_count = 4 : i32' in transformer_layout
+    assert 'legacy_configured_count = 10 : i32' in transformer_layout
+    assert 'blocker_count = 6 : i32' in transformer_layout
+    assert 'unresolved_public_count = 6 : i32' in transformer_layout
+    assert 'ready = false' in transformer_layout
     assert 'candidate_count = 8 : i32' in transformer_recovered
     assert 'snapshot_count = 3 : i32' in transformer_recovered
     assert 'unresolved_count = 5 : i32' in transformer_recovered
@@ -1259,6 +1276,9 @@ def main():
     udonblas_reconciliation = mlir_module_attribute(
         udonblas_recovered, 'vrc.static_unity_buffer_reconciliation'
     )
+    udonblas_layout = mlir_module_attribute(
+        udonblas_recovered, 'vrc.static_unity_buffer_layout_plan'
+    )
     assert udonblas_inventory.count('resource_kind = "allocation"') == 3
     assert 'context_count = 3 : i32' in udonblas_context_plan
     assert 'allocation_site_count = 3 : i32' in udonblas_context_plan
@@ -1276,6 +1296,11 @@ def main():
     assert 'resolved_alias_count = 0 : i32' in udonblas_reconciliation
     assert 'unresolved_public_count = 3 : i32' in udonblas_reconciliation
     assert 'unresolved_private_count = 0 : i32' in udonblas_reconciliation
+    assert 'planned_count = 3 : i32' in udonblas_layout
+    assert 'legacy_configured_count = 3 : i32' in udonblas_layout
+    assert 'blocker_count = 3 : i32' in udonblas_layout
+    assert 'unresolved_public_count = 3 : i32' in udonblas_layout
+    assert 'ready = false' in udonblas_layout
     udonblas_transfers = mlir_module_attribute(
         udonblas_recovered, 'vrc.static_transfer_bindings'
     )

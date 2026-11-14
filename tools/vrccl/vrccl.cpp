@@ -733,6 +733,7 @@ LogicalResult reconcileStaticUnityBuffers(ModuleOp module,
       }));
   PassManager reconciliation(module.getContext());
   reconciliation.addPass(::vrc::createReconcileStaticUnityBuffersPass());
+  reconciliation.addPass(::vrc::createPlanStaticUnityBufferLayoutPass());
   return reconciliation.run(module);
 }
 

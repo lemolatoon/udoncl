@@ -364,8 +364,17 @@ incomplete metadata and identity/capacity conflicts are diagnosed. Real
 artifact acceptance currently records MNIST as 2 resolved plus 5 legacy
 private buffers, TinyLlama as 6 unresolved public plus 4 legacy private
 buffers, and ordinary UdonBLAS as 3 unresolved public buffers. This slice is
-still metadata-only: manifest deduplication and pool replacement require the
-static-lowering readiness verifier described below.
+still metadata-only.
+
+A standalone canonical Unity-buffer layout planner now consumes the keyed
+inventory, Texture assignments, public aliases, and reconciliation result. It
+does not assume that a Texture ID equals a legacy buffer ID. Instead, it emits
+an independently versioned resource-to-Texture-to-heap-slot layout and a
+readiness decision. Real MNIST is ready with 5 planned buffers replacing 7
+legacy entries, so 2 duplicate legacy entries are removable. TinyLlama is
+blocked by 6 unresolved public endpoints and ordinary UdonBLAS by 3; neither
+silently replaces its pool. Manifest and pool replacement remain a separate
+tool-adapter commit gated by this plan.
 
 - Replace supported allocation/release and buffer arguments with direct typed
   resources.
