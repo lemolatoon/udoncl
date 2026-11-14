@@ -513,6 +513,7 @@ struct UnityBuffer {
   std::string heapSlot;
   std::string elementType;
   std::string publicAccess;
+  std::optional<int64_t> publicIndex;
 };
 
 FailureOr<SmallVector<UnityBuffer>>
@@ -551,6 +552,7 @@ parseUnityBuffers(const json::Object &config) {
     auto elementType = entry ? entry->getString("element_type") : std::nullopt;
     auto publicAccess =
         entry ? entry->getString("public_access") : std::nullopt;
+    auto publicIndex = entry ? entry->getInteger("public_index") : std::nullopt;
     constexpr int64_t maximumBytes = 8192LL * 8192LL * 4LL;
     bool semanticBinding =
         elementType && publicAccess &&
@@ -562,7 +564,8 @@ parseUnityBuffers(const json::Object &config) {
         (logicalBytes && (*logicalBytes < 0 || *logicalBytes > *bytes)) ||
         (explicitWidth.has_value() != explicitHeight.has_value()) ||
         !ids.insert(*id).second || !names.insert(name->str()).second ||
-        ((elementType || publicAccess) && !semanticBinding)) {
+        ((elementType || publicAccess || publicIndex) && !semanticBinding) ||
+        (publicIndex && *publicIndex < 0)) {
       errs() << "invalid or duplicate Unity Device buffer\n";
       return failure();
     }
@@ -584,7 +587,7 @@ parseUnityBuffers(const json::Object &config) {
     result.push_back({*id, *bytes, logicalBytes.value_or(*bytes), width, height,
                       name->str(), "__udoncl_buffer_" + std::to_string(*id),
                       elementType ? elementType->str() : "",
-                      publicAccess ? publicAccess->str() : ""});
+                      publicAccess ? publicAccess->str() : "", publicIndex});
   }
   return result;
 }
@@ -645,6 +648,7 @@ LogicalResult generateOnnxPublicBufferConfig(ModuleOp module,
           {"logical_byte_size", logicalBytes.getInt()},
           {"element_type", dataType.getValue()},
           {"public_access", output ? "output" : "input"},
+          {"public_index", index.getInt()},
       });
     }
     return success();
@@ -689,6 +693,47 @@ LogicalResult generateOnnxPublicBufferConfig(ModuleOp module,
   }
   config["buffers"] = std::move(generated);
   return success();
+}
+
+LogicalResult reconcileStaticUnityBuffers(ModuleOp module,
+                                          ArrayRef<UnityBuffer> buffers) {
+  bool hasInventory = module->hasAttr("vrc.static_device_resource_inventory");
+  bool hasAliases = module->hasAttr("vrc.static_public_resource_aliases");
+  if (!hasInventory && !hasAliases)
+    return success();
+  if (hasInventory != hasAliases) {
+    module.emitError(
+        "static Unity buffer reconciliation metadata is incomplete");
+    return failure();
+  }
+  Builder builder(module.getContext());
+  SmallVector<mlir::Attribute> entries;
+  entries.reserve(buffers.size());
+  for (const UnityBuffer &buffer : buffers) {
+    SmallVector<NamedAttribute> fields{
+        builder.getNamedAttr("buffer_id", builder.getI32IntegerAttr(buffer.id)),
+        builder.getNamedAttr("capacity_bytes",
+                             builder.getI64IntegerAttr(buffer.allocationBytes)),
+        builder.getNamedAttr("heap_slot",
+                             builder.getStringAttr(buffer.heapSlot)),
+    };
+    if (!buffer.publicAccess.empty())
+      fields.push_back(builder.getNamedAttr(
+          "public_access", builder.getStringAttr(buffer.publicAccess)));
+    if (buffer.publicIndex)
+      fields.push_back(builder.getNamedAttr(
+          "public_index", builder.getI32IntegerAttr(*buffer.publicIndex)));
+    entries.push_back(builder.getDictionaryAttr(fields));
+  }
+  module->setAttr(
+      "vrc.unity_configured_buffers",
+      builder.getDictionaryAttr({
+          builder.getNamedAttr("buffers", builder.getArrayAttr(entries)),
+          builder.getNamedAttr("schema_version", builder.getI32IntegerAttr(1)),
+      }));
+  PassManager reconciliation(module.getContext());
+  reconciliation.addPass(::vrc::createReconcileStaticUnityBuffersPass());
+  return reconciliation.run(module);
 }
 
 FailureOr<SmallVector<const json::Object *>>
@@ -3116,6 +3161,8 @@ int main(int argc, char **argv) {
       return 1;
     auto generatedBuffers = parseUnityBuffers(*unityConfig);
     if (failed(generatedBuffers))
+      return 1;
+    if (failed(reconcileStaticUnityBuffers(*module, *generatedBuffers)))
       return 1;
     unityBuffers = std::move(*generatedBuffers);
     if (!omitIntermediateIR) {

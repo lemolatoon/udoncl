@@ -336,7 +336,21 @@ additional Texture. Private allocations are omitted. Public endpoints that
 have not reached the allocation inventory remain outside this mapping and
 continue to require the legacy pool until their provenance is resolved. The
 slice is integrated immediately after one-to-one Texture assignment and is
-metadata-only; manifest reconciliation remains a later component.
+metadata-only.
+
+A standalone Unity-buffer reconciliation pass now exact-joins configured
+public endpoints to those aliases by `(public_access, public_index)`. The tool
+adapter serializes the final configured buffer list into a versioned MLIR
+attribute after Host-buffer planning, then the pass classifies each entry as a
+resolved static alias, unresolved legacy public buffer, or unresolved legacy
+private buffer. It never infers identity from a name, capacity, numeric buffer
+ID, or list position. Static-metadata-free UdonCL artifacts remain unchanged;
+incomplete metadata and identity/capacity conflicts are diagnosed. Real
+artifact acceptance currently records MNIST as 2 resolved plus 5 legacy
+private buffers, TinyLlama as 6 unresolved public plus 4 legacy private
+buffers, and ordinary UdonBLAS as 3 unresolved public buffers. This slice is
+still metadata-only: manifest deduplication and pool replacement require the
+static-lowering readiness verifier described below.
 
 - Replace supported allocation/release and buffer arguments with direct typed
   resources.

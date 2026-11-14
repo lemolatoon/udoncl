@@ -375,6 +375,17 @@ add_test(NAME static-public-resource-aliases-diagnostics
     --verify-diagnostics
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_public_resource_aliases_invalid.mlir"
 )
+add_test(NAME static-unity-buffer-reconciliation
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_unity_buffer_reconciliation.py"
+    $<TARGET_FILE:vrc-opt>
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_unity_buffer_reconciliation.mlir"
+)
+add_test(NAME static-unity-buffer-reconciliation-diagnostics
+  COMMAND vrc-opt --vrc-reconcile-static-unity-buffers --split-input-file
+    --verify-diagnostics
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_unity_buffer_reconciliation_invalid.mlir"
+)
 add_test(NAME unity-texture-assignment
   COMMAND Python3::Interpreter
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/unity_texture_assignment.py"

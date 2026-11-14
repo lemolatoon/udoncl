@@ -579,6 +579,9 @@ def main():
     mnist_public_aliases = mlir_module_attribute(
         onnx_mnist_recovered, 'vrc.static_public_resource_aliases'
     )
+    mnist_reconciliation = mlir_module_attribute(
+        onnx_mnist_recovered, 'vrc.static_unity_buffer_reconciliation'
+    )
     assert mnist_inventory.count('resource_kind = "allocation"') == 5
     assert mnist_inventory.count('public = true') == 2
     assert 'resource_id = 0 : i32' in mnist_inventory
@@ -591,6 +594,10 @@ def main():
     assert mnist_public_aliases.count('resource_kind = "allocation"') == 2
     assert 'public_access = "input", public_index = 0 : i32' in mnist_public_aliases
     assert 'public_access = "output", public_index = 0 : i32' in mnist_public_aliases
+    assert 'configured_count = 7 : i32' in mnist_reconciliation
+    assert 'resolved_alias_count = 2 : i32' in mnist_reconciliation
+    assert 'unresolved_public_count = 0 : i32' in mnist_reconciliation
+    assert 'unresolved_private_count = 5 : i32' in mnist_reconciliation
     assert 'vrc.static_kernel_bindings' in onnx_mnist_recovered
     assert 'snapshot_count = 6 : i32' in onnx_mnist_recovered
     assert onnx_mnist_recovered.count(
@@ -889,11 +896,18 @@ def main():
     transformer_public_aliases = mlir_module_attribute(
         transformer_recovered, 'vrc.static_public_resource_aliases'
     )
+    transformer_reconciliation = mlir_module_attribute(
+        transformer_recovered, 'vrc.static_unity_buffer_reconciliation'
+    )
     assert transformer_inventory.count('resource_kind = "allocation"') == 4
     assert transformer_inventory.count('public = false') == 4
     assert 'public = true' not in transformer_inventory
     assert transformer_assignments.count('texture_id = ') == 4
     assert 'resolved_count = 0 : i32' in transformer_public_aliases
+    assert 'configured_count = 10 : i32' in transformer_reconciliation
+    assert 'resolved_alias_count = 0 : i32' in transformer_reconciliation
+    assert 'unresolved_public_count = 6 : i32' in transformer_reconciliation
+    assert 'unresolved_private_count = 4 : i32' in transformer_reconciliation
     assert 'candidate_count = 8 : i32' in transformer_recovered
     assert 'snapshot_count = 3 : i32' in transformer_recovered
     assert 'unresolved_count = 5 : i32' in transformer_recovered
@@ -1201,11 +1215,18 @@ def main():
     udonblas_public_aliases = mlir_module_attribute(
         udonblas_recovered, 'vrc.static_public_resource_aliases'
     )
+    udonblas_reconciliation = mlir_module_attribute(
+        udonblas_recovered, 'vrc.static_unity_buffer_reconciliation'
+    )
     assert udonblas_inventory.count('resource_kind = "allocation"') == 3
     assert udonblas_inventory.count('public = false') == 3
     assert 'vrc.static_device_resource_public_bindings' not in udonblas_recovered
     assert udonblas_assignments.count('texture_id = ') == 3
     assert 'resolved_count = 0 : i32' in udonblas_public_aliases
+    assert 'configured_count = 3 : i32' in udonblas_reconciliation
+    assert 'resolved_alias_count = 0 : i32' in udonblas_reconciliation
+    assert 'unresolved_public_count = 3 : i32' in udonblas_reconciliation
+    assert 'unresolved_private_count = 0 : i32' in udonblas_reconciliation
     udonblas_transfers = mlir_module_attribute(
         udonblas_recovered, 'vrc.static_transfer_bindings'
     )

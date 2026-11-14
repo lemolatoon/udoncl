@@ -66,6 +66,9 @@ def ResolveStaticTransferBindingsPass : Pass<"vrc-resolve-static-transfer-bindin
 def ResolveStaticPublicResourceAliasesPass : Pass<"vrc-resolve-static-public-resource-aliases", "mlir::ModuleOp"> {
   let summary = "Resolve public Device endpoints to compiler-assigned Unity Textures";
 }
+def ReconcileStaticUnityBuffersPass : Pass<"vrc-reconcile-static-unity-buffers", "mlir::ModuleOp"> {
+  let summary = "Reconcile configured Unity buffers with resolved static public resources";
+}
 def AllocateUnityTexturesPass : Pass<"vrc-allocate-unity-textures", "mlir::ModuleOp"> {
   let summary = "Assign one deterministic Unity Texture to each keyed allocation resource";
 }
