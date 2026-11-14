@@ -14,12 +14,17 @@ module attributes {
     return %second : i32
   }
 
+  func.func @dynamic() -> i32 {
+    %result = call @create() : () -> i32
+    return %result : i32
+  }
+
   func.func private @create() -> i32 {
     %result = call @physical() : () -> i32
     return %result : i32
   }
 
-  func.func private @physical() -> i32 {
+  func.func private @physical() -> i32 attributes {vrc.async_effect = "may_suspend", vrc.llvm_function = {sym_name = "physical"}} {
     %logical = arith.constant 1 : i32
     %bytes = arith.constant 32 : i32
     %buffer, %status = vrc.buffer_alloc %logical, %bytes {format = "rgba8_unorm", usage = "storage"} : (i32, i32) -> (!vrc.buffer, i32)

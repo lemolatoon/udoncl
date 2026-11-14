@@ -413,6 +413,18 @@ graph nor OpenCL status and logical-handle semantics. Production preview runs
 this planner on the same clone and records its plan without rewriting the
 executable module.
 
+The corresponding clone-only transformation consumes that plan atomically.
+It resolves every planned call against the unchanged module before mutation,
+then clones the entire private callee path for every resource, including the
+first resource, so blocked or dynamic callers keep the original shared
+runtime. Clone names include resource and frame indices. The terminal cloned
+`vrc.buffer_alloc` receives the keyed physical assignment for the following
+materialization pass, but remains an allocation in this slice; OpenCL
+validation, status branches, logical handles, and all original functions are
+unchanged. Production integration waits until physical allocation
+materialization and dead-symbol removal are available, because clone-only IR
+temporarily contains more allocation operations.
+
 A standalone physical-allocation specialization planner is the next static
 lowering boundary. It follows each proven singleton allocation call through
 private defined callees to exactly one `vrc.buffer_alloc`, joins the resource

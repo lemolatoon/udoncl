@@ -464,6 +464,17 @@ add_test(NAME static-physical-allocation-specialization-plan-diagnostics
     --verify-diagnostics
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_physical_allocation_specialization_plan_invalid.mlir"
 )
+add_test(NAME static-physical-allocation-path-specialization
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_physical_allocation_path_specialization.py"
+    $<TARGET_FILE:vrc-opt>
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_physical_allocation_specialization_plan.mlir"
+)
+add_test(NAME static-physical-allocation-path-specialization-diagnostics
+  COMMAND vrc-opt --vrc-specialize-static-physical-allocation-paths
+    --verify-diagnostics
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_physical_allocation_path_specialization_invalid.mlir"
+)
 add_test(NAME static-device-resource-switch
   COMMAND Python3::Interpreter
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_switch.py"
