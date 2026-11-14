@@ -2739,7 +2739,7 @@ LogicalResult discoverStaticDeviceResources(ModuleOp module) {
   discovery.addPass(::vrc::createInferStaticDeviceResourceRequirementsPass());
   discovery.addPass(::vrc::createPropagateDeviceResourceProvenancePass());
   discovery.addPass(::vrc::createResolveStaticTransferBindingsPass());
-  discovery.addPass(::vrc::createClassifyONNXPublicDeviceResourcesPass());
+  discovery.addPass(::vrc::createClassifyStaticPublicDeviceResourcesPass());
   discovery.addPass(::vrc::createAnalyzeStaticDeviceResourcePersistencePass());
   discovery.addPass(::vrc::createBuildStaticDeviceResourceInventoryPass());
   discovery.addPass(::vrc::createAllocateUnityTexturesPass());

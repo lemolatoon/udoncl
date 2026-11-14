@@ -1,4 +1,4 @@
-// expected-error @below {{shared allocation contexts require root-distinct call paths before specialization}}
+// expected-error @below {{planned allocation call site is missing or ambiguous}}
 module attributes {
   vrc.static_device_resource_context_plan = {schema_version = 1 : i32, sites = [{
     allocation_site = {function = @leaf, occurrence = 0 : i32, primitive = "clCreateBuffer"},

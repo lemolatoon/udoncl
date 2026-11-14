@@ -28,6 +28,7 @@ assert first == second
 assert "func.func private @allocate.__udoncl_ctx_1" in first
 assert first.count("call @allocate()") == 1
 assert first.count("call @allocate.__udoncl_ctx_1()") == 1
+assert first.count("call @initialize()") == 1
 assert "cloned_function_count = 1 : i32" in first
 assert "rewritten_call_count = 1 : i32" in first
 assert "specialized_context_count = 1 : i32" in first
@@ -36,4 +37,4 @@ assert "allocation_site_count = 2 : i32" in first
 assert "singleton_site_count = 2 : i32" in first
 assert "shared_site_count = 0 : i32" in first
 assert "required_clone_count = 0 : i32" in first
-print("static_allocation_context_specialization=passed clones=1 singleton=2")
+print("static_allocation_context_specialization=passed shared_prefix=true clones=1 singleton=2")

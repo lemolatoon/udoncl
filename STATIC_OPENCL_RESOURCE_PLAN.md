@@ -305,16 +305,18 @@ Status: standalone allocator implemented against a versioned keyed inventory.
 It assigns deterministic one-based Texture IDs to allocation contexts while
 preserving capacity, format, public access, and persistence. The producer that
 derives this inventory is split by responsibility: a standalone requirements
-pass now reconstructs keyed capacity, memory flags, format, and usage through
-discovery call paths. A standalone ONNX public-resource pass now joins generic
-allocation provenance with stable input/output bind call sites and typed ONNX
-metadata; it does not classify by model name, capacity, or fixed resource ID.
-A separate generic persistence pass now classifies identities that cross an
-export root or escape through global storage, independently of ONNX metadata.
-A standalone keyed merger now combines requirements, persistence, and optional
-ONNX public bindings into the allocator inventory; ordinary UdonCL modules do
-not require ONNX metadata. Removal of the current duplicate public-buffer
-capacities and manifest integration remain separate work.
+pass reconstructs keyed capacity, memory flags, format, and usage through
+discovery call paths. A generic public-resource pass joins allocation
+provenance with versioned public-resource metadata attached to an allocation's
+resource operand. It does not recognize ONNX functions, model names,
+capacities, or fixed resource IDs; any C Host frontend may emit the same
+metadata contract. The ONNX Host finalizer is only one producer of that generic
+contract. A separate generic persistence pass classifies identities that cross
+an export root or escape through global storage. A standalone keyed merger
+combines requirements, persistence, and optional public bindings into the
+allocator inventory. No ONNX marker or metadata is required by the allocator.
+Removal of duplicate public-buffer capacities and manifest integration remain
+separate work.
 
 - Assign one physical Texture per allocation context.
 - Emit stable resource IDs, capacities, formats, and public/persistent flags.
@@ -360,11 +362,18 @@ attribute after Host-buffer planning, then the pass classifies each entry as a
 resolved static alias, unresolved legacy public buffer, or unresolved legacy
 private buffer. It never infers identity from a name, capacity, numeric buffer
 ID, or list position. Static-metadata-free UdonCL artifacts remain unchanged;
-incomplete metadata and identity/capacity conflicts are diagnosed. Real
-artifact acceptance currently records MNIST as 2 resolved plus 5 legacy
-private buffers, TinyLlama as 6 unresolved public plus 4 legacy private
-buffers, and ordinary UdonBLAS as 3 unresolved public buffers. This slice is
-still metadata-only.
+incomplete metadata and identity/capacity conflicts are diagnosed. The prior
+baseline recorded MNIST as 2 resolved plus 5 legacy private buffers, TinyLlama
+as 6 unresolved public plus 4 legacy private buffers, and ordinary UdonBLAS as
+3 unresolved public buffers. Public allocations produced through the generated
+Host ABI now use the same generic allocation/provenance contract as ordinary
+UdonCL. TinyLlama now has 6 resolved public plus 4 private allocations, 10
+deterministic Texture assignments, and no canonical-layout blocker. The legacy
+MNIST handwritten C Host does not yet emit this generic declaration, so its two
+public endpoints intentionally remain legacy until the same C-facing contract
+is exposed; no ONNX-symbol fallback is retained. Refreshed artifact counts are
+acceptance evidence rather than separate ONNX behavior. This slice is still
+metadata-only.
 
 A standalone canonical Unity-buffer layout planner now consumes the keyed
 inventory, Texture assignments, public aliases, and reconciliation result. It
@@ -372,13 +381,13 @@ does not assume that a Texture ID equals a legacy buffer ID. Instead, it emits
 an independently versioned resource-to-Texture-to-heap-slot layout and a
 readiness decision. Each public planned entry is self-contained and carries
 its semantic name, data type, and logical byte count in addition to the
-physical capacity and public endpoint identity. Real MNIST is ready with 5
-planned buffers replacing 7
-legacy entries, so 2 duplicate legacy entries are removable. TinyLlama is
-blocked by 6 unresolved public endpoints and ordinary UdonBLAS by 3; neither
-silently replaces its pool. Manifest and pool replacement remain a separate
-tool-adapter commit gated by this plan and by direct static resource lowering;
-the existing runtime handle ordinal is not treated as a Texture identity.
+physical capacity and public endpoint identity. Generated-ABI TinyLlama is
+ready with 10 planned buffers and all 6 public endpoints resolved. The
+handwritten MNIST C Host remains blocked by its 2 undeclared public endpoints,
+and ordinary UdonBLAS by 3; neither silently replaces its pool. Manifest and
+pool replacement remain a separate tool-adapter commit gated by this plan and
+by direct static resource lowering; the existing runtime handle ordinal is not
+treated as a Texture identity.
 
 The Host validator, Unity dispatch binder, and Udon Assembly lowering now
 accept `vrc.assigned_buffer` as a mutable compiler-assigned resource. The
@@ -424,6 +433,15 @@ validation, status branches, logical handles, and all original functions are
 unchanged. Production integration waits until physical allocation
 materialization and dead-symbol removal are available, because clone-only IR
 temporarily contains more allocation operations.
+
+Allocation-site metadata now states whether resource identity is returned as a
+result or written through an output operand. The physical planner consumes that
+generic contract instead of assuming result zero. All 10 TinyLlama allocations,
+including the 6 generated `udonclDeviceBufferCreate` calls, are therefore valid
+physical-specialization candidates with zero planner blockers. The generated
+create path also exercises shared-prefix context specialization: repeated calls
+inside one initialization helper clone only the first unique suffix rather than
+requiring different export-root branches.
 
 A separate physical-allocation materializer consumes only those annotated
 terminal operations. It revalidates the specialization summary, persistent

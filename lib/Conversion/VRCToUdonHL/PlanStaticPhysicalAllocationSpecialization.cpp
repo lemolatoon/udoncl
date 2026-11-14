@@ -21,6 +21,8 @@ constexpr StringLiteral allocationSiteAttribute =
     "vrc.static_device_allocation_site";
 constexpr StringLiteral resultProvenanceAttribute =
     "vrc.static_device_result_provenance";
+constexpr StringLiteral operandProvenanceAttribute =
+    "vrc.static_device_operand_provenance";
 constexpr StringLiteral inventoryAttribute =
     "vrc.static_device_resource_inventory";
 constexpr StringLiteral assignmentsAttribute = "vrc.unity_texture_assignments";
@@ -112,15 +114,25 @@ FailureOr<DenseMap<int32_t, Assignment>> readAssignments(ModuleOp module) {
   return result;
 }
 
-std::optional<int32_t> singletonResource(func::CallOp call) {
-  auto provenance = call->getAttrOfType<ArrayAttr>(resultProvenanceAttribute);
+std::optional<int32_t> singletonResource(func::CallOp call,
+                                         DictionaryAttr site) {
+  auto resultIndex = site.getAs<IntegerAttr>("resource_result");
+  auto operandIndex = site.getAs<IntegerAttr>("resource_operand");
+  if (static_cast<bool>(resultIndex) == static_cast<bool>(operandIndex))
+    return std::nullopt;
+  int64_t target = resultIndex ? resultIndex.getInt() : operandIndex.getInt();
+  if (target < 0 || (resultIndex && target >= call.getNumResults()) ||
+      (operandIndex && target >= call.getNumOperands()))
+    return std::nullopt;
+  auto provenance = call->getAttrOfType<ArrayAttr>(
+      resultIndex ? resultProvenanceAttribute : operandProvenanceAttribute);
   if (!provenance)
     return std::nullopt;
   DictionaryAttr result;
   for (Attribute attribute : provenance) {
     auto candidate = dyn_cast<DictionaryAttr>(attribute);
     auto index = candidate ? candidate.getAs<IntegerAttr>("index") : nullptr;
-    if (index && index.getInt() == 0) {
+    if (index && index.getInt() == target) {
       result = candidate;
       break;
     }
@@ -240,7 +252,7 @@ struct PlanStaticPhysicalAllocationSpecializationPass
       auto occurrence = site ? site.getAs<IntegerAttr>("occurrence") : nullptr;
       auto primitive = site ? site.getAs<StringAttr>("primitive") : nullptr;
       auto caller = call->getParentOfType<func::FuncOp>();
-      auto resource = singletonResource(call);
+      auto resource = site ? singletonResource(call, site) : std::nullopt;
       if (!function || function.getValue() != caller.getSymName() ||
           !occurrence || occurrence.getInt() < 0 || !primitive ||
           occurrence.getInt() != callOccurrence(call) ||

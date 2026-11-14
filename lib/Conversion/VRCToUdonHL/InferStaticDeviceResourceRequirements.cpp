@@ -48,6 +48,42 @@ FailureOr<int64_t> evaluateInteger(Value value, ArrayRef<func::CallOp> path,
     return evaluateUnary(op.getIn());
   if (auto op = value.getDefiningOp<arith::TruncIOp>())
     return evaluateUnary(op.getIn());
+  if (auto op = value.getDefiningOp<arith::SelectOp>()) {
+    auto condition = evaluateInteger(op.getCondition(), path, depth);
+    if (failed(condition))
+      return failure();
+    return evaluateInteger(*condition ? op.getTrueValue() : op.getFalseValue(),
+                           path, depth);
+  }
+  if (auto op = value.getDefiningOp<arith::CmpIOp>()) {
+    auto left = evaluateInteger(op.getLhs(), path, depth);
+    auto right = evaluateInteger(op.getRhs(), path, depth);
+    if (failed(left) || failed(right))
+      return failure();
+    switch (op.getPredicate()) {
+    case arith::CmpIPredicate::eq:
+      return *left == *right;
+    case arith::CmpIPredicate::ne:
+      return *left != *right;
+    case arith::CmpIPredicate::slt:
+      return *left < *right;
+    case arith::CmpIPredicate::sle:
+      return *left <= *right;
+    case arith::CmpIPredicate::sgt:
+      return *left > *right;
+    case arith::CmpIPredicate::sge:
+      return *left >= *right;
+    case arith::CmpIPredicate::ult:
+      return static_cast<uint64_t>(*left) < static_cast<uint64_t>(*right);
+    case arith::CmpIPredicate::ule:
+      return static_cast<uint64_t>(*left) <= static_cast<uint64_t>(*right);
+    case arith::CmpIPredicate::ugt:
+      return static_cast<uint64_t>(*left) > static_cast<uint64_t>(*right);
+    case arith::CmpIPredicate::uge:
+      return static_cast<uint64_t>(*left) >= static_cast<uint64_t>(*right);
+    }
+    return failure();
+  }
   if (auto op = value.getDefiningOp<arith::ShLIOp>()) {
     auto left = evaluateInteger(op.getLhs(), path, depth);
     auto right = evaluateInteger(op.getRhs(), path, depth);
@@ -116,7 +152,8 @@ struct InferStaticDeviceResourceRequirementsPass
       if (!id || id.getInt() < 0 || !root || !frames || !siteFunction ||
           !occurrence || !primitive ||
           (primitive != "clCreateBuffer" &&
-           primitive != "udonclCreateBufferForQueue")) {
+           primitive != "udonclCreateBufferForQueue" &&
+           primitive != "udonclDeviceBufferCreate")) {
         module.emitError("invalid discovered allocation requirement context");
         signalPassFailure();
         return;

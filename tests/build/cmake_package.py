@@ -608,34 +608,25 @@ def main():
     assert 'cloned_function_count = 1 : i32' in mnist_context_specialization
     assert 'rewritten_call_count = 1 : i32' in mnist_context_specialization
     assert 'specialized_context_count = 1 : i32' in mnist_context_specialization
-    assert mnist_inventory.count('public = true') == 2
+    assert 'public = true' not in mnist_inventory
     assert 'resource_id = 0 : i32' in mnist_inventory
     assert 'resource_id = 1 : i32' in mnist_inventory
-    assert 'public_access = "input"' in mnist_inventory
-    assert 'public_access = "output"' in mnist_inventory
-    assert mnist_inventory.count('public = false') == 3
+    assert mnist_inventory.count('public = false') == 5
     assert mnist_assignments.count('texture_id = ') == 5
-    assert 'resolved_count = 2 : i32' in mnist_public_aliases
-    assert mnist_public_aliases.count('resource_kind = "allocation"') == 2
-    assert 'public_access = "input", public_index = 0 : i32' in mnist_public_aliases
-    assert 'public_access = "output", public_index = 0 : i32' in mnist_public_aliases
+    assert 'resolved_count = 0 : i32' in mnist_public_aliases
+    assert 'resource_kind = "allocation"' not in mnist_public_aliases
     assert 'configured_count = 7 : i32' in mnist_reconciliation
-    assert 'resolved_alias_count = 2 : i32' in mnist_reconciliation
-    assert 'unresolved_public_count = 0 : i32' in mnist_reconciliation
+    assert 'resolved_alias_count = 0 : i32' in mnist_reconciliation
+    assert 'unresolved_public_count = 2 : i32' in mnist_reconciliation
     assert 'unresolved_private_count = 5 : i32' in mnist_reconciliation
     assert 'planned_count = 5 : i32' in mnist_layout
     assert 'legacy_configured_count = 7 : i32' in mnist_layout
-    assert 'removable_legacy_count = 2 : i32' in mnist_layout
-    assert 'blocker_count = 0 : i32' in mnist_layout
-    assert 'ready = true' in mnist_layout
+    assert 'removable_legacy_count = 0 : i32' in mnist_layout
+    assert 'blocker_count = 2 : i32' in mnist_layout
+    assert 'ready = false' in mnist_layout
     assert mnist_layout.count('resource_kind = "allocation"') == 5
-    assert 'data_type = "float32"' in mnist_layout
-    assert 'logical_bytes = 3136 : i64' in mnist_layout
-    assert 'name = "image"' in mnist_layout
-    assert 'logical_bytes = 40 : i64' in mnist_layout
-    assert 'name = "logits"' in mnist_layout
     assert 'preview = true' in mnist_lowering_readiness
-    assert 'resource_operands_ready = true' in mnist_lowering_readiness
+    assert 'resource_operands_ready = false' in mnist_lowering_readiness
     assert 'pool_replacement_ready = false' in mnist_lowering_readiness
     assert 'dispatch_candidate_count = 6 : i32' in mnist_lowering_readiness
     assert 'dynamic_resolve_count = 5 : i32' in mnist_lowering_readiness
@@ -957,34 +948,46 @@ def main():
     transformer_layout = mlir_module_attribute(
         transformer_recovered, 'vrc.static_unity_buffer_layout_plan'
     )
-    assert transformer_inventory.count('resource_kind = "allocation"') == 4
-    assert 'context_count = 4 : i32' in transformer_context_plan
-    assert 'allocation_site_count = 4 : i32' in transformer_context_plan
-    assert 'singleton_site_count = 4 : i32' in transformer_context_plan
+    transformer_physical_plan = mlir_module_attribute(
+        transformer_recovered,
+        'vrc.static_physical_allocation_specialization_plan',
+    )
+    assert transformer_inventory.count('resource_kind = "allocation"') == 10
+    assert 'context_count = 10 : i32' in transformer_context_plan
+    assert 'allocation_site_count = 10 : i32' in transformer_context_plan
+    assert 'singleton_site_count = 10 : i32' in transformer_context_plan
     assert 'shared_site_count = 0 : i32' in transformer_context_plan
     assert 'required_clone_count = 0 : i32' in transformer_context_plan
     assert (
-        'cloned_function_count = 0 : i32'
+        'cloned_function_count = 5 : i32'
         in transformer_context_specialization
     )
-    assert 'rewritten_call_count = 0 : i32' in transformer_context_specialization
+    assert 'rewritten_call_count = 5 : i32' in transformer_context_specialization
     assert (
-        'specialized_context_count = 0 : i32'
+        'specialized_context_count = 5 : i32'
         in transformer_context_specialization
     )
     assert transformer_inventory.count('public = false') == 4
-    assert 'public = true' not in transformer_inventory
-    assert transformer_assignments.count('texture_id = ') == 4
-    assert 'resolved_count = 0 : i32' in transformer_public_aliases
+    assert transformer_inventory.count('public = true') == 6
+    assert transformer_assignments.count('texture_id = ') == 10
+    assert 'resolved_count = 6 : i32' in transformer_public_aliases
     assert 'configured_count = 10 : i32' in transformer_reconciliation
-    assert 'resolved_alias_count = 0 : i32' in transformer_reconciliation
-    assert 'unresolved_public_count = 6 : i32' in transformer_reconciliation
+    assert 'resolved_alias_count = 6 : i32' in transformer_reconciliation
+    assert 'unresolved_public_count = 0 : i32' in transformer_reconciliation
     assert 'unresolved_private_count = 4 : i32' in transformer_reconciliation
-    assert 'planned_count = 4 : i32' in transformer_layout
+    assert 'planned_count = 10 : i32' in transformer_layout
     assert 'legacy_configured_count = 10 : i32' in transformer_layout
-    assert 'blocker_count = 6 : i32' in transformer_layout
-    assert 'unresolved_public_count = 6 : i32' in transformer_layout
-    assert 'ready = false' in transformer_layout
+    assert 'blocker_count = 0 : i32' in transformer_layout
+    assert 'unresolved_public_count = 0 : i32' in transformer_layout
+    assert 'ready = true' in transformer_layout
+    for name in [
+        'input_ids', 'past_key', 'past_value', 'logits',
+        'present_key', 'present_value',
+    ]:
+        assert f'name = "{name}"' in transformer_layout
+    assert 'candidate_count = 10 : i32' in transformer_physical_plan
+    assert 'planned_count = 10 : i32' in transformer_physical_plan
+    assert 'blocker_count = 0 : i32' in transformer_physical_plan
     assert 'candidate_count = 8 : i32' in transformer_recovered
     assert 'snapshot_count = 3 : i32' in transformer_recovered
     assert 'unresolved_count = 5 : i32' in transformer_recovered

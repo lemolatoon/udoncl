@@ -62,24 +62,28 @@ resolveSingletonResource(func::CallOp call, int32_t operandIndex,
         resourceCase ? resourceCase.getAs<BoolAttr>("may_be_null") : nullptr;
     auto ids =
         resourceCase ? resourceCase.getAs<ArrayAttr>("resource_ids") : nullptr;
-    if (!resourceCase || !unknown || !nullable || !ids || unknown.getValue() ||
-        ids.size() > 1)
-      return call.emitError("static dispatch requires one non-null resource "
-                            "identity per operand");
+    if (!resourceCase || !unknown || !nullable || !ids)
+      return call.emitError("static dispatch resource provenance is invalid");
+    if (unknown.getValue() || ids.size() > 1) {
+      unresolved = true;
+      continue;
+    }
     if (ids.empty()) {
       unresolved = true;
       continue;
     }
-    if (requireNonNull && nullable.getValue())
-      return call.emitError("static dispatch requires one non-null resource "
-                            "identity per operand");
+    if (requireNonNull && nullable.getValue()) {
+      unresolved = true;
+      continue;
+    }
     auto id = dyn_cast<IntegerAttr>(ids[0]);
     if (!id || id.getInt() < 0)
       return call.emitError("static dispatch resource identity is invalid");
     int32_t value = static_cast<int32_t>(id.getInt());
-    if (identity && *identity != value)
-      return call.emitError("static dispatch resource identity is ambiguous "
-                            "across call contexts");
+    if (identity && *identity != value) {
+      unresolved = true;
+      continue;
+    }
     identity = value;
   }
   if (unresolved)

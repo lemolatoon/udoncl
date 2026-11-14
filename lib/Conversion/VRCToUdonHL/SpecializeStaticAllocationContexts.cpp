@@ -101,23 +101,6 @@ struct SpecializeStaticAllocationContextsPass
                rhs.getAs<IntegerAttr>("resource_id").getInt();
       });
 
-      std::set<std::tuple<std::string, std::string, int64_t>> rootBranches;
-      for (DictionaryAttr context : ordered) {
-        auto root = context.getAs<FlatSymbolRefAttr>("root");
-        auto path = context.getAs<ArrayAttr>("call_path");
-        auto first = cast<DictionaryAttr>(*path.begin());
-        auto branch = std::make_tuple(
-            root.getValue().str(),
-            first.getAs<FlatSymbolRefAttr>("callee").getValue().str(),
-            first.getAs<IntegerAttr>("occurrence").getInt());
-        if (!rootBranches.insert(branch).second) {
-          module.emitError("shared allocation contexts require root-distinct "
-                           "call paths before specialization");
-          signalPassFailure();
-          return;
-        }
-      }
-
       for (DictionaryAttr context : llvm::drop_begin(ordered)) {
         int32_t resource = static_cast<int32_t>(
             context.getAs<IntegerAttr>("resource_id").getInt());
@@ -130,8 +113,42 @@ struct SpecializeStaticAllocationContextsPass
           return;
         }
 
+        size_t split = path.size();
+        for (size_t index = 0; index < path.size(); ++index) {
+          bool unique = true;
+          for (DictionaryAttr other : ordered) {
+            if (other == context)
+              continue;
+            if (other.getAs<FlatSymbolRefAttr>("root") != rootName)
+              continue;
+            auto otherPath = other.getAs<ArrayAttr>("call_path");
+            if (otherPath.size() <= index)
+              continue;
+            bool samePrefix = true;
+            for (size_t prefix = 0; prefix <= index; ++prefix)
+              if (path[prefix] != otherPath[prefix]) {
+                samePrefix = false;
+                break;
+              }
+            if (samePrefix) {
+              unique = false;
+              break;
+            }
+          }
+          if (unique) {
+            split = index;
+            break;
+          }
+        }
+        if (split == path.size()) {
+          module.emitError(
+              "shared allocation contexts have identical call paths");
+          signalPassFailure();
+          return;
+        }
+
         SmallVector<func::FuncOp> clones;
-        for (Attribute frameAttribute : path) {
+        for (Attribute frameAttribute : llvm::drop_begin(path, split)) {
           auto frame = cast<DictionaryAttr>(frameAttribute);
           auto callee = frame.getAs<FlatSymbolRefAttr>("callee");
           auto source = module.lookupSymbol<func::FuncOp>(callee.getValue());
@@ -160,7 +177,19 @@ struct SpecializeStaticAllocationContextsPass
         }
 
         func::FuncOp parent = root;
-        for (auto [index, frameAttribute] : llvm::enumerate(path)) {
+        if (split) {
+          auto parentFrame = cast<DictionaryAttr>(path[split - 1]);
+          parent = module.lookupSymbol<func::FuncOp>(
+              parentFrame.getAs<FlatSymbolRefAttr>("callee").getValue());
+          if (!parent) {
+            module.emitError(
+                "shared allocation context prefix function is missing");
+            signalPassFailure();
+            return;
+          }
+        }
+        for (size_t index = split; index < path.size(); ++index) {
+          Attribute frameAttribute = path[index];
           auto call = findCall(parent, cast<DictionaryAttr>(frameAttribute));
           if (failed(call)) {
             module.emitError(
@@ -168,9 +197,9 @@ struct SpecializeStaticAllocationContextsPass
             signalPassFailure();
             return;
           }
-          (*call).setCallee(clones[index].getSymName());
+          (*call).setCallee(clones[index - split].getSymName());
           ++rewrittenCalls;
-          parent = clones[index];
+          parent = clones[index - split];
         }
         ++specializedContexts;
       }

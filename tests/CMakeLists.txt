@@ -522,6 +522,12 @@ add_test(NAME static-device-resource-device-memory
     $<TARGET_FILE:vrc-opt>
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_device_memory.mlir"
 )
+add_test(NAME static-device-resource-device-create
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_device_create.py"
+    $<TARGET_FILE:vrc-opt>
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_device_create.mlir"
+)
 add_test(NAME static-device-resource-buffer-view
   COMMAND Python3::Interpreter
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_buffer_view.py"

@@ -165,6 +165,10 @@ assert "call @udononnxBindingInitializeModel" in host.stdout
 assert "func.func @udon_onnx_binding_create" in host.stdout
 assert "func.func @udon_onnx_binding_bind_tensor" in host.stdout
 assert "func.func @udon_onnx_binding_bind_all" in host.stdout
+assert host.stdout.count("vrc.static_public_resource_binding") == 3
+assert host.stdout.count('public_access = "input"') >= 2
+assert host.stdout.count('public_access = "output"') >= 1
+assert host.stdout.count('resource_source = "call_allocation"') == 3
 assert "func.func @udon_onnx_binding_enqueue_initialize" in host.stdout
 assert "func.func @udon_onnx_binding_enqueue_run" in host.stdout
 assert "func.func @udon_onnx_binding_wait_active_event" not in host.stdout

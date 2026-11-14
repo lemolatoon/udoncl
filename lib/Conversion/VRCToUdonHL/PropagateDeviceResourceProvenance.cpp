@@ -1626,6 +1626,30 @@ struct PropagateDeviceResourceProvenancePass
             for (Value result : call.getResults())
               updateFact(result, Fact::scalar(), facts, worklist, queued,
                          reached);
+          } else if (calleeName == "udonclDeviceBufferCreate") {
+            if (call.getNumOperands() != 4 || call.getNumResults() != 1 ||
+                !call.getResult(0).getType().isInteger(32)) {
+              call.emitError(
+                  "udonclDeviceBufferCreate has an invalid signature");
+              invalid = true;
+              continue;
+            }
+            auto identity = allocationIdentity(invocation, call);
+            auto object = objectValues.find(call.getOperand(3));
+            auto exact = object == objectValues.end()
+                             ? std::nullopt
+                             : exactObject(object->second);
+            if (!identity || !exact || !handles.count(*exact)) {
+              call.emitError("udonclDeviceBufferCreate requires a discovered "
+                             "allocation and an exact 8-byte handle object");
+              invalid = true;
+              continue;
+            }
+            Fact resource = Fact::identity(*identity);
+            updateHandle(*exact, resource, handles, worklist, queued, reached);
+            recordCase(operandCases, call, invocation, 3, resource);
+            updateFact(call.getResult(0), Fact::scalar(), facts, worklist,
+                       queued, reached);
           } else if (isAllocation(calleeName)) {
             if (call.getNumResults() != 1) {
               call.emitError(

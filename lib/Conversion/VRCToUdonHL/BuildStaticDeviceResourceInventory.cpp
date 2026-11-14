@@ -133,12 +133,6 @@ struct BuildStaticDeviceResourceInventoryPass
 
     auto publicBindings =
         module->getAttrOfType<DictionaryAttr>(publicAttribute);
-    if (module->hasAttr("udoncl.onnx_binding") && !publicBindings) {
-      module.emitError(
-          "ONNX resource inventory requires public classification");
-      signalPassFailure();
-      return;
-    }
     llvm::DenseMap<int32_t, PublicBinding> publicById;
     if (publicBindings) {
       auto resources = publicBindings.getAs<ArrayAttr>("resources");

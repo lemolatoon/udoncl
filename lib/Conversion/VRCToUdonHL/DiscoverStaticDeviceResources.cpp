@@ -25,9 +25,12 @@ constexpr StringLiteral discoveryAttribute =
 constexpr StringLiteral allocationSiteAttribute =
     "vrc.static_device_allocation_site";
 constexpr StringLiteral callSiteAttribute = "vrc.static_device_call_site";
+constexpr StringLiteral publicBindingAttribute =
+    "vrc.static_public_resource_binding";
 
 bool isAllocationPrimitive(StringRef name) {
-  return name == "clCreateBuffer" || name == "udonclCreateBufferForQueue";
+  return name == "clCreateBuffer" || name == "udonclCreateBufferForQueue" ||
+         name == "udonclDeviceBufferCreate";
 }
 
 struct CallEdge {
@@ -66,6 +69,7 @@ struct AllocationContext {
   std::string function;
   std::string primitive;
   int32_t occurrence;
+  DictionaryAttr publicBinding;
 
   auto key() const {
     return std::tie(root, path, function, primitive, occurrence);
@@ -136,7 +140,7 @@ DictionaryAttr contextAttribute(Builder &builder,
   SmallVector<Attribute> path;
   for (const CallFrame &frame : context.path)
     path.push_back(frameAttribute(builder, frame));
-  auto site = builder.getDictionaryAttr({
+  SmallVector<NamedAttribute> siteFields{
       builder.getNamedAttr(
           "function",
           FlatSymbolRefAttr::get(builder.getContext(), context.function)),
@@ -144,14 +148,25 @@ DictionaryAttr contextAttribute(Builder &builder,
                            builder.getI32IntegerAttr(context.occurrence)),
       builder.getNamedAttr("primitive",
                            builder.getStringAttr(context.primitive)),
-  });
-  return builder.getDictionaryAttr({
+  };
+  if (context.primitive == "udonclDeviceBufferCreate")
+    siteFields.push_back(
+        builder.getNamedAttr("resource_operand", builder.getI32IntegerAttr(3)));
+  else
+    siteFields.push_back(
+        builder.getNamedAttr("resource_result", builder.getI32IntegerAttr(0)));
+  auto site = builder.getDictionaryAttr(siteFields);
+  SmallVector<NamedAttribute> fields{
       builder.getNamedAttr("allocation_site", site),
       builder.getNamedAttr("call_path", builder.getArrayAttr(path)),
       builder.getNamedAttr("context_id", builder.getI32IntegerAttr(contextId)),
       builder.getNamedAttr(
           "root", FlatSymbolRefAttr::get(builder.getContext(), context.root)),
-  });
+  };
+  if (context.publicBinding)
+    fields.push_back(
+        builder.getNamedAttr("public_binding", context.publicBinding));
+  return builder.getDictionaryAttr(fields);
 }
 
 struct DiscoverStaticDeviceResourcesPass
@@ -197,17 +212,23 @@ struct DiscoverStaticDeviceResourcesPass
             return;
           }
           int32_t occurrence = allocationOccurrences[calleeName]++;
-          call->setAttr(
-              allocationSiteAttribute,
-              builder.getDictionaryAttr({
-                  builder.getNamedAttr("function", FlatSymbolRefAttr::get(
-                                                       builder.getContext(),
-                                                       function.getSymName())),
-                  builder.getNamedAttr("occurrence",
-                                       builder.getI32IntegerAttr(occurrence)),
-                  builder.getNamedAttr("primitive",
-                                       builder.getStringAttr(calleeName)),
-              }));
+          SmallVector<NamedAttribute> siteFields{
+              builder.getNamedAttr(
+                  "function", FlatSymbolRefAttr::get(builder.getContext(),
+                                                     function.getSymName())),
+              builder.getNamedAttr("occurrence",
+                                   builder.getI32IntegerAttr(occurrence)),
+              builder.getNamedAttr("primitive",
+                                   builder.getStringAttr(calleeName)),
+          };
+          if (calleeName == "udonclDeviceBufferCreate")
+            siteFields.push_back(builder.getNamedAttr(
+                "resource_operand", builder.getI32IntegerAttr(3)));
+          else
+            siteFields.push_back(builder.getNamedAttr(
+                "resource_result", builder.getI32IntegerAttr(0)));
+          call->setAttr(allocationSiteAttribute,
+                        builder.getDictionaryAttr(siteFields));
           info.allocations.push_back(
               {call, calleeName.str(), occurrence, inLoop});
           return;
@@ -297,6 +318,7 @@ struct DiscoverStaticDeviceResourcesPass
     SmallVector<AllocationContext> contexts;
     SmallVector<func::FuncOp> active;
     SmallVector<CallFrame> path;
+    SmallVector<DictionaryAttr> publicBindings;
     std::function<void(func::FuncOp, StringRef)> visit =
         [&](func::FuncOp function, StringRef root) {
           if (invalid)
@@ -320,8 +342,22 @@ struct DiscoverStaticDeviceResourcesPass
               invalid = true;
               break;
             }
+            auto siteBinding = site.call->getAttrOfType<DictionaryAttr>(
+                publicBindingAttribute);
+            if ((siteBinding && !publicBindings.empty()) ||
+                publicBindings.size() > 1) {
+              site.call.emitError(
+                  "allocation context has ambiguous public resource bindings");
+              invalid = true;
+              break;
+            }
+            DictionaryAttr publicBinding =
+                siteBinding ? siteBinding
+                            : (publicBindings.empty() ? DictionaryAttr()
+                                                      : publicBindings.back());
             contexts.push_back({root.str(), path, function.getSymName().str(),
-                                site.primitive, site.occurrence});
+                                site.primitive, site.occurrence,
+                                publicBinding});
           }
           if (!invalid)
             for (CallEdge &edge : info.calls) {
@@ -338,7 +374,13 @@ struct DiscoverStaticDeviceResourcesPass
               }
               path.push_back({function.getSymName().str(),
                               edge.callee.getSymName().str(), edge.occurrence});
+              auto binding = edge.call->getAttrOfType<DictionaryAttr>(
+                  publicBindingAttribute);
+              if (binding)
+                publicBindings.push_back(binding);
               visit(edge.callee, root);
+              if (binding)
+                publicBindings.pop_back();
               path.pop_back();
               if (invalid)
                 break;
