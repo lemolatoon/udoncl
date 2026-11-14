@@ -2,8 +2,8 @@
 
 > Status: implementation in progress; Gates 1 and 2 are integrated at the
 > runtime-free Host boundary. Repeated root-distinct allocation contexts now
-> have a standalone call-path specialization pass; production integration and
-> common-prefix invocation tries remain. Gate 3 has standalone slices for immutable
+> use an integrated call-path specialization pass; common-prefix invocation
+> tries remain. Gate 3 has standalone slices for immutable
 > call-by-value and typed `vrc.dispatch` snapshots. The typed path is integrated
 > for production artifacts; generic `clSetKernelArg` recovery remains.
 > Decision date: 2026-11-12
@@ -267,9 +267,10 @@ the selected call chain, and removes inherited LLVM symbol metadata. Re-running
 discovery and planning after the transformation proves the formerly shared
 contexts are singleton. Common-prefix paths are diagnosed until the generic
 invocation-trie transformation is implemented. Current production acceptance
-still records one shared MNIST site requiring one additional clone; TinyLlama
-and ordinary UdonBLAS allocation sites are already singleton because the
-transformation is not yet in the production pipeline.
+records one MNIST clone followed by five singleton sites; TinyLlama and
+ordinary UdonBLAS remain zero-clone singleton cases. The production order is
+`Discover -> Plan -> Specialize -> Discover -> Plan` before requirements and
+provenance analysis, so all downstream metadata uses the specialized graph.
 
 - Track handles through arguments, results, PHIs/selects, and supported memory
   promotion.
