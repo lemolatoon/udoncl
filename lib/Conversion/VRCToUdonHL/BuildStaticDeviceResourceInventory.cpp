@@ -153,7 +153,7 @@ struct BuildStaticDeviceResourceInventoryPass
         auto access =
             resource ? resource.getAs<StringAttr>("public_access") : nullptr;
         auto index =
-            resource ? resource.getAs<IntegerAttr>("onnx_index") : nullptr;
+            resource ? resource.getAs<IntegerAttr>("public_index") : nullptr;
         auto name = resource ? resource.getAs<StringAttr>("name") : nullptr;
         auto dataType =
             resource ? resource.getAs<StringAttr>("data_type") : nullptr;
@@ -226,7 +226,7 @@ struct BuildStaticDeviceResourceInventoryPass
             builder.getNamedAttr("logical_bytes", builder.getI64IntegerAttr(
                                                       binding.logicalBytes)),
             builder.getNamedAttr("name", binding.name),
-            builder.getNamedAttr("onnx_index",
+            builder.getNamedAttr("public_index",
                                  builder.getI32IntegerAttr(binding.index)),
             builder.getNamedAttr("public_access", binding.access),
         });

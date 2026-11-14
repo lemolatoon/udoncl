@@ -225,7 +225,7 @@ struct ClassifyONNXPublicDeviceResourcesPass
           builder.getNamedAttr("logical_bytes",
                                resource.metadata.get("logical_bytes")),
           builder.getNamedAttr("name", resource.metadata.get("name")),
-          builder.getNamedAttr("onnx_index",
+          builder.getNamedAttr("public_index",
                                builder.getI32IntegerAttr(resource.index)),
           builder.getNamedAttr("public_access", resource.access),
           builder.getNamedAttr("resource_id",
