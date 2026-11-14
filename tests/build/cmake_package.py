@@ -591,6 +591,10 @@ def main():
     mnist_layout = mlir_module_attribute(
         onnx_mnist_recovered, 'vrc.static_unity_buffer_layout_plan'
     )
+    mnist_lowering_readiness = mlir_module_attribute(
+        onnx_mnist_recovered,
+        'vrc.static_unity_resource_lowering_readiness',
+    )
     assert mnist_inventory.count('resource_kind = "allocation"') == 5
     assert 'context_count = 5 : i32' in mnist_context_plan
     assert 'allocation_site_count = 5 : i32' in mnist_context_plan
@@ -626,6 +630,11 @@ def main():
     assert 'name = "image"' in mnist_layout
     assert 'logical_bytes = 40 : i64' in mnist_layout
     assert 'name = "logits"' in mnist_layout
+    assert 'preview = true' in mnist_lowering_readiness
+    assert 'resource_operands_ready = true' in mnist_lowering_readiness
+    assert 'pool_replacement_ready = false' in mnist_lowering_readiness
+    assert 'dispatch_candidate_count = 6 : i32' in mnist_lowering_readiness
+    assert 'dynamic_resolve_count = 5 : i32' in mnist_lowering_readiness
     assert 'vrc.static_kernel_bindings' in onnx_mnist_recovered
     assert 'snapshot_count = 6 : i32' in onnx_mnist_recovered
     assert onnx_mnist_recovered.count(

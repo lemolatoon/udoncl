@@ -734,7 +734,25 @@ LogicalResult reconcileStaticUnityBuffers(ModuleOp module,
   PassManager reconciliation(module.getContext());
   reconciliation.addPass(::vrc::createReconcileStaticUnityBuffersPass());
   reconciliation.addPass(::vrc::createPlanStaticUnityBufferLayoutPass());
-  return reconciliation.run(module);
+  if (failed(reconciliation.run(module)))
+    return failure();
+
+  OwningOpRef<ModuleOp> preview = cast<ModuleOp>(module.clone());
+  PassManager readiness(module.getContext());
+  readiness.addPass(::vrc::createMaterializeStaticDispatchResourcesPass());
+  readiness.addPass(::vrc::createAssessStaticUnityResourceLoweringPass());
+  if (failed(readiness.run(*preview)))
+    return failure();
+  auto result = (*preview)->getAttrOfType<DictionaryAttr>(
+      "vrc.static_unity_resource_lowering_readiness");
+  if (!result)
+    return module.emitError(
+        "static Unity resource readiness preview produced no result");
+  SmallVector<NamedAttribute> fields(result.begin(), result.end());
+  fields.push_back(builder.getNamedAttr("preview", builder.getBoolAttr(true)));
+  module->setAttr("vrc.static_unity_resource_lowering_readiness",
+                  builder.getDictionaryAttr(fields));
+  return success();
 }
 
 FailureOr<SmallVector<const json::Object *>>

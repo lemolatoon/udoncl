@@ -396,7 +396,11 @@ operand. `pool_replacement_ready` additionally requires dynamic allocation,
 release, and physical-buffer resolution to be absent. The analysis validates
 its summaries against the actual IR so stale metadata cannot authorize a
 pool replacement. Production integration of materialization and this analysis
-is the next slice; neither readiness flag changes the manifest by itself.
+first runs on a clone of the recovered production module. The resulting
+readiness record is copied back with `preview = true`, while the executable IR
+and legacy pool remain unchanged. This exercises real MNIST, TinyLlama, and
+ordinary UdonCL graphs without prematurely changing their runtime semantics;
+neither readiness flag changes the manifest by itself.
 
 - Replace supported allocation/release and buffer arguments with direct typed
   resources.
