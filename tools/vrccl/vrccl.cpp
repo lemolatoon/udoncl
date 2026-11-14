@@ -695,8 +695,9 @@ LogicalResult generateOnnxPublicBufferConfig(ModuleOp module,
   return success();
 }
 
-LogicalResult reconcileStaticUnityBuffers(ModuleOp module,
+LogicalResult reconcileStaticUnityBuffers(OwningOpRef<ModuleOp> &ownedModule,
                                           ArrayRef<UnityBuffer> buffers) {
+  ModuleOp module = *ownedModule;
   bool hasInventory = module->hasAttr("vrc.static_device_resource_inventory");
   bool hasAliases = module->hasAttr("vrc.static_public_resource_aliases");
   if (!hasInventory && !hasAliases)
@@ -778,10 +779,24 @@ LogicalResult reconcileStaticUnityBuffers(ModuleOp module,
   if (!result)
     return module.emitError(
         "static Unity resource readiness preview produced no result");
+  auto poolReplacementReady = result.getAs<BoolAttr>("pool_replacement_ready");
+  if (!poolReplacementReady)
+    return module.emitError(
+        "static Unity resource readiness result has no replacement decision");
   SmallVector<NamedAttribute> fields(result.begin(), result.end());
-  fields.push_back(builder.getNamedAttr("preview", builder.getBoolAttr(true)));
-  module->setAttr("vrc.static_unity_resource_lowering_readiness",
-                  builder.getDictionaryAttr(fields));
+  bool apply = poolReplacementReady.getValue();
+  fields.push_back(builder.getNamedAttr("applied", builder.getBoolAttr(apply)));
+  fields.push_back(
+      builder.getNamedAttr("preview", builder.getBoolAttr(!apply)));
+  auto readinessResult = builder.getDictionaryAttr(fields);
+  if (apply) {
+    (*preview)->setAttr("vrc.static_unity_resource_lowering_readiness",
+                        readinessResult);
+    ownedModule = std::move(preview);
+  } else {
+    module->setAttr("vrc.static_unity_resource_lowering_readiness",
+                    readinessResult);
+  }
   return success();
 }
 
@@ -3241,7 +3256,7 @@ int main(int argc, char **argv) {
     auto generatedBuffers = parseUnityBuffers(*unityConfig);
     if (failed(generatedBuffers))
       return 1;
-    if (failed(reconcileStaticUnityBuffers(*module, *generatedBuffers)))
+    if (failed(reconcileStaticUnityBuffers(module, *generatedBuffers)))
       return 1;
     unityBuffers = std::move(*generatedBuffers);
     if (!omitIntermediateIR) {

@@ -630,6 +630,7 @@ def main():
     assert 'ready = false' in mnist_layout
     assert mnist_layout.count('resource_kind = "allocation"') == 5
     assert 'preview = true' in mnist_lowering_readiness
+    assert 'applied = false' in mnist_lowering_readiness
     assert 'resource_operands_ready = false' in mnist_lowering_readiness
     assert 'pool_replacement_ready = false' in mnist_lowering_readiness
     assert 'dispatch_candidate_count = 6 : i32' in mnist_lowering_readiness
@@ -1011,9 +1012,15 @@ def main():
     )
     assert 'transfer_ready = true' in transformer_lowering_readiness
     assert 'pool_replacement_ready = true' in transformer_lowering_readiness
+    assert 'applied = true' in transformer_lowering_readiness
+    assert 'preview = false' in transformer_lowering_readiness
     assert 'dynamic_allocation_count = 0 : i32' in transformer_lowering_readiness
     assert 'dynamic_release_count = 0 : i32' in transformer_lowering_readiness
     assert 'dynamic_resolve_count = 0 : i32' in transformer_lowering_readiness
+    assert 'vrc.assigned_buffer' in transformer_recovered
+    assert 'vrc.buffer_alloc' not in transformer_recovered
+    assert 'vrc.buffer_release' not in transformer_recovered
+    assert 'udonhl.checked_assigned_buffer_resolve' not in transformer_recovered
     assert 'materialized_count = 9 : i32' in transformer_physical_resolves
     assert 'checked_count = 3 : i32' in transformer_physical_resolves
     assert 'unresolved_count = 0 : i32' in transformer_physical_resolves
@@ -1218,8 +1225,15 @@ def main():
     transformer_async = (
         transformer_artifact / 'host.async-runtime.mlir'
     ).read_text(encoding='utf-8')
+    transformer_udon_async = (
+        transformer_artifact / 'host.udon-async.mlir'
+    ).read_text(encoding='utf-8')
     assert 'tinyllamaPrepareFixedPrefillInputs' not in transformer_async
     assert 'tinyllamaPrepareGeneratedFixedPrefillInputs' not in transformer_async
+    assert 'vrc.assigned_buffer' in transformer_udon_async
+    assert 'vrc.unity_heap_slot' in transformer_udon_async
+    assert 'vrc.buffer_alloc' not in transformer_udon_async
+    assert 'vrc.buffer_release' not in transformer_udon_async
     conversation_input_async = (
         conversation_input_artifact / 'host.async-runtime.mlir'
     ).read_text(encoding='utf-8')
