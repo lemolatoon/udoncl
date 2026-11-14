@@ -948,6 +948,14 @@ def main():
     transformer_layout = mlir_module_attribute(
         transformer_recovered, 'vrc.static_unity_buffer_layout_plan'
     )
+    transformer_logical_materialization = mlir_module_attribute(
+        transformer_recovered,
+        'vrc.static_logical_buffer_materialization',
+    )
+    transformer_lowering_readiness = mlir_module_attribute(
+        transformer_recovered,
+        'vrc.static_unity_resource_lowering_readiness',
+    )
     transformer_physical_plan = mlir_module_attribute(
         transformer_recovered,
         'vrc.static_physical_allocation_specialization_plan',
@@ -980,6 +988,16 @@ def main():
     assert 'blocker_count = 0 : i32' in transformer_layout
     assert 'unresolved_public_count = 0 : i32' in transformer_layout
     assert 'ready = true' in transformer_layout
+    assert 'candidate_count = 9 : i32' in transformer_logical_materialization
+    assert 'materialized_count = 8 : i32' in transformer_logical_materialization
+    assert 'unresolved_count = 1 : i32' in transformer_logical_materialization
+    assert 'typed_copy_count = 4 : i32' in transformer_lowering_readiness
+    assert (
+        'unresolved_typed_transfer_operand_count = 0 : i32'
+        in transformer_lowering_readiness
+    )
+    assert 'transfer_ready = true' in transformer_lowering_readiness
+    assert 'dynamic_allocation_count = 1 : i32' in transformer_lowering_readiness
     for name in [
         'input_ids', 'past_key', 'past_value', 'logits',
         'present_key', 'present_value',

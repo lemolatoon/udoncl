@@ -411,8 +411,8 @@ and legacy pool remain unchanged. This exercises real MNIST, TinyLlama, and
 ordinary UdonCL graphs without prematurely changing their runtime semantics;
 neither readiness flag changes the manifest by itself.
 
-A standalone physical-allocation specialization planner is the next static
-lowering boundary. It follows each proven singleton allocation call through
+A standalone physical-allocation specialization planner follows each proven
+singleton allocation call through
 private defined callees to exactly one `vrc.buffer_alloc`, joins the resource
 to the keyed persistent Texture assignment, and records the exact call path
 that a later transformation may clone. Missing provenance, ambiguous sinks,
@@ -453,14 +453,17 @@ the planned call site. The surrounding `clCreateBuffer` implementation keeps
 logical-slot exhaustion, argument validation, error-pointer writes, recycling,
 and return behavior. Unannotated shared or dynamic allocations remain intact.
 
-A standalone physical-allocation specialization planner is the next static
-lowering boundary. It follows each proven singleton allocation call through
-private defined callees to exactly one `vrc.buffer_alloc`, joins the resource
-to the keyed persistent Texture assignment, and records the exact call path
-that a later transformation may clone. Missing provenance, ambiguous sinks,
-recursion, exported callees, duplicate resources, and non-persistent or
-mismatched assignments remain blockers. The planner changes neither the call
-graph nor OpenCL status and logical-handle semantics.
+A generic logical-buffer materializer now joins constant `vrc.buffer_alloc`
+IDs through Unity-buffer reconciliation into the canonical resource and
+Texture layout. It validates capacity, format, and storage usage, replaces the
+buffer with `vrc.assigned_buffer`, and replaces only that allocation's status
+with success. Dynamic IDs and IDs without an exact static alias remain
+untouched and are counted. This pass does not inspect ONNX metadata, model
+names, tensor names, or TinyLlama symbols. In the real TinyLlama preview it
+materializes all eight logical allocations used by the four KV copies, leaves
+only the shared physical allocator dynamic, and reduces unresolved typed
+transfer operands from eight to zero. The remaining five unresolved
+dispatches are a separate call-context provenance problem in shared C helpers.
 
 - Replace supported allocation/release and buffer arguments with direct typed
   resources.

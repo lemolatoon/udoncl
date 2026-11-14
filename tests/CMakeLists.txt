@@ -431,6 +431,12 @@ add_test(NAME unity-texture-assignment-diagnostics
     --verify-diagnostics
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/unity_texture_assignment_invalid.mlir"
 )
+add_test(NAME static-logical-buffer-materialization
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_logical_buffer_materialization.py"
+    $<TARGET_FILE:vrc-opt>
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_logical_buffer_materialization.mlir"
+)
 add_test(NAME static-dispatch-resource-materialization
   COMMAND Python3::Interpreter
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_dispatch_resource_materialization.py"
