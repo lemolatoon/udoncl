@@ -59,6 +59,10 @@ def ResolveStaticKernelBindingsPass : Pass<"vrc-resolve-static-kernel-bindings",
   let summary = "Capture immutable call-by-value Device dispatch bindings";
   let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "::vrc::vrc::VRCDialect", "mlir::arith::ArithDialect", "mlir::cf::ControlFlowDialect", "mlir::func::FuncDialect"];
 }
+def ResolveStaticTransferBindingsPass : Pass<"vrc-resolve-static-transfer-bindings", "mlir::ModuleOp"> {
+  let summary = "Capture context-sensitive static resources at OpenCL transfer call sites";
+  let dependentDialects = ["mlir::func::FuncDialect"];
+}
 def AllocateUnityTexturesPass : Pass<"vrc-allocate-unity-textures", "mlir::ModuleOp"> {
   let summary = "Assign one deterministic Unity Texture to each keyed allocation resource";
 }

@@ -308,7 +308,7 @@ capacities and manifest integration remain separate work.
 
 ### Gate 5: static lowering
 
-Status: the first standalone slice is implemented. A mutable
+Status: the first two standalone slices are implemented. A mutable
 `vrc.assigned_buffer` reference is distinct from immutable static tensors and
 dynamic allocation. Resolved typed dispatch operands are joined by
 `(resource_kind, resource_id)` to the keyed Texture assignment and replaced
@@ -316,6 +316,15 @@ without relying on logical-buffer ordinals. Snapshot-less and logical-buffer
 operands remain explicitly counted. Production integration waits for the
 manifest/pool to use the same assignment identities; this avoids binding
 TinyLlama allocation contexts to the legacy public-buffer ordinals.
+
+Runtime-free `clEnqueueWriteBuffer`, `clEnqueueReadBuffer`, and
+`clEnqueueCopyBuffer` call sites now have a separate generic transfer-binding
+analysis. It records read/write roles and allocation identities while
+preserving `(export root, call path)` cases. A call whose resource identity
+changes by call context is marked for later context specialization instead of
+being flattened. Unknown and public logical resources remain explicitly
+unresolved. This slice is metadata-only: it does not lower transfers, alter
+queue ordering, or map legacy logical-buffer ordinals to allocation IDs.
 
 - Replace supported allocation/release and buffer arguments with direct typed
   resources.

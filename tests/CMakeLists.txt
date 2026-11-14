@@ -353,6 +353,17 @@ add_test(NAME static-dispatch-bindings-diagnostics
     --verify-diagnostics
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_dispatch_bindings_invalid.mlir"
 )
+add_test(NAME static-transfer-bindings
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_transfer_bindings.py"
+    $<TARGET_FILE:vrc-opt>
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_transfer_bindings.mlir"
+)
+add_test(NAME static-transfer-bindings-diagnostics
+  COMMAND vrc-opt --vrc-resolve-static-transfer-bindings --split-input-file
+    --verify-diagnostics
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_transfer_bindings_invalid.mlir"
+)
 add_test(NAME unity-texture-assignment
   COMMAND Python3::Interpreter
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/unity_texture_assignment.py"
