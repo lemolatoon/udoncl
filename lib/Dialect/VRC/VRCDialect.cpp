@@ -74,6 +74,18 @@ mlir::LogicalResult vrc::vrc::StaticBufferOp::verify() {
   return mlir::success();
 }
 
+mlir::LogicalResult vrc::vrc::AssignedBufferOp::verify() {
+  if (getResourceId() < 0)
+    return emitOpError("resource id must be nonnegative");
+  if (getTextureId() <= 0)
+    return emitOpError("texture id must be positive");
+  if (getCapacityBytes() <= 0)
+    return emitOpError("capacity must be positive");
+  if (getFormat() != "rgba8_unorm")
+    return emitOpError("initial assigned buffers require rgba8_unorm format");
+  return mlir::success();
+}
+
 mlir::LogicalResult vrc::vrc::BufferReleaseOp::verify() {
   return verifyHostRuntimeOperation(*this);
 }

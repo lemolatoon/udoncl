@@ -14,6 +14,13 @@ def VRC_StaticBufferOp : Op<VRC_Dialect, "static_buffer", [Pure]> {
   let results = (outs VRC_BufferType:$buffer);
   let hasVerifier = 1;
 }
+def VRC_AssignedBufferOp : Op<VRC_Dialect, "assigned_buffer", [Pure]> {
+  let summary = "Reference a compiler-assigned mutable Unity Device texture";
+  let arguments = (ins I32Attr:$resource_id, I32Attr:$texture_id,
+    I64Attr:$capacity_bytes, StrAttr:$format);
+  let results = (outs VRC_BufferType:$buffer);
+  let hasVerifier = 1;
+}
 def VRC_BufferReleaseOp : Op<VRC_Dialect, "buffer_release", [MemoryEffects<[MemWrite]>]> {
   let summary = "Release a logical reference to a fixed Device buffer";
   let arguments = (ins VRC_BufferType:$buffer);

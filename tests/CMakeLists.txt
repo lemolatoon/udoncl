@@ -364,6 +364,17 @@ add_test(NAME unity-texture-assignment-diagnostics
     --verify-diagnostics
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/unity_texture_assignment_invalid.mlir"
 )
+add_test(NAME static-dispatch-resource-materialization
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_dispatch_resource_materialization.py"
+    $<TARGET_FILE:vrc-opt>
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_dispatch_resource_materialization.mlir"
+)
+add_test(NAME static-dispatch-resource-materialization-diagnostics
+  COMMAND vrc-opt --vrc-materialize-static-dispatch-resources
+    --split-input-file --verify-diagnostics
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_dispatch_resource_materialization_invalid.mlir"
+)
 add_test(NAME static-device-resource-switch
   COMMAND Python3::Interpreter
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_switch.py"

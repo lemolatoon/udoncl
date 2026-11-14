@@ -62,6 +62,10 @@ def ResolveStaticKernelBindingsPass : Pass<"vrc-resolve-static-kernel-bindings",
 def AllocateUnityTexturesPass : Pass<"vrc-allocate-unity-textures", "mlir::ModuleOp"> {
   let summary = "Assign one deterministic Unity Texture to each keyed allocation resource";
 }
+def MaterializeStaticDispatchResourcesPass : Pass<"vrc-materialize-static-dispatch-resources", "mlir::ModuleOp"> {
+  let summary = "Replace proven dispatch allocation operands with assigned mutable Texture resources";
+  let dependentDialects = ["::vrc::vrc::VRCDialect"];
+}
 def LowerAwaitToContinuationsPass : Pass<"vrc-lower-await-to-continuations", "mlir::ModuleOp"> {
   let summary = "Split a single typed await into explicit UdonHL frame, suspend and resume blocks";
   let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "::vrc::vrc::VRCDialect"];

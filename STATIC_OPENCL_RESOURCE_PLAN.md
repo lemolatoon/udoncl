@@ -308,6 +308,15 @@ capacities and manifest integration remain separate work.
 
 ### Gate 5: static lowering
 
+Status: the first standalone slice is implemented. A mutable
+`vrc.assigned_buffer` reference is distinct from immutable static tensors and
+dynamic allocation. Resolved typed dispatch operands are joined by
+`(resource_kind, resource_id)` to the keyed Texture assignment and replaced
+without relying on logical-buffer ordinals. Snapshot-less and logical-buffer
+operands remain explicitly counted. Production integration waits for the
+manifest/pool to use the same assignment identities; this avoids binding
+TinyLlama allocation contexts to the legacy public-buffer ordinals.
+
 - Replace supported allocation/release and buffer arguments with direct typed
   resources.
 - Remove runtime handle lookup, buffer free-list use, and kernel buffer-argument
