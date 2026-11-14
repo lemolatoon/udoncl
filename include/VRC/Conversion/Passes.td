@@ -94,6 +94,10 @@ def SpecializeStaticPhysicalAllocationPathsPass : Pass<"vrc-specialize-static-ph
   let summary = "Clone planned physical allocation paths into resource-owned private functions";
   let dependentDialects = ["::vrc::vrc::VRCDialect", "mlir::func::FuncDialect"];
 }
+def MaterializeStaticPhysicalAllocationsPass : Pass<"vrc-materialize-static-physical-allocations", "mlir::ModuleOp"> {
+  let summary = "Replace proven resource-owned physical allocations with assigned Unity buffers";
+  let dependentDialects = ["::vrc::vrc::VRCDialect", "mlir::arith::ArithDialect"];
+}
 def AssessStaticUnityResourceLoweringPass : Pass<"vrc-assess-static-unity-resource-lowering", "mlir::ModuleOp"> {
   let summary = "Assess static resource operands separately from canonical Unity pool replacement";
 }

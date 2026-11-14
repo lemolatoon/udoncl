@@ -425,6 +425,16 @@ unchanged. Production integration waits until physical allocation
 materialization and dead-symbol removal are available, because clone-only IR
 temporarily contains more allocation operations.
 
+A separate physical-allocation materializer consumes only those annotated
+terminal operations. It revalidates the specialization summary, persistent
+inventory, Texture assignment, format, and capacity before replacing the
+physical `vrc.buffer_alloc` results with `vrc.assigned_buffer` and success.
+Dynamic local byte-size SSA is accepted only under that proof chain because
+the earlier context-sensitive requirements pass already proved its value at
+the planned call site. The surrounding `clCreateBuffer` implementation keeps
+logical-slot exhaustion, argument validation, error-pointer writes, recycling,
+and return behavior. Unannotated shared or dynamic allocations remain intact.
+
 A standalone physical-allocation specialization planner is the next static
 lowering boundary. It follows each proven singleton allocation call through
 private defined callees to exactly one `vrc.buffer_alloc`, joins the resource

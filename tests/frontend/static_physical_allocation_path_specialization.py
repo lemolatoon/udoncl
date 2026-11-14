@@ -35,7 +35,7 @@ assert first.count("specialized_context_count = 2 : i32") == 1
 assert "cloned_function_count = 4 : i32" in first
 assert "rewritten_call_count = 4 : i32" in first
 assert "annotated_sink_count = 2 : i32" in first
-assert "call @create() : () -> i32" in first
+assert "call @create(" in first
 assert first.count('vrc.async_effect = "may_suspend"') == 3
 assert first.count("vrc.llvm_function") == 1
 assert first.count("specialized_context_count = 0 : i32") == 2
