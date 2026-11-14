@@ -255,7 +255,13 @@ Status: complete and enforced for split runtime-free Unity Host builds.
 Status: complete and integrated. DeviceMemory adopt, view, resolve, local/global
 cell, aggregate pointer, output-cell, call-context, and nullable-handle paths
 have focused coverage. The production pipeline emits the versioned provenance
-schema into real MNIST and TinyLlama artifacts.
+schema into real MNIST and TinyLlama artifacts. A separate metadata-only
+context-specialization planner now groups discovery contexts by allocation
+site and records which internal call paths require cloning before static
+lowering. It validates direct paths and dense resource identities without
+changing the call graph. Current acceptance records one shared MNIST site
+requiring one additional clone; TinyLlama and ordinary UdonBLAS allocation
+sites are already singleton.
 
 - Track handles through arguments, results, PHIs/selects, and supported memory
   promotion.

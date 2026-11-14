@@ -573,6 +573,9 @@ def main():
     mnist_inventory = mlir_module_attribute(
         onnx_mnist_recovered, 'vrc.static_device_resource_inventory'
     )
+    mnist_context_plan = mlir_module_attribute(
+        onnx_mnist_recovered, 'vrc.static_device_resource_context_plan'
+    )
     mnist_assignments = mlir_module_attribute(
         onnx_mnist_recovered, 'vrc.unity_texture_assignments'
     )
@@ -583,6 +586,11 @@ def main():
         onnx_mnist_recovered, 'vrc.static_unity_buffer_reconciliation'
     )
     assert mnist_inventory.count('resource_kind = "allocation"') == 5
+    assert 'context_count = 5 : i32' in mnist_context_plan
+    assert 'allocation_site_count = 4 : i32' in mnist_context_plan
+    assert 'singleton_site_count = 3 : i32' in mnist_context_plan
+    assert 'shared_site_count = 1 : i32' in mnist_context_plan
+    assert 'required_clone_count = 1 : i32' in mnist_context_plan
     assert mnist_inventory.count('public = true') == 2
     assert 'resource_id = 0 : i32' in mnist_inventory
     assert 'resource_id = 1 : i32' in mnist_inventory
@@ -890,6 +898,9 @@ def main():
     transformer_inventory = mlir_module_attribute(
         transformer_recovered, 'vrc.static_device_resource_inventory'
     )
+    transformer_context_plan = mlir_module_attribute(
+        transformer_recovered, 'vrc.static_device_resource_context_plan'
+    )
     transformer_assignments = mlir_module_attribute(
         transformer_recovered, 'vrc.unity_texture_assignments'
     )
@@ -900,6 +911,11 @@ def main():
         transformer_recovered, 'vrc.static_unity_buffer_reconciliation'
     )
     assert transformer_inventory.count('resource_kind = "allocation"') == 4
+    assert 'context_count = 4 : i32' in transformer_context_plan
+    assert 'allocation_site_count = 4 : i32' in transformer_context_plan
+    assert 'singleton_site_count = 4 : i32' in transformer_context_plan
+    assert 'shared_site_count = 0 : i32' in transformer_context_plan
+    assert 'required_clone_count = 0 : i32' in transformer_context_plan
     assert transformer_inventory.count('public = false') == 4
     assert 'public = true' not in transformer_inventory
     assert transformer_assignments.count('texture_id = ') == 4
@@ -1209,6 +1225,9 @@ def main():
     udonblas_inventory = mlir_module_attribute(
         udonblas_recovered, 'vrc.static_device_resource_inventory'
     )
+    udonblas_context_plan = mlir_module_attribute(
+        udonblas_recovered, 'vrc.static_device_resource_context_plan'
+    )
     udonblas_assignments = mlir_module_attribute(
         udonblas_recovered, 'vrc.unity_texture_assignments'
     )
@@ -1219,6 +1238,11 @@ def main():
         udonblas_recovered, 'vrc.static_unity_buffer_reconciliation'
     )
     assert udonblas_inventory.count('resource_kind = "allocation"') == 3
+    assert 'context_count = 3 : i32' in udonblas_context_plan
+    assert 'allocation_site_count = 3 : i32' in udonblas_context_plan
+    assert 'singleton_site_count = 3 : i32' in udonblas_context_plan
+    assert 'shared_site_count = 0 : i32' in udonblas_context_plan
+    assert 'required_clone_count = 0 : i32' in udonblas_context_plan
     assert udonblas_inventory.count('public = false') == 3
     assert 'vrc.static_device_resource_public_bindings' not in udonblas_recovered
     assert udonblas_assignments.count('texture_id = ') == 3

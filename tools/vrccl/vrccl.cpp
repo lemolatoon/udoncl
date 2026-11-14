@@ -2684,6 +2684,8 @@ LogicalResult discoverStaticDeviceResources(ModuleOp module) {
   attachDeviceResourceOperandContracts(module);
   PassManager discovery(module.getContext());
   discovery.addPass(::vrc::createDiscoverStaticDeviceResourcesPass());
+  discovery.addPass(
+      ::vrc::createPlanStaticDeviceResourceContextSpecializationPass());
   discovery.addPass(::vrc::createInferStaticDeviceResourceRequirementsPass());
   discovery.addPass(::vrc::createPropagateDeviceResourceProvenancePass());
   discovery.addPass(::vrc::createResolveStaticTransferBindingsPass());
