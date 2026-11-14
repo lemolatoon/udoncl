@@ -39,6 +39,10 @@ def DiscoverStaticDeviceResourcesPass : Pass<"vrc-discover-static-device-resourc
 def PlanStaticDeviceResourceContextSpecializationPass : Pass<"vrc-plan-static-device-resource-context-specialization", "mlir::ModuleOp"> {
   let summary = "Plan context specialization for shared static allocation sites";
 }
+def SpecializeStaticAllocationContextsPass : Pass<"vrc-specialize-static-allocation-contexts", "mlir::ModuleOp"> {
+  let summary = "Clone root-distinct internal allocation paths into singleton contexts";
+  let dependentDialects = ["mlir::func::FuncDialect"];
+}
 def InferStaticDeviceResourceRequirementsPass : Pass<"vrc-infer-static-device-resource-requirements", "mlir::ModuleOp"> {
   let summary = "Infer keyed capacity and memory requirements for static allocation contexts";
   let dependentDialects = ["mlir::arith::ArithDialect", "mlir::func::FuncDialect"];

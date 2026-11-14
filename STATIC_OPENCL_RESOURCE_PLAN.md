@@ -1,7 +1,9 @@
 # Static OpenCL Resource Specialization Plan
 
 > Status: implementation in progress; Gates 1 and 2 are integrated at the
-> runtime-free Host boundary. Gate 3 has standalone slices for immutable
+> runtime-free Host boundary. Repeated root-distinct allocation contexts now
+> have a standalone call-path specialization pass; production integration and
+> common-prefix invocation tries remain. Gate 3 has standalone slices for immutable
 > call-by-value and typed `vrc.dispatch` snapshots. The typed path is integrated
 > for production artifacts; generic `clSetKernelArg` recovery remains.
 > Decision date: 2026-11-12
@@ -259,9 +261,15 @@ schema into real MNIST and TinyLlama artifacts. A separate metadata-only
 context-specialization planner now groups discovery contexts by allocation
 site and records which internal call paths require cloning before static
 lowering. It validates direct paths and dense resource identities without
-changing the call graph. Current acceptance records one shared MNIST site
-requiring one additional clone; TinyLlama and ordinary UdonBLAS allocation
-sites are already singleton.
+changing the call graph. A separate standalone transformation now consumes
+that plan for root-distinct paths, clones only private defined callees, rewrites
+the selected call chain, and removes inherited LLVM symbol metadata. Re-running
+discovery and planning after the transformation proves the formerly shared
+contexts are singleton. Common-prefix paths are diagnosed until the generic
+invocation-trie transformation is implemented. Current production acceptance
+still records one shared MNIST site requiring one additional clone; TinyLlama
+and ordinary UdonBLAS allocation sites are already singleton because the
+transformation is not yet in the production pipeline.
 
 - Track handles through arguments, results, PHIs/selects, and supported memory
   promotion.
