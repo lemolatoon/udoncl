@@ -48,6 +48,10 @@ def ClassifyONNXPublicDeviceResourcesPass : Pass<"vrc-classify-onnx-public-devic
   let summary = "Classify static allocation identities bound to public ONNX inputs and outputs";
   let dependentDialects = ["mlir::arith::ArithDialect", "mlir::func::FuncDialect"];
 }
+def AnalyzeStaticDeviceResourcePersistencePass : Pass<"vrc-analyze-static-device-resource-persistence", "mlir::ModuleOp"> {
+  let summary = "Classify static allocation identities that must survive an exported Host call";
+  let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "mlir::func::FuncDialect"];
+}
 def ResolveStaticKernelBindingsPass : Pass<"vrc-resolve-static-kernel-bindings", "mlir::ModuleOp"> {
   let summary = "Capture immutable call-by-value Device dispatch bindings";
   let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "::vrc::vrc::VRCDialect", "mlir::arith::ArithDialect", "mlir::cf::ControlFlowDialect", "mlir::func::FuncDialect"];

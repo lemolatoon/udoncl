@@ -307,6 +307,17 @@ add_test(NAME onnx-public-device-resources-diagnostics
     --split-input-file --verify-diagnostics
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/onnx_public_device_resources_invalid.mlir"
 )
+add_test(NAME static-device-resource-persistence
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_persistence.py"
+    $<TARGET_FILE:vrc-opt>
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_persistence.mlir"
+)
+add_test(NAME static-device-resource-persistence-diagnostics
+  COMMAND vrc-opt --vrc-analyze-static-device-resource-persistence
+    --split-input-file --verify-diagnostics
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_persistence_invalid.mlir"
+)
 add_test(NAME static-kernel-bindings
   COMMAND Python3::Interpreter
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_kernel_bindings.py"

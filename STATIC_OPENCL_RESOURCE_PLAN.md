@@ -294,9 +294,10 @@ pass now reconstructs keyed capacity, memory flags, format, and usage through
 discovery call paths. A standalone ONNX public-resource pass now joins generic
 allocation provenance with stable input/output bind call sites and typed ONNX
 metadata; it does not classify by model name, capacity, or fixed resource ID.
-Generic persistence analysis, the inventory merger, removal of the current
-duplicate public-buffer capacities, and manifest integration remain separate
-work.
+A separate generic persistence pass now classifies identities that cross an
+export root or escape through global storage, independently of ONNX metadata.
+The inventory merger, removal of the current duplicate public-buffer
+capacities, and manifest integration remain separate work.
 
 - Assign one physical Texture per allocation context.
 - Emit stable resource IDs, capacities, formats, and public/persistent flags.
