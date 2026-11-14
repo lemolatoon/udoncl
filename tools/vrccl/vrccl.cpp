@@ -747,6 +747,7 @@ LogicalResult reconcileStaticUnityBuffers(ModuleOp module,
   readiness.addPass(::vrc::createMaterializeStaticPhysicalAllocationsPass());
   readiness.addPass(::vrc::createMaterializeStaticPhysicalResolvesPass());
   readiness.addPass(::vrc::createLowerCheckedAssignedBufferResolvesPass());
+  readiness.addPass(::vrc::createMaterializeFixedPhysicalReleasesPass());
   readiness.addPass(
       ::vrc::createEliminateDeadPhysicalAllocationFallbacksPass());
   readiness.addPass(::vrc::createAssessStaticUnityResourceLoweringPass());
@@ -763,6 +764,7 @@ LogicalResult reconcileStaticUnityBuffers(ModuleOp module,
            "vrc.static_physical_allocation_specialization",
            "vrc.static_physical_allocation_materialization",
            "vrc.static_physical_resolve_materialization",
+           "vrc.fixed_physical_release_materialization",
        })
     if (mlir::Attribute value = (*preview)->getAttr(name))
       module->setAttr(name, value);
@@ -3513,6 +3515,7 @@ int main(int argc, char **argv) {
       udon.addPass(::vrc::createLowerHostToUdonHLPass());
       udon.addPass(::vrc::createSubstituteRuntimeIntrinsicsPass());
     }
+    udon.addPass(::vrc::createMaterializeFixedPhysicalReleasesPass());
     phase("udon-hl-to-asm");
     udon.addPass(::vrc::createLowerUdonHLToUdonAsmPass());
     if (failed(udon.run(physicalModule)) || failed(verify(physicalModule)))

@@ -475,6 +475,15 @@ immutable odd-tag handles remain outside this transformation. Real MNIST now
 materializes all 5 resolves (3 checked), and TinyLlama all 9 (3 checked), so
 both previews have zero dynamic physical resolver calls.
 
+The two remaining `vrc.buffer_release` operations are shared backend retirement
+sites in `udoncl_mem_finalize`, not model-specific logical releases. For the
+`vrc-pc` fixed Unity Texture pool, a target-gated pass materializes only this
+physical retirement boundary as status zero. `clReleaseMemObject`, refcounts,
+`active`, `command_refs`, sub-buffer parent handling, and handle recycling stay
+unchanged. Other targets retain `vrc.buffer_release`. This matches the existing
+Udon scalar lowering contract and gives both real previews zero dynamic
+physical releases without changing OpenCL lifetime semantics.
+
 A generic logical-buffer materializer now joins constant `vrc.buffer_alloc`
 IDs through Unity-buffer reconciliation into the canonical resource and
 Texture layout. It validates capacity, format, and storage usage, replaces the
