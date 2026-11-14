@@ -1,6 +1,6 @@
 module attributes {
   vrc.static_device_resource_inventory = {schema_version = 1 : i32, resources = [
-    {capacity_bytes = 16 : i64, format = "rgba8_unorm", persistent = true, public = true, public_access = "input", resource_id = 0 : i32, resource_kind = "allocation"},
+    {capacity_bytes = 16 : i64, data_type = "float32", format = "rgba8_unorm", logical_bytes = 12 : i64, name = "samples", persistent = true, public = true, public_access = "input", resource_id = 0 : i32, resource_kind = "allocation"},
     {capacity_bytes = 32 : i64, format = "rgba8_unorm", persistent = true, public = false, resource_id = 1 : i32, resource_kind = "allocation"}
   ]},
   vrc.unity_texture_assignments = {schema_version = 1 : i32, assignments = [

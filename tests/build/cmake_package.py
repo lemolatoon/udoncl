@@ -621,6 +621,11 @@ def main():
     assert 'blocker_count = 0 : i32' in mnist_layout
     assert 'ready = true' in mnist_layout
     assert mnist_layout.count('resource_kind = "allocation"') == 5
+    assert 'data_type = "float32"' in mnist_layout
+    assert 'logical_bytes = 3136 : i64' in mnist_layout
+    assert 'name = "image"' in mnist_layout
+    assert 'logical_bytes = 40 : i64' in mnist_layout
+    assert 'name = "logits"' in mnist_layout
     assert 'vrc.static_kernel_bindings' in onnx_mnist_recovered
     assert 'snapshot_count = 6 : i32' in onnx_mnist_recovered
     assert onnx_mnist_recovered.count(

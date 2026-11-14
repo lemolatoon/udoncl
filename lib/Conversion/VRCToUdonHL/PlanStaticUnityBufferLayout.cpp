@@ -31,6 +31,9 @@ struct Resource {
   BoolAttr isPublic;
   BoolAttr persistent;
   StringAttr publicAccess;
+  StringAttr name;
+  StringAttr dataType;
+  IntegerAttr logicalBytes;
 };
 
 struct Assignment {
@@ -123,11 +126,23 @@ struct PlanStaticUnityBufferLayoutPass
       auto isPublic = resource.getAs<BoolAttr>("public");
       auto persistent = resource.getAs<BoolAttr>("persistent");
       auto access = resource.getAs<StringAttr>("public_access");
+      auto name = resource.getAs<StringAttr>("name");
+      auto dataType = resource.getAs<StringAttr>("data_type");
+      auto logicalBytes = resource.getAs<IntegerAttr>("logical_bytes");
+      bool validPublicMetadata =
+          !isPublic || !isPublic.getValue() ||
+          (capacity && name && !name.getValue().empty() && dataType &&
+           (dataType == "float32" || dataType == "int32" ||
+            dataType == "int64") &&
+           logicalBytes && logicalBytes.getInt() >= 0 &&
+           logicalBytes.getInt() <= capacity.getInt());
       if (!capacity || capacity.getInt() <= 0 || !format ||
           format != "rgba8_unorm" || !isPublic || !persistent ||
           (isPublic.getValue() &&
            (!access || (access != "input" && access != "output"))) ||
-          (!isPublic.getValue() && access)) {
+          (!isPublic.getValue() &&
+           (access || name || dataType || logicalBytes)) ||
+          !validPublicMetadata) {
         module.emitError("invalid allocation in static resource inventory");
         signalPassFailure();
         return;
@@ -135,7 +150,8 @@ struct PlanStaticUnityBufferLayoutPass
       int32_t resourceId = static_cast<int32_t>(id.getInt());
       inventoryById.emplace(resourceId,
                             Resource{resourceId, capacity.getInt(), format,
-                                     isPublic, persistent, access});
+                                     isPublic, persistent, access, name,
+                                     dataType, logicalBytes});
     }
 
     SmallVector<Assignment> ordered;
@@ -265,6 +281,12 @@ struct PlanStaticUnityBufferLayoutPass
                                builder.getI32IntegerAttr(assignment.textureId)),
       };
       if (alias != aliasByResource.end()) {
+        fields.push_back(
+            builder.getNamedAttr("data_type", assignment.resource.dataType));
+        fields.push_back(builder.getNamedAttr(
+            "logical_bytes", assignment.resource.logicalBytes));
+        fields.push_back(
+            builder.getNamedAttr("name", assignment.resource.name));
         fields.push_back(
             builder.getNamedAttr("public_access", alias->second.access));
         fields.push_back(builder.getNamedAttr(

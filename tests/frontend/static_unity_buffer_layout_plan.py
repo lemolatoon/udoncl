@@ -28,6 +28,9 @@ assert "legacy_configured_count = 3 : i32" in first
 assert "removable_legacy_count = 1 : i32" in first
 assert "ready = true" in first
 assert 'heap_slot = "__udoncl_buffer_1"' in first
+assert 'data_type = "float32"' in first
+assert 'logical_bytes = 12 : i64' in first
+assert 'name = "samples"' in first
 assert 'public_access = "input", public_index = 0 : i32' in first
 assert "planned_count = 1 : i32" in first
 assert "unresolved_public_count = 1 : i32" in first
