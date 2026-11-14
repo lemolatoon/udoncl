@@ -389,6 +389,15 @@ downstream support is deliberately independent from production
 materialization: the canonical pool is not selected until dispatch and
 transfer completeness have both been proven.
 
+A separate readiness analysis now prevents those two milestones from being
+conflated. `resource_operands_ready` requires the canonical layout, complete
+dispatch snapshots/materialization, and no unresolved transfer or copy
+operand. `pool_replacement_ready` additionally requires dynamic allocation,
+release, and physical-buffer resolution to be absent. The analysis validates
+its summaries against the actual IR so stale metadata cannot authorize a
+pool replacement. Production integration of materialization and this analysis
+is the next slice; neither readiness flag changes the manifest by itself.
+
 - Replace supported allocation/release and buffer arguments with direct typed
   resources.
 - Remove runtime handle lookup, buffer free-list use, and kernel buffer-argument

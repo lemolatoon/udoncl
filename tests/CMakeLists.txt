@@ -442,6 +442,17 @@ add_test(NAME static-dispatch-resource-materialization-diagnostics
     --split-input-file --verify-diagnostics
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_dispatch_resource_materialization_invalid.mlir"
 )
+add_test(NAME static-unity-resource-lowering-readiness
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_unity_resource_lowering_readiness.py"
+    $<TARGET_FILE:vrc-opt>
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_unity_resource_lowering_readiness.mlir"
+)
+add_test(NAME static-unity-resource-lowering-readiness-diagnostics
+  COMMAND vrc-opt --vrc-assess-static-unity-resource-lowering
+    --verify-diagnostics
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_unity_resource_lowering_readiness_invalid.mlir"
+)
 add_test(NAME static-device-resource-switch
   COMMAND Python3::Interpreter
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_switch.py"

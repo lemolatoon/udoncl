@@ -86,6 +86,9 @@ def MaterializeStaticDispatchResourcesPass : Pass<"vrc-materialize-static-dispat
   let summary = "Replace proven dispatch allocation operands with assigned mutable Texture resources";
   let dependentDialects = ["::vrc::vrc::VRCDialect"];
 }
+def AssessStaticUnityResourceLoweringPass : Pass<"vrc-assess-static-unity-resource-lowering", "mlir::ModuleOp"> {
+  let summary = "Assess static resource operands separately from canonical Unity pool replacement";
+}
 def LowerAwaitToContinuationsPass : Pass<"vrc-lower-await-to-continuations", "mlir::ModuleOp"> {
   let summary = "Split a single typed await into explicit UdonHL frame, suspend and resume blocks";
   let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "::vrc::vrc::VRCDialect"];
