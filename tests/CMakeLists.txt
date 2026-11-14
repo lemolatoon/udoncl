@@ -318,6 +318,17 @@ add_test(NAME static-device-resource-persistence-diagnostics
     --split-input-file --verify-diagnostics
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_persistence_invalid.mlir"
 )
+add_test(NAME static-device-resource-inventory
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_inventory.py"
+    $<TARGET_FILE:vrc-opt>
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_inventory.mlir"
+)
+add_test(NAME static-device-resource-inventory-diagnostics
+  COMMAND vrc-opt --vrc-build-static-device-resource-inventory
+    --split-input-file --verify-diagnostics
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_inventory_invalid.mlir"
+)
 add_test(NAME static-kernel-bindings
   COMMAND Python3::Interpreter
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_kernel_bindings.py"

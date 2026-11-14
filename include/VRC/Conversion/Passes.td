@@ -52,6 +52,9 @@ def AnalyzeStaticDeviceResourcePersistencePass : Pass<"vrc-analyze-static-device
   let summary = "Classify static allocation identities that must survive an exported Host call";
   let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "mlir::func::FuncDialect"];
 }
+def BuildStaticDeviceResourceInventoryPass : Pass<"vrc-build-static-device-resource-inventory", "mlir::ModuleOp"> {
+  let summary = "Merge keyed allocation requirements, persistence and optional public bindings";
+}
 def ResolveStaticKernelBindingsPass : Pass<"vrc-resolve-static-kernel-bindings", "mlir::ModuleOp"> {
   let summary = "Capture immutable call-by-value Device dispatch bindings";
   let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "::vrc::vrc::VRCDialect", "mlir::arith::ArithDialect", "mlir::cf::ControlFlowDialect", "mlir::func::FuncDialect"];

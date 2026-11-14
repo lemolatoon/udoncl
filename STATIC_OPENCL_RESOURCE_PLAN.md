@@ -296,8 +296,10 @@ allocation provenance with stable input/output bind call sites and typed ONNX
 metadata; it does not classify by model name, capacity, or fixed resource ID.
 A separate generic persistence pass now classifies identities that cross an
 export root or escape through global storage, independently of ONNX metadata.
-The inventory merger, removal of the current duplicate public-buffer
-capacities, and manifest integration remain separate work.
+A standalone keyed merger now combines requirements, persistence, and optional
+ONNX public bindings into the allocator inventory; ordinary UdonCL modules do
+not require ONNX metadata. Removal of the current duplicate public-buffer
+capacities and manifest integration remain separate work.
 
 - Assign one physical Texture per allocation context.
 - Emit stable resource IDs, capacities, formats, and public/persistent flags.
