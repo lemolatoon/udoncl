@@ -857,10 +857,14 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
                           ArrayRef<int64_t> configuredKernelIds,
                           ArrayAttr staticTensors = {}) {
   SmallVector<::vrc::vrc::BufferAllocOp> allocations;
+  SmallVector<::vrc::vrc::AssignedBufferOp> assignedBuffers;
   SmallVector<::vrc::vrc::BufferCopyOp> copies;
   SmallVector<::vrc::vrc::DispatchOp> dispatches;
   module.walk([&](::vrc::vrc::BufferAllocOp operation) {
     allocations.push_back(operation);
+  });
+  module.walk([&](::vrc::vrc::AssignedBufferOp operation) {
+    assignedBuffers.push_back(operation);
   });
   module.walk(
       [&](::vrc::vrc::BufferCopyOp operation) { copies.push_back(operation); });
@@ -897,6 +901,22 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
                               builder.getStringAttr(buffer.heapSlot))}));
   module->setAttr("vrc.unity_buffer_pool", builder.getArrayAttr(poolEntries));
   llvm::DenseMap<Operation *, const UnityBuffer *> bound;
+  for (auto assigned : assignedBuffers) {
+    const UnityBuffer *buffer = nullptr;
+    for (const UnityBuffer &candidate : buffers)
+      if (candidate.id == assigned.getTextureId()) {
+        buffer = &candidate;
+        break;
+      }
+    if (!buffer || buffer->allocationBytes != assigned.getCapacityBytes() ||
+        assigned.getFormat() != "rgba8_unorm")
+      return assigned.emitError(
+          "assigned Unity buffer must match its configured texture id, "
+          "capacity, and format");
+    assigned->setAttr("vrc.unity_heap_slot",
+                      builder.getStringAttr(buffer->heapSlot));
+    bound.try_emplace(assigned.getOperation(), buffer);
+  }
   for (auto allocation : allocations) {
     auto logicalId =
         allocation.getLogicalId().getDefiningOp<arith::ConstantIntOp>();
@@ -923,29 +943,35 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
                         builder.getI32IntegerAttr(buffer->allocationBytes));
     bound.try_emplace(allocation.getOperation(), buffer);
   }
+  auto resolveBoundBuffer = [&](mlir::Value value) -> const UnityBuffer * {
+    while (auto cast = value.getDefiningOp<UnrealizedConversionCastOp>()) {
+      if (cast.getInputs().size() != 1)
+        return nullptr;
+      value = cast.getInputs().front();
+    }
+    Operation *definition = value.getDefiningOp();
+    auto found = definition ? bound.find(definition) : bound.end();
+    return found == bound.end() ? nullptr : found->second;
+  };
   for (auto copy : copies) {
-    auto source = copy.getSource().getDefiningOp<::vrc::vrc::BufferAllocOp>();
-    auto destination =
-        copy.getDestination().getDefiningOp<::vrc::vrc::BufferAllocOp>();
     auto sourceOffset =
         copy.getSourceOffset().getDefiningOp<arith::ConstantIntOp>();
     auto destinationOffset =
         copy.getDestinationOffset().getDefiningOp<arith::ConstantIntOp>();
     auto byteSize = copy.getByteSize().getDefiningOp<arith::ConstantIntOp>();
-    auto sourceBuffer =
-        source ? bound.find(source.getOperation()) : bound.end();
-    auto destinationBuffer =
-        destination ? bound.find(destination.getOperation()) : bound.end();
-    if (!source || !destination || source == destination ||
-        sourceBuffer == bound.end() || destinationBuffer == bound.end() ||
-        !sourceOffset || sourceOffset.value() != 0 || !destinationOffset ||
+    const UnityBuffer *sourceBuffer = resolveBoundBuffer(copy.getSource());
+    const UnityBuffer *destinationBuffer =
+        resolveBoundBuffer(copy.getDestination());
+    if (!sourceBuffer || !destinationBuffer ||
+        sourceBuffer == destinationBuffer || !sourceOffset ||
+        sourceOffset.value() != 0 || !destinationOffset ||
         destinationOffset.value() != 0 || !byteSize ||
-        byteSize.value() != sourceBuffer->second->allocationBytes ||
-        byteSize.value() != destinationBuffer->second->allocationBytes ||
-        sourceBuffer->second->width != destinationBuffer->second->width ||
-        sourceBuffer->second->height != destinationBuffer->second->height) {
-      copy.emitError("initial Unity CopyBuffer requires distinct direct "
-                     "allocations, zero offsets, and equal full buffer shapes");
+        byteSize.value() != sourceBuffer->allocationBytes ||
+        byteSize.value() != destinationBuffer->allocationBytes ||
+        sourceBuffer->width != destinationBuffer->width ||
+        sourceBuffer->height != destinationBuffer->height) {
+      copy.emitError("initial Unity CopyBuffer requires distinct statically "
+                     "bound buffers, zero offsets, and equal full shapes");
       return failure();
     }
     copy->setAttr("vrc.unity_copy_material_slot",
@@ -992,10 +1018,8 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
     bool resourcesMatch = dispatch.getResources().size() == bufferKindCount;
     SmallVector<mlir::Attribute> resourceHeapSlots;
     for (mlir::Value resource : dispatch.getResources()) {
-      auto allocation = resource.getDefiningOp<::vrc::vrc::BufferAllocOp>();
       auto staticBuffer = resource.getDefiningOp<::vrc::vrc::StaticBufferOp>();
-      auto assignedBuffer =
-          resource.getDefiningOp<::vrc::vrc::AssignedBufferOp>();
+      const UnityBuffer *boundBuffer = resolveBoundBuffer(resource);
       const UnityBuffer *constantBuffer = nullptr;
       mlir::Value token = resource;
       while (auto cast = token.getDefiningOp<UnrealizedConversionCastOp>()) {
@@ -1015,27 +1039,9 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
         resourcesMatch &= staticTensorMatches(staticBuffer.getResourceId(),
                                               staticBuffer.getByteSize());
         resourceHeapSlots.push_back(builder.getStringAttr(""));
-      } else if (assignedBuffer) {
-        const UnityBuffer *assigned = nullptr;
-        for (const UnityBuffer &candidate : buffers)
-          if (candidate.id == assignedBuffer.getTextureId()) {
-            assigned = &candidate;
-            break;
-          }
-        resourcesMatch &=
-            assigned &&
-            assigned->allocationBytes == assignedBuffer.getCapacityBytes() &&
-            assignedBuffer.getFormat() == "rgba8_unorm";
-        if (assigned)
-          assignedBuffer->setAttr("vrc.unity_heap_slot",
-                                  builder.getStringAttr(assigned->heapSlot));
+      } else if (boundBuffer) {
         resourceHeapSlots.push_back(
-            builder.getStringAttr(assigned ? assigned->heapSlot : StringRef()));
-      } else if (allocation) {
-        resourcesMatch &= bound.contains(allocation.getOperation());
-        auto found = bound.find(allocation.getOperation());
-        resourceHeapSlots.push_back(builder.getStringAttr(
-            found == bound.end() ? "" : found->second->heapSlot));
+            builder.getStringAttr(boundBuffer->heapSlot));
       } else if (constantBuffer) {
         resourceHeapSlots.push_back(
             builder.getStringAttr(constantBuffer->heapSlot));
