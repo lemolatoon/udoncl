@@ -364,6 +364,17 @@ add_test(NAME static-transfer-bindings-diagnostics
     --verify-diagnostics
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_transfer_bindings_invalid.mlir"
 )
+add_test(NAME static-public-resource-aliases
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_public_resource_aliases.py"
+    $<TARGET_FILE:vrc-opt>
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_public_resource_aliases.mlir"
+)
+add_test(NAME static-public-resource-aliases-diagnostics
+  COMMAND vrc-opt --vrc-resolve-static-public-resource-aliases --split-input-file
+    --verify-diagnostics
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_public_resource_aliases_invalid.mlir"
+)
 add_test(NAME unity-texture-assignment
   COMMAND Python3::Interpreter
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/unity_texture_assignment.py"

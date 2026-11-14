@@ -63,6 +63,9 @@ def ResolveStaticTransferBindingsPass : Pass<"vrc-resolve-static-transfer-bindin
   let summary = "Capture context-sensitive static resources at OpenCL transfer call sites";
   let dependentDialects = ["mlir::func::FuncDialect"];
 }
+def ResolveStaticPublicResourceAliasesPass : Pass<"vrc-resolve-static-public-resource-aliases", "mlir::ModuleOp"> {
+  let summary = "Resolve public Device endpoints to compiler-assigned Unity Textures";
+}
 def AllocateUnityTexturesPass : Pass<"vrc-allocate-unity-textures", "mlir::ModuleOp"> {
   let summary = "Assign one deterministic Unity Texture to each keyed allocation resource";
 }
