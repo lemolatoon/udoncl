@@ -18,13 +18,16 @@ def run():
 first = run()
 assert first == run()
 assert "vrc.static_physical_resolve_materialization" in first
-assert "materialized_count = 1 : i32" in first
-assert "unresolved_count = 1 : i32" in first
-assert first.count("call @udonclResolvePhysicalBuffer") == 1
-assert first.count('"vrc.assigned_buffer"') == 1
+assert "materialized_count = 2 : i32" in first
+assert "checked_count = 1 : i32" in first
+assert "unresolved_count = 0 : i32" in first
+assert "call @udonclResolvePhysicalBuffer" not in first
+assert first.count('"vrc.assigned_buffer"') == 2
 assert "resource_id = 7 : i32" in first
 assert "texture_id = 2 : i32" in first
+assert "texture_id = 1 : i32" in first
+assert "udonhl.checked_assigned_buffer_resolve" in first
 assert "builtin.unrealized_conversion_cast" in first
 assert '"udonhl.store"' in first
 assert "arith.constant 0 : i32" in first
-print("static_physical_resolve_materialization=passed materialized=1 unresolved=1")
+print("static_physical_resolve_materialization=passed materialized=2 checked=1 unresolved=0")

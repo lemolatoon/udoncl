@@ -465,6 +465,16 @@ assigned operands while its dynamic allocation count also becomes zero.
 Readiness is assessed only after that cleanup, so its metadata is checked
 against the final preview IR.
 
+Physical resolve materialization also preserves nullable mutable-handle
+semantics without retaining the linked resolver. A singleton allocation with
+an assigned Texture becomes a typed checked resolve: it rejects a null or
+inactive `cl_mem` with `CL_INVALID_MEM_OBJECT`, leaves the output cell unchanged
+on failure, and stores the compiler-selected Unity token only on success. The
+check is generic allocation provenance, not ONNX or model-specific logic;
+immutable odd-tag handles remain outside this transformation. Real MNIST now
+materializes all 5 resolves (3 checked), and TinyLlama all 9 (3 checked), so
+both previews have zero dynamic physical resolver calls.
+
 A generic logical-buffer materializer now joins constant `vrc.buffer_alloc`
 IDs through Unity-buffer reconciliation into the canonical resource and
 Texture layout. It validates capacity, format, and storage usage, replaces the

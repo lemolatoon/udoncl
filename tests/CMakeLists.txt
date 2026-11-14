@@ -498,6 +498,12 @@ add_test(NAME static-physical-resolve-materialization
     $<TARGET_FILE:vrc-opt>
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_physical_resolve_materialization.mlir"
 )
+add_test(NAME checked-assigned-buffer-resolve-lowering
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/checked_assigned_buffer_resolve_lowering.py"
+    $<TARGET_FILE:vrc-opt>
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/checked_assigned_buffer_resolve_lowering.mlir"
+)
 add_test(NAME dead-physical-allocation-fallback-elimination
   COMMAND Python3::Interpreter
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/dead_physical_allocation_fallback_elimination.py"

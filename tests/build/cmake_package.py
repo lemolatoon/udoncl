@@ -634,9 +634,10 @@ def main():
     assert 'pool_replacement_ready = false' in mnist_lowering_readiness
     assert 'dispatch_candidate_count = 6 : i32' in mnist_lowering_readiness
     assert 'dynamic_allocation_count = 0 : i32' in mnist_lowering_readiness
-    assert 'dynamic_resolve_count = 3 : i32' in mnist_lowering_readiness
-    assert 'materialized_count = 2 : i32' in mnist_physical_resolves
-    assert 'unresolved_count = 3 : i32' in mnist_physical_resolves
+    assert 'dynamic_resolve_count = 0 : i32' in mnist_lowering_readiness
+    assert 'materialized_count = 5 : i32' in mnist_physical_resolves
+    assert 'checked_count = 3 : i32' in mnist_physical_resolves
+    assert 'unresolved_count = 0 : i32' in mnist_physical_resolves
     assert 'candidate_count = 5 : i32' in mnist_physical_plan
     assert 'planned_count = 5 : i32' in mnist_physical_plan
     assert 'blocker_count = 0 : i32' in mnist_physical_plan
@@ -1009,9 +1010,10 @@ def main():
     )
     assert 'transfer_ready = true' in transformer_lowering_readiness
     assert 'dynamic_allocation_count = 0 : i32' in transformer_lowering_readiness
-    assert 'dynamic_resolve_count = 3 : i32' in transformer_lowering_readiness
-    assert 'materialized_count = 6 : i32' in transformer_physical_resolves
-    assert 'unresolved_count = 3 : i32' in transformer_physical_resolves
+    assert 'dynamic_resolve_count = 0 : i32' in transformer_lowering_readiness
+    assert 'materialized_count = 9 : i32' in transformer_physical_resolves
+    assert 'checked_count = 3 : i32' in transformer_physical_resolves
+    assert 'unresolved_count = 0 : i32' in transformer_physical_resolves
     for name in [
         'input_ids', 'past_key', 'past_value', 'logits',
         'present_key', 'present_value',

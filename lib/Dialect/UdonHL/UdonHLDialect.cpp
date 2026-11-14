@@ -2,6 +2,7 @@
 #include "VRC/Dialect/VRC/VRCDialect.h"
 #include "udoncl/array.h"
 #include "udoncl/string.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/DialectImplementation.h"
@@ -159,6 +160,26 @@ mlir::LogicalResult vrc::udonhl::StoreOp::verify() {
     return emitOpError() << "value type " << getValue().getType()
                          << " must be a fixed-width scalar or vector";
   return verifyAlignment(*this, getAlignment());
+}
+
+mlir::LogicalResult vrc::udonhl::CheckedAssignedBufferResolveOp::verify() {
+  auto function = (*this)->getParentOfType<mlir::func::FuncOp>();
+  if (!function || !mlir::isa<mlir::ModuleOp>(function->getParentOp()))
+    return emitOpError("must belong to the Host runtime path");
+  if (getLogicalHandle().getType().getAddressSpace() != 0 ||
+      getOutputCell().getType().getAddressSpace() != 0)
+    return emitOpError("requires raw address-space-zero pointers");
+  if (!mlir::isa<::vrc::vrc::BufferType>(getAssignedBuffer().getType()))
+    return emitOpError("requires a !vrc.buffer assigned-buffer operand");
+  if (!getAssignedBuffer().getDefiningOp<::vrc::vrc::AssignedBufferOp>())
+    return emitOpError("requires a directly assigned Unity buffer");
+  auto output = getOutputCell().getDefiningOp<AllocaOp>();
+  auto bytes =
+      output ? output.getByteSize().getDefiningOp<mlir::arith::ConstantIntOp>()
+             : mlir::arith::ConstantIntOp();
+  if (!output || output.getAlignment() != 4 || !bytes || bytes.value() != 4)
+    return emitOpError("requires an exact aligned four-byte output cell");
+  return mlir::success();
 }
 
 mlir::LogicalResult vrc::udonhl::AsyncBindEventOp::verify() {

@@ -73,6 +73,15 @@ def UdonHL_StoreOp : Op<UdonHL_Dialect, "store"> {
     I64Attr:$alignment, UnitAttr:$volatile_);
   let hasVerifier = 1;
 }
+def UdonHL_CheckedAssignedBufferResolveOp : Op<UdonHL_Dialect,
+    "checked_assigned_buffer_resolve", [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "Resolve an active mutable cl_mem to its assigned Unity buffer token";
+  let arguments = (ins UdonHL_PtrType:$logical_handle,
+    AnyType:$assigned_buffer, UdonHL_PtrType:$output_cell);
+  let results = (outs I32:$status);
+  let assemblyFormat = "$logical_handle `,` $assigned_buffer `,` $output_cell attr-dict `:` functional-type(operands, results)";
+  let hasVerifier = 1;
+}
 def UdonHL_MemcpyOp : Op<UdonHL_Dialect, "memcpy"> {
   let summary = "Copy non-overlapping byte ranges";
   let arguments = (ins UdonHL_PtrType:$destination,

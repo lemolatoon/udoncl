@@ -106,10 +106,15 @@ FailureOr<DenseMap<int32_t, Assignment>> readAssignments(ModuleOp module) {
   return result;
 }
 
-FailureOr<std::optional<int32_t>> resolveNonNullSingleton(func::CallOp call) {
+struct ResolveIdentity {
+  int32_t resourceId;
+  bool nullable;
+};
+
+FailureOr<std::optional<ResolveIdentity>> resolveSingleton(func::CallOp call) {
   auto provenance = call->getAttrOfType<ArrayAttr>(operandProvenanceAttribute);
   if (!provenance)
-    return std::optional<int32_t>();
+    return std::optional<ResolveIdentity>();
   DictionaryAttr operand;
   for (Attribute attribute : provenance) {
     auto candidate = dyn_cast<DictionaryAttr>(attribute);
@@ -120,12 +125,13 @@ FailureOr<std::optional<int32_t>> resolveNonNullSingleton(func::CallOp call) {
     }
   }
   if (!operand)
-    return std::optional<int32_t>();
+    return std::optional<ResolveIdentity>();
   auto cases = operand.getAs<ArrayAttr>("cases");
   if (!cases || cases.empty())
     return call.emitError("physical resolve provenance has no cases");
 
   std::optional<int32_t> identity;
+  bool mayBeNull = false;
   for (Attribute attribute : cases) {
     auto item = dyn_cast<DictionaryAttr>(attribute);
     auto unknown = item ? item.getAs<BoolAttr>("unknown") : nullptr;
@@ -133,17 +139,20 @@ FailureOr<std::optional<int32_t>> resolveNonNullSingleton(func::CallOp call) {
     auto ids = item ? item.getAs<ArrayAttr>("resource_ids") : nullptr;
     if (!item || !unknown || !nullable || !ids)
       return call.emitError("physical resolve provenance is invalid");
-    if (unknown.getValue() || nullable.getValue() || ids.size() != 1)
-      return std::optional<int32_t>();
+    if (unknown.getValue() || ids.size() != 1)
+      return std::optional<ResolveIdentity>();
+    mayBeNull |= nullable.getValue();
     auto id = dyn_cast<IntegerAttr>(ids[0]);
     if (!id || id.getInt() < 0)
       return call.emitError("physical resolve resource identity is invalid");
     int32_t value = static_cast<int32_t>(id.getInt());
     if (identity && *identity != value)
-      return std::optional<int32_t>();
+      return std::optional<ResolveIdentity>();
     identity = value;
   }
-  return identity;
+  if (!identity)
+    return std::optional<ResolveIdentity>();
+  return std::optional<ResolveIdentity>(ResolveIdentity{*identity, mayBeNull});
 }
 
 bool isExactOutputCell(Value value) {
@@ -163,9 +172,11 @@ struct MaterializeStaticPhysicalResolvesPass
     if (auto summary =
             module->getAttrOfType<DictionaryAttr>(summaryAttribute)) {
       auto materialized = summary.getAs<IntegerAttr>("materialized_count");
+      auto checked = summary.getAs<IntegerAttr>("checked_count");
       auto unresolved = summary.getAs<IntegerAttr>("unresolved_count");
       if (!schemaV1(summary) || !materialized || materialized.getInt() < 0 ||
-          !unresolved || unresolved.getInt() < 0) {
+          !checked || checked.getInt() < 0 || !unresolved ||
+          unresolved.getInt() < 0) {
         module.emitError(
             "static physical resolve materialization summary is invalid");
         signalPassFailure();
@@ -182,6 +193,8 @@ struct MaterializeStaticPhysicalResolvesPass
       module->setAttr(summaryAttribute,
                       builder.getDictionaryAttr({
                           builder.getNamedAttr("materialized_count",
+                                               builder.getI32IntegerAttr(0)),
+                          builder.getNamedAttr("checked_count",
                                                builder.getI32IntegerAttr(0)),
                           builder.getNamedAttr("schema_version",
                                                builder.getI32IntegerAttr(1)),
@@ -200,6 +213,7 @@ struct MaterializeStaticPhysicalResolvesPass
     struct Candidate {
       func::CallOp call;
       int32_t resourceId;
+      bool checked;
     };
     SmallVector<Candidate> candidates;
     int32_t unresolved = 0;
@@ -218,19 +232,21 @@ struct MaterializeStaticPhysicalResolvesPass
         signalPassFailure();
         return;
       }
-      auto identity = resolveNonNullSingleton(call);
+      auto identity = resolveSingleton(call);
       if (failed(identity)) {
         signalPassFailure();
         return;
       }
       if (!*identity || !isExactOutputCell(call.getOperand(1)) ||
-          !assignments->contains(**identity)) {
+          !assignments->contains((*identity)->resourceId)) {
         ++unresolved;
         continue;
       }
-      candidates.push_back({call, **identity});
+      candidates.push_back(
+          {call, (*identity)->resourceId, (*identity)->nullable});
     }
 
+    int32_t checked = 0;
     for (Candidate &candidate : candidates) {
       const Assignment &assignment = assignments->lookup(candidate.resourceId);
       OpBuilder opBuilder(candidate.call);
@@ -245,6 +261,16 @@ struct MaterializeStaticPhysicalResolvesPass
                          builder.getI64IntegerAttr(assignment.capacity));
       state.addAttribute("format", assignment.format);
       Value assigned = opBuilder.create(state)->getResult(0);
+      if (candidate.checked) {
+        auto resolve = ::vrc::udonhl::CheckedAssignedBufferResolveOp::create(
+            opBuilder, candidate.call.getLoc(), builder.getI32Type(),
+            candidate.call.getOperand(0), assigned,
+            candidate.call.getOperand(1));
+        candidate.call.getResult(0).replaceAllUsesWith(resolve.getStatus());
+        candidate.call.erase();
+        ++checked;
+        continue;
+      }
       auto token = UnrealizedConversionCastOp::create(
           opBuilder, candidate.call.getLoc(), TypeRange{builder.getI32Type()},
           ValueRange{assigned});
@@ -260,6 +286,8 @@ struct MaterializeStaticPhysicalResolvesPass
     module->setAttr(
         summaryAttribute,
         builder.getDictionaryAttr({
+            builder.getNamedAttr("checked_count",
+                                 builder.getI32IntegerAttr(checked)),
             builder.getNamedAttr("materialized_count",
                                  builder.getI32IntegerAttr(
                                      static_cast<int32_t>(candidates.size()))),
