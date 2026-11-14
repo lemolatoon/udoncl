@@ -576,6 +576,9 @@ def main():
     mnist_assignments = mlir_module_attribute(
         onnx_mnist_recovered, 'vrc.unity_texture_assignments'
     )
+    mnist_public_aliases = mlir_module_attribute(
+        onnx_mnist_recovered, 'vrc.static_public_resource_aliases'
+    )
     assert mnist_inventory.count('resource_kind = "allocation"') == 5
     assert mnist_inventory.count('public = true') == 2
     assert 'resource_id = 0 : i32' in mnist_inventory
@@ -584,6 +587,10 @@ def main():
     assert 'public_access = "output"' in mnist_inventory
     assert mnist_inventory.count('public = false') == 3
     assert mnist_assignments.count('texture_id = ') == 5
+    assert 'resolved_count = 2 : i32' in mnist_public_aliases
+    assert mnist_public_aliases.count('resource_kind = "allocation"') == 2
+    assert 'public_access = "input", public_index = 0 : i32' in mnist_public_aliases
+    assert 'public_access = "output", public_index = 0 : i32' in mnist_public_aliases
     assert 'vrc.static_kernel_bindings' in onnx_mnist_recovered
     assert 'snapshot_count = 6 : i32' in onnx_mnist_recovered
     assert onnx_mnist_recovered.count(
@@ -879,10 +886,14 @@ def main():
     transformer_assignments = mlir_module_attribute(
         transformer_recovered, 'vrc.unity_texture_assignments'
     )
+    transformer_public_aliases = mlir_module_attribute(
+        transformer_recovered, 'vrc.static_public_resource_aliases'
+    )
     assert transformer_inventory.count('resource_kind = "allocation"') == 4
     assert transformer_inventory.count('public = false') == 4
     assert 'public = true' not in transformer_inventory
     assert transformer_assignments.count('texture_id = ') == 4
+    assert 'resolved_count = 0 : i32' in transformer_public_aliases
     assert 'candidate_count = 8 : i32' in transformer_recovered
     assert 'snapshot_count = 3 : i32' in transformer_recovered
     assert 'unresolved_count = 5 : i32' in transformer_recovered
@@ -1187,10 +1198,14 @@ def main():
     udonblas_assignments = mlir_module_attribute(
         udonblas_recovered, 'vrc.unity_texture_assignments'
     )
+    udonblas_public_aliases = mlir_module_attribute(
+        udonblas_recovered, 'vrc.static_public_resource_aliases'
+    )
     assert udonblas_inventory.count('resource_kind = "allocation"') == 3
     assert udonblas_inventory.count('public = false') == 3
     assert 'vrc.static_device_resource_public_bindings' not in udonblas_recovered
     assert udonblas_assignments.count('texture_id = ') == 3
+    assert 'resolved_count = 0 : i32' in udonblas_public_aliases
     udonblas_transfers = mlir_module_attribute(
         udonblas_recovered, 'vrc.static_transfer_bindings'
     )

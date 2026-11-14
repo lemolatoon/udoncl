@@ -328,13 +328,15 @@ provenance propagation. This slice remains metadata-only: it does not lower
 transfers, alter queue ordering, or map legacy logical-buffer ordinals to
 allocation IDs.
 
-A standalone public-endpoint alias slice now joins generic
+A public-endpoint alias slice now joins generic
 `(public_access, public_index)` identities from the static inventory to the
 same keyed Texture assignments. It emits only proven
 `public endpoint -> allocation -> texture_id` mappings and never creates an
 additional Texture. Private allocations are omitted. Public endpoints that
 have not reached the allocation inventory remain outside this mapping and
-continue to require the legacy pool until their provenance is resolved.
+continue to require the legacy pool until their provenance is resolved. The
+slice is integrated immediately after one-to-one Texture assignment and is
+metadata-only; manifest reconciliation remains a later component.
 
 - Replace supported allocation/release and buffer arguments with direct typed
   resources.

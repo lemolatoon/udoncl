@@ -2646,6 +2646,7 @@ LogicalResult discoverStaticDeviceResources(ModuleOp module) {
   discovery.addPass(::vrc::createAnalyzeStaticDeviceResourcePersistencePass());
   discovery.addPass(::vrc::createBuildStaticDeviceResourceInventoryPass());
   discovery.addPass(::vrc::createAllocateUnityTexturesPass());
+  discovery.addPass(::vrc::createResolveStaticPublicResourceAliasesPass());
   return failure(failed(discovery.run(module)) || failed(verify(module)));
 }
 
