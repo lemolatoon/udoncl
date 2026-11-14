@@ -1234,6 +1234,25 @@ def main():
     assert 'vrc.unity_heap_slot' in transformer_udon_async
     assert 'vrc.buffer_alloc' not in transformer_udon_async
     assert 'vrc.buffer_release' not in transformer_udon_async
+    expected_transformer_dispatch_slots = [
+        '["", "__udoncl_buffer_1", "__udoncl_buffer_7"]',
+        '["__udoncl_buffer_7", "", "__udoncl_buffer_8"]',
+        '["__udoncl_buffer_8", "__udoncl_buffer_2", '
+        '"__udoncl_buffer_8", "__udoncl_buffer_5"]',
+        '["__udoncl_buffer_8", "__udoncl_buffer_3", '
+        '"__udoncl_buffer_8", "__udoncl_buffer_6"]',
+        '["__udoncl_buffer_5", "__udoncl_buffer_6", '
+        '"__udoncl_buffer_5", "__udoncl_buffer_7"]',
+        '["__udoncl_buffer_7", "__udoncl_buffer_7", '
+        '"__udoncl_buffer_8"]',
+        '["__udoncl_buffer_8", "", "", "__udoncl_buffer_10", '
+        '"__udoncl_buffer_4"]',
+    ]
+    for slots in expected_transformer_dispatch_slots:
+        assert f'vrc.unity_resource_heap_slots = {slots}' in transformer_udon_async
+    assert transformer_udon_async.count(
+        'vrc.unity_resource_heap_slots = '
+    ) == 8
     conversation_input_async = (
         conversation_input_artifact / 'host.async-runtime.mlir'
     ).read_text(encoding='utf-8')

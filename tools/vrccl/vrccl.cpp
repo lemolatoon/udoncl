@@ -26,6 +26,8 @@
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/Passes.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
@@ -916,6 +918,7 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
                               builder.getStringAttr(buffer.heapSlot))}));
   module->setAttr("vrc.unity_buffer_pool", builder.getArrayAttr(poolEntries));
   llvm::DenseMap<Operation *, const UnityBuffer *> bound;
+  llvm::DenseMap<int32_t, const UnityBuffer *> assignedResources;
   for (auto assigned : assignedBuffers) {
     const UnityBuffer *buffer = nullptr;
     for (const UnityBuffer &candidate : buffers)
@@ -931,6 +934,25 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
     assigned->setAttr("vrc.unity_heap_slot",
                       builder.getStringAttr(buffer->heapSlot));
     bound.try_emplace(assigned.getOperation(), buffer);
+    auto [resource, inserted] = assignedResources.try_emplace(
+        static_cast<int32_t>(assigned.getResourceId()), buffer);
+    if (!inserted && resource->second != buffer)
+      return assigned.emitError(
+          "one static resource cannot name multiple Unity buffers");
+  }
+  bool staticLoweringApplied = false;
+  if (auto readiness = module->getAttrOfType<DictionaryAttr>(
+          "vrc.static_unity_resource_lowering_readiness")) {
+    auto version = readiness.getAs<IntegerAttr>("schema_version");
+    auto applied = readiness.getAs<BoolAttr>("applied");
+    auto poolReady = readiness.getAs<BoolAttr>("pool_replacement_ready");
+    if (applied && applied.getValue()) {
+      if (!version || version.getInt() != 1 || !poolReady ||
+          !poolReady.getValue())
+        return module.emitError(
+            "applied static Unity lowering has invalid readiness metadata");
+      staticLoweringApplied = true;
+    }
   }
   for (auto allocation : allocations) {
     auto logicalId =
@@ -1007,6 +1029,15 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
     }
     return false;
   };
+  auto staticTensorExists = [&](int64_t id) {
+    if (!staticTensors)
+      return false;
+    return llvm::any_of(staticTensors, [&](mlir::Attribute attribute) {
+      auto tensor = dyn_cast<DictionaryAttr>(attribute);
+      auto tensorId = tensor ? tensor.getAs<IntegerAttr>("id") : IntegerAttr();
+      return tensorId && tensorId.getInt() == id;
+    });
+  };
   for (auto dispatch : dispatches) {
     auto descriptor =
         dispatch.getDesc().getDefiningOp<::vrc::vrc::DispatchDescCreateOp>();
@@ -1031,10 +1062,78 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
           return kind && kind.getValue() == "buffer";
         });
     bool resourcesMatch = dispatch.getResources().size() == bufferKindCount;
+    llvm::DenseMap<unsigned, const UnityBuffer *> snapshotBuffers;
+    llvm::DenseSet<unsigned> snapshotStaticTensors;
+    if (staticLoweringApplied) {
+      auto snapshot = dispatch->getAttrOfType<DictionaryAttr>(
+          "vrc.static_kernel_binding_snapshot");
+      auto version =
+          snapshot ? snapshot.getAs<IntegerAttr>("schema_version") : nullptr;
+      auto kernelId =
+          snapshot ? snapshot.getAs<IntegerAttr>("kernel_id") : nullptr;
+      auto resources =
+          snapshot ? snapshot.getAs<ArrayAttr>("resources") : nullptr;
+      if (!version || version.getInt() != 1 || !kernelId ||
+          kernelId.getInt() != dispatch.getKernelId() || !resources)
+        return dispatch.emitError(
+            "applied static Unity dispatch has an invalid binding snapshot");
+      llvm::DenseSet<unsigned> seen;
+      for (mlir::Attribute attribute : resources) {
+        auto resource = dyn_cast<DictionaryAttr>(attribute);
+        auto kind =
+            resource ? resource.getAs<StringAttr>("kind") : StringAttr();
+        auto index = resource ? resource.getAs<IntegerAttr>("operand_index")
+                              : IntegerAttr();
+        auto id = resource ? resource.getAs<IntegerAttr>("resource_id")
+                           : IntegerAttr();
+        auto access =
+            resource ? resource.getAs<StringAttr>("access") : StringAttr();
+        if (!kind || !index || index.getInt() < 0 ||
+            index.getInt() >= dispatch.getResources().size() || !id ||
+            id.getInt() < 0 || !access ||
+            !seen.insert(static_cast<unsigned>(index.getInt())).second)
+          return dispatch.emitError(
+              "applied static Unity dispatch snapshot is malformed");
+        auto expectedAccess = dyn_cast<StringAttr>(
+            dispatch.getResourceAccesses()[index.getInt()]);
+        if (!expectedAccess || expectedAccess != access)
+          return dispatch.emitError(
+              "applied static Unity dispatch access is inconsistent");
+        unsigned operandIndex = static_cast<unsigned>(index.getInt());
+        if (kind.getValue() == "allocation") {
+          auto found =
+              assignedResources.find(static_cast<int32_t>(id.getInt()));
+          if (found == assignedResources.end())
+            return dispatch.emitError(
+                "static dispatch allocation has no bound Unity buffer");
+          snapshotBuffers[operandIndex] = found->second;
+        } else if (kind.getValue() == "static_tensor") {
+          if (!staticTensorExists(id.getInt()))
+            return dispatch.emitError(
+                "static dispatch tensor is absent from the artifact");
+          snapshotStaticTensors.insert(operandIndex);
+        } else {
+          return dispatch.emitError(
+              "applied static Unity dispatch retains a dynamic resource");
+        }
+      }
+      if (seen.size() != dispatch.getResources().size())
+        return dispatch.emitError(
+            "applied static Unity dispatch snapshot is incomplete");
+    }
     SmallVector<mlir::Attribute> resourceHeapSlots;
-    for (mlir::Value resource : dispatch.getResources()) {
+    for (auto [resourceIndex, resource] :
+         llvm::enumerate(dispatch.getResources())) {
       auto staticBuffer = resource.getDefiningOp<::vrc::vrc::StaticBufferOp>();
       const UnityBuffer *boundBuffer = resolveBoundBuffer(resource);
+      auto snapshotBuffer =
+          snapshotBuffers.find(static_cast<unsigned>(resourceIndex));
+      if (snapshotBuffer != snapshotBuffers.end()) {
+        if (boundBuffer && boundBuffer != snapshotBuffer->second)
+          return dispatch.emitError(
+              "static dispatch SSA resource disagrees with its snapshot");
+        boundBuffer = snapshotBuffer->second;
+      }
       const UnityBuffer *constantBuffer = nullptr;
       mlir::Value token = resource;
       while (auto cast = token.getDefiningOp<UnrealizedConversionCastOp>()) {
@@ -1053,6 +1152,9 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
       if (staticBuffer) {
         resourcesMatch &= staticTensorMatches(staticBuffer.getResourceId(),
                                               staticBuffer.getByteSize());
+        resourceHeapSlots.push_back(builder.getStringAttr(""));
+      } else if (snapshotStaticTensors.contains(
+                     static_cast<unsigned>(resourceIndex))) {
         resourceHeapSlots.push_back(builder.getStringAttr(""));
       } else if (boundBuffer) {
         resourceHeapSlots.push_back(
