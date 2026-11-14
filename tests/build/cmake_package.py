@@ -22,6 +22,33 @@ def run_failure(command, diagnostic):
     assert diagnostic in result.stderr, (command, diagnostic, result.stderr)
 
 
+def mlir_module_attribute(source, name):
+    marker = f'{name} = {{'
+    start = source.index(marker) + len(marker) - 1
+    depth = 0
+    quoted = False
+    escaped = False
+    for index in range(start, len(source)):
+        character = source[index]
+        if quoted:
+            if escaped:
+                escaped = False
+            elif character == '\\':
+                escaped = True
+            elif character == '"':
+                quoted = False
+            continue
+        if character == '"':
+            quoted = True
+        elif character == '{':
+            depth += 1
+        elif character == '}':
+            depth -= 1
+            if depth == 0:
+                return source[start:index + 1]
+    raise AssertionError(f'unterminated MLIR module attribute: {name}')
+
+
 def udon_heap_slots(assembly):
     declarations = sum(
         line.startswith('    ') and ': %' in line
@@ -542,6 +569,20 @@ def main():
     ).read_text(encoding='utf-8')
     assert 'vrc.static_device_resource_discovery' in onnx_mnist_recovered
     assert 'vrc.static_device_resource_provenance' in onnx_mnist_recovered
+    mnist_inventory = mlir_module_attribute(
+        onnx_mnist_recovered, 'vrc.static_device_resource_inventory'
+    )
+    mnist_assignments = mlir_module_attribute(
+        onnx_mnist_recovered, 'vrc.unity_texture_assignments'
+    )
+    assert mnist_inventory.count('resource_kind = "allocation"') == 5
+    assert mnist_inventory.count('public = true') == 2
+    assert 'resource_id = 0 : i32' in mnist_inventory
+    assert 'resource_id = 1 : i32' in mnist_inventory
+    assert 'public_access = "input"' in mnist_inventory
+    assert 'public_access = "output"' in mnist_inventory
+    assert mnist_inventory.count('public = false') == 3
+    assert mnist_assignments.count('texture_id = ') == 5
     assert 'vrc.static_kernel_bindings' in onnx_mnist_recovered
     assert 'snapshot_count = 6 : i32' in onnx_mnist_recovered
     assert onnx_mnist_recovered.count(
@@ -820,6 +861,16 @@ def main():
     transformer_recovered = (
         transformer_artifact / 'frontend.recovered.mlir'
     ).read_text(encoding='utf-8')
+    transformer_inventory = mlir_module_attribute(
+        transformer_recovered, 'vrc.static_device_resource_inventory'
+    )
+    transformer_assignments = mlir_module_attribute(
+        transformer_recovered, 'vrc.unity_texture_assignments'
+    )
+    assert transformer_inventory.count('resource_kind = "allocation"') == 4
+    assert transformer_inventory.count('public = false') == 4
+    assert 'public = true' not in transformer_inventory
+    assert transformer_assignments.count('texture_id = ') == 4
     assert 'candidate_count = 8 : i32' in transformer_recovered
     assert 'snapshot_count = 3 : i32' in transformer_recovered
     assert 'unresolved_count = 5 : i32' in transformer_recovered
@@ -1118,6 +1169,16 @@ def main():
     assert udonblas_recovered.count(
         'vrc.static_device_allocation_site'
     ) == 3
+    udonblas_inventory = mlir_module_attribute(
+        udonblas_recovered, 'vrc.static_device_resource_inventory'
+    )
+    udonblas_assignments = mlir_module_attribute(
+        udonblas_recovered, 'vrc.unity_texture_assignments'
+    )
+    assert udonblas_inventory.count('resource_kind = "allocation"') == 3
+    assert udonblas_inventory.count('public = false') == 3
+    assert 'vrc.static_device_resource_public_bindings' not in udonblas_recovered
+    assert udonblas_assignments.count('texture_id = ') == 3
     udonblas_manifest = json.loads(
         (udonblas_artifact / 'manifest.json').read_text(encoding='utf-8')
     )

@@ -2639,7 +2639,12 @@ LogicalResult discoverStaticDeviceResources(ModuleOp module) {
   attachDeviceResourceOperandContracts(module);
   PassManager discovery(module.getContext());
   discovery.addPass(::vrc::createDiscoverStaticDeviceResourcesPass());
+  discovery.addPass(::vrc::createInferStaticDeviceResourceRequirementsPass());
   discovery.addPass(::vrc::createPropagateDeviceResourceProvenancePass());
+  discovery.addPass(::vrc::createClassifyONNXPublicDeviceResourcesPass());
+  discovery.addPass(::vrc::createAnalyzeStaticDeviceResourcePersistencePass());
+  discovery.addPass(::vrc::createBuildStaticDeviceResourceInventoryPass());
+  discovery.addPass(::vrc::createAllocateUnityTexturesPass());
   return failure(failed(discovery.run(module)) || failed(verify(module)));
 }
 
