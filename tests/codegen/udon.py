@@ -1599,6 +1599,74 @@ assert sparse_output.count(
 assert 'name = "__udoncl_sparse_buffer_7"' not in sparse_output
 assert 'name = "__udoncl_sparse_buffer_42"' not in sparse_output
 
+assigned_buffer_source = r'''module attributes {
+  vrc.host_stage = "udonhl",
+  vrc.unity_buffer_pool = [
+    {id = 7 : i32, logical_bytes = 4 : i32, heap_slot = "__udoncl_assigned_7"}
+  ]
+} {
+  func.func @assigned_dispatch() attributes {vrc.export_id = 65 : i32} {
+    %output = "vrc.assigned_buffer"() {
+      capacity_bytes = 4 : i64,
+      format = "rgba8_unorm",
+      resource_id = 12 : i32,
+      texture_id = 7 : i32,
+      vrc.unity_heap_slot = "__udoncl_assigned_7"
+    } : () -> !vrc.buffer
+    %desc = vrc.dispatch_desc_create {
+      kernel_id = 1 : i32, scalar_kinds = []
+    } : () -> !vrc.dispatch_desc
+    %event = vrc.dispatch %desc(%output) {
+      argument_kinds = ["buffer"],
+      resource_accesses = ["write"],
+      global_offset = array<i32: 0, 0, 0>,
+      global_size = array<i32: 1, 1, 1>,
+      kernel_id = 1 : i32,
+      local_size = array<i32: 1, 1, 1>,
+      vrc.unity_dispatch_material_slot = "__udoncl_kernel_material_1",
+      vrc.unity_output_resource_index = 0 : i32,
+      vrc.unity_resource_heap_slots = ["__udoncl_assigned_7"]
+    } : (!vrc.dispatch_desc, !vrc.buffer) -> !vrc.event
+    return
+  }
+}'''
+assigned_buffer_lowered = subprocess.run(
+    [
+        opt,
+        '--pass-pipeline=builtin.module(vrc-lower-host-to-udonhl,'
+        'vrc-lower-udonhl-to-udonasm)',
+        '--verify-each',
+    ],
+    input=assigned_buffer_source, text=True, capture_output=True)
+assert assigned_buffer_lowered.returncode == 0, assigned_buffer_lowered.stderr
+for expected in [
+    'udonasm.push "__udoncl_buffer_pool"',
+    'SystemObjectArray.__Get__SystemInt32__SystemObject',
+    'VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_'
+    'UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid',
+]:
+    assert expected in assigned_buffer_lowered.stdout, (
+        expected, assigned_buffer_lowered.stdout)
+assert assigned_buffer_lowered.stdout.count(
+    'SystemObjectArray.__Get__SystemInt32__SystemObject') == 1
+assert 'SystemInt32.__op_Equality__SystemInt32_SystemInt32__SystemBoolean' not in (
+    assigned_buffer_lowered.stdout)
+assigned_buffer_mismatch = subprocess.run(
+    [
+        opt,
+        '--pass-pipeline=builtin.module(vrc-lower-host-to-udonhl,'
+        'vrc-lower-udonhl-to-udonasm)',
+        '--verify-each',
+    ],
+    input=assigned_buffer_source.replace(
+        'capacity_bytes = 4 : i64', 'capacity_bytes = 8 : i64'),
+    text=True,
+    capture_output=True,
+)
+assert assigned_buffer_mismatch.returncode != 0
+assert 'assigned buffer does not match the Unity buffer pool' in (
+    assigned_buffer_mismatch.stderr)
+
 static_buffer_source = r'''module attributes {
   vrc.host_stage = "udonhl",
   vrc.unity_buffer_pool = [

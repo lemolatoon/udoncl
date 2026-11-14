@@ -84,6 +84,7 @@ struct ConstantPoolLocation {
 
 struct UnityBufferPoolEntry {
   int64_t id;
+  int64_t logicalBytes;
   std::string heapSlot;
   unsigned index;
 };
@@ -1158,14 +1159,17 @@ private:
     for (Attribute attribute : pool) {
       auto entry = dyn_cast<DictionaryAttr>(attribute);
       auto id = entry ? entry.getAs<IntegerAttr>("id") : IntegerAttr();
+      auto logicalBytes =
+          entry ? entry.getAs<IntegerAttr>("logical_bytes") : IntegerAttr();
       auto heapSlot =
           entry ? entry.getAs<StringAttr>("heap_slot") : StringAttr();
-      if (!id || id.getInt() <= 0 || !heapSlot || heapSlot.getValue().empty() ||
-          !ids.insert(id.getInt()).second ||
+      if (!id || id.getInt() <= 0 || !logicalBytes ||
+          logicalBytes.getInt() <= 0 || !heapSlot ||
+          heapSlot.getValue().empty() || !ids.insert(id.getInt()).second ||
           !slots.insert(heapSlot.getValue().str()).second)
         return module.emitError("invalid Unity buffer pool metadata");
       unityBufferPool.push_back(
-          {id.getInt(), heapSlot.getValue().str(),
+          {id.getInt(), logicalBytes.getInt(), heapSlot.getValue().str(),
            static_cast<unsigned>(unityBufferPool.size())});
     }
     addSlot("__udoncl_buffer_pool", "UnityEngineRenderTextureArray", "null",
@@ -2120,6 +2124,12 @@ private:
               coloredSlot(staticBuffer.getBuffer());
           continue;
         }
+        if (auto assignedBuffer =
+                dyn_cast<::vrc::vrc::AssignedBufferOp>(operation)) {
+          valueSlots[assignedBuffer.getBuffer()] =
+              coloredSlot(assignedBuffer.getBuffer());
+          continue;
+        }
         if (auto frame = dyn_cast<host::FrameCreateOp>(operation)) {
           std::string frameName =
               prefix + "frame_" + std::to_string(frameSlots.size());
@@ -2527,6 +2537,28 @@ private:
           uint32_t tagged = static_cast<uint32_t>(
               -static_cast<int64_t>(staticBuffer.getResourceId()) - 1);
           emitI32Literal(staticBuffer.getLoc(), tagged, token);
+          continue;
+        }
+        if (auto assignedBuffer =
+                dyn_cast<::vrc::vrc::AssignedBufferOp>(operation)) {
+          std::string token = valueSlots.lookup(assignedBuffer.getBuffer());
+          auto heapSlot =
+              assignedBuffer->getAttrOfType<StringAttr>("vrc.unity_heap_slot");
+          if (token.empty())
+            return assignedBuffer.emitError(
+                "assigned buffer has no allocated token slot");
+          auto entry = llvm::find_if(unityBufferPool, [&](const auto &item) {
+            return item.id == assignedBuffer.getTextureId() && heapSlot &&
+                   StringRef(item.heapSlot) == heapSlot.getValue();
+          });
+          if (entry == unityBufferPool.end() ||
+              entry->logicalBytes != assignedBuffer.getCapacityBytes())
+            return assignedBuffer.emitError(
+                "assigned buffer does not match the Unity buffer pool");
+          emitCopy(
+              assignedBuffer.getLoc(),
+              immutableSlot("SystemInt32", std::to_string(entry->index + 1)),
+              token);
           continue;
         }
         if (auto release = dyn_cast<::vrc::vrc::BufferReleaseOp>(operation)) {

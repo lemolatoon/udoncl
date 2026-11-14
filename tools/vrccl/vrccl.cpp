@@ -946,6 +946,8 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
     for (mlir::Value resource : dispatch.getResources()) {
       auto allocation = resource.getDefiningOp<::vrc::vrc::BufferAllocOp>();
       auto staticBuffer = resource.getDefiningOp<::vrc::vrc::StaticBufferOp>();
+      auto assignedBuffer =
+          resource.getDefiningOp<::vrc::vrc::AssignedBufferOp>();
       const UnityBuffer *constantBuffer = nullptr;
       mlir::Value token = resource;
       while (auto cast = token.getDefiningOp<UnrealizedConversionCastOp>()) {
@@ -965,6 +967,22 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
         resourcesMatch &= staticTensorMatches(staticBuffer.getResourceId(),
                                               staticBuffer.getByteSize());
         resourceHeapSlots.push_back(builder.getStringAttr(""));
+      } else if (assignedBuffer) {
+        const UnityBuffer *assigned = nullptr;
+        for (const UnityBuffer &candidate : buffers)
+          if (candidate.id == assignedBuffer.getTextureId()) {
+            assigned = &candidate;
+            break;
+          }
+        resourcesMatch &=
+            assigned &&
+            assigned->allocationBytes == assignedBuffer.getCapacityBytes() &&
+            assignedBuffer.getFormat() == "rgba8_unorm";
+        if (assigned)
+          assignedBuffer->setAttr("vrc.unity_heap_slot",
+                                  builder.getStringAttr(assigned->heapSlot));
+        resourceHeapSlots.push_back(
+            builder.getStringAttr(assigned ? assigned->heapSlot : StringRef()));
       } else if (allocation) {
         resourcesMatch &= bound.contains(allocation.getOperation());
         auto found = bound.find(allocation.getOperation());

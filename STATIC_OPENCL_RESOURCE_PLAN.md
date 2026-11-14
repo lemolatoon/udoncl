@@ -380,6 +380,15 @@ silently replaces its pool. Manifest and pool replacement remain a separate
 tool-adapter commit gated by this plan and by direct static resource lowering;
 the existing runtime handle ordinal is not treated as a Texture identity.
 
+The Host validator, Unity dispatch binder, and Udon Assembly lowering now
+accept `vrc.assigned_buffer` as a mutable compiler-assigned resource. The
+binder exact-matches its Texture ID and capacity to the selected Unity buffer,
+records the resolved heap slot, and lowering emits a constant physical pool
+token. Runtime read/write alias validation still observes that token. This
+downstream support is deliberately independent from production
+materialization: the canonical pool is not selected until dispatch and
+transfer completeness have both been proven.
+
 - Replace supported allocation/release and buffer arguments with direct typed
   resources.
 - Remove runtime handle lookup, buffer free-list use, and kernel buffer-argument
