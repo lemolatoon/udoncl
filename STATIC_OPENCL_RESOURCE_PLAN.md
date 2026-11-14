@@ -494,6 +494,17 @@ entry points. It is the prerequisite for safely replacing
 path where the preceding view resolution proved a live, non-null resource.
 The physical-resolver materializer remains a separate pass.
 
+That materializer now consumes only non-null singleton allocation provenance,
+an exact four-byte output cell, persistent inventory, and a matching Unity
+Texture assignment. It creates `vrc.assigned_buffer`, converts that typed value
+to the existing i32 physical-token ABI, stores it to the original output cell,
+and replaces the status with success. The token is not guessed from the
+Texture ID: normal `vrc.assigned_buffer` lowering performs the canonical Unity
+pool lookup. Nullable, unknown, ambiguous, non-persistent, or non-exact cases
+remain dynamic. The current real preview safely removes two of five MNIST
+resolves and six of nine TinyLlama resolves; the three global-buffer cases in
+each graph remain for a separate lifetime/non-null proof.
+
 - Replace supported allocation/release and buffer arguments with direct typed
   resources.
 - Remove runtime handle lookup, buffer free-list use, and kernel buffer-argument

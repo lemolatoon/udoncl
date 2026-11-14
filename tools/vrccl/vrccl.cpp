@@ -745,6 +745,7 @@ LogicalResult reconcileStaticUnityBuffers(ModuleOp module,
       ::vrc::createPlanStaticPhysicalAllocationSpecializationPass());
   readiness.addPass(::vrc::createSpecializeStaticPhysicalAllocationPathsPass());
   readiness.addPass(::vrc::createMaterializeStaticPhysicalAllocationsPass());
+  readiness.addPass(::vrc::createMaterializeStaticPhysicalResolvesPass());
   readiness.addPass(::vrc::createAssessStaticUnityResourceLoweringPass());
   if (failed(readiness.run(*preview)))
     return failure();
@@ -758,6 +759,7 @@ LogicalResult reconcileStaticUnityBuffers(ModuleOp module,
   for (const char *name : {
            "vrc.static_physical_allocation_specialization",
            "vrc.static_physical_allocation_materialization",
+           "vrc.static_physical_resolve_materialization",
        })
     if (mlir::Attribute value = (*preview)->getAttr(name))
       module->setAttr(name, value);

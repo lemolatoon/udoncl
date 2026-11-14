@@ -599,6 +599,10 @@ def main():
         onnx_mnist_recovered,
         'vrc.static_physical_allocation_specialization_plan',
     )
+    mnist_physical_resolves = mlir_module_attribute(
+        onnx_mnist_recovered,
+        'vrc.static_physical_resolve_materialization',
+    )
     assert mnist_inventory.count('resource_kind = "allocation"') == 5
     assert 'context_count = 5 : i32' in mnist_context_plan
     assert 'allocation_site_count = 5 : i32' in mnist_context_plan
@@ -629,7 +633,9 @@ def main():
     assert 'resource_operands_ready = false' in mnist_lowering_readiness
     assert 'pool_replacement_ready = false' in mnist_lowering_readiness
     assert 'dispatch_candidate_count = 6 : i32' in mnist_lowering_readiness
-    assert 'dynamic_resolve_count = 5 : i32' in mnist_lowering_readiness
+    assert 'dynamic_resolve_count = 3 : i32' in mnist_lowering_readiness
+    assert 'materialized_count = 2 : i32' in mnist_physical_resolves
+    assert 'unresolved_count = 3 : i32' in mnist_physical_resolves
     assert 'candidate_count = 5 : i32' in mnist_physical_plan
     assert 'planned_count = 5 : i32' in mnist_physical_plan
     assert 'blocker_count = 0 : i32' in mnist_physical_plan
@@ -960,6 +966,10 @@ def main():
         transformer_recovered,
         'vrc.static_physical_allocation_specialization_plan',
     )
+    transformer_physical_resolves = mlir_module_attribute(
+        transformer_recovered,
+        'vrc.static_physical_resolve_materialization',
+    )
     assert transformer_inventory.count('resource_kind = "allocation"') == 10
     assert 'context_count = 10 : i32' in transformer_context_plan
     assert 'allocation_site_count = 10 : i32' in transformer_context_plan
@@ -998,6 +1008,9 @@ def main():
     )
     assert 'transfer_ready = true' in transformer_lowering_readiness
     assert 'dynamic_allocation_count = 1 : i32' in transformer_lowering_readiness
+    assert 'dynamic_resolve_count = 3 : i32' in transformer_lowering_readiness
+    assert 'materialized_count = 6 : i32' in transformer_physical_resolves
+    assert 'unresolved_count = 3 : i32' in transformer_physical_resolves
     for name in [
         'input_ids', 'past_key', 'past_value', 'logits',
         'present_key', 'present_value',

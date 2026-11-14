@@ -492,6 +492,12 @@ add_test(NAME static-physical-allocation-materialization-diagnostics
     --verify-diagnostics
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_physical_allocation_materialization_invalid.mlir"
 )
+add_test(NAME static-physical-resolve-materialization
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_physical_resolve_materialization.py"
+    $<TARGET_FILE:vrc-opt>
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_physical_resolve_materialization.mlir"
+)
 add_test(NAME static-device-resource-switch
   COMMAND Python3::Interpreter
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_switch.py"
