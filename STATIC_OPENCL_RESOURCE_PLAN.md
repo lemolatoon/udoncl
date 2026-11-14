@@ -291,9 +291,12 @@ It assigns deterministic one-based Texture IDs to allocation contexts while
 preserving capacity, format, public access, and persistence. The producer that
 derives this inventory is split by responsibility: a standalone requirements
 pass now reconstructs keyed capacity, memory flags, format, and usage through
-discovery call paths. Public/persistent classification from ONNX binding state,
-the current duplicate public-buffer capacities, and manifest integration remain
-separate work.
+discovery call paths. A standalone ONNX public-resource pass now joins generic
+allocation provenance with stable input/output bind call sites and typed ONNX
+metadata; it does not classify by model name, capacity, or fixed resource ID.
+Generic persistence analysis, the inventory merger, removal of the current
+duplicate public-buffer capacities, and manifest integration remain separate
+work.
 
 - Assign one physical Texture per allocation context.
 - Emit stable resource IDs, capacities, formats, and public/persistent flags.

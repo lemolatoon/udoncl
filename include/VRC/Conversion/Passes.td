@@ -44,6 +44,10 @@ def PropagateDeviceResourceProvenancePass : Pass<"vrc-propagate-device-resource-
   let summary = "Propagate context-sensitive static device resource identities through Host SSA";
   let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "mlir::func::FuncDialect", "mlir::cf::ControlFlowDialect", "mlir::arith::ArithDialect", "mlir::memref::MemRefDialect", "mlir::scf::SCFDialect"];
 }
+def ClassifyONNXPublicDeviceResourcesPass : Pass<"vrc-classify-onnx-public-device-resources", "mlir::ModuleOp"> {
+  let summary = "Classify static allocation identities bound to public ONNX inputs and outputs";
+  let dependentDialects = ["mlir::arith::ArithDialect", "mlir::func::FuncDialect"];
+}
 def ResolveStaticKernelBindingsPass : Pass<"vrc-resolve-static-kernel-bindings", "mlir::ModuleOp"> {
   let summary = "Capture immutable call-by-value Device dispatch bindings";
   let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "::vrc::vrc::VRCDialect", "mlir::arith::ArithDialect", "mlir::cf::ControlFlowDialect", "mlir::func::FuncDialect"];
