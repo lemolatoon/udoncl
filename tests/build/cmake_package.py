@@ -569,6 +569,7 @@ def main():
     ).read_text(encoding='utf-8')
     assert 'vrc.static_device_resource_discovery' in onnx_mnist_recovered
     assert 'vrc.static_device_resource_provenance' in onnx_mnist_recovered
+    assert 'vrc.static_transfer_bindings' not in onnx_mnist_recovered
     mnist_inventory = mlir_module_attribute(
         onnx_mnist_recovered, 'vrc.static_device_resource_inventory'
     )
@@ -861,6 +862,17 @@ def main():
     transformer_recovered = (
         transformer_artifact / 'frontend.recovered.mlir'
     ).read_text(encoding='utf-8')
+    transformer_transfers = mlir_module_attribute(
+        transformer_recovered, 'vrc.static_transfer_bindings'
+    )
+    assert 'candidate_count = 7 : i32' in transformer_transfers
+    assert 'resolved_count = 0 : i32' in transformer_transfers
+    assert 'unresolved_count = 7 : i32' in transformer_transfers
+    assert (
+        'requires_context_specialization_count = 0 : i32'
+        in transformer_transfers
+    )
+    assert 'vrc.static_transfer_binding_snapshot' not in transformer_recovered
     transformer_inventory = mlir_module_attribute(
         transformer_recovered, 'vrc.static_device_resource_inventory'
     )
@@ -1179,6 +1191,18 @@ def main():
     assert udonblas_inventory.count('public = false') == 3
     assert 'vrc.static_device_resource_public_bindings' not in udonblas_recovered
     assert udonblas_assignments.count('texture_id = ') == 3
+    udonblas_transfers = mlir_module_attribute(
+        udonblas_recovered, 'vrc.static_transfer_bindings'
+    )
+    assert 'candidate_count = 3 : i32' in udonblas_transfers
+    assert 'resolved_count = 3 : i32' in udonblas_transfers
+    assert 'unresolved_count = 0 : i32' in udonblas_transfers
+    assert 'requires_context_specialization_count = 0 : i32' in udonblas_transfers
+    assert udonblas_recovered.count(
+        'vrc.static_transfer_binding_snapshot'
+    ) == 3
+    assert udonblas_recovered.count('transfer_kind = "write"') == 2
+    assert udonblas_recovered.count('transfer_kind = "read"') == 1
     udonblas_manifest = json.loads(
         (udonblas_artifact / 'manifest.json').read_text(encoding='utf-8')
     )

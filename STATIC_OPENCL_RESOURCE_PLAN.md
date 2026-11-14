@@ -323,8 +323,10 @@ analysis. It records read/write roles and allocation identities while
 preserving `(export root, call path)` cases. A call whose resource identity
 changes by call context is marked for later context specialization instead of
 being flattened. Unknown and public logical resources remain explicitly
-unresolved. This slice is metadata-only: it does not lower transfers, alter
-queue ordering, or map legacy logical-buffer ordinals to allocation IDs.
+unresolved. The analysis is integrated immediately after runtime-free
+provenance propagation. This slice remains metadata-only: it does not lower
+transfers, alter queue ordering, or map legacy logical-buffer ordinals to
+allocation IDs.
 
 - Replace supported allocation/release and buffer arguments with direct typed
   resources.
