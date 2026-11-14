@@ -633,6 +633,7 @@ def main():
     assert 'resource_operands_ready = false' in mnist_lowering_readiness
     assert 'pool_replacement_ready = false' in mnist_lowering_readiness
     assert 'dispatch_candidate_count = 6 : i32' in mnist_lowering_readiness
+    assert 'dynamic_allocation_count = 0 : i32' in mnist_lowering_readiness
     assert 'dynamic_resolve_count = 3 : i32' in mnist_lowering_readiness
     assert 'materialized_count = 2 : i32' in mnist_physical_resolves
     assert 'unresolved_count = 3 : i32' in mnist_physical_resolves
@@ -1007,7 +1008,7 @@ def main():
         in transformer_lowering_readiness
     )
     assert 'transfer_ready = true' in transformer_lowering_readiness
-    assert 'dynamic_allocation_count = 1 : i32' in transformer_lowering_readiness
+    assert 'dynamic_allocation_count = 0 : i32' in transformer_lowering_readiness
     assert 'dynamic_resolve_count = 3 : i32' in transformer_lowering_readiness
     assert 'materialized_count = 6 : i32' in transformer_physical_resolves
     assert 'unresolved_count = 3 : i32' in transformer_physical_resolves

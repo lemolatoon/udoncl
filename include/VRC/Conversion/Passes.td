@@ -109,6 +109,10 @@ def MaterializeStaticPhysicalResolvesPass : Pass<"vrc-materialize-static-physica
   let summary = "Replace proven physical-buffer resolves with assigned Unity buffer tokens";
   let dependentDialects = ["::vrc::vrc::VRCDialect", "::vrc::udonhl::UdonHLDialect", "mlir::arith::ArithDialect", "mlir::func::FuncDialect"];
 }
+def EliminateDeadPhysicalAllocationFallbacksPass : Pass<"vrc-eliminate-dead-physical-allocation-fallbacks", "mlir::ModuleOp"> {
+  let summary = "Erase unreachable private physical-allocation fallback call chains";
+  let dependentDialects = ["::vrc::vrc::VRCDialect", "mlir::func::FuncDialect"];
+}
 def AssessStaticUnityResourceLoweringPass : Pass<"vrc-assess-static-unity-resource-lowering", "mlir::ModuleOp"> {
   let summary = "Assess static resource operands separately from canonical Unity pool replacement";
 }

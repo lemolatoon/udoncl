@@ -746,6 +746,8 @@ LogicalResult reconcileStaticUnityBuffers(ModuleOp module,
   readiness.addPass(::vrc::createSpecializeStaticPhysicalAllocationPathsPass());
   readiness.addPass(::vrc::createMaterializeStaticPhysicalAllocationsPass());
   readiness.addPass(::vrc::createMaterializeStaticPhysicalResolvesPass());
+  readiness.addPass(
+      ::vrc::createEliminateDeadPhysicalAllocationFallbacksPass());
   readiness.addPass(::vrc::createAssessStaticUnityResourceLoweringPass());
   if (failed(readiness.run(*preview)))
     return failure();

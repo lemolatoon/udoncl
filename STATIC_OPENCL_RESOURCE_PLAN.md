@@ -455,9 +455,15 @@ and return behavior. Unannotated shared or dynamic allocations remain intact.
 Production preview now runs the physical path specializer and materializer
 after planning. Real TinyLlama proves and materializes all 10 planned physical
 allocations on the cloned preview; MNIST proves and materializes all 5. The
-executable module is still unchanged. The original shared fallback allocator
-remains in the preview until a separate reachability-aware cleanup slice can
-remove it without invalidating dispatch metadata.
+executable module is still unchanged. A narrow cleanup pass then removes only
+an unreachable private call chain that contains a remaining physical
+allocation fallback. It refuses dispatch and transfer functions rather than
+performing whole-module symbol DCE after static metadata has been computed.
+Real MNIST retains all 6 dispatches and snapshots while its dynamic allocation
+count becomes zero; TinyLlama retains all 8 dispatches, snapshots, and 24
+assigned operands while its dynamic allocation count also becomes zero.
+Readiness is assessed only after that cleanup, so its metadata is checked
+against the final preview IR.
 
 A generic logical-buffer materializer now joins constant `vrc.buffer_alloc`
 IDs through Unity-buffer reconciliation into the canonical resource and
