@@ -740,9 +740,18 @@ LogicalResult reconcileStaticUnityBuffers(ModuleOp module,
   OwningOpRef<ModuleOp> preview = cast<ModuleOp>(module.clone());
   PassManager readiness(module.getContext());
   readiness.addPass(::vrc::createMaterializeStaticDispatchResourcesPass());
+  readiness.addPass(
+      ::vrc::createPlanStaticPhysicalAllocationSpecializationPass());
   readiness.addPass(::vrc::createAssessStaticUnityResourceLoweringPass());
   if (failed(readiness.run(*preview)))
     return failure();
+  auto physicalPlan =
+      (*preview)->getAttr("vrc.static_physical_allocation_specialization_plan");
+  if (!physicalPlan)
+    return module.emitError(
+        "static physical allocation preview produced no plan");
+  module->setAttr("vrc.static_physical_allocation_specialization_plan",
+                  physicalPlan);
   auto result = (*preview)->getAttrOfType<DictionaryAttr>(
       "vrc.static_unity_resource_lowering_readiness");
   if (!result)

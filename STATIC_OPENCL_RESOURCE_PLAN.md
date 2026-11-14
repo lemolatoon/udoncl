@@ -402,6 +402,26 @@ and legacy pool remain unchanged. This exercises real MNIST, TinyLlama, and
 ordinary UdonCL graphs without prematurely changing their runtime semantics;
 neither readiness flag changes the manifest by itself.
 
+A standalone physical-allocation specialization planner is the next static
+lowering boundary. It follows each proven singleton allocation call through
+private defined callees to exactly one `vrc.buffer_alloc`, joins the resource
+to the keyed persistent Texture assignment, and records the exact call path
+that a later transformation may clone. Missing provenance, ambiguous sinks,
+recursion, exported callees, duplicate resources, and non-persistent or
+mismatched assignments remain blockers. The planner changes neither the call
+graph nor OpenCL status and logical-handle semantics. Production preview runs
+this planner on the same clone and records its plan without rewriting the
+executable module.
+
+A standalone physical-allocation specialization planner is the next static
+lowering boundary. It follows each proven singleton allocation call through
+private defined callees to exactly one `vrc.buffer_alloc`, joins the resource
+to the keyed persistent Texture assignment, and records the exact call path
+that a later transformation may clone. Missing provenance, ambiguous sinks,
+recursion, exported callees, duplicate resources, and non-persistent or
+mismatched assignments remain blockers. The planner changes neither the call
+graph nor OpenCL status and logical-handle semantics.
+
 - Replace supported allocation/release and buffer arguments with direct typed
   resources.
 - Remove runtime handle lookup, buffer free-list use, and kernel buffer-argument

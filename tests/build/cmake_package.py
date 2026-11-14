@@ -595,6 +595,10 @@ def main():
         onnx_mnist_recovered,
         'vrc.static_unity_resource_lowering_readiness',
     )
+    mnist_physical_plan = mlir_module_attribute(
+        onnx_mnist_recovered,
+        'vrc.static_physical_allocation_specialization_plan',
+    )
     assert mnist_inventory.count('resource_kind = "allocation"') == 5
     assert 'context_count = 5 : i32' in mnist_context_plan
     assert 'allocation_site_count = 5 : i32' in mnist_context_plan
@@ -635,6 +639,13 @@ def main():
     assert 'pool_replacement_ready = false' in mnist_lowering_readiness
     assert 'dispatch_candidate_count = 6 : i32' in mnist_lowering_readiness
     assert 'dynamic_resolve_count = 5 : i32' in mnist_lowering_readiness
+    assert 'candidate_count = 5 : i32' in mnist_physical_plan
+    assert 'planned_count = 5 : i32' in mnist_physical_plan
+    assert 'blocker_count = 0 : i32' in mnist_physical_plan
+    assert mnist_physical_plan.count('resource_id = ') == 5
+    assert mnist_physical_plan.count('texture_id = ') == 5
+    assert 'callee = @clCreateBuffer' in mnist_physical_plan
+    assert 'callee = @udonclCreateBufferForQueue' in mnist_physical_plan
     assert 'vrc.static_kernel_bindings' in onnx_mnist_recovered
     assert 'snapshot_count = 6 : i32' in onnx_mnist_recovered
     assert onnx_mnist_recovered.count(

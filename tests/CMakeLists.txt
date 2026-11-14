@@ -453,6 +453,17 @@ add_test(NAME static-unity-resource-lowering-readiness-diagnostics
     --verify-diagnostics
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_unity_resource_lowering_readiness_invalid.mlir"
 )
+add_test(NAME static-physical-allocation-specialization-plan
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_physical_allocation_specialization_plan.py"
+    $<TARGET_FILE:vrc-opt>
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_physical_allocation_specialization_plan.mlir"
+)
+add_test(NAME static-physical-allocation-specialization-plan-diagnostics
+  COMMAND vrc-opt --vrc-plan-static-physical-allocation-specialization
+    --verify-diagnostics
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_physical_allocation_specialization_plan_invalid.mlir"
+)
 add_test(NAME static-device-resource-switch
   COMMAND Python3::Interpreter
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_switch.py"

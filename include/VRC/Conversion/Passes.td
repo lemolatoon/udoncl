@@ -86,6 +86,10 @@ def MaterializeStaticDispatchResourcesPass : Pass<"vrc-materialize-static-dispat
   let summary = "Replace proven dispatch allocation operands with assigned mutable Texture resources";
   let dependentDialects = ["::vrc::vrc::VRCDialect"];
 }
+def PlanStaticPhysicalAllocationSpecializationPass : Pass<"vrc-plan-static-physical-allocation-specialization", "mlir::ModuleOp"> {
+  let summary = "Plan private call-path specialization to compiler-assigned physical buffers";
+  let dependentDialects = ["::vrc::vrc::VRCDialect", "mlir::func::FuncDialect"];
+}
 def AssessStaticUnityResourceLoweringPass : Pass<"vrc-assess-static-unity-resource-lowering", "mlir::ModuleOp"> {
   let summary = "Assess static resource operands separately from canonical Unity pool replacement";
 }
