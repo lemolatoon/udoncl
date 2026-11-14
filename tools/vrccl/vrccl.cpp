@@ -743,6 +743,8 @@ LogicalResult reconcileStaticUnityBuffers(ModuleOp module,
   readiness.addPass(::vrc::createMaterializeStaticDispatchResourcesPass());
   readiness.addPass(
       ::vrc::createPlanStaticPhysicalAllocationSpecializationPass());
+  readiness.addPass(::vrc::createSpecializeStaticPhysicalAllocationPathsPass());
+  readiness.addPass(::vrc::createMaterializeStaticPhysicalAllocationsPass());
   readiness.addPass(::vrc::createAssessStaticUnityResourceLoweringPass());
   if (failed(readiness.run(*preview)))
     return failure();
@@ -753,6 +755,12 @@ LogicalResult reconcileStaticUnityBuffers(ModuleOp module,
         "static physical allocation preview produced no plan");
   module->setAttr("vrc.static_physical_allocation_specialization_plan",
                   physicalPlan);
+  for (const char *name : {
+           "vrc.static_physical_allocation_specialization",
+           "vrc.static_physical_allocation_materialization",
+       })
+    if (mlir::Attribute value = (*preview)->getAttr(name))
+      module->setAttr(name, value);
   auto logicalMaterialization =
       (*preview)->getAttr("vrc.static_logical_buffer_materialization");
   if (logicalMaterialization)

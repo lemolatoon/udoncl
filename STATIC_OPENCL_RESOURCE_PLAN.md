@@ -452,6 +452,12 @@ the earlier context-sensitive requirements pass already proved its value at
 the planned call site. The surrounding `clCreateBuffer` implementation keeps
 logical-slot exhaustion, argument validation, error-pointer writes, recycling,
 and return behavior. Unannotated shared or dynamic allocations remain intact.
+Production preview now runs the physical path specializer and materializer
+after planning. Real TinyLlama proves and materializes all 10 planned physical
+allocations on the cloned preview; MNIST proves and materializes all 5. The
+executable module is still unchanged. The original shared fallback allocator
+remains in the preview until a separate reachability-aware cleanup slice can
+remove it without invalidating dispatch metadata.
 
 A generic logical-buffer materializer now joins constant `vrc.buffer_alloc`
 IDs through Unity-buffer reconciliation into the canonical resource and

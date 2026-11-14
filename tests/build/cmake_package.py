@@ -1006,6 +1006,11 @@ def main():
     assert 'candidate_count = 10 : i32' in transformer_physical_plan
     assert 'planned_count = 10 : i32' in transformer_physical_plan
     assert 'blocker_count = 0 : i32' in transformer_physical_plan
+    assert (
+        'specialized_context_count = 10 : i32' in transformer_recovered
+    )
+    assert 'annotated_sink_count = 10 : i32' in transformer_recovered
+    assert 'materialized_count = 10 : i32' in transformer_recovered
     assert 'candidate_count = 8 : i32' in transformer_recovered
     assert 'snapshot_count = 8 : i32' in transformer_recovered
     assert 'unresolved_count = 0 : i32' in transformer_recovered
