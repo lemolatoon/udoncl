@@ -484,6 +484,16 @@ KV-copy operands. The preview therefore reports `dispatch_ready = true`,
 physical allocator plus its release and resolve paths remain dynamic, so
 `pool_replacement_ready` intentionally remains false.
 
+Successful out-parameter effects now refine the resolved `cl_mem` to non-null
+when `udonclBufferViewResolve` returns success. The input view keeps its
+conservative nullability, while the existing status-sensitive memory-effect
+summary carries the stronger output fact through arbitrary private C wrappers.
+This is a generic C/OpenCL semantic refinement and does not recognize ONNX
+entry points. It is the prerequisite for safely replacing
+`udonclResolvePhysicalBuffer`: a resolver may become unconditional only on a
+path where the preceding view resolution proved a live, non-null resource.
+The physical-resolver materializer remains a separate pass.
+
 - Replace supported allocation/release and buffer arguments with direct typed
   resources.
 - Remove runtime handle lookup, buffer free-list use, and kernel buffer-argument

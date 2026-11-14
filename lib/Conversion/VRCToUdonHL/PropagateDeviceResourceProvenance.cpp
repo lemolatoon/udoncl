@@ -1963,6 +1963,14 @@ struct PropagateDeviceResourceProvenancePass
             }
             Fact resource = localViews[*exactView].resource;
             recordCase(operandCases, call, invocation, 0, resource);
+            // A successful view resolution has found a live Device-buffer
+            // table entry whose cl_mem is non-null.  Keep the input operand's
+            // conservative nullability for diagnostics, but refine the
+            // out-parameter on the status==success edge.  Interprocedural
+            // memory-effect summaries preserve this correlation through
+            // ordinary wrapper functions.
+            Fact successfulResource = resource;
+            successfulResource.mayBeNull = false;
             Value cell = call.getOperand(1);
             ResourceCellMap beforeResourceCells = localResourceCells;
             ResourceCellMap successfulResourceCells = localResourceCells;
@@ -1977,15 +1985,15 @@ struct PropagateDeviceResourceProvenancePass
               ObjectRef outputCell = *exactObject(object->second);
               CellState previous = successfulResourceCells[outputCell];
               Fact output = previous.initializedOnAllPaths
-                                ? joinFacts(previous.fact, resource)
-                                : resource;
+                                ? joinFacts(previous.fact, successfulResource)
+                                : successfulResource;
               successfulResourceCells[outputCell] = {true, true, output};
               localResourceCells = successfulResourceCells;
             } else if (eligibleCells.contains(cell)) {
               CellState previous = localMemory.lookup(cell);
               Fact output = previous.initializedOnAllPaths
-                                ? joinFacts(previous.fact, resource)
-                                : resource;
+                                ? joinFacts(previous.fact, successfulResource)
+                                : successfulResource;
               localMemory[cell] = {true, true, output};
               resourceCells.insert(cell);
             } else {
