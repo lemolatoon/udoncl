@@ -462,8 +462,21 @@ untouched and are counted. This pass does not inspect ONNX metadata, model
 names, tensor names, or TinyLlama symbols. In the real TinyLlama preview it
 materializes all eight logical allocations used by the four KV copies, leaves
 only the shared physical allocator dynamic, and reduces unresolved typed
-transfer operands from eight to zero. The remaining five unresolved
-dispatches are a separate call-context provenance problem in shared C helpers.
+transfer operands from eight to zero.
+
+Resource provenance now evaluates exact integer comparisons and follows only
+the selected `cf.cond_br` or `cf.switch` edge when the selector is proven.
+Unknown or loop-ambiguous selectors still join every possible edge. Integer
+block arguments and derived arithmetic results use a monotone
+unknown/exact/ambiguous lattice, so a loop backedge invalidates stale exact
+facts and requeues the affected block. This is ordinary C control-flow
+analysis: it introduces no ONNX symbols or model metadata. It separates the
+six persistent public binding cells in the real TinyLlama Host and resolves
+all eight dispatch snapshots, all 24 mutable dispatch operands, and all typed
+KV-copy operands. The preview therefore reports `dispatch_ready = true`,
+`transfer_ready = true`, and `resource_operands_ready = true`. The shared
+physical allocator plus its release and resolve paths remain dynamic, so
+`pool_replacement_ready` intentionally remains false.
 
 - Replace supported allocation/release and buffer arguments with direct typed
   resources.

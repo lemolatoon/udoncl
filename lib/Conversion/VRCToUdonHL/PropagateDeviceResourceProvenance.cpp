@@ -434,6 +434,73 @@ std::optional<int64_t> foldExactInteger(Type type, int64_t left, int64_t right,
   return combine(leftBits, rightBits).getSExtValue();
 }
 
+std::optional<int64_t>
+foldExactIntegerComparison(Type type, int64_t left, int64_t right,
+                           arith::CmpIPredicate predicate) {
+  auto integer = dyn_cast<IntegerType>(type);
+  if (!integer || integer.getWidth() > 64)
+    return std::nullopt;
+  llvm::APInt leftBits(integer.getWidth(), static_cast<uint64_t>(left), true);
+  llvm::APInt rightBits(integer.getWidth(), static_cast<uint64_t>(right), true);
+  bool result = false;
+  switch (predicate) {
+  case arith::CmpIPredicate::eq:
+    result = leftBits.eq(rightBits);
+    break;
+  case arith::CmpIPredicate::ne:
+    result = leftBits.ne(rightBits);
+    break;
+  case arith::CmpIPredicate::slt:
+    result = leftBits.slt(rightBits);
+    break;
+  case arith::CmpIPredicate::sle:
+    result = leftBits.sle(rightBits);
+    break;
+  case arith::CmpIPredicate::sgt:
+    result = leftBits.sgt(rightBits);
+    break;
+  case arith::CmpIPredicate::sge:
+    result = leftBits.sge(rightBits);
+    break;
+  case arith::CmpIPredicate::ult:
+    result = leftBits.ult(rightBits);
+    break;
+  case arith::CmpIPredicate::ule:
+    result = leftBits.ule(rightBits);
+    break;
+  case arith::CmpIPredicate::ugt:
+    result = leftBits.ugt(rightBits);
+    break;
+  case arith::CmpIPredicate::uge:
+    result = leftBits.uge(rightBits);
+    break;
+  }
+  return result ? 1 : 0;
+}
+
+void mergeExactInteger(Value value, std::optional<int64_t> incoming,
+                       llvm::DenseMap<Value, int64_t> &integerValues,
+                       llvm::DenseSet<Value> &ambiguousIntegers) {
+  if (ambiguousIntegers.contains(value))
+    return;
+  auto existing = integerValues.find(value);
+  if (!incoming) {
+    if (existing != integerValues.end()) {
+      integerValues.erase(existing);
+      ambiguousIntegers.insert(value);
+    }
+    return;
+  }
+  if (existing == integerValues.end()) {
+    integerValues[value] = *incoming;
+    return;
+  }
+  if (existing->second != *incoming) {
+    integerValues.erase(existing);
+    ambiguousIntegers.insert(value);
+  }
+}
+
 bool operator==(const Fact &left, const Fact &right) {
   return left.initialized == right.initialized &&
          left.resource == right.resource && left.unknown == right.unknown &&
@@ -1991,9 +2058,11 @@ struct PropagateDeviceResourceProvenancePass
                              : Fact::scalar(),
                          facts, worklist, queued, reached);
             for (auto [index, result] : llvm::enumerate(call.getResults()))
-              if (index < nestedResult.integerResults.size() &&
-                  nestedResult.integerResults[index])
-                integerValues[result] = *nestedResult.integerResults[index];
+              mergeExactInteger(result,
+                                index < nestedResult.integerResults.size()
+                                    ? nestedResult.integerResults[index]
+                                    : std::nullopt,
+                                integerValues, ambiguousIntegers);
             for (auto [index, result] : llvm::enumerate(call.getResults()))
               if (index < nestedResult.objectResults.size() &&
                   nestedResult.objectResults[index])
@@ -2085,15 +2154,17 @@ struct PropagateDeviceResourceProvenancePass
           }
           auto left = integerValues.find(add.getLhs());
           auto right = integerValues.find(add.getRhs());
-          if (left != integerValues.end() && right != integerValues.end()) {
-            auto folded = foldExactInteger(
+          std::optional<int64_t> folded;
+          if (left != integerValues.end() && right != integerValues.end() &&
+              !ambiguousIntegers.contains(add.getLhs()) &&
+              !ambiguousIntegers.contains(add.getRhs()))
+            folded = foldExactInteger(
                 add.getType(), left->second, right->second,
                 [](const llvm::APInt &lhs, const llvm::APInt &rhs) {
                   return lhs + rhs;
                 });
-            if (folded)
-              integerValues[add.getResult()] = *folded;
-          }
+          mergeExactInteger(add.getResult(), folded, integerValues,
+                            ambiguousIntegers);
           updateFact(add.getResult(), Fact::scalar(), facts, worklist, queued,
                      reached);
         } else if (auto subtract = dyn_cast<arith::SubIOp>(operation)) {
@@ -2107,15 +2178,17 @@ struct PropagateDeviceResourceProvenancePass
           }
           auto left = integerValues.find(subtract.getLhs());
           auto right = integerValues.find(subtract.getRhs());
-          if (left != integerValues.end() && right != integerValues.end()) {
-            auto folded = foldExactInteger(
+          std::optional<int64_t> folded;
+          if (left != integerValues.end() && right != integerValues.end() &&
+              !ambiguousIntegers.contains(subtract.getLhs()) &&
+              !ambiguousIntegers.contains(subtract.getRhs()))
+            folded = foldExactInteger(
                 subtract.getType(), left->second, right->second,
                 [](const llvm::APInt &lhs, const llvm::APInt &rhs) {
                   return lhs - rhs;
                 });
-            if (folded)
-              integerValues[subtract.getResult()] = *folded;
-          }
+          mergeExactInteger(subtract.getResult(), folded, integerValues,
+                            ambiguousIntegers);
           updateFact(subtract.getResult(), Fact::scalar(), facts, worklist,
                      queued, reached);
         } else if (auto multiply = dyn_cast<arith::MulIOp>(operation)) {
@@ -2129,15 +2202,17 @@ struct PropagateDeviceResourceProvenancePass
           }
           auto left = integerValues.find(multiply.getLhs());
           auto right = integerValues.find(multiply.getRhs());
-          if (left != integerValues.end() && right != integerValues.end()) {
-            auto folded = foldExactInteger(
+          std::optional<int64_t> folded;
+          if (left != integerValues.end() && right != integerValues.end() &&
+              !ambiguousIntegers.contains(multiply.getLhs()) &&
+              !ambiguousIntegers.contains(multiply.getRhs()))
+            folded = foldExactInteger(
                 multiply.getType(), left->second, right->second,
                 [](const llvm::APInt &lhs, const llvm::APInt &rhs) {
                   return lhs * rhs;
                 });
-            if (folded)
-              integerValues[multiply.getResult()] = *folded;
-          }
+          mergeExactInteger(multiply.getResult(), folded, integerValues,
+                            ambiguousIntegers);
           updateFact(multiply.getResult(), Fact::scalar(), facts, worklist,
                      queued, reached);
         } else if (auto compare = dyn_cast<arith::CmpIOp>(operation)) {
@@ -2161,9 +2236,21 @@ struct PropagateDeviceResourceProvenancePass
             invalid = true;
           }
           const Fact &resourceFact = leftFact.resource ? leftFact : rightFact;
+          std::optional<int64_t> foldedComparison;
           if (comparesResourceWithNull && !resourceFact.mayBeNull)
-            integerValues[compare.getResult()] =
+            foldedComparison =
                 compare.getPredicate() == arith::CmpIPredicate::ne ? 1 : 0;
+          auto leftInteger = integerValues.find(compare.getLhs());
+          auto rightInteger = integerValues.find(compare.getRhs());
+          if (!comparesResource && leftInteger != integerValues.end() &&
+              rightInteger != integerValues.end() &&
+              !ambiguousIntegers.contains(compare.getLhs()) &&
+              !ambiguousIntegers.contains(compare.getRhs()))
+            foldedComparison = foldExactIntegerComparison(
+                compare.getLhs().getType(), leftInteger->second,
+                rightInteger->second, compare.getPredicate());
+          mergeExactInteger(compare.getResult(), foldedComparison,
+                            integerValues, ambiguousIntegers);
           if (compare.getPredicate() == arith::CmpIPredicate::eq ||
               compare.getPredicate() == arith::CmpIPredicate::ne) {
             Value subject;
@@ -2194,8 +2281,12 @@ struct PropagateDeviceResourceProvenancePass
                      queued, reached);
         } else if (auto extend = dyn_cast<arith::ExtUIOp>(operation)) {
           auto integer = integerValues.find(extend.getIn());
-          if (integer != integerValues.end())
-            integerValues[extend.getOut()] = integer->second;
+          mergeExactInteger(extend.getOut(),
+                            integer != integerValues.end() &&
+                                    !ambiguousIntegers.contains(extend.getIn())
+                                ? std::optional<int64_t>(integer->second)
+                                : std::nullopt,
+                            integerValues, ambiguousIntegers);
           auto pending = pendingMemoryEffects.find(extend.getIn());
           if (pending != pendingMemoryEffects.end()) {
             PendingMemoryEffect forwarded = pending->second;
@@ -2211,10 +2302,15 @@ struct PropagateDeviceResourceProvenancePass
                 objectAlternative(select.getFalseValue(), facts, objectValues));
           auto trueInteger = integerValues.find(select.getTrueValue());
           auto falseInteger = integerValues.find(select.getFalseValue());
+          std::optional<int64_t> selectedInteger;
           if (trueInteger != integerValues.end() &&
               falseInteger != integerValues.end() &&
+              !ambiguousIntegers.contains(select.getTrueValue()) &&
+              !ambiguousIntegers.contains(select.getFalseValue()) &&
               trueInteger->second == falseInteger->second)
-            integerValues[select.getResult()] = trueInteger->second;
+            selectedInteger = trueInteger->second;
+          mergeExactInteger(select.getResult(), selectedInteger, integerValues,
+                            ambiguousIntegers);
           auto trueHandleField = handleFieldValues.find(select.getTrueValue());
           auto falseHandleField =
               handleFieldValues.find(select.getFalseValue());
@@ -2298,6 +2394,26 @@ struct PropagateDeviceResourceProvenancePass
                   !refinement->second.equalOnTrue, localResourceCells);
             }
           }
+          auto condition = integerValues.find(branch.getCondition());
+          if (condition != integerValues.end() &&
+              !ambiguousIntegers.contains(branch.getCondition())) {
+            bool takeTrue = condition->second != 0;
+            mergeSuccessor(
+                takeTrue ? branch.getTrueDest() : branch.getFalseDest(),
+                takeTrue ? branch.getTrueDestOperands()
+                         : branch.getFalseDestOperands(),
+                facts, worklist, queued, reached, block, localMemory,
+                memoryInputs, edgeMemory, eligibleCells, objectValues,
+                integerValues, ambiguousIntegers, handleFieldValues,
+                takeTrue ? trueViews : falseViews, viewInputs, edgeViews,
+                takeTrue ? truePointers : falsePointers, pointerInputs,
+                edgePointers, takeTrue ? trueResourceCells : falseResourceCells,
+                resourceCellInputs, edgeResourceCells,
+                takeTrue ? trueStatusConstraints : falseStatusConstraints,
+                statusConstraintInputs, edgeStatusConstraints,
+                edgeIntegerArguments);
+            continue;
+          }
           mergeSuccessor(branch.getTrueDest(), branch.getTrueDestOperands(),
                          facts, worklist, queued, reached, block, localMemory,
                          memoryInputs, edgeMemory, eligibleCells, objectValues,
@@ -2317,6 +2433,37 @@ struct PropagateDeviceResourceProvenancePass
                          falseStatusConstraints, statusConstraintInputs,
                          edgeStatusConstraints, edgeIntegerArguments);
         } else if (auto branch = dyn_cast<cf::SwitchOp>(operation)) {
+          auto selector = integerValues.find(branch.getFlag());
+          if (selector != integerValues.end() &&
+              !ambiguousIntegers.contains(branch.getFlag())) {
+            Block *destination = branch.getDefaultDestination();
+            ValueRange operands = branch.getDefaultOperands();
+            auto integer = dyn_cast<IntegerType>(branch.getFlag().getType());
+            auto caseValues = branch.getCaseValues();
+            if (integer && integer.getWidth() <= 64 && caseValues) {
+              llvm::APInt selectorBits(integer.getWidth(),
+                                       static_cast<uint64_t>(selector->second),
+                                       true);
+              for (auto [index, caseValue] :
+                   llvm::enumerate(caseValues->getValues<llvm::APInt>())) {
+                if (selectorBits != caseValue)
+                  continue;
+                destination = branch.getCaseDestinations()[index];
+                operands = branch.getCaseOperands(index);
+                break;
+              }
+            }
+            mergeSuccessor(destination, operands, facts, worklist, queued,
+                           reached, block, localMemory, memoryInputs,
+                           edgeMemory, eligibleCells, objectValues,
+                           integerValues, ambiguousIntegers, handleFieldValues,
+                           localViews, viewInputs, edgeViews, localPointerCells,
+                           pointerInputs, edgePointers, localResourceCells,
+                           resourceCellInputs, edgeResourceCells,
+                           localStatusConstraints, statusConstraintInputs,
+                           edgeStatusConstraints, edgeIntegerArguments);
+            continue;
+          }
           mergeSuccessor(
               branch.getDefaultDestination(), branch.getDefaultOperands(),
               facts, worklist, queued, reached, block, localMemory,
@@ -2688,20 +2835,27 @@ struct PropagateDeviceResourceProvenancePass
               joinObjectRefs(std::move(existingObject->second), incomingObject);
       }
       auto incomingInteger = integerValues.find(operand);
+      bool incomingIntegerIsExact = incomingInteger != integerValues.end() &&
+                                    !ambiguousIntegers.contains(operand);
       incomingIntegers.push_back(
-          incomingInteger == integerValues.end()
+          !incomingIntegerIsExact
               ? std::nullopt
               : std::optional<int64_t>(incomingInteger->second));
       if (!ambiguousIntegers.contains(argument)) {
         auto existingInteger = integerValues.find(argument);
-        if (incomingInteger == integerValues.end()) {
-          integerValues.erase(argument);
+        if (!incomingIntegerIsExact) {
+          if (existingInteger != integerValues.end()) {
+            integerValues.erase(existingInteger);
+          }
           ambiguousIntegers.insert(argument);
+          changed = true;
         } else if (existingInteger == integerValues.end()) {
           integerValues[argument] = incomingInteger->second;
+          changed = true;
         } else if (existingInteger->second != incomingInteger->second) {
-          integerValues.erase(argument);
+          integerValues.erase(existingInteger);
           ambiguousIntegers.insert(argument);
+          changed = true;
         }
       }
       auto incomingHandleField = handleFieldValues.find(operand);

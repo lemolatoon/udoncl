@@ -1007,11 +1007,11 @@ def main():
     assert 'planned_count = 10 : i32' in transformer_physical_plan
     assert 'blocker_count = 0 : i32' in transformer_physical_plan
     assert 'candidate_count = 8 : i32' in transformer_recovered
-    assert 'snapshot_count = 3 : i32' in transformer_recovered
-    assert 'unresolved_count = 5 : i32' in transformer_recovered
+    assert 'snapshot_count = 8 : i32' in transformer_recovered
+    assert 'unresolved_count = 0 : i32' in transformer_recovered
     assert transformer_recovered.count(
         'vrc.static_kernel_binding_snapshot'
-    ) == 3
+    ) == 8
     assert transformer_recovered.count(
         'vrc.static_kernel_binding_snapshot = {kernel_id = 221 : i32'
     ) == 2
@@ -1019,6 +1019,15 @@ def main():
         'vrc.static_kernel_binding_snapshot = {kernel_id = 233 : i32'
         in transformer_recovered
     )
+    for kernel_id in [234, 235, 242]:
+        assert (
+            f'vrc.static_kernel_binding_snapshot = {{kernel_id = {kernel_id} : i32'
+            in transformer_recovered
+        )
+    assert 'assigned_dispatch_operand_count = 24 : i32' in transformer_lowering_readiness
+    assert 'unresolved_dispatch_operand_count = 0 : i32' in transformer_lowering_readiness
+    assert 'dispatch_ready = true' in transformer_lowering_readiness
+    assert 'resource_operands_ready = true' in transformer_lowering_readiness
     transformer_source = run([
         install / 'bin' / f'udoncl-opt{suffix}', transformer_host,
     ])

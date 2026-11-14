@@ -498,6 +498,12 @@ add_test(NAME static-device-resource-switch
     $<TARGET_FILE:vrc-opt>
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_switch.mlir"
 )
+add_test(NAME static-device-resource-known-control-flow
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_known_control_flow.py"
+    $<TARGET_FILE:vrc-opt>
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_known_control_flow.mlir"
+)
 add_test(NAME static-device-resource-local-cells
   COMMAND Python3::Interpreter
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_local_cells.py"
