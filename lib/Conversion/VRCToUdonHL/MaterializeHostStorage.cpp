@@ -1,5 +1,6 @@
 #include "VRC/Conversion/Passes.h"
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
+#include "VRC/Dialect/VRC/VRCDialect.h"
 #include "VRC/Support/HostLiteral.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -56,7 +57,7 @@ struct MaterializeHostStoragePass
         module->getAttrOfType<ArrayAttr>("vrc.host_literal_allocations");
     auto writableExtents =
         module->getAttrOfType<ArrayAttr>("vrc.host_writable_extents");
-    if (!useSiteVersion || useSiteVersion.getInt() != 2 || !writableVersion ||
+    if (!useSiteVersion || useSiteVersion.getInt() != 3 || !writableVersion ||
         writableVersion.getInt() != 2 || !inventoryVersion ||
         inventoryVersion.getInt() != 1 || !allocationVersion ||
         allocationVersion.getInt() != 1 || !sites || !instances ||
@@ -136,7 +137,14 @@ struct MaterializeHostStoragePass
     for (Attribute attribute : sites) {
       auto site = dyn_cast<DictionaryAttr>(attribute);
       auto id = site ? site.getAs<StringAttr>("site_id") : StringAttr();
-      if (!id || id.getValue().empty() ||
+      auto role = site ? site.getAs<StringAttr>("value_role") : StringAttr();
+      auto resourceIndex =
+          site ? site.getAs<IntegerAttr>("resource_index") : IntegerAttr();
+      if (!id || id.getValue().empty() || !role ||
+          (role != "source_operand" && role != "static_resource_index") ||
+          (role == "source_operand" && resourceIndex) ||
+          (role == "static_resource_index" &&
+           (!resourceIndex || resourceIndex.getInt() < 0)) ||
           !siteById.emplace(id.getValue().str(), site).second) {
         module.emitError("invalid Host literal materialization site inventory");
         signalPassFailure();
@@ -366,6 +374,7 @@ struct MaterializeHostStoragePass
         auto siteConsumer = site.getAs<StringAttr>("consumer_id");
         auto operandIndex = site.getAs<IntegerAttr>("operand_index");
         auto eligible = site.getAs<BoolAttr>("scratch_eligible");
+        auto role = site.getAs<StringAttr>("value_role");
         auto operation = siteConsumer
                              ? operations.find(siteConsumer.getValue().str())
                              : operations.end();
@@ -381,10 +390,34 @@ struct MaterializeHostStoragePass
         }
         Value operand = operation->second->getOperand(operandIndex.getInt());
         auto constant = operand.getDefiningOp<arith::ConstantOp>();
+        auto generatedRole =
+            constant
+                ? constant->getAttrOfType<StringAttr>("vrc.host_literal_role")
+                : StringAttr();
+        auto dispatch = dyn_cast<::vrc::vrc::DispatchOp>(operation->second);
+        auto resourceIndex = site.getAs<IntegerAttr>("resource_index");
+        unsigned staticSegmentStart =
+            dispatch ? 1 + dispatch.getResources().size() : 0;
+        bool validStaticResourceIndex = false;
+        if (dispatch && resourceIndex &&
+            operandIndex.getInt() >= staticSegmentStart) {
+          unsigned segmentIndex =
+              static_cast<unsigned>(operandIndex.getInt()) - staticSegmentStart;
+          auto positions = dispatch.getStaticResourcePositions();
+          validStaticResourceIndex =
+              segmentIndex < dispatch.getStaticResourceIndices().size() &&
+              positions && segmentIndex < positions->size() &&
+              (*positions)[segmentIndex] == resourceIndex.getInt();
+        }
         HostLiteralKey key = constant ? getHostLiteralKey(constant.getType(),
                                                           constant.getValue())
                                       : HostLiteralKey();
-        if (!constant || key.id != literalKey.getValue() ||
+        if (!constant || !role ||
+            ((role == "source_operand" && generatedRole) ||
+             (role == "static_resource_index" &&
+              (generatedRole != "static_resource_index" ||
+               !validStaticResourceIndex))) ||
+            key.id != literalKey.getValue() ||
             hostLiteralTypeText(constant.getType()) != logicalType.getValue() ||
             (consumer && consumer != operation->second) ||
             (literal && literal != constant.getValue()) ||

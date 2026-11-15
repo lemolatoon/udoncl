@@ -3,6 +3,7 @@
 #include "VRC/Analysis/HostStorageLiveness.h"
 #include "VRC/Support/HostLiteral.h"
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
+#include "VRC/Dialect/VRC/VRCDialect.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -370,7 +371,7 @@ private:
         module->getAttrOfType<ArrayAttr>("vrc.host_literal_scratch_instances");
     auto groups =
         module->getAttrOfType<ArrayAttr>("vrc.host_literal_consumer_groups");
-    if (!version || version.getInt() != 2 || !sites || !instances || !groups)
+    if (!version || version.getInt() != 3 || !sites || !instances || !groups)
       return module.emitError("invalid Host literal use-site schema");
 
     SmallVector<func::FuncOp> functions;
@@ -456,6 +457,9 @@ private:
           site ? site.getAs<IntegerAttr>("operand_index") : IntegerAttr();
       auto logicalType =
           site ? site.getAs<StringAttr>("logical_type") : StringAttr();
+      auto role = site ? site.getAs<StringAttr>("value_role") : StringAttr();
+      auto resourceIndex =
+          site ? site.getAs<IntegerAttr>("resource_index") : IntegerAttr();
       auto lifetime = site ? site.getAs<StringAttr>("lifetime") : StringAttr();
       auto crossesCall =
           site ? site.getAs<BoolAttr>("crosses_call") : BoolAttr();
@@ -475,6 +479,32 @@ private:
         if (constant)
           key = getHostLiteralKey(constant.getType(), constant.getValue());
       }
+      auto generatedRole =
+          constant
+              ? constant->getAttrOfType<StringAttr>("vrc.host_literal_role")
+              : StringAttr();
+      auto dispatch = validOperand
+                          ? dyn_cast<::vrc::vrc::DispatchOp>(operation->second)
+                          : ::vrc::vrc::DispatchOp();
+      unsigned staticSegmentStart =
+          dispatch ? 1 + dispatch.getResources().size() : 0;
+      bool validStaticResourceIndex = false;
+      if (dispatch && operandIndex && resourceIndex &&
+          operandIndex.getInt() >= staticSegmentStart) {
+        unsigned segmentIndex =
+            static_cast<unsigned>(operandIndex.getInt()) - staticSegmentStart;
+        auto positions = dispatch.getStaticResourcePositions();
+        validStaticResourceIndex =
+            segmentIndex < dispatch.getStaticResourceIndices().size() &&
+            positions && segmentIndex < positions->size() &&
+            (*positions)[segmentIndex] == resourceIndex.getInt();
+      }
+      bool validRole =
+          role &&
+          ((role == "source_operand" && !generatedRole && !resourceIndex) ||
+           (role == "static_resource_index" &&
+            generatedRole == "static_resource_index" && resourceIndex &&
+            resourceIndex.getInt() >= 0 && validStaticResourceIndex));
       bool expectedEligible =
           constant &&
           llvm::any_of(key.contextFreeRecipes,
@@ -489,7 +519,8 @@ private:
                          ":operand:" + std::to_string(operandIndex.getInt());
       if (!site || !siteId || siteId.getValue().empty() || !eligible ||
           !consumer || !definition || !operandIndex || !logicalType ||
-          !validOperand || !constant || siteId.getValue() != expectedSiteId ||
+          !validRole || !validOperand || !constant ||
+          siteId.getValue() != expectedSiteId ||
           definition.getValue() !=
               analysis->valueIds.lookup(constant.getResult()) ||
           !literal || literal.getValue().empty() || !physicalType ||

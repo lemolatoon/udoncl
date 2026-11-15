@@ -1,3 +1,4 @@
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -6,6 +7,7 @@ from pathlib import Path
 optimizer = Path(sys.argv[1])
 source = Path(sys.argv[2]).read_text()
 command = [optimizer, "--vrc-expose-host-backend-literal-uses"]
+discover_command = command + ["--vrc-discover-host-rematerialization"]
 
 
 def run(text, success=True, diagnostic=None):
@@ -32,6 +34,52 @@ dynamic_dispatch = next(
     if "kernel_id = 8 : i32" in line and "vrc.dispatch " in line
 )
 assert "static_indices" not in dynamic_dispatch
+
+discovered = subprocess.run(
+    discover_command, input=source, text=True, capture_output=True, check=True
+).stdout
+assert "vrc.host_literal_use_site_version = 3 : i32" in discovered
+assert discovered.count('value_role = "static_resource_index"') == 2
+assert discovered.count('kind = "static_resource_index"') == 2
+assert discovered.count('origin = "backend"') == 2
+assert "resource_index = 0 : i32" in discovered
+assert "resource_index = 2 : i32" in discovered
+assert ":static_resource:" not in discovered
+backend_sites = [
+    entry
+    for entry in re.findall(r"\{([^{}]+)\}", discovered)
+    if 'value_role = "static_resource_index"' in entry
+]
+assert len(backend_sites) == 2
+backend_instances = {
+    re.search(r'scratch_instance_id = "([^"]+)"', entry).group(1)
+    for entry in backend_sites
+}
+assert len(backend_instances) == 2
+allocated = subprocess.run(
+    discover_command + ["--vrc-allocate-host-storage"],
+    input=source,
+    text=True,
+    capture_output=True,
+    check=True,
+).stdout
+scratch_entries = re.findall(r"\{([^{}]+)\}", allocated)
+backend_colors = {
+    int(re.search(r"color = (\d+) : i32", entry).group(1))
+    for entry in scratch_entries
+    if "color = " in entry
+    and any(f'instance_id = "{instance}"' in entry for instance in backend_instances)
+}
+assert len(backend_colors) == 2
+legacy = subprocess.run(
+    [optimizer, "--vrc-discover-host-rematerialization"],
+    input=source,
+    text=True,
+    capture_output=True,
+    check=True,
+).stdout
+assert legacy.count('kind = "static_tensor_index"') == 2
+assert 'value_role = "static_resource_index"' not in legacy
 
 run(
     source.replace(

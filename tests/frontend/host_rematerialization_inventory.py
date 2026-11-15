@@ -111,7 +111,9 @@ assert '"rematerialize_i32"' in first
 assert '"rematerialize_f32_bits"' in first
 assert '"rematerialize_i1"' in first
 assert '"rematerialize_i64"' in first
-assert "vrc.host_literal_use_site_version = 2 : i32" in first
+assert "vrc.host_literal_use_site_version = 3 : i32" in first
+assert 'value_role = "source_operand"' in first
+assert 'value_role = "static_resource_index"' not in first
 for attribute in [
     "vrc.host_literal_use_sites",
     "vrc.host_literal_scratch_instances",
@@ -425,8 +427,11 @@ reject_allocation(first.replace(
 ))
 reject_allocation(first.replace('origin = "backend", ', "", 1))
 reject_allocation(first.replace(
+    "vrc.host_literal_use_site_version = 3 : i32",
     "vrc.host_literal_use_site_version = 2 : i32",
-    "vrc.host_literal_use_site_version = 1 : i32",
+))
+reject_allocation(first.replace(
+    'value_role = "source_operand"', 'value_role = "unknown"', 1
 ))
 reject_allocation(first.replace('logical_type = "i8", ', "", 1))
 reject_allocation(first.replace(

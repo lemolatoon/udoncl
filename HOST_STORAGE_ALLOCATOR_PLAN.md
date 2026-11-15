@@ -701,9 +701,12 @@ Continue in the following independently testable commits:
    recorded by `2eb8fae`. `vrc.dispatch` now has the backward-compatible sized
    operand segment, and the standalone transactional
    `vrc-expose-host-backend-literal-uses` pass exposes verified static-tensor
-   indices without ONNX or model-specific logic. The pass is intentionally not
-   in the production pipeline yet. Role-aware discovery, lowering consumption,
-   and production wiring remain slices (c), (d), and (e).
+   indices without ONNX or model-specific logic. Role-aware discovery is also
+   implemented with use-site schema v3: generated indices carry the
+   `static_resource_index` value role, participate in the existing simultaneous
+   scratch coloring, and replace the legacy attribute-only inventory for an
+   exposed module. The pass is intentionally not in the production pipeline
+   yet. Lowering consumption and production wiring remain slices (d) and (e).
 5. Extend `AllocateHostStorage` with a deterministic pressure/cost selection
    between resident and `rematerialize_i32` placement. Emit complete selected
    recipe data: exact resident seed bindings, writable color, required externs,

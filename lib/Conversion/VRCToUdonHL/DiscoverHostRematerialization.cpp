@@ -39,6 +39,77 @@ struct ConsumerGroup {
   std::set<std::string> instanceIds;
 };
 
+struct LiteralOperandRole {
+  StringRef valueRole;
+  std::optional<int32_t> resourceIndex;
+};
+
+FailureOr<LiteralOperandRole> classifyLiteralOperand(arith::ConstantOp constant,
+                                                     Operation *consumer,
+                                                     unsigned operandIndex) {
+  auto role = constant->getAttrOfType<StringAttr>("vrc.host_literal_role");
+  auto version = constant->getAttrOfType<IntegerAttr>(
+      "vrc.host_literal_generated_version");
+  auto dispatch = dyn_cast<::vrc::vrc::DispatchOp>(consumer);
+  unsigned segmentStart = dispatch ? 1 + dispatch.getResources().size() : 0;
+  bool inStaticIndexSegment =
+      dispatch && operandIndex >= segmentStart &&
+      operandIndex - segmentStart < dispatch.getStaticResourceIndices().size();
+  if (!role && !version) {
+    if (inStaticIndexSegment)
+      return constant.emitError(
+          "static resource index operand lacks a generated Host literal role");
+    return LiteralOperandRole{"source_operand", std::nullopt};
+  }
+  auto module = consumer->getParentOfType<ModuleOp>();
+  auto completion = module ? module->getAttrOfType<IntegerAttr>(
+                                 "vrc.host_backend_literal_use_version")
+                           : IntegerAttr();
+  if (!role || role != "static_resource_index" || !version ||
+      version.getInt() != 1 || !constant.getType().isInteger(32) ||
+      !completion || completion.getInt() != 1 || !constant->hasOneUse() ||
+      *constant->getUsers().begin() != consumer)
+    return constant.emitError("invalid generated Host literal role");
+
+  if (!inStaticIndexSegment ||
+      dispatch.getStaticResourceIndices()[operandIndex - segmentStart] !=
+          constant.getResult())
+    return constant.emitError(
+        "generated Host literal is not a static resource index operand");
+  auto positions = dispatch.getStaticResourcePositions();
+  unsigned segmentIndex = operandIndex - segmentStart;
+  if (!positions || segmentIndex >= positions->size())
+    return dispatch.emitError("static resource index position is missing");
+  int32_t resourcePosition = (*positions)[segmentIndex];
+  auto snapshot = dispatch->getAttrOfType<DictionaryAttr>(
+      "vrc.static_kernel_binding_snapshot");
+  auto resources =
+      snapshot ? snapshot.getAs<ArrayAttr>("resources") : ArrayAttr();
+  auto literal = dyn_cast<IntegerAttr>(constant.getValue());
+  bool matched = false;
+  if (resources && literal)
+    for (Attribute attribute : resources) {
+      auto resource = dyn_cast<DictionaryAttr>(attribute);
+      auto position = resource ? resource.getAs<IntegerAttr>("operand_index")
+                               : IntegerAttr();
+      auto kind = resource ? resource.getAs<StringAttr>("kind") : StringAttr();
+      auto id =
+          resource ? resource.getAs<IntegerAttr>("resource_id") : IntegerAttr();
+      auto access =
+          resource ? resource.getAs<StringAttr>("access") : StringAttr();
+      if (position && position.getInt() == resourcePosition &&
+          kind == "static_tensor" && access == "read" && id &&
+          id.getInt() == literal.getInt()) {
+        matched = true;
+        break;
+      }
+    }
+  if (!matched)
+    return dispatch.emitError(
+        "static resource index literal disagrees with its binding snapshot");
+  return LiteralOperandRole{role.getValue(), resourcePosition};
+}
+
 struct DiscoverHostRematerializationPass
     : impl::DiscoverHostRematerializationPassBase<
           DiscoverHostRematerializationPass> {
@@ -52,6 +123,13 @@ struct DiscoverHostRematerializationPass
     std::set<std::string> operandUseIds;
     std::map<std::string, ScratchInstance> scratchInstances;
     std::map<std::string, ConsumerGroup> consumerGroups;
+    auto exposureVersion = module->getAttrOfType<IntegerAttr>(
+        "vrc.host_backend_literal_use_version");
+    if (exposureVersion && exposureVersion.getInt() != 1) {
+      module.emitError("unsupported Host backend literal use version");
+      signalPassFailure();
+      return;
+    }
 
     auto recipes = [&](ArrayRef<StringRef> names) {
       SmallVector<Attribute> values;
@@ -174,6 +252,12 @@ struct DiscoverHostRematerializationPass
               }
               HostLiteralKey key =
                   getHostLiteralKey(constant.getType(), constant.getValue());
+              auto role = classifyLiteralOperand(
+                  constant, &operation, static_cast<unsigned>(operandIndex));
+              if (failed(role)) {
+                signalPassFailure();
+                return false;
+              }
               std::string keyId =
                   ensureKey(constant.getType(), constant.getValue());
               std::string logicalType = hostLiteralTypeText(constant.getType());
@@ -208,6 +292,10 @@ struct DiscoverHostRematerializationPass
                              hostLiteralTypeText(constant.getType())));
               fields.set("physical_type",
                          builder.getStringAttr(key.physicalType));
+              fields.set("value_role", builder.getStringAttr(role->valueRole));
+              if (role->resourceIndex)
+                fields.set("resource_index",
+                           builder.getI32IntegerAttr(*role->resourceIndex));
               fields.set("scratch_eligible",
                          builder.getBoolAttr(scratchEligible));
               if (scratchEligible) {
@@ -240,7 +328,35 @@ struct DiscoverHostRematerializationPass
             }
             if (auto constant = dyn_cast<arith::ConstantOp>(operation)) {
               Type type = constant.getType();
-              if (!appendUse(prefix + ":result:0", "source", "arith_constant",
+              StringRef origin = "source";
+              StringRef kind = "arith_constant";
+              if (constant->hasAttr("vrc.host_literal_role")) {
+                if (!constant->hasOneUse()) {
+                  constant.emitError(
+                      "generated Host literal must have one use");
+                  signalPassFailure();
+                  return false;
+                }
+                Operation *consumer = *constant->getUsers().begin();
+                auto found =
+                    llvm::find(consumer->getOperands(), constant.getResult());
+                if (found == consumer->getOperands().end()) {
+                  constant.emitError("generated Host literal use is missing");
+                  signalPassFailure();
+                  return false;
+                }
+                unsigned operandIndex = static_cast<unsigned>(
+                    found - consumer->getOperands().begin());
+                auto role =
+                    classifyLiteralOperand(constant, consumer, operandIndex);
+                if (failed(role)) {
+                  signalPassFailure();
+                  return false;
+                }
+                origin = "backend";
+                kind = role->valueRole;
+              }
+              if (!appendUse(prefix + ":result:0", origin, kind,
                              ensureKey(type, constant.getValue()), type,
                              {builder.getNamedAttr(
                                  "function", builder.getStringAttr(
@@ -253,7 +369,30 @@ struct DiscoverHostRematerializationPass
             auto ids = dispatch ? dispatch->getAttrOfType<ArrayAttr>(
                                       "vrc.unity_static_tensor_ids")
                                 : ArrayAttr();
-            if (ids) {
+            if (dispatch && exposureVersion) {
+              auto snapshot = dispatch->getAttrOfType<DictionaryAttr>(
+                  "vrc.static_kernel_binding_snapshot");
+              auto resources = snapshot ? snapshot.getAs<ArrayAttr>("resources")
+                                        : ArrayAttr();
+              size_t expected = 0;
+              if (resources)
+                for (Attribute attribute : resources) {
+                  auto resource = dyn_cast<DictionaryAttr>(attribute);
+                  auto kind = resource ? resource.getAs<StringAttr>("kind")
+                                       : StringAttr();
+                  expected += kind == "static_tensor";
+                }
+              auto positions = dispatch.getStaticResourcePositions();
+              if (dispatch.getStaticResourceIndices().size() != expected ||
+                  (expected && (!positions || positions->size() != expected)) ||
+                  (!expected && positions)) {
+                dispatch.emitError(
+                    "exposed static resource index coverage is incomplete");
+                signalPassFailure();
+                return false;
+              }
+            }
+            if (ids && !exposureVersion) {
               for (auto [resourceIndex, attribute] : llvm::enumerate(ids)) {
                 auto id = dyn_cast<IntegerAttr>(attribute);
                 if (!id || id.getInt() < 0)
@@ -348,7 +487,7 @@ struct DiscoverHostRematerializationPass
     module->setAttr("vrc.host_literal_uses",
                     builder.getArrayAttr(useInventory));
     module->setAttr("vrc.host_literal_use_site_version",
-                    builder.getI32IntegerAttr(2));
+                    builder.getI32IntegerAttr(3));
     module->setAttr("vrc.host_literal_use_sites",
                     builder.getArrayAttr(operandUseInventory));
     module->setAttr("vrc.host_literal_scratch_instances",
