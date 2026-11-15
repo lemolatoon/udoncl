@@ -1,5 +1,5 @@
-#ifndef VRC_CONVERSION_UDONHLTOUDONASM_HOSTSTORAGELIVENESS_H
-#define VRC_CONVERSION_UDONHLTOUDONASM_HOSTSTORAGELIVENESS_H
+#ifndef VRC_ANALYSIS_HOSTSTORAGELIVENESS_H
+#define VRC_ANALYSIS_HOSTSTORAGELIVENESS_H
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -27,4 +27,4 @@ mlir::FailureOr<HostStorageInterference> analyzeHostStorageInterference(
 
 } // namespace vrc
 
-#endif
+#endif // VRC_ANALYSIS_HOSTSTORAGELIVENESS_H
