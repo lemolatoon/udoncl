@@ -696,10 +696,12 @@ Implement in this order, keeping each gate independently testable:
     `generic_onnx_transformer_tiny` and its existing binding class. Both may
     therefore be imported without duplicate C# types or generated-root
     collisions.
-    The tokenizer remains independent of the Conversation Artifact. The next
-    gate is importing the real artifact and oracle into the focused Unity test
-    and comparing all values; numerical prefill through U# and generation
-    state are not yet complete.
+    The tokenizer remains independent of the Conversation Artifact. A
+    model-independent Unity reader for the `udoncl.onnx-oracle.v1` sidecar now
+    validates typed inputs, ordered FP32 outputs, shapes, byte lengths, model
+    hashes, and numerical tolerances. The next gate is importing the real
+    artifact and oracle into the focused Unity test and comparing all values;
+    numerical prefill through U# and generation state are not yet complete.
 12. Add the example token-array generation Host, exact lifecycle/status
     contract, and generated async U# binding.
 13. Pass the Unity external-token prompt and bounded-completion gate. Record
