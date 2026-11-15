@@ -153,13 +153,19 @@ struct DiscoverHostRematerializationPass
         std::string idText = std::to_string(id.getInt());
         auto idAttr = builder.getI32IntegerAttr(id.getInt());
         auto indexAttr = builder.getI32IntegerAttr(static_cast<int32_t>(index));
+        auto tokenAttr =
+            builder.getI32IntegerAttr(static_cast<int32_t>(index + 1));
         if (!appendUse("backend:unity_buffer_id:" + idText, "backend",
                        "unity_buffer_id",
                        ensureKey(builder.getI32Type(), idAttr),
                        builder.getI32Type()) ||
-            !appendUse("backend:unity_buffer_index:" + idText, "backend",
-                       "unity_buffer_index",
+            !appendUse("backend:unity_buffer_pool_index:" + idText, "backend",
+                       "unity_buffer_pool_index",
                        ensureKey(builder.getI32Type(), indexAttr),
+                       builder.getI32Type()) ||
+            !appendUse("backend:unity_buffer_token:" + idText, "backend",
+                       "unity_buffer_token",
+                       ensureKey(builder.getI32Type(), tokenAttr),
                        builder.getI32Type())) {
           signalPassFailure();
           return;

@@ -36,8 +36,10 @@ assert stable_ids == sorted(stable_ids), stable_ids
 assert stable_ids == [
     "backend:unity_buffer_id:3",
     "backend:unity_buffer_id:7",
-    "backend:unity_buffer_index:3",
-    "backend:unity_buffer_index:7",
+    "backend:unity_buffer_pool_index:3",
+    "backend:unity_buffer_pool_index:7",
+    "backend:unity_buffer_token:3",
+    "backend:unity_buffer_token:7",
     "function:alpha:region:0:block:0:operation:0:result:0",
     "function:alpha:region:0:block:0:operation:1:result:0",
     "function:alpha:region:0:block:0:operation:2:result:0",
@@ -55,7 +57,8 @@ assert "vrc.host_literal_uses" in first
 assert 'origin = "backend"' in first
 assert 'origin = "source"' in first
 assert 'kind = "unity_buffer_id"' in first
-assert 'kind = "unity_buffer_index"' in first
+assert 'kind = "unity_buffer_pool_index"' in first
+assert 'kind = "unity_buffer_token"' in first
 assert 'kind = "arith_constant"' in first
 assert first.count('value = "0xFFFFFFFF"') == 1
 assert 'value = "0x80000000"' in first
@@ -85,4 +88,4 @@ invalid = subprocess.run(
     capture_output=True,
 )
 assert invalid.returncode != 0
-print("host_rematerialization_inventory=passed requests=14")
+print("host_rematerialization_inventory=passed requests=16")
