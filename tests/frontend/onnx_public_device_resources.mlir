@@ -2,7 +2,7 @@ module attributes {
   udoncl.onnx_binding = {
     inputs = [
       {capacity_bytes = 16 : i64, data_type = "float32", index = 0 : i32, logical_bytes = 16 : i64, name = "unused_input"},
-      {capacity_bytes = 48 : i64, data_type = "int64", index = 1 : i32, logical_bytes = 24 : i64, name = "tokens"}
+      {capacity_bytes = 48 : i64, data_type = "int64", index = 1 : i32, logical_bytes = 0 : i64, name = "tokens"}
     ],
     outputs = [
       {capacity_bytes = 48 : i64, data_type = "float32", index = 0 : i32, logical_bytes = 20 : i64, name = "scores"}

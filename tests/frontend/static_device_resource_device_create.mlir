@@ -9,7 +9,7 @@ module {
     %handle = "udonhl.alloca"(%handle_bytes) {alignment = 4 : i64} : (i32) -> !udonhl.ptr<0>
     %cell = "udonhl.alloca"(%cell_bytes) {alignment = 4 : i64} : (i32) -> !udonhl.ptr<0>
     %created = func.call @udonclDeviceBufferCreate(%context, %flags, %bytes, %handle) {
-      vrc.static_public_resource_binding = {capacity_bytes = 96 : i64, data_type = "float32", logical_bytes = 64 : i64, name = "values", public_access = "input", public_index = 0 : i32, resource_source = "call_allocation", schema_version = 1 : i32}
+      vrc.static_public_resource_binding = {capacity_bytes = 96 : i64, data_type = "float32", logical_bytes = 0 : i64, name = "values", public_access = "input", public_index = 0 : i32, resource_source = "call_allocation", schema_version = 1 : i32}
     } : (!udonhl.ptr<0>, i64, i32, !udonhl.ptr<0>) -> i32
     %resolved = func.call @udonclDeviceBufferGetRaw(%handle, %cell) : (!udonhl.ptr<0>, !udonhl.ptr<0>) -> i32
     return

@@ -194,6 +194,69 @@ def prepare_tinyllama_conversation_artifact(root: Path, build: Path):
     return artifact, oracle
 
 
+def prepare_tinyllama_prefill_artifact(root: Path, build: Path):
+    fetched = run(
+        [sys.executable, root / "scripts/fetch_tinyllama_onnx.py"],
+        cwd=root,
+        text=True,
+        capture_output=True,
+    )
+    model = Path(fetched.stdout.strip().splitlines()[-1]).resolve()
+    prefill_build = root / "build/tinyllama-real-binding"
+    install = build / "tests/cmake-package/install"
+    executable_suffix = ".exe" if sys.platform == "win32" else ""
+    llvm = root / ".deps/llvm23/bin"
+    onnx_mlir = root / ".deps/onnx-mlir/bin"
+    run(
+        [
+            "cmake",
+            "-S",
+            root / "examples/onnx-transformer-tiny",
+            "-B",
+            prefill_build,
+            "-G",
+            "Ninja",
+            f"-DCMAKE_PREFIX_PATH={install.resolve()}",
+            f"-DUDONCL_CLANG_EXECUTABLE={llvm / ('clang' + executable_suffix)}",
+            f"-DUDONCL_LLVM_LINK_EXECUTABLE={llvm / ('llvm-link' + executable_suffix)}",
+            f"-DUDONCL_ONNX_IMPORTER_EXECUTABLE={onnx_mlir / ('udoncl-onnx' + executable_suffix)}",
+            f"-DUDONCL_ONNX_OPT_EXECUTABLE={onnx_mlir / ('udoncl-onnx-opt' + executable_suffix)}",
+            f"-DUDONCL_TINYLLAMA_ONNX_MODEL={model}",
+        ],
+        cwd=root,
+    )
+    run(
+        [
+            "cmake",
+            "--build",
+            prefill_build,
+            "--target",
+            "onnx-transformer-tiny",
+            "--parallel",
+            str(os.cpu_count() or 1),
+        ],
+        cwd=root,
+        timeout=1800,
+    )
+    artifact = (prefill_build / "udoncl/onnx-transformer-tiny/artifact").resolve()
+    oracle = (build / "tests/tinyllama-real-onnx/oracle.json").resolve()
+    if not (artifact / "manifest.json").is_file():
+        raise RuntimeError(f"TinyLlama prefill artifact is missing: {artifact}")
+    if not oracle.is_file():
+        oracle.parent.mkdir(parents=True, exist_ok=True)
+        run(
+            [
+                sys.executable,
+                root / "tests/boundary/tinyllama_real_onnx.py",
+                root,
+                oracle.parent,
+            ],
+            cwd=root,
+            timeout=1200,
+        )
+    return artifact, oracle.parent
+
+
 def extract_payload(result):
     structured = result.get("structuredContent")
     if structured is not None:
@@ -611,6 +674,8 @@ def run_unity_mcp_gate(
     test_names=(),
     test_assemblies=(TEST_ASSEMBLY,),
     mnist_artifact=None,
+    tinyllama_prefill_artifact=None,
+    tinyllama_prefill_oracle=None,
     tinyllama_conversation_artifact=None,
     tinyllama_conversation_oracle=None,
 ):
@@ -728,6 +793,13 @@ def run_unity_mcp_gate(
         environment["UDONCL_PUBLIC_TINYLLAMA_CONVERSATION_ORACLE"] = str(
             tinyllama_conversation_oracle
         )
+    if tinyllama_prefill_artifact is not None:
+        environment["UDONCL_PUBLIC_TINYLLAMA_PREFILL_UNITY_BUNDLE"] = str(
+            tinyllama_prefill_artifact
+        )
+        environment["UDONCL_PUBLIC_TINYLLAMA_PREFILL_ORACLE"] = str(
+            tinyllama_prefill_oracle
+        )
     lifecycle_backup = output / "unity-lifecycle-backup"
     shutil.rmtree(lifecycle_backup, ignore_errors=True)
     lifecycle_backup.mkdir()
@@ -799,6 +871,33 @@ def run_unity_mcp_gate(
             client,
             "Tools/udoncl/Internal/Prepare Public MNIST Validation",
         )
+        if tinyllama_prefill_artifact is not None:
+            execute_menu_after_reload(
+                client,
+                "Tools/udoncl/Internal/Prepare Public TinyLlama Prefill Validation",
+                timeout=900,
+                reconnect_timeout=900,
+            )
+            focused_test = (
+                Path(project)
+                / "Assets/UdonclSampleValidation/Editor/"
+                "PublicTinyLlamaPrefillLifecycleTests.cs"
+            )
+            imported_program = (
+                Path(project)
+                / "Assets/udoncl-generated/tinyllama_real_prefill/Programs/"
+                "host_program.asset"
+            )
+            missing = [
+                str(path)
+                for path in (focused_test, imported_program)
+                if not path.is_file()
+            ]
+            if missing:
+                raise RuntimeError(
+                    "TinyLlama prefill preparation did not complete: "
+                    + ", ".join(missing)
+                )
         if tinyllama_conversation_artifact is not None:
             execute_menu_after_reload(
                 client,
@@ -985,6 +1084,19 @@ def main():
         help="override the public C++ ONNX MNIST Unity artifact",
     )
     parser.add_argument(
+        "--tinyllama-prefill",
+        action="store_true",
+        help="build and run the focused real TinyLlama prefill Unity test",
+    )
+    parser.add_argument(
+        "--reuse-tinyllama-prefill-artifact",
+        type=Path,
+        help=(
+            "focused diagnosis only: reuse an already generated TinyLlama "
+            "prefill artifact instead of rebuilding it"
+        ),
+    )
+    parser.add_argument(
         "--tinyllama-conversation",
         action="store_true",
         help="build and run the focused real TinyLlama conversation Unity test",
@@ -998,6 +1110,8 @@ def main():
         ),
     )
     args = parser.parse_args()
+    if args.tinyllama_prefill and args.tinyllama_conversation:
+        parser.error("run one focused TinyLlama Unity gate at a time")
     if args.unity is None:
         parser.error("set UNITY_EDITOR_PATH in .env or pass --unity")
     if args.project is None:
@@ -1057,10 +1171,39 @@ def main():
             cwd=root,
             timeout=1200,
         )
+    tinyllama_prefill_artifact = None
+    tinyllama_prefill_oracle = None
     tinyllama_conversation_artifact = None
     tinyllama_conversation_oracle = None
     unity_tests = list(args.unity_test)
     unity_test_assemblies = [TEST_ASSEMBLY]
+    if args.tinyllama_prefill:
+        if args.reuse_tinyllama_prefill_artifact:
+            tinyllama_prefill_artifact = args.reuse_tinyllama_prefill_artifact.resolve()
+            tinyllama_prefill_oracle = (
+                args.build_dir.resolve() / "tests/tinyllama-real-onnx"
+            )
+            if not (tinyllama_prefill_artifact / "manifest.json").is_file():
+                parser.error(
+                    "reused TinyLlama prefill artifact has no manifest: "
+                    f"{tinyllama_prefill_artifact}"
+                )
+            if not (tinyllama_prefill_oracle / "oracle.json").is_file():
+                parser.error(
+                    "reused TinyLlama prefill oracle is missing: "
+                    f"{tinyllama_prefill_oracle / 'oracle.json'}"
+                )
+        else:
+            tinyllama_prefill_artifact, tinyllama_prefill_oracle = (
+                prepare_tinyllama_prefill_artifact(root, args.build_dir.resolve())
+            )
+        if not unity_tests:
+            unity_tests.append(
+                "Lemolatoon.Udoncl.Editor.Tests."
+                "PublicTinyLlamaPrefillLifecycleTests."
+                "GeneratedUSharpBindingMatchesAllRealPrefillOutputs"
+            )
+            unity_test_assemblies = ["Udoncl.TinyLlama.Prefill.Focused.Tests"]
     if args.tinyllama_conversation:
         if args.reuse_tinyllama_conversation_artifact:
             tinyllama_conversation_artifact = (
@@ -1104,6 +1247,8 @@ def main():
         mnist_artifact=(
             args.mnist_artifact.resolve() if args.mnist_artifact else None
         ),
+        tinyllama_prefill_artifact=tinyllama_prefill_artifact,
+        tinyllama_prefill_oracle=tinyllama_prefill_oracle,
         tinyllama_conversation_artifact=tinyllama_conversation_artifact,
         tinyllama_conversation_oracle=tinyllama_conversation_oracle,
     )

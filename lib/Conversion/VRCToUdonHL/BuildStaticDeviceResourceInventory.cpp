@@ -160,7 +160,7 @@ struct BuildStaticDeviceResourceInventoryPass
             (access != "input" && access != "output") || !index ||
             index.getInt() < 0 || !name || name.getValue().empty() ||
             !dataType || dataType.getValue().empty() || !logical ||
-            logical.getInt() <= 0 || !capacity ||
+            logical.getInt() < 0 || !capacity ||
             capacity.getInt() < logical.getInt()) {
           module.emitError("invalid public allocation binding");
           signalPassFailure();

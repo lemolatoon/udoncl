@@ -22,6 +22,7 @@ public = first.split("vrc.static_device_resource_public_bindings", 1)[1].split(
     "schema_version = 1 : i32", 1
 )[0]
 assert 'name = "tokens"' in public
+assert "logical_bytes = 0 : i64" in public
 assert 'public_index = 1 : i32' in public
 assert 'public_access = "input"' in public
 assert 'resource_id = 7 : i32' in public

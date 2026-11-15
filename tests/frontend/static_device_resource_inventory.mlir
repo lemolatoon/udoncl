@@ -12,7 +12,7 @@ module attributes {
     {persistent = false, resource_id = 2 : i32, resource_kind = "allocation"}
   ], schema_version = 1 : i32},
   vrc.static_device_resource_public_bindings = {resources = [
-    {capacity_bytes = 32 : i64, data_type = "int64", logical_bytes = 24 : i64, name = "tokens", public_index = 1 : i32, public_access = "input", resource_id = 5 : i32, resource_kind = "allocation"}
+    {capacity_bytes = 32 : i64, data_type = "int64", logical_bytes = 0 : i64, name = "tokens", public_index = 1 : i32, public_access = "input", resource_id = 5 : i32, resource_kind = "allocation"}
   ], schema_version = 1 : i32}
 } {
 }

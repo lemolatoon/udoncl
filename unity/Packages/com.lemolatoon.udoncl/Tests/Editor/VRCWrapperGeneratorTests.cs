@@ -224,6 +224,27 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         }
 
         [Test]
+        public void GeneratesTransferApiForZeroLengthLogicalBuffer()
+        {
+            string manifest = ScalarManifest.Replace(
+                "]}",
+                "],\"device\":{\"buffers\":[{"
+                    + "\"id\":7,\"name\":\"empty_input\",\"heap_slot\":\"__udoncl_buffer_7\","
+                    + "\"logical_bytes\":0,\"width\":1,\"height\":1,"
+                    + "\"format\":\"rgba8_unorm\",\"element_type\":\"float32\","
+                    + "\"public_access\":\"input\"}]}}"
+            );
+
+            string source = VRCWrapperGenerator.GenerateFromJson(
+                manifest,
+                "Lemolatoon.Generated",
+                "EmptyTransferBinding"
+            );
+            StringAssert.Contains("public int TryWriteEmptyInput(float[] source)", source);
+            StringAssert.Contains("return TryWriteFloatBuffer(7, source);", source);
+        }
+
+        [Test]
         public void GeneratesNamedOnnxWriteRunReadBinding()
         {
             const string manifest =

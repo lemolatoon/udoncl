@@ -193,8 +193,8 @@ struct ClassifyONNXPublicDeviceResourcesPass
           metadata ? metadata.getAs<IntegerAttr>("logical_bytes") : nullptr;
       auto capacity =
           metadata ? metadata.getAs<IntegerAttr>("capacity_bytes") : nullptr;
-      if (!name || !dataType || !logical || logical.getInt() <= 0 ||
-          !capacity || capacity.getInt() < logical.getInt()) {
+      if (!name || !dataType || !logical || logical.getInt() < 0 || !capacity ||
+          capacity.getInt() < logical.getInt()) {
         bindCall.emitError("ONNX bind tensor metadata is invalid");
         signalPassFailure();
         return;

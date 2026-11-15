@@ -681,7 +681,7 @@ namespace Lemolatoon.Udoncl.Editor
                     buffer == null
                     || buffer.id < 0
                     || !ids.Add(buffer.id)
-                    || buffer.logical_bytes <= 0
+                    || buffer.logical_bytes < 0
                     || buffer.logical_bytes % 4 != 0
                     || buffer.width <= 0
                     || buffer.height <= 0

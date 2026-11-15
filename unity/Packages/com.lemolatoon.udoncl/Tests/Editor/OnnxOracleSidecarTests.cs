@@ -56,7 +56,13 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 new float[] { 1.0f, -2.0f, 3.5f, 4.0f },
                 oracle.ReadFloat32Output(0)
             );
-            oracle.RequireFloat32Close(1, new float[] { 0.25001f, 0.49999f }, 0.00002f, 0.0f);
+            oracle.RequireFloat32Close(
+                1,
+                new float[] { 99.0f, 0.25001f, 0.49999f },
+                1,
+                0.00002f,
+                0.0f
+            );
         }
 
         [Test]

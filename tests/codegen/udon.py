@@ -2004,4 +2004,23 @@ for argument_type, diagnostic in [
         text=True, capture_output=True)
     assert rejected.returncode != 0
     assert diagnostic in rejected.stderr, rejected.stderr
+
+zero_buffer_pool_source = r'''module attributes {
+  vrc.host_stage = "udonhl",
+  vrc.unity_buffer_pool = [
+    {id = 1 : i32, logical_bytes = 0 : i32, heap_slot = "__udoncl_buffer_1"}
+  ]
+} {
+  func.func @empty_buffer_view() attributes {vrc.export_id = 63 : i32} {
+    return
+  }
+}'''
+zero_buffer_pool_lowered = subprocess.run(
+    [opt, '--vrc-lower-udonhl-to-udonasm', '--verify-each'],
+    input=zero_buffer_pool_source,
+    text=True,
+    capture_output=True,
+)
+assert zero_buffer_pool_lowered.returncode == 0, zero_buffer_pool_lowered.stderr
+assert 'name = "__udoncl_buffer_pool"' in zero_buffer_pool_lowered.stdout
 print('scalar Udon heap allocation, opcode lowering and .uasm emission passed')

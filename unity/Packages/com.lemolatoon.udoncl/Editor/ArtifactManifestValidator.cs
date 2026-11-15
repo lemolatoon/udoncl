@@ -678,7 +678,7 @@ namespace Lemolatoon.Udoncl.Editor
                     || !IsSafeIdentifier(buffer.heap_slot)
                     || !heapSlots.Add(buffer.heap_slot)
                     || buffer.heap_slot != "__udoncl_buffer_" + buffer.id
-                    || buffer.logical_bytes <= 0
+                    || buffer.logical_bytes < 0
                     || buffer.width <= 0
                     || buffer.width > 8192
                     || buffer.height <= 0

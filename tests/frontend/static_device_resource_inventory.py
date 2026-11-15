@@ -26,7 +26,7 @@ onnx, udoncl = first.split("// -----")
 assert onnx.index("resource_id = 2 : i32") < onnx.index("resource_id = 5 : i32")
 assert onnx.index("resource_id = 5 : i32") < onnx.index("resource_id = 9 : i32")
 assert 'binding_capacity_bytes = 32 : i64' in onnx
-assert 'logical_bytes = 24 : i64' in onnx
+assert 'logical_bytes = 0 : i64' in onnx
 assert 'public_access = "input"' in onnx
 public_entry = onnx[onnx.index('binding_capacity_bytes') : onnx.index('resource_id = 5')]
 assert "persistent = true" in public_entry

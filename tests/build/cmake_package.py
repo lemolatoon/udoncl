@@ -1188,6 +1188,27 @@ def main():
         '29958',
     ]:
         assert forbidden not in prefill_controller, forbidden
+    prefill_lifecycle_path = (
+        args.source.resolve().parents[1]
+        / 'unity/Packages/com.lemolatoon.udoncl/Editor/Examples/'
+        'tinyllama-prefill-lifecycle-test.cs.txt'
+    )
+    prefill_lifecycle = prefill_lifecycle_path.read_text(encoding='utf-8')
+    for source_contract in [
+        'OnnxOracleSidecar.Load(',
+        'GeneratedUSharpBindingMatchesAllRealPrefillOutputs',
+        'oracle.Inputs[0].ReadInt64Values()',
+        'oracle.RequireFloat32Close(0, actualLogits,',
+        'oracle.RequireFloat32Close(\n                    index,\n                    actualPresent,',
+    ]:
+        assert source_contract in prefill_lifecycle, source_contract
+    for forbidden in [
+        'IUdonVM',
+        'InspectHeap',
+        '29958',
+        'output-000.f32.bytes',
+    ]:
+        assert forbidden not in prefill_lifecycle, forbidden
     assert {
         item['kernel_id'] for item in transformer_manifest['dispatch_sites']
     } == {221, 233, 234, 235, 242}

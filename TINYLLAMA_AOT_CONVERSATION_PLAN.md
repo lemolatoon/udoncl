@@ -699,9 +699,17 @@ Implement in this order, keeping each gate independently testable:
     The tokenizer remains independent of the Conversation Artifact. A
     model-independent Unity reader for the `udoncl.onnx-oracle.v1` sidecar now
     validates typed inputs, ordered FP32 outputs, shapes, byte lengths, model
-    hashes, and numerical tolerances. The next gate is importing the real
-    artifact and oracle into the focused Unity test and comparing all values;
-    numerical prefill through U# and generation state are not yet complete.
+    hashes, and numerical tolerances. A focused real-prefill Unity fixture now
+    imports the ordinary artifact, drives the generated U# binding, and
+    compares logits plus every present K/V tensor through that generic reader.
+    The next gate is making this numerical fixture pass, then applying the same
+    proof to generation state; numerical prefill and generation are not yet
+    accepted until those focused executions are green.
+    The first focused import exposed and fixed a generic Unity validation
+    mismatch: zero-length logical buffers backed by positive physical capacity
+    are valid OpenCL/ONNX resources. Unity artifact and fallback wrapper
+    validation now accept the same `logical_bytes >= 0` contract already used
+    by the compiler resource plan and Device buffer-view runtime.
 12. Add the example token-array generation Host, exact lifecycle/status
     contract, and generated async U# binding.
 13. Pass the Unity external-token prompt and bounded-completion gate. Record

@@ -45,25 +45,36 @@ namespace Lemolatoon.Udoncl.Editor
             float relativeTolerance
         )
         {
+            RequireFloat32Close(index, actual, 0, absoluteTolerance, relativeTolerance);
+        }
+
+        internal void RequireFloat32Close(
+            int index,
+            float[] actual,
+            int actualOffset,
+            float absoluteTolerance,
+            float relativeTolerance
+        )
+        {
             if (actual == null)
                 throw new ArgumentNullException("actual");
+            if (actualOffset < 0)
+                throw new ArgumentOutOfRangeException("actualOffset");
             if (absoluteTolerance < 0.0f || relativeTolerance < 0.0f)
                 throw new ArgumentOutOfRangeException("absoluteTolerance");
             float[] expected = ReadFloat32Output(index);
-            if (actual.Length != expected.Length)
+            if (actualOffset > actual.Length - expected.Length)
                 throw new InvalidDataException(
                     "ONNX oracle output "
                         + index
                         + " has "
                         + expected.Length
-                        + " elements, but the actual output has "
-                        + actual.Length
-                        + "."
+                        + " elements, but the requested actual range is unavailable."
                 );
             for (int element = 0; element < expected.Length; ++element)
             {
                 float expectedValue = expected[element];
-                float actualValue = actual[element];
+                float actualValue = actual[actualOffset + element];
                 float tolerance = absoluteTolerance + relativeTolerance * Math.Abs(expectedValue);
                 if (
                     float.IsNaN(actualValue)

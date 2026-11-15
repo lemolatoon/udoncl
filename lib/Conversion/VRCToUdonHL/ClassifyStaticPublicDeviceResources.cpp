@@ -96,7 +96,7 @@ FailureOr<Binding> readBinding(Operation *operation, DictionaryAttr binding,
   if (!schemaV1(binding) || !access ||
       (access != "input" && access != "output") || !index ||
       index.getInt() < 0 || !source || !name || name.empty() || !dataType ||
-      dataType.empty() || !logical || logical.getInt() <= 0 || !capacity ||
+      dataType.empty() || !logical || logical.getInt() < 0 || !capacity ||
       capacity.getInt() < logical.getInt())
     return operation->emitError("invalid static public resource binding");
   FailureOr<int32_t> resource = failure();

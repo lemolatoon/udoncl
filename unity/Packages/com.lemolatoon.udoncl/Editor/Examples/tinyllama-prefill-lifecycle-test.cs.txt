@@ -1,0 +1,163 @@
+using System;
+using System.Collections;
+using System.IO;
+using Lemolatoon.Udoncl.Editor;
+using NUnit.Framework;
+using UnityEditor;
+using UnityEngine;
+using UnityEngine.TestTools;
+using VRC.Udon;
+
+namespace Lemolatoon.Udoncl.Editor.Tests
+{
+    public sealed class PublicTinyLlamaPrefillLifecycleTests
+    {
+        private const string GeneratedRoot = "Assets/udoncl-generated/tinyllama_real_prefill";
+        private const string BindingClass = "UdonclTinyLlamaPrefillBinding";
+        private const string ControllerClass = "UdonclTinyLlamaPrefillTestController";
+        private const string GeneratedNamespace = "Lemolatoon.Udoncl.Generated.";
+        private const string ControllerSource =
+            "Assets/UdonclSampleValidation/" + ControllerClass + ".cs";
+        private const string ControllerProgram =
+            GeneratedRoot + "/Tests/" + ControllerClass + ".asset";
+        private ValidatedOnnxOracle oracle;
+
+        [OneTimeSetUp]
+        public void ImportPrefillArtifact()
+        {
+            string artifactDirectory = Environment.GetEnvironmentVariable(
+                "UDONCL_PUBLIC_TINYLLAMA_PREFILL_UNITY_BUNDLE"
+            );
+            Assert.IsFalse(
+                string.IsNullOrWhiteSpace(artifactDirectory),
+                "The real TinyLlama prefill artifact path is required."
+            );
+            artifactDirectory = Path.GetFullPath(artifactDirectory);
+            ValidatedArtifact artifact = ArtifactManifestValidator.Validate(artifactDirectory);
+            Assert.AreEqual("tinyllama_real_prefill", artifact.ProgramName);
+            if (!AssetDatabase.IsValidFolder(GeneratedRoot))
+                Assert.AreEqual(GeneratedRoot, UdonclArtifactImporter.Import(artifactDirectory));
+            CollectionAssert.AreEqual(
+                File.ReadAllBytes(Path.Combine(artifactDirectory, "binding.cs")),
+                File.ReadAllBytes(GeneratedRoot + "/Bindings/" + BindingClass + ".cs")
+            );
+            Assert.NotNull(AssetDatabase.LoadAssetAtPath<MonoScript>(ControllerSource));
+            if (!AssetDatabase.IsValidFolder(GeneratedRoot + "/Tests"))
+                AssetDatabase.CreateFolder(GeneratedRoot, "Tests");
+            UdonclArtifactImporter.EnsureCompiledUdonSharpProgramAsset(
+                GeneratedRoot + "/Bindings/" + BindingClass + ".cs",
+                GeneratedRoot + "/Bindings/" + BindingClass + ".asset"
+            );
+            UdonclArtifactImporter.EnsureCompiledUdonSharpProgramAsset(
+                ControllerSource,
+                ControllerProgram
+            );
+            GeneratedBindingFinalizer.FinalizeAvailableBindings();
+
+            string oracleDirectory = Environment.GetEnvironmentVariable(
+                "UDONCL_PUBLIC_TINYLLAMA_PREFILL_ORACLE"
+            );
+            Assert.IsFalse(
+                string.IsNullOrWhiteSpace(oracleDirectory),
+                "The TinyLlama prefill oracle directory is required."
+            );
+            oracle = OnnxOracleSidecar.Load(oracleDirectory);
+            Assert.AreEqual(3, oracle.Inputs.Count);
+            Assert.AreEqual(45, oracle.Outputs.Count);
+            Assert.AreEqual(128000, oracle.Outputs[0].ElementCount);
+            for (int index = 1; index < oracle.Outputs.Count; ++index)
+                Assert.AreEqual(1024, oracle.Outputs[index].ElementCount);
+        }
+
+        [UnityTest]
+        public IEnumerator GeneratedUSharpBindingMatchesAllRealPrefillOutputs()
+        {
+            yield return new EnterPlayMode();
+
+            GameObject prefab = AssetDatabase.LoadAssetAtPath<GameObject>(
+                GeneratedRoot + "/Prefabs/" + BindingClass + ".prefab"
+            );
+            Assert.NotNull(prefab);
+            GameObject instance = UnityEngine.Object.Instantiate(prefab);
+            UdonBehaviour controller = UdonclArtifactImporter.AddCompiledUdonSharpBehaviour(
+                instance,
+                ControllerProgram
+            );
+            UdonclArtifactImporter.InitializeUdonBehaviours(instance);
+            yield return null;
+
+            UdonBehaviour binding = UdonclArtifactImporter.FindUdonSharpBacking(
+                instance,
+                GeneratedNamespace + BindingClass
+            );
+            Assert.NotNull(binding);
+            Assert.NotNull(controller);
+            float[] logits = new float[oracle.Outputs[0].ElementCount];
+            float[] presentScratch = new float[oracle.Outputs[1].ElementCount];
+            float[] presentKv = new float[(oracle.Outputs.Count - 1) * presentScratch.Length];
+            UdonclArtifactImporter.SetUdonProgramVariable(controller, "binding", binding);
+            UdonclArtifactImporter.SetUdonProgramVariable(
+                controller,
+                "inputIds",
+                oracle.Inputs[0].ReadInt64Values()
+            );
+            UdonclArtifactImporter.SetUdonProgramVariable(
+                controller,
+                "attentionMask",
+                oracle.Inputs[1].ReadInt64Values()
+            );
+            UdonclArtifactImporter.SetUdonProgramVariable(
+                controller,
+                "positionIds",
+                oracle.Inputs[2].ReadInt64Values()
+            );
+            UdonclArtifactImporter.SetUdonProgramVariable(controller, "logits", logits);
+            UdonclArtifactImporter.SetUdonProgramVariable(
+                controller,
+                "presentScratch",
+                presentScratch
+            );
+            UdonclArtifactImporter.SetUdonProgramVariable(controller, "presentKv", presentKv);
+            UdonclArtifactImporter.SendUdonCustomEvent(controller, "Run");
+
+            const int timeoutFrames = 36000;
+            int frame = 0;
+            bool completed = false;
+            while (frame < timeoutFrames && !completed)
+            {
+                ++frame;
+                yield return null;
+                completed = (bool)
+                    UdonclArtifactImporter.GetUdonProgramVariable(controller, "completed");
+            }
+            int phase = (int)UdonclArtifactImporter.GetUdonProgramVariable(controller, "phase");
+            int status = (int)UdonclArtifactImporter.GetUdonProgramVariable(controller, "status");
+            int libraryStatus = (int)
+                UdonclArtifactImporter.GetUdonProgramVariable(controller, "libraryStatus");
+            float[] actualLogits = (float[])
+                UdonclArtifactImporter.GetUdonProgramVariable(controller, "logits");
+            float[] actualPresent = (float[])
+                UdonclArtifactImporter.GetUdonProgramVariable(controller, "presentKv");
+            UnityEngine.Object.Destroy(instance);
+            yield return new ExitPlayMode();
+
+            Assert.IsTrue(completed, "TinyLlama prefill timed out at phase " + phase + ".");
+            Assert.AreEqual(0, status, "Generated binding failed at phase " + phase + ".");
+            Assert.AreEqual(0, libraryStatus, "C Host failed at phase " + phase + ".");
+            oracle.RequireFloat32Close(0, actualLogits, 0.001f, 0.001f);
+            for (int index = 1; index < oracle.Outputs.Count; ++index)
+                oracle.RequireFloat32Close(
+                    index,
+                    actualPresent,
+                    (index - 1) * presentScratch.Length,
+                    0.001f,
+                    0.001f
+                );
+            TestContext.Progress.WriteLine(
+                "tinyllama_prefill frames={0} outputs={1}",
+                frame,
+                oracle.Outputs.Count
+            );
+        }
+    }
+}

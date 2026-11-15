@@ -183,6 +183,27 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         }
 
         [Test]
+        public void ValidateAcceptsZeroLengthPublicBufferWithPhysicalCapacity()
+        {
+            string manifestPath = Path.Combine(_directory, "manifest.json");
+            string json = File.ReadAllText(manifestPath)
+                .Replace(
+                    "\"device\":{\"kernels\"",
+                    "\"device\":{\"buffers\":[{\"id\":7,\"name\":\"empty_input\","
+                        + "\"heap_slot\":\"__udoncl_buffer_7\",\"logical_bytes\":0,"
+                        + "\"width\":1,\"height\":1,\"format\":\"rgba8_unorm\","
+                        + "\"srgb\":false,\"mipmaps\":false,\"filter\":\"point\","
+                        + "\"element_type\":\"float32\",\"public_access\":\"input\"}],"
+                        + "\"kernels\""
+                );
+            File.WriteAllText(manifestPath, json, new UTF8Encoding(false));
+
+            ValidatedArtifact artifact = ArtifactManifestValidator.Validate(_directory);
+            Assert.AreEqual(1, artifact.DeviceBuffers.Count);
+            Assert.AreEqual(0, artifact.DeviceBuffers[0].LogicalBytes);
+        }
+
+        [Test]
         public void ValidateRejectsMissingBufferCopyShader()
         {
             string manifestPath = Path.Combine(_directory, "manifest.json");

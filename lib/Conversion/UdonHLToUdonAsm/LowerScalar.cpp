@@ -1164,7 +1164,7 @@ private:
       auto heapSlot =
           entry ? entry.getAs<StringAttr>("heap_slot") : StringAttr();
       if (!id || id.getInt() <= 0 || !logicalBytes ||
-          logicalBytes.getInt() <= 0 || !heapSlot ||
+          logicalBytes.getInt() < 0 || !heapSlot ||
           heapSlot.getValue().empty() || !ids.insert(id.getInt()).second ||
           !slots.insert(heapSlot.getValue().str()).second)
         return module.emitError("invalid Unity buffer pool metadata");
