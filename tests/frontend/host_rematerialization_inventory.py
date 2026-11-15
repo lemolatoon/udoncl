@@ -73,6 +73,8 @@ assert stable_ids == [
     "function:branch_literal:region:0:block:0:operation:0:result:0",
     "function:external_caller:region:0:block:0:operation:0:result:0",
     "function:internal_caller:region:0:block:0:operation:0:result:0",
+    "function:mixed_logical_literals:region:0:block:0:operation:0:result:0",
+    "function:mixed_logical_literals:region:0:block:0:operation:1:result:0",
     "function:nested_direct:region:0:block:0:operation:0:region:0:block:0:operation:0:result:0",
     "function:scratch_groups:region:0:block:0:operation:0:result:0",
     "function:scratch_groups:region:0:block:0:operation:1:result:0",
@@ -109,7 +111,7 @@ assert '"rematerialize_i32"' in first
 assert '"rematerialize_f32_bits"' in first
 assert '"rematerialize_i1"' in first
 assert '"rematerialize_i64"' in first
-assert "vrc.host_literal_use_site_version = 1 : i32" in first
+assert "vrc.host_literal_use_site_version = 2 : i32" in first
 for attribute in [
     "vrc.host_literal_use_sites",
     "vrc.host_literal_scratch_instances",
@@ -135,13 +137,14 @@ first_group_entry = next(
 assert (
     'member_instance_ids = ['
     '"function:scratch_groups:region:0:block:0:operation:2:literal:'
-    'SystemInt32:0x16", '
+    'SystemInt32:0x16:logical:i32", '
     '"function:scratch_groups:region:0:block:0:operation:2:literal:'
-    'SystemInt32:0xB"]'
+    'SystemInt32:0xB:logical:i32"]'
     in first_group_entry
 )
 assert first.count(
-    "function:scratch_groups:region:0:block:0:operation:3:literal:SystemInt32:0xB"
+    "function:scratch_groups:region:0:block:0:operation:3:literal:"
+    "SystemInt32:0xB:logical:i32"
 ) >= 3
 assert (
     'site_ids = ['
@@ -232,9 +235,22 @@ duplicate_group = group_entries[
 assert duplicate_group.count(":literal:SystemInt32:0xB") == 1
 duplicate_instance = instance_entries[
     "function:scratch_groups:region:0:block:0:operation:3:literal:"
-    "SystemInt32:0xB"
+    "SystemInt32:0xB:logical:i32"
 ]
 assert duplicate_instance.count(":operand:") == 2
+
+mixed_consumer = (
+    "function:mixed_logical_literals:region:0:block:0:operation:2"
+)
+mixed_group = group_entries[f"{mixed_consumer}:scratch:SystemInt32"]
+mixed_i8 = f"{mixed_consumer}:literal:SystemInt32:0xFFFFFFFF:logical:i8"
+mixed_i32 = f"{mixed_consumer}:literal:SystemInt32:0xFFFFFFFF:logical:i32"
+assert 'literal_key = "SystemInt32:0xFFFFFFFF"' in instance_entries[mixed_i8]
+assert 'logical_type = "i8"' in instance_entries[mixed_i8]
+assert 'literal_key = "SystemInt32:0xFFFFFFFF"' in instance_entries[mixed_i32]
+assert 'logical_type = "i32"' in instance_entries[mixed_i32]
+assert f'"{mixed_i8}"' in mixed_group
+assert f'"{mixed_i32}"' in mixed_group
 
 allocation_start = allocated.index("vrc.host_literal_allocations = [")
 allocation_end = allocated.index("vrc.host_literal_inventory_version", allocation_start)
@@ -258,7 +274,7 @@ for colors in colors_by_type.values():
 shared_minus_one = next(
     entry for entry in entries if 'key_id = "SystemInt32:0xFFFFFFFF"' in entry
 )
-assert "inventory_use_count = 3 : i64" in shared_minus_one
+assert "inventory_use_count = 5 : i64" in shared_minus_one
 
 
 def attribute_entries(text, name, next_name):
@@ -299,10 +315,10 @@ assert not any(
 )
 
 
-def scratch_id(function, operation, key):
+def scratch_id(function, operation, key, logical_type="i32"):
     return (
         f"function:{function}:region:0:block:0:operation:{operation}:"
-        f"literal:SystemInt32:{key}"
+        f"literal:SystemInt32:{key}:logical:{logical_type}"
     )
 
 
@@ -341,7 +357,7 @@ nested_consumer = {
     ],
     scratch_colors[
         "function:nested_direct:region:0:block:0:operation:0:region:0:"
-        "block:0:operation:1:literal:SystemInt32:0x5"
+        "block:0:operation:1:literal:SystemInt32:0x5:logical:i32"
     ],
     direct_colors[
         "function:nested_direct:region:0:block:0:operation:0:region:0:"
@@ -359,7 +375,8 @@ internal_result = result_id("internal_caller", 1)
 internal_scratch = scratch_id("internal_caller", 1, "0x9")
 assert direct_colors[internal_parameter] == direct_colors[internal_result]
 assert scratch_colors[internal_scratch] != direct_colors[internal_parameter]
-assert "vrc.host_writable_allocation_version = 1 : i32" in allocated
+assert scratch_colors[mixed_i8] != scratch_colors[mixed_i32]
+assert "vrc.host_writable_allocation_version = 2 : i32" in allocated
 assert 'storage_domain = "writable"' in allocated
 assert 'placement = "resident_shared"' in allocated
 assert any(color == 0 for color in direct_colors.values())
@@ -408,9 +425,14 @@ reject_allocation(first.replace(
 ))
 reject_allocation(first.replace('origin = "backend", ', "", 1))
 reject_allocation(first.replace(
-    "vrc.host_literal_use_site_version = 1 : i32",
     "vrc.host_literal_use_site_version = 2 : i32",
+    "vrc.host_literal_use_site_version = 1 : i32",
 ))
+reject_allocation(first.replace('logical_type = "i8", ', "", 1))
+reject_allocation(first.replace(
+    'logical_type = "i8"', 'logical_type = "i16"', 1
+))
+reject_allocation(first.replace(":logical:i8", "", 1))
 reject_allocation(first.replace("operand_index = 0 : i32", "operand_index = 99 : i32", 1))
 reject_allocation(first.replace(
     'definition_use_id = "', 'definition_use_id = "missing:', 1
@@ -421,7 +443,7 @@ reject_allocation(first.replace(
 ))
 reject_allocation(first.replace(
     '"function:scratch_groups:region:0:block:0:operation:2:literal:'
-    'SystemInt32:0x16"',
+    'SystemInt32:0x16:logical:i32"',
     '"missing:scratch:instance"',
     1,
 ))
@@ -429,4 +451,4 @@ reject_allocation(
     'module attributes {vrc.host_literal_allocation_version = 1 : i32, '
     'vrc.host_literal_allocations = []} {}'
 )
-print("host_rematerialization_inventory=passed requests=26")
+print("host_rematerialization_inventory=passed requests=29")

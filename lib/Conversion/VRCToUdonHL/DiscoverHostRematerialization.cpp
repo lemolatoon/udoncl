@@ -28,6 +28,7 @@ struct InventoryEntry {
 struct ScratchInstance {
   std::string consumerId;
   std::string literalKey;
+  std::string logicalType;
   std::string physicalType;
   SmallVector<std::string> siteIds;
 };
@@ -175,9 +176,11 @@ struct DiscoverHostRematerializationPass
                   getHostLiteralKey(constant.getType(), constant.getValue());
               std::string keyId =
                   ensureKey(constant.getType(), constant.getValue());
+              std::string logicalType = hostLiteralTypeText(constant.getType());
               std::string siteId =
                   prefix + ":operand:" + std::to_string(operandIndex);
-              std::string instanceId = prefix + ":literal:" + keyId;
+              std::string instanceId =
+                  prefix + ":literal:" + keyId + ":logical:" + logicalType;
               std::string groupId = prefix + ":scratch:" + key.physicalType;
               bool scratchEligible =
                   llvm::any_of(key.contextFreeRecipes,
@@ -224,7 +227,8 @@ struct DiscoverHostRematerializationPass
                   scratchInstances
                       .try_emplace(
                           instanceId,
-                          ScratchInstance{prefix, keyId, key.physicalType, {}})
+                          ScratchInstance{
+                              prefix, keyId, logicalType, key.physicalType, {}})
                       .first;
               instance->second.siteIds.push_back(siteId);
               auto group =
@@ -320,6 +324,7 @@ struct DiscoverHostRematerializationPass
       fields.set("instance_id", builder.getStringAttr(instanceId));
       fields.set("consumer_id", builder.getStringAttr(instance.consumerId));
       fields.set("literal_key", builder.getStringAttr(instance.literalKey));
+      fields.set("logical_type", builder.getStringAttr(instance.logicalType));
       fields.set("physical_type", builder.getStringAttr(instance.physicalType));
       fields.set("site_ids", builder.getArrayAttr(siteIds));
       scratchInstanceInventory.push_back(builder.getDictionaryAttr(fields));
@@ -343,7 +348,7 @@ struct DiscoverHostRematerializationPass
     module->setAttr("vrc.host_literal_uses",
                     builder.getArrayAttr(useInventory));
     module->setAttr("vrc.host_literal_use_site_version",
-                    builder.getI32IntegerAttr(1));
+                    builder.getI32IntegerAttr(2));
     module->setAttr("vrc.host_literal_use_sites",
                     builder.getArrayAttr(operandUseInventory));
     module->setAttr("vrc.host_literal_scratch_instances",

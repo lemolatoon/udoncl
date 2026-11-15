@@ -57,6 +57,7 @@ struct ScratchAllocation {
   std::string instanceId;
   std::string consumerId;
   std::string literalKey;
+  std::string logicalType;
   std::string physicalType;
   SmallVector<std::string> siteIds;
   std::optional<HostStorageNodeId> node;
@@ -369,7 +370,7 @@ private:
         module->getAttrOfType<ArrayAttr>("vrc.host_literal_scratch_instances");
     auto groups =
         module->getAttrOfType<ArrayAttr>("vrc.host_literal_consumer_groups");
-    if (!version || version.getInt() != 1 || !sites || !instances || !groups)
+    if (!version || version.getInt() != 2 || !sites || !instances || !groups)
       return module.emitError("invalid Host literal use-site schema");
 
     SmallVector<func::FuncOp> functions;
@@ -432,6 +433,7 @@ private:
     std::map<std::string, std::string> groupByInstance;
     std::map<std::string, std::string> consumerBySite;
     std::map<std::string, std::string> literalBySite;
+    std::map<std::string, std::string> logicalTypeBySite;
     std::map<std::string, std::string> physicalTypeBySite;
     for (Attribute attribute : sites) {
       auto site = dyn_cast<DictionaryAttr>(attribute);
@@ -509,6 +511,8 @@ private:
                                consumer.getValue().str());
         literalBySite.emplace(siteId.getValue().str(),
                               literal.getValue().str());
+        logicalTypeBySite.emplace(siteId.getValue().str(),
+                                  logicalType.getValue().str());
         physicalTypeBySite.emplace(siteId.getValue().str(),
                                    physicalType.getValue().str());
         auto [found, inserted] = groupByInstance.emplace(
@@ -530,6 +534,8 @@ private:
           source ? source.getAs<StringAttr>("consumer_id") : StringAttr();
       auto literalKey =
           source ? source.getAs<StringAttr>("literal_key") : StringAttr();
+      auto logicalType =
+          source ? source.getAs<StringAttr>("logical_type") : StringAttr();
       auto physicalType =
           source ? source.getAs<StringAttr>("physical_type") : StringAttr();
       auto sourceSites =
@@ -537,19 +543,22 @@ private:
       if (!source || !instanceId || instanceId.getValue().empty() ||
           !consumerId ||
           operations.find(consumerId.getValue().str()) == operations.end() ||
-          !literalKey || literalKey.getValue().empty() || !physicalType ||
+          !literalKey || literalKey.getValue().empty() || !logicalType ||
+          logicalType.getValue().empty() || !physicalType ||
           physicalType.getValue().empty() || !sourceSites ||
           scratch.count(instanceId.getValue().str()))
         return module.emitError("invalid Host literal scratch instance");
       std::string expectedInstanceId =
           consumerId.getValue().str() +
-          ":literal:" + literalKey.getValue().str();
+          ":literal:" + literalKey.getValue().str() +
+          ":logical:" + logicalType.getValue().str();
       if (instanceId.getValue() != expectedInstanceId)
         return module.emitError("noncanonical Host scratch instance identity");
       ScratchAllocation allocation{source,
                                    instanceId.getValue().str(),
                                    consumerId.getValue().str(),
                                    literalKey.getValue().str(),
+                                   logicalType.getValue().str(),
                                    physicalType.getValue().str(),
                                    {}};
       for (Attribute siteAttribute : sourceSites) {
@@ -563,6 +572,8 @@ private:
                 allocation.consumerId ||
             literalBySite.at(siteId.getValue().str()) !=
                 allocation.literalKey ||
+            logicalTypeBySite.at(siteId.getValue().str()) !=
+                allocation.logicalType ||
             physicalTypeBySite.at(siteId.getValue().str()) !=
                 allocation.physicalType ||
             !coveredSites.insert(siteId.getValue().str()).second ||
@@ -679,7 +690,7 @@ private:
       extents.push_back(builder.getDictionaryAttr(fields));
     }
     module->setAttr("vrc.host_writable_allocation_version",
-                    builder.getI32IntegerAttr(1));
+                    builder.getI32IntegerAttr(2));
     module->setAttr("vrc.host_direct_color_allocations",
                     builder.getArrayAttr(directAllocations));
     module->setAttr("vrc.host_literal_scratch_allocations",

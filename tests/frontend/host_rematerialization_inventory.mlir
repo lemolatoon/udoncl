@@ -23,6 +23,15 @@ module attributes {
     return %value : i32
   }
 
+  func.func private @mixed_logical_consumer(i8, i32)
+
+  func.func @mixed_logical_literals() {
+    %narrow = arith.constant -1 : i8
+    %integer = arith.constant -1 : i32
+    func.call @mixed_logical_consumer(%narrow, %integer) : (i8, i32) -> ()
+    return
+  }
+
   func.func @internal_caller() -> i32 {
     %c9 = arith.constant 9 : i32
     %result = func.call @internal_callee(%c9) : (i32) -> i32

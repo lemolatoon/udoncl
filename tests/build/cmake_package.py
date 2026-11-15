@@ -672,9 +672,9 @@ def main():
         onnx_mnist_artifact / 'host.async-runtime.mlir'
     ).read_text(encoding='utf-8')
     assert 'vrc.host_literal_inventory_version = 1 : i32' in host_async
-    assert 'vrc.host_literal_use_site_version = 1 : i32' in host_async
+    assert 'vrc.host_literal_use_site_version = 2 : i32' in host_async
     assert 'vrc.host_literal_allocation_version = 1 : i32' in host_async
-    assert 'vrc.host_writable_allocation_version = 1 : i32' in host_async
+    assert 'vrc.host_writable_allocation_version = 2 : i32' in host_async
     assert '"udonhl.literal_materialize"' not in host_async
     udon_async = (onnx_mnist_artifact / 'host.udon-async.mlir').read_bytes()
     assert udon_async.count(b'"vrc.static_buffer"') == 4

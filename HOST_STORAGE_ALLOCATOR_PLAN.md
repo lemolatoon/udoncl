@@ -59,6 +59,14 @@ Current implementation checkpoint (2026-11-16):
   operands using the same key share one instance; distinct keys in one
   consumer remain distinct. Backend literals created only during final
   lowering are not yet represented as operand sites;
+- the source scratch schema is now version 2. A scratch instance identity
+  includes consumer, physical literal key, and logical MLIR type. Equal i8,
+  i16, i32, and index values may share one `SystemInt32` physical key, but they
+  remain distinct typed SSA materialization instances; same-type duplicate
+  operands still share one instance. Consumer groups remain physical-type
+  groups, so simultaneously consumed logical types receive non-aliasing
+  writable colors. `AllocateHostStorage` revalidates the logical type against
+  every actual constant operand and emits writable-allocation schema version 2;
 - discovery now runs in the production Host pipeline immediately after
   `PrepareUdonAsyncRuntime` and before `AllocateHostStorage`. The CMake package
   integration fixture proves that the production async intermediate contains
@@ -499,6 +507,15 @@ Continue in the following independently testable commits:
    immediately before `AllocateHostStorage`. Prove in an integration fixture
    that the production intermediate IR contains the deterministic versioned
    inventory. This commit must not change generated Udon Assembly.
+
+   **Completed schema prerequisite (2026-11-16):** version source literal use
+   sites and writable allocations at version 2 so canonical scratch instance
+   identity includes logical type as well as its shared physical key. Mixed
+   i8/i32 operands with identical bits now remain separate typed instances and
+   receive distinct simultaneous writable colors, while same-type duplicate
+   operands continue to share one instance. This remains metadata-only; Step 2
+   has not materialized executable IR yet.
+
 2. Add `MaterializeHostStorage` as one pass in one implementation file. It
    consumes only an explicit selected-placement schema and rewrites selected
    source operand sites to `udonhl.literal_materialize`; candidate metadata
