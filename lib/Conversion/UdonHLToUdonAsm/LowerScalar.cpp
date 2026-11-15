@@ -877,7 +877,8 @@ private:
 
   void planMaterializedConstants(ArrayRef<func::FuncOp> functions) {
     auto stage = module->getAttrOfType<StringAttr>("vrc.async_stage");
-    if (!stage || stage.getValue() != "udon-static-v1")
+    if ((!stage || stage.getValue() != "udon-static-v1") &&
+        !externalRawHeapInitialization)
       return;
     llvm::DenseMap<uint32_t, ConstantPoolLocation> locations;
     llvm::DenseMap<uint32_t, unsigned> occurrences;

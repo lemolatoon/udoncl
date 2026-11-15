@@ -651,7 +651,7 @@ for expected in [
 # the Udon address space. Materializing only one occurrence of a value would
 # keep its shared constant slot alive for the other occurrence.
 repeated_constant_lines = [
-    'module attributes {vrc.async_stage = "udon-static-v1"} {',
+    'module attributes {vrc.external_raw_heap_initialization} {',
     '  func.func @many_constants() -> i32 attributes {vrc.export_id = 1 : i32} {',
     '    %acc0 = arith.constant 0 : i32',
 ]
