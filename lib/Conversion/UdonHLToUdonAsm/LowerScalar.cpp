@@ -2948,20 +2948,41 @@ private:
         if (auto copy = dyn_cast<::vrc::vrc::BufferCopyOp>(operation)) {
           auto materialSlot =
               copy->getAttrOfType<StringAttr>("vrc.unity_copy_material_slot");
+          auto sourceHeapSlot = copy->getAttrOfType<StringAttr>(
+              "vrc.unity_copy_source_heap_slot");
+          auto destinationHeapSlot = copy->getAttrOfType<StringAttr>(
+              "vrc.unity_copy_destination_heap_slot");
           std::string sourceToken = valueSlots.lookup(copy.getSource());
           std::string destinationToken =
               valueSlots.lookup(copy.getDestination());
+          bool hasSourceHeapSlot =
+              sourceHeapSlot && !sourceHeapSlot.getValue().empty();
+          bool hasDestinationHeapSlot =
+              destinationHeapSlot && !destinationHeapSlot.getValue().empty();
           if (!materialSlot || materialSlot.getValue().empty() ||
-              sourceToken.empty() || destinationToken.empty())
+              hasSourceHeapSlot != hasDestinationHeapSlot ||
+              (!hasSourceHeapSlot &&
+               (sourceToken.empty() || destinationToken.empty())))
             return copy.emitError(
                 "Unity buffer copy requires distinct bound buffers and a copy "
                 "material slot");
-          std::string source = selectUnityReadableBuffer(
-              copy.getLoc(), sourceToken,
-              prefix + "copy_source_" + std::to_string(valueIndex++));
-          std::string destination = selectUnityBuffer(
-              copy.getLoc(), destinationToken,
-              prefix + "copy_destination_" + std::to_string(valueIndex++));
+          std::string sourcePrefix =
+              prefix + "copy_source_" + std::to_string(valueIndex++);
+          std::string destinationPrefix =
+              prefix + "copy_destination_" + std::to_string(valueIndex++);
+          std::string source =
+              hasSourceHeapSlot
+                  ? loadUnityBufferFromHeapSlot(
+                        copy.getLoc(), sourceHeapSlot.getValue(), sourcePrefix)
+                  : selectUnityReadableBuffer(copy.getLoc(), sourceToken,
+                                              sourcePrefix);
+          std::string destination =
+              hasDestinationHeapSlot
+                  ? loadUnityBufferFromHeapSlot(copy.getLoc(),
+                                                destinationHeapSlot.getValue(),
+                                                destinationPrefix)
+                  : selectUnityBuffer(copy.getLoc(), destinationToken,
+                                      destinationPrefix);
           if (source.empty() || destination.empty())
             return copy.emitError("Unity copy has no physical buffer pool");
           addSlot(materialSlot.getValue(), "UnityEngineMaterial", "null", true);

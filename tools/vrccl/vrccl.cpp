@@ -990,6 +990,19 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
     auto found = definition ? bound.find(definition) : bound.end();
     return found == bound.end() ? nullptr : found->second;
   };
+  auto validateOrSetCopySlot = [&](Operation *operation, StringRef name,
+                                   StringRef value) -> LogicalResult {
+    if (auto existing = operation->getAttrOfType<StringAttr>(name)) {
+      if (existing.getValue() != value) {
+        operation->emitError()
+            << name << " contradicts the statically bound Unity buffer";
+        return failure();
+      }
+      return success();
+    }
+    operation->setAttr(name, builder.getStringAttr(value));
+    return success();
+  };
   for (auto copy : copies) {
     auto sourceOffset =
         copy.getSourceOffset().getDefiningOp<arith::ConstantIntOp>();
@@ -1013,6 +1026,12 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
     }
     copy->setAttr("vrc.unity_copy_material_slot",
                   builder.getStringAttr("__udoncl_buffer_copy_material"));
+    if (failed(validateOrSetCopySlot(copy, "vrc.unity_copy_source_heap_slot",
+                                     sourceBuffer->heapSlot)) ||
+        failed(validateOrSetCopySlot(copy,
+                                     "vrc.unity_copy_destination_heap_slot",
+                                     destinationBuffer->heapSlot)))
+      return failure();
   }
   UnityBufferBinding result;
   result.usesCopy = !copies.empty();

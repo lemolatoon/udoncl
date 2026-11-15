@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -1268,6 +1269,32 @@ def main():
     assert transformer_udon_async.count(
         'vrc.unity_static_tensor_ids = '
     ) == 8
+    expected_transformer_copy_slots = [
+        ('__udoncl_buffer_5', '__udoncl_buffer_2'),
+        ('__udoncl_buffer_5', '__udoncl_buffer_3'),
+        ('__udoncl_buffer_6', '__udoncl_buffer_2'),
+        ('__udoncl_buffer_6', '__udoncl_buffer_3'),
+    ]
+    transformer_copy_lines = [
+        line for line in transformer_udon_async.splitlines()
+        if 'vrc.buffer_copy ' in line
+    ]
+    actual_transformer_copy_slots = []
+    for line in transformer_copy_lines:
+        source_match = re.search(
+            r'vrc\.unity_copy_source_heap_slot = "([^"]+)"', line
+        )
+        destination_match = re.search(
+            r'vrc\.unity_copy_destination_heap_slot = "([^"]+)"', line
+        )
+        assert source_match and destination_match, line
+        actual_transformer_copy_slots.append(
+            (source_match.group(1), destination_match.group(1))
+        )
+    assert actual_transformer_copy_slots == expected_transformer_copy_slots
+    for suffix in ['index', 'static_index', 'dynamic_index']:
+        assert f'copy_source_0_{suffix}' not in transformer_assembly
+        assert f'copy_destination_1_{suffix}' not in transformer_assembly
     conversation_input_async = (
         conversation_input_artifact / 'host.async-runtime.mlir'
     ).read_text(encoding='utf-8')
