@@ -3502,6 +3502,9 @@ int main(int argc, char **argv) {
                              createAsyncFuncToAsyncRuntimePass())) ||
         failed(runAsyncStage("prepare-udon-async-runtime",
                              ::vrc::createPrepareUdonAsyncRuntimePass())) ||
+        failed(
+            runAsyncStage("discover-host-rematerialization",
+                          ::vrc::createDiscoverHostRematerializationPass())) ||
         failed(runAsyncStage("allocate-host-storage",
                              ::vrc::createAllocateHostStoragePass())) ||
         failed(runAsyncStage("analyze-host-storage",

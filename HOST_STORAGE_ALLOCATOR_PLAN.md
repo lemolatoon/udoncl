@@ -7,7 +7,7 @@
 > generated-U# prefill matches every ORT output, and the mandatory pre-commit
 > gate passes.
 
-Current implementation checkpoint (2026-11-15):
+Current implementation checkpoint (2026-11-16):
 
 - deterministic async placement metadata is emitted by the independent
   `AnalyzeHostStorage` pass;
@@ -59,7 +59,12 @@ Current implementation checkpoint (2026-11-15):
   operands using the same key share one instance; distinct keys in one
   consumer remain distinct. Backend literals created only during final
   lowering are not yet represented as operand sites;
-- discovery is not yet in the production compiler pipeline.
+- discovery now runs in the production Host pipeline immediately after
+  `PrepareUdonAsyncRuntime` and before `AllocateHostStorage`. The CMake package
+  integration fixture proves that the production async intermediate contains
+  the inventory, use-site, allocation, and writable-allocation schema versions
+  while containing no `udonhl.literal_materialize`; this integration is
+  metadata-only and does not select or materialize a new placement.
   `AllocateHostStorage` currently has two disconnected consumers of the
   shared allocator: the resident literal compatibility baseline and legacy
   async persistent spill indices. A third, metadata-only candidate graph now
@@ -81,10 +86,9 @@ Current implementation checkpoint (2026-11-15):
   bindings, required externs, helper scratch, and generated version. The first
   supported contract is `rematerialize_i32`; no pass emits or lowers this op
   yet, and candidate colors are not treated as placement decisions;
-- the next implementation boundary is deliberately model-independent. First
-  connect discovery to the production Host pipeline without changing code
-  generation. Then add a mechanical `MaterializeHostStorage` pass and explicit
-  `LowerScalar` support that operate only on allocator-selected placement.
+- the next implementation boundary is deliberately model-independent. Add a
+  mechanical `MaterializeHostStorage` pass and explicit `LowerScalar` support
+  that operate only on allocator-selected placement.
   Finally move every late backend `SystemInt32` request that can be
   rematerialized out of hidden `LowerScalar::immutableSlot()` policy and into
   explicit pre-lowering IR use sites. Source-operand rematerialization alone
@@ -486,10 +490,12 @@ the single-root restriction concerns Host execution state.
 Completed foundations include placement IR, common liveness/interference
 analysis, typed persistent-spill coloring, deterministic literal
 key/requirement discovery, source immediate-consumer scratch groups, a shared
-candidate color graph, and the verified `udonhl.literal_materialize` contract.
+candidate color graph, the verified `udonhl.literal_materialize` contract, and
+production metadata-only rematerialization discovery.
 Continue in the following independently testable commits:
 
-1. Run `DiscoverHostRematerialization` in the production Host pipeline
+1. **Completed (2026-11-16):** run `DiscoverHostRematerialization` in the
+   production Host pipeline
    immediately before `AllocateHostStorage`. Prove in an integration fixture
    that the production intermediate IR contains the deterministic versioned
    inventory. This commit must not change generated Udon Assembly.
