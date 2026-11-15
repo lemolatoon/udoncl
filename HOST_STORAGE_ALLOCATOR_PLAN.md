@@ -49,8 +49,10 @@ Current implementation checkpoint (2026-11-16):
 - `AllocateHostStorage` now consumes a discovered literal inventory and emits
   a deterministic, type-separated `resident_shared` compatibility baseline.
   Resident keys use symbolic simultaneous groups rather than quadratic edge
-  metadata. This is not yet the final pressure-selected placement: discovery
-  still lacks literals created only inside final lowering, and the legacy
+  metadata. An opt-in pressure request can now select complete explicit
+  static-resource-index groups for i32 rematerialization. This is not yet the
+  final capacity loop: production exposure/materialization and exact
+  post-selection remeasurement remain disconnected, and the legacy
   constant-pool/rematerialization probes still run later;
 - discovery now records source literal operand sites separately from the
   definition/requirement inventory. Stable consumer IDs, per-operand site IDs,
@@ -99,8 +101,9 @@ Current implementation checkpoint (2026-11-16):
   actual constant operands, writable candidate color/extent, and referenced
   resident seed allocations, then inserts one `udonhl.literal_materialize`
   before the consumer and rewrites that instance's operand sites. It is not in
-  the production pipeline, `AllocateHostStorage` does not yet emit selections,
-  and `LowerScalar` does not yet lower the operation. The pass and operation
+  the production pipeline; `AllocateHostStorage` emits selections only for an
+  explicit, versioned pressure request, and `LowerScalar` lowers the selected
+  operation through its allocated writable color. The pass and operation
   verifier now share the exact i32 recipe helper; all selected plans, resident
   inventory/allocation versions, seed bindings, required externs, and actual
   operands are validated before mutation. Every distinct constant definition
@@ -128,15 +131,15 @@ Current implementation checkpoint (2026-11-16):
   attributes exist, preserving the legacy coloring and resident-slot path.
   Focused tests also prove that every seed uses its binding color's physical
   resident slot and that selected scratch/direct colors remain distinct;
-- the next implementation boundary is deliberately model-independent. Move
-  late backend integer consumers into explicit pre-lowering use sites without
-  activating candidate-only metadata.
-  Finally move every late backend `SystemInt32` request that can be
-  rematerialized out of hidden `LowerScalar::immutableSlot()` policy and into
-  explicit pre-lowering IR use sites. Source-operand rematerialization alone
-  cannot solve the real-model pressure because most of the measured integer
-  constants are created by backend lowering rather than present as source SSA
-  operands;
+- the next implementation boundary is deliberately model-independent: finish
+  the focused pressure-selection contract and exact post-selection capacity
+  test, then wire backend-use exposure, allocation, materialization, and
+  remeasurement in production order. After that, move every remaining late
+  backend `SystemInt32` request that can be rematerialized out of hidden
+  `LowerScalar::immutableSlot()` policy and into explicit pre-lowering IR use
+  sites. Source-operand rematerialization alone cannot solve the real-model
+  pressure because most measured integer constants are created by backend
+  lowering rather than present as source SSA operands;
 - the fresh real TinyLlama Host remains the pressure reproducer: its last
   measured lowering required 752 data slots against an effective 503-slot
   data-table capacity, with 515 constant slots, including 509 `SystemInt32`
@@ -713,8 +716,8 @@ Continue in the following independently testable commits:
    testable: (d1) makes Udon lowering consume the explicit allocated operand
    slot while retaining legacy fallback only for unexposed IR; (d2) adds the
    native ABI exclusion/equivalence regression without changing native runtime
-   arguments. Slice (d1) is recorded by `330951e`. Slice (d2) is implemented
-   in the current change: the native-fragment regression proves that adding a
+   arguments. Slice (d1) is recorded by `330951e`, and slice (d2) by
+   `d19375c`: the native-fragment regression proves that adding a
    lowering-only static-resource index yields byte-identical canonical native
    IR, preserves the fixed three-argument native dispatch ABI, and leaves the
    existing executed results unchanged. Slices (a)-(d) are complete;
@@ -725,6 +728,34 @@ Continue in the following independently testable commits:
    helper scratch, and generated version. Test the non-ONNX static-resource
    pressure fixture at the exact 512-address boundary; source-only fixtures are
    insufficient for this gate.
+
+   The first Step 5 slice accepts a versioned
+   `vrc.host_storage_pressure_request` containing exact i32
+   `measured_data_slots`, `data_slot_capacity`, and
+   `required_resident_slot_savings = measured - capacity`. Absence of the
+   request preserves candidate-only output. The selector may initially choose
+   only complete literal-key groups whose uses are all explicit
+   `static_resource_index` sites, whose i32 recipe seeds already have resident
+   allocations, and whose key is not itself retained as another candidate's
+   recipe seed. Every instance for a selected key is emitted through the
+   existing MaterializeHostStorage selection schema, while the reported
+   guaranteed saving is one resident slot per selected key.
+
+   This request expresses resident pressure, not proof that the final Udon
+   address table now fits. Activating writable colors and generated operations
+   can change other address categories. The driver must therefore re-run the
+   exact final capacity probe after materialization; Step 6 owns stable,
+   monotonic retry and final acceptance. The initial deterministic ranking is
+   deliberately limited to unweighted straight-line recipe bytes: 20 bytes
+   for the copy plus 32 bytes per nibble shift and nonzero lower-nibble OR,
+   multiplied by the selected key's instance count, with stable instance ID
+   and literal key tie-breaks. Shared extern/address marginal cost and loop
+   weight remain required refinements before selection expands to general
+   literal roles. A focused end-to-end test must cover request absence,
+   deterministic selection, schema rejection, insufficient safe candidates,
+   direct MaterializeHostStorage consumption, and final lowering. The exact
+   512-address boundary remains a separate acceptance gate before production
+   activation.
 6. Add `VerifyHostStorageCapacity` as an independent pass and connect
    discovery, allocation, materialization, verification, then scalar lowering
    in production order. It reports exact category totals and replacement

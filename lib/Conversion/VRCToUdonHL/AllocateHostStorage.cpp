@@ -360,7 +360,283 @@ private:
                     builder.getI32IntegerAttr(1));
     module->setAttr("vrc.host_literal_allocations",
                     builder.getArrayAttr(result));
-    return allocateWritableCandidates(module, builder);
+    if (failed(allocateWritableCandidates(module, builder)))
+      return failure();
+    return selectPressurePlacements(module, builder);
+  }
+
+  LogicalResult selectPressurePlacements(ModuleOp module, Builder &builder) {
+    auto request = module->getAttrOfType<DictionaryAttr>(
+        "vrc.host_storage_pressure_request");
+    bool hasSelection =
+        module->hasAttr("vrc.host_literal_selected_placement_version") ||
+        module->hasAttr("vrc.host_literal_selected_placements") ||
+        module->hasAttr("vrc.host_storage_selection");
+    if (!request)
+      return hasSelection
+                 ? module.emitError(
+                       "Host storage selection has no pressure request")
+                 : success();
+    if (hasSelection)
+      return module.emitError(
+          "Host storage pressure selection already has an output");
+
+    auto schema = request.getAs<IntegerAttr>("schema_version");
+    auto measured = request.getAs<IntegerAttr>("measured_data_slots");
+    auto capacity = request.getAs<IntegerAttr>("data_slot_capacity");
+    auto required =
+        request.getAs<IntegerAttr>("required_resident_slot_savings");
+    auto isI32 = [](IntegerAttr value) {
+      return value && value.getType().isInteger(32);
+    };
+    if (!isI32(schema) || schema.getInt() != 1 || !isI32(measured) ||
+        !isI32(capacity) || capacity.getInt() < 1 || capacity.getInt() > 512 ||
+        measured.getInt() <= capacity.getInt() || !isI32(required) ||
+        required.getInt() <= 0 ||
+        required.getInt() != measured.getInt() - capacity.getInt())
+      return module.emitError("invalid Host storage pressure request");
+
+    auto uses = module->getAttrOfType<ArrayAttr>("vrc.host_literal_uses");
+    auto sites = module->getAttrOfType<ArrayAttr>("vrc.host_literal_use_sites");
+    auto scratchAllocations = module->getAttrOfType<ArrayAttr>(
+        "vrc.host_literal_scratch_allocations");
+    auto residentAllocations =
+        module->getAttrOfType<ArrayAttr>("vrc.host_literal_allocations");
+    if (!uses || !sites || !scratchAllocations || !residentAllocations)
+      return module.emitError(
+          "Host storage pressure selection lacks allocation inputs");
+
+    struct LiteralUses {
+      uint64_t count = 0;
+      bool onlyStaticResourceIndices = true;
+    };
+    std::map<std::string, LiteralUses> usesByKey;
+    for (Attribute attribute : uses) {
+      auto use = dyn_cast<DictionaryAttr>(attribute);
+      auto key = use ? use.getAs<StringAttr>("literal_key") : StringAttr();
+      auto kind = use ? use.getAs<StringAttr>("kind") : StringAttr();
+      if (!key || !kind)
+        return module.emitError(
+            "invalid Host literal use during pressure selection");
+      LiteralUses &summary = usesByKey[key.getValue().str()];
+      ++summary.count;
+      summary.onlyStaticResourceIndices &=
+          kind.getValue() == "static_resource_index";
+    }
+
+    std::map<std::string, std::string> roleBySite;
+    for (Attribute attribute : sites) {
+      auto site = dyn_cast<DictionaryAttr>(attribute);
+      auto id = site ? site.getAs<StringAttr>("site_id") : StringAttr();
+      auto role = site ? site.getAs<StringAttr>("value_role") : StringAttr();
+      if (!id || !role ||
+          !roleBySite.emplace(id.getValue().str(), role.getValue().str())
+               .second)
+        return module.emitError(
+            "invalid Host literal site during pressure selection");
+    }
+
+    struct ResidentBinding {
+      int64_t color;
+    };
+    std::map<std::string, ResidentBinding> residentByKey;
+    for (Attribute attribute : residentAllocations) {
+      auto allocation = dyn_cast<DictionaryAttr>(attribute);
+      auto key =
+          allocation ? allocation.getAs<StringAttr>("key_id") : StringAttr();
+      auto type = allocation ? allocation.getAs<StringAttr>("physical_type")
+                             : StringAttr();
+      auto placement =
+          allocation ? allocation.getAs<StringAttr>("placement") : StringAttr();
+      auto color =
+          allocation ? allocation.getAs<IntegerAttr>("color") : IntegerAttr();
+      if (!key || !type || type.getValue() != "SystemInt32" || !placement ||
+          placement.getValue() != "resident_shared" || !color ||
+          color.getInt() < 0 ||
+          !residentByKey
+               .emplace(key.getValue().str(), ResidentBinding{color.getInt()})
+               .second)
+        continue;
+    }
+
+    struct Instance {
+      DictionaryAttr allocation;
+      std::string instanceId;
+      std::string literalKey;
+      ArrayAttr siteIds;
+      int64_t color;
+    };
+    std::map<std::string, SmallVector<Instance>> instancesByKey;
+    std::map<std::string, uint64_t> siteCountByKey;
+    for (Attribute attribute : scratchAllocations) {
+      auto allocation = dyn_cast<DictionaryAttr>(attribute);
+      auto instance = allocation ? allocation.getAs<StringAttr>("instance_id")
+                                 : StringAttr();
+      auto key = allocation ? allocation.getAs<StringAttr>("literal_key")
+                            : StringAttr();
+      auto logical = allocation ? allocation.getAs<StringAttr>("logical_type")
+                                : StringAttr();
+      auto physical = allocation ? allocation.getAs<StringAttr>("physical_type")
+                                 : StringAttr();
+      auto siteIds =
+          allocation ? allocation.getAs<ArrayAttr>("site_ids") : ArrayAttr();
+      auto color =
+          allocation ? allocation.getAs<IntegerAttr>("color") : IntegerAttr();
+      bool allStatic = allocation && instance && key && logical &&
+                       logical.getValue() == "i32" && physical &&
+                       physical.getValue() == "SystemInt32" && siteIds &&
+                       !siteIds.empty() && color && color.getInt() >= 0;
+      if (allStatic)
+        for (Attribute siteAttribute : siteIds) {
+          auto site = dyn_cast<StringAttr>(siteAttribute);
+          auto role =
+              site ? roleBySite.find(site.getValue().str()) : roleBySite.end();
+          allStatic &= site && role != roleBySite.end() &&
+                       role->second == "static_resource_index";
+        }
+      if (!allStatic)
+        continue;
+      instancesByKey[key.getValue().str()].push_back(
+          {allocation, instance.getValue().str(), key.getValue().str(), siteIds,
+           color.getInt()});
+      siteCountByKey[key.getValue().str()] += siteIds.size();
+    }
+
+    struct Candidate {
+      std::string literalKey;
+      SmallVector<Instance> instances;
+      HostLiteralI32Recipe recipe;
+      uint64_t codeBytes = 0;
+      SmallVector<std::string> seedKeys;
+    };
+    SmallVector<Candidate, 0> candidates;
+    std::set<std::string> allSeedKeys;
+    for (auto &[key, instances] : instancesByKey) {
+      auto usesFound = usesByKey.find(key);
+      if (usesFound == usesByKey.end() ||
+          !usesFound->second.onlyStaticResourceIndices ||
+          usesFound->second.count != siteCountByKey[key] ||
+          !StringRef(key).starts_with("SystemInt32:0x"))
+        continue;
+      uint64_t bits = 0;
+      if (StringRef(key)
+              .drop_front(sizeof("SystemInt32:0x") - 1)
+              .getAsInteger(16, bits) ||
+          bits > std::numeric_limits<uint32_t>::max())
+        continue;
+      auto recipe = getHostLiteralI32Recipe(
+          builder.getI32Type(),
+          builder.getI32IntegerAttr(static_cast<int32_t>(uint32_t(bits))));
+      if (!recipe)
+        continue;
+      Candidate candidate{key, instances, *recipe};
+      bool seedsAvailable = true;
+      SmallVector<std::string> candidateSeedKeys;
+      for (unsigned seed : recipe->seedValues) {
+        HostLiteralKey seedKey = getHostLiteralKey(
+            builder.getI32Type(), builder.getI32IntegerAttr(seed));
+        if (!residentByKey.count(seedKey.id))
+          seedsAvailable = false;
+        candidateSeedKeys.push_back(seedKey.id);
+      }
+      if (!seedsAvailable)
+        continue;
+      candidate.seedKeys = std::move(candidateSeedKeys);
+      allSeedKeys.insert(candidate.seedKeys.begin(), candidate.seedKeys.end());
+      uint32_t value = static_cast<uint32_t>(bits);
+      unsigned highestNibble = 0;
+      for (unsigned nibble = 1; nibble < 8; ++nibble)
+        if ((value >> (nibble * 4)) & 15)
+          highestNibble = nibble;
+      unsigned lowerNonzero = 0;
+      for (unsigned nibble = 0; nibble < highestNibble; ++nibble)
+        lowerNonzero += ((value >> (nibble * 4)) & 15) != 0;
+      candidate.codeBytes =
+          instances.size() * (20 + 32 * (highestNibble + lowerNonzero));
+      llvm::sort(candidate.instances,
+                 [](const Instance &left, const Instance &right) {
+                   return left.instanceId < right.instanceId;
+                 });
+      candidates.push_back(std::move(candidate));
+    }
+    llvm::erase_if(candidates, [&](const Candidate &candidate) {
+      return allSeedKeys.count(candidate.literalKey);
+    });
+    llvm::sort(candidates, [](const Candidate &left, const Candidate &right) {
+      return std::tie(left.codeBytes, left.instances.front().instanceId,
+                      left.literalKey) <
+             std::tie(right.codeBytes, right.instances.front().instanceId,
+                      right.literalKey);
+    });
+    if (static_cast<uint64_t>(required.getInt()) > candidates.size())
+      return module.emitError()
+             << "Host storage pressure requires " << required.getInt()
+             << " resident slots but only " << candidates.size()
+             << " are safely selectable";
+
+    SmallVector<Attribute> selections;
+    SmallVector<const Candidate *> selected;
+    for (int64_t index = 0; index < required.getInt(); ++index)
+      selected.push_back(&candidates[index]);
+    SmallVector<const Instance *> selectedInstances;
+    for (const Candidate *candidate : selected)
+      for (const Instance &instance : candidate->instances)
+        selectedInstances.push_back(&instance);
+    llvm::sort(selectedInstances,
+               [](const Instance *left, const Instance *right) {
+                 return left->instanceId < right->instanceId;
+               });
+    for (const Instance *instance : selectedInstances) {
+      auto candidateIt = llvm::find_if(selected, [&](const Candidate *item) {
+        return item->literalKey == instance->literalKey;
+      });
+      const Candidate &candidate = **candidateIt;
+      SmallVector<Attribute> seedBindings;
+      for (const std::string &seedKey : candidate.seedKeys) {
+        NamedAttrList seed;
+        seed.set("literal_key", builder.getStringAttr(seedKey));
+        seed.set("physical_type", builder.getStringAttr("SystemInt32"));
+        seed.set("storage_domain", builder.getStringAttr("resident"));
+        seed.set("color",
+                 builder.getI32IntegerAttr(residentByKey.at(seedKey).color));
+        seedBindings.push_back(builder.getDictionaryAttr(seed));
+      }
+      SmallVector<Attribute> externs;
+      for (StringRef name : candidate.recipe.requiredExterns)
+        externs.push_back(builder.getStringAttr(name));
+      NamedAttrList fields;
+      fields.set("instance_id", builder.getStringAttr(instance->instanceId));
+      fields.set("site_ids", instance->siteIds);
+      fields.set("literal_key", builder.getStringAttr(instance->literalKey));
+      fields.set("logical_type", builder.getStringAttr("i32"));
+      fields.set("physical_type", builder.getStringAttr("SystemInt32"));
+      fields.set("placement", builder.getStringAttr("rematerialized"));
+      fields.set("storage_domain", builder.getStringAttr("writable"));
+      fields.set("color", builder.getI32IntegerAttr(instance->color));
+      fields.set("recipe", builder.getStringAttr("rematerialize_i32"));
+      fields.set("generated_version", builder.getI32IntegerAttr(1));
+      fields.set("helper_scratch", builder.getI32IntegerAttr(0));
+      fields.set("required_externs", builder.getArrayAttr(externs));
+      fields.set("seed_bindings", builder.getArrayAttr(seedBindings));
+      selections.push_back(builder.getDictionaryAttr(fields));
+    }
+    module->setAttr("vrc.host_literal_selected_placement_version",
+                    builder.getI32IntegerAttr(1));
+    module->setAttr("vrc.host_literal_selected_placements",
+                    builder.getArrayAttr(selections));
+    module->setAttr(
+        "vrc.host_storage_selection",
+        builder.getDictionaryAttr({
+            builder.getNamedAttr("schema_version",
+                                 builder.getI32IntegerAttr(1)),
+            builder.getNamedAttr("required_resident_slot_savings",
+                                 builder.getI32IntegerAttr(required.getInt())),
+            builder.getNamedAttr("guaranteed_resident_slot_savings",
+                                 builder.getI32IntegerAttr(selected.size())),
+            builder.getNamedAttr("selected_literal_key_count",
+                                 builder.getI32IntegerAttr(selected.size())),
+        }));
+    return success();
   }
 
   LogicalResult allocateWritableCandidates(ModuleOp module, Builder &builder) {

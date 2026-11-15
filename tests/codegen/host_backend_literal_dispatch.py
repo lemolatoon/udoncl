@@ -5,12 +5,16 @@ from pathlib import Path
 
 
 optimizer = Path(sys.argv[1])
-SHIFT = "SystemInt32.__op_LeftShift__SystemInt32_SystemInt32__SystemInt32"
-LOGICAL_OR = "SystemInt32.__op_LogicalOr__SystemInt32_SystemInt32__SystemInt32"
 
 
 source = r'''module attributes {
   vrc.host_stage = "udonhl",
+  vrc.host_storage_pressure_request = {
+    schema_version = 1 : i32,
+    measured_data_slots = 2 : i32,
+    data_slot_capacity = 1 : i32,
+    required_resident_slot_savings = 1 : i32
+  },
   vrc.unity_buffer_pool = [
     {id = 1 : i32, logical_bytes = 4 : i32, heap_slot = "__udoncl_output"}
   ]
@@ -62,71 +66,93 @@ def run(arguments, text):
     )
 
 
-def entries(text, name, next_name):
-    start = text.index(f"{name} = [")
-    end = text.index(next_name, start)
-    return re.findall(r"\{([^{}]+)\}", text[start:end])
-
-
-allocated = run(
-    [
+allocation_pipeline = [
         "--vrc-expose-host-backend-literal-uses",
         "--vrc-discover-host-rematerialization",
         "--vrc-allocate-host-storage",
-    ],
-    source,
-)
+]
+
+
+def allocate(text):
+    return run(allocation_pipeline, text)
+
+
+allocated = allocate(source)
 assert allocated.returncode == 0, (allocated.stdout, allocated.stderr)
-
-scratch = next(
-    entry
-    for entry in entries(
-        allocated.stdout,
-        "vrc.host_literal_scratch_allocations",
-        "vrc.host_literal_scratch_instances",
-    )
-    if 'literal_key = "SystemInt32:0x16"' in entry
-)
-instance_id = re.search(r'instance_id = "([^"]+)"', scratch).group(1)
-color = int(re.search(r"color = (\d+) : i32", scratch).group(1))
-site_ids = re.findall(
-    r'"([^"]+)"', re.search(r"site_ids = \[([^]]+)\]", scratch).group(1)
-)
-
-resident_entries = entries(
+repeated = allocate(source)
+assert repeated.returncode == 0
+assert repeated.stdout == allocated.stdout
+assert "vrc.host_literal_selected_placement_version = 1 : i32" in allocated.stdout
+assert "vrc.host_storage_selection" in allocated.stdout
+assert "guaranteed_resident_slot_savings = 1 : i32" in allocated.stdout
+assert 'literal_key = "SystemInt32:0x16"' in allocated.stdout
+selected_color = re.search(
+    r"vrc\.host_literal_selected_placements = \[\{color = (\d+) : i32,.*?"
+    r'literal_key = "SystemInt32:0x16"',
     allocated.stdout,
-    "vrc.host_literal_allocations",
-    "vrc.host_literal_consumer_groups",
+    re.DOTALL,
 )
-resident_colors = {
-    re.search(r'key_id = "([^"]+)"', entry).group(1): int(
-        re.search(r"color = (\d+) : i32", entry).group(1)
-    )
-    for entry in resident_entries
-}
-seed_bindings = ", ".join(
-    "{color = %d : i32, literal_key = \"SystemInt32:0x%X\", "
-    "physical_type = \"SystemInt32\", storage_domain = \"resident\"}"
-    % (resident_colors[f"SystemInt32:0x{seed:X}"], seed)
-    for seed in [1, 4, 6]
+assert selected_color, allocated.stdout
+color = int(selected_color.group(1))
+
+without_request = re.sub(
+    r"\s*vrc\.host_storage_pressure_request = \{.*?\},\n",
+    "\n",
+    source,
+    count=1,
+    flags=re.DOTALL,
 )
-sites = ", ".join(f'"{site}"' for site in site_ids)
-selection = (
-    "{color = %d : i32, generated_version = 1 : i32, "
-    "helper_scratch = 0 : i32, instance_id = \"%s\", "
-    "literal_key = \"SystemInt32:0x16\", logical_type = \"i32\", "
-    "physical_type = \"SystemInt32\", placement = \"rematerialized\", "
-    "recipe = \"rematerialize_i32\", required_externs = [\"%s\", \"%s\"], "
-    "seed_bindings = [%s], site_ids = [%s], storage_domain = \"writable\"}"
-    % (color, instance_id, SHIFT, LOGICAL_OR, seed_bindings, sites)
+candidate_only = allocate(without_request)
+assert candidate_only.returncode == 0, (
+    candidate_only.stdout,
+    candidate_only.stderr,
 )
-selected = allocated.stdout.replace(
-    "module attributes {",
-    "module attributes {vrc.host_literal_selected_placement_version = "
-    f"1 : i32, vrc.host_literal_selected_placements = [{selection}], ",
-    1,
+assert "vrc.host_literal_selected_placement_version" not in candidate_only.stdout
+assert "vrc.host_literal_selected_placements" not in candidate_only.stdout
+assert "vrc.host_storage_selection" not in candidate_only.stdout
+
+
+def reject_allocation(text, diagnostic):
+    result = allocate(text)
+    assert result.returncode != 0, (result.stdout, result.stderr)
+    assert diagnostic in result.stderr, result.stderr
+
+
+reject_allocation(
+    source.replace("schema_version = 1 : i32", "schema_version = 2 : i32", 1),
+    "invalid Host storage pressure request",
 )
-materialized = run(["--vrc-materialize-host-storage"], selected)
+reject_allocation(
+    source.replace("schema_version = 1 : i32", "schema_version = 1 : i64", 1),
+    "invalid Host storage pressure request",
+)
+reject_allocation(
+    source.replace(
+        "required_resident_slot_savings = 1 : i32",
+        "required_resident_slot_savings = 2 : i32",
+        1,
+    ),
+    "invalid Host storage pressure request",
+)
+reject_allocation(
+    source.replace("measured_data_slots = 2 : i32", "measured_data_slots = 3 : i32", 1)
+    .replace(
+        "required_resident_slot_savings = 1 : i32",
+        "required_resident_slot_savings = 2 : i32",
+        1,
+    ),
+    "resident slots but only 1 are safely selectable",
+)
+reject_allocation(
+    source.replace(
+        "module attributes {",
+        "module attributes {vrc.host_literal_selected_placement_version = 1 : i32, ",
+        1,
+    ),
+    "Host storage pressure selection already has an output",
+)
+
+materialized = run(["--vrc-materialize-host-storage"], allocated.stdout)
 assert materialized.returncode == 0, (materialized.stdout, materialized.stderr)
 assert materialized.stdout.count('"udonhl.literal_materialize"') == 1
 
