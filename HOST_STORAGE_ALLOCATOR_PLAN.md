@@ -75,6 +75,12 @@ Current implementation checkpoint (2026-11-15):
   numeric colors in different domains do not alias. Legacy async persistent
   spill coloring and resident literal compatibility allocation use this graph,
   with placement and generated code unchanged;
+- `udonhl.literal_materialize` now defines the non-Pure explicit IR contract
+  that a later `MaterializeHostStorage` pass will insert. Its verifier fixes
+  the selected recipe, typed literal/key, writable color, exact resident seed
+  bindings, required externs, helper scratch, and generated version. The first
+  supported contract is `rematerialize_i32`; no pass emits or lowers this op
+  yet, and candidate colors are not treated as placement decisions;
 - the fresh real TinyLlama Host remains the pressure reproducer: its last
   measured lowering required 752 data slots against an effective 503-slot
   data-table capacity, with 515 constant slots, including 509 `SystemInt32`
@@ -358,6 +364,14 @@ Mechanically converts placement decisions into direct storage, existing
 `udonhl.spill_store`/`udonhl.spill_load` operations, constant-pool reads,
 derivation sequences, and typed scratch use. It creates fixed-size typed arrays
 and must not invent a new placement decision.
+
+It consumes allocator-selected placement decisions, never candidate metadata,
+and emits explicit placement IR. Every literal recipe must already name its
+domain-qualified writable color, resident seed bindings, required externs, and
+helper scratch. `rematerialize_i32` is a physical `SystemInt32` recipe shared
+by i8, i16, i32, and index logical literals. Materialization and final lowering
+must not call `immutableSlot()` or otherwise add hidden seed storage, choose a
+different recipe, or independently recolor direct SSA values.
 
 ### 5.7 `VerifyHostStorageCapacity`
 

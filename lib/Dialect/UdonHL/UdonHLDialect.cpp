@@ -1,4 +1,5 @@
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
+#include "VRC/Support/HostLiteral.h"
 #include "VRC/Dialect/VRC/VRCDialect.h"
 #include "udoncl/array.h"
 #include "udoncl/string.h"
@@ -87,6 +88,99 @@ mlir::LogicalResult verifyMatchingAddressSpaces(mlir::Operation *operation,
   return mlir::success();
 }
 } // namespace
+
+mlir::LogicalResult vrc::udonhl::LiteralMaterializeOp::verify() {
+  auto literal = mlir::dyn_cast<mlir::TypedAttr>(getLiteral());
+  if (!literal || literal.getType() != getResult().getType())
+    return emitOpError("literal type must match the result type");
+  if (getInstanceId().empty())
+    return emitOpError("instance_id must be nonempty");
+  if (getGeneratedVersion() != 1)
+    return emitOpError("generated_version must be 1");
+  if (getStorageDomain() != "writable" || getColorAttr().getInt() < 0)
+    return emitOpError("requires a nonnegative writable storage color");
+  if (getHelperScratchAttr().getInt() < 0)
+    return emitOpError("helper_scratch must be nonnegative");
+
+  ::vrc::HostLiteralKey key =
+      ::vrc::getHostLiteralKey(literal.getType(), literal);
+  if (!key.supported || getLiteralKey() != key.id ||
+      getPhysicalType() != key.physicalType)
+    return emitOpError("literal key or physical type is not canonical");
+  if (getRecipe() != "rematerialize_i32")
+    return emitOpError("unsupported literal materialization recipe");
+  auto integer = mlir::dyn_cast<mlir::IntegerAttr>(literal);
+  mlir::Type logicalType = literal.getType();
+  bool systemInt32 = logicalType.isInteger(8) || logicalType.isInteger(16) ||
+                     logicalType.isInteger(32) || logicalType.isIndex();
+  if (!integer || !systemInt32 || getHelperScratch() != 0)
+    return emitOpError(
+        "rematerialize_i32 requires a SystemInt32 literal and no helper "
+        "scratch");
+
+  uint32_t value =
+      static_cast<uint32_t>(integer.getValue().sextOrTrunc(32).getZExtValue());
+  unsigned highestNibble = 0;
+  for (unsigned nibble = 1; nibble < 8; ++nibble)
+    if ((value >> (nibble * 4)) & 15)
+      highestNibble = nibble;
+  llvm::SmallVector<unsigned> seedValues{
+      static_cast<unsigned>((value >> (highestNibble * 4)) & 15)};
+  if (highestNibble)
+    seedValues.push_back(4);
+  bool needsOr = false;
+  for (unsigned nibble = highestNibble; nibble-- > 0;) {
+    unsigned digit = static_cast<unsigned>((value >> (nibble * 4)) & 15);
+    if (digit) {
+      needsOr = true;
+      seedValues.push_back(digit);
+    }
+  }
+  llvm::sort(seedValues);
+  seedValues.erase(std::unique(seedValues.begin(), seedValues.end()),
+                   seedValues.end());
+  if (getSeedBindings().size() != seedValues.size())
+    return emitOpError("seed_bindings do not match the selected recipe");
+  llvm::DenseSet<int32_t> seedColors;
+  for (auto [attribute, seed] : llvm::zip(getSeedBindings(), seedValues)) {
+    auto binding = mlir::dyn_cast<mlir::DictionaryAttr>(attribute);
+    auto literalKey = binding ? binding.getAs<mlir::StringAttr>("literal_key")
+                              : mlir::StringAttr();
+    auto domain = binding ? binding.getAs<mlir::StringAttr>("storage_domain")
+                          : mlir::StringAttr();
+    auto physicalType = binding
+                            ? binding.getAs<mlir::StringAttr>("physical_type")
+                            : mlir::StringAttr();
+    auto color = binding ? binding.getAs<mlir::IntegerAttr>("color")
+                         : mlir::IntegerAttr();
+    ::vrc::HostLiteralKey seedKey = ::vrc::getHostLiteralKey(
+        mlir::IntegerType::get(getContext(), 32),
+        mlir::IntegerAttr::get(mlir::IntegerType::get(getContext(), 32), seed));
+    if (!binding || !literalKey || literalKey.getValue() != seedKey.id ||
+        !domain || domain.getValue() != "resident" || !physicalType ||
+        physicalType.getValue() != "SystemInt32" || !color ||
+        color.getInt() < 0 ||
+        !seedColors.insert(static_cast<int32_t>(color.getInt())).second)
+      return emitOpError("seed binding is noncanonical or aliases a seed");
+  }
+
+  llvm::SmallVector<llvm::StringRef> expectedExterns;
+  if (highestNibble)
+    expectedExterns.push_back(
+        "SystemInt32.__op_LeftShift__SystemInt32_SystemInt32__SystemInt32");
+  if (needsOr)
+    expectedExterns.push_back(
+        "SystemInt32.__op_LogicalOr__SystemInt32_SystemInt32__SystemInt32");
+  if (getRequiredExterns().size() != expectedExterns.size())
+    return emitOpError("required_externs do not match the selected recipe");
+  for (auto [attribute, expected] :
+       llvm::zip(getRequiredExterns(), expectedExterns)) {
+    auto name = mlir::dyn_cast<mlir::StringAttr>(attribute);
+    if (!name || name.getValue() != expected)
+      return emitOpError("required_externs do not match the selected recipe");
+  }
+  return mlir::success();
+}
 
 mlir::LogicalResult vrc::udonhl::GlobalOp::verify() {
   if (!mlir::isa<mlir::ModuleOp>((*this)->getParentOp()))

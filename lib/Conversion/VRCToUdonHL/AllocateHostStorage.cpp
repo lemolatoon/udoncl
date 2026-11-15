@@ -1,7 +1,7 @@
 #include "VRC/Conversion/Passes.h"
 #include "VRC/Analysis/HostStorageAllocation.h"
 #include "VRC/Analysis/HostStorageLiveness.h"
-#include "VRC/Conversion/HostLiteral.h"
+#include "VRC/Support/HostLiteral.h"
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"

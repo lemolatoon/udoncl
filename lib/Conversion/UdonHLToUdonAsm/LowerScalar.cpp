@@ -1,7 +1,7 @@
 #include "VRC/Conversion/Passes.h"
 #include "VRC/ABI/Manifest/UdonSharpABI.h"
 #include "VRC/Analysis/HostStorageLiveness.h"
-#include "VRC/Conversion/HostLiteral.h"
+#include "VRC/Support/HostLiteral.h"
 #include "VRC/Dialect/UdonAsm/UdonAsmDialect.h"
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
 #include "VRC/Dialect/VRC/VRCDialect.h"

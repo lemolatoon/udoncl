@@ -1,5 +1,5 @@
-#ifndef VRC_CONVERSION_HOSTLITERAL_H
-#define VRC_CONVERSION_HOSTLITERAL_H
+#ifndef VRC_SUPPORT_HOSTLITERAL_H
+#define VRC_SUPPORT_HOSTLITERAL_H
 
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Types.h"
@@ -91,4 +91,4 @@ inline HostLiteralKey getHostLiteralKey(mlir::Type type,
 
 } // namespace vrc
 
-#endif // VRC_CONVERSION_HOSTLITERAL_H
+#endif // VRC_SUPPORT_HOSTLITERAL_H

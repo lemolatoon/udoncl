@@ -154,6 +154,17 @@ def UdonHL_SpillLoadOp : Op<UdonHL_Dialect, "spill_load"> {
   let results = (outs AnyType:$value);
   let assemblyFormat = "`[` $index `]` attr-dict `:` type($value)";
 }
+def UdonHL_LiteralMaterializeOp : Op<UdonHL_Dialect,
+    "literal_materialize"> {
+  let summary = "Materialize one allocator-selected typed literal into writable storage";
+  let arguments = (ins AnyAttr:$literal, StrAttr:$literal_key,
+    StrAttr:$instance_id, StrAttr:$recipe, StrAttr:$storage_domain,
+    StrAttr:$physical_type, I32Attr:$color, ArrayAttr:$seed_bindings,
+    ArrayAttr:$required_externs, I32Attr:$helper_scratch,
+    I32Attr:$generated_version);
+  let results = (outs AnyType:$result);
+  let hasVerifier = 1;
+}
 def UdonHL_CallOp : Op<UdonHL_Dialect, "call", [SymbolUserOpInterface]> {
   let summary = "C call with explicit recursion/suspension policy";
   let arguments = (ins FlatSymbolRefAttr:$callee, Variadic<AnyType>:$args,

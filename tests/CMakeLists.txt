@@ -450,6 +450,12 @@ add_test(NAME host-rematerialization-inventory
     $<TARGET_FILE:vrc-opt>
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/host_rematerialization_inventory.mlir"
 )
+add_test(NAME literal-materialization-contract
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/literal_materialization_contract.py"
+    $<TARGET_FILE:vrc-opt>
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/literal_materialization_contract.mlir"
+)
 add_test(NAME static-dispatch-resource-materialization
   COMMAND Python3::Interpreter
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_dispatch_resource_materialization.py"
