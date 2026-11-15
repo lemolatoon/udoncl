@@ -956,6 +956,14 @@ assert raw_memory_lowered.returncode == 0, raw_memory_lowered.stderr
 assert 'udonasm.storage_report' in raw_memory_lowered.stdout
 assert 'raw_heap_bytes = 41 : i64' in raw_memory_lowered.stdout
 assert 'raw_heap_words = 11 : i64' in raw_memory_lowered.stdout
+assert re.search(
+    r'key_id = "SystemBoolean:0x1", kind = "arith_constant"',
+    raw_memory_lowered.stdout,
+), raw_memory_lowered.stdout
+assert re.search(
+    r'key_id = "SystemInt64:0x[0-9A-F]+", kind = "arith_constant"',
+    raw_memory_lowered.stdout,
+), raw_memory_lowered.stdout
 slot_count = int(re.search(
     r'data_slot_count = (\d+) : i64', raw_memory_lowered.stdout
 ).group(1))
@@ -1356,6 +1364,13 @@ buffer_lowered = subprocess.run(
     [opt, '--vrc-lower-udonhl-to-udonasm', '--verify-each'],
     input=buffer_source, text=True, capture_output=True)
 assert buffer_lowered.returncode == 0, buffer_lowered.stderr
+oversized_buffer_id = subprocess.run(
+    [opt, '--vrc-lower-udonhl-to-udonasm'],
+    input=buffer_source.replace('id = 2 : i32', 'id = 2147483648 : i64'),
+    text=True,
+    capture_output=True,
+)
+assert oversized_buffer_id.returncode != 0
 for expected in [
     'name = "__udoncl_buffer_pool"',
     'type = "UnityEngineRenderTextureArray"',
@@ -1590,6 +1605,28 @@ sparse_selector_lowered = subprocess.run(
 )
 assert sparse_selector_lowered.returncode == 0, sparse_selector_lowered.stderr
 sparse_output = sparse_selector_lowered.stdout
+literal_request_pattern = re.compile(
+    r'\{key_id = "(?P<key>[^"]+)", kind = "(?P<kind>[^"]+)", '
+    r'origin = "(?P<origin>[^"]+)", physical_type = "(?P<type>[^"]+)", '
+    r'placement = "(?P<placement>[^"]+)", slot = "(?P<slot>[^"]+)", '
+    r'use_count = (?P<uses>\d+) : i64, value = "(?P<value>[^"]+)"\}'
+)
+sparse_literal_requests = [
+    match.groupdict() for match in literal_request_pattern.finditer(sparse_output)
+]
+assert sparse_literal_requests, sparse_output
+assert {request['kind'] for request in sparse_literal_requests} >= {
+    'arith_constant', 'unity_buffer_id', 'unity_buffer_token'
+}, sparse_literal_requests
+assert all(
+    request['placement'] == 'resident_shared'
+    for request in sparse_literal_requests
+), sparse_literal_requests
+for key in {request['key'] for request in sparse_literal_requests}:
+    assert len({
+        request['slot'] for request in sparse_literal_requests
+        if request['key'] == key
+    }) == 1, (key, sparse_literal_requests)
 assert sparse_output.count(
     'SystemInt32.__op_Equality__SystemInt32_SystemInt32__SystemBoolean'
 ) == 2, sparse_output
@@ -1639,6 +1676,14 @@ assigned_buffer_lowered = subprocess.run(
     ],
     input=assigned_buffer_source, text=True, capture_output=True)
 assert assigned_buffer_lowered.returncode == 0, assigned_buffer_lowered.stderr
+assigned_literal_requests = [
+    match.groupdict()
+    for match in literal_request_pattern.finditer(assigned_buffer_lowered.stdout)
+]
+assert any(
+    request['kind'] == 'unity_buffer_pool_index'
+    for request in assigned_literal_requests
+), assigned_literal_requests
 for expected in [
     'udonasm.push "__udoncl_buffer_pool"',
     'SystemObjectArray.__Get__SystemInt32__SystemObject',

@@ -1,6 +1,7 @@
 #include "VRC/Conversion/Passes.h"
 #include "HostStorageLiveness.h"
 #include "VRC/ABI/Manifest/UdonSharpABI.h"
+#include "VRC/Conversion/HostLiteral.h"
 #include "VRC/Dialect/UdonAsm/UdonAsmDialect.h"
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
 #include "VRC/Dialect/VRC/VRCDialect.h"
@@ -23,6 +24,7 @@
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/MathExtras.h"
+#include <map>
 
 using namespace mlir;
 
@@ -96,6 +98,14 @@ struct RawObjectPlan {
   uint64_t base;
   uint64_t bytes;
   uint64_t alignment;
+};
+
+struct ResidentLiteralRequest {
+  HostLiteralKey key;
+  std::string origin;
+  std::string kind;
+  std::string slot;
+  unsigned useCount = 0;
 };
 
 static FailureOr<StringRef> udonType(Type type) {
@@ -1155,6 +1165,8 @@ private:
     auto pool = module->getAttrOfType<ArrayAttr>("vrc.unity_buffer_pool");
     if (!pool)
       return success();
+    if (pool.size() > static_cast<size_t>(INT32_MAX))
+      return module.emitError("Unity buffer pool exceeds i32 token capacity");
     llvm::SmallSet<int64_t, 8> ids;
     llvm::SmallSet<std::string, 8> slots;
     for (Attribute attribute : pool) {
@@ -1164,7 +1176,7 @@ private:
           entry ? entry.getAs<IntegerAttr>("logical_bytes") : IntegerAttr();
       auto heapSlot =
           entry ? entry.getAs<StringAttr>("heap_slot") : StringAttr();
-      if (!id || id.getInt() <= 0 || !logicalBytes ||
+      if (!id || id.getInt() <= 0 || id.getInt() > INT32_MAX || !logicalBytes ||
           logicalBytes.getInt() < 0 || !heapSlot ||
           heapSlot.getValue().empty() || !ids.insert(id.getInt()).second ||
           !slots.insert(heapSlot.getValue().str()).second)
@@ -1408,6 +1420,17 @@ private:
       cachedSpillIndexEntries.push_back(
           entry({stringField("storage_key", storageKey),
                  integerField("index", index)}));
+    SmallVector<Attribute> literalRequests;
+    for (const auto &[requestId, request] : residentLiteralRequests)
+      literalRequests.push_back(
+          entry({stringField("key_id", request.key.id),
+                 stringField("physical_type", request.key.physicalType),
+                 stringField("value", request.key.value),
+                 stringField("origin", request.origin),
+                 stringField("kind", request.kind),
+                 stringField("placement", "resident_shared"),
+                 stringField("slot", request.slot),
+                 integerField("use_count", request.useCount)}));
     int64_t finalDataSlotReserve = 0;
     if (auto reserve =
             module->getAttrOfType<IntegerAttr>("vrc.final_data_slot_reserve"))
@@ -1432,6 +1455,9 @@ private:
          integerField("cached_raw_addresses", cachedRawGlobalSlots.size()),
          integerField("cached_return_addresses",
                       cachedReturnAddressSlots.size()),
+         integerField("literal_request_count", literalRequests.size()),
+         builder.getNamedAttr("literal_requests",
+                              builder.getArrayAttr(literalRequests)),
          integerField("unity_buffer_id_direct_count",
                       unityBufferPool.size() -
                           rematerializedUnityBufferIds.size()),
@@ -2208,7 +2234,10 @@ private:
           }
           Type constantType = operation.getResult(0).getType();
           if (!constantType.isInteger(1) && !constantType.isInteger(64)) {
-            name = immutableSlot(*type, initial);
+            auto constant = cast<arith::ConstantOp>(operation);
+            name =
+                requestResidentLiteral(constant.getType(), constant.getValue(),
+                                       initial, "source", "arith_constant");
             valueSlots[operation.getResult(0)] = name;
             continue;
           }
@@ -2225,6 +2254,9 @@ private:
           } else {
             name = found->second;
           }
+          auto constant = cast<arith::ConstantOp>(operation);
+          recordResidentLiteral(constant.getType(), constant.getValue(), name,
+                                "source", "arith_constant");
         } else {
           name = coloredSlot(operation.getResult(0));
         }
@@ -4342,6 +4374,37 @@ private:
     return name;
   }
 
+  std::string requestResidentLiteral(Type logicalType, Attribute value,
+                                     StringRef initial, StringRef origin,
+                                     StringRef kind) {
+    HostLiteralKey key = getHostLiteralKey(logicalType, value);
+    auto slot = residentLiteralSlots.find(key.id);
+    if (slot == residentLiteralSlots.end())
+      slot = residentLiteralSlots
+                 .try_emplace(key.id, immutableSlot(key.physicalType, initial))
+                 .first;
+    recordResidentLiteral(logicalType, value, slot->second, origin, kind);
+    return slot->second;
+  }
+
+  void recordResidentLiteral(Type logicalType, Attribute value, StringRef slot,
+                             StringRef origin, StringRef kind) {
+    HostLiteralKey key = getHostLiteralKey(logicalType, value);
+    residentLiteralSlots.try_emplace(key.id, slot.str());
+    std::string requestId = (origin + "\n" + kind + "\n" + key.id).str();
+    auto [found, inserted] = residentLiteralRequests.try_emplace(
+        requestId,
+        ResidentLiteralRequest{key, origin.str(), kind.str(), slot.str()});
+    ++found->second.useCount;
+  }
+
+  std::string requestResidentI32Literal(int64_t value, StringRef origin,
+                                        StringRef kind) {
+    auto attribute = builder.getI32IntegerAttr(value);
+    return requestResidentLiteral(builder.getI32Type(), attribute,
+                                  std::to_string(value), origin, kind);
+  }
+
   std::string loadUnityBufferAtIndex(Location location, StringRef index,
                                      StringRef prefix) {
     if (unityBufferPool.empty())
@@ -4363,7 +4426,9 @@ private:
     if (entry == unityBufferPool.end())
       return {};
     return loadUnityBufferAtIndex(
-        location, immutableSlot("SystemInt32", std::to_string(entry->index)),
+        location,
+        requestResidentI32Literal(entry->index, "backend",
+                                  "unity_buffer_pool_index"),
         prefix);
   }
 
@@ -4394,7 +4459,7 @@ private:
         emitI32Literal(location, static_cast<uint32_t>(entry.id), accumulator);
         id = accumulator.str();
       } else {
-        id = immutableSlot("SystemInt32", std::to_string(entry.id));
+        id = requestResidentI32Literal(entry.id, "backend", "unity_buffer_id");
       }
       constexpr StringLiteral matches = "__vrc_unity_buffer_matches";
       addSlot(matches, "SystemBoolean", "null", false);
@@ -4410,7 +4475,8 @@ private:
           {builder.getNamedAttr("target", builder.getI64IntegerAttr(0))});
       address += 8;
       emitCopy(location,
-               immutableSlot("SystemInt32", std::to_string(entry.index + 1)),
+               requestResidentI32Literal(entry.index + 1, "backend",
+                                         "unity_buffer_token"),
                token);
       done.push_back(emitJump(location, 0));
       next->setAttr("target",
@@ -5494,6 +5560,8 @@ private:
   SmallVector<std::string> typedSpillBankOrder;
   llvm::StringMap<std::string> sharedConstantSlots;
   llvm::StringMap<std::string> immutableSlots;
+  std::map<std::string, std::string> residentLiteralSlots;
+  std::map<std::string, ResidentLiteralRequest> residentLiteralRequests;
   unsigned sharedConstantIndex = 0;
   llvm::StringMap<uint64_t> rawGlobalBases;
   llvm::StringMap<DenseI8ArrayAttr> rawGlobalInitializers;
