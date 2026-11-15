@@ -2109,6 +2109,8 @@ recoverUnityOpenCLDispatchProgram(const llvm::Module &input,
   OperationState dispatch(owner.getLoc(),
                           ::vrc::vrc::DispatchOp::getOperationName());
   dispatch.addOperands({desc->getResult(0), buffer->getResult(0)});
+  dispatch.addAttribute("operandSegmentSizes",
+                        builder.getDenseI32ArrayAttr({1, 1, 0}));
   dispatch.addTypes(::vrc::vrc::EventType::get(&context));
   dispatch.addAttribute("kernel_id", builder.getI32IntegerAttr(*kernelId));
   dispatch.addAttribute(
@@ -2426,6 +2428,10 @@ recoverUnityOpenCLGatherDispatchProgram(const llvm::Module &input,
   for (Operation *buffer : allocatedBuffers)
     operands.push_back(buffer->getResult(0));
   dispatch.addOperands(operands);
+  dispatch.addAttribute(
+      "operandSegmentSizes",
+      builder.getDenseI32ArrayAttr(
+          {1, static_cast<int32_t>(allocatedBuffers.size()), 0}));
   dispatch.addTypes(::vrc::vrc::EventType::get(&context));
   dispatch.addAttribute("kernel_id", builder.getI32IntegerAttr(*kernelId));
   dispatch.addAttribute("argument_kinds", builder.getArrayAttr(kindAttrs));

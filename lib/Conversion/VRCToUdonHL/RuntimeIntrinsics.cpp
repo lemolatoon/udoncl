@@ -139,13 +139,17 @@ struct SubstituteRuntimeIntrinsicsPass
       if (name != "static_buffer")
         state.addOperands(call.getArgs());
       state.addTypes(call.getResultTypes());
-      if (name == "dispatch")
+      if (name == "dispatch") {
+        state.addAttribute(
+            "operandSegmentSizes",
+            rewriter.getDenseI32ArrayAttr(
+                {1, static_cast<int32_t>(call.getArgs().size() - 1), 0}));
         for (StringRef attribute :
              {"kernel_id", "argument_kinds", "resource_accesses", "global_size",
               "local_size", "global_offset"})
           state.addAttribute(attribute,
                              callee->getAttr(("vrc." + attribute).str()));
-      else if (name == "buffer_alloc")
+      } else if (name == "buffer_alloc")
         for (StringRef attribute : {"format", "usage"})
           state.addAttribute(attribute,
                              callee->getAttr(("vrc." + attribute).str()));

@@ -169,6 +169,44 @@ transfers_roundtrip = run(transfers.stdout)
 assert transfers_roundtrip.returncode == 0, transfers_roundtrip.stderr
 assert transfers.stdout == transfers_roundtrip.stdout
 
+dispatches = run('''module {
+  func.func @legacy(%desc: !vrc.dispatch_desc, %output: !vrc.buffer) {
+    %event = vrc.dispatch %desc(%output) {argument_kinds = ["buffer"], global_offset = array<i32: 0, 0, 0>, global_size = array<i32: 1, 1, 1>, kernel_id = 7 : i32, local_size = array<i32: 1, 1, 1>, resource_accesses = ["write"]} : (!vrc.dispatch_desc, !vrc.buffer) -> !vrc.event
+    return
+  }
+  func.func @explicit(%desc: !vrc.dispatch_desc, %input: !vrc.buffer, %output: !vrc.buffer, %index: i32) {
+    %event = vrc.dispatch %desc(%input, %output) static_indices(%index) {argument_kinds = ["buffer", "buffer"], global_offset = array<i32: 0, 0, 0>, global_size = array<i32: 1, 1, 1>, kernel_id = 8 : i32, local_size = array<i32: 1, 1, 1>, resource_accesses = ["read", "write"], static_resource_positions = array<i32: 0>} : (!vrc.dispatch_desc, !vrc.buffer, !vrc.buffer, i32) -> !vrc.event
+    return
+  }
+}
+''')
+assert dispatches.returncode == 0, dispatches.stderr
+assert dispatches.stdout.count("static_indices(") == 1
+assert "static_resource_positions = array<i32: 0>" in dispatches.stdout
+dispatches_roundtrip = run(dispatches.stdout)
+assert dispatches_roundtrip.returncode == 0, dispatches_roundtrip.stderr
+assert dispatches.stdout == dispatches_roundtrip.stdout
+
+for positions, indices, diagnostic in [
+    (None, "%index", "positions and index operands must appear together"),
+    ("array<i32: 0>", "", "positions and index operands must appear together"),
+    ("array<i32: 0, 1>", "%index", "position count must match index operands"),
+    ("array<i32: 0, 0>", "%index, %index", "positions must be sorted and unique"),
+    ("array<i32: 1, 0>", "%index, %index", "positions must be sorted and unique"),
+    ("array<i32: 2>", "%index", "position is out of range"),
+]:
+    clause = f" static_indices({indices})" if indices else ""
+    attribute = (f", static_resource_positions = {positions}"
+                 if positions is not None else "")
+    invalid_dispatch = run(f'''module {{
+      func.func @bad(%desc: !vrc.dispatch_desc, %input: !vrc.buffer, %output: !vrc.buffer, %index: i32) {{
+        %event = vrc.dispatch %desc(%input, %output){clause} {{argument_kinds = ["buffer", "buffer"], global_offset = array<i32: 0, 0, 0>, global_size = array<i32: 1, 1, 1>, kernel_id = 9 : i32, local_size = array<i32: 1, 1, 1>, resource_accesses = ["read", "write"]{attribute}}} : (!vrc.dispatch_desc, !vrc.buffer, !vrc.buffer{", i32" * len([item for item in indices.split(",") if item.strip()])}) -> !vrc.event
+        return
+      }}
+    }}''')
+    assert invalid_dispatch.returncode != 0, invalid_dispatch.stdout
+    assert diagnostic in invalid_dispatch.stderr, invalid_dispatch.stderr
+
 invalid_await = run('''module {
   func.func @bad(%event: !vrc.event) -> i32 {
     %status = vrc.await %event : (!vrc.event) -> i32
@@ -211,4 +249,4 @@ for operation, diagnostic in [
     result = run('module { ' + operation + ' }')
     assert result.returncode != 0, operation
     assert diagnostic in result.stderr, (operation, result.stderr)
-print('10 opcode, memory, transfer/event and continuation-frame round-trips plus negative verifier cases passed')
+print('10 opcode, memory, dispatch, transfer/event and continuation-frame round-trips plus negative verifier cases passed')

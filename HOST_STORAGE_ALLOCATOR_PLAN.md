@@ -593,6 +593,109 @@ Continue in the following independently testable commits:
    operator. Keep late code addresses and ABI/state constants fixed until
    their distinct semantics are modeled. Prove that the inventory and
    executable IR name the same consumer phases.
+
+   **Next implementation slice: static-resource dispatch indices.** Do not
+   start with typed-spill indices: `AllocateHostStorage` currently creates the
+   spill operations after discovery, so exposing their index attributes first
+   would not yet produce allocator-visible use sites. Static-resource indices
+   already have a stable dispatch consumer phase and account for material
+   integer pressure without depending on a model or source operator.
+
+   Extend `vrc.dispatch` backward-compatibly rather than adding a marker-only
+   operation. Add a zero-or-more `i32` `static_resource_indices` operand
+   segment and an optional dense `static_resource_positions` attribute. The
+   operation has one fixed operand followed by two variadic segments, so its
+   ODS traits must include `AttrSizedOperandSegments`; builders must provide
+   `operandSegmentSizes = [1, resources.size(),
+   static_resource_indices.size()]`. Preserve the existing textual form when
+   the new segment is empty. When nonempty, print an optional explicit clause,
+   for example `static_indices(%i0, %i1)`, before the attribute dictionary;
+   `functional-type(operands, results)` continues to describe all three
+   segments. The position array is sorted, unique, has the same length as the
+   index operands, and contains only resource ordinals in range. Every operand
+   is exactly `i32` and must agree with the static-resource provenance and
+   binding snapshot for that resource. An absent position attribute is valid
+   only with an empty operand segment, keeping existing textual fixtures and
+   callers valid.
+
+   Add one `ExposeHostBackendLiteralUses` pass whose first and only supported
+   role is `static_resource_index`. It runs after async-runtime preparation and
+   immediately before `DiscoverHostRematerialization`, while dispatch resource
+   provenance and the static kernel binding snapshot are still available. It
+   must not consume `vrc.unity_static_tensor_ids`: that compatibility attribute
+   is currently attached later by Unity buffer binding, after host-storage
+   discovery. Instead, derive each index from the dispatch resource's verified
+   static provenance/snapshot. Later binding must cross-check its compatibility
+   attribute against the explicit operands rather than silently replacing
+   them.
+
+   The pass first validates and plans every dispatch, then mutates any of them.
+   For each static resource position it inserts one dedicated `arith.constant`
+   immediately before the dispatch, tagged with
+   `vrc.host_literal_role = "static_resource_index"` and a generated schema
+   version, then rebuilds or updates the dispatch operand segments without
+   changing result identity or unrelated attributes. A module-level
+   `vrc.host_backend_literal_use_version = 1` records completion. Running the
+   pass again on an exact complete representation is a no-op; absent version
+   with pre-existing generated operands, partial coverage, duplicate or stale
+   positions, a mismatched literal/provenance pair, or an unsupported version
+   is a transactional failure.
+
+   Update `DiscoverHostRematerialization` to classify the new exact operand
+   sites by the tagged backend value role. Bump the versioned use-site schema
+   rather than making the role silently optional: ordinary source operands use
+   `source_operand`, while these sites use `static_resource_index`. The stable
+   site still names the dispatch operation and real operand index, so the
+   existing typed scratch instance, simultaneous consumer group, candidate
+   coloring, selected placement, and materialization path applies unchanged.
+   Remove the old attribute-only `static_tensor_index` inventory entry for an
+   exposed resource; the explicit constant definition and operand site are the
+   single source of truth and must not be counted twice. Discovery rejects a
+   generated backend literal whose role, version, dispatch segment, or
+   provenance no longer agrees.
+
+   `LowerScalar` obtains a static texture-array index only from the explicit
+   operand slot when the segment is present; it must not call
+   `immutableSlot()` for that use. Candidate-only compilation remains resident
+   and produces equivalent behavior, while an allocator-selected operand may
+   already be a `udonhl.literal_materialize` result using its fixed writable
+   color. The native-test dispatch adaptor deliberately excludes these
+   lowering-only operands from the native runtime call, but validates or
+   rejects an inconsistent segment rather than silently treating it as a
+   kernel argument.
+
+   Audit every programmatic `vrc.dispatch` construction when adding the sized
+   segments. The current manual `OperationState` builders in
+   `OpenCLAOTIntrinsics.cpp`, `RuntimeIntrinsics.cpp`, and the two recovery
+   builders in `vrccl.cpp` must emit the three segment sizes with a zero final
+   segment. Generated builders, adaptors, `DispatchOp::verify`, native-test
+   lowering, boundary/manifest readers, static binding/resource
+   materialization, Unity binding, scalar lowering, and textual fixtures must
+   continue to use `getResources()` only for Device buffers and the new
+   accessor only for backend indices. `MaterializeStaticDispatchResources`
+   mutates resource operands by their descriptor-relative positions and must
+   remain inside the resource segment. Register the new pass in `Passes.td`,
+   the VRC conversion library, and the focused frontend test target. Generic
+   rewrites that preserve the whole operation must preserve the segment sizes
+   and optional position attribute.
+
+   Develop this slice test-first in small commits: (a) add the backward-
+   compatible ODS segment, verifier checks, builder updates, and old-syntax
+   parse/print tests with no behavior change; (b) add the transactional,
+   idempotent exposure pass and focused generic MLIR tests; (c) connect role-
+   aware discovery and remove attribute-only double counting; (d) make native
+   and Udon lowering consume the explicit segment and add equivalence tests;
+   (e) only then place the pass in production. A non-ONNX fixture with two
+   static read resources and one dynamic/write resource must prove sorted exact
+   positions, two role-bearing use sites at the same dispatch phase, distinct
+   simultaneous writable candidates, deterministic repeated output, and no
+   site for the dynamic resource. Negative tests cover missing or duplicate
+   positions, out-of-range positions, non-i32 operands, stale provenance,
+   partial/idempotence schemas, and version mismatches. A manually selected
+   placement must reach Udon Assembly through the chosen writable color and
+   avoid the old resident index slot; candidate-only output must retain native
+   value semantics. This is Step 4 coverage only: automatic selection and the
+   exact 512-address acceptance remain Step 5.
 5. Extend `AllocateHostStorage` with a deterministic pressure/cost selection
    between resident and `rematerialize_i32` placement. Emit complete selected
    recipe data: exact resident seed bindings, writable color, required externs,

@@ -447,6 +447,10 @@ struct LowerOpenCLAOTIntrinsicsPass
                                      runtime::DispatchOp::getOperationName());
         dispatchState.addOperands(descriptor);
         dispatchState.addOperands(resources);
+        dispatchState.addAttribute(
+            "operandSegmentSizes",
+            rewriter.getDenseI32ArrayAttr(
+                {1, static_cast<int32_t>(resources.size()), 0}));
         dispatchState.addTypes(event);
         dispatchState.addAttribute("kernel_id",
                                    rewriter.getI32IntegerAttr(kernelId));

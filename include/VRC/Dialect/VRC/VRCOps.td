@@ -60,14 +60,18 @@ def VRC_DispatchDescCreateOp : Op<VRC_Dialect, "dispatch_desc_create"> {
   let assemblyFormat = "$scalars attr-dict `:` functional-type(operands, results)";
   let hasVerifier = 1;
 }
-def VRC_DispatchOp : Op<VRC_Dialect, "dispatch", [MemoryEffects<[MemWrite]>]> {
+def VRC_DispatchOp : Op<VRC_Dialect, "dispatch", [MemoryEffects<[MemWrite]>,
+    AttrSizedOperandSegments]> {
   let summary = "Enqueue a Manifest-defined kernel; C runtime owns OpenCL API contracts";
-  let arguments = (ins VRC_DispatchDescType:$desc, Variadic<VRC_BufferType>:$resources,
+  let arguments = (ins VRC_DispatchDescType:$desc,
+    Variadic<VRC_BufferType>:$resources,
+    Variadic<I32>:$static_resource_indices,
     I32Attr:$kernel_id, ArrayAttr:$argument_kinds, ArrayAttr:$resource_accesses,
+    OptionalAttr<DenseI32ArrayAttr>:$static_resource_positions,
     DenseI32ArrayAttr:$global_size, DenseI32ArrayAttr:$local_size,
     DenseI32ArrayAttr:$global_offset);
   let results = (outs VRC_EventType:$event);
-  let assemblyFormat = "$desc `(` $resources `)` attr-dict `:` functional-type(operands, results)";
+  let assemblyFormat = "$desc `(` $resources `)` (`static_indices` `(` $static_resource_indices^ `)`) ? attr-dict `:` functional-type(operands, results)";
   let hasVerifier = 1;
 }
 def VRC_AwaitOp : Op<VRC_Dialect, "await", [MemoryEffects<[MemWrite]>]> {

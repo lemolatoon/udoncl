@@ -165,6 +165,25 @@ mlir::LogicalResult vrc::vrc::DispatchOp::verify() {
     return emitOpError("ordered resource count must match buffer arguments");
   if (getResourceAccesses().size() != getResources().size())
     return emitOpError("resource access count must match ordered resources");
+  auto positions = getStaticResourcePositions();
+  if (getStaticResourceIndices().empty() != !positions)
+    return emitOpError(
+        "static resource positions and index operands must appear together");
+  if (positions) {
+    if (positions->size() != getStaticResourceIndices().size())
+      return emitOpError(
+          "static resource position count must match index operands");
+    int32_t previous = -1;
+    for (int32_t position : *positions) {
+      if (position < 0 ||
+          static_cast<size_t>(position) >= getResources().size())
+        return emitOpError("static resource position is out of range");
+      if (position <= previous)
+        return emitOpError(
+            "static resource positions must be sorted and unique");
+      previous = position;
+    }
+  }
   std::optional<size_t> output;
   for (auto [index, value] : llvm::enumerate(getResourceAccesses())) {
     auto access = mlir::dyn_cast<mlir::StringAttr>(value);
