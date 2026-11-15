@@ -1616,7 +1616,7 @@ sparse_literal_requests = [
 ]
 assert sparse_literal_requests, sparse_output
 assert {request['kind'] for request in sparse_literal_requests} >= {
-    'arith_constant', 'unity_buffer_id', 'unity_buffer_token'
+    'arith_constant', 'lowering_i32', 'unity_buffer_id', 'unity_buffer_token'
 }, sparse_literal_requests
 assert all(
     request['placement'] == 'resident_shared'
@@ -1627,6 +1627,14 @@ for key in {request['key'] for request in sparse_literal_requests}:
         request['slot'] for request in sparse_literal_requests
         if request['key'] == key
     }) == 1, (key, sparse_literal_requests)
+shared_one_requests = [
+    request for request in sparse_literal_requests
+    if request['key'] == 'SystemInt32:0x1'
+]
+assert {request['kind'] for request in shared_one_requests} >= {
+    'lowering_i32', 'unity_buffer_token'
+}, shared_one_requests
+assert len({request['slot'] for request in shared_one_requests}) == 1
 assert sparse_output.count(
     'SystemInt32.__op_Equality__SystemInt32_SystemInt32__SystemBoolean'
 ) == 2, sparse_output

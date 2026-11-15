@@ -4362,7 +4362,7 @@ private:
     slots.push_back({name.str(), type.str(), initial.str(), isPublic});
   }
 
-  std::string immutableSlot(StringRef type, StringRef initial) {
+  std::string materializeImmutableSlot(StringRef type, StringRef initial) {
     std::string key = (type + "\n" + initial).str();
     auto found = immutableSlots.find(key);
     if (found != immutableSlots.end())
@@ -4374,6 +4374,14 @@ private:
     return name;
   }
 
+  std::string immutableSlot(StringRef type, StringRef initial) {
+    int64_t value = 0;
+    if (type == "SystemInt32" && !initial.getAsInteger(10, value) &&
+        llvm::isInt<32>(value))
+      return requestResidentI32Literal(value, "backend", "lowering_i32");
+    return materializeImmutableSlot(type, initial);
+  }
+
   std::string requestResidentLiteral(Type logicalType, Attribute value,
                                      StringRef initial, StringRef origin,
                                      StringRef kind) {
@@ -4381,7 +4389,8 @@ private:
     auto slot = residentLiteralSlots.find(key.id);
     if (slot == residentLiteralSlots.end())
       slot = residentLiteralSlots
-                 .try_emplace(key.id, immutableSlot(key.physicalType, initial))
+                 .try_emplace(key.id, materializeImmutableSlot(key.physicalType,
+                                                               initial))
                  .first;
     recordResidentLiteral(logicalType, value, slot->second, origin, kind);
     return slot->second;

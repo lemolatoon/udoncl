@@ -7,7 +7,7 @@
 > generated-U# prefill matches every ORT output, and the mandatory pre-commit
 > gate passes.
 
-Current implementation checkpoint (2026-11-12):
+Current implementation checkpoint (2026-11-15):
 
 - deterministic async placement metadata is emitted by the independent
   `AnalyzeHostStorage` pass;
@@ -36,6 +36,27 @@ Current implementation checkpoint (2026-11-12):
   copies; runtime selection is logarithmic rather than a linear equality scan;
 - persistent direct-slot promotion and cross-coroutine reuse remain migration
   work.
+- `DiscoverHostRematerialization` now emits a deterministic, versioned
+  physical-key/use inventory, and `HostLiteralKey` is shared by discovery and
+  final lowering. Unity logical IDs, zero-based pool indices, and one-based
+  physical tokens are distinct use kinds even when they share one physical
+  literal key;
+- source constants and decimal `SystemInt32` literals requested by final
+  lowering now pass through one compatibility request API and appear in the
+  storage report. Placement is intentionally still `resident_shared`; the
+  report is aggregated by origin/kind/key and is not yet a use-site
+  interference model;
+- discovery is not yet in the production compiler pipeline, and
+  `AllocateHostStorage` still colors only legacy async persistent spill
+  indices. `MaterializeHostStorage` and `VerifyHostStorageCapacity` have not
+  yet been extracted from final scalar lowering;
+- reusable `HostStorageLiveness` currently lives in the final Udon lowering
+  library. It must move to a common analysis library before the allocator can
+  consume the same SSA, call, branch-copy, and suspend interference facts;
+- the fresh real TinyLlama Host remains the pressure reproducer: its last
+  measured lowering required 752 data slots against an effective 503-slot
+  data-table capacity, with 515 constant slots, including 509 `SystemInt32`
+  constants.
 
 ## 1. Why this work remains
 
@@ -279,6 +300,12 @@ extern requirements, instruction cost, loop weight, and call/suspend legality.
 It does not select resident storage, spill indices, or scratch colors, and it
 does not emit Udon instructions.
 
+The current checkpoint implements only deterministic physical keys,
+context-free recipe names, and stable source/backend use identities. Concrete
+derivation sources, simultaneous-consumer groups, scratch and extern costs,
+loop weight, and call/suspend legality remain required before any
+rematerialization placement is enabled.
+
 ### 5.5 `AllocateHostStorage`
 
 Consumes common liveness/interference analyses and assigns each segment a
@@ -403,6 +430,10 @@ the single-root restriction concerns Host execution state.
    output while retaining current resident code generation.
 5. Route source `arith.constant` and backend-required i32 literals through the
    same logical request API; `immutableSlot()` stops making placement policy.
+   Source constants, Unity ID/index/token uses, and decimal `SystemInt32`
+   literals requested during final lowering are routed. Late-bound code
+   addresses and direct `addSlot` state still require explicit fixed/recipe
+   migration.
 6. Model recipe-result scratch lifetimes in the normal simultaneous-operand,
    call, branch-copy, and suspend interference graph.
 7. Move shared resident and raw-pool placement into `AllocateHostStorage`.
@@ -427,6 +458,12 @@ the single-root restriction concerns Host execution state.
 
 Each step must build and pass its relevant focused tests. Do not accumulate a
 large knowingly broken pipeline between steps.
+
+Before step 6, move `HostStorageLiveness` into a common analysis library and
+introduce a generic `HostStorageProblem`/`HostStorageSolution` boundary. Then
+run discovery in the production pipeline and represent literal use sites and
+simultaneous consumers as allocator nodes. Do not add another model- or
+resource-specific placement heuristic to final scalar lowering.
 
 ## 10. Tests
 
