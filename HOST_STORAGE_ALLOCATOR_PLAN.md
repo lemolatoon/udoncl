@@ -3,8 +3,9 @@
 > Status: **approved design; implementation in progress**
 > Decision dates: **2026-11-05 through 2026-11-11**
 > Parent architecture: [PLAN.md](PLAN.md)
-> Acceptance targets: generated-U# MNIST remains green, the real TinyLlama
-> artifact remains generatable, and the mandatory pre-commit gate passes.
+> Acceptance targets: generated-U# MNIST remains green, fresh real TinyLlama
+> generated-U# prefill matches every ORT output, and the mandatory pre-commit
+> gate passes.
 
 Current implementation checkpoint (2026-11-12):
 
@@ -74,8 +75,9 @@ The accepted implementation already provides:
 - a little-endian word-packed raw heap for genuinely address-observable data;
 - generated-U# MNIST execution through whole-buffer write, callback-first run,
   whole-buffer read, and shutdown;
-- a real TinyLlama artifact with 155 Q4 nodes and two Q4 dispatch call sites
-  per node.
+- a previously generated structural TinyLlama artifact with 155 Q4 nodes and
+  two Q4 dispatch call sites per node; fresh generation and numerical
+  acceptance are reopened by the current scalar-slot overflow.
 
 These are regression constraints, not reasons to retain the current raw async
 frame representation.
@@ -167,6 +169,52 @@ coroutine, and async object state must not silently fall back to raw globals.
 
 Every remaining raw object records a reason in `storage-report.json`.
 
+### 3.7 Constants, literals, and rematerialization recipes
+
+Every constant-like value enters the unified allocator before Udon Assembly
+emission. This includes source `arith.constant` values and literals requested
+later by lowering for resource IDs, table indices, raw addresses, descriptor
+fields, return addresses, and helper arithmetic. `immutableSlot()` is a
+materialization mechanism, not an allocation policy.
+
+For each logical value the allocator chooses one of:
+
+- one shared resident typed slot;
+- a typed constant-pool load;
+- derivation from an already-live value;
+- straight-line rematerialization into a reusable typed scratch slot;
+- fixed storage when its address or public identity is observable.
+
+A derivation recipe records its source values, physical result type, exact
+scratch requirements, required extern signatures, instruction cost, and
+whether it may cross calls or suspend points. A source-derived placement is
+legal only when every source is available at the use, or extending its
+liveness is cheaper than retaining the result.
+
+Udon Assembly has no general value-immediate operand: `PUSH` names a Heap
+address. Rematerialization therefore reuses bounded typed scratch slots; it
+does not pretend that literals consume zero storage. Recipe results participate
+in the normal simultaneous-operand interference graph. Two values consumed by
+the same `EXTERN` or `COPY` cannot share a scratch slot because Udon's stack
+holds their slot addresses, not copied values. Scratch may be reused only after
+the consumer and never across a may-suspend, reentrant, or unresolved call
+boundary. A value needed after suspend is regenerated in the resume segment or
+stored through the ordinary typed-spill policy.
+
+Examples include:
+
+- decoding a static tensor index from its existing tagged buffer token;
+- deriving a Unity buffer index from an existing physical token;
+- synthesizing an i32 from a shared small-literal basis;
+- loading AOT-initialized i32/f32 bits from the raw constant pool;
+- composing i64/f32 values through verified bit-exact recipes;
+- deriving a raw address from a known base and constant offset.
+
+Strings, Unity object references, public ABI slots, and values without a legal
+recipe remain shared or fixed resident storage. Late-bound code/return
+addresses retain a separate verified recipe because their values depend on
+final instruction layout.
+
 ## 4. Liveness and live-range splitting
 
 One analysis framework covers ordinary and persistent values. Suspend-to-resume
@@ -184,8 +232,9 @@ entry when that preserves SSA semantics. Fast, ready, and error merge paths
 must receive the same C-observable value without converting copy semantics to
 reference semantics.
 
-Constants and cheap pure expressions may be rematerialized instead of stored
-when legal and cheaper.
+Constants, lowering-required literals, and cheap pure expressions use the
+recipe and placement model in section 3.7 rather than operation-specific slot
+heuristics.
 
 ## 5. Small-pass pipeline
 
@@ -198,6 +247,7 @@ Async runtime and coroutine CFG legalization
   -> ScalarizeHostStorage
   -> MarkAsyncPersistence
   -> SplitHostLiveRanges
+  -> DiscoverHostRematerialization
   -> AllocateHostStorage
   -> MaterializeHostStorage
   -> VerifyHostStorageCapacity
@@ -221,20 +271,33 @@ create one raw global per value.
 Creates live segments and explicit logical save/restore points. It does not
 assign slots or spill indices.
 
-### 5.4 `AllocateHostStorage`
+### 5.4 `DiscoverHostRematerialization`
+
+Builds deterministic typed recipes for source constants and
+lowering-required literals. It records derivation sources, exact scratch and
+extern requirements, instruction cost, loop weight, and call/suspend legality.
+It does not select resident storage, spill indices, or scratch colors, and it
+does not emit Udon instructions.
+
+### 5.5 `AllocateHostStorage`
 
 Consumes common liveness/interference analyses and assigns each segment a
 direct color, typed spill index, fixed ABI placement, or justified raw
 placement. It emits placement IR/attributes and does not materialize Udon
 loads/stores.
 
-### 5.5 `MaterializeHostStorage`
+The allocator chooses fixed, resident, typed-spill, pooled, derived, or
+rematerialized placement using the same liveness graph and the exact address
+and code-cost model.
 
-Mechanically converts placement decisions into direct storage and existing
-`udonhl.spill_store`/`udonhl.spill_load` operations. It creates the fixed-size
-typed arrays and performs no allocation policy.
+### 5.6 `MaterializeHostStorage`
 
-### 5.6 `VerifyHostStorageCapacity`
+Mechanically converts placement decisions into direct storage, existing
+`udonhl.spill_store`/`udonhl.spill_load` operations, constant-pool reads,
+derivation sequences, and typed scratch use. It creates fixed-size typed arrays
+and must not invent a new placement decision.
+
+### 5.7 `VerifyHostStorageCapacity`
 
 Counts the exact final address representation. If materialization changes
 index constants, scratch, extern signatures, or other address costs, the
@@ -249,8 +312,8 @@ candidates; it never silently selects a semantically different fallback.
 
 The allocator optimizes in this strict order:
 
-1. remain within the exact 512-address Udon limit;
-2. preserve liveness, copy, call, and suspend semantics;
+1. preserve liveness, copy, call, and suspend semantics;
+2. remain within the exact 512-address Udon limit;
 3. reduce typed-array accesses on statically hot paths;
 4. reduce generated code size;
 5. reduce spill-array extent.
@@ -289,6 +352,12 @@ For every logical live segment, allocator output records:
 - estimated cost and placement reason;
 - any fixed ABI or raw-observability exclusion reason.
 
+For every literal-like value it also records a stable typed key, use count,
+loop weight, legal recipes, selected placement, scratch color, added extern
+signatures, estimated instruction cost, call/suspend segments, and the reason
+for the choice. Inventory and placement order are deterministic and are fixed
+before scalar Udon Assembly emission.
+
 `storage-report.json` reports at least:
 
 - direct slots by physical type;
@@ -297,8 +366,16 @@ For every logical live segment, allocator output records:
 - spill-index reuse count;
 - suspend-crossing segment count;
 - rematerialized value count;
+- literal use/value counts and per-type `resident_shared`, `raw_pool`,
+  `rematerialized`, `derived`, and `fixed` placement counts;
+- resident literal slots, typed scratch slots, and addresses saved;
+- distinct extern signatures and extern signatures added by recipes;
+- estimated emitted instruction bytes and weighted execution cost;
+- stable per-candidate recipe and selection diagnostics;
+- call-crossing and suspend-crossing rematerialized segment counts;
 - raw objects and individual reasons;
-- final Udon address count out of 512;
+- data-slot count, distinct-extern count, and final Udon address count out of
+  512;
 - estimated hot-path load/store count.
 
 Allocator tests consume placement results directly rather than inferring all
@@ -319,21 +396,34 @@ the single-root restriction concerns Host execution state.
 
 1. Introduce placement IR and update the storage report without changing code
    generation.
-2. Add fixed-layout struct scalarization.
-3. Extract common liveness/interference analyses used by normal and async
-   values.
-4. Add live-range splitting and suspend-edge save/resume-entry restore markers.
-5. Add allocation decisions and deterministic diagnostics.
-6. Materialize ordinary transient SSA through the new allocator and compare
-   with the existing implementation.
-7. Move live-across-suspend values and resume PCs off raw async globals.
-8. Move internal async object fields into the unified model.
-9. Delete superseded `__udoncl_async_frame_*_spill_*` generation and tests that
-   require those names.
-10. Remove or narrowly repurpose dormant continuation-frame code so the main
-    pipeline has one implementation of each responsibility.
-11. Run native/compiler integration, generated-U# MNIST, real TinyLlama
-    artifact, and mandatory pre-commit validation.
+2. Add fixed-layout struct scalarization and extract common
+   liveness/interference analyses used by normal and async values.
+3. Add live-range splitting and suspend-edge save/resume-entry restore markers.
+4. Introduce a versioned literal key/use/recipe inventory with deterministic
+   output while retaining current resident code generation.
+5. Route source `arith.constant` and backend-required i32 literals through the
+   same logical request API; `immutableSlot()` stops making placement policy.
+6. Model recipe-result scratch lifetimes in the normal simultaneous-operand,
+   call, branch-copy, and suspend interference graph.
+7. Move shared resident and raw-pool placement into `AllocateHostStorage`.
+8. Add generic derived/rematerialized placement and make the non-ONNX
+   520-static-resource pressure fixture fit the exact 512-address budget.
+9. Migrate Unity buffer IDs, raw addresses, pool/spill indices, and descriptor
+   literals to the same mechanism. Delete the old per-feature
+   `unity_buffer_id_rematerialization`, raw-address-cache, spill-index-cache,
+   and provisional `static_tensor_id_*` allocation policies once their tests
+   use the general report.
+10. Add bit-exact i1, f32, and i64 recipes. Strings and Unity references remain
+    shared/fixed until a separately verified table representation exists.
+11. Move live-across-suspend values, resume PCs, and internal async object
+    fields into the unified model; delete superseded raw-frame generation and
+    incidental symbol-name tests.
+12. Run native/compiler integration and generated-U# MNIST numerical
+    validation.
+13. Generate the fresh real TinyLlama artifact, execute generated U# prefill,
+    and compare all 128,000 logits and 44 present K/V outputs with the ORT
+    oracle.
+14. Run the mandatory pre-commit gate.
 
 Each step must build and pass its relevant focused tests. Do not accumulate a
 large knowingly broken pipeline between steps.
@@ -354,6 +444,13 @@ Focused compiler tests cover:
 - dynamic async object IDs and statically unique objects;
 - struct field scalarization and every raw-observability exclusion;
 - logical types sharing a compatible physical type;
+- hot resident and cold rematerialized constants under measured pressure;
+- two literals consumed by one extern receiving distinct simultaneous scratch;
+- scratch reuse only after the consumer;
+- ordinary and lowering-required literals sharing one planner/report;
+- derived values whose sources remain available at every selected use;
+- recipe regeneration after calls and resume rather than scratch persistence;
+- bit-exact i32 boundaries, i1, i64, f32 `-0`/NaN/Inf, and string sharing;
 - deterministic output across repeated builds;
 - exact 512-address success and detailed overflow failure.
 
@@ -362,7 +459,8 @@ Integration proceeds through:
 1. native/Udon result equality for small C Hosts;
 2. a multiple-kernel, multiple-suspend Host;
 3. generated-U# MNIST numerical execution;
-4. real TinyLlama ONNX artifact generation;
+4. real TinyLlama ONNX artifact generation and generated-U# prefill numerical
+   comparison of every public output;
 5. `python scripts/precommit.py`.
 
 Tests assert placement and behavior, not incidental diagnostic wording or raw
@@ -387,13 +485,16 @@ The allocator change must preserve:
 - no more than 512 final Udon addresses;
 - 155 Q4 nodes with two Q4 dispatch call sites per node;
 - deterministic placement;
+- no model-specific literal or static-resource allocation rule;
 - no dependency on `__udoncl_async_frame_*_spill_*` raw globals;
 - no major regression from the currently observed approximately 818 MB
   `host.uasm` without an explained architectural reason.
 
-The first allocator milestone ends at artifact generation. Completing the
-interactive U# conversation path remains governed by the dedicated TinyLlama
-plan and depends on this allocator rather than duplicating it.
+The allocator milestone ends only after the ordinary generated U# binding
+compares all 128,000 logits and all 44 present K/V outputs with the ORT oracle.
+Artifact generation alone is not completion. The later interactive conversation
+path remains governed by the dedicated TinyLlama plan and depends on this
+allocator rather than duplicating it.
 
 ### 11.3 Repository gate
 
@@ -416,6 +517,6 @@ This plan is complete only when:
 - remaining raw objects have observable-semantics reasons;
 - exact capacity and deterministic placement tests pass;
 - generated-U# MNIST passes;
-- the real TinyLlama artifact satisfies its gate;
+- the real TinyLlama generated-U# numerical gate passes;
 - stale allocator paths and tests are removed;
 - the mandatory pre-commit gate passes.
