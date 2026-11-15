@@ -628,6 +628,7 @@ public:
     }
 
     if (failed(planDeclaredTypedSpillBanks()) ||
+        failed(consumeDirectColorAllocations(functions)) ||
         failed(planInterproceduralValueSlots(functions)))
       return failure();
     compactSpillIndices();
@@ -1016,6 +1017,100 @@ private:
   }
 
   LogicalResult
+  consumeDirectColorAllocations(ArrayRef<func::FuncOp> functions) {
+    bool hasMaterialization = false;
+    module.walk(
+        [&](udonhl::LiteralMaterializeOp) { hasMaterialization = true; });
+    auto version = module->getAttrOfType<IntegerAttr>(
+        "vrc.host_writable_allocation_version");
+    auto allocations =
+        module->getAttrOfType<ArrayAttr>("vrc.host_direct_color_allocations");
+    auto residentVersion = module->getAttrOfType<IntegerAttr>(
+        "vrc.host_literal_allocation_version");
+    auto residentAllocations =
+        module->getAttrOfType<ArrayAttr>("vrc.host_literal_allocations");
+    if (!hasMaterialization)
+      return success();
+    if (!version || version.getInt() != 2 || !allocations || !residentVersion ||
+        residentVersion.getInt() != 1 || !residentAllocations)
+      return module.emitError(
+          "literal materialization lacks direct color allocations");
+
+    std::set<std::pair<std::string, int64_t>> residentColors;
+    for (Attribute attribute : residentAllocations) {
+      auto allocation = dyn_cast<DictionaryAttr>(attribute);
+      auto key =
+          allocation ? allocation.getAs<StringAttr>("key_id") : StringAttr();
+      auto physicalType = allocation
+                              ? allocation.getAs<StringAttr>("physical_type")
+                              : StringAttr();
+      auto placement =
+          allocation ? allocation.getAs<StringAttr>("placement") : StringAttr();
+      auto color =
+          allocation ? allocation.getAs<IntegerAttr>("color") : IntegerAttr();
+      if (!allocation || !key || key.getValue().empty() || !physicalType ||
+          physicalType.getValue().empty() || !placement ||
+          placement.getValue() != "resident_shared" || !color ||
+          color.getInt() < 0 ||
+          !residentColors
+               .insert({physicalType.getValue().str(), color.getInt()})
+               .second ||
+          allocatorResidentSlots.count(key.getValue().str()))
+        return module.emitError("invalid resident literal allocation");
+      allocatorResidentSlots.emplace(key.getValue().str(),
+                                     "__vrc_resident_" +
+                                         physicalType.getValue().str() + "_" +
+                                         std::to_string(color.getInt()));
+    }
+
+    llvm::DenseSet<Operation *> constants;
+    auto analysis = analyzeHostStorageInterference(
+        module, functions, [&](Type type) { return slotStorageKey(type); },
+        constants, true);
+    if (failed(analysis))
+      return failure();
+    std::map<std::string, Value> valueById;
+    for (const auto &[value, id] : analysis->valueIds)
+      if (analysis->ordinals.contains(value))
+        valueById.emplace(id, value);
+
+    std::set<std::string> seen;
+    for (Attribute attribute : allocations) {
+      auto allocation = dyn_cast<DictionaryAttr>(attribute);
+      auto valueId =
+          allocation ? allocation.getAs<StringAttr>("value_id") : StringAttr();
+      auto physicalType = allocation
+                              ? allocation.getAs<StringAttr>("physical_type")
+                              : StringAttr();
+      auto domain = allocation ? allocation.getAs<StringAttr>("storage_domain")
+                               : StringAttr();
+      auto kind = allocation ? allocation.getAs<StringAttr>("allocation")
+                             : StringAttr();
+      auto color =
+          allocation ? allocation.getAs<IntegerAttr>("color") : IntegerAttr();
+      auto value =
+          valueId ? valueById.find(valueId.getValue().str()) : valueById.end();
+      if (!allocation || !valueId || value == valueById.end() ||
+          !physicalType ||
+          physicalType.getValue() !=
+              analysis->storageKeys.lookup(value->second) ||
+          !domain || domain.getValue() != "writable" || !kind ||
+          kind.getValue() != "direct_color_candidate" || !color ||
+          color.getInt() < 0 || !seen.insert(valueId.getValue().str()).second)
+        return module.emitError("invalid direct color allocation");
+      allocatorDirectColors.try_emplace(value->second,
+                                        static_cast<unsigned>(color.getInt()));
+    }
+    for (const auto &[value, ordinal] : analysis->ordinals) {
+      if (value.getDefiningOp<udonhl::LiteralMaterializeOp>())
+        continue;
+      if (!allocatorDirectColors.contains(value))
+        return module.emitError("direct color allocation is incomplete");
+    }
+    return success();
+  }
+
+  LogicalResult
   planInterproceduralValueSlots(ArrayRef<func::FuncOp> functions) {
     unsigned registerBudget = 16;
     if (auto budget =
@@ -1063,6 +1158,33 @@ private:
       });
       llvm::DenseMap<Value, unsigned> colors;
       for (Value value : order) {
+        auto allocated = allocatorDirectColors.find(value);
+        if (allocated != allocatorDirectColors.end()) {
+          colors.try_emplace(value, allocated->second);
+          continue;
+        }
+        if (auto materialize =
+                value.getDefiningOp<udonhl::LiteralMaterializeOp>())
+          colors.try_emplace(value,
+                             static_cast<unsigned>(materialize.getColor()));
+      }
+      for (const auto &[value, color] : colors)
+        for (Value neighbor : interference[value]) {
+          auto neighborColor = colors.find(neighbor);
+          if (neighborColor != colors.end() && neighborColor->second == color)
+            return emitError(value.getLoc())
+                   << "allocated writable colors interfere";
+        }
+      for (Value value : order) {
+        auto fixed = colors.find(value);
+        if (fixed != colors.end()) {
+          minimumScalarRegisterCount =
+              std::max(minimumScalarRegisterCount, fixed->second + 1);
+          interproceduralValueSlots.try_emplace(
+              value, "__vrc_shared_r_" + entry.getKey().str() + "_" +
+                         std::to_string(fixed->second));
+          continue;
+        }
         llvm::SmallSet<unsigned, 16> used;
         for (Value neighbor : interference[value]) {
           auto color = colors.find(neighbor);
@@ -1839,7 +1961,7 @@ private:
       return (!isa<arith::ConstantOp>(operation) ||
               materializedConstants.contains(&operation)) &&
              !isa<memref::GetGlobalOp, ::vrc::vrc::DispatchDescCreateOp,
-                  host::FrameCreateOp>(operation);
+                  host::FrameCreateOp, udonhl::LiteralMaterializeOp>(operation);
     };
     for (Block &block : function.getBody()) {
       if (&block != &function.getBody().front())
@@ -2092,6 +2214,23 @@ private:
         }
         if (!operation.getNumResults())
           continue;
+        if (auto materialize =
+                dyn_cast<udonhl::LiteralMaterializeOp>(operation)) {
+          auto type = udonType(materialize.getResult().getType());
+          if (failed(type))
+            return materialize.emitError(
+                "literal materialization has unsupported Udon type");
+          auto allocated =
+              interproceduralValueSlots.find(materialize.getResult());
+          if (allocated == interproceduralValueSlots.end())
+            return materialize.emitError(
+                "literal materialization has no allocated writable color");
+          std::string name = allocated->second;
+          addSlot(name, *type, "null", false);
+          scalarRegisterSlots.try_emplace(name, type->str());
+          valueSlots[materialize.getResult()] = name;
+          continue;
+        }
         if (auto descriptor =
                 dyn_cast<::vrc::vrc::DispatchDescCreateOp>(operation)) {
           SmallVector<std::string> snapshots;
@@ -2448,6 +2587,79 @@ private:
           if (source.empty() || output.empty())
             return cast.emitError("index cast has missing heap slots");
           emitCopy(cast.getLoc(), source, output);
+          continue;
+        }
+        if (auto materialize =
+                dyn_cast<udonhl::LiteralMaterializeOp>(operation)) {
+          auto literal = dyn_cast<TypedAttr>(materialize.getLiteral());
+          auto recipe =
+              literal ? getHostLiteralI32Recipe(literal.getType(), literal)
+                      : std::nullopt;
+          std::string result = valueSlots.lookup(materialize.getResult());
+          if (!recipe || result.empty())
+            return materialize.emitError(
+                "literal materialization has no mechanical lowering plan");
+
+          llvm::StringMap<std::string> seedSlots;
+          for (Attribute attribute : materialize.getSeedBindings()) {
+            auto binding = cast<DictionaryAttr>(attribute);
+            StringRef key = binding.getAs<StringAttr>("literal_key").getValue();
+            auto slot = residentLiteralSlots.find(key.str());
+            if (slot == residentLiteralSlots.end())
+              return materialize.emitError()
+                     << "resident seed " << key << " has no Udon heap slot";
+            seedSlots.try_emplace(key, slot->second);
+          }
+          auto seedSlot = [&](unsigned value) -> std::string {
+            Type i32 = builder.getI32Type();
+            HostLiteralKey key =
+                getHostLiteralKey(i32, builder.getIntegerAttr(i32, value));
+            auto found = seedSlots.find(key.id);
+            return found == seedSlots.end() ? std::string() : found->second;
+          };
+
+          StringRef shiftExtern;
+          StringRef orExtern;
+          for (Attribute attribute : materialize.getRequiredExterns()) {
+            StringRef name = cast<StringAttr>(attribute).getValue();
+            if (name.contains("__op_LeftShift__"))
+              shiftExtern = name;
+            else if (name.contains("__op_LogicalOr__"))
+              orExtern = name;
+          }
+          auto integer = cast<IntegerAttr>(literal);
+          uint32_t bits = static_cast<uint32_t>(
+              integer.getValue().sextOrTrunc(32).getZExtValue());
+          unsigned highestNibble = 0;
+          for (unsigned nibble = 1; nibble < 8; ++nibble)
+            if ((bits >> (nibble * 4)) & 15)
+              highestNibble = nibble;
+          unsigned first = (bits >> (highestNibble * 4)) & 15;
+          std::string firstSlot = seedSlot(first);
+          if (firstSlot.empty())
+            return materialize.emitError("literal recipe seed is unavailable");
+          emitCopy(materialize.getLoc(), firstSlot, result);
+          for (unsigned nibble = highestNibble; nibble-- > 0;) {
+            std::string four = seedSlot(4);
+            if (four.empty() || shiftExtern.empty())
+              return materialize.emitError(
+                  "literal recipe shift inputs are unavailable");
+            emitPush(materialize.getLoc(), result);
+            emitPush(materialize.getLoc(), four);
+            emitPush(materialize.getLoc(), result);
+            emitExtern(materialize.getLoc(), shiftExtern);
+            unsigned digit = (bits >> (nibble * 4)) & 15;
+            if (!digit)
+              continue;
+            std::string digitSlot = seedSlot(digit);
+            if (digitSlot.empty() || orExtern.empty())
+              return materialize.emitError(
+                  "literal recipe OR inputs are unavailable");
+            emitPush(materialize.getLoc(), result);
+            emitPush(materialize.getLoc(), digitSlot);
+            emitPush(materialize.getLoc(), result);
+            emitExtern(materialize.getLoc(), orExtern);
+          }
           continue;
         }
         if (auto constant = dyn_cast<arith::ConstantOp>(operation)) {
@@ -4387,11 +4599,17 @@ private:
                                      StringRef kind) {
     HostLiteralKey key = getHostLiteralKey(logicalType, value);
     auto slot = residentLiteralSlots.find(key.id);
-    if (slot == residentLiteralSlots.end())
-      slot = residentLiteralSlots
-                 .try_emplace(key.id, materializeImmutableSlot(key.physicalType,
-                                                               initial))
-                 .first;
+    if (slot == residentLiteralSlots.end()) {
+      auto allocated = allocatorResidentSlots.find(key.id);
+      std::string name;
+      if (allocated != allocatorResidentSlots.end()) {
+        name = allocated->second;
+        addSlot(name, key.physicalType, initial, false);
+      } else {
+        name = materializeImmutableSlot(key.physicalType, initial);
+      }
+      slot = residentLiteralSlots.try_emplace(key.id, std::move(name)).first;
+    }
     recordResidentLiteral(logicalType, value, slot->second, origin, kind);
     return slot->second;
   }
@@ -5556,6 +5774,7 @@ private:
   llvm::DenseMap<Operation *, UdonSharpMethodABI> methodABIs;
   llvm::DenseMap<Operation *, FunctionPlan> functionPlans;
   llvm::DenseMap<Value, std::string> interproceduralValueSlots;
+  llvm::DenseMap<Value, unsigned> allocatorDirectColors;
   llvm::DenseSet<Operation *> materializedConstants;
   llvm::DenseMap<Operation *, ConstantPoolLocation> pooledConstants;
   SmallVector<uint32_t> constantPoolValues;
@@ -5570,6 +5789,7 @@ private:
   llvm::StringMap<std::string> sharedConstantSlots;
   llvm::StringMap<std::string> immutableSlots;
   std::map<std::string, std::string> residentLiteralSlots;
+  std::map<std::string, std::string> allocatorResidentSlots;
   std::map<std::string, ResidentLiteralRequest> residentLiteralRequests;
   unsigned sharedConstantIndex = 0;
   llvm::StringMap<uint64_t> rawGlobalBases;

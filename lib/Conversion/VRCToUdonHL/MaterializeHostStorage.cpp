@@ -4,6 +4,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include <functional>
@@ -49,6 +50,8 @@ struct MaterializeHostStoragePass
         module->getAttrOfType<ArrayAttr>("vrc.host_literal_scratch_instances");
     auto scratchAllocations = module->getAttrOfType<ArrayAttr>(
         "vrc.host_literal_scratch_allocations");
+    auto directAllocations =
+        module->getAttrOfType<ArrayAttr>("vrc.host_direct_color_allocations");
     auto residentAllocations =
         module->getAttrOfType<ArrayAttr>("vrc.host_literal_allocations");
     auto writableExtents =
@@ -57,31 +60,76 @@ struct MaterializeHostStoragePass
         writableVersion.getInt() != 2 || !inventoryVersion ||
         inventoryVersion.getInt() != 1 || !allocationVersion ||
         allocationVersion.getInt() != 1 || !sites || !instances ||
-        !scratchAllocations || !residentAllocations || !writableExtents) {
+        !scratchAllocations || !directAllocations || !residentAllocations ||
+        !writableExtents) {
       module.emitError("Host literal selection lacks allocation inputs");
       signalPassFailure();
       return;
     }
 
     std::map<std::string, Operation *> operations;
+    std::map<std::string, Value> values;
     for (func::FuncOp function : module.getOps<func::FuncOp>()) {
       if (function.isExternal())
         continue;
       std::function<void(Region &, const std::string &)> collect;
       collect = [&](Region &region, const std::string &regionPath) {
-        for (auto [blockIndex, block] : llvm::enumerate(region.getBlocks()))
+        for (auto [blockIndex, block] : llvm::enumerate(region.getBlocks())) {
+          std::string blockPath =
+              regionPath + ":block:" + std::to_string(blockIndex);
+          for (auto [argumentIndex, argument] :
+               llvm::enumerate(block.getArguments()))
+            values.emplace(blockPath +
+                               ":argument:" + std::to_string(argumentIndex),
+                           argument);
           for (auto [operationIndex, operation] : llvm::enumerate(block)) {
-            std::string id = regionPath +
-                             ":block:" + std::to_string(blockIndex) +
-                             ":operation:" + std::to_string(operationIndex);
+            std::string id =
+                blockPath + ":operation:" + std::to_string(operationIndex);
             operations.emplace(id, &operation);
+            for (auto [resultIndex, result] :
+                 llvm::enumerate(operation.getResults()))
+              values.emplace(id + ":result:" + std::to_string(resultIndex),
+                             result);
             for (auto [regionIndex, nested] :
                  llvm::enumerate(operation.getRegions()))
               collect(nested, id + ":region:" + std::to_string(regionIndex));
           }
+        }
       };
       collect(function.getBody(),
               "function:" + function.getSymName().str() + ":region:0");
+    }
+
+    SmallVector<std::pair<DictionaryAttr, Value>> directPlans;
+    std::set<std::string> directIds;
+    for (Attribute attribute : directAllocations) {
+      auto allocation = dyn_cast<DictionaryAttr>(attribute);
+      auto valueId =
+          allocation ? allocation.getAs<StringAttr>("value_id") : StringAttr();
+      auto physicalType = allocation
+                              ? allocation.getAs<StringAttr>("physical_type")
+                              : StringAttr();
+      auto domain = allocation ? allocation.getAs<StringAttr>("storage_domain")
+                               : StringAttr();
+      auto kind = allocation ? allocation.getAs<StringAttr>("allocation")
+                             : StringAttr();
+      auto color =
+          allocation ? allocation.getAs<IntegerAttr>("color") : IntegerAttr();
+      auto value =
+          valueId ? values.find(valueId.getValue().str()) : values.end();
+      if (!allocation || !valueId || value == values.end() || !physicalType ||
+          value->second.getDefiningOp<arith::ConstantOp>() ||
+          physicalType.getValue() !=
+              hostLiteralPhysicalType(value->second.getType()) ||
+          !domain || domain.getValue() != "writable" || !kind ||
+          kind.getValue() != "direct_color_candidate" || !color ||
+          color.getInt() < 0 ||
+          !directIds.insert(valueId.getValue().str()).second) {
+        module.emitError("invalid Host direct color allocation inventory");
+        signalPassFailure();
+        return;
+      }
+      directPlans.push_back({allocation, value->second});
     }
 
     std::map<std::string, DictionaryAttr> siteById;
@@ -420,6 +468,46 @@ struct MaterializeHostStoragePass
     for (Operation *constant : originalConstants)
       if (constant->use_empty())
         constant->erase();
+
+    llvm::DenseMap<Value, std::string> rewrittenValueIds;
+    for (func::FuncOp function : module.getOps<func::FuncOp>()) {
+      std::function<void(Region &, const std::string &)> collect;
+      collect = [&](Region &region, const std::string &regionPath) {
+        for (auto [blockIndex, block] : llvm::enumerate(region.getBlocks())) {
+          std::string blockPath =
+              regionPath + ":block:" + std::to_string(blockIndex);
+          for (auto [argumentIndex, argument] :
+               llvm::enumerate(block.getArguments()))
+            rewrittenValueIds.try_emplace(
+                argument,
+                blockPath + ":argument:" + std::to_string(argumentIndex));
+          for (auto [operationIndex, operation] : llvm::enumerate(block)) {
+            std::string operationPath =
+                blockPath + ":operation:" + std::to_string(operationIndex);
+            for (auto [resultIndex, result] :
+                 llvm::enumerate(operation.getResults()))
+              rewrittenValueIds.try_emplace(
+                  result,
+                  operationPath + ":result:" + std::to_string(resultIndex));
+            for (auto [regionIndex, nested] :
+                 llvm::enumerate(operation.getRegions()))
+              collect(nested,
+                      operationPath + ":region:" + std::to_string(regionIndex));
+          }
+        }
+      };
+      collect(function.getBody(),
+              "function:" + function.getSymName().str() + ":region:0");
+    }
+    SmallVector<Attribute> rewrittenDirectAllocations;
+    for (const auto &[source, value] : directPlans) {
+      NamedAttrList fields(source);
+      fields.set("value_id",
+                 builder.getStringAttr(rewrittenValueIds.lookup(value)));
+      rewrittenDirectAllocations.push_back(builder.getDictionaryAttr(fields));
+    }
+    module->setAttr("vrc.host_direct_color_allocations",
+                    builder.getArrayAttr(rewrittenDirectAllocations));
 
     module->setAttr("vrc.host_literal_materialization_version",
                     builder.getI32IntegerAttr(1));

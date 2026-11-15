@@ -111,9 +111,26 @@ Current implementation checkpoint (2026-11-16):
   stale operands, schema versions, recipe fields, and missing/incorrect/
   duplicate seed bindings. Candidate colors remain non-executable without an
   explicit selected placement;
-- the next implementation boundary is deliberately model-independent. Add a
-  mechanical `MaterializeHostStorage` pass and explicit `LowerScalar` support
-  that operate only on allocator-selected placement.
+- opt-in `LowerScalar` support now recognizes an explicit
+  `udonhl.literal_materialize`, assigns its result the selected function-local
+  writable-color slot, resolves only already resident seed keys, and emits the
+  mechanical nibble shift/OR sequence for i8, i16, i32, and index logical
+  literals. It neither calls `immutableSlot()` nor creates a missing seed, and
+  a focused Udon Assembly interpreter checks boundary values and instruction
+  counts. LowerScalar now reparses the post-materialization stable value IDs,
+  consumes fixed direct colors and literal colors in one interprocedural
+  coloring, rejects interfering fixed colors, and maps resident key/type/color
+  allocations to physical resident slot names. MaterializeHostStorage rewrites
+  direct allocation IDs after inserting literal operations and erasing dead
+  constants, so downstream IDs describe the mutated IR. Fixed allocation
+  consumption is gated on an actual `udonhl.literal_materialize`; candidate-only
+  modules bypass the new schema even when deliberately malformed candidate
+  attributes exist, preserving the legacy coloring and resident-slot path.
+  Focused tests also prove that every seed uses its binding color's physical
+  resident slot and that selected scratch/direct colors remain distinct;
+- the next implementation boundary is deliberately model-independent. Move
+  late backend integer consumers into explicit pre-lowering use sites without
+  activating candidate-only metadata.
   Finally move every late backend `SystemInt32` request that can be
   rematerialized out of hidden `LowerScalar::immutableSlot()` policy and into
   explicit pre-lowering IR use sites. Source-operand rematerialization alone
@@ -555,6 +572,20 @@ Continue in the following independently testable commits:
    mechanically from its exact seed bindings, extern list, and writable color.
    Add focused Udon Assembly and native-equivalence tests. It must not call
    `immutableSlot()`, choose a recipe, recolor the result, or add hidden seeds.
+
+   **Completed (2026-11-16):** explicit i32 recipe lowering, exact selected
+   scratch naming, resident-key lookup, no-hidden-seed failure, deterministic
+   shift/OR emission, and physical `SystemInt32` behavior for i8/i16/i32/index
+   are implemented and covered by a focused interpreter. Post-mutation stable
+   IDs are regenerated for retained direct values; LowerScalar consumes those
+   fixed direct colors and the literal color in one interprocedural plan,
+   rejects fixed-color interference, and gives resident binding colors physical
+   slot identities. A selected color 7 scratch and simultaneous color 8 result
+   execute with equal native-value semantics. Allocation consumption is gated
+   on an actual materialization operation; a candidate-only module, including
+   one with intentionally incomplete candidate attributes, retains the legacy
+   code-generation path. Candidate discovery alone does not activate placement.
+
 4. Represent rematerializable late backend integer consumers as explicit
    pre-lowering IR use sites. Start with Unity buffer IDs, pool indices/tokens,
    static tensor/resource indices, descriptor fields, and typed spill/pool

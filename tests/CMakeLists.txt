@@ -462,6 +462,11 @@ add_test(NAME host-storage-materialization
     $<TARGET_FILE:vrc-opt>
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/host_storage_materialization.mlir"
 )
+add_test(NAME host-literal-materialization-codegen
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/codegen/host_literal_materialization.py"
+    $<TARGET_FILE:vrc-opt>
+)
 add_test(NAME static-dispatch-resource-materialization
   COMMAND Python3::Interpreter
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_dispatch_resource_materialization.py"
