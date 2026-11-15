@@ -713,8 +713,12 @@ Continue in the following independently testable commits:
    testable: (d1) makes Udon lowering consume the explicit allocated operand
    slot while retaining legacy fallback only for unexposed IR; (d2) adds the
    native ABI exclusion/equivalence regression without changing native runtime
-   arguments. Slice (d1) is implemented in the current change; (d2) and
-   production wiring slice (e) remain.
+   arguments. Slice (d1) is recorded by `330951e`. Slice (d2) is implemented
+   in the current change: the native-fragment regression proves that adding a
+   lowering-only static-resource index yields byte-identical canonical native
+   IR, preserves the fixed three-argument native dispatch ABI, and leaves the
+   existing executed results unchanged. Slices (a)-(d) are complete;
+   production wiring slice (e) remains.
 5. Extend `AllocateHostStorage` with a deterministic pressure/cost selection
    between resident and `rematerialize_i32` placement. Emit complete selected
    recipe data: exact resident seed bindings, writable color, required externs,
