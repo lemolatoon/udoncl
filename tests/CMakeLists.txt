@@ -450,6 +450,12 @@ add_test(NAME host-rematerialization-inventory
     $<TARGET_FILE:vrc-opt>
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/host_rematerialization_inventory.mlir"
 )
+add_test(NAME host-backend-literal-exposure
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/host_backend_literal_exposure.py"
+    $<TARGET_FILE:vrc-opt>
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/host_backend_literal_exposure.mlir"
+)
 add_test(NAME literal-materialization-contract
   COMMAND Python3::Interpreter
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/literal_materialization_contract.py"

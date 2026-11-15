@@ -144,6 +144,10 @@ def PrepareUdonAsyncRuntimePass : Pass<"vrc-prepare-udon-async-runtime", "mlir::
   let summary = "Verify the structured Async Runtime subset and assign static Udon frame/resume ids";
   let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "mlir::arith::ArithDialect", "mlir::async::AsyncDialect", "mlir::cf::ControlFlowDialect", "mlir::func::FuncDialect"];
 }
+def ExposeHostBackendLiteralUsesPass : Pass<"vrc-expose-host-backend-literal-uses", "mlir::ModuleOp"> {
+  let summary = "Expose verified backend-only Host literals as typed SSA operands";
+  let dependentDialects = ["::vrc::vrc::VRCDialect", "mlir::arith::ArithDialect"];
+}
 def AnalyzeHostStoragePass : Pass<"vrc-analyze-host-storage", "mlir::ModuleOp"> {
   let summary = "Record deterministic logical Host storage placements before physical allocation";
   let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "mlir::func::FuncDialect"];

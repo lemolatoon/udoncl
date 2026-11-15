@@ -696,6 +696,14 @@ Continue in the following independently testable commits:
    avoid the old resident index slot; candidate-only output must retain native
    value semantics. This is Step 4 coverage only: automatic selection and the
    exact 512-address acceptance remain Step 5.
+
+   Implementation status: slices (a) and (b) are implemented; slice (a) is
+   recorded by `2eb8fae`. `vrc.dispatch` now has the backward-compatible sized
+   operand segment, and the standalone transactional
+   `vrc-expose-host-backend-literal-uses` pass exposes verified static-tensor
+   indices without ONNX or model-specific logic. The pass is intentionally not
+   in the production pipeline yet. Role-aware discovery, lowering consumption,
+   and production wiring remain slices (c), (d), and (e).
 5. Extend `AllocateHostStorage` with a deterministic pressure/cost selection
    between resident and `rematerialize_i32` placement. Emit complete selected
    recipe data: exact resident seed bindings, writable color, required externs,
