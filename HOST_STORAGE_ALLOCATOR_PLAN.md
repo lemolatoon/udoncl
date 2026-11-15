@@ -92,8 +92,25 @@ Current implementation checkpoint (2026-11-16):
   that a later `MaterializeHostStorage` pass will insert. Its verifier fixes
   the selected recipe, typed literal/key, writable color, exact resident seed
   bindings, required externs, helper scratch, and generated version. The first
-  supported contract is `rematerialize_i32`; no pass emits or lowers this op
-  yet, and candidate colors are not treated as placement decisions;
+  supported contract is `rematerialize_i32`;
+- an opt-in `MaterializeHostStorage` pass now parses a separate versioned
+  selected-placement schema. Candidate-only modules remain a strict no-op. For
+  a selected typed instance, it cross-checks the exact instance/site list,
+  actual constant operands, writable candidate color/extent, and referenced
+  resident seed allocations, then inserts one `udonhl.literal_materialize`
+  before the consumer and rewrites that instance's operand sites. It is not in
+  the production pipeline, `AllocateHostStorage` does not yet emit selections,
+  and `LowerScalar` does not yet lower the operation. The pass and operation
+  verifier now share the exact i32 recipe helper; all selected plans, resident
+  inventory/allocation versions, seed bindings, required externs, and actual
+  operands are validated before mutation. Every distinct constant definition
+  represented by a selected instance is collected, and each one is erased only
+  when all of its uses have been replaced. Focused tests cover separate
+  same-value definitions, duplicate operands, simultaneous distinct colors,
+  mixed logical types, exact call arguments, ineligible branch selection,
+  stale operands, schema versions, recipe fields, and missing/incorrect/
+  duplicate seed bindings. Candidate colors remain non-executable without an
+  explicit selected placement;
 - the next implementation boundary is deliberately model-independent. Add a
   mechanical `MaterializeHostStorage` pass and explicit `LowerScalar` support
   that operate only on allocator-selected placement.
@@ -521,6 +538,19 @@ Continue in the following independently testable commits:
    source operand sites to `udonhl.literal_materialize`; candidate metadata
    alone is never executable. Test duplicate operands, simultaneous distinct
    operands, calls, branches, and rejection of stale/partial decisions.
+
+   **Completed (2026-11-16):** the independent pass, selected-placement
+   schema, candidate-only no-op, typed instance/site/color/extent checks,
+   resident seed lookup, deterministic insertion, and duplicate-operand reuse
+   are implemented. Exact recipe validation is shared with the operation
+   verifier and runs transactionally before mutation; resident schema versions
+   and actual operands are checked, every distinct replaced constant definition
+   is erased when dead, and behavioral/negative tests cover exact call
+   operands, ineligible branch-derived selections, stale operands, recipe
+   fields, and resident seed bindings. The pass remains opt-in until the
+   allocator emits selected placements; production activation belongs to later
+   steps.
+
 3. Teach `LowerScalar` to lower an explicit `rematerialize_i32` operation
    mechanically from its exact seed bindings, extern list, and writable color.
    Add focused Udon Assembly and native-equivalence tests. It must not call

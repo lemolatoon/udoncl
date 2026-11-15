@@ -6,6 +6,8 @@
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/raw_ostream.h"
+#include <algorithm>
+#include <optional>
 #include <string>
 
 namespace vrc {
@@ -17,6 +19,51 @@ struct HostLiteralKey {
   bool supported = false;
   llvm::SmallVector<llvm::StringRef, 4> contextFreeRecipes;
 };
+
+struct HostLiteralI32Recipe {
+  llvm::SmallVector<unsigned> seedValues;
+  llvm::SmallVector<llvm::StringRef> requiredExterns;
+};
+
+inline std::optional<HostLiteralI32Recipe>
+getHostLiteralI32Recipe(mlir::Type type, mlir::Attribute value) {
+  auto integer = mlir::dyn_cast<mlir::IntegerAttr>(value);
+  if (!integer || !(type.isInteger(8) || type.isInteger(16) ||
+                    type.isInteger(32) || type.isIndex()))
+    return std::nullopt;
+
+  uint32_t bits =
+      static_cast<uint32_t>(integer.getValue().sextOrTrunc(32).getZExtValue());
+  unsigned highestNibble = 0;
+  for (unsigned nibble = 1; nibble < 8; ++nibble)
+    if ((bits >> (nibble * 4)) & 15)
+      highestNibble = nibble;
+
+  HostLiteralI32Recipe recipe;
+  recipe.seedValues.push_back(
+      static_cast<unsigned>((bits >> (highestNibble * 4)) & 15));
+  if (highestNibble) {
+    recipe.seedValues.push_back(4);
+    recipe.requiredExterns.push_back(
+        "SystemInt32.__op_LeftShift__SystemInt32_SystemInt32__SystemInt32");
+  }
+  bool needsOr = false;
+  for (unsigned nibble = highestNibble; nibble-- > 0;) {
+    unsigned digit = static_cast<unsigned>((bits >> (nibble * 4)) & 15);
+    if (!digit)
+      continue;
+    needsOr = true;
+    recipe.seedValues.push_back(digit);
+  }
+  if (needsOr)
+    recipe.requiredExterns.push_back(
+        "SystemInt32.__op_LogicalOr__SystemInt32_SystemInt32__SystemInt32");
+  llvm::sort(recipe.seedValues);
+  recipe.seedValues.erase(
+      std::unique(recipe.seedValues.begin(), recipe.seedValues.end()),
+      recipe.seedValues.end());
+  return recipe;
+}
 
 inline std::string hostLiteralTypeText(mlir::Type type) {
   std::string text;
