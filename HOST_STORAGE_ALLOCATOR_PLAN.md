@@ -52,6 +52,13 @@ Current implementation checkpoint (2026-11-15):
   metadata. This is not yet the final pressure-selected placement: discovery
   still lacks literals created only inside final lowering, and the legacy
   constant-pool/rematerialization probes still run later;
+- discovery now records source literal operand sites separately from the
+  definition/requirement inventory. Stable consumer IDs, per-operand site IDs,
+  `(consumer, key)` scratch instances, and per-physical-type consumer groups
+  establish immediate-consumer lifetimes without changing executable IR. Two
+  operands using the same key share one instance; distinct keys in one
+  consumer remain distinct. Backend literals created only during final
+  lowering are not yet represented as operand sites;
 - discovery is not yet in the production compiler pipeline. Beyond the
   compatibility literal baseline, `AllocateHostStorage` still colors only
   legacy async persistent spill indices. `MaterializeHostStorage` and
@@ -310,10 +317,11 @@ It does not select resident storage, spill indices, or scratch colors, and it
 does not emit Udon instructions.
 
 The current checkpoint implements only deterministic physical keys,
-context-free recipe names, and stable source/backend use identities. Concrete
-derivation sources, simultaneous-consumer groups, scratch and extern costs,
-loop weight, and call/suspend legality remain required before any
-rematerialization placement is enabled.
+context-free recipe names, stable source/backend requirement identities, and
+source-operand immediate-consumer groups. Concrete derivation sources,
+ordinary SSA/result interference, scratch and extern costs, loop weight, and
+backend use sites remain required before any rematerialization placement is
+enabled.
 
 ### 5.5 `AllocateHostStorage`
 

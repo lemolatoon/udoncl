@@ -24,6 +24,19 @@ struct InventoryEntry {
   DictionaryAttr metadata;
 };
 
+struct ScratchInstance {
+  std::string consumerId;
+  std::string literalKey;
+  std::string physicalType;
+  SmallVector<std::string> siteIds;
+};
+
+struct ConsumerGroup {
+  std::string consumerId;
+  std::string physicalType;
+  std::set<std::string> instanceIds;
+};
+
 struct DiscoverHostRematerializationPass
     : impl::DiscoverHostRematerializationPassBase<
           DiscoverHostRematerializationPass> {
@@ -33,6 +46,10 @@ struct DiscoverHostRematerializationPass
     std::map<std::string, DictionaryAttr> keys;
     SmallVector<InventoryEntry> uses;
     std::set<std::string> useIds;
+    SmallVector<InventoryEntry> operandUses;
+    std::set<std::string> operandUseIds;
+    std::map<std::string, ScratchInstance> scratchInstances;
+    std::map<std::string, ConsumerGroup> consumerGroups;
 
     auto recipes = [&](ArrayRef<StringRef> names) {
       SmallVector<Attribute> values;
@@ -117,6 +134,23 @@ struct DiscoverHostRematerializationPass
       return left.getSymName() < right.getSymName();
     });
     for (func::FuncOp function : functions) {
+      DenseMap<Operation *, std::string> operationPaths;
+      std::function<void(Region &, const std::string &)> collectPaths;
+      collectPaths = [&](Region &region, const std::string &regionPath) {
+        for (auto [blockIndex, block] : llvm::enumerate(region.getBlocks()))
+          for (auto [operationIndex, operation] : llvm::enumerate(block)) {
+            std::string prefix = regionPath +
+                                 ":block:" + std::to_string(blockIndex) +
+                                 ":operation:" + std::to_string(operationIndex);
+            operationPaths[&operation] = prefix;
+            for (auto [regionIndex, nested] :
+                 llvm::enumerate(operation.getRegions()))
+              collectPaths(nested,
+                           prefix + ":region:" + std::to_string(regionIndex));
+          }
+      };
+      collectPaths(function.getBody(),
+                   "function:" + function.getSymName().str() + ":region:0");
       std::function<bool(Region &, const std::string &)> visitRegion;
       visitRegion = [&](Region &region, const std::string &regionPath) {
         for (auto [blockIndex, block] : llvm::enumerate(region.getBlocks())) {
@@ -124,6 +158,79 @@ struct DiscoverHostRematerializationPass
             std::string prefix = regionPath +
                                  ":block:" + std::to_string(blockIndex) +
                                  ":operation:" + std::to_string(operationIndex);
+            for (auto [operandIndex, operand] :
+                 llvm::enumerate(operation.getOperands())) {
+              auto constant = operand.getDefiningOp<arith::ConstantOp>();
+              if (!constant)
+                continue;
+              auto definition = operationPaths.find(constant.getOperation());
+              if (definition == operationPaths.end()) {
+                module.emitError(
+                    "literal operand definition lacks a stable id");
+                signalPassFailure();
+                return false;
+              }
+              HostLiteralKey key =
+                  getHostLiteralKey(constant.getType(), constant.getValue());
+              std::string keyId =
+                  ensureKey(constant.getType(), constant.getValue());
+              std::string siteId =
+                  prefix + ":operand:" + std::to_string(operandIndex);
+              std::string instanceId = prefix + ":literal:" + keyId;
+              std::string groupId = prefix + ":scratch:" + key.physicalType;
+              bool scratchEligible =
+                  llvm::any_of(key.contextFreeRecipes, [](StringRef recipe) {
+                    return recipe.starts_with("rematerialize_");
+                  });
+              if (!operandUseIds.insert(siteId).second) {
+                module.emitError("duplicate Host literal operand use id: ")
+                    << siteId;
+                signalPassFailure();
+                return false;
+              }
+              NamedAttrList fields;
+              fields.set("site_id", builder.getStringAttr(siteId));
+              fields.set(
+                  "definition_use_id",
+                  builder.getStringAttr(definition->second + ":result:0"));
+              fields.set("literal_key", builder.getStringAttr(keyId));
+              fields.set("consumer_id", builder.getStringAttr(prefix));
+              fields.set("operand_index",
+                         builder.getI32IntegerAttr(operandIndex));
+              fields.set("logical_type",
+                         builder.getStringAttr(
+                             hostLiteralTypeText(constant.getType())));
+              fields.set("physical_type",
+                         builder.getStringAttr(key.physicalType));
+              fields.set("scratch_eligible",
+                         builder.getBoolAttr(scratchEligible));
+              if (scratchEligible) {
+                fields.set("scratch_instance_id",
+                           builder.getStringAttr(instanceId));
+                fields.set("consumer_group_id", builder.getStringAttr(groupId));
+              }
+              fields.set("lifetime",
+                         builder.getStringAttr("immediate_consumer"));
+              fields.set("crosses_call", builder.getBoolAttr(false));
+              fields.set("crosses_suspend", builder.getBoolAttr(false));
+              operandUses.push_back(
+                  {siteId, builder.getDictionaryAttr(fields)});
+              if (!scratchEligible)
+                continue;
+              auto instance =
+                  scratchInstances
+                      .try_emplace(
+                          instanceId,
+                          ScratchInstance{prefix, keyId, key.physicalType, {}})
+                      .first;
+              instance->second.siteIds.push_back(siteId);
+              auto group =
+                  consumerGroups
+                      .try_emplace(groupId,
+                                   ConsumerGroup{prefix, key.physicalType, {}})
+                      .first;
+              group->second.instanceIds.insert(instanceId);
+            }
             if (auto constant = dyn_cast<arith::ConstantOp>(operation)) {
               Type type = constant.getType();
               if (!appendUse(prefix + ":result:0", "source", "arith_constant",
@@ -185,6 +292,10 @@ struct DiscoverHostRematerializationPass
                [](const InventoryEntry &left, const InventoryEntry &right) {
                  return left.stableId < right.stableId;
                });
+    llvm::sort(operandUses,
+               [](const InventoryEntry &left, const InventoryEntry &right) {
+                 return left.stableId < right.stableId;
+               });
     SmallVector<Attribute> keyInventory;
     keyInventory.reserve(keys.size());
     for (const auto &[id, metadata] : keys)
@@ -193,12 +304,49 @@ struct DiscoverHostRematerializationPass
     useInventory.reserve(uses.size());
     for (const InventoryEntry &use : uses)
       useInventory.push_back(use.metadata);
+    SmallVector<Attribute> operandUseInventory;
+    for (const InventoryEntry &use : operandUses)
+      operandUseInventory.push_back(use.metadata);
+    SmallVector<Attribute> scratchInstanceInventory;
+    for (auto &[instanceId, instance] : scratchInstances) {
+      llvm::sort(instance.siteIds);
+      SmallVector<Attribute> siteIds;
+      for (const std::string &siteId : instance.siteIds)
+        siteIds.push_back(builder.getStringAttr(siteId));
+      NamedAttrList fields;
+      fields.set("instance_id", builder.getStringAttr(instanceId));
+      fields.set("consumer_id", builder.getStringAttr(instance.consumerId));
+      fields.set("literal_key", builder.getStringAttr(instance.literalKey));
+      fields.set("physical_type", builder.getStringAttr(instance.physicalType));
+      fields.set("site_ids", builder.getArrayAttr(siteIds));
+      scratchInstanceInventory.push_back(builder.getDictionaryAttr(fields));
+    }
+    SmallVector<Attribute> consumerGroupInventory;
+    for (const auto &[groupId, group] : consumerGroups) {
+      SmallVector<Attribute> members;
+      for (const std::string &instanceId : group.instanceIds)
+        members.push_back(builder.getStringAttr(instanceId));
+      NamedAttrList fields;
+      fields.set("group_id", builder.getStringAttr(groupId));
+      fields.set("consumer_id", builder.getStringAttr(group.consumerId));
+      fields.set("physical_type", builder.getStringAttr(group.physicalType));
+      fields.set("member_instance_ids", builder.getArrayAttr(members));
+      consumerGroupInventory.push_back(builder.getDictionaryAttr(fields));
+    }
     module->setAttr("vrc.host_literal_inventory_version",
                     builder.getI32IntegerAttr(1));
     module->setAttr("vrc.host_literal_keys",
                     builder.getArrayAttr(keyInventory));
     module->setAttr("vrc.host_literal_uses",
                     builder.getArrayAttr(useInventory));
+    module->setAttr("vrc.host_literal_use_site_version",
+                    builder.getI32IntegerAttr(1));
+    module->setAttr("vrc.host_literal_use_sites",
+                    builder.getArrayAttr(operandUseInventory));
+    module->setAttr("vrc.host_literal_scratch_instances",
+                    builder.getArrayAttr(scratchInstanceInventory));
+    module->setAttr("vrc.host_literal_consumer_groups",
+                    builder.getArrayAttr(consumerGroupInventory));
   }
 };
 
