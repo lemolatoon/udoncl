@@ -148,6 +148,10 @@ def AnalyzeHostStoragePass : Pass<"vrc-analyze-host-storage", "mlir::ModuleOp"> 
   let summary = "Record deterministic logical Host storage placements before physical allocation";
   let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "mlir::func::FuncDialect"];
 }
+def DiscoverHostRematerializationPass : Pass<"vrc-discover-host-rematerialization", "mlir::ModuleOp"> {
+  let summary = "Inventory typed Host literal uses and legal rematerialization recipes";
+  let dependentDialects = ["::vrc::vrc::VRCDialect", "mlir::arith::ArithDialect", "mlir::func::FuncDialect"];
+}
 def AllocateHostStoragePass : Pass<"vrc-allocate-host-storage", "mlir::ModuleOp"> {
   let summary = "Assign deterministic physical storage to planned Host live ranges";
   let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "mlir::func::FuncDialect"];

@@ -437,6 +437,12 @@ add_test(NAME static-logical-buffer-materialization
     $<TARGET_FILE:vrc-opt>
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_logical_buffer_materialization.mlir"
 )
+add_test(NAME host-rematerialization-inventory
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/host_rematerialization_inventory.py"
+    $<TARGET_FILE:vrc-opt>
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/host_rematerialization_inventory.mlir"
+)
 add_test(NAME static-dispatch-resource-materialization
   COMMAND Python3::Interpreter
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_dispatch_resource_materialization.py"
