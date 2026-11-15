@@ -370,6 +370,116 @@ assert (
     in candidate_boundary.stderr
 )
 
+
+def fit_capacity(text):
+    return run(
+        [
+            "--vrc-expose-host-backend-literal-uses",
+            "--vrc-discover-host-rematerialization",
+            "--vrc-fit-host-storage-capacity",
+        ],
+        text,
+    )
+
+
+fit_input = with_reserve(without_request).replace(
+    "func.func @entry() attributes {",
+    'func.func @entry() attributes {vrc.async_spill_slots = "sentinel", ',
+    1,
+)
+fitted = fit_capacity(fit_input)
+assert fitted.returncode == 0, (fitted.stdout, fitted.stderr)
+fitted_repeat = fit_capacity(fit_input)
+assert fitted_repeat.returncode == 0, (
+    fitted_repeat.stdout,
+    fitted_repeat.stderr,
+)
+assert fitted_repeat.stdout == fitted.stdout
+assert fitted.stdout.count('"udonhl.literal_materialize"') == 2
+assert 'vrc.async_spill_slots = "sentinel"' in fitted.stdout
+fit_report = re.search(
+    r"vrc\.host_storage_capacity_fit = \{([^}]*)\}", fitted.stdout
+)
+assert fit_report, fitted.stdout
+assert (
+    f"baseline_address_count = {candidate_addresses} : i64"
+    in fit_report.group(1)
+)
+assert f"final_address_count = {selected_addresses} : i64" in fit_report.group(1)
+assert "attempt_count = 2 : i32" in fit_report.group(1)
+assert "requested_resident_slot_savings = 2 : i32" in fit_report.group(1)
+fitted_lowered = run(
+    ["--vrc-lower-udonhl-to-udonasm", "--verify-each"], fitted.stdout
+)
+assert fitted_lowered.returncode == 0, (
+    fitted_lowered.stdout,
+    fitted_lowered.stderr,
+)
+assert sum(address_components(fitted_lowered.stdout)) == selected_addresses
+
+already_fit_input = fit_input.replace(
+    f"vrc.final_data_slot_reserve = {reserve} : i32",
+    f"vrc.final_data_slot_reserve = {reserve - 1} : i32",
+    1,
+)
+already_fit = fit_capacity(already_fit_input)
+assert already_fit.returncode == 0, (already_fit.stdout, already_fit.stderr)
+assert '"udonhl.literal_materialize"' not in already_fit.stdout
+already_fit_report = re.search(
+    r"vrc\.host_storage_capacity_fit = \{([^}]*)\}", already_fit.stdout
+)
+assert already_fit_report, already_fit.stdout
+assert "attempt_count = 0 : i32" in already_fit_report.group(1)
+assert "requested_resident_slot_savings = 0 : i32" in already_fit_report.group(1)
+assert "vrc.host_storage_pressure_request" not in already_fit.stdout
+
+exhausted_input = fit_input.replace(
+    f"vrc.final_data_slot_reserve = {reserve} : i32",
+    f"vrc.final_data_slot_reserve = {reserve + 1} : i32",
+    1,
+)
+exhausted = fit_capacity(exhausted_input)
+assert exhausted.returncode != 0, (exhausted.stdout, exhausted.stderr)
+assert "only 2 are safely selectable" in exhausted.stderr
+assert "failed to prepare Host storage selection attempt" in exhausted.stderr
+
+spill_input = r'''module attributes {vrc.host_stage = "udonhl"} {
+  func.func @reuse(%a: i32, %b: i32, %c: i32) attributes {
+    vrc.export_id = 72 : i32,
+    vrc.async_spill_slots = [
+      {value_id = 10 : i32, slot = 0 : i32, storage_key = "SystemInt32",
+       placement = "typed_spill_array", interferes_with = array<i32>},
+      {value_id = 2 : i32, slot = 1 : i32, storage_key = "SystemInt32",
+       placement = "typed_spill_array", interferes_with = array<i32: 10>},
+      {value_id = 7 : i32, slot = 2 : i32, storage_key = "SystemInt32",
+       placement = "typed_spill_array", interferes_with = array<i32>}
+    ]
+  } {
+    udonhl.spill_store %a[0] {storage_key = "SystemInt32",
+      vrc.async_frame_store} : i32
+    udonhl.spill_store %b[1] {storage_key = "SystemInt32",
+      vrc.async_frame_store} : i32
+    udonhl.spill_store %c[2] {storage_key = "SystemInt32",
+      vrc.async_frame_store} : i32
+    return
+  }
+}'''
+spill_fitted = fit_capacity(spill_input)
+assert spill_fitted.returncode == 0, (
+    spill_fitted.stdout,
+    spill_fitted.stderr,
+)
+assert spill_fitted.stdout.count("spill_store %arg0[0]") == 1
+assert spill_fitted.stdout.count("spill_store %arg1[1]") == 1
+assert spill_fitted.stdout.count("spill_store %arg2[2]") == 1
+assert spill_fitted.stdout.count("slot = 0 : i32") == 1
+assert spill_fitted.stdout.count("slot = 1 : i32") == 1
+assert spill_fitted.stdout.count("slot = 2 : i32") == 1
+
+missing_discovery = run(["--vrc-fit-host-storage-capacity"], without_request)
+assert missing_discovery.returncode != 0
+assert "requires pristine post-discovery IR" in missing_discovery.stderr
+
 legacy = run(["--vrc-lower-udonhl-to-udonasm", "--verify-each"], source)
 assert legacy.returncode == 0, (legacy.stdout, legacy.stderr)
 assert 'initial = "22"' in legacy.stdout
@@ -441,5 +551,5 @@ reject(
 
 print(
     "host_backend_literal_dispatch=passed selected=2 candidate=2 legacy=1 "
-    "diagnostics=7"
+    "capacity_fit=2 retries=2 diagnostics=7"
 )

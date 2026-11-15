@@ -1,0 +1,5 @@
+add_mlir_library(VRCHostStoragePipeline DISABLE_INSTALL FitHostStorageCapacity.cpp
+  DEPENDS VRCBoundaryPassIncGen
+  LINK_LIBS PUBLIC VRCConversionUdon VRCConversionVRC VRCDialectUdonHL
+  MLIRArithDialect MLIRFuncDialect MLIRPass)
+vrc_configure_target(VRCHostStoragePipeline)

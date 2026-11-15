@@ -171,6 +171,10 @@ def MaterializeHostStoragePass : Pass<"vrc-materialize-host-storage", "mlir::Mod
 def MeasureHostStorageCapacityPass : Pass<"vrc-measure-host-storage-capacity", "mlir::ModuleOp"> {
   let summary = "Measure exact final Udon address pressure without lowering the input module";
 }
+def FitHostStorageCapacityPass : Pass<"vrc-fit-host-storage-capacity", "mlir::ModuleOp"> {
+  let summary = "Transactionally select and materialize Host literals until exact Udon address pressure fits";
+  let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "mlir::arith::ArithDialect", "mlir::func::FuncDialect"];
+}
 def LowerUdonAsyncRuntimePass : Pass<"vrc-lower-udon-async-runtime", "mlir::ModuleOp"> {
   let summary = "Remove upstream Async/Coro scaffolding after static Udon routing is materialized";
   let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "::vrc::vrc::VRCDialect", "mlir::cf::ControlFlowDialect", "mlir::func::FuncDialect"];

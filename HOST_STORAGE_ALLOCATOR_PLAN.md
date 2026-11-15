@@ -801,14 +801,12 @@ Continue in the following independently testable commits:
    proves request absence remains selection-free, and proves the literal-only
    pass leaves representative async spill indices unchanged. It remains
    intentionally disconnected from production.
-6. Extract exact measurement, add bounded fixed-point coordination, and only
-   then connect production. The existing `LowerScalar` clone-probe calculation
-   is exposed through the public `measureHostStorageCapacity` API and the
-   independent `vrc-measure-host-storage-capacity` pass; do not duplicate its
-   data-slot, unique-extern, scalar-register, constant-pool, cache, or final
-   reserve accounting in a second estimator. `VerifyHostStorageCapacity`
-   consumes that measurement, reports exact category totals and replacement
-   candidates, and never selects a fallback itself.
+6. Complete bounded fixed-point coordination and verification before connecting
+   production. The existing `LowerScalar` clone-probe calculation is exposed
+   through the public `measureHostStorageCapacity` API and the independent
+   `vrc-measure-host-storage-capacity` pass; no coordinator or verifier may
+   duplicate its data-slot, unique-extern, scalar-register, constant-pool,
+   cache, or final-reserve accounting.
 
    **Measurement checkpoint completed (2026-11-16):** the API clones its input
    and runs the same LowerScalar planning path in measurement-only mode through
@@ -821,35 +819,79 @@ Continue in the following independently testable commits:
    failure. The generic two-dispatch regression compares the measured data and
    extern components with final lowering and proves selected 512-address fit,
    candidate-only 513-address overflow, normalized capacity, and required
-   reduction. This checkpoint does not perform selection, retry, verification,
-   or production wiring.
+   reduction. This checkpoint performs no selection, retry, or production
+   wiring.
 
-   The coordinator snapshots the final bound Host IR after
-   `ExposeHostBackendLiteralUses` and `DiscoverHostRematerialization`. Candidate
-   measurement and every selected attempt start from that pristine snapshot;
-   neither `AllocateHostStorage` nor a previously materialized/selected module
-   is rerun. For an address limit of `512 - final_data_slot_reserve`, derive the
-   first pressure request from exact candidate data slots and unique extern
-   signatures. Run `AllocateHostLiteralStorage`, then
-   `MaterializeHostStorage`, and remeasure with the same shared probe. If the
-   result still exceeds capacity because writable scratch, helper state, or
-   extern costs changed, increase only the deterministic selected prefix and
-   retry from the pristine snapshot. Require strictly monotonic requested
-   resident savings, stable candidate ordering, a finite safe-candidate bound,
-   and a diagnostic when no legal prefix fits. Commit only the winning
-   pre-lowered IR; final scalar lowering still runs once in the ordinary
-   pipeline.
+   **Coordinator checkpoint completed (2026-11-16):** the transactional
+   `FitHostStorageCapacity` coordinator pass now lives in the upper-layer
+   `HostStoragePipeline` library. That library links the existing
+   `VRCConversionVRC` literal allocation/materialization implementation and the
+   `VRCConversionUdon` measurement implementation; neither lower library gains
+   a reverse dependency. The new library is linked into `vrc-opt` for focused
+   tests and remains deliberately absent from the production `vrccl` driver.
 
-   TDD must cover: an already-fitting candidate with no selection; the existing
-   exact 512/513 two-dispatch case; a generic case where the first selected
-   prefix remains over capacity but a larger prefix fits; exhaustion of safe
-   candidates; preservation of async spill indices across all attempts;
-   identical measurements from verification and final lowering; and
-   deterministic repeated output. After those focused tests pass, connect the
-   final production order as fixed physical releases, exposure, final
-   discovery, literal-only allocation/fixed-point materialization, verification,
-   and scalar lowering. Fresh production generation and exact remeasurement,
-   followed by MNIST and TinyLlama acceptance, remain mandatory gates.
+   The coordinator input is the final bound Host IR after
+   `ExposeHostBackendLiteralUses` and the final
+   `DiscoverHostRematerialization`. Backend-literal exposure and inventory
+   schemas must be complete, while coordinator-owned pressure-request,
+   selected-placement, materialization, and fit-plan attributes must be absent.
+   Existing compiler-owned candidate allocation metadata may be present because
+   literal-only allocation replaces it. Capture one pristine clone after these
+   checks. Never rerun the combined `AllocateHostStorage` pass and never retry
+   from an already selected or materialized module.
+
+   First clone the pristine input, run `AllocateHostLiteralStorage` without a
+   pressure request, run `MaterializeHostStorage` as its required candidate-only
+   no-op, and measure that candidate exactly. If it fits, this allocated
+   candidate is the winner. Otherwise let `D` be its exact `dataSlotCount` and
+   let `R` initially be its exact `requiredReduction`. A selection request is
+   exactly `{measured_data_slots = D, data_slot_capacity = D - R,
+   required_resident_slot_savings = R}` with schema version 1 and i32 fields;
+   reject unrepresentable values or `D - R < 1` before allocation.
+
+   Every selected attempt starts from a fresh clone of the same pristine input,
+   installs that request, runs `AllocateHostLiteralStorage`, then
+   `MaterializeHostStorage`, and finally remeasures through the shared exact API.
+   If the result does not fit, increment `R` by exactly one and try the next
+   deterministic selector prefix. Do not jump by the measured overflow and do
+   not assume total address pressure is monotonic: a newly activated writable
+   color, helper, or extern may change the marginal cost. The strictly
+   increasing prefix, `R <= D - 1`, and allocator safe-candidate exhaustion are
+   the finite bounds. Exhaustion produces one actionable diagnostic.
+
+   All attempts are speculative. Until a fit is found, the caller's module is
+   byte-for-byte unchanged. Commit only the winning clone's attributes and body
+   to the original module, preserving the module operation identity; on any
+   validation, allocation, materialization, measurement, or exhaustion failure,
+   discard every clone and leave the original untouched. Final scalar lowering
+   remains a separate ordinary pass and runs once after a committed winner.
+   A later `VerifyHostStorageCapacity` pass consumes the same measurement,
+   reports exact category totals and replacement candidates, and never selects
+   a fallback itself.
+
+   Focused coverage uses the existing model-independent two-dispatch fixture
+   with no source-authored request. With the same reserve, candidate-only
+   measurement is 513 addresses, the one-key prefix remains over capacity
+   because it activates scratch, and the two-key prefix reuses scratch and fits
+   exactly 512. The regression proves two attempts, requested savings two, two
+   materialized literals, successful ordinary final lowering, byte-identical
+   repeated output, and the already-fitting no-selection path. Exhaustion keeps
+   the original module speculative and preserves the allocator's exact safe-
+   candidate diagnostic; malformed or partial pre-discovery/coordinator schemas
+   are rejected before cloning. A separate generic fixture proves real
+   `udonhl.spill_store` indices and their valid async spill plan are unchanged.
+   Request construction rejects values that cannot be represented by the
+   version 1 i32 schema, and non-exhaustion allocation/materialization failures
+   are no longer mislabeled as safe-candidate exhaustion.
+
+   The remaining Step 6 work is an independent
+   `VerifyHostStorageCapacity` pass, followed by production pipeline wiring.
+   Verification consumes the same exact measurement, reports category totals
+   and actionable replacement candidates, and never selects or retries a
+   placement. Only after it is green may production connect fixed physical
+   releases, exposure, final discovery, fitting, verification, and scalar
+   lowering. Fresh production generation, MNIST, and TinyLlama remain mandatory
+   acceptance gates.
 7. Remove the superseded per-feature integer literal policies only after the
    general backend-use path covers them. This includes
    `unity_buffer_id_rematerialization`, raw-address-cache, spill-index-cache,
