@@ -1,4 +1,5 @@
 #include "VRC/Conversion/Passes.h"
+#include "HostStorageCapacityInternal.h"
 #include "VRC/ABI/Manifest/UdonSharpABI.h"
 #include "VRC/Analysis/HostStorageLiveness.h"
 #include "VRC/Support/HostLiteral.h"
@@ -5957,6 +5958,10 @@ private:
 
 struct LowerUdonHLToUdonAsmPass
     : impl::LowerUdonHLToUdonAsmPassBase<LowerUdonHLToUdonAsmPass> {
+  LowerUdonHLToUdonAsmPass() = default;
+  explicit LowerUdonHLToUdonAsmPass(bool measurementOnly)
+      : measurementOnly(measurementOnly) {}
+
   static unsigned addressCount(ModuleOp module) {
     auto data = module->getAttrOfType<ArrayAttr>("udonasm.data");
     llvm::StringSet<> externs;
@@ -6156,6 +6161,64 @@ struct LowerUdonHLToUdonAsmPass
       else
         best = *cached;
     }
+    if (measurementOnly) {
+      getOperation()->setAttr(
+          "vrc.host_storage_capacity_measurement",
+          DictionaryAttr::get(
+              getOperation().getContext(),
+              {NamedAttribute(
+                   StringAttr::get(getOperation().getContext(),
+                                   "schema_version"),
+                   IntegerAttr::get(
+                       IntegerType::get(getOperation().getContext(), 32), 1)),
+               NamedAttribute(
+                   StringAttr::get(getOperation().getContext(),
+                                   "address_count"),
+                   IntegerAttr::get(
+                       IntegerType::get(getOperation().getContext(), 64),
+                       best.addresses)),
+               NamedAttribute(
+                   StringAttr::get(getOperation().getContext(),
+                                   "data_slot_count"),
+                   IntegerAttr::get(
+                       IntegerType::get(getOperation().getContext(), 64),
+                       best.dataSlots)),
+               NamedAttribute(
+                   StringAttr::get(getOperation().getContext(),
+                                   "unique_extern_count"),
+                   IntegerAttr::get(
+                       IntegerType::get(getOperation().getContext(), 64),
+                       best.addresses - best.dataSlots)),
+               NamedAttribute(
+                   StringAttr::get(getOperation().getContext(),
+                                   "address_limit"),
+                   IntegerAttr::get(
+                       IntegerType::get(getOperation().getContext(), 64),
+                       addressLimit)),
+               NamedAttribute(
+                   StringAttr::get(getOperation().getContext(),
+                                   "data_slot_capacity"),
+                   IntegerAttr::get(
+                       IntegerType::get(getOperation().getContext(), 64),
+                       dataSlotCapacity)),
+               NamedAttribute(
+                   StringAttr::get(getOperation().getContext(),
+                                   "final_data_slot_reserve"),
+                   IntegerAttr::get(
+                       IntegerType::get(getOperation().getContext(), 64),
+                       finalDataSlotReserve)),
+               NamedAttribute(
+                   StringAttr::get(getOperation().getContext(),
+                                   "required_reduction"),
+                   IntegerAttr::get(
+                       IntegerType::get(getOperation().getContext(), 64),
+                       requiredReduction(best))),
+               NamedAttribute(
+                   StringAttr::get(getOperation().getContext(), "fits"),
+                   BoolAttr::get(getOperation().getContext(),
+                                 !requiredReduction(best)))}));
+      return;
+    }
     ScalarLoweringOptions options;
     options.materializationLimit = materializationLimit;
     options.rawAddressCacheLimit = rawAddressCacheLimit;
@@ -6246,6 +6309,14 @@ struct LowerUdonHLToUdonAsmPass
       signalPassFailure();
     }
   }
+
+private:
+  bool measurementOnly = false;
 };
 } // namespace
+
+std::unique_ptr<Pass> createHostStorageMeasurementLoweringPass() {
+  return std::make_unique<LowerUdonHLToUdonAsmPass>(true);
+}
+
 } // namespace vrc

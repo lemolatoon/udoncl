@@ -81,9 +81,9 @@ Current implementation checkpoint (2026-11-16):
   async persistent spill indices. A third, metadata-only candidate graph now
   combines source literal scratch with ordinary writable SSA values and emits
   deterministic colors without selecting that placement.
-  `MaterializeHostStorage` is an independent opt-in pass;
-  `VerifyHostStorageCapacity` and the production fixed-point coordinator have
-  not yet been extracted from final scalar lowering;
+  `MaterializeHostStorage` and exact `MeasureHostStorageCapacity` are
+  independent opt-in passes; `VerifyHostStorageCapacity` and the production
+  fixed-point coordinator have not yet been connected;
 - reusable `HostStorageLiveness` now lives in a common analysis library. A
   feature-neutral `HostStorageProblem`/`HostStorageSolution` graph owns stable
   storage-domain and physical-type coloring, interference edges, and
@@ -133,11 +133,13 @@ Current implementation checkpoint (2026-11-16):
   attributes exist, preserving the legacy coloring and resident-slot path.
   Focused tests also prove that every seed uses its binding color's physical
   resident slot and that selected scratch/direct colors remain distinct;
-- the next implementation boundary is deliberately model-independent: split
-  literal allocation/pressure selection from the legacy async-spill mutation
-  in `AllocateHostStorage`, expose it as an independently testable pass, then
-  extract exact post-selection measurement and fixed-point coordination before
-  wiring production. After that, move every remaining late
+- literal allocation/pressure selection is now separated from legacy
+  async-spill mutation by the independent `AllocateHostLiteralStorage` pass,
+  and the public capacity API measures an unchanged clone with the same exact
+  `LowerScalar` planning heuristics used by final lowering. The next
+  implementation boundary is the model-independent bounded fixed-point
+  coordinator and verification contract; production wiring follows only after
+  that focused acceptance. Afterward, move every remaining late
   backend `SystemInt32` request that can be rematerialized out of hidden
   `LowerScalar::immutableSlot()` policy and into explicit pre-lowering IR use
   sites. Source-operand rematerialization alone cannot solve the real-model
@@ -423,15 +425,15 @@ The allocator chooses fixed, resident, typed-spill, pooled, derived, or
 rematerialized placement using the same liveness graph and the exact address
 and code-cost model.
 
-The current pass combines two mutation domains that must not be repeated
-together late in production: literal allocation/pressure selection and async
-persistent-spill index remapping. The next slice extracts the literal work into
-a shared implementation and an independent `AllocateHostLiteralStorage` pass.
+The former combined implementation had two mutation domains that must not be
+repeated together late in production: literal allocation/pressure selection
+and async persistent-spill index remapping. The literal work now lives in a
+shared implementation and the independent `AllocateHostLiteralStorage` pass.
 The existing `AllocateHostStorage` delegates to that implementation and retains
 its current spill behavior and output. The independent pass consumes the final
-literal inventory and may replace only compiler-owned literal allocation,
-writable-candidate, and selected-placement metadata; it must neither inspect
-nor mutate async frame spill operations, indices, or plans.
+literal inventory and changes only compiler-owned literal allocation,
+writable-candidate, and selected-placement metadata; it neither inspects nor
+mutates async frame spill operations, indices, or plans.
 
 ### 5.6 `MaterializeHostStorage`
 
@@ -789,13 +791,38 @@ Continue in the following independently testable commits:
    consumes the current final inventory rather than stale early literal
    allocations. The pass is registered and directly invokable, but this slice
    makes no production pipeline change and does not edit the driver.
+
+   **Completed (2026-11-16, `122f11a`):** literal allocation, writable
+   coloring, and pressure selection now live behind the shared
+   `allocateHostLiteralStorage` entry point. The independent
+   `AllocateHostLiteralStorage` pass invokes only that entry point, while the
+   compatibility `AllocateHostStorage` pass retains its existing async-spill
+   mutation. Focused coverage freezes candidate and selected literal output,
+   proves request absence remains selection-free, and proves the literal-only
+   pass leaves representative async spill indices unchanged. It remains
+   intentionally disconnected from production.
 6. Extract exact measurement, add bounded fixed-point coordination, and only
-   then connect production. First expose the existing `LowerScalar` clone-probe
-   calculation through one shared capacity-measurement API; do not duplicate
-   its data-slot, unique-extern, scalar-register, constant-pool, cache, or final
+   then connect production. The existing `LowerScalar` clone-probe calculation
+   is exposed through the public `measureHostStorageCapacity` API and the
+   independent `vrc-measure-host-storage-capacity` pass; do not duplicate its
+   data-slot, unique-extern, scalar-register, constant-pool, cache, or final
    reserve accounting in a second estimator. `VerifyHostStorageCapacity`
    consumes that measurement, reports exact category totals and replacement
    candidates, and never selects a fallback itself.
+
+   **Measurement checkpoint completed (2026-11-16):** the API clones its input
+   and runs the same LowerScalar planning path in measurement-only mode through
+   an unregistered library-internal C++ factory. No IR attribute can switch the
+   normal LowerScalar pass into that mode, and the caller's module is not
+   lowered or otherwise mutated. Schema version 1 reports exact data slots,
+   unique extern signatures, total addresses, normalized data capacity,
+   reserve-adjusted address limit, final reserve, required reduction, and fit
+   status. Over-capacity input is a successful measurement rather than a pass
+   failure. The generic two-dispatch regression compares the measured data and
+   extern components with final lowering and proves selected 512-address fit,
+   candidate-only 513-address overflow, normalized capacity, and required
+   reduction. This checkpoint does not perform selection, retry, verification,
+   or production wiring.
 
    The coordinator snapshots the final bound Host IR after
    `ExposeHostBackendLiteralUses` and `DiscoverHostRematerialization`. Candidate

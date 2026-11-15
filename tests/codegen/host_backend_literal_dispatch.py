@@ -255,14 +255,16 @@ assert re.search(
 assert 'initial = "33"' in candidate.stdout
 
 
-def address_count(text):
+def address_components(text):
     data_slots = int(re.search(r"data_slot_count = (\d+) : i64", text).group(1))
     externs = set(re.findall(r'udonasm\.extern "([^"]+)"', text))
-    return data_slots + len(externs)
+    return data_slots, len(externs)
 
 
-selected_addresses = address_count(lowered.stdout)
-candidate_addresses = address_count(candidate.stdout)
+selected_data, selected_externs = address_components(lowered.stdout)
+candidate_data, candidate_externs = address_components(candidate.stdout)
+selected_addresses = selected_data + selected_externs
+candidate_addresses = candidate_data + candidate_externs
 assert candidate_addresses == selected_addresses + 1, (
     selected_addresses,
     candidate_addresses,
@@ -278,6 +280,73 @@ def with_reserve(text):
     )
 
 
+def measure(text):
+    result = run(["--vrc-measure-host-storage-capacity"], text)
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    match = re.search(
+        r"vrc\.host_storage_capacity_measurement = \{([^}]*)\}", result.stdout
+    )
+    assert match, result.stdout
+    fields = match.group(1)
+
+    def count(name):
+        value = re.search(rf"{name} = (\d+) : i64", fields)
+        assert value, fields
+        return int(value.group(1))
+
+    fits = re.search(r"fits = (true|false)", fields)
+    assert fits, fields
+    return result, {
+        "addresses": count("address_count"),
+        "data": count("data_slot_count"),
+        "externs": count("unique_extern_count"),
+        "limit": count("address_limit"),
+        "capacity": count("data_slot_capacity"),
+        "reserve": count("final_data_slot_reserve"),
+        "required": count("required_reduction"),
+        "fits": fits.group(1) == "true",
+    }
+
+
+measured_selected, selected_measurement = measure(with_reserve(materialized.stdout))
+measured_candidate, candidate_measurement = measure(
+    with_reserve(candidate_materialized.stdout)
+)
+assert '"udonhl.literal_materialize"' in measured_selected.stdout
+assert "udonasm.data" not in measured_selected.stdout
+assert selected_measurement == {
+    "addresses": selected_addresses,
+    "data": selected_data,
+    "externs": selected_externs,
+    "limit": selected_addresses,
+    "capacity": selected_addresses,
+    "reserve": reserve,
+    "required": 0,
+    "fits": True,
+}
+assert candidate_measurement["addresses"] == candidate_addresses
+assert candidate_measurement["data"] == candidate_data
+assert candidate_measurement["externs"] == candidate_externs
+assert candidate_measurement["limit"] == selected_addresses
+assert candidate_measurement["capacity"] == selected_addresses
+assert candidate_measurement["reserve"] == reserve
+assert candidate_measurement["required"] == 1
+assert not candidate_measurement["fits"]
+
+normal_lowering_ignores_mode_attributes = run(
+    ["--vrc-lower-udonhl-to-udonasm", "--verify-each"],
+    materialized.stdout.replace(
+        "module attributes {",
+        "module attributes {vrc.host_storage_measurement_only, ",
+        1,
+    ),
+)
+assert normal_lowering_ignores_mode_attributes.returncode == 0, (
+    normal_lowering_ignores_mode_attributes.stdout,
+    normal_lowering_ignores_mode_attributes.stderr,
+)
+assert "udonasm.data" in normal_lowering_ignores_mode_attributes.stdout
+
 selected_boundary = run(
     ["--vrc-lower-udonhl-to-udonasm", "--verify-each"],
     with_reserve(materialized.stdout),
@@ -286,7 +355,7 @@ assert selected_boundary.returncode == 0, (
     selected_boundary.stdout,
     selected_boundary.stderr,
 )
-assert address_count(selected_boundary.stdout) + reserve == 512
+assert sum(address_components(selected_boundary.stdout)) + reserve == 512
 candidate_boundary = run(
     ["--vrc-lower-udonhl-to-udonasm", "--verify-each"],
     with_reserve(candidate_materialized.stdout),
