@@ -101,19 +101,26 @@ def run(arguments, text):
     )
 
 
-allocation_pipeline = [
-        "--vrc-expose-host-backend-literal-uses",
-        "--vrc-discover-host-rematerialization",
-        "--vrc-allocate-host-storage",
+allocation_prefix = [
+    "--vrc-expose-host-backend-literal-uses",
+    "--vrc-discover-host-rematerialization",
 ]
 
 
 def allocate(text):
-    return run(allocation_pipeline, text)
+    return run([*allocation_prefix, "--vrc-allocate-host-literal-storage"], text)
 
 
 allocated = allocate(source)
 assert allocated.returncode == 0, (allocated.stdout, allocated.stderr)
+legacy_allocated = run(
+    [*allocation_prefix, "--vrc-allocate-host-storage"], source
+)
+assert legacy_allocated.returncode == 0, (
+    legacy_allocated.stdout,
+    legacy_allocated.stderr,
+)
+assert legacy_allocated.stdout == allocated.stdout
 repeated = allocate(source)
 assert repeated.returncode == 0
 assert repeated.stdout == allocated.stdout
@@ -146,6 +153,18 @@ assert candidate_only.returncode == 0, (
 assert "vrc.host_literal_selected_placement_version" not in candidate_only.stdout
 assert "vrc.host_literal_selected_placements" not in candidate_only.stdout
 assert "vrc.host_storage_selection" not in candidate_only.stdout
+
+async_sentinel = r'''module {
+  func.func @untouched() attributes {vrc.async_spill_slots = "sentinel"} {
+    return
+  }
+}'''
+sentinel_result = run(["--vrc-allocate-host-literal-storage"], async_sentinel)
+assert sentinel_result.returncode == 0, (
+    sentinel_result.stdout,
+    sentinel_result.stderr,
+)
+assert 'vrc.async_spill_slots = "sentinel"' in sentinel_result.stdout
 
 
 def reject_allocation(text, diagnostic):

@@ -160,6 +160,10 @@ def AllocateHostStoragePass : Pass<"vrc-allocate-host-storage", "mlir::ModuleOp"
   let summary = "Assign deterministic physical storage to planned Host live ranges";
   let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "mlir::func::FuncDialect"];
 }
+def AllocateHostLiteralStoragePass : Pass<"vrc-allocate-host-literal-storage", "mlir::ModuleOp"> {
+  let summary = "Assign literal storage without changing async spill indices";
+  let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "mlir::func::FuncDialect"];
+}
 def MaterializeHostStoragePass : Pass<"vrc-materialize-host-storage", "mlir::ModuleOp"> {
   let summary = "Materialize allocator-selected Host storage placements";
   let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "mlir::arith::ArithDialect", "mlir::func::FuncDialect"];

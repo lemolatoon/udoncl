@@ -1,4 +1,5 @@
 #include "VRC/Conversion/Passes.h"
+#include "VRC/Conversion/HostLiteralStorage.h"
 #include "VRC/Analysis/HostStorageAllocation.h"
 #include "VRC/Analysis/HostStorageLiveness.h"
 #include "VRC/Support/HostLiteral.h"
@@ -69,7 +70,7 @@ struct AllocateHostStoragePass
   void runOnOperation() override {
     ModuleOp module = getOperation();
     Builder builder(module.getContext());
-    if (failed(allocateLiterals(module, builder))) {
+    if (failed(allocateHostLiteralStorage(module))) {
       signalPassFailure();
       return;
     }
@@ -232,7 +233,7 @@ struct AllocateHostStoragePass
       signalPassFailure();
   }
 
-private:
+public:
   LogicalResult allocateLiterals(ModuleOp module, Builder &builder) {
     auto keys = module->getAttrOfType<ArrayAttr>("vrc.host_literal_keys");
     auto uses = module->getAttrOfType<ArrayAttr>("vrc.host_literal_uses");
@@ -1008,4 +1009,11 @@ private:
 };
 
 } // namespace
+
+LogicalResult allocateHostLiteralStorage(ModuleOp module) {
+  Builder builder(module.getContext());
+  AllocateHostStoragePass allocator;
+  return allocator.allocateLiterals(module, builder);
+}
+
 } // namespace vrc

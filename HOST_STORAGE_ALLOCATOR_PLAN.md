@@ -59,8 +59,9 @@ Current implementation checkpoint (2026-11-16):
   `(consumer, key)` scratch instances, and per-physical-type consumer groups
   establish immediate-consumer lifetimes without changing executable IR. Two
   operands using the same key share one instance; distinct keys in one
-  consumer remain distinct. Backend literals created only during final
-  lowering are not yet represented as operand sites;
+  consumer remain distinct. Explicit static-resource indices are represented;
+  remaining backend literals created only during final lowering are not yet
+  represented as operand sites;
 - the source scratch schema is now version 2. A scratch instance identity
   includes consumer, physical literal key, and logical MLIR type. Equal i8,
   i16, i32, and index values may share one `SystemInt32` physical key, but they
@@ -80,8 +81,9 @@ Current implementation checkpoint (2026-11-16):
   async persistent spill indices. A third, metadata-only candidate graph now
   combines source literal scratch with ordinary writable SSA values and emits
   deterministic colors without selecting that placement.
-  `MaterializeHostStorage` and `VerifyHostStorageCapacity` have not yet been
-  extracted from final scalar lowering;
+  `MaterializeHostStorage` is an independent opt-in pass;
+  `VerifyHostStorageCapacity` and the production fixed-point coordinator have
+  not yet been extracted from final scalar lowering;
 - reusable `HostStorageLiveness` now lives in a common analysis library. A
   feature-neutral `HostStorageProblem`/`HostStorageSolution` graph owns stable
   storage-domain and physical-type coloring, interference edges, and
@@ -91,7 +93,7 @@ Current implementation checkpoint (2026-11-16):
   spill coloring and resident literal compatibility allocation use this graph,
   with placement and generated code unchanged;
 - `udonhl.literal_materialize` now defines the non-Pure explicit IR contract
-  that a later `MaterializeHostStorage` pass will insert. Its verifier fixes
+  inserted by the opt-in `MaterializeHostStorage` pass. Its verifier fixes
   the selected recipe, typed literal/key, writable color, exact resident seed
   bindings, required externs, helper scratch, and generated version. The first
   supported contract is `rematerialize_i32`;
@@ -131,10 +133,11 @@ Current implementation checkpoint (2026-11-16):
   attributes exist, preserving the legacy coloring and resident-slot path.
   Focused tests also prove that every seed uses its binding color's physical
   resident slot and that selected scratch/direct colors remain distinct;
-- the next implementation boundary is deliberately model-independent: finish
-  the focused pressure-selection contract and exact post-selection capacity
-  test, then wire backend-use exposure, allocation, materialization, and
-  remeasurement in production order. After that, move every remaining late
+- the next implementation boundary is deliberately model-independent: split
+  literal allocation/pressure selection from the legacy async-spill mutation
+  in `AllocateHostStorage`, expose it as an independently testable pass, then
+  extract exact post-selection measurement and fixed-point coordination before
+  wiring production. After that, move every remaining late
   backend `SystemInt32` request that can be rematerialized out of hidden
   `LowerScalar::immutableSlot()` policy and into explicit pre-lowering IR use
   sites. Source-operand rematerialization alone cannot solve the real-model
@@ -361,9 +364,13 @@ Async runtime and coroutine CFG legalization
   -> MarkAsyncPersistence
   -> SplitHostLiveRanges
   -> DiscoverHostRematerialization
-  -> AllocateHostStorage
+  -> AllocateHostStorage (current early async-spill allocation)
+  -> final Host lowering and Unity resource binding
+  -> ExposeHostBackendLiteralUses
+  -> DiscoverHostRematerialization (final literal inventory)
+  -> AllocateHostLiteralStorage
   -> MaterializeHostStorage
-  -> VerifyHostStorageCapacity
+  -> VerifyHostStorageCapacity / bounded retry from a pristine snapshot
   -> UdonHL scalar/extern lowering
   -> Udon Assembly
 ```
@@ -392,22 +399,18 @@ extern requirements, instruction cost, loop weight, and call/suspend legality.
 It does not select resident storage, spill indices, or scratch colors, and it
 does not emit Udon instructions.
 
-The current checkpoint implements only deterministic physical keys,
-context-free recipe names, stable source/backend requirement identities, and
-source-operand immediate-consumer groups. The backend requirement inventory
-records which values final lowering requests, but it does not yet identify the
-exact pre-lowering consumer operand/phase where writable scratch must be live;
-it therefore cannot be materialized safely. Concrete derivation sources,
-scratch and extern costs, loop weight, and backend use sites remain required
-before any rematerialization placement is enabled. The allocator now joins
-those source scratch groups with stable ordinary SSA/result liveness, including
-live-through values and direct-call entry destinations, and emits
-candidate-only writable colors. Branch terminator literals remain explicitly
-ineligible until discovery assigns edge-specific consumer phases; they do not
-receive an unsafe or over-conservative scratch candidate. Recursive nested SSA
-collection is opt-in for this candidate analysis, so the existing production
-LowerScalar allocation input remains unchanged. This is an opt-in pass
-checkpoint rather than a production placement decision.
+The current checkpoint implements deterministic physical keys, context-free
+recipe names, stable source/backend requirement identities, source-operand
+immediate-consumer groups, and explicit `static_resource_index` backend use
+sites. Those generated dispatch operands name their exact consumer phase and
+participate in the same typed scratch coloring as source operands. Other late
+backend integer roles still lack explicit pre-lowering use sites and therefore
+remain resident. Concrete marginal extern cost and loop weight also remain
+required before selection expands beyond the currently proven role. Branch
+terminator literals remain explicitly ineligible until discovery assigns
+edge-specific consumer phases; they do not receive an unsafe or
+over-conservative scratch candidate. Production exposure and late literal
+allocation are not connected yet.
 
 ### 5.5 `AllocateHostStorage`
 
@@ -419,6 +422,16 @@ loads/stores.
 The allocator chooses fixed, resident, typed-spill, pooled, derived, or
 rematerialized placement using the same liveness graph and the exact address
 and code-cost model.
+
+The current pass combines two mutation domains that must not be repeated
+together late in production: literal allocation/pressure selection and async
+persistent-spill index remapping. The next slice extracts the literal work into
+a shared implementation and an independent `AllocateHostLiteralStorage` pass.
+The existing `AllocateHostStorage` delegates to that implementation and retains
+its current spill behavior and output. The independent pass consumes the final
+literal inventory and may replace only compiler-owned literal allocation,
+writable-candidate, and selected-placement metadata; it must neither inspect
+nor mutate async frame spill operations, indices, or plans.
 
 ### 5.6 `MaterializeHostStorage`
 
@@ -437,14 +450,17 @@ different recipe, or independently recolor direct SSA values.
 
 ### 5.7 `VerifyHostStorageCapacity`
 
-Counts the exact final address representation. If materialization changes
-index constants, scratch, extern signatures, or other address costs, the
-driver may rerun allocation with the measured totals. Generated placement is
-tagged so a retry replaces only compiler-generated materialization.
+Uses the same capacity-planning calculation as final scalar lowering to measure
+the exact final address representation. It reports category totals and
+actionable replacement candidates; it never chooses a semantically different
+fallback.
 
-The process normally converges in one allocation. At the 512 boundary it may
-iterate until stable. Failure reports category totals and actionable placement
-candidates; it never silently selects a semantically different fallback.
+If materialization changes index constants, scratch, extern signatures, or
+other address costs, a coordinator may request a larger deterministic literal
+selection. Every attempt starts from one pristine post-discovery snapshot, so
+it never reruns the combined async-spill allocator or edits an already
+materialized selection. At the 512 boundary iteration must be monotonic,
+bounded by the safe candidate set, and stable under repetition.
 
 ## 6. Allocation policy
 
@@ -622,15 +638,14 @@ Continue in the following independently testable commits:
    callers valid.
 
    Add one `ExposeHostBackendLiteralUses` pass whose first and only supported
-   role is `static_resource_index`. It runs after async-runtime preparation and
-   immediately before `DiscoverHostRematerialization`, while dispatch resource
-   provenance and the static kernel binding snapshot are still available. It
-   must not consume `vrc.unity_static_tensor_ids`: that compatibility attribute
-   is currently attached later by Unity buffer binding, after host-storage
-   discovery. Instead, derive each index from the dispatch resource's verified
-   static provenance/snapshot. Later binding must cross-check its compatibility
-   attribute against the explicit operands rather than silently replacing
-   them.
+   role is `static_resource_index`. In the final production pipeline it runs on
+   the bound physical Host module immediately before the final
+   `DiscoverHostRematerialization`, while dispatch resource provenance and the
+   static kernel binding snapshot are still available. It derives each index
+   from the dispatch resource's verified static provenance/snapshot rather than
+   using `vrc.unity_static_tensor_ids` as its source of truth. Compatibility
+   metadata attached by Unity binding must agree with the explicit operands and
+   may never silently replace them.
 
    The pass first validates and plans every dispatch, then mutates any of them.
    For each static resource position it inserts one dedicated `arith.constant`
@@ -722,12 +737,14 @@ Continue in the following independently testable commits:
    IR, preserves the fixed three-argument native dispatch ABI, and leaves the
    existing executed results unchanged. Slices (a)-(d) are complete;
    production wiring slice (e) remains.
-5. Extend `AllocateHostStorage` with a deterministic pressure/cost selection
-   between resident and `rematerialize_i32` placement. Emit complete selected
-   recipe data: exact resident seed bindings, writable color, required externs,
-   helper scratch, and generated version. Test the non-ONNX static-resource
-   pressure fixture at the exact 512-address boundary; source-only fixtures are
-   insufficient for this gate.
+5. Separate literal allocation/pressure selection from async-spill mutation,
+   without connecting production yet. Extract the existing literal allocation,
+   writable coloring, and deterministic pressure/cost selector from
+   `AllocateHostStorage` into one shared implementation. Add an independent
+   `AllocateHostLiteralStorage` pass that invokes only that implementation.
+   Keep `AllocateHostStorage` as the compatibility entry point that invokes the
+   shared literal implementation and then performs its existing async-spill
+   allocation exactly once.
 
    The first Step 5 slice accepts a versioned
    `vrc.host_storage_pressure_request` containing exact i32
@@ -758,14 +775,54 @@ Continue in the following independently testable commits:
    resident static indices reuse one non-overlapping writable color, reducing
    the final address count by one; with an identical final reserve the selected
    program fits exactly 512 addresses while candidate-only lowering fails at
-   513. Fresh production generation and remeasurement remain acceptance gates
-   before production activation.
-6. Add `VerifyHostStorageCapacity` as an independent pass and connect
-   discovery, allocation, materialization, verification, then scalar lowering
-   in production order. It reports exact category totals and replacement
-   candidates and must never select a fallback itself. If measured costs
-   require a retry, replace only compiler-generated placement and require
-   monotonic/stable convergence.
+   513. This selector and its exact focused boundary test are implemented; they
+   do not authorize production activation.
+
+   Develop the extraction test-first. Before moving implementation, freeze the
+   current `AllocateHostStorage` literal metadata and selected-placement output
+   byte-for-byte for both request absence and a valid pressure request. Then
+   prove that the independent pass produces the same literal outputs, leaves
+   representative async spill plans and `udonhl.spill_store`/`spill_load`
+   indices unchanged, and does not create selected placement without a request.
+   Negative coverage must retain the existing partial/schema/insufficient-safe-
+   candidate diagnostics. A late rediscovery fixture must prove that the pass
+   consumes the current final inventory rather than stale early literal
+   allocations. The pass is registered and directly invokable, but this slice
+   makes no production pipeline change and does not edit the driver.
+6. Extract exact measurement, add bounded fixed-point coordination, and only
+   then connect production. First expose the existing `LowerScalar` clone-probe
+   calculation through one shared capacity-measurement API; do not duplicate
+   its data-slot, unique-extern, scalar-register, constant-pool, cache, or final
+   reserve accounting in a second estimator. `VerifyHostStorageCapacity`
+   consumes that measurement, reports exact category totals and replacement
+   candidates, and never selects a fallback itself.
+
+   The coordinator snapshots the final bound Host IR after
+   `ExposeHostBackendLiteralUses` and `DiscoverHostRematerialization`. Candidate
+   measurement and every selected attempt start from that pristine snapshot;
+   neither `AllocateHostStorage` nor a previously materialized/selected module
+   is rerun. For an address limit of `512 - final_data_slot_reserve`, derive the
+   first pressure request from exact candidate data slots and unique extern
+   signatures. Run `AllocateHostLiteralStorage`, then
+   `MaterializeHostStorage`, and remeasure with the same shared probe. If the
+   result still exceeds capacity because writable scratch, helper state, or
+   extern costs changed, increase only the deterministic selected prefix and
+   retry from the pristine snapshot. Require strictly monotonic requested
+   resident savings, stable candidate ordering, a finite safe-candidate bound,
+   and a diagnostic when no legal prefix fits. Commit only the winning
+   pre-lowered IR; final scalar lowering still runs once in the ordinary
+   pipeline.
+
+   TDD must cover: an already-fitting candidate with no selection; the existing
+   exact 512/513 two-dispatch case; a generic case where the first selected
+   prefix remains over capacity but a larger prefix fits; exhaustion of safe
+   candidates; preservation of async spill indices across all attempts;
+   identical measurements from verification and final lowering; and
+   deterministic repeated output. After those focused tests pass, connect the
+   final production order as fixed physical releases, exposure, final
+   discovery, literal-only allocation/fixed-point materialization, verification,
+   and scalar lowering. Fresh production generation and exact remeasurement,
+   followed by MNIST and TinyLlama acceptance, remain mandatory gates.
 7. Remove the superseded per-feature integer literal policies only after the
    general backend-use path covers them. This includes
    `unity_buffer_id_rematerialization`, raw-address-cache, spill-index-cache,
