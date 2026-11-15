@@ -753,9 +753,13 @@ Continue in the following independently testable commits:
    weight remain required refinements before selection expands to general
    literal roles. A focused end-to-end test must cover request absence,
    deterministic selection, schema rejection, insufficient safe candidates,
-   direct MaterializeHostStorage consumption, and final lowering. The exact
-   512-address boundary remains a separate acceptance gate before production
-   activation.
+   direct MaterializeHostStorage consumption, and final lowering. A generic
+   two-dispatch fixture now proves the essential net effect: two distinct
+   resident static indices reuse one non-overlapping writable color, reducing
+   the final address count by one; with an identical final reserve the selected
+   program fits exactly 512 addresses while candidate-only lowering fails at
+   513. Fresh production generation and remeasurement remain acceptance gates
+   before production activation.
 6. Add `VerifyHostStorageCapacity` as an independent pass and connect
    discovery, allocation, materialization, verification, then scalar lowering
    in production order. It reports exact category totals and replacement
