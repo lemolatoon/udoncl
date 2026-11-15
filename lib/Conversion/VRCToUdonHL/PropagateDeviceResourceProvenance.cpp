@@ -7,6 +7,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/Interfaces/DataLayoutInterfaces.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
@@ -421,6 +422,17 @@ ViewMap selectViewExitCases(const ViewExitCases &cases, int64_t constant,
     hasSelected = true;
   }
   return hasSelected ? selected : fallback;
+}
+
+template <typename ExitCases>
+bool hasMatchingExitCase(const ExitCases &cases, int64_t constant, bool equal) {
+  for (const auto &[status, state] : cases.exact)
+    if ((status == constant) == equal)
+      return true;
+  for (const auto &unknown : cases.unknown)
+    if (!equal || !unknown.excluded.count(constant))
+      return true;
+  return false;
 }
 
 template <typename Combine>
@@ -1113,6 +1125,37 @@ struct PropagateDeviceResourceProvenancePass
     state.mayBeInvalid = true;
   }
 
+  void recordGlobalViewWrite(ObjectRef view, const ViewState &state) {
+    if (!collectingGlobalSummaries || !globalObjectIds.contains(view.base) ||
+        !state.hasPath || !state.initialized || !canHoldView(view) ||
+        !state.resource.resource || state.resource.unknown)
+      return;
+    ViewState persistent = state;
+    // Cross-export summaries describe the resource identity a global view may
+    // hold after any export. Concrete lifecycle checks still reject an
+    // uninitialized view on the execution path being compiled.
+    persistent.initialized = true;
+    persistent.mayBeInvalid = true;
+    auto filterOrigins = [&](HandleFieldOriginSet &origins) {
+      auto firstRemoved =
+          std::remove_if(origins.refs.begin(), origins.refs.end(),
+                         [&](const HandleFieldOrigin &origin) {
+                           return !globalObjectIds.contains(origin.handle.base);
+                         });
+      if (firstRemoved != origins.refs.end()) {
+        origins.refs.erase(firstRemoved, origins.refs.end());
+        origins.unknown = true;
+      }
+    };
+    filterOrigins(persistent.slotOrigins);
+    filterOrigins(persistent.generationOrigins);
+    auto write = globalViewWrites.find(view);
+    if (write == globalViewWrites.end())
+      globalViewWrites.emplace(view, std::move(persistent));
+    else
+      write->second = joinViewStates(std::move(write->second), persistent);
+  }
+
   bool recordDirectViewField(const ObjectRef &field, Type storedType,
                              const HandleFieldOriginSet *storedOrigins,
                              ViewMap &views, const HandleMap &handles) {
@@ -1140,6 +1183,7 @@ struct PropagateDeviceResourceProvenancePass
         state.generationOrigins =
             storedOrigins ? *storedOrigins : HandleFieldOriginSet{true};
       completeDirectView(state, handles);
+      recordGlobalViewWrite(view, state);
     }
     return recognized;
   }
@@ -1188,8 +1232,10 @@ struct PropagateDeviceResourceProvenancePass
       else
         ++iterator;
     }
-    for (auto &[view, state] : copied)
+    for (auto &[view, state] : copied) {
       views[view] = std::move(state);
+      recordGlobalViewWrite(view, views[view]);
+    }
   }
 
   ::vrc::udonhl::GlobalOp globalCell(Value pointer) {
@@ -1466,15 +1512,59 @@ struct PropagateDeviceResourceProvenancePass
     llvm::DenseMap<std::pair<Block *, Block *>, StatusConstraintMap>
         edgeStatusConstraints;
     llvm::DenseMap<Value, PendingMemoryEffect> pendingMemoryEffects;
+    llvm::DenseSet<Operation *> trackedDomainTransparentOperations;
     llvm::DenseMap<Value, ComparisonRefinement> comparisonRefinements;
     PointerCellMap returnedPointerCells;
     ResourceCellMap returnedResourceCells;
     ViewMap returnedViews;
-    ResourceCellExitCases resourceCellExitCases;
-    PointerExitCases pointerExitCases;
-    ViewExitCases viewExitCases;
+    llvm::DenseMap<Block *, ResourceCellExitCases> blockResourceCellExitCases;
+    llvm::DenseMap<Block *, PointerExitCases> blockPointerExitCases;
+    llvm::DenseMap<Block *, ViewExitCases> blockViewExitCases;
     bool sawReturn = false;
     llvm::DenseSet<Value> resourceCells;
+    DominanceInfo dominance(function);
+    auto nonNegativeUnitStrideLoop =
+        [&](Value value, Operation *at) -> std::optional<int64_t> {
+      auto argument = dyn_cast<BlockArgument>(value);
+      if (!argument)
+        return std::nullopt;
+      Block *header = argument.getOwner();
+      if (header->isEntryBlock() ||
+          !dominance.dominates(header, at->getBlock()))
+        return std::nullopt;
+      std::optional<int64_t> start;
+      bool sawBackedge = false;
+      unsigned edges = 0;
+      for (Block *predecessor : header->getPredecessors()) {
+        ++edges;
+        Value incoming =
+            successorOperand(predecessor, header, argument.getArgNumber());
+        if (!incoming)
+          return std::nullopt;
+        if (auto constant = incoming.getDefiningOp<arith::ConstantIntOp>()) {
+          if (start || dominance.dominates(header, predecessor) ||
+              constant.value() < 0)
+            return std::nullopt;
+          start = constant.value();
+          continue;
+        }
+        if (sawBackedge || !dominance.dominates(header, predecessor))
+          return std::nullopt;
+        auto increment = incoming.getDefiningOp<arith::AddIOp>();
+        if (!increment ||
+            !arith::bitEnumContainsAll(increment.getOverflowFlags(),
+                                       arith::IntegerOverflowFlags::nuw) ||
+            !((increment.getLhs() == argument &&
+               isConstantI32(increment.getRhs(), 1)) ||
+              (increment.getRhs() == argument &&
+               isConstantI32(increment.getLhs(), 1))))
+          return std::nullopt;
+        sawBackedge = true;
+      }
+      if (edges != 2 || !start || !sawBackedge)
+        return std::nullopt;
+      return start;
+    };
     if (!function.empty()) {
       worklist.push_back(&function.front());
       queued.insert(&function.front());
@@ -1486,6 +1576,114 @@ struct PropagateDeviceResourceProvenancePass
       for (Value cell : eligibleCells)
         memoryInputs[&function.front()][cell] = {true, false, Fact()};
     }
+    auto pendingEffectAtTerminator =
+        [&](Value value, Block *block,
+            Operation *terminator) -> PendingMemoryEffect * {
+      auto pending = pendingMemoryEffects.find(value);
+      if (pending == pendingMemoryEffects.end())
+        return nullptr;
+      Operation *next = nullptr;
+      if (pending->second.call) {
+        if (pending->second.call->getBlock() != block)
+          return nullptr;
+        next = pending->second.call->getNextNode();
+      } else {
+        auto argument = dyn_cast<BlockArgument>(value);
+        if (!argument || argument.getOwner() != block)
+          return nullptr;
+        next = block->empty() ? nullptr : &block->front();
+      }
+      for (; next && next != terminator; next = next->getNextNode())
+        if (!isa<arith::ConstantOp, arith::CmpIOp>(next) &&
+            !trackedDomainTransparentOperations.contains(next))
+          return nullptr;
+      return next == terminator ? &pending->second : nullptr;
+    };
+    auto completeSuccessEffect =
+        [&](Operation *call, const ResourceCellMap &failureResourceCells,
+            const ResourceCellMap &successResourceCells,
+            const PointerCellMap &pointerCells,
+            const ViewMap &views) -> PendingMemoryEffect {
+      PendingMemoryEffect effect;
+      effect.call = call;
+      addResourceCellExitCase(effect.resourceCellCases, 0,
+                              successResourceCells);
+      addResourceCellExitCase(effect.resourceCellCases, std::nullopt,
+                              failureResourceCells, {0});
+      addPointerExitCase(effect.pointerCases, 0, pointerCells,
+                         zeroInitializedGlobalObjectIds);
+      addPointerExitCase(effect.pointerCases, std::nullopt, pointerCells,
+                         zeroInitializedGlobalObjectIds, {0});
+      addViewExitCase(effect.viewCases, 0, views);
+      addViewExitCase(effect.viewCases, std::nullopt, views, {0});
+      return effect;
+    };
+    auto blockArgumentPendingEffect =
+        [&](BlockArgument argument) -> std::optional<PendingMemoryEffect> {
+      Block *destination = argument.getOwner();
+      PendingMemoryEffect combined;
+      bool sawReachableEdge = false;
+      auto addPendingCases = [&](const PendingMemoryEffect &pending) {
+        for (const auto &[status, cells] : pending.resourceCellCases.exact)
+          addResourceCellExitCase(combined.resourceCellCases, status, cells);
+        for (const auto &unknown : pending.resourceCellCases.unknown)
+          addResourceCellExitCase(combined.resourceCellCases, std::nullopt,
+                                  unknown.cells, unknown.excluded);
+        for (const auto &[status, cells] : pending.pointerCases.exact)
+          addPointerExitCase(combined.pointerCases, status, cells,
+                             zeroInitializedGlobalObjectIds);
+        for (const auto &unknown : pending.pointerCases.unknown)
+          addPointerExitCase(combined.pointerCases, std::nullopt,
+                             unknown.pointerCells,
+                             zeroInitializedGlobalObjectIds, unknown.excluded);
+        for (const auto &[status, views] : pending.viewCases.exact)
+          addViewExitCase(combined.viewCases, status, views);
+        for (const auto &unknown : pending.viewCases.unknown)
+          addViewExitCase(combined.viewCases, std::nullopt, unknown.views,
+                          unknown.excluded);
+      };
+      for (Block *predecessor : destination->getPredecessors()) {
+        auto views = edgeViews.find({predecessor, destination});
+        auto pointers = edgePointers.find({predecessor, destination});
+        auto resourceCells = edgeResourceCells.find({predecessor, destination});
+        if (views == edgeViews.end() && pointers == edgePointers.end() &&
+            resourceCells == edgeResourceCells.end())
+          continue;
+        sawReachableEdge = true;
+        Value incoming =
+            successorOperand(predecessor, destination, argument.getArgNumber());
+        if (isa<cf::BranchOp>(predecessor->getTerminator()))
+          if (PendingMemoryEffect *pending = pendingEffectAtTerminator(
+                  incoming, predecessor, predecessor->getTerminator())) {
+            addPendingCases(*pending);
+            continue;
+          }
+        std::optional<int64_t> status;
+        auto integers = edgeIntegerArguments.find({predecessor, destination});
+        if (integers != edgeIntegerArguments.end() &&
+            argument.getArgNumber() < integers->second.size())
+          status = integers->second[argument.getArgNumber()];
+        StatusExclusions excluded;
+        auto constraints =
+            edgeStatusConstraints.find({predecessor, destination});
+        if (constraints != edgeStatusConstraints.end()) {
+          auto found = constraints->second.find(argument);
+          if (found != constraints->second.end())
+            excluded = found->second;
+        }
+        if (views != edgeViews.end())
+          addViewExitCase(combined.viewCases, status, views->second, excluded);
+        if (pointers != edgePointers.end())
+          addPointerExitCase(combined.pointerCases, status, pointers->second,
+                             zeroInitializedGlobalObjectIds, excluded);
+        if (resourceCells != edgeResourceCells.end())
+          addResourceCellExitCase(combined.resourceCellCases, status,
+                                  resourceCells->second, excluded);
+      }
+      if (!sawReachableEdge)
+        return std::nullopt;
+      return combined;
+    };
     unsigned iterations = 0;
     while (!worklist.empty() && !invalid) {
       if (++iterations > 10000) {
@@ -1515,13 +1713,15 @@ struct PropagateDeviceResourceProvenancePass
           auto exactCell = cellObjects == objectValues.end()
                                ? std::nullopt
                                : exactObject(cellObjects->second);
+          auto storedOrigins = handleFieldValues.find(store.getValue());
           bool directViewField = false;
           if (exactCell) {
-            auto origins = handleFieldValues.find(store.getValue());
-            directViewField = recordDirectViewField(
-                *exactCell, store.getValue().getType(),
-                origins == handleFieldValues.end() ? nullptr : &origins->second,
-                localViews, handles);
+            directViewField =
+                recordDirectViewField(*exactCell, store.getValue().getType(),
+                                      storedOrigins == handleFieldValues.end()
+                                          ? nullptr
+                                          : &storedOrigins->second,
+                                      localViews, handles);
           }
           bool existingObjectPointer = false;
           if (exactCell) {
@@ -1820,12 +2020,9 @@ struct PropagateDeviceResourceProvenancePass
                          reached);
             if (call.getNumResults() == 1 &&
                 successfulResourceCells != beforeResourceCells) {
-              ResourceCellExitCases cases;
-              addResourceCellExitCase(cases, 0, successfulResourceCells);
-              addResourceCellExitCase(cases, std::nullopt, beforeResourceCells,
-                                      {0});
-              pendingMemoryEffects[call.getResult(0)] = {
-                  call, std::move(cases), {}, {}};
+              pendingMemoryEffects[call.getResult(0)] = completeSuccessEffect(
+                  call, beforeResourceCells, successfulResourceCells,
+                  localPointerCells, localViews);
             }
           } else if (calleeName == "udonclDeviceBufferDestroy") {
             if (call.getNumOperands() != 1) {
@@ -1889,6 +2086,7 @@ struct PropagateDeviceResourceProvenancePass
                                 ? joinFacts(previous.resource, resource)
                                 : resource;
             localViews[*exactOutput] = next;
+            recordGlobalViewWrite(*exactOutput, next);
             recordCase(operandCases, call, invocation, 0, resource);
             recordCase(operandCases, call, invocation, 4, next.resource);
             for (Value result : call.getResults())
@@ -1931,6 +2129,8 @@ struct PropagateDeviceResourceProvenancePass
               continue;
             }
             localViews[*exactDestination] = localViews[*exactSource];
+            recordGlobalViewWrite(*exactDestination,
+                                  localViews[*exactDestination]);
             recordCase(operandCases, call, invocation, 0,
                        localViews[*exactDestination].resource);
             recordCase(operandCases, call, invocation, 1,
@@ -1945,13 +2145,27 @@ struct PropagateDeviceResourceProvenancePass
               continue;
             }
             auto view = objectValues.find(call.getOperand(0));
-            auto exactView = view == objectValues.end()
-                                 ? std::nullopt
-                                 : exactObject(view->second);
-            if (!exactView || !canHoldView(*exactView) ||
-                !localViews[*exactView].initialized ||
-                !localViews[*exactView].resource.resource ||
-                localViews[*exactView].resource.unknown) {
+            Fact resource;
+            bool hasResource = false;
+            bool validView = view != objectValues.end() &&
+                             !view->second.unknown &&
+                             !view->second.refs.empty();
+            if (validView)
+              for (ObjectRef candidate : view->second.refs) {
+                auto state = localViews.find(candidate);
+                if (!canHoldView(candidate) || state == localViews.end() ||
+                    !state->second.initialized ||
+                    !state->second.resource.resource ||
+                    state->second.resource.unknown) {
+                  validView = false;
+                  break;
+                }
+                resource = hasResource
+                               ? joinFacts(resource, state->second.resource)
+                               : state->second.resource;
+                hasResource = true;
+              }
+            if (!validView || !hasResource) {
               if (collectingGlobalSummaries)
                 continue;
               call.emitError("udonclBufferViewResolve requires an initialized "
@@ -1961,7 +2175,6 @@ struct PropagateDeviceResourceProvenancePass
               invalid = true;
               continue;
             }
-            Fact resource = localViews[*exactView].resource;
             recordCase(operandCases, call, invocation, 0, resource);
             // A successful view resolution has found a live Device-buffer
             // table entry whose cl_mem is non-null.  Keep the input operand's
@@ -2007,12 +2220,9 @@ struct PropagateDeviceResourceProvenancePass
                          reached);
             if (call.getNumResults() == 1 &&
                 successfulResourceCells != beforeResourceCells) {
-              ResourceCellExitCases cases;
-              addResourceCellExitCase(cases, 0, successfulResourceCells);
-              addResourceCellExitCase(cases, std::nullopt, beforeResourceCells,
-                                      {0});
-              pendingMemoryEffects[call.getResult(0)] = {
-                  call, std::move(cases), {}, {}};
+              pendingMemoryEffects[call.getResult(0)] = completeSuccessEffect(
+                  call, beforeResourceCells, successfulResourceCells,
+                  localPointerCells, localViews);
             }
           } else if (auto found = functions.find(calleeName);
                      found != functions.end() &&
@@ -2040,21 +2250,62 @@ struct PropagateDeviceResourceProvenancePass
                                                : handleField->second);
             }
             Invocation nested = calleeInvocation(invocation, function, call);
+            HandleMap handlesBeforeCall = handles;
+            ViewMap viewsBeforeCall = localViews;
+            ResourceCellMap resourceCellsBeforeCall = localResourceCells;
+            PointerCellMap pointerCellsBeforeCall = localPointerCells;
             AnalysisResult nestedResult =
                 analyze(found->getValue(), nested, actuals, actualIntegers,
                         actualObjects, actualHandleFields, handles, localViews,
                         localResourceCells, localPointerCells);
+            auto resourceCasesMatchFinal = [&] {
+              return llvm::all_of(nestedResult.resourceCellExitCases.exact,
+                                  [&](const auto &entry) {
+                                    return entry.second ==
+                                           nestedResult.resourceCells;
+                                  }) &&
+                     llvm::all_of(nestedResult.resourceCellExitCases.unknown,
+                                  [&](const auto &entry) {
+                                    return entry.cells ==
+                                           nestedResult.resourceCells;
+                                  });
+            };
+            auto pointerCasesMatchFinal = [&] {
+              return llvm::all_of(nestedResult.pointerExitCases.exact,
+                                  [&](const auto &entry) {
+                                    return entry.second ==
+                                           nestedResult.pointerCells;
+                                  }) &&
+                     llvm::all_of(nestedResult.pointerExitCases.unknown,
+                                  [&](const auto &entry) {
+                                    return entry.pointerCells ==
+                                           nestedResult.pointerCells;
+                                  });
+            };
+            auto viewCasesMatchFinal = [&] {
+              return llvm::all_of(nestedResult.viewExitCases.exact,
+                                  [&](const auto &entry) {
+                                    return entry.second == nestedResult.views;
+                                  }) &&
+                     llvm::all_of(nestedResult.viewExitCases.unknown,
+                                  [&](const auto &entry) {
+                                    return entry.views == nestedResult.views;
+                                  });
+            };
+            bool hasConditionalMemoryEffect = !resourceCasesMatchFinal() ||
+                                              !pointerCasesMatchFinal() ||
+                                              !viewCasesMatchFinal();
+            if (!hasConditionalMemoryEffect &&
+                nestedResult.handles == handlesBeforeCall &&
+                nestedResult.views == viewsBeforeCall &&
+                nestedResult.resourceCells == resourceCellsBeforeCall &&
+                nestedResult.pointerCells == pointerCellsBeforeCall)
+              trackedDomainTransparentOperations.insert(call);
             handles = std::move(nestedResult.handles);
             localViews = std::move(nestedResult.views);
             localResourceCells = std::move(nestedResult.resourceCells);
             localPointerCells = std::move(nestedResult.pointerCells);
-            if (call.getNumResults() == 1 &&
-                (!nestedResult.resourceCellExitCases.exact.empty() ||
-                 !nestedResult.resourceCellExitCases.unknown.empty() ||
-                 !nestedResult.pointerExitCases.exact.empty() ||
-                 !nestedResult.pointerExitCases.unknown.empty() ||
-                 !nestedResult.viewExitCases.exact.empty() ||
-                 !nestedResult.viewExitCases.unknown.empty()))
+            if (call.getNumResults() == 1 && hasConditionalMemoryEffect)
               pendingMemoryEffects[call.getResult(0)] = {
                   call, std::move(nestedResult.resourceCellExitCases),
                   std::move(nestedResult.pointerExitCases),
@@ -2132,6 +2383,9 @@ struct PropagateDeviceResourceProvenancePass
                      facts, worklist, queued, reached);
         } else if (auto pointerAdd =
                        dyn_cast<::vrc::udonhl::PtrAddOp>(operation)) {
+          // A loop value may widen after an earlier exact visit. Never retain
+          // the stale exact address when recomputing its pointer addition.
+          objectValues.erase(pointerAdd.getResult());
           auto base = objectValues.find(pointerAdd.getPointer());
           auto offset = integerValues.find(pointerAdd.getByteOffset());
           if (base != objectValues.end() && offset != integerValues.end()) {
@@ -2149,6 +2403,63 @@ struct PropagateDeviceResourceProvenancePass
                   {object.base, static_cast<int32_t>(combined)});
             }
             objectValues[pointerAdd.getResult()] = std::move(shifted);
+          } else if (base != objectValues.end()) {
+            Value induction = pointerAdd.getByteOffset();
+            int64_t stride = 1;
+            if (auto multiply = induction.getDefiningOp<arith::MulIOp>()) {
+              auto left =
+                  multiply.getLhs().getDefiningOp<arith::ConstantIntOp>();
+              auto right =
+                  multiply.getRhs().getDefiningOp<arith::ConstantIntOp>();
+              if (left && left.value() > 0) {
+                stride = left.value();
+                induction = multiply.getRhs();
+              } else if (right && right.value() > 0) {
+                stride = right.value();
+                induction = multiply.getLhs();
+              } else {
+                induction = Value();
+              }
+            }
+            auto start = induction
+                             ? nonNegativeUnitStrideLoop(induction, pointerAdd)
+                             : std::nullopt;
+            if (start && stride > 0) {
+              constexpr size_t maxAlternatives = 64;
+              ObjectRefSet shifted;
+              shifted.unknown = base->second.unknown;
+              for (ObjectRef object : base->second.refs) {
+                auto size = objectSizes.find(object.base);
+                if (size == objectSizes.end() ||
+                    *start > std::numeric_limits<int64_t>::max() / stride) {
+                  shifted.unknown = true;
+                  continue;
+                }
+                int64_t first = *start * stride;
+                // C executions that dereference this pointer must remain
+                // inside the statically identified object. Enumerate every
+                // constant-stride subobject that such a defined execution can
+                // select; later consumers validate every candidate.
+                for (int64_t relative = first;
+                     relative <
+                     static_cast<int64_t>(size->second) - object.offset;
+                     relative += stride) {
+                  if (shifted.refs.size() >= maxAlternatives ||
+                      relative >
+                          std::numeric_limits<int32_t>::max() - object.offset) {
+                    shifted.unknown = true;
+                    break;
+                  }
+                  shifted.refs.push_back(
+                      {object.base,
+                       static_cast<int32_t>(object.offset + relative)});
+                  if (relative > std::numeric_limits<int64_t>::max() - stride)
+                    break;
+                }
+              }
+              if (!shifted.refs.empty())
+                objectValues[pointerAdd.getResult()] = std::move(shifted);
+            }
           }
           updateFact(pointerAdd.getResult(), Fact::scalar(), facts, worklist,
                      queued, reached);
@@ -2262,6 +2573,13 @@ struct PropagateDeviceResourceProvenancePass
                             integerValues, ambiguousIntegers);
           if (compare.getPredicate() == arith::CmpIPredicate::eq ||
               compare.getPredicate() == arith::CmpIPredicate::ne) {
+            for (Value operand : compare.getOperands()) {
+              auto argument = dyn_cast<BlockArgument>(operand);
+              if (!argument)
+                continue;
+              if (auto pending = blockArgumentPendingEffect(argument))
+                pendingMemoryEffects[argument] = std::move(*pending);
+            }
             Value subject;
             std::optional<int64_t> constant;
             if (pendingMemoryEffects.contains(compare.getLhs())) {
@@ -2346,13 +2664,11 @@ struct PropagateDeviceResourceProvenancePass
             for (auto [operand, argument] :
                  llvm::zip_equal(branch.getDestOperands(),
                                  branch.getDest()->getArguments())) {
-              auto pending = pendingMemoryEffects.find(operand);
-              if (pending == pendingMemoryEffects.end() ||
-                  !pending->second.call ||
-                  pending->second.call->getBlock() != block ||
-                  pending->second.call->getNextNode() != &operation)
+              PendingMemoryEffect *pending =
+                  pendingEffectAtTerminator(operand, block, &operation);
+              if (!pending)
                 continue;
-              PendingMemoryEffect forwarded = pending->second;
+              PendingMemoryEffect forwarded = *pending;
               // A null call denotes an effect available at the destination
               // block entry. The conditional-branch refinement below accepts
               // it only when no intervening operation can change that state.
@@ -2376,6 +2692,8 @@ struct PropagateDeviceResourceProvenancePass
           ResourceCellMap falseResourceCells = localResourceCells;
           ViewMap trueViews = localViews;
           ViewMap falseViews = localViews;
+          bool trueFeasible = true;
+          bool falseFeasible = true;
           StatusConstraintMap trueStatusConstraints = localStatusConstraints;
           StatusConstraintMap falseStatusConstraints = localStatusConstraints;
           auto refinement = comparisonRefinements.find(branch.getCondition());
@@ -2414,6 +2732,18 @@ struct PropagateDeviceResourceProvenancePass
                 }
             }
             if (direct) {
+              auto hasCase = [&](bool equal) {
+                return hasMatchingExitCase(effect->second.pointerCases,
+                                           refinement->second.constant,
+                                           equal) ||
+                       hasMatchingExitCase(effect->second.viewCases,
+                                           refinement->second.constant,
+                                           equal) ||
+                       hasMatchingExitCase(effect->second.resourceCellCases,
+                                           refinement->second.constant, equal);
+              };
+              trueFeasible = hasCase(refinement->second.equalOnTrue);
+              falseFeasible = hasCase(!refinement->second.equalOnTrue);
               truePointers = selectPointerExitCases(
                   effect->second.pointerCases, refinement->second.constant,
                   refinement->second.equalOnTrue, localPointerCells,
@@ -2456,24 +2786,26 @@ struct PropagateDeviceResourceProvenancePass
                 edgeIntegerArguments);
             continue;
           }
-          mergeSuccessor(branch.getTrueDest(), branch.getTrueDestOperands(),
-                         facts, worklist, queued, reached, block, localMemory,
-                         memoryInputs, edgeMemory, eligibleCells, objectValues,
-                         integerValues, ambiguousIntegers, handleFieldValues,
-                         trueViews, viewInputs, edgeViews, truePointers,
-                         pointerInputs, edgePointers, trueResourceCells,
-                         resourceCellInputs, edgeResourceCells,
-                         trueStatusConstraints, statusConstraintInputs,
-                         edgeStatusConstraints, edgeIntegerArguments);
-          mergeSuccessor(branch.getFalseDest(), branch.getFalseDestOperands(),
-                         facts, worklist, queued, reached, block, localMemory,
-                         memoryInputs, edgeMemory, eligibleCells, objectValues,
-                         integerValues, ambiguousIntegers, handleFieldValues,
-                         falseViews, viewInputs, edgeViews, falsePointers,
-                         pointerInputs, edgePointers, falseResourceCells,
-                         resourceCellInputs, edgeResourceCells,
-                         falseStatusConstraints, statusConstraintInputs,
-                         edgeStatusConstraints, edgeIntegerArguments);
+          if (trueFeasible)
+            mergeSuccessor(
+                branch.getTrueDest(), branch.getTrueDestOperands(), facts,
+                worklist, queued, reached, block, localMemory, memoryInputs,
+                edgeMemory, eligibleCells, objectValues, integerValues,
+                ambiguousIntegers, handleFieldValues, trueViews, viewInputs,
+                edgeViews, truePointers, pointerInputs, edgePointers,
+                trueResourceCells, resourceCellInputs, edgeResourceCells,
+                trueStatusConstraints, statusConstraintInputs,
+                edgeStatusConstraints, edgeIntegerArguments);
+          if (falseFeasible)
+            mergeSuccessor(
+                branch.getFalseDest(), branch.getFalseDestOperands(), facts,
+                worklist, queued, reached, block, localMemory, memoryInputs,
+                edgeMemory, eligibleCells, objectValues, integerValues,
+                ambiguousIntegers, handleFieldValues, falseViews, viewInputs,
+                edgeViews, falsePointers, pointerInputs, edgePointers,
+                falseResourceCells, resourceCellInputs, edgeResourceCells,
+                falseStatusConstraints, statusConstraintInputs,
+                edgeStatusConstraints, edgeIntegerArguments);
         } else if (auto branch = dyn_cast<cf::SwitchOp>(operation)) {
           auto selector = integerValues.find(branch.getFlag());
           if (selector != integerValues.end() &&
@@ -2527,6 +2859,13 @@ struct PropagateDeviceResourceProvenancePass
                 localStatusConstraints, statusConstraintInputs,
                 edgeStatusConstraints, edgeIntegerArguments);
         } else if (auto returned = dyn_cast<func::ReturnOp>(operation)) {
+          ResourceCellExitCases &resourceCellExitCases =
+              blockResourceCellExitCases[block];
+          PointerExitCases &pointerExitCases = blockPointerExitCases[block];
+          ViewExitCases &viewExitCases = blockViewExitCases[block];
+          resourceCellExitCases = {};
+          pointerExitCases = {};
+          viewExitCases = {};
           bool exported = hasConfiguredRoots
                               ? function->hasAttr("vrc.export_id")
                               : function->hasAttr("udoncl.export");
@@ -2595,28 +2934,25 @@ struct PropagateDeviceResourceProvenancePass
               function.getFunctionType().getNumResults() == 1 &&
               function.getFunctionType().getResult(0).isIntOrIndex()) {
             Value status = returned.getOperand(0);
-            auto pending = pendingMemoryEffects.find(status);
-            if (pending != pendingMemoryEffects.end() && pending->second.call &&
-                pending->second.call->getBlock() == block &&
-                pending->second.call->getNextNode() == &operation) {
+            if (PendingMemoryEffect *pending =
+                    pendingEffectAtTerminator(status, block, &operation)) {
               for (const auto &[value, cells] :
-                   pending->second.resourceCellCases.exact)
+                   pending->resourceCellCases.exact)
                 addResourceCellExitCase(resourceCellExitCases, value, cells);
-              for (const auto &unknown :
-                   pending->second.resourceCellCases.unknown)
+              for (const auto &unknown : pending->resourceCellCases.unknown)
                 addResourceCellExitCase(resourceCellExitCases, std::nullopt,
                                         unknown.cells, unknown.excluded);
               for (const auto &[value, pointerCells] :
-                   pending->second.pointerCases.exact)
+                   pending->pointerCases.exact)
                 addPointerExitCase(pointerExitCases, value, pointerCells,
                                    zeroInitializedGlobalObjectIds);
-              for (const auto &unknown : pending->second.pointerCases.unknown)
+              for (const auto &unknown : pending->pointerCases.unknown)
                 addPointerExitCase(
                     pointerExitCases, std::nullopt, unknown.pointerCells,
                     zeroInitializedGlobalObjectIds, unknown.excluded);
-              for (const auto &[value, views] : pending->second.viewCases.exact)
+              for (const auto &[value, views] : pending->viewCases.exact)
                 addViewExitCase(viewExitCases, value, views);
-              for (const auto &unknown : pending->second.viewCases.unknown)
+              for (const auto &unknown : pending->viewCases.unknown)
                 addViewExitCase(viewExitCases, std::nullopt, unknown.views,
                                 unknown.excluded);
             } else if (auto integer = integerValues.find(status);
@@ -2737,6 +3073,31 @@ struct PropagateDeviceResourceProvenancePass
           recordCase(resultCases, &operation, invocation, index,
                      valueFact(result, facts));
       }
+    }
+    ResourceCellExitCases resourceCellExitCases;
+    PointerExitCases pointerExitCases;
+    ViewExitCases viewExitCases;
+    for (const auto &[block, cases] : blockResourceCellExitCases) {
+      for (const auto &[status, cells] : cases.exact)
+        addResourceCellExitCase(resourceCellExitCases, status, cells);
+      for (const auto &unknown : cases.unknown)
+        addResourceCellExitCase(resourceCellExitCases, std::nullopt,
+                                unknown.cells, unknown.excluded);
+    }
+    for (const auto &[block, cases] : blockPointerExitCases) {
+      for (const auto &[status, cells] : cases.exact)
+        addPointerExitCase(pointerExitCases, status, cells,
+                           zeroInitializedGlobalObjectIds);
+      for (const auto &unknown : cases.unknown)
+        addPointerExitCase(pointerExitCases, std::nullopt, unknown.pointerCells,
+                           zeroInitializedGlobalObjectIds, unknown.excluded);
+    }
+    for (const auto &[block, cases] : blockViewExitCases) {
+      for (const auto &[status, views] : cases.exact)
+        addViewExitCase(viewExitCases, status, views);
+      for (const auto &unknown : cases.unknown)
+        addViewExitCase(viewExitCases, std::nullopt, unknown.views,
+                        unknown.excluded);
     }
     active.erase(function);
     for (auto [index, fact] : llvm::enumerate(returns))
@@ -3153,8 +3514,14 @@ struct PropagateDeviceResourceProvenancePass
     functionResultCases.clear();
     active.clear();
     invalid = false;
-    for (func::FuncOp function : module.getOps<func::FuncOp>())
-      functions.try_emplace(function.getSymName(), function);
+    for (func::FuncOp function : module.getOps<func::FuncOp>()) {
+      auto found = functions.find(function.getSymName());
+      if (found == functions.end()) {
+        functions.try_emplace(function.getSymName(), function);
+      } else if (found->getValue().isExternal() && !function.isExternal()) {
+        found->getValue() = function;
+      }
+    }
     DataLayout layout(module);
     for (auto global : module.getOps<::vrc::udonhl::GlobalOp>()) {
       auto initial =
@@ -3289,37 +3656,8 @@ struct PropagateDeviceResourceProvenancePass
                 joinObjectRefs(std::move(write.objects), persistentTargets);
           }
         }
-        for (const auto &[view, state] : result.views) {
-          if (!globalObjectIds.contains(view.base) || !state.hasPath ||
-              !canHoldView(view) || !state.resource.resource ||
-              state.resource.unknown)
-            continue;
-          ViewState persistent = state;
-          // Cross-export summaries describe the resource identity a global
-          // view may hold. Runtime lifecycle checks still reject a view that
-          // was not initialized on the concrete execution path.
-          persistent.initialized = true;
-          persistent.mayBeInvalid = true;
-          auto filterOrigins = [&](HandleFieldOriginSet &origins) {
-            auto firstRemoved = std::remove_if(
-                origins.refs.begin(), origins.refs.end(),
-                [&](const HandleFieldOrigin &origin) {
-                  return !globalObjectIds.contains(origin.handle.base);
-                });
-            if (firstRemoved != origins.refs.end()) {
-              origins.refs.erase(firstRemoved, origins.refs.end());
-              origins.unknown = true;
-            }
-          };
-          filterOrigins(persistent.slotOrigins);
-          filterOrigins(persistent.generationOrigins);
-          auto write = globalViewWrites.find(view);
-          if (write == globalViewWrites.end())
-            globalViewWrites.emplace(view, std::move(persistent));
-          else
-            write->second =
-                joinViewStates(std::move(write->second), persistent);
-        }
+        for (const auto &[view, state] : result.views)
+          recordGlobalViewWrite(view, state);
         if (invalid)
           break;
       }

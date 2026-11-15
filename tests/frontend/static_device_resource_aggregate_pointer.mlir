@@ -85,7 +85,7 @@ module {
     return %loaded : !udonhl.ptr<0>
   }
 
-  func.func @AInitializePersistentPointer() attributes {udoncl.export} {
+  func.func @AInitializePersistentPointer(%clear_after_write: i1) attributes {udoncl.export} {
     %true = arith.constant true
     %zero = arith.constant 0 : i32
     %eight = arith.constant 8 : i32
@@ -104,6 +104,24 @@ module {
     %binding = udonhl.address_of @persistent_binding : !udonhl.ptr<0>
     %initialized = func.call @initializeNullablePointer(%session, %binding, %true) : (!udonhl.ptr<0>, !udonhl.ptr<0>, i1) -> !udonhl.ptr<0>
     func.call @udononnxCopyBufferView(%binding, %view) : (!udonhl.ptr<0>, !udonhl.ptr<0>) -> ()
+    cf.cond_br %clear_after_write, ^clear, ^done
+  ^clear:
+    %empty_view = "udonhl.alloca"(%twenty) <{alignment = 4 : i64}> : (i32) -> !udonhl.ptr<0>
+    "udonhl.memcpy"(%binding, %empty_view, %twenty) : (!udonhl.ptr<0>, !udonhl.ptr<0>, i32) -> ()
+    %four = arith.constant 4 : i32
+    %twelve = arith.constant 12 : i32
+    %sixteen = arith.constant 16 : i32
+    %field1 = "udonhl.ptr_add"(%binding, %four) : (!udonhl.ptr<0>, i32) -> !udonhl.ptr<0>
+    %field2 = "udonhl.ptr_add"(%binding, %eight) : (!udonhl.ptr<0>, i32) -> !udonhl.ptr<0>
+    %field3 = "udonhl.ptr_add"(%binding, %twelve) : (!udonhl.ptr<0>, i32) -> !udonhl.ptr<0>
+    %field4 = "udonhl.ptr_add"(%binding, %sixteen) : (!udonhl.ptr<0>, i32) -> !udonhl.ptr<0>
+    "udonhl.store"(%zero, %binding) <{alignment = 4 : i64}> : (i32, !udonhl.ptr<0>) -> ()
+    "udonhl.store"(%zero, %field1) <{alignment = 4 : i64}> : (i32, !udonhl.ptr<0>) -> ()
+    "udonhl.store"(%zero, %field2) <{alignment = 4 : i64}> : (i32, !udonhl.ptr<0>) -> ()
+    "udonhl.store"(%zero, %field3) <{alignment = 4 : i64}> : (i32, !udonhl.ptr<0>) -> ()
+    "udonhl.store"(%zero, %field4) <{alignment = 4 : i64}> : (i32, !udonhl.ptr<0>) -> ()
+    cf.br ^done
+  ^done:
     return
   }
 

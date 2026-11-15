@@ -132,6 +132,28 @@ Propagate it through SSA copies, arguments, results, PHIs, selects, supported
 alloca/global loads and stores, static tensors, public bindings, and
 sub-buffer creation. Unknown escape is an error in the initial subset.
 
+Status-indexed interprocedural summaries are complete post-state snapshots,
+not per-domain deltas. Every feasible status partition carries resource-cell,
+aggregate-pointer, and buffer-view state together. An unconditional branch may
+forward that correlation through a block argument when no intervening
+state-changing operation exists. Internal calls may be crossed only when their
+complete summaries prove identical handle, resource-cell, aggregate-pointer,
+and buffer-view state before and after the call and every status partition has
+that same post-state. A conditional edge must instead consume its edge-refined
+snapshot so a failure edge cannot reintroduce the unfiltered success state.
+Return-block summaries are replaced when dataflow inputs change and are
+aggregated only after convergence; provisional visits must not poison a later
+precise status partition.
+
+For aggregate pointer arithmetic, an exact base plus a positive constant
+stride over a proven non-negative unit-stride loop may become a finite set of
+in-object subobjects. Resolution succeeds only when every enumerated candidate
+is a complete initialized view with known resource provenance. Stale exact
+pointer facts are erased when a loop value widens, noncanonical or unbounded
+forms remain unknown, and the finite-set cap prevents accidental state-space
+growth. This is ordinary C object/provenance analysis and does not inspect ONNX
+models or tensor names.
+
 ### 5.3 Kernel argument snapshots
 
 Track the copied state of every `(kernel identity, argument index)`. At each
@@ -189,6 +211,8 @@ Keep each responsibility independently testable.
      allocation.
 2. `PropagateDeviceResourceProvenance`
    - resolves aliases, views, joins, and escapes;
+   - preserves complete status-conditioned resource-cell, pointer, and view
+     post-state across private C wrappers and block arguments;
    - annotates every supported resource use with a finite identity set.
 3. `ResolveStaticKernelBindings`
    - computes reaching copied kernel arguments;
@@ -271,6 +295,18 @@ records one MNIST clone followed by five singleton sites; TinyLlama and
 ordinary UdonBLAS remain zero-clone singleton cases. The production order is
 `Discover -> Plan -> Specialize -> Discover -> Plan` before requirements and
 provenance analysis, so all downstream metadata uses the specialized graph.
+Status-conditioned effects now remain complete across all tracked memory
+domains, survive chains of unconditional block arguments, and use refined
+snapshots at conditional joins. Proven resource-transparent scalar helpers may
+occur between a status-producing call and its return without dropping that
+correlation; calls with any conditional or unconditional tracked-state change
+remain barriers. Focused tests cover a two-call C initialization shape where a
+failure status and a successful binding status merge before a view resolve, a
+transparent private wrapper, finite unit-stride arrays of initialized views,
+and cross-export global handle/view persistence. The generic rules generate
+the real MNIST package and the pinned real TinyLlama conversation artifact
+without symbol-, tensor-, or model-specific recognition. Numerical generated-
+U# acceptance remains Gate 7.
 
 - Track handles through arguments, results, PHIs/selects, and supported memory
   promotion.

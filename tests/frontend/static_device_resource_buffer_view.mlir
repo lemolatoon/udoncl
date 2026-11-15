@@ -1,5 +1,7 @@
 module {
   "udonhl.global"() <{address_space = 0 : i32, alignment = 4 : i64, initial_value = array<i8: 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0>, linkage = "internal", storage_type = !llvm.array<20 x i8>, sym_name = "persistent_view"}> : () -> ()
+  "udonhl.global"() <{address_space = 0 : i32, alignment = 4 : i64, initial_value = array<i8: 0, 0, 0, 0, 0, 0, 0, 0>, linkage = "internal", storage_type = !llvm.array<8 x i8>, sym_name = "persistent_direct_handle"}> : () -> ()
+  "udonhl.global"() <{address_space = 0 : i32, alignment = 4 : i64, initial_value = array<i8: 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0>, linkage = "internal", storage_type = !llvm.array<20 x i8>, sym_name = "persistent_direct_view"}> : () -> ()
   func.func private @clCreateBuffer() -> !udonhl.ptr<0>
   func.func private @clReleaseMemObject(!udonhl.ptr<0>) -> i32
   func.func private @udonclDeviceBufferAdopt(!udonhl.ptr<0>, !udonhl.ptr<0>, i32, !udonhl.ptr<0>) -> i32
@@ -84,6 +86,37 @@ module {
     return
   }
 
+  func.func @AAllocatePersistentDirectHandle() attributes {udoncl.export, vrc.export_id = 4 : i32} {
+    %zero = arith.constant 0 : i32
+    %bytes = arith.constant 64 : i32
+    %context = "udonhl.inttoptr"(%zero) : (i32) -> !udonhl.ptr<0>
+    %resource = func.call @clCreateBuffer() : () -> !udonhl.ptr<0>
+    %handle = udonhl.address_of @persistent_direct_handle : !udonhl.ptr<0>
+    %adopted = func.call @udonclDeviceBufferAdopt(%context, %resource, %bytes, %handle) : (!udonhl.ptr<0>, !udonhl.ptr<0>, i32, !udonhl.ptr<0>) -> i32
+    return
+  }
+
+  func.func @BBindPersistentDirectView() attributes {udoncl.export, vrc.export_id = 5 : i32} {
+    %four = arith.constant 4 : i32
+    %handle = udonhl.address_of @persistent_direct_handle : !udonhl.ptr<0>
+    %slot = "udonhl.load"(%handle) <{alignment = 4 : i64}> : (!udonhl.ptr<0>) -> i32
+    %generation_cell = "udonhl.ptr_add"(%handle, %four) : (!udonhl.ptr<0>, i32) -> !udonhl.ptr<0>
+    %generation = "udonhl.load"(%generation_cell) <{alignment = 4 : i64}> : (!udonhl.ptr<0>) -> i32
+    %view = udonhl.address_of @persistent_direct_view : !udonhl.ptr<0>
+    func.call @initializeDirectView(%slot, %generation, %view) : (i32, i32, !udonhl.ptr<0>) -> ()
+    return
+  }
+
+  func.func @CConsumePersistentDirectView() attributes {udoncl.export, vrc.export_id = 6 : i32} {
+    %four = arith.constant 4 : i32
+    %view = udonhl.address_of @persistent_direct_view : !udonhl.ptr<0>
+    %raw = "udonhl.alloca"(%four) <{alignment = 4 : i64}> : (i32) -> !udonhl.ptr<0>
+    %offset = "udonhl.alloca"(%four) <{alignment = 4 : i64}> : (i32) -> !udonhl.ptr<0>
+    %length = "udonhl.alloca"(%four) <{alignment = 4 : i64}> : (i32) -> !udonhl.ptr<0>
+    %resolved = func.call @udonclBufferViewResolve(%view, %raw, %offset, %length) : (!udonhl.ptr<0>, !udonhl.ptr<0>, !udonhl.ptr<0>, !udonhl.ptr<0>) -> i32
+    return
+  }
+
   func.func private @createConditionalView(%fail: i1, %destination: !udonhl.ptr<0>, %source: !udonhl.ptr<0>) -> i32 {
     %failure = arith.constant 1 : i32
     cf.cond_br %fail, ^bb1, ^bb2
@@ -93,6 +126,12 @@ module {
     func.call @udononnxCopyBufferView(%destination, %source) : (!udonhl.ptr<0>, !udonhl.ptr<0>) -> ()
     %status = func.call @validateView(%destination) : (!udonhl.ptr<0>) -> i32
     return %status : i32
+  }
+
+  func.func private @observeScalarStatus(%status: i32) -> i32 {
+    %zero = arith.constant 0 : i32
+    %observed = arith.addi %status, %zero : i32
+    return %observed : i32
   }
 
   func.func private @forwardConditionalView(%fail: i1, %destination: !udonhl.ptr<0>, %source: !udonhl.ptr<0>) -> i32 {
@@ -113,7 +152,13 @@ module {
     return %forwarded : i32
   }
 
-  func.func @Run(%fail: i1) attributes {udoncl.export, vrc.export_id = 1 : i32} {
+  func.func private @forwardConditionalViewAcrossObserver(%fail: i1, %destination: !udonhl.ptr<0>, %source: !udonhl.ptr<0>) -> i32 {
+    %status = func.call @createConditionalView(%fail, %destination, %source) : (i1, !udonhl.ptr<0>, !udonhl.ptr<0>) -> i32
+    %observed = func.call @observeScalarStatus(%status) : (i32) -> i32
+    return %status : i32
+  }
+
+  func.func @Run(%precheck_fail: i1, %bind_fail: i1) attributes {udoncl.export, vrc.export_id = 1 : i32} {
     %zero = arith.constant 0 : i32
     %four = arith.constant 4 : i32
     %eight = arith.constant 8 : i32
@@ -144,17 +189,22 @@ module {
     "udonhl.store"(%null, %raw_cell) <{alignment = 4 : i64}> : (!udonhl.ptr<0>, !udonhl.ptr<0>) -> ()
     %offset_cell = "udonhl.alloca"(%four) <{alignment = 4 : i64}> : (i32) -> !udonhl.ptr<0>
     %length_cell = "udonhl.alloca"(%four) <{alignment = 4 : i64}> : (i32) -> !udonhl.ptr<0>
-    %create_status = func.call @forwardConditionalView(%fail, %direct_tensor, %direct_view) : (i1, !udonhl.ptr<0>, !udonhl.ptr<0>) -> i32
-    cf.br ^bb0(%create_status : i32)
-  ^bb0(%forwarded_create_status: i32):
-    %created = arith.cmpi eq, %forwarded_create_status, %zero : i32
+    %precheck_tensor = "udonhl.alloca"(%eighty_eight) <{alignment = 8 : i64}> : (i32) -> !udonhl.ptr<0>
+    %precheck_status = func.call @forwardConditionalViewAcrossObserver(%precheck_fail, %precheck_tensor, %direct_view) : (i1, !udonhl.ptr<0>, !udonhl.ptr<0>) -> i32
+    %precheck_succeeded = arith.cmpi eq, %precheck_status, %zero : i32
+    cf.cond_br %precheck_succeeded, ^bb0, ^bb3(%precheck_status : i32)
+  ^bb0:
+    %bind_status = func.call @forwardConditionalView(%bind_fail, %direct_tensor, %direct_view) : (i1, !udonhl.ptr<0>, !udonhl.ptr<0>) -> i32
+    cf.br ^bb3(%bind_status : i32)
+  ^bb3(%merged_status: i32):
+    %created = arith.cmpi eq, %merged_status, %zero : i32
     cf.cond_br %created, ^bb1, ^bb2
   ^bb1:
     %direct_resolved = func.call @udonclBufferViewResolve(%direct_tensor, %raw_cell, %offset_cell, %length_cell) : (!udonhl.ptr<0>, !udonhl.ptr<0>, !udonhl.ptr<0>, !udonhl.ptr<0>) -> i32
-    cf.br ^bb3
+    cf.br ^bb4
   ^bb2:
-    cf.br ^bb3
-  ^bb3:
+    cf.br ^bb4
+  ^bb4:
     %copied_resolved = func.call @udonclBufferViewResolve(%copied_tensor, %raw_cell, %offset_cell, %length_cell) : (!udonhl.ptr<0>, !udonhl.ptr<0>, !udonhl.ptr<0>, !udonhl.ptr<0>) -> i32
     %resolved = func.call @udonclBufferViewResolve(%tensor, %raw_cell, %offset_cell, %length_cell) : (!udonhl.ptr<0>, !udonhl.ptr<0>, !udonhl.ptr<0>, !udonhl.ptr<0>) -> i32
     %raw = "udonhl.load"(%raw_cell) <{alignment = 4 : i64}> : (!udonhl.ptr<0>) -> !udonhl.ptr<0>
