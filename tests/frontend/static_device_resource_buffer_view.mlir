@@ -98,20 +98,22 @@ module {
   func.func private @forwardConditionalView(%fail: i1, %destination: !udonhl.ptr<0>, %source: !udonhl.ptr<0>) -> i32 {
     %zero = arith.constant 0 : i32
     %status = func.call @createConditionalView(%fail, %destination, %source) : (i1, !udonhl.ptr<0>, !udonhl.ptr<0>) -> i32
-    %succeeded = arith.cmpi eq, %status, %zero : i32
+    cf.br ^bb0(%status : i32)
+  ^bb0(%forwarded_status: i32):
+    %succeeded = arith.cmpi eq, %forwarded_status, %zero : i32
     cf.cond_br %succeeded, ^bb1, ^bb2
   ^bb1:
     cf.br ^bb3(%zero : i32)
   ^bb2:
     // Model cleanup between the call and the joined return. The failure edge
     // still proves that the original status cannot be zero.
-    %cleanup = arith.addi %status, %zero : i32
-    cf.br ^bb3(%status : i32)
+    %cleanup = arith.addi %forwarded_status, %zero : i32
+    cf.br ^bb3(%forwarded_status : i32)
   ^bb3(%forwarded: i32):
     return %forwarded : i32
   }
 
-  func.func @Run() attributes {udoncl.export, vrc.export_id = 1 : i32} {
+  func.func @Run(%fail: i1) attributes {udoncl.export, vrc.export_id = 1 : i32} {
     %zero = arith.constant 0 : i32
     %four = arith.constant 4 : i32
     %eight = arith.constant 8 : i32
@@ -142,9 +144,10 @@ module {
     "udonhl.store"(%null, %raw_cell) <{alignment = 4 : i64}> : (!udonhl.ptr<0>, !udonhl.ptr<0>) -> ()
     %offset_cell = "udonhl.alloca"(%four) <{alignment = 4 : i64}> : (i32) -> !udonhl.ptr<0>
     %length_cell = "udonhl.alloca"(%four) <{alignment = 4 : i64}> : (i32) -> !udonhl.ptr<0>
-    %false = arith.constant false
-    %create_status = func.call @forwardConditionalView(%false, %direct_tensor, %direct_view) : (i1, !udonhl.ptr<0>, !udonhl.ptr<0>) -> i32
-    %created = arith.cmpi eq, %create_status, %zero : i32
+    %create_status = func.call @forwardConditionalView(%fail, %direct_tensor, %direct_view) : (i1, !udonhl.ptr<0>, !udonhl.ptr<0>) -> i32
+    cf.br ^bb0(%create_status : i32)
+  ^bb0(%forwarded_create_status: i32):
+    %created = arith.cmpi eq, %forwarded_create_status, %zero : i32
     cf.cond_br %created, ^bb1, ^bb2
   ^bb1:
     %direct_resolved = func.call @udonclBufferViewResolve(%direct_tensor, %raw_cell, %offset_cell, %length_cell) : (!udonhl.ptr<0>, !udonhl.ptr<0>, !udonhl.ptr<0>, !udonhl.ptr<0>) -> i32

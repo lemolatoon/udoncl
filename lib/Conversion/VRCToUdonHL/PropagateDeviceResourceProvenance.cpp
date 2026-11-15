@@ -2342,6 +2342,24 @@ struct PropagateDeviceResourceProvenancePass
                                valueFact(select.getFalseValue(), facts)),
                      facts, worklist, queued, reached);
         } else if (auto branch = dyn_cast<cf::BranchOp>(operation)) {
+          if (branch.getDest()->getSinglePredecessor() == block) {
+            for (auto [operand, argument] :
+                 llvm::zip_equal(branch.getDestOperands(),
+                                 branch.getDest()->getArguments())) {
+              auto pending = pendingMemoryEffects.find(operand);
+              if (pending == pendingMemoryEffects.end() ||
+                  !pending->second.call ||
+                  pending->second.call->getBlock() != block ||
+                  pending->second.call->getNextNode() != &operation)
+                continue;
+              PendingMemoryEffect forwarded = pending->second;
+              // A null call denotes an effect available at the destination
+              // block entry. The conditional-branch refinement below accepts
+              // it only when no intervening operation can change that state.
+              forwarded.call = nullptr;
+              pendingMemoryEffects[argument] = std::move(forwarded);
+            }
+          }
           mergeSuccessor(branch.getDest(), branch.getDestOperands(), facts,
                          worklist, queued, reached, block, localMemory,
                          memoryInputs, edgeMemory, eligibleCells, objectValues,
@@ -2370,9 +2388,9 @@ struct PropagateDeviceResourceProvenancePass
             auto effect = pendingMemoryEffects.find(refinement->second.subject);
             Operation *comparison = branch.getCondition().getDefiningOp();
             bool direct = effect != pendingMemoryEffects.end() && comparison &&
-                          effect->second.call->getBlock() == block &&
                           comparison->getBlock() == block;
-            if (direct)
+            if (direct && effect->second.call) {
+              direct = effect->second.call->getBlock() == block;
               for (Operation *between = effect->second.call->getNextNode();
                    between && between != &operation;
                    between = between->getNextNode())
@@ -2380,6 +2398,21 @@ struct PropagateDeviceResourceProvenancePass
                   direct = false;
                   break;
                 }
+            } else if (direct) {
+              auto argument =
+                  dyn_cast<BlockArgument>(refinement->second.subject);
+              direct = argument && argument.getOwner() == block;
+              if (direct)
+                for (Operation &between : *block) {
+                  if (&between == &operation)
+                    break;
+                  if (&between != comparison &&
+                      !isa<arith::ConstantOp>(between)) {
+                    direct = false;
+                    break;
+                  }
+                }
+            }
             if (direct) {
               truePointers = selectPointerExitCases(
                   effect->second.pointerCases, refinement->second.constant,
@@ -2563,7 +2596,7 @@ struct PropagateDeviceResourceProvenancePass
               function.getFunctionType().getResult(0).isIntOrIndex()) {
             Value status = returned.getOperand(0);
             auto pending = pendingMemoryEffects.find(status);
-            if (pending != pendingMemoryEffects.end() &&
+            if (pending != pendingMemoryEffects.end() && pending->second.call &&
                 pending->second.call->getBlock() == block &&
                 pending->second.call->getNextNode() == &operation) {
               for (const auto &[value, cells] :
@@ -2602,6 +2635,7 @@ struct PropagateDeviceResourceProvenancePass
                                                   argument.getArgNumber());
                 auto incomingPending = pendingMemoryEffects.find(incoming);
                 if (incomingPending != pendingMemoryEffects.end() &&
+                    incomingPending->second.call &&
                     incomingPending->second.call->getBlock() == predecessor &&
                     incomingPending->second.call->getNextNode() ==
                         predecessor->getTerminator()) {
