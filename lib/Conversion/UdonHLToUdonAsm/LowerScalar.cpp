@@ -2737,6 +2737,8 @@ private:
               "vrc.unity_output_resource_index");
           auto resourceHeapSlots = dispatch->getAttrOfType<ArrayAttr>(
               "vrc.unity_resource_heap_slots");
+          auto resourceStaticTensorIds =
+              dispatch->getAttrOfType<ArrayAttr>("vrc.unity_static_tensor_ids");
           int64_t output = outputIndex ? outputIndex.getInt() : 0;
           std::string destinationToken =
               output >= 0 && size_t(output) < dispatch.getResources().size()
@@ -2758,7 +2760,13 @@ private:
             return selectUnityBuffer(dispatch.getLoc(), token, dynamicPrefix);
           };
           auto staticResourceId =
-              [&](Value resource) -> std::optional<int64_t> {
+              [&](size_t index, Value resource) -> std::optional<int64_t> {
+            if (resourceStaticTensorIds &&
+                index < resourceStaticTensorIds.size())
+              if (auto id =
+                      dyn_cast<IntegerAttr>(resourceStaticTensorIds[index]);
+                  id && id.getInt() >= 0)
+                return id.getInt();
             llvm::SmallPtrSet<Operation *, 4> visited;
             while (Operation *definition = resource.getDefiningOp()) {
               if (!visited.insert(definition).second)
@@ -2774,7 +2782,8 @@ private:
             return std::nullopt;
           };
           if (output >= 0 && size_t(output) < dispatch.getResources().size() &&
-              staticResourceId(dispatch.getResources()[output]))
+              staticResourceId(static_cast<size_t>(output),
+                               dispatch.getResources()[output]))
             return dispatch.emitError(
                 "immutable static tensor cannot be a dispatch output");
           SmallVector<Operation *> runtimeAliasExitJumps;
@@ -2787,7 +2796,7 @@ private:
               if (!access || access.getValue() != "read")
                 continue;
               Value resource = dispatch.getResources()[resourceIndex];
-              if (staticResourceId(resource))
+              if (staticResourceId(resourceIndex, resource))
                 continue;
               std::string sourceToken = valueSlots.lookup(resource);
               if (sourceToken.empty())
@@ -2844,7 +2853,7 @@ private:
                     "dispatch buffer has no allocated Udon heap slot");
               if (resourceIndex == size_t(output))
                 continue;
-              if (auto id = staticResourceId(resource)) {
+              if (auto id = staticResourceId(resourceIndex, resource)) {
                 std::string loaded = prefix + "dispatch_" +
                                      std::to_string(dispatch.getKernelId()) +
                                      "_static_" + std::to_string(argumentIndex);

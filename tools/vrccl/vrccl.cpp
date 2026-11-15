@@ -1063,7 +1063,7 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
         });
     bool resourcesMatch = dispatch.getResources().size() == bufferKindCount;
     llvm::DenseMap<unsigned, const UnityBuffer *> snapshotBuffers;
-    llvm::DenseSet<unsigned> snapshotStaticTensors;
+    llvm::DenseMap<unsigned, int64_t> snapshotStaticTensors;
     if (staticLoweringApplied) {
       auto snapshot = dispatch->getAttrOfType<DictionaryAttr>(
           "vrc.static_kernel_binding_snapshot");
@@ -1111,7 +1111,7 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
           if (!staticTensorExists(id.getInt()))
             return dispatch.emitError(
                 "static dispatch tensor is absent from the artifact");
-          snapshotStaticTensors.insert(operandIndex);
+          snapshotStaticTensors[operandIndex] = id.getInt();
         } else {
           return dispatch.emitError(
               "applied static Unity dispatch retains a dynamic resource");
@@ -1122,6 +1122,7 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
             "applied static Unity dispatch snapshot is incomplete");
     }
     SmallVector<mlir::Attribute> resourceHeapSlots;
+    SmallVector<mlir::Attribute> resourceStaticTensorIds;
     for (auto [resourceIndex, resource] :
          llvm::enumerate(dispatch.getResources())) {
       auto staticBuffer = resource.getDefiningOp<::vrc::vrc::StaticBufferOp>();
@@ -1153,18 +1154,26 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
         resourcesMatch &= staticTensorMatches(staticBuffer.getResourceId(),
                                               staticBuffer.getByteSize());
         resourceHeapSlots.push_back(builder.getStringAttr(""));
-      } else if (snapshotStaticTensors.contains(
-                     static_cast<unsigned>(resourceIndex))) {
+        resourceStaticTensorIds.push_back(
+            builder.getI32IntegerAttr(staticBuffer.getResourceId()));
+      } else if (auto found = snapshotStaticTensors.find(
+                     static_cast<unsigned>(resourceIndex));
+                 found != snapshotStaticTensors.end()) {
         resourceHeapSlots.push_back(builder.getStringAttr(""));
+        resourceStaticTensorIds.push_back(
+            builder.getI32IntegerAttr(found->second));
       } else if (boundBuffer) {
         resourceHeapSlots.push_back(
             builder.getStringAttr(boundBuffer->heapSlot));
+        resourceStaticTensorIds.push_back(builder.getI32IntegerAttr(-1));
       } else if (constantBuffer) {
         resourceHeapSlots.push_back(
             builder.getStringAttr(constantBuffer->heapSlot));
+        resourceStaticTensorIds.push_back(builder.getI32IntegerAttr(-1));
       } else {
         resourcesMatch &= !buffers.empty();
         resourceHeapSlots.push_back(builder.getStringAttr(""));
+        resourceStaticTensorIds.push_back(builder.getI32IntegerAttr(-1));
       }
     }
     std::optional<size_t> writeResource;
@@ -1212,6 +1221,8 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
                                             std::to_string(kernelId)));
     dispatch->setAttr("vrc.unity_resource_heap_slots",
                       builder.getArrayAttr(resourceHeapSlots));
+    dispatch->setAttr("vrc.unity_static_tensor_ids",
+                      builder.getArrayAttr(resourceStaticTensorIds));
     if (!writeResource) {
       dispatch.emitError("Unity dispatch requires one write resource");
       return failure();

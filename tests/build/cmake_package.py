@@ -1253,6 +1253,21 @@ def main():
     assert transformer_udon_async.count(
         'vrc.unity_resource_heap_slots = '
     ) == 8
+    expected_transformer_static_tensor_ids = [
+        '[0 : i32, -1 : i32, -1 : i32]',
+        '[-1 : i32, 1 : i32, -1 : i32]',
+        '[-1 : i32, -1 : i32, -1 : i32, -1 : i32]',
+        '[-1 : i32, -1 : i32, -1 : i32]',
+        '[-1 : i32, 3 : i32, 4 : i32, -1 : i32, -1 : i32]',
+    ]
+    for tensor_ids in expected_transformer_static_tensor_ids:
+        assert (
+            f'vrc.unity_static_tensor_ids = {tensor_ids}'
+            in transformer_udon_async
+        )
+    assert transformer_udon_async.count(
+        'vrc.unity_static_tensor_ids = '
+    ) == 8
     conversation_input_async = (
         conversation_input_artifact / 'host.async-runtime.mlir'
     ).read_text(encoding='utf-8')
