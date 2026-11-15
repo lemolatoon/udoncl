@@ -81,6 +81,16 @@ Current implementation checkpoint (2026-11-15):
   bindings, required externs, helper scratch, and generated version. The first
   supported contract is `rematerialize_i32`; no pass emits or lowers this op
   yet, and candidate colors are not treated as placement decisions;
+- the next implementation boundary is deliberately model-independent. First
+  connect discovery to the production Host pipeline without changing code
+  generation. Then add a mechanical `MaterializeHostStorage` pass and explicit
+  `LowerScalar` support that operate only on allocator-selected placement.
+  Finally move every late backend `SystemInt32` request that can be
+  rematerialized out of hidden `LowerScalar::immutableSlot()` policy and into
+  explicit pre-lowering IR use sites. Source-operand rematerialization alone
+  cannot solve the real-model pressure because most of the measured integer
+  constants are created by backend lowering rather than present as source SSA
+  operands;
 - the fresh real TinyLlama Host remains the pressure reproducer: its last
   measured lowering required 752 data slots against an effective 503-slot
   data-table capacity, with 515 constant slots, including 509 `SystemInt32`
@@ -335,7 +345,10 @@ does not emit Udon instructions.
 
 The current checkpoint implements only deterministic physical keys,
 context-free recipe names, stable source/backend requirement identities, and
-source-operand immediate-consumer groups. Concrete derivation sources,
+source-operand immediate-consumer groups. The backend requirement inventory
+records which values final lowering requests, but it does not yet identify the
+exact pre-lowering consumer operand/phase where writable scratch must be live;
+it therefore cannot be materialized safely. Concrete derivation sources,
 scratch and extern costs, loop weight, and backend use sites remain required
 before any rematerialization placement is enabled. The allocator now joins
 those source scratch groups with stable ordinary SSA/result liveness, including
@@ -470,48 +483,72 @@ the single-root restriction concerns Host execution state.
 
 ## 9. Migration sequence
 
-1. Introduce placement IR and update the storage report without changing code
-   generation.
-2. Add fixed-layout struct scalarization and extract common
-   liveness/interference analyses used by normal and async values.
-3. Add live-range splitting and suspend-edge save/resume-entry restore markers.
-4. Introduce a versioned literal key/use/recipe inventory with deterministic
-   output while retaining current resident code generation.
-5. Route source `arith.constant` and backend-required i32 literals through the
-   same logical request API; `immutableSlot()` stops making placement policy.
-   Source constants, Unity ID/index/token uses, and decimal `SystemInt32`
-   literals requested during final lowering are routed. Late-bound code
-   addresses and direct `addSlot` state still require explicit fixed/recipe
-   migration.
-6. Model recipe-result scratch lifetimes in the normal simultaneous-operand,
-   call, branch-copy, and suspend interference graph.
-7. Move shared resident and raw-pool placement into `AllocateHostStorage`.
-8. Add generic derived/rematerialized placement and make the non-ONNX
-   520-static-resource pressure fixture fit the exact 512-address budget.
-9. Migrate Unity buffer IDs, raw addresses, pool/spill indices, and descriptor
-   literals to the same mechanism. Delete the old per-feature
+Completed foundations include placement IR, common liveness/interference
+analysis, typed persistent-spill coloring, deterministic literal
+key/requirement discovery, source immediate-consumer scratch groups, a shared
+candidate color graph, and the verified `udonhl.literal_materialize` contract.
+Continue in the following independently testable commits:
+
+1. Run `DiscoverHostRematerialization` in the production Host pipeline
+   immediately before `AllocateHostStorage`. Prove in an integration fixture
+   that the production intermediate IR contains the deterministic versioned
+   inventory. This commit must not change generated Udon Assembly.
+2. Add `MaterializeHostStorage` as one pass in one implementation file. It
+   consumes only an explicit selected-placement schema and rewrites selected
+   source operand sites to `udonhl.literal_materialize`; candidate metadata
+   alone is never executable. Test duplicate operands, simultaneous distinct
+   operands, calls, branches, and rejection of stale/partial decisions.
+3. Teach `LowerScalar` to lower an explicit `rematerialize_i32` operation
+   mechanically from its exact seed bindings, extern list, and writable color.
+   Add focused Udon Assembly and native-equivalence tests. It must not call
+   `immutableSlot()`, choose a recipe, recolor the result, or add hidden seeds.
+4. Represent rematerializable late backend integer consumers as explicit
+   pre-lowering IR use sites. Start with Unity buffer IDs, pool indices/tokens,
+   static tensor/resource indices, descriptor fields, and typed spill/pool
+   indices, but define this by backend value role rather than ONNX model or
+   operator. Keep late code addresses and ABI/state constants fixed until
+   their distinct semantics are modeled. Prove that the inventory and
+   executable IR name the same consumer phases.
+5. Extend `AllocateHostStorage` with a deterministic pressure/cost selection
+   between resident and `rematerialize_i32` placement. Emit complete selected
+   recipe data: exact resident seed bindings, writable color, required externs,
+   helper scratch, and generated version. Test the non-ONNX static-resource
+   pressure fixture at the exact 512-address boundary; source-only fixtures are
+   insufficient for this gate.
+6. Add `VerifyHostStorageCapacity` as an independent pass and connect
+   discovery, allocation, materialization, verification, then scalar lowering
+   in production order. It reports exact category totals and replacement
+   candidates and must never select a fallback itself. If measured costs
+   require a retry, replace only compiler-generated placement and require
+   monotonic/stable convergence.
+7. Remove the superseded per-feature integer literal policies only after the
+   general backend-use path covers them. This includes
    `unity_buffer_id_rematerialization`, raw-address-cache, spill-index-cache,
-   and provisional `static_tensor_id_*` allocation policies once their tests
-   use the general report.
-10. Add bit-exact i1, f32, and i64 recipes. Strings and Unity references remain
-    shared/fixed until a separately verified table representation exists.
-11. Move live-across-suspend values, resume PCs, and internal async object
-    fields into the unified model; delete superseded raw-frame generation and
-    incidental symbol-name tests.
-12. Run native/compiler integration and generated-U# MNIST numerical
+   provisional `static_tensor_id_*` allocation, and hidden decimal
+   `SystemInt32` allocation through `immutableSlot()`.
+8. Add bit-exact i1, f32, and i64 recipes. Strings, Unity references,
+   late-bound code addresses, and ABI/state constants remain shared/fixed until
+   separately modeled and verified.
+9. Continue unified allocation of live-across-suspend values, resume PCs, and
+   internal async object fields; delete superseded raw-frame generation and
+   incidental symbol-name tests.
+10. Run native/compiler integration and generated-U# MNIST numerical
     validation.
-13. Generate the fresh real TinyLlama artifact, execute generated U# prefill,
-    and compare all 128,000 logits and 44 present K/V outputs with the ORT
-    oracle.
-14. Run the mandatory pre-commit gate.
+11. Generate the fresh real TinyLlama artifact, verify the exact final address
+    count, execute generated U# prefill, and compare all 128,000 logits and 44
+    present K/V outputs with the ORT oracle.
+12. Run the mandatory pre-commit gate.
 
 Each step must build and pass its relevant focused tests. Do not accumulate a
 large knowingly broken pipeline between steps.
 
-Before step 6, run discovery in the production pipeline and represent literal
-use sites and simultaneous consumers as nodes in the common
+At every step, literal use sites and simultaneous consumers cross the common
 `HostStorageProblem`/`HostStorageSolution` boundary. Do not add another model-
-or resource-specific placement heuristic to final scalar lowering.
+or resource-specific placement heuristic to final scalar lowering. In
+particular, passing source-only pressure tests is not evidence that the real
+TinyLlama blocker is fixed: fresh production generation must show that late
+backend integer requests have become explicit selected use sites and no longer
+consume one resident slot per distinct value.
 
 ## 10. Tests
 
