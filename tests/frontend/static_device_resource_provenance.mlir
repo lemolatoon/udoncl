@@ -45,6 +45,8 @@ module {
   ^scalar:
     cf.br ^merge(%one : i32)
   ^merge(%value: i32):
+    %null = arith.constant 0 : i32
+    %is_null = arith.cmpi eq, %value, %null : i32
     %dead = func.call @identity(%value) : (i32) -> i32
     return
   }

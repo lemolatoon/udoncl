@@ -2234,8 +2234,8 @@ struct PropagateDeviceResourceProvenancePass
                    !fact.ids.empty();
           };
           bool comparesResourceWithNull =
-              equality && ((isFiniteResource(leftFact) && rightFact.zero) ||
-                           (isFiniteResource(rightFact) && leftFact.zero));
+              equality && ((leftFact.resource && rightFact.zero) ||
+                           (rightFact.resource && leftFact.zero));
           if (comparesResource && !comparesResourceWithNull) {
             compare.emitError(
                 "unsupported operation consumes a static device resource: ")
@@ -2245,7 +2245,8 @@ struct PropagateDeviceResourceProvenancePass
           }
           const Fact &resourceFact = leftFact.resource ? leftFact : rightFact;
           std::optional<int64_t> foldedComparison;
-          if (comparesResourceWithNull && !resourceFact.mayBeNull)
+          if (comparesResourceWithNull && isFiniteResource(resourceFact) &&
+              !resourceFact.mayBeNull)
             foldedComparison =
                 compare.getPredicate() == arith::CmpIPredicate::ne ? 1 : 0;
           auto leftInteger = integerValues.find(compare.getLhs());
