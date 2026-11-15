@@ -473,6 +473,11 @@ add_test(NAME host-literal-materialization-codegen
     "${CMAKE_CURRENT_SOURCE_DIR}/codegen/host_literal_materialization.py"
     $<TARGET_FILE:vrc-opt>
 )
+add_test(NAME host-backend-literal-dispatch
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/codegen/host_backend_literal_dispatch.py"
+    $<TARGET_FILE:vrc-opt>
+)
 add_test(NAME static-dispatch-resource-materialization
   COMMAND Python3::Interpreter
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_dispatch_resource_materialization.py"

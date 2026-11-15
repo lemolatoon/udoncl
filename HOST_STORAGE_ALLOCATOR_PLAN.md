@@ -660,9 +660,11 @@ Continue in the following independently testable commits:
    and produces equivalent behavior, while an allocator-selected operand may
    already be a `udonhl.literal_materialize` result using its fixed writable
    color. The native-test dispatch adaptor deliberately excludes these
-   lowering-only operands from the native runtime call, but validates or
-   rejects an inconsistent segment rather than silently treating it as a
-   kernel argument.
+   lowering-only operands from the native runtime call. Structural and
+   identity validation belongs to the shared exposure/discovery/materialization
+   contract and the Udon consumer boundary; after that contract succeeds, the
+   native adaptor preserves its runtime ABI by forwarding Device resources
+   only.
 
    Audit every programmatic `vrc.dispatch` construction when adding the sized
    segments. The current manual `OperationState` builders in
@@ -697,8 +699,9 @@ Continue in the following independently testable commits:
    value semantics. This is Step 4 coverage only: automatic selection and the
    exact 512-address acceptance remain Step 5.
 
-   Implementation status: slices (a) and (b) are implemented; slice (a) is
-   recorded by `2eb8fae`. `vrc.dispatch` now has the backward-compatible sized
+   Implementation status: slices (a), (b), and (c) are implemented; slice (a)
+   is recorded by `2eb8fae`, and role-aware discovery by `bea0007`.
+   `vrc.dispatch` now has the backward-compatible sized
    operand segment, and the standalone transactional
    `vrc-expose-host-backend-literal-uses` pass exposes verified static-tensor
    indices without ONNX or model-specific logic. Role-aware discovery is also
@@ -706,7 +709,12 @@ Continue in the following independently testable commits:
    `static_resource_index` value role, participate in the existing simultaneous
    scratch coloring, and replace the legacy attribute-only inventory for an
    exposed module. The pass is intentionally not in the production pipeline
-   yet. Lowering consumption and production wiring remain slices (d) and (e).
+   yet. Slice (d) is split so each backend contract remains independently
+   testable: (d1) makes Udon lowering consume the explicit allocated operand
+   slot while retaining legacy fallback only for unexposed IR; (d2) adds the
+   native ABI exclusion/equivalence regression without changing native runtime
+   arguments. Slice (d1) is implemented in the current change; (d2) and
+   production wiring slice (e) remain.
 5. Extend `AllocateHostStorage` with a deterministic pressure/cost selection
    between resident and `rematerialize_i32` placement. Emit complete selected
    recipe data: exact resident seed bindings, writable color, required externs,

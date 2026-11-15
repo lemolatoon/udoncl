@@ -1104,6 +1104,8 @@ private:
     for (const auto &[value, ordinal] : analysis->ordinals) {
       if (value.getDefiningOp<udonhl::LiteralMaterializeOp>())
         continue;
+      if (hostLiteralPhysicalType(value.getType()) == "unsupported")
+        continue;
       if (!allocatorDirectColors.contains(value))
         return module.emitError("direct color allocation is incomplete");
     }
@@ -3015,14 +3017,18 @@ private:
                 return loadBoundMutableBuffer(slot.getValue(), dynamicPrefix);
             return selectUnityBuffer(dispatch.getLoc(), token, dynamicPrefix);
           };
-          auto staticResourceId =
-              [&](size_t index, Value resource) -> std::optional<int64_t> {
+          auto compatibilityStaticResourceId =
+              [&](size_t index) -> std::optional<int64_t> {
             if (resourceStaticTensorIds &&
                 index < resourceStaticTensorIds.size())
               if (auto id =
                       dyn_cast<IntegerAttr>(resourceStaticTensorIds[index]);
                   id && id.getInt() >= 0)
                 return id.getInt();
+            return std::nullopt;
+          };
+          auto tracedStaticResourceId =
+              [&](Value resource) -> std::optional<int64_t> {
             llvm::SmallPtrSet<Operation *, 4> visited;
             while (Operation *definition = resource.getDefiningOp()) {
               if (!visited.insert(definition).second)
@@ -3037,6 +3043,96 @@ private:
             }
             return std::nullopt;
           };
+          auto staticResourceId = [&](size_t index, Value resource) {
+            auto compatibility = compatibilityStaticResourceId(index);
+            return compatibility ? compatibility
+                                 : tracedStaticResourceId(resource);
+          };
+          llvm::DenseMap<size_t, Value> explicitStaticResourceIndices;
+          auto exposureVersion = module->getAttrOfType<IntegerAttr>(
+              "vrc.host_backend_literal_use_version");
+          auto staticPositions = dispatch.getStaticResourcePositionsAttr();
+          bool hasExplicitStaticIndices =
+              !dispatch.getStaticResourceIndices().empty() || staticPositions;
+          if (hasExplicitStaticIndices) {
+            if (!exposureVersion || exposureVersion.getInt() != 1)
+              return dispatch.emitError(
+                  "explicit static-resource indices require Host backend "
+                  "literal exposure version 1");
+            if (!staticPositions ||
+                staticPositions.size() !=
+                    dispatch.getStaticResourceIndices().size())
+              return dispatch.emitError(
+                  "incomplete static-resource index coverage");
+            for (auto [segmentIndex, position] :
+                 llvm::enumerate(staticPositions.asArrayRef())) {
+              if (position < 0 ||
+                  size_t(position) >= dispatch.getResources().size())
+                return dispatch.emitError(
+                    "static-resource index position is out of range");
+              size_t resourceIndex = static_cast<size_t>(position);
+              auto expected = staticResourceId(
+                  resourceIndex, dispatch.getResources()[resourceIndex]);
+              if (!expected)
+                return dispatch.emitError(
+                    "static-resource index references a non-static resource");
+              Value value = dispatch.getStaticResourceIndices()[segmentIndex];
+              IntegerAttr literal;
+              if (auto constant = value.getDefiningOp<arith::ConstantOp>()) {
+                auto role = constant->getAttrOfType<StringAttr>(
+                    "vrc.host_literal_role");
+                auto generatedVersion = constant->getAttrOfType<IntegerAttr>(
+                    "vrc.host_literal_generated_version");
+                if (!value.getType().isInteger(32) || !role ||
+                    role.getValue() != "static_resource_index" ||
+                    !generatedVersion || generatedVersion.getInt() != 1 ||
+                    !value.hasOneUse() ||
+                    *value.user_begin() != dispatch.getOperation())
+                  return dispatch.emitError(
+                      "static-resource index is not a generated Host backend "
+                      "literal");
+                literal = dyn_cast<IntegerAttr>(constant.getValue());
+              } else if (auto materialize = value.getDefiningOp<
+                                            udonhl::LiteralMaterializeOp>()) {
+                if (!value.getType().isInteger(32) ||
+                    materialize.getGeneratedVersion() != 1)
+                  return dispatch.emitError(
+                      "static-resource index has an invalid materialization "
+                      "schema");
+                literal = dyn_cast<IntegerAttr>(materialize.getLiteral());
+              } else {
+                return dispatch.emitError(
+                    "static-resource index is not a generated Host backend "
+                    "literal");
+              }
+              if (!literal || literal.getInt() != *expected)
+                return dispatch.emitError(
+                    "static-resource index literal disagrees with resource "
+                    "identity");
+              auto compatibility = compatibilityStaticResourceId(resourceIndex);
+              auto traced = tracedStaticResourceId(
+                  dispatch.getResources()[resourceIndex]);
+              if (compatibility && traced && *compatibility != *traced)
+                return dispatch.emitError(
+                    "static-resource compatibility identity disagrees with "
+                    "resource provenance");
+              if (!explicitStaticResourceIndices
+                       .try_emplace(resourceIndex, value)
+                       .second)
+                return dispatch.emitError(
+                    "duplicate static-resource index position");
+            }
+          } else if (exposureVersion && exposureVersion.getInt() != 1) {
+            return dispatch.emitError(
+                "unsupported Host backend literal exposure version");
+          }
+          if (exposureVersion && exposureVersion.getInt() == 1)
+            for (auto [resourceIndex, resource] :
+                 llvm::enumerate(dispatch.getResources()))
+              if (staticResourceId(resourceIndex, resource) &&
+                  !explicitStaticResourceIndices.contains(resourceIndex))
+                return dispatch.emitError(
+                    "incomplete static-resource index coverage");
           if (output >= 0 && size_t(output) < dispatch.getResources().size() &&
               staticResourceId(static_cast<size_t>(output),
                                dispatch.getResources()[output]))
@@ -3115,8 +3211,20 @@ private:
                                      "_static_" + std::to_string(argumentIndex);
                 addSlot(loaded, "UnityEngineTexture2D", "null", false);
                 emitPush(dispatch.getLoc(), "__udoncl_static_tensors");
-                emitPush(dispatch.getLoc(),
-                         immutableSlot("SystemInt32", std::to_string(*id)));
+                auto explicitIndex =
+                    explicitStaticResourceIndices.find(resourceIndex);
+                if (explicitIndex != explicitStaticResourceIndices.end()) {
+                  std::string indexSlot =
+                      valueSlots.lookup(explicitIndex->second);
+                  if (indexSlot.empty())
+                    return dispatch.emitError(
+                        "static-resource index operand has no allocated Udon "
+                        "heap slot");
+                  emitPush(dispatch.getLoc(), indexSlot);
+                } else {
+                  emitPush(dispatch.getLoc(),
+                           immutableSlot("SystemInt32", std::to_string(*id)));
+                }
                 emitPush(dispatch.getLoc(), loaded);
                 emitExtern(dispatch.getLoc(),
                            "UnityEngineTexture2DArray.__Get__SystemInt32__"
