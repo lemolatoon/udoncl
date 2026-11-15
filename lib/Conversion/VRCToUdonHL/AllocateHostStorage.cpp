@@ -1,4 +1,5 @@
 #include "VRC/Conversion/Passes.h"
+#include "VRC/Analysis/HostStorageAllocation.h"
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -6,6 +7,7 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/STLExtras.h"
+#include <limits>
 #include <map>
 #include <string>
 
@@ -63,7 +65,14 @@ struct AllocateHostStoragePass
             entry ? entry.getAs<StringAttr>("storage_key") : nullptr;
         auto conflicts =
             entry ? entry.getAs<DenseI32ArrayAttr>("interferes_with") : nullptr;
-        if (!entry || !valueId || !oldIndex || !storageKey || !conflicts) {
+        if (!entry || !valueId || !oldIndex || !storageKey || !conflicts ||
+            valueId.getInt() < 0 ||
+            valueId.getInt() > std::numeric_limits<int32_t>::max() ||
+            oldIndex.getInt() < 0 ||
+            oldIndex.getInt() > std::numeric_limits<int32_t>::max() ||
+            storageKey.getValue().empty() ||
+            llvm::any_of(conflicts.asArrayRef(),
+                         [](int32_t conflict) { return conflict < 0; })) {
           function.emitError(
               "async persistent storage plan lacks allocation inputs");
           invalid = true;
@@ -82,26 +91,54 @@ struct AllocateHostStoragePass
                           std::tie(right.storageKey, right.valueId);
                  });
 
-      std::map<std::string, int32_t> functionExtent;
-      DenseMap<int32_t, int32_t> colorByValue;
-      for (PlannedSpill &spill : spills) {
-        llvm::DenseSet<int32_t> unavailable;
-        for (int32_t conflict : spill.conflicts) {
-          auto assigned = colorByValue.find(conflict);
-          if (assigned != colorByValue.end())
-            unavailable.insert(assigned->second);
+      HostStorageProblem problem;
+      DenseMap<int32_t, HostStorageNodeId> nodeByValue;
+      for (const PlannedSpill &spill : spills) {
+        auto node = problem.addNode(std::to_string(spill.valueId),
+                                    spill.storageKey, spill.valueId,
+                                    HostStorageConstraint::TypedSpillOnly);
+        if (!node) {
+          function.emitError("duplicate async persistent storage identity");
+          invalid = true;
+          break;
         }
-        int32_t color = 0;
-        while (unavailable.contains(color))
-          ++color;
-        colorByValue[spill.valueId] = color;
+        nodeByValue[spill.valueId] = *node;
+      }
+      if (invalid)
+        break;
+      for (const PlannedSpill &spill : spills)
+        for (int32_t conflict : spill.conflicts) {
+          auto found = nodeByValue.find(conflict);
+          if (found == nodeByValue.end() ||
+              !problem.addInterference(nodeByValue.lookup(spill.valueId),
+                                       found->second)) {
+            function.emitError(
+                "async persistent storage references an unknown conflict");
+            invalid = true;
+            break;
+          }
+        }
+      if (invalid)
+        break;
+      HostStorageSolution solution = solveHostStorageProblem(problem);
+      for (PlannedSpill &spill : spills) {
+        unsigned color = solution.getColor(nodeByValue.lookup(spill.valueId));
         spill.newIndex = nextIndex[spill.storageKey] + color;
-        functionExtent[spill.storageKey] =
-            std::max(functionExtent[spill.storageKey], color + 1);
         remappedIndices[{spill.storageKey, spill.oldIndex}] = spill.newIndex;
       }
-      for (const auto &[storageKey, extent] : functionExtent)
+      for (const auto &[storageKey, extent] : solution.extents) {
+        if (extent >
+                static_cast<unsigned>(std::numeric_limits<int32_t>::max()) ||
+            nextIndex[storageKey] > std::numeric_limits<int32_t>::max() -
+                                        static_cast<int32_t>(extent)) {
+          function.emitError("typed spill allocation exceeds i32 capacity");
+          invalid = true;
+          break;
+        }
         nextIndex[storageKey] += extent;
+      }
+      if (invalid)
+        break;
 
       SmallVector<Attribute> allocated;
       llvm::sort(spills,

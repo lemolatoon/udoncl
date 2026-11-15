@@ -249,11 +249,11 @@ for unsupported_memref in [
 allocation_source = r'''module {
   func.func @reuse(%a: i32, %b: i32, %c: i32) attributes {
     vrc.async_spill_slots = [
-      {value_id = 0 : i32, slot = 0 : i32, storage_key = "SystemInt32",
-       placement = "typed_spill_array", interferes_with = array<i32: 1>},
-      {value_id = 1 : i32, slot = 1 : i32, storage_key = "SystemInt32",
-       placement = "typed_spill_array", interferes_with = array<i32: 0>},
-      {value_id = 2 : i32, slot = 2 : i32, storage_key = "SystemInt32",
+      {value_id = 10 : i32, slot = 0 : i32, storage_key = "SystemInt32",
+       placement = "typed_spill_array", interferes_with = array<i32>},
+      {value_id = 2 : i32, slot = 1 : i32, storage_key = "SystemInt32",
+       placement = "typed_spill_array", interferes_with = array<i32: 10>},
+      {value_id = 7 : i32, slot = 2 : i32, storage_key = "SystemInt32",
        placement = "typed_spill_array", interferes_with = array<i32>}
     ]
   } {
@@ -275,7 +275,24 @@ allocated = subprocess.run(
 assert allocated.returncode == 0, (allocated.stdout, allocated.stderr)
 assert allocated.stdout.count('slot = 0 : i32') == 2, allocated.stdout
 assert allocated.stdout.count('slot = 1 : i32') == 1, allocated.stdout
+assert allocated.stdout.count('spill_store %arg0[1]') == 1, allocated.stdout
+assert allocated.stdout.count('spill_store %arg1[0]') == 1, allocated.stdout
 assert allocated.stdout.count('spill_store %arg2[0]') == 1, allocated.stdout
+
+unknown_conflict = subprocess.run(
+    [optimizer, '--vrc-allocate-host-storage'],
+    input=allocation_source.replace('array<i32: 10>', 'array<i32: 99>'),
+    text=True,
+    capture_output=True,
+)
+assert unknown_conflict.returncode != 0
+invalid_identity = subprocess.run(
+    [optimizer, '--vrc-allocate-host-storage'],
+    input=allocation_source.replace('value_id = 10', 'value_id = -1'),
+    text=True,
+    capture_output=True,
+)
+assert invalid_identity.returncode != 0
 
 # wait_colored contains both the already-ready fast path and suspend/resume
 # path, followed by success/error merges.  Its live argument must have exactly

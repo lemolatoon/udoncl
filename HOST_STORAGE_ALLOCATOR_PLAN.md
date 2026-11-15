@@ -50,9 +50,11 @@ Current implementation checkpoint (2026-11-15):
   `AllocateHostStorage` still colors only legacy async persistent spill
   indices. `MaterializeHostStorage` and `VerifyHostStorageCapacity` have not
   yet been extracted from final scalar lowering;
-- reusable `HostStorageLiveness` currently lives in the final Udon lowering
-  library. It must move to a common analysis library before the allocator can
-  consume the same SSA, call, branch-copy, and suspend interference facts;
+- reusable `HostStorageLiveness` now lives in a common analysis library. A
+  feature-neutral `HostStorageProblem`/`HostStorageSolution` graph owns stable
+  physical-type coloring, interference edges, and simultaneous groups; legacy
+  async persistent spill coloring is its first consumer, with placement and
+  generated code unchanged;
 - the fresh real TinyLlama Host remains the pressure reproducer: its last
   measured lowering required 752 data slots against an effective 503-slot
   data-table capacity, with 515 constant slots, including 509 `SystemInt32`
@@ -459,11 +461,10 @@ the single-root restriction concerns Host execution state.
 Each step must build and pass its relevant focused tests. Do not accumulate a
 large knowingly broken pipeline between steps.
 
-Before step 6, move `HostStorageLiveness` into a common analysis library and
-introduce a generic `HostStorageProblem`/`HostStorageSolution` boundary. Then
-run discovery in the production pipeline and represent literal use sites and
-simultaneous consumers as allocator nodes. Do not add another model- or
-resource-specific placement heuristic to final scalar lowering.
+Before step 6, run discovery in the production pipeline and represent literal
+use sites and simultaneous consumers as nodes in the common
+`HostStorageProblem`/`HostStorageSolution` boundary. Do not add another model-
+or resource-specific placement heuristic to final scalar lowering.
 
 ## 10. Tests
 

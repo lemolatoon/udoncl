@@ -1,4 +1,11 @@
 find_package(Python3 3.12 REQUIRED COMPONENTS Interpreter)
+add_executable(host-storage-allocation-test
+  analysis/host_storage_allocation.cpp)
+target_link_libraries(host-storage-allocation-test PRIVATE
+  VRCAnalysisHostStorage)
+vrc_configure_target(host-storage-allocation-test)
+add_test(NAME host-storage-allocation
+  COMMAND host-storage-allocation-test)
 file(READ
   "${PROJECT_SOURCE_DIR}/libraries/udononnxoperators/device/matmul_nbits.cl"
   _UDONONNX_TEST_DEVICE_SOURCE)
