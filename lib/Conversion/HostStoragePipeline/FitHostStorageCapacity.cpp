@@ -53,7 +53,7 @@ void setFitReport(ModuleOp module,
   module->setAttr(
       "vrc.host_storage_capacity_fit",
       builder.getDictionaryAttr({
-          builder.getNamedAttr("schema_version", builder.getI32IntegerAttr(1)),
+          builder.getNamedAttr("schema_version", builder.getI32IntegerAttr(2)),
           builder.getNamedAttr(
               "baseline_address_count",
               builder.getI64IntegerAttr(baseline.addressCount)),
@@ -63,6 +63,18 @@ void setFitReport(ModuleOp module,
           builder.getNamedAttr(
               "baseline_unique_extern_count",
               builder.getI64IntegerAttr(baseline.uniqueExternCount)),
+          builder.getNamedAttr(
+              "baseline_address_limit",
+              builder.getI64IntegerAttr(baseline.addressLimit)),
+          builder.getNamedAttr(
+              "baseline_data_slot_capacity",
+              builder.getI64IntegerAttr(baseline.dataSlotCapacity)),
+          builder.getNamedAttr(
+              "baseline_final_data_slot_reserve",
+              builder.getI64IntegerAttr(baseline.finalDataSlotReserve)),
+          builder.getNamedAttr(
+              "baseline_required_reduction",
+              builder.getI64IntegerAttr(baseline.requiredReduction)),
           builder.getNamedAttr("final_address_count",
                                builder.getI64IntegerAttr(final.addressCount)),
           builder.getNamedAttr("final_data_slot_count",
@@ -70,8 +82,17 @@ void setFitReport(ModuleOp module,
           builder.getNamedAttr(
               "final_unique_extern_count",
               builder.getI64IntegerAttr(final.uniqueExternCount)),
-          builder.getNamedAttr("address_limit",
+          builder.getNamedAttr("final_address_limit",
                                builder.getI64IntegerAttr(final.addressLimit)),
+          builder.getNamedAttr(
+              "final_data_slot_capacity",
+              builder.getI64IntegerAttr(final.dataSlotCapacity)),
+          builder.getNamedAttr(
+              "final_data_slot_reserve",
+              builder.getI64IntegerAttr(final.finalDataSlotReserve)),
+          builder.getNamedAttr(
+              "final_required_reduction",
+              builder.getI64IntegerAttr(final.requiredReduction)),
           builder.getNamedAttr("attempt_count",
                                builder.getI32IntegerAttr(attempts)),
           builder.getNamedAttr("requested_resident_slot_savings",

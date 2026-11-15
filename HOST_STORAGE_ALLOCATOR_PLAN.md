@@ -454,8 +454,8 @@ different recipe, or independently recolor direct SSA values.
 
 Uses the same capacity-planning calculation as final scalar lowering to measure
 the exact final address representation. It reports category totals and
-actionable replacement candidates; it never chooses a semantically different
-fallback.
+actual/expected address, data, extern, capacity, reserve, and reduction totals;
+it never proposes or chooses a semantically different fallback.
 
 If materialization changes index constants, scratch, extern signatures, or
 other address costs, a coordinator may request a larger deterministic literal
@@ -865,9 +865,6 @@ Continue in the following independently testable commits:
    validation, allocation, materialization, measurement, or exhaustion failure,
    discard every clone and leave the original untouched. Final scalar lowering
    remains a separate ordinary pass and runs once after a committed winner.
-   A later `VerifyHostStorageCapacity` pass consumes the same measurement,
-   reports exact category totals and replacement candidates, and never selects
-   a fallback itself.
 
    Focused coverage uses the existing model-independent two-dispatch fixture
    with no source-authored request. With the same reserve, candidate-only
@@ -884,14 +881,32 @@ Continue in the following independently testable commits:
    version 1 i32 schema, and non-exhaustion allocation/materialization failures
    are no longer mislabeled as safe-candidate exhaustion.
 
-   The remaining Step 6 work is an independent
-   `VerifyHostStorageCapacity` pass, followed by production pipeline wiring.
-   Verification consumes the same exact measurement, reports category totals
-   and actionable replacement candidates, and never selects or retries a
-   placement. Only after it is green may production connect fixed physical
-   releases, exposure, final discovery, fitting, verification, and scalar
-   lowering. Fresh production generation, MNIST, and TinyLlama remain mandatory
-   acceptance gates.
+   **Verification checkpoint completed (2026-11-16):** the independent
+   `VerifyHostStorageCapacity` pass consumes fit-report schema version 2 and
+   reruns the shared exact measurement without selecting, materializing, or
+   retrying a placement. The fit report records complete baseline and final
+   address/data/extern/limit/capacity/reserve/reduction totals plus coordinator
+   attempts and requested savings. Verification recomputes reduction with
+   overflow-safe arithmetic, validates the exact request/prefix relationship
+   and complete selected/materialized schemas, and requires the fresh final
+   measurement to match every recorded field and fit the limit.
+
+   On success it adds versioned
+   `vrc.host_storage_capacity_verification` metadata only after all checks;
+   repeating verification is an exact no-op, while stale or partial existing
+   verification fails without mutation. Mismatch diagnostics report actual and
+   expected address, data, extern, limit, capacity, reserve, and required-
+   reduction totals and direct the caller to rerun fitting. The verifier never
+   proposes replacement candidates or changes placement. Focused coverage
+   includes selected exact-512 and already-fitting paths, fit/request/prefix
+   tampering, stale post-fit capacity, idempotence, and field-by-field agreement
+   with ordinary final LowerScalar output, including unique extern signatures,
+   data-slot capacity, and final reserve.
+
+   The remaining Step 6 work is production pipeline wiring only. Production may
+   now connect fixed physical releases, exposure, final discovery, fitting,
+   verification, and scalar lowering in that order. Fresh production
+   generation, MNIST, and TinyLlama remain mandatory acceptance gates.
 7. Remove the superseded per-feature integer literal policies only after the
    general backend-use path covers them. This includes
    `unity_buffer_id_rematerialization`, raw-address-cache, spill-index-cache,

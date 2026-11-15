@@ -401,6 +401,7 @@ fit_report = re.search(
     r"vrc\.host_storage_capacity_fit = \{([^}]*)\}", fitted.stdout
 )
 assert fit_report, fitted.stdout
+assert "schema_version = 2 : i32" in fit_report.group(1)
 assert (
     f"baseline_address_count = {candidate_addresses} : i64"
     in fit_report.group(1)
@@ -408,14 +409,56 @@ assert (
 assert f"final_address_count = {selected_addresses} : i64" in fit_report.group(1)
 assert "attempt_count = 2 : i32" in fit_report.group(1)
 assert "requested_resident_slot_savings = 2 : i32" in fit_report.group(1)
+verified = run(["--vrc-verify-host-storage-capacity"], fitted.stdout)
+assert verified.returncode == 0, (verified.stdout, verified.stderr)
+verification_report = re.search(
+    r"vrc\.host_storage_capacity_verification = \{([^}]*)\}", verified.stdout
+)
+assert verification_report, verified.stdout
+assert f"address_count = {selected_addresses} : i64" in verification_report.group(1)
+assert f"data_slot_count = {selected_data} : i64" in verification_report.group(1)
+assert f"unique_extern_count = {selected_externs} : i64" in verification_report.group(
+    1
+)
+assert f"address_limit = {selected_addresses} : i64" in verification_report.group(1)
+verified_capacity = re.search(
+    r"data_slot_capacity = (\d+)", verification_report.group(1)
+)
+assert verified_capacity
+verified_capacity = int(verified_capacity.group(1))
+assert verified_capacity == selected_measurement["capacity"]
+assert f"final_data_slot_reserve = {reserve} : i64" in verification_report.group(1)
+assert "required_reduction = 0 : i64" in verification_report.group(1)
+assert "fits = true" in verification_report.group(1)
+verified_repeat = run(["--vrc-verify-host-storage-capacity"], verified.stdout)
+assert verified_repeat.returncode == 0, (
+    verified_repeat.stdout,
+    verified_repeat.stderr,
+)
+assert verified_repeat.stdout == verified.stdout
 fitted_lowered = run(
-    ["--vrc-lower-udonhl-to-udonasm", "--verify-each"], fitted.stdout
+    ["--vrc-lower-udonhl-to-udonasm", "--verify-each"], verified.stdout
 )
 assert fitted_lowered.returncode == 0, (
     fitted_lowered.stdout,
     fitted_lowered.stderr,
 )
-assert sum(address_components(fitted_lowered.stdout)) == selected_addresses
+lowered_data, lowered_externs = address_components(fitted_lowered.stdout)
+assert lowered_data == selected_data
+assert lowered_externs == selected_externs
+assert lowered_data + lowered_externs == selected_addresses
+lowered_capacity = re.search(
+    r"udonasm\.storage_report = \{.*?data_slot_capacity = (\d+)",
+    fitted_lowered.stdout,
+    re.DOTALL,
+)
+lowered_reserve = re.search(
+    r"udonasm\.storage_report = \{.*?final_data_slot_reserve = (\d+)",
+    fitted_lowered.stdout,
+    re.DOTALL,
+)
+assert lowered_capacity and int(lowered_capacity.group(1)) == verified_capacity
+assert lowered_reserve and int(lowered_reserve.group(1)) == reserve
 
 already_fit_input = fit_input.replace(
     f"vrc.final_data_slot_reserve = {reserve} : i32",
@@ -432,6 +475,53 @@ assert already_fit_report, already_fit.stdout
 assert "attempt_count = 0 : i32" in already_fit_report.group(1)
 assert "requested_resident_slot_savings = 0 : i32" in already_fit_report.group(1)
 assert "vrc.host_storage_pressure_request" not in already_fit.stdout
+already_fit_verified = run(
+    ["--vrc-verify-host-storage-capacity"], already_fit.stdout
+)
+assert already_fit_verified.returncode == 0, (
+    already_fit_verified.stdout,
+    already_fit_verified.stderr,
+)
+
+stale_fit = run(
+    ["--vrc-verify-host-storage-capacity"],
+    fitted.stdout.replace(
+        f"final_address_count = {selected_addresses} : i64",
+        f"final_address_count = {selected_addresses + 1} : i64",
+        1,
+    ),
+)
+assert stale_fit.returncode != 0
+assert "invalid Host storage capacity fit report" in stale_fit.stderr
+
+wrong_fit_schema = run(
+    ["--vrc-verify-host-storage-capacity"],
+    fitted.stdout.replace("schema_version = 2 : i32", "schema_version = 1 : i32", 1),
+)
+assert wrong_fit_schema.returncode != 0
+assert "invalid Host storage capacity fit report" in wrong_fit_schema.stderr
+
+tampered_prefix = run(
+    ["--vrc-verify-host-storage-capacity"],
+    fitted.stdout.replace(
+        f"baseline_required_reduction = {candidate_measurement['required']} : i64",
+        f"baseline_required_reduction = {candidate_measurement['required'] + 1} : i64",
+        1,
+    ),
+)
+assert tampered_prefix.returncode != 0
+assert "invalid Host storage capacity fit report" in tampered_prefix.stderr
+
+overflow_after_fit = run(
+    ["--vrc-verify-host-storage-capacity"],
+    fitted.stdout.replace(
+        f"vrc.final_data_slot_reserve = {reserve} : i32",
+        f"vrc.final_data_slot_reserve = {reserve + 1} : i32",
+        1,
+    ),
+)
+assert overflow_after_fit.returncode != 0
+assert "does not match the exact final Udon address plan" in overflow_after_fit.stderr
 
 exhausted_input = fit_input.replace(
     f"vrc.final_data_slot_reserve = {reserve} : i32",

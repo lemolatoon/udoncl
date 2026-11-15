@@ -175,6 +175,9 @@ def FitHostStorageCapacityPass : Pass<"vrc-fit-host-storage-capacity", "mlir::Mo
   let summary = "Transactionally select and materialize Host literals until exact Udon address pressure fits";
   let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "mlir::arith::ArithDialect", "mlir::func::FuncDialect"];
 }
+def VerifyHostStorageCapacityPass : Pass<"vrc-verify-host-storage-capacity", "mlir::ModuleOp"> {
+  let summary = "Verify fitted Host storage against the exact final Udon address plan";
+}
 def LowerUdonAsyncRuntimePass : Pass<"vrc-lower-udon-async-runtime", "mlir::ModuleOp"> {
   let summary = "Remove upstream Async/Coro scaffolding after static Udon routing is materialized";
   let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "::vrc::vrc::VRCDialect", "mlir::cf::ControlFlowDialect", "mlir::func::FuncDialect"];
