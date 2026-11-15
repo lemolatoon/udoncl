@@ -14,15 +14,18 @@ int main() {
   if (chainSolution.getColor(*two) != 0 ||
       chainSolution.getColor(*seven) != 1 ||
       chainSolution.getColor(*ten) != 0 ||
-      chainSolution.extents["SystemInt32"] != 2)
+      chainSolution.extents[{HostStorageDomain::Writable, "SystemInt32"}] != 2)
     return 2;
 
   HostStorageProblem simultaneous;
   auto first = simultaneous.addNode("first", "SystemInt32", 0,
+                                    HostStorageDomain::Writable,
                                     HostStorageConstraint::DirectOnly);
   auto second = simultaneous.addNode("second", "SystemInt32", 1,
+                                     HostStorageDomain::Writable,
                                      HostStorageConstraint::DirectOnly);
   auto third = simultaneous.addNode("third", "SystemInt32", 2,
+                                    HostStorageDomain::Writable,
                                     HostStorageConstraint::DirectOnly);
   if (!first || !second || !third ||
       !simultaneous.addSimultaneousGroup({*first, *second, *third}))
@@ -42,8 +45,9 @@ int main() {
   HostStorageSolution typedSolution = solveHostStorageProblem(typed);
   if (typedSolution.getColor(*integer) != 0 ||
       typedSolution.getColor(*floating) != 0 ||
-      typedSolution.extents["SystemInt32"] != 1 ||
-      typedSolution.extents["SystemSingle"] != 1)
+      typedSolution.extents[{HostStorageDomain::Writable, "SystemInt32"}] !=
+          1 ||
+      typedSolution.extents[{HostStorageDomain::Writable, "SystemSingle"}] != 1)
     return 6;
   if (typed.addNode("integer", "SystemInt32", 2) ||
       typed.addInterference(*integer, 99))
@@ -73,5 +77,42 @@ int main() {
       overlappingSolution.getColor(*c) != 0 ||
       overlappingSolution.getColor(*d) != 1)
     return 10;
+
+  HostStorageProblem domains;
+  auto resident =
+      domains.addNode("resident", "SystemInt32", 0, HostStorageDomain::Resident,
+                      HostStorageConstraint::Fixed);
+  auto scratchA = domains.addNode("scratch-a", "SystemInt32", 3,
+                                  HostStorageDomain::Writable,
+                                  HostStorageConstraint::DirectOnly);
+  auto scratchB = domains.addNode("scratch-b", "SystemInt32", 1,
+                                  HostStorageDomain::Writable,
+                                  HostStorageConstraint::DirectOnly);
+  auto resultX =
+      domains.addNode("result-x", "SystemInt32", 2, HostStorageDomain::Writable,
+                      HostStorageConstraint::DirectOnly);
+  auto scratchC = domains.addNode("scratch-c", "SystemInt32", 5,
+                                  HostStorageDomain::Writable,
+                                  HostStorageConstraint::DirectOnly);
+  auto resultY =
+      domains.addNode("result-y", "SystemInt32", 4, HostStorageDomain::Writable,
+                      HostStorageConstraint::DirectOnly);
+  if (!resident || !scratchA || !scratchB || !resultX || !scratchC ||
+      !resultY ||
+      !domains.addSimultaneousGroup({*scratchA, *scratchB, *resultX}) ||
+      !domains.addSimultaneousGroup({*scratchC, *resultY}) ||
+      domains.addSimultaneousGroup({*resident, *scratchA}))
+    return 11;
+  HostStorageSolution domainSolution = solveHostStorageProblem(domains);
+  if (domainSolution.getColor(*resident) != 0 ||
+      domainSolution.getColor(*scratchB) != 0 ||
+      domainSolution.getColor(*resultX) != 1 ||
+      domainSolution.getColor(*scratchA) != 2 ||
+      domainSolution.getColor(*resultY) != 0 ||
+      domainSolution.getColor(*scratchC) != 1 ||
+      domainSolution.extents[{HostStorageDomain::Resident, "SystemInt32"}] !=
+          1 ||
+      domainSolution.extents[{HostStorageDomain::Writable, "SystemInt32"}] != 3)
+    return 12;
   return 0;
 }

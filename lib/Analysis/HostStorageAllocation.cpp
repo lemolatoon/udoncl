@@ -5,15 +5,17 @@
 
 namespace vrc {
 
-std::optional<HostStorageNodeId> HostStorageProblem::addNode(
-    llvm::StringRef stableId, llvm::StringRef physicalType,
-    uint64_t stableOrdinal, HostStorageConstraint constraint) {
+std::optional<HostStorageNodeId>
+HostStorageProblem::addNode(llvm::StringRef stableId,
+                            llvm::StringRef physicalType,
+                            uint64_t stableOrdinal, HostStorageDomain domain,
+                            HostStorageConstraint constraint) {
   if (stableId.empty() || physicalType.empty() ||
       nodeByStableId.count(stableId.str()))
     return std::nullopt;
   HostStorageNodeId id = nodes.size();
   nodes.push_back(
-      {stableId.str(), physicalType.str(), stableOrdinal, constraint});
+      {stableId.str(), physicalType.str(), stableOrdinal, domain, constraint});
   nodeByStableId.emplace(stableId.str(), id);
   interference.emplace_back();
   simultaneousGroupsByNode.emplace_back();
@@ -24,7 +26,8 @@ bool HostStorageProblem::addInterference(HostStorageNodeId left,
                                          HostStorageNodeId right) {
   if (left >= nodes.size() || right >= nodes.size())
     return false;
-  if (left == right || nodes[left].physicalType != nodes[right].physicalType)
+  if (left == right || nodes[left].domain != nodes[right].domain ||
+      nodes[left].physicalType != nodes[right].physicalType)
     return true;
   interference[left].insert(right);
   interference[right].insert(left);
@@ -45,6 +48,8 @@ bool HostStorageProblem::addSimultaneousGroup(
       physicalType = nodes[node].physicalType;
     else if (physicalType != nodes[node].physicalType)
       return false;
+    if (nodes[node].domain != nodes[group.front()].domain)
+      return false;
   }
   for (HostStorageNodeId node : group)
     simultaneousGroupsByNode[node].push_back(groupId);
@@ -59,10 +64,10 @@ HostStorageSolution solveHostStorageProblem(const HostStorageProblem &problem) {
   std::vector<HostStorageNodeId> order(nodes.size());
   std::iota(order.begin(), order.end(), 0);
   llvm::sort(order, [&](HostStorageNodeId left, HostStorageNodeId right) {
-    return std::tie(nodes[left].physicalType, nodes[left].stableOrdinal,
-                    nodes[left].stableId) < std::tie(nodes[right].physicalType,
-                                                     nodes[right].stableOrdinal,
-                                                     nodes[right].stableId);
+    return std::tie(nodes[left].domain, nodes[left].physicalType,
+                    nodes[left].stableOrdinal, nodes[left].stableId) <
+           std::tie(nodes[right].domain, nodes[right].physicalType,
+                    nodes[right].stableOrdinal, nodes[right].stableId);
   });
 
   llvm::DenseSet<HostStorageNodeId> assigned;
@@ -83,7 +88,8 @@ HostStorageSolution solveHostStorageProblem(const HostStorageProblem &problem) {
     assigned.insert(node);
     for (unsigned group : problem.getSimultaneousGroups(node))
       simultaneousGroupColors[group].insert(color);
-    unsigned &extent = solution.extents[nodes[node].physicalType];
+    unsigned &extent =
+        solution.extents[{nodes[node].domain, nodes[node].physicalType}];
     extent = std::max(extent, color + 1);
   }
   return solution;

@@ -108,9 +108,10 @@ struct AllocateHostStoragePass
       HostStorageProblem problem;
       DenseMap<int32_t, HostStorageNodeId> nodeByValue;
       for (const PlannedSpill &spill : spills) {
-        auto node = problem.addNode(std::to_string(spill.valueId),
-                                    spill.storageKey, spill.valueId,
-                                    HostStorageConstraint::TypedSpillOnly);
+        auto node =
+            problem.addNode(std::to_string(spill.valueId), spill.storageKey,
+                            spill.valueId, HostStorageDomain::TypedSpill,
+                            HostStorageConstraint::TypedSpillOnly);
         if (!node) {
           function.emitError("duplicate async persistent storage identity");
           invalid = true;
@@ -140,7 +141,8 @@ struct AllocateHostStoragePass
         spill.newIndex = nextIndex[spill.storageKey] + color;
         remappedIndices[{spill.storageKey, spill.oldIndex}] = spill.newIndex;
       }
-      for (const auto &[storageKey, extent] : solution.extents) {
+      for (const auto &[colorKey, extent] : solution.extents) {
+        const std::string &storageKey = colorKey.physicalType;
         if (extent >
                 static_cast<unsigned>(std::numeric_limits<int32_t>::max()) ||
             nextIndex[storageKey] > std::numeric_limits<int32_t>::max() -
@@ -308,9 +310,9 @@ private:
             "Host literal inventory contains an orphan key");
       if (!allocation.supported)
         continue;
-      allocation.node =
-          problem.addNode(keyId, allocation.physicalType, ordinal++,
-                          HostStorageConstraint::Fixed);
+      allocation.node = problem.addNode(keyId, allocation.physicalType,
+                                        ordinal++, HostStorageDomain::Resident,
+                                        HostStorageConstraint::Fixed);
       if (!allocation.node)
         return module.emitError("invalid Host literal allocation identity");
       nodesByType[allocation.physicalType].push_back(*allocation.node);

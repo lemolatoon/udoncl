@@ -59,16 +59,21 @@ Current implementation checkpoint (2026-11-15):
   operands using the same key share one instance; distinct keys in one
   consumer remain distinct. Backend literals created only during final
   lowering are not yet represented as operand sites;
-- discovery is not yet in the production compiler pipeline. Beyond the
-  compatibility literal baseline, `AllocateHostStorage` still colors only
-  legacy async persistent spill indices. `MaterializeHostStorage` and
+- discovery is not yet in the production compiler pipeline.
+  `AllocateHostStorage` currently has two disconnected consumers of the
+  shared allocator: the resident literal compatibility baseline and legacy
+  async persistent spill indices. It does not yet combine writable literal
+  scratch with direct SSA values. `MaterializeHostStorage` and
   `VerifyHostStorageCapacity` have not yet been extracted from final scalar
   lowering;
 - reusable `HostStorageLiveness` now lives in a common analysis library. A
   feature-neutral `HostStorageProblem`/`HostStorageSolution` graph owns stable
-  physical-type coloring, interference edges, and simultaneous groups; legacy
-  async persistent spill coloring is its first consumer, with placement and
-  generated code unchanged;
+  storage-domain and physical-type coloring, interference edges, and
+  simultaneous groups. Resident immutable storage, writable direct/scratch
+  storage, and typed spill arrays have distinct color namespaces; equal
+  numeric colors in different domains do not alias. Legacy async persistent
+  spill coloring and resident literal compatibility allocation use this graph,
+  with placement and generated code unchanged;
 - the fresh real TinyLlama Host remains the pressure reproducer: its last
   measured lowering required 752 data slots against an effective 503-slot
   data-table capacity, with 515 constant slots, including 509 `SystemInt32`
@@ -174,6 +179,11 @@ There is no fixed semantic boundary at 16 registers. Direct-slot count is a
 capacity- and cost-based allocator decision. The allocator must still reserve
 enough direct storage for any simultaneous operand clique that cannot be
 spilled.
+
+Writable direct and rematerialization-scratch values share one color namespace
+per physical Udon type. Immutable resident literals use a separate namespace:
+they may have the same numeric color as a writable value, but must never map to
+the same Heap slot because materialization overwrites scratch.
 
 ### 3.5 Typed spill arrays
 
@@ -499,6 +509,9 @@ Focused compiler tests cover:
 - logical types sharing a compatible physical type;
 - hot resident and cold rematerialized constants under measured pressure;
 - two literals consumed by one extern receiving distinct simultaneous scratch;
+- scratch operands and the writable result of one consumer receiving pairwise
+  distinct colors;
+- resident and writable colors using distinct non-aliasing storage domains;
 - scratch reuse only after the consumer;
 - ordinary and lowering-required literals sharing one planner/report;
 - derived values whose sources remain available at every selected use;
