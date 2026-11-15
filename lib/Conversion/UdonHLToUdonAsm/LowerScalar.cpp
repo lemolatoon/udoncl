@@ -2750,13 +2750,24 @@ private:
             return dispatch.emitError(
                 "Unity dispatch requires a bound output, a copied scalar "
                 "descriptor, an event and a kernel material slot");
+          llvm::StringMap<std::string> loadedMutableBuffers;
+          auto loadBoundMutableBuffer = [&](StringRef heapSlot,
+                                            StringRef loadPrefix) {
+            auto existing = loadedMutableBuffers.find(heapSlot);
+            if (existing != loadedMutableBuffers.end())
+              return existing->second;
+            std::string loaded = loadUnityBufferFromHeapSlot(
+                dispatch.getLoc(), heapSlot, loadPrefix);
+            if (!loaded.empty())
+              loadedMutableBuffers.try_emplace(heapSlot, loaded);
+            return loaded;
+          };
           auto physicalBuffer = [&](size_t index, StringRef token,
                                     StringRef dynamicPrefix) {
             if (resourceHeapSlots && index < resourceHeapSlots.size())
               if (auto slot = dyn_cast<StringAttr>(resourceHeapSlots[index]);
                   slot && !slot.getValue().empty())
-                return loadUnityBufferFromHeapSlot(
-                    dispatch.getLoc(), slot.getValue(), dynamicPrefix);
+                return loadBoundMutableBuffer(slot.getValue(), dynamicPrefix);
             return selectUnityBuffer(dispatch.getLoc(), token, dynamicPrefix);
           };
           auto staticResourceId =
@@ -2872,8 +2883,8 @@ private:
                   if (auto slot = dyn_cast<StringAttr>(
                           resourceHeapSlots[resourceIndex]);
                       slot && !slot.getValue().empty())
-                    texture = loadUnityBufferFromHeapSlot(
-                        dispatch.getLoc(), slot.getValue(),
+                    texture = loadBoundMutableBuffer(
+                        slot.getValue(),
                         prefix + "dispatch_" +
                             std::to_string(dispatch.getKernelId()) + "_input_" +
                             std::to_string(argumentIndex));

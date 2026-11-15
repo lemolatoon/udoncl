@@ -1295,6 +1295,16 @@ def main():
     for suffix in ['index', 'static_index', 'dynamic_index']:
         assert f'copy_source_0_{suffix}' not in transformer_assembly
         assert f'copy_destination_1_{suffix}' not in transformer_assembly
+    assert transformer_assembly.count(
+        'PUSH, __udoncl_buffer_pool'
+    ) == 28
+    assert transformer_assembly.count(
+        'UnityEngineTexture2DArray.__Get__SystemInt32__UnityEngineTexture2D'
+    ) == 5
+    assert transformer_assembly.count(
+        'VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_'
+        'UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid'
+    ) == 12
     conversation_input_async = (
         conversation_input_artifact / 'host.async-runtime.mlir'
     ).read_text(encoding='utf-8')
