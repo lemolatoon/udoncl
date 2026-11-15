@@ -62,10 +62,11 @@ Current implementation checkpoint (2026-11-15):
 - discovery is not yet in the production compiler pipeline.
   `AllocateHostStorage` currently has two disconnected consumers of the
   shared allocator: the resident literal compatibility baseline and legacy
-  async persistent spill indices. It does not yet combine writable literal
-  scratch with direct SSA values. `MaterializeHostStorage` and
-  `VerifyHostStorageCapacity` have not yet been extracted from final scalar
-  lowering;
+  async persistent spill indices. A third, metadata-only candidate graph now
+  combines source literal scratch with ordinary writable SSA values and emits
+  deterministic colors without selecting that placement.
+  `MaterializeHostStorage` and `VerifyHostStorageCapacity` have not yet been
+  extracted from final scalar lowering;
 - reusable `HostStorageLiveness` now lives in a common analysis library. A
   feature-neutral `HostStorageProblem`/`HostStorageSolution` graph owns stable
   storage-domain and physical-type coloring, interference edges, and
@@ -329,9 +330,16 @@ does not emit Udon instructions.
 The current checkpoint implements only deterministic physical keys,
 context-free recipe names, stable source/backend requirement identities, and
 source-operand immediate-consumer groups. Concrete derivation sources,
-ordinary SSA/result interference, scratch and extern costs, loop weight, and
-backend use sites remain required before any rematerialization placement is
-enabled.
+scratch and extern costs, loop weight, and backend use sites remain required
+before any rematerialization placement is enabled. The allocator now joins
+those source scratch groups with stable ordinary SSA/result liveness, including
+live-through values and direct-call entry destinations, and emits
+candidate-only writable colors. Branch terminator literals remain explicitly
+ineligible until discovery assigns edge-specific consumer phases; they do not
+receive an unsafe or over-conservative scratch candidate. Recursive nested SSA
+collection is opt-in for this candidate analysis, so the existing production
+LowerScalar allocation input remains unchanged. This is an opt-in pass
+checkpoint rather than a production placement decision.
 
 ### 5.5 `AllocateHostStorage`
 

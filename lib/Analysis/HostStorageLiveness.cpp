@@ -8,6 +8,7 @@
 #include "mlir/IR/SymbolTable.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallSet.h"
+#include <functional>
 #include "llvm/ADT/STLExtras.h"
 
 using namespace mlir;
@@ -17,7 +18,8 @@ namespace vrc {
 FailureOr<HostStorageInterference> analyzeHostStorageInterference(
     ModuleOp module, ArrayRef<func::FuncOp> functions,
     llvm::function_ref<FailureOr<std::string>(Type)> physicalStorageKey,
-    const llvm::DenseSet<Operation *> &materializedConstants) {
+    const llvm::DenseSet<Operation *> &materializedConstants,
+    bool includeNestedRegions) {
   HostStorageInterference result;
   DenseMap<Operation *, SmallVector<Operation *>> callees;
   llvm::SmallPtrSet<Operation *, 32> functionSet;
@@ -26,6 +28,36 @@ FailureOr<HostStorageInterference> analyzeHostStorageInterference(
   bool shareExportLocals = stage && stage.getValue() == "udon-static-v1";
   for (func::FuncOp function : functions)
     functionSet.insert(function.getOperation());
+
+  for (func::FuncOp function : functions) {
+    std::function<void(Region &, const std::string &)> assignStableIds;
+    assignStableIds = [&](Region &region, const std::string &regionPath) {
+      for (auto [blockIndex, block] : llvm::enumerate(region.getBlocks())) {
+        std::string blockPath =
+            regionPath + ":block:" + std::to_string(blockIndex);
+        for (auto [argumentIndex, argument] :
+             llvm::enumerate(block.getArguments()))
+          result.valueIds.try_emplace(
+              argument,
+              blockPath + ":argument:" + std::to_string(argumentIndex));
+        for (auto [operationIndex, operation] : llvm::enumerate(block)) {
+          std::string operationPath =
+              blockPath + ":operation:" + std::to_string(operationIndex);
+          result.operationIds.try_emplace(&operation, operationPath);
+          for (auto [resultIndex, value] :
+               llvm::enumerate(operation.getResults()))
+            result.valueIds.try_emplace(value, operationPath + ":result:" +
+                                                   std::to_string(resultIndex));
+          for (auto [regionIndex, nested] :
+               llvm::enumerate(operation.getRegions()))
+            assignStableIds(nested, operationPath + ":region:" +
+                                        std::to_string(regionIndex));
+        }
+      }
+    };
+    assignStableIds(function.getBody(),
+                    "function:" + function.getSymName().str() + ":region:0");
+  }
 
   auto addValue = [&](func::FuncOp function, Value value) {
     auto key = physicalStorageKey(value.getType());
@@ -49,16 +81,28 @@ FailureOr<HostStorageInterference> analyzeHostStorageInterference(
     if (!fixedEntryArguments)
       for (BlockArgument argument : function.getArguments())
         addValue(function, argument);
-    for (Block &block : function.getBody()) {
-      if (shareFunctionLocals && &block != &function.getBody().front())
-        for (BlockArgument argument : block.getArguments())
-          addValue(function, argument);
-      if (shareFunctionLocals)
+    if (shareFunctionLocals && includeNestedRegions)
+      function.walk([&](Block *block) {
+        if (block != &function.getBody().front())
+          for (BlockArgument argument : block->getArguments())
+            addValue(function, argument);
+      });
+    if (shareFunctionLocals && includeNestedRegions)
+      function.walk([&](Operation *operation) {
+        if (isColorableResult(*operation))
+          for (Value value : operation->getResults())
+            addValue(function, value);
+      });
+    if (shareFunctionLocals && !includeNestedRegions)
+      for (Block &block : function.getBody()) {
+        if (&block != &function.getBody().front())
+          for (BlockArgument argument : block.getArguments())
+            addValue(function, argument);
         for (Operation &operation : block)
           if (isColorableResult(operation))
             for (Value value : operation.getResults())
               addValue(function, value);
-    }
+      }
     function.walk([&](Operation *operation) {
       FlatSymbolRefAttr calleeAttr;
       if (auto call = dyn_cast<func::CallOp>(operation))
@@ -128,6 +172,7 @@ FailureOr<HostStorageInterference> analyzeHostStorageInterference(
       for (Value value : operation->getResults())
         if (result.ordinals.contains(value))
           live.push_back(value);
+
       llvm::sort(live, [&](Value left, Value right) {
         return result.ordinals.lookup(left) < result.ordinals.lookup(right);
       });
@@ -135,6 +180,70 @@ FailureOr<HostStorageInterference> analyzeHostStorageInterference(
       for (auto [leftIndex, left] : llvm::enumerate(live))
         for (Value right : ArrayRef<Value>(live).drop_front(leftIndex + 1))
           addInterference(left, right);
+
+      SmallVector<SmallVector<Value>> simultaneousGroups;
+      if (auto branch = dyn_cast<cf::BranchOp>(operation)) {
+        SmallVector<Value> simultaneous(live.begin(), live.end());
+        for (BlockArgument argument : branch.getDest()->getArguments())
+          if (result.ordinals.contains(argument))
+            simultaneous.push_back(argument);
+        simultaneousGroups.push_back(std::move(simultaneous));
+      } else if (auto branch = dyn_cast<cf::CondBranchOp>(operation)) {
+        for (Block *destination :
+             {branch.getTrueDest(), branch.getFalseDest()}) {
+          SmallVector<Value> simultaneous(live.begin(), live.end());
+          for (BlockArgument argument : destination->getArguments())
+            if (result.ordinals.contains(argument))
+              simultaneous.push_back(argument);
+          simultaneousGroups.push_back(std::move(simultaneous));
+        }
+      } else if (auto branch = dyn_cast<cf::SwitchOp>(operation)) {
+        for (Block *destination : branch.getCaseDestinations()) {
+          SmallVector<Value> simultaneous(live.begin(), live.end());
+          for (BlockArgument argument : destination->getArguments())
+            if (result.ordinals.contains(argument))
+              simultaneous.push_back(argument);
+          simultaneousGroups.push_back(std::move(simultaneous));
+        }
+        SmallVector<Value> simultaneous(live.begin(), live.end());
+        for (BlockArgument argument :
+             branch.getDefaultDestination()->getArguments())
+          if (result.ordinals.contains(argument))
+            simultaneous.push_back(argument);
+        simultaneousGroups.push_back(std::move(simultaneous));
+      } else {
+        FlatSymbolRefAttr directCalleeAttr;
+        if (auto call = dyn_cast<func::CallOp>(operation))
+          directCalleeAttr = call.getCalleeAttr();
+        else if (auto call = dyn_cast<::vrc::udonhl::CallOp>(operation))
+          directCalleeAttr = call.getCalleeAttr();
+        func::FuncOp callee;
+        if (directCalleeAttr)
+          callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
+              operation, directCalleeAttr);
+        if (callee && functionSet.contains(callee.getOperation())) {
+          SmallVector<Value> simultaneous;
+          for (Value value : live)
+            if (value.getDefiningOp() != operation)
+              simultaneous.push_back(value);
+          for (BlockArgument argument : callee.getArguments())
+            if (result.ordinals.contains(argument))
+              simultaneous.push_back(argument);
+          simultaneousGroups.push_back(std::move(simultaneous));
+        } else {
+          simultaneousGroups.push_back(live);
+        }
+      }
+      for (SmallVector<Value> &simultaneous : simultaneousGroups) {
+        llvm::sort(simultaneous, [&](Value left, Value right) {
+          return result.ordinals.lookup(left) < result.ordinals.lookup(right);
+        });
+        simultaneous.erase(
+            std::unique(simultaneous.begin(), simultaneous.end()),
+            simultaneous.end());
+      }
+      result.simultaneousValueGroups.try_emplace(operation,
+                                                 std::move(simultaneousGroups));
 
       if (auto branch = dyn_cast<cf::BranchOp>(operation)) {
         addParallelCopyInterference(branch.getDestOperands(), branch.getDest());

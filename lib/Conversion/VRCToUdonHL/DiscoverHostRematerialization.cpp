@@ -2,6 +2,7 @@
 #include "VRC/Conversion/Passes.h"
 #include "VRC/Dialect/VRC/VRCDialect.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "llvm/ADT/STLExtras.h"
@@ -179,9 +180,11 @@ struct DiscoverHostRematerializationPass
               std::string instanceId = prefix + ":literal:" + keyId;
               std::string groupId = prefix + ":scratch:" + key.physicalType;
               bool scratchEligible =
-                  llvm::any_of(key.contextFreeRecipes, [](StringRef recipe) {
-                    return recipe.starts_with("rematerialize_");
-                  });
+                  llvm::any_of(key.contextFreeRecipes,
+                               [](StringRef recipe) {
+                                 return recipe.starts_with("rematerialize_");
+                               }) &&
+                  !isa<cf::BranchOp, cf::CondBranchOp, cf::SwitchOp>(operation);
               if (!operandUseIds.insert(siteId).second) {
                 module.emitError("duplicate Host literal operand use id: ")
                     << siteId;

@@ -4,6 +4,42 @@ module attributes {
     {id = 3 : i32}
   ]
 } {
+  func.func @branch_literal() -> i32 {
+    %c13 = arith.constant 13 : i32
+    cf.br ^next(%c13 : i32)
+  ^next(%value: i32):
+    return %value : i32
+  }
+
+  func.func private @external_passthrough(i32) -> i32
+
+  func.func @external_caller() -> i32 {
+    %c7 = arith.constant 7 : i32
+    %result = func.call @external_passthrough(%c7) : (i32) -> i32
+    return %result : i32
+  }
+
+  func.func private @internal_callee(%value: i32) -> i32 {
+    return %value : i32
+  }
+
+  func.func @internal_caller() -> i32 {
+    %c9 = arith.constant 9 : i32
+    %result = func.call @internal_callee(%c9) : (i32) -> i32
+    return %result : i32
+  }
+
+  func.func @nested_direct(%value: i32, %condition: i1) -> i32 {
+    %result = scf.if %condition -> (i32) {
+      %c5 = arith.constant 5 : i32
+      %sum = arith.addi %value, %c5 : i32
+      scf.yield %sum : i32
+    } else {
+      scf.yield %value : i32
+    }
+    return %result : i32
+  }
+
   func.func @zeta() -> (i1, i64) {
     %true = arith.constant true
     %wide = arith.constant 4294967297 : i64
@@ -19,6 +55,16 @@ module attributes {
     %second = arith.addi %first, %c33 : i32
     %result = arith.addi %second, %duplicate : i32
     return %result : i32
+  }
+
+  func.func @scratch_reuse() -> i32 {
+    %c11 = arith.constant 11 : i32
+    %c22 = arith.constant 22 : i32
+    %first = arith.addi %c11, %c22 : i32
+    %c33 = arith.constant 33 : i32
+    %c44 = arith.constant 44 : i32
+    %second = arith.addi %c33, %c44 : i32
+    return %second : i32
   }
 
   func.func @alpha(%condition: i1) -> (i32, f32, index, i2) {

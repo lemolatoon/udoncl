@@ -70,9 +70,17 @@ assert stable_ids == [
     "function:alpha:region:0:block:0:operation:5:result:0",
     "function:alpha:region:0:block:0:operation:6:region:0:block:0:operation:0:result:0",
     "function:alpha:region:0:block:0:operation:6:region:1:block:0:operation:0:result:0",
+    "function:branch_literal:region:0:block:0:operation:0:result:0",
+    "function:external_caller:region:0:block:0:operation:0:result:0",
+    "function:internal_caller:region:0:block:0:operation:0:result:0",
+    "function:nested_direct:region:0:block:0:operation:0:region:0:block:0:operation:0:result:0",
     "function:scratch_groups:region:0:block:0:operation:0:result:0",
     "function:scratch_groups:region:0:block:0:operation:1:result:0",
     "function:scratch_groups:region:0:block:0:operation:4:result:0",
+    "function:scratch_reuse:region:0:block:0:operation:0:result:0",
+    "function:scratch_reuse:region:0:block:0:operation:1:result:0",
+    "function:scratch_reuse:region:0:block:0:operation:3:result:0",
+    "function:scratch_reuse:region:0:block:0:operation:4:result:0",
     "function:zeta:region:0:block:0:operation:0:result:0",
     "function:zeta:region:0:block:0:operation:1:result:0",
 ]
@@ -186,6 +194,11 @@ group_entries = {
 assert list(site_entries) == sorted(site_entries)
 assert list(instance_entries) == sorted(instance_entries)
 assert list(group_entries) == sorted(group_entries)
+branch_site = "function:branch_literal:region:0:block:0:operation:1:operand:0"
+branch_entry = site_entries[branch_site]
+assert "scratch_eligible = false" in branch_entry
+assert "scratch_instance_id" not in branch_entry
+assert "consumer_group_id" not in branch_entry
 for site_id, entry in site_entries.items():
     definition = re.search(r'definition_use_id = "([^"]+)"', entry).group(1)
     assert definition in stable_ids, (site_id, definition)
@@ -247,6 +260,111 @@ shared_minus_one = next(
 )
 assert "inventory_use_count = 3 : i64" in shared_minus_one
 
+
+def attribute_entries(text, name, next_name):
+    start = text.index(f"{name} = [")
+    end = text.index(next_name, start)
+    return re.findall(r"\{([^{}]+)\}", text[start:end])
+
+
+direct_entries = attribute_entries(
+    allocated,
+    "vrc.host_direct_color_allocations",
+    "vrc.host_literal_allocation_version",
+)
+scratch_entries = attribute_entries(
+    allocated,
+    "vrc.host_literal_scratch_allocations",
+    "vrc.host_literal_scratch_instances",
+)
+direct_colors = {
+    re.search(r'value_id = "([^"]+)"', entry).group(1): int(
+        re.search(r"color = (\d+) : i32", entry).group(1)
+    )
+    for entry in direct_entries
+}
+scratch_colors = {
+    re.search(r'instance_id = "([^"]+)"', entry).group(1): int(
+        re.search(r"color = (\d+) : i32", entry).group(1)
+    )
+    for entry in scratch_entries
+}
+assert all('storage_domain = "writable"' in entry for entry in direct_entries)
+assert all('storage_domain = "writable"' in entry for entry in scratch_entries)
+assert all(
+    'allocation = "direct_color_candidate"' in entry for entry in direct_entries
+)
+assert not any(
+    'function:external_passthrough' in entry for entry in direct_entries
+)
+
+
+def scratch_id(function, operation, key):
+    return (
+        f"function:{function}:region:0:block:0:operation:{operation}:"
+        f"literal:SystemInt32:{key}"
+    )
+
+
+def result_id(function, operation):
+    return f"function:{function}:region:0:block:0:operation:{operation}:result:0"
+
+
+first_consumer = {
+    scratch_colors[scratch_id("scratch_groups", 2, "0xB")],
+    scratch_colors[scratch_id("scratch_groups", 2, "0x16")],
+    direct_colors[result_id("scratch_groups", 2)],
+}
+assert len(first_consumer) == 3, first_consumer
+live_through_consumer = {
+    direct_colors[result_id("scratch_groups", 2)],
+    scratch_colors[scratch_id("scratch_groups", 5, "0x21")],
+    direct_colors[result_id("scratch_groups", 5)],
+}
+assert len(live_through_consumer) == 3, live_through_consumer
+
+reuse_first = {
+    scratch_colors[scratch_id("scratch_reuse", 2, "0xB")],
+    scratch_colors[scratch_id("scratch_reuse", 2, "0x16")],
+    direct_colors[result_id("scratch_reuse", 2)],
+}
+reuse_second = {
+    scratch_colors[scratch_id("scratch_reuse", 5, "0x21")],
+    scratch_colors[scratch_id("scratch_reuse", 5, "0x2C")],
+    direct_colors[result_id("scratch_reuse", 5)],
+}
+assert len(reuse_first) == 3
+assert reuse_second == reuse_first, (reuse_first, reuse_second)
+nested_consumer = {
+    direct_colors[
+        "function:nested_direct:region:0:block:0:argument:0"
+    ],
+    scratch_colors[
+        "function:nested_direct:region:0:block:0:operation:0:region:0:"
+        "block:0:operation:1:literal:SystemInt32:0x5"
+    ],
+    direct_colors[
+        "function:nested_direct:region:0:block:0:operation:0:region:0:"
+        "block:0:operation:1:result:0"
+    ],
+}
+assert len(nested_consumer) == 3, nested_consumer
+external_consumer = {
+    scratch_colors[scratch_id("external_caller", 1, "0x7")],
+    direct_colors[result_id("external_caller", 1)],
+}
+assert len(external_consumer) == 2, external_consumer
+internal_parameter = "function:internal_callee:region:0:block:0:argument:0"
+internal_result = result_id("internal_caller", 1)
+internal_scratch = scratch_id("internal_caller", 1, "0x9")
+assert direct_colors[internal_parameter] == direct_colors[internal_result]
+assert scratch_colors[internal_scratch] != direct_colors[internal_parameter]
+assert "vrc.host_writable_allocation_version = 1 : i32" in allocated
+assert 'storage_domain = "writable"' in allocated
+assert 'placement = "resident_shared"' in allocated
+assert any(color == 0 for color in direct_colors.values())
+assert any("color = 0 : i32" in entry for entry in entries)
+
 # Allocation annotates only module metadata and preserves executable IR.
 assert (
     allocated[allocated.index("  func.func") :]
@@ -289,8 +407,26 @@ reject_allocation(first.replace(
     'key_id = "unsupported:i2:0x1"',
 ))
 reject_allocation(first.replace('origin = "backend", ', "", 1))
+reject_allocation(first.replace(
+    "vrc.host_literal_use_site_version = 1 : i32",
+    "vrc.host_literal_use_site_version = 2 : i32",
+))
+reject_allocation(first.replace("operand_index = 0 : i32", "operand_index = 99 : i32", 1))
+reject_allocation(first.replace(
+    'definition_use_id = "', 'definition_use_id = "missing:', 1
+))
+reject_allocation(first.replace(
+    'consumer_id = "function:scratch_groups:region:0:block:0:operation:2"',
+    'consumer_id = "function:missing:region:0:block:0:operation:0"',
+))
+reject_allocation(first.replace(
+    '"function:scratch_groups:region:0:block:0:operation:2:literal:'
+    'SystemInt32:0x16"',
+    '"missing:scratch:instance"',
+    1,
+))
 reject_allocation(
     'module attributes {vrc.host_literal_allocation_version = 1 : i32, '
     'vrc.host_literal_allocations = []} {}'
 )
-print("host_rematerialization_inventory=passed requests=19")
+print("host_rematerialization_inventory=passed requests=26")

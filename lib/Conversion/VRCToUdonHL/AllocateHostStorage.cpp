@@ -1,6 +1,10 @@
 #include "VRC/Conversion/Passes.h"
 #include "VRC/Analysis/HostStorageAllocation.h"
+#include "VRC/Analysis/HostStorageLiveness.h"
+#include "VRC/Conversion/HostLiteral.h"
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "llvm/ADT/DenseMap.h"
@@ -45,6 +49,16 @@ struct LiteralAllocation {
   std::string physicalType;
   bool supported;
   uint64_t useCount = 0;
+  std::optional<HostStorageNodeId> node;
+};
+
+struct ScratchAllocation {
+  DictionaryAttr source;
+  std::string instanceId;
+  std::string consumerId;
+  std::string literalKey;
+  std::string physicalType;
+  SmallVector<std::string> siteIds;
   std::optional<HostStorageNodeId> node;
 };
 
@@ -344,6 +358,333 @@ private:
                     builder.getI32IntegerAttr(1));
     module->setAttr("vrc.host_literal_allocations",
                     builder.getArrayAttr(result));
+    return allocateWritableCandidates(module, builder);
+  }
+
+  LogicalResult allocateWritableCandidates(ModuleOp module, Builder &builder) {
+    auto version =
+        module->getAttrOfType<IntegerAttr>("vrc.host_literal_use_site_version");
+    auto sites = module->getAttrOfType<ArrayAttr>("vrc.host_literal_use_sites");
+    auto instances =
+        module->getAttrOfType<ArrayAttr>("vrc.host_literal_scratch_instances");
+    auto groups =
+        module->getAttrOfType<ArrayAttr>("vrc.host_literal_consumer_groups");
+    if (!version || version.getInt() != 1 || !sites || !instances || !groups)
+      return module.emitError("invalid Host literal use-site schema");
+
+    SmallVector<func::FuncOp> functions;
+    for (func::FuncOp function : module.getOps<func::FuncOp>())
+      if (!function.isExternal())
+        functions.push_back(function);
+    llvm::sort(functions, [](func::FuncOp left, func::FuncOp right) {
+      return left.getSymName() < right.getSymName();
+    });
+    llvm::DenseSet<Operation *> materializedConstants;
+    auto analysis = analyzeHostStorageInterference(
+        module, functions,
+        [](Type type) -> FailureOr<std::string> {
+          StringRef physicalType = hostLiteralPhysicalType(type);
+          if (physicalType == "unsupported")
+            return failure();
+          return physicalType.str();
+        },
+        materializedConstants, true);
+    if (failed(analysis))
+      return failure();
+
+    std::map<std::string, Operation *> operations;
+    for (const auto &[operation, stableId] : analysis->operationIds)
+      if (!operations.emplace(stableId, operation).second)
+        return module.emitError("duplicate Host operation identity");
+
+    HostStorageProblem problem;
+    DenseMap<Value, HostStorageNodeId> directNodes;
+    SmallVector<Value> directValues;
+    for (const auto &[value, ordinal] : analysis->ordinals)
+      directValues.push_back(value);
+    llvm::sort(directValues, [&](Value left, Value right) {
+      return analysis->ordinals.lookup(left) < analysis->ordinals.lookup(right);
+    });
+    for (Value value : directValues) {
+      auto stableId = analysis->valueIds.find(value);
+      auto physicalType = analysis->storageKeys.find(value);
+      if (stableId == analysis->valueIds.end() ||
+          physicalType == analysis->storageKeys.end())
+        return module.emitError("Host direct value lacks allocation identity");
+      auto node = problem.addNode(
+          "direct:" + stableId->second, physicalType->second,
+          analysis->ordinals.lookup(value), HostStorageDomain::Writable,
+          HostStorageConstraint::DirectOnly);
+      if (!node)
+        return module.emitError("duplicate Host direct allocation identity");
+      directNodes.try_emplace(value, *node);
+    }
+    for (Value value : directValues)
+      for (Value conflict : analysis->interference.lookup(value)) {
+        auto found = directNodes.find(conflict);
+        if (found != directNodes.end() &&
+            !problem.addInterference(directNodes.lookup(value), found->second))
+          return module.emitError("invalid Host direct interference");
+      }
+
+    std::set<std::string> knownSiteIds;
+    std::map<std::string, std::string> instanceBySite;
+    std::map<std::string, std::string> groupByInstance;
+    std::map<std::string, std::string> consumerBySite;
+    std::map<std::string, std::string> literalBySite;
+    std::map<std::string, std::string> physicalTypeBySite;
+    for (Attribute attribute : sites) {
+      auto site = dyn_cast<DictionaryAttr>(attribute);
+      auto siteId = site ? site.getAs<StringAttr>("site_id") : StringAttr();
+      auto eligible =
+          site ? site.getAs<BoolAttr>("scratch_eligible") : BoolAttr();
+      auto instance =
+          site ? site.getAs<StringAttr>("scratch_instance_id") : StringAttr();
+      auto group =
+          site ? site.getAs<StringAttr>("consumer_group_id") : StringAttr();
+      auto consumer =
+          site ? site.getAs<StringAttr>("consumer_id") : StringAttr();
+      auto literal =
+          site ? site.getAs<StringAttr>("literal_key") : StringAttr();
+      auto physicalType =
+          site ? site.getAs<StringAttr>("physical_type") : StringAttr();
+      auto definition =
+          site ? site.getAs<StringAttr>("definition_use_id") : StringAttr();
+      auto operandIndex =
+          site ? site.getAs<IntegerAttr>("operand_index") : IntegerAttr();
+      auto logicalType =
+          site ? site.getAs<StringAttr>("logical_type") : StringAttr();
+      auto lifetime = site ? site.getAs<StringAttr>("lifetime") : StringAttr();
+      auto crossesCall =
+          site ? site.getAs<BoolAttr>("crosses_call") : BoolAttr();
+      auto crossesSuspend =
+          site ? site.getAs<BoolAttr>("crosses_suspend") : BoolAttr();
+      auto operation = consumer ? operations.find(consumer.getValue().str())
+                                : operations.end();
+      bool validOperand = operation != operations.end() && operandIndex &&
+                          operandIndex.getInt() >= 0 &&
+                          static_cast<uint64_t>(operandIndex.getInt()) <
+                              operation->second->getNumOperands();
+      arith::ConstantOp constant;
+      HostLiteralKey key;
+      if (validOperand) {
+        Value operand = operation->second->getOperand(operandIndex.getInt());
+        constant = operand.getDefiningOp<arith::ConstantOp>();
+        if (constant)
+          key = getHostLiteralKey(constant.getType(), constant.getValue());
+      }
+      bool expectedEligible =
+          constant &&
+          llvm::any_of(key.contextFreeRecipes,
+                       [](StringRef recipe) {
+                         return recipe.starts_with("rematerialize_");
+                       }) &&
+          !isa<cf::BranchOp, cf::CondBranchOp, cf::SwitchOp>(
+              *operation->second);
+      std::string expectedSiteId;
+      if (consumer && operandIndex)
+        expectedSiteId = consumer.getValue().str() +
+                         ":operand:" + std::to_string(operandIndex.getInt());
+      if (!site || !siteId || siteId.getValue().empty() || !eligible ||
+          !consumer || !definition || !operandIndex || !logicalType ||
+          !validOperand || !constant || siteId.getValue() != expectedSiteId ||
+          definition.getValue() !=
+              analysis->valueIds.lookup(constant.getResult()) ||
+          !literal || literal.getValue().empty() || !physicalType ||
+          literal.getValue() != key.id ||
+          physicalType.getValue() != key.physicalType ||
+          logicalType.getValue() != hostLiteralTypeText(constant.getType()) ||
+          eligible.getValue() != expectedEligible || !lifetime ||
+          lifetime.getValue() != "immediate_consumer" || !crossesCall ||
+          crossesCall.getValue() || !crossesSuspend ||
+          crossesSuspend.getValue() ||
+          !knownSiteIds.insert(siteId.getValue().str()).second ||
+          (eligible.getValue() && (!instance || !group)) ||
+          (!eligible.getValue() && (instance || group)))
+        return module.emitError("invalid Host literal use-site entry");
+      if (eligible.getValue()) {
+        instanceBySite.emplace(siteId.getValue().str(),
+                               instance.getValue().str());
+        consumerBySite.emplace(siteId.getValue().str(),
+                               consumer.getValue().str());
+        literalBySite.emplace(siteId.getValue().str(),
+                              literal.getValue().str());
+        physicalTypeBySite.emplace(siteId.getValue().str(),
+                                   physicalType.getValue().str());
+        auto [found, inserted] = groupByInstance.emplace(
+            instance.getValue().str(), group.getValue().str());
+        if (!inserted && found->second != group.getValue())
+          return module.emitError(
+              "Host scratch instance references multiple consumer groups");
+      }
+    }
+
+    std::map<std::string, ScratchAllocation> scratch;
+    std::set<std::string> coveredSites;
+    uint64_t nextOrdinal = directValues.size();
+    for (Attribute attribute : instances) {
+      auto source = dyn_cast<DictionaryAttr>(attribute);
+      auto instanceId =
+          source ? source.getAs<StringAttr>("instance_id") : StringAttr();
+      auto consumerId =
+          source ? source.getAs<StringAttr>("consumer_id") : StringAttr();
+      auto literalKey =
+          source ? source.getAs<StringAttr>("literal_key") : StringAttr();
+      auto physicalType =
+          source ? source.getAs<StringAttr>("physical_type") : StringAttr();
+      auto sourceSites =
+          source ? source.getAs<ArrayAttr>("site_ids") : ArrayAttr();
+      if (!source || !instanceId || instanceId.getValue().empty() ||
+          !consumerId ||
+          operations.find(consumerId.getValue().str()) == operations.end() ||
+          !literalKey || literalKey.getValue().empty() || !physicalType ||
+          physicalType.getValue().empty() || !sourceSites ||
+          scratch.count(instanceId.getValue().str()))
+        return module.emitError("invalid Host literal scratch instance");
+      std::string expectedInstanceId =
+          consumerId.getValue().str() +
+          ":literal:" + literalKey.getValue().str();
+      if (instanceId.getValue() != expectedInstanceId)
+        return module.emitError("noncanonical Host scratch instance identity");
+      ScratchAllocation allocation{source,
+                                   instanceId.getValue().str(),
+                                   consumerId.getValue().str(),
+                                   literalKey.getValue().str(),
+                                   physicalType.getValue().str(),
+                                   {}};
+      for (Attribute siteAttribute : sourceSites) {
+        auto siteId = dyn_cast<StringAttr>(siteAttribute);
+        if (!siteId ||
+            instanceBySite.find(siteId.getValue().str()) ==
+                instanceBySite.end() ||
+            instanceBySite.at(siteId.getValue().str()) !=
+                allocation.instanceId ||
+            consumerBySite.at(siteId.getValue().str()) !=
+                allocation.consumerId ||
+            literalBySite.at(siteId.getValue().str()) !=
+                allocation.literalKey ||
+            physicalTypeBySite.at(siteId.getValue().str()) !=
+                allocation.physicalType ||
+            !coveredSites.insert(siteId.getValue().str()).second ||
+            llvm::is_contained(allocation.siteIds, siteId.getValue().str()))
+          return module.emitError("invalid Host literal scratch site list");
+        allocation.siteIds.push_back(siteId.getValue().str());
+      }
+      if (allocation.siteIds.empty())
+        return module.emitError("Host literal scratch instance has no sites");
+      allocation.node = problem.addNode("scratch:" + allocation.instanceId,
+                                        allocation.physicalType, nextOrdinal++,
+                                        HostStorageDomain::Writable,
+                                        HostStorageConstraint::DirectOnly);
+      if (!allocation.node)
+        return module.emitError("duplicate Host scratch allocation identity");
+      scratch.emplace(allocation.instanceId, std::move(allocation));
+    }
+    if (scratch.size() != groupByInstance.size() ||
+        coveredSites.size() != instanceBySite.size())
+      return module.emitError("Host literal scratch references are incomplete");
+
+    std::set<std::string> seenGroups;
+    std::set<std::string> allocatedInstances;
+    for (Attribute attribute : groups) {
+      auto group = dyn_cast<DictionaryAttr>(attribute);
+      auto groupId = group ? group.getAs<StringAttr>("group_id") : StringAttr();
+      auto consumerId =
+          group ? group.getAs<StringAttr>("consumer_id") : StringAttr();
+      auto physicalType =
+          group ? group.getAs<StringAttr>("physical_type") : StringAttr();
+      auto members =
+          group ? group.getAs<ArrayAttr>("member_instance_ids") : ArrayAttr();
+      auto operation = consumerId ? operations.find(consumerId.getValue().str())
+                                  : operations.end();
+      if (!group || !groupId || groupId.getValue().empty() || !consumerId ||
+          !physicalType || physicalType.getValue().empty() || !members ||
+          operation == operations.end() ||
+          !seenGroups.insert(groupId.getValue().str()).second)
+        return module.emitError("invalid Host literal consumer group");
+      std::string expectedGroupId = consumerId.getValue().str() +
+                                    ":scratch:" + physicalType.getValue().str();
+      if (groupId.getValue() != expectedGroupId)
+        return module.emitError("noncanonical Host consumer group identity");
+      SmallVector<HostStorageNodeId> scratchMembers;
+      for (Attribute memberAttribute : members) {
+        auto memberId = dyn_cast<StringAttr>(memberAttribute);
+        auto member =
+            memberId ? scratch.find(memberId.getValue().str()) : scratch.end();
+        if (!memberId || member == scratch.end() ||
+            member->second.consumerId != consumerId.getValue() ||
+            member->second.physicalType != physicalType.getValue() ||
+            groupByInstance.find(member->first) == groupByInstance.end() ||
+            groupByInstance.at(member->first) != groupId.getValue() ||
+            !allocatedInstances.insert(member->first).second)
+          return module.emitError("invalid Host literal consumer group member");
+        scratchMembers.push_back(*member->second.node);
+      }
+      if (scratchMembers.empty())
+        return module.emitError("Host literal consumer group is empty");
+      auto directGroups =
+          analysis->simultaneousValueGroups.find(operation->second);
+      if (directGroups == analysis->simultaneousValueGroups.end() ||
+          directGroups->second.empty())
+        return module.emitError("Host literal consumer lacks a liveness phase");
+      for (const SmallVector<Value> &directGroup : directGroups->second) {
+        SmallVector<HostStorageNodeId> simultaneous(scratchMembers.begin(),
+                                                    scratchMembers.end());
+        for (Value value : directGroup)
+          if (analysis->storageKeys.lookup(value) == physicalType.getValue())
+            simultaneous.push_back(directNodes.lookup(value));
+        llvm::sort(simultaneous);
+        simultaneous.erase(
+            std::unique(simultaneous.begin(), simultaneous.end()),
+            simultaneous.end());
+        if (!problem.addSimultaneousGroup(simultaneous))
+          return module.emitError("invalid Host literal simultaneous group");
+      }
+    }
+    if (allocatedInstances.size() != scratch.size())
+      return module.emitError("Host scratch instance has no consumer group");
+
+    HostStorageSolution solution = solveHostStorageProblem(problem);
+    SmallVector<Attribute> directAllocations;
+    for (Value value : directValues) {
+      HostStorageNodeId node = directNodes.lookup(value);
+      NamedAttrList fields;
+      fields.set("value_id",
+                 builder.getStringAttr(analysis->valueIds.lookup(value)));
+      fields.set("physical_type",
+                 builder.getStringAttr(analysis->storageKeys.lookup(value)));
+      fields.set("storage_domain", builder.getStringAttr("writable"));
+      fields.set("allocation", builder.getStringAttr("direct_color_candidate"));
+      fields.set("color", builder.getI32IntegerAttr(solution.getColor(node)));
+      directAllocations.push_back(builder.getDictionaryAttr(fields));
+    }
+    SmallVector<Attribute> scratchAllocations;
+    for (const auto &[instanceId, allocation] : scratch) {
+      NamedAttrList fields(allocation.source);
+      fields.set("storage_domain", builder.getStringAttr("writable"));
+      fields.set("allocation",
+                 builder.getStringAttr("immediate_consumer_candidate"));
+      fields.set("color", builder.getI32IntegerAttr(
+                              solution.getColor(*allocation.node)));
+      scratchAllocations.push_back(builder.getDictionaryAttr(fields));
+    }
+    SmallVector<Attribute> extents;
+    for (const auto &[key, extent] : solution.extents) {
+      if (key.domain != HostStorageDomain::Writable)
+        continue;
+      NamedAttrList fields;
+      fields.set("storage_domain", builder.getStringAttr("writable"));
+      fields.set("physical_type", builder.getStringAttr(key.physicalType));
+      fields.set("extent", builder.getI32IntegerAttr(extent));
+      extents.push_back(builder.getDictionaryAttr(fields));
+    }
+    module->setAttr("vrc.host_writable_allocation_version",
+                    builder.getI32IntegerAttr(1));
+    module->setAttr("vrc.host_direct_color_allocations",
+                    builder.getArrayAttr(directAllocations));
+    module->setAttr("vrc.host_literal_scratch_allocations",
+                    builder.getArrayAttr(scratchAllocations));
+    module->setAttr("vrc.host_writable_extents", builder.getArrayAttr(extents));
     return success();
   }
 };
