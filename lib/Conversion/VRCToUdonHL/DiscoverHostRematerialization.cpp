@@ -1,13 +1,11 @@
+#include "VRC/Conversion/HostLiteral.h"
 #include "VRC/Conversion/Passes.h"
 #include "VRC/Dialect/VRC/VRCDialect.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/StringExtras.h"
-#include "llvm/Support/raw_ostream.h"
 #include <functional>
 #include <limits>
 #include <map>
@@ -25,50 +23,6 @@ struct InventoryEntry {
   std::string stableId;
   DictionaryAttr metadata;
 };
-
-std::string typeText(Type type) {
-  std::string text;
-  llvm::raw_string_ostream stream(text);
-  type.print(stream);
-  stream.flush();
-  return text;
-}
-
-StringRef physicalType(Type type) {
-  if (type.isInteger(1))
-    return "SystemBoolean";
-  if (type.isInteger(8) || type.isInteger(16) || type.isInteger(32) ||
-      type.isIndex())
-    return "SystemInt32";
-  if (type.isInteger(64))
-    return "SystemInt64";
-  if (type.isF32())
-    return "SystemSingle";
-  return "unsupported";
-}
-
-std::string physicalValue(Attribute value, Type type) {
-  APInt bits;
-  if (auto integer = dyn_cast<IntegerAttr>(value)) {
-    bits = integer.getValue();
-    if (type.isInteger(1))
-      bits = bits.zextOrTrunc(1);
-    else if (type.isInteger(8) || type.isInteger(16) || type.isInteger(32) ||
-             type.isIndex())
-      bits = bits.sextOrTrunc(32);
-  } else if (auto floating = dyn_cast<FloatAttr>(value))
-    bits = floating.getValue().bitcastToAPInt();
-  else {
-    std::string text;
-    llvm::raw_string_ostream stream(text);
-    value.print(stream);
-    stream.flush();
-    return "attr:" + text;
-  }
-  llvm::SmallString<32> hexadecimal;
-  bits.toStringUnsigned(hexadecimal, 16);
-  return "0x" + hexadecimal.str().str();
-}
 
 struct DiscoverHostRematerializationPass
     : impl::DiscoverHostRematerializationPassBase<
@@ -88,36 +42,18 @@ struct DiscoverHostRematerializationPass
       return builder.getArrayAttr(values);
     };
     auto ensureKey = [&](Type type, Attribute value) -> std::string {
-      StringRef physical = physicalType(type);
-      std::string encoded = physicalValue(value, type);
-      std::string keyId =
-          physical == "unsupported"
-              ? (physical + ":" + typeText(type) + ":" + encoded).str()
-              : (physical + ":" + encoded).str();
-      if (keys.find(keyId) != keys.end())
-        return keyId;
-
-      SmallVector<StringRef> legal;
-      if (physical != "unsupported")
-        legal.push_back("resident_shared");
-      if (type.isInteger(1))
-        legal.push_back("rematerialize_i1");
-      else if (type.isInteger(8) || type.isInteger(16) || type.isInteger(32) ||
-               type.isIndex())
-        legal.append({"raw_pool", "rematerialize_i32"});
-      else if (type.isF32())
-        legal.append({"raw_pool", "rematerialize_f32_bits"});
-      else if (type.isInteger(64))
-        legal.push_back("rematerialize_i64");
+      HostLiteralKey key = getHostLiteralKey(type, value);
+      if (keys.find(key.id) != keys.end())
+        return key.id;
 
       NamedAttrList fields;
-      fields.set("key_id", builder.getStringAttr(keyId));
-      fields.set("physical_type", builder.getStringAttr(physical));
-      fields.set("value", builder.getStringAttr(encoded));
-      fields.set("context_free_recipes", recipes(legal));
-      fields.set("supported", builder.getBoolAttr(physical != "unsupported"));
-      keys.emplace(keyId, builder.getDictionaryAttr(fields));
-      return keyId;
+      fields.set("key_id", builder.getStringAttr(key.id));
+      fields.set("physical_type", builder.getStringAttr(key.physicalType));
+      fields.set("value", builder.getStringAttr(key.value));
+      fields.set("context_free_recipes", recipes(key.contextFreeRecipes));
+      fields.set("supported", builder.getBoolAttr(key.supported));
+      keys.emplace(key.id, builder.getDictionaryAttr(fields));
+      return key.id;
     };
     auto appendUse = [&](StringRef stableId, StringRef origin, StringRef kind,
                          StringRef keyId, Type logicalType,
@@ -131,7 +67,8 @@ struct DiscoverHostRematerializationPass
       fields.set("literal_key", builder.getStringAttr(keyId));
       fields.set("origin", builder.getStringAttr(origin));
       fields.set("kind", builder.getStringAttr(kind));
-      fields.set("logical_type", builder.getStringAttr(typeText(logicalType)));
+      fields.set("logical_type",
+                 builder.getStringAttr(hostLiteralTypeText(logicalType)));
       fields.append(extra.begin(), extra.end());
       uses.push_back({stableId.str(), builder.getDictionaryAttr(fields)});
       return true;
