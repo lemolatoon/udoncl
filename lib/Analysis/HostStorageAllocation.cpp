@@ -16,6 +16,7 @@ std::optional<HostStorageNodeId> HostStorageProblem::addNode(
       {stableId.str(), physicalType.str(), stableOrdinal, constraint});
   nodeByStableId.emplace(stableId.str(), id);
   interference.emplace_back();
+  simultaneousGroupsByNode.emplace_back();
   return id;
 }
 
@@ -32,10 +33,22 @@ bool HostStorageProblem::addInterference(HostStorageNodeId left,
 
 bool HostStorageProblem::addSimultaneousGroup(
     llvm::ArrayRef<HostStorageNodeId> group) {
-  for (auto [leftIndex, left] : llvm::enumerate(group))
-    for (HostStorageNodeId right : group.drop_front(leftIndex + 1))
-      if (!addInterference(left, right))
-        return false;
+  if (group.empty())
+    return true;
+  llvm::DenseSet<HostStorageNodeId> unique;
+  llvm::StringRef physicalType;
+  unsigned groupId = simultaneousGroupCount;
+  for (HostStorageNodeId node : group) {
+    if (node >= nodes.size() || !unique.insert(node).second)
+      return false;
+    if (physicalType.empty())
+      physicalType = nodes[node].physicalType;
+    else if (physicalType != nodes[node].physicalType)
+      return false;
+  }
+  for (HostStorageNodeId node : group)
+    simultaneousGroupsByNode[node].push_back(groupId);
+  ++simultaneousGroupCount;
   return true;
 }
 
@@ -53,16 +66,23 @@ HostStorageSolution solveHostStorageProblem(const HostStorageProblem &problem) {
   });
 
   llvm::DenseSet<HostStorageNodeId> assigned;
+  std::vector<llvm::DenseSet<unsigned>> simultaneousGroupColors(
+      problem.getSimultaneousGroupCount());
   for (HostStorageNodeId node : order) {
     llvm::DenseSet<unsigned> unavailable;
     for (HostStorageNodeId conflict : problem.getInterference(node))
       if (assigned.contains(conflict))
         unavailable.insert(solution.colors[conflict]);
+    for (unsigned group : problem.getSimultaneousGroups(node))
+      unavailable.insert(simultaneousGroupColors[group].begin(),
+                         simultaneousGroupColors[group].end());
     unsigned color = 0;
     while (unavailable.contains(color))
       ++color;
     solution.colors[node] = color;
     assigned.insert(node);
+    for (unsigned group : problem.getSimultaneousGroups(node))
+      simultaneousGroupColors[group].insert(color);
     unsigned &extent = solution.extents[nodes[node].physicalType];
     extent = std::max(extent, color + 1);
   }

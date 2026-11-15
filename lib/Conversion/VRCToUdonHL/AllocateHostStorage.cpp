@@ -9,6 +9,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include <limits>
 #include <map>
+#include <set>
 #include <string>
 
 using namespace mlir;
@@ -38,11 +39,24 @@ struct SpillIdentity {
   }
 };
 
+struct LiteralAllocation {
+  DictionaryAttr source;
+  std::string keyId;
+  std::string physicalType;
+  bool supported;
+  uint64_t useCount = 0;
+  std::optional<HostStorageNodeId> node;
+};
+
 struct AllocateHostStoragePass
     : impl::AllocateHostStoragePassBase<AllocateHostStoragePass> {
   void runOnOperation() override {
     ModuleOp module = getOperation();
     Builder builder(module.getContext());
+    if (failed(allocateLiterals(module, builder))) {
+      signalPassFailure();
+      return;
+    }
     SmallVector<func::FuncOp> functions;
     for (func::FuncOp function : module.getOps<func::FuncOp>())
       if (function->hasAttr("vrc.async_spill_slots"))
@@ -198,6 +212,137 @@ struct AllocateHostStoragePass
     });
     if (invalid)
       signalPassFailure();
+  }
+
+private:
+  LogicalResult allocateLiterals(ModuleOp module, Builder &builder) {
+    auto keys = module->getAttrOfType<ArrayAttr>("vrc.host_literal_keys");
+    auto uses = module->getAttrOfType<ArrayAttr>("vrc.host_literal_uses");
+    auto version = module->getAttrOfType<IntegerAttr>(
+        "vrc.host_literal_inventory_version");
+    if (!keys && !uses && !version) {
+      if (module->hasAttr("vrc.host_literal_allocation_version") ||
+          module->hasAttr("vrc.host_literal_allocations"))
+        return module.emitError("Host literal allocation lacks its inventory");
+      return success();
+    }
+    if (!keys || !uses || !version || version.getInt() != 1)
+      return module.emitError("invalid Host literal inventory schema");
+
+    std::map<std::string, LiteralAllocation> allocations;
+    constexpr StringLiteral supportedPhysicalTypes[] = {
+        "SystemBoolean", "SystemInt32", "SystemInt64", "SystemSingle"};
+    for (Attribute attribute : keys) {
+      auto source = dyn_cast<DictionaryAttr>(attribute);
+      auto keyId = source ? source.getAs<StringAttr>("key_id") : StringAttr();
+      auto physicalType =
+          source ? source.getAs<StringAttr>("physical_type") : StringAttr();
+      auto supported =
+          source ? source.getAs<BoolAttr>("supported") : BoolAttr();
+      auto value = source ? source.getAs<StringAttr>("value") : StringAttr();
+      auto recipes = source ? source.getAs<ArrayAttr>("context_free_recipes")
+                            : ArrayAttr();
+      bool validRecipes = recipes != nullptr;
+      bool hasResidentRecipe = false;
+      std::set<std::string> recipeNames;
+      if (recipes)
+        for (Attribute recipe : recipes) {
+          auto name = dyn_cast<StringAttr>(recipe);
+          validRecipes &= name && !name.getValue().empty() &&
+                          recipeNames.insert(name.getValue().str()).second;
+          hasResidentRecipe |= name && name.getValue() == "resident_shared";
+        }
+      bool supportedContract = false;
+      if (keyId && physicalType && supported && value && validRecipes &&
+          !value.getValue().empty()) {
+        std::string supportedKey =
+            (physicalType.getValue() + ":" + value.getValue()).str();
+        std::string unsupportedSuffix = (":" + value.getValue()).str();
+        supportedContract =
+            (supported.getValue() &&
+             llvm::is_contained(supportedPhysicalTypes,
+                                physicalType.getValue()) &&
+             keyId.getValue() == supportedKey && hasResidentRecipe) ||
+            (!supported.getValue() &&
+             physicalType.getValue() == "unsupported" &&
+             keyId.getValue().starts_with("unsupported:") &&
+             keyId.getValue().ends_with(unsupportedSuffix) &&
+             recipeNames.empty());
+      }
+      if (!source || !keyId || keyId.getValue().empty() || !physicalType ||
+          physicalType.getValue().empty() || !value ||
+          value.getValue().empty() || !validRecipes || !supportedContract ||
+          allocations.count(keyId.getValue().str()))
+        return module.emitError("invalid Host literal key inventory");
+      allocations.emplace(keyId.getValue().str(),
+                          LiteralAllocation{source, keyId.getValue().str(),
+                                            physicalType.getValue().str(),
+                                            supported.getValue()});
+    }
+    std::set<std::string> useIds;
+    for (Attribute attribute : uses) {
+      auto use = dyn_cast<DictionaryAttr>(attribute);
+      auto key = use ? use.getAs<StringAttr>("literal_key") : StringAttr();
+      auto useId = use ? use.getAs<StringAttr>("use_id") : StringAttr();
+      auto origin = use ? use.getAs<StringAttr>("origin") : StringAttr();
+      auto kind = use ? use.getAs<StringAttr>("kind") : StringAttr();
+      auto logicalType =
+          use ? use.getAs<StringAttr>("logical_type") : StringAttr();
+      auto found =
+          key ? allocations.find(key.getValue().str()) : allocations.end();
+      if (!use || !key || !useId || useId.getValue().empty() || !origin ||
+          origin.getValue().empty() || !kind || kind.getValue().empty() ||
+          !logicalType || logicalType.getValue().empty() ||
+          !useIds.insert(useId.getValue().str()).second ||
+          found == allocations.end())
+        return module.emitError("invalid Host literal use inventory");
+      ++found->second.useCount;
+    }
+
+    HostStorageProblem problem;
+    std::map<std::string, SmallVector<HostStorageNodeId>> nodesByType;
+    uint64_t ordinal = 0;
+    for (auto &[keyId, allocation] : allocations) {
+      if (!allocation.useCount)
+        return module.emitError(
+            "Host literal inventory contains an orphan key");
+      if (!allocation.supported)
+        continue;
+      allocation.node =
+          problem.addNode(keyId, allocation.physicalType, ordinal++,
+                          HostStorageConstraint::Fixed);
+      if (!allocation.node)
+        return module.emitError("invalid Host literal allocation identity");
+      nodesByType[allocation.physicalType].push_back(*allocation.node);
+    }
+    for (const auto &[physicalType, nodes] : nodesByType)
+      if (!problem.addSimultaneousGroup(nodes))
+        return module.emitError("invalid Host literal resident group");
+    HostStorageSolution solution = solveHostStorageProblem(problem);
+
+    SmallVector<Attribute> result;
+    for (const auto &[keyId, allocation] : allocations) {
+      if (!allocation.supported)
+        continue;
+      NamedAttrList fields(allocation.source);
+      fields.set("inventory_use_count",
+                 builder.getI64IntegerAttr(allocation.useCount));
+      fields.set("placement", builder.getStringAttr("resident_shared"));
+      fields.set("reason",
+                 builder.getStringAttr("compatibility_resident_baseline"));
+      fields.set("storage_key", builder.getStringAttr(allocation.physicalType));
+      fields.set("simultaneous_group",
+                 builder.getStringAttr("resident:" + allocation.physicalType));
+      if (allocation.node)
+        fields.set("color", builder.getI32IntegerAttr(
+                                solution.getColor(*allocation.node)));
+      result.push_back(builder.getDictionaryAttr(fields));
+    }
+    module->setAttr("vrc.host_literal_allocation_version",
+                    builder.getI32IntegerAttr(1));
+    module->setAttr("vrc.host_literal_allocations",
+                    builder.getArrayAttr(result));
+    return success();
   }
 };
 

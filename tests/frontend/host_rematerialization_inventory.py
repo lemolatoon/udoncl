@@ -14,6 +14,12 @@ double_command = [
     source,
 ]
 baseline_command = [optimizer, source]
+allocation_command = [
+    optimizer,
+    "--vrc-discover-host-rematerialization",
+    "--vrc-allocate-host-storage",
+    source,
+]
 
 
 def run():
@@ -24,12 +30,28 @@ def run():
 
 first = run()
 second = run()
+allocated = subprocess.run(
+    allocation_command, text=True, capture_output=True, check=True
+).stdout
+allocated_twice = subprocess.run(
+    [
+        optimizer,
+        "--vrc-discover-host-rematerialization",
+        "--vrc-allocate-host-storage",
+        "--vrc-allocate-host-storage",
+        source,
+    ],
+    text=True,
+    capture_output=True,
+    check=True,
+).stdout
 assert first == second
 double = subprocess.run(double_command, text=True, capture_output=True, check=True).stdout
 baseline = subprocess.run(
     baseline_command, text=True, capture_output=True, check=True
 ).stdout
 assert first == double
+assert allocated == allocated_twice
 
 stable_ids = re.findall(r'use_id = "([^"]+)"', first)
 assert stable_ids == sorted(stable_ids), stable_ids
@@ -77,6 +99,36 @@ assert '"rematerialize_f32_bits"' in first
 assert '"rematerialize_i1"' in first
 assert '"rematerialize_i64"' in first
 
+allocation_start = allocated.index("vrc.host_literal_allocations = [")
+allocation_end = allocated.index("vrc.host_literal_inventory_version", allocation_start)
+allocation_text = allocated[allocation_start:allocation_end]
+expected_supported = first.count("supported = true")
+assert allocation_text.count(
+    'reason = "compatibility_resident_baseline"'
+) == expected_supported
+assert "unsupported:i2:0x1" not in allocation_text
+entries = re.findall(r"\{([^{}]+)\}", allocation_text)
+colors_by_type = {}
+for entry in entries:
+    physical_type = re.search(r'physical_type = "([^"]+)"', entry)
+    color = re.search(r"color = (\d+) : i32", entry)
+    if physical_type and color:
+        colors_by_type.setdefault(physical_type.group(1), []).append(
+            int(color.group(1))
+        )
+for colors in colors_by_type.values():
+    assert sorted(colors) == list(range(len(colors))), colors
+shared_minus_one = next(
+    entry for entry in entries if 'key_id = "SystemInt32:0xFFFFFFFF"' in entry
+)
+assert "inventory_use_count = 3 : i64" in shared_minus_one
+
+# Allocation annotates only module metadata and preserves executable IR.
+assert (
+    allocated[allocated.index("  func.func") :]
+    == baseline[baseline.index("  func.func") :]
+)
+
 # Discovery annotates the module but does not rewrite executable operations.
 assert first[first.index("  func.func") :] == baseline[baseline.index("  func.func") :]
 
@@ -88,4 +140,33 @@ invalid = subprocess.run(
     capture_output=True,
 )
 assert invalid.returncode != 0
+
+
+def reject_allocation(text):
+    rejected = subprocess.run(
+        [optimizer, "--vrc-allocate-host-storage", "-"],
+        input=text,
+        text=True,
+        capture_output=True,
+    )
+    assert rejected.returncode != 0
+
+
+reject_allocation(first.replace(
+    "vrc.host_literal_inventory_version = 1 : i32",
+    "vrc.host_literal_inventory_version = 2 : i32",
+))
+reject_allocation(first.replace("supported = true", "supported = false", 1))
+reject_allocation(first.replace('physical_type = "SystemBoolean", ', "", 1))
+reject_allocation(first.replace('value = "0x1"', 'value = "0x2"', 1))
+reject_allocation(first.replace(
+    'context_free_recipes = [], key_id = "unsupported:i2:0x1"',
+    'context_free_recipes = ["arbitrary"], '
+    'key_id = "unsupported:i2:0x1"',
+))
+reject_allocation(first.replace('origin = "backend", ', "", 1))
+reject_allocation(
+    'module attributes {vrc.host_literal_allocation_version = 1 : i32, '
+    'vrc.host_literal_allocations = []} {}'
+)
 print("host_rematerialization_inventory=passed requests=16")

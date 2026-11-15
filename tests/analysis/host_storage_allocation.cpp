@@ -48,5 +48,30 @@ int main() {
   if (typed.addNode("integer", "SystemInt32", 2) ||
       typed.addInterference(*integer, 99))
     return 7;
+
+  HostStorageProblem overlapping;
+  auto a = overlapping.addNode("a", "SystemInt32", 0);
+  auto b = overlapping.addNode("b", "SystemInt32", 1);
+  auto c = overlapping.addNode("c", "SystemInt32", 2);
+  auto d = overlapping.addNode("d", "SystemInt32", 3);
+  auto f = overlapping.addNode("f", "SystemSingle", 4);
+  if (!a || !b || !c || !d || !f ||
+      !overlapping.addSimultaneousGroup({*a, *b}) ||
+      !overlapping.addSimultaneousGroup({*b, *c}) ||
+      !overlapping.addInterference(*c, *d) ||
+      overlapping.addSimultaneousGroup({*a, *a}) ||
+      overlapping.addSimultaneousGroup({*a, *f}))
+    return 8;
+  if (!overlapping.getInterference(*a).empty() ||
+      overlapping.getSimultaneousGroupCount() != 2 ||
+      overlapping.getSimultaneousGroups(*b).size() != 2)
+    return 9;
+  HostStorageSolution overlappingSolution =
+      solveHostStorageProblem(overlapping);
+  if (overlappingSolution.getColor(*a) != 0 ||
+      overlappingSolution.getColor(*b) != 1 ||
+      overlappingSolution.getColor(*c) != 0 ||
+      overlappingSolution.getColor(*d) != 1)
+    return 10;
   return 0;
 }

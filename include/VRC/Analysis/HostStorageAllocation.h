@@ -37,11 +37,18 @@ public:
   getInterference(HostStorageNodeId node) const {
     return interference[node];
   }
+  const std::vector<unsigned> &
+  getSimultaneousGroups(HostStorageNodeId node) const {
+    return simultaneousGroupsByNode[node];
+  }
+  unsigned getSimultaneousGroupCount() const { return simultaneousGroupCount; }
 
 private:
   std::vector<HostStorageNode> nodes;
   std::map<std::string, HostStorageNodeId> nodeByStableId;
   std::vector<llvm::DenseSet<HostStorageNodeId>> interference;
+  std::vector<std::vector<unsigned>> simultaneousGroupsByNode;
+  unsigned simultaneousGroupCount = 0;
 };
 
 struct HostStorageSolution {

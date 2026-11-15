@@ -46,10 +46,17 @@ Current implementation checkpoint (2026-11-15):
   storage report. Placement is intentionally still `resident_shared`; the
   report is aggregated by origin/kind/key and is not yet a use-site
   interference model;
-- discovery is not yet in the production compiler pipeline, and
-  `AllocateHostStorage` still colors only legacy async persistent spill
-  indices. `MaterializeHostStorage` and `VerifyHostStorageCapacity` have not
-  yet been extracted from final scalar lowering;
+- `AllocateHostStorage` now consumes a discovered literal inventory and emits
+  a deterministic, type-separated `resident_shared` compatibility baseline.
+  Resident keys use symbolic simultaneous groups rather than quadratic edge
+  metadata. This is not yet the final pressure-selected placement: discovery
+  still lacks literals created only inside final lowering, and the legacy
+  constant-pool/rematerialization probes still run later;
+- discovery is not yet in the production compiler pipeline. Beyond the
+  compatibility literal baseline, `AllocateHostStorage` still colors only
+  legacy async persistent spill indices. `MaterializeHostStorage` and
+  `VerifyHostStorageCapacity` have not yet been extracted from final scalar
+  lowering;
 - reusable `HostStorageLiveness` now lives in a common analysis library. A
   feature-neutral `HostStorageProblem`/`HostStorageSolution` graph owns stable
   physical-type coloring, interference edges, and simultaneous groups; legacy
