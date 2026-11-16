@@ -686,39 +686,6 @@ assert exhausted.returncode != 0, (exhausted.stdout, exhausted.stderr)
 assert "only 2 are safely selectable" in exhausted.stderr
 assert "failed to prepare Host storage selection attempt" in exhausted.stderr
 
-spill_input = r'''module attributes {vrc.host_stage = "udonhl"} {
-  func.func @reuse(%a: i32, %b: i32, %c: i32) attributes {
-    vrc.export_id = 72 : i32,
-    vrc.async_spill_slots = [
-      {value_id = 10 : i32, slot = 0 : i32, storage_key = "SystemInt32",
-       placement = "typed_spill_array", interferes_with = array<i32>},
-      {value_id = 2 : i32, slot = 1 : i32, storage_key = "SystemInt32",
-       placement = "typed_spill_array", interferes_with = array<i32: 10>},
-      {value_id = 7 : i32, slot = 2 : i32, storage_key = "SystemInt32",
-       placement = "typed_spill_array", interferes_with = array<i32>}
-    ]
-  } {
-    udonhl.spill_store %a[0] {storage_key = "SystemInt32",
-      vrc.async_frame_store} : i32
-    udonhl.spill_store %b[1] {storage_key = "SystemInt32",
-      vrc.async_frame_store} : i32
-    udonhl.spill_store %c[2] {storage_key = "SystemInt32",
-      vrc.async_frame_store} : i32
-    return
-  }
-}'''
-spill_fitted = fit_capacity(spill_input)
-assert spill_fitted.returncode == 0, (
-    spill_fitted.stdout,
-    spill_fitted.stderr,
-)
-assert spill_fitted.stdout.count("spill_store %arg0[0]") == 1
-assert spill_fitted.stdout.count("spill_store %arg1[1]") == 1
-assert spill_fitted.stdout.count("spill_store %arg2[2]") == 1
-assert spill_fitted.stdout.count("slot = 0 : i32") == 1
-assert spill_fitted.stdout.count("slot = 1 : i32") == 1
-assert spill_fitted.stdout.count("slot = 2 : i32") == 1
-
 missing_discovery = run(["--vrc-fit-host-storage-capacity"], without_request)
 assert missing_discovery.returncode != 0
 assert "requires pristine post-discovery IR" in missing_discovery.stderr

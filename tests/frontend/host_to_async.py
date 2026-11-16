@@ -466,6 +466,28 @@ for fragment in [
         materialized_persistent.stdout,
     )
 
+final_persistent = subprocess.run(
+    [optimizer, '--vrc-lower-udonhl-to-udonasm', '--verify-each'],
+    input=materialized_persistent.stdout,
+    text=True,
+    capture_output=True,
+)
+assert final_persistent.returncode == 0, (
+    final_persistent.stdout,
+    final_persistent.stderr,
+)
+for obsolete_spill_implementation in [
+    'udonhl.spill_store',
+    'udonhl.spill_load',
+    'typed_spill_arrays',
+    '__vrc_spill_bank_',
+    '__vrc_spill_index',
+]:
+    assert obsolete_spill_implementation not in final_persistent.stdout, (
+        obsolete_spill_implementation,
+        final_persistent.stdout,
+    )
+
 checkpoint_operations = []
 previous = '%arg0'
 for index in range(320):

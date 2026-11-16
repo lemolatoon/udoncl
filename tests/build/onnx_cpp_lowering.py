@@ -184,6 +184,30 @@ assert "udoncl.onnx_operator_counts" in host.stdout
 assert "logical_bytes" in host.stdout
 assert "capacity_bytes" in host.stdout
 assert "udoncl.mutable_handle_capacity" in host.stdout
+assert host.stdout.count("vrc.buffer_view_layout") == 6
+metadata_global = next(
+    line
+    for line in host.stdout.splitlines()
+    if 'sym_name = "__udon_onnx_input_metadata"' in line
+)
+assert "vrc.buffer_view_layout" in metadata_global
+assert "count = 0 : i32" in metadata_global
+binding_global = next(
+    line
+    for line in host.stdout.splitlines()
+    if 'sym_name = "__udon_onnx_binding_inputs"' in line
+)
+assert "vrc.buffer_view_layout" in binding_global
+assert "schema_version = 1 : i32" in binding_global
+assert "count = 2 : i32" in binding_global
+assert "stride_bytes = 88 : i32" in binding_global
+assert "offsets = array<i32: 0>" in binding_global
+output_binding_global = next(
+    line
+    for line in host.stdout.splitlines()
+    if 'sym_name = "__udon_onnx_binding_outputs"' in line
+)
+assert "count = 1 : i32" in output_binding_global
 
 sequence_state_source = source.with_name("onnx_sequence_state.mlir")
 sequence_state = subprocess.run(

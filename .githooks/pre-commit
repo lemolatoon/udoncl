@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+root=$(git rev-parse --show-toplevel)
+python_path=$(git config --local --get udoncl.validationPython)
+exec "$python_path" "$root/scripts/precheck_hooks.py" pre-commit

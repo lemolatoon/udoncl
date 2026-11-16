@@ -808,6 +808,11 @@ add_test(NAME tinyllama-tokenizer-oracle
 add_test(NAME build-parallelism
   COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/build/parallel.py"
 )
+add_test(NAME commit-validation-service
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/build/precheck_service.py"
+    "${PROJECT_SOURCE_DIR}"
+)
 add_test(NAME cmake-package-consumer
   COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/build/cmake_package.py"
     --source "${PROJECT_SOURCE_DIR}/examples/hello-kernel"

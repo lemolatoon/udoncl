@@ -368,11 +368,13 @@ recognize MNIST, TinyLlama, tensor names, layer counts, or model shapes.
   priority, alternatives, and colors. `LowerScalar.cpp` only consumes the
   resulting ordinary direct plan.
 
-  Stage 5 hardening is complete. The now-inactive `TypedSpill` solver/index
-  remapping has been deleted from `AllocateHostStorage`; a focused
-  model-independent test covers that removal. The next cleanup commit deletes
-  the inactive typed spill bank/index-cache/constructor/Get/Set path from
-  `LowerScalar.cpp` and its obsolete report fields. The temporary spill
+  Stage 5 hardening and cleanup are complete. The inactive `TypedSpill`
+  solver/index remapping has been deleted from `AllocateHostStorage`, and the
+  typed spill bank/index-cache/constructor/Get/Set path has been deleted from
+  `LowerScalar.cpp`. Storage-report schema version 3 omits all of those legacy
+  fields. Final scalar lowering rejects a residual spill alias because such an
+  alias proves that the required pre-allocation SSA normalization did not run.
+  Focused model-independent tests cover both removal and rejection. The temporary spill
   operations, compatibility indices, and live-slot metadata produced by
   `PrepareUdonAsyncRuntime.cpp` remain until the async preparation contract is
   redesigned: discovery and SSA normalization still consume them before the

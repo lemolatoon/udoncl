@@ -4,6 +4,7 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/SymbolTable.h"
 
 using namespace mlir;
 
@@ -114,18 +115,53 @@ struct AssessStaticUnityResourceLoweringPass
       signalPassFailure();
       return;
     }
-    bool dispatchReady =
-        dispatchCount == 0 || (kernelUnresolved.getInt() == 0 &&
-                               materializedUnresolvedDispatches.getInt() == 0 &&
-                               materializedUnresolvedOperands.getInt() == 0 &&
-                               unresolvedDispatchOperands == 0);
-
     int32_t transferCalls = 0;
     int32_t dynamicResolveCount = 0;
+    int32_t typedAllocationCalls = 0;
+    int32_t typedReleaseCalls = 0;
+    int32_t typedDispatchCalls = 0;
+    int32_t typedUploadCalls = 0;
+    int32_t typedReadbackCalls = 0;
+    int32_t typedCopyCalls = 0;
+    int32_t unresolvedTypedCallOperands = 0;
     module.walk([&](func::CallOp call) {
       transferCalls += transferCall(call);
       dynamicResolveCount += call.getCallee() == "udonclResolvePhysicalBuffer";
+      auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
+          call, call.getCalleeAttr());
+      auto intrinsic = callee
+                           ? callee->getAttrOfType<StringAttr>("vrc.intrinsic")
+                           : StringAttr();
+      if (!intrinsic)
+        return;
+      StringRef name = intrinsic.getValue();
+      if (name == "buffer_alloc") {
+        ++typedAllocationCalls;
+      } else if (name == "buffer_release") {
+        ++typedReleaseCalls;
+        unresolvedTypedCallOperands +=
+            call.getOperands().empty() || !assignedOrStatic(call.getOperand(0));
+      } else if (name == "buffer_upload" || name == "buffer_readback") {
+        name == "buffer_upload" ? ++typedUploadCalls : ++typedReadbackCalls;
+        unresolvedTypedCallOperands +=
+            call.getOperands().empty() || !assignedOrStatic(call.getOperand(0));
+      } else if (name == "buffer_copy") {
+        ++typedCopyCalls;
+        unresolvedTypedCallOperands += call.getOperands().size() < 2;
+        if (call.getOperands().size() >= 2) {
+          unresolvedTypedCallOperands += !assignedOrStatic(call.getOperand(0));
+          unresolvedTypedCallOperands += !assignedOrStatic(call.getOperand(1));
+        }
+      } else if (name == "dispatch") {
+        ++typedDispatchCalls;
+      }
     });
+    bool dispatchReady = typedDispatchCalls == 0 &&
+                         (dispatchCount == 0 ||
+                          (kernelUnresolved.getInt() == 0 &&
+                           materializedUnresolvedDispatches.getInt() == 0 &&
+                           materializedUnresolvedOperands.getInt() == 0 &&
+                           unresolvedDispatchOperands == 0));
     auto transfers = module->getAttrOfType<DictionaryAttr>(transferAttribute);
     auto transferCandidates = integer(transfers, "candidate_count");
     auto transferResolved = integer(transfers, "resolved_count");
@@ -163,13 +199,20 @@ struct AssessStaticUnityResourceLoweringPass
       unresolvedTypedTransferOperands +=
           !assignedOrStatic(operation.getDestination());
     });
-    bool transferReady =
-        transferCalls == 0 && unresolvedTypedTransferOperands == 0;
+    uploadCount += typedUploadCalls;
+    readbackCount += typedReadbackCalls;
+    copyCount += typedCopyCalls;
+    unresolvedTypedTransferOperands += unresolvedTypedCallOperands;
+    bool transferReady = transferCalls == 0 && typedUploadCalls == 0 &&
+                         typedReadbackCalls == 0 && typedCopyCalls == 0 &&
+                         unresolvedTypedTransferOperands == 0;
 
     int32_t dynamicAllocationCount = 0;
     int32_t dynamicReleaseCount = 0;
     module.walk([&](::vrc::vrc::BufferAllocOp) { ++dynamicAllocationCount; });
     module.walk([&](::vrc::vrc::BufferReleaseOp) { ++dynamicReleaseCount; });
+    dynamicAllocationCount += typedAllocationCalls;
+    dynamicReleaseCount += typedReleaseCalls;
 
     bool resourceReady =
         layoutReady.getValue() && dispatchReady && transferReady;

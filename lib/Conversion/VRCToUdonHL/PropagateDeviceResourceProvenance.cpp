@@ -1,5 +1,6 @@
 #include "VRC/Conversion/Passes.h"
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
+#include "udoncl/udon_abi_layout.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -22,6 +23,7 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <memory>
 #include <set>
 #include <tuple>
 
@@ -49,6 +51,7 @@ constexpr StringLiteral functionResultAttribute =
     "vrc.static_device_function_result_provenance";
 constexpr StringLiteral resourceOperandContractAttribute =
     "vrc.device_resource_operands";
+constexpr StringLiteral bufferViewLayoutAttribute = "vrc.buffer_view_layout";
 
 struct Fact {
   bool initialized = false;
@@ -109,6 +112,89 @@ struct ObjectRef {
   }
 };
 
+struct BufferViewLayout {
+  uint32_t count = 0;
+  uint32_t stride = 0;
+  SmallVector<int32_t> memberOffsets;
+};
+
+template <typename Key, typename Value> class CopyOnWriteMap {
+  using Storage = std::map<Key, Value>;
+  std::shared_ptr<Storage> storage = std::make_shared<Storage>();
+
+  void ensureUnique() {
+    if (!storage.unique())
+      storage = std::make_shared<Storage>(*storage);
+  }
+
+public:
+  using const_iterator = typename Storage::const_iterator;
+
+  bool empty() const { return storage->empty(); }
+  size_t size() const { return storage->size(); }
+  size_t count(const Key &key) const { return storage->count(key); }
+  const_iterator find(const Key &key) const { return storage->find(key); }
+  const_iterator find(const Key &key) { return storage->find(key); }
+  const_iterator begin() const { return storage->begin(); }
+  const_iterator end() const { return storage->end(); }
+  const_iterator begin() { return storage->begin(); }
+  const_iterator end() { return storage->end(); }
+  const Value &at(const Key &key) const { return storage->at(key); }
+  Value lookup(const Key &key) const {
+    auto found = storage->find(key);
+    return found == storage->end() ? Value() : found->second;
+  }
+
+  Value &operator[](const Key &key) {
+    ensureUnique();
+    return (*storage)[key];
+  }
+
+  template <typename... Args> auto try_emplace(const Key &key, Args &&...args) {
+    ensureUnique();
+    return storage->try_emplace(key, std::forward<Args>(args)...);
+  }
+
+  size_t erase(const Key &key) {
+    ensureUnique();
+    return storage->erase(key);
+  }
+
+  template <typename Predicate> void eraseIf(Predicate predicate) {
+    if (llvm::none_of(*storage, [&](const auto &entry) {
+          return predicate(entry.first, entry.second);
+        }))
+      return;
+    ensureUnique();
+    for (auto iterator = storage->begin(); iterator != storage->end();)
+      if (predicate(iterator->first, iterator->second))
+        iterator = storage->erase(iterator);
+      else
+        ++iterator;
+  }
+
+  void clear() {
+    if (storage->empty())
+      return;
+    storage = std::make_shared<Storage>();
+  }
+
+  Storage &mutableStorage() {
+    ensureUnique();
+    return *storage;
+  }
+
+  friend bool operator==(const CopyOnWriteMap &left,
+                         const CopyOnWriteMap &right) {
+    return left.storage == right.storage || *left.storage == *right.storage;
+  }
+
+  friend bool operator!=(const CopyOnWriteMap &left,
+                         const CopyOnWriteMap &right) {
+    return !(left == right);
+  }
+};
+
 struct ObjectRefSet {
   bool unknown = false;
   SmallVector<ObjectRef> refs;
@@ -120,7 +206,7 @@ struct ObjectRefSet {
   }
 };
 
-using ResourceCellMap = std::map<ObjectRef, CellState>;
+using ResourceCellMap = CopyOnWriteMap<ObjectRef, CellState>;
 
 enum class HandleFieldKind : uint8_t { Slot, Generation };
 
@@ -183,7 +269,7 @@ std::optional<ObjectRef> exactObject(const ObjectRefSet &objects) {
   return objects.refs.front();
 }
 
-using HandleMap = std::map<ObjectRef, Fact>;
+using HandleMap = CopyOnWriteMap<ObjectRef, Fact>;
 
 struct ViewState {
   bool hasPath = false;
@@ -205,7 +291,7 @@ bool operator==(const ViewState &left, const ViewState &right) {
          left.resource == right.resource;
 }
 
-using ViewMap = std::map<ObjectRef, ViewState>;
+using ViewMap = CopyOnWriteMap<ObjectRef, ViewState>;
 
 ViewState joinViewStates(ViewState left, const ViewState &right) {
   if (!left.hasPath)
@@ -244,7 +330,7 @@ struct PointerCellState {
   ObjectRefSet objects;
 };
 
-using PointerCellMap = std::map<ObjectRef, PointerCellState>;
+using PointerCellMap = CopyOnWriteMap<ObjectRef, PointerCellState>;
 
 using StatusExclusions = std::set<int64_t>;
 using StatusConstraintMap = llvm::DenseMap<Value, StatusExclusions>;
@@ -883,6 +969,7 @@ struct PropagateDeviceResourceProvenancePass
   PointerCellMap globalPointerFacts;
   PointerCellMap globalPointerWrites;
   llvm::DenseMap<ObjectId, uint32_t> objectSizes;
+  llvm::DenseMap<ObjectId, BufferViewLayout> restrictedBufferViewLayouts;
   std::map<std::tuple<std::string, std::string, Operation *>, ObjectId>
       localHandleObjects;
   ObjectId nextObjectId = 0;
@@ -915,12 +1002,9 @@ struct PropagateDeviceResourceProvenancePass
   static void
   eraseLocalObjectEntries(Map &map,
                           const llvm::DenseSet<ObjectId> &localObjects) {
-    for (auto iterator = map.begin(); iterator != map.end();) {
-      if (localObjects.contains(iterator->first.base))
-        iterator = map.erase(iterator);
-      else
-        ++iterator;
-    }
+    map.eraseIf([&](ObjectRef object, const auto &) {
+      return localObjects.contains(object.base);
+    });
   }
 
   static void
@@ -1057,8 +1141,22 @@ struct PropagateDeviceResourceProvenancePass
 
   bool canHoldView(const ObjectRef &object) const {
     auto found = objectSizes.find(object.base);
-    return found != objectSizes.end() && object.offset >= 0 &&
-           static_cast<uint64_t>(object.offset) + 20 <= found->second;
+    if (found == objectSizes.end() || object.offset < 0 ||
+        static_cast<uint64_t>(object.offset) +
+                UDONCL_UDON_ABI_BUFFER_VIEW_BYTES >
+            found->second)
+      return false;
+    auto restricted = restrictedBufferViewLayouts.find(object.base);
+    if (restricted == restrictedBufferViewLayouts.end())
+      return true;
+    const BufferViewLayout &layout = restricted->second;
+    for (int32_t memberOffset : layout.memberOffsets) {
+      int64_t delta = static_cast<int64_t>(object.offset) - memberOffset;
+      if (delta >= 0 && layout.stride != 0 && delta % layout.stride == 0 &&
+          static_cast<uint64_t>(delta / layout.stride) < layout.count)
+        return true;
+    }
+    return false;
   }
 
   bool canHoldHandle(const ObjectRef &object) const {
@@ -1150,10 +1248,9 @@ struct PropagateDeviceResourceProvenancePass
     filterOrigins(persistent.slotOrigins);
     filterOrigins(persistent.generationOrigins);
     auto write = globalViewWrites.find(view);
-    if (write == globalViewWrites.end())
-      globalViewWrites.emplace(view, std::move(persistent));
-    else
-      write->second = joinViewStates(std::move(write->second), persistent);
+    if (write != globalViewWrites.end())
+      persistent = joinViewStates(write->second, persistent);
+    globalViewWrites[view] = std::move(persistent);
   }
 
   bool recordDirectViewField(const ObjectRef &field, Type storedType,
@@ -1210,7 +1307,7 @@ struct PropagateDeviceResourceProvenancePass
     SmallVector<std::pair<ObjectRef, ViewState>> copied;
     for (const auto &[view, state] : views) {
       int64_t viewBegin = view.offset;
-      int64_t viewEnd = viewBegin + 20;
+      int64_t viewEnd = viewBegin + UDONCL_UDON_ABI_BUFFER_VIEW_BYTES;
       if (view.base != exactSource->base || viewBegin < sourceBegin ||
           viewEnd > sourceEnd)
         continue;
@@ -1223,15 +1320,12 @@ struct PropagateDeviceResourceProvenancePass
       if (canHoldView(copiedView))
         copied.push_back({copiedView, state});
     }
-    for (auto iterator = views.begin(); iterator != views.end();) {
-      int64_t viewBegin = iterator->first.offset;
-      int64_t viewEnd = viewBegin + 20;
-      if (iterator->first.base == exactDestination->base &&
-          viewBegin < destinationEnd && destinationBegin < viewEnd)
-        iterator = views.erase(iterator);
-      else
-        ++iterator;
-    }
+    views.eraseIf([&](ObjectRef view, const ViewState &) {
+      int64_t viewBegin = view.offset;
+      int64_t viewEnd = viewBegin + UDONCL_UDON_ABI_BUFFER_VIEW_BYTES;
+      return view.base == exactDestination->base &&
+             viewBegin < destinationEnd && destinationBegin < viewEnd;
+    });
     for (auto &[view, state] : copied) {
       views[view] = std::move(state);
       recordGlobalViewWrite(view, views[view]);
@@ -1269,12 +1363,14 @@ struct PropagateDeviceResourceProvenancePass
   void updateHandle(ObjectRef object, const Fact &incoming, HandleMap &handles,
                     SmallVectorImpl<Block *> &worklist,
                     llvm::DenseSet<Block *> &queued,
-                    const llvm::DenseSet<Block *> &reached) {
-    Fact joined = joinFacts(handles[object], incoming);
-    if (handles[object] == joined)
+                    std::map<ObjectRef, llvm::DenseSet<Block *>> &readers) {
+    auto current = handles.find(object);
+    Fact previous = current == handles.end() ? Fact() : current->second;
+    Fact joined = joinFacts(previous, incoming);
+    if (previous == joined)
       return;
     handles[object] = joined;
-    for (Block *block : reached)
+    for (Block *block : readers[object])
       if (queued.insert(block).second)
         worklist.push_back(block);
   }
@@ -1451,7 +1547,8 @@ struct PropagateDeviceResourceProvenancePass
       if (isSingletonCell(allocation))
         eligibleCells.insert(allocation.getResult());
       auto bytes = constantAllocationBytes(allocation);
-      if (bytes && (*bytes == 4 || *bytes == 8 || *bytes >= 20)) {
+      if (bytes && (*bytes == 4 || *bytes == 8 ||
+                    *bytes >= UDONCL_UDON_ABI_BUFFER_VIEW_BYTES)) {
         ObjectId object = localObject(invocation, allocation, *bytes);
         localObjects.insert(object);
         objectValues[allocation.getResult()] =
@@ -1496,6 +1593,7 @@ struct PropagateDeviceResourceProvenancePass
     SmallVector<Block *> worklist;
     llvm::DenseSet<Block *> queued;
     llvm::DenseSet<Block *> reached;
+    std::map<ObjectRef, llvm::DenseSet<Block *>> handleReaders;
     llvm::DenseMap<Block *, CellMap> memoryInputs;
     llvm::DenseMap<std::pair<Block *, Block *>, CellMap> edgeMemory;
     llvm::DenseMap<Block *, PointerCellMap> pointerInputs;
@@ -1913,7 +2011,8 @@ struct PropagateDeviceResourceProvenancePass
               continue;
             }
             Fact resource = Fact::identity(*identity);
-            updateHandle(*exact, resource, handles, worklist, queued, reached);
+            updateHandle(*exact, resource, handles, worklist, queued,
+                         handleReaders);
             recordCase(operandCases, call, invocation, 3, resource);
             updateFact(call.getResult(0), Fact::scalar(), facts, worklist,
                        queued, reached);
@@ -1951,9 +2050,11 @@ struct PropagateDeviceResourceProvenancePass
               invalid = true;
               continue;
             }
-            Fact state = joinFacts(handles[*exact], Fact::nullHandle());
+            handleReaders[*exact].insert(block);
+            Fact state = joinFacts(handles.lookup(*exact), Fact::nullHandle());
             state = joinFacts(state, resource);
-            updateHandle(*exact, state, handles, worklist, queued, reached);
+            updateHandle(*exact, state, handles, worklist, queued,
+                         handleReaders);
             recordCase(operandCases, call, invocation, 3, state);
             for (Value result : call.getResults())
               updateFact(result, Fact::scalar(), facts, worklist, queued,
@@ -1974,7 +2075,8 @@ struct PropagateDeviceResourceProvenancePass
               invalid = true;
               continue;
             }
-            Fact state = handles[*exact];
+            handleReaders[*exact].insert(block);
+            Fact state = handles.lookup(*exact);
             if (!state.initialized)
               state = Fact::nullHandle();
             recordCase(operandCases, call, invocation, 0, state);
@@ -2041,12 +2143,13 @@ struct PropagateDeviceResourceProvenancePass
               invalid = true;
               continue;
             }
-            Fact state = handles[*exact];
+            handleReaders[*exact].insert(block);
+            Fact state = handles.lookup(*exact);
             if (!state.initialized)
               state = Fact::nullHandle();
             recordCase(operandCases, call, invocation, 0, state);
             updateHandle(*exact, Fact::nullHandle(), handles, worklist, queued,
-                         reached);
+                         handleReaders);
             for (Value result : call.getResults())
               updateFact(result, Fact::scalar(), facts, worklist, queued,
                          reached);
@@ -2071,12 +2174,14 @@ struct PropagateDeviceResourceProvenancePass
               continue;
             }
             if (!exactOutput || !canHoldView(*exactOutput)) {
-              call.emitError("udonclDeviceBufferView requires an exact "
-                             "20-byte view subobject");
+              call.emitError("udonclDeviceBufferView requires an exact ")
+                  << UDONCL_UDON_ABI_BUFFER_VIEW_BYTES
+                  << "-byte view subobject";
               invalid = true;
               continue;
             }
-            Fact resource = handles[*exactHandle];
+            handleReaders[*exactHandle].insert(block);
+            Fact resource = handles.lookup(*exactHandle);
             ViewState previous = localViews[*exactOutput];
             ViewState next;
             next.hasPath = true;
@@ -2250,10 +2355,6 @@ struct PropagateDeviceResourceProvenancePass
                                                : handleField->second);
             }
             Invocation nested = calleeInvocation(invocation, function, call);
-            HandleMap handlesBeforeCall = handles;
-            ViewMap viewsBeforeCall = localViews;
-            ResourceCellMap resourceCellsBeforeCall = localResourceCells;
-            PointerCellMap pointerCellsBeforeCall = localPointerCells;
             AnalysisResult nestedResult =
                 analyze(found->getValue(), nested, actuals, actualIntegers,
                         actualObjects, actualHandleFields, handles, localViews,
@@ -2296,10 +2397,10 @@ struct PropagateDeviceResourceProvenancePass
                                               !pointerCasesMatchFinal() ||
                                               !viewCasesMatchFinal();
             if (!hasConditionalMemoryEffect &&
-                nestedResult.handles == handlesBeforeCall &&
-                nestedResult.views == viewsBeforeCall &&
-                nestedResult.resourceCells == resourceCellsBeforeCall &&
-                nestedResult.pointerCells == pointerCellsBeforeCall)
+                nestedResult.handles == handles &&
+                nestedResult.views == localViews &&
+                nestedResult.resourceCells == localResourceCells &&
+                nestedResult.pointerCells == localPointerCells)
               trackedDomainTransparentOperations.insert(call);
             handles = std::move(nestedResult.handles);
             localViews = std::move(nestedResult.views);
@@ -3504,6 +3605,7 @@ struct PropagateDeviceResourceProvenancePass
     globalPointerWrites.clear();
     localHandleObjects.clear();
     objectSizes.clear();
+    restrictedBufferViewLayouts.clear();
     nextObjectId = 0;
     globalFacts.clear();
     globalWrites.clear();
@@ -3557,6 +3659,59 @@ struct PropagateDeviceResourceProvenancePass
         objectSizes[globalObjects[global.getSymName()]] =
             static_cast<uint32_t>(*objectBytes);
         globalObjectIds.insert(globalObjects[global.getSymName()]);
+        if (auto layout = global->getAttrOfType<DictionaryAttr>(
+                bufferViewLayoutAttribute)) {
+          auto version = layout.getAs<IntegerAttr>("schema_version");
+          auto count = layout.getAs<IntegerAttr>("count");
+          auto stride = layout.getAs<IntegerAttr>("stride_bytes");
+          auto offsets = layout.getAs<DenseI32ArrayAttr>("offsets");
+          auto isI32 = [](IntegerAttr value) {
+            return value && value.getType().isInteger(32);
+          };
+          if (!isI32(version) || version.getInt() != 1 || !isI32(count) ||
+              !isI32(stride) || !offsets || count.getInt() < 0 ||
+              stride.getInt() < 0 ||
+              (count.getInt() == 0 &&
+               (stride.getInt() != 0 || !offsets.empty())) ||
+              (count.getInt() > 0 &&
+               (stride.getInt() == 0 || offsets.empty()))) {
+            global.emitError("malformed buffer view layout metadata");
+            invalid = true;
+          } else {
+            BufferViewLayout parsed{static_cast<uint32_t>(count.getInt()),
+                                    static_cast<uint32_t>(stride.getInt()),
+                                    {}};
+            for (int32_t offset : offsets.asArrayRef()) {
+              uint64_t strideBytes = parsed.stride;
+              uint64_t viewBytes = UDONCL_UDON_ABI_BUFFER_VIEW_BYTES;
+              if (offset < 0 || strideBytes < viewBytes ||
+                  static_cast<uint64_t>(offset) > strideBytes - viewBytes) {
+                global.emitError("buffer view layout offset is out of bounds");
+                invalid = true;
+                continue;
+              }
+              uint64_t lastStart =
+                  static_cast<uint64_t>(parsed.count - 1) * strideBytes +
+                  static_cast<uint64_t>(offset);
+              if (lastStart > std::numeric_limits<int32_t>::max() ||
+                  lastStart + viewBytes > *objectBytes) {
+                global.emitError("buffer view layout extent is out of bounds");
+                invalid = true;
+                continue;
+              }
+              parsed.memberOffsets.push_back(offset);
+            }
+            llvm::sort(parsed.memberOffsets);
+            if (std::adjacent_find(parsed.memberOffsets.begin(),
+                                   parsed.memberOffsets.end()) !=
+                parsed.memberOffsets.end()) {
+              global.emitError("buffer view layout offsets are not unique");
+              invalid = true;
+            }
+            restrictedBufferViewLayouts[globalObjects[global.getSymName()]] =
+                std::move(parsed);
+          }
+        }
         if (zeroInitialized)
           zeroInitializedGlobalObjectIds.insert(
               globalObjects[global.getSymName()]);
@@ -3631,8 +3786,8 @@ struct PropagateDeviceResourceProvenancePass
           uint32_t bytes = objectSizes[object];
           for (uint32_t offset = 0; offset < bytes; offset += 8) {
             ObjectRef handle{object, static_cast<int32_t>(offset)};
-            globalHandleWrites[handle] =
-                joinFacts(globalHandleWrites[handle], result.handles[handle]);
+            globalHandleWrites[handle] = joinFacts(
+                globalHandleWrites[handle], result.handles.lookup(handle));
           }
         }
         for (const auto &[cell, state] : result.pointerCells) {
@@ -3673,7 +3828,7 @@ struct PropagateDeviceResourceProvenancePass
           converged = false;
         }
       }
-      for (auto &[handle, fact] : globalHandleFacts) {
+      for (auto &[handle, fact] : globalHandleFacts.mutableStorage()) {
         Fact next = joinFacts(Fact::nullHandle(), globalHandleWrites[handle]);
         if (!(fact == next)) {
           fact = next;

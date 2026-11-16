@@ -1,5 +1,6 @@
 #include "VRC/Conversion/Passes.h"
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
+#include "udoncl/udon_abi_layout.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
@@ -506,8 +507,8 @@ void createPointerGlobal(ModuleOp module, StringRef symbol) {
   builder.create(state);
 }
 
-void createByteGlobal(ModuleOp module, StringRef symbol, ArrayRef<int8_t> bytes,
-                      int64_t alignment = 1) {
+Operation *createByteGlobal(ModuleOp module, StringRef symbol,
+                            ArrayRef<int8_t> bytes, int64_t alignment = 1) {
   OpBuilder builder(module.getBodyRegion());
   builder.setInsertionPointToEnd(module.getBody());
   OperationState state(module.getLoc(), host::GlobalOp::getOperationName());
@@ -523,12 +524,13 @@ void createByteGlobal(ModuleOp module, StringRef symbol, ArrayRef<int8_t> bytes,
   state.addAttribute("linkage", builder.getStringAttr("internal"));
   state.addAttribute("address_space", builder.getI32IntegerAttr(0));
   state.addAttribute("alignment", builder.getI64IntegerAttr(alignment));
-  builder.create(state);
+  return builder.create(state);
 }
 
-void createZeroGlobal(ModuleOp module, StringRef symbol, size_t bytes,
-                      int64_t alignment = 8) {
-  createByteGlobal(module, symbol, SmallVector<int8_t>(bytes, 0), alignment);
+Operation *createZeroGlobal(ModuleOp module, StringRef symbol, size_t bytes,
+                            int64_t alignment = 8) {
+  return createByteGlobal(module, symbol, SmallVector<int8_t>(bytes, 0),
+                          alignment);
 }
 
 void createStringGlobal(ModuleOp module, StringRef symbol, StringRef value) {
@@ -589,21 +591,50 @@ std::string ioDimensionsSymbol(bool output, unsigned index) {
 }
 
 void createModelMetadataGlobals(ModuleOp module, const GraphRecord &graph) {
-  createZeroGlobal(module, modelStorageSymbol, modelStorageBytes);
-  createZeroGlobal(module, inputMetadataSymbol,
-                   std::max<size_t>(graph.inputs.size(), 1) *
-                       metadataStorageBytes);
-  createZeroGlobal(module, outputMetadataSymbol,
-                   std::max<size_t>(graph.outputs.size(), 1) *
-                       metadataStorageBytes);
+  Builder builder(module.getContext());
+  auto setBufferViewLayout = [&](Operation *global, int32_t count,
+                                 int32_t stride, ArrayRef<int32_t> offsets) {
+    global->setAttr(
+        "vrc.buffer_view_layout",
+        builder.getDictionaryAttr({
+            builder.getNamedAttr("count", builder.getI32IntegerAttr(count)),
+            builder.getNamedAttr("offsets",
+                                 builder.getDenseI32ArrayAttr(offsets)),
+            builder.getNamedAttr("schema_version",
+                                 builder.getI32IntegerAttr(1)),
+            builder.getNamedAttr("stride_bytes",
+                                 builder.getI32IntegerAttr(stride)),
+        }));
+  };
+  setBufferViewLayout(
+      createZeroGlobal(module, modelStorageSymbol, modelStorageBytes), 0, 0,
+      {});
+  setBufferViewLayout(
+      createZeroGlobal(module, inputMetadataSymbol,
+                       std::max<size_t>(graph.inputs.size(), 1) *
+                           metadataStorageBytes),
+      0, 0, {});
+  setBufferViewLayout(
+      createZeroGlobal(module, outputMetadataSymbol,
+                       std::max<size_t>(graph.outputs.size(), 1) *
+                           metadataStorageBytes),
+      0, 0, {});
   createStringGlobal(module, modelNameSymbol, "model");
-  createZeroGlobal(module, bindingStateSymbol, bindingStateStorageBytes);
-  createZeroGlobal(module, bindingInputSymbol,
-                   std::max<size_t>(graph.inputs.size(), 1) *
-                       bindingTensorStorageBytes);
-  createZeroGlobal(module, bindingOutputSymbol,
-                   std::max<size_t>(graph.outputs.size(), 1) *
-                       bindingTensorStorageBytes);
+  setBufferViewLayout(
+      createZeroGlobal(module, bindingStateSymbol, bindingStateStorageBytes), 0,
+      0, {});
+  setBufferViewLayout(
+      createZeroGlobal(module, bindingInputSymbol,
+                       std::max<size_t>(graph.inputs.size(), 1) *
+                           bindingTensorStorageBytes),
+      static_cast<int32_t>(graph.inputs.size()),
+      UDONCL_UDON_ABI_ONNX_TENSOR_BYTES, {0});
+  setBufferViewLayout(
+      createZeroGlobal(module, bindingOutputSymbol,
+                       std::max<size_t>(graph.outputs.size(), 1) *
+                           bindingTensorStorageBytes),
+      static_cast<int32_t>(graph.outputs.size()),
+      UDONCL_UDON_ABI_ONNX_TENSOR_BYTES, {0});
   createZeroGlobal(
       module, bindingIoHandlesSymbol,
       std::max<size_t>(graph.inputs.size() + graph.outputs.size(), 1) *

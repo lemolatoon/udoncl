@@ -581,16 +581,16 @@ assert parallel_branch_lowered.returncode == 0, parallel_branch_lowered.stderr
 # otherwise a destination COPY can overwrite the next source and violate SSA
 # parallel-copy semantics.
 for expected in [
+    'version = 3 : i64',
     'minimum_simultaneous_registers = 4 : i64',
     'scalar_register_budget = 4 : i64',
-    'typed_spill_arrays = []',
 ]:
     assert expected in parallel_branch_lowered.stdout, (
         expected,
         parallel_branch_lowered.stdout,
     )
 
-typed_spill_source = r'''module attributes {
+direct_pressure_source = r'''module attributes {
   vrc.async_stage = "udon-static-v1",
   vrc.host_stage = "udonhl",
   vrc.scalar_register_budget = 1 : i32
@@ -605,33 +605,33 @@ typed_spill_source = r'''module attributes {
     return %result : i32
   }
 }'''
-typed_spill_lowered = subprocess.run(
+direct_pressure_lowered = subprocess.run(
     [opt, '--vrc-lower-udonhl-to-udonasm', '--verify-each'],
-    input=typed_spill_source,
+    input=direct_pressure_source,
     text=True,
     capture_output=True,
 )
-assert typed_spill_lowered.returncode == 0, typed_spill_lowered.stderr
+assert direct_pressure_lowered.returncode == 0, direct_pressure_lowered.stderr
 for expected in [
+    'version = 3 : i64',
     'minimum_simultaneous_registers = 3 : i64',
     'scalar_register_budget = 3 : i64',
-    'typed_spill_arrays = []',
 ]:
-    assert expected in typed_spill_lowered.stdout, (
+    assert expected in direct_pressure_lowered.stdout, (
         expected,
-        typed_spill_lowered.stdout,
+        direct_pressure_lowered.stdout,
     )
 for obsolete_spill_implementation in [
     'SystemInt32Array.__ctor__SystemInt32__SystemInt32Array',
     'SystemInt32Array.__Set__SystemInt32_SystemInt32__SystemVoid',
     'SystemInt32Array.__Get__SystemInt32__SystemInt32',
 ]:
-    assert obsolete_spill_implementation not in typed_spill_lowered.stdout, (
+    assert obsolete_spill_implementation not in direct_pressure_lowered.stdout, (
         obsolete_spill_implementation,
-        typed_spill_lowered.stdout,
+        direct_pressure_lowered.stdout,
     )
 
-capacity_source = typed_spill_source.replace(
+capacity_source = direct_pressure_source.replace(
     'vrc.scalar_register_budget = 1 : i32',
     'vrc.scalar_register_budget = 1 : i32, '
     'vrc.data_slot_capacity = 4 : i32',
@@ -1035,66 +1035,27 @@ for expected in [
     assert expected in raw_memory_lowered.stdout, (
         expected, raw_memory_lowered.stdout)
 
-# Spill-index caching is capacity-driven and loop-aware.  Twenty-five cold
-# indices have more static operations than the one hot index, but the latter
-# is used by a natural CFG loop and must win the first newly available cache
-# slot.  Discover the semantic minimum capacity so this remains independent
-# of unrelated fixed-slot changes in the lowering.
-cold_spill_ops = []
-for index in range(25):
-    cold_spill_ops.append(
-        f'    udonhl.spill_store %value[{index}] '
-        '{storage_key = "SystemInt32"} : i32')
-    cold_spill_ops.extend([
-        f'    %cold_{index}_{use} = udonhl.spill_load [{index}] '
-        '{storage_key = "SystemInt32"} : i32'
-        for use in range(2)
-    ])
-loop_weighted_cache_source = r'''module attributes {
-  vrc.data_slot_capacity = @CAPACITY@ : i64
-} {
-  func.func @loop_weighted_cache(%value: i32, %again: i1) attributes {
+# Spill aliases are a temporary async-preparation representation.  The normal
+# pipeline must normalize them back to SSA before final scalar lowering; a
+# residual alias is a compiler-stage error, never a request for a private array.
+residual_spill_source = r'''module {
+  func.func @residual_spill(%value: i32) attributes {
     vrc.export_id = 91 : i32
   } {
-@OPS@
-    udonhl.spill_store %value[100] {storage_key = "SystemInt32"} : i32
-    cf.br ^loop
-  ^loop:
-    %hot = udonhl.spill_load [100] {storage_key = "SystemInt32"} : i32
-    cf.cond_br %again, ^loop, ^exit
-  ^exit:
+    udonhl.spill_store %value[0] {storage_key = "SystemInt32"} : i32
+    %loaded = udonhl.spill_load [0] {storage_key = "SystemInt32"} : i32
     return
   }
-}'''.replace('@OPS@', '\n'.join(cold_spill_ops))
-
-def lower_loop_weighted_cache(capacity):
-    return subprocess.run(
-        [opt, '--vrc-lower-udonhl-to-udonasm', '--verify-each'],
-        input=loop_weighted_cache_source.replace(
-            '@CAPACITY@', str(capacity)),
-        text=True,
-        capture_output=True,
-    )
-
-minimum = 1
-maximum = 512
-while minimum < maximum:
-    middle = (minimum + maximum) // 2
-    candidate = lower_loop_weighted_cache(middle)
-    if candidate.returncode == 0:
-        maximum = middle
-    else:
-        minimum = middle + 1
-minimum_cache = lower_loop_weighted_cache(minimum)
-assert minimum_cache.returncode == 0, minimum_cache.stderr
-one_cache = lower_loop_weighted_cache(minimum + 1)
-assert one_cache.returncode == 0, one_cache.stderr
-assert 'index = 25 : i64, storage_key = "SystemInt32"' not in (
-    minimum_cache.stdout)
-assert 'index = 25 : i64, storage_key = "SystemInt32"' in one_cache.stdout, (
-    minimum, one_cache.stdout)
-assert 'address_cache_loop_weight_base = 8 : i64' in one_cache.stdout
-assert 'address_cache_maximum_loop_weight = 4096 : i64' in one_cache.stdout
+}'''
+residual_spill_lowered = subprocess.run(
+    [opt, '--vrc-lower-udonhl-to-udonasm', '--verify-each'],
+    input=residual_spill_source,
+    text=True,
+    capture_output=True,
+)
+assert residual_spill_lowered.returncode != 0
+assert 'async persistent storage must be materialized to SSA' in (
+    residual_spill_lowered.stderr)
 for forbidden in ['__op_BitwiseAnd__', '__op_BitwiseOr__', '__op_Multiply__']:
     assert forbidden not in raw_memory_lowered.stdout, (
         forbidden, raw_memory_lowered.stdout)

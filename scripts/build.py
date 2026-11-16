@@ -4,46 +4,11 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-import tempfile
 
-
-def ensure_msvc_environment(build_dir):
-    if sys.platform != 'win32' or (
-        os.environ.get('INCLUDE') and os.environ.get('VCToolsInstallDir')
-    ):
-        return
-    cache = Path(build_dir) / 'CMakeCache.txt'
-    if not cache.is_file():
-        raise RuntimeError(f'configured CMake build is missing: {cache}')
-    compiler_value = next(
-        (line.split('=', 1)[1]
-         for line in cache.read_text(encoding='utf-8').splitlines()
-         if line.startswith('CMAKE_CXX_COMPILER:') and '=' in line),
-        None,
-    )
-    if not compiler_value:
-        raise RuntimeError('CMake cache does not identify the MSVC compiler')
-    compiler = Path(compiler_value)
-    try:
-        visual_studio = compiler.parents[7]
-    except IndexError as error:
-        raise RuntimeError(f'unexpected MSVC compiler path: {compiler}') from error
-    vsdevcmd = visual_studio / 'Common7/Tools/VsDevCmd.bat'
-    if not vsdevcmd.is_file():
-        raise RuntimeError(f'Visual Studio environment script is missing: {vsdevcmd}')
-    with tempfile.TemporaryDirectory(prefix='udoncl-vsdevcmd-', dir=cache.parent) as temporary:
-        batch = Path(temporary) / 'environment.cmd'
-        batch.write_text(
-            f'@call "{vsdevcmd}" -no_logo -arch=x64 -host_arch=x64 >nul\n@set\n',
-            encoding='utf-8',
-        )
-        result = subprocess.run(
-            ['cmd.exe', '/d', '/c', batch], check=True, text=True,
-            capture_output=True)
-    for line in result.stdout.splitlines():
-        if '=' in line:
-            key, value = line.split('=', 1)
-            os.environ[key] = value
+# Keep this script importable by focused tests which load it through
+# importlib.util.spec_from_file_location instead of executing it as a script.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from msvc_environment import ensure_msvc_environment
 
 
 def available_cpu_count():

@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import platform
 import queue
 import shutil
 import subprocess
@@ -13,6 +14,8 @@ import sys
 import tempfile
 import threading
 import time
+
+from msvc_environment import ensure_msvc_environment
 
 from unity_ci import (
     LOWERING_TEST_CASES,
@@ -77,50 +80,6 @@ def ensure_cmake_toolchain_on_path():
             break
     if not shutil.which("cmake") or not shutil.which("ninja"):
         raise RuntimeError("CMake and Ninja are required for fixture generation")
-
-
-def ensure_msvc_environment(build: Path):
-    if sys.platform != "win32" or (
-        os.environ.get("INCLUDE") and os.environ.get("VCToolsInstallDir")
-    ):
-        return
-    cache = build / "CMakeCache.txt"
-    if not cache.is_file():
-        raise RuntimeError(f"configured CMake build is missing: {cache}")
-    compiler_value = next(
-        (
-            line.split("=", 1)[1]
-            for line in cache.read_text(encoding="utf-8").splitlines()
-            if line.startswith("CMAKE_CXX_COMPILER:") and "=" in line
-        ),
-        None,
-    )
-    if not compiler_value:
-        raise RuntimeError("CMake cache does not identify the MSVC compiler")
-    compiler = Path(compiler_value)
-    try:
-        visual_studio = compiler.parents[7]
-    except IndexError as error:
-        raise RuntimeError(f"unexpected MSVC compiler path: {compiler}") from error
-    vsdevcmd = visual_studio / "Common7/Tools/VsDevCmd.bat"
-    if not vsdevcmd.is_file():
-        raise RuntimeError(f"Visual Studio environment script is missing: {vsdevcmd}")
-    with tempfile.TemporaryDirectory(prefix="udoncl-vsdevcmd-", dir=build) as temporary:
-        batch = Path(temporary) / "environment.cmd"
-        batch.write_text(
-            f'@call "{vsdevcmd}" -no_logo -arch=x64 -host_arch=x64 >nul\n@set\n',
-            encoding="utf-8",
-        )
-        result = subprocess.run(
-            ["cmd.exe", "/d", "/c", batch],
-            check=True,
-            text=True,
-            capture_output=True,
-        )
-    for line in result.stdout.splitlines():
-        if "=" in line:
-            key, value = line.split("=", 1)
-            os.environ[key] = value
 
 
 def run(command, **kwargs):
@@ -648,6 +607,12 @@ def run_unity_mcp_gate(
                     / "tests/cmake-package/onnx-transformer-consumer/udoncl/onnx-transformer-tiny/artifact"
                 ).resolve()
             ),
+            "UDONCL_PUBLIC_TOKENIZER_UNITY_BUNDLE": str(
+                (
+                    build
+                    / "tests/cmake-package/consumer/udoncl/tinyllama-tokenizer-unity-library/artifact"
+                ).resolve()
+            ),
             "UDONCL_ONNX_AOT_UASM": str(
                 (output / "onnx-aot/generic-host.uasm").resolve()
             ),
@@ -733,7 +698,7 @@ def run_unity_mcp_gate(
         unity_command = [
             unity,
             "-batchmode",
-            "-force-d3d11",
+            "-force-vulkan" if platform.system() == "Linux" else "-force-d3d11",
             "-projectPath",
             project,
             "-executeMethod",
@@ -970,6 +935,14 @@ def main():
         help="run only the MCP-driven Unity gate without the native pre-commit steps",
     )
     parser.add_argument(
+        "--commit-snapshot",
+        metavar="COMMIT",
+        help=(
+            "validate this exact clean checked-out commit without requiring or "
+            "modifying a staged change"
+        ),
+    )
+    parser.add_argument(
         "--unity-test",
         action="append",
         default=[],
@@ -1007,6 +980,20 @@ def main():
         ),
     )
     args = parser.parse_args()
+    snapshot_commit = None
+    if args.commit_snapshot:
+        snapshot_commit = subprocess.check_output(
+            ["git", "rev-parse", "--verify", f"{args.commit_snapshot}^{{commit}}"],
+            cwd=root,
+            text=True,
+        ).strip()
+        head = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=root, text=True
+        ).strip()
+        if head != snapshot_commit:
+            parser.error(
+                f"checked-out HEAD is {head}, expected commit snapshot {snapshot_commit}"
+            )
     if args.tinyllama_prefill and args.tinyllama_conversation:
         parser.error("run one focused TinyLlama Unity gate at a time")
     if args.unity is None:
@@ -1021,14 +1008,26 @@ def main():
     ensure_cmake_toolchain_on_path()
     ensure_msvc_environment(args.build_dir.resolve())
     if not args.unity_only:
-        staged = subprocess.check_output(
-            ["git", "diff", "--cached", "--name-only", "-z"], cwd=root
-        ).decode("utf-8").rstrip("\0").split("\0")
-        staged = [path for path in staged if path]
-        if not staged:
-            parser.error("stage the intended commit before running the pre-commit gate")
-        run([sys.executable, root / "scripts/format.py"], cwd=root)
-        restage_original_paths(root, staged)
+        if args.commit_snapshot:
+            dirty = subprocess.check_output(
+                ["git", "status", "--porcelain", "--untracked-files=no"],
+                cwd=root,
+                text=True,
+            )
+            if dirty:
+                parser.error("commit snapshot validation requires a clean worktree")
+            run([sys.executable, root / "scripts/format.py", "--check"], cwd=root)
+        else:
+            staged = subprocess.check_output(
+                ["git", "diff", "--cached", "--name-only", "-z"], cwd=root
+            ).decode("utf-8").rstrip("\0").split("\0")
+            staged = [path for path in staged if path]
+            if not staged:
+                parser.error(
+                    "stage the intended commit before running the pre-commit gate"
+                )
+            run([sys.executable, root / "scripts/format.py"], cwd=root)
+            restage_original_paths(root, staged)
         run(
             [
                 sys.executable,
@@ -1038,6 +1037,23 @@ def main():
             cwd=root,
         )
         run([sys.executable, root / "scripts/validate_vpm_package.py"], cwd=root)
+        if args.commit_snapshot:
+            run(
+                [
+                    "cmake",
+                    "-S",
+                    root,
+                    "-B",
+                    args.build_dir.resolve(),
+                    "-G",
+                    "Ninja",
+                    "-DCMAKE_BUILD_TYPE=Release",
+                    f"-DCMAKE_PREFIX_PATH={root / '.deps/llvm23'}",
+                    "-DBUILD_TESTING=ON",
+                    "-DVRC_ENABLE_NATIVE_FRAGMENT_TESTS=ON",
+                ],
+                cwd=root,
+            )
         run(
             [
                 sys.executable,
@@ -1154,7 +1170,28 @@ def main():
         print("unity_validation=passed")
         return
     run([sys.executable, root / "scripts/format.py", "--check"], cwd=root)
-    run(["git", "diff", "--cached", "--check"], cwd=root)
+    if args.commit_snapshot:
+        parent_count = len(
+            subprocess.check_output(
+                ["git", "rev-list", "--parents", "-n", "1", "HEAD"],
+                cwd=root,
+                text=True,
+            ).split()
+        ) - 1
+        if parent_count:
+            run(["git", "diff", "--check", "HEAD^", "HEAD"], cwd=root)
+        else:
+            run(["git", "diff-tree", "--check", "--root", "HEAD"], cwd=root)
+    else:
+        run(["git", "diff", "--cached", "--check"], cwd=root)
+    if snapshot_commit:
+        final_head = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=root, text=True
+        ).strip()
+        if final_head != snapshot_commit:
+            parser.error(
+                f"HEAD changed during validation: expected {snapshot_commit}, got {final_head}"
+            )
     print("precommit=passed")
 
 

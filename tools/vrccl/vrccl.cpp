@@ -803,6 +803,114 @@ LogicalResult reconcileStaticUnityBuffers(OwningOpRef<ModuleOp> &ownedModule,
   return success();
 }
 
+LogicalResult materializeCanonicalUnityBufferConfig(ModuleOp module,
+                                                    json::Object &config) {
+  auto readiness = module->getAttrOfType<DictionaryAttr>(
+      "vrc.static_unity_resource_lowering_readiness");
+  auto applied = readiness ? readiness.getAs<BoolAttr>("applied") : BoolAttr();
+  if (!applied || !applied.getValue())
+    return success();
+  auto readinessVersion = readiness.getAs<IntegerAttr>("schema_version");
+  auto poolReady = readiness.getAs<BoolAttr>("pool_replacement_ready");
+  auto layout = module->getAttrOfType<DictionaryAttr>(
+      "vrc.static_unity_buffer_layout_plan");
+  auto layoutVersion =
+      layout ? layout.getAs<IntegerAttr>("schema_version") : IntegerAttr();
+  auto layoutReady = layout ? layout.getAs<BoolAttr>("ready") : BoolAttr();
+  auto buffers = layout ? layout.getAs<ArrayAttr>("buffers") : ArrayAttr();
+  if (!readinessVersion || readinessVersion.getInt() != 1 || !poolReady ||
+      !poolReady.getValue() || !layoutVersion || layoutVersion.getInt() != 1 ||
+      !layoutReady || !layoutReady.getValue() || !buffers) {
+    module.emitError(
+        "applied static Unity lowering has no canonical buffer layout");
+    return failure();
+  }
+  json::Array canonical;
+  std::set<int64_t> textureIds;
+  std::set<int64_t> resourceIds;
+  std::set<std::string> names;
+  std::set<std::pair<std::string, int64_t>> publicEndpoints;
+  for (mlir::Attribute attribute : buffers) {
+    auto entry = dyn_cast<DictionaryAttr>(attribute);
+    auto bufferId = entry ? entry.getAs<IntegerAttr>("buffer_id") : nullptr;
+    auto resourceId = entry ? entry.getAs<IntegerAttr>("resource_id") : nullptr;
+    auto textureId = entry ? entry.getAs<IntegerAttr>("texture_id") : nullptr;
+    auto capacity =
+        entry ? entry.getAs<IntegerAttr>("capacity_bytes") : nullptr;
+    auto format = entry ? entry.getAs<StringAttr>("format") : nullptr;
+    auto heapSlot = entry ? entry.getAs<StringAttr>("heap_slot") : nullptr;
+    auto persistent = entry ? entry.getAs<BoolAttr>("persistent") : nullptr;
+    auto isPublic = entry ? entry.getAs<BoolAttr>("public") : nullptr;
+    if (!bufferId || !resourceId || resourceId.getInt() < 0 || !textureId ||
+        textureId.getInt() <= 0 || bufferId.getInt() != textureId.getInt() ||
+        !capacity || capacity.getInt() <= 0 || !format ||
+        format != "rgba8_unorm" || !heapSlot ||
+        heapSlot.getValue() !=
+            "__udoncl_buffer_" + std::to_string(textureId.getInt()) ||
+        !persistent || !persistent.getValue() || !isPublic ||
+        !textureIds.insert(textureId.getInt()).second ||
+        !resourceIds.insert(resourceId.getInt()).second) {
+      module.emitError("invalid canonical Unity buffer layout entry");
+      return failure();
+    }
+
+    std::string name = "private_" + std::to_string(textureId.getInt());
+    bool nameInserted = false;
+    json::Object item{{"id", textureId.getInt()},
+                      {"name", name},
+                      {"byte_size", capacity.getInt()}};
+    if (isPublic.getValue()) {
+      auto publicName = entry.getAs<StringAttr>("name");
+      auto dataType = entry.getAs<StringAttr>("data_type");
+      auto logicalBytes = entry.getAs<IntegerAttr>("logical_bytes");
+      auto access = entry.getAs<StringAttr>("public_access");
+      auto index = entry.getAs<IntegerAttr>("public_index");
+      if (!publicName || !dataType ||
+          (dataType != "float32" && dataType != "int32" &&
+           dataType != "int64") ||
+          !logicalBytes || logicalBytes.getInt() < 0 ||
+          logicalBytes.getInt() > capacity.getInt() || !access ||
+          (access != "input" && access != "output") || !index ||
+          index.getInt() < 0 ||
+          !publicEndpoints.insert({access.getValue().str(), index.getInt()})
+               .second) {
+        module.emitError("invalid public canonical Unity buffer layout entry");
+        return failure();
+      }
+      name = onnxPublicBufferName(publicName.getValue(), access == "output",
+                                  index.getInt(), names);
+      if (name.empty()) {
+        module.emitError(
+            "canonical Unity buffer names are not uniquely mappable");
+        return failure();
+      }
+      nameInserted = true;
+      item["name"] = name;
+      item["logical_byte_size"] = logicalBytes.getInt();
+      item["element_type"] = dataType.getValue();
+      item["public_access"] = access.getValue();
+      item["public_index"] = index.getInt();
+    } else if (entry.get("name") || entry.get("data_type") ||
+               entry.get("logical_bytes") || entry.get("public_access") ||
+               entry.get("public_index")) {
+      module.emitError("private canonical Unity buffer has public metadata");
+      return failure();
+    }
+    if (!nameInserted && !names.insert(name).second) {
+      module.emitError("canonical Unity buffer names are not unique");
+      return failure();
+    }
+    canonical.push_back(std::move(item));
+  }
+  for (int64_t id = 1; id <= static_cast<int64_t>(canonical.size()); ++id)
+    if (textureIds.find(id) == textureIds.end()) {
+      module.emitError("canonical Unity Texture IDs must be dense from one");
+      return failure();
+    }
+  config["buffers"] = std::move(canonical);
+  return success();
+}
+
 FailureOr<SmallVector<const json::Object *>>
 parseUnityDeviceKernels(const json::Object &config) {
   SmallVector<const json::Object *> result;
@@ -3400,6 +3508,11 @@ int main(int argc, char **argv) {
     if (failed(generatedBuffers))
       return 1;
     if (failed(reconcileStaticUnityBuffers(module, *generatedBuffers)))
+      return 1;
+    if (failed(materializeCanonicalUnityBufferConfig(*module, *unityConfig)))
+      return 1;
+    generatedBuffers = parseUnityBuffers(*unityConfig);
+    if (failed(generatedBuffers))
       return 1;
     unityBuffers = std::move(*generatedBuffers);
     if (!omitIntermediateIR) {

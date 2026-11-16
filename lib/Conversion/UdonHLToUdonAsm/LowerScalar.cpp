@@ -10,7 +10,6 @@
 #include "VRC/Dialect/VRC/VRCDialect.h"
 #include "udoncl/array.h"
 #include "udoncl/string.h"
-#include "mlir/Analysis/CFGLoopInfo.h"
 #include "mlir/Analysis/Liveness.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
@@ -74,13 +73,6 @@ struct GlobalBankPlan {
   Type elementType;
   uint64_t length = 0;
   SmallVector<std::pair<uint64_t, ElementsAttr>> initializers;
-};
-
-struct TypedSpillBankPlan {
-  std::string slot;
-  std::string scalarType;
-  std::string arrayType;
-  unsigned length = 0;
 };
 
 struct ConstantPoolLocation {
@@ -319,6 +311,17 @@ public:
   }
 
   LogicalResult run() {
+    Operation *residualSpill = nullptr;
+    module.walk([&](Operation *operation) {
+      if (!residualSpill &&
+          isa<host::SpillLoadOp, host::SpillStoreOp>(operation))
+        residualSpill = operation;
+    });
+    if (residualSpill)
+      return residualSpill->emitError(
+          "async persistent storage must be materialized to SSA before "
+          "scalar Udon lowering");
+
     SmallVector<func::FuncOp> functions;
     SmallVector<func::FuncOp> exportsToLower;
     SmallVector<func::FuncOp> internalsToLower;
@@ -584,17 +587,10 @@ public:
       }
     }
 
-    if (failed(planDeclaredTypedSpillBanks()) ||
-        failed(consumeDirectColorAllocations(functions)) ||
+    if (failed(consumeDirectColorAllocations(functions)) ||
         failed(planInterproceduralValueSlots(functions)))
       return failure();
-    compactSpillIndices();
     planAddressCaches();
-    if (!typedSpillBanks.empty()) {
-      addSlot(globalInitializedSlot, "SystemInt32", "0", false);
-      addSlot(globalOneSlot, "SystemInt32", "1", false);
-      addSlot(globalReadySlot, "SystemBoolean", "null", false);
-    }
 
     for (auto [index, function] : llvm::enumerate(functions)) {
       FunctionPlan plan;
@@ -773,8 +769,6 @@ private:
       persistentCandidates.insert(slot.first());
     for (const GlobalBankPlan &bank : globalBanks)
       arrayCandidates.insert(bank.slot);
-    for (const std::string &key : typedSpillBankOrder)
-      arrayCandidates.insert(typedSpillBanks.at(key).slot);
     if (rawHeapBytes)
       arrayCandidates.insert(rawHeapSlot);
     for (const auto &slot : immutableSlots)
@@ -933,51 +927,6 @@ private:
           }
       }
     }
-  }
-
-  LogicalResult planDeclaredTypedSpillBanks() {
-    auto include = [&](Operation *operation, StringRef storageKey, Type type,
-                       int64_t index) -> LogicalResult {
-      if (index < 0)
-        return operation->emitError("typed spill index must be nonnegative");
-      auto scalarType = udonType(type);
-      if (failed(scalarType))
-        return operation->emitError(
-            "declared typed spill has no physical Udon type");
-      auto bank = typedSpillBanks.find(storageKey);
-      if (bank == typedSpillBanks.end()) {
-        std::string slot = "__vrc_spill_bank_" + storageKey.str();
-        std::string arrayType = scalarType->str() + "Array";
-        addSlot(slot, arrayType, "null", false);
-        bank = typedSpillBanks
-                   .try_emplace(storageKey,
-                                TypedSpillBankPlan{slot, scalarType->str(),
-                                                   std::move(arrayType), 0})
-                   .first;
-        typedSpillBankOrder.push_back(storageKey.str());
-      } else if (bank->second.scalarType != *scalarType) {
-        return operation->emitError(
-            "typed spill storage key has inconsistent physical types");
-      }
-      bank->second.length =
-          std::max(bank->second.length, static_cast<unsigned>(index) + 1);
-      return success();
-    };
-
-    WalkResult result = module.walk([&](Operation *operation) -> WalkResult {
-      if (auto load = dyn_cast<host::SpillLoadOp>(operation))
-        return failed(include(operation, load.getStorageKey(),
-                              load.getValue().getType(), load.getIndex()))
-                   ? WalkResult::interrupt()
-                   : WalkResult::advance();
-      if (auto store = dyn_cast<host::SpillStoreOp>(operation))
-        return failed(include(operation, store.getStorageKey(),
-                              store.getValue().getType(), store.getIndex()))
-                   ? WalkResult::interrupt()
-                   : WalkResult::advance();
-      return WalkResult::advance();
-    });
-    return result.wasInterrupted() ? failure() : success();
   }
 
   LogicalResult
@@ -1368,16 +1317,6 @@ private:
       persistent.push_back(
           entry({stringField("name", name), stringField("type", type)}));
 
-    SmallVector<Attribute> spillBanks;
-    for (const std::string &key : typedSpillBankOrder) {
-      const TypedSpillBankPlan &bank = typedSpillBanks.at(key);
-      spillBanks.push_back(entry({stringField("storage_key", key),
-                                  stringField("name", bank.slot),
-                                  stringField("scalar_type", bank.scalarType),
-                                  stringField("array_type", bank.arrayType),
-                                  integerField("length", bank.length)}));
-    }
-
     SmallVector<Attribute> globalBankAttributes;
     for (const GlobalBankPlan &bank : globalBanks)
       globalBankAttributes.push_back(
@@ -1439,23 +1378,6 @@ private:
     SmallVector<Attribute> rematerializedIds;
     for (int64_t id : orderedRematerializedIds)
       rematerializedIds.push_back(builder.getI64IntegerAttr(id));
-    SmallVector<std::pair<std::string, unsigned>> orderedCachedSpillIndices;
-    for (const auto &cached : cachedSpillIndexSlots) {
-      StringRef key = cached.first();
-      size_t separator = key.rfind('\n');
-      uint64_t index = 0;
-      if (separator == StringRef::npos ||
-          key.drop_front(separator + 1).getAsInteger(10, index))
-        continue;
-      orderedCachedSpillIndices.emplace_back(key.take_front(separator).str(),
-                                             static_cast<unsigned>(index));
-    }
-    llvm::sort(orderedCachedSpillIndices);
-    SmallVector<Attribute> cachedSpillIndexEntries;
-    for (const auto &[storageKey, index] : orderedCachedSpillIndices)
-      cachedSpillIndexEntries.push_back(
-          entry({stringField("storage_key", storageKey),
-                 integerField("index", index)}));
     SmallVector<Attribute> literalRequests;
     for (const auto &[requestId, request] : residentLiteralRequests)
       literalRequests.push_back(
@@ -1473,7 +1395,7 @@ private:
       finalDataSlotReserve = reserve.getInt();
 
     return entry(
-        {integerField("version", 2),
+        {integerField("version", 3),
          integerField("data_slot_count", slots.size()),
          integerField("data_slot_capacity", dataSlotCapacity()),
          integerField("final_data_slot_reserve", finalDataSlotReserve),
@@ -1481,13 +1403,6 @@ private:
          integerField("minimum_simultaneous_registers",
                       minimumScalarRegisterCount),
          integerField("address_cache_budget", rawAddressCacheLimit),
-         integerField("address_cache_loop_weight_base", 8),
-         integerField("address_cache_maximum_loop_weight", 4096),
-         integerField("cached_spill_indices", cachedSpillIndexSlots.size()),
-         builder.getNamedAttr("cached_spill_index_entries",
-                              builder.getArrayAttr(cachedSpillIndexEntries)),
-         integerField("synthesized_spill_indices",
-                      plannedSpillIndexCount - cachedSpillIndexSlots.size()),
          integerField("cached_raw_addresses", cachedRawGlobalSlots.size()),
          integerField("cached_return_addresses",
                       cachedReturnAddressSlots.size()),
@@ -1514,8 +1429,6 @@ private:
                               builder.getArrayAttr(registerBanks)),
          builder.getNamedAttr("async_persistent_values",
                               builder.getArrayAttr(persistent)),
-         builder.getNamedAttr("typed_spill_arrays",
-                              builder.getArrayAttr(spillBanks)),
          builder.getNamedAttr("typed_global_arrays",
                               builder.getArrayAttr(globalBankAttributes)),
          builder.getNamedAttr("slot_category_counts", categoryCounts),
@@ -1659,60 +1572,8 @@ private:
     return success();
   }
 
-  static std::string spillIndexCacheKey(StringRef storageKey, unsigned index) {
-    return (storageKey + "\n" + std::to_string(index)).str();
-  }
-
-  void compactSpillIndices() {
-    llvm::StringMap<llvm::DenseMap<unsigned, unsigned>> occurrences;
-    module.walk([&](Operation *operation) {
-      StringRef storageKey;
-      int64_t index = -1;
-      if (auto load = dyn_cast<host::SpillLoadOp>(operation)) {
-        storageKey = load.getStorageKey();
-        index = load.getIndex();
-      } else if (auto store = dyn_cast<host::SpillStoreOp>(operation)) {
-        storageKey = store.getStorageKey();
-        index = store.getIndex();
-      }
-      if (index >= 0)
-        ++occurrences[storageKey][static_cast<unsigned>(index)];
-    });
-    llvm::StringMap<llvm::DenseMap<unsigned, unsigned>> remapped;
-    for (auto &storage : occurrences) {
-      SmallVector<unsigned> indices;
-      indices.reserve(storage.second.size());
-      for (const auto &entry : storage.second)
-        indices.push_back(entry.first);
-      llvm::sort(indices, [&](unsigned left, unsigned right) {
-        unsigned leftCount = storage.second.lookup(left);
-        unsigned rightCount = storage.second.lookup(right);
-        if (leftCount != rightCount)
-          return leftCount > rightCount;
-        return left < right;
-      });
-      for (auto [newIndex, oldIndex] : llvm::enumerate(indices))
-        remapped[storage.first()][oldIndex] = newIndex;
-    }
-    module.walk([&](Operation *operation) {
-      if (auto load = dyn_cast<host::SpillLoadOp>(operation)) {
-        unsigned index = static_cast<unsigned>(load.getIndex());
-        load->setAttr("index",
-                      builder.getI32IntegerAttr(
-                          remapped[load.getStorageKey()].lookup(index)));
-      } else if (auto store = dyn_cast<host::SpillStoreOp>(operation)) {
-        unsigned index = static_cast<unsigned>(store.getIndex());
-        store->setAttr("index",
-                       builder.getI32IntegerAttr(
-                           remapped[store.getStorageKey()].lookup(index)));
-      }
-    });
-  }
-
   void planAddressCaches() {
-    constexpr uint64_t loopWeightBase = 8;
-    constexpr uint64_t maximumLoopWeight = 4096;
-    enum class Kind { Spill, RawAddress, ReturnAddress };
+    enum class Kind { RawAddress, ReturnAddress };
     struct Candidate {
       Kind kind;
       std::string id;
@@ -1739,52 +1600,6 @@ private:
           {Kind::RawAddress, symbol, rawGlobalBases.at(symbol),
            occurrences * literalSavings(rawGlobalBases.at(symbol))});
 
-    llvm::DenseMap<Block *, uint64_t> blockWeights;
-    DominanceInfo dominance(module);
-    for (func::FuncOp function : module.getOps<func::FuncOp>()) {
-      Region &body = function.getBody();
-      if (body.hasOneBlock()) {
-        blockWeights.try_emplace(&body.front(), 1);
-        continue;
-      }
-      CFGLoopInfo loops(dominance.getDomTree(&body));
-      for (Block &block : body) {
-        uint64_t weight = 1;
-        for (unsigned depth = loops.getLoopDepth(&block); depth > 0; --depth)
-          weight = std::min(maximumLoopWeight, weight * loopWeightBase);
-        blockWeights.try_emplace(&block, weight);
-      }
-    }
-    llvm::StringMap<uint64_t> spillOccurrences;
-    module.walk([&](Operation *operation) {
-      StringRef storageKey;
-      int64_t index = -1;
-      if (auto load = dyn_cast<host::SpillLoadOp>(operation)) {
-        storageKey = load.getStorageKey();
-        index = load.getIndex();
-      } else if (auto store = dyn_cast<host::SpillStoreOp>(operation)) {
-        storageKey = store.getStorageKey();
-        index = store.getIndex();
-      }
-      if (index >= 0) {
-        uint64_t weight = blockWeights.lookup(operation->getBlock());
-        spillOccurrences[spillIndexCacheKey(storageKey,
-                                            static_cast<unsigned>(index))] +=
-            std::max<uint64_t>(1, weight);
-      }
-    });
-    for (const auto &entry : spillOccurrences) {
-      StringRef key = entry.first();
-      size_t separator = key.rfind('\n');
-      uint64_t index = 0;
-      if (separator == StringRef::npos ||
-          key.drop_front(separator + 1).getAsInteger(10, index))
-        continue;
-      candidates.push_back(
-          {Kind::Spill, key.str(), index,
-           entry.second * static_cast<uint64_t>(literalSavings(index))});
-    }
-    plannedSpillIndexCount = spillOccurrences.size();
     unsigned callOrdinal = 0;
     module.walk([&](Operation *operation) {
       if (!isa<func::CallOp, host::CallOp>(operation))
@@ -1823,12 +1638,8 @@ private:
           immutableSlot("SystemInt32", std::to_string(candidate.value));
       if (!exists)
         ++addedSlots;
-      if (candidate.kind == Kind::Spill) {
-        cachedSpillIndexSlots.try_emplace(candidate.id, slot);
-      } else {
-        cachedRawGlobalSlots.try_emplace(candidate.id, slot);
-        cachedRawGlobalBases.emplace_back(candidate.value, std::move(slot));
-      }
+      cachedRawGlobalSlots.try_emplace(candidate.id, slot);
+      cachedRawGlobalBases.emplace_back(candidate.value, std::move(slot));
     }
   }
 
@@ -2318,7 +2129,7 @@ private:
     }
 
     if ((exportId || function->hasAttr("vrc.compiler_async_completion")) &&
-        (!globalPlans.empty() || !typedSpillBanks.empty() ||
+        (!globalPlans.empty() ||
          (rawHeapBytes && !externalRawHeapInitialization)))
       emitGlobalInitialization(function.getLoc());
 
@@ -3723,44 +3534,6 @@ private:
           jumpTo(branch.getLoc(), branch.getDefaultDestination());
           continue;
         }
-        if (auto store = dyn_cast<host::SpillStoreOp>(operation)) {
-          auto bank = typedSpillBanks.find(store.getStorageKey());
-          std::string value = valueSlots.lookup(store.getValue());
-          if (bank == typedSpillBanks.end() || value.empty() ||
-              store.getIndex() < 0 ||
-              static_cast<unsigned>(store.getIndex()) >= bank->second.length)
-            return store.emitError("invalid typed spill store plan");
-          constexpr StringLiteral indexSlot = "__vrc_spill_index";
-          addSlot(indexSlot, "SystemInt32", "0", false);
-          emitSpillIndex(store.getLoc(), store.getStorageKey(),
-                         store.getIndex(), indexSlot);
-          emitPush(store.getLoc(), bank->second.slot);
-          emitPush(store.getLoc(), indexSlot);
-          emitPush(store.getLoc(), value);
-          emitExtern(store.getLoc(),
-                     bank->second.arrayType + ".__Set__SystemInt32_" +
-                         bank->second.scalarType + "__SystemVoid");
-          continue;
-        }
-        if (auto load = dyn_cast<host::SpillLoadOp>(operation)) {
-          auto bank = typedSpillBanks.find(load.getStorageKey());
-          std::string result = valueSlots.lookup(load.getValue());
-          if (bank == typedSpillBanks.end() || result.empty() ||
-              load.getIndex() < 0 ||
-              static_cast<unsigned>(load.getIndex()) >= bank->second.length)
-            return load.emitError("invalid typed spill load plan");
-          constexpr StringLiteral indexSlot = "__vrc_spill_index";
-          addSlot(indexSlot, "SystemInt32", "0", false);
-          emitSpillIndex(load.getLoc(), load.getStorageKey(), load.getIndex(),
-                         indexSlot);
-          emitPush(load.getLoc(), bank->second.slot);
-          emitPush(load.getLoc(), indexSlot);
-          emitPush(load.getLoc(), result);
-          emitExtern(load.getLoc(), bank->second.arrayType +
-                                        ".__Get__SystemInt32__" +
-                                        bank->second.scalarType);
-          continue;
-        }
         if (auto load = dyn_cast<memref::LoadOp>(operation)) {
           if (load.getIndices().size() != 1)
             return load.emitError(
@@ -4890,17 +4663,6 @@ private:
     }
   }
 
-  void emitSpillIndex(Location location, StringRef storageKey, unsigned index,
-                      StringRef result) {
-    auto cached =
-        cachedSpillIndexSlots.find(spillIndexCacheKey(storageKey, index));
-    if (cached == cachedSpillIndexSlots.end()) {
-      emitI32Literal(location, index, result);
-      return;
-    }
-    emitCopy(location, cached->second, result);
-  }
-
   void emitRawAddress(Location location, uint64_t address, StringRef result) {
     auto closest = cachedRawGlobalBases.end();
     uint64_t closestDistance = UINT64_MAX;
@@ -5666,14 +5428,6 @@ private:
     addSlot(globalIntValueSlot, "SystemInt32", "0", false);
     addSlot(globalFloatBitsSlot, "SystemInt32", "0", false);
     addSlot(globalFloatValueSlot, "SystemSingle", "0", false);
-    for (const std::string &key : typedSpillBankOrder) {
-      const TypedSpillBankPlan &bank = typedSpillBanks.at(key);
-      emitI32Literal(location, bank.length, globalLengthSlot);
-      emitPush(location, globalLengthSlot);
-      emitPush(location, bank.slot);
-      emitExtern(location,
-                 bank.arrayType + ".__ctor__SystemInt32__" + bank.arrayType);
-    }
     for (const GlobalBankPlan &bank : globalBanks) {
       emitI32Literal(location, bank.length, globalLengthSlot);
       emitPush(location, globalLengthSlot);
@@ -5805,8 +5559,6 @@ private:
   llvm::StringMap<GlobalPlan> globalPlans;
   llvm::StringMap<unsigned> globalBankIndices;
   SmallVector<GlobalBankPlan> globalBanks;
-  llvm::StringMap<TypedSpillBankPlan> typedSpillBanks;
-  SmallVector<std::string> typedSpillBankOrder;
   llvm::StringMap<std::string> sharedConstantSlots;
   llvm::StringMap<std::string> immutableSlots;
   std::map<std::string, std::string> residentLiteralSlots;
@@ -5818,7 +5570,6 @@ private:
   SmallVector<std::pair<std::string, unsigned>> rawAddressCandidates;
   llvm::StringMap<std::string> cachedRawGlobalSlots;
   SmallVector<std::pair<uint64_t, std::string>> cachedRawGlobalBases;
-  llvm::StringMap<std::string> cachedSpillIndexSlots;
   llvm::DenseMap<Operation *, std::string> cachedReturnAddressSlots;
   llvm::DenseMap<Operation *, uint64_t> rawAllocaBases;
   SmallVector<RawObjectPlan> rawObjects;
@@ -5833,7 +5584,6 @@ private:
   bool enforceCapacity = true;
   unsigned requestedScalarRegisterBudget = 16;
   unsigned minimumScalarRegisterCount = 16;
-  unsigned plannedSpillIndexCount = 0;
   bool externalRawHeapInitialization = false;
   SmallVector<std::pair<Operation *, func::FuncOp>> callRelocations;
   SmallVector<AsyncResumeTarget> asyncResumeTargets;
@@ -6212,7 +5962,6 @@ struct LowerUdonHLToUdonAsmPass
           << ", fixed=" << arraySize("fixed_named_slots")
           << ", scalar_registers=" << arraySize("scalar_registers")
           << ", async_persistent=" << arraySize("async_persistent_values")
-          << ", typed_spill_arrays=" << arraySize("typed_spill_arrays")
           << ", typed_global_arrays=" << arraySize("typed_global_arrays")
           << ", constants=" << categoryCount("constant")
           << ", other=" << categoryCount("other")

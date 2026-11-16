@@ -4,6 +4,7 @@
 #include <CL/cl.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <udoncl/udon_abi_layout.h>
 
 #ifdef __cplusplus
 extern "C" {

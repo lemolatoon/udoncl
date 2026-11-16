@@ -80,6 +80,52 @@ assert len(resolve_lines) == 5 and all(
 hidden = first.split("func.func @HiddenDynamicBinding", 1)[1]
 assert "vrc.static_device_operand_provenance" not in hidden, hidden
 
+layout_source = source.with_name("static_device_resource_buffer_view_layout.mlir")
+layout = run_source(layout_source)
+layout_resolve = next(
+    line for line in layout.splitlines()
+    if "call @udonclBufferViewResolve" in line
+)
+assert re.search(r"resource_ids = \[\d+ : i32\]", layout_resolve), layout_resolve
+assert "unknown = false" in layout_resolve, layout_resolve
+
+layout_text = layout_source.read_text(encoding="utf-8")
+
+
+def run_layout_variant(old, new):
+    variant = layout_text.replace(old, new, 1)
+    assert variant != layout_text
+    return subprocess.run(
+        command[:-1], input=variant, text=True, capture_output=True, timeout=5
+    )
+
+
+for old, new in [
+    ("schema_version = 1 : i32", "schema_version = 2 : i32"),
+    ("count = 2 : i32", "count = 2 : i64"),
+    ("count = 2 : i32", "count = -1 : i32"),
+    ("stride_bytes = 88 : i32", "stride_bytes = 0 : i32"),
+    ("offsets = array<i32: 0>", "offsets = array<i32: 80>"),
+    ("offsets = array<i32: 0>", "offsets = array<i32: 0, 0>"),
+    (
+        "count = 2 : i32",
+        "count = 2147483647 : i32",
+    ),
+]:
+    rejected_layout = run_layout_variant(old, new)
+    assert rejected_layout.returncode != 0, (
+        old,
+        new,
+        rejected_layout.stdout,
+        rejected_layout.stderr,
+    )
+
+padding = run_layout_variant(
+    "%view_offset = arith.constant 88 : i32",
+    "%view_offset = arith.constant 20 : i32",
+)
+assert padding.returncode != 0, (padding.stdout, padding.stderr)
+
 print(
     "static_device_resource_buffer_view=passed contexts=1 "
     "copy=strong direct_fields=checked"

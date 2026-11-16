@@ -592,6 +592,10 @@ def main():
         )
 
     onnx_mnist_source = args.source.resolve().parents[1] / 'examples/onnx-mnist'
+    configured_mnist = json.loads(
+        (onnx_mnist_source / 'unity-library.json').read_text(encoding='utf-8')
+    )
+    assert len(configured_mnist['buffers']) == 17
     run([
         args.cmake,
         '-S', onnx_mnist_source,
@@ -919,6 +923,9 @@ def main():
     ] == [(8192, 2)] * 5
     assert onnx_mnist_manifest['device']['mutable_handle_capacity'] == 7
     assert [
+        item['id'] for item in onnx_mnist_manifest['device']['buffers']
+    ] == list(range(1, 8))
+    assert [
         item['capacity_bytes']
         for item in onnx_mnist_manifest['device']['buffers'][-2:]
     ] == [3136, 40]
@@ -946,6 +953,12 @@ def main():
     onnx_transformer_source = (
         args.source.resolve().parents[1] / 'examples/onnx-transformer-tiny'
     )
+    configured_transformer = json.loads(
+        (onnx_transformer_source / 'unity-library.json').read_text(
+            encoding='utf-8'
+        )
+    )
+    assert len(configured_transformer['buffers']) == 37
     run([
         args.cmake,
         '-S', onnx_transformer_source,
@@ -1152,6 +1165,9 @@ def main():
         (transformer_artifact / 'manifest.json').read_text(encoding='utf-8')
     )
     assert len(transformer_manifest['device']['buffers']) == 10
+    assert [
+        item['id'] for item in transformer_manifest['device']['buffers']
+    ] == list(range(1, 11))
     assert transformer_manifest['device']['mutable_handle_capacity'] == 10
     assert {
         item['c_symbol']: item['public_name']
@@ -1174,6 +1190,15 @@ def main():
         ('logits', 128, 524288, 'float32', 'output'),
         ('present_key', 128, 128, 'float32', 'output'),
         ('present_value', 128, 128, 'float32', 'output'),
+    ]
+    assert [
+        (item['name'], item['capacity_bytes'])
+        for item in transformer_manifest['device']['buffers'][6:]
+    ] == [
+        ('private_7', 128),
+        ('private_8', 128),
+        ('private_9', 524288),
+        ('private_10', 524288),
     ]
     assert transformer_manifest['program']['binding_source'] == 'binding.cs'
     transformer_binding = (transformer_artifact / 'binding.cs').read_text(
@@ -1852,8 +1877,16 @@ def main():
     storage_report = json.loads(
         (unity_artifact / 'storage-report.json').read_text(encoding='utf-8')
     )
-    assert storage_report['version'] == 2
-    assert storage_report['typed_spill_arrays'] == []
+    assert storage_report['version'] == 3
+    for obsolete_field in [
+        'typed_spill_arrays',
+        'cached_spill_indices',
+        'cached_spill_index_entries',
+        'synthesized_spill_indices',
+        'address_cache_loop_weight_base',
+        'address_cache_maximum_loop_weight',
+    ]:
+        assert obsolete_field not in storage_report
     assert 'typed_global_arrays' in storage_report
     assert storage_report['fixed_named_slots']
     assert storage_report['scalar_registers']

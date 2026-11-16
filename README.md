@@ -197,38 +197,77 @@ above; Windows uses D3D11. `scripts/build.py` remains available for automation
 that needs an explicit process-aware parallel job count. The CMake build preset
 has no fixed job limit, so direct Ninja builds use its native parallelism.
 
-Before committing, create or select a dedicated Unity 2022.3 project containing
-the VRChat Worlds SDK and Unity for MCP. It must be a real Unity project with
-`Packages/manifest.json`; do not point the setting at a temporary directory under
-`build`. Record the editor and project paths in the repository-local `.env`:
+Commit validation runs in the background against every exact commit SHA. First
+create a dedicated Unity 2022.3 template project containing the VRChat Worlds
+SDK and Unity for MCP. It must be a real Unity project with
+`Packages/manifest.json`; the validation service treats it as read-only and
+opens only isolated worker copies. Record the editor and template paths in the
+repository-local `.env`:
 
 ```dotenv
 UNITY_EDITOR_PATH=C:\Program Files\Unity\Hub\Editor\2022.3.22f1\Editor\Unity.exe
 UDONCL_UNITY_TEST_PROJECT=C:\path\to\dedicated\udoncl-test
 ```
 
-Close that Unity project, stage the intended change, and run the single
-authoritative gate:
+Install the tracked Git hooks and per-user coordinator once. The coordinator is
+registered through Task Scheduler on Windows and a systemd user service on
+Linux. If Task Scheduler registration is denied, Windows automatically installs
+a hidden per-user Startup supervisor instead. `--no-system-service` keeps the
+manual background process only:
+
+```text
+python scripts/precheck_service.py install --jobs 2
+python scripts/precheck_service.py status
+```
+
+If a worker has no LLVM or ONNX-MLIR dependency prefix, it runs the locked
+repository installers before validation. Each worker has its own persistent Git
+worktree and Unity project, while each commit receives a separate build/output
+directory, so multiple commits can be tested concurrently without sharing
+mutable build or Unity state. On Linux the Unity gate uses Vulkan; Windows uses
+D3D11.
+
+The pre-commit hook requires a healthy coordinator and performs only the fast
+format and whitespace checks. The post-commit hook writes the new SHA to the
+SQLite queue and returns immediately:
 
 ```text
 git add <paths>
-python scripts/precommit.py
+git commit -m "describe the change"
+python scripts/precheck_status.py --commit HEAD --require-enqueued
 ```
 
-The gate first formats and re-stages only the originally staged paths, then
-validates the installed ONNX-MLIR receipt, builds and runs the native tests,
-generates fixtures, runs the complete `Udoncl.Editor.Tests` assembly through
-Unity MCP, rejects skipped tests and console errors, and checks Git whitespace.
-Commit only after it prints
-`precommit=passed`. If a checked-in Unity example archive is reported as stale,
-regenerate it from the already generated fixtures, stage the updated archives,
-and rerun the gate:
+Successful background jobs are silent. Failed jobs produce a desktop
+notification and remain visible in the database:
 
 ```text
-python scripts/package_example_artifacts.py
-git add unity/Packages/com.lemolatoon.udoncl/Editor/Examples
-python scripts/precommit.py
+python scripts/precheck_status.py --failures --unreported
+python scripts/precheck_service.py retry HEAD
 ```
+
+Every outgoing SHA must pass independently. A later successful commit does not
+cover a failed ancestor. Before pushing, wait for the complete outgoing range;
+the pre-push hook rejects missing, pending and failed results too:
+
+```text
+python scripts/precheck_status.py --outgoing --wait --require-passed
+git push
+```
+
+Service administration is cross-platform:
+
+```text
+python scripts/precheck_service.py start --jobs 2
+python scripts/precheck_service.py stop
+python scripts/precheck_service.py status
+python scripts/precheck_service.py uninstall
+```
+
+`UDONCL_PRECHECK_CACHE_ROOT` overrides the per-user state directory and
+`UDONCL_PRECHECK_JOBS` sets the default worker count. Queue state and structured
+results live in SQLite; large Unity/MCP/native logs remain content-hashed files
+referenced by the database. `scripts/precommit.py` remains the authoritative
+full native and Unity gate used internally by commit-snapshot workers.
 
 Formatter versions are pinned in `scripts/requirements-format.txt` and
 `.config/dotnet-tools.json`; a different `clang-format` version is rejected.

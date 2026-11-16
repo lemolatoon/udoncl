@@ -8,31 +8,74 @@ These rules apply to the entire repository.
   `gpt-6-luna` model with `xhigh` reasoning effort. The subagent must follow the
   `unity-mcp-orchestrator` skill and report readiness, tests, console, and
   cleanup results. The primary agent owns repository edits.
-- The sole routine exception is `scripts/precommit.py`: the primary agent is
-  explicitly allowed to run this Python command directly because the script
-  performs the fixed Unity MCP validation workflow internally. Do not replace
-  it with direct Unity MCP calls or separate gate commands.
+- The background commit validation service is the sole routine exception. The
+  primary agent may start, inspect, and enqueue work for the service because
+  each worker executes the fixed repository-owned Unity MCP workflow through
+  `scripts/precommit.py` in an isolated Unity project.
+- Do not replace the service gate with direct Unity MCP calls or ad-hoc Unity
+  test commands. Additional interactive Unity diagnosis still requires the
+  Luna/xhigh subagent.
 - A pre-commit failure may be inspected without Unity MCP. Route any additional
   Unity MCP diagnosis or validation through the Luna/xhigh subagent.
 
-## Pre-Commit Gates
+## Commit Validation Service
 
-- Stage the intended change, then run exactly one gate command against a closed
-  Unity 2022.3 project with the VRChat Worlds SDK and Unity for MCP installed:
+- Every commit must be validated independently by the repository background
+  validation service. A passing descendant does not validate an ancestor.
+- Before creating a commit, run:
 
   ```text
-  python scripts/precommit.py
+  python scripts/precheck_service.py require-ready
   ```
 
-- Set `UNITY_EDITOR_PATH` and `UDONCL_UNITY_TEST_PROJECT` in the repository
-  `.env`. Explicit `--unity` and `--project` arguments override these defaults.
+  Do not commit if it fails. Do not bypass or disable the repository hooks.
+- Stage only the intended change and commit normally. The `pre-commit` hook
+  performs synchronous formatting and whitespace checks. The `post-commit`
+  hook durably enqueues the exact new commit SHA and returns without waiting for
+  the native or Unity gate.
+- After committing, confirm that the exact SHA was enqueued:
 
-- The command is authoritative. It generates fixtures, uses Python to run the
-  whole `Udoncl.Editor.Tests` assembly through Unity MCP, rejects skipped tests,
-  console errors, or cleanup leaks, then formats and re-stages only the paths
-  that were already staged and runs format and Git whitespace checks.
-- Do not commit unless it prints `precommit=passed`. If files change afterward,
-  stage the intended change and rerun the same command.
+  ```text
+  python scripts/precheck_status.py --commit HEAD --require-enqueued
+  ```
+
+  Continue working while pending validation runs in the background.
+- Before another commit and before reporting completed work, run:
+
+  ```text
+  python scripts/precheck_status.py --failures --unreported
+  ```
+
+  Successful or pending jobs require no user-facing report. On failure,
+  immediately report the commit and concise failure. Amend/rebase the failing
+  commit into a new SHA or remove it from outgoing history; do not merely add a
+  passing descendant and do not push while the failed SHA remains outgoing.
+- Before pushing, wait for every outgoing commit to pass:
+
+  ```text
+  python scripts/precheck_status.py --outgoing --wait --require-passed
+  ```
+
+  The `pre-push` hook enforces the same rule. Never push pending, failed, stale,
+  or unvalidated commits.
+- Results are authoritative only in the service SQLite database and must match
+  the exact commit SHA and validation fingerprint. Never edit the database or
+  synthesize a pass. Amend, rebase, cherry-pick, and merge create new SHAs that
+  require independent validation.
+- `scripts/precommit.py` is the internal worker gate. Do not run it
+  synchronously for routine commits. Manual use is limited to focused diagnosis
+  of a failed background job.
+
+## Validation Service Safety
+
+- The lightweight coordinator must remain running while commits are created;
+  heavy executors run only while jobs are queued. Use the repository service
+  commands on Windows and Linux and do not launch worker commands manually.
+- Never share a mutable Git worktree, build directory, Unity project, Unity
+  Library, MCP status directory, or output directory between concurrent jobs.
+- Treat `UDONCL_UNITY_TEST_PROJECT` as a read-only template. Workers open only
+  their isolated copies. Preserve failure logs and artifacts. A crashed or
+  cleanup-failed worker slot is contaminated and must be rebuilt before reuse.
 
 ## CUDA Library API Compatibility
 

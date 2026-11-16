@@ -4,12 +4,13 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <udoncl/device_memory.h>
+#include <udoncl/udon_abi_layout.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define UDONONNX_MAX_TENSOR_RANK 8
+#define UDONONNX_MAX_TENSOR_RANK UDONCL_UDON_ABI_ONNX_MAX_TENSOR_RANK
 
 typedef enum udononnxStatus {
   UDONONNX_STATUS_SUCCESS = 0,
