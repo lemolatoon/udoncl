@@ -290,66 +290,76 @@ recognize MNIST, TinyLlama, tensor names, layer counts, or model shapes.
   materialization. A partial, stale, or incomplete report fails instead of
   invoking final-lowering recoloring. Only a module with no allocation schema
   may use the temporary standalone compatibility path.
-- Stage 5 is next. The current compatibility path is deliberately not the
-  target design: `PrepareUdonAsyncRuntime` computes suspend liveness, assigns a
-  unique typed-spill index, records `vrc.async_spill_slots`, and immediately
-  demotes each value to `udonhl.spill_store`/`spill_load` operations.
-  `AllocateHostStorage` then solves those entries again in the separate
-  `TypedSpill` domain and rewrites their indices, while its writable problem
-  independently colors the store operands and load results as ordinary SSA.
-  `LowerScalar` consequently allocates typed arrays, index materialization,
-  array constructor/Get/Set externs, and direct colors for the same logical
-  persistent values.
+- Stage 5 uses pre-allocation SSA canonicalization rather than a second async-
+  specific allocation problem. `PrepareUdonAsyncRuntime` still computes
+  suspend liveness and temporarily demotes a live value to marked
+  `udonhl.spill_store`/`spill_load` aliases with a compatibility index.
+  `DiscoverAsyncPersistentStorage` validates that representation, gives the
+  definition and every reload one deterministic logical request identity, and
+  records physical type, direct legality, semantic-use priority, members, and
+  pre-demotion conflicts without choosing storage. The compatibility index is
+  discovery evidence only, never a selected placement.
 
-  Implement Stage 5 in independently testable responsibilities:
+  `MaterializeAsyncPersistentStorage` then normalizes the SSA graph before any
+  Host allocation: it replaces every reload use with the request's original
+  definition, erases the frame store/load aliases, and removes the function
+  spill plan and live-slot attributes. Only after every alias has been removed
+  does it emit the version 2 direct-request receipt. That receipt retains the
+  canonical value ID, physical type, semantic-use priority, and the original
+  persistent-to-persistent conflicts. It is audit and allocator input metadata,
+  not an allocation decision or color.
 
-  1. Add a metadata-only async-persistent discovery component after current
-     async preparation. It validates each function plan and its marked
-     store/load operations and gives one stable logical request identity to the
-     original definition plus every reload result. It must not choose a color,
-     rewrite an index, or materialize storage. The first commit may consume the
-     current unique pre-allocation index only as a compatibility identity; that
-     index is not a physical placement and must disappear with the migration.
-  2. Project ordinary SSA liveness through those logical equivalence classes
-     when building the existing writable `HostStorageProblem`. Union the
-     member SSA interference produced by `HostStorageLiveness` with the
-     pre-demotion suspend interference already recorded by preparation, ignore
-     conflicts within one logical request, and retain simultaneous-consumer
-     constraints. Submit one prioritized request with the same legal `direct`
-     alternative used by ordinary SSA. Priority is the saturating aggregate of
-     semantic member uses; generated frame store/load markers do not inflate
-     it. Suspend persistence is correctness and therefore affects liveness,
-     not an arbitrary model-specific priority bonus.
-  3. Emit one authoritative selected request/color and complete member mapping
-     for every definition and reload SSA value. A separate async-persistent
-     materializer consumes that selection, makes the marked frame accesses
-     direct-slot aliases/no-ops, and removes legacy spill placement metadata.
-     Final lowering validates the materialized direct contract and must not
-     allocate a typed bank, synthesize an index, or select a fallback.
-  4. Delete the `TypedSpill` compatibility solver, index remapping, typed spill
-     array planning, index caches, constructor/Get/Set emission, and obsolete
-     report fields only after all async production paths consume the selected
-     direct plan.
+  Ordinary CFG liveness is necessary but not sufficient for a persistent
+  value. A suspend ends the current Udon invocation; before its matching resume,
+  another exported invocation can execute ordinary SSA whose CFG live range is
+  disjoint from the suspended function while the persistent value must still
+  survive. This missing cross-invocation interference allowed an ordinary value
+  to reuse the MNIST persistent buffer-index color and corrupt index 839.
 
-  Keep these responsibilities in separate files: async semantic liveness and
-  demotion remain in `PrepareUdonAsyncRuntime.cpp`; metadata-only request
-  validation/discovery belongs in a new async-persistent discovery file;
-  generic equivalence projection and selection belong beside the existing
-  writable problem builder rather than in async lowering; selected-plan
-  rewriting belongs in a dedicated async-persistent materialization file; and
-  `LowerScalar.cpp` only validates and consumes the result. The first TDD slice
-  extends the model-independent `host_to_async` fast/suspend/error-merge
-  fixture with stable request/member metadata and malformed-plan negatives,
-  without changing generated storage. Subsequent acceptance requires
-  interfering persistent values to receive distinct direct colors,
-  noninterfering persistent and ordinary values to reuse colors, every member
-  to map to its request color, and final Udon output to contain no typed spill
-  arrays, spill-index slot, or spill array constructor/Get/Set externs.
-- Stage 5.1 is complete: `DiscoverAsyncPersistentStorage` validates the
-  current demoted frame accesses and emits deterministic logical request IDs,
-  member SSA IDs, direct legality, semantic-use priority, and pre-demotion
-  conflicts without selecting or rewriting storage. The final Host-storage
-  pipeline runs this discovery before allocation. Stage 5.2, equivalence-class
-  projection into the writable problem, is next.
+  Until a scheduler proof can bound which invocations may overlap a suspended
+  continuation, `AllocateHostStorage` conservatively adds interference between
+  each normalized persistent value and every ordinary or cross-function
+  persistent value of the same physical type. The receipt priority overrides
+  the priority of that same canonical direct request rather than creating a
+  second request. These constraints enter the same module-wide
+  `HostStorageProblem`, `Writable` domain, and direct color space as ordinary
+  SSA. No post-selection alias rewrite, special priority bonus, separate
+  persistent allocator, or `TypedSpill` bank is permitted.
+
+  The production finalization order is now fixed releases, async-persistent
+  discovery, async-persistent SSA normalization, backend-literal exposure,
+  literal/rematerialization discovery, unified allocation and capacity fit,
+  verification, then scalar lowering. The focused model-independent
+  fast/suspend/error-merge fixture proves that normalization removes all spill
+  operations and legacy spill/live-slot metadata before literal discovery and
+  allocation and that the version 2 receipt survives into unified allocation.
+  The focused path and CMake consumer pass with the conservative
+  cross-invocation interference. Unity numerical revalidation, including the
+  MNIST buffer-index path, is still pending.
+
+  Keep the responsibilities separate: `PrepareUdonAsyncRuntime.cpp` owns
+  coroutine semantics and the temporary compatibility representation;
+  `DiscoverAsyncPersistentStorage.cpp` owns validation and logical identity;
+  `MaterializeAsyncPersistentStorage.cpp` owns pre-allocation SSA
+  normalization and the canonical version 2 receipt; ordinary Host liveness
+  owns intra-invocation interference, while `AllocateHostStorage.cpp` merges
+  the receipt's original persistent conflicts and the conservative
+  cross-invocation constraints into the single allocation problem and owns
+  priority, alternatives, and colors. `LowerScalar.cpp` only consumes the
+  resulting ordinary direct plan.
+
+  Before declaring Stage 5 complete, make discovery tagging and materialization
+  fully transactional and schema-exact: validate every request field, exact
+  member-to-frame-alias coverage, every marked operation, dominance of each
+  replacement, and any existing completion receipt before the first tag, use
+  replacement, or erase. Add malformed, partial, duplicate, stale, and
+  repeated-run focused cases.
+
+  Then delete the now-inactive `TypedSpill` solver/index remapping from
+  `AllocateHostStorage`, remove transient spill-index assignment when the
+  preparation contract no longer needs it, and delete typed spill bank/index-
+  cache/constructor/Get/Set lowering plus obsolete report fields. Final
+  acceptance requires production Udon output to contain no typed spill arrays,
+  spill-index slot, or spill array constructor/Get/Set externs.
 - Stages 6-8 and the TinyLlama generated-U# conversation acceptance path remain
   open.

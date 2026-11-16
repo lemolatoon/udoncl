@@ -394,6 +394,44 @@ for fragment in [
 ]:
     assert fragment not in lowered.stdout, (fragment, lowered.stdout)
 
+materialized_persistent = subprocess.run(
+    [
+        optimizer,
+        '--vrc-discover-async-persistent-storage',
+        '--vrc-materialize-async-persistent-storage',
+        '--vrc-discover-host-rematerialization',
+        '--vrc-allocate-host-storage',
+    ],
+    input=lowered.stdout,
+    text=True,
+    capture_output=True,
+)
+assert materialized_persistent.returncode == 0, (
+    materialized_persistent.stdout,
+    materialized_persistent.stderr,
+)
+for fragment in [
+    'vrc.async_persistent_materialization_version = 2 : i32',
+    'vrc.async_persistent_direct_requests',
+    'canonical_value_id = ',
+    'physical_type = ',
+    'interferes_with = [',
+]:
+    assert fragment in materialized_persistent.stdout, (
+        fragment,
+        materialized_persistent.stdout,
+    )
+for fragment in [
+    'udonhl.spill_store',
+    'udonhl.spill_load',
+    'vrc.async_spill_slots',
+    'vrc.async_live_spill_slots',
+]:
+    assert fragment not in materialized_persistent.stdout, (
+        fragment,
+        materialized_persistent.stdout,
+    )
+
 checkpoint_operations = []
 previous = '%arg0'
 for index in range(320):

@@ -150,6 +150,8 @@ struct DiscoverAsyncPersistentStoragePass
           invalid = true;
           return;
         }
+        operation->setAttr("vrc.async_persistent_request_id",
+                           builder.getStringAttr(found->first));
         if (auto store = dyn_cast<udonhl::SpillStoreOp>(operation)) {
           if (found->second.definition) {
             store.emitError(

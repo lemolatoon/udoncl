@@ -148,6 +148,10 @@ def DiscoverAsyncPersistentStoragePass : Pass<"vrc-discover-async-persistent-sto
   let summary = "Describe live-across-suspend SSA equivalence classes without choosing storage";
   let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "mlir::func::FuncDialect"];
 }
+def MaterializeAsyncPersistentStoragePass : Pass<"vrc-materialize-async-persistent-storage", "mlir::ModuleOp"> {
+  let summary = "Normalize validated async frame aliases to one SSA storage identity before allocation";
+  let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "mlir::func::FuncDialect"];
+}
 def ExposeHostBackendLiteralUsesPass : Pass<"vrc-expose-host-backend-literal-uses", "mlir::ModuleOp"> {
   let summary = "Expose verified backend-only Host literals as typed SSA operands";
   let dependentDialects = ["::vrc::vrc::VRCDialect", "mlir::arith::ArithDialect"];

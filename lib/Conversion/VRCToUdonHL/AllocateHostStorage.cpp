@@ -693,6 +693,54 @@ public:
     if (failed(analysis))
       return failure();
 
+    std::map<std::string, uint64_t> persistentPriorities;
+    std::map<std::string, std::string> persistentTypes;
+    std::map<std::string, SmallVector<std::string>> persistentConflicts;
+    auto persistentVersion = module->getAttrOfType<IntegerAttr>(
+        "vrc.async_persistent_materialization_version");
+    auto persistentRequests = module->getAttrOfType<ArrayAttr>(
+        "vrc.async_persistent_direct_requests");
+    if (bool(persistentVersion) != bool(persistentRequests) ||
+        (persistentVersion && persistentVersion.getInt() != 2))
+      return module.emitError(
+          "invalid normalized async persistent allocation schema");
+    if (persistentRequests)
+      for (Attribute attribute : persistentRequests) {
+        auto request = dyn_cast<DictionaryAttr>(attribute);
+        auto valueId = request ? request.getAs<StringAttr>("canonical_value_id")
+                               : StringAttr();
+        auto physicalType =
+            request ? request.getAs<StringAttr>("physical_type") : StringAttr();
+        auto priority =
+            request ? request.getAs<IntegerAttr>("priority") : IntegerAttr();
+        auto conflicts =
+            request ? request.getAs<ArrayAttr>("interferes_with") : ArrayAttr();
+        if (!request || !valueId || valueId.getValue().empty() ||
+            !physicalType || physicalType.getValue().empty() || !priority ||
+            !priority.getType().isInteger(64) || priority.getInt() < 1 ||
+            !conflicts ||
+            !persistentPriorities
+                 .emplace(valueId.getValue().str(),
+                          static_cast<uint64_t>(priority.getInt()))
+                 .second ||
+            !persistentTypes
+                 .emplace(valueId.getValue().str(),
+                          physicalType.getValue().str())
+                 .second)
+          return module.emitError(
+              "invalid normalized async persistent allocation request");
+        SmallVector<std::string> conflictIds;
+        for (Attribute conflict : conflicts) {
+          auto conflictId = dyn_cast<StringAttr>(conflict);
+          if (!conflictId || conflictId.getValue().empty())
+            return module.emitError(
+                "invalid normalized async persistent interference");
+          conflictIds.push_back(conflictId.getValue().str());
+        }
+        persistentConflicts.emplace(valueId.getValue().str(),
+                                    std::move(conflictIds));
+      }
+
     std::map<std::string, Operation *> operations;
     for (const auto &[operation, stableId] : analysis->operationIds)
       if (!operations.emplace(stableId, operation).second)
@@ -718,6 +766,15 @@ public:
       for (OpOperand &use : value.getUses())
         if (priority != std::numeric_limits<uint64_t>::max())
           ++priority;
+      auto persistentPriority = persistentPriorities.find(stableId->second);
+      if (persistentPriority != persistentPriorities.end()) {
+        auto persistentType = persistentTypes.find(stableId->second);
+        if (persistentType == persistentTypes.end() ||
+            persistentType->second != physicalType->second)
+          return module.emitError(
+              "normalized async persistent physical type changed");
+        priority = persistentPriority->second;
+      }
       auto node =
           problem.addRequest("direct:" + stableId->second, physicalType->second,
                              analysis->ordinals.lookup(value), priority);
@@ -739,6 +796,34 @@ public:
             !problem.addInterference(directNodes.lookup(value), found->second))
           return module.emitError("invalid Host direct interference");
       }
+    std::map<std::string, Value> directValueById;
+    for (Value value : directValues)
+      directValueById.emplace(analysis->valueIds.lookup(value), value);
+    for (const auto &[valueId, conflicts] : persistentConflicts) {
+      auto persistent = directValueById.find(valueId);
+      if (persistent == directValueById.end())
+        return module.emitError(
+            "normalized async persistent value is not allocatable");
+      for (const std::string &conflictId : conflicts)
+        if (!directValueById.count(conflictId))
+          return module.emitError(
+              "normalized async persistent conflict is not allocatable");
+
+      // A suspend point ends the current Udon invocation. Until the matching
+      // resume, any other exported invocation may use an otherwise-dead
+      // writable slot, so persistent values cannot share with ordinary SSA of
+      // the same physical type. Keeping this constraint in the common problem
+      // preserves one allocator and one color space without relying on a
+      // separate typed-spill bank.
+      for (Value other : directValues) {
+        if (analysis->storageKeys.lookup(other) !=
+            analysis->storageKeys.lookup(persistent->second))
+          continue;
+        if (!problem.addInterference(directNodes.lookup(persistent->second),
+                                     directNodes.lookup(other)))
+          return module.emitError("invalid async persistent Host interference");
+      }
+    }
 
     std::set<std::string> knownSiteIds;
     std::map<std::string, std::string> instanceBySite;
