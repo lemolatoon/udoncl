@@ -277,6 +277,32 @@ candidate = run(
     candidate_materialized.stdout,
 )
 assert candidate.returncode == 0, (candidate.stdout, candidate.stderr)
+candidate_allocations = re.search(
+    r"vrc\.host_direct_color_allocations = \[(.*?)\]",
+    candidate_materialized.stdout,
+    re.DOTALL,
+)
+assert candidate_allocations
+planned_candidate_slots = {
+    "__vrc_shared_r_"
+    + re.search(r'physical_type = "([^"]+)"', entry).group(1)
+    + "_"
+    + re.search(r"color = (\d+) : i32", entry).group(1)
+    for entry in re.findall(r"\{([^{}]+)\}", candidate_allocations.group(1))
+}
+assert planned_candidate_slots
+assert all(slot in candidate.stdout for slot in planned_candidate_slots)
+invalid_candidate_plan = re.sub(
+    r'(vrc\.host_direct_color_allocations = \[\{[^{}]*value_id = ")([^"]+)',
+    r'\1missing-value',
+    candidate_materialized.stdout,
+    count=1,
+)
+assert invalid_candidate_plan != candidate_materialized.stdout
+invalid_candidate = run(
+    ["--vrc-lower-udonhl-to-udonasm", "--verify-each"], invalid_candidate_plan
+)
+assert invalid_candidate.returncode != 0
 candidate_get = re.search(
     r'udonasm\.push "__udoncl_static_tensors"\s+'
     r'udonasm\.push "([^"]+)"\s+'

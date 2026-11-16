@@ -3,6 +3,7 @@
 #include "VRC/Analysis/HostStorageAllocation.h"
 #include "VRC/Analysis/HostStorageLiveness.h"
 #include "VRC/Support/HostLiteral.h"
+#include "VRC/Support/HostStorageType.h"
 #include "VRC/Support/UdonLimits.h"
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
 #include "VRC/Dialect/VRC/VRCDialect.h"
@@ -664,10 +665,7 @@ public:
     auto analysis = analyzeHostStorageInterference(
         module, functions,
         [](Type type) -> FailureOr<std::string> {
-          StringRef physicalType = hostLiteralPhysicalType(type);
-          if (physicalType == "unsupported")
-            return failure();
-          return physicalType.str();
+          return hostStorageKey(type);
         },
         materializedConstants, true);
     if (failed(analysis))

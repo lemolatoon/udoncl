@@ -147,7 +147,33 @@ selected shared resources, and implement suspend-crossing copies. It must not
 rerun allocation, invent a fallback, partially rewrite a value, or recognize a
 model.
 
-### 3.4 Final lowering and Unity assembly
+### 3.4 Selected-plan authority
+
+Once `vrc.host_writable_allocation_version` and
+`vrc.host_direct_color_allocations` are present, they are the only authority
+for ordinary SSA placement in final Udon lowering. Consumption is independent
+of whether the module contains `udonhl.literal_materialize` operations.
+
+The consumer reconstructs stable value identities only to validate the plan
+and map selected colors to SSA values. It must reject a partial schema, an
+unknown or duplicate value identity, a physical-type mismatch, an unsupported
+placement, an interfering color, or an allocation that omits an ordinary
+allocatable SSA value. It must not repair any of these cases by graph-coloring
+the missing value again.
+
+Literal-materialization results, fixed ABI fields, descriptor snapshots, and
+other resources not yet represented by the ordinary-SSA schema remain
+separate explicit categories during migration. Their handling must not provide
+an implicit fallback for an ordinary SSA value covered by the schema.
+
+Modules with no writable-allocation schema at all may temporarily use the
+standalone-lowering compatibility path while direct pass tests and external
+tools migrate. A malformed or half-present schema is never a legacy input.
+Production compiler pipelines must always run discovery and allocation first.
+The compatibility path is removed after standalone callers use that pipeline;
+it is not part of the final contract.
+
+### 3.5 Final lowering and Unity assembly
 
 Udon Assembly lowering consumes only selected placements. Verification
 recounts `.data` declarations and distinct anonymous `EXTERN` strings, proves
@@ -186,8 +212,14 @@ Implement and commit in independently testable stages:
 3. Add exact-capacity Unity assembly and a regression that assembles,
    serializes, retrieves, and executes a program requiring more than 512
    addresses.
-4. Route ordinary SSA through the unified allocator and remove the 16/256
-   direct-register-budget spill recursion.
+4. Route ordinary SSA through the unified allocator in three independently
+   tested steps:
+   1. remove the 16/256 direct-register-budget spill recursion;
+   2. submit explicit prioritized requests with a legal direct alternative and
+      report the selected alternative and color;
+   3. consume that complete report independently of literal materialization,
+      reject missing selections, and remove ordinary-SSA recoloring from final
+      lowering.
 5. Route live-across-suspend values through the same direct allocation and
    remove capacity-driven typed spill arrays and spill-index allocation.
 6. Route constants, generated literals, static-resource indices, fixed ABI
@@ -250,9 +282,15 @@ recognize MNIST, TinyLlama, tensor names, layer counts, or model shapes.
 
 - Stages 1-3 are complete: the value-centric request model, shared
   1,048,576-address limit, and exact-capacity Unity assembly path are in use.
-- Stage 4 is complete: ordinary SSA coloring has no 16/256 register-budget
+- Stage 4.1 is complete: ordinary SSA coloring has no 16/256 register-budget
   cutoff and does not synthesize typed-array spill loads or stores.
-- Stage 5 is next: migrate pre-existing live-across-suspend spill operations to
+- Stages 4.2 and 4.3 are complete: ordinary SSA requests carry an explicit
+  priority and direct alternative; the selected report covers every supported
+  Host physical type and is authoritative even without literal
+  materialization. A partial, stale, or incomplete report fails instead of
+  invoking final-lowering recoloring. Only a module with no allocation schema
+  may use the temporary standalone compatibility path.
+- Stage 5 next migrates pre-existing live-across-suspend spill operations to
   the same direct-slot allocation, then remove their typed spill banks.
 - Stages 6-8 and the TinyLlama generated-U# conversation acceptance path remain
   open.

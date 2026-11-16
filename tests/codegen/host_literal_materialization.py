@@ -202,8 +202,6 @@ candidate_only = lower(
 }
 '''
 )
-assert candidate_only.returncode == 0, candidate_only.stderr
-assert "__vrc_resident_" not in candidate_only.stdout
-assert 'initial = "22"' in candidate_only.stdout
+assert candidate_only.returncode != 0
 
 print(f"host_literal_materialization_codegen=passed cases={len(cases)}")

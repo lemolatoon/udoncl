@@ -3,6 +3,7 @@
 #include "VRC/ABI/Manifest/UdonSharpABI.h"
 #include "VRC/Analysis/HostStorageLiveness.h"
 #include "VRC/Support/HostLiteral.h"
+#include "VRC/Support/HostStorageType.h"
 #include "VRC/Support/UdonLimits.h"
 #include "VRC/Dialect/UdonAsm/UdonAsmDialect.h"
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
@@ -111,57 +112,11 @@ struct ResidentLiteralRequest {
 };
 
 static FailureOr<StringRef> udonType(Type type) {
-  if (type.isInteger(1))
-    return StringRef("SystemBoolean");
-  if (type.isInteger(8) || type.isInteger(16))
-    return StringRef("SystemInt32");
-  if (type.isInteger(32))
-    return StringRef("SystemInt32");
-  if (type.isInteger(64))
-    return StringRef("SystemInt64");
-  if (type.isF32())
-    return StringRef("SystemSingle");
-  if (type.isIndex())
-    return StringRef("SystemInt32");
-  if (isa<::vrc::vrc::BufferType>(type))
-    return StringRef("SystemInt32");
-  if (isa<::vrc::vrc::EventType>(type))
-    return StringRef("SystemInt32");
-  if (isa<::vrc::vrc::DispatchDescType>(type))
-    return StringRef("SystemInt32");
-  if (isa<host::FrameType>(type))
-    return StringRef("SystemInt32");
-  if (auto pointer = dyn_cast<host::PtrType>(type)) {
-    if (pointer.getAddressSpace() == UDONCL_STRING_ADDRESS_SPACE)
-      return StringRef("SystemString");
-    if (pointer.getAddressSpace() == UDONCL_INT32_ARRAY_ADDRESS_SPACE)
-      return StringRef("SystemInt32Array");
-    return StringRef("SystemInt32");
-  }
-  if (auto memref = dyn_cast<MemRefType>(type)) {
-    if (memref.getRank() != 1 || !memref.getLayout().isIdentity())
-      return failure();
-    if (memref.getElementType().isF32())
-      return StringRef("SystemSingleArray");
-    if (memref.getElementType().isInteger(32))
-      return StringRef("SystemInt32Array");
-  }
-  return failure();
+  return hostStorageUdonType(type);
 }
 
 static FailureOr<std::string> slotStorageKey(Type type) {
-  auto physicalType = udonType(type);
-  if (failed(physicalType))
-    return failure();
-  std::string key = physicalType->str();
-  if (auto memref = dyn_cast<MemRefType>(type)) {
-    key += "_n";
-    if (memref.hasStaticShape())
-      key += std::to_string(memref.getNumElements());
-    else
-      key += "dynamic";
-  }
-  return key;
+  return hostStorageKey(type);
 }
 
 static StringRef arrayLoadExtern(MemRefType type) {
@@ -1047,54 +1002,64 @@ private:
         "vrc.host_literal_allocation_version");
     auto residentAllocations =
         module->getAttrOfType<ArrayAttr>("vrc.host_literal_allocations");
-    if (!hasMaterialization)
+    bool hasWritablePlan = version || allocations;
+    if (!hasWritablePlan) {
+      if (hasMaterialization)
+        return module.emitError(
+            "literal materialization lacks direct color allocations");
       return success();
-    if (!version || version.getInt() != 2 || !allocations || !residentVersion ||
-        residentVersion.getInt() != 1 || !residentAllocations)
+    }
+    if (!version || version.getInt() != 2 || !allocations)
+      return module.emitError("invalid direct color allocation schema");
+    hasWritableAllocationPlan = true;
+    if (hasMaterialization &&
+        (!residentVersion || residentVersion.getInt() != 1 ||
+         !residentAllocations))
       return module.emitError(
           "literal materialization lacks direct color allocations");
 
     std::set<std::pair<std::string, int64_t>> residentColors;
-    for (Attribute attribute : residentAllocations) {
-      auto allocation = dyn_cast<DictionaryAttr>(attribute);
-      auto key =
-          allocation ? allocation.getAs<StringAttr>("key_id") : StringAttr();
-      auto physicalType = allocation
-                              ? allocation.getAs<StringAttr>("physical_type")
-                              : StringAttr();
-      auto placement =
-          allocation ? allocation.getAs<StringAttr>("placement") : StringAttr();
-      auto color =
-          allocation ? allocation.getAs<IntegerAttr>("color") : IntegerAttr();
-      auto value =
-          allocation ? allocation.getAs<StringAttr>("value") : StringAttr();
-      if (!allocation || !key || key.getValue().empty() || !physicalType ||
-          physicalType.getValue().empty() || !placement ||
-          placement.getValue() != "resident_shared" || !color ||
-          color.getInt() < 0 ||
-          !residentColors
-               .insert({physicalType.getValue().str(), color.getInt()})
-               .second ||
-          allocatorResidentSlots.count(key.getValue().str()))
-        return module.emitError("invalid resident literal allocation");
-      allocatorResidentSlots.emplace(key.getValue().str(),
-                                     "__vrc_resident_" +
-                                         physicalType.getValue().str() + "_" +
-                                         std::to_string(color.getInt()));
-      if (materializationSeedKeys.count(key.getValue().str()) && value) {
-        uint64_t bits = 0;
-        StringRef encoded = value ? value.getValue() : StringRef();
-        if (physicalType.getValue() != "SystemInt32" ||
-            !encoded.consume_front("0x") || encoded.getAsInteger(16, bits) ||
-            bits > std::numeric_limits<uint32_t>::max())
-          return module.emitError(
-              "invalid allocated i32 rematerialization seed");
-        std::string slot = allocatorResidentSlots.at(key.getValue().str());
-        int32_t initial = static_cast<int32_t>(static_cast<uint32_t>(bits));
-        addSlot(slot, "SystemInt32", std::to_string(initial), false);
-        residentLiteralSlots.try_emplace(key.getValue().str(), slot);
+    if (hasMaterialization)
+      for (Attribute attribute : residentAllocations) {
+        auto allocation = dyn_cast<DictionaryAttr>(attribute);
+        auto key =
+            allocation ? allocation.getAs<StringAttr>("key_id") : StringAttr();
+        auto physicalType = allocation
+                                ? allocation.getAs<StringAttr>("physical_type")
+                                : StringAttr();
+        auto placement = allocation ? allocation.getAs<StringAttr>("placement")
+                                    : StringAttr();
+        auto color =
+            allocation ? allocation.getAs<IntegerAttr>("color") : IntegerAttr();
+        auto value =
+            allocation ? allocation.getAs<StringAttr>("value") : StringAttr();
+        if (!allocation || !key || key.getValue().empty() || !physicalType ||
+            physicalType.getValue().empty() || !placement ||
+            placement.getValue() != "resident_shared" || !color ||
+            color.getInt() < 0 ||
+            !residentColors
+                 .insert({physicalType.getValue().str(), color.getInt()})
+                 .second ||
+            allocatorResidentSlots.count(key.getValue().str()))
+          return module.emitError("invalid resident literal allocation");
+        allocatorResidentSlots.emplace(key.getValue().str(),
+                                       "__vrc_resident_" +
+                                           physicalType.getValue().str() + "_" +
+                                           std::to_string(color.getInt()));
+        if (materializationSeedKeys.count(key.getValue().str()) && value) {
+          uint64_t bits = 0;
+          StringRef encoded = value ? value.getValue() : StringRef();
+          if (physicalType.getValue() != "SystemInt32" ||
+              !encoded.consume_front("0x") || encoded.getAsInteger(16, bits) ||
+              bits > std::numeric_limits<uint32_t>::max())
+            return module.emitError(
+                "invalid allocated i32 rematerialization seed");
+          std::string slot = allocatorResidentSlots.at(key.getValue().str());
+          int32_t initial = static_cast<int32_t>(static_cast<uint32_t>(bits));
+          addSlot(slot, "SystemInt32", std::to_string(initial), false);
+          residentLiteralSlots.try_emplace(key.getValue().str(), slot);
+        }
       }
-    }
 
     llvm::DenseSet<Operation *> constants;
     auto analysis = analyzeHostStorageInterference(
@@ -1203,6 +1168,14 @@ private:
                          std::to_string(fixed->second));
           continue;
         }
+        Operation *definition = value.getDefiningOp();
+        bool lateConstant =
+            definition && (materializedConstants.contains(definition) ||
+                           pooledConstants.contains(definition));
+        if (hasWritableAllocationPlan && !lateConstant)
+          return emitError(value.getLoc())
+                 << "ordinary SSA value is missing its selected Host storage "
+                    "allocation";
         llvm::SmallSet<unsigned, 16> used;
         for (Value neighbor : interference[value]) {
           auto color = colors.find(neighbor);
@@ -5822,6 +5795,7 @@ private:
   llvm::DenseMap<Operation *, FunctionPlan> functionPlans;
   llvm::DenseMap<Value, std::string> interproceduralValueSlots;
   llvm::DenseMap<Value, unsigned> allocatorDirectColors;
+  bool hasWritableAllocationPlan = false;
   llvm::DenseSet<Operation *> materializedConstants;
   llvm::DenseMap<Operation *, ConstantPoolLocation> pooledConstants;
   SmallVector<uint32_t> constantPoolValues;

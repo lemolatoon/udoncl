@@ -2,6 +2,7 @@
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
 #include "VRC/Dialect/VRC/VRCDialect.h"
 #include "VRC/Support/HostLiteral.h"
+#include "VRC/Support/HostStorageType.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -118,10 +119,12 @@ struct MaterializeHostStoragePass
           allocation ? allocation.getAs<IntegerAttr>("color") : IntegerAttr();
       auto value =
           valueId ? values.find(valueId.getValue().str()) : values.end();
+      auto storageKey = value != values.end()
+                            ? hostStorageKey(value->second.getType())
+                            : FailureOr<std::string>(failure());
       if (!allocation || !valueId || value == values.end() || !physicalType ||
           value->second.getDefiningOp<arith::ConstantOp>() ||
-          physicalType.getValue() !=
-              hostLiteralPhysicalType(value->second.getType()) ||
+          failed(storageKey) || physicalType.getValue() != *storageKey ||
           !domain || domain.getValue() != "writable" || !kind ||
           kind.getValue() != "direct_color_candidate" || !color ||
           color.getInt() < 0 ||
