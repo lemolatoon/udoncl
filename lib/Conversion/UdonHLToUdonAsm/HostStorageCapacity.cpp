@@ -5,6 +5,9 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/Pass/PassManager.h"
+#include "llvm/ADT/StringExtras.h"
+#include "llvm/Support/SHA256.h"
+#include "llvm/Support/raw_ostream.h"
 
 using namespace mlir;
 
@@ -13,6 +16,13 @@ namespace vrc {
 #include "VRC/Conversion/Passes.h.inc"
 
 namespace {
+
+constexpr llvm::StringLiteral transientPlanAttrs[] = {
+    "vrc.host_scalar_lowering_plan",
+    "vrc.host_storage_capacity_measurement",
+    "vrc.host_storage_capacity_fit",
+    "vrc.host_storage_capacity_verification",
+};
 
 FailureOr<uint32_t> readCount(DictionaryAttr measurement, StringRef name) {
   auto value = measurement.getAs<IntegerAttr>(name);
@@ -61,6 +71,19 @@ struct MeasureHostStorageCapacityPass
 
 } // namespace
 
+std::string hostStorageIRFingerprint(ModuleOp module) {
+  OwningOpRef<ModuleOp> clone = cast<ModuleOp>(module->clone());
+  for (StringRef name : transientPlanAttrs)
+    (*clone)->removeAttr(name);
+  std::string storage;
+  llvm::raw_string_ostream stream(storage);
+  clone->print(stream);
+  stream.flush();
+  auto digest = llvm::SHA256::hash(llvm::ArrayRef<uint8_t>(
+      reinterpret_cast<const uint8_t *>(storage.data()), storage.size()));
+  return llvm::toHex(digest, true);
+}
+
 FailureOr<HostStorageCapacityMeasurement>
 measureHostStorageCapacity(ModuleOp module) {
   OwningOpRef<ModuleOp> clone = cast<ModuleOp>(module->clone());
@@ -83,15 +106,17 @@ measureHostStorageCapacity(ModuleOp module) {
   auto dataCapacity = readCount(measurement, "data_slot_capacity");
   auto reserve = readCount(measurement, "final_data_slot_reserve");
   auto required = readCount(measurement, "required_reduction");
+  auto plan =
+      (*clone)->getAttrOfType<DictionaryAttr>("vrc.host_scalar_lowering_plan");
   if (failed(addresses) || failed(dataSlots) || failed(externs) ||
       failed(addressLimit) || failed(dataCapacity) || failed(reserve) ||
-      failed(required) || *dataSlots + *externs != *addresses ||
+      failed(required) || !plan || *dataSlots + *externs != *addresses ||
       *addressLimit + *reserve != kUdonHeapMaximumCapacity ||
       fits.getValue() != (*required == 0))
     return failure();
   return HostStorageCapacityMeasurement{*addresses,    *dataSlots,    *externs,
                                         *addressLimit, *dataCapacity, *reserve,
-                                        *required};
+                                        *required,     plan};
 }
 
 } // namespace vrc

@@ -506,6 +506,13 @@ assert (
 assert f"final_address_count = {selected_addresses} : i64" in fit_report.group(1)
 assert "attempt_count = 2 : i32" in fit_report.group(1)
 assert "requested_resident_slot_savings = 2 : i32" in fit_report.group(1)
+scalar_plan = re.search(
+    r"vrc\.host_scalar_lowering_plan = \{([^}]*)\}", fitted.stdout
+)
+assert scalar_plan, fitted.stdout
+assert "schema_version = 1 : i32" in scalar_plan.group(1)
+assert f"expected_address_count = {selected_addresses} : i64" in scalar_plan.group(1)
+assert re.search(r'ir_fingerprint = "[0-9a-fA-F]{64}"', scalar_plan.group(1))
 verified = run(["--vrc-verify-host-storage-capacity"], fitted.stdout)
 assert verified.returncode == 0, (verified.stdout, verified.stderr)
 verification_report = re.search(
@@ -527,6 +534,7 @@ assert verified_capacity == selected_measurement["capacity"]
 assert f"final_data_slot_reserve = {reserve} : i64" in verification_report.group(1)
 assert "required_reduction = 0 : i64" in verification_report.group(1)
 assert "fits = true" in verification_report.group(1)
+assert "schema_version = 2 : i32" in verification_report.group(1)
 verified_repeat = run(["--vrc-verify-host-storage-capacity"], verified.stdout)
 assert verified_repeat.returncode == 0, (
     verified_repeat.stdout,
@@ -618,7 +626,18 @@ overflow_after_fit = run(
     ),
 )
 assert overflow_after_fit.returncode != 0
-assert "does not match the exact final Udon address plan" in overflow_after_fit.stderr
+assert "invalid or stale Host scalar lowering plan" in overflow_after_fit.stderr
+
+tampered_scalar_plan = run(
+    ["--vrc-verify-host-storage-capacity"],
+    fitted.stdout.replace(
+        f"expected_address_count = {selected_addresses} : i64",
+        f"expected_address_count = {selected_addresses + 1} : i64",
+        1,
+    ),
+)
+assert tampered_scalar_plan.returncode != 0
+assert "invalid or stale Host scalar lowering plan" in tampered_scalar_plan.stderr
 
 finalization_input = with_reserve(without_request)
 manual_finalization = run(
@@ -659,7 +678,7 @@ registered_verify_report = re.search(
     registered_finalization.stdout,
 )
 assert registered_verify_report
-assert "schema_version = 1 : i32" in registered_verify_report.group(1)
+assert "schema_version = 2 : i32" in registered_verify_report.group(1)
 
 registered_already_fit = run(
     ["--verify-each", "--vrc-finalize-udon-host-storage"], already_fit_input

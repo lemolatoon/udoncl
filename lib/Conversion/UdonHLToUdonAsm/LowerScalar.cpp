@@ -2,6 +2,7 @@
 #include "HostStorageCapacityInternal.h"
 #include "VRC/ABI/Manifest/UdonSharpABI.h"
 #include "VRC/Analysis/HostStorageLiveness.h"
+#include "VRC/Conversion/HostStorageCapacity.h"
 #include "VRC/Support/HostLiteral.h"
 #include "VRC/Support/HostStorageType.h"
 #include "VRC/Support/UdonLimits.h"
@@ -5635,6 +5636,10 @@ struct LowerUdonHLToUdonAsmPass
 
   void runOnOperation() override {
     constexpr unsigned physicalAddressLimit = kUdonHeapMaximumCapacity;
+    std::optional<std::string> inputFingerprint;
+    if (measurementOnly ||
+        getOperation()->hasAttr("vrc.host_scalar_lowering_plan"))
+      inputFingerprint = hostStorageIRFingerprint(getOperation());
     unsigned finalDataSlotReserve = 0;
     if (auto configured = getOperation()->getAttrOfType<IntegerAttr>(
             "vrc.final_data_slot_reserve")) {
@@ -5670,6 +5675,84 @@ struct LowerUdonHLToUdonAsmPass
     if (auto configured = getOperation()->getAttrOfType<IntegerAttr>(
             "vrc.scalar_register_budget"))
       scalarRegisterBudget = static_cast<unsigned>(configured.getInt());
+    if (!measurementOnly &&
+        getOperation()->hasAttr("vrc.host_storage_capacity_verification")) {
+      auto plan = getOperation()->getAttrOfType<DictionaryAttr>(
+          "vrc.host_scalar_lowering_plan");
+      auto read = [&](StringRef name) -> FailureOr<unsigned> {
+        auto value = plan ? plan.getAs<IntegerAttr>(name) : IntegerAttr();
+        if (!value || value.getInt() < 0 ||
+            static_cast<uint64_t>(value.getInt()) >
+                std::numeric_limits<unsigned>::max())
+          return failure();
+        return static_cast<unsigned>(value.getInt());
+      };
+      auto schema = read("schema_version");
+      auto materialization = read("materialization_limit");
+      auto registers = read("scalar_register_budget");
+      auto rematerialization = read("unity_buffer_id_rematerialization_count");
+      auto rematerializationDelta =
+          read("unity_buffer_id_rematerialization_address_delta");
+      auto rematerializationAttempts =
+          read("unity_buffer_id_rematerialization_attempts");
+      auto cache = read("raw_address_cache_limit");
+      auto expectedAddresses = read("expected_address_count");
+      auto expectedData = read("expected_data_slot_count");
+      auto expectedExterns = read("expected_unique_extern_count");
+      auto expectedAddressLimit = read("address_limit");
+      auto expectedDataCapacity = read("data_slot_capacity");
+      auto expectedReserve = read("final_data_slot_reserve");
+      auto expectedReduction = read("required_reduction");
+      auto fingerprint =
+          plan ? plan.getAs<StringAttr>("ir_fingerprint") : StringAttr();
+      if (!plan || plan.size() != 15 || failed(schema) || *schema != 1 ||
+          failed(materialization) || failed(registers) ||
+          failed(rematerialization) || failed(rematerializationDelta) ||
+          failed(rematerializationAttempts) || failed(cache) ||
+          failed(expectedAddresses) || failed(expectedData) ||
+          failed(expectedExterns) || failed(expectedAddressLimit) ||
+          failed(expectedDataCapacity) || failed(expectedReserve) ||
+          failed(expectedReduction) || *expectedReduction != 0 ||
+          *expectedAddresses != *expectedData + *expectedExterns ||
+          *expectedAddressLimit != addressLimit ||
+          *expectedDataCapacity != dataSlotCapacity ||
+          *expectedReserve != finalDataSlotReserve || !fingerprint ||
+          !inputFingerprint || fingerprint.getValue() != *inputFingerprint) {
+        getOperation().emitError("invalid or stale Host scalar lowering plan");
+        signalPassFailure();
+        return;
+      }
+      getOperation()->setAttr(
+          "vrc.scalar_register_budget",
+          IntegerAttr::get(IntegerType::get(getOperation().getContext(), 32),
+                           *registers));
+      ScalarLoweringOptions options;
+      options.materializationLimit = *materialization;
+      options.rawAddressCacheLimit = *cache;
+      options.unityBufferIdRematerializationCount = *rematerialization;
+      options.unityBufferIdRematerializationAddressDelta =
+          *rematerializationDelta;
+      options.unityBufferIdRematerializationAttempts =
+          *rematerializationAttempts;
+      if (failed(ScalarLowering(getOperation(), options).run())) {
+        signalPassFailure();
+        return;
+      }
+      unsigned addresses = addressCount(getOperation());
+      auto data = getOperation()->getAttrOfType<ArrayAttr>("udonasm.data");
+      unsigned dataSlots = data ? data.size() : 0;
+      if (addresses != *expectedAddresses || dataSlots != *expectedData ||
+          addresses - dataSlots != *expectedExterns) {
+        getOperation().emitError()
+            << "Host scalar lowering result does not match its selected plan; "
+               "expected address/data/extern="
+            << *expectedAddresses << "/" << *expectedData << "/"
+            << *expectedExterns << ", actual=" << addresses << "/" << dataSlots
+            << "/" << addresses - dataSlots;
+        signalPassFailure();
+      }
+      return;
+    }
     auto probe = [&](unsigned materializationLimit, unsigned registerBudget,
                      unsigned rematerializationCount,
                      unsigned addressCacheLimit = 0) -> FailureOr<ProbeResult> {
@@ -5809,7 +5892,8 @@ struct LowerUdonHLToUdonAsmPass
     // lowering the whole module a second time. Capacity-constrained programs
     // retain the exact trial below because shared immutable slots can allow a
     // useful prefix larger than a conservative slot-count bound.
-    if (rawAddressCacheLimit >= best.addressCacheCandidates) {
+    if (!measurementOnly &&
+        rawAddressCacheLimit >= best.addressCacheCandidates) {
       rawAddressCacheLimit = best.addressCacheCandidates;
     } else if (rawAddressCacheLimit) {
       auto cached =
@@ -5841,6 +5925,51 @@ struct LowerUdonHLToUdonAsmPass
         best = *cached;
     }
     if (measurementOnly) {
+      Builder builder(getOperation().getContext());
+      getOperation()->setAttr(
+          "vrc.host_scalar_lowering_plan",
+          builder.getDictionaryAttr({
+              builder.getNamedAttr("schema_version",
+                                   builder.getI32IntegerAttr(1)),
+              builder.getNamedAttr(
+                  "materialization_limit",
+                  builder.getI64IntegerAttr(materializationLimit)),
+              builder.getNamedAttr(
+                  "scalar_register_budget",
+                  builder.getI64IntegerAttr(scalarRegisterBudget)),
+              builder.getNamedAttr("unity_buffer_id_rematerialization_count",
+                                   builder.getI64IntegerAttr(
+                                       unityBufferIdRematerializationCount)),
+              builder.getNamedAttr(
+                  "unity_buffer_id_rematerialization_address_delta",
+                  builder.getI64IntegerAttr(
+                      unityBufferIdRematerializationAddressDelta)),
+              builder.getNamedAttr("unity_buffer_id_rematerialization_attempts",
+                                   builder.getI64IntegerAttr(
+                                       unityBufferIdRematerializationAttempts)),
+              builder.getNamedAttr(
+                  "raw_address_cache_limit",
+                  builder.getI64IntegerAttr(rawAddressCacheLimit)),
+              builder.getNamedAttr("expected_address_count",
+                                   builder.getI64IntegerAttr(best.addresses)),
+              builder.getNamedAttr("expected_data_slot_count",
+                                   builder.getI64IntegerAttr(best.dataSlots)),
+              builder.getNamedAttr(
+                  "expected_unique_extern_count",
+                  builder.getI64IntegerAttr(best.addresses - best.dataSlots)),
+              builder.getNamedAttr("address_limit",
+                                   builder.getI64IntegerAttr(addressLimit)),
+              builder.getNamedAttr("data_slot_capacity",
+                                   builder.getI64IntegerAttr(dataSlotCapacity)),
+              builder.getNamedAttr(
+                  "final_data_slot_reserve",
+                  builder.getI64IntegerAttr(finalDataSlotReserve)),
+              builder.getNamedAttr(
+                  "required_reduction",
+                  builder.getI64IntegerAttr(requiredReduction(best))),
+              builder.getNamedAttr("ir_fingerprint",
+                                   builder.getStringAttr(*inputFingerprint)),
+          }));
       getOperation()->setAttr(
           "vrc.host_storage_capacity_measurement",
           DictionaryAttr::get(

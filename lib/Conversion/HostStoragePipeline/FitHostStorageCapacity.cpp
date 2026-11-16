@@ -115,6 +115,7 @@ struct FitHostStorageCapacityPass
         !hasI32Version(module, "vrc.host_literal_use_site_version", 3) ||
         module->hasAttr("vrc.host_storage_capacity_fit") ||
         module->hasAttr("vrc.host_storage_capacity_measurement") ||
+        module->hasAttr("vrc.host_scalar_lowering_plan") ||
         module->hasAttr("vrc.host_storage_pressure_request") ||
         module->hasAttr("vrc.host_literal_selected_placement_version") ||
         module->hasAttr("vrc.host_literal_selected_placements") ||
@@ -140,6 +141,8 @@ struct FitHostStorageCapacityPass
       return;
     }
     if (baseline->fits()) {
+      (*candidate)
+          ->setAttr("vrc.host_scalar_lowering_plan", baseline->loweringPlan);
       setFitReport(*candidate, *baseline, *baseline, 0, 0);
       commitCandidate(module, *candidate);
       return;
@@ -172,6 +175,8 @@ struct FitHostStorageCapacityPass
         return;
       }
       if (measurement->fits()) {
+        (*attempt)->setAttr("vrc.host_scalar_lowering_plan",
+                            measurement->loweringPlan);
         setFitReport(*attempt, *baseline, *measurement, attempts,
                      requestedSavings);
         commitCandidate(module, *attempt);

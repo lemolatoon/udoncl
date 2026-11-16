@@ -160,22 +160,56 @@ FailureOr<FitReport> parseFitReport(ModuleOp module) {
   return FitReport{baseline, final, *attempts, *requested};
 }
 
-bool equalMeasurement(const HostStorageCapacityMeasurement &left,
-                      const HostStorageCapacityMeasurement &right) {
-  return left.addressCount == right.addressCount &&
-         left.dataSlotCount == right.dataSlotCount &&
-         left.uniqueExternCount == right.uniqueExternCount &&
-         left.addressLimit == right.addressLimit &&
-         left.dataSlotCapacity == right.dataSlotCapacity &&
-         left.finalDataSlotReserve == right.finalDataSlotReserve &&
-         left.requiredReduction == right.requiredReduction;
+struct ScalarLoweringPlan {
+  HostStorageCapacityMeasurement measurement;
+  StringAttr fingerprint;
+};
+
+FailureOr<ScalarLoweringPlan> parseScalarLoweringPlan(ModuleOp module) {
+  auto plan =
+      module->getAttrOfType<DictionaryAttr>("vrc.host_scalar_lowering_plan");
+  auto schema = plan ? readCount(plan, "schema_version", 32)
+                     : FailureOr<uint32_t>(failure());
+  auto read = [&](StringRef name) { return readCount(plan, name, 64); };
+  auto materialization = read("materialization_limit");
+  auto registers = read("scalar_register_budget");
+  auto rematerialization = read("unity_buffer_id_rematerialization_count");
+  auto rematerializationDelta =
+      read("unity_buffer_id_rematerialization_address_delta");
+  auto rematerializationAttempts =
+      read("unity_buffer_id_rematerialization_attempts");
+  auto cache = read("raw_address_cache_limit");
+  auto addresses = read("expected_address_count");
+  auto data = read("expected_data_slot_count");
+  auto externs = read("expected_unique_extern_count");
+  auto limit = read("address_limit");
+  auto capacity = read("data_slot_capacity");
+  auto reserve = read("final_data_slot_reserve");
+  auto reduction = read("required_reduction");
+  auto fingerprint =
+      plan ? plan.getAs<StringAttr>("ir_fingerprint") : StringAttr();
+  if (!plan || plan.size() != 15 || failed(schema) || *schema != 1 ||
+      failed(materialization) || failed(registers) ||
+      failed(rematerialization) || failed(rematerializationDelta) ||
+      failed(rematerializationAttempts) || failed(cache) || failed(addresses) ||
+      failed(data) || failed(externs) || failed(limit) || failed(capacity) ||
+      failed(reserve) || failed(reduction) || *addresses != *data + *externs ||
+      *limit + *reserve != kUdonHeapMaximumCapacity || *reduction != 0 ||
+      !fingerprint || fingerprint.getValue().size() != 64 ||
+      fingerprint.getValue() != hostStorageIRFingerprint(module))
+    return failure();
+  return ScalarLoweringPlan{
+      HostStorageCapacityMeasurement{*addresses, *data, *externs, *limit,
+                                     *capacity, *reserve, *reduction, plan},
+      fingerprint};
 }
 
-DictionaryAttr verificationAttr(MLIRContext *context, const FitReport &fit) {
+DictionaryAttr verificationAttr(MLIRContext *context, const FitReport &fit,
+                                StringAttr fingerprint) {
   Builder builder(context);
   const auto &value = fit.final;
   return builder.getDictionaryAttr({
-      builder.getNamedAttr("schema_version", builder.getI32IntegerAttr(1)),
+      builder.getNamedAttr("schema_version", builder.getI32IntegerAttr(2)),
       builder.getNamedAttr("fit_schema_version", builder.getI32IntegerAttr(2)),
       builder.getNamedAttr("address_count",
                            builder.getI64IntegerAttr(value.addressCount)),
@@ -197,6 +231,7 @@ DictionaryAttr verificationAttr(MLIRContext *context, const FitReport &fit) {
                            builder.getI32IntegerAttr(fit.attempts)),
       builder.getNamedAttr("requested_resident_slot_savings",
                            builder.getI32IntegerAttr(fit.requestedSavings)),
+      builder.getNamedAttr("ir_fingerprint", fingerprint),
   });
 }
 
@@ -210,13 +245,20 @@ struct VerifyHostStorageCapacityPass
       signalPassFailure();
       return;
     }
-    auto measured = measureHostStorageCapacity(module);
-    if (failed(measured)) {
-      module.emitError("failed to measure fitted Host storage");
+    auto plan = parseScalarLoweringPlan(module);
+    if (failed(plan)) {
+      module.emitError("invalid or stale Host scalar lowering plan");
       signalPassFailure();
       return;
     }
-    if (!measured->fits() || !equalMeasurement(*measured, fit->final)) {
+    const auto &measured = plan->measurement;
+    if (!measured.fits() || measured.addressCount != fit->final.addressCount ||
+        measured.dataSlotCount != fit->final.dataSlotCount ||
+        measured.uniqueExternCount != fit->final.uniqueExternCount ||
+        measured.addressLimit != fit->final.addressLimit ||
+        measured.dataSlotCapacity != fit->final.dataSlotCapacity ||
+        measured.finalDataSlotReserve != fit->final.finalDataSlotReserve ||
+        measured.requiredReduction != fit->final.requiredReduction) {
       module.emitError()
           << "fitted Host storage does not match the exact final Udon address "
              "plan; expected "
@@ -226,15 +268,16 @@ struct VerifyHostStorageCapacityPass
           << "/" << fit->final.dataSlotCapacity << "/"
           << fit->final.finalDataSlotReserve << "/"
           << fit->final.requiredReduction
-          << ", actual=" << measured->addressCount << "/"
-          << measured->dataSlotCount << "/" << measured->uniqueExternCount
-          << "/" << measured->addressLimit << "/" << measured->dataSlotCapacity
-          << "/" << measured->finalDataSlotReserve << "/"
-          << measured->requiredReduction << "; rerun capacity fitting";
+          << ", actual=" << measured.addressCount << "/"
+          << measured.dataSlotCount << "/" << measured.uniqueExternCount << "/"
+          << measured.addressLimit << "/" << measured.dataSlotCapacity << "/"
+          << measured.finalDataSlotReserve << "/" << measured.requiredReduction
+          << "; rerun capacity fitting";
       signalPassFailure();
       return;
     }
-    DictionaryAttr expected = verificationAttr(module.getContext(), *fit);
+    DictionaryAttr expected =
+        verificationAttr(module.getContext(), *fit, plan->fingerprint);
     if (Attribute existing =
             module->getAttr("vrc.host_storage_capacity_verification")) {
       if (existing != expected) {

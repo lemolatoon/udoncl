@@ -368,6 +368,18 @@ recognize MNIST, TinyLlama, tensor names, layer counts, or model shapes.
   priority, alternatives, and colors. `LowerScalar.cpp` only consumes the
   resulting ordinary direct plan.
 
+  Capacity fitting now also emits a versioned scalar-lowering receipt. The
+  receipt pins the selected constant materialization, scalar-register,
+  Unity-buffer-ID rematerialization, and raw-address-cache options together
+  with the exact expected data/extern/address counts and a SHA-256 fingerprint
+  of the pre-lowering IR. Verification validates the fit report, receipt, and
+  fingerprint without rerunning scalar lowering. Final scalar lowering
+  consumes those options exactly once and rejects any output count that differs
+  from the receipt. Standalone lowering without a fit receipt retains the
+  compatibility planner. Within each scalar lowering, writable-plan validation
+  and slot planning share one Host-storage interference analysis instead of
+  independently recomputing liveness.
+
   Stage 5 hardening and cleanup are complete. The inactive `TypedSpill`
   solver/index remapping has been deleted from `AllocateHostStorage`, and the
   typed spill bank/index-cache/constructor/Get/Set path has been deleted from
