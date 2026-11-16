@@ -101,6 +101,44 @@ def run(arguments, text):
     )
 
 
+def add_scalar_pressure(text, count=17):
+    values = [f"%pressure{index}" for index in range(count)]
+    constants = "\n".join(
+        f"    {value} = arith.constant {100 + index} : i32"
+        for index, value in enumerate(values)
+    )
+    types = ", ".join(["i32"] * count)
+    call = (
+        f"    func.call @consume_scalar_pressure({', '.join(values)}) "
+        f": ({types}) -> ()"
+    )
+    declaration = (
+        "  func.func private @consume_scalar_pressure("
+        + ", ".join(f"{value}: i32" for value in values)
+        + ") {\n    return\n  }\n"
+    )
+    pressured = text.replace(
+        "module attributes {",
+        'module attributes {vrc.async_stage = "udon-static-v1", '
+        "vrc.data_slot_capacity = 1 : i32, ",
+        1,
+    )
+    pressured = pressured.replace(
+        "    %event = vrc.dispatch %desc(%weight, %output) {",
+        constants + "\n    %event = vrc.dispatch %desc(%weight, %output) {",
+        1,
+    )
+    pressured = pressured.replace(
+        "    return\n  }\n  func.func private @dispatch_static_read_second()",
+        call
+        + "\n    return\n  }\n"
+        + declaration
+        + "  func.func private @dispatch_static_read_second()",
+        1,
+    )
+    return pressured
+
+
 allocation_prefix = [
     "--vrc-expose-host-backend-literal-uses",
     "--vrc-discover-host-rematerialization",
@@ -632,6 +670,27 @@ assert 'initial = "22"' in legacy.stdout
 
 exposed = run(["--vrc-expose-host-backend-literal-uses"], source)
 assert exposed.returncode == 0, (exposed.stdout, exposed.stderr)
+
+pressure_exposed = run(
+    ["--vrc-expose-host-backend-literal-uses"], add_scalar_pressure(source)
+)
+assert pressure_exposed.returncode == 0, (
+    pressure_exposed.stdout,
+    pressure_exposed.stderr,
+)
+pressure_measured = run(
+    ["--vrc-measure-host-storage-capacity"], pressure_exposed.stdout
+)
+assert pressure_measured.returncode == 0, (
+    pressure_measured.stdout,
+    pressure_measured.stderr,
+)
+assert "vrc.host_storage_capacity_measurement" in pressure_measured.stdout
+assert "data_slot_capacity = 1 : i64" in pressure_measured.stdout
+pressure_reduction = re.search(
+    r"required_reduction = (\d+) : i64", pressure_measured.stdout
+)
+assert pressure_reduction and int(pressure_reduction.group(1)) > 0
 
 
 def reject(text, diagnostic):

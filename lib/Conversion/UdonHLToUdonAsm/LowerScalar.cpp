@@ -897,6 +897,12 @@ private:
     SmallVector<std::pair<Operation *, uint32_t>> candidates;
     for (func::FuncOp function : functions)
       function.walk([&](arith::ConstantOp constant) {
+        // Backend literals have a dedicated exposure, discovery, allocation,
+        // and materialization contract.  Generic pooling must preserve their
+        // direct SSA edge to the backend consumer instead of turning it into a
+        // spill reload.
+        if (constant->hasAttr("vrc.host_literal_role"))
+          return;
         Type type = constant.getType();
         if (auto floating = dyn_cast<FloatAttr>(constant.getValue())) {
           llvm::SmallString<32> text;
