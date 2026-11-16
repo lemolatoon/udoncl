@@ -534,6 +534,7 @@ def run_unity_mcp_gate(
     tinyllama_prefill_oracle=None,
     tinyllama_conversation_artifact=None,
     tinyllama_conversation_oracle=None,
+    prepare_standard_fixtures=True,
 ):
     require_unity_mcp(project)
     output.mkdir(parents=True, exist_ok=True)
@@ -555,10 +556,11 @@ def run_unity_mcp_gate(
         raise RuntimeError(f"Unity validation scene path already exists: {validation_scene}")
     generated_before = tree_snapshot(generated)
     serialized_before = tree_snapshot(serialized)
-    unity_library = prepare_cmake_unity_library(build)
-    assembly = prepare_fixtures(root, build, output)
-    run(
-        [
+    if prepare_standard_fixtures:
+        unity_library = prepare_cmake_unity_library(build)
+        assembly = prepare_fixtures(root, build, output)
+        run(
+            [
             sys.executable,
             root / "scripts/package_example_artifacts.py",
             "--arena",
@@ -575,9 +577,9 @@ def run_unity_mcp_gate(
             build
             / "tests/cmake-package/average-pooling-consumer/udoncl/average-pooling-unity-library/artifact",
             "--check",
-        ],
-        cwd=root,
-    )
+            ],
+            cwd=root,
+        )
     manifest_original = manifest_path.read_bytes()
     lock_original = lock_path.read_bytes() if lock_path.is_file() else None
     manifest = json.loads(manifest_original.decode("utf-8"))
@@ -586,8 +588,9 @@ def run_unity_mcp_gate(
     )
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     environment = dict(os.environ)
-    environment.update(
-        {
+    if prepare_standard_fixtures:
+        environment.update(
+            {
             "UDONCL_LOWERED_UASM": str(assembly),
             "UDONCL_CONTINUATION_UASM": str(
                 (output / "lowering/continuation.uasm").resolve()
@@ -640,9 +643,19 @@ def run_unity_mcp_gate(
                     / "onnx-aot/unity-tiny-llama-standard-reference.bytes"
                 ).resolve()
             ),
+            "UDONCL_PACKAGED_EXAMPLE_VALIDATION": "1",
+            }
+        )
+    environment.update(
+        {
+            "UDONCL_ASSIGNED_Q4_COMPONENT_UNITY_BUNDLE": str(
+                (
+                    build
+                    / "tests/onnx-q4-component/consumer/udoncl/onnx-q4-component/artifact"
+                ).resolve()
+            ),
             "UNITY_MCP_STATUS_DIR": str(status_dir),
             "UNITY_MCP_TRANSPORT": "stdio",
-            "UDONCL_PACKAGED_EXAMPLE_VALIDATION": "1",
             "GIT_CONFIG_COUNT": "1",
             "GIT_CONFIG_KEY_0": "core.longpaths",
             "GIT_CONFIG_VALUE_0": "true",
@@ -682,19 +695,20 @@ def run_unity_mcp_gate(
     passed = 0
     failure = None
     try:
-        sample_validation.mkdir()
-        sample_sources = sorted(
-            (
-                root / "unity/Packages/com.lemolatoon.udoncl/Samples~"
-            ).rglob("*.cs")
-        )
-        if not sample_sources:
-            raise RuntimeError("Unity package contains no sample scripts")
-        for source in sample_sources:
-            destination = sample_validation / source.name
-            if destination.exists():
-                raise RuntimeError(f"duplicate Unity sample script name: {source.name}")
-            shutil.copy2(source, destination)
+        if prepare_standard_fixtures:
+            sample_validation.mkdir()
+            sample_sources = sorted(
+                (
+                    root / "unity/Packages/com.lemolatoon.udoncl/Samples~"
+                ).rglob("*.cs")
+            )
+            if not sample_sources:
+                raise RuntimeError("Unity package contains no sample scripts")
+            for source in sample_sources:
+                destination = sample_validation / source.name
+                if destination.exists():
+                    raise RuntimeError(f"duplicate Unity sample script name: {source.name}")
+                shutil.copy2(source, destination)
         unity_command = [
             unity,
             "-batchmode",
@@ -729,10 +743,11 @@ def run_unity_mcp_gate(
         client.tool("set_active_instance", {"instance": instance})
         wait_for_editor(client)
         client.tool("read_console", {"action": "clear"})
-        execute_menu_after_reload(
-            client,
-            "Tools/udoncl/Internal/Prepare Public MNIST Validation",
-        )
+        if prepare_standard_fixtures:
+            execute_menu_after_reload(
+                client,
+                "Tools/udoncl/Internal/Prepare Public MNIST Validation",
+            )
         if tinyllama_prefill_artifact is not None:
             execute_menu_after_reload(
                 client,
@@ -787,26 +802,27 @@ def run_unity_mcp_gate(
                     "TinyLlama conversation preparation did not complete: "
                     + ", ".join(missing)
                 )
-        execute_menu_after_reload(
-            client,
-            "Tools/udoncl/Internal/Prepare Public Transformer Validation",
-        )
-        execute_menu_after_reload(
-            client,
-            "Tools/udoncl/Internal/Prepare Public Tokenizer Validation",
-        )
-        execute_menu_after_reload(
-            client,
-            "Tools/udoncl/Internal/Prepare Public MNIST Controller Validation",
-        )
-        execute_menu_after_reload(
-            client,
-            "Tools/udoncl/Internal/Prepare Packaged Example Validation",
-        )
-        execute_menu_after_reload(
-            client,
-            "Tools/udoncl/Internal/Ensure Validation Scene Saved",
-        )
+        if prepare_standard_fixtures:
+            execute_menu_after_reload(
+                client,
+                "Tools/udoncl/Internal/Prepare Public Transformer Validation",
+            )
+            execute_menu_after_reload(
+                client,
+                "Tools/udoncl/Internal/Prepare Public Tokenizer Validation",
+            )
+            execute_menu_after_reload(
+                client,
+                "Tools/udoncl/Internal/Prepare Public MNIST Controller Validation",
+            )
+            execute_menu_after_reload(
+                client,
+                "Tools/udoncl/Internal/Prepare Packaged Example Validation",
+            )
+            execute_menu_after_reload(
+                client,
+                "Tools/udoncl/Internal/Ensure Validation Scene Saved",
+            )
         wait_for_editor(client)
         for attempt in range(4):
             started = start_unity_tests(client, test_names, test_assemblies)
@@ -935,6 +951,11 @@ def main():
         help="run only the MCP-driven Unity gate without the native pre-commit steps",
     )
     parser.add_argument(
+        "--minimal-unity-fixtures",
+        action="store_true",
+        help="skip unrelated standard fixture generation for a named package test",
+    )
+    parser.add_argument(
         "--commit-snapshot",
         metavar="COMMIT",
         help=(
@@ -996,6 +1017,8 @@ def main():
             )
     if args.tinyllama_prefill and args.tinyllama_conversation:
         parser.error("run one focused TinyLlama Unity gate at a time")
+    if args.minimal_unity_fixtures and (not args.unity_only or not args.unity_test):
+        parser.error("--minimal-unity-fixtures requires --unity-only and --unity-test")
     if args.unity is None:
         parser.error("set UNITY_EDITOR_PATH in .env or pass --unity")
     if args.project is None:
@@ -1165,6 +1188,7 @@ def main():
         tinyllama_prefill_oracle=tinyllama_prefill_oracle,
         tinyllama_conversation_artifact=tinyllama_conversation_artifact,
         tinyllama_conversation_oracle=tinyllama_conversation_oracle,
+        prepare_standard_fixtures=not args.minimal_unity_fixtures,
     )
     if args.unity_only:
         print("unity_validation=passed")
