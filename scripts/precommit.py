@@ -128,133 +128,30 @@ def run(command, **kwargs):
     return subprocess.run([str(item) for item in command], check=True, **kwargs)
 
 
-def prepare_tinyllama_conversation_artifact(root: Path, build: Path):
-    fetched = run(
-        [sys.executable, root / "scripts/fetch_tinyllama_onnx.py"],
-        cwd=root,
-        text=True,
-        capture_output=True,
-    )
-    model = Path(fetched.stdout.strip().splitlines()[-1]).resolve()
-    conversation_build = root / "build/tinyllama-real-binding"
-    install = build / "tests/cmake-package/install"
-    executable_suffix = ".exe" if sys.platform == "win32" else ""
-    llvm = root / ".deps/llvm23/bin"
-    onnx_mlir = root / ".deps/onnx-mlir/bin"
-    run(
-        [
-            "cmake",
-            "-S",
-            root / "examples/onnx-transformer-tiny",
-            "-B",
-            conversation_build,
-            "-G",
-            "Ninja",
-            f"-DCMAKE_PREFIX_PATH={install.resolve()}",
-            f"-DUDONCL_CLANG_EXECUTABLE={llvm / ('clang' + executable_suffix)}",
-            f"-DUDONCL_LLVM_LINK_EXECUTABLE={llvm / ('llvm-link' + executable_suffix)}",
-            f"-DUDONCL_ONNX_IMPORTER_EXECUTABLE={onnx_mlir / ('udoncl-onnx' + executable_suffix)}",
-            f"-DUDONCL_ONNX_OPT_EXECUTABLE={onnx_mlir / ('udoncl-onnx-opt' + executable_suffix)}",
-            f"-DUDONCL_TINYLLAMA_ONNX_MODEL={model}",
-        ],
-        cwd=root,
-    )
-    run(
-        [
-            "cmake",
-            "--build",
-            conversation_build,
-            "--target",
-            "onnx-transformer-tiny-conversation",
-            "--parallel",
-            str(os.cpu_count() or 1),
-        ],
-        cwd=root,
-        timeout=1800,
-    )
-    artifact = (
-        conversation_build
-        / "udoncl/onnx-transformer-tiny-conversation/artifact"
-    ).resolve()
-    oracle = (build / "tests/tinyllama-real-onnx/m1-oracle.json").resolve()
-    if not (artifact / "manifest.json").is_file():
-        raise RuntimeError(f"TinyLlama conversation artifact is missing: {artifact}")
-    if not oracle.is_file():
-        oracle.parent.mkdir(parents=True, exist_ok=True)
+def prepare_tinyllama_focused_case(root: Path, build: Path, case: str):
+    entry = root / "tests/focused" / f"tinyllama_{case}.py"
+    with tempfile.TemporaryDirectory(prefix=f"udoncl-{case}-", dir=build) as temporary:
+        result_path = Path(temporary) / "result.json"
         run(
             [
                 sys.executable,
-                root / "tests/boundary/tinyllama_real_onnx.py",
-                root,
-                oracle.parent,
+                entry,
+                "--build-dir",
+                build,
+                "--prepare-only",
+                "--result-json",
+                result_path,
             ],
             cwd=root,
-            timeout=1200,
         )
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+    if result.get("schema_version") != 1 or result.get("case") != case:
+        raise RuntimeError(f"invalid TinyLlama {case} focused result")
+    artifact = Path(result["artifact"]).resolve()
+    oracle = Path(result["oracle"]).resolve()
+    if not (artifact / "manifest.json").is_file() or not oracle.is_file():
+        raise RuntimeError(f"TinyLlama {case} focused result is incomplete")
     return artifact, oracle
-
-
-def prepare_tinyllama_prefill_artifact(root: Path, build: Path):
-    fetched = run(
-        [sys.executable, root / "scripts/fetch_tinyllama_onnx.py"],
-        cwd=root,
-        text=True,
-        capture_output=True,
-    )
-    model = Path(fetched.stdout.strip().splitlines()[-1]).resolve()
-    prefill_build = root / "build/tinyllama-real-binding"
-    install = build / "tests/cmake-package/install"
-    executable_suffix = ".exe" if sys.platform == "win32" else ""
-    llvm = root / ".deps/llvm23/bin"
-    onnx_mlir = root / ".deps/onnx-mlir/bin"
-    run(
-        [
-            "cmake",
-            "-S",
-            root / "examples/onnx-transformer-tiny",
-            "-B",
-            prefill_build,
-            "-G",
-            "Ninja",
-            f"-DCMAKE_PREFIX_PATH={install.resolve()}",
-            f"-DUDONCL_CLANG_EXECUTABLE={llvm / ('clang' + executable_suffix)}",
-            f"-DUDONCL_LLVM_LINK_EXECUTABLE={llvm / ('llvm-link' + executable_suffix)}",
-            f"-DUDONCL_ONNX_IMPORTER_EXECUTABLE={onnx_mlir / ('udoncl-onnx' + executable_suffix)}",
-            f"-DUDONCL_ONNX_OPT_EXECUTABLE={onnx_mlir / ('udoncl-onnx-opt' + executable_suffix)}",
-            f"-DUDONCL_TINYLLAMA_ONNX_MODEL={model}",
-        ],
-        cwd=root,
-    )
-    run(
-        [
-            "cmake",
-            "--build",
-            prefill_build,
-            "--target",
-            "onnx-transformer-tiny",
-            "--parallel",
-            str(os.cpu_count() or 1),
-        ],
-        cwd=root,
-        timeout=1800,
-    )
-    artifact = (prefill_build / "udoncl/onnx-transformer-tiny/artifact").resolve()
-    oracle = (build / "tests/tinyllama-real-onnx/oracle.json").resolve()
-    if not (artifact / "manifest.json").is_file():
-        raise RuntimeError(f"TinyLlama prefill artifact is missing: {artifact}")
-    if not oracle.is_file():
-        oracle.parent.mkdir(parents=True, exist_ok=True)
-        run(
-            [
-                sys.executable,
-                root / "tests/boundary/tinyllama_real_onnx.py",
-                root,
-                oracle.parent,
-            ],
-            cwd=root,
-            timeout=1200,
-        )
-    return artifact, oracle.parent
 
 
 def extract_payload(result):
@@ -1194,9 +1091,10 @@ def main():
                     f"{tinyllama_prefill_oracle / 'oracle.json'}"
                 )
         else:
-            tinyllama_prefill_artifact, tinyllama_prefill_oracle = (
-                prepare_tinyllama_prefill_artifact(root, args.build_dir.resolve())
+            tinyllama_prefill_artifact, oracle_file = prepare_tinyllama_focused_case(
+                root, args.build_dir.resolve(), "prefill"
             )
+            tinyllama_prefill_oracle = oracle_file.parent
         if not unity_tests:
             unity_tests.append(
                 "Lemolatoon.Udoncl.Editor.Tests."
@@ -1225,8 +1123,8 @@ def main():
                 )
         else:
             tinyllama_conversation_artifact, tinyllama_conversation_oracle = (
-                prepare_tinyllama_conversation_artifact(
-                    root, args.build_dir.resolve()
+                prepare_tinyllama_focused_case(
+                    root, args.build_dir.resolve(), "conversation"
                 )
             )
         if not unity_tests:

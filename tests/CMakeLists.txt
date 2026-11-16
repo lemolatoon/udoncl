@@ -778,6 +778,11 @@ add_test(NAME tinyllama-prefill-artifact-validator
     "${CMAKE_CURRENT_SOURCE_DIR}/build/validate_tinyllama_prefill_artifact.py"
     "${PROJECT_SOURCE_DIR}"
 )
+add_test(NAME tinyllama-focused-driver
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/build/tinyllama_focused_driver.py"
+    "${PROJECT_SOURCE_DIR}"
+)
 add_test(NAME tinyllama-conversation-artifact-validator
   COMMAND Python3::Interpreter
     "${CMAKE_CURRENT_SOURCE_DIR}/build/validate_tinyllama_conversation_artifact.py"
