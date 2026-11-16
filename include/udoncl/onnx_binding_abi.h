@@ -80,6 +80,12 @@ udononnxStatus_t udononnxBindingStateEnqueueRun(void *state_storage,
                                                 cl_event *completion);
 udononnxStatus_t udononnxBindingStateGetSession(void *state_storage,
                                                 udononnxSession_t **session);
+/* Generated AOT bind-all fast path. Begin validates the same session lifecycle
+ * accepted by per-tensor bind calls; Complete records the final status. */
+udononnxStatus_t udononnxBindingStateBeginStaticBind(void *state_storage);
+udononnxStatus_t
+udononnxBindingStateCompleteStaticBind(void *state_storage,
+                                       udononnxStatus_t status);
 udononnxStatus_t udononnxBindingStateResolveInput(void *state_storage,
                                                   uint32_t input_index,
                                                   cl_mem *memory,

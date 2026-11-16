@@ -48,6 +48,7 @@
 #include "llvm/IR/Module.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IRReader/IRReader.h"
+#include <chrono>
 #include <set>
 #include <map>
 #include <limits>
@@ -3020,24 +3021,60 @@ void attachDeviceResourceOperandContracts(ModuleOp module) {
 }
 
 LogicalResult discoverStaticDeviceResources(ModuleOp module) {
+  constexpr StringLiteral debugProvenanceAttribute =
+      "vrc.debug_device_resource_provenance";
+  if (debugCompilerPhases)
+    module->setAttr(debugProvenanceAttribute,
+                    UnitAttr::get(module.getContext()));
   attachDeviceResourceOperandContracts(module);
-  PassManager discovery(module.getContext());
-  discovery.addPass(::vrc::createDiscoverStaticDeviceResourcesPass());
-  discovery.addPass(
-      ::vrc::createPlanStaticDeviceResourceContextSpecializationPass());
-  discovery.addPass(::vrc::createSpecializeStaticAllocationContextsPass());
-  discovery.addPass(::vrc::createDiscoverStaticDeviceResourcesPass());
-  discovery.addPass(
-      ::vrc::createPlanStaticDeviceResourceContextSpecializationPass());
-  discovery.addPass(::vrc::createInferStaticDeviceResourceRequirementsPass());
-  discovery.addPass(::vrc::createPropagateDeviceResourceProvenancePass());
-  discovery.addPass(::vrc::createResolveStaticTransferBindingsPass());
-  discovery.addPass(::vrc::createClassifyStaticPublicDeviceResourcesPass());
-  discovery.addPass(::vrc::createAnalyzeStaticDeviceResourcePersistencePass());
-  discovery.addPass(::vrc::createBuildStaticDeviceResourceInventoryPass());
-  discovery.addPass(::vrc::createAllocateUnityTexturesPass());
-  discovery.addPass(::vrc::createResolveStaticPublicResourceAliasesPass());
-  return failure(failed(discovery.run(module)) || failed(verify(module)));
+  auto run = [&](StringRef name, std::unique_ptr<Pass> pass) {
+    auto started = std::chrono::steady_clock::now();
+    if (debugCompilerPhases)
+      errs() << "udonclc-unity-prepare-pass=" << name << " state=start\n";
+    PassManager manager(module.getContext());
+    manager.addPass(std::move(pass));
+    if (failed(manager.run(module)))
+      return failure();
+    if (debugCompilerPhases) {
+      auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::steady_clock::now() - started)
+                         .count();
+      errs() << "udonclc-unity-prepare-pass=" << name
+             << " state=complete elapsed_ms=" << elapsed << "\n";
+    }
+    return success();
+  };
+  if (failed(run("discover-initial",
+                 ::vrc::createDiscoverStaticDeviceResourcesPass())) ||
+      failed(run(
+          "plan-context-initial",
+          ::vrc::createPlanStaticDeviceResourceContextSpecializationPass())) ||
+      failed(run("specialize-context",
+                 ::vrc::createSpecializeStaticAllocationContextsPass())) ||
+      failed(run("discover-specialized",
+                 ::vrc::createDiscoverStaticDeviceResourcesPass())) ||
+      failed(run(
+          "plan-context-specialized",
+          ::vrc::createPlanStaticDeviceResourceContextSpecializationPass())) ||
+      failed(run("infer-requirements",
+                 ::vrc::createInferStaticDeviceResourceRequirementsPass())) ||
+      failed(run("propagate-provenance",
+                 ::vrc::createPropagateDeviceResourceProvenancePass())) ||
+      failed(run("resolve-transfers",
+                 ::vrc::createResolveStaticTransferBindingsPass())) ||
+      failed(run("classify-public",
+                 ::vrc::createClassifyStaticPublicDeviceResourcesPass())) ||
+      failed(run("analyze-persistence",
+                 ::vrc::createAnalyzeStaticDeviceResourcePersistencePass())) ||
+      failed(run("build-inventory",
+                 ::vrc::createBuildStaticDeviceResourceInventoryPass())) ||
+      failed(
+          run("allocate-textures", ::vrc::createAllocateUnityTexturesPass())) ||
+      failed(run("resolve-public-aliases",
+                 ::vrc::createResolveStaticPublicResourceAliasesPass())))
+    return failure();
+  module->removeAttr(debugProvenanceAttribute);
+  return verify(module);
 }
 
 LogicalResult linkUnityHostLibrary(ModuleOp destination, ModuleOp library) {

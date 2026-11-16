@@ -362,6 +362,8 @@ int main(void) {
              binding_state, sizeof(binding_state), context, queue, 0,
              binding_inputs, sizeof(binding_inputs), binding_outputs,
              sizeof(binding_outputs)) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(udononnxBindingStateBeginStaticBind(binding_state) ==
+         UDONONNX_STATUS_NOT_INITIALIZED);
   EXPECT(udononnxBindingStateGetContext(binding_state, &binding_context) ==
              UDONONNX_STATUS_SUCCESS &&
          binding_context == context);
@@ -377,6 +379,18 @@ int main(void) {
                                            UDONONNX_STATUS_SUCCESS) ==
          UDONONNX_STATUS_SUCCESS);
   EXPECT(clReleaseEvent(completion) == CL_SUCCESS);
+  EXPECT(udononnxBindingStateBeginStaticBind(binding_state) ==
+         UDONONNX_STATUS_SUCCESS);
+  EXPECT(udononnxBindingStateCompleteStaticBind(
+             binding_state, UDONONNX_STATUS_INVALID_VALUE) ==
+         UDONONNX_STATUS_INVALID_VALUE);
+  EXPECT(udononnxBindingStateGetSession(binding_state, &binding_session) ==
+             UDONONNX_STATUS_SUCCESS &&
+         binding_session &&
+         binding_session->last_status == UDONONNX_STATUS_INVALID_VALUE);
+  EXPECT(udononnxBindingStateCompleteStaticBind(binding_state,
+                                                UDONONNX_STATUS_SUCCESS) ==
+         UDONONNX_STATUS_SUCCESS);
   EXPECT(udononnxBindingStateAllocateBuffer(binding_state, 3, sizeof(source),
                                             &binding_input) ==
          UDONONNX_STATUS_INVALID_VALUE);
@@ -429,6 +443,8 @@ int main(void) {
   EXPECT(udonclDeviceBufferDestroy(&binding_read_write) ==
          UDONCL_STATUS_SUCCESS);
   EXPECT(udononnxBindingStateDispose(binding_state) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(udononnxBindingStateBeginStaticBind(binding_state) ==
+         UDONONNX_STATUS_NOT_INITIALIZED);
   EXPECT(clFinish(queue) == CL_SUCCESS);
   EXPECT(clReleaseCommandQueue(queue) == CL_SUCCESS);
   EXPECT(clReleaseCommandQueue(other_queue) == CL_SUCCESS);

@@ -160,11 +160,23 @@ assert "func.func @udononnxGeneratedEnqueueRun" in host.stdout
 assert "func.func @udononnxGeneratedDispose" in host.stdout
 assert "func.func @udononnxGeneratedGetModelCount" in host.stdout
 assert "func.func @udononnxGeneratedGetModel" in host.stdout
-assert "call @udononnxBindingInitializeTensorMetadata" in host.stdout
-assert "call @udononnxBindingInitializeModel" in host.stdout
+assert "call @udononnxBindingInitializeTensorMetadata" not in host.stdout
+assert "call @udononnxBindingInitializeModel" not in host.stdout
+assert "func.func private @udononnxBindingInitializeTensorMetadata" not in host.stdout
+assert "func.func private @udononnxBindingInitializeModel" not in host.stdout
+assert "udonhl.store" in host.stdout
+assert "arith.cmpi ne" in host.stdout
 assert "func.func @udon_onnx_binding_create" in host.stdout
 assert "func.func @udon_onnx_binding_bind_tensor" in host.stdout
 assert "func.func @udon_onnx_binding_bind_all" in host.stdout
+bind_all_start = host.stdout.index("func.func @udon_onnx_binding_bind_all")
+bind_all_end = host.stdout.index("func.func", bind_all_start + 10)
+bind_all = host.stdout[bind_all_start:bind_all_end]
+assert "call @udononnxBindingStateBindTensor" not in bind_all
+assert "call @udononnxBindingStateBeginStaticBind" in bind_all
+assert "call @udononnxBindingStateCompleteStaticBind" in bind_all
+assert bind_all.count("call @udonclDeviceBufferView") == 3
+assert "udonhl.alloca" not in bind_all
 assert host.stdout.count("vrc.static_public_resource_binding") == 3
 assert host.stdout.count('public_access = "input"') >= 2
 assert host.stdout.count('public_access = "output"') >= 1

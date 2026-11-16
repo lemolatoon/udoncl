@@ -3,6 +3,61 @@
 
 #define UDONONNX_BINDING_STATE_MAGIC 0x554f4e58u
 
+#if defined(__SPIR__)
+_Static_assert(sizeof(udononnxTensorMetadata_t) ==
+                   UDONCL_UDON_ABI_ONNX_TENSOR_METADATA_BYTES,
+               "Udon ONNX tensor metadata ABI size drifted");
+_Static_assert(offsetof(udononnxTensorMetadata_t, name) ==
+                   UDONCL_UDON_ABI_ONNX_TENSOR_METADATA_NAME_OFFSET,
+               "Udon ONNX tensor metadata name offset drifted");
+_Static_assert(offsetof(udononnxTensorMetadata_t, data_type) ==
+                   UDONCL_UDON_ABI_ONNX_TENSOR_METADATA_DATA_TYPE_OFFSET,
+               "Udon ONNX tensor metadata dtype offset drifted");
+_Static_assert(offsetof(udononnxTensorMetadata_t, rank) ==
+                   UDONCL_UDON_ABI_ONNX_TENSOR_METADATA_RANK_OFFSET,
+               "Udon ONNX tensor metadata rank offset drifted");
+_Static_assert(offsetof(udononnxTensorMetadata_t, dimensions) ==
+                   UDONCL_UDON_ABI_ONNX_TENSOR_METADATA_DIMENSIONS_OFFSET,
+               "Udon ONNX tensor metadata dimensions offset drifted");
+_Static_assert(offsetof(udononnxTensorMetadata_t, dimension_bounds) ==
+                   UDONCL_UDON_ABI_ONNX_TENSOR_METADATA_DIMENSION_BOUNDS_OFFSET,
+               "Udon ONNX tensor metadata bounds offset drifted");
+_Static_assert(sizeof(udononnxModel_t) == UDONCL_UDON_ABI_ONNX_MODEL_BYTES,
+               "Udon ONNX model ABI size drifted");
+_Static_assert(offsetof(udononnxModel_t, name) ==
+                   UDONCL_UDON_ABI_ONNX_MODEL_NAME_OFFSET,
+               "Udon ONNX model name offset drifted");
+_Static_assert(offsetof(udononnxModel_t, graph_id) ==
+                   UDONCL_UDON_ABI_ONNX_MODEL_GRAPH_ID_OFFSET,
+               "Udon ONNX model graph id offset drifted");
+_Static_assert(offsetof(udononnxModel_t, inputs) ==
+                   UDONCL_UDON_ABI_ONNX_MODEL_INPUTS_OFFSET,
+               "Udon ONNX model inputs offset drifted");
+_Static_assert(offsetof(udononnxModel_t, input_count) ==
+                   UDONCL_UDON_ABI_ONNX_MODEL_INPUT_COUNT_OFFSET,
+               "Udon ONNX model input count offset drifted");
+_Static_assert(offsetof(udononnxModel_t, outputs) ==
+                   UDONCL_UDON_ABI_ONNX_MODEL_OUTPUTS_OFFSET,
+               "Udon ONNX model outputs offset drifted");
+_Static_assert(offsetof(udononnxModel_t, output_count) ==
+                   UDONCL_UDON_ABI_ONNX_MODEL_OUTPUT_COUNT_OFFSET,
+               "Udon ONNX model output count offset drifted");
+_Static_assert(sizeof(udononnxTensor_t) == UDONCL_UDON_ABI_ONNX_TENSOR_BYTES,
+               "Udon ONNX tensor ABI size drifted");
+_Static_assert(offsetof(udononnxTensor_t, storage) ==
+                   UDONCL_UDON_ABI_ONNX_TENSOR_STORAGE_OFFSET,
+               "Udon ONNX tensor storage offset drifted");
+_Static_assert(offsetof(udononnxTensor_t, rank) ==
+                   UDONCL_UDON_ABI_ONNX_TENSOR_RANK_OFFSET,
+               "Udon ONNX tensor rank offset drifted");
+_Static_assert(offsetof(udononnxTensor_t, dimensions) ==
+                   UDONCL_UDON_ABI_ONNX_TENSOR_DIMENSIONS_OFFSET,
+               "Udon ONNX tensor dimensions offset drifted");
+_Static_assert(sizeof(((udononnxTensor_t *)0)->dimensions[0]) ==
+                   UDONCL_UDON_ABI_ONNX_TENSOR_DIMENSION_STRIDE,
+               "Udon ONNX tensor dimension stride drifted");
+#endif
+
 struct udononnxBindingState {
   uint32_t magic;
   cl_context context;
@@ -15,6 +70,16 @@ udononnxBindingStateGet(void *state_storage) {
   struct udononnxBindingState *state =
       (struct udononnxBindingState *)state_storage;
   return state && state->magic == UDONONNX_BINDING_STATE_MAGIC ? state : 0;
+}
+
+static udononnxStatus_t
+udononnxBindingStateRecord(struct udononnxBindingState *state,
+                           udononnxStatus_t status) {
+  if (state) {
+    state->session.last_status = status;
+    state->session.last_error = udononnxStatusString(status);
+  }
+  return status;
 }
 
 udononnxStatus_t udononnxBindingInitializeTensorMetadata(
@@ -255,6 +320,31 @@ udononnxStatus_t udononnxBindingStateGetSession(void *state_storage,
     return UDONONNX_STATUS_INVALID_VALUE;
   *session = &state->session;
   return UDONONNX_STATUS_SUCCESS;
+}
+
+udononnxStatus_t udononnxBindingStateBeginStaticBind(void *state_storage) {
+  struct udononnxBindingState *state = udononnxBindingStateGet(state_storage);
+  udononnxStatus_t status;
+  if (!state)
+    return UDONONNX_STATUS_NOT_INITIALIZED;
+  if (state->session.state == UDONONNX_SESSION_DISPOSED)
+    status = UDONONNX_STATUS_DISPOSED;
+  else if (state->session.state == UDONONNX_SESSION_INITIALIZING ||
+           state->session.state == UDONONNX_SESSION_RUNNING)
+    status = UDONONNX_STATUS_BUSY;
+  else if (state->session.state != UDONONNX_SESSION_READY)
+    status = UDONONNX_STATUS_NOT_INITIALIZED;
+  else
+    status = UDONONNX_STATUS_SUCCESS;
+  return udononnxBindingStateRecord(state, status);
+}
+
+udononnxStatus_t
+udononnxBindingStateCompleteStaticBind(void *state_storage,
+                                       udononnxStatus_t status) {
+  struct udononnxBindingState *state = udononnxBindingStateGet(state_storage);
+  return state ? udononnxBindingStateRecord(state, status)
+               : UDONONNX_STATUS_NOT_INITIALIZED;
 }
 
 udononnxStatus_t udononnxBindingStateResolveInput(void *state_storage,

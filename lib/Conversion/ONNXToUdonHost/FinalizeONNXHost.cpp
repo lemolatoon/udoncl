@@ -2935,7 +2935,25 @@ LogicalResult createRunExport(ModuleOp module, const GraphRecord &graph) {
   return success();
 }
 
-void createGeneratedModelExports(ModuleOp module, const GraphRecord &graph) {
+LogicalResult createGeneratedModelExports(ModuleOp module,
+                                          const GraphRecord &graph) {
+  auto validateMetadata = [&](ArrayRef<unsigned> indices) {
+    for (unsigned tensorIndex : indices) {
+      const TensorRecord &tensor = graph.tensors[tensorIndex];
+      if (tensor.name.empty()) {
+        module.emitError("ONNX model input/output name must not be empty");
+        return failure();
+      }
+      if (tensor.type.getRank() > UDONCL_UDON_ABI_ONNX_MAX_TENSOR_RANK) {
+        module.emitError("ONNX model input/output rank exceeds Udon ABI limit");
+        return failure();
+      }
+    }
+    return success();
+  };
+  if (failed(validateMetadata(graph.inputs)) ||
+      failed(validateMetadata(graph.outputs)))
+    return failure();
   OpBuilder builder(module.getBodyRegion());
   Location location = module.getLoc();
   Type i32 = builder.getI32Type();
@@ -2963,65 +2981,64 @@ void createGeneratedModelExports(ModuleOp module, const GraphRecord &graph) {
   Value isModel =
       arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
                             entry->getArgument(0), constant(0));
-  cf::CondBranchOp::create(builder, location, isModel, body, ValueRange{},
+  Value modelOutput = pointerToInt(builder, location, entry->getArgument(1));
+  Value hasOutput = arith::CmpIOp::create(
+      builder, location, arith::CmpIPredicate::ne, modelOutput, constant(0));
+  Value valid = arith::AndIOp::create(builder, location, isModel, hasOutput);
+  cf::CondBranchOp::create(builder, location, valid, body, ValueRange{},
                            invalid, ValueRange{});
   builder.setInsertionPointToEnd(invalid);
   func::ReturnOp::create(builder, location, constant(1));
   builder.setInsertionPointToEnd(body);
 
-  auto returnIfNonzero = [&](Value status) {
-    Block *next = get.addBlock();
-    Block *failure = get.addBlock();
-    Value succeeded = arith::CmpIOp::create(
-        builder, location, arith::CmpIPredicate::eq, status, constant(0));
-    cf::CondBranchOp::create(builder, location, succeeded, next, ValueRange{},
-                             failure, ValueRange{});
-    builder.setInsertionPointToEnd(failure);
-    func::ReturnOp::create(builder, location, status);
-    builder.setInsertionPointToEnd(next);
+  auto storeAt = [&](Value base, uint32_t offset, Value value) {
+    Value field =
+        offset ? pointerAdd(builder, location, base, constant(offset)) : base;
+    store(builder, location, value, field);
   };
   auto initializeMetadata = [&](bool output, unsigned index,
                                 const TensorRecord &tensor) {
     StringRef storage = output ? outputMetadataSymbol : inputMetadataSymbol;
-    int64_t storageBytes =
-        std::max<size_t>(output ? graph.outputs.size() : graph.inputs.size(),
-                         1) *
-        metadataStorageBytes;
+    Value base = addressOf(builder, location, storage);
+    Value metadata =
+        pointerAdd(builder, location, base,
+                   constant(static_cast<int64_t>(index) *
+                            UDONCL_UDON_ABI_ONNX_TENSOR_METADATA_BYTES));
     Value dimensions =
         tensor.type.getRank()
             ? addressOf(builder, location, ioDimensionsSymbol(output, index))
             : nullPointer(builder, location);
-    auto call = func::CallOp::create(
-        builder, location, "udononnxBindingInitializeTensorMetadata",
-        TypeRange{i32},
-        ValueRange{addressOf(builder, location, storage),
-                   constant(storageBytes), constant(index),
-                   addressOf(builder, location, ioNameSymbol(output, index)),
-                   constant(udonclDataType(tensor.type.getElementType())),
-                   constant(tensor.type.getRank()), dimensions,
-                   nullPointer(builder, location)});
-    returnIfNonzero(call.getResult(0));
+    storeAt(metadata, UDONCL_UDON_ABI_ONNX_TENSOR_METADATA_NAME_OFFSET,
+            addressOf(builder, location, ioNameSymbol(output, index)));
+    storeAt(metadata, UDONCL_UDON_ABI_ONNX_TENSOR_METADATA_DATA_TYPE_OFFSET,
+            constant(udonclDataType(tensor.type.getElementType())));
+    storeAt(metadata, UDONCL_UDON_ABI_ONNX_TENSOR_METADATA_RANK_OFFSET,
+            constant(tensor.type.getRank()));
+    storeAt(metadata, UDONCL_UDON_ABI_ONNX_TENSOR_METADATA_DIMENSIONS_OFFSET,
+            dimensions);
+    storeAt(metadata,
+            UDONCL_UDON_ABI_ONNX_TENSOR_METADATA_DIMENSION_BOUNDS_OFFSET,
+            nullPointer(builder, location));
   };
   for (auto [index, tensorIndex] : llvm::enumerate(graph.inputs))
     initializeMetadata(false, index, graph.tensors[tensorIndex]);
   for (auto [index, tensorIndex] : llvm::enumerate(graph.outputs))
     initializeMetadata(true, index, graph.tensors[tensorIndex]);
-  auto initializeModel = func::CallOp::create(
-      builder, location, "udononnxBindingInitializeModel", TypeRange{i32},
-      ValueRange{addressOf(builder, location, modelStorageSymbol),
-                 constant(modelStorageBytes),
-                 addressOf(builder, location, modelNameSymbol), constant(0),
-                 addressOf(builder, location, inputMetadataSymbol),
-                 constant(graph.inputs.size()),
-                 addressOf(builder, location, outputMetadataSymbol),
-                 constant(graph.outputs.size()), entry->getArgument(1)});
-  func::ReturnOp::create(builder, location, initializeModel.getResult(0));
-
-  declaration(module, "udononnxBindingInitializeTensorMetadata",
-              {pointer, i32, i32, pointer, i32, i32, pointer, pointer}, {i32});
-  declaration(module, "udononnxBindingInitializeModel",
-              {pointer, i32, pointer, i32, pointer, i32, pointer, i32, pointer},
-              {i32});
+  Value model = addressOf(builder, location, modelStorageSymbol);
+  storeAt(model, UDONCL_UDON_ABI_ONNX_MODEL_NAME_OFFSET,
+          addressOf(builder, location, modelNameSymbol));
+  storeAt(model, UDONCL_UDON_ABI_ONNX_MODEL_GRAPH_ID_OFFSET, constant(0));
+  storeAt(model, UDONCL_UDON_ABI_ONNX_MODEL_INPUTS_OFFSET,
+          addressOf(builder, location, inputMetadataSymbol));
+  storeAt(model, UDONCL_UDON_ABI_ONNX_MODEL_INPUT_COUNT_OFFSET,
+          constant(graph.inputs.size()));
+  storeAt(model, UDONCL_UDON_ABI_ONNX_MODEL_OUTPUTS_OFFSET,
+          addressOf(builder, location, outputMetadataSymbol));
+  storeAt(model, UDONCL_UDON_ABI_ONNX_MODEL_OUTPUT_COUNT_OFFSET,
+          constant(graph.outputs.size()));
+  store(builder, location, model, entry->getArgument(1));
+  func::ReturnOp::create(builder, location, constant(0));
+  return success();
 }
 
 void createPhysicalBindingExports(ModuleOp module, const GraphRecord &graph) {
@@ -3193,34 +3210,57 @@ void createPhysicalBindingExports(ModuleOp module, const GraphRecord &graph) {
   markExport(bindAll);
   entry = bindAll.addEntryBlock();
   builder.setInsertionPointToEnd(entry);
+  auto beginStaticBind = func::CallOp::create(
+      builder, location, "udononnxBindingStateBeginStaticBind", TypeRange{i32},
+      state());
+  returnIfNonzero(bindAll, beginStaticBind.getResult(0));
+  auto returnIfViewFailed = [&](Value status) {
+    Block *next = bindAll.addBlock();
+    Block *failure = bindAll.addBlock();
+    Value succeeded = arith::CmpIOp::create(
+        builder, location, arith::CmpIPredicate::eq, status, constant(0));
+    cf::CondBranchOp::create(builder, location, succeeded, next, ValueRange{},
+                             failure, ValueRange{});
+    builder.setInsertionPointToEnd(failure);
+    Value stale = arith::CmpIOp::create(
+        builder, location, arith::CmpIPredicate::eq, status, constant(3));
+    Value mapped = arith::SelectOp::create(builder, location, stale,
+                                           constant(3), constant(1));
+    auto completed = func::CallOp::create(
+        builder, location, "udononnxBindingStateCompleteStaticBind",
+        TypeRange{i32}, ValueRange{state(), mapped});
+    func::ReturnOp::create(builder, location, completed.getResult(0));
+    builder.setInsertionPointToEnd(next);
+  };
   auto bindOne = [&](bool output, size_t publicIndex, unsigned tensorIndex,
                      size_t ioHandleIndex) {
     const TensorRecord &tensor = graph.tensors[tensorIndex];
-    Value dimensionBytes = constant(maximumTensorRank * 4);
-    OperationState allocation(location, host::AllocaOp::getOperationName());
-    allocation.addOperands(dimensionBytes);
-    allocation.addTypes(pointer);
-    allocation.addAttribute("alignment", builder.getI64IntegerAttr(4));
-    Value dimensions = builder.create(allocation)->getResult(0);
+    Value bindings = addressOf(
+        builder, location, output ? bindingOutputSymbol : bindingInputSymbol);
+    Value target =
+        pointerAdd(builder, location, bindings,
+                   constant(publicIndex * UDONCL_UDON_ABI_ONNX_TENSOR_BYTES));
+    Value handle = handleAddress(ioHandleIndex);
+    auto viewed = func::CallOp::create(
+        builder, location, "udonclDeviceBufferView", TypeRange{i32},
+        ValueRange{handle, constant(0), constant(tensor.type.getNumElements()),
+                   constant(udonclDataType(tensor.type.getElementType())),
+                   target});
+    returnIfViewFailed(viewed.getResult(0));
+    store(builder, location, constant(tensor.type.getRank()),
+          pointerAdd(builder, location, target,
+                     constant(UDONCL_UDON_ABI_ONNX_TENSOR_RANK_OFFSET)));
     for (int64_t axis = 0; axis != maximumTensorRank; ++axis) {
       int64_t dimension =
           axis < tensor.type.getRank() ? tensor.type.getShape()[axis] : 0;
-      store(builder, location, constant(dimension),
-            pointerAdd(builder, location, dimensions, constant(axis * 4)));
+      Value field = pointerAdd(
+          builder, location, target,
+          constant(UDONCL_UDON_ABI_ONNX_TENSOR_DIMENSIONS_OFFSET +
+                   axis * UDONCL_UDON_ABI_ONNX_TENSOR_DIMENSION_STRIDE));
+      store(builder, location,
+            arith::ConstantIntOp::create(builder, location, dimension, 64),
+            field);
     }
-    Value handle = handleAddress(ioHandleIndex);
-    auto bound = func::CallOp::create(
-        builder, location, "udononnxBindingStateBindTensor", TypeRange{i32},
-        ValueRange{state(), constant(output), constant(publicIndex),
-                   loadI32(builder, location, handle),
-                   loadI32(builder, location,
-                           pointerAdd(builder, location, handle, constant(4))),
-                   constant(0),
-                   constant(tensor.type.getNumElements() *
-                            elementByteSize(tensor.type.getElementType())),
-                   constant(udonclDataType(tensor.type.getElementType())),
-                   constant(tensor.type.getRank()), dimensions});
-    returnIfNonzero(bindAll, bound.getResult(0));
   };
   handleIndex = 0;
   for (auto [index, tensorIndex] : llvm::enumerate(graph.inputs))
@@ -3233,7 +3273,10 @@ void createPhysicalBindingExports(ModuleOp module, const GraphRecord &graph) {
     store(builder, location, constant(0),
           addressOf(builder, location, sequenceStatePendingSymbol));
   }
-  func::ReturnOp::create(builder, location, constant(0));
+  auto completedStaticBind = func::CallOp::create(
+      builder, location, "udononnxBindingStateCompleteStaticBind",
+      TypeRange{i32}, ValueRange{state(), constant(0)});
+  func::ReturnOp::create(builder, location, completedStaticBind.getResult(0));
 
   auto createResolve = [&](StringRef name, StringRef callee) {
     builder.setInsertionPointToEnd(module.getBody());
@@ -3707,6 +3750,11 @@ void createPhysicalBindingExports(ModuleOp module, const GraphRecord &graph) {
   declaration(module, "udononnxBindingStateBindTensor",
               {pointer, i32, i32, i32, i32, i32, i32, i32, i32, pointer},
               {i32});
+  declaration(module, "udononnxBindingStateBeginStaticBind", {pointer}, {i32});
+  declaration(module, "udononnxBindingStateCompleteStaticBind", {pointer, i32},
+              {i32});
+  declaration(module, "udonclDeviceBufferView",
+              {pointer, i32, i32, i32, pointer}, {i32});
   declaration(module, "udononnxBindingStateEnqueueInitialize",
               {pointer, i32, pointer, pointer}, {i32});
   declaration(module, "udononnxBindingStateEnqueueRun",
@@ -4869,7 +4917,10 @@ struct FinalizeONNXHostPass
       createReadExport(module, *graph, builder.getI64Type(), "int64");
       createBindingExports(module, *graph);
     }
-    createGeneratedModelExports(module, *graph);
+    if (failed(createGeneratedModelExports(module, *graph))) {
+      signalPassFailure();
+      return;
+    }
     createPhysicalBindingExports(module, *graph);
     if (!deviceGraph && failed(createRunExport(module, *graph))) {
       signalPassFailure();
