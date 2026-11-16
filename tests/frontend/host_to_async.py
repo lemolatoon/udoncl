@@ -84,12 +84,51 @@ assert 'coroutine result escapes the supported structured Udon' in (
     escaping.stderr
 ), escaping.stderr
 
+prepared = subprocess.run(
+    [optimizer, '--vrc-prepare-udon-async-runtime'],
+    input=runtime_input.stdout,
+    text=True,
+    capture_output=True,
+)
+assert prepared.returncode == 0, (prepared.stdout, prepared.stderr)
+discovered_persistent = subprocess.run(
+    [optimizer, '--vrc-discover-async-persistent-storage'],
+    input=prepared.stdout,
+    text=True,
+    capture_output=True,
+)
+assert discovered_persistent.returncode == 0, (
+    discovered_persistent.stdout,
+    discovered_persistent.stderr,
+)
+for fragment in [
+    'vrc.async_persistent_request_version = 1 : i32',
+    'vrc.async_persistent_requests',
+    'legal_alternatives = ["direct"]',
+    'member_value_ids = [',
+    'priority = ',
+]:
+    assert fragment in discovered_persistent.stdout, (
+        fragment,
+        discovered_persistent.stdout,
+    )
+missing_persistent_definition = subprocess.run(
+    [optimizer, '--vrc-discover-async-persistent-storage'],
+    input=prepared.stdout.replace(
+        'vrc.async_frame_store', 'vrc.removed_async_frame_store', 1
+    ),
+    text=True,
+    capture_output=True,
+)
+assert missing_persistent_definition.returncode != 0
+
 runtime = subprocess.run(
     [
         optimizer,
         '--vrc-lower-host-to-async',
         '--async-func-to-async-runtime',
         '--vrc-prepare-udon-async-runtime',
+        '--vrc-discover-async-persistent-storage',
         '--vrc-allocate-host-storage',
         '--vrc-analyze-host-storage',
         source,
@@ -111,6 +150,12 @@ for fragment in [
     'vrc.async_frame_id',
     'vrc.async_resume_pc',
     'vrc.async_spill_slot_count = 3 : i32',
+    'vrc.async_persistent_request_version = 1 : i32',
+    'vrc.async_persistent_requests',
+    'vrc.async_persistent_request_id = ',
+    'legal_alternatives = ["direct"]',
+    'member_value_ids = [',
+    'priority = ',
     'vrc.async_object_count = 3 : i32',
     'vrc.async_live_object_ids',
     'object_id = 4 : i32',

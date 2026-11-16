@@ -9,6 +9,7 @@ namespace vrc {
 
 void buildUdonHostStorageFinalizationPipeline(OpPassManager &manager) {
   manager.addPass(createMaterializeFixedPhysicalReleasesPass());
+  manager.addPass(createDiscoverAsyncPersistentStoragePass());
   manager.addPass(createExposeHostBackendLiteralUsesPass());
   manager.addPass(createDiscoverHostRematerializationPass());
   manager.addPass(createFitHostStorageCapacityPass());

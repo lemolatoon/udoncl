@@ -290,7 +290,66 @@ recognize MNIST, TinyLlama, tensor names, layer counts, or model shapes.
   materialization. A partial, stale, or incomplete report fails instead of
   invoking final-lowering recoloring. Only a module with no allocation schema
   may use the temporary standalone compatibility path.
-- Stage 5 next migrates pre-existing live-across-suspend spill operations to
-  the same direct-slot allocation, then remove their typed spill banks.
+- Stage 5 is next. The current compatibility path is deliberately not the
+  target design: `PrepareUdonAsyncRuntime` computes suspend liveness, assigns a
+  unique typed-spill index, records `vrc.async_spill_slots`, and immediately
+  demotes each value to `udonhl.spill_store`/`spill_load` operations.
+  `AllocateHostStorage` then solves those entries again in the separate
+  `TypedSpill` domain and rewrites their indices, while its writable problem
+  independently colors the store operands and load results as ordinary SSA.
+  `LowerScalar` consequently allocates typed arrays, index materialization,
+  array constructor/Get/Set externs, and direct colors for the same logical
+  persistent values.
+
+  Implement Stage 5 in independently testable responsibilities:
+
+  1. Add a metadata-only async-persistent discovery component after current
+     async preparation. It validates each function plan and its marked
+     store/load operations and gives one stable logical request identity to the
+     original definition plus every reload result. It must not choose a color,
+     rewrite an index, or materialize storage. The first commit may consume the
+     current unique pre-allocation index only as a compatibility identity; that
+     index is not a physical placement and must disappear with the migration.
+  2. Project ordinary SSA liveness through those logical equivalence classes
+     when building the existing writable `HostStorageProblem`. Union the
+     member SSA interference produced by `HostStorageLiveness` with the
+     pre-demotion suspend interference already recorded by preparation, ignore
+     conflicts within one logical request, and retain simultaneous-consumer
+     constraints. Submit one prioritized request with the same legal `direct`
+     alternative used by ordinary SSA. Priority is the saturating aggregate of
+     semantic member uses; generated frame store/load markers do not inflate
+     it. Suspend persistence is correctness and therefore affects liveness,
+     not an arbitrary model-specific priority bonus.
+  3. Emit one authoritative selected request/color and complete member mapping
+     for every definition and reload SSA value. A separate async-persistent
+     materializer consumes that selection, makes the marked frame accesses
+     direct-slot aliases/no-ops, and removes legacy spill placement metadata.
+     Final lowering validates the materialized direct contract and must not
+     allocate a typed bank, synthesize an index, or select a fallback.
+  4. Delete the `TypedSpill` compatibility solver, index remapping, typed spill
+     array planning, index caches, constructor/Get/Set emission, and obsolete
+     report fields only after all async production paths consume the selected
+     direct plan.
+
+  Keep these responsibilities in separate files: async semantic liveness and
+  demotion remain in `PrepareUdonAsyncRuntime.cpp`; metadata-only request
+  validation/discovery belongs in a new async-persistent discovery file;
+  generic equivalence projection and selection belong beside the existing
+  writable problem builder rather than in async lowering; selected-plan
+  rewriting belongs in a dedicated async-persistent materialization file; and
+  `LowerScalar.cpp` only validates and consumes the result. The first TDD slice
+  extends the model-independent `host_to_async` fast/suspend/error-merge
+  fixture with stable request/member metadata and malformed-plan negatives,
+  without changing generated storage. Subsequent acceptance requires
+  interfering persistent values to receive distinct direct colors,
+  noninterfering persistent and ordinary values to reuse colors, every member
+  to map to its request color, and final Udon output to contain no typed spill
+  arrays, spill-index slot, or spill array constructor/Get/Set externs.
+- Stage 5.1 is complete: `DiscoverAsyncPersistentStorage` validates the
+  current demoted frame accesses and emits deterministic logical request IDs,
+  member SSA IDs, direct legality, semantic-use priority, and pre-demotion
+  conflicts without selecting or rewriting storage. The final Host-storage
+  pipeline runs this discovery before allocation. Stage 5.2, equivalence-class
+  projection into the writable problem, is next.
 - Stages 6-8 and the TinyLlama generated-U# conversation acceptance path remain
   open.

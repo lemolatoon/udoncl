@@ -86,6 +86,8 @@ struct AllocateHostStoragePass
 
     std::map<std::string, int32_t> nextIndex;
     std::map<SpillIdentity, int32_t> remappedIndices;
+    std::map<std::tuple<std::string, std::string, int32_t>, std::string>
+        persistentRequestIds;
     bool invalid = false;
     for (func::FuncOp function : functions) {
       auto plan = function->getAttrOfType<ArrayAttr>("vrc.async_spill_slots");
@@ -181,6 +183,11 @@ struct AllocateHostStoragePass
                    return left.valueId < right.valueId;
                  });
       for (const PlannedSpill &spill : spills) {
+        persistentRequestIds.emplace(
+            std::make_tuple(function.getSymName().str(), spill.storageKey,
+                            spill.oldIndex),
+            "function:" + function.getSymName().str() +
+                ":async_persistent:" + std::to_string(spill.valueId));
         NamedAttrList fields(spill.source);
         fields.set("slot", builder.getI32IntegerAttr(spill.newIndex));
         fields.set("allocation", builder.getStringAttr("liveness_colored"));
@@ -229,6 +236,21 @@ struct AllocateHostStoragePass
         invalid = true;
         return;
       }
+      auto function = operation->getParentOfType<func::FuncOp>();
+      auto request =
+          function
+              ? persistentRequestIds.find(std::make_tuple(
+                    function.getSymName().str(), storageKey.getValue().str(),
+                    static_cast<int32_t>(index.getInt())))
+              : persistentRequestIds.end();
+      if (request == persistentRequestIds.end()) {
+        operation->emitError(
+            "async frame access has no persistent request identity");
+        invalid = true;
+        return;
+      }
+      operation->setAttr("vrc.async_persistent_request_id",
+                         builder.getStringAttr(request->second));
       operation->setAttr("index", builder.getI32IntegerAttr(mapped->second));
     });
     if (invalid)
