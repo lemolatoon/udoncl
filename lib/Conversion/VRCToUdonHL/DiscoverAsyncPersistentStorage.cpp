@@ -44,9 +44,35 @@ struct DiscoverAsyncPersistentStoragePass
     bool hasPlans = llvm::any_of(functions, [](func::FuncOp function) {
       return function->hasAttr("vrc.async_spill_slots");
     });
+    auto existingVersion = module->getAttrOfType<IntegerAttr>(
+        "vrc.async_persistent_request_version");
+    auto existingRequests =
+        module->getAttrOfType<ArrayAttr>("vrc.async_persistent_requests");
+    auto completionVersion = module->getAttrOfType<IntegerAttr>(
+        "vrc.async_persistent_materialization_version");
+    auto completionRequests = module->getAttrOfType<ArrayAttr>(
+        "vrc.async_persistent_direct_requests");
+    bool hasFrameState = false;
+    module.walk([&](Operation *operation) {
+      hasFrameState |= operation->hasAttr("vrc.async_frame_store") ||
+                       operation->hasAttr("vrc.async_frame_load") ||
+                       operation->hasAttr("vrc.async_persistent_request_id");
+    });
+    if (bool(existingVersion) != bool(existingRequests) ||
+        bool(completionVersion) != bool(completionRequests) ||
+        ((completionVersion || completionRequests) &&
+         (hasPlans || hasFrameState || existingVersion || existingRequests))) {
+      module.emitError("inconsistent async persistent discovery state");
+      signalPassFailure();
+      return;
+    }
+    if (completionVersion)
+      return;
     if (!hasPlans) {
-      module->removeAttr("vrc.async_persistent_request_version");
-      module->removeAttr("vrc.async_persistent_requests");
+      if (existingVersion || existingRequests || hasFrameState) {
+        module.emitError("stale async persistent discovery state");
+        signalPassFailure();
+      }
       return;
     }
 
@@ -64,6 +90,7 @@ struct DiscoverAsyncPersistentStoragePass
 
     Builder builder(module.getContext());
     SmallVector<Attribute> requests;
+    SmallVector<std::pair<Operation *, std::string>> pendingTags;
     bool invalid = false;
     for (func::FuncOp function : functions) {
       auto plan = function->getAttrOfType<ArrayAttr>("vrc.async_spill_slots");
@@ -150,8 +177,7 @@ struct DiscoverAsyncPersistentStoragePass
           invalid = true;
           return;
         }
-        operation->setAttr("vrc.async_persistent_request_id",
-                           builder.getStringAttr(found->first));
+        pendingTags.emplace_back(operation, found->first);
         if (auto store = dyn_cast<udonhl::SpillStoreOp>(operation)) {
           if (found->second.definition) {
             store.emitError(
@@ -265,10 +291,31 @@ struct DiscoverAsyncPersistentStoragePass
                                    .getAs<StringAttr>("request_id")
                                    .getValue();
     });
+    ArrayAttr generatedRequests = builder.getArrayAttr(requests);
+    if (existingVersion) {
+      if (existingVersion.getInt() != 1 ||
+          existingRequests != generatedRequests) {
+        module.emitError("stale async persistent discovery receipt");
+        signalPassFailure();
+        return;
+      }
+      for (const auto &[operation, requestId] : pendingTags) {
+        auto existing = operation->getAttrOfType<StringAttr>(
+            "vrc.async_persistent_request_id");
+        if (!existing || existing.getValue() != requestId) {
+          operation->emitError("stale async persistent operation tag");
+          signalPassFailure();
+          return;
+        }
+      }
+      return;
+    }
+    for (const auto &[operation, requestId] : pendingTags)
+      operation->setAttr("vrc.async_persistent_request_id",
+                         builder.getStringAttr(requestId));
     module->setAttr("vrc.async_persistent_request_version",
                     builder.getI32IntegerAttr(1));
-    module->setAttr("vrc.async_persistent_requests",
-                    builder.getArrayAttr(requests));
+    module->setAttr("vrc.async_persistent_requests", generatedRequests);
   }
 };
 

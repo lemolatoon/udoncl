@@ -326,16 +326,36 @@ recognize MNIST, TinyLlama, tensor names, layer counts, or model shapes.
   SSA. No post-selection alias rewrite, special priority bonus, separate
   persistent allocator, or `TypedSpill` bank is permitted.
 
-  The production finalization order is now fixed releases, async-persistent
+  Discovery and normalization are schema-exact and transactional. Discovery
+  reconstructs a pending version 1 request set without mutation, verifies an
+  existing request schema and every operation tag against that reconstruction,
+  and makes the first set of tags only after the whole module validates. It
+  rejects partial version/request pairs, stale requests or tags, unowned frame
+  markers, and a mixture of pending frame state with a completion receipt. An
+  identical repeated discovery is a no-op.
+
+  Materialization validates exact request fields, the single `direct`
+  alternative, physical types, compatibility indices, member-to-alias
+  coverage, store/load markers, conflict identities and symmetry, and
+  definition dominance before changing the input module. It performs the
+  rewrite on a clone and commits the clone only after all replacements,
+  erasures, stable-ID recomputation, and receipt construction succeed. After
+  every alias is gone it emits the version 2 receipt with canonical SSA IDs.
+  Repeated materialization validates the exact completion schema, canonical
+  bindings, symmetric conflicts, and absence of legacy state, then leaves the
+  module byte-identical.
+
+  The production finalization order is fixed releases, async-persistent
   discovery, async-persistent SSA normalization, backend-literal exposure,
   literal/rematerialization discovery, unified allocation and capacity fit,
-  verification, then scalar lowering. The focused model-independent
-  fast/suspend/error-merge fixture proves that normalization removes all spill
-  operations and legacy spill/live-slot metadata before literal discovery and
-  allocation and that the version 2 receipt survives into unified allocation.
-  The focused path and CMake consumer pass with the conservative
-  cross-invocation interference. Unity numerical revalidation, including the
-  MNIST buffer-index path, is still pending.
+  verification, then scalar lowering. The focused model-independent fixture
+  covers byte-identical repeated discovery and materialization and rejects a
+  stale discovery receipt, a non-direct alternative, a mismatched
+  compatibility index, an untagged marker, and a partial completion receipt.
+  It also proves that normalization removes all spill operations and legacy
+  spill/live-slot metadata before literal discovery and allocation and that
+  the version 2 receipt survives into unified allocation. Unity numerical
+  revalidation, including the MNIST buffer-index path, is still pending.
 
   Keep the responsibilities separate: `PrepareUdonAsyncRuntime.cpp` owns
   coroutine semantics and the temporary compatibility representation;
@@ -348,14 +368,8 @@ recognize MNIST, TinyLlama, tensor names, layer counts, or model shapes.
   priority, alternatives, and colors. `LowerScalar.cpp` only consumes the
   resulting ordinary direct plan.
 
-  Before declaring Stage 5 complete, make discovery tagging and materialization
-  fully transactional and schema-exact: validate every request field, exact
-  member-to-frame-alias coverage, every marked operation, dominance of each
-  replacement, and any existing completion receipt before the first tag, use
-  replacement, or erase. Add malformed, partial, duplicate, stale, and
-  repeated-run focused cases.
-
-  Then delete the now-inactive `TypedSpill` solver/index remapping from
+  Stage 5 hardening is complete. The remaining cleanup is to delete the
+  now-inactive `TypedSpill` solver/index remapping from
   `AllocateHostStorage`, remove transient spill-index assignment when the
   preparation contract no longer needs it, and delete typed spill bank/index-
   cache/constructor/Get/Set lowering plus obsolete report fields. Final

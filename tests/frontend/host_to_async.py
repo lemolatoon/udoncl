@@ -101,6 +101,31 @@ assert discovered_persistent.returncode == 0, (
     discovered_persistent.stdout,
     discovered_persistent.stderr,
 )
+rediscovered_persistent = subprocess.run(
+    [optimizer, '--vrc-discover-async-persistent-storage'],
+    input=discovered_persistent.stdout,
+    text=True,
+    capture_output=True,
+)
+assert rediscovered_persistent.returncode == 0, (
+    rediscovered_persistent.stdout,
+    rediscovered_persistent.stderr,
+)
+assert rediscovered_persistent.stdout == discovered_persistent.stdout
+stale_persistent, replacement_count = re.subn(
+    r'priority = ([0-9]+) : i64',
+    lambda match: f'priority = {int(match.group(1)) + 1} : i64',
+    discovered_persistent.stdout,
+    count=1,
+)
+assert replacement_count == 1
+stale_discovery = subprocess.run(
+    [optimizer, '--vrc-discover-async-persistent-storage'],
+    input=stale_persistent,
+    text=True,
+    capture_output=True,
+)
+assert stale_discovery.returncode != 0
 for fragment in [
     'vrc.async_persistent_request_version = 1 : i32',
     'vrc.async_persistent_requests',
@@ -410,6 +435,64 @@ assert materialized_persistent.returncode == 0, (
     materialized_persistent.stdout,
     materialized_persistent.stderr,
 )
+repeated_materialization = subprocess.run(
+    [optimizer, '--vrc-materialize-async-persistent-storage'],
+    input=materialized_persistent.stdout,
+    text=True,
+    capture_output=True,
+)
+assert repeated_materialization.returncode == 0, (
+    repeated_materialization.stdout,
+    repeated_materialization.stderr,
+)
+assert repeated_materialization.stdout == materialized_persistent.stdout
+
+malformed_persistent_inputs = []
+malformed_persistent_inputs.append(
+    discovered_persistent.stdout.replace(
+        'legal_alternatives = ["direct"]',
+        'legal_alternatives = ["typed_spill"]',
+        1,
+    )
+)
+wrong_index, replacement_count = re.subn(
+    r'compatibility_index = ([0-9]+) : i32',
+    lambda match: f'compatibility_index = {int(match.group(1)) + 1} : i32',
+    discovered_persistent.stdout,
+    count=1,
+)
+assert replacement_count == 1
+malformed_persistent_inputs.append(wrong_index)
+untagged_frame, replacement_count = re.subn(
+    r', vrc\.async_persistent_request_id = "[^"]+"',
+    '',
+    discovered_persistent.stdout,
+    count=1,
+)
+assert replacement_count == 1
+malformed_persistent_inputs.append(untagged_frame)
+for malformed_persistent in malformed_persistent_inputs:
+    malformed_result = subprocess.run(
+        [optimizer, '--vrc-materialize-async-persistent-storage'],
+        input=malformed_persistent,
+        text=True,
+        capture_output=True,
+    )
+    assert malformed_result.returncode != 0
+
+partial_receipt = materialized_persistent.stdout.replace(
+    'vrc.async_persistent_direct_requests',
+    'vrc.removed_async_persistent_direct_requests',
+    1,
+)
+assert partial_receipt != materialized_persistent.stdout
+partial_receipt_result = subprocess.run(
+    [optimizer, '--vrc-materialize-async-persistent-storage'],
+    input=partial_receipt,
+    text=True,
+    capture_output=True,
+)
+assert partial_receipt_result.returncode != 0
 for fragment in [
     'vrc.async_persistent_materialization_version = 2 : i32',
     'vrc.async_persistent_direct_requests',
