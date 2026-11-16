@@ -1,0 +1,61 @@
+{
+  "schema_version": 2,
+  "program": "onnx_rms_component",
+  "generate_onnx_public_buffers": true,
+  "binding": {
+    "namespace": "Lemolatoon.Udoncl.Generated",
+    "class_name": "UdonclOnnxRmsComponentBinding"
+  },
+  "device_kernels": [
+    {
+      "schema_version": 1,
+      "profile": "gather-f32",
+      "words": 16384,
+      "kernel": "udonaten_arena_rms_norm_reduce",
+      "kernel_id": 217,
+      "input_words": [16384],
+      "argument_bounds": [
+        {"index": 2, "min": 1, "max": 16384},
+        {"index": 3, "min": 1, "max": 4096}
+      ],
+      "argument_kinds": ["buffer", "buffer", "i32", "i32"],
+      "global_size": [8192, 2, 1],
+      "local_size": [1, 1, 1],
+      "global_offset": [0, 0, 0]
+    },
+    {
+      "schema_version": 1,
+      "profile": "gather-f32",
+      "words": 16384,
+      "kernel": "udonaten_arena_rms_norm_finalize",
+      "kernel_id": 218,
+      "input_words": [16384, 16384, 4096],
+      "argument_bounds": [
+        {"index": 4, "min": 1, "max": 16384},
+        {"index": 5, "min": 1, "max": 4096},
+        {"index": 7, "min": 1, "max": 1}
+      ],
+      "argument_kinds": [
+        "buffer", "buffer", "buffer", "buffer", "i32", "i32", "f32", "i32"
+      ],
+      "global_size": [8192, 2, 1],
+      "local_size": [1, 1, 1],
+      "global_offset": [0, 0, 0]
+    }
+  ],
+  "export_overrides": [
+    {"symbol": "rms_component_initialize", "public_name": "Initialize", "parameters": []},
+    {"symbol": "rms_component_run", "public_name": "Run", "parameters": []},
+    {"symbol": "rms_component_dispose", "public_name": "Shutdown", "parameters": []}
+  ],
+  "internal_exports": [
+    "udon_onnx_binding_create",
+    "udon_onnx_binding_bind_tensor",
+    "udon_onnx_binding_bind_all",
+    "udon_onnx_binding_resolve_input",
+    "udon_onnx_binding_resolve_output",
+    "udon_onnx_binding_enqueue_initialize",
+    "udon_onnx_binding_enqueue_run",
+    "udon_onnx_binding_dispose"
+  ]
+}
