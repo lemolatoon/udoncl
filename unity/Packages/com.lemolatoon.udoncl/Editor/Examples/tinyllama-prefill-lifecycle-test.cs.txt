@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.IO;
 using Lemolatoon.Udoncl.Editor;
 using NUnit.Framework;
@@ -21,6 +22,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         private const string ControllerProgram =
             GeneratedRoot + "/Tests/" + ControllerClass + ".asset";
         private ValidatedOnnxOracle oracle;
+        private int[] outputBufferIds;
 
         [OneTimeSetUp]
         public void ImportPrefillArtifact()
@@ -62,11 +64,48 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 "The TinyLlama prefill oracle directory is required."
             );
             oracle = OnnxOracleSidecar.Load(oracleDirectory);
-            Assert.AreEqual(3, oracle.Inputs.Count);
+            Assert.GreaterOrEqual(oracle.Inputs.Count, 3);
+            CollectionAssert.AreEqual(
+                new[] { "input_ids", "attention_mask", "position_ids" },
+                new[]
+                {
+                    oracle.Inputs[0].Name,
+                    oracle.Inputs[1].Name,
+                    oracle.Inputs[2].Name,
+                }
+            );
+            for (int index = 0; index < 3; ++index)
+            {
+                Assert.AreEqual("int64", oracle.Inputs[index].DataType);
+                Assert.Greater(oracle.Inputs[index].Values.Length, 0);
+            }
+            for (int index = 3; index < oracle.Inputs.Count; ++index)
+            {
+                ValidatedOnnxOracleInput input = oracle.Inputs[index];
+                StringAssert.StartsWith("past_key_values.", input.Name);
+                Assert.AreEqual("float32", input.DataType);
+                Assert.AreEqual(0, input.Values.Length);
+                CollectionAssert.Contains(input.Shape, 0L);
+            }
             Assert.AreEqual(45, oracle.Outputs.Count);
             Assert.AreEqual(128000, oracle.Outputs[0].ElementCount);
             for (int index = 1; index < oracle.Outputs.Count; ++index)
                 Assert.AreEqual(1024, oracle.Outputs[index].ElementCount);
+            List<int> outputIds = new List<int>();
+            foreach (ValidatedDeviceBuffer buffer in artifact.DeviceBuffers)
+            {
+                if (buffer.PublicAccess != "output")
+                    continue;
+                Assert.Less(outputIds.Count, oracle.Outputs.Count);
+                Assert.AreEqual("float32", buffer.ElementType);
+                Assert.AreEqual(
+                    oracle.Outputs[outputIds.Count].ElementCount * sizeof(float),
+                    buffer.LogicalBytes
+                );
+                outputIds.Add(buffer.Id);
+            }
+            Assert.AreEqual(oracle.Outputs.Count, outputIds.Count);
+            outputBufferIds = outputIds.ToArray();
         }
 
         [UnityTest]
@@ -112,6 +151,11 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 oracle.Inputs[2].ReadInt64Values()
             );
             UdonclArtifactImporter.SetUdonProgramVariable(controller, "logits", logits);
+            UdonclArtifactImporter.SetUdonProgramVariable(
+                controller,
+                "outputBufferIds",
+                outputBufferIds
+            );
             UdonclArtifactImporter.SetUdonProgramVariable(
                 controller,
                 "presentScratch",

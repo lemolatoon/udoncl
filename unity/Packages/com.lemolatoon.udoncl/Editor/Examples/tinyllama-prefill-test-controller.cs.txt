@@ -16,6 +16,7 @@ namespace Lemolatoon.Udoncl.Generated
         public float[] logits;
         public float[] presentScratch;
         public float[] presentKv;
+        public int[] outputBufferIds;
         public bool completed;
         public int status;
         public int libraryStatus;
@@ -43,6 +44,8 @@ namespace Lemolatoon.Udoncl.Generated
                 || presentScratch.Length != PresentValues
                 || presentKv == null
                 || presentKv.Length != PresentCount * PresentValues
+                || outputBufferIds == null
+                || outputBufferIds.Length != PresentCount + 1
             )
             {
                 status = UdonclTinyLlamaPrefillBinding.StatusInvalidArgument;
@@ -109,7 +112,12 @@ namespace Lemolatoon.Udoncl.Generated
 
         private void StartNextPresent()
         {
-            status = binding.StartReadFloatBuffer(49 + presentIndex, presentScratch, this, nameof(OnPresentComplete));
+            status = binding.StartReadFloatBuffer(
+                outputBufferIds[1 + presentIndex],
+                presentScratch,
+                this,
+                nameof(OnPresentComplete)
+            );
             if (status != UdonclTinyLlamaPrefillBinding.StatusSuccess)
                 completed = true;
         }
