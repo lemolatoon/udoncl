@@ -660,6 +660,12 @@ def run_unity_mcp_gate(
                     / "tests/onnx-rms-component/consumer/udoncl/onnx-rms-component/artifact"
                 ).resolve()
             ),
+            "UDONCL_ASSIGNED_TRANSPOSE_COMPONENT_UNITY_BUNDLE": str(
+                (
+                    build
+                    / "tests/onnx-transpose-component/consumer/udoncl/onnx-transpose-component/artifact"
+                ).resolve()
+            ),
             "UNITY_MCP_STATUS_DIR": str(status_dir),
             "UNITY_MCP_TRANSPORT": "stdio",
             "GIT_CONFIG_COUNT": "1",
