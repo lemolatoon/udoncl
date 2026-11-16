@@ -16,17 +16,22 @@ if(EXISTS
     "${_UDONONNXRUNTIME_INSTALL_PREFIX}/share/udononnxruntime")
   set(_UDONONNXRUNTIME_INCLUDE_DIR
     "${_UDONONNXRUNTIME_INSTALL_PREFIX}/include")
+  set(_UDONONNXRUNTIME_DEVICE_MEMORY
+    "${_UDONONNXRUNTIME_INSTALL_PREFIX}/share/udoncl/runtime/DeviceMemory.c")
 else()
   set(_UDONONNXRUNTIME_ROOT
     "${_UDONONNXRUNTIME_SOURCE_HINT}/libraries/udononnxruntime")
   set(_UDONONNXRUNTIME_INCLUDE_DIR
     "${_UDONONNXRUNTIME_ROOT}/include")
+  set(_UDONONNXRUNTIME_DEVICE_MEMORY
+    "${_UDONONNXRUNTIME_SOURCE_HINT}/lib/Runtime/OpenCL/DeviceMemory.c")
 endif()
 
 if(NOT TARGET udononnxruntime_host)
   udoncl_add_host_library(udononnxruntime_host
     "${_UDONONNXRUNTIME_ROOT}/src/udononnxruntime.c"
-    "${_UDONONNXRUNTIME_ROOT}/src/onnx_binding_abi.c")
+    "${_UDONONNXRUNTIME_ROOT}/src/onnx_binding_abi.c"
+    "${_UDONONNXRUNTIME_DEVICE_MEMORY}")
   target_compile_definitions(udononnxruntime_host INTERFACE
     CL_TARGET_OPENCL_VERSION=120)
   target_include_directories(udononnxruntime_host INTERFACE

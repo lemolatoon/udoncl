@@ -843,6 +843,21 @@ add_test(NAME onnx-rms-assigned-buffer-component
     --onnx-opt "${VRC_TEST_ONNX_OPT}"
 )
 set_tests_properties(onnx-rms-assigned-buffer-component PROPERTIES TIMEOUT 120)
+add_test(NAME onnx-transpose-assigned-buffer-component
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/build/onnx_transpose_component.py"
+    --root "${PROJECT_SOURCE_DIR}"
+    --project-build "${PROJECT_BINARY_DIR}"
+    --output "${PROJECT_BINARY_DIR}/tests/onnx-transpose-component"
+    --cmake "${CMAKE_COMMAND}"
+    --generator "${CMAKE_GENERATOR}"
+    --make-program "${CMAKE_MAKE_PROGRAM}"
+    --clang "${VRC_TEST_CLANG}"
+    --llvm-link "${VRC_TEST_LLVM_LINK}"
+    --onnx-importer "${VRC_TEST_ONNX_IMPORTER}"
+    --onnx-opt "${VRC_TEST_ONNX_OPT}"
+)
+set_tests_properties(onnx-transpose-assigned-buffer-component PROPERTIES TIMEOUT 120)
 add_test(NAME cmake-package-consumer
   COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/build/cmake_package.py"
     --source "${PROJECT_SOURCE_DIR}/examples/hello-kernel"
