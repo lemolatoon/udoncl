@@ -292,6 +292,35 @@ assert re.search(
 )
 assert 'initial = "33"' in candidate.stdout
 
+seedless_source = source.replace("    %seed6 = arith.constant 6 : i32\n", "", 1)
+seedless_source = seedless_source.replace(
+    "data_slot_capacity = 1 : i32,\n    required_resident_slot_savings = 2 : i32",
+    "data_slot_capacity = 2 : i32,\n    required_resident_slot_savings = 1 : i32",
+    1,
+)
+seedless_allocated = allocate(seedless_source)
+assert seedless_allocated.returncode == 0, (
+    seedless_allocated.stdout,
+    seedless_allocated.stderr,
+)
+assert 'kind = "rematerialization_seed"' in seedless_allocated.stdout
+seedless_materialized = run(
+    ["--vrc-materialize-host-storage"], seedless_allocated.stdout
+)
+assert seedless_materialized.returncode == 0, (
+    seedless_materialized.stdout,
+    seedless_materialized.stderr,
+)
+seedless_lowered = run(
+    ["--vrc-lower-udonhl-to-udonasm", "--verify-each"],
+    seedless_materialized.stdout,
+)
+assert seedless_lowered.returncode == 0, (
+    seedless_lowered.stdout,
+    seedless_lowered.stderr,
+)
+assert 'initial = "6"' in seedless_lowered.stdout
+
 
 def address_components(text):
     data_slots = int(re.search(r"data_slot_count = (\d+) : i64", text).group(1))

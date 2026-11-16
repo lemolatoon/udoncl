@@ -1026,8 +1026,17 @@ private:
   LogicalResult
   consumeDirectColorAllocations(ArrayRef<func::FuncOp> functions) {
     bool hasMaterialization = false;
-    module.walk(
-        [&](udonhl::LiteralMaterializeOp) { hasMaterialization = true; });
+    std::set<std::string> materializationSeedKeys;
+    module.walk([&](udonhl::LiteralMaterializeOp materialize) {
+      hasMaterialization = true;
+      for (Attribute attribute : materialize.getSeedBindings()) {
+        auto binding = dyn_cast<DictionaryAttr>(attribute);
+        auto key =
+            binding ? binding.getAs<StringAttr>("literal_key") : StringAttr();
+        if (key)
+          materializationSeedKeys.insert(key.getValue().str());
+      }
+    });
     auto version = module->getAttrOfType<IntegerAttr>(
         "vrc.host_writable_allocation_version");
     auto allocations =
@@ -1055,6 +1064,8 @@ private:
           allocation ? allocation.getAs<StringAttr>("placement") : StringAttr();
       auto color =
           allocation ? allocation.getAs<IntegerAttr>("color") : IntegerAttr();
+      auto value =
+          allocation ? allocation.getAs<StringAttr>("value") : StringAttr();
       if (!allocation || !key || key.getValue().empty() || !physicalType ||
           physicalType.getValue().empty() || !placement ||
           placement.getValue() != "resident_shared" || !color ||
@@ -1068,6 +1079,19 @@ private:
                                      "__vrc_resident_" +
                                          physicalType.getValue().str() + "_" +
                                          std::to_string(color.getInt()));
+      if (materializationSeedKeys.count(key.getValue().str()) && value) {
+        uint64_t bits = 0;
+        StringRef encoded = value ? value.getValue() : StringRef();
+        if (physicalType.getValue() != "SystemInt32" ||
+            !encoded.consume_front("0x") || encoded.getAsInteger(16, bits) ||
+            bits > std::numeric_limits<uint32_t>::max())
+          return module.emitError(
+              "invalid allocated i32 rematerialization seed");
+        std::string slot = allocatorResidentSlots.at(key.getValue().str());
+        int32_t initial = static_cast<int32_t>(static_cast<uint32_t>(bits));
+        addSlot(slot, "SystemInt32", std::to_string(initial), false);
+        residentLiteralSlots.try_emplace(key.getValue().str(), slot);
+      }
     }
 
     llvm::DenseSet<Operation *> constants;

@@ -123,6 +123,7 @@ struct DiscoverHostRematerializationPass
     std::set<std::string> operandUseIds;
     std::map<std::string, ScratchInstance> scratchInstances;
     std::map<std::string, ConsumerGroup> consumerGroups;
+    std::set<unsigned> rematerializationSeedValues;
     auto exposureVersion = module->getAttrOfType<IntegerAttr>(
         "vrc.host_backend_literal_use_version");
     if (exposureVersion && exposureVersion.getInt() != 1) {
@@ -272,6 +273,11 @@ struct DiscoverHostRematerializationPass
                                  return recipe.starts_with("rematerialize_");
                                }) &&
                   !isa<cf::BranchOp, cf::CondBranchOp, cf::SwitchOp>(operation);
+              if (scratchEligible && role->valueRole == "static_resource_index")
+                if (auto recipe = getHostLiteralI32Recipe(constant.getType(),
+                                                          constant.getValue()))
+                  rematerializationSeedValues.insert(recipe->seedValues.begin(),
+                                                     recipe->seedValues.end());
               if (!operandUseIds.insert(siteId).second) {
                 module.emitError("duplicate Host literal operand use id: ")
                     << siteId;
@@ -432,6 +438,17 @@ struct DiscoverHostRematerializationPass
       if (!visitRegion(function.getBody(),
                        "function:" + function.getSymName().str() + ":region:0"))
         return;
+    }
+
+    for (unsigned seed : rematerializationSeedValues) {
+      auto value = builder.getI32IntegerAttr(seed);
+      if (!appendUse("backend:rematerialization_seed:" + std::to_string(seed),
+                     "backend", "rematerialization_seed",
+                     ensureKey(builder.getI32Type(), value),
+                     builder.getI32Type())) {
+        signalPassFailure();
+        return;
+      }
     }
 
     llvm::sort(uses,

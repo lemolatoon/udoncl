@@ -71,7 +71,7 @@ discovered = subprocess.run(
 assert "vrc.host_literal_use_site_version = 3 : i32" in discovered
 assert discovered.count('value_role = "static_resource_index"') == 2
 assert discovered.count('kind = "static_resource_index"') == 2
-assert discovered.count('origin = "backend"') == 2
+assert 'kind = "rematerialization_seed"' in discovered
 assert "resource_index = 0 : i32" in discovered
 assert "resource_index = 2 : i32" in discovered
 assert ":static_resource:" not in discovered
