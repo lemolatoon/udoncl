@@ -11,11 +11,13 @@ requested limit and returns generated token IDs. Generating an artifact,
 completing one fixed batch prefill, or running the synthetic hidden-size-8
 Transformer does not by itself complete this plan.
 
-Tokenization, chat-template application, token-to-text decoding, multi-turn
-history, and transactional rollback are outside this milestone. Existing
-`UdonTokenizers` work remains available as an independent package, but the
-Conversation Artifact does not link it and the compiler/runtime must not
-depend on it.
+The first compiler/runtime acceptance milestone remains the externally
+tokenized token-array path. After that path passes, the user-facing acceptance
+sequence adds token-to-text decoding and chat-template/special-token handling.
+Existing `UdonTokenizers` work remains an independent package: the generic
+ONNX compiler/runtime must not depend on it, and the low-level Conversation
+Artifact must continue to accept and return token IDs without requiring text
+services. Multi-turn history and transactional rollback remain later work.
 
 The implementation must remain model-independent below the example C Host.
 Model names, 22-layer structure, hidden sizes, and TinyLlama graph patterns must
@@ -54,19 +56,24 @@ aliasing are allowed.
   scalar storage types, and large source tensors by transferring selected
   slices. The old statement that INT64/large Gather is the next blocker is
   stale.
-- The real model now completes ONNX Dialect -> portable Host MLIR -> finalized
-  Host MLIR and emits the Prefill Validation Artifact. The validated artifact
-  has the model's generic 47-input/45-output binding, 123 public Device
-  buffers, and 920 immutable static tensors totaling 909,029,428 bytes. Static
-  weights remain external resources; the Udon raw heap is 200,256 bytes.
-- Exact final Host allocation uses 472 data slots. Together with 40 unique
-  extern signatures this reaches the 512-address limit. The generic allocator
-  lowers the scalar-register budget under measured pressure and rematerializes
-  four dynamically selected Unity buffer IDs instead of reserving permanent
-  constant slots. A synthetic 260-buffer regression covers bounded measured
-  retries, deterministic candidate selection, and first/middle/last selector
-  behavior. Artifact generation is no longer the blocker, but this is not yet
-  a numerical prefill success through the generated U# surface.
+- The real model completes ONNX Dialect -> portable Host MLIR -> finalized Host
+  MLIR. An earlier allocator path reached a historical 752-slot measurement
+  against capacity 503, dominated by lowering-created i32 static-resource
+  indices. That number is not the current production requirement and must not
+  be reused as an acceptance baseline: later finalization stopped earlier on a
+  generated-Host-literal ownership check, before exact capacity measurement.
+- Commit `86437ad` fixes that issue generically. Backend-generated literals,
+  including immutable static-resource indices, have a dedicated ownership and
+  materialization path and are excluded from ordinary source-constant pooling
+  and spill selection. The general regression and mandatory precommit pass;
+  no model name, tensor shape, layer count, or TinyLlama-specific allocation
+  rule was added. The earlier finite-buffer-view provenance scaling issue
+  remains separately handled by exact copy-on-write state and explicit layout
+  metadata; literal ownership is not coupled to resource provenance.
+- Fresh real-model artifact generation and numerical U# execution have not yet
+  accepted this change. The next gate is to generate a fresh focused Prefill
+  Validation Artifact, then compare all 128,000 logits and all 44 present K/V
+  outputs with the ORT oracle through the generated U# binding.
 - The compiler records operator counts and unsupported Device operator/provider
   pairs. A Unity config can set `require_device_graph` so this fallback fails
   immediately instead of producing a misleading large artifact. Persistent
@@ -80,12 +87,15 @@ aliasing are allowed.
   described below, plus generic rank-zero-through-four FP32 Equal/Where
   broadcast kernels with word-addressable FP32 0/1 Device masks and a generic
   rank-one-through-four ScatterND kernel, the remaining measured unsupported
-  Device operator set is empty. Full artifact emission and the real generic
-  47-input/45-output public binding now pass structural validation. The next
-  gate is numerical prefill through the ordinary C Host exports and generated
-  U# binding. The mutable Device pool is provisioned
-  for the measured 35 allocation sites, and public Q4 logits use a logical view
-  over a padded 131,072-word physical surface.
+  Device operator set is empty. An earlier artifact and the real generic
+  47-input/45-output public binding passed structural validation, but that does
+  not accept the current compiler. The current next gate is fresh artifact
+  generation followed by numerical prefill through the ordinary C Host exports
+  and generated U# binding. An earlier structural real-model artifact
+  provisioned the mutable Device pool for 35 measured allocation sites, and
+  public Q4 logits used a logical view over a padded 131,072-word physical
+  surface. These counts remain diagnostic history until the current compiler
+  emits a fresh accepted artifact.
 - The generic correctness-oriented `MatMulNBits` path still uses small
   Host-managed tiles. A first Device-resident specialization now covers the
   pinned model's three-input unsigned Q4 form (`bits=4`, `block_size=32`,
@@ -212,7 +222,33 @@ aliasing are allowed.
   Host memory. The test still reads present K/V solely as an acceptance oracle.
   Dynamic append/slice handling for the real model remains required.
 
-### 2.3 Initial target
+### 2.3 Current acceptance gap
+
+The following work remains before real TinyLlama generated-U# numerical
+acceptance. Each failure must be fixed in a model-independent compiler,
+runtime, library, or importer component and covered by a smaller regression
+before the real-model gate is retried.
+
+1. Generate a fresh Prefill Validation Artifact from the current compiler and
+   record its actual storage report, immutable resources, mutable allocations,
+   canonical Unity pool, and absence of readiness fallbacks. Historical
+   artifacts and synthetic 10-buffer results are not evidence for this step.
+2. Prove that canonical pool materialization handles the real 47-input/
+   45-output public binding plus its private buffers. HEAD `0d6c512` currently
+   proves config/manifest replacement only on the bounded synthetic Transformer.
+3. Import that fresh artifact and run the focused generated-U# lifecycle. Bulk
+   upload the three fixed prefill inputs, execute through callbacks, bulk-read
+   all outputs, and compare all 128,000 logits and 44 present K/V tensors with
+   the ORT sidecar. Structural validation alone does not complete this step.
+4. Generate the static `M=1`, capacity-64 Conversation Artifact and first prove
+   one decode token against ORT. Then prove the complete externally-tokenized
+   prompt/decode loop, including Device-resident K/V advancement, exact greedy
+   token sequence, EOS/limit behavior, callbacks, and cleanup.
+5. Only after the token-array conversation passes, add the independent
+   token-to-text, chat-template, and special-token consumer layer. None of this
+   text work may enter generic ONNX or OpenCL lowering.
+
+### 2.4 Initial target
 
 - Unity 2022.3, VRChat Worlds, PC, D3D11 only.
 - Batch size 1.
@@ -626,13 +662,12 @@ Implement in this order, keeping each gate independently testable:
 2. Move MNIST weight/bias to immutable Device textures and pass Native/Device/
    generated-U# Unity numerical tests with no weight upload.
 3. Externalize the pinned TinyLlama initializers and import its static resource
-   table without placing bytes in Host globals.
-   The earlier 920-immutable/31-mutable estimate is superseded by the later
-   recorded 1,033-static/35-mutable checkpoint in §2.2. Re-run the canonical
-   real-model pipeline after the Device API migration and replace both with one
-   measured artifact report; do not encode either historical count as a
-   compiler limit. Static resource IDs and dispatch uses remain fixed by AOT
-   lowering and bypass the dynamic OpenCL Device-memory handle table.
+   table without placing bytes in Host globals. Historical 920/31 and
+   1,033/35 static/mutable counts came from different compiler checkpoints and
+   are not acceptance baselines. Replace them with one report from the next
+   fresh accepted real-model artifact; do not encode either historical count
+   as a compiler limit. Static resource IDs and dispatch uses remain fixed by
+   AOT lowering and bypass the dynamic OpenCL Device-memory handle table.
 4. Implement static shape/view canonicalization and Device workspace planning.
 5. Replace `MatMulNBits` with the Device-resident implementation.
 6. Implement and test every remaining generic operator required by the
@@ -645,9 +680,11 @@ Implement in this order, keeping each gate independently testable:
    and dtype-correct `long[]`/`float[]` U# whole-buffer APIs. Remove the real
    target's dependence on the toy C/JSON tensor table without changing the
    synthetic fixture.
-9. Add the ordinary prefill C Host lifecycle over model-independent generated
-   physical helpers, then pass full-model Native and Device prefill against all
-   ORT logits and K/V outputs.
+9. The ordinary prefill C Host lifecycle and model-independent generated
+   physical helpers exist and have structural/small-fixture coverage. The
+   remaining gate is full-model Native/Device and generated-U# prefill against
+   every ORT logit and K/V output; structural artifact validation is not a
+   numerical pass.
 10. Identify semantic ONNX past/present pairs generically, generate an unrolled
     helper that materializes each
     `present[:, :, step:capacity, ...] -> past` with the generic Slice kernel,
@@ -682,10 +719,13 @@ Implement in this order, keeping each gate independently testable:
     CMake consumer links the real generated TinyLlama tokenizer tables and
     lowers the helper through a separate small synthetic artifact. The Prefill
     Validation Artifact deliberately excludes tokenizer/conversation code and
-    accepts already-tokenized low-level input. Its real 47-input/45-output
-    artifact now passes structural, static-weight, raw-heap, and generated-U#
-    binding validation. The independent ORT oracle now emits a model-hash and
-    typed-shape manifest plus 45 little-endian FP32 raw outputs, so Unity does
+    accepts already-tokenized low-level input. The previously generated real
+    47-input/45-output artifact passed structural, static-weight, raw-heap, and
+    generated-U# binding validation. The current fresh artifact is not
+    accepted until the dedicated generated-literal path is exercised by a
+    fresh focused build and numerical execution is green. The independent ORT
+    oracle emits a model-hash and typed-shape manifest plus 45 little-endian
+    FP32 raw outputs, so Unity does
     not need an NPZ parser or compiler-embedded expectations. A dedicated
     test-only U# controller is structurally covered: it writes the three
     fixed-prefill INT64 inputs, runs the ordinary generated lifecycle, and
@@ -710,11 +750,39 @@ Implement in this order, keeping each gate independently testable:
     are valid OpenCL/ONNX resources. Unity artifact and fallback wrapper
     validation now accept the same `logical_bytes >= 0` contract already used
     by the compiler resource plan and Device buffer-view runtime.
-12. Add the example token-array generation Host, exact lifecycle/status
-    contract, and generated async U# binding.
-13. Pass the Unity external-token prompt and bounded-completion gate. Record
-    the first performance and resource baseline, then integrate deterministic
-    cached inference into the mandatory precheck.
+    The subsequent fresh build exposed a generic static-resource join bug:
+    reconciliation `buffer_id` values identify Host logical buffers, whereas
+    canonical layout `buffer_id` values identify Unity Texture slots. Static
+    logical-buffer materialization now joins both schemas through their stable
+    `resource_id` and verifies the reconciled Texture identity instead of
+    assuming the two buffer-ID spaces have matching numbers. A regression
+    fixture deliberately uses different logical and physical IDs. The focused
+    real-prefill numerical gate remains the acceptance point for this fix.
+    Pool replacement must also carry that canonical identity into the tool
+    adapter. When static lowering is both `applied` and
+    `pool_replacement_ready`, `vrccl` now rebuilds the final Unity buffer
+    configuration from the versioned canonical layout before binding assigned
+    resources or emitting the manifest. Unready programs retain their legacy
+    configured pool. This removes the remaining assumption that a mutable
+    logical-handle ordinal is a physical Texture slot.
+    The last recorded focused build before HEAD crossed this former
+    Texture-identity barrier and reached Host backend-literal finalization.
+    Commit `86437ad` then removed
+    generated backend literals from generic source pooling/spill allocation and
+    gave them their dedicated ownership path; its general regression is covered
+    by `precommit=passed`. This is compiler-wide behavior, not an ONNX or
+    TinyLlama exception. It still requires a fresh real artifact and generated-
+    U# numerical run before the production path is accepted.
+12. Finish and validate the existing example token-array generation Host,
+    lifecycle/status exports, and generated async U# binding against the fresh
+    production artifact. Do not add a second TinyLlama-only Host ABI.
+13. Pass the remaining gates in order: generate the fresh focused prefill
+    artifact; compare 128,000 logits and all 44 present K/V outputs through the
+    generated U# binding; reuse K/V and match the agreed greedy conversation
+    token sequence `[1701, 29916, 432, 17204]`; then add token-to-text decoding
+    plus chat-template and special-token handling. Record the first performance
+    and resource baseline, then integrate deterministic cached inference into
+    the mandatory precheck.
 14. After all consumers pass, remove the old ONNX execution-plan JSON,
     Material/arena scheduler, `static_inputs`, old runtime, and toy TinyLlama
     sample. Do not remove the only working comparison path earlier.

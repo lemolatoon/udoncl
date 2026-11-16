@@ -1,11 +1,13 @@
 # Static OpenCL Resource Specialization Plan
 
-> Status: implementation in progress; Gates 1 and 2 are integrated at the
-> runtime-free Host boundary. Repeated root-distinct allocation contexts now
-> use an integrated call-path specialization pass; common-prefix invocation
-> tries remain. Gate 3 has standalone slices for immutable
-> call-by-value and typed `vrc.dispatch` snapshots. The typed path is integrated
-> for production artifacts; generic `clSetKernelArg` recovery remains.
+> Status: implementation in progress. Gates 1 and 2 are integrated at the
+> runtime-free Host boundary. Gate 3 has integrated immutable call-by-value and
+> typed `vrc.dispatch` snapshots; generic `clSetKernelArg` recovery remains.
+> Gate 5 can apply the canonical pool to a fully proven program, and HEAD
+> `0d6c512` materializes that pool into the Unity config and manifest. Its
+> config/manifest behavior is covered by the bounded synthetic Transformer
+> fixture, not yet by a freshly generated real TinyLlama artifact. Gates 6 and
+> 7 remain numerical acceptance gates.
 > Decision date: 2026-11-12
 > Parent architecture: [PLAN.md](PLAN.md)
 > Related execution plan:
@@ -281,7 +283,9 @@ Status: complete and enforced for split runtime-free Unity Host builds.
 Status: complete and integrated. DeviceMemory adopt, view, resolve, local/global
 cell, aggregate pointer, output-cell, call-context, and nullable-handle paths
 have focused coverage. The production pipeline emits the versioned provenance
-schema into real MNIST and TinyLlama artifacts. A separate metadata-only
+schema into MNIST and the bounded synthetic Transformer artifacts. Earlier
+real TinyLlama artifacts also carried the schema, but must be regenerated
+before they count as current evidence. A separate metadata-only
 context-specialization planner now groups discovery contexts by allocation
 site and records which internal call paths require cloning before static
 lowering. It validates direct paths and dense resource identities without
@@ -291,8 +295,9 @@ the selected call chain, and removes inherited LLVM symbol metadata. Re-running
 discovery and planning after the transformation proves the formerly shared
 contexts are singleton. Common-prefix paths are diagnosed until the generic
 invocation-trie transformation is implemented. Current production acceptance
-records one MNIST clone followed by five singleton sites; TinyLlama and
-ordinary UdonBLAS remain zero-clone singleton cases. The production order is
+records one MNIST clone followed by five singleton sites; the bounded
+synthetic Transformer and ordinary UdonBLAS remain zero-clone singleton cases.
+The production order is
 `Discover -> Plan -> Specialize -> Discover -> Plan` before requirements and
 provenance analysis, so all downstream metadata uses the specialized graph.
 Status-conditioned effects now remain complete across all tracked memory
@@ -303,10 +308,21 @@ correlation; calls with any conditional or unconditional tracked-state change
 remain barriers. Focused tests cover a two-call C initialization shape where a
 failure status and a successful binding status merge before a view resolve, a
 transparent private wrapper, finite unit-stride arrays of initialized views,
-and cross-export global handle/view persistence. The generic rules generate
-the real MNIST package and the pinned real TinyLlama conversation artifact
-without symbol-, tensor-, or model-specific recognition. Numerical generated-
-U# acceptance remains Gate 7.
+and cross-export global handle/view persistence. The generic rules have
+generated the real MNIST package and earlier pinned TinyLlama structural
+artifacts without symbol-, tensor-, or model-specific recognition. A fresh
+TinyLlama artifact from the current compiler and numerical generated-U#
+acceptance remain Gate 7.
+
+The last recorded focused TinyLlama build before HEAD crossed the former
+logical-buffer versus physical-Texture identity failure and reached Host
+backend-literal finalization. Commit `86437ad` fixes the next failure at the
+generic compiler boundary: generated backend literals such as immutable
+static-resource indices
+use a dedicated ownership/materialization path and are excluded from ordinary
+source-constant pooling and spill selection. Its general regression is covered
+by `precommit=passed`. This is not an ONNX, TinyLlama, model-shape, or tensor-ID
+special case; fresh artifact and numerical acceptance remain Gate 7.
 
 - Track handles through arguments, results, PHIs/selects, and supported memory
   promotion.
@@ -361,14 +377,19 @@ separate work.
 
 ### Gate 5: static lowering
 
-Status: the first two standalone slices are implemented. A mutable
+Status: the generic slices below are integrated through canonical Unity-pool
+materialization for programs that prove `pool_replacement_ready`. HEAD
+`0d6c512` proves the config/manifest materialization boundary for the bounded
+synthetic Transformer. MNIST retains its legacy pool because its handwritten
+Host has not declared both public endpoints, and a fresh real TinyLlama
+artifact has not yet passed this path. A mutable
 `vrc.assigned_buffer` reference is distinct from immutable static tensors and
 dynamic allocation. Resolved typed dispatch operands are joined by
 `(resource_kind, resource_id)` to the keyed Texture assignment and replaced
 without relying on logical-buffer ordinals. Snapshot-less and logical-buffer
-operands remain explicitly counted. Production integration waits for the
-manifest/pool to use the same assignment identities; this avoids binding
-TinyLlama allocation contexts to the legacy public-buffer ordinals.
+operands remain explicitly counted. The manifest and pool now use the same
+assignment identities only after the readiness proof; this avoids binding any
+allocation context to a legacy public-buffer ordinal.
 
 Runtime-free `clEnqueueWriteBuffer`, `clEnqueueReadBuffer`, and
 `clEnqueueCopyBuffer` call sites now have a separate generic transfer-binding
@@ -399,12 +420,13 @@ resolved static alias, unresolved legacy public buffer, or unresolved legacy
 private buffer. It never infers identity from a name, capacity, numeric buffer
 ID, or list position. Static-metadata-free UdonCL artifacts remain unchanged;
 incomplete metadata and identity/capacity conflicts are diagnosed. The prior
-baseline recorded MNIST as 2 resolved plus 5 legacy private buffers, TinyLlama
-as 6 unresolved public plus 4 legacy private buffers, and ordinary UdonBLAS as
-3 unresolved public buffers. Public allocations produced through the generated
-Host ABI now use the same generic allocation/provenance contract as ordinary
-UdonCL. TinyLlama now has 6 resolved public plus 4 private allocations, 10
-deterministic Texture assignments, and no canonical-layout blocker. The legacy
+baseline recorded MNIST as 2 resolved plus 5 legacy private buffers, the
+bounded synthetic Transformer as 6 unresolved public plus 4 legacy private
+buffers, and ordinary UdonBLAS as 3 unresolved public buffers. Public
+allocations produced through the generated Host ABI now use the same generic
+allocation/provenance contract as ordinary UdonCL. The synthetic Transformer
+now has 6 resolved public plus 4 private allocations, 10 deterministic Texture
+assignments, and no canonical-layout blocker. The legacy
 MNIST handwritten C Host does not yet emit this generic declaration, so its two
 public endpoints intentionally remain legacy until the same C-facing contract
 is exposed; no ONNX-symbol fallback is retained. Refreshed artifact counts are
@@ -417,13 +439,16 @@ does not assume that a Texture ID equals a legacy buffer ID. Instead, it emits
 an independently versioned resource-to-Texture-to-heap-slot layout and a
 readiness decision. Each public planned entry is self-contained and carries
 its semantic name, data type, and logical byte count in addition to the
-physical capacity and public endpoint identity. Generated-ABI TinyLlama is
-ready with 10 planned buffers and all 6 public endpoints resolved. The
+physical capacity and public endpoint identity. The generated-ABI synthetic
+Transformer is ready with 10 planned buffers and all 6 public endpoints
+resolved. The
 handwritten MNIST C Host remains blocked by its 2 undeclared public endpoints,
-and ordinary UdonBLAS by 3; neither silently replaces its pool. Manifest and
-pool replacement remain a separate tool-adapter commit gated by this plan and
-by direct static resource lowering; the existing runtime handle ordinal is not
-treated as a Texture identity.
+and ordinary UdonBLAS by 3; neither silently replaces its pool. When direct
+static lowering proves `pool_replacement_ready`, the tool adapter rebuilds the
+final Unity buffer configuration from this canonical layout before binding
+assigned resources or emitting the manifest. Programs that are not ready
+retain the configured legacy pool. The existing runtime handle ordinal is
+never treated as a Texture identity.
 
 The Host validator, Unity dispatch binder, and Udon Assembly lowering now
 accept `vrc.assigned_buffer` as a mutable compiler-assigned resource. The
@@ -441,11 +466,11 @@ operand. `pool_replacement_ready` additionally requires dynamic allocation,
 release, and physical-buffer resolution to be absent. The analysis validates
 its summaries against the actual IR so stale metadata cannot authorize a
 pool replacement. Production integration of materialization and this analysis
-first runs on a clone of the recovered production module. The resulting
-readiness record is copied back with `preview = true`, while the executable IR
-and legacy pool remain unchanged. This exercises real MNIST, TinyLlama, and
-ordinary UdonCL graphs without prematurely changing their runtime semantics;
-neither readiness flag changes the manifest by itself.
+first runs on a clone of the recovered production module. If pool replacement
+is not proven, only the readiness record is copied back with `preview = true`
+and the executable IR and legacy pool remain unchanged. If it is proven, the
+clone becomes the executable module with `applied = true`, and the tool adapter
+materializes the versioned canonical layout into the Unity pool and manifest.
 
 A standalone physical-allocation specialization planner follows each proven
 singleton allocation call through
@@ -454,7 +479,7 @@ to the keyed persistent Texture assignment, and records the exact call path
 that a later transformation may clone. Missing provenance, ambiguous sinks,
 recursion, exported callees, duplicate resources, and non-persistent or
 mismatched assignments remain blockers. The planner changes neither the call
-graph nor OpenCL status and logical-handle semantics. Production preview runs
+graph nor OpenCL status and logical-handle semantics. The production clone runs
 this planner on the same clone and records its plan without rewriting the
 executable module.
 
@@ -466,14 +491,15 @@ runtime. Clone names include resource and frame indices. The terminal cloned
 `vrc.buffer_alloc` receives the keyed physical assignment for the following
 materialization pass, but remains an allocation in this slice; OpenCL
 validation, status branches, logical handles, and all original functions are
-unchanged. Production integration waits until physical allocation
-materialization and dead-symbol removal are available, because clone-only IR
-temporarily contains more allocation operations.
+unchanged. The production pipeline does not expose that clone-only intermediate
+state: it continues into physical allocation materialization and narrow
+dead-symbol cleanup before readiness can select the clone.
 
 Allocation-site metadata now states whether resource identity is returned as a
 result or written through an output operand. The physical planner consumes that
-generic contract instead of assuming result zero. All 10 TinyLlama allocations,
-including the 6 generated `udonclDeviceBufferCreate` calls, are therefore valid
+generic contract instead of assuming result zero. All 10 synthetic Transformer
+allocations, including the 6 generated `udonclDeviceBufferCreate` calls, are
+therefore valid
 physical-specialization candidates with zero planner blockers. The generated
 create path also exercises shared-prefix context specialization: repeated calls
 inside one initialization helper clone only the first unique suffix rather than
@@ -488,18 +514,20 @@ the earlier context-sensitive requirements pass already proved its value at
 the planned call site. The surrounding `clCreateBuffer` implementation keeps
 logical-slot exhaustion, argument validation, error-pointer writes, recycling,
 and return behavior. Unannotated shared or dynamic allocations remain intact.
-Production preview now runs the physical path specializer and materializer
-after planning. Real TinyLlama proves and materializes all 10 planned physical
-allocations on the cloned preview; MNIST proves and materializes all 5. The
-executable module is still unchanged. A narrow cleanup pass then removes only
-an unreachable private call chain that contains a remaining physical
+The production clone now runs the physical path specializer and materializer
+after planning. The bounded synthetic Transformer proves and materializes all
+10 planned physical allocations on the cloned preview; MNIST proves and
+materializes all 5. The original executable module is still unchanged at this
+intermediate stage. A narrow cleanup pass then removes only an unreachable
+private call chain that contains a remaining physical
 allocation fallback. It refuses dispatch and transfer functions rather than
 performing whole-module symbol DCE after static metadata has been computed.
 Real MNIST retains all 6 dispatches and snapshots while its dynamic allocation
-count becomes zero; TinyLlama retains all 8 dispatches, snapshots, and 24
-assigned operands while its dynamic allocation count also becomes zero.
+count becomes zero; the synthetic Transformer retains all 8 dispatches,
+snapshots, and 24 assigned operands while its dynamic allocation count also
+becomes zero.
 Readiness is assessed only after that cleanup, so its metadata is checked
-against the final preview IR.
+against the final candidate IR.
 
 Physical resolve materialization also preserves nullable mutable-handle
 semantics without retaining the linked resolver. A singleton allocation with
@@ -507,9 +535,9 @@ an assigned Texture becomes a typed checked resolve: it rejects a null or
 inactive `cl_mem` with `CL_INVALID_MEM_OBJECT`, leaves the output cell unchanged
 on failure, and stores the compiler-selected Unity token only on success. The
 check is generic allocation provenance, not ONNX or model-specific logic;
-immutable odd-tag handles remain outside this transformation. Real MNIST now
-materializes all 5 resolves (3 checked), and TinyLlama all 9 (3 checked), so
-both previews have zero dynamic physical resolver calls.
+immutable odd-tag handles remain outside this transformation. MNIST now
+materializes all 5 resolves (3 checked), and the synthetic Transformer all 9
+(3 checked), so both previews have zero dynamic physical resolver calls.
 
 The two remaining `vrc.buffer_release` operations are shared backend retirement
 sites in `udoncl_mem_finalize`, not model-specific logical releases. For the
@@ -517,7 +545,7 @@ sites in `udoncl_mem_finalize`, not model-specific logical releases. For the
 physical retirement boundary as status zero. `clReleaseMemObject`, refcounts,
 `active`, `command_refs`, sub-buffer parent handling, and handle recycling stay
 unchanged. Other targets retain `vrc.buffer_release`. This matches the existing
-Udon scalar lowering contract and gives both real previews zero dynamic
+Udon scalar lowering contract and gives both fixture previews zero dynamic
 physical releases without changing OpenCL lifetime semantics.
 
 A generic logical-buffer materializer now joins constant `vrc.buffer_alloc`
@@ -526,7 +554,8 @@ Texture layout. It validates capacity, format, and storage usage, replaces the
 buffer with `vrc.assigned_buffer`, and replaces only that allocation's status
 with success. Dynamic IDs and IDs without an exact static alias remain
 untouched and are counted. This pass does not inspect ONNX metadata, model
-names, tensor names, or TinyLlama symbols. In the real TinyLlama preview it
+names, tensor names, or TinyLlama symbols. In the synthetic Transformer preview
+it
 materializes all eight logical allocations used by the four KV copies, leaves
 only the shared physical allocator dynamic, and reduces unresolved typed
 transfer operands from eight to zero.
@@ -538,12 +567,17 @@ block arguments and derived arithmetic results use a monotone
 unknown/exact/ambiguous lattice, so a loop backedge invalidates stale exact
 facts and requeues the affected block. This is ordinary C control-flow
 analysis: it introduces no ONNX symbols or model metadata. It separates the
-six persistent public binding cells in the real TinyLlama Host and resolves
+six persistent public binding cells in the synthetic Transformer Host and resolves
 all eight dispatch snapshots, all 24 mutable dispatch operands, and all typed
 KV-copy operands. The preview therefore reports `dispatch_ready = true`,
-`transfer_ready = true`, and `resource_operands_ready = true`. The shared
-physical allocator plus its release and resolve paths remain dynamic, so
-`pool_replacement_ready` intentionally remains false.
+`transfer_ready = true`, and `resource_operands_ready = true`. These component
+facts do not by themselves determine `pool_replacement_ready`: the final
+generic readiness analysis must also prove that no dynamic physical allocate,
+release, or resolve operation remains. The canonical-layout adapter is covered
+for both outcomes: a proven synthetic Transformer rebuilds its configured pool,
+while unready programs preserve the legacy pool. A fresh real TinyLlama build
+must establish which outcome the current production Host reaches; an older
+preview is not acceptance evidence.
 
 Successful out-parameter effects now refine the resolved `cl_mem` to non-null
 when `udonclBufferViewResolve` returns success. The input view keeps its
@@ -562,9 +596,9 @@ to the existing i32 physical-token ABI, stores it to the original output cell,
 and replaces the status with success. The token is not guessed from the
 Texture ID: normal `vrc.assigned_buffer` lowering performs the canonical Unity
 pool lookup. Nullable, unknown, ambiguous, non-persistent, or non-exact cases
-remain dynamic. The current real preview safely removes two of five MNIST
-resolves and six of nine TinyLlama resolves; the three global-buffer cases in
-each graph remain for a separate lifetime/non-null proof.
+remain dynamic. The earlier preview safely removed two of five MNIST resolves
+and six of nine synthetic Transformer resolves; the three global-buffer cases
+in each graph remained for the later lifetime/non-null proof described above.
 
 - Replace supported allocation/release and buffer arguments with direct typed
   resources.
@@ -585,8 +619,13 @@ each graph remain for a separate lifetime/non-null proof.
 
 ### Gate 7: TinyLlama focused prefill
 
+- Generate a fresh focused artifact with the production compiler; historical
+  slot counts and previously generated artifacts are not acceptance evidence.
 - Run the real focused generated-U# prefill against the ORT oracle.
-- Compare all logits and present K/V outputs.
+- Compare all 128,000 logits and all 44 present K/V outputs.
+- After prefill passes, reuse the same static resources and K/V through the
+  conversation token-sequence gate. Text decode and chat-template handling are
+  subsequent consumer gates and must not be folded into resource lowering.
 - Record watchdog result and the same resource/performance metrics as MNIST.
 - Do not introduce a TinyLlama-specific resource scheduler or runtime.
 
@@ -623,8 +662,9 @@ none of the following in its reachable Host path:
 
 The artifact may and normally will retain:
 
-- direct Texture array access at compile-time constant indices when required to
-  conserve Udon Heap addresses;
+- direct immutable Texture-array access; its index operand is placed, pooled,
+  derived, or rematerialized by the generic Host storage allocator. Static
+  resource analysis does not define a separate scalar-slot policy;
 - `VRCGraphics.Blit` and real upload/readback operations;
 - dynamic scalar kernel arguments;
 - resume PC, completion status, busy state, and callback generation;
