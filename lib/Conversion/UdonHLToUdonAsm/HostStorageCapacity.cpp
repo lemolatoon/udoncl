@@ -1,5 +1,6 @@
 #include "VRC/Conversion/HostStorageCapacity.h"
 #include "VRC/Conversion/Passes.h"
+#include "VRC/Support/UdonLimits.h"
 #include "HostStorageCapacityInternal.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Builders.h"
@@ -85,7 +86,8 @@ measureHostStorageCapacity(ModuleOp module) {
   if (failed(addresses) || failed(dataSlots) || failed(externs) ||
       failed(addressLimit) || failed(dataCapacity) || failed(reserve) ||
       failed(required) || *dataSlots + *externs != *addresses ||
-      *addressLimit + *reserve != 512 || fits.getValue() != (*required == 0))
+      *addressLimit + *reserve != kUdonHeapMaximumCapacity ||
+      fits.getValue() != (*required == 0))
     return failure();
   return HostStorageCapacityMeasurement{*addresses,    *dataSlots,    *externs,
                                         *addressLimit, *dataCapacity, *reserve,

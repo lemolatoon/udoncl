@@ -4,6 +4,7 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
+#include "VRC/Support/UdonLimits.h"
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -13,8 +14,6 @@
 #include <vector>
 
 namespace vrc {
-
-inline constexpr uint32_t kUdonHeapMaximumCapacity = 1'048'576;
 
 using HostStorageNodeId = unsigned;
 

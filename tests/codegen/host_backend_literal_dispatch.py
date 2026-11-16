@@ -5,6 +5,7 @@ from pathlib import Path
 
 
 optimizer = Path(sys.argv[1])
+UDON_HEAP_MAXIMUM_CAPACITY = 1_048_576
 
 
 source = r'''module attributes {
@@ -336,7 +337,7 @@ assert candidate_addresses == selected_addresses + 1, (
     selected_addresses,
     candidate_addresses,
 )
-reserve = 512 - selected_addresses
+reserve = UDON_HEAP_MAXIMUM_CAPACITY - selected_addresses
 
 
 def with_reserve(text):
@@ -422,7 +423,10 @@ assert selected_boundary.returncode == 0, (
     selected_boundary.stdout,
     selected_boundary.stderr,
 )
-assert sum(address_components(selected_boundary.stdout)) + reserve == 512
+assert (
+    sum(address_components(selected_boundary.stdout)) + reserve
+    == UDON_HEAP_MAXIMUM_CAPACITY
+)
 candidate_boundary = run(
     ["--vrc-lower-udonhl-to-udonasm", "--verify-each"],
     with_reserve(candidate_materialized.stdout),

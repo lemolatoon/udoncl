@@ -9,6 +9,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+UDON_HEAP_MAXIMUM_CAPACITY = 1_048_576
+
 
 def run(command):
     result = subprocess.run(command, text=True, capture_output=True)
@@ -72,7 +74,7 @@ def assert_host_storage_finalization(artifact):
     reserve = mlir_integer_field(verification, 'final_data_slot_reserve')
     address_limit = mlir_integer_field(verification, 'address_limit')
     assert addresses == data + externs
-    assert address_limit == 512 - reserve
+    assert address_limit == UDON_HEAP_MAXIMUM_CAPACITY - reserve
     assert addresses <= address_limit
     assert mlir_integer_field(verification, 'required_reduction') == 0
     assert 'fits = true' in verification
@@ -205,7 +207,10 @@ def assert_static_async_artifact(artifact, assembly):
         for line in assembly.splitlines()
     )
     assert storage['data_slot_count'] + reserve == declarations
-    assert storage['data_slot_capacity'] + reserve <= 512
+    assert (
+        storage['data_slot_capacity'] + reserve
+        <= UDON_HEAP_MAXIMUM_CAPACITY
+    )
 
 
 def main():
@@ -936,8 +941,7 @@ def main():
                    for name in mnist_raw_names)
     assert not any(name.startswith('udonblas_') for name in mnist_raw_names)
     assert not any(name.startswith('udondnn_') for name in mnist_raw_names)
-    assert sum(': %' in line for line in onnx_mnist_assembly.splitlines()) <= 480
-    assert udon_heap_slots(onnx_mnist_assembly) <= 512
+    assert udon_heap_slots(onnx_mnist_assembly) <= UDON_HEAP_MAXIMUM_CAPACITY
     assert 'E+' not in onnx_mnist_assembly
     onnx_transformer_source = (
         args.source.resolve().parents[1] / 'examples/onnx-transformer-tiny'
@@ -1402,8 +1406,11 @@ def main():
     assert_static_async_artifact(
         conversation_input_artifact, conversation_input_assembly
     )
-    assert udon_heap_slots(conversation_input_assembly) <= 512
-    assert udon_heap_slots(transformer_assembly) <= 512
+    assert (
+        udon_heap_slots(conversation_input_assembly)
+        <= UDON_HEAP_MAXIMUM_CAPACITY
+    )
+    assert udon_heap_slots(transformer_assembly) <= UDON_HEAP_MAXIMUM_CAPACITY
     assert not list(onnx_transformer_consumer.rglob('execution-plan.json'))
     run([
         args.cmake,
@@ -1604,9 +1611,10 @@ def main():
     udonblas_data = udonblas_assembly.split('.data_start', 1)[1].split(
         '.data_end', 1
     )[0]
-    # The SDK assembler adds its own heap entries around the generated data
-    # section. Keep a margin below the Udon VM's 512-address hard limit.
-    assert sum(': %' in line for line in udonblas_data.splitlines()) <= 480
+    assert (
+        sum(': %' in line for line in udonblas_data.splitlines())
+        <= UDON_HEAP_MAXIMUM_CAPACITY
+    )
     assert ': %SystemString, "_VRC_Input"' in udonblas_data
     assert ': %SystemString, "_VRC_Input1"' in udonblas_data
     assert ': %SystemString, "_VRC_Input2"' not in udonblas_data

@@ -2144,6 +2144,9 @@ namespace Lemolatoon.Udoncl.Editor
                     "Worlds SDK Udon Assembly asset has no source field."
                 );
             source.stringValue = assembly;
+            SerializedProperty assemblyError = serialized.FindProperty("assemblyError");
+            if (assemblyError != null)
+                assemblyError.stringValue = null;
             serialized.ApplyModifiedPropertiesWithoutUndo();
             EditorUtility.SetDirty(programAsset);
             AssetDatabase.SaveAssetIfDirty(programAsset);
@@ -2156,23 +2159,48 @@ namespace Lemolatoon.Udoncl.Editor
             string guid = AssetDatabase.AssetPathToGUID(programPath);
             if (string.IsNullOrEmpty(guid))
                 throw new InvalidDataException("Unity did not assign a GUID to " + programPath);
-            transaction.Track("Assets/SerializedUdonPrograms/" + guid + ".asset");
+            string serializedProgramPath = "Assets/SerializedUdonPrograms/" + guid + ".asset";
+            transaction.Track(serializedProgramPath);
 
-            programAsset.RefreshProgram();
-            if (!string.IsNullOrEmpty(programAsset.AssemblyError))
+            SerializedUdonProgramAsset serializedProgram =
+                AssetDatabase.LoadAssetAtPath<SerializedUdonProgramAsset>(serializedProgramPath);
+            if (serializedProgram == null)
+            {
+                EnsureFolders("Assets/SerializedUdonPrograms");
+                serializedProgram = ScriptableObject.CreateInstance<SerializedUdonProgramAsset>();
+                serializedProgram.name = guid;
+                AssetDatabase.CreateAsset(serializedProgram, serializedProgramPath);
+            }
+            SerializedObject programReference = new SerializedObject(programAsset);
+            SerializedProperty serializedProgramReference = programReference.FindProperty(
+                "serializedUdonProgramAsset"
+            );
+            if (serializedProgramReference == null)
                 throw new InvalidDataException(
-                    "Worlds SDK rejected Udon Assembly: "
-                        + (programAsset.AssemblyError ?? programPath)
+                    "Worlds SDK Udon Assembly asset has no serialized program field."
                 );
+            serializedProgramReference.objectReferenceValue = serializedProgram;
+            programReference.ApplyModifiedPropertiesWithoutUndo();
+
+            IUdonProgram assembledProgram;
+            try
+            {
+                assembledProgram = UdonAssemblyCompiler.Assemble(assembly);
+            }
+            catch (Exception exception)
+            {
+                throw new InvalidDataException(
+                    "Worlds SDK rejected Udon Assembly: " + exception.Message,
+                    exception
+                );
+            }
+            serializedProgram.StoreProgram(assembledProgram);
 
             // A newly created SDK SerializedUdonProgramAsset can retain the
-            // empty program it deserialized before RefreshProgram stored the
+            // empty program it deserialized before the custom assembler stored the
             // assembled bytes. Persist and synchronously reimport it so the
             // object referenced by the prefab has a fresh deserialization
             // cache in this same Editor session.
-            AbstractSerializedUdonProgramAsset serializedProgram =
-                programAsset.SerializedProgramAsset;
-            string serializedProgramPath = AssetDatabase.GetAssetPath(serializedProgram);
             if (serializedProgram == null || string.IsNullOrEmpty(serializedProgramPath))
                 throw new InvalidDataException(
                     "Worlds SDK did not create a serialized Udon program for " + programPath

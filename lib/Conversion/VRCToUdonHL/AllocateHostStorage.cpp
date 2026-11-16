@@ -3,6 +3,7 @@
 #include "VRC/Analysis/HostStorageAllocation.h"
 #include "VRC/Analysis/HostStorageLiveness.h"
 #include "VRC/Support/HostLiteral.h"
+#include "VRC/Support/UdonLimits.h"
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
 #include "VRC/Dialect/VRC/VRCDialect.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -391,7 +392,8 @@ public:
       return value && value.getType().isInteger(32);
     };
     if (!isI32(schema) || schema.getInt() != 1 || !isI32(measured) ||
-        !isI32(capacity) || capacity.getInt() < 1 || capacity.getInt() > 512 ||
+        !isI32(capacity) || capacity.getInt() < 1 ||
+        capacity.getInt() > kUdonHeapMaximumCapacity ||
         measured.getInt() <= capacity.getInt() || !isI32(required) ||
         required.getInt() <= 0 ||
         required.getInt() != measured.getInt() - capacity.getInt())

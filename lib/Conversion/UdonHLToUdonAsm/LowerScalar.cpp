@@ -3,6 +3,7 @@
 #include "VRC/ABI/Manifest/UdonSharpABI.h"
 #include "VRC/Analysis/HostStorageLiveness.h"
 #include "VRC/Support/HostLiteral.h"
+#include "VRC/Support/UdonLimits.h"
 #include "VRC/Dialect/UdonAsm/UdonAsmDialect.h"
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
 #include "VRC/Dialect/VRC/VRCDialect.h"
@@ -776,7 +777,7 @@ private:
     if (auto capacity =
             module->getAttrOfType<IntegerAttr>("vrc.data_slot_capacity"))
       return static_cast<unsigned>(capacity.getInt());
-    return 512;
+    return kUdonHeapMaximumCapacity;
   }
 
   struct StorageSlotClassification {
@@ -849,9 +850,10 @@ private:
   LogicalResult
   verifyDataSlotCapacity(const StorageSlotClassification &storage) {
     unsigned capacity = dataSlotCapacity();
-    if (!capacity || capacity > 512)
-      return module.emitError(
-          "vrc.data_slot_capacity must be in the range 1..512");
+    if (!capacity || capacity > kUdonHeapMaximumCapacity)
+      return module.emitError()
+             << "vrc.data_slot_capacity must be in the range 1.."
+             << kUdonHeapMaximumCapacity;
     if (slots.size() <= capacity)
       return success();
 
@@ -6002,14 +6004,15 @@ struct LowerUdonHLToUdonAsmPass
   }
 
   void runOnOperation() override {
-    constexpr unsigned physicalAddressLimit = 512;
+    constexpr unsigned physicalAddressLimit = kUdonHeapMaximumCapacity;
     unsigned finalDataSlotReserve = 0;
     if (auto configured = getOperation()->getAttrOfType<IntegerAttr>(
             "vrc.final_data_slot_reserve")) {
       if (configured.getInt() < 0 ||
           configured.getInt() >= physicalAddressLimit) {
         getOperation().emitError(
-            "vrc.final_data_slot_reserve must be in the range 0..511");
+            "vrc.final_data_slot_reserve must be smaller than the Udon heap "
+            "maximum capacity");
         signalPassFailure();
         return;
       }

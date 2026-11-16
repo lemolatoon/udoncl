@@ -647,9 +647,9 @@ for expected in [
         capacity_lowered.stderr,
     )
 
-# Repeated identities must also leave the immutable data table when it exceeds
-# the Udon address space. Materializing only one occurrence of a value would
-# keep its shared constant slot alive for the other occurrence.
+# Repeated identities share one resident constant slot.  The maximum Udon heap
+# is large enough that this fixture does not need the rematerialization
+# alternative, but constant pooling must still deduplicate both SSA values.
 repeated_constant_lines = [
     'module attributes {vrc.external_raw_heap_initialization} {',
     '  func.func @many_constants() -> i32 attributes {vrc.export_id = 1 : i32} {',
@@ -676,8 +676,12 @@ repeated_constants_lowered = subprocess.run(
 assert repeated_constants_lowered.returncode == 0, (
     repeated_constants_lowered.stderr
 )
-assert 'SystemInt32.__op_LeftShift' in repeated_constants_lowered.stdout
-assert 'SystemInt32.__op_LogicalOr' in repeated_constants_lowered.stdout
+assert repeated_constants_lowered.stdout.count('initial = "520"') == 1
+assert re.search(
+    r'key_id = "SystemInt32:0x208".*?placement = "resident_shared".*?'
+    r'use_count = 2 : i64',
+    repeated_constants_lowered.stdout,
+), repeated_constants_lowered.stdout
 for obsolete_literal_scratch in [
     '__vrc_return_address_high',
     '__vrc_return_address_byte',
@@ -1500,6 +1504,7 @@ assert 'initial = "-59"' not in runtime_alias_release.stdout, (
 # A large dynamic Unity buffer pool maps logical IDs to dense physical tokens
 # once at allocation. Repeated dispatch selection is one array lookup and does
 # not reserve one public RenderTexture slot per buffer.
+UDON_HEAP_MAXIMUM_CAPACITY = 1_048_576
 selector_buffer_count = 260
 selector_pool = ',\n    '.join(
     '{id = %d : i32, logical_bytes = 4 : i32, '
@@ -1548,7 +1553,7 @@ selector_data_count = int(re.search(
 selector_extern_count = len(set(re.findall(
     r'udonasm\.extern "([^"]+)"', selector_output
 )))
-assert selector_data_count + selector_extern_count <= 512, (
+assert selector_data_count + selector_extern_count <= UDON_HEAP_MAXIMUM_CAPACITY, (
     selector_data_count, selector_extern_count)
 selector_direct_count = int(re.search(
     r'unity_buffer_id_direct_count = (\d+) : i64', selector_output

@@ -1,5 +1,6 @@
 #include "VRC/Conversion/HostStorageCapacity.h"
 #include "VRC/Conversion/Passes.h"
+#include "VRC/Support/UdonLimits.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Builders.h"
 #include <algorithm>
@@ -74,8 +75,10 @@ FailureOr<FitReport> parseFitReport(ModuleOp module) {
           baseline.addressCount ||
       uint64_t(final.dataSlotCount) + final.uniqueExternCount !=
           final.addressCount ||
-      uint64_t(baseline.addressLimit) + baseline.finalDataSlotReserve != 512 ||
-      uint64_t(final.addressLimit) + final.finalDataSlotReserve != 512 ||
+      uint64_t(baseline.addressLimit) + baseline.finalDataSlotReserve !=
+          kUdonHeapMaximumCapacity ||
+      uint64_t(final.addressLimit) + final.finalDataSlotReserve !=
+          kUdonHeapMaximumCapacity ||
       baseline.addressLimit != final.addressLimit ||
       baseline.dataSlotCapacity != final.dataSlotCapacity ||
       baseline.finalDataSlotReserve != final.finalDataSlotReserve ||
@@ -140,8 +143,9 @@ FailureOr<FitReport> parseFitReport(ModuleOp module) {
         *requestSchema != 1 || failed(measured) || failed(capacity) ||
         failed(required) || *measured != baseline.dataSlotCount ||
         *required != *requested || *required >= *measured || *capacity < 1 ||
-        *capacity > 512 || *capacity != *measured - *required ||
-        !selectedVersion || !selectedVersion.getType().isInteger(32) ||
+        *capacity > kUdonHeapMaximumCapacity ||
+        *capacity != *measured - *required || !selectedVersion ||
+        !selectedVersion.getType().isInteger(32) ||
         selectedVersion.getInt() != 1 || !selections || selections.empty() ||
         !selection || selection.size() != 4 || failed(selectionSchema) ||
         *selectionSchema != 1 || failed(selectionRequired) ||

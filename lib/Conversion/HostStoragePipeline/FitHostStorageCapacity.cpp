@@ -1,6 +1,7 @@
 #include "VRC/Conversion/HostStorageCapacity.h"
 #include "VRC/Conversion/Passes.h"
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
+#include "VRC/Support/UdonLimits.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -148,7 +149,7 @@ struct FitHostStorageCapacityPass
     if (baseline->dataSlotCount >
             static_cast<uint32_t>(std::numeric_limits<int32_t>::max()) ||
         requestedSavings == 0 || requestedSavings >= baseline->dataSlotCount ||
-        baseline->dataSlotCount - requestedSavings > 512) {
+        baseline->dataSlotCount - requestedSavings > kUdonHeapMaximumCapacity) {
       module.emitError("measured Host storage pressure cannot be represented "
                        "by a version 1 selection request");
       signalPassFailure();
