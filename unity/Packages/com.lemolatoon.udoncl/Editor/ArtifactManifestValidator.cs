@@ -985,7 +985,8 @@ namespace Lemolatoon.Udoncl.Editor
                     texture.width != expectedWidth
                     || texture.height != expectedHeight
                     || (long)texture.width * texture.height * 4 < tensor.byte_length
-                    || (long)texture.width * texture.height * 4 - tensor.byte_length >= 4
+                    || (long)texture.width * texture.height * 4 - tensor.byte_length
+                        >= (long)texture.width * 4
                     || elements > long.MaxValue / elementBytes
                     || elements * elementBytes != tensor.byte_length
                     || new FileInfo(resource.AbsolutePath).Length != tensor.byte_length

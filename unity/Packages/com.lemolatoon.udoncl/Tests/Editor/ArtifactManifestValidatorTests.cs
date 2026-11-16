@@ -324,6 +324,34 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         }
 
         [Test]
+        public void ValidateAcceptsMultiRowImmutableStaticTensor()
+        {
+            File.WriteAllBytes(Path.Combine(_directory, "weight.bytes"), new byte[33792]);
+            AddResources(
+                "[{\"name\":\"static_tensor_0\",\"kind\":\"bytes\","
+                    + "\"path\":\"weight.bytes\",\"bytes\":33792}]"
+            );
+            AddManifestProperty(
+                "\"static_tensors\":[{\"id\":0,\"name\":\"weight\","
+                    + "\"resource\":\"static_tensor_0\",\"data_type\":\"int8\","
+                    + "\"shape\":[33,64,16],\"layout\":\"row_major_contiguous\","
+                    + "\"alignment\":1,\"byte_strides\":[1024,16,1],"
+                    + "\"byte_length\":33792,\"sha256\":"
+                    + "\"904cc818da7f8339cc5ea26ae49ec7f7d33bbca04f63902ea9c2bcd6012532a7\","
+                    + "\"texture\":{\"abi\":\"udoncl-static-rgba32-v1\","
+                    + "\"width\":8192,\"height\":2,\"format\":\"rgba32\","
+                    + "\"srgb\":false,\"mipmaps\":false,\"filter\":\"point\"}}]"
+            );
+            AddProgramProperty("\"static_tensor_table_slot\":\"__udoncl_static_tensors\"");
+
+            ValidatedArtifact artifact = ArtifactManifestValidator.Validate(_directory);
+            Assert.AreEqual(1, artifact.StaticTensors.Count);
+            Assert.AreEqual(33792, artifact.StaticTensors[0].ByteLength);
+            Assert.AreEqual(8192, artifact.StaticTensors[0].Width);
+            Assert.AreEqual(2, artifact.StaticTensors[0].Height);
+        }
+
+        [Test]
         public void ValidateRejectsStaticTensorTableSlotWithoutTensors()
         {
             AddProgramProperty("\"static_tensor_table_slot\":\"__udoncl_static_tensors\"");
