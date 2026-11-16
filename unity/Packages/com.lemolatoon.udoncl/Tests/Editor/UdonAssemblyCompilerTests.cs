@@ -17,11 +17,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             IUdonProgram program = UdonAssemblyCompiler.Assemble(assembly.ToString());
 
             Assert.NotNull(program);
-            Assert.That(program.Heap.GetHeapCapacity(), Is.GreaterThanOrEqualTo(513));
-            Assert.That(
-                program.Heap.GetHeapCapacity(),
-                Is.LessThanOrEqualTo(UdonAssemblyCompiler.MaximumHeapCapacity)
-            );
+            Assert.AreEqual(513, program.Heap.GetHeapCapacity());
         }
     }
 }

@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 using VRC.Udon.Common.Interfaces;
 using VRC.Udon.Editor;
 using VRC.Udon.UAssembly.Assembler;
@@ -22,13 +24,31 @@ namespace Lemolatoon.Udoncl.Editor
                         new FixedHeapFactory(capacity),
                         new EditorTypeResolver()
                     );
-                    return assembler.Assemble(assembly);
+                    IUdonProgram program = assembler.Assemble(assembly);
+                    uint requiredCapacity = RequiredCapacity(program);
+                    if (requiredCapacity == capacity)
+                        return program;
+                    return new UAssemblyAssembler(
+                        new FixedHeapFactory(requiredCapacity),
+                        new EditorTypeResolver()
+                    ).Assemble(assembly);
                 }
                 catch (IndexOutOfRangeException) when (capacity < MaximumHeapCapacity)
                 {
                     capacity = Math.Min(capacity * 2, MaximumHeapCapacity);
                 }
             }
+        }
+
+        private static uint RequiredCapacity(IUdonProgram program)
+        {
+            List<(uint address, IStrongBox value, Type type)> entries =
+                new List<(uint address, IStrongBox value, Type type)>();
+            program.Heap.DumpHeapObjects(entries);
+            uint required = 1;
+            foreach (var entry in entries)
+                required = Math.Max(required, checked(entry.address + 1));
+            return required;
         }
 
         private sealed class FixedHeapFactory : IUdonHeapFactory
