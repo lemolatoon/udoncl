@@ -368,12 +368,16 @@ recognize MNIST, TinyLlama, tensor names, layer counts, or model shapes.
   priority, alternatives, and colors. `LowerScalar.cpp` only consumes the
   resulting ordinary direct plan.
 
-  Stage 5 hardening is complete. The remaining cleanup is to delete the
-  now-inactive `TypedSpill` solver/index remapping from
-  `AllocateHostStorage`, remove transient spill-index assignment when the
-  preparation contract no longer needs it, and delete typed spill bank/index-
-  cache/constructor/Get/Set lowering plus obsolete report fields. Final
-  acceptance requires production Udon output to contain no typed spill arrays,
-  spill-index slot, or spill array constructor/Get/Set externs.
+  Stage 5 hardening is complete. The now-inactive `TypedSpill` solver/index
+  remapping has been deleted from `AllocateHostStorage`; a focused
+  model-independent test covers that removal. The next cleanup commit deletes
+  the inactive typed spill bank/index-cache/constructor/Get/Set path from
+  `LowerScalar.cpp` and its obsolete report fields. The temporary spill
+  operations, compatibility indices, and live-slot metadata produced by
+  `PrepareUdonAsyncRuntime.cpp` remain until the async preparation contract is
+  redesigned: discovery and SSA normalization still consume them before the
+  unified allocator and final scalar lowering. Final acceptance requires
+  production Udon output to contain no typed spill arrays, spill-index slot, or
+  spill array constructor/Get/Set externs.
 - Stages 6-8 and the TinyLlama generated-U# conversation acceptance path remain
   open.

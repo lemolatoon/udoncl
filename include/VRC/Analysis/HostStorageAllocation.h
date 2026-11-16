@@ -17,9 +17,9 @@ namespace vrc {
 
 using HostStorageNodeId = unsigned;
 
-enum class HostStorageConstraint { General, DirectOnly, TypedSpillOnly, Fixed };
+enum class HostStorageConstraint { General, DirectOnly, Fixed };
 
-enum class HostStorageDomain { Resident, Writable, TypedSpill };
+enum class HostStorageDomain { Resident, Writable };
 
 enum class HostStoragePlacementKind {
   Direct,
