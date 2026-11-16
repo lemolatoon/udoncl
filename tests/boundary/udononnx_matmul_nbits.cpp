@@ -40,14 +40,10 @@ static float testHostManagedKernel() {
   return maximum_error;
 }
 
-static float testDeviceQ4Kernel() {
+static float testDeviceQ4Kernel(int m, int n, int k, const char *label) {
   constexpr int surface_words = 131072;
-  constexpr int m = 2;
-  constexpr int n = 37;
-  constexpr int k = 145;
-  constexpr int blocks = (k + 31) / 32;
-  constexpr int k_passes = (k + 127) / 128;
-  constexpr int pass_count = k_passes;
+  int blocks = (k + 31) / 32;
+  int pass_count = (k + 127) / 128;
   std::vector<float> activation(m * k);
   std::vector<uint> packed(n * blocks * 4, 0);
   std::vector<float> scales(n * blocks);
@@ -97,14 +93,18 @@ static float testDeviceQ4Kernel() {
   for (int index = 0; index < m * n; ++index)
     maximum_error =
         std::max(maximum_error, std::abs(output[index] - expected[index]));
-  std::cout << "matmul_nbits_q4_outputs=" << m * n << '\n';
-  std::cout << "matmul_nbits_q4_dispatches=" << pass_count << '\n';
-  std::cout << "matmul_nbits_q4_max_error=" << maximum_error << '\n';
+  std::cout << "matmul_nbits_q4_case=" << label << " outputs=" << m * n
+            << " dispatches=" << pass_count << " max_error=" << maximum_error
+            << '\n';
   return maximum_error;
 }
 
 int main() {
   float host_error = testHostManagedKernel();
-  float device_error = testDeviceQ4Kernel();
-  return host_error < 0.0001f && device_error < 0.0001f ? 0 : 1;
+  float tail_error = testDeviceQ4Kernel(2, 37, 145, "tail");
+  float tinyllama_k_error = testDeviceQ4Kernel(4, 33, 2048, "tinyllama_k");
+  return host_error < 0.0001f && tail_error < 0.0001f &&
+                 tinyllama_k_error < 0.0001f
+             ? 0
+             : 1;
 }
