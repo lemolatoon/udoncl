@@ -4,8 +4,8 @@ module attributes {
     {buffer_id = 5 : i32, heap_slot = "__udoncl_buffer_5", resolution = "static_alias", resource_id = 9 : i32, resource_kind = "allocation", texture_id = 4 : i32}
   ]},
   vrc.static_unity_buffer_layout_plan = {schema_version = 1 : i32, ready = true, buffers = [
-    {buffer_id = 2 : i32, capacity_bytes = 64 : i64, format = "rgba8_unorm", heap_slot = "__udoncl_buffer_2", persistent = true, public = true, resource_id = 7 : i32, resource_kind = "allocation", texture_id = 3 : i32},
-    {buffer_id = 5 : i32, capacity_bytes = 128 : i64, format = "rgba8_unorm", heap_slot = "__udoncl_buffer_5", persistent = true, public = true, resource_id = 9 : i32, resource_kind = "allocation", texture_id = 4 : i32}
+    {buffer_id = 3 : i32, capacity_bytes = 64 : i64, format = "rgba8_unorm", heap_slot = "__udoncl_buffer_3", persistent = true, public = true, resource_id = 7 : i32, resource_kind = "allocation", texture_id = 3 : i32},
+    {buffer_id = 4 : i32, capacity_bytes = 128 : i64, format = "rgba8_unorm", heap_slot = "__udoncl_buffer_4", persistent = true, public = true, resource_id = 9 : i32, resource_kind = "allocation", texture_id = 4 : i32}
   ]}
 } {
   func.func @copy(%dynamic_id: i32) -> (!vrc.event, i32) {

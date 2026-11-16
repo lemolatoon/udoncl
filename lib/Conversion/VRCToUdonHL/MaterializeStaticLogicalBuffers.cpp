@@ -28,6 +28,11 @@ struct LogicalBufferPlan {
   StringAttr format;
 };
 
+struct LogicalBufferAlias {
+  int32_t resourceId;
+  int32_t textureId;
+};
+
 bool hasSchemaVersion(DictionaryAttr attribute) {
   auto version =
       attribute ? attribute.getAs<IntegerAttr>("schema_version") : nullptr;
@@ -48,7 +53,7 @@ FailureOr<DenseMap<int32_t, LogicalBufferPlan>> readPlans(ModuleOp module) {
     return failure();
   }
 
-  DenseMap<int32_t, int32_t> resourceByBuffer;
+  DenseMap<int32_t, LogicalBufferAlias> aliasByBuffer;
   for (Attribute attribute : reconciled) {
     auto entry = dyn_cast<DictionaryAttr>(attribute);
     auto resolution = entry ? entry.getAs<StringAttr>("resolution") : nullptr;
@@ -59,16 +64,16 @@ FailureOr<DenseMap<int32_t, LogicalBufferPlan>> readPlans(ModuleOp module) {
     auto textureId = entry.getAs<IntegerAttr>("texture_id");
     if (!bufferId || bufferId.getInt() <= 0 || !resourceId ||
         resourceId.getInt() < 0 || !textureId || textureId.getInt() <= 0 ||
-        resourceByBuffer.contains(static_cast<int32_t>(bufferId.getInt()))) {
+        aliasByBuffer.contains(static_cast<int32_t>(bufferId.getInt()))) {
       module.emitError("invalid static alias in Unity buffer reconciliation");
       return failure();
     }
-    resourceByBuffer[static_cast<int32_t>(bufferId.getInt())] =
-        static_cast<int32_t>(resourceId.getInt());
+    aliasByBuffer[static_cast<int32_t>(bufferId.getInt())] = {
+        static_cast<int32_t>(resourceId.getInt()),
+        static_cast<int32_t>(textureId.getInt())};
   }
 
-  DenseMap<int32_t, LogicalBufferPlan> result;
-  DenseSet<int32_t> layoutResourceIds;
+  DenseMap<int32_t, LogicalBufferPlan> planByResource;
   for (Attribute attribute : buffers) {
     auto entry = dyn_cast<DictionaryAttr>(attribute);
     auto bufferId = entry ? entry.getAs<IntegerAttr>("buffer_id") : nullptr;
@@ -81,28 +86,28 @@ FailureOr<DenseMap<int32_t, LogicalBufferPlan>> readPlans(ModuleOp module) {
         resourceId.getInt() < 0 || !textureId || textureId.getInt() <= 0 ||
         !capacity || capacity.getInt() <= 0 || !format ||
         format != "rgba8_unorm" ||
-        !layoutResourceIds.insert(static_cast<int32_t>(resourceId.getInt()))
-             .second) {
+        planByResource.contains(static_cast<int32_t>(resourceId.getInt()))) {
       module.emitError("invalid buffer in canonical Unity layout");
       return failure();
     }
-    auto alias = resourceByBuffer.find(static_cast<int32_t>(bufferId.getInt()));
-    if (alias == resourceByBuffer.end())
-      continue;
-    if (alias->second != resourceId.getInt()) {
-      module.emitError(
-          "reconciled logical buffer does not match canonical Unity layout");
-      return failure();
-    }
-    result[static_cast<int32_t>(bufferId.getInt())] = {
+    planByResource[static_cast<int32_t>(resourceId.getInt())] = {
         static_cast<int32_t>(resourceId.getInt()),
         static_cast<int32_t>(textureId.getInt()), capacity.getInt(), format};
   }
-  for (const auto &[bufferId, resourceId] : resourceByBuffer)
-    if (!result.contains(bufferId)) {
+
+  // Reconciliation buffer IDs are logical IDs from the host program, while
+  // canonical layout buffer IDs name physical Unity texture slots.  Resource
+  // identity is the stable key shared by both schemas.
+  DenseMap<int32_t, LogicalBufferPlan> result;
+  for (const auto &[bufferId, alias] : aliasByBuffer) {
+    auto plan = planByResource.find(alias.resourceId);
+    if (plan == planByResource.end() ||
+        plan->second.textureId != alias.textureId) {
       module.emitError("reconciled logical buffer has no canonical layout");
       return failure();
     }
+    result[bufferId] = plan->second;
+  }
   return result;
 }
 
