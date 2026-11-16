@@ -587,8 +587,15 @@ public:
       }
     }
 
-    if (failed(consumeDirectColorAllocations(functions)) ||
-        failed(planInterproceduralValueSlots(functions)))
+    llvm::DenseSet<Operation *> allocatableConstants(materializedConstants);
+    for (const auto &entry : pooledConstants)
+      allocatableConstants.insert(entry.first);
+    auto hostStorage = analyzeHostStorageInterference(
+        module, functions, [&](Type type) { return slotStorageKey(type); },
+        allocatableConstants, true);
+    if (failed(hostStorage) ||
+        failed(consumeDirectColorAllocations(*hostStorage)) ||
+        failed(planInterproceduralValueSlots(*hostStorage)))
       return failure();
     planAddressCaches();
 
@@ -930,7 +937,7 @@ private:
   }
 
   LogicalResult
-  consumeDirectColorAllocations(ArrayRef<func::FuncOp> functions) {
+  consumeDirectColorAllocations(const HostStorageInterference &analysis) {
     bool hasMaterialization = false;
     std::set<std::string> materializationSeedKeys;
     module.walk([&](udonhl::LiteralMaterializeOp materialize) {
@@ -1010,15 +1017,9 @@ private:
         }
       }
 
-    llvm::DenseSet<Operation *> constants;
-    auto analysis = analyzeHostStorageInterference(
-        module, functions, [&](Type type) { return slotStorageKey(type); },
-        constants, true);
-    if (failed(analysis))
-      return failure();
     std::map<std::string, Value> valueById;
-    for (const auto &[value, id] : analysis->valueIds)
-      if (analysis->ordinals.contains(value))
+    for (const auto &[value, id] : analysis.valueIds)
+      if (analysis.ordinals.contains(value))
         valueById.emplace(id, value);
 
     std::set<std::string> seen;
@@ -1040,7 +1041,7 @@ private:
       if (!allocation || !valueId || value == valueById.end() ||
           !physicalType ||
           physicalType.getValue() !=
-              analysis->storageKeys.lookup(value->second) ||
+              analysis.storageKeys.lookup(value->second) ||
           !domain || domain.getValue() != "writable" || !kind ||
           kind.getValue() != "direct_color_candidate" || !color ||
           color.getInt() < 0 || !seen.insert(valueId.getValue().str()).second)
@@ -1048,8 +1049,12 @@ private:
       allocatorDirectColors.try_emplace(value->second,
                                         static_cast<unsigned>(color.getInt()));
     }
-    for (const auto &[value, ordinal] : analysis->ordinals) {
+    for (const auto &[value, ordinal] : analysis.ordinals) {
       if (value.getDefiningOp<udonhl::LiteralMaterializeOp>())
+        continue;
+      Operation *definition = value.getDefiningOp();
+      if (definition && (materializedConstants.contains(definition) ||
+                         pooledConstants.contains(definition)))
         continue;
       if (hostLiteralPhysicalType(value.getType()) == "unsupported")
         continue;
@@ -1060,21 +1065,13 @@ private:
   }
 
   LogicalResult
-  planInterproceduralValueSlots(ArrayRef<func::FuncOp> functions) {
+  planInterproceduralValueSlots(HostStorageInterference &analysis) {
     requestedScalarRegisterBudget = 0;
     minimumScalarRegisterCount = 0;
-    llvm::DenseSet<Operation *> allocatableConstants(materializedConstants);
-    for (const auto &entry : pooledConstants)
-      allocatableConstants.insert(entry.first);
-    auto analysis = analyzeHostStorageInterference(
-        module, functions, [&](Type type) { return slotStorageKey(type); },
-        allocatableConstants);
-    if (failed(analysis))
-      return failure();
-    auto &functionValues = analysis->functionValues;
-    auto &storageKeys = analysis->storageKeys;
-    auto &ordinals = analysis->ordinals;
-    auto &interference = analysis->interference;
+    auto &functionValues = analysis.functionValues;
+    auto &storageKeys = analysis.storageKeys;
+    auto &ordinals = analysis.ordinals;
+    auto &interference = analysis.interference;
     llvm::StringMap<SmallVector<Value>> valuesByStorage;
     for (const auto &entry : storageKeys)
       valuesByStorage[entry.second].push_back(entry.first);
@@ -1403,6 +1400,8 @@ private:
          integerField("minimum_simultaneous_registers",
                       minimumScalarRegisterCount),
          integerField("address_cache_budget", rawAddressCacheLimit),
+         integerField("address_cache_candidate_count",
+                      rawAddressCacheCandidateCount),
          integerField("cached_raw_addresses", cachedRawGlobalSlots.size()),
          integerField("cached_return_addresses",
                       cachedReturnAddressSlots.size()),
@@ -1614,6 +1613,7 @@ private:
         return left.kind < right.kind;
       return std::tie(left.value, left.id) < std::tie(right.value, right.id);
     });
+    rawAddressCacheCandidateCount = candidates.size();
 
     unsigned addedSlots = 0;
     for (const Candidate &candidate : candidates) {
@@ -5578,6 +5578,7 @@ private:
   uint64_t rawHeapBytes = 0;
   unsigned materializationLimit = 0;
   unsigned rawAddressCacheLimit = 0;
+  unsigned rawAddressCacheCandidateCount = 0;
   unsigned unityBufferIdRematerializationCount = 0;
   unsigned unityBufferIdRematerializationAddressDelta = 0;
   unsigned unityBufferIdRematerializationAttempts = 0;
@@ -5651,6 +5652,7 @@ struct LowerUdonHLToUdonAsmPass
     struct ProbeResult {
       unsigned addresses;
       unsigned dataSlots;
+      unsigned addressCacheCandidates;
       bool hasLiteralAccumulator;
     };
     unsigned dataSlotCapacity = addressLimit;
@@ -5689,6 +5691,7 @@ struct LowerUdonHLToUdonAsmPass
       unsigned count = addressCount(module);
       unsigned dataSlots = 0;
       bool hasLiteralAccumulator = false;
+      unsigned addressCacheCandidates = 0;
       if (auto data = module->getAttrOfType<ArrayAttr>("udonasm.data")) {
         dataSlots = data.size();
         for (Attribute attribute : data) {
@@ -5698,8 +5701,14 @@ struct LowerUdonHLToUdonAsmPass
               name && name.getValue() == "__vrc_return_address_i32";
         }
       }
+      if (auto report =
+              module->getAttrOfType<DictionaryAttr>("udonasm.storage_report"))
+        if (auto candidates =
+                report.getAs<IntegerAttr>("address_cache_candidate_count"))
+          addressCacheCandidates = static_cast<unsigned>(candidates.getUInt());
       cloned->erase();
-      return ProbeResult{count, dataSlots, hasLiteralAccumulator};
+      return ProbeResult{count, dataSlots, addressCacheCandidates,
+                         hasLiteralAccumulator};
     };
     auto pressure = [&](const ProbeResult &result) {
       unsigned totalOverflow =
@@ -5794,7 +5803,15 @@ struct LowerUdonHLToUdonAsmPass
         best.dataSlots < dataSlotCapacity ? dataSlotCapacity - best.dataSlots
                                           : 0,
         best.addresses < addressLimit ? addressLimit - best.addresses : 0);
-    if (rawAddressCacheLimit) {
+    // Every address-cache candidate consumes at most one data slot. When all
+    // candidates fit in the remaining address and data-slot headroom, the
+    // already-computed candidate count proves capacity without cloning and
+    // lowering the whole module a second time. Capacity-constrained programs
+    // retain the exact trial below because shared immutable slots can allow a
+    // useful prefix larger than a conservative slot-count bound.
+    if (rawAddressCacheLimit >= best.addressCacheCandidates) {
+      rawAddressCacheLimit = best.addressCacheCandidates;
+    } else if (rawAddressCacheLimit) {
       auto cached =
           probe(materializationLimit, scalarRegisterBudget,
                 unityBufferIdRematerializationCount, rawAddressCacheLimit);
