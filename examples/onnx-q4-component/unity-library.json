@@ -1,0 +1,52 @@
+{
+  "schema_version": 2,
+  "program": "onnx_q4_component",
+  "generate_onnx_public_buffers": true,
+  "binding": {
+    "namespace": "Lemolatoon.Udoncl.Generated",
+    "class_name": "UdonclOnnxQ4ComponentBinding"
+  },
+  "device_kernels": [
+    {
+      "schema_version": 1,
+      "profile": "gather-f32",
+      "words": 131072,
+      "kernel": "udononnx_matmul_nbits_q4",
+      "kernel_id": 235,
+      "input_words": [8192, 8448, 2112, 131072],
+      "argument_bounds": [
+        {"index": 5, "min": 1, "max": 4},
+        {"index": 6, "min": 1, "max": 33},
+        {"index": 7, "min": 1, "max": 2048},
+        {"index": 8, "min": 32, "max": 32},
+        {"index": 9, "min": 0, "max": 0},
+        {"index": 10, "min": 0, "max": 1920},
+        {"index": 11, "min": 33, "max": 33},
+        {"index": 12, "min": 1, "max": 128},
+        {"index": 13, "min": 0, "max": 1}
+      ],
+      "argument_kinds": [
+        "buffer", "buffer", "buffer", "buffer", "buffer",
+        "i32", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "i32"
+      ],
+      "global_size": [8192, 16, 1],
+      "local_size": [1, 1, 1],
+      "global_offset": [0, 0, 0]
+    }
+  ],
+  "export_overrides": [
+    {"symbol": "q4_component_initialize", "public_name": "Initialize", "parameters": []},
+    {"symbol": "q4_component_run", "public_name": "Run", "parameters": []},
+    {"symbol": "q4_component_dispose", "public_name": "Shutdown", "parameters": []}
+  ],
+  "internal_exports": [
+    "udon_onnx_binding_create",
+    "udon_onnx_binding_bind_tensor",
+    "udon_onnx_binding_bind_all",
+    "udon_onnx_binding_resolve_input",
+    "udon_onnx_binding_resolve_output",
+    "udon_onnx_binding_enqueue_initialize",
+    "udon_onnx_binding_enqueue_run",
+    "udon_onnx_binding_dispose"
+  ]
+}
