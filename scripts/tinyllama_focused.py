@@ -18,6 +18,14 @@ def run(command, **kwargs):
     return subprocess.run([str(item) for item in command], check=True, **kwargs)
 
 
+def cmake_cache_value(build: Path, name: str) -> str:
+    prefix = f"{name}:"
+    for line in (build / "CMakeCache.txt").read_text(encoding="utf-8").splitlines():
+        if line.startswith(prefix) and "=" in line:
+            return line.split("=", 1)[1]
+    raise RuntimeError(f"configured CMake build has no {name}")
+
+
 def prepare(case: str, root: Path, build: Path) -> dict[str, str]:
     # This must remain the first subprocess: a focused consumer may never use a
     # compiler left over from an earlier main-tree build.
@@ -47,6 +55,7 @@ def prepare(case: str, root: Path, build: Path) -> dict[str, str]:
     suffix = ".exe" if sys.platform == "win32" else ""
     llvm = root / ".deps/llvm23/bin"
     onnx_mlir = root / ".deps/onnx-mlir/bin"
+    make_program = cmake_cache_value(build, "CMAKE_MAKE_PROGRAM")
     run(
         [
             "cmake",
@@ -56,6 +65,7 @@ def prepare(case: str, root: Path, build: Path) -> dict[str, str]:
             consumer,
             "-G",
             "Ninja",
+            f"-DCMAKE_MAKE_PROGRAM={make_program}",
             f"-DCMAKE_PREFIX_PATH={sdk.resolve()}",
             f"-DUDONCLC_EXECUTABLE={sdk / 'bin' / ('udonclc' + suffix)}",
             f"-DUDONCL_CLANG_EXECUTABLE={llvm / ('clang' + suffix)}",

@@ -19,6 +19,10 @@ def exercise(case):
     with tempfile.TemporaryDirectory(prefix=f"tinyllama-{case}-") as temporary:
         fake_root = Path(temporary)
         build = fake_root / "build/udoncl"
+        build.mkdir(parents=True)
+        (build / "CMakeCache.txt").write_text(
+            "CMAKE_MAKE_PROGRAM:FILEPATH=/tools/ninja\n", encoding="utf-8"
+        )
         oracle = build / "tests/tinyllama-real-onnx" / (
             "oracle.json" if case == "prefill" else "m1-oracle.json"
         )
