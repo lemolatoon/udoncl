@@ -582,7 +582,8 @@ assert parallel_branch_lowered.returncode == 0, parallel_branch_lowered.stderr
 # parallel-copy semantics.
 for expected in [
     'minimum_simultaneous_registers = 4 : i64',
-    'typed_spill_arrays = [{array_type = "SystemInt32Array", length = 3 : i64',
+    'scalar_register_budget = 4 : i64',
+    'typed_spill_arrays = []',
 ]:
     assert expected in parallel_branch_lowered.stdout, (
         expected,
@@ -612,13 +613,21 @@ typed_spill_lowered = subprocess.run(
 )
 assert typed_spill_lowered.returncode == 0, typed_spill_lowered.stderr
 for expected in [
-    'typed_spill_arrays = [{array_type = "SystemInt32Array"',
+    'minimum_simultaneous_registers = 3 : i64',
+    'scalar_register_budget = 3 : i64',
+    'typed_spill_arrays = []',
+]:
+    assert expected in typed_spill_lowered.stdout, (
+        expected,
+        typed_spill_lowered.stdout,
+    )
+for obsolete_spill_implementation in [
     'SystemInt32Array.__ctor__SystemInt32__SystemInt32Array',
     'SystemInt32Array.__Set__SystemInt32_SystemInt32__SystemVoid',
     'SystemInt32Array.__Get__SystemInt32__SystemInt32',
 ]:
-    assert expected in typed_spill_lowered.stdout, (
-        expected,
+    assert obsolete_spill_implementation not in typed_spill_lowered.stdout, (
+        obsolete_spill_implementation,
         typed_spill_lowered.stdout,
     )
 

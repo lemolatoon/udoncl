@@ -1147,16 +1147,8 @@ private:
 
   LogicalResult
   planInterproceduralValueSlots(ArrayRef<func::FuncOp> functions) {
-    unsigned registerBudget = 16;
-    if (auto budget =
-            module->getAttrOfType<IntegerAttr>("vrc.scalar_register_budget")) {
-      if (budget.getInt() <= 0 || budget.getInt() > 256)
-        return module.emitError(
-            "vrc.scalar_register_budget must be in the range 1..256");
-      registerBudget = static_cast<unsigned>(budget.getInt());
-    }
-    requestedScalarRegisterBudget = registerBudget;
-    minimumScalarRegisterCount = registerBudget;
+    requestedScalarRegisterBudget = 0;
+    minimumScalarRegisterCount = 0;
     llvm::DenseSet<Operation *> allocatableConstants(materializedConstants);
     for (const auto &entry : pooledConstants)
       allocatableConstants.insert(entry.first);
@@ -1172,15 +1164,6 @@ private:
     llvm::StringMap<SmallVector<Value>> valuesByStorage;
     for (const auto &entry : storageKeys)
       valuesByStorage[entry.second].push_back(entry.first);
-    llvm::StringMap<unsigned> declaredSpillBases;
-    for (const auto &entry : typedSpillBanks)
-      declaredSpillBases[entry.first()] = entry.second.length;
-    struct SpillCandidate {
-      Value value;
-      std::string storageKey;
-      unsigned index;
-    };
-    SmallVector<SpillCandidate> spillCandidates;
     for (auto &entry : valuesByStorage) {
       SmallVector<Value> order(entry.getValue().begin(),
                                entry.getValue().end());
@@ -1230,91 +1213,14 @@ private:
         while (used.contains(color))
           ++color;
         colors.try_emplace(value, color);
-        if (color >= registerBudget) {
-          if (typedSpillsInserted) {
-            // Reloads immediately before one operation and internal-call
-            // argument copies form an unspillable simultaneous-use clique.
-            // Grow only to that proven minimum; long-lived values were
-            // already moved to typed arrays by the first allocation round.
-            minimumScalarRegisterCount =
-                std::max(minimumScalarRegisterCount, color + 1);
-          } else {
-            spillCandidates.push_back(
-                {value, entry.getKey().str(),
-                 declaredSpillBases.lookup(entry.getKey()) + color -
-                     registerBudget});
-            continue;
-          }
-        }
+        minimumScalarRegisterCount =
+            std::max(minimumScalarRegisterCount, color + 1);
         interproceduralValueSlots.try_emplace(
             value, "__vrc_shared_r_" + entry.getKey().str() + "_" +
                        std::to_string(color));
       }
     }
-    if (!spillCandidates.empty()) {
-      module.getContext()->getOrLoadDialect<host::UdonHLDialect>();
-      llvm::sort(spillCandidates, [&](const SpillCandidate &left,
-                                      const SpillCandidate &right) {
-        return ordinals.lookup(left.value) < ordinals.lookup(right.value);
-      });
-      for (const SpillCandidate &candidate : spillCandidates) {
-        unsigned spillIndex = candidate.index;
-        auto scalarType = udonType(candidate.value.getType());
-        if (failed(scalarType))
-          return emitError(candidate.value.getLoc())
-                 << "typed spill has no physical Udon type";
-        auto bank = typedSpillBanks.find(candidate.storageKey);
-        if (bank == typedSpillBanks.end()) {
-          std::string slot = "__vrc_spill_bank_" + candidate.storageKey;
-          std::string arrayType = scalarType->str() + "Array";
-          addSlot(slot, arrayType, "null", false);
-          bank = typedSpillBanks
-                     .try_emplace(candidate.storageKey,
-                                  TypedSpillBankPlan{slot, scalarType->str(),
-                                                     std::move(arrayType), 0})
-                     .first;
-          typedSpillBankOrder.push_back(candidate.storageKey);
-        }
-        bank->second.length = std::max(bank->second.length, spillIndex + 1);
-
-        SmallVector<OpOperand *> uses;
-        for (OpOperand &use : candidate.value.getUses())
-          uses.push_back(&use);
-        llvm::DenseMap<Operation *, Value> reloads;
-        for (OpOperand *use : uses) {
-          Operation *owner = use->getOwner();
-          auto reload = reloads.find(owner);
-          Value loaded;
-          if (reload == reloads.end()) {
-            builder.setInsertionPoint(owner);
-            loaded = builder
-                         .create<host::SpillLoadOp>(
-                             owner->getLoc(), candidate.value.getType(),
-                             builder.getStringAttr(candidate.storageKey),
-                             builder.getI32IntegerAttr(spillIndex))
-                         .getValue();
-            reloads.try_emplace(owner, loaded);
-          } else {
-            loaded = reload->second;
-          }
-          use->set(loaded);
-        }
-        if (auto argument = dyn_cast<BlockArgument>(candidate.value)) {
-          builder.setInsertionPointToStart(argument.getOwner());
-        } else {
-          Operation *definition = candidate.value.getDefiningOp();
-          builder.setInsertionPointAfter(definition);
-        }
-        builder.create<host::SpillStoreOp>(
-            candidate.value.getLoc(), candidate.value,
-            builder.getStringAttr(candidate.storageKey),
-            builder.getI32IntegerAttr(spillIndex));
-      }
-      typedSpillsInserted = true;
-      interproceduralValueSlots.clear();
-      builder.setInsertionPointToEnd(module.getBody());
-      return planInterproceduralValueSlots(functions);
-    }
+    requestedScalarRegisterBudget = minimumScalarRegisterCount;
     return success();
   }
 
@@ -5955,7 +5861,6 @@ private:
   unsigned minimumScalarRegisterCount = 16;
   unsigned plannedSpillIndexCount = 0;
   bool externalRawHeapInitialization = false;
-  bool typedSpillsInserted = false;
   SmallVector<std::pair<Operation *, func::FuncOp>> callRelocations;
   SmallVector<AsyncResumeTarget> asyncResumeTargets;
   SmallVector<std::pair<Operation *, Block *>> asyncResumeRelocations;

@@ -1853,8 +1853,7 @@ def main():
         (unity_artifact / 'storage-report.json').read_text(encoding='utf-8')
     )
     assert storage_report['version'] == 2
-    assert storage_report['scalar_register_budget'] >= 1
-    assert 'typed_spill_arrays' in storage_report
+    assert storage_report['typed_spill_arrays'] == []
     assert 'typed_global_arrays' in storage_report
     assert storage_report['fixed_named_slots']
     assert storage_report['scalar_registers']

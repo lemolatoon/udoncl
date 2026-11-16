@@ -245,3 +245,14 @@ recognize MNIST, TinyLlama, tensor names, layer counts, or model shapes.
 - Mandatory precommit passes.
 - Generated-U# MNIST remains numerically correct.
 - Real TinyLlama completes the agreed conversation path from U#.
+
+## 8. Implementation status
+
+- Stages 1-3 are complete: the value-centric request model, shared
+  1,048,576-address limit, and exact-capacity Unity assembly path are in use.
+- Stage 4 is complete: ordinary SSA coloring has no 16/256 register-budget
+  cutoff and does not synthesize typed-array spill loads or stores.
+- Stage 5 is next: migrate pre-existing live-across-suspend spill operations to
+  the same direct-slot allocation, then remove their typed spill banks.
+- Stages 6-8 and the TinyLlama generated-U# conversation acceptance path remain
+  open.
