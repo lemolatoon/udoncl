@@ -63,10 +63,13 @@ def assert_host_storage_finalization(artifact):
     fit = mlir_module_attribute(lowered, 'vrc.host_storage_capacity_fit')
     verification = mlir_module_attribute(
         lowered, 'vrc.host_storage_capacity_verification')
+    scalar_plan = mlir_module_attribute(
+        lowered, 'vrc.host_scalar_lowering_plan')
     storage = mlir_module_attribute(lowered, 'udonasm.storage_report')
     assert mlir_integer_field(fit, 'schema_version') == 2
-    assert mlir_integer_field(verification, 'schema_version') == 1
+    assert mlir_integer_field(verification, 'schema_version') == 2
     assert mlir_integer_field(verification, 'fit_schema_version') == 2
+    assert mlir_integer_field(scalar_plan, 'schema_version') == 1
     data = mlir_integer_field(verification, 'data_slot_count')
     externs = mlir_integer_field(verification, 'unique_extern_count')
     addresses = mlir_integer_field(verification, 'address_count')
@@ -78,6 +81,24 @@ def assert_host_storage_finalization(artifact):
     assert addresses <= address_limit
     assert mlir_integer_field(verification, 'required_reduction') == 0
     assert 'fits = true' in verification
+    plan_to_verification = {
+        'expected_data_slot_count': 'data_slot_count',
+        'expected_unique_extern_count': 'unique_extern_count',
+        'expected_address_count': 'address_count',
+        'data_slot_capacity': 'data_slot_capacity',
+        'final_data_slot_reserve': 'final_data_slot_reserve',
+        'address_limit': 'address_limit',
+        'required_reduction': 'required_reduction',
+    }
+    for plan_field, verification_field in plan_to_verification.items():
+        assert mlir_integer_field(scalar_plan, plan_field) == mlir_integer_field(
+            verification, verification_field)
+    plan_fingerprint = re.search(
+        r'ir_fingerprint = "([0-9a-fA-F]{64})"', scalar_plan)
+    verification_fingerprint = re.search(
+        r'ir_fingerprint = "([0-9a-fA-F]{64})"', verification)
+    assert plan_fingerprint and verification_fingerprint
+    assert plan_fingerprint.group(1) == verification_fingerprint.group(1)
     fit_to_verification = {
         'final_data_slot_count': 'data_slot_count',
         'final_unique_extern_count': 'unique_extern_count',
