@@ -1,4 +1,6 @@
 #include "VRC/Analysis/HostStorageAllocation.h"
+#include <limits>
+#include <set>
 
 using namespace vrc;
 
@@ -114,5 +116,64 @@ int main() {
           1 ||
       domainSolution.extents[{HostStorageDomain::Writable, "SystemInt32"}] != 3)
     return 12;
+
+  HostStorageProblem alternatives;
+  if (!alternatives.addSharedResource("i32-remat-scratch", "SystemInt32", 1))
+    return 13;
+  auto hot = alternatives.addRequest("hot", "SystemInt32", 0, 100);
+  auto rejected = alternatives.addRequest("rejected", "SystemInt32", 1, 10);
+  auto cold = alternatives.addRequest("cold", "SystemInt32", 2, 1);
+  if (!hot || !rejected || !cold)
+    return 14;
+  auto addPlacements = [&](HostStorageNodeId node) {
+    auto direct = alternatives.addAlternative(
+        node, "direct", HostStoragePlacementKind::Direct,
+        HostStorageDomain::Writable, true, 0, 0);
+    auto rematerialized = alternatives.addAlternative(
+        node, "rematerialized", HostStoragePlacementKind::Rematerialized,
+        HostStorageDomain::Writable, false, 5, 3);
+    if (!direct || !rematerialized ||
+        !alternatives.addAlternativeDependency(node, *rematerialized,
+                                               "i32-remat-scratch"))
+      return std::optional<
+          std::pair<HostStorageAlternativeId, HostStorageAlternativeId>>{};
+    return std::optional(std::pair(*direct, *rematerialized));
+  };
+  auto hotPlacements = addPlacements(*hot);
+  auto rejectedPlacements = addPlacements(*rejected);
+  auto coldPlacements = addPlacements(*cold);
+  if (!hotPlacements || !rejectedPlacements || !coldPlacements ||
+      !alternatives.rejectAlternative(*rejected, rejectedPlacements->first,
+                                      "one use requires rematerialization") ||
+      !alternatives.addSimultaneousGroup({*hot, *rejected, *cold}))
+    return 15;
+  HostStorageSolution alternativeSolution =
+      solveHostStorageProblem(alternatives, 2);
+  if (!alternativeSolution.success ||
+      alternativeSolution.getSelectedAlternative(*hot) !=
+          hotPlacements->first ||
+      alternativeSolution.getSelectedAlternative(*rejected) !=
+          rejectedPlacements->second ||
+      alternativeSolution.getSelectedAlternative(*cold) !=
+          coldPlacements->second ||
+      alternativeSolution.getColor(*hot) != 0 ||
+      alternativeSolution.getColor(*rejected) !=
+          std::numeric_limits<unsigned>::max() ||
+      alternativeSolution.selectedSharedResources !=
+          std::set<std::string>{"i32-remat-scratch"} ||
+      alternativeSolution.physicalAddressCount != 2)
+    return 16;
+
+  HostStorageProblem impossible;
+  auto value = impossible.addRequest("value", "SystemInt32", 0);
+  auto placement =
+      value ? impossible.addAlternative(*value, "direct",
+                                        HostStoragePlacementKind::Direct,
+                                        HostStorageDomain::Writable, true, 0, 0)
+            : std::optional<HostStorageAlternativeId>{};
+  if (!value || !placement ||
+      !impossible.rejectAlternative(*value, *placement, "unsupported use") ||
+      solveHostStorageProblem(impossible).success)
+    return 17;
   return 0;
 }
