@@ -903,10 +903,37 @@ Continue in the following independently testable commits:
    with ordinary final LowerScalar output, including unique extern signatures,
    data-slot capacity, and final reserve.
 
-   The remaining Step 6 work is production pipeline wiring only. Production may
-   now connect fixed physical releases, exposure, final discovery, fitting,
-   verification, and scalar lowering in that order. Fresh production
-   generation, MNIST, and TinyLlama remain mandatory acceptance gates.
+   **Finalization builder checkpoint completed (2026-11-16):** the public
+   `buildUdonHostStorageFinalizationPipeline` API and registered
+   `vrc-finalize-udon-host-storage` pipeline now own the exact common tail:
+   fixed physical releases, backend-literal exposure, final rematerialization
+   discovery, capacity fitting, capacity verification, then scalar lowering.
+   The builder accepts an already bound physical UdonHL module after final
+   reserve and external-heap attributes are installed. It deliberately does not
+   run high-level Host lowering or runtime-intrinsic substitution.
+
+   Async-only `LowerHostToUdonHL` and `SubstituteRuntimeIntrinsics` therefore
+   remain driver-owned preprocessing immediately before this common tail; the
+   synchronous path has already run them before Unity buffer binding. Early
+   async discovery/allocation/analyze also remains in place to allocate typed
+   spill indices once. The final discovery refreshes literal inventory after
+   binding, while fitting invokes only literal allocation and cannot remap those
+   spills.
+
+   `vrc-opt` registers the builder for focused use, and the model-independent
+   exact-boundary fixture proves byte-identical output between the registered
+   pipeline and the same six passes written explicitly in order. Both outputs
+   contain fit schema version 2, verification schema version 1, and the same
+   final Udon storage report. The production `vrccl` driver remains unconnected.
+
+   The remaining Step 6 work is the narrow production wiring commit after the
+   unrelated dirty driver work is resolved: link `vrccl` with
+   `VRCHostStoragePipeline`, include the public builder header, and replace its
+   existing fixed-release plus scalar-lowering tail with one builder call while
+   retaining the async-only two-pass prefix. Production integration must prove
+   both synchronous and async-command artifacts contain mutually consistent
+   fit, verification, and final storage reports. Fresh production generation,
+   MNIST, and TinyLlama remain mandatory acceptance gates.
 7. Remove the superseded per-feature integer literal policies only after the
    general backend-use path covers them. This includes
    `unity_buffer_id_rematerialization`, raw-address-cache, spill-index-cache,

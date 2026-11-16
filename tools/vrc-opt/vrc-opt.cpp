@@ -1,4 +1,5 @@
 #include "VRC/Conversion/BoundaryFrontend/Frontend.h"
+#include "VRC/Conversion/HostStoragePipeline.h"
 #include "VRC/Conversion/LLVMToHighLevel/Passes.h"
 #include "VRC/Conversion/Passes.h"
 #include "VRC/Dialect/UdonAsm/UdonAsmDialect.h"
@@ -25,6 +26,7 @@ int main(int argc, char **argv) {
   vrc::registerCBoundaryRecoveryPipeline();
   vrc::registerVRCRecoveryPasses();
   vrc::registerHighLevelRecoveryPipeline();
+  vrc::registerUdonHostStorageFinalizationPipeline();
   vrc::registerVRCBoundaryPasses();
   mlir::DialectRegistry registry;
   mlir::func::registerInlinerExtension(registry);

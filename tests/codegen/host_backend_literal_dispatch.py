@@ -523,6 +523,62 @@ overflow_after_fit = run(
 assert overflow_after_fit.returncode != 0
 assert "does not match the exact final Udon address plan" in overflow_after_fit.stderr
 
+finalization_input = with_reserve(without_request)
+manual_finalization = run(
+    [
+        "--verify-each",
+        "--vrc-materialize-fixed-physical-releases",
+        "--vrc-expose-host-backend-literal-uses",
+        "--vrc-discover-host-rematerialization",
+        "--vrc-fit-host-storage-capacity",
+        "--vrc-verify-host-storage-capacity",
+        "--vrc-lower-udonhl-to-udonasm",
+    ],
+    finalization_input,
+)
+assert manual_finalization.returncode == 0, (
+    manual_finalization.stdout,
+    manual_finalization.stderr,
+)
+registered_finalization = run(
+    ["--verify-each", "--vrc-finalize-udon-host-storage"], finalization_input
+)
+assert registered_finalization.returncode == 0, (
+    registered_finalization.stdout,
+    registered_finalization.stderr,
+)
+assert registered_finalization.stdout == manual_finalization.stdout
+assert "vrc.host_storage_capacity_fit" in registered_finalization.stdout
+assert "vrc.host_storage_capacity_verification" in registered_finalization.stdout
+assert "udonasm.storage_report" in registered_finalization.stdout
+registered_fit_report = re.search(
+    r"vrc\.host_storage_capacity_fit = \{([^}]*)\}",
+    registered_finalization.stdout,
+)
+assert registered_fit_report
+assert "schema_version = 2 : i32" in registered_fit_report.group(1)
+registered_verify_report = re.search(
+    r"vrc\.host_storage_capacity_verification = \{([^}]*)\}",
+    registered_finalization.stdout,
+)
+assert registered_verify_report
+assert "schema_version = 1 : i32" in registered_verify_report.group(1)
+
+registered_already_fit = run(
+    ["--verify-each", "--vrc-finalize-udon-host-storage"], already_fit_input
+)
+assert registered_already_fit.returncode == 0, (
+    registered_already_fit.stdout,
+    registered_already_fit.stderr,
+)
+already_fit_final_report = re.search(
+    r"vrc\.host_storage_capacity_fit = \{([^}]*)\}",
+    registered_already_fit.stdout,
+)
+assert already_fit_final_report
+assert "attempt_count = 0 : i32" in already_fit_final_report.group(1)
+assert "vrc.host_storage_pressure_request" not in registered_already_fit.stdout
+
 exhausted_input = fit_input.replace(
     f"vrc.final_data_slot_reserve = {reserve} : i32",
     f"vrc.final_data_slot_reserve = {reserve + 1} : i32",

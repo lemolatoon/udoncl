@@ -1,4 +1,4 @@
-add_mlir_library(VRCHostStoragePipeline DISABLE_INSTALL FitHostStorageCapacity.cpp VerifyHostStorageCapacity.cpp
+add_mlir_library(VRCHostStoragePipeline DISABLE_INSTALL HostStoragePipeline.cpp FitHostStorageCapacity.cpp VerifyHostStorageCapacity.cpp
   DEPENDS VRCBoundaryPassIncGen
   LINK_LIBS PUBLIC VRCConversionUdon VRCConversionVRC VRCDialectUdonHL
   MLIRArithDialect MLIRFuncDialect MLIRPass)
