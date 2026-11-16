@@ -1,6 +1,7 @@
 #include "VRC/ABI/Manifest/Boundary.h"
 #include "VRC/ABI/Manifest/BindingSource.h"
 #include "VRC/Conversion/BoundaryFrontend/Frontend.h"
+#include "VRC/Conversion/HostStoragePipeline.h"
 #include "VRC/Conversion/LLVMToHighLevel/Import.h"
 #include "VRC/Conversion/LLVMToHighLevel/Passes.h"
 #include "VRC/Conversion/Passes.h"
@@ -1083,9 +1084,12 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
     bool resourcesMatch = dispatch.getResources().size() == bufferKindCount;
     llvm::DenseMap<unsigned, const UnityBuffer *> snapshotBuffers;
     llvm::DenseMap<unsigned, int64_t> snapshotStaticTensors;
-    if (staticLoweringApplied) {
-      auto snapshot = dispatch->getAttrOfType<DictionaryAttr>(
-          "vrc.static_kernel_binding_snapshot");
+    auto snapshot = dispatch->getAttrOfType<DictionaryAttr>(
+        "vrc.static_kernel_binding_snapshot");
+    if (staticLoweringApplied && !snapshot)
+      return dispatch.emitError(
+          "applied static Unity dispatch has no binding snapshot");
+    if (snapshot) {
       auto version =
           snapshot ? snapshot.getAs<IntegerAttr>("schema_version") : nullptr;
       auto kernelId =
@@ -1122,16 +1126,17 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
         if (kind.getValue() == "allocation") {
           auto found =
               assignedResources.find(static_cast<int32_t>(id.getInt()));
-          if (found == assignedResources.end())
+          if (found != assignedResources.end())
+            snapshotBuffers[operandIndex] = found->second;
+          else if (staticLoweringApplied)
             return dispatch.emitError(
                 "static dispatch allocation has no bound Unity buffer");
-          snapshotBuffers[operandIndex] = found->second;
         } else if (kind.getValue() == "static_tensor") {
           if (!staticTensorExists(id.getInt()))
             return dispatch.emitError(
                 "static dispatch tensor is absent from the artifact");
           snapshotStaticTensors[operandIndex] = id.getInt();
-        } else {
+        } else if (staticLoweringApplied) {
           return dispatch.emitError(
               "applied static Unity dispatch retains a dynamic resource");
         }
@@ -3677,9 +3682,8 @@ int main(int argc, char **argv) {
       udon.addPass(::vrc::createLowerHostToUdonHLPass());
       udon.addPass(::vrc::createSubstituteRuntimeIntrinsicsPass());
     }
-    udon.addPass(::vrc::createMaterializeFixedPhysicalReleasesPass());
     phase("udon-hl-to-asm");
-    udon.addPass(::vrc::createLowerUdonHLToUdonAsmPass());
+    ::vrc::buildUdonHostStorageFinalizationPipeline(udon);
     if (failed(udon.run(physicalModule)) || failed(verify(physicalModule)))
       return 1;
     if (auto initializer = physicalModule->getAttrOfType<DenseI8ArrayAttr>(

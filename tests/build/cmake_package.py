@@ -50,6 +50,53 @@ def mlir_module_attribute(source, name):
     raise AssertionError(f'unterminated MLIR module attribute: {name}')
 
 
+def mlir_integer_field(attribute, name):
+    match = re.search(rf'\b{re.escape(name)} = (\d+) : i(?:32|64)\b', attribute)
+    assert match, (name, attribute)
+    return int(match.group(1))
+
+
+def assert_host_storage_finalization(artifact):
+    lowered = (artifact / 'host.udonasm.mlir').read_text(encoding='utf-8')
+    fit = mlir_module_attribute(lowered, 'vrc.host_storage_capacity_fit')
+    verification = mlir_module_attribute(
+        lowered, 'vrc.host_storage_capacity_verification')
+    storage = mlir_module_attribute(lowered, 'udonasm.storage_report')
+    assert mlir_integer_field(fit, 'schema_version') == 2
+    assert mlir_integer_field(verification, 'schema_version') == 1
+    assert mlir_integer_field(verification, 'fit_schema_version') == 2
+    data = mlir_integer_field(verification, 'data_slot_count')
+    externs = mlir_integer_field(verification, 'unique_extern_count')
+    addresses = mlir_integer_field(verification, 'address_count')
+    capacity = mlir_integer_field(verification, 'data_slot_capacity')
+    reserve = mlir_integer_field(verification, 'final_data_slot_reserve')
+    address_limit = mlir_integer_field(verification, 'address_limit')
+    assert addresses == data + externs
+    assert address_limit == 512 - reserve
+    assert addresses <= address_limit
+    assert mlir_integer_field(verification, 'required_reduction') == 0
+    assert 'fits = true' in verification
+    fit_to_verification = {
+        'final_data_slot_count': 'data_slot_count',
+        'final_unique_extern_count': 'unique_extern_count',
+        'final_address_count': 'address_count',
+        'final_data_slot_capacity': 'data_slot_capacity',
+        'final_data_slot_reserve': 'final_data_slot_reserve',
+        'final_address_limit': 'address_limit',
+        'final_required_reduction': 'required_reduction',
+        'attempt_count': 'attempt_count',
+        'requested_resident_slot_savings': 'requested_resident_slot_savings',
+    }
+    for fit_field, verification_field in fit_to_verification.items():
+        assert mlir_integer_field(fit, fit_field) == mlir_integer_field(
+            verification, verification_field)
+    assert mlir_integer_field(storage, 'data_slot_count') == data
+    assert mlir_integer_field(storage, 'data_slot_capacity') == capacity
+    assert mlir_integer_field(storage, 'final_data_slot_reserve') == reserve
+    actual_externs = set(re.findall(r'udonasm\.extern "([^"]+)"', lowered))
+    assert len(actual_externs) == externs
+
+
 def udon_heap_slots(assembly):
     declarations = sum(
         line.startswith('    ') and ': %' in line
@@ -117,6 +164,7 @@ def assert_binding_identity(manifest, source):
 
 
 def assert_static_async_artifact(artifact, assembly):
+    assert_host_storage_finalization(artifact)
     assert '.export __udoncl_async_complete' in assembly
     assert '__udoncl_async_resume_state' not in assembly
     for slot in [
@@ -1688,6 +1736,7 @@ def main():
     assert 'program.SendCustomEvent("__0_SquarePlusOne")' in binding_source
     assert 'VRCWrapperGenerator' not in binding_source
     assembly = (unity_artifact / 'host.uasm').read_text(encoding='utf-8')
+    assert_host_storage_finalization(unity_artifact)
     assert '.export __0_SquarePlusOne' in assembly
     assert '.export __0_EchoString' in assembly
     assert (

@@ -924,16 +924,38 @@ Continue in the following independently testable commits:
    exact-boundary fixture proves byte-identical output between the registered
    pipeline and the same six passes written explicitly in order. Both outputs
    contain fit schema version 2, verification schema version 1, and the same
-   final Udon storage report. The production `vrccl` driver remains unconnected.
+   final Udon storage report.
 
-   The remaining Step 6 work is the narrow production wiring commit after the
-   unrelated dirty driver work is resolved: link `vrccl` with
-   `VRCHostStoragePipeline`, include the public builder header, and replace its
-   existing fixed-release plus scalar-lowering tail with one builder call while
-   retaining the async-only two-pass prefix. Production integration must prove
-   both synchronous and async-command artifacts contain mutually consistent
-   fit, verification, and final storage reports. Fresh production generation,
-   MNIST, and TinyLlama remain mandatory acceptance gates.
+   **Production wiring completed (2026-11-16):** `vrccl` now links
+   `VRCHostStoragePipeline` and replaces its former fixed-release plus scalar-
+   lowering tail with the common builder. The async path retains its driver-
+   owned `LowerHostToUdonHL` and `SubstituteRuntimeIntrinsics` prefix; sync and
+   async-command artifacts therefore converge on the same six-pass finalization
+   tail after binding and final reserve installation.
+
+   Final-bound static tensor operands need not retain a traceable
+   `StaticBufferOp`. Exposure continues to take the expected resource identity
+   from the verified binding snapshot, and accepts binder-stamped compatibility
+   identity only as corroborating bound provenance. Direct SSA provenance and
+   compatibility identity, when present, must each agree with the snapshot;
+   neither may silently replace it. Focused generic coverage includes opaque
+   bound operands plus missing and contradictory provenance failures.
+
+   The CMake consumer integration now exercises the finalization helper on a
+   synchronous Unity artifact and on the existing async-command artifact set.
+   Generated `host.udonasm.mlir` files contain fit schema version 2,
+   verification schema version 1, and a final storage report. The integration
+   compares all seven fit-report final address/data/extern/limit/capacity/
+   reserve/reduction totals with verification, also compares attempt count and
+   requested savings, fixes `address_limit + reserve == 512`, and checks final
+   data/capacity/reserve totals plus the actual unique extern set. This is the
+   complete production three-report consistency oracle.
+
+   Step 6 implementation, verification, production connection, and sync/async
+   artifact integration are complete. The only remaining end-to-end acceptance
+   is fresh real TinyLlama artifact generation, exact final address/capacity
+   confirmation, generated U# prefill and decode, and oracle comparison of
+   logits and present K/V outputs.
 7. Remove the superseded per-feature integer literal policies only after the
    general backend-use path covers them. This includes
    `unity_buffer_id_rematerialization`, raw-address-cache, spill-index-cache,

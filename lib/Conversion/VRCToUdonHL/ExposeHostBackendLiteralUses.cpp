@@ -5,6 +5,7 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include <cstdint>
+#include <optional>
 
 using namespace mlir;
 
@@ -33,8 +34,7 @@ struct DispatchPlan {
   SmallVector<StaticIndexPlan> indices;
 };
 
-FailureOr<int32_t> traceStaticResourceId(::vrc::vrc::DispatchOp dispatch,
-                                         Value resource) {
+std::optional<int32_t> traceStaticResourceId(Value resource) {
   llvm::DenseSet<Value> visited;
   while (visited.insert(resource).second) {
     if (auto buffer = resource.getDefiningOp<::vrc::vrc::StaticBufferOp>())
@@ -44,8 +44,7 @@ FailureOr<int32_t> traceStaticResourceId(::vrc::vrc::DispatchOp dispatch,
       break;
     resource = cast.getInputs().front();
   }
-  return dispatch.emitError(
-      "static tensor snapshot does not reference a static buffer");
+  return std::nullopt;
 }
 
 LogicalResult validateGeneratedRepresentation(DispatchPlan &plan) {
@@ -102,9 +101,12 @@ FailureOr<DispatchPlan> planDispatch(::vrc::vrc::DispatchOp dispatch) {
   auto kernelId = snapshot.getAs<IntegerAttr>("kernel_id");
   auto resources = snapshot.getAs<ArrayAttr>("resources");
   auto scalars = snapshot.getAs<ArrayAttr>("scalars");
+  auto compatibility =
+      dispatch->getAttrOfType<ArrayAttr>("vrc.unity_static_tensor_ids");
   if (!version || version.getInt() != 1 || !kernelId ||
       kernelId != dispatch.getKernelIdAttr() || !resources || !scalars ||
-      resources.size() != dispatch.getResources().size())
+      resources.size() != dispatch.getResources().size() ||
+      (compatibility && compatibility.size() != resources.size()))
     return dispatch.emitError("invalid static kernel binding snapshot");
 
   llvm::DenseSet<int32_t> claimed;
@@ -126,18 +128,35 @@ FailureOr<DispatchPlan> planDispatch(::vrc::vrc::DispatchOp dispatch) {
         access != dispatch.getResourceAccesses()[position.getInt()] ||
         !claimed.insert(static_cast<int32_t>(position.getInt())).second)
       return dispatch.emitError("invalid resource in static kernel snapshot");
-    if (kind != "static_tensor")
+    IntegerAttr compatibleId;
+    if (compatibility) {
+      compatibleId = dyn_cast<IntegerAttr>(compatibility[position.getInt()]);
+      if (!compatibleId || !compatibleId.getType().isInteger(32) ||
+          compatibleId.getInt() < -1)
+        return dispatch.emitError(
+            "invalid bound static tensor compatibility identity");
+    }
+    if (kind != "static_tensor") {
+      if (compatibleId && compatibleId.getInt() != -1)
+        return dispatch.emitError(
+            "non-static resource has a bound static tensor identity");
       continue;
+    }
     if (access != "read")
       return dispatch.emitError("static tensor dispatch resource must be read");
-    auto actual = traceStaticResourceId(
-        dispatch, dispatch.getResources()[position.getInt()]);
-    if (failed(actual) || *actual != resourceId.getInt()) {
-      if (succeeded(actual))
-        dispatch.emitError(
-            "static tensor snapshot resource id does not match its operand");
-      return failure();
-    }
+    auto traced =
+        traceStaticResourceId(dispatch.getResources()[position.getInt()]);
+    if (traced && *traced != resourceId.getInt())
+      return dispatch.emitError(
+          "static tensor snapshot resource id does not match its operand");
+    if (compatibleId && compatibleId.getInt() != resourceId.getInt())
+      return dispatch.emitError()
+             << "static tensor snapshot resource id " << resourceId.getInt()
+             << " does not match bound compatibility identity "
+             << compatibleId.getInt() << " at resource " << position.getInt();
+    if (!traced && !compatibleId)
+      return dispatch.emitError(
+          "static tensor snapshot has neither SSA nor bound provenance");
     plan.indices.push_back({static_cast<int32_t>(position.getInt()),
                             static_cast<int32_t>(resourceId.getInt())});
   }

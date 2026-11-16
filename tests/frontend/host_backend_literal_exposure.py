@@ -35,6 +35,36 @@ dynamic_dispatch = next(
 )
 assert "static_indices" not in dynamic_dispatch
 
+bound_source = source.replace(
+    "func.func @run(%dynamic: !vrc.buffer)",
+    "func.func @run(%dynamic: !vrc.buffer, %bound0: !vrc.buffer, "
+    "%bound1: !vrc.buffer)",
+    1,
+).replace(
+    "%static0, %dynamic, %static1", "%bound0, %dynamic, %bound1", 1
+)
+bound = run(bound_source)
+assert bound.count('vrc.host_literal_role = "static_resource_index"') == 2
+assert "static_indices(%c4_i32, %c9_i32)" in bound
+run(
+    bound_source.replace(
+        ", vrc.unity_static_tensor_ids = [4 : i32, -1 : i32, 9 : i32]",
+        "",
+        1,
+    ),
+    success=False,
+    diagnostic="neither SSA nor bound provenance",
+)
+run(
+    source.replace(
+        "vrc.unity_static_tensor_ids = [4 : i32, -1 : i32, 9 : i32]",
+        "vrc.unity_static_tensor_ids = [5 : i32, -1 : i32, 9 : i32]",
+        1,
+    ),
+    success=False,
+    diagnostic="does not match bound compatibility identity",
+)
+
 discovered = subprocess.run(
     discover_command, input=source, text=True, capture_output=True, check=True
 ).stdout
