@@ -654,6 +654,12 @@ def run_unity_mcp_gate(
                     / "tests/onnx-q4-component/consumer/udoncl/onnx-q4-component/artifact"
                 ).resolve()
             ),
+            "UDONCL_ASSIGNED_RMS_COMPONENT_UNITY_BUNDLE": str(
+                (
+                    build
+                    / "tests/onnx-rms-component/consumer/udoncl/onnx-rms-component/artifact"
+                ).resolve()
+            ),
             "UNITY_MCP_STATUS_DIR": str(status_dir),
             "UNITY_MCP_TRANSPORT": "stdio",
             "GIT_CONFIG_COUNT": "1",
