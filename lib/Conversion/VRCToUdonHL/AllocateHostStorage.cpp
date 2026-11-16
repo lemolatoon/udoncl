@@ -680,6 +680,8 @@ public:
 
     HostStorageProblem problem;
     DenseMap<Value, HostStorageNodeId> directNodes;
+    DenseMap<Value, HostStorageAlternativeId> directAlternatives;
+    DenseMap<Value, uint64_t> directPriorities;
     SmallVector<Value> directValues;
     for (const auto &[value, ordinal] : analysis->ordinals)
       directValues.push_back(value);
@@ -692,13 +694,23 @@ public:
       if (stableId == analysis->valueIds.end() ||
           physicalType == analysis->storageKeys.end())
         return module.emitError("Host direct value lacks allocation identity");
-      auto node = problem.addNode(
-          "direct:" + stableId->second, physicalType->second,
-          analysis->ordinals.lookup(value), HostStorageDomain::Writable,
-          HostStorageConstraint::DirectOnly);
+      uint64_t priority = 1;
+      for (OpOperand &use : value.getUses())
+        if (priority != std::numeric_limits<uint64_t>::max())
+          ++priority;
+      auto node =
+          problem.addRequest("direct:" + stableId->second, physicalType->second,
+                             analysis->ordinals.lookup(value), priority);
       if (!node)
         return module.emitError("duplicate Host direct allocation identity");
+      auto alternative = problem.addAlternative(
+          *node, "direct", HostStoragePlacementKind::Direct,
+          HostStorageDomain::Writable, true, 0, 0);
+      if (!alternative)
+        return module.emitError("invalid Host direct allocation alternative");
       directNodes.try_emplace(value, *node);
+      directAlternatives.try_emplace(value, *alternative);
+      directPriorities.try_emplace(value, priority);
     }
     for (Value value : directValues)
       for (Value conflict : analysis->interference.lookup(value)) {
@@ -966,6 +978,8 @@ public:
       return module.emitError("Host scratch instance has no consumer group");
 
     HostStorageSolution solution = solveHostStorageProblem(problem);
+    if (!solution.success)
+      return module.emitError("Host writable allocation has no legal solution");
     SmallVector<Attribute> directAllocations;
     for (Value value : directValues) {
       HostStorageNodeId node = directNodes.lookup(value);
@@ -976,6 +990,13 @@ public:
                  builder.getStringAttr(analysis->storageKeys.lookup(value)));
       fields.set("storage_domain", builder.getStringAttr("writable"));
       fields.set("allocation", builder.getStringAttr("direct_color_candidate"));
+      fields.set("priority",
+                 builder.getI64IntegerAttr(directPriorities.lookup(value)));
+      fields.set("selected_alternative", builder.getStringAttr("direct"));
+      if (solution.getSelectedAlternative(node) !=
+          directAlternatives.lookup(value))
+        return module.emitError(
+            "Host direct allocation selected a wrong alternative");
       fields.set("color", builder.getI32IntegerAttr(solution.getColor(node)));
       directAllocations.push_back(builder.getDictionaryAttr(fields));
     }

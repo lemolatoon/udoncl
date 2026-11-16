@@ -312,6 +312,12 @@ assert all('storage_domain = "writable"' in entry for entry in scratch_entries)
 assert all(
     'allocation = "direct_color_candidate"' in entry for entry in direct_entries
 )
+assert all('priority = ' in entry for entry in direct_entries)
+assert all('selected_alternative = "direct"' in entry for entry in direct_entries)
+assert all(
+    int(re.search(r"priority = (\d+) : i64", entry).group(1)) >= 1
+    for entry in direct_entries
+)
 assert not any(
     'function:external_passthrough' in entry for entry in direct_entries
 )
