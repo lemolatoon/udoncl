@@ -596,6 +596,12 @@ def run_unity_mcp_gate(
                 (output / "lowering/continuation.uasm").resolve()
             ),
             "UDONCL_UNITY_LIBRARY_ARTIFACT": str(unity_library),
+            "UDONCL_UNITY_TOKENIZER_ARTIFACT": str(
+                (
+                    build
+                    / "tests/cmake-package/consumer/udoncl/hello-tokenizer-unity-library/artifact"
+                ).resolve()
+            ),
             "UDONCL_PUBLIC_MNIST_UNITY_BUNDLE": str(
                 (
                     mnist_artifact
@@ -618,6 +624,27 @@ def run_unity_mcp_gate(
             ),
             "UDONCL_ONNX_AOT_UASM": str(
                 (output / "onnx-aot/generic-host.uasm").resolve()
+            ),
+            "UDONCL_ONNX_ARENA_UNITY_BUNDLE": str(
+                (output / "onnx-aot/unity-arena-add-model-bundle").resolve()
+            ),
+            "UDONCL_ONNX_MNIST_UNITY_BUNDLE": str(
+                (output / "onnx-aot/unity-mnist-model-bundle").resolve()
+            ),
+            "UDONCL_ONNX_MNIST_INPUT": str(
+                (output / "onnx-aot/unity-mnist-input.bytes").resolve()
+            ),
+            "UDONCL_ONNX_MNIST_REFERENCE": str(
+                (output / "onnx-aot/unity-mnist-reference.bytes").resolve()
+            ),
+            "UDONCL_ONNX_RL_UNITY_BUNDLE": str(
+                (output / "onnx-aot/unity-rl-policy-model-bundle").resolve()
+            ),
+            "UDONCL_ONNX_SGEMM_SHADER": str(
+                (
+                    build
+                    / "tests/udondnn-device/udonblas-arena-sgemm-bundle/kernels/kernel_221.shader"
+                ).resolve()
             ),
             "UDONCL_ONNX_TILED_AOT_UASM": str(
                 (output / "onnx-aot/tiled-gemm-host.uasm").resolve()

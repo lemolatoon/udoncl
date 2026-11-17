@@ -167,6 +167,12 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             Assert.That(maximumError, Is.LessThan(1.0e-6f));
         }
 
+        [OneTimeTearDown]
+        public void RemoveGeneratedUnityAssets()
+        {
+            AssignedQ4ComponentLifecycleTests.RemoveGeneratedUnityAssets(GeneratedRoot);
+        }
+
         private static float[] Input()
         {
             float[] values = new float[Sequence * Heads * Width];

@@ -181,6 +181,31 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             Assert.That(maximumError, Is.LessThan(0.005f));
         }
 
+        [OneTimeTearDown]
+        public void RemoveGeneratedUnityAssets()
+        {
+            RemoveGeneratedUnityAssets(GeneratedRoot);
+        }
+
+        internal static void RemoveGeneratedUnityAssets(string generatedRoot)
+        {
+            RenderTexture.active = null;
+            string programPath = generatedRoot + "/Programs/host_program.asset";
+            string programGuid = AssetDatabase.AssetPathToGUID(programPath);
+            AssetDatabase.DeleteAsset(generatedRoot);
+            string serializedProgramPath = string.IsNullOrEmpty(programGuid)
+                ? null
+                : "Assets/SerializedUdonPrograms/" + programGuid + ".asset";
+            if (serializedProgramPath != null)
+                AssetDatabase.DeleteAsset(serializedProgramPath);
+            AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+            Assert.IsNull(AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(generatedRoot));
+            if (serializedProgramPath != null)
+                Assert.IsNull(
+                    AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(serializedProgramPath)
+                );
+        }
+
         private static float[] Input()
         {
             float[] values = new float[M * K];
