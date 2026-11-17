@@ -31,9 +31,17 @@ def PlanONNXHostGraphPass : Pass<"udoncl-plan-onnx-host-graph", "mlir::ModuleOp"
   let summary = "Plan ONNX Host storage and backend selection before materialization";
   let dependentDialects = ["mlir::arith::ArithDialect", "mlir::func::FuncDialect"];
 }
+def MaterializeONNXHostGlobalsPass : Pass<"udoncl-materialize-onnx-host-globals", "mlir::ModuleOp"> {
+  let summary = "Materialize planned ONNX Host global storage without consuming the source graph";
+  let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "mlir::LLVM::LLVMDialect"];
+}
 def FinalizeONNXHostPass : Pass<"udoncl-finalize-onnx-host", "mlir::ModuleOp"> {
   let summary = "Lower portable ONNX library calls to the Udon Host ABI and session exports";
   let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "mlir::arith::ArithDialect", "mlir::cf::ControlFlowDialect", "mlir::func::FuncDialect", "mlir::LLVM::LLVMDialect"];
+}
+def CleanupONNXHostSourcePass : Pass<"udoncl-cleanup-onnx-host-source", "mlir::ModuleOp"> {
+  let summary = "Erase finalized ONNX Host source symbols while preserving unrelated symbols";
+  let dependentDialects = ["mlir::func::FuncDialect"];
 }
 def EmitONNXHostMetadataPass : Pass<"udoncl-emit-onnx-host-metadata", "mlir::ModuleOp"> {
   let summary = "Write compact compiler-owned ONNX Host artifact metadata";

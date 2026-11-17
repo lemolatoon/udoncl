@@ -51,7 +51,9 @@ def canonicalize(
                 '--udoncl-lower-onnx-to-host',
                 '--udoncl-validate-onnx-host-graph',
                 '--udoncl-plan-onnx-host-graph',
+                '--udoncl-materialize-onnx-host-globals',
                 '--udoncl-finalize-onnx-host',
+                '--udoncl-cleanup-onnx-host-source',
                 '--canonicalize',
                 '--udoncl-emit-onnx-host-metadata=' +
                 f'output={temporary_metadata}',

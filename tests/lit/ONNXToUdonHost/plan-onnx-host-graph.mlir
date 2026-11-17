@@ -23,4 +23,5 @@ func.func @main_graph(
 // CHECK-SAME: mutable_buffer_bytes = array<i64:
 // CHECK-SAME: mutable_handle_capacity =
 // CHECK-SAME: operator_scratch_bytes = 0 : i64
+// CHECK-SAME: owned_device_buffers = array<i64
 // CHECK: func.func @main_graph

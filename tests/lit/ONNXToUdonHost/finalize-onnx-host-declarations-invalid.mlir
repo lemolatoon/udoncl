@@ -1,4 +1,4 @@
-// RUN: not %vrc-opt --udoncl-validate-onnx-host-graph --udoncl-plan-onnx-host-graph --udoncl-finalize-onnx-host --verify-diagnostics %s
+// RUN: not %vrc-opt --udoncl-validate-onnx-host-graph --udoncl-plan-onnx-host-graph --udoncl-materialize-onnx-host-globals --udoncl-finalize-onnx-host --verify-diagnostics %s
 
 // expected-error @below {{ONNX Host runtime declaration clEnqueueMarkerWithWaitList has type (!udonhl.ptr<0>, i64, !udonhl.ptr<0>, !udonhl.ptr<0>) -> i32; expected (!udonhl.ptr<0>, i32, !udonhl.ptr<0>, !udonhl.ptr<0>) -> i32}}
 func.func private @clEnqueueMarkerWithWaitList(

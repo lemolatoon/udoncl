@@ -77,12 +77,21 @@ class CompileONNXMLIRTests(unittest.TestCase):
                        '--udoncl-lower-onnx-to-host',
                        '--udoncl-validate-onnx-host-graph',
                        '--udoncl-plan-onnx-host-graph',
-                       '--udoncl-finalize-onnx-host', '--emit-bytecode'):
+                       '--udoncl-materialize-onnx-host-globals',
+                       '--udoncl-finalize-onnx-host',
+                       '--udoncl-cleanup-onnx-host-source',
+                       '--emit-bytecode'):
             self.assertIn(option, command)
         self.assertLess(command.index('--udoncl-validate-onnx-host-graph'),
                         command.index('--udoncl-plan-onnx-host-graph'))
         self.assertLess(command.index('--udoncl-plan-onnx-host-graph'),
+                        command.index(
+                            '--udoncl-materialize-onnx-host-globals'))
+        self.assertLess(
+            command.index('--udoncl-materialize-onnx-host-globals'),
                         command.index('--udoncl-finalize-onnx-host'))
+        self.assertLess(command.index('--udoncl-finalize-onnx-host'),
+                        command.index('--udoncl-cleanup-onnx-host-source'))
         self.assertEqual(self.output.read_bytes(), b'host bytecode')
 
     def test_host_lowering_moves_static_payloads_transactionally(self):

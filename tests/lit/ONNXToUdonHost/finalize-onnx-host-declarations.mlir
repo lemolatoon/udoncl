@@ -1,4 +1,4 @@
-// RUN: %vrc-opt --udoncl-validate-onnx-host-graph --udoncl-plan-onnx-host-graph --udoncl-finalize-onnx-host %s | %FileCheck %s
+// RUN: %vrc-opt --udoncl-validate-onnx-host-graph --udoncl-plan-onnx-host-graph --udoncl-materialize-onnx-host-globals --udoncl-finalize-onnx-host --udoncl-cleanup-onnx-host-source %s | %FileCheck %s
 
 func.func private @clEnqueueMarkerWithWaitList(
     !udonhl.ptr<0>, i32, !udonhl.ptr<0>, !udonhl.ptr<0>) -> i32

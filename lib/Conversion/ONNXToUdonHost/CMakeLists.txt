@@ -1,5 +1,7 @@
 add_mlir_library(VRCONNXToUdonHost DISABLE_INSTALL
+  CleanupONNXHostSource.cpp
   FinalizeONNXHost.cpp
+  MaterializeONNXHostGlobals.cpp
   ONNXHostGraph.cpp
   ONNXHostPlan.cpp
   ONNXHostSymbols.cpp

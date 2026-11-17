@@ -44,6 +44,8 @@ struct PlanONNXHostGraphPass
       }
     }
     SmallVector<unsigned> storage = deviceStorage(*graph);
+    SmallVector<unsigned> owned =
+        ownedDeviceBuffers(*graph, deviceGraph, storage);
     SmallVector<int64_t> bufferBytes = mutableBufferBytes(*graph, deviceGraph);
     int64_t handleCapacity = bufferBytes.size();
     constexpr int64_t maximumMutableHandleCapacity = 512;
@@ -61,6 +63,10 @@ struct PlanONNXHostGraphPass
     storageIds.reserve(storage.size());
     for (unsigned value : storage)
       storageIds.push_back(value);
+    SmallVector<int64_t> ownedIds;
+    ownedIds.reserve(owned.size());
+    for (unsigned value : owned)
+      ownedIds.push_back(value);
     module->setAttr(
         hostGraphPlanAttr,
         builder.getDictionaryAttr({
@@ -68,6 +74,8 @@ struct PlanONNXHostGraphPass
                                  builder.getBoolAttr(deviceGraph)),
             builder.getNamedAttr("device_storage",
                                  builder.getDenseI64ArrayAttr(storageIds)),
+            builder.getNamedAttr("owned_device_buffers",
+                                 builder.getDenseI64ArrayAttr(ownedIds)),
             builder.getNamedAttr(
                 "operator_scratch_bytes",
                 builder.getI64IntegerAttr(operatorScratchBytes(*graph))),

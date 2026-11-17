@@ -1,6 +1,9 @@
 // RUN: not %vrc-opt --udoncl-finalize-onnx-host %s 2>&1 | %FileCheck %s
 
-module attributes {udoncl.onnx_host_graph_validated} {
+module attributes {
+  udoncl.onnx_host_globals_materialized,
+  udoncl.onnx_host_graph_validated
+} {
   func.func @main_graph(%input: tensor<1xf32>) -> tensor<1xf32> {
     return %input : tensor<1xf32>
   }

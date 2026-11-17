@@ -1,4 +1,6 @@
+#include "ONNXHostABI.h"
 #include "ONNXHostGraph.h"
+#include "ONNXHostMaterialization.h"
 #include "ONNXHostPlan.h"
 #include "ONNXHostSymbols.h"
 #include "VRC/Conversion/Passes.h"
@@ -27,9 +29,49 @@ namespace vrc {
 namespace {
 namespace host = ::vrc::udonhl;
 
-constexpr StringLiteral operatorScratchSymbol = "__udon_onnx_operator_scratch";
-constexpr StringLiteral operatorScratchOwnedSymbol =
-    "__udon_onnx_operator_scratch_owned";
+constexpr StringRef operatorScratchSymbol = onnxHostOperatorScratchSymbol;
+constexpr StringRef operatorScratchOwnedSymbol =
+    onnxHostOperatorScratchOwnedSymbol;
+constexpr StringRef modelStorageSymbol = onnxHostModelStorageSymbol;
+constexpr StringRef inputMetadataSymbol = onnxHostInputMetadataSymbol;
+constexpr StringRef outputMetadataSymbol = onnxHostOutputMetadataSymbol;
+constexpr StringRef modelNameSymbol = onnxHostModelNameSymbol;
+constexpr StringRef bindingStateSymbol = onnxHostBindingStateSymbol;
+constexpr StringRef bindingInputSymbol = onnxHostBindingInputSymbol;
+constexpr StringRef bindingOutputSymbol = onnxHostBindingOutputSymbol;
+constexpr StringRef bindingEventSymbol = onnxHostBindingEventSymbol;
+constexpr StringRef bindingIoHandlesSymbol = onnxHostBindingIoHandlesSymbol;
+constexpr StringRef sequenceStateOwnedSymbol = onnxHostSequenceStateOwnedSymbol;
+constexpr StringRef sequenceStatePendingSymbol =
+    onnxHostSequenceStatePendingSymbol;
+constexpr StringRef sequenceStatePoisonedSymbol =
+    onnxHostSequenceStatePoisonedSymbol;
+constexpr StringRef sequenceStateZeroSymbol = onnxHostSequenceStateZeroSymbol;
+constexpr StringRef hasRunSymbol = onnxHostHasRunSymbol;
+constexpr int32_t bindingStateStorageBytes = onnxHostBindingStateStorageBytes;
+constexpr int32_t bindingTensorStorageBytes = onnxHostBindingTensorStorageBytes;
+constexpr int32_t bindingBufferHandleBytes = onnxHostBindingBufferHandleBytes;
+constexpr int32_t maximumTensorRank = onnxHostMaximumTensorRank;
+
+std::string ioNameSymbol(bool output, unsigned index) {
+  return onnxHostIoNameSymbol(output, index);
+}
+
+std::string ioDimensionsSymbol(bool output, unsigned index) {
+  return onnxHostIoDimensionsSymbol(output, index);
+}
+
+std::string inputBindingSymbol(unsigned index) {
+  return onnxHostInputBindingSymbol(index);
+}
+
+std::string deviceBufferSymbol(unsigned index) {
+  return onnxHostDeviceBufferSymbol(index);
+}
+
+std::string deviceBufferOwnedSymbol(unsigned index) {
+  return onnxHostDeviceBufferOwnedSymbol(index);
+}
 
 unsigned elementByteSize(Type type) {
   if (type.isInteger(1) || type.isInteger(8))
@@ -177,256 +219,6 @@ void attachBindingMetadata(ModuleOp module, const GraphRecord &graph) {
           builder.getNamedAttr("physical", physical),
       }));
 }
-
-DenseI8ArrayAttr rawInitializer(DenseElementsAttr dense) {
-  SmallVector<int8_t> bytes;
-  Type element = cast<ShapedType>(dense.getType()).getElementType();
-  unsigned width = elementByteSize(element);
-  bytes.reserve(dense.getNumElements() * width);
-  auto append = [&](const APInt &bits) {
-    for (unsigned index = 0; index != width; ++index)
-      bytes.push_back(
-          static_cast<int8_t>(bits.extractBitsAsZExtValue(8, index * 8)));
-  };
-  if (isa<FloatType>(element))
-    for (APFloat value : dense.getValues<APFloat>())
-      append(value.bitcastToAPInt());
-  else
-    for (APInt value : dense.getValues<APInt>())
-      append(value);
-  return DenseI8ArrayAttr::get(dense.getContext(), bytes);
-}
-
-void createGlobal(ModuleOp module, const TensorRecord &tensor) {
-  OpBuilder builder(module.getBodyRegion());
-  builder.setInsertionPointToEnd(module.getBody());
-  OperationState state(module.getLoc(), host::GlobalOp::getOperationName());
-  state.addAttribute("sym_name", builder.getStringAttr(tensor.symbol));
-  state.addAttribute("storage_type",
-                     TypeAttr::get(LLVM::LLVMArrayType::get(
-                         tensor.type.getElementType(),
-                         std::max<int64_t>(tensor.type.getNumElements(), 1))));
-  if (tensor.initialValue) {
-    state.addAttribute("initial_value", rawInitializer(tensor.initialValue));
-    state.addAttribute("constant", builder.getUnitAttr());
-  } else
-    state.addAttribute(
-        "initial_value",
-        DenseI8ArrayAttr::get(
-            module.getContext(),
-            SmallVector<int8_t>(
-                std::max<int64_t>(tensor.type.getNumElements(), 1) *
-                    elementByteSize(tensor.type.getElementType()),
-                0)));
-  state.addAttribute("linkage", builder.getStringAttr("internal"));
-  state.addAttribute("address_space", builder.getI32IntegerAttr(0));
-  state.addAttribute("alignment", builder.getI64IntegerAttr(elementByteSize(
-                                      tensor.type.getElementType())));
-  builder.create(state);
-}
-
-void createI32Global(ModuleOp module, StringRef symbol) {
-  OpBuilder builder(module.getBodyRegion());
-  builder.setInsertionPointToEnd(module.getBody());
-  OperationState state(module.getLoc(), host::GlobalOp::getOperationName());
-  state.addAttribute("sym_name", builder.getStringAttr(symbol));
-  state.addAttribute("storage_type", TypeAttr::get(builder.getI32Type()));
-  state.addAttribute("initial_value", builder.getI32IntegerAttr(0));
-  state.addAttribute("linkage", builder.getStringAttr("internal"));
-  state.addAttribute("address_space", builder.getI32IntegerAttr(0));
-  state.addAttribute("alignment", builder.getI64IntegerAttr(4));
-  builder.create(state);
-}
-
-void createPointerGlobal(ModuleOp module, StringRef symbol) {
-  OpBuilder builder(module.getBodyRegion());
-  builder.setInsertionPointToEnd(module.getBody());
-  OperationState state(module.getLoc(), host::GlobalOp::getOperationName());
-  state.addAttribute("sym_name", builder.getStringAttr(symbol));
-  state.addAttribute("storage_type",
-                     TypeAttr::get(host::PtrType::get(module.getContext(), 0)));
-  state.addAttribute("initial_value", builder.getI32IntegerAttr(0));
-  state.addAttribute("linkage", builder.getStringAttr("internal"));
-  state.addAttribute("address_space", builder.getI32IntegerAttr(0));
-  state.addAttribute("alignment", builder.getI64IntegerAttr(4));
-  builder.create(state);
-}
-
-Operation *createByteGlobal(ModuleOp module, StringRef symbol,
-                            ArrayRef<int8_t> bytes, int64_t alignment = 1) {
-  OpBuilder builder(module.getBodyRegion());
-  builder.setInsertionPointToEnd(module.getBody());
-  OperationState state(module.getLoc(), host::GlobalOp::getOperationName());
-  state.addAttribute("sym_name", builder.getStringAttr(symbol));
-  state.addAttribute("storage_type", TypeAttr::get(LLVM::LLVMArrayType::get(
-                                         builder.getI8Type(),
-                                         std::max<size_t>(bytes.size(), 1))));
-  SmallVector<int8_t> initial(bytes);
-  if (initial.empty())
-    initial.push_back(0);
-  state.addAttribute("initial_value",
-                     DenseI8ArrayAttr::get(module.getContext(), initial));
-  state.addAttribute("linkage", builder.getStringAttr("internal"));
-  state.addAttribute("address_space", builder.getI32IntegerAttr(0));
-  state.addAttribute("alignment", builder.getI64IntegerAttr(alignment));
-  return builder.create(state);
-}
-
-Operation *createZeroGlobal(ModuleOp module, StringRef symbol, size_t bytes,
-                            int64_t alignment = 8) {
-  return createByteGlobal(module, symbol, SmallVector<int8_t>(bytes, 0),
-                          alignment);
-}
-
-void createStringGlobal(ModuleOp module, StringRef symbol, StringRef value) {
-  SmallVector<int8_t> bytes;
-  bytes.reserve(value.size() + 1);
-  for (char character : value)
-    bytes.push_back(static_cast<int8_t>(character));
-  bytes.push_back(0);
-  createByteGlobal(module, symbol, bytes);
-}
-
-void createI64ArrayGlobal(ModuleOp module, StringRef symbol,
-                          ArrayRef<int64_t> values) {
-  SmallVector<int8_t> bytes;
-  bytes.reserve(values.size() * 8);
-  for (int64_t value : values) {
-    uint64_t bits = static_cast<uint64_t>(value);
-    for (unsigned byte = 0; byte != 8; ++byte)
-      bytes.push_back(static_cast<int8_t>((bits >> (byte * 8)) & 0xffu));
-  }
-  createByteGlobal(module, symbol, bytes, 8);
-}
-
-constexpr StringLiteral modelStorageSymbol = "__udon_onnx_model_storage";
-constexpr StringLiteral inputMetadataSymbol = "__udon_onnx_input_metadata";
-constexpr StringLiteral outputMetadataSymbol = "__udon_onnx_output_metadata";
-constexpr StringLiteral modelNameSymbol = "__udon_onnx_model_name";
-constexpr StringLiteral bindingStateSymbol = "__udon_onnx_binding_state";
-constexpr StringLiteral bindingInputSymbol = "__udon_onnx_binding_inputs";
-constexpr StringLiteral bindingOutputSymbol = "__udon_onnx_binding_outputs";
-constexpr StringLiteral bindingEventSymbol = "__udon_onnx_binding_event";
-constexpr StringLiteral bindingIoHandlesSymbol = "__udon_onnx_io_handles";
-constexpr StringLiteral sequenceStateOwnedSymbol =
-    "__udon_onnx_sequence_state_owned";
-constexpr StringLiteral sequenceStatePendingSymbol =
-    "__udon_onnx_sequence_state_pending";
-constexpr StringLiteral sequenceStatePoisonedSymbol =
-    "__udon_onnx_sequence_state_poisoned";
-constexpr StringLiteral sequenceStateZeroSymbol =
-    "__udon_onnx_sequence_state_zero";
-constexpr int32_t metadataStorageBytes = 64;
-constexpr int32_t modelStorageBytes = 64;
-constexpr int32_t bindingStateStorageBytes = 256;
-constexpr int32_t bindingTensorStorageBytes = 128;
-constexpr int32_t bindingBufferHandleBytes = 8;
-constexpr int32_t maximumTensorRank = 8;
-
-std::string ioNameSymbol(bool output, unsigned index) {
-  return (Twine("__udon_onnx_") + (output ? "output" : "input") + "_name_" +
-          Twine(index))
-      .str();
-}
-
-std::string ioDimensionsSymbol(bool output, unsigned index) {
-  return (Twine("__udon_onnx_") + (output ? "output" : "input") +
-          "_dimensions_" + Twine(index))
-      .str();
-}
-
-void createModelMetadataGlobals(ModuleOp module, const GraphRecord &graph) {
-  Builder builder(module.getContext());
-  auto setBufferViewLayout = [&](Operation *global, int32_t count,
-                                 int32_t stride, ArrayRef<int32_t> offsets) {
-    global->setAttr(
-        "vrc.buffer_view_layout",
-        builder.getDictionaryAttr({
-            builder.getNamedAttr("count", builder.getI32IntegerAttr(count)),
-            builder.getNamedAttr("offsets",
-                                 builder.getDenseI32ArrayAttr(offsets)),
-            builder.getNamedAttr("schema_version",
-                                 builder.getI32IntegerAttr(1)),
-            builder.getNamedAttr("stride_bytes",
-                                 builder.getI32IntegerAttr(stride)),
-        }));
-  };
-  setBufferViewLayout(
-      createZeroGlobal(module, modelStorageSymbol, modelStorageBytes), 0, 0,
-      {});
-  setBufferViewLayout(
-      createZeroGlobal(module, inputMetadataSymbol,
-                       std::max<size_t>(graph.inputs.size(), 1) *
-                           metadataStorageBytes),
-      0, 0, {});
-  setBufferViewLayout(
-      createZeroGlobal(module, outputMetadataSymbol,
-                       std::max<size_t>(graph.outputs.size(), 1) *
-                           metadataStorageBytes),
-      0, 0, {});
-  createStringGlobal(module, modelNameSymbol, "model");
-  setBufferViewLayout(
-      createZeroGlobal(module, bindingStateSymbol, bindingStateStorageBytes), 0,
-      0, {});
-  setBufferViewLayout(
-      createZeroGlobal(module, bindingInputSymbol,
-                       std::max<size_t>(graph.inputs.size(), 1) *
-                           bindingTensorStorageBytes),
-      static_cast<int32_t>(graph.inputs.size()),
-      UDONCL_UDON_ABI_ONNX_TENSOR_BYTES, {0});
-  setBufferViewLayout(
-      createZeroGlobal(module, bindingOutputSymbol,
-                       std::max<size_t>(graph.outputs.size(), 1) *
-                           bindingTensorStorageBytes),
-      static_cast<int32_t>(graph.outputs.size()),
-      UDONCL_UDON_ABI_ONNX_TENSOR_BYTES, {0});
-  createZeroGlobal(
-      module, bindingIoHandlesSymbol,
-      std::max<size_t>(graph.inputs.size() + graph.outputs.size(), 1) *
-          bindingBufferHandleBytes,
-      4);
-  createI32Global(module, bindingEventSymbol);
-  if (!graph.sequenceStates.empty()) {
-    createI32Global(module, sequenceStateOwnedSymbol);
-    createI32Global(module, sequenceStatePendingSymbol);
-    createI32Global(module, sequenceStatePoisonedSymbol);
-    size_t zeroBytes = 1;
-    for (const SequenceStateRecord &sequence : graph.sequenceStates) {
-      const TensorRecord &input =
-          graph.tensors[graph.inputs[sequence.inputIndex]];
-      zeroBytes = std::max<size_t>(
-          zeroBytes, input.type.getNumElements() *
-                         elementByteSize(input.type.getElementType()));
-    }
-    createZeroGlobal(module, sequenceStateZeroSymbol, zeroBytes);
-  }
-  for (auto [index, tensorIndex] : llvm::enumerate(graph.inputs)) {
-    const TensorRecord &tensor = graph.tensors[tensorIndex];
-    createStringGlobal(module, ioNameSymbol(false, index), tensor.name);
-    createI64ArrayGlobal(module, ioDimensionsSymbol(false, index),
-                         tensor.type.getShape());
-  }
-  for (auto [index, tensorIndex] : llvm::enumerate(graph.outputs)) {
-    const TensorRecord &tensor = graph.tensors[tensorIndex];
-    createStringGlobal(module, ioNameSymbol(true, index), tensor.name);
-    createI64ArrayGlobal(module, ioDimensionsSymbol(true, index),
-                         tensor.type.getShape());
-  }
-}
-
-std::string inputBindingSymbol(unsigned index) {
-  return ("__udon_onnx_input_binding_" + Twine(index)).str();
-}
-
-std::string deviceBufferSymbol(unsigned index) {
-  return ("__udon_onnx_device_buffer_" + Twine(index)).str();
-}
-
-std::string deviceBufferOwnedSymbol(unsigned index) {
-  return ("__udon_onnx_device_buffer_owned_" + Twine(index)).str();
-}
-
-constexpr StringLiteral hasRunSymbol = "__udon_onnx_has_run";
 
 Value addressOf(OpBuilder &builder, Location location, StringRef symbol) {
   OperationState state(location, host::AddressOfOp::getOperationName());
@@ -3815,6 +3607,17 @@ struct FinalizeONNXHostPass
     : impl::FinalizeONNXHostPassBase<FinalizeONNXHostPass> {
   void runOnOperation() override {
     ModuleOp module = getOperation();
+    if (module->hasAttr(onnxHostFinalizedAttr)) {
+      module.emitError("ONNX Host has already been finalized");
+      signalPassFailure();
+      return;
+    }
+    if (!module->hasAttr(onnxHostGlobalsMaterializedAttr)) {
+      module.emitError(
+          "ONNX Host finalization requires global materialization");
+      signalPassFailure();
+      return;
+    }
     if (!module->hasAttr(hostGraphValidatedAttr)) {
       module.emitError(
           "ONNX Host finalization requires the graph validation pass");
@@ -3837,50 +3640,7 @@ struct FinalizeONNXHostPass
       signalPassFailure();
       return;
     }
-    SmallVector<Operation *> preservedSymbols;
-    for (Operation &operation :
-         llvm::make_early_inc_range(module.getBody()->getOperations())) {
-      auto function = dyn_cast<func::FuncOp>(operation);
-      if (!function || !function.isExternal() ||
-          function.getSymName() == "main_graph" ||
-          function->hasAttr("udon.onnx.operation") ||
-          function->hasAttr("udon.onnx.provider") ||
-          function->hasAttr("udoncl.static_tensor"))
-        continue;
-      preservedSymbols.push_back(&operation);
-      operation.remove();
-    }
-    module.getBody()->getOperations().clear();
-    for (Operation *operation : preservedSymbols)
-      module.getBody()->getOperations().push_back(operation);
     bool deviceGraph = plan->deviceGraph;
-    if (!deviceGraph)
-      for (const TensorRecord &tensor : graph->tensors)
-        createGlobal(module, tensor);
-    createModelMetadataGlobals(module, *graph);
-    if (!deviceGraph) {
-      for (auto [inputIndex, tensorIndex] : llvm::enumerate(graph->inputs)) {
-        (void)tensorIndex;
-        createI32Global(module,
-                        inputBindingSymbol(static_cast<unsigned>(inputIndex)));
-      }
-      createI32Global(module, hasRunSymbol);
-    }
-    ArrayRef<unsigned> deviceStorageMap = plan->deviceStorage;
-    for (auto [tensorIndex, tensor] : llvm::enumerate(graph->tensors)) {
-      if (deviceGraph && deviceStorageMap[tensorIndex] == tensorIndex &&
-          tensor.staticResourceId < 0 &&
-          !llvm::is_contained(graph->inputs, tensorIndex) &&
-          (!llvm::is_contained(graph->outputs, tensorIndex) ||
-           needsQ4Surface(*graph, tensorIndex))) {
-        createPointerGlobal(module, deviceBufferSymbol(tensorIndex));
-        createI32Global(module, deviceBufferOwnedSymbol(tensorIndex));
-      }
-    }
-    if (deviceGraph && plan->operatorScratchBytes) {
-      createPointerGlobal(module, operatorScratchSymbol);
-      createI32Global(module, operatorScratchOwnedSymbol);
-    }
     Builder builder(module.getContext());
     if (!deviceGraph) {
       createWriteExport(module, *graph, builder.getF32Type(), "float");
@@ -3918,8 +3678,7 @@ struct FinalizeONNXHostPass
                     DenseI64ArrayAttr::get(module.getContext(), bufferBytes));
     module->setAttr("udoncl.onnx_lowering",
                     StringAttr::get(module.getContext(), "library-calls-v2"));
-    module->removeAttr(hostGraphValidatedAttr);
-    module->removeAttr(hostGraphPlanAttr);
+    module->setAttr(onnxHostFinalizedAttr, UnitAttr::get(module.getContext()));
   }
 };
 } // namespace

@@ -12,6 +12,7 @@ namespace vrc {
 struct ONNXHostPlan {
   bool deviceGraph;
   llvm::SmallVector<unsigned> deviceStorage;
+  llvm::SmallVector<unsigned> ownedDeviceBuffers;
   int64_t operatorScratchBytes;
   llvm::SmallVector<int64_t> mutableBufferBytes;
   int64_t mutableHandleCapacity;
@@ -97,6 +98,9 @@ int64_t deviceAllocationBytes(const GraphRecord &graph, unsigned tensorIndex);
 bool supportsDeviceNode(const GraphRecord &graph, const NodeRecord &node);
 bool supportsDeviceGraph(const GraphRecord &graph);
 llvm::SmallVector<unsigned> deviceStorage(const GraphRecord &graph);
+llvm::SmallVector<unsigned>
+ownedDeviceBuffers(const GraphRecord &graph, bool deviceGraph,
+                   llvm::ArrayRef<unsigned> storage);
 llvm::SmallVector<int64_t> mutableBufferBytes(const GraphRecord &graph,
                                               bool deviceGraph);
 mlir::FailureOr<HostPlanRecord> readHostPlan(mlir::ModuleOp module,

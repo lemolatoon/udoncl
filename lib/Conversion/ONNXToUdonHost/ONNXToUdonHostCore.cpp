@@ -1,4 +1,5 @@
 #include "ONNXToUdonHost.h"
+#include "ONNXHostMaterialization.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -75,6 +76,9 @@ LogicalResult lowerONNXToUdonHost(ModuleOp module) {
     if (op->getName().getStringRef().starts_with("onnx."))
       operations.push_back(op);
   });
+  for (Operation *op : operations)
+    if (auto function = op->getParentOfType<func::FuncOp>())
+      function->setAttr(onnxHostSourceAttr, UnitAttr::get(module.getContext()));
   for (Operation *op : operations) {
     StringRef name = op->getName().getStringRef();
     StringRef operation = name.drop_front(5);

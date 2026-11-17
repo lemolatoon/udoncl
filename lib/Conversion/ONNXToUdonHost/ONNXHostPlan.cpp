@@ -1,6 +1,7 @@
 #include "ONNXHostPlan.h"
 
 #include "mlir/IR/BuiltinOps.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 
 #include <algorithm>
@@ -794,12 +795,29 @@ SmallVector<int64_t> mutableBufferBytes(const GraphRecord &graph,
   return bytes;
 }
 
+SmallVector<unsigned> ownedDeviceBuffers(const GraphRecord &graph,
+                                         bool deviceGraph,
+                                         ArrayRef<unsigned> storage) {
+  SmallVector<unsigned> owned;
+  if (!deviceGraph)
+    return owned;
+  for (auto [tensorIndex, tensor] : llvm::enumerate(graph.tensors))
+    if (storage[tensorIndex] == tensorIndex && tensor.staticResourceId < 0 &&
+        !llvm::is_contained(graph.inputs, tensorIndex) &&
+        (!llvm::is_contained(graph.outputs, tensorIndex) ||
+         needsQ4Surface(graph, tensorIndex)))
+      owned.push_back(tensorIndex);
+  return owned;
+}
+
 FailureOr<HostPlanRecord> readHostPlan(ModuleOp module,
                                        const GraphRecord &graph) {
   auto plan = module->getAttrOfType<DictionaryAttr>(hostGraphPlanAttr);
   auto deviceGraph = plan ? plan.getAs<BoolAttr>("device_graph") : BoolAttr();
   auto storage = plan ? plan.getAs<DenseI64ArrayAttr>("device_storage")
                       : DenseI64ArrayAttr();
+  auto owned = plan ? plan.getAs<DenseI64ArrayAttr>("owned_device_buffers")
+                    : DenseI64ArrayAttr();
   auto scratch =
       plan ? plan.getAs<IntegerAttr>("operator_scratch_bytes") : IntegerAttr();
   auto bufferBytes = plan
@@ -807,21 +825,28 @@ FailureOr<HostPlanRecord> readHostPlan(ModuleOp module,
                          : DenseI64ArrayAttr();
   auto handleCapacity =
       plan ? plan.getAs<IntegerAttr>("mutable_handle_capacity") : IntegerAttr();
-  if (!deviceGraph || !storage || !scratch || !bufferBytes || !handleCapacity ||
-      storage.size() != graph.tensors.size() || scratch.getInt() < 0 ||
-      handleCapacity.getInt() <= 0 ||
+  if (!deviceGraph || !storage || !owned || !scratch || !bufferBytes ||
+      !handleCapacity || storage.size() != graph.tensors.size() ||
+      scratch.getInt() < 0 || handleCapacity.getInt() <= 0 ||
       static_cast<int64_t>(bufferBytes.size()) != handleCapacity.getInt())
     return module.emitError("ONNX Host graph plan is malformed");
-  HostPlanRecord result{deviceGraph.getValue(),
-                        {},
-                        scratch.getInt(),
-                        {},
-                        handleCapacity.getInt()};
+  HostPlanRecord result{deviceGraph.getValue(), {}, {},
+                        scratch.getInt(),       {}, handleCapacity.getInt()};
   result.deviceStorage.reserve(storage.size());
   for (int64_t value : storage.asArrayRef()) {
     if (value < 0 || value >= static_cast<int64_t>(graph.tensors.size()))
       return module.emitError("ONNX Host graph plan has invalid storage");
     result.deviceStorage.push_back(static_cast<unsigned>(value));
+  }
+  llvm::SmallDenseSet<unsigned> seenOwned;
+  for (int64_t value : owned.asArrayRef()) {
+    if (!result.deviceGraph || value < 0 ||
+        value >= static_cast<int64_t>(graph.tensors.size()) ||
+        result.deviceStorage[value] != static_cast<unsigned>(value) ||
+        !seenOwned.insert(static_cast<unsigned>(value)).second)
+      return module.emitError(
+          "ONNX Host graph plan has invalid owned device buffers");
+    result.ownedDeviceBuffers.push_back(static_cast<unsigned>(value));
   }
   for (int64_t value : bufferBytes.asArrayRef())
     result.mutableBufferBytes.push_back(value);

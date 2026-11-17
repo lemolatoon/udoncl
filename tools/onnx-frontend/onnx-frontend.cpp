@@ -33,7 +33,9 @@ int main(int argc, char **argv) {
   vrc::registerLowerONNXToUdonHostPass();
   vrc::registerValidateONNXHostGraphPass();
   vrc::registerPlanONNXHostGraphPass();
+  vrc::registerMaterializeONNXHostGlobalsPass();
   vrc::registerFinalizeONNXHostPass();
+  vrc::registerCleanupONNXHostSourcePass();
   vrc::registerEmitONNXHostMetadataPass();
   mlir::registerPass([] { return onnx_mlir::createShapeInferencePass(); });
   mlir::registerPass([] { return onnx_mlir::createConstPropONNXToONNXPass(); });
