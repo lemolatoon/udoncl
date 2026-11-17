@@ -1,5 +1,6 @@
 #include "ONNXHostGraph.h"
 #include "ONNXHostPlan.h"
+#include "ONNXHostSymbols.h"
 #include "VRC/Conversion/Passes.h"
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
 #include "udoncl/udon_abi_layout.h"
@@ -554,17 +555,6 @@ Value pointerAdd(OpBuilder &builder, Location location, Value pointer,
   return builder.create(state)->getResult(0);
 }
 
-func::FuncOp declaration(ModuleOp module, StringRef name, TypeRange arguments,
-                         TypeRange results) {
-  OpBuilder builder(module.getBodyRegion());
-  builder.setInsertionPointToEnd(module.getBody());
-  auto function = func::FuncOp::create(
-      builder, module.getLoc(), name,
-      FunctionType::get(module.getContext(), arguments, results));
-  function.setPrivate();
-  return function;
-}
-
 void attachDeviceGraphMetadata(ModuleOp module, const GraphRecord &graph,
                                bool deviceGraph) {
   Builder builder(module.getContext());
@@ -857,6 +847,7 @@ void createBindingExports(ModuleOp module, const GraphRecord &graph) {
 }
 
 LogicalResult createRunExport(ModuleOp module, const GraphRecord &graph) {
+  ONNXHostDeclarations declarations(module);
   OpBuilder builder(module.getBodyRegion());
   builder.setInsertionPointToEnd(module.getBody());
   auto i32 = builder.getI32Type();
@@ -1762,120 +1753,126 @@ LogicalResult createRunExport(ModuleOp module, const GraphRecord &graph) {
         addressOf(builder, module.getLoc(), hasRunSymbol));
   func::ReturnOp::create(builder, module.getLoc(), cleanup->getArgument(0));
 
-  declaration(module, "udondnnCreate", {pointer}, {i32});
-  declaration(module, "udondnnDestroy", {i32}, {i32});
-  declaration(module, "udondnnCreateTensorDescriptor", {pointer}, {i32});
-  declaration(module, "udondnnSetTensor4dDescriptor",
-              {i32, i32, i32, i32, i32, i32, i32}, {i32});
-  declaration(module, "udondnnDestroyTensorDescriptor", {i32}, {i32});
-  declaration(module, "udondnnCreateFilterDescriptor", {pointer}, {i32});
-  declaration(module, "udondnnSetFilter4dDescriptor",
-              {i32, i32, i32, i32, i32, i32, i32}, {i32});
-  declaration(module, "udondnnDestroyFilterDescriptor", {i32}, {i32});
-  declaration(module, "udondnnCreateConvolutionDescriptor", {pointer}, {i32});
-  declaration(module, "udondnnSetConvolution2dDescriptor",
-              {i32, i32, i32, i32, i32, i32, i32, i32, i32}, {i32});
-  declaration(module, "udondnnDestroyConvolutionDescriptor", {i32}, {i32});
-  declaration(module, "udondnnConvolutionForward",
-              {i32, pointer, i32, pointer, i32, pointer, i32, i32, pointer, i32,
-               pointer, i32, pointer},
-              {i32});
-  declaration(module, "udondnnCreatePoolingDescriptor", {pointer}, {i32});
-  declaration(module, "udondnnSetPooling2dDescriptor",
-              {i32, i32, i32, i32, i32, i32, i32, i32, i32}, {i32});
-  declaration(module, "udondnnDestroyPoolingDescriptor", {i32}, {i32});
-  declaration(module, "udondnnPoolingForward",
-              {i32, i32, pointer, i32, pointer, pointer, i32, pointer}, {i32});
-  declaration(
-      module, "udonatenAdd",
+  declarations.require("udondnnCreate", {pointer}, {i32});
+  declarations.require("udondnnDestroy", {i32}, {i32});
+  declarations.require("udondnnCreateTensorDescriptor", {pointer}, {i32});
+  declarations.require("udondnnSetTensor4dDescriptor",
+                       {i32, i32, i32, i32, i32, i32, i32}, {i32});
+  declarations.require("udondnnDestroyTensorDescriptor", {i32}, {i32});
+  declarations.require("udondnnCreateFilterDescriptor", {pointer}, {i32});
+  declarations.require("udondnnSetFilter4dDescriptor",
+                       {i32, i32, i32, i32, i32, i32, i32}, {i32});
+  declarations.require("udondnnDestroyFilterDescriptor", {i32}, {i32});
+  declarations.require("udondnnCreateConvolutionDescriptor", {pointer}, {i32});
+  declarations.require("udondnnSetConvolution2dDescriptor",
+                       {i32, i32, i32, i32, i32, i32, i32, i32, i32}, {i32});
+  declarations.require("udondnnDestroyConvolutionDescriptor", {i32}, {i32});
+  declarations.require("udondnnConvolutionForward",
+                       {i32, pointer, i32, pointer, i32, pointer, i32, i32,
+                        pointer, i32, pointer, i32, pointer},
+                       {i32});
+  declarations.require("udondnnCreatePoolingDescriptor", {pointer}, {i32});
+  declarations.require("udondnnSetPooling2dDescriptor",
+                       {i32, i32, i32, i32, i32, i32, i32, i32, i32}, {i32});
+  declarations.require("udondnnDestroyPoolingDescriptor", {i32}, {i32});
+  declarations.require("udondnnPoolingForward",
+                       {i32, i32, pointer, i32, pointer, pointer, i32, pointer},
+                       {i32});
+  declarations.require(
+      "udonatenAdd",
       {i32, i32, pointer, i32, pointer, builder.getF32Type(), i32, pointer},
       {i32});
-  declaration(module, "udonatenMul",
-              {i32, i32, pointer, i32, pointer, i32, pointer}, {i32});
-  declaration(module, "udonatenRelu", {i32, i32, pointer, i32, pointer}, {i32});
-  declaration(module, "udonatenTanh", {i32, i32, pointer, i32, pointer}, {i32});
-  declaration(module, "udonatenSigmoid", {i32, i32, pointer, i32, pointer},
-              {i32});
-  declaration(
-      module, "udonatenRmsNorm",
+  declarations.require("udonatenMul",
+                       {i32, i32, pointer, i32, pointer, i32, pointer}, {i32});
+  declarations.require("udonatenRelu", {i32, i32, pointer, i32, pointer},
+                       {i32});
+  declarations.require("udonatenTanh", {i32, i32, pointer, i32, pointer},
+                       {i32});
+  declarations.require("udonatenSigmoid", {i32, i32, pointer, i32, pointer},
+                       {i32});
+  declarations.require(
+      "udonatenRmsNorm",
       {i32, i32, pointer, pointer, i32, i32, pointer, pointer, i32, pointer},
       {i32});
-  declaration(module, "udononnxGather",
-              {i32, i32, pointer, pointer, i32, i32, pointer, i32,
-               builder.getI64Type(), pointer},
-              {i32});
-  declaration(module, "udondnnSoftmaxForward",
-              {i32, i32, i32, pointer, i32, pointer, pointer, i32, pointer},
-              {i32});
-  declaration(module, "udononnxCast", {i32, i32, pointer, i32, pointer, i32},
-              {i32});
-  declaration(module, "udononnxExpand",
-              {i32, i32, pointer, pointer, i32, pointer, pointer, i32}, {i32});
-  declaration(module, "udononnxTranspose",
-              {i32, i32, pointer, pointer, i32, pointer, pointer}, {i32});
-  declaration(module, "udononnxConcat",
-              {i32, i32, pointer, pointer, i32, i32, builder.getI64Type(),
-               pointer, pointer},
-              {i32});
-  declaration(module, "udononnxCos", {i32, pointer, i32, pointer}, {i32});
-  declaration(module, "udononnxSin", {i32, pointer, i32, pointer}, {i32});
-  declaration(module, "udononnxNeg", {i32, pointer, i32, pointer}, {i32});
-  declaration(module, "udononnxSlice",
-              {i32, i32, pointer, pointer, i32, pointer, pointer, pointer,
-               pointer, i32, pointer, pointer},
-              {i32});
-  declaration(module, "udononnxEqual",
-              {i32, i32, pointer, pointer, i32, pointer, pointer, i32, pointer,
-               pointer, i32},
-              {i32});
-  declaration(module, "udononnxWhere",
-              {i32, i32, pointer, pointer, i32, pointer, pointer, i32, pointer,
-               pointer, i32, pointer, pointer, i32},
-              {i32});
-  declaration(module, "udononnxAdd",
-              {i32, i32, pointer, pointer, i32, pointer, pointer, i32, pointer,
-               pointer, i32},
-              {i32});
-  declaration(module, "udononnxScatterND",
-              {i32, i32, pointer, pointer, i32, i32, pointer, pointer, i32,
-               pointer, pointer},
-              {i32});
-  declaration(module, "udonblasCreate", {pointer}, {i32});
-  declaration(module, "udonblasDestroy", {i32}, {i32});
-  declaration(module, "udonblasSgemm",
-              {i32, i32, i32, i32, i32, i32, pointer, pointer, i32, pointer,
-               i32, pointer, pointer, i32},
-              {i32});
-  declaration(module, "udonblasSgemmStridedBatched",
-              {i32, i32, i32, i32, i32, i32, pointer, pointer, i32,
-               builder.getI64Type(), pointer, i32, builder.getI64Type(),
-               pointer, pointer, i32, builder.getI64Type(), i32},
-              {i32});
-  declaration(module, "udononnxCreateOperatorHandle", {pointer}, {i32});
-  declaration(module, "udononnxDestroyOperatorHandle", {i32}, {i32});
-  declaration(module, "udononnxMatMulNBits",
-              {i32,
-               i32,
-               pointer,
-               builder.getI64Type(),
-               builder.getI64Type(),
-               pointer,
-               i32,
-               pointer,
-               i32,
-               pointer,
-               i32,
-               i32,
-               pointer,
-               i32,
-               pointer,
-               i32,
-               builder.getI64Type(),
-               i32,
-               i32,
-               pointer},
-              {i32});
-  return success();
+  declarations.require("udononnxGather",
+                       {i32, i32, pointer, pointer, i32, i32, pointer, i32,
+                        builder.getI64Type(), pointer},
+                       {i32});
+  declarations.require(
+      "udondnnSoftmaxForward",
+      {i32, i32, i32, pointer, i32, pointer, pointer, i32, pointer}, {i32});
+  declarations.require("udononnxCast", {i32, i32, pointer, i32, pointer, i32},
+                       {i32});
+  declarations.require("udononnxExpand",
+                       {i32, i32, pointer, pointer, i32, pointer, pointer, i32},
+                       {i32});
+  declarations.require("udononnxTranspose",
+                       {i32, i32, pointer, pointer, i32, pointer, pointer},
+                       {i32});
+  declarations.require("udononnxConcat",
+                       {i32, i32, pointer, pointer, i32, i32,
+                        builder.getI64Type(), pointer, pointer},
+                       {i32});
+  declarations.require("udononnxCos", {i32, pointer, i32, pointer}, {i32});
+  declarations.require("udononnxSin", {i32, pointer, i32, pointer}, {i32});
+  declarations.require("udononnxNeg", {i32, pointer, i32, pointer}, {i32});
+  declarations.require("udononnxSlice",
+                       {i32, i32, pointer, pointer, i32, pointer, pointer,
+                        pointer, pointer, i32, pointer, pointer},
+                       {i32});
+  declarations.require("udononnxEqual",
+                       {i32, i32, pointer, pointer, i32, pointer, pointer, i32,
+                        pointer, pointer, i32},
+                       {i32});
+  declarations.require("udononnxWhere",
+                       {i32, i32, pointer, pointer, i32, pointer, pointer, i32,
+                        pointer, pointer, i32, pointer, pointer, i32},
+                       {i32});
+  declarations.require("udononnxAdd",
+                       {i32, i32, pointer, pointer, i32, pointer, pointer, i32,
+                        pointer, pointer, i32},
+                       {i32});
+  declarations.require("udononnxScatterND",
+                       {i32, i32, pointer, pointer, i32, i32, pointer, pointer,
+                        i32, pointer, pointer},
+                       {i32});
+  declarations.require("udonblasCreate", {pointer}, {i32});
+  declarations.require("udonblasDestroy", {i32}, {i32});
+  declarations.require("udonblasSgemm",
+                       {i32, i32, i32, i32, i32, i32, pointer, pointer, i32,
+                        pointer, i32, pointer, pointer, i32},
+                       {i32});
+  declarations.require("udonblasSgemmStridedBatched",
+                       {i32, i32, i32, i32, i32, i32, pointer, pointer, i32,
+                        builder.getI64Type(), pointer, i32,
+                        builder.getI64Type(), pointer, pointer, i32,
+                        builder.getI64Type(), i32},
+                       {i32});
+  declarations.require("udononnxCreateOperatorHandle", {pointer}, {i32});
+  declarations.require("udononnxDestroyOperatorHandle", {i32}, {i32});
+  declarations.require("udononnxMatMulNBits",
+                       {i32,
+                        i32,
+                        pointer,
+                        builder.getI64Type(),
+                        builder.getI64Type(),
+                        pointer,
+                        i32,
+                        pointer,
+                        i32,
+                        pointer,
+                        i32,
+                        i32,
+                        pointer,
+                        i32,
+                        pointer,
+                        i32,
+                        builder.getI64Type(),
+                        i32,
+                        i32,
+                        pointer},
+                       {i32});
+  return declarations.result();
 }
 
 LogicalResult createGeneratedModelExports(ModuleOp module,
@@ -1984,7 +1981,9 @@ LogicalResult createGeneratedModelExports(ModuleOp module,
   return success();
 }
 
-void createPhysicalBindingExports(ModuleOp module, const GraphRecord &graph) {
+LogicalResult createPhysicalBindingExports(ModuleOp module,
+                                           const GraphRecord &graph) {
+  ONNXHostDeclarations declarations(module);
   OpBuilder builder(module.getBodyRegion());
   Location location = module.getLoc();
   Type i32 = builder.getI32Type();
@@ -2685,50 +2684,53 @@ void createPhysicalBindingExports(ModuleOp module, const GraphRecord &graph) {
   }
   func::ReturnOp::create(builder, location, constant(0));
 
-  declaration(module, "udononnxBindingStateCreate",
-              {pointer, i32, pointer, pointer, i32, pointer, i32, pointer, i32},
-              {i32});
-  declaration(module, "udononnxBindingStateAllocateBuffer",
-              {pointer, i32, i32, pointer}, {i32});
-  declaration(module, "udononnxBindingStateBindTensor",
-              {pointer, i32, i32, i32, i32, i32, i32, i32, i32, pointer},
-              {i32});
-  declaration(module, "udononnxBindingStateBeginStaticBind", {pointer}, {i32});
-  declaration(module, "udononnxBindingStateCompleteStaticBind", {pointer, i32},
-              {i32});
-  declaration(module, "udonclDeviceBufferView",
-              {pointer, i32, i32, i32, pointer}, {i32});
-  declaration(module, "udononnxBindingStateEnqueueInitialize",
-              {pointer, i32, pointer, pointer}, {i32});
-  declaration(module, "udononnxBindingStateEnqueueRun",
-              {pointer, i32, pointer, pointer}, {i32});
-  declaration(module, "udononnxBindingStateGetSession", {pointer, pointer},
-              {i32});
-  declaration(module, "udononnxBindingStateResolveInput",
-              {pointer, i32, pointer, pointer, pointer}, {i32});
-  declaration(module, "udononnxBindingStateResolveOutput",
-              {pointer, i32, pointer, pointer, pointer}, {i32});
-  declaration(module, "udononnxSessionResolveInput",
-              {pointer, i32, pointer, pointer, pointer}, {i32});
-  declaration(module, "udononnxSessionResolveOutput",
-              {pointer, i32, pointer, pointer, pointer}, {i32});
-  declaration(module, "udonclResolvePhysicalBuffer", {pointer, pointer}, {i32});
-  declaration(module, "__vrc_opencl_buffer_copy", {i32, i32, i32, i32, i32},
-              {i32});
-  declaration(module, "__vrc_opencl_buffer_upload", {i32, i32, i32, pointer},
-              {i32});
-  declaration(module, "__vrc_opencl_buffer_alloc", {i32, i32}, {i32});
-  declaration(module, "__vrc_opencl_await", {i32}, {i32});
-  declaration(module, "udononnxBindingStateCompleteEvent",
-              {pointer, pointer, i32}, {i32});
-  declaration(module, "udononnxBindingStateDispose", {pointer}, {i32});
-  declaration(module, "udonclDeviceBufferDestroy", {pointer}, {i32});
-  declaration(module, "clWaitForEvents", {i32, pointer}, {i32});
-  declaration(module, "clReleaseEvent", {pointer}, {i32});
+  declarations.require(
+      "udononnxBindingStateCreate",
+      {pointer, i32, pointer, pointer, i32, pointer, i32, pointer, i32}, {i32});
+  declarations.require("udononnxBindingStateAllocateBuffer",
+                       {pointer, i32, i32, pointer}, {i32});
+  declarations.require(
+      "udononnxBindingStateBindTensor",
+      {pointer, i32, i32, i32, i32, i32, i32, i32, i32, pointer}, {i32});
+  declarations.require("udononnxBindingStateBeginStaticBind", {pointer}, {i32});
+  declarations.require("udononnxBindingStateCompleteStaticBind", {pointer, i32},
+                       {i32});
+  declarations.require("udonclDeviceBufferView",
+                       {pointer, i32, i32, i32, pointer}, {i32});
+  declarations.require("udononnxBindingStateEnqueueInitialize",
+                       {pointer, i32, pointer, pointer}, {i32});
+  declarations.require("udononnxBindingStateEnqueueRun",
+                       {pointer, i32, pointer, pointer}, {i32});
+  declarations.require("udononnxBindingStateGetSession", {pointer, pointer},
+                       {i32});
+  declarations.require("udononnxBindingStateResolveInput",
+                       {pointer, i32, pointer, pointer, pointer}, {i32});
+  declarations.require("udononnxBindingStateResolveOutput",
+                       {pointer, i32, pointer, pointer, pointer}, {i32});
+  declarations.require("udononnxSessionResolveInput",
+                       {pointer, i32, pointer, pointer, pointer}, {i32});
+  declarations.require("udononnxSessionResolveOutput",
+                       {pointer, i32, pointer, pointer, pointer}, {i32});
+  declarations.require("udonclResolvePhysicalBuffer", {pointer, pointer},
+                       {i32});
+  declarations.require("__vrc_opencl_buffer_copy", {i32, i32, i32, i32, i32},
+                       {i32});
+  declarations.require("__vrc_opencl_buffer_upload", {i32, i32, i32, pointer},
+                       {i32});
+  declarations.require("__vrc_opencl_buffer_alloc", {i32, i32}, {i32});
+  declarations.require("__vrc_opencl_await", {i32}, {i32});
+  declarations.require("udononnxBindingStateCompleteEvent",
+                       {pointer, pointer, i32}, {i32});
+  declarations.require("udononnxBindingStateDispose", {pointer}, {i32});
+  declarations.require("udonclDeviceBufferDestroy", {pointer}, {i32});
+  declarations.require("clWaitForEvents", {i32, pointer}, {i32});
+  declarations.require("clReleaseEvent", {pointer}, {i32});
+  return declarations.result();
 }
 
 LogicalResult createRuntimeDispatchers(ModuleOp module,
                                        const GraphRecord &graph) {
+  ONNXHostDeclarations declarations(module);
   OpBuilder builder(module.getBodyRegion());
   Location location = module.getLoc();
   Type i32 = builder.getI32Type();
@@ -2881,7 +2883,7 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
     releaseDeviceBuffer(operatorScratchSymbol, operatorScratchOwnedSymbol);
   func::ReturnOp::create(builder, location,
                          loadI32(builder, location, disposeStatus));
-  declaration(module, "clReleaseMemObject", {pointer}, {i32});
+  declarations.require("clReleaseMemObject", {pointer}, {i32});
 
   builder.setInsertionPointToEnd(module.getBody());
   auto run = func::FuncOp::create(builder, location,
@@ -3614,68 +3616,71 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
     func::ReturnOp::create(builder, location, onnxStatus(0));
 
     Type f32 = builder.getF32Type();
-    declaration(module, "__vrc_opencl_dispatch_udondnn_large_convolution",
-                {i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32,
-                 i32, i32, f32, f32},
-                {i32});
-    declaration(module, "__vrc_opencl_dispatch_udondnn_large_activation",
-                {i32, i32, i32, i32, i32, i32, f32, f32, f32}, {i32});
-    declaration(module, "__vrc_opencl_dispatch_udondnn_large_pooling",
-                {i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32,
-                 i32, f32, f32},
-                {i32});
-    declaration(module, "__vrc_opencl_dispatch_udondnn_large_op_tensor",
-                {i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32,
-                 f32, f32, f32},
-                {i32});
-    declaration(module, "__vrc_opencl_dispatch_udonblas_arena_sgemm",
-                {i32, i32, i32, i32, i32, i32, i32, i32, f32}, {i32});
-    declaration(
-        module, "__vrc_opencl_dispatch_udonblas_arena_sgemm_strided_batched",
+    declarations.require("__vrc_opencl_dispatch_udondnn_large_convolution",
+                         {i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32,
+                          i32, i32, i32, f32, f32},
+                         {i32});
+    declarations.require("__vrc_opencl_dispatch_udondnn_large_activation",
+                         {i32, i32, i32, i32, i32, i32, f32, f32, f32}, {i32});
+    declarations.require("__vrc_opencl_dispatch_udondnn_large_pooling",
+                         {i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32,
+                          i32, i32, f32, f32},
+                         {i32});
+    declarations.require("__vrc_opencl_dispatch_udondnn_large_op_tensor",
+                         {i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32,
+                          i32, f32, f32, f32},
+                         {i32});
+    declarations.require("__vrc_opencl_dispatch_udonblas_arena_sgemm",
+                         {i32, i32, i32, i32, i32, i32, i32, i32, f32}, {i32});
+    declarations.require(
+        "__vrc_opencl_dispatch_udonblas_arena_sgemm_strided_batched",
         {i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, f32},
         {i32});
-    declaration(module, "__vrc_opencl_dispatch_udononnx_unary_f32",
-                {i32, i32, i32, i32}, {i32});
-    declaration(module, "__vrc_opencl_dispatch_udononnx_transpose_f32",
-                {i32, i32, i32, i32, i32, i32, i32, i32}, {i32});
-    declaration(module, "__vrc_opencl_dispatch_udononnx_slice_f32",
-                {i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32,
-                 i32, i32, i32, i32},
-                {i32});
-    declaration(module, "__vrc_opencl_dispatch_udononnx_expand_f32",
-                {i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32}, {i32});
-    declaration(module, "__vrc_opencl_dispatch_udononnx_concat2_f32",
-                {i32, i32, i32, i32, i32, i32, i32}, {i32});
-    declaration(module, "__vrc_opencl_dispatch_udononnx_gather_axis0_f32",
-                {i32, i32, i32, i32, i32, i32, i32}, {i32});
-    declaration(module, "__vrc_opencl_dispatch_udononnx_cast_i64_f32",
-                {i32, i32, i32}, {i32});
-    declaration(module, "__vrc_opencl_dispatch_udononnx_equal_f32",
-                {i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32}, {i32});
-    declaration(
-        module, "__vrc_opencl_dispatch_udononnx_where_f32",
+    declarations.require("__vrc_opencl_dispatch_udononnx_unary_f32",
+                         {i32, i32, i32, i32}, {i32});
+    declarations.require("__vrc_opencl_dispatch_udononnx_transpose_f32",
+                         {i32, i32, i32, i32, i32, i32, i32, i32}, {i32});
+    declarations.require("__vrc_opencl_dispatch_udononnx_slice_f32",
+                         {i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32,
+                          i32, i32, i32, i32, i32},
+                         {i32});
+    declarations.require(
+        "__vrc_opencl_dispatch_udononnx_expand_f32",
+        {i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32}, {i32});
+    declarations.require("__vrc_opencl_dispatch_udononnx_concat2_f32",
+                         {i32, i32, i32, i32, i32, i32, i32}, {i32});
+    declarations.require("__vrc_opencl_dispatch_udononnx_gather_axis0_f32",
+                         {i32, i32, i32, i32, i32, i32, i32}, {i32});
+    declarations.require("__vrc_opencl_dispatch_udononnx_cast_i64_f32",
+                         {i32, i32, i32}, {i32});
+    declarations.require(
+        "__vrc_opencl_dispatch_udononnx_equal_f32",
+        {i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32}, {i32});
+    declarations.require(
+        "__vrc_opencl_dispatch_udononnx_where_f32",
         {i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32},
         {i32});
-    declaration(module, "__vrc_opencl_dispatch_udononnx_scatter_nd_f32",
-                {i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32},
-                {i32});
-    declaration(
-        module, "__vrc_opencl_dispatch_udononnx_matmul_nbits_q4",
+    declarations.require(
+        "__vrc_opencl_dispatch_udononnx_scatter_nd_f32",
+        {i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32}, {i32});
+    declarations.require(
+        "__vrc_opencl_dispatch_udononnx_matmul_nbits_q4",
         {i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32},
         {i32});
-    declaration(module, "__vrc_opencl_dispatch_udonaten_arena_rms_norm_reduce",
-                {i32, i32, i32, i32}, {i32});
-    declaration(module,
-                "__vrc_opencl_dispatch_udonaten_arena_rms_norm_finalize",
-                {i32, i32, i32, i32, i32, i32, f32, i32}, {i32});
-    declaration(module, "__vrc_opencl_dispatch_udondnn_arena_softmax",
-                {i32, i32, i32, i32, i32, i32, i32, i32}, {i32});
-    declaration(module, "clEnqueueMarkerWithWaitList",
-                {pointer, i32, pointer, pointer}, {i32});
-    declaration(module, "__vrc_opencl_static_tensor", {i32, i32}, {i32});
-    declaration(module, "udonclCreateBufferForQueue",
-                {pointer, builder.getI64Type(), i32, pointer}, {pointer});
-    return success();
+    declarations.require("__vrc_opencl_dispatch_udonaten_arena_rms_norm_reduce",
+                         {i32, i32, i32, i32}, {i32});
+    declarations.require(
+        "__vrc_opencl_dispatch_udonaten_arena_rms_norm_finalize",
+        {i32, i32, i32, i32, i32, i32, f32, i32}, {i32});
+    declarations.require("__vrc_opencl_dispatch_udondnn_arena_softmax",
+                         {i32, i32, i32, i32, i32, i32, i32, i32}, {i32});
+    declarations.require("clEnqueueMarkerWithWaitList",
+                         {pointer, i32, pointer, pointer}, {i32});
+    declarations.require("__vrc_opencl_static_tensor", {i32, i32}, {i32});
+    declarations.require("udonclCreateBufferForQueue",
+                         {pointer, builder.getI64Type(), i32, pointer},
+                         {pointer});
+    return declarations.result();
   }
 
   for (auto [inputIndex, tensorIndex] : llvm::enumerate(graph.inputs)) {
@@ -3787,18 +3792,19 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
   returnOpenCLErrorIfNonzero(marker.getResult(0));
   func::ReturnOp::create(builder, location, onnxStatus(0));
 
-  declaration(module, "clEnqueueReadBuffer",
-              {pointer, pointer, i32, i32, i32, pointer, i32, pointer, pointer},
-              {i32});
-  declaration(module, "clEnqueueWriteBuffer",
-              {pointer, pointer, i32, i32, i32, pointer, i32, pointer, pointer},
-              {i32});
-  declaration(module, "clEnqueueMarkerWithWaitList",
-              {pointer, i32, pointer, pointer}, {i32});
-  declaration(module, "__vrc_opencl_static_tensor", {i32, i32}, {i32});
-  declaration(module, "udonclCreateBufferForQueue",
-              {pointer, builder.getI64Type(), i32, pointer}, {pointer});
-  return success();
+  declarations.require(
+      "clEnqueueReadBuffer",
+      {pointer, pointer, i32, i32, i32, pointer, i32, pointer, pointer}, {i32});
+  declarations.require(
+      "clEnqueueWriteBuffer",
+      {pointer, pointer, i32, i32, i32, pointer, i32, pointer, pointer}, {i32});
+  declarations.require("clEnqueueMarkerWithWaitList",
+                       {pointer, i32, pointer, pointer}, {i32});
+  declarations.require("__vrc_opencl_static_tensor", {i32, i32}, {i32});
+  declarations.require("udonclCreateBufferForQueue",
+                       {pointer, builder.getI64Type(), i32, pointer},
+                       {pointer});
+  return declarations.result();
 }
 
 } // namespace
@@ -3831,7 +3837,22 @@ struct FinalizeONNXHostPass
       signalPassFailure();
       return;
     }
+    SmallVector<Operation *> preservedSymbols;
+    for (Operation &operation :
+         llvm::make_early_inc_range(module.getBody()->getOperations())) {
+      auto function = dyn_cast<func::FuncOp>(operation);
+      if (!function || !function.isExternal() ||
+          function.getSymName() == "main_graph" ||
+          function->hasAttr("udon.onnx.operation") ||
+          function->hasAttr("udon.onnx.provider") ||
+          function->hasAttr("udoncl.static_tensor"))
+        continue;
+      preservedSymbols.push_back(&operation);
+      operation.remove();
+    }
     module.getBody()->getOperations().clear();
+    for (Operation *operation : preservedSymbols)
+      module.getBody()->getOperations().push_back(operation);
     bool deviceGraph = plan->deviceGraph;
     if (!deviceGraph)
       for (const TensorRecord &tensor : graph->tensors)
@@ -3874,7 +3895,10 @@ struct FinalizeONNXHostPass
       signalPassFailure();
       return;
     }
-    createPhysicalBindingExports(module, *graph);
+    if (failed(createPhysicalBindingExports(module, *graph))) {
+      signalPassFailure();
+      return;
+    }
     if (!deviceGraph && failed(createRunExport(module, *graph))) {
       signalPassFailure();
       return;
