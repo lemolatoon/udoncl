@@ -151,6 +151,11 @@ with tempfile.TemporaryDirectory(prefix="udoncl precheck ") as temporary:
     assert failed["exit_code"] == 1
     assert "test_gate=failed" in failed["error_summary"]
 
+    (repository / ".precheck-baseline").write_text(
+        commits[0] + "\n", encoding="utf-8"
+    )
+    run(["git", "add", ".precheck-baseline"], repository)
+    run(["git", "commit", "-m", "set validation baseline"], repository)
     remote = commits[0]
     updates = [f"refs/heads/main {commits[2]} refs/heads/main {remote}"]
     assert outgoing_commits(repository, updates) == sorted(commits[1:])
@@ -158,6 +163,110 @@ with tempfile.TemporaryDirectory(prefix="udoncl precheck ") as temporary:
     run(["git", "update-ref", "refs/remotes/other/main", commits[1]], repository)
     new_branch = [f"refs/heads/topic {commits[2]} refs/heads/topic {'0' * 40}"]
     assert outgoing_commits(repository, new_branch, "origin") == sorted(commits[1:])
+
+    window_repository = temporary / "push window repository"
+    window_cache = temporary / "push window state"
+    window_repository.mkdir()
+    run(["git", "init"], window_repository)
+    run(["git", "config", "user.email", "precheck@example.invalid"], window_repository)
+    run(["git", "config", "user.name", "Precheck Test"], window_repository)
+    (window_repository / "cmake").mkdir()
+    (window_repository / "cmake/llvm-lock.json").write_text("{}\n", encoding="utf-8")
+    (window_repository / "cmake/onnx-mlir-lock.json").write_text(
+        "{}\n", encoding="utf-8"
+    )
+    window_commits = []
+    for index in range(141):
+        (window_repository / "value.txt").write_text(str(index), encoding="utf-8")
+        run(["git", "add", "."], window_repository)
+        run(["git", "commit", "-m", f"window commit {index}"], window_repository)
+        window_commits.append(run(["git", "rev-parse", "HEAD"], window_repository))
+    (window_repository / ".precheck-baseline").write_text(
+        window_commits[116] + "\n", encoding="utf-8"
+    )
+    run(["git", "add", ".precheck-baseline"], window_repository)
+    run(["git", "commit", "-m", "set validation baseline"], window_repository)
+    window_update = [
+        "refs/heads/main "
+        f"{window_commits[-1]} refs/heads/main {window_commits[0]}"
+    ]
+    eligible = outgoing_commits(window_repository, window_update)
+    assert eligible == sorted(window_commits[116:])
+    assert len(eligible) == 25
+    boundary_update = [
+        "refs/heads/boundary "
+        f"{window_commits[116]} refs/heads/boundary {window_commits[115]}"
+    ]
+    assert outgoing_commits(window_repository, boundary_update) == [
+        window_commits[116]
+    ]
+    two_ref_updates = window_update + [
+        "refs/heads/topic "
+        f"{window_commits[120]} refs/heads/topic {window_commits[0]}"
+    ]
+    assert outgoing_commits(window_repository, two_ref_updates) == sorted(
+        window_commits[116:]
+    )
+    unrelated_tree = run(
+        ["git", "rev-parse", f"{window_commits[0]}^{{tree}}"], window_repository
+    )
+    unrelated = run(
+        ["git", "commit-tree", unrelated_tree, "-m", "unrelated"],
+        window_repository,
+    )
+    try:
+        outgoing_commits(
+            window_repository,
+            [f"refs/heads/unrelated {unrelated} refs/heads/unrelated {'0' * 40}"],
+        )
+        raise AssertionError("unrelated pushed tip was accepted")
+    except ValueError as error:
+        assert "is not a descendant of validation baseline" in str(error)
+
+    run(
+        ["git", "update-ref", "refs/remotes/origin/main", window_commits[0]],
+        window_repository,
+    )
+    run(["git", "config", "branch.master.remote", "origin"], window_repository)
+    run(
+        ["git", "config", "branch.master.merge", "refs/heads/main"],
+        window_repository,
+    )
+    window_database = ValidationDatabase(window_cache / "queue.sqlite3")
+    old_failure, _ = window_database.enqueue(window_repository, window_commits[10])
+    recent_failure, _ = window_database.enqueue(
+        window_repository, window_commits[130]
+    )
+    with window_database.immediate():
+        for commit in (old_failure, recent_failure):
+            window_database.connection.execute(
+                """UPDATE jobs SET state='failed', attempt=1, exit_code=1,
+                     error_summary='test failure', finished_at=?
+                   WHERE commit_sha=?""",
+                ("2026-01-07T00:00:00+00:00", commit),
+            )
+    window_database.close()
+    filtered_failures = subprocess.run(
+        [
+            sys.executable,
+            ROOT / "scripts/precheck_status.py",
+            "--repo",
+            window_repository,
+            "--cache-root",
+            window_cache,
+            "--outgoing",
+            "--failures",
+            "--unreported",
+            "--json",
+        ],
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+    )
+    assert filtered_failures.returncode == 1
+    assert recent_failure in filtered_failures.stdout
+    assert old_failure not in filtered_failures.stdout
 
     template = temporary / "unity template"
     for name in ("Assets", "Packages", "ProjectSettings"):

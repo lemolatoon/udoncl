@@ -30,6 +30,7 @@ HEARTBEAT_SECONDS = 2.0
 HEALTH_TIMEOUT_SECONDS = 10.0
 TERMINAL_STATES = {"passed", "failed", "infrastructure_failed", "cancelled"}
 ZERO_OID = "0" * 40
+PRECHECK_BASELINE_FILE = ".precheck-baseline"
 
 
 def console_python() -> Path:
@@ -1353,9 +1354,49 @@ def print_job(row):
     )
 
 
+def validation_baseline(root: Path) -> str:
+    path = root / PRECHECK_BASELINE_FILE
+    try:
+        baseline = git(root, "show", f"HEAD:{PRECHECK_BASELINE_FILE}").strip()
+    except subprocess.CalledProcessError as error:
+        raise ValueError(f"missing tracked push validation baseline: {path}") from error
+    if not re.fullmatch(r"[0-9a-fA-F]{40}", baseline):
+        raise ValueError(
+            f"{PRECHECK_BASELINE_FILE} must contain one full commit SHA"
+        )
+    result = run(
+        ["git", "cat-file", "-e", f"{baseline}^{{commit}}"],
+        cwd=root,
+        check=False,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        raise ValueError(
+            f"push validation baseline is not a local commit: {baseline}"
+        )
+    return baseline.lower()
+
+
+def require_baseline_ancestor(root: Path, baseline: str, tip: str):
+    result = run(
+        ["git", "merge-base", "--is-ancestor", baseline, tip],
+        cwd=root,
+        check=False,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        raise ValueError(
+            f"pushed tip {tip} is not a descendant of validation baseline "
+            f"{baseline}"
+        )
+
+
 def outgoing_commits(
-    root: Path, updates: list[str], remote_name: str | None = None
+    root: Path,
+    updates: list[str],
+    remote_name: str | None = None,
 ) -> list[str]:
+    baseline = validation_baseline(root)
     commits: set[str] = set()
     for line in updates:
         fields = line.split()
@@ -1364,8 +1405,10 @@ def outgoing_commits(
         _, local_sha, _, remote_sha = fields
         if set(local_sha) == {"0"}:
             continue
+        local_commit = git(root, "rev-parse", "--verify", f"{local_sha}^{{commit}}")
+        require_baseline_ancestor(root, baseline, local_commit)
         if set(remote_sha) == {"0"}:
-            command = ["rev-list", local_sha]
+            command = ["rev-list", local_commit]
             if remote_name:
                 remote_refs = git(
                     root,
@@ -1378,8 +1421,13 @@ def outgoing_commits(
             else:
                 command.extend(["--not", "--remotes"])
         else:
-            command = ["rev-list", f"{remote_sha}..{local_sha}"]
-        commits.update(git(root, *command).splitlines())
+            command = ["rev-list", f"{remote_sha}..{local_commit}"]
+        candidates = git(root, *command).splitlines()
+        if set(remote_sha) == {"0"} and local_commit not in candidates:
+            candidates.append(local_commit)
+        eligible = set(git(root, "rev-list", f"{baseline}..{local_commit}").splitlines())
+        eligible.add(baseline)
+        commits.update(commit for commit in candidates if commit in eligible)
     return sorted(commits)
 
 
@@ -1402,28 +1450,58 @@ def status_main(argv=None):
     cache_root = (args.cache_root or default_cache_root(root)).resolve()
     database = ValidationDatabase(cache_root / "queue.sqlite3")
     commits: list[str] = []
-    if args.commit:
-        commits = [git(root, "rev-parse", "--verify", f"{args.commit}^{{commit}}")]
-    elif args.stdin:
-        commits = outgoing_commits(
-            root, sys.stdin.read().splitlines(), args.remote_name
-        )
-    elif args.outgoing:
-        upstream = run(
-            ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
-            cwd=root,
-            check=False,
-            capture_output=True,
-        )
-        if upstream.returncode == 0:
-            commits = git(root, "rev-list", f"{upstream.stdout.strip()}..HEAD").splitlines()
-        else:
-            commits = git(root, "rev-list", "HEAD", "--not", "--remotes").splitlines()
+    try:
+        if args.commit:
+            commits = [
+                git(root, "rev-parse", "--verify", f"{args.commit}^{{commit}}")
+            ]
+        elif args.stdin:
+            commits = outgoing_commits(
+                root,
+                sys.stdin.read().splitlines(),
+                args.remote_name,
+            )
+        elif args.outgoing:
+            upstream = run(
+                [
+                    "git",
+                    "rev-parse",
+                    "--abbrev-ref",
+                    "--symbolic-full-name",
+                    "@{u}",
+                ],
+                cwd=root,
+                check=False,
+                capture_output=True,
+            )
+            if upstream.returncode == 0:
+                remote_sha = git(root, "rev-parse", upstream.stdout.strip())
+                commits = outgoing_commits(
+                    root,
+                    [f"refs/heads/current HEAD refs/heads/upstream {remote_sha}"],
+                )
+            else:
+                commits = outgoing_commits(
+                    root,
+                    [f"refs/heads/current HEAD refs/heads/current {ZERO_OID}"],
+                )
+    except ValueError as error:
+        database.close()
+        parser.error(str(error))
     if args.failures:
         query = "SELECT * FROM jobs WHERE state IN ('failed','infrastructure_failed')"
+        parameters: list[str] = []
         if args.unreported:
             query += " AND notified_at IS NULL"
-        rows = database.connection.execute(query + " ORDER BY finished_at").fetchall()
+        if args.commit or args.stdin or args.outgoing:
+            if commits:
+                query += " AND commit_sha IN (" + ",".join("?" for _ in commits) + ")"
+                parameters.extend(commits)
+            else:
+                query += " AND 0"
+        rows = database.connection.execute(
+            query + " ORDER BY finished_at", parameters
+        ).fetchall()
     else:
         rows = []
         for commit in commits:

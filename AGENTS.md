@@ -20,8 +20,9 @@ These rules apply to the entire repository.
 
 ## Commit Validation Service
 
-- Every commit must be validated independently by the repository background
-  validation service. A passing descendant does not validate an ancestor.
+- Every newly created commit is enqueued independently in the repository
+  background validation service. A passing descendant does not change an
+  ancestor's recorded result.
 - Before creating a commit, run:
 
   ```text
@@ -43,21 +44,25 @@ These rules apply to the entire repository.
 - Before another commit and before reporting completed work, run:
 
   ```text
-  python scripts/precheck_status.py --failures --unreported
+  python scripts/precheck_status.py --outgoing --failures --unreported
   ```
 
-  Successful or pending jobs require no user-facing report. On failure,
-  immediately report the commit and concise failure. Amend/rebase the failing
-  commit into a new SHA or remove it from outgoing history; do not merely add a
-  passing descendant and do not push while the failed SHA remains outgoing.
-- Before pushing, wait for every outgoing commit to pass:
+  This reports only push-eligible commits: the tracked `.precheck-baseline`
+  commit and its outgoing descendants. Older database failures do not block
+  completion or pushing. Successful or pending jobs require no user-facing
+  report. On an eligible failure, immediately report the commit and concise
+  failure, then amend/rebase it or remove it from eligible history.
+- Before pushing, wait for every push-eligible commit to pass:
 
   ```text
   python scripts/precheck_status.py --outgoing --wait --require-passed
   ```
 
-  The `pre-push` hook enforces the same rule. Never push pending, failed, stale,
-  or unvalidated commits.
+  The `pre-push` hook enforces the same bootstrap boundary. Every pushed tip
+  must descend from the full SHA in `.precheck-baseline`; unrelated histories
+  fail explicitly. Never push an eligible pending, failed, stale, or
+  unvalidated commit. Change the boundary only as an explicit reviewed policy
+  update after its commit has passed the full validation gate.
 - Results are authoritative only in the service SQLite database and must match
   the exact commit SHA and validation fingerprint. Never edit the database or
   synthesize a pass. Amend, rebase, cherry-pick, and merge create new SHAs that

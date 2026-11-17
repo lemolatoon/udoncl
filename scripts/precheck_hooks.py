@@ -39,7 +39,10 @@ def post_commit(root: Path):
 
 def pre_push(root: Path, remote_name: str | None):
     updates = sys.stdin.read().splitlines()
-    commits = outgoing_commits(root, updates, remote_name)
+    try:
+        commits = outgoing_commits(root, updates, remote_name)
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
     if not commits:
         return
     cache_root = default_cache_root(root)
