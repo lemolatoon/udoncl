@@ -820,6 +820,11 @@ add_test(NAME commit-validation-service
     "${CMAKE_CURRENT_SOURCE_DIR}/build/precheck_service.py"
     "${PROJECT_SOURCE_DIR}"
 )
+add_test(NAME commit-validation-cleanup
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/build/precheck_cleanup.py"
+    "${PROJECT_SOURCE_DIR}"
+)
 add_test(NAME onnx-q4-assigned-buffer-component
   COMMAND Python3::Interpreter
     "${CMAKE_CURRENT_SOURCE_DIR}/build/onnx_q4_component.py"

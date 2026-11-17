@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import ctypes
 import json
 import os
 from pathlib import Path
 import platform
 import queue
+import signal
 import shutil
 import subprocess
 import sys
@@ -33,6 +36,96 @@ MCP_SOURCE = (
     "git+https://github.com/CoplayDev/unity-mcp.git@"
     f"{MCP_REVISION}#subdirectory=Server"
 )
+
+
+if os.name == "nt":
+    from ctypes import wintypes
+
+    class _JobObjectBasicLimitInformation(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_longlong),
+            ("PerJobUserTimeLimit", ctypes.c_longlong),
+            ("LimitFlags", wintypes.DWORD),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.c_size_t),
+            ("PriorityClass", wintypes.DWORD),
+            ("SchedulingClass", wintypes.DWORD),
+        ]
+
+    class _IoCounters(ctypes.Structure):
+        _fields_ = [
+            ("ReadOperationCount", ctypes.c_ulonglong),
+            ("WriteOperationCount", ctypes.c_ulonglong),
+            ("OtherOperationCount", ctypes.c_ulonglong),
+            ("ReadTransferCount", ctypes.c_ulonglong),
+            ("WriteTransferCount", ctypes.c_ulonglong),
+            ("OtherTransferCount", ctypes.c_ulonglong),
+        ]
+
+    class _JobObjectExtendedLimitInformation(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", _JobObjectBasicLimitInformation),
+            ("IoInfo", _IoCounters),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+
+def _create_windows_kill_job(process):
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel32.SetInformationJobObject.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+    ]
+    kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    job = kernel32.CreateJobObjectW(None, None)
+    if not job:
+        raise ctypes.WinError(ctypes.get_last_error())
+    information = _JobObjectExtendedLimitInformation()
+    information.BasicLimitInformation.LimitFlags = 0x00002000
+    if not kernel32.SetInformationJobObject(
+        job, 9, ctypes.byref(information), ctypes.sizeof(information)
+    ):
+        error = ctypes.WinError(ctypes.get_last_error())
+        kernel32.CloseHandle(job)
+        raise error
+    if not kernel32.AssignProcessToJobObject(job, wintypes.HANDLE(process._handle)):
+        error = ctypes.WinError(ctypes.get_last_error())
+        kernel32.CloseHandle(job)
+        raise error
+    return job
+
+
+def _terminate_windows_job(job):
+    if not job:
+        return
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel32.TerminateJobObject.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.TerminateJobObject(job, 1)
+    kernel32.CloseHandle(job)
+
+
+def _process_group_alive(process_group: int) -> bool:
+    try:
+        os.killpg(process_group, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
 
 
 def load_dotenv_defaults(path: Path):
@@ -131,6 +224,14 @@ def extract_payload(result):
 class McpClient:
     def __init__(self, command, environment, stderr_path: Path):
         self._stderr = stderr_path.open("w", encoding="utf-8")
+        self._windows_job = None
+        process_options = {}
+        if os.name == "nt":
+            process_options["creationflags"] = getattr(
+                subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+            )
+        else:
+            process_options["start_new_session"] = True
         self._process = subprocess.Popen(
             [str(item) for item in command],
             stdin=subprocess.PIPE,
@@ -140,7 +241,17 @@ class McpClient:
             encoding="utf-8",
             bufsize=1,
             env=environment,
+            **process_options,
         )
+        if os.name == "nt":
+            try:
+                self._windows_job = _create_windows_kill_job(self._process)
+            except Exception:
+                self._process.kill()
+                self._process.wait(timeout=10)
+                self._stderr.close()
+                raise
+        self._process_group = self._process.pid
         self._lines = queue.Queue()
         self._reader = threading.Thread(target=self._read_stdout, daemon=True)
         self._reader.start()
@@ -222,14 +333,50 @@ class McpClient:
         return payload
 
     def close(self):
+        if os.name == "nt":
+            if self._windows_job is not None:
+                _terminate_windows_job(self._windows_job)
+                self._windows_job = None
+            elif self._process.poll() is None:
+                subprocess.run(
+                    ["taskkill", "/PID", str(self._process.pid), "/T", "/F"],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+        else:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(self._process_group, signal.SIGTERM)
+            deadline = time.monotonic() + 10
+            while (
+                _process_group_alive(self._process_group)
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.05)
+            if _process_group_alive(self._process_group):
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(self._process_group, signal.SIGKILL)
         if self._process.poll() is None:
-            self._process.terminate()
             try:
                 self._process.wait(timeout=10)
             except subprocess.TimeoutExpired:
-                self._process.kill()
+                if os.name == "nt":
+                    self._process.kill()
+                else:
+                    with contextlib.suppress(ProcessLookupError):
+                        os.killpg(self._process_group, signal.SIGKILL)
                 self._process.wait(timeout=10)
+        if self._process.stdin is not None:
+            with contextlib.suppress(OSError):
+                self._process.stdin.close()
+        self._reader.join(timeout=10)
+        reader_alive = self._reader.is_alive()
+        if self._process.stdout is not None:
+            with contextlib.suppress(OSError):
+                self._process.stdout.close()
         self._stderr.close()
+        if reader_alive:
+            raise RuntimeError("MCP stdout reader did not stop during cleanup")
 
 
 def wait_for_status(status_dir: Path, unity_process, timeout=600):
@@ -920,7 +1067,11 @@ def run_unity_mcp_gate(
         failure = error
     finally:
         if client is not None:
-            client.close()
+            try:
+                client.close()
+            except Exception as error:
+                if failure is None:
+                    failure = error
         if unity_process is not None and unity_process.poll() is None:
             unity_process.terminate()
             try:

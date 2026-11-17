@@ -22,6 +22,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import uuid
 
 
@@ -31,6 +32,8 @@ HEALTH_TIMEOUT_SECONDS = 10.0
 TERMINAL_STATES = {"passed", "failed", "infrastructure_failed", "cancelled"}
 ZERO_OID = "0" * 40
 PRECHECK_BASELINE_FILE = ".precheck-baseline"
+REMOVE_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.4, 0.8, 1.6, 3.2)
+SLOT_RECOVERY_COOLDOWN_SECONDS = 5.0
 
 
 def console_python() -> Path:
@@ -446,14 +449,85 @@ def remove_owned(path: Path, parent: Path):
     target = path
     if os.name == "nt" and not str(path).startswith("\\\\?\\"):
         target = Path("\\\\?\\" + str(path.resolve()))
-    if path.is_dir():
-        def clear_read_only(function, failing_path, _error):
-            os.chmod(failing_path, stat.S_IWRITE)
-            function(failing_path)
 
-        shutil.rmtree(target, onexc=clear_read_only)
-    else:
-        target.unlink(missing_ok=True)
+    def remove_once():
+        if not path.exists():
+            return
+        if path.is_dir():
+            def clear_read_only(function, failing_path, _error):
+                os.chmod(failing_path, stat.S_IWRITE)
+                function(failing_path)
+
+            shutil.rmtree(target, onexc=clear_read_only)
+        else:
+            target.unlink(missing_ok=True)
+
+    for delay in (*REMOVE_RETRY_DELAYS, None):
+        try:
+            remove_once()
+            return
+        except OSError as error:
+            retryable = os.name == "nt" and getattr(error, "winerror", None) in {
+                5,
+                32,
+            }
+            if not retryable or delay is None:
+                raise
+            time.sleep(delay)
+
+
+def worker_slot_root(cache_root: Path, slot: int) -> Path:
+    return cache_root / "w" / str(slot)
+
+
+def worker_slot_contamination_marker(cache_root: Path, slot: int) -> Path:
+    return worker_slot_root(cache_root, slot) / ".udoncl-contaminated"
+
+
+def mark_worker_slot_contaminated(
+    cache_root: Path, slot: int, commit: str, reason: str
+):
+    marker = worker_slot_contamination_marker(cache_root, slot)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(
+        f"commit={commit}\nreason={reason[:2000]}\n", encoding="utf-8"
+    )
+
+
+def recover_worker_slot(root: Path, cache_root: Path, slot: int) -> bool:
+    marker = worker_slot_contamination_marker(cache_root, slot)
+    if not marker.is_file():
+        return True
+    slot_root = worker_slot_root(cache_root, slot)
+    worktree = slot_root / "r"
+    try:
+        if (worktree / ".git").exists():
+            run(["git", "worktree", "remove", "--force", worktree], cwd=root)
+        if slot_root.exists():
+            remove_owned(slot_root, cache_root)
+        run(["git", "worktree", "prune"], cwd=root)
+        return True
+    except Exception as error:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        with marker.open("a", encoding="utf-8") as stream:
+            stream.write(f"recovery_error={type(error).__name__}: {error}\n")
+        return False
+
+
+def claim_ready_job(
+    database: ValidationDatabase,
+    root: Path,
+    cache_root: Path,
+    slot: int,
+    worker_token: str,
+    retry_after: float = 0,
+) -> tuple[str | None, float]:
+    current = time.monotonic()
+    if current < retry_after:
+        return None, retry_after
+    if not recover_worker_slot(root, cache_root, slot):
+        return None, current + SLOT_RECOVERY_COOLDOWN_SECONDS
+    return database.claim(slot, worker_token), 0
 
 
 def sync_unity_project(template: Path, destination: Path, cache_root: Path):
@@ -742,7 +816,8 @@ def execute_job(root: Path, cache_root: Path, commit: str, slot: int, token: str
         "exit_code": 1,
         "cleanup_passed": 0,
     }
-    worker_root = cache_root / "w" / str(slot)
+    worker_root = worker_slot_root(cache_root, slot)
+    slot_marker = worker_slot_contamination_marker(cache_root, slot)
     worktree = worker_root / "r"
     # Build products contain deeply nested CMake target paths. Keep them under
     # the short, reusable worker-slot root so Windows' legacy MAX_PATH does not
@@ -754,6 +829,10 @@ def execute_job(root: Path, cache_root: Path, commit: str, slot: int, token: str
     try:
         testing = os.environ.get("UDONCL_PRECHECK_TESTING") == "1"
         with log_path.open("w", encoding="utf-8", errors="replace") as log:
+            if slot_marker.exists():
+                raise RuntimeError(
+                    f"worker slot {slot} is contaminated and requires recovery"
+                )
             if testing:
                 delay = float(os.environ.get("UDONCL_PRECHECK_TEST_DELAY", "0"))
                 time.sleep(delay)
@@ -850,10 +929,20 @@ def execute_job(root: Path, cache_root: Path, commit: str, slot: int, token: str
             f"commit={commit}\n", encoding="utf-8"
         )
         with log_path.open("a", encoding="utf-8") as log:
-            log.write(result["error_summary"] + "\n")
+            log.write(traceback.format_exc())
     finally:
         stop.set()
         heartbeat_thread.join(timeout=5)
+        if result["state"] == "passed" and result.get("cleanup_passed") == 1:
+            slot_marker.unlink(missing_ok=True)
+        else:
+            with contextlib.suppress(OSError):
+                mark_worker_slot_contaminated(
+                    cache_root,
+                    slot,
+                    commit,
+                    result.get("error_summary", result["state"]),
+                )
         if log_path.is_file():
             artifacts.append(file_artifact(log_path, "precheck_log"))
         database.finish(commit, token, result, artifacts)
@@ -943,13 +1032,22 @@ def terminate_pid_tree(pid: int):
                 os.killpg(pid, signal.SIGKILL)
 
 
-def recover_orphan_workers(database: ValidationDatabase):
+def recover_orphan_workers(
+    database: ValidationDatabase, cache_root: Path | None = None
+):
     rows = database.connection.execute(
         "SELECT * FROM jobs WHERE state='running'"
     ).fetchall()
     for row in rows:
         if row["worker_pid"]:
             terminate_pid_tree(row["worker_pid"])
+        if cache_root is not None and row["slot"] is not None:
+            mark_worker_slot_contaminated(
+                cache_root,
+                row["slot"],
+                row["commit_sha"],
+                "coordinator restarted during validation",
+            )
     with database.immediate():
         for row in rows:
             state = "queued" if row["attempt"] < 2 else "infrastructure_failed"
@@ -966,7 +1064,7 @@ def coordinator(root: Path, cache_root: Path, jobs: int, once: bool):
     database = ValidationDatabase(cache_root / "queue.sqlite3")
     token = uuid.uuid4().hex
     database.acquire_service(token)
-    recover_orphan_workers(database)
+    recover_orphan_workers(database, cache_root)
     database.recover()
     stopping = False
 
@@ -978,6 +1076,7 @@ def coordinator(root: Path, cache_root: Path, jobs: int, once: bool):
     if hasattr(signal, "SIGINT"):
         signal.signal(signal.SIGINT, stop_service)
     active: dict[int, tuple[subprocess.Popen, str, str]] = {}
+    slot_retry_after: dict[int, float] = {}
     try:
         while not stopping:
             database.heartbeat_service(token)
@@ -993,6 +1092,12 @@ def coordinator(root: Path, cache_root: Path, jobs: int, once: bool):
                     "SELECT state FROM jobs WHERE commit_sha=?", (commit,)
                 ).fetchone()
                 if row and row["state"] == "running":
+                    mark_worker_slot_contaminated(
+                        cache_root,
+                        slot,
+                        commit,
+                        "worker exited without recording a result",
+                    )
                     database.finish(
                         commit,
                         worker_token,
@@ -1009,7 +1114,18 @@ def coordinator(root: Path, cache_root: Path, jobs: int, once: bool):
                 if slot in active:
                     continue
                 worker_token = uuid.uuid4().hex
-                commit = database.claim(slot, worker_token)
+                commit, retry_after = claim_ready_job(
+                    database,
+                    root,
+                    cache_root,
+                    slot,
+                    worker_token,
+                    slot_retry_after.get(slot, 0),
+                )
+                if retry_after:
+                    slot_retry_after[slot] = retry_after
+                else:
+                    slot_retry_after.pop(slot, None)
                 if not commit:
                     continue
                 command = [
