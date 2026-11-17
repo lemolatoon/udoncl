@@ -12,6 +12,9 @@ public:
 
   void require(llvm::StringRef name, mlir::TypeRange arguments,
                mlir::TypeRange results);
+  mlir::FailureOr<mlir::func::FuncOp>
+  reservePublicDefinition(llvm::StringRef name, mlir::TypeRange arguments,
+                          mlir::TypeRange results);
   mlir::LogicalResult result() const;
 
 private:

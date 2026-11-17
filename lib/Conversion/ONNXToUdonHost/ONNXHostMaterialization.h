@@ -8,6 +8,8 @@ inline constexpr llvm::StringLiteral onnxHostSourceAttr =
     "udoncl.onnx_host_source";
 inline constexpr llvm::StringLiteral onnxHostGlobalsMaterializedAttr =
     "udoncl.onnx_host_globals_materialized";
+inline constexpr llvm::StringLiteral onnxHostModelRegistryMaterializedAttr =
+    "udoncl.onnx_host_model_registry_materialized";
 inline constexpr llvm::StringLiteral onnxHostFinalizedAttr =
     "udoncl.onnx_host_finalized";
 inline constexpr llvm::StringLiteral onnxHostSourceCleanedAttr =

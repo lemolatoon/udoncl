@@ -70,6 +70,7 @@ struct CleanupONNXHostSourcePass
     module->removeAttr(hostGraphValidatedAttr);
     module->removeAttr(hostGraphPlanAttr);
     module->removeAttr(onnxHostGlobalsMaterializedAttr);
+    module->removeAttr(onnxHostModelRegistryMaterializedAttr);
     module->setAttr(onnxHostSourceCleanedAttr,
                     UnitAttr::get(module.getContext()));
   }

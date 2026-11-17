@@ -1,5 +1,6 @@
 #include "ONNXHostABI.h"
 #include "ONNXHostGraph.h"
+#include "ONNXHostIRBuilder.h"
 #include "ONNXHostMaterialization.h"
 #include "ONNXHostPlan.h"
 #include "ONNXHostSymbols.h"
@@ -32,10 +33,6 @@ namespace host = ::vrc::udonhl;
 constexpr StringRef operatorScratchSymbol = onnxHostOperatorScratchSymbol;
 constexpr StringRef operatorScratchOwnedSymbol =
     onnxHostOperatorScratchOwnedSymbol;
-constexpr StringRef modelStorageSymbol = onnxHostModelStorageSymbol;
-constexpr StringRef inputMetadataSymbol = onnxHostInputMetadataSymbol;
-constexpr StringRef outputMetadataSymbol = onnxHostOutputMetadataSymbol;
-constexpr StringRef modelNameSymbol = onnxHostModelNameSymbol;
 constexpr StringRef bindingStateSymbol = onnxHostBindingStateSymbol;
 constexpr StringRef bindingInputSymbol = onnxHostBindingInputSymbol;
 constexpr StringRef bindingOutputSymbol = onnxHostBindingOutputSymbol;
@@ -52,14 +49,6 @@ constexpr int32_t bindingStateStorageBytes = onnxHostBindingStateStorageBytes;
 constexpr int32_t bindingTensorStorageBytes = onnxHostBindingTensorStorageBytes;
 constexpr int32_t bindingBufferHandleBytes = onnxHostBindingBufferHandleBytes;
 constexpr int32_t maximumTensorRank = onnxHostMaximumTensorRank;
-
-std::string ioNameSymbol(bool output, unsigned index) {
-  return onnxHostIoNameSymbol(output, index);
-}
-
-std::string ioDimensionsSymbol(bool output, unsigned index) {
-  return onnxHostIoDimensionsSymbol(output, index);
-}
 
 std::string inputBindingSymbol(unsigned index) {
   return onnxHostInputBindingSymbol(index);
@@ -85,21 +74,7 @@ unsigned elementByteSize(Type type) {
   return 0;
 }
 
-int32_t udonclDataType(Type type) {
-  if (type.isInteger(1) || type.isInteger(8))
-    return 1;
-  if (type.isInteger(32))
-    return 2;
-  if (type.isInteger(64))
-    return 3;
-  if (type.isF16())
-    return 4;
-  if (type.isBF16())
-    return 5;
-  if (type.isF32())
-    return 6;
-  return 0;
-}
+int32_t udonclDataType(Type type) { return onnxHostDataType(type); }
 
 StringRef udonclDataTypeName(Type type) {
   if (type.isInteger(1))
@@ -221,11 +196,7 @@ void attachBindingMetadata(ModuleOp module, const GraphRecord &graph) {
 }
 
 Value addressOf(OpBuilder &builder, Location location, StringRef symbol) {
-  OperationState state(location, host::AddressOfOp::getOperationName());
-  state.addTypes(host::PtrType::get(builder.getContext(), 0));
-  state.addAttribute("global",
-                     FlatSymbolRefAttr::get(builder.getContext(), symbol));
-  return builder.create(state)->getResult(0);
+  return onnxHostAddressOf(builder, location, symbol);
 }
 
 void store(OpBuilder &builder, Location location, Value value, Value pointer);
@@ -279,18 +250,11 @@ Value allocaI64Array(OpBuilder &builder, Location location,
 }
 
 Value nullPointer(OpBuilder &builder, Location location) {
-  Value zero = arith::ConstantIntOp::create(builder, location, 0, 32);
-  OperationState state(location, host::IntToPtrOp::getOperationName());
-  state.addOperands(zero);
-  state.addTypes(host::PtrType::get(builder.getContext(), 0));
-  return builder.create(state)->getResult(0);
+  return onnxHostNullPointer(builder, location);
 }
 
 Value pointerToInt(OpBuilder &builder, Location location, Value pointer) {
-  OperationState state(location, host::PtrToIntOp::getOperationName());
-  state.addOperands(pointer);
-  state.addTypes(builder.getI32Type());
-  return builder.create(state)->getResult(0);
+  return onnxHostPointerToInt(builder, location, pointer);
 }
 
 Value intToPointer(OpBuilder &builder, Location location, Value integer) {
@@ -317,10 +281,7 @@ Value boundInputPointer(OpBuilder &builder, Location location, unsigned index,
 }
 
 void store(OpBuilder &builder, Location location, Value value, Value pointer) {
-  OperationState state(location, host::StoreOp::getOperationName());
-  state.addOperands({value, pointer});
-  state.addAttribute("alignment", builder.getI64IntegerAttr(4));
-  builder.create(state);
+  onnxHostStore(builder, location, value, pointer);
 }
 
 Value loadI32(OpBuilder &builder, Location location, Value pointer) {
@@ -341,10 +302,7 @@ Value loadPointer(OpBuilder &builder, Location location, Value pointer) {
 
 Value pointerAdd(OpBuilder &builder, Location location, Value pointer,
                  Value offset) {
-  OperationState state(location, host::PtrAddOp::getOperationName());
-  state.addOperands({pointer, offset});
-  state.addTypes(pointer.getType());
-  return builder.create(state)->getResult(0);
+  return onnxHostPointerAdd(builder, location, pointer, offset);
 }
 
 void attachDeviceGraphMetadata(ModuleOp module, const GraphRecord &graph,
@@ -1665,112 +1623,6 @@ LogicalResult createRunExport(ModuleOp module, const GraphRecord &graph) {
                         pointer},
                        {i32});
   return declarations.result();
-}
-
-LogicalResult createGeneratedModelExports(ModuleOp module,
-                                          const GraphRecord &graph) {
-  auto validateMetadata = [&](ArrayRef<unsigned> indices) {
-    for (unsigned tensorIndex : indices) {
-      const TensorRecord &tensor = graph.tensors[tensorIndex];
-      if (tensor.name.empty()) {
-        module.emitError("ONNX model input/output name must not be empty");
-        return failure();
-      }
-      if (tensor.type.getRank() > UDONCL_UDON_ABI_ONNX_MAX_TENSOR_RANK) {
-        module.emitError("ONNX model input/output rank exceeds Udon ABI limit");
-        return failure();
-      }
-    }
-    return success();
-  };
-  if (failed(validateMetadata(graph.inputs)) ||
-      failed(validateMetadata(graph.outputs)))
-    return failure();
-  OpBuilder builder(module.getBodyRegion());
-  Location location = module.getLoc();
-  Type i32 = builder.getI32Type();
-  Type pointer = host::PtrType::get(module.getContext(), 0);
-  auto constant = [&](int64_t value) -> Value {
-    return arith::ConstantIntOp::create(builder, location, value, 32);
-  };
-
-  builder.setInsertionPointToEnd(module.getBody());
-  auto count =
-      func::FuncOp::create(builder, location, "udononnxGeneratedGetModelCount",
-                           FunctionType::get(module.getContext(), {}, {i32}));
-  Block *countEntry = count.addEntryBlock();
-  builder.setInsertionPointToEnd(countEntry);
-  func::ReturnOp::create(builder, location, constant(1));
-
-  builder.setInsertionPointToEnd(module.getBody());
-  auto get = func::FuncOp::create(
-      builder, location, "udononnxGeneratedGetModel",
-      FunctionType::get(module.getContext(), {i32, pointer}, {i32}));
-  Block *entry = get.addEntryBlock();
-  Block *body = get.addBlock();
-  Block *invalid = get.addBlock();
-  builder.setInsertionPointToEnd(entry);
-  Value isModel =
-      arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
-                            entry->getArgument(0), constant(0));
-  Value modelOutput = pointerToInt(builder, location, entry->getArgument(1));
-  Value hasOutput = arith::CmpIOp::create(
-      builder, location, arith::CmpIPredicate::ne, modelOutput, constant(0));
-  Value valid = arith::AndIOp::create(builder, location, isModel, hasOutput);
-  cf::CondBranchOp::create(builder, location, valid, body, ValueRange{},
-                           invalid, ValueRange{});
-  builder.setInsertionPointToEnd(invalid);
-  func::ReturnOp::create(builder, location, constant(1));
-  builder.setInsertionPointToEnd(body);
-
-  auto storeAt = [&](Value base, uint32_t offset, Value value) {
-    Value field =
-        offset ? pointerAdd(builder, location, base, constant(offset)) : base;
-    store(builder, location, value, field);
-  };
-  auto initializeMetadata = [&](bool output, unsigned index,
-                                const TensorRecord &tensor) {
-    StringRef storage = output ? outputMetadataSymbol : inputMetadataSymbol;
-    Value base = addressOf(builder, location, storage);
-    Value metadata =
-        pointerAdd(builder, location, base,
-                   constant(static_cast<int64_t>(index) *
-                            UDONCL_UDON_ABI_ONNX_TENSOR_METADATA_BYTES));
-    Value dimensions =
-        tensor.type.getRank()
-            ? addressOf(builder, location, ioDimensionsSymbol(output, index))
-            : nullPointer(builder, location);
-    storeAt(metadata, UDONCL_UDON_ABI_ONNX_TENSOR_METADATA_NAME_OFFSET,
-            addressOf(builder, location, ioNameSymbol(output, index)));
-    storeAt(metadata, UDONCL_UDON_ABI_ONNX_TENSOR_METADATA_DATA_TYPE_OFFSET,
-            constant(udonclDataType(tensor.type.getElementType())));
-    storeAt(metadata, UDONCL_UDON_ABI_ONNX_TENSOR_METADATA_RANK_OFFSET,
-            constant(tensor.type.getRank()));
-    storeAt(metadata, UDONCL_UDON_ABI_ONNX_TENSOR_METADATA_DIMENSIONS_OFFSET,
-            dimensions);
-    storeAt(metadata,
-            UDONCL_UDON_ABI_ONNX_TENSOR_METADATA_DIMENSION_BOUNDS_OFFSET,
-            nullPointer(builder, location));
-  };
-  for (auto [index, tensorIndex] : llvm::enumerate(graph.inputs))
-    initializeMetadata(false, index, graph.tensors[tensorIndex]);
-  for (auto [index, tensorIndex] : llvm::enumerate(graph.outputs))
-    initializeMetadata(true, index, graph.tensors[tensorIndex]);
-  Value model = addressOf(builder, location, modelStorageSymbol);
-  storeAt(model, UDONCL_UDON_ABI_ONNX_MODEL_NAME_OFFSET,
-          addressOf(builder, location, modelNameSymbol));
-  storeAt(model, UDONCL_UDON_ABI_ONNX_MODEL_GRAPH_ID_OFFSET, constant(0));
-  storeAt(model, UDONCL_UDON_ABI_ONNX_MODEL_INPUTS_OFFSET,
-          addressOf(builder, location, inputMetadataSymbol));
-  storeAt(model, UDONCL_UDON_ABI_ONNX_MODEL_INPUT_COUNT_OFFSET,
-          constant(graph.inputs.size()));
-  storeAt(model, UDONCL_UDON_ABI_ONNX_MODEL_OUTPUTS_OFFSET,
-          addressOf(builder, location, outputMetadataSymbol));
-  storeAt(model, UDONCL_UDON_ABI_ONNX_MODEL_OUTPUT_COUNT_OFFSET,
-          constant(graph.outputs.size()));
-  store(builder, location, model, entry->getArgument(1));
-  func::ReturnOp::create(builder, location, constant(0));
-  return success();
 }
 
 LogicalResult createPhysicalBindingExports(ModuleOp module,
@@ -3618,6 +3470,12 @@ struct FinalizeONNXHostPass
       signalPassFailure();
       return;
     }
+    if (!module->hasAttr(onnxHostModelRegistryMaterializedAttr)) {
+      module.emitError(
+          "ONNX Host finalization requires model registry materialization");
+      signalPassFailure();
+      return;
+    }
     if (!module->hasAttr(hostGraphValidatedAttr)) {
       module.emitError(
           "ONNX Host finalization requires the graph validation pass");
@@ -3650,10 +3508,6 @@ struct FinalizeONNXHostPass
       createReadExport(module, *graph, builder.getI32Type(), "int32");
       createReadExport(module, *graph, builder.getI64Type(), "int64");
       createBindingExports(module, *graph);
-    }
-    if (failed(createGeneratedModelExports(module, *graph))) {
-      signalPassFailure();
-      return;
     }
     if (failed(createPhysicalBindingExports(module, *graph))) {
       signalPassFailure();

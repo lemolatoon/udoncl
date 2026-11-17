@@ -35,6 +35,10 @@ def MaterializeONNXHostGlobalsPass : Pass<"udoncl-materialize-onnx-host-globals"
   let summary = "Materialize planned ONNX Host global storage without consuming the source graph";
   let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "mlir::LLVM::LLVMDialect"];
 }
+def MaterializeONNXHostModelRegistryPass : Pass<"udoncl-materialize-onnx-host-model-registry", "mlir::ModuleOp"> {
+  let summary = "Materialize the planned ONNX Host model registry and descriptor accessors";
+  let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "mlir::arith::ArithDialect", "mlir::cf::ControlFlowDialect", "mlir::func::FuncDialect"];
+}
 def FinalizeONNXHostPass : Pass<"udoncl-finalize-onnx-host", "mlir::ModuleOp"> {
   let summary = "Lower portable ONNX library calls to the Udon Host ABI and session exports";
   let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "mlir::arith::ArithDialect", "mlir::cf::ControlFlowDialect", "mlir::func::FuncDialect", "mlir::LLVM::LLVMDialect"];

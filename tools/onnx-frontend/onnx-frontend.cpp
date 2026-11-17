@@ -34,6 +34,7 @@ int main(int argc, char **argv) {
   vrc::registerValidateONNXHostGraphPass();
   vrc::registerPlanONNXHostGraphPass();
   vrc::registerMaterializeONNXHostGlobalsPass();
+  vrc::registerMaterializeONNXHostModelRegistryPass();
   vrc::registerFinalizeONNXHostPass();
   vrc::registerCleanupONNXHostSourcePass();
   vrc::registerEmitONNXHostMetadataPass();

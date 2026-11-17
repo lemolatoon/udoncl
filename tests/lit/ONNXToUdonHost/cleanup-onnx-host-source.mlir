@@ -3,6 +3,7 @@
 module attributes {
   udoncl.onnx_host_finalized,
   udoncl.onnx_host_globals_materialized,
+  udoncl.onnx_host_model_registry_materialized,
   udoncl.onnx_host_graph_validated,
   udoncl.onnx_host_plan = {}
 } {
@@ -44,6 +45,7 @@ module attributes {
 // CHECK-SAME: udoncl.onnx_host_finalized
 // CHECK-SAME: udoncl.onnx_host_source_cleaned
 // CHECK-NOT: udoncl.onnx_host_globals_materialized
+// CHECK-NOT: udoncl.onnx_host_model_registry_materialized
 // CHECK-NOT: udoncl.onnx_host_graph_validated
 // CHECK-NOT: udoncl.onnx_host_plan
 // CHECK-NOT: @__udon_onnx_add

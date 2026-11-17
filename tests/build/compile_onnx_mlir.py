@@ -78,6 +78,7 @@ class CompileONNXMLIRTests(unittest.TestCase):
                        '--udoncl-validate-onnx-host-graph',
                        '--udoncl-plan-onnx-host-graph',
                        '--udoncl-materialize-onnx-host-globals',
+                       '--udoncl-materialize-onnx-host-model-registry',
                        '--udoncl-finalize-onnx-host',
                        '--udoncl-cleanup-onnx-host-source',
                        '--emit-bytecode'):
@@ -89,6 +90,9 @@ class CompileONNXMLIRTests(unittest.TestCase):
                             '--udoncl-materialize-onnx-host-globals'))
         self.assertLess(
             command.index('--udoncl-materialize-onnx-host-globals'),
+            command.index('--udoncl-materialize-onnx-host-model-registry'))
+        self.assertLess(
+            command.index('--udoncl-materialize-onnx-host-model-registry'),
                         command.index('--udoncl-finalize-onnx-host'))
         self.assertLess(command.index('--udoncl-finalize-onnx-host'),
                         command.index('--udoncl-cleanup-onnx-host-source'))

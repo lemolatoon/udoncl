@@ -2,6 +2,7 @@
 
 module attributes {
   udoncl.onnx_host_globals_materialized,
+  udoncl.onnx_host_model_registry_materialized,
   udoncl.onnx_host_graph_validated
 } {
   func.func @main_graph(%input: tensor<1xf32>) -> tensor<1xf32> {

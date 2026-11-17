@@ -1,6 +1,7 @@
 #ifndef VRC_CONVERSION_ONNXTOUDONHOST_ONNXHOSTABI_H
 #define VRC_CONVERSION_ONNXTOUDONHOST_ONNXHOSTABI_H
 
+#include "mlir/IR/Types.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Twine.h"
 
@@ -8,6 +9,22 @@
 #include <string>
 
 namespace vrc {
+inline int32_t onnxHostDataType(mlir::Type type) {
+  if (type.isInteger(1) || type.isInteger(8))
+    return 1;
+  if (type.isInteger(32))
+    return 2;
+  if (type.isInteger(64))
+    return 3;
+  if (type.isF16())
+    return 4;
+  if (type.isBF16())
+    return 5;
+  if (type.isF32())
+    return 6;
+  return 0;
+}
+
 inline constexpr llvm::StringLiteral onnxHostOperatorScratchSymbol =
     "__udon_onnx_operator_scratch";
 inline constexpr llvm::StringLiteral onnxHostOperatorScratchOwnedSymbol =
