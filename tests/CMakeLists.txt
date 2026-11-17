@@ -1,4 +1,14 @@
 find_package(Python3 3.12 REQUIRED COMPONENTS Interpreter)
+configure_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/lit/lit.site.cfg.py.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/lit/lit.site.cfg.py"
+  @ONLY)
+add_test(NAME mlir-lit
+  COMMAND "${CMAKE_COMMAND}" -E env
+    "UDONCL_LIT_VRC_OPT=$<TARGET_FILE:vrc-opt>"
+    "UDONCL_LIT_FILECHECK=$<TARGET_FILE:FileCheck>"
+    "${Python3_EXECUTABLE}" -m lit.main -sv
+    "${CMAKE_CURRENT_BINARY_DIR}/lit")
 add_executable(host-storage-allocation-test
   analysis/host_storage_allocation.cpp)
 target_link_libraries(host-storage-allocation-test PRIVATE

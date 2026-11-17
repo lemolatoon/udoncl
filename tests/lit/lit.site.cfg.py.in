@@ -1,0 +1,10 @@
+import os
+
+config.udoncl_obj_root = r"@CMAKE_BINARY_DIR@"
+config.vrc_opt = os.environ["UDONCL_LIT_VRC_OPT"]
+config.filecheck = os.environ["UDONCL_LIT_FILECHECK"]
+
+lit_config.load_config(
+    config,
+    os.path.join(r"@CMAKE_CURRENT_SOURCE_DIR@", "lit.cfg.py"),
+)

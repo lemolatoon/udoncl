@@ -68,6 +68,7 @@ Install the pinned toolchains and model fixtures before configuring UdonCL:
 python -m pip install -r scripts/requirements-llvm.txt
 python -m pip install -r scripts/requirements-onnx.txt
 python -m pip install -r scripts/requirements-format.txt
+python -m pip install -r scripts/requirements-test.txt
 python scripts/install_llvm.py
 python scripts/install_llvm.py --check
 python scripts/install_onnx_mlir.py --jobs 2

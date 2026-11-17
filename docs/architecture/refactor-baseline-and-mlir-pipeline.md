@@ -854,14 +854,13 @@ compiler ABI semantics.
 Exit criterion: adding a generic artifact resource does not require editing a
 central importer or model-specific UI code.
 
-### Gate 6: Migrate and remove the legacy ONNX path
+### Gate 6: Remove the legacy ONNX path
 
-- Move generic MNIST lifecycle and U# numerical tests to the C++ ONNX path.
-- Move real TinyLlama components and conversation exports to the same path.
-- Move packaged examples to generated bindings.
-- Remove execution-plan generation/materialization, model-specific Python
+- Keep generic MNIST lifecycle, real TinyLlama components, conversation
+  exports, and packaged examples on the C++ ONNX-dialect path.
+- Delete execution-plan generation/materialization, model-specific Python
   providers, legacy Unity runtime/model assets, and MNIST-specific OpenCLAOT
-  paths only after replacement coverage is green.
+  paths. The legacy path is no longer a supported compatibility surface.
 
 Exit criterion: MNIST and real TinyLlama pass U# numerical tests without an
 `execution-plan.json` runtime.
@@ -872,7 +871,7 @@ Exit criterion: MNIST and real TinyLlama pass U# numerical tests without an
 - Do not change compiler ABI and Unity binding interpretation in one step.
 - Do not change allocator/storage lowering and Udon Assembly emission in one
   step.
-- Do not remove the legacy ONNX path before replacement U# numerical coverage.
+- Do not add new behavior to the legacy ONNX path while it is being removed.
 - Preserve CUDA-compatible UdonBLAS/UdonDNN public contracts.
 - Preserve current public CMake functions during migration.
 - Preserve Unity import transactions, domain-reload timing, and cleanup.
@@ -883,14 +882,15 @@ Exit criterion: MNIST and real TinyLlama pass U# numerical tests without an
 
 The first implementation slice should be deliberately structural:
 
-1. Add pipeline-level characterization tests that join the existing per-pass
-   fixtures.
-2. Extract static-resource analysis/materialization and Unity host recovery
+1. Add LLVM lit/FileCheck coverage for every MLIR pass boundary.
+2. Split `FinalizeONNXHost` into graph validation, planning, global
+   materialization, export materialization, runtime dispatch, metadata, and
+   source-graph cleanup passes. Keep one pass implementation per file.
+3. Move the resulting pass order into a named C++ pipeline.
+4. Delete the legacy execution-plan pipeline and its tests.
+5. Extract static-resource analysis/materialization and Unity host recovery
    into named pipeline builders without changing order.
-3. Make `vrccl.cpp` call those builders.
-4. Split `tests/CMakeLists.txt` and common test harnesses without changing the
-   registered test set.
-5. Then separate UdonATen's device target from UdonDNN.
+6. Make `vrccl.cpp` call those builders.
 
 This reduces hidden coupling and makes later ONNX, artifact, and Unity importer
 work observable without immediately changing runtime behavior.
