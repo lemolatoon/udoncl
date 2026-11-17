@@ -1793,8 +1793,9 @@ def outgoing_commits(
         candidates = git(root, *command).splitlines()
         if set(remote_sha) == {"0"} and local_commit not in candidates:
             candidates.append(local_commit)
-        eligible = set(git(root, "rev-list", f"{baseline}..{local_commit}").splitlines())
-        eligible.add(baseline)
+        eligible = set(
+            git(root, "rev-list", f"{baseline}..{local_commit}").splitlines()
+        )
         commits.update(commit for commit in candidates if commit in eligible)
     return sorted(commits)
 

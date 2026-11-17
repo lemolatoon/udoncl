@@ -191,21 +191,19 @@ with tempfile.TemporaryDirectory(prefix="udoncl precheck ") as temporary:
         f"{window_commits[-1]} refs/heads/main {window_commits[0]}"
     ]
     eligible = outgoing_commits(window_repository, window_update)
-    assert eligible == sorted(window_commits[116:])
-    assert len(eligible) == 25
+    assert eligible == sorted(window_commits[117:])
+    assert len(eligible) == 24
     boundary_update = [
         "refs/heads/boundary "
         f"{window_commits[116]} refs/heads/boundary {window_commits[115]}"
     ]
-    assert outgoing_commits(window_repository, boundary_update) == [
-        window_commits[116]
-    ]
+    assert outgoing_commits(window_repository, boundary_update) == []
     two_ref_updates = window_update + [
         "refs/heads/topic "
         f"{window_commits[120]} refs/heads/topic {window_commits[0]}"
     ]
     assert outgoing_commits(window_repository, two_ref_updates) == sorted(
-        window_commits[116:]
+        window_commits[117:]
     )
     unrelated_tree = run(
         ["git", "rev-parse", f"{window_commits[0]}^{{tree}}"], window_repository
@@ -234,11 +232,14 @@ with tempfile.TemporaryDirectory(prefix="udoncl precheck ") as temporary:
     )
     window_database = ValidationDatabase(window_cache / "queue.sqlite3")
     old_failure, _ = window_database.enqueue(window_repository, window_commits[10])
+    anchor_failure, _ = window_database.enqueue(
+        window_repository, window_commits[116]
+    )
     recent_failure, _ = window_database.enqueue(
         window_repository, window_commits[130]
     )
     with window_database.immediate():
-        for commit in (old_failure, recent_failure):
+        for commit in (old_failure, anchor_failure, recent_failure):
             window_database.connection.execute(
                 """UPDATE jobs SET state='failed', attempt=1, exit_code=1,
                      error_summary='test failure', finished_at=?
@@ -266,6 +267,7 @@ with tempfile.TemporaryDirectory(prefix="udoncl precheck ") as temporary:
     )
     assert filtered_failures.returncode == 1
     assert recent_failure in filtered_failures.stdout
+    assert anchor_failure not in filtered_failures.stdout
     assert old_failure not in filtered_failures.stdout
 
     template = temporary / "unity template"

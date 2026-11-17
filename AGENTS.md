@@ -47,22 +47,24 @@ These rules apply to the entire repository.
   python scripts/precheck_status.py --outgoing --failures --unreported
   ```
 
-  This reports only push-eligible commits: the tracked `.precheck-baseline`
-  commit and its outgoing descendants. Older database failures do not block
-  completion or pushing. Successful or pending jobs require no user-facing
-  report. On an eligible failure, immediately report the commit and concise
-  failure, then amend/rebase it or remove it from eligible history.
+  This reports only push-eligible commits: outgoing descendants strictly after
+  the tracked `.precheck-baseline` bootstrap anchor. The anchor is already
+  accepted, and older database failures do not block completion or pushing.
+  Successful or pending jobs require no user-facing report. On an eligible
+  failure, immediately report the commit and concise failure, then amend/rebase
+  it or remove it from eligible history.
 - Before pushing, wait for every push-eligible commit to pass:
 
   ```text
   python scripts/precheck_status.py --outgoing --wait --require-passed
   ```
 
-  The `pre-push` hook enforces the same bootstrap boundary. Every pushed tip
-  must descend from the full SHA in `.precheck-baseline`; unrelated histories
-  fail explicitly. Never push an eligible pending, failed, stale, or
-  unvalidated commit. Change the boundary only as an explicit reviewed policy
-  update after its commit has passed the full validation gate.
+  The `pre-push` hook enforces the same exclusive bootstrap anchor. Every
+  pushed tip must descend from the full SHA in `.precheck-baseline`; a tip equal
+  to the anchor has no eligible commits, and unrelated histories fail
+  explicitly. Never push an eligible pending, failed, stale, or unvalidated
+  commit. Change the anchor only as an explicit reviewed policy update after
+  its commit has passed the full validation gate.
 - Results are authoritative only in the service SQLite database and must match
   the exact commit SHA and validation fingerprint. Never edit the database or
   synthesize a pass. Amend, rebase, cherry-pick, and merge create new SHAs that
