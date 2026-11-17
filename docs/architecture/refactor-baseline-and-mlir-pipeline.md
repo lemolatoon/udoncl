@@ -1,0 +1,896 @@
+# Refactor Baseline and MLIR Pipeline
+
+Date: 2026-11-17
+
+This document records the current codebase structure, the actual MLIR
+transformation paths, the tests that protect them, and a staged boundary for a
+large refactor. It describes the repository as it exists today. It is not a
+replacement for the feature plans in the repository.
+
+## Executive summary
+
+The intended production architecture is:
+
+```text
+C host / OpenCL device / ONNX model
+             |
+             v
+       MLIR-based compiler
+             |
+      +------+------+
+      |             |
+      v             v
+ Udon Assembly   fragment shaders
+      |             |
+      +------+------+
+             v
+   versioned Unity artifact
+             |
+             v
+ generated U# binding and prefab
+```
+
+The main technical pieces exist, but their ownership is not yet clean:
+
+1. `tools/vrccl/vrccl.cpp` is both the CLI and the effective pipeline
+   specification. Several important transformations are ordinary helper
+   functions rather than registered MLIR passes.
+2. The C++ ONNX-dialect path and the Python execution-plan path coexist. They
+   overlap in host/session generation, static resources, artifact creation,
+   and Unity integration.
+3. Static device resource lowering is already well decomposed into small
+   passes, but the order and cross-pass attributes are mostly stringly typed.
+4. `FinalizeONNXHost.cpp`, `LowerScalar.cpp`, and
+   `PropagateDeviceResourceProvenance.cpp` each contain multiple internal
+   subsystems.
+5. The CMake facade, artifact schema, generated binding ABI, and Unity importer
+   each duplicate part of the compiler's domain model.
+6. UdonDNN currently packages UdonATen device kernels even though UdonATen
+   depends on UdonDNN at the public API level.
+
+The safest first refactor is therefore not a rewrite. First freeze the stage
+contracts with characterization tests, extract named pipeline builders from
+`vrccl.cpp`, and split test orchestration. Then repair library ownership and
+artifact authority one boundary at a time.
+
+## Repository structure and current ownership
+
+### Compiler dialects and transformations
+
+```text
+include/VRC/Dialect/                 TableGen dialect/op/type declarations
+lib/Dialect/                         dialect implementations
+include/VRC/Conversion/Passes.td     public pass names and options
+lib/Conversion/LLVMToHighLevel/      LLVM recovery
+lib/Conversion/BoundaryFrontend/     C/OpenCL boundary recovery and linking
+lib/Conversion/ONNXToUdonHost/       ONNX dialect lowering and host generation
+lib/Conversion/HighLevelToVRCGPU/    device lowering
+lib/Conversion/HighLevelToUdonHL/    generic host lowering
+lib/Conversion/VRCToUdonHL/          resource, async, and runtime lowering
+lib/Conversion/HostStoragePipeline/  final storage pipeline
+lib/Conversion/UdonHLToUdonAsm/      Udon Assembly IR lowering
+lib/Analysis/                        liveness and host storage allocation
+lib/Target/HLSL/                     HLSL/ShaderLab emission
+lib/Target/UdonAssembly/             textual Udon Assembly emission
+lib/ABI/Manifest/                    artifact ABI and generated U# binding
+```
+
+`tools/vrc-opt/vrc-opt.cpp` registers the standard and project dialects,
+passes, and pipelines. `tools/vrccl/vrccl.cpp` (`udonclc`) additionally owns
+input-mode selection, pass ordering, linking, semantic helper calls, artifact
+planning, and file emission.
+
+### Runtime and CUDA-shaped libraries
+
+```text
+UdonCL
+├── compiler and artifact production
+├── DeviceMemory/OpenCLAOT runtime
+└── native fragment/OpenCL test runtimes
+
+UdonBLAS ───────────────> UdonCL
+UdonDNN  ───────────────> UdonCL
+UdonATen ───────────────> UdonDNN ──> UdonCL
+UdonONNXOperators ──────> UdonCL
+UdonONNXRuntime ────────> UdonCL
+UdonTokenizers ─────────> UdonCL
+```
+
+The intended public direction is clear, but two implementation details violate
+it:
+
+- `cmake/UdonDNNConfig.cmake` packages both `libraries/udondnn/device` and
+  `libraries/udonaten/device`. UdonATen needs a real device target of its own.
+- ONNXOperators and ONNXRuntime privately rebuild or embed parts of the
+  OpenCLAOT/DeviceMemory runtime. Runtime composition should become explicit.
+
+Public UdonBLAS/UdonDNN signatures remain outside this refactor boundary. Their
+CUDA compatibility contract must be preserved while internal ownership is
+repaired.
+
+### Build and packaging
+
+`cmake/UdonCLConfig.cmake` currently owns all of the following:
+
+- public source-library APIs;
+- target graph traversal through custom `UDONCL_*` properties;
+- host/device compilation and linking;
+- ONNX host generation;
+- host storage capacity planning;
+- Unity artifact generation and validation.
+
+Runtime roles are partly recognized by source basenames such as `OpenCLAOT.c`
+and `DeviceMemory.c`. Those filenames currently act as an undocumented ABI.
+The replacement should use explicit module roles while keeping the public CMake
+functions as compatibility wrappers during migration.
+
+### Unity package
+
+`unity/Packages/com.lemolatoon.udoncl/Editor/UdonclArtifactImporter.cs` owns
+generic import infrastructure and application-specific construction in one
+file:
+
+- transaction and cleanup;
+- manifest interpretation;
+- Udon program assembly;
+- shader, material, texture, and render-texture creation;
+- generated U# source installation and compilation;
+- generic runtime prefab binding;
+- MNIST, TinyLlama, BLAS, DNN, and ATen demo construction;
+- TinyLlama chat UI.
+
+The target decomposition is:
+
+```text
+manifest parser/validator
+  -> import plan
+  -> transactional resource handlers
+  -> binding installer
+  -> generic prefab assembler
+  -> sample-owned recipes and UI
+```
+
+### Two ONNX architectures currently coexist
+
+The intended path is:
+
+```text
+ONNX protobuf
+  -> ONNX dialect
+  -> C++ MLIR passes
+  -> generic provider calls and C/OpenCL-style host
+  -> normal UdonCL pipeline
+  -> compiler-generated artifact and U# binding
+```
+
+The legacy path is still installed and tested:
+
+```text
+ONNX protobuf
+  -> runtime/onnx Python planner
+  -> execution-plan JSON and provider-specific materialization
+  -> UdonOnnxModelAsset/UdonOnnxRuntimeBehaviour
+```
+
+The legacy implementation is mainly in:
+
+- `runtime/onnx/udon_onnx.py`
+- `runtime/onnx/udon_pages.py`
+- `runtime/onnx/udon_weights.py`
+- `unity/Packages/com.lemolatoon.udoncl/Runtime/UdonOnnxModelAsset.cs`
+- `unity/Packages/com.lemolatoon.udoncl/Runtime/UdonOnnxRuntimeBehaviour.cs`
+
+It must not be removed until MNIST and real TinyLlama pass their U# numerical
+tests through the C++ ONNX-dialect/generated-binding path.
+
+## Actual MLIR transformation paths
+
+### 1. C and OpenCL source to LLVM dialect
+
+`cmake/UdonCLConfig.cmake` compiles host and device sources separately.
+
+```text
+Host C:
+  clang -target spir-unknown-unknown -x c -std=c11 -O1 -fno-inline
+
+Device OpenCL C:
+  clang -target spir-unknown-unknown -x cl -cl-std=CL1.2 -O0
+```
+
+The modules are linked by role before `udonclc` imports LLVM IR into MLIR.
+
+The registered C boundary recovery pipeline in
+`lib/Conversion/BoundaryFrontend/BoundaryFrontend.cpp` is:
+
+```text
+mem2reg
+-> vrc-raise-llvm-boundary-device
+-> vrc-raise-llvm-memory (raw fallback allowed)
+-> vrc-raise-llvm-raw-memory
+-> vrc-raise-llvm-to-scalar
+-> canonicalize
+-> vrc-link-c-boundary
+```
+
+The separately registered high-level recovery pipeline also lifts CFG to SCF:
+
+```text
+mem2reg
+-> RaiseLLVMMemory
+-> RaiseLLVMRawMemory
+-> RaiseLLVMToScalar
+-> LiftControlFlowToSCF
+```
+
+The Unity host path in `vrccl.cpp` reconstructs a similar sequence manually
+and adds SROA, export/calling-convention normalization, optional OpenCLAOT
+intrinsic lowering, and export restoration. This duplication is the first
+pipeline extraction target.
+
+### 2. ONNX protobuf to provider calls
+
+`scripts/compile_onnx_mlir.py` currently owns the complete pass order:
+
+```text
+udoncl-onnx importer
+  ONNX protobuf -> ONNX dialect
+
+onnx-mlir-opt
+  shape-inference
+  simplify-shape-related-ops-onnx
+  constprop-onnx
+  standard-func-return
+  canonicalize
+  udoncl-canonicalize-onnx-library-patterns
+  udoncl-infer-onnx-shapes
+  shape-inference
+  simplify-shape-related-ops-onnx
+  constprop-onnx
+  udoncl-infer-onnx-shapes
+  udoncl-materialize-onnx-constants
+  udoncl-externalize-onnx-initializers
+  udoncl-identify-onnx-sequence-state
+  udoncl-lower-onnx-to-host
+  canonicalize
+  udoncl-emit-bytecode
+
+udoncl-opt
+  udoncl-finalize-onnx-host
+  canonicalize
+  udoncl-emit-onnx-host-metadata
+  emit-bytecode
+```
+
+Python orchestrates tools; the semantic lowering is C++. However, keeping the
+pass order only in Python makes it an implicit compiler contract. This order
+should become a named C++ pipeline that both the script and tools call.
+
+`ONNXToUdonHostCore.cpp` converts ONNX operations to private provider
+declarations and ordinary `func.call` operations.
+
+Before, from `tests/frontend/onnx_to_udon_host.mlir`:
+
+```mlir
+%sum = "onnx.Add"(%left, %right)
+  : (tensor<1x4xf32>, tensor<1x4xf32>) -> tensor<1x4xf32>
+"onnx.Return"(%sum) : (tensor<1x4xf32>) -> ()
+```
+
+After, schematically:
+
+```mlir
+func.func private @__udon_onnx_add_0(...)
+  attributes {
+    udon.onnx.provider = "udonatenAdd",
+    udon.onnx.operation = "Add"
+  }
+
+%sum = func.call @__udon_onnx_add_0(%left, %right) : (...) -> ...
+func.return %sum : ...
+```
+
+Current ownership mapping includes:
+
+| ONNX operation | Provider |
+|---|---|
+| Add/Mul/Sub/Relu/Sigmoid/Tanh | UdonATen |
+| Conv/AveragePool/Softmax | UdonDNN |
+| Gemm/MatMul | UdonBLAS |
+| Microsoft MatMulNBits | UdonONNXOperators |
+| custom RmsNorm | UdonATen |
+| other supported ONNX operations | UdonONNXOperators |
+
+`ExternalizeONNXInitializers.cpp` replaces dense constant payloads with private
+static tensor symbols and `udoncl.static_tensors` metadata. The bytes are placed
+in the artifact's static-tensor store. `IdentifyONNXSequenceState.cpp` records
+KV-like state in `udoncl.onnx_sequence_states`.
+
+### 3. Provider graph to executable host
+
+`FinalizeONNXHost.cpp` currently performs all of these in one pass:
+
+- graph reading and validation;
+- static shape and ABI validation;
+- tensor lifetime and layout planning;
+- OpenCL context, queue, model, and session lifecycle generation;
+- public input/output and static buffer generation;
+- BLAS/DNN/ATen/ONNXOperators call generation;
+- initialize/write/run/read/dispose exports;
+- sequence/KV state API generation;
+- binding and device graph metadata.
+
+Representative output:
+
+```mlir
+func.func @udon_onnx_binding_create(...)
+func.func @udon_onnx_binding_bind_tensor(...)
+func.func @udon_onnx_binding_bind_all(...)
+func.func @udon_onnx_binding_enqueue_initialize(...)
+func.func @udon_onnx_binding_enqueue_run(...)
+func.func @udon_onnx_binding_dispose(...)
+
+%input = func.call @clCreateBuffer(...)
+  {vrc.static_public_resource_binding = {
+    public_access = "input",
+    public_index = 0,
+    ...
+  }}
+```
+
+The module carries contracts such as:
+
+```text
+udoncl.onnx_binding
+udoncl.onnx_device_graph
+udoncl.onnx_operator_counts
+udoncl.mutable_handle_capacity
+udoncl.mutable_buffer_bytes
+udoncl.onnx_lowering = "library-calls-v2"
+vrc.static_public_resource_binding
+vrc.async_effect = "may_suspend"
+udoncl.export
+```
+
+The pass should first be split internally into graph reader, validator, tensor
+plan, provider lowering, session API builder, sequence-state builder, and
+metadata builder. Creating several externally visible passes before those
+interfaces are stable would make the pipeline harder to change.
+
+### 4. Static device resource analysis
+
+The current analysis sequence in `vrccl.cpp` is:
+
+```text
+attachDeviceResourceOperandContracts        (ordinary helper)
+DiscoverStaticDeviceResources
+PlanStaticDeviceResourceContextSpecialization
+SpecializeStaticAllocationContexts
+DiscoverStaticDeviceResources               (specialized graph)
+PlanStaticDeviceResourceContextSpecialization
+InferStaticDeviceResourceRequirements
+PropagateDeviceResourceProvenance
+ResolveStaticTransferBindings
+ClassifyStaticPublicDeviceResources
+AnalyzeStaticDeviceResourcePersistence
+BuildStaticDeviceResourceInventory
+AllocateUnityTextures
+ResolveStaticPublicResourceAliases
+```
+
+Physicalization then runs:
+
+```text
+ResolveStaticKernelBindings
+ReconcileStaticUnityBuffers
+PlanStaticUnityBufferLayout
+MaterializeStaticLogicalBuffers
+MaterializeStaticDispatchResources
+PlanStaticPhysicalAllocationSpecialization
+SpecializeStaticPhysicalAllocationPaths
+MaterializeStaticPhysicalAllocations
+MaterializeStaticPhysicalResolves
+LowerCheckedAssignedBufferResolves
+MaterializeFixedPhysicalReleases
+EliminateDeadPhysicalAllocationFallbacks
+AssessStaticUnityResourceLowering
+```
+
+Most entries are already one pass per file. The refactor should preserve these
+small pass boundaries and extract only their orchestration first.
+
+#### Concrete resource identity example
+
+Before, from `tests/frontend/static_device_resources.mlir`:
+
+```mlir
+%buffer = func.call @clCreateBuffer() : () -> i32
+```
+
+After discovery:
+
+```mlir
+%buffer = func.call @clCreateBuffer()
+  {vrc.static_device_allocation_site = {
+    function = @RunDirect,
+    occurrence = 0,
+    primitive = "clCreateBuffer",
+    context_id = ...
+  }}
+```
+
+Calls receive context-sensitive edge identity:
+
+```mlir
+func.call @allocate()
+  {vrc.static_device_call_site = {
+    root = @RunRepeat,
+    caller = @RunRepeat,
+    callee = @allocate,
+    occurrence = 0,
+    context_id = ...
+  }}
+```
+
+Provenance is propagated through values, arguments, results, aggregates,
+memrefs, pointer cells, and calls using attributes including:
+
+```text
+vrc.static_device_argument_provenance
+vrc.static_device_function_result_provenance
+vrc.static_device_operand_provenance
+vrc.static_device_result_provenance
+```
+
+#### Concrete kernel binding example
+
+Before, from `tests/frontend/static_kernel_bindings.mlir`:
+
+```mlir
+%event = func.call @enqueue(%input, %output, %scale) : (...) -> !vrc.event
+```
+
+After binding resolution:
+
+```mlir
+%event = func.call @enqueue(%input, %output, %scale)
+  {vrc.static_kernel_binding_snapshot = {
+    kernel_id = 7,
+    resources = [
+      {operand_index = 0, resource_id = 0, access = "read"},
+      {operand_index = 1, resource_id = 1, access = "write"}
+    ],
+    scalars = [{operand_index = 2, type = i32}]
+  }}
+```
+
+The module-level handoff is:
+
+```text
+vrc.static_device_resource_inventory
+vrc.unity_texture_assignments
+vrc.static_public_resource_aliases
+vrc.static_unity_buffer_reconciliation
+-> vrc.static_unity_buffer_layout_plan
+```
+
+The final plan records heap slot, Udon type, logical and physical capacity,
+public access/index, and readiness.
+
+### 5. Async conversion and state machine generation
+
+The Unity host path first propagates `may_suspend`, optimizes, and clones the
+module. The async candidate runs:
+
+```text
+LowerHostToAsync
+MLIR AsyncFuncToAsyncRuntime
+PrepareUdonAsyncRuntime
+DiscoverHostRematerialization
+AllocateHostStorage
+AnalyzeHostStorage
+LowerUdonAsyncRuntime
+bindUnityBufferOperations                  (ordinary helper)
+```
+
+The synchronous candidate runs `LowerHostToUdonHL`, runtime intrinsic
+substitution, and buffer binding. The async clone is selected only if upload,
+readback, or await operations remain.
+
+Before, from `tests/frontend/host_to_async.mlir`:
+
+```mlir
+func.func private @wait_child(%event: !vrc.event, %value: i32) -> i32
+  attributes {vrc.async_effect = "may_suspend"} {
+  %status = vrc.await %event : (!vrc.event) -> i32
+  %result = arith.addi %value, %status : i32
+  return %result : i32
+}
+```
+
+After `LowerHostToAsync`, schematically:
+
+```mlir
+async.func private @wait_child(...) -> !async.value<i32> {
+  %token = vrc.event_as_async %event
+  ...
+  async.await ...
+}
+```
+
+After standard async-to-runtime and preparation, the IR contains coroutine
+suspension plus compiler metadata:
+
+```text
+vrc.async_frame_id
+vrc.async_resume_pc
+vrc.async_live_object_ids
+vrc.async_result_object_ids
+vrc.async_resume_routes
+vrc.async_object_state_encoding
+vrc.async_frame_store / vrc.async_frame_load
+vrc.async_object_payload_store / load
+```
+
+Persistent discovery creates requests such as:
+
+```mlir
+module attributes {
+  vrc.async_persistent_request_version = 1,
+  vrc.async_persistent_requests = [{
+    member_value_ids = [...],
+    priority = ...,
+    legal_alternatives = ["direct"],
+    ...
+  }]
+}
+```
+
+Host storage analysis turns these into placements with classification,
+interference, and storage key. `LowerUdonAsyncRuntime` finally produces
+`udonhl.async_enter`, `udonhl.async_resume_point`, event binding, and the
+completion entry. Standard async/coroutine operations must no longer remain.
+
+### 6. Host storage and UdonAsm
+
+The named finalization pipeline in
+`lib/Conversion/HostStoragePipeline/HostStoragePipeline.cpp` is:
+
+```text
+MaterializeFixedPhysicalReleases
+DiscoverAsyncPersistentStorage
+MaterializeAsyncPersistentStorage
+ExposeHostBackendLiteralUses
+DiscoverHostRematerialization
+FitHostStorageCapacity
+VerifyHostStorageCapacity
+LowerUdonHLToUdonAsm
+```
+
+`FitHostStorageCapacity` transactionally tries literal allocation and host
+storage materialization. Exact capacity is measured by lowering a clone of the
+module.
+
+Before, represented by `tests/codegen/udon.py` fixtures:
+
+```mlir
+func.func @add(%a: i32, %b: i32) -> i32 {
+  %sum = arith.addi %a, %b : i32
+  return %sum : i32
+}
+```
+
+After:
+
+```mlir
+module attributes {udonasm.stage = "scalar-v1", ...} {
+  udonasm.push "__0_arg0__param"
+  udonasm.push "__0_arg1__param"
+  udonasm.extern
+    "SystemInt32.__op_Addition__SystemInt32_SystemInt32__SystemInt32"
+  ...
+}
+```
+
+Memref loads/stores similarly become Udon extern calls such as
+`SystemSingleArray.__Get__...` and `SystemSingleArray.__Set__...`.
+
+`lib/Target/UdonAssembly/Emitter.cpp` requires the final data/export/stage
+metadata and emits `.data_start`, `.export`, `PUSH`, `POP`, `JUMP`, `EXTERN`,
+and `COPY`.
+
+### 7. Device lowering and shader emission
+
+Normal device code uses `LowerDeviceSingleInvocation`; gather-profile code uses
+`LowerGatherDevice`. Both produce the VRCGPU dialect:
+
+```mlir
+vrcgpu.kernel ... {
+  %resource = vrcgpu.resource ...
+  vrcgpu.pass ...
+  %x = vrcgpu.uniform_load ...
+  %packed = vrcgpu.raw_pack ...
+  vrcgpu.output ...
+}
+```
+
+`lib/Target/HLSL/Emitter.cpp` emits fragment HLSL and ShaderLab for each
+`vrcgpu.kernel`.
+
+### 8. Artifact and generated binding
+
+The final artifact combines:
+
+- `host.uasm`;
+- fragment shaders and kernel metadata;
+- device buffer layout;
+- raw heap initializer;
+- static tensor payloads;
+- `manifest.json`;
+- compiler-generated `binding.cs`;
+- optional intermediate MLIR and diagnostics.
+
+Artifact concepts are independently represented in C++, JSON construction,
+CMake, Python, and C#. The authoritative model should become a versioned typed
+artifact schema with shared golden fixtures. Compiler-generated bindings should
+be authoritative; Unity-side regeneration should be a temporary,
+schema-versioned compatibility path only.
+
+## Test topology and what it protects
+
+### Native and Python tests
+
+`tests/CMakeLists.txt` is the current inventory and registers more than one
+hundred tests. The major groups are:
+
+| Group | Main locations | Contract |
+|---|---|---|
+| analysis | `tests/analysis` | liveness, allocation, interference |
+| frontend | `tests/frontend` | individual passes, attributes, diagnostics |
+| codegen | `tests/codegen` | UdonAsm and textual Udon output |
+| runtime | `tests/runtime` | OpenCL/ONNX/stream/tokenizer host behavior |
+| boundary | `tests/boundary` | compiler bundles and native GPU execution |
+| build/package | `tests/build` | CMake consumers, ONNX tools, artifact schema |
+
+Static resource lowering has positive and negative fixtures for almost every
+pass. This is the strongest existing base for refactoring pass orchestration.
+
+Several large tests mix orchestration and assertions:
+
+- `tests/build/cmake_package.py`
+- `tests/codegen/udon.py`
+- `tests/boundary/onnx_runtime.py`
+- `tests/build/onnx_cpp_lowering.py`
+
+They should be split by stage contract, not merely by line count.
+
+### Unity EditMode/U# tests
+
+The package tests cover:
+
+- manifest validation and transactional import;
+- generated assets and bindings;
+- SDK UdonVM execution;
+- fragment dispatch and numerical comparison;
+- upload/readback and async pumping;
+- public U# controller APIs;
+- MNIST/TinyLlama and BLAS/DNN/operator lifecycles;
+- cleanup.
+
+Repeated helpers should move to a test-support assembly:
+
+```text
+artifact locator
+Udon VM harness
+texture and assigned-buffer fixture
+async command pump
+readback/oracle comparison
+generated asset cleanup tracker
+```
+
+### Commit validation service
+
+`scripts/precheck_service.py` owns the SQLite-backed queue, exact commit/tree
+identity, leases, worker heartbeats, isolated worktrees, logs, and result
+fingerprints. `scripts/precommit.py` owns the build, CTest, fixture packaging,
+isolated Unity MCP lifecycle, Unity tests, console validation, and cleanup.
+
+Each job uses:
+
+```text
+w/<slot>/r   exact commit worktree
+w/<slot>/b   build tree
+w/<slot>/o   compiler/test output
+w/<slot>/u   isolated Unity project
+```
+
+This external contract should remain stable while the service is internally
+split into database, coordinator, lease, workspace, native gate, Unity gate,
+and result persistence modules.
+
+## Main refactor risks and seams
+
+### P0: Pipeline order is hidden in `vrccl.cpp`
+
+Extract named builders before changing pass behavior:
+
+```text
+buildUnityHostRecoveryPipeline
+buildStaticDeviceResourceAnalysisPipeline
+buildStaticUnityResourceMaterializationPipeline
+buildUnityHostOptimizationPipeline
+buildUnityAsyncPipeline
+buildNativeDeviceRecoveryPipeline
+```
+
+`vrc-opt` and `udonclc` should call the same builders.
+
+### P0: ONNX production ownership is ambiguous
+
+Declare the C++ ONNX-dialect path authoritative. Restrict Python to model
+download/cache, protobuf and weight inspection, fixture generation, and
+packaging. Keep the legacy execution-plan implementation quarantined until
+generic MNIST and real TinyLlama U# numerical coverage replaces it.
+
+### P0: Library dependency direction is inverted
+
+Create a real UdonATen device target and remove ATen kernels from UdonDNN's
+device bundle. Centralize DeviceMemory/OpenCLAOT runtime ownership and make
+ONNX provider dependencies explicit.
+
+### P1: Important semantics live outside passes
+
+The following helpers should become passes or explicit compiler services with
+typed inputs/outputs:
+
+- `attachDeviceResourceOperandContracts`;
+- `propagateUnityHostAsyncEffects`;
+- `bindUnityBufferOperations`;
+- Unity OpenCL call normalization.
+
+### P1: Cross-pass attributes are string protocols
+
+Introduce shared typed parsers/verifiers, then dialect attributes or op
+interfaces, for:
+
+```text
+resource/allocation context identity
+resource provenance and inventory
+kernel binding snapshot
+Unity buffer layout
+async frame/object/resume route
+persistent storage request
+host storage placement
+```
+
+### P1: Static tensors use a compiler side channel
+
+Large payload attributes are removed before async cloning and retained in C++
+state for artifact packing. Replace this with lightweight IR symbols/references
+whose bytes live in an artifact store. A pipeline should be reproducible from
+the MLIR module plus referenced artifact store.
+
+### P1: Large implementation units
+
+Approximate current sizes and internal seams:
+
+| File | Size | Internal split |
+|---|---:|---|
+| `LowerScalar.cpp` | 6.1k lines | data layout, slots, scalar/cf/memref, externs, metadata |
+| `FinalizeONNXHost.cpp` | 5.0k | graph, tensor plan, providers, session, sequence state, metadata |
+| `PropagateDeviceResourceProvenance.cpp` | 4.1k | lattice, memory models, summaries, solver, receipt |
+| `tools/vrccl/vrccl.cpp` | 4.1k | CLI, pipelines, semantics, artifact writing |
+| `UdonclArtifactImporter.cs` | 3.7k | parser, transaction, resources, bindings, examples/UI |
+| `runtime/onnx/udon_onnx.py` | 3.4k | legacy planning and model-specific generation |
+| `OpenCLAOT.c` | 2.7k | runtime and operation-specific dispatch |
+
+Split these internally first. Only create additional externally visible passes
+after each new boundary has an invariant and a focused test.
+
+## Staged refactor plan
+
+### Gate 0: Freeze contracts
+
+- Document and version the artifact schema.
+- Add shared golden artifacts/bindings for Hello, one BLAS operation, one DNN
+  operation, generic MNIST, and one TinyLlama component.
+- Add pipeline-level characterization tests around the concrete stage
+  boundaries described above.
+- Record the authoritative ONNX path.
+- Keep the exact-commit background validation gate unchanged.
+
+Exit criterion: current output is reproducible and stage failures are local.
+
+### Gate 1: Refactor tests without behavior changes
+
+- Split `tests/CMakeLists.txt` into group files.
+- Split mega Python tests by stage contract.
+- Create Python tool/consumer/artifact assertion helpers.
+- Create the Unity test-support assembly.
+
+Exit criterion: same test inventory and semantics, with independently runnable
+stage tests.
+
+### Gate 2: Extract compiler pipeline libraries
+
+- Move pipeline order from `vrccl.cpp` to named builders.
+- Share builders between `vrc-opt`, `udoncl-opt`, and `udonclc` where valid.
+- Separate CLI parsing, compiler request, host frontend, device frontend,
+  static-resource pipeline, async pipeline, storage pipeline, and artifact
+  writer.
+- Move the ONNX pass order from Python into a named C++ pipeline.
+
+Exit criterion: tools produce schema-equivalent artifacts through shared
+pipeline builders.
+
+### Gate 3: Repair build and library ownership
+
+- Introduce explicit host/device/runtime/static-tensor/generated-MLIR module
+  roles in CMake.
+- Move ONNX import/lowering from configure-time side effects to explicit build
+  outputs.
+- Give UdonATen its own device target.
+- Centralize OpenCLAOT/DeviceMemory composition.
+- Preserve existing public CMake functions and BLAS/DNN C APIs as wrappers.
+
+Exit criterion: dependency direction is explicit and all existing consumers
+produce equivalent artifacts.
+
+### Gate 4: Establish artifact and binding authority
+
+- Introduce a versioned in-memory artifact model and serialization layer.
+- Extract artifact construction/serialization from `vrccl.cpp`.
+- Add C++ emitter/C# validator golden parity tests.
+- Make compiler-generated U# bindings authoritative.
+
+Exit criterion: Unity installs artifacts and bindings without reinterpreting
+compiler ABI semantics.
+
+### Gate 5: Decompose Unity import
+
+- Split parse/validate, plan, transaction, program, shader/material,
+  texture/static tensor, binding, and generic prefab services.
+- Move MNIST/TinyLlama and operation demo construction into sample recipes.
+
+Exit criterion: adding a generic artifact resource does not require editing a
+central importer or model-specific UI code.
+
+### Gate 6: Migrate and remove the legacy ONNX path
+
+- Move generic MNIST lifecycle and U# numerical tests to the C++ ONNX path.
+- Move real TinyLlama components and conversation exports to the same path.
+- Move packaged examples to generated bindings.
+- Remove execution-plan generation/materialization, model-specific Python
+  providers, legacy Unity runtime/model assets, and MNIST-specific OpenCLAOT
+  paths only after replacement coverage is green.
+
+Exit criterion: MNIST and real TinyLlama pass U# numerical tests without an
+`execution-plan.json` runtime.
+
+## Refactor safety rules
+
+- Do not change MLIR pipeline behavior and artifact serialization in one step.
+- Do not change compiler ABI and Unity binding interpretation in one step.
+- Do not change allocator/storage lowering and Udon Assembly emission in one
+  step.
+- Do not remove the legacy ONNX path before replacement U# numerical coverage.
+- Preserve CUDA-compatible UdonBLAS/UdonDNN public contracts.
+- Preserve current public CMake functions during migration.
+- Preserve Unity import transactions, domain-reload timing, and cleanup.
+- Each gate and each intermediate commit must pass exact-commit background
+  validation before the next behavior change.
+
+## Recommended first implementation slice
+
+The first implementation slice should be deliberately structural:
+
+1. Add pipeline-level characterization tests that join the existing per-pass
+   fixtures.
+2. Extract static-resource analysis/materialization and Unity host recovery
+   into named pipeline builders without changing order.
+3. Make `vrccl.cpp` call those builders.
+4. Split `tests/CMakeLists.txt` and common test harnesses without changing the
+   registered test set.
+5. Then separate UdonATen's device target from UdonDNN.
+
+This reduces hidden coupling and makes later ONNX, artifact, and Unity importer
+work observable without immediately changing runtime behavior.
