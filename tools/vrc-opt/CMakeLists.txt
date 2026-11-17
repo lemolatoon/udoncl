@@ -1,7 +1,10 @@
 add_llvm_executable(vrc-opt vrc-opt.cpp)
+target_sources(vrc-opt PRIVATE ${VRC_ONNX_LOCAL_PASS_SOURCES})
 set_target_properties(vrc-opt PROPERTIES OUTPUT_NAME udoncl-opt)
 llvm_update_compile_flags(vrc-opt)
 target_link_libraries(vrc-opt PRIVATE VRCHostStoragePipeline VRCConversionUdon VRCNativeTestLowering VRCBoundaryFrontend VRCONNXToUdonHost VRCONNXHostMetadata VRCManifest VRCConversionHost VRCConversionVRC VRCConversionDevice VRCLLVMToHighLevelMLIR MLIRGPUDialect MLIROptLib MLIRDLTIDialect MLIRArithDialect MLIRFuncDialect MLIRFuncInlinerExtension
   MLIRAsyncDialect MLIRAsyncTransforms MLIRControlFlowDialect MLIRUBDialect MLIRSCFDialect MLIRMemRefDialect MLIRLLVMDialect
-  VRCDialectUdonHL VRCDialectUdonAsm VRCDialectVRC VRCDialectVRCGPU)
+  MLIRRegisterAllPasses MLIRRegisterAllDialects MLIRRegisterAllExtensions
+  VRCDialectUdonHL VRCDialectUdonAsm VRCDialectVRC VRCDialectVRCGPU
+  ONNXMLIR::Dialect)
 vrc_configure_target(vrc-opt)

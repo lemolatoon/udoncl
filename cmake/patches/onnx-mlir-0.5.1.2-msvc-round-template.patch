@@ -1,0 +1,12 @@
+diff --git a/src/Conversion/ONNXToKrnl/ONNXToKrnlCommon.hpp b/src/Conversion/ONNXToKrnl/ONNXToKrnlCommon.hpp
+index 8a2ee1a4..d3398d53 100644
+--- a/src/Conversion/ONNXToKrnl/ONNXToKrnlCommon.hpp
++++ b/src/Conversion/ONNXToKrnl/ONNXToKrnlCommon.hpp
+@@ -295,3 +295,7 @@ GenOpMix getGenOpMix(mlir::Type elementType, mlir::Operation *op) {
++template <>
++GenOpMix getGenOpMix<mlir::ONNXRoundOp>(
++    mlir::Type elementType, mlir::Operation *op);
++
+ //===----------------------------------------------------------------------===//
+ // Type conversion from Onnx types to Krnl types:
+ //   - from Tensor type to the Standard dialect MemRef type

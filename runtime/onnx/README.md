@@ -162,9 +162,11 @@ udon-onnx model.onnx -o execution-plan.json --execution-provider operators
 ```
 
 The normal CMake Host path does not publish an execution-plan JSON.
-`udoncl_add_onnx_host_library` runs the locked importer, ONNX shape inference
-and canonicalization, then direct library-call lowering during configure. It
-exposes the generated C as an ordinary UdonCL Host source target:
+`udoncl_add_onnx_host_library` runs the locked protobuf importer, specializes
+public input shapes in the repository-built `udoncl-opt`, runs upstream ONNX
+shape inference and canonicalization, then performs direct library-call
+lowering in `udoncl-opt` during configure. It exposes the generated C as an
+ordinary UdonCL Host source target:
 
 ```cmake
 find_package(UdonCL 0.1 REQUIRED CONFIG)
@@ -177,10 +179,9 @@ The equivalent low-level CLI sequence is:
 
 ```text
 python compile_onnx_mlir.py model.onnx -o model.mlir \
-  --importer /path/to/udoncl-onnx --optimizer /path/to/onnx-mlir-opt
+  --frontend /path/to/udoncl-onnx-frontend
 python ../../scripts/compile_onnx_mlir.py model.onnx -o host.mlir \
-  --importer udoncl-onnx --optimizer udoncl-onnx-opt \
-  --host-optimizer udoncl-opt --lower-to-host
+  --frontend udoncl-onnx-frontend --lower-to-host
 ```
 
 Link `model_host` with the UdonBLAS, UdonDNN, and UdonATen targets required by

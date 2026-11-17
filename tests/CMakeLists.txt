@@ -7,7 +7,7 @@ add_test(NAME mlir-lit
   COMMAND "${CMAKE_COMMAND}" -E env
     "UDONCL_LIT_VRC_OPT=$<TARGET_FILE:vrc-opt>"
     "UDONCL_LIT_FILECHECK=$<TARGET_FILE:FileCheck>"
-    "${Python3_EXECUTABLE}" -m lit.main -sv
+    "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/run_lit.py" -sv
     "${CMAKE_CURRENT_BINARY_DIR}/lit")
 add_executable(host-storage-allocation-test
   analysis/host_storage_allocation.cpp)
@@ -730,22 +730,19 @@ add_test(NAME onnx-oracle-sidecar
     "${CMAKE_CURRENT_SOURCE_DIR}/build/onnx_oracle_sidecar.py"
     "${PROJECT_SOURCE_DIR}" "${PROJECT_BINARY_DIR}/tests/onnx-oracle-sidecar"
 )
-if(VRC_TEST_ONNX_IMPORTER AND VRC_TEST_ONNX_OPT)
-  add_test(NAME onnx-cpp-lowering
-    COMMAND Python3::Interpreter
-      "${CMAKE_CURRENT_SOURCE_DIR}/build/onnx_cpp_lowering.py"
-      "${VRC_TEST_ONNX_OPT}"
-      $<TARGET_FILE:vrc-opt>
-      "${CMAKE_CURRENT_SOURCE_DIR}/frontend/onnx_to_udon_host.mlir"
-  )
-  add_test(NAME tinyllama-real-onnx-frontend
-    COMMAND Python3::Interpreter
-      "${CMAKE_CURRENT_SOURCE_DIR}/boundary/tinyllama_onnx_frontend.py"
-      "${PROJECT_SOURCE_DIR}" "${PROJECT_BINARY_DIR}/tests/tinyllama-real-onnx-frontend"
-      "${VRC_TEST_ONNX_IMPORTER}" "${VRC_TEST_ONNX_OPT}"
-  )
-  set_tests_properties(tinyllama-real-onnx-frontend PROPERTIES TIMEOUT 600)
-endif()
+add_test(NAME onnx-cpp-lowering
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/build/onnx_cpp_lowering.py"
+    $<TARGET_FILE:vrc-opt>
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/onnx_to_udon_host.mlir"
+)
+add_test(NAME tinyllama-real-onnx-frontend
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/boundary/tinyllama_onnx_frontend.py"
+    "${PROJECT_SOURCE_DIR}" "${PROJECT_BINARY_DIR}/tests/tinyllama-real-onnx-frontend"
+    $<TARGET_FILE:udoncl-onnx-frontend>
+)
+set_tests_properties(tinyllama-real-onnx-frontend PROPERTIES TIMEOUT 600)
 add_test(NAME onnx-runtime-mnist
   COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/boundary/onnx_runtime.py"
     "${PROJECT_SOURCE_DIR}" "${PROJECT_BINARY_DIR}/tests/onnx-runtime-mnist"
@@ -834,8 +831,7 @@ add_test(NAME onnx-q4-assigned-buffer-component
     --make-program "${CMAKE_MAKE_PROGRAM}"
     --clang "${VRC_TEST_CLANG}"
     --llvm-link "${VRC_TEST_LLVM_LINK}"
-    --onnx-importer "${VRC_TEST_ONNX_IMPORTER}"
-    --onnx-opt "${VRC_TEST_ONNX_OPT}"
+    --onnx-frontend $<TARGET_FILE:udoncl-onnx-frontend>
 )
 set_tests_properties(onnx-q4-assigned-buffer-component PROPERTIES TIMEOUT 120)
 add_test(NAME onnx-rms-assigned-buffer-component
@@ -849,8 +845,7 @@ add_test(NAME onnx-rms-assigned-buffer-component
     --make-program "${CMAKE_MAKE_PROGRAM}"
     --clang "${VRC_TEST_CLANG}"
     --llvm-link "${VRC_TEST_LLVM_LINK}"
-    --onnx-importer "${VRC_TEST_ONNX_IMPORTER}"
-    --onnx-opt "${VRC_TEST_ONNX_OPT}"
+    --onnx-frontend $<TARGET_FILE:udoncl-onnx-frontend>
 )
 set_tests_properties(onnx-rms-assigned-buffer-component PROPERTIES TIMEOUT 120)
 add_test(NAME onnx-transpose-assigned-buffer-component
@@ -864,8 +859,7 @@ add_test(NAME onnx-transpose-assigned-buffer-component
     --make-program "${CMAKE_MAKE_PROGRAM}"
     --clang "${VRC_TEST_CLANG}"
     --llvm-link "${VRC_TEST_LLVM_LINK}"
-    --onnx-importer "${VRC_TEST_ONNX_IMPORTER}"
-    --onnx-opt "${VRC_TEST_ONNX_OPT}"
+    --onnx-frontend $<TARGET_FILE:udoncl-onnx-frontend>
 )
 set_tests_properties(onnx-transpose-assigned-buffer-component PROPERTIES TIMEOUT 120)
 add_test(NAME cmake-package-consumer
@@ -879,8 +873,7 @@ add_test(NAME cmake-package-consumer
     --compiler $<TARGET_FILE:vrccl>
     --clang "${VRC_TEST_CLANG}"
     --llvm-link "${VRC_TEST_LLVM_LINK}"
-    --onnx-importer "${VRC_TEST_ONNX_IMPORTER}"
-    --onnx-opt "${VRC_TEST_ONNX_OPT}"
+    --onnx-frontend $<TARGET_FILE:udoncl-onnx-frontend>
 )
 set_tests_properties(cmake-package-consumer PROPERTIES TIMEOUT 300)
 

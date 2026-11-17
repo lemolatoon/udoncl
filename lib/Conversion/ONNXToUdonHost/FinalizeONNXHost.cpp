@@ -1,3 +1,4 @@
+#include "ONNXHostGraph.h"
 #include "VRC/Conversion/Passes.h"
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
 #include "udoncl/udon_abi_layout.h"
@@ -56,6 +57,18 @@ struct GraphRecord {
   SmallVector<NodeRecord> nodes;
   SmallVector<SequenceStateRecord> sequenceStates;
 };
+
+struct HostPlanRecord {
+  bool deviceGraph;
+  SmallVector<unsigned> deviceStorage;
+  int64_t operatorScratchBytes;
+  SmallVector<int64_t> mutableBufferBytes;
+  int64_t mutableHandleCapacity;
+};
+
+constexpr StringLiteral hostGraphValidatedAttr =
+    "udoncl.onnx_host_graph_validated";
+constexpr StringLiteral hostGraphPlanAttr = "udoncl.onnx_host_plan";
 
 int64_t deviceAllocationBytes(const GraphRecord &graph, unsigned tensorIndex);
 
@@ -4858,28 +4871,127 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
   return success();
 }
 
+} // namespace
+
+LogicalResult validateONNXHostGraph(ModuleOp module) {
+  if (failed(readGraph(module)))
+    return failure();
+  module->setAttr(hostGraphValidatedAttr, UnitAttr::get(module.getContext()));
+  return success();
+}
+
+LogicalResult planONNXHostGraph(ModuleOp module) {
+  if (!module->hasAttr(hostGraphValidatedAttr))
+    return module.emitError(
+        "ONNX Host planning requires the graph validation pass");
+  auto graph = readGraph(module);
+  if (failed(graph))
+    return failure();
+  bool deviceGraph = supportsDeviceGraph(*graph);
+  if (!deviceGraph) {
+    for (const NodeRecord &node : graph->nodes) {
+      if (!StringRef(node.provider).starts_with("udonblas"))
+        continue;
+      return module.emitError()
+             << "ONNX Host fallback cannot call Device-pointer provider "
+             << node.provider << " for " << node.operation;
+    }
+  }
+  SmallVector<unsigned> storage = deviceStorage(*graph);
+  SmallVector<int64_t> bufferBytes = mutableBufferBytes(*graph, deviceGraph);
+  int64_t handleCapacity = bufferBytes.size();
+  if (handleCapacity <= 0 || handleCapacity > maximumMutableHandleCapacity)
+    return module.emitError()
+           << "ONNX graph requires " << handleCapacity
+           << " simultaneously live mutable handles; backend limit is "
+           << maximumMutableHandleCapacity;
+
+  Builder builder(module.getContext());
+  SmallVector<int64_t> storageIds;
+  storageIds.reserve(storage.size());
+  for (unsigned value : storage)
+    storageIds.push_back(value);
+  module->setAttr(
+      hostGraphPlanAttr,
+      builder.getDictionaryAttr({
+          builder.getNamedAttr("device_graph",
+                               builder.getBoolAttr(deviceGraph)),
+          builder.getNamedAttr("device_storage",
+                               builder.getDenseI64ArrayAttr(storageIds)),
+          builder.getNamedAttr(
+              "operator_scratch_bytes",
+              builder.getI64IntegerAttr(operatorScratchBytes(*graph))),
+          builder.getNamedAttr("mutable_buffer_bytes",
+                               builder.getDenseI64ArrayAttr(bufferBytes)),
+          builder.getNamedAttr("mutable_handle_capacity",
+                               builder.getI64IntegerAttr(handleCapacity)),
+      }));
+  return success();
+}
+
+namespace {
+FailureOr<HostPlanRecord> readHostPlan(ModuleOp module,
+                                       const GraphRecord &graph) {
+  auto plan = module->getAttrOfType<DictionaryAttr>(hostGraphPlanAttr);
+  auto deviceGraph = plan ? plan.getAs<BoolAttr>("device_graph") : BoolAttr();
+  auto storage = plan ? plan.getAs<DenseI64ArrayAttr>("device_storage")
+                      : DenseI64ArrayAttr();
+  auto scratch =
+      plan ? plan.getAs<IntegerAttr>("operator_scratch_bytes") : IntegerAttr();
+  auto bufferBytes = plan
+                         ? plan.getAs<DenseI64ArrayAttr>("mutable_buffer_bytes")
+                         : DenseI64ArrayAttr();
+  auto handleCapacity =
+      plan ? plan.getAs<IntegerAttr>("mutable_handle_capacity") : IntegerAttr();
+  if (!deviceGraph || !storage || !scratch || !bufferBytes || !handleCapacity ||
+      storage.size() != graph.tensors.size() || scratch.getInt() < 0 ||
+      handleCapacity.getInt() <= 0 ||
+      static_cast<int64_t>(bufferBytes.size()) != handleCapacity.getInt())
+    return module.emitError("ONNX Host graph plan is malformed");
+  HostPlanRecord result{deviceGraph.getValue(),
+                        {},
+                        scratch.getInt(),
+                        {},
+                        handleCapacity.getInt()};
+  result.deviceStorage.reserve(storage.size());
+  for (int64_t value : storage.asArrayRef()) {
+    if (value < 0 || value >= static_cast<int64_t>(graph.tensors.size()))
+      return module.emitError("ONNX Host graph plan has invalid storage");
+    result.deviceStorage.push_back(static_cast<unsigned>(value));
+  }
+  for (int64_t value : bufferBytes.asArrayRef())
+    result.mutableBufferBytes.push_back(value);
+  return result;
+}
+
 struct FinalizeONNXHostPass
     : impl::FinalizeONNXHostPassBase<FinalizeONNXHostPass> {
   void runOnOperation() override {
     ModuleOp module = getOperation();
+    if (!module->hasAttr(hostGraphValidatedAttr)) {
+      module.emitError(
+          "ONNX Host finalization requires the graph validation pass");
+      signalPassFailure();
+      return;
+    }
     auto graph = readGraph(module);
     if (failed(graph)) {
       signalPassFailure();
       return;
     }
-    module.getBody()->getOperations().clear();
-    bool deviceGraph = supportsDeviceGraph(*graph);
-    if (!deviceGraph) {
-      for (const NodeRecord &node : graph->nodes) {
-        if (!StringRef(node.provider).starts_with("udonblas"))
-          continue;
-        module.emitError()
-            << "ONNX Host fallback cannot call Device-pointer provider "
-            << node.provider << " for " << node.operation;
-        signalPassFailure();
-        return;
-      }
+    if (!module->hasAttr(hostGraphPlanAttr)) {
+      module.emitError(
+          "ONNX Host finalization requires the graph planning pass");
+      signalPassFailure();
+      return;
     }
+    auto plan = readHostPlan(module, *graph);
+    if (failed(plan)) {
+      signalPassFailure();
+      return;
+    }
+    module.getBody()->getOperations().clear();
+    bool deviceGraph = plan->deviceGraph;
     if (!deviceGraph)
       for (const TensorRecord &tensor : graph->tensors)
         createGlobal(module, tensor);
@@ -4892,7 +5004,7 @@ struct FinalizeONNXHostPass
       }
       createI32Global(module, hasRunSymbol);
     }
-    SmallVector<unsigned> deviceStorageMap = deviceStorage(*graph);
+    ArrayRef<unsigned> deviceStorageMap = plan->deviceStorage;
     for (auto [tensorIndex, tensor] : llvm::enumerate(graph->tensors)) {
       if (deviceGraph && deviceStorageMap[tensorIndex] == tensorIndex &&
           tensor.staticResourceId < 0 &&
@@ -4903,7 +5015,7 @@ struct FinalizeONNXHostPass
         createI32Global(module, deviceBufferOwnedSymbol(tensorIndex));
       }
     }
-    if (deviceGraph && operatorScratchBytes(*graph)) {
+    if (deviceGraph && plan->operatorScratchBytes) {
       createPointerGlobal(module, operatorScratchSymbol);
       createI32Global(module, operatorScratchOwnedSymbol);
     }
@@ -4930,16 +5042,8 @@ struct FinalizeONNXHostPass
       signalPassFailure();
       return;
     }
-    SmallVector<int64_t> bufferBytes = mutableBufferBytes(*graph, deviceGraph);
-    int64_t handleCapacity = bufferBytes.size();
-    if (handleCapacity <= 0 || handleCapacity > maximumMutableHandleCapacity) {
-      module.emitError()
-          << "ONNX graph requires " << handleCapacity
-          << " simultaneously live mutable handles; backend limit is "
-          << maximumMutableHandleCapacity;
-      signalPassFailure();
-      return;
-    }
+    ArrayRef<int64_t> bufferBytes = plan->mutableBufferBytes;
+    int64_t handleCapacity = plan->mutableHandleCapacity;
     attachBindingMetadata(module, *graph);
     attachDeviceGraphMetadata(module, *graph, deviceGraph);
     module->setAttr("udoncl.mutable_handle_capacity",
@@ -4949,6 +5053,8 @@ struct FinalizeONNXHostPass
                     DenseI64ArrayAttr::get(module.getContext(), bufferBytes));
     module->setAttr("udoncl.onnx_lowering",
                     StringAttr::get(module.getContext(), "library-calls-v2"));
+    module->removeAttr(hostGraphValidatedAttr);
+    module->removeAttr(hostGraphPlanAttr);
   }
 };
 } // namespace

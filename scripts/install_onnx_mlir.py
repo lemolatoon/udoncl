@@ -1,4 +1,4 @@
-"""Build the locked ONNX-MLIR frontend against UdonCL's LLVM/MLIR SDK.
+"""Build and publish the locked ONNX-MLIR SDK used by repo-owned tools.
 
 The published prefix is immutable and identified by a receipt. Source and build
 directories are retained outside the prefix so interrupted builds can resume.
@@ -17,6 +17,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 LOCK_PATH = ROOT / 'cmake/onnx-mlir-lock.json'
 RECEIPT = '.udoncl-onnx-mlir.json'
+SDK_CONFIG = ROOT / 'cmake/ONNXMLIRConfig.cmake'
 
 
 def run(command, cwd=None):
@@ -68,60 +69,89 @@ def ensure_windows_toolchain():
             os.environ[key] = value
 
 
-def patch_digest(lock):
+def patch_digest(lock, root=ROOT):
     digest = hashlib.sha256()
     for relative in lock['patches']:
         digest.update(relative.encode())
         digest.update(b'\0')
-        digest.update((ROOT / relative).read_bytes())
-        digest.update(b'\0')
-    return digest.hexdigest()
-
-
-def extension_digest(lock):
-    digest = hashlib.sha256()
-    for relative in lock.get('extension_sources', []):
-        digest.update(relative.encode())
-        digest.update(b'\0')
-        digest.update((ROOT / relative).read_bytes())
+        digest.update((root / relative).read_bytes())
         digest.update(b'\0')
     return digest.hexdigest()
 
 
 def lock_digest(lock):
-    encoded = json.dumps(lock, sort_keys=True, separators=(',', ':')).encode()
+    build_lock = {key: value for key, value in lock.items()
+                  if key != 'compatible_receipts'}
+    encoded = json.dumps(
+        build_lock, sort_keys=True, separators=(',', ':')).encode()
     return hashlib.sha256(encoded).hexdigest()
 
 
-def expected_receipt(lock, host):
+def sdk_config_digest(root=ROOT):
+    return hashlib.sha256((root / 'cmake/ONNXMLIRConfig.cmake').read_bytes()).hexdigest()
+
+
+def expected_receipt(lock, host, root=ROOT):
     return {
         'repository': lock['repository'],
         'revision': lock['revision'],
         'llvm_version': lock['llvm_version'],
         'platform': host,
         'lock_sha256': lock_digest(lock),
-        'patch_sha256': patch_digest(lock),
-        'extension_sha256': extension_digest(lock),
-        'targets': lock['targets'],
+        'patch_sha256': patch_digest(lock, root),
+        'build_targets': lock['build_targets'],
+        'sdk_version': lock['sdk_version'],
+        'sdk_config_sha256': sdk_config_digest(root),
     }
 
 
-def executable(prefix, host, name='onnx-mlir-opt'):
-    suffix = '.exe' if host == 'windows' else ''
-    return prefix / 'bin' / f'{name}{suffix}'
+def copy_sdk_headers(source, destination):
+    extensions = {'.def', '.h', '.hpp', '.inc', '.td'}
+    for path in source.rglob('*'):
+        if not path.is_file() or path.suffix not in extensions:
+            continue
+        output = destination / path.relative_to(source)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, output)
+
+
+def publishable_sdk_library(path):
+    """Reject executable import libraries left by an older shared build tree."""
+    return path.stem not in {'udoncl-onnx', 'onnx-mlir-opt'}
 
 
 def validate(prefix, lock, host):
     marker = prefix / RECEIPT
-    missing = [executable(prefix, host, name) for name in lock['targets']
-               if not executable(prefix, host, name).is_file()]
-    if missing:
+    sdk_required = [
+        prefix / 'include/onnx-mlir/src/Builder/FrontendDialectTransformer.hpp',
+        prefix / 'include/onnx-mlir/src/Dialect/ONNX/ONNXOps.hpp',
+        prefix / 'include/onnx-mlir/src/Dialect/ONNX/ONNXOps.hpp.inc',
+        prefix / 'include/onnx-mlir/src/Pass/Passes.hpp',
+        prefix / 'include/onnx-mlir/third_party/onnx/onnx/onnx_pb.h',
+        prefix / 'include/onnx-mlir/build/third_party/onnx/onnx/onnx-ml.pb.h',
+        prefix / 'include/onnx-mlir/build/_deps/protobuf-src/src/google/protobuf/message.h',
+        prefix / 'lib/cmake/ONNXMLIR/ONNXMLIRConfig.cmake',
+    ]
+    for component in ('OMBuilder', 'OMCompilerOptions', 'OMCompilerDialects',
+                      'OMONNXOps', 'OMShapeInferencePass',
+                      'OMONNXRewrite', 'OMONNXSimplifyShapeRelatedOps',
+                      'OMONNXStandardFuncReturnPass', 'onnx', 'protobuf'):
+        if component == 'protobuf':
+            library_name = 'libprotobuf.lib' if host == 'windows' else 'libprotobuf.a'
+        else:
+            library_name = (f'{component}.lib' if host == 'windows'
+                            else f'lib{component}.a')
+        sdk_required.append(prefix / 'lib' / library_name)
+    missing_sdk = [path for path in sdk_required if not path.is_file()]
+    if missing_sdk:
         raise RuntimeError(
-            'Incomplete ONNX-MLIR frontend: missing ' +
-            ', '.join(str(path) for path in missing))
+            'Incomplete ONNX-MLIR SDK: missing ' +
+            ', '.join(str(path) for path in missing_sdk))
     if not marker.is_file():
         raise RuntimeError(f'ONNX-MLIR frontend has no install receipt: {marker}')
-    if json.loads(marker.read_text(encoding='utf-8')) != expected_receipt(lock, host):
+    receipt = json.loads(marker.read_text(encoding='utf-8'))
+    if (receipt != expected_receipt(lock, host)
+            and receipt not in lock.get('compatible_receipts', [])):
         raise RuntimeError('ONNX-MLIR install receipt does not match the lock file')
 
 
@@ -176,7 +206,6 @@ def ensure_source(lock, source):
 def configure_command(lock, source, build, llvm_prefix, host, cmake):
     command = [cmake, '-S', source, '-B', build, '-G', 'Ninja',
                f'-DMLIR_DIR={llvm_prefix / "lib/cmake/mlir"}',
-               f'-DUDONCL_ONNX_EXTENSION_SOURCE_DIR={ROOT / "lib/Conversion/ONNXToUdonHost"}',
                '-DCMAKE_BUILD_TYPE=Release']
     command += [f'-D{name}={value}'
                 for name, value in lock['cmake_options'].items()]
@@ -188,7 +217,7 @@ def configure_command(lock, source, build, llvm_prefix, host, cmake):
 def install(lock, host, prefix, source, build, llvm_prefix, jobs):
     if prefix.exists():
         validate(prefix, lock, host)
-        print(f'Using previously verified ONNX-MLIR frontend: {prefix}')
+        print(f'Using previously verified ONNX-MLIR SDK: {prefix}')
         return
     llvm_receipt = llvm_prefix / '.udoncl-sdk.json'
     if not llvm_receipt.is_file():
@@ -207,29 +236,51 @@ def install(lock, host, prefix, source, build, llvm_prefix, jobs):
     ensure_source(lock, source)
     run(configure_command(lock, source, build, llvm_prefix, host, cmake))
     run([cmake, '--build', build, '--config', 'Release', '--parallel',
-         str(jobs), '--target', *lock['targets']])
-
-    built_tools = []
-    for name in lock['targets']:
-        built = build / 'Release/bin' / executable(Path(), host, name).name
-        if not built.is_file():
-            built = build / 'bin' / executable(Path(), host, name).name
-        if not built.is_file():
-            raise RuntimeError(f'ONNX-MLIR build did not produce {built.name}')
-        built_tools.append(built)
+         str(jobs), '--target', *lock['build_targets']])
+    library_root = build / 'Release/lib'
+    if not library_root.is_dir():
+        library_root = build / 'lib'
+    library_suffix = '.lib' if host == 'windows' else '.a'
+    built_libraries = sorted(library_root.glob(f'*{library_suffix}'))
+    dialect_library = ('OMONNXOps.lib' if host == 'windows'
+                       else 'libOMONNXOps.a')
+    if not any(path.name == dialect_library
+               for path in built_libraries):
+        raise RuntimeError('ONNX-MLIR build did not produce the dialect SDK')
     prefix.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(
             prefix=prefix.name + '.publish-', dir=prefix.parent) as temporary:
         publication = Path(temporary)
-        (publication / 'bin').mkdir()
-        for built in built_tools:
-            shutil.copy2(built, publication / 'bin' / built.name)
+        include_root = publication / 'include/onnx-mlir'
+        copy_sdk_headers(source / 'src', include_root / 'src')
+        # Preserve ONNX-MLIR's virtual source root. Its internal SDK headers
+        # include both `src/...` and `include/onnx-mlir/...` paths.
+        copy_sdk_headers(source / 'include', include_root / 'include')
+        copy_sdk_headers(build / 'src', include_root / 'src')
+        copy_sdk_headers(source / 'third_party/onnx',
+                         include_root / 'third_party/onnx')
+        copy_sdk_headers(build / 'third_party/onnx',
+                         include_root / 'build/third_party/onnx')
+        copy_sdk_headers(build / '_deps/protobuf-src/src',
+                         include_root / 'build/_deps/protobuf-src/src')
+        copy_sdk_headers(build / '_deps/absl-src',
+                         include_root / 'build/_deps/absl-src')
+        library_destination = publication / 'lib'
+        library_destination.mkdir()
+        for built in built_libraries:
+            if not publishable_sdk_library(built):
+                continue
+            shutil.copy2(built, library_destination / built.name)
+        config_destination = library_destination / 'cmake/ONNXMLIR'
+        config_destination.mkdir(parents=True)
+        shutil.copy2(SDK_CONFIG,
+                     config_destination / 'ONNXMLIRConfig.cmake')
         (publication / RECEIPT).write_text(
             json.dumps(expected_receipt(lock, host), indent=2) + '\n',
             encoding='utf-8')
         validate(publication, lock, host)
         publication.rename(prefix)
-    print(f'Installed ONNX-MLIR frontend: {prefix}')
+    print(f'Installed ONNX-MLIR SDK: {prefix}')
 
 
 def main():
@@ -254,7 +305,7 @@ def main():
             raise RuntimeError('ONNX-MLIR frontend supports x64 hosts')
         if args.check:
             validate(args.prefix.resolve(), lock, args.platform)
-            print(f'Validated ONNX-MLIR frontend: {args.prefix.resolve()}')
+            print(f'Validated ONNX-MLIR SDK: {args.prefix.resolve()}')
         else:
             install(lock, args.platform, args.prefix.resolve(),
                     args.source_dir.resolve(), args.build_dir.resolve(),

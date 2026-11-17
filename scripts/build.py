@@ -10,6 +10,8 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from msvc_environment import ensure_msvc_environment
 
+ROOT = Path(__file__).resolve().parents[1]
+
 
 def available_cpu_count():
     # Python 3.13+ accounts for process affinity directly. On Python 3.12,
@@ -38,8 +40,12 @@ def main():
     parser.add_argument('--target', nargs='+', help='Build selected targets')
     parser.add_argument('--config', help='Configuration for multi-config generators')
     args = parser.parse_args()
-    if args.build_dir:
-        ensure_msvc_environment(args.build_dir)
+    # Presets own their binary directory, so use the repository build root as
+    # the environment bootstrap directory without assuming a preset name or
+    # duplicating CMake's preset expansion. Explicit build directories retain
+    # the cache-aware Visual Studio discovery in msvc_environment.py.
+    ensure_msvc_environment(Path(args.build_dir) if args.build_dir
+                            else ROOT / 'build')
     command = ['cmake', '--build']
     command += [args.build_dir] if args.build_dir else ['--preset', args.preset or 'udoncl']
     jobs = available_cpu_count()

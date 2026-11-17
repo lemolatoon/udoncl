@@ -6,9 +6,9 @@ import subprocess
 import sys
 
 
-opt = Path(sys.argv[1])
-host_opt = Path(sys.argv[2])
-source = Path(sys.argv[3])
+host_opt = Path(sys.argv[1])
+source = Path(sys.argv[2])
+onnx_opt = [host_opt]
 
 
 def global_definition(text, symbol):
@@ -118,7 +118,7 @@ def assert_owned_global_lifecycle(text, symbol):
 
 result = subprocess.run(
     [
-        opt,
+        *onnx_opt,
         "--udoncl-infer-onnx-shapes",
         "--udoncl-lower-onnx-to-host",
         "--one-shot-bufferize=bufferize-function-boundaries copy-before-write",
@@ -140,13 +140,19 @@ assert "memref<1x4x16xf32" in result.stdout
 assert 'udon.onnx.provider = "udonatenRmsNorm"' in result.stdout
 assert "memref<1x4x8xf32" in result.stdout
 portable = subprocess.run(
-    [opt, "--udoncl-infer-onnx-shapes", "--udoncl-lower-onnx-to-host", source],
+    [*onnx_opt, "--udoncl-infer-onnx-shapes", "--udoncl-lower-onnx-to-host", source],
     text=True,
     capture_output=True,
     check=True,
 ).stdout
 host = subprocess.run(
-    [host_opt, "--udoncl-finalize-onnx-host", "-"],
+    [
+        host_opt,
+        "--udoncl-validate-onnx-host-graph",
+        "--udoncl-plan-onnx-host-graph",
+        "--udoncl-finalize-onnx-host",
+        "-",
+    ],
     input=portable,
     text=True,
     capture_output=True,
@@ -223,7 +229,7 @@ assert "count = 1 : i32" in output_binding_global
 
 sequence_state_source = source.with_name("onnx_sequence_state.mlir")
 sequence_state = subprocess.run(
-    [opt, "--udoncl-identify-onnx-sequence-state", sequence_state_source],
+    [*onnx_opt, "--udoncl-identify-onnx-sequence-state", sequence_state_source],
     text=True,
     capture_output=True,
 )
@@ -241,13 +247,22 @@ assert sequence_state.stdout.count("step = 1 : i64") == 2
 assert sequence_state.stdout.count("capacity = 8 : i64") == 2
 assert "input_index = 3 : i64" not in sequence_state.stdout
 
-sequence_state_after_standard_return = subprocess.run(
+sequence_state_standard_return = subprocess.run(
     [
-        opt,
+        host_opt,
         "--standard-func-return",
-        "--udoncl-identify-onnx-sequence-state",
         sequence_state_source,
     ],
+    text=True,
+    capture_output=True,
+)
+assert sequence_state_standard_return.returncode == 0, (
+    sequence_state_standard_return.stdout,
+    sequence_state_standard_return.stderr,
+)
+sequence_state_after_standard_return = subprocess.run(
+    [*onnx_opt, "--udoncl-identify-onnx-sequence-state", "-"],
+    input=sequence_state_standard_return.stdout,
     text=True,
     capture_output=True,
 )
@@ -265,7 +280,7 @@ assert sequence_state_after_standard_return.stdout.count("capacity = 8 : i64") =
 
 sequence_state_portable = subprocess.run(
     [
-        opt,
+        *onnx_opt,
         "--udoncl-identify-onnx-sequence-state",
         "--udoncl-lower-onnx-to-host",
         sequence_state_source,
@@ -275,7 +290,13 @@ sequence_state_portable = subprocess.run(
     check=True,
 ).stdout
 sequence_state_host = subprocess.run(
-    [host_opt, "--udoncl-finalize-onnx-host", "-"],
+    [
+        host_opt,
+        "--udoncl-validate-onnx-host-graph",
+        "--udoncl-plan-onnx-host-graph",
+        "--udoncl-finalize-onnx-host",
+        "-",
+    ],
     input=sequence_state_portable,
     text=True,
     capture_output=True,
@@ -318,7 +339,7 @@ assert "arith.constant 12 : i32" in advance_body
 static_source = source.parents[1] / "fixtures" / "onnx-static-initializer.mlir"
 static_portable = subprocess.run(
     [
-        opt,
+        *onnx_opt,
         "--udoncl-materialize-onnx-constants",
         "--udoncl-externalize-onnx-initializers",
         "--udoncl-lower-onnx-to-host",
@@ -339,7 +360,13 @@ assert "byte_strides = array<i64: 8, 4>" in static_portable
 assert "ad73b9acd6e4a74b2f5bb5386658ce3bb146cd040a1867646ab3b973fb6632b1" in static_portable
 assert "call @__udoncl_static_tensor_0" in static_portable
 static_host = subprocess.run(
-    [host_opt, "--udoncl-finalize-onnx-host", "-"],
+    [
+        host_opt,
+        "--udoncl-validate-onnx-host-graph",
+        "--udoncl-plan-onnx-host-graph",
+        "--udoncl-finalize-onnx-host",
+        "-",
+    ],
     input=static_portable,
     text=True,
     capture_output=True,
@@ -357,7 +384,7 @@ assert "call @clReleaseMemObject" not in static_host.stdout
 
 expand_source = source.with_name("onnx_expand_shape.mlir")
 expand_inferred = subprocess.run(
-    [opt, "--udoncl-infer-onnx-shapes", expand_source],
+    [*onnx_opt, "--udoncl-infer-onnx-shapes", expand_source],
     text=True,
     capture_output=True,
     check=True,
@@ -368,7 +395,7 @@ assert "-> tensor<*xf32>" not in expand_inferred
 alias_source = source.with_name("onnx_metadata_alias.mlir")
 alias_portable = subprocess.run(
     [
-        opt,
+        *onnx_opt,
         "--udoncl-infer-onnx-shapes",
         "--udoncl-materialize-onnx-constants",
         "--udoncl-lower-onnx-to-host",
@@ -385,7 +412,13 @@ assert "onnx.Where" not in alias_portable
 assert "onnx.Slice" not in alias_portable
 assert "onnx.Trilu" not in alias_portable
 alias_host = subprocess.run(
-    [host_opt, "--udoncl-finalize-onnx-host", "-"],
+    [
+        host_opt,
+        "--udoncl-validate-onnx-host-graph",
+        "--udoncl-plan-onnx-host-graph",
+        "--udoncl-finalize-onnx-host",
+        "-",
+    ],
     input=alias_portable,
     text=True,
     capture_output=True,
@@ -399,13 +432,19 @@ assert "call @__vrc_enqueue_udondnn" not in alias_host.stdout
 
 cast_source = source.with_name("onnx_cast.mlir")
 cast_portable = subprocess.run(
-    [opt, "--udoncl-infer-onnx-shapes", "--udoncl-lower-onnx-to-host", cast_source],
+    [*onnx_opt, "--udoncl-infer-onnx-shapes", "--udoncl-lower-onnx-to-host", cast_source],
     text=True,
     capture_output=True,
     check=True,
 ).stdout
 cast_host = subprocess.run(
-    [host_opt, "--udoncl-finalize-onnx-host", "-"],
+    [
+        host_opt,
+        "--udoncl-validate-onnx-host-graph",
+        "--udoncl-plan-onnx-host-graph",
+        "--udoncl-finalize-onnx-host",
+        "-",
+    ],
     input=cast_portable,
     text=True,
     capture_output=True,
@@ -418,13 +457,19 @@ assert "udoncl.onnx_device_unsupported = []" in cast_host.stdout
 
 unary_source = source.with_name("onnx_unary_device.mlir")
 unary_portable = subprocess.run(
-    [opt, "--udoncl-infer-onnx-shapes", "--udoncl-lower-onnx-to-host", unary_source],
+    [*onnx_opt, "--udoncl-infer-onnx-shapes", "--udoncl-lower-onnx-to-host", unary_source],
     text=True,
     capture_output=True,
     check=True,
 ).stdout
 unary_host = subprocess.run(
-    [host_opt, "--udoncl-finalize-onnx-host", "-"],
+    [
+        host_opt,
+        "--udoncl-validate-onnx-host-graph",
+        "--udoncl-plan-onnx-host-graph",
+        "--udoncl-finalize-onnx-host",
+        "-",
+    ],
     input=unary_portable,
     text=True,
     capture_output=True,
@@ -479,7 +524,7 @@ assert "call @udononnxNeg" not in unary_host.stdout
 transpose_source = source.with_name("onnx_transpose_device.mlir")
 transpose_portable = subprocess.run(
     [
-        opt,
+        *onnx_opt,
         "--udoncl-infer-onnx-shapes",
         "--udoncl-lower-onnx-to-host",
         transpose_source,
@@ -489,7 +534,13 @@ transpose_portable = subprocess.run(
     check=True,
 ).stdout
 transpose_host = subprocess.run(
-    [host_opt, "--udoncl-finalize-onnx-host", "-"],
+    [
+        host_opt,
+        "--udoncl-validate-onnx-host-graph",
+        "--udoncl-plan-onnx-host-graph",
+        "--udoncl-finalize-onnx-host",
+        "-",
+    ],
     input=transpose_portable,
     text=True,
     capture_output=True,
@@ -511,7 +562,7 @@ assert "call @udononnxTranspose" not in transpose_host.stdout
 slice_source = source.with_name("onnx_slice_device.mlir")
 slice_portable = subprocess.run(
     [
-        opt,
+        *onnx_opt,
         "--udoncl-infer-onnx-shapes",
         "--udoncl-materialize-onnx-constants",
         "--udoncl-lower-onnx-to-host",
@@ -522,7 +573,13 @@ slice_portable = subprocess.run(
     check=True,
 ).stdout
 slice_host = subprocess.run(
-    [host_opt, "--udoncl-finalize-onnx-host", "-"],
+    [
+        host_opt,
+        "--udoncl-validate-onnx-host-graph",
+        "--udoncl-plan-onnx-host-graph",
+        "--udoncl-finalize-onnx-host",
+        "-",
+    ],
     input=slice_portable,
     text=True,
     capture_output=True,
@@ -536,7 +593,7 @@ assert "call @udononnxSlice" not in slice_host.stdout
 large_pointwise_source = source.with_name("onnx_large_pointwise.mlir")
 large_pointwise_portable = subprocess.run(
     [
-        opt,
+        *onnx_opt,
         "--udoncl-infer-onnx-shapes",
         "--udoncl-lower-onnx-to-host",
         large_pointwise_source,
@@ -546,7 +603,13 @@ large_pointwise_portable = subprocess.run(
     check=True,
 ).stdout
 large_pointwise_host = subprocess.run(
-    [host_opt, "--udoncl-finalize-onnx-host", "-"],
+    [
+        host_opt,
+        "--udoncl-validate-onnx-host-graph",
+        "--udoncl-plan-onnx-host-graph",
+        "--udoncl-finalize-onnx-host",
+        "-",
+    ],
     input=large_pointwise_portable,
     text=True,
     capture_output=True,
@@ -594,7 +657,7 @@ assert all(arguments[1] != arguments[2] for arguments in activation_calls)
 gemm_bias_source = source.with_name("onnx_gemm_bias_device.mlir")
 gemm_bias_portable = subprocess.run(
     [
-        opt,
+        *onnx_opt,
         "--udoncl-infer-onnx-shapes",
         "--udoncl-lower-onnx-to-host",
         gemm_bias_source,
@@ -604,7 +667,13 @@ gemm_bias_portable = subprocess.run(
     check=True,
 ).stdout
 gemm_bias_host = subprocess.run(
-    [host_opt, "--udoncl-finalize-onnx-host", "-"],
+    [
+        host_opt,
+        "--udoncl-validate-onnx-host-graph",
+        "--udoncl-plan-onnx-host-graph",
+        "--udoncl-finalize-onnx-host",
+        "-",
+    ],
     input=gemm_bias_portable,
     text=True,
     capture_output=True,
@@ -639,7 +708,7 @@ assert gemm_bias_calls[0][2] != gemm_bias_calls[0][3]
 q4_source = source.with_name("onnx_matmul_nbits_device.mlir")
 q4_portable = subprocess.run(
     [
-        opt,
+        *onnx_opt,
         "--udoncl-materialize-onnx-constants",
         "--udoncl-externalize-onnx-initializers",
         "--udoncl-lower-onnx-to-host",
@@ -652,7 +721,13 @@ q4_portable = subprocess.run(
 assert "onnx.Constant" not in q4_portable
 assert "udoncl.static_tensors" in q4_portable
 q4_host = subprocess.run(
-    [host_opt, "--udoncl-finalize-onnx-host", "-"],
+    [
+        host_opt,
+        "--udoncl-validate-onnx-host-graph",
+        "--udoncl-plan-onnx-host-graph",
+        "--udoncl-finalize-onnx-host",
+        "-",
+    ],
     input=q4_portable,
     text=True,
     capture_output=True,
@@ -699,7 +774,7 @@ assert "cf.cond_br" in q4_host.stdout
 
 rmsnorm_source = source.with_name("onnx_rmsnorm_pattern.mlir")
 rmsnorm_canonical = subprocess.run(
-    [opt, "--udoncl-canonicalize-onnx-library-patterns", rmsnorm_source],
+    [*onnx_opt, "--udoncl-canonicalize-onnx-library-patterns", rmsnorm_source],
     text=True,
     capture_output=True,
     check=True,
@@ -710,7 +785,7 @@ assert 'domain_name = "com.lemolatoon.udoncl"' in rmsnorm_canonical
 rmsnorm_device_source = source.with_name("onnx_rmsnorm_device.mlir")
 rmsnorm_device_portable = subprocess.run(
     [
-        opt,
+        *onnx_opt,
         "--udoncl-materialize-onnx-constants",
         "--udoncl-externalize-onnx-initializers",
         "--udoncl-lower-onnx-to-host",
@@ -721,7 +796,13 @@ rmsnorm_device_portable = subprocess.run(
     check=True,
 ).stdout
 rmsnorm_device_host = subprocess.run(
-    [host_opt, "--udoncl-finalize-onnx-host", "-"],
+    [
+        host_opt,
+        "--udoncl-validate-onnx-host-graph",
+        "--udoncl-plan-onnx-host-graph",
+        "--udoncl-finalize-onnx-host",
+        "-",
+    ],
     input=rmsnorm_device_portable,
     text=True,
     capture_output=True,
@@ -760,7 +841,7 @@ assert "arith.constant 65536 : i32" in rmsnorm_device_host.stdout
 batched_matmul_source = source.with_name("onnx_batched_matmul.mlir")
 batched_matmul_portable = subprocess.run(
     [
-        opt,
+        *onnx_opt,
         "--udoncl-materialize-onnx-constants",
         "--udoncl-externalize-onnx-initializers",
         "--udoncl-lower-onnx-to-host",
@@ -771,7 +852,13 @@ batched_matmul_portable = subprocess.run(
     check=True,
 ).stdout
 batched_matmul_host = subprocess.run(
-    [host_opt, "--udoncl-finalize-onnx-host", "-"],
+    [
+        host_opt,
+        "--udoncl-validate-onnx-host-graph",
+        "--udoncl-plan-onnx-host-graph",
+        "--udoncl-finalize-onnx-host",
+        "-",
+    ],
     input=batched_matmul_portable,
     text=True,
     capture_output=True,
@@ -792,13 +879,19 @@ assert "call @udonblasSgemmStridedBatched" not in batched_matmul_host.stdout
 
 m1_attention_matmul_source = source.with_name("onnx_m1_attention_matmul.mlir")
 m1_attention_matmul_portable = subprocess.run(
-    [opt, "--udoncl-lower-onnx-to-host", m1_attention_matmul_source],
+    [*onnx_opt, "--udoncl-lower-onnx-to-host", m1_attention_matmul_source],
     text=True,
     capture_output=True,
     check=True,
 ).stdout
 m1_attention_matmul_host = subprocess.run(
-    [host_opt, "--udoncl-finalize-onnx-host", "-"],
+    [
+        host_opt,
+        "--udoncl-validate-onnx-host-graph",
+        "--udoncl-plan-onnx-host-graph",
+        "--udoncl-finalize-onnx-host",
+        "-",
+    ],
     input=m1_attention_matmul_portable,
     text=True,
     capture_output=True,
@@ -815,13 +908,19 @@ assert (
 
 concat_source = source.with_name("onnx_concat.mlir")
 concat_portable = subprocess.run(
-    [opt, "--udoncl-lower-onnx-to-host", concat_source],
+    [*onnx_opt, "--udoncl-lower-onnx-to-host", concat_source],
     text=True,
     capture_output=True,
     check=True,
 ).stdout
 concat_host = subprocess.run(
-    [host_opt, "--udoncl-finalize-onnx-host", "-"],
+    [
+        host_opt,
+        "--udoncl-validate-onnx-host-graph",
+        "--udoncl-plan-onnx-host-graph",
+        "--udoncl-finalize-onnx-host",
+        "-",
+    ],
     input=concat_portable,
     text=True,
     capture_output=True,
@@ -833,13 +932,19 @@ assert "call @udononnxConcat" not in concat_host.stdout
 
 concat_device_source = source.with_name("onnx_concat_device.mlir")
 concat_device_portable = subprocess.run(
-    [opt, "--udoncl-lower-onnx-to-host", concat_device_source],
+    [*onnx_opt, "--udoncl-lower-onnx-to-host", concat_device_source],
     text=True,
     capture_output=True,
     check=True,
 ).stdout
 concat_device_host = subprocess.run(
-    [host_opt, "--udoncl-finalize-onnx-host", "-"],
+    [
+        host_opt,
+        "--udoncl-validate-onnx-host-graph",
+        "--udoncl-plan-onnx-host-graph",
+        "--udoncl-finalize-onnx-host",
+        "-",
+    ],
     input=concat_device_portable,
     text=True,
     capture_output=True,
@@ -861,7 +966,7 @@ assert "call @udononnxConcat" not in concat_device_host.stdout
 gather_device_source = source.with_name("onnx_gather_device.mlir")
 gather_device_portable = subprocess.run(
     [
-        opt,
+        *onnx_opt,
         "--udoncl-materialize-onnx-constants",
         "--udoncl-externalize-onnx-initializers",
         "--udoncl-lower-onnx-to-host",
@@ -872,7 +977,13 @@ gather_device_portable = subprocess.run(
     check=True,
 ).stdout
 gather_device_host = subprocess.run(
-    [host_opt, "--udoncl-finalize-onnx-host", "-"],
+    [
+        host_opt,
+        "--udoncl-validate-onnx-host-graph",
+        "--udoncl-plan-onnx-host-graph",
+        "--udoncl-finalize-onnx-host",
+        "-",
+    ],
     input=gather_device_portable,
     text=True,
     capture_output=True,
@@ -893,13 +1004,19 @@ assert "call @udononnxGather" not in gather_device_host.stdout
 
 slice_source = source.with_name("onnx_slice.mlir")
 slice_portable = subprocess.run(
-    [opt, "--udoncl-materialize-onnx-constants", "--udoncl-lower-onnx-to-host", slice_source],
+    [*onnx_opt, "--udoncl-materialize-onnx-constants", "--udoncl-lower-onnx-to-host", slice_source],
     text=True,
     capture_output=True,
     check=True,
 ).stdout
 slice_host = subprocess.run(
-    [host_opt, "--udoncl-finalize-onnx-host", "-"],
+    [
+        host_opt,
+        "--udoncl-validate-onnx-host-graph",
+        "--udoncl-plan-onnx-host-graph",
+        "--udoncl-finalize-onnx-host",
+        "-",
+    ],
     input=slice_portable,
     text=True,
     capture_output=True,
@@ -912,7 +1029,7 @@ assert "call @udononnxSlice" not in slice_host.stdout
 expand_device_source = source.with_name("onnx_expand_device.mlir")
 expand_device_portable = subprocess.run(
     [
-        opt,
+        *onnx_opt,
         "--udoncl-materialize-onnx-constants",
         "--udoncl-lower-onnx-to-host",
         expand_device_source,
@@ -922,7 +1039,13 @@ expand_device_portable = subprocess.run(
     check=True,
 ).stdout
 expand_device_host = subprocess.run(
-    [host_opt, "--udoncl-finalize-onnx-host", "-"],
+    [
+        host_opt,
+        "--udoncl-validate-onnx-host-graph",
+        "--udoncl-plan-onnx-host-graph",
+        "--udoncl-finalize-onnx-host",
+        "-",
+    ],
     input=expand_device_portable,
     text=True,
     capture_output=True,
@@ -943,13 +1066,19 @@ assert "call @udononnxExpand" not in expand_device_host.stdout
 
 where_source = source.with_name("onnx_equal_where.mlir")
 where_portable = subprocess.run(
-    [opt, "--udoncl-materialize-onnx-constants", "--udoncl-lower-onnx-to-host", where_source],
+    [*onnx_opt, "--udoncl-materialize-onnx-constants", "--udoncl-lower-onnx-to-host", where_source],
     text=True,
     capture_output=True,
     check=True,
 ).stdout
 where_host = subprocess.run(
-    [host_opt, "--udoncl-finalize-onnx-host", "-"],
+    [
+        host_opt,
+        "--udoncl-validate-onnx-host-graph",
+        "--udoncl-plan-onnx-host-graph",
+        "--udoncl-finalize-onnx-host",
+        "-",
+    ],
     input=where_portable,
     text=True,
     capture_output=True,
@@ -964,13 +1093,19 @@ assert "call @udononnxWhere" not in where_host.stdout
 
 integer_add_source = source.with_name("onnx_integer_add.mlir")
 integer_add_portable = subprocess.run(
-    [opt, "--udoncl-lower-onnx-to-host", integer_add_source],
+    [*onnx_opt, "--udoncl-lower-onnx-to-host", integer_add_source],
     text=True,
     capture_output=True,
     check=True,
 ).stdout
 integer_add_host = subprocess.run(
-    [host_opt, "--udoncl-finalize-onnx-host", "-"],
+    [
+        host_opt,
+        "--udoncl-validate-onnx-host-graph",
+        "--udoncl-plan-onnx-host-graph",
+        "--udoncl-finalize-onnx-host",
+        "-",
+    ],
     input=integer_add_portable,
     text=True,
     capture_output=True,
@@ -985,13 +1120,19 @@ device_pointer_fallback_source = source.with_name(
     "onnx_device_pointer_fallback.mlir"
 )
 device_pointer_fallback_portable = subprocess.run(
-    [opt, "--udoncl-lower-onnx-to-host", device_pointer_fallback_source],
+    [*onnx_opt, "--udoncl-lower-onnx-to-host", device_pointer_fallback_source],
     text=True,
     capture_output=True,
     check=True,
 ).stdout
 device_pointer_fallback_host = subprocess.run(
-    [host_opt, "--udoncl-finalize-onnx-host", "-"],
+    [
+        host_opt,
+        "--udoncl-validate-onnx-host-graph",
+        "--udoncl-plan-onnx-host-graph",
+        "--udoncl-finalize-onnx-host",
+        "-",
+    ],
     input=device_pointer_fallback_portable,
     text=True,
     capture_output=True,
@@ -1005,13 +1146,19 @@ assert (
 
 scatter_source = source.with_name("onnx_scatter_nd.mlir")
 scatter_portable = subprocess.run(
-    [opt, "--udoncl-materialize-onnx-constants", "--udoncl-lower-onnx-to-host", scatter_source],
+    [*onnx_opt, "--udoncl-materialize-onnx-constants", "--udoncl-lower-onnx-to-host", scatter_source],
     text=True,
     capture_output=True,
     check=True,
 ).stdout
 scatter_host = subprocess.run(
-    [host_opt, "--udoncl-finalize-onnx-host", "-"],
+    [
+        host_opt,
+        "--udoncl-validate-onnx-host-graph",
+        "--udoncl-plan-onnx-host-graph",
+        "--udoncl-finalize-onnx-host",
+        "-",
+    ],
     input=scatter_portable,
     text=True,
     capture_output=True,
@@ -1024,13 +1171,19 @@ assert "call @udononnxScatterND" not in scatter_host.stdout
 
 gqa_source = source.with_name("onnx_m1_gqa_materialization.mlir")
 gqa_portable = subprocess.run(
-    [opt, "--udoncl-lower-onnx-to-host", gqa_source],
+    [*onnx_opt, "--udoncl-lower-onnx-to-host", gqa_source],
     text=True,
     capture_output=True,
     check=True,
 ).stdout
 gqa_host = subprocess.run(
-    [host_opt, "--udoncl-finalize-onnx-host", "-"],
+    [
+        host_opt,
+        "--udoncl-validate-onnx-host-graph",
+        "--udoncl-plan-onnx-host-graph",
+        "--udoncl-finalize-onnx-host",
+        "-",
+    ],
     input=gqa_portable,
     text=True,
     capture_output=True,
@@ -1050,13 +1203,19 @@ assert gqa_host.stdout.count(
 
 softmax_source = source.with_name("onnx_softmax.mlir")
 softmax_portable = subprocess.run(
-    [opt, "--udoncl-lower-onnx-to-host", softmax_source],
+    [*onnx_opt, "--udoncl-lower-onnx-to-host", softmax_source],
     text=True,
     capture_output=True,
     check=True,
 ).stdout
 softmax_host = subprocess.run(
-    [host_opt, "--udoncl-finalize-onnx-host", "-"],
+    [
+        host_opt,
+        "--udoncl-validate-onnx-host-graph",
+        "--udoncl-plan-onnx-host-graph",
+        "--udoncl-finalize-onnx-host",
+        "-",
+    ],
     input=softmax_portable,
     text=True,
     capture_output=True,
@@ -1074,7 +1233,7 @@ assert "call @udondnnSoftmaxForward" not in softmax_host.stdout
 
 unsupported = source.with_name("onnx_unsupported.mlir")
 result = subprocess.run(
-    [opt, "--verify-each=false", "--udoncl-lower-onnx-to-host", unsupported],
+    [*onnx_opt, "--verify-each=false", "--udoncl-lower-onnx-to-host", unsupported],
     text=True,
     capture_output=True,
 )

@@ -20,6 +20,9 @@ include(TableGen)
 include(AddLLVM)
 include(AddMLIR)
 include(CTest)
+find_package(ONNXMLIR CONFIG REQUIRED
+  PATHS "${PROJECT_SOURCE_DIR}/.deps/onnx-mlir/lib/cmake/ONNXMLIR"
+  NO_DEFAULT_PATH)
 option(VRC_ENABLE_NATIVE_FRAGMENT_TESTS "Run native Host binaries with software fragment rendering" ON)
 include(cmake/VRCBuildOptions.cmake)
 add_subdirectory(include/VRC/Dialect)
@@ -29,6 +32,7 @@ add_subdirectory(lib/Analysis)
 add_subdirectory(lib/Conversion/LLVMToHighLevel)
 add_subdirectory(lib/Conversion/BoundaryFrontend)
 add_subdirectory(lib/Conversion/ONNXToUdonHost)
+include(lib/Conversion/ONNXToUdonHost/UdonCLLocalSources.cmake)
 add_subdirectory(lib/Conversion/ONNXHostMetadata)
 add_subdirectory(lib/Conversion/HighLevelToUdonHL)
 add_subdirectory(lib/Conversion/VRCToUdonHL)
@@ -45,10 +49,12 @@ if(VRC_ENABLE_NATIVE_FRAGMENT_TESTS)
   add_subdirectory(lib/Testing/NativeOpenCL)
 endif()
 add_subdirectory(tools/vrc-opt)
+add_subdirectory(tools/onnx-frontend)
 add_subdirectory(tools/vrc-translate)
 add_subdirectory(tools/vrccl)
 include(GNUInstallDirs)
-install(TARGETS vrccl vrc-opt RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+install(TARGETS vrccl vrc-opt udoncl-onnx-frontend
+  RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
         COMPONENT UdonCLCompiler)
 install(FILES
   cmake/UdonCLConfig.cmake
@@ -115,16 +121,6 @@ install(FILES
   DESTINATION "${CMAKE_INSTALL_DATADIR}/udoncl/onnx"
   COMPONENT UdonCLCompiler)
 
-unset(VRC_TEST_ONNX_IMPORTER CACHE)
-unset(VRC_TEST_ONNX_OPT CACHE)
-find_program(VRC_TEST_ONNX_IMPORTER NAMES udoncl-onnx
-  HINTS
-    "${PROJECT_SOURCE_DIR}/.deps/onnx-mlir/bin"
-  NO_DEFAULT_PATH)
-find_program(VRC_TEST_ONNX_OPT NAMES udoncl-onnx-opt
-  HINTS
-    "${PROJECT_SOURCE_DIR}/.deps/onnx-mlir/bin"
-  NO_DEFAULT_PATH)
 install(FILES libraries/udonblas/include/udonblas.h
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
   COMPONENT UdonCLCompiler)

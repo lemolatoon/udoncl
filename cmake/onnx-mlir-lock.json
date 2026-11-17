@@ -4,11 +4,7 @@
   "upstream_branch": "0.5.1.2",
   "llvm_version": "23.1.4",
   "patches": [
-    "cmake/patches/onnx-mlir-0.5.1.2-msvc-template.patch",
-    "cmake/patches/onnx-mlir-0.5.1.2-udoncl-dimensions.patch",
-    "cmake/patches/onnx-mlir-0.5.1.2-matmul-nbits-shape.patch",
-    "cmake/patches/onnx-mlir-0.5.1.2-udoncl-bytecode.patch",
-    "cmake/patches/onnx-mlir-0.5.1.2-udoncl-plugin.patch"
+    "cmake/patches/onnx-mlir-0.5.1.2-msvc-round-template.patch"
   ],
   "submodules": {
     "third_party/benchmark": "a4cf155615c63e019ae549e31703bf367df5b471",
@@ -23,20 +19,14 @@
     "ONNX_MLIR_ENABLE_WERROR": "OFF",
     "ONNX_MLIR_BUILD_TESTS": "OFF"
   },
-  "targets": [
-    "onnx-mlir-opt",
-    "udoncl-onnx",
-    "udoncl-onnx-opt"
+  "build_targets": [
+    "OMBuilder",
+    "OMCompilerOptions",
+    "OMCompilerDialects",
+    "OMShapeInferencePass",
+    "OMONNXRewrite",
+    "OMONNXSimplifyShapeRelatedOps",
+    "OMONNXStandardFuncReturnPass"
   ],
-  "extension_sources": [
-    "lib/Conversion/ONNXToUdonHost/CMakeLists.txt",
-    "lib/Conversion/ONNXToUdonHost/CanonicalizeONNXLibraryPatterns.cpp",
-    "lib/Conversion/ONNXToUdonHost/ExternalizeONNXInitializers.cpp",
-    "lib/Conversion/ONNXToUdonHost/IdentifyONNXSequenceState.cpp",
-    "lib/Conversion/ONNXToUdonHost/InferONNXShapes.cpp",
-    "lib/Conversion/ONNXToUdonHost/MaterializeONNXConstants.cpp",
-    "lib/Conversion/ONNXToUdonHost/ONNXToUdonHost.h",
-    "lib/Conversion/ONNXToUdonHost/ONNXToUdonHostCore.cpp",
-    "lib/Conversion/ONNXToUdonHost/ONNXToUdonHostStandalone.cpp"
-  ]
+  "sdk_version": 3
 }

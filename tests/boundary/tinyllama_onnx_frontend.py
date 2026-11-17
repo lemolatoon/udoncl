@@ -10,8 +10,7 @@ import sys
 
 root = Path(sys.argv[1]).resolve()
 output = Path(sys.argv[2]).resolve()
-importer = Path(sys.argv[3]).resolve()
-optimizer = Path(sys.argv[4]).resolve()
+frontend = Path(sys.argv[3]).resolve()
 output.mkdir(parents=True, exist_ok=True)
 
 
@@ -29,8 +28,7 @@ canonical = output / "model.mlir"
 compiler.canonicalize(
     model,
     canonical,
-    importer,
-    optimizer,
+    frontend,
     dimensions=["batch_size=1", "sequence_length=4", "past_sequence_length=0"],
     input_shapes=["attention_mask=1,4"],
 )

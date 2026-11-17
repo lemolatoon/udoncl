@@ -232,34 +232,36 @@ pipeline extraction target.
 `scripts/compile_onnx_mlir.py` currently owns the complete pass order:
 
 ```text
-udoncl-onnx importer
+repo-private udoncl-onnx-frontend
   ONNX protobuf -> ONNX dialect
-
-onnx-mlir-opt
+  udoncl-specialize-onnx-inputs
+  udoncl-infer-onnx-shapes
   shape-inference
   simplify-shape-related-ops-onnx
   constprop-onnx
   standard-func-return
   canonicalize
+
   udoncl-canonicalize-onnx-library-patterns
-  udoncl-infer-onnx-shapes
-  shape-inference
-  simplify-shape-related-ops-onnx
-  constprop-onnx
   udoncl-infer-onnx-shapes
   udoncl-materialize-onnx-constants
   udoncl-externalize-onnx-initializers
   udoncl-identify-onnx-sequence-state
   udoncl-lower-onnx-to-host
-  canonicalize
-  udoncl-emit-bytecode
-
-udoncl-opt
+  udoncl-validate-onnx-host-graph
+  udoncl-plan-onnx-host-graph
   udoncl-finalize-onnx-host
   canonicalize
   udoncl-emit-onnx-host-metadata
   emit-bytecode
 ```
+
+ONNX-MLIR is an external SDK dependency. Its installed headers and libraries
+provide protobuf import, the ONNX dialect, and selected upstream passes to the
+repository-built private frontend. The SDK installs no compiler tool and
+contains no UdonCL-specific source. Dimension bindings and result-type repair
+remain typed repo-owned passes before upstream shape inference, so ordinary
+UdonCL pass changes do not rebuild the external SDK.
 
 Python orchestrates tools; the semantic lowering is C++. However, keeping the
 pass order only in Python makes it an implicit compiler contract. This order
@@ -318,6 +320,14 @@ KV-like state in `udoncl.onnx_sequence_states`.
 - initialize/write/run/read/dispose exports;
 - sequence/KV state API generation;
 - binding and device graph metadata.
+
+Graph validation and graph-level planning are now explicit prerequisites.
+`udoncl-validate-onnx-host-graph` validates the portable provider graph without
+rewriting it. `udoncl-plan-onnx-host-graph` then records backend selection,
+device-storage aliases, operator scratch capacity, and mutable-buffer capacity
+in `udoncl.onnx_host_plan`. Finalization consumes that plan before performing
+any destructive materialization. Global, export, runtime-dispatch, metadata,
+and source-graph cleanup remain to be split from finalization.
 
 Representative output:
 
@@ -877,6 +887,12 @@ Exit criterion: MNIST and real TinyLlama pass U# numerical tests without an
 - Preserve Unity import transactions, domain-reload timing, and cleanup.
 - Each gate and each intermediate commit must pass exact-commit background
   validation before the next behavior change.
+- Keep one MLIR pass implementation per source file and give every pass focused
+  lit/FileCheck coverage for its input, output, and diagnostics.
+- Use `RewritePattern`/`OpRewritePattern` for local rewrites and dialect
+  conversion infrastructure for legality-driven lowering. Reserve direct IR
+  walking for analysis; do not mutate several unrelated operation kinds from a
+  broad `walk()` callback.
 
 ## Recommended first implementation slice
 

@@ -13,6 +13,24 @@ def LowerONNXToUdonHostPass : Pass<"udoncl-lower-onnx-to-host", "mlir::ModuleOp"
   let summary = "Lower typed ONNX dialect operations directly to Udon library calls";
   let dependentDialects = ["mlir::arith::ArithDialect", "mlir::func::FuncDialect"];
 }
+def SpecializeONNXInputsPass : Pass<"udoncl-specialize-onnx-inputs", "mlir::ModuleOp"> {
+  let summary = "Specialize public ONNX tensor inputs from explicit dimension bindings";
+  let dependentDialects = ["mlir::func::FuncDialect"];
+  let options = [
+    Option<"dimensionBindings", "dimensions", "std::string", /*default=*/"",
+           "Semicolon-separated symbolic dimension bindings name=value">,
+    Option<"inputShapeBindings", "input-shapes", "std::string", /*default=*/"",
+           "Semicolon-separated public input shapes name=d0,d1,...">
+  ];
+}
+def ValidateONNXHostGraphPass : Pass<"udoncl-validate-onnx-host-graph", "mlir::ModuleOp"> {
+  let summary = "Validate the portable ONNX Host graph before materialization";
+  let dependentDialects = ["mlir::arith::ArithDialect", "mlir::func::FuncDialect"];
+}
+def PlanONNXHostGraphPass : Pass<"udoncl-plan-onnx-host-graph", "mlir::ModuleOp"> {
+  let summary = "Plan ONNX Host storage and backend selection before materialization";
+  let dependentDialects = ["mlir::arith::ArithDialect", "mlir::func::FuncDialect"];
+}
 def FinalizeONNXHostPass : Pass<"udoncl-finalize-onnx-host", "mlir::ModuleOp"> {
   let summary = "Lower portable ONNX library calls to the Udon Host ABI and session exports";
   let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "mlir::arith::ArithDialect", "mlir::cf::ControlFlowDialect", "mlir::func::FuncDialect", "mlir::LLVM::LLVMDialect"];

@@ -22,8 +22,7 @@ def main():
     parser.add_argument('--make-program', required=True)
     parser.add_argument('--clang', required=True)
     parser.add_argument('--llvm-link', required=True)
-    parser.add_argument('--onnx-importer', required=True)
-    parser.add_argument('--onnx-opt', required=True)
+    parser.add_argument('--onnx-frontend', required=True)
     args = parser.parse_args()
 
     root = args.root.resolve()
@@ -52,8 +51,7 @@ def main():
         f'-DUdonONNXRuntime_DIR={package_root / "UdonONNXRuntime"}',
         f'-DUDONCL_CLANG_EXECUTABLE={Path(args.clang).resolve()}',
         f'-DUDONCL_LLVM_LINK_EXECUTABLE={Path(args.llvm_link).resolve()}',
-        f'-DUDONCL_ONNX_IMPORTER_EXECUTABLE={Path(args.onnx_importer).resolve()}',
-        f'-DUDONCL_ONNX_OPT_EXECUTABLE={Path(args.onnx_opt).resolve()}',
+        f'-DUDONCL_ONNX_FRONTEND_EXECUTABLE={Path(args.onnx_frontend).resolve()}',
     ])
     run([args.cmake, '--build', consumer, '--target', 'onnx-rms-component'])
 

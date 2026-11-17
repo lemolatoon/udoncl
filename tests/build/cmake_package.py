@@ -245,8 +245,7 @@ def main():
     parser.add_argument('--compiler', required=True)
     parser.add_argument('--clang', required=True)
     parser.add_argument('--llvm-link', required=True)
-    parser.add_argument('--onnx-importer', required=True)
-    parser.add_argument('--onnx-opt', required=True)
+    parser.add_argument('--onnx-frontend', required=True)
     args = parser.parse_args()
 
     output = args.output.resolve()
@@ -548,8 +547,7 @@ def main():
         f'-DUdonONNXRuntime_DIR={udononnxruntime_package}',
         f'-DUDONCL_CLANG_EXECUTABLE={Path(args.clang).resolve()}',
         f'-DUDONCL_LLVM_LINK_EXECUTABLE={Path(args.llvm_link).resolve()}',
-        f'-DUDONCL_ONNX_IMPORTER_EXECUTABLE={Path(args.onnx_importer).resolve()}',
-        f'-DUDONCL_ONNX_OPT_EXECUTABLE={Path(args.onnx_opt).resolve()}',
+        f'-DUDONCL_ONNX_FRONTEND_EXECUTABLE={Path(args.onnx_frontend).resolve()}',
     ])
     generated_onnx_host = onnx_consumer / 'udoncl-onnx/mnist_host/host.mlir'
     assert generated_onnx_host.is_file()
@@ -606,8 +604,7 @@ def main():
                 f'-DUdonCL_DIR={package}',
                 f'-DUDONCL_CLANG_EXECUTABLE={Path(args.clang).resolve()}',
                 f'-DUDONCL_LLVM_LINK_EXECUTABLE={Path(args.llvm_link).resolve()}',
-                f'-DUDONCL_ONNX_IMPORTER_EXECUTABLE={Path(args.onnx_importer).resolve()}',
-                f'-DUDONCL_ONNX_OPT_EXECUTABLE={Path(args.onnx_opt).resolve()}',
+                f'-DUDONCL_ONNX_FRONTEND_EXECUTABLE={Path(args.onnx_frontend).resolve()}',
             ],
             diagnostic,
         )
@@ -631,8 +628,7 @@ def main():
         f'-DUdonONNXRuntime_DIR={udononnxruntime_package}',
         f'-DUDONCL_CLANG_EXECUTABLE={Path(args.clang).resolve()}',
         f'-DUDONCL_LLVM_LINK_EXECUTABLE={Path(args.llvm_link).resolve()}',
-        f'-DUDONCL_ONNX_IMPORTER_EXECUTABLE={Path(args.onnx_importer).resolve()}',
-        f'-DUDONCL_ONNX_OPT_EXECUTABLE={Path(args.onnx_opt).resolve()}',
+        f'-DUDONCL_ONNX_FRONTEND_EXECUTABLE={Path(args.onnx_frontend).resolve()}',
     ])
     run([
         args.cmake, '--build', onnx_mnist_consumer, '--target', 'onnx-mnist',
@@ -996,8 +992,7 @@ def main():
         f'-DUDONCL_TINYLLAMA_TOKENIZER_DIRECTORY={tokenizer_directory}',
         f'-DUDONCL_CLANG_EXECUTABLE={Path(args.clang).resolve()}',
         f'-DUDONCL_LLVM_LINK_EXECUTABLE={Path(args.llvm_link).resolve()}',
-        f'-DUDONCL_ONNX_IMPORTER_EXECUTABLE={Path(args.onnx_importer).resolve()}',
-        f'-DUDONCL_ONNX_OPT_EXECUTABLE={Path(args.onnx_opt).resolve()}',
+        f'-DUDONCL_ONNX_FRONTEND_EXECUTABLE={Path(args.onnx_frontend).resolve()}',
     ])
     run([
         args.cmake, '--build', onnx_transformer_consumer,

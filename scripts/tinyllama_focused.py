@@ -54,7 +54,6 @@ def prepare(case: str, root: Path, build: Path) -> dict[str, str]:
     consumer = root / f"build/tinyllama-focused-{case}"
     suffix = ".exe" if sys.platform == "win32" else ""
     llvm = root / ".deps/llvm23/bin"
-    onnx_mlir = root / ".deps/onnx-mlir/bin"
     make_program = cmake_cache_value(build, "CMAKE_MAKE_PROGRAM")
     run(
         [
@@ -70,8 +69,7 @@ def prepare(case: str, root: Path, build: Path) -> dict[str, str]:
             f"-DUDONCLC_EXECUTABLE={sdk / 'bin' / ('udonclc' + suffix)}",
             f"-DUDONCL_CLANG_EXECUTABLE={llvm / ('clang' + suffix)}",
             f"-DUDONCL_LLVM_LINK_EXECUTABLE={llvm / ('llvm-link' + suffix)}",
-            f"-DUDONCL_ONNX_IMPORTER_EXECUTABLE={onnx_mlir / ('udoncl-onnx' + suffix)}",
-            f"-DUDONCL_ONNX_OPT_EXECUTABLE={onnx_mlir / ('udoncl-onnx-opt' + suffix)}",
+            f"-DUDONCL_ONNX_FRONTEND_EXECUTABLE={sdk / 'bin' / ('udoncl-onnx-frontend' + suffix)}",
             f"-DUDONCL_TINYLLAMA_ONNX_MODEL={model}",
         ],
         cwd=root,

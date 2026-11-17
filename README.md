@@ -108,8 +108,11 @@ udoncl_add_unity_library(my-tokenizer-unity-library
 The repository keeps installed dependencies separate from build products:
 
 - `.deps/llvm23` is the verified LLVM/MLIR/Clang SDK.
-- `.deps/onnx-mlir` is the single supported installed ONNX-MLIR frontend prefix.
-  It must contain `onnx-mlir-opt`, `udoncl-onnx`, and `udoncl-onnx-opt`.
+- `.deps/onnx-mlir` is the single supported installed ONNX-MLIR SDK prefix.
+  It contains headers and libraries for protobuf import, the ONNX dialect, and
+  the required upstream ONNX transforms. It contains no UdonCL-specific pass or
+  compiler tool. The repository-built internal ONNX frontend owns import,
+  shape specialization, upstream transforms, and every UdonCL semantic pass.
 - `.deps/onnx-mlir-src` is a disposable checkout managed by the installer.
 - `.deps/models` contains checksum-addressed downloaded model fixtures.
 - `build/onnx-mlir` contains ONNX-MLIR intermediate build products.
@@ -118,8 +121,10 @@ The repository keeps installed dependencies separate from build products:
 Do not combine tools from older prefixes. In particular,
 `.deps/onnx-mlir-complete` is not a supported discovery location. The ONNX-MLIR
 installer validates an immutable receipt and does not overwrite an existing
-prefix. When the lock, patches, or embedded UdonCL conversion sources change,
-remove only the installed frontend prefix and rebuild it:
+prefix. Rebuild this dependency only when the pinned ONNX-MLIR revision,
+upstream compatibility patches, or SDK packaging schema changes. Changes to
+repo-owned UdonCL passes require only rebuilding UdonCL. To replace an obsolete
+tool-only prefix with the dialect SDK prefix, remove only that installed prefix:
 
 ```powershell
 Remove-Item -LiteralPath .\.deps\onnx-mlir -Recurse -Force
