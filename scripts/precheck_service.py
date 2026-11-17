@@ -26,6 +26,13 @@ import traceback
 import uuid
 
 
+if os.name == "nt":
+    import msvcrt
+    from ctypes import wintypes
+else:
+    import fcntl
+
+
 PROTOCOL_VERSION = 1
 HEARTBEAT_SECONDS = 2.0
 HEALTH_TIMEOUT_SECONDS = 10.0
@@ -34,6 +41,53 @@ ZERO_OID = "0" * 40
 PRECHECK_BASELINE_FILE = ".precheck-baseline"
 REMOVE_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.4, 0.8, 1.6, 3.2)
 SLOT_RECOVERY_COOLDOWN_SECONDS = 5.0
+
+
+if os.name == "nt":
+    class _JobObjectBasicLimitInformation(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_longlong),
+            ("PerJobUserTimeLimit", ctypes.c_longlong),
+            ("LimitFlags", wintypes.DWORD),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.c_size_t),
+            ("PriorityClass", wintypes.DWORD),
+            ("SchedulingClass", wintypes.DWORD),
+        ]
+
+    class _IoCounters(ctypes.Structure):
+        _fields_ = [
+            ("ReadOperationCount", ctypes.c_ulonglong),
+            ("WriteOperationCount", ctypes.c_ulonglong),
+            ("OtherOperationCount", ctypes.c_ulonglong),
+            ("ReadTransferCount", ctypes.c_ulonglong),
+            ("WriteTransferCount", ctypes.c_ulonglong),
+            ("OtherTransferCount", ctypes.c_ulonglong),
+        ]
+
+    class _JobObjectExtendedLimitInformation(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", _JobObjectBasicLimitInformation),
+            ("IoInfo", _IoCounters),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    class _JobObjectBasicAccountingInformation(ctypes.Structure):
+        _fields_ = [
+            ("TotalUserTime", ctypes.c_longlong),
+            ("TotalKernelTime", ctypes.c_longlong),
+            ("ThisPeriodTotalUserTime", ctypes.c_longlong),
+            ("ThisPeriodTotalKernelTime", ctypes.c_longlong),
+            ("TotalPageFaultCount", wintypes.DWORD),
+            ("TotalProcesses", wintypes.DWORD),
+            ("ActiveProcesses", wintypes.DWORD),
+            ("TotalTerminatedProcesses", wintypes.DWORD),
+        ]
 
 
 def console_python() -> Path:
@@ -138,6 +192,179 @@ def age_seconds(value: str | None) -> float:
         return float("inf")
     timestamp = dt.datetime.fromisoformat(value)
     return (dt.datetime.now(dt.timezone.utc) - timestamp).total_seconds()
+
+
+class CoordinatorLock:
+    """An OS-owned singleton lock for one repository coordinator."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.stream = None
+
+    def __enter__(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.stream = self.path.open("a+b")
+        self.stream.seek(0, os.SEEK_END)
+        if self.stream.tell() == 0:
+            self.stream.write(b"\0")
+            self.stream.flush()
+        self.stream.seek(0)
+        try:
+            if os.name == "nt":
+                msvcrt.locking(self.stream.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                fcntl.flock(self.stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as error:
+            self.stream.close()
+            self.stream = None
+            raise RuntimeError(
+                f"precheck coordinator already owns {self.path}"
+            ) from error
+        return self
+
+    def __exit__(self, *_):
+        if self.stream is None:
+            return
+        self.stream.seek(0)
+        if os.name == "nt":
+            msvcrt.locking(self.stream.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            fcntl.flock(self.stream.fileno(), fcntl.LOCK_UN)
+        self.stream.close()
+        self.stream = None
+
+
+def _create_windows_kill_job(process: subprocess.Popen):
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel32.SetInformationJobObject.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+    ]
+    kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    job = kernel32.CreateJobObjectW(None, None)
+    if not job:
+        raise ctypes.WinError(ctypes.get_last_error())
+    information = _JobObjectExtendedLimitInformation()
+    information.BasicLimitInformation.LimitFlags = 0x00002000
+    if not kernel32.SetInformationJobObject(
+        job, 9, ctypes.byref(information), ctypes.sizeof(information)
+    ):
+        error = ctypes.WinError(ctypes.get_last_error())
+        kernel32.CloseHandle(job)
+        raise error
+    if not kernel32.AssignProcessToJobObject(job, wintypes.HANDLE(process._handle)):
+        error = ctypes.WinError(ctypes.get_last_error())
+        kernel32.CloseHandle(job)
+        raise error
+    return job
+
+
+def _terminate_windows_job(job):
+    if not job:
+        return
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel32.QueryInformationJobObject.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    kernel32.QueryInformationJobObject.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.TerminateJobObject(job, 1)
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        accounting = _JobObjectBasicAccountingInformation()
+        if not kernel32.QueryInformationJobObject(
+            job,
+            1,
+            ctypes.byref(accounting),
+            ctypes.sizeof(accounting),
+            None,
+        ):
+            break
+        if accounting.ActiveProcesses == 0:
+            break
+        time.sleep(0.05)
+    kernel32.CloseHandle(job)
+
+
+def _process_group_alive(process_group: int) -> bool:
+    try:
+        os.killpg(process_group, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+class ContainedProcess:
+    """A subprocess whose descendants cannot outlive slot ownership."""
+
+    def __init__(self, command, **options):
+        if os.name == "nt":
+            options["creationflags"] = options.get("creationflags", 0) | getattr(
+                subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+            )
+        else:
+            options["start_new_session"] = True
+        self.process = subprocess.Popen([str(item) for item in command], **options)
+        self.windows_job = None
+        self.process_group = self.process.pid if os.name != "nt" else None
+        if os.name == "nt":
+            try:
+                self.windows_job = _create_windows_kill_job(self.process)
+            except Exception:
+                terminate_pid_tree(self.process.pid)
+                with contextlib.suppress(Exception):
+                    self.process.wait(timeout=10)
+                raise
+
+    @property
+    def pid(self):
+        return self.process.pid
+
+    def poll(self):
+        return self.process.poll()
+
+    def close(self):
+        if os.name == "nt":
+            _terminate_windows_job(self.windows_job)
+            self.windows_job = None
+        elif self.process_group is not None:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(self.process_group, signal.SIGTERM)
+            deadline = time.monotonic() + 10
+            while (
+                _process_group_alive(self.process_group)
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.05)
+            if _process_group_alive(self.process_group):
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(self.process_group, signal.SIGKILL)
+                deadline = time.monotonic() + 10
+                while (
+                    _process_group_alive(self.process_group)
+                    and time.monotonic() < deadline
+                ):
+                    time.sleep(0.05)
+                if _process_group_alive(self.process_group):
+                    raise RuntimeError(
+                        f"process group {self.process_group} survived SIGKILL"
+                    )
+            self.process_group = None
+        with contextlib.suppress(Exception):
+            self.process.wait(timeout=10)
 
 
 class ValidationDatabase:
@@ -251,7 +478,12 @@ class ValidationDatabase:
     def acquire_service(self, token: str):
         with self.immediate():
             row = self.service_row()
-            if row and row["token"] != token and self.service_healthy():
+            if (
+                row
+                and row["token"] != token
+                and row["hostname"] == socket.gethostname()
+                and process_alive(row["pid"])
+            ):
                 raise RuntimeError(
                     f"precheck coordinator is already running as pid {row['pid']}"
                 )
@@ -275,10 +507,10 @@ class ValidationDatabase:
             )
 
     def heartbeat_service(self, token: str):
-        self.connection.execute(
+        return bool(self.connection.execute(
             "UPDATE service SET heartbeat_at=?, pid=? WHERE singleton=1 AND token=?",
             (now(), os.getpid(), token),
-        )
+        ).rowcount)
 
     def release_service(self, token: str):
         self.connection.execute(
@@ -1061,32 +1293,51 @@ def recover_orphan_workers(
 
 def coordinator(root: Path, cache_root: Path, jobs: int, once: bool):
     cache_root.mkdir(parents=True, exist_ok=True)
+    with CoordinatorLock(cache_root / "coordinator.lock"):
+        return _coordinator_locked(root, cache_root, jobs, once)
+
+
+def _coordinator_locked(root: Path, cache_root: Path, jobs: int, once: bool):
     database = ValidationDatabase(cache_root / "queue.sqlite3")
     token = uuid.uuid4().hex
     database.acquire_service(token)
+    stopping = threading.Event()
+    ownership_lost = threading.Event()
+
+    def heartbeat_service():
+        heartbeat_database = ValidationDatabase(cache_root / "queue.sqlite3")
+        try:
+            while not stopping.wait(HEARTBEAT_SECONDS):
+                if not heartbeat_database.heartbeat_service(token):
+                    ownership_lost.set()
+                    stopping.set()
+                    return
+        finally:
+            heartbeat_database.close()
+
+    heartbeat_thread = threading.Thread(target=heartbeat_service, daemon=True)
+    heartbeat_thread.start()
     recover_orphan_workers(database, cache_root)
     database.recover()
-    stopping = False
 
     def stop_service(*_):
-        nonlocal stopping
-        stopping = True
+        stopping.set()
 
     signal.signal(signal.SIGTERM, stop_service)
     if hasattr(signal, "SIGINT"):
         signal.signal(signal.SIGINT, stop_service)
-    active: dict[int, tuple[subprocess.Popen, str, str]] = {}
+    active: dict[int, tuple[ContainedProcess, str, str]] = {}
     slot_retry_after: dict[int, float] = {}
     try:
-        while not stopping:
-            database.heartbeat_service(token)
+        while not stopping.is_set():
             if database.stop_requested(token):
-                stopping = True
+                stopping.set()
                 continue
             for slot, (process, commit, worker_token) in list(active.items()):
                 code = process.poll()
                 if code is None:
                     continue
+                process.close()
                 active.pop(slot)
                 row = database.connection.execute(
                     "SELECT state FROM jobs WHERE commit_sha=?", (commit,)
@@ -1143,16 +1394,7 @@ def coordinator(root: Path, cache_root: Path, jobs: int, once: bool):
                     "--token",
                     worker_token,
                 ]
-                process_options = {"cwd": root}
-                if os.name == "nt":
-                    process_options["creationflags"] = getattr(
-                        subprocess, "CREATE_NEW_PROCESS_GROUP", 0
-                    )
-                else:
-                    process_options["start_new_session"] = True
-                process = subprocess.Popen(
-                    [str(item) for item in command], **process_options
-                )
+                process = ContainedProcess(command, cwd=root)
                 database.set_worker_pid(commit, worker_token, process.pid)
                 active[slot] = (process, commit, worker_token)
             queued = database.connection.execute(
@@ -1162,12 +1404,16 @@ def coordinator(root: Path, cache_root: Path, jobs: int, once: bool):
                 break
             time.sleep(0.5)
     finally:
+        stopping.set()
         if active:
             for process, _, _ in active.values():
                 with contextlib.suppress(Exception):
-                    terminate_process_tree(process)
+                    process.close()
+        heartbeat_thread.join(timeout=5)
         database.release_service(token)
         database.close()
+    if ownership_lost.is_set():
+        raise RuntimeError("precheck coordinator lost database ownership")
 
 
 def start_background(root: Path, cache_root: Path, jobs: int):
@@ -1176,6 +1422,12 @@ def start_background(root: Path, cache_root: Path, jobs: int):
         database.close()
         return
     database.close()
+    if os.name == "nt" and (cache_root / "service-enabled").is_file():
+        # The installed fallback supervisor is the sole owner of coordinator
+        # startup. It restarts the coordinator within five seconds; spawning a
+        # detached coordinator here would race that restart.
+        wait_for_service(cache_root, timeout=15)
+        return
     cache_root.mkdir(parents=True, exist_ok=True)
     log = (cache_root / "service.log").open("a", encoding="utf-8")
     command = [
