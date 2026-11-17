@@ -19,8 +19,12 @@ struct ValidateONNXHostGraphPass
   }
 
   void runOnOperation() override {
-    if (failed(validateONNXHostGraph(getOperation())))
+    ModuleOp module = getOperation();
+    if (failed(readONNXHostGraph(module))) {
       signalPassFailure();
+      return;
+    }
+    module->setAttr(hostGraphValidatedAttr, UnitAttr::get(module.getContext()));
   }
 };
 } // namespace

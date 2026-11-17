@@ -1,4 +1,5 @@
 #include "ONNXHostGraph.h"
+#include "ONNXHostPlan.h"
 #include "VRC/Conversion/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -19,8 +20,62 @@ struct PlanONNXHostGraphPass
   }
 
   void runOnOperation() override {
-    if (failed(planONNXHostGraph(getOperation())))
+    ModuleOp module = getOperation();
+    if (!module->hasAttr(hostGraphValidatedAttr)) {
+      module.emitError("ONNX Host planning requires the graph validation pass");
       signalPassFailure();
+      return;
+    }
+    auto graph = readONNXHostGraph(module);
+    if (failed(graph)) {
+      signalPassFailure();
+      return;
+    }
+    bool deviceGraph = supportsDeviceGraph(*graph);
+    if (!deviceGraph) {
+      for (const NodeRecord &node : graph->nodes) {
+        if (!StringRef(node.provider).starts_with("udonblas"))
+          continue;
+        module.emitError()
+            << "ONNX Host fallback cannot call Device-pointer provider "
+            << node.provider << " for " << node.operation;
+        signalPassFailure();
+        return;
+      }
+    }
+    SmallVector<unsigned> storage = deviceStorage(*graph);
+    SmallVector<int64_t> bufferBytes = mutableBufferBytes(*graph, deviceGraph);
+    int64_t handleCapacity = bufferBytes.size();
+    constexpr int64_t maximumMutableHandleCapacity = 512;
+    if (handleCapacity <= 0 || handleCapacity > maximumMutableHandleCapacity) {
+      module.emitError()
+          << "ONNX graph requires " << handleCapacity
+          << " simultaneously live mutable handles; backend limit is "
+          << maximumMutableHandleCapacity;
+      signalPassFailure();
+      return;
+    }
+
+    Builder builder(module.getContext());
+    SmallVector<int64_t> storageIds;
+    storageIds.reserve(storage.size());
+    for (unsigned value : storage)
+      storageIds.push_back(value);
+    module->setAttr(
+        hostGraphPlanAttr,
+        builder.getDictionaryAttr({
+            builder.getNamedAttr("device_graph",
+                                 builder.getBoolAttr(deviceGraph)),
+            builder.getNamedAttr("device_storage",
+                                 builder.getDenseI64ArrayAttr(storageIds)),
+            builder.getNamedAttr(
+                "operator_scratch_bytes",
+                builder.getI64IntegerAttr(operatorScratchBytes(*graph))),
+            builder.getNamedAttr("mutable_buffer_bytes",
+                                 builder.getDenseI64ArrayAttr(bufferBytes)),
+            builder.getNamedAttr("mutable_handle_capacity",
+                                 builder.getI64IntegerAttr(handleCapacity)),
+        }));
   }
 };
 } // namespace
