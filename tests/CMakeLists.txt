@@ -185,6 +185,18 @@ add_executable(udononnx-matmul-nbits-kernel
 target_compile_features(udononnx-matmul-nbits-kernel PRIVATE cxx_std_20)
 set_target_properties(udononnx-matmul-nbits-kernel PROPERTIES
   CXX_EXTENSIONS OFF)
+# The test requires bit-identical results between the one-dispatch Q4 kernel
+# and its K-tiled reference. The Device lowering never contracts (all floats
+# are precise), so the native build must not fuse multiply-adds either.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+  target_compile_options(udononnx-matmul-nbits-kernel PRIVATE /fp:precise)
+elseif(CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+  target_compile_options(udononnx-matmul-nbits-kernel PRIVATE
+    /clang:-ffp-contract=off)
+else()
+  target_compile_options(udononnx-matmul-nbits-kernel PRIVATE
+    -ffp-contract=off)
+endif()
 add_test(NAME udononnx-matmul-nbits-kernel
   COMMAND udononnx-matmul-nbits-kernel)
 add_executable(udonblas-arena-sgemm-kernel
@@ -691,6 +703,12 @@ add_test(NAME c-boundary-example
     $<TARGET_FILE:vrccl> $<TARGET_FILE:vrc-translate> $<TARGET_FILE:vrc-opt>
     "${VRC_TEST_MLIR_OPT}" "${VRC_TEST_MLIR_TRANSLATE}" "${VRC_TEST_CLANG}"
     "${PROJECT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/tests/c-boundary"
+)
+add_test(NAME udononnx-matmul-nbits-q4-lowering
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/boundary/udononnx_matmul_nbits_q4_bundle.py"
+    $<TARGET_FILE:vrccl> "${VRC_TEST_CLANG}"
+    "${PROJECT_BINARY_DIR}/tests/udononnx-matmul-nbits-q4"
 )
 add_test(NAME large-gather-device-lowering
   COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/boundary/large_gather.py"

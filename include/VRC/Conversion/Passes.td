@@ -194,19 +194,32 @@ def ScheduleUdonDeviceWorkPass : Pass<"vrc-schedule-udon-device-work", "mlir::Mo
   let description = [{
     On the Udon target vrc.dispatch and vrc.buffer_copy are Blits recorded on
     Unity's in-order graphics queue and complete at issue. A vrc.await of such
-    an event is folded to CL_SUCCESS. Before every Device command in a
-    may-suspend function the command is charged to a slice budget held in
-    instance globals (command count and launch fragments); when it would
-    exceed the budget the Host yields through a cooperative checkpoint, which
-    starts a new slice. Transfers, readbacks and other events keep their
-    awaits.
+    an event is folded to CL_SUCCESS. After every Device command in a
+    may-suspend function its static cost is charged to two slice budgets held
+    in instance globals; at the former await the Host yields through a
+    cooperative checkpoint when either budget is full, which starts a new
+    slice. Transfers, readbacks and other events keep their awaits.
+
+    The Device cost is counted in texel-load units: `fragment-weight` units
+    per launched fragment plus one unit per texel load, with loads per
+    fragment taken from an optional `vrc.fragment_cost` dispatch attribute
+    (evaluated with the site's constant scalar arguments or the declared
+    maxima) and otherwise one load per read resource. The Host cost estimates
+    the Udon instructions spent binding the command's arguments and running
+    the Host operations its block issues since the previous command.
   }];
   let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "::vrc::vrc::VRCDialect", "mlir::arith::ArithDialect", "mlir::cf::ControlFlowDialect", "mlir::func::FuncDialect"];
   let options = [
-    Option<"commandBudget", "command-budget", "int64_t", /*default=*/"16",
-           "Device commands one Udon event may issue before yielding">,
-    Option<"fragmentBudget", "fragment-budget", "int64_t", /*default=*/"2097152",
-           "Launch fragments one Udon event may issue before yielding">
+    Option<"deviceCostBudget", "device-cost-budget", "int64_t",
+           /*default=*/"134217728",
+           "Device cost units (texel loads) one Udon event may issue before "
+           "yielding">,
+    Option<"hostCostBudget", "host-cost-budget", "int64_t",
+           /*default=*/"16384",
+           "Estimated Udon instructions one Udon event may spend issuing "
+           "Device commands before yielding">,
+    Option<"fragmentWeight", "fragment-weight", "int64_t", /*default=*/"16",
+           "Device cost units charged per launched fragment">
   ];
 }
 def LowerHostAsyncToNativePass : Pass<"vrc-lower-host-async-to-native", "mlir::ModuleOp"> {

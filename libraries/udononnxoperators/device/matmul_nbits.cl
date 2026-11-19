@@ -46,39 +46,94 @@ __kernel void udononnx_matmul_nbits(__global const float *state,
   result[gid] = value;
 }
 
-/* Device-resident Q4 tile used by the generic ONNX AOT path. Packed weights
- * remain little-endian uint32 words in their immutable texture. Every pass
- * rewrites the complete output surface so previous/output may be ping-ponged
- * safely across N and K tiles without an in-place Blit. */
-__kernel void udononnx_matmul_nbits_q4(
-    __global const float *activation, __global const uint *packed_weight,
-    __global const float *scales, __global const float *previous,
-    __global float *output, int m, int n, int k, int block_size, int n_base,
-    int k_base, int tile_n, int tile_k, int accumulate) {
+/* Device-resident Q4 (bits=4, block_size=32, implicit zero point 8) used by
+ * the generic ONNX AOT path. Packed weights remain little-endian uint32 words
+ * in their immutable texture. One fragment owns one output word (row, column)
+ * and accumulates the K blocks [block_base, block_base + block_count) in one
+ * dispatch, strictly ascending in k. A dispatch covers at most
+ * UDONONNX_Q4_DISPATCH_BLOCKS blocks; the Host splits a longer K into
+ * segments that pass the partial sum through previous (accumulate != 0).
+ *
+ * The Device lowering accepts only constant loop bounds, so the block loop
+ * runs a constant number of chunks of UDONONNX_Q4_CHUNK_BLOCKS blocks and
+ * guards the tail: a short K skips whole chunks at the cost of one compare.
+ * Fragments outside the m x n output write 0 without any Load, and every
+ * dispatch rewrites the complete output surface so previous/output may be
+ * ping-ponged without an in-place Blit. */
+#define UDONONNX_Q4_CHUNK_BLOCKS 16u
+#define UDONONNX_Q4_DISPATCH_CHUNKS 16u
+#define UDONONNX_Q4_DISPATCH_BLOCKS                                            \
+  (UDONONNX_Q4_CHUNK_BLOCKS * UDONONNX_Q4_DISPATCH_CHUNKS)
+
+/* All eight nibbles of one packed word; the expression and order match the
+ * per-element K tail below, so a full block and a tail block round alike. */
+#define UDONONNX_Q4_MAC(PACKED, J)                                             \
+  sum += (((float)(((PACKED) >> ((J) * 4u)) & 15u) - 8.0f) * scale) *          \
+         activation[a_base + (J)]
+#define UDONONNX_Q4_WORD(W)                                                    \
+  {                                                                            \
+    uint packed = packed_weight[scale_index * 4u + (W)];                       \
+    uint a_base = row * (uint)k + block * 32u + (W) * 8u;                      \
+    UDONONNX_Q4_MAC(packed, 0u);                                               \
+    UDONONNX_Q4_MAC(packed, 1u);                                               \
+    UDONONNX_Q4_MAC(packed, 2u);                                               \
+    UDONONNX_Q4_MAC(packed, 3u);                                               \
+    UDONONNX_Q4_MAC(packed, 4u);                                               \
+    UDONONNX_Q4_MAC(packed, 5u);                                               \
+    UDONONNX_Q4_MAC(packed, 6u);                                               \
+    UDONONNX_Q4_MAC(packed, 7u);                                               \
+  }
+
+__kernel void udononnx_matmul_nbits_q4(__global const float *activation,
+                                       __global const uint *packed_weight,
+                                       __global const float *scales,
+                                       __global const float *previous,
+                                       __global float *output, int m, int n,
+                                       int k, int block_base, int block_count,
+                                       int accumulate) {
   uint gid = (uint)UDONONNX_LINEAR_GID();
-  uint output_words = (uint)(m * n);
-  float value = previous[gid];
-  if (gid < output_words) {
+  float value = 0.0f;
+  if (gid < (uint)(m * n)) {
     uint row = gid / (uint)n;
     uint column = gid % (uint)n;
-    if (column >= (uint)n_base && column < (uint)(n_base + tile_n)) {
-      uint blocks = ((uint)k + 31u) / 32u;
-      float sum = accumulate != 0 ? previous[gid] : 0.0f;
-      for (uint inner = 0; inner < 128u; ++inner) {
-        uint inner_index = (uint)k_base + inner;
-        if (inner < (uint)tile_k && inner_index < (uint)k) {
-          uint block = inner_index / 32u;
-          uint in_block = inner_index % 32u;
-          uint word_index = (column * blocks + block) * 4u + in_block / 8u;
-          uint shift = (in_block % 8u) * 4u;
-          uint quantized = (packed_weight[word_index] >> shift) & 15u;
-          float weight =
-              ((float)quantized - 8.0f) * scales[column * blocks + block];
-          sum += weight * activation[row * (uint)k + inner_index];
+    uint blocks = ((uint)k + 31u) / 32u;
+    uint full_blocks = (uint)k / 32u;
+    float sum = accumulate != 0 ? previous[gid] : 0.0f;
+    for (uint chunk = 0; chunk < UDONONNX_Q4_DISPATCH_CHUNKS; ++chunk)
+      if (chunk * UDONONNX_Q4_CHUNK_BLOCKS < (uint)block_count)
+        for (uint lane = 0; lane < UDONONNX_Q4_CHUNK_BLOCKS; ++lane) {
+          uint step = chunk * UDONONNX_Q4_CHUNK_BLOCKS + lane;
+          uint block = (uint)block_base + step;
+          /* The full-block test comes first so the Device index proof bounds
+           * every full-block access by k / 32 rather than ceil(k / 32). */
+          if (step < (uint)block_count) {
+            if (block < full_blocks) {
+              /* 1 scale, 4 packed-word and 32 activation Loads, none of
+               * which depends on the accumulation chain. */
+              uint scale_index = column * blocks + block;
+              float scale = scales[scale_index];
+              UDONONNX_Q4_WORD(0u);
+              UDONONNX_Q4_WORD(1u);
+              UDONONNX_Q4_WORD(2u);
+              UDONONNX_Q4_WORD(3u);
+            } else if (block < blocks) {
+              /* K tail block (k % 32 != 0). */
+              uint scale_index = column * blocks + block;
+              float scale = scales[scale_index];
+              for (uint in_block = 0; in_block < 32u; ++in_block) {
+                uint k_index = block * 32u + in_block;
+                if (k_index < (uint)k) {
+                  uint packed = packed_weight[scale_index * 4u + in_block / 8u];
+                  sum += (((float)((packed >> ((in_block % 8u) * 4u)) & 15u) -
+                           8.0f) *
+                          scale) *
+                         activation[row * (uint)k + k_index];
+                }
+              }
+            }
+          }
         }
-      }
-      value = sum;
-    }
+    value = sum;
   }
   output[gid] = value;
 }

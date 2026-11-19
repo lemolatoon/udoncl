@@ -48,6 +48,8 @@
       "schema_version": 1, "profile": "gather-f32", "words": 16384,
       "kernel": "udonblas_arena_sgemm", "kernel_id": 221,
       "argument_kinds": ["buffer", "buffer", "buffer", "i32", "i32", "i32", "i32", "i32", "f32"],
+      "argument_bounds": [{"index": 3, "min": 1, "max": 16384}, {"index": 4, "min": 1, "max": 16384}, {"index": 5, "min": 1, "max": 8192}, {"index": 6, "min": 0, "max": 1}, {"index": 7, "min": 0, "max": 1}],
+      "fragment_cost": {"loads": 0, "active": [3, 4], "per_argument": [{"index": 5, "loads": 2}]},
       "global_size": [8192, 2, 1], "local_size": [1, 1, 1], "global_offset": [0, 0, 0]
     },
     {
@@ -70,6 +72,7 @@
         {"index": 3, "min": 1, "max": 4096}
       ],
       "argument_kinds": ["buffer", "buffer", "i32", "i32"],
+      "fragment_cost": {"loads": 1, "active": [2]},
       "global_size": [8192, 2, 1], "local_size": [1, 1, 1], "global_offset": [0, 0, 0]
     },
     {
@@ -82,6 +85,7 @@
         {"index": 7, "min": 1, "max": 1}
       ],
       "argument_kinds": ["buffer", "buffer", "buffer", "buffer", "i32", "i32", "f32", "i32"],
+      "fragment_cost": {"loads": 66, "active": [4]},
       "global_size": [8192, 2, 1], "local_size": [1, 1, 1], "global_offset": [0, 0, 0]
     },
     {
@@ -92,14 +96,12 @@
         {"index": 5, "min": 1, "max": 4},
         {"index": 6, "min": 1, "max": 32000},
         {"index": 7, "min": 1, "max": 5632},
-        {"index": 8, "min": 32, "max": 32},
-        {"index": 9, "min": 0, "max": 0},
-        {"index": 10, "min": 0, "max": 5504},
-        {"index": 11, "min": 1, "max": 32000},
-        {"index": 12, "min": 1, "max": 128},
-        {"index": 13, "min": 0, "max": 1}
+        {"index": 8, "min": 0, "max": 175},
+        {"index": 9, "min": 1, "max": 176},
+        {"index": 10, "min": 0, "max": 1}
       ],
-      "argument_kinds": ["buffer", "buffer", "buffer", "buffer", "buffer", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "i32"],
+      "argument_kinds": ["buffer", "buffer", "buffer", "buffer", "buffer", "i32", "i32", "i32", "i32", "i32", "i32"],
+      "fragment_cost": {"loads": 1, "active": [5, 6], "per_argument": [{"index": 9, "loads": 37}]},
       "global_size": [8192, 16, 1], "local_size": [1, 1, 1], "global_offset": [0, 0, 0]
     },
     {
@@ -111,6 +113,7 @@
         {"index": 3, "min": 1, "max": 131072}
       ],
       "argument_kinds": ["buffer", "buffer", "i32", "i32"],
+      "fragment_cost": {"loads": 256},
       "global_size": [512, 1, 1], "local_size": [1, 1, 1], "global_offset": [0, 0, 0]
     },
     {
@@ -123,6 +126,7 @@
         {"index": 5, "min": 0, "max": 1}
       ],
       "argument_kinds": ["buffer", "buffer", "buffer", "i32", "i32", "i32"],
+      "fragment_cost": {"loads": 512},
       "global_size": [1, 1, 1], "local_size": [1, 1, 1], "global_offset": [0, 0, 0]
     },
     {
@@ -242,6 +246,7 @@
         {"index": 11, "min": 1, "max": 2}
       ],
       "argument_kinds": ["buffer", "buffer", "buffer", "buffer", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "i32"],
+      "fragment_cost": {"loads": 2, "active": [4], "per_argument": [{"index": 9, "loads": 6}]},
       "global_size": [16384, 1, 1], "local_size": [1, 1, 1], "global_offset": [0, 0, 0]
     },
     {
@@ -256,6 +261,7 @@
         {"index": 7, "min": 0, "max": 1}
       ],
       "argument_kinds": ["buffer", "buffer", "i32", "i32", "i32", "i32", "i32", "i32"],
+      "fragment_cost": {"loads": 1, "active": [2, 3, 4, 5], "per_argument": [{"index": 3, "loads": 2}]},
       "global_size": [8192, 2, 1], "local_size": [1, 1, 1], "global_offset": [0, 0, 0]
     },
     {
@@ -265,7 +271,7 @@
       "argument_bounds": [
         {"index": 3, "min": 1, "max": 16384},
         {"index": 4, "min": 1, "max": 16384},
-        {"index": 5, "min": 1, "max": 256},
+        {"index": 5, "min": 1, "max": 8192},
         {"index": 6, "min": 0, "max": 131072},
         {"index": 7, "min": 0, "max": 131072},
         {"index": 8, "min": 1, "max": 16384},
@@ -274,6 +280,7 @@
         {"index": 11, "min": 0, "max": 1}
       ],
       "argument_kinds": ["buffer", "buffer", "buffer", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "f32"],
+      "fragment_cost": {"loads": 0, "active": [3, 4, 9], "per_argument": [{"index": 5, "loads": 2}]},
       "global_size": [8192, 2, 1], "local_size": [1, 1, 1], "global_offset": [0, 0, 0]
     }
   ],

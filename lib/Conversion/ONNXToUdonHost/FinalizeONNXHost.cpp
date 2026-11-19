@@ -2912,56 +2912,26 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
         int64_t k = integerAttribute(node, "K", 0);
         int64_t n = integerAttribute(node, "N", 0);
         int64_t m = activation.type.getNumElements() / k;
-        int64_t kPasses = (k + 127) / 128;
-        int64_t loopStart = 0;
-        if (kPasses & 1) {
-          int64_t tileK = std::min<int64_t>(128, k);
+        // One dispatch accumulates up to deviceQ4DispatchBlocks K blocks per
+        // output word. A longer K becomes straight-line dispatches whose
+        // partial sums ping-pong through the operator scratch so the last
+        // one writes the output; the first one ignores `previous`.
+        int64_t blocks = (k + 31) / 32;
+        int64_t segments =
+            (blocks + deviceQ4DispatchBlocks - 1) / deviceQ4DispatchBlocks;
+        for (int64_t segment = 0; segment < segments; ++segment) {
+          int64_t blockBase = segment * deviceQ4DispatchBlocks;
+          int64_t blockCount =
+              std::min(deviceQ4DispatchBlocks, blocks - blockBase);
+          bool writesOutput = (segments - 1 - segment) % 2 == 0;
+          Value destination = writesOutput ? output : operatorScratch;
+          Value previous = writesOutput ? operatorScratch : output;
           dispatch("__vrc_opencl_dispatch_udononnx_matmul_nbits_q4",
                    ValueRange{buffer(node.inputs[0]), buffer(node.inputs[1]),
-                              buffer(node.inputs[2]), operatorScratch, output,
+                              buffer(node.inputs[2]), previous, destination,
                               constant(m), constant(n), constant(k),
-                              constant(32), constant(0), constant(0),
-                              constant(n), constant(tileK), constant(0)});
-          loopStart = 128;
-        }
-        if (loopStart < k) {
-          Block *loop = run.addBlock();
-          Block *body = run.addBlock();
-          Block *done = run.addBlock();
-          BlockArgument kBase = loop->addArgument(i32, location);
-          cf::BranchOp::create(builder, location, loop,
-                               ValueRange{constant(loopStart)});
-
-          builder.setInsertionPointToEnd(loop);
-          Value keepGoing = arith::CmpIOp::create(
-              builder, location, arith::CmpIPredicate::slt, kBase, constant(k));
-          cf::CondBranchOp::create(builder, location, keepGoing, body,
-                                   ValueRange{}, done, ValueRange{});
-
-          builder.setInsertionPointToEnd(body);
-          Value hasPrevious = arith::CmpIOp::create(
-              builder, location, arith::CmpIPredicate::ne, kBase, constant(0));
-          Value accumulate = arith::SelectOp::create(
-              builder, location, hasPrevious, constant(1), constant(0));
-          dispatch("__vrc_opencl_dispatch_udononnx_matmul_nbits_q4",
-                   ValueRange{buffer(node.inputs[0]), buffer(node.inputs[1]),
-                              buffer(node.inputs[2]), output, operatorScratch,
-                              constant(m), constant(n), constant(k),
-                              constant(32), constant(0), kBase, constant(n),
-                              constant(128), accumulate});
-
-          Value secondBase =
-              arith::AddIOp::create(builder, location, kBase, constant(128));
-          dispatch("__vrc_opencl_dispatch_udononnx_matmul_nbits_q4",
-                   ValueRange{buffer(node.inputs[0]), buffer(node.inputs[1]),
-                              buffer(node.inputs[2]), operatorScratch, output,
-                              constant(m), constant(n), constant(k),
-                              constant(32), constant(0), secondBase,
-                              constant(n), constant(128), constant(1)});
-          Value nextBase =
-              arith::AddIOp::create(builder, location, kBase, constant(256));
-          cf::BranchOp::create(builder, location, loop, ValueRange{nextBase});
-          builder.setInsertionPointToEnd(done);
+                              constant(blockBase), constant(blockCount),
+                              constant(segment == 0 ? 0 : 1)});
         }
         continue;
       }
@@ -3003,7 +2973,12 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
           return emitError(location)
                  << "Device MatMul requires a supported contiguous static "
                     "batch shape";
-        if (shape->outputBatches == 1) {
+        // The non-batched kernel addresses at most deviceSgemmOperandWords
+        // per operand; a larger single product uses the strided-batched
+        // kernel with one batch instead of wrapping its indices.
+        bool smallOperands = shape->m * shape->k <= deviceSgemmOperandWords &&
+                             shape->k * shape->n <= deviceSgemmOperandWords;
+        if (shape->outputBatches == 1 && smallOperands) {
           dispatch("__vrc_opencl_dispatch_udonblas_arena_sgemm",
                    ValueRange{buffer(node.inputs[0]), buffer(node.inputs[1]),
                               output, constant(shape->m), constant(shape->n),
@@ -3040,11 +3015,21 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
         if (!product)
           return emitError(location)
                  << "Device Gemm with bias lacks operator scratch storage";
-        dispatch("__vrc_opencl_dispatch_udonblas_arena_sgemm",
-                 ValueRange{buffer(node.inputs[0]), buffer(node.inputs[1]),
-                            product, constant(left[0]), constant(right[1]),
-                            constant(left[1]), constant(transA),
-                            constant(transB), floating(alpha)});
+        if (left[0] * left[1] <= deviceSgemmOperandWords &&
+            right[0] * right[1] <= deviceSgemmOperandWords)
+          dispatch("__vrc_opencl_dispatch_udonblas_arena_sgemm",
+                   ValueRange{buffer(node.inputs[0]), buffer(node.inputs[1]),
+                              product, constant(left[0]), constant(right[1]),
+                              constant(left[1]), constant(transA),
+                              constant(transB), floating(alpha)});
+        else
+          dispatch("__vrc_opencl_dispatch_udonblas_arena_sgemm_strided_batched",
+                   ValueRange{buffer(node.inputs[0]), buffer(node.inputs[1]),
+                              product, constant(left[0]), constant(right[1]),
+                              constant(left[1]), constant(0), constant(0),
+                              constant(left[0] * right[1]), constant(1),
+                              constant(transA), constant(transB),
+                              floating(alpha)});
         if (hasBias) {
           SmallVector<int64_t, 4> a = tensor4d(graph.tensors[node.output].type);
           SmallVector<int64_t, 4> b =
@@ -3152,8 +3137,7 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
         {i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32}, {i32});
     declarations.require(
         "__vrc_opencl_dispatch_udononnx_matmul_nbits_q4",
-        {i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32},
-        {i32});
+        {i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32}, {i32});
     declarations.require("__vrc_opencl_dispatch_udonaten_arena_rms_norm_reduce",
                          {i32, i32, i32, i32}, {i32});
     declarations.require(

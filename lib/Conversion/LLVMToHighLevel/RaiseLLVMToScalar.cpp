@@ -375,9 +375,25 @@ struct SwitchPattern : OpConversionPattern<LLVM::SwitchOp> {
       caseOperandStorage.emplace_back(operands.begin(), operands.end());
     for (const SmallVector<Value> &operands : caseOperandStorage)
       caseOperands.emplace_back(operands);
-    cf::SwitchOp::create(rewriter, op.getLoc(), adaptor.getValue(),
+    // The Udon backend compares switch flags as SystemInt32. A narrower
+    // integer flag is widened with zero extension together with its case
+    // values, which preserves equality of the bit patterns.
+    Value flag = adaptor.getValue();
+    DenseIntElementsAttr caseValues = op.getCaseValuesAttr();
+    auto flagType = dyn_cast<IntegerType>(flag.getType());
+    if (flagType && flagType.getWidth() < 32) {
+      flag = arith::ExtUIOp::create(rewriter, op.getLoc(),
+                                    rewriter.getI32Type(), flag);
+      if (caseValues) {
+        SmallVector<int32_t> widened;
+        for (const APInt &value : caseValues.getValues<APInt>())
+          widened.push_back(static_cast<int32_t>(value.getZExtValue()));
+        caseValues = rewriter.getI32VectorAttr(widened);
+      }
+    }
+    cf::SwitchOp::create(rewriter, op.getLoc(), flag,
                          op.getDefaultDestination(),
-                         adaptor.getDefaultOperands(), op.getCaseValuesAttr(),
+                         adaptor.getDefaultOperands(), caseValues,
                          op.getCaseDestinations(), caseOperands);
     rewriter.eraseOp(op);
     return success();

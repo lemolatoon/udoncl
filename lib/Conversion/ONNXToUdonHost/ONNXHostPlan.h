@@ -89,9 +89,19 @@ bool isDeviceRmsNormNode(const GraphRecord &graph, const NodeRecord &node);
 bool isDeviceSoftmaxNode(const GraphRecord &graph, const NodeRecord &node);
 std::optional<llvm::SmallVector<int64_t>>
 deviceTransposePermutation(const GraphRecord &graph, const NodeRecord &node);
+/// K bound of the udonblas_arena_sgemm kernels (32 guarded chunks of 256).
+inline constexpr int64_t deviceSgemmMaxK = 8192;
+/// Operand words the non-batched udonblas_arena_sgemm kernel addresses; a
+/// larger operand goes through the strided-batched kernel with one batch.
+inline constexpr int64_t deviceSgemmOperandWords = 16384;
 std::optional<DeviceMatMulShape> deviceMatMulShape(const GraphRecord &graph,
                                                    const NodeRecord &node);
 bool isDeviceQ4Node(const GraphRecord &graph, const NodeRecord &node);
+/// K blocks of 32 that one udononnx_matmul_nbits_q4 dispatch accumulates. It
+/// must equal UDONONNX_Q4_DISPATCH_BLOCKS in
+/// libraries/udononnxoperators/device/matmul_nbits.cl; a longer K is split
+/// into ceil(blocks / deviceQ4DispatchBlocks) dispatches at compile time.
+inline constexpr int64_t deviceQ4DispatchBlocks = 256;
 int64_t operatorScratchBytes(const GraphRecord &graph);
 bool needsQ4Surface(const GraphRecord &graph, unsigned tensorIndex);
 int64_t deviceAllocationBytes(const GraphRecord &graph, unsigned tensorIndex);

@@ -138,8 +138,7 @@ struct LowerOpenCLAOTIntrinsicsPass
       else if (name == "__vrc_opencl_dispatch_udononnx_matmul_nbits")
         arguments = {i32, i32, i32, i32, i32, i32};
       else if (name == "__vrc_opencl_dispatch_udononnx_matmul_nbits_q4")
-        arguments = {i32, i32, i32, i32, i32, i32, i32,
-                     i32, i32, i32, i32, i32, i32, i32};
+        arguments = {i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32};
       else if (name == "__vrc_opencl_dispatch_udononnx_gather_copy")
         arguments = {i32, i32, i32};
       else if (name == "__vrc_opencl_dispatch_udononnx_unary_f32")
@@ -400,7 +399,7 @@ struct LowerOpenCLAOTIntrinsicsPass
         } else if (arenaSoftmax) {
           scalarKinds.append(6, rewriter.getStringAttr("i32"));
         } else if (matmulNBitsQ4) {
-          scalarKinds.append(9, rewriter.getStringAttr("i32"));
+          scalarKinds.append(6, rewriter.getStringAttr("i32"));
         } else if (matmulNBits) {
           scalarKinds.append(4, rewriter.getStringAttr("i32"));
         } else if (gather) {

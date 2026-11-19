@@ -431,10 +431,13 @@ reimport, console checks, and cleanup are part of this gate.
   generated at compile time and no weight bytes are repacked by the runtime
   Host. Extend the same contract with zero-point and other generic views rather
   than introducing a model profile.
-- Resource limits therefore require multiple Device-only dispatches per
-  operator. K partial sums remain in a persistent Device workspace and never
-  round-trip through the Host. N tiles write disjoint output ranges. The final
-  32,000-logit projection is tiled by the same generic rule.
+- One Q4 dispatch accumulates the whole K of every output word for up to 256
+  blocks of 32 (K <= 8192) with constant, guarded Device loops; a longer K is
+  split at compile time into straight-line dispatches whose partial sums
+  ping-pong through a persistent Device workspace and never round-trip through
+  the Host. The result is bit-identical to the former 128-wide K tiles, which
+  cost ceil(K / 128) dispatches (3,096 of about 4,019 per token step); every
+  TinyLlama projection, including the 32,000-logit one, is now one dispatch.
 
 ### 5.3 Fusion policy
 
@@ -644,9 +647,9 @@ These decisions fill the parts of 6.1 and 6.5 that the plan left open.
   `UDONCL_TINYLLAMA_MAX_NEW_TOKENS`, default 32). They specialize the graph to
   `past_sequence_length = capacity - 1` and pass the same bounds to the C
   Host; the compiler has no knowledge of the value, and generic kernel limits
-  decide whether a capacity compiles. The batched SGEMM contract (K at most
-  256, attention-times-V has K = capacity) is expected to cap it at 256; this
-  bound is inferred, and only capacity 64 has been compiled. A capacity of 64 holds a short exchange: 22 prompt tokens plus up
+  decide whether a capacity compiles. The SGEMM contract (K at most 8192,
+  attention-times-V has K = capacity) no longer caps it at 256; other
+  capacities are inferred to compile, and only capacity 64 has been compiled. A capacity of 64 holds a short exchange: 22 prompt tokens plus up
   to 32 new tokens.
 
 ### 6.7 Text acceptance fixture
@@ -770,6 +773,30 @@ still runs about 1.36 M instructions in a single event; it is the largest
 remaining Udon slice. Frames are an emulator estimate (one frame per
 continuation, two per readback) and wall-clock time still needs a Unity
 measurement.
+
+Two generic follow-ups then cut the per-step Device work. `d7bde51` lets one
+Q4 dispatch accumulate the whole K of every output word (up to 256 blocks of
+32, bit-identical to the K tiles), so every TinyLlama projection is one
+dispatch: 155 instead of 3,096 Q4 dispatches, about 1.2 G instead of about
+3.1 G estimated Q4 texel loads, and 20 M instead of 406 M launched Q4
+fragments per step. `7f79b20` and `121dd69` replace the command-count budget
+by static Device (texel-load) and Host (estimated Udon instruction) costs per
+command, with declared kernel fragment costs; the defaults close a slice at
+about 2 ms of mid-range GPU work or about 16,000 Udon instructions. The same
+emulator protocol measures per token step:
+
+| | gate 7 | Q4 whole-K | + cost budget |
+|---|---:|---:|---:|
+| Udon events | 254 | 70 | 33 |
+| estimated frames | 262 | 78 | 41 |
+| Udon instructions | 3.6 M | 1.93 M | 1.79 M |
+| Device Blits | 4,019 | 1,078 | 1,078 |
+| median Blits per budget slice | 16 | 16 | 37 |
+
+The Udon Host budget, not the GPU budget, closes most slices (median 12,230
+Udon instructions per slice). The 1.35 M-instruction continuation after the
+token upload is now three quarters of the step's Udon work and is the next
+Host-lowering target.
 
 ### 7.3 Required execution
 

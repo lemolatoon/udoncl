@@ -12,6 +12,11 @@ extern size_t udonblas_arena_sgemm_cpu_gid_y;
 #endif
 
 #define UDONBLAS_ARENA_WIDTH 8192u
+/* The Device lowering accepts only constant loop bounds. K is walked in
+ * guarded chunks so a short K skips whole chunks with one compare each; the
+ * accumulation order stays strictly ascending in K. */
+#define UDONBLAS_ARENA_K_CHUNK 256
+#define UDONBLAS_ARENA_K_CHUNKS 32 /* K <= 8192 */
 
 /* Private texture-arena backend for the public cuBLAS-shaped udonblasSgemm
  * call. ONNX tensors are row-major, so AOT supplies the validated transpose
@@ -27,13 +32,16 @@ __kernel void udonblas_arena_sgemm(__global const float *a,
     int row = (int)(gid / (size_t)n);
     int column = (int)(gid % (size_t)n);
     float sum = 0.0f;
-    for (int inner = 0; inner < 256; ++inner) {
-      if (inner < k) {
-        int a_index = transa ? inner * m + row : row * k + inner;
-        int b_index = transb ? column * k + inner : inner * n + column;
-        sum += a[(size_t)a_index & 16383u] * b[(size_t)b_index & 16383u];
-      }
-    }
+    for (int chunk = 0; chunk < UDONBLAS_ARENA_K_CHUNKS; ++chunk)
+      if (chunk * UDONBLAS_ARENA_K_CHUNK < k)
+        for (int lane = 0; lane < UDONBLAS_ARENA_K_CHUNK; ++lane) {
+          int inner = chunk * UDONBLAS_ARENA_K_CHUNK + lane;
+          if (inner < k) {
+            int a_index = transa ? inner * m + row : row * k + inner;
+            int b_index = transb ? column * k + inner : inner * n + column;
+            sum += a[(size_t)a_index & 16383u] * b[(size_t)b_index & 16383u];
+          }
+        }
     value = alpha * sum;
   }
   output[gid] = value;
@@ -58,14 +66,17 @@ __kernel void udonblas_arena_sgemm_strided_batched(
     size_t b_base = stride_b ? batch * (size_t)stride_b : 0u;
     (void)stride_c;
     float sum = 0.0f;
-    for (int inner = 0; inner < 256; ++inner) {
-      if (inner < k) {
-        int a_index = transa ? inner * m + row : row * k + inner;
-        int b_index = transb ? column * k + inner : inner * n + column;
-        sum += a[(a_base + (size_t)a_index) & 131071u] *
-               b[(b_base + (size_t)b_index) & 131071u];
-      }
-    }
+    for (int chunk = 0; chunk < UDONBLAS_ARENA_K_CHUNKS; ++chunk)
+      if (chunk * UDONBLAS_ARENA_K_CHUNK < k)
+        for (int lane = 0; lane < UDONBLAS_ARENA_K_CHUNK; ++lane) {
+          int inner = chunk * UDONBLAS_ARENA_K_CHUNK + lane;
+          if (inner < k) {
+            int a_index = transa ? inner * m + row : row * k + inner;
+            int b_index = transb ? column * k + inner : inner * n + column;
+            sum += a[(a_base + (size_t)a_index) & 131071u] *
+                   b[(b_base + (size_t)b_index) & 131071u];
+          }
+        }
     value = alpha * sum;
   }
   output[gid] = value;

@@ -552,11 +552,38 @@ Before `LowerHostToAsync`, the Unity pipeline runs
 `vrc-schedule-udon-device-work` once the async effects have fixed the export
 ABI. On Udon a `vrc.dispatch` or `vrc.buffer_copy` is a Blit on the in-order
 graphics queue and is complete at issue, so an await of its event is replaced
-by a cooperative checkpoint that is taken only when the per-slice work budget
-(16 commands or 2,097,152 launch fragments by default, kept in two instance
-globals and charged after every command) is full. Remaining awaits reset the
-budget. Device commands are therefore enqueue-only and one Udon event issues a
-bounded slice of work instead of one command per frame.
+by a cooperative checkpoint that is taken only when a per-slice budget is
+full. Remaining awaits reset the budgets. Device commands are therefore
+enqueue-only and one Udon event issues a bounded slice of work instead of one
+command per frame.
+
+Every command is charged two static costs, kept in two saturating instance
+globals:
+
+- Device cost in texel-load units: `fragment-weight` (default 16) per
+  launched fragment for raster, output write and Blit overhead, plus one per
+  texel load. A kernel may declare `fragment_cost` next to its
+  `argument_bounds` in the Unity library JSON: fixed `loads` per fragment,
+  `per_argument` loads per unit of a scalar argument (a loop trip count such
+  as the Q4 `block_count` or the SGEMM `k`), and `active` arguments whose
+  product bounds the fragments doing that work (such as `m * n`). The values
+  are the dispatch site's constant scalar arguments, or the declared maxima
+  when an argument is not constant. Undeclared kernels read every read
+  resource once per launched fragment. The default budget of 134,217,728
+  units is about 2 ms of GPU work on a mid-range desktop GPU: on an RTX 4070
+  Ti a trivial full-surface 8192 x 16 Blit (about 2.1 M units) measured about
+  19 microseconds, and texel loads are cheaper than fragments.
+- Host cost in estimated Udon instructions: 32 per bound kernel argument plus
+  32 for the Blit, and 8 per Host operation the command's block runs since
+  the previous command, fitted to the Udon VM emulator (about 430 Udon
+  instructions per dispatch in the budget slices of the TinyLlama graph). The default budget of 16,384 is
+  about 1.5 to 2 ms of Udon VM time.
+
+A slice ends after the command that fills either budget. The budgets are pass
+options (`device-cost-budget`, `host-cost-budget`, `fragment-weight`) and
+per-library settings in the Unity library JSON:
+`"device_work_budget": {"device_cost": N, "host_cost": N,
+"fragment_weight": N}`.
 
 Persistent discovery creates requests such as:
 

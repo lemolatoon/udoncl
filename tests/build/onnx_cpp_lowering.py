@@ -795,12 +795,27 @@ q4_host = subprocess.run(
 assert q4_host.returncode == 0, (q4_host.stdout, q4_host.stderr)
 assert "udoncl.onnx_device_graph = true" in q4_host.stdout
 assert "udoncl.onnx_device_unsupported = []" in q4_host.stdout
-assert (
-    q4_host.stdout.count(
-        "call @__vrc_opencl_dispatch_udononnx_matmul_nbits_q4"
-    )
-    == 2
+# K = 256 is 8 blocks of 32: the whole K is accumulated by one dispatch
+# (block_base 0, block_count 8, accumulate 0) that writes the output directly;
+# no Host loop over K tiles remains.
+q4_calls = call_arguments(
+    q4_host.stdout, "__vrc_opencl_dispatch_udononnx_matmul_nbits_q4"
 )
+assert len(q4_calls) == 1, q4_calls
+q4_call_offset = q4_host.stdout.index(
+    "call @__vrc_opencl_dispatch_udononnx_matmul_nbits_q4"
+)
+q4_function = q4_host.stdout[
+    q4_host.stdout.rindex("func.func @", 0, q4_call_offset):q4_call_offset
+]
+q4_constants = dict(
+    re.findall(r"(%[\w#]+) = arith\.constant (-?\d+) : i32", q4_function)
+)
+assert len(q4_calls[0]) == 11, q4_calls
+assert [q4_constants.get(argument) for argument in q4_calls[0][5:]] == [
+    "1", "256", "256", "0", "8", "0",
+], q4_calls
+assert q4_calls[0][3] != q4_calls[0][4]
 assert "call @udononnxMatMulNBits" not in q4_host.stdout
 assert "@__udon_onnx_operator_scratch" in q4_host.stdout
 scratch_definition = global_definition(
@@ -827,10 +842,6 @@ assert q4_host.stdout.count("arith.constant 524288 : i32") >= 2
 assert "call @__vrc_opencl_buffer_copy" in q4_host.stdout
 assert "call @__vrc_opencl_await" in q4_host.stdout
 assert "call @clEnqueueCopyBuffer" not in q4_host.stdout
-assert "arith.constant 128 : i32" in q4_host.stdout
-assert "arith.constant 256 : i32" in q4_host.stdout
-assert "cf.br ^" in q4_host.stdout
-assert "cf.cond_br" in q4_host.stdout
 
 rmsnorm_source = source.with_name("onnx_rmsnorm_pattern.mlir")
 rmsnorm_canonical = subprocess.run(
@@ -946,6 +957,59 @@ assert (
     == 1
 )
 assert "call @udonblasSgemmStridedBatched" not in batched_matmul_host.stdout
+
+
+def lower_device_graph(name):
+    portable = subprocess.run(
+        [
+            *onnx_opt,
+            "--udoncl-materialize-onnx-constants",
+            "--udoncl-externalize-onnx-initializers",
+            "--udoncl-externalize-onnx-graph-constants",
+            "--udoncl-lower-onnx-to-host",
+            source.with_name(name),
+        ],
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout
+    host = subprocess.run(
+        [
+            host_opt,
+            "--udoncl-validate-onnx-host-graph",
+            "--udoncl-plan-onnx-host-graph",
+            "--udoncl-materialize-onnx-host-globals",
+            "--udoncl-materialize-onnx-host-model-registry",
+            "--udoncl-attach-onnx-host-metadata",
+            "--udoncl-finalize-onnx-host",
+            "--udoncl-cleanup-onnx-host-source",
+            "-",
+        ],
+        input=portable,
+        text=True,
+        capture_output=True,
+    )
+    assert host.returncode == 0, (host.stdout, host.stderr)
+    assert "udoncl.onnx_device_graph = true" in host.stdout, name
+    assert "udoncl.onnx_device_unsupported = []" in host.stdout, name
+    return host.stdout
+
+
+# K beyond one 256-wide chunk stays on the non-batched Device SGEMM.
+long_k_host = lower_device_graph("onnx_matmul_long_k_device.mlir")
+assert long_k_host.count("call @__vrc_opencl_dispatch_udonblas_arena_sgemm(") == 1
+assert "arith.constant 1024 : i32" in long_k_host
+# A 256 x 128 weight (32768 words) exceeds the 16384 words the non-batched
+# kernel addresses: it must use the strided-batched kernel with one batch
+# instead of wrapping its indices.
+wide_host = lower_device_graph("onnx_matmul_wide_device.mlir")
+assert "call @__vrc_opencl_dispatch_udonblas_arena_sgemm(" not in wide_host
+assert (
+    wide_host.count(
+        "call @__vrc_opencl_dispatch_udonblas_arena_sgemm_strided_batched("
+    )
+    == 1
+)
 
 m1_attention_matmul_source = source.with_name("onnx_m1_attention_matmul.mlir")
 m1_attention_matmul_portable = subprocess.run(

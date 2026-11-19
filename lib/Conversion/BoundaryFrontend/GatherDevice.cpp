@@ -84,7 +84,11 @@ struct Proof {
     // bounded only in the true region. Recover that fact before inspecting
     // the value's definition so data loaded from an input can still be used
     // as a guarded index without trusting the input contents globally.
-    if (at)
+    // Every dominating guard holds, so use the tightest one. `x <u b` also
+    // implies b >= 1, so a bound whose range starts at zero still proves
+    // x <= b.max - 1 (the true region is unreachable when b is zero).
+    if (at) {
+      std::optional<Range> guarded;
       for (Block &block : function.getBody()) {
         auto branch = dyn_cast<LLVM::CondBrOp>(block.getTerminator());
         auto compare = branch
@@ -95,9 +99,14 @@ struct Proof {
             !dominance.dominates(branch.getTrueDest(), at->getBlock()))
           continue;
         auto bound = range(compare.getRhs(), branch, depth + 1);
-        if (bound && bound->min > 0 && bound->max <= INT32_MAX)
-          return Range{0, bound->max - 1};
+        if (bound && bound->min >= 0 && bound->max > 0 &&
+            bound->max <= INT32_MAX &&
+            (!guarded || bound->max - 1 < guarded->max))
+          guarded = Range{0, bound->max - 1};
       }
+      if (guarded)
+        return guarded;
+    }
     if (value == gid[0])
       return Range{0, width - 1};
     if (value == gid[1])

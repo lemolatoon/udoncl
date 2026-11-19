@@ -18,17 +18,15 @@
         {"index": 5, "min": 1, "max": 4},
         {"index": 6, "min": 1, "max": 33},
         {"index": 7, "min": 1, "max": 2048},
-        {"index": 8, "min": 32, "max": 32},
-        {"index": 9, "min": 0, "max": 0},
-        {"index": 10, "min": 0, "max": 1920},
-        {"index": 11, "min": 33, "max": 33},
-        {"index": 12, "min": 1, "max": 128},
-        {"index": 13, "min": 0, "max": 1}
+        {"index": 8, "min": 0, "max": 63},
+        {"index": 9, "min": 1, "max": 64},
+        {"index": 10, "min": 0, "max": 1}
       ],
       "argument_kinds": [
         "buffer", "buffer", "buffer", "buffer", "buffer",
-        "i32", "i32", "i32", "i32", "i32", "i32", "i32", "i32", "i32"
+        "i32", "i32", "i32", "i32", "i32", "i32"
       ],
+      "fragment_cost": {"loads": 1, "active": [5, 6], "per_argument": [{"index": 9, "loads": 37}]},
       "global_size": [8192, 16, 1],
       "local_size": [1, 1, 1],
       "global_offset": [0, 0, 0]

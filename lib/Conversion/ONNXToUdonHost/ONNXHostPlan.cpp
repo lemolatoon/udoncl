@@ -522,8 +522,9 @@ std::optional<DeviceMatMulShape> deviceMatMulShape(const GraphRecord &graph,
   int64_t m = left[left.size() - 2];
   int64_t k = left.back();
   int64_t n = right.back();
-  if (m < 1 || n < 1 || k < 1 || k > 256 || output[output.size() - 2] != m ||
-      output.back() != n || leftTensor.type.getNumElements() > 131072 ||
+  if (m < 1 || n < 1 || k < 1 || k > deviceSgemmMaxK ||
+      output[output.size() - 2] != m || output.back() != n ||
+      leftTensor.type.getNumElements() > 131072 ||
       rightTensor.type.getNumElements() > 131072 ||
       outputTensor.type.getNumElements() > 16384)
     return std::nullopt;
@@ -697,7 +698,15 @@ bool supportsDeviceNode(const GraphRecord &graph, const NodeRecord &node) {
       return false;
     const TensorRecord &left = graph.tensors[node.inputs[0]];
     const TensorRecord &right = graph.tensors[node.inputs[1]];
-    return left.type.getRank() == 2 && right.type.getRank() == 2;
+    const TensorRecord &output = graph.tensors[node.output];
+    // The arena SGEMM kernels bound K, the operand capacities and the output
+    // surface; anything larger must not reach them.
+    return left.type.getRank() == 2 && right.type.getRank() == 2 &&
+           left.type.getDimSize(1) >= 1 &&
+           left.type.getDimSize(1) <= deviceSgemmMaxK &&
+           left.type.getNumElements() <= 131072 &&
+           right.type.getNumElements() <= 131072 &&
+           output.type.getNumElements() <= 16384;
   }
   return false;
 }

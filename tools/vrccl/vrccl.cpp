@@ -2967,6 +2967,131 @@ recoverRuntimeFreeUnityHost(StringRef filename, MLIRContext &context) {
   return recoverUnityHostLLVM(filename, context, false);
 }
 
+/// Copies each configured kernel's optional `fragment_cost` declaration onto
+/// its dispatch sites as `vrc.fragment_cost`, completing every argument
+/// reference with the declared `argument_bounds` maximum used when the site
+/// argument is not a constant:
+///   "fragment_cost": {"loads": L, "active": [i, ...],
+///                     "per_argument": [{"index": i, "loads": l}, ...]}
+/// Loads per fragment are L + sum(argument_i * l) over the fragments selected
+/// by the product of the `active` arguments (all launched fragments when
+/// absent).
+LogicalResult
+attachDeviceFragmentCosts(ModuleOp module,
+                          ArrayRef<const json::Object *> deviceConfigs) {
+  Builder builder(module.getContext());
+  llvm::DenseMap<int64_t, DictionaryAttr> costs;
+  for (const json::Object *config : deviceConfigs) {
+    const json::Object *declared = config->getObject("fragment_cost");
+    if (!declared)
+      continue;
+    int64_t kernelId = *config->getInteger("kernel_id");
+    auto fail = [&](const Twine &message) {
+      errs() << "kernel " << kernelId << " fragment_cost: " << message << "\n";
+      return failure();
+    };
+    llvm::DenseMap<int64_t, int64_t> maxima;
+    if (const json::Array *bounds = config->getArray("argument_bounds"))
+      for (const json::Value &bound : *bounds)
+        if (const json::Object *entry = bound.getAsObject())
+          if (auto index = entry->getInteger("index"))
+            if (auto maximum = entry->getInteger("max"))
+              maxima[*index] = *maximum;
+    auto maximumOf = [&](int64_t index) -> std::optional<int64_t> {
+      auto found = maxima.find(index);
+      if (found == maxima.end())
+        return std::nullopt;
+      return found->second;
+    };
+    std::optional<int64_t> loads = declared->getInteger("loads");
+    if (!loads || *loads < 0)
+      return fail("requires non-negative integer loads");
+    SmallVector<NamedAttribute> entries{
+        builder.getNamedAttr("loads", builder.getI64IntegerAttr(*loads))};
+    if (const json::Array *active = declared->getArray("active")) {
+      SmallVector<mlir::Attribute> terms;
+      for (const json::Value &value : *active) {
+        std::optional<int64_t> index = value.getAsInteger();
+        std::optional<int64_t> maximum =
+            index ? maximumOf(*index) : std::nullopt;
+        if (!maximum)
+          return fail("active arguments need argument_bounds");
+        terms.push_back(builder.getDictionaryAttr(
+            {builder.getNamedAttr("index", builder.getI64IntegerAttr(*index)),
+             builder.getNamedAttr("max",
+                                  builder.getI64IntegerAttr(*maximum))}));
+      }
+      entries.push_back(
+          builder.getNamedAttr("active", builder.getArrayAttr(terms)));
+    }
+    if (const json::Array *perArgument = declared->getArray("per_argument")) {
+      SmallVector<mlir::Attribute> terms;
+      for (const json::Value &value : *perArgument) {
+        const json::Object *entry = value.getAsObject();
+        std::optional<int64_t> index =
+            entry ? entry->getInteger("index") : std::nullopt;
+        std::optional<int64_t> unit =
+            entry ? entry->getInteger("loads") : std::nullopt;
+        std::optional<int64_t> maximum =
+            index ? maximumOf(*index) : std::nullopt;
+        if (!unit || *unit < 0 || !maximum)
+          return fail("per_argument entries need non-negative loads and "
+                      "argument_bounds");
+        terms.push_back(builder.getDictionaryAttr(
+            {builder.getNamedAttr("index", builder.getI64IntegerAttr(*index)),
+             builder.getNamedAttr("loads", builder.getI64IntegerAttr(*unit)),
+             builder.getNamedAttr("max",
+                                  builder.getI64IntegerAttr(*maximum))}));
+      }
+      entries.push_back(
+          builder.getNamedAttr("per_argument", builder.getArrayAttr(terms)));
+    }
+    costs[kernelId] = builder.getDictionaryAttr(entries);
+  }
+  if (costs.empty())
+    return success();
+  module.walk([&](::vrc::vrc::DispatchOp dispatch) {
+    auto found = costs.find(dispatch.getKernelId());
+    if (found != costs.end())
+      dispatch->setAttr("vrc.fragment_cost", found->second);
+  });
+  return success();
+}
+
+/// Reads the optional per-library slice budgets:
+///   "device_work_budget": {"device_cost": N, "host_cost": N,
+///                          "fragment_weight": N}
+LogicalResult
+readDeviceWorkBudget(const json::Object &config,
+                     ::vrc::ScheduleUdonDeviceWorkPassOptions &out) {
+  const json::Value *value = config.get("device_work_budget");
+  if (!value)
+    return success();
+  const json::Object *budget = value->getAsObject();
+  if (!budget) {
+    errs() << "device_work_budget must be an object\n";
+    return failure();
+  }
+  for (const auto &[key, field] : *budget) {
+    std::optional<int64_t> number = field.getAsInteger();
+    if (!number) {
+      errs() << "device_work_budget." << key.str() << " must be an integer\n";
+      return failure();
+    }
+    if (key == "device_cost")
+      out.deviceCostBudget = *number;
+    else if (key == "host_cost")
+      out.hostCostBudget = *number;
+    else if (key == "fragment_weight")
+      out.fragmentWeight = *number;
+    else {
+      errs() << "unknown device_work_budget key " << key.str() << "\n";
+      return failure();
+    }
+  }
+  return success();
+}
+
 void attachDeviceResourceOperandContracts(ModuleOp module) {
   Builder builder(module.getContext());
   struct Contract {
@@ -3649,8 +3774,13 @@ int main(int argc, char **argv) {
     // enqueue-only and yield by slice budget instead of one frame each.
     phase("schedule-device-work");
     {
+      if (failed(attachDeviceFragmentCosts(*module, unityDeviceConfigs)))
+        return 1;
+      ::vrc::ScheduleUdonDeviceWorkPassOptions budget;
+      if (failed(readDeviceWorkBudget(*unityConfig, budget)))
+        return 1;
       PassManager deviceWork(&context);
-      deviceWork.addPass(::vrc::createScheduleUdonDeviceWorkPass());
+      deviceWork.addPass(::vrc::createScheduleUdonDeviceWorkPass(budget));
       if (failed(deviceWork.run(*module)) || failed(verify(*module)))
         return 1;
     }

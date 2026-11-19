@@ -86,6 +86,9 @@ static cl_int dispatched_sgemv_trans;
 static cl_int dispatched_mnist_kernel;
 static cl_int dispatched_nbits_tile_n;
 static cl_int dispatched_nbits_finalize;
+static cl_int dispatched_q4_block_base;
+static cl_int dispatched_q4_block_count;
+static cl_int dispatched_q4_accumulate;
 static cl_int dispatched_gather_words;
 static cl_int dispatched_dnn_operation;
 static cl_uint dispatched_dnn_input_token;
@@ -459,9 +462,8 @@ extern cl_int __vrc_enqueue_udonaten_argmax_finalize_device_args(
 extern cl_int __vrc_enqueue_udononnx_matmul_nbits_q4_device_args(
     cl_command_queue queue, cl_mem activation, cl_mem packed_weight,
     cl_mem scales, cl_mem previous, cl_mem output, cl_int m, cl_int n, cl_int k,
-    cl_int block_size, cl_int n_base, cl_int k_base, cl_int tile_n,
-    cl_int tile_k, cl_int accumulate, cl_uint wait_count,
-    const cl_event *wait_list, cl_event *event);
+    cl_int block_base, cl_int block_count, cl_int accumulate,
+    cl_uint wait_count, const cl_event *wait_list, cl_event *event);
 extern cl_mem udonclAdoptStaticBuffer(cl_command_queue queue,
                                       cl_uint resource_id, size_t bytes,
                                       cl_uint physical_token, cl_int *error);
@@ -533,8 +535,7 @@ cl_int __vrc_opencl_dispatch_udononnx_matmul_nbits(cl_uint input_token,
 cl_int __vrc_opencl_dispatch_udononnx_matmul_nbits_q4(
     cl_uint activation_token, cl_uint packed_weight_token, cl_uint scales_token,
     cl_uint previous_token, cl_uint output_token, cl_int m, cl_int n, cl_int k,
-    cl_int block_size, cl_int n_base, cl_int k_base, cl_int tile_n,
-    cl_int tile_k, cl_int accumulate) {
+    cl_int block_base, cl_int block_count, cl_int accumulate) {
   (void)activation_token;
   (void)packed_weight_token;
   (void)scales_token;
@@ -543,12 +544,9 @@ cl_int __vrc_opencl_dispatch_udononnx_matmul_nbits_q4(
   (void)m;
   (void)n;
   (void)k;
-  (void)block_size;
-  (void)n_base;
-  (void)k_base;
-  (void)tile_n;
-  (void)tile_k;
-  (void)accumulate;
+  dispatched_q4_block_base = block_base;
+  dispatched_q4_block_count = block_count;
+  dispatched_q4_accumulate = accumulate;
   return CL_SUCCESS;
 }
 
@@ -1608,6 +1606,24 @@ int main(void) {
   EXPECT(__vrc_enqueue_udonblas_arena_sgemm_strided_batched_device_args(
              queue, m1_batched_a, m1_batched_b, m1_batched_c, 1, 64, 64, 64,
              4096, 64, 33, 0, 0, 1.0f, 0, 0, 0) == CL_INVALID_VALUE);
+  /* K beyond one 256-wide chunk is accepted up to 8192. */
+  EXPECT(__vrc_enqueue_udonblas_arena_sgemm_strided_batched_device_args(
+             queue, m1_batched_b, m1_batched_b, m1_batched_c, 1, 8, 8192, 0, 0,
+             8, 1, 0, 0, 1.0f, 0, 0, &marker_event) == CL_SUCCESS);
+  EXPECT(marker_event && clWaitForEvents(1, &marker_event) == CL_SUCCESS);
+  EXPECT(dispatched_arena_batch_count == 1);
+  EXPECT(clReleaseEvent(marker_event) == CL_SUCCESS);
+  EXPECT(__vrc_enqueue_udonblas_arena_sgemm_strided_batched_device_args(
+             queue, m1_batched_a, m1_batched_b, m1_batched_c, 1, 1, 8193, 0, 0,
+             1, 1, 0, 0, 1.0f, 0, 0, 0) == CL_INVALID_VALUE);
+  EXPECT(__vrc_enqueue_udonblas_arena_sgemm_device_args(
+             queue, m1_batched_a, m1_batched_b, m1_batched_c, 1, 1, 2048, 0, 0,
+             1.0f, 0, 0, &marker_event) == CL_SUCCESS);
+  EXPECT(marker_event && clWaitForEvents(1, &marker_event) == CL_SUCCESS);
+  EXPECT(clReleaseEvent(marker_event) == CL_SUCCESS);
+  EXPECT(__vrc_enqueue_udonblas_arena_sgemm_device_args(
+             queue, m1_batched_a, m1_batched_b, m1_batched_c, 1, 1, 8193, 0, 0,
+             1.0f, 0, 0, 0) == CL_INVALID_VALUE);
   EXPECT(clReleaseMemObject(m1_batched_c) == CL_SUCCESS);
   EXPECT(clReleaseMemObject(m1_batched_b) == CL_SUCCESS);
   EXPECT(clReleaseMemObject(m1_batched_a) == CL_SUCCESS);
@@ -1627,16 +1643,36 @@ int main(void) {
   q4_output =
       udonclCreateBufferForQueue(queue, CL_MEM_READ_WRITE, 524288, &error);
   EXPECT(q4_output && error == CL_SUCCESS);
+  /* The whole K (176 blocks) in one dispatch. */
   EXPECT(__vrc_enqueue_udononnx_matmul_nbits_q4_device_args(
              queue, q4_activation, q4_packed, q4_scales, q4_previous, q4_output,
-             4, 32000, 5632, 32, 0, 5504, 32000, 128, 1, 0, 0,
-             &marker_event) == CL_SUCCESS);
+             4, 32000, 5632, 0, 176, 0, 0, 0, &marker_event) == CL_SUCCESS);
   EXPECT(marker_event && clWaitForEvents(1, &marker_event) == CL_SUCCESS);
   EXPECT(clReleaseEvent(marker_event) == CL_SUCCESS);
+  EXPECT(dispatched_q4_block_base == 0 && dispatched_q4_block_count == 176 &&
+         dispatched_q4_accumulate == 0);
+  /* A later segment accumulating onto a previous partial sum. */
   EXPECT(__vrc_enqueue_udononnx_matmul_nbits_q4_device_args(
              queue, q4_activation, q4_packed, q4_scales, q4_previous, q4_output,
-             4, 32000, 5632, 32, 1, 5504, 31999, 128, 1, 0, 0,
-             0) == CL_INVALID_VALUE);
+             4, 32000, 5632, 100, 76, 1, 0, 0, &marker_event) == CL_SUCCESS);
+  EXPECT(marker_event && clWaitForEvents(1, &marker_event) == CL_SUCCESS);
+  EXPECT(clReleaseEvent(marker_event) == CL_SUCCESS);
+  EXPECT(dispatched_q4_block_base == 100 && dispatched_q4_block_count == 76 &&
+         dispatched_q4_accumulate == 1);
+  /* Segments past the K blocks, empty or longer than one dispatch covers,
+   * and a non-boolean accumulate are rejected. */
+  EXPECT(__vrc_enqueue_udononnx_matmul_nbits_q4_device_args(
+             queue, q4_activation, q4_packed, q4_scales, q4_previous, q4_output,
+             4, 32000, 5632, 1, 176, 1, 0, 0, 0) == CL_INVALID_VALUE);
+  EXPECT(__vrc_enqueue_udononnx_matmul_nbits_q4_device_args(
+             queue, q4_activation, q4_packed, q4_scales, q4_previous, q4_output,
+             4, 32000, 5632, 0, 0, 0, 0, 0, 0) == CL_INVALID_VALUE);
+  EXPECT(__vrc_enqueue_udononnx_matmul_nbits_q4_device_args(
+             queue, q4_activation, q4_packed, q4_scales, q4_previous, q4_output,
+             4, 32000, 5632, -1, 1, 0, 0, 0, 0) == CL_INVALID_VALUE);
+  EXPECT(__vrc_enqueue_udononnx_matmul_nbits_q4_device_args(
+             queue, q4_activation, q4_packed, q4_scales, q4_previous, q4_output,
+             1, 2, 5632, 0, 176, 2, 0, 0, 0) == CL_INVALID_VALUE);
   EXPECT(clReleaseMemObject(q4_output) == CL_SUCCESS);
   EXPECT(clReleaseMemObject(q4_previous) == CL_SUCCESS);
   EXPECT(clReleaseMemObject(q4_scales) == CL_SUCCESS);

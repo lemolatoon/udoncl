@@ -108,8 +108,7 @@ extern cl_int __vrc_opencl_dispatch_udononnx_matmul_nbits(
 extern cl_int __vrc_opencl_dispatch_udononnx_matmul_nbits_q4(
     cl_uint activation_token, cl_uint packed_weight_token, cl_uint scales_token,
     cl_uint previous_token, cl_uint output_token, cl_int m, cl_int n, cl_int k,
-    cl_int block_size, cl_int n_base, cl_int k_base, cl_int tile_n,
-    cl_int tile_k, cl_int accumulate);
+    cl_int block_base, cl_int block_count, cl_int accumulate);
 extern cl_int __vrc_opencl_dispatch_udononnx_gather_copy(cl_uint input_token,
                                                          cl_uint output_token,
                                                          cl_int words);
@@ -1795,12 +1794,15 @@ cl_int __vrc_enqueue_udondnn_arena_softmax_device_args(
 #endif
 
 #if UDONCL_AOT_ENABLE_ONNX
+/* One dispatch accumulates the K blocks [block_base, block_base +
+ * block_count) of every output word; UDONONNX_Q4_DISPATCH_BLOCKS in
+ * libraries/udononnxoperators/device/matmul_nbits.cl bounds block_count. */
+#define UDONCL_Q4_DISPATCH_BLOCKS 256
 cl_int __vrc_enqueue_udononnx_matmul_nbits_q4_device_args(
     cl_command_queue queue, cl_mem activation, cl_mem packed_weight,
     cl_mem scales, cl_mem previous, cl_mem output, cl_int m, cl_int n, cl_int k,
-    cl_int block_size, cl_int n_base, cl_int k_base, cl_int tile_n,
-    cl_int tile_k, cl_int accumulate, cl_uint wait_count,
-    const cl_event *wait_list, cl_event *event) {
+    cl_int block_base, cl_int block_count, cl_int accumulate,
+    cl_uint wait_count, const cl_event *wait_list, cl_event *event) {
   cl_int pending;
   size_t blocks;
   if (queue != &udoncl_queue || !queue->active || !activation ||
@@ -1814,10 +1816,10 @@ cl_int __vrc_enqueue_udononnx_matmul_nbits_q4_device_args(
       udoncl_mem_context(scales) != queue->context ||
       udoncl_mem_context(previous) != queue->context ||
       udoncl_mem_context(output) != queue->context || m < 1 || m > 4 || n < 1 ||
-      n > 32000 || k < 1 || k > 5632 || block_size != 32 || n_base != 0 ||
-      k_base < 0 || k_base > 5504 || tile_n < 1 || tile_n > 32000 ||
-      tile_k < 1 || tile_k > 128 || accumulate < 0 || accumulate > 1 ||
-      n_base > n - tile_n || k_base > k - tile_k || m > 131072 / n ||
+      n > 32000 || k < 1 || k > 5632 || block_base < 0 || block_count < 1 ||
+      block_count > UDONCL_Q4_DISPATCH_BLOCKS || accumulate < 0 ||
+      accumulate > 1 || block_base > (k + 31) / 32 - block_count ||
+      m > 131072 / n ||
       udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
   blocks = ((size_t)k + 31u) / 32u;
@@ -1833,8 +1835,8 @@ cl_int __vrc_enqueue_udononnx_matmul_nbits_q4_device_args(
       udoncl_mem_physical_token(activation),
       udoncl_mem_physical_token(packed_weight),
       udoncl_mem_physical_token(scales), udoncl_mem_physical_token(previous),
-      udoncl_mem_physical_token(output), m, n, k, block_size, n_base, k_base,
-      tile_n, tile_k, accumulate);
+      udoncl_mem_physical_token(output), m, n, k, block_base, block_count,
+      accumulate);
   return udoncl_finish_enqueue(queue, CL_COMMAND_NDRANGE_KERNEL, pending,
                                CL_FALSE, event);
 }
@@ -2341,6 +2343,8 @@ cl_int __vrc_enqueue_udononnx_scatter_nd_f32_device_args(
   }
 
 #if UDONCL_AOT_ENABLE_BLAS
+/* The arena SGEMM kernels walk K in 32 guarded chunks of 256. */
+#define UDONCL_ARENA_SGEMM_MAX_K 8192
 cl_int __vrc_enqueue_udonblas_arena_sgemm_device_args(
     cl_command_queue queue, cl_mem a, cl_mem b, cl_mem output, cl_int m,
     cl_int n, cl_int k, cl_int transa, cl_int transb, cl_float alpha,
@@ -2357,7 +2361,8 @@ cl_int __vrc_enqueue_udonblas_arena_sgemm_device_args(
       udoncl_mem_context(output) != queue->context ||
       udoncl_mem_is_subbuffer(a) || udoncl_mem_is_subbuffer(b) ||
       udoncl_mem_is_subbuffer(output) || m <= 0 || n <= 0 || k <= 0 ||
-      k > 256 || udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
+      k > UDONCL_ARENA_SGEMM_MAX_K ||
+      udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
   a_words = (size_t)m * (size_t)k;
   b_words = (size_t)k * (size_t)n;
@@ -2398,9 +2403,10 @@ cl_int __vrc_enqueue_udonblas_arena_sgemm_strided_batched_device_args(
       udoncl_mem_context(b) != queue->context ||
       udoncl_mem_context(output) != queue->context ||
       udoncl_mem_is_subbuffer(a) || udoncl_mem_is_subbuffer(b) ||
-      udoncl_mem_is_subbuffer(output) || m < 1 || n < 1 || k < 1 || k > 256 ||
-      stride_a < 0 || stride_b < 0 || stride_c < 1 || batch_count < 1 ||
-      transa < 0 || transa > 1 || transb < 0 || transb > 1 ||
+      udoncl_mem_is_subbuffer(output) || m < 1 || n < 1 || k < 1 ||
+      k > UDONCL_ARENA_SGEMM_MAX_K || stride_a < 0 || stride_b < 0 ||
+      stride_c < 1 || batch_count < 1 || transa < 0 || transa > 1 ||
+      transb < 0 || transb > 1 ||
       udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
   matrix_a = (size_t)m * (size_t)k;

@@ -503,6 +503,83 @@ run(
     error="buffer index bounds are not proven within the declared extent",
 )
 
+# Nested guards on the same index: the proof uses the tightest dominating
+# guard, not the first one in block order, and a guard bound whose range
+# starts at zero still bounds the index in its (then possibly empty) region.
+nested_source = output / "nested-guard.cl"
+nested_source.write_text(
+    "__kernel void nested_guard(__global const float *input, "
+    "__global float *output, int count, int limit) {\n"
+    "  uint gid = get_global_id(0);\n"
+    "  float value = 0.0f;\n"
+    "  if (gid < (uint)count)\n"
+    "    if (gid < (uint)limit)\n"
+    "      value = input[gid];\n"
+    "  output[gid] = value;\n"
+    "}\n",
+    encoding="utf-8",
+)
+nested_ir = output / "nested-guard.ll"
+run(
+    [
+        clang,
+        "-target",
+        "spir-unknown-unknown",
+        "-x",
+        "cl",
+        "-cl-std=CL1.2",
+        "-cl-kernel-arg-info",
+        "-O0",
+        "-Xclang",
+        "-disable-O0-optnone",
+        "-fomit-frame-pointer",
+        "-ffp-contract=off",
+        "-S",
+        "-emit-llvm",
+        nested_source,
+        "-o",
+        nested_ir,
+    ]
+)
+for name, limit_min, limit_max, error in [
+    ("nested-tightest", 1, 8, None),
+    ("nested-zero-bound", 0, 8, None),
+    (
+        "nested-loose",
+        1,
+        9,
+        "buffer index bounds are not proven within the declared extent",
+    ),
+]:
+    nested_config = dict(
+        config,
+        words=16,
+        input_words=[8],
+        argument_bounds=[
+            {"index": 2, "min": 1, "max": 16},
+            {"index": 3, "min": limit_min, "max": limit_max},
+        ],
+        kernel="nested_guard",
+        kernel_id=29,
+        global_size=[16, 1, 1],
+    )
+    config_path.write_text(json.dumps(nested_config), encoding="utf-8")
+    nested_bundle = output / f"{name}-bundle"
+    if nested_bundle.exists():
+        shutil.rmtree(nested_bundle)
+    run(
+        [
+            compiler,
+            "--emit-native-device-bundle",
+            config_path,
+            "--device-llvm",
+            nested_ir,
+            "-o",
+            nested_bundle,
+        ],
+        error=error,
+    )
+
 packed_source = output / "packed.cl"
 packed_source.write_text(
     "__kernel void packed(__global const uint *input, "

@@ -81,6 +81,12 @@ adding a UdonDNN extension. ONNX Runtime extension `MatMulNBits` belongs to
 as an ATen, UdonBLAS, or UdonDNN public extension. The superseded
 `udonatenWeightInt4packMm` and private `udonblasBackendSgemvQ4` paths were
 removed rather than retained as competing quantized-matrix APIs.
+The Device-resident Q4 kernel `udononnx_matmul_nbits_q4` is a private
+UdonONNXOperators schedule of that ONNX Runtime contract, not a public API:
+one dispatch accumulates up to 256 K blocks of every output word in ascending
+K order, and the Host splits a longer K into compile-time segments that pass
+the partial sum through a scratch surface. Changing that schedule keeps the
+`MatMulNBits` semantics and adds no `Ext` entry point.
 
 The general ONNX MNIST path follows the same boundary: arena convolution and
 pooling are private backends of `udondnnConvolutionForward` and

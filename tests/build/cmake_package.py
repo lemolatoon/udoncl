@@ -1363,6 +1363,22 @@ def main():
     assert 'vrc.unity_heap_slot' in transformer_udon_async
     assert 'vrc.buffer_alloc' not in transformer_udon_async
     assert 'vrc.buffer_release' not in transformer_udon_async
+    # The library's fragment_cost declarations reach the dispatch sites, the
+    # Q4 site with its K-block count, and the slice scheduler charges a
+    # static cost for every issued command.
+    assert (
+        'vrc.fragment_cost = {active = [{index = 5 : i64, max = 4 : i64}, '
+        '{index = 6 : i64, max = 32000 : i64}], loads = 1 : i64, '
+        'per_argument = [{index = 9 : i64, loads = 37 : i64, '
+        'max = 176 : i64}]}' in transformer_udon_async
+    )
+    static_cost = re.search(
+        r'vrc\.device_work_static_cost = \{commands = (\d+) : i64, '
+        r'device = (\d+) : i64, host = (\d+) : i64\}',
+        transformer_udon_async,
+    )
+    assert static_cost, 'missing static Device work cost'
+    assert all(int(value) > 0 for value in static_cost.groups())
     expected_transformer_dispatch_slots = [
         '["", "__udoncl_buffer_1", "__udoncl_buffer_7"]',
         '["__udoncl_buffer_7", "", "__udoncl_buffer_8"]',

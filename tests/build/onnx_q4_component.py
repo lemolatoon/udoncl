@@ -80,11 +80,11 @@ def main():
     assert 'vrc.buffer_alloc' not in recovered
     assert 'vrc.buffer_release' not in recovered
     assert 'udonhl.checked_assigned_buffer_resolve' not in recovered
-    assert udon_async.count('vrc.unity_resource_heap_slots = ') == 2
+    assert udon_async.count('vrc.unity_resource_heap_slots = ') == 1
     assert udon_async.count(
         'vrc.unity_static_tensor_ids = [-1 : i32, 0 : i32, 1 : i32, '
         '-1 : i32, -1 : i32]'
-    ) == 2
+    ) == 1
     assert [
         (item['name'], item['logical_bytes'], item['capacity_bytes'],
          item.get('element_type'), item.get('public_access'),
@@ -96,13 +96,14 @@ def main():
         ('private_3', 524288, 524288, None, None, '__udoncl_buffer_3'),
         ('private_4', 524288, 524288, None, None, '__udoncl_buffer_4'),
     ]
-    assert [item['kernel_id'] for item in manifest['dispatch_sites']] == [235, 235]
+    # K = 2048 (64 blocks) is accumulated by a single dispatch.
+    assert [item['kernel_id'] for item in manifest['dispatch_sites']] == [235]
     kernel = next(item for item in manifest['device']['kernels'] if item['id'] == 235)
     assert [item['required_bytes'] for item in kernel['args'][:5]] == [
         32768, 33792, 8448, 524288, 524288,
     ]
     assert kernel['global_size'] == [8192, 16, 1]
-    print('onnx_q4_component=passed assigned_buffers=4 dispatch_sites=2 k=2048')
+    print('onnx_q4_component=passed assigned_buffers=4 dispatch_sites=1 k=2048')
 
 
 if __name__ == '__main__':
