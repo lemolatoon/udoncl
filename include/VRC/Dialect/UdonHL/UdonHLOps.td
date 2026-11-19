@@ -216,9 +216,12 @@ def UdonHL_SuspendOp : Op<UdonHL_Dialect, "suspend", [Terminator]> {
 def UdonHL_AsyncResumeOp : Op<UdonHL_Dialect, "async_resume"> {
   let summary = "Resume one statically identified Udon coroutine continuation";
   let description = [{
-    Directly enters the generated resume trampoline for frame_id/resume_pc.
-    A zero frame_id is a no-op. This operation does not imply a scheduler,
-    queue, polling loop, or dynamic frame allocation.
+    Requests the statically routed continuation frame_id/resume_pc. Udon
+    lowering records it in a one-element ready slot that the completion event
+    drains after the current activation returns, so continuations never nest
+    through static return slots. A zero frame_id is a no-op. This operation
+    does not imply a scheduler, queue, polling loop, or dynamic frame
+    allocation.
   }];
   let arguments = (ins I32:$frame_id, I32:$resume_pc);
 }

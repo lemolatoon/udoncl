@@ -2472,17 +2472,46 @@ UDONCL_DEFINE_DIRECT_ENQUEUE(__vrc_enqueue_udondnn_large_op_tensor, 234,
 #endif
 #undef UDONCL_DEFINE_DIRECT_ENQUEUE
 
+/* The Udon target has exactly one host-transfer command slot per component
+ * instance: an upload or readback is published there and executed by the
+ * generated binding only after the current Udon event yields. Issuing a second
+ * transfer before the first one has been awaited would overwrite the
+ * unexecuted command, and the in-order completion of the later command would
+ * then report the dropped one as complete. Non-blocking transfers therefore
+ * drain any outstanding transfer first; this only completes earlier commands
+ * of the same in-order queue sooner, which OpenCL permits. */
+static cl_int udoncl_await_outstanding_transfer(cl_command_queue queue) {
+  cl_uint index;
+  for (index = 0; index < UDONCL_AOT_EVENT_CAPACITY; ++index) {
+    cl_event event = &udoncl_events[index];
+    cl_int status;
+    if (!event->active || event->queue != queue ||
+        event->execution_status <= CL_COMPLETE ||
+        (event->command_type != CL_COMMAND_WRITE_BUFFER &&
+         event->command_type != CL_COMMAND_READ_BUFFER))
+      continue;
+    status = udoncl_event_wait(event);
+    if (status != CL_SUCCESS)
+      return status;
+  }
+  return CL_SUCCESS;
+}
+
 CL_API_ENTRY cl_int CL_API_CALL clEnqueueWriteBuffer(
     cl_command_queue queue, cl_mem buffer, cl_bool blocking, size_t offset,
     size_t bytes, const void *source, cl_uint wait_count,
     const cl_event *wait_list, cl_event *event) {
   cl_int pending;
+  cl_int status;
   if (queue != &udoncl_queue || !queue->active ||
       !udoncl_mem_is_active(buffer) || udoncl_mem_is_static(buffer) ||
       !source || offset > udoncl_mem_bytes(buffer) ||
       bytes > udoncl_mem_bytes(buffer) - offset ||
       udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
+  status = udoncl_await_outstanding_transfer(queue);
+  if (status != CL_SUCCESS)
+    return status;
   udoncl_pending_resources_reset();
   udoncl_pending_resource_add(buffer);
   pending = __vrc_opencl_buffer_upload(udoncl_mem_physical_token(buffer),
@@ -2497,12 +2526,16 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueReadBuffer(
     size_t bytes, void *destination, cl_uint wait_count,
     const cl_event *wait_list, cl_event *event) {
   cl_int pending;
+  cl_int status;
   if (queue != &udoncl_queue || !queue->active ||
       !udoncl_mem_is_active(buffer) || !destination ||
       offset > udoncl_mem_bytes(buffer) ||
       bytes > udoncl_mem_bytes(buffer) - offset ||
       udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
+  status = udoncl_await_outstanding_transfer(queue);
+  if (status != CL_SUCCESS)
+    return status;
   udoncl_pending_resources_reset();
   udoncl_pending_resource_add(buffer);
   pending = __vrc_opencl_buffer_readback(udoncl_mem_physical_token(buffer),

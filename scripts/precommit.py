@@ -702,6 +702,8 @@ def run_unity_mcp_gate(
     tinyllama_prefill_oracle=None,
     tinyllama_conversation_artifact=None,
     tinyllama_conversation_oracle=None,
+    tinyllama_step_artifact=None,
+    tinyllama_step_oracles=None,
     prepare_standard_fixtures=True,
 ):
     require_unity_mcp(project)
@@ -868,6 +870,13 @@ def run_unity_mcp_gate(
             "GIT_CONFIG_VALUE_0": "true",
         }
     )
+    if tinyllama_step_artifact is not None:
+        environment["UDONCL_PUBLIC_TINYLLAMA_STEP_UNITY_BUNDLE"] = str(
+            tinyllama_step_artifact
+        )
+        environment["UDONCL_PUBLIC_TINYLLAMA_STEP_ORACLES"] = str(
+            tinyllama_step_oracles
+        )
     if tinyllama_conversation_artifact is not None:
         environment["UDONCL_PUBLIC_TINYLLAMA_CONVERSATION_UNITY_BUNDLE"] = str(
             tinyllama_conversation_artifact
@@ -980,6 +989,33 @@ def run_unity_mcp_gate(
             if missing:
                 raise RuntimeError(
                     "TinyLlama prefill preparation did not complete: "
+                    + ", ".join(missing)
+                )
+        if tinyllama_step_artifact is not None:
+            execute_menu_after_reload(
+                client,
+                "Tools/udoncl/Internal/Prepare Public TinyLlama M1 Step Validation",
+                timeout=900,
+                reconnect_timeout=900,
+            )
+            focused_test = (
+                Path(project)
+                / "Assets/UdonclSampleValidation/Editor/"
+                "PublicTinyLlamaStepValidationTests.cs"
+            )
+            imported_program = (
+                Path(project)
+                / "Assets/udoncl-generated/tinyllama_real_m1_step/Programs/"
+                "host_program.asset"
+            )
+            missing = [
+                str(path)
+                for path in (focused_test, imported_program)
+                if not path.is_file()
+            ]
+            if missing:
+                raise RuntimeError(
+                    "TinyLlama M=1 step preparation did not complete: "
                     + ", ".join(missing)
                 )
         if tinyllama_conversation_artifact is not None:
@@ -1192,6 +1228,19 @@ def main():
             "conversation artifact instead of rebuilding it"
         ),
     )
+    parser.add_argument(
+        "--tinyllama-m1-step-artifact",
+        type=Path,
+        help=(
+            "focused diagnosis only: run the M=1 step validation Unity test "
+            "on this public-buffer step artifact"
+        ),
+    )
+    parser.add_argument(
+        "--tinyllama-m1-step-oracles",
+        type=Path,
+        help="directory containing the ORT step-* sidecars for --tinyllama-m1-step-artifact",
+    )
     args = parser.parse_args()
     snapshot_commit = None
     if args.commit_snapshot:
@@ -1207,8 +1256,22 @@ def main():
             parser.error(
                 f"checked-out HEAD is {head}, expected commit snapshot {snapshot_commit}"
             )
-    if args.tinyllama_prefill and args.tinyllama_conversation:
+    if (
+        sum(
+            bool(item)
+            for item in (
+                args.tinyllama_prefill,
+                args.tinyllama_conversation,
+                args.tinyllama_m1_step_artifact,
+            )
+        )
+        > 1
+    ):
         parser.error("run one focused TinyLlama Unity gate at a time")
+    if bool(args.tinyllama_m1_step_artifact) != bool(args.tinyllama_m1_step_oracles):
+        parser.error(
+            "--tinyllama-m1-step-artifact and --tinyllama-m1-step-oracles go together"
+        )
     if args.minimal_unity_fixtures and (not args.unity_only or not args.unity_test):
         parser.error("--minimal-unity-fixtures requires --unity-only and --unity-test")
     if args.unity is None:
@@ -1303,6 +1366,8 @@ def main():
     tinyllama_prefill_oracle = None
     tinyllama_conversation_artifact = None
     tinyllama_conversation_oracle = None
+    tinyllama_step_artifact = None
+    tinyllama_step_oracles = None
     unity_tests = list(args.unity_test)
     unity_test_assemblies = [TEST_ASSEMBLY]
     if args.tinyllama_prefill:
@@ -1362,9 +1427,29 @@ def main():
             unity_tests.append(
                 "Lemolatoon.Udoncl.Editor.Tests."
                 "PublicTinyLlamaConversationLifecycleTests."
-                "GeneratedUSharpBindingGeneratesFirstRealToken"
+                "GeneratedUSharpBindingRunsGreedyConversationLifecycle"
             )
             unity_test_assemblies = ["Udoncl.TinyLlama.Focused.Tests"]
+    if args.tinyllama_m1_step_artifact:
+        tinyllama_step_artifact = args.tinyllama_m1_step_artifact.resolve()
+        tinyllama_step_oracles = args.tinyllama_m1_step_oracles.resolve()
+        if not (tinyllama_step_artifact / "manifest.json").is_file():
+            parser.error(
+                "TinyLlama M=1 step artifact has no manifest: "
+                f"{tinyllama_step_artifact}"
+            )
+        if not any(tinyllama_step_oracles.glob("step-*/oracle.json")):
+            parser.error(
+                "TinyLlama M=1 step oracle directory has no step-* sidecars: "
+                f"{tinyllama_step_oracles}"
+            )
+        if not unity_tests:
+            unity_tests.append(
+                "Lemolatoon.Udoncl.Editor.Tests."
+                "PublicTinyLlamaStepValidationTests."
+                "GeneratedUSharpBindingMatchesM1StepOutputs"
+            )
+            unity_test_assemblies = ["Udoncl.TinyLlama.Step.Focused.Tests"]
     run_unity_mcp_gate(
         root,
         unity,
@@ -1380,6 +1465,8 @@ def main():
         tinyllama_prefill_oracle=tinyllama_prefill_oracle,
         tinyllama_conversation_artifact=tinyllama_conversation_artifact,
         tinyllama_conversation_oracle=tinyllama_conversation_oracle,
+        tinyllama_step_artifact=tinyllama_step_artifact,
+        tinyllama_step_oracles=tinyllama_step_oracles,
         prepare_standard_fixtures=not args.minimal_unity_fixtures,
     )
     if args.unity_only:

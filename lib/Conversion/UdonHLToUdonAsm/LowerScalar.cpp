@@ -513,25 +513,47 @@ public:
         bankedSet.insert(function.getOperation());
       }
 
+      // Every internal function returns through one static slot. Both an
+      // ordinary call and an async_enter (which sets the resumed coroutine's
+      // return slot to the entering site) are activations that must return
+      // before the same slot is written again. Build the activation graph over
+      // all internal functions, including the unbanked async dispatcher, so
+      // banks are colored through dispatcher/enter edges and any activation
+      // cycle is rejected instead of silently clobbering a return address.
+      llvm::SmallPtrSet<Operation *, 32> internalSet;
+      for (func::FuncOp function : internalsToLower)
+        internalSet.insert(function.getOperation());
+      llvm::DenseMap<int64_t, Operation *> coroutineByFrame;
+      for (func::FuncOp function : functions)
+        if (auto frame =
+                function->getAttrOfType<IntegerAttr>("vrc.async_frame_id"))
+          coroutineByFrame.try_emplace(frame.getInt(), function.getOperation());
       llvm::DenseMap<Operation *, SmallVector<Operation *>> callees;
-      for (func::FuncOp function : bankedFunctions) {
+      for (func::FuncOp function : internalsToLower) {
         function.walk([&](Operation *operation) {
-          FlatSymbolRefAttr calleeAttr;
-          if (auto call = dyn_cast<func::CallOp>(operation))
-            calleeAttr = call.getCalleeAttr();
-          else if (auto call = dyn_cast<host::CallOp>(operation))
-            calleeAttr = call.getCalleeAttr();
-          if (!calleeAttr)
-            return;
-          auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
-              operation, calleeAttr);
-          if (callee && bankedSet.contains(callee.getOperation()))
-            callees[function.getOperation()].push_back(callee.getOperation());
+          Operation *target = nullptr;
+          if (auto enter = dyn_cast<host::AsyncEnterOp>(operation)) {
+            target = coroutineByFrame.lookup(enter.getFrameId());
+          } else {
+            FlatSymbolRefAttr calleeAttr;
+            if (auto call = dyn_cast<func::CallOp>(operation))
+              calleeAttr = call.getCalleeAttr();
+            else if (auto call = dyn_cast<host::CallOp>(operation))
+              calleeAttr = call.getCalleeAttr();
+            if (!calleeAttr)
+              return;
+            if (auto callee =
+                    SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
+                        operation, calleeAttr))
+              target = callee.getOperation();
+          }
+          if (target && internalSet.contains(target))
+            callees[function.getOperation()].push_back(target);
         });
       }
 
       llvm::DenseMap<Operation *, llvm::SmallPtrSet<Operation *, 32>> reachable;
-      for (func::FuncOp function : bankedFunctions) {
+      for (func::FuncOp function : internalsToLower) {
         llvm::SmallPtrSet<Operation *, 32> visited;
         SmallVector<Operation *> worklist(
             callees[function.getOperation()].begin(),
@@ -547,7 +569,12 @@ public:
               "recursive internal Udon call graph has no static slot plan");
           return failure();
         }
-        reachable.try_emplace(function.getOperation(), std::move(visited));
+        llvm::SmallPtrSet<Operation *, 32> bankedReachable;
+        for (Operation *callee : visited)
+          if (bankedSet.contains(callee))
+            bankedReachable.insert(callee);
+        reachable.try_emplace(function.getOperation(),
+                              std::move(bankedReachable));
       }
 
       SmallVector<func::FuncOp> coloringOrder(bankedFunctions);
@@ -2557,12 +2584,8 @@ private:
                 "Unity buffer upload has missing command slots");
           std::string kind = prefix + "upload_command";
           addSlot(kind, "SystemInt32", "1", false);
-          emitCopy(transfer.getLoc(), buffer, asyncCommandBufferSlot);
-          emitCopy(transfer.getLoc(), offset, asyncCommandOffsetSlot);
-          emitCopy(transfer.getLoc(), size, asyncCommandSizeSlot);
-          emitCopy(transfer.getLoc(), pointer, asyncCommandPointerSlot);
-          emitCopy(transfer.getLoc(), kind, asyncCommandKindSlot);
-          emitCopy(transfer.getLoc(), asyncEventSlot, event);
+          emitGuardedTransferCommand(transfer.getLoc(), kind, buffer, offset,
+                                     size, pointer, event);
           continue;
         }
         if (auto transfer = dyn_cast<runtime::BufferReadbackOp>(operation)) {
@@ -2577,12 +2600,8 @@ private:
                 "Unity buffer readback has missing command slots");
           std::string kind = prefix + "readback_command";
           addSlot(kind, "SystemInt32", "2", false);
-          emitCopy(transfer.getLoc(), buffer, asyncCommandBufferSlot);
-          emitCopy(transfer.getLoc(), offset, asyncCommandOffsetSlot);
-          emitCopy(transfer.getLoc(), size, asyncCommandSizeSlot);
-          emitCopy(transfer.getLoc(), pointer, asyncCommandPointerSlot);
-          emitCopy(transfer.getLoc(), kind, asyncCommandKindSlot);
-          emitCopy(transfer.getLoc(), asyncEventSlot, event);
+          emitGuardedTransferCommand(transfer.getLoc(), kind, buffer, offset,
+                                     size, pointer, event);
           continue;
         }
         if (auto await = dyn_cast<runtime::AwaitOp>(operation)) {
@@ -5511,6 +5530,46 @@ private:
     OperationState state(location, name);
     state.addAttributes(attributes);
     return builder.create(state);
+  }
+
+  // The binding executes the single published host-transfer command only after
+  // the current Udon event yields and then clears the kind slot. Publishing a
+  // command while the slot is still occupied would silently overwrite an
+  // unexecuted transfer, so the occupied case reports CL_INVALID_OPERATION as
+  // the transfer's event instead of publishing anything.
+  void emitGuardedTransferCommand(Location location, StringRef kind,
+                                  StringRef buffer, StringRef offset,
+                                  StringRef size, StringRef pointer,
+                                  StringRef event) {
+    constexpr StringLiteral idleKind = "__udoncl_async_command_idle_kind";
+    constexpr StringLiteral idle = "__udoncl_async_command_slot_idle";
+    constexpr StringLiteral overwrite =
+        "__udoncl_async_command_overwrite_status";
+    addSlot(idleKind, "SystemInt32", "0", false);
+    addSlot(idle, "SystemBoolean", "null", false);
+    addSlot(overwrite, "SystemInt32", "-59", false);
+    emitPush(location, asyncCommandKindSlot);
+    emitPush(location, idleKind);
+    emitPush(location, idle);
+    emitExtern(location, "SystemInt32.__op_Equality__SystemInt32_SystemInt32__"
+                         "SystemBoolean");
+    emitPush(location, idle);
+    Operation *occupied =
+        create(location, vm::JumpIfFalseOp::getOperationName(),
+               {builder.getNamedAttr("target", builder.getI64IntegerAttr(0))});
+    address += 8;
+    emitCopy(location, buffer, asyncCommandBufferSlot);
+    emitCopy(location, offset, asyncCommandOffsetSlot);
+    emitCopy(location, size, asyncCommandSizeSlot);
+    emitCopy(location, pointer, asyncCommandPointerSlot);
+    emitCopy(location, kind, asyncCommandKindSlot);
+    emitCopy(location, asyncEventSlot, event);
+    Operation *done = emitJump(location, 0);
+    occupied->setAttr("target",
+                      builder.getI64IntegerAttr(static_cast<int64_t>(address)));
+    emitCopy(location, overwrite, event);
+    done->setAttr("target",
+                  builder.getI64IntegerAttr(static_cast<int64_t>(address)));
   }
 
   void emitPush(Location location, StringRef slot) {

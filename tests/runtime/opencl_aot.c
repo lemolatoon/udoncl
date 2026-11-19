@@ -93,6 +93,10 @@ static cl_uint dispatched_dnn_other_token;
 static cl_uint dispatched_dnn_previous_token;
 static cl_uint dispatched_dnn_output_token;
 static cl_uint await_count;
+/* The Udon binding owns one host-transfer command slot that an await flushes.
+ * A transfer issued while another one is unawaited would overwrite it. */
+static cl_uint transfer_outstanding;
+static cl_uint transfer_overlaps;
 static cl_uint await_failure_call;
 static cl_int awaited_events[8];
 static unsigned char physical_buffers[33][524288];
@@ -122,6 +126,8 @@ cl_int __vrc_opencl_buffer_upload(cl_uint physical_token, size_t offset,
   (void)bytes;
   (void)source;
   uploaded_token = physical_token;
+  transfer_overlaps += transfer_outstanding;
+  transfer_outstanding = 1;
   memcpy(physical_buffers[physical_token - 100] + offset, source, bytes);
   return 7;
 }
@@ -131,6 +137,8 @@ cl_int __vrc_opencl_buffer_readback(cl_uint physical_token, size_t offset,
   (void)physical_token;
   (void)offset;
   (void)bytes;
+  transfer_overlaps += transfer_outstanding;
+  transfer_outstanding = 1;
   memcpy(destination, physical_buffers[physical_token - 100] + offset, bytes);
   return 8;
 }
@@ -696,6 +704,7 @@ cl_int __vrc_opencl_dispatch_udononnx_scatter_nd_f32(
 }
 
 cl_int __vrc_opencl_await(cl_int event) {
+  transfer_outstanding = 0;
   if (await_count < sizeof(awaited_events) / sizeof(awaited_events[0]))
     awaited_events[await_count] = event;
   ++await_count;
@@ -985,6 +994,23 @@ int main(void) {
   EXPECT(recycled_event == wait_events[1]);
   EXPECT(clWaitForEvents(1, &recycled_event) == CL_SUCCESS);
   EXPECT(clReleaseEvent(recycled_event) == CL_SUCCESS);
+
+  /* Consecutive non-blocking writes, as a C Host stages input_ids,
+   * attention_mask and position_ids before one run, must each reach the
+   * single Udon transfer slot: every later write drains the earlier one. */
+  await_count = 0;
+  transfer_overlaps = 0;
+  EXPECT(clEnqueueWriteBuffer(queue, first, CL_FALSE, 0, sizeof(source),
+                              &source, 0, 0, 0) == CL_SUCCESS);
+  EXPECT(await_count == 0);
+  EXPECT(clEnqueueWriteBuffer(queue, second, CL_FALSE, 0, sizeof(source),
+                              &source, 0, 0, 0) == CL_SUCCESS);
+  EXPECT(await_count == 1 && awaited_events[0] == 7);
+  EXPECT(clEnqueueWriteBuffer(queue, first, CL_FALSE, 0, sizeof(source),
+                              &source, 0, 0, 0) == CL_SUCCESS);
+  EXPECT(await_count == 2 && transfer_overlaps == 0);
+  EXPECT(clFinish(queue) == CL_SUCCESS);
+  EXPECT(await_count == 3 && transfer_outstanding == 0);
 
   await_count = 0;
   await_failure_call = 2;
@@ -1890,5 +1916,6 @@ int main(void) {
     EXPECT(clReleaseMemObject(capacity_buffers[index]) == CL_SUCCESS);
   EXPECT(clReleaseCommandQueue(queue) == CL_SUCCESS);
   EXPECT(clReleaseContext(context) == CL_SUCCESS);
+  EXPECT(transfer_overlaps == 0);
   return 0;
 }

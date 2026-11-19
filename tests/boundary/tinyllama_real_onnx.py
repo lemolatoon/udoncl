@@ -71,6 +71,14 @@ step_logit_error: list[float] = []
 step_kv_error: list[float] = []
 
 
+# Step-level M=1 sidecars: every input of the fixed capacity-64 graph,
+# including the rolling past state, and every output. A Unity run of the
+# public-buffer M=1 step artifact compares all logits and present K/V of these
+# steps independently of the C Host loop.
+step_sidecar_positions = (3, 4)
+step_sidecars: dict[int, tuple[dict[str, np.ndarray], list[np.ndarray]]] = {}
+
+
 def run_fixed_m1(token: int, position: int) -> list[np.ndarray]:
     valid = position + 1
     assert 0 < valid <= capacity
@@ -83,7 +91,10 @@ def run_fixed_m1(token: int, position: int) -> list[np.ndarray]:
     }
     for item, value in zip(session.get_inputs()[3:], rolling_past):
         step_feed[item.name] = value
-    return session.run(None, step_feed)
+    step_results = session.run(None, step_feed)
+    if position in step_sidecar_positions:
+        step_sidecars[position] = (dict(step_feed), step_results)
+    return step_results
 
 
 def run_variable_m1(token: int, position: int) -> list[np.ndarray]:
@@ -156,6 +167,23 @@ manifest = json.loads((output / "oracle.json").read_text(encoding="utf-8"))
 assert len(manifest["outputs"]) == 45
 assert manifest["outputs"][0]["element_count"] == 128000
 assert all(item["element_count"] == 1024 for item in manifest["outputs"][1:])
+assert sorted(step_sidecars) == list(step_sidecar_positions), sorted(step_sidecars)
+for position, (step_feed, step_results) in step_sidecars.items():
+    step_directory = output / "m1-steps" / f"step-{position:03d}"
+    write_float32_oracle(
+        step_directory,
+        model_sha256=fetch.MODEL_SHA256,
+        inputs=step_feed,
+        outputs=[
+            (item.name, value)
+            for item, value in zip(session.get_outputs(), step_results)
+        ],
+        metadata={
+            "capacity": capacity,
+            "position": position,
+            "argmax": int(np.argmax(step_results[0][0, 0])),
+        },
+    )
 (output / "m1-oracle.json").write_text(
     json.dumps(
         {

@@ -53,7 +53,12 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
             "StartGenerate(",
             "TryGeneratedTokenCount(",
             "TryReadGeneratedTokens(",
+            "StartReset(",
+            "GetResetStatus(",
+            "TryGetResetResult(",
             "TryShutdown(",
+            "LibraryStatusInvalidState = 12",
+            "LibraryStatusDisposed = 8",
         ):
             self.assertIn(required, source)
         for forbidden in (
@@ -67,6 +72,102 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
             "udon_onnx_binding_",
         ):
             self.assertNotIn(forbidden, source)
+
+    def test_lifecycle_test_checks_whole_greedy_sequence(self):
+        examples = ROOT / "unity/Packages/com.lemolatoon.udoncl/Editor/Examples"
+        source = (
+            examples / "tinyllama-conversation-lifecycle-test.cs.txt"
+        ).read_text(encoding="utf-8")
+        controller = (
+            examples / "tinyllama-conversation-test-controller.cs.txt"
+        ).read_text(encoding="utf-8")
+        precommit = (ROOT / "scripts/precommit.py").read_text(encoding="utf-8")
+        name = "GeneratedUSharpBindingRunsGreedyConversationLifecycle"
+        self.assertIn(f"IEnumerator {name}()", source)
+        self.assertIn(f'"{name}"', precommit)
+        self.assertNotIn("GeneratesFirstRealToken", source + precommit)
+        for required in (
+            # The request limit is the whole oracle sequence, and both the
+            # first and the post-Reset generation must match all of it.
+            "int maxNewTokens = expectedTokens.Length;",
+            "CollectionAssert.AreEqual(expectedTokens, Prefix(first, firstCount)",
+            "Prefix(second, secondCount)",
+            "rejectedPromptStatus",
+            "disposedPromptStatus",
+            # A VM halt is reported with the controller phase.
+            "Application.logMessageReceived += CaptureVmError;",
+            "Udon VM halted during ",
+            # Phase/frame progress and the final state reach the Editor log.
+            'Debug.Log("udoncl tinyllama_conversation result " + state);',
+            "udoncl tinyllama_conversation phase={0} ({1}) frame={2}",
+            # Every prerequisite fails with a message, not a bare NRE.
+            "were not restored after the play-mode domain reload",
+            "The conversation test controller program is not initialized.",
+            "is unset.",
+        ):
+            self.assertIn(required, source)
+        # EnterPlayMode reloads the domain and the Unity Test Framework
+        # restores only the iterator state number. A closure's display object
+        # is allocated at iterator entry and would be null after the reload.
+        iterator = source.split(f"IEnumerator {name}()", 1)[1].split(
+            "private void CaptureVmError", 1)[0]
+        self.assertNotIn("=>", iterator)
+        self.assertNotIn("delegate", iterator)
+        self.assertNotIn("(int)UdonclArtifactImporter.GetUdonProgramVariable", source)
+        self.assertNotIn("generated_tokens[0]", source)
+        self.assertNotIn("TestContext.Progress", source)
+        # The Editor test mirrors the controller's phase numbering.
+        self.assertIn("private const int PhaseDone = 12;", source)
+        self.assertIn("public const int PhaseDone = 12;", controller)
+
+    def test_m1_step_validation_is_model_independent_and_wired(self):
+        package = ROOT / "unity/Packages/com.lemolatoon.udoncl/Editor"
+        source = (
+            package / "Examples/tinyllama-step-lifecycle-test.cs.txt"
+        ).read_text(encoding="utf-8")
+        controller = (
+            package / "Examples/tinyllama-step-test-controller.cs.txt"
+        ).read_text(encoding="utf-8")
+        importer = (package / "UdonclPackagedExampleImporter.cs").read_text(
+            encoding="utf-8")
+        assembly = (package / "AssemblyInfo.cs").read_text(encoding="utf-8")
+        precommit = (ROOT / "scripts/precommit.py").read_text(encoding="utf-8")
+        oracle = (ROOT / "tests/boundary/tinyllama_real_onnx.py").read_text(
+            encoding="utf-8")
+        cmake = (ROOT / "examples/onnx-transformer-tiny/CMakeLists.txt").read_text(
+            encoding="utf-8")
+        name = "GeneratedUSharpBindingMatchesM1StepOutputs"
+        self.assertIn(f"IEnumerator {name}()", source)
+        self.assertIn(f'"{name}"', precommit)
+        self.assertIn("Prepare Public TinyLlama M1 Step Validation", importer)
+        self.assertIn("Prepare Public TinyLlama M1 Step Validation", precommit)
+        self.assertIn("Udoncl.TinyLlama.Step.Focused.Tests", assembly)
+        self.assertIn("onnx-transformer-tiny-m1-step", cmake)
+        self.assertIn('"m1-steps"', oracle)
+        # Every sidecar output is compared and reported by name with its
+        # maximum error; inputs and outputs follow manifest order generically.
+        for required in (
+            "UDONCL_PUBLIC_TINYLLAMA_STEP_UNITY_BUNDLE",
+            "UDONCL_PUBLIC_TINYLLAMA_STEP_ORACLES",
+            "for (int index = 0; index < oracle.Outputs.Count; ++index)",
+            " max_abs_error=",
+            'Debug.Log("udoncl tinyllama_m1_step " + line);',
+        ):
+            self.assertIn(required, source)
+        iterator = source.split(f"IEnumerator {name}()", 1)[1].split(
+            "private static string CompareOutput", 1)[0]
+        self.assertNotIn("=>", iterator)
+        self.assertNotIn("delegate", iterator)
+        for required in (
+            "TryWriteLongBuffer(",
+            "TryWriteFloatBuffer(",
+            "StartReadFloatBuffer(",
+            "SendCustomEventDelayedFrames(nameof(_WriteNextInput), 1);",
+        ):
+            self.assertIn(required, controller)
+        for forbidden in ("GetProgramVariable", "SetProgramVariable", "__vrc_",
+                          "__udoncl_", "32000", "1701"):
+            self.assertNotIn(forbidden, controller)
 
     def make_artifact(self, root: Path) -> Path:
         inputs = [

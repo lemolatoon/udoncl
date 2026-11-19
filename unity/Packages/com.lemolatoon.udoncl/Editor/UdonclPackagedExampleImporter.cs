@@ -26,6 +26,8 @@ namespace Lemolatoon.Udoncl.Editor
         private const string PrefillControllerTemplate = "tinyllama-prefill-test-controller.cs.txt";
         private const string PrefillLifecycleTestTemplate =
             "tinyllama-prefill-lifecycle-test.cs.txt";
+        private const string StepControllerTemplate = "tinyllama-step-test-controller.cs.txt";
+        private const string StepValidationTestTemplate = "tinyllama-step-lifecycle-test.cs.txt";
 
         [MenuItem("Tools/udoncl/Examples/Import C and OpenCL Hello Dispatch")]
         private static void ImportHelloDispatch()
@@ -354,6 +356,76 @@ namespace Lemolatoon.Udoncl.Editor
                 editorRoot + "/Udoncl.TinyLlama.Prefill.Focused.Tests.asmdef",
                 "{\n"
                     + "  \"name\": \"Udoncl.TinyLlama.Prefill.Focused.Tests\",\n"
+                    + "  \"references\": [\"Udoncl.Runtime\", \"Udoncl.Editor\", "
+                    + "\"VRC.Udon\", \"VRC.Udon.Editor\", \"UdonSharp.Runtime\"],\n"
+                    + "  \"includePlatforms\": [\"Editor\"],\n"
+                    + "  \"overrideReferences\": true,\n"
+                    + "  \"precompiledReferences\": [\"nunit.framework.dll\", "
+                    + "\"VRC.Udon.Common.dll\"],\n"
+                    + "  \"autoReferenced\": false,\n"
+                    + "  \"optionalUnityReferences\": [\"TestAssemblies\"]\n"
+                    + "}\n"
+            );
+            AssetDatabase.ImportAsset(
+                validationRoot,
+                ImportAssetOptions.ForceSynchronousImport | ImportAssetOptions.ForceUpdate
+            );
+            AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+            UnityEditor.Compilation.CompilationPipeline.RequestScriptCompilation();
+        }
+
+        [MenuItem("Tools/udoncl/Internal/Prepare Public TinyLlama M1 Step Validation")]
+        public static void PreparePublicTinyLlamaStepValidation()
+        {
+            string artifact = Environment.GetEnvironmentVariable(
+                "UDONCL_PUBLIC_TINYLLAMA_STEP_UNITY_BUNDLE"
+            );
+            if (string.IsNullOrWhiteSpace(artifact))
+                throw new InvalidOperationException(
+                    "UDONCL_PUBLIC_TINYLLAMA_STEP_UNITY_BUNDLE is required."
+                );
+            artifact = Path.GetFullPath(artifact);
+            if (!File.Exists(Path.Combine(artifact, "manifest.json")))
+                throw new FileNotFoundException(
+                    "The TinyLlama M=1 step validation artifact is missing.",
+                    artifact
+                );
+            const string root = "Assets/udoncl-generated/tinyllama_real_m1_step";
+            AssetDatabase.DeleteAsset(root);
+            if (UdonclArtifactImporter.Import(artifact) != root)
+                throw new InvalidDataException(
+                    "TinyLlama M=1 step validation imported to an unexpected path."
+                );
+            UnityEditor.PackageManager.PackageInfo package =
+                UnityEditor.PackageManager.PackageInfo.FindForAssembly(
+                    typeof(UdonclPackagedExampleImporter).Assembly
+                );
+            if (package == null || string.IsNullOrEmpty(package.resolvedPath))
+                throw new InvalidOperationException(
+                    "Could not resolve the installed UdonCL package."
+                );
+            const string validationRoot = "Assets/UdonclSampleValidation";
+            string editorRoot = validationRoot + "/Editor";
+            Directory.CreateDirectory(editorRoot);
+            File.Copy(
+                Path.Combine(package.resolvedPath, "Editor", "Examples", StepControllerTemplate),
+                validationRoot + "/UdonclTinyLlamaStepTestController.cs",
+                true
+            );
+            File.Copy(
+                Path.Combine(
+                    package.resolvedPath,
+                    "Editor",
+                    "Examples",
+                    StepValidationTestTemplate
+                ),
+                editorRoot + "/PublicTinyLlamaStepValidationTests.cs",
+                true
+            );
+            File.WriteAllText(
+                editorRoot + "/Udoncl.TinyLlama.Step.Focused.Tests.asmdef",
+                "{\n"
+                    + "  \"name\": \"Udoncl.TinyLlama.Step.Focused.Tests\",\n"
                     + "  \"references\": [\"Udoncl.Runtime\", \"Udoncl.Editor\", "
                     + "\"VRC.Udon\", \"VRC.Udon.Editor\", \"UdonSharp.Runtime\"],\n"
                     + "  \"includePlatforms\": [\"Editor\"],\n"

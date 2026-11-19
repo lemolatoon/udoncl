@@ -222,12 +222,45 @@ aliasing are allowed.
   Host memory. The test still reads present K/V solely as an acceptance oracle.
   Dynamic append/slice handling for the real model remains required.
 
-### 2.3 Current acceptance gap
+### 2.3 Acceptance status
 
-The following work remains before real TinyLlama generated-U# numerical
-acceptance. Each failure must be fixed in a model-independent compiler,
-runtime, library, or importer component and covered by a smaller regression
-before the real-model gate is retried.
+Items 1-4 below passed on 2026-11-20 through the generated U# bindings in
+Unity (commits `3fad51f..49cd65c`, on top of `6d1485c`):
+
+- Prefill Validation Artifact: all 128,000 logits and all 44 present K/V
+  tensors match the ORT sidecar.
+- `M=1`, capacity-64 Conversation Artifact: the externally tokenized prompt
+  `[1, 450, 4996, 17354]` greedily generates `[1701, 29916, 432, 17204]`
+  twice with `Reset` in between, then `Shutdown` succeeds. The `M=1` step
+  gate (`49cd65c`) compares steps 3 and 4 against ORT: all logits and all
+  present K/V match with maximum absolute error about `5e-5`.
+- Measured cost: 56,339 frames for two generations of 4 prompt + 4 generated
+  steps, about 4,000 frames and 4,000 device dispatches per token step.
+
+Real-model validation found three generic bug classes, each fixed below the
+example Host with a smaller regression:
+
+- unwritten graph-constant Device buffers: graph-local ONNX constants are now
+  externalized as immutable static tensors (`073d5fe`), and a Device graph
+  operand that nothing writes is rejected at compile time (`2f3715e`);
+- async resume re-entering the dispatcher's static return slot: waiters are
+  resumed through a non-nesting trampoline (`78f9474`), and fixed entry
+  arguments stay out of async persistent slots (`a59f378`);
+- consecutive non-blocking Host transfers overwriting the single Udon command
+  slot: an outstanding transfer is drained before the next is issued
+  (`d1ca036`), and an unexecuted command is never overwritten (`86efdba`).
+
+Other fixes in the same range: static ONNX folding and canonicalization for
+the `M=1` graph (`bedcc35`, `541319e`, `cab5d46`, `5a6c85d`, `fa3e709`,
+`1be8479`, `402736a`), strided-view provenance (`d21631b`, `6940e1b`,
+`6a88197`, `407b270`), buffer resolution at each use and transfer binding
+after export pruning (`6b21d1b`, `a21aedc`), and the Unity fixtures
+(`80b5392`, `432d165`, `54bf4d0`, `e279ae9`, `49cd65c`).
+
+Item 5 is the open gate. The original list follows; each failure must still
+be fixed in a model-independent compiler, runtime, library, or importer
+component and covered by a smaller regression before a real-model gate is
+retried.
 
 1. Generate a fresh Prefill Validation Artifact from the current compiler and
    record its actual storage report, immutable resources, mutable allocations,

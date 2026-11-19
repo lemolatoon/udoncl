@@ -1,0 +1,162 @@
+using UdonSharp;
+using UnityEngine;
+
+namespace Lemolatoon.Udoncl.Generated
+{
+    // Acceptance-only controller for one M=1 step of the public-buffer step
+    // validation artifact. It is model-independent: the Editor test supplies
+    // every public input buffer id with its value array and every public
+    // output buffer id with a destination array, in manifest order.
+    [UdonBehaviourSyncMode(BehaviourSyncMode.None)]
+    public sealed class UdonclTinyLlamaStepTestController : UdonSharpBehaviour
+    {
+        public const int PhaseInitialize = 1;
+        public const int PhaseWriteInputs = 2;
+        public const int PhaseRun = 3;
+        public const int PhaseReadOutputs = 4;
+        public const int PhaseShutdown = 5;
+        public const int PhaseDone = 6;
+
+        public const int KindInt64 = 0;
+        public const int KindFloat32 = 1;
+
+        public UdonclTinyLlamaStepBinding binding;
+        public int[] inputBufferIds;
+        public int[] inputKinds;
+        public object[] inputValues;
+        public int[] outputBufferIds;
+        public object[] outputValues;
+        public bool completed;
+        public int status;
+        public int libraryStatus;
+        public int phase;
+        public int transferIndex;
+
+        public void Run()
+        {
+            completed = false;
+            status = UdonclTinyLlamaStepBinding.StatusSuccess;
+            libraryStatus = 0;
+            transferIndex = 0;
+            phase = PhaseInitialize;
+            if (
+                binding == null
+                || inputBufferIds == null
+                || inputKinds == null
+                || inputValues == null
+                || inputKinds.Length != inputBufferIds.Length
+                || inputValues.Length != inputBufferIds.Length
+                || outputBufferIds == null
+                || outputValues == null
+                || outputValues.Length != outputBufferIds.Length
+            )
+            {
+                status = UdonclTinyLlamaStepBinding.StatusInvalidArgument;
+                completed = true;
+                return;
+            }
+            status = binding.StartInitialize(this, nameof(OnInitializeComplete));
+            if (status != UdonclTinyLlamaStepBinding.StatusSuccess)
+                completed = true;
+        }
+
+        public void OnInitializeComplete()
+        {
+            status = binding.GetInitializeStatus();
+            if (status == UdonclTinyLlamaStepBinding.StatusSuccess)
+                status = binding.TryGetInitializeResult(out libraryStatus);
+            if (!Succeeded())
+                return;
+            phase = PhaseWriteInputs;
+            transferIndex = 0;
+            SendCustomEventDelayedFrames(nameof(_WriteNextInput), 1);
+        }
+
+        // One input per frame keeps each packing loop well inside the Udon
+        // per-event VM time limit.
+        public void _WriteNextInput()
+        {
+            if (completed)
+                return;
+            if (transferIndex >= inputBufferIds.Length)
+            {
+                phase = PhaseRun;
+                status = binding.StartRun(this, nameof(OnRunComplete));
+                if (status != UdonclTinyLlamaStepBinding.StatusSuccess)
+                    completed = true;
+                return;
+            }
+            if (inputKinds[transferIndex] == KindInt64)
+                status = binding.TryWriteLongBuffer(
+                    inputBufferIds[transferIndex],
+                    (long[])inputValues[transferIndex]
+                );
+            else
+                status = binding.TryWriteFloatBuffer(
+                    inputBufferIds[transferIndex],
+                    (float[])inputValues[transferIndex]
+                );
+            if (status != UdonclTinyLlamaStepBinding.StatusSuccess)
+            {
+                completed = true;
+                return;
+            }
+            ++transferIndex;
+            SendCustomEventDelayedFrames(nameof(_WriteNextInput), 1);
+        }
+
+        public void OnRunComplete()
+        {
+            status = binding.GetRunStatus();
+            if (status == UdonclTinyLlamaStepBinding.StatusSuccess)
+                status = binding.TryGetRunResult(out libraryStatus);
+            if (!Succeeded())
+                return;
+            phase = PhaseReadOutputs;
+            transferIndex = 0;
+            StartNextOutput();
+        }
+
+        private void StartNextOutput()
+        {
+            status = binding.StartReadFloatBuffer(
+                outputBufferIds[transferIndex],
+                (float[])outputValues[transferIndex],
+                this,
+                nameof(OnOutputComplete)
+            );
+            if (status != UdonclTinyLlamaStepBinding.StatusSuccess)
+                completed = true;
+        }
+
+        public void OnOutputComplete()
+        {
+            status = binding.GetLastReadbackStatus();
+            if (status != UdonclTinyLlamaStepBinding.StatusSuccess)
+            {
+                completed = true;
+                return;
+            }
+            ++transferIndex;
+            if (transferIndex < outputBufferIds.Length)
+            {
+                StartNextOutput();
+                return;
+            }
+            phase = PhaseShutdown;
+            status = binding.TryShutdown(out libraryStatus);
+            if (!Succeeded())
+                return;
+            phase = PhaseDone;
+            completed = true;
+        }
+
+        private bool Succeeded()
+        {
+            if (status == UdonclTinyLlamaStepBinding.StatusSuccess && libraryStatus == 0)
+                return true;
+            completed = true;
+            return false;
+        }
+    }
+}

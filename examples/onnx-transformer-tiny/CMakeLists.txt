@@ -80,6 +80,18 @@ if(UDONCL_TINYLLAMA_ONNX_MODEL)
     "${CMAKE_CURRENT_BINARY_DIR}/unity-library-conversation.json")
   file(WRITE "${conversation_unity_config}"
     "${conversation_unity_config_json}\n")
+
+  # Acceptance-only M=1 step validation artifact: the same capacity-64 graph
+  # as the Conversation Artifact, but with public input/output buffers and the
+  # plain initialize/run Host, so a Unity test can feed one ORT step (including
+  # its rolling past K/V) and compare every logit and present K/V output.
+  set(step_unity_config_json "${real_unity_config}")
+  string(JSON step_unity_config_json SET "${step_unity_config_json}"
+    program "\"tinyllama_real_m1_step\"")
+  string(JSON step_unity_config_json SET "${step_unity_config_json}"
+    binding class_name "\"UdonclTinyLlamaStepBinding\"")
+  set(step_unity_config "${CMAKE_CURRENT_BINARY_DIR}/unity-library-step.json")
+  file(WRITE "${step_unity_config}" "${step_unity_config_json}\n")
 else()
   set(model "${CMAKE_CURRENT_BINARY_DIR}/transformer.onnx")
   execute_process(
@@ -153,6 +165,17 @@ if(UDONCL_TINYLLAMA_ONNX_MODEL)
     HOST_LIBRARIES
       transformer_conversation_model_host
       transformer_conversation_user_host
+      UdonONNXRuntime::UdonONNXRuntime
+    LIBRARIES
+      UdonONNXOperators::UdonONNXOperators
+      UdonATen::UdonATen
+      UdonBLAS::UdonBLAS)
+  udoncl_add_unity_library(onnx-transformer-tiny-m1-step
+    CONFIG "${step_unity_config}"
+    OMIT_INTERMEDIATE_IR
+    HOST_LIBRARIES
+      transformer_conversation_model_host
+      transformer_user_host
       UdonONNXRuntime::UdonONNXRuntime
     LIBRARIES
       UdonONNXOperators::UdonONNXOperators

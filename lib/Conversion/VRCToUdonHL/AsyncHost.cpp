@@ -899,12 +899,6 @@ struct LowerUdonAsyncRuntimePass
       func::ReturnOp::create(completionBuilder, module.getLoc());
     }
 
-    module.walk([&](::vrc::udonhl::AsyncResumeOp resume) {
-      auto objectId = resume->getAttrOfType<IntegerAttr>("vrc.async_object_id");
-      if (objectId && objectResumeRoutes.count(objectId.getInt()))
-        specializedObjectDispatchers.insert(
-            static_cast<int32_t>(objectId.getInt()));
-    });
     for (int32_t objectId : specializedObjectDispatchers) {
       std::string name =
           "__udoncl_async_resume_object_" + std::to_string(objectId);
@@ -1039,21 +1033,135 @@ struct LowerUdonAsyncRuntimePass
     dispatcherBuilder.setInsertionPointToEnd(routeMiss);
     func::ReturnOp::create(dispatcherBuilder, module.getLoc());
 
+    // Udon functions return through static per-function (or per-bank) return
+    // slots, so a continuation must never be entered while another activation
+    // of the dispatcher or of the resumed coroutine is still waiting to
+    // return. Entering the waiter directly from the completing child nests
+    // dispatcher -> coroutine -> dispatcher; once a resumed parent calls the
+    // same child again, the outer return slot is overwritten and the event
+    // loops forever. A completing coroutine therefore only records its single
+    // ready waiter and returns. The completion event drains that one-element
+    // trampoline after every entry, so each continuation runs at dispatcher
+    // depth one. The single-waiter/single-root contract guarantees that at
+    // most one waiter is ready between drains; a zero frame is a no-op.
     SmallVector<::vrc::udonhl::AsyncResumeOp> resumeRequests;
     module.walk([&](::vrc::udonhl::AsyncResumeOp resume) {
       resumeRequests.push_back(resume);
     });
-    for (::vrc::udonhl::AsyncResumeOp resume : resumeRequests) {
-      OpBuilder callBuilder(resume);
-      auto objectId = resume->getAttrOfType<IntegerAttr>("vrc.async_object_id");
-      std::string target =
-          objectId && specializedObjectDispatchers.count(objectId.getInt())
-              ? "__udoncl_async_resume_object_" +
-                    std::to_string(objectId.getInt())
-              : dispatcherName.str();
-      func::CallOp::create(callBuilder, resume.getLoc(), target, TypeRange{},
-                           resume.getOperands());
-      resume.erase();
+    if (!resumeRequests.empty()) {
+      constexpr StringLiteral readyFrameName = "__udoncl_async_ready_frame";
+      constexpr StringLiteral readyPCName = "__udoncl_async_ready_pc";
+      constexpr StringLiteral drainName = "__udoncl_async_drain_ready";
+      for (StringRef reserved : {StringRef(readyFrameName),
+                                 StringRef(readyPCName), StringRef(drainName)})
+        if (module.lookupSymbol(reserved)) {
+          module.emitError("reserved async trampoline symbol already exists: ")
+              << reserved;
+          signalPassFailure();
+          return;
+        }
+      OpBuilder trampolineBuilder(module.getBodyRegion());
+      trampolineBuilder.setInsertionPointToEnd(module.getBody());
+      auto i32 = trampolineBuilder.getI32Type();
+      for (StringRef symbol :
+           {StringRef(readyFrameName), StringRef(readyPCName)})
+        ::vrc::udonhl::GlobalOp::create(
+            trampolineBuilder, module.getLoc(), symbol, i32,
+            trampolineBuilder.getI32IntegerAttr(0), "internal", 0, 4, false);
+      auto readyAddress = [&](OpBuilder &builder, Location location,
+                              StringRef symbol) {
+        return ::vrc::udonhl::AddressOfOp::create(
+            builder, location,
+            ::vrc::udonhl::PtrType::get(module.getContext(), 0), symbol);
+      };
+      for (::vrc::udonhl::AsyncResumeOp resume : resumeRequests) {
+        OpBuilder deferBuilder(resume);
+        auto frameStore = ::vrc::udonhl::StoreOp::create(
+            deferBuilder, resume.getLoc(), resume.getFrameId(),
+            readyAddress(deferBuilder, resume.getLoc(), readyFrameName)
+                .getResult(),
+            4);
+        frameStore->setAttr("vrc.async_ready_frame_store",
+                            deferBuilder.getUnitAttr());
+        auto pcStore = ::vrc::udonhl::StoreOp::create(
+            deferBuilder, resume.getLoc(), resume.getResumePc(),
+            readyAddress(deferBuilder, resume.getLoc(), readyPCName)
+                .getResult(),
+            4);
+        pcStore->setAttr("vrc.async_ready_pc_store",
+                         deferBuilder.getUnitAttr());
+        resume.erase();
+      }
+
+      auto drain =
+          func::FuncOp::create(trampolineBuilder, module.getLoc(), drainName,
+                               FunctionType::get(module.getContext(), {}, {}));
+      drain.setPrivate();
+      drain->setAttr("vrc.compiler_async_drain",
+                     trampolineBuilder.getUnitAttr());
+      Block *drainEntry = drain.addEntryBlock();
+      Block *check = new Block();
+      Block *run = new Block();
+      Block *done = new Block();
+      drain.getBody().push_back(check);
+      drain.getBody().push_back(run);
+      drain.getBody().push_back(done);
+      OpBuilder drainBuilder = OpBuilder::atBlockEnd(drainEntry);
+      cf::BranchOp::create(drainBuilder, module.getLoc(), check);
+      drainBuilder.setInsertionPointToEnd(check);
+      auto frame = ::vrc::udonhl::LoadOp::create(
+          drainBuilder, module.getLoc(), i32,
+          readyAddress(drainBuilder, module.getLoc(), readyFrameName)
+              .getResult(),
+          4);
+      auto zero =
+          arith::ConstantIntOp::create(drainBuilder, module.getLoc(), 0, 32);
+      auto ready = arith::CmpIOp::create(drainBuilder, module.getLoc(),
+                                         arith::CmpIPredicate::ne,
+                                         frame.getResult(), zero);
+      cf::CondBranchOp::create(drainBuilder, module.getLoc(), ready, run,
+                               ValueRange{}, done, ValueRange{});
+      drainBuilder.setInsertionPointToEnd(run);
+      auto runFrame = ::vrc::udonhl::LoadOp::create(
+          drainBuilder, module.getLoc(), i32,
+          readyAddress(drainBuilder, module.getLoc(), readyFrameName)
+              .getResult(),
+          4);
+      auto runPC = ::vrc::udonhl::LoadOp::create(
+          drainBuilder, module.getLoc(), i32,
+          readyAddress(drainBuilder, module.getLoc(), readyPCName).getResult(),
+          4);
+      auto runZero =
+          arith::ConstantIntOp::create(drainBuilder, module.getLoc(), 0, 32);
+      ::vrc::udonhl::StoreOp::create(
+          drainBuilder, module.getLoc(), runZero,
+          readyAddress(drainBuilder, module.getLoc(), readyFrameName)
+              .getResult(),
+          4);
+      ::vrc::udonhl::StoreOp::create(
+          drainBuilder, module.getLoc(), runZero,
+          readyAddress(drainBuilder, module.getLoc(), readyPCName).getResult(),
+          4);
+      func::CallOp::create(drainBuilder, module.getLoc(), dispatcherName,
+                           TypeRange{},
+                           ValueRange{runFrame.getResult(), runPC.getResult()});
+      cf::BranchOp::create(drainBuilder, module.getLoc(), check);
+      drainBuilder.setInsertionPointToEnd(done);
+      func::ReturnOp::create(drainBuilder, module.getLoc());
+
+      auto completion =
+          module.lookupSymbol<func::FuncOp>("__udoncl_async_complete");
+      if (completion && completion->hasAttr("vrc.compiler_async_completion")) {
+        SmallVector<func::ReturnOp> completionReturns;
+        completion.walk([&](func::ReturnOp operation) {
+          completionReturns.push_back(operation);
+        });
+        for (func::ReturnOp operation : completionReturns) {
+          OpBuilder drainCallBuilder(operation);
+          func::CallOp::create(drainCallBuilder, operation.getLoc(), drainName,
+                               TypeRange{}, ValueRange{});
+        }
+      }
     }
 
     module.walk([&](Operation *operation) {

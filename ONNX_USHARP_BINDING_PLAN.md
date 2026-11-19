@@ -195,6 +195,18 @@ trampoline:
 5. completed children select their parent continuation until the root finishes
    or another external wait suspends.
 
+Step 5 is a one-element trampoline, not nesting. Udon functions return through
+static per-function return slots, so a completing child must not enter its
+parent while it is itself still waiting to return: once the resumed parent
+calls the same child again, the outer return slot is overwritten and the event
+never returns. A completing coroutine records its single ready waiter
+(`__udoncl_async_ready_frame/pc`) and returns; the completion event drains
+that slot after every entry, so each continuation runs at dispatcher depth
+one. The single-waiter contract guarantees at most one ready continuation
+between drains. Udon scalar lowering treats `async_enter` as an activation
+edge like a call when coloring return-slot banks and rejects any activation
+cycle at compile time.
+
 There is no worker pool, task fairness, polling scan, time slicing, or generic
 ready queue. `clWaitForEvents` validates and awaits its event list in order;
 the ordinary C caller does not return until the final dependency completes,

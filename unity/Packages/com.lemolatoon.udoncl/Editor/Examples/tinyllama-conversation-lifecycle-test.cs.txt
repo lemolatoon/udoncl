@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.IO;
+using System.Text;
 using NUnit.Framework;
 using UnityEditor;
 using UnityEngine;
@@ -19,9 +20,36 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             "Assets/UdonclSampleValidation/" + ControllerClass + ".cs";
         private const string ControllerProgram =
             GeneratedRoot + "/Tests/" + ControllerClass + ".asset";
+
+        // Mirrors UdonclTinyLlamaConversationTestController.PhaseDone and its
+        // phase names; the controller is generated U# and is not referenced
+        // from this Editor assembly.
+        private const int PhaseDone = 12;
+        private static readonly string[] PhaseNames =
+        {
+            "not-started",
+            "initialize",
+            "initialized",
+            "first-generate",
+            "first-generated",
+            "reject-prompt-without-reset",
+            "reset",
+            "reset-completed",
+            "second-generate",
+            "second-generated",
+            "shutdown",
+            "reject-after-shutdown",
+            "done",
+        };
+        private const int LibraryStatusDisposed = 8;
+        private const int LibraryStatusInvalidState = 12;
+
         private string artifactDirectory;
         private int[] promptTokens;
-        private int expectedToken;
+        private int[] expectedTokens;
+
+        // Set only by CaptureVmError while the conversation is running.
+        private string capturedVmError;
 
         [OneTimeSetUp]
         public void ImportConversationArtifact()
@@ -67,23 +95,52 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             TinyLlamaConversationOracle parsed = JsonUtility.FromJson<TinyLlamaConversationOracle>(
                 json
             );
-            Assert.NotNull(parsed);
-            Assert.NotNull(parsed.prompt_tokens);
-            Assert.NotNull(parsed.generated_tokens);
-            Assert.Greater(parsed.generated_tokens.Length, 0);
+            Assert.NotNull(parsed, "The M=1 TinyLlama oracle did not parse: " + oracle);
+            Assert.NotNull(parsed.prompt_tokens, "The oracle has no prompt_tokens: " + oracle);
+            Assert.NotNull(
+                parsed.generated_tokens,
+                "The oracle has no generated_tokens: " + oracle
+            );
+            Assert.Greater(parsed.prompt_tokens.Length, 0, "The oracle prompt is empty.");
+            Assert.Greater(
+                parsed.generated_tokens.Length,
+                0,
+                "The oracle generated sequence is empty."
+            );
             promptTokens = parsed.prompt_tokens;
-            expectedToken = parsed.generated_tokens[0];
+            expectedTokens = parsed.generated_tokens;
         }
 
+        // Greedy generation of the whole oracle sequence through the generated
+        // U# binding: the request limit equals the oracle length, so the C Host
+        // must stop exactly at the limit (or earlier only at an EOS that the
+        // oracle also produced). Reset must restore the empty sequence state so
+        // that a second identical request reproduces the same tokens, and
+        // Shutdown must leave the instance disposed.
+        //
+        // EnterPlayMode reloads the script domain. The Unity Test Framework
+        // then re-creates this iterator and restores only its state number,
+        // so nothing the iterator allocated before that yield survives. In
+        // particular this method must not use lambdas or other closures: their
+        // display object is allocated at method entry and is null after the
+        // reload (the first run of this fixture failed with exactly that NRE).
         [UnityTest]
-        public IEnumerator GeneratedUSharpBindingGeneratesFirstRealToken()
+        public IEnumerator GeneratedUSharpBindingRunsGreedyConversationLifecycle()
         {
             yield return new EnterPlayMode();
 
+            Assert.NotNull(
+                promptTokens,
+                "Oracle prompt tokens were not restored after the play-mode domain reload."
+            );
+            Assert.NotNull(
+                expectedTokens,
+                "Oracle generated tokens were not restored after the play-mode domain reload."
+            );
             GameObject prefab = AssetDatabase.LoadAssetAtPath<GameObject>(
                 GeneratedRoot + "/Prefabs/" + BindingClass + ".prefab"
             );
-            Assert.NotNull(prefab);
+            Assert.NotNull(prefab, "The generated conversation binding prefab is missing.");
             GameObject instance = UnityEngine.Object.Instantiate(prefab);
             UdonBehaviour controller = UdonclArtifactImporter.AddCompiledUdonSharpBehaviour(
                 instance,
@@ -96,57 +153,199 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 instance,
                 GeneratedNamespace + BindingClass
             );
-            Assert.NotNull(binding);
-            Assert.NotNull(controller);
-            int[] generated = new int[1];
+            Assert.NotNull(binding, "The generated binding UdonBehaviour was not found.");
+            Assert.NotNull(controller, "The conversation test controller was not added.");
+            int maxNewTokens = expectedTokens.Length;
             UdonclArtifactImporter.SetUdonProgramVariable(controller, "binding", binding);
             UdonclArtifactImporter.SetUdonProgramVariable(controller, "promptTokens", promptTokens);
-            UdonclArtifactImporter.SetUdonProgramVariable(controller, "generatedTokens", generated);
-            UdonclArtifactImporter.SetUdonProgramVariable(controller, "maxNewTokens", 1);
-            UdonclArtifactImporter.SendUdonCustomEvent(controller, "Run");
+            UdonclArtifactImporter.SetUdonProgramVariable(
+                controller,
+                "firstTokens",
+                new int[maxNewTokens]
+            );
+            UdonclArtifactImporter.SetUdonProgramVariable(
+                controller,
+                "secondTokens",
+                new int[maxNewTokens]
+            );
+            UdonclArtifactImporter.SetUdonProgramVariable(controller, "maxNewTokens", maxNewTokens);
+            Assert.AreEqual(
+                maxNewTokens,
+                ReadInt(controller, "maxNewTokens"),
+                "The conversation test controller program is not initialized."
+            );
+            Assert.NotNull(
+                UdonclArtifactImporter.GetUdonProgramVariable(controller, "binding"),
+                "The conversation test controller did not accept the binding."
+            );
 
-            const int timeoutFrames = 36000;
+            // A halted UdonBehaviour (for example the 10 s VM time limit) never
+            // reaches its completion callback. Capture the VM error instead of
+            // letting the log assertion fail without context, stop waiting as
+            // soon as it is logged, and report it with the controller phase.
+            capturedVmError = null;
+            bool ignoreFailingMessages = LogAssert.ignoreFailingMessages;
+            LogAssert.ignoreFailingMessages = true;
+            Application.logMessageReceived += CaptureVmError;
+
+            const int timeoutFrames = 108000;
             int frame = 0;
+            int lastPhase = -1;
             bool completed = false;
-            while (frame < timeoutFrames && !completed)
+            try
             {
-                ++frame;
-                yield return null;
-                completed = (bool)
-                    UdonclArtifactImporter.GetUdonProgramVariable(controller, "completed");
+                UdonclArtifactImporter.SendUdonCustomEvent(controller, "Run");
+                while (frame < timeoutFrames && !completed && capturedVmError == null)
+                {
+                    ++frame;
+                    yield return null;
+                    completed = ReadBool(controller, "completed");
+                    int currentPhase = ReadInt(controller, "phase");
+                    if (currentPhase != lastPhase)
+                    {
+                        lastPhase = currentPhase;
+                        // Debug.Log lands in the Editor log that the focused
+                        // driver preserves; NUnit progress output does not.
+                        Debug.Log(
+                            string.Format(
+                                "udoncl tinyllama_conversation phase={0} ({1}) frame={2}",
+                                currentPhase,
+                                PhaseName(currentPhase),
+                                frame
+                            )
+                        );
+                    }
+                }
             }
-            int phase = (int)UdonclArtifactImporter.GetUdonProgramVariable(controller, "phase");
-            int status = (int)UdonclArtifactImporter.GetUdonProgramVariable(controller, "status");
-            int libraryStatus = (int)
-                UdonclArtifactImporter.GetUdonProgramVariable(controller, "libraryStatus");
-            int asyncDiagnostic = (int)
-                UdonclArtifactImporter.GetUdonProgramVariable(controller, "asyncDiagnostic");
-            int count = (int)
-                UdonclArtifactImporter.GetUdonProgramVariable(controller, "generatedCount");
-            int[] actual = (int[])
-                UdonclArtifactImporter.GetUdonProgramVariable(controller, "generatedTokens");
+            finally
+            {
+                Application.logMessageReceived -= CaptureVmError;
+                LogAssert.ignoreFailingMessages = ignoreFailingMessages;
+            }
+
+            int phase = ReadInt(controller, "phase");
+            int status = ReadInt(controller, "status");
+            int libraryStatus = ReadInt(controller, "libraryStatus");
+            int asyncDiagnostic = ReadInt(controller, "asyncDiagnostic");
+            int firstCount = ReadInt(controller, "firstCount");
+            int secondCount = ReadInt(controller, "secondCount");
+            int rejectedPromptStatus = ReadInt(controller, "rejectedPromptStatus");
+            int disposedPromptStatus = ReadInt(controller, "disposedPromptStatus");
+            int[] first = ReadTokens(controller, "firstTokens");
+            int[] second = ReadTokens(controller, "secondTokens");
+            string vmError = capturedVmError;
             UnityEngine.Object.Destroy(instance);
             yield return new ExitPlayMode();
 
-            Assert.IsTrue(completed, "TinyLlama generation timed out at phase " + phase + ".");
+            string state = new StringBuilder()
+                .Append("phase=").Append(phase).Append(" (").Append(PhaseName(phase)).Append(')')
+                .Append(" status=").Append(status)
+                .Append(" libraryStatus=").Append(libraryStatus)
+                .Append(" asyncDiagnostic=").Append(asyncDiagnostic)
+                .Append(" frames=").Append(frame)
+                .Append(" firstCount=").Append(firstCount)
+                .Append(" first=").Append(Tokens(first, firstCount))
+                .Append(" secondCount=").Append(secondCount)
+                .Append(" second=").Append(Tokens(second, secondCount))
+                .Append(" expected=").Append(Tokens(expectedTokens, expectedTokens.Length))
+                .Append(" rejectedPromptStatus=").Append(rejectedPromptStatus)
+                .Append(" disposedPromptStatus=").Append(disposedPromptStatus)
+                .ToString();
+            Debug.Log("udoncl tinyllama_conversation result " + state);
+            Assert.IsNull(vmError, "Udon VM halted during " + state + "\n" + vmError);
+            Assert.IsTrue(completed, "TinyLlama conversation timed out: " + state);
+            Assert.AreEqual(0, status, "Generated binding failed: " + state);
+            Assert.AreEqual(0, libraryStatus, "C Host failed: " + state);
+            Assert.AreEqual(expectedTokens.Length, firstCount, "Token limit not honored: " + state);
+            CollectionAssert.AreEqual(expectedTokens, Prefix(first, firstCount), state);
             Assert.AreEqual(
-                0,
-                status,
-                "Generated binding failed at phase "
-                    + phase
-                    + " (async diagnostic "
-                    + asyncDiagnostic
-                    + ")."
+                LibraryStatusInvalidState,
+                rejectedPromptStatus,
+                "A completed generation must reject a new prompt before Reset: " + state
             );
-            Assert.AreEqual(0, libraryStatus, "C Host failed at phase " + phase + ".");
-            Assert.AreEqual(1, count);
-            Assert.AreEqual(expectedToken, actual[0]);
-            TestContext.Progress.WriteLine(
-                "tinyllama_conversation frames={0} prompt={1} generated={2}",
-                frame,
-                promptTokens.Length,
-                actual[0]
+            Assert.AreEqual(expectedTokens.Length, secondCount, "Reset generation count: " + state);
+            CollectionAssert.AreEqual(
+                expectedTokens,
+                Prefix(second, secondCount),
+                "Reset did not reproduce the greedy sequence: " + state
             );
+            Assert.AreEqual(
+                LibraryStatusDisposed,
+                disposedPromptStatus,
+                "Shutdown must leave the instance disposed: " + state
+            );
+            Assert.AreEqual(PhaseDone, phase, state);
+            Debug.Log("udoncl tinyllama_conversation passed " + state);
+        }
+
+        private void CaptureVmError(string message, string stackTrace, LogType type)
+        {
+            if (
+                capturedVmError == null
+                && (type == LogType.Error || type == LogType.Exception)
+                && message.IndexOf("Udon", StringComparison.Ordinal) >= 0
+                && message.IndexOf("exception", StringComparison.OrdinalIgnoreCase) >= 0
+            )
+                capturedVmError = message;
+        }
+
+        private static object ReadVariable(UdonBehaviour controller, string symbol)
+        {
+            object value = UdonclArtifactImporter.GetUdonProgramVariable(controller, symbol);
+            Assert.NotNull(value, "Conversation controller variable '" + symbol + "' is unset.");
+            return value;
+        }
+
+        private static int ReadInt(UdonBehaviour controller, string symbol)
+        {
+            object value = ReadVariable(controller, symbol);
+            Assert.IsInstanceOf<int>(value, "Controller variable '" + symbol + "' is not int.");
+            return (int)value;
+        }
+
+        private static bool ReadBool(UdonBehaviour controller, string symbol)
+        {
+            object value = ReadVariable(controller, symbol);
+            Assert.IsInstanceOf<bool>(value, "Controller variable '" + symbol + "' is not bool.");
+            return (bool)value;
+        }
+
+        private static int[] ReadTokens(UdonBehaviour controller, string symbol)
+        {
+            object value = ReadVariable(controller, symbol);
+            Assert.IsInstanceOf<int[]>(
+                value,
+                "Controller variable '" + symbol + "' is not int[]."
+            );
+            return (int[])value;
+        }
+
+        private static string PhaseName(int phase)
+        {
+            return phase >= 0 && phase < PhaseNames.Length ? PhaseNames[phase] : "unknown";
+        }
+
+        private static int[] Prefix(int[] values, int count)
+        {
+            if (values == null)
+                return new int[0];
+            int length = Math.Max(0, Math.Min(count, values.Length));
+            int[] prefix = new int[length];
+            Array.Copy(values, prefix, length);
+            return prefix;
+        }
+
+        private static string Tokens(int[] values, int count)
+        {
+            int[] prefix = Prefix(values, count);
+            StringBuilder text = new StringBuilder("[");
+            for (int index = 0; index < prefix.Length; ++index)
+            {
+                if (index != 0)
+                    text.Append(',');
+                text.Append(prefix[index]);
+            }
+            return text.Append(']').ToString();
         }
 
         [Serializable]
