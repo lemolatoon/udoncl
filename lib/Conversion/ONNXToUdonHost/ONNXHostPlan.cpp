@@ -763,8 +763,7 @@ SmallVector<unsigned> deviceStorage(const GraphRecord &graph) {
   return storage;
 }
 
-static int64_t bindingCapacityBytes(const GraphRecord &graph,
-                                    unsigned tensorIndex) {
+int64_t bindingCapacityBytes(const GraphRecord &graph, unsigned tensorIndex) {
   const TensorRecord &tensor = graph.tensors[tensorIndex];
   return std::max<int64_t>(planElementByteSize(tensor.type.getElementType()),
                            deviceAllocationBytes(graph, tensorIndex));

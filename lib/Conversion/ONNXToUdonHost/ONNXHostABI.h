@@ -25,6 +25,36 @@ inline int32_t onnxHostDataType(mlir::Type type) {
   return 0;
 }
 
+inline unsigned onnxHostElementByteSize(mlir::Type type) {
+  if (type.isInteger(1) || type.isInteger(8))
+    return 1;
+  if (type.isF16() || type.isBF16())
+    return 2;
+  if (type.isInteger(32) || type.isF32())
+    return 4;
+  if (type.isInteger(64))
+    return 8;
+  return 0;
+}
+
+inline llvm::StringRef onnxHostDataTypeName(mlir::Type type) {
+  if (type.isInteger(1))
+    return "bool";
+  if (type.isInteger(8))
+    return "uint8";
+  if (type.isInteger(32))
+    return "int32";
+  if (type.isInteger(64))
+    return "int64";
+  if (type.isF16())
+    return "float16";
+  if (type.isBF16())
+    return "bfloat16";
+  if (type.isF32())
+    return "float32";
+  return "unknown";
+}
+
 inline constexpr llvm::StringLiteral onnxHostOperatorScratchSymbol =
     "__udon_onnx_operator_scratch";
 inline constexpr llvm::StringLiteral onnxHostOperatorScratchOwnedSymbol =

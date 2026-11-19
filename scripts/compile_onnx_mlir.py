@@ -53,6 +53,7 @@ def canonicalize(
                 '--udoncl-plan-onnx-host-graph',
                 '--udoncl-materialize-onnx-host-globals',
                 '--udoncl-materialize-onnx-host-model-registry',
+                '--udoncl-attach-onnx-host-metadata',
                 '--udoncl-finalize-onnx-host',
                 '--udoncl-cleanup-onnx-host-source',
                 '--canonicalize',

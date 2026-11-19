@@ -1,4 +1,5 @@
 add_mlir_library(VRCONNXToUdonHost DISABLE_INSTALL
+  AttachONNXHostMetadata.cpp
   CleanupONNXHostSource.cpp
   FinalizeONNXHost.cpp
   MaterializeONNXHostGlobals.cpp

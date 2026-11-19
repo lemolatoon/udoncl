@@ -2,7 +2,8 @@
 
 module attributes {
   udoncl.onnx_host_globals_materialized,
-  udoncl.onnx_host_model_registry_materialized
+  udoncl.onnx_host_model_registry_materialized,
+  udoncl.onnx_host_metadata_attached
 } {
 }
 

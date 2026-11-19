@@ -95,6 +95,7 @@ bool isDeviceQ4Node(const GraphRecord &graph, const NodeRecord &node);
 int64_t operatorScratchBytes(const GraphRecord &graph);
 bool needsQ4Surface(const GraphRecord &graph, unsigned tensorIndex);
 int64_t deviceAllocationBytes(const GraphRecord &graph, unsigned tensorIndex);
+int64_t bindingCapacityBytes(const GraphRecord &graph, unsigned tensorIndex);
 bool supportsDeviceNode(const GraphRecord &graph, const NodeRecord &node);
 bool supportsDeviceGraph(const GraphRecord &graph);
 llvm::SmallVector<unsigned> deviceStorage(const GraphRecord &graph);

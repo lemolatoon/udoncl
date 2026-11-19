@@ -250,7 +250,11 @@ repo-private udoncl-onnx-frontend
   udoncl-lower-onnx-to-host
   udoncl-validate-onnx-host-graph
   udoncl-plan-onnx-host-graph
+  udoncl-materialize-onnx-host-globals
+  udoncl-materialize-onnx-host-model-registry
+  udoncl-attach-onnx-host-metadata
   udoncl-finalize-onnx-host
+  udoncl-cleanup-onnx-host-source
   canonicalize
   udoncl-emit-onnx-host-metadata
   emit-bytecode
@@ -326,8 +330,10 @@ Graph validation and graph-level planning are now explicit prerequisites.
 rewriting it. `udoncl-plan-onnx-host-graph` then records backend selection,
 device-storage aliases, operator scratch capacity, and mutable-buffer capacity
 in `udoncl.onnx_host_plan`. Finalization consumes that plan before performing
-any destructive materialization. Global, export, runtime-dispatch, metadata,
-and source-graph cleanup remain to be split from finalization.
+any destructive materialization. Global storage, the model registry, module
+metadata (`udoncl-attach-onnx-host-metadata`), and source-graph cleanup are
+separate passes with their own prerequisite markers. Session/binding export
+and runtime-dispatch materialization remain to be split from finalization.
 
 Representative output:
 

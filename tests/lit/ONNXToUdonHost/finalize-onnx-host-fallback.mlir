@@ -1,4 +1,4 @@
-// RUN: %vrc-opt --udoncl-validate-onnx-host-graph --udoncl-plan-onnx-host-graph --udoncl-materialize-onnx-host-globals --udoncl-materialize-onnx-host-model-registry --udoncl-finalize-onnx-host --udoncl-cleanup-onnx-host-source %s | %FileCheck %s
+// RUN: %vrc-opt --udoncl-validate-onnx-host-graph --udoncl-plan-onnx-host-graph --udoncl-materialize-onnx-host-globals --udoncl-materialize-onnx-host-model-registry --udoncl-attach-onnx-host-metadata --udoncl-finalize-onnx-host --udoncl-cleanup-onnx-host-source %s | %FileCheck %s
 
 func.func private @__udon_onnx_add(
     tensor<1x4xi32>, tensor<1x4xi32>) -> tensor<1x4xi32>

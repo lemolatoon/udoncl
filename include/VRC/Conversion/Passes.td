@@ -39,6 +39,9 @@ def MaterializeONNXHostModelRegistryPass : Pass<"udoncl-materialize-onnx-host-mo
   let summary = "Materialize the planned ONNX Host model registry and descriptor accessors";
   let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "mlir::arith::ArithDialect", "mlir::cf::ControlFlowDialect", "mlir::func::FuncDialect"];
 }
+def AttachONNXHostMetadataPass : Pass<"udoncl-attach-onnx-host-metadata", "mlir::ModuleOp"> {
+  let summary = "Attach planned ONNX Host binding, Device graph, and capacity metadata";
+}
 def FinalizeONNXHostPass : Pass<"udoncl-finalize-onnx-host", "mlir::ModuleOp"> {
   let summary = "Lower portable ONNX library calls to the Udon Host ABI and session exports";
   let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "mlir::arith::ArithDialect", "mlir::cf::ControlFlowDialect", "mlir::func::FuncDialect", "mlir::LLVM::LLVMDialect"];
