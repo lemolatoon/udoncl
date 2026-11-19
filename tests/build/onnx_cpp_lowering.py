@@ -120,6 +120,8 @@ result = subprocess.run(
     [
         *onnx_opt,
         "--udoncl-infer-onnx-shapes",
+        "--udoncl-externalize-onnx-initializers",
+        "--udoncl-externalize-onnx-graph-constants",
         "--udoncl-lower-onnx-to-host",
         "--one-shot-bufferize=bufferize-function-boundaries copy-before-write",
         source,
@@ -140,7 +142,7 @@ assert "memref<1x4x16xf32" in result.stdout
 assert 'udon.onnx.provider = "udonatenRmsNorm"' in result.stdout
 assert "memref<1x4x8xf32" in result.stdout
 portable = subprocess.run(
-    [*onnx_opt, "--udoncl-infer-onnx-shapes", "--udoncl-lower-onnx-to-host", source],
+    [*onnx_opt, "--udoncl-infer-onnx-shapes", "--udoncl-externalize-onnx-initializers", "--udoncl-externalize-onnx-graph-constants", "--udoncl-lower-onnx-to-host", source],
     text=True,
     capture_output=True,
     check=True,
@@ -286,6 +288,8 @@ sequence_state_portable = subprocess.run(
     [
         *onnx_opt,
         "--udoncl-identify-onnx-sequence-state",
+        "--udoncl-externalize-onnx-initializers",
+        "--udoncl-externalize-onnx-graph-constants",
         "--udoncl-lower-onnx-to-host",
         sequence_state_source,
     ],
@@ -350,6 +354,7 @@ static_portable = subprocess.run(
         *onnx_opt,
         "--udoncl-materialize-onnx-constants",
         "--udoncl-externalize-onnx-initializers",
+        "--udoncl-externalize-onnx-graph-constants",
         "--udoncl-lower-onnx-to-host",
         static_source,
     ],
@@ -410,6 +415,8 @@ alias_portable = subprocess.run(
         *onnx_opt,
         "--udoncl-infer-onnx-shapes",
         "--udoncl-materialize-onnx-constants",
+        "--udoncl-externalize-onnx-initializers",
+        "--udoncl-externalize-onnx-graph-constants",
         "--udoncl-lower-onnx-to-host",
         alias_source,
     ],
@@ -448,7 +455,7 @@ assert "call @__vrc_enqueue_udondnn" not in alias_host.stdout
 
 cast_source = source.with_name("onnx_cast.mlir")
 cast_portable = subprocess.run(
-    [*onnx_opt, "--udoncl-infer-onnx-shapes", "--udoncl-lower-onnx-to-host", cast_source],
+    [*onnx_opt, "--udoncl-infer-onnx-shapes", "--udoncl-externalize-onnx-initializers", "--udoncl-externalize-onnx-graph-constants", "--udoncl-lower-onnx-to-host", cast_source],
     text=True,
     capture_output=True,
     check=True,
@@ -477,7 +484,7 @@ assert "udoncl.onnx_device_unsupported = []" in cast_host.stdout
 
 unary_source = source.with_name("onnx_unary_device.mlir")
 unary_portable = subprocess.run(
-    [*onnx_opt, "--udoncl-infer-onnx-shapes", "--udoncl-lower-onnx-to-host", unary_source],
+    [*onnx_opt, "--udoncl-infer-onnx-shapes", "--udoncl-externalize-onnx-initializers", "--udoncl-externalize-onnx-graph-constants", "--udoncl-lower-onnx-to-host", unary_source],
     text=True,
     capture_output=True,
     check=True,
@@ -550,6 +557,8 @@ transpose_portable = subprocess.run(
     [
         *onnx_opt,
         "--udoncl-infer-onnx-shapes",
+        "--udoncl-externalize-onnx-initializers",
+        "--udoncl-externalize-onnx-graph-constants",
         "--udoncl-lower-onnx-to-host",
         transpose_source,
     ],
@@ -593,6 +602,8 @@ slice_portable = subprocess.run(
         *onnx_opt,
         "--udoncl-infer-onnx-shapes",
         "--udoncl-materialize-onnx-constants",
+        "--udoncl-externalize-onnx-initializers",
+        "--udoncl-externalize-onnx-graph-constants",
         "--udoncl-lower-onnx-to-host",
         slice_source,
     ],
@@ -627,6 +638,8 @@ large_pointwise_portable = subprocess.run(
     [
         *onnx_opt,
         "--udoncl-infer-onnx-shapes",
+        "--udoncl-externalize-onnx-initializers",
+        "--udoncl-externalize-onnx-graph-constants",
         "--udoncl-lower-onnx-to-host",
         large_pointwise_source,
     ],
@@ -695,6 +708,8 @@ gemm_bias_portable = subprocess.run(
     [
         *onnx_opt,
         "--udoncl-infer-onnx-shapes",
+        "--udoncl-externalize-onnx-initializers",
+        "--udoncl-externalize-onnx-graph-constants",
         "--udoncl-lower-onnx-to-host",
         gemm_bias_source,
     ],
@@ -751,6 +766,7 @@ q4_portable = subprocess.run(
         *onnx_opt,
         "--udoncl-materialize-onnx-constants",
         "--udoncl-externalize-onnx-initializers",
+        "--udoncl-externalize-onnx-graph-constants",
         "--udoncl-lower-onnx-to-host",
         q4_source,
     ],
@@ -832,6 +848,7 @@ rmsnorm_device_portable = subprocess.run(
         *onnx_opt,
         "--udoncl-materialize-onnx-constants",
         "--udoncl-externalize-onnx-initializers",
+        "--udoncl-externalize-onnx-graph-constants",
         "--udoncl-lower-onnx-to-host",
         rmsnorm_device_source,
     ],
@@ -892,6 +909,7 @@ batched_matmul_portable = subprocess.run(
         *onnx_opt,
         "--udoncl-materialize-onnx-constants",
         "--udoncl-externalize-onnx-initializers",
+        "--udoncl-externalize-onnx-graph-constants",
         "--udoncl-lower-onnx-to-host",
         batched_matmul_source,
     ],
@@ -931,7 +949,7 @@ assert "call @udonblasSgemmStridedBatched" not in batched_matmul_host.stdout
 
 m1_attention_matmul_source = source.with_name("onnx_m1_attention_matmul.mlir")
 m1_attention_matmul_portable = subprocess.run(
-    [*onnx_opt, "--udoncl-lower-onnx-to-host", m1_attention_matmul_source],
+    [*onnx_opt, "--udoncl-externalize-onnx-initializers", "--udoncl-externalize-onnx-graph-constants", "--udoncl-lower-onnx-to-host", m1_attention_matmul_source],
     text=True,
     capture_output=True,
     check=True,
@@ -964,7 +982,7 @@ assert (
 
 concat_source = source.with_name("onnx_concat.mlir")
 concat_portable = subprocess.run(
-    [*onnx_opt, "--udoncl-lower-onnx-to-host", concat_source],
+    [*onnx_opt, "--udoncl-externalize-onnx-initializers", "--udoncl-externalize-onnx-graph-constants", "--udoncl-lower-onnx-to-host", concat_source],
     text=True,
     capture_output=True,
     check=True,
@@ -992,7 +1010,7 @@ assert "call @udononnxConcat" not in concat_host.stdout
 
 concat_device_source = source.with_name("onnx_concat_device.mlir")
 concat_device_portable = subprocess.run(
-    [*onnx_opt, "--udoncl-lower-onnx-to-host", concat_device_source],
+    [*onnx_opt, "--udoncl-externalize-onnx-initializers", "--udoncl-externalize-onnx-graph-constants", "--udoncl-lower-onnx-to-host", concat_device_source],
     text=True,
     capture_output=True,
     check=True,
@@ -1033,6 +1051,7 @@ gather_device_portable = subprocess.run(
         *onnx_opt,
         "--udoncl-materialize-onnx-constants",
         "--udoncl-externalize-onnx-initializers",
+        "--udoncl-externalize-onnx-graph-constants",
         "--udoncl-lower-onnx-to-host",
         gather_device_source,
     ],
@@ -1072,7 +1091,7 @@ assert "call @udononnxGather" not in gather_device_host.stdout
 
 slice_source = source.with_name("onnx_slice.mlir")
 slice_portable = subprocess.run(
-    [*onnx_opt, "--udoncl-materialize-onnx-constants", "--udoncl-lower-onnx-to-host", slice_source],
+    [*onnx_opt, "--udoncl-materialize-onnx-constants", "--udoncl-externalize-onnx-initializers", "--udoncl-externalize-onnx-graph-constants", "--udoncl-lower-onnx-to-host", slice_source],
     text=True,
     capture_output=True,
     check=True,
@@ -1103,6 +1122,8 @@ expand_device_portable = subprocess.run(
     [
         *onnx_opt,
         "--udoncl-materialize-onnx-constants",
+        "--udoncl-externalize-onnx-initializers",
+        "--udoncl-externalize-onnx-graph-constants",
         "--udoncl-lower-onnx-to-host",
         expand_device_source,
     ],
@@ -1142,7 +1163,7 @@ assert "call @udononnxExpand" not in expand_device_host.stdout
 
 where_source = source.with_name("onnx_equal_where.mlir")
 where_portable = subprocess.run(
-    [*onnx_opt, "--udoncl-materialize-onnx-constants", "--udoncl-lower-onnx-to-host", where_source],
+    [*onnx_opt, "--udoncl-materialize-onnx-constants", "--udoncl-externalize-onnx-initializers", "--udoncl-externalize-onnx-graph-constants", "--udoncl-lower-onnx-to-host", where_source],
     text=True,
     capture_output=True,
     check=True,
@@ -1173,7 +1194,7 @@ assert "call @udononnxWhere" not in where_host.stdout
 
 integer_add_source = source.with_name("onnx_integer_add.mlir")
 integer_add_portable = subprocess.run(
-    [*onnx_opt, "--udoncl-lower-onnx-to-host", integer_add_source],
+    [*onnx_opt, "--udoncl-externalize-onnx-initializers", "--udoncl-externalize-onnx-graph-constants", "--udoncl-lower-onnx-to-host", integer_add_source],
     text=True,
     capture_output=True,
     check=True,
@@ -1204,7 +1225,7 @@ device_pointer_fallback_source = source.with_name(
     "onnx_device_pointer_fallback.mlir"
 )
 device_pointer_fallback_portable = subprocess.run(
-    [*onnx_opt, "--udoncl-lower-onnx-to-host", device_pointer_fallback_source],
+    [*onnx_opt, "--udoncl-externalize-onnx-initializers", "--udoncl-externalize-onnx-graph-constants", "--udoncl-lower-onnx-to-host", device_pointer_fallback_source],
     text=True,
     capture_output=True,
     check=True,
@@ -1234,7 +1255,7 @@ assert (
 
 scatter_source = source.with_name("onnx_scatter_nd.mlir")
 scatter_portable = subprocess.run(
-    [*onnx_opt, "--udoncl-materialize-onnx-constants", "--udoncl-lower-onnx-to-host", scatter_source],
+    [*onnx_opt, "--udoncl-materialize-onnx-constants", "--udoncl-externalize-onnx-initializers", "--udoncl-externalize-onnx-graph-constants", "--udoncl-lower-onnx-to-host", scatter_source],
     text=True,
     capture_output=True,
     check=True,
@@ -1263,7 +1284,7 @@ assert "call @udononnxScatterND" not in scatter_host.stdout
 
 gqa_source = source.with_name("onnx_m1_gqa_materialization.mlir")
 gqa_portable = subprocess.run(
-    [*onnx_opt, "--udoncl-lower-onnx-to-host", gqa_source],
+    [*onnx_opt, "--udoncl-externalize-onnx-initializers", "--udoncl-externalize-onnx-graph-constants", "--udoncl-lower-onnx-to-host", gqa_source],
     text=True,
     capture_output=True,
     check=True,
@@ -1299,7 +1320,7 @@ assert gqa_host.stdout.count(
 
 softmax_source = source.with_name("onnx_softmax.mlir")
 softmax_portable = subprocess.run(
-    [*onnx_opt, "--udoncl-lower-onnx-to-host", softmax_source],
+    [*onnx_opt, "--udoncl-externalize-onnx-initializers", "--udoncl-externalize-onnx-graph-constants", "--udoncl-lower-onnx-to-host", softmax_source],
     text=True,
     capture_output=True,
     check=True,
@@ -1333,7 +1354,7 @@ assert "call @udondnnSoftmaxForward" not in softmax_host.stdout
 
 unsupported = source.with_name("onnx_unsupported.mlir")
 result = subprocess.run(
-    [*onnx_opt, "--verify-each=false", "--udoncl-lower-onnx-to-host", unsupported],
+    [*onnx_opt, "--verify-each=false", "--udoncl-externalize-onnx-initializers", "--udoncl-externalize-onnx-graph-constants", "--udoncl-lower-onnx-to-host", unsupported],
     text=True,
     capture_output=True,
 )

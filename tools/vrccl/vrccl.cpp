@@ -3532,6 +3532,10 @@ int main(int argc, char **argv) {
     }
     if ((*module)->hasAttr("vrc.static_device_resource_provenance")) {
       PassManager kernelBindings(&context);
+      // Export configuration has erased unreachable Host functions since the
+      // transfer bindings were first resolved. Recompute them so their
+      // summary describes only the transfers that survive into the artifact.
+      kernelBindings.addPass(::vrc::createResolveStaticTransferBindingsPass());
       kernelBindings.addPass(::vrc::createResolveStaticKernelBindingsPass());
       if (failed(kernelBindings.run(*module)) || failed(verify(*module)))
         return 1;

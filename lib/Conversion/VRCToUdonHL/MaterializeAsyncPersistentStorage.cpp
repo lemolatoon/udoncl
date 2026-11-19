@@ -29,6 +29,19 @@ struct PersistentMaterialization {
   SmallVector<udonhl::SpillLoadOp> reloads;
 };
 
+/// Exported and compiler async-completion entry points keep their entry
+/// arguments in fixed ABI parameter storage that is written only when the
+/// entry point is invoked. Such an argument already survives suspension, so
+/// it needs no colorable persistent slot.
+bool isFixedEntryArgument(Value value) {
+  auto argument = dyn_cast<BlockArgument>(value);
+  if (!argument || !argument.getOwner()->isEntryBlock())
+    return false;
+  auto function = dyn_cast<func::FuncOp>(argument.getOwner()->getParentOp());
+  return function && (function->hasAttr("vrc.export_id") ||
+                      function->hasAttr("vrc.compiler_async_completion"));
+}
+
 bool hasExactFields(DictionaryAttr dictionary,
                     ArrayRef<StringRef> expectedFields) {
   if (!dictionary || dictionary.size() != expectedFields.size())
@@ -332,7 +345,12 @@ LogicalResult materializeAsyncPersistentStorage(ModuleOp module) {
     return failure();
   }
   std::map<std::string, std::string> valueIdByRequest;
+  std::set<std::string> fixedRequests;
   for (const PersistentMaterialization &request : normalizedRequests) {
+    if (isFixedEntryArgument(request.definition)) {
+      fixedRequests.insert(request.requestId.getValue().str());
+      continue;
+    }
     auto valueId = normalizedAnalysis->valueIds.find(request.definition);
     auto storageKey = normalizedAnalysis->storageKeys.find(request.definition);
     if (valueId == normalizedAnalysis->valueIds.end() ||
@@ -346,8 +364,14 @@ LogicalResult materializeAsyncPersistentStorage(ModuleOp module) {
   }
   SmallVector<Attribute> materialized;
   for (const PersistentMaterialization &request : normalizedRequests) {
+    if (fixedRequests.count(request.requestId.getValue().str()))
+      continue;
     SmallVector<Attribute> canonicalConflicts;
     for (StringAttr conflict : request.conflicts) {
+      // A fixed entry argument occupies its own parameter storage and can
+      // never share a slot, so it imposes no interference on slot coloring.
+      if (fixedRequests.count(conflict.getValue().str()))
+        continue;
       auto found = valueIdByRequest.find(conflict.getValue().str());
       if (found == valueIdByRequest.end()) {
         module.emitError("async persistent conflict lacks canonical value");

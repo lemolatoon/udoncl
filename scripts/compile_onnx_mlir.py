@@ -48,6 +48,8 @@ def canonicalize(
                 '--udoncl-materialize-onnx-constants',
                 '--udoncl-externalize-onnx-initializers=' +
                 f'static-data-directory={temporary_static_data}',
+                '--udoncl-externalize-onnx-graph-constants=' +
+                f'static-data-directory={temporary_static_data}',
                 '--udoncl-identify-onnx-sequence-state',
                 '--udoncl-lower-onnx-to-host',
                 '--udoncl-validate-onnx-host-graph',

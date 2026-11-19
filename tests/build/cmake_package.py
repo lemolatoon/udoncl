@@ -1015,16 +1015,12 @@ def main():
     transformer_recovered = (
         transformer_artifact / 'frontend.recovered.mlir'
     ).read_text(encoding='utf-8')
-    transformer_transfers = mlir_module_attribute(
-        transformer_recovered, 'vrc.static_transfer_bindings'
-    )
-    assert 'candidate_count = 7 : i32' in transformer_transfers
-    assert 'resolved_count = 0 : i32' in transformer_transfers
-    assert 'unresolved_count = 7 : i32' in transformer_transfers
-    assert (
-        'requires_context_specialization_count = 0 : i32'
-        in transformer_transfers
-    )
+    # The only raw transfers in the linked Transformer Host belong to library
+    # helpers that export configuration erases as unreachable. Transfer
+    # bindings are recomputed after that pruning, so no summary survives.
+    assert 'vrc.static_transfer_bindings' not in transformer_recovered
+    assert 'call @clEnqueueWriteBuffer' not in transformer_recovered
+    assert 'call @clEnqueueReadBuffer' not in transformer_recovered
     assert 'vrc.static_transfer_binding_snapshot' not in transformer_recovered
     transformer_inventory = mlir_module_attribute(
         transformer_recovered, 'vrc.static_device_resource_inventory'

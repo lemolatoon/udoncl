@@ -246,6 +246,7 @@ repo-private udoncl-onnx-frontend
   udoncl-infer-onnx-shapes
   udoncl-materialize-onnx-constants
   udoncl-externalize-onnx-initializers
+  udoncl-externalize-onnx-graph-constants
   udoncl-identify-onnx-sequence-state
   udoncl-lower-onnx-to-host
   udoncl-validate-onnx-host-graph

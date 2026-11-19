@@ -23,6 +23,23 @@ def SpecializeONNXInputsPass : Pass<"udoncl-specialize-onnx-inputs", "mlir::Modu
            "Semicolon-separated public input shapes name=d0,d1,...">
   ];
 }
+def ExternalizeONNXGraphConstantsPass : Pass<"udoncl-externalize-onnx-graph-constants", "mlir::ModuleOp"> {
+  let summary = "Replace graph-local dense ONNX constants with immutable static tensor symbols";
+  let description = [{
+    Runs after udoncl-externalize-onnx-initializers and the last constant
+    folding pass. Every remaining ranked, static-shape, non-empty dense
+    tensor constant (onnx.Constant without an initializer origin and folded
+    arith.constant tensors) becomes an immutable static tensor appended to
+    udoncl.static_tensors, so a Device operand never relies on an
+    uninitialized mutable buffer. The dense value stays inline in the record
+    so Host finalization can still fold scalar and shape operands.
+  }];
+  let dependentDialects = ["mlir::func::FuncDialect"];
+  let options = [
+    Option<"staticDataDirectory", "static-data-directory", "std::string",
+           /*default=*/"", "Directory receiving external static tensor payloads">
+  ];
+}
 def SimplifyONNXEmptyConcatPass : Pass<"udoncl-simplify-onnx-empty-concat", "mlir::ModuleOp"> {
   let summary = "Remove statically empty operands from ONNX Concat operations";
 }

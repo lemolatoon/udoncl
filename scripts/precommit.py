@@ -668,6 +668,27 @@ def wait_for_test_job(client: McpClient, job_id: str, timeout=1260):
     raise TimeoutError(f"Unity test job did not finish: {last_error}")
 
 
+STANDARD_FIXTURE_MENUS = (
+    "Tools/udoncl/Internal/Prepare Public Transformer Validation",
+    "Tools/udoncl/Internal/Prepare Public Tokenizer Validation",
+    "Tools/udoncl/Internal/Prepare Public MNIST Controller Validation",
+    "Tools/udoncl/Internal/Prepare Packaged Example Validation",
+)
+ENSURE_VALIDATION_SCENE_MENU = "Tools/udoncl/Internal/Ensure Validation Scene Saved"
+
+
+def final_preparation_menus(prepare_standard_fixtures):
+    """Menus run after focused fixtures and before the Unity test runner.
+
+    The batchmode test runner cannot start from an unsaved Untitled scene, so
+    every flow ends by saving the validation scene, including focused flows
+    that skip the standard fixtures.
+    """
+    menus = list(STANDARD_FIXTURE_MENUS) if prepare_standard_fixtures else []
+    menus.append(ENSURE_VALIDATION_SCENE_MENU)
+    return menus
+
+
 def run_unity_mcp_gate(
     root,
     unity,
@@ -988,27 +1009,8 @@ def run_unity_mcp_gate(
                     "TinyLlama conversation preparation did not complete: "
                     + ", ".join(missing)
                 )
-        if prepare_standard_fixtures:
-            execute_menu_after_reload(
-                client,
-                "Tools/udoncl/Internal/Prepare Public Transformer Validation",
-            )
-            execute_menu_after_reload(
-                client,
-                "Tools/udoncl/Internal/Prepare Public Tokenizer Validation",
-            )
-            execute_menu_after_reload(
-                client,
-                "Tools/udoncl/Internal/Prepare Public MNIST Controller Validation",
-            )
-            execute_menu_after_reload(
-                client,
-                "Tools/udoncl/Internal/Prepare Packaged Example Validation",
-            )
-            execute_menu_after_reload(
-                client,
-                "Tools/udoncl/Internal/Ensure Validation Scene Saved",
-            )
+        for menu in final_preparation_menus(prepare_standard_fixtures):
+            execute_menu_after_reload(client, menu)
         wait_for_editor(client)
         for attempt in range(4):
             started = start_unity_tests(client, test_names, test_assemblies)

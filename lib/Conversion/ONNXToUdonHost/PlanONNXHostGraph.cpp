@@ -58,6 +58,33 @@ struct PlanONNXHostGraphPass
         return;
       }
     }
+    // A Device dispatch can only read storage something has written: a public
+    // input bound by the caller, an immutable static tensor, or the result of
+    // an earlier node. Any other operand (for example a dense constant that
+    // was never externalized) would be backed by an unwritten mutable buffer.
+    if (deviceGraph) {
+      llvm::SmallDenseSet<unsigned> written(graph->inputs.begin(),
+                                            graph->inputs.end());
+      for (const NodeRecord &node : graph->nodes) {
+        for (int64_t input : node.inputs) {
+          if (input < 0)
+            continue;
+          unsigned tensorIndex = static_cast<unsigned>(input);
+          const TensorRecord &tensor = graph->tensors[tensorIndex];
+          if (written.contains(tensorIndex) || tensor.staticResourceId >= 0)
+            continue;
+          module.emitError()
+              << "ONNX Device graph node " << node.operation << " via "
+              << node.provider << " reads " << tensor.symbol << " ("
+              << tensor.type
+              << ") that is neither a graph input, an immutable static "
+                 "tensor, nor the result of an earlier node";
+          signalPassFailure();
+          return;
+        }
+        written.insert(node.output);
+      }
+    }
     SmallVector<unsigned> storage = deviceStorage(*graph);
     SmallVector<unsigned> owned =
         ownedDeviceBuffers(*graph, deviceGraph, storage);

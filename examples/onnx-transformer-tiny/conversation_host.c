@@ -23,10 +23,14 @@ cl_int __vrc_enqueue_udonaten_argmax_finalize_device_args(
     cl_command_queue, cl_mem, cl_mem, cl_mem, cl_int, cl_int, cl_int, cl_uint,
     const cl_event *, cl_event *);
 
+#define TINYLLAMA_INPUT_IDS 0u
+#define TINYLLAMA_ATTENTION_MASK 1u
+#define TINYLLAMA_POSITION_IDS 2u
+#define TINYLLAMA_LOGITS 0u
+
 static cl_context context;
 static cl_command_queue queue;
-static cl_mem inputs[3], logits, partials, result;
-static size_t input_offsets[3], logits_offset;
+static cl_mem partials, result;
 static int32_t prompt[TINYLLAMA_CONTEXT_CAPACITY];
 static int32_t generated[TINYLLAMA_GENERATED_CAPACITY];
 static int64_t staged_tokens[TINYLLAMA_CONTEXT_CAPACITY];
@@ -63,34 +67,58 @@ static udononnxStatus_t cleanup(udononnxStatus_t status) {
   return opencl == UDONONNX_STATUS_SUCCESS ? status : opencl;
 }
 
-static udononnxStatus_t resolve_buffers(void) {
-  static const size_t lengths[3] = {8, 512, 8};
+/* The generated binding owns every model buffer. Resolve a buffer at each
+ * use with a constant binding index instead of caching cl_mem values, so the
+ * Host never retains a stale view of binding-owned storage. */
+static udononnxStatus_t resolve_input(uint32_t index, size_t expected_length,
+                                      cl_mem *memory, size_t *offset) {
   size_t length = 0;
-  uint32_t index;
-  for (index = 0; index < 3; ++index) {
-    udononnxStatus_t status = udon_onnx_binding_resolve_input(
-        index, &inputs[index], &input_offsets[index], &length);
-    if (status != UDONONNX_STATUS_SUCCESS)
-      return status;
-    if (!inputs[index] || length != lengths[index])
-      return UDONONNX_STATUS_TYPE_MISMATCH;
-  }
-  {
-    udononnxStatus_t status =
-        udon_onnx_binding_resolve_output(0, &logits, &logits_offset, &length);
-    if (status != UDONONNX_STATUS_SUCCESS)
-      return status;
-  }
-  if (!logits || length != 128000 || logits_offset % sizeof(float))
-    return UDONONNX_STATUS_TYPE_MISMATCH;
-  return UDONONNX_STATUS_SUCCESS;
+  udononnxStatus_t status =
+      udon_onnx_binding_resolve_input(index, memory, offset, &length);
+  if (status != UDONONNX_STATUS_SUCCESS)
+    return status;
+  return *memory && length == expected_length ? UDONONNX_STATUS_SUCCESS
+                                              : UDONONNX_STATUS_TYPE_MISMATCH;
+}
+
+static udononnxStatus_t resolve_logits(cl_mem *memory, size_t *offset) {
+  size_t length = 0;
+  udononnxStatus_t status = udon_onnx_binding_resolve_output(
+      TINYLLAMA_LOGITS, memory, offset, &length);
+  if (status != UDONONNX_STATUS_SUCCESS)
+    return status;
+  return *memory && length == TINYLLAMA_LOGIT_WORDS * sizeof(float) &&
+                 *offset % sizeof(float) == 0
+             ? UDONONNX_STATUS_SUCCESS
+             : UDONONNX_STATUS_TYPE_MISMATCH;
+}
+
+static udononnxStatus_t resolve_buffers(void) {
+  cl_mem memory = 0;
+  size_t offset = 0;
+  udononnxStatus_t status =
+      resolve_input(TINYLLAMA_INPUT_IDS, sizeof(int64_t), &memory, &offset);
+  if (status == UDONONNX_STATUS_SUCCESS)
+    status = resolve_input(TINYLLAMA_ATTENTION_MASK,
+                           sizeof(zero_attention_mask), &memory, &offset);
+  if (status == UDONONNX_STATUS_SUCCESS)
+    status = resolve_input(TINYLLAMA_POSITION_IDS, sizeof(int64_t), &memory,
+                           &offset);
+  if (status == UDONONNX_STATUS_SUCCESS)
+    status = resolve_logits(&memory, &offset);
+  return status;
 }
 
 static udononnxStatus_t enqueue_clear_sequence_state(void) {
+  cl_mem mask = 0;
+  size_t mask_offset = 0;
   udononnxStatus_t status = udon_onnx_binding_enqueue_reset_sequence_state();
+  if (status == UDONONNX_STATUS_SUCCESS)
+    status = resolve_input(TINYLLAMA_ATTENTION_MASK,
+                           sizeof(zero_attention_mask), &mask, &mask_offset);
   if (status != UDONONNX_STATUS_SUCCESS)
     return status;
-  if (clEnqueueWriteBuffer(queue, inputs[1], CL_FALSE, input_offsets[1],
+  if (clEnqueueWriteBuffer(queue, mask, CL_FALSE, mask_offset,
                            sizeof(zero_attention_mask), zero_attention_mask, 0,
                            0, 0) != CL_SUCCESS)
     return UDONONNX_STATUS_OPENCL_ERROR;
@@ -197,15 +225,28 @@ UDONCL_EXPORT udononnxStatus_t tinyllama_set_prompt_tokens(
 
 static udononnxStatus_t enqueue_step(int32_t token, uint32_t position) {
   size_t mask = TINYLLAMA_CONTEXT_CAPACITY - position - 1u;
+  cl_mem ids, attention, positions;
+  size_t ids_offset = 0, attention_offset = 0, positions_offset = 0;
+  udononnxStatus_t status =
+      resolve_input(TINYLLAMA_INPUT_IDS, sizeof(int64_t), &ids, &ids_offset);
+  if (status == UDONONNX_STATUS_SUCCESS)
+    status =
+        resolve_input(TINYLLAMA_ATTENTION_MASK, sizeof(zero_attention_mask),
+                      &attention, &attention_offset);
+  if (status == UDONONNX_STATUS_SUCCESS)
+    status = resolve_input(TINYLLAMA_POSITION_IDS, sizeof(int64_t), &positions,
+                           &positions_offset);
+  if (status != UDONONNX_STATUS_SUCCESS)
+    return status;
   staged_tokens[position] = token;
   staged_positions[position] = position;
-  if (clEnqueueWriteBuffer(queue, inputs[0], CL_FALSE, input_offsets[0],
+  if (clEnqueueWriteBuffer(queue, ids, CL_FALSE, ids_offset,
                            sizeof(staged_tokens[position]),
                            &staged_tokens[position], 0, 0, 0) != CL_SUCCESS ||
-      clEnqueueWriteBuffer(queue, inputs[1], CL_FALSE,
-                           input_offsets[1] + mask * sizeof(int64_t),
+      clEnqueueWriteBuffer(queue, attention, CL_FALSE,
+                           attention_offset + mask * sizeof(int64_t),
                            sizeof(one), &one, 0, 0, 0) != CL_SUCCESS ||
-      clEnqueueWriteBuffer(queue, inputs[2], CL_FALSE, input_offsets[2],
+      clEnqueueWriteBuffer(queue, positions, CL_FALSE, positions_offset,
                            sizeof(staged_positions[position]),
                            &staged_positions[position], 0, 0, 0) != CL_SUCCESS)
     return UDONONNX_STATUS_OPENCL_ERROR;
@@ -213,7 +254,13 @@ static udononnxStatus_t enqueue_step(int32_t token, uint32_t position) {
 }
 
 static udononnxStatus_t select_token(uint32_t *token) {
-  cl_int offset = (cl_int)(logits_offset / sizeof(float));
+  cl_mem logits;
+  size_t logits_offset = 0;
+  cl_int offset;
+  udononnxStatus_t status = resolve_logits(&logits, &logits_offset);
+  if (status != UDONONNX_STATUS_SUCCESS)
+    return status;
+  offset = (cl_int)(logits_offset / sizeof(float));
   if (__vrc_enqueue_udonaten_argmax_reduce_device_args(
           queue, logits, partials, offset, TINYLLAMA_LOGIT_WORDS, 0, 0, 0) !=
           CL_SUCCESS ||

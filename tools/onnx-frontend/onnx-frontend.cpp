@@ -33,6 +33,7 @@ int main(int argc, char **argv) {
   mlir::registerAllPasses();
   vrc::registerSpecializeONNXInputsPass();
   vrc::registerSimplifyONNXEmptyConcatPass();
+  vrc::registerExternalizeONNXGraphConstantsPass();
   vrc::registerLowerONNXToUdonHostPass();
   vrc::registerValidateONNXHostGraphPass();
   vrc::registerPlanONNXHostGraphPass();
