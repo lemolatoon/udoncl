@@ -605,8 +605,9 @@ public:
             "normalized async persistent value is not allocatable");
       for (const std::string &conflictId : conflicts)
         if (!directValueById.count(conflictId))
-          return module.emitError(
-              "normalized async persistent conflict is not allocatable");
+          return module.emitError("normalized async persistent conflict is not "
+                                  "allocatable: ")
+                 << valueId << " conflicts with " << conflictId;
 
       // A suspend point ends the current Udon invocation. Until the matching
       // resume, any other exported invocation may use an otherwise-dead

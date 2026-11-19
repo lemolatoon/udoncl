@@ -189,6 +189,26 @@ def InsertUdonCooperativeCheckpointsPass : Pass<"vrc-insert-udon-cooperative-che
   let summary = "Split long Udon-only synchronous Host regions with static cooperative checkpoints";
   let dependentDialects = ["::vrc::vrc::VRCDialect", "mlir::arith::ArithDialect", "mlir::func::FuncDialect"];
 }
+def ScheduleUdonDeviceWorkPass : Pass<"vrc-schedule-udon-device-work", "mlir::ModuleOp"> {
+  let summary = "Make Udon Device commands enqueue-only and yield by a per-slice work budget";
+  let description = [{
+    On the Udon target vrc.dispatch and vrc.buffer_copy are Blits recorded on
+    Unity's in-order graphics queue and complete at issue. A vrc.await of such
+    an event is folded to CL_SUCCESS. Before every Device command in a
+    may-suspend function the command is charged to a slice budget held in
+    instance globals (command count and launch fragments); when it would
+    exceed the budget the Host yields through a cooperative checkpoint, which
+    starts a new slice. Transfers, readbacks and other events keep their
+    awaits.
+  }];
+  let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "::vrc::vrc::VRCDialect", "mlir::arith::ArithDialect", "mlir::cf::ControlFlowDialect", "mlir::func::FuncDialect"];
+  let options = [
+    Option<"commandBudget", "command-budget", "int64_t", /*default=*/"16",
+           "Device commands one Udon event may issue before yielding">,
+    Option<"fragmentBudget", "fragment-budget", "int64_t", /*default=*/"2097152",
+           "Launch fragments one Udon event may issue before yielding">
+  ];
+}
 def LowerHostAsyncToNativePass : Pass<"vrc-lower-host-async-to-native", "mlir::ModuleOp"> {
   let summary = "Map VRC completion events in the common Host Async contract to Native async values";
   let dependentDialects = ["mlir::async::AsyncDialect", "mlir::func::FuncDialect"];

@@ -257,7 +257,12 @@ the `M=1` graph (`bedcc35`, `541319e`, `cab5d46`, `5a6c85d`, `fa3e709`,
 after export pruning (`6b21d1b`, `a21aedc`), and the Unity fixtures
 (`80b5392`, `432d165`, `54bf4d0`, `e279ae9`, `49cd65c`).
 
-Item 5 is the open gate. The original list follows; each failure must still
+Item 5 is implemented and awaits its Unity run (section 6.7): UdonTokenizers
+gained added-token splitting, a streaming encoder, compiled chat templates and
+an incremental decoder (`5ffcc06`); the example gained the optional text layer
+and a Context Capacity build parameter (`d7d4768`) and a text-in/text-out
+Unity fixture for the separate Chat Artifact (`1b7323b`). The original list
+follows; each failure must still
 be fixed in a model-independent compiler, runtime, library, or importer
 component and covered by a smaller regression before a real-model gate is
 retried.
@@ -588,7 +593,75 @@ The C conversation Host uses the same encode core through
 entry points share tokenization and BPE logic but use their own storage
 accessors.
 
-### 6.6 Generated prefill binding and physical storage
+### 6.6 Text layer as implemented
+
+These decisions fill the parts of 6.1 and 6.5 that the plan left open.
+
+- Encoding matches Hugging Face `Tokenizer.encode(text)` of the pinned
+  `tokenizer.json`: the post-processor BOS, then added tokens (`<unk>`, `<s>`,
+  `</s>`) matched on the raw text leftmost-longest, also inside user text.
+  The text between them forms independent segments, each normalized with its
+  own `Prepend("▁")`, so `</s>\n<|assistant|>` encodes as `</s>`, `▁`,
+  `<0x0A>`, ... exactly as Hugging Face does. Added tokens that are normalized,
+  stripped or single-word are rejected by the table compiler.
+- The chat template is compiled at build time, not interpreted. The table
+  compiler renders the Jinja template with the Hugging Face settings
+  (`trim_blocks`, `lstrip_blocks`, sandboxed) using sentinel contents and
+  accepts it only if every probe conversation of one to three messages over
+  the rendered roles equals the concatenation of per-role
+  `prefix + content + suffix` plus a generation-prompt suffix. It also rejects
+  literals that an added token could straddle. For TinyLlama this yields
+  `<|role|>\n` + content + `</s>\n` and the generation prompt
+  `<|assistant|>\n`. The runtime streams the literals and the caller's
+  immutable strings into one logical text; BPE segments continue across
+  pieces, so no string is concatenated.
+- The chat prompt is BOS + rendered template, i.e. `Tokenizer.encode` of
+  `apply_chat_template(..., tokenize=False, add_generation_prompt=True)`.
+  With no system message the template costs 17 tokens; a user message of
+  "What is your name?" gives 22 prompt tokens, "Hello" gives 18.
+- Decoding implements the pinned decoder sequence Replace(`▁`→` `),
+  ByteFallback, Fuse, Strip(1 leading space) with explicit state: a run of
+  byte-fallback pieces that is not valid UTF-8 (including truncated runs and
+  overlong or surrogate encodings) becomes one U+FFFD per byte, as in
+  Hugging Face, by rewriting the run's own output. Special tokens are skipped
+  on request; the leading strip is applied when decoding finishes.
+- There is no Udon char-array ABI. Decoded text is returned as UTF-16 code
+  units, one per element of a caller-owned `int[]`; a U# caller builds the
+  string from it. Workspaces are bounded by
+  `max_new_tokens * MAX_PIECE_CODE_UNITS` (16 for TinyLlama), emitted by the
+  table compiler.
+- The example C Host keeps its token-array exports unchanged and exposes a
+  small internal C interface to its prompt and generated-token workspaces.
+  `conversation_text.c` adds `SetChatPrompt(systemText, userText)` (an empty
+  system text omits the system message), `PromptTokenCount`,
+  `ReadPromptTokens`, `GeneratedTextLength`, `ReadGeneratedText` and
+  `LastTokenizerStatus`. Output exhaustion maps to `CAPACITY_EXCEEDED`. The
+  text layer is linked only into the separate Chat Artifact
+  (`tinyllama_real_chat`, `UdonclTinyLlamaChatBinding`); the Conversation
+  Artifact stays free of tokenizer code.
+- Context Capacity and the new-token limit are CMake cache parameters of the
+  example (`UDONCL_TINYLLAMA_CONTEXT_CAPACITY`, default 64, and
+  `UDONCL_TINYLLAMA_MAX_NEW_TOKENS`, default 32). They specialize the graph to
+  `past_sequence_length = capacity - 1` and pass the same bounds to the C
+  Host; the compiler has no knowledge of the value, and generic kernel limits
+  decide whether a capacity compiles. The batched SGEMM contract (K at most
+  256, attention-times-V has K = capacity) is expected to cap it at 256; this
+  bound is inferred, and only capacity 64 has been compiled. A capacity of 64 holds a short exchange: 22 prompt tokens plus up
+  to 32 new tokens.
+
+### 6.7 Text acceptance fixture
+
+`tests/boundary/tinyllama_chat_oracle.py` renders the chat prompt, runs ONNX
+Runtime with the same left-padded fixed-capacity `M=1` profile, decodes the
+greedy reply with Hugging Face and records the greedy margins. For "What is
+your name?" at capacity 64 the oracle is prompt `[1, 529, 29989, 1792, ...]`
+(22 tokens), reply tokens `[3421, 1024, 338, 19235, 29889, 2]` and the text
+"My name is Sarah." with a minimum greedy margin of 0.66. The Unity fixture
+`PublicTinyLlamaChatLifecycleTests.GeneratedUSharpBindingAnswersChatPromptWithText`
+passes the two strings through the generated binding and compares the prompt
+tokens, the generated tokens and the decoded UTF-16 text with the oracle.
+
+### 6.8 Generated prefill binding and physical storage
 
 The Prefill Validation Artifact and Conversation Artifact are separate. The
 former exposes all 47 inputs and 45 outputs as generated Logical Tensor
@@ -672,6 +745,31 @@ execution time. GPU waits must yield frames from the beginning. A measured
 baseline establishes a later timeout that distinguishes hangs from slow runs;
 until then tests emit phase heartbeat/progress and use a deliberately generous
 upper bound.
+
+The first measured baseline (gate 6, before `232d42f`) spent about 4,029
+frames per `M=1` token step: every one of the 4,019 Device dispatches of a
+step was followed by an await, and every await suspends the Udon Host for at
+least one frame although a Blit is complete at issue. 3,096 of those
+dispatches are the Q4 `MatMulNBits` K tiles of 128. `232d42f` makes Device
+commands enqueue-only and yields by a per-slice work budget
+(`vrc-schedule-udon-device-work`, described in
+`docs/architecture/refactor-baseline-and-mlir-pipeline.md`). With the default
+budget of 16 commands the Udon emulator, driving the generated binding
+protocol over the same capacity-64 conversation, measures per token step:
+
+| | before | after |
+|---|---:|---:|
+| Udon events | 4,021 | 254 |
+| estimated frames | 4,029 | 262 |
+| Udon instructions | 22.6 M | 3.6 M |
+| Device Blits | 4,019 | 4,019 |
+
+The instruction count falls because the per-dispatch suspend/resume round
+trip, not the dispatch itself, dominated Host work. One continuation per step
+still runs about 1.36 M instructions in a single event; it is the largest
+remaining Udon slice. Frames are an emulator estimate (one frame per
+continuation, two per readback) and wall-clock time still needs a Unity
+measurement.
 
 ### 7.3 Required execution
 

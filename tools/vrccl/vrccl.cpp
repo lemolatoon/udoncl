@@ -3645,6 +3645,15 @@ int main(int argc, char **argv) {
     phase("host-effects");
     if (failed(propagateUnityHostAsyncEffects(*module)))
       return 1;
+    // After the async effects fix the export ABI: Device commands become
+    // enqueue-only and yield by slice budget instead of one frame each.
+    phase("schedule-device-work");
+    {
+      PassManager deviceWork(&context);
+      deviceWork.addPass(::vrc::createScheduleUdonDeviceWorkPass());
+      if (failed(deviceWork.run(*module)) || failed(verify(*module)))
+        return 1;
+    }
     phase("host-storage");
     if (failed(optimizeUnityHostStorage(*module)) || failed(verify(*module)))
       return 1;

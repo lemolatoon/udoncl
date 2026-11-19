@@ -229,7 +229,14 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             );
             Assert.AreEqual(0, runStatus, "MNIST inference returned an OpenCL error status.");
             Assert.AreEqual(0, runResult, "RunMnist returned an error.");
-            Assert.Greater(commands, 0, "MNIST inference emitted no transfer commands.");
+            // Device dispatches are enqueue-only and the six MNIST commands fit
+            // in one Device work slice, so inference completes without a
+            // suspension; the output is still read back and compared below.
+            Assert.AreEqual(
+                0,
+                commands,
+                "Enqueue-only MNIST inference within one work slice must not suspend."
+            );
 
             float[] actual = ReadFloats(buffers[2], 10);
 

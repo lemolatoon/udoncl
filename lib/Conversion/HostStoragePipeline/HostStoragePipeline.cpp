@@ -9,9 +9,12 @@ namespace vrc {
 
 void buildUdonHostStorageFinalizationPipeline(OpPassManager &manager) {
   manager.addPass(createMaterializeFixedPhysicalReleasesPass());
+  // Exposing backend literals inserts operations next to their users.
+  // Persistent async storage records positional value identities, so the
+  // literals must be exposed before those identities are taken.
+  manager.addPass(createExposeHostBackendLiteralUsesPass());
   manager.addPass(createDiscoverAsyncPersistentStoragePass());
   manager.addPass(createMaterializeAsyncPersistentStoragePass());
-  manager.addPass(createExposeHostBackendLiteralUsesPass());
   manager.addPass(createDiscoverHostRematerializationPass());
   manager.addPass(createFitHostStorageCapacityPass());
   manager.addPass(createVerifyHostStorageCapacityPass());

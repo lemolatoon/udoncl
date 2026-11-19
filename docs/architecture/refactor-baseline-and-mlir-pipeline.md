@@ -548,6 +548,16 @@ vrc.async_frame_store / vrc.async_frame_load
 vrc.async_object_payload_store / load
 ```
 
+Before `LowerHostToAsync`, the Unity pipeline runs
+`vrc-schedule-udon-device-work` once the async effects have fixed the export
+ABI. On Udon a `vrc.dispatch` or `vrc.buffer_copy` is a Blit on the in-order
+graphics queue and is complete at issue, so an await of its event is replaced
+by a cooperative checkpoint that is taken only when the per-slice work budget
+(16 commands or 2,097,152 launch fragments by default, kept in two instance
+globals and charged after every command) is full. Remaining awaits reset the
+budget. Device commands are therefore enqueue-only and one Udon event issues a
+bounded slice of work instead of one command per frame.
+
 Persistent discovery creates requests such as:
 
 ```mlir
@@ -574,14 +584,17 @@ The named finalization pipeline in
 
 ```text
 MaterializeFixedPhysicalReleases
+ExposeHostBackendLiteralUses
 DiscoverAsyncPersistentStorage
 MaterializeAsyncPersistentStorage
-ExposeHostBackendLiteralUses
 DiscoverHostRematerialization
 FitHostStorageCapacity
 VerifyHostStorageCapacity
 LowerUdonHLToUdonAsm
 ```
+
+Backend literals are exposed first because persistent discovery records
+positional value identities that later insertions would invalidate.
 
 `FitHostStorageCapacity` transactionally tries literal allocation and host
 storage materialization. Exact capacity is measured by lowering a clone of the
