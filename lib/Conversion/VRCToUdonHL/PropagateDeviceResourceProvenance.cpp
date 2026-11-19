@@ -9,10 +9,12 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Dominance.h"
+#include "mlir/IR/RegionGraphTraits.h"
 #include "mlir/Interfaces/DataLayoutInterfaces.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
@@ -1855,14 +1857,39 @@ struct PropagateDeviceResourceProvenancePass
         return std::nullopt;
       return combined;
     };
+    llvm::DenseMap<Block *, unsigned> reversePostOrderIndex;
+    if (!function.empty())
+      for (auto [index, block] : llvm::enumerate(
+               llvm::ReversePostOrderTraversal<Block *>(&function.front())))
+        reversePostOrderIndex[block] = index;
+    bool acyclic = llvm::all_of(reversePostOrderIndex, [&](const auto &entry) {
+      return llvm::all_of(entry.first->getSuccessors(), [&](Block *successor) {
+        return reversePostOrderIndex.lookup(successor) > entry.second;
+      });
+    });
     unsigned iterations = 0;
+    size_t pushedByPreviousBlock = worklist.size();
     while (!worklist.empty() && !invalid) {
       if (++iterations > 10000) {
         function.emitError("device resource provenance did not converge");
         invalid = true;
         break;
       }
+      // The worklist stays depth-first. In an acyclic CFG the blocks queued
+      // by one visit are taken in reverse post-order; otherwise a join is
+      // visited before its other forward predecessor, and a chain of
+      // conditional regions revisits every later block once per pending
+      // branch arm. Cyclic CFGs keep the established visit order because some
+      // lifecycle checks still observe intermediate loop states.
+      pushedByPreviousBlock = std::min(pushedByPreviousBlock, worklist.size());
+      if (acyclic)
+        std::stable_sort(worklist.begin() + pushedByPreviousBlock,
+                         worklist.end(), [&](Block *lhs, Block *rhs) {
+                           return reversePostOrderIndex.lookup(lhs) >
+                                  reversePostOrderIndex.lookup(rhs);
+                         });
       Block *block = worklist.pop_back_val();
+      pushedByPreviousBlock = worklist.size();
       queued.erase(block);
       CellMap localMemory = memoryInputs[block];
       PointerCellMap localPointerCells = pointerInputs[block];
@@ -2581,6 +2608,7 @@ struct PropagateDeviceResourceProvenancePass
           } else if (base != objectValues.end()) {
             Value induction = pointerAdd.getByteOffset();
             int64_t stride = 1;
+            bool explicitStride = false;
             if (auto multiply = induction.getDefiningOp<arith::MulIOp>()) {
               auto left =
                   multiply.getLhs().getDefiningOp<arith::ConstantIntOp>();
@@ -2589,9 +2617,11 @@ struct PropagateDeviceResourceProvenancePass
               if (left && left.value() > 0) {
                 stride = left.value();
                 induction = multiply.getRhs();
+                explicitStride = true;
               } else if (right && right.value() > 0) {
                 stride = right.value();
                 induction = multiply.getLhs();
+                explicitStride = true;
               } else {
                 induction = Value();
               }
@@ -2599,26 +2629,46 @@ struct PropagateDeviceResourceProvenancePass
             auto start = induction
                              ? nonNegativeUnitStrideLoop(induction, pointerAdd)
                              : std::nullopt;
-            if (start && stride > 0) {
+            // An index that is not a recognized loop induction (for example
+            // a function argument whose callers pass different values) still
+            // selects one element of an explicitly strided array in every
+            // defined C execution. Without a known lower bound, enumerate the
+            // in-bounds elements on both sides of the base subobject.
+            bool anyElement = !start && induction && explicitStride;
+            if ((start || anyElement) && stride > 0) {
               constexpr size_t maxAlternatives = 64;
               ObjectRefSet shifted;
               shifted.unknown = base->second.unknown;
               for (ObjectRef object : base->second.refs) {
                 auto size = objectSizes.find(object.base);
                 if (size == objectSizes.end() ||
-                    *start > std::numeric_limits<int64_t>::max() / stride) {
+                    (!start && object.offset < 0) ||
+                    (start &&
+                     *start > std::numeric_limits<int64_t>::max() / stride)) {
                   shifted.unknown = true;
                   continue;
                 }
-                int64_t first = *start * stride;
+                int64_t first = start ? *start * stride
+                                      : -(object.offset / stride) * stride;
+                int64_t extent = size->second;
+                // A declared buffer-view layout with the same element stride
+                // names the element array held by the storage. Any tail past
+                // its last element is reserved storage, not an element that
+                // an index can select.
+                if (auto layout = restrictedBufferViewLayouts.find(object.base);
+                    layout != restrictedBufferViewLayouts.end() &&
+                    layout->second.stride == stride) {
+                  int64_t elements =
+                      static_cast<int64_t>(layout->second.count) * stride;
+                  if (object.offset < elements)
+                    extent = std::min(extent, elements);
+                }
                 // C executions that dereference this pointer must remain
                 // inside the statically identified object. Enumerate every
                 // constant-stride subobject that such a defined execution can
                 // select; later consumers validate every candidate.
                 for (int64_t relative = first;
-                     relative <
-                     static_cast<int64_t>(size->second) - object.offset;
-                     relative += stride) {
+                     relative < extent - object.offset; relative += stride) {
                   if (shifted.refs.size() >= maxAlternatives ||
                       relative >
                           std::numeric_limits<int32_t>::max() - object.offset) {
@@ -2777,6 +2827,25 @@ struct PropagateDeviceResourceProvenancePass
                       compare, pendingMemoryEffects[subject], *constant,
                       compare.getPredicate() == arith::CmpIPredicate::eq,
                       zeroInitializedGlobalObjectIds);
+            } else if (!foldedComparison) {
+              // A value without its own memory effect still carries the
+              // branch outcome as a status exclusion. A later join may pass
+              // it alongside an effectful status, and the exclusion is what
+              // keeps its edge out of the effectful status's success case.
+              auto exactConstant = [&](Value value) -> std::optional<int64_t> {
+                auto found = integerValues.find(value);
+                if (found == integerValues.end() ||
+                    ambiguousIntegers.contains(value))
+                  return std::nullopt;
+                return found->second;
+              };
+              std::optional<int64_t> left = exactConstant(compare.getLhs());
+              std::optional<int64_t> right = exactConstant(compare.getRhs());
+              if (left.has_value() != right.has_value())
+                comparisonRefinements[compare.getResult()] = {
+                    left ? compare.getRhs() : compare.getLhs(),
+                    left ? *left : *right,
+                    compare.getPredicate() == arith::CmpIPredicate::eq};
             }
           }
           updateFact(compare.getResult(), Fact::scalar(), facts, worklist,

@@ -580,6 +580,11 @@ add_test(NAME static-device-resource-known-control-flow
     $<TARGET_FILE:vrc-opt>
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_known_control_flow.mlir"
 )
+add_test(NAME static-device-resource-branch-chain
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_branch_chain.py"
+    $<TARGET_FILE:vrc-opt>
+)
 add_test(NAME static-device-resource-local-cells
   COMMAND Python3::Interpreter
     "${CMAKE_CURRENT_SOURCE_DIR}/frontend/static_device_resource_local_cells.py"
