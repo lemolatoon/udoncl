@@ -4,8 +4,9 @@ These rules apply to the entire repository.
 
 ## Unity MCP
 
-- Route every direct MCP for Unity operation through a subagent using the
-  `gpt-6-luna` model with `xhigh` reasoning effort. The subagent must follow the
+- Route every direct MCP for Unity operation through a dedicated Unity
+  subagent: either the `gpt-6-luna` model with `xhigh` reasoning effort or a
+  Claude Sonnet subagent. The subagent must follow the
   `unity-mcp-orchestrator` skill and report readiness, tests, console, and
   cleanup results. The primary agent owns repository edits.
 - The background commit validation service is the sole routine exception. The
@@ -14,9 +15,9 @@ These rules apply to the entire repository.
   `scripts/precommit.py` in an isolated Unity project.
 - Do not replace the service gate with direct Unity MCP calls or ad-hoc Unity
   test commands. Additional interactive Unity diagnosis still requires the
-  Luna/xhigh subagent.
+  dedicated Unity subagent.
 - A pre-commit failure may be inspected without Unity MCP. Route any additional
-  Unity MCP diagnosis or validation through the Luna/xhigh subagent.
+  Unity MCP diagnosis or validation through the dedicated Unity subagent.
 
 ## Commit Validation Service
 
@@ -30,6 +31,8 @@ These rules apply to the entire repository.
   ```
 
   Do not commit if it fails. Do not bypass or disable the repository hooks.
+- Do not add trailers such as `Co-Authored-By` or `Signed-off-by` to commit
+  messages. Amend any commit that contains one before it is pushed.
 - Stage only the intended change and commit normally. The `pre-commit` hook
   performs synchronous formatting and whitespace checks. The `post-commit`
   hook durably enqueues the exact new commit SHA and returns without waiting for
