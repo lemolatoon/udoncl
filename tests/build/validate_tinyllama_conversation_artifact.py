@@ -312,6 +312,100 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "ArgMax kernels"):
                 VALIDATOR.validate_artifact(artifact)
 
+    def make_chat_artifact(self, root: Path, capacity: int) -> Path:
+        artifact = self.make_artifact(root)
+        manifest_path = artifact / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["program"]["name"] = "tinyllama_real_chat"
+        manifest["program"]["binding_class"] = "UdonclTinyLlamaChatBinding"
+        for symbol, (export_symbol, kinds, is_async) in VALIDATOR.CHAT_EXPORTS.items():
+            manifest["exports"].append(export(symbol, export_symbol, kinds, is_async))
+        inputs = manifest["onnx_binding"]["inputs"]
+        outputs = manifest["onnx_binding"]["outputs"]
+        inputs[1].update(dimensions=[1, capacity], logical_bytes=8 * capacity,
+                         capacity_bytes=8 * capacity)
+        for item in inputs[3:]:
+            size = 4 * 4 * (capacity - 1) * 64
+            item.update(dimensions=[1, 4, capacity - 1, 64], logical_bytes=size,
+                        capacity_bytes=size)
+        for item in outputs[1:]:
+            size = 4 * 4 * capacity * 64
+            item.update(dimensions=[1, 4, capacity, 64], logical_bytes=size,
+                        capacity_bytes=size)
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        binding = artifact / "binding.cs"
+        binding.write_text(binding.read_text(encoding="utf-8") + "\n".join((
+            "TrySetChatPrompt(string systemText, string userText, out int result)",
+            "TryPromptTokenCount(out int result)",
+            "TryReadPromptTokens(int[] destination, out int result)",
+            "TryGeneratedTextLength(out int result)",
+            "TryReadGeneratedText(int[] destination, out int result)",
+            "TryLastTokenizerStatus(out int result)",
+        )) + "\n", encoding="utf-8")
+        return artifact
+
+    def test_accepts_chat_profile_at_a_build_time_capacity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = self.make_chat_artifact(Path(directory), 128)
+            summary = VALIDATOR.validate_artifact(artifact, "chat", 128)
+            self.assertEqual(summary["inputs"], 47)
+            with self.assertRaisesRegex(ValueError, "attention_mask"):
+                VALIDATOR.validate_artifact(artifact, "chat", 64)
+            with self.assertRaisesRegex(ValueError, "program identity"):
+                VALIDATOR.validate_artifact(artifact, "conversation", 128)
+
+    def test_chat_fixture_uses_only_the_generated_text_api(self):
+        package = ROOT / "unity/Packages/com.lemolatoon.udoncl/Editor"
+        controller = (
+            package / "Examples/tinyllama-chat-test-controller.cs.txt"
+        ).read_text(encoding="utf-8")
+        source = (
+            package / "Examples/tinyllama-chat-lifecycle-test.cs.txt"
+        ).read_text(encoding="utf-8")
+        importer = (package / "UdonclPackagedExampleImporter.cs").read_text(
+            encoding="utf-8")
+        assembly = (package / "AssemblyInfo.cs").read_text(encoding="utf-8")
+        precommit = (ROOT / "scripts/precommit.py").read_text(encoding="utf-8")
+        cmake = (ROOT / "examples/onnx-transformer-tiny/CMakeLists.txt").read_text(
+            encoding="utf-8")
+        name = "GeneratedUSharpBindingAnswersChatPromptWithText"
+        self.assertIn(f"IEnumerator {name}()", source)
+        self.assertIn(f'"{name}"', precommit)
+        self.assertIn("Prepare Public TinyLlama Chat Validation", importer)
+        self.assertIn("Prepare Public TinyLlama Chat Validation", precommit)
+        self.assertIn("Udoncl.TinyLlama.Chat.Focused.Tests", assembly)
+        self.assertIn("onnx-transformer-tiny-chat", cmake)
+        self.assertIn("UDONCL_TINYLLAMA_CONTEXT_CAPACITY", cmake)
+        for required in (
+            "TrySetChatPrompt(systemText, userText, out libraryStatus)",
+            "TryReadPromptTokens(",
+            "StartGenerate(",
+            "TryReadGeneratedTokens(",
+            "TryGeneratedTextLength(",
+            "TryReadGeneratedText(",
+            "TryShutdown(",
+        ):
+            self.assertIn(required, controller)
+        for forbidden in ("GetProgramVariable", "SetProgramVariable", "__vrc_",
+                          "__udoncl_", "udon_onnx_binding_", "1701", "29871"):
+            self.assertNotIn(forbidden, controller)
+        for required in (
+            "UDONCL_PUBLIC_TINYLLAMA_CHAT_UNITY_BUNDLE",
+            "UDONCL_PUBLIC_TINYLLAMA_CHAT_ORACLE",
+            "udoncl.tinyllama-chat-oracle.v1",
+            "CollectionAssert.AreEqual(expectedPrompt, Prefix(prompt, promptCount), state);",
+            "CollectionAssert.AreEqual(expectedTokens, Prefix(tokens, generatedCount), state);",
+            "CollectionAssert.AreEqual(expectedTextUnits, Prefix(units, textLength), state);",
+            "Udon VM halted during ",
+        ):
+            self.assertIn(required, source)
+        iterator = source.split(f"IEnumerator {name}()", 1)[1].split(
+            "private void CaptureVmError", 1)[0]
+        self.assertNotIn("=>", iterator)
+        self.assertNotIn("delegate", iterator)
+        self.assertIn("private const int PhaseDone = 9;", source)
+        self.assertIn("public const int PhaseDone = 9;", controller)
+
 
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0]])

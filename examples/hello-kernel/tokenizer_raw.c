@@ -24,6 +24,17 @@ UDONCL_EXPORT int32_t tokenizer_raw_first(udon_string_t text) {
   model.normalizer_replace_from_scalar = -1;
   model.normalizer_replace_to_scalar = -1;
   model.bos_token_id = -1;
+  model.added_token_ids = 0;
+  model.added_token_offsets = 0;
+  model.added_token_code_units = 0;
+  model.added_token_count = 0;
+  model.piece_offsets = 0;
+  model.piece_code_units = 0;
+  model.piece_kinds = 0;
+  model.vocab_count = 0;
+  model.decoder_strip_scalar = -1;
+  model.decoder_strip_count = 0;
+  model.eos_token_id = -1;
   status = udontokenizersEncodeRaw(&model, text, token_ids, 4, &count);
   if (status != UDONTOKENIZERS_STATUS_SUCCESS)
     return -(int32_t)status;

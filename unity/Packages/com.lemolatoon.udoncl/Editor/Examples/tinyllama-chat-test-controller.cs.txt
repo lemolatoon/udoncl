@@ -1,0 +1,177 @@
+using UdonSharp;
+using UnityEngine;
+
+namespace Lemolatoon.Udoncl.Generated
+{
+    [UdonBehaviourSyncMode(BehaviourSyncMode.None)]
+    public sealed class UdonclTinyLlamaChatTestController : UdonSharpBehaviour
+    {
+        // Controller phases. A failure leaves `phase` at the step that failed;
+        // PhaseDone is reached only after every step passed.
+        public const int PhaseInitialize = 1;
+        public const int PhaseInitialized = 2;
+        public const int PhaseSetChatPrompt = 3;
+        public const int PhaseReadPrompt = 4;
+        public const int PhaseGenerate = 5;
+        public const int PhaseGenerated = 6;
+        public const int PhaseReadText = 7;
+        public const int PhaseShutdown = 8;
+        public const int PhaseDone = 9;
+
+        // udononnxStatus_t value returned by the C Host as libraryStatus.
+        public const int LibraryStatusSuccess = 0;
+
+        public UdonclTinyLlamaChatBinding binding;
+        public string systemText;
+        public string userText;
+        public int maxNewTokens;
+        public int[] promptTokens;
+        public int[] generatedTokens;
+        public int[] textUnits;
+        public bool completed;
+        public int status;
+        public int libraryStatus;
+        public int tokenizerStatus;
+        public int promptCount;
+        public int generatedCount;
+        public int textLength;
+        public int asyncDiagnostic;
+        public int phase;
+
+        public void Run()
+        {
+            completed = false;
+            status = UdonclTinyLlamaChatBinding.StatusSuccess;
+            libraryStatus = LibraryStatusSuccess;
+            tokenizerStatus = 0;
+            promptCount = 0;
+            generatedCount = 0;
+            textLength = 0;
+            asyncDiagnostic = UdonclTinyLlamaChatBinding.AsyncDiagnosticNone;
+            phase = PhaseInitialize;
+            if (
+                binding == null
+                || systemText == null
+                || userText == null
+                || promptTokens == null
+                || generatedTokens == null
+                || textUnits == null
+                || maxNewTokens <= 0
+                || generatedTokens.Length < maxNewTokens
+            )
+            {
+                status = UdonclTinyLlamaChatBinding.StatusInvalidArgument;
+                completed = true;
+                return;
+            }
+            status = binding.StartInitialize(this, nameof(OnInitializeComplete));
+            if (status != UdonclTinyLlamaChatBinding.StatusSuccess)
+                completed = true;
+        }
+
+        public void OnInitializeComplete()
+        {
+            phase = PhaseInitialized;
+            status = binding.GetInitializeStatus();
+            if (status == UdonclTinyLlamaChatBinding.StatusSuccess)
+                status = binding.TryGetInitializeResult(out libraryStatus);
+            if (!Succeeded())
+                return;
+
+            // Text in: chat template, special tokens and BOS are applied by
+            // the C Host through the compiled tokenizer tables.
+            phase = PhaseSetChatPrompt;
+            status = binding.TrySetChatPrompt(systemText, userText, out libraryStatus);
+            if (status == UdonclTinyLlamaChatBinding.StatusSuccess)
+                binding.TryLastTokenizerStatus(out tokenizerStatus);
+            if (!Succeeded())
+                return;
+
+            phase = PhaseReadPrompt;
+            status = binding.TryPromptTokenCount(out promptCount);
+            if (status != UdonclTinyLlamaChatBinding.StatusSuccess)
+            {
+                completed = true;
+                return;
+            }
+            if (promptCount <= 0 || promptCount > promptTokens.Length)
+            {
+                status = UdonclTinyLlamaChatBinding.StatusExecutionFailure;
+                completed = true;
+                return;
+            }
+            status = binding.TryReadPromptTokens(promptTokens, out libraryStatus);
+            if (!Succeeded())
+                return;
+
+            phase = PhaseGenerate;
+            status = binding.StartGenerate(maxNewTokens, this, nameof(OnGenerateComplete));
+            if (status != UdonclTinyLlamaChatBinding.StatusSuccess)
+                completed = true;
+        }
+
+        public void OnGenerateComplete()
+        {
+            phase = PhaseGenerated;
+            status = binding.GetGenerateStatus();
+            if (status == UdonclTinyLlamaChatBinding.StatusSuccess)
+                status = binding.TryGetGenerateResult(out libraryStatus);
+            if (!Succeeded())
+                return;
+            status = binding.TryGeneratedTokenCount(out generatedCount);
+            if (status != UdonclTinyLlamaChatBinding.StatusSuccess)
+            {
+                completed = true;
+                return;
+            }
+            if (generatedCount <= 0 || generatedCount > generatedTokens.Length)
+            {
+                status = UdonclTinyLlamaChatBinding.StatusExecutionFailure;
+                completed = true;
+                return;
+            }
+            status = binding.TryReadGeneratedTokens(generatedTokens, out libraryStatus);
+            if (!Succeeded())
+                return;
+
+            // Text out: UTF-16 code units, one per int, special tokens skipped.
+            phase = PhaseReadText;
+            status = binding.TryGeneratedTextLength(out textLength);
+            if (status != UdonclTinyLlamaChatBinding.StatusSuccess)
+            {
+                completed = true;
+                return;
+            }
+            if (textLength < 0 || textLength > textUnits.Length)
+            {
+                status = UdonclTinyLlamaChatBinding.StatusExecutionFailure;
+                completed = true;
+                return;
+            }
+            status = binding.TryReadGeneratedText(textUnits, out libraryStatus);
+            if (status == UdonclTinyLlamaChatBinding.StatusSuccess)
+                binding.TryLastTokenizerStatus(out tokenizerStatus);
+            if (!Succeeded())
+                return;
+
+            phase = PhaseShutdown;
+            status = binding.TryShutdown(out libraryStatus);
+            if (!Succeeded())
+                return;
+            phase = PhaseDone;
+            completed = true;
+        }
+
+        private bool Succeeded()
+        {
+            if (
+                status == UdonclTinyLlamaChatBinding.StatusSuccess
+                && libraryStatus == LibraryStatusSuccess
+            )
+                return true;
+            asyncDiagnostic = binding.GetLastAsyncDiagnostic();
+            completed = true;
+            return false;
+        }
+    }
+}

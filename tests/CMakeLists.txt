@@ -817,6 +817,13 @@ add_test(NAME tinyllama-tokenizer-oracle
     "${PROJECT_BINARY_DIR}/tests/tinyllama-tokenizer-oracle"
     "${CMAKE_C_COMPILER}"
 )
+add_test(NAME tinyllama-conversation-text
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/boundary/tinyllama_conversation_text.py"
+    "${PROJECT_SOURCE_DIR}"
+    "${PROJECT_BINARY_DIR}/tests/tinyllama-conversation-text"
+    "${CMAKE_C_COMPILER}"
+)
 add_test(NAME build-parallelism
   COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/build/parallel.py"
 )

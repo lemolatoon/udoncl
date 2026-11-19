@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 
 
-COMPILER_ABI = 5
+COMPILER_ABI = 6
 REQUIRED_ASSETS = (
     "special_tokens_map.json",
     "tokenizer.json",
@@ -85,7 +85,17 @@ def _parse_normalizer(tokenizer: dict) -> dict[str, str]:
     return result
 
 
-def _validate_decoder(tokenizer: dict) -> None:
+def _pattern_string(pattern, message: str) -> str:
+    if isinstance(pattern, str):
+        return pattern
+    _require(
+        isinstance(pattern, dict) and isinstance(pattern.get("String"), str),
+        message,
+    )
+    return pattern["String"]
+
+
+def _parse_decoder(tokenizer: dict) -> dict[str, object]:
     decoder = tokenizer.get("decoder")
     _require(
         isinstance(decoder, dict) and decoder.get("type") == "Sequence",
@@ -99,6 +109,181 @@ def _validate_decoder(tokenizer: dict) -> None:
         == expected_types,
         "unsupported tokenizer decoder sequence",
     )
+    replace, _byte_fallback, _fuse, strip = steps
+    replace_from = _pattern_string(
+        replace.get("pattern"), "unsupported tokenizer decoder replacement"
+    )
+    replace_to = replace.get("content")
+    _require(
+        isinstance(replace_to, str)
+        and len(replace_from) == 1
+        and len(replace_to) == 1,
+        "unsupported tokenizer decoder replacement: values must be one scalar",
+    )
+    content = strip.get("content")
+    start = strip.get("start")
+    stop = strip.get("stop")
+    _require(
+        isinstance(content, str)
+        and len(content) == 1
+        and ord(content) <= 0xFFFF
+        and isinstance(start, int)
+        and start >= 0
+        and stop == 0,
+        "unsupported tokenizer decoder strip: only a leading BMP strip is supported",
+    )
+    return {
+        "replace_from": replace_from,
+        "replace_to": replace_to,
+        "strip": content,
+        "strip_start": start,
+    }
+
+
+def _utf16(text: str) -> list[int]:
+    encoded = text.encode("utf-16-le", "surrogatepass")
+    return [
+        int.from_bytes(encoded[index : index + 2], "little")
+        for index in range(0, len(encoded), 2)
+    ]
+
+
+def _added_tokens(tokenizer: dict, vocab: dict[str, int]) -> list[dict[str, object]]:
+    result = []
+    for entry in tokenizer.get("added_tokens") or []:
+        _require(isinstance(entry, dict), "unsupported added token entry")
+        content = entry.get("content")
+        token_id = entry.get("id")
+        _require(
+            isinstance(content, str) and bool(content) and isinstance(token_id, int),
+            "unsupported added token entry",
+        )
+        _require(
+            not entry.get("normalized", False)
+            and not entry.get("lstrip", False)
+            and not entry.get("rstrip", False)
+            and not entry.get("single_word", False),
+            f"unsupported added token {content!r}: only raw, unstripped "
+            "whole-text matching is supported",
+        )
+        _require(
+            vocab.get(content) == token_id,
+            f"added token {content!r} does not match the vocabulary",
+        )
+        result.append(
+            {"id": token_id, "content": content, "special": bool(entry.get("special"))}
+        )
+    return sorted(result, key=lambda item: (-len(_utf16(item["content"])), item["id"]))
+
+
+CHAT_ROLES = ("system", "user", "assistant")
+_PROBE_CONTENTS = ("", "a b", "x\ny", " lead", "trail ", "日本")
+
+
+def _compile_chat_template(
+    config: dict, added: list[dict[str, object]]
+) -> dict[str, object] | None:
+    """Decompose a Hugging Face chat template into per-message literals.
+
+    The template is rendered with the Hugging Face settings and sentinel
+    contents. It is accepted only when every probe conversation renders as the
+    concatenation of `prefix[role] + content + suffix[role]` per message
+    followed by the generation prompt; anything else is rejected rather than
+    approximated.
+    """
+
+    source = config.get("chat_template")
+    if source is None:
+        return None
+    _require(isinstance(source, str), "unsupported chat template: expected one string")
+    try:
+        from jinja2.sandbox import ImmutableSandboxedEnvironment
+    except ImportError as error:  # pragma: no cover - environment dependent
+        raise ValueError("compiling a chat template requires jinja2") from error
+
+    def raise_exception(message):
+        raise ValueError(f"chat template raised: {message}")
+
+    environment = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True)
+    environment.globals["raise_exception"] = raise_exception
+    template = environment.from_string(source)
+    variables = {}
+    for field in ("bos_token", "eos_token", "unk_token", "pad_token"):
+        value = config.get(field)
+        if value is not None:
+            variables[field] = _token_content(value, field)
+
+    def render(messages, generation: bool) -> str:
+        return template.render(
+            messages=messages, add_generation_prompt=generation, **variables
+        )
+
+    sentinel = "UDONCL"
+    roles: dict[str, tuple[str, str]] = {}
+    for role in CHAT_ROLES:
+        try:
+            text = render([{"role": role, "content": sentinel}], False)
+        except Exception:  # noqa: BLE001 - a rejected role is template data
+            continue
+        if text.count(sentinel) != 1:
+            continue
+        prefix, suffix = text.split(sentinel)
+        roles[role] = (prefix, suffix)
+    _require(bool(roles), "unsupported chat template: no role renders its content")
+    first_role = next(iter(roles))
+    with_prompt = render([{"role": first_role, "content": sentinel}], True)
+    without_prompt = render([{"role": first_role, "content": sentinel}], False)
+    _require(
+        with_prompt.startswith(without_prompt),
+        "unsupported chat template: generation prompt is not a suffix",
+    )
+    generation = with_prompt[len(without_prompt) :]
+
+    sequences = [[role] for role in roles]
+    sequences += [[left, right] for left in roles for right in roles]
+    sequences += [[a, b, c] for a in roles for b in roles for c in roles]
+    for sequence in sequences:
+        for content_index in range(len(_PROBE_CONTENTS)):
+            messages = [
+                {
+                    "role": role,
+                    "content": _PROBE_CONTENTS[
+                        (content_index + index) % len(_PROBE_CONTENTS)
+                    ],
+                }
+                for index, role in enumerate(sequence)
+            ]
+            expected = "".join(
+                roles[item["role"]][0] + item["content"] + roles[item["role"]][1]
+                for item in messages
+            )
+            for flag in (False, True):
+                try:
+                    actual = render(messages, flag)
+                except Exception as error:  # noqa: BLE001
+                    raise ValueError(
+                        f"unsupported chat template: roles {sequence} raised {error}"
+                    ) from error
+                _require(
+                    actual == expected + (generation if flag else ""),
+                    "unsupported chat template: output is not a per-message "
+                    f"concatenation for roles {sequence}",
+                )
+
+    # Pieces are streamed into the encoder, so an added token straddling a
+    # literal boundary would be matched differently than in the whole text.
+    literals = [part for pair in roles.values() for part in pair] + [generation]
+    for literal in literals:
+        for token in added:
+            content = str(token["content"])
+            for split in range(1, len(content)):
+                _require(
+                    not literal.startswith(content[split:])
+                    and not literal.endswith(content[:split]),
+                    f"unsupported chat template: added token {content!r} can "
+                    "straddle a literal boundary",
+                )
+    return {"roles": roles, "generation": generation}
 
 
 def _special_ids(tokenizer: dict, config: dict, special_map: dict) -> dict[str, int]:
@@ -154,8 +339,15 @@ def _identifier(value: str) -> str:
     return value
 
 
-def _write_header(path: Path, symbol: str) -> None:
+def _write_header(
+    path: Path, symbol: str, has_chat_template: bool, max_piece_code_units: int
+) -> None:
     guard = f"{symbol.upper()}_H"
+    chat = (
+        f"void {symbol}InitializeChatTemplate(udontokenizers_chat_template_t *chat);\n"
+        if has_chat_template
+        else ""
+    )
     path.write_text(
         f"""#ifndef {guard}
 #define {guard}
@@ -163,13 +355,28 @@ def _write_header(path: Path, symbol: str) -> None:
 #include <stdint.h>
 #include <udontokenizers.h>
 
-void {symbol}InitializeModel(udontokenizers_model_t *model);
+/* Upper bound of UTF-16 code units one decoded token appends. */
+#define {symbol.upper()}_MAX_PIECE_CODE_UNITS {max_piece_code_units}
 
+void {symbol}InitializeModel(udontokenizers_model_t *model);
+{chat}
 #endif
 """,
         encoding="utf-8",
         newline="\n",
     )
+
+
+def _int_table(lines: list[str], ctype: str, name: str, values, per_line: int = 12) -> None:
+    values = list(values)
+    lines.append(f"static const {ctype} {name}[{max(1, len(values))}] = {{")
+    if not values:
+        lines.append("  0,")
+    for offset in range(0, len(values), per_line):
+        lines.append(
+            "  " + ", ".join(str(value) for value in values[offset : offset + per_line]) + ","
+        )
+    lines.extend(["};", ""])
 
 
 def _write_source(
@@ -180,6 +387,11 @@ def _write_source(
     merges: list[tuple[int, int, int, int]],
     normalizer: dict[str, str],
     special_ids: dict[str, int],
+    added: list[dict[str, object]],
+    pieces: list[list[int]],
+    piece_kinds: list[int],
+    decoder: dict[str, object],
+    chat: dict[str, object] | None,
 ) -> None:
     lines = [f'#include "{symbol}.h"', ""]
     lines.append(f"static const uint32_t {symbol}_scalar_values[] = {{")
@@ -198,17 +410,28 @@ def _write_source(
         ("merge_result_token_ids", 2),
         ("merge_ranks", 3),
     ):
-        lines.append(f"static const int32_t {symbol}_{suffix}[] = {{")
-        for offset in range(0, len(merges), 12):
-            lines.append(
-                "  "
-                + ", ".join(
-                    str(merge[value_index])
-                    for merge in merges[offset : offset + 12]
-                )
-                + ","
-            )
-        lines.extend(["};", ""])
+        _int_table(
+            lines, "int32_t", f"{symbol}_{suffix}", (merge[value_index] for merge in merges)
+        )
+
+    added_units: list[int] = []
+    added_offsets = [0]
+    for token in added:
+        added_units.extend(_utf16(str(token["content"])))
+        added_offsets.append(len(added_units))
+    _int_table(lines, "int32_t", f"{symbol}_added_token_ids", (token["id"] for token in added))
+    _int_table(lines, "int32_t", f"{symbol}_added_token_offsets", added_offsets)
+    _int_table(lines, "uint16_t", f"{symbol}_added_token_code_units", added_units)
+
+    piece_units: list[int] = []
+    piece_offsets = [0]
+    for piece in pieces:
+        piece_units.extend(piece)
+        piece_offsets.append(len(piece_units))
+    _int_table(lines, "int32_t", f"{symbol}_piece_offsets", piece_offsets)
+    _int_table(lines, "uint16_t", f"{symbol}_piece_code_units", piece_units, 16)
+    _int_table(lines, "int32_t", f"{symbol}_piece_kinds", piece_kinds, 16)
+
     lines.extend(
         [
             f"void {symbol}InitializeModel(udontokenizers_model_t *model) {{",
@@ -225,11 +448,59 @@ def _write_source(
             f"  model->normalizer_replace_from_scalar = {ord(normalizer['replace_from'])};",
             f"  model->normalizer_replace_to_scalar = {ord(normalizer['replace_to'])};",
             f"  model->bos_token_id = {special_ids['bos']};",
+            f"  model->added_token_ids = {symbol}_added_token_ids;",
+            f"  model->added_token_offsets = {symbol}_added_token_offsets;",
+            f"  model->added_token_code_units = {symbol}_added_token_code_units;",
+            f"  model->added_token_count = {len(added)};",
+            f"  model->piece_offsets = {symbol}_piece_offsets;",
+            f"  model->piece_code_units = {symbol}_piece_code_units;",
+            f"  model->piece_kinds = {symbol}_piece_kinds;",
+            f"  model->vocab_count = {len(pieces)};",
+            f"  model->decoder_strip_scalar = {ord(str(decoder['strip']))};",
+            f"  model->decoder_strip_count = {decoder['strip_start']};",
+            f"  model->eos_token_id = {special_ids['eos']};",
             "}",
             "",
         ]
     )
+    if chat is not None:
+        roles = chat["roles"]
+        units: list[int] = []
+        layout = {"prefix_offsets": [], "prefix_lengths": [], "suffix_offsets": [], "suffix_lengths": []}
+        for role in CHAT_ROLES:
+            if role not in roles:
+                for key in layout:
+                    layout[key].append(0 if key.endswith("offsets") else -1)
+                continue
+            for part, key in ((roles[role][0], "prefix"), (roles[role][1], "suffix")):
+                encoded = _utf16(part)
+                layout[f"{key}_offsets"].append(len(units))
+                layout[f"{key}_lengths"].append(len(encoded))
+                units.extend(encoded)
+        generation = _utf16(str(chat["generation"]))
+        generation_offset = len(units)
+        units.extend(generation)
+        _int_table(lines, "uint16_t", f"{symbol}_chat_code_units", units, 16)
+        for key, values in layout.items():
+            _int_table(lines, "int32_t", f"{symbol}_chat_role_{key}", values)
+        lines.extend(
+            [
+                f"void {symbol}InitializeChatTemplate(udontokenizers_chat_template_t *chat) {{",
+                f"  chat->code_units = {symbol}_chat_code_units;",
+                f"  chat->role_prefix_offsets = {symbol}_chat_role_prefix_offsets;",
+                f"  chat->role_prefix_lengths = {symbol}_chat_role_prefix_lengths;",
+                f"  chat->role_suffix_offsets = {symbol}_chat_role_suffix_offsets;",
+                f"  chat->role_suffix_lengths = {symbol}_chat_role_suffix_lengths;",
+                f"  chat->generation_prompt_offset = {generation_offset};",
+                f"  chat->generation_prompt_length = {len(generation)};",
+                "}",
+                "",
+            ]
+        )
     path.write_text("\n".join(lines), encoding="utf-8", newline="\n")
+
+
+_BYTE_PIECE = re.compile(r"<0x([0-9A-F]{2})>")
 
 
 def compile_bundle(bundle: Path, output: Path, *, symbol: str) -> Path:
@@ -249,11 +520,17 @@ def compile_bundle(bundle: Path, output: Path, *, symbol: str) -> Path:
     _require(isinstance(vocab, dict), "tokenizer BPE vocabulary is missing")
     _require(isinstance(merges_json, list), "tokenizer BPE merges are missing")
     _require(len(set(vocab.values())) == len(vocab), "tokenizer IDs must be unique")
+    _require(
+        sorted(vocab.values()) == list(range(len(vocab))),
+        "tokenizer IDs must be dense from zero",
+    )
 
     normalizer = _parse_normalizer(tokenizer)
-    _validate_decoder(tokenizer)
+    decoder = _parse_decoder(tokenizer)
     special_ids = _special_ids(tokenizer, config, special_map)
     _validate_post_processor(tokenizer, special_ids["bos"])
+    added = _added_tokens(tokenizer, vocab)
+    chat = _compile_chat_template(config, added)
 
     byte_ids = []
     for value in range(256):
@@ -270,6 +547,23 @@ def compile_bundle(bundle: Path, output: Path, *, symbol: str) -> Path:
         key=lambda merge: (merge[0], merge[1]),
     )
 
+    special_contents = {str(token["content"]) for token in added if token["special"]}
+    by_id = {int(token_id): piece for piece, token_id in vocab.items()}
+    pieces: list[list[int]] = []
+    piece_kinds: list[int] = []
+    for token_id in range(len(vocab)):
+        piece = by_id[token_id]
+        byte = _BYTE_PIECE.fullmatch(piece)
+        if piece in special_contents:
+            piece_kinds.append(-2)
+        elif byte:
+            piece_kinds.append(int(byte.group(1), 16))
+        else:
+            piece_kinds.append(-1)
+        pieces.append(
+            [] if byte else _utf16(piece.replace(str(decoder["replace_from"]), str(decoder["replace_to"])))
+        )
+
     asset_hashes = {name: _digest(bundle / name) for name in sorted(REQUIRED_ASSETS)}
     cache_key_payload = json.dumps(
         {"compiler_abi": COMPILER_ABI, "assets": asset_hashes},
@@ -285,13 +579,27 @@ def compile_bundle(bundle: Path, output: Path, *, symbol: str) -> Path:
         "byte_token_count": len(byte_ids),
         "merge_count": len(merges),
         "normalizer": normalizer,
+        "decoder": decoder,
         "special_token_ids": special_ids,
+        "added_tokens": [
+            {"id": token["id"], "content": token["content"], "special": token["special"]}
+            for token in added
+        ],
+        "piece_code_unit_count": sum(len(piece) for piece in pieces),
         "chat_template_sha256": hashlib.sha256(
             str(config.get("chat_template", "")).encode("utf-8")
         ).hexdigest(),
+        "chat_template": None
+        if chat is None
+        else {
+            "roles": {role: list(parts) for role, parts in chat["roles"].items()},
+            "generation_prompt": chat["generation"],
+        },
     }
     output.mkdir(parents=True, exist_ok=True)
-    _write_header(output / f"{symbol}.h", symbol)
+    max_piece_code_units = max([1] + [len(piece) for piece in pieces])
+    manifest["max_piece_code_units"] = max_piece_code_units
+    _write_header(output / f"{symbol}.h", symbol, chat is not None, max_piece_code_units)
     _write_source(
         output / f"{symbol}.c",
         symbol,
@@ -300,6 +608,11 @@ def compile_bundle(bundle: Path, output: Path, *, symbol: str) -> Path:
         merges,
         normalizer,
         special_ids,
+        added,
+        pieces,
+        piece_kinds,
+        decoder,
+        chat,
     )
     manifest_path = output / "manifest.json"
     manifest_path.write_text(

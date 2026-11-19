@@ -5,8 +5,7 @@
 #include <udoncl/export.h>
 #include <udoncl/onnx_generated_binding.h>
 
-#define TINYLLAMA_CONTEXT_CAPACITY 64u
-#define TINYLLAMA_GENERATED_CAPACITY 32u
+#include "conversation_host.h"
 #define TINYLLAMA_LOGIT_WORDS 32000
 #define TINYLLAMA_ARGMAX_PARTIAL_WORDS 512u
 #define TINYLLAMA_ARGMAX_FAILURE 0xffffffffu
@@ -194,9 +193,7 @@ UDONCL_EXPORT udononnxStatus_t tinyllama_reset(void) {
   return status;
 }
 
-UDONCL_EXPORT udononnxStatus_t tinyllama_set_prompt_tokens(
-    udon_int32_array_t token_ids, uint32_t token_count) {
-  uint32_t index;
+static udononnxStatus_t prompt_replacement_state(void) {
   if (disposed)
     return UDONONNX_STATUS_DISPOSED;
   if (!initialized)
@@ -205,6 +202,15 @@ UDONCL_EXPORT udononnxStatus_t tinyllama_set_prompt_tokens(
     return UDONONNX_STATUS_BUSY;
   if (failed)
     return UDONONNX_STATUS_INVALID_STATE;
+  return UDONONNX_STATUS_SUCCESS;
+}
+
+UDONCL_EXPORT udononnxStatus_t tinyllama_set_prompt_tokens(
+    udon_int32_array_t token_ids, uint32_t token_count) {
+  uint32_t index;
+  udononnxStatus_t status = prompt_replacement_state();
+  if (status != UDONONNX_STATUS_SUCCESS)
+    return status;
   if (!token_ids || !token_count ||
       udonInt32ArrayLength(token_ids) < (int32_t)token_count)
     return UDONONNX_STATUS_INVALID_VALUE;
@@ -220,6 +226,69 @@ UDONCL_EXPORT udononnxStatus_t tinyllama_set_prompt_tokens(
   for (index = 0; index < token_count; ++index)
     prompt[index] = udonInt32ArrayGet(token_ids, (int32_t)index);
   prompt_count = token_count;
+  return UDONONNX_STATUS_SUCCESS;
+}
+
+udononnxStatus_t tinyllamaConversationPreparePrompt(int32_t **workspace) {
+  udononnxStatus_t status = prompt_replacement_state();
+  if (status != UDONONNX_STATUS_SUCCESS)
+    return status;
+  if (!workspace)
+    return UDONONNX_STATUS_INVALID_VALUE;
+  if (generated_count || completed)
+    return UDONONNX_STATUS_INVALID_STATE;
+  prompt_count = 0;
+  *workspace = prompt;
+  return UDONONNX_STATUS_SUCCESS;
+}
+
+udononnxStatus_t tinyllamaConversationCommitPrompt(uint32_t token_count) {
+  uint32_t index;
+  udononnxStatus_t status = prompt_replacement_state();
+  if (status != UDONONNX_STATUS_SUCCESS)
+    return status;
+  if (!token_count)
+    return UDONONNX_STATUS_INVALID_VALUE;
+  if (token_count > TINYLLAMA_CONTEXT_CAPACITY)
+    return UDONONNX_STATUS_CAPACITY_EXCEEDED;
+  if (generated_count || completed)
+    return UDONONNX_STATUS_INVALID_STATE;
+  for (index = 0; index < token_count; ++index)
+    if (prompt[index] < 0 || prompt[index] >= TINYLLAMA_LOGIT_WORDS)
+      return UDONONNX_STATUS_INVALID_VALUE;
+  prompt_count = token_count;
+  return UDONONNX_STATUS_SUCCESS;
+}
+
+udononnxStatus_t tinyllamaConversationPrompt(const int32_t **tokens,
+                                             uint32_t *token_count) {
+  if (disposed)
+    return UDONONNX_STATUS_DISPOSED;
+  if (!initialized)
+    return UDONONNX_STATUS_NOT_INITIALIZED;
+  if (busy)
+    return UDONONNX_STATUS_BUSY;
+  if (!tokens || !token_count)
+    return UDONONNX_STATUS_INVALID_VALUE;
+  *tokens = prompt;
+  *token_count = prompt_count;
+  return UDONONNX_STATUS_SUCCESS;
+}
+
+udononnxStatus_t tinyllamaConversationGenerated(const int32_t **tokens,
+                                                uint32_t *token_count) {
+  if (disposed)
+    return UDONONNX_STATUS_DISPOSED;
+  if (!initialized)
+    return UDONONNX_STATUS_NOT_INITIALIZED;
+  if (busy)
+    return UDONONNX_STATUS_BUSY;
+  if (!completed)
+    return UDONONNX_STATUS_INVALID_STATE;
+  if (!tokens || !token_count || generated_count > TINYLLAMA_GENERATED_CAPACITY)
+    return UDONONNX_STATUS_INVALID_VALUE;
+  *tokens = generated;
+  *token_count = generated_count;
   return UDONONNX_STATUS_SUCCESS;
 }
 
