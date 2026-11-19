@@ -1,7 +1,9 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassRegistry.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/Dialect/ONNX/ElementsAttr/DisposableElementsAttr.hpp"
 
 using namespace mlir;
@@ -121,6 +123,29 @@ std::optional<RMSNormMatch> matchRMSNorm(Operation *root) {
   return std::nullopt;
 }
 
+/// Replaces a generic ONNX RMS normalization subgraph rooted at its final
+/// weight multiplication with the public RmsNorm library operation.
+struct RMSNormPattern : RewritePattern {
+  explicit RMSNormPattern(MLIRContext *context)
+      : RewritePattern("onnx.Mul", /*benefit=*/1, context) {}
+
+  LogicalResult matchAndRewrite(Operation *root,
+                                PatternRewriter &rewriter) const override {
+    auto match = matchRMSNorm(root);
+    if (!match)
+      return rewriter.notifyMatchFailure(root, "not an RMS normalization");
+    OperationState state(root->getLoc(), "onnx.Custom");
+    state.addOperands({match->input, match->weight, match->epsilon});
+    state.addTypes(root->getResultTypes());
+    state.addAttribute("function_name", rewriter.getStringAttr("RmsNorm"));
+    state.addAttribute("domain_name",
+                       rewriter.getStringAttr("com.lemolatoon.udoncl"));
+    Operation *replacement = rewriter.create(state);
+    rewriter.replaceOp(root, replacement->getResults());
+    return success();
+  }
+};
+
 struct CanonicalizeONNXLibraryPatternsPass
     : PassWrapper<CanonicalizeONNXLibraryPatternsPass,
                   OperationPass<ModuleOp>> {
@@ -134,25 +159,18 @@ struct CanonicalizeONNXLibraryPatternsPass
   }
 
   void runOnOperation() override {
-    SmallVector<Operation *> roots;
-    getOperation().walk([&](Operation *operation) {
-      if (matchRMSNorm(operation))
-        roots.push_back(operation);
-    });
-    for (Operation *root : roots) {
-      auto match = matchRMSNorm(root);
-      if (!match)
-        continue;
-      OpBuilder builder(root);
-      OperationState state(root->getLoc(), "onnx.Custom");
-      state.addOperands({match->input, match->weight, match->epsilon});
-      state.addTypes(root->getResultTypes());
-      state.addAttribute("function_name", builder.getStringAttr("RmsNorm"));
-      state.addAttribute("domain_name",
-                         builder.getStringAttr("com.lemolatoon.udoncl"));
-      Operation *replacement = builder.create(state);
-      root->replaceAllUsesWith(replacement->getResults());
-    }
+    RewritePatternSet patterns(&getContext());
+    patterns.add<RMSNormPattern>(&getContext());
+    // The replaced subgraph becomes trivially dead and is erased by the
+    // driver. Folding stays disabled so this pass only performs the library
+    // pattern rewrites.
+    GreedyRewriteConfig config;
+    config.enableFolding(false);
+    config.enableConstantCSE(false);
+    config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Disabled);
+    if (failed(
+            applyPatternsGreedily(getOperation(), std::move(patterns), config)))
+      signalPassFailure();
   }
 };
 

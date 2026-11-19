@@ -401,15 +401,92 @@ std::optional<SmallVector<int64_t>> evaluateIntegerTensor(Value value,
        name == "onnx.Cast") &&
       op->getNumOperands() >= 1)
     return evaluateIntegerTensor(op->getOperand(0), depth + 1);
-  if (name == "onnx.Concat" &&
-      (!op->getAttrOfType<IntegerAttr>("axis") ||
-       op->getAttrOfType<IntegerAttr>("axis").getInt() == 0)) {
-    SmallVector<int64_t> result;
+  if (name == "onnx.Concat" && op->getNumResults() == 1) {
+    auto resultType = dyn_cast<RankedTensorType>(op->getResult(0).getType());
+    int64_t axis = 0;
+    if (auto attribute = op->getAttrOfType<IntegerAttr>("axis"))
+      axis = attribute.getInt();
+    if (resultType && axis < 0)
+      axis += resultType.getRank();
+    if (axis == 0) {
+      SmallVector<int64_t> result;
+      for (Value operand : op->getOperands()) {
+        auto values = evaluateIntegerTensor(operand, depth + 1);
+        if (!values)
+          return std::nullopt;
+        llvm::append_range(result, *values);
+      }
+      return result;
+    }
+    // A non-leading axis interleaves one contiguous chunk of every operand
+    // per outer index.
+    if (!resultType || !resultType.hasStaticShape() || axis < 0 ||
+        axis >= resultType.getRank() ||
+        resultType.getNumElements() > (1u << 20))
+      return std::nullopt;
+    int64_t outer = 1;
+    for (int64_t extent : resultType.getShape().take_front(axis))
+      outer *= extent;
+    SmallVector<SmallVector<int64_t>> operands;
+    SmallVector<int64_t> chunks;
     for (Value operand : op->getOperands()) {
+      auto type = dyn_cast<RankedTensorType>(operand.getType());
       auto values = evaluateIntegerTensor(operand, depth + 1);
-      if (!values)
+      if (!type || !type.hasStaticShape() ||
+          type.getRank() != resultType.getRank() || !values ||
+          values->size() != static_cast<size_t>(type.getNumElements()))
         return std::nullopt;
-      llvm::append_range(result, *values);
+      int64_t chunk = 1;
+      for (int64_t extent : type.getShape().drop_front(axis))
+        chunk *= extent;
+      chunks.push_back(chunk);
+      operands.push_back(std::move(*values));
+    }
+    SmallVector<int64_t> result;
+    result.reserve(resultType.getNumElements());
+    for (int64_t index = 0; index < outer; ++index)
+      for (auto [values, chunk] : llvm::zip_equal(operands, chunks))
+        llvm::append_range(
+            result, ArrayRef<int64_t>(values).slice(index * chunk, chunk));
+    if (result.size() != static_cast<size_t>(resultType.getNumElements()))
+      return std::nullopt;
+    return result;
+  }
+  if (name == "onnx.Expand" && op->getNumOperands() == 2 &&
+      op->getNumResults() == 1) {
+    auto inputType = dyn_cast<RankedTensorType>(op->getOperand(0).getType());
+    auto resultType = dyn_cast<RankedTensorType>(op->getResult(0).getType());
+    auto values = evaluateIntegerTensor(op->getOperand(0), depth + 1);
+    if (!inputType || !resultType || !inputType.hasStaticShape() ||
+        !resultType.hasStaticShape() ||
+        inputType.getRank() > resultType.getRank() ||
+        resultType.getNumElements() > (1u << 20) || !values ||
+        values->size() != static_cast<size_t>(inputType.getNumElements()))
+      return std::nullopt;
+    int64_t rankOffset = resultType.getRank() - inputType.getRank();
+    for (int64_t axis = 0; axis < inputType.getRank(); ++axis) {
+      int64_t extent = inputType.getDimSize(axis);
+      if (extent != 1 && extent != resultType.getDimSize(rankOffset + axis))
+        return std::nullopt;
+    }
+    SmallVector<int64_t> result;
+    result.reserve(resultType.getNumElements());
+    for (int64_t flat = 0; flat < resultType.getNumElements(); ++flat) {
+      int64_t remaining = flat;
+      int64_t offset = 0;
+      int64_t stride = 1;
+      for (int64_t axis = resultType.getRank(); axis-- > 0;) {
+        int64_t coordinate = remaining % resultType.getDimSize(axis);
+        remaining /= resultType.getDimSize(axis);
+        int64_t inputAxis = axis - rankOffset;
+        if (inputAxis < 0)
+          continue;
+        int64_t extent = inputType.getDimSize(inputAxis);
+        if (extent != 1)
+          offset += coordinate * stride;
+        stride *= extent;
+      }
+      result.push_back((*values)[offset]);
     }
     return result;
   }
@@ -840,8 +917,45 @@ struct InferONNXShapesPass
           return;
         }
         auto type = dyn_cast<RankedTensorType>(op->getResult(0).getType());
-        if (!type || !type.hasStaticShape() ||
-            !isa<IntegerType>(type.getElementType()))
+        if (!type || !type.hasStaticShape())
+          return;
+        if (auto floatType = dyn_cast<FloatType>(type.getElementType())) {
+          // A Cast of a statically known integer tensor to floating point is
+          // folded the same way as integer shape values.
+          auto inputType =
+              op->getName().getStringRef() == "onnx.Cast" &&
+                      op->getNumOperands() == 1
+                  ? dyn_cast<RankedTensorType>(op->getOperand(0).getType())
+                  : RankedTensorType();
+          auto inputElement =
+              inputType ? dyn_cast<IntegerType>(inputType.getElementType())
+                        : IntegerType();
+          if (!inputElement || inputElement.isUnsigned() ||
+              inputType.getShape() != type.getShape())
+            return;
+          auto values = evaluateIntegerTensor(op->getOperand(0));
+          if (!values ||
+              values->size() != static_cast<size_t>(type.getNumElements()))
+            return;
+          SmallVector<APFloat> floats;
+          floats.reserve(values->size());
+          for (int64_t value : *values) {
+            if (inputElement.getWidth() == 1)
+              value = value != 0;
+            APFloat converted(floatType.getFloatSemantics());
+            converted.convertFromAPInt(APInt(64, value, /*isSigned=*/true),
+                                       /*IsSigned=*/true,
+                                       APFloat::rmNearestTiesToEven);
+            floats.push_back(converted);
+          }
+          OpBuilder builder(op);
+          Value constant = builder.create<arith::ConstantOp>(
+              op->getLoc(), DenseElementsAttr::get(type, floats));
+          op->getResult(0).replaceAllUsesWith(constant);
+          erase.push_back(op);
+          return;
+        }
+        if (!isa<IntegerType>(type.getElementType()))
           return;
         auto values = evaluateIntegerTensor(op->getResult(0));
         if (!values ||

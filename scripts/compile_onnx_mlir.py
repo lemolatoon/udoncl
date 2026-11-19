@@ -44,6 +44,7 @@ def canonicalize(
             command.extend([
                 '--udoncl-canonicalize-onnx-library-patterns',
                 '--udoncl-infer-onnx-shapes',
+                '--udoncl-simplify-onnx-empty-concat',
                 '--udoncl-materialize-onnx-constants',
                 '--udoncl-externalize-onnx-initializers=' +
                 f'static-data-directory={temporary_static_data}',

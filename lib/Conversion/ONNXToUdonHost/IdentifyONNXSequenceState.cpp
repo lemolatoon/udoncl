@@ -64,9 +64,12 @@ struct IdentifyONNXSequenceStatePass
           if (dimension != axis && inputType.getDimSize(dimension) !=
                                        outputType.getDimSize(dimension))
             compatible = false;
+        // A zero-extent input carries no rows into the next run, so it is an
+        // ordinary empty input rather than a fixed-capacity state bank.
+        int64_t carried = inputType.getDimSize(axis);
         int64_t capacity = outputType.getDimSize(axis);
-        int64_t step = capacity - inputType.getDimSize(axis);
-        if (!compatible || capacity <= 0 || step <= 0)
+        int64_t step = capacity - carried;
+        if (!compatible || carried <= 0 || step <= 0)
           continue;
 
         states.push_back(builder.getDictionaryAttr({

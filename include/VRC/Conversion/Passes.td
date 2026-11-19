@@ -23,6 +23,9 @@ def SpecializeONNXInputsPass : Pass<"udoncl-specialize-onnx-inputs", "mlir::Modu
            "Semicolon-separated public input shapes name=d0,d1,...">
   ];
 }
+def SimplifyONNXEmptyConcatPass : Pass<"udoncl-simplify-onnx-empty-concat", "mlir::ModuleOp"> {
+  let summary = "Remove statically empty operands from ONNX Concat operations";
+}
 def ValidateONNXHostGraphPass : Pass<"udoncl-validate-onnx-host-graph", "mlir::ModuleOp"> {
   let summary = "Validate the portable ONNX Host graph before materialization";
   let dependentDialects = ["mlir::arith::ArithDialect", "mlir::func::FuncDialect"];

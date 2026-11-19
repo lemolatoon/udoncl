@@ -36,9 +36,24 @@ struct PlanONNXHostGraphPass
       for (const NodeRecord &node : graph->nodes) {
         if (!StringRef(node.provider).starts_with("udonblas"))
           continue;
-        module.emitError()
+        InFlightDiagnostic diagnostic =
+            module.emitError()
             << "ONNX Host fallback cannot call Device-pointer provider "
             << node.provider << " for " << node.operation;
+        const NodeRecord *blocker =
+            llvm::find_if(graph->nodes, [&](const NodeRecord &candidate) {
+              return !supportsDeviceNode(*graph, candidate);
+            });
+        Diagnostic &note = diagnostic.attachNote();
+        note << "first Device-unsupported node is " << blocker->operation
+             << " via " << blocker->provider << " with inputs (";
+        llvm::interleaveComma(blocker->inputs, note, [&](int64_t input) {
+          if (input < 0)
+            note << "none";
+          else
+            note << graph->tensors[static_cast<unsigned>(input)].type;
+        });
+        note << ") and result " << graph->tensors[blocker->output].type;
         signalPassFailure();
         return;
       }

@@ -238,9 +238,14 @@ FailureOr<GraphRecord> readONNXHostGraph(ModuleOp module) {
     auto concatAxis = concat && concat->attributes
                           ? concat->attributes.getAs<IntegerAttr>("axis")
                           : IntegerAttr();
+    // ONNX permits a negative Concat axis counted from the last dimension.
+    int64_t normalizedConcatAxis =
+        concatAxis && concatAxis.getInt() < 0
+            ? concatAxis.getInt() + outputType.getRank()
+            : (concatAxis ? concatAxis.getInt() : -1);
     if (!concat || concat->operation != "Concat" || concat->inputs.empty() ||
         concat->inputs[0] != static_cast<int64_t>(inputTensorIndex) ||
-        !concatAxis || concatAxis.getInt() != sequenceAxis)
+        !concatAxis || normalizedConcatAxis != sequenceAxis)
       return module.emitError(
           "ONNX sequence-state metadata does not match a Concat output");
     result.sequenceStates.push_back(

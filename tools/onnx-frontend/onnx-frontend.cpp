@@ -4,6 +4,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/AsmState.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Diagnostics.h"
 #include "mlir/InitAllDialects.h"
 #include "mlir/InitAllExtensions.h"
 #include "mlir/InitAllPasses.h"
@@ -16,6 +17,7 @@
 #include "src/Dialect/ONNX/ONNXDialect.hpp"
 #include "src/Pass/Passes.hpp"
 #include "llvm/Support/InitLLVM.h"
+#include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Support/raw_ostream.h"
@@ -30,6 +32,7 @@ int main(int argc, char **argv) {
   llvm::InitLLVM init(argc, argv);
   mlir::registerAllPasses();
   vrc::registerSpecializeONNXInputsPass();
+  vrc::registerSimplifyONNXEmptyConcatPass();
   vrc::registerLowerONNXToUdonHostPass();
   vrc::registerValidateONNXHostGraphPass();
   vrc::registerPlanONNXHostGraphPass();
@@ -53,6 +56,12 @@ int main(int argc, char **argv) {
   mlir::registerMLIRContextCLOptions();
   mlir::registerPassManagerCLOptions();
   mlir::registerDefaultTimingManagerCLOptions();
+  // Imported modules are model sized, so diagnostics do not append the whole
+  // operation unless explicitly requested.
+  auto printOpOnDiagnostic =
+      llvm::cl::getRegisteredOptions().lookup("mlir-print-op-on-diagnostic");
+  if (auto *option = static_cast<llvm::cl::opt<bool> *>(printOpOnDiagnostic))
+    option->setInitialValue(false);
   mlir::PassPipelineCLParser pipeline("", "Compiler passes to run");
   if (!llvm::cl::ParseCommandLineOptions(argc, argv,
                                          "internal UdonCL ONNX frontend\n"))
@@ -80,6 +89,10 @@ int main(int argc, char **argv) {
     return importResult == 0 ? 1 : importResult;
   }
 
+  // Report notes attached to pass diagnostics, as mlir-opt does. Importer
+  // warnings about custom-domain operators remain silent.
+  llvm::SourceMgr sourceManager;
+  mlir::SourceMgrDiagnosticHandler diagnosticHandler(sourceManager, &context);
   auto setup = [&](mlir::PassManager &passManager) {
     return pipeline.addToPipeline(passManager, [&](const llvm::Twine &message) {
       mlir::emitError(mlir::UnknownLoc::get(&context)) << message;
