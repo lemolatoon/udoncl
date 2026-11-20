@@ -225,7 +225,10 @@ def ScheduleUdonDeviceWorkPass : Pass<"vrc-schedule-udon-device-work", "mlir::Mo
     may-suspend function its static cost is charged to two slice budgets held
     in instance globals; at the former await the Host yields through a
     cooperative checkpoint when either budget is full, which starts a new
-    slice. Transfers, readbacks and other events keep their awaits.
+    slice. Transfers, readbacks and other events keep their awaits. A command
+    whose former await directly follows it is charged at that yield point:
+    the check compares the sums it just stored, which need not saturate
+    because a full slice yields at once and the yield resets both budgets.
 
     The Device cost is counted in texel-load units: `fragment-weight` units
     per launched fragment plus one unit per texel load, with loads per

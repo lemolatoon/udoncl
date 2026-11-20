@@ -9,7 +9,9 @@ from pathlib import Path
 import re
 
 
-COMPILER_ABI = 6
+COMPILER_ABI = 7
+# Odd multiplier of the merge index hash; halved for very large token IDs.
+MERGE_HASH_MULTIPLIER = 40503
 REQUIRED_ASSETS = (
     "special_tokens_map.json",
     "tokenizer.json",
@@ -379,6 +381,30 @@ def _int_table(lines: list[str], ctype: str, name: str, values, per_line: int = 
     lines.extend(["};", ""])
 
 
+def _merge_hash(merges: list[tuple[int, int, int, int]]) -> tuple[list[int], int, int]:
+    """Open-addressing index of the sorted merge table, at most half full."""
+    if not merges:
+        return [], 0, 0
+    size = 1
+    while size < 2 * len(merges):
+        size *= 2
+    largest = max(max(left, right) for left, right, _result, _rank in merges)
+    multiplier = MERGE_HASH_MULTIPLIER
+    while multiplier > 1 and largest * multiplier + largest > 0x7FFFFFFF:
+        multiplier = (multiplier // 2) | 1
+    _require(
+        largest * multiplier + largest <= 0x7FFFFFFF,
+        "token IDs are too large for the merge index",
+    )
+    slots = [-1] * size
+    for index, (left, right, _result, _rank) in enumerate(merges):
+        slot = (left * multiplier + right) & (size - 1)
+        while slots[slot] >= 0:
+            slot = (slot + 1) & (size - 1)
+        slots[slot] = index
+    return slots, size - 1, multiplier
+
+
 def _write_source(
     path: Path,
     symbol: str,
@@ -413,6 +439,9 @@ def _write_source(
         _int_table(
             lines, "int32_t", f"{symbol}_{suffix}", (merge[value_index] for merge in merges)
         )
+
+    hash_slots, hash_mask, hash_multiplier = _merge_hash(merges)
+    _int_table(lines, "int32_t", f"{symbol}_merge_hash_slots", hash_slots, 16)
 
     added_units: list[int] = []
     added_offsets = [0]
@@ -459,6 +488,11 @@ def _write_source(
             f"  model->decoder_strip_scalar = {ord(str(decoder['strip']))};",
             f"  model->decoder_strip_count = {decoder['strip_start']};",
             f"  model->eos_token_id = {special_ids['eos']};",
+            f"  model->merge_hash_slots = {symbol}_merge_hash_slots;"
+            if hash_slots
+            else "  model->merge_hash_slots = 0;",
+            f"  model->merge_hash_mask = {hash_mask};",
+            f"  model->merge_hash_multiplier = {hash_multiplier};",
             "}",
             "",
         ]

@@ -28,14 +28,29 @@
 // CHECK-NEXT: %[[RESET:.+]] = arith.constant 0 : i32
 // CHECK-NEXT: %[[SLOT:.+]] = udonhl.address_of @__udoncl_slice_device_cost
 // CHECK-NEXT: "udonhl.store"(%[[RESET]], %[[SLOT]])
+// The yield point directly follows the command, so the command is charged
+// there: the sums are not saturated and the check compares them without
+// reloading the counters.
 // CHECK: %[[FIRST:.+]] = vrc.dispatch %
-// CHECK-NEXT: arith.constant 128 : i32
+// CHECK-NEXT: %[[DEVICE_CHARGE:.+]] = arith.constant 128 : i32
+// CHECK-NEXT: %[[DEVICE_SLOT:.+]] = udonhl.address_of @__udoncl_slice_device_cost
+// CHECK-NEXT: %[[DEVICE_BEFORE:.+]] = "udonhl.load"(%[[DEVICE_SLOT]])
+// CHECK-NEXT: %[[DEVICE_USED:.+]] = arith.addi %[[DEVICE_BEFORE]], %[[DEVICE_CHARGE]]
 // CHECK-NEXT: udonhl.address_of @__udoncl_slice_device_cost
-// CHECK: arith.constant 184 : i32
+// CHECK-NEXT: "udonhl.store"(%[[DEVICE_USED]],
+// CHECK-NEXT: %[[HOST_CHARGE:.+]] = arith.constant 184 : i32
+// CHECK-NEXT: %[[HOST_SLOT:.+]] = udonhl.address_of @__udoncl_slice_host_cost
+// CHECK-NEXT: %[[HOST_BEFORE:.+]] = "udonhl.load"(%[[HOST_SLOT]])
+// CHECK-NEXT: %[[HOST_USED:.+]] = arith.addi %[[HOST_BEFORE]], %[[HOST_CHARGE]]
 // CHECK-NEXT: udonhl.address_of @__udoncl_slice_host_cost
+// CHECK-NEXT: "udonhl.store"(%[[HOST_USED]],
+// CHECK-NEXT: %[[DEVICE_BUDGET:.+]] = arith.constant 150 : i32
+// CHECK-NEXT: %[[DEVICE_FULL:.+]] = arith.cmpi sge, %[[DEVICE_USED]], %[[DEVICE_BUDGET]]
+// CHECK-NEXT: %[[HOST_BUDGET:.+]] = arith.constant 1000 : i32
+// CHECK-NEXT: %[[HOST_FULL:.+]] = arith.cmpi sge, %[[HOST_USED]], %[[HOST_BUDGET]]
+// CHECK-NEXT: %[[FULL:.+]] = arith.ori %[[DEVICE_FULL]], %[[HOST_FULL]]
+// CHECK-NEXT: cf.cond_br %[[FULL]]
 // CHECK-NOT: vrc.await %[[FIRST]]
-// CHECK: arith.cmpi sge
-// CHECK: cf.cond_br
 // CHECK: vrc.await %{{.+}} {vrc.cooperative_checkpoint, vrc.device_work_budget_checkpoint}
 // CHECK: %[[SECOND:.+]] = vrc.dispatch %{{.+}}vrc.fragment_cost
 // CHECK-NEXT: arith.constant 103 : i32

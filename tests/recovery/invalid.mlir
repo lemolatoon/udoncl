@@ -8,9 +8,9 @@ module {
 
 // -----
 module {
-  llvm.func @exact_shift(%a: i32, %b: i32) -> i32 {
-    // expected-error @below {{cannot raise llvm.lshr: poison-generating flag has no implemented mapping}}
-    %r = llvm.lshr exact %a, %b : i32
+  llvm.func @exact_division(%a: i32, %b: i32) -> i32 {
+    // expected-error @below {{cannot raise llvm.udiv: poison-generating flag has no implemented mapping}}
+    %r = llvm.udiv exact %a, %b : i32
     llvm.return %r : i32
   }
 }

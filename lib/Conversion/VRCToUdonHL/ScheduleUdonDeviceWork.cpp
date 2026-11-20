@@ -373,7 +373,29 @@ struct ScheduleUdonDeviceWorkPass
                                    constant(builder, location, budget)),
             symbol);
     };
+    // A command whose yield point follows it in the same block, with only
+    // effect-free operations in between, is charged at that yield point
+    // instead: the check then reads the sums it just computed, and the sums
+    // need not saturate because a full slice yields at once and the yield
+    // resets both counters. Every counter is at most its budget when a command
+    // is issued, so the unsaturated sum is representable when the budget plus
+    // the charge is.
+    llvm::DenseMap<Operation *, std::pair<int64_t, int64_t>> chargedAtYield;
+    auto representable = [](int64_t cost, int64_t budget) {
+      return budget + std::min(cost, budget) <= INT32_MAX;
+    };
     for (auto [command, cost] : llvm::zip_equal(commands, costs)) {
+      Operation *next = command->getNextNode();
+      while (next && !isa<runtime::AwaitOp>(next) && isMemoryEffectFree(next) &&
+             !next->hasTrait<OpTrait::IsTerminator>())
+        next = next->getNextNode();
+      auto await = dyn_cast_or_null<runtime::AwaitOp>(next);
+      if (await && llvm::is_contained(yieldPoints, await) &&
+          representable(cost.first, deviceCostBudget) &&
+          representable(cost.second, hostCostBudget)) {
+        chargedAtYield.try_emplace(await.getOperation(), cost);
+        continue;
+      }
       OpBuilder builder(context);
       builder.setInsertionPointAfter(command);
       charge(builder, command->getLoc(), kDeviceCostSymbol, cost.first,
@@ -399,14 +421,35 @@ struct ScheduleUdonDeviceWorkPass
       Value success = constant(builder, location, 0);
       await.getStatus().replaceAllUsesWith(success);
       builder.setInsertionPoint(await);
-      Value full = arith::OrIOp::create(
-          builder, location,
+      Value deviceUsed, hostUsed;
+      auto charged = chargedAtYield.find(await.getOperation());
+      if (charged != chargedAtYield.end()) {
+        auto chargeHere = [&](StringRef symbol, int64_t cost, int64_t budget) {
+          // Built one by one: the order of the operations must not depend
+          // on the argument evaluation order of the Host compiler.
+          Value charge = constant(builder, location, std::min(cost, budget));
+          Value before = load(builder, location, symbol);
+          Value used = arith::AddIOp::create(builder, location, before, charge);
+          store(builder, location, used, symbol);
+          return used;
+        };
+        deviceUsed = chargeHere(kDeviceCostSymbol, charged->second.first,
+                                deviceCostBudget);
+        hostUsed =
+            chargeHere(kHostCostSymbol, charged->second.second, hostCostBudget);
+      } else {
+        deviceUsed = load(builder, location, kDeviceCostSymbol);
+        hostUsed = load(builder, location, kHostCostSymbol);
+      }
+      Value deviceBudget = constant(builder, location, deviceCostBudget);
+      Value deviceFull =
           arith::CmpIOp::create(builder, location, arith::CmpIPredicate::sge,
-                                load(builder, location, kDeviceCostSymbol),
-                                constant(builder, location, deviceCostBudget)),
-          arith::CmpIOp::create(builder, location, arith::CmpIPredicate::sge,
-                                load(builder, location, kHostCostSymbol),
-                                constant(builder, location, hostCostBudget)));
+                                deviceUsed, deviceBudget);
+      Value hostBudget = constant(builder, location, hostCostBudget);
+      Value hostFull = arith::CmpIOp::create(
+          builder, location, arith::CmpIPredicate::sge, hostUsed, hostBudget);
+      Value full =
+          arith::OrIOp::create(builder, location, deviceFull, hostFull);
       cf::CondBranchOp::create(builder, location, full, yield, ValueRange{},
                                after, ValueRange{});
       // The event is now unused: drop the casts that only carried it to the

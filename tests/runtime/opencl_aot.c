@@ -838,7 +838,8 @@ static int test_fill_buffer(cl_context context, cl_command_queue queue,
 /* clEnqueueCopyBuffer copies any word-aligned range between two physical
  * buffers as one Device command that is complete at issue; it never reads the
  * destination back. */
-static int test_copy_buffer(cl_context context, cl_command_queue queue) {
+static int test_copy_buffer(cl_context context, cl_command_queue queue,
+                            cl_mem static_buffer) {
   static const unsigned char expected[16] = {21, 22, 23, 24, 9,  10, 11, 12,
                                              29, 30, 31, 32, 33, 34, 35, 36};
   unsigned char source_bytes[16], destination_bytes[16], readback[16];
@@ -851,7 +852,9 @@ static int test_copy_buffer(cl_context context, cl_command_queue queue) {
                                  sizeof(source_bytes), 0, &error);
   cl_mem destination, part;
   EXPECT(source && error == CL_SUCCESS);
-  destination = clCreateBuffer(context, CL_MEM_READ_WRITE,
+  /* CL_MEM_READ_ONLY constrains kernel access, not Host transfers: a model
+   * input is such a buffer and still receives Device feedback copies. */
+  destination = clCreateBuffer(context, CL_MEM_READ_ONLY,
                                sizeof(destination_bytes), 0, &error);
   EXPECT(destination && error == CL_SUCCESS);
   part = clCreateSubBuffer(source, CL_MEM_READ_WRITE,
@@ -885,6 +888,8 @@ static int test_copy_buffer(cl_context context, cl_command_queue queue) {
          CL_INVALID_OPERATION);
   EXPECT(clEnqueueCopyBuffer(queue, part, source, 0, 0, 4, 0, 0, 0) ==
          CL_INVALID_OPERATION);
+  EXPECT(clEnqueueCopyBuffer(queue, source, static_buffer, 0, 0, 4, 0, 0, 0) ==
+         CL_INVALID_VALUE);
   EXPECT(copy_count == 0);
 
   await_count = 0;
@@ -1335,7 +1340,7 @@ int main(void) {
   index = (cl_uint)test_fill_buffer(context, queue, static_buffer);
   if (index)
     return (int)index;
-  index = (cl_uint)test_copy_buffer(context, queue);
+  index = (cl_uint)test_copy_buffer(context, queue, static_buffer);
   if (index)
     return (int)index;
   index = (cl_uint)test_deferred_read(context, queue);

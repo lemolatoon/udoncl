@@ -160,9 +160,14 @@ LogicalResult checkOperation(Operation *op) {
   if (auto fastmath = dyn_cast<LLVM::FastmathFlagsInterface>(op))
     if (fastmath.getFastmathAttr().getValue() != LLVM::FastmathFlags::none)
       return reject(op, "fast-math recovery is pending");
-  // Dropping these flags would erase poison conditions.
+  // `exact` on a right shift only makes the result poison when a shifted-out
+  // bit is set. The unflagged arith shift is defined for every such input and
+  // equal for all others, so raising to it refines the LLVM operation. Clang
+  // emits the flag for `1 << (31 - n)`-style bit scans.
+  bool exactShift = isa<LLVM::LShrOp, LLVM::AShrOp>(op);
+  // The remaining flags have no implemented mapping.
   for (StringRef name : {"isExact", "nonNeg", "isDisjoint", "samesign"})
-    if (op->hasAttr(name))
+    if (op->hasAttr(name) && !(exactShift && name == "isExact"))
       return reject(op, "poison-generating flag has no implemented mapping");
   if (auto call = dyn_cast<LLVM::CallOp>(op)) {
     if (!call.getCallee() || call.getCConv() != LLVM::cconv::CConv::C ||
@@ -192,7 +197,7 @@ LogicalResult checkOperation(Operation *op) {
   }
   for (NamedAttribute attr : op->getAttrs()) {
     auto name = attr.getName().getValue();
-    if (name.starts_with("vrc."))
+    if (name.starts_with("vrc.") || (exactShift && name == "isExact"))
       continue;
     if (!llvm::StringSwitch<bool>(name)
              .Cases({"value", "predicate", "overflowFlags", "fastmathFlags"},

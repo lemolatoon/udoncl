@@ -20,6 +20,14 @@
 #define TINYLLAMA_TEXT_CAPACITY                                                \
   (TINYLLAMA_GENERATED_CAPACITY * TINYLLAMA_TOKENIZER_MAX_PIECE_CODE_UNITS)
 
+/* A token covers at most its piece length in symbols, so a text with more
+ * symbols than this cannot fit the Context Capacity either. */
+#define TINYLLAMA_PROMPT_SYMBOL_CAPACITY                                       \
+  (TINYLLAMA_CONTEXT_CAPACITY * TINYLLAMA_TOKENIZER_MAX_PIECE_CODE_UNITS)
+#define TINYLLAMA_PROMPT_WORKSPACE_WORDS                                       \
+  UDONTOKENIZERS_ENCODER_WORKSPACE_WORDS(TINYLLAMA_PROMPT_SYMBOL_CAPACITY)
+
+static int32_t prompt_workspace[TINYLLAMA_PROMPT_WORKSPACE_WORDS];
 static int32_t text_units[TINYLLAMA_TEXT_CAPACITY];
 static int32_t last_tokenizer_status;
 
@@ -45,34 +53,40 @@ tinyllama_set_chat_prompt(udon_string_t system_text, udon_string_t user_text) {
   udontokenizers_model_t model;
   udontokenizers_chat_template_t chat;
   udontokenizers_encoder_t encoder;
-  int32_t *workspace = 0;
+  int32_t *tokens = 0;
   int32_t count = 0;
+  int32_t index;
   udontokenizersStatus_t status;
-  udononnxStatus_t host = tinyllamaConversationPreparePrompt(&workspace);
+  udononnxStatus_t host = tinyllamaConversationPreparePrompt(&tokens);
   last_tokenizer_status = UDONTOKENIZERS_STATUS_SUCCESS;
   if (host != UDONONNX_STATUS_SUCCESS)
     return host;
   tinyllama_tokenizerInitializeModel(&model);
   tinyllama_tokenizerInitializeChatTemplate(&chat);
-  status = udontokenizersEncoderBeginRaw(
-      &model, &encoder, workspace, (int32_t)TINYLLAMA_CONTEXT_CAPACITY, 1);
+  status = udontokenizersEncoderBeginRaw(&model, &encoder, prompt_workspace,
+                                         TINYLLAMA_PROMPT_WORKSPACE_WORDS, 1);
   if (status == UDONTOKENIZERS_STATUS_SUCCESS && udonStringLength(system_text))
     status = udontokenizersEncoderAppendChatMessageRaw(
         &model, &chat, &encoder, UDONTOKENIZERS_CHAT_ROLE_SYSTEM, system_text,
-        workspace);
+        prompt_workspace);
   if (status == UDONTOKENIZERS_STATUS_SUCCESS)
     status = udontokenizersEncoderAppendChatMessageRaw(
         &model, &chat, &encoder, UDONTOKENIZERS_CHAT_ROLE_USER, user_text,
-        workspace);
+        prompt_workspace);
   if (status == UDONTOKENIZERS_STATUS_SUCCESS)
     status = udontokenizersEncoderAppendChatGenerationPromptRaw(
-        &model, &chat, &encoder, workspace);
+        &model, &chat, &encoder, prompt_workspace);
   if (status == UDONTOKENIZERS_STATUS_SUCCESS)
-    status =
-        udontokenizersEncoderFinishRaw(&model, &encoder, workspace, &count);
+    status = udontokenizersEncoderFinishRaw(&model, &encoder, prompt_workspace,
+                                            &count);
+  if (status == UDONTOKENIZERS_STATUS_SUCCESS &&
+      count > (int32_t)TINYLLAMA_CONTEXT_CAPACITY)
+    status = UDONTOKENIZERS_STATUS_OUTPUT_TOO_SMALL;
   host = map_tokenizer_status(status);
   if (host != UDONONNX_STATUS_SUCCESS)
     return host;
+  for (index = 0; index < count; ++index)
+    tokens[index] = prompt_workspace[index];
   return tinyllamaConversationCommitPrompt((uint32_t)count);
 }
 

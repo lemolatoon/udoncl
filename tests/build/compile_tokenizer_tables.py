@@ -111,6 +111,38 @@ def write_bundle(
 
 
 class TokenizerTableCompilerTests(unittest.TestCase):
+    def test_merge_hash_finds_every_merge_by_linear_probing(self):
+        self.assertEqual(COMPILER._merge_hash([]), ([], 0, 0))
+        merges = sorted(
+            (left, right, 1000 + left * 37 + right, left * 37 + right)
+            for left in range(0, 300, 7)
+            for right in range(0, 37, 3)
+        )
+        slots, mask, multiplier = COMPILER._merge_hash(merges)
+        self.assertEqual(multiplier, COMPILER.MERGE_HASH_MULTIPLIER)
+        self.assertEqual(len(slots), mask + 1)
+        self.assertEqual(mask & (mask + 1), 0)
+        self.assertGreaterEqual(len(slots), 2 * len(merges))
+        self.assertEqual(sorted(slot for slot in slots if slot >= 0), list(range(len(merges))))
+
+        def find(left, right):
+            slot = (left * multiplier + right) & mask
+            while slots[slot] >= 0:
+                if merges[slots[slot]][:2] == (left, right):
+                    return slots[slot]
+                slot = (slot + 1) & mask
+            return -1
+
+        for index, merge in enumerate(merges):
+            self.assertEqual(find(merge[0], merge[1]), index)
+        self.assertEqual(find(1, 1), -1)
+        # Token IDs near the int32 limit shrink the multiplier until the
+        # hash cannot overflow.
+        large = [(0x3FFFFFF0, 5, 9, 0)]
+        _slots, _mask, multiplier = COMPILER._merge_hash(large)
+        self.assertEqual(multiplier, 1)
+        self.assertLessEqual(large[0][0] * multiplier + large[0][0], 0x7FFFFFFF)
+
     def test_compiles_deterministic_model_tables(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -143,6 +175,16 @@ class TokenizerTableCompilerTests(unittest.TestCase):
             self.assertIn("tinyllama_tokenizer_byte_token_ids[256]", source)
             self.assertIn("tinyllama_tokenizer_merge_left_token_ids[2]", source)
             self.assertIn("tinyllama_tokenizer_merge_ranks[2]", source)
+            self.assertIn("tinyllama_tokenizer_merge_hash_slots[4]", source)
+            self.assertIn(
+                "model->merge_hash_slots = tinyllama_tokenizer_merge_hash_slots;",
+                source,
+            )
+            self.assertIn("model->merge_hash_mask = 3;", source)
+            self.assertIn(
+                f"model->merge_hash_multiplier = {COMPILER.MERGE_HASH_MULTIPLIER};",
+                source,
+            )
             self.assertIn("tinyllama_tokenizer_piece_kinds[264]", source)
             self.assertEqual(
                 [token["content"] for token in manifest["added_tokens"]],

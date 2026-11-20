@@ -26,6 +26,8 @@ udononnxStatus_t
 tinyllamaPrepareFixedPrefillInputs(const udontokenizers_model_t *tokenizer,
                                    udon_string_t text, cl_command_queue queue) {
   int32_t token_ids[TINYLLAMA_FIXED_PREFILL_TOKEN_COUNT];
+  int32_t workspace[UDONTOKENIZERS_ENCODER_WORKSPACE_WORDS(
+      TINYLLAMA_FIXED_PREFILL_SYMBOL_CAPACITY)];
   int64_t input_ids[TINYLLAMA_FIXED_PREFILL_TOKEN_COUNT];
   int64_t attention_mask[TINYLLAMA_FIXED_PREFILL_TOKEN_COUNT];
   int64_t position_ids[TINYLLAMA_FIXED_PREFILL_TOKEN_COUNT];
@@ -37,7 +39,9 @@ tinyllamaPrepareFixedPrefillInputs(const udontokenizers_model_t *tokenizer,
     return UDONONNX_STATUS_INVALID_VALUE;
   tokenizer_status = udontokenizersEncodeRaw(
       tokenizer, text, token_ids, TINYLLAMA_FIXED_PREFILL_TOKEN_COUNT,
-      &token_count);
+      &token_count, workspace,
+      UDONTOKENIZERS_ENCODER_WORKSPACE_WORDS(
+          TINYLLAMA_FIXED_PREFILL_SYMBOL_CAPACITY));
   if (tokenizer_status == UDONTOKENIZERS_STATUS_OUTPUT_TOO_SMALL)
     return UDONONNX_STATUS_CAPACITY_EXCEEDED;
   if (tokenizer_status != UDONTOKENIZERS_STATUS_SUCCESS ||

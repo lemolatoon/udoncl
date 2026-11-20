@@ -121,9 +121,23 @@ undef_result = run([opt, '--vrc-raise-llvm-to-scalar'], undef_case)
 assert 'arith.constant 0 : i32' in undef_result
 assert 'llvm.mlir.undef' not in undef_result
 
+# `exact` on a right shift is only a poison condition; the unflagged arith
+# shift refines it.
+exact_shift_case = '''module {
+  llvm.func @exact_shifts(%a: i32, %b: i32) -> i32 {
+    %logical = llvm.lshr exact %a, %b : i32
+    %arithmetic = llvm.ashr exact %logical, %b : i32
+    llvm.return %arithmetic : i32
+  }
+}'''
+exact_shift_result = run([opt, '--vrc-raise-llvm-to-scalar'], exact_shift_case)
+assert 'arith.shrui' in exact_shift_result
+assert 'arith.shrsi' in exact_shift_result
+assert 'exact' not in exact_shift_result.replace('exact_shifts', '')
+
 negative = [
     ('llvm.func @pointer(%p: !llvm.ptr) { llvm.return }', 'memory/provenance'),
-    ('llvm.func @exact(%a: i32, %b: i32) -> i32 { %r = llvm.lshr exact %a, %b : i32 llvm.return %r : i32 }', 'poison-generating flag'),
+    ('llvm.func @exact(%a: i32, %b: i32) -> i32 { %r = llvm.udiv exact %a, %b : i32 llvm.return %r : i32 }', 'poison-generating flag'),
     ('llvm.func @disjoint(%a: i32, %b: i32) -> i32 { %r = llvm.or disjoint %a, %b : i32 llvm.return %r : i32 }', 'poison-generating flag'),
     ('llvm.func @negative(%a: i8) -> i32 { %r = llvm.zext nneg %a : i8 to i32 llvm.return %r : i32 }', 'poison-generating flag'),
     ('llvm.func @poison() -> i32 { %r = llvm.mlir.poison : i32 llvm.return %r : i32 }', 'unsupported semantics'),

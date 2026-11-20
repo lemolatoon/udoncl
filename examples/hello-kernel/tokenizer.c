@@ -18,6 +18,7 @@ static const int32_t byte_tokens[256] = {
 UDONCL_EXPORT int32_t tokenizer_encode(udon_string_t text,
                                        udon_int32_array_t token_ids) {
   udontokenizers_model_t model;
+  int32_t workspace[UDONTOKENIZERS_ENCODER_WORKSPACE_WORDS(64)];
   int32_t count = 0;
   udontokenizersStatus_t status;
   model.scalar_values = scalar_values;
@@ -44,7 +45,11 @@ UDONCL_EXPORT int32_t tokenizer_encode(udon_string_t text,
   model.decoder_strip_scalar = -1;
   model.decoder_strip_count = 0;
   model.eos_token_id = -1;
-  status = udontokenizersEncode(&model, text, token_ids,
-                                udonInt32ArrayLength(token_ids), &count);
+  model.merge_hash_slots = 0;
+  model.merge_hash_mask = 0;
+  model.merge_hash_multiplier = 0;
+  status = udontokenizersEncode(
+      &model, text, token_ids, udonInt32ArrayLength(token_ids), &count,
+      workspace, UDONTOKENIZERS_ENCODER_WORKSPACE_WORDS(64));
   return status == UDONTOKENIZERS_STATUS_SUCCESS ? count : -(int32_t)status;
 }
