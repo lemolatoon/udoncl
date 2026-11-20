@@ -9,12 +9,21 @@ These rules apply to the entire repository.
   Claude Sonnet subagent. The subagent must follow the
   `unity-mcp-orchestrator` skill and report readiness, tests, console, and
   cleanup results. The primary agent owns repository edits.
-- The background commit validation service is the sole routine exception. The
-  primary agent may start, inspect, and enqueue work for the service because
-  each worker executes the fixed repository-owned Unity MCP workflow through
-  `scripts/precommit.py` in an isolated Unity project.
+- There are two routine exceptions. First, the background commit validation
+  service: the primary agent may start, inspect, and enqueue work for the
+  service because each worker executes the fixed repository-owned Unity MCP
+  workflow through `scripts/precommit.py` in an isolated Unity project.
+- Second, the real-TinyLlama gate script: the primary agent may run
+  `scripts/tinyllama_gates.py` (`build`, `run`, `probe`, `summarize`,
+  `clean`) directly because it executes only its fixed repository-owned
+  workflow (the focused `scripts/precommit.py` Unity MCP gate, the
+  `scripts/tinyllama_gpu_probe` batchmode test, and a plain batchmode
+  open-and-quit of a new project copy) in isolated copies of the
+  Unity template. Do not edit it per run, wrap it in ad-hoc drivers, or point
+  its output at the template or the validation service's directories.
 - Do not replace the service gate with direct Unity MCP calls or ad-hoc Unity
-  test commands. Additional interactive Unity diagnosis still requires the
+  test commands. Additional interactive Unity diagnosis, ad-hoc Unity MCP
+  calls, and any Unity work outside these two exceptions still require the
   dedicated Unity subagent.
 - A pre-commit failure may be inspected without Unity MCP. Route any additional
   Unity MCP diagnosis or validation through the dedicated Unity subagent.

@@ -1,0 +1,245 @@
+// Unity EditMode probe: GPU time of each UdonCL kernel dispatch configuration
+// of one TinyLlama decode run, and of the whole run replayed in order.
+//
+// scripts/tinyllama_gates.py `probe` installs this file (as
+// Assets/UdonclGpuProbe/Tests/UdonclGpuKernelTimingProbe.cs, next to
+// UdonclGpuProbe.Tests.asmdef) into an isolated copy of the Unity template
+// and runs it in a batchmode Editor with D3D11 graphics; it is not part of
+// the Unity package.
+//
+// Inputs (environment):
+//   UDONCL_GPU_PROBE_PLAN      gpu-probe-plan-*.unity.json (makeplan.py)
+//   UDONCL_GPU_PROBE_ARTIFACT  artifact directory (kernels/*.shader, buffer-copy.shader)
+//   UDONCL_GPU_PROBE_OUT       optional result JSON path
+// Method: Graphics.Blit is submitted immediately; an AsyncGPUReadback of one
+// pixel followed by WaitForCompletion() is an in-order GPU fence. The time per
+// Blit is the slope (T(N2) - T(N1)) / (N2 - N1), which cancels the fence and
+// readback latency. Texture contents are irrelevant to the kernels' control
+// flow (loop bounds are uniform arguments), so textures are left uninitialized.
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Text;
+using NUnit.Framework;
+using UnityEditor;
+using UnityEngine;
+using UnityEngine.Rendering;
+using Debug = UnityEngine.Debug;
+
+public class UdonclGpuKernelTimingProbe
+{
+    [Serializable]
+    private class Config
+    {
+        public int id; public string kernel; public string shader; public int count;
+        public int dstWidth; public int dstHeight; public int dstBuffer;
+        public string[] intNames; public int[] intValues;
+        public string[] floatNames; public float[] floatValues;
+        public string[] inputNames; public bool[] inputStatic; public int[] inputIndex;
+        public int[] inputWidth; public int[] inputHeight;
+        public long modelLoads; public long modelOps; public long modelMaxLoads; public long modelMaxOps;
+    }
+
+    [Serializable]
+    private class Plan
+    {
+        public string label; public int step;
+        public int[] sequence; public int[] sequenceStatic;
+        public int[] staticIds; public int[] staticWidth; public int[] staticHeight;
+        public Config[] configs;
+    }
+
+    private const string ShaderFolder = "Assets/UdonclGpuProbe/Shaders";
+    private readonly Dictionary<int, RenderTexture> buffers = new Dictionary<int, RenderTexture>();
+    private readonly Dictionary<int, Texture2D> statics = new Dictionary<int, Texture2D>();
+    private readonly List<UnityEngine.Object> owned = new List<UnityEngine.Object>();
+
+    private RenderTexture Buffer(int id, int width, int height)
+    {
+        if (buffers.TryGetValue(id, out RenderTexture existing))
+            return existing;
+        var rt = new RenderTexture(width, height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear)
+        {
+            filterMode = FilterMode.Point, wrapMode = TextureWrapMode.Clamp,
+            useMipMap = false, autoGenerateMips = false, antiAliasing = 1,
+        };
+        rt.Create();
+        buffers[id] = rt;
+        owned.Add(rt);
+        return rt;
+    }
+
+    private Texture2D Static(int id, int width, int height)
+    {
+        if (statics.TryGetValue(id, out Texture2D existing))
+            return existing;
+        var texture = new Texture2D(width, height, TextureFormat.RGBA32, false, true)
+        {
+            filterMode = FilterMode.Point, wrapMode = TextureWrapMode.Clamp,
+        };
+        texture.Apply(false, true);
+        statics[id] = texture;
+        owned.Add(texture);
+        return texture;
+    }
+
+    private static void Fence(RenderTexture target)
+    {
+        AsyncGPUReadbackRequest request = AsyncGPUReadback.Request(target, 0, 0, 1, 0, 1, 0, 1);
+        request.WaitForCompletion();
+        Assert.IsFalse(request.hasError, "fence readback failed");
+    }
+
+    // Culture-invariant numbers for the log lines and the result JSON.
+    private static string Number(double value, string format)
+    {
+        return value.ToString(format, CultureInfo.InvariantCulture);
+    }
+
+    private static double Timed(Action issue, int repetitions, RenderTexture fence)
+    {
+        Fence(fence);
+        Stopwatch watch = Stopwatch.StartNew();
+        for (int i = 0; i < repetitions; ++i)
+            issue();
+        Fence(fence);
+        return watch.Elapsed.TotalMilliseconds;
+    }
+
+    private static double Slope(Action issue, int low, int high, RenderTexture fence)
+    {
+        var samples = new List<double>();
+        for (int trial = 0; trial < 5; ++trial)
+        {
+            double a = Timed(issue, low, fence);
+            double b = Timed(issue, high, fence);
+            samples.Add((b - a) / (high - low));
+        }
+        samples.Sort();
+        return samples[samples.Count / 2];
+    }
+
+    [Test]
+    public void MeasureDecodeRunKernels()
+    {
+        string planPath = Environment.GetEnvironmentVariable("UDONCL_GPU_PROBE_PLAN");
+        string artifact = Environment.GetEnvironmentVariable("UDONCL_GPU_PROBE_ARTIFACT");
+        if (string.IsNullOrEmpty(planPath) || string.IsNullOrEmpty(artifact))
+            Assert.Ignore("UDONCL_GPU_PROBE_PLAN / UDONCL_GPU_PROBE_ARTIFACT not set");
+        Plan plan = JsonUtility.FromJson<Plan>(File.ReadAllText(planPath));
+
+        Directory.CreateDirectory(ShaderFolder);
+        foreach (string source in Directory.GetFiles(Path.Combine(artifact, "kernels"), "*.shader")
+                     .Append(Path.Combine(artifact, "buffer-copy.shader")))
+            File.Copy(source, Path.Combine(ShaderFolder, Path.GetFileName(source)), true);
+        AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+
+        Debug.Log($"udoncl gpu_probe device={SystemInfo.graphicsDeviceName} api={SystemInfo.graphicsDeviceType} " +
+                  $"gpu_recorder={SystemInfo.supportsGpuRecorder} batchmode={Application.isBatchMode}");
+        var staticDims = new Dictionary<int, (int, int)>();
+        for (int i = 0; i < plan.staticIds.Length; ++i)
+            staticDims[plan.staticIds[i]] = (plan.staticWidth[i], plan.staticHeight[i]);
+
+        var materials = new Material[plan.configs.Length];
+        foreach (Config c in plan.configs)
+        {
+            Shader shader = Shader.Find(c.shader);
+            Assert.IsNotNull(shader, "shader not found: " + c.shader);
+            Assert.IsTrue(shader.isSupported, "shader not supported: " + c.shader);
+            var material = new Material(shader);
+            owned.Add(material);
+            for (int i = 0; i < c.intNames.Length; ++i)
+                material.SetInteger(c.intNames[i], c.intValues[i]);
+            for (int i = 0; i < c.floatNames.Length; ++i)
+                material.SetFloat(c.floatNames[i], c.floatValues[i]);
+            for (int i = 0; i < c.inputNames.Length; ++i)
+                material.SetTexture(c.inputNames[i], c.inputStatic[i]
+                    ? (Texture)Static(c.inputIndex[i], c.inputWidth[i], c.inputHeight[i])
+                    : Buffer(c.inputIndex[i], c.inputWidth[i], c.inputHeight[i]));
+            Buffer(c.dstBuffer, c.dstWidth, c.dstHeight);
+            materials[c.id] = material;
+        }
+        // Every static tensor the run reads, so the replay streams each
+        // layer's own weights as the real run does.
+        foreach (KeyValuePair<int, (int, int)> s in staticDims)
+            Static(s.Key, s.Value.Item1, s.Value.Item2);
+
+        // Warm up every configuration once (shader variant compile/upload).
+        foreach (Config c in plan.configs)
+            Graphics.Blit(null, buffers[c.dstBuffer], materials[c.id]);
+        Fence(buffers[plan.configs[0].dstBuffer]);
+
+        var report = new StringBuilder();
+        report.Append("{\"configs\":[");
+        double predicted = 0.0;
+        var rows = new List<(double total, string line)>();
+        foreach (Config c in plan.configs)
+        {
+            Material material = materials[c.id];
+            RenderTexture dst = buffers[c.dstBuffer];
+            double ms = Slope(() => Graphics.Blit(null, dst, material), 2, 18, dst);
+            predicted += ms * c.count;
+            string line = $"udoncl gpu_probe config id={c.id} kernel={c.kernel} count={c.count} " +
+                          $"dst={c.dstWidth}x{c.dstHeight} ms_per_blit={Number(ms, "F4")} " +
+                          $"ms_per_run={Number(ms * c.count, "F3")} " +
+                          $"model_loads={c.modelLoads} model_ops={c.modelOps} model_max_loads={c.modelMaxLoads} " +
+                          $"model_max_ops={c.modelMaxOps} ints=[{string.Join(",", c.intNames.Zip(c.intValues, (n, v) => n + "=" + v))}]";
+            rows.Add((ms * c.count, line));
+            // An interpolation format clause cannot be followed by an escaped
+            // closing brace: the brace became part of the format and wrote a
+            // literal R into the JSON. Build the JSON explicitly instead.
+            report.Append(c.id == 0 ? "" : ",")
+                .Append("{\"id\":").Append(c.id)
+                .Append(",\"kernel\":\"").Append(c.kernel)
+                .Append("\",\"count\":").Append(c.count)
+                .Append(",\"ms_per_blit\":").Append(Number(ms, "R")).Append('}');
+        }
+        foreach ((double _, string line) in rows.OrderByDescending(r => r.total))
+            Debug.Log(line);
+
+        // Replay the whole run in issue order with per-Blit weights.
+        RenderTexture last = buffers[plan.configs[plan.sequence[plan.sequence.Length - 1]].dstBuffer];
+        Action run = () =>
+        {
+            for (int b = 0; b < plan.sequence.Length; ++b)
+            {
+                Config c = plan.configs[plan.sequence[b]];
+                Material material = materials[c.id];
+                for (int i = 0; i < c.inputNames.Length && i < 8; ++i)
+                {
+                    int id = plan.sequenceStatic[b * 8 + i];
+                    if (id >= 0)
+                        material.SetTexture(c.inputNames[i], Static(id, staticDims[id].Item1, staticDims[id].Item2));
+                }
+                Graphics.Blit(null, buffers[c.dstBuffer], material);
+            }
+        };
+        double single = Timed(run, 1, last);
+        double perRun = Slope(run, 1, 4, last);
+        Debug.Log($"udoncl gpu_probe replay blits={plan.sequence.Length} ms_per_run={Number(perRun, "F3")} " +
+                  $"single_run_with_fence_ms={Number(single, "F3")} sum_of_configs_ms={Number(predicted, "F3")}");
+        report.Append("],\"replay_ms_per_run\":").Append(Number(perRun, "R"))
+            .Append(",\"single_run_with_fence_ms\":").Append(Number(single, "R"))
+            .Append(",\"sum_of_configs_ms\":").Append(Number(predicted, "R")).Append('}');
+        string outPath = Environment.GetEnvironmentVariable("UDONCL_GPU_PROBE_OUT");
+        if (!string.IsNullOrEmpty(outPath))
+            File.WriteAllText(outPath, report.ToString());
+    }
+
+    [TearDown]
+    public void Release()
+    {
+        foreach (UnityEngine.Object o in owned)
+        {
+            if (o is RenderTexture rt)
+                rt.Release();
+            UnityEngine.Object.DestroyImmediate(o);
+        }
+        owned.Clear();
+        buffers.Clear();
+        statics.Clear();
+    }
+}

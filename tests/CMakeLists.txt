@@ -875,6 +875,12 @@ add_test(NAME commit-validation-cleanup
     "${CMAKE_CURRENT_SOURCE_DIR}/build/precheck_cleanup.py"
     "${PROJECT_SOURCE_DIR}"
 )
+add_test(NAME tinyllama-gate-script
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/build/tinyllama_gates.py"
+    "${PROJECT_SOURCE_DIR}"
+)
+set_tests_properties(tinyllama-gate-script PROPERTIES TIMEOUT 120)
 add_test(NAME onnx-q4-assigned-buffer-component
   COMMAND Python3::Interpreter
     "${CMAKE_CURRENT_SOURCE_DIR}/build/onnx_q4_component.py"

@@ -1300,6 +1300,58 @@ the normal VPM package. The library package distributes compiler/runtime/
 operator/tokenizer support; the example CMake build obtains the pinned model
 and generates its project-local artifact.
 
+### 7.4 Running the real-model gates
+
+`scripts/tinyllama_gates.py` is the one repository-owned workflow for
+real-TinyLlama Unity measurements (AGENTS.md allows the primary agent to run
+it directly). Use short output paths on Windows (Unity Library paths count
+against `MAX_PATH`) and keep each invocation's `--out` new:
+
+```text
+python scripts/tinyllama_gates.py build --commit <sha> --out C:/t/g1 \
+    [--targets conversation,chat,m1-step,prefill] [--capacity 512]
+python scripts/tinyllama_gates.py run --artifacts C:/t/g1 --out C:/t/g1-u0 \
+    --gates prefill,step,conv,chat,multiturn
+python scripts/tinyllama_gates.py run --artifacts C:/t/g1 --out C:/t/g1-u90 \
+    --gates conv,chat,multiturn --fps 90 --budget-us 8000 --adaptive 1 --trace
+python scripts/tinyllama_gates.py probe --artifacts C:/t/g1 \
+    --plan <gpu-probe-plan-*.unity.json> --out C:/t/g1-probe
+python scripts/tinyllama_gates.py clean --out C:/t/g1 --keep-artifacts
+```
+
+- `build` exports the exact commit with `git archive` into `<out>/src`
+  (no Git worktree, so `core.hooksPath` is untouched; a guard restores it
+  anyway), builds the compiler/SDK and the requested example targets with
+  parallelism 4, and regenerates the real-model and `M=1` step oracles
+  (`tests/boundary/tinyllama_real_onnx.py`, capacity 512 only, so `m1-step`
+  requires `--capacity 512`) and the two-turn chat oracle ("What is your
+  name?", then "Repeat your name."). About 10 GiB per target is required.
+- `run` runs `run_unity_mcp_gate` of the exported commit for each focused
+  test assembly (chat and multiturn share one Chat Artifact session) in an
+  isolated copy of the read-only `UDONCL_UNITY_TEST_PROJECT` template
+  (`--project` reuses a copy and its Library across runs; a copy is locked
+  by pid and never shared). A copy whose Library was never built is first
+  opened once by a plain batchmode Editor (`-quit`): an MCP session started
+  on an empty Library never compiled the focused test assembly and ran 0
+  tests. A run that finds 0 tests stops with that message, without a retry.
+  `--fps`, `--budget-us`, `--continuations` and
+  `--adaptive` set exactly the `UDONCL_FIXTURE_*` variables of section 7.2;
+  the pump trace exists only with `--fps`. One retry follows a known
+  transient Editor/MCP failure. `summary.json` and `summary.txt` give
+  pass/fail, test counts, wall clock, frames, frames per step and per
+  token, busy and idle frames, the pump stop reasons (limit, budget,
+  estimate, idle), `main_ms`, the step comparison errors and token
+  matches; each session keeps `unity.log`, `progress-times.log`, the MCP
+  results and the console. `summarize --out` rebuilds the summary.
+- `probe` installs `scripts/tinyllama_gpu_probe` into a fresh project copy
+  per plan and reports the replay ms per run and the top kernel
+  configurations. Plans (`*.unity.json`) come from the decode-trace
+  tooling and must match the artifact's tensor shapes.
+- `clean` deletes the trees an invocation recorded (exported source,
+  compiler and example builds, project copies) and keeps logs, oracles and
+  summaries; `--keep-artifacts` also keeps the exported source and the
+  artifacts, so `run` still works on the build.
+
 ## 8. Implementation and commit gates
 
 Implement in this order, keeping each gate independently testable:
