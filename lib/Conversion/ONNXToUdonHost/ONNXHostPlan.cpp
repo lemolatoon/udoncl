@@ -588,6 +588,127 @@ bool isDeviceQ4Node(const GraphRecord &graph, const NodeRecord &node) {
          scales.type.getNumElements() == n * blocks;
 }
 
+// Split-K cost model. A Blit of a GEMV-shaped kernel is latency-bound when it
+// launches few fragments: each fragment's reduction is one dependent chain
+// that the GPU cannot hide behind other fragments. The model estimates one
+// dispatch, in GPU cycles, as
+//   dispatch overhead + max(throughput, chain * waves)
+// where throughput is the dispatch's total statements and Loads over the
+// GPU's ALU lanes and texture units, chain the statement and Load latency of
+// the longest fragment, and waves the number of times the launched fragments
+// fill the GPU. It is the latency/throughput model of
+// docs/investigations/2026-11-21-tinyllama-decode-gpu-bound.md (a current
+// desktop GPU: 60 SMs, 240 texture units, latencies calibrated to the gate13
+// Unity trace). The dispatch overhead is the cost of one more Blit: about
+// 10 us of GPU and about 24 us of Host issue (the Udon emulator counts about
+// 150 more Udon instructions per added sum dispatch, at the gate13 Host rate
+// of about 160 ns per instruction), so a split must pay for its sum dispatch.
+// The inputs are only the output count, the reduction length and the
+// kernel's per-unit statements and Loads; nothing depends on a model.
+namespace {
+/// Fragments the GPU keeps in flight.
+constexpr int64_t splitKResidentFragments = 65536;
+/// Statements and texel Loads the GPU issues per cycle (60 SMs x 128 lanes
+/// at two cycles per statement, and 240 texture units).
+constexpr int64_t splitKStatementLanes = 3840;
+constexpr int64_t splitKTextureUnits = 240;
+/// Dependent latency of one statement and one texel Load, in cycles.
+constexpr int64_t splitKStatementCycles = 24;
+constexpr int64_t splitKLoadCycles = 120;
+/// Cycles one more dispatch costs (GPU Blit and Host issue, about 34 us).
+constexpr int64_t splitKDispatchCycles = 90000;
+/// Statements of a fragment besides its reduction (indexing and the output
+/// write), and statements per partial the ordered sum adds.
+constexpr int64_t splitKFragmentStatements = 20;
+constexpr int64_t splitKSumStatements = 6;
+
+int64_t ceilDivide(int64_t value, int64_t divisor) {
+  return (value + divisor - 1) / divisor;
+}
+
+/// One dispatch of `fragments` fragments whose longest one executes
+/// `chainStatements` statements and `chainLoads` Loads.
+int64_t splitKPassCycles(int64_t fragments, int64_t statements, int64_t loads,
+                         int64_t chainStatements, int64_t chainLoads) {
+  int64_t waves = ceilDivide(fragments, splitKResidentFragments);
+  int64_t throughput = ceilDivide(statements, splitKStatementLanes) +
+                       ceilDivide(loads, splitKTextureUnits);
+  int64_t chain =
+      chainStatements * splitKStatementCycles + chainLoads * splitKLoadCycles;
+  return splitKDispatchCycles + std::max(throughput, chain * waves);
+}
+} // namespace
+
+std::optional<DeviceSplitK>
+chooseDeviceSplitK(const DeviceSplitKProblem &problem) {
+  if (problem.outputs < 1 || problem.units < 1 || problem.loadsPerUnit < 0 ||
+      problem.statementsPerUnit < 0 || problem.maxUnitsPerSplit < 1 ||
+      problem.maxSplits < 1)
+    return std::nullopt;
+  int64_t outputs = problem.outputs;
+  int64_t statements = outputs * (problem.units * problem.statementsPerUnit +
+                                  splitKFragmentStatements);
+  int64_t loads = outputs * problem.units * problem.loadsPerUnit;
+  std::optional<DeviceSplitK> best;
+  int64_t bestCycles = 0;
+  for (int64_t candidate = 1;
+       candidate <= std::min(problem.maxSplits, problem.units); ++candidate) {
+    // Only the smallest split count for each slice length: every split is
+    // non-empty and the last one is the shortest.
+    int64_t unitsPerSplit = ceilDivide(problem.units, candidate);
+    int64_t splits = ceilDivide(problem.units, unitsPerSplit);
+    if (splits != candidate || unitsPerSplit > problem.maxUnitsPerSplit ||
+        (splits > 1 && splits * outputs > problem.partialWords))
+      continue;
+    int64_t cycles;
+    if (splits == 1) {
+      cycles = splitKPassCycles(outputs, statements, loads,
+                                problem.units * problem.statementsPerUnit +
+                                    splitKFragmentStatements,
+                                problem.units * problem.loadsPerUnit);
+    } else {
+      // The partial pass writes every partial once; the sum pass loads them
+      // in ascending split order.
+      int64_t partials = splits * outputs;
+      cycles = splitKPassCycles(partials,
+                                statements + (partials - outputs) *
+                                                 splitKFragmentStatements,
+                                loads,
+                                unitsPerSplit * problem.statementsPerUnit +
+                                    splitKFragmentStatements,
+                                unitsPerSplit * problem.loadsPerUnit) +
+               splitKPassCycles(outputs,
+                                partials * splitKSumStatements +
+                                    outputs * splitKFragmentStatements,
+                                partials,
+                                splits * splitKSumStatements +
+                                    splitKFragmentStatements,
+                                splits);
+    }
+    // Strictly faster only: a tie keeps fewer splits.
+    if (!best || cycles < bestCycles) {
+      best = DeviceSplitK{splits, unitsPerSplit};
+      bestCycles = cycles;
+    }
+  }
+  return best;
+}
+
+std::optional<DeviceSplitK> deviceQ4SplitK(const GraphRecord &graph,
+                                           const NodeRecord &node) {
+  if (!isDeviceQ4Node(graph, node))
+    return std::nullopt;
+  int64_t k = integerAttribute(node, "K", 0);
+  int64_t n = integerAttribute(node, "N", 0);
+  int64_t m = graph.tensors[node.inputs[0]].type.getNumElements() / k;
+  // One 32-element block of udononnx_matmul_nbits_q4 executes 37 Loads (1
+  // scale, 4 packed words, 32 activations) and about 583 HLSL statements
+  // (counted on the generated kernel).
+  return chooseDeviceSplitK(
+      DeviceSplitKProblem{m * n, (k + 31) / 32, 37, 583, deviceQ4DispatchBlocks,
+                          deviceQ4MaxSplits, q4SurfaceWords});
+}
+
 static bool hasDeviceQ4(const GraphRecord &graph) {
   return llvm::any_of(graph.nodes, [&](const NodeRecord &node) {
     return isDeviceQ4Node(graph, node);

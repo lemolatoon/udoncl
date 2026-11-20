@@ -114,7 +114,7 @@ extern cl_int __vrc_opencl_dispatch_udononnx_matmul_nbits(
 extern cl_int __vrc_opencl_dispatch_udononnx_matmul_nbits_q4(
     cl_uint activation_token, cl_uint packed_weight_token, cl_uint scales_token,
     cl_uint previous_token, cl_uint output_token, cl_int m, cl_int n, cl_int k,
-    cl_int block_base, cl_int block_count, cl_int accumulate);
+    cl_int block_count, cl_int splits, cl_int previous_partials);
 extern cl_int __vrc_opencl_dispatch_udononnx_gather_copy(cl_uint input_token,
                                                          cl_uint output_token,
                                                          cl_int words);
@@ -1802,17 +1802,25 @@ cl_int __vrc_enqueue_udondnn_arena_softmax_device_args(
 #endif
 
 #if UDONCL_AOT_ENABLE_ONNX
-/* One dispatch accumulates the K blocks [block_base, block_base +
- * block_count) of every output word; UDONONNX_Q4_DISPATCH_BLOCKS in
- * libraries/udononnxoperators/device/matmul_nbits.cl bounds block_count. */
+/* One dispatch writes `splits` planes of m x n words: plane s first sums
+ * the `previous_partials` planes of previous and then accumulates the K
+ * blocks [s * block_count, min((s + 1) * block_count, ceil(k / 32))). The
+ * planes must cover K without an empty split, or (block_count = 0) the
+ * dispatch only sums previous partials. UDONONNX_Q4_DISPATCH_BLOCKS and
+ * UDONONNX_Q4_MAX_SPLITS in
+ * libraries/udononnxoperators/device/matmul_nbits.cl bound block_count,
+ * splits and previous_partials. */
 #define UDONCL_Q4_DISPATCH_BLOCKS 256
+#define UDONCL_Q4_MAX_SPLITS 64
+#define UDONCL_Q4_SURFACE_WORDS 131072
 cl_int __vrc_enqueue_udononnx_matmul_nbits_q4_device_args(
     cl_command_queue queue, cl_mem activation, cl_mem packed_weight,
     cl_mem scales, cl_mem previous, cl_mem output, cl_int m, cl_int n, cl_int k,
-    cl_int block_base, cl_int block_count, cl_int accumulate,
+    cl_int block_count, cl_int splits, cl_int previous_partials,
     cl_uint wait_count, const cl_event *wait_list, cl_event *event) {
   cl_int pending;
   size_t blocks;
+  int covers;
   if (queue != &udoncl_queue || !queue->active || !activation ||
       !udoncl_mem_is_active(activation) || !packed_weight ||
       !udoncl_mem_is_active(packed_weight) || !scales ||
@@ -1824,18 +1832,28 @@ cl_int __vrc_enqueue_udononnx_matmul_nbits_q4_device_args(
       udoncl_mem_context(scales) != queue->context ||
       udoncl_mem_context(previous) != queue->context ||
       udoncl_mem_context(output) != queue->context || m < 1 || m > 4 || n < 1 ||
-      n > 32000 || k < 1 || k > 5632 || block_base < 0 || block_count < 1 ||
-      block_count > UDONCL_Q4_DISPATCH_BLOCKS || accumulate < 0 ||
-      accumulate > 1 || block_base > (k + 31) / 32 - block_count ||
-      m > 131072 / n ||
+      n > 32000 || k < 1 || k > 5632 || block_count < 0 ||
+      block_count > UDONCL_Q4_DISPATCH_BLOCKS || splits < 1 ||
+      splits > UDONCL_Q4_MAX_SPLITS || previous_partials < 0 ||
+      previous_partials > UDONCL_Q4_MAX_SPLITS ||
+      m > UDONCL_Q4_SURFACE_WORDS / n ||
+      splits > UDONCL_Q4_SURFACE_WORDS / (m * n) ||
+      previous_partials > UDONCL_Q4_SURFACE_WORDS / (m * n) ||
       udoncl_wait_list(queue, wait_count, wait_list) != CL_SUCCESS)
     return CL_INVALID_VALUE;
   blocks = ((size_t)k + 31u) / 32u;
+  if (block_count == 0)
+    covers = splits == 1 && previous_partials > 0;
+  else
+    covers = (size_t)splits * (size_t)block_count >= blocks &&
+             (size_t)(splits - 1) * (size_t)block_count < blocks;
+  if (!covers)
+    return CL_INVALID_VALUE;
   if (udoncl_mem_bytes(activation) < (size_t)m * (size_t)k * 4u ||
       udoncl_mem_bytes(packed_weight) < (size_t)n * blocks * 16u ||
       udoncl_mem_bytes(scales) < (size_t)n * blocks * 4u ||
-      udoncl_mem_bytes(previous) < 131072u * 4u ||
-      udoncl_mem_bytes(output) < 131072u * 4u)
+      udoncl_mem_bytes(previous) < UDONCL_Q4_SURFACE_WORDS * 4u ||
+      udoncl_mem_bytes(output) < UDONCL_Q4_SURFACE_WORDS * 4u)
     return CL_INVALID_BUFFER_SIZE;
   UDONCL_RETURN_IF_READ_WRITE_ALIAS(output, activation, packed_weight, scales,
                                     previous);
@@ -1843,8 +1861,8 @@ cl_int __vrc_enqueue_udononnx_matmul_nbits_q4_device_args(
       udoncl_mem_physical_token(activation),
       udoncl_mem_physical_token(packed_weight),
       udoncl_mem_physical_token(scales), udoncl_mem_physical_token(previous),
-      udoncl_mem_physical_token(output), m, n, k, block_base, block_count,
-      accumulate);
+      udoncl_mem_physical_token(output), m, n, k, block_count, splits,
+      previous_partials);
   return udoncl_finish_enqueue(queue, CL_COMMAND_NDRANGE_KERNEL, pending,
                                CL_FALSE, event);
 }

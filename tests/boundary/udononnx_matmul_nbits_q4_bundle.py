@@ -1,7 +1,7 @@
-"""Lower the one-dispatch Q4 MatMulNBits kernel to a Unity Device bundle.
+"""Lower the split-K Q4 MatMulNBits kernel to a Unity Device bundle.
 
-The kernel accumulates a whole K-block segment per dispatch with constant,
-guarded loops. The bundle must be accepted for the library capacities, emit
+One fragment sums its previous partial planes and accumulates its K slice
+with constant, guarded loops. The bundle must be accepted for the library capacities, emit
 exactly the expected Loads (no loop unrolling, no extra reads), and be
 rejected when a declared input capacity cannot hold the proven index range.
 """
@@ -69,9 +69,9 @@ def config(m, n, k, input_words):
             {"index": 5, "min": 1, "max": m},
             {"index": 6, "min": 1, "max": n},
             {"index": 7, "min": 1, "max": k},
-            {"index": 8, "min": 0, "max": blocks - 1},
-            {"index": 9, "min": 1, "max": blocks},
-            {"index": 10, "min": 0, "max": 1},
+            {"index": 8, "min": 0, "max": blocks},
+            {"index": 9, "min": 1, "max": 64},
+            {"index": 10, "min": 0, "max": 64},
         ],
         "argument_kinds": ["buffer"] * 5 + ["i32"] * 6,
         "global_size": [8192, 16, 1],
@@ -126,13 +126,14 @@ for name, (m, n, k) in {
         "write",
     ]
     hlsl = (bundle / "kernels/kernel_235.hlsl").read_text(encoding="utf-8")
-    # Chunk, block-in-chunk and K-tail loops stay rolled; the full-block body
-    # is expanded by the source macros: 1 scale + 4 packed words + 32
+    # The partial-plane chunk and plane loops, and the block chunk,
+    # block-in-chunk and K-tail loops stay rolled; the full-block body is
+    # expanded by the source macros: 1 scale + 4 packed words + 32
     # activations, plus 1 scale + 1 packed word + 1 activation in the K tail
-    # and the optional previous partial sum.
+    # and 1 previous partial plane.
     loops = hlsl.count("[loop]")
     loads = len(re.findall(r"\.Load\(", hlsl))
-    assert loops == 3, loops
+    assert loops == 5, loops
     assert loads == 41, loads
     accepted.append(f"{name}:loops={loops},loads={loads}")
 

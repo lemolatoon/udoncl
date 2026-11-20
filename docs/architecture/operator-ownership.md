@@ -82,11 +82,16 @@ as an ATen, UdonBLAS, or UdonDNN public extension. The superseded
 `udonatenWeightInt4packMm` and private `udonblasBackendSgemvQ4` paths were
 removed rather than retained as competing quantized-matrix APIs.
 The Device-resident Q4 kernel `udononnx_matmul_nbits_q4` is a private
-UdonONNXOperators schedule of that ONNX Runtime contract, not a public API:
-one dispatch accumulates up to 256 K blocks of every output word in ascending
-K order, and the Host splits a longer K into compile-time segments that pass
-the partial sum through a scratch surface. Changing that schedule keeps the
-`MatMulNBits` semantics and adds no `Ext` entry point.
+UdonONNXOperators schedule of that ONNX Runtime contract, not a public API.
+It runs split-K: a partial dispatch gives each output word S fragments, each
+accumulating a slice of at most 256 K blocks in ascending K order into a
+scratch plane, and an ordered sum dispatch adds the S planes in ascending
+plane order into the output (S = 1 is one serial whole-K dispatch). The Host
+chooses S at compile time with the generic cost model `chooseDeviceSplitK`
+from the output count, K and the kernel's per-block cost only, so results
+are deterministic run to run but not bit-identical to the serial K order.
+Changing that schedule keeps the `MatMulNBits` semantics and adds no `Ext`
+entry point.
 `udoncl-simplify-onnx-views` turns an ONNX `ScatterND` without reduction
 whose constant indices overwrite every element of its data once, in
 row-major order, into a `Reshape` of its updates: by the ONNX definition its
@@ -103,7 +108,9 @@ rows, and each original result is an ONNX `Slice` of its last axis. ONNX
 Runtime defines every output column from its own weight row and scales, so
 the merged node computes each column from the same operands in the same
 order; `udononnx-matmul-nbits-kernel` checks the stacked kernel bit for bit
-against the separate ones. The Slices are re-indexing nodes and fuse into
+against the separate ones under one split schedule. The Device may choose a
+different split-K schedule for the merged node than for the separate ones,
+which changes only the rounding order. The Slices are re-indexing nodes and fuse into
 their readers like any other.
 
 `udoncl-fold-onnx-repeated-matmul-operand` keeps ONNX `MatMul` an UdonBLAS

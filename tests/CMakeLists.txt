@@ -185,9 +185,11 @@ add_executable(udononnx-matmul-nbits-kernel
 target_compile_features(udononnx-matmul-nbits-kernel PRIVATE cxx_std_20)
 set_target_properties(udononnx-matmul-nbits-kernel PROPERTIES
   CXX_EXTENSIONS OFF)
-# The test requires bit-identical results between the one-dispatch Q4 kernel
-# and its K-tiled reference. The Device lowering never contracts (all floats
-# are precise), so the native build must not fuse multiply-adds either.
+# The test requires bit-identical results between the Q4 kernel and its
+# references of the same summation order (the K-tiled serial order for one
+# split, the documented split-K order otherwise). The Device lowering never
+# contracts (all floats are precise), so the native build must not fuse
+# multiply-adds either.
 if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
   target_compile_options(udononnx-matmul-nbits-kernel PRIVATE /fp:precise)
 elseif(CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")

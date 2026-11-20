@@ -107,11 +107,45 @@ inline constexpr int64_t deviceSgemmOperandWords = 16384;
 std::optional<DeviceMatMulShape> deviceMatMulShape(const GraphRecord &graph,
                                                    const NodeRecord &node);
 bool isDeviceQ4Node(const GraphRecord &graph, const NodeRecord &node);
-/// K blocks of 32 that one udononnx_matmul_nbits_q4 dispatch accumulates. It
+/// K blocks of 32 that one udononnx_matmul_nbits_q4 fragment accumulates. It
 /// must equal UDONONNX_Q4_DISPATCH_BLOCKS in
-/// libraries/udononnxoperators/device/matmul_nbits.cl; a longer K is split
-/// into ceil(blocks / deviceQ4DispatchBlocks) dispatches at compile time.
+/// libraries/udononnxoperators/device/matmul_nbits.cl.
 inline constexpr int64_t deviceQ4DispatchBlocks = 256;
+/// Partial planes one udononnx_matmul_nbits_q4 dispatch writes or sums; it
+/// must equal UDONONNX_Q4_MAX_SPLITS.
+inline constexpr int64_t deviceQ4MaxSplits = 64;
+
+/// A reduction-heavy Device kernel in which one fragment computes one output
+/// word by a serial reduction (a GEMV-shaped kernel). Split-K runs it as S
+/// partial fragments per output, each over `unitsPerSplit` consecutive units
+/// of the reduction, followed by one ordered sum pass over the S partials.
+struct DeviceSplitKProblem {
+  /// Output words, i.e. fragments of the unsplit kernel.
+  int64_t outputs;
+  /// Serial reduction length of one output word, in kernel units.
+  int64_t units;
+  /// Texel Loads and shader statements one fragment executes per unit.
+  int64_t loadsPerUnit;
+  int64_t statementsPerUnit;
+  /// Kernel limits: units one fragment may reduce, partial planes one
+  /// dispatch may write or sum, and words of the partial surface.
+  int64_t maxUnitsPerSplit;
+  int64_t maxSplits;
+  int64_t partialWords;
+};
+struct DeviceSplitK {
+  /// 1 runs the unsplit kernel in one dispatch.
+  int64_t splits;
+  int64_t unitsPerSplit;
+};
+/// Chooses the split count with the smallest modelled GPU time; see the
+/// definition for the model. Returns nothing when no schedule fits the
+/// kernel limits.
+std::optional<DeviceSplitK>
+chooseDeviceSplitK(const DeviceSplitKProblem &problem);
+/// The split-K schedule of a Device Q4 MatMulNBits node (isDeviceQ4Node).
+std::optional<DeviceSplitK> deviceQ4SplitK(const GraphRecord &graph,
+                                           const NodeRecord &node);
 int64_t operatorScratchBytes(const GraphRecord &graph);
 bool needsQ4Surface(const GraphRecord &graph, unsigned tensorIndex);
 /// Bytes of the Device buffer that holds `tensorIndex`. The input of a

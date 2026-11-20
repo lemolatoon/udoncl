@@ -48,22 +48,37 @@ __kernel void udononnx_matmul_nbits(__global const float *state,
 
 /* Device-resident Q4 (bits=4, block_size=32, implicit zero point 8) used by
  * the generic ONNX AOT path. Packed weights remain little-endian uint32 words
- * in their immutable texture. One fragment owns one output word (row, column)
- * and accumulates the K blocks [block_base, block_base + block_count) in one
- * dispatch, strictly ascending in k. A dispatch covers at most
- * UDONONNX_Q4_DISPATCH_BLOCKS blocks; the Host splits a longer K into
- * segments that pass the partial sum through previous (accumulate != 0).
+ * in their immutable texture.
+ *
+ * Split-K schedule. A dispatch writes `splits` planes of m x n words; plane s
+ * starts at word s * m * n, so fragment gid = (s * m + row) * n + column owns
+ * output word (row, column) of plane s. That fragment
+ *  1. adds the `previous_partials` planes of previous at its (row, column),
+ *     in ascending plane order, and then
+ *  2. accumulates its K slice, the blocks [s * block_count,
+ *     min((s + 1) * block_count, ceil(k / 32))), strictly ascending in k.
+ * The Host runs a long reduction as one partial dispatch (splits = S,
+ * previous_partials = 0) into a scratch surface and one ordered sum dispatch
+ * (splits = 1, block_count = 0, previous_partials = S) into the output, so
+ * the summation order is fixed at compile time and repeated runs are bit
+ * identical. With splits = 1, block_count = ceil(k / 32) and
+ * previous_partials = 0 one dispatch computes the serial whole-K sum.
  *
  * The Device lowering accepts only constant loop bounds, so the block loop
  * runs a constant number of chunks of UDONONNX_Q4_CHUNK_BLOCKS blocks and
- * guards the tail: a short K skips whole chunks at the cost of one compare.
- * Fragments outside the m x n output write 0 without any Load, and every
- * dispatch rewrites the complete output surface so previous/output may be
- * ping-ponged without an in-place Blit. */
+ * guards the tail: a short slice skips whole chunks at the cost of one
+ * compare. block_count is at most UDONONNX_Q4_DISPATCH_BLOCKS and
+ * previous_partials at most UDONONNX_Q4_MAX_SPLITS. Fragments outside the
+ * splits x m x n planes write 0 without any Load, and every dispatch rewrites
+ * the complete output surface. */
 #define UDONONNX_Q4_CHUNK_BLOCKS 16u
 #define UDONONNX_Q4_DISPATCH_CHUNKS 16u
 #define UDONONNX_Q4_DISPATCH_BLOCKS                                            \
   (UDONONNX_Q4_CHUNK_BLOCKS * UDONONNX_Q4_DISPATCH_CHUNKS)
+#define UDONONNX_Q4_PARTIAL_CHUNKS 4u
+#define UDONONNX_Q4_MAX_SPLITS                                                 \
+  (UDONONNX_Q4_CHUNK_BLOCKS * UDONONNX_Q4_PARTIAL_CHUNKS)
+#define UDONONNX_Q4_SURFACE_WORDS 131072u
 
 /* All eight nibbles of one packed word; the expression and order match the
  * per-element K tail below, so a full block and a tail block round alike. */
@@ -89,21 +104,36 @@ __kernel void udononnx_matmul_nbits_q4(__global const float *activation,
                                        __global const float *scales,
                                        __global const float *previous,
                                        __global float *output, int m, int n,
-                                       int k, int block_base, int block_count,
-                                       int accumulate) {
+                                       int k, int block_count, int splits,
+                                       int previous_partials) {
   uint gid = (uint)UDONONNX_LINEAR_GID();
   float value = 0.0f;
-  if (gid < (uint)(m * n)) {
-    uint row = gid / (uint)n;
+  /* plane_row = s * m + row. Dividing gid by n under the guard
+   * gid < (splits * m) * n is what bounds plane_row, and so row, for the
+   * Device index proof. */
+  if (gid < (uint)(splits * m) * (uint)n) {
+    uint plane_row = gid / (uint)n;
+    uint row = plane_row % (uint)m;
+    uint split = plane_row / (uint)m;
     uint column = gid % (uint)n;
     uint blocks = ((uint)k + 31u) / 32u;
     uint full_blocks = (uint)k / 32u;
-    float sum = accumulate != 0 ? previous[gid] : 0.0f;
+    uint block_base = split * (uint)block_count;
+    float sum = 0.0f;
+    for (uint chunk = 0; chunk < UDONONNX_Q4_PARTIAL_CHUNKS; ++chunk)
+      if (chunk * UDONONNX_Q4_CHUNK_BLOCKS < (uint)previous_partials)
+        for (uint lane = 0; lane < UDONONNX_Q4_CHUNK_BLOCKS; ++lane) {
+          uint plane = chunk * UDONONNX_Q4_CHUNK_BLOCKS + lane;
+          uint partial = (plane * (uint)m + row) * (uint)n + column;
+          if (plane < (uint)previous_partials &&
+              partial < UDONONNX_Q4_SURFACE_WORDS)
+            sum += previous[partial];
+        }
     for (uint chunk = 0; chunk < UDONONNX_Q4_DISPATCH_CHUNKS; ++chunk)
       if (chunk * UDONONNX_Q4_CHUNK_BLOCKS < (uint)block_count)
         for (uint lane = 0; lane < UDONONNX_Q4_CHUNK_BLOCKS; ++lane) {
           uint step = chunk * UDONONNX_Q4_CHUNK_BLOCKS + lane;
-          uint block = (uint)block_base + step;
+          uint block = block_base + step;
           /* The full-block test comes first so the Device index proof bounds
            * every full-block access by k / 32 rather than ceil(k / 32). */
           if (step < (uint)block_count) {

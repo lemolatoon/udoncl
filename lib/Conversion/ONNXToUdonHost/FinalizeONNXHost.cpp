@@ -3230,26 +3230,29 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
         int64_t k = integerAttribute(node, "K", 0);
         int64_t n = integerAttribute(node, "N", 0);
         int64_t m = activation.type.getNumElements() / k;
-        // One dispatch accumulates up to deviceQ4DispatchBlocks K blocks per
-        // output word. A longer K becomes straight-line dispatches whose
-        // partial sums ping-pong through the operator scratch so the last
-        // one writes the output; the first one ignores `previous`.
-        int64_t blocks = (k + 31) / 32;
-        int64_t segments =
-            (blocks + deviceQ4DispatchBlocks - 1) / deviceQ4DispatchBlocks;
-        for (int64_t segment = 0; segment < segments; ++segment) {
-          int64_t blockBase = segment * deviceQ4DispatchBlocks;
-          int64_t blockCount =
-              std::min(deviceQ4DispatchBlocks, blocks - blockBase);
-          bool writesOutput = (segments - 1 - segment) % 2 == 0;
-          Value destination = writesOutput ? output : operatorScratch;
-          Value previous = writesOutput ? operatorScratch : output;
+        std::optional<DeviceSplitK> split = deviceQ4SplitK(graph, node);
+        if (!split)
+          return emitError(location)
+                 << "Device Q4 MatMulNBits has no split-K schedule";
+        auto q4 = [&](Value previous, Value destination, int64_t blockCount,
+                      int64_t splits, int64_t previousPartials) {
           dispatch("__vrc_opencl_dispatch_udononnx_matmul_nbits_q4",
                    ValueRange{buffer(node.inputs[0]), buffer(node.inputs[1]),
                               buffer(node.inputs[2]), previous, destination,
                               constant(m), constant(n), constant(k),
-                              constant(blockBase), constant(blockCount),
-                              constant(segment == 0 ? 0 : 1)});
+                              constant(blockCount), constant(splits),
+                              constant(previousPartials)});
+        };
+        // Split-K (see chooseDeviceSplitK): the partial pass writes S planes
+        // of m x n partial sums to the operator scratch, and the sum pass
+        // adds them in ascending plane order into the output, which is the
+        // only buffer readers (fused or not) see. One split is the serial
+        // whole-K kernel; its `previous` is never read.
+        if (split->splits == 1) {
+          q4(operatorScratch, output, split->unitsPerSplit, 1, 0);
+        } else {
+          q4(output, operatorScratch, split->unitsPerSplit, split->splits, 0);
+          q4(operatorScratch, output, 0, 1, split->splits);
         }
         return success();
       }

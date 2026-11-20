@@ -880,14 +880,16 @@ q4_host = subprocess.run(
 assert q4_host.returncode == 0, (q4_host.stdout, q4_host.stderr)
 assert "udoncl.onnx_device_graph = true" in q4_host.stdout
 assert "udoncl.onnx_device_unsupported = []" in q4_host.stdout
-# K = 256 is 8 blocks of 32: the whole K is accumulated by one dispatch
-# (block_base 0, block_count 8, accumulate 0) that writes the output directly;
-# no Host loop over K tiles remains.
+# K = 256 is 8 blocks of 32 over 256 outputs: the split-K cost model splits
+# the 8-block chain into 8 one-block planes over 2048 fragments (block_count
+# 1, splits 8, previous_partials 0) written to the operator scratch, and an
+# ordered sum dispatch (block_count 0, splits 1, previous_partials 8) reads
+# them and writes the output; no Host loop over K tiles remains.
 q4_calls = call_arguments(
     q4_host.stdout, "__vrc_opencl_dispatch_udononnx_matmul_nbits_q4"
 )
-assert len(q4_calls) == 1, q4_calls
-q4_call_offset = q4_host.stdout.index(
+assert len(q4_calls) == 2, q4_calls
+q4_call_offset = q4_host.stdout.rindex(
     "call @__vrc_opencl_dispatch_udononnx_matmul_nbits_q4"
 )
 q4_function = q4_host.stdout[
@@ -896,10 +898,17 @@ q4_function = q4_host.stdout[
 q4_constants = dict(
     re.findall(r"(%[\w#]+) = arith\.constant (-?\d+) : i32", q4_function)
 )
-assert len(q4_calls[0]) == 11, q4_calls
-assert [q4_constants.get(argument) for argument in q4_calls[0][5:]] == [
-    "1", "256", "256", "0", "8", "0",
+assert [len(call) for call in q4_calls] == [11, 11], q4_calls
+assert [
+    [q4_constants.get(argument) for argument in call[5:]] for call in q4_calls
+] == [
+    ["1", "256", "256", "1", "8", "0"],
+    ["1", "256", "256", "0", "1", "8"],
 ], q4_calls
+# The partial pass writes the scratch that the sum pass reads; the sum pass
+# writes the output, which the partial pass passed as its unread previous.
+assert q4_calls[0][4] == q4_calls[1][3], q4_calls
+assert q4_calls[0][3] == q4_calls[1][4], q4_calls
 assert q4_calls[0][3] != q4_calls[0][4]
 assert "call @udononnxMatMulNBits" not in q4_host.stdout
 assert "@__udon_onnx_operator_scratch" in q4_host.stdout

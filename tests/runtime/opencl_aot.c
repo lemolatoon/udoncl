@@ -86,9 +86,9 @@ static cl_int dispatched_sgemv_trans;
 static cl_int dispatched_mnist_kernel;
 static cl_int dispatched_nbits_tile_n;
 static cl_int dispatched_nbits_finalize;
-static cl_int dispatched_q4_block_base;
 static cl_int dispatched_q4_block_count;
-static cl_int dispatched_q4_accumulate;
+static cl_int dispatched_q4_splits;
+static cl_int dispatched_q4_previous_partials;
 static cl_int dispatched_gather_words;
 static cl_int dispatched_dnn_operation;
 static cl_uint dispatched_dnn_input_token;
@@ -490,7 +490,7 @@ extern cl_int __vrc_enqueue_udonaten_argmax_finalize_device_args(
 extern cl_int __vrc_enqueue_udononnx_matmul_nbits_q4_device_args(
     cl_command_queue queue, cl_mem activation, cl_mem packed_weight,
     cl_mem scales, cl_mem previous, cl_mem output, cl_int m, cl_int n, cl_int k,
-    cl_int block_base, cl_int block_count, cl_int accumulate,
+    cl_int block_count, cl_int splits, cl_int previous_partials,
     cl_uint wait_count, const cl_event *wait_list, cl_event *event);
 extern cl_mem udonclAdoptStaticBuffer(cl_command_queue queue,
                                       cl_uint resource_id, size_t bytes,
@@ -563,7 +563,7 @@ cl_int __vrc_opencl_dispatch_udononnx_matmul_nbits(cl_uint input_token,
 cl_int __vrc_opencl_dispatch_udononnx_matmul_nbits_q4(
     cl_uint activation_token, cl_uint packed_weight_token, cl_uint scales_token,
     cl_uint previous_token, cl_uint output_token, cl_int m, cl_int n, cl_int k,
-    cl_int block_base, cl_int block_count, cl_int accumulate) {
+    cl_int block_count, cl_int splits, cl_int previous_partials) {
   (void)activation_token;
   (void)packed_weight_token;
   (void)scales_token;
@@ -572,9 +572,9 @@ cl_int __vrc_opencl_dispatch_udononnx_matmul_nbits_q4(
   (void)m;
   (void)n;
   (void)k;
-  dispatched_q4_block_base = block_base;
   dispatched_q4_block_count = block_count;
-  dispatched_q4_accumulate = accumulate;
+  dispatched_q4_splits = splits;
+  dispatched_q4_previous_partials = previous_partials;
   return CL_SUCCESS;
 }
 
@@ -1936,33 +1936,58 @@ int main(void) {
   /* The whole K (176 blocks) in one dispatch. */
   EXPECT(__vrc_enqueue_udononnx_matmul_nbits_q4_device_args(
              queue, q4_activation, q4_packed, q4_scales, q4_previous, q4_output,
-             4, 32000, 5632, 0, 176, 0, 0, 0, &marker_event) == CL_SUCCESS);
+             4, 32000, 5632, 176, 1, 0, 0, 0, &marker_event) == CL_SUCCESS);
   EXPECT(marker_event && clWaitForEvents(1, &marker_event) == CL_SUCCESS);
   EXPECT(clReleaseEvent(marker_event) == CL_SUCCESS);
-  EXPECT(dispatched_q4_block_base == 0 && dispatched_q4_block_count == 176 &&
-         dispatched_q4_accumulate == 0);
-  /* A later segment accumulating onto a previous partial sum. */
+  EXPECT(dispatched_q4_block_count == 176 && dispatched_q4_splits == 1 &&
+         dispatched_q4_previous_partials == 0);
+  /* A split-K partial pass: 16 planes of 11 blocks over 2 x 2048 words. */
   EXPECT(__vrc_enqueue_udononnx_matmul_nbits_q4_device_args(
              queue, q4_activation, q4_packed, q4_scales, q4_previous, q4_output,
-             4, 32000, 5632, 100, 76, 1, 0, 0, &marker_event) == CL_SUCCESS);
+             2, 2048, 5632, 11, 16, 0, 0, 0, &marker_event) == CL_SUCCESS);
   EXPECT(marker_event && clWaitForEvents(1, &marker_event) == CL_SUCCESS);
   EXPECT(clReleaseEvent(marker_event) == CL_SUCCESS);
-  EXPECT(dispatched_q4_block_base == 100 && dispatched_q4_block_count == 76 &&
-         dispatched_q4_accumulate == 1);
-  /* Segments past the K blocks, empty or longer than one dispatch covers,
-   * and a non-boolean accumulate are rejected. */
+  EXPECT(dispatched_q4_block_count == 11 && dispatched_q4_splits == 16 &&
+         dispatched_q4_previous_partials == 0);
+  /* Its ordered sum pass. */
   EXPECT(__vrc_enqueue_udononnx_matmul_nbits_q4_device_args(
              queue, q4_activation, q4_packed, q4_scales, q4_previous, q4_output,
-             4, 32000, 5632, 1, 176, 1, 0, 0, 0) == CL_INVALID_VALUE);
+             2, 2048, 5632, 0, 1, 16, 0, 0, &marker_event) == CL_SUCCESS);
+  EXPECT(marker_event && clWaitForEvents(1, &marker_event) == CL_SUCCESS);
+  EXPECT(clReleaseEvent(marker_event) == CL_SUCCESS);
+  EXPECT(dispatched_q4_block_count == 0 && dispatched_q4_splits == 1 &&
+         dispatched_q4_previous_partials == 16);
+  /* Splits that leave K uncovered or end empty, slices longer than one
+   * fragment covers, too many planes for the surface or the kernel, a sum
+   * pass with several planes or nothing to sum, and negative counts are
+   * rejected. */
   EXPECT(__vrc_enqueue_udononnx_matmul_nbits_q4_device_args(
              queue, q4_activation, q4_packed, q4_scales, q4_previous, q4_output,
-             4, 32000, 5632, 0, 0, 0, 0, 0, 0) == CL_INVALID_VALUE);
+             4, 32000, 5632, 175, 1, 0, 0, 0, 0) == CL_INVALID_VALUE);
   EXPECT(__vrc_enqueue_udononnx_matmul_nbits_q4_device_args(
              queue, q4_activation, q4_packed, q4_scales, q4_previous, q4_output,
-             4, 32000, 5632, -1, 1, 0, 0, 0, 0) == CL_INVALID_VALUE);
+             1, 2048, 5632, 11, 17, 0, 0, 0, 0) == CL_INVALID_VALUE);
   EXPECT(__vrc_enqueue_udononnx_matmul_nbits_q4_device_args(
              queue, q4_activation, q4_packed, q4_scales, q4_previous, q4_output,
-             1, 2, 5632, 0, 176, 2, 0, 0, 0) == CL_INVALID_VALUE);
+             1, 2048, 5632, 257, 1, 0, 0, 0, 0) == CL_INVALID_VALUE);
+  EXPECT(__vrc_enqueue_udononnx_matmul_nbits_q4_device_args(
+             queue, q4_activation, q4_packed, q4_scales, q4_previous, q4_output,
+             4, 32000, 5632, 88, 2, 0, 0, 0, 0) == CL_INVALID_VALUE);
+  EXPECT(__vrc_enqueue_udononnx_matmul_nbits_q4_device_args(
+             queue, q4_activation, q4_packed, q4_scales, q4_previous, q4_output,
+             1, 1, 5632, 2, 88, 0, 0, 0, 0) == CL_INVALID_VALUE);
+  EXPECT(__vrc_enqueue_udononnx_matmul_nbits_q4_device_args(
+             queue, q4_activation, q4_packed, q4_scales, q4_previous, q4_output,
+             1, 1, 5632, 0, 2, 2, 0, 0, 0) == CL_INVALID_VALUE);
+  EXPECT(__vrc_enqueue_udononnx_matmul_nbits_q4_device_args(
+             queue, q4_activation, q4_packed, q4_scales, q4_previous, q4_output,
+             1, 1, 5632, 0, 1, 0, 0, 0, 0) == CL_INVALID_VALUE);
+  EXPECT(__vrc_enqueue_udononnx_matmul_nbits_q4_device_args(
+             queue, q4_activation, q4_packed, q4_scales, q4_previous, q4_output,
+             1, 1, 5632, -1, 1, 0, 0, 0, 0) == CL_INVALID_VALUE);
+  EXPECT(__vrc_enqueue_udononnx_matmul_nbits_q4_device_args(
+             queue, q4_activation, q4_packed, q4_scales, q4_previous, q4_output,
+             1, 1, 5632, 176, 1, -1, 0, 0, 0) == CL_INVALID_VALUE);
   EXPECT(clReleaseMemObject(q4_output) == CL_SUCCESS);
   EXPECT(clReleaseMemObject(q4_previous) == CL_SUCCESS);
   EXPECT(clReleaseMemObject(q4_scales) == CL_SUCCESS);
