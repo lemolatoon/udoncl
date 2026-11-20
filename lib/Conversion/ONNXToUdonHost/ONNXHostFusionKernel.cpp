@@ -32,6 +32,11 @@ constexpr int64_t maximumSurfaceWords = surfaceWidth * 16;
 
 constexpr StringLiteral carrierName = "udononnx_fused_kernels";
 
+/// Words of the launch surface of a kernel that writes `words` words.
+int64_t statisticsSurfaceWords(int64_t words) {
+  return (words + surfaceWidth - 1) / surfaceWidth * surfaceWidth;
+}
+
 int64_t elementCount(ArrayRef<int64_t> shape) {
   int64_t elements = 1;
   for (int64_t extent : shape)
@@ -133,6 +138,19 @@ struct Emitted {
   unsigned loads;
 };
 
+/// The partial statistics of a two-pass Softmax (deviceSoftmaxSchedule):
+/// for each row r and chunk c of `chunkLength` elements, word r * chunks + c
+/// holds the chunk maximum and word rows * chunks + r * chunks + c the sum
+/// of exp(sample - chunk maximum) over the chunk.
+struct DeviceRowStatistics {
+  int64_t rows;
+  int64_t chunks;
+  int64_t chunkLength;
+  /// The statistics argument of the elementwise kernel.
+  Value buffer;
+  int64_t partials() const { return rows * chunks; }
+};
+
 /// Emits the expression of one fusion group at the builder's insertion point.
 class ExpressionEmitter {
 public:
@@ -143,14 +161,66 @@ public:
       : builder(builder), location(location), fusion(fusion),
         graph(fusion.graph), leaves(leaves), buffers(buffers), view(view) {}
 
-  Emitted emitRoot(unsigned rootNode, Value linear) {
+  Emitted emitRoot(unsigned rootNode, Value linear,
+                   const DeviceRowStatistics *statistics) {
     ArrayRef<int64_t> shape = shapeOf(graph, graph.nodes[rootNode].output);
     IndexMap &map = newMap(shape);
     map.linear = Bounded{linear, elementCount(shape) - 1, std::nullopt};
     if (*deviceFusionKind(graph, graph.nodes[rootNode]) ==
         DeviceFusionKind::Softmax)
-      return emitSoftmax(rootNode, map);
+      return statistics ? emitSoftmaxFromStatistics(rootNode, map, *statistics)
+                        : emitSoftmax(rootNode, map);
     return emitNode(rootNode, map);
+  }
+
+  /// Fragment `linear` of the statistics pass of the Softmax root `rootNode`
+  /// (see DeviceRowStatistics): the maximum of one chunk of one row, or the
+  /// ascending sum of exp(sample - that maximum) over the chunk.
+  Emitted emitSoftmaxStatistics(unsigned rootNode, Value linear,
+                                const DeviceRowStatistics &statistics) {
+    int64_t axis = softmaxAxis(graph, graph.nodes[rootNode]);
+    ArrayRef<int64_t> shape = shapeOf(graph, graph.nodes[rootNode].output);
+    int64_t extent = shape[axis];
+    int64_t partials = statistics.partials();
+    Bounded fragment{linear, 2 * partials - 1, std::nullopt};
+    Value isSum =
+        arith::CmpIOp::create(builder, location, arith::CmpIPredicate::uge,
+                              linear, i32Constant(partials));
+    Bounded partial = remainder(fragment, partials);
+    Bounded chunk = remainder(partial, statistics.chunks);
+    // The coordinates of the row are those of its linear index in the shape
+    // without the reduced axis.
+    SmallVector<int64_t> rowShape(shape);
+    rowShape[axis] = 1;
+    IndexMap &rowMap = newMap(rowShape);
+    rowMap.linear = divide(partial, statistics.chunks);
+    IndexMap &map = newMap(shape);
+    map.coordinates = SmallVector<Bounded>(coordinatesOf(rowMap));
+    (*map.coordinates)[axis] = constant(0);
+    Value start = valueOf(multiply(chunk, statistics.chunkLength));
+    Value end = arith::MinUIOp::create(
+        builder, location,
+        arith::AddIOp::create(builder, location, start,
+                              i32Constant(statistics.chunkLength)),
+        i32Constant(extent));
+    std::pair<Value, unsigned> maximum =
+        foldAxis(rootNode, map, axis, f32Constant(-3.402823466e+38f), start,
+                 end, [&](Value current, Value sample) -> Value {
+                   return maximumOf(current, sample);
+                 });
+    // A fragment of the maximum plane runs no element of the sum.
+    Value sumEnd =
+        arith::SelectOp::create(builder, location, isSum, end, start);
+    std::pair<Value, unsigned> sum = foldAxis(
+        rootNode, map, axis, f32Constant(0.0f), start, sumEnd,
+        [&](Value total, Value sample) -> Value {
+          return arith::AddFOp::create(builder, location, total,
+                                       exponentialAbove(sample, maximum.first));
+        });
+    Value value = arith::SelectOp::create(builder, location, isSum, sum.first,
+                                          maximum.first);
+    return {value,
+            static_cast<unsigned>(2 * statistics.chunkLength * maximum.second)};
   }
 
 private:
@@ -163,16 +233,44 @@ private:
   std::pair<Value, unsigned> foldAxis(unsigned rootNode, IndexMap &map,
                                       int64_t axis, Value initial,
                                       Combine &&combine) {
-    Type i32 = builder.getI32Type();
-    Type f32 = builder.getF32Type();
+    // The limit is defined outside the loop, so the proof recognizes a
+    // counted loop.
+    Value limit = i32Constant(map.shape[axis]);
+    return foldAxis(rootNode, map, axis, initial, i32Constant(0), limit,
+                    std::forward<Combine>(combine));
+  }
+
+  /// The fold over the elements [start, limit) of `axis`, with `limit` at
+  /// most its extent.
+  template <typename Combine>
+  std::pair<Value, unsigned> foldAxis(unsigned rootNode, IndexMap &map,
+                                      int64_t axis, Value initial, Value start,
+                                      Value limit, Combine &&combine) {
     ArrayRef<Bounded> coordinates = coordinatesOf(map);
     int64_t extent = map.shape[axis];
-    // The limit and the step are defined outside the loop, so the proof
-    // recognizes a counted loop.
-    Value limit = i32Constant(extent);
+    unsigned loads = 0;
+    Value result =
+        countedLoop(start, limit, initial, [&](Value counter, Value carried) {
+          IndexMap &element = newMap(map.shape);
+          element.coordinates = SmallVector<Bounded>(coordinates);
+          (*element.coordinates)[axis] =
+              Bounded{counter, extent - 1, std::nullopt};
+          Emitted sample = emitOperand(rootNode, 0, element);
+          loads = sample.loads;
+          return combine(carried, sample.value);
+        });
+    return {result, loads};
+  }
+
+  /// An scf.while that counts from `start` up to `limit`, both defined
+  /// outside it, carrying one f32 from `initial` through `body`.
+  template <typename Body>
+  Value countedLoop(Value start, Value limit, Value initial, Body &&body) {
+    Type i32 = builder.getI32Type();
+    Type f32 = builder.getF32Type();
     Value one = i32Constant(1);
     auto loop = scf::WhileOp::create(builder, location, TypeRange{i32, f32},
-                                     ValueRange{i32Constant(0), initial});
+                                     ValueRange{start, initial});
     OpBuilder::InsertionGuard guard(builder);
     Block *before = builder.createBlock(&loop.getBefore(), {}, {i32, f32},
                                         {location, location});
@@ -182,17 +280,70 @@ private:
     scf::ConditionOp::create(builder, location, inside, before->getArguments());
     Block *after = builder.createBlock(&loop.getAfter(), {}, {i32, f32},
                                        {location, location});
-    IndexMap &element = newMap(map.shape);
-    element.coordinates = SmallVector<Bounded>(coordinates);
-    (*element.coordinates)[axis] =
-        Bounded{after->getArgument(0), extent - 1, std::nullopt};
-    Emitted sample = emitOperand(rootNode, 0, element);
+    Value carried = body(after->getArgument(0), after->getArgument(1));
     Value next =
         arith::AddIOp::create(builder, location, after->getArgument(0), one);
-    scf::YieldOp::create(
-        builder, location,
-        ValueRange{next, combine(after->getArgument(1), sample.value)});
-    return {loop.getResult(1), sample.loads};
+    scf::YieldOp::create(builder, location, ValueRange{next, carried});
+    return loop.getResult(1);
+  }
+
+  /// The library kernel's running maximum: `sample` replaces `current` only
+  /// when it compares greater, so a NaN sample is skipped.
+  Value maximumOf(Value current, Value sample) {
+    Value greater = arith::CmpFOp::create(
+        builder, location, arith::CmpFPredicate::OGT, sample, current);
+    return arith::SelectOp::create(builder, location, greater, sample, current);
+  }
+
+  /// exp(sample - maximum).
+  Value exponentialAbove(Value sample, Value maximum) {
+    Value shifted = arith::SubFOp::create(builder, location, sample, maximum);
+    return math::ExpOp::create(builder, location, shifted);
+  }
+
+  /// The elementwise pass of a two-pass Softmax. The row's maximum M is the
+  /// largest chunk maximum m_c (the same value the one-pass kernel finds),
+  /// its sum the ascending sum over chunks of s_c * exp(m_c - M), and the
+  /// result exp(own sample - M) / sum.
+  Emitted emitSoftmaxFromStatistics(unsigned rootNode, IndexMap &map,
+                                    const DeviceRowStatistics &statistics) {
+    int64_t axis = softmaxAxis(graph, graph.nodes[rootNode]);
+    ArrayRef<Bounded> coordinates = coordinatesOf(map);
+    Bounded row = constant(0);
+    for (auto [index, extent] : llvm::enumerate(map.shape))
+      if (static_cast<int64_t>(index) != axis)
+        row = add(multiply(row, extent), coordinates[index]);
+    int64_t partials = statistics.partials();
+    Bounded base = multiply(row, statistics.chunks);
+    // Partial c of the row is word base + c of the maximum plane and of the
+    // sum plane after it.
+    auto loadPartial = [&](Value chunk, int64_t plane) -> Value {
+      Bounded index =
+          add(add(base, Bounded{chunk, statistics.chunks - 1, std::nullopt}),
+              constant(plane * partials));
+      Value address = arith::IndexCastOp::create(
+          builder, location, builder.getIndexType(), valueOf(index));
+      return memref::LoadOp::create(builder, location, statistics.buffer,
+                                    ValueRange{address});
+    };
+    Value zero = i32Constant(0);
+    Value chunks = i32Constant(statistics.chunks);
+    Value maximum =
+        countedLoop(zero, chunks, f32Constant(-3.402823466e+38f),
+                    [&](Value chunk, Value current) {
+                      return maximumOf(current, loadPartial(chunk, 0));
+                    });
+    Value sum = countedLoop(
+        zero, chunks, f32Constant(0.0f), [&](Value chunk, Value total) {
+          Value scaled = arith::MulFOp::create(
+              builder, location, loadPartial(chunk, 1),
+              exponentialAbove(loadPartial(chunk, 0), maximum));
+          return arith::AddFOp::create(builder, location, total, scaled);
+        });
+    Emitted own = emitOperand(rootNode, 0, map);
+    Value value = arith::DivFOp::create(
+        builder, location, exponentialAbove(own.value, maximum), sum);
+    return {value, static_cast<unsigned>(3 * statistics.chunks) + own.loads};
   }
 
   /// udondnn_arena_softmax_forward with algorithm 0 (accurate) over the
@@ -204,28 +355,21 @@ private:
     int64_t axis = softmaxAxis(graph, graph.nodes[rootNode]);
     // Every fragment derives its coordinates before the loops.
     coordinatesOf(map);
-    std::pair<Value, unsigned> maximum = foldAxis(
-        rootNode, map, axis, f32Constant(-3.402823466e+38f),
-        [&](Value current, Value sample) -> Value {
-          Value greater = arith::CmpFOp::create(
-              builder, location, arith::CmpFPredicate::OGT, sample, current);
-          return arith::SelectOp::create(builder, location, greater, sample,
-                                         current);
-        });
+    std::pair<Value, unsigned> maximum =
+        foldAxis(rootNode, map, axis, f32Constant(-3.402823466e+38f),
+                 [&](Value current, Value sample) -> Value {
+                   return maximumOf(current, sample);
+                 });
     std::pair<Value, unsigned> denominator = foldAxis(
         rootNode, map, axis, f32Constant(0.0f),
         [&](Value sum, Value sample) -> Value {
-          Value shifted =
-              arith::SubFOp::create(builder, location, sample, maximum.first);
-          Value exponential = math::ExpOp::create(builder, location, shifted);
-          return arith::AddFOp::create(builder, location, sum, exponential);
+          return arith::AddFOp::create(builder, location, sum,
+                                       exponentialAbove(sample, maximum.first));
         });
     Emitted own = emitOperand(rootNode, 0, map);
-    Value shifted =
-        arith::SubFOp::create(builder, location, own.value, maximum.first);
-    Value exponential = math::ExpOp::create(builder, location, shifted);
-    Value value = arith::DivFOp::create(builder, location, exponential,
-                                        denominator.first);
+    Value value = arith::DivFOp::create(
+        builder, location, exponentialAbove(own.value, maximum.first),
+        denominator.first);
     int64_t extent = map.shape[axis];
     return {value, static_cast<unsigned>((maximum.second + denominator.second) *
                                          extent) +
@@ -625,11 +769,31 @@ private:
 
 FailureOr<DeviceFusionDispatch>
 DeviceFusionKernels::dispatch(unsigned rootNode) {
-  if (!fusion.isRoot(rootNode))
+  const GraphRecord &graph = fusion.graph;
+  // A Softmax outside every group is a group of its own when it runs in two
+  // passes, which its library kernel cannot.
+  DeviceRowReduction schedule{0, 0};
+  if (!fusion.isInterior(rootNode))
+    schedule = deviceSoftmaxSchedule(graph, graph.nodes[rootNode]);
+  if (!fusion.isRoot(rootNode) && !schedule.chunks)
     return emitError(module.getLoc())
            << "ONNX Device fusion group of node " << rootNode
            << " is outside the fused kernel contract";
-  return synthesize(rootNode, nullptr);
+  if (!schedule.chunks)
+    return synthesize(rootNode, nullptr, nullptr, FusedKernelRole::Whole);
+  FailureOr<DeviceFusionDispatch> statistics =
+      synthesize(rootNode, nullptr, &schedule, FusedKernelRole::RowStatistics);
+  if (failed(statistics))
+    return failure();
+  FailureOr<DeviceFusionDispatch> elementwise = synthesize(
+      rootNode, nullptr, &schedule, FusedKernelRole::FromRowStatistics);
+  if (failed(elementwise))
+    return failure();
+  elementwise->statisticsCallee = statistics->callee;
+  elementwise->statisticsWords = statisticsSurfaceWords(
+      2 * deviceSoftmaxRows(graph, graph.nodes[rootNode])->rows() *
+      schedule.chunks);
+  return elementwise;
 }
 
 FailureOr<DeviceFusionDispatch>
@@ -642,7 +806,7 @@ DeviceFusionKernels::dispatchAlone(unsigned node) {
     return emitError(module.getLoc())
            << "ONNX Device node " << node
            << " is outside the fused kernel contract";
-  return synthesize(node, nullptr);
+  return synthesize(node, nullptr, nullptr, FusedKernelRole::Whole);
 }
 
 FailureOr<DeviceFusionDispatch>
@@ -666,12 +830,12 @@ DeviceFusionKernels::dispatch(unsigned rootNode,
              << "ONNX Device view of tensor " << view.tensor
              << " does not fit its buffer";
   }
-  return synthesize(rootNode, &view);
+  return synthesize(rootNode, &view, nullptr, FusedKernelRole::Whole);
 }
 
-FailureOr<DeviceFusionDispatch>
-DeviceFusionKernels::synthesize(unsigned rootNode,
-                                const DeviceFusionLeafView *view) {
+FailureOr<DeviceFusionDispatch> DeviceFusionKernels::synthesize(
+    unsigned rootNode, const DeviceFusionLeafView *view,
+    const DeviceRowReduction *schedule, FusedKernelRole role) {
   const GraphRecord &graph = fusion.graph;
   Location location = module.getLoc();
   DeviceFusionDispatch result;
@@ -679,6 +843,21 @@ DeviceFusionKernels::synthesize(unsigned rootNode,
   DeviceFusionCost cost = fusion.cost(rootNode);
   int64_t elements =
       graph.tensors[graph.nodes[rootNode].output].type.getNumElements();
+  // The words the statistics pass writes and the elementwise pass reads.
+  int64_t statisticsWords = 0;
+  int64_t rows = 0;
+  if (role != FusedKernelRole::Whole) {
+    std::optional<DeviceSoftmaxRows> shape =
+        deviceSoftmaxRows(graph, graph.nodes[rootNode]);
+    if (!shape || !schedule || schedule->chunks < 1 || view)
+      return emitError(location)
+             << "ONNX Device row reduction of node " << rootNode
+             << " is outside the fused kernel contract";
+    rows = shape->rows();
+    statisticsWords = 2 * rows * schedule->chunks;
+    if (role == FusedKernelRole::RowStatistics)
+      elements = statisticsWords;
+  }
   if (!cost.withinCaps() || result.leaves.empty() ||
       elements > maximumSurfaceWords ||
       (view && !llvm::is_contained(result.leaves, view->tensor)))
@@ -697,6 +876,10 @@ DeviceFusionKernels::synthesize(unsigned rootNode,
     llvm::interleave(view->shape, keyStream, "x");
     keyStream << "]@" << view->axis << '+' << view->offset;
   }
+  if (role != FusedKernelRole::Whole)
+    keyStream << (role == FusedKernelRole::RowStatistics ? "|statistics"
+                                                         : "|from-statistics")
+              << schedule->chunks << 'x' << schedule->chunkLength;
   auto [entry, inserted] = callees.try_emplace(key);
   if (!inserted) {
     result.callee = entry->second;
@@ -728,6 +911,12 @@ DeviceFusionKernels::synthesize(unsigned rootNode,
                              ? elementCount(view->shape)
                              : graph.tensors[leaf].type.getNumElements()},
                         f32));
+  // The statistics buffer is the operator scratch, read as the whole surface
+  // the statistics pass writes: a buffer texture is at most surfaceWidth
+  // words wide, so this keeps the addressing of the scratch texture.
+  if (role == FusedKernelRole::FromRowStatistics)
+    arguments.push_back(
+        MemRefType::get({statisticsSurfaceWords(statisticsWords)}, f32));
   int64_t surfaceHeight = (elements + surfaceWidth - 1) / surfaceWidth;
   int64_t surfaceWords = surfaceWidth * surfaceHeight;
   arguments.push_back(MemRefType::get({surfaceWords}, f32));
@@ -766,9 +955,20 @@ DeviceFusionKernels::synthesize(unsigned rootNode,
                                  /*addThenBlock=*/true, /*addElseBlock=*/true);
   builder.setInsertionPointToStart(guard.thenBlock());
   SmallVector<BlockArgument> buffers(body.getArguments());
-  ExpressionEmitter emitter(builder, location, fusion, result.leaves,
-                            ArrayRef<BlockArgument>(buffers).drop_back(), view);
-  Emitted value = emitter.emitRoot(rootNode, linear);
+  ExpressionEmitter emitter(
+      builder, location, fusion, result.leaves,
+      ArrayRef<BlockArgument>(buffers).take_front(result.leaves.size()), view);
+  Emitted value;
+  if (role == FusedKernelRole::Whole) {
+    value = emitter.emitRoot(rootNode, linear, nullptr);
+  } else {
+    DeviceRowStatistics statistics{rows, schedule->chunks,
+                                   schedule->chunkLength,
+                                   buffers[result.leaves.size()]};
+    value = role == FusedKernelRole::RowStatistics
+                ? emitter.emitSoftmaxStatistics(rootNode, linear, statistics)
+                : emitter.emitRoot(rootNode, linear, &statistics);
+  }
   scf::YieldOp::create(builder, location, value.value);
   builder.setInsertionPointToStart(guard.elseBlock());
   scf::YieldOp::create(

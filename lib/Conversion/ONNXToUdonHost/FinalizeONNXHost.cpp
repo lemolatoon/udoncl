@@ -2894,7 +2894,10 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
           return success();
         }
       }
-      if (fusion.isRoot(nodeIndex)) {
+      // A Softmax runs as a fused kernel also outside every group when its
+      // schedule has two passes (deviceSoftmaxSchedule).
+      if (fusion.isRoot(nodeIndex) ||
+          deviceSoftmaxSchedule(graph, node).chunks) {
         FailureOr<DeviceFusionDispatch> fused =
             fusedKernels.dispatch(nodeIndex);
         if (failed(fused))
@@ -2905,6 +2908,15 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
           if (!arguments.back())
             return emitError(location)
                    << "Device ONNX fusion operand lacks physical storage";
+        }
+        // A two-pass row reduction writes its partial statistics to the
+        // operator scratch, and the elementwise pass reads them there.
+        if (!fused->statisticsCallee.empty()) {
+          if (!operatorScratch)
+            return emitError(location)
+                   << "Device row reduction lacks operator scratch storage";
+          arguments.push_back(operatorScratch);
+          dispatch(fused->statisticsCallee, arguments);
         }
         arguments.push_back(output);
         dispatch(fused->callee, arguments);

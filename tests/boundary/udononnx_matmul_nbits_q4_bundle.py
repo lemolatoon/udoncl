@@ -126,14 +126,18 @@ for name, (m, n, k) in {
         "write",
     ]
     hlsl = (bundle / "kernels/kernel_235.hlsl").read_text(encoding="utf-8")
-    # The partial-plane chunk and plane loops, and the block chunk,
-    # block-in-chunk and K-tail loops stay rolled; the full-block body is
-    # expanded by the source macros: 1 scale + 4 packed words + 32
-    # activations, plus 1 scale + 1 packed word + 1 activation in the K tail
-    # and 1 previous partial plane.
+    # The partial-plane chunk, block chunk and block-in-chunk loops stay
+    # rolled (a block is 37 Loads); the 16 planes of a partial chunk (one
+    # Load each) and the 32 elements of the K tail are short counted loops
+    # that the emitter unrolls with flattened guards. The
+    # full-block body is expanded by the source macros: 1 scale + 4 packed
+    # words + 32 activations, plus 1 scale + 1 packed word + 1 activation in
+    # the K tail and 1 previous partial plane.
     loops = hlsl.count("[loop]")
+    unrolled = hlsl.count("[unroll]")
     loads = len(re.findall(r"\.Load\(", hlsl))
-    assert loops == 5, loops
+    assert (loops, unrolled) == (3, 2), (loops, unrolled)
+    assert "[flatten] if" in hlsl
     assert loads == 41, loads
     accepted.append(f"{name}:loops={loops},loads={loads}")
 

@@ -710,6 +710,111 @@ std::optional<DeviceSplitK> deviceQ4SplitK(const GraphRecord &graph,
                           deviceQ4MaxSplits, q4SurfaceWords});
 }
 
+// The row-reduction schedule uses the split-K model above. Each row element
+// is one evaluation of the row operand; the one-pass kernel evaluates the
+// whole row twice in every fragment (maximum, then the sum of exponentials)
+// and its own element once. The two-pass schedule runs
+//  1. a statistics pass of 2 x rows x chunks fragments: the first plane holds
+//     the maximum of each chunk, the second the sum of exp(sample - chunk
+//     maximum), which re-derives the chunk maximum first, and
+//  2. the elementwise pass, whose fragments combine the chunk partials of
+//     their row (three Loads per chunk) and evaluate their own element.
+namespace {
+/// Statements of a row element besides its operand: the compare and select
+/// of the maximum, and the subtraction, exponential and addition of the sum.
+constexpr int64_t rowMaximumStatements = 2;
+constexpr int64_t rowSumStatements = 4;
+/// Statements and Loads with which the elementwise pass combines one chunk.
+constexpr int64_t rowCombineStatements = 44;
+constexpr int64_t rowCombineLoads = 3;
+} // namespace
+
+DeviceRowReduction
+chooseDeviceRowReduction(const DeviceRowReductionProblem &problem) {
+  DeviceRowReduction onePass{0, problem.extent};
+  if (problem.rows < 1 || problem.extent < 2 || problem.loadsPerElement < 0 ||
+      problem.statementsPerElement < 0)
+    return onePass;
+  int64_t rows = problem.rows, extent = problem.extent;
+  int64_t loads = problem.loadsPerElement;
+  int64_t maximum = problem.statementsPerElement + rowMaximumStatements;
+  int64_t sum = problem.statementsPerElement + rowSumStatements;
+  int64_t outputs = rows * extent;
+  int64_t onePassChain = extent * (maximum + sum) +
+                         problem.statementsPerElement +
+                         splitKFragmentStatements;
+  int64_t bestCycles = splitKPassCycles(outputs, outputs * onePassChain,
+                                        outputs * (2 * extent + 1) * loads,
+                                        onePassChain, (2 * extent + 1) * loads);
+  DeviceRowReduction best = onePass;
+  for (int64_t candidate = 2;
+       candidate <= std::min(extent, deviceRowReductionMaxChunks);
+       ++candidate) {
+    int64_t chunkLength = ceilDivide(extent, candidate);
+    int64_t chunks = ceilDivide(extent, chunkLength);
+    if (chunks != candidate || 2 * rows * chunks > problem.statisticsWords)
+      continue;
+    int64_t partials = rows * chunks;
+    int64_t sumChain = chunkLength * (maximum + sum) + splitKFragmentStatements;
+    int64_t statistics = splitKPassCycles(
+        2 * partials,
+        outputs * (2 * maximum + sum) + 2 * partials * splitKFragmentStatements,
+        3 * outputs * loads, sumChain, 2 * chunkLength * loads);
+    int64_t combineChain = chunks * rowCombineStatements +
+                           problem.statementsPerElement + rowSumStatements +
+                           splitKFragmentStatements;
+    int64_t combineLoads = chunks * rowCombineLoads + loads;
+    int64_t elementwise =
+        splitKPassCycles(outputs, outputs * combineChain,
+                         outputs * combineLoads, combineChain, combineLoads);
+    // The second pass must save more than a tenth of the one-pass time, about
+    // the resolution of the model; among two-pass schedules a tie keeps fewer
+    // chunks.
+    int64_t cycles = statistics + elementwise;
+    if (best.chunks ? cycles < bestCycles : cycles * 10 < bestCycles * 9) {
+      best = DeviceRowReduction{chunks, chunkLength};
+      bestCycles = statistics + elementwise;
+    }
+  }
+  return best;
+}
+
+std::optional<DeviceSoftmaxRows> deviceSoftmaxRows(const GraphRecord &graph,
+                                                   const NodeRecord &node) {
+  if (!isDeviceSoftmaxNode(graph, node))
+    return std::nullopt;
+  RankedTensorType type = graph.tensors[node.inputs[0]].type;
+  int64_t axis = integerAttribute(node, "axis", -1);
+  if (axis < 0)
+    axis += type.getRank();
+  DeviceSoftmaxRows rows{1, type.getDimSize(axis), 1};
+  for (int64_t extent : type.getShape().take_front(axis))
+    rows.outer *= extent;
+  for (int64_t extent : type.getShape().drop_front(axis + 1))
+    rows.inner *= extent;
+  return rows;
+}
+
+DeviceRowReduction deviceSoftmaxSchedule(const GraphRecord &graph,
+                                         const NodeRecord &node) {
+  std::optional<DeviceSoftmaxRows> rows = deviceSoftmaxRows(graph, node);
+  if (!rows)
+    return DeviceRowReduction{0, 0};
+  // A fused Softmax evaluates an operand of at most
+  // deviceFusionMaxReductionOperandLoads Loads per element; one Load
+  // decodes a texel in about 12 statements, and indexing adds about 3.
+  int64_t loads = deviceFusionMaxReductionOperandLoads;
+  return chooseDeviceRowReduction(
+      DeviceRowReductionProblem{rows->rows(), rows->extent, loads,
+                                12 * loads + 3, deviceRowStatisticsWords});
+}
+
+static bool hasTwoPassSoftmax(const GraphRecord &graph) {
+  return llvm::any_of(graph.nodes, [&](const NodeRecord &node) {
+    return deviceSoftmaxSchedule(graph, node).chunks > 0;
+  });
+}
+
 static bool hasDeviceQ4(const GraphRecord &graph) {
   return llvm::any_of(graph.nodes, [&](const NodeRecord &node) {
     return isDeviceQ4Node(graph, node);
@@ -720,6 +825,8 @@ int64_t operatorScratchBytes(const GraphRecord &graph) {
   int64_t bytes = hasDeviceQ4(graph) ? q4SurfaceBytes : 0;
   if (hasDeviceRmsNorm(graph))
     bytes = std::max(bytes, rmsScratchBytes);
+  if (hasTwoPassSoftmax(graph))
+    bytes = std::max(bytes, deviceRowStatisticsWords * 4);
   for (const NodeRecord &node : graph.nodes)
     if (node.operation == "Gemm" && node.inputs.size() >= 3 &&
         node.inputs[2] >= 0)

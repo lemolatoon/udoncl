@@ -5,7 +5,9 @@ onnx_fusion_graph.mlir. The carrier gpu.module is taken from its output as it
 is after the passes that follow finalization, each kernel goes through
 --device-mlir (which proves it), and the unfused library kernels go through
 the OpenCL C/LLVM path. The native fragment renderer then runs both and must
-return bit-identical output words.
+return bit-identical output words. The two-pass Softmax of
+onnx_fusion_two_pass_graph.mlir regroups the sum of exponentials, so it must
+instead stay within a few rounding errors of the library and be deterministic.
 """
 
 import json
@@ -212,6 +214,52 @@ for index, (source, (name, arguments), inputs) in enumerate(
     assert "vrc.gather_proven" in recovered and "vrc.synthesized_kernel" in recovered
     fragments.append(fragment)
 
+# A Softmax over rows of 512 runs in two passes: the statistics kernel reads
+# x and the mask and writes 2 x 32 x chunks words into one surface row, and
+# the elementwise kernel also reads that row and writes the 32 x 512 result.
+two_pass_dispatches, two_pass_carrier, two_pass_kernels = finalize(
+    "onnx_fusion_two_pass_graph.mlir", "two-pass"
+)
+assert two_pass_dispatches == ["udononnx_fused_0", "udononnx_fused_1"], (
+    two_pass_dispatches
+)
+assert [name for name, _ in two_pass_kernels] == [
+    "udononnx_fused_0",
+    "udononnx_fused_1",
+]
+statistics_sizes, elementwise_sizes = (
+    [int(size) for size in re.findall(r"memref<(\d+)xf32>", arguments)]
+    for _, arguments in two_pass_kernels
+)
+assert statistics_sizes[:2] == [16384, 512] and statistics_sizes[2] == 8192, (
+    statistics_sizes
+)
+# The elementwise kernel reads the statistics as the whole surface row the
+# statistics kernel writes, which is how the operator scratch texture is laid
+# out.
+assert elementwise_sizes == [16384, 512, 8192, 16384], elementwise_sizes
+TWO_ROWS = {"words": 16384, "global_size": [8192, 2, 1]}
+for index, ((name, _), inputs, geometry) in enumerate(
+    zip(
+        two_pass_kernels,
+        [[16384, 512], [16384, 512, 8192]],
+        [ROW, TWO_ROWS],
+    )
+):
+    fragment = emit(
+        name,
+        310 + index,
+        geometry,
+        "--device-mlir",
+        two_pass_carrier,
+        {"input_words": inputs},
+        label=f"{two_pass_carrier.stem}-{name}",
+    )
+    hlsl = fragment.read_text(encoding="utf-8")
+    assert "precise float" in hlsl
+    assert not re.search(r"\b(mad|fma)\s*\(", hlsl)
+    fragments.append(fragment)
+
 vertex = output / "fullscreen.hlsl"
 vertex.write_text(
     "float4 vert(uint id : SV_VertexID) : SV_Position { return float4(id == 2 ? 3.0 : -1.0, id == 1 ? 3.0 : -1.0, 0, 1); }\n",
@@ -271,4 +319,13 @@ for name, count, counters in [
 for step in range(4):
     assert f"step{step}_bitexact=128/128" in result.stdout, result.stdout
     assert f"step{step}_tail_zero=1" in result.stdout, result.stdout
-assert "draws=30" in result.stdout, result.stdout
+# The two-pass Softmax is within a few rounding errors of the library kernel
+# (the chunk sums are rescaled to the row maximum), NaN exactly where the
+# library is, and deterministic: a second run is bit-identical.
+assert "long_within_tolerance=16384/16384" in result.stdout, result.stdout
+assert "long_nan_match=1" in result.stdout, result.stdout
+assert "long_deterministic=1" in result.stdout, result.stdout
+for counter in ["nan", "zero", "nonzero"]:
+    found = re.search(rf"long_{counter}=(\d+)", result.stdout)
+    assert int(found.group(1)) > 0, (counter, result.stdout)
+assert "draws=36" in result.stdout, result.stdout

@@ -102,14 +102,40 @@ stay in the investigation section.
 ### Device floats use a byte-preserving RGBA texture ABI
 
 - Generated fragment shaders encode `asuint(value)` into four normalized byte
-  channels and decode a texture sample by rebuilding those four bytes before
-  `asfloat`.
+  channels and decode a texture sample by rebuilding the word before
+  `asfloat`. The decode rebuilds two 16-bit halves,
+  `uint2(t.yw * 65280.0 + t.xz * 255.0 + 0.5)`: each half is an exact
+  integer of at most 65535 whose float error is a few ulps, far below 0.5, so
+  the truncation is exact for every word. It needs two float-to-integer
+  conversions per Load instead of four rounds and four conversions; type
+  conversions run at a fraction of the FMA rate on current GPUs and bounded
+  the Q4 MatMulNBits Load loops. `raw-word-texel-execution` checks every byte
+  value in every position, NaN payloads and denormals on the native renderer.
 - Dynamic arena render textures and static input textures must therefore be
   linear RGBA32, point-filtered, and used without color-space conversion or
   interpolation.
 - Rule: numerical tests compare decoded float bit patterns or a stated floating
   tolerance. A visually plausible texture is not evidence of numerical
   correctness.
+
+### Short counted loops are unrolled with flattened guards
+
+- A `[loop]` iteration whose Loads feed its accumulation waits one full Load
+  latency before the next iteration can issue its Loads. Kernels with few
+  fragments and long reductions (attention SGEMMs, Softmax passes, RMSNorm,
+  split-K sums) are bound by that chain, not by throughput: the gate15
+  QK^T SGEMM (16384 fragments, 64 iterations of 2 Loads) took 17.7 us per
+  Blit, about 500 cycles per iteration after the fixed Blit cost.
+- The gather emitter therefore emits a loop whose counter starts at a
+  constant, is compared with a constant (`ult`/`slt`) and steps by a positive
+  constant as `[unroll] for` when trips x body operations is at most 4096
+  (trips at most 64, no nested loop), and every `if` inside it as
+  `[flatten]`. The Device libraries already split long reductions into
+  dynamic chunk loops around constant 16-lane loops, so the lanes unroll.
+- Flattening evaluates both arms and selects. Arithmetic results and their
+  order are unchanged (bit identical); a Load on the arm not taken may
+  address past the logical extent, which D3D11 defines to read zero, and its
+  value is discarded.
 
 ### Generated fragment kernels execute over physical arena capacity
 

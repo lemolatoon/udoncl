@@ -5,6 +5,9 @@ Date: 2026-11-21
 ## Status
 
 Fix 1 (split-K for Q4 MatMulNBits) is implemented; see "Split-K results".
+The two-pass Softmax for long rows is implemented; see "Attention at
+capacity 512". The cheaper RGBA8 decode and the unrolled short loops are
+implemented and measured; see "Gate16 probe and the RGBA8 decode".
 The GPU cost model below is static (fragment-level Load/statement counts)
 and is calibrated against one Unity trace. The per-kernel times still need
 a Unity measurement (see "Measuring in Unity").
@@ -278,6 +281,194 @@ roughly 5 ms of GPU the split would save. A worthwhile version needs an
 internal split mode in the arena SGEMM kernel, which would change its
 private dispatch signature.
 
+## Attention at capacity 512
+
+The gate15 Unity probe (RTX 4070 Ti) measured the split-K Artifacts at
+29.0 ms per run at capacity 512 and 9.7 ms at capacity 64. At 512 the fused
+Softmax kernel alone took 14.0 ms (22 Blits, 739 M texel Loads); the QK and
+PV SGEMMs took only 0.39 and 0.56 ms. The static model had the two the other
+way round (Softmax 8.4 ms, SGEMMs 7.1 ms): its latency term charges every
+Load of a serial chain about 40 cycles, but the SGEMM's Loads do not depend
+on the accumulation and pipeline, while the Softmax is bound by its sheer
+Load count.
+
+### Two-pass Softmax
+
+A long Softmax now runs as a row-statistics kernel and an elementwise kernel
+(`chooseDeviceRowReduction`, see
+`docs/architecture/refactor-baseline-and-mlir-pipeline.md`). At capacity 512
+each attention Softmax (32 rows of 512) becomes a statistics pass of 1728
+fragments (27 chunks of 19 per row, at most 76 Loads each) and an elementwise
+pass of 16384 fragments (83 Loads each, 81 of them the row's chunk
+statistics). A row of 64 stays one pass, so capacity 64 is unchanged.
+
+| conversation Artifact, per decode run | split-K (gate15) | two-pass |
+|---|---:|---:|
+| capacity 512: Blits | 504 | 526 |
+| capacity 512: Softmax texel Loads | 739 M | 32 M |
+| capacity 512: Udon instructions per decode step (master 610894e) | about 96 K | 97.8 K |
+| capacity 512: static model, latency x2.98 (lat .. uniform) | 26.9 .. 35.0 ms | 19.6 .. 27.8 ms |
+| capacity 512: measured / predicted from the gate15 rate | 29.0 ms | about 15.8 ms |
+| capacity 64: Blits, model | 504, 15.5 .. 23.6 ms | unchanged |
+
+The prediction scales the measured one-pass Softmax rate (about 19 ns per
+1000 Loads) to the 32 M Loads of the two kernels (about 0.6 ms) and adds
+about 10 us per added Blit. `UNITY_PROBE_ATTENTION.txt` in the analysis
+directory measures it.
+
+Numerics: the maximum is the backend's; the sum of exponentials is regrouped
+by chunk and rescaled by `exp(chunk maximum - row maximum)`.
+`onnx-fusion-execution` runs a 32 x 512 masked Softmax with NaNs,
+infinities, a fully -inf row and a fully -FLT_MAX row on WARP: every output
+is within 4e-6 relative of the arena backend (worst 5.9e-7), NaN exactly
+where the backend has NaN, and bit-identical across runs. The emulator
+(Host protocol, scripted tokens) still gives `[1701, 29916, 432, 17204]` for
+gen1 and gen2 at capacities 512 and 64, "My name is Sarah." for the chat and
+"Sarah." for its second turn at 512; the capacity-512 m1-step Artifact
+initializes and runs (521 Blits).
+
+### PV split-K: implemented, measured out, dropped
+
+An internal split mode in `udonblas_arena_sgemm_strided_batched` (a
+`previous` buffer and `k_per_split`, `splits`, `previous_partials` arguments,
+public `udonblasSgemmStridedBatched` unchanged) ran the PV product as 8
+planes of 64 plus an ordered sum, bit for bit in the documented order on
+WARP. The static model credited it about 5 ms; the gate15 measurement leaves
+at most the 0.56 ms the PV SGEMM takes, against 22 more Blits and about
+1.6 K more Udon instructions per decode step. It was not kept; the patch is
+`sgemm-splitk-dropped.patch` in the analysis directory.
+
+### Bounding attention by the live length: not generic
+
+Every position past the conversation is still computed. Restricting the
+work needs a run-time extent per run, and there is no clean generic way to
+derive it:
+
+- The live window is a property of Host data, not of the graph. The
+  Artifacts are left-padded: `attention_mask` is a graph input that the
+  conversation Host fills with zeros for the unused leading positions. The
+  compiler can see that the mask feeds an additive bias of the Softmax
+  operand, but not where it is zero; deriving the extent would need a
+  per-run Host scan of the mask input (about 5 K Udon instructions at 512)
+  or a value the example Host passes, which is model protocol.
+- Skipping is not exact in general. The exported mask adds the finite
+  `finfo.min` (-FLT_MAX), not -inf. A masked score only contributes exactly
+  0 when `score - FLT_MAX` rounds to -FLT_MAX and the row has a live
+  maximum; a fully masked row gives a uniform distribution over all
+  positions, which skipping would change. That is a statement about the
+  data's range, not something an analysis of the graph can prove.
+- The extent is a suffix (live rows are the last ones), so every affected
+  kernel (both Softmax passes, the QK and PV SGEMMs, the banked K/V Concats)
+  would take a run-time start, and the SGEMM a run-time K offset, plus
+  Host-patched scalars at every dispatch site.
+
+After the two-pass Softmax the capacity-dependent remainder is small: the
+SGEMMs are under 1 ms, so the live-length bound could save at most about
+1-2 ms at short conversations. The next capacity-dependent target is
+whatever makes up the rest of the gate15 difference between capacities 512
+and 64 (19.3 ms, of which Softmax 14.0 and SGEMMs about 1): the per-config
+probe numbers (the probe's JSON writer was fixed to emit them) should show
+whether it is the banked K/V Concat kernels, which write 256 x capacity words
+over 8192 x 16 surfaces every layer.
+
+## Gate16 probe and the RGBA8 decode
+
+The gate16 Artifact (master f62f00b: split-K Q4, two-pass Softmax,
+per-site materials; capacity 512) was probed with
+`gpu-probe-plan-g16-cap512.unity.json` (38 configurations, 526 Blits):
+replay **12.8 ms per run** (gate15 split-K: 29.0 ms), so the two-pass
+Softmax took off more than the predicted 13 ms. The isolated
+configurations sum to 22.1 ms; isolated times run about 1.7 times the
+replay, so only their shares are used:
+
+| kernel | Blits | isolated ms | share |
+|---|---:|---:|---:|
+| Q4 partials (gate/up, down, qkv, o, lm_head) | 89 | 16.0 | 72% |
+| arena SGEMM (PV 1.36, QK^T 0.78) | 44 | 2.15 | 10% |
+| Softmax elementwise + statistics | 44 | 1.57 | 7% |
+| Q4 ordered sums | 89 | 1.10 | 5% |
+| RMSNorm reduce + finalize | 90 | 0.48 | 2% |
+| banked K/V Concat views, RoPE, SiLU, residual adds | 176 | 0.62 | 3% |
+| argmax reduce + finalize | 2 | 0.07 | 0.3% |
+
+The banked K/V Concat views (`fused_0`/`fused_5`, 131072 words each) cost
+about 0.1 ms per run each, and `argmax_finalize` 0.05 ms: neither is the
+capacity gap. Inactive fragments are cheap: shading 46.8 M fragments for
+10.9 M active ones costs a few tenths of a millisecond in total.
+
+### Why Q4 is slow: type conversions
+
+A Q4 partial runs 37 Loads per 32-element block, 32 of them activations.
+Every Load decoded its RGBA8 texel with `uint4(round(t * 255.0))`: four
+rounds and four float-to-integer conversions, plus one integer-to-float
+conversion of the nibble. On Ada (SM 8.9) type conversions issue at 16 per
+SM per clock against 128 FMAs and 4 texel Loads, so the decode bounds the
+kernel: 9 conversions per element is 0.56 SM cycles, against 0.29 for the
+1.16 Loads. The gate/up partial (23 M elements) has a conversion bound of
+0.083 ms and measured 0.138 ms (gate15) per Blit.
+
+The decode now rebuilds two exact 16-bit halves,
+`uint2(t.yw * 65280.0 + t.xz * 255.0 + 0.5)` (see
+`docs/architecture/udon-vrchat-shader-constraints.md`): two conversions per
+Load. The data layout and every value are unchanged, so results are bit
+identical; `raw-word-texel-execution` checks every byte value in every
+byte position, NaN payloads and denormals on WARP.
+
+A pipe model (`decodemodel.py`: per Blit, the larger of Loads / 4,
+conversions / 16 and ALU / 96 SM cycles; configurations with fewer than
+30720 fragments are latency-bound and kept) scales each measured
+configuration:
+
+| | sum of isolated configs | replay |
+|---|---:|---:|
+| gate16 measured | 22.1 ms | 12.8 ms |
+| decode, modelled | 15.6 ms | 9.0 ms |
+| decode (9f75df9), measured | | 9.44 ms (gate16 re-probed in the same session: 12.53 ms) |
+
+The isolated configuration times disagree between sessions by up to two
+times in either direction (the gate16 re-probe measured its Q4 partials at
+half the first probe's time while its replay matched), so only the replay
+is compared.
+
+### Latency-bound loops: unrolled with flattened guards
+
+The kernels with few fragments and long reductions (attention SGEMMs,
+Softmax passes, RMSNorm, the Q4 ordered sums) are about 5.4 of the 22.1
+isolated ms. They are bound by one Load latency per `[loop]` iteration: the
+gate15 QK^T SGEMM (16384 fragments, 64 iterations of 2 Loads) took 17.7 us
+per Blit, about 500 cycles per iteration after the fixed Blit cost. The
+gather emitter now unrolls short counted loops (trips x body operations at
+most 4096, trips at most 64) and flattens the guards inside them, so a
+chunk's Loads issue back to back; the arena SGEMM walks K in chunks of 64
+lanes (was 256) so its lanes are such a loop and a K of 64 is one chunk.
+Order and values are unchanged (bit identical on WARP). Assuming a quarter
+of the latency chain remains and the fixed cost of about 3.5 us per
+isolated Blit stays, the group falls from 5.4 to about 2.0 isolated ms,
+about 2 ms of replay:
+
+| | sum of isolated configs | replay |
+|---|---:|---:|
+| decode + unroll, modelled | 12.2 ms | 7.0 ms |
+
+Measured replay, one probe session (RTX 4070 Ti, capacity 512, 526
+Blits):
+
+| Artifact | ms per run |
+|---|---:|
+| decode (9f75df9) | 9.87 |
+| decode + unroll (c4893d1) | 8.09 |
+| decode + unroll with the `[flatten]` attributes stripped | 9.28 |
+
+Unrolling saves 1.8 ms per run (the model said about 2); two thirds of it
+comes from flattening the guards, so the driver compiler does not schedule
+Loads across the unflattened branches by itself. From gate16 (12.5 ms in
+the earlier session) the two changes take about 35% off a decode run.
+
+Q4 is then Load-bound (37 RGBA8 Loads per block). The next step for it is
+typed textures (M7): RGBA32F activations would need 8 Loads per block
+instead of 32, but every Device buffer is `rgba8_unorm` throughout the
+compiler, the importer and the transfer paths.
+
 ## Measuring in Unity
 
 A Unity EditMode probe times every dispatch configuration of one decode run,
@@ -291,7 +482,7 @@ the main checkout:
 
 | file | role |
 |---|---|
-| `costtrace.py`, `costtrace_chat.py`, `udonvm.py` | emulator Blit trace (`TRACE_OUT=<pkl>`; same arguments as `drive_m4.py`) |
+| `costtrace.py`, `costtrace_chat.py`, `udonvm.py` | emulator Blit trace (`TRACE_OUT=<pkl>`; same arguments as `drive_m4.py`); `udonvm.py` names per-site dispatch materials from the manifest |
 | `hlsl2cpp.py` | build `kcost.exe` (MSVC `cl /O2 /EHsc /std:c++17 kcost.cpp`) |
 | `gpucost.py` | per-kernel table |
 | `gpumodel.py` | time model and split-K what-ifs |
@@ -300,3 +491,6 @@ the main checkout:
 | `build_cap.sh` | rebuild the 3c152f2 Artifacts at capacities 512 and 64 |
 | `UNITY_PROBE.txt` | instructions for the Unity measurement |
 | `unity/UdonclGpuKernelTimingProbe.cs`, `unity/UdonclGpuProbe.Tests.asmdef` | the probe; it compiles against the Unity 2022.3 assemblies |
+| `UNITY_PROBE_ATTENTION.txt`, `gpu-probe-plan-attn512*.json`, `artifacts/attn-cap512` | the two-pass Softmax measurement |
+| `costtrace_m1.py` | the emulator driver with an `m1` mode (Initialize, Run) for the m1-step Artifact |
+| `gpu-probe-plan-g16-cap512*.json`, `cost-g16-gen1-0.json`, `decodemodel.py` | the gate16 probe plan (it also matches the later Artifacts of this note) and the conversion/Load pipe model |

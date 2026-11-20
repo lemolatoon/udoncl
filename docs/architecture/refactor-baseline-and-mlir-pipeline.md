@@ -394,6 +394,18 @@ The rule is generic: it names node kinds, never a model, a node or a shape.
   the ascending sum of `exp(sample - maximum)`) and
   `exp(own sample - maximum) / sum`. Groups with the same expression,
   shapes and immediates share one kernel.
+- **Two-pass row reductions.** The one-pass Softmax kernel re-reduces the
+  row in every output fragment, so its work grows with the square of the row
+  length. `chooseDeviceRowReduction` (`ONNXHostPlan.cpp`) compares it, with
+  the split-K latency/throughput model, against a statistics pass of
+  2 x rows x chunks fragments (chunk maxima, then chunk sums of
+  `exp(sample - chunk maximum)`) into the operator scratch followed by an
+  elementwise pass that combines its row's chunks; two passes must save more
+  than a tenth. The inputs are only the row count, the row length and the
+  operand's Loads, so a row of 64 stays one pass and a row of 512 runs as
+  27 chunks of 19. The elementwise kernel reads the scratch as the whole
+  surface row the statistics kernel writes, matching the 8192-wide scratch
+  texture.
 - **Proof after canonicalization.** The frontend canonicalizes after
   finalization and `udonclc` proves the kernel later. Every index is
   therefore bounded by interval arithmetic over constants, `remui` and

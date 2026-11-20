@@ -12,12 +12,21 @@
 #include <string>
 
 namespace vrc {
+struct DeviceRowReduction;
+
 /// How the Host dispatches one fusion group: a call to `callee` with the
 /// buffer token of every tensor of `leaves`, in order, then the token of the
 /// root's result. The kernel takes no scalars because every shape is static.
+///
+/// A two-pass row reduction (deviceSoftmaxSchedule) first calls
+/// `statisticsCallee` with the leaf tokens and then a scratch buffer of at
+/// least `statisticsWords` words, which it writes; `callee` then takes the
+/// leaf tokens, that scratch buffer and the result.
 struct DeviceFusionDispatch {
   std::string callee;
   llvm::SmallVector<unsigned> leaves;
+  std::string statisticsCallee;
+  int64_t statisticsWords = 0;
 };
 
 /// A leaf that the kernel reads in a larger buffer: the element at
@@ -40,7 +49,8 @@ public:
       : module(module), fusion(fusion) {}
 
   /// Returns the dispatch of the group rooted at `rootNode`, synthesizing its
-  /// kernel unless an identical one exists.
+  /// kernel unless an identical one exists. `rootNode` may also be a Softmax
+  /// outside every group whose schedule has two passes.
   mlir::FailureOr<DeviceFusionDispatch> dispatch(unsigned rootNode);
 
   /// The dispatch of the expression of `rootNode` with the leaf `view.tensor`
@@ -55,8 +65,17 @@ public:
   mlir::FailureOr<DeviceFusionDispatch> dispatchAlone(unsigned node);
 
 private:
+  enum class FusedKernelRole {
+    /// The root's value at every element.
+    Whole,
+    /// The partial statistics of a two-pass row reduction.
+    RowStatistics,
+    /// The root's value at every element from those statistics.
+    FromRowStatistics,
+  };
   mlir::FailureOr<DeviceFusionDispatch>
-  synthesize(unsigned rootNode, const DeviceFusionLeafView *view);
+  synthesize(unsigned rootNode, const DeviceFusionLeafView *view,
+             const DeviceRowReduction *schedule, FusedKernelRole role);
 
   mlir::ModuleOp module;
   const DeviceFusion &fusion;

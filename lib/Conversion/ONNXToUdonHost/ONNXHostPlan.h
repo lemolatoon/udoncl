@@ -146,6 +146,52 @@ chooseDeviceSplitK(const DeviceSplitKProblem &problem);
 /// The split-K schedule of a Device Q4 MatMulNBits node (isDeviceQ4Node).
 std::optional<DeviceSplitK> deviceQ4SplitK(const GraphRecord &graph,
                                            const NodeRecord &node);
+
+/// A row reduction followed by an elementwise pass over the row (Softmax).
+/// The one-pass kernel re-reduces the whole row in every output fragment, so
+/// its work grows with the square of the row length. The two-pass schedule
+/// instead writes `chunks` partial statistics per row once, each over
+/// `chunkLength` consecutive elements, and the elementwise pass combines the
+/// partials of its row.
+struct DeviceRowReductionProblem {
+  /// Rows, and elements of one row (the reduced axis).
+  int64_t rows;
+  int64_t extent;
+  /// Texel Loads and statements of one evaluation of the row operand.
+  int64_t loadsPerElement;
+  int64_t statementsPerElement;
+  /// Words of the statistics surface (two words per partial).
+  int64_t statisticsWords;
+};
+struct DeviceRowReduction {
+  /// 0 runs the one-pass kernel.
+  int64_t chunks;
+  int64_t chunkLength;
+};
+/// Chooses between the one-pass kernel and the two-pass schedule with the
+/// split-K latency/throughput model (chooseDeviceSplitK). Two passes must
+/// save more than a tenth of the one-pass time.
+DeviceRowReduction
+chooseDeviceRowReduction(const DeviceRowReductionProblem &problem);
+/// Most partial statistics per row of a two-pass row reduction.
+inline constexpr int64_t deviceRowReductionMaxChunks = 64;
+/// Words of the operator scratch a statistics pass may write: two rows of
+/// the 8192-word surface, so its whole launch surface fits.
+inline constexpr int64_t deviceRowStatisticsWords = 16384;
+/// Shape of the rows a Device Softmax node (isDeviceSoftmaxNode) normalizes:
+/// `outer` x `extent` x `inner`, reducing the middle axis.
+struct DeviceSoftmaxRows {
+  int64_t outer;
+  int64_t extent;
+  int64_t inner;
+  int64_t rows() const { return outer * inner; }
+};
+std::optional<DeviceSoftmaxRows> deviceSoftmaxRows(const GraphRecord &graph,
+                                                   const NodeRecord &node);
+/// The schedule of a Device Softmax node, assuming the largest operand a
+/// fused Softmax may read; chunks 0 is the one-pass kernel.
+DeviceRowReduction deviceSoftmaxSchedule(const GraphRecord &graph,
+                                         const NodeRecord &node);
 int64_t operatorScratchBytes(const GraphRecord &graph);
 bool needsQ4Surface(const GraphRecord &graph, unsigned tensorIndex);
 /// Bytes of the Device buffer that holds `tensorIndex`. The input of a

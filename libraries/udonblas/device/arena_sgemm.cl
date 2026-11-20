@@ -14,9 +14,11 @@ extern size_t udonblas_arena_sgemm_cpu_gid_y;
 #define UDONBLAS_ARENA_WIDTH 8192u
 /* The Device lowering accepts only constant loop bounds. K is walked in
  * guarded chunks so a short K skips whole chunks with one compare each; the
- * accumulation order stays strictly ascending in K. */
-#define UDONBLAS_ARENA_K_CHUNK 256
-#define UDONBLAS_ARENA_K_CHUNKS 32 /* K <= 8192 */
+ * accumulation order stays strictly ascending in K. A chunk of 64 lanes is a
+ * short counted loop that the HLSL emitter unrolls, so the Loads of a chunk
+ * issue back to back; a K of 64 (an attention head) is exactly one chunk. */
+#define UDONBLAS_ARENA_K_CHUNK 64
+#define UDONBLAS_ARENA_K_CHUNKS 128 /* K <= 8192 */
 
 /* Private texture-arena backend for the public cuBLAS-shaped udonblasSgemm
  * call. ONNX tensors are row-major, so AOT supplies the validated transpose

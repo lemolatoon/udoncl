@@ -248,3 +248,18 @@ fused pointwise operand where that backend loads its input. This is not a
 masked-softmax API; an additive mask is an ordinary Add read only by the
 Softmax. `onnx-fusion-execution` compares it with the Add and arena Softmax
 dispatches it replaces.
+
+A long Softmax row runs in two passes instead (`deviceSoftmaxSchedule`,
+chosen by the split-K cost model when it saves more than a tenth): a
+statistics kernel writes the maximum and the sum of `exp(sample - maximum)`
+of each chunk of each row to the operator scratch, and an elementwise kernel
+takes the largest chunk maximum M, the ascending sum of
+`chunk sum * exp(chunk maximum - M)`, and `exp(own sample - M) / sum`. The
+maximum is the backend's; the sum is regrouped, so this path is not bit
+identical to the backend. It is still the cuDNN accurate algorithm (the
+maximum is subtracted before every exponential), and the cuDNN contract
+fixes no summation order. A Softmax outside every group with such a
+schedule runs the same two kernels with its input as the only leaf.
+`onnx-fusion-execution` checks a 32 x 512 masked Softmax against the arena
+backend within 4e-6 relative (NaN exactly where the backend has NaN) and for
+determinism.

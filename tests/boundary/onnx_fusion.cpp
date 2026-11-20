@@ -4,8 +4,10 @@
 // for bit: UdonDNN OpTensor and activation and the UdonONNXOperators unary
 // kernel run on the same renderer, and the re-indexing nodes, which only copy
 // words, are applied on the Host. A banked sequence state runs several steps
-// through its two banks against the copying advance.
+// through its two banks against the copying advance. A two-pass Softmax
+// regroups its sums, so it is compared within tolerance and for determinism.
 #include "VRC/Testing/NativeOpenCL/Runtime.h"
+#include <algorithm>
 #include <cfloat>
 #include <cmath>
 #include <cstdint>
@@ -21,8 +23,11 @@ namespace {
 constexpr uint32_t surfaceWidth = 8192, surfaceHeight = 16;
 constexpr uint32_t surfaceWords = surfaceWidth * surfaceHeight;
 // udononnx_unary_f32 addresses one row, and a fused kernel launches over the
-// rows its result occupies: one for every result here.
+// rows its result occupies: one for every result here but the two-pass
+// Softmax, which writes two.
 constexpr uint32_t rowWords = surfaceWidth;
+constexpr uint32_t longRows = 32, longColumns = 512;
+constexpr uint32_t longElements = longRows * longColumns;
 constexpr uint32_t rows = 4, columns = 64, half = columns / 2;
 constexpr uint32_t elements = rows * columns;
 constexpr uint32_t keyRows = 4, keyColumns = 8, keyCopies = 3;
@@ -159,10 +164,11 @@ Comparison compare(const char *name, const Buffer &fused,
 } // namespace
 
 int main(int argc, char **argv) {
-  if (argc != 13) {
+  if (argc != 15) {
     std::cerr << "usage: onnx-fusion-kernels <op-tensor> <activation> <unary> "
                  "<softmax> <rotated> <gated> <keys> <mixed> <masked> "
-                 "<banked-view> <banked-past> <vertex>\n";
+                 "<banked-view> <banked-past> <long-statistics> "
+                 "<long-elementwise> <vertex>\n";
     return 2;
   }
   try {
@@ -191,8 +197,15 @@ int main(int argc, char **argv) {
          {fusedId + 5, rowWords, 0, "banked_udononnx_fused_0", argv[10],
           surfaceWidth, 1, 2},
          {fusedId + 6, rowWords, 0, "banked_udononnx_fused_1", argv[11],
-          surfaceWidth, 1, 2}},
-        argv[12]);
+          surfaceWidth, 1, 2},
+         // The renderer binds every input as a texture of the draw surface,
+         // so the one-row statistics kernel draws two rows to see all of x;
+         // its second row is outside the guard and writes zeros.
+         {fusedId + 10, longElements, 0, "two_pass_udononnx_fused_0", argv[12],
+          surfaceWidth, 2, 2},
+         {fusedId + 11, longElements, 0, "two_pass_udononnx_fused_1", argv[13],
+          surfaceWidth, 2, 3}},
+        argv[14]);
 
     std::mt19937 generator(0x5eed);
     auto uniform = [&](float scale) {
@@ -388,6 +401,66 @@ int main(int argc, char **argv) {
                 presentReference[(head * capacity + line + 1) * width + column];
       bank = present;
     }
+    // long = softmax(x + mask) over rows of 512, in two passes: the
+    // statistics kernel writes chunk maxima and sums that the elementwise
+    // kernel combines. Row 0 holds the special values (NaN), row 1 is masked
+    // out entirely by -inf (NaN as 0/0 in both), row 2 entirely by -FLT_MAX,
+    // row 3 has one dominant score, and every row carries the additive mask
+    // of a left-padded sequence.
+    Buffer longX(surfaceWords, 0.0f), longMask(surfaceWords, 0.0f);
+    for (uint32_t index = 0; index < longElements; ++index)
+      longX[index] = uniform(12.0f);
+    for (uint32_t index = 0; index < specialCount; ++index)
+      longX[index * 17] = specials[index];
+    for (uint32_t column = 0; column < longColumns; ++column) {
+      longMask[column] = column < 300 ? -FLT_MAX : 0.0f;
+      longX[longColumns + column] = -infinity;
+      longX[2 * longColumns + column] = -FLT_MAX;
+    }
+    longX[3 * longColumns + 400] = 80.0f;
+    const Shape longShape{1, longRows, 1, longColumns},
+        longRow{1, 1, 1, longColumns};
+    Buffer longScores =
+        opTensor(session, longX, longShape, longMask, longRow, longShape, 0);
+    Buffer longReference = softmax(session, longScores, longRows, longColumns);
+    Buffer longStatistics = draw(session, fusedId + 10, longElements,
+                                 {&longX, &longMask}, nullptr, 0);
+    Buffer longFused = draw(session, fusedId + 11, longElements,
+                            {&longX, &longMask, &longStatistics}, nullptr, 0);
+    Buffer longStatisticsAgain = draw(session, fusedId + 10, longElements,
+                                      {&longX, &longMask}, nullptr, 0);
+    Buffer longAgain =
+        draw(session, fusedId + 11, longElements,
+             {&longX, &longMask, &longStatisticsAgain}, nullptr, 0);
+    unsigned within = 0, nans = 0, zeros = 0, nonZeros = 0;
+    bool nanMatch = true, deterministic = true;
+    double worst = 0.0;
+    for (uint32_t index = 0; index < longElements; ++index) {
+      float value = longFused[index], reference = longReference[index];
+      deterministic &= bits(value) == bits(longAgain[index]);
+      nanMatch &= std::isnan(value) == std::isnan(reference);
+      nans += std::isnan(value);
+      zeros += value == 0.0f;
+      nonZeros += value != 0.0f && !std::isnan(value);
+      // Each output is a quotient of exponentials whose sums differ only in
+      // grouping and in one rescaling per chunk: a few float roundings.
+      double error = std::fabs(static_cast<double>(value) - reference);
+      bool close = std::isnan(value) ? std::isnan(reference)
+                                     : error <= 4.0e-6 * reference;
+      within += close;
+      if (!std::isnan(value) && reference > 0.0f)
+        worst = std::max(worst, error / reference);
+      if (!close && within + 8 > index)
+        std::cerr << "long[" << index << "]: fused " << value << " library "
+                  << reference << "\n";
+    }
+    std::cout << "long_within_tolerance=" << within << "/" << longElements
+              << " long_nan_match=" << nanMatch
+              << " long_deterministic=" << deterministic << " long_nan=" << nans
+              << " long_zero=" << zeros << " long_nonzero=" << nonZeros
+              << " long_worst_relative=" << worst << "\n";
+    passed &= within == longElements && nanMatch && deterministic;
+
     std::cout << "draws=" << session.drawCount() << " device=\""
               << session.deviceName() << "\"\n";
     return passed ? 0 : 1;

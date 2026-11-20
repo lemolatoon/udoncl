@@ -998,6 +998,17 @@ if(VRC_ENABLE_NATIVE_FRAGMENT_TESTS)
       $<TARGET_FILE:synthesized-gather-kernel>
       "${PROJECT_BINARY_DIR}/tests/synthesized-gather")
   set_tests_properties(synthesized-gather-execution PROPERTIES TIMEOUT 600)
+  add_executable(raw-word-texel-kernel boundary/raw_word_texel.cpp)
+  target_compile_features(raw-word-texel-kernel PRIVATE cxx_std_20)
+  set_target_properties(raw-word-texel-kernel PROPERTIES CXX_EXTENSIONS OFF)
+  target_link_libraries(raw-word-texel-kernel PRIVATE VRCNativeOpenCLRuntime)
+  add_test(NAME raw-word-texel-execution
+    COMMAND Python3::Interpreter
+      "${CMAKE_CURRENT_SOURCE_DIR}/boundary/raw_word_texel.py"
+      $<TARGET_FILE:vrccl> "${VRC_TEST_CLANG}"
+      $<TARGET_FILE:raw-word-texel-kernel>
+      "${PROJECT_BINARY_DIR}/tests/raw-word-texel")
+  set_tests_properties(raw-word-texel-execution PROPERTIES TIMEOUT 600)
   add_executable(onnx-fusion-kernels boundary/onnx_fusion.cpp)
   target_compile_features(onnx-fusion-kernels PRIVATE cxx_std_20)
   set_target_properties(onnx-fusion-kernels PROPERTIES CXX_EXTENSIONS OFF)

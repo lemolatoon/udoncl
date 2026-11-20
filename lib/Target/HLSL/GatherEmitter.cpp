@@ -3,6 +3,7 @@
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "llvm/ADT/StringExtras.h"
+#include <optional>
 using namespace mlir;
 namespace vrc {
 namespace fragment = ::vrc::vrcgpu;
@@ -10,11 +11,63 @@ namespace {
 std::string textureName(unsigned argument) {
   return argument == 0 ? "_VRC_Input" : "_VRC_Input" + std::to_string(argument);
 }
+
+// A counted loop is unrolled when its trip count times its body size stays
+// within this many operations, so the shader stays small.
+constexpr uint64_t unrollMaxTrips = 64, unrollMaxOperations = 4096;
+
+std::optional<uint64_t> constantInteger(Value value) {
+  if (auto constant = value.getDefiningOp<arith::ConstantOp>())
+    if (auto integer = dyn_cast<IntegerAttr>(constant.getValue()))
+      if (integer.getValue().getActiveBits() <= 31)
+        return integer.getValue().getZExtValue();
+  return std::nullopt;
+}
+
+/* The trip count of a loop the lowering emits for a constant-bound counter:
+ * the before region only compares the counter (initially a constant) with a
+ * constant, unsigned or signed less-than, and passes its arguments through;
+ * the after region yields the counter plus a positive constant. The bounds
+ * are below 2^31, so the counter never wraps and both compares agree. */
+std::optional<uint64_t> countedTrips(scf::WhileOp loop) {
+  auto &before = loop.getBefore().front(), &after = loop.getAfter().front();
+  auto condition = cast<scf::ConditionOp>(before.getTerminator());
+  auto compare = condition.getCondition().getDefiningOp<arith::CmpIOp>();
+  if (condition.getArgs().size() != before.getNumArguments() ||
+      !llvm::equal(condition.getArgs(), before.getArguments()) ||
+      llvm::any_of(before.without_terminator(), [&](Operation &op) {
+        return &op != compare.getOperation() && !isa<arith::ConstantOp>(op);
+      }))
+    return std::nullopt;
+  if (!compare || (compare.getPredicate() != arith::CmpIPredicate::ult &&
+                   compare.getPredicate() != arith::CmpIPredicate::slt))
+    return std::nullopt;
+  auto counter = dyn_cast<BlockArgument>(compare.getLhs());
+  auto bound = constantInteger(compare.getRhs());
+  if (!counter || counter.getOwner() != &before || !bound)
+    return std::nullopt;
+  unsigned index = counter.getArgNumber();
+  auto first = constantInteger(loop.getInits()[index]);
+  auto yield = cast<scf::YieldOp>(after.getTerminator());
+  auto increment = yield.getOperand(index).getDefiningOp<arith::AddIOp>();
+  if (!first || !increment || increment.getLhs() != after.getArgument(index))
+    return std::nullopt;
+  auto step = constantInteger(increment.getRhs());
+  if (!step || *step == 0)
+    return std::nullopt;
+  return *first >= *bound ? 0 : (*bound - *first + *step - 1) / *step;
+}
+
+bool containsLoop(Region &region) {
+  return region.walk([](scf::WhileOp) { return WalkResult::interrupt(); })
+      .wasInterrupted();
+}
+
 struct Emitter {
   explicit Emitter(llvm::raw_ostream &stream) : out(stream) {}
   llvm::raw_ostream &out;
   llvm::DenseMap<Value, std::string> names;
-  unsigned next = 0, indent = 1;
+  unsigned next = 0, indent = 1, unrolled = 0;
   bool invalid = false;
   void line(StringRef text) { out.indent(indent * 2) << text << "\n"; }
   std::string type(Type t) {
@@ -96,11 +149,17 @@ struct Emitter {
                                    ".Load(int3(int(" + get(load.getX()) +
                                    "), int(" + get(load.getY()) + "), 0))");
     } else if (auto unpack = dyn_cast<fragment::RawUnpackOp>(op)) {
+      // Rebuild the word as two exact 16-bit halves: channel c holds
+      // byte_c / 255, so x * 255 + y * 65280 is the low half within a few
+      // float ulps of 65535 (far below 0.5, fused or not), and truncating
+      // after +0.5 is exact. Two float-to-uint conversions replace four
+      // rounds and four conversions per Load; type conversions run at a
+      // fraction of the FMA rate and dominate long Load loops.
+      auto texel = get(unpack.getTexel());
       auto bytes = "bytes" + std::to_string(next++);
-      line("uint4 " + bytes + " = uint4(round(" + get(unpack.getTexel()) +
-           " * 255.0));");
-      auto word = bytes + ".x | (" + bytes + ".y << 8u) | (" + bytes +
-                  ".z << 16u) | (" + bytes + ".w << 24u)";
+      line("uint2 " + bytes + " = uint2(" + texel + ".yw * 65280.0 + " + texel +
+           ".xz * 255.0 + 0.5);");
+      auto word = bytes + ".x | (" + bytes + ".y << 16u)";
       declare(unpack.getValue(), unpack.getValue().getType().isF32()
                                      ? "asfloat(" + word + ")"
                                      : word);
@@ -116,7 +175,10 @@ struct Emitter {
     } else if (auto condition = dyn_cast<scf::IfOp>(op)) {
       for (auto value : condition.getResults())
         declare(value);
-      line("if (" + get(condition.getCondition()) + ") {");
+      bool flatten = unrolled && !containsLoop(condition.getThenRegion()) &&
+                     !containsLoop(condition.getElseRegion());
+      line(std::string(flatten ? "[flatten] " : "") + "if (" +
+           get(condition.getCondition()) + ") {");
       ++indent;
       if (failed(body(condition.getThenRegion().front())))
         return failure();
@@ -144,6 +206,46 @@ struct Emitter {
         declare(std::get<0>(pair), get(std::get<1>(pair)));
       for (auto value : loop.getResults())
         declare(value);
+      auto trips = countedTrips(loop);
+      uint64_t operations = 0;
+      loop.getAfter().walk([&](Operation *) { ++operations; });
+      if (trips && *trips <= unrollMaxTrips &&
+          *trips * operations <= unrollMaxOperations &&
+          !containsLoop(loop.getAfter())) {
+        /* A short counted loop: run its body exactly `trips` times, fully
+         * unrolled, with every conditional inside flattened. The guarded
+         * Loads of all iterations then issue back to back instead of one
+         * Load latency per iteration; a flattened guard evaluates both arms
+         * and selects, so every result keeps its value and order. Index
+         * proofs hold on every path and an out-of-range Load reads zero. */
+        auto loopIndex = "u" + std::to_string(next++);
+        line("[unroll] for (uint " + loopIndex + " = 0u; " + loopIndex + " < " +
+             std::to_string(*trips) + "u; ++" + loopIndex + ") {");
+        ++indent;
+        ++unrolled;
+        for (auto pair : llvm::zip(after.getArguments(), before.getArguments()))
+          declare(std::get<0>(pair), get(std::get<1>(pair)));
+        if (failed(body(after)))
+          return failure();
+        auto yield = cast<scf::YieldOp>(after.getTerminator());
+        SmallVector<std::string> temporary;
+        for (auto value : yield.getOperands()) {
+          auto name = "next" + std::to_string(next++);
+          line(type(value.getType()) + " " + name + " = " + get(value) + ";");
+          temporary.push_back(name);
+        }
+        for (auto pair : llvm::zip(before.getArguments(), temporary))
+          line(get(std::get<0>(pair)) + " = " + std::get<1>(pair) + ";");
+        --unrolled;
+        --indent;
+        line("}");
+        SmallVector<std::string> exits;
+        for (auto value : before.getArguments())
+          exits.push_back(get(value));
+        for (auto pair : llvm::zip(loop.getResults(), exits))
+          line(get(std::get<0>(pair)) + " = " + std::get<1>(pair) + ";");
+        return success(!invalid);
+      }
       line("[loop] while (true) {");
       ++indent;
       if (failed(body(before)))
