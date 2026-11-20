@@ -232,6 +232,61 @@ def EvaluateHostConstructorsPass : Pass<"vrc-evaluate-host-constructors", "mlir:
   ];
   let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "::vrc::vrc::VRCDialect", "mlir::arith::ArithDialect", "mlir::func::FuncDialect", "mlir::LLVM::LLVMDialect"];
 }
+def FoldImmutableHostMemoryPass : Pass<"vrc-fold-immutable-host-memory", "mlir::ModuleOp"> {
+  let summary = "Fold loads from raw Host memory that no reachable operation can store to";
+  let description = [{
+    A raw global of a linked Host program is closed-world state: every store
+    that can reach it is an operation of the module, or the completion of a
+    readback the module issues. A load from a byte range no store can touch
+    reads the initializer under every interleaving of export events and
+    continuations, so it is replaced by a constant, by the address a
+    relocated word names, or by the Unity buffer a token word names. A global
+    nothing stores to becomes `constant`.
+
+    The analysis is flow-insensitive and field-sensitive, in the style of
+    LLVM GlobalOpt: addresses are (object, offset) sets with strided offsets,
+    memory keeps what stored values may point to, and a store through an
+    address the analysis lost clobbers exactly the objects whose address
+    escaped it. Run it before async conversion, alternating with scalar
+    simplification: a folded load can make the code holding a store
+    unreachable. `vrc.immutable_host_memory` on the module reports what one
+    run folded.
+  }];
+  let options = [
+    Option<"explain", "explain", "bool", "false",
+           "Print how many loads were not folded, and why, to stderr">
+  ];
+  let statistics = [
+    Statistic<"foldedLoads", "folded-loads", "Loads replaced by their initializer">,
+    Statistic<"constantGlobals", "constant-globals", "Globals proven never stored to">
+  ];
+  let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "::vrc::vrc::VRCDialect", "mlir::arith::ArithDialect"];
+}
+def PromoteHostGlobalsToUdonVariablesPass : Pass<"vrc-promote-host-globals-to-udon-variables", "mlir::ModuleOp"> {
+  let summary = "Hold scalar Host globals whose address is unobservable in named Udon variables";
+  let description = [{
+    A `udonhl.global` of one i32 or pointer whose address is used only as the
+    pointer of whole-object loads and stores of its own type is marked
+    `vrc.udon_variable`. Its accesses become `udonhl.variable_load` and
+    `udonhl.variable_store`, which name the symbol instead of an address, and
+    the `udonhl.address_of` operations are erased. Scalar Udon lowering gives
+    such a global a named heap slot initialized with the global's initializer
+    instead of a raw heap cell.
+
+    Globals with any other address use (pointer arithmetic with a run-time
+    offset, bulk memory operations, calls, comparisons, a stored address),
+    with a partial or retyped access, or with an initializer the Udon
+    assembler cannot spell are left in the raw heap. With
+    `vrc.debug_compiler_phases` on the module the decision for every global is
+    printed to stderr.
+  }];
+  let dependentDialects = ["::vrc::udonhl::UdonHLDialect"];
+  let statistics = [
+    Statistic<"numPromoted", "num-promoted", "Globals held in Udon variables">,
+    Statistic<"numKeptInRawHeap", "num-kept-in-raw-heap", "Globals left in the raw heap">,
+    Statistic<"numAccessesRewritten", "num-accesses-rewritten", "Loads and stores rewritten to variable accesses">
+  ];
+}
 def ThreadConstantBranchesPass : Pass<"vrc-thread-constant-branches", "mlir::ModuleOp"> {
   let summary = "Retarget edges whose constant block arguments decide the conditional branch of their successor";
   let description = [{

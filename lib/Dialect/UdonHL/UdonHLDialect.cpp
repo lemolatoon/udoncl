@@ -287,7 +287,35 @@ mlir::LogicalResult vrc::udonhl::AddressOfOp::verifySymbolUses(
   if (static_cast<int64_t>(getResult().getType().getAddressSpace()) !=
       global.getAddressSpace())
     return emitOpError("result address space must match the global");
+  if (global->hasAttr("vrc.udon_variable"))
+    return emitOpError("a global held in a Udon variable has no address");
   return mlir::success();
+}
+
+static mlir::LogicalResult
+verifyVariableAccess(mlir::Operation *operation,
+                     mlir::SymbolTableCollection &symbols,
+                     mlir::FlatSymbolRefAttr variable, mlir::Type type) {
+  auto global = symbols.lookupNearestSymbolFrom<vrc::udonhl::GlobalOp>(
+      operation, variable);
+  if (!global || !global->hasAttr("vrc.udon_variable"))
+    return operation->emitOpError(
+        "variable must resolve to a udonhl.global marked vrc.udon_variable");
+  if (global.getStorageType() != type)
+    return operation->emitOpError("type must match the variable storage type");
+  return mlir::success();
+}
+
+mlir::LogicalResult vrc::udonhl::VariableLoadOp::verifySymbolUses(
+    mlir::SymbolTableCollection &symbols) {
+  return verifyVariableAccess(getOperation(), symbols, getVariableAttr(),
+                              getResult().getType());
+}
+
+mlir::LogicalResult vrc::udonhl::VariableStoreOp::verifySymbolUses(
+    mlir::SymbolTableCollection &symbols) {
+  return verifyVariableAccess(getOperation(), symbols, getVariableAttr(),
+                              getValue().getType());
 }
 
 mlir::LogicalResult vrc::udonhl::AllocaOp::verify() {

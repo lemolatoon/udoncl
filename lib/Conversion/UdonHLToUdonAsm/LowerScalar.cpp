@@ -20,6 +20,7 @@
 #include "mlir/IR/Matchers.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallPtrSet.h"
@@ -124,6 +125,43 @@ dispatchReadsScalarsDirectly(::vrc::vrc::DispatchDescCreateOp descriptor) {
   auto dispatch =
       dyn_cast_or_null<::vrc::vrc::DispatchOp>(descriptor->getNextNode());
   return dispatch && dispatch.getDesc() == result;
+}
+
+/// Whether the sign bit of the i32 `value` is clear on every execution.
+static bool isKnownNonNegative(Value value, unsigned depth = 0) {
+  llvm::APInt constant;
+  if (matchPattern(value, m_ConstantInt(&constant)))
+    return constant.isNonNegative();
+  Operation *definition = value.getDefiningOp();
+  if (!definition || depth == 4)
+    return false;
+  // Narrower integers are zero-extended, and lengths and UTF-16 code units
+  // are never negative.
+  if (auto extension = dyn_cast<arith::ExtUIOp>(definition))
+    return extension.getIn().getType().getIntOrFloatBitWidth() < 32;
+  if (isa<::vrc::udonhl::StringLengthOp, ::vrc::udonhl::StringCodeUnitOp,
+          ::vrc::udonhl::Int32ArrayLengthOp>(definition))
+    return true;
+  if (auto bitAnd = dyn_cast<arith::AndIOp>(definition))
+    return isKnownNonNegative(bitAnd.getLhs(), depth + 1) ||
+           isKnownNonNegative(bitAnd.getRhs(), depth + 1);
+  if (auto bitOr = dyn_cast<arith::OrIOp>(definition))
+    return isKnownNonNegative(bitOr.getLhs(), depth + 1) &&
+           isKnownNonNegative(bitOr.getRhs(), depth + 1);
+  if (auto shift = dyn_cast<arith::ShRUIOp>(definition)) {
+    if (matchPattern(shift.getRhs(), m_ConstantInt(&constant)) &&
+        constant.ugt(0) && constant.ult(32))
+      return true;
+    return isKnownNonNegative(shift.getLhs(), depth + 1);
+  }
+  if (auto shift = dyn_cast<arith::ShRSIOp>(definition))
+    return isKnownNonNegative(shift.getLhs(), depth + 1);
+  if (auto remainder = dyn_cast<arith::RemSIOp>(definition))
+    return isKnownNonNegative(remainder.getLhs(), depth + 1);
+  if (auto select = dyn_cast<arith::SelectOp>(definition))
+    return isKnownNonNegative(select.getTrueValue(), depth + 1) &&
+           isKnownNonNegative(select.getFalseValue(), depth + 1);
+  return false;
 }
 
 static StringRef arrayLoadExtern(MemRefType type) {
@@ -1487,6 +1525,159 @@ private:
          integerField("raw_heap_words", rawHeapWordCount())});
   }
 
+  /// A global marked `vrc.udon_variable` is one named heap slot that starts
+  /// with the global's initializer.
+  LogicalResult planUdonVariable(host::GlobalOp global) {
+    Type type = global.getStorageType();
+    auto pointer = dyn_cast<host::PtrType>(type);
+    int64_t initial = 0;
+    Attribute attribute = global.getInitialValueAttr();
+    if (auto integer = dyn_cast_or_null<IntegerAttr>(attribute))
+      initial = integer.getValue().getSExtValue();
+    else if (attribute && !isa<UnitAttr>(attribute))
+      return global.emitError("Udon variable requires an integer initializer");
+    if ((!type.isInteger(32) && !(pointer && pointer.getAddressSpace() == 0)) ||
+        initial == INT32_MIN || !llvm::isInt<32>(initial) ||
+        (pointer && initial != 0))
+      return global.emitError(
+          "Udon variable requires an assemblable i32 or null pointer");
+    std::string name = "__vrc_variable_";
+    for (char character : global.getSymName())
+      name += llvm::isAlnum(character) ? character : '_';
+    // Distinct symbols may sanitize to one identifier.
+    std::string unique = name;
+    for (unsigned suffix = 1; !variableSlotNames.insert(unique).second;
+         ++suffix)
+      unique = name + "_" + std::to_string(suffix);
+    addSlot(unique, "SystemInt32", std::to_string(initial), false);
+    variableSlots.try_emplace(global.getSymName(), std::move(unique));
+    return success();
+  }
+
+  /// Chooses the values of `function` that live in a Udon variable instead of
+  /// a register.
+  ///
+  /// A variable is an ordinary heap slot, so a value can use it as its own
+  /// slot while both hold the same value:
+  ///  - the result of a variable_load, until the variable is written again;
+  ///  - the result of a single-extern integer operation that is stored to a
+  ///    variable, from its definition on. The variable then receives the
+  ///    value at the definition instead of at the store, so nothing may read
+  ///    it in between.
+  /// Both are decided within one block, and only where nothing but
+  /// effect-free operations and other variable accesses run while the value
+  /// is in use: a call, a suspension or an unknown operation may run code
+  /// that reads or writes the variable.
+  void planVariableAliases(func::FuncOp function,
+                           llvm::DenseMap<Value, std::string> &aliases) {
+    for (Block &block : function.getBody()) {
+      llvm::DenseMap<Operation *, unsigned> positions;
+      SmallVector<unsigned> barriersBefore;
+      unsigned barriers = 0;
+      for (Operation &operation : block) {
+        positions.try_emplace(&operation, positions.size());
+        barriersBefore.push_back(barriers);
+        barriers +=
+            !isa<host::VariableLoadOp, host::VariableStoreOp>(operation) &&
+            !isMemoryEffectFree(&operation);
+      }
+      barriersBefore.push_back(barriers);
+      // No barrier at a position in (first, last].
+      auto undisturbed = [&](unsigned first, unsigned last) {
+        return barriersBefore[first + 1] == barriersBefore[last + 1];
+      };
+      // The position of the last use of `value`, all of which must be in
+      // this block after `definition`.
+      auto lastUse = [&](Value value,
+                         unsigned definition) -> std::optional<unsigned> {
+        unsigned last = definition;
+        for (Operation *user : value.getUsers()) {
+          auto position = positions.find(user);
+          if (position == positions.end() || position->second <= definition)
+            return std::nullopt;
+          last = std::max(last, position->second);
+        }
+        return last;
+      };
+      struct Access {
+        unsigned position;
+        Operation *operation;
+      };
+      // In block order, by variable in order of first access.
+      llvm::MapVector<StringRef, SmallVector<Access>> loads, stores;
+      for (Operation &operation : block) {
+        if (auto load = dyn_cast<host::VariableLoadOp>(operation))
+          loads[load.getVariable()].push_back(
+              {positions.lookup(&operation), &operation});
+        else if (auto store = dyn_cast<host::VariableStoreOp>(operation))
+          stores[store.getVariable()].push_back(
+              {positions.lookup(&operation), &operation});
+      }
+      // Positions at which each variable's slot is written: the definition
+      // of a value that lives in the variable, or else the store.
+      llvm::StringMap<SmallVector<unsigned>> writes;
+      for (auto &[variable, variableStores] : stores) {
+        std::string slot = variableSlots.lookup(variable);
+        ArrayRef<Access> variableLoads;
+        if (auto found = loads.find(variable); found != loads.end())
+          variableLoads = found->second;
+        // The end of the previous value that lives in this variable.
+        std::optional<unsigned> busyUntil;
+        for (const Access &access : variableStores) {
+          Value value =
+              cast<host::VariableStoreOp>(access.operation).getValue();
+          Operation *definition = value.getDefiningOp();
+          auto defined =
+              definition ? positions.find(definition) : positions.end();
+          std::optional<unsigned> last =
+              defined != positions.end() && value.getType().isInteger(32) &&
+                      isa<arith::AddIOp, arith::SubIOp, arith::MulIOp>(
+                          definition)
+                  ? lastUse(value, defined->second)
+                  : std::nullopt;
+          bool inVariable =
+              last && !aliases.contains(value) &&
+              undisturbed(defined->second, *last) &&
+              (!busyUntil || defined->second >= *busyUntil) &&
+              llvm::none_of(variableStores,
+                            [&](const Access &other) {
+                              return other.operation != access.operation &&
+                                     other.position > defined->second &&
+                                     other.position <= *last;
+                            }) &&
+              llvm::none_of(variableLoads, [&](const Access &load) {
+                return load.position > defined->second &&
+                       load.position < access.position;
+              });
+          if (!inVariable) {
+            writes[variable].push_back(access.position);
+            continue;
+          }
+          aliases.try_emplace(value, slot);
+          writes[variable].push_back(defined->second);
+          busyUntil = *last;
+        }
+      }
+      for (auto &[variable, variableLoads] : loads) {
+        std::string slot = variableSlots.lookup(variable);
+        ArrayRef<unsigned> variableWrites;
+        if (auto found = writes.find(variable); found != writes.end())
+          variableWrites = found->second;
+        for (const Access &access : variableLoads) {
+          Value value = access.operation->getResult(0);
+          std::optional<unsigned> last = lastUse(value, access.position);
+          // The last user may itself overwrite the variable: it reads its
+          // operands first.
+          if (last && undisturbed(access.position, *last) &&
+              llvm::none_of(variableWrites, [&](unsigned write) {
+                return write > access.position && write < *last;
+              }))
+            aliases.try_emplace(value, slot);
+        }
+      }
+    }
+  }
+
   LogicalResult planRawMemory() {
     uint64_t cursor = 4; // Keep the null pointer unmapped.
     llvm::StringMap<host::AddressOfOp> representativeAddresses;
@@ -1498,6 +1689,11 @@ private:
         return global.emitError(
             "raw Udon globals currently require internal address-space zero");
       Type type = global.getStorageType();
+      if (global->hasAttr("vrc.udon_variable")) {
+        if (failed(planUdonVariable(global)))
+          return failure();
+        continue;
+      }
       auto bytes =
           dyn_cast_or_null<DenseI8ArrayAttr>(global.getInitialValueAttr());
       auto integer = dyn_cast<IntegerType>(type);
@@ -1965,6 +2161,9 @@ private:
       }
     }
 
+    llvm::DenseMap<Value, std::string> variableAliases;
+    planVariableAliases(function, variableAliases);
+
     // Allocate every SSA value before emitting code. This makes block argument
     // transfer and forward-branch relocation independent of traversal order.
     unsigned valueIndex = 0;
@@ -2026,6 +2225,11 @@ private:
         }
         if (!operation.getNumResults())
           continue;
+        if (auto alias = variableAliases.find(operation.getResult(0));
+            alias != variableAliases.end()) {
+          valueSlots[operation.getResult(0)] = alias->second;
+          continue;
+        }
         if (auto materialize =
                 dyn_cast<udonhl::LiteralMaterializeOp>(operation)) {
           auto type = udonType(materialize.getResult().getType());
@@ -3454,6 +3658,24 @@ private:
                    valueSlots.lookup(cast.getResult()));
           continue;
         }
+        if (auto load = dyn_cast<host::VariableLoadOp>(operation)) {
+          std::string variable = variableSlots.lookup(load.getVariable());
+          std::string result = valueSlots.lookup(load.getResult());
+          if (variable.empty() || result.empty())
+            return load.emitError("Udon variable load has no heap slot");
+          if (result != variable)
+            emitCopy(load.getLoc(), variable, result);
+          continue;
+        }
+        if (auto store = dyn_cast<host::VariableStoreOp>(operation)) {
+          std::string variable = variableSlots.lookup(store.getVariable());
+          std::string value = valueSlots.lookup(store.getValue());
+          if (variable.empty() || value.empty())
+            return store.emitError("Udon variable store has no heap slot");
+          if (value != variable)
+            emitCopy(store.getLoc(), value, variable);
+          continue;
+        }
         if (auto load = dyn_cast<host::LoadOp>(operation)) {
           std::string pointer = valueSlots.lookup(load.getPointer());
           std::string result = valueSlots.lookup(load.getResult());
@@ -3935,6 +4157,23 @@ private:
             emitPush(cast.getLoc(), result);
             emitExtern(cast.getLoc(),
                        "SystemConvert.__ToInt64__SystemInt32__SystemInt64");
+          } else if (cast.getIn().getType().isInteger(1) &&
+                     cast.getOut().getType().isInteger(32)) {
+            // The sign bit of an i1 is its only bit: true is -1.
+            std::string zero = immutableSlot("SystemInt32", "0");
+            std::string allOnes = immutableSlot("SystemInt32", "-1");
+            emitPush(cast.getLoc(), source);
+            Operation *useZero = create(
+                cast.getLoc(), vm::JumpIfFalseOp::getOperationName(),
+                {builder.getNamedAttr("target", builder.getI64IntegerAttr(0))});
+            address += 8;
+            emitCopy(cast.getLoc(), allOnes, result);
+            Operation *done = emitJump(cast.getLoc(), 0);
+            useZero->setAttr("target", builder.getI64IntegerAttr(
+                                           static_cast<int64_t>(address)));
+            emitCopy(cast.getLoc(), zero, result);
+            done->setAttr("target", builder.getI64IntegerAttr(
+                                        static_cast<int64_t>(address)));
           } else {
             return cast.emitError("unsupported signed integer extension");
           }
@@ -4026,7 +4265,31 @@ private:
             return cast.emitError("unsupported integer truncation");
           if (cast.getIn().getType().isInteger(64) &&
               cast.getOut().getType().isInteger(32)) {
-            emitPush(cast.getLoc(), source);
+            // Truncation keeps the low word of any value, but
+            // SystemConvert.ToInt32 throws outside the i32 range. Two shifts
+            // first reduce the value to its sign-extended low word. A value
+            // that was extended from i32 is in range already.
+            std::string narrow = source;
+            if (!cast.getIn().getDefiningOp<arith::ExtSIOp>()) {
+              constexpr StringLiteral wide = "__vrc_i64_scratch_0";
+              addSlot(wide, "SystemInt64", "null", false);
+              std::string wordBits = immutableSlot("SystemInt32", "32");
+              emitPush(cast.getLoc(), source);
+              emitPush(cast.getLoc(), wordBits);
+              emitPush(cast.getLoc(), wide);
+              emitExtern(cast.getLoc(),
+                         "SystemInt64.__op_LeftShift__SystemInt64_SystemInt32__"
+                         "SystemInt64");
+              emitPush(cast.getLoc(), wide);
+              emitPush(cast.getLoc(), wordBits);
+              emitPush(cast.getLoc(), wide);
+              emitExtern(
+                  cast.getLoc(),
+                  "SystemInt64.__op_RightShift__SystemInt64_SystemInt32__"
+                  "SystemInt64");
+              narrow = wide.str();
+            }
+            emitPush(cast.getLoc(), narrow);
             emitPush(cast.getLoc(), result);
             emitExtern(cast.getLoc(),
                        "SystemConvert.__ToInt32__SystemInt64__SystemInt32");
@@ -4268,6 +4531,42 @@ private:
               !shift.getType().isInteger(32))
             return shift.emitError(
                 "logical right shift currently requires i32 operands");
+
+          constexpr StringLiteral arithmeticShift =
+              "SystemInt32.__op_RightShift__SystemInt32_SystemInt32__"
+              "SystemInt32";
+          // The arithmetic shift fills with the sign bit, so it is the
+          // logical shift of a value whose sign bit is clear.
+          if (isKnownNonNegative(shift.getLhs())) {
+            emitPush(shift.getLoc(), value);
+            emitPush(shift.getLoc(), amount);
+            emitPush(shift.getLoc(), result);
+            emitExtern(shift.getLoc(), arithmeticShift);
+            continue;
+          }
+          // A constant amount fixes the mask that clears the copies of the
+          // sign bit.
+          llvm::APInt constantAmount;
+          if (matchPattern(shift.getRhs(), m_ConstantInt(&constantAmount)) &&
+              constantAmount.ugt(0) && constantAmount.ult(32)) {
+            constexpr StringLiteral shifted = "__vrc_lshr_i32_arithmetic";
+            addSlot(shifted, "SystemInt32", "0", false);
+            std::string mask = immutableSlot(
+                "SystemInt32", std::to_string(llvm::maskTrailingOnes<uint32_t>(
+                                   32 - static_cast<unsigned>(
+                                            constantAmount.getZExtValue()))));
+            emitPush(shift.getLoc(), value);
+            emitPush(shift.getLoc(), amount);
+            emitPush(shift.getLoc(), shifted);
+            emitExtern(shift.getLoc(), arithmeticShift);
+            emitPush(shift.getLoc(), shifted);
+            emitPush(shift.getLoc(), mask);
+            emitPush(shift.getLoc(), result);
+            emitExtern(shift.getLoc(),
+                       "SystemInt32.__op_LogicalAnd__SystemInt32_SystemInt32__"
+                       "SystemInt32");
+            continue;
+          }
 
           std::string zero = immutableSlot("SystemInt32", "0");
           std::string width = immutableSlot("SystemInt32", "32");
@@ -6301,6 +6600,8 @@ private:
   std::map<std::string, std::string> allocatorResidentSlots;
   std::map<std::string, ResidentLiteralRequest> residentLiteralRequests;
   unsigned sharedConstantIndex = 0;
+  llvm::StringMap<std::string> variableSlots;
+  llvm::StringSet<> variableSlotNames;
   llvm::StringMap<uint64_t> rawGlobalBases;
   llvm::StringMap<DenseI8ArrayAttr> rawGlobalInitializers;
   SmallVector<std::pair<std::string, unsigned>> rawAddressCandidates;

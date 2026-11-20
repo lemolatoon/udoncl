@@ -103,6 +103,30 @@ def UdonHL_StoreOp : Op<UdonHL_Dialect, "store"> {
     I64Attr:$alignment, UnitAttr:$volatile_);
   let hasVerifier = 1;
 }
+def UdonHL_VariableLoadOp : Op<UdonHL_Dialect, "variable_load",
+    [MemoryEffects<[MemRead]>, SymbolUserOpInterface]> {
+  let summary = "Read a C global that is held in a named Udon variable";
+  let description = [{
+    A `udonhl.global` marked `vrc.udon_variable` has no byte address: it is a
+    named Udon heap slot that persists across events and continuations and is
+    read and written only by these two operations.
+  }];
+  let arguments = (ins FlatSymbolRefAttr:$variable);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$variable attr-dict `:` type($result)";
+  let extraClassDeclaration = [{
+    ::mlir::LogicalResult verifySymbolUses(::mlir::SymbolTableCollection &symbolTable);
+  }];
+}
+def UdonHL_VariableStoreOp : Op<UdonHL_Dialect, "variable_store",
+    [MemoryEffects<[MemWrite]>, SymbolUserOpInterface]> {
+  let summary = "Write a C global that is held in a named Udon variable";
+  let arguments = (ins AnyType:$value, FlatSymbolRefAttr:$variable);
+  let assemblyFormat = "$value `,` $variable attr-dict `:` type($value)";
+  let extraClassDeclaration = [{
+    ::mlir::LogicalResult verifySymbolUses(::mlir::SymbolTableCollection &symbolTable);
+  }];
+}
 def UdonHL_CheckedAssignedBufferResolveOp : Op<UdonHL_Dialect,
     "checked_assigned_buffer_resolve", [MemoryEffects<[MemRead, MemWrite]>]> {
   let summary = "Resolve an active mutable cl_mem to its assigned Unity buffer token";

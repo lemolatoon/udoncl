@@ -1949,6 +1949,9 @@ LogicalResult optimizeUnityHostStorage(ModuleOp module) {
   optimization.addPass(::vrc::createThreadConstantBranchesPass());
   optimization.addPass(createCanonicalizerPass());
   optimization.addPass(createSymbolDCEPass());
+  // Before the async transform: a suspension spills a live address, and a
+  // spilled address no longer names its global.
+  optimization.addPass(::vrc::createPromoteHostGlobalsToUdonVariablesPass());
   LogicalResult result = optimization.run(module);
   for (const std::string &name : protectedFunctions)
     if (auto function = module.lookupSymbol<func::FuncOp>(name))
@@ -4491,6 +4494,8 @@ int main(int argc, char **argv) {
       udon.addPass(::vrc::createSubstituteRuntimeIntrinsicsPass());
     }
     phase("udon-hl-to-asm");
+    // Again for the globals the async transform introduced.
+    udon.addPass(::vrc::createPromoteHostGlobalsToUdonVariablesPass());
     ::vrc::buildUdonHostStorageFinalizationPipeline(udon);
     if (failed(udon.run(physicalModule)) || failed(verify(physicalModule)))
       return 1;
