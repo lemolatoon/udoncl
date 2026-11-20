@@ -965,6 +965,25 @@ static int test_deferred_read(cl_context context, cl_command_queue queue) {
   EXPECT(clWaitForEvents(1, &read_event) == CL_SUCCESS && await_count == 1);
   EXPECT(clReleaseEvent(read_event) == CL_SUCCESS);
 
+  /* clFlush issues queued commands without waiting for them: it executes a
+   * write still in the command slot and leaves a submitted read in flight. */
+  await_count = flush_count = 0;
+  EXPECT(clEnqueueWriteBuffer(queue, destination, CL_FALSE, 0, sizeof(value),
+                              &value, 0, 0, 0) == CL_SUCCESS);
+  EXPECT(transfer_outstanding && await_count == 0);
+  EXPECT(clFlush(queue) == CL_SUCCESS);
+  EXPECT(await_count == 1 && !transfer_outstanding);
+  EXPECT(clEnqueueReadBuffer(queue, source, CL_FALSE, 0, sizeof(readback),
+                             &readback, 0, 0, &read_event) == CL_SUCCESS);
+  EXPECT(clFlush(queue) == CL_SUCCESS);
+  EXPECT(flush_count == 1 && await_count == 1 && transfer_outstanding);
+  EXPECT(clGetEventInfo(read_event, CL_EVENT_COMMAND_EXECUTION_STATUS,
+                        sizeof(status), &status, 0) == CL_SUCCESS &&
+         status == CL_SUBMITTED);
+  EXPECT(clWaitForEvents(1, &read_event) == CL_SUCCESS && await_count == 2);
+  EXPECT(clReleaseEvent(read_event) == CL_SUCCESS);
+  EXPECT(clFlush(0) == CL_INVALID_COMMAND_QUEUE);
+
   /* The command slot holds one transfer: the next transfer and a fill drain
    * a read nobody has waited for. */
   await_count = flush_count = 0;

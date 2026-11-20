@@ -658,6 +658,15 @@ defaults 4,000 and 8). They are recorded in the manifest as
 either to zero, or a manifest without them, resumes one continuation per
 frame.
 
+While an async export is pending the binding rejects every synchronous
+`Try*` export with `StatusBusy`. A library can declare a synchronous export
+`"allowed_while_busy": true` in its export entry (recorded on the manifest
+export, outside the public ABI fingerprint) when the export neither suspends
+nor changes state the suspended export owns, for example a progress or
+streamed-text getter. The generated method then runs between continuations
+and restores the pending export's busy state; it is still refused while a
+public buffer readback is in flight.
+
 Persistent discovery creates requests such as:
 
 ```mlir

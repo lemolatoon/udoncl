@@ -632,6 +632,14 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
     if (!publicName || !eventName || !statusSlot || !isAsync || !exportId ||
         *exportId <= 0 || !parameters || !isUdonSharpIdentifier(*publicName))
       return invalid("manifest contains an invalid export binding");
+    // A synchronous export declared safe to call while an async export is
+    // suspended: it neither suspends nor touches the state the suspended
+    // export owns, so it is not rejected with StatusBusy.
+    bool allowedWhileBusy =
+        entry->getBoolean("allowed_while_busy").value_or(false);
+    if (allowedWhileBusy && *isAsync)
+      return invalid(Twine("an async export cannot be allowed while busy: ") +
+                     *publicName);
     std::string methodName =
         (Twine(*isAsync ? "Start" : "Try") + *publicName).str();
     if (!methods.insert(methodName).second)
@@ -791,11 +799,20 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
     output << "            if (disposed)\n"
               "                return StatusDisposed;\n"
               "            if (program == null)\n"
-              "                return StatusNotInitialized;\n"
-           << (hasPublicBuffers ? "            if (busy || readbackBusy)\n"
-                                : "            if (busy)\n")
-           << "                return StatusBusy;\n"
-              "            busy = true;\n";
+              "                return StatusNotInitialized;\n";
+    StringRef restoreBusy =
+        allowedWhileBusy ? "busy = wasBusy;\n" : "busy = false;\n";
+    if (!allowedWhileBusy)
+      output << (hasPublicBuffers ? "            if (busy || readbackBusy)\n"
+                                  : "            if (busy)\n")
+             << "                return StatusBusy;\n"
+                "            busy = true;\n";
+    else
+      output << (hasPublicBuffers ? "            if (readbackBusy)\n"
+                                    "                return StatusBusy;\n"
+                                  : "")
+             << "            bool wasBusy = busy;\n"
+                "            busy = true;\n";
     for (const Parameter &parameter : parsedParameters)
       output << "            program.SetProgramVariable(\""
              << escapeString(parameter.slot) << "\", " << parameter.name
@@ -807,8 +824,9 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
            << "\");\n"
               "            if (rawStatus == null)\n"
               "            {\n"
-              "                busy = false;\n"
-              "                return StatusAbiMismatch;\n"
+              "                "
+           << restoreBusy
+           << "                return StatusAbiMismatch;\n"
               "            }\n"
               "            int status = (int)rawStatus;\n";
     if (resultType)
@@ -820,14 +838,15 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
           << "\");\n"
              "                if (rawResult == null)\n"
              "                {\n"
-             "                    busy = false;\n"
-             "                    return StatusAbiMismatch;\n"
+             "                    "
+          << restoreBusy
+          << "                    return StatusAbiMismatch;\n"
              "                }\n"
           << "                result = (" << *resultType
           << ")rawResult;\n"
              "            }\n";
-    output << "            busy = false;\n"
-              "            return status;\n"
+    output << "            " << restoreBusy
+           << "            return status;\n"
               "        }\n";
   }
   if (hasAsync) {

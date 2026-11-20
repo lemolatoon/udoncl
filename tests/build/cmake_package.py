@@ -1796,6 +1796,34 @@ def main():
     )
     assert_binding_identity(udonblas_manifest, udonblas_binding)
     assert 'public sealed class UdonBlasSgemmBinding' in udonblas_binding
+    # A synchronous export is rejected while an async export is pending
+    # unless the library declares it "allowed_while_busy"; such an export
+    # keeps the pending export's busy state and is not part of the public
+    # ABI fingerprint.
+    assert [
+        export.get('allowed_while_busy', False)
+        for export in udonblas_manifest['exports']
+    ] == [False, False, True]
+
+    def sync_method(name):
+        return udonblas_binding.split(
+            f'public int {name}(', 1
+        )[1].split('\n        }\n', 1)[0]
+
+    rejected = sync_method('TryGetUdonBlasSgemmResult')
+    assert 'if (busy || readbackBusy)' in rejected
+    assert 'wasBusy' not in rejected
+    assert rejected.rstrip().endswith(
+        'busy = false;\n            return status;'
+    )
+    polled = sync_method('TryGetUdonBlasSgemmPhase')
+    assert 'if (busy' not in polled
+    assert 'if (readbackBusy)\n                return StatusBusy;' in polled
+    assert 'bool wasBusy = busy;\n            busy = true;' in polled
+    assert 'busy = false;' not in polled
+    assert polled.rstrip().endswith(
+        'busy = wasBusy;\n            return status;'
+    )
     assert 'public int StartRunUdonBlasSgemm(' in udonblas_binding
     assert 'UdonSharpBehaviour receiver, string completionEvent' in (
         udonblas_binding)

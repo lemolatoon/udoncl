@@ -25,18 +25,42 @@ namespace Lemolatoon.Udoncl.Generated
         public string systemText;
         public string userText;
         public int maxNewTokens;
+
+        // Prompt work units done per frame while the prompt is tokenized.
+        public int promptWorkPerFrame;
         public int[] promptTokens;
         public int[] generatedTokens;
         public int[] textUnits;
+
+        // Reply text polled while it is generated: the first streamedLength
+        // elements of streamedUnits. streamChunk is scratch of the same size.
+        public int[] streamedUnits;
+        public int[] streamChunk;
         public bool completed;
         public int status;
         public int libraryStatus;
         public int tokenizerStatus;
         public int promptCount;
+        public int promptFrames;
         public int generatedCount;
         public int textLength;
+        public int streamedLength;
+
+        // Poll statistics: all polls, polls the binding refused as busy, polls
+        // that returned new text, and those of them made before the
+        // generation completed.
+        public int streamPolls;
+        public int streamBusyPolls;
+        public int streamUpdates;
+        public int streamMidGenerationUpdates;
+
+        // False once a polled length shrank or an already polled unit changed.
+        public bool streamMonotone;
+        public bool streamPrefixStable;
         public int asyncDiagnostic;
         public int phase;
+
+        private bool polling;
 
         public void Run()
         {
@@ -45,8 +69,17 @@ namespace Lemolatoon.Udoncl.Generated
             libraryStatus = LibraryStatusSuccess;
             tokenizerStatus = 0;
             promptCount = 0;
+            promptFrames = 0;
             generatedCount = 0;
             textLength = 0;
+            streamedLength = 0;
+            streamPolls = 0;
+            streamBusyPolls = 0;
+            streamUpdates = 0;
+            streamMidGenerationUpdates = 0;
+            streamMonotone = true;
+            streamPrefixStable = true;
+            polling = false;
             asyncDiagnostic = UdonclTinyLlamaChatBinding.AsyncDiagnosticNone;
             phase = PhaseInitialize;
             if (
@@ -56,7 +89,11 @@ namespace Lemolatoon.Udoncl.Generated
                 || promptTokens == null
                 || generatedTokens == null
                 || textUnits == null
+                || streamedUnits == null
+                || streamChunk == null
+                || streamChunk.Length < streamedUnits.Length
                 || maxNewTokens <= 0
+                || promptWorkPerFrame <= 0
                 || generatedTokens.Length < maxNewTokens
             )
             {
@@ -79,13 +116,42 @@ namespace Lemolatoon.Udoncl.Generated
                 return;
 
             // Text in: chat template, special tokens and BOS are applied by
-            // the C Host through the compiled tokenizer tables.
+            // the C Host through the compiled tokenizer tables, a bounded
+            // amount of work per frame.
             phase = PhaseSetChatPrompt;
-            status = binding.TrySetChatPrompt(systemText, userText, out libraryStatus);
+            status = binding.TryBeginChatPrompt(out libraryStatus);
+            if (!Succeeded())
+                return;
+            ContinueChatPrompt();
+        }
+
+        public void ContinueChatPrompt()
+        {
+            if (completed || phase != PhaseSetChatPrompt)
+                return;
+            ++promptFrames;
+            status = binding.TryContinueChatPrompt(
+                systemText,
+                userText,
+                promptWorkPerFrame,
+                out libraryStatus
+            );
             if (status == UdonclTinyLlamaChatBinding.StatusSuccess)
                 binding.TryLastTokenizerStatus(out tokenizerStatus);
             if (!Succeeded())
                 return;
+            int pending;
+            status = binding.TryChatPromptPending(out pending);
+            if (status != UdonclTinyLlamaChatBinding.StatusSuccess)
+            {
+                completed = true;
+                return;
+            }
+            if (pending != 0)
+            {
+                SendCustomEventDelayedFrames(nameof(ContinueChatPrompt), 1);
+                return;
+            }
 
             phase = PhaseReadPrompt;
             status = binding.TryPromptTokenCount(out promptCount);
@@ -107,11 +173,88 @@ namespace Lemolatoon.Udoncl.Generated
             phase = PhaseGenerate;
             status = binding.StartGenerate(maxNewTokens, this, nameof(OnGenerateComplete));
             if (status != UdonclTinyLlamaChatBinding.StatusSuccess)
+            {
                 completed = true;
+                return;
+            }
+            polling = true;
+            SendCustomEventDelayedFrames(nameof(PollStreamedText), 1);
+        }
+
+        // Text out while generating: once per frame, ask how much of the reply
+        // is final and read only the new part. A binding that is busy with
+        // the running generation refuses the call; that poll is skipped.
+        public void PollStreamedText()
+        {
+            if (!polling || completed)
+                return;
+            ReadStreamedText(true);
+            if (polling && !completed)
+                SendCustomEventDelayedFrames(nameof(PollStreamedText), 1);
+        }
+
+        private bool ReadStreamedText(bool generating)
+        {
+            int length;
+            int pollLibraryStatus;
+            ++streamPolls;
+            int pollStatus = binding.TryStreamedTextLength(out length);
+            if (pollStatus == UdonclTinyLlamaChatBinding.StatusBusy)
+            {
+                ++streamBusyPolls;
+                return true;
+            }
+            if (pollStatus != UdonclTinyLlamaChatBinding.StatusSuccess)
+            {
+                status = pollStatus;
+                return false;
+            }
+            if (length < streamedLength)
+            {
+                streamMonotone = false;
+                return true;
+            }
+            if (length == streamedLength)
+                return true;
+            if (length > streamedUnits.Length)
+            {
+                status = UdonclTinyLlamaChatBinding.StatusExecutionFailure;
+                return false;
+            }
+            // Re-read the already polled prefix with the new part: text that
+            // was reported final must never change.
+            pollStatus = binding.TryReadStreamedText(streamChunk, 0, length, out pollLibraryStatus);
+            if (pollStatus == UdonclTinyLlamaChatBinding.StatusBusy)
+            {
+                ++streamBusyPolls;
+                return true;
+            }
+            if (
+                pollStatus != UdonclTinyLlamaChatBinding.StatusSuccess
+                || pollLibraryStatus != LibraryStatusSuccess
+            )
+            {
+                status = pollStatus;
+                libraryStatus = pollLibraryStatus;
+                return false;
+            }
+            for (int index = 0; index < streamedLength; ++index)
+            {
+                if (streamChunk[index] != streamedUnits[index])
+                    streamPrefixStable = false;
+            }
+            for (int index = streamedLength; index < length; ++index)
+                streamedUnits[index] = streamChunk[index];
+            streamedLength = length;
+            ++streamUpdates;
+            if (generating)
+                ++streamMidGenerationUpdates;
+            return true;
         }
 
         public void OnGenerateComplete()
         {
+            polling = false;
             phase = PhaseGenerated;
             status = binding.GetGenerateStatus();
             if (status == UdonclTinyLlamaChatBinding.StatusSuccess)
@@ -134,8 +277,17 @@ namespace Lemolatoon.Udoncl.Generated
             if (!Succeeded())
                 return;
 
-            // Text out: UTF-16 code units, one per int, special tokens skipped.
+            // The last poll: after completion the streamed text is the whole
+            // reply.
             phase = PhaseReadText;
+            if (!ReadStreamedText(false) || !Succeeded())
+            {
+                asyncDiagnostic = binding.GetLastAsyncDiagnostic();
+                completed = true;
+                return;
+            }
+
+            // Text out: UTF-16 code units, one per int, special tokens skipped.
             status = binding.TryGeneratedTextLength(out textLength);
             if (status != UdonclTinyLlamaChatBinding.StatusSuccess)
             {

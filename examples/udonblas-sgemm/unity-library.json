@@ -45,7 +45,8 @@
       "symbol": "get_udonblas_sgemm_phase",
       "public_name": "GetUdonBlasSgemmPhase",
       "id": 3,
-      "parameters": []
+      "parameters": [],
+      "allowed_while_busy": true
     }
   ],
   "buffers": [

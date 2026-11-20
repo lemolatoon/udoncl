@@ -320,6 +320,8 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
         manifest["program"]["binding_class"] = "UdonclTinyLlamaChatBinding"
         for symbol, (export_symbol, kinds, is_async) in VALIDATOR.CHAT_EXPORTS.items():
             manifest["exports"].append(export(symbol, export_symbol, kinds, is_async))
+            if symbol in VALIDATOR.POLLED_WHILE_GENERATING:
+                manifest["exports"][-1]["allowed_while_busy"] = True
         inputs = manifest["onnx_binding"]["inputs"]
         outputs = manifest["onnx_binding"]["outputs"]
         inputs[1].update(dimensions=[1, capacity], logical_bytes=8 * capacity,
@@ -336,10 +338,17 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
         binding = artifact / "binding.cs"
         binding.write_text(binding.read_text(encoding="utf-8") + "\n".join((
             "TrySetChatPrompt(string systemText, string userText, out int result)",
+            "TryBeginChatPrompt(out int result)",
+            "TryContinueChatPrompt(string systemText, string userText, "
+            "int maxWork, out int result)",
+            "TryChatPromptPending(out int result)",
             "TryPromptTokenCount(out int result)",
             "TryReadPromptTokens(int[] destination, out int result)",
             "TryGeneratedTextLength(out int result)",
             "TryReadGeneratedText(int[] destination, out int result)",
+            "TryStreamedTextLength(out int result)",
+            "TryReadStreamedText(int[] destination, int offset, int count, "
+            "out int result)",
             "TryLastTokenizerStatus(out int result)",
         )) + "\n", encoding="utf-8")
         return artifact
@@ -377,9 +386,13 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
         self.assertIn("onnx-transformer-tiny-chat", cmake)
         self.assertIn("UDONCL_TINYLLAMA_CONTEXT_CAPACITY", cmake)
         for required in (
-            "TrySetChatPrompt(systemText, userText, out libraryStatus)",
+            "TryBeginChatPrompt(out libraryStatus)",
+            "TryContinueChatPrompt(",
+            "TryChatPromptPending(",
             "TryReadPromptTokens(",
             "StartGenerate(",
+            "TryStreamedTextLength(",
+            "TryReadStreamedText(",
             "TryReadGeneratedTokens(",
             "TryGeneratedTextLength(",
             "TryReadGeneratedText(",
@@ -396,6 +409,9 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
             "CollectionAssert.AreEqual(expectedPrompt, Prefix(prompt, promptCount), state);",
             "CollectionAssert.AreEqual(expectedTokens, Prefix(tokens, generatedCount), state);",
             "CollectionAssert.AreEqual(expectedTextUnits, Prefix(units, textLength), state);",
+            "CollectionAssert.AreEqual(expectedTextUnits, Prefix(streamed, streamedLength), state);",
+            "Assert.IsTrue(streamMonotone,",
+            "Assert.IsTrue(streamPrefixStable,",
             "Udon VM halted during ",
         ):
             self.assertIn(required, source)

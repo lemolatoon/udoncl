@@ -1689,7 +1689,8 @@ bool configureUnityExports(ModuleOp module, const json::Object &config,
   std::set<int64_t> ids;
   OpBuilder builder(module.getContext());
   auto configure = [&](StringRef symbol, StringRef publicName, int64_t id,
-                       const json::Array *parameters) -> bool {
+                       const json::Array *parameters,
+                       bool allowedWhileBusy) -> bool {
     if (!identifier(symbol) || !identifier(publicName) || id <= 0 ||
         id > INT32_MAX || !selected.insert(symbol.str()).second ||
         !publicNames.insert(publicName.str()).second ||
@@ -1723,6 +1724,10 @@ bool configureUnityExports(ModuleOp module, const json::Object &config,
     function->setAttr("vrc.export_id", builder.getI32IntegerAttr(id));
     function->setAttr("vrc.public_name", builder.getStringAttr(publicName));
     function->setAttr("vrc.parameter_names", builder.getArrayAttr(names));
+    // "allowed_while_busy": the generated binding does not reject this
+    // synchronous export while an async export is suspended.
+    if (allowedWhileBusy)
+      function->setAttr("vrc.allowed_while_busy", builder.getUnitAttr());
     return true;
   };
   if (*schema == 1) {
@@ -1733,7 +1738,8 @@ bool configureUnityExports(ModuleOp module, const json::Object &config,
       auto id = entry ? entry->getInteger("id") : std::nullopt;
       auto *parameters = entry ? entry->getArray("parameters") : nullptr;
       if (!symbol || !publicName || !id || !parameters ||
-          !configure(*symbol, *publicName, *id, parameters)) {
+          !configure(*symbol, *publicName, *id, parameters,
+                     entry->getBoolean("allowed_while_busy").value_or(false))) {
         errs() << "invalid or duplicate Unity library export\n";
         return false;
       }
@@ -1779,9 +1785,11 @@ bool configureUnityExports(ModuleOp module, const json::Object &config,
       auto publicName = entry ? entry->getString("public_name") : std::nullopt;
       StringRef resolvedName = publicName ? *publicName : StringRef(symbol);
       auto *parameters = entry ? entry->getArray("parameters") : nullptr;
-      if (!configure(symbol, resolvedName,
-                     stableExportId(resolvedName, function.getFunctionType()),
-                     parameters))
+      if (!configure(
+              symbol, resolvedName,
+              stableExportId(resolvedName, function.getFunctionType()),
+              parameters,
+              entry && entry->getBoolean("allowed_while_busy").value_or(false)))
         return false;
     }
     if (selected.empty()) {

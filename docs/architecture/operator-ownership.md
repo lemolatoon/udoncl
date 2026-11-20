@@ -102,3 +102,37 @@ UdonATen follows PyTorch's CUDA `argmax_kernel_cuda` comparison semantics from
 the lowest index.  The Udon backend may separately request rejection of any
 non-finite input for conversation-result validation; that policy does not alter
 the public ATen-compatible operation.
+
+# Device-resident model I/O and Host transfers
+
+Binding a model input or output to Device storage is owned by ONNX Runtime
+`IOBinding` (`include/onnxruntime/core/session/onnxruntime_cxx_api.h`,
+`Ort::IoBinding::BindInput` / `BindOutput` / `SynchronizeOutputs`): a bound
+tensor stays on the execution provider's device across `Run`, and nothing is
+copied to the CPU unless the caller asks for it. The UdonONNX counterpart is
+the session binding (`udononnxSessionBindInput`, `udononnxSessionBindOutput`,
+`udononnxSessionResolveInput`, `udononnxSessionResolveOutput`) and the
+generated physical helpers in `udoncl/onnx_generated_binding.h`; every bound
+tensor is a borrowed `cl_mem` range. There is no UdonONNX read, write or
+feedback facade and no `Ext` entry point: moving bytes between bound tensors,
+or between the Device and the Host, is owned by OpenCL 1.2 and uses its
+signatures and ordering rules unchanged.
+
+- Output-to-input feedback is `clEnqueueCopyBuffer` between the two resolved
+  ranges (or `udon_onnx_binding_enqueue_copy_output_to_input` for whole
+  tensors, and the generated sequence-state advance for K/V). It is one
+  Device Blit and never reaches the Host.
+- Host-known input updates are `clEnqueueWriteBuffer` / `clEnqueueFillBuffer`
+  on the resolved range; small word-aligned ones are Device patches issued
+  inside the current Udon event.
+- Readback is explicit: `clEnqueueReadBuffer`. With `blocking_read = CL_FALSE`
+  and an event the command is submitted at its position in the in-order queue
+  and the Host continues; the destination is defined once the event is
+  complete (`clWaitForEvents`, or any later transfer, which drains it). This
+  is the OpenCL contract, so a Host decides how many steps a value may lag.
+
+Udon restrictions of those OpenCL calls, all reported with OpenCL status
+codes instead of a different contract: ranges are word-aligned
+(`CL_INVALID_VALUE`); a copy inside one physical buffer is
+`CL_INVALID_OPERATION`; one Host transfer is outstanding at a time, so a
+second transfer first waits for the previous one.

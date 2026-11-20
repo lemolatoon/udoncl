@@ -38,12 +38,20 @@ def validate_tensor(
 
 CHAT_EXPORTS = {
     "SetChatPrompt": ("tinyllama_set_chat_prompt", ["string", "string"], False),
+    "BeginChatPrompt": ("tinyllama_begin_chat_prompt", [], False),
+    "ContinueChatPrompt": (
+        "tinyllama_continue_chat_prompt", ["string", "string", "i32"], False),
+    "ChatPromptPending": ("tinyllama_chat_prompt_pending", [], False),
     "PromptTokenCount": ("tinyllama_prompt_token_count", [], False),
     "ReadPromptTokens": ("tinyllama_read_prompt_tokens", ["i32_array"], False),
     "GeneratedTextLength": ("tinyllama_generated_text_length", [], False),
     "ReadGeneratedText": ("tinyllama_read_generated_text", ["i32_array"], False),
+    "StreamedTextLength": ("tinyllama_streamed_text_length", [], False),
+    "ReadStreamedText": (
+        "tinyllama_read_streamed_text", ["i32_array", "i32", "i32"], False),
     "LastTokenizerStatus": ("tinyllama_last_tokenizer_status", [], False),
 }
+POLLED_WHILE_GENERATING = ("StreamedTextLength", "ReadStreamedText")
 PROFILES = {
     "conversation": ("tinyllama_real_conversation", "UdonclTinyLlamaConversationBinding"),
     "chat": ("tinyllama_real_chat", "UdonclTinyLlamaChatBinding"),
@@ -83,6 +91,11 @@ def validate_exports(manifest: dict, profile: str = "conversation") -> None:
                 f"{public_name}: invalid async contract")
         require(export.get("result", {}).get("kind") == "i32",
                 f"{public_name}: invalid result schema")
+        # Only the streamed-text exports may be polled while Generate is
+        # pending; every other export stays rejected as busy.
+        require(export.get("allowed_while_busy", False)
+                is (public_name in POLLED_WHILE_GENERATING),
+                f"{public_name}: invalid busy contract")
 
 
 def validate_artifact(
@@ -166,10 +179,17 @@ def validate_artifact(
     if profile == "chat":
         required_methods += (
             "TrySetChatPrompt(string systemText, string userText, out int result)",
+            "TryBeginChatPrompt(out int result)",
+            "TryContinueChatPrompt(string systemText, string userText, "
+            "int maxWork, out int result)",
+            "TryChatPromptPending(out int result)",
             "TryPromptTokenCount(out int result)",
             "TryReadPromptTokens(int[] destination, out int result)",
             "TryGeneratedTextLength(out int result)",
             "TryReadGeneratedText(int[] destination, out int result)",
+            "TryStreamedTextLength(out int result)",
+            "TryReadStreamedText(int[] destination, int offset, int count, "
+            "out int result)",
             "TryLastTokenizerStatus(out int result)",
         )
     for method in required_methods:

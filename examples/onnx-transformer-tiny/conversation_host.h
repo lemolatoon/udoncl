@@ -32,6 +32,15 @@ udononnxStatus_t tinyllamaConversationPrompt(const int32_t **tokens,
 /* Requires a successfully completed generation. */
 udononnxStatus_t tinyllamaConversationGenerated(const int32_t **tokens,
                                                 uint32_t *token_count);
+/* The tokens generated so far, also while a generation is running. *serial
+ * changes whenever a generation starts or the conversation is reset, so a
+ * consumer can tell a continued token sequence from a new one; a failed
+ * generation reports no tokens. *is_completed is set once the generation
+ * finished successfully. */
+udononnxStatus_t tinyllamaConversationGenerationProgress(const int32_t **tokens,
+                                                         uint32_t *token_count,
+                                                         uint32_t *serial,
+                                                         int32_t *is_completed);
 
 #ifdef __cplusplus
 }

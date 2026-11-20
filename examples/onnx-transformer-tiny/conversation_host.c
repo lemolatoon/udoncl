@@ -38,11 +38,17 @@ static int64_t staged_tokens[TINYLLAMA_CONTEXT_CAPACITY];
 static int64_t staged_positions[TINYLLAMA_CONTEXT_CAPACITY];
 static const uint32_t zero_word;
 static const int64_t one = 1;
-static uint32_t prompt_count, generated_count;
+/* Destination and event of the one outstanding selected-token read. */
+static uint32_t selected_token;
+static cl_event selected_event;
+static uint32_t prompt_count, generated_count, generation_serial;
 static int initialized, disposed, busy, completed, failed;
 
 static udononnxStatus_t release_opencl(void) {
   int failed = 0;
+  if (selected_event && clReleaseEvent(selected_event) != CL_SUCCESS)
+    failed = 1;
+  selected_event = 0;
   if (result && clReleaseMemObject(result) != CL_SUCCESS)
     failed = 1;
   result = 0;
@@ -169,6 +175,7 @@ UDONCL_EXPORT udononnxStatus_t tinyllama_initialize(void) {
     return cleanup(status);
   prompt_count = generated_count = 0;
   completed = failed = 0;
+  ++generation_serial;
   initialized = 1;
   return UDONONNX_STATUS_SUCCESS;
 }
@@ -186,6 +193,7 @@ UDONCL_EXPORT udononnxStatus_t tinyllama_reset(void) {
     return UDONONNX_STATUS_OPENCL_ERROR;
   }
   status = enqueue_clear_sequence_state();
+  ++generation_serial;
   if (status == UDONONNX_STATUS_SUCCESS) {
     prompt_count = generated_count = 0;
     completed = failed = 0;
@@ -294,37 +302,69 @@ udononnxStatus_t tinyllamaConversationGenerated(const int32_t **tokens,
   return UDONONNX_STATUS_SUCCESS;
 }
 
-static udononnxStatus_t enqueue_step(int32_t token, uint32_t position) {
+udononnxStatus_t
+tinyllamaConversationGenerationProgress(const int32_t **tokens,
+                                        uint32_t *token_count, uint32_t *serial,
+                                        int32_t *is_completed) {
+  if (disposed)
+    return UDONONNX_STATUS_DISPOSED;
+  if (!initialized)
+    return UDONONNX_STATUS_NOT_INITIALIZED;
+  if (!tokens || !token_count || !serial || !is_completed ||
+      generated_count > TINYLLAMA_GENERATED_CAPACITY)
+    return UDONONNX_STATUS_INVALID_VALUE;
+  *tokens = generated;
+  *token_count = generated_count;
+  *serial = generation_serial;
+  *is_completed = completed && !busy;
+  return UDONONNX_STATUS_SUCCESS;
+}
+
+/* The attention mask and the position of a step depend only on the step
+ * index, so the Host patches them on the Device before the token is known. */
+static udononnxStatus_t enqueue_step_position(uint32_t position) {
   size_t mask = TINYLLAMA_CONTEXT_CAPACITY - position - 1u;
-  cl_mem ids, attention, positions;
-  size_t ids_offset = 0, attention_offset = 0, positions_offset = 0;
+  cl_mem attention, positions;
+  size_t attention_offset = 0, positions_offset = 0;
   udononnxStatus_t status =
-      resolve_input(TINYLLAMA_INPUT_IDS, sizeof(int64_t), &ids, &ids_offset);
-  if (status == UDONONNX_STATUS_SUCCESS)
-    status =
-        resolve_input(TINYLLAMA_ATTENTION_MASK, TINYLLAMA_ATTENTION_MASK_BYTES,
-                      &attention, &attention_offset);
+      resolve_input(TINYLLAMA_ATTENTION_MASK, TINYLLAMA_ATTENTION_MASK_BYTES,
+                    &attention, &attention_offset);
   if (status == UDONONNX_STATUS_SUCCESS)
     status = resolve_input(TINYLLAMA_POSITION_IDS, sizeof(int64_t), &positions,
                            &positions_offset);
   if (status != UDONONNX_STATUS_SUCCESS)
     return status;
-  staged_tokens[position] = token;
   staged_positions[position] = position;
-  if (clEnqueueWriteBuffer(queue, ids, CL_FALSE, ids_offset,
-                           sizeof(staged_tokens[position]),
-                           &staged_tokens[position], 0, 0, 0) != CL_SUCCESS ||
-      clEnqueueWriteBuffer(queue, attention, CL_FALSE,
+  if (clEnqueueWriteBuffer(queue, attention, CL_FALSE,
                            attention_offset + mask * sizeof(int64_t),
                            sizeof(one), &one, 0, 0, 0) != CL_SUCCESS ||
       clEnqueueWriteBuffer(queue, positions, CL_FALSE, positions_offset,
                            sizeof(staged_positions[position]),
                            &staged_positions[position], 0, 0, 0) != CL_SUCCESS)
     return UDONONNX_STATUS_OPENCL_ERROR;
-  return udon_onnx_binding_enqueue_run();
+  return UDONONNX_STATUS_SUCCESS;
 }
 
-static udononnxStatus_t select_token(uint32_t *token) {
+/* A prompt step uploads its Host token. */
+static udononnxStatus_t enqueue_step(int32_t token, uint32_t position) {
+  cl_mem ids;
+  size_t ids_offset = 0;
+  udononnxStatus_t status =
+      resolve_input(TINYLLAMA_INPUT_IDS, sizeof(int64_t), &ids, &ids_offset);
+  if (status != UDONONNX_STATUS_SUCCESS)
+    return status;
+  staged_tokens[position] = token;
+  if (clEnqueueWriteBuffer(queue, ids, CL_FALSE, ids_offset,
+                           sizeof(staged_tokens[position]),
+                           &staged_tokens[position], 0, 0, 0) != CL_SUCCESS)
+    return UDONONNX_STATUS_OPENCL_ERROR;
+  status = enqueue_step_position(position);
+  return status == UDONONNX_STATUS_SUCCESS ? udon_onnx_binding_enqueue_run()
+                                           : status;
+}
+
+/* Greedy ArgMax of the current logits into the Device result word. */
+static udononnxStatus_t enqueue_select_token(void) {
   cl_mem logits;
   size_t logits_offset = 0;
   cl_int offset;
@@ -337,12 +377,74 @@ static udononnxStatus_t select_token(uint32_t *token) {
           CL_SUCCESS ||
       __vrc_enqueue_udonaten_argmax_finalize_device_args(
           queue, logits, partials, result, offset, TINYLLAMA_LOGIT_WORDS, 1, 0,
-          0, 0) != CL_SUCCESS ||
-      clEnqueueReadBuffer(queue, result, CL_TRUE, 0, sizeof(*token), token, 0,
-                          0, 0) != CL_SUCCESS)
+          0, 0) != CL_SUCCESS)
     return UDONONNX_STATUS_OPENCL_ERROR;
+  return UDONONNX_STATUS_SUCCESS;
+}
+
+/* The selected token feeds the next step on the Device: the result word is
+ * copied into the low word of input_ids, whose high word every prompt
+ * upload left zero. No Host round trip separates two decode steps. */
+static udononnxStatus_t enqueue_feed_selected_token(void) {
+  cl_mem ids;
+  size_t ids_offset = 0;
+  udononnxStatus_t status =
+      resolve_input(TINYLLAMA_INPUT_IDS, sizeof(int64_t), &ids, &ids_offset);
+  if (status != UDONONNX_STATUS_SUCCESS)
+    return status;
+  return clEnqueueCopyBuffer(queue, result, ids, 0, ids_offset,
+                             sizeof(uint32_t), 0, 0, 0) == CL_SUCCESS
+             ? UDONONNX_STATUS_SUCCESS
+             : UDONONNX_STATUS_OPENCL_ERROR;
+}
+
+/* The Host needs the token only for the EOS check and the generated-token
+ * array, so it requests it without waiting and consumes it after the next
+ * step is already enqueued. */
+static udononnxStatus_t enqueue_read_selected_token(void) {
+  return clEnqueueReadBuffer(queue, result, CL_FALSE, 0, sizeof(selected_token),
+                             &selected_token, 0, 0,
+                             &selected_event) == CL_SUCCESS
+             ? UDONONNX_STATUS_SUCCESS
+             : UDONONNX_STATUS_OPENCL_ERROR;
+}
+
+static udononnxStatus_t wait_selected_token(uint32_t *token) {
+  cl_int waited = clWaitForEvents(1, &selected_event);
+  cl_int released = clReleaseEvent(selected_event);
+  selected_event = 0;
+  if (waited != CL_SUCCESS || released != CL_SUCCESS)
+    return UDONONNX_STATUS_OPENCL_ERROR;
+  *token = selected_token;
   return *token == TINYLLAMA_ARGMAX_FAILURE ? UDONONNX_STATUS_EXECUTION_FAILURE
                                             : UDONONNX_STATUS_SUCCESS;
+}
+
+/* One decode step. Unless this is the last requested token, the next model
+ * step is enqueued from the Device-resident token before the Host reads it;
+ * when the token turns out to be EOS that speculative step is discarded
+ * (generation is complete and only Reset reuses the sequence state). */
+static udononnxStatus_t decode_token(uint32_t position, int last,
+                                     uint32_t *token) {
+  udononnxStatus_t status = enqueue_select_token(), waited;
+  if (status != UDONONNX_STATUS_SUCCESS)
+    return status;
+  if (!last) {
+    status = udon_onnx_binding_enqueue_advance_sequence_state();
+    if (status == UDONONNX_STATUS_SUCCESS)
+      status = enqueue_feed_selected_token();
+    if (status == UDONONNX_STATUS_SUCCESS)
+      status = enqueue_step_position(position);
+    if (status != UDONONNX_STATUS_SUCCESS)
+      return status;
+  }
+  status = enqueue_read_selected_token();
+  if (status != UDONONNX_STATUS_SUCCESS)
+    return status;
+  if (!last)
+    status = udon_onnx_binding_enqueue_run();
+  waited = wait_selected_token(token);
+  return status == UDONONNX_STATUS_SUCCESS ? waited : status;
 }
 
 UDONCL_EXPORT udononnxStatus_t tinyllama_generate(uint32_t max_new_tokens) {
@@ -365,6 +467,7 @@ UDONCL_EXPORT udononnxStatus_t tinyllama_generate(uint32_t max_new_tokens) {
     return UDONONNX_STATUS_CAPACITY_EXCEEDED;
   busy = 1;
   generated_count = 0;
+  ++generation_serial;
   for (index = 0; index < prompt_tokens; ++index) {
     status = enqueue_step(prompt[index], index);
     if (status != UDONONNX_STATUS_SUCCESS)
@@ -376,17 +479,15 @@ UDONCL_EXPORT udononnxStatus_t tinyllama_generate(uint32_t max_new_tokens) {
     }
   }
   for (output_index = 0; output_index < max_new_tokens; ++output_index) {
-    status = select_token(&token);
+    if (status != UDONONNX_STATUS_SUCCESS)
+      break;
+    status = decode_token(prompt_tokens + output_index,
+                          output_index + 1u == max_new_tokens, &token);
     if (status != UDONONNX_STATUS_SUCCESS)
       break;
     generated[output_index] = (int32_t)token;
     generated_count = output_index + 1u;
-    if (token == TINYLLAMA_EOS_TOKEN || output_index + 1u == max_new_tokens)
-      break;
-    status = udon_onnx_binding_enqueue_advance_sequence_state();
-    if (status == UDONONNX_STATUS_SUCCESS)
-      status = enqueue_step((int32_t)token, prompt_tokens + output_index);
-    if (status != UDONONNX_STATUS_SUCCESS)
+    if (token == TINYLLAMA_EOS_TOKEN)
       break;
   }
   if (status == UDONONNX_STATUS_SUCCESS) {

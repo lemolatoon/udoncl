@@ -2532,7 +2532,27 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
       }
     }
 
+    // The run is recorded behind everything the caller already enqueued on
+    // the in-order queue. With a wait list it also waits for those events.
+    // Without one nothing has to complete first: earlier commands only have
+    // to be issued (clFlush), so a non-blocking read the caller has not
+    // consumed yet stays in flight while the run is enqueued.
     Value dispatchEvent = allocaI32(builder, location);
+    Block *waitForList = run.addBlock();
+    Block *flushOnly = run.addBlock();
+    Block *enqueueRun = run.addBlock();
+    Value hasWaitList =
+        arith::CmpIOp::create(builder, location, arith::CmpIPredicate::ne,
+                              entry->getArgument(3), constant(0));
+    cf::CondBranchOp::create(builder, location, hasWaitList, waitForList,
+                             ValueRange{}, flushOnly, ValueRange{});
+    builder.setInsertionPointToEnd(flushOnly);
+    auto flushed =
+        func::CallOp::create(builder, location, "clFlush", TypeRange{i32},
+                             ValueRange{entry->getArgument(2)});
+    returnOpenCLErrorIfNonzero(flushed.getResult(0));
+    cf::BranchOp::create(builder, location, enqueueRun);
+    builder.setInsertionPointToEnd(waitForList);
     auto initialWait = func::CallOp::create(
         builder, location, "clEnqueueMarkerWithWaitList", TypeRange{i32},
         ValueRange{entry->getArgument(2), entry->getArgument(3),
@@ -2551,6 +2571,8 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
       store(builder, location, constant(0), dispatchEvent);
     };
     waitAndRelease();
+    cf::BranchOp::create(builder, location, enqueueRun);
+    builder.setInsertionPointToEnd(enqueueRun);
     auto dispatch = [&](StringRef callee, ValueRange arguments) {
       auto enqueued = func::CallOp::create(builder, location, callee,
                                            TypeRange{i32}, arguments);
@@ -3172,6 +3194,7 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                          {i32, i32, i32, i32, i32, i32, i32, i32}, {i32});
     declarations.require("clEnqueueMarkerWithWaitList",
                          {pointer, i32, pointer, pointer}, {i32});
+    declarations.require("clFlush", {pointer}, {i32});
     declarations.require("__vrc_opencl_static_tensor", {i32, i32}, {i32});
     declarations.require("udonclCreateBufferForQueue",
                          {pointer, builder.getI64Type(), i32, pointer},

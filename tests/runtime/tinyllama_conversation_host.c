@@ -19,6 +19,10 @@ extern udononnxStatus_t tinyllama_generate(uint32_t);
 extern uint32_t tinyllama_generated_token_count(void);
 extern udononnxStatus_t tinyllama_read_generated_tokens(udon_int32_array_t);
 extern udononnxStatus_t tinyllama_dispose(void);
+extern udononnxStatus_t
+tinyllamaConversationGenerationProgress(const int32_t **tokens,
+                                        uint32_t *token_count, uint32_t *serial,
+                                        int32_t *is_completed);
 
 static cl_context binding_context;
 static cl_command_queue binding_queue;
@@ -29,6 +33,10 @@ static char trace[512];
 static int trace_size, mask_valid = 1;
 static int runs, advances, resets, reduce_calls, finalize_calls;
 static int fail_advance_call = -1, fail_finalize_call = -1;
+/* Generation progress observed while each token is being selected. */
+static uint32_t progress_counts[32], progress_serials[32];
+static int32_t progress_last_token[32];
+static int progress_valid = 1;
 
 static void record(char operation) { trace[trace_size++] = operation; }
 
@@ -170,6 +178,19 @@ cl_int __vrc_enqueue_udonaten_argmax_finalize_device_args(
   (void)l;
   (void)e;
   record('F');
+  {
+    const int32_t *tokens = 0;
+    uint32_t count = 0, serial = 0;
+    int32_t is_completed = 1;
+    if (tinyllamaConversationGenerationProgress(&tokens, &count, &serial,
+                                                &is_completed) !=
+            UDONONNX_STATUS_SUCCESS ||
+        is_completed)
+      progress_valid = 0;
+    progress_counts[finalize_calls] = count;
+    progress_serials[finalize_calls] = serial;
+    progress_last_token[finalize_calls] = count ? tokens[count - 1] : -1;
+  }
   if (finalize_calls == fail_finalize_call)
     return CL_INVALID_OPERATION;
   ++finalize_calls;
@@ -185,10 +206,21 @@ int main(void) {
   udon_int32_array_native_t prompt = {prompt_data, 4},
                             result = {result_data, 32},
                             long_prompt = {long_prompt_data, 64};
+  const int32_t *progress_tokens = 0;
+  uint32_t progress_count = 9, serial = 0, previous_serial;
+  int32_t is_completed = 1;
   int i;
   for (i = 0; i < 64; ++i)
     long_prompt_data[i] = i;
+  EXPECT(tinyllamaConversationGenerationProgress(
+             &progress_tokens, &progress_count, &serial, &is_completed) ==
+         UDONONNX_STATUS_NOT_INITIALIZED);
   EXPECT(tinyllama_initialize() == UDONONNX_STATUS_SUCCESS);
+  EXPECT(tinyllamaConversationGenerationProgress(
+             &progress_tokens, &progress_count, &serial, &is_completed) ==
+         UDONONNX_STATUS_SUCCESS);
+  EXPECT(progress_count == 0 && !is_completed);
+  previous_serial = serial;
 
   clear_trace();
   for (i = 0; i < 4; ++i)
@@ -216,8 +248,30 @@ int main(void) {
   for (i = 0; i < 4; ++i)
     EXPECT(result_data[i] == (int32_t)expected_tokens[i]);
   EXPECT(tinyllama_generate(1) == UDONONNX_STATUS_INVALID_STATE);
+  /* While token i was being selected, exactly the i earlier tokens of this
+   * generation were visible, and the generation was not completed. */
+  EXPECT(progress_valid);
+  for (i = 0; i < 4; ++i) {
+    EXPECT(progress_counts[i] == (uint32_t)i);
+    EXPECT(progress_serials[i] == progress_serials[0]);
+    EXPECT(progress_last_token[i] ==
+           (i ? (int32_t)expected_tokens[i - 1] : -1));
+  }
+  EXPECT(progress_serials[0] != previous_serial);
+  EXPECT(tinyllamaConversationGenerationProgress(
+             &progress_tokens, &progress_count, &serial, &is_completed) ==
+         UDONONNX_STATUS_SUCCESS);
+  EXPECT(progress_count == 4 && is_completed && serial == progress_serials[0]);
+  for (i = 0; i < 4; ++i)
+    EXPECT(progress_tokens[i] == (int32_t)expected_tokens[i]);
+  previous_serial = serial;
 
   EXPECT(tinyllama_reset() == UDONONNX_STATUS_SUCCESS);
+  EXPECT(tinyllamaConversationGenerationProgress(
+             &progress_tokens, &progress_count, &serial, &is_completed) ==
+         UDONONNX_STATUS_SUCCESS);
+  EXPECT(progress_count == 0 && !is_completed && serial != previous_serial);
+  previous_serial = serial;
   clear_trace();
   scheduled_tokens[0] = 1701;
   scheduled_tokens[1] = 2;
@@ -227,9 +281,14 @@ int main(void) {
   EXPECT(tinyllama_generated_token_count() == 2);
   EXPECT(tinyllama_read_generated_tokens(&result) == UDONONNX_STATUS_SUCCESS);
   EXPECT(result_data[0] == 1701 && result_data[1] == 2);
-  EXPECT(runs == 5 && advances == 4 && finalize_calls == 2 && mask_valid);
-  EXPECT(trace_size == 13 &&
-         !memcmp(trace, "RARARARDFARDF", (size_t)trace_size));
+  /* Each decode step is enqueued from the Device-resident token before the
+   * Host reads it, so the step fed by EOS has already been issued; it is
+   * discarded. */
+  EXPECT(runs == 6 && advances == 5 && finalize_calls == 2 && mask_valid);
+  EXPECT(trace_size == 15 &&
+         !memcmp(trace, "RARARARDFARDFAR", (size_t)trace_size));
+  EXPECT(seen_tokens[4] == 1701 && seen_tokens[5] == 2 &&
+         seen_positions[5] == 5);
 
   EXPECT(tinyllama_reset() == UDONONNX_STATUS_SUCCESS);
   clear_trace();
@@ -261,6 +320,10 @@ int main(void) {
   EXPECT(tinyllama_set_prompt_tokens(&prompt, 4) == UDONONNX_STATUS_SUCCESS);
   EXPECT(tinyllama_generate(2) == UDONONNX_STATUS_OPENCL_ERROR);
   EXPECT(tinyllama_generated_token_count() == 0);
+  EXPECT(tinyllamaConversationGenerationProgress(
+             &progress_tokens, &progress_count, &serial, &is_completed) ==
+         UDONONNX_STATUS_SUCCESS);
+  EXPECT(progress_count == 0 && !is_completed);
   EXPECT(tinyllama_read_generated_tokens(&result) ==
          UDONONNX_STATUS_INVALID_STATE);
   EXPECT(tinyllama_generate(1) == UDONONNX_STATUS_INVALID_STATE);
@@ -283,6 +346,9 @@ int main(void) {
   EXPECT(tinyllama_generate(1) == UDONONNX_STATUS_SUCCESS);
 
   EXPECT(tinyllama_dispose() == UDONONNX_STATUS_SUCCESS);
+  EXPECT(tinyllamaConversationGenerationProgress(
+             &progress_tokens, &progress_count, &serial, &is_completed) ==
+         UDONONNX_STATUS_DISPOSED);
   EXPECT(tinyllama_initialize() == UDONONNX_STATUS_DISPOSED);
   return 0;
 }

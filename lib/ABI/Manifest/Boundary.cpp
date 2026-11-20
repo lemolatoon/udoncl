@@ -276,15 +276,18 @@ llvm::json::Object buildBoundaryManifest(ModuleOp module) {
     bool isAsync = asyncEffect && asyncEffect.getValue() == "may_suspend";
     canonicalABI += "|status=" + udonclStatusSlot(id.getInt());
     canonicalABI += isAsync ? "|async\n" : "|sync\n";
-    exports.push_back(
-        llvm::json::Object{{"id", id.getInt()},
-                           {"c_symbol", function.getName().str()},
-                           {"public_name", abi.publicName},
-                           {"udon_event", abi.eventName},
-                           {"parameters", std::move(args)},
-                           {"result", std::move(result)},
-                           {"status_slot", udonclStatusSlot(id.getInt())},
-                           {"async", isAsync}});
+    llvm::json::Object exported{{"id", id.getInt()},
+                                {"c_symbol", function.getName().str()},
+                                {"public_name", abi.publicName},
+                                {"udon_event", abi.eventName},
+                                {"parameters", std::move(args)},
+                                {"result", std::move(result)},
+                                {"status_slot", udonclStatusSlot(id.getInt())},
+                                {"async", isAsync}};
+    // Binding behaviour, not part of the public ABI fingerprint.
+    if (function->hasAttr("vrc.allowed_while_busy"))
+      exported["allowed_while_busy"] = true;
+    exports.push_back(std::move(exported));
   }
   if (auto bindingNamespace =
           module->getAttrOfType<StringAttr>("vrc.binding_namespace"))

@@ -107,7 +107,10 @@ if(UDONCL_TINYLLAMA_ONNX_MODEL)
 
   # Chat Artifact: the same token-array Conversation Host plus the optional
   # text layer (chat template, special tokens and UTF-16 decoding). The
-  # Conversation Artifact above stays free of tokenizer code.
+  # Conversation Artifact above stays free of tokenizer code. A prompt can be
+  # tokenized in bounded slices (BeginChatPrompt, then ContinueChatPrompt
+  # until ChatPromptPending is 0), and the reply text is streamed: the
+  # StreamedTextLength code units read by ReadStreamedText are final.
   set(chat_unity_config_json "${conversation_unity_config_json}")
   string(JSON chat_unity_config_json SET "${chat_unity_config_json}"
     program "\"tinyllama_real_chat\"")
@@ -115,10 +118,15 @@ if(UDONCL_TINYLLAMA_ONNX_MODEL)
     binding class_name "\"UdonclTinyLlamaChatBinding\"")
   set(chat_exports
     [[{"symbol":"tinyllama_set_chat_prompt","public_name":"SetChatPrompt","parameters":["systemText","userText"]}]]
+    [[{"symbol":"tinyllama_begin_chat_prompt","public_name":"BeginChatPrompt","parameters":[]}]]
+    [[{"symbol":"tinyllama_continue_chat_prompt","public_name":"ContinueChatPrompt","parameters":["systemText","userText","maxWork"]}]]
+    [[{"symbol":"tinyllama_chat_prompt_pending","public_name":"ChatPromptPending","parameters":[]}]]
     [[{"symbol":"tinyllama_prompt_token_count","public_name":"PromptTokenCount","parameters":[]}]]
     [[{"symbol":"tinyllama_read_prompt_tokens","public_name":"ReadPromptTokens","parameters":["destination"]}]]
     [[{"symbol":"tinyllama_generated_text_length","public_name":"GeneratedTextLength","parameters":[]}]]
     [[{"symbol":"tinyllama_read_generated_text","public_name":"ReadGeneratedText","parameters":["destination"]}]]
+    [[{"symbol":"tinyllama_streamed_text_length","public_name":"StreamedTextLength","parameters":[],"allowed_while_busy":true}]]
+    [[{"symbol":"tinyllama_read_streamed_text","public_name":"ReadStreamedText","parameters":["destination","offset","count"],"allowed_while_busy":true}]]
     [[{"symbol":"tinyllama_last_tokenizer_status","public_name":"LastTokenizerStatus","parameters":[]}]]
   )
   string(JSON chat_export_count LENGTH "${chat_unity_config_json}"

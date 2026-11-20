@@ -14,7 +14,10 @@ namespace Lemolatoon.Udoncl.Editor.Tests
     // the Chat Artifact: user text -> chat template + special tokens (checked
     // against Hugging Face prompt token IDs) -> greedy generation (checked
     // against ONNX Runtime) -> decoded reply text (checked against Hugging
-    // Face decode with skip_special_tokens).
+    // Face decode with skip_special_tokens). The prompt is tokenized a bounded
+    // amount per frame, and the reply text is polled every frame while it is
+    // generated: every polled text must extend the previous one and the last
+    // one must be the whole reply.
     public sealed class PublicTinyLlamaChatLifecycleTests
     {
         private const string GeneratedRoot = "Assets/udoncl-generated/tinyllama_real_chat";
@@ -30,6 +33,10 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         // names; the controller is generated U# and not referenced here.
         private const int PhaseDone = 9;
         private const int PhaseGenerate = 5;
+
+        // Prompt work units per frame: small enough that the oracle prompt
+        // needs several frames.
+        private const int PromptWorkPerFrame = 32;
         private static readonly string[] PhaseNames =
         {
             "not-started",
@@ -158,6 +165,21 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 "textUnits",
                 new int[maxNewTokens * 16]
             );
+            UdonclArtifactImporter.SetUdonProgramVariable(
+                controller,
+                "streamedUnits",
+                new int[maxNewTokens * 16]
+            );
+            UdonclArtifactImporter.SetUdonProgramVariable(
+                controller,
+                "streamChunk",
+                new int[maxNewTokens * 16]
+            );
+            UdonclArtifactImporter.SetUdonProgramVariable(
+                controller,
+                "promptWorkPerFrame",
+                PromptWorkPerFrame
+            );
             Assert.AreEqual(maxNewTokens, ReadInt(controller, "maxNewTokens"));
 
             capturedVmError = null;
@@ -224,6 +246,15 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             int[] prompt = ReadInts(controller, "promptTokens");
             int[] tokens = ReadInts(controller, "generatedTokens");
             int[] units = ReadInts(controller, "textUnits");
+            int promptFrames = ReadInt(controller, "promptFrames");
+            int streamedLength = ReadInt(controller, "streamedLength");
+            int streamPolls = ReadInt(controller, "streamPolls");
+            int streamBusyPolls = ReadInt(controller, "streamBusyPolls");
+            int streamUpdates = ReadInt(controller, "streamUpdates");
+            int streamMidGenerationUpdates = ReadInt(controller, "streamMidGenerationUpdates");
+            bool streamMonotone = ReadBool(controller, "streamMonotone");
+            bool streamPrefixStable = ReadBool(controller, "streamPrefixStable");
+            int[] streamed = ReadInts(controller, "streamedUnits");
             string vmError = capturedVmError;
             UnityEngine.Object.Destroy(instance);
             yield return new ExitPlayMode();
@@ -236,6 +267,12 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 .Append(" tokenizerStatus=").Append(tokenizerStatus)
                 .Append(" asyncDiagnostic=").Append(asyncDiagnostic)
                 .Append(" frames=").Append(frame)
+                .Append(" promptFrames=").Append(promptFrames)
+                .Append(" streamPolls=").Append(streamPolls)
+                .Append(" streamBusyPolls=").Append(streamBusyPolls)
+                .Append(" streamUpdates=").Append(streamUpdates)
+                .Append(" streamMidGenerationUpdates=").Append(streamMidGenerationUpdates)
+                .Append(" streamedLength=").Append(streamedLength)
                 .Append(" prompt=").Append(Tokens(prompt, promptCount))
                 .Append(" expectedPrompt=").Append(Tokens(expectedPrompt, expectedPrompt.Length))
                 .Append(" tokens=").Append(Tokens(tokens, generatedCount))
@@ -257,6 +294,17 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             CollectionAssert.AreEqual(expectedTokens, Prefix(tokens, generatedCount), state);
             CollectionAssert.AreEqual(expectedTextUnits, Prefix(units, textLength), state);
             Assert.AreEqual(expectedText, text, state);
+            // Every polled text extended the previous one, so each was a
+            // prefix of the last, and the last is the whole reply. The
+            // streamed-text exports are declared allowed_while_busy, so no
+            // poll is refused while Generate is pending and the text grows
+            // before the generation completes.
+            Assert.AreEqual(0, streamBusyPolls, "A streamed-text poll was refused as busy: " + state);
+            Assert.Greater(streamMidGenerationUpdates, 0, "No text arrived during generation: " + state);
+            Assert.IsTrue(streamMonotone, "Streamed text length decreased: " + state);
+            Assert.IsTrue(streamPrefixStable, "Streamed text changed after being final: " + state);
+            CollectionAssert.AreEqual(expectedTextUnits, Prefix(streamed, streamedLength), state);
+            Assert.Greater(promptFrames, 1, "The prompt was not tokenized in slices: " + state);
             Assert.AreEqual(PhaseDone, phase, state);
             Debug.Log("udoncl tinyllama_chat passed " + state);
         }

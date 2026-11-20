@@ -200,6 +200,9 @@ assert "func.func @udon_onnx_binding_dispose" in host.stdout
 assert "call @udononnxSessionResolveInput" in host.stdout
 assert "call @udononnxSessionResolveOutput" in host.stdout
 assert "call @clEnqueueMarkerWithWaitList" in host.stdout
+# Without a wait list the run only issues what the caller enqueued before
+# it (clFlush); it waits for a marker only over a caller wait list.
+assert host.stdout.count("call @clFlush") == 1
 assert "call @__vrc_opencl_dispatch_udondnn_large_op_tensor" in host.stdout
 assert "udoncl.onnx_lowering = \"library-calls-v2\"" in host.stdout
 assert "udoncl.onnx_device_graph = true" in host.stdout

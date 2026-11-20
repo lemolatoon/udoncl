@@ -12,12 +12,14 @@ completing one fixed batch prefill, or running the synthetic hidden-size-8
 Transformer does not by itself complete this plan.
 
 The first compiler/runtime acceptance milestone remains the externally
-tokenized token-array path. After that path passes, the user-facing acceptance
-sequence adds token-to-text decoding and chat-template/special-token handling.
-Existing `UdonTokenizers` work remains an independent package: the generic
-ONNX compiler/runtime must not depend on it, and the low-level Conversation
-Artifact must continue to accept and return token IDs without requiring text
-services. Multi-turn history and transactional rollback remain later work.
+tokenized token-array path. On top of it the separate Chat Artifact adds the
+text layer: chat-template and special-token handling for the prompt, and
+token-to-text decoding that streams the reply while it is generated
+(sections 6.6, 6.9 and 6.10). `UdonTokenizers` remains an independent
+package: the generic ONNX compiler/runtime must not depend on it, and the
+low-level Conversation Artifact must continue to accept and return token IDs
+without requiring text services. Multi-turn history and transactional
+rollback remain later work; a second utterance starts from a fresh prompt.
 
 The implementation must remain model-independent below the example C Host.
 Model names, 22-layer structure, hidden sizes, and TinyLlama graph patterns must
@@ -456,18 +458,18 @@ described by `tokenizer.json`, `tokenizer.model`, `tokenizer_config.json`, and
 `special_tokens_map.json`: vocabulary 32,000, 61,249 BPE merges, byte fallback,
 and a chat template.
 
-`UdonTokenizers` is an independent C library/package. Its first TDD slice now
-contains the allocation-free generic byte-fallback BPE encode engine and
-consumes model-specific immutable tables. It is not part of
-UdonONNXOperators or the generic ONNX runtime. The remaining table compiler,
-decode engine, special-token handling, and chat-template compiler build on
-this package rather than introducing another runtime.
+`UdonTokenizers` is an independent C library/package. It contains the
+allocation-free generic byte-fallback BPE encoder, the incremental decoder,
+added/special-token handling and the build-time table and chat-template
+compiler, and it consumes model-specific immutable tables. It is not part of
+UdonONNXOperators or the generic ONNX runtime.
 
 At build time, tokenizer JSON/config is compiled to compact arrays containing:
 
 - normal vocabulary pieces already decoded to UTF-16;
 - byte-fallback value to token-ID mappings;
-- integer merge-pair keys and ranks;
+- integer merge-pair keys and ranks, plus an open-addressing hash index of
+  the pairs (at most half full, so a lookup is about one probe);
 - special token IDs and chat-template data.
 
 Runtime JSON parsing, `DataDictionary`, and string-concatenation BPE are not
@@ -506,13 +508,16 @@ enter the raw C byte-memory model.
 The example C Host, not handwritten U#, owns initialization, bounded prompt
 token storage, the `M=1` prefill/decode loop, K/V state, greedy token selection,
 EOS handling, and generated-token storage. Tokenization and text decoding are
-caller concerns for this milestone. The Unity test calls only the generated
-binding; it does not implement another decode loop or K/V manager in U#.
+caller concerns for the token-array Conversation Artifact; the Chat Artifact
+links the optional text layer of section 6.6 into the same Host. The Unity
+test calls only the generated binding; it does not implement another decode
+loop or K/V manager in U#.
 
 The first gate uses deterministic greedy selection. ArgMax runs on Device and
 only the selected token is returned during normal conversation. Test/debug
-mode can read all logits. Streaming callbacks, cancellation, top-k/top-p, and
-temperature sampling are later work.
+mode can read all logits. Reply text is streamed by polling synchronous
+exports (section 6.10); C-to-U# streaming callbacks, cancellation,
+top-k/top-p, and temperature sampling are later work.
 
 ### 6.4 Agreed generation lifecycle and C ABI
 
@@ -561,18 +566,21 @@ reusable and keeps immutable model resources initialized; dispose is terminal.
 Generate requires a nonempty prompt and a positive token limit. Reading tokens
 requires successful completion.
 
-### 6.5 Deferred tokenizer C contract
+### 6.5 Tokenizer C contract
 
 This section documents the independent `UdonTokenizers` package only. It is
-not part of the current Conversation Artifact or its completion gate.
+not part of the token-array Conversation Artifact or its completion gate.
 
 `UdonTokenizers` owns its independent status enum because encoding and table
 validation are not ONNX session states. Its generated Tokenizer Model is
-immutable and shareable. Encoding writes to a caller-owned token array;
-decoding uses a caller-owned output builder and explicit incremental UTF-8
-fallback state. It performs no dynamic allocation and has no mutable global
-session. Conversation Host maps tokenizer failures to its public ONNX status
-at the example boundary while retaining the tokenizer status for diagnostics.
+immutable and shareable. Encoding uses a caller-owned encoder state and a
+caller-owned Tokenizer Workspace of six `int32` words per pre-merge symbol
+(`UDONTOKENIZERS_ENCODER_WORKSPACE_WORDS`); the token IDs end up in the first
+words of that workspace. Decoding uses a caller-owned output array and
+explicit incremental UTF-8 fallback state. The library performs no dynamic
+allocation and has no mutable global session. Conversation Host maps
+tokenizer failures to its public ONNX status at the example boundary while
+retaining the tokenizer status for diagnostics.
 
 The build compiles the pinned tokenizer files into project-local generated
 tables keyed by their content hashes and compiler ABI. The VPM package ships
@@ -584,17 +592,16 @@ response workspace capacities from Context Capacity, the configured maximum
 new tokens, and the concrete Tokenizer Model. Exhaustion is explicit and never
 falls back to dynamic allocation or repeated string concatenation.
 
-The current generated low-level U# surface for encode is
-`TryTokenize(string text, int[] tokenIds, out int result)`. `tokenIds` is both
-the caller-owned workspace and result storage; `result` is the number of valid
-token IDs, while negative values in the small fixture facade encode tokenizer
-status. The conversation Host will map the independent tokenizer status enum
-to its public status contract instead of exposing that fixture convention.
-The C conversation Host uses the same encode core through
-`udontokenizersEncodeRaw`, writing directly into its build-time-bounded
-`int32_t` workspace. A C array is not cast to `udon_int32_array_t`; the two
-entry points share tokenization and BPE logic but use their own storage
-accessors.
+The generated low-level U# surface of the small tokenizer fixtures is
+`TryTokenize(string text, int[] tokenIds, out int result)`. `tokenIds` is the
+caller-owned result storage; `result` is the number of valid token IDs, while
+negative values in the fixture facade encode tokenizer status. The encoder
+workspace is C storage of the fixture Host. The conversation Host maps the
+independent tokenizer status enum to its public status contract instead of
+exposing that fixture convention. One-shot `udontokenizersEncode` (Udon
+`int[]` output) and `udontokenizersEncodeRaw` (C array output) share the
+streaming encoder and copy the finished tokens out; a C array is not cast to
+`udon_int32_array_t`.
 
 ### 6.6 Text layer as implemented
 
@@ -627,7 +634,8 @@ These decisions fill the parts of 6.1 and 6.5 that the plan left open.
   byte-fallback pieces that is not valid UTF-8 (including truncated runs and
   overlong or surrogate encodings) becomes one U+FFFD per byte, as in
   Hugging Face, by rewriting the run's own output. Special tokens are skipped
-  on request; the leading strip is applied when decoding finishes.
+  on request. The leading strip is applied to the first units that become
+  final, so decoded text is usable before decoding finishes (section 6.10).
 - There is no Udon char-array ABI. Decoded text is returned as UTF-16 code
   units, one per element of a caller-owned `int[]`; a U# caller builds the
   string from it. Workspaces are bounded by
@@ -636,9 +644,12 @@ These decisions fill the parts of 6.1 and 6.5 that the plan left open.
 - The example C Host keeps its token-array exports unchanged and exposes a
   small internal C interface to its prompt and generated-token workspaces.
   `conversation_text.c` adds `SetChatPrompt(systemText, userText)` (an empty
-  system text omits the system message), `PromptTokenCount`,
-  `ReadPromptTokens`, `GeneratedTextLength`, `ReadGeneratedText` and
-  `LastTokenizerStatus`. Output exhaustion maps to `CAPACITY_EXCEEDED`. The
+  system text omits the system message), its bounded form `BeginChatPrompt` /
+  `ContinueChatPrompt(systemText, userText, maxWork)` / `ChatPromptPending`
+  (section 6.9), `PromptTokenCount`, `ReadPromptTokens`, `StreamedTextLength`,
+  `ReadStreamedText(destination, offset, count)` (section 6.10),
+  `GeneratedTextLength`, `ReadGeneratedText` and `LastTokenizerStatus`. A
+  prompt beyond the Context Capacity maps to `CAPACITY_EXCEEDED`. The
   text layer is linked only into the separate Chat Artifact
   (`tinyllama_real_chat`, `UdonclTinyLlamaChatBinding`); the Conversation
   Artifact stays free of tokenizer code.
@@ -662,7 +673,12 @@ your name?" at capacity 64 the oracle is prompt `[1, 529, 29989, 1792, ...]`
 "My name is Sarah." with a minimum greedy margin of 0.66. The Unity fixture
 `PublicTinyLlamaChatLifecycleTests.GeneratedUSharpBindingAnswersChatPromptWithText`
 passes the two strings through the generated binding and compares the prompt
-tokens, the generated tokens and the decoded UTF-16 text with the oracle.
+tokens, the generated tokens and the decoded UTF-16 text with the oracle. Its
+controller tokenizes the prompt in bounded slices over several frames and
+polls the streamed text once per frame during the generation; the test
+requires monotone lengths, a stable polled prefix and a last polled text
+equal to the oracle reply. This revision of the fixture has not been run in
+Unity yet.
 
 ### 6.8 Generated prefill binding and physical storage
 
@@ -716,6 +732,120 @@ proven requirement exceeds the backend limit. Fixed global increases and
 model-name capacity branches are forbidden. Physical sharing and slot reuse
 remain invisible behind Logical Tensor Bindings and require proven non-overlap,
 liveness, and fragment read/write legality.
+
+### 6.9 Encode cost and bounded work
+
+Hugging Face BPE merges the lowest-ranked adjacent pair first, leftmost on a
+tie, until no pair has a merge. The first encoder implemented that definition
+literally: every merge rescanned all adjacent pairs with a 16-step binary
+search each, which is quadratic in the text length. The encoder now uses the
+Hugging Face algorithm itself: a binary min-heap of `(rank, position)` keys
+over a doubly linked symbol list, with stale heap entries discarded when they
+surface. Rank and position are packed into one `int32` key. Added tokens are
+stored as negative symbols that never merge, so one pass covers all segments
+of a text. Pair lookup goes through the hash index of the merge table.
+
+Udon instructions for one synchronous call, measured with the Udon emulator
+on a small artifact that links only the tokenizer and the pinned TinyLlama
+tables (the library source and tables that the Chat Artifact links):
+
+| input | tokens | before | after |
+|---|---:|---:|---:|
+| encode, 18 chars English | 6 | 332,544 | 76,869 |
+| encode, 175 chars English | 37 | 26,213,253 | 856,972 |
+| encode, 36 UTF-16 units Japanese + emoji | 42 | 139,889 | 80,901 |
+| encode, 879 chars English | 181 | 647,395,865 | 4,611,347 |
+| chat prompt, 18 chars | 22 | 836,481 | 162,292 |
+| chat prompt, 175 chars | 53 | 28,772,700 | 948,774 |
+| chat prompt, Japanese + emoji | 57 | 638,968 | 167,859 |
+| chat prompt, 879 chars | 197 | 659,117,948 | 4,711,791 |
+
+At the rate assumed in section 7.2 (about 16,000 Udon instructions in 2 ms)
+the 879-character encode took about 80 s before, far beyond the 10 s Udon VM
+limit, and takes about 0.6 s now. The cost is now close to linear, about
+5,000 instructions per input character. The remaining cost is dominated by
+raw-heap accesses (four externs each) in the heap sift and in the
+character-to-token binary search.
+
+A long message still must not run in one Udon event, so all encode work can
+be sliced. Progress lives in the caller-owned encoder state, the caller
+passes the same strings on every call, and nothing is allocated:
+
+- `udontokenizersEncoderAppendPartRaw` and
+  `udontokenizersEncoderAppendChatMessagePartRaw` consume at most about
+  `max_code_units` UTF-16 code units per call (a surrogate pair or an added
+  token is never split) and report when the text is consumed.
+- `udontokenizersEncoderStepRaw` does at most `max_work` merge work units per
+  call: one unit links one symbol, resolves one queued pair, or emits one
+  token. `udontokenizersEncoderFinishRaw` runs the remaining steps.
+- The Chat Host exposes this as `BeginChatPrompt`, then
+  `ContinueChatPrompt(systemText, userText, maxWork)` until
+  `ChatPromptPending` returns 0. One work unit is one consumed code unit or
+  one merge work unit. The prompt is committed by the call that finishes it;
+  a failure abandons it and leaves no prompt.
+
+Measured on the text layer in the emulator, a `ContinueChatPrompt` call with
+a budget of 8 costs at most about 35,000 Udon instructions and with a budget
+of 32 at most about 79,000 (roughly 2,500 to 4,400 per work unit, falling
+with larger budgets because each call also pays a fixed setup). The
+175-character chat prompt needs 92 calls at budget 8 and 23 at budget 32;
+slicing adds about 12% and 3% to the total. The caller chooses the budget
+for its frame time. In the real Chat Artifact, run in the same emulator, the
+oracle prompt ("What is your name?", 22 tokens) takes five
+`ContinueChatPrompt` calls at budget 32: 175,713 instructions in total and
+at most 71,489 in one call.
+
+### 6.10 Streamed reply text
+
+U# polls synchronous exports; C never calls back. `StreamedTextLength`
+decodes the tokens generated since the previous call and returns the number
+of UTF-16 code units of the reply that are final. `ReadStreamedText` copies
+any range of the final units. The contract:
+
+- Final units never change and the length never decreases during one
+  generation, so every polled text is a prefix of every later one.
+- After the generation completed, the streamed text is exactly the text
+  `ReadGeneratedText` returns: Hugging Face `decode(ids,
+  skip_special_tokens=True)`.
+- U# never sees a partial character. The UTF-8 state machine, U+FFFD
+  replacement and the leading-space strip stay in C. An open byte-fallback
+  run is withheld until a non-byte token or the end of the generation closes
+  it, because Hugging Face decodes a run as a whole and replaces every byte
+  of it when any part is invalid UTF-8. A character that is not in the
+  vocabulary therefore appears when its last byte token has been followed by
+  another token, not byte by byte.
+- A poll costs time proportional to the new tokens only: about 4,000 Udon
+  instructions for a poll that decodes one token and 1,400 for one that
+  finds nothing new, against a whole re-decode per call before (about 32,000
+  for a 20-token reply).
+- A new generation or a reset starts an empty text; the Host reports this
+  through a generation serial.
+
+The library function behind it is `udontokenizersDecoderStepRaw`, the
+counterpart of Hugging Face `DecodeStream.step`: it appends one token and
+reports the chunk that became final. `DecodeStream` emits a chunk as soon as
+the text does not end in U+FFFD and never flushes, so its chunks can differ
+from `decode` for invalid or truncated UTF-8. Here the chunks of all steps
+plus the units `udontokenizersDecoderFinishRaw` adds always equal `decode`.
+Native tests check this after every token against Hugging Face, including
+byte fallback split across tokens and by a skipped special token, invalid
+runs, a run cut off by the end, and 60 pseudo-random token sequences.
+
+Known limit: the generated binding currently returns `StatusBusy` from every
+synchronous method while an asynchronous export such as `Generate` is
+pending, so a poll made during a generation is refused before it reaches the
+C Host. The C exports themselves are valid during a generation. Until the
+binding admits them, the first successful poll is the one made after
+completion.
+
+The gate is the binding's, not the program's, as far as the emulator can
+tell. Driving the real Chat Artifact with scripted reply tokens and running
+`StreamedTextLength` and `ReadStreamedText` directly on the Udon program
+between the events of the suspended `Generate` (790 polls, at most 3,408
+instructions each) left the generation and its result intact. The polled
+text grew with each token read back, 0, 2, 7, 10, 16 and 17 code units for
+"My name is Sarah.", and every polled text was a prefix of the next. This
+has not been tried in the Udon VM.
 
 ## 7. Tests, performance, and caching
 
@@ -1006,8 +1136,9 @@ Implement in this order, keeping each gate independently testable:
     Play Mode and matches the same real token IDs without direct heap/event
     manipulation. The fixed-C-workspace `udontokenizersEncodeRaw` path is also
     implemented and covered by both Native value tests and an installed CMake
-    consumer that lowers a fixed token array through the Udon backend. Next add
-    decode, special-token recognition, and chat-template compilation.
+    consumer that lowers a fixed token array through the Udon backend. Decode,
+    special-token recognition and chat-template compilation followed and are
+    described in section 6.6.
     The first fixed-four-token prefill input helper is also implemented: it
     widens tokenizer output to ONNX INT64, constructs attention-mask and
     position-ID arrays, resolves inputs 0--2 through the generated generic

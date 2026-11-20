@@ -2778,9 +2778,28 @@ CL_API_ENTRY cl_int CL_API_CALL clFinish(cl_command_queue queue) {
   return queue->tail ? udoncl_event_wait(queue->tail) : CL_SUCCESS;
 }
 
+/* Issues every queued command without waiting for it to complete. Device
+ * commands are recorded when they are enqueued and a non-blocking read is
+ * submitted when it is published, so only a write still waiting in the
+ * binding's command slot is left: the binding executes it when the Host
+ * suspends on it, which also completes it. A read in flight stays in
+ * flight. */
 CL_API_ENTRY cl_int CL_API_CALL clFlush(cl_command_queue queue) {
-  return queue == &udoncl_queue && queue->active ? CL_SUCCESS
-                                                 : CL_INVALID_COMMAND_QUEUE;
+  cl_uint index;
+  if (queue != &udoncl_queue || !queue->active)
+    return CL_INVALID_COMMAND_QUEUE;
+  for (index = 0; index < UDONCL_AOT_EVENT_CAPACITY; ++index) {
+    cl_event event = &udoncl_events[index];
+    cl_int status;
+    if (!event->active || event->queue != queue ||
+        event->execution_status <= CL_COMPLETE ||
+        event->command_type != CL_COMMAND_WRITE_BUFFER)
+      continue;
+    status = udoncl_event_wait(event);
+    if (status != CL_SUCCESS)
+      return status;
+  }
+  return CL_SUCCESS;
 }
 
 CL_API_ENTRY cl_int CL_API_CALL
