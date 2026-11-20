@@ -1,9 +1,10 @@
 // RUN: %vrc-opt --udoncl-validate-onnx-host-graph --udoncl-plan-onnx-host-graph --udoncl-materialize-onnx-host-globals --udoncl-materialize-onnx-host-model-registry --udoncl-attach-onnx-host-metadata --udoncl-finalize-onnx-host --udoncl-cleanup-onnx-host-source %s | %FileCheck %s
+// RUN: %vrc-opt --udoncl-validate-onnx-host-graph --udoncl-plan-onnx-host-graph=fuse-device-nodes=false --udoncl-materialize-onnx-host-globals --udoncl-materialize-onnx-host-model-registry --udoncl-attach-onnx-host-metadata --udoncl-finalize-onnx-host --udoncl-cleanup-onnx-host-source %s | %FileCheck %s --check-prefix=UNFUSED
 
-// A Device Mul read only by one Add of the same shape is folded into the
-// Add's OpTensor dispatch: operation 1 (multiply) with beta 1 adds the other
-// Add operand as the previous value. A product with a second reader and an
-// Add whose other operand is broadcast keep their own dispatches.
+// A Device Mul whose product only an Add reads is an interior node of the
+// Add's fusion group like any other fusible producer: the Add's synthesized
+// kernel computes the product and the sum, and the product has no buffer.
+// There is no separate Mul+Add path through the OpTensor kernel.
 
 func.func private @clEnqueueMarkerWithWaitList(
     !udonhl.ptr<0>, i32, !udonhl.ptr<0>, !udonhl.ptr<0>) -> i32
@@ -56,30 +57,42 @@ func.func @main_graph(
 }
 
 // CHECK-LABEL: func.func @udononnxGeneratedEnqueueRun
-
-// x * cos is the previous value of the folded y * sin + (x * cos).
-// CHECK: %[[MUL:.*]] = arith.constant 257 : i32
-// CHECK-NEXT: arith.constant 1.000000e+00 : f32
-// CHECK-NEXT: arith.constant 1.000000e+00 : f32
-// CHECK-NEXT: %[[NO_PREVIOUS:.*]] = arith.constant 0.000000e+00 : f32
-// CHECK-NEXT: call @__vrc_opencl_dispatch_udondnn_large_op_tensor(%[[X:[^,]*]], %[[COS:[^,]*]], %[[X]], %[[X_COS:[^,]*]],
-// CHECK-SAME: %[[MUL]], %{{[^,]*}}, %{{[^,]*}}, %[[NO_PREVIOUS]])
-// CHECK: %[[FOLDED:.*]] = arith.constant 257 : i32
-// CHECK-NEXT: arith.constant 1.000000e+00 : f32
-// CHECK-NEXT: arith.constant 1.000000e+00 : f32
-// CHECK-NEXT: %[[BETA:.*]] = arith.constant 1.000000e+00 : f32
-// CHECK-NEXT: call @__vrc_opencl_dispatch_udondnn_large_op_tensor(%[[Y:[^,]*]], %[[SIN:[^,]*]], %[[X_COS]], %[[ROTATED:[^,]*]],
-// CHECK-SAME: %[[FOLDED]], %{{[^,]*}}, %{{[^,]*}}, %[[BETA]])
-
-// A product read twice by its Add keeps its Mul dispatch.
-// CHECK: call @__vrc_opencl_dispatch_udondnn_large_op_tensor(%[[Y]], %[[COS]], %[[Y]], %[[TWICE:[^,]*]],
-// CHECK: %[[ADD:.*]] = arith.constant 256 : i32
-// CHECK: call @__vrc_opencl_dispatch_udondnn_large_op_tensor(%[[TWICE]], %[[TWICE]], %[[TWICE]], %{{[^,]*}},
-// CHECK-SAME: %[[ADD]],
-
-// A broadcast Add operand cannot be the previous value.
-// CHECK: call @__vrc_opencl_dispatch_udondnn_large_op_tensor(%[[X]], %[[SIN]], %[[X]], %[[X_SIN:[^,]*]],
-// CHECK: %[[ROW_ADD:.*]] = arith.constant 256 : i32
-// CHECK: call @__vrc_opencl_dispatch_udondnn_large_op_tensor(%[[X_SIN]], %[[COS]], %[[X_SIN]], %{{[^,]*}},
-// CHECK-SAME: %[[ROW_ADD]],
 // CHECK-NOT: call @__vrc_opencl_dispatch_udondnn_large_op_tensor
+
+// x * cos + y * sin
+// CHECK: call @__vrc_opencl_dispatch_udononnx_fused_0(%[[X:[^,]*]], %[[COS:[^,]*]], %[[Y:[^,]*]], %[[SIN:[^,]*]], %{{[^,]*}}) : (i32, i32, i32, i32, i32) -> i32
+// A product that its Add reads twice is evaluated once.
+// CHECK: call @__vrc_opencl_dispatch_udononnx_fused_1(%[[Y]], %[[COS]], %{{[^,]*}}) : (i32, i32, i32) -> i32
+// The other Add operand may be broadcast.
+// CHECK: call @__vrc_opencl_dispatch_udononnx_fused_2(%[[X]], %[[SIN]], %[[COS]], %{{[^,]*}}) : (i32, i32, i32, i32) -> i32
+// CHECK-NOT: call @__vrc_opencl_dispatch_
+
+// CHECK-LABEL: gpu.module @udononnx_fused_kernels {
+// The products are rounded before they are added: two mulf and one addf
+// without fast-math flags, never a fused multiply-add.
+// CHECK: gpu.func @udononnx_fused_0(%[[X:.*]]: memref<32xf32>, %[[COS:.*]]: memref<8xf32>, %[[Y:.*]]: memref<32xf32>, %[[SIN:.*]]: memref<8xf32>, %{{.*}}: memref<8192xf32>) kernel
+// CHECK: %[[X_VALUE:.*]] = memref.load %[[X]][
+// CHECK: %[[COS_VALUE:.*]] = memref.load %[[COS]][
+// CHECK: %[[X_COS:.*]] = arith.mulf %[[X_VALUE]], %[[COS_VALUE]] : f32
+// CHECK: %[[Y_VALUE:.*]] = memref.load %[[Y]][
+// CHECK: %[[SIN_VALUE:.*]] = memref.load %[[SIN]][
+// CHECK: %[[Y_SIN:.*]] = arith.mulf %[[Y_VALUE]], %[[SIN_VALUE]] : f32
+// CHECK: %[[SUM:.*]] = arith.addf %[[X_COS]], %[[Y_SIN]] : f32
+// CHECK: scf.yield %[[SUM]] : f32
+
+// CHECK: gpu.func @udononnx_fused_1(%[[Y:.*]]: memref<32xf32>, %[[COS:.*]]: memref<8xf32>, %{{.*}}: memref<8192xf32>) kernel
+// CHECK-SAME: vrc.fragment_cost = {loads = 2 : i64}
+// CHECK: %[[TWICE:.*]] = arith.mulf
+// CHECK-NOT: arith.mulf
+// CHECK: arith.addf %[[TWICE]], %[[TWICE]] : f32
+
+// CHECK: gpu.func @udononnx_fused_2(%[[X:.*]]: memref<32xf32>, %[[SIN:.*]]: memref<8xf32>, %[[COS:.*]]: memref<8xf32>, %{{.*}}: memref<8192xf32>) kernel
+// CHECK: %[[X_SIN:.*]] = arith.mulf
+// CHECK: %[[COS_VALUE:.*]] = memref.load %[[COS]][
+// CHECK: arith.addf %[[X_SIN]], %[[COS_VALUE]] : f32
+
+// Unfused, every Mul and Add is its own OpTensor dispatch with beta 0.
+// UNFUSED-LABEL: func.func @udononnxGeneratedEnqueueRun
+// UNFUSED-COUNT-7: call @__vrc_opencl_dispatch_udondnn_large_op_tensor(
+// UNFUSED-NOT: call @__vrc_opencl_dispatch_
+// UNFUSED-NOT: gpu.module

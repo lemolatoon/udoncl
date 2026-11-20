@@ -714,7 +714,8 @@ def main():
     assert 'applied = false' in mnist_lowering_readiness
     assert 'resource_operands_ready = false' in mnist_lowering_readiness
     assert 'pool_replacement_ready = false' in mnist_lowering_readiness
-    assert 'dispatch_candidate_count = 6 : i32' in mnist_lowering_readiness
+    # Convolution, the fused bias Add and Relu, pooling, SGEMM and its bias.
+    assert 'dispatch_candidate_count = 5 : i32' in mnist_lowering_readiness
     assert 'dynamic_allocation_count = 0 : i32' in mnist_lowering_readiness
     assert 'dynamic_release_count = 0 : i32' in mnist_lowering_readiness
     assert 'dynamic_resolve_count = 0 : i32' in mnist_lowering_readiness
@@ -729,11 +730,13 @@ def main():
     assert 'callee = @clCreateBuffer' in mnist_physical_plan
     assert 'callee = @udonclCreateBufferForQueue' in mnist_physical_plan
     assert 'vrc.static_kernel_bindings' in onnx_mnist_recovered
-    assert 'snapshot_count = 6 : i32' in onnx_mnist_recovered
+    assert 'snapshot_count = 5 : i32' in onnx_mnist_recovered
     assert onnx_mnist_recovered.count(
         'vrc.static_kernel_binding_snapshot'
-    ) == 6
-    for kernel_id in [221, 231, 232, 233, 234]:
+    ) == 5
+    # The activation kernel 233 has no dispatch of its own any more: the
+    # synthesized kernel 4096 computes the Relu with the bias Add.
+    for kernel_id in [221, 231, 232, 234, 4096]:
         assert (
             f'vrc.static_kernel_binding_snapshot = {{kernel_id = '
             f'{kernel_id} : i32'
@@ -813,11 +816,12 @@ def main():
         'udondnn_large_activation_forward',
         'udondnn_large_pooling_forward',
         'udonblas_arena_sgemm',
+        'udononnx_fused_0',
     ]
     mnist_dispatch_ids = [
         item['kernel_id'] for item in onnx_mnist_manifest['dispatch_sites']
     ]
-    assert set(mnist_dispatch_ids) == {221, 231, 232, 233, 234}
+    assert set(mnist_dispatch_ids) == {221, 231, 232, 234, 4096}
     assert {
         item['c_symbol']: item['public_name']
         for item in onnx_mnist_manifest['exports']
@@ -1042,10 +1046,17 @@ def main():
         item['capacity_bytes']
         for item in onnx_mnist_manifest['device']['buffers'][-2:]
     ] == [3136, 40]
-    for kernel_id in [221, 231, 232, 233, 234]:
+    # 4096 is the synthesized kernel of the fused bias Add and Relu: 9216
+    # elements, which the 8192x2 buffer textures of this bundle hold.
+    for kernel_id in [221, 231, 232, 233, 234, 4096]:
         assert (
             onnx_mnist_artifact / f'kernels/kernel_{kernel_id}.shader'
         ).is_file()
+    mnist_fused_kernel = next(
+        kernel for kernel in onnx_mnist_manifest['device']['kernels']
+        if kernel['id'] == 4096
+    )
+    assert mnist_fused_kernel['global_size'] == [8192, 2, 1]
     onnx_mnist_assembly = (onnx_mnist_artifact / 'host.uasm').read_text(
         encoding='utf-8'
     )
@@ -1219,25 +1230,28 @@ def main():
     )
     assert 'annotated_sink_count = 10 : i32' in transformer_recovered
     assert 'materialized_count = 10 : i32' in transformer_recovered
-    assert 'candidate_count = 8 : i32' in transformer_recovered
-    assert 'snapshot_count = 8 : i32' in transformer_recovered
+    # Seven dispatches: the residual Add and the activation that reads it are
+    # one synthesized kernel (4096) instead of OpTensor and activation (233).
+    assert 'candidate_count = 7 : i32' in transformer_recovered
+    assert 'snapshot_count = 7 : i32' in transformer_recovered
     assert 'unresolved_count = 0 : i32' in transformer_recovered
     assert transformer_recovered.count(
         'vrc.static_kernel_binding_snapshot'
-    ) == 8
+    ) == 7
     assert transformer_recovered.count(
         'vrc.static_kernel_binding_snapshot = {kernel_id = 221 : i32'
     ) == 2
     assert (
         'vrc.static_kernel_binding_snapshot = {kernel_id = 233 : i32'
-        in transformer_recovered
+        not in transformer_recovered
     )
-    for kernel_id in [234, 235, 242]:
+    assert (transformer_artifact / 'kernels/kernel_4096.shader').is_file()
+    for kernel_id in [234, 235, 242, 4096]:
         assert (
             f'vrc.static_kernel_binding_snapshot = {{kernel_id = {kernel_id} : i32'
             in transformer_recovered
         )
-    assert 'assigned_dispatch_operand_count = 24 : i32' in transformer_lowering_readiness
+    assert 'assigned_dispatch_operand_count = 20 : i32' in transformer_lowering_readiness
     assert 'unresolved_dispatch_operand_count = 0 : i32' in transformer_lowering_readiness
     assert 'dispatch_ready = true' in transformer_lowering_readiness
     assert 'resource_operands_ready = true' in transformer_lowering_readiness
@@ -1409,12 +1423,13 @@ def main():
         assert forbidden not in prefill_lifecycle, forbidden
     assert {
         item['kernel_id'] for item in transformer_manifest['dispatch_sites']
-    } == {221, 233, 234, 235, 242}
+    } == {221, 234, 235, 242, 4096}
     assert {
         item['id'] for item in transformer_manifest['device']['kernels']
     } == {
         1, 2, 207, 217, 218, 219, 220, 221, 222, 231, 232, 233, 234, 235,
         236, 237, 238, 239, 240, 241, 242, 243, 244, 245, 246, 247, 248,
+        4096,
     }
     sgemm_kernel = next(
         item for item in transformer_manifest['device']['kernels']
@@ -1477,18 +1492,17 @@ def main():
         '"__udoncl_buffer_8", "__udoncl_buffer_5"]',
         '["__udoncl_buffer_8", "__udoncl_buffer_3", '
         '"__udoncl_buffer_8", "__udoncl_buffer_6"]',
-        '["__udoncl_buffer_5", "__udoncl_buffer_6", '
-        '"__udoncl_buffer_5", "__udoncl_buffer_7"]',
-        '["__udoncl_buffer_7", "__udoncl_buffer_7", '
-        '"__udoncl_buffer_8"]',
-        '["__udoncl_buffer_8", "", "", "__udoncl_buffer_10", '
+        # The fused residual Add and activation read both present tensors
+        # and write the Q4 operand; the sum has no buffer.
+        '["__udoncl_buffer_5", "__udoncl_buffer_6", "__udoncl_buffer_7"]',
+        '["__udoncl_buffer_7", "", "", "__udoncl_buffer_10", '
         '"__udoncl_buffer_4"]',
     ]
     for slots in expected_transformer_dispatch_slots:
         assert f'vrc.unity_resource_heap_slots = {slots}' in transformer_udon_async
     assert transformer_udon_async.count(
         'vrc.unity_resource_heap_slots = '
-    ) == 8
+    ) == 7
     expected_transformer_static_tensor_ids = [
         '[0 : i32, -1 : i32, -1 : i32]',
         '[-1 : i32, 1 : i32, -1 : i32]',
@@ -1503,7 +1517,7 @@ def main():
         )
     assert transformer_udon_async.count(
         'vrc.unity_static_tensor_ids = '
-    ) == 8
+    ) == 7
     expected_transformer_copy_slots = [
         ('__udoncl_buffer_5', '__udoncl_buffer_2'),
         ('__udoncl_buffer_5', '__udoncl_buffer_3'),
@@ -1530,16 +1544,18 @@ def main():
     for suffix in ['index', 'static_index', 'dynamic_index']:
         assert f'copy_source_0_{suffix}' not in transformer_assembly
         assert f'copy_destination_1_{suffix}' not in transformer_assembly
+    # Two fewer than before fusion: the residual sum has no buffer to bind
+    # as an input and as a target.
     assert transformer_assembly.count(
         'PUSH, __udoncl_buffer_pool'
-    ) == 28
+    ) == 26
     assert transformer_assembly.count(
         'UnityEngineTexture2DArray.__Get__SystemInt32__UnityEngineTexture2D'
     ) == 5
     assert transformer_assembly.count(
         'VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_'
         'UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid'
-    ) == 12
+    ) == 11
     conversation_input_async = (
         conversation_input_artifact / 'host.async-runtime.mlir'
     ).read_text(encoding='utf-8')

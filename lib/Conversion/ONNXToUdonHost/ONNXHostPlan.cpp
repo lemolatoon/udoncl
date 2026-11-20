@@ -1,5 +1,7 @@
 #include "ONNXHostPlan.h"
 
+#include "ONNXHostFusion.h"
+
 #include "mlir/IR/BuiltinOps.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
@@ -711,70 +713,14 @@ bool supportsDeviceNode(const GraphRecord &graph, const NodeRecord &node) {
   return false;
 }
 
-std::optional<DeviceMulAdd> deviceMulAdd(const GraphRecord &graph,
-                                         unsigned addNodeIndex) {
-  const NodeRecord &add = graph.nodes[addNodeIndex];
-  if (add.operation != "Add" || add.provider != "udonatenAdd" ||
-      add.inputs.size() != 2 || add.inputs[0] < 0 || add.inputs[1] < 0 ||
-      add.inputs[0] == add.inputs[1] || !supportsDeviceNode(graph, add))
-    return std::nullopt;
-  const TensorRecord &sum = graph.tensors[add.output];
-  SmallVector<int64_t, 4> sumShape = broadcastTensor4d(sum.type);
-  // The second operand is preferred so that an Add of two products folds a
-  // deterministic one.
-  for (unsigned operand : {1u, 0u}) {
-    unsigned product = static_cast<unsigned>(add.inputs[operand]);
-    int64_t addend = add.inputs[1 - operand];
-    if (graph.tensors[static_cast<unsigned>(addend)].type.getNumElements() !=
-            sum.type.getNumElements() ||
-        broadcastTensor4d(graph.tensors[product].type) != sumShape ||
-        llvm::is_contained(graph.inputs, product) ||
-        llvm::is_contained(graph.outputs, product))
-      continue;
-    unsigned readers = 0;
-    for (const NodeRecord &node : graph.nodes)
-      readers += llvm::count(node.inputs, static_cast<int64_t>(product));
-    if (readers != 1)
-      continue;
-    for (unsigned mulNodeIndex = 0; mulNodeIndex != addNodeIndex;
-         ++mulNodeIndex) {
-      const NodeRecord &mul = graph.nodes[mulNodeIndex];
-      if (mul.output != product)
-        continue;
-      if (mul.operation != "Mul" || mul.provider != "udonatenMul" ||
-          mul.inputs.size() != 2 || mul.inputs[0] < 0 || mul.inputs[1] < 0 ||
-          !supportsDeviceNode(graph, mul))
-        break;
-      return DeviceMulAdd{mulNodeIndex, mul.inputs[0], mul.inputs[1], addend};
-    }
-  }
-  return std::nullopt;
-}
-
-std::optional<unsigned> deviceFoldedReader(const GraphRecord &graph,
-                                           unsigned nodeIndex) {
-  const NodeRecord &node = graph.nodes[nodeIndex];
-  if (node.operation != "Mul")
-    return std::nullopt;
-  for (unsigned readerIndex = nodeIndex + 1; readerIndex < graph.nodes.size();
-       ++readerIndex) {
-    if (!llvm::is_contained(graph.nodes[readerIndex].inputs,
-                            static_cast<int64_t>(node.output)))
-      continue;
-    std::optional<DeviceMulAdd> folded = deviceMulAdd(graph, readerIndex);
-    if (folded && folded->mulNode == nodeIndex)
-      return readerIndex;
-    return std::nullopt;
-  }
-  return std::nullopt;
-}
-
 bool supportsDeviceGraph(const GraphRecord &graph) {
   return llvm::all_of(graph.nodes, [&](const NodeRecord &node) {
     return supportsDeviceNode(graph, node);
   });
 }
-SmallVector<unsigned> deviceStorage(const GraphRecord &graph) {
+
+SmallVector<unsigned> deviceStorage(const GraphRecord &graph,
+                                    ArrayRef<unsigned> fusionRoots) {
   SmallVector<unsigned> storage(graph.tensors.size());
   std::iota(storage.begin(), storage.end(), 0u);
   for (const NodeRecord &node : graph.nodes)
@@ -785,13 +731,12 @@ SmallVector<unsigned> deviceStorage(const GraphRecord &graph) {
   // allocation. A dispatch may read every input while writing its output, so
   // a slot becomes reusable only after the last input use, never at that same
   // node. Graph outputs remain live through the final public-buffer copy.
-  // A node folded into its reader has no dispatch of its own: the reader's
-  // dispatch reads the folded node's operands, which therefore stay live
-  // until the reader.
-  SmallVector<int64_t> dispatchIndex(graph.nodes.size());
-  for (unsigned nodeIndex = 0; nodeIndex != graph.nodes.size(); ++nodeIndex)
-    dispatchIndex[nodeIndex] =
-        deviceFoldedReader(graph, nodeIndex).value_or(nodeIndex);
+  // An interior node of a fusion group has no dispatch of its own: the
+  // dispatch of the group's root reads the node's operands, which therefore
+  // stay live until the root. A result only takes a slot whose last reader
+  // dispatched earlier, so the root never shares a buffer with such an
+  // operand and a fused kernel never reads the buffer it writes.
+  SmallVector<int64_t> dispatchIndex(fusionRoots.begin(), fusionRoots.end());
   SmallVector<int64_t> lastUse(graph.tensors.size(), -1);
   for (auto [nodeIndex, node] : llvm::enumerate(graph.nodes))
     for (int64_t input : node.inputs)
@@ -813,7 +758,7 @@ SmallVector<unsigned> deviceStorage(const GraphRecord &graph) {
       continue;
     unsigned output = node.output;
     if (dispatchIndex[nodeIndex] != static_cast<int64_t>(nodeIndex)) {
-      // Never written or read on the Device; it shares the reader's result.
+      // Never written or read on the Device; it shares the root's result.
       storage[output] = graph.nodes[dispatchIndex[nodeIndex]].output;
       continue;
     }
@@ -848,7 +793,8 @@ int64_t bindingCapacityBytes(const GraphRecord &graph, unsigned tensorIndex) {
 }
 
 SmallVector<int64_t> mutableBufferBytes(const GraphRecord &graph,
-                                        bool deviceGraph) {
+                                        bool deviceGraph,
+                                        ArrayRef<unsigned> storage) {
   SmallVector<int64_t> bytes;
   bytes.reserve(graph.inputs.size() + graph.outputs.size());
   for (unsigned tensorIndex : graph.inputs)
@@ -858,7 +804,6 @@ SmallVector<int64_t> mutableBufferBytes(const GraphRecord &graph,
   if (!deviceGraph)
     return bytes;
 
-  SmallVector<unsigned> storage = deviceStorage(graph);
   for (auto [tensorIndex, tensor] : llvm::enumerate(graph.tensors)) {
     if (storage[tensorIndex] != tensorIndex || tensor.staticResourceId >= 0 ||
         llvm::is_contained(graph.inputs, tensorIndex) ||
@@ -893,6 +838,8 @@ FailureOr<HostPlanRecord> readHostPlan(ModuleOp module,
   auto deviceGraph = plan ? plan.getAs<BoolAttr>("device_graph") : BoolAttr();
   auto storage = plan ? plan.getAs<DenseI64ArrayAttr>("device_storage")
                       : DenseI64ArrayAttr();
+  auto fusionRoots = plan ? plan.getAs<DenseI64ArrayAttr>("device_fusion_roots")
+                          : DenseI64ArrayAttr();
   auto owned = plan ? plan.getAs<DenseI64ArrayAttr>("owned_device_buffers")
                     : DenseI64ArrayAttr();
   auto scratch =
@@ -902,19 +849,30 @@ FailureOr<HostPlanRecord> readHostPlan(ModuleOp module,
                          : DenseI64ArrayAttr();
   auto handleCapacity =
       plan ? plan.getAs<IntegerAttr>("mutable_handle_capacity") : IntegerAttr();
-  if (!deviceGraph || !storage || !owned || !scratch || !bufferBytes ||
-      !handleCapacity || storage.size() != graph.tensors.size() ||
-      scratch.getInt() < 0 || handleCapacity.getInt() <= 0 ||
+  if (!deviceGraph || !storage || !fusionRoots || !owned || !scratch ||
+      !bufferBytes || !handleCapacity ||
+      storage.size() != graph.tensors.size() ||
+      fusionRoots.size() != graph.nodes.size() || scratch.getInt() < 0 ||
+      handleCapacity.getInt() <= 0 ||
       static_cast<int64_t>(bufferBytes.size()) != handleCapacity.getInt())
     return module.emitError("ONNX Host graph plan is malformed");
-  HostPlanRecord result{deviceGraph.getValue(), {}, {},
-                        scratch.getInt(),       {}, handleCapacity.getInt()};
+  HostPlanRecord result{
+      deviceGraph.getValue(), {}, {}, {}, scratch.getInt(), {},
+      handleCapacity.getInt()};
   result.deviceStorage.reserve(storage.size());
   for (int64_t value : storage.asArrayRef()) {
     if (value < 0 || value >= static_cast<int64_t>(graph.tensors.size()))
       return module.emitError("ONNX Host graph plan has invalid storage");
     result.deviceStorage.push_back(static_cast<unsigned>(value));
   }
+  for (auto [nodeIndex, root] : llvm::enumerate(fusionRoots.asArrayRef())) {
+    if (root < 0 || root >= static_cast<int64_t>(graph.nodes.size()) ||
+        (!result.deviceGraph && root != static_cast<int64_t>(nodeIndex)))
+      return module.emitError("ONNX Host graph plan has invalid fusion roots");
+    result.deviceFusionRoots.push_back(static_cast<unsigned>(root));
+  }
+  if (!DeviceFusion::isValid(graph, result.deviceFusionRoots))
+    return module.emitError("ONNX Host graph plan has invalid fusion roots");
   llvm::SmallDenseSet<unsigned> seenOwned;
   for (int64_t value : owned.asArrayRef()) {
     if (!result.deviceGraph || value < 0 ||

@@ -10,6 +10,36 @@ host_opt = Path(sys.argv[1])
 source = Path(sys.argv[2])
 onnx_opt = [host_opt]
 
+# A fixture whose nodes form a fusion group checks the library lowering of
+# each operator with fusion off, and the synthesized kernel with it on.
+UNFUSED_PLAN = "--udoncl-plan-onnx-host-graph=fuse-device-nodes=false"
+
+
+def finalize_fused(portable):
+    result = subprocess.run(
+        [
+            host_opt,
+            "--udoncl-validate-onnx-host-graph",
+            "--udoncl-plan-onnx-host-graph",
+            "--udoncl-materialize-onnx-host-globals",
+            "--udoncl-materialize-onnx-host-model-registry",
+            "--udoncl-attach-onnx-host-metadata",
+            "--udoncl-finalize-onnx-host",
+            "--udoncl-cleanup-onnx-host-source",
+            "-",
+        ],
+        input=portable,
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert "udoncl.onnx_device_graph = true" in result.stdout
+    return result.stdout
+
+
+def device_dispatches(mlir):
+    return re.findall(r"call @__vrc_opencl_dispatch_(\w+)\(", mlir)
+
 
 def global_definition(text, symbol):
     return next(
@@ -505,7 +535,7 @@ unary_host = subprocess.run(
     [
         host_opt,
         "--udoncl-validate-onnx-host-graph",
-        "--udoncl-plan-onnx-host-graph",
+        UNFUSED_PLAN,
         "--udoncl-materialize-onnx-host-globals",
         "--udoncl-materialize-onnx-host-model-registry",
         "--udoncl-attach-onnx-host-metadata",
@@ -563,6 +593,18 @@ assert unary_host.stdout.count("call @__vrc_opencl_dispatch_udononnx_unary_f32")
 assert "call @udononnxCos" not in unary_host.stdout
 assert "call @udononnxSin" not in unary_host.stdout
 assert "call @udononnxNeg" not in unary_host.stdout
+# Fused, the six nodes are one kernel and no intermediate owns a buffer.
+unary_fused = finalize_fused(unary_portable)
+assert device_dispatches(unary_fused) == ["udononnx_fused_0"]
+assert "__udon_onnx_device_buffer_" not in unary_fused
+for operation, count in [
+    ("math.cos", 1),
+    ("math.sin", 1),
+    ("arith.negf", 2),
+    ("math.exp", 2),
+    ("memref.load", 1),
+]:
+    assert unary_fused.count(operation) == count, operation
 
 transpose_source = source.with_name("onnx_transpose_device.mlir")
 transpose_portable = subprocess.run(
@@ -663,7 +705,7 @@ large_pointwise_host = subprocess.run(
     [
         host_opt,
         "--udoncl-validate-onnx-host-graph",
-        "--udoncl-plan-onnx-host-graph",
+        UNFUSED_PLAN,
         "--udoncl-materialize-onnx-host-globals",
         "--udoncl-materialize-onnx-host-model-registry",
         "--udoncl-attach-onnx-host-metadata",
@@ -714,6 +756,14 @@ assert len(pointwise_calls) == 1
 assert len(activation_calls) == 2
 assert pointwise_calls[0][2] != pointwise_calls[0][3]
 assert all(arguments[1] != arguments[2] for arguments in activation_calls)
+large_pointwise_fused = finalize_fused(large_pointwise_portable)
+assert device_dispatches(large_pointwise_fused) == ["udononnx_fused_0"]
+assert (
+    "gpu.func @udononnx_fused_0(%arg0: memref<20000xf32>, "
+    "%arg1: memref<24576xf32>) kernel" in large_pointwise_fused
+)
+# 20000 elements take three rows of the 8192 wide surface.
+assert "known_grid_size = array<i32: 8192, 3, 1>" in large_pointwise_fused
 
 gemm_bias_source = source.with_name("onnx_gemm_bias_device.mlir")
 gemm_bias_portable = subprocess.run(
@@ -1369,7 +1419,7 @@ gqa_host = subprocess.run(
     [
         host_opt,
         "--udoncl-validate-onnx-host-graph",
-        "--udoncl-plan-onnx-host-graph",
+        UNFUSED_PLAN,
         "--udoncl-materialize-onnx-host-globals",
         "--udoncl-materialize-onnx-host-model-registry",
         "--udoncl-attach-onnx-host-metadata",
@@ -1393,6 +1443,16 @@ assert gqa_host.stdout.count(
 assert gqa_host.stdout.count(
     "call @__vrc_opencl_dispatch_udondnn_large_op_tensor"
 ) == 1
+# Fused, the whole materialization is index arithmetic in front of the Loads
+# of the input and of the scale, for every fragment of the full surface.
+gqa_fused = finalize_fused(gqa_portable)
+assert device_dispatches(gqa_fused) == ["udononnx_fused_0"]
+assert (
+    "gpu.func @udononnx_fused_0(%arg0: memref<16384xf32>, %arg1: memref<1xf32>, "
+    "%arg2: memref<131072xf32>) kernel" in gqa_fused
+)
+assert "vrc.fragment_cost = {loads = 2 : i64}" in gqa_fused
+assert gqa_fused.count("memref.load") == 2
 
 softmax_source = source.with_name("onnx_softmax.mlir")
 softmax_portable = subprocess.run(

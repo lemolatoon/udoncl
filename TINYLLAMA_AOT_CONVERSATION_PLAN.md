@@ -1056,6 +1056,21 @@ dispatches are rotary embedding and 3 dispatches are SiLU gating; merging
 them needs compiler-generated fused kernels, because every Device kernel is
 still a hand-written library kernel wired by name through the runtime.
 
+The generated kernel channel and generic Device fusion groups
+(`docs/architecture/refactor-baseline-and-mlir-pipeline.md`) then provide
+exactly that. Single-reader pointwise nodes and views fuse into their reader
+under caps of 8 leaf buffers, 16 Loads per path and 64 expression nodes; each
+group is one synthesized, bounds-proven kernel that is bit-identical to the
+library dispatches it replaces. The capacity-64 step falls from 919 to 567
+dispatches with four distinct synthesized kernels, each dispatched once per
+layer (the key rotary embedding inside the key-cache Concat, the query rotary
+embedding with its scale, the grouped-query key expansion with its transpose
+and scale, and the SiLU gate), at most 4 Loads per fragment. The remaining 567
+are 155 Q4 `MatMulNBits`, 90 RMSNorm passes, 88 synthesized, 68 OpTensor
+(residual and mask Adds), 45 SGEMM, 44 sequence-state Slices, 23 Concat, 22
+Expand, 22 Softmax and 10 others; the emulator counts 570 Blits per decode
+step.
+
 Those frame estimates charge one frame per continuation, which on a 90 Hz
 client is the dominant cost of the remaining budget slices. The generated
 binding now resumes ready continuations in the same Udon event under a

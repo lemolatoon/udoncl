@@ -1,7 +1,12 @@
 #include "VRC/Conversion/Passes.h"
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
 #include "mlir/Bytecode/BytecodeWriter.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/AsmState.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Diagnostics.h"
@@ -53,6 +58,10 @@ int main(int argc, char **argv) {
   mlir::DialectRegistry registry = onnx_mlir::registerDialects({});
   mlir::registerAllExtensions(registry);
   registry.insert<mlir::ONNXDialect, vrc::udonhl::UdonHLDialect>();
+  // Host finalization synthesizes fused Device kernels as gpu.func.
+  registry.insert<mlir::arith::ArithDialect, mlir::gpu::GPUDialect,
+                  mlir::math::MathDialect, mlir::memref::MemRefDialect,
+                  mlir::scf::SCFDialect>();
 
   mlir::registerAsmPrinterCLOptions();
   mlir::registerMLIRContextCLOptions();

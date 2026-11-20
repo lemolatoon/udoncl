@@ -170,6 +170,9 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                     246,
                     247,
                     248,
+                    // The synthesized kernel of the fused residual Add and
+                    // activation; 233 stays in the table without a dispatch.
+                    4096,
                 },
                 materials.Keys
             );

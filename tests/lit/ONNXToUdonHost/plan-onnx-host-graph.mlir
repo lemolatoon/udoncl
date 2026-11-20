@@ -18,6 +18,7 @@ func.func @main_graph(
 
 // CHECK: udoncl.onnx_host_graph_validated
 // CHECK: udoncl.onnx_host_plan = {
+// CHECK-SAME: device_fusion_roots = array<i64: 0>
 // CHECK-SAME: device_graph = true
 // CHECK-SAME: device_storage = array<i64:
 // CHECK-SAME: mutable_buffer_bytes = array<i64:

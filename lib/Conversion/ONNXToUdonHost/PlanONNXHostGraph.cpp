@@ -1,3 +1,4 @@
+#include "ONNXHostFusion.h"
 #include "ONNXHostGraph.h"
 #include "ONNXHostPlan.h"
 #include "VRC/Conversion/Passes.h"
@@ -15,6 +16,8 @@ namespace vrc {
 namespace {
 struct PlanONNXHostGraphPass
     : impl::PlanONNXHostGraphPassBase<PlanONNXHostGraphPass> {
+  using Base::Base;
+
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<arith::ArithDialect, func::FuncDialect>();
   }
@@ -85,10 +88,13 @@ struct PlanONNXHostGraphPass
         written.insert(node.output);
       }
     }
-    SmallVector<unsigned> storage = deviceStorage(*graph);
+    SmallVector<unsigned> fusionRoots =
+        DeviceFusion::plan(*graph, fuseDeviceNodes);
+    SmallVector<unsigned> storage = deviceStorage(*graph, fusionRoots);
     SmallVector<unsigned> owned =
         ownedDeviceBuffers(*graph, deviceGraph, storage);
-    SmallVector<int64_t> bufferBytes = mutableBufferBytes(*graph, deviceGraph);
+    SmallVector<int64_t> bufferBytes =
+        mutableBufferBytes(*graph, deviceGraph, storage);
     int64_t handleCapacity = bufferBytes.size();
     constexpr int64_t maximumMutableHandleCapacity = 512;
     if (handleCapacity <= 0 || handleCapacity > maximumMutableHandleCapacity) {
@@ -105,6 +111,7 @@ struct PlanONNXHostGraphPass
     storageIds.reserve(storage.size());
     for (unsigned value : storage)
       storageIds.push_back(value);
+    SmallVector<int64_t> fusionRootIds(fusionRoots.begin(), fusionRoots.end());
     SmallVector<int64_t> ownedIds;
     ownedIds.reserve(owned.size());
     for (unsigned value : owned)
@@ -114,6 +121,8 @@ struct PlanONNXHostGraphPass
         builder.getDictionaryAttr({
             builder.getNamedAttr("device_graph",
                                  builder.getBoolAttr(deviceGraph)),
+            builder.getNamedAttr("device_fusion_roots",
+                                 builder.getDenseI64ArrayAttr(fusionRootIds)),
             builder.getNamedAttr("device_storage",
                                  builder.getDenseI64ArrayAttr(storageIds)),
             builder.getNamedAttr("owned_device_buffers",

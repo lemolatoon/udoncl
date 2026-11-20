@@ -976,4 +976,15 @@ if(VRC_ENABLE_NATIVE_FRAGMENT_TESTS)
       $<TARGET_FILE:synthesized-gather-kernel>
       "${PROJECT_BINARY_DIR}/tests/synthesized-gather")
   set_tests_properties(synthesized-gather-execution PROPERTIES TIMEOUT 600)
+  add_executable(onnx-fusion-kernels boundary/onnx_fusion.cpp)
+  target_compile_features(onnx-fusion-kernels PRIVATE cxx_std_20)
+  set_target_properties(onnx-fusion-kernels PROPERTIES CXX_EXTENSIONS OFF)
+  target_link_libraries(onnx-fusion-kernels PRIVATE VRCNativeOpenCLRuntime)
+  add_test(NAME onnx-fusion-execution
+    COMMAND Python3::Interpreter
+      "${CMAKE_CURRENT_SOURCE_DIR}/boundary/onnx_fusion.py"
+      $<TARGET_FILE:vrccl> $<TARGET_FILE:vrc-opt> "${VRC_TEST_CLANG}"
+      $<TARGET_FILE:onnx-fusion-kernels>
+      "${PROJECT_BINARY_DIR}/tests/onnx-fusion")
+  set_tests_properties(onnx-fusion-execution PROPERTIES TIMEOUT 600)
 endif()

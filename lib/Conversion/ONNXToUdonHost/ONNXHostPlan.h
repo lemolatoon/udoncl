@@ -12,6 +12,8 @@ namespace vrc {
 struct ONNXHostPlan {
   bool deviceGraph;
   llvm::SmallVector<unsigned> deviceStorage;
+  /// Root of the fusion group of every node; see ONNXHostFusion.h.
+  llvm::SmallVector<unsigned> deviceFusionRoots;
   llvm::SmallVector<unsigned> ownedDeviceBuffers;
   int64_t operatorScratchBytes;
   llvm::SmallVector<int64_t> mutableBufferBytes;
@@ -51,23 +53,12 @@ struct ONNXHostDeviceMatMulShape {
   int64_t outputBatches;
 };
 
-/// A Device Mul whose product is read only by one Add. The Add dispatch
-/// computes left * right + addend itself, so the Mul has no dispatch and its
-/// result has no buffer.
-struct ONNXHostDeviceMulAdd {
-  unsigned mulNode;
-  int64_t left;
-  int64_t right;
-  int64_t addend;
-};
-
 using HostPlanRecord = ONNXHostPlan;
 using DeviceSliceShape = ONNXHostDeviceSliceShape;
 using DeviceConcatShape = ONNXHostDeviceConcatShape;
 using DeviceGatherShape = ONNXHostDeviceGatherShape;
 using DeviceScatterNDShape = ONNXHostDeviceScatterNDShape;
 using DeviceMatMulShape = ONNXHostDeviceMatMulShape;
-using DeviceMulAdd = ONNXHostDeviceMulAdd;
 
 inline constexpr llvm::StringLiteral onnxHostPlanAttr = "udoncl.onnx_host_plan";
 inline constexpr llvm::StringLiteral hostGraphPlanAttr = onnxHostPlanAttr;
@@ -107,13 +98,6 @@ inline constexpr int64_t deviceSgemmMaxK = 8192;
 inline constexpr int64_t deviceSgemmOperandWords = 16384;
 std::optional<DeviceMatMulShape> deviceMatMulShape(const GraphRecord &graph,
                                                    const NodeRecord &node);
-/// The Mul folded into the Device Add at addNodeIndex, if any.
-std::optional<DeviceMulAdd> deviceMulAdd(const GraphRecord &graph,
-                                         unsigned addNodeIndex);
-/// The node whose Device dispatch computes the node at nodeIndex, if that node
-/// is folded into its only reader.
-std::optional<unsigned> deviceFoldedReader(const GraphRecord &graph,
-                                           unsigned nodeIndex);
 bool isDeviceQ4Node(const GraphRecord &graph, const NodeRecord &node);
 /// K blocks of 32 that one udononnx_matmul_nbits_q4 dispatch accumulates. It
 /// must equal UDONONNX_Q4_DISPATCH_BLOCKS in
@@ -126,12 +110,18 @@ int64_t deviceAllocationBytes(const GraphRecord &graph, unsigned tensorIndex);
 int64_t bindingCapacityBytes(const GraphRecord &graph, unsigned tensorIndex);
 bool supportsDeviceNode(const GraphRecord &graph, const NodeRecord &node);
 bool supportsDeviceGraph(const GraphRecord &graph);
-llvm::SmallVector<unsigned> deviceStorage(const GraphRecord &graph);
+/// Assigns every tensor the tensor whose Device buffer holds it.
+/// `fusionRoots` maps every node to the node whose dispatch computes it: the
+/// operands of a fused node stay live until that dispatch, and its result
+/// has no buffer of its own.
+llvm::SmallVector<unsigned> deviceStorage(const GraphRecord &graph,
+                                          llvm::ArrayRef<unsigned> fusionRoots);
 llvm::SmallVector<unsigned>
 ownedDeviceBuffers(const GraphRecord &graph, bool deviceGraph,
                    llvm::ArrayRef<unsigned> storage);
 llvm::SmallVector<int64_t> mutableBufferBytes(const GraphRecord &graph,
-                                              bool deviceGraph);
+                                              bool deviceGraph,
+                                              llvm::ArrayRef<unsigned> storage);
 mlir::FailureOr<HostPlanRecord> readHostPlan(mlir::ModuleOp module,
                                              const GraphRecord &graph);
 } // namespace vrc

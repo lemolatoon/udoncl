@@ -4,6 +4,8 @@ add_mlir_library(VRCONNXToUdonHost DISABLE_INSTALL
   FinalizeONNXHost.cpp
   MaterializeONNXHostGlobals.cpp
   MaterializeONNXHostModelRegistry.cpp
+  ONNXHostFusion.cpp
+  ONNXHostFusionKernel.cpp
   ONNXHostGraph.cpp
   ONNXHostPlan.cpp
   ONNXHostSymbols.cpp
@@ -15,9 +17,13 @@ add_mlir_library(VRCONNXToUdonHost DISABLE_INSTALL
     MLIRArithDialect
     MLIRControlFlowDialect
     MLIRFuncDialect
+    MLIRGPUDialect
     MLIRIR
     MLIRLLVMDialect
+    MLIRMathDialect
+    MLIRMemRefDialect
     MLIRPass
+    MLIRSCFDialect
     VRCDialectUdonHL
 )
 vrc_configure_target(VRCONNXToUdonHost)

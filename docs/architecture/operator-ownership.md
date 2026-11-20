@@ -156,3 +156,14 @@ intermediates. `synthesized-gather-execution` checks this for the hand-written
 rotary kernel against the UdonDNN OpTensor dispatches it replaces. A fusion
 that cannot meet that bar must stay unfused; changing an operator's numerical
 contract remains a change to its owning library.
+
+ONNX Host planning fuses trees of Add, Mul, Relu, Sigmoid, Tanh, Cos, Sin and
+Neg nodes and of the re-indexing nodes Slice, Concat, Expand, Transpose and
+the metadata aliases into such kernels. The owners do not change: Add, Mul and
+the activations stay UdonATen operators executed by the UdonDNN OpTensor and
+activation contracts, and the others stay UdonONNXOperators. The synthesized
+kernel repeats their library formulas with alpha 1 and beta 0, and
+`onnx-fusion-execution` runs the kernels Host finalization produces against
+`udondnn_large_op_tensor`, `udondnn_large_activation_forward` and
+`udononnx_unary_f32` on the same renderer, with NaNs, infinities, signed
+zeros and denormals in the inputs.

@@ -86,9 +86,9 @@ int main() {
         std::max(maximumError, std::abs(attentionOutput[index] -
                                         attention[index] * scale[0]));
 
-  // The ONNX planner folds a Mul read only by one Add into that Add: one
-  // dispatch computes product + previous. It must equal the Mul dispatch
-  // followed by the Add dispatch bit for bit, with either Add operand order.
+  // OpTensor computes op(a, b) + beta * previous, so one dispatch with beta 1
+  // computes product + previous. It must equal the Mul dispatch followed by
+  // the Add dispatch bit for bit, with either Add operand order.
   constexpr int rotaryWords = 1 * 32 * 1 * 64;
   std::vector<float> rotaryLeft(arenaWords, 0.0f);
   std::vector<float> rotaryRight(arenaWords, 0.0f);

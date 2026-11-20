@@ -1,4 +1,6 @@
 #include "ONNXHostABI.h"
+#include "ONNXHostFusion.h"
+#include "ONNXHostFusionKernel.h"
 #include "ONNXHostGraph.h"
 #include "ONNXHostIRBuilder.h"
 #include "ONNXHostMaterialization.h"
@@ -11,7 +13,11 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "llvm/ADT/DenseMap.h"
 
@@ -2235,7 +2241,8 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
 }
 
 LogicalResult createRuntimeDispatchers(ModuleOp module,
-                                       const GraphRecord &graph) {
+                                       const GraphRecord &graph,
+                                       const HostPlanRecord &plan) {
   ONNXHostDeclarations declarations(module);
   OpBuilder builder(module.getBodyRegion());
   Location location = module.getLoc();
@@ -2269,7 +2276,7 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
   builder.setInsertionPointToEnd(initializeValid);
   if (supportsDeviceGraph(graph)) {
     Value bufferError = allocaI32(builder, location);
-    SmallVector<unsigned> storage = deviceStorage(graph);
+    ArrayRef<unsigned> storage = plan.deviceStorage;
     auto storeDeviceBuffer = [&](StringRef symbol, StringRef ownedSymbol,
                                  Value created) {
       Value errorSucceeded = arith::CmpIOp::create(
@@ -2345,7 +2352,7 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
   builder.setInsertionPointToEnd(disposeBody);
   Value disposeStatus = allocaI32(builder, location);
   store(builder, location, onnxStatus(0), disposeStatus);
-  SmallVector<unsigned> disposeStorage = deviceStorage(graph);
+  ArrayRef<unsigned> disposeStorage = plan.deviceStorage;
   auto releaseDeviceBuffer = [&](StringRef symbol, StringRef ownedSymbol) {
     Value address = addressOf(builder, location, symbol);
     Value active = arith::CmpIOp::create(
@@ -2462,7 +2469,7 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
       func::ReturnOp::create(builder, location, onnxStatus(2));
       builder.setInsertionPointToEnd(next);
     };
-    SmallVector<unsigned> storage = deviceStorage(graph);
+    ArrayRef<unsigned> storage = plan.deviceStorage;
     SmallVector<Value> buffers(graph.tensors.size());
     SmallVector<Value> publicOutputBuffers(graph.tensors.size());
     auto resolvePhysicalBuffer = [&](Value handle) {
@@ -2594,15 +2601,34 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                       addressOf(builder, location, operatorScratchSymbol));
       operatorScratch = resolvePhysicalBuffer(handle);
     }
+    DeviceFusion fusion(graph, plan.deviceFusionRoots);
+    DeviceFusionKernels fusedKernels(module, fusion);
     for (const NodeRecord &node : graph.nodes) {
       unsigned nodeIndex = static_cast<unsigned>(&node - graph.nodes.data());
-      if (isDeviceAlias(graph, node) || deviceFoldedReader(graph, nodeIndex)) {
+      // The root of a fusion group computes its interior nodes.
+      if (isDeviceAlias(graph, node) || fusion.isInterior(nodeIndex)) {
         continue;
       }
       Value output = buffer(node.output);
       if (!output)
         return emitError(location)
                << "Device ONNX graph output lacks physical storage";
+      if (fusion.isRoot(nodeIndex)) {
+        FailureOr<DeviceFusionDispatch> fused =
+            fusedKernels.dispatch(nodeIndex);
+        if (failed(fused))
+          return failure();
+        SmallVector<Value> arguments;
+        for (unsigned leaf : fused->leaves) {
+          arguments.push_back(buffer(leaf));
+          if (!arguments.back())
+            return emitError(location)
+                   << "Device ONNX fusion operand lacks physical storage";
+        }
+        arguments.push_back(output);
+        dispatch(fused->callee, arguments);
+        continue;
+      }
       if (node.operation == "Conv") {
         if (node.inputs.size() < 2 || node.inputs[0] < 0 || node.inputs[1] < 0)
           return emitError(location) << "Device Conv requires input and filter";
@@ -2641,29 +2667,24 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
       if (node.operation == "Add" || node.operation == "Mul") {
         if (node.inputs.size() != 2 || node.inputs[0] < 0 || node.inputs[1] < 0)
           return emitError(location) << "Device Add requires two inputs";
-        // OpTensor computes op(a, b) + beta * previous. A Mul folded into this
-        // Add becomes the operation and the other Add operand the previous
-        // value, which is the same sum of the same product.
-        std::optional<DeviceMulAdd> folded = deviceMulAdd(graph, nodeIndex);
-        int64_t left = folded ? folded->left : node.inputs[0];
-        int64_t right = folded ? folded->right : node.inputs[1];
-        int64_t previous = folded ? folded->addend : node.inputs[0];
-        SmallVector<int64_t, 4> a = broadcastTensor4d(graph.tensors[left].type);
+        SmallVector<int64_t, 4> a =
+            broadcastTensor4d(graph.tensors[node.inputs[0]].type);
         SmallVector<int64_t, 4> b =
-            broadcastTensor4d(graph.tensors[right].type);
+            broadcastTensor4d(graph.tensors[node.inputs[1]].type);
         SmallVector<int64_t, 4> c =
             broadcastTensor4d(graph.tensors[node.output].type);
-        int64_t operation = folded || node.operation == "Mul" ? 1 : 0;
+        int64_t operation = node.operation == "Mul" ? 1 : 0;
         dispatch(
             "__vrc_opencl_dispatch_udondnn_large_op_tensor",
             ValueRange{
-                buffer(left), buffer(right), buffer(previous), output,
+                buffer(node.inputs[0]), buffer(node.inputs[1]),
+                buffer(node.inputs[0]), output,
                 constant(graph.tensors[node.output].type.getNumElements()),
                 constant(a[0] | (a[1] << 16)), constant(a[2] | (a[3] << 16)),
                 constant(b[0] | (b[1] << 16)), constant(b[2] | (b[3] << 16)),
                 constant(c[0] | (c[1] << 16)), constant(c[2] | (c[3] << 16)),
                 constant(operation | (1 << 8)), floating(1.0f), floating(1.0f),
-                floating(folded ? 1.0f : 0.0f)});
+                floating(0.0f)});
         continue;
       }
       if (node.operation == "Relu" || node.operation == "Sigmoid" ||
@@ -3397,7 +3418,7 @@ struct FinalizeONNXHostPass
       signalPassFailure();
       return;
     }
-    if (failed(createRuntimeDispatchers(module, *graph))) {
+    if (failed(createRuntimeDispatchers(module, *graph, *plan))) {
       signalPassFailure();
       return;
     }

@@ -336,6 +336,53 @@ metadata (`udoncl-attach-onnx-host-metadata`), and source-graph cleanup are
 separate passes with their own prerequisite markers. Session/binding export
 and runtime-dispatch materialization remain to be split from finalization.
 
+#### Device fusion groups
+
+A Device dispatch is one full-surface Blit plus a few hundred Udon
+instructions, so the number of dispatches, not the work inside one, bounds a
+graph step. Planning therefore groups nodes that only combine or re-index
+elements, and finalization emits one synthesized kernel per group through the
+generated kernel channel (section 7) instead of one library dispatch per node.
+The rule is generic: it names node kinds, never a model, a node or a shape.
+
+- **Fusible kinds** (`deviceFusionKind`, `ONNXHostFusion.h`): the f32
+  per-element nodes Add, Mul, Relu, Sigmoid, Tanh, Cos, Sin and Neg, the
+  re-indexing nodes Slice, two-input Concat, Expand and Transpose, and the
+  metadata aliases Reshape, Flatten, Identity, Squeeze and Unsqueeze, each
+  within the static-shape limits of its library kernel.
+- **Groups.** A group has one root, the only node whose result has a buffer,
+  and interior nodes whose results exist only inside the root's kernel. A
+  fusible producer joins the group of its readers when its result is not a
+  graph input or output (which covers sequence state) and every reader is in
+  that group. Everything else a group reads is a leaf buffer; a known f32
+  scalar next to a non-constant Add or Mul operand is an immediate. Groups
+  grow greedily from the last node to the first, breadth-first from the root.
+- **Caps** (`deviceFusionMax*`): at most 8 leaf buffers, 16 Loads on the path
+  of one fragment (a Concat executes one side) and 64 expression nodes,
+  counted on the expression as a tree. A producer that would exceed a cap
+  stays materialized. A node on its own keeps its library kernel, and a group
+  that would only absorb aliases is not formed.
+- **Plan.** `udoncl.onnx_host_plan` carries `device_fusion_roots`, the node
+  whose dispatch computes each node. Storage planning keeps every leaf live
+  until the root's dispatch and gives interior results no buffer, so a fused
+  kernel never reads the buffer it writes. Every later pass reads the groups
+  from the plan. `--udoncl-plan-onnx-host-graph=fuse-device-nodes=false`
+  plans the unfused graph.
+- **Kernel.** `ONNXHostFusionKernel.cpp` emits the `gpu.func` into the carrier
+  `gpu.module @udononnx_fused_kernels` and a dispatch declaration with
+  `vrc.synthesized_dispatch`. Its arguments are the leaf buffers and the
+  root's buffer; all shapes are static, so it takes no scalars. It launches
+  over the 8192 wide rows that hold the root's elements and writes zero
+  outside them. Views are index arithmetic in front of the Loads, a Concat is
+  an `scf.if`, and the float operations repeat the library kernels' formulas
+  in their order without fast-math flags. Groups with the same expression,
+  shapes and immediates share one kernel.
+- **Proof after canonicalization.** The frontend canonicalizes after
+  finalization and `udonclc` proves the kernel later. Every index is
+  therefore bounded by interval arithmetic over constants, `remui` and
+  `minui`, never by a branch condition inside the expression, which
+  canonicalization can separate from the value it guards.
+
 Representative output:
 
 ```mlir

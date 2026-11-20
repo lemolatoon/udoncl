@@ -181,7 +181,8 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 materials.Add(kernel.Id, material);
                 Set(heap, program, "__udoncl_kernel_material_" + kernel.Id, material);
             }
-            CollectionAssert.AreEquivalent(new[] { 221, 231, 232, 233, 234 }, materials.Keys);
+            // 4096 is the synthesized kernel of the fused bias Add and Relu.
+            CollectionAssert.AreEquivalent(new[] { 221, 231, 232, 233, 234, 4096 }, materials.Keys);
             Material copyMaterial = Load<Material>("Materials/buffer-copy.mat");
 
             float[] input = ReadFloats(

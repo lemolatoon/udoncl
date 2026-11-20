@@ -60,7 +60,19 @@ def ValidateONNXHostGraphPass : Pass<"udoncl-validate-onnx-host-graph", "mlir::M
 }
 def PlanONNXHostGraphPass : Pass<"udoncl-plan-onnx-host-graph", "mlir::ModuleOp"> {
   let summary = "Plan ONNX Host storage and backend selection before materialization";
+  let description = [{
+    Records `udoncl.onnx_host_plan` on the module: whether the Device runs the
+    whole graph, the fusion group of every node (`device_fusion_roots`, the
+    node whose dispatch computes it), and the buffer of every tensor. Every
+    later pass reads these decisions from the plan, so they agree on which
+    nodes have a dispatch and which results have a buffer.
+  }];
   let dependentDialects = ["mlir::arith::ArithDialect", "mlir::func::FuncDialect"];
+  let options = [
+    Option<"fuseDeviceNodes", "fuse-device-nodes", "bool", /*default=*/"true",
+           "Fuse trees of per-element and re-indexing Device nodes into one "
+           "synthesized kernel each">
+  ];
 }
 def MaterializeONNXHostGlobalsPass : Pass<"udoncl-materialize-onnx-host-globals", "mlir::ModuleOp"> {
   let summary = "Materialize planned ONNX Host global storage without consuming the source graph";
@@ -75,7 +87,7 @@ def AttachONNXHostMetadataPass : Pass<"udoncl-attach-onnx-host-metadata", "mlir:
 }
 def FinalizeONNXHostPass : Pass<"udoncl-finalize-onnx-host", "mlir::ModuleOp"> {
   let summary = "Lower portable ONNX library calls to the Udon Host ABI and session exports";
-  let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "mlir::arith::ArithDialect", "mlir::cf::ControlFlowDialect", "mlir::func::FuncDialect", "mlir::LLVM::LLVMDialect"];
+  let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "mlir::arith::ArithDialect", "mlir::cf::ControlFlowDialect", "mlir::func::FuncDialect", "mlir::gpu::GPUDialect", "mlir::LLVM::LLVMDialect", "mlir::math::MathDialect", "mlir::memref::MemRefDialect", "mlir::scf::SCFDialect"];
 }
 def CleanupONNXHostSourcePass : Pass<"udoncl-cleanup-onnx-host-source", "mlir::ModuleOp"> {
   let summary = "Erase finalized ONNX Host source symbols while preserving unrelated symbols";
