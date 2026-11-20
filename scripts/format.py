@@ -13,7 +13,9 @@ ROOT = Path(__file__).resolve().parents[1]
 CLANG_FORMAT_VERSION = "22.1.0"
 CPP_SUFFIXES = {".c", ".cc", ".cl", ".cpp", ".h", ".hpp"}
 CSHARP_SUFFIXES = {".cs"}
+# Agent worktrees under .claude/ are separate checkouts with their own hooks.
 EXCLUDED_DIRECTORIES = {
+    ".claude",
     ".deps",
     ".git",
     ".vs",
@@ -26,13 +28,17 @@ EXCLUDED_DIRECTORIES = {
 
 
 def source_files(suffixes):
+    # Excluded directories are pruned while walking, so large build trees are
+    # never traversed.
     result = []
-    for path in ROOT.rglob("*"):
-        if not path.is_file() or path.suffix.lower() not in suffixes:
-            continue
-        if any(part in EXCLUDED_DIRECTORIES for part in path.relative_to(ROOT).parts):
-            continue
-        result.append(path)
+    for directory, subdirectories, files in os.walk(ROOT):
+        subdirectories[:] = [
+            name for name in subdirectories if name not in EXCLUDED_DIRECTORIES
+        ]
+        for name in files:
+            path = Path(directory) / name
+            if path.suffix.lower() in suffixes and path.is_file():
+                result.append(path)
     return sorted(result)
 
 
@@ -61,9 +67,40 @@ def check_clang_format_version(command):
         )
 
 
+# Windows limits a whole command line to 32,767 characters, and a long
+# repository path times every source file exceeds it. File arguments are
+# therefore passed in batches whose command lines stay well below the limit.
+MAX_COMMAND_LINE = 8000
+
+
 def run(command):
     print("+ " + subprocess.list2cmdline([str(value) for value in command]), flush=True)
     subprocess.run([str(value) for value in command], cwd=ROOT, check=True)
+
+
+def batches(prefix, files, limit=None):
+    """Split `files` so each `prefix + batch` command line fits in `limit`.
+
+    A file whose own command line is longer still gets a batch of its own.
+    """
+    limit = MAX_COMMAND_LINE if limit is None else limit
+    base = len(subprocess.list2cmdline([str(value) for value in prefix]))
+    batch, length = [], base
+    for path in files:
+        width = len(subprocess.list2cmdline([str(path)])) + 1
+        if batch and length + width > limit:
+            yield batch
+            batch, length = [], base
+        batch.append(path)
+        length += width
+    if batch:
+        yield batch
+
+
+def run_batched(prefix, files):
+    """Run `prefix` over `files` in batches; any failing batch fails."""
+    for batch in batches(prefix, files):
+        run([*prefix, *batch])
 
 
 def main():
@@ -80,7 +117,7 @@ def main():
 
     if cpp:
         flags = ["--dry-run", "--Werror"] if args.check else ["-i"]
-        run([clang_format, "--style=file", *flags, *cpp])
+        run_batched([clang_format, "--style=file", *flags], cpp)
 
     dotnet = executable("dotnet", "DOTNET")
     run(
@@ -94,7 +131,7 @@ def main():
     )
     if csharp:
         action = "check" if args.check else "format"
-        run([dotnet, "tool", "run", "csharpier", action, *csharp])
+        run_batched([dotnet, "tool", "run", "csharpier", action], csharp)
 
     mode = "check" if args.check else "format"
     print(f"{mode} passed: {len(cpp)} C/C++/OpenCL C and {len(csharp)} C# files")

@@ -1,1 +1,57 @@
 /.githooks/* text eol=lf
+
+# Text sources are LF in every checkout, including agent worktrees created
+# with core.autocrlf=true: the formatter, generated-code tests and exact
+# line-length checks see the same bytes everywhere.
+*.c text eol=lf
+*.cc text eol=lf
+*.cl text eol=lf
+*.cpp text eol=lf
+*.h text eol=lf
+*.hpp text eol=lf
+*.td text eol=lf
+*.ll text eol=lf
+*.mlir text eol=lf
+*.py text eol=lf
+*.ps1 text eol=lf
+*.cmake text eol=lf
+CMakeLists.txt text eol=lf
+Makefile text eol=lf
+*.in text eol=lf
+*.json text eol=lf
+*.toml text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.html text eol=lf
+*.patch text eol=lf
+*.cs text eol=lf
+*.cs.txt text eol=lf
+*.shader text eol=lf
+*.hlsl text eol=lf
+*.uasm text eol=lf
+*.meta text eol=lf
+*.asmdef text eol=lf
+*.asset text eol=lf
+.gitignore text eol=lf
+.gitattributes text eol=lf
+.clangd text eol=lf
+.clang-format text eol=lf
+.precheck-baseline text eol=lf
+LICENSE text eol=lf
+
+# Binary assets are never converted.
+*.bytes binary
+*.zip binary
+*.onnx binary
+*.npz binary
+*.npy binary
+*.bc binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.exr binary
+*.dll binary
+*.exe binary

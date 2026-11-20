@@ -845,6 +845,13 @@ add_test(NAME tinyllama-conversation-text
 add_test(NAME build-parallelism
   COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/build/parallel.py"
 )
+add_test(NAME repository-line-endings
+  COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/build/line_endings.py"
+    "${PROJECT_SOURCE_DIR}"
+)
+add_test(NAME format-script-batches
+  COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/build/format_script.py"
+)
 add_test(NAME commit-validation-service
   COMMAND Python3::Interpreter
     "${CMAKE_CURRENT_SOURCE_DIR}/build/precheck_service.py"
