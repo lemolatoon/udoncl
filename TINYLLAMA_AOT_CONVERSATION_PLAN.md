@@ -1071,6 +1071,29 @@ are 155 Q4 `MatMulNBits`, 90 RMSNorm passes, 88 synthesized, 68 OpTensor
 Expand, 22 Softmax and 10 others; the emulator counts 570 Blits per decode
 step.
 
+Three further generic rewrites cut that to 460 Blits. Sibling `MatMulNBits`
+nodes that read one activation stack their weight rows into one node whose
+result the readers Slice (`udoncl-merge-onnx-sibling-matmulnbits`; q/k/v and
+gate/up: 155 to 89 Q4 dispatches). A MatMul whose right operand an Expand
+repeats along the batch multiplies the unrepeated tensor with the repeated
+left matrices stacked as rows (`udoncl-fold-onnx-repeated-matmul-operand`; the
+22 value-cache Expands disappear). A Softmax is a reduction root of a fusion
+group, so the attention mask Add it alone reads runs inside its kernel (22
+OpTensor dispatches fewer). All three are bit-identical to the unfused
+kernels. Emulator, capacity-64 decode step on the conversation artifact:
+
+| | before | sibling Q4 merge | + repeated operand + Softmax root |
+|---|---:|---:|---:|
+| Device Blits | 570 | 504 | 460 |
+| Udon events (frames) | 17 | 15 | 14 |
+| Udon instructions | 241 K | 223 K | 217 K |
+
+The remaining 460 are 89 Q4, 90 RMSNorm passes, 45 SGEMM, 45 OpTensor
+(residual Adds), 44 sequence-state advance Slices, 132 synthesized kernels in
+6 shapes per layer, and 15 others. The next large items are the advance
+copies (double-buffered state would remove them, but changes the binding of
+past/present tensors) and the second RMSNorm pass.
+
 Those frame estimates charge one frame per continuation, which on a 90 Hz
 client is the dominant cost of the remaining budget slices. The generated
 binding now resumes ready continuations in the same Udon event under a

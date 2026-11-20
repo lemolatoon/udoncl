@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstring>
 #include <iostream>
 #include <vector>
 
@@ -90,7 +91,55 @@ static float runPlainCase(int m, int n, int k, int transa, int transb) {
   return static_cast<float>(maximumError);
 }
 
+static std::vector<float> runBatched(const std::vector<float> &a,
+                                     const std::vector<float> &b, int batches,
+                                     int m, int n, int k) {
+  std::vector<float> output(131072, -37.0f);
+  for (udonblas_arena_sgemm_cpu_gid_y = 0; udonblas_arena_sgemm_cpu_gid_y < 16;
+       ++udonblas_arena_sgemm_cpu_gid_y)
+    for (udonblas_arena_sgemm_cpu_gid_x = 0;
+         udonblas_arena_sgemm_cpu_gid_x < 8192;
+         ++udonblas_arena_sgemm_cpu_gid_x)
+      udonblas_arena_sgemm_strided_batched(a.data(), b.data(), output.data(), m,
+                                           n, k, m * k, k * n, m * n, batches,
+                                           0, 0, 1.0f);
+  output.resize(batches * m * n);
+  return output;
+}
+
+/* udoncl-fold-onnx-repeated-matmul-operand turns G * R batches of M rows
+ * whose right matrices repeat R times into G batches of R * M rows over the
+ * distinct matrices. Every output word must stay bit-identical. */
+static int runRepeatedOperandCase(int groups, int repeats, int m, int n,
+                                  int k) {
+  std::vector<float> a(groups * repeats * m * k);
+  std::vector<float> distinct(groups * k * n);
+  std::vector<float> repeated;
+  for (int index = 0; index < static_cast<int>(a.size()); ++index)
+    a[index] = value(index, 6) * (index % 5 == 0 ? 1.0e-3f : 1.0f);
+  for (int index = 0; index < static_cast<int>(distinct.size()); ++index)
+    distinct[index] = value(index, 8) * (index % 7 == 0 ? 3.0e4f : 1.0f);
+  for (int group = 0; group < groups; ++group)
+    for (int repeat = 0; repeat < repeats; ++repeat)
+      repeated.insert(repeated.end(), distinct.begin() + group * k * n,
+                      distinct.begin() + (group + 1) * k * n);
+  std::vector<float> expanded =
+      runBatched(a, repeated, groups * repeats, m, n, k);
+  std::vector<float> folded =
+      runBatched(a, distinct, groups, repeats * m, n, k);
+  int mismatches = 0;
+  for (size_t index = 0; index < expanded.size(); ++index)
+    mismatches +=
+        std::memcmp(&expanded[index], &folded[index], sizeof(float)) != 0;
+  std::cout << "arena_sgemm_repeated_operand groups=" << groups
+            << " repeats=" << repeats << " m=" << m
+            << " mismatches=" << mismatches << '\n';
+  return mismatches;
+}
+
 int main() {
+  int repeatedMismatches = runRepeatedOperandCase(4, 8, 1, 64, 64) +
+                           runRepeatedOperandCase(2, 3, 2, 5, 300);
   float attentionError = runCase(32, 4, 64, 4, false);
   float m1AttentionError = runCase(32, 1, 64, 64, false);
   float broadcastError = runCase(2, 2, 4, 3, true);
@@ -106,9 +155,9 @@ int main() {
   std::cout << "arena_sgemm_max_error="
             << std::max({attentionError, m1AttentionError, broadcastError})
             << '\n';
-  return attentionError < 0.0001f && m1AttentionError < 0.0001f &&
-                 broadcastError < 0.0001f && longKBatchedError < 0.001f &&
-                 longKError < 0.0001f
+  return repeatedMismatches == 0 && attentionError < 0.0001f &&
+                 m1AttentionError < 0.0001f && broadcastError < 0.0001f &&
+                 longKBatchedError < 0.001f && longKError < 0.0001f
              ? 0
              : 1;
 }

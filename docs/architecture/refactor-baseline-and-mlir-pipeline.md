@@ -244,7 +244,11 @@ repo-private udoncl-onnx-frontend
 
   udoncl-canonicalize-onnx-library-patterns
   udoncl-infer-onnx-shapes
+  udoncl-simplify-onnx-empty-concat
+  udoncl-simplify-onnx-views
+  udoncl-fold-onnx-repeated-matmul-operand
   udoncl-materialize-onnx-constants
+  udoncl-merge-onnx-sibling-matmulnbits
   udoncl-externalize-onnx-initializers
   udoncl-externalize-onnx-graph-constants
   udoncl-identify-onnx-sequence-state
@@ -350,6 +354,12 @@ The rule is generic: it names node kinds, never a model, a node or a shape.
   re-indexing nodes Slice, two-input Concat, Expand and Transpose, and the
   metadata aliases Reshape, Flatten, Identity, Squeeze and Unsqueeze, each
   within the static-shape limits of its library kernel.
+- **Reduction roots.** A Softmax is fusible only as a root: its kernel
+  evaluates the operand expression at every element of the normalized axis
+  in each pass, where the library kernel loads its input buffer, so a
+  pointwise tree that only the Softmax reads (an attention mask Add) is not
+  materialized. One evaluation of that operand is capped at 2 Loads
+  (`deviceFusionMaxReductionOperandLoads`); a Softmax is never interior.
 - **Groups.** A group has one root, the only node whose result has a buffer,
   and interior nodes whose results exist only inside the root's kernel. A
   fusible producer joins the group of its readers when its result is not a
@@ -375,7 +385,11 @@ The rule is generic: it names node kinds, never a model, a node or a shape.
   over the 8192 wide rows that hold the root's elements and writes zero
   outside them. Views are index arithmetic in front of the Loads, a Concat is
   an `scf.if`, and the float operations repeat the library kernels' formulas
-  in their order without fast-math flags. Groups with the same expression,
+  in their order without fast-math flags. A Softmax root repeats
+  `udondnn_arena_softmax_forward`: two counted `scf.while` loops over the
+  axis (the maximum from -FLT_MAX of the samples that compare greater, then
+  the ascending sum of `exp(sample - maximum)`) and
+  `exp(own sample - maximum) / sum`. Groups with the same expression,
   shapes and immediates share one kernel.
 - **Proof after canonicalization.** The frontend canonicalizes after
   finalization and `udonclc` proves the kernel later. Every index is

@@ -1,15 +1,28 @@
 // ONNX Host graph of the fused kernel execution test (onnx_fusion.py). Host
-// finalization turns each of its four results into one synthesized gather
-// kernel, in this order:
+// finalization turns each of its five results into one synthesized kernel,
+// in this order:
 //   rotated = scale * (x * cos + concat(-x[.., 32:64], x[.., 0:32]) * sin)
 //   gated   = (x * sigmoid(x)) * y
 //   keys    = scale * transpose(reshape(expand(k)))
 //   mixed   = tanh(x) * relu(y) + sin(cos(x))
+//   masked  = softmax(x + mask) over the last axis
 // onnx_fusion.cpp rebuilds every result from the unfused library kernels.
 
 func.func private @clEnqueueMarkerWithWaitList(
     !udonhl.ptr<0>, i32, !udonhl.ptr<0>, !udonhl.ptr<0>) -> i32
 
+func.func private @__udon_onnx_add_row(
+    tensor<1x4x1x64xf32>, tensor<1x1x1x64xf32>) -> tensor<1x4x1x64xf32>
+    attributes {
+      udon.onnx.operation = "Add",
+      udon.onnx.provider = "udonatenAdd"
+    }
+func.func private @__udon_onnx_softmax(
+    tensor<1x4x1x64xf32>) -> tensor<1x4x1x64xf32>
+    attributes {
+      udon.onnx.operation = "Softmax",
+      udon.onnx.provider = "udondnnSoftmaxForward"
+    }
 func.func private @__udon_onnx_mul_row(
     tensor<1x4x1x64xf32>, tensor<1x1x1x64xf32>) -> tensor<1x4x1x64xf32>
     attributes {
@@ -158,11 +171,13 @@ func.func @main_graph(
     %y: tensor<1x4x1x64xf32> {onnx.name = "y"},
     %cos: tensor<1x1x1x64xf32> {onnx.name = "cos"},
     %sin: tensor<1x1x1x64xf32> {onnx.name = "sin"},
-    %k: tensor<1x1x4x8xf32> {onnx.name = "k"})
+    %k: tensor<1x1x4x8xf32> {onnx.name = "k"},
+    %mask: tensor<1x1x1x64xf32> {onnx.name = "mask"})
     -> (tensor<1x4x1x64xf32> {onnx.name = "rotated"},
         tensor<1x4x1x64xf32> {onnx.name = "gated"},
         tensor<1x8x12xf32> {onnx.name = "keys"},
-        tensor<1x4x1x64xf32> {onnx.name = "mixed"}) {
+        tensor<1x4x1x64xf32> {onnx.name = "mixed"},
+        tensor<1x4x1x64xf32> {onnx.name = "masked"}) {
   %scale = func.call @__static_scale() : () -> tensor<f32>
   %zero = func.call @__static_zero() : () -> tensor<1xi64>
   %half = func.call @__static_half() : () -> tensor<1xi64>
@@ -221,7 +236,13 @@ func.func @main_graph(
   %mixed = func.call @__udon_onnx_add(%product, %wave)
       : (tensor<1x4x1x64xf32>, tensor<1x4x1x64xf32>) -> tensor<1x4x1x64xf32>
 
-  return %rotated, %gated, %keys, %mixed
+  %scores = func.call @__udon_onnx_add_row(%x, %mask)
+      : (tensor<1x4x1x64xf32>, tensor<1x1x1x64xf32>) -> tensor<1x4x1x64xf32>
+  %masked = func.call @__udon_onnx_softmax(%scores)
+      {udon.onnx.attributes = {axis = -1 : si64}}
+      : (tensor<1x4x1x64xf32>) -> tensor<1x4x1x64xf32>
+
+  return %rotated, %gated, %keys, %mixed, %masked
       : tensor<1x4x1x64xf32>, tensor<1x4x1x64xf32>, tensor<1x8x12xf32>,
-        tensor<1x4x1x64xf32>
+        tensor<1x4x1x64xf32>, tensor<1x4x1x64xf32>
 }

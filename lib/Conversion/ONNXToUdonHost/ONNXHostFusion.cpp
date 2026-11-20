@@ -68,6 +68,7 @@ std::optional<DeviceFusionKind> deviceFusionKind(const GraphRecord &graph,
       {"Concat", DeviceFusionKind::Concat},
       {"Expand", DeviceFusionKind::Expand},
       {"Transpose", DeviceFusionKind::Transpose},
+      {"Softmax", DeviceFusionKind::Softmax},
   };
   std::optional<DeviceFusionKind> kind;
   if (isMetadataOnlyAlias(node))
@@ -127,8 +128,9 @@ bool DeviceFusion::isValid(const GraphRecord &graph, ArrayRef<unsigned> roots) {
     unsigned root = roots[nodeIndex];
     if (root == nodeIndex)
       continue;
+    std::optional<DeviceFusionKind> kind = deviceFusionKind(graph, node);
     if (root < nodeIndex || root >= roots.size() || roots[root] != root ||
-        !deviceFusionKind(graph, node) ||
+        !kind || isDeviceFusionReduction(*kind) ||
         llvm::is_contained(graph.inputs, node.output) ||
         llvm::is_contained(graph.outputs, node.output))
       return false;
@@ -195,6 +197,10 @@ DeviceFusionCost DeviceFusion::walk(unsigned rootNode,
     return kind == DeviceFusionKind::Concat ? std::max(loads[0], loads[1])
                                             : loads[0] + loads[1];
   };
+  // A reduction root evaluates its operand per element of the reduced axis;
+  // its cap applies to one evaluation.
+  cost.reduction =
+      isDeviceFusionReduction(*deviceFusionKind(graph, graph.nodes[rootNode]));
   cost.pathLoads = visit(visit, rootNode);
   cost.leafBuffers = leaves.size();
   return cost;
@@ -245,7 +251,8 @@ SmallVector<unsigned> DeviceFusion::plan(const GraphRecord &graph,
     auto joins = [&](unsigned producer) {
       const NodeRecord &node = graph.nodes[producer];
       if (roots[producer] != producer || rejected[producer] ||
-          !kinds[producer] || external[node.output])
+          !kinds[producer] || isDeviceFusionReduction(*kinds[producer]) ||
+          external[node.output])
         return false;
       for (unsigned reader : readers[node.output]) {
         if (roots[reader] != root)

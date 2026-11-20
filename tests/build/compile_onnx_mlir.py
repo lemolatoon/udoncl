@@ -74,7 +74,9 @@ class CompileONNXMLIRTests(unittest.TestCase):
         command = self.run_pipeline(b'host bytecode', lower_to_host=True)
         for option in ('--udoncl-simplify-onnx-empty-concat',
                        '--udoncl-simplify-onnx-views',
+                       '--udoncl-fold-onnx-repeated-matmul-operand',
                        '--udoncl-materialize-onnx-constants',
+                       '--udoncl-merge-onnx-sibling-matmulnbits',
                        '--udoncl-identify-onnx-sequence-state',
                        '--udoncl-lower-onnx-to-host',
                        '--udoncl-validate-onnx-host-graph',
@@ -90,6 +92,27 @@ class CompileONNXMLIRTests(unittest.TestCase):
                         command.index('--udoncl-identify-onnx-sequence-state'))
         self.assertLess(command.index('--udoncl-simplify-onnx-views'),
                         command.index('--udoncl-materialize-onnx-constants'))
+        # The repeated-operand fold matches the Expand and Reshape views the
+        # view simplification leaves, and its shape operands are materialized
+        # with the other constants.
+        self.assertLess(
+            command.index('--udoncl-simplify-onnx-views'),
+            command.index('--udoncl-fold-onnx-repeated-matmul-operand'))
+        self.assertLess(
+            command.index('--udoncl-fold-onnx-repeated-matmul-operand'),
+            command.index('--udoncl-materialize-onnx-constants'))
+        # Merged MatMulNBits weights are stacked from materialized constants
+        # and must still be initializers when those are externalized.
+        self.assertLess(
+            command.index('--udoncl-materialize-onnx-constants'),
+            command.index('--udoncl-merge-onnx-sibling-matmulnbits'))
+        externalize = next(
+            index for index, value in enumerate(command)
+            if str(value).startswith(
+                '--udoncl-externalize-onnx-initializers='))
+        self.assertLess(
+            command.index('--udoncl-merge-onnx-sibling-matmulnbits'),
+            externalize)
         self.assertLess(command.index('--udoncl-validate-onnx-host-graph'),
                         command.index('--udoncl-plan-onnx-host-graph'))
         self.assertLess(command.index('--udoncl-plan-onnx-host-graph'),

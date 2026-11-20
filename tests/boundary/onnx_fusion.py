@@ -107,10 +107,32 @@ def compile_opencl(source):
 
 pointwise = compile_opencl(root / "libraries/udondnn/device/large_pointwise.cl")
 unary = compile_opencl(root / "libraries/udononnxoperators/device/unary.cl")
+softmax = compile_opencl(root / "libraries/udondnn/device/arena_softmax.cl")
+# The arena Softmax as examples/onnx-transformer-tiny/unity-library.json
+# declares it.
+SOFTMAX = {"words": 16384, "global_size": [8192, 2, 1]}
+SOFTMAX_BOUNDS = {
+    "argument_bounds": [
+        {"index": 2, "min": 1, "max": 16384},
+        {"index": 3, "min": 1, "max": 512},
+        {"index": 4, "min": 1, "max": 16384},
+        {"index": 5, "min": 1, "max": 16384},
+        {"index": 6, "min": 0, "max": 2},
+        {"index": 7, "min": 0, "max": 1},
+    ]
+}
 fragments = [
     emit("udondnn_large_op_tensor", 234, SURFACE, "--device-llvm", pointwise),
     emit("udondnn_large_activation_forward", 233, SURFACE, "--device-llvm", pointwise),
     emit("udononnx_unary_f32", 222, ROW, "--device-llvm", unary),
+    emit(
+        "udondnn_arena_softmax_forward",
+        236,
+        SOFTMAX,
+        "--device-llvm",
+        softmax,
+        SOFTMAX_BOUNDS,
+    ),
 ]
 
 # The pipeline of scripts/compile_onnx_mlir.py from Host planning on.
@@ -129,7 +151,7 @@ run([optimizer, *PIPELINE, root / "tests/boundary/onnx_fusion_graph.mlir", "-o",
 text = host.read_text(encoding="utf-8")
 # One dispatch per result and no library dispatch: every node is fused.
 dispatches = re.findall(r"call @__vrc_opencl_dispatch_(\w+)\(", text)
-assert dispatches == [f"udononnx_fused_{index}" for index in range(4)], dispatches
+assert dispatches == [f"udononnx_fused_{index}" for index in range(5)], dispatches
 
 start = text.index("gpu.module @udononnx_fused_kernels {")
 depth = 0
@@ -140,10 +162,10 @@ for end in range(text.index("{", start), len(text)):
 carrier = output / "fused-kernels.mlir"
 carrier.write_text(text[start : end + 1] + "\n", encoding="utf-8")
 
-# Leaf buffers of the four kernels: x, cos, sin; x, y; k; x, y.
-expected_inputs = [[256, 64, 64], [256, 256], [32], [256, 256]]
+# Leaf buffers of the five kernels: x, cos, sin; x, y; k; x, y; x, cos.
+expected_inputs = [[256, 64, 64], [256, 256], [32], [256, 256], [256, 64]]
 kernels = re.findall(r"gpu\.func @(\w+)\((.*?)\) kernel", carrier.read_text("utf-8"))
-assert [name for name, _ in kernels] == [f"udononnx_fused_{i}" for i in range(4)]
+assert [name for name, _ in kernels] == [f"udononnx_fused_{i}" for i in range(5)]
 for index, ((name, arguments), inputs) in enumerate(zip(kernels, expected_inputs)):
     sizes = [int(size) for size in re.findall(r"memref<(\d+)xf32>", arguments)]
     assert sizes == inputs + [8192], (name, sizes)
@@ -197,11 +219,18 @@ result = subprocess.run(
 )
 print(result.stdout, end="")
 assert result.returncode == 0, (result.stdout, result.stderr)
-for name, count in [("rotated", 256), ("gated", 256), ("keys", 96), ("mixed", 256)]:
+for name, count, counters in [
+    ("rotated", 256, ["nan", "infinite"]),
+    ("gated", 256, ["nan", "infinite"]),
+    ("keys", 96, ["nan", "infinite"]),
+    ("mixed", 256, ["nan", "infinite"]),
+    # A probability is at most 1: the masked rows reach NaN and zeros.
+    ("masked", 256, ["nan", "zero"]),
+]:
     assert f"{name}_bitexact={count}/{count}" in result.stdout, result.stdout
     assert f"{name}_tail_zero=1" in result.stdout, result.stdout
     # The inputs must actually reach the non-finite cases.
-    for counter in ["nan", "infinite"]:
+    for counter in counters:
         found = re.search(rf"{name}_{counter}=(\d+)", result.stdout)
         assert int(found.group(1)) > 0, (name, counter, result.stdout)
-assert "draws=19" in result.stdout, result.stdout
+assert "draws=22" in result.stdout, result.stdout

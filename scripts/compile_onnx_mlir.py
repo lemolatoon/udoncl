@@ -46,7 +46,9 @@ def canonicalize(
                 '--udoncl-infer-onnx-shapes',
                 '--udoncl-simplify-onnx-empty-concat',
                 '--udoncl-simplify-onnx-views',
+                '--udoncl-fold-onnx-repeated-matmul-operand',
                 '--udoncl-materialize-onnx-constants',
+                '--udoncl-merge-onnx-sibling-matmulnbits',
                 '--udoncl-externalize-onnx-initializers=' +
                 f'static-data-directory={temporary_static_data}',
                 '--udoncl-externalize-onnx-graph-constants=' +

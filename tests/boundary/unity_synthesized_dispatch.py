@@ -184,7 +184,8 @@ for kernel_id in (LIBRARY_ID, synthesized_id):
     assert f".export __udoncl_kernel_material_{kernel_id}" in assembly, kernel_id
 material = f"__udoncl_kernel_material_{synthesized_id}"
 # Everything between the first use of the kernel's material and its Blit
-# binds that kernel: three input textures and the i32 count.
+# binds that kernel: three input textures and the i32 count. A constant count
+# is bound once, ahead of the arguments every dispatch binds.
 binding = assembly[assembly.index(f"PUSH, {material}") :]
 binding = binding[: binding.index("VRCSDKBaseVRCGraphics.__Blit__")]
 strings = dict(
@@ -192,7 +193,7 @@ strings = dict(
 )
 pushed = re.findall(r"PUSH, (\S+)", binding)
 bound = [strings[name] for name in pushed if name in strings]
-assert bound == ["_VRC_Input", "_VRC_Input1", "_VRC_Input2", "_VRC_Arg4"], bound
+assert sorted(bound) == ["_VRC_Arg4", "_VRC_Input", "_VRC_Input1", "_VRC_Input2"], bound
 assert binding.count("__SetTexture__SystemString_UnityEngineTexture__") == 3, binding
 assert binding.count("__SetInteger__SystemString_SystemInt32__") == 1, binding
 

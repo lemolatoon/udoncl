@@ -39,6 +39,8 @@ int main(int argc, char **argv) {
   vrc::registerSpecializeONNXInputsPass();
   vrc::registerSimplifyONNXEmptyConcatPass();
   vrc::registerSimplifyONNXViewsPass();
+  vrc::registerFoldONNXRepeatedMatMulOperandPass();
+  vrc::registerMergeONNXSiblingMatMulNBitsPass();
   vrc::registerExternalizeONNXGraphConstantsPass();
   vrc::registerLowerONNXToUdonHostPass();
   vrc::registerValidateONNXHostGraphPass();

@@ -127,6 +127,92 @@ dispatchReadsScalarsDirectly(::vrc::vrc::DispatchDescCreateOp descriptor) {
   return dispatch && dispatch.getDesc() == result;
 }
 
+/// The static tensor id the compatibility attribute assigns to resource
+/// `index` of `dispatch`.
+static std::optional<int64_t>
+compatibilityStaticResourceId(::vrc::vrc::DispatchOp dispatch, size_t index) {
+  auto ids = dispatch->getAttrOfType<ArrayAttr>("vrc.unity_static_tensor_ids");
+  if (ids && index < ids.size())
+    if (auto id = dyn_cast<IntegerAttr>(ids[index]); id && id.getInt() >= 0)
+      return id.getInt();
+  return std::nullopt;
+}
+
+/// The static tensor id `resource` is defined from, looking through token
+/// conversions.
+static std::optional<int64_t> tracedStaticResourceId(Value resource) {
+  llvm::SmallPtrSet<Operation *, 4> visited;
+  while (Operation *definition = resource.getDefiningOp()) {
+    if (!visited.insert(definition).second)
+      break;
+    if (auto staticBuffer = dyn_cast<::vrc::vrc::StaticBufferOp>(definition))
+      return staticBuffer.getResourceId();
+    auto cast = dyn_cast<UnrealizedConversionCastOp>(definition);
+    if (!cast || cast.getInputs().size() != 1)
+      break;
+    resource = cast.getInputs().front();
+  }
+  return std::nullopt;
+}
+
+/// The static tensor resource `index` of `dispatch` reads, if any.
+static std::optional<int64_t> staticResourceId(::vrc::vrc::DispatchOp dispatch,
+                                               size_t index) {
+  if (auto compatibility = compatibilityStaticResourceId(dispatch, index))
+    return compatibility;
+  return tracedStaticResourceId(dispatch.getResources()[index]);
+}
+
+/// A value a dispatch binds to one material property and that is known at
+/// compile time: a static tensor, or the constant of a scalar argument.
+struct MaterialBinding {
+  bool staticTensor = false;
+  int64_t staticTensorId = 0;
+  Attribute constant;
+
+  bool operator==(const MaterialBinding &other) const {
+    return staticTensor == other.staticTensor &&
+           staticTensorId == other.staticTensorId && constant == other.constant;
+  }
+  bool operator!=(const MaterialBinding &other) const {
+    return !(*this == other);
+  }
+};
+
+/// The compile-time value `dispatch` binds to each kernel argument, or
+/// std::nullopt for the output and for every value known only at run time.
+static SmallVector<std::optional<MaterialBinding>>
+compileTimeMaterialBindings(::vrc::vrc::DispatchOp dispatch) {
+  SmallVector<std::optional<MaterialBinding>> bindings;
+  auto descriptor =
+      dispatch.getDesc().getDefiningOp<::vrc::vrc::DispatchDescCreateOp>();
+  auto outputIndex =
+      dispatch->getAttrOfType<IntegerAttr>("vrc.unity_output_resource_index");
+  int64_t output = outputIndex ? outputIndex.getInt() : 0;
+  size_t scalarIndex = 0, bufferIndex = 0;
+  for (Attribute kindValue : dispatch.getArgumentKinds()) {
+    std::optional<MaterialBinding> &binding = bindings.emplace_back();
+    auto kind = dyn_cast<StringAttr>(kindValue);
+    if (!kind || !descriptor)
+      continue;
+    if (kind.getValue() == "buffer") {
+      size_t index = bufferIndex++;
+      if (index >= dispatch.getResources().size() ||
+          static_cast<int64_t>(index) == output)
+        continue;
+      if (std::optional<int64_t> id = staticResourceId(dispatch, index))
+        binding = MaterialBinding{true, *id, {}};
+      continue;
+    }
+    size_t index = scalarIndex++;
+    Attribute constant;
+    if (index < descriptor.getScalars().size() &&
+        matchPattern(descriptor.getScalars()[index], m_Constant(&constant)))
+      binding = MaterialBinding{false, 0, constant};
+  }
+  return bindings;
+}
+
 /// Whether the sign bit of the i32 `value` is clear on every execution.
 static bool isKnownNonNegative(Value value, unsigned depth = 0) {
   llvm::APInt constant;
@@ -384,6 +470,7 @@ public:
     bool hasCompilerAsyncABI = false;
     if (failed(planUnityBufferPool()) || failed(planRawMemory()))
       return failure();
+    planMaterialBindOnce();
     if (module->hasAttr("vrc.debug_compiler_phases")) {
       llvm::errs() << "udonclc-scalar-lowering=raw-memory-planned"
                    << " raw_heap_bytes=" << rawHeapBytes << "\n";
@@ -1222,6 +1309,55 @@ private:
     }
     requestedScalarRegisterBudget = minimumScalarRegisterCount;
     return success();
+  }
+
+  /// The flag recording that the properties bound once through `material`
+  /// are set.
+  static std::string boundMaterialSlot(StringRef material) {
+    return ("__udoncl_bound_" + material.drop_front(strlen("__udoncl_"))).str();
+  }
+
+  /// Finds, for every kernel material, the arguments every dispatch through
+  /// it binds to the same compile-time value. A material keeps its properties
+  /// between Blits and only these dispatches write them, so the first
+  /// dispatch that runs binds such an argument for all of them.
+  void planMaterialBindOnce() {
+    llvm::StringMap<SmallVector<std::optional<MaterialBinding>>> shared;
+    llvm::StringSet<> excluded;
+    module.walk([&](Operation *operation) {
+      if (auto transfer = operation->getAttrOfType<StringAttr>(
+              "vrc.unity_copy_material_slot"))
+        excluded.insert(transfer.getValue());
+      auto dispatch = dyn_cast<::vrc::vrc::DispatchOp>(operation);
+      auto material = operation->getAttrOfType<StringAttr>(
+          "vrc.unity_dispatch_material_slot");
+      if (!dispatch || !material || material.getValue().empty())
+        return;
+      SmallVector<std::optional<MaterialBinding>> bindings =
+          compileTimeMaterialBindings(dispatch);
+      auto [known, inserted] =
+          shared.try_emplace(material.getValue(), bindings);
+      if (inserted)
+        return;
+      if (known->second.size() != bindings.size()) {
+        known->second.assign(known->second.size(), std::nullopt);
+        return;
+      }
+      for (auto [common, binding] : llvm::zip(known->second, bindings))
+        if (common != binding)
+          common.reset();
+    });
+    for (auto &entry : shared) {
+      if (excluded.contains(entry.getKey()) ||
+          !llvm::any_of(entry.getValue(),
+                        [](const std::optional<MaterialBinding> &binding) {
+                          return binding.has_value();
+                        }))
+        continue;
+      SmallVector<bool> &once = materialBindOnce[entry.getKey()];
+      for (const std::optional<MaterialBinding> &binding : entry.getValue())
+        once.push_back(binding.has_value());
+    }
   }
 
   LogicalResult planUnityBufferPool() {
@@ -3131,8 +3267,6 @@ private:
               "vrc.unity_output_resource_index");
           auto resourceHeapSlots = dispatch->getAttrOfType<ArrayAttr>(
               "vrc.unity_resource_heap_slots");
-          auto resourceStaticTensorIds =
-              dispatch->getAttrOfType<ArrayAttr>("vrc.unity_static_tensor_ids");
           int64_t output = outputIndex ? outputIndex.getInt() : 0;
           std::string destinationToken =
               output >= 0 && size_t(output) < dispatch.getResources().size()
@@ -3164,37 +3298,6 @@ private:
                 return loadBoundMutableBuffer(slot.getValue(), dynamicPrefix);
             return selectUnityBuffer(dispatch.getLoc(), token, dynamicPrefix);
           };
-          auto compatibilityStaticResourceId =
-              [&](size_t index) -> std::optional<int64_t> {
-            if (resourceStaticTensorIds &&
-                index < resourceStaticTensorIds.size())
-              if (auto id =
-                      dyn_cast<IntegerAttr>(resourceStaticTensorIds[index]);
-                  id && id.getInt() >= 0)
-                return id.getInt();
-            return std::nullopt;
-          };
-          auto tracedStaticResourceId =
-              [&](Value resource) -> std::optional<int64_t> {
-            llvm::SmallPtrSet<Operation *, 4> visited;
-            while (Operation *definition = resource.getDefiningOp()) {
-              if (!visited.insert(definition).second)
-                break;
-              if (auto staticBuffer =
-                      dyn_cast<::vrc::vrc::StaticBufferOp>(definition))
-                return staticBuffer.getResourceId();
-              auto cast = dyn_cast<UnrealizedConversionCastOp>(definition);
-              if (!cast || cast.getInputs().size() != 1)
-                break;
-              resource = cast.getInputs().front();
-            }
-            return std::nullopt;
-          };
-          auto staticResourceId = [&](size_t index, Value resource) {
-            auto compatibility = compatibilityStaticResourceId(index);
-            return compatibility ? compatibility
-                                 : tracedStaticResourceId(resource);
-          };
           llvm::DenseMap<size_t, Value> explicitStaticResourceIndices;
           auto exposureVersion = module->getAttrOfType<IntegerAttr>(
               "vrc.host_backend_literal_use_version");
@@ -3218,8 +3321,7 @@ private:
                 return dispatch.emitError(
                     "static-resource index position is out of range");
               size_t resourceIndex = static_cast<size_t>(position);
-              auto expected = staticResourceId(
-                  resourceIndex, dispatch.getResources()[resourceIndex]);
+              auto expected = staticResourceId(dispatch, resourceIndex);
               if (!expected)
                 return dispatch.emitError(
                     "static-resource index references a non-static resource");
@@ -3256,7 +3358,8 @@ private:
                 return dispatch.emitError(
                     "static-resource index literal disagrees with resource "
                     "identity");
-              auto compatibility = compatibilityStaticResourceId(resourceIndex);
+              auto compatibility =
+                  compatibilityStaticResourceId(dispatch, resourceIndex);
               auto traced = tracedStaticResourceId(
                   dispatch.getResources()[resourceIndex]);
               if (compatibility && traced && *compatibility != *traced)
@@ -3276,13 +3379,12 @@ private:
           if (exposureVersion && exposureVersion.getInt() == 1)
             for (auto [resourceIndex, resource] :
                  llvm::enumerate(dispatch.getResources()))
-              if (staticResourceId(resourceIndex, resource) &&
+              if (staticResourceId(dispatch, resourceIndex) &&
                   !explicitStaticResourceIndices.contains(resourceIndex))
                 return dispatch.emitError(
                     "incomplete static-resource index coverage");
           if (output >= 0 && size_t(output) < dispatch.getResources().size() &&
-              staticResourceId(static_cast<size_t>(output),
-                               dispatch.getResources()[output]))
+              staticResourceId(dispatch, static_cast<size_t>(output)))
             return dispatch.emitError(
                 "immutable static tensor cannot be a dispatch output");
           SmallVector<Operation *> runtimeAliasExitJumps;
@@ -3295,7 +3397,7 @@ private:
               if (!access || access.getValue() != "read")
                 continue;
               Value resource = dispatch.getResources()[resourceIndex];
-              if (staticResourceId(resourceIndex, resource))
+              if (staticResourceId(dispatch, resourceIndex))
                 continue;
               std::string sourceToken = valueSlots.lookup(resource);
               if (sourceToken.empty())
@@ -3330,117 +3432,160 @@ private:
           if (destination.empty())
             return dispatch.emitError("Unity dispatch has no physical pool");
           addSlot(materialSlot.getValue(), "UnityEngineMaterial", "null", true);
-          unsigned scalarIndex = 0, bufferIndex = 0;
           auto snapshots = descriptorSlots.find(descriptor.getOperation());
           if (snapshots == descriptorSlots.end())
             return dispatch.emitError(
                 "Unity dispatch descriptor has no scalar snapshots");
-          for (auto [argumentIndex, kindValue] :
-               llvm::enumerate(dispatch.getArgumentKinds())) {
-            auto kind = dyn_cast<StringAttr>(kindValue);
-            if (!kind)
-              return dispatch.emitError("invalid dispatch argument kind");
-            if (kind.getValue() == "buffer") {
-              if (bufferIndex >= dispatch.getResources().size())
-                return dispatch.emitError(
-                    "dispatch buffer descriptor is incomplete");
-              size_t resourceIndex = bufferIndex++;
-              Value resource = dispatch.getResources()[resourceIndex];
-              std::string texture = valueSlots.lookup(resource);
-              if (texture.empty())
-                return dispatch.emitError(
-                    "dispatch buffer has no allocated Udon heap slot");
-              if (resourceIndex == size_t(output))
-                continue;
-              if (auto id = staticResourceId(resourceIndex, resource)) {
-                std::string loaded = prefix + "dispatch_" +
-                                     std::to_string(dispatch.getKernelId()) +
-                                     "_static_" + std::to_string(argumentIndex);
-                addSlot(loaded, "UnityEngineTexture2D", "null", false);
-                emitPush(dispatch.getLoc(), "__udoncl_static_tensors");
-                auto explicitIndex =
-                    explicitStaticResourceIndices.find(resourceIndex);
-                if (explicitIndex != explicitStaticResourceIndices.end()) {
-                  std::string indexSlot =
-                      valueSlots.lookup(explicitIndex->second);
-                  if (indexSlot.empty())
-                    return dispatch.emitError(
-                        "static-resource index operand has no allocated Udon "
-                        "heap slot");
-                  emitPush(dispatch.getLoc(), indexSlot);
+          ArrayRef<bool> boundOnce;
+          if (auto found = materialBindOnce.find(materialSlot.getValue());
+              found != materialBindOnce.end())
+            boundOnce = found->second;
+          auto isBoundOnce = [&](size_t argumentIndex) {
+            return argumentIndex < boundOnce.size() && boundOnce[argumentIndex];
+          };
+          // Binds the arguments `isBoundOnce` classifies as `once`.
+          auto bindArguments = [&](bool once) -> LogicalResult {
+            unsigned scalarIndex = 0, bufferIndex = 0;
+            for (auto [argumentIndex, kindValue] :
+                 llvm::enumerate(dispatch.getArgumentKinds())) {
+              auto kind = dyn_cast<StringAttr>(kindValue);
+              if (!kind)
+                return dispatch.emitError("invalid dispatch argument kind");
+              if (kind.getValue() == "buffer") {
+                if (bufferIndex >= dispatch.getResources().size())
+                  return dispatch.emitError(
+                      "dispatch buffer descriptor is incomplete");
+                size_t resourceIndex = bufferIndex++;
+                Value resource = dispatch.getResources()[resourceIndex];
+                std::string texture = valueSlots.lookup(resource);
+                if (texture.empty())
+                  return dispatch.emitError(
+                      "dispatch buffer has no allocated Udon heap slot");
+                if (resourceIndex == size_t(output) ||
+                    isBoundOnce(argumentIndex) != once)
+                  continue;
+                if (auto id = staticResourceId(dispatch, resourceIndex)) {
+                  std::string loaded = prefix + "dispatch_" +
+                                       std::to_string(dispatch.getKernelId()) +
+                                       "_static_" +
+                                       std::to_string(argumentIndex);
+                  addSlot(loaded, "UnityEngineTexture2D", "null", false);
+                  emitPush(dispatch.getLoc(), "__udoncl_static_tensors");
+                  auto explicitIndex =
+                      explicitStaticResourceIndices.find(resourceIndex);
+                  if (explicitIndex != explicitStaticResourceIndices.end()) {
+                    std::string indexSlot =
+                        valueSlots.lookup(explicitIndex->second);
+                    if (indexSlot.empty())
+                      return dispatch.emitError(
+                          "static-resource index operand has no allocated Udon "
+                          "heap slot");
+                    emitPush(dispatch.getLoc(), indexSlot);
+                  } else {
+                    emitPush(dispatch.getLoc(),
+                             immutableSlot("SystemInt32", std::to_string(*id)));
+                  }
+                  emitPush(dispatch.getLoc(), loaded);
+                  emitExtern(dispatch.getLoc(),
+                             "UnityEngineTexture2DArray.__Get__SystemInt32__"
+                             "UnityEngineTexture2D");
+                  texture = loaded;
                 } else {
-                  emitPush(dispatch.getLoc(),
-                           immutableSlot("SystemInt32", std::to_string(*id)));
-                }
-                emitPush(dispatch.getLoc(), loaded);
-                emitExtern(dispatch.getLoc(),
-                           "UnityEngineTexture2DArray.__Get__SystemInt32__"
-                           "UnityEngineTexture2D");
-                texture = loaded;
-              } else {
-                if (resourceHeapSlots &&
-                    resourceIndex < resourceHeapSlots.size()) {
-                  if (auto slot = dyn_cast<StringAttr>(
-                          resourceHeapSlots[resourceIndex]);
-                      slot && !slot.getValue().empty())
-                    texture = loadBoundMutableBuffer(
-                        slot.getValue(),
-                        prefix + "dispatch_" +
-                            std::to_string(dispatch.getKernelId()) + "_input_" +
-                            std::to_string(argumentIndex));
-                  else
+                  if (resourceHeapSlots &&
+                      resourceIndex < resourceHeapSlots.size()) {
+                    if (auto slot = dyn_cast<StringAttr>(
+                            resourceHeapSlots[resourceIndex]);
+                        slot && !slot.getValue().empty())
+                      texture = loadBoundMutableBuffer(
+                          slot.getValue(),
+                          prefix + "dispatch_" +
+                              std::to_string(dispatch.getKernelId()) +
+                              "_input_" + std::to_string(argumentIndex));
+                    else
+                      texture = selectUnityReadableBuffer(
+                          dispatch.getLoc(), texture,
+                          prefix + "dispatch_" +
+                              std::to_string(dispatch.getKernelId()) +
+                              "_input_" + std::to_string(argumentIndex));
+                  } else {
                     texture = selectUnityReadableBuffer(
                         dispatch.getLoc(), texture,
                         prefix + "dispatch_" +
                             std::to_string(dispatch.getKernelId()) + "_input_" +
                             std::to_string(argumentIndex));
-                } else {
-                  texture = selectUnityReadableBuffer(
-                      dispatch.getLoc(), texture,
-                      prefix + "dispatch_" +
-                          std::to_string(dispatch.getKernelId()) + "_input_" +
-                          std::to_string(argumentIndex));
+                  }
                 }
+                if (texture.empty())
+                  return dispatch.emitError(
+                      "Unity dispatch has no physical pool");
+                std::string propertySlot =
+                    "__udoncl_material_input_" + std::to_string(argumentIndex);
+                addSlot(propertySlot, "SystemString",
+                        argumentIndex == 0
+                            ? "\"_VRC_Input\""
+                            : "\"_VRC_Input" + std::to_string(argumentIndex) +
+                                  "\"",
+                        false);
+                emitPush(dispatch.getLoc(), materialSlot.getValue());
+                emitPush(dispatch.getLoc(), propertySlot);
+                emitPush(dispatch.getLoc(), texture);
+                emitExtern(dispatch.getLoc(),
+                           "UnityEngineMaterial.__SetTexture__SystemString_"
+                           "UnityEngineTexture__SystemVoid");
+                continue;
               }
-              if (texture.empty())
+              if (scalarIndex >= snapshots->second.size())
+                return dispatch.emitError("dispatch descriptor is incomplete");
+              std::string scalar = snapshots->second[scalarIndex++];
+              if (isBoundOnce(argumentIndex) != once)
+                continue;
+              if (scalar.empty())
                 return dispatch.emitError(
-                    "Unity dispatch has no physical pool");
+                    "dispatch scalar has no allocated Udon heap slot");
               std::string propertySlot =
-                  "__udoncl_material_input_" + std::to_string(argumentIndex);
+                  "__udoncl_material_arg_" + std::to_string(argumentIndex);
               addSlot(propertySlot, "SystemString",
-                      argumentIndex == 0
-                          ? "\"_VRC_Input\""
-                          : "\"_VRC_Input" + std::to_string(argumentIndex) +
-                                "\"",
+                      "\"_VRC_Arg" + std::to_string(argumentIndex) + "\"",
                       false);
               emitPush(dispatch.getLoc(), materialSlot.getValue());
               emitPush(dispatch.getLoc(), propertySlot);
-              emitPush(dispatch.getLoc(), texture);
+              emitPush(dispatch.getLoc(), scalar);
               emitExtern(dispatch.getLoc(),
-                         "UnityEngineMaterial.__SetTexture__SystemString_"
-                         "UnityEngineTexture__SystemVoid");
-              continue;
+                         kind.getValue() == "f32"
+                             ? "UnityEngineMaterial.__SetFloat__SystemString_"
+                               "SystemSingle__SystemVoid"
+                             : "UnityEngineMaterial.__SetInteger__SystemString_"
+                               "SystemInt32__SystemVoid");
             }
-            if (scalarIndex >= snapshots->second.size())
-              return dispatch.emitError("dispatch descriptor is incomplete");
-            std::string scalar = snapshots->second[scalarIndex++];
-            if (scalar.empty())
-              return dispatch.emitError(
-                  "dispatch scalar has no allocated Udon heap slot");
-            std::string propertySlot =
-                "__udoncl_material_arg_" + std::to_string(argumentIndex);
-            addSlot(propertySlot, "SystemString",
-                    "\"_VRC_Arg" + std::to_string(argumentIndex) + "\"", false);
-            emitPush(dispatch.getLoc(), materialSlot.getValue());
-            emitPush(dispatch.getLoc(), propertySlot);
-            emitPush(dispatch.getLoc(), scalar);
+            return success();
+          };
+          if (llvm::is_contained(boundOnce, true)) {
+            // The material keeps these properties between Blits: the first
+            // dispatch through it binds them, every later one skips them.
+            std::string bound = boundMaterialSlot(materialSlot.getValue());
+            addSlot(bound, "SystemBoolean", "null", false);
+            emitPush(dispatch.getLoc(), bound);
+            Operation *bind = create(
+                dispatch.getLoc(), vm::JumpIfFalseOp::getOperationName(),
+                {builder.getNamedAttr("target", builder.getI64IntegerAttr(0))});
+            address += 8;
+            Operation *skip = emitJump(dispatch.getLoc(), 0);
+            bind->setAttr("target", builder.getI64IntegerAttr(
+                                        static_cast<int64_t>(address)));
+            if (failed(bindArguments(/*once=*/true)))
+              return failure();
+            std::string one = immutableSlot("SystemInt32", "1");
+            emitPush(dispatch.getLoc(), one);
+            emitPush(dispatch.getLoc(), one);
+            emitPush(dispatch.getLoc(), bound);
             emitExtern(dispatch.getLoc(),
-                       kind.getValue() == "f32"
-                           ? "UnityEngineMaterial.__SetFloat__SystemString_"
-                             "SystemSingle__SystemVoid"
-                           : "UnityEngineMaterial.__SetInteger__SystemString_"
-                             "SystemInt32__SystemVoid");
+                       "SystemInt32.__op_Equality__SystemInt32_SystemInt32__"
+                       "SystemBoolean");
+            skip->setAttr("target", builder.getI64IntegerAttr(
+                                        static_cast<int64_t>(address)));
           }
+          if (failed(bindArguments(/*once=*/false)))
+            return failure();
           addSlot("__udoncl_null_texture", "UnityEngineTexture", "null", false);
           emitPush(dispatch.getLoc(), "__udoncl_null_texture");
           emitPush(dispatch.getLoc(), destination);
@@ -6601,6 +6746,7 @@ private:
   std::map<std::string, ResidentLiteralRequest> residentLiteralRequests;
   unsigned sharedConstantIndex = 0;
   llvm::StringMap<std::string> variableSlots;
+  llvm::StringMap<SmallVector<bool>> materialBindOnce;
   llvm::StringSet<> variableSlotNames;
   llvm::StringMap<uint64_t> rawGlobalBases;
   llvm::StringMap<DenseI8ArrayAttr> rawGlobalInitializers;

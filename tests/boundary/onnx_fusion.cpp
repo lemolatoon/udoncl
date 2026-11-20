@@ -27,6 +27,7 @@ constexpr uint32_t elements = rows * columns;
 constexpr uint32_t keyRows = 4, keyColumns = 8, keyCopies = 3;
 constexpr uint32_t keyElements = keyCopies * keyRows * keyColumns;
 constexpr uint32_t opTensorId = 234, activationId = 233, unaryId = 222;
+constexpr uint32_t softmaxId = 236, softmaxWords = 16384;
 constexpr uint32_t fusedId = 300;
 
 // Scalar payloads of the library kernels, in argument order.
@@ -40,6 +41,9 @@ struct ActivationScalars {
 };
 struct UnaryScalars {
   int32_t operation, words;
+};
+struct SoftmaxScalars {
+  int32_t n, c, h, w, algorithm, mode;
 };
 
 /// A tensor shape as the Host folds it for OpTensor: N, C, H, W.
@@ -108,8 +112,19 @@ Buffer unary(native_opencl::Session &session, const Buffer &input,
   return draw(session, unaryId, rowWords, {&input}, &scalars, sizeof scalars);
 }
 
+/// Softmax over the last axis of `outer` rows of `extent` words as Host
+/// finalization dispatches it: N = outer, C = extent, H = 1, W = inner = 1,
+/// accurate algorithm, channel mode.
+Buffer softmax(native_opencl::Session &session, const Buffer &input,
+               int32_t outer, int32_t extent) {
+  SoftmaxScalars scalars{outer, extent, 1, 1, 0, 1};
+  return draw(session, softmaxId, softmaxWords, {&input}, &scalars,
+              sizeof scalars);
+}
+
 struct Comparison {
-  unsigned exact = 0, nan = 0, infinite = 0, negativeZero = 0, nonZero = 0;
+  unsigned exact = 0, nan = 0, infinite = 0, negativeZero = 0, nonZero = 0,
+           zero = 0;
   bool tailZero = true;
 };
 
@@ -127,6 +142,7 @@ Comparison compare(const char *name, const Buffer &fused,
     result.infinite += std::isinf(fused[index]);
     result.negativeZero += word == 0x80000000u;
     result.nonZero += (word & 0x7fffffffu) != 0;
+    result.zero += (word & 0x7fffffffu) == 0;
   }
   for (uint32_t index = count; index < rowWords; ++index)
     result.tailZero &= bits(fused[index]) == 0;
@@ -135,15 +151,17 @@ Comparison compare(const char *name, const Buffer &fused,
             << "_nan=" << result.nan << " " << name
             << "_infinite=" << result.infinite << " " << name
             << "_negative_zero=" << result.negativeZero << " " << name
-            << "_nonzero=" << result.nonZero << "\n";
+            << "_nonzero=" << result.nonZero << " " << name
+            << "_zero=" << result.zero << "\n";
   return result;
 }
 } // namespace
 
 int main(int argc, char **argv) {
-  if (argc != 9) {
+  if (argc != 11) {
     std::cerr << "usage: onnx-fusion-kernels <op-tensor> <activation> <unary> "
-                 "<rotated> <gated> <keys> <mixed> <vertex>\n";
+                 "<softmax> <rotated> <gated> <keys> <mixed> <masked> "
+                 "<vertex>\n";
     return 2;
   }
   try {
@@ -157,15 +175,19 @@ int main(int argc, char **argv) {
           argv[2], surfaceWidth, surfaceHeight, 2},
          {unaryId, rowWords, 2, "udononnx_unary_f32", argv[3], surfaceWidth, 1,
           1},
-         {fusedId + 0, rowWords, 0, "udononnx_fused_0", argv[4], surfaceWidth,
+         {softmaxId, softmaxWords, 6, "udondnn_arena_softmax_forward", argv[4],
+          surfaceWidth, 2, 1},
+         {fusedId + 0, rowWords, 0, "udononnx_fused_0", argv[5], surfaceWidth,
           1, 3},
-         {fusedId + 1, rowWords, 0, "udononnx_fused_1", argv[5], surfaceWidth,
+         {fusedId + 1, rowWords, 0, "udononnx_fused_1", argv[6], surfaceWidth,
           1, 2},
-         {fusedId + 2, rowWords, 0, "udononnx_fused_2", argv[6], surfaceWidth,
+         {fusedId + 2, rowWords, 0, "udononnx_fused_2", argv[7], surfaceWidth,
           1, 1},
-         {fusedId + 3, rowWords, 0, "udononnx_fused_3", argv[7], surfaceWidth,
+         {fusedId + 3, rowWords, 0, "udononnx_fused_3", argv[8], surfaceWidth,
+          1, 2},
+         {fusedId + 4, rowWords, 0, "udononnx_fused_4", argv[9], surfaceWidth,
           1, 2}},
-        argv[8]);
+        argv[10]);
 
     std::mt19937 generator(0x5eed);
     auto uniform = [&](float scale) {
@@ -285,17 +307,36 @@ int main(int argc, char **argv) {
         opTensor(session, product, full, wave, full, full, 0);
     Buffer mixed = draw(session, fusedId + 3, rowWords, {&x, &y}, nullptr, 0);
 
+    // masked = softmax(x + mask) over the last axis, with an additive
+    // attention mask of zeros, -FLT_MAX, -inf and a denormal. Rows 0 and 2
+    // of x hold the special values and become NaN; rows 1 and 3 are finite
+    // with masked probabilities of zero.
+    Buffer mask(surfaceWords, 0.0f);
+    for (uint32_t column = 0; column < columns; ++column)
+      mask[column] = column % 5 == 1   ? -FLT_MAX
+                     : column % 7 == 3 ? -infinity
+                     : column == 10    ? 1.0e-40f
+                     : column % 3 == 0 ? uniform(30.0f)
+                                       : 0.0f;
+    Buffer scores = opTensor(session, x, full, mask, row, full, 0);
+    Buffer maskedReference = softmax(session, scores, rows, columns);
+    Buffer masked =
+        draw(session, fusedId + 4, rowWords, {&x, &mask}, nullptr, 0);
+
     Comparison results[] = {
         compare("rotated", rotated, rotatedReference, elements),
         compare("gated", gated, gatedReference, elements),
         compare("keys", keysFused, keysReference, keyElements),
-        compare("mixed", mixed, mixedReference, elements)};
-    const uint32_t counts[] = {elements, elements, keyElements, elements};
+        compare("mixed", mixed, mixedReference, elements),
+        compare("masked", masked, maskedReference, elements)};
+    const uint32_t counts[] = {elements, elements, keyElements, elements,
+                               elements};
     bool passed = true;
-    for (unsigned index = 0; index < 4; ++index)
+    for (unsigned index = 0; index < 5; ++index)
       passed &= results[index].exact == counts[index] &&
                 results[index].tailZero && results[index].nan > 0 &&
-                results[index].infinite > 0 &&
+                (index == 4 ? results[index].zero > 0
+                            : results[index].infinite > 0) &&
                 results[index].nonZero > counts[index] / 2;
     std::cout << "draws=" << session.drawCount() << " device=\""
               << session.deviceName() << "\"\n";

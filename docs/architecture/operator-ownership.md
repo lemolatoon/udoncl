@@ -87,6 +87,26 @@ one dispatch accumulates up to 256 K blocks of every output word in ascending
 K order, and the Host splits a longer K into compile-time segments that pass
 the partial sum through a scratch surface. Changing that schedule keeps the
 `MatMulNBits` semantics and adds no `Ext` entry point.
+`udoncl-merge-onnx-sibling-matmulnbits` is a graph rewrite inside that
+contract, not a new operator: `MatMulNBits` nodes that read one activation
+with equal K, bits and block size, constant weights and no zero points,
+`g_idx` or bias become one `MatMulNBits` over the stacked weight and scale
+rows, and each original result is an ONNX `Slice` of its last axis. ONNX
+Runtime defines every output column from its own weight row and scales, so
+the merged node computes each column from the same operands in the same
+order; `udononnx-matmul-nbits-kernel` checks the stacked kernel bit for bit
+against the separate ones. The Slices are re-indexing nodes and fuse into
+their readers like any other.
+
+`udoncl-fold-onnx-repeated-matmul-operand` keeps ONNX `MatMul` an UdonBLAS
+`udonblasSgemmStridedBatched` call and adds no API. When the right operand
+of a MatMul is a Reshape of an Expand that repeats each matrix R times along
+the axis merged into the batch (the grouped-query attention key/value
+expansion), the R left matrices of a group multiply one matrix; the rewrite
+stacks them as R * M rows of one batch and multiplies the matrices before the
+Expand. Each output element is the same dot product in the same K order, and
+`udonblas-arena-sgemm-kernel` checks the folded batches bit for bit against
+the repeated ones.
 
 The general ONNX MNIST path follows the same boundary: arena convolution and
 pooling are private backends of `udondnnConvolutionForward` and
@@ -167,3 +187,12 @@ kernel repeats their library formulas with alpha 1 and beta 0, and
 `udondnn_large_op_tensor`, `udondnn_large_activation_forward` and
 `udononnx_unary_f32` on the same renderer, with NaNs, infinities, signed
 zeros and denormals in the inputs.
+
+A Softmax may be the root of such a kernel and stays the UdonDNN
+`udondnnSoftmaxForward` operator (cuDNN `CUDNN_SOFTMAX_ACCURATE`, channel
+mode, alpha 1, beta 0): the kernel repeats the formula of its private
+`udondnn_arena_softmax_forward` backend in the same order and evaluates the
+fused pointwise operand where that backend loads its input. This is not a
+masked-softmax API; an additive mask is an ordinary Add read only by the
+Softmax. `onnx-fusion-execution` compares it with the Add and arena Softmax
+dispatches it replaces.

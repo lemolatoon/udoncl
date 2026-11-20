@@ -26,6 +26,11 @@ inline constexpr unsigned deviceFusionMaxPathLoads = 16;
 /// Nodes of the expression tree of one kernel, which bounds the shader size
 /// and the duplication of nodes with several readers.
 inline constexpr unsigned deviceFusionMaxExpressionNodes = 64;
+/// Loads of the operand expression of a reduction root. The root evaluates
+/// it once per element of the reduced axis in each of its passes, as the
+/// library kernel loads its input, so this bounds the kernel to a multiple
+/// of the library kernel's Loads.
+inline constexpr unsigned deviceFusionMaxReductionOperandLoads = 2;
 
 enum class DeviceFusionKind {
   Add,
@@ -41,7 +46,15 @@ enum class DeviceFusionKind {
   Expand,
   Transpose,
   Alias,
+  /// A reduction along one axis. It is only ever the root of a group: its
+  /// kernel evaluates the operand expression at every element of the axis.
+  Softmax,
 };
+
+/// True for kinds that only a group root may have.
+inline bool isDeviceFusionReduction(DeviceFusionKind kind) {
+  return kind == DeviceFusionKind::Softmax;
+}
 
 /// How a fused kernel can evaluate `node`, or nothing when it cannot: the
 /// node is not one of the f32 per-element or re-indexing operations the
@@ -71,12 +84,16 @@ struct DeviceFusionOperand {
 
 struct DeviceFusionCost {
   unsigned leafBuffers = 0;
+  /// Loads on the path of one fragment; for a reduction root, the Loads of
+  /// one evaluation of its operand.
   unsigned pathLoads = 0;
   unsigned expressionNodes = 0;
+  bool reduction = false;
 
   bool withinCaps() const {
     return leafBuffers <= deviceFusionMaxLeafBuffers &&
-           pathLoads <= deviceFusionMaxPathLoads &&
+           pathLoads <= (reduction ? deviceFusionMaxReductionOperandLoads
+                                   : deviceFusionMaxPathLoads) &&
            expressionNodes <= deviceFusionMaxExpressionNodes;
   }
 };
@@ -94,8 +111,9 @@ public:
   /// that is still its own root and is fusible, other than a metadata alias,
   /// grows a group breadth-first over the producers of its value operands. A
   /// producer joins when it is fusible, its result is not a graph input or
-  /// output (which includes sequence state), every reader of its result is
-  /// already in the group and reads it as a value, and the group stays
+  /// output (which includes sequence state), it is not a reduction (which is
+  /// only ever a root), every reader of its result is already in the group
+  /// and reads it as a value, and the group stays
   /// within the caps above. A producer that would exceed a cap stays
   /// materialized for good. A group whose interior nodes are all metadata
   /// aliases saves no dispatch and is dissolved.

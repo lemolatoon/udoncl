@@ -48,6 +48,13 @@ int64_t concatAxis(const GraphRecord &graph, const NodeRecord &node) {
   return axis < 0 ? axis + graph.tensors[node.output].type.getRank() : axis;
 }
 
+/// The axis the ONNX (opset 13) Softmax normalizes, as isDeviceSoftmaxNode
+/// and the library dispatch read it.
+int64_t softmaxAxis(const GraphRecord &graph, const NodeRecord &node) {
+  int64_t axis = integerAttribute(node, "axis", -1);
+  return axis < 0 ? axis + graph.tensors[node.output].type.getRank() : axis;
+}
+
 /// Writes everything that determines the kernel of the group rooted at
 /// `nodeIndex`: operations, shapes, static parameters, immediates and which
 /// leaf argument every Load reads. Two groups with the same key have the
@@ -73,6 +80,8 @@ void structureKey(const DeviceFusion &fusion, ArrayRef<unsigned> leaves,
     os << '}';
   } else if (kind == DeviceFusionKind::Concat) {
     os << '{' << concatAxis(graph, node) << '}';
+  } else if (kind == DeviceFusionKind::Softmax) {
+    os << '{' << softmaxAxis(graph, node) << '}';
   }
   os << '(';
   for (unsigned index = 0; index != deviceFusionValueOperands(kind); ++index) {
@@ -137,10 +146,91 @@ public:
     ArrayRef<int64_t> shape = shapeOf(graph, graph.nodes[rootNode].output);
     IndexMap &map = newMap(shape);
     map.linear = Bounded{linear, elementCount(shape) - 1, std::nullopt};
+    if (*deviceFusionKind(graph, graph.nodes[rootNode]) ==
+        DeviceFusionKind::Softmax)
+      return emitSoftmax(rootNode, map);
     return emitNode(rootNode, map);
   }
 
 private:
+  /// Folds `combine` over the operand of the reduction root `rootNode` at
+  /// every element of `axis`, in ascending order, starting from `initial`.
+  /// The operand is evaluated inside a counted scf.while whose counter
+  /// replaces the axis coordinate of `map`; returns the result and the Loads
+  /// of one evaluation.
+  template <typename Combine>
+  std::pair<Value, unsigned> foldAxis(unsigned rootNode, IndexMap &map,
+                                      int64_t axis, Value initial,
+                                      Combine &&combine) {
+    Type i32 = builder.getI32Type();
+    Type f32 = builder.getF32Type();
+    ArrayRef<Bounded> coordinates = coordinatesOf(map);
+    int64_t extent = map.shape[axis];
+    // The limit and the step are defined outside the loop, so the proof
+    // recognizes a counted loop.
+    Value limit = i32Constant(extent);
+    Value one = i32Constant(1);
+    auto loop = scf::WhileOp::create(builder, location, TypeRange{i32, f32},
+                                     ValueRange{i32Constant(0), initial});
+    OpBuilder::InsertionGuard guard(builder);
+    Block *before = builder.createBlock(&loop.getBefore(), {}, {i32, f32},
+                                        {location, location});
+    Value inside =
+        arith::CmpIOp::create(builder, location, arith::CmpIPredicate::ult,
+                              before->getArgument(0), limit);
+    scf::ConditionOp::create(builder, location, inside, before->getArguments());
+    Block *after = builder.createBlock(&loop.getAfter(), {}, {i32, f32},
+                                       {location, location});
+    IndexMap &element = newMap(map.shape);
+    element.coordinates = SmallVector<Bounded>(coordinates);
+    (*element.coordinates)[axis] =
+        Bounded{after->getArgument(0), extent - 1, std::nullopt};
+    Emitted sample = emitOperand(rootNode, 0, element);
+    Value next =
+        arith::AddIOp::create(builder, location, after->getArgument(0), one);
+    scf::YieldOp::create(
+        builder, location,
+        ValueRange{next, combine(after->getArgument(1), sample.value)});
+    return {loop.getResult(1), sample.loads};
+  }
+
+  /// udondnn_arena_softmax_forward with algorithm 0 (accurate) over the
+  /// root's axis, reading the operand expression where the library kernel
+  /// reads its input buffer: the maximum, starting from -FLT_MAX, of the
+  /// samples greater than it; the ascending sum of exp(sample - maximum);
+  /// and exp(own sample - maximum) / sum.
+  Emitted emitSoftmax(unsigned rootNode, IndexMap &map) {
+    int64_t axis = softmaxAxis(graph, graph.nodes[rootNode]);
+    // Every fragment derives its coordinates before the loops.
+    coordinatesOf(map);
+    std::pair<Value, unsigned> maximum = foldAxis(
+        rootNode, map, axis, f32Constant(-3.402823466e+38f),
+        [&](Value current, Value sample) -> Value {
+          Value greater = arith::CmpFOp::create(
+              builder, location, arith::CmpFPredicate::OGT, sample, current);
+          return arith::SelectOp::create(builder, location, greater, sample,
+                                         current);
+        });
+    std::pair<Value, unsigned> denominator = foldAxis(
+        rootNode, map, axis, f32Constant(0.0f),
+        [&](Value sum, Value sample) -> Value {
+          Value shifted =
+              arith::SubFOp::create(builder, location, sample, maximum.first);
+          Value exponential = math::ExpOp::create(builder, location, shifted);
+          return arith::AddFOp::create(builder, location, sum, exponential);
+        });
+    Emitted own = emitOperand(rootNode, 0, map);
+    Value shifted =
+        arith::SubFOp::create(builder, location, own.value, maximum.first);
+    Value exponential = math::ExpOp::create(builder, location, shifted);
+    Value value = arith::DivFOp::create(builder, location, exponential,
+                                        denominator.first);
+    int64_t extent = map.shape[axis];
+    return {value, static_cast<unsigned>((maximum.second + denominator.second) *
+                                         extent) +
+                       own.loads};
+  }
+
   Value i32Constant(int64_t value) {
     return arith::ConstantIntOp::create(builder, location, value, 32);
   }
@@ -493,6 +583,8 @@ private:
     case DeviceFusionKind::Concat:
       result = emitConcat(nodeIndex, map);
       break;
+    case DeviceFusionKind::Softmax:
+      llvm_unreachable("a reduction is only a group root");
     }
     values[key] = result.value;
     return result;

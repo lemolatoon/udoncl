@@ -214,8 +214,52 @@ static bool testDeviceQ4Kernel(int m, int n, int k) {
   return passed;
 }
 
+/* udoncl-merge-onnx-sibling-matmulnbits stacks the weight and scale rows of
+ * MatMulNBits nodes that read one activation and slices the result. Every
+ * output word must be bit-identical to the separate nodes'. */
+static Q4Case columnsOf(const Q4Case &stacked, int first, int count) {
+  int blocks = (stacked.k + 31) / 32;
+  Q4Case part{stacked.m, count, stacked.k, stacked.activation, {}, {}, {}};
+  part.packed.assign(stacked.packed.begin() + first * blocks * 4,
+                     stacked.packed.begin() + (first + count) * blocks * 4);
+  part.scales.assign(stacked.scales.begin() + first * blocks,
+                     stacked.scales.begin() + (first + count) * blocks);
+  return part;
+}
+
+static bool testStackedColumns(int m, int k, std::vector<int> widths) {
+  int n = 0;
+  for (int width : widths)
+    n += width;
+  Q4Case stacked = makeQ4Case(m, n, k);
+  std::vector<float> merged;
+  bool passed = runOnePass(stacked, q4Segments(k, 0), merged);
+  int mismatches = 0;
+  int first = 0;
+  for (int width : widths) {
+    std::vector<float> separate;
+    passed = runOnePass(columnsOf(stacked, first, width), q4Segments(k, 0),
+                        separate) &&
+             passed;
+    for (int row = 0; row < m; ++row)
+      for (int column = 0; column < width; ++column)
+        mismatches +=
+            std::memcmp(&merged[row * n + first + column],
+                        &separate[row * width + column], sizeof(float)) != 0;
+    first += width;
+  }
+  passed = passed && mismatches == 0;
+  std::cout << "matmul_nbits_q4_stacked m=" << m << " k=" << k << " n=" << n
+            << " parts=" << widths.size() << " mismatches=" << mismatches
+            << (passed ? " passed" : " FAILED") << '\n';
+  return passed;
+}
+
 int main() {
   float host_error = testHostManagedKernel();
+  bool stacked_passed = testStackedColumns(1, 2048, {64, 8, 8});
+  stacked_passed = testStackedColumns(3, 145, {5, 1, 7}) && stacked_passed;
+  stacked_passed = testStackedColumns(2, 8225, {3, 2}) && stacked_passed;
   bool q4_passed = true;
   /* K covers one block, K tails, one 128-wide tile, the 16-block chunk and
    * 256-block dispatch boundaries, and K that needs two and three dispatch
@@ -226,5 +270,5 @@ int main() {
                            {1, 3, 8192},  {2, 3, 8225},   {1, 2, 16416}};
   for (const auto &shape : shapes)
     q4_passed = testDeviceQ4Kernel(shape[0], shape[1], shape[2]) && q4_passed;
-  return host_error < 0.0001f && q4_passed ? 0 : 1;
+  return host_error < 0.0001f && q4_passed && stacked_passed ? 0 : 1;
 }

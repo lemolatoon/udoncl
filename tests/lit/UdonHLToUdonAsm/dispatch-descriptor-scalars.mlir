@@ -3,7 +3,8 @@
 // A dispatch descriptor snapshots its scalars so that a later dispatch still
 // sees them after their slots are reused. A dispatch that directly follows
 // its descriptor, and is its only user, sets the kernel material from the
-// scalars' own slots: no snapshot slot exists and nothing is copied.
+// scalars' own slots: no snapshot slot exists and nothing is copied. The
+// compile-time constant is bound once behind the material's bound flag.
 
 module attributes {
   vrc.host_stage = "udonhl",
@@ -15,14 +16,17 @@ module attributes {
   // CHECK-NOT: name = "{{[^"]*}}descriptor_
   // CHECK-DAG: {initial = "41", name = "[[LITERAL:__vrc_constant_[0-9]+]]", type = "SystemInt32"}
 
-  // CHECK: udonasm.push "__udoncl_kernel_material_1"
-  // CHECK-NEXT: udonasm.push "__udoncl_material_input_0"
-  // CHECK-NEXT: udonasm.push "{{[^"]+}}"
-  // CHECK-NEXT: udonasm.extern "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
+  // CHECK: udonasm.push "__udoncl_bound_kernel_material_1"
+  // CHECK-NEXT: udonasm.jump_if_false
+  // CHECK-NEXT: udonasm.jump
   // CHECK-NEXT: udonasm.push "__udoncl_kernel_material_1"
   // CHECK-NEXT: udonasm.push "__udoncl_material_arg_2"
   // CHECK-NEXT: udonasm.push "[[LITERAL]]"
   // CHECK-NEXT: udonasm.extern "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
+  // CHECK: udonasm.push "__udoncl_kernel_material_1"
+  // CHECK-NEXT: udonasm.push "__udoncl_material_input_0"
+  // CHECK-NEXT: udonasm.push "{{[^"]+}}"
+  // CHECK-NEXT: udonasm.extern "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
   // CHECK-NEXT: udonasm.push "__udoncl_kernel_material_1"
   // CHECK-NEXT: udonasm.push "__udoncl_material_arg_3"
   // CHECK-NEXT: udonasm.push "__0_arg0__param"

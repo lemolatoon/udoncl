@@ -54,6 +54,40 @@ def SimplifyONNXViewsPass : Pass<"udoncl-simplify-onnx-views", "mlir::ModuleOp">
   }];
   let dependentDialects = ["mlir::arith::ArithDialect"];
 }
+def FoldONNXRepeatedMatMulOperandPass : Pass<"udoncl-fold-onnx-repeated-matmul-operand", "mlir::ModuleOp"> {
+  let summary = "Fold a MatMul right operand repeated by Expand into the left operand rows";
+  let description = [{
+    Runs on statically shaped ONNX graphs. When the right operand of a MatMul
+    is Reshape(Expand(X)) with X[P..., G, 1, K, N] expanded to
+    [P..., G, R, K, N] and reshaped to [P..., G*R, K, N], the R left matrices
+    of each group multiply the same matrix. The MatMul becomes one over X
+    whose left matrices are those R matrices stacked as rows,
+    MatMul(A[P..., G, R*M, K], X[P..., G, K, N]), reshaped back to the
+    original result. Every element is the same dot product, and the repeated
+    operand is never materialized.
+  }];
+  let dependentDialects = ["mlir::arith::ArithDialect"];
+}
+def MergeONNXSiblingMatMulNBitsPass : Pass<"udoncl-merge-onnx-sibling-matmulnbits", "mlir::ModuleOp"> {
+  let summary = "Merge MatMulNBits nodes that read the same activation into one node";
+  let description = [{
+    Runs on statically shaped ONNX graphs whose weights are constants. Every
+    output column n of com.microsoft::MatMulNBits is computed from row n of
+    its packed weights and scales alone, so readers of one activation with
+    equal K, bits, block size and other attributes, constant weights and no
+    zero points, group index or bias become one node over the concatenated
+    rows, followed by one Slice of its last axis per original result. Each
+    column is computed from the same operands in the same order as before.
+    Groups form in program order and stay within `max-result-words` result
+    elements, the largest tensor a Device Slice reads.
+  }];
+  let dependentDialects = ["mlir::arith::ArithDialect"];
+  let options = [
+    Option<"maxResultWords", "max-result-words", "int64_t",
+           /*default=*/"16384",
+           "Largest number of result elements of a merged node">
+  ];
+}
 def ValidateONNXHostGraphPass : Pass<"udoncl-validate-onnx-host-graph", "mlir::ModuleOp"> {
   let summary = "Validate the portable ONNX Host graph before materialization";
   let dependentDialects = ["mlir::arith::ArithDialect", "mlir::func::FuncDialect"];
