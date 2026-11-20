@@ -1735,6 +1735,10 @@ bool configureUnityExports(ModuleOp module, const json::Object &config,
       function->setAttr("vrc.allowed_while_busy", builder.getUnitAttr());
     return true;
   };
+  if (*schema == 1 && config.get("static_initialization")) {
+    errs() << "static_initialization requires Unity library schema 2\n";
+    return false;
+  }
   if (*schema == 1) {
     for (const json::Value &value : *exports) {
       auto *entry = value.getAsObject();
@@ -1776,8 +1780,46 @@ bool configureUnityExports(ModuleOp module, const json::Object &config,
           return false;
         }
       }
+    // A static-initialization artifact is a closed world: the constructor has
+    // run before any other export, and an omitted export (a destructor) is
+    // not part of the artifact at all. Unlike an internal export, an omitted
+    // one may keep its override so one configuration serves both modes.
+    std::set<std::string> omittedExports;
+    std::string staticConstructor;
+    if (const json::Value *value = config.get("static_initialization")) {
+      auto *initialization = value->getAsObject();
+      auto constructor = initialization
+                             ? initialization->getString("constructor")
+                             : std::nullopt;
+      if (!constructor || !annotatedExports.count(constructor->str()) ||
+          internalExports.count(constructor->str())) {
+        errs() << "static_initialization requires a constructor naming one "
+                  "exported annotated Host definition\n";
+        return false;
+      }
+      staticConstructor = constructor->str();
+      if (const json::Value *omitted = initialization->get("omit_exports")) {
+        auto *symbols = omitted->getAsArray();
+        if (!symbols) {
+          errs() << "static_initialization omit_exports must be an array\n";
+          return false;
+        }
+        for (const json::Value &entry : *symbols) {
+          auto symbol = entry.getAsString();
+          if (!symbol || !annotatedExports.count(symbol->str()) ||
+              internalExports.count(symbol->str()) ||
+              *symbol == staticConstructor ||
+              !omittedExports.insert(symbol->str()).second) {
+            errs() << "static_initialization omit_exports must name distinct "
+                      "exported annotated Host definitions other than the "
+                      "constructor\n";
+            return false;
+          }
+        }
+      }
+    }
     for (const std::string &symbol : annotatedExports) {
-      if (internalExports.count(symbol))
+      if (internalExports.count(symbol) || omittedExports.count(symbol))
         continue;
       auto function = module.lookupSymbol<func::FuncOp>(symbol);
       if (!function || function.isExternal() || function.isPrivate()) {
@@ -1801,6 +1843,30 @@ bool configureUnityExports(ModuleOp module, const json::Object &config,
       errs() << "Unity library schema 2 cannot hide every UDONCL_EXPORT "
                 "definition\n";
       return false;
+    }
+    if (!staticConstructor.empty()) {
+      auto constructor = module.lookupSymbol<func::FuncOp>(staticConstructor);
+      if (constructor.getNumArguments() != 0 ||
+          constructor.getNumResults() > 1 ||
+          (constructor.getNumResults() == 1 &&
+           !constructor.getResultTypes().front().isInteger(32))) {
+        errs() << "static_initialization constructor must take no parameters "
+                  "and return void or a 32-bit status: "
+               << staticConstructor << "\n";
+        return false;
+      }
+      constructor->setAttr("vrc.static_constructor",
+                           UnitAttr::get(module.getContext()));
+      SmallVector<mlir::Attribute> omitted;
+      for (const std::string &symbol : omittedExports)
+        omitted.push_back(builder.getStringAttr(symbol));
+      module->setAttr(
+          "vrc.static_initialization",
+          builder.getDictionaryAttr(
+              {builder.getNamedAttr("constructor",
+                                    builder.getStringAttr(staticConstructor)),
+               builder.getNamedAttr("omitted_exports",
+                                    builder.getArrayAttr(omitted))}));
     }
   }
   if (auto *binding = config.getObject("binding")) {
@@ -4170,6 +4236,32 @@ int main(int argc, char **argv) {
       if (failed(hostObjects.run(*module)) || failed(verify(*module)))
         return 1;
     }
+    // A static constructor is evaluated once every allocation is a compiler-
+    // assigned buffer and while it is still a plain function: what it leaves
+    // of itself decides the async effects computed next.
+    DictionaryAttr evaluatedConstructor;
+    if (auto initialization = (*module)->getAttrOfType<DictionaryAttr>(
+            "vrc.static_initialization")) {
+      phase("static-initialization");
+      PassManager staticInitialization(&context);
+      staticInitialization.addPass(::vrc::createEvaluateHostConstructorsPass());
+      staticInitialization.addPass(createSymbolDCEPass());
+      if (failed(staticInitialization.run(*module)) || failed(verify(*module)))
+        return 1;
+      if (auto constructor = module->lookupSymbol<func::FuncOp>(
+              initialization.getAs<StringAttr>("constructor").getValue()))
+        evaluatedConstructor = constructor->getAttrOfType<DictionaryAttr>(
+            "vrc.evaluated_static_constructor");
+      if (!evaluatedConstructor) {
+        errs() << "static_initialization constructor was not evaluated\n";
+        return 1;
+      }
+      if (!omitIntermediateIR) {
+        raw_string_ostream evaluated(files["host.static-initialized.mlir"]);
+        module->print(evaluated);
+        evaluated << "\n";
+      }
+    }
     phase("host-effects");
     if (failed(propagateUnityHostAsyncEffects(*module)))
       return 1;
@@ -4274,6 +4366,23 @@ int main(int argc, char **argv) {
       programManifest["ir"] = "host.udonasm.mlir";
     }
     manifest["program"] = std::move(programManifest);
+    if (auto initialization = (*module)->getAttrOfType<DictionaryAttr>(
+            "vrc.static_initialization")) {
+      json::Array omitted;
+      for (mlir::Attribute symbol :
+           initialization.getAs<ArrayAttr>("omitted_exports"))
+        omitted.push_back(cast<StringAttr>(symbol).getValue().str());
+      manifest["static_initialization"] = json::Object{
+          {"constructor",
+           initialization.getAs<StringAttr>("constructor").getValue().str()},
+          {"omitted_exports", std::move(omitted)},
+          {"evaluated_operations",
+           evaluatedConstructor.getAs<IntegerAttr>("evaluated_operations")
+               .getInt()},
+          {"residual_commands",
+           evaluatedConstructor.getAs<IntegerAttr>("residual_commands")
+               .getInt()}};
+    }
     if (usesAsyncCommands)
       (*manifest["program"].getAsObject())["async_commands"] = json::Object{
           {"completion_status_slot", "__udoncl_async_completion_status"},

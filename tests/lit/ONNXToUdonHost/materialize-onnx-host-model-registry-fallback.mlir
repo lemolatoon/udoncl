@@ -19,7 +19,10 @@ func.func @main_graph(
 // CHECK: module attributes {
 // CHECK-SAME: udoncl.onnx_host_model_registry_materialized
 // CHECK-SAME: device_graph = false
+// The data type of each metadata row is initializer data, not a store.
+// CHECK: initial_value = array<i8: 0, 0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 0, 0,
+// CHECK-SAME: sym_name = "__udon_onnx_input_metadata"
 // CHECK: sym_name = "__udon_onnx_has_run"
 // CHECK: func.func @udononnxGeneratedGetModelCount() -> i32 {
 // CHECK: func.func @udononnxGeneratedGetModel
-// CHECK: arith.constant 2 : i32
+// CHECK-NOT: arith.constant 2 : i32

@@ -86,57 +86,121 @@ LogicalResult materializeModelRegistry(ModuleOp module,
   func::ReturnOp::create(builder, location, constant(1));
   builder.setInsertionPointToEnd(body);
 
-  auto storeAt = [&](Value base, uint32_t offset, Value value) {
-    Value field =
-        offset ? onnxHostPointerAdd(builder, location, base, constant(offset))
-               : base;
-    onnxHostStore(builder, location, value, field);
+  // The registry is a pure function of the graph: the model record and the
+  // metadata tables are initializers whose pointer fields are relocations, so
+  // looking the model up stores nothing but the result.
+  struct RegistryImage {
+    host::GlobalOp global;
+    SmallVector<int8_t> bytes;
+    SmallVector<Attribute> relocations;
   };
-  auto initializeMetadata = [&](bool output, unsigned index,
-                                const TensorRecord &tensor) {
-    StringRef storage =
-        output ? onnxHostOutputMetadataSymbol : onnxHostInputMetadataSymbol;
-    Value base = onnxHostAddressOf(builder, location, storage);
-    Value metadata = onnxHostPointerAdd(
-        builder, location, base,
-        constant(static_cast<int64_t>(index) *
-                 UDONCL_UDON_ABI_ONNX_TENSOR_METADATA_BYTES));
-    Value dimensions =
-        tensor.type.getRank()
-            ? onnxHostAddressOf(builder, location,
-                                onnxHostIoDimensionsSymbol(output, index))
-            : onnxHostNullPointer(builder, location);
-    storeAt(metadata, UDONCL_UDON_ABI_ONNX_TENSOR_METADATA_NAME_OFFSET,
-            onnxHostAddressOf(builder, location,
-                              onnxHostIoNameSymbol(output, index)));
-    storeAt(metadata, UDONCL_UDON_ABI_ONNX_TENSOR_METADATA_DATA_TYPE_OFFSET,
-            constant(onnxHostDataType(tensor.type.getElementType())));
-    storeAt(metadata, UDONCL_UDON_ABI_ONNX_TENSOR_METADATA_RANK_OFFSET,
-            constant(tensor.type.getRank()));
-    storeAt(metadata, UDONCL_UDON_ABI_ONNX_TENSOR_METADATA_DIMENSIONS_OFFSET,
-            dimensions);
-    storeAt(metadata,
-            UDONCL_UDON_ABI_ONNX_TENSOR_METADATA_DIMENSION_BOUNDS_OFFSET,
-            onnxHostNullPointer(builder, location));
+  auto openImage = [&](StringRef symbol) -> FailureOr<RegistryImage> {
+    auto global = module.lookupSymbol<host::GlobalOp>(symbol);
+    auto bytes =
+        global
+            ? dyn_cast_or_null<DenseI8ArrayAttr>(global.getInitialValueAttr())
+            : DenseI8ArrayAttr();
+    if (!bytes || global.getRelocations() || global.getAlignment() < 4) {
+      module.emitError() << "ONNX Host model registry storage @" << symbol
+                         << " is not an unrelocated aligned byte global";
+      return failure();
+    }
+    return RegistryImage{global, SmallVector<int8_t>(bytes.asArrayRef()), {}};
   };
-  for (auto [index, tensorIndex] : llvm::enumerate(graph.inputs))
-    initializeMetadata(false, index, graph.tensors[tensorIndex]);
-  for (auto [index, tensorIndex] : llvm::enumerate(graph.outputs))
-    initializeMetadata(true, index, graph.tensors[tensorIndex]);
+  auto writeWord = [&](RegistryImage &image, uint32_t offset,
+                       uint32_t value) -> LogicalResult {
+    if (offset + uint64_t{4} > image.bytes.size())
+      return image.global.emitError(
+          "ONNX Host model registry field is outside its storage");
+    for (unsigned byte = 0; byte != 4; ++byte)
+      image.bytes[offset + byte] =
+          static_cast<int8_t>((value >> (byte * 8)) & 0xffu);
+    return success();
+  };
+  auto writeAddress = [&](RegistryImage &image, uint32_t offset,
+                          StringRef symbol) -> LogicalResult {
+    if (failed(writeWord(image, offset, 0)))
+      return failure();
+    host::GlobalRelocation relocation;
+    relocation.offset = offset;
+    relocation.symbol = FlatSymbolRefAttr::get(module.getContext(), symbol);
+    image.relocations.push_back(relocation.build(module.getContext()));
+    return success();
+  };
+  auto commitImage = [&](RegistryImage &image) {
+    image.global.setInitialValueAttr(
+        DenseI8ArrayAttr::get(module.getContext(), image.bytes));
+    if (!image.relocations.empty())
+      image.global.setRelocationsAttr(builder.getArrayAttr(image.relocations));
+  };
+  auto initializeMetadata = [&](bool output,
+                                ArrayRef<unsigned> tensors) -> LogicalResult {
+    auto image = openImage(output ? onnxHostOutputMetadataSymbol
+                                  : onnxHostInputMetadataSymbol);
+    if (failed(image))
+      return failure();
+    for (auto [index, tensorIndex] : llvm::enumerate(tensors)) {
+      const TensorRecord &tensor = graph.tensors[tensorIndex];
+      uint32_t base = static_cast<uint32_t>(index) *
+                      UDONCL_UDON_ABI_ONNX_TENSOR_METADATA_BYTES;
+      if (failed(writeAddress(
+              *image, base + UDONCL_UDON_ABI_ONNX_TENSOR_METADATA_NAME_OFFSET,
+              onnxHostIoNameSymbol(output, index))) ||
+          failed(writeWord(
+              *image,
+              base + UDONCL_UDON_ABI_ONNX_TENSOR_METADATA_DATA_TYPE_OFFSET,
+              static_cast<uint32_t>(
+                  onnxHostDataType(tensor.type.getElementType())))) ||
+          failed(writeWord(
+              *image, base + UDONCL_UDON_ABI_ONNX_TENSOR_METADATA_RANK_OFFSET,
+              static_cast<uint32_t>(tensor.type.getRank()))) ||
+          failed(
+              tensor.type.getRank()
+                  ? writeAddress(
+                        *image,
+                        base +
+                            UDONCL_UDON_ABI_ONNX_TENSOR_METADATA_DIMENSIONS_OFFSET,
+                        onnxHostIoDimensionsSymbol(output, index))
+                  : writeWord(
+                        *image,
+                        base +
+                            UDONCL_UDON_ABI_ONNX_TENSOR_METADATA_DIMENSIONS_OFFSET,
+                        0)) ||
+          failed(writeWord(
+              *image,
+              base +
+                  UDONCL_UDON_ABI_ONNX_TENSOR_METADATA_DIMENSION_BOUNDS_OFFSET,
+              0)))
+        return failure();
+    }
+    commitImage(*image);
+    return success();
+  };
+  if (failed(initializeMetadata(false, graph.inputs)) ||
+      failed(initializeMetadata(true, graph.outputs)))
+    return failure();
+  auto modelImage = openImage(onnxHostModelStorageSymbol);
+  if (failed(modelImage) ||
+      failed(writeAddress(*modelImage, UDONCL_UDON_ABI_ONNX_MODEL_NAME_OFFSET,
+                          onnxHostModelNameSymbol)) ||
+      failed(writeWord(*modelImage, UDONCL_UDON_ABI_ONNX_MODEL_GRAPH_ID_OFFSET,
+                       0)) ||
+      failed(writeAddress(*modelImage, UDONCL_UDON_ABI_ONNX_MODEL_INPUTS_OFFSET,
+                          onnxHostInputMetadataSymbol)) ||
+      failed(writeWord(*modelImage,
+                       UDONCL_UDON_ABI_ONNX_MODEL_INPUT_COUNT_OFFSET,
+                       static_cast<uint32_t>(graph.inputs.size()))) ||
+      failed(writeAddress(*modelImage,
+                          UDONCL_UDON_ABI_ONNX_MODEL_OUTPUTS_OFFSET,
+                          onnxHostOutputMetadataSymbol)) ||
+      failed(writeWord(*modelImage,
+                       UDONCL_UDON_ABI_ONNX_MODEL_OUTPUT_COUNT_OFFSET,
+                       static_cast<uint32_t>(graph.outputs.size()))))
+    return failure();
+  commitImage(*modelImage);
 
   Value model =
       onnxHostAddressOf(builder, location, onnxHostModelStorageSymbol);
-  storeAt(model, UDONCL_UDON_ABI_ONNX_MODEL_NAME_OFFSET,
-          onnxHostAddressOf(builder, location, onnxHostModelNameSymbol));
-  storeAt(model, UDONCL_UDON_ABI_ONNX_MODEL_GRAPH_ID_OFFSET, constant(0));
-  storeAt(model, UDONCL_UDON_ABI_ONNX_MODEL_INPUTS_OFFSET,
-          onnxHostAddressOf(builder, location, onnxHostInputMetadataSymbol));
-  storeAt(model, UDONCL_UDON_ABI_ONNX_MODEL_INPUT_COUNT_OFFSET,
-          constant(graph.inputs.size()));
-  storeAt(model, UDONCL_UDON_ABI_ONNX_MODEL_OUTPUTS_OFFSET,
-          onnxHostAddressOf(builder, location, onnxHostOutputMetadataSymbol));
-  storeAt(model, UDONCL_UDON_ABI_ONNX_MODEL_OUTPUT_COUNT_OFFSET,
-          constant(graph.outputs.size()));
   onnxHostStore(builder, location, model, entry->getArgument(1));
   func::ReturnOp::create(builder, location, constant(0));
   return success();

@@ -1556,10 +1556,52 @@ private:
                << "raw global initializer is not serializable for @"
                << global.getSymName() << " with storage type " << type;
       }
-      if (llvm::any_of(serialized, [](int8_t byte) { return byte != 0; }))
+      if (global.getRelocations() ||
+          llvm::any_of(serialized, [](int8_t byte) { return byte != 0; }))
         rawGlobalInitializers.try_emplace(
             global.getSymName(),
             DenseI8ArrayAttr::get(module.getContext(), serialized));
+    }
+    // Every base is known now: write the words that hold an address or a
+    // Unity buffer token into the serialized image.
+    for (host::GlobalOp global : module.getOps<host::GlobalOp>()) {
+      auto relocations = global.getRelocations();
+      if (!relocations)
+        continue;
+      auto initializer = rawGlobalInitializers.find(global.getSymName());
+      SmallVector<int8_t> serialized(initializer->second.asArrayRef());
+      for (Attribute attribute : *relocations) {
+        auto relocation = host::GlobalRelocation::parse(attribute);
+        if (!relocation)
+          return global.emitError("malformed raw global relocation");
+        uint32_t word = 0;
+        if (relocation->symbol) {
+          auto base = rawGlobalBases.find(relocation->symbol.getValue());
+          if (base == rawGlobalBases.end())
+            return global.emitError("raw global relocation has no heap base");
+          word = static_cast<uint32_t>(base->second) +
+                 static_cast<uint32_t>(relocation->addend);
+        } else {
+          int64_t texture =
+              relocation->assignedBuffer.getAs<IntegerAttr>("texture_id")
+                  .getInt();
+          int64_t capacity =
+              relocation->assignedBuffer.getAs<IntegerAttr>("capacity_bytes")
+                  .getInt();
+          auto entry = llvm::find_if(unityBufferPool, [&](const auto &item) {
+            return item.id == texture;
+          });
+          if (entry == unityBufferPool.end() || entry->logicalBytes != capacity)
+            return global.emitError("raw global buffer relocation does not "
+                                    "match the Unity buffer pool");
+          word = entry->index + 1;
+        }
+        for (unsigned byte = 0; byte < 4; ++byte)
+          serialized[relocation->offset + byte] =
+              static_cast<int8_t>((word >> (byte * 8)) & 0xff);
+      }
+      initializer->second =
+          DenseI8ArrayAttr::get(module.getContext(), serialized);
     }
     for (func::FuncOp function : module.getOps<func::FuncOp>()) {
       unsigned allocaIndex = 0;

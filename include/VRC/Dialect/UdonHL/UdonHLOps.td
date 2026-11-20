@@ -2,13 +2,43 @@ include "VRC/Dialect/UdonHL/UdonHLAttrs.td"
 include "VRC/Dialect/UdonHL/UdonHLTypes.td"
 include "mlir/IR/SymbolInterfaces.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
-def UdonHL_GlobalOp : Op<UdonHL_Dialect, "global", [Symbol]> {
+def UdonHL_GlobalOp : Op<UdonHL_Dialect, "global",
+    [Symbol, DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
   let summary = "Define instance-local storage for a C global";
+  let description = [{
+    `relocations` patches 32-bit words of the initializer whose value is only
+    known once the raw heap is laid out. Each entry is a dictionary with a
+    word-aligned byte `offset` inside the object and either
+
+    - `symbol` and `addend`: the word is the logical byte address of the
+      internal address-space-zero global `symbol` plus `addend`, the image of
+      a pointer-typed C initializer; or
+    - `assigned_buffer`: the word is the token of the compiler-assigned Unity
+      buffer described by the attributes of a `vrc.assigned_buffer`.
+
+    The initializer bytes under a relocation are ignored.
+  }];
   let arguments = (ins SymbolNameAttr:$sym_name, TypeAttr:$storage_type,
     OptionalAttr<AnyAttr>:$initial_value, StrAttr:$linkage,
     DefaultValuedAttr<I32Attr, "0">:$address_space,
-    DefaultValuedAttr<I64Attr, "1">:$alignment, UnitAttr:$constant);
+    DefaultValuedAttr<I64Attr, "1">:$alignment, UnitAttr:$constant,
+    OptionalAttr<ArrayAttr>:$relocations);
   let hasVerifier = 1;
+  let builders = [
+    OpBuilder<(ins "::llvm::StringRef":$sym_name,
+                   "::mlir::Type":$storage_type,
+                   "::mlir::Attribute":$initial_value,
+                   "::llvm::StringRef":$linkage, "int32_t":$address_space,
+                   "int64_t":$alignment, "bool":$constant), [{
+      build($_builder, $_state, sym_name, storage_type, initial_value, linkage,
+            address_space, alignment, constant, ::mlir::ArrayAttr());
+    }]>
+  ];
+  let extraClassDeclaration = [{
+    /// Byte size of the object when the storage is a serialized byte array or
+    /// a scalar the raw memory model supports.
+    std::optional<uint64_t> getObjectByteSize();
+  }];
 }
 def UdonHL_AddressOfOp : Op<UdonHL_Dialect, "address_of",
     [Pure, SymbolUserOpInterface]> {

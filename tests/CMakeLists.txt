@@ -915,6 +915,20 @@ add_test(NAME onnx-transpose-assigned-buffer-component
     --onnx-frontend $<TARGET_FILE:udoncl-onnx-frontend>
 )
 set_tests_properties(onnx-transpose-assigned-buffer-component PROPERTIES TIMEOUT 120)
+add_test(NAME static-initialization-artifact
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/build/static_initialization.py"
+    --root "${PROJECT_SOURCE_DIR}"
+    --project-build "${PROJECT_BINARY_DIR}"
+    --output "${PROJECT_BINARY_DIR}/tests/static-initialization"
+    --cmake "${CMAKE_COMMAND}"
+    --generator "${CMAKE_GENERATOR}"
+    --make-program "${CMAKE_MAKE_PROGRAM}"
+    --clang "${VRC_TEST_CLANG}"
+    --llvm-link "${VRC_TEST_LLVM_LINK}"
+    --onnx-frontend $<TARGET_FILE:udoncl-onnx-frontend>
+)
+set_tests_properties(static-initialization-artifact PROPERTIES TIMEOUT 180)
 add_test(NAME cmake-package-consumer
   COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/build/cmake_package.py"
     --source "${PROJECT_SOURCE_DIR}/examples/hello-kernel"

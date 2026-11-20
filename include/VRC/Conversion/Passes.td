@@ -212,6 +212,26 @@ def InsertUdonCooperativeCheckpointsPass : Pass<"vrc-insert-udon-cooperative-che
   let summary = "Split long Udon-only synchronous Host regions with static cooperative checkpoints";
   let dependentDialects = ["::vrc::vrc::VRCDialect", "mlir::arith::ArithDialect", "mlir::func::FuncDialect"];
 }
+def EvaluateHostConstructorsPass : Pass<"vrc-evaluate-host-constructors", "mlir::ModuleOp"> {
+  let summary = "Evaluate static Host constructors at build time and commit their memory as initializers";
+  let description = [{
+    A function marked `vrc.static_constructor` has run exactly once before any
+    other export of a closed-world artifact, so the Host memory it leaves is a
+    function of the build. The pass interprets it over the Host IR (the MLIR
+    counterpart of GlobalOpt's `llvm.global_ctors` evaluation), rewrites the
+    initializer of every global it wrote, with relocations for words that
+    hold an address or a Unity buffer token, and reduces its body to its
+    result.
+
+    A constructor that cannot be evaluated, or that does not return success,
+    is an error at the blocking operation; nothing is committed.
+  }];
+  let options = [
+    Option<"stepBudget", "step-budget", "uint64_t", "268435456",
+           "Operations the evaluation of one constructor may execute">
+  ];
+  let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "::vrc::vrc::VRCDialect", "mlir::arith::ArithDialect", "mlir::func::FuncDialect", "mlir::LLVM::LLVMDialect"];
+}
 def ThreadConstantBranchesPass : Pass<"vrc-thread-constant-branches", "mlir::ModuleOp"> {
   let summary = "Retarget edges whose constant block arguments decide the conditional branch of their successor";
   let description = [{

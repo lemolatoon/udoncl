@@ -151,6 +151,90 @@ mlir::LogicalResult vrc::udonhl::LiteralMaterializeOp::verify() {
   return mlir::success();
 }
 
+std::optional<vrc::udonhl::GlobalRelocation>
+vrc::udonhl::GlobalRelocation::parse(mlir::Attribute attribute) {
+  auto entry = mlir::dyn_cast_or_null<mlir::DictionaryAttr>(attribute);
+  auto offset =
+      entry ? entry.getAs<mlir::IntegerAttr>("offset") : mlir::IntegerAttr();
+  if (!offset || !offset.getType().isInteger(32) || offset.getInt() < 0)
+    return std::nullopt;
+  GlobalRelocation relocation;
+  relocation.offset = static_cast<uint32_t>(offset.getInt());
+  relocation.symbol = entry.getAs<mlir::FlatSymbolRefAttr>("symbol");
+  relocation.assignedBuffer =
+      entry.getAs<mlir::DictionaryAttr>("assigned_buffer");
+  auto addend = entry.getAs<mlir::IntegerAttr>("addend");
+  if (bool(relocation.symbol) == bool(relocation.assignedBuffer) ||
+      bool(relocation.symbol) != bool(addend) ||
+      entry.size() != (relocation.symbol ? 3u : 2u))
+    return std::nullopt;
+  if (addend) {
+    if (!addend.getType().isInteger(32))
+      return std::nullopt;
+    relocation.addend = static_cast<int32_t>(addend.getInt());
+  }
+  if (mlir::DictionaryAttr buffer = relocation.assignedBuffer) {
+    auto resource = buffer.getAs<mlir::IntegerAttr>("resource_id");
+    auto texture = buffer.getAs<mlir::IntegerAttr>("texture_id");
+    auto capacity = buffer.getAs<mlir::IntegerAttr>("capacity_bytes");
+    auto format = buffer.getAs<mlir::StringAttr>("format");
+    if (buffer.size() != 4 || !resource || !resource.getType().isInteger(32) ||
+        resource.getInt() < 0 || !texture || !texture.getType().isInteger(32) ||
+        texture.getInt() <= 0 || !capacity ||
+        !capacity.getType().isInteger(64) || capacity.getInt() <= 0 || !format)
+      return std::nullopt;
+  }
+  return relocation;
+}
+
+mlir::Attribute
+vrc::udonhl::GlobalRelocation::build(mlir::MLIRContext *context) const {
+  mlir::Builder builder(context);
+  llvm::SmallVector<mlir::NamedAttribute, 3> fields;
+  fields.push_back(builder.getNamedAttr(
+      "offset", builder.getI32IntegerAttr(static_cast<int32_t>(offset))));
+  if (symbol) {
+    fields.push_back(builder.getNamedAttr("symbol", symbol));
+    fields.push_back(
+        builder.getNamedAttr("addend", builder.getI32IntegerAttr(addend)));
+  } else {
+    fields.push_back(builder.getNamedAttr("assigned_buffer", assignedBuffer));
+  }
+  return builder.getDictionaryAttr(fields);
+}
+
+std::optional<uint64_t> vrc::udonhl::GlobalOp::getObjectByteSize() {
+  if (auto bytes =
+          mlir::dyn_cast_or_null<mlir::DenseI8ArrayAttr>(getInitialValueAttr()))
+    return bytes.size();
+  mlir::Type type = getStorageType();
+  if (mlir::isa<PtrType>(type) || type.isF32())
+    return 4;
+  if (auto integer = mlir::dyn_cast<mlir::IntegerType>(type))
+    if (integer.getWidth() == 1 ||
+        (integer.getWidth() >= 8 && integer.getWidth() <= 64))
+      return llvm::divideCeil(integer.getWidth(), 8u);
+  return std::nullopt;
+}
+
+mlir::LogicalResult
+vrc::udonhl::GlobalOp::verifySymbolUses(mlir::SymbolTableCollection &symbols) {
+  if (!getRelocations())
+    return mlir::success();
+  for (mlir::Attribute attribute : *getRelocations()) {
+    auto relocation = GlobalRelocation::parse(attribute);
+    if (!relocation || !relocation->symbol)
+      continue;
+    auto target =
+        symbols.lookupNearestSymbolFrom<GlobalOp>(*this, relocation->symbol);
+    if (!target || target.getLinkage() != "internal" ||
+        target.getAddressSpace() != 0)
+      return emitOpError("relocation symbol must resolve to an internal "
+                         "address-space-zero udonhl.global");
+  }
+  return mlir::success();
+}
+
 mlir::LogicalResult vrc::udonhl::GlobalOp::verify() {
   if (!mlir::isa<mlir::ModuleOp>((*this)->getParentOp()))
     return emitOpError("must be defined directly inside a module");
@@ -171,6 +255,26 @@ mlir::LogicalResult vrc::udonhl::GlobalOp::verify() {
           initial.getType().isInteger(32)) &&
         !mlir::isa<mlir::DenseI8ArrayAttr>(initial))
       return emitOpError("initializer type must match storage_type");
+  if (auto relocations = getRelocations()) {
+    auto bytes = getObjectByteSize();
+    if (!getInitialValue() || !bytes || getAddressSpace() != 0 ||
+        getLinkage() != "internal" || getAlignment() < 4)
+      return emitOpError("relocations require an initialized internal "
+                         "address-space-zero global aligned to 4 bytes");
+    llvm::SmallDenseSet<uint32_t> offsets;
+    for (mlir::Attribute attribute : *relocations) {
+      auto relocation = GlobalRelocation::parse(attribute);
+      if (!relocation)
+        return emitOpError("relocation must be a dictionary with an i32 "
+                           "offset and either symbol and addend or "
+                           "assigned_buffer");
+      if (relocation->offset % 4 || relocation->offset + uint64_t{4} > *bytes)
+        return emitOpError("relocation offset must be a multiple of 4 inside "
+                           "the object");
+      if (!offsets.insert(relocation->offset).second)
+        return emitOpError("relocation offsets must be distinct");
+    }
+  }
   return mlir::success();
 }
 
