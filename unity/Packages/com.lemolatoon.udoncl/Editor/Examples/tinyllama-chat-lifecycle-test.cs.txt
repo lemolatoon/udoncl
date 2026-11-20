@@ -29,6 +29,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         // Mirrors UdonclTinyLlamaChatTestController.PhaseDone and its phase
         // names; the controller is generated U# and not referenced here.
         private const int PhaseDone = 9;
+        private const int PhaseGenerate = 5;
         private static readonly string[] PhaseNames =
         {
             "not-started",
@@ -167,27 +168,38 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             // Generous bound: (prompt + generated) steps at the measured
             // worst case of about 4,100 frames per step.
             int timeoutFrames = (expectedPrompt.Length + expectedTokens.Length) * 4100 + 3000;
+            // One generation runs prompt + generated - 1 model steps: the
+            // last generated token is not fed back.
+            int generateSteps = expectedPrompt.Length + expectedTokens.Length - 1;
+            UdonclFixtureTiming timing = new UdonclFixtureTiming("tinyllama_chat");
             int frame = 0;
             int lastPhase = -1;
             bool completed = false;
             try
             {
+                timing.Begin(PhaseName(1), 0);
                 UdonclArtifactImporter.SendUdonCustomEvent(controller, "Run");
                 while (frame < timeoutFrames && !completed && capturedVmError == null)
                 {
                     ++frame;
                     yield return null;
+                    timing.Frame();
                     completed = ReadBool(controller, "completed");
                     int currentPhase = ReadInt(controller, "phase");
                     if (currentPhase != lastPhase)
                     {
                         lastPhase = currentPhase;
+                        timing.Phase(
+                            PhaseName(currentPhase),
+                            currentPhase == PhaseGenerate ? generateSteps : 0
+                        );
                         Debug.Log(
                             string.Format(
-                                "udoncl tinyllama_chat phase={0} ({1}) frame={2}",
+                                "udoncl tinyllama_chat phase={0} ({1}) frame={2} ms={3}",
                                 currentPhase,
                                 PhaseName(currentPhase),
-                                frame
+                                frame,
+                                timing.ElapsedMillisecondsText
                             )
                         );
                     }
@@ -195,6 +207,8 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             }
             finally
             {
+                // Restores the frame-rate settings and logs the totals.
+                timing.End();
                 Application.logMessageReceived -= CaptureVmError;
                 LogAssert.ignoreFailingMessages = ignoreFailingMessages;
             }
@@ -228,6 +242,10 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 .Append(" expectedTokens=").Append(Tokens(expectedTokens, expectedTokens.Length))
                 .Append(" text=\"").Append(text).Append('"')
                 .Append(" expectedText=\"").Append(expectedText).Append('"')
+                .Append(timing.Summary)
+                .Append(" generate_steps=").Append(generateSteps)
+                .Append(" generate_ms=")
+                .Append(timing.PhaseMillisecondsText(PhaseName(PhaseGenerate)))
                 .ToString();
             Debug.Log("udoncl tinyllama_chat result " + state);
             Assert.IsNull(vmError, "Udon VM halted during " + state + "\n" + vmError);

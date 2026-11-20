@@ -861,6 +861,10 @@ def main():
         busy_position = async_start.index('busy = true;')
         send_position = async_start.index('program.SendCustomEvent(')
         assert ensure_position < busy_position < send_position
+        assert send_position < async_start.index(
+            'asyncPumpRequested = true;'
+        ) < async_start.index('DriveAsyncCommands();')
+        assert 'PumpAsyncCommand();' not in async_start
         assert 'return __udonclDeviceBufferStatus;' in async_start
     assert 'SendCustomEventDelayedFrames("_StartPublicReadback"' not in (
         mnist_binding
@@ -886,11 +890,62 @@ def main():
     )
     assert 'pendingAsyncObject = pendingObject;' in async_pump
     assert 'AsyncDiagnosticInconsistentIdleState' not in async_pump
+    # A continuation that is ready in the same Udon event resumes in the one
+    # driving loop while the frame budget lasts. Only that loop schedules the
+    # next frame, and only it pumps, so an export started from a completion
+    # event never nests the pump.
+    delayed_continue = 'SendCustomEventDelayedFrames("_ContinueAsyncCommand", 1);'
+    assert mnist_binding.count(delayed_continue) == 1
+    assert mnist_binding.count('PumpAsyncCommand();') == 1
+    assert 'asyncContinuationReady = true;' in async_pump
+    finish_command = mnist_binding.split(
+        'private void FinishAsyncCommand(int status)', 1
+    )[1].split('private void DeliverAsyncCompletion()', 1)[0]
+    assert finish_command.rstrip().endswith(
+        'asyncContinuationReady = true;\n        }'
+    )
+    async_deliver = mnist_binding.split(
+        'private void DeliverAsyncCompletion()', 1
+    )[1].split('private void DriveAsyncCommands()', 1)[0]
+    assert 'if (pendingAsyncObject != 0)' in async_deliver
+    assert 'program.SendCustomEvent(' in async_deliver
+    async_drive = mnist_binding.split(
+        'private void DriveAsyncCommands()', 1
+    )[1].split('public void _ContinueAsyncCommand()', 1)[0]
+    assert async_drive.index('if (asyncDriving)') < async_drive.index(
+        'asyncDriving = true;'
+    ) < async_drive.index('while (true)') < async_drive.index(
+        'asyncDriving = false;'
+    )
+    assert 'if (Time.frameCount != asyncFrame)' in async_drive
+    assert (
+        'asyncFrameDeadline = Time.realtimeSinceStartupAsDouble + 0.004000;'
+        in async_drive
+    )
+    assert (
+        'if (asyncFrameContinuations >= AsyncFrameContinuationLimit || '
+        'Time.realtimeSinceStartupAsDouble >= asyncFrameDeadline)'
+        in async_drive
+    )
+    budget_check = async_drive.index('AsyncFrameContinuationLimit')
+    assert budget_check < async_drive.index(delayed_continue) < (
+        async_drive.index('DeliverAsyncCompletion();')
+    ) < async_drive.index('PumpAsyncCommand();')
+    assert 'DriveAsyncCommands();' not in async_drive
     async_continue = mnist_binding.split(
         'public void _ContinueAsyncCommand()', 1
     )[1].split('private void CompleteAsyncExportFromProgram()', 1)[0]
-    assert 'if (pendingAsyncObject != 0)' in async_continue
-    assert 'program.SendCustomEvent(' in async_continue
+    assert async_continue.index('DeliverAsyncCompletion();') < (
+        async_continue.index('asyncPumpRequested = true;')
+    ) < async_continue.index('DriveAsyncCommands();')
+    assert (
+        'CompleteAsyncCommandReadback(request);\n'
+        '                DriveAsyncCommands();' in mnist_binding
+    )
+    assert 'public const int AsyncFrameBudgetMicroseconds = 4000;' in (
+        mnist_binding
+    )
+    assert 'public const int AsyncFrameContinuationLimit = 8;' in mnist_binding
     masked_heap_word = (
         'new Color32((byte)(value & 255), '
         '(byte)((value >> 8) & 255), '
@@ -1744,6 +1799,80 @@ def main():
     ) == 1
     assert 'CompleteAsyncCommandReadback(request);' in udonblas_binding
     assert 'VRCWrapperGenerator' not in udonblas_binding
+
+    # The frame budget defaults to 4 ms and eight continuations and is a
+    # per-library device_work_budget setting; zero keeps one continuation
+    # per frame.
+    udonblas_commands = udonblas_manifest['program']['async_commands']
+    assert udonblas_commands['frame_budget_microseconds'] == 4000
+    assert udonblas_commands['frame_continuation_limit'] == 8
+    udonblas_config = json.loads(
+        (udonblas_source / 'unity-library.json').read_text(encoding='utf-8')
+    )
+
+    def udonblas_frame_budget_command(name, budget):
+        config = output / f'udonblas-frame-budget-{name}.json'
+        document = dict(udonblas_config)
+        document['device_work_budget'] = budget
+        config.write_text(json.dumps(document), encoding='utf-8')
+        return [
+            installed_compiler, '--emit-unity-library-bundle', config,
+            '--host-llvm', udonblas_root / 'host.bc',
+            '--host-library-llvm', runtime_module,
+            '--device-llvm', udonblas_root / 'device.bc',
+            '-o', output / f'udonblas-frame-budget-{name}-artifact',
+        ]
+
+    run(udonblas_frame_budget_command(
+        'custom', {'frame_microseconds': 2500, 'frame_continuations': 3}
+    ))
+    custom_budget_artifact = output / 'udonblas-frame-budget-custom-artifact'
+    custom_budget_commands = json.loads(
+        (custom_budget_artifact / 'manifest.json').read_text(encoding='utf-8')
+    )['program']['async_commands']
+    assert custom_budget_commands['frame_budget_microseconds'] == 2500
+    assert custom_budget_commands['frame_continuation_limit'] == 3
+    custom_budget_binding = (custom_budget_artifact / 'binding.cs').read_text(
+        encoding='utf-8'
+    )
+    assert 'public const int AsyncFrameBudgetMicroseconds = 2500;' in (
+        custom_budget_binding
+    )
+    assert 'public const int AsyncFrameContinuationLimit = 3;' in (
+        custom_budget_binding
+    )
+    assert 'Time.realtimeSinceStartupAsDouble + 0.002500;' in (
+        custom_budget_binding
+    )
+    run(udonblas_frame_budget_command(
+        'disabled', {'frame_microseconds': 0, 'frame_continuations': 0}
+    ))
+    disabled_budget_binding = (
+        output / 'udonblas-frame-budget-disabled-artifact/binding.cs'
+    ).read_text(encoding='utf-8')
+    assert 'public const int AsyncFrameBudgetMicroseconds = 0;' in (
+        disabled_budget_binding
+    )
+    assert 'public const int AsyncFrameContinuationLimit = 0;' in (
+        disabled_budget_binding
+    )
+    assert 'Time.realtimeSinceStartupAsDouble + 0.000000;' in (
+        disabled_budget_binding
+    )
+    run_failure(
+        udonblas_frame_budget_command('negative', {'frame_microseconds': -1}),
+        'device_work_budget.frame_microseconds must be between 0 and 1000000',
+    )
+    run_failure(
+        udonblas_frame_budget_command(
+            'excessive', {'frame_continuations': 1000001}
+        ),
+        'device_work_budget.frame_continuations must be between 0 and 1000000',
+    )
+    run_failure(
+        udonblas_frame_budget_command('fraction', {'frame_microseconds': 0.5}),
+        'device_work_budget.frame_microseconds must be an integer',
+    )
 
     assert [item['name'] for item in udonblas_manifest['device']['kernels']] == [
         'udonblas_arena_sgemm',

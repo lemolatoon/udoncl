@@ -610,6 +610,36 @@ The AOT `clEnqueueCopyBuffer` therefore also requires word-aligned offsets
 and size, and rejects a copy between disjoint ranges of one physical buffer
 with `CL_INVALID_OPERATION`, because a Blit cannot sample its own target.
 
+A slice bounds one Udon event, not one frame. The generated U# binding
+resumes a continuation in the same Udon event when it is ready at once: after
+a Device work slice (command kind 0) and after a command that completes
+synchronously (an upload, or a rejected command). Its `DriveAsyncCommands`
+loop is the only caller of `PumpAsyncCommand` and the only place that
+schedules `_ContinueAsyncCommand` for the next frame:
+
+- The first entry in a frame (`Time.frameCount`) opens a window of
+  `frame_microseconds` of wall-clock time
+  (`Time.realtimeSinceStartupAsDouble`) and `frame_continuations`
+  continuations. A ready continuation is delivered and pumped while both
+  remain; otherwise it waits one frame. The limits are checked before every
+  continuation, so a frame overruns the time budget by at most one slice, and
+  the continuation limit bounds the Device work one frame enqueues to
+  `frame_continuations + 1` slices even when the slices are cheap on the Host.
+- A command that really waits (`VRCAsyncGPUReadback`) returns from the loop.
+  Its callback re-enters the loop, which charges the same window.
+- An export started from a completion event only requests a pump from the
+  running loop, so pumps and Host completion events never nest however many
+  exports complete in one frame.
+
+Both limits are `device_work_budget` settings of the Unity library JSON
+(`"frame_microseconds": N, "frame_continuations": N`, each 0 to 1,000,000,
+defaults 4,000 and 8). They are recorded in the manifest as
+`program.async_commands.frame_budget_microseconds` and
+`frame_continuation_limit` and emitted as the binding constants
+`AsyncFrameBudgetMicroseconds` and `AsyncFrameContinuationLimit`. Setting
+either to zero, or a manifest without them, resumes one continuation per
+frame.
+
 Persistent discovery creates requests such as:
 
 ```mlir

@@ -28,7 +28,20 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             "Assets/UdonclSampleValidation/" + ControllerClass + ".cs";
         private const string ControllerProgram =
             GeneratedRoot + "/Tests/" + ControllerClass + ".asset";
+        // Mirrors UdonclTinyLlamaStepTestController's phases.
+        private const int PhaseRun = 3;
+        private const int PhaseReadOutputs = 4;
         private const int PhaseDone = 6;
+        private static readonly string[] PhaseNames =
+        {
+            "not-started",
+            "initialize",
+            "write-inputs",
+            "run",
+            "read-outputs",
+            "shutdown",
+            "done",
+        };
         private const int KindInt64 = 0;
         private const int KindFloat32 = 1;
         private const float AbsoluteTolerance = 0.001f;
@@ -200,16 +213,50 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                     UdonclArtifactImporter.GetUdonProgramVariable(controller, "outputValues"),
                     "The step test controller program is not initialized."
                 );
-                UdonclArtifactImporter.SendUdonCustomEvent(controller, "Run");
 
+                // The run phase is exactly one M=1 model step. Each output
+                // readback is requested from the previous completion
+                // callback, so the per-frame poll sees every request ->
+                // callback interval.
+                UdonclFixtureTiming timing = new UdonclFixtureTiming(
+                    "tinyllama_m1_step",
+                    "step=" + stepName
+                );
                 const int timeoutFrames = 36000;
                 int frame = 0;
                 bool completed = false;
-                while (frame < timeoutFrames && !completed)
+                try
                 {
-                    ++frame;
-                    yield return null;
-                    completed = ReadBool(controller, "completed");
+                    timing.Begin(PhaseName(1), 0);
+                    UdonclArtifactImporter.SendUdonCustomEvent(controller, "Run");
+                    while (frame < timeoutFrames && !completed)
+                    {
+                        ++frame;
+                        yield return null;
+                        timing.Frame();
+                        completed = ReadBool(controller, "completed");
+                        int currentPhase = ReadInt(controller, "phase");
+                        int readbacks =
+                            currentPhase >= PhaseReadOutputs
+                                ? ReadInt(controller, "transferIndex")
+                                : 0;
+                        timing.Readbacks(
+                            readbacks,
+                            currentPhase == PhaseReadOutputs && !completed,
+                            readbacks < oracle.Outputs.Count
+                                ? oracle.Outputs[readbacks].Name
+                                : null
+                        );
+                        timing.Phase(
+                            PhaseName(currentPhase),
+                            currentPhase == PhaseRun ? 1 : 0
+                        );
+                    }
+                }
+                finally
+                {
+                    // Restores the frame-rate settings and logs the totals.
+                    timing.End();
                 }
                 int phase = ReadInt(controller, "phase");
                 int status = ReadInt(controller, "status");
@@ -228,7 +275,12 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                     + " libraryStatus="
                     + libraryStatus
                     + " frames="
-                    + frame;
+                    + frame
+                    + timing.Summary
+                    + " run_frames="
+                    + timing.PhaseFrames(PhaseName(PhaseRun))
+                    + " run_ms="
+                    + timing.PhaseMillisecondsText(PhaseName(PhaseRun));
                 Debug.Log("udoncl tinyllama_m1_step " + header);
                 report.Append(header).Append('\n');
                 if (!completed || phase != PhaseDone || status != 0 || libraryStatus != 0)
@@ -328,6 +380,11 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             path = Path.GetFullPath(path);
             Assert.IsTrue(Directory.Exists(path), message + " Missing: " + path);
             return path;
+        }
+
+        private static string PhaseName(int phase)
+        {
+            return phase >= 0 && phase < PhaseNames.Length ? PhaseNames[phase] : "unknown";
         }
 
         private static object ReadVariable(UdonBehaviour controller, string symbol)

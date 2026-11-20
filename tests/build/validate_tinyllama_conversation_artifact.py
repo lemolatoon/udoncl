@@ -406,6 +406,87 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
         self.assertIn("private const int PhaseDone = 9;", source)
         self.assertIn("public const int PhaseDone = 9;", controller)
 
+    def test_fixtures_report_wall_clock_and_frame_rate_mode(self):
+        # Batchmode frames are not a proxy for time, so every focused
+        # TinyLlama fixture reports wall-clock time per phase and per step,
+        # and can hold a fixed frame rate; see plan section 7.2.
+        package = ROOT / "unity/Packages/com.lemolatoon.udoncl/Editor"
+        timing = (package / "UdonclFixtureTiming.cs").read_text(encoding="utf-8")
+        self.assertTrue((package / "UdonclFixtureTiming.cs.meta").is_file())
+        for required in (
+            'FrameRateVariable = "UDONCL_FIXTURE_TARGET_FRAME_RATE";',
+            "QualitySettings.vSyncCount = 0;",
+            "Application.targetFrameRate = targetFrameRate;",
+            "QualitySettings.vSyncCount = savedVSyncCount;",
+            "Application.targetFrameRate = savedTargetFrameRate;",
+            "Time.realtimeSinceStartupAsDouble",
+            '" mode="',
+            '" target_fps="',
+            '" phase="',
+            '" ms_per_step="',
+            '" frames_per_step="',
+            '" readback"',
+            '" readback_ms_max="',
+            '" paced_frames="',
+        ):
+            self.assertIn(required, timing)
+        plan = (ROOT / "TINYLLAMA_AOT_CONVERSATION_PLAN.md").read_text(
+            encoding="utf-8")
+        self.assertIn("UDONCL_FIXTURE_TARGET_FRAME_RATE", plan)
+        fixtures = {
+            "conversation": (
+                'new UdonclFixtureTiming("tinyllama_conversation")',
+                # Existing progress fields keep their order; ms is appended.
+                "udoncl tinyllama_conversation phase={0} ({1}) frame={2} ms={3}",
+                "IsGeneratePhase(currentPhase) ? generateSteps : 0",
+                "int generateSteps = promptTokens.Length + maxNewTokens - 1;",
+                '.Append(" first_generate_ms=")',
+                '.Append(" second_generate_ms=")',
+            ),
+            "chat": (
+                'new UdonclFixtureTiming("tinyllama_chat")',
+                "udoncl tinyllama_chat phase={0} ({1}) frame={2} ms={3}",
+                "currentPhase == PhaseGenerate ? generateSteps : 0",
+                '.Append(" generate_ms=")',
+            ),
+            "prefill": (
+                'new UdonclFixtureTiming("tinyllama_prefill")',
+                '"tinyllama_prefill frames={0} outputs={1}{2} run_frames={3} run_ms={4}"',
+                "timing.Readbacks(",
+                'timing.Phase("run", 1);',
+            ),
+            "step": (
+                '"tinyllama_m1_step",',
+                '"step=" + stepName',
+                "timing.Readbacks(",
+                "currentPhase == PhaseRun ? 1 : 0",
+                '+ " run_ms="',
+            ),
+        }
+        for name, required_lines in fixtures.items():
+            source = (
+                package / f"Examples/tinyllama-{name}-lifecycle-test.cs.txt"
+            ).read_text(encoding="utf-8")
+            for required in required_lines + (
+                "timing.Begin(",
+                "timing.Frame();",
+                "timing.End();",
+                "timing.Summary",
+            ):
+                self.assertIn(required, source, name)
+            # The settings are restored even when the wait loop throws.
+            self.assertLess(
+                source.index("timing.Begin("), source.index("finally"), name)
+            self.assertLess(
+                source.index("finally"), source.index("timing.End();"), name)
+            controller = (
+                package / f"Examples/tinyllama-{name}-test-controller.cs.txt"
+            ).read_text(encoding="utf-8")
+            # Measurement is Editor-side only: the U# controllers are unchanged.
+            for forbidden in ("realtimeSinceStartup", "targetFrameRate",
+                              "UdonclFixtureTiming"):
+                self.assertNotIn(forbidden, controller, name)
+
 
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0]])

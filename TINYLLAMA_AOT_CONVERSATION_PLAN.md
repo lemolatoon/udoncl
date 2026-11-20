@@ -749,6 +749,66 @@ baseline establishes a later timeout that distinguishes hangs from slow runs;
 until then tests emit phase heartbeat/progress and use a deliberately generous
 upper bound.
 
+#### Measurement basis
+
+Performance is judged by wall-clock time per model step and by frames at a
+fixed frame rate. A frame count from a `-batchmode` Editor is neither: that
+Editor renders on D3D11 with no vsync and no frame-rate limit, so near-empty
+frames spin while an asynchronous GPU readback waits for the GPU backlog. One
+`M=1` step measured 109 batchmode frames against about 34 structural frames
+(continuations plus readback round trips). Batchmode frame counts remain in
+the logs as a hang/timeout diagnostic only; they are not compared between
+runs, machines, or commits.
+
+Every focused TinyLlama fixture (prefill, `M=1` step, conversation, chat)
+therefore measures on the Editor side with `UdonclFixtureTiming`
+(`Time.realtimeSinceStartup`, sampled once per polled frame, so every boundary
+has one-frame resolution) and writes these Editor-log lines:
+
+```text
+udoncl <label> timing[ step=<name>] mode=<unbounded|fixed> target_fps=<n> vsync=<n> previous_target_fps=<n> previous_vsync=<n> batchmode=<true|false> graphics=<api>
+udoncl <label> timing[ step=<name>] phase=<name> frames=<n> ms=<t> steps=<n>[ ms_per_step=<t> frames_per_step=<f>]
+udoncl <label> readback[ step=<name>] index=<n> name=<tensor> frames=<n> ms=<t>
+udoncl <label> timing[ step=<name>] total frames=<n> unity_frames=<n> ms=<t> fps=<f> mode=<m> target_fps=<n> paced_frames=<n> readbacks=<n>[ readback_frames_min=.. readback_frames_max=.. readback_frames_mean=.. readback_ms_min=.. readback_ms_max=.. readback_ms_mean=..]
+```
+
+`<label>` is `tinyllama_prefill`, `tinyllama_m1_step`, `tinyllama_conversation`
+or `tinyllama_chat`. A phase line is written when the phase ends. `steps` is
+the number of `M=1` model steps the phase runs: 1 for the prefill and step
+`run` phase, and `prompt + generated - 1` for a `Generate` (the last generated
+token is not fed back); phases that run no model step report `steps=0` and no
+per-step fields. The pre-existing progress and result lines keep their fields
+in order and gain trailing ones (`ms=`, `fps=`, `mode=`, `target_fps=`, and
+`run_ms=`/`generate_ms=` style per-phase totals).
+
+Setting `UDONCL_FIXTURE_TARGET_FRAME_RATE=90` in the environment of the
+focused run selects the VRChat-like `fixed` mode: the fixture sets
+`QualitySettings.vSyncCount = 0` and `Application.targetFrameRate = 90` for
+the measured interval and restores both afterwards. Because a batchmode Editor
+does not necessarily honor `targetFrameRate`, the fixture also holds every
+polled frame until its period has elapsed; `paced_frames` counts the frames
+that needed this hold, and `fps` reports the rate actually achieved. Unset,
+empty or `0` leaves the Editor unbounded (`mode=unbounded`), which is the
+default and the mode of the commit validation gate. The frame count to quote
+for a step is `frames_per_step` of a `mode=fixed` run; the time to quote is
+`ms_per_step`, with its mode.
+
+Readback latency (request to completion callback, in frames and ms) is
+reported for the public-buffer readbacks of the prefill and step fixtures,
+where the test controller issues each `StartRead*` from the previous
+completion callback and the per-frame poll sees both ends. The readbacks the
+generated binding issues on behalf of the C Host inside an asynchronous export
+(the ArgMax token readback of every `Generate` step) are not observable from a
+fixture, and neither are the individual token steps inside one `Generate`. To
+expose them without Editor-only reflection the generated binding would need,
+per instance: a counter and the `Time.frameCount`/`Time.realtimeSinceStartup`
+pair taken at each `VRCAsyncGPUReadback.Request` of an async-command readback
+and at its `OnAsyncGpuReadbackComplete`, published as public read-only
+accessors (count, last/maximum/total latency in frames and ms), and a counter
+of `_ContinueAsyncCommand` resumptions so slices per step can be counted. This
+is a binding-generator change and is deliberately not emulated in the
+fixtures.
+
 The first measured baseline (gate 6, before `232d42f`) spent about 4,029
 frames per `M=1` token step: every one of the 4,019 Device dispatches of a
 step was followed by an await, and every await suspends the Udon Host for at
@@ -771,8 +831,9 @@ The instruction count falls because the per-dispatch suspend/resume round
 trip, not the dispatch itself, dominated Host work. One continuation per step
 still runs about 1.36 M instructions in a single event; it is the largest
 remaining Udon slice. Frames are an emulator estimate (one frame per
-continuation, two per readback) and wall-clock time still needs a Unity
-measurement.
+continuation, two per readback): a structural lower bound, not a batchmode
+frame count and not a time. Wall-clock time per step comes from the fixture
+measurement described above.
 
 Two generic follow-ups then cut the per-step Device work. `d7bde51` lets one
 Q4 dispatch accumulate the whole K of every output word (up to 256 blocks of
@@ -864,6 +925,17 @@ activation and 8 others. Per layer 4 Slices, 2 Negs, 2 Concats and 5 OpTensor
 dispatches are rotary embedding and 3 dispatches are SiLU gating; merging
 them needs compiler-generated fused kernels, because every Device kernel is
 still a hand-written library kernel wired by name through the runtime.
+
+Those frame estimates charge one frame per continuation, which on a 90 Hz
+client is the dominant cost of the remaining budget slices. The generated
+binding now resumes ready continuations in the same Udon event under a
+per-frame wall-clock budget (`device_work_budget.frame_microseconds`, default
+4 ms, and `frame_continuations`, default 8; see the device work scheduling
+section of `docs/architecture/refactor-baseline-and-mlir-pipeline.md`). A
+frame therefore runs as many slices as fit the budget, and a synchronously
+completed upload no longer costs a frame; only readbacks still wait. The
+resulting frames per step depend on the real Udon time of a slice and need a
+Unity measurement.
 
 ### 7.3 Required execution
 

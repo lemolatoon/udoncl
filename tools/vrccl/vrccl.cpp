@@ -3107,12 +3107,23 @@ attachDeviceFragmentCosts(ModuleOp module,
   return success();
 }
 
-/// Reads the optional per-library slice budgets:
+/// How much the generated binding resumes within one frame: a continuation
+/// that is ready in the same Udon event (a Device work slice or a
+/// synchronously completed command) runs at once while both limits allow.
+/// A zero limit resumes one continuation per frame.
+struct DeviceWorkFrameBudget {
+  int64_t microseconds = 4000;
+  int64_t continuations = 8;
+};
+
+/// Reads the optional per-library slice and frame budgets:
 ///   "device_work_budget": {"device_cost": N, "host_cost": N,
-///                          "fragment_weight": N}
+///                          "fragment_weight": N, "frame_microseconds": N,
+///                          "frame_continuations": N}
 LogicalResult
 readDeviceWorkBudget(const json::Object &config,
-                     ::vrc::ScheduleUdonDeviceWorkPassOptions &out) {
+                     ::vrc::ScheduleUdonDeviceWorkPassOptions &out,
+                     DeviceWorkFrameBudget &frame) {
   const json::Value *value = config.get("device_work_budget");
   if (!value)
     return success();
@@ -3133,7 +3144,15 @@ readDeviceWorkBudget(const json::Object &config,
       out.hostCostBudget = *number;
     else if (key == "fragment_weight")
       out.fragmentWeight = *number;
-    else {
+    else if (key == "frame_microseconds" || key == "frame_continuations") {
+      if (*number < 0 || *number > 1000000) {
+        errs() << "device_work_budget." << key.str()
+               << " must be between 0 and 1000000\n";
+        return failure();
+      }
+      (key == "frame_microseconds" ? frame.microseconds : frame.continuations) =
+          *number;
+    } else {
       errs() << "unknown device_work_budget key " << key.str() << "\n";
       return failure();
     }
@@ -3864,6 +3883,7 @@ int main(int argc, char **argv) {
       configuredKernelIds.push_back(kernelId);
       unityConfiguredKernelIds.push_back(static_cast<int32_t>(kernelId));
     }
+    DeviceWorkFrameBudget frameBudget;
     phase("host-object-intrinsics");
     {
       PassManager hostObjects(&context);
@@ -3881,7 +3901,7 @@ int main(int argc, char **argv) {
       if (failed(attachDeviceFragmentCosts(*module, unityDeviceConfigs)))
         return 1;
       ::vrc::ScheduleUdonDeviceWorkPassOptions budget;
-      if (failed(readDeviceWorkBudget(*unityConfig, budget)))
+      if (failed(readDeviceWorkBudget(*unityConfig, budget, frameBudget)))
         return 1;
       PassManager deviceWork(&context);
       deviceWork.addPass(::vrc::createScheduleUdonDeviceWorkPass(budget));
@@ -3989,6 +4009,8 @@ int main(int argc, char **argv) {
           {"raw_heap_slot", "__vrc_raw_heap"},
           {"upload_kind", 1},
           {"readback_kind", 2},
+          {"frame_budget_microseconds", frameBudget.microseconds},
+          {"frame_continuation_limit", frameBudget.continuations},
       };
     auto *device = manifest["device"].getAsObject();
     if (!device) {

@@ -162,17 +162,48 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 presentScratch
             );
             UdonclArtifactImporter.SetUdonProgramVariable(controller, "presentKv", presentKv);
-            UdonclArtifactImporter.SendUdonCustomEvent(controller, "Run");
 
+            // Controller phases: 1 initialize, 2 run, 3 logits readback in
+            // flight, 4 + n after the n-th readback callback, 49 done. Each
+            // readback is requested from the previous completion callback,
+            // so the per-frame poll sees every request -> callback interval.
+            UdonclFixtureTiming timing = new UdonclFixtureTiming("tinyllama_prefill");
             const int timeoutFrames = 36000;
             int frame = 0;
             bool completed = false;
-            while (frame < timeoutFrames && !completed)
+            try
             {
-                ++frame;
-                yield return null;
-                completed = (bool)
-                    UdonclArtifactImporter.GetUdonProgramVariable(controller, "completed");
+                timing.Begin("initialize", 0);
+                UdonclArtifactImporter.SendUdonCustomEvent(controller, "Run");
+                while (frame < timeoutFrames && !completed)
+                {
+                    ++frame;
+                    yield return null;
+                    timing.Frame();
+                    completed = (bool)
+                        UdonclArtifactImporter.GetUdonProgramVariable(controller, "completed");
+                    int currentPhase = (int)
+                        UdonclArtifactImporter.GetUdonProgramVariable(controller, "phase");
+                    int presentIndex = (int)
+                        UdonclArtifactImporter.GetUdonProgramVariable(controller, "presentIndex");
+                    int readbacks = currentPhase >= 4 ? 1 + presentIndex : 0;
+                    timing.Readbacks(
+                        readbacks,
+                        currentPhase >= 3 && !completed && readbacks < oracle.Outputs.Count,
+                        readbacks < oracle.Outputs.Count ? oracle.Outputs[readbacks].Name : null
+                    );
+                    if (currentPhase >= 49)
+                        timing.Phase("done", 0);
+                    else if (currentPhase >= 3)
+                        timing.Phase("read-outputs", 0);
+                    else if (currentPhase == 2)
+                        timing.Phase("run", 1);
+                }
+            }
+            finally
+            {
+                // Restores the frame-rate settings and logs the totals.
+                timing.End();
             }
             int phase = (int)UdonclArtifactImporter.GetUdonProgramVariable(controller, "phase");
             int status = (int)UdonclArtifactImporter.GetUdonProgramVariable(controller, "status");
@@ -197,11 +228,17 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                     0.001f,
                     0.001f
                 );
-            TestContext.Progress.WriteLine(
-                "tinyllama_prefill frames={0} outputs={1}",
+            string result = string.Format(
+                "tinyllama_prefill frames={0} outputs={1}{2} run_frames={3} run_ms={4}",
                 frame,
-                oracle.Outputs.Count
+                oracle.Outputs.Count,
+                timing.Summary,
+                timing.PhaseFrames("run"),
+                timing.PhaseMillisecondsText("run")
             );
+            TestContext.Progress.WriteLine(result);
+            // NUnit progress output does not reach the Editor log.
+            Debug.Log("udoncl " + result);
         }
     }
 }

@@ -4,6 +4,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/Format.h"
 #include "llvm/Support/raw_ostream.h"
 #include <optional>
 #include <set>
@@ -62,6 +63,10 @@ struct AsyncCommands {
   std::string rawHeap;
   int64_t uploadKind = 0;
   int64_t readbackKind = 0;
+  /// Wall-clock time and number of continuations one frame may resume in
+  /// the same Udon event. Zero resumes one continuation per frame.
+  int64_t frameBudgetMicroseconds = 0;
+  int64_t frameContinuationLimit = 0;
 };
 
 struct AsyncExportBinding {
@@ -126,6 +131,14 @@ Expected<AsyncCommands> parseAsyncCommands(const json::Object &manifest) {
       !readbackKind || *uploadKind <= 0 || *readbackKind <= 0 ||
       *uploadKind == *readbackKind)
     return invalid("async binding command ABI is incomplete");
+  // A manifest without a frame budget keeps one continuation per frame.
+  int64_t frameBudget =
+      commands->getInteger("frame_budget_microseconds").value_or(0);
+  int64_t frameContinuations =
+      commands->getInteger("frame_continuation_limit").value_or(0);
+  if (frameBudget < 0 || frameBudget > 1000000 || frameContinuations < 0 ||
+      frameContinuations > 1000000)
+    return invalid("async binding frame budget is out of range");
   return AsyncCommands{pendingObject->str(),
                        completionObject->str(),
                        completionStatus->str(),
@@ -137,7 +150,9 @@ Expected<AsyncCommands> parseAsyncCommands(const json::Object &manifest) {
                        commandPointer->str(),
                        rawHeap->str(),
                        *uploadKind,
-                       *readbackKind};
+                       *readbackKind,
+                       frameBudget,
+                       frameContinuations};
 }
 
 } // namespace
@@ -265,6 +280,19 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
               "        private int asyncCommandSizeWords;\n"
               "        private int asyncCommandPointerBytes;\n"
               "        private int[] asyncCommandHeap;\n";
+  if (hasAsync)
+    output << "        public const int AsyncFrameBudgetMicroseconds = "
+           << asyncCommands->frameBudgetMicroseconds
+           << ";\n"
+              "        public const int AsyncFrameContinuationLimit = "
+           << asyncCommands->frameContinuationLimit
+           << ";\n"
+              "        private bool asyncDriving;\n"
+              "        private bool asyncPumpRequested;\n"
+              "        private bool asyncContinuationReady;\n"
+              "        private int asyncFrame = -1;\n"
+              "        private int asyncFrameContinuations;\n"
+              "        private double asyncFrameDeadline;\n";
   if (hasPublicOutput)
     output
         << "        private float[] pendingFloatReadback;\n"
@@ -713,7 +741,8 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
       output << "            program.SendCustomEvent(\""
              << escapeString(*eventName)
              << "\");\n"
-                "            PumpAsyncCommand();\n"
+                "            asyncPumpRequested = true;\n"
+                "            DriveAsyncCommands();\n"
                 "            return StatusSuccess;\n"
                 "        }\n\n"
              << "        public int " << statusMethod
@@ -838,8 +867,7 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
            "            if (kind == 0)\n"
            "            {\n"
            "                pendingAsyncCompletionStatus = StatusSuccess;\n"
-           "                "
-           "SendCustomEventDelayedFrames(\"_ContinueAsyncCommand\", 1);\n"
+           "                asyncContinuationReady = true;\n"
            "                return;\n"
            "            }\n"
         << "            object rawBuffer = program.GetProgramVariable(\""
@@ -956,14 +984,10 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
            << "\", 0);\n"
               "            asyncCommandHeap = null;\n"
               "            pendingAsyncCompletionStatus = status;\n"
-              "            "
-              "SendCustomEventDelayedFrames(\"_ContinueAsyncCommand\", 1);\n"
+              "            asyncContinuationReady = true;\n"
               "        }\n\n"
-              "        public void _ContinueAsyncCommand()\n"
+              "        private void DeliverAsyncCompletion()\n"
               "        {\n"
-              "            if (!busy || program == null || "
-              "pendingAsyncGeneration != generation)\n"
-              "                return;\n"
               "            if (pendingAsyncObject != 0)\n"
               "            {\n"
            << "                program.SetProgramVariable(\""
@@ -980,7 +1004,60 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
               "            }\n"
               "            pendingAsyncObject = 0;\n"
               "            pendingAsyncCompletionStatus = 0;\n"
-              "            PumpAsyncCommand();\n"
+              "        }\n\n"
+              // The only loop that pumps commands. A continuation that is
+              // ready in the same Udon event (a Device work slice or a
+              // synchronously completed command) resumes here while the
+              // frame's budget lasts; otherwise it waits for the next frame.
+              // An export started from a completion event only requests a
+              // pump from the running loop, so the pump never nests.
+              "        private void DriveAsyncCommands()\n"
+              "        {\n"
+              "            if (asyncDriving)\n"
+              "                return;\n"
+              "            asyncDriving = true;\n"
+              "            if (Time.frameCount != asyncFrame)\n"
+              "            {\n"
+              "                asyncFrame = Time.frameCount;\n"
+              "                asyncFrameContinuations = 0;\n"
+              "                asyncFrameDeadline = "
+              "Time.realtimeSinceStartupAsDouble + "
+           << format("%.6f", commands.frameBudgetMicroseconds / 1000000.0)
+           << ";\n"
+              "            }\n"
+              "            while (true)\n"
+              "            {\n"
+              "                if (asyncContinuationReady)\n"
+              "                {\n"
+              "                    asyncContinuationReady = false;\n"
+              "                    if (asyncFrameContinuations >= "
+              "AsyncFrameContinuationLimit || "
+              "Time.realtimeSinceStartupAsDouble >= asyncFrameDeadline)\n"
+              "                    {\n"
+              "                        SendCustomEventDelayedFrames("
+              "\"_ContinueAsyncCommand\", 1);\n"
+              "                        break;\n"
+              "                    }\n"
+              "                    asyncFrameContinuations = "
+              "asyncFrameContinuations + 1;\n"
+              "                    DeliverAsyncCompletion();\n"
+              "                    asyncPumpRequested = true;\n"
+              "                }\n"
+              "                if (!asyncPumpRequested)\n"
+              "                    break;\n"
+              "                asyncPumpRequested = false;\n"
+              "                PumpAsyncCommand();\n"
+              "            }\n"
+              "            asyncDriving = false;\n"
+              "        }\n\n"
+              "        public void _ContinueAsyncCommand()\n"
+              "        {\n"
+              "            if (!busy || program == null || "
+              "pendingAsyncGeneration != generation)\n"
+              "                return;\n"
+              "            DeliverAsyncCompletion();\n"
+              "            asyncPumpRequested = true;\n"
+              "            DriveAsyncCommands();\n"
               "        }\n\n"
               "        private void CompleteAsyncExportFromProgram()\n"
               "        {\n";
@@ -1057,6 +1134,7 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
       output << R"(            if (asyncCommandReadbackMode != 0)
             {
                 CompleteAsyncCommandReadback(request);
+                DriveAsyncCommands();
                 return;
             }
 )";
