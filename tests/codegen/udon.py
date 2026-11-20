@@ -701,6 +701,9 @@ for obsolete_literal_scratch in [
         repeated_constants_lowered.stdout,
     )
 
+# A word-aligned access through a raw global address is a literal raw-heap
+# index and needs no address at all, so the address that must survive the call
+# is the one of a packed byte access.
 raw_address_after_call_source = r'''module attributes {vrc.async_stage = "udon-static-v1"} {
   "udonhl.global"() <{sym_name = "value", storage_type = i32, initial_value = 0 : i32, linkage = "internal", address_space = 0 : i32, alignment = 4 : i64}> : () -> ()
   func.func @run() -> i32 attributes {
@@ -710,7 +713,8 @@ raw_address_after_call_source = r'''module attributes {vrc.async_stage = "udon-s
   } {
     %address = udonhl.address_of @value : !udonhl.ptr<0>
     %ignored = func.call @helper() : () -> i32
-    %result = "udonhl.load"(%address) <{alignment = 4 : i64}> : (!udonhl.ptr<0>) -> i32
+    %byte = "udonhl.load"(%address) <{alignment = 1 : i64}> : (!udonhl.ptr<0>) -> i8
+    %result = arith.extui %byte : i8 to i32
     return %result : i32
   }
   func.func private @helper() -> i32 {
@@ -961,14 +965,22 @@ raw_memory_source = r'''module {
     %loaded = "udonhl.load"(%pointer) <{alignment = 1 : i64}> : (!udonhl.ptr<0>) -> i1
     return %loaded : i1
   }
+  func.func @raw_i64_packed() -> i64 attributes {vrc.export_id = 8 : i32} {
+    %bytes = arith.constant 8 : i32
+    %pointer = "udonhl.alloca"(%bytes) <{alignment = 1 : i64}> : (i32) -> !udonhl.ptr<0>
+    %value = arith.constant 72623859790382856 : i64
+    "udonhl.store"(%value, %pointer) <{alignment = 1 : i64}> : (i64, !udonhl.ptr<0>) -> ()
+    %loaded = "udonhl.load"(%pointer) <{alignment = 1 : i64}> : (!udonhl.ptr<0>) -> i64
+    return %loaded : i64
+  }
 }'''
 raw_memory_lowered = subprocess.run(
     [opt, '--vrc-lower-udonhl-to-udonasm', '--verify-each'],
     input=raw_memory_source, text=True, capture_output=True)
 assert raw_memory_lowered.returncode == 0, raw_memory_lowered.stderr
 assert 'udonasm.storage_report' in raw_memory_lowered.stdout
-assert 'raw_heap_bytes = 41 : i64' in raw_memory_lowered.stdout
-assert 'raw_heap_words = 11 : i64' in raw_memory_lowered.stdout
+assert 'raw_heap_bytes = 49 : i64' in raw_memory_lowered.stdout
+assert 'raw_heap_words = 13 : i64' in raw_memory_lowered.stdout
 assert re.search(
     r'key_id = "SystemBoolean:0x1", kind = "arith_constant"',
     raw_memory_lowered.stdout,
@@ -1014,7 +1026,7 @@ assert re.search(
 ), raw_memory_lowered.stdout
 for expected in [
     'name = "__vrc_raw_heap"',
-    'initial = "11", name = "__vrc_raw_heap_length"',
+    'initial = "13", name = "__vrc_raw_heap_length"',
     'SystemInt32Array.__ctor__SystemInt32__SystemInt32Array',
     'SystemInt32Array.__Get__SystemInt32__SystemInt32',
     'SystemInt32Array.__Set__SystemInt32_SystemInt32__SystemVoid',
@@ -1029,6 +1041,8 @@ for expected in [
     'SystemBitConverter.__SingleToInt32Bits__SystemSingle__SystemInt32',
     'SystemBitConverter.__Int32BitsToSingle__SystemInt32__SystemSingle',
     'SystemInt32.__op_Inequality__SystemInt32_SystemInt32__SystemBoolean',
+    'name = "__vrc_raw_load_i64_low"',
+    'name = "__vrc_raw_load_i64_high"',
     'name = "__vrc_raw_memcpy_counter"',
     'name = "__vrc_raw_memset_scratch_counter"',
 ]:

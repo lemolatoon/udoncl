@@ -24,8 +24,17 @@
 // CHECK-NOT: call @__udoncl_async_resume
 // CHECK: return
 
+// The completion event selects the completed object with one switch, which
+// the Udon lowering emits as a balanced decision tree, not with one
+// comparison per bound object.
 // Every completion path enters at most one continuation and then drains.
 // CHECK-LABEL: func.func @__udoncl_async_complete(
+// CHECK-SAME: %[[OBJECT:[^:]+]]: i32,
+// CHECK-NEXT: cf.switch %[[OBJECT]] : i32, [
+// CHECK-NEXT: default: ^[[UNMATCHED:bb[0-9]+]],
+// CHECK-NEXT: 3: ^{{bb[0-9]+}}
+// CHECK-NEXT: ]
+// CHECK-NOT: arith.cmpi eq, %[[OBJECT]]
 // CHECK: "udonhl.async_enter"()
 // CHECK-NEXT: call @__udoncl_async_drain_ready() : () -> ()
 // CHECK-NEXT: return

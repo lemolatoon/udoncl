@@ -200,6 +200,22 @@ def InsertUdonCooperativeCheckpointsPass : Pass<"vrc-insert-udon-cooperative-che
   let summary = "Split long Udon-only synchronous Host regions with static cooperative checkpoints";
   let dependentDialects = ["::vrc::vrc::VRCDialect", "mlir::arith::ArithDialect", "mlir::func::FuncDialect"];
 }
+def ThreadConstantBranchesPass : Pass<"vrc-thread-constant-branches", "mlir::ModuleOp"> {
+  let summary = "Retarget edges whose constant block arguments decide the conditional branch of their successor";
+  let description = [{
+    A block that only compares its own arguments with constants and branches
+    on the result is the recovered shape of a C short-circuit or conditional
+    expression. An edge that passes constants for the compared arguments
+    already knows the taken successor: it is retargeted to that successor,
+    with the block's forwarded arguments replaced by the values the edge
+    passes. Edges with a run-time argument keep the block.
+
+    The block must contain nothing but the comparison and the branch, and
+    none of its values may be used outside it, so a threaded edge skips no
+    effect and breaks no dominance.
+  }];
+  let dependentDialects = ["mlir::cf::ControlFlowDialect"];
+}
 def ScheduleUdonDeviceWorkPass : Pass<"vrc-schedule-udon-device-work", "mlir::ModuleOp"> {
   let summary = "Make Udon Device commands enqueue-only and yield by a per-slice work budget";
   let description = [{

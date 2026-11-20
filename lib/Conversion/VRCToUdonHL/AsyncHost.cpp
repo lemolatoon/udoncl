@@ -768,18 +768,24 @@ struct LowerUdonAsyncRuntimePass
                                                 "__udoncl_async_complete"));
 
       Block *entry = completion.addEntryBlock();
-      SmallVector<Block *> checks;
       SmallVector<Block *> completions;
       for (size_t index = 0; index < boundObjectIds.size(); ++index) {
-        checks.push_back(new Block());
         completions.push_back(new Block());
-        completion.getBody().push_back(checks.back());
         completion.getBody().push_back(completions.back());
       }
       Block *unmatched = new Block();
       completion.getBody().push_back(unmatched);
+      // One switch over the completed object, which the Udon lowering emits
+      // as a balanced decision tree: a program awaits hundreds of objects and
+      // every completion event starts here.
       completionBuilder.setInsertionPointToEnd(entry);
-      cf::BranchOp::create(completionBuilder, module.getLoc(), checks.front());
+      SmallVector<int32_t> objectIds(boundObjectIds.begin(),
+                                     boundObjectIds.end());
+      SmallVector<ValueRange> noOperands(completions.size(), ValueRange{});
+      cf::SwitchOp::create(completionBuilder, module.getLoc(),
+                           entry->getArgument(0), unmatched, ValueRange{},
+                           completionBuilder.getI32VectorAttr(objectIds),
+                           completions, noOperands);
 
       auto addressOf = [&](OpBuilder &builder, int32_t objectId,
                            StringRef suffix) {
@@ -805,19 +811,7 @@ struct LowerUdonAsyncRuntimePass
 
       size_t routeIndex = 0;
       for (int32_t objectId : boundObjectIds) {
-        Block *check = checks[routeIndex];
         Block *complete = completions[routeIndex];
-        Block *next =
-            routeIndex + 1 < checks.size() ? checks[routeIndex + 1] : unmatched;
-        completionBuilder.setInsertionPointToEnd(check);
-        auto id = arith::ConstantIntOp::create(completionBuilder,
-                                               module.getLoc(), objectId, 32);
-        auto matches = arith::CmpIOp::create(completionBuilder, module.getLoc(),
-                                             arith::CmpIPredicate::eq,
-                                             entry->getArgument(0), id);
-        cf::CondBranchOp::create(completionBuilder, module.getLoc(), matches,
-                                 complete, ValueRange{}, next, ValueRange{});
-
         completionBuilder.setInsertionPointToEnd(complete);
         auto checkpoint = checkpointRoutes.find(objectId);
         if (checkpoint != checkpointRoutes.end()) {

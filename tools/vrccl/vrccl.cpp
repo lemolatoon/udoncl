@@ -1865,6 +1865,9 @@ LogicalResult optimizeUnityHostStorage(ModuleOp module) {
   optimization.addPass(createCanonicalizerPass());
   optimization.addPass(createSCCPPass());
   optimization.addPass(createCSEPass());
+  // Canonical constants are what makes a decision edge recognizable; the
+  // following canonicalization merges the blocks threading leaves behind.
+  optimization.addPass(::vrc::createThreadConstantBranchesPass());
   optimization.addPass(createCanonicalizerPass());
   optimization.addPass(createSymbolDCEPass());
   LogicalResult result = optimization.run(module);

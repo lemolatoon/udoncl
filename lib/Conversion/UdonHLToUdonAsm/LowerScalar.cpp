@@ -17,6 +17,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/Matchers.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
@@ -110,6 +111,19 @@ static FailureOr<StringRef> udonType(Type type) {
 
 static FailureOr<std::string> slotStorageKey(Type type) {
   return hostStorageKey(type);
+}
+
+/// A dispatch that directly follows the creation of its descriptor, and is
+/// its only user, reads the descriptor scalars from their own slots: nothing
+/// between the two operations can overwrite them, so no snapshot is needed.
+static bool
+dispatchReadsScalarsDirectly(::vrc::vrc::DispatchDescCreateOp descriptor) {
+  Value result = descriptor.getResult();
+  if (!result.hasOneUse())
+    return false;
+  auto dispatch =
+      dyn_cast_or_null<::vrc::vrc::DispatchOp>(descriptor->getNextNode());
+  return dispatch && dispatch.getDesc() == result;
 }
 
 static StringRef arrayLoadExtern(MemRefType type) {
@@ -1618,9 +1632,11 @@ private:
       for (unsigned nibble = 0; nibble < highestNibble; ++nibble)
         nonzeroLowerNibbles += ((value >> (nibble * 4)) & 15) != 0;
       // emitI32Literal copies the highest nibble, then uses one 32-byte shift
-      // per lower nibble and one 32-byte OR for each nonzero lower nibble. A
-      // cached constant replaces that whole tail with the same 20-byte COPY.
-      return (highestNibble + nonzeroLowerNibbles) * 32;
+      // and one 32-byte OR for each nonzero lower nibble, and one more shift
+      // for trailing zero nibbles. A cached constant replaces that whole tail
+      // with the same 20-byte COPY.
+      bool trailingZeros = highestNibble && !(value & 15);
+      return (2 * nonzeroLowerNibbles + trailingZeros) * 32;
     };
     for (const auto &[symbol, occurrences] : rawAddressCandidates)
       candidates.push_back(
@@ -1988,12 +2004,19 @@ private:
                 dyn_cast<::vrc::vrc::DispatchDescCreateOp>(operation)) {
           SmallVector<std::string> snapshots;
           unsigned color = descriptorColors.lookup(descriptor.getResult());
+          bool direct = dispatchReadsScalarsDirectly(descriptor);
           for (auto [index, scalar] :
                llvm::enumerate(descriptor.getScalars())) {
             auto type = udonType(scalar.getType());
             if (failed(type))
               return descriptor.emitError(
                   "dispatch scalar has unsupported Udon type");
+            if (direct) {
+              // Resolved to the scalar's own slot when the descriptor is
+              // lowered.
+              snapshots.emplace_back();
+              continue;
+            }
             std::string name = prefix + "descriptor_" + std::to_string(color) +
                                "_" + std::to_string(index) + "_" + type->str();
             addSlot(name, *type, "null", false);
@@ -2218,6 +2241,13 @@ private:
       Operation *jump = emitJump(location, 0);
       relocations.emplace_back(jump, target);
     };
+    // Blocks are emitted in function order, so the jump that ends a block
+    // and targets the next block is a fall-through.
+    auto jumpToUnlessNext = [&](Location location, Block *current,
+                                Block *target) {
+      if (current->getNextNode() != target)
+        jumpTo(location, target);
+    };
     auto materializeRawGlobalAddress = [&](Value value,
                                            Location location) -> LogicalResult {
       auto addressOf = value.getDefiningOp<host::AddressOfOp>();
@@ -2245,6 +2275,95 @@ private:
           return true;
       return false;
     };
+    // Raw addresses known at compile time: a raw global, a raw alloca and
+    // any constant byte offset from one. A word-aligned access through such an
+    // address indexes the raw heap with a literal, and an address whose every
+    // use is such an access is never materialized.
+    llvm::DenseMap<Value, uint64_t> staticRawAddresses;
+    for (bool changed = true; changed;) {
+      changed = false;
+      function.walk([&](Operation *operation) {
+        if (operation->getNumResults() != 1 ||
+            staticRawAddresses.contains(operation->getResult(0)))
+          return;
+        std::optional<uint64_t> address;
+        if (auto addressOf = dyn_cast<host::AddressOfOp>(operation)) {
+          auto found = rawGlobalBases.find(addressOf.getGlobal());
+          if (found != rawGlobalBases.end())
+            address = found->second;
+        } else if (auto allocation = dyn_cast<host::AllocaOp>(operation)) {
+          auto found = rawAllocaBases.find(operation);
+          if (found != rawAllocaBases.end())
+            address = found->second;
+        } else if (auto pointer = dyn_cast<host::PtrAddOp>(operation)) {
+          auto base = staticRawAddresses.find(pointer.getPointer());
+          llvm::APInt offset;
+          if (base != staticRawAddresses.end() &&
+              matchPattern(pointer.getByteOffset(), m_ConstantInt(&offset))) {
+            int64_t sum =
+                static_cast<int64_t>(base->second) + offset.getSExtValue();
+            if (sum >= 0 && sum <= INT32_MAX)
+              address = static_cast<uint64_t>(sum);
+          }
+        }
+        if (!address)
+          return;
+        staticRawAddresses.try_emplace(operation->getResult(0), *address);
+        changed = true;
+      });
+    }
+    auto staticWordAccess = [&](Operation *operation,
+                                Value pointer) -> std::optional<uint64_t> {
+      Type type;
+      uint64_t alignment = 0;
+      if (auto load = dyn_cast<host::LoadOp>(operation)) {
+        if (load.getPointer() != pointer)
+          return std::nullopt;
+        type = load.getResult().getType();
+        alignment = load.getAlignment();
+      } else if (auto store = dyn_cast<host::StoreOp>(operation)) {
+        // The stored value itself is not an access through the address.
+        if (store.getPointer() != pointer || store.getValue() == pointer)
+          return std::nullopt;
+        type = store.getValue().getType();
+        alignment = store.getAlignment();
+      } else {
+        return std::nullopt;
+      }
+      auto address = staticRawAddresses.find(pointer);
+      if (address == staticRawAddresses.end() || alignment < 4 ||
+          address->second % 4 != 0)
+        return std::nullopt;
+      if (!type.isInteger(32) && !type.isInteger(64) && !type.isF32() &&
+          !isa<host::PtrType, runtime::BufferType, runtime::EventType,
+               runtime::DispatchDescType>(type))
+        return std::nullopt;
+      return address->second;
+    };
+    llvm::DenseSet<Operation *> foldedRawAddresses;
+    for (const auto &entry : staticRawAddresses)
+      foldedRawAddresses.insert(entry.first.getDefiningOp());
+    for (bool changed = true; changed;) {
+      changed = false;
+      for (const auto &entry : staticRawAddresses) {
+        Operation *definition = entry.first.getDefiningOp();
+        if (!foldedRawAddresses.contains(definition))
+          continue;
+        bool folded = llvm::all_of(entry.first.getUses(), [&](OpOperand &use) {
+          Operation *user = use.getOwner();
+          if (staticWordAccess(user, entry.first))
+            return true;
+          auto pointer = dyn_cast<host::PtrAddOp>(user);
+          return pointer && pointer.getPointer() == entry.first &&
+                 pointer.getByteOffset() != entry.first &&
+                 foldedRawAddresses.contains(user);
+        });
+        if (!folded) {
+          foldedRawAddresses.erase(definition);
+          changed = true;
+        }
+      }
+    }
     auto typedArrayIndex = [&](Location location, Value array,
                                StringRef logicalIndex) -> std::string {
       uint64_t base = globalBaseOffsets.lookup(array);
@@ -2277,7 +2396,9 @@ private:
         llvm::SmallPtrSet<Operation *, 4> materializedAddresses;
         for (Value operand : operation.getOperands()) {
           auto addressOf = operand.getDefiningOp<host::AddressOfOp>();
-          if (addressOf && rawAddressCrossesCall(addressOf, &operation) &&
+          if (addressOf && !foldedRawAddresses.contains(&operation) &&
+              !staticWordAccess(&operation, operand) &&
+              rawAddressCrossesCall(addressOf, &operation) &&
               materializedAddresses.insert(addressOf.getOperation()).second &&
               failed(materializeRawGlobalAddress(operand, operation.getLoc())))
             return failure();
@@ -2299,6 +2420,8 @@ private:
                   : "SystemInt32Array.__ctor__SystemInt32__SystemInt32Array");
           continue;
         }
+        if (foldedRawAddresses.contains(&operation))
+          continue;
         if (auto allocation = dyn_cast<host::AllocaOp>(operation)) {
           auto found = rawAllocaBases.find(allocation.getOperation());
           if (found == rawAllocaBases.end())
@@ -2484,13 +2607,17 @@ private:
               found->second.size() != descriptor.getScalars().size())
             return descriptor.emitError(
                 "dispatch descriptor has no scalar snapshot slots");
+          bool direct = dispatchReadsScalarsDirectly(descriptor);
           for (auto [scalar, snapshot] :
                llvm::zip(descriptor.getScalars(), found->second)) {
             std::string source = valueSlots.lookup(scalar);
             if (source.empty())
               return descriptor.emitError(
                   "dispatch scalar has no allocated Udon heap slot");
-            emitCopy(descriptor.getLoc(), source, snapshot);
+            if (direct)
+              snapshot = source;
+            else
+              emitCopy(descriptor.getLoc(), source, snapshot);
           }
           continue;
         }
@@ -3288,9 +3415,10 @@ private:
           std::string pointer = valueSlots.lookup(load.getPointer());
           std::string result = valueSlots.lookup(load.getResult());
           if (pointer.empty() || result.empty() ||
-              failed(emitRawLoad(load.getLoc(), pointer, result,
-                                 load.getResult().getType(),
-                                 load.getAlignment())))
+              failed(
+                  emitRawLoad(load.getLoc(), pointer, result,
+                              load.getResult().getType(), load.getAlignment(),
+                              staticWordAccess(&operation, load.getPointer()))))
             return load.emitError("unsupported raw Udon load");
           continue;
         }
@@ -3299,9 +3427,10 @@ private:
           std::string value = valueSlots.lookup(store.getValue());
           if (pointer.empty() || value.empty())
             return store.emitError("raw store operand has no Udon heap slot");
-          if (failed(emitRawStore(store.getLoc(), pointer, value,
-                                  store.getValue().getType(),
-                                  store.getAlignment())))
+          if (failed(emitRawStore(
+                  store.getLoc(), pointer, value, store.getValue().getType(),
+                  store.getAlignment(),
+                  staticWordAccess(&operation, store.getPointer()))))
             return store.emitError("unsupported raw Udon store");
           continue;
         }
@@ -3517,7 +3646,7 @@ private:
           if (failed(copies(branch.getLoc(), branch.getDestOperands(),
                             branch.getDest())))
             return failure();
-          jumpTo(branch.getLoc(), branch.getDest());
+          jumpToUnlessNext(branch.getLoc(), &block, branch.getDest());
           continue;
         }
         if (auto branch = dyn_cast<cf::CondBranchOp>(operation)) {
@@ -3530,6 +3659,17 @@ private:
               branch.getLoc(), vm::JumpIfFalseOp::getOperationName(),
               {builder.getNamedAttr("target", builder.getI64IntegerAttr(0))});
           address += 8;
+          if (branch.getFalseDestOperands().empty()) {
+            // Without block-argument copies the false edge needs no
+            // trampoline: the conditional jump targets the successor itself
+            // and the true edge may fall through.
+            relocations.emplace_back(falseJump, branch.getFalseDest());
+            if (failed(copies(branch.getLoc(), branch.getTrueDestOperands(),
+                              branch.getTrueDest())))
+              return failure();
+            jumpToUnlessNext(branch.getLoc(), &block, branch.getTrueDest());
+            continue;
+          }
           if (failed(copies(branch.getLoc(), branch.getTrueDestOperands(),
                             branch.getTrueDest())))
             return failure();
@@ -3539,7 +3679,7 @@ private:
           if (failed(copies(branch.getLoc(), branch.getFalseDestOperands(),
                             branch.getFalseDest())))
             return failure();
-          jumpTo(branch.getLoc(), branch.getFalseDest());
+          jumpToUnlessNext(branch.getLoc(), &block, branch.getFalseDest());
           continue;
         }
         if (auto branch = dyn_cast<cf::SwitchOp>(operation)) {
@@ -3551,10 +3691,20 @@ private:
             return branch.emitError("switch flag has no Udon heap slot");
           auto caseValues = branch.getCaseValues();
           if (caseValues) {
-            constexpr StringLiteral caseConstant = "__vrc_switch_case_constant";
+            constexpr StringLiteral caseScratch = "__vrc_switch_case_constant";
             constexpr StringLiteral condition = "__vrc_switch_condition";
-            addSlot(caseConstant, "SystemInt32", "0", false);
             addSlot(condition, "SystemBoolean", "null", false);
+            // A case value is a literal slot; only the minimum SystemInt32,
+            // which the assembler cannot spell, is built at the comparison.
+            auto caseLiteral = [&](const llvm::APInt &value) -> std::string {
+              if (!value.isMinSignedValue())
+                return immutableSlot("SystemInt32",
+                                     std::to_string(value.getSExtValue()));
+              addSlot(caseScratch, "SystemInt32", "0", false);
+              emitI32Literal(branch.getLoc(), value.getZExtValue(),
+                             caseScratch);
+              return caseScratch.str();
+            };
             struct SwitchCase {
               llvm::APInt value;
               unsigned originalIndex;
@@ -3574,8 +3724,7 @@ private:
             auto emitEquality =
                 [&](const SwitchCase &switchCase,
                     SmallVectorImpl<Operation *> &defaults) -> LogicalResult {
-              emitI32Literal(branch.getLoc(), switchCase.value.getZExtValue(),
-                             caseConstant);
+              std::string caseConstant = caseLiteral(switchCase.value);
               emitPush(branch.getLoc(), flag);
               emitPush(branch.getLoc(), caseConstant);
               emitPush(branch.getLoc(), condition);
@@ -3615,9 +3764,7 @@ private:
                 if (end - begin == 1)
                   return emitEquality(cases[begin], defaultJumps);
                 unsigned middle = begin + (end - begin) / 2;
-                emitI32Literal(branch.getLoc(),
-                               cases[middle].value.getZExtValue(),
-                               caseConstant);
+                std::string caseConstant = caseLiteral(cases[middle].value);
                 emitPush(branch.getLoc(), flag);
                 emitPush(branch.getLoc(), caseConstant);
                 emitPush(branch.getLoc(), condition);
@@ -4369,7 +4516,13 @@ private:
           } else {
             mask = "__vrc_unsigned_cmp_sign_i32";
             addSlot(mask, systemType, "null", false);
-            emitI32Literal(comparison.getLoc(), uint64_t{1} << 31, mask);
+            // The assembler cannot spell the minimum SystemInt32.
+            emitPush(comparison.getLoc(), immutableSlot("SystemInt32", "1"));
+            emitPush(comparison.getLoc(), immutableSlot("SystemInt32", "31"));
+            emitPush(comparison.getLoc(), mask);
+            emitExtern(comparison.getLoc(),
+                       "SystemInt32.__op_LeftShift__SystemInt32_SystemInt32__"
+                       "SystemInt32");
           }
           std::string adjustedLhs = type.isInteger(64)
                                         ? "__vrc_unsigned_cmp_lhs_i64"
@@ -4753,7 +4906,6 @@ private:
 
   void emitI32Literal(Location location, uint64_t value, StringRef result) {
     assert(value <= UINT32_MAX && "i32 literal exceeds 32 bits");
-    std::string nibbleShift = immutableSlot("SystemInt32", "4");
     unsigned highestNibble = 0;
     for (unsigned nibble = 1; nibble < 8; ++nibble)
       if ((value >> (nibble * 4)) & 15)
@@ -4762,16 +4914,26 @@ private:
              immutableSlot("SystemInt32",
                            std::to_string((value >> (highestNibble * 4)) & 15)),
              result);
-    for (unsigned nibble = highestNibble; nibble-- > 0;) {
+    // A run of zero nibbles is one shift by the width of the whole run.
+    unsigned pendingShift = 0;
+    auto flushShift = [&] {
+      if (!pendingShift)
+        return;
       emitPush(location, result);
-      emitPush(location, nibbleShift);
+      emitPush(location,
+               immutableSlot("SystemInt32", std::to_string(pendingShift)));
       emitPush(location, result);
       emitExtern(location,
                  "SystemInt32.__op_LeftShift__SystemInt32_SystemInt32__"
                  "SystemInt32");
+      pendingShift = 0;
+    };
+    for (unsigned nibble = highestNibble; nibble-- > 0;) {
+      pendingShift += 4;
       uint64_t digit = (value >> (nibble * 4)) & 15;
       if (!digit)
         continue;
+      flushShift();
       emitPush(location, result);
       emitPush(location, immutableSlot("SystemInt32", std::to_string(digit)));
       emitPush(location, result);
@@ -4779,6 +4941,7 @@ private:
                  "SystemInt32.__op_LogicalOr__SystemInt32_SystemInt32__"
                  "SystemInt32");
     }
+    flushShift();
   }
 
   void emitRawAddress(Location location, uint64_t address, StringRef result) {
@@ -4818,41 +4981,81 @@ private:
   void emitI64Constant(Location location, const llvm::APInt &value,
                        StringRef result) {
     constexpr StringLiteral wide = "__vrc_i64_scratch_0";
-    constexpr StringLiteral shifted = "__vrc_i64_scratch_1";
-    constexpr StringLiteral combined = "__vrc_i64_scratch_2";
+    constexpr StringLiteral toInt64 =
+        "SystemConvert.__ToInt64__SystemInt32__SystemInt64";
+    constexpr StringLiteral leftShift =
+        "SystemInt64.__op_LeftShift__SystemInt64_SystemInt32__SystemInt64";
+    // The SDK assembler has no SystemInt64 literal and cannot spell the
+    // minimum SystemInt32, so every other SystemInt32 literal is a seed.
+    auto seed = [&](int64_t word) {
+      return immutableSlot("SystemInt32", std::to_string(word));
+    };
+    auto isSeed = [](int64_t word) {
+      return llvm::isInt<32>(word) && word != INT32_MIN;
+    };
+    auto widen = [&](int64_t word, StringRef destination) {
+      emitPush(location, seed(word));
+      emitPush(location, destination);
+      emitExtern(location, toInt64);
+    };
+    auto shiftInPlace = [&](StringRef slot, unsigned amount) {
+      emitPush(location, slot);
+      emitPush(location, seed(amount));
+      emitPush(location, slot);
+      emitExtern(location, leftShift);
+    };
+    // A sign-extended word, optionally shifted left: one or two externs.
+    unsigned trailingZeros = value.isZero() ? 0 : value.countr_zero();
+    int64_t shiftedWord = value.ashr(trailingZeros).getSExtValue();
+    if (isSeed(value.getSExtValue())) {
+      widen(value.getSExtValue(), result);
+      return;
+    }
+    if (isSeed(shiftedWord)) {
+      widen(shiftedWord, result);
+      shiftInPlace(result, trailingZeros);
+      return;
+    }
+    // Two words. Widening the low word sign-extends it, which flips every
+    // high bit when the low word is negative; the high word is complemented
+    // up front so that the exclusive OR restores it.
+    int64_t low = static_cast<int32_t>(value.extractBitsAsZExtValue(32, 0));
+    int64_t high = static_cast<int32_t>(value.extractBitsAsZExtValue(32, 32));
+    if (low < 0)
+      high = static_cast<int32_t>(~static_cast<uint32_t>(high));
+    if (isSeed(low) && isSeed(high)) {
+      addSlot(wide, "SystemInt64", "null", false);
+      widen(high, result);
+      shiftInPlace(result, 32);
+      widen(low, wide);
+      emitPush(location, result);
+      emitPush(location, wide);
+      emitPush(location, result);
+      emitExtern(location,
+                 "SystemInt64.__op_LogicalXor__SystemInt64_SystemInt64__"
+                 "SystemInt64");
+      return;
+    }
+    // A word equal to the minimum SystemInt32: assemble the non-zero bytes.
     addSlot(wide, "SystemInt64", "null", false);
-    addSlot(shifted, "SystemInt64", "null", false);
-    addSlot(combined, "SystemInt64", "null", false);
+    bool first = true;
     for (unsigned byteIndex = 0; byteIndex < 8; ++byteIndex) {
       uint64_t byteValue = value.extractBitsAsZExtValue(8, byteIndex * 8);
-      std::string seed =
-          immutableSlot("SystemInt32", std::to_string(byteValue));
-      emitPush(location, seed);
-      emitPush(location, wide);
-      emitExtern(location, "SystemConvert.__ToInt64__SystemInt32__SystemInt64");
-      StringRef component = wide;
-      if (byteIndex) {
-        std::string shift =
-            immutableSlot("SystemInt32", std::to_string(byteIndex * 8));
-        emitPush(location, component);
-        emitPush(location, shift);
-        emitPush(location, shifted);
-        emitExtern(location,
-                   "SystemInt64.__op_LeftShift__SystemInt64_SystemInt32__"
-                   "SystemInt64");
-        component = shifted;
-      }
-      if (!byteIndex) {
-        emitCopy(location, component, result);
-      } else {
+      if (!byteValue)
+        continue;
+      StringRef component = first ? result : StringRef(wide);
+      widen(static_cast<int64_t>(byteValue), component);
+      if (byteIndex)
+        shiftInPlace(component, byteIndex * 8);
+      if (!first) {
         emitPush(location, result);
         emitPush(location, component);
-        emitPush(location, combined);
+        emitPush(location, result);
         emitExtern(location,
                    "SystemInt64.__op_LogicalOr__SystemInt64_SystemInt64__"
                    "SystemInt64");
-        emitCopy(location, combined, result);
       }
+      first = false;
     }
   }
 
@@ -5020,6 +5223,30 @@ private:
                "SystemInt32");
   }
 
+  /// Returns the slot holding the raw-heap word index of `byteAddress`, plus
+  /// `wordOffset` words. A compile-time address is a literal; any other one is
+  /// shifted, and offset, into `scratch`.
+  std::string rawWordIndex(Location location, StringRef byteAddress,
+                           StringRef scratch,
+                           std::optional<uint64_t> staticAddress,
+                           unsigned wordOffset = 0) {
+    if (staticAddress)
+      return immutableSlot("SystemInt32",
+                           std::to_string(*staticAddress / 4 + wordOffset));
+    if (!wordOffset) {
+      emitRawWordIndex(location, byteAddress, scratch);
+      return scratch.str();
+    }
+    // The caller already holds the index of the first word in `scratch`.
+    emitPush(location, scratch);
+    emitPush(location,
+             immutableSlot("SystemInt32", std::to_string(wordOffset)));
+    emitPush(location, scratch);
+    emitExtern(location, "SystemInt32.__op_Addition__SystemInt32_SystemInt32__"
+                         "SystemInt32");
+    return scratch.str();
+  }
+
   void emitPackedByteLoad(Location location, StringRef byteAddress,
                           StringRef result) {
     constexpr StringLiteral wordIndex = "__vrc_raw_byte_load_word_index";
@@ -5134,8 +5361,10 @@ private:
                "SystemInt32Array.__Set__SystemInt32_SystemInt32__SystemVoid");
   }
 
-  LogicalResult emitRawLoad(Location location, StringRef pointer,
-                            StringRef result, Type type, uint64_t alignment) {
+  LogicalResult
+  emitRawLoad(Location location, StringRef pointer, StringRef result, Type type,
+              uint64_t alignment,
+              std::optional<uint64_t> staticAddress = std::nullopt) {
     if (!type.isInteger(1) && !type.isInteger(8) && !type.isInteger(16) &&
         !type.isInteger(32) && !type.isInteger(64) && !type.isF32() &&
         !isa<host::PtrType, runtime::BufferType, runtime::EventType,
@@ -5155,9 +5384,10 @@ private:
       constexpr StringLiteral word = "__vrc_raw_load_word";
       addSlot(wordIndex, "SystemInt32", "0", false);
       addSlot(word, "SystemInt32", "0", false);
-      emitRawWordIndex(location, pointer, wordIndex);
+      std::string index =
+          rawWordIndex(location, pointer, wordIndex, staticAddress);
       emitPush(location, rawHeapSlot);
-      emitPush(location, wordIndex);
+      emitPush(location, index);
       emitPush(location, type.isF32() ? word : result);
       emitExtern(location, "SystemInt32Array.__Get__SystemInt32__SystemInt32");
       if (type.isF32()) {
@@ -5167,6 +5397,63 @@ private:
                    "SystemBitConverter.__Int32BitsToSingle__SystemInt32__"
                    "SystemSingle");
       }
+      return success();
+    }
+    if (alignment >= 4 && wide) {
+      // Two word loads. Widening the low word sign-extends it, which flips
+      // every high bit when the low word is negative; the high word is
+      // complemented by the low word's sign so that the exclusive OR restores
+      // it.
+      constexpr StringLiteral wordIndex = "__vrc_raw_load_word_index";
+      constexpr StringLiteral low = "__vrc_raw_load_i64_low";
+      constexpr StringLiteral high = "__vrc_raw_load_i64_high";
+      constexpr StringLiteral lowSign = "__vrc_raw_load_i64_low_sign";
+      constexpr StringLiteral lowWide = "__vrc_i64_scratch_0";
+      for (StringRef slot : {wordIndex, low, high, lowSign})
+        addSlot(slot, "SystemInt32", "0", false);
+      addSlot(lowWide, "SystemInt64", "null", false);
+      std::string lowIndex =
+          rawWordIndex(location, pointer, wordIndex, staticAddress);
+      emitPush(location, rawHeapSlot);
+      emitPush(location, lowIndex);
+      emitPush(location, low);
+      emitExtern(location, "SystemInt32Array.__Get__SystemInt32__SystemInt32");
+      std::string highIndex =
+          rawWordIndex(location, pointer, wordIndex, staticAddress, 1);
+      emitPush(location, rawHeapSlot);
+      emitPush(location, highIndex);
+      emitPush(location, high);
+      emitExtern(location, "SystemInt32Array.__Get__SystemInt32__SystemInt32");
+      emitPush(location, low);
+      emitPush(location, immutableSlot("SystemInt32", "31"));
+      emitPush(location, lowSign);
+      emitExtern(location,
+                 "SystemInt32.__op_RightShift__SystemInt32_SystemInt32__"
+                 "SystemInt32");
+      emitPush(location, high);
+      emitPush(location, lowSign);
+      emitPush(location, high);
+      emitExtern(location,
+                 "SystemInt32.__op_LogicalXor__SystemInt32_SystemInt32__"
+                 "SystemInt32");
+      emitPush(location, high);
+      emitPush(location, result);
+      emitExtern(location, "SystemConvert.__ToInt64__SystemInt32__SystemInt64");
+      emitPush(location, result);
+      emitPush(location, immutableSlot("SystemInt32", "32"));
+      emitPush(location, result);
+      emitExtern(location,
+                 "SystemInt64.__op_LeftShift__SystemInt64_SystemInt32__"
+                 "SystemInt64");
+      emitPush(location, low);
+      emitPush(location, lowWide);
+      emitExtern(location, "SystemConvert.__ToInt64__SystemInt32__SystemInt64");
+      emitPush(location, result);
+      emitPush(location, lowWide);
+      emitPush(location, result);
+      emitExtern(location,
+                 "SystemInt64.__op_LogicalXor__SystemInt64_SystemInt64__"
+                 "SystemInt64");
       return success();
     }
     std::string prefix =
@@ -5257,8 +5544,10 @@ private:
     return success();
   }
 
-  LogicalResult emitRawStore(Location location, StringRef pointer,
-                             StringRef value, Type type, uint64_t alignment) {
+  LogicalResult
+  emitRawStore(Location location, StringRef pointer, StringRef value, Type type,
+               uint64_t alignment,
+               std::optional<uint64_t> staticAddress = std::nullopt) {
     if (!type.isInteger(1) && !type.isInteger(8) && !type.isInteger(16) &&
         !type.isInteger(32) && !type.isInteger(64) && !type.isF32() &&
         !isa<host::PtrType, runtime::BufferType, runtime::EventType,
@@ -5278,7 +5567,8 @@ private:
       constexpr StringLiteral word = "__vrc_raw_store_word";
       addSlot(wordIndex, "SystemInt32", "0", false);
       addSlot(word, "SystemInt32", "0", false);
-      emitRawWordIndex(location, pointer, wordIndex);
+      std::string index =
+          rawWordIndex(location, pointer, wordIndex, staticAddress);
       StringRef stored = value;
       if (type.isF32()) {
         emitPush(location, value);
@@ -5289,10 +5579,53 @@ private:
         stored = word;
       }
       emitPush(location, rawHeapSlot);
-      emitPush(location, wordIndex);
+      emitPush(location, index);
       emitPush(location, stored);
       emitExtern(location,
                  "SystemInt32Array.__Set__SystemInt32_SystemInt32__SystemVoid");
+      return success();
+    }
+    if (alignment >= 4 && wide) {
+      // Two word stores. SystemConvert.ToInt32 is range checked, so each word
+      // is first reduced to its sign-extended 32 bits by arithmetic shifts.
+      constexpr StringLiteral wordIndex = "__vrc_raw_store_word_index";
+      constexpr StringLiteral word = "__vrc_raw_store_word";
+      constexpr StringLiteral wordWide = "__vrc_i64_scratch_0";
+      addSlot(wordIndex, "SystemInt32", "0", false);
+      addSlot(word, "SystemInt32", "0", false);
+      addSlot(wordWide, "SystemInt64", "null", false);
+      std::string wordBits = immutableSlot("SystemInt32", "32");
+      constexpr StringLiteral leftShift =
+          "SystemInt64.__op_LeftShift__SystemInt64_SystemInt32__SystemInt64";
+      constexpr StringLiteral rightShift =
+          "SystemInt64.__op_RightShift__SystemInt64_SystemInt32__SystemInt64";
+      auto shift = [&](StringRef source, StringRef signature) {
+        emitPush(location, source);
+        emitPush(location, wordBits);
+        emitPush(location, wordWide);
+        emitExtern(location, signature);
+      };
+      auto storeWord = [&](StringRef index) {
+        emitPush(location, wordWide);
+        emitPush(location, word);
+        emitExtern(location,
+                   "SystemConvert.__ToInt32__SystemInt64__SystemInt32");
+        emitPush(location, rawHeapSlot);
+        emitPush(location, index);
+        emitPush(location, word);
+        emitExtern(
+            location,
+            "SystemInt32Array.__Set__SystemInt32_SystemInt32__SystemVoid");
+      };
+      std::string lowIndex =
+          rawWordIndex(location, pointer, wordIndex, staticAddress);
+      shift(value, leftShift);
+      shift(wordWide, rightShift);
+      storeWord(lowIndex);
+      std::string highIndex =
+          rawWordIndex(location, pointer, wordIndex, staticAddress, 1);
+      shift(value, rightShift);
+      storeWord(highIndex);
       return success();
     }
     std::string prefix =
