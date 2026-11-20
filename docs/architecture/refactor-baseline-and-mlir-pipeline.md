@@ -755,6 +755,61 @@ vrcgpu.kernel ... {
 `lib/Target/HLSL/Emitter.cpp` emits fragment HLSL and ShaderLab for each
 `vrcgpu.kernel`.
 
+#### Generated kernel channel
+
+Library kernels are hand-written OpenCL C, configured by name and fixed id in
+the bundle JSON and dispatched through intrinsics that
+`LowerOpenCLAOTIntrinsics` knows by name. A kernel the compiler synthesizes
+has none of these, so a Host MLIR module can carry it and dispatch it with
+nothing keyed on its name:
+
+```mlir
+gpu.module @carrier {
+  gpu.func @fused(%x: memref<256xf32>, %out: memref<131072xf32>, %n: i32)
+      kernel attributes {vrc.synthesized_kernel, vrc.profile = "gather-f32",
+                         known_grid_size = array<i32: 8192, 16, 1>,
+                         known_block_size = array<i32: 1, 1, 1>,
+                         vrc.words = 131072 : i32} { ... }
+}
+func.func private @__vrc_opencl_dispatch_fused(i32, i32, i32) -> i32
+    attributes {vrc.synthesized_dispatch = @carrier::@fused}
+```
+
+- **Carrier.** A top-level `gpu.module` that holds only `gpu.func` kernels
+  marked `vrc.synthesized_kernel` (the gather contract checked by
+  `ProveSynthesizedGatherKernels`), without `vrc.kernel_id`. A dispatch is a
+  call to an external declaration whose `vrc.synthesized_dispatch` names the
+  kernel and whose signature is the kernel's argument list with an i32
+  physical buffer token for every buffer, returning the i32 event token of
+  the named dispatch intrinsics.
+- **Id assignment.** `vrc-assign-synthesized-kernel-ids` gives every kernel
+  with a called declaration the next free id in module order (`first-id`,
+  skipping `reserved-ids` and ids already in the module), stamps
+  `vrc.kernel_id`, isolates it as `gpu.module @device_gpu_<id>`, and erases
+  uncalled declarations, undispatched kernels and the carriers.
+- **Dispatch attribute.** The pass checks each declaration against its kernel
+  and replaces the reference with
+  `vrc.device_dispatch = {kernel_id, buffer_count, global_size}` plus the
+  kernel's `vrc.fragment_cost` as `fragment_cost`. `LowerOpenCLAOTIntrinsics`
+  lowers any declaration with that attribute to `vrc.dispatch_desc_create`
+  and `vrc.dispatch` exactly as it lowers a named intrinsic: leading buffers
+  read, the last buffer written, scalar kinds from the declared types, and
+  `vrc.fragment_cost` on the dispatch for `ScheduleUdonDeviceWork`.
+- **Proof.** `vrc-prove-synthesized-gather-kernels` must mark the kernel
+  `vrc.gather_proven` before `LowerGatherDevice` accepts it; a failed proof
+  fails the build.
+- **Unity bundle.** `udonclc --emit-unity-library-bundle` runs id assignment
+  and the proof right after it parses `--host-mlir`, with ids starting at
+  4096 and the JSON `device_kernels` ids reserved. It moves each
+  `@device_gpu_<id>` module out of the Host into the Device module next to
+  the library kernels, so gather lowering, shader emission
+  (`kernels/kernel_<id>.shader`), the manifest `device.kernels` entry, the
+  material slot `__udoncl_kernel_material_<id>` and the Unity finalizer treat
+  it like any other kernel. Its grid width and word count take part in the
+  texture row-pitch and shape decisions, and the build fails if the texture
+  shape the Unity buffers share cannot hold its output. A Host module that
+  carries no synthesized kernel produces the same bundle as before.
+
 ### 8. Artifact and generated binding
 
 The final artifact combines:

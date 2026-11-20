@@ -345,6 +345,47 @@ def RaiseGatherDevicePass : Pass<"vrc-raise-gather-device", "mlir::ModuleOp"> {
   let summary = "Prove fixed global-buffer gather bounds, loop bounds and exclusive scalar output ownership";
   let dependentDialects = ["mlir::func::FuncDialect", "mlir::memref::MemRefDialect", "mlir::arith::ArithDialect", "mlir::math::MathDialect", "mlir::gpu::GPUDialect"];
 }
+def ProveSynthesizedGatherKernelsPass : Pass<"vrc-prove-synthesized-gather-kernels", "mlir::ModuleOp"> {
+  let summary = "Prove the buffer bounds and output ownership of compiler-synthesized gather kernels";
+  let description = [{
+    A `gpu.func` kernel marked `vrc.synthesized_kernel` was built directly as
+    MLIR, so no LLVM-level gather proof covers it. This pass checks its
+    argument, attribute and operation contract, proves by 32-bit integer range
+    analysis that every `memref.load` stays inside its input buffer, checks
+    that the single top-level `memref.store` writes the output word of the
+    current fragment and that every `scf.while` is a bounded counted loop, and
+    then marks the kernel `vrc.gather_proven`. Kernels without the marker are
+    left untouched.
+  }];
+}
+def AssignSynthesizedKernelIdsPass : Pass<"vrc-assign-synthesized-kernel-ids", "mlir::ModuleOp"> {
+  let summary = "Assign kernel ids to the synthesized kernels a Host module carries and make their dispatch declarations self-describing";
+  let description = [{
+    A Host module may carry `gpu.module`s that hold only `gpu.func` kernels
+    marked `vrc.synthesized_kernel`, and dispatch one through an external
+    declaration with `vrc.synthesized_dispatch = @gpu_module::@kernel`, whose
+    signature is the kernel's argument list with every buffer replaced by an
+    i32 token, returning i32.
+
+    Every kernel with a called declaration gets the next free id, starting at
+    `first-id` and skipping `reserved-ids` and the ids already present in the
+    module, in module order. It is stamped `vrc.kernel_id` and moved into its
+    own `gpu.module @device_gpu_<id>`. Each declaration is checked against its
+    kernel and its reference is replaced by
+    `vrc.device_dispatch = {kernel_id, buffer_count, global_size}` (plus
+    `fragment_cost` when the kernel declares `vrc.fragment_cost`), the form
+    `vrc-lower-opencl-aot-intrinsics` lowers without a name table. Uncalled
+    declarations, kernels nothing dispatches and the emptied carriers are
+    erased; a reference that names no synthesized kernel is an error.
+  }];
+  let dependentDialects = ["mlir::gpu::GPUDialect"];
+  let options = [
+    Option<"firstId", "first-id", "int64_t", /*default=*/"1",
+           "Smallest kernel id to assign">,
+    ListOption<"reservedIds", "reserved-ids", "int64_t",
+               "Kernel ids that belong to other kernels and are skipped">
+  ];
+}
 def LowerGatherDevicePass : Pass<"vrc-lower-gather-device", "mlir::ModuleOp"> {
   let summary = "Lower proven gather kernels with scalar loops to fragment-safe resources and passes";
   let dependentDialects = ["::vrc::vrcgpu::VRCGPUDialect", "mlir::arith::ArithDialect"];

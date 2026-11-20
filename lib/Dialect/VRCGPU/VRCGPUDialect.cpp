@@ -33,7 +33,7 @@ static bool gather(KernelOp kernel) {
 static bool scalar(Type t) {
   return t.isF32() || t.isInteger(32) || t.isInteger(1) || t.isIndex();
 }
-static bool legalArithmetic(Operation *op) {
+bool isGatherLegalArithmetic(Operation *op) {
   return llvm::is_contained(
              ArrayRef<StringRef>{
                  "arith.constant",   "arith.addf",         "arith.subf",
@@ -226,7 +226,7 @@ LogicalResult PassOp::verify() {
       if (isa<FragmentCoordOp, TextureLoadOp, RawUnpackOp, RawPackOp,
               UniformLoadOp, OutputOp, scf::IfOp, scf::WhileOp, scf::YieldOp,
               scf::ConditionOp, scf::ExecuteRegionOp>(op) ||
-          legalArithmetic(op)) {
+          isGatherLegalArithmetic(op)) {
         if (auto flags =
                 op->getAttrOfType<arith::FastMathFlagsAttr>("fastmath"))
           if (flags.getValue() != arith::FastMathFlags::none)

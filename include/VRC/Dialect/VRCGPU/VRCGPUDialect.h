@@ -13,3 +13,9 @@
 #include "VRC/Dialect/VRCGPU/VRCGPUTypes.h.inc"
 #define GET_OP_CLASSES
 #include "VRC/Dialect/VRCGPU/VRCGPUOps.h.inc"
+
+namespace vrc::vrcgpu {
+/// Returns true for the scalar arith/math operations that the body of a
+/// gather-profile pass may contain.
+bool isGatherLegalArithmetic(mlir::Operation *op);
+} // namespace vrc::vrcgpu

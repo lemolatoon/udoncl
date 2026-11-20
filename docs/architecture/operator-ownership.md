@@ -136,3 +136,23 @@ codes instead of a different contract: ranges are word-aligned
 (`CL_INVALID_VALUE`); a copy inside one physical buffer is
 `CL_INVALID_OPERATION`; one Host transfer is outstanding at a time, so a
 second transfer first waits for the previous one.
+
+# Synthesized Device kernels
+
+A Device kernel that the compiler synthesizes, for example by fusing a chain
+of pointwise operators into one gather kernel, is a private mechanism of the
+UdonCL Device backend. It is not a public UdonBLAS, UdonDNN, UdonATen, or
+UdonONNXOperators API, and it is not an `udondnnExt*` or `udonblasExt*`
+extension: it has no C entry point, no header, and no stable name or kernel
+id. The compiler assigns its id per build and dispatches it through the
+generated kernel channel described in
+`docs/architecture/refactor-baseline-and-mlir-pipeline.md`.
+
+Every operator keeps the public owner listed above. A synthesized kernel is
+only an execution detail of that owner's operators: it may replace a sequence
+of their library dispatches only if its output words are bit-identical to the
+unfused library kernels, including signed zeros and overflowed
+intermediates. `synthesized-gather-execution` checks this for the hand-written
+rotary kernel against the UdonDNN OpTensor dispatches it replaces. A fusion
+that cannot meet that bar must stay unfused; changing an operator's numerical
+contract remains a change to its owning library.

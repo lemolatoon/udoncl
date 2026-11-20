@@ -5,6 +5,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 
 using namespace mlir;
@@ -33,6 +34,15 @@ struct LowerOpenCLAOTIntrinsicsPass
     SmallVector<Site> sites;
     SmallVector<func::FuncOp> prototypes;
     llvm::DenseSet<Operation *> suspendFunctions;
+    // Dispatch declarations that describe their own kernel launch through
+    // `vrc.device_dispatch` instead of a name known to this pass.
+    struct DescribedDispatch {
+      int32_t kernelId;
+      unsigned bufferCount;
+      DenseI32ArrayAttr globalSize;
+      DictionaryAttr fragmentCost;
+    };
+    llvm::DenseMap<Operation *, DescribedDispatch> describedDispatches;
 
     auto signatureIs = [](func::FuncOp function, ArrayRef<Type> arguments,
                           ArrayRef<Type> results) {
@@ -41,6 +51,78 @@ struct LowerOpenCLAOTIntrinsicsPass
     };
     for (func::FuncOp function : module.getOps<func::FuncOp>()) {
       StringRef name = function.getSymName();
+      if (function->hasAttr("vrc.synthesized_dispatch")) {
+        function.emitError("vrc.synthesized_dispatch must be resolved by "
+                           "vrc-assign-synthesized-kernel-ids first");
+        signalPassFailure();
+        return;
+      }
+      if (Attribute attribute = function->getAttr("vrc.device_dispatch")) {
+        auto invalid = [&](const Twine &message) {
+          signalPassFailure();
+          return function.emitError("invalid vrc.device_dispatch: ") << message;
+        };
+        auto description = dyn_cast<DictionaryAttr>(attribute);
+        auto kernelId = description
+                            ? description.getAs<IntegerAttr>("kernel_id")
+                            : IntegerAttr();
+        auto bufferCount = description
+                               ? description.getAs<IntegerAttr>("buffer_count")
+                               : IntegerAttr();
+        auto globalSize =
+            description ? description.getAs<DenseI32ArrayAttr>("global_size")
+                        : DenseI32ArrayAttr();
+        if (!kernelId || !kernelId.getType().isInteger(32) ||
+            kernelId.getInt() <= 0 || !bufferCount ||
+            !bufferCount.getType().isInteger(32) || !globalSize) {
+          invalid("requires {kernel_id : i32 > 0, buffer_count : i32, "
+                  "global_size : array<i32>}");
+          return;
+        }
+        if (globalSize.size() != 3 ||
+            llvm::any_of(globalSize.asArrayRef(),
+                         [](int32_t extent) { return extent <= 0; })) {
+          invalid("global_size must hold three positive extents");
+          return;
+        }
+        Attribute cost = description.get("fragment_cost");
+        if (cost && !isa<DictionaryAttr>(cost)) {
+          invalid("fragment_cost must be a dictionary");
+          return;
+        }
+        if (description.size() != (cost ? 4u : 3u)) {
+          invalid("unknown entry");
+          return;
+        }
+        ArrayRef<Type> arguments = function.getArgumentTypes();
+        if (!function.isExternal() ||
+            function.getResultTypes() != ArrayRef<Type>{i32}) {
+          invalid("requires an external declaration returning i32");
+          return;
+        }
+        if (bufferCount.getInt() < 1 ||
+            bufferCount.getInt() > int64_t(arguments.size())) {
+          invalid("buffer_count must be between 1 and the number of "
+                  "arguments");
+          return;
+        }
+        for (unsigned index = 0; index < arguments.size(); ++index) {
+          bool isBuffer = index < bufferCount.getInt();
+          if (arguments[index] != i32 &&
+              (isBuffer || arguments[index] != f32)) {
+            invalid(isBuffer ? "buffer argument " : "scalar argument ")
+                << index
+                << (isBuffer ? " must be an i32 token" : " must be i32 or f32");
+            return;
+          }
+        }
+        describedDispatches[function.getOperation()] = {
+            static_cast<int32_t>(kernelId.getInt()),
+            static_cast<unsigned>(bufferCount.getInt()), globalSize,
+            dyn_cast_or_null<DictionaryAttr>(cost)};
+        prototypes.push_back(function);
+        continue;
+      }
       bool known =
           name == "__vrc_opencl_static_tensor" ||
           name == "__vrc_opencl_buffer_alloc" ||
@@ -203,10 +285,79 @@ struct LowerOpenCLAOTIntrinsicsPass
       state.addTypes(type);
       return rewriter.create(state)->getResult(0);
     };
+    // Replaces a dispatch call (buffer tokens in kernel argument order, then
+    // scalars) with its descriptor and dispatch. The last buffer is the
+    // kernel output.
+    auto lowerDispatch = [&](func::CallOp call, int32_t kernelId,
+                             unsigned bufferCount,
+                             ArrayRef<Attribute> scalarKinds,
+                             DenseI32ArrayAttr globalSize,
+                             DictionaryAttr fragmentCost) {
+      SmallVector<Value> scalars(call.getOperands().drop_front(bufferCount));
+      OperationState descriptorState(
+          call.getLoc(), runtime::DispatchDescCreateOp::getOperationName());
+      descriptorState.addOperands(scalars);
+      descriptorState.addTypes(runtime::DispatchDescType::get(context));
+      descriptorState.addAttribute("kernel_id",
+                                   rewriter.getI32IntegerAttr(kernelId));
+      descriptorState.addAttribute("scalar_kinds",
+                                   rewriter.getArrayAttr(scalarKinds));
+      Value descriptor = rewriter.create(descriptorState)->getResult(0);
+      SmallVector<Value> resources;
+      SmallVector<Attribute> argumentKinds;
+      for (unsigned index = 0; index < bufferCount; ++index) {
+        resources.push_back(
+            cast(call.getLoc(), buffer, call.getOperand(index)));
+        argumentKinds.push_back(rewriter.getStringAttr("buffer"));
+      }
+      argumentKinds.append(scalarKinds.begin(), scalarKinds.end());
+      OperationState dispatchState(call.getLoc(),
+                                   runtime::DispatchOp::getOperationName());
+      dispatchState.addOperands(descriptor);
+      dispatchState.addOperands(resources);
+      dispatchState.addAttribute(
+          "operandSegmentSizes",
+          rewriter.getDenseI32ArrayAttr(
+              {1, static_cast<int32_t>(resources.size()), 0}));
+      dispatchState.addTypes(event);
+      dispatchState.addAttribute("kernel_id",
+                                 rewriter.getI32IntegerAttr(kernelId));
+      dispatchState.addAttribute("argument_kinds",
+                                 rewriter.getArrayAttr(argumentKinds));
+      SmallVector<Attribute> resourceAccesses(bufferCount,
+                                              rewriter.getStringAttr("read"));
+      resourceAccesses.back() = rewriter.getStringAttr("write");
+      dispatchState.addAttribute("resource_accesses",
+                                 rewriter.getArrayAttr(resourceAccesses));
+      dispatchState.addAttribute("global_size", globalSize);
+      dispatchState.addAttribute("local_size",
+                                 rewriter.getDenseI32ArrayAttr({1, 1, 1}));
+      dispatchState.addAttribute("global_offset",
+                                 rewriter.getDenseI32ArrayAttr({0, 0, 0}));
+      if (fragmentCost)
+        dispatchState.addAttribute("vrc.fragment_cost", fragmentCost);
+      Value token = cast(call.getLoc(), i32,
+                         rewriter.create(dispatchState)->getResult(0));
+      rewriter.replaceOp(call, token);
+    };
     for (Site site : sites) {
       func::CallOp call = site.call;
       StringRef name = site.callee.getSymName();
       rewriter.setInsertionPoint(call);
+      if (auto described = describedDispatches.find(site.callee.getOperation());
+          described != describedDispatches.end()) {
+        // Scalar kinds are the declared types that follow the buffer tokens.
+        SmallVector<Attribute> scalarKinds;
+        for (Type type : site.callee.getArgumentTypes().drop_front(
+                 described->second.bufferCount))
+          scalarKinds.push_back(
+              rewriter.getStringAttr(type == f32 ? "f32" : "i32"));
+        lowerDispatch(call, described->second.kernelId,
+                      described->second.bufferCount, scalarKinds,
+                      described->second.globalSize,
+                      described->second.fragmentCost);
+        continue;
+      }
       if (name == "__vrc_opencl_static_tensor") {
         auto id = call.getOperand(0).getDefiningOp<arith::ConstantIntOp>();
         auto bytes = call.getOperand(1).getDefiningOp<arith::ConstantIntOp>();
@@ -408,7 +559,6 @@ struct LowerOpenCLAOTIntrinsicsPass
                            : name == "__vrc_opencl_dispatch_mnist_conv" ? 20
                            : name == "__vrc_opencl_dispatch_mnist_pool" ? 21
                                                                         : 22;
-        SmallVector<Value> scalars(call.getOperands().drop_front(bufferCount));
         SmallVector<Attribute> scalarKinds;
         if (arenaBatchedSgemm) {
           scalarKinds.append(9, rewriter.getStringAttr("i32"));
@@ -475,41 +625,6 @@ struct LowerOpenCLAOTIntrinsicsPass
         } else if (scatterNDF32) {
           scalarKinds.append(8, rewriter.getStringAttr("i32"));
         }
-        OperationState descriptorState(
-            call.getLoc(), runtime::DispatchDescCreateOp::getOperationName());
-        descriptorState.addOperands(scalars);
-        descriptorState.addTypes(runtime::DispatchDescType::get(context));
-        descriptorState.addAttribute("kernel_id",
-                                     rewriter.getI32IntegerAttr(kernelId));
-        descriptorState.addAttribute("scalar_kinds",
-                                     rewriter.getArrayAttr(scalarKinds));
-        Value descriptor = rewriter.create(descriptorState)->getResult(0);
-        SmallVector<Value> resources;
-        SmallVector<Attribute> argumentKinds;
-        for (unsigned index = 0; index < bufferCount; ++index) {
-          resources.push_back(
-              cast(call.getLoc(), buffer, call.getOperand(index)));
-          argumentKinds.push_back(rewriter.getStringAttr("buffer"));
-        }
-        argumentKinds.append(scalarKinds);
-        OperationState dispatchState(call.getLoc(),
-                                     runtime::DispatchOp::getOperationName());
-        dispatchState.addOperands(descriptor);
-        dispatchState.addOperands(resources);
-        dispatchState.addAttribute(
-            "operandSegmentSizes",
-            rewriter.getDenseI32ArrayAttr(
-                {1, static_cast<int32_t>(resources.size()), 0}));
-        dispatchState.addTypes(event);
-        dispatchState.addAttribute("kernel_id",
-                                   rewriter.getI32IntegerAttr(kernelId));
-        dispatchState.addAttribute("argument_kinds",
-                                   rewriter.getArrayAttr(argumentKinds));
-        SmallVector<Attribute> resourceAccesses(bufferCount,
-                                                rewriter.getStringAttr("read"));
-        resourceAccesses.back() = rewriter.getStringAttr("write");
-        dispatchState.addAttribute("resource_accesses",
-                                   rewriter.getArrayAttr(resourceAccesses));
         DenseI32ArrayAttr globalSize;
         if (sgemm)
           globalSize = rewriter.getDenseI32ArrayAttr({32, 32, 1});
@@ -533,14 +648,8 @@ struct LowerOpenCLAOTIntrinsicsPass
           globalSize = rewriter.getDenseI32ArrayAttr({16384, 1, 1});
         else
           globalSize = rewriter.getDenseI32ArrayAttr({10800, 1, 1});
-        dispatchState.addAttribute("global_size", globalSize);
-        dispatchState.addAttribute("local_size",
-                                   rewriter.getDenseI32ArrayAttr({1, 1, 1}));
-        dispatchState.addAttribute("global_offset",
-                                   rewriter.getDenseI32ArrayAttr({0, 0, 0}));
-        Value token = cast(call.getLoc(), i32,
-                           rewriter.create(dispatchState)->getResult(0));
-        rewriter.replaceOp(call, token);
+        lowerDispatch(call, kernelId, bufferCount, scalarKinds, globalSize,
+                      DictionaryAttr());
       }
     }
 

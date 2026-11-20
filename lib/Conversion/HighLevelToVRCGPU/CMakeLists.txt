@@ -1,4 +1,5 @@
 add_mlir_library(VRCConversionDevice DISABLE_INSTALL HighLevelToVRCGPU.cpp GatherToVRCGPU.cpp
+  ProveSynthesizedGatherKernels.cpp AssignSynthesizedKernelIds.cpp
   DEPENDS VRCBoundaryPassIncGen
-  LINK_LIBS PUBLIC VRCDialectVRCGPU MLIRGPUDialect MLIRArithDialect MLIRMemRefDialect MLIRSCFDialect MLIRMathDialect MLIRPass)
+  LINK_LIBS PUBLIC VRCDialectVRCGPU MLIRGPUDialect MLIRArithDialect MLIRMemRefDialect MLIRSCFDialect MLIRMathDialect MLIRFuncDialect MLIRPass)
 vrc_configure_target(VRCConversionDevice)

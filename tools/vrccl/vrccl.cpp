@@ -21,7 +21,9 @@
 #include "mlir/Dialect/Func/Extensions/InlinerExtension.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Parser/Parser.h"
@@ -347,6 +349,9 @@ cl::opt<std::string> staticTensorDirectory(
     cl::desc("Directory containing external ONNX static tensor payloads"));
 cl::opt<std::string> deviceLLVM("device-llvm",
                                 cl::desc("Device LLVM IR from OpenCL C"));
+cl::opt<std::string> deviceMLIR(
+    "device-mlir",
+    cl::desc("Device MLIR holding compiler-synthesized gather kernels"));
 cl::opt<bool> checkRequest(
     "check-boundary-request",
     cl::desc(
@@ -3407,6 +3412,178 @@ std::string unityLibraryBufferCopyShader(StringRef program) {
           "}\n")
       .str();
 }
+
+/// Reads the `gpu.func` named by a native Device bundle config from a module
+/// of compiler-synthesized gather kernels. A synthesized kernel carries its
+/// own launch contract, so the config must agree with it and only assigns the
+/// kernel id. A native bundle holds one kernel; the others are dropped.
+OwningOpRef<ModuleOp> importSynthesizedDeviceKernel(StringRef filename,
+                                                    const json::Object &config,
+                                                    MLIRContext &context) {
+  auto fail = [](const Twine &message) {
+    errs() << "synthesized Device kernel: " << message << "\n";
+    return OwningOpRef<ModuleOp>();
+  };
+  auto dimensions = [&](StringRef key) -> std::optional<SmallVector<int32_t>> {
+    const json::Array *array = config.getArray(key);
+    if (!array)
+      return std::nullopt;
+    SmallVector<int32_t> values;
+    for (const json::Value &value : *array) {
+      std::optional<int64_t> integer = value.getAsInteger();
+      if (!integer || *integer < INT32_MIN || *integer > INT32_MAX)
+        return std::nullopt;
+      values.push_back(static_cast<int32_t>(*integer));
+    }
+    return values;
+  };
+  std::optional<StringRef> name = config.getString("kernel");
+  std::optional<int64_t> kernelId = config.getInteger("kernel_id");
+  std::optional<int64_t> words = config.getInteger("words");
+  auto globalSize = dimensions("global_size");
+  if (config.getInteger("schema_version") != 1 ||
+      config.getString("profile") != "gather-f32" || !name || !kernelId ||
+      *kernelId <= 0 || *kernelId > INT32_MAX || !words || !globalSize ||
+      dimensions("local_size") != SmallVector<int32_t>{1, 1, 1} ||
+      dimensions("global_offset") != SmallVector<int32_t>{0, 0, 0})
+    return fail("config requires schema_version 1, profile gather-f32, a "
+                "kernel name, a positive kernel_id, words, global_size, unit "
+                "local_size and zero global_offset");
+
+  context
+      .loadDialect<arith::ArithDialect, func::FuncDialect, gpu::GPUDialect,
+                   math::MathDialect, memref::MemRefDialect, scf::SCFDialect>();
+  OwningOpRef<ModuleOp> module = parseSourceFile<ModuleOp>(filename, &context);
+  if (!module)
+    return {};
+  gpu::GPUFuncOp kernel;
+  SmallVector<Operation *> dropped;
+  for (Operation &op : *module->getBody()) {
+    auto gpuModule = dyn_cast<gpu::GPUModuleOp>(op);
+    if (!gpuModule)
+      return fail("the module may only contain gpu.module operations");
+    auto found = kernel ? gpu::GPUFuncOp()
+                        : gpuModule.lookupSymbol<gpu::GPUFuncOp>(*name);
+    if (!found) {
+      dropped.push_back(&op);
+      continue;
+    }
+    kernel = found;
+    for (Operation &member : *gpuModule.getBody())
+      if (&member != kernel.getOperation())
+        dropped.push_back(&member);
+  }
+  if (!kernel || !kernel->hasAttr("vrc.synthesized_kernel"))
+    return fail("no gpu.func @" + *name + " marked vrc.synthesized_kernel");
+  for (Operation *op : dropped)
+    op->erase();
+
+  // The kernel is the source of truth for its launch contract.
+  Builder builder(&context);
+  auto grid = kernel->getAttrOfType<DenseI32ArrayAttr>("known_grid_size");
+  auto kernelWords = kernel->getAttrOfType<IntegerAttr>("vrc.words");
+  if (!grid || grid.asArrayRef() != ArrayRef<int32_t>(*globalSize))
+    return fail("config global_size does not match known_grid_size");
+  if (!kernelWords || kernelWords.getInt() != *words)
+    return fail("config words does not match vrc.words");
+  if (const json::Array *inputWords = config.getArray("input_words")) {
+    SmallVector<int64_t> declared;
+    for (mlir::Type type : kernel.getFunctionType().getInputs())
+      if (auto buffer = dyn_cast<MemRefType>(type))
+        declared.push_back(buffer.hasStaticShape() ? buffer.getNumElements()
+                                                   : int64_t{-1});
+    // The last buffer is the output.
+    if (!declared.empty())
+      declared.pop_back();
+    bool matches = inputWords->size() == declared.size();
+    for (size_t index = 0; matches && index < declared.size(); ++index)
+      matches = (*inputWords)[index].getAsInteger() == declared[index];
+    if (!matches)
+      return fail("config input_words does not match the input buffer sizes");
+  }
+  if (const json::Array *argumentBounds = config.getArray("argument_bounds")) {
+    SmallVector<mlir::Attribute> entries;
+    for (const json::Value &value : *argumentBounds) {
+      const json::Object *entry = value.getAsObject();
+      auto index = entry ? entry->getInteger("index") : std::nullopt;
+      auto minimum = entry ? entry->getInteger("min") : std::nullopt;
+      auto maximum = entry ? entry->getInteger("max") : std::nullopt;
+      if (!index || !minimum || !maximum)
+        return fail("invalid config argument_bounds entry");
+      entries.push_back(builder.getDictionaryAttr({
+          builder.getNamedAttr("index", builder.getI32IntegerAttr(*index)),
+          builder.getNamedAttr("min", builder.getI32IntegerAttr(*minimum)),
+          builder.getNamedAttr("max", builder.getI32IntegerAttr(*maximum)),
+      }));
+    }
+    if (kernel->getAttr("vrc.argument_bounds") != builder.getArrayAttr(entries))
+      return fail("config argument_bounds does not match "
+                  "vrc.argument_bounds");
+  }
+  IntegerAttr id = builder.getI32IntegerAttr(static_cast<int32_t>(*kernelId));
+  if (mlir::Attribute assigned = kernel->getAttr("vrc.kernel_id");
+      assigned && assigned != id)
+    return fail("config kernel_id does not match vrc.kernel_id");
+  kernel->setAttr("vrc.kernel_id", id);
+  // A proof marker read from a file is a claim, not a proof.
+  kernel->removeAttr("vrc.gather_proven");
+  return module;
+}
+
+/// Kernel ids below this are left to hand-written library kernels, whose ids
+/// are fixed by their dispatch intrinsics and the library configs.
+constexpr int64_t firstSynthesizedKernelId = 4096;
+
+/// A synthesized kernel taken out of a Unity Host module, alone in its
+/// `gpu.module @device_gpu_<id>`.
+struct SynthesizedUnityKernel {
+  gpu::GPUModuleOp module;
+  std::string name;
+  int32_t id;
+  int64_t width;
+  int64_t words;
+};
+
+/// Resolves the generated kernel channel of a Unity Host module: assigns ids
+/// that avoid the configured library kernels, proves the kernels, and moves
+/// them out of `host` into the returned module, which is null when the Host
+/// carries none. The Host keeps only self-describing dispatch declarations.
+FailureOr<OwningOpRef<ModuleOp>> extractSynthesizedUnityKernels(
+    ModuleOp host, ArrayRef<const json::Object *> deviceConfigs,
+    SmallVectorImpl<SynthesizedUnityKernel> &kernels) {
+  ::vrc::AssignSynthesizedKernelIdsPassOptions ids;
+  ids.firstId = firstSynthesizedKernelId;
+  for (const json::Object *config : deviceConfigs)
+    ids.reservedIds.push_back(*config->getInteger("kernel_id"));
+  PassManager resolution(host.getContext());
+  // The caller verifies the Host once kernels have left it; a Host without
+  // any is not changed.
+  resolution.enableVerifier(false);
+  resolution.addPass(::vrc::createAssignSynthesizedKernelIdsPass(ids));
+  // No LLVM-level gather proof covers a synthesized kernel.
+  resolution.addPass(::vrc::createProveSynthesizedGatherKernelsPass());
+  if (failed(resolution.run(host)))
+    return failure();
+  OwningOpRef<ModuleOp> device;
+  for (gpu::GPUModuleOp gpuModule :
+       llvm::make_early_inc_range(host.getOps<gpu::GPUModuleOp>())) {
+    auto functions = gpuModule.getOps<gpu::GPUFuncOp>();
+    if (!llvm::hasSingleElement(functions) ||
+        !(*functions.begin())->hasAttr("vrc.synthesized_kernel"))
+      continue;
+    gpu::GPUFuncOp kernel = *functions.begin();
+    if (!device)
+      device = ModuleOp::create(host.getLoc());
+    gpuModule->moveBefore(device->getBody(), device->getBody()->end());
+    kernels.push_back(
+        {gpuModule, kernel.getName().str(),
+         static_cast<int32_t>(
+             kernel->getAttrOfType<IntegerAttr>("vrc.kernel_id").getInt()),
+         kernel->getAttrOfType<DenseI32ArrayAttr>("known_grid_size")[0],
+         kernel->getAttrOfType<IntegerAttr>("vrc.words").getInt()});
+  }
+  return device;
+}
 } // namespace
 int main(int argc, char **argv) {
   InitLLVM init(argc, argv);
@@ -3423,6 +3600,11 @@ int main(int argc, char **argv) {
           int(planHostBufferCapacity) !=
       1) {
     errs() << "select exactly one boundary mode\n";
+    return 1;
+  }
+  if (!deviceMLIR.empty() && (!emitNativeDevice || !deviceLLVM.empty())) {
+    errs() << "--device-mlir replaces --device-llvm and requires "
+              "--emit-native-device-bundle\n";
     return 1;
   }
   if (runtimeValidation && noRuntimeValidation) {
@@ -3483,11 +3665,11 @@ int main(int argc, char **argv) {
   }
   DialectRegistry registry;
   func::registerInlinerExtension(registry);
-  registry
-      .insert<::vrc::udonasm::UdonAsmDialect, ::vrc::udonhl::UdonHLDialect,
-              ::vrc::vrc::VRCDialect, ::vrc::vrcgpu::VRCGPUDialect,
-              arith::ArithDialect, async::AsyncDialect, cf::ControlFlowDialect,
-              func::FuncDialect, gpu::GPUDialect, memref::MemRefDialect>();
+  registry.insert<::vrc::udonasm::UdonAsmDialect, ::vrc::udonhl::UdonHLDialect,
+                  ::vrc::vrc::VRCDialect, ::vrc::vrcgpu::VRCGPUDialect,
+                  arith::ArithDialect, async::AsyncDialect,
+                  cf::ControlFlowDialect, func::FuncDialect, gpu::GPUDialect,
+                  math::MathDialect, memref::MemRefDialect, scf::SCFDialect>();
   MLIRContext context(registry);
   OwningOpRef<ModuleOp> module;
   std::map<std::string, std::string> files;
@@ -3497,6 +3679,7 @@ int main(int argc, char **argv) {
   std::optional<json::Object> unityConfig;
   OwningOpRef<ModuleOp> unityDeviceModule;
   SmallVector<const json::Object *> unityDeviceConfigs;
+  SmallVector<SynthesizedUnityKernel> unitySynthesizedKernels;
   SmallVector<UnityBuffer> unityBuffers;
   bool unityUsesBufferCopy = false;
   SmallVector<int32_t> unityConfiguredKernelIds;
@@ -3538,47 +3721,6 @@ int main(int argc, char **argv) {
     unityBuffers = std::move(*parsedBuffers);
     if (!deviceLLVM.empty()) {
       unityDeviceModule = ModuleOp::create(UnknownLoc::get(&context));
-      int64_t maximumKernelWords = 0;
-      std::optional<int64_t> commonKernelWidth;
-      bool commonKernelWidthValid = true;
-      for (const json::Object *deviceConfig : unityDeviceConfigs) {
-        if (auto words = deviceConfig->getInteger("words"))
-          maximumKernelWords = std::max(maximumKernelWords, *words);
-        auto *global = deviceConfig->getArray("global_size");
-        auto width = global && global->size() == 3 ? (*global)[0].getAsInteger()
-                                                   : std::optional<int64_t>();
-        if (!width)
-          commonKernelWidthValid = false;
-        else if (!commonKernelWidth)
-          commonKernelWidth = *width;
-        else if (*commonKernelWidth != *width)
-          commonKernelWidthValid = false;
-      }
-      if (!unityBuffers.empty() && commonKernelWidthValid &&
-          commonKernelWidth &&
-          llvm::all_of(unityBuffers, [&](const UnityBuffer &buffer) {
-            return buffer.width == unityBuffers.front().width &&
-                   buffer.width == *commonKernelWidth;
-          }))
-        (*unityDeviceModule)
-            ->setAttr("vrc.texture_row_pitch",
-                      mlir::IntegerAttr::get(
-                          mlir::IntegerType::get(&context, 32),
-                          static_cast<int32_t>(unityBuffers.front().width)));
-      if (!unityBuffers.empty() &&
-          llvm::all_of(unityBuffers,
-                       [&](const UnityBuffer &buffer) {
-                         return buffer.width == unityBuffers.front().width &&
-                                buffer.height == unityBuffers.front().height;
-                       }) &&
-          unityBuffers.front().width * unityBuffers.front().height >=
-              maximumKernelWords)
-        (*unityDeviceModule)
-            ->setAttr("vrc.texture_shape",
-                      DenseI32ArrayAttr::get(
-                          &context,
-                          {static_cast<int32_t>(unityBuffers.front().width),
-                           static_cast<int32_t>(unityBuffers.front().height)}));
       unityGatherProfile = true;
       for (const json::Object *deviceConfig : unityDeviceConfigs) {
         bool gather = deviceConfig->getString("profile") == "gather-f32";
@@ -3627,13 +3769,106 @@ int main(int argc, char **argv) {
         gpuModule->moveBefore(unityDeviceModule->getBody(),
                               unityDeviceModule->getBody()->end());
       }
-      if (failed(verify(*unityDeviceModule)))
-        return 1;
     }
+    // The Host MLIR may carry synthesized Device kernels; they leave it here
+    // and join the configured library kernels.
+    OwningOpRef<ModuleOp> synthesizedDeviceModule;
     if (!hostMLIR.empty()) {
       module = parseSourceFile<ModuleOp>(hostMLIR, &context);
       if (!module || failed(verify(*module)))
         return 1;
+      auto extracted = extractSynthesizedUnityKernels(
+          *module, unityDeviceConfigs, unitySynthesizedKernels);
+      if (failed(extracted))
+        return 1;
+      synthesizedDeviceModule = std::move(*extracted);
+      if (synthesizedDeviceModule && failed(verify(*module)))
+        return 1;
+    }
+    if (synthesizedDeviceModule) {
+      if (!unityDeviceModule) {
+        unityDeviceModule = ModuleOp::create(UnknownLoc::get(&context));
+        unityGatherProfile = true;
+      } else if (!unityGatherProfile) {
+        errs() << "synthesized kernels require library kernels of the "
+                  "gather-f32 profile\n";
+        return 1;
+      }
+    }
+    if (unityDeviceModule) {
+      int64_t maximumKernelWords = 0;
+      std::optional<int64_t> commonKernelWidth;
+      bool commonKernelWidthValid = true;
+      for (const json::Object *deviceConfig : unityDeviceConfigs) {
+        if (auto words = deviceConfig->getInteger("words"))
+          maximumKernelWords = std::max(maximumKernelWords, *words);
+        auto *global = deviceConfig->getArray("global_size");
+        auto width = global && global->size() == 3 ? (*global)[0].getAsInteger()
+                                                   : std::optional<int64_t>();
+        if (!width)
+          commonKernelWidthValid = false;
+        else if (!commonKernelWidth)
+          commonKernelWidth = *width;
+        else if (*commonKernelWidth != *width)
+          commonKernelWidthValid = false;
+      }
+      // A synthesized kernel states its own launch shape. It takes part in
+      // the same shape decisions, and the texture shape the buffers share
+      // must hold its output.
+      bool sharedBufferShape =
+          !unityBuffers.empty() &&
+          llvm::all_of(unityBuffers, [&](const UnityBuffer &buffer) {
+            return buffer.width == unityBuffers.front().width &&
+                   buffer.height == unityBuffers.front().height;
+          });
+      for (const SynthesizedUnityKernel &kernel : unitySynthesizedKernels) {
+        maximumKernelWords = std::max(maximumKernelWords, kernel.words);
+        if (!commonKernelWidth)
+          commonKernelWidth = kernel.width;
+        else if (*commonKernelWidth != kernel.width)
+          commonKernelWidthValid = false;
+        if (sharedBufferShape &&
+            unityBuffers.front().width * unityBuffers.front().height <
+                kernel.words) {
+          errs() << "synthesized kernel @" << kernel.name << " writes "
+                 << kernel.words << " words but the Unity buffers are "
+                 << unityBuffers.front().width << "x"
+                 << unityBuffers.front().height << " textures\n";
+          return 1;
+        }
+      }
+      if (!unityBuffers.empty() && commonKernelWidthValid &&
+          commonKernelWidth &&
+          llvm::all_of(unityBuffers, [&](const UnityBuffer &buffer) {
+            return buffer.width == unityBuffers.front().width &&
+                   buffer.width == *commonKernelWidth;
+          }))
+        (*unityDeviceModule)
+            ->setAttr("vrc.texture_row_pitch",
+                      mlir::IntegerAttr::get(
+                          mlir::IntegerType::get(&context, 32),
+                          static_cast<int32_t>(unityBuffers.front().width)));
+      if (!unityBuffers.empty() &&
+          llvm::all_of(unityBuffers,
+                       [&](const UnityBuffer &buffer) {
+                         return buffer.width == unityBuffers.front().width &&
+                                buffer.height == unityBuffers.front().height;
+                       }) &&
+          unityBuffers.front().width * unityBuffers.front().height >=
+              maximumKernelWords)
+        (*unityDeviceModule)
+            ->setAttr("vrc.texture_shape",
+                      DenseI32ArrayAttr::get(
+                          &context,
+                          {static_cast<int32_t>(unityBuffers.front().width),
+                           static_cast<int32_t>(unityBuffers.front().height)}));
+      for (const SynthesizedUnityKernel &kernel : unitySynthesizedKernels)
+        kernel.module->moveBefore(unityDeviceModule->getBody(),
+                                  unityDeviceModule->getBody()->end());
+      if (failed(verify(*unityDeviceModule)))
+        return 1;
+    }
+    if (!hostMLIR.empty()) {
       if (unityConfig->getBoolean("require_device_graph").value_or(false)) {
         auto deviceGraph =
             (*module)->getAttrOfType<BoolAttr>("udoncl.onnx_device_graph");
@@ -3817,6 +4052,38 @@ int main(int argc, char **argv) {
       module->print(recovered);
       recovered << "\n";
     }
+  } else if (emitNativeDevice && !deviceMLIR.empty()) {
+    auto input = MemoryBuffer::getFile(inputFilename);
+    if (!input) {
+      errs() << "native Device bundle mode requires a JSON config\n";
+      return 1;
+    }
+    auto config = json::parse((*input)->getBuffer());
+    if (!config) {
+      errs() << toString(config.takeError()) << "\n";
+      return 1;
+    }
+    if (!config->getAsObject()) {
+      errs() << "config must be a JSON object\n";
+      return 1;
+    }
+    gatherProfile = true;
+    module = importSynthesizedDeviceKernel(deviceMLIR, *config->getAsObject(),
+                                           context);
+    if (!module || failed(verify(*module)))
+      return 1;
+    raw_string_ostream imported(files["frontend.imported.mlir"]);
+    module->print(imported);
+    imported << "\n";
+    // No LLVM-level gather proof covers a synthesized kernel; the lowering
+    // below only accepts it once its buffer accesses are proven here.
+    PassManager proof(&context);
+    proof.addPass(::vrc::createProveSynthesizedGatherKernelsPass());
+    if (failed(proof.run(*module)))
+      return 1;
+    raw_string_ostream recovered(files["frontend.recovered.mlir"]);
+    module->print(recovered);
+    recovered << "\n";
   } else if (emitLLVMBundle || emitNativeDevice) {
     auto input = MemoryBuffer::getFile(inputFilename);
     if (!input || (!emitNativeDevice && hostLLVM.empty()) ||
@@ -3890,6 +4157,10 @@ int main(int argc, char **argv) {
       int64_t kernelId = *deviceKernel->getInteger("kernel_id");
       configuredKernelIds.push_back(kernelId);
       unityConfiguredKernelIds.push_back(static_cast<int32_t>(kernelId));
+    }
+    for (const SynthesizedUnityKernel &kernel : unitySynthesizedKernels) {
+      configuredKernelIds.push_back(kernel.id);
+      unityConfiguredKernelIds.push_back(kernel.id);
     }
     DeviceWorkFrameBudget frameBudget;
     phase("host-object-intrinsics");

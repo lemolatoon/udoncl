@@ -710,6 +710,12 @@ add_test(NAME udononnx-matmul-nbits-q4-lowering
     $<TARGET_FILE:vrccl> "${VRC_TEST_CLANG}"
     "${PROJECT_BINARY_DIR}/tests/udononnx-matmul-nbits-q4"
 )
+add_test(NAME unity-synthesized-kernel-bundle
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/boundary/unity_synthesized_dispatch.py"
+    $<TARGET_FILE:vrccl> "${VRC_TEST_CLANG}"
+    "${PROJECT_BINARY_DIR}/tests/unity-synthesized-kernel"
+)
 add_test(NAME large-gather-device-lowering
   COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/boundary/large_gather.py"
     $<TARGET_FILE:vrccl> "${VRC_TEST_CLANG}"
@@ -957,4 +963,17 @@ if(VRC_ENABLE_NATIVE_FRAGMENT_TESTS)
     COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/boundary/udondnn_device.py"
       "${PROJECT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/tests/udondnn-device")
   set_tests_properties(udondnn-device-execution PROPERTIES TIMEOUT 600)
+  add_executable(synthesized-gather-kernel boundary/synthesized_gather.cpp)
+  target_compile_features(synthesized-gather-kernel PRIVATE cxx_std_20)
+  set_target_properties(synthesized-gather-kernel PROPERTIES
+    CXX_EXTENSIONS OFF)
+  target_link_libraries(synthesized-gather-kernel PRIVATE
+    VRCNativeOpenCLRuntime)
+  add_test(NAME synthesized-gather-execution
+    COMMAND Python3::Interpreter
+      "${CMAKE_CURRENT_SOURCE_DIR}/boundary/synthesized_gather.py"
+      $<TARGET_FILE:vrccl> "${VRC_TEST_CLANG}"
+      $<TARGET_FILE:synthesized-gather-kernel>
+      "${PROJECT_BINARY_DIR}/tests/synthesized-gather")
+  set_tests_properties(synthesized-gather-execution PROPERTIES TIMEOUT 600)
 endif()
