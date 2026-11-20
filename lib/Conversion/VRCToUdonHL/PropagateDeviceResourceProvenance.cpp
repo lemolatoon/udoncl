@@ -883,7 +883,7 @@ bool isAllocation(StringRef name) {
 bool isKnownOpenCLConsumer(StringRef name) {
   return name == "clReleaseMemObject" || name == "clEnqueueWriteBuffer" ||
          name == "clEnqueueReadBuffer" || name == "clEnqueueCopyBuffer" ||
-         name == "clSetKernelArg";
+         name == "clEnqueueFillBuffer" || name == "clSetKernelArg";
 }
 
 bool isConstantI32(Value value, int32_t expected) {

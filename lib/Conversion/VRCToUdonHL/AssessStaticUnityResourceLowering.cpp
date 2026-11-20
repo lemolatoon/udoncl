@@ -46,7 +46,8 @@ bool assignedOrStatic(Value value) {
 bool transferCall(func::CallOp call) {
   return call.getCallee() == "clEnqueueWriteBuffer" ||
          call.getCallee() == "clEnqueueReadBuffer" ||
-         call.getCallee() == "clEnqueueCopyBuffer";
+         call.getCallee() == "clEnqueueCopyBuffer" ||
+         call.getCallee() == "clEnqueueFillBuffer";
 }
 
 struct AssessStaticUnityResourceLoweringPass
@@ -183,6 +184,12 @@ struct AssessStaticUnityResourceLoweringPass
     int32_t copyCount = 0;
     int32_t unresolvedTypedTransferOperands = 0;
     module.walk([&](::vrc::vrc::BufferUploadOp operation) {
+      ++uploadCount;
+      unresolvedTypedTransferOperands +=
+          !assignedOrStatic(operation.getDestination());
+    });
+    // A fill writes Host-provided bytes like an upload.
+    module.walk([&](::vrc::vrc::BufferFillOp operation) {
       ++uploadCount;
       unresolvedTypedTransferOperands +=
           !assignedOrStatic(operation.getDestination());

@@ -26,6 +26,8 @@ cl_int __vrc_enqueue_udonaten_argmax_finalize_device_args(
 #define TINYLLAMA_ATTENTION_MASK 1u
 #define TINYLLAMA_POSITION_IDS 2u
 #define TINYLLAMA_LOGITS 0u
+#define TINYLLAMA_ATTENTION_MASK_BYTES                                         \
+  (TINYLLAMA_CONTEXT_CAPACITY * sizeof(int64_t))
 
 static cl_context context;
 static cl_command_queue queue;
@@ -34,7 +36,7 @@ static int32_t prompt[TINYLLAMA_CONTEXT_CAPACITY];
 static int32_t generated[TINYLLAMA_GENERATED_CAPACITY];
 static int64_t staged_tokens[TINYLLAMA_CONTEXT_CAPACITY];
 static int64_t staged_positions[TINYLLAMA_CONTEXT_CAPACITY];
-static const int64_t zero_attention_mask[TINYLLAMA_CONTEXT_CAPACITY];
+static const uint32_t zero_word;
 static const int64_t one = 1;
 static uint32_t prompt_count, generated_count;
 static int initialized, disposed, busy, completed, failed;
@@ -99,7 +101,7 @@ static udononnxStatus_t resolve_buffers(void) {
       resolve_input(TINYLLAMA_INPUT_IDS, sizeof(int64_t), &memory, &offset);
   if (status == UDONONNX_STATUS_SUCCESS)
     status = resolve_input(TINYLLAMA_ATTENTION_MASK,
-                           sizeof(zero_attention_mask), &memory, &offset);
+                           TINYLLAMA_ATTENTION_MASK_BYTES, &memory, &offset);
   if (status == UDONONNX_STATUS_SUCCESS)
     status = resolve_input(TINYLLAMA_POSITION_IDS, sizeof(int64_t), &memory,
                            &offset);
@@ -114,12 +116,12 @@ static udononnxStatus_t enqueue_clear_sequence_state(void) {
   udononnxStatus_t status = udon_onnx_binding_enqueue_reset_sequence_state();
   if (status == UDONONNX_STATUS_SUCCESS)
     status = resolve_input(TINYLLAMA_ATTENTION_MASK,
-                           sizeof(zero_attention_mask), &mask, &mask_offset);
+                           TINYLLAMA_ATTENTION_MASK_BYTES, &mask, &mask_offset);
   if (status != UDONONNX_STATUS_SUCCESS)
     return status;
-  if (clEnqueueWriteBuffer(queue, mask, CL_FALSE, mask_offset,
-                           sizeof(zero_attention_mask), zero_attention_mask, 0,
-                           0, 0) != CL_SUCCESS)
+  if (clEnqueueFillBuffer(queue, mask, &zero_word, sizeof(zero_word),
+                          mask_offset, TINYLLAMA_ATTENTION_MASK_BYTES, 0, 0,
+                          0) != CL_SUCCESS)
     return UDONONNX_STATUS_OPENCL_ERROR;
   return UDONONNX_STATUS_SUCCESS;
 }
@@ -300,7 +302,7 @@ static udononnxStatus_t enqueue_step(int32_t token, uint32_t position) {
       resolve_input(TINYLLAMA_INPUT_IDS, sizeof(int64_t), &ids, &ids_offset);
   if (status == UDONONNX_STATUS_SUCCESS)
     status =
-        resolve_input(TINYLLAMA_ATTENTION_MASK, sizeof(zero_attention_mask),
+        resolve_input(TINYLLAMA_ATTENTION_MASK, TINYLLAMA_ATTENTION_MASK_BYTES,
                       &attention, &attention_offset);
   if (status == UDONONNX_STATUS_SUCCESS)
     status = resolve_input(TINYLLAMA_POSITION_IDS, sizeof(int64_t), &positions,

@@ -179,6 +179,40 @@ int run_opencl_runtime_tests(void) {
                          &copied_event, NULL));
   EXPECT(!memcmp(bytes, copied, 4));
   OK(clReleaseEvent(copied_event));
+  {
+    static const unsigned char expected_fill[4] = {1, 0x77, 0xA5, 0x5A};
+    unsigned char pattern[2] = {0xA5, 0x5A}, word[4] = {1, 2, 3, 4};
+    unsigned char marker = 0x77, filled_bytes[4];
+    cl_event filled_event;
+    cl_mem filled = clCreateBuffer(context, CL_MEM_READ_WRITE, 4, NULL, &error);
+    EXPECT(filled && !error);
+    EXPECT(clEnqueueFillBuffer(queue, filled, NULL, 2, 0, 2, 0, NULL, NULL) ==
+           CL_INVALID_VALUE);
+    EXPECT(clEnqueueFillBuffer(queue, filled, pattern, 3, 0, 6, 0, NULL,
+                               NULL) == CL_INVALID_VALUE);
+    EXPECT(clEnqueueFillBuffer(queue, filled, pattern, 256, 0, 256, 0, NULL,
+                               NULL) == CL_INVALID_VALUE);
+    EXPECT(clEnqueueFillBuffer(queue, filled, pattern, 2, 1, 2, 0, NULL,
+                               NULL) == CL_INVALID_VALUE);
+    EXPECT(clEnqueueFillBuffer(queue, filled, pattern, 2, 0, 3, 0, NULL,
+                               NULL) == CL_INVALID_VALUE);
+    EXPECT(clEnqueueFillBuffer(queue, filled, pattern, 2, 2, 4, 0, NULL,
+                               NULL) == CL_INVALID_VALUE);
+    EXPECT(clEnqueueFillBuffer(queue, foreign, pattern, 2, 0, 2, 0, NULL,
+                               NULL) == CL_INVALID_CONTEXT);
+    EXPECT(clEnqueueFillBuffer(queue, filled, pattern, 2, 0, 2, 1, NULL,
+                               NULL) == CL_INVALID_EVENT_WAIT_LIST);
+    OK(clEnqueueFillBuffer(queue, filled, word, 4, 0, 4, 0, NULL, NULL));
+    /* Bytes outside [offset, offset + size) keep their earlier contents. */
+    OK(clEnqueueFillBuffer(queue, filled, pattern, 2, 2, 2, 0, NULL, NULL));
+    OK(clEnqueueFillBuffer(queue, filled, &marker, 1, 1, 1, 0, NULL,
+                           &filled_event));
+    OK(clEnqueueReadBuffer(queue, filled, CL_TRUE, 0, 4, filled_bytes, 1,
+                           &filled_event, NULL));
+    EXPECT(!memcmp(filled_bytes, expected_fill, 4));
+    OK(clReleaseEvent(filled_event));
+    OK(clReleaseMemObject(filled));
+  }
   OK(clEnqueueWriteBuffer(other_queue, foreign, CL_TRUE, 0, 4, bytes, 0, NULL,
                           &foreign_event));
   EXPECT(clEnqueueNDRangeKernel(queue, kernel, 1, NULL, &one, &one, 1,

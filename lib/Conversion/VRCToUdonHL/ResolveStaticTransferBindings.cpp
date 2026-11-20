@@ -55,6 +55,8 @@ std::optional<TransferContract> contractFor(func::CallOp call) {
     return TransferContract{"read", {{1, "read"}}, 9};
   if (name == "clEnqueueCopyBuffer")
     return TransferContract{"copy", {{1, "read"}, {2, "write"}}, 9};
+  if (name == "clEnqueueFillBuffer")
+    return TransferContract{"fill", {{1, "write"}}, 9};
   return std::nullopt;
 }
 

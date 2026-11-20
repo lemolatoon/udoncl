@@ -986,6 +986,8 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
   SmallVector<::vrc::vrc::BufferAllocOp> allocations;
   SmallVector<::vrc::vrc::AssignedBufferOp> assignedBuffers;
   SmallVector<::vrc::vrc::BufferCopyOp> copies;
+  SmallVector<::vrc::vrc::BufferFillOp> fills;
+  SmallVector<::vrc::vrc::BufferUploadOp> uploads;
   SmallVector<::vrc::vrc::DispatchOp> dispatches;
   module.walk([&](::vrc::vrc::BufferAllocOp operation) {
     allocations.push_back(operation);
@@ -995,6 +997,11 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
   });
   module.walk(
       [&](::vrc::vrc::BufferCopyOp operation) { copies.push_back(operation); });
+  module.walk(
+      [&](::vrc::vrc::BufferFillOp operation) { fills.push_back(operation); });
+  module.walk([&](::vrc::vrc::BufferUploadOp operation) {
+    uploads.push_back(operation);
+  });
   module.walk([&](::vrc::vrc::DispatchOp operation) {
     dispatches.push_back(operation);
   });
@@ -1143,8 +1150,30 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
                                      destinationBuffer->heapSlot)))
       return failure();
   }
+  // Fills and small uploads write their words through the same transfer
+  // material as copies; a fill of a statically bound buffer also loads its
+  // destination from the buffer's heap slot.
+  constexpr StringLiteral transferMaterial = "__udoncl_buffer_copy_material";
+  for (auto fill : fills) {
+    fill->setAttr("vrc.unity_copy_material_slot",
+                  builder.getStringAttr(transferMaterial));
+    if (const UnityBuffer *destination =
+            resolveBoundBuffer(fill.getDestination()))
+      if (failed(validateOrSetCopySlot(fill,
+                                       "vrc.unity_fill_destination_heap_slot",
+                                       destination->heapSlot)))
+        return failure();
+  }
+  // A small upload is patched in place only when the program has a Unity
+  // buffer pool to select its destination from; otherwise it stays a binding
+  // command.
+  bool patchesUploads = !uploads.empty() && !buffers.empty();
+  if (patchesUploads)
+    for (auto upload : uploads)
+      upload->setAttr("vrc.unity_copy_material_slot",
+                      builder.getStringAttr(transferMaterial));
   UnityBufferBinding result;
-  result.usesCopy = !copies.empty();
+  result.usesCopy = !copies.empty() || !fills.empty() || patchesUploads;
   auto staticTensorMatches = [&](int64_t id, int64_t bytes) {
     if (!staticTensors)
       return false;
@@ -3256,21 +3285,76 @@ std::string unityLibraryDisplayShader(StringRef program) {
       .str();
 }
 
+/// The program's transfer shader. Mode 0 (the material default) copies the
+/// whole source surface and serves whole-buffer copies and binding uploads.
+/// Modes 1 and 2 write only the destination words [First, First + Count) of a
+/// surface Width texels wide and discard every other fragment, so the rest of
+/// the destination keeps its contents: mode 1 copies source word
+/// (word + Delta), mode 2 writes pattern word ((word - First) mod Period).
+/// Bytes are carried through RGBA8 texels exactly, as in every kernel.
 std::string unityLibraryBufferCopyShader(StringRef program) {
+  std::string words, properties;
+  raw_string_ostream wordList(words), propertyList(properties);
+  for (int index = 0; index < 32; ++index) {
+    propertyList << "    _VRC_TransferWord" << index << " (\"Word " << index
+                 << "\", Integer) = 0\n";
+    wordList << (index ? ", " : "") << "asuint(_VRC_TransferWord" << index
+             << ")";
+  }
+  std::string declarations;
+  raw_string_ostream declarationList(declarations);
+  for (StringRef name : {"Mode", "Width", "First", "Count", "Period", "Delta"})
+    declarationList << "    int _VRC_Transfer" << name << ";\n";
+  for (int index = 0; index < 32; ++index)
+    declarationList << "    int _VRC_TransferWord" << index << ";\n";
   return (Twine("Shader \"Hidden/UdonCL/") + program +
           "/BufferCopy\" {\n"
-          "  Properties { _MainTex (\"Source\", 2D) = \"black\" {} }\n"
-          "  SubShader { Pass { ZTest Always Cull Off ZWrite Off\n"
+          "  Properties {\n"
+          "    _MainTex (\"Source\", 2D) = \"black\" {}\n"
+          "    _VRC_TransferMode (\"Mode\", Integer) = 0\n"
+          "    _VRC_TransferWidth (\"Destination width\", Integer) = 1\n"
+          "    _VRC_TransferFirst (\"First word\", Integer) = 0\n"
+          "    _VRC_TransferCount (\"Word count\", Integer) = 0\n"
+          "    _VRC_TransferPeriod (\"Pattern words\", Integer) = 1\n"
+          "    _VRC_TransferDelta (\"Source word delta\", Integer) = 0\n" +
+          properties +
+          "  }\n"
+          "  SubShader { Pass { ZTest Always Cull Off ZWrite Off Blend Off\n"
           "    HLSLPROGRAM\n"
+          "    #pragma target 5.0\n"
           "    #pragma vertex vert_img\n"
           "    #pragma fragment frag\n"
           "    #include \"UnityCG.cginc\"\n"
-          "    Texture2D<float4> _MainTex;\n"
+          "    Texture2D<float4> _MainTex;\n" +
+          declarations +
           "    float4 frag(v2f_img input) : SV_Target {\n"
-          "      uint width, height; _MainTex.GetDimensions(width, height);\n"
-          "      uint2 p = min(uint2(input.pos.xy), "
+          "      uint width, height;\n"
+          "      if (_VRC_TransferMode == 0) {\n"
+          "        _MainTex.GetDimensions(width, height);\n"
+          "        uint2 p = min(uint2(input.pos.xy), "
           "uint2(width - 1, height - 1));\n"
-          "      return _MainTex.Load(int3(p, 0));\n"
+          "        return _MainTex.Load(int3(p, 0));\n"
+          "      }\n"
+          "      uint2 position = uint2(input.pos.xy);\n"
+          "      uint index = position.y * uint(_VRC_TransferWidth) + "
+          "position.x;\n"
+          "      uint offset = index - uint(_VRC_TransferFirst);\n"
+          "      if (index < uint(_VRC_TransferFirst) || "
+          "offset >= uint(_VRC_TransferCount))\n"
+          "        discard;\n"
+          "      if (_VRC_TransferMode == 2) {\n"
+          "        uint words[32] = { " +
+          words +
+          " };\n"
+          "        uint word = words[offset % uint(max(_VRC_TransferPeriod, "
+          "1))];\n"
+          "        return float4(word & 255u, (word >> 8u) & 255u, "
+          "(word >> 16u) & 255u, word >> 24u) / 255.0;\n"
+          "      }\n"
+          "      _MainTex.GetDimensions(width, height);\n"
+          "      uint source = index + uint(_VRC_TransferDelta);\n"
+          "      return _MainTex.Load(int3(source % width, source / width, "
+          "0));\n"
           "    }\n"
           "  ENDHLSL } }\n"
           "}\n")

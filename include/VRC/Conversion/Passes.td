@@ -192,8 +192,8 @@ def InsertUdonCooperativeCheckpointsPass : Pass<"vrc-insert-udon-cooperative-che
 def ScheduleUdonDeviceWorkPass : Pass<"vrc-schedule-udon-device-work", "mlir::ModuleOp"> {
   let summary = "Make Udon Device commands enqueue-only and yield by a per-slice work budget";
   let description = [{
-    On the Udon target vrc.dispatch and vrc.buffer_copy are Blits recorded on
-    Unity's in-order graphics queue and complete at issue. A vrc.await of such
+    On the Udon target vrc.dispatch, vrc.buffer_copy and vrc.buffer_fill are
+    Blits recorded on Unity's in-order graphics queue and complete at issue. A vrc.await of such
     an event is folded to CL_SUCCESS. After every Device command in a
     may-suspend function its static cost is charged to two slice budgets held
     in instance globals; at the former await the Host yields through a

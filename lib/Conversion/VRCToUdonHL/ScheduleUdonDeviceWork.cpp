@@ -1,15 +1,16 @@
 // Schedule Device work issued by the Udon Host without a frame per command.
 //
-// On the Udon target a vrc.dispatch or vrc.buffer_copy is a Blit recorded on
-// Unity's in-order graphics queue when the Host issues it; its event is
-// complete at issue (the scalar lowering stores CL_SUCCESS). Awaiting such an
-// event therefore observes nothing, yet every vrc.await suspends the Host for
-// at least one frame. Only Host transfers (upload/readback commands executed
-// by the generated binding) and other external events need a suspension.
+// On the Udon target a vrc.dispatch, vrc.buffer_copy or vrc.buffer_fill is a
+// Blit recorded on Unity's in-order graphics queue when the Host issues it;
+// its event is complete at issue (the scalar lowering stores CL_SUCCESS).
+// Awaiting such an event therefore observes nothing, yet every vrc.await
+// suspends the Host for at least one frame. Only Host transfers
+// (upload/readback commands executed by the generated binding) and other
+// external events need a suspension.
 //
 // This pass
-//  1. folds vrc.await of an event produced by vrc.dispatch or vrc.buffer_copy
-//     to CL_SUCCESS, so issuing Device work is enqueue-only, and
+//  1. folds vrc.await of an event produced by such a Device command to
+//     CL_SUCCESS, so issuing Device work is enqueue-only, and
 //  2. bounds the work one Udon event issues: after each Device command in a
 //     may-suspend function it charges the command's static cost to a slice
 //     budget held in instance globals, and each folded await becomes a
@@ -75,9 +76,15 @@ Value stripCasts(Value value) {
   return value;
 }
 
+/// A Device command is recorded as one Blit and is complete at issue.
+bool isDeviceCommand(Operation *operation) {
+  return isa<runtime::DispatchOp, runtime::BufferCopyOp, runtime::BufferFillOp>(
+      operation);
+}
+
 bool completesAtIssue(Value event) {
   Operation *producer = stripCasts(event).getDefiningOp();
-  return producer && isa<runtime::DispatchOp, runtime::BufferCopyOp>(producer);
+  return producer && isDeviceCommand(producer);
 }
 
 std::optional<int64_t> constantI32(Value value) {
@@ -127,6 +134,12 @@ FailureOr<int64_t> deviceCost(Operation *command, int64_t fragmentWeight) {
     std::optional<int64_t> bytes = constantI32(copy.getByteSize());
     int64_t words = bytes ? (*bytes + 3) / 4 : 131072;
     return saturatingMultiply(std::max<int64_t>(words, 1), fragmentWeight + 1);
+  }
+  if (auto fill = dyn_cast<runtime::BufferFillOp>(command)) {
+    // A fill is a Blit of the destination words that loads nothing.
+    std::optional<int64_t> bytes = constantI32(fill.getByteSize());
+    int64_t words = bytes ? (*bytes + 3) / 4 : 131072;
+    return saturatingMultiply(std::max<int64_t>(words, 1), fragmentWeight);
   }
   auto dispatch = cast<runtime::DispatchOp>(command);
   int64_t fragments = 1;
@@ -210,8 +223,7 @@ struct ScheduleUdonDeviceWorkPass
           effect.getValue() != "may_suspend")
         continue;
       WalkResult result = function.walk([&](Operation *operation) {
-        bool command =
-            isa<runtime::DispatchOp, runtime::BufferCopyOp>(operation);
+        bool command = isDeviceCommand(operation);
         auto await = dyn_cast<runtime::AwaitOp>(operation);
         bool foldable = await &&
                         !await->hasAttr("vrc.cooperative_checkpoint") &&
@@ -257,13 +269,14 @@ struct ScheduleUdonDeviceWorkPass
       }
       int64_t operations = 1;
       for (Operation *previous = command->getPrevNode();
-           previous &&
-           !isa<runtime::DispatchOp, runtime::BufferCopyOp>(previous);
+           previous && !isDeviceCommand(previous);
            previous = previous->getPrevNode())
         ++operations;
       int64_t arguments = 2; // a copy binds its source and destination
       if (auto dispatch = dyn_cast<runtime::DispatchOp>(command))
         arguments = dispatch.getArgumentKinds().size();
+      else if (isa<runtime::BufferFillOp>(command))
+        arguments = 8; // destination, range, width, period and pattern words
       int64_t host = kUdonPerArgument * (arguments + 1) +
                      kUdonPerHostOperation * operations;
       costs.push_back({*device, host});

@@ -127,6 +127,29 @@ mlir::LogicalResult vrc::vrc::BufferCopyOp::verify() {
   return mlir::success();
 }
 
+mlir::LogicalResult vrc::vrc::BufferFillOp::verify() {
+  if (mlir::failed(verifyHostRuntimeOperation(*this)))
+    return mlir::failure();
+  auto offset = constantI32(getDestinationOffset());
+  auto size = constantI32(getByteSize());
+  auto pointer = constantI32(getHostPointer());
+  auto pattern = constantI32(getPatternSize());
+  if (offset && (*offset < 0 || *offset % 4))
+    return emitOpError(
+        "constant destination offset must be a non-negative multiple of 4");
+  if (size && (*size <= 0 || *size % 4))
+    return emitOpError("constant byte size must be a positive multiple of 4");
+  if (pointer && (*pointer == 0 || *pointer % 4))
+    return emitOpError(
+        "constant Host pointer must be a non-null multiple of 4");
+  if (pattern && (*pattern < 4 || *pattern > 128 || *pattern % 4))
+    return emitOpError(
+        "constant pattern size must be a multiple of 4 in [4, 128]");
+  if (size && pattern && *size % *pattern)
+    return emitOpError("constant byte size must repeat the pattern exactly");
+  return mlir::success();
+}
+
 mlir::LogicalResult vrc::vrc::DispatchDescCreateOp::verify() {
   if (mlir::failed(verifyHostRuntimeOperation(*this)))
     return mlir::failure();

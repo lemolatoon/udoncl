@@ -214,14 +214,15 @@ struct LowerHostToUdonHLPass
                    runtime::DispatchDescCreateOp, runtime::DispatchOp,
                    runtime::BufferAllocOp, runtime::StaticBufferOp,
                    runtime::AssignedBufferOp, runtime::BufferReleaseOp,
-                   runtime::BufferCopyOp, runtime::BufferUploadOp,
-                   runtime::BufferReadbackOp, runtime::AwaitOp,
-                   runtime::EventStatusOp, memref::LoadOp, memref::StoreOp,
-                   memref::AllocaOp, memref::GetGlobalOp, arith::ConstantOp,
-                   arith::AddIOp, arith::SubIOp, arith::MulIOp, arith::AddFOp,
-                   arith::SubFOp, arith::MulFOp, arith::DivSIOp, arith::DivUIOp,
-                   arith::RemSIOp, arith::RemUIOp, arith::DivFOp, arith::CmpIOp,
-                   arith::CmpFOp>(op) &&
+                   runtime::BufferCopyOp, runtime::BufferFillOp,
+                   runtime::BufferUploadOp, runtime::BufferReadbackOp,
+                   runtime::AwaitOp, runtime::EventStatusOp, memref::LoadOp,
+                   memref::StoreOp, memref::AllocaOp, memref::GetGlobalOp,
+                   arith::ConstantOp, arith::AddIOp, arith::SubIOp,
+                   arith::MulIOp, arith::AddFOp, arith::SubFOp, arith::MulFOp,
+                   arith::DivSIOp, arith::DivUIOp, arith::RemSIOp,
+                   arith::RemUIOp, arith::DivFOp, arith::CmpIOp, arith::CmpFOp>(
+                  op) &&
               !isa<arith::AndIOp, arith::OrIOp, arith::XOrIOp, arith::ShLIOp,
                    arith::ShRSIOp, arith::ShRUIOp, arith::SelectOp,
                    arith::IndexCastOp, arith::ExtSIOp, arith::ExtUIOp,

@@ -154,6 +154,31 @@ cl_int __vrc_opencl_buffer_copy(cl_uint source_token, cl_uint destination_token,
   return 19;
 }
 
+static cl_uint fill_count;
+static size_t filled_offset;
+static size_t filled_bytes;
+static size_t filled_pattern_bytes;
+static uint32_t filled_pattern[32];
+
+/* Like the Udon backend: word fill, complete at issue. */
+cl_int __vrc_opencl_buffer_fill(cl_uint physical_token, size_t offset,
+                                size_t bytes, const void *pattern,
+                                size_t pattern_bytes) {
+  size_t word;
+  ++fill_count;
+  filled_offset = offset;
+  filled_bytes = bytes;
+  filled_pattern_bytes = pattern_bytes;
+  if (((size_t)pattern & 3u) || (offset & 3u) || (bytes & 3u) ||
+      (pattern_bytes & 3u) || !pattern_bytes || pattern_bytes > 128u)
+    return CL_INVALID_VALUE;
+  memcpy(filled_pattern, pattern, pattern_bytes);
+  for (word = 0; word < bytes / 4u; ++word)
+    memcpy(physical_buffers[physical_token - 100] + offset + 4u * word,
+           filled_pattern + word % (pattern_bytes / 4u), 4u);
+  return CL_SUCCESS;
+}
+
 cl_int __vrc_opencl_dispatch_udonblas_sgemm(cl_uint input_token,
                                             cl_uint output_token, cl_int m,
                                             cl_int n, cl_int k, cl_int transa,
@@ -722,6 +747,82 @@ static void pack_nbits(uint8_t *destination, size_t bytes, size_t index,
     destination[byte + 1u] |= (uint8_t)(word >> 8u);
 }
 
+/* clEnqueueFillBuffer replicates 1- and 2-byte patterns to one word, keeps
+ * aligned word patterns in place, copies unaligned ones, drains an
+ * outstanding binding transfer first, and completes at issue. */
+static int test_fill_buffer(cl_context context, cl_command_queue queue,
+                            cl_mem static_buffer) {
+  static const unsigned char expected[24] = {
+      1, 2, 3, 4, 0xA5, 0x5A, 0xA5, 0x5A, 0xA5, 0x5A, 0xA5, 0x5A,
+      1, 2, 3, 4, 9,    8,    7,    6,    5,    4,    3,    2};
+  unsigned char initial[24], readback[24];
+  unsigned char halfword[2] = {0xA5, 0x5A};
+  unsigned char unaligned[12] = {0, 9, 8, 7, 6, 5, 4, 3, 2};
+  uint32_t word_pattern[2] = {0x04030201u, 0x08070605u};
+  cl_event fill_event = 0;
+  cl_int error, status;
+  size_t byte;
+  cl_mem buffer =
+      clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(initial), 0, &error);
+  EXPECT(buffer && error == CL_SUCCESS);
+  for (byte = 0; byte < sizeof(initial); ++byte)
+    initial[byte] = (unsigned char)(byte + 1u);
+  EXPECT(clEnqueueFillBuffer(queue, buffer, 0, 4, 0, 4, 0, 0, 0) ==
+         CL_INVALID_VALUE);
+  EXPECT(clEnqueueFillBuffer(queue, buffer, halfword, 3, 0, 6, 0, 0, 0) ==
+         CL_INVALID_VALUE);
+  EXPECT(clEnqueueFillBuffer(queue, buffer, word_pattern, 256, 0, 0, 0, 0, 0) ==
+         CL_INVALID_VALUE);
+  EXPECT(clEnqueueFillBuffer(queue, buffer, word_pattern, 8, 4, 8, 0, 0, 0) ==
+         CL_INVALID_VALUE);
+  EXPECT(clEnqueueFillBuffer(queue, buffer, word_pattern, 8, 0, 12, 0, 0, 0) ==
+         CL_INVALID_VALUE);
+  EXPECT(clEnqueueFillBuffer(queue, buffer, word_pattern, 4, 20, 8, 0, 0, 0) ==
+         CL_INVALID_VALUE);
+  /* OpenCL permits these 2-byte fills; the word Device does not. */
+  EXPECT(clEnqueueFillBuffer(queue, buffer, halfword, 2, 2, 4, 0, 0, 0) ==
+         CL_INVALID_VALUE);
+  EXPECT(clEnqueueFillBuffer(queue, buffer, halfword, 2, 4, 2, 0, 0, 0) ==
+         CL_INVALID_VALUE);
+  EXPECT(clEnqueueFillBuffer(queue, static_buffer, word_pattern, 4, 0, 4, 0, 0,
+                             0) == CL_INVALID_MEM_OBJECT);
+  EXPECT(clEnqueueFillBuffer(0, buffer, word_pattern, 4, 0, 4, 0, 0, 0) ==
+         CL_INVALID_COMMAND_QUEUE);
+  EXPECT(clEnqueueFillBuffer(queue, buffer, word_pattern, 4, 0, 4, 1, 0, 0) ==
+         CL_INVALID_EVENT_WAIT_LIST);
+  EXPECT(fill_count == 0);
+
+  /* A non-blocking write still in the command slot is drained first. */
+  await_count = 0;
+  EXPECT(clEnqueueWriteBuffer(queue, buffer, CL_FALSE, 0, sizeof(initial),
+                              initial, 0, 0, 0) == CL_SUCCESS);
+  EXPECT(transfer_outstanding && await_count == 0);
+  EXPECT(clEnqueueFillBuffer(queue, buffer, halfword, 2, 4, 8, 0, 0,
+                             &fill_event) == CL_SUCCESS);
+  EXPECT(await_count == 1 && !transfer_outstanding);
+  EXPECT(fill_count == 1 && filled_offset == 4 && filled_bytes == 8 &&
+         filled_pattern_bytes == 4 && filled_pattern[0] == 0x5AA55AA5u);
+  EXPECT(clGetEventInfo(fill_event, CL_EVENT_COMMAND_EXECUTION_STATUS,
+                        sizeof(status), &status, 0) == CL_SUCCESS &&
+         status == CL_COMPLETE);
+  EXPECT(clReleaseEvent(fill_event) == CL_SUCCESS);
+  EXPECT(clEnqueueFillBuffer(queue, buffer, unaligned + 1, 8, 16, 8, 0, 0, 0) ==
+         CL_SUCCESS);
+  EXPECT(fill_count == 2 && filled_pattern_bytes == 8 &&
+         filled_pattern[0] == 0x06070809u && filled_pattern[1] == 0x02030405u);
+  EXPECT(clEnqueueFillBuffer(queue, buffer, word_pattern, 4, 12, 4, 0, 0, 0) ==
+         CL_SUCCESS);
+  EXPECT(fill_count == 3 && filled_pattern[0] == 0x04030201u);
+  EXPECT(clEnqueueFillBuffer(queue, buffer, word_pattern, 8, 0, 0, 0, 0, 0) ==
+         CL_SUCCESS);
+  EXPECT(fill_count == 3);
+  EXPECT(clEnqueueReadBuffer(queue, buffer, CL_TRUE, 0, sizeof(readback),
+                             readback, 0, 0, 0) == CL_SUCCESS);
+  EXPECT(!memcmp(readback, expected, sizeof(expected)));
+  EXPECT(clReleaseMemObject(buffer) == CL_SUCCESS);
+  return 0;
+}
+
 int main(void) {
   cl_platform_id platform;
   cl_device_id device;
@@ -1075,6 +1176,9 @@ int main(void) {
   EXPECT(allocated_logical_id == 0);
   EXPECT(clEnqueueWriteBuffer(queue, static_buffer, CL_FALSE, 0, sizeof(source),
                               &source, 0, 0, 0) == CL_INVALID_VALUE);
+  index = (cl_uint)test_fill_buffer(context, queue, static_buffer);
+  if (index)
+    return (int)index;
   nested_buffer = udonclCreateBufferForQueue(queue, CL_MEM_READ_WRITE,
                                              sizeof(source), &error);
   EXPECT(nested_buffer && error == CL_SUCCESS);

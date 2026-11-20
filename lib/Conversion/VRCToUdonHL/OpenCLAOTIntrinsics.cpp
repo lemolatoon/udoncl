@@ -47,7 +47,8 @@ struct LowerOpenCLAOTIntrinsicsPass
           name == "__vrc_opencl_buffer_release" ||
           name == "__vrc_opencl_buffer_upload" ||
           name == "__vrc_opencl_buffer_readback" ||
-          name == "__vrc_opencl_buffer_copy" || name == "__vrc_opencl_await" ||
+          name == "__vrc_opencl_buffer_copy" ||
+          name == "__vrc_opencl_buffer_fill" || name == "__vrc_opencl_await" ||
           name == "__vrc_opencl_dispatch_udonblas_sgemm" ||
           name == "__vrc_opencl_dispatch_udonblas_arena_sgemm" ||
           name ==
@@ -101,6 +102,16 @@ struct LowerOpenCLAOTIntrinsicsPass
         }
       } else if (name == "__vrc_opencl_buffer_copy") {
         arguments = {i32, i32, i32, i32, i32};
+      } else if (name == "__vrc_opencl_buffer_fill") {
+        arguments = llvm::to_vector(function.getArgumentTypes());
+        if (arguments.size() != 5 || arguments[0] != i32 ||
+            arguments[1] != i32 || arguments[2] != i32 ||
+            (arguments[3] != i32 && !isa<host::PtrType>(arguments[3])) ||
+            arguments[4] != i32) {
+          function.emitError("invalid OpenCL AOT backend intrinsic signature");
+          signalPassFailure();
+          return;
+        }
       } else if (name == "__vrc_opencl_dispatch_udonblas_sgemm")
         arguments = {i32, i32, i32, i32, i32, i32,
                      i32, i32, i32, i32, f32, f32};
@@ -251,6 +262,23 @@ struct LowerOpenCLAOTIntrinsicsPass
                                : runtime::BufferReadbackOp::getOperationName());
         state.addOperands(
             {typedBuffer, call.getOperand(1), call.getOperand(2), pointer});
+        state.addTypes(event);
+        Value token =
+            cast(call.getLoc(), i32, rewriter.create(state)->getResult(0));
+        rewriter.replaceOp(call, token);
+      } else if (name == "__vrc_opencl_buffer_fill") {
+        Value pointer = call.getOperand(3);
+        if (isa<host::PtrType>(pointer.getType())) {
+          OperationState pointerState(call.getLoc(),
+                                      host::PtrToIntOp::getOperationName());
+          pointerState.addOperands(pointer);
+          pointerState.addTypes(i32);
+          pointer = rewriter.create(pointerState)->getResult(0);
+        }
+        OperationState state(call.getLoc(),
+                             runtime::BufferFillOp::getOperationName());
+        state.addOperands({typedBuffer, call.getOperand(1), call.getOperand(2),
+                           pointer, call.getOperand(4)});
         state.addTypes(event);
         Value token =
             cast(call.getLoc(), i32, rewriter.create(state)->getResult(0));

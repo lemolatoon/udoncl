@@ -43,6 +43,12 @@ extern cl_int __vrc_opencl_buffer_copy(cl_uint source_token,
                                        cl_uint destination_token,
                                        size_t source_offset,
                                        size_t destination_offset, size_t bytes);
+/* Writes `bytes` bytes at `offset` with the `pattern_bytes`-byte pattern at
+ * `pattern`, read at issue; the backend completes it at issue. Every operand
+ * is a multiple of 4 and the pattern has 1 to 32 words. */
+extern cl_int __vrc_opencl_buffer_fill(cl_uint physical_token, size_t offset,
+                                       size_t bytes, const void *pattern,
+                                       size_t pattern_bytes);
 #if UDONCL_AOT_ENABLE_BLAS
 extern cl_int __vrc_opencl_dispatch_udonblas_sgemm(
     cl_uint input_token, cl_uint output_token, cl_int m, cl_int n, cl_int k,
@@ -2548,6 +2554,72 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueReadBuffer(
                                          udoncl_mem_origin(buffer) + offset,
                                          bytes, destination);
   return udoncl_finish_enqueue(queue, CL_COMMAND_READ_BUFFER, pending, blocking,
+                               event);
+}
+
+/* Word copy of a fill pattern: a 1- or 2-byte OpenCL pattern replicated to
+ * one word, or a word pattern whose Host address is not word-aligned. */
+static cl_uint udoncl_fill_pattern[32];
+
+/* The Device stores 32-bit words, so besides the OpenCL 1.2 rules (a
+ * pattern of 1, 2, 4, ..., 128 bytes that tiles [offset, offset + size))
+ * the offset and size must be word-aligned; other ranges are rejected with
+ * CL_INVALID_VALUE instead of being written partially. */
+CL_API_ENTRY cl_int CL_API_CALL clEnqueueFillBuffer(
+    cl_command_queue queue, cl_mem buffer, const void *pattern,
+    size_t pattern_size, size_t offset, size_t bytes, cl_uint wait_count,
+    const cl_event *wait_list, cl_event *event) {
+  const unsigned char *pattern_bytes = (const unsigned char *)pattern;
+  const void *words = pattern;
+  size_t word_bytes = pattern_size;
+  cl_int pending;
+  cl_int status;
+  size_t index;
+  if (queue != &udoncl_queue || !queue->active)
+    return CL_INVALID_COMMAND_QUEUE;
+  if (!udoncl_mem_is_active(buffer) || udoncl_mem_is_static(buffer))
+    return CL_INVALID_MEM_OBJECT;
+  if (udoncl_mem_context(buffer) != queue->context)
+    return CL_INVALID_CONTEXT;
+  if (!pattern || !pattern_size || pattern_size > 128u ||
+      (pattern_size & (pattern_size - 1u)) || offset % pattern_size ||
+      bytes % pattern_size || offset > udoncl_mem_bytes(buffer) ||
+      bytes > udoncl_mem_bytes(buffer) - offset || (offset & 3u) ||
+      (bytes & 3u))
+    return CL_INVALID_VALUE;
+  status = udoncl_wait_list(queue, wait_count, wait_list);
+  if (status != CL_SUCCESS)
+    return status;
+  udoncl_pending_resources_reset();
+  if (!bytes)
+    return udoncl_finish_enqueue(queue, CL_COMMAND_FILL_BUFFER, CL_SUCCESS,
+                                 CL_FALSE, event);
+  if (pattern_size < 4u) {
+    udoncl_fill_pattern[0] = 0;
+    for (index = 0; index < 4u; ++index)
+      udoncl_fill_pattern[0] |= (cl_uint)pattern_bytes[index % pattern_size]
+                                << (8u * index);
+    words = udoncl_fill_pattern;
+    word_bytes = 4u;
+  } else if ((size_t)pattern & 3u) {
+    for (index = 0; index < pattern_size; index += 4u)
+      udoncl_fill_pattern[index / 4u] =
+          (cl_uint)pattern_bytes[index] |
+          ((cl_uint)pattern_bytes[index + 1u] << 8u) |
+          ((cl_uint)pattern_bytes[index + 2u] << 16u) |
+          ((cl_uint)pattern_bytes[index + 3u] << 24u);
+    words = udoncl_fill_pattern;
+  }
+  /* A fill is recorded on the Device queue at issue, after any binding
+   * transfer still waiting in the single command slot has executed. */
+  status = udoncl_await_outstanding_transfer(queue);
+  if (status != CL_SUCCESS)
+    return status;
+  udoncl_pending_resource_add(buffer);
+  pending = __vrc_opencl_buffer_fill(udoncl_mem_physical_token(buffer),
+                                     udoncl_mem_origin(buffer) + offset, bytes,
+                                     words, word_bytes);
+  return udoncl_finish_enqueue(queue, CL_COMMAND_FILL_BUFFER, pending, CL_FALSE,
                                event);
 }
 

@@ -52,6 +52,26 @@ def VRC_BufferCopyOp : Op<VRC_Dialect, "buffer_copy", [MemoryEffects<[MemWrite]>
   let assemblyFormat = "$source `,` $destination `,` $source_offset `,` $destination_offset `,` $byte_size attr-dict `:` functional-type(operands, results)";
   let hasVerifier = 1;
 }
+def VRC_BufferFillOp : Op<VRC_Dialect, "buffer_fill", [MemoryEffects<[MemWrite]>]> {
+  let summary = "Fill a word-aligned Device byte range with a repeated pattern";
+  let description = [{
+    Writes `byte_size` bytes of `destination` starting at `destination_offset`
+    with the `pattern_size`-byte pattern read from Host memory at
+    `host_pointer`, repeated from the first written byte. Every byte outside
+    the range keeps its contents. The pattern is read when the command is
+    issued, so the command is complete at issue like a dispatch.
+
+    The Device stores 32-bit words: the offset, byte size, Host pointer and
+    pattern size are multiples of 4, the pattern size is at most 128 bytes
+    (the largest OpenCL fill pattern) and the byte size is a multiple of the
+    pattern size.
+  }];
+  let arguments = (ins VRC_BufferType:$destination, I32:$destination_offset,
+    I32:$byte_size, I32:$host_pointer, I32:$pattern_size);
+  let results = (outs VRC_EventType:$event);
+  let assemblyFormat = "$destination `,` $destination_offset `,` $byte_size `,` $host_pointer `,` $pattern_size attr-dict `:` functional-type(operands, results)";
+  let hasVerifier = 1;
+}
 def VRC_DispatchDescCreateOp : Op<VRC_Dialect, "dispatch_desc_create"> {
   let summary = "Capture copied scalar kernel arguments in an AOT descriptor";
   let arguments = (ins Variadic<AnyType>:$scalars, I32Attr:$kernel_id,

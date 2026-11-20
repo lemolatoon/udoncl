@@ -870,6 +870,20 @@ def main():
         'private void PumpAsyncCommand()', 1
     )[1].split('private void CopyHeapToPixels(', 1)[0]
     assert 'if (pendingObject == 0 && kind == 0)' in async_pump
+    # A partial upload writes only its word range through the transfer
+    # material's range-copy mode; it never reads the surface back first.
+    assert 'asyncCommandReadbackMode = 2' not in mnist_binding
+    assert 'UploadWordRange(index, pixels, asyncCommandOffsetWords, ' in (
+        async_pump
+    )
+    upload_range = mnist_binding.split(
+        'private int UploadWordRange(', 1
+    )[1].split('\n        }\n', 1)[0]
+    assert 'SetInteger("_VRC_TransferMode", 1);' in upload_range
+    assert upload_range.rstrip().endswith('return StatusSuccess;')
+    assert upload_range.index('VRCGraphics.Blit(') < upload_range.index(
+        'SetInteger("_VRC_TransferMode", 0);'
+    )
     assert 'pendingAsyncObject = pendingObject;' in async_pump
     assert 'AsyncDiagnosticInconsistentIdleState' not in async_pump
     async_continue = mnist_binding.split(

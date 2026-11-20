@@ -1972,6 +1972,19 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
                  ValueRange{constant(logicalId), constant(bytes)})
           .getResult(0);
     };
+    // A transfer still waiting in the binding's command slot reaches the
+    // Device before the state is cleared: drain the session queue, then zero
+    // every past state with one word-fill command each. A fill is recorded
+    // on the Device queue at issue and needs no staged zero array.
+    Value queueSlot = allocaI32(builder, location);
+    auto gotQueue = func::CallOp::create(
+        builder, location, "udononnxBindingStateGetCommandQueue",
+        TypeRange{i32}, ValueRange{state(), queueSlot});
+    resetReturnIfFailed(gotQueue.getResult(0));
+    auto finished = func::CallOp::create(
+        builder, location, "clFinish", TypeRange{i32},
+        ValueRange{loadPointer(builder, location, queueSlot)});
+    resetReturnIfFailed(finished.getResult(0));
     for (const SequenceStateRecord &sequence : graph.sequenceStates) {
       unsigned inputTensorIndex = graph.inputs[sequence.inputIndex];
       const TensorRecord &input = graph.tensors[inputTensorIndex];
@@ -1979,13 +1992,14 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
                            elementByteSize(input.type.getElementType());
       Value destination =
           resetPhysicalBuffer(sequence.inputIndex + 1, inputBytes);
-      auto uploaded = func::CallOp::create(
-          builder, location, "__vrc_opencl_buffer_upload", TypeRange{i32},
+      auto filled = func::CallOp::create(
+          builder, location, "__vrc_opencl_buffer_fill", TypeRange{i32},
           ValueRange{destination, constant(0), constant(inputBytes),
-                     addressOf(builder, location, sequenceStateZeroSymbol)});
+                     addressOf(builder, location, sequenceStateZeroSymbol),
+                     constant(4)});
       auto awaited =
           func::CallOp::create(builder, location, "__vrc_opencl_await",
-                               TypeRange{i32}, uploaded.getResult(0));
+                               TypeRange{i32}, filled.getResult(0));
       resetReturnIfFailed(awaited.getResult(0));
     }
     store(builder, location, constant(0),
@@ -2204,6 +2218,11 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
                        {i32});
   declarations.require("__vrc_opencl_buffer_upload", {i32, i32, i32, pointer},
                        {i32});
+  declarations.require("__vrc_opencl_buffer_fill",
+                       {i32, i32, i32, pointer, i32}, {i32});
+  declarations.require("udononnxBindingStateGetCommandQueue",
+                       {pointer, pointer}, {i32});
+  declarations.require("clFinish", {pointer}, {i32});
   declarations.require("__vrc_opencl_buffer_alloc", {i32, i32}, {i32});
   declarations.require("__vrc_opencl_await", {i32}, {i32});
   declarations.require("udononnxBindingStateCompleteEvent",

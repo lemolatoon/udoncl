@@ -798,6 +798,49 @@ Udon instructions per slice). The 1.35 M-instruction continuation after the
 token upload is now three quarters of the step's Udon work and is the next
 Host-lowering target.
 
+Attributing that continuation to functions (from `host.udonasm.mlir`
+function ranges) shows it is not transfer work: 1.22 M instructions (90%)
+are `udononnxEnqueueRun`, whose `udononnxValidateRunBindings` re-validates
+all 92 bindings and checks every input/output range pair (45 x 47 + 45 x 44
+/ 2 = 3,105 overlap tests) with byte-addressed 64-bit metadata loads on every
+run, and 117 K are the generated run prologue. Likewise 1.29 M of the 1.33 M
+`Initialize` instructions are `tinyllama_initialize` with the inlined binding
+creation, mostly byte-wise memsets of the 4,136- and 3,960-byte binding
+tables. In the budget slices each dispatch costs about 210 Udon
+instructions in the generated run, and the async resume dispatcher compares
+the resume state against every registered state in turn, growing from about
+1,000 to 6,200 instructions per slice through a step.
+
+The generic transfer work of this plan's M2 then removed every Host transfer
+but the token readback from a step and every transfer from Initialize and
+Reset. `clEnqueueFillBuffer` (`f1c6302`, `d2a9293`), the sequence-state
+reset (`9120f80`) and the attention-mask clear (`43d0d90`) issue Device
+word fills, and uploads of up to 128 word-aligned bytes are written in place
+by a word-fill Blit inside the issuing Udon event; the transfer shader
+discards every fragment outside the written words, so no write reads the
+surface back; a larger partial upload is staged by the binding and written
+with a range-copy Blit instead of a readback-modify-upload (`7f911ba`).
+Driving the gate 9 artifacts through the same emulator
+protocol (frames: one per continuation, one per whole-buffer upload, three
+per readback or partial upload):
+
+| | gate 8 | M2 |
+|---|---:|---:|
+| `Initialize`: Udon events / frames / Blits | 45 / 44 / 0 | 1 / 0 / 45 |
+| `Initialize`: binding uploads (words copied) | 44 (709,632) | 0 |
+| `Reset`: Udon events / frames / Udon instructions | 45 / 44 / 45.8 K | 1 / 0 / 18.4 K |
+| `Reset`: binding uploads (words copied) | 44 (709,632) | 0 |
+| decode step: Udon events / frames | 33 / 37 | 30 / 32 |
+| decode step: Udon instructions | 1.79 M | 1.76 M |
+| decode step: Device Blits | 1,078 | 1,081 |
+| decode step: binding commands | 2 uploads, 1 partial upload, 1 readback | 1 readback |
+
+The partial attention-mask upload was a readback-modify-upload; in Unity
+batchmode its readback waited for the GPU backlog of the step, so removing
+it matters more than the frame estimate suggests. The largest event of a
+step (1.38 M instructions) is unchanged in kind: it is the run validation
+above, now also issuing the three input patches.
+
 ### 7.3 Required execution
 
 The final `scripts/precommit.py` runs the real-model tests every time. The model,

@@ -187,15 +187,8 @@ void createModelMetadataGlobals(ModuleOp module, const GraphRecord &graph) {
     createI32Global(module, onnxHostSequenceStateOwnedSymbol);
     createI32Global(module, onnxHostSequenceStatePendingSymbol);
     createI32Global(module, onnxHostSequenceStatePoisonedSymbol);
-    size_t zeroBytes = 1;
-    for (const SequenceStateRecord &sequence : graph.sequenceStates) {
-      const TensorRecord &input =
-          graph.tensors[graph.inputs[sequence.inputIndex]];
-      zeroBytes = std::max<size_t>(
-          zeroBytes, input.type.getNumElements() *
-                         elementByteSize(input.type.getElementType()));
-    }
-    createZeroGlobal(module, onnxHostSequenceStateZeroSymbol, zeroBytes);
+    // The fill pattern that clears every sequence state: one zero word.
+    createZeroGlobal(module, onnxHostSequenceStateZeroSymbol, 4, 4);
   }
   for (auto [index, tensorIndex] : llvm::enumerate(graph.inputs)) {
     const TensorRecord &tensor = graph.tensors[tensorIndex];

@@ -17,15 +17,16 @@ namespace {
 bool isRawTransfer(func::CallOp call) {
   return call.getCallee() == "clEnqueueWriteBuffer" ||
          call.getCallee() == "clEnqueueReadBuffer" ||
-         call.getCallee() == "clEnqueueCopyBuffer";
+         call.getCallee() == "clEnqueueCopyBuffer" ||
+         call.getCallee() == "clEnqueueFillBuffer";
 }
 
 bool containsProtectedWork(func::FuncOp function) {
   bool protectedWork = false;
   function.walk([&](Operation *operation) {
-    protectedWork |=
-        isa<::vrc::vrc::DispatchOp, ::vrc::vrc::BufferUploadOp,
-            ::vrc::vrc::BufferReadbackOp, ::vrc::vrc::BufferCopyOp>(operation);
+    protectedWork |= isa<::vrc::vrc::DispatchOp, ::vrc::vrc::BufferUploadOp,
+                         ::vrc::vrc::BufferReadbackOp, ::vrc::vrc::BufferCopyOp,
+                         ::vrc::vrc::BufferFillOp>(operation);
     if (auto call = dyn_cast<func::CallOp>(operation))
       protectedWork |= isRawTransfer(call);
   });

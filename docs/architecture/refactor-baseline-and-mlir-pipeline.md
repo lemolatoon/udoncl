@@ -550,8 +550,9 @@ vrc.async_object_payload_store / load
 
 Before `LowerHostToAsync`, the Unity pipeline runs
 `vrc-schedule-udon-device-work` once the async effects have fixed the export
-ABI. On Udon a `vrc.dispatch` or `vrc.buffer_copy` is a Blit on the in-order
-graphics queue and is complete at issue, so an await of its event is replaced
+ABI. On Udon a `vrc.dispatch`, `vrc.buffer_copy` or `vrc.buffer_fill` is a
+Blit on the in-order graphics queue and is complete at issue, so an await of
+its event is replaced
 by a cooperative checkpoint that is taken only when a per-slice budget is
 full. Remaining awaits reset the budgets. Device commands are therefore
 enqueue-only and one Udon event issues a bounded slice of work instead of one
@@ -584,6 +585,21 @@ options (`device-cost-budget`, `host-cost-budget`, `fragment-weight`) and
 per-library settings in the Unity library JSON:
 `"device_work_budget": {"device_cost": N, "host_cost": N,
 "fragment_weight": N}`.
+
+Host writes of Device memory use the program's transfer material (the
+generated `buffer-copy.shader`). Its default mode 0 copies a whole surface
+for whole-buffer copies and binding uploads; mode 1 (range copy) and mode 2
+(word fill) write only the destination words `[First, First + Count)` and
+discard every other fragment, so the rest of the buffer keeps its contents
+without a readback. `vrc.buffer_fill` (from `clEnqueueFillBuffer` through
+`__vrc_opencl_buffer_fill`, and from the generated sequence-state reset) is
+one mode-2 Blit with a 1- to 32-word pattern read from the raw heap at issue.
+A `vrc.buffer_upload` of a mutable buffer of 1 to 128 word-aligned bytes is
+written the same way inside the issuing Udon event, with the upload as the
+pattern and a complete event; larger uploads stay binding commands, and the
+binding writes a partial one with a mode-1 Blit of its staging surface. The
+Device stores 32-bit words, so the AOT `clEnqueueFillBuffer` rejects byte
+ranges that are not word-aligned with `CL_INVALID_VALUE`.
 
 Persistent discovery creates requests such as:
 

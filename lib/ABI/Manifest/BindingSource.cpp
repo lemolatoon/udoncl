@@ -358,6 +358,37 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
             return StatusSuccess;
         }
 )";
+  if (hasAsync)
+    output << R"(
+        // Writes only words [firstWord, firstWord + wordCount) of the
+        // staging surface: the transfer material's range-copy mode discards
+        // every other fragment, so the rest of the Device buffer keeps its
+        // contents without a readback.
+        private int UploadWordRange(int index, Color32[] pixels, int firstWord, int wordCount)
+        {
+            if (bufferCopyMaterial == null || deviceBuffers[index] == null)
+                return StatusNotInitialized;
+            if (uploadTextures == null)
+                uploadTextures = new Texture2D[deviceBuffers.Length];
+            RenderTexture destination = deviceBuffers[index];
+            Texture2D staging = uploadTextures[index];
+            if (staging == null)
+            {
+                staging = new Texture2D(destination.width, destination.height, TextureFormat.RGBA32, false, true);
+                uploadTextures[index] = staging;
+            }
+            staging.SetPixels32(pixels);
+            staging.Apply(false, false);
+            bufferCopyMaterial.SetInteger("_VRC_TransferMode", 1);
+            bufferCopyMaterial.SetInteger("_VRC_TransferWidth", destination.width);
+            bufferCopyMaterial.SetInteger("_VRC_TransferFirst", firstWord);
+            bufferCopyMaterial.SetInteger("_VRC_TransferCount", wordCount);
+            bufferCopyMaterial.SetInteger("_VRC_TransferDelta", 0);
+            VRCGraphics.Blit(staging, destination, bufferCopyMaterial);
+            bufferCopyMaterial.SetInteger("_VRC_TransferMode", 0);
+            return StatusSuccess;
+        }
+)";
   if (hasPublicBuffers)
     output << R"(
         private int ValidateTransfer(int bufferId, int words)
@@ -854,20 +885,17 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
         << "            if (kind == " << commands.uploadKind
         << ")\n"
            "            {\n"
-           "                if (offset == 0 && size == "
-           "deviceBufferLogicalBytes[index])\n"
-           "                {\n"
-           "                    Color32[] pixels = new "
+           "                Color32[] pixels = new "
            "Color32[deviceBuffers[index].width * "
            "deviceBuffers[index].height];\n"
-           "                    CopyHeapToPixels(pixels);\n"
+           "                CopyHeapToPixels(pixels);\n"
+           "                if (offset == 0 && size == "
+           "deviceBufferLogicalBytes[index])\n"
            "                    FinishAsyncCommand(UploadWords(index, "
            "pixels));\n"
-           "                    return;\n"
-           "                }\n"
-           "                asyncCommandReadbackMode = 2;\n"
-           "                VRCAsyncGPUReadback.Request(deviceBuffers[index], "
-           "0, TextureFormat.RGBA32, this);\n"
+           "                else\n"
+           "                    FinishAsyncCommand(UploadWordRange(index, "
+           "pixels, asyncCommandOffsetWords, asyncCommandSizeWords));\n"
            "                return;\n"
            "            }\n"
         << "            if (kind == " << commands.readbackKind
@@ -906,19 +934,18 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
                 FinishAsyncCommand(StatusExecutionFailure);
                 return;
             }
-            if (mode == 1)
+            if (mode != 1)
             {
-                for (int word = 0; word < asyncCommandSizeWords; ++word)
-                {
-                    int heapWord = asyncCommandPointerBytes / 4 + word;
-                    Color32 pixel = pixels[asyncCommandOffsetWords + word];
-                    asyncCommandHeap[heapWord] = pixel.r | (pixel.g << 8) | (pixel.b << 16) | (pixel.a << 24);
-                }
-                FinishAsyncCommand(StatusSuccess);
+                FinishAsyncCommand(StatusAbiMismatch);
                 return;
             }
-            CopyHeapToPixels(pixels);
-            FinishAsyncCommand(UploadWords(asyncCommandBufferIndex, pixels));
+            for (int word = 0; word < asyncCommandSizeWords; ++word)
+            {
+                int heapWord = asyncCommandPointerBytes / 4 + word;
+                Color32 pixel = pixels[asyncCommandOffsetWords + word];
+                asyncCommandHeap[heapWord] = pixel.r | (pixel.g << 8) | (pixel.b << 16) | (pixel.a << 24);
+            }
+            FinishAsyncCommand(StatusSuccess);
         }
 
         private void FinishAsyncCommand(int status)

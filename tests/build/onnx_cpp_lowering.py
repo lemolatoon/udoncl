@@ -326,8 +326,17 @@ assert "func.func @udon_onnx_binding_enqueue_reset_sequence_state" in (
 reset_body = sequence_state_host.stdout.split(
     "func.func @udon_onnx_binding_enqueue_reset_sequence_state", 1
 )[1].split("func.func", 1)[0]
-assert reset_body.count("call @__vrc_opencl_buffer_upload") == 2
+# The queue is drained once, then each state is cleared by one word-fill
+# command with the 4-byte zero pattern; nothing is uploaded.
+assert reset_body.count("call @udononnxBindingStateGetCommandQueue") == 1
+assert reset_body.count("call @clFinish") == 1
+assert reset_body.count("call @__vrc_opencl_buffer_fill") == 2
+assert "call @__vrc_opencl_buffer_upload" not in reset_body
 assert reset_body.count("call @__vrc_opencl_await") == 2
+assert "arith.constant 4 : i32" in reset_body
+assert reset_body.index("call @clFinish") < reset_body.index(
+    "call @__vrc_opencl_buffer_fill"
+)
 assert "call @__vrc_opencl_buffer_copy" not in reset_body
 assert "call @__vrc_opencl_buffer_readback" not in reset_body
 assert "arith.constant 7168 : i32" in reset_body

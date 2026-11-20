@@ -832,6 +832,40 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueCopyBuffer(
     *result = event;
   return CL_SUCCESS;
 }
+/* OpenCL 1.2 accepts pattern sizes 1, 2, 4, ..., 128 bytes; offset and size
+ * must be multiples of the pattern size. */
+CL_API_ENTRY cl_int CL_API_CALL
+clEnqueueFillBuffer(cl_command_queue q, cl_mem m, const void *pattern,
+                    size_t pattern_size, size_t offset, size_t bytes,
+                    cl_uint count, const cl_event *list, cl_event *result) {
+  cl_int status;
+  cl_event event = NULL;
+  size_t byte;
+  if (!queue_find(q))
+    return CL_INVALID_COMMAND_QUEUE;
+  if (!buffer_find(m))
+    return CL_INVALID_MEM_OBJECT;
+  if (m->context != q->context)
+    return CL_INVALID_CONTEXT;
+  if (!pattern || !pattern_size || pattern_size > 128 ||
+      (pattern_size & (pattern_size - 1)) || offset % pattern_size ||
+      bytes % pattern_size || offset > m->size || bytes > m->size - offset)
+    return CL_INVALID_VALUE;
+  if ((status = waits(q->context, count, list)))
+    return status;
+  if (result) {
+    event = new_event(q, CL_COMMAND_FILL_BUFFER);
+    if (!event)
+      return CL_OUT_OF_HOST_MEMORY;
+  }
+  for (byte = 0; byte < bytes; ++byte)
+    m->data[offset + byte] =
+        ((const unsigned char *)pattern)[byte % pattern_size];
+  memset(m->initialized + offset, 1, bytes);
+  if (result)
+    *result = event;
+  return CL_SUCCESS;
+}
 CL_API_ENTRY cl_int CL_API_CALL clEnqueueCopyBufferRect(
     cl_command_queue q, cl_mem source, cl_mem destination,
     const size_t *source_origin, const size_t *destination_origin,

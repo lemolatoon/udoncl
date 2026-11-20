@@ -113,7 +113,7 @@ struct InsertUdonCooperativeCheckpointsPass
       function.walk([&](Operation *operation) {
         transfersBuffer |=
             isa<runtime::BufferUploadOp, runtime::BufferReadbackOp,
-                runtime::BufferCopyOp>(operation);
+                runtime::BufferCopyOp, runtime::BufferFillOp>(operation);
       });
       bool dispatchesDevice =
           deviceDispatchFunctions.contains(function.getOperation());

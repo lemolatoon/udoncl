@@ -2584,8 +2584,38 @@ private:
                 "Unity buffer upload has missing command slots");
           std::string kind = prefix + "upload_command";
           addSlot(kind, "SystemInt32", "1", false);
+          // With a transfer material a small word-aligned upload is written
+          // in place by a word-fill Blit whose pattern is the whole upload:
+          // it completes at issue and neither publishes a binding command
+          // nor reads back the surface. Anything else keeps the command.
+          Operation *patched = nullptr;
+          auto materialSlot = transfer->getAttrOfType<StringAttr>(
+              "vrc.unity_copy_material_slot");
+          if (materialSlot && !materialSlot.getValue().empty()) {
+            SmallVector<Operation *> command = emitWordPatchGuard(
+                transfer.getLoc(), buffer, offset, size, pointer);
+            std::string destination = selectUnityBuffer(
+                transfer.getLoc(), buffer,
+                prefix + "upload_patch_" + std::to_string(valueIndex++));
+            if (destination.empty())
+              return transfer.emitError(
+                  "Unity upload patch has no physical buffer pool");
+            addSlot(materialSlot.getValue(), "UnityEngineMaterial", "null",
+                    true);
+            emitWordFillBlit(transfer.getLoc(), materialSlot.getValue(),
+                             destination, offset, size, pointer, size);
+            addSlot("__udoncl_completed_event", "SystemInt32", "0", false);
+            emitCopy(transfer.getLoc(), "__udoncl_completed_event", event);
+            patched = emitJump(transfer.getLoc(), 0);
+            for (Operation *jump : command)
+              jump->setAttr("target", builder.getI64IntegerAttr(
+                                          static_cast<int64_t>(address)));
+          }
           emitGuardedTransferCommand(transfer.getLoc(), kind, buffer, offset,
                                      size, pointer, event);
+          if (patched)
+            patched->setAttr("target", builder.getI64IntegerAttr(
+                                           static_cast<int64_t>(address)));
           continue;
         }
         if (auto transfer = dyn_cast<runtime::BufferReadbackOp>(operation)) {
@@ -3105,6 +3135,56 @@ private:
             return copy.emitError("Unity buffer copy has no event slot");
           addSlot("__udoncl_completed_event", "SystemInt32", "0", false);
           emitCopy(copy.getLoc(), "__udoncl_completed_event", event);
+          continue;
+        }
+        if (auto fill = dyn_cast<::vrc::vrc::BufferFillOp>(operation)) {
+          auto materialSlot =
+              fill->getAttrOfType<StringAttr>("vrc.unity_copy_material_slot");
+          auto destinationHeapSlot = fill->getAttrOfType<StringAttr>(
+              "vrc.unity_fill_destination_heap_slot");
+          std::string token = valueSlots.lookup(fill.getDestination());
+          std::string offset = valueSlots.lookup(fill.getDestinationOffset());
+          std::string size = valueSlots.lookup(fill.getByteSize());
+          std::string pointer = valueSlots.lookup(fill.getHostPointer());
+          std::string pattern = valueSlots.lookup(fill.getPatternSize());
+          std::string event = valueSlots.lookup(fill.getEvent());
+          if (!materialSlot || materialSlot.getValue().empty() ||
+              offset.empty() || size.empty() || pointer.empty() ||
+              pattern.empty() || event.empty() ||
+              (token.empty() && !destinationHeapSlot))
+            return fill.emitError(
+                "Unity buffer fill requires a transfer material slot, a bound "
+                "destination and operand slots");
+          std::string fillPrefix =
+              prefix + "fill_destination_" + std::to_string(valueIndex++);
+          std::string destination =
+              destinationHeapSlot && !destinationHeapSlot.getValue().empty()
+                  ? loadUnityBufferFromHeapSlot(fill.getLoc(),
+                                                destinationHeapSlot.getValue(),
+                                                fillPrefix)
+                  : selectUnityBuffer(fill.getLoc(), token, fillPrefix);
+          if (destination.empty())
+            return fill.emitError("Unity fill has no physical buffer pool");
+          addSlot(materialSlot.getValue(), "UnityEngineMaterial", "null", true);
+          std::optional<int64_t> patternBytes;
+          if (auto constant =
+                  fill.getPatternSize().getDefiningOp<arith::ConstantIntOp>())
+            patternBytes = constant.value();
+          else if (auto literal =
+                       fill.getPatternSize()
+                           .getDefiningOp<udonhl::LiteralMaterializeOp>())
+            if (auto integer = dyn_cast<IntegerAttr>(literal.getLiteral()))
+              patternBytes = integer.getInt();
+          if (patternBytes && (*patternBytes < 4 || *patternBytes % 4 ||
+                               *patternBytes > kTransferPatchBytes))
+            return fill.emitError("Unity fill pattern must be 1 to ")
+                   << kTransferPatternWords << " words";
+          emitWordFillBlit(fill.getLoc(), materialSlot.getValue(), destination,
+                           offset, size, pointer, pattern,
+                           patternBytes ? std::optional<int>(*patternBytes / 4)
+                                        : std::nullopt);
+          addSlot("__udoncl_completed_event", "SystemInt32", "0", false);
+          emitCopy(fill.getLoc(), "__udoncl_completed_event", event);
           continue;
         }
         if (auto length = dyn_cast<host::StringLengthOp>(operation)) {
@@ -5570,6 +5650,152 @@ private:
     emitCopy(location, overwrite, event);
     done->setAttr("target",
                   builder.getI64IntegerAttr(static_cast<int64_t>(address)));
+  }
+
+  // Words transferred through the transfer material: the program's buffer
+  // copy material, whose shader leaves every texel outside the destination
+  // word range [first, first + count) untouched. A fill or a small upload
+  // therefore rewrites only its own words and never reads back the surface.
+  static constexpr int kTransferPatternWords = 32;
+  static constexpr int kTransferPatchBytes = 4 * kTransferPatternWords;
+
+  void emitSetTransferInteger(Location location, StringRef material,
+                              StringRef property, StringRef value) {
+    std::string name = ("__udoncl_transfer_property_" + property).str();
+    addSlot(name, "SystemString", ("\"_VRC_Transfer" + property + "\"").str(),
+            false);
+    emitPush(location, material);
+    emitPush(location, name);
+    emitPush(location, value);
+    emitExtern(location, "UnityEngineMaterial.__SetInteger__SystemString_"
+                         "SystemInt32__SystemVoid");
+  }
+
+  void emitBinaryI32(Location location, StringRef lhs, StringRef rhs,
+                     StringRef result, StringRef operation) {
+    emitPush(location, lhs);
+    emitPush(location, rhs);
+    emitPush(location, result);
+    emitExtern(location, ("SystemInt32.__op_" + operation +
+                          "__SystemInt32_SystemInt32__SystemInt32")
+                             .str());
+  }
+
+  /// Branches unless `condition(lhs, rhs)` holds; returns the branch whose
+  /// target the caller patches.
+  Operation *emitBranchUnless(Location location, StringRef lhs, StringRef rhs,
+                              StringRef condition) {
+    constexpr StringLiteral holds = "__udoncl_transfer_condition";
+    addSlot(holds, "SystemBoolean", "null", false);
+    emitPush(location, lhs);
+    emitPush(location, rhs);
+    emitPush(location, holds);
+    emitExtern(location, ("SystemInt32.__op_" + condition +
+                          "__SystemInt32_SystemInt32__SystemBoolean")
+                             .str());
+    emitPush(location, holds);
+    Operation *branch =
+        create(location, vm::JumpIfFalseOp::getOperationName(),
+               {builder.getNamedAttr("target", builder.getI64IntegerAttr(0))});
+    address += 8;
+    return branch;
+  }
+
+  /// Falls through only for an upload a word patch can write: a mutable
+  /// buffer token, 1 to kTransferPatchBytes bytes, and a word-aligned offset,
+  /// size and Host pointer. Returns the branches taken otherwise.
+  SmallVector<Operation *> emitWordPatchGuard(Location location,
+                                              StringRef token, StringRef offset,
+                                              StringRef size,
+                                              StringRef pointer) {
+    constexpr StringLiteral bits = "__udoncl_transfer_alignment";
+    addSlot(bits, "SystemInt32", "0", false);
+    std::string zero = immutableSlot("SystemInt32", "0");
+    SmallVector<Operation *> rejected;
+    rejected.push_back(emitBranchUnless(location, token, zero, "GreaterThan"));
+    rejected.push_back(emitBranchUnless(location, size, zero, "GreaterThan"));
+    rejected.push_back(emitBranchUnless(
+        location, size,
+        immutableSlot("SystemInt32", std::to_string(kTransferPatchBytes)),
+        "LessThanOrEqual"));
+    emitBinaryI32(location, offset, size, bits, "LogicalOr");
+    emitBinaryI32(location, bits, pointer, bits, "LogicalOr");
+    emitBinaryI32(location, bits, immutableSlot("SystemInt32", "3"), bits,
+                  "LogicalAnd");
+    rejected.push_back(emitBranchUnless(location, bits, zero, "Equality"));
+    return rejected;
+  }
+
+  /// Blits a word fill of the RenderTexture in `destination`: Device words
+  /// [offset / 4, (offset + size) / 4) take pattern word
+  /// ((word - offset / 4) mod (patternBytes / 4)), read from the raw heap at
+  /// byte address `pointer` when the command is issued. Every operand is a
+  /// multiple of 4 and the pattern has at most kTransferPatternWords words.
+  /// A statically known pattern length loads exactly `patternWords` words.
+  void emitWordFillBlit(Location location, StringRef material,
+                        StringRef destination, StringRef offset, StringRef size,
+                        StringRef pointer, StringRef patternBytes,
+                        std::optional<int> patternWords = std::nullopt) {
+    constexpr StringLiteral width = "__udoncl_transfer_width";
+    constexpr StringLiteral first = "__udoncl_transfer_first";
+    constexpr StringLiteral count = "__udoncl_transfer_count";
+    constexpr StringLiteral period = "__udoncl_transfer_period";
+    constexpr StringLiteral base = "__udoncl_transfer_base";
+    constexpr StringLiteral index = "__udoncl_transfer_index";
+    constexpr StringLiteral word = "__udoncl_transfer_word";
+    for (StringRef slot : {width, first, count, period, base, index, word})
+      addSlot(slot, "SystemInt32", "0", false);
+    emitPush(location, destination);
+    emitPush(location, width);
+    emitExtern(location, "UnityEngineRenderTexture.__get_width__SystemInt32");
+    std::string two = immutableSlot("SystemInt32", "2");
+    for (auto [bytes, words] : {std::pair{offset, StringRef(first)},
+                                std::pair{size, StringRef(count)},
+                                std::pair{patternBytes, StringRef(period)},
+                                std::pair{pointer, StringRef(base)}}) {
+      emitPush(location, bytes);
+      emitPush(location, two);
+      emitPush(location, words);
+      emitExtern(location, "SystemInt32.__op_RightShift__SystemInt32_"
+                           "SystemInt32__SystemInt32");
+    }
+    emitSetTransferInteger(location, material, "Mode", two);
+    emitSetTransferInteger(location, material, "Width", width);
+    emitSetTransferInteger(location, material, "First", first);
+    emitSetTransferInteger(location, material, "Count", count);
+    emitSetTransferInteger(location, material, "Period", period);
+    // The pattern has at least one word; load words until the period ends.
+    SmallVector<Operation *> loaded;
+    for (int wordIndex = 0;
+         wordIndex < patternWords.value_or(kTransferPatternWords);
+         ++wordIndex) {
+      std::string offsetSlot =
+          immutableSlot("SystemInt32", std::to_string(wordIndex));
+      if (wordIndex && !patternWords)
+        loaded.push_back(
+            emitBranchUnless(location, offsetSlot, period, "LessThan"));
+      emitBinaryI32(location, base, offsetSlot, index, "Addition");
+      emitPush(location, rawHeapSlot);
+      emitPush(location, index);
+      emitPush(location, word);
+      emitExtern(location, "SystemInt32Array.__Get__SystemInt32__SystemInt32");
+      emitSetTransferInteger(location, material,
+                             "Word" + std::to_string(wordIndex), word);
+    }
+    for (Operation *branch : loaded)
+      branch->setAttr("target",
+                      builder.getI64IntegerAttr(static_cast<int64_t>(address)));
+    addSlot("__udoncl_null_texture", "UnityEngineTexture", "null", false);
+    emitPush(location, "__udoncl_null_texture");
+    emitPush(location, destination);
+    emitPush(location, material);
+    emitExtern(location,
+               "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_"
+               "UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid");
+    // The material is shared with whole-buffer copies and the generated
+    // binding's uploads, which expect the default whole-surface copy mode.
+    emitSetTransferInteger(location, material, "Mode",
+                           immutableSlot("SystemInt32", "0"));
   }
 
   void emitPush(Location location, StringRef slot) {
