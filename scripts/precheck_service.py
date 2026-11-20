@@ -1067,7 +1067,12 @@ def execute_job(root: Path, cache_root: Path, commit: str, slot: int, token: str
                 )
             if testing:
                 delay = float(os.environ.get("UDONCL_PRECHECK_TEST_DELAY", "0"))
+                # Wall-clock stamps let the service test prove that the fake
+                # gates of concurrent workers overlapped, independent of the
+                # per-job worktree and process-spawn overhead.
+                log.write(f"test_gate_started={time.time():.6f}\n")
                 time.sleep(delay)
+                log.write(f"test_gate_finished={time.time():.6f}\n")
                 desired = os.environ.get("UDONCL_PRECHECK_TEST_RESULT", "passed")
                 return_code = 0 if desired == "passed" else 1
                 log.write(f"test_gate={desired}\n")

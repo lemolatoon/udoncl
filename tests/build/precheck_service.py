@@ -4,7 +4,6 @@ import subprocess
 import stat
 import sys
 import tempfile
-import time
 
 
 ROOT = Path(sys.argv[1]).resolve()
@@ -91,14 +90,32 @@ with tempfile.TemporaryDirectory(prefix="udoncl precheck ") as temporary:
     previous_delay = os.environ.get("UDONCL_PRECHECK_TEST_DELAY")
     previous_result = os.environ.get("UDONCL_PRECHECK_TEST_RESULT")
     os.environ["UDONCL_PRECHECK_TESTING"] = "1"
-    os.environ["UDONCL_PRECHECK_TEST_DELAY"] = "1.5"
+    # The gate delay must exceed the worst start skew between the two workers
+    # (spawn and worktree overhead under host load) for overlap to be visible.
+    os.environ["UDONCL_PRECHECK_TEST_DELAY"] = "4"
     os.environ["UDONCL_PRECHECK_TEST_RESULT"] = "passed"
-    started = time.monotonic()
     coordinator(repository, cache, 2, True)
-    elapsed = time.monotonic() - started
-    assert elapsed < 2.3, elapsed
 
     database = ValidationDatabase(cache / "queue.sqlite3")
+    # Prove the two jobs ran concurrently by checking that their fake gate
+    # intervals overlap. Total elapsed time also includes per-job worktree and
+    # process-spawn overhead, which varies too much across hosts to bound.
+    intervals = []
+    for (log_path,) in database.connection.execute(
+        "SELECT path FROM artifacts WHERE kind='precheck_log'"
+    ).fetchall():
+        stamps = dict(
+            line.split("=", 1)
+            for line in Path(log_path).read_text(encoding="utf-8").splitlines()
+            if "=" in line
+        )
+        intervals.append(
+            (float(stamps["test_gate_started"]), float(stamps["test_gate_finished"]))
+        )
+    assert len(intervals) == 2, intervals
+    assert max(start for start, _ in intervals) < min(
+        finish for _, finish in intervals
+    ), intervals
     rows = database.connection.execute(
         "SELECT commit_sha, state, cleanup_passed FROM jobs ORDER BY enqueued_at"
     ).fetchall()
