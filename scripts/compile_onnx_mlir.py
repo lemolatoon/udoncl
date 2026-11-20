@@ -45,6 +45,7 @@ def canonicalize(
                 '--udoncl-canonicalize-onnx-library-patterns',
                 '--udoncl-infer-onnx-shapes',
                 '--udoncl-simplify-onnx-empty-concat',
+                '--udoncl-simplify-onnx-views',
                 '--udoncl-materialize-onnx-constants',
                 '--udoncl-externalize-onnx-initializers=' +
                 f'static-data-directory={temporary_static_data}',

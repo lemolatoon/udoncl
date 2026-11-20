@@ -711,6 +711,64 @@ bool supportsDeviceNode(const GraphRecord &graph, const NodeRecord &node) {
   return false;
 }
 
+std::optional<DeviceMulAdd> deviceMulAdd(const GraphRecord &graph,
+                                         unsigned addNodeIndex) {
+  const NodeRecord &add = graph.nodes[addNodeIndex];
+  if (add.operation != "Add" || add.provider != "udonatenAdd" ||
+      add.inputs.size() != 2 || add.inputs[0] < 0 || add.inputs[1] < 0 ||
+      add.inputs[0] == add.inputs[1] || !supportsDeviceNode(graph, add))
+    return std::nullopt;
+  const TensorRecord &sum = graph.tensors[add.output];
+  SmallVector<int64_t, 4> sumShape = broadcastTensor4d(sum.type);
+  // The second operand is preferred so that an Add of two products folds a
+  // deterministic one.
+  for (unsigned operand : {1u, 0u}) {
+    unsigned product = static_cast<unsigned>(add.inputs[operand]);
+    int64_t addend = add.inputs[1 - operand];
+    if (graph.tensors[static_cast<unsigned>(addend)].type.getNumElements() !=
+            sum.type.getNumElements() ||
+        broadcastTensor4d(graph.tensors[product].type) != sumShape ||
+        llvm::is_contained(graph.inputs, product) ||
+        llvm::is_contained(graph.outputs, product))
+      continue;
+    unsigned readers = 0;
+    for (const NodeRecord &node : graph.nodes)
+      readers += llvm::count(node.inputs, static_cast<int64_t>(product));
+    if (readers != 1)
+      continue;
+    for (unsigned mulNodeIndex = 0; mulNodeIndex != addNodeIndex;
+         ++mulNodeIndex) {
+      const NodeRecord &mul = graph.nodes[mulNodeIndex];
+      if (mul.output != product)
+        continue;
+      if (mul.operation != "Mul" || mul.provider != "udonatenMul" ||
+          mul.inputs.size() != 2 || mul.inputs[0] < 0 || mul.inputs[1] < 0 ||
+          !supportsDeviceNode(graph, mul))
+        break;
+      return DeviceMulAdd{mulNodeIndex, mul.inputs[0], mul.inputs[1], addend};
+    }
+  }
+  return std::nullopt;
+}
+
+std::optional<unsigned> deviceFoldedReader(const GraphRecord &graph,
+                                           unsigned nodeIndex) {
+  const NodeRecord &node = graph.nodes[nodeIndex];
+  if (node.operation != "Mul")
+    return std::nullopt;
+  for (unsigned readerIndex = nodeIndex + 1; readerIndex < graph.nodes.size();
+       ++readerIndex) {
+    if (!llvm::is_contained(graph.nodes[readerIndex].inputs,
+                            static_cast<int64_t>(node.output)))
+      continue;
+    std::optional<DeviceMulAdd> folded = deviceMulAdd(graph, readerIndex);
+    if (folded && folded->mulNode == nodeIndex)
+      return readerIndex;
+    return std::nullopt;
+  }
+  return std::nullopt;
+}
+
 bool supportsDeviceGraph(const GraphRecord &graph) {
   return llvm::all_of(graph.nodes, [&](const NodeRecord &node) {
     return supportsDeviceNode(graph, node);
@@ -727,13 +785,19 @@ SmallVector<unsigned> deviceStorage(const GraphRecord &graph) {
   // allocation. A dispatch may read every input while writing its output, so
   // a slot becomes reusable only after the last input use, never at that same
   // node. Graph outputs remain live through the final public-buffer copy.
+  // A node folded into its reader has no dispatch of its own: the reader's
+  // dispatch reads the folded node's operands, which therefore stay live
+  // until the reader.
+  SmallVector<int64_t> dispatchIndex(graph.nodes.size());
+  for (unsigned nodeIndex = 0; nodeIndex != graph.nodes.size(); ++nodeIndex)
+    dispatchIndex[nodeIndex] =
+        deviceFoldedReader(graph, nodeIndex).value_or(nodeIndex);
   SmallVector<int64_t> lastUse(graph.tensors.size(), -1);
   for (auto [nodeIndex, node] : llvm::enumerate(graph.nodes))
     for (int64_t input : node.inputs)
       if (input >= 0) {
         unsigned root = storage[static_cast<unsigned>(input)];
-        lastUse[root] =
-            std::max(lastUse[root], static_cast<int64_t>(nodeIndex));
+        lastUse[root] = std::max(lastUse[root], dispatchIndex[nodeIndex]);
       }
   for (unsigned output : graph.outputs)
     lastUse[storage[output]] = static_cast<int64_t>(graph.nodes.size());
@@ -748,6 +812,11 @@ SmallVector<unsigned> deviceStorage(const GraphRecord &graph) {
     if (isDeviceAlias(graph, node))
       continue;
     unsigned output = node.output;
+    if (dispatchIndex[nodeIndex] != static_cast<int64_t>(nodeIndex)) {
+      // Never written or read on the Device; it shares the reader's result.
+      storage[output] = graph.nodes[dispatchIndex[nodeIndex]].output;
+      continue;
+    }
     const TensorRecord &tensor = graph.tensors[output];
     if (tensor.staticResourceId >= 0 ||
         llvm::is_contained(graph.inputs, output) ||

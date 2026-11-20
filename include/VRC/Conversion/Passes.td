@@ -43,6 +43,17 @@ def ExternalizeONNXGraphConstantsPass : Pass<"udoncl-externalize-onnx-graph-cons
 def SimplifyONNXEmptyConcatPass : Pass<"udoncl-simplify-onnx-empty-concat", "mlir::ModuleOp"> {
   let summary = "Remove statically empty operands from ONNX Concat operations";
 }
+def SimplifyONNXViewsPass : Pass<"udoncl-simplify-onnx-views", "mlir::ModuleOp"> {
+  let summary = "Remove ONNX view operations that keep the row-major element order";
+  let description = [{
+    Runs on statically shaped ONNX graphs. A Transpose that only moves unit
+    dimensions becomes a Reshape, and a unit-step Slice or an Expand whose
+    result shape equals its input shape is replaced by its input. The Host
+    planner aliases a Reshape to its operand, so none of these views costs a
+    Device dispatch or a buffer.
+  }];
+  let dependentDialects = ["mlir::arith::ArithDialect"];
+}
 def ValidateONNXHostGraphPass : Pass<"udoncl-validate-onnx-host-graph", "mlir::ModuleOp"> {
   let summary = "Validate the portable ONNX Host graph before materialization";
   let dependentDialects = ["mlir::arith::ArithDialect", "mlir::func::FuncDialect"];

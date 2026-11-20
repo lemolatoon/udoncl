@@ -3096,10 +3096,13 @@ private:
               sourceHeapSlot && !sourceHeapSlot.getValue().empty();
           bool hasDestinationHeapSlot =
               destinationHeapSlot && !destinationHeapSlot.getValue().empty();
+          // A word-range copy rewrites only the destination words through
+          // the transfer material; its buffers may be bound at run time.
+          bool wordRange = copy->hasAttr("vrc.unity_copy_word_range");
           if (!materialSlot || materialSlot.getValue().empty() ||
-              hasSourceHeapSlot != hasDestinationHeapSlot ||
-              (!hasSourceHeapSlot &&
-               (sourceToken.empty() || destinationToken.empty())))
+              (!wordRange && hasSourceHeapSlot != hasDestinationHeapSlot) ||
+              (!hasSourceHeapSlot && sourceToken.empty()) ||
+              (!hasDestinationHeapSlot && destinationToken.empty()))
             return copy.emitError(
                 "Unity buffer copy requires distinct bound buffers and a copy "
                 "material slot");
@@ -3123,13 +3126,28 @@ private:
           if (source.empty() || destination.empty())
             return copy.emitError("Unity copy has no physical buffer pool");
           addSlot(materialSlot.getValue(), "UnityEngineMaterial", "null", true);
-          emitPush(copy.getLoc(), source);
-          emitPush(copy.getLoc(), destination);
-          emitPush(copy.getLoc(), materialSlot.getValue());
-          emitExtern(
-              copy.getLoc(),
-              "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_"
-              "UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid");
+          if (wordRange) {
+            std::string sourceOffset =
+                valueSlots.lookup(copy.getSourceOffset());
+            std::string destinationOffset =
+                valueSlots.lookup(copy.getDestinationOffset());
+            std::string size = valueSlots.lookup(copy.getByteSize());
+            if (sourceOffset.empty() || destinationOffset.empty() ||
+                size.empty())
+              return copy.emitError(
+                  "Unity buffer range copy has missing operand slots");
+            emitWordRangeCopyBlit(copy.getLoc(), materialSlot.getValue(),
+                                  source, destination, sourceOffset,
+                                  destinationOffset, size);
+          } else {
+            emitPush(copy.getLoc(), source);
+            emitPush(copy.getLoc(), destination);
+            emitPush(copy.getLoc(), materialSlot.getValue());
+            emitExtern(
+                copy.getLoc(),
+                "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_"
+                "UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid");
+          }
           std::string event = valueSlots.lookup(copy.getEvent());
           if (event.empty())
             return copy.emitError("Unity buffer copy has no event slot");
@@ -5787,6 +5805,53 @@ private:
                       builder.getI64IntegerAttr(static_cast<int64_t>(address)));
     addSlot("__udoncl_null_texture", "UnityEngineTexture", "null", false);
     emitPush(location, "__udoncl_null_texture");
+    emitPush(location, destination);
+    emitPush(location, material);
+    emitExtern(location,
+               "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_"
+               "UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid");
+    // The material is shared with whole-buffer copies and the generated
+    // binding's uploads, which expect the default whole-surface copy mode.
+    emitSetTransferInteger(location, material, "Mode",
+                           immutableSlot("SystemInt32", "0"));
+  }
+
+  /// Blits a word-range copy: Device words [destinationOffset / 4,
+  /// (destinationOffset + size) / 4) of the RenderTexture in `destination`
+  /// take the words of `source` starting at sourceOffset / 4, and every
+  /// other destination word keeps its contents. Every operand is a multiple
+  /// of 4; the two surfaces may have different shapes.
+  void emitWordRangeCopyBlit(Location location, StringRef material,
+                             StringRef source, StringRef destination,
+                             StringRef sourceOffset,
+                             StringRef destinationOffset, StringRef size) {
+    constexpr StringLiteral width = "__udoncl_transfer_width";
+    constexpr StringLiteral first = "__udoncl_transfer_first";
+    constexpr StringLiteral count = "__udoncl_transfer_count";
+    constexpr StringLiteral delta = "__udoncl_transfer_delta";
+    for (StringRef slot : {width, first, count, delta})
+      addSlot(slot, "SystemInt32", "0", false);
+    emitPush(location, destination);
+    emitPush(location, width);
+    emitExtern(location, "UnityEngineRenderTexture.__get_width__SystemInt32");
+    std::string two = immutableSlot("SystemInt32", "2");
+    for (auto [bytes, words] : {std::pair{destinationOffset, StringRef(first)},
+                                std::pair{size, StringRef(count)},
+                                std::pair{sourceOffset, StringRef(delta)}}) {
+      emitPush(location, bytes);
+      emitPush(location, two);
+      emitPush(location, words);
+      emitExtern(location, "SystemInt32.__op_RightShift__SystemInt32_"
+                           "SystemInt32__SystemInt32");
+    }
+    emitBinaryI32(location, delta, first, delta, "Subtraction");
+    emitSetTransferInteger(location, material, "Mode",
+                           immutableSlot("SystemInt32", "1"));
+    emitSetTransferInteger(location, material, "Width", width);
+    emitSetTransferInteger(location, material, "First", first);
+    emitSetTransferInteger(location, material, "Count", count);
+    emitSetTransferInteger(location, material, "Delta", delta);
+    emitPush(location, source);
     emitPush(location, destination);
     emitPush(location, material);
     emitExtern(location,

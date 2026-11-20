@@ -362,6 +362,32 @@ for expected in [
 ]:
     assert expected in copy_assembly, (expected, copy_assembly)
 assert (copy_artifact / 'buffer-copy.shader').is_file()
+assert '_VRC_TransferDelta' not in copy_assembly
+
+# A copy of part of a buffer, or between differently shaped buffers, is a
+# word-range Blit through the same transfer material.
+range_copy_artifact = output / 'unity-buffer-range-copy'
+run([
+    compiler, '--emit-unity-library-bundle',
+    root / 'tests/boundary/unity_buffer_range_copy.json',
+    '--host-mlir', root / 'tests/boundary/unity_buffer_range_copy.mlir',
+    '-o', range_copy_artifact,
+])
+range_copy_manifest = json.loads(
+    (range_copy_artifact / 'manifest.json').read_text())
+assert range_copy_manifest['program']['buffer_copy_program_slot'] is True
+range_copy_assembly = (range_copy_artifact / 'host.uasm').read_text()
+for expected in [
+    '.export CopyWord',
+    '"_VRC_TransferMode"',
+    '"_VRC_TransferFirst"',
+    '"_VRC_TransferCount"',
+    '"_VRC_TransferDelta"',
+    'UnityEngineRenderTexture.__get_width__SystemInt32',
+    'VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_'
+    'UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid',
+]:
+    assert expected in range_copy_assembly, (expected, range_copy_assembly)
 
 static_artifact = output / 'unity-static-tensor'
 run([

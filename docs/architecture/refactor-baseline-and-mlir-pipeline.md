@@ -601,6 +601,15 @@ binding writes a partial one with a mode-1 Blit of its staging surface. The
 Device stores 32-bit words, so the AOT `clEnqueueFillBuffer` rejects byte
 ranges that are not word-aligned with `CL_INVALID_VALUE`.
 
+A `vrc.buffer_copy` (from `clEnqueueCopyBuffer`) of two whole, equally shaped,
+statically bound surfaces stays one mode-0 Blit. Every other copy is marked
+`vrc.unity_copy_word_range` and is one mode-1 Blit with
+`Delta = source_offset / 4 - destination_offset / 4`: the surfaces may differ
+in shape and may be bound at run time, and the destination is not read back.
+The AOT `clEnqueueCopyBuffer` therefore also requires word-aligned offsets
+and size, and rejects a copy between disjoint ranges of one physical buffer
+with `CL_INVALID_OPERATION`, because a Blit cannot sample its own target.
+
 Persistent discovery creates requests such as:
 
 ```mlir

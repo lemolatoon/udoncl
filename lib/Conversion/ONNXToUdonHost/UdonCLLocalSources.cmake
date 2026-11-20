@@ -10,6 +10,7 @@ set(VRC_ONNX_LOCAL_PASS_SOURCES
   "${CMAKE_CURRENT_LIST_DIR}/ONNXStaticTensor.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/PlanONNXHostGraph.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/SimplifyONNXEmptyConcat.cpp"
+  "${CMAKE_CURRENT_LIST_DIR}/SimplifyONNXViews.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/SpecializeONNXInputs.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/ValidateONNXHostGraph.cpp"
 )

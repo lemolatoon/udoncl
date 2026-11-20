@@ -51,12 +51,23 @@ struct ONNXHostDeviceMatMulShape {
   int64_t outputBatches;
 };
 
+/// A Device Mul whose product is read only by one Add. The Add dispatch
+/// computes left * right + addend itself, so the Mul has no dispatch and its
+/// result has no buffer.
+struct ONNXHostDeviceMulAdd {
+  unsigned mulNode;
+  int64_t left;
+  int64_t right;
+  int64_t addend;
+};
+
 using HostPlanRecord = ONNXHostPlan;
 using DeviceSliceShape = ONNXHostDeviceSliceShape;
 using DeviceConcatShape = ONNXHostDeviceConcatShape;
 using DeviceGatherShape = ONNXHostDeviceGatherShape;
 using DeviceScatterNDShape = ONNXHostDeviceScatterNDShape;
 using DeviceMatMulShape = ONNXHostDeviceMatMulShape;
+using DeviceMulAdd = ONNXHostDeviceMulAdd;
 
 inline constexpr llvm::StringLiteral onnxHostPlanAttr = "udoncl.onnx_host_plan";
 inline constexpr llvm::StringLiteral hostGraphPlanAttr = onnxHostPlanAttr;
@@ -96,6 +107,13 @@ inline constexpr int64_t deviceSgemmMaxK = 8192;
 inline constexpr int64_t deviceSgemmOperandWords = 16384;
 std::optional<DeviceMatMulShape> deviceMatMulShape(const GraphRecord &graph,
                                                    const NodeRecord &node);
+/// The Mul folded into the Device Add at addNodeIndex, if any.
+std::optional<DeviceMulAdd> deviceMulAdd(const GraphRecord &graph,
+                                         unsigned addNodeIndex);
+/// The node whose Device dispatch computes the node at nodeIndex, if that node
+/// is folded into its only reader.
+std::optional<unsigned> deviceFoldedReader(const GraphRecord &graph,
+                                           unsigned nodeIndex);
 bool isDeviceQ4Node(const GraphRecord &graph, const NodeRecord &node);
 /// K blocks of 32 that one udononnx_matmul_nbits_q4 dispatch accumulates. It
 /// must equal UDONONNX_Q4_DISPATCH_BLOCKS in

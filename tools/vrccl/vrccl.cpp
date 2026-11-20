@@ -1129,25 +1129,42 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
     const UnityBuffer *sourceBuffer = resolveBoundBuffer(copy.getSource());
     const UnityBuffer *destinationBuffer =
         resolveBoundBuffer(copy.getDestination());
-    if (!sourceBuffer || !destinationBuffer ||
-        sourceBuffer == destinationBuffer || !sourceOffset ||
-        sourceOffset.value() != 0 || !destinationOffset ||
-        destinationOffset.value() != 0 || !byteSize ||
-        byteSize.value() != sourceBuffer->allocationBytes ||
-        byteSize.value() != destinationBuffer->allocationBytes ||
-        sourceBuffer->width != destinationBuffer->width ||
-        sourceBuffer->height != destinationBuffer->height) {
-      copy.emitError("initial Unity CopyBuffer requires distinct statically "
-                     "bound buffers, zero offsets, and equal full shapes");
+    // A copy of two whole, equally shaped, statically bound surfaces is one
+    // whole-surface Blit. Every other copy is a word-range Blit through the
+    // transfer material's range-copy mode, which rewrites only the
+    // destination words; its buffers may be bound at run time.
+    bool wholeSurface =
+        sourceBuffer && destinationBuffer && sourceOffset &&
+        sourceOffset.value() == 0 && destinationOffset &&
+        destinationOffset.value() == 0 && byteSize &&
+        byteSize.value() == sourceBuffer->allocationBytes &&
+        byteSize.value() == destinationBuffer->allocationBytes &&
+        sourceBuffer->width == destinationBuffer->width &&
+        sourceBuffer->height == destinationBuffer->height;
+    bool unaligned = false;
+    for (auto constant : {sourceOffset, destinationOffset, byteSize})
+      unaligned |= constant && constant.value() % 4 != 0;
+    if ((sourceBuffer && sourceBuffer == destinationBuffer) || unaligned ||
+        (sourceBuffer && sourceOffset && byteSize &&
+         sourceOffset.value() + byteSize.value() >
+             sourceBuffer->allocationBytes) ||
+        (destinationBuffer && destinationOffset && byteSize &&
+         destinationOffset.value() + byteSize.value() >
+             destinationBuffer->allocationBytes)) {
+      copy.emitError("Unity CopyBuffer requires distinct buffers and a "
+                     "word-aligned range inside both of them");
       return failure();
     }
     copy->setAttr("vrc.unity_copy_material_slot",
                   builder.getStringAttr("__udoncl_buffer_copy_material"));
-    if (failed(validateOrSetCopySlot(copy, "vrc.unity_copy_source_heap_slot",
-                                     sourceBuffer->heapSlot)) ||
-        failed(validateOrSetCopySlot(copy,
-                                     "vrc.unity_copy_destination_heap_slot",
-                                     destinationBuffer->heapSlot)))
+    if (!wholeSurface)
+      copy->setAttr("vrc.unity_copy_word_range", builder.getUnitAttr());
+    if ((sourceBuffer &&
+         failed(validateOrSetCopySlot(copy, "vrc.unity_copy_source_heap_slot",
+                                      sourceBuffer->heapSlot))) ||
+        (destinationBuffer && failed(validateOrSetCopySlot(
+                                  copy, "vrc.unity_copy_destination_heap_slot",
+                                  destinationBuffer->heapSlot))))
       return failure();
   }
   // Fills and small uploads write their words through the same transfer

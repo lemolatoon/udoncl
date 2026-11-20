@@ -179,6 +179,13 @@ int run_opencl_runtime_tests(void) {
                          &copied_event, NULL));
   EXPECT(!memcmp(bytes, copied, 4));
   OK(clReleaseEvent(copied_event));
+  /* A sub-range copy with different offsets leaves the other bytes alone. */
+  OK(clEnqueueCopyBuffer(queue, buffer, copy_buffer, 2, 0, 2, 0, NULL, NULL));
+  memset(copied, 0, sizeof(copied));
+  OK(clEnqueueReadBuffer(queue, copy_buffer, CL_TRUE, 0, 4, copied, 0, NULL,
+                         NULL));
+  EXPECT(copied[0] == bytes[2] && copied[1] == bytes[3] &&
+         copied[2] == bytes[2] && copied[3] == bytes[3]);
   {
     static const unsigned char expected_fill[4] = {1, 0x77, 0xA5, 0x5A};
     unsigned char pattern[2] = {0xA5, 0x5A}, word[4] = {1, 2, 3, 4};

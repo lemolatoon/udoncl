@@ -146,9 +146,12 @@ cl_int __vrc_opencl_buffer_readback(cl_uint physical_token, size_t offset,
   return 8;
 }
 
+static cl_uint copy_count;
+
 cl_int __vrc_opencl_buffer_copy(cl_uint source_token, cl_uint destination_token,
                                 size_t source_offset, size_t destination_offset,
                                 size_t bytes) {
+  ++copy_count;
   memmove(physical_buffers[destination_token - 100] + destination_offset,
           physical_buffers[source_token - 100] + source_offset, bytes);
   return 19;
@@ -823,6 +826,82 @@ static int test_fill_buffer(cl_context context, cl_command_queue queue,
   return 0;
 }
 
+/* clEnqueueCopyBuffer copies any word-aligned range between two physical
+ * buffers as one Device command that is complete at issue; it never reads the
+ * destination back. */
+static int test_copy_buffer(cl_context context, cl_command_queue queue) {
+  static const unsigned char expected[16] = {21, 22, 23, 24, 9,  10, 11, 12,
+                                             29, 30, 31, 32, 33, 34, 35, 36};
+  unsigned char source_bytes[16], destination_bytes[16], readback[16];
+  cl_buffer_region region = {8, 4};
+  cl_event copy_event = 0;
+  cl_command_type command;
+  cl_int error;
+  size_t byte;
+  cl_mem source = clCreateBuffer(context, CL_MEM_READ_WRITE,
+                                 sizeof(source_bytes), 0, &error);
+  cl_mem destination, part;
+  EXPECT(source && error == CL_SUCCESS);
+  destination = clCreateBuffer(context, CL_MEM_READ_WRITE,
+                               sizeof(destination_bytes), 0, &error);
+  EXPECT(destination && error == CL_SUCCESS);
+  part = clCreateSubBuffer(source, CL_MEM_READ_WRITE,
+                           CL_BUFFER_CREATE_TYPE_REGION, &region, &error);
+  EXPECT(part && error == CL_SUCCESS);
+  for (byte = 0; byte < sizeof(source_bytes); ++byte) {
+    source_bytes[byte] = (unsigned char)(byte + 1u);
+    destination_bytes[byte] = (unsigned char)(byte + 21u);
+  }
+  EXPECT(clEnqueueWriteBuffer(queue, source, CL_TRUE, 0, sizeof(source_bytes),
+                              source_bytes, 0, 0, 0) == CL_SUCCESS);
+  EXPECT(clEnqueueWriteBuffer(queue, destination, CL_TRUE, 0,
+                              sizeof(destination_bytes), destination_bytes, 0,
+                              0, 0) == CL_SUCCESS);
+  copy_count = 0;
+  /* OpenCL permits byte ranges; the word Device does not. */
+  EXPECT(clEnqueueCopyBuffer(queue, source, destination, 2, 0, 4, 0, 0, 0) ==
+         CL_INVALID_VALUE);
+  EXPECT(clEnqueueCopyBuffer(queue, source, destination, 0, 2, 4, 0, 0, 0) ==
+         CL_INVALID_VALUE);
+  EXPECT(clEnqueueCopyBuffer(queue, source, destination, 0, 0, 6, 0, 0, 0) ==
+         CL_INVALID_VALUE);
+  EXPECT(clEnqueueCopyBuffer(queue, source, destination, 12, 0, 8, 0, 0, 0) ==
+         CL_INVALID_VALUE);
+  EXPECT(clEnqueueCopyBuffer(queue, source, destination, 0, 12, 8, 0, 0, 0) ==
+         CL_INVALID_VALUE);
+  EXPECT(clEnqueueCopyBuffer(queue, source, source, 0, 4, 8, 0, 0, 0) ==
+         CL_MEM_COPY_OVERLAP);
+  /* One Blit cannot sample the surface it renders to. */
+  EXPECT(clEnqueueCopyBuffer(queue, source, source, 0, 8, 4, 0, 0, 0) ==
+         CL_INVALID_OPERATION);
+  EXPECT(clEnqueueCopyBuffer(queue, part, source, 0, 0, 4, 0, 0, 0) ==
+         CL_INVALID_OPERATION);
+  EXPECT(copy_count == 0);
+
+  await_count = 0;
+  EXPECT(clEnqueueCopyBuffer(queue, source, destination, 8, 4, 4, 0, 0,
+                             &copy_event) == CL_SUCCESS);
+  EXPECT(copy_count == 1 && await_count == 0);
+  EXPECT(clGetEventInfo(copy_event, CL_EVENT_COMMAND_TYPE, sizeof(command),
+                        &command, 0) == CL_SUCCESS &&
+         command == CL_COMMAND_COPY_BUFFER);
+  EXPECT(clReleaseEvent(copy_event) == CL_SUCCESS);
+  EXPECT(clEnqueueReadBuffer(queue, destination, CL_TRUE, 0, sizeof(readback),
+                             readback, 0, 0, 0) == CL_SUCCESS);
+  EXPECT(!memcmp(readback, expected, sizeof(expected)));
+  /* A sub-buffer range is addressed from its origin in the parent. */
+  EXPECT(clEnqueueCopyBuffer(queue, part, destination, 0, 12, 4, 0, 0, 0) ==
+         CL_SUCCESS);
+  EXPECT(clEnqueueReadBuffer(queue, destination, CL_TRUE, 0, sizeof(readback),
+                             readback, 0, 0, 0) == CL_SUCCESS);
+  EXPECT(!memcmp(readback, expected, 12) &&
+         !memcmp(readback + 12, source_bytes + 8, 4));
+  EXPECT(clReleaseMemObject(part) == CL_SUCCESS);
+  EXPECT(clReleaseMemObject(destination) == CL_SUCCESS);
+  EXPECT(clReleaseMemObject(source) == CL_SUCCESS);
+  return 0;
+}
+
 int main(void) {
   cl_platform_id platform;
   cl_device_id device;
@@ -1177,6 +1256,9 @@ int main(void) {
   EXPECT(clEnqueueWriteBuffer(queue, static_buffer, CL_FALSE, 0, sizeof(source),
                               &source, 0, 0, 0) == CL_INVALID_VALUE);
   index = (cl_uint)test_fill_buffer(context, queue, static_buffer);
+  if (index)
+    return (int)index;
+  index = (cl_uint)test_copy_buffer(context, queue);
   if (index)
     return (int)index;
   nested_buffer = udonclCreateBufferForQueue(queue, CL_MEM_READ_WRITE,

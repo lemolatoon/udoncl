@@ -841,6 +841,30 @@ it matters more than the frame estimate suggests. The largest event of a
 step (1.38 M instructions) is unchanged in kind: it is the run validation
 above, now also issuing the three input patches.
 
+Two generic graph-level reductions then removed 159 of the 1,078 dispatches
+of a step without a new kernel. `udoncl-simplify-onnx-views` (`59a5c88`)
+turns a Transpose that only moves unit dimensions into a Reshape and removes
+unit-step Slices and Expands that keep their input shape (88 Transposes, 23
+Slices, 4 Expands). The Host planner (`e720a72`) folds a Device Mul read only
+by one Add into that Add's OpTensor dispatch as `a * b + previous`, which is
+bit-identical to the two dispatches (44 rotary-embedding products). The same
+emulator protocol measures per decode step:
+
+| | M2 | + views | + Mul/Add |
+|---|---:|---:|---:|
+| Device dispatches | 1,078 | 963 | 919 |
+| Device Blits (with input patches) | 1,081 | | 922 |
+| Udon events / frames | 30 / 32 | | 26 / 28 |
+| Udon instructions | 1.76 M | | 1.70 M |
+
+The 919 remaining dispatches are 244 OpTensor, 155 Q4 `MatMulNBits`, 132
+Slice (44 of them the sequence-state advance), 89 Concat, 90 RMSNorm
+passes, 46 unary, 44 Expand, 45 SGEMM, 22 Transpose, 22 Softmax, 22
+activation and 8 others. Per layer 4 Slices, 2 Negs, 2 Concats and 5 OpTensor
+dispatches are rotary embedding and 3 dispatches are SiLU gating; merging
+them needs compiler-generated fused kernels, because every Device kernel is
+still a hand-written library kernel wired by name through the runtime.
+
 ### 7.3 Required execution
 
 The final `scripts/precommit.py` runs the real-model tests every time. The model,

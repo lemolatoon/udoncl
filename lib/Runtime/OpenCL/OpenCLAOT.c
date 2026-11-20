@@ -2623,6 +2623,11 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueFillBuffer(
                                event);
 }
 
+/* A copy of any word-aligned range is one Device Blit that rewrites only the
+ * destination words, so it never reads the destination back. Besides the
+ * OpenCL rules the offsets and size must be word-aligned (CL_INVALID_VALUE),
+ * and because a Blit cannot sample the surface it renders to, a copy between
+ * disjoint ranges of one physical buffer is CL_INVALID_OPERATION. */
 CL_API_ENTRY cl_int CL_API_CALL clEnqueueCopyBuffer(
     cl_command_queue queue, cl_mem source, cl_mem destination,
     size_t source_offset, size_t destination_offset, size_t bytes,
@@ -2634,6 +2639,7 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueCopyBuffer(
       udoncl_mem_context(source) != queue->context ||
       udoncl_mem_context(destination) != queue->context ||
       (udoncl_mem_flags(destination) & CL_MEM_READ_ONLY) || !bytes ||
+      ((source_offset | destination_offset | bytes) & 3u) ||
       source_offset > udoncl_mem_bytes(source) ||
       bytes > udoncl_mem_bytes(source) - source_offset ||
       destination_offset > udoncl_mem_bytes(destination) ||
@@ -2657,6 +2663,9 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueCopyBuffer(
                : CL_INVALID_VALUE;
   if (udoncl_mem_context(source) != udoncl_mem_context(destination))
     return CL_INVALID_CONTEXT;
+  if (udoncl_mem_physical_token(source) ==
+      udoncl_mem_physical_token(destination))
+    return CL_INVALID_OPERATION;
   udoncl_pending_resources_reset();
   udoncl_pending_resource_add(source);
   udoncl_pending_resource_add(destination);

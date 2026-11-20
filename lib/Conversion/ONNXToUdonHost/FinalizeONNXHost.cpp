@@ -2573,7 +2573,8 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
       operatorScratch = resolvePhysicalBuffer(handle);
     }
     for (const NodeRecord &node : graph.nodes) {
-      if (isDeviceAlias(graph, node)) {
+      unsigned nodeIndex = static_cast<unsigned>(&node - graph.nodes.data());
+      if (isDeviceAlias(graph, node) || deviceFoldedReader(graph, nodeIndex)) {
         continue;
       }
       Value output = buffer(node.output);
@@ -2618,24 +2619,29 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
       if (node.operation == "Add" || node.operation == "Mul") {
         if (node.inputs.size() != 2 || node.inputs[0] < 0 || node.inputs[1] < 0)
           return emitError(location) << "Device Add requires two inputs";
-        SmallVector<int64_t, 4> a =
-            broadcastTensor4d(graph.tensors[node.inputs[0]].type);
+        // OpTensor computes op(a, b) + beta * previous. A Mul folded into this
+        // Add becomes the operation and the other Add operand the previous
+        // value, which is the same sum of the same product.
+        std::optional<DeviceMulAdd> folded = deviceMulAdd(graph, nodeIndex);
+        int64_t left = folded ? folded->left : node.inputs[0];
+        int64_t right = folded ? folded->right : node.inputs[1];
+        int64_t previous = folded ? folded->addend : node.inputs[0];
+        SmallVector<int64_t, 4> a = broadcastTensor4d(graph.tensors[left].type);
         SmallVector<int64_t, 4> b =
-            broadcastTensor4d(graph.tensors[node.inputs[1]].type);
+            broadcastTensor4d(graph.tensors[right].type);
         SmallVector<int64_t, 4> c =
             broadcastTensor4d(graph.tensors[node.output].type);
-        int64_t operation = node.operation == "Mul" ? 1 : 0;
+        int64_t operation = folded || node.operation == "Mul" ? 1 : 0;
         dispatch(
             "__vrc_opencl_dispatch_udondnn_large_op_tensor",
             ValueRange{
-                buffer(node.inputs[0]), buffer(node.inputs[1]),
-                buffer(node.inputs[0]), output,
+                buffer(left), buffer(right), buffer(previous), output,
                 constant(graph.tensors[node.output].type.getNumElements()),
                 constant(a[0] | (a[1] << 16)), constant(a[2] | (a[3] << 16)),
                 constant(b[0] | (b[1] << 16)), constant(b[2] | (b[3] << 16)),
                 constant(c[0] | (c[1] << 16)), constant(c[2] | (c[3] << 16)),
                 constant(operation | (1 << 8)), floating(1.0f), floating(1.0f),
-                floating(0.0f)});
+                floating(folded ? 1.0f : 0.0f)});
         continue;
       }
       if (node.operation == "Relu" || node.operation == "Sigmoid" ||
