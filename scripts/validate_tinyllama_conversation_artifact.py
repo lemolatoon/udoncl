@@ -1,8 +1,10 @@
 """Validate the pinned TinyLlama M=1 Conversation/Chat Artifact contract.
 
 The Conversation Artifact exports only the token-array lifecycle. The Chat
-Artifact is the same Host plus the optional text layer. Both are specialized
-to a build-time Context Capacity (default 64).
+Artifact is the same Host plus the optional text layer, including multi-turn
+chat (BeginChatTurn/ContinueChatTurn append a user message after a reply,
+ResetChat starts a new conversation). Both are specialized to a build-time
+Context Capacity (default 64).
 """
 
 from __future__ import annotations
@@ -42,6 +44,10 @@ CHAT_EXPORTS = {
     "ContinueChatPrompt": (
         "tinyllama_continue_chat_prompt", ["string", "string", "i32"], False),
     "ChatPromptPending": ("tinyllama_chat_prompt_pending", [], False),
+    "BeginChatTurn": ("tinyllama_begin_chat_turn", [], False),
+    "ContinueChatTurn": (
+        "tinyllama_continue_chat_turn", ["string", "i32"], False),
+    "ResetChat": ("tinyllama_reset_chat", [], True),
     "PromptTokenCount": ("tinyllama_prompt_token_count", [], False),
     "ReadPromptTokens": ("tinyllama_read_prompt_tokens", ["i32_array"], False),
     "GeneratedTextLength": ("tinyllama_generated_text_length", [], False),
@@ -183,6 +189,9 @@ def validate_artifact(
             "TryContinueChatPrompt(string systemText, string userText, "
             "int maxWork, out int result)",
             "TryChatPromptPending(out int result)",
+            "TryBeginChatTurn(out int result)",
+            "TryContinueChatTurn(string userText, int maxWork, out int result)",
+            "StartResetChat(", "GetResetChatStatus(", "TryGetResetChatResult(",
             "TryPromptTokenCount(out int result)",
             "TryReadPromptTokens(int[] destination, out int result)",
             "TryGeneratedTextLength(out int result)",

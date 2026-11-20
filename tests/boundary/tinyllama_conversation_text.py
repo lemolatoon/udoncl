@@ -57,14 +57,47 @@ CONTEXT_CAPACITY = 64
 GENERATED_CAPACITY = 32
 
 
-def chat_tokens(system: str, user: str) -> list[int]:
-    messages = ([{"role": "system", "content": system}] if system else []) + [
-        {"role": "user", "content": user}
-    ]
+def conversation_tokens(system: str, messages: list[dict[str, str]]) -> list[int]:
+    messages = ([{"role": "system", "content": system}] if system else []) + messages
     rendered = template.render(
         messages=messages, add_generation_prompt=True, eos_token="</s>", bos_token="<s>"
     )
     return tokenizer.encode(rendered).ids
+
+
+def chat_tokens(system: str, user: str) -> list[int]:
+    return conversation_tokens(system, [{"role": "user", "content": user}])
+
+
+def conversation_turns(system: str, exchanges: list[tuple[str, str]], last_user: str):
+    """Splits Hugging Face's encoding of a whole conversation into the turns
+    the text layer appends.
+
+    Returns the first prompt, then per later user message the reply tokens
+    the model would have generated (the Hugging Face tokens of the assistant
+    message through its EOS) and the tokens appended for that turn. Every
+    prefix of the conversation must encode to a prefix of the whole one, so
+    the concatenation of the prompt, replies and turns is exactly
+    `apply_chat_template` of the whole conversation.
+    """
+    users = [user for user, _ in exchanges] + [last_user]
+    messages = [{"role": "user", "content": users[0]}]
+    context = conversation_tokens(system, messages)
+    first = list(context)
+    turns = []
+    for (_, assistant), user in zip(exchanges, users[1:]):
+        messages += [
+            {"role": "assistant", "content": assistant},
+            {"role": "user", "content": user},
+        ]
+        whole = conversation_tokens(system, messages)
+        assert whole[: len(context)] == context, (system, users)
+        end = whole.index(2, len(context)) + 1
+        reply = whole[len(context) : end]
+        assert len(reply) <= GENERATED_CAPACITY, reply
+        turns.append((user, reply, whole[end:]))
+        context = whole
+    return first, turns, context
 
 
 byte = {value: tokenizer.token_to_id(f"<0x{value:02X}>") for value in range(256)}
@@ -120,6 +153,9 @@ lines = [
     "udononnxStatus_t tinyllama_begin_chat_prompt(void);",
     "udononnxStatus_t tinyllama_continue_chat_prompt(udon_string_t, udon_string_t, uint32_t);",
     "uint32_t tinyllama_chat_prompt_pending(void);",
+    "udononnxStatus_t tinyllama_begin_chat_turn(void);",
+    "udononnxStatus_t tinyllama_continue_chat_turn(udon_string_t, uint32_t);",
+    "udononnxStatus_t tinyllama_reset_chat(void);",
     "uint32_t tinyllama_prompt_token_count(void);",
     "udononnxStatus_t tinyllama_read_prompt_tokens(udon_int32_array_t);",
     "uint32_t tinyllama_streamed_text_length(void);",
@@ -143,6 +179,32 @@ lines = [
     "  if (count > TINYLLAMA_CONTEXT_CAPACITY) return UDONONNX_STATUS_CAPACITY_EXCEEDED;",
     "  prompt_count = count;",
     "  ++committed;",
+    "  return UDONONNX_STATUS_SUCCESS;",
+    "}",
+    "/* Turns: the fake reports a completed reply whose closing tokens take the",
+    " * first `closing` prompt words, and the capacity left after them. */",
+    "static uint32_t closing, turn_capacity = TINYLLAMA_CONTEXT_CAPACITY, resets;",
+    "udononnxStatus_t tinyllamaConversationPrepareTurn(int32_t **workspace, uint32_t *capacity) {",
+    "  uint32_t index;",
+    "  if (!completed) return UDONONNX_STATUS_INVALID_STATE;",
+    "  for (index = 0; index < closing; ++index) prompt[index] = 2;",
+    "  prompt_count = 0;",
+    "  *workspace = prompt + closing;",
+    "  *capacity = turn_capacity;",
+    "  return UDONONNX_STATUS_SUCCESS;",
+    "}",
+    "udononnxStatus_t tinyllamaConversationCommitTurn(uint32_t count) {",
+    "  if (!completed) return UDONONNX_STATUS_INVALID_STATE;",
+    "  if (count > turn_capacity) return UDONONNX_STATUS_CAPACITY_EXCEEDED;",
+    "  prompt_count = closing + count;",
+    "  ++committed;",
+    "  return UDONONNX_STATUS_SUCCESS;",
+    "}",
+    "udononnxStatus_t tinyllamaConversationReset(void) {",
+    "  ++resets;",
+    "  ++serial;",
+    "  prompt_count = generated_count = 0;",
+    "  completed = 0;",
     "  return UDONONNX_STATUS_SUCCESS;",
     "}",
     "udononnxStatus_t tinyllamaConversationPrompt(const int32_t **tokens, uint32_t *count) {",
@@ -254,6 +316,143 @@ lines.extend(
         "  }",
     ]
 )
+def c_string(name: str, text: str) -> list[str]:
+    units = utf16_units(text)
+    return [
+        f"    static const uint16_t {name}_units[] = {{{c_values(units)}}};",
+        f"    udon_string_native_t {name} = {{{name}_units, {len(units)}}};",
+    ]
+
+
+def c_expect_prompt(expected: list[int], closing: int = 0) -> list[str]:
+    return [
+        "    {",
+        f"      static const int32_t expected[] = {{{c_values(expected)}}};",
+        f"      EXPECT(tinyllama_prompt_token_count() == {closing + len(expected)});",
+        "      EXPECT(tinyllama_read_prompt_tokens(&read_array) == UDONONNX_STATUS_SUCCESS);",
+        f"      for (index = 0; index < {closing}; ++index)",
+        "        EXPECT(read[index] == 2);",
+        f"      for (index = 0; index < {len(expected)}; ++index)",
+        f"        EXPECT(read[{closing} + index] == expected[index]);",
+        "    }",
+    ]
+
+
+# Multi-turn conversations. The appended turns concatenated with the first
+# prompt and the replies must be exactly Hugging Face's encoding of the whole
+# conversation, including a user message that spells added tokens.
+conversations = [
+    (
+        "",
+        [("What is your name?", "My name is Sarah."), ("What did you just say?", "I said that my name is Sarah.")],
+        "Thanks! こんにちは \U0001f35c",
+    ),
+    ("You are a friendly chatbot.", [("Hi", "Hello! How can I help? 日本 é")], "a</s>b <s> é"),
+]
+turn_count = 0
+lines.extend(
+    [
+        "  /* A turn needs a completed reply to continue. */",
+        "  EXPECT(tinyllama_begin_chat_turn() == UDONONNX_STATUS_INVALID_STATE);",
+        "  EXPECT(tinyllama_chat_prompt_pending() == 0);",
+    ]
+)
+for conversation_index, (system, exchanges, last_user) in enumerate(conversations):
+    first, turns, whole = conversation_turns(system, exchanges, last_user)
+    concatenated = list(first)
+    for _, reply, appended in turns:
+        concatenated += reply + appended
+    assert concatenated == whole
+    assert turns[0][2][0] != 1, "a turn must not start with BOS"
+    lines.append("  {")
+    lines += c_string("system", system)
+    lines += c_string("first_user", exchanges[0][0])
+    lines += [
+        "    uint32_t calls;",
+        "    completed = 0;",
+        "    generated_count = 0;",
+        "    ++serial;",
+        "    EXPECT(tinyllama_set_chat_prompt(&system, &first_user) == UDONONNX_STATUS_SUCCESS);",
+    ]
+    lines += c_expect_prompt(first)
+    for turn_index, (user, reply, appended) in enumerate(turns):
+        turn_count += 1
+        bounded = turn_index % 2 == 0
+        lines += [
+            "    {",
+            f"      static const int32_t reply[] = {{{c_values(reply)}}};",
+        ]
+        lines += ["  " + line for line in c_string("user", user)]
+        lines += [
+            "      /* The Host completed the reply. */",
+            f"      for (index = 0; index < {len(reply)}; ++index)",
+            "        generated[index] = reply[index];",
+            f"      generated_count = {len(reply)};",
+            "      completed = 1;",
+            "      ++serial;",
+            "      calls = 0;",
+            "      EXPECT(tinyllama_continue_chat_turn(&user, 5) == UDONONNX_STATUS_INVALID_STATE);",
+            "      EXPECT(tinyllama_begin_chat_turn() == UDONONNX_STATUS_SUCCESS);",
+            "      EXPECT(tinyllama_chat_prompt_pending() == 1);",
+            "      EXPECT(tinyllama_prompt_token_count() == 0);",
+            "      /* A turn is not a new prompt. */",
+            "      EXPECT(tinyllama_continue_chat_prompt(&system, &user, 5) == UDONONNX_STATUS_INVALID_STATE);",
+            "      EXPECT(tinyllama_continue_chat_turn(&user, 0) == UDONONNX_STATUS_INVALID_VALUE);",
+            "      while (tinyllama_chat_prompt_pending()) {",
+            f"        EXPECT(tinyllama_continue_chat_turn(&user, {5 if bounded else '0xffffffffu'}) == UDONONNX_STATUS_SUCCESS);",
+            "        ++calls;",
+            "      }",
+            f"      EXPECT(calls {'>' if bounded else '=='} {len(utf16_units(user)) // 5 if bounded else 1});",
+            "      EXPECT(tinyllama_last_tokenizer_status() == 0);",
+        ]
+        lines += ["  " + line for line in c_expect_prompt(appended)]
+        lines.append("    }")
+    # The text layer appends after the closing tokens the Host reserves and
+    # rejects a turn beyond the capacity the Host reports, unchanged.
+    user, reply, appended = turns[-1]
+    lines += c_string("last", user)
+    lines += [
+        "    closing = 2;",
+        "    EXPECT(tinyllama_begin_chat_turn() == UDONONNX_STATUS_SUCCESS);",
+        "    EXPECT(tinyllama_continue_chat_turn(&last, 0xffffffffu) == UDONONNX_STATUS_SUCCESS);",
+    ]
+    lines += c_expect_prompt(appended, 2)
+    lines += [
+        "    {",
+        "      uint32_t before = committed;",
+        f"      turn_capacity = {len(appended) - 1};",
+        "      EXPECT(tinyllama_begin_chat_turn() == UDONONNX_STATUS_SUCCESS);",
+        "      EXPECT(tinyllama_continue_chat_turn(&last, 0xffffffffu) == UDONONNX_STATUS_CAPACITY_EXCEEDED);",
+        "      EXPECT(tinyllama_last_tokenizer_status() == 4);",
+        "      EXPECT(committed == before && tinyllama_chat_prompt_pending() == 0);",
+        f"      turn_capacity = {len(appended)};",
+        "      EXPECT(tinyllama_begin_chat_turn() == UDONONNX_STATUS_SUCCESS);",
+        "      EXPECT(tinyllama_continue_chat_turn(&last, 0xffffffffu) == UDONONNX_STATUS_SUCCESS);",
+        "      EXPECT(committed == before + 1);",
+        "      turn_capacity = TINYLLAMA_CONTEXT_CAPACITY;",
+        "      closing = 0;",
+        "    }",
+        "    /* ResetChat abandons a turn being built and the conversation. */",
+        "    {",
+        "      uint32_t before = resets;",
+        "      EXPECT(tinyllama_begin_chat_turn() == UDONONNX_STATUS_SUCCESS);",
+        "      EXPECT(tinyllama_chat_prompt_pending() == 1);",
+        "      EXPECT(tinyllama_reset_chat() == UDONONNX_STATUS_SUCCESS);",
+        "      EXPECT(resets == before + 1 && tinyllama_chat_prompt_pending() == 0);",
+        "      EXPECT(tinyllama_continue_chat_turn(&last, 5) == UDONONNX_STATUS_INVALID_STATE);",
+        "      EXPECT(tinyllama_begin_chat_turn() == UDONONNX_STATUS_INVALID_STATE);",
+        "      EXPECT(tinyllama_set_chat_prompt(&system, &first_user) == UDONONNX_STATUS_SUCCESS);",
+        "    }",
+        "  }",
+    ]
+lines.extend(
+    [
+        "  completed = 0;",
+        "  generated_count = 0;",
+        "  ++serial;",
+    ]
+)
+
 for reply_index, reply in enumerate(replies):
     final = utf16_units(tokenizer.decode(reply, skip_special_tokens=True))
     lines.extend(
@@ -360,6 +559,7 @@ result = subprocess.run([str(executable)])
 assert result.returncode == 0, f"conversation text layer failed: {result.returncode}"
 print(
     "tinyllama_conversation_text=passed "
-    f"chat_cases={len(cases)} replies={len(replies)} "
+    f"chat_cases={len(cases)} conversations={len(conversations)} "
+    f"turns={turn_count} replies={len(replies)} "
     f"streamed_tokens={sum(len(reply) for reply in replies)}"
 )

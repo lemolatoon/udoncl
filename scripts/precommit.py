@@ -180,6 +180,15 @@ def run(command, **kwargs):
     return subprocess.run([str(item) for item in command], check=True, **kwargs)
 
 
+def tinyllama_chat_oracle_turns(oracle: Path) -> int:
+    """Number of later turns in a chat oracle written by
+    tests/boundary/tinyllama_chat_oracle.py."""
+    turns = json.loads(oracle.read_text(encoding="utf-8")).get("turns") or []
+    if not isinstance(turns, list):
+        raise RuntimeError(f"invalid TinyLlama chat oracle turns: {oracle}")
+    return len(turns)
+
+
 def prepare_tinyllama_focused_case(root: Path, build: Path, case: str):
     entry = root / "tests/focused" / f"tinyllama_{case}.py"
     with tempfile.TemporaryDirectory(prefix=f"udoncl-{case}-", dir=build) as temporary:
@@ -1066,6 +1075,11 @@ def run_unity_mcp_gate(
                 / "Assets/UdonclSampleValidation/Editor/"
                 "PublicTinyLlamaChatLifecycleTests.cs"
             )
+            multi_turn_test = (
+                Path(project)
+                / "Assets/UdonclSampleValidation/Editor/"
+                "PublicTinyLlamaMultiTurnChatLifecycleTests.cs"
+            )
             imported_program = (
                 Path(project)
                 / "Assets/udoncl-generated/tinyllama_real_chat/Programs/"
@@ -1073,7 +1087,7 @@ def run_unity_mcp_gate(
             )
             missing = [
                 str(path)
-                for path in (focused_test, imported_program)
+                for path in (focused_test, multi_turn_test, imported_program)
                 if not path.is_file()
             ]
             if missing:
@@ -1283,7 +1297,10 @@ def main():
     parser.add_argument(
         "--tinyllama-chat-oracle",
         type=Path,
-        help="chat-oracle.json written by tests/boundary/tinyllama_chat_oracle.py",
+        help=(
+            "chat-oracle.json written by tests/boundary/tinyllama_chat_oracle.py; "
+            "with later turns (--next-user) the multi-turn chat test runs too"
+        ),
     )
     parser.add_argument(
         "--tinyllama-m1-step-oracles",
@@ -1519,6 +1536,14 @@ def main():
                 "PublicTinyLlamaChatLifecycleTests."
                 "GeneratedUSharpBindingAnswersChatPromptWithText"
             )
+            # An oracle with later turns (--next-user) also gates the
+            # multi-turn conversation on the same Chat Artifact.
+            if tinyllama_chat_oracle_turns(tinyllama_chat_oracle):
+                unity_tests.append(
+                    "Lemolatoon.Udoncl.Editor.Tests."
+                    "PublicTinyLlamaMultiTurnChatLifecycleTests."
+                    "GeneratedUSharpBindingContinuesChatAcrossTurns"
+                )
             unity_test_assemblies = ["Udoncl.TinyLlama.Chat.Focused.Tests"]
     run_unity_mcp_gate(
         root,

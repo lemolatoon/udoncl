@@ -11,10 +11,18 @@
  * (begin, then continue with a work budget until nothing is pending), so a
  * long message never has to fit in one Udon event.
  *
+ * Multi-turn: a chat prompt starts a conversation. After a reply, the next
+ * user message is appended as a turn (begin, then continue, the same way):
+ * the reply enters the context as its generated tokens, and only the template
+ * text from the end of the reply through the next generation prompt is
+ * encoded, without BOS. A conversation that would overflow the Context
+ * Capacity is rejected unchanged; ResetChat starts a new one.
+ *
  * Text out: generated tokens are decoded incrementally. The streamed text is
  * the prefix of the reply that can no longer change; it only grows, and once
- * the generation completed it is the whole reply. Polling costs time
- * proportional to the tokens generated since the previous poll. */
+ * the generation completed it is the whole reply. Each generation streams its
+ * own reply from the start. Polling costs time proportional to the tokens
+ * generated since the previous poll. */
 #include <stdint.h>
 #include <udoncl/array.h>
 #include <udoncl/export.h>
@@ -36,16 +44,19 @@
   UDONTOKENIZERS_ENCODER_WORKSPACE_WORDS(TINYLLAMA_PROMPT_SYMBOL_CAPACITY)
 #define TINYLLAMA_UNBOUNDED_WORK 0x7fffffffu
 
-/* Stages of building a chat prompt. */
+/* Stages of building a chat prompt or turn. */
 #define PROMPT_IDLE 0
 #define PROMPT_SYSTEM 1
 #define PROMPT_USER 2
-#define PROMPT_MERGE 3
+#define PROMPT_TURN 3
+#define PROMPT_MERGE 4
 
 static int32_t prompt_workspace[TINYLLAMA_PROMPT_WORKSPACE_WORDS];
 static udontokenizers_encoder_t prompt_encoder;
 static int32_t prompt_stage;
 static int32_t prompt_position;
+/* 1 while the text being built is a turn appended to the conversation. */
+static int32_t prompt_is_turn;
 
 static int32_t text_units[TINYLLAMA_TEXT_CAPACITY];
 static udontokenizers_decoder_t stream;
@@ -74,54 +85,69 @@ static udononnxStatus_t map_tokenizer_status(udontokenizersStatus_t status) {
 /* Starts replacing the prompt with BOS + the chat-templated conversation
  * [system (omitted when empty), user] + the generation prompt. The previous
  * prompt is cleared; the new one exists once no work is pending. */
-UDONCL_EXPORT udononnxStatus_t tinyllama_begin_chat_prompt(void) {
+static udononnxStatus_t begin_text(udononnxStatus_t host, int32_t is_turn) {
   udontokenizers_model_t model;
-  int32_t *tokens = 0;
-  udononnxStatus_t host = tinyllamaConversationPreparePrompt(&tokens);
   prompt_stage = PROMPT_IDLE;
   last_tokenizer_status = UDONTOKENIZERS_STATUS_SUCCESS;
   if (host != UDONONNX_STATUS_SUCCESS)
     return host;
   tinyllama_tokenizerInitializeModel(&model);
-  host = map_tokenizer_status(
-      udontokenizersEncoderBeginRaw(&model, &prompt_encoder, prompt_workspace,
-                                    TINYLLAMA_PROMPT_WORKSPACE_WORDS, 1));
+  /* A turn continues the conversation, so only a new prompt starts with
+   * BOS. */
+  host = map_tokenizer_status(udontokenizersEncoderBeginRaw(
+      &model, &prompt_encoder, prompt_workspace,
+      TINYLLAMA_PROMPT_WORKSPACE_WORDS, !is_turn));
   if (host != UDONONNX_STATUS_SUCCESS)
     return host;
-  prompt_stage = PROMPT_SYSTEM;
+  prompt_stage = is_turn ? PROMPT_TURN : PROMPT_SYSTEM;
+  prompt_is_turn = is_turn;
   prompt_position = 0;
   return UDONONNX_STATUS_SUCCESS;
 }
 
-static udononnxStatus_t commit_chat_prompt(void) {
+UDONCL_EXPORT udononnxStatus_t tinyllama_begin_chat_prompt(void) {
   int32_t *tokens = 0;
+  return begin_text(tinyllamaConversationPreparePrompt(&tokens), 0);
+}
+
+/* Starts appending the next user message to the conversation, after a
+ * completed reply: the reply's end-of-turn text, the user message and the
+ * generation prompt. A turn that was committed but not generated yet is
+ * replaced. */
+UDONCL_EXPORT udononnxStatus_t tinyllama_begin_chat_turn(void) {
+  int32_t *tokens = 0;
+  uint32_t capacity = 0;
+  return begin_text(tinyllamaConversationPrepareTurn(&tokens, &capacity), 1);
+}
+
+static udononnxStatus_t commit_text(void) {
+  int32_t *tokens = 0;
+  uint32_t capacity = TINYLLAMA_CONTEXT_CAPACITY;
   int32_t count = prompt_encoder.count;
   int32_t index;
-  udononnxStatus_t host = tinyllamaConversationPreparePrompt(&tokens);
+  udononnxStatus_t host =
+      prompt_is_turn ? tinyllamaConversationPrepareTurn(&tokens, &capacity)
+                     : tinyllamaConversationPreparePrompt(&tokens);
   if (host != UDONONNX_STATUS_SUCCESS)
     return host;
-  if (count > (int32_t)TINYLLAMA_CONTEXT_CAPACITY)
+  if (count > (int32_t)capacity)
     return map_tokenizer_status(UDONTOKENIZERS_STATUS_OUTPUT_TOO_SMALL);
   for (index = 0; index < count; ++index)
     tokens[index] = prompt_workspace[index];
-  return tinyllamaConversationCommitPrompt((uint32_t)count);
+  return prompt_is_turn ? tinyllamaConversationCommitTurn((uint32_t)count)
+                        : tinyllamaConversationCommitPrompt((uint32_t)count);
 }
 
-/* Does at most `max_work` units of prompt work: one unit consumes about one
- * UTF-16 code unit of the template and messages or does one unit of merge
- * work. The caller passes the same texts on every call of one prompt. The
- * prompt is committed by the call that leaves no work pending; any failure
- * abandons it. */
-UDONCL_EXPORT udononnxStatus_t tinyllama_continue_chat_prompt(
-    udon_string_t system_text, udon_string_t user_text, uint32_t max_work) {
+/* The bounded work of a begun prompt or turn; see continue_chat_prompt. */
+static udononnxStatus_t continue_text(udon_string_t system_text,
+                                      udon_string_t user_text,
+                                      uint32_t max_work) {
   udontokenizers_model_t model;
   udontokenizers_chat_template_t chat;
   udontokenizersStatus_t status = UDONTOKENIZERS_STATUS_SUCCESS;
   int32_t remaining =
       max_work > TINYLLAMA_UNBOUNDED_WORK ? 0x7fffffff : (int32_t)max_work;
   int32_t finished = 0;
-  if (prompt_stage == PROMPT_IDLE)
-    return UDONONNX_STATUS_INVALID_STATE;
   if (remaining <= 0)
     return UDONONNX_STATUS_INVALID_VALUE;
   tinyllama_tokenizerInitializeModel(&model);
@@ -136,10 +162,15 @@ UDONCL_EXPORT udononnxStatus_t tinyllama_continue_chat_prompt(
           &model, &chat, &prompt_encoder, UDONTOKENIZERS_CHAT_ROLE_SYSTEM,
           system_text, &prompt_position, remaining, &finished,
           prompt_workspace);
-    else
+    else if (prompt_stage == PROMPT_USER)
       status = udontokenizersEncoderAppendChatMessagePartRaw(
           &model, &chat, &prompt_encoder, UDONTOKENIZERS_CHAT_ROLE_USER,
           user_text, &prompt_position, remaining, &finished, prompt_workspace);
+    else
+      status = udontokenizersEncoderAppendChatTurnPartRaw(
+          &model, &chat, &prompt_encoder, UDONTOKENIZERS_CHAT_ROLE_ASSISTANT,
+          UDONTOKENIZERS_CHAT_ROLE_USER, user_text, &prompt_position, remaining,
+          &finished, prompt_workspace);
     if (status != UDONTOKENIZERS_STATUS_SUCCESS)
       break;
     remaining -= prompt_position - before;
@@ -165,10 +196,45 @@ UDONCL_EXPORT udononnxStatus_t tinyllama_continue_chat_prompt(
   if (!finished)
     return UDONONNX_STATUS_SUCCESS;
   prompt_stage = PROMPT_IDLE;
-  return commit_chat_prompt();
+  return commit_text();
 }
 
-/* 1 while a begun chat prompt still has work pending, else 0. */
+/* Does at most `max_work` units of prompt work: one unit consumes about one
+ * UTF-16 code unit of the template and messages or does one unit of merge
+ * work. The caller passes the same texts on every call of one prompt. The
+ * prompt is committed by the call that leaves no work pending; any failure
+ * abandons it. */
+UDONCL_EXPORT udononnxStatus_t tinyllama_continue_chat_prompt(
+    udon_string_t system_text, udon_string_t user_text, uint32_t max_work) {
+  if (prompt_stage == PROMPT_IDLE || prompt_is_turn)
+    return UDONONNX_STATUS_INVALID_STATE;
+  return continue_text(system_text, user_text, max_work);
+}
+
+/* The bounded work of a begun turn, as ContinueChatPrompt. The turn is
+ * committed by the call that leaves no work pending. A turn that does not
+ * fit the Context Capacity fails with CAPACITY_EXCEEDED and leaves the
+ * conversation unchanged. */
+UDONCL_EXPORT udononnxStatus_t
+tinyllama_continue_chat_turn(udon_string_t user_text, uint32_t max_work) {
+  if (prompt_stage == PROMPT_IDLE || !prompt_is_turn)
+    return UDONONNX_STATUS_INVALID_STATE;
+  return continue_text(user_text, user_text, max_work);
+}
+
+/* Discards the conversation, including a prompt or turn being built, and
+ * starts a new one; the Host Reset. */
+UDONCL_EXPORT udononnxStatus_t tinyllama_reset_chat(void) {
+  udononnxStatus_t status = tinyllamaConversationReset();
+  if (status == UDONONNX_STATUS_SUCCESS) {
+    prompt_stage = PROMPT_IDLE;
+    prompt_is_turn = 0;
+    last_tokenizer_status = UDONTOKENIZERS_STATUS_SUCCESS;
+  }
+  return status;
+}
+
+/* 1 while a begun chat prompt or turn still has work pending, else 0. */
 UDONCL_EXPORT uint32_t tinyllama_chat_prompt_pending(void) {
   return prompt_stage != PROMPT_IDLE;
 }

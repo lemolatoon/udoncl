@@ -201,6 +201,94 @@ static int test_text_layer(void) {
     EXPECT(workspace[0] == 1 && workspace[1] == 263 && workspace[2] == 2 &&
            workspace[3] == 259 && workspace[4] == 261);
   }
+  /* A turn after a generated reply: the rest of the previous suffix after its
+   * leading EOS text, then the next message. The tokens equal the tail of
+   * the whole conversation encoded at once. */
+  {
+    static const uint16_t turn_units[] = {'a', '<', '/', 's', '>', 'a', 'b'};
+    static const int32_t turn_prefix_offsets[] = {0, 0, 6};
+    static const int32_t turn_prefix_lengths[] = {-1, 1, 1};
+    static const int32_t turn_suffix_offsets[] = {0, 1, 1};
+    static const int32_t turn_suffix_lengths[] = {-1, 5, 5};
+    /* "</s>" + rest "a" + prefix "a" + content "b" + suffix "</s>a". */
+    static const uint16_t whole_units[] = {'<', '/', 's', '>', 'a', 'a',
+                                           'b', '<', '/', 's', '>', 'a'};
+    udon_string_native_t whole = {whole_units, 12};
+    udontokenizers_chat_template_t turn;
+    int32_t expected[16];
+    int32_t expected_count = -1;
+    int32_t position = 0;
+    int32_t finished = 0;
+    int32_t calls = 0;
+    turn.code_units = turn_units;
+    turn.role_prefix_offsets = turn_prefix_offsets;
+    turn.role_prefix_lengths = turn_prefix_lengths;
+    turn.role_suffix_offsets = turn_suffix_offsets;
+    turn.role_suffix_lengths = turn_suffix_lengths;
+    turn.generation_prompt_offset = 6;
+    turn.generation_prompt_length = 1;
+    EXPECT(udontokenizersEncodeRaw(
+               &model, &whole, expected, 16, &expected_count, workspace,
+               WORKSPACE_WORDS) == UDONTOKENIZERS_STATUS_SUCCESS);
+    EXPECT(expected_count == 8 && expected[0] == 1 && expected[1] == 2);
+    EXPECT(expected[2] == 259 && expected[3] == 260 && expected[4] == 262 &&
+           expected[5] == 2 && expected[6] == 259 && expected[7] == 260);
+    EXPECT(udontokenizersEncoderBeginRaw(&model, &encoder, workspace,
+                                         WORKSPACE_WORDS,
+                                         0) == UDONTOKENIZERS_STATUS_SUCCESS);
+    EXPECT(udontokenizersEncoderAppendChatTurnRaw(
+               &model, &turn, &encoder, UDONTOKENIZERS_CHAT_ROLE_ASSISTANT,
+               UDONTOKENIZERS_CHAT_ROLE_USER, &content,
+               workspace) == UDONTOKENIZERS_STATUS_SUCCESS);
+    EXPECT(
+        udontokenizersEncoderFinishRaw(&model, &encoder, workspace, &count) ==
+        UDONTOKENIZERS_STATUS_SUCCESS);
+    EXPECT(count == expected_count - 2);
+    for (index = 0; index < count; ++index)
+      EXPECT(workspace[index] == expected[index + 2]);
+    /* The same turn in single-unit slices, after text that would otherwise
+     * merge with it: the EOS before the turn ends that segment. */
+    EXPECT(udontokenizersEncoderBeginRaw(&model, &encoder, workspace,
+                                         WORKSPACE_WORDS,
+                                         0) == UDONTOKENIZERS_STATUS_SUCCESS);
+    EXPECT(udontokenizersEncoderAppendCodeUnitsRaw(&model, &encoder, turn_units,
+                                                   1, workspace) ==
+           UDONTOKENIZERS_STATUS_SUCCESS);
+    while (!finished) {
+      EXPECT(udontokenizersEncoderAppendChatTurnPartRaw(
+                 &model, &turn, &encoder, UDONTOKENIZERS_CHAT_ROLE_ASSISTANT,
+                 UDONTOKENIZERS_CHAT_ROLE_USER, &content, &position, 1,
+                 &finished, workspace) == UDONTOKENIZERS_STATUS_SUCCESS);
+      ++calls;
+    }
+    /* "a", "a", "b", the whole added token "</s>", then "a". */
+    EXPECT(calls == 5 && position == 8);
+    EXPECT(
+        udontokenizersEncoderFinishRaw(&model, &encoder, workspace, &count) ==
+        UDONTOKENIZERS_STATUS_SUCCESS);
+    EXPECT(count == expected_count);
+    EXPECT(workspace[0] == 259 && workspace[1] == 260);
+    for (index = 2; index < count; ++index)
+      EXPECT(workspace[index] == expected[index]);
+    /* The previous role must exist and its suffix must start with EOS. */
+    EXPECT(udontokenizersEncoderBeginRaw(&model, &encoder, workspace,
+                                         WORKSPACE_WORDS,
+                                         0) == UDONTOKENIZERS_STATUS_SUCCESS);
+    EXPECT(udontokenizersEncoderAppendChatTurnRaw(
+               &model, &turn, &encoder, UDONTOKENIZERS_CHAT_ROLE_SYSTEM,
+               UDONTOKENIZERS_CHAT_ROLE_USER, &content,
+               workspace) == UDONTOKENIZERS_STATUS_INVALID_ARGUMENT);
+    model.eos_token_id = 1;
+    EXPECT(udontokenizersEncoderAppendChatTurnRaw(
+               &model, &turn, &encoder, UDONTOKENIZERS_CHAT_ROLE_ASSISTANT,
+               UDONTOKENIZERS_CHAT_ROLE_USER, &content,
+               workspace) == UDONTOKENIZERS_STATUS_INVALID_ARGUMENT);
+    model.eos_token_id = 2;
+    EXPECT(udontokenizersEncoderAppendChatTurnRaw(
+               &model, &chat, &encoder, UDONTOKENIZERS_CHAT_ROLE_USER,
+               UDONTOKENIZERS_CHAT_ROLE_USER, &content,
+               workspace) == UDONTOKENIZERS_STATUS_SUCCESS);
+  }
   /* Room for two symbols: BOS and the prefix fit, the first letter does not,
    * and the failure is sticky. */
   EXPECT(

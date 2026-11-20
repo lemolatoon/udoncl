@@ -30,6 +30,10 @@ namespace Lemolatoon.Udoncl.Editor
         private const string StepValidationTestTemplate = "tinyllama-step-lifecycle-test.cs.txt";
         private const string ChatControllerTemplate = "tinyllama-chat-test-controller.cs.txt";
         private const string ChatLifecycleTestTemplate = "tinyllama-chat-lifecycle-test.cs.txt";
+        private const string MultiTurnChatControllerTemplate =
+            "tinyllama-multi-turn-chat-test-controller.cs.txt";
+        private const string MultiTurnChatLifecycleTestTemplate =
+            "tinyllama-multi-turn-chat-lifecycle-test.cs.txt";
 
         [MenuItem("Tools/udoncl/Examples/Import C and OpenCL Hello Dispatch")]
         private static void ImportHelloDispatch()
@@ -347,6 +351,26 @@ namespace Lemolatoon.Udoncl.Editor
             File.Copy(
                 Path.Combine(package.resolvedPath, "Editor", "Examples", ChatLifecycleTestTemplate),
                 editorRoot + "/PublicTinyLlamaChatLifecycleTests.cs",
+                true
+            );
+            File.Copy(
+                Path.Combine(
+                    package.resolvedPath,
+                    "Editor",
+                    "Examples",
+                    MultiTurnChatControllerTemplate
+                ),
+                validationRoot + "/UdonclTinyLlamaMultiTurnChatTestController.cs",
+                true
+            );
+            File.Copy(
+                Path.Combine(
+                    package.resolvedPath,
+                    "Editor",
+                    "Examples",
+                    MultiTurnChatLifecycleTestTemplate
+                ),
+                editorRoot + "/PublicTinyLlamaMultiTurnChatLifecycleTests.cs",
                 true
             );
             File.WriteAllText(

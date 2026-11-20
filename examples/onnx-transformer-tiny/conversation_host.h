@@ -27,6 +27,21 @@ extern "C" {
 udononnxStatus_t tinyllamaConversationPreparePrompt(int32_t **workspace);
 /* Validates and accepts the first token_count workspace tokens. */
 udononnxStatus_t tinyllamaConversationCommitPrompt(uint32_t token_count);
+/* Starts appending the next turn to the conversation after a completed
+ * generation. The previous reply enters the context as its generated tokens;
+ * a reply cut off by the token limit is closed with its never-run last token
+ * and EOS. On success the workspace for the turn tokens and its capacity (the
+ * Context Capacity left after the conversation and those closing tokens) are
+ * returned and any previously committed turn is cleared; the conversation
+ * itself is unchanged until the next generation. */
+udononnxStatus_t tinyllamaConversationPrepareTurn(int32_t **workspace,
+                                                  uint32_t *capacity);
+/* Validates and accepts the first token_count turn workspace tokens; the
+ * next generation feeds the closing tokens and the turn. */
+udononnxStatus_t tinyllamaConversationCommitTurn(uint32_t token_count);
+/* The exported Reset of the Conversation Host; an export is not called from
+ * another one. */
+udononnxStatus_t tinyllamaConversationReset(void);
 udononnxStatus_t tinyllamaConversationPrompt(const int32_t **tokens,
                                              uint32_t *token_count);
 /* Requires a successfully completed generation. */

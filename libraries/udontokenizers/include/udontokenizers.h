@@ -185,6 +185,32 @@ udontokenizersStatus_t udontokenizersEncoderAppendChatMessagePartRaw(
     udontokenizers_encoder_t *encoder, int32_t role, udon_string_t content,
     int32_t *position, int32_t max_code_units, int32_t *finished,
     int32_t *workspace);
+/* Continues a conversation after a message of `previous_role` that the model
+ * generated as token IDs ending with its end-of-sequence token, so the
+ * generated tokens enter the context as they are instead of being decoded and
+ * encoded again. Appends the rest of `previous_role`'s suffix after the
+ * end-of-sequence text, then the `role` message as AppendChatMessageRaw does.
+ * The suffix must start with the text of the model's end-of-sequence added
+ * token. That token ends a segment, so the appended text starts a new
+ * segment; an encoder begun without special tokens for this text yields the
+ * same tokens as encoding the whole conversation in one text.
+ *
+ * For TinyLlama, appending a user turn after an assistant reply that ended
+ * with `</s>` encodes "\n<|user|>\n{content}</s>\n". */
+udontokenizersStatus_t udontokenizersEncoderAppendChatTurnRaw(
+    const udontokenizers_model_t *model,
+    const udontokenizers_chat_template_t *chat,
+    udontokenizers_encoder_t *encoder, int32_t previous_role, int32_t role,
+    udon_string_t content, int32_t *workspace);
+/* Bounded form of AppendChatTurnRaw. *position counts the code units of the
+ * rest of the previous suffix, the role prefix, the content and the role
+ * suffix consumed so far, starting at zero for each turn. */
+udontokenizersStatus_t udontokenizersEncoderAppendChatTurnPartRaw(
+    const udontokenizers_model_t *model,
+    const udontokenizers_chat_template_t *chat,
+    udontokenizers_encoder_t *encoder, int32_t previous_role, int32_t role,
+    udon_string_t content, int32_t *position, int32_t max_code_units,
+    int32_t *finished, int32_t *workspace);
 udontokenizersStatus_t udontokenizersEncoderAppendChatGenerationPromptRaw(
     const udontokenizers_model_t *model,
     const udontokenizers_chat_template_t *chat,

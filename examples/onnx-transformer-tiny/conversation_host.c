@@ -43,6 +43,21 @@ static uint32_t selected_token;
 static cl_event selected_event;
 static uint32_t prompt_count, generated_count, generation_serial;
 static int initialized, disposed, busy, completed, failed;
+/* Multi-turn state. The sequence state holds the K/V of positions
+ * [0, context_count). After a completed generation the last generated token
+ * was never run when the generation reached its limit (last_unrun); a reply
+ * that ended with EOS before the limit had its EOS run speculatively. A turn
+ * prepared after a completed generation fills prompt[] with the tokens that
+ * close the previous reply (closing_count of them) followed by the next turn;
+ * once committed (continuing) the next generation feeds them from
+ * context_count. */
+static uint32_t context_count, closing_count;
+static int last_unrun, turn_prepared, continuing;
+
+static void clear_conversation(void) {
+  prompt_count = generated_count = context_count = closing_count = 0;
+  completed = failed = last_unrun = turn_prepared = continuing = 0;
+}
 
 static udononnxStatus_t release_opencl(void) {
   int failed = 0;
@@ -173,14 +188,17 @@ UDONCL_EXPORT udononnxStatus_t tinyllama_initialize(void) {
   status = enqueue_clear_sequence_state();
   if (status != UDONONNX_STATUS_SUCCESS)
     return cleanup(status);
-  prompt_count = generated_count = 0;
-  completed = failed = 0;
+  clear_conversation();
   ++generation_serial;
   initialized = 1;
   return UDONONNX_STATUS_SUCCESS;
 }
 
 UDONCL_EXPORT udononnxStatus_t tinyllama_reset(void) {
+  return tinyllamaConversationReset();
+}
+
+udononnxStatus_t tinyllamaConversationReset(void) {
   udononnxStatus_t status;
   if (disposed)
     return UDONONNX_STATUS_DISPOSED;
@@ -195,8 +213,7 @@ UDONCL_EXPORT udononnxStatus_t tinyllama_reset(void) {
   status = enqueue_clear_sequence_state();
   ++generation_serial;
   if (status == UDONONNX_STATUS_SUCCESS) {
-    prompt_count = generated_count = 0;
-    completed = failed = 0;
+    clear_conversation();
   } else {
     failed = 1;
   }
@@ -270,6 +287,58 @@ udononnxStatus_t tinyllamaConversationCommitPrompt(uint32_t token_count) {
   return UDONONNX_STATUS_SUCCESS;
 }
 
+/* Closes the previous reply: a token that was never run is run now, and a
+ * reply that did not end with EOS gets one, so the conversation continues
+ * after the template's end-of-sequence text exactly as when the model emits
+ * EOS itself. */
+udononnxStatus_t tinyllamaConversationPrepareTurn(int32_t **workspace,
+                                                  uint32_t *capacity) {
+  udononnxStatus_t status = prompt_replacement_state();
+  uint32_t closing = 0;
+  if (status != UDONONNX_STATUS_SUCCESS)
+    return status;
+  if (!workspace || !capacity)
+    return UDONONNX_STATUS_INVALID_VALUE;
+  if (!completed || !generated_count ||
+      generated_count > TINYLLAMA_GENERATED_CAPACITY)
+    return UDONONNX_STATUS_INVALID_STATE;
+  if (last_unrun) {
+    prompt[closing++] = generated[generated_count - 1u];
+    if (generated[generated_count - 1u] != (int32_t)TINYLLAMA_EOS_TOKEN)
+      prompt[closing++] = (int32_t)TINYLLAMA_EOS_TOKEN;
+  }
+  /* A turn needs at least one token after the closing tokens. */
+  if (context_count > TINYLLAMA_CONTEXT_CAPACITY ||
+      closing >= TINYLLAMA_CONTEXT_CAPACITY - context_count)
+    return UDONONNX_STATUS_CAPACITY_EXCEEDED;
+  prompt_count = 0;
+  continuing = 0;
+  closing_count = closing;
+  turn_prepared = 1;
+  *workspace = prompt + closing;
+  *capacity = TINYLLAMA_CONTEXT_CAPACITY - context_count - closing;
+  return UDONONNX_STATUS_SUCCESS;
+}
+
+udononnxStatus_t tinyllamaConversationCommitTurn(uint32_t token_count) {
+  uint32_t index;
+  udononnxStatus_t status = prompt_replacement_state();
+  if (status != UDONONNX_STATUS_SUCCESS)
+    return status;
+  if (!completed || !turn_prepared)
+    return UDONONNX_STATUS_INVALID_STATE;
+  if (!token_count)
+    return UDONONNX_STATUS_INVALID_VALUE;
+  if (token_count > TINYLLAMA_CONTEXT_CAPACITY - context_count - closing_count)
+    return UDONONNX_STATUS_CAPACITY_EXCEEDED;
+  for (index = closing_count; index < closing_count + token_count; ++index)
+    if (prompt[index] < 0 || prompt[index] >= TINYLLAMA_LOGIT_WORDS)
+      return UDONONNX_STATUS_INVALID_VALUE;
+  prompt_count = closing_count + token_count;
+  continuing = 1;
+  return UDONONNX_STATUS_SUCCESS;
+}
+
 udononnxStatus_t tinyllamaConversationPrompt(const int32_t **tokens,
                                              uint32_t *token_count) {
   if (disposed)
@@ -323,10 +392,16 @@ tinyllamaConversationGenerationProgress(const int32_t **tokens,
 /* The attention mask and the position of a step depend only on the step
  * index, so the Host patches them on the Device before the token is known. */
 static udononnxStatus_t enqueue_step_position(uint32_t position) {
-  size_t mask = TINYLLAMA_CONTEXT_CAPACITY - position - 1u;
+  size_t mask;
   cl_mem attention, positions;
   size_t attention_offset = 0, positions_offset = 0;
-  udononnxStatus_t status =
+  udononnxStatus_t status;
+  /* The mask has one word per position; generate() never gets here with a
+   * position past the Context Capacity, and this keeps it that way. */
+  if (position >= TINYLLAMA_CONTEXT_CAPACITY)
+    return UDONONNX_STATUS_CAPACITY_EXCEEDED;
+  mask = TINYLLAMA_CONTEXT_CAPACITY - position - 1u;
+  status =
       resolve_input(TINYLLAMA_ATTENTION_MASK, TINYLLAMA_ATTENTION_MASK_BYTES,
                     &attention, &attention_offset);
   if (status == UDONONNX_STATUS_SUCCESS)
@@ -421,9 +496,10 @@ static udononnxStatus_t wait_selected_token(uint32_t *token) {
 }
 
 /* One decode step. Unless this is the last requested token, the next model
- * step is enqueued from the Device-resident token before the Host reads it;
- * when the token turns out to be EOS that speculative step is discarded
- * (generation is complete and only Reset reuses the sequence state). */
+ * step is enqueued from the Device-resident token before the Host reads it.
+ * When the token turns out to be EOS that speculative step already ran the
+ * EOS that ends the reply; its logits are unused, and a next turn continues
+ * after it. */
 static udononnxStatus_t decode_token(uint32_t position, int last,
                                      uint32_t *token) {
   udononnxStatus_t status = enqueue_select_token(), waited;
@@ -448,7 +524,7 @@ static udononnxStatus_t decode_token(uint32_t position, int last,
 }
 
 UDONCL_EXPORT udononnxStatus_t tinyllama_generate(uint32_t max_new_tokens) {
-  uint32_t index, output_index, token = 0, prompt_tokens;
+  uint32_t index, output_index, token = 0, prompt_tokens, base;
   udononnxStatus_t status = UDONONNX_STATUS_SUCCESS;
   if (disposed)
     return UDONONNX_STATUS_DISPOSED;
@@ -456,32 +532,42 @@ UDONCL_EXPORT udononnxStatus_t tinyllama_generate(uint32_t max_new_tokens) {
     return UDONONNX_STATUS_NOT_INITIALIZED;
   if (busy)
     return UDONONNX_STATUS_BUSY;
-  if (failed || completed)
+  /* After a completed generation only a committed turn continues. */
+  if (failed || (completed && !continuing))
     return UDONONNX_STATUS_INVALID_STATE;
+  base = continuing ? context_count : 0u;
   prompt_tokens = prompt_count;
   if (!prompt_tokens || !max_new_tokens)
     return UDONONNX_STATUS_INVALID_VALUE;
-  if (prompt_tokens > TINYLLAMA_CONTEXT_CAPACITY ||
+  /* Every run position stays below the Context Capacity: the prompt runs at
+   * [base, base + prompt_tokens) and all but the last new token run after
+   * it. A rejected request leaves the conversation unchanged. */
+  if (base > TINYLLAMA_CONTEXT_CAPACITY ||
+      prompt_tokens > TINYLLAMA_CONTEXT_CAPACITY - base ||
       max_new_tokens > TINYLLAMA_GENERATED_CAPACITY ||
-      max_new_tokens - 1u > TINYLLAMA_CONTEXT_CAPACITY - prompt_tokens)
+      max_new_tokens - 1u > TINYLLAMA_CONTEXT_CAPACITY - base - prompt_tokens)
     return UDONONNX_STATUS_CAPACITY_EXCEEDED;
   busy = 1;
+  completed = 0;
+  continuing = turn_prepared = 0;
   generated_count = 0;
   ++generation_serial;
+  /* Each run leaves one pending sequence-state entry that the next step
+   * advances first; only the first step of a conversation has none. */
   for (index = 0; index < prompt_tokens; ++index) {
-    status = enqueue_step(prompt[index], index);
-    if (status != UDONONNX_STATUS_SUCCESS)
-      break;
-    if (index + 1u < prompt_tokens) {
+    if (index || base) {
       status = udon_onnx_binding_enqueue_advance_sequence_state();
       if (status != UDONONNX_STATUS_SUCCESS)
         break;
     }
+    status = enqueue_step(prompt[index], base + index);
+    if (status != UDONONNX_STATUS_SUCCESS)
+      break;
   }
   for (output_index = 0; output_index < max_new_tokens; ++output_index) {
     if (status != UDONONNX_STATUS_SUCCESS)
       break;
-    status = decode_token(prompt_tokens + output_index,
+    status = decode_token(base + prompt_tokens + output_index,
                           output_index + 1u == max_new_tokens, &token);
     if (status != UDONONNX_STATUS_SUCCESS)
       break;
@@ -492,6 +578,10 @@ UDONCL_EXPORT udononnxStatus_t tinyllama_generate(uint32_t max_new_tokens) {
   }
   if (status == UDONONNX_STATUS_SUCCESS) {
     completed = 1;
+    /* The last requested token selects but does not run the next step. */
+    last_unrun = generated_count == max_new_tokens;
+    context_count =
+        base + prompt_tokens + generated_count - (uint32_t)last_unrun;
   } else {
     failed = 1;
     completed = 0;

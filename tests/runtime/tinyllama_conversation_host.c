@@ -23,6 +23,12 @@ extern udononnxStatus_t
 tinyllamaConversationGenerationProgress(const int32_t **tokens,
                                         uint32_t *token_count, uint32_t *serial,
                                         int32_t *is_completed);
+extern udononnxStatus_t tinyllamaConversationPreparePrompt(int32_t **);
+extern udononnxStatus_t tinyllamaConversationPrepareTurn(int32_t **,
+                                                         uint32_t *);
+extern udononnxStatus_t tinyllamaConversationCommitTurn(uint32_t);
+extern udononnxStatus_t tinyllamaConversationPrompt(const int32_t **,
+                                                    uint32_t *);
 
 static cl_context binding_context;
 static cl_command_queue binding_queue;
@@ -31,6 +37,9 @@ static int64_t seen_tokens[128], seen_positions[128];
 static uint32_t scheduled_tokens[32];
 static char trace[512];
 static int trace_size, mask_valid = 1;
+/* The generated binding's sequence-state protocol: a run needs no pending
+ * entry and leaves one, an advance needs one, and a reset clears it. */
+static int pending, protocol_valid = 1;
 static int runs, advances, resets, reduce_calls, finalize_calls;
 static int fail_advance_call = -1, fail_finalize_call = -1;
 /* Generation progress observed while each token is being selected. */
@@ -118,12 +127,16 @@ udononnxStatus_t udon_onnx_binding_resolve_output(uint32_t i, cl_mem *m,
 }
 udononnxStatus_t udon_onnx_binding_enqueue_reset_sequence_state(void) {
   ++resets;
+  pending = 0;
   return 0;
 }
 udononnxStatus_t udon_onnx_binding_enqueue_advance_sequence_state(void) {
   record('A');
   if (advances == fail_advance_call)
     return UDONONNX_STATUS_EXECUTION_FAILURE;
+  if (pending != 1)
+    protocol_valid = 0;
+  pending = 0;
   ++advances;
   return 0;
 }
@@ -131,6 +144,9 @@ udononnxStatus_t udon_onnx_binding_enqueue_run(void) {
   int64_t mask[64];
   int index;
   record('R');
+  if (pending != 0)
+    protocol_valid = 0;
+  pending = 1;
   clEnqueueReadBuffer(binding_queue, input[0], CL_TRUE, 8, 8,
                       &seen_tokens[runs], 0, 0, 0);
   clEnqueueReadBuffer(binding_queue, input[2], CL_TRUE, 8, 8,
@@ -197,6 +213,166 @@ cl_int __vrc_enqueue_udonaten_argmax_finalize_device_args(
   return reject == 1
              ? clEnqueueWriteBuffer(q, r, CL_FALSE, 0, 4, token, 0, 0, 0)
              : CL_INVALID_VALUE;
+}
+
+/* Writes a turn of `count` tokens 100, 101, ... into the prepared workspace
+ * and commits it. */
+static int commit_turn(uint32_t count, uint32_t expected_closing,
+                       uint32_t expected_capacity) {
+  int32_t *workspace = 0;
+  const int32_t *tokens = 0;
+  uint32_t capacity = 0, index, token_count = 9;
+  EXPECT(tinyllamaConversationPrepareTurn(&workspace, &capacity) ==
+         UDONONNX_STATUS_SUCCESS);
+  EXPECT(tinyllamaConversationPrompt(&tokens, &token_count) ==
+         UDONONNX_STATUS_SUCCESS);
+  EXPECT(token_count == 0 && workspace == tokens + expected_closing);
+  EXPECT(capacity == expected_capacity);
+  for (index = 0; index < count; ++index)
+    workspace[index] = (int32_t)(100 + index);
+  EXPECT(tinyllamaConversationCommitTurn(count) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(tinyllamaConversationPrompt(&tokens, &token_count) ==
+         UDONONNX_STATUS_SUCCESS);
+  EXPECT(token_count == expected_closing + count);
+  return 0;
+}
+
+/* Multi-turn: every turn continues the sequence state at the position where
+ * the previous reply ended, closing a reply cut off by the token limit. */
+static int test_turns(void) {
+  int32_t prompt_data[] = {1, 450, 4996, 17354}, result_data[32];
+  udon_int32_array_native_t prompt = {prompt_data, 4},
+                            result = {result_data, 32};
+  int32_t *workspace = 0;
+  const int32_t *tokens = 0;
+  uint32_t capacity = 0, count = 0, serial = 0, previous_serial;
+  int32_t is_completed = 0;
+  int i, failure;
+
+  EXPECT(tinyllama_reset() == UDONONNX_STATUS_SUCCESS);
+  protocol_valid = 1;
+  /* No reply to continue yet. */
+  EXPECT(tinyllamaConversationPrepareTurn(&workspace, &capacity) ==
+         UDONONNX_STATUS_INVALID_STATE);
+  EXPECT(tinyllamaConversationCommitTurn(1) == UDONONNX_STATUS_INVALID_STATE);
+  clear_trace();
+  scheduled_tokens[0] = 1701;
+  scheduled_tokens[1] = 2;
+  EXPECT(tinyllama_set_prompt_tokens(&prompt, 4) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(tinyllama_generate(5) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(tinyllama_generated_token_count() == 2);
+  /* Positions 0..5 hold the prompt, 1701 and the EOS that ended the reply. */
+  EXPECT(seen_tokens[5] == 2 && seen_positions[5] == 5);
+  EXPECT(tinyllama_generate(1) == UDONONNX_STATUS_INVALID_STATE);
+  EXPECT(tinyllama_set_prompt_tokens(&prompt, 4) ==
+         UDONONNX_STATUS_INVALID_STATE);
+  EXPECT(tinyllamaConversationPreparePrompt(&workspace) ==
+         UDONONNX_STATUS_INVALID_STATE);
+  EXPECT(tinyllamaConversationGenerationProgress(
+             &tokens, &count, &previous_serial, &is_completed) ==
+         UDONONNX_STATUS_SUCCESS);
+
+  /* An EOS-ended reply already ran its EOS: nothing to close. A committed
+   * turn may be replaced before it is generated. */
+  if ((failure = commit_turn(5, 0, 58)) != 0)
+    return failure;
+  if ((failure = commit_turn(3, 0, 58)) != 0)
+    return failure;
+  EXPECT(tinyllama_generated_token_count() == 2);
+  clear_trace();
+  scheduled_tokens[0] = 555;
+  scheduled_tokens[1] = 2;
+  EXPECT(tinyllama_generate(4) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(trace_size == 14 &&
+         !memcmp(trace, "ARARARDFARDFAR", (size_t)trace_size));
+  for (i = 0; i < 3; ++i)
+    EXPECT(seen_tokens[i] == 100 + i && seen_positions[i] == 6 + i);
+  EXPECT(seen_tokens[3] == 555 && seen_positions[3] == 9);
+  EXPECT(seen_tokens[4] == 2 && seen_positions[4] == 10);
+  EXPECT(mask_valid && protocol_valid);
+  /* Each turn is its own generation with its own tokens. */
+  EXPECT(tinyllama_generated_token_count() == 2);
+  EXPECT(tinyllama_read_generated_tokens(&result) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(result_data[0] == 555 && result_data[1] == 2);
+  EXPECT(tinyllamaConversationGenerationProgress(&tokens, &count, &serial,
+                                                 &is_completed) ==
+         UDONONNX_STATUS_SUCCESS);
+  EXPECT(count == 2 && is_completed && serial != previous_serial);
+
+  /* A reply that reaches the token limit never ran its last token. */
+  if ((failure = commit_turn(1, 0, 53)) != 0)
+    return failure;
+  clear_trace();
+  scheduled_tokens[0] = 777;
+  scheduled_tokens[1] = 778;
+  EXPECT(tinyllama_generate(2) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(trace_size == 8 && !memcmp(trace, "ARDFARDF", (size_t)trace_size));
+  EXPECT(seen_tokens[0] == 100 && seen_positions[0] == 11);
+  EXPECT(seen_tokens[1] == 777 && seen_positions[1] == 12);
+  /* The next turn first runs 778 at 13, then the EOS the reply lacks. */
+  if ((failure = commit_turn(1, 2, 49)) != 0)
+    return failure;
+  EXPECT(tinyllamaConversationPrompt(&tokens, &count) ==
+         UDONONNX_STATUS_SUCCESS);
+  EXPECT(count == 3 && tokens[0] == 778 && tokens[1] == 2 && tokens[2] == 100);
+  clear_trace();
+  scheduled_tokens[0] = 2;
+  EXPECT(tinyllama_generate(1) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(trace_size == 8 && !memcmp(trace, "ARARARDF", (size_t)trace_size));
+  EXPECT(seen_tokens[0] == 778 && seen_positions[0] == 13);
+  EXPECT(seen_tokens[1] == 2 && seen_positions[1] == 14);
+  EXPECT(seen_tokens[2] == 100 && seen_positions[2] == 15);
+  EXPECT(mask_valid && protocol_valid);
+  /* An EOS selected as the last requested token is run, but not doubled. */
+  if ((failure = commit_turn(2, 1, 47)) != 0)
+    return failure;
+  EXPECT(tinyllamaConversationPrompt(&tokens, &count) ==
+         UDONONNX_STATUS_SUCCESS);
+  EXPECT(count == 3 && tokens[0] == 2 && tokens[1] == 100);
+
+  /* Overflow leaves the conversation unchanged: a turn that does not fit is
+   * rejected, and so is a generation whose token budget does not fit. */
+  EXPECT(tinyllamaConversationPrepareTurn(&workspace, &capacity) ==
+         UDONONNX_STATUS_SUCCESS);
+  EXPECT(capacity == 47);
+  EXPECT(tinyllamaConversationCommitTurn(48) ==
+         UDONONNX_STATUS_CAPACITY_EXCEEDED);
+  EXPECT(tinyllama_generate(1) == UDONONNX_STATUS_INVALID_STATE);
+  if ((failure = commit_turn(47, 1, 47)) != 0)
+    return failure;
+  clear_trace();
+  EXPECT(tinyllama_generate(2) == UDONONNX_STATUS_CAPACITY_EXCEEDED);
+  EXPECT(trace_size == 0);
+  scheduled_tokens[0] = 2;
+  EXPECT(tinyllama_generate(1) == UDONONNX_STATUS_SUCCESS);
+  /* The last prompt step runs at the final position of the capacity. */
+  EXPECT(runs == 48 && seen_positions[0] == 16 && seen_positions[47] == 63);
+  EXPECT(mask_valid && protocol_valid);
+  EXPECT(tinyllamaConversationPrepareTurn(&workspace, &capacity) ==
+         UDONONNX_STATUS_CAPACITY_EXCEEDED);
+
+  /* Reset starts a new conversation at position 0. */
+  EXPECT(tinyllama_reset() == UDONONNX_STATUS_SUCCESS);
+  EXPECT(tinyllamaConversationPrepareTurn(&workspace, &capacity) ==
+         UDONONNX_STATUS_INVALID_STATE);
+  clear_trace();
+  scheduled_tokens[0] = 1701;
+  scheduled_tokens[1] = 1702;
+  EXPECT(tinyllama_set_prompt_tokens(&prompt, 4) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(tinyllama_generate(2) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(seen_positions[0] == 0 && trace[0] == 'R');
+  EXPECT(mask_valid && protocol_valid);
+
+  /* A failed turn needs Reset like any failed generation. */
+  if ((failure = commit_turn(2, 2, 57)) != 0)
+    return failure;
+  clear_trace();
+  fail_finalize_call = 0;
+  EXPECT(tinyllama_generate(1) == UDONONNX_STATUS_OPENCL_ERROR);
+  EXPECT(tinyllamaConversationPrepareTurn(&workspace, &capacity) ==
+         UDONONNX_STATUS_INVALID_STATE);
+  EXPECT(tinyllama_reset() == UDONONNX_STATUS_SUCCESS);
+  return 0;
 }
 
 int main(void) {
@@ -344,6 +520,11 @@ int main(void) {
   scheduled_tokens[0] = 2;
   EXPECT(tinyllama_set_prompt_tokens(&prompt, 4) == UDONONNX_STATUS_SUCCESS);
   EXPECT(tinyllama_generate(1) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(protocol_valid);
+
+  i = test_turns();
+  if (i)
+    return i;
 
   EXPECT(tinyllama_dispose() == UDONONNX_STATUS_SUCCESS);
   EXPECT(tinyllamaConversationGenerationProgress(

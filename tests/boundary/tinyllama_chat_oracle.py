@@ -6,6 +6,15 @@ the Hugging Face template settings and tokenized by the pinned
 ONNX Runtime with the same fixed-capacity, left-padded ``M=1`` profile as the
 Conversation Artifact and stops at EOS or the requested limit. The decoded
 reply uses ``skip_special_tokens=True``.
+
+Multi-turn (``--next-user``, repeatable): each later user message continues
+the same sequence state, as the Chat Artifact does. A reply stays in the
+context as its generated tokens: its last token, which no generation step
+runs, is run now, followed by EOS when the reply was cut off by the limit.
+Then the template text from the end of the reply through the next generation
+prompt is tokenized without BOS. A later turn requests at most
+``--max-new-tokens``, reduced to what the Context Capacity still holds. The
+top-level fields describe the first turn; ``turns`` lists the later ones.
 """
 
 from __future__ import annotations
@@ -49,12 +58,36 @@ def render_chat(config: dict, messages: list[dict[str, str]]) -> str:
     )
 
 
+def turn_text(config: dict, messages: list[dict[str, str]], user: str) -> str:
+    """The template text after the EOS that ends the next assistant message,
+    through the generation prompt after the next user message."""
+    sentinel = "udoncl-reply"
+    rendered = render_chat(
+        config,
+        messages
+        + [
+            {"role": "assistant", "content": sentinel},
+            {"role": "user", "content": user},
+        ],
+    )
+    tail = rendered[rendered.index(sentinel) + len(sentinel) :]
+    if not tail.startswith(config["eos_token"]):
+        raise SystemExit("the chat template does not end a reply with EOS")
+    return tail[len(config["eos_token"]) :]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("root", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("--user", default="Hello")
     parser.add_argument("--system", default="")
+    parser.add_argument(
+        "--next-user",
+        action="append",
+        default=[],
+        help="a later user message of the same conversation (repeatable)",
+    )
     parser.add_argument("--capacity", type=int, default=64)
     parser.add_argument("--max-new-tokens", type=int, default=32)
     args = parser.parse_args()
@@ -119,23 +152,88 @@ def main() -> None:
         others = np.delete(logits, best)
         return best, float(logits[best] - np.max(others))
 
+    position = 0
+
+    def feed(tokens: list[int]) -> np.ndarray:
+        nonlocal position
+        for token in tokens:
+            if position >= capacity:
+                raise SystemExit(f"position {position} reaches capacity {capacity}")
+            logits = step(token, position)
+            position += 1
+        return logits
+
+    def generate(logits: np.ndarray, max_new_tokens: int) -> dict:
+        nonlocal position
+        generated: list[int] = []
+        margins: list[float] = []
+        while True:
+            token, margin = select(logits)
+            generated.append(token)
+            margins.append(margin)
+            if token == eos or len(generated) == max_new_tokens:
+                break
+            logits = step(token, position)
+            position += 1
+        text = tokenizer.decode(generated, skip_special_tokens=True)
+        return {
+            "generated_tokens": generated,
+            "stopped_at_eos": generated[-1] == eos,
+            "generated_text": text,
+            "generated_text_utf16": utf16_units(text),
+            "min_greedy_margin": min(margins),
+            "greedy_margins": margins,
+        }
+
     started = time.perf_counter()
-    for position, token in enumerate(prompt_tokens):
-        logits = step(token, position)
-    generated: list[int] = []
-    margins: list[float] = []
-    position = len(prompt_tokens)
-    while True:
-        token, margin = select(logits)
-        generated.append(token)
-        margins.append(margin)
-        if token == eos or len(generated) == args.max_new_tokens:
-            break
-        logits = step(token, position)
-        position += 1
+    first = generate(feed(prompt_tokens), args.max_new_tokens)
+    previous, previous_limit = first["generated_tokens"], args.max_new_tokens
+    turns = []
+    for user in args.next_user:
+        last = previous[-1]
+        # The Host already ran an EOS selected before the limit; this oracle
+        # runs no selected token at the end of a generation, so it runs the
+        # last one now. A reply cut off by the limit is closed with EOS.
+        closing = [] if last == eos and len(previous) < previous_limit else [last]
+        if last != eos:
+            closing.append(eos)
+        text = turn_text(config, messages, user)
+        appended = tokenizer.encode(text, add_special_tokens=False).ids
+        if not appended or appended[0] == tokenizer.token_to_id(config["bos_token"]):
+            raise SystemExit("a turn must be non-empty and must not start with BOS")
+        messages += [
+            {"role": "assistant", "content": tokenizer.decode(previous, skip_special_tokens=True)},
+            {"role": "user", "content": user},
+        ]
+        run = [last] + ([eos] if last != eos else []) + appended
+        if position + len(run) > capacity:
+            raise SystemExit(
+                f"turn {user!r} needs {position + len(run)} positions, more than "
+                f"capacity {capacity}; the Chat Artifact rejects it as CAPACITY_EXCEEDED"
+            )
+        logits = feed(run)
+        # As the Host, keep every run position below the Context Capacity.
+        limit = min(args.max_new_tokens, capacity - position + 1)
+        if limit < 1:
+            raise SystemExit(f"turn {user!r} does not fit capacity {capacity}")
+        context = position
+        reply = generate(logits, limit)
+        turns.append(
+            {
+                "user_text": user,
+                "turn_text": text,
+                "max_new_tokens": limit,
+                "closing_tokens": closing,
+                "turn_tokens": appended,
+                # What ReadPromptTokens reports once ContinueChatTurn is done.
+                "prompt_tokens": closing + appended,
+                "context_tokens": context,
+                **reply,
+            }
+        )
+        previous, previous_limit = reply["generated_tokens"], limit
     elapsed = time.perf_counter() - started
 
-    text = tokenizer.decode(generated, skip_special_tokens=True)
     result = {
         "schema": "udoncl.tinyllama-chat-oracle.v1",
         "model_sha256": fetch_model.MODEL_SHA256,
@@ -146,12 +244,8 @@ def main() -> None:
         "user_text": args.user,
         "prompt_text": prompt_text,
         "prompt_tokens": prompt_tokens,
-        "generated_tokens": generated,
-        "stopped_at_eos": generated[-1] == eos,
-        "generated_text": text,
-        "generated_text_utf16": utf16_units(text),
-        "min_greedy_margin": min(margins),
-        "greedy_margins": margins,
+        **first,
+        "turns": turns,
         "seconds": elapsed,
     }
     output.mkdir(parents=True, exist_ok=True)
@@ -162,9 +256,16 @@ def main() -> None:
     )
     print(
         f"tinyllama_chat_oracle prompt={len(prompt_tokens)} "
-        f"generated={len(generated)} eos={result['stopped_at_eos']} "
-        f"min_margin={result['min_greedy_margin']:.4f} text={text!r}"
+        f"generated={len(first['generated_tokens'])} eos={first['stopped_at_eos']} "
+        f"min_margin={first['min_greedy_margin']:.4f} text={first['generated_text']!r}"
     )
+    for index, turn in enumerate(turns, 2):
+        print(
+            f"tinyllama_chat_oracle turn={index} prompt={len(turn['prompt_tokens'])} "
+            f"context={turn['context_tokens']} max_new_tokens={turn['max_new_tokens']} "
+            f"generated={len(turn['generated_tokens'])} eos={turn['stopped_at_eos']} "
+            f"min_margin={turn['min_greedy_margin']:.4f} text={turn['generated_text']!r}"
+        )
 
 
 if __name__ == "__main__":

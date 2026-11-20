@@ -1,0 +1,431 @@
+using UdonSharp;
+using UnityEngine;
+
+namespace Lemolatoon.Udoncl.Generated
+{
+    [UdonBehaviourSyncMode(BehaviourSyncMode.None)]
+    public sealed class UdonclTinyLlamaMultiTurnChatTestController : UdonSharpBehaviour
+    {
+        // Controller phases. A failure leaves `phase` at the step that failed
+        // and `turn` at the turn it failed in; PhaseDone is reached only after
+        // every step of every turn passed.
+        public const int PhaseInitialize = 1;
+        public const int PhaseInitialized = 2;
+        public const int PhaseBuildPrompt = 3;
+        public const int PhaseReadPrompt = 4;
+        public const int PhaseGenerate = 5;
+        public const int PhaseGenerated = 6;
+        public const int PhaseReadText = 7;
+        public const int PhaseResetChat = 8;
+        public const int PhaseShutdown = 9;
+        public const int PhaseDone = 10;
+
+        // udononnxStatus_t values returned by the C Host as libraryStatus.
+        public const int LibraryStatusSuccess = 0;
+        public const int LibraryStatusInvalidState = 12;
+
+        public UdonclTinyLlamaChatBinding binding;
+        public string systemText;
+
+        // One user message and token limit per turn. Turn 0 starts the
+        // conversation; every later turn is appended after the previous reply.
+        public string[] userTexts;
+        public int[] maxNewTokens;
+
+        // Prompt work units done per frame while a prompt or turn is
+        // tokenized.
+        public int promptWorkPerFrame;
+
+        // Per-turn results, turn t at [t * stride, (t + 1) * stride).
+        public int promptStride;
+        public int tokenStride;
+        public int textStride;
+        public int[] promptTokens;
+        public int[] promptCounts;
+        public int[] promptFrames;
+        public int[] generatedTokens;
+        public int[] generatedCounts;
+        public int[] textUnits;
+        public int[] textLengths;
+
+        // Reply text polled while each turn is generated. Every turn streams
+        // its own reply from the start.
+        public int[] streamedUnits;
+        public int[] streamedLengths;
+        public int[] streamChunk;
+        public int streamPolls;
+        public int streamBusyPolls;
+        public int streamMidGenerationUpdates;
+
+        // False once a polled length shrank or an already polled unit changed.
+        public bool streamMonotone;
+        public bool streamPrefixStable;
+
+        // Contract checks: a completed reply cannot start a new prompt, and
+        // after ResetChat there is no reply to continue.
+        public int newPromptAfterReplyStatus;
+        public int turnAfterResetStatus;
+
+        public bool completed;
+        public int status;
+        public int libraryStatus;
+        public int tokenizerStatus;
+        public int asyncDiagnostic;
+        public int phase;
+        public int turn;
+
+        private bool polling;
+        private int streamedLength;
+
+        public void Run()
+        {
+            completed = false;
+            status = UdonclTinyLlamaChatBinding.StatusSuccess;
+            libraryStatus = LibraryStatusSuccess;
+            tokenizerStatus = 0;
+            streamPolls = 0;
+            streamBusyPolls = 0;
+            streamMidGenerationUpdates = 0;
+            streamMonotone = true;
+            streamPrefixStable = true;
+            newPromptAfterReplyStatus = -1;
+            turnAfterResetStatus = -1;
+            polling = false;
+            streamedLength = 0;
+            turn = 0;
+            asyncDiagnostic = UdonclTinyLlamaChatBinding.AsyncDiagnosticNone;
+            phase = PhaseInitialize;
+            if (
+                binding == null
+                || systemText == null
+                || userTexts == null
+                || maxNewTokens == null
+                || userTexts.Length < 2
+                || maxNewTokens.Length != userTexts.Length
+                || promptWorkPerFrame <= 0
+                || promptStride <= 0
+                || tokenStride <= 0
+                || textStride <= 0
+                || promptTokens == null
+                || promptCounts == null
+                || promptFrames == null
+                || generatedTokens == null
+                || generatedCounts == null
+                || textUnits == null
+                || textLengths == null
+                || streamedUnits == null
+                || streamedLengths == null
+                || streamChunk == null
+                || promptTokens.Length < promptStride * userTexts.Length
+                || promptCounts.Length < userTexts.Length
+                || promptFrames.Length < userTexts.Length
+                || generatedTokens.Length < tokenStride * userTexts.Length
+                || generatedCounts.Length < userTexts.Length
+                || textUnits.Length < textStride * userTexts.Length
+                || textLengths.Length < userTexts.Length
+                || streamedUnits.Length < textStride * userTexts.Length
+                || streamedLengths.Length < userTexts.Length
+                || streamChunk.Length < textStride
+            )
+            {
+                status = UdonclTinyLlamaChatBinding.StatusInvalidArgument;
+                completed = true;
+                return;
+            }
+            for (int index = 0; index < userTexts.Length; ++index)
+            {
+                if (
+                    userTexts[index] == null
+                    || maxNewTokens[index] <= 0
+                    || maxNewTokens[index] > tokenStride
+                )
+                {
+                    status = UdonclTinyLlamaChatBinding.StatusInvalidArgument;
+                    completed = true;
+                    return;
+                }
+            }
+            status = binding.StartInitialize(this, nameof(OnInitializeComplete));
+            if (status != UdonclTinyLlamaChatBinding.StatusSuccess)
+                completed = true;
+        }
+
+        public void OnInitializeComplete()
+        {
+            phase = PhaseInitialized;
+            status = binding.GetInitializeStatus();
+            if (status == UdonclTinyLlamaChatBinding.StatusSuccess)
+                status = binding.TryGetInitializeResult(out libraryStatus);
+            if (!Succeeded())
+                return;
+
+            // Turn 0 starts the conversation: system and user message with
+            // the chat template, special tokens and BOS.
+            phase = PhaseBuildPrompt;
+            status = binding.TryBeginChatPrompt(out libraryStatus);
+            if (!Succeeded())
+                return;
+            ContinuePrompt();
+        }
+
+        public void ContinuePrompt()
+        {
+            if (completed || phase != PhaseBuildPrompt)
+                return;
+            promptFrames[turn] = promptFrames[turn] + 1;
+            // Later turns append only the next user message: the previous
+            // reply is already in the conversation as its generated tokens.
+            if (turn == 0)
+                status = binding.TryContinueChatPrompt(
+                    systemText,
+                    userTexts[0],
+                    promptWorkPerFrame,
+                    out libraryStatus
+                );
+            else
+                status = binding.TryContinueChatTurn(
+                    userTexts[turn],
+                    promptWorkPerFrame,
+                    out libraryStatus
+                );
+            if (status == UdonclTinyLlamaChatBinding.StatusSuccess)
+                binding.TryLastTokenizerStatus(out tokenizerStatus);
+            if (!Succeeded())
+                return;
+            int pending;
+            status = binding.TryChatPromptPending(out pending);
+            if (status != UdonclTinyLlamaChatBinding.StatusSuccess)
+            {
+                completed = true;
+                return;
+            }
+            if (pending != 0)
+            {
+                SendCustomEventDelayedFrames(nameof(ContinuePrompt), 1);
+                return;
+            }
+
+            // The tokens the next generation feeds: for a later turn, the
+            // tokens that close the previous reply and the appended turn.
+            phase = PhaseReadPrompt;
+            int promptCount;
+            status = binding.TryPromptTokenCount(out promptCount);
+            if (status != UdonclTinyLlamaChatBinding.StatusSuccess)
+            {
+                completed = true;
+                return;
+            }
+            if (promptCount <= 0 || promptCount > promptStride || promptCount > streamChunk.Length)
+            {
+                status = UdonclTinyLlamaChatBinding.StatusExecutionFailure;
+                completed = true;
+                return;
+            }
+            promptCounts[turn] = promptCount;
+            status = binding.TryReadPromptTokens(streamChunk, out libraryStatus);
+            if (!Succeeded())
+                return;
+            for (int index = 0; index < promptCount; ++index)
+                promptTokens[turn * promptStride + index] = streamChunk[index];
+
+            phase = PhaseGenerate;
+            streamedLength = 0;
+            status = binding.StartGenerate(maxNewTokens[turn], this, nameof(OnGenerateComplete));
+            if (status != UdonclTinyLlamaChatBinding.StatusSuccess)
+            {
+                completed = true;
+                return;
+            }
+            polling = true;
+            SendCustomEventDelayedFrames(nameof(PollStreamedText), 1);
+        }
+
+        public void PollStreamedText()
+        {
+            if (!polling || completed)
+                return;
+            ReadStreamedText(true);
+            if (polling && !completed)
+                SendCustomEventDelayedFrames(nameof(PollStreamedText), 1);
+        }
+
+        private bool ReadStreamedText(bool generating)
+        {
+            int length;
+            int pollLibraryStatus;
+            ++streamPolls;
+            int pollStatus = binding.TryStreamedTextLength(out length);
+            if (pollStatus == UdonclTinyLlamaChatBinding.StatusBusy)
+            {
+                ++streamBusyPolls;
+                return true;
+            }
+            if (pollStatus != UdonclTinyLlamaChatBinding.StatusSuccess)
+            {
+                status = pollStatus;
+                return false;
+            }
+            if (length < streamedLength)
+            {
+                streamMonotone = false;
+                return true;
+            }
+            if (length == streamedLength)
+                return true;
+            if (length > textStride)
+            {
+                status = UdonclTinyLlamaChatBinding.StatusExecutionFailure;
+                return false;
+            }
+            pollStatus = binding.TryReadStreamedText(streamChunk, 0, length, out pollLibraryStatus);
+            if (pollStatus == UdonclTinyLlamaChatBinding.StatusBusy)
+            {
+                ++streamBusyPolls;
+                return true;
+            }
+            if (
+                pollStatus != UdonclTinyLlamaChatBinding.StatusSuccess
+                || pollLibraryStatus != LibraryStatusSuccess
+            )
+            {
+                status = pollStatus;
+                libraryStatus = pollLibraryStatus;
+                return false;
+            }
+            int offset = turn * textStride;
+            for (int index = 0; index < streamedLength; ++index)
+            {
+                if (streamChunk[index] != streamedUnits[offset + index])
+                    streamPrefixStable = false;
+            }
+            for (int index = streamedLength; index < length; ++index)
+                streamedUnits[offset + index] = streamChunk[index];
+            streamedLength = length;
+            streamedLengths[turn] = length;
+            if (generating)
+                ++streamMidGenerationUpdates;
+            return true;
+        }
+
+        public void OnGenerateComplete()
+        {
+            polling = false;
+            phase = PhaseGenerated;
+            status = binding.GetGenerateStatus();
+            if (status == UdonclTinyLlamaChatBinding.StatusSuccess)
+                status = binding.TryGetGenerateResult(out libraryStatus);
+            if (!Succeeded())
+                return;
+            int generatedCount;
+            status = binding.TryGeneratedTokenCount(out generatedCount);
+            if (status != UdonclTinyLlamaChatBinding.StatusSuccess)
+            {
+                completed = true;
+                return;
+            }
+            if (generatedCount <= 0 || generatedCount > tokenStride)
+            {
+                status = UdonclTinyLlamaChatBinding.StatusExecutionFailure;
+                completed = true;
+                return;
+            }
+            generatedCounts[turn] = generatedCount;
+            status = binding.TryReadGeneratedTokens(streamChunk, out libraryStatus);
+            if (!Succeeded())
+                return;
+            for (int index = 0; index < generatedCount; ++index)
+                generatedTokens[turn * tokenStride + index] = streamChunk[index];
+
+            phase = PhaseReadText;
+            if (!ReadStreamedText(false) || !Succeeded())
+            {
+                asyncDiagnostic = binding.GetLastAsyncDiagnostic();
+                completed = true;
+                return;
+            }
+            int textLength;
+            status = binding.TryGeneratedTextLength(out textLength);
+            if (status != UdonclTinyLlamaChatBinding.StatusSuccess)
+            {
+                completed = true;
+                return;
+            }
+            if (textLength < 0 || textLength > textStride)
+            {
+                status = UdonclTinyLlamaChatBinding.StatusExecutionFailure;
+                completed = true;
+                return;
+            }
+            textLengths[turn] = textLength;
+            status = binding.TryReadGeneratedText(streamChunk, out libraryStatus);
+            if (status == UdonclTinyLlamaChatBinding.StatusSuccess)
+                binding.TryLastTokenizerStatus(out tokenizerStatus);
+            if (!Succeeded())
+                return;
+            for (int index = 0; index < textLength; ++index)
+                textUnits[turn * textStride + index] = streamChunk[index];
+
+            if (turn == 0)
+            {
+                // A completed reply is continued by a turn, not replaced by a
+                // new prompt; only ResetChat starts over.
+                status = binding.TryBeginChatPrompt(out newPromptAfterReplyStatus);
+                if (status != UdonclTinyLlamaChatBinding.StatusSuccess)
+                {
+                    completed = true;
+                    return;
+                }
+            }
+            ++turn;
+            if (turn < userTexts.Length)
+            {
+                phase = PhaseBuildPrompt;
+                status = binding.TryBeginChatTurn(out libraryStatus);
+                if (!Succeeded())
+                    return;
+                ContinuePrompt();
+                return;
+            }
+
+            --turn;
+            phase = PhaseResetChat;
+            status = binding.StartResetChat(this, nameof(OnResetChatComplete));
+            if (status != UdonclTinyLlamaChatBinding.StatusSuccess)
+                completed = true;
+        }
+
+        public void OnResetChatComplete()
+        {
+            status = binding.GetResetChatStatus();
+            if (status == UdonclTinyLlamaChatBinding.StatusSuccess)
+                status = binding.TryGetResetChatResult(out libraryStatus);
+            if (!Succeeded())
+                return;
+            status = binding.TryBeginChatTurn(out turnAfterResetStatus);
+            if (status != UdonclTinyLlamaChatBinding.StatusSuccess)
+            {
+                completed = true;
+                return;
+            }
+
+            phase = PhaseShutdown;
+            status = binding.TryShutdown(out libraryStatus);
+            if (!Succeeded())
+                return;
+            phase = PhaseDone;
+            completed = true;
+        }
+
+        private bool Succeeded()
+        {
+            if (
+                status == UdonclTinyLlamaChatBinding.StatusSuccess
+                && libraryStatus == LibraryStatusSuccess
+            )
+                return true;
+            asyncDiagnostic = binding.GetLastAsyncDiagnostic();
+            completed = true;
+            return false;
+        }
+    }
+}

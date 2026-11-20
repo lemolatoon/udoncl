@@ -18,8 +18,10 @@ token-to-text decoding that streams the reply while it is generated
 (sections 6.6, 6.9 and 6.10). `UdonTokenizers` remains an independent
 package: the generic ONNX compiler/runtime must not depend on it, and the
 low-level Conversation Artifact must continue to accept and return token IDs
-without requiring text services. Multi-turn history and transactional
-rollback remain later work; a second utterance starts from a fresh prompt.
+without requiring text services. The Chat Artifact continues one
+conversation over several turns within the Context Capacity (section 6.11);
+a conversation longer than the capacity (ring buffer, M8) and transactional
+rollback remain later work.
 
 The implementation must remain model-independent below the example C Host.
 Model names, 22-layer structure, hidden sizes, and TinyLlama graph patterns must
@@ -648,7 +650,9 @@ These decisions fill the parts of 6.1 and 6.5 that the plan left open.
   `ContinueChatPrompt(systemText, userText, maxWork)` / `ChatPromptPending`
   (section 6.9), `PromptTokenCount`, `ReadPromptTokens`, `StreamedTextLength`,
   `ReadStreamedText(destination, offset, count)` (section 6.10),
-  `GeneratedTextLength`, `ReadGeneratedText` and `LastTokenizerStatus`. A
+  `GeneratedTextLength`, `ReadGeneratedText` and `LastTokenizerStatus`, and
+  for multi-turn chat `BeginChatTurn` / `ContinueChatTurn(userText, maxWork)`
+  and `ResetChat` (section 6.11). A
   prompt beyond the Context Capacity maps to `CAPACITY_EXCEEDED`. The
   text layer is linked only into the separate Chat Artifact
   (`tinyllama_real_chat`, `UdonclTinyLlamaChatBinding`); the Conversation
@@ -846,6 +850,67 @@ instructions each) left the generation and its result intact. The polled
 text grew with each token read back, 0, 2, 7, 10, 16 and 17 code units for
 "My name is Sarah.", and every polled text was a prefix of the next. This
 has not been tried in the Udon VM.
+
+### 6.11 Multi-turn chat
+
+The Chat Artifact keeps one conversation in the sequence state across turns.
+The conversation state is example Host C (`conversation_host.c`,
+`conversation_text.c`); the only library addition is the model-independent
+`udontokenizersEncoderAppendChatTurn[Part]Raw`, and no compiler code knows
+about turns.
+
+- `BeginChatPrompt`/`ContinueChatPrompt` start a conversation as before.
+  After a completed reply, `BeginChatTurn` then `ContinueChatTurn(userText,
+  maxWork)` (bounded like `ContinueChatPrompt`, until `ChatPromptPending` is
+  0) append the next user message, and `Generate` continues at the position
+  where the reply ended. A new prompt after a reply stays `INVALID_STATE`;
+  `ResetChat` (async, the Host Reset) discards the conversation and any text
+  being built. A turn committed but not generated yet may be replaced by
+  another `BeginChatTurn`.
+- The reply enters the context as its generated token IDs, never decoded and
+  encoded again: Hugging Face would encode the reply text differently (for
+  example `My` instead of the generated `▁My` after `<|assistant|>\n`).
+- Closing the reply: an EOS selected before the limit was already run by the
+  speculative decode step, so nothing is added. A reply that reached the
+  token limit never ran its last token; the next turn first runs it and then
+  EOS (only the token when it is EOS itself). Each prompt step after the
+  first of a conversation advances the pending sequence-state entry first,
+  as the generated binding requires.
+- The appended text is the rest of the previous role's suffix after its
+  leading EOS text, the user message and the generation prompt, encoded
+  without BOS as a new segment: `\n<|user|>\n{content}</s>\n<|assistant|>\n`
+  for TinyLlama. `tinyllama-conversation-text` splits Hugging Face's
+  `apply_chat_template` encoding of whole multi-turn conversations into the
+  first prompt, the replies and the appended turns and requires each turn
+  exactly.
+- `ReadPromptTokens` after `ContinueChatTurn` returns the tokens the next
+  generation feeds: the closing tokens and the appended turn. The streamed
+  and generated text restarts with every turn; the history display belongs
+  to U#.
+- Overflow: a turn whose tokens do not fit fails `ContinueChatTurn`, and a
+  `Generate` whose prompt plus token budget does not fit fails, both with
+  `CAPACITY_EXCEEDED` and the conversation unchanged; the caller resets.
+  There is no sliding window, and every run position stays below the
+  capacity. Capacity 64 holds a short exchange: the oracle conversation
+  below reaches 51 positions before its second reply.
+- `tests/boundary/tinyllama_chat_oracle.py --next-user` continues the same
+  ORT sequence state the same way and lists later turns under `turns`, with
+  the token limit reduced to the remaining capacity. "What is your name?"
+  then "Repeat your name." gives "My name is Sarah." and then
+  `[29903, 279, 801, 29889, 2]`, "Sarah." (minimum margin 0.30); asked
+  alone, "Repeat your name." does not produce the name. The Unity fixture
+  `PublicTinyLlamaMultiTurnChatLifecycleTests.GeneratedUSharpBindingContinuesChatAcrossTurns`
+  runs in the chat focused gate when the oracle has later turns. It has not
+  been run in Unity yet.
+- Udon emulator, real Chat Artifact, selected tokens scripted from the
+  oracle (so the Host protocol, not numerics): both turns of the oracle above
+  return `Generate` 0 (the generated binding rejects a run or advance out of
+  protocol), the turn-2 prompt equals the oracle's 23 tokens, its tokens are
+  staged at positions 28..50 and its steps run at 28..55, and both texts
+  match. With `--max-new-tokens 4` the cut-off first reply is closed by
+  `[19235, 2]` and turn 2 continues at position 25. `ContinueChatTurn` at
+  budget 32 takes five calls, about 155,000 instructions in total.
+  `ResetChat` returns 0, after which `BeginChatTurn` is `INVALID_STATE`.
 
 ## 7. Tests, performance, and caching
 

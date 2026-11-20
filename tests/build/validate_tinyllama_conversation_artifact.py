@@ -342,6 +342,9 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
             "TryContinueChatPrompt(string systemText, string userText, "
             "int maxWork, out int result)",
             "TryChatPromptPending(out int result)",
+            "TryBeginChatTurn(out int result)",
+            "TryContinueChatTurn(string userText, int maxWork, out int result)",
+            "StartResetChat(", "GetResetChatStatus(", "TryGetResetChatResult(",
             "TryPromptTokenCount(out int result)",
             "TryReadPromptTokens(int[] destination, out int result)",
             "TryGeneratedTextLength(out int result)",
@@ -362,6 +365,36 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
                 VALIDATOR.validate_artifact(artifact, "chat", 64)
             with self.assertRaisesRegex(ValueError, "program identity"):
                 VALIDATOR.validate_artifact(artifact, "conversation", 128)
+
+    def test_chat_profile_requires_the_multi_turn_api(self):
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = self.make_chat_artifact(Path(directory), 64)
+            manifest_path = artifact / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            exports = manifest["exports"]
+            manifest["exports"] = [
+                item for item in exports if item["public_name"] != "ResetChat"
+            ]
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "unexpected public API"):
+                VALIDATOR.validate_artifact(artifact, "chat", 64)
+            # ResetChat restarts the sequence state on the Device: async.
+            manifest["exports"] = exports
+            for item in exports:
+                if item["public_name"] == "ResetChat":
+                    item["async"] = False
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "ResetChat: invalid async"):
+                VALIDATOR.validate_artifact(artifact, "chat", 64)
+            for item in exports:
+                if item["public_name"] == "ResetChat":
+                    item["async"] = True
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            binding = artifact / "binding.cs"
+            binding.write_text(binding.read_text(encoding="utf-8").replace(
+                "TryContinueChatTurn(", "TryContinueChat("), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "TryContinueChatTurn"):
+                VALIDATOR.validate_artifact(artifact, "chat", 64)
 
     def test_chat_fixture_uses_only_the_generated_text_api(self):
         package = ROOT / "unity/Packages/com.lemolatoon.udoncl/Editor"
@@ -421,6 +454,78 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
         self.assertNotIn("delegate", iterator)
         self.assertIn("private const int PhaseDone = 9;", source)
         self.assertIn("public const int PhaseDone = 9;", controller)
+
+    def test_multi_turn_chat_fixture_is_wired_to_the_chat_gate(self):
+        package = ROOT / "unity/Packages/com.lemolatoon.udoncl/Editor"
+        controller = (
+            package / "Examples/tinyllama-multi-turn-chat-test-controller.cs.txt"
+        ).read_text(encoding="utf-8")
+        source = (
+            package / "Examples/tinyllama-multi-turn-chat-lifecycle-test.cs.txt"
+        ).read_text(encoding="utf-8")
+        importer = (package / "UdonclPackagedExampleImporter.cs").read_text(
+            encoding="utf-8")
+        precommit = (ROOT / "scripts/precommit.py").read_text(encoding="utf-8")
+        oracle = (ROOT / "tests/boundary/tinyllama_chat_oracle.py").read_text(
+            encoding="utf-8")
+        for name in ("test-controller", "lifecycle-test"):
+            self.assertTrue((
+                package / f"Examples/tinyllama-multi-turn-chat-{name}.cs.txt.meta"
+            ).is_file())
+        name = "GeneratedUSharpBindingContinuesChatAcrossTurns"
+        self.assertIn(f"IEnumerator {name}()", source)
+        self.assertIn(f'"{name}"', precommit)
+        self.assertIn("tinyllama_chat_oracle_turns(tinyllama_chat_oracle)", precommit)
+        self.assertIn("PublicTinyLlamaMultiTurnChatLifecycleTests.cs", importer)
+        self.assertIn("UdonclTinyLlamaMultiTurnChatTestController.cs", importer)
+        self.assertIn('"--next-user"', oracle)
+        # The controller drives every turn through the high-level text API.
+        for required in (
+            "TryBeginChatPrompt(out libraryStatus)",
+            "TryContinueChatPrompt(",
+            "TryBeginChatTurn(out libraryStatus)",
+            "TryContinueChatTurn(",
+            "TryChatPromptPending(",
+            "TryReadPromptTokens(",
+            "StartGenerate(",
+            "TryStreamedTextLength(",
+            "TryReadStreamedText(",
+            "TryReadGeneratedTokens(",
+            "TryReadGeneratedText(",
+            "StartResetChat(",
+            "TryGetResetChatResult(",
+            "TryShutdown(",
+        ):
+            self.assertIn(required, controller)
+        for forbidden in ("GetProgramVariable", "SetProgramVariable", "__vrc_",
+                          "__udoncl_", "udon_onnx_binding_", "TrySetPromptTokens",
+                          "StartReset(", "29871"):
+            self.assertNotIn(forbidden, controller)
+        for required in (
+            "UDONCL_PUBLIC_TINYLLAMA_CHAT_UNITY_BUNDLE",
+            "UDONCL_PUBLIC_TINYLLAMA_CHAT_ORACLE",
+            "udoncl.tinyllama-chat-oracle.v1",
+            "public TinyLlamaChatTurn[] turns;",
+            '"turn " + index + " prompt: " + state',
+            '"turn " + index + " tokens: " + state',
+            '"turn " + index + " text: " + state',
+            '"turn " + index + " streamed text: " + state',
+            "newPromptAfterReplyStatus",
+            "turnAfterResetStatus",
+            "Udon VM halted during ",
+            "timing.Begin(",
+            "timing.End();",
+        ):
+            self.assertIn(required, source)
+        iterator = source.split(f"IEnumerator {name}()", 1)[1].split(
+            "private void CaptureVmError", 1)[0]
+        self.assertNotIn("=>", iterator)
+        self.assertNotIn("delegate", iterator)
+        # Jagged arrays do not survive the play-mode domain reload.
+        fields = source.split("[OneTimeSetUp]", 1)[0]
+        self.assertNotIn("int[][]", fields)
+        self.assertIn("private const int PhaseDone = 10;", source)
+        self.assertIn("public const int PhaseDone = 10;", controller)
 
     def test_fixtures_report_wall_clock_and_frame_rate_mode(self):
         # Batchmode frames are not a proxy for time, so every focused

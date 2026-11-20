@@ -724,6 +724,91 @@ udontokenizersStatus_t udontokenizersEncoderAppendChatMessageRaw(
       &finished, workspace);
 }
 
+/* Length of the end-of-sequence added token's text when `role`'s suffix
+ * starts with it, else -1. */
+static int32_t
+chat_suffix_eos_length(const udontokenizers_model_t *model,
+                       const udontokenizers_chat_template_t *chat,
+                       int32_t role) {
+  const int32_t *offsets = model->added_token_offsets;
+  int32_t suffix_offset = chat->role_suffix_offsets[role];
+  int32_t token;
+  if (model->eos_token_id < 0)
+    return -1;
+  for (token = 0; token < model->added_token_count; ++token) {
+    int32_t begin = offsets[token];
+    int32_t length = offsets[token + 1] - begin;
+    int32_t index;
+    if (model->added_token_ids[token] != model->eos_token_id || length <= 0 ||
+        length > chat->role_suffix_lengths[role])
+      continue;
+    for (index = 0; index < length; ++index)
+      if (chat->code_units[suffix_offset + index] !=
+          model->added_token_code_units[begin + index])
+        break;
+    if (index == length)
+      return length;
+  }
+  return -1;
+}
+
+udontokenizersStatus_t udontokenizersEncoderAppendChatTurnPartRaw(
+    const udontokenizers_model_t *model,
+    const udontokenizers_chat_template_t *chat,
+    udontokenizers_encoder_t *encoder, int32_t previous_role, int32_t role,
+    udon_string_t content, int32_t *position, int32_t max_code_units,
+    int32_t *finished, int32_t *workspace) {
+  int32_t eos_length;
+  int32_t rest_length;
+  int32_t start;
+  int32_t local;
+  udontokenizersStatus_t status = UDONTOKENIZERS_STATUS_SUCCESS;
+  if (!model || !encoder || !position || !finished || max_code_units <= 0 ||
+      !valid_chat_role(chat, previous_role) || !valid_chat_role(chat, role))
+    return UDONTOKENIZERS_STATUS_INVALID_ARGUMENT;
+  *finished = 0;
+  eos_length = chat_suffix_eos_length(model, chat, previous_role);
+  if (eos_length < 0)
+    return UDONTOKENIZERS_STATUS_INVALID_ARGUMENT;
+  rest_length = chat->role_suffix_lengths[previous_role] - eos_length;
+  start = *position;
+  if (start < 0)
+    return UDONTOKENIZERS_STATUS_INVALID_ARGUMENT;
+  /* The end-of-sequence added token already ended a segment. */
+  if (!start && encoder->phase == UDONTOKENIZERS_PHASE_TEXT)
+    encoder->segment_started = 0;
+  if (start < rest_length) {
+    local = start;
+    status = encoder_append(model, encoder, (udon_string_t)0,
+                            chat->code_units +
+                                chat->role_suffix_offsets[previous_role] +
+                                eos_length,
+                            rest_length, 1, workspace, &local, max_code_units);
+    *position = local;
+  }
+  if (status == UDONTOKENIZERS_STATUS_SUCCESS && *position >= rest_length &&
+      *position - start < max_code_units) {
+    local = *position - rest_length;
+    status = udontokenizersEncoderAppendChatMessagePartRaw(
+        model, chat, encoder, role, content, &local,
+        max_code_units - (*position - start), finished, workspace);
+    *position = rest_length + local;
+  }
+  return status;
+}
+
+udontokenizersStatus_t udontokenizersEncoderAppendChatTurnRaw(
+    const udontokenizers_model_t *model,
+    const udontokenizers_chat_template_t *chat,
+    udontokenizers_encoder_t *encoder, int32_t previous_role, int32_t role,
+    udon_string_t content, int32_t *workspace) {
+  int32_t position = 0;
+  int32_t finished = 0;
+  return udontokenizersEncoderAppendChatTurnPartRaw(
+      model, chat, encoder, previous_role, role, content, &position,
+      UDONTOKENIZERS_UNBOUNDED, &finished, workspace);
+}
+
 udontokenizersStatus_t udontokenizersEncoderAppendChatGenerationPromptRaw(
     const udontokenizers_model_t *model,
     const udontokenizers_chat_template_t *chat,

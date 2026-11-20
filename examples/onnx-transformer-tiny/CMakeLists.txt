@@ -110,7 +110,9 @@ if(UDONCL_TINYLLAMA_ONNX_MODEL)
   # Conversation Artifact above stays free of tokenizer code. A prompt can be
   # tokenized in bounded slices (BeginChatPrompt, then ContinueChatPrompt
   # until ChatPromptPending is 0), and the reply text is streamed: the
-  # StreamedTextLength code units read by ReadStreamedText are final.
+  # StreamedTextLength code units read by ReadStreamedText are final. After a
+  # reply, BeginChatTurn/ContinueChatTurn append the next user message to the
+  # same conversation and ResetChat starts a new one.
   set(chat_unity_config_json "${conversation_unity_config_json}")
   string(JSON chat_unity_config_json SET "${chat_unity_config_json}"
     program "\"tinyllama_real_chat\"")
@@ -121,6 +123,9 @@ if(UDONCL_TINYLLAMA_ONNX_MODEL)
     [[{"symbol":"tinyllama_begin_chat_prompt","public_name":"BeginChatPrompt","parameters":[]}]]
     [[{"symbol":"tinyllama_continue_chat_prompt","public_name":"ContinueChatPrompt","parameters":["systemText","userText","maxWork"]}]]
     [[{"symbol":"tinyllama_chat_prompt_pending","public_name":"ChatPromptPending","parameters":[]}]]
+    [[{"symbol":"tinyllama_begin_chat_turn","public_name":"BeginChatTurn","parameters":[]}]]
+    [[{"symbol":"tinyllama_continue_chat_turn","public_name":"ContinueChatTurn","parameters":["userText","maxWork"]}]]
+    [[{"symbol":"tinyllama_reset_chat","public_name":"ResetChat","parameters":[]}]]
     [[{"symbol":"tinyllama_prompt_token_count","public_name":"PromptTokenCount","parameters":[]}]]
     [[{"symbol":"tinyllama_read_prompt_tokens","public_name":"ReadPromptTokens","parameters":["destination"]}]]
     [[{"symbol":"tinyllama_generated_text_length","public_name":"GeneratedTextLength","parameters":[]}]]
