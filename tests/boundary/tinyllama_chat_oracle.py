@@ -88,7 +88,7 @@ def main() -> None:
         default=[],
         help="a later user message of the same conversation (repeatable)",
     )
-    parser.add_argument("--capacity", type=int, default=64)
+    parser.add_argument("--capacity", type=int, default=512)
     parser.add_argument("--max-new-tokens", type=int, default=32)
     args = parser.parse_args()
     root = args.root.resolve()

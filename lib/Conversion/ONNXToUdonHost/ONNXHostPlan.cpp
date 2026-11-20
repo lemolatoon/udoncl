@@ -234,8 +234,13 @@ bool isDeviceExpandNode(const GraphRecord &graph, const NodeRecord &node) {
   return true;
 }
 
-std::optional<DeviceConcatShape> deviceConcatShape(const GraphRecord &graph,
-                                                   const NodeRecord &node) {
+namespace {
+/// The two-input Concat contract with the element limit of the kernel that
+/// runs it: the 16384 words udononnx_concat2_f32 addresses, or the 131072
+/// words of a synthesized gather kernel.
+std::optional<DeviceConcatShape> concatShapeWithin(const GraphRecord &graph,
+                                                   const NodeRecord &node,
+                                                   int64_t maximumElements) {
   if (node.operation != "Concat" || node.provider != "udononnxConcat" ||
       node.inputs.size() != 2 || node.inputs[0] < 0 || node.inputs[1] < 0)
     return std::nullopt;
@@ -251,9 +256,11 @@ std::optional<DeviceConcatShape> deviceConcatShape(const GraphRecord &graph,
       !output.type.getElementType().isF32() || rank < 1 || rank > 5 ||
       left.type.getRank() != rank || right.type.getRank() != rank || axis < 0 ||
       axis >= rank || left.type.getNumElements() < 1 ||
-      left.type.getNumElements() > 16384 || right.type.getNumElements() < 1 ||
-      right.type.getNumElements() > 16384 || output.type.getNumElements() < 1 ||
-      output.type.getNumElements() > 16384)
+      left.type.getNumElements() > maximumElements ||
+      right.type.getNumElements() < 1 ||
+      right.type.getNumElements() > maximumElements ||
+      output.type.getNumElements() < 1 ||
+      output.type.getNumElements() > maximumElements)
     return std::nullopt;
   int64_t innerWords = 1;
   for (int64_t dimension = 0; dimension < rank; ++dimension) {
@@ -271,6 +278,17 @@ std::optional<DeviceConcatShape> deviceConcatShape(const GraphRecord &graph,
   }
   return DeviceConcatShape{innerWords, left.type.getDimSize(axis),
                            right.type.getDimSize(axis)};
+}
+} // namespace
+
+std::optional<DeviceConcatShape> deviceConcatShape(const GraphRecord &graph,
+                                                   const NodeRecord &node) {
+  return concatShapeWithin(graph, node, 16384);
+}
+
+bool isSynthesizedConcatNode(const GraphRecord &graph, const NodeRecord &node) {
+  return !deviceConcatShape(graph, node) &&
+         concatShapeWithin(graph, node, 131072).has_value();
 }
 
 std::optional<DeviceGatherShape> deviceGatherShape(const GraphRecord &graph,
@@ -600,8 +618,44 @@ int64_t deviceAllocationBytes(const GraphRecord &graph, unsigned tensorIndex) {
           ? 4
           : planElementByteSize(tensor.type.getElementType());
   int64_t bytes = tensor.type.getNumElements() * elementBytes;
+  for (const SequenceStateRecord &state : graph.sequenceStates)
+    if (graph.inputs[state.inputIndex] == tensorIndex)
+      bytes = std::max(bytes, deviceAllocationBytes(
+                                  graph, graph.outputs[state.outputIndex]));
   return needsQ4Surface(graph, tensorIndex) ? std::max(bytes, q4SurfaceBytes)
                                             : bytes;
+}
+
+SmallVector<unsigned> sequenceStateBanks(const GraphRecord &graph) {
+  SmallVector<unsigned> banks;
+  if (graph.sequenceStates.empty() || !supportsDeviceGraph(graph))
+    return banks;
+  for (auto [stateIndex, state] : llvm::enumerate(graph.sequenceStates)) {
+    unsigned past = graph.inputs[state.inputIndex];
+    unsigned present = graph.outputs[state.outputIndex];
+    if (llvm::count(graph.inputs, past) != 1 ||
+        llvm::count(graph.outputs, present) != 1 ||
+        llvm::is_contained(graph.outputs, past))
+      continue;
+    const NodeRecord *concat = nullptr;
+    bool otherReader = false;
+    for (const NodeRecord &node : graph.nodes) {
+      if (node.output == present)
+        concat = &node;
+      for (auto [operand, input] : llvm::enumerate(node.inputs))
+        if (input == static_cast<int64_t>(past) &&
+            (node.output != present || operand != 0))
+          otherReader = true;
+    }
+    std::optional<DeviceFusionKind> kind =
+        concat ? deviceFusionKind(graph, *concat) : std::nullopt;
+    if (otherReader || !kind || *kind != DeviceFusionKind::Concat ||
+        concat->inputs.size() != 2 ||
+        concat->inputs[0] != static_cast<int64_t>(past))
+      continue;
+    banks.push_back(static_cast<unsigned>(stateIndex));
+  }
+  return banks;
 }
 
 bool supportsDeviceNode(const GraphRecord &graph, const NodeRecord &node) {
@@ -682,7 +736,8 @@ bool supportsDeviceNode(const GraphRecord &graph, const NodeRecord &node) {
   if (node.operation == "Expand")
     return isDeviceExpandNode(graph, node);
   if (node.operation == "Concat")
-    return deviceConcatShape(graph, node).has_value();
+    return deviceConcatShape(graph, node).has_value() ||
+           isSynthesizedConcatNode(graph, node);
   if (node.operation == "Gather")
     return deviceGatherShape(graph, node).has_value();
   if (node.operation == "Cast")
@@ -885,6 +940,21 @@ FailureOr<HostPlanRecord> readHostPlan(ModuleOp module,
   }
   for (int64_t value : bufferBytes.asArrayRef())
     result.mutableBufferBytes.push_back(value);
+  // Absent in plans that bank no state.
+  if (Attribute banksAttr = plan.get("sequence_state_banks")) {
+    auto banks = dyn_cast<DenseI64ArrayAttr>(banksAttr);
+    if (!banks)
+      return module.emitError("ONNX Host graph plan has invalid sequence "
+                              "state banks");
+    SmallVector<unsigned> bankable = sequenceStateBanks(graph);
+    for (int64_t value : banks.asArrayRef()) {
+      if (value < 0 || !llvm::is_contained(bankable, value) ||
+          llvm::is_contained(result.sequenceStateBanks, value))
+        return module.emitError("ONNX Host graph plan has invalid sequence "
+                                "state banks");
+      result.sequenceStateBanks.push_back(static_cast<unsigned>(value));
+    }
+  }
   return result;
 }
 } // namespace vrc

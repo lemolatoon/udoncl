@@ -20,6 +20,17 @@ struct DeviceFusionDispatch {
   llvm::SmallVector<unsigned> leaves;
 };
 
+/// A leaf that the kernel reads in a larger buffer: the element at
+/// coordinates c of the leaf tensor is the element at c, with `offset` added
+/// on `axis`, of a row-major tensor of `shape`. A banked sequence state reads
+/// its carried rows this way from the previous present.
+struct DeviceFusionLeafView {
+  unsigned tensor;
+  llvm::SmallVector<int64_t> shape;
+  int64_t axis;
+  int64_t offset;
+};
+
 /// The synthesized kernels of one Host module. They live in one carrier
 /// `gpu.module`; groups with the same expression, shapes and immediates
 /// share a kernel.
@@ -32,7 +43,21 @@ public:
   /// kernel unless an identical one exists.
   mlir::FailureOr<DeviceFusionDispatch> dispatch(unsigned rootNode);
 
+  /// The dispatch of the expression of `rootNode` with the leaf `view.tensor`
+  /// read through `view`; its buffer argument holds the whole view shape.
+  /// `rootNode` may also be a node outside every group, which the kernel then
+  /// evaluates on its own.
+  mlir::FailureOr<DeviceFusionDispatch>
+  dispatch(unsigned rootNode, const DeviceFusionLeafView &view);
+
+  /// The dispatch of `node`, outside every group, as a kernel of its own:
+  /// for a re-indexing node beyond the limits of its library kernel.
+  mlir::FailureOr<DeviceFusionDispatch> dispatchAlone(unsigned node);
+
 private:
+  mlir::FailureOr<DeviceFusionDispatch>
+  synthesize(unsigned rootNode, const DeviceFusionLeafView *view);
+
   mlir::ModuleOp module;
   const DeviceFusion &fusion;
   mlir::Operation *carrier = nullptr;

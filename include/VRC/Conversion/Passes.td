@@ -97,7 +97,9 @@ def PlanONNXHostGraphPass : Pass<"udoncl-plan-onnx-host-graph", "mlir::ModuleOp"
   let description = [{
     Records `udoncl.onnx_host_plan` on the module: whether the Device runs the
     whole graph, the fusion group of every node (`device_fusion_roots`, the
-    node whose dispatch computes it), and the buffer of every tensor. Every
+    node whose dispatch computes it), the buffer of every tensor, and the
+    sequence states that alternate between two banks
+    (`sequence_state_banks`, indices into `udoncl.onnx_sequence_states`). Every
     later pass reads these decisions from the plan, so they agree on which
     nodes have a dispatch and which results have a buffer.
   }];
@@ -105,7 +107,11 @@ def PlanONNXHostGraphPass : Pass<"udoncl-plan-onnx-host-graph", "mlir::ModuleOp"
   let options = [
     Option<"fuseDeviceNodes", "fuse-device-nodes", "bool", /*default=*/"true",
            "Fuse trees of per-element and re-indexing Device nodes into one "
-           "synthesized kernel each">
+           "synthesized kernel each">,
+    Option<"bankSequenceState", "bank-sequence-state", "bool",
+           /*default=*/"true",
+           "Alternate qualifying sequence states between two Device banks "
+           "instead of copying the carried rows on every advance">
   ];
 }
 def MaterializeONNXHostGlobalsPass : Pass<"udoncl-materialize-onnx-host-globals", "mlir::ModuleOp"> {

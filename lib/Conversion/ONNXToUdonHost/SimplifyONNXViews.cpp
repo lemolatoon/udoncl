@@ -180,6 +180,66 @@ struct RemoveIdentityExpand : RewritePattern {
   }
 };
 
+/// A ScatterND without reduction whose constant indices name every element
+/// of its data once, the k-th index tuple the k-th element in row-major
+/// order, overwrites the whole data with the updates in order: its result is
+/// the updates reshaped to the data shape.
+struct ScatterNDOfEveryElementToReshape : RewritePattern {
+  ScatterNDOfEveryElementToReshape(MLIRContext *context,
+                                   ShapeConstantCache &shapes)
+      : RewritePattern("onnx.ScatterND", /*benefit=*/1, context),
+        shapes(shapes) {}
+
+  LogicalResult matchAndRewrite(Operation *scatter,
+                                PatternRewriter &rewriter) const override {
+    if (scatter->getNumOperands() != 3 || scatter->getNumResults() != 1)
+      return rewriter.notifyMatchFailure(scatter, "unexpected signature");
+    if (auto reduction = scatter->getAttrOfType<StringAttr>("reduction");
+        reduction && reduction.getValue() != "none")
+      return rewriter.notifyMatchFailure(scatter, "reduces");
+    RankedTensorType data = staticNonEmptyType(scatter->getOperand(0));
+    RankedTensorType indicesType = staticNonEmptyType(scatter->getOperand(1));
+    RankedTensorType updates = staticNonEmptyType(scatter->getOperand(2));
+    RankedTensorType result = staticNonEmptyType(scatter->getResult(0));
+    if (!data || !indicesType || !updates || result != data ||
+        updates.getElementType() != data.getElementType() ||
+        indicesType.getRank() < 1 ||
+        indicesType.getShape().back() != data.getRank() ||
+        updates.getShape() != indicesType.getShape().drop_back() ||
+        updates.getNumElements() != data.getNumElements())
+      return rewriter.notifyMatchFailure(scatter, "does not cover the data");
+    DenseElementsAttr indices = constantElements(scatter->getOperand(1));
+    if (!indices || !isa<IntegerType>(indices.getElementType()))
+      return rewriter.notifyMatchFailure(scatter, "indices are not constant");
+    ArrayRef<int64_t> shape = data.getShape();
+    int64_t rank = data.getRank();
+    int64_t position = 0, linear = 0;
+    for (const APInt &value : indices.getValues<APInt>()) {
+      int64_t axis = position % rank;
+      int64_t index = value.getSExtValue();
+      if (index < 0)
+        index += shape[axis];
+      if (index < 0 || index >= shape[axis])
+        return rewriter.notifyMatchFailure(scatter, "index out of range");
+      linear = (axis == 0 ? 0 : linear) * shape[axis] + index;
+      if (axis == rank - 1 && linear != position / rank)
+        return rewriter.notifyMatchFailure(scatter, "not row-major order");
+      ++position;
+    }
+    Value newShape = shapes.get(rewriter, scatter, shape);
+    OperationState state(scatter->getLoc(), "onnx.Reshape");
+    state.addOperands({scatter->getOperand(2), newShape});
+    state.addTypes(data);
+    if (Attribute name = scatter->getAttr("onnx_node_name"))
+      state.addAttribute("onnx_node_name", name);
+    Operation *reshape = rewriter.create(state);
+    rewriter.replaceOp(scatter, reshape->getResults());
+    return success();
+  }
+
+  ShapeConstantCache &shapes;
+};
+
 struct SimplifyONNXViewsPass
     : impl::SimplifyONNXViewsPassBase<SimplifyONNXViewsPass> {
   void runOnOperation() override {
@@ -188,6 +248,7 @@ struct SimplifyONNXViewsPass
     patterns.add<TransposeOfUnitDimensionsToReshape>(&getContext(), shapes);
     patterns.add<RemoveIdentitySlice>(&getContext());
     patterns.add<RemoveIdentityExpand>(&getContext());
+    patterns.add<ScatterNDOfEveryElementToReshape>(&getContext(), shapes);
     GreedyRewriteConfig config;
     config.enableFolding(false);
     config.enableConstantCSE(false);

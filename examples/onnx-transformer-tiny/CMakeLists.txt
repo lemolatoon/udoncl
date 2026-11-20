@@ -38,7 +38,7 @@ if(UDONCL_TINYLLAMA_ONNX_MODEL)
   # past_sequence_length = capacity - 1 and a capacity-long attention mask,
   # and the C Host receives the same bound. Generic kernel limits, not this
   # file, decide whether a capacity compiles.
-  set(UDONCL_TINYLLAMA_CONTEXT_CAPACITY 64 CACHE STRING
+  set(UDONCL_TINYLLAMA_CONTEXT_CAPACITY 512 CACHE STRING
     "TinyLlama conversation Context Capacity in tokens")
   set(UDONCL_TINYLLAMA_MAX_NEW_TOKENS 32 CACHE STRING
     "Maximum new tokens one TinyLlama generation may request")
@@ -144,7 +144,7 @@ if(UDONCL_TINYLLAMA_ONNX_MODEL)
   set(chat_unity_config "${CMAKE_CURRENT_BINARY_DIR}/unity-library-chat.json")
   file(WRITE "${chat_unity_config}" "${chat_unity_config_json}\n")
 
-  # Acceptance-only M=1 step validation artifact: the same capacity-64 graph
+  # Acceptance-only M=1 step validation artifact: the same capacity graph
   # as the Conversation Artifact, but with public input/output buffers and the
   # plain initialize/run Host, so a Unity test can feed one ORT step (including
   # its rolling past K/V) and compare every logit and present K/V output.

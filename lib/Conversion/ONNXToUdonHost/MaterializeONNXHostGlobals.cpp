@@ -261,6 +261,9 @@ LogicalResult preflightGlobalSymbols(ModuleOp module, const GraphRecord &graph,
       (failed(reserve(onnxHostOperatorScratchSymbol)) ||
        failed(reserve(onnxHostOperatorScratchOwnedSymbol))))
     return failure();
+  if (!plan.sequenceStateBanks.empty() &&
+      failed(reserve(onnxHostSequenceStateBankSymbol)))
+    return failure();
 
   for (const auto &entry : symbols)
     if (Operation *existing =
@@ -329,6 +332,8 @@ struct MaterializeONNXHostGlobalsPass
       createPointerGlobal(module, onnxHostOperatorScratchSymbol);
       createI32Global(module, onnxHostOperatorScratchOwnedSymbol);
     }
+    if (!plan->sequenceStateBanks.empty())
+      createI32Global(module, onnxHostSequenceStateBankSymbol);
     module->setAttr(onnxHostGlobalsMaterializedAttr,
                     UnitAttr::get(module.getContext()));
   }

@@ -18,6 +18,10 @@ struct ONNXHostPlan {
   int64_t operatorScratchBytes;
   llvm::SmallVector<int64_t> mutableBufferBytes;
   int64_t mutableHandleCapacity;
+  /// Indices into GraphRecord::sequenceStates of the states that alternate
+  /// between two banks instead of being copied on advance; see
+  /// sequenceStateBanks().
+  llvm::SmallVector<unsigned> sequenceStateBanks;
 };
 
 struct ONNXHostDeviceSliceShape {
@@ -80,6 +84,10 @@ std::optional<DeviceSliceShape> deviceSliceShape(const GraphRecord &graph,
 bool isDeviceExpandNode(const GraphRecord &graph, const NodeRecord &node);
 std::optional<DeviceConcatShape> deviceConcatShape(const GraphRecord &graph,
                                                    const NodeRecord &node);
+/// A two-input Concat beyond the 16384 words of udononnx_concat2_f32 but
+/// within the 131072 words of a synthesized gather kernel, which then runs it
+/// even when it is not part of a fusion group.
+bool isSynthesizedConcatNode(const GraphRecord &graph, const NodeRecord &node);
 std::optional<DeviceGatherShape> deviceGatherShape(const GraphRecord &graph,
                                                    const NodeRecord &node);
 bool isDeviceCastI64F32Node(const GraphRecord &graph, const NodeRecord &node);
@@ -106,7 +114,18 @@ bool isDeviceQ4Node(const GraphRecord &graph, const NodeRecord &node);
 inline constexpr int64_t deviceQ4DispatchBlocks = 256;
 int64_t operatorScratchBytes(const GraphRecord &graph);
 bool needsQ4Surface(const GraphRecord &graph, unsigned tensorIndex);
+/// Bytes of the Device buffer that holds `tensorIndex`. The input of a
+/// sequence state also holds a whole present tensor: it is one of the two
+/// banks of a banked state.
 int64_t deviceAllocationBytes(const GraphRecord &graph, unsigned tensorIndex);
+/// The sequence states whose carried rows stay where the last run wrote
+/// them. Every run's Concat writes its present into one of two banks, the
+/// public output buffer or the (present-sized) public input buffer, and reads
+/// the previous rows from the other bank through a view, so advancing the
+/// state copies nothing. A state qualifies when the graph runs on the Device,
+/// the Concat that produces the present is a two-input Concat a fused kernel
+/// can evaluate, and nothing but that Concat's first operand reads the past.
+llvm::SmallVector<unsigned> sequenceStateBanks(const GraphRecord &graph);
 int64_t bindingCapacityBytes(const GraphRecord &graph, unsigned tensorIndex);
 bool supportsDeviceNode(const GraphRecord &graph, const NodeRecord &node);
 bool supportsDeviceGraph(const GraphRecord &graph);

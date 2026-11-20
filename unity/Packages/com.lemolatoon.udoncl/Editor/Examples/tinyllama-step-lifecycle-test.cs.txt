@@ -12,7 +12,7 @@ using VRC.Udon;
 
 namespace Lemolatoon.Udoncl.Editor.Tests
 {
-    // Step-level numerical gate for the M=1 capacity-64 graph. Every ORT step
+    // Step-level numerical gate for the M=1 fixed-capacity graph. Every ORT step
     // sidecar (all inputs including the rolling past K/V, all outputs) is fed
     // through the generated public-buffer binding of the step validation
     // artifact, and every output is compared. The report names each output

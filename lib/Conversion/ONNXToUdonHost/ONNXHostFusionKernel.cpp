@@ -138,9 +138,10 @@ class ExpressionEmitter {
 public:
   ExpressionEmitter(OpBuilder &builder, Location location,
                     const DeviceFusion &fusion, ArrayRef<unsigned> leaves,
-                    ArrayRef<BlockArgument> buffers)
+                    ArrayRef<BlockArgument> buffers,
+                    const DeviceFusionLeafView *view)
       : builder(builder), location(location), fusion(fusion),
-        graph(fusion.graph), leaves(leaves), buffers(buffers) {}
+        graph(fusion.graph), leaves(leaves), buffers(buffers), view(view) {}
 
   Emitted emitRoot(unsigned rootNode, Value linear) {
     ArrayRef<int64_t> shape = shapeOf(graph, graph.nodes[rootNode].output);
@@ -382,7 +383,24 @@ private:
       return {known, 0};
     unsigned argument = llvm::find(leaves, tensor) - leaves.begin();
     int64_t capacity = graph.tensors[tensor].type.getNumElements();
-    Bounded linear = bound(linearOf(map), capacity - 1);
+    Bounded linear;
+    if (view && view->tensor == tensor) {
+      // The coordinates of the element in the leaf tensor, moved along the
+      // view axis, address the larger buffer row-major.
+      ArrayRef<Bounded> coordinates =
+          coordinatesOf(reshape(map, shapeOf(graph, tensor)));
+      linear = constant(0);
+      for (auto [axis, extent] : llvm::enumerate(view->shape)) {
+        Bounded coordinate = coordinates[axis];
+        if (static_cast<int64_t>(axis) == view->axis)
+          coordinate = add(coordinate, constant(view->offset));
+        linear = add(multiply(linear, extent), coordinate);
+      }
+      capacity = elementCount(view->shape);
+    } else {
+      linear = linearOf(map);
+    }
+    linear = bound(linear, capacity - 1);
     Value index =
         linear.constant
             ? Value(arith::ConstantIndexOp::create(builder, location,
@@ -596,6 +614,7 @@ private:
   const GraphRecord &graph;
   ArrayRef<unsigned> leaves;
   ArrayRef<BlockArgument> buffers;
+  const DeviceFusionLeafView *view;
   std::deque<IndexMap> maps;
   std::map<std::string, IndexMap *> derivedMaps;
   /// Value of a node (key 2 * node) or of a leaf Load (key 2 * tensor + 1)
@@ -606,6 +625,53 @@ private:
 
 FailureOr<DeviceFusionDispatch>
 DeviceFusionKernels::dispatch(unsigned rootNode) {
+  if (!fusion.isRoot(rootNode))
+    return emitError(module.getLoc())
+           << "ONNX Device fusion group of node " << rootNode
+           << " is outside the fused kernel contract";
+  return synthesize(rootNode, nullptr);
+}
+
+FailureOr<DeviceFusionDispatch>
+DeviceFusionKernels::dispatchAlone(unsigned node) {
+  const GraphRecord &graph = fusion.graph;
+  std::optional<DeviceFusionKind> kind =
+      deviceFusionKind(graph, graph.nodes[node]);
+  if (fusion.isRoot(node) || fusion.isInterior(node) || !kind ||
+      *kind == DeviceFusionKind::Alias || isDeviceFusionReduction(*kind))
+    return emitError(module.getLoc())
+           << "ONNX Device node " << node
+           << " is outside the fused kernel contract";
+  return synthesize(node, nullptr);
+}
+
+FailureOr<DeviceFusionDispatch>
+DeviceFusionKernels::dispatch(unsigned rootNode,
+                              const DeviceFusionLeafView &view) {
+  const GraphRecord &graph = fusion.graph;
+  std::optional<DeviceFusionKind> kind =
+      deviceFusionKind(graph, graph.nodes[rootNode]);
+  if (fusion.isInterior(rootNode) || !kind ||
+      *kind == DeviceFusionKind::Alias || isDeviceFusionReduction(*kind) ||
+      view.shape.size() != shapeOf(graph, view.tensor).size() ||
+      view.axis < 0 || view.axis >= static_cast<int64_t>(view.shape.size()) ||
+      elementCount(view.shape) > maximumSurfaceWords)
+    return emitError(module.getLoc())
+           << "ONNX Device view of tensor " << view.tensor << " in node "
+           << rootNode << " is outside the fused kernel contract";
+  for (auto [axis, extent] : llvm::enumerate(shapeOf(graph, view.tensor))) {
+    int64_t moved = static_cast<int64_t>(axis) == view.axis ? view.offset : 0;
+    if (moved < 0 || extent + moved > view.shape[axis])
+      return emitError(module.getLoc())
+             << "ONNX Device view of tensor " << view.tensor
+             << " does not fit its buffer";
+  }
+  return synthesize(rootNode, &view);
+}
+
+FailureOr<DeviceFusionDispatch>
+DeviceFusionKernels::synthesize(unsigned rootNode,
+                                const DeviceFusionLeafView *view) {
   const GraphRecord &graph = fusion.graph;
   Location location = module.getLoc();
   DeviceFusionDispatch result;
@@ -613,8 +679,9 @@ DeviceFusionKernels::dispatch(unsigned rootNode) {
   DeviceFusionCost cost = fusion.cost(rootNode);
   int64_t elements =
       graph.tensors[graph.nodes[rootNode].output].type.getNumElements();
-  if (!fusion.isRoot(rootNode) || !cost.withinCaps() || result.leaves.empty() ||
-      elements > maximumSurfaceWords)
+  if (!cost.withinCaps() || result.leaves.empty() ||
+      elements > maximumSurfaceWords ||
+      (view && !llvm::is_contained(result.leaves, view->tensor)))
     return emitError(location)
            << "ONNX Device fusion group of node " << rootNode
            << " is outside the fused kernel contract";
@@ -622,6 +689,14 @@ DeviceFusionKernels::dispatch(unsigned rootNode) {
   std::string key;
   llvm::raw_string_ostream keyStream(key);
   structureKey(fusion, result.leaves, rootNode, keyStream);
+  if (view) {
+    keyStream << "|view%"
+              << (llvm::find(result.leaves, view->tensor) -
+                  result.leaves.begin())
+              << '[';
+    llvm::interleave(view->shape, keyStream, "x");
+    keyStream << "]@" << view->axis << '+' << view->offset;
+  }
   auto [entry, inserted] = callees.try_emplace(key);
   if (!inserted) {
     result.callee = entry->second;
@@ -649,7 +724,10 @@ DeviceFusionKernels::dispatch(unsigned rootNode) {
   SmallVector<Type> arguments;
   for (unsigned leaf : result.leaves)
     arguments.push_back(
-        MemRefType::get({graph.tensors[leaf].type.getNumElements()}, f32));
+        MemRefType::get({view && view->tensor == leaf
+                             ? elementCount(view->shape)
+                             : graph.tensors[leaf].type.getNumElements()},
+                        f32));
   int64_t surfaceHeight = (elements + surfaceWidth - 1) / surfaceWidth;
   int64_t surfaceWords = surfaceWidth * surfaceHeight;
   arguments.push_back(MemRefType::get({surfaceWords}, f32));
@@ -689,7 +767,7 @@ DeviceFusionKernels::dispatch(unsigned rootNode) {
   builder.setInsertionPointToStart(guard.thenBlock());
   SmallVector<BlockArgument> buffers(body.getArguments());
   ExpressionEmitter emitter(builder, location, fusion, result.leaves,
-                            ArrayRef<BlockArgument>(buffers).drop_back());
+                            ArrayRef<BlockArgument>(buffers).drop_back(), view);
   Emitted value = emitter.emitRoot(rootNode, linear);
   scf::YieldOp::create(builder, location, value.value);
   builder.setInsertionPointToStart(guard.elseBlock());

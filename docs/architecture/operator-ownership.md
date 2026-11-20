@@ -87,6 +87,14 @@ one dispatch accumulates up to 256 K blocks of every output word in ascending
 K order, and the Host splits a longer K into compile-time segments that pass
 the partial sum through a scratch surface. Changing that schedule keeps the
 `MatMulNBits` semantics and adds no `Ext` entry point.
+`udoncl-simplify-onnx-views` turns an ONNX `ScatterND` without reduction
+whose constant indices overwrite every element of its data once, in
+row-major order, into a `Reshape` of its updates: by the ONNX definition its
+result is then exactly the updates. Such a ScatterND (the attention-mask
+reshaping of exported decoder graphs) stays an UdonONNXOperators node until
+then; the rewrite only removes a dispatch whose library kernel addresses at
+most 256 index tuples, which bounded the Context Capacity.
+
 `udoncl-merge-onnx-sibling-matmulnbits` is a graph rewrite inside that
 contract, not a new operator: `MatMulNBits` nodes that read one activation
 with equal K, bits and block size, constant weights and no zero points,
@@ -106,7 +114,13 @@ expansion), the R left matrices of a group multiply one matrix; the rewrite
 stacks them as R * M rows of one batch and multiplies the matrices before the
 Expand. Each output element is the same dot product in the same K order, and
 `udonblas-arena-sgemm-kernel` checks the folded batches bit for bit against
-the repeated ones.
+the repeated ones. A right operand that transposes its last two axes and
+scales every element by a constant scalar after the repetition (the key
+operand of attention) first moves the Transpose and the Mul in front of the
+Expand: every element is still the product of the same key element and the
+same scalar, computed once per key instead of once per repeat, and the fold
+then applies. The Mul stays an UdonATen operator and the Transpose an
+UdonONNXOperators re-indexing node.
 
 The general ONNX MNIST path follows the same boundary: arena convolution and
 pooling are private backends of `udondnnConvolutionForward` and
@@ -150,6 +164,37 @@ signatures and ordering rules unchanged.
   and the Host continues; the destination is defined once the event is
   complete (`clWaitForEvents`, or any later transfer, which drains it). This
   is the OpenCL contract, so a Host decides how many steps a value may lag.
+
+## Banked sequence state
+
+Advancing a sequence state (an ONNX past input carried into the next run from
+the `Concat` that produces the matching present output) is a binding
+mechanism of this section, not an operator: it adds no UdonBLAS, UdonDNN,
+UdonATen or UdonONNXOperators API and changes no operator contract. The
+`Concat` stays the UdonONNXOperators operator, and ONNX semantics are
+unchanged: every run computes present = Concat(past, new) element for
+element.
+
+What changes is where the Host keeps the rows. When Host planning banks a
+state (`sequence_state_banks`, `sequenceStateBanks` in `ONNXHostPlan.h`), the
+public past input buffer is allocated with the size of the present, and the
+two buffers alternate: one run writes the present into the present output and
+the next run writes it into the past input, each reading the carried rows of
+the other through a static view (row r of the past is row r + step of the
+previous present). The generated `udon_onnx_binding_enqueue_advance_sequence_state`
+then only flips a bank counter instead of copying `present[step:]` into the
+past. The view is read by a synthesized kernel of the `Concat` (section
+"Synthesized Device kernels"), so it is held to the same bit-identity bar:
+`onnx-fusion-execution` runs four steps through banks 0, 1, 2, 1 against the
+copying advance built from the library kernels.
+
+The present of a run from bank 1 is in the past input. A caller that reads a
+present output calls `udon_onnx_binding_enqueue_materialize_sequence_state`
+first, which copies such presents into their outputs (one Device copy each)
+and leaves the bank unchanged; the first run after create, bind-all or reset
+needs no materialization. Writing the past input directly is only meaningful
+before the first advance after create, bind-all or reset, which is the only
+time a run reads it in the ONNX past layout.
 
 Udon restrictions of those OpenCL calls, all reported with OpenCL status
 codes instead of a different contract: ranges are word-aligned

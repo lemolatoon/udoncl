@@ -221,7 +221,7 @@ FailureOr<GraphRecord> readONNXHostGraph(ModuleOp module) {
         sequenceCapacity <= 0 ||
         outputType.getDimSize(sequenceAxis) != sequenceCapacity ||
         inputType.getDimSize(sequenceAxis) + sequenceStep != sequenceCapacity ||
-        inputType.getNumElements() <= 0 || inputType.getNumElements() > 16384)
+        inputType.getNumElements() <= 0)
       return module.emitError("ONNX sequence-state shape is not supported");
     for (int64_t dimension = 0; dimension < inputType.getRank(); ++dimension) {
       if (inputType.getDimSize(dimension) > 65535 ||

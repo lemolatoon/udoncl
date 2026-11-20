@@ -330,26 +330,49 @@ sequence_state_portable = subprocess.run(
     capture_output=True,
     check=True,
 ).stdout
-sequence_state_host = subprocess.run(
-    [
-        host_opt,
-        "--udoncl-validate-onnx-host-graph",
-        "--udoncl-plan-onnx-host-graph",
-        "--udoncl-materialize-onnx-host-globals",
-        "--udoncl-materialize-onnx-host-model-registry",
-        "--udoncl-attach-onnx-host-metadata",
-        "--udoncl-finalize-onnx-host",
-        "--udoncl-cleanup-onnx-host-source",
-        "-",
-    ],
-    input=sequence_state_portable,
-    text=True,
-    capture_output=True,
+def sequence_state_finalize(*plan_options):
+    plan = "--udoncl-plan-onnx-host-graph"
+    if plan_options:
+        plan += "=" + " ".join(plan_options)
+    result = subprocess.run(
+        [
+            host_opt,
+            "--udoncl-validate-onnx-host-graph",
+            plan,
+            "--udoncl-materialize-onnx-host-globals",
+            "--udoncl-materialize-onnx-host-model-registry",
+            "--udoncl-attach-onnx-host-metadata",
+            "--udoncl-finalize-onnx-host",
+            "--udoncl-cleanup-onnx-host-source",
+            "-",
+        ],
+        input=sequence_state_portable,
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    return result
+
+
+# By default both states are banked: the advance flips the bank and copies
+# nothing, and every past input holds a whole present (8192 bytes).
+sequence_state_banked = sequence_state_finalize()
+banked_advance_body = sequence_state_banked.stdout.split(
+    "func.func @udon_onnx_binding_enqueue_advance_sequence_state", 1
+)[1].split("func.func", 1)[0]
+assert "call @__vrc_opencl_" not in banked_advance_body
+assert "__udon_onnx_sequence_state_bank" in banked_advance_body
+assert (
+    "func.func @udon_onnx_binding_enqueue_materialize_sequence_state"
+    in sequence_state_banked.stdout
 )
-assert sequence_state_host.returncode == 0, (
-    sequence_state_host.stdout,
-    sequence_state_host.stderr,
+assert (
+    "udoncl.mutable_buffer_bytes = array<i64: 1024, 8192, 8192, 8, 8192, 8, "
+    "8192>" in sequence_state_banked.stdout
 )
+# Without banks the advance copies the carried rows of each state.
+sequence_state_host = sequence_state_finalize("bank-sequence-state=false")
+assert "__udon_onnx_sequence_state_bank" not in sequence_state_host.stdout
 assert "func.func @udon_onnx_binding_enqueue_advance_sequence_state" in (
     sequence_state_host.stdout
 )

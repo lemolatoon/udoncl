@@ -371,7 +371,10 @@ The rule is generic: it names node kinds, never a model, a node or a shape.
   of one fragment (a Concat executes one side) and 64 expression nodes,
   counted on the expression as a tree. A producer that would exceed a cap
   stays materialized. A node on its own keeps its library kernel, and a group
-  that would only absorb aliases is not formed.
+  that would only absorb aliases is not formed. A two-input Concat beyond
+  the 16384 words of `udononnx_concat2_f32` (up to the 131072 words of a
+  fused surface) has no library kernel; on its own it dispatches a
+  synthesized kernel of just itself.
 - **Plan.** `udoncl.onnx_host_plan` carries `device_fusion_roots`, the node
   whose dispatch computes each node. Storage planning keeps every leaf live
   until the root's dispatch and gives interior results no buffer, so a fused
@@ -396,6 +399,30 @@ The rule is generic: it names node kinds, never a model, a node or a shape.
   therefore bounded by interval arithmetic over constants, `remui` and
   `minui`, never by a branch condition inside the expression, which
   canonicalization can separate from the value it guards.
+
+#### Banked sequence state
+
+`udoncl-identify-onnx-sequence-state` records past/present pairs whose
+present is `Concat(past, new)`. Host planning banks a pair
+(`sequence_state_banks` in `udoncl.onnx_host_plan`,
+`--udoncl-plan-onnx-host-graph=bank-sequence-state=false` turns it off) when
+the graph runs on the Device, the Concat is a fusible two-input Concat and
+nothing else reads the past. Every past input is allocated with the size of
+its present, so the past input and the present output are two banks of one
+state. The global `__udon_onnx_sequence_state_bank` says where the next run
+finds the carried rows: 0 in the past input as the ONNX past tensor (after
+create, bind-all, reset), 1 in the present output, 2 in the past input, each
+as the rows after the step of the previous present. The run loads it once;
+every dispatch that touches a banked buffer is emitted per bank it
+distinguishes: in bank 1 the Concat writes the past input and its readers
+read it, and in banks 1 and 2 the Concat is a view kernel
+(`DeviceFusionKernels::dispatch(root, DeviceFusionLeafView)`) that reads the
+past leaf at row r + step of the other bank. The advance only maps the bank
+to 2 after a run from bank 1 and to 1 otherwise; it copies nothing.
+`udon_onnx_binding_enqueue_materialize_sequence_state` copies a present left
+in the past input into its output for a caller that reads it. A banked state
+is bounded by its view kernel (131072 words per present), not by the 16384
+words of the Slice that a copying advance still uses.
 
 Representative output:
 

@@ -122,4 +122,42 @@ module {
 
 // CHECK-LABEL: func.func @broadcast
 // CHECK: "onnx.Expand"
+
+  // A ScatterND whose constant indices overwrite every element in row-major
+  // order (negative indices count from the end) is its updates reshaped, with
+  // or without the default reduction spelled out. One that reorders an
+  // element, or that reduces, is kept.
+  func.func @scatters(%data: tensor<1x1x2x2xf32>, %updates: tensor<1x1x2x2xf32>)
+      -> (tensor<1x1x2x2xf32>, tensor<1x1x2x2xf32>, tensor<1x1x2x2xf32>,
+          tensor<1x1x2x2xf32>) {
+    %every = "onnx.Constant"() {value = dense<[[[[[0, 0, 0, 0], [0, 0, 0, 1]], [[0, 0, 1, 0], [0, 0, -1, -1]]]]]> : tensor<1x1x2x2x4xi64>}
+        : () -> tensor<1x1x2x2x4xi64>
+    %swapped = "onnx.Constant"() {value = dense<[[[[[0, 0, 0, 1], [0, 0, 0, 0]], [[0, 0, 1, 0], [0, 0, 1, 1]]]]]> : tensor<1x1x2x2x4xi64>}
+        : () -> tensor<1x1x2x2x4xi64>
+    %overwritten = "onnx.ScatterND"(%data, %every, %updates)
+        {reduction = "none", onnx_node_name = "whole"}
+        : (tensor<1x1x2x2xf32>, tensor<1x1x2x2x4xi64>, tensor<1x1x2x2xf32>)
+        -> tensor<1x1x2x2xf32>
+    %reordered = "onnx.ScatterND"(%data, %swapped, %updates)
+        {reduction = "none"}
+        : (tensor<1x1x2x2xf32>, tensor<1x1x2x2x4xi64>, tensor<1x1x2x2xf32>)
+        -> tensor<1x1x2x2xf32>
+    %added = "onnx.ScatterND"(%data, %every, %updates) {reduction = "add"}
+        : (tensor<1x1x2x2xf32>, tensor<1x1x2x2x4xi64>, tensor<1x1x2x2xf32>)
+        -> tensor<1x1x2x2xf32>
+    %unreduced = "onnx.ScatterND"(%data, %every, %updates)
+        : (tensor<1x1x2x2xf32>, tensor<1x1x2x2x4xi64>, tensor<1x1x2x2xf32>)
+        -> tensor<1x1x2x2xf32>
+    "onnx.Return"(%overwritten, %reordered, %added, %unreduced)
+        : (tensor<1x1x2x2xf32>, tensor<1x1x2x2xf32>, tensor<1x1x2x2xf32>,
+           tensor<1x1x2x2xf32>) -> ()
+  }
+
+// CHECK-LABEL: func.func @scatters
+// CHECK-SAME: (%[[DATA:.*]]: tensor<1x1x2x2xf32>, %[[UPDATES:.*]]: tensor<1x1x2x2xf32>)
+// CHECK: %[[WHOLE:.*]] = "onnx.Reshape"(%[[UPDATES]], %{{.*}}){{.*}}onnx_node_name = "whole"
+// CHECK: %[[REORDERED:.*]] = "onnx.ScatterND"(%[[DATA]]
+// CHECK: %[[ADDED:.*]] = "onnx.ScatterND"(%[[DATA]]
+// CHECK: %[[UNREDUCED:.*]] = "onnx.Reshape"(%[[UPDATES]]
+// CHECK: onnx.Return %[[WHOLE]], %[[REORDERED]], %[[ADDED]], %[[UNREDUCED]]
 }

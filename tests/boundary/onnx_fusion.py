@@ -45,8 +45,9 @@ SURFACE = {"words": 131072, "global_size": [8192, 16, 1]}
 ROW = {"words": 8192, "global_size": [8192, 1, 1]}
 
 
-def emit(name, kernel_id, geometry, source_option, source, extra=None):
-    config = output / f"{name}.json"
+def emit(name, kernel_id, geometry, source_option, source, extra=None, label=None):
+    label = label or name
+    config = output / f"{label}.json"
     config.write_text(
         json.dumps(
             {
@@ -62,7 +63,7 @@ def emit(name, kernel_id, geometry, source_option, source, extra=None):
         ),
         encoding="utf-8",
     )
-    bundle = output / f"{name}-bundle"
+    bundle = output / f"{label}-bundle"
     if bundle.exists():
         shutil.rmtree(bundle)
     run(
@@ -146,31 +147,63 @@ PIPELINE = [
     "--udoncl-cleanup-onnx-host-source",
     "--canonicalize",
 ]
-host = output / "host.mlir"
-run([optimizer, *PIPELINE, root / "tests/boundary/onnx_fusion_graph.mlir", "-o", host])
-text = host.read_text(encoding="utf-8")
-# One dispatch per result and no library dispatch: every node is fused.
-dispatches = re.findall(r"call @__vrc_opencl_dispatch_(\w+)\(", text)
-assert dispatches == [f"udononnx_fused_{index}" for index in range(5)], dispatches
+def finalize(graph, name):
+    """Returns the dispatched callees and the carrier of the finalized graph."""
+    host = output / f"{name}.mlir"
+    run([optimizer, *PIPELINE, root / "tests/boundary" / graph, "-o", host])
+    text = host.read_text(encoding="utf-8")
+    dispatches = re.findall(r"call @__vrc_opencl_dispatch_(\w+)\(", text)
+    start = text.index("gpu.module @udononnx_fused_kernels {")
+    depth = 0
+    for end in range(text.index("{", start), len(text)):
+        depth += {"{": 1, "}": -1}.get(text[end], 0)
+        if depth == 0:
+            break
+    carrier = output / f"{name}-kernels.mlir"
+    carrier.write_text(text[start : end + 1] + "\n", encoding="utf-8")
+    kernels = re.findall(
+        r"gpu\.func @(\w+)\((.*?)\) kernel", carrier.read_text("utf-8")
+    )
+    return dispatches, carrier, kernels
 
-start = text.index("gpu.module @udononnx_fused_kernels {")
-depth = 0
-for end in range(text.index("{", start), len(text)):
-    depth += {"{": 1, "}": -1}.get(text[end], 0)
-    if depth == 0:
-        break
-carrier = output / "fused-kernels.mlir"
-carrier.write_text(text[start : end + 1] + "\n", encoding="utf-8")
+
+dispatches, carrier, kernels = finalize("onnx_fusion_graph.mlir", "host")
+# One dispatch per result and no library dispatch: every node is fused.
+assert dispatches == [f"udononnx_fused_{index}" for index in range(5)], dispatches
+# The banked key cache dispatches its view kernel in banks 1 and 2 and its
+# own fused kernel in bank 0.
+state_dispatches, state_carrier, state_kernels = finalize(
+    "onnx_fusion_sequence_state_graph.mlir", "sequence-state"
+)
+assert state_dispatches == [
+    "udononnx_fused_0",
+    "udononnx_fused_0",
+    "udononnx_fused_1",
+], state_dispatches
 
 # Leaf buffers of the five kernels: x, cos, sin; x, y; k; x, y; x, cos.
+# The view kernel reads a whole 128-word present bank, the bank-0 kernel the
+# 112-word past; both read the 16-word token.
 expected_inputs = [[256, 64, 64], [256, 256], [32], [256, 256], [256, 64]]
-kernels = re.findall(r"gpu\.func @(\w+)\((.*?)\) kernel", carrier.read_text("utf-8"))
 assert [name for name, _ in kernels] == [f"udononnx_fused_{i}" for i in range(5)]
-for index, ((name, arguments), inputs) in enumerate(zip(kernels, expected_inputs)):
+assert [name for name, _ in state_kernels] == [
+    "udononnx_fused_0",
+    "udononnx_fused_1",
+]
+for index, (source, (name, arguments), inputs) in enumerate(
+    [(carrier, kernel, inputs) for kernel, inputs in zip(kernels, expected_inputs)]
+    + list(zip([state_carrier] * 2, state_kernels, [[128, 16], [112, 16]]))
+):
     sizes = [int(size) for size in re.findall(r"memref<(\d+)xf32>", arguments)]
     assert sizes == inputs + [8192], (name, sizes)
     fragment = emit(
-        name, 300 + index, ROW, "--device-mlir", carrier, {"input_words": inputs}
+        name,
+        300 + index,
+        ROW,
+        "--device-mlir",
+        source,
+        {"input_words": inputs},
+        label=f"{source.stem}-{name}",
     )
     hlsl = fragment.read_text(encoding="utf-8")
     assert "precise float" in hlsl
@@ -233,4 +266,9 @@ for name, count, counters in [
     for counter in counters:
         found = re.search(rf"{name}_{counter}=(\d+)", result.stdout)
         assert int(found.group(1)) > 0, (name, counter, result.stdout)
-assert "draws=22" in result.stdout, result.stdout
+# Four steps of the banked key cache: bank 0, 1, 2, 1. Each step draws the
+# library Neg of its reference and the fused kernel.
+for step in range(4):
+    assert f"step{step}_bitexact=128/128" in result.stdout, result.stdout
+    assert f"step{step}_tail_zero=1" in result.stdout, result.stdout
+assert "draws=30" in result.stdout, result.stdout

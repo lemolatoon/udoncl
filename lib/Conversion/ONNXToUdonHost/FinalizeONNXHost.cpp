@@ -50,6 +50,7 @@ constexpr StringRef sequenceStatePendingSymbol =
 constexpr StringRef sequenceStatePoisonedSymbol =
     onnxHostSequenceStatePoisonedSymbol;
 constexpr StringRef sequenceStateZeroSymbol = onnxHostSequenceStateZeroSymbol;
+constexpr StringRef sequenceStateBankSymbol = onnxHostSequenceStateBankSymbol;
 constexpr StringRef hasRunSymbol = onnxHostHasRunSymbol;
 constexpr int32_t bindingStateStorageBytes = onnxHostBindingStateStorageBytes;
 constexpr int32_t bindingTensorStorageBytes = onnxHostBindingTensorStorageBytes;
@@ -86,6 +87,10 @@ bool isSequenceStateOutput(const GraphRecord &graph, size_t index) {
                       [&](const SequenceStateRecord &state) {
                         return state.outputIndex == index;
                       });
+}
+
+bool isBankedSequenceState(const HostPlanRecord &plan, size_t stateIndex) {
+  return llvm::is_contained(plan.sequenceStateBanks, stateIndex);
 }
 
 Value addressOf(OpBuilder &builder, Location location, StringRef symbol) {
@@ -1475,7 +1480,8 @@ LogicalResult createRunExport(ModuleOp module, const GraphRecord &graph) {
 }
 
 LogicalResult createPhysicalBindingExports(ModuleOp module,
-                                           const GraphRecord &graph) {
+                                           const GraphRecord &graph,
+                                           const HostPlanRecord &plan) {
   ONNXHostDeclarations declarations(module);
   OpBuilder builder(module.getBodyRegion());
   Location location = module.getLoc();
@@ -1483,6 +1489,14 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
   Type pointer = host::PtrType::get(module.getContext(), 0);
   auto constant = [&](int64_t value) -> Value {
     return arith::ConstantIntOp::create(builder, location, value, 32);
+  };
+  bool banked = !plan.sequenceStateBanks.empty();
+  // create, bind-all and reset leave the carried rows of a banked state in
+  // the past input, laid out as the ONNX past tensor.
+  auto resetBank = [&]() {
+    if (banked)
+      store(builder, location, constant(0),
+            addressOf(builder, location, sequenceStateBankSymbol));
   };
   auto state = [&]() -> Value {
     return addressOf(builder, location, bindingStateSymbol);
@@ -1578,6 +1592,7 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
           addressOf(builder, location, sequenceStatePendingSymbol));
     store(builder, location, constant(0),
           addressOf(builder, location, sequenceStatePoisonedSymbol));
+    resetBank();
   }
   func::ReturnOp::create(builder, location, constant(0));
 
@@ -1635,6 +1650,13 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
           arith::SelectOp::create(builder, location, invalidate, constant(0),
                                   loadI32(builder, location, owned)),
           owned);
+    if (banked) {
+      Value bank = addressOf(builder, location, sequenceStateBankSymbol);
+      store(builder, location,
+            arith::SelectOp::create(builder, location, invalidate, constant(0),
+                                    loadI32(builder, location, bank)),
+            bank);
+    }
   }
   func::ReturnOp::create(builder, location, bindCall.getResult(0));
 
@@ -1707,6 +1729,7 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
           addressOf(builder, location, sequenceStateOwnedSymbol));
     store(builder, location, constant(0),
           addressOf(builder, location, sequenceStatePendingSymbol));
+    resetBank();
   }
   auto completedStaticBind = func::CallOp::create(
       builder, location, "udononnxBindingStateCompleteStaticBind",
@@ -1996,8 +2019,10 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
       const TensorRecord &input = graph.tensors[inputTensorIndex];
       int64_t inputBytes = input.type.getNumElements() *
                            elementByteSize(input.type.getElementType());
+      // The buffer holds a whole present; only the past tensor is cleared.
       Value destination =
-          resetPhysicalBuffer(sequence.inputIndex + 1, inputBytes);
+          resetPhysicalBuffer(sequence.inputIndex + 1,
+                              deviceAllocationBytes(graph, inputTensorIndex));
       auto filled = func::CallOp::create(
           builder, location, "__vrc_opencl_buffer_fill", TypeRange{i32},
           ValueRange{destination, constant(0), constant(inputBytes),
@@ -2012,6 +2037,7 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
           addressOf(builder, location, sequenceStatePendingSymbol));
     store(builder, location, constant(0),
           addressOf(builder, location, sequenceStatePoisonedSymbol));
+    resetBank();
     func::ReturnOp::create(builder, location, constant(0));
 
     builder.setInsertionPointToEnd(module.getBody());
@@ -2019,7 +2045,12 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
         builder, location, "udon_onnx_binding_enqueue_advance_sequence_state",
         FunctionType::get(module.getContext(), {}, {i32}));
     markExport(advance);
-    advance->setAttr("vrc.async_effect", builder.getStringAttr("may_suspend"));
+    // An advance that only flips banks issues no Device command and never
+    // suspends; the Udon async lowering supports no coroutine without a
+    // suspension point.
+    if (plan.sequenceStateBanks.size() != graph.sequenceStates.size())
+      advance->setAttr("vrc.async_effect",
+                       builder.getStringAttr("may_suspend"));
     Block *advanceEntry = advance.addEntryBlock();
     builder.setInsertionPointToEnd(advanceEntry);
     Block *advanceReady = advance.addBlock();
@@ -2096,16 +2127,28 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
                          : fallback;
       return (low & 65535) | ((high & 65535) << 16);
     };
-    for (const SequenceStateRecord &sequence : graph.sequenceStates) {
+    for (auto [stateIndex, sequence] : llvm::enumerate(graph.sequenceStates)) {
+      // A banked state moves nothing: the bank flip below makes the rows the
+      // last run wrote the carried rows of the next run.
+      if (isBankedSequenceState(plan, stateIndex))
+        continue;
       unsigned inputTensorIndex = graph.inputs[sequence.inputIndex];
       unsigned outputTensorIndex = graph.outputs[sequence.outputIndex];
       const TensorRecord &input = graph.tensors[inputTensorIndex];
       const TensorRecord &output = graph.tensors[outputTensorIndex];
-      int64_t inputBytes = input.type.getNumElements() * sizeof(float);
-      int64_t outputBytes = output.type.getNumElements() * sizeof(float);
-      Value source = physicalBuffer(
-          graph.inputs.size() + sequence.outputIndex + 1, outputBytes);
-      Value destination = physicalBuffer(sequence.inputIndex + 1, inputBytes);
+      // The copying advance is one udononnx_slice_f32 dispatch, which
+      // addresses at most 16384 words; a banked state has no such limit.
+      if (input.type.getNumElements() > 16384 ||
+          output.type.getNumElements() > 16384)
+        return emitError(location)
+               << "ONNX sequence state that is not banked exceeds the 16384 "
+                  "elements of its copying advance";
+      Value source =
+          physicalBuffer(graph.inputs.size() + sequence.outputIndex + 1,
+                         deviceAllocationBytes(graph, outputTensorIndex));
+      Value destination =
+          physicalBuffer(sequence.inputIndex + 1,
+                         deviceAllocationBytes(graph, inputTensorIndex));
       SmallVector<int64_t> starts(input.type.getRank(), 0);
       SmallVector<int64_t> steps(input.type.getRank(), 1);
       starts[sequence.axis] = sequence.step;
@@ -2131,8 +2174,113 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
                                TypeRange{i32}, dispatched.getResult(0));
       advanceReturnIfNonzero(awaited.getResult(0), 5);
     }
+    if (banked) {
+      // The pending run wrote the present into the past input from bank 1
+      // and into the present output otherwise.
+      Value bank = addressOf(builder, location, sequenceStateBankSymbol);
+      Value fromInput =
+          arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
+                                loadI32(builder, location, bank), constant(1));
+      store(builder, location,
+            arith::SelectOp::create(builder, location, fromInput, constant(2),
+                                    constant(1)),
+            bank);
+    }
     store(builder, location, constant(0),
           addressOf(builder, location, sequenceStatePendingSymbol));
+    func::ReturnOp::create(builder, location, constant(0));
+  }
+
+  if (banked) {
+    // The present of a banked state is in its past input after a run from
+    // bank 1: while that run is pending, and once it was advanced to bank 2.
+    // Materializing copies it into the present output, where the presents of
+    // all other runs already are, so that a caller reads every present from
+    // its output. The bank and the carried rows stay as they are.
+    builder.setInsertionPointToEnd(module.getBody());
+    auto materialize = func::FuncOp::create(
+        builder, location,
+        "udon_onnx_binding_enqueue_materialize_sequence_state",
+        FunctionType::get(module.getContext(), {}, {i32}));
+    // Only a C Host that reads presents calls it, so it is not a Udon export
+    // and an artifact that never calls it does not keep it.
+    materialize->setAttr("vrc.async_effect",
+                         builder.getStringAttr("may_suspend"));
+    Block *materializeEntry = materialize.addEntryBlock();
+    Block *materializeCheck = materialize.addBlock();
+    Block *materializeBusy = materialize.addBlock();
+    Block *materializeInvalid = materialize.addBlock();
+    Block *materializeCopy = materialize.addBlock();
+    Block *materializeDone = materialize.addBlock();
+    builder.setInsertionPointToEnd(materializeEntry);
+    auto loadState = [&](StringRef symbol) {
+      return loadI32(builder, location, addressOf(builder, location, symbol));
+    };
+    auto equals = [&](Value value, int64_t expected) -> Value {
+      return arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
+                                   value, constant(expected));
+    };
+    cf::CondBranchOp::create(
+        builder, location, equals(loadState(bindingEventSymbol), 0),
+        materializeCheck, ValueRange{}, materializeBusy, ValueRange{});
+    builder.setInsertionPointToEnd(materializeBusy);
+    func::ReturnOp::create(builder, location, constant(7));
+    builder.setInsertionPointToEnd(materializeCheck);
+    Value healthy = arith::AndIOp::create(
+        builder, location, equals(loadState(sequenceStateOwnedSymbol), 1),
+        equals(loadState(sequenceStatePoisonedSymbol), 0));
+    Block *materializeBank = materialize.addBlock();
+    cf::CondBranchOp::create(builder, location, healthy, materializeBank,
+                             ValueRange{}, materializeInvalid, ValueRange{});
+    builder.setInsertionPointToEnd(materializeInvalid);
+    func::ReturnOp::create(builder, location, constant(12));
+    builder.setInsertionPointToEnd(materializeBank);
+    Value bank = loadState(sequenceStateBankSymbol);
+    Value inInput = arith::SelectOp::create(
+        builder, location, equals(loadState(sequenceStatePendingSymbol), 1),
+        equals(bank, 1), equals(bank, 2));
+    cf::CondBranchOp::create(builder, location, inInput, materializeCopy,
+                             ValueRange{}, materializeDone, ValueRange{});
+    builder.setInsertionPointToEnd(materializeDone);
+    func::ReturnOp::create(builder, location, constant(0));
+    builder.setInsertionPointToEnd(materializeCopy);
+    for (unsigned stateIndex : plan.sequenceStateBanks) {
+      const SequenceStateRecord &sequence = graph.sequenceStates[stateIndex];
+      unsigned inputTensorIndex = graph.inputs[sequence.inputIndex];
+      unsigned outputTensorIndex = graph.outputs[sequence.outputIndex];
+      const TensorRecord &present = graph.tensors[outputTensorIndex];
+      int64_t presentBytes = present.type.getNumElements() *
+                             elementByteSize(present.type.getElementType());
+      Value source =
+          func::CallOp::create(
+              builder, location, "__vrc_opencl_buffer_alloc", TypeRange{i32},
+              ValueRange{
+                  constant(sequence.inputIndex + 1),
+                  constant(deviceAllocationBytes(graph, inputTensorIndex))})
+              .getResult(0);
+      Value destination =
+          func::CallOp::create(
+              builder, location, "__vrc_opencl_buffer_alloc", TypeRange{i32},
+              ValueRange{
+                  constant(graph.inputs.size() + sequence.outputIndex + 1),
+                  constant(deviceAllocationBytes(graph, outputTensorIndex))})
+              .getResult(0);
+      auto copied = func::CallOp::create(
+          builder, location, "__vrc_opencl_buffer_copy", TypeRange{i32},
+          ValueRange{source, destination, constant(0), constant(0),
+                     constant(presentBytes)});
+      auto awaited =
+          func::CallOp::create(builder, location, "__vrc_opencl_await",
+                               TypeRange{i32}, copied.getResult(0));
+      Block *next = materialize.addBlock();
+      Block *failure = materialize.addBlock();
+      cf::CondBranchOp::create(builder, location,
+                               equals(awaited.getResult(0), 0), next,
+                               ValueRange{}, failure, ValueRange{});
+      builder.setInsertionPointToEnd(failure);
+      func::ReturnOp::create(builder, location, constant(5));
+      builder.setInsertionPointToEnd(next);
+    }
     func::ReturnOp::create(builder, location, constant(0));
   }
 
@@ -2165,6 +2313,7 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
           addressOf(builder, location, sequenceStatePendingSymbol));
     store(builder, location, constant(0),
           addressOf(builder, location, sequenceStatePoisonedSymbol));
+    resetBank();
   }
   for (size_t index = 0; index != graph.inputs.size() + graph.outputs.size();
        ++index) {
@@ -2588,8 +2737,13 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                                TypeRange{i32}, enqueued.getResult(0));
       returnOpenCLErrorIfNonzero(waited.getResult(0));
     };
+    // The buffer of a banked present while a dispatch for bank 1 is emitted.
+    llvm::DenseMap<unsigned, Value> bankOverrides;
+    int64_t activeBank = 0;
     auto buffer = [&](int64_t tensorIndex) -> Value {
       unsigned storageIndex = storage[static_cast<unsigned>(tensorIndex)];
+      if (Value overridden = bankOverrides.lookup(storageIndex))
+        return overridden;
       if (buffers[storageIndex])
         return buffers[storageIndex];
       return {};
@@ -2603,16 +2757,94 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
     }
     DeviceFusion fusion(graph, plan.deviceFusionRoots);
     DeviceFusionKernels fusedKernels(module, fusion);
-    for (const NodeRecord &node : graph.nodes) {
-      unsigned nodeIndex = static_cast<unsigned>(&node - graph.nodes.data());
-      // The root of a fusion group computes its interior nodes.
-      if (isDeviceAlias(graph, node) || fusion.isInterior(nodeIndex)) {
-        continue;
-      }
+    // Banked sequence states (sequenceStateBanks in ONNXHostPlan.h). The
+    // bank, read once per run, decides where the carried rows are and where
+    // the present goes; every dispatch that touches either buffer is
+    // emitted once per bank it distinguishes.
+    struct BankedState {
+      unsigned past;
+      unsigned present;
+      unsigned concat;
+      DeviceFusionLeafView view;
+    };
+    SmallVector<BankedState> bankedStates;
+    for (unsigned stateIndex : plan.sequenceStateBanks) {
+      const SequenceStateRecord &sequence = graph.sequenceStates[stateIndex];
+      unsigned past = graph.inputs[sequence.inputIndex];
+      unsigned present = graph.outputs[sequence.outputIndex];
+      const NodeRecord *concat =
+          llvm::find_if(graph.nodes, [&](const NodeRecord &node) {
+            return node.output == present;
+          });
+      if (concat == graph.nodes.end() || storage[past] != past ||
+          storage[present] != present || !buffers[past] || !buffers[present])
+        return emitError(location)
+               << "banked ONNX sequence state lacks its public buffers";
+      ArrayRef<int64_t> presentShape = graph.tensors[present].type.getShape();
+      bankedStates.push_back(
+          {past,
+           present,
+           static_cast<unsigned>(concat - graph.nodes.begin()),
+           {past, SmallVector<int64_t>(presentShape), sequence.axis,
+            sequence.step}});
+    }
+    auto bankedConcat = [&](unsigned nodeIndex) -> const BankedState * {
+      for (const BankedState &bank : bankedStates)
+        if (bank.concat == nodeIndex)
+          return &bank;
+      return nullptr;
+    };
+    auto touchesBank = [&](unsigned nodeIndex) {
+      const NodeRecord &node = graph.nodes[nodeIndex];
+      SmallVector<unsigned> tensors;
+      if (fusion.isRoot(nodeIndex))
+        tensors = fusion.leaves(nodeIndex);
+      for (int64_t input : node.inputs)
+        if (input >= 0)
+          tensors.push_back(static_cast<unsigned>(input));
+      tensors.push_back(node.output);
+      return llvm::any_of(tensors, [&](unsigned tensor) {
+        return llvm::any_of(bankedStates, [&](const BankedState &bank) {
+          return storage[tensor] == bank.past ||
+                 storage[tensor] == bank.present;
+        });
+      });
+    };
+    Value bankValue;
+    if (!bankedStates.empty())
+      bankValue =
+          loadI32(builder, location,
+                  addressOf(builder, location, sequenceStateBankSymbol));
+    auto emitNodeDispatch = [&](const NodeRecord &node,
+                                unsigned nodeIndex) -> LogicalResult {
       Value output = buffer(node.output);
       if (!output)
         return emitError(location)
                << "Device ONNX graph output lacks physical storage";
+      if (activeBank != 0) {
+        if (const BankedState *bank = bankedConcat(nodeIndex)) {
+          // Bank 1 reads the previous present in the present output and
+          // writes the past input; bank 2 the other way around.
+          Value previous =
+              activeBank == 1 ? buffers[bank->present] : buffers[bank->past];
+          Value next =
+              activeBank == 1 ? buffers[bank->past] : buffers[bank->present];
+          FailureOr<DeviceFusionDispatch> viewed =
+              fusedKernels.dispatch(nodeIndex, bank->view);
+          if (failed(viewed))
+            return failure();
+          SmallVector<Value> arguments;
+          for (unsigned leaf : viewed->leaves) {
+            arguments.push_back(leaf == bank->past ? previous : buffer(leaf));
+            if (!arguments.back())
+              return emitError(location)
+                     << "Device ONNX fusion operand lacks physical storage";
+          }
+          arguments.push_back(next);
+          dispatch(viewed->callee, arguments);
+          return success();
+        }
+      }
       if (fusion.isRoot(nodeIndex)) {
         FailureOr<DeviceFusionDispatch> fused =
             fusedKernels.dispatch(nodeIndex);
@@ -2627,7 +2859,7 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
         }
         arguments.push_back(output);
         dispatch(fused->callee, arguments);
-        continue;
+        return success();
       }
       if (node.operation == "Conv") {
         if (node.inputs.size() < 2 || node.inputs[0] < 0 || node.inputs[1] < 0)
@@ -2662,7 +2894,7 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                      constant(strides[0] | (strides[1] << 16)),
                      constant(dilations[0] | (dilations[1] << 16)), constant(1),
                      floating(1.0f), floating(0.0f)});
-        continue;
+        return success();
       }
       if (node.operation == "Add" || node.operation == "Mul") {
         if (node.inputs.size() != 2 || node.inputs[0] < 0 || node.inputs[1] < 0)
@@ -2685,7 +2917,7 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                 constant(c[0] | (c[1] << 16)), constant(c[2] | (c[3] << 16)),
                 constant(operation | (1 << 8)), floating(1.0f), floating(1.0f),
                 floating(0.0f)});
-        continue;
+        return success();
       }
       if (node.operation == "Relu" || node.operation == "Sigmoid" ||
           node.operation == "Tanh") {
@@ -2698,7 +2930,7 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                      constant(graph.tensors[node.output].type.getNumElements()),
                      constant(mode), constant(1), floating(0.0f),
                      floating(1.0f), floating(0.0f)});
-        continue;
+        return success();
       }
       if (node.operation == "AveragePool") {
         SmallVector<int64_t, 4> inputShape =
@@ -2728,7 +2960,7 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                      constant(strides[0] | (strides[1] << 16)),
                      constant(mode | (1 << 8)), floating(1.0f),
                      floating(0.0f)});
-        continue;
+        return success();
       }
       if (node.operation == "Cos" || node.operation == "Sin" ||
           node.operation == "Neg") {
@@ -2740,7 +2972,7 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
             ValueRange{
                 buffer(node.inputs[0]), output, constant(operation),
                 constant(graph.tensors[node.output].type.getNumElements())});
-        continue;
+        return success();
       }
       if (node.operation == "Transpose") {
         std::optional<SmallVector<int64_t>> permutation =
@@ -2768,7 +3000,7 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                      constant(shape.size()), constant(packDimensions(0)),
                      constant(packDimensions(2)), constant(packDimensions(4)),
                      constant(packedPermutation)});
-        continue;
+        return success();
       }
       if (node.operation == "Slice") {
         std::optional<DeviceSliceShape> slice = deviceSliceShape(graph, node);
@@ -2808,7 +3040,7 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                      constant(packUnsigned(slice->steps, 0, 1)),
                      constant(packUnsigned(slice->steps, 2, 1)),
                      constant(packUnsigned(slice->steps, 4, 1))});
-        continue;
+        return success();
       }
       if (node.operation == "Expand") {
         if (!isDeviceExpandNode(graph, node))
@@ -2840,9 +3072,27 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                      constant(packDimensions(outputShape, 0)),
                      constant(packDimensions(outputShape, 2)),
                      constant(packDimensions(outputShape, 4))});
-        continue;
+        return success();
       }
       if (node.operation == "Concat") {
+        // A Concat beyond the library kernel runs a synthesized kernel of
+        // its own.
+        if (isSynthesizedConcatNode(graph, node)) {
+          FailureOr<DeviceFusionDispatch> alone =
+              fusedKernels.dispatchAlone(nodeIndex);
+          if (failed(alone))
+            return failure();
+          SmallVector<Value> arguments;
+          for (unsigned leaf : alone->leaves) {
+            arguments.push_back(buffer(leaf));
+            if (!arguments.back())
+              return emitError(location)
+                     << "Device ONNX Concat operand lacks physical storage";
+          }
+          arguments.push_back(output);
+          dispatch(alone->callee, arguments);
+          return success();
+        }
         std::optional<DeviceConcatShape> shape = deviceConcatShape(graph, node);
         if (!shape)
           return emitError(location)
@@ -2855,7 +3105,7 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                      constant(graph.tensors[node.output].type.getNumElements()),
                      constant(shape->innerWords), constant(shape->leftExtent),
                      constant(shape->rightExtent)});
-        continue;
+        return success();
       }
       if (node.operation == "Gather") {
         std::optional<DeviceGatherShape> shape = deviceGatherShape(graph, node);
@@ -2869,7 +3119,7 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                      constant(graph.tensors[node.output].type.getNumElements()),
                      constant(shape->innerWords), constant(shape->axisExtent),
                      constant(shape->indexWords)});
-        continue;
+        return success();
       }
       if (node.operation == "Cast") {
         if (!isDeviceCastI64F32Node(graph, node))
@@ -2881,7 +3131,7 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
             ValueRange{
                 buffer(node.inputs[0]), output,
                 constant(graph.tensors[node.output].type.getNumElements())});
-        continue;
+        return success();
       }
       if (node.operation == "Equal") {
         if (!isDeviceEqualNode(graph, node))
@@ -2910,7 +3160,7 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                             constant(packShape(right.getShape(), 2)),
                             constant(packShape(result.getShape(), 0)),
                             constant(packShape(result.getShape(), 2))});
-        continue;
+        return success();
       }
       if (node.operation == "Where") {
         if (!isDeviceWhereNode(graph, node))
@@ -2945,7 +3195,7 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                 constant(packShape(whenFalse.getShape(), 2)),
                 constant(packShape(result.getShape(), 0)),
                 constant(packShape(result.getShape(), 2))});
-        continue;
+        return success();
       }
       if (node.operation == "ScatterND") {
         std::optional<DeviceScatterNDShape> shape =
@@ -2973,7 +3223,7 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                      constant(packShape(data.getShape(), 2)),
                      constant(shape->tupleRank), constant(shape->updateCount),
                      constant(shape->sliceWords), constant(shape->indexWords)});
-        continue;
+        return success();
       }
       if (isDeviceQ4Node(graph, node)) {
         const TensorRecord &activation = graph.tensors[node.inputs[0]];
@@ -3001,7 +3251,7 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                               constant(blockBase), constant(blockCount),
                               constant(segment == 0 ? 0 : 1)});
         }
-        continue;
+        return success();
       }
       if (isDeviceRmsNormNode(graph, node)) {
         int64_t words = graph.tensors[node.inputs[0]].type.getNumElements();
@@ -3016,7 +3266,7 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                             buffer(node.inputs[1]), output, constant(words),
                             constant(normalizedWords), floating(epsilon),
                             constant(1)});
-        continue;
+        return success();
       }
       if (isDeviceSoftmaxNode(graph, node)) {
         const TensorRecord &input = graph.tensors[node.inputs[0]];
@@ -3033,7 +3283,7 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                  ValueRange{buffer(node.inputs[0]), output, constant(outer),
                             constant(input.type.getDimSize(axis)), constant(1),
                             constant(inner), constant(0), constant(1)});
-        continue;
+        return success();
       }
       if (node.operation == "MatMul") {
         std::optional<DeviceMatMulShape> shape = deviceMatMulShape(graph, node);
@@ -3063,7 +3313,7 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                   constant(shape->m * shape->n), constant(shape->outputBatches),
                   constant(0), constant(0), floating(1.0f)});
         }
-        continue;
+        return success();
       }
       if (node.operation == "Gemm") {
         ArrayRef<int64_t> left = graph.tensors[node.inputs[0]].type.getShape();
@@ -3118,8 +3368,58 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                   constant(1 << 8), floating(1.0f), floating(beta),
                   floating(0.0f)});
         }
+        return success();
+      }
+      return success();
+    };
+    for (const NodeRecord &node : graph.nodes) {
+      unsigned nodeIndex = static_cast<unsigned>(&node - graph.nodes.data());
+      // The root of a fusion group computes its interior nodes.
+      if (isDeviceAlias(graph, node) || fusion.isInterior(nodeIndex))
+        continue;
+      if (bankedStates.empty() || !touchesBank(nodeIndex)) {
+        if (failed(emitNodeDispatch(node, nodeIndex)))
+          return failure();
         continue;
       }
+      // Bank 1 moves every present into its past input. The Concat of a
+      // banked state also reads its carried rows differently in banks 1 and
+      // 2; everything else is the same in banks 0 and 2.
+      SmallVector<int64_t, 3> variants{1};
+      if (bankedConcat(nodeIndex))
+        variants.push_back(2);
+      variants.push_back(0);
+      Block *joined = run.addBlock();
+      for (auto [position, variant] : llvm::enumerate(variants)) {
+        if (position + 1 != variants.size()) {
+          Block *selected = run.addBlock();
+          Block *other = run.addBlock();
+          Value matches =
+              arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
+                                    bankValue, constant(variant));
+          cf::CondBranchOp::create(builder, location, matches, selected,
+                                   ValueRange{}, other, ValueRange{});
+          builder.setInsertionPointToEnd(selected);
+          activeBank = variant;
+          bankOverrides.clear();
+          if (variant == 1)
+            for (const BankedState &bank : bankedStates)
+              bankOverrides[bank.present] = buffers[bank.past];
+          if (failed(emitNodeDispatch(node, nodeIndex)))
+            return failure();
+          cf::BranchOp::create(builder, location, joined);
+          builder.setInsertionPointToEnd(other);
+          continue;
+        }
+        activeBank = 0;
+        bankOverrides.clear();
+        if (failed(emitNodeDispatch(node, nodeIndex)))
+          return failure();
+        cf::BranchOp::create(builder, location, joined);
+      }
+      activeBank = 0;
+      bankOverrides.clear();
+      builder.setInsertionPointToEnd(joined);
     }
     for (unsigned tensorIndex : graph.outputs) {
       Value source = buffer(tensorIndex);
@@ -3410,7 +3710,7 @@ struct FinalizeONNXHostPass
       createReadExport(module, *graph, builder.getI64Type(), "int64");
       createBindingExports(module, *graph);
     }
-    if (failed(createPhysicalBindingExports(module, *graph))) {
+    if (failed(createPhysicalBindingExports(module, *graph, *plan))) {
       signalPassFailure();
       return;
     }

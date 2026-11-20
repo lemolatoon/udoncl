@@ -116,25 +116,30 @@ struct PlanONNXHostGraphPass
     ownedIds.reserve(owned.size());
     for (unsigned value : owned)
       ownedIds.push_back(value);
-    module->setAttr(
-        hostGraphPlanAttr,
-        builder.getDictionaryAttr({
-            builder.getNamedAttr("device_graph",
-                                 builder.getBoolAttr(deviceGraph)),
-            builder.getNamedAttr("device_fusion_roots",
-                                 builder.getDenseI64ArrayAttr(fusionRootIds)),
-            builder.getNamedAttr("device_storage",
-                                 builder.getDenseI64ArrayAttr(storageIds)),
-            builder.getNamedAttr("owned_device_buffers",
-                                 builder.getDenseI64ArrayAttr(ownedIds)),
-            builder.getNamedAttr(
-                "operator_scratch_bytes",
-                builder.getI64IntegerAttr(operatorScratchBytes(*graph))),
-            builder.getNamedAttr("mutable_buffer_bytes",
-                                 builder.getDenseI64ArrayAttr(bufferBytes)),
-            builder.getNamedAttr("mutable_handle_capacity",
-                                 builder.getI64IntegerAttr(handleCapacity)),
-        }));
+    SmallVector<int64_t> bankIds;
+    if (bankSequenceState)
+      for (unsigned value : sequenceStateBanks(*graph))
+        bankIds.push_back(value);
+    SmallVector<NamedAttribute> planEntries{
+        builder.getNamedAttr("device_graph", builder.getBoolAttr(deviceGraph)),
+        builder.getNamedAttr("device_fusion_roots",
+                             builder.getDenseI64ArrayAttr(fusionRootIds)),
+        builder.getNamedAttr("device_storage",
+                             builder.getDenseI64ArrayAttr(storageIds)),
+        builder.getNamedAttr("owned_device_buffers",
+                             builder.getDenseI64ArrayAttr(ownedIds)),
+        builder.getNamedAttr(
+            "operator_scratch_bytes",
+            builder.getI64IntegerAttr(operatorScratchBytes(*graph))),
+        builder.getNamedAttr("mutable_buffer_bytes",
+                             builder.getDenseI64ArrayAttr(bufferBytes)),
+        builder.getNamedAttr("mutable_handle_capacity",
+                             builder.getI64IntegerAttr(handleCapacity)),
+    };
+    if (!bankIds.empty())
+      planEntries.push_back(builder.getNamedAttr(
+          "sequence_state_banks", builder.getDenseI64ArrayAttr(bankIds)));
+    module->setAttr(hostGraphPlanAttr, builder.getDictionaryAttr(planEntries));
   }
 };
 } // namespace

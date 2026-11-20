@@ -3,7 +3,8 @@
 // produce the output words of the unfused library dispatches it replaces, bit
 // for bit: UdonDNN OpTensor and activation and the UdonONNXOperators unary
 // kernel run on the same renderer, and the re-indexing nodes, which only copy
-// words, are applied on the Host.
+// words, are applied on the Host. A banked sequence state runs several steps
+// through its two banks against the copying advance.
 #include "VRC/Testing/NativeOpenCL/Runtime.h"
 #include <cfloat>
 #include <cmath>
@@ -158,10 +159,10 @@ Comparison compare(const char *name, const Buffer &fused,
 } // namespace
 
 int main(int argc, char **argv) {
-  if (argc != 11) {
+  if (argc != 13) {
     std::cerr << "usage: onnx-fusion-kernels <op-tensor> <activation> <unary> "
                  "<softmax> <rotated> <gated> <keys> <mixed> <masked> "
-                 "<vertex>\n";
+                 "<banked-view> <banked-past> <vertex>\n";
     return 2;
   }
   try {
@@ -186,8 +187,12 @@ int main(int argc, char **argv) {
          {fusedId + 3, rowWords, 0, "udononnx_fused_3", argv[8], surfaceWidth,
           1, 2},
          {fusedId + 4, rowWords, 0, "udononnx_fused_4", argv[9], surfaceWidth,
-          1, 2}},
-        argv[10]);
+          1, 2},
+         {fusedId + 5, rowWords, 0, "banked_udononnx_fused_0", argv[10],
+          surfaceWidth, 1, 2},
+         {fusedId + 6, rowWords, 0, "banked_udononnx_fused_1", argv[11],
+          surfaceWidth, 1, 2}},
+        argv[12]);
 
     std::mt19937 generator(0x5eed);
     auto uniform = [&](float scale) {
@@ -338,6 +343,51 @@ int main(int argc, char **argv) {
                 (index == 4 ? results[index].zero > 0
                             : results[index].infinite > 0) &&
                 results[index].nonZero > counts[index] / 2;
+
+    // present = concat(past, -token) of a banked key cache of two heads and
+    // capacity 8. Step 0 runs from bank 0 and reads the past input; every
+    // later step reads the carried rows from the previous present, which
+    // alternates between the two banks. The reference advances by copying
+    // present[1:] into the past, the negation is the library Neg kernel.
+    constexpr uint32_t heads = 2, capacity = 8, width = 8;
+    constexpr uint32_t carried = capacity - 1;
+    constexpr uint32_t presentWords = heads * capacity * width;
+    Buffer pastReference(surfaceWords, 0.0f);
+    for (uint32_t index = 0; index < heads * carried * width; ++index)
+      pastReference[index] = uniform(50.0f);
+    for (uint32_t index = 0; index < specialCount; ++index)
+      pastReference[(index * 5) % (heads * carried * width)] = specials[index];
+    Buffer bank = pastReference;
+    for (uint32_t step = 0; step < 4; ++step) {
+      Buffer token(surfaceWords, 0.0f);
+      for (uint32_t index = 0; index < heads * width; ++index)
+        token[index] = uniform(20.0f);
+      token[step] = fromBits(0x7fc12345u);
+      token[width + step] = step % 2 ? -infinity : infinity;
+      token[step + 4] = -0.0f;
+      token[width + step + 4] = 1.0e-40f;
+      Buffer negatedToken = unary(session, token, 3, heads * width);
+      Buffer presentReference(surfaceWords, 0.0f);
+      for (uint32_t head = 0; head < heads; ++head)
+        for (uint32_t line = 0; line < capacity; ++line)
+          for (uint32_t column = 0; column < width; ++column)
+            presentReference[(head * capacity + line) * width + column] =
+                line < carried
+                    ? pastReference[(head * carried + line) * width + column]
+                    : negatedToken[head * width + column];
+      Buffer present = draw(session, step == 0 ? fusedId + 6 : fusedId + 5,
+                            rowWords, {&bank, &token}, nullptr, 0);
+      Comparison stepResult = compare(("step" + std::to_string(step)).c_str(),
+                                      present, presentReference, presentWords);
+      passed &= stepResult.exact == presentWords && stepResult.tailZero &&
+                stepResult.nan > 0 && stepResult.infinite > 0;
+      for (uint32_t head = 0; head < heads; ++head)
+        for (uint32_t line = 0; line < carried; ++line)
+          for (uint32_t column = 0; column < width; ++column)
+            pastReference[(head * carried + line) * width + column] =
+                presentReference[(head * capacity + line + 1) * width + column];
+      bank = present;
+    }
     std::cout << "draws=" << session.drawCount() << " device=\""
               << session.deviceName() << "\"\n";
     return passed ? 0 : 1;

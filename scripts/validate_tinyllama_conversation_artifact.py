@@ -4,7 +4,7 @@ The Conversation Artifact exports only the token-array lifecycle. The Chat
 Artifact is the same Host plus the optional text layer, including multi-turn
 chat (BeginChatTurn/ContinueChatTurn append a user message after a reply,
 ResetChat starts a new conversation). Both are specialized to a build-time
-Context Capacity (default 64).
+Context Capacity (default 512).
 """
 
 from __future__ import annotations
@@ -105,7 +105,7 @@ def validate_exports(manifest: dict, profile: str = "conversation") -> None:
 
 
 def validate_artifact(
-    artifact: Path, profile: str = "conversation", capacity: int = 64
+    artifact: Path, profile: str = "conversation", capacity: int = 512
 ) -> dict[str, int]:
     require(profile in PROFILES, f"unknown artifact profile: {profile}")
     require(capacity >= 2, "Context Capacity must be at least 2")
@@ -224,7 +224,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("artifact", type=Path)
     parser.add_argument("--profile", choices=sorted(PROFILES), default="conversation")
-    parser.add_argument("--capacity", type=int, default=64)
+    parser.add_argument("--capacity", type=int, default=512)
     args = parser.parse_args()
     summary = validate_artifact(args.artifact.resolve(), args.profile, args.capacity)
     print(f"tinyllama_m1_{args.profile}_profile=passed capacity={args.capacity} " + " ".join(

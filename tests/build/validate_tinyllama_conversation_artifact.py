@@ -18,6 +18,10 @@ assert SPEC.loader is not None
 SPEC.loader.exec_module(VALIDATOR)
 
 
+# The default Context Capacity of examples/onnx-transformer-tiny.
+CAPACITY = 512
+
+
 def tensor(index, name, data_type, dimensions, logical_bytes, capacity_bytes=None):
     return {
         "index": index, "name": name, "data_type": data_type,
@@ -172,20 +176,22 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
     def make_artifact(self, root: Path) -> Path:
         inputs = [
             tensor(0, "input_ids", "int64", [1, 1], 8),
-            tensor(1, "attention_mask", "int64", [1, 64], 512),
+            tensor(1, "attention_mask", "int64", [1, CAPACITY], 8 * CAPACITY),
             tensor(2, "position_ids", "int64", [1, 1], 8),
         ]
         for layer in range(22):
             for kind in ("key", "value"):
                 inputs.append(tensor(len(inputs),
                                      f"past_key_values.{layer}.{kind}",
-                                     "float32", [1, 4, 63, 64], 64512))
+                                     "float32", [1, 4, CAPACITY - 1, 64],
+                                     16 * (CAPACITY - 1) * 64))
         outputs = [tensor(0, "logits", "float32", [1, 1, 32000],
                           128000, 131072)]
         for layer in range(22):
             for kind in ("key", "value"):
                 outputs.append(tensor(len(outputs), f"present.{layer}.{kind}",
-                                      "float32", [1, 4, 64, 64], 65536))
+                                      "float32", [1, 4, CAPACITY, 64],
+                                      16 * CAPACITY * 64))
         manifest = {
             "exports": [
                 export("Initialize", "tinyllama_initialize", is_async=True),

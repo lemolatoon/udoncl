@@ -85,6 +85,12 @@ inline constexpr llvm::StringLiteral onnxHostSequenceStatePoisonedSymbol =
     "__udon_onnx_sequence_state_poisoned";
 inline constexpr llvm::StringLiteral onnxHostSequenceStateZeroSymbol =
     "__udon_onnx_sequence_state_zero";
+/// Where the next run of the banked sequence states finds the carried rows:
+/// 0 in the past input, laid out as the ONNX past tensor (after create,
+/// bind-all and reset); 1 in the present output, and 2 in the present-sized
+/// past input, each as the rows after the step of the previous present.
+inline constexpr llvm::StringLiteral onnxHostSequenceStateBankSymbol =
+    "__udon_onnx_sequence_state_bank";
 inline constexpr llvm::StringLiteral onnxHostHasRunSymbol =
     "__udon_onnx_has_run";
 

@@ -59,9 +59,10 @@ for index, value in enumerate(results[1:]):
 # Prove the fixed-shape conversation profile independently of the compiler.
 # A capacity-sized present tensor is materialized by slicing away its first
 # sequence row into the next fixed past tensor. Unused left-padding rows are
-# hidden by the ONNX attention mask. Capacity 64 is the first compiler profile:
-# 4 * 63 * 64 = 16128 FP32 words remains within the generic Slice limit.
-capacity = 64
+# hidden by the ONNX attention mask. The capacity is the default Context
+# Capacity of examples/onnx-transformer-tiny, the graph of the conversation
+# and M=1 step artifacts.
+capacity = 512
 rolling_past = [
     np.zeros((1, 4, capacity - 1, 64), dtype=np.float32) for _ in range(44)
 ]
@@ -71,7 +72,7 @@ step_logit_error: list[float] = []
 step_kv_error: list[float] = []
 
 
-# Step-level M=1 sidecars: every input of the fixed capacity-64 graph,
+# Step-level M=1 sidecars: every input of the fixed-capacity graph,
 # including the rolling past state, and every output. A Unity run of the
 # public-buffer M=1 step artifact compares all logits and present K/V of these
 # steps independently of the C Host loop.

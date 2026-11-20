@@ -658,14 +658,14 @@ These decisions fill the parts of 6.1 and 6.5 that the plan left open.
   (`tinyllama_real_chat`, `UdonclTinyLlamaChatBinding`); the Conversation
   Artifact stays free of tokenizer code.
 - Context Capacity and the new-token limit are CMake cache parameters of the
-  example (`UDONCL_TINYLLAMA_CONTEXT_CAPACITY`, default 64, and
+  example (`UDONCL_TINYLLAMA_CONTEXT_CAPACITY`, default 512, and
   `UDONCL_TINYLLAMA_MAX_NEW_TOKENS`, default 32). They specialize the graph to
   `past_sequence_length = capacity - 1` and pass the same bounds to the C
   Host; the compiler has no knowledge of the value, and generic kernel limits
-  decide whether a capacity compiles. The SGEMM contract (K at most 8192,
-  attention-times-V has K = capacity) no longer caps it at 256; other
-  capacities are inferred to compile, and only capacity 64 has been compiled. A capacity of 64 holds a short exchange: 22 prompt tokens plus up
-  to 32 new tokens.
+  decide whether a capacity compiles. Capacities 64 and 512 have been
+  compiled; 512 is the largest the kernels hold (section 7.2, banked
+  sequence state). A capacity of 64 held only a short exchange (22 prompt
+  tokens plus up to 32 new tokens); 512 holds several turns.
 
 ### 6.7 Text acceptance fixture
 
@@ -891,8 +891,9 @@ about turns.
   `Generate` whose prompt plus token budget does not fit fails, both with
   `CAPACITY_EXCEEDED` and the conversation unchanged; the caller resets.
   There is no sliding window, and every run position stays below the
-  capacity. Capacity 64 holds a short exchange: the oracle conversation
-  below reaches 51 positions before its second reply.
+  capacity. Capacity 64 held only a short exchange: the oracle conversation
+  below reaches 51 positions before its second reply; the default 512 leaves
+  room for many more turns.
 - `tests/boundary/tinyllama_chat_oracle.py --next-user` continues the same
   ORT sequence state the same way and lists later turns under `turns`, with
   the token limit reduced to the remaining capacity. "What is your name?"
@@ -1191,6 +1192,48 @@ The remaining 460 are 89 Q4, 90 RMSNorm passes, 45 SGEMM, 45 OpTensor
 6 shapes per layer, and 15 others. The next large items are the advance
 copies (double-buffered state would remove them, but changes the binding of
 past/present tensors) and the second RMSNorm pass.
+
+Banked sequence state (M8; a conversation longer than the capacity is still
+later work) removes the advance copies without changing the ONNX semantics
+or the binding protocol. Every past input buffer is allocated with the size
+of its present, so it and the present output are the two banks of one
+state: a run writes its present into one bank and its Concat reads the
+carried rows from the other through a static view, and the advance only
+flips a Host bank counter (`docs/architecture/operator-ownership.md`,
+"Banked sequence state"). The 44 Slice dispatches of an advance disappear;
+the K Concat with its rotary embedding and the V Concat are still one
+dispatch each, in one of three variants chosen by the bank.
+
+Three further generic changes then lift the Context Capacity from 64 to 512,
+the new default: a banked state is no longer bound by the 16,384 words of
+the copying Slice and a Concat beyond the library kernel runs a synthesized
+kernel; a ScatterND that overwrites every element in order (the mask
+reshaping, one index tuple per position, against a 256-tuple kernel) is a
+Reshape; and the grouped-query key expansion folds into the score MatMul like
+the value expansion, because its transpose and scale move in front of the
+repetition, so no kernel writes 32 x capacity x 64 words any more. Emulator,
+conversation artifact, generated tokens and protocol unchanged
+(`[1701, 29916, 432, 17204]` before and after Reset), and the two-turn chat
+oracle ("What is your name?", "Repeat your name.") at both capacities:
+
+| per decode step | before | banked (64) | 64 | 512 |
+|---|---:|---:|---:|---:|
+| Device Blits | 460 | 416 | 415 | 415 |
+| Udon events (frames) | 14 | 13 | 13 | 19 |
+| Udon instructions | 211 K | 206 K | 205 K | 207 K |
+
+The Blits and the Udon work of a step do not depend on the capacity. The
+Device work does: per layer the two Concats copy 2 x 256 x capacity words,
+the key kernel writes 256 x capacity, the score and value SGEMMs and the
+three Softmax passes run over all capacity positions, and the device work
+budget closes more slices at 512 (19 events instead of 13). Restricting the
+attention to the occupied positions would need run-time extents in the
+SGEMM, Softmax and fused kernels, which take only static shapes today. 512
+is also the largest capacity the kernels hold: a present of 256 x capacity
+words must fit the 131,072 words of a fused surface and the strided SGEMM
+operand, and the scores of 32 x capacity words the 16,384 of the Softmax
+kernel. Capacity 2048 (524,288-word presents, 65,536 scores) needs taller
+surfaces in those kernels first.
 
 Those frame estimates charge one frame per continuation, which on a 90 Hz
 client is the dominant cost of the remaining budget slices. The generated
