@@ -325,19 +325,33 @@ int main(void) {
   EXPECT(strcmp(udononnxSessionGetLastError(&session), "success") == 0);
 
   /* The first run validated the binding table. A run of the unchanged table
-   * only checks that the bound buffers are alive; a bind validates the table
-   * again, and a destroyed buffer is still reported. */
+   * only checks that the bound buffers are alive (nothing while no handle was
+   * destroyed); a bind validates the table again, and a destroyed buffer is
+   * still reported. The binding version changes with every bind or
+   * invalidation and never repeats. */
   EXPECT(session.bindings_validated == 1);
-  EXPECT(udononnxEnqueueRun(&session, queue, 0, 0, &run) ==
-             UDONONNX_STATUS_SUCCESS &&
-         run && session.bindings_validated == 1);
+  {
+    uint32_t version = udononnxSessionBindingVersion(&session);
+    EXPECT(version != 0 &&
+           session.validated_buffer_epoch == udonclDeviceBufferEpoch());
+    EXPECT(udononnxEnqueueRun(&session, queue, 0, 0, &run) ==
+               UDONONNX_STATUS_SUCCESS &&
+           run && session.bindings_validated == 1);
+    EXPECT(udononnxSessionBindingVersion(&session) == version);
+    EXPECT(udononnxSessionBindingVersion(0) == 0);
+  }
   EXPECT(clWaitForEvents(1, &run) == CL_SUCCESS);
   EXPECT(udononnxSessionCompleteEvent(&session, run, UDONONNX_STATUS_SUCCESS) ==
          UDONONNX_STATUS_SUCCESS);
   EXPECT(clReleaseEvent(run) == CL_SUCCESS);
-  EXPECT(udononnxSessionBindOutput(&session, 0, input_tensor) ==
-             UDONONNX_STATUS_SUCCESS &&
-         session.bindings_validated == 0);
+  {
+    uint32_t before = udononnxSessionBindingVersion(&session);
+    EXPECT(udononnxSessionBindOutput(&session, 0, input_tensor) ==
+               UDONONNX_STATUS_SUCCESS &&
+           session.bindings_validated == 0);
+    EXPECT(udononnxSessionBindingVersion(&session) != before &&
+           udononnxSessionBindingVersion(&session) != 0);
+  }
   EXPECT(udononnxEnqueueRun(&session, queue, 0, 0, &run) ==
              UDONONNX_STATUS_INVALID_VALUE &&
          session.bindings_validated == 0);
@@ -350,8 +364,12 @@ int main(void) {
   EXPECT(udononnxSessionCompleteEvent(&session, run, UDONONNX_STATUS_SUCCESS) ==
          UDONONNX_STATUS_SUCCESS);
   EXPECT(clReleaseEvent(run) == CL_SUCCESS);
-  udononnxSessionInvalidateBindings(&session);
-  EXPECT(session.bindings_validated == 0);
+  {
+    uint32_t before = udononnxSessionBindingVersion(&session);
+    udononnxSessionInvalidateBindings(&session);
+    EXPECT(session.bindings_validated == 0 &&
+           udononnxSessionBindingVersion(&session) != before);
+  }
   EXPECT(udononnxEnqueueRun(&session, queue, 0, 0, &run) ==
              UDONONNX_STATUS_SUCCESS &&
          run && session.bindings_validated == 1);
@@ -359,7 +377,11 @@ int main(void) {
   EXPECT(udononnxSessionCompleteEvent(&session, run, UDONONNX_STATUS_SUCCESS) ==
          UDONONNX_STATUS_SUCCESS);
   EXPECT(clReleaseEvent(run) == CL_SUCCESS);
-  EXPECT(udonclDeviceBufferDestroy(&output_buffer) == UDONCL_STATUS_SUCCESS);
+  {
+    uint32_t epoch = udonclDeviceBufferEpoch();
+    EXPECT(udonclDeviceBufferDestroy(&output_buffer) == UDONCL_STATUS_SUCCESS);
+    EXPECT(udonclDeviceBufferEpoch() != epoch);
+  }
   EXPECT(udononnxEnqueueRun(&session, queue, 0, 0, &completion) ==
              UDONONNX_STATUS_STALE_HANDLE &&
          !completion);

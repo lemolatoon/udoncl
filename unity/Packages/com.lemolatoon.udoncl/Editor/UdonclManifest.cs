@@ -18,6 +18,7 @@ namespace Lemolatoon.Udoncl.Editor
         public ExportInfo[] exports;
         public DeviceInfo device;
         public DispatchSiteInfo[] dispatch_sites;
+        public DispatchMaterialInfo[] dispatch_materials;
         public ValidationInfo validation;
         public ArtifactResourceInfo[] resources;
         public StaticTensorInfo[] static_tensors;
@@ -38,6 +39,13 @@ namespace Lemolatoon.Udoncl.Editor
     [Serializable]
     internal sealed class DispatchSiteInfo
     {
+        public int kernel_id;
+    }
+
+    [Serializable]
+    internal sealed class DispatchMaterialInfo
+    {
+        public string slot;
         public int kernel_id;
     }
 

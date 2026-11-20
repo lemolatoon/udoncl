@@ -133,13 +133,15 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                     "Materials/kernel_" + kernel.Id + "_" + kernel.Name + ".mat"
                 );
                 materials.Add(kernel.Id, material);
+            }
+            // Every dispatch site Blits through its own material.
+            foreach (ValidatedDispatchMaterial dispatch in artifact.DispatchMaterials)
                 PublicMnistOnnxRuntimeLifecycleTests.Set(
                     heap,
                     program,
-                    "__udoncl_kernel_material_" + kernel.Id,
-                    material
+                    dispatch.Slot,
+                    Load<Material>("Materials/Dispatch/" + dispatch.AssetName + ".mat")
                 );
-            }
             CollectionAssert.AreEquivalent(
                 new[]
                 {

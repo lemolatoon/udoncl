@@ -1569,9 +1569,11 @@ assert selector_address_delta == 0, selector_address_delta
 assert selector_attempts == 0, selector_attempts
 assert selector_requested_count == 0, selector_requested_count
 assert selector_ids == [], selector_ids
+# The material remembers its token-selected render target: the pool is read
+# by the first dispatch through it and when the token changes.
 assert selector_output.count(
     'SystemObjectArray.__Get__SystemInt32__SystemObject'
-) == 1, selector_output
+) == 2, selector_output
 assert 'name = "__udoncl_buffer_pool"' in selector_output, selector_output
 for index in [1, selector_buffer_count // 2, selector_buffer_count]:
     assert ('name = "__udoncl_selector_buffer_%d"' % index) not in selector_output
@@ -1624,12 +1626,14 @@ assert {request['kind'] for request in shared_one_requests} >= {
     'lowering_i32', 'unity_buffer_token'
 }, shared_one_requests
 assert len({request['slot'] for request in shared_one_requests}) == 1
+# Two buffer id comparisons, plus the material's bound flag; the remembered
+# render target reads the pool on the first dispatch and on a token change.
 assert sparse_output.count(
     'SystemInt32.__op_Equality__SystemInt32_SystemInt32__SystemBoolean'
-) == 2, sparse_output
+) == 3, sparse_output
 assert sparse_output.count(
     'SystemObjectArray.__Get__SystemInt32__SystemObject'
-) == 1, sparse_output
+) == 2, sparse_output
 assert 'name = "__udoncl_sparse_buffer_7"' not in sparse_output
 assert 'name = "__udoncl_sparse_buffer_42"' not in sparse_output
 
@@ -1691,8 +1695,11 @@ for expected in [
         expected, assigned_buffer_lowered.stdout)
 assert assigned_buffer_lowered.stdout.count(
     'SystemObjectArray.__Get__SystemInt32__SystemObject') == 1
-assert 'SystemInt32.__op_Equality__SystemInt32_SystemInt32__SystemBoolean' not in (
-    assigned_buffer_lowered.stdout)
+# No buffer id comparison: the fixed render target is loaded once, by the
+# first dispatch through the material, which only sets the bound flag.
+assert assigned_buffer_lowered.stdout.count(
+    'SystemInt32.__op_Equality__SystemInt32_SystemInt32__SystemBoolean') == 1
+assert '"__udoncl_bound_kernel_material_1"' in assigned_buffer_lowered.stdout
 assigned_buffer_mismatch = subprocess.run(
     [
         opt,

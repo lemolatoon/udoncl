@@ -327,6 +327,33 @@ def PromoteHostGlobalsToUdonVariablesPass : Pass<"vrc-promote-host-globals-to-ud
     Statistic<"numAccessesRewritten", "num-accesses-rewritten", "Loads and stores rewritten to variable accesses">
   ];
 }
+def AssignUnityDispatchMaterialsPass : Pass<"vrc-assign-unity-dispatch-materials", "mlir::ModuleOp"> {
+  let summary = "Give every Unity dispatch site its own kernel material";
+  let description = [{
+    A Unity dispatch binds its kernel arguments as properties of the material
+    it Blits with, and a material keeps its properties between Blits. With
+    one material per kernel, every dispatch rebinds whatever differs from the
+    previous dispatch of that kernel elsewhere in the program. This pass gives
+    every `vrc.dispatch` carrying `vrc.unity_dispatch_material_slot` its own
+    public material slot `__udoncl_dispatch_material_<n>`, numbered in module
+    order, so the scalar Udon lowering can bind fixed arguments once per site
+    and remember the values that change.
+
+    The module attribute `vrc.unity_dispatch_materials` lists every material
+    slot the dispatches use with the kernel id whose shader it renders:
+    `[{slot = "...", kernel_id = k : i32}, ...]`. The Unity importer creates
+    one material per entry. With `max-materials` set, dispatches beyond that
+    count keep their kernel's shared slot, which is listed once.
+  }];
+  let options = [
+    Option<"maxMaterials", "max-materials", "int64_t", /*default=*/"0",
+           "Upper bound of per-site materials (0: one material per site)">
+  ];
+  let statistics = [
+    Statistic<"numSiteMaterials", "num-site-materials", "Dispatch sites given their own material">,
+    Statistic<"numSharedMaterials", "num-shared-materials", "Kernel materials still shared by several sites">
+  ];
+}
 def ThreadConstantBranchesPass : Pass<"vrc-thread-constant-branches", "mlir::ModuleOp"> {
   let summary = "Retarget edges whose constant block arguments decide the conditional branch of their successor";
   let description = [{

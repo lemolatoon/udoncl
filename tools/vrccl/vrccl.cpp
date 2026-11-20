@@ -32,6 +32,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/FormatVariadic.h"
@@ -981,7 +982,6 @@ void appendUnityBufferPoolSlot(ModuleOp module, ArrayRef<UnityBuffer> buffers) {
 
 struct UnityBufferBinding {
   bool usesCopy = false;
-  SmallVector<int32_t> dispatchKernelIds;
 };
 
 FailureOr<UnityBufferBinding>
@@ -1414,7 +1414,6 @@ bindUnityBufferOperations(ModuleOp module, ArrayRef<UnityBuffer> buffers,
     dispatch->setAttr(
         "vrc.unity_output_resource_index",
         builder.getI32IntegerAttr(static_cast<int32_t>(*writeResource)));
-    result.dispatchKernelIds.push_back(kernelId);
   }
   return result;
 }
@@ -1439,37 +1438,38 @@ void appendUnityCopyMaterialSlot(ModuleOp module) {
   module->setAttr("udonasm.data", builder.getArrayAttr(entries));
 }
 
-void appendUnityDispatchMaterialSlots(ModuleOp module,
-                                      ArrayRef<int32_t> kernelIds) {
-  auto data = module->getAttrOfType<ArrayAttr>("udonasm.data");
-  SmallVector<mlir::Attribute> entries(data.begin(), data.end());
-  OpBuilder builder(module.getContext());
-  for (int32_t kernelId : kernelIds) {
-    std::string name = "__udoncl_kernel_material_" + std::to_string(kernelId);
-    if (llvm::any_of(entries, [&](mlir::Attribute attribute) {
-          auto entry = dyn_cast<DictionaryAttr>(attribute);
-          auto existing =
-              entry ? entry.getAs<StringAttr>("name") : StringAttr();
-          return existing && existing.getValue() == name;
-        }))
-      continue;
-    entries.push_back(builder.getDictionaryAttr(
-        {builder.getNamedAttr("name", builder.getStringAttr(name)),
-         builder.getNamedAttr("type",
-                              builder.getStringAttr("UnityEngineMaterial")),
-         builder.getNamedAttr("initial", builder.getStringAttr("null")),
-         builder.getNamedAttr("public", builder.getUnitAttr())}));
-  }
-  module->setAttr("udonasm.data", builder.getArrayAttr(entries));
-}
-
-unsigned unityFinalDataSlotReserve(ArrayRef<int32_t> configuredKernelIds,
-                                   ArrayRef<int32_t> usedKernelIds) {
-  std::set<int32_t> unusedKernelIds(configuredKernelIds.begin(),
-                                    configuredKernelIds.end());
-  for (int32_t kernelId : usedKernelIds)
-    unusedKernelIds.erase(kernelId);
-  return unusedKernelIds.size();
+/// Lists in the manifest every dispatch material the Udon program declares,
+/// with the kernel whose shader it renders: the Unity importer creates one
+/// material per entry and binds it to the program's public slot.
+LogicalResult appendUnityDispatchMaterialManifest(ModuleOp module,
+                                                  json::Object &manifest) {
+  llvm::StringSet<> declared;
+  if (auto data = module->getAttrOfType<ArrayAttr>("udonasm.data"))
+    for (mlir::Attribute attribute : data)
+      if (auto entry = dyn_cast<DictionaryAttr>(attribute))
+        if (auto name = entry.getAs<StringAttr>("name"))
+          declared.insert(name.getValue());
+  json::Array materials;
+  if (auto entries =
+          module->getAttrOfType<ArrayAttr>("vrc.unity_dispatch_materials"))
+    for (mlir::Attribute attribute : entries) {
+      auto entry = dyn_cast<DictionaryAttr>(attribute);
+      auto slot = entry ? entry.getAs<StringAttr>("slot") : StringAttr();
+      auto kernelId =
+          entry ? entry.getAs<IntegerAttr>("kernel_id") : IntegerAttr();
+      if (!slot || !kernelId) {
+        errs() << "malformed vrc.unity_dispatch_materials entry\n";
+        return failure();
+      }
+      // A dispatch the scalar lowering dropped as unreachable declares no
+      // material.
+      if (!declared.contains(slot.getValue()))
+        continue;
+      materials.push_back(json::Object{{"slot", slot.getValue().str()},
+                                       {"kernel_id", kernelId.getInt()}});
+    }
+  manifest["dispatch_materials"] = std::move(materials);
+  return success();
 }
 
 json::Array unityBufferManifest(ArrayRef<UnityBuffer> buffers) {
@@ -3194,10 +3194,12 @@ attachDeviceFragmentCosts(ModuleOp module,
 /// synchronously completed command) runs at once while both limits allow.
 /// Every Host slice of a frame is charged, the first one included, and a
 /// zero limit resumes one slice per frame. The binding can change both at
-/// run time; these are its defaults (8 ms of a 90 Hz frame's 11.1 ms).
+/// run time; these are its defaults: 8 ms of a 90 Hz frame's 11.1 ms, and
+/// enough continuations that the time budget, not the count, ends a frame
+/// whose slices take the measured 0.8 ms on average (32 x 0.8 ms > 8 ms).
 struct DeviceWorkFrameBudget {
   int64_t microseconds = 8000;
-  int64_t continuations = 8;
+  int64_t continuations = 32;
 };
 
 /// Reads the optional per-library slice and frame budgets:
@@ -3753,7 +3755,6 @@ int main(int argc, char **argv) {
   SmallVector<SynthesizedUnityKernel> unitySynthesizedKernels;
   SmallVector<UnityBuffer> unityBuffers;
   bool unityUsesBufferCopy = false;
-  SmallVector<int32_t> unityConfiguredKernelIds;
   std::set<std::string> annotatedHostExports;
   if (emitUnityLibrary) {
     phase("unity-prepare");
@@ -4227,11 +4228,9 @@ int main(int argc, char **argv) {
     for (const json::Object *deviceKernel : unityDeviceConfigs) {
       int64_t kernelId = *deviceKernel->getInteger("kernel_id");
       configuredKernelIds.push_back(kernelId);
-      unityConfiguredKernelIds.push_back(static_cast<int32_t>(kernelId));
     }
     for (const SynthesizedUnityKernel &kernel : unitySynthesizedKernels) {
       configuredKernelIds.push_back(kernel.id);
-      unityConfiguredKernelIds.push_back(kernel.id);
     }
     DeviceWorkFrameBudget frameBudget;
     phase("host-object-intrinsics");
@@ -4482,14 +4481,6 @@ int main(int argc, char **argv) {
     ModuleOp physicalModule = usesAsyncCommands ? *asyncPreview : *module;
     physicalModule->setAttr("vrc.external_raw_heap_initialization",
                             UnitAttr::get(&context));
-    physicalModule->setAttr(
-        "vrc.final_data_slot_reserve",
-        IntegerAttr::get(mlir::IntegerType::get(&context, 32),
-                         unityFinalDataSlotReserve(
-                             unityConfiguredKernelIds,
-                             usesAsyncCommands
-                                 ? asyncBufferBinding->dispatchKernelIds
-                                 : bufferBinding->dispatchKernelIds)));
     PassManager udon(&context);
     if (usesAsyncCommands) {
       udon.addPass(::vrc::createLowerHostToUdonHLPass());
@@ -4498,6 +4489,9 @@ int main(int argc, char **argv) {
     phase("udon-hl-to-asm");
     // Again for the globals the async transform introduced.
     udon.addPass(::vrc::createPromoteHostGlobalsToUdonVariablesPass());
+    // One material per dispatch site, so the scalar lowering binds each
+    // site's fixed arguments once.
+    udon.addPass(::vrc::createAssignUnityDispatchMaterialsPass());
     ::vrc::buildUdonHostStorageFinalizationPipeline(udon);
     if (failed(udon.run(physicalModule)) || failed(verify(physicalModule)))
       return 1;
@@ -4676,7 +4670,8 @@ int main(int argc, char **argv) {
     appendUnityBufferPoolSlot(physicalModule, unityBuffers);
     if (unityUsesBufferCopy)
       appendUnityCopyMaterialSlot(physicalModule);
-    appendUnityDispatchMaterialSlots(physicalModule, unityConfiguredKernelIds);
+    if (failed(appendUnityDispatchMaterialManifest(physicalModule, manifest)))
+      return 1;
     phase("emit-udon-assembly");
     std::string assembly;
     raw_string_ostream assemblyOut(assembly);

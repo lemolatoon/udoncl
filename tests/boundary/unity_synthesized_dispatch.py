@@ -180,12 +180,17 @@ assert site["resource_accesses"] == ["read", "read", "read", "write"], site
 assert site["function"] == "rotate" and site["resources"] == 4, site
 
 assembly = (bundle / "host.uasm").read_text(encoding="utf-8")
-for kernel_id in (LIBRARY_ID, synthesized_id):
-    assert f".export __udoncl_kernel_material_{kernel_id}" in assembly, kernel_id
-material = f"__udoncl_kernel_material_{synthesized_id}"
-# Everything between the first use of the kernel's material and its Blit
-# binds that kernel: three input textures and the i32 count. A constant count
-# is bound once, ahead of the arguments every dispatch binds.
+# Each dispatch site Blits through its own exported material.
+materials = {item["kernel_id"]: item["slot"] for item in manifest["dispatch_materials"]}
+assert set(materials) == {LIBRARY_ID, synthesized_id}, materials
+for slot in materials.values():
+    assert f".export {slot}" in assembly, slot
+assert "__udoncl_kernel_material_" not in assembly
+material = materials[synthesized_id]
+# Everything between the first use of the site's material and its Blit
+# binds that kernel: three input textures and the i32 count. Every argument
+# of the site is fixed (statically planned buffers and a constant count), so
+# only the first dispatch through the material binds them.
 binding = assembly[assembly.index(f"PUSH, {material}") :]
 binding = binding[: binding.index("VRCSDKBaseVRCGraphics.__Blit__")]
 strings = dict(

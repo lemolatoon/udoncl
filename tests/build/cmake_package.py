@@ -997,7 +997,7 @@ def main():
     assert 'public const int AsyncFrameBudgetMicroseconds = 8000;' in (
         mnist_binding
     )
-    assert 'public const int AsyncFrameContinuationLimit = 8;' in mnist_binding
+    assert 'public const int AsyncFrameContinuationLimit = 32;' in mnist_binding
     # The manifest limits are only defaults: U# changes them at run time
     # within the manifest's range, and the loop reads the run-time values.
     assert 'public const int AsyncFrameSettingMaximum = 1000000;' in (
@@ -1518,6 +1518,8 @@ def main():
         'StringAssert.StartsWith("past_key_values.", input.Name);',
         'CollectionAssert.Contains(input.Shape, 0L);',
         'foreach (ValidatedDeviceBuffer buffer in artifact.DeviceBuffers)',
+        # Outputs are paired with public buffers by name, not position.
+        'OnnxPublicBuffers.Find(',
         '"outputBufferIds",',
         'oracle.RequireFloat32Close(0, actualLogits,',
         'oracle.RequireFloat32Close(\n                    index,\n                    actualPresent,',
@@ -1980,12 +1982,12 @@ def main():
     assert 'CompleteAsyncCommandReadback(request);' in udonblas_binding
     assert 'VRCWrapperGenerator' not in udonblas_binding
 
-    # The frame budget defaults to 8 ms and eight continuations and is a
-    # per-library device_work_budget setting; zero keeps one continuation
-    # per frame.
+    # The frame budget defaults to 8 ms and 32 continuations, so the time
+    # budget rather than the count ends a busy frame, and is a per-library
+    # device_work_budget setting; zero keeps one continuation per frame.
     udonblas_commands = udonblas_manifest['program']['async_commands']
     assert udonblas_commands['frame_budget_microseconds'] == 8000
-    assert udonblas_commands['frame_continuation_limit'] == 8
+    assert udonblas_commands['frame_continuation_limit'] == 32
     udonblas_config = json.loads(
         (udonblas_source / 'unity-library.json').read_text(encoding='utf-8')
     )
@@ -2057,7 +2059,14 @@ def main():
         'udonblas_arena_sgemm',
     ]
     assert (udonblas_artifact / 'kernels/kernel_221.shader').is_file()
-    assert '.export __udoncl_kernel_material_221' in udonblas_assembly
+    # Every dispatch site has its own material, exported for the importer.
+    udonblas_materials = udonblas_manifest['dispatch_materials']
+    assert udonblas_materials, udonblas_manifest
+    assert {item['kernel_id'] for item in udonblas_materials} == {221}
+    for item in udonblas_materials:
+        assert item['slot'].startswith('__udoncl_dispatch_material_'), item
+        assert f".export {item['slot']}" in udonblas_assembly, item
+    assert '__udoncl_kernel_material_' not in udonblas_assembly
     assert 'dispatch_alias_match_' not in udonblas_assembly
 
     build_root = consumer / 'udoncl/hello-artifact'
@@ -2290,7 +2299,10 @@ def main():
     dispatch_assembly = (dispatch_artifact / 'host.uasm').read_text(
         encoding='utf-8'
     )
-    assert '.export __udoncl_kernel_material_1' in dispatch_assembly
+    assert dispatch_manifest['dispatch_materials'] == [
+        {'slot': '__udoncl_dispatch_material_0', 'kernel_id': 1}
+    ]
+    assert '.export __udoncl_dispatch_material_0' in dispatch_assembly
     assert 'UnityEngineMaterial.__SetFloat__' in dispatch_assembly
     assert dispatch_assembly.count('VRCSDKBaseVRCGraphics.__Blit__') == 1
     run_failure([
@@ -2326,7 +2338,10 @@ def main():
         opencl_dispatch_artifact / 'host.uasm'
     ).read_text(encoding='utf-8')
     assert '.export __0_DispatchSquare' in opencl_dispatch_assembly
-    assert '.export __udoncl_kernel_material_1' in opencl_dispatch_assembly
+    assert opencl_dispatch_manifest['dispatch_materials'] == [
+        {'slot': '__udoncl_dispatch_material_0', 'kernel_id': 1}
+    ]
+    assert '.export __udoncl_dispatch_material_0' in opencl_dispatch_assembly
     assert opencl_dispatch_assembly.count('UnityEngineMaterial.__SetFloat__') == 1
     assert opencl_dispatch_assembly.count('VRCSDKBaseVRCGraphics.__Blit__') == 1
     assert (opencl_dispatch_artifact / 'kernels/kernel_1.shader').is_file()
@@ -2345,7 +2360,13 @@ def main():
         encoding='utf-8'
     )
     assert '.export __0_DispatchSquareInt' in int_dispatch_assembly
-    assert int_dispatch_assembly.count('UnityEngineMaterial.__SetInteger__') == 1
+    # The run-time i32 argument is bound by the first dispatch through the
+    # site's material and afterwards only when it differs from the value the
+    # material remembers.
+    assert int_dispatch_assembly.count('UnityEngineMaterial.__SetInteger__') == 2
+    assert int_dispatch_assembly.count(
+        'SystemInt32.__op_Inequality__SystemInt32_SystemInt32__SystemBoolean'
+    ) >= 1
     assert int_dispatch_assembly.count('VRCSDKBaseVRCGraphics.__Blit__') == 1
     int_hlsl = (int_dispatch_artifact / 'kernels/kernel_2.hlsl').read_text(
         encoding='utf-8'
@@ -2440,8 +2461,10 @@ def main():
         encoding='utf-8'
     )
     assert '.export __0_RunSaxpy' in saxpy_assembly
+    # The fixed input texture is bound once; the run-time n is bound first and
+    # then only on a change; the run-time f32 alpha on every dispatch.
     assert saxpy_assembly.count('UnityEngineMaterial.__SetTexture__') == 1
-    assert saxpy_assembly.count('UnityEngineMaterial.__SetInteger__') == 1
+    assert saxpy_assembly.count('UnityEngineMaterial.__SetInteger__') == 2
     assert saxpy_assembly.count('UnityEngineMaterial.__SetFloat__') == 1
     assert saxpy_assembly.count('VRCSDKBaseVRCGraphics.__Blit__') == 1
     saxpy_hlsl = (saxpy_artifact / 'kernels/kernel_10.hlsl').read_text(

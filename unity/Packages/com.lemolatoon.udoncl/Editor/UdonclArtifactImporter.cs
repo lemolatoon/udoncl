@@ -135,6 +135,13 @@ namespace Lemolatoon.Udoncl.Editor
                             kernelShaders.Add(shaderFileName, shader);
                     }
 
+                    CreateOrUpdateDispatchMaterials(
+                        transaction,
+                        programRoot,
+                        artifacts.DispatchMaterials,
+                        kernelMaterials
+                    );
+
                     Shader displayShader = AssetDatabase.LoadAssetAtPath<Shader>(displayShaderPath);
                     if (displayShader == null)
                         throw new InvalidDataException(
@@ -2252,6 +2259,76 @@ namespace Lemolatoon.Udoncl.Editor
                 EditorUtility.SetDirty(material);
             }
             return material;
+        }
+
+        /// <summary>
+        /// Creates one Material per dispatch site from its kernel's material.
+        /// The Udon program binds each site's fixed arguments to its own
+        /// material once and only rebinds the values that change, so sites
+        /// must not share a material. Materials of sites that no longer exist
+        /// are deleted.
+        /// </summary>
+        internal static void CreateOrUpdateDispatchMaterials(
+            AssetImportTransaction transaction,
+            string programRoot,
+            IList<ValidatedDispatchMaterial> dispatchMaterials,
+            IDictionary<int, Material> kernelMaterials
+        )
+        {
+            string materialDirectory = programRoot + "/Materials/Dispatch";
+            HashSet<string> current = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (dispatchMaterials != null && dispatchMaterials.Count != 0)
+            {
+                EnsureFolders(materialDirectory);
+                foreach (ValidatedDispatchMaterial dispatch in dispatchMaterials)
+                {
+                    if (!kernelMaterials.TryGetValue(dispatch.Kernel.Id, out Material kernel))
+                        throw new InvalidDataException(
+                            "Dispatch material " + dispatch.Slot + " has no kernel material."
+                        );
+                    string materialPath = DispatchMaterialAssetPath(
+                        programRoot,
+                        dispatch.AssetName
+                    );
+                    current.Add(materialPath);
+                    transaction.Track(materialPath);
+                    Material material = AssetDatabase.LoadAssetAtPath<Material>(materialPath);
+                    if (material == null)
+                    {
+                        if (AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(materialPath) != null)
+                            throw new InvalidDataException(
+                                "An incompatible asset already occupies " + materialPath
+                            );
+                        material = new Material(kernel.shader);
+                        material.name = dispatch.AssetName;
+                        AssetDatabase.CreateAsset(material, materialPath);
+                    }
+                    else
+                    {
+                        material.shader = kernel.shader;
+                        material.name = dispatch.AssetName;
+                        EditorUtility.SetDirty(material);
+                    }
+                }
+            }
+            if (!AssetDatabase.IsValidFolder(materialDirectory))
+                return;
+            foreach (
+                string guid in AssetDatabase.FindAssets("t:Material", new[] { materialDirectory })
+            )
+            {
+                string stalePath = AssetDatabase.GUIDToAssetPath(guid);
+                if (current.Contains(stalePath))
+                    continue;
+                transaction.Track(stalePath);
+                AssetDatabase.DeleteAsset(stalePath);
+            }
+        }
+
+        /// <summary>The asset path of the dispatch material named <paramref name="assetName"/>.</summary>
+        public static string DispatchMaterialAssetPath(string programRoot, string assetName)
+        {
+            return programRoot + "/Materials/Dispatch/" + assetName + ".mat";
         }
 
         private static Material CreateOrUpdateDisplayMaterial(

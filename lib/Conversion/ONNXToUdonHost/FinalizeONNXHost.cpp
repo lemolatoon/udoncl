@@ -2424,6 +2424,10 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
   func::ReturnOp::create(builder, location, onnxStatus(1));
   builder.setInsertionPointToEnd(initializeValid);
   if (supportsDeviceGraph(graph)) {
+    // The session's Device buffers are created again: tokens a run resolved
+    // before are stale.
+    store(builder, location, onnxStatus(0),
+          addressOf(builder, location, onnxHostResolvedBindingVersionSymbol));
     Value bufferError = allocaI32(builder, location);
     ArrayRef<unsigned> storage = plan.deviceStorage;
     auto storeDeviceBuffer = [&](StringRef symbol, StringRef ownedSymbol,
@@ -2659,33 +2663,78 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
       }
       return success();
     };
+    // Resolving the bound inputs and outputs and the Device buffers the
+    // session owns to physical tokens depends only on the binding table and
+    // on the buffers Initialize created, not on the run. The tokens are kept
+    // in globals under the session binding version they were resolved for;
+    // a run of an unchanged table (udononnxEnqueueRun has checked that its
+    // buffers are alive) reads them instead of resolving every buffer again.
+    Value bindingVersion =
+        func::CallOp::create(builder, location, "udononnxSessionBindingVersion",
+                             TypeRange{i32}, ValueRange{entry->getArgument(1)})
+            .getResult(0);
+    Value resolvedVersion = loadI32(
+        builder, location,
+        addressOf(builder, location, onnxHostResolvedBindingVersionSymbol));
+    Value reuse = arith::AndIOp::create(
+        builder, location,
+        arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
+                              bindingVersion, resolvedVersion),
+        arith::CmpIOp::create(builder, location, arith::CmpIPredicate::ne,
+                              resolvedVersion, constant(0)));
+    Block *resolveTokens = run.addBlock();
+    Block *tokensReady = run.addBlock();
+    cf::CondBranchOp::create(builder, location, reuse, tokensReady,
+                             ValueRange{}, resolveTokens, ValueRange{});
+    builder.setInsertionPointToEnd(resolveTokens);
     for (auto [inputIndex, tensorIndex] : llvm::enumerate(graph.inputs))
       if (failed(resolve(false, inputIndex, tensorIndex)))
         return failure();
     for (auto [outputIndex, tensorIndex] : llvm::enumerate(graph.outputs))
       if (failed(resolve(true, outputIndex, tensorIndex)))
         return failure();
-    for (auto [tensorIndex, tensor] : llvm::enumerate(graph.tensors)) {
-      if (buffers[tensorIndex] || storage[tensorIndex] != tensorIndex)
+    for (unsigned tensorIndex : plan.ownedDeviceBuffers) {
+      if (buffers[tensorIndex])
         continue;
-      if (tensor.staticResourceId >= 0) {
-        Value resourceId = arith::ConstantIntOp::create(
-            builder, location, tensor.staticResourceId, 32);
-        Value bytes = arith::ConstantIntOp::create(builder, location,
-                                                   tensor.staticByteLength, 32);
-        buffers[tensorIndex] =
-            func::CallOp::create(builder, location,
-                                 "__vrc_opencl_static_tensor", TypeRange{i32},
-                                 ValueRange{resourceId, bytes})
-                .getResult(0);
-      } else if (!llvm::is_contained(graph.inputs, tensorIndex) &&
-                 (!llvm::is_contained(graph.outputs, tensorIndex) ||
-                  needsQ4Surface(graph, tensorIndex))) {
-        Value handle = loadPointer(
-            builder, location,
-            addressOf(builder, location, deviceBufferSymbol(tensorIndex)));
-        buffers[tensorIndex] = resolvePhysicalBuffer(handle);
-      }
+      Value handle = loadPointer(
+          builder, location,
+          addressOf(builder, location, deviceBufferSymbol(tensorIndex)));
+      buffers[tensorIndex] = resolvePhysicalBuffer(handle);
+    }
+    SmallVector<unsigned> resolvedTensors = resolvedRunTensors(graph, plan);
+    for (unsigned tensorIndex : resolvedTensors) {
+      if (!buffers[tensorIndex])
+        return emitError(location)
+               << "ONNX Device run did not resolve tensor " << tensorIndex;
+      store(builder, location, buffers[tensorIndex],
+            addressOf(builder, location,
+                      onnxHostResolvedTokenSymbol(tensorIndex)));
+    }
+    store(builder, location, bindingVersion,
+          addressOf(builder, location, onnxHostResolvedBindingVersionSymbol));
+    cf::BranchOp::create(builder, location, tokensReady);
+    builder.setInsertionPointToEnd(tokensReady);
+    for (unsigned tensorIndex : resolvedTensors) {
+      Value token =
+          loadI32(builder, location,
+                  addressOf(builder, location,
+                            onnxHostResolvedTokenSymbol(tensorIndex)));
+      buffers[tensorIndex] = token;
+      if (publicOutputBuffers[tensorIndex])
+        publicOutputBuffers[tensorIndex] = token;
+    }
+    for (auto [tensorIndex, tensor] : llvm::enumerate(graph.tensors)) {
+      if (buffers[tensorIndex] || storage[tensorIndex] != tensorIndex ||
+          tensor.staticResourceId < 0)
+        continue;
+      Value resourceId = arith::ConstantIntOp::create(
+          builder, location, tensor.staticResourceId, 32);
+      Value bytes = arith::ConstantIntOp::create(builder, location,
+                                                 tensor.staticByteLength, 32);
+      buffers[tensorIndex] =
+          func::CallOp::create(builder, location, "__vrc_opencl_static_tensor",
+                               TypeRange{i32}, ValueRange{resourceId, bytes})
+              .getResult(0);
     }
 
     // The run is recorded behind everything the caller already enqueued on
@@ -3523,6 +3572,7 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
     declarations.require("udonclCreateBufferForQueue",
                          {pointer, builder.getI64Type(), i32, pointer},
                          {pointer});
+    declarations.require("udononnxSessionBindingVersion", {pointer}, {i32});
     return declarations.result();
   }
 

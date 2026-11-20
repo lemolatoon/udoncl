@@ -157,6 +157,82 @@ namespace Lemolatoon.Udoncl.Editor
         internal long[] Shape { get; private set; }
     }
 
+    // Pairs ONNX tensors with the public Device buffers of an artifact by
+    // name. The manifest lists Device buffers in allocation order, which is
+    // not the ONNX input/output order (a banked sequence state moves its
+    // past inputs, for one), so a caller never pairs them by position.
+    internal static class OnnxPublicBuffers
+    {
+        // Mirrors onnxPublicBufferName in tools/vrccl/vrccl.cpp: every
+        // character outside [A-Za-z0-9_] becomes '_', and a name that does not
+        // start with a letter or '_' gets the prefix "tensor_".
+        internal static string BufferName(string tensorName)
+        {
+            if (tensorName == null)
+                throw new ArgumentNullException("tensorName");
+            char[] characters = tensorName.ToCharArray();
+            for (int index = 0; index < characters.Length; ++index)
+            {
+                char character = characters[index];
+                if (!IsAsciiLetter(character) && !IsAsciiDigit(character) && character != '_')
+                    characters[index] = '_';
+            }
+            string name = new string(characters);
+            if (name.Length == 0 || !(IsAsciiLetter(name[0]) || name[0] == '_'))
+                name = "tensor_" + name;
+            return name;
+        }
+
+        // The public buffer of the ONNX `access` ("input" or "output") tensor
+        // `index` named `tensorName`. vrccl gives a name that collides with an
+        // earlier public buffer the suffix "_<access>_<index>".
+        internal static ValidatedDeviceBuffer Find(
+            IList<ValidatedDeviceBuffer> buffers,
+            string access,
+            int index,
+            string tensorName
+        )
+        {
+            if (buffers == null)
+                throw new ArgumentNullException("buffers");
+            if (access != "input" && access != "output")
+                throw new ArgumentException("access must be input or output.", "access");
+            string name = BufferName(tensorName);
+            string suffixed = name + "_" + access + "_" + index;
+            ValidatedDeviceBuffer plain = null;
+            foreach (ValidatedDeviceBuffer buffer in buffers)
+            {
+                if (buffer == null || buffer.PublicAccess != access)
+                    continue;
+                if (buffer.Name == suffixed)
+                    return buffer;
+                if (buffer.Name == name)
+                    plain = buffer;
+            }
+            if (plain == null)
+                throw new InvalidDataException(
+                    "The artifact has no public "
+                        + access
+                        + " buffer '"
+                        + name
+                        + "' for ONNX tensor '"
+                        + tensorName
+                        + "'."
+                );
+            return plain;
+        }
+
+        private static bool IsAsciiLetter(char character)
+        {
+            return (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z');
+        }
+
+        private static bool IsAsciiDigit(char character)
+        {
+            return character >= '0' && character <= '9';
+        }
+    }
+
     internal static class OnnxOracleSidecar
     {
         internal static ValidatedOnnxOracle Load(string directory)

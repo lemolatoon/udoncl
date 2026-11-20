@@ -209,34 +209,28 @@ namespace Lemolatoon.Udoncl.Editor
                         );
                     SetPublicVariable(program, "__udoncl_buffer_copy_material", material);
                 }
-                if (manifest.dispatch_sites != null)
-                    foreach (DispatchSiteInfo dispatch in manifest.dispatch_sites)
+                // Every dispatch site Blits through its own material.
+                if (manifest.dispatch_materials != null)
+                    foreach (DispatchMaterialInfo dispatch in manifest.dispatch_materials)
                     {
-                        KernelInfo kernel = Array.Find(
-                            manifest.device?.kernels,
-                            candidate => candidate.id == dispatch.kernel_id
-                        );
-                        if (kernel == null)
+                        if (
+                            dispatch == null
+                            || string.IsNullOrEmpty(dispatch.slot)
+                            || !dispatch.slot.StartsWith("__udoncl_", StringComparison.Ordinal)
+                        )
                             throw new InvalidDataException(
-                                "Generated dispatch references a missing kernel material."
+                                "Generated dispatch material metadata is malformed."
                             );
-                        string materialPath =
-                            programRoot
-                            + "/Materials/kernel_"
-                            + kernel.id
-                            + "_"
-                            + kernel.name
-                            + ".mat";
+                        string materialPath = UdonclArtifactImporter.DispatchMaterialAssetPath(
+                            programRoot,
+                            dispatch.slot.Substring("__udoncl_".Length)
+                        );
                         Material material = AssetDatabase.LoadAssetAtPath<Material>(materialPath);
                         if (material == null)
                             throw new InvalidDataException(
-                                "Generated kernel material is missing: " + materialPath
+                                "Generated dispatch material is missing: " + materialPath
                             );
-                        SetPublicVariable(
-                            program,
-                            "__udoncl_kernel_material_" + kernel.id,
-                            material
-                        );
+                        SetPublicVariable(program, dispatch.slot, material);
                     }
 
                 UdonSharpBehaviour wrapper = root.AddUdonSharpComponent(wrapperType);

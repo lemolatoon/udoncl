@@ -4,7 +4,8 @@
 // sees them after their slots are reused. A dispatch that directly follows
 // its descriptor, and is its only user, sets the kernel material from the
 // scalars' own slots: no snapshot slot exists and nothing is copied. The
-// compile-time constant is bound once behind the material's bound flag.
+// compile-time constant is bound once behind the material's bound flag; the
+// run-time count is compared with the value the material holds.
 
 module attributes {
   vrc.host_stage = "udonhl",
@@ -18,20 +19,29 @@ module attributes {
 
   // CHECK: udonasm.push "__udoncl_bound_kernel_material_1"
   // CHECK-NEXT: udonasm.jump_if_false
-  // CHECK-NEXT: udonasm.jump
+  // CHECK: udonasm.push "__0_arg0__param"
+  // CHECK-NEXT: udonasm.push "__udoncl_arg_3_kernel_material_1"
+  // CHECK-NEXT: udonasm.push "__udoncl_material_value_changed"
+  // CHECK-NEXT: udonasm.extern "SystemInt32.__op_Inequality__SystemInt32_SystemInt32__SystemBoolean"
+  // CHECK-NEXT: udonasm.push "__udoncl_material_value_changed"
+  // CHECK-NEXT: udonasm.jump_if_false
   // CHECK-NEXT: udonasm.push "__udoncl_kernel_material_1"
-  // CHECK-NEXT: udonasm.push "__udoncl_material_arg_2"
-  // CHECK-NEXT: udonasm.push "[[LITERAL]]"
+  // CHECK-NEXT: udonasm.push "__udoncl_material_arg_3"
+  // CHECK-NEXT: udonasm.push "__0_arg0__param"
   // CHECK-NEXT: udonasm.extern "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
   // CHECK: udonasm.push "__udoncl_kernel_material_1"
   // CHECK-NEXT: udonasm.push "__udoncl_material_input_0"
   // CHECK-NEXT: udonasm.push "{{[^"]+}}"
   // CHECK-NEXT: udonasm.extern "UnityEngineMaterial.__SetTexture__SystemString_UnityEngineTexture__SystemVoid"
+  // CHECK: udonasm.push "__udoncl_kernel_material_1"
+  // CHECK-NEXT: udonasm.push "__udoncl_material_arg_2"
+  // CHECK-NEXT: udonasm.push "[[LITERAL]]"
+  // CHECK-NEXT: udonasm.extern "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
   // CHECK-NEXT: udonasm.push "__udoncl_kernel_material_1"
   // CHECK-NEXT: udonasm.push "__udoncl_material_arg_3"
   // CHECK-NEXT: udonasm.push "__0_arg0__param"
   // CHECK-NEXT: udonasm.extern "UnityEngineMaterial.__SetInteger__SystemString_SystemInt32__SystemVoid"
-  // CHECK-NEXT: udonasm.push "__udoncl_null_texture"
+  // CHECK: udonasm.push "__udoncl_null_texture"
   func.func @adjacent(%count: i32) attributes {vrc.export_id = 1 : i32} {
     %input_id = arith.constant 1 : i32
     %output_id = arith.constant 2 : i32

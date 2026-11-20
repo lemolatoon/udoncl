@@ -5,6 +5,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SetVector.h"
 
 #include <algorithm>
 #include <cstring>
@@ -991,6 +992,18 @@ SmallVector<int64_t> mutableBufferBytes(const GraphRecord &graph,
   if (int64_t scratchBytes = operatorScratchBytes(graph))
     bytes.push_back(scratchBytes);
   return bytes;
+}
+
+SmallVector<unsigned> resolvedRunTensors(const GraphRecord &graph,
+                                         const HostPlanRecord &plan) {
+  llvm::SetVector<unsigned> tensors;
+  if (!plan.deviceGraph)
+    return {};
+  tensors.insert(graph.inputs.begin(), graph.inputs.end());
+  tensors.insert(graph.outputs.begin(), graph.outputs.end());
+  tensors.insert(plan.ownedDeviceBuffers.begin(),
+                 plan.ownedDeviceBuffers.end());
+  return SmallVector<unsigned>(tensors.begin(), tensors.end());
 }
 
 SmallVector<unsigned> ownedDeviceBuffers(const GraphRecord &graph,

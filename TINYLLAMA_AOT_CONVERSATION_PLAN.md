@@ -1239,7 +1239,7 @@ Those frame estimates charge one frame per continuation, which on a 90 Hz
 client is the dominant cost of the remaining budget slices. The generated
 binding now resumes ready continuations in the same Udon event under a
 per-frame wall-clock budget (`device_work_budget.frame_microseconds`, default
-8 ms, and `frame_continuations`, default 8; see the device work scheduling
+8 ms, and `frame_continuations`, default 32; see the device work scheduling
 section of `docs/architecture/refactor-baseline-and-mlir-pipeline.md`). A
 frame therefore runs as many slices as fit the budget, and a synchronously
 completed upload no longer costs a frame; only readbacks still wait. The
@@ -1278,6 +1278,13 @@ At 8 ms the predicted Udon time of a busy frame averages about 7 to 8 ms and
 stays below 11.1 ms. These are predictions from one trace, not
 measurements; the readback-wait frames, which the frame budget cannot
 remove, are now the larger part of a step.
+
+The Unity trace at the 8 ms default (gate 14) showed that the limit had moved:
+with a mean continuation of about 0.8 ms, most busy frames stopped on the
+then-default limit of 8 continuations (30 of 46 conversation windows, 63 of
+74 chat windows) after about 6.4 ms, not on the time budget. The default
+`frame_continuations` is now 32, so the 8 ms budget ends a busy frame again;
+the frames per step at the new default need a new Unity measurement.
 
 ### 7.3 Required execution
 

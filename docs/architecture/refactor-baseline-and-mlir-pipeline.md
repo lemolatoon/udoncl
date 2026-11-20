@@ -745,8 +745,13 @@ schedules `_ContinueAsyncCommand` for the next frame:
 
 Both limits are `device_work_budget` settings of the Unity library JSON
 (`"frame_microseconds": N, "frame_continuations": N`, each 0 to 1,000,000,
-defaults 8,000 and 8: 8 ms leaves about 3 ms of a 90 Hz frame's 11.1 ms to
-the rest of the world). They are recorded in the manifest as
+defaults 8,000 and 32: 8 ms leaves about 3 ms of a 90 Hz frame's 11.1 ms to
+the rest of the world, and 32 continuations keep the time budget the limit
+that ends a busy frame. With the earlier default of 8, a Unity trace of the
+TinyLlama conversation and chat at 8 ms stopped most busy frames on the
+continuation limit (30 of 46 and 63 of 74 windows) at a mean continuation of
+about 0.8 ms, about 6.4 ms of the 8 ms budget). They are recorded in the
+manifest as
 `program.async_commands.frame_budget_microseconds` and
 `frame_continuation_limit` and emitted as the binding constants
 `AsyncFrameBudgetMicroseconds` and `AsyncFrameContinuationLimit`. Setting
@@ -933,11 +938,39 @@ func.func private @__vrc_opencl_dispatch_fused(i32, i32, i32) -> i32
   `@device_gpu_<id>` module out of the Host into the Device module next to
   the library kernels, so gather lowering, shader emission
   (`kernels/kernel_<id>.shader`), the manifest `device.kernels` entry, the
-  material slot `__udoncl_kernel_material_<id>` and the Unity finalizer treat
-  it like any other kernel. Its grid width and word count take part in the
+  per-site dispatch materials and the Unity finalizer treat it like any other
+  kernel. Its grid width and word count take part in the
   texture row-pitch and shape decisions, and the build fails if the texture
   shape the Unity buffers share cannot hold its output. A Host module that
   carries no synthesized kernel produces the same bundle as before.
+
+### 7b. Per-site dispatch materials
+
+A Unity dispatch binds its kernel arguments as properties of the Material it
+Blits with, and a Material keeps its properties between Blits. Right before
+scalar Udon lowering, `vrc-assign-unity-dispatch-materials` gives every
+`vrc.dispatch` its own public slot `__udoncl_dispatch_material_<n>` and lists
+the slots with their kernel ids in `vrc.unity_dispatch_materials`; the
+manifest carries them as `dispatch_materials`, the importer creates
+`Materials/Dispatch/dispatch_material_<n>.mat` from the kernel's shader, and
+the finalizer binds each slot. The scalar lowering then plans every material
+(`planDispatchMaterials`):
+
+- an argument all dispatches through the material bind to the same fixed
+  value (a constant, a static tensor, a fixed buffer pool entry) is bound by
+  the first dispatch only, behind the material's bound flag;
+- an i32 scalar, a token-selected buffer and a token-selected render target
+  are remembered in per-material slots (`__udoncl_arg_<i>_<material>`,
+  `__udoncl_target[_token]_<material>`): a later dispatch compares the value
+  (one `Int32 !=`) and rebinds only on a change;
+- a run-time f32 is set by every dispatch (an f32 comparison would equate
+  -0.0 and 0.0).
+
+The buffer pool and the static tensor table are immutable once the program is
+bound, so a token determines its texture for the program's lifetime and no
+bind-time invalidation is needed. Two instances of one program share their
+Material and RenderTexture assets and therefore must not run concurrently
+(already true for the shared Device buffers).
 
 ### 8. Artifact and generated binding
 

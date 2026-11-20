@@ -24,6 +24,7 @@ namespace Lemolatoon.Udoncl.Editor
             string artifactStage,
             string programName,
             IList<ValidatedKernel> kernels,
+            IList<ValidatedDispatchMaterial> dispatchMaterials,
             IList<ValidatedDeviceBuffer> deviceBuffers,
             IList<ValidatedResource> resources,
             IList<ValidatedStaticTensor> staticTensors,
@@ -45,6 +46,7 @@ namespace Lemolatoon.Udoncl.Editor
             ArtifactStage = artifactStage;
             ProgramName = programName;
             Kernels = kernels;
+            DispatchMaterials = dispatchMaterials;
             DeviceBuffers = deviceBuffers;
             Resources = resources;
             StaticTensors = staticTensors;
@@ -66,6 +68,12 @@ namespace Lemolatoon.Udoncl.Editor
         public string ArtifactStage { get; private set; }
         public string ProgramName { get; private set; }
         public IList<ValidatedKernel> Kernels { get; private set; }
+
+        /// <summary>
+        /// One Material per dispatch site: the program's public material slot
+        /// and the kernel whose shader the material renders.
+        /// </summary>
+        public IList<ValidatedDispatchMaterial> DispatchMaterials { get; private set; }
         public IList<ValidatedDeviceBuffer> DeviceBuffers { get; private set; }
         public IList<ValidatedResource> Resources { get; private set; }
         public IList<ValidatedStaticTensor> StaticTensors { get; private set; }
@@ -239,6 +247,24 @@ namespace Lemolatoon.Udoncl.Editor
         public string Name { get; private set; }
         public string RelativeShaderPath { get; private set; }
         public string AbsoluteShaderPath { get; private set; }
+    }
+
+    public sealed class ValidatedDispatchMaterial
+    {
+        internal ValidatedDispatchMaterial(string slot, ValidatedKernel kernel)
+        {
+            Slot = slot;
+            Kernel = kernel;
+        }
+
+        public string Slot { get; private set; }
+        public ValidatedKernel Kernel { get; private set; }
+
+        /// <summary>The material asset name: the slot without its prefix.</summary>
+        public string AssetName
+        {
+            get { return Slot.Substring("__udoncl_".Length); }
+        }
     }
 
     public sealed class ValidatedDeviceBuffer
@@ -453,6 +479,11 @@ namespace Lemolatoon.Udoncl.Editor
                 }
             }
 
+            List<ValidatedDispatchMaterial> dispatchMaterials = ValidateDispatchMaterials(
+                manifest.dispatch_materials,
+                kernels
+            );
+
             List<ValidatedDeviceBuffer> deviceBuffers = ValidateDeviceBuffers(
                 manifest.device == null ? null : manifest.device.buffers
             );
@@ -590,6 +621,7 @@ namespace Lemolatoon.Udoncl.Editor
                 manifest.artifact_stage,
                 manifest.program.name,
                 kernels,
+                dispatchMaterials,
                 deviceBuffers,
                 resources,
                 staticTensors,
@@ -598,6 +630,50 @@ namespace Lemolatoon.Udoncl.Editor
                 onnxInputs,
                 onnxOutputs
             );
+        }
+
+        private static readonly Regex DispatchMaterialSlot = new Regex(
+            @"^__udoncl_(dispatch_material_[0-9]+|kernel_material_[0-9]+)$",
+            RegexOptions.Compiled
+        );
+
+        private static List<ValidatedDispatchMaterial> ValidateDispatchMaterials(
+            DispatchMaterialInfo[] materials,
+            IList<ValidatedKernel> kernels
+        )
+        {
+            List<ValidatedDispatchMaterial> result = new List<ValidatedDispatchMaterial>();
+            if (materials == null)
+                return result;
+            HashSet<string> slots = new HashSet<string>(StringComparer.Ordinal);
+            foreach (DispatchMaterialInfo material in materials)
+            {
+                if (
+                    material == null
+                    || string.IsNullOrEmpty(material.slot)
+                    || !DispatchMaterialSlot.IsMatch(material.slot)
+                )
+                    throw new InvalidDataException(
+                        "Each dispatch material needs a compiler-owned material slot."
+                    );
+                if (!slots.Add(material.slot))
+                    throw new InvalidDataException(
+                        "Duplicate dispatch material slot: " + material.slot
+                    );
+                ValidatedKernel kernel = null;
+                foreach (ValidatedKernel candidate in kernels)
+                    if (candidate.Id == material.kernel_id)
+                        kernel = candidate;
+                if (kernel == null)
+                    throw new InvalidDataException(
+                        "Dispatch material "
+                            + material.slot
+                            + " references missing kernel "
+                            + material.kernel_id
+                    );
+                result.Add(new ValidatedDispatchMaterial(material.slot, kernel));
+            }
+            return result;
         }
 
         private static bool IsDottedIdentifier(string value)

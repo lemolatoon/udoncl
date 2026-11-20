@@ -179,8 +179,15 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                     "Materials/kernel_" + kernel.Id + "_" + kernel.Name + ".mat"
                 );
                 materials.Add(kernel.Id, material);
-                Set(heap, program, "__udoncl_kernel_material_" + kernel.Id, material);
             }
+            // Every dispatch site Blits through its own material.
+            foreach (ValidatedDispatchMaterial dispatch in artifact.DispatchMaterials)
+                Set(
+                    heap,
+                    program,
+                    dispatch.Slot,
+                    Load<Material>("Materials/Dispatch/" + dispatch.AssetName + ".mat")
+                );
             // 4096 is the synthesized kernel of the fused bias Add and Relu.
             CollectionAssert.AreEquivalent(new[] { 221, 231, 232, 233, 234, 4096 }, materials.Keys);
             Material copyMaterial = Load<Material>("Materials/buffer-copy.mat");

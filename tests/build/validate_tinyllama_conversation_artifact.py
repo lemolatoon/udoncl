@@ -149,13 +149,28 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
         self.assertIn("onnx-transformer-tiny-m1-step", cmake)
         self.assertIn('"m1-steps"', oracle)
         # Every sidecar output is compared and reported by name with its
-        # maximum error; inputs and outputs follow manifest order generically.
+        # maximum error. Sidecar inputs and outputs are paired with public
+        # buffers by name: manifest buffer order is Device allocation order,
+        # which banked sequence state makes differ from the ONNX order.
         for required in (
             "UDONCL_PUBLIC_TINYLLAMA_STEP_UNITY_BUNDLE",
             "UDONCL_PUBLIC_TINYLLAMA_STEP_ORACLES",
             "for (int index = 0; index < oracle.Outputs.Count; ++index)",
             " max_abs_error=",
             'Debug.Log("udoncl tinyllama_m1_step " + line);',
+            "OnnxPublicBuffers.Find(\n                        inputBuffers,",
+            "OnnxPublicBuffers.Find(\n                        outputBuffers,",
+            "pairedIds.Add(buffer.Id)",
+        ):
+            self.assertIn(required, source)
+        for forbidden in ("inputBuffers[index]", "outputBuffers[index]",
+                          "order differs from the sidecar"):
+            self.assertNotIn(forbidden, source)
+        # The comparison stays strict: absolute + relative 1e-3, NaN/Inf fail.
+        for required in (
+            "private const float AbsoluteTolerance = 0.001f;",
+            "private const float RelativeTolerance = 0.001f;",
+            "float.IsNaN(value) || float.IsInfinity(value) || error > tolerance",
         ):
             self.assertIn(required, source)
         iterator = source.split(f"IEnumerator {name}()", 1)[1].split(

@@ -125,6 +125,18 @@ inline std::string onnxHostDeviceBufferOwnedSymbol(unsigned index) {
   return (llvm::Twine("__udon_onnx_device_buffer_owned_") + llvm::Twine(index))
       .str();
 }
+
+/// The session binding version the run's resolved physical tokens belong to
+/// (0: none resolved).
+inline constexpr llvm::StringLiteral onnxHostResolvedBindingVersionSymbol =
+    "__udon_onnx_resolved_binding_version";
+
+/// The physical buffer token the run resolved for tensor `index`: a bound
+/// input or output, or a Device buffer the session owns.
+inline std::string onnxHostResolvedTokenSymbol(unsigned index) {
+  return (llvm::Twine("__udon_onnx_resolved_token_") + llvm::Twine(index))
+      .str();
+}
 } // namespace vrc
 
 #endif

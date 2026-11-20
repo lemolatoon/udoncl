@@ -91,21 +91,29 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             Assert.AreEqual(128000, oracle.Outputs[0].ElementCount);
             for (int index = 1; index < oracle.Outputs.Count; ++index)
                 Assert.AreEqual(1024, oracle.Outputs[index].ElementCount);
-            List<int> outputIds = new List<int>();
+            // Outputs are paired with public buffers by name, not by manifest
+            // position (Device allocation order need not be the ONNX order).
+            int publicOutputs = 0;
             foreach (ValidatedDeviceBuffer buffer in artifact.DeviceBuffers)
+                if (buffer.PublicAccess == "output")
+                    ++publicOutputs;
+            Assert.AreEqual(oracle.Outputs.Count, publicOutputs);
+            HashSet<int> pairedIds = new HashSet<int>();
+            outputBufferIds = new int[oracle.Outputs.Count];
+            for (int index = 0; index < oracle.Outputs.Count; ++index)
             {
-                if (buffer.PublicAccess != "output")
-                    continue;
-                Assert.Less(outputIds.Count, oracle.Outputs.Count);
-                Assert.AreEqual("float32", buffer.ElementType);
-                Assert.AreEqual(
-                    oracle.Outputs[outputIds.Count].ElementCount * sizeof(float),
-                    buffer.LogicalBytes
+                ValidatedOnnxOracleOutput output = oracle.Outputs[index];
+                ValidatedDeviceBuffer buffer = OnnxPublicBuffers.Find(
+                    artifact.DeviceBuffers,
+                    "output",
+                    output.Index,
+                    output.Name
                 );
-                outputIds.Add(buffer.Id);
+                Assert.IsTrue(pairedIds.Add(buffer.Id), output.Name + " shares a public buffer.");
+                Assert.AreEqual("float32", buffer.ElementType);
+                Assert.AreEqual(output.ElementCount * sizeof(float), buffer.LogicalBytes);
+                outputBufferIds[index] = buffer.Id;
             }
-            Assert.AreEqual(oracle.Outputs.Count, outputIds.Count);
-            outputBufferIds = outputIds.ToArray();
         }
 
         [UnityTest]

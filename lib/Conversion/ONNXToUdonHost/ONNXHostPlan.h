@@ -172,6 +172,11 @@ llvm::SmallVector<unsigned> deviceStorage(const GraphRecord &graph,
 llvm::SmallVector<unsigned>
 ownedDeviceBuffers(const GraphRecord &graph, bool deviceGraph,
                    llvm::ArrayRef<unsigned> storage);
+/// The tensors whose physical buffer token a Device graph run resolves at
+/// run time, in resolution order without repeats: the bound inputs, the
+/// bound outputs, and the Device buffers the session owns.
+llvm::SmallVector<unsigned> resolvedRunTensors(const GraphRecord &graph,
+                                               const HostPlanRecord &plan);
 llvm::SmallVector<int64_t> mutableBufferBytes(const GraphRecord &graph,
                                               bool deviceGraph,
                                               llvm::ArrayRef<unsigned> storage);

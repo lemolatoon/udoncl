@@ -33,7 +33,13 @@ typedef enum udononnxSessionState {
  * Bindings change only through the bind functions: the first run after a
  * bind validates the whole binding table, and later runs of the unchanged
  * table only check that every bound buffer is still alive in the session
- * context. */
+ * context, which is known without a check while no device buffer handle
+ * was destroyed since (udonclDeviceBufferEpoch).
+ *
+ * binding_version identifies the binding table: creating the session and
+ * every bind or invalidation give it a value no session had before, so code
+ * that derived anything from the bound buffers (the generated run resolves
+ * them to physical tokens once) can reuse it while the version is equal. */
 typedef struct udononnxSession {
   const udononnxModel_t *model;
   cl_context context;
@@ -46,6 +52,8 @@ typedef struct udononnxSession {
   cl_event active_event;
   udononnxSessionState_t state;
   uint32_t bindings_validated;
+  uint32_t validated_buffer_epoch;
+  uint32_t binding_version;
 } udononnxSession_t;
 
 udononnxStatus_t udononnxCreateTensor(udonclBufferView_t storage, uint32_t rank,
@@ -91,6 +99,8 @@ udononnxStatus_t udononnxSessionBindInput(udononnxSession_t *session,
 /* For a caller that writes the borrowed binding arrays itself: the next run
  * validates the whole binding table again. */
 void udononnxSessionInvalidateBindings(udononnxSession_t *session);
+/* The current binding version (see udononnxSession_t); 0 without a session. */
+uint32_t udononnxSessionBindingVersion(const udononnxSession_t *session);
 udononnxStatus_t udononnxSessionBindOutput(udononnxSession_t *session,
                                            size_t index,
                                            udononnxTensor_t tensor);

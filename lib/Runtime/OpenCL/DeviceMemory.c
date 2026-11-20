@@ -16,6 +16,10 @@ struct udoncl_device_buffer_entry {
 static struct udoncl_device_buffer_entry
     udoncl_device_buffers[UDONCL_DEVICE_BUFFER_CAPACITY];
 static int32_t udoncl_device_buffer_next_unused;
+/* Counts handle invalidations: every destroy makes the handles of one slot
+ * stale. A caller that checked a set of handles at one epoch knows they are
+ * all still alive while the epoch is unchanged. */
+static uint32_t udoncl_device_buffer_epoch;
 static int32_t udoncl_device_buffer_free_head = -1;
 static int32_t udoncl_device_buffer_free_next[UDONCL_DEVICE_BUFFER_CAPACITY];
 
@@ -136,11 +140,15 @@ udonclStatus_t udonclDeviceBufferDestroy(udonclBufferHandle_t *buffer) {
   entry->memory = 0;
   entry->context = 0;
   entry->bytes = 0;
+  udoncl_device_buffer_epoch =
+      udoncl_next_generation(udoncl_device_buffer_epoch);
   udoncl_device_buffer_recycle((int32_t)buffer->slot - 1);
   buffer->slot = 0;
   buffer->generation = 0;
   return UDONCL_STATUS_SUCCESS;
 }
+
+uint32_t udonclDeviceBufferEpoch(void) { return udoncl_device_buffer_epoch; }
 
 udonclStatus_t udonclDeviceBufferGetSize(udonclBufferHandle_t buffer,
                                          size_t *bytes) {

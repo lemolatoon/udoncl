@@ -59,6 +59,9 @@ udonclStatus_t udonclDeviceBufferAdopt(cl_context context, cl_mem memory,
                                        size_t bytes,
                                        udonclBufferHandle_t *buffer);
 udonclStatus_t udonclDeviceBufferDestroy(udonclBufferHandle_t *buffer);
+/* Changes whenever a destroy makes a handle stale. Handles found alive at one
+ * epoch are still alive while the epoch is unchanged. */
+uint32_t udonclDeviceBufferEpoch(void);
 udonclStatus_t udonclDeviceBufferGetSize(udonclBufferHandle_t buffer,
                                          size_t *bytes);
 udonclStatus_t udonclDeviceBufferGetRaw(udonclBufferHandle_t buffer,

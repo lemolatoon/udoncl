@@ -238,6 +238,15 @@ udononnxStatus_t udononnxFindGeneratedModel(const char *name,
   return UDONONNX_STATUS_INVALID_VALUE;
 }
 
+/* Binding versions are unique across sessions: the last one handed out. */
+static uint32_t udononnx_last_binding_version;
+
+static uint32_t udononnxNextBindingVersion(void) {
+  udononnx_last_binding_version =
+      udononnxNextGeneration(udononnx_last_binding_version);
+  return udononnx_last_binding_version;
+}
+
 static void udononnxClearBinding(udononnxTensor_t *tensor) {
   uint32_t axis;
   tensor->storage.buffer.slot = 0;
@@ -282,6 +291,8 @@ udononnxStatus_t udononnxCreateSession(udononnxSession_t *session,
   session->active_event = 0;
   session->state = UDONONNX_SESSION_CREATED;
   session->bindings_validated = 0;
+  session->validated_buffer_epoch = 0;
+  session->binding_version = udononnxNextBindingVersion();
   for (index = 0; index < model->input_count; ++index)
     udononnxClearBinding(&input_bindings[index]);
   for (index = 0; index < model->output_count; ++index)
@@ -366,13 +377,20 @@ udononnxSessionBind(udononnxSession_t *session, size_t index,
   if (status == UDONONNX_STATUS_SUCCESS) {
     udononnxCopyTensor(&bindings[index], &tensor);
     session->bindings_validated = 0;
+    session->binding_version = udononnxNextBindingVersion();
   }
   return status;
 }
 
 void udononnxSessionInvalidateBindings(udononnxSession_t *session) {
-  if (session)
+  if (session) {
     session->bindings_validated = 0;
+    session->binding_version = udononnxNextBindingVersion();
+  }
+}
+
+uint32_t udononnxSessionBindingVersion(const udononnxSession_t *session) {
+  return session ? session->binding_version : 0;
 }
 
 udononnxStatus_t udononnxSessionBindInput(udononnxSession_t *session,
@@ -521,8 +539,16 @@ static udononnxStatus_t
 udononnxValidateRunBindings(udononnxSession_t *session) {
   size_t input, output, bound_outputs = 0;
   udononnxStatus_t status;
-  if (session->bindings_validated)
-    return udononnxValidateRunBindingLiveness(session);
+  uint32_t epoch = udonclDeviceBufferEpoch();
+  if (session->bindings_validated) {
+    /* No handle became stale since the table was last found alive. */
+    if (session->validated_buffer_epoch == epoch)
+      return UDONONNX_STATUS_SUCCESS;
+    status = udononnxValidateRunBindingLiveness(session);
+    if (status == UDONONNX_STATUS_SUCCESS)
+      session->validated_buffer_epoch = epoch;
+    return status;
+  }
   for (input = 0; input < session->model->input_count; ++input) {
     if (!udononnxTensorIsBound(&session->input_bindings[input]))
       return UDONONNX_STATUS_MISSING_BINDING;
@@ -554,6 +580,7 @@ udononnxValidateRunBindings(udononnxSession_t *session) {
   if (session->model->output_count && !bound_outputs)
     return UDONONNX_STATUS_MISSING_BINDING;
   session->bindings_validated = 1;
+  session->validated_buffer_epoch = epoch;
   return UDONONNX_STATUS_SUCCESS;
 }
 

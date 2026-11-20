@@ -82,6 +82,65 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             );
         }
 
+        [Test]
+        public void FindsPublicBuffersByNameNotPosition()
+        {
+            // Device allocation order, not ONNX order.
+            ValidatedDeviceBuffer[] buffers =
+            {
+                Buffer(1, "input_ids", "int64", "input"),
+                Buffer(2, "past_key_values_0_key", "float32", "input"),
+                Buffer(3, "position_ids", "int64", "input"),
+                Buffer(4, "private_4", null, null),
+                Buffer(5, "present_0_key", "float32", "output"),
+                Buffer(6, "tensor_0", "float32", "output"),
+                Buffer(7, "a_b", "float32", "input"),
+                Buffer(8, "a_b_input_5", "float32", "input"),
+            };
+            Assert.AreEqual(
+                "past_key_values_0_key",
+                OnnxPublicBuffers.BufferName("past_key_values.0.key")
+            );
+            Assert.AreEqual("tensor_0", OnnxPublicBuffers.BufferName("0"));
+            Assert.AreEqual("_x_y", OnnxPublicBuffers.BufferName("_x-y"));
+            Assert.AreEqual(3, OnnxPublicBuffers.Find(buffers, "input", 1, "position_ids").Id);
+            Assert.AreEqual(
+                2,
+                OnnxPublicBuffers.Find(buffers, "input", 2, "past_key_values.0.key").Id
+            );
+            Assert.AreEqual(5, OnnxPublicBuffers.Find(buffers, "output", 1, "present.0.key").Id);
+            Assert.AreEqual(6, OnnxPublicBuffers.Find(buffers, "output", 0, "0").Id);
+            // A colliding name carries the access and ONNX index.
+            Assert.AreEqual(7, OnnxPublicBuffers.Find(buffers, "input", 4, "a.b").Id);
+            Assert.AreEqual(8, OnnxPublicBuffers.Find(buffers, "input", 5, "a_b").Id);
+            // The access is part of the match.
+            Assert.Throws<InvalidDataException>(() =>
+                OnnxPublicBuffers.Find(buffers, "output", 0, "input_ids")
+            );
+            Assert.Throws<InvalidDataException>(() =>
+                OnnxPublicBuffers.Find(buffers, "input", 9, "attention_mask")
+            );
+        }
+
+        private static ValidatedDeviceBuffer Buffer(
+            int id,
+            string name,
+            string elementType,
+            string access
+        )
+        {
+            return new ValidatedDeviceBuffer(
+                id,
+                name,
+                "__udoncl_buffer_" + id,
+                4,
+                1,
+                1,
+                elementType,
+                access
+            );
+        }
+
         private static byte[] Floats(params float[] values)
         {
             byte[] bytes = new byte[values.Length * sizeof(float)];
