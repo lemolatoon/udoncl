@@ -729,6 +729,15 @@ cl_int __vrc_opencl_dispatch_udononnx_scatter_nd_f32(
   return 29;
 }
 
+static cl_uint flush_count;
+
+/* Like the Udon backend: the binding submits the published transfer and the
+ * Host resumes without waiting for it. */
+cl_int __vrc_opencl_flush(void) {
+  ++flush_count;
+  return CL_SUCCESS;
+}
+
 cl_int __vrc_opencl_await(cl_int event) {
   transfer_outstanding = 0;
   if (await_count < sizeof(awaited_events) / sizeof(awaited_events[0]))
@@ -897,6 +906,74 @@ static int test_copy_buffer(cl_context context, cl_command_queue queue) {
   EXPECT(!memcmp(readback, expected, 12) &&
          !memcmp(readback + 12, source_bytes + 8, 4));
   EXPECT(clReleaseMemObject(part) == CL_SUCCESS);
+  EXPECT(clReleaseMemObject(destination) == CL_SUCCESS);
+  EXPECT(clReleaseMemObject(source) == CL_SUCCESS);
+  return 0;
+}
+
+/* A non-blocking read is submitted at its queue position and awaited only
+ * when its event is waited for, or when the next transfer needs the command
+ * slot. Device commands issued in between do not wait for it. */
+static int test_deferred_read(cl_context context, cl_command_queue queue) {
+  uint32_t value = 0x11223344u, other = 0x55667788u, readback = 0;
+  uint32_t pattern = 0xCAFEF00Du;
+  cl_event read_event = 0, second_event = 0;
+  cl_int error, status;
+  cl_mem source =
+      clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(value), 0, &error);
+  cl_mem destination;
+  EXPECT(source && error == CL_SUCCESS);
+  destination =
+      clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(value), 0, &error);
+  EXPECT(destination && error == CL_SUCCESS);
+  EXPECT(clEnqueueWriteBuffer(queue, source, CL_TRUE, 0, sizeof(value), &value,
+                              0, 0, 0) == CL_SUCCESS);
+  EXPECT(clEnqueueWriteBuffer(queue, destination, CL_TRUE, 0, sizeof(other),
+                              &other, 0, 0, 0) == CL_SUCCESS);
+
+  /* A blocking read waits and needs no separate submission. */
+  await_count = flush_count = 0;
+  EXPECT(clEnqueueReadBuffer(queue, source, CL_TRUE, 0, sizeof(readback),
+                             &readback, 0, 0, 0) == CL_SUCCESS);
+  EXPECT(await_count == 1 && flush_count == 0 && readback == value);
+
+  await_count = 0;
+  EXPECT(clEnqueueReadBuffer(queue, source, CL_FALSE, 0, sizeof(readback),
+                             &readback, 0, 0, &read_event) == CL_SUCCESS);
+  EXPECT(flush_count == 1 && await_count == 0 && transfer_outstanding);
+  EXPECT(clGetEventInfo(read_event, CL_EVENT_COMMAND_EXECUTION_STATUS,
+                        sizeof(status), &status, 0) == CL_SUCCESS &&
+         status == CL_SUBMITTED);
+  /* Device commands do not wait for the read. */
+  EXPECT(clEnqueueCopyBuffer(queue, source, destination, 0, 0, sizeof(value), 0,
+                             0, 0) == CL_SUCCESS);
+  EXPECT(await_count == 0 && transfer_outstanding);
+  EXPECT(clGetEventInfo(read_event, CL_EVENT_COMMAND_EXECUTION_STATUS,
+                        sizeof(status), &status, 0) == CL_SUCCESS &&
+         status == CL_SUBMITTED);
+  EXPECT(clWaitForEvents(1, &read_event) == CL_SUCCESS);
+  EXPECT(await_count == 1 && awaited_events[0] == 8 && !transfer_outstanding);
+  EXPECT(clGetEventInfo(read_event, CL_EVENT_COMMAND_EXECUTION_STATUS,
+                        sizeof(status), &status, 0) == CL_SUCCESS &&
+         status == CL_COMPLETE);
+  /* A completed event is not awaited again. */
+  EXPECT(clWaitForEvents(1, &read_event) == CL_SUCCESS && await_count == 1);
+  EXPECT(clReleaseEvent(read_event) == CL_SUCCESS);
+
+  /* The command slot holds one transfer: the next transfer and a fill drain
+   * a read nobody has waited for. */
+  await_count = flush_count = 0;
+  transfer_overlaps = 0;
+  EXPECT(clEnqueueReadBuffer(queue, source, CL_FALSE, 0, sizeof(readback),
+                             &readback, 0, 0, &read_event) == CL_SUCCESS);
+  EXPECT(clEnqueueReadBuffer(queue, destination, CL_FALSE, 0, sizeof(other),
+                             &other, 0, 0, &second_event) == CL_SUCCESS);
+  EXPECT(flush_count == 2 && await_count == 1 && transfer_overlaps == 0);
+  EXPECT(clEnqueueFillBuffer(queue, destination, &pattern, sizeof(pattern), 0,
+                             sizeof(pattern), 0, 0, 0) == CL_SUCCESS);
+  EXPECT(await_count == 2 && !transfer_outstanding && other == value);
+  EXPECT(clReleaseEvent(read_event) == CL_SUCCESS);
+  EXPECT(clReleaseEvent(second_event) == CL_SUCCESS);
   EXPECT(clReleaseMemObject(destination) == CL_SUCCESS);
   EXPECT(clReleaseMemObject(source) == CL_SUCCESS);
   return 0;
@@ -1259,6 +1336,9 @@ int main(void) {
   if (index)
     return (int)index;
   index = (cl_uint)test_copy_buffer(context, queue);
+  if (index)
+    return (int)index;
+  index = (cl_uint)test_deferred_read(context, queue);
   if (index)
     return (int)index;
   nested_buffer = udonclCreateBufferForQueue(queue, CL_MEM_READ_WRITE,

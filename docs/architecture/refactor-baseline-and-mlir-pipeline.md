@@ -610,6 +610,24 @@ The AOT `clEnqueueCopyBuffer` therefore also requires word-aligned offsets
 and size, and rejects a copy between disjoint ranges of one physical buffer
 with `CL_INVALID_OPERATION`, because a Blit cannot sample its own target.
 
+A Host read of Device memory stays a binding command (`vrc.buffer_readback`),
+but only a blocking read suspends the Host until it completes. After
+publishing a non-blocking `clEnqueueReadBuffer` the AOT runtime calls
+`__vrc_opencl_flush`, which `vrc-lower-opencl-aot-intrinsics` lowers to a
+cooperative checkpoint (a `vrc.await` of a complete event marked
+`vrc.cooperative_checkpoint`). Every checkpoint bind also sets the public
+`__udoncl_async_pending_yield` slot (`pending_yield_slot` in the manifest's
+`async_commands`). When the Udon event returns, the generated binding
+submits the published readback, so it observes the buffer at its position in
+the in-order queue, and for a checkpoint it resumes the Host on the next
+frame without waiting for `VRCAsyncGPUReadback`. Later checkpoints (budget
+yields included) keep resuming the Host while the readback is in flight; a
+suspension that is not a checkpoint, such as the await behind
+`clWaitForEvents` or the drain before the next transfer, waits for the
+callback and receives its status. A readback that fails while nothing waits
+for it fails the next suspension that does. The single command slot is
+unchanged: one transfer is outstanding at a time.
+
 A slice bounds one Udon event, not one frame. The generated U# binding
 resumes a continuation in the same Udon event when it is ready at once: after
 a Device work slice (command kind 0) and after a command that completes

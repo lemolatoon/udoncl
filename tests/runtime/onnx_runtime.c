@@ -323,6 +323,48 @@ int main(void) {
   EXPECT(memcmp(source, result, sizeof(source)) == 0);
   EXPECT(udononnxSessionGetLastStatus(&session) == UDONONNX_STATUS_SUCCESS);
   EXPECT(strcmp(udononnxSessionGetLastError(&session), "success") == 0);
+
+  /* The first run validated the binding table. A run of the unchanged table
+   * only checks that the bound buffers are alive; a bind validates the table
+   * again, and a destroyed buffer is still reported. */
+  EXPECT(session.bindings_validated == 1);
+  EXPECT(udononnxEnqueueRun(&session, queue, 0, 0, &run) ==
+             UDONONNX_STATUS_SUCCESS &&
+         run && session.bindings_validated == 1);
+  EXPECT(clWaitForEvents(1, &run) == CL_SUCCESS);
+  EXPECT(udononnxSessionCompleteEvent(&session, run, UDONONNX_STATUS_SUCCESS) ==
+         UDONONNX_STATUS_SUCCESS);
+  EXPECT(clReleaseEvent(run) == CL_SUCCESS);
+  EXPECT(udononnxSessionBindOutput(&session, 0, input_tensor) ==
+             UDONONNX_STATUS_SUCCESS &&
+         session.bindings_validated == 0);
+  EXPECT(udononnxEnqueueRun(&session, queue, 0, 0, &run) ==
+             UDONONNX_STATUS_INVALID_VALUE &&
+         session.bindings_validated == 0);
+  EXPECT(udononnxSessionBindOutput(&session, 0, output_tensor) ==
+         UDONONNX_STATUS_SUCCESS);
+  EXPECT(udononnxEnqueueRun(&session, queue, 0, 0, &run) ==
+             UDONONNX_STATUS_SUCCESS &&
+         run && session.bindings_validated == 1);
+  EXPECT(clWaitForEvents(1, &run) == CL_SUCCESS);
+  EXPECT(udononnxSessionCompleteEvent(&session, run, UDONONNX_STATUS_SUCCESS) ==
+         UDONONNX_STATUS_SUCCESS);
+  EXPECT(clReleaseEvent(run) == CL_SUCCESS);
+  udononnxSessionInvalidateBindings(&session);
+  EXPECT(session.bindings_validated == 0);
+  EXPECT(udononnxEnqueueRun(&session, queue, 0, 0, &run) ==
+             UDONONNX_STATUS_SUCCESS &&
+         run && session.bindings_validated == 1);
+  EXPECT(clWaitForEvents(1, &run) == CL_SUCCESS);
+  EXPECT(udononnxSessionCompleteEvent(&session, run, UDONONNX_STATUS_SUCCESS) ==
+         UDONONNX_STATUS_SUCCESS);
+  EXPECT(clReleaseEvent(run) == CL_SUCCESS);
+  EXPECT(udonclDeviceBufferDestroy(&output_buffer) == UDONCL_STATUS_SUCCESS);
+  EXPECT(udononnxEnqueueRun(&session, queue, 0, 0, &completion) ==
+             UDONONNX_STATUS_STALE_HANDLE &&
+         !completion);
+  EXPECT(udononnxSessionGetLastStatus(&session) ==
+         UDONONNX_STATUS_STALE_HANDLE);
   EXPECT(udononnxSessionDispose(&session) == UDONONNX_STATUS_SUCCESS);
   EXPECT(udononnxSessionCompleteEvent(&session, run, UDONONNX_STATUS_SUCCESS) ==
          UDONONNX_STATUS_STALE_HANDLE);
@@ -347,7 +389,6 @@ int main(void) {
   EXPECT(udononnxSessionDispose(&session) == UDONONNX_STATUS_SUCCESS);
 
   EXPECT(udonclDeviceBufferDestroy(&input_buffer) == UDONCL_STATUS_SUCCESS);
-  EXPECT(udonclDeviceBufferDestroy(&output_buffer) == UDONCL_STATUS_SUCCESS);
   EXPECT(udonclDeviceBufferDestroy(&foreign_buffer) == UDONCL_STATUS_SUCCESS);
   EXPECT(initialization_buffer == 0);
   EXPECT(udononnxBindingStateCreate(

@@ -171,6 +171,8 @@ extern cl_int __vrc_opencl_dispatch_mnist_dense(cl_uint input_token,
                                                 cl_uint output_token);
 #endif
 extern cl_int __vrc_opencl_await(cl_int event);
+/* Submits the published transfer command without waiting for it. */
+extern cl_int __vrc_opencl_flush(void);
 
 struct _cl_platform_id {
   cl_uint active;
@@ -2553,8 +2555,15 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueReadBuffer(
   pending = __vrc_opencl_buffer_readback(udoncl_mem_physical_token(buffer),
                                          udoncl_mem_origin(buffer) + offset,
                                          bytes, destination);
-  return udoncl_finish_enqueue(queue, CL_COMMAND_READ_BUFFER, pending, blocking,
-                               event);
+  status = udoncl_finish_enqueue(queue, CL_COMMAND_READ_BUFFER, pending,
+                                 blocking, event);
+  /* A non-blocking read observes the buffer at its position in the in-order
+   * queue: the binding must submit it before the Host records any later
+   * Device command, which may rewrite the buffer. The Host continues without
+   * waiting; the destination is valid once the read's event completes. */
+  if (status == CL_SUCCESS && !blocking && pending > CL_SUCCESS)
+    status = __vrc_opencl_flush();
+  return status;
 }
 
 /* Word copy of a fill pattern: a 1- or 2-byte OpenCL pattern replicated to

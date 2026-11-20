@@ -482,6 +482,7 @@ public:
       addSlot(asyncCompletionStatusSlot, "SystemInt32", "0", true);
       addSlot(asyncCompletionObjectSlot, "SystemInt32", "0", true);
       addSlot(asyncPendingObjectSlot, "SystemInt32", "0", true);
+      addSlot(asyncPendingYieldSlot, "SystemInt32", "0", true);
       addSlot(asyncCommandKindSlot, "SystemInt32", "0", true);
       addSlot(asyncCommandBufferSlot, "SystemInt32", "0", true);
       addSlot(asyncCommandOffsetSlot, "SystemInt32", "0", true);
@@ -3464,6 +3465,15 @@ private:
           addSlot(asyncPendingObjectSlot, "SystemInt32", "0", true);
           emitI32Literal(bind.getLoc(), bind.getObjectId(),
                          asyncPendingObjectSlot);
+          // A cooperative checkpoint depends on no Device or transfer
+          // result. Telling the binding so lets it resume the Host while a
+          // published readback is still in flight; every other suspension
+          // waits for the outstanding transfer.
+          if (bind->hasAttr("vrc.cooperative_checkpoint")) {
+            addSlot(asyncPendingYieldSlot, "SystemInt32", "0", true);
+            emitCopy(bind.getLoc(), immutableSlot("SystemInt32", "1"),
+                     asyncPendingYieldSlot);
+          }
           continue;
         }
         if (auto enter = dyn_cast<host::AsyncEnterOp>(operation)) {
@@ -6289,6 +6299,8 @@ private:
       "__udoncl_async_completion_object";
   static constexpr StringLiteral asyncPendingObjectSlot =
       "__udoncl_async_pending_object";
+  static constexpr StringLiteral asyncPendingYieldSlot =
+      "__udoncl_async_pending_yield";
   static constexpr StringLiteral asyncCommandKindSlot =
       "__udoncl_async_command_kind";
   static constexpr StringLiteral asyncCommandBufferSlot =

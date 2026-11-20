@@ -192,6 +192,7 @@ def assert_static_async_artifact(artifact, assembly):
     assert '__udoncl_async_resume_state' not in assembly
     for slot in [
         '__udoncl_async_pending_object',
+        '__udoncl_async_pending_yield',
         '__udoncl_async_completion_object',
         '__udoncl_async_completion_status',
         '__udoncl_async_command_kind',
@@ -215,10 +216,10 @@ def assert_static_async_artifact(artifact, assembly):
         '"udonhl.async_resume"(',
     ]:
         assert legacy not in lowered, legacy
-    # The only cooperative checkpoints are Device work slice yields that
-    # replace awaits of complete-at-issue Device commands.
+    # The cooperative checkpoints are Device work slice yields that replace
+    # awaits of complete-at-issue Device commands, and the submission of a
+    # non-blocking read.
     if 'vrc.cooperative_checkpoint' in lowered:
-        assert 'vrc.device_work_folded_awaits' in lowered
         assert 'vrc.async_checkpoint_routes = []' not in lowered
     else:
         assert 'vrc.async_checkpoint_routes = []' in lowered
@@ -903,6 +904,27 @@ def main():
     )[1].split('private void DeliverAsyncCompletion()', 1)[0]
     assert finish_command.rstrip().endswith(
         'asyncContinuationReady = true;\n        }'
+    )
+    # A cooperative checkpoint resumes the Host while a published readback
+    # is in flight; any other suspension waits for the readback, and a
+    # readback nobody waits for reports a failure to the next one that does.
+    assert 'program.GetProgramVariable("__udoncl_async_pending_yield")' in (
+        async_pump
+    )
+    in_flight = async_pump.split(
+        'if (asyncCommandReadbackMode != 0)', 1
+    )[1].split('asyncCommandAwaited = true;', 1)[0]
+    assert 'asyncCommandAwaited = !yields;' in in_flight
+    assert 'asyncContinuationReady = true;' in in_flight
+    request = async_pump.split('VRCAsyncGPUReadback.Request(', 1)[1]
+    assert request.index('asyncCommandAwaited = !yields;') < request.index(
+        'asyncContinuationReady = true;'
+    )
+    assert finish_command.index('if (!asyncCommandAwaited)') < (
+        finish_command.index('asyncCommandUnreportedStatus = status;')
+    ) < finish_command.index('asyncContinuationReady = true;')
+    assert 'pendingAsyncCompletionStatus = asyncCommandUnreportedStatus;' in (
+        async_pump
     )
     async_deliver = mnist_binding.split(
         'private void DeliverAsyncCompletion()', 1
@@ -1723,6 +1745,8 @@ def main():
     assert udonblas_manifest['program']['async_commands'][
         'pending_object_slot'] == '__udoncl_async_pending_object'
     assert udonblas_manifest['program']['async_commands'][
+        'pending_yield_slot'] == '__udoncl_async_pending_yield'
+    assert udonblas_manifest['program']['async_commands'][
         'completion_object_slot'] == '__udoncl_async_completion_object'
     assert udonblas_manifest['program']['async_commands'][
         'completion_event'] == '__udoncl_async_complete'
@@ -1753,6 +1777,7 @@ def main():
     assert '__udoncl_completed_event: %SystemInt32, 0' in udonblas_data
     for slot in [
         '__udoncl_async_pending_object',
+        '__udoncl_async_pending_yield',
         '__udoncl_async_completion_object',
         '__udoncl_async_completion_status',
         '__udoncl_async_command_kind',

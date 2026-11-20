@@ -3999,6 +3999,7 @@ int main(int argc, char **argv) {
       (*manifest["program"].getAsObject())["async_commands"] = json::Object{
           {"completion_status_slot", "__udoncl_async_completion_status"},
           {"pending_object_slot", "__udoncl_async_pending_object"},
+          {"pending_yield_slot", "__udoncl_async_pending_yield"},
           {"completion_object_slot", "__udoncl_async_completion_object"},
           {"completion_event", "__udoncl_async_complete"},
           {"command_kind_slot", "__udoncl_async_command_kind"},

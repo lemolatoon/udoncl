@@ -52,6 +52,7 @@ std::string escapeString(StringRef value) {
 
 struct AsyncCommands {
   std::string pendingObject;
+  std::string pendingYield;
   std::string completionObject;
   std::string completionStatus;
   std::string completionEvent;
@@ -114,6 +115,7 @@ Expected<AsyncCommands> parseAsyncCommands(const json::Object &manifest) {
   if (!commands)
     return invalid("async binding requires program.async_commands");
   auto pendingObject = commands->getString("pending_object_slot");
+  auto pendingYield = commands->getString("pending_yield_slot");
   auto completionObject = commands->getString("completion_object_slot");
   auto completionStatus = commands->getString("completion_status_slot");
   auto completionEvent = commands->getString("completion_event");
@@ -125,10 +127,10 @@ Expected<AsyncCommands> parseAsyncCommands(const json::Object &manifest) {
   auto rawHeap = commands->getString("raw_heap_slot");
   auto uploadKind = commands->getInteger("upload_kind");
   auto readbackKind = commands->getInteger("readback_kind");
-  if (!pendingObject || !completionObject || !completionStatus ||
-      !completionEvent || !commandKind || !commandBuffer || !commandOffset ||
-      !commandSize || !commandPointer || !rawHeap || !uploadKind ||
-      !readbackKind || *uploadKind <= 0 || *readbackKind <= 0 ||
+  if (!pendingObject || !pendingYield || !completionObject ||
+      !completionStatus || !completionEvent || !commandKind || !commandBuffer ||
+      !commandOffset || !commandSize || !commandPointer || !rawHeap ||
+      !uploadKind || !readbackKind || *uploadKind <= 0 || *readbackKind <= 0 ||
       *uploadKind == *readbackKind)
     return invalid("async binding command ABI is incomplete");
   // A manifest without a frame budget keeps one continuation per frame.
@@ -139,19 +141,13 @@ Expected<AsyncCommands> parseAsyncCommands(const json::Object &manifest) {
   if (frameBudget < 0 || frameBudget > 1000000 || frameContinuations < 0 ||
       frameContinuations > 1000000)
     return invalid("async binding frame budget is out of range");
-  return AsyncCommands{pendingObject->str(),
-                       completionObject->str(),
-                       completionStatus->str(),
-                       completionEvent->str(),
-                       commandKind->str(),
-                       commandBuffer->str(),
-                       commandOffset->str(),
-                       commandSize->str(),
-                       commandPointer->str(),
-                       rawHeap->str(),
-                       *uploadKind,
-                       *readbackKind,
-                       frameBudget,
+  return AsyncCommands{pendingObject->str(),    pendingYield->str(),
+                       completionObject->str(), completionStatus->str(),
+                       completionEvent->str(),  commandKind->str(),
+                       commandBuffer->str(),    commandOffset->str(),
+                       commandSize->str(),      commandPointer->str(),
+                       rawHeap->str(),          *uploadKind,
+                       *readbackKind,           frameBudget,
                        frameContinuations};
 }
 
@@ -275,6 +271,8 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
               "        private int pendingAsyncObject;\n"
               "        private int pendingAsyncCompletionStatus;\n"
               "        private int asyncCommandReadbackMode;\n"
+              "        private bool asyncCommandAwaited;\n"
+              "        private int asyncCommandUnreportedStatus;\n"
               "        private int asyncCommandBufferIndex;\n"
               "        private int asyncCommandOffsetWords;\n"
               "        private int asyncCommandSizeWords;\n"
@@ -733,7 +731,11 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
              << "            program.SetProgramVariable(\""
              << escapeString(asyncCommands->completionObject) << "\", 0);\n"
              << "            program.SetProgramVariable(\""
-             << escapeString(asyncCommands->commandKind) << "\", 0);\n";
+             << escapeString(asyncCommands->pendingYield) << "\", 0);\n"
+             << "            program.SetProgramVariable(\""
+             << escapeString(asyncCommands->commandKind) << "\", 0);\n"
+             << "            asyncCommandAwaited = false;\n"
+                "            asyncCommandUnreportedStatus = StatusSuccess;\n";
       for (const Parameter &parameter : parsedParameters)
         output << "            program.SetProgramVariable(\""
                << escapeString(parameter.slot) << "\", " << parameter.name
@@ -858,18 +860,51 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
            "                return;\n"
            "            }\n"
            "            pendingAsyncObject = pendingObject;\n"
+           "            // A cooperative checkpoint does not depend on the\n"
+           "            // published transfer: the Host resumes while a\n"
+           "            // readback is in flight. Every other suspension\n"
+           "            // waits for the transfer to finish.\n"
+           "            bool yields = false;\n"
            "            if (pendingObject != 0)\n"
            "            {\n"
+        << "                object rawYield = program.GetProgramVariable(\""
+        << escapeString(commands.pendingYield)
+        << "\");\n"
+           "                yields = rawYield != null && (int)rawYield != 0;\n"
         << "                program.SetProgramVariable(\""
-        << escapeString(commands.pendingObject)
+        << escapeString(commands.pendingObject) << "\", 0);\n"
+        << "                program.SetProgramVariable(\""
+        << escapeString(commands.pendingYield)
         << "\", 0);\n"
            "            }\n"
            "            if (kind == 0)\n"
            "            {\n"
+           "                // A transfer that failed while nothing waited\n"
+           "                // for it fails the next suspension that waits.\n"
            "                pendingAsyncCompletionStatus = StatusSuccess;\n"
+           "                if (!yields)\n"
+           "                {\n"
+           "                    pendingAsyncCompletionStatus = "
+           "asyncCommandUnreportedStatus;\n"
+           "                    asyncCommandUnreportedStatus = "
+           "StatusSuccess;\n"
+           "                }\n"
            "                asyncContinuationReady = true;\n"
            "                return;\n"
            "            }\n"
+           "            if (asyncCommandReadbackMode != 0)\n"
+           "            {\n"
+           "                // The published readback is already in flight.\n"
+           "                asyncCommandAwaited = !yields;\n"
+           "                if (yields)\n"
+           "                {\n"
+           "                    pendingAsyncCompletionStatus = "
+           "StatusSuccess;\n"
+           "                    asyncContinuationReady = true;\n"
+           "                }\n"
+           "                return;\n"
+           "            }\n"
+           "            asyncCommandAwaited = true;\n"
         << "            object rawBuffer = program.GetProgramVariable(\""
         << escapeString(commands.commandBuffer) << "\");\n"
         << "            object rawOffset = program.GetProgramVariable(\""
@@ -932,6 +967,13 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
            "                asyncCommandReadbackMode = 1;\n"
            "                VRCAsyncGPUReadback.Request(deviceBuffers[index], "
            "0, TextureFormat.RGBA32, this);\n"
+           "                asyncCommandAwaited = !yields;\n"
+           "                if (yields)\n"
+           "                {\n"
+           "                    pendingAsyncCompletionStatus = "
+           "StatusSuccess;\n"
+           "                    asyncContinuationReady = true;\n"
+           "                }\n"
            "                return;\n"
            "            }\n"
            "            lastAsyncDiagnostic = "
@@ -983,6 +1025,15 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
            << escapeString(commands.commandKind)
            << "\", 0);\n"
               "            asyncCommandHeap = null;\n"
+              "            if (!asyncCommandAwaited)\n"
+              "            {\n"
+              "                // The Host already resumed from a checkpoint;\n"
+              "                // it observes the idle command slot later.\n"
+              "                if (status != StatusSuccess)\n"
+              "                    asyncCommandUnreportedStatus = status;\n"
+              "                return;\n"
+              "            }\n"
+              "            asyncCommandAwaited = false;\n"
               "            pendingAsyncCompletionStatus = status;\n"
               "            asyncContinuationReady = true;\n"
               "        }\n\n"

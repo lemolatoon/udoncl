@@ -281,6 +281,7 @@ udononnxStatus_t udononnxCreateSession(udononnxSession_t *session,
   session->last_error = udononnxStatusString(UDONONNX_STATUS_SUCCESS);
   session->active_event = 0;
   session->state = UDONONNX_SESSION_CREATED;
+  session->bindings_validated = 0;
   for (index = 0; index < model->input_count; ++index)
     udononnxClearBinding(&input_bindings[index]);
   for (index = 0; index < model->output_count; ++index)
@@ -362,9 +363,16 @@ udononnxSessionBind(udononnxSession_t *session, size_t index,
   if (index >= count)
     return UDONONNX_STATUS_INVALID_VALUE;
   status = udononnxValidateBinding(&metadata[index], &tensor, session->context);
-  if (status == UDONONNX_STATUS_SUCCESS)
+  if (status == UDONONNX_STATUS_SUCCESS) {
     udononnxCopyTensor(&bindings[index], &tensor);
+    session->bindings_validated = 0;
+  }
   return status;
+}
+
+void udononnxSessionInvalidateBindings(udononnxSession_t *session) {
+  if (session)
+    session->bindings_validated = 0;
 }
 
 udononnxStatus_t udononnxSessionBindInput(udononnxSession_t *session,
@@ -471,10 +479,50 @@ static int udononnxRangesOverlap(const udonclBufferView_t *left,
   return left->byte_offset < right_end && right->byte_offset < left_end;
 }
 
+/* The part of a binding that can change without a bind call: the bound
+ * buffer may have been destroyed. A live handle keeps its size and context,
+ * so shape, type, range and overlap need no second look. */
+static udononnxStatus_t
+udononnxValidateBindingLiveness(const udononnxTensor_t *tensor,
+                                cl_context context) {
+  cl_context buffer_context = 0;
+  udonclStatus_t status =
+      udonclDeviceBufferGetContext(tensor->storage.buffer, &buffer_context);
+  if (status == UDONCL_STATUS_STALE_HANDLE)
+    return UDONONNX_STATUS_STALE_HANDLE;
+  if (status != UDONCL_STATUS_SUCCESS)
+    return UDONONNX_STATUS_INVALID_VALUE;
+  return buffer_context == context ? UDONONNX_STATUS_SUCCESS
+                                   : UDONONNX_STATUS_CONTEXT_MISMATCH;
+}
+
+static udononnxStatus_t
+udononnxValidateRunBindingLiveness(const udononnxSession_t *session) {
+  size_t index;
+  udononnxStatus_t status;
+  for (index = 0; index < session->model->input_count; ++index) {
+    status = udononnxValidateBindingLiveness(&session->input_bindings[index],
+                                             session->context);
+    if (status != UDONONNX_STATUS_SUCCESS)
+      return status;
+  }
+  for (index = 0; index < session->model->output_count; ++index) {
+    if (!udononnxTensorIsBound(&session->output_bindings[index]))
+      continue;
+    status = udononnxValidateBindingLiveness(&session->output_bindings[index],
+                                             session->context);
+    if (status != UDONONNX_STATUS_SUCCESS)
+      return status;
+  }
+  return UDONONNX_STATUS_SUCCESS;
+}
+
 static udononnxStatus_t
 udononnxValidateRunBindings(udononnxSession_t *session) {
   size_t input, output, bound_outputs = 0;
   udononnxStatus_t status;
+  if (session->bindings_validated)
+    return udononnxValidateRunBindingLiveness(session);
   for (input = 0; input < session->model->input_count; ++input) {
     if (!udononnxTensorIsBound(&session->input_bindings[input]))
       return UDONONNX_STATUS_MISSING_BINDING;
@@ -505,6 +553,7 @@ udononnxValidateRunBindings(udononnxSession_t *session) {
   }
   if (session->model->output_count && !bound_outputs)
     return UDONONNX_STATUS_MISSING_BINDING;
+  session->bindings_validated = 1;
   return UDONONNX_STATUS_SUCCESS;
 }
 

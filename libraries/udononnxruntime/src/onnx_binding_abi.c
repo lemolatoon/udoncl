@@ -336,6 +336,8 @@ udononnxStatus_t udononnxBindingStateBeginStaticBind(void *state_storage) {
     status = UDONONNX_STATUS_NOT_INITIALIZED;
   else
     status = UDONONNX_STATUS_SUCCESS;
+  /* The generated bind-all writes the binding arrays itself. */
+  udononnxSessionInvalidateBindings(&state->session);
   return udononnxBindingStateRecord(state, status);
 }
 
@@ -343,6 +345,8 @@ udononnxStatus_t
 udononnxBindingStateCompleteStaticBind(void *state_storage,
                                        udononnxStatus_t status) {
   struct udononnxBindingState *state = udononnxBindingStateGet(state_storage);
+  if (state)
+    udononnxSessionInvalidateBindings(&state->session);
   return state ? udononnxBindingStateRecord(state, status)
                : UDONONNX_STATUS_NOT_INITIALIZED;
 }

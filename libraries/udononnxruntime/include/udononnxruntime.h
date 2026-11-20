@@ -29,7 +29,11 @@ typedef enum udononnxSessionState {
 } udononnxSessionState_t;
 
 /* The model metadata and binding arrays are borrowed for the session
- * lifetime. Every bound device allocation remains owned by the caller. */
+ * lifetime. Every bound device allocation remains owned by the caller.
+ * Bindings change only through the bind functions: the first run after a
+ * bind validates the whole binding table, and later runs of the unchanged
+ * table only check that every bound buffer is still alive in the session
+ * context. */
 typedef struct udononnxSession {
   const udononnxModel_t *model;
   cl_context context;
@@ -41,6 +45,7 @@ typedef struct udononnxSession {
   const char *last_error;
   cl_event active_event;
   udononnxSessionState_t state;
+  uint32_t bindings_validated;
 } udononnxSession_t;
 
 udononnxStatus_t udononnxCreateTensor(udonclBufferView_t storage, uint32_t rank,
@@ -83,6 +88,9 @@ int udononnxSessionFindOutput(const udononnxSession_t *session,
 udononnxStatus_t udononnxSessionBindInput(udononnxSession_t *session,
                                           size_t index,
                                           udononnxTensor_t tensor);
+/* For a caller that writes the borrowed binding arrays itself: the next run
+ * validates the whole binding table again. */
+void udononnxSessionInvalidateBindings(udononnxSession_t *session);
 udononnxStatus_t udononnxSessionBindOutput(udononnxSession_t *session,
                                            size_t index,
                                            udononnxTensor_t tensor);

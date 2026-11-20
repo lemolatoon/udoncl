@@ -49,6 +49,7 @@ struct LowerOpenCLAOTIntrinsicsPass
           name == "__vrc_opencl_buffer_readback" ||
           name == "__vrc_opencl_buffer_copy" ||
           name == "__vrc_opencl_buffer_fill" || name == "__vrc_opencl_await" ||
+          name == "__vrc_opencl_flush" ||
           name == "__vrc_opencl_dispatch_udonblas_sgemm" ||
           name == "__vrc_opencl_dispatch_udonblas_arena_sgemm" ||
           name ==
@@ -90,6 +91,8 @@ struct LowerOpenCLAOTIntrinsicsPass
       else if (name == "__vrc_opencl_buffer_release" ||
                name == "__vrc_opencl_await")
         arguments = {i32};
+      else if (name == "__vrc_opencl_flush")
+        arguments = {};
       else if (name == "__vrc_opencl_buffer_upload" ||
                name == "__vrc_opencl_buffer_readback") {
         arguments = llvm::to_vector(function.getArgumentTypes());
@@ -235,6 +238,25 @@ struct LowerOpenCLAOTIntrinsicsPass
         Operation *allocation = rewriter.create(state);
         Value token = cast(call.getLoc(), i32, allocation->getResult(0));
         rewriter.replaceOp(call, token);
+        continue;
+      }
+      if (name == "__vrc_opencl_flush") {
+        // Returning to the binding submits the transfer command the Host
+        // has published, at its position in the in-order queue. The Host
+        // does not wait for the transfer: this is a cooperative checkpoint
+        // on an already complete event.
+        auto function = call->getParentOfType<func::FuncOp>();
+        Value complete =
+            arith::ConstantIntOp::create(rewriter, call.getLoc(), 0, 32);
+        OperationState state(call.getLoc(),
+                             runtime::AwaitOp::getOperationName());
+        state.addOperands(cast(call.getLoc(), event, complete));
+        state.addTypes(i32);
+        state.addAttribute("vrc.cooperative_checkpoint",
+                           rewriter.getUnitAttr());
+        rewriter.replaceOp(call, rewriter.create(state)->getResults());
+        if (function)
+          suspendFunctions.insert(function);
         continue;
       }
       Value typedBuffer;
