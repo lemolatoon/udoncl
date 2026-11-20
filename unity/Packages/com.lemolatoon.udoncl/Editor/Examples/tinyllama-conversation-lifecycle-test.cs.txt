@@ -194,6 +194,12 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             // last generated token is not fed back.
             int generateSteps = promptTokens.Length + maxNewTokens - 1;
             UdonclFixtureTiming timing = new UdonclFixtureTiming("tinyllama_conversation");
+            // Applies the optional UDONCL_FIXTURE_FRAME_* run-time frame
+            // budget overrides and logs the budget. Fixed mode only: the
+            // generated binding's opt-in pump trace (continuations per frame,
+            // Udon event microseconds, why the pump stopped) is logged by
+            // timing.End().
+            timing.TraceBinding(binding);
 
             const int timeoutFrames = 108000;
             int frame = 0;

@@ -285,12 +285,29 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
               "        public const int AsyncFrameContinuationLimit = "
            << asyncCommands->frameContinuationLimit
            << ";\n"
+              "        public const int AsyncFrameSettingMaximum = 1000000;\n"
               "        private bool asyncDriving;\n"
               "        private bool asyncPumpRequested;\n"
               "        private bool asyncContinuationReady;\n"
+              // Run-time frame budget, initialized from the manifest
+              // defaults above and changed through TrySetAsyncFrameBudget.
+              "        private int asyncFrameBudgetMicroseconds = "
+              "AsyncFrameBudgetMicroseconds;\n"
+              "        private int asyncFrameContinuationLimit = "
+              "AsyncFrameContinuationLimit;\n"
+              "        private bool asyncFrameAdaptive;\n"
+              "        private double asyncSliceEstimate;\n"
               "        private int asyncFrame = -1;\n"
               "        private int asyncFrameContinuations;\n"
-              "        private double asyncFrameDeadline;\n";
+              "        private double asyncFrameStart;\n"
+              "        private double asyncFrameDeadline;\n"
+              // Opt-in pump trace. Inert while the arrays are null: a
+              // frame-pacing fixture assigns them through
+              // UdonBehaviour.SetProgramVariable and reads them back.
+              "        private int[] asyncTraceContinuations;\n"
+              "        private int asyncTraceContinuationWords;\n"
+              "        private int[] asyncTraceWindows;\n"
+              "        private int asyncTraceWindowWords;\n";
   if (hasPublicOutput)
     output
         << "        private float[] pendingFloatReadback;\n"
@@ -338,6 +355,11 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
 
   std::set<std::string> methods{"IsInitialized", "TryBindProgram",
                                 "TryDispose"};
+  if (hasAsync)
+    methods.insert({"GetLastAsyncDiagnostic", "TrySetAsyncFrameBudget",
+                    "GetAsyncFrameBudgetMicroseconds",
+                    "GetAsyncFrameContinuationLimit", "SetAsyncFrameAdaptive",
+                    "IsAsyncFrameAdaptive"});
   if (hasBuffers)
     output << R"(
         private int FindDeviceBuffer(int bufferId)
@@ -748,7 +770,12 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
         output << "            program.SetProgramVariable(\""
                << escapeString(parameter.slot) << "\", " << parameter.name
                << ");\n";
-      output << "            program.SendCustomEvent(\""
+      // The export entry is the first Host slice of the export: it is
+      // charged to the frame's window like a continuation.
+      output << "            OpenAsyncFrameWindow();\n"
+                "            asyncFrameContinuations = "
+                "asyncFrameContinuations + 1;\n"
+                "            program.SendCustomEvent(\""
              << escapeString(*eventName)
              << "\");\n"
                 "            asyncPumpRequested = true;\n"
@@ -1066,70 +1093,174 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
            << "                program.SetProgramVariable(\""
            << escapeString(commands.completionStatus)
            << "\", pendingAsyncCompletionStatus);\n"
+              "                double traceStart = asyncTraceContinuations "
+              "!= null ? Time.realtimeSinceStartupAsDouble : 0.0;\n"
            << "                program.SendCustomEvent(\""
            << escapeString(commands.completionEvent) << "\");\n"
+           << "                if (asyncTraceContinuations != null)\n"
+              "                    TraceAsyncContinuation(traceStart);\n"
            << "                program.SetProgramVariable(\""
            << escapeString(commands.completionObject)
            << "\", 0);\n"
               "            }\n"
               "            pendingAsyncObject = 0;\n"
               "            pendingAsyncCompletionStatus = 0;\n"
-              "        }\n\n"
-              // The only loop that pumps commands. A continuation that is
-              // ready in the same Udon event (a Device work slice or a
-              // synchronously completed command) resumes here while the
-              // frame's budget lasts; otherwise it waits for the next frame.
-              // An export started from a completion event only requests a
-              // pump from the running loop, so the pump never nests.
-              "        private void DriveAsyncCommands()\n"
-              "        {\n"
-              "            if (asyncDriving)\n"
-              "                return;\n"
-              "            asyncDriving = true;\n"
-              "            if (Time.frameCount != asyncFrame)\n"
-              "            {\n"
-              "                asyncFrame = Time.frameCount;\n"
-              "                asyncFrameContinuations = 0;\n"
-              "                asyncFrameDeadline = "
-              "Time.realtimeSinceStartupAsDouble + "
-           << format("%.6f", commands.frameBudgetMicroseconds / 1000000.0)
-           << ";\n"
-              "            }\n"
-              "            while (true)\n"
-              "            {\n"
-              "                if (asyncContinuationReady)\n"
-              "                {\n"
-              "                    asyncContinuationReady = false;\n"
-              "                    if (asyncFrameContinuations >= "
-              "AsyncFrameContinuationLimit || "
-              "Time.realtimeSinceStartupAsDouble >= asyncFrameDeadline)\n"
-              "                    {\n"
-              "                        SendCustomEventDelayedFrames("
-              "\"_ContinueAsyncCommand\", 1);\n"
-              "                        break;\n"
-              "                    }\n"
-              "                    asyncFrameContinuations = "
-              "asyncFrameContinuations + 1;\n"
-              "                    DeliverAsyncCompletion();\n"
-              "                    asyncPumpRequested = true;\n"
-              "                }\n"
-              "                if (!asyncPumpRequested)\n"
-              "                    break;\n"
-              "                asyncPumpRequested = false;\n"
-              "                PumpAsyncCommand();\n"
-              "            }\n"
-              "            asyncDriving = false;\n"
-              "        }\n\n"
-              "        public void _ContinueAsyncCommand()\n"
-              "        {\n"
-              "            if (!busy || program == null || "
-              "pendingAsyncGeneration != generation)\n"
-              "                return;\n"
-              "            DeliverAsyncCompletion();\n"
-              "            asyncPumpRequested = true;\n"
-              "            DriveAsyncCommands();\n"
-              "        }\n\n"
-              "        private void CompleteAsyncExportFromProgram()\n"
+              "        }\n\n";
+    // Trace records: per delivered continuation (frame, 0 when it was the
+    // first Host slice charged to the frame's window or 1 when it followed
+    // another one, microseconds of the Udon event), and per exit of the
+    // driving loop (frame, Host slices charged to the window, microseconds
+    // since the window opened, reason: 1 continuation limit, 2 time budget,
+    // 3 nothing ready, 4 adaptive estimate of the next slice exceeds the
+    // budget).
+    output << R"(        private void TraceAsyncContinuation(double start)
+        {
+            int word = asyncTraceContinuationWords;
+            if (word + 3 > asyncTraceContinuations.Length)
+                return;
+            asyncTraceContinuations[word] = Time.frameCount;
+            asyncTraceContinuations[word + 1] = asyncFrameContinuations > 1 ? 1 : 0;
+            asyncTraceContinuations[word + 2] = (int)((Time.realtimeSinceStartupAsDouble - start) * 1000000.0);
+            asyncTraceContinuationWords = word + 3;
+        }
+
+        private void TraceAsyncWindow(int reason)
+        {
+            int word = asyncTraceWindowWords;
+            if (word + 4 > asyncTraceWindows.Length)
+                return;
+            asyncTraceWindows[word] = asyncFrame;
+            asyncTraceWindows[word + 1] = asyncFrameContinuations;
+            asyncTraceWindows[word + 2] = (int)((Time.realtimeSinceStartupAsDouble - asyncFrameStart) * 1000000.0);
+            asyncTraceWindows[word + 3] = reason;
+            asyncTraceWindowWords = word + 4;
+        }
+
+        // The first entry in a frame opens the frame's window. Every Host
+        // slice that runs in the frame (an export entry or a continuation)
+        // is charged to it, the first one included.
+        private void OpenAsyncFrameWindow()
+        {
+            if (Time.frameCount == asyncFrame)
+                return;
+            asyncFrame = Time.frameCount;
+            asyncFrameContinuations = 0;
+            asyncFrameStart = Time.realtimeSinceStartupAsDouble;
+            asyncFrameDeadline = asyncFrameStart + asyncFrameBudgetMicroseconds * 0.000001;
+        }
+
+        // The only loop that pumps commands. A continuation that is ready
+        // in the same Udon event (a Device work slice or a synchronously
+        // completed command) resumes here while the frame's budget lasts;
+        // otherwise it waits for the next frame. The first Host slice of a
+        // frame always runs, so every frame makes progress. An export
+        // started from a completion event only requests a pump from the
+        // running loop, so the pump never nests.
+        private void DriveAsyncCommands()
+        {
+            if (asyncDriving)
+                return;
+            asyncDriving = true;
+            OpenAsyncFrameWindow();
+            while (true)
+            {
+                double sliceStart = 0.0;
+                if (asyncFrameAdaptive)
+                    sliceStart = Time.realtimeSinceStartupAsDouble;
+                if (asyncContinuationReady)
+                {
+                    asyncContinuationReady = false;
+                    if (asyncFrameContinuations > 0)
+                    {
+                        int stop = 0;
+                        double now = Time.realtimeSinceStartupAsDouble;
+                        if (asyncFrameContinuations >= asyncFrameContinuationLimit)
+                            stop = 1;
+                        else if (now >= asyncFrameDeadline)
+                            stop = 2;
+                        else if (asyncFrameAdaptive && now + asyncSliceEstimate > asyncFrameDeadline)
+                            stop = 4;
+                        if (stop != 0)
+                        {
+                            SendCustomEventDelayedFrames("_ContinueAsyncCommand", 1);
+                            if (asyncTraceWindows != null)
+                                TraceAsyncWindow(stop);
+                            break;
+                        }
+                    }
+                    asyncFrameContinuations = asyncFrameContinuations + 1;
+                    DeliverAsyncCompletion();
+                    asyncPumpRequested = true;
+                }
+                if (!asyncPumpRequested)
+                {
+                    if (asyncTraceWindows != null)
+                        TraceAsyncWindow(3);
+                    break;
+                }
+                asyncPumpRequested = false;
+                PumpAsyncCommand();
+                if (asyncFrameAdaptive)
+                {
+                    // Running average of one Host slice and its command.
+                    double slice = Time.realtimeSinceStartupAsDouble - sliceStart;
+                    if (asyncSliceEstimate <= 0.0)
+                        asyncSliceEstimate = slice;
+                    else
+                        asyncSliceEstimate = asyncSliceEstimate + (slice - asyncSliceEstimate) * 0.25;
+                }
+            }
+            asyncDriving = false;
+        }
+
+        // Resumes a continuation the previous frame deferred. It is charged
+        // to this frame's window like any other continuation.
+        public void _ContinueAsyncCommand()
+        {
+            if (!busy || program == null || pendingAsyncGeneration != generation)
+                return;
+            asyncContinuationReady = true;
+            DriveAsyncCommands();
+        }
+
+        // Changes the frame budget at run time. Both limits take the
+        // manifest's range (0 to AsyncFrameSettingMaximum); zero resumes one
+        // Host slice per frame. The time budget applies from the next
+        // frame's window, the continuation limit at once.
+        public int TrySetAsyncFrameBudget(int microseconds, int continuations)
+        {
+            if (microseconds < 0 || microseconds > AsyncFrameSettingMaximum || continuations < 0 || continuations > AsyncFrameSettingMaximum)
+                return StatusInvalidArgument;
+            asyncFrameBudgetMicroseconds = microseconds;
+            asyncFrameContinuationLimit = continuations;
+            return StatusSuccess;
+        }
+
+        public int GetAsyncFrameBudgetMicroseconds()
+        {
+            return asyncFrameBudgetMicroseconds;
+        }
+
+        public int GetAsyncFrameContinuationLimit()
+        {
+            return asyncFrameContinuationLimit;
+        }
+
+        // Adaptive mode also stops before a slice that the running average
+        // of the measured slices predicts would end past the budget.
+        public void SetAsyncFrameAdaptive(bool enabled)
+        {
+            asyncFrameAdaptive = enabled;
+            asyncSliceEstimate = 0.0;
+        }
+
+        public bool IsAsyncFrameAdaptive()
+        {
+            return asyncFrameAdaptive;
+        }
+
+)";
+    output << "        private void CompleteAsyncExportFromProgram()\n"
               "        {\n";
     for (const AsyncExportBinding &binding : asyncExports) {
       output

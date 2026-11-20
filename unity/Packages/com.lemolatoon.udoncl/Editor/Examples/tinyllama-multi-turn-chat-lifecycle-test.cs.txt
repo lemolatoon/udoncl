@@ -239,6 +239,12 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 generateSteps += expectedPrompts[index].Length + expectedTokens[index].Length - 1;
             int timeoutFrames = (generateSteps + turnCount) * 4100 + 3000 * turnCount;
             UdonclFixtureTiming timing = new UdonclFixtureTiming("tinyllama_multi_turn_chat");
+            // Applies the optional UDONCL_FIXTURE_FRAME_* run-time frame
+            // budget overrides and logs the budget. Fixed mode only: the
+            // generated binding's opt-in pump trace (continuations per frame,
+            // Udon event microseconds, why the pump stopped) is logged by
+            // timing.End().
+            timing.TraceBinding(binding);
             int frame = 0;
             int lastPhase = -1;
             int lastTurn = -1;

@@ -698,12 +698,18 @@ schedules `_ContinueAsyncCommand` for the next frame:
 
 - The first entry in a frame (`Time.frameCount`) opens a window of
   `frame_microseconds` of wall-clock time
-  (`Time.realtimeSinceStartupAsDouble`) and `frame_continuations`
-  continuations. A ready continuation is delivered and pumped while both
-  remain; otherwise it waits one frame. The limits are checked before every
-  continuation, so a frame overruns the time budget by at most one slice, and
-  the continuation limit bounds the Device work one frame enqueues to
-  `frame_continuations + 1` slices even when the slices are cheap on the Host.
+  (`Time.realtimeSinceStartupAsDouble`) and `frame_continuations` Host
+  slices. Every Host slice that runs in the frame is charged to the window,
+  the first one included: the entry event of an export started in the frame
+  (the export method opens the window before it sends the event) and every
+  delivered continuation, including the one `_ContinueAsyncCommand` resumes
+  at the start of a frame, which goes through the same loop.
+- A ready continuation is delivered and pumped while both limits remain;
+  otherwise it waits one frame. Only the first Host slice of a window skips
+  the check, so every frame makes progress. The limits are checked before
+  every later continuation, so a frame overruns the time budget by at most
+  one slice, and the continuation limit bounds the Host slices of one frame
+  to `max(frame_continuations, 1)` even when they are cheap on the Host.
 - A command that really waits (`VRCAsyncGPUReadback`) returns from the loop.
   Its callback re-enters the loop, which charges the same window.
 - An export started from a completion event only requests a pump from the
@@ -712,12 +718,47 @@ schedules `_ContinueAsyncCommand` for the next frame:
 
 Both limits are `device_work_budget` settings of the Unity library JSON
 (`"frame_microseconds": N, "frame_continuations": N`, each 0 to 1,000,000,
-defaults 4,000 and 8). They are recorded in the manifest as
+defaults 8,000 and 8: 8 ms leaves about 3 ms of a 90 Hz frame's 11.1 ms to
+the rest of the world). They are recorded in the manifest as
 `program.async_commands.frame_budget_microseconds` and
 `frame_continuation_limit` and emitted as the binding constants
 `AsyncFrameBudgetMicroseconds` and `AsyncFrameContinuationLimit`. Setting
-either to zero, or a manifest without them, resumes one continuation per
+either to zero, or a manifest without them, resumes one Host slice per
 frame.
+
+The constants are only defaults. U# changes the budget at run time through
+the generated binding:
+
+- `int TrySetAsyncFrameBudget(int microseconds, int continuations)` sets
+  both limits. Each takes 0 to `AsyncFrameSettingMaximum` (1,000,000, the
+  manifest's range); anything else returns `StatusInvalidArgument` and keeps
+  the previous values. The continuation limit applies at once, the time
+  budget from the next frame's window. It may be called while an export is
+  pending.
+- `GetAsyncFrameBudgetMicroseconds()` and `GetAsyncFrameContinuationLimit()`
+  return the values in effect.
+- `SetAsyncFrameAdaptive(bool enabled)` and `IsAsyncFrameAdaptive()` select
+  the adaptive mode (off by default). The loop then measures every Host
+  slice with its command and keeps a running average (each new slice moves
+  it a quarter of the way), and also stops before a continuation whose
+  slice the average predicts would end past the budget. This trades a
+  little throughput for fewer overruns; with uneven slices it still
+  overruns when a slice is longer than the average. Enabling or disabling
+  it resets the average.
+
+The binding also carries an opt-in pump trace for measurement. It is inert
+while its private arrays `asyncTraceContinuations` and `asyncTraceWindows`
+are null (every record is behind a null check and the binding never
+allocates them). A caller that assigns them through
+`UdonBehaviour.SetProgramVariable`, as the focused TinyLlama fixtures do in
+`fixed` frame-rate mode (`UdonclFixtureTiming.TraceBinding`), receives three
+words per delivered continuation (`Time.frameCount`, 0 when it was the first
+Host slice charged to its frame's window or 1 when it followed another one,
+microseconds of the Udon event) and four words per exit of the driving loop
+(`Time.frameCount`, Host slices charged to the window, microseconds since
+the window opened, reason: 1 continuation limit, 2 time budget, 3 nothing
+ready, 4 adaptive estimate of the next slice exceeds the budget). `asyncTraceContinuationWords` and `asyncTraceWindowWords`
+count the words written; recording stops when an array is full.
 
 While an async export is pending the binding rejects every synchronous
 `Try*` export with `StatusBusy`. A library can declare a synchronous export

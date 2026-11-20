@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Text;
 using System.Threading;
 using UnityEngine;
+using VRC.Udon;
 
 namespace Lemolatoon.Udoncl.Editor
 {
@@ -28,12 +29,46 @@ namespace Lemolatoon.Udoncl.Editor
     //   udoncl <label> timing[ <context>] total frames=.. unity_frames=..
     //       ms=.. fps=.. mode=.. target_fps=.. paced_frames=.. readbacks=..
     //       [readback_frames_min/max/mean=.. readback_ms_min/max/mean=..]
+    //
+    // Fixed mode only (the same UDONCL_FIXTURE_TARGET_FRAME_RATE switch),
+    // written by End() after the total line:
+    //   udoncl <label> frame_timing[ <context>] available=.. samples=..
+    //       gpu_ms_mean/max=.. main_ms_mean/max=.. render_ms_mean/max=..
+    //   and, for a binding passed to TraceBinding (the opt-in pump trace of
+    //   the generated binding, see DriveAsyncCommands):
+    //   udoncl <label> pump[ <context>] trace=<on|unavailable>
+    //       continuations=.. in_window=.. first_of_frame=.. unity_frames=..
+    //       continuations_per_frame_mean=.. continuations_per_frame_max=..
+    //       event_us_total/mean/max=.. frame_event_us_mean/max=..
+    //       windows=.. stop_limit=.. stop_budget=.. stop_estimate=.. stop_idle=..
+    //       window_us_mean/max=..
+    //   udoncl <label> pump_continuations[ <context>] <frame>:<driven>:<us>,...
+    //   udoncl <label> pump_windows[ <context>] <frame>:<count>:<us>:<reason>,...
+    //   (driven 0 for the first Host slice charged to its frame's window;
+    //   reason 1 continuation limit, 2 time budget, 3 nothing ready,
+    //   4 adaptive estimate of the next slice exceeds the budget)
+    //
+    // Any mode, written by TraceBinding for a binding with asynchronous
+    // exports (the run-time frame budget of the generated binding, after the
+    // optional UDONCL_FIXTURE_FRAME_* overrides below):
+    //   udoncl <label> pump_budget[ <context>] budget_us=.. continuations=..
+    //       adaptive=<true|false> override=<true|false>
     internal sealed class UdonclFixtureTiming
     {
         // Unset, empty or 0: leave the Editor frame rate alone ("unbounded").
         // A positive integer N: QualitySettings.vSyncCount = 0 and
         // Application.targetFrameRate = N for the run, restored by End().
         public const string FrameRateVariable = "UDONCL_FIXTURE_TARGET_FRAME_RATE";
+
+        // Optional run-time frame budget of the traced binding (what U#
+        // sets through TrySetAsyncFrameBudget and SetAsyncFrameAdaptive).
+        // Unset or empty keeps the binding's manifest defaults. Budget and
+        // continuations take an integer from 0 to 1000000; adaptive takes
+        // 0 or 1. Any other value fails the fixture.
+        public const string FrameBudgetVariable = "UDONCL_FIXTURE_FRAME_BUDGET_US";
+        public const string FrameContinuationsVariable = "UDONCL_FIXTURE_FRAME_CONTINUATIONS";
+        public const string FrameAdaptiveVariable = "UDONCL_FIXTURE_FRAME_ADAPTIVE";
+        private const int FrameSettingMaximum = 1000000;
 
         private readonly string label;
         private readonly string context;
@@ -63,6 +98,18 @@ namespace Lemolatoon.Udoncl.Editor
         private string readbackName;
         private int readbackStartFrame;
         private double readbackStartTime;
+
+        // Fixed mode only: FrameTimingManager samples (milliseconds) and the
+        // generated binding whose opt-in pump trace End() reports.
+        private const int TraceContinuationCapacity = 16384;
+        private const int TraceWindowCapacity = 16384;
+        private readonly FrameTiming[] frameTimingSample = new FrameTiming[1];
+        private readonly List<double> gpuMilliseconds = new List<double>();
+        private readonly List<double> mainMilliseconds = new List<double>();
+        private readonly List<double> renderMilliseconds = new List<double>();
+        private UdonBehaviour tracedBinding;
+        private bool bindingTraceOn;
+
         private int readbackCount;
         private int readbackMeasured;
         private int readbackFramesMin;
@@ -206,6 +253,7 @@ namespace Lemolatoon.Udoncl.Editor
             ++frames;
             if (targetFrameRate > 0)
             {
+                SampleFrameTiming();
                 double period = 1.0 / targetFrameRate;
                 bool paced = false;
                 double remaining = period - (Now() - lastFrameTime);
@@ -318,6 +366,323 @@ namespace Lemolatoon.Udoncl.Editor
                     .Append(" readback_ms_mean=")
                     .Append(Ms(readbackMsSum / readbackMeasured));
             UnityEngine.Debug.Log(line.ToString());
+            if (targetFrameRate > 0)
+            {
+                ReportFrameTiming();
+                ReportBindingTrace();
+            }
+        }
+
+        // Applies the optional UDONCL_FIXTURE_FRAME_* overrides to a
+        // generated binding that has asynchronous exports and logs its
+        // run-time frame budget; in fixed mode it also turns on the binding's
+        // opt-in pump trace by assigning its trace arrays. Call before the
+        // controller starts the first export. A binding without the trace
+        // fields reports trace=unavailable.
+        public void TraceBinding(UdonBehaviour binding)
+        {
+            if (binding == null)
+                return;
+            ApplyFrameBudget(binding);
+            if (targetFrameRate <= 0)
+                return;
+            tracedBinding = binding;
+            binding.SetProgramVariable(
+                "asyncTraceContinuations",
+                new int[TraceContinuationCapacity * 3]
+            );
+            binding.SetProgramVariable("asyncTraceContinuationWords", 0);
+            binding.SetProgramVariable("asyncTraceWindows", new int[TraceWindowCapacity * 4]);
+            binding.SetProgramVariable("asyncTraceWindowWords", 0);
+            bindingTraceOn =
+                binding.GetProgramVariable("asyncTraceContinuations") is int[]
+                && binding.GetProgramVariable("asyncTraceWindows") is int[];
+        }
+
+        // The overrides assign the private fields behind the binding's
+        // TrySetAsyncFrameBudget/SetAsyncFrameAdaptive (an Editor fixture
+        // cannot call a U# method with arguments) after the same range
+        // check, then read the effective values back.
+        private void ApplyFrameBudget(UdonBehaviour binding)
+        {
+            int? budget = FrameSetting(FrameBudgetVariable, FrameSettingMaximum);
+            int? continuations = FrameSetting(FrameContinuationsVariable, FrameSettingMaximum);
+            int? adaptive = FrameSetting(FrameAdaptiveVariable, 1);
+            bool overridden = budget.HasValue || continuations.HasValue || adaptive.HasValue;
+            bool available =
+                binding.GetProgramVariable("asyncFrameBudgetMicroseconds") is int
+                && binding.GetProgramVariable("asyncFrameContinuationLimit") is int
+                && binding.GetProgramVariable("asyncFrameAdaptive") is bool;
+            if (!available)
+            {
+                if (overridden)
+                    throw new InvalidOperationException(
+                        "the generated binding has no run-time frame budget to override"
+                    );
+                return;
+            }
+            if (budget.HasValue)
+                binding.SetProgramVariable("asyncFrameBudgetMicroseconds", budget.Value);
+            if (continuations.HasValue)
+                binding.SetProgramVariable("asyncFrameContinuationLimit", continuations.Value);
+            if (adaptive.HasValue)
+            {
+                binding.SetProgramVariable("asyncFrameAdaptive", adaptive.Value != 0);
+                binding.SetProgramVariable("asyncSliceEstimate", 0.0);
+            }
+            UnityEngine.Debug.Log(
+                "udoncl "
+                    + label
+                    + " pump_budget"
+                    + context
+                    + " budget_us="
+                    + ((int)binding.GetProgramVariable("asyncFrameBudgetMicroseconds")).ToString(
+                        CultureInfo.InvariantCulture
+                    )
+                    + " continuations="
+                    + ((int)binding.GetProgramVariable("asyncFrameContinuationLimit")).ToString(
+                        CultureInfo.InvariantCulture
+                    )
+                    + " adaptive="
+                    + ((bool)binding.GetProgramVariable("asyncFrameAdaptive") ? "true" : "false")
+                    + " override="
+                    + (overridden ? "true" : "false")
+            );
+        }
+
+        private static int? FrameSetting(string variable, int maximum)
+        {
+            string text = Environment.GetEnvironmentVariable(variable);
+            if (string.IsNullOrWhiteSpace(text))
+                return null;
+            int value;
+            if (
+                !int.TryParse(
+                    text.Trim(),
+                    NumberStyles.Integer,
+                    CultureInfo.InvariantCulture,
+                    out value
+                )
+                || value < 0
+                || value > maximum
+            )
+                throw new InvalidOperationException(
+                    variable
+                        + " must be an integer from 0 to "
+                        + maximum.ToString(CultureInfo.InvariantCulture)
+                        + ": "
+                        + text
+                );
+            return value;
+        }
+
+        private void SampleFrameTiming()
+        {
+            FrameTimingManager.CaptureFrameTimings();
+            if (FrameTimingManager.GetLatestTimings(1, frameTimingSample) == 0)
+                return;
+            gpuMilliseconds.Add(frameTimingSample[0].gpuFrameTime);
+            mainMilliseconds.Add(frameTimingSample[0].cpuMainThreadFrameTime);
+            renderMilliseconds.Add(frameTimingSample[0].cpuRenderThreadFrameTime);
+        }
+
+        private void ReportFrameTiming()
+        {
+            StringBuilder line = new StringBuilder("udoncl ")
+                .Append(label)
+                .Append(" frame_timing")
+                .Append(context)
+                .Append(" available=")
+                .Append(gpuMilliseconds.Count > 0 ? "true" : "false")
+                .Append(" feature_enabled=")
+                .Append(FrameTimingManager.IsFeatureEnabled() ? "true" : "false")
+                .Append(" samples=")
+                .Append(gpuMilliseconds.Count.ToString(CultureInfo.InvariantCulture));
+            AppendMeanMax(line, "gpu_ms", gpuMilliseconds);
+            AppendMeanMax(line, "main_ms", mainMilliseconds);
+            AppendMeanMax(line, "render_ms", renderMilliseconds);
+            UnityEngine.Debug.Log(line.ToString());
+        }
+
+        private static void AppendMeanMax(StringBuilder line, string name, List<double> values)
+        {
+            double sum = 0.0;
+            double max = 0.0;
+            foreach (double value in values)
+            {
+                sum += value;
+                if (value > max)
+                    max = value;
+            }
+            line.Append(' ')
+                .Append(name)
+                .Append("_mean=")
+                .Append(Ms(values.Count > 0 ? sum / values.Count : 0.0))
+                .Append(' ')
+                .Append(name)
+                .Append("_max=")
+                .Append(Ms(max));
+        }
+
+        private void ReportBindingTrace()
+        {
+            if (tracedBinding == null)
+                return;
+            StringBuilder summary = new StringBuilder("udoncl ")
+                .Append(label)
+                .Append(" pump")
+                .Append(context)
+                .Append(" trace=")
+                .Append(bindingTraceOn ? "on" : "unavailable");
+            int[] continuations =
+                tracedBinding.GetProgramVariable("asyncTraceContinuations") as int[];
+            int[] windows = tracedBinding.GetProgramVariable("asyncTraceWindows") as int[];
+            object rawContinuationWords = tracedBinding.GetProgramVariable(
+                "asyncTraceContinuationWords"
+            );
+            object rawWindowWords = tracedBinding.GetProgramVariable("asyncTraceWindowWords");
+            if (
+                !bindingTraceOn
+                || continuations == null
+                || windows == null
+                || !(rawContinuationWords is int)
+                || !(rawWindowWords is int)
+            )
+            {
+                UnityEngine.Debug.Log(summary.ToString());
+                return;
+            }
+            int continuationWords = Math.Min((int)rawContinuationWords, continuations.Length);
+            int windowWords = Math.Min((int)rawWindowWords, windows.Length);
+
+            int count = continuationWords / 3;
+            int inWindow = 0;
+            long eventTotal = 0;
+            int eventMax = 0;
+            int unityFrames = 0;
+            int perFrameMax = 0;
+            long frameEventMax = 0;
+            int lastFrame = int.MinValue;
+            int frameCount = 0;
+            long frameEvent = 0;
+            StringBuilder raw = new StringBuilder("udoncl ")
+                .Append(label)
+                .Append(" pump_continuations")
+                .Append(context)
+                .Append(' ');
+            for (int index = 0; index < count; ++index)
+            {
+                int frame = continuations[index * 3];
+                int driven = continuations[index * 3 + 1];
+                int us = continuations[index * 3 + 2];
+                if (driven != 0)
+                    ++inWindow;
+                eventTotal += us;
+                if (us > eventMax)
+                    eventMax = us;
+                if (frame != lastFrame)
+                {
+                    lastFrame = frame;
+                    ++unityFrames;
+                    frameCount = 0;
+                    frameEvent = 0;
+                }
+                ++frameCount;
+                frameEvent += us;
+                if (frameCount > perFrameMax)
+                    perFrameMax = frameCount;
+                if (frameEvent > frameEventMax)
+                    frameEventMax = frameEvent;
+                if (index != 0)
+                    raw.Append(',');
+                raw.Append(frame.ToString(CultureInfo.InvariantCulture))
+                    .Append(':')
+                    .Append(driven.ToString(CultureInfo.InvariantCulture))
+                    .Append(':')
+                    .Append(us.ToString(CultureInfo.InvariantCulture));
+            }
+
+            int windowCount = windowWords / 4;
+            int stopLimit = 0;
+            int stopBudget = 0;
+            int stopEstimate = 0;
+            int stopIdle = 0;
+            long windowTotal = 0;
+            int windowMax = 0;
+            StringBuilder rawWindows = new StringBuilder("udoncl ")
+                .Append(label)
+                .Append(" pump_windows")
+                .Append(context)
+                .Append(' ');
+            for (int index = 0; index < windowCount; ++index)
+            {
+                int frame = windows[index * 4];
+                int charged = windows[index * 4 + 1];
+                int us = windows[index * 4 + 2];
+                int reason = windows[index * 4 + 3];
+                if (reason == 1)
+                    ++stopLimit;
+                else if (reason == 2)
+                    ++stopBudget;
+                else if (reason == 4)
+                    ++stopEstimate;
+                else
+                    ++stopIdle;
+                windowTotal += us;
+                if (us > windowMax)
+                    windowMax = us;
+                if (index != 0)
+                    rawWindows.Append(',');
+                rawWindows
+                    .Append(frame.ToString(CultureInfo.InvariantCulture))
+                    .Append(':')
+                    .Append(charged.ToString(CultureInfo.InvariantCulture))
+                    .Append(':')
+                    .Append(us.ToString(CultureInfo.InvariantCulture))
+                    .Append(':')
+                    .Append(reason.ToString(CultureInfo.InvariantCulture));
+            }
+
+            summary
+                .Append(" continuations=")
+                .Append(count.ToString(CultureInfo.InvariantCulture))
+                .Append(" in_window=")
+                .Append(inWindow.ToString(CultureInfo.InvariantCulture))
+                .Append(" first_of_frame=")
+                .Append((count - inWindow).ToString(CultureInfo.InvariantCulture))
+                .Append(" unity_frames=")
+                .Append(unityFrames.ToString(CultureInfo.InvariantCulture))
+                .Append(" continuations_per_frame_mean=")
+                .Append(Ms(unityFrames > 0 ? (double)count / unityFrames : 0.0))
+                .Append(" continuations_per_frame_max=")
+                .Append(perFrameMax.ToString(CultureInfo.InvariantCulture))
+                .Append(" event_us_total=")
+                .Append(eventTotal.ToString(CultureInfo.InvariantCulture))
+                .Append(" event_us_mean=")
+                .Append(Ms(count > 0 ? (double)eventTotal / count : 0.0))
+                .Append(" event_us_max=")
+                .Append(eventMax.ToString(CultureInfo.InvariantCulture))
+                .Append(" frame_event_us_mean=")
+                .Append(Ms(unityFrames > 0 ? (double)eventTotal / unityFrames : 0.0))
+                .Append(" frame_event_us_max=")
+                .Append(frameEventMax.ToString(CultureInfo.InvariantCulture))
+                .Append(" windows=")
+                .Append(windowCount.ToString(CultureInfo.InvariantCulture))
+                .Append(" stop_limit=")
+                .Append(stopLimit.ToString(CultureInfo.InvariantCulture))
+                .Append(" stop_budget=")
+                .Append(stopBudget.ToString(CultureInfo.InvariantCulture))
+                .Append(" stop_estimate=")
+                .Append(stopEstimate.ToString(CultureInfo.InvariantCulture))
+                .Append(" stop_idle=")
+                .Append(stopIdle.ToString(CultureInfo.InvariantCulture))
+                .Append(" window_us_mean=")
+                .Append(Ms(windowCount > 0 ? (double)windowTotal / windowCount : 0.0))
+                .Append(" window_us_max=")
+                .Append(windowMax.ToString(CultureInfo.InvariantCulture));
+            UnityEngine.Debug.Log(summary.ToString());
+            UnityEngine.Debug.Log(raw.ToString());
+            UnityEngine.Debug.Log(rawWindows.ToString());
         }
 
         private void ClosePhase()

@@ -3192,9 +3192,11 @@ attachDeviceFragmentCosts(ModuleOp module,
 /// How much the generated binding resumes within one frame: a continuation
 /// that is ready in the same Udon event (a Device work slice or a
 /// synchronously completed command) runs at once while both limits allow.
-/// A zero limit resumes one continuation per frame.
+/// Every Host slice of a frame is charged, the first one included, and a
+/// zero limit resumes one slice per frame. The binding can change both at
+/// run time; these are its defaults (8 ms of a 90 Hz frame's 11.1 ms).
 struct DeviceWorkFrameBudget {
-  int64_t microseconds = 4000;
+  int64_t microseconds = 8000;
   int64_t continuations = 8;
 };
 

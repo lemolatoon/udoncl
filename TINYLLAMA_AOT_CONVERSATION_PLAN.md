@@ -988,6 +988,39 @@ default and the mode of the commit validation gate. The frame count to quote
 for a step is `frames_per_step` of a `mode=fixed` run; the time to quote is
 `ms_per_step`, with its mode.
 
+In `fixed` mode the conversation and chat fixtures also write, from
+`UdonclFixtureTiming.End()`, a `frame_timing` line (`FrameTimingManager`
+GPU, main-thread and render-thread milliseconds per polled frame, mean and
+maximum, `available=false` when the Editor reports none) and, through the
+generated binding's opt-in pump trace (`TraceBinding`, see the device work
+scheduling section of
+`docs/architecture/refactor-baseline-and-mlir-pipeline.md`), these lines:
+
+```text
+udoncl <label> pump trace=<on|unavailable> continuations=<n> in_window=<n> first_of_frame=<n> unity_frames=<n> continuations_per_frame_mean=<f> continuations_per_frame_max=<n> event_us_total=<n> event_us_mean=<f> event_us_max=<n> frame_event_us_mean=<f> frame_event_us_max=<n> windows=<n> stop_limit=<n> stop_budget=<n> stop_estimate=<n> stop_idle=<n> window_us_mean=<f> window_us_max=<n>
+udoncl <label> pump_continuations <frame>:<driven>:<us>,...
+udoncl <label> pump_windows <frame>:<slices>:<us>:<reason>,...
+```
+
+They say per Unity frame how many continuations ran, how long each Udon
+event took, and whether the pump stopped at the continuation limit (1), the
+time budget (2), the adaptive estimate (4) or because nothing was ready (3,
+a readback wait or the end of the export). `driven` is 0 for the first Host
+slice charged to its frame's window (`first_of_frame`). The continuation
+order matches the Udon emulator's event order for the same artifact, so
+per-event instruction and Blit counts can be joined to the measured
+microseconds.
+
+`TraceBinding` also logs, in either mode, the binding's run-time frame budget
+(`udoncl <label> pump_budget budget_us=<n> continuations=<n>
+adaptive=<true|false> override=<true|false>`) after applying the optional
+environment overrides `UDONCL_FIXTURE_FRAME_BUDGET_US`,
+`UDONCL_FIXTURE_FRAME_CONTINUATIONS` (each 0 to 1,000,000) and
+`UDONCL_FIXTURE_FRAME_ADAPTIVE` (0 or 1). Unset, they keep the manifest
+defaults, which is what the commit validation gate runs; an invalid value
+fails the fixture. They let one artifact be measured at several budgets
+without recompiling it.
+
 Readback latency (request to completion callback, in frames and ms) is
 reported for the public-buffer readbacks of the prefill and step fixtures,
 where the test controller issues each `StartRead*` from the previous
@@ -1163,12 +1196,45 @@ Those frame estimates charge one frame per continuation, which on a 90 Hz
 client is the dominant cost of the remaining budget slices. The generated
 binding now resumes ready continuations in the same Udon event under a
 per-frame wall-clock budget (`device_work_budget.frame_microseconds`, default
-4 ms, and `frame_continuations`, default 8; see the device work scheduling
+8 ms, and `frame_continuations`, default 8; see the device work scheduling
 section of `docs/architecture/refactor-baseline-and-mlir-pipeline.md`). A
 frame therefore runs as many slices as fit the budget, and a synchronously
 completed upload no longer costs a frame; only readbacks still wait. The
 resulting frames per step depend on the real Udon time of a slice and need a
 Unity measurement.
+
+The first `fixed`-mode pump trace (90 Hz, the earlier 4 ms default) showed
+that the pump stopped on the time budget in nearly every busy frame and
+never at the continuation limit, and that the continuation
+`_ContinueAsyncCommand` delivered at the start of a frame ran before the
+window opened, uncounted and untimed. A busy frame therefore spent the first
+continuation plus 4 ms plus one overrun: about 5 ms of Udon events on
+average and up to 8.5 ms. A decode step needs about 16 to 17 ms of Udon time
+(about 15 us per thousand Udon instructions and 30 us per Blit), so it
+occupied about 2.9 busy frames, and the step's token readback waits added
+about 3 to 4.6 frames with no continuation: 7.5 (conversation) and 5.9 (chat)
+frames per step in total.
+
+The binding now charges every Host slice of a frame to the window, the first
+one included, defaults to 8 ms of the 11.1 ms frame, lets U# change both
+limits at run time (`TrySetAsyncFrameBudget`) and offers an adaptive mode
+that stops before a slice the running average predicts would overrun
+(`SetAsyncFrameAdaptive`). Replaying the measured per-continuation times of
+that trace under the new rule, keeping its readback-wait frames unchanged,
+predicts these frames per step (busy frames per step in parentheses):
+
+| budget | conversation | chat | multi-turn chat |
+|---|---:|---:|---:|
+| before, 4 ms with the uncharged first continuation | 7.50 (2.86) | 5.89 (2.89) | 5.54 (2.57) |
+| 4 ms | 8.36 (3.71) | 6.56 (3.56) | 6.28 (3.31) |
+| 6 ms | 7.50 (2.86) | 5.67 (2.67) | 5.33 (2.37) |
+| 8 ms | 6.93 (2.29) | 5.07 (2.07) | 4.81 (1.85) |
+| 8 ms adaptive | 7.21 (2.57) | 5.33 (2.33) | 5.02 (2.06) |
+
+At 8 ms the predicted Udon time of a busy frame averages about 7 to 8 ms and
+stays below 11.1 ms. These are predictions from one trace, not
+measurements; the readback-wait frames, which the frame budget cannot
+remove, are now the larger part of a step.
 
 ### 7.3 Required execution
 

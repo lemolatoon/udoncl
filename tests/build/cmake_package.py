@@ -943,35 +943,144 @@ def main():
     ) < async_drive.index('while (true)') < async_drive.index(
         'asyncDriving = false;'
     )
-    assert 'if (Time.frameCount != asyncFrame)' in async_drive
-    assert (
-        'asyncFrameDeadline = Time.realtimeSinceStartupAsDouble + 0.004000;'
-        in async_drive
+    # Every Host slice of a frame is charged to the frame's window, the
+    # first one included: the window opens before anything runs, a deferred
+    # continuation resumes through the loop, and only the first slice of a
+    # window skips the limits so that every frame makes progress.
+    open_window = mnist_binding.split(
+        'private void OpenAsyncFrameWindow()', 1
+    )[1].split('private void DriveAsyncCommands()', 1)[0]
+    assert open_window.index('if (Time.frameCount == asyncFrame)') < (
+        open_window.index('asyncFrameContinuations = 0;')
+    ) < open_window.index(
+        'asyncFrameStart = Time.realtimeSinceStartupAsDouble;'
+    ) < open_window.index(
+        'asyncFrameDeadline = asyncFrameStart + '
+        'asyncFrameBudgetMicroseconds * 0.000001;'
     )
-    assert (
-        'if (asyncFrameContinuations >= AsyncFrameContinuationLimit || '
-        'Time.realtimeSinceStartupAsDouble >= asyncFrameDeadline)'
-        in async_drive
+    assert async_drive.index('asyncDriving = true;') < async_drive.index(
+        'OpenAsyncFrameWindow();'
+    ) < async_drive.index('while (true)')
+    budget_check = async_drive.index('if (asyncFrameContinuations > 0)')
+    assert budget_check < async_drive.index(
+        'if (asyncFrameContinuations >= asyncFrameContinuationLimit)'
+    ) < async_drive.index(
+        'else if (now >= asyncFrameDeadline)'
+    ) < async_drive.index(delayed_continue) < (
+        async_drive.index('asyncFrameContinuations = asyncFrameContinuations + 1;')
+    ) < async_drive.index('DeliverAsyncCompletion();') < async_drive.index(
+        'PumpAsyncCommand();'
     )
-    budget_check = async_drive.index('AsyncFrameContinuationLimit')
-    assert budget_check < async_drive.index(delayed_continue) < (
-        async_drive.index('DeliverAsyncCompletion();')
-    ) < async_drive.index('PumpAsyncCommand();')
+    assert 'AsyncFrameContinuationLimit' not in async_drive
     assert 'DriveAsyncCommands();' not in async_drive
     async_continue = mnist_binding.split(
         'public void _ContinueAsyncCommand()', 1
-    )[1].split('private void CompleteAsyncExportFromProgram()', 1)[0]
-    assert async_continue.index('DeliverAsyncCompletion();') < (
-        async_continue.index('asyncPumpRequested = true;')
-    ) < async_continue.index('DriveAsyncCommands();')
+    )[1].split('public int TrySetAsyncFrameBudget(', 1)[0]
+    assert 'DeliverAsyncCompletion();' not in async_continue
+    assert async_continue.index('asyncContinuationReady = true;') < (
+        async_continue.index('DriveAsyncCommands();')
+    )
+    for method, next_method in [
+        ('public int StartRun(', 'public int GetRunStatus()'),
+        ('public int StartInitialize(', 'public int GetInitializeStatus()'),
+    ]:
+        async_start = mnist_binding.split(method, 1)[1].split(next_method, 1)[0]
+        assert async_start.index('busy = true;') < async_start.index(
+            'OpenAsyncFrameWindow();'
+        ) < async_start.index(
+            'asyncFrameContinuations = asyncFrameContinuations + 1;'
+        ) < async_start.index('program.SendCustomEvent(')
     assert (
         'CompleteAsyncCommandReadback(request);\n'
         '                DriveAsyncCommands();' in mnist_binding
     )
-    assert 'public const int AsyncFrameBudgetMicroseconds = 4000;' in (
+    assert 'public const int AsyncFrameBudgetMicroseconds = 8000;' in (
         mnist_binding
     )
     assert 'public const int AsyncFrameContinuationLimit = 8;' in mnist_binding
+    # The manifest limits are only defaults: U# changes them at run time
+    # within the manifest's range, and the loop reads the run-time values.
+    assert 'public const int AsyncFrameSettingMaximum = 1000000;' in (
+        mnist_binding
+    )
+    assert (
+        'private int asyncFrameBudgetMicroseconds = '
+        'AsyncFrameBudgetMicroseconds;' in mnist_binding
+    )
+    assert (
+        'private int asyncFrameContinuationLimit = '
+        'AsyncFrameContinuationLimit;' in mnist_binding
+    )
+    set_budget = mnist_binding.split(
+        'public int TrySetAsyncFrameBudget(int microseconds, int continuations)',
+        1,
+    )[1].split('public int GetAsyncFrameBudgetMicroseconds()', 1)[0]
+    assert (
+        'if (microseconds < 0 || microseconds > AsyncFrameSettingMaximum || '
+        'continuations < 0 || continuations > AsyncFrameSettingMaximum)\n'
+        '                return StatusInvalidArgument;' in set_budget
+    )
+    assert set_budget.index('return StatusInvalidArgument;') < (
+        set_budget.index('asyncFrameBudgetMicroseconds = microseconds;')
+    ) < set_budget.index(
+        'asyncFrameContinuationLimit = continuations;'
+    ) < set_budget.index('return StatusSuccess;')
+    assert (
+        'public int GetAsyncFrameBudgetMicroseconds()\n        {\n'
+        '            return asyncFrameBudgetMicroseconds;' in mnist_binding
+    )
+    assert (
+        'public int GetAsyncFrameContinuationLimit()\n        {\n'
+        '            return asyncFrameContinuationLimit;' in mnist_binding
+    )
+    # Adaptive mode (off by default) also stops before a slice that the
+    # running average of measured slices predicts would end past the budget.
+    assert 'private bool asyncFrameAdaptive;' in mnist_binding
+    assert (
+        'public void SetAsyncFrameAdaptive(bool enabled)\n        {\n'
+        '            asyncFrameAdaptive = enabled;\n'
+        '            asyncSliceEstimate = 0.0;' in mnist_binding
+    )
+    assert 'public bool IsAsyncFrameAdaptive()' in mnist_binding
+    assert async_drive.index('else if (now >= asyncFrameDeadline)') < (
+        async_drive.index(
+            'else if (asyncFrameAdaptive && now + asyncSliceEstimate > '
+            'asyncFrameDeadline)'
+        )
+    ) < async_drive.index(delayed_continue)
+    assert async_drive.index('PumpAsyncCommand();') < async_drive.index(
+        'double slice = Time.realtimeSinceStartupAsDouble - sliceStart;'
+    ) < async_drive.index(
+        'asyncSliceEstimate = asyncSliceEstimate + '
+        '(slice - asyncSliceEstimate) * 0.25;'
+    )
+    # The opt-in pump trace is inert until a caller assigns its arrays: every
+    # record is behind a null check, and the arrays are never allocated by
+    # the binding itself.
+    assert 'private int[] asyncTraceContinuations;' in mnist_binding
+    assert 'private int[] asyncTraceWindows;' in mnist_binding
+    assert 'asyncTraceContinuations = new' not in mnist_binding
+    assert 'asyncTraceWindows = new' not in mnist_binding
+    assert async_deliver.index('double traceStart = asyncTraceContinuations '
+                               '!= null ?') < async_deliver.index(
+        'program.SendCustomEvent('
+    ) < async_deliver.index(
+        'if (asyncTraceContinuations != null)\n'
+        '                    TraceAsyncContinuation(traceStart);'
+    )
+    assert async_drive.count('if (asyncTraceWindows != null)') == 2
+    assert async_drive.index(delayed_continue) < async_drive.index(
+        'TraceAsyncWindow(stop);'
+    )
+    assert 'TraceAsyncWindow(3);' in async_drive
+    assert (
+        'asyncTraceContinuations[word + 1] = asyncFrameContinuations > 1 ? 1 : 0;'
+        in mnist_binding
+    )
+    assert (
+        'asyncTraceWindows[word + 2] = (int)((Time.realtimeSinceStartupAsDouble'
+        ' - asyncFrameStart) * 1000000.0);' in mnist_binding
+    )
     masked_heap_word = (
         'new Color32((byte)(value & 255), '
         '(byte)((value >> 8) & 255), '
@@ -1869,11 +1978,11 @@ def main():
     assert 'CompleteAsyncCommandReadback(request);' in udonblas_binding
     assert 'VRCWrapperGenerator' not in udonblas_binding
 
-    # The frame budget defaults to 4 ms and eight continuations and is a
+    # The frame budget defaults to 8 ms and eight continuations and is a
     # per-library device_work_budget setting; zero keeps one continuation
     # per frame.
     udonblas_commands = udonblas_manifest['program']['async_commands']
-    assert udonblas_commands['frame_budget_microseconds'] == 4000
+    assert udonblas_commands['frame_budget_microseconds'] == 8000
     assert udonblas_commands['frame_continuation_limit'] == 8
     udonblas_config = json.loads(
         (udonblas_source / 'unity-library.json').read_text(encoding='utf-8')
@@ -1910,8 +2019,9 @@ def main():
     assert 'public const int AsyncFrameContinuationLimit = 3;' in (
         custom_budget_binding
     )
-    assert 'Time.realtimeSinceStartupAsDouble + 0.002500;' in (
-        custom_budget_binding
+    assert (
+        'private int asyncFrameBudgetMicroseconds = '
+        'AsyncFrameBudgetMicroseconds;' in custom_budget_binding
     )
     run(udonblas_frame_budget_command(
         'disabled', {'frame_microseconds': 0, 'frame_continuations': 0}
@@ -1925,9 +2035,7 @@ def main():
     assert 'public const int AsyncFrameContinuationLimit = 0;' in (
         disabled_budget_binding
     )
-    assert 'Time.realtimeSinceStartupAsDouble + 0.000000;' in (
-        disabled_budget_binding
-    )
+    assert 'if (asyncFrameContinuations > 0)' in disabled_budget_binding
     run_failure(
         udonblas_frame_budget_command('negative', {'frame_microseconds': -1}),
         'device_work_budget.frame_microseconds must be between 0 and 1000000',

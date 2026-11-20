@@ -554,6 +554,27 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
         plan = (ROOT / "TINYLLAMA_AOT_CONVERSATION_PLAN.md").read_text(
             encoding="utf-8")
         self.assertIn("UDONCL_FIXTURE_TARGET_FRAME_RATE", plan)
+        # The run-time frame budget of the traced binding can be overridden
+        # per run; the overrides take the binding's own range and are logged.
+        for required in (
+            'FrameBudgetVariable = "UDONCL_FIXTURE_FRAME_BUDGET_US";',
+            'FrameContinuationsVariable = "UDONCL_FIXTURE_FRAME_CONTINUATIONS";',
+            'FrameAdaptiveVariable = "UDONCL_FIXTURE_FRAME_ADAPTIVE";',
+            "private const int FrameSettingMaximum = 1000000;",
+            '"asyncFrameBudgetMicroseconds"',
+            '"asyncFrameContinuationLimit"',
+            '"asyncFrameAdaptive"',
+            '" pump_budget"',
+            '" stop_estimate="',
+        ):
+            self.assertIn(required, timing)
+        trace_binding = timing.split("public void TraceBinding(", 1)[1]
+        self.assertLess(trace_binding.index("ApplyFrameBudget(binding);"),
+                        trace_binding.index("if (targetFrameRate <= 0)"))
+        for variable in ("UDONCL_FIXTURE_FRAME_BUDGET_US",
+                         "UDONCL_FIXTURE_FRAME_CONTINUATIONS",
+                         "UDONCL_FIXTURE_FRAME_ADAPTIVE"):
+            self.assertIn(variable, plan)
         fixtures = {
             "conversation": (
                 'new UdonclFixtureTiming("tinyllama_conversation")',
