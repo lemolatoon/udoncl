@@ -48,6 +48,14 @@ if(UDONCL_TINYLLAMA_ONNX_MODEL)
   # file, decide whether a capacity compiles.
   set(UDONCL_TINYLLAMA_CONTEXT_CAPACITY 512 CACHE STRING
     "TinyLlama conversation Context Capacity in tokens")
+  # The 4096-token Conversation and Chat Artifacts (the -4k targets) have a
+  # Host file of their own, conversation_host_4k.c, and are configured next
+  # to the ones above. Their U# API, program and binding names are the same,
+  # so a project imports one of the two.
+  option(UDONCL_TINYLLAMA_CONTEXT_4K
+    "Also configure the 4096-token TinyLlama Conversation and Chat Artifacts"
+    ON)
+  set(tinyllama_context_4k 4096)
   set(UDONCL_TINYLLAMA_MAX_NEW_TOKENS 32 CACHE STRING
     "Maximum new tokens one TinyLlama generation may request")
   if(NOT UDONCL_TINYLLAMA_CONTEXT_CAPACITY MATCHES "^[1-9][0-9]*$" OR
@@ -61,18 +69,6 @@ if(UDONCL_TINYLLAMA_ONNX_MODEL)
       "UDONCL_TINYLLAMA_MAX_NEW_TOKENS must be a positive integer no larger "
       "than the Context Capacity")
   endif()
-  math(EXPR conversation_past_length
-    "${UDONCL_TINYLLAMA_CONTEXT_CAPACITY} - 1")
-  set(conversation_shape_arguments
-    DIMENSION_BOUNDS
-      batch_size=1
-      sequence_length=1
-      past_sequence_length=${conversation_past_length}
-    INPUT_SHAPES
-      attention_mask=1,${UDONCL_TINYLLAMA_CONTEXT_CAPACITY})
-  set(conversation_capacity_definitions
-    TINYLLAMA_CONTEXT_CAPACITY=${UDONCL_TINYLLAMA_CONTEXT_CAPACITY}u
-    TINYLLAMA_GENERATED_CAPACITY=${UDONCL_TINYLLAMA_MAX_NEW_TOKENS}u)
   set(conversation_unity_config_json "${real_unity_config}")
   string(JSON conversation_unity_config_json SET
     "${conversation_unity_config_json}" program
@@ -188,31 +184,109 @@ target_include_directories(transformer_host INTERFACE
 udoncl_add_host_library(transformer_user_host host.c)
 target_include_directories(transformer_user_host INTERFACE
   "${UdonONNXRuntime_INCLUDE_DIRS}")
-if(UDONCL_TINYLLAMA_ONNX_MODEL)
-  udoncl_add_onnx_host_library(transformer_conversation_model_host
+# The Conversation Host libraries of one Context Capacity, named with
+# `suffix`: the M=1 graph specialized to past_sequence_length = capacity - 1
+# and a capacity-long attention mask, the token-array C Host `host` and, with
+# a tokenizer, the chat text layer, all compiled with the same capacity.
+function(tinyllama_add_conversation_libraries suffix capacity host)
+  math(EXPR past_length "${capacity} - 1")
+  udoncl_add_onnx_host_library(transformer_conversation_model_host${suffix}
     MODEL "${model}"
-    ${conversation_shape_arguments})
-  target_include_directories(transformer_conversation_model_host INTERFACE
-    "${UdonBLAS_INCLUDE_DIRS}"
-    "${UdonDNN_INCLUDE_DIRS}"
-    "${UdonATen_INCLUDE_DIRS}")
-  udoncl_add_host_library(transformer_conversation_user_host
-    conversation_host.c)
-  target_include_directories(transformer_conversation_user_host INTERFACE
-    "${UdonONNXRuntime_INCLUDE_DIRS}")
-  target_compile_definitions(transformer_conversation_user_host INTERFACE
-    ${conversation_capacity_definitions})
-endif()
+    DIMENSION_BOUNDS
+      batch_size=1
+      sequence_length=1
+      past_sequence_length=${past_length}
+    INPUT_SHAPES
+      attention_mask=1,${capacity})
+  target_include_directories(transformer_conversation_model_host${suffix}
+    INTERFACE
+      "${UdonBLAS_INCLUDE_DIRS}"
+      "${UdonDNN_INCLUDE_DIRS}"
+      "${UdonATen_INCLUDE_DIRS}")
+  set(definitions
+    TINYLLAMA_CONTEXT_CAPACITY=${capacity}u
+    TINYLLAMA_GENERATED_CAPACITY=${UDONCL_TINYLLAMA_MAX_NEW_TOKENS}u)
+  udoncl_add_host_library(transformer_conversation_user_host${suffix} ${host})
+  target_include_directories(transformer_conversation_user_host${suffix}
+    INTERFACE "${UdonONNXRuntime_INCLUDE_DIRS}")
+  target_compile_definitions(transformer_conversation_user_host${suffix}
+    INTERFACE ${definitions})
+  if(UDONCL_TINYLLAMA_TOKENIZER_DIRECTORY)
+    udontokenizers_add_huggingface_model(transformer_chat_tokenizer${suffix}
+      TOKENIZER_DIRECTORY "${UDONCL_TINYLLAMA_TOKENIZER_DIRECTORY}"
+      SYMBOL tinyllama_tokenizer
+      SOURCES conversation_text.c)
+    target_include_directories(transformer_chat_tokenizer${suffix} INTERFACE
+      "${UdonONNXRuntime_INCLUDE_DIRS}")
+    target_compile_definitions(transformer_chat_tokenizer${suffix} INTERFACE
+      ${definitions})
+  endif()
+endfunction()
+
+# The Conversation Artifact, and with a tokenizer the Chat Artifact, of the
+# libraries named with `suffix`; the artifact targets end in `target_suffix`.
+# An optional JSON file of further `device_kernels` adds the library kernels
+# only that capacity dispatches: a declared kernel is compiled into the
+# artifact whether or not it runs.
+function(tinyllama_add_conversation_artifacts suffix target_suffix)
+  set(conversation_config "${conversation_unity_config}")
+  set(chat_config "${chat_unity_config}")
+  if(ARGC GREATER 2)
+    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/${ARGV2}" extra_json)
+    string(JSON extra_count LENGTH "${extra_json}" device_kernels)
+    math(EXPR extra_last "${extra_count} - 1")
+    foreach(kind IN ITEMS conversation chat)
+      set(config_json "${${kind}_unity_config_json}")
+      string(JSON kernel_count LENGTH "${config_json}" device_kernels)
+      foreach(extra RANGE ${extra_last})
+        string(JSON kernel GET "${extra_json}" device_kernels ${extra})
+        string(JSON config_json SET "${config_json}" device_kernels
+          ${kernel_count} "${kernel}")
+        math(EXPR kernel_count "${kernel_count} + 1")
+      endforeach()
+      set(${kind}_config
+        "${CMAKE_CURRENT_BINARY_DIR}/unity-library-${kind}${target_suffix}.json")
+      file(WRITE "${${kind}_config}" "${config_json}\n")
+    endforeach()
+  endif()
+  udoncl_add_unity_library(onnx-transformer-tiny-conversation${target_suffix}
+    CONFIG "${conversation_config}"
+    OMIT_INTERMEDIATE_IR
+    HOST_LIBRARIES
+      transformer_conversation_model_host${suffix}
+      transformer_conversation_user_host${suffix}
+      UdonONNXRuntime::UdonONNXRuntime
+    LIBRARIES
+      UdonONNXOperators::UdonONNXOperators
+      UdonATen::UdonATen
+      UdonBLAS::UdonBLAS)
+  if(UDONCL_TINYLLAMA_TOKENIZER_DIRECTORY)
+    udoncl_add_unity_library(onnx-transformer-tiny-chat${target_suffix}
+      CONFIG "${chat_config}"
+      OMIT_INTERMEDIATE_IR
+      HOST_LIBRARIES
+        transformer_conversation_model_host${suffix}
+        transformer_conversation_user_host${suffix}
+        transformer_chat_tokenizer${suffix}
+        UdonONNXRuntime::UdonONNXRuntime
+        UdonTokenizers::UdonTokenizers
+      LIBRARIES
+        UdonONNXOperators::UdonONNXOperators
+        UdonATen::UdonATen
+        UdonBLAS::UdonBLAS)
+  endif()
+endfunction()
+
 if(UDONCL_TINYLLAMA_ONNX_MODEL AND UDONCL_TINYLLAMA_TOKENIZER_DIRECTORY)
   find_package(UdonTokenizers 0.1 CONFIG REQUIRED)
-  udontokenizers_add_huggingface_model(transformer_chat_tokenizer
-    TOKENIZER_DIRECTORY "${UDONCL_TINYLLAMA_TOKENIZER_DIRECTORY}"
-    SYMBOL tinyllama_tokenizer
-    SOURCES conversation_text.c)
-  target_include_directories(transformer_chat_tokenizer INTERFACE
-    "${UdonONNXRuntime_INCLUDE_DIRS}")
-  target_compile_definitions(transformer_chat_tokenizer INTERFACE
-    ${conversation_capacity_definitions})
+endif()
+if(UDONCL_TINYLLAMA_ONNX_MODEL)
+  tinyllama_add_conversation_libraries(""
+    ${UDONCL_TINYLLAMA_CONTEXT_CAPACITY} conversation_host.c)
+  if(UDONCL_TINYLLAMA_CONTEXT_4K)
+    tinyllama_add_conversation_libraries(_4k ${tinyllama_context_4k}
+      conversation_host_4k.c)
+  endif()
 endif()
 if(UDONCL_TINYLLAMA_TOKENIZER_DIRECTORY)
   find_package(UdonTokenizers 0.1 CONFIG REQUIRED)
@@ -243,31 +317,9 @@ udoncl_add_unity_library(onnx-transformer-tiny
     UdonBLAS::UdonBLAS)
 
 if(UDONCL_TINYLLAMA_ONNX_MODEL)
-  udoncl_add_unity_library(onnx-transformer-tiny-conversation
-    CONFIG "${conversation_unity_config}"
-    OMIT_INTERMEDIATE_IR
-    HOST_LIBRARIES
-      transformer_conversation_model_host
-      transformer_conversation_user_host
-      UdonONNXRuntime::UdonONNXRuntime
-    LIBRARIES
-      UdonONNXOperators::UdonONNXOperators
-      UdonATen::UdonATen
-      UdonBLAS::UdonBLAS)
-  if(UDONCL_TINYLLAMA_TOKENIZER_DIRECTORY)
-    udoncl_add_unity_library(onnx-transformer-tiny-chat
-      CONFIG "${chat_unity_config}"
-      OMIT_INTERMEDIATE_IR
-      HOST_LIBRARIES
-        transformer_conversation_model_host
-        transformer_conversation_user_host
-        transformer_chat_tokenizer
-        UdonONNXRuntime::UdonONNXRuntime
-        UdonTokenizers::UdonTokenizers
-      LIBRARIES
-        UdonONNXOperators::UdonONNXOperators
-        UdonATen::UdonATen
-        UdonBLAS::UdonBLAS)
+  tinyllama_add_conversation_artifacts("" "")
+  if(UDONCL_TINYLLAMA_CONTEXT_4K)
+    tinyllama_add_conversation_artifacts(_4k -4k unity-library-4k-kernels.json)
   endif()
   udoncl_add_unity_library(onnx-transformer-tiny-m1-step
     CONFIG "${step_unity_config}"

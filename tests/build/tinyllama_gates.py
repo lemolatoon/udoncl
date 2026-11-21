@@ -44,6 +44,27 @@ command = gates.example_configure_command(
 )
 assert "-DUDONCL_TINYLLAMA_CONTEXT_CAPACITY=64" in command, command
 assert "-DUDONCL_TINYLLAMA_ONNX_MODEL=m.onnx" in command, command
+assert "-DUDONCL_TINYLLAMA_CONTEXT_4K=OFF" in command, command
+command = gates.example_configure_command(
+    Path("s"), Path("e"), Path("k"), Path("l"), "ninja", Path("m.onnx"), Path("t"), 512, True
+)
+assert "-DUDONCL_TINYLLAMA_CONTEXT_4K=ON" in command, command
+assert not gates.example_context_4k(Path("no-such-build"))
+
+# The 4096-token targets: not built by default, fixed capacity, own oracles.
+assert gates.parse_targets("chat-4k,conversation,conversation-4k") == [
+    "conversation", "conversation-4k", "chat-4k",
+]
+assert "conversation-4k" not in gates.DEFAULT_TARGETS
+assert gates.target_capacity("chat-4k", 64) == 4096
+assert gates.target_capacity("chat", 64) == 64
+assert gates.target_family("conversation-4k") == "conversation"
+assert gates.TARGET_ORACLES["conversation-4k"] == "real-4k"
+gates.validate_build(["conversation-4k", "chat-4k"], 64)
+assert gates.GATES["conv-4k"][0] == "conversation-4k"
+assert gates.GATES["multiturn-4k"][1:] == gates.GATES["multiturn"][1:]
+assert "step-4k" not in gates.GATES and "prefill-4k" not in gates.GATES
+assert gates.parse_gates("multiturn-4k,conv,chat-4k") == ["conv", "chat-4k", "multiturn-4k"]
 with contextlib.redirect_stderr(io.StringIO()) as stderr:
     code = gates.main(["build", "--commit", "HEAD", "--out", "x", "--targets", "decode"])
 assert code == 2 and "unknown build target" in stderr.getvalue(), stderr.getvalue()
@@ -198,6 +219,12 @@ assert gates.plan_sessions(["prefill", "conv", "chat", "multiturn"]) == [
     ["prefill"], ["conv"], ["chat", "multiturn"],
 ]
 assert gates.plan_sessions(["multiturn"]) == [["multiturn"]]
+assert gates.plan_sessions(["chat", "conv-4k", "chat-4k", "multiturn-4k"]) == [
+    ["chat"], ["conv-4k"], ["chat-4k", "multiturn-4k"],
+]
+gates.validate_run(
+    ["conv-4k", "chat-4k"], fps=90, budget_us=8000, continuations=None, adaptive=1, trace=True
+)
 
 # Fixture log parsing (lines as the Editor fixtures write them).
 fields = gates.parse_fields(
@@ -340,6 +367,31 @@ with tempfile.TemporaryDirectory(prefix="udoncl gates run ") as temporary:
     assert "no conversation artifact" in refused(gates.session_artifacts, build, build_manifest, ["conv"])
     oracle.write_text(json.dumps({"turns": [{}]}), encoding="utf-8")
     gates.session_artifacts(build, build_manifest, ["chat", "multiturn"])
+    # A -4k gate runs its family's fixture on the -4k artifact and oracle.
+    artifact_4k = build / "ex" / "udoncl" / "onnx-transformer-tiny-conversation-4k" / "artifact"
+    artifact_4k.mkdir(parents=True)
+    (artifact_4k / "manifest.json").write_text("{}", encoding="utf-8")
+    (build / "oracle" / "real-4k").mkdir(parents=True)
+    (build / "oracle" / "real-4k" / "m1-oracle.json").write_text("{}", encoding="utf-8")
+    build_manifest_4k = {
+        "targets": {
+            "conversation-4k": {"artifact": artifact_4k.relative_to(build).as_posix()}
+        },
+        "oracles": {"real-4k": "oracle/real-4k"},
+    }
+    assert gates.session_artifacts(build, build_manifest_4k, ["conv-4k"]) == {
+        "tinyllama_conversation_artifact": str(artifact_4k),
+        "tinyllama_conversation_oracle": str(build / "oracle" / "real-4k" / "m1-oracle.json"),
+    }
+    assert "no conversation artifact" in refused(
+        gates.session_artifacts, build, build_manifest_4k, ["conv"]
+    )
+    assert "no chat-4k oracle" in refused(
+        gates.session_artifacts,
+        build,
+        {**build_manifest_4k, "targets": {"chat-4k": {"artifact": "ex"}}},
+        ["chat-4k"],
+    )
     # run refuses before any Unity work: unfinished builds, unpaced overrides.
     gates.write_manifest(build, {"kind": "build", "state": "building", **build_manifest})
     for arguments, message in (

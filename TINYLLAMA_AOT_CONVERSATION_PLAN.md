@@ -662,10 +662,19 @@ These decisions fill the parts of 6.1 and 6.5 that the plan left open.
   `UDONCL_TINYLLAMA_MAX_NEW_TOKENS`, default 32). They specialize the graph to
   `past_sequence_length = capacity - 1` and pass the same bounds to the C
   Host; the compiler has no knowledge of the value, and generic kernel limits
-  decide whether a capacity compiles. Capacities 64 and 512 have been
-  compiled; 512 is the largest the kernels hold (section 7.2, banked
-  sequence state). A capacity of 64 held only a short exchange (22 prompt
-  tokens plus up to 32 new tokens); 512 holds several turns.
+  decide whether a capacity compiles. Capacities 64, 512 and 4096 have been
+  compiled (section 7.2, banked sequence state and the 4096-token
+  artifacts). A capacity of 64 held only a short exchange (22 prompt tokens
+  plus up to 32 new tokens); 512 holds several turns.
+- The 4096-token Conversation and Chat Artifacts
+  (`onnx-transformer-tiny-conversation-4k`, `onnx-transformer-tiny-chat-4k`,
+  `UDONCL_TINYLLAMA_CONTEXT_4K`, default `ON`) are configured next to the
+  default ones. Their Host file, `conversation_host_4k.c`, pins a capacity of
+  4096 and includes the shared `conversation_host.c`; the same CMake
+  function (`tinyllama_add_conversation_libraries`) specializes their graph
+  and text layer to it. They keep the program and binding names and the U#
+  API of the default artifacts, so the same fixtures and gates run on them
+  and a project imports one of the two.
 
 ### 6.7 Text acceptance fixture
 
@@ -1229,11 +1238,72 @@ three Softmax passes run over all capacity positions, and the device work
 budget closes more slices at 512 (19 events instead of 13). Restricting the
 attention to the occupied positions would need run-time extents in the
 SGEMM, Softmax and fused kernels, which take only static shapes today. 512
-is also the largest capacity the kernels hold: a present of 256 x capacity
-words must fit the 131,072 words of a fused surface and the strided SGEMM
+was also the largest capacity the kernels held: a present of 256 x capacity
+words had to fit the 131,072 words of a fused surface and the strided SGEMM
 operand, and the scores of 32 x capacity words the 16,384 of the Softmax
-kernel. Capacity 2048 (524,288-word presents, 65,536 scores) needs taller
-surfaces in those kernels first.
+kernel.
+
+#### 4096-token artifacts
+
+Three generic changes lift that bound; nothing in them names a model or a
+capacity, and the capacity-512 artifacts keep their kernels and dispatches:
+
+- A gather kernel may write a whole Device buffer texture (8192 x 8192
+  words, `GatherLimits.h`) instead of a surface of 8192 x 16; library
+  kernels keep their declared surfaces, and a synthesized kernel launches
+  the rows its result needs.
+- A per-element, re-indexing or Softmax node beyond the limits of its
+  library kernel runs a synthesized kernel (`isSynthesizedDeviceNode`,
+  `DeviceKernelLimits`): the banked K and V Concats of 1,048,576 words
+  (8192 x 128 fragments), the transposed and scaled keys of the same size,
+  and the masked Softmax over rows of 4096, which runs in two passes of 64
+  chunks of 64.
+- A batched MatMul beyond `udonblas_arena_sgemm_strided_batched` runs its
+  large variant (operands up to a whole buffer texture, a surface of
+  8192 x 16 words): the 32 x 4096 scores and their product with the values.
+
+The 4096-token Conversation Artifact compiles to 37 kernels and 107 Device
+buffers of 358 MB (capacity 512: 36 kernels, 46 MB); each of the 44 K/V
+states holds 1,048,576 words in each of its two banks. Only the -4k
+artifacts declare the large SGEMM kernel (`unity-library-4k-kernels.json`),
+so the capacity-512 Conversation and Chat Artifacts built from this change
+equal those of 8cb9ac9 file for file except for the embedded Host source
+path. ONNX Runtime with
+the fixed capacity-4096 profile gives the same tokens as at 512 (prompt
+argmax `[29958, 390, 17354, 1701]`, decode `[1701, 29916, 432, 17204]`,
+step logits within 1.4e-5 of the variable-length run) and the same
+two-turn chat ("My name is Sarah.", then "Sarah.", minimum greedy margin
+0.66). The Udon emulator (Host protocol, scripted tokens) reproduces that
+token trace before and after Reset. Per decode step:
+
+| per decode step, emulator | capacity 512 (8cb9ac9) | capacity 4096 |
+|---|---:|---:|
+| Device Blits | 529 | 529 |
+| Udon instructions | 98 K | 101 K |
+| Udon events (budget slices, frames upper bound) | 17 | 32 |
+
+The Blits and the Udon work do not depend on the capacity; the device
+work does. Every attention dispatch covers all 4096 positions whatever the
+conversation length: per layer the two Concats and the scaled keys write
+3 x 1,048,576 words, the QK^T SGEMM computes 32 x 4096 scores over K = 64,
+the Softmax passes read them, and the PV SGEMM runs 2,048 fragments with a
+serial K of 4096. The static device cost model therefore closes 32 budget
+slices per step instead of 17. Scaling the gate16 Unity probe's
+capacity-dependent terms at 512 (attention SGEMMs 2.15, Softmax 1.57 and
+K/V views about 0.6 of 22.1 isolated ms) by 8 predicts roughly 35 isolated
+ms more per decode step, about 20 ms of replay on the RTX 4070 Ti, so a
+4096-token step would take roughly three times the GPU time of a
+512-token one; this is a model, not a measurement. Restricting attention to
+the occupied positions (run-time extents in the SGEMM, Softmax and fused
+kernels) and a split-K PV SGEMM are the follow-ups that would make the cost
+follow the conversation length instead of the capacity.
+
+TinyLlama-1.1B-Chat was trained on sequences of 2048 positions
+(`max_position_embeddings` 2048 in its Hugging Face configuration; the
+repository pins only the ONNX export and the tokenizer). The exported graph
+computes its rotary embedding from `position_ids`, so positions up to 4095
+run without an out-of-range table lookup, but the model has not learned
+them: replies in a conversation past about 2048 tokens may degrade.
 
 Those frame estimates charge one frame per continuation, which on a 90 Hz
 client is the dominant cost of the remaining budget slices. The generated
@@ -1314,6 +1384,10 @@ python scripts/tinyllama_gates.py run --artifacts C:/t/g1 --out C:/t/g1-u0 \
     --gates prefill,step,conv,chat,multiturn
 python scripts/tinyllama_gates.py run --artifacts C:/t/g1 --out C:/t/g1-u90 \
     --gates conv,chat,multiturn --fps 90 --budget-us 8000 --adaptive 1 --trace
+python scripts/tinyllama_gates.py build --commit <sha> --out C:/t/g4 \
+    --targets conversation-4k,chat-4k
+python scripts/tinyllama_gates.py run --artifacts C:/t/g4 --out C:/t/g4-u0 \
+    --gates conv-4k,chat-4k,multiturn-4k
 python scripts/tinyllama_gates.py probe --artifacts C:/t/g1 \
     --plan <gpu-probe-plan-*.unity.json> --out C:/t/g1-probe
 python scripts/tinyllama_gates.py clean --out C:/t/g1 --keep-artifacts
@@ -1326,6 +1400,14 @@ python scripts/tinyllama_gates.py clean --out C:/t/g1 --keep-artifacts
   (`tests/boundary/tinyllama_real_onnx.py`, capacity 512 only, so `m1-step`
   requires `--capacity 512`) and the two-turn chat oracle ("What is your
   name?", then "Repeat your name."). About 10 GiB per target is required.
+  The default targets are `conversation,chat,m1-step,prefill`; the
+  4096-token `conversation-4k` and `chat-4k` are built on request (the
+  example is then configured with `UDONCL_TINYLLAMA_CONTEXT_4K=ON`) with
+  their own oracles at capacity 4096 (`real-4k`, without step sidecars, and
+  `chat-4k`), independently of `--capacity`. Their gates `conv-4k`,
+  `chat-4k` and `multiturn-4k` run the `conv`, `chat` and `multiturn`
+  fixtures on them. There is no 4096-token step gate: its sidecars would
+  hold 44 past tensors of 4095 rows as JSON per step.
 - `run` runs `run_unity_mcp_gate` of the exported commit for each focused
   test assembly (chat and multiturn share one Chat Artifact session) in an
   isolated copy of the read-only `UDONCL_UNITY_TEST_PROJECT` template

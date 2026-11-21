@@ -1,7 +1,17 @@
-"""Run the pinned TinyLlama Q4 model with ONNX Runtime's CPU provider."""
+"""Run the pinned TinyLlama Q4 model with ONNX Runtime's CPU provider.
+
+usage: tinyllama_real_onnx.py ROOT OUTPUT [--capacity N] [--skip-step-sidecars]
+
+The fixed-shape M=1 profile and its oracles use the Context Capacity N of the
+conversation artifacts they check (default 512). The step sidecars hold every
+input as JSON, including 44 past tensors of capacity - 1 rows;
+--skip-step-sidecars leaves them out for a capacity whose step artifact is not
+built.
+"""
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import json
 from pathlib import Path
@@ -12,8 +22,14 @@ import numpy as np
 import onnxruntime as ort
 
 
-root = Path(sys.argv[1]).resolve()
-output = Path(sys.argv[2]).resolve()
+parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+parser.add_argument("root", type=Path)
+parser.add_argument("output", type=Path)
+parser.add_argument("--capacity", type=int, default=512)
+parser.add_argument("--skip-step-sidecars", action="store_true")
+arguments = parser.parse_args()
+root = arguments.root.resolve()
+output = arguments.output.resolve()
 output.mkdir(parents=True, exist_ok=True)
 sys.path.insert(0, str(root / "scripts"))
 
@@ -59,10 +75,11 @@ for index, value in enumerate(results[1:]):
 # Prove the fixed-shape conversation profile independently of the compiler.
 # A capacity-sized present tensor is materialized by slicing away its first
 # sequence row into the next fixed past tensor. Unused left-padding rows are
-# hidden by the ONNX attention mask. The capacity is the default Context
-# Capacity of examples/onnx-transformer-tiny, the graph of the conversation
-# and M=1 step artifacts.
-capacity = 512
+# hidden by the ONNX attention mask. The capacity is the Context Capacity of
+# the graph of the conversation and M=1 step artifacts (512 by default in
+# examples/onnx-transformer-tiny, 4096 for its -4k artifacts).
+capacity = arguments.capacity
+assert capacity >= 16, capacity
 rolling_past = [
     np.zeros((1, 4, capacity - 1, 64), dtype=np.float32) for _ in range(44)
 ]
@@ -76,7 +93,7 @@ step_kv_error: list[float] = []
 # including the rolling past state, and every output. A Unity run of the
 # public-buffer M=1 step artifact compares all logits and present K/V of these
 # steps independently of the C Host loop.
-step_sidecar_positions = (3, 4)
+step_sidecar_positions = () if arguments.skip_step_sidecars else (3, 4)
 step_sidecars: dict[int, tuple[dict[str, np.ndarray], list[np.ndarray]]] = {}
 
 

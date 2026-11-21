@@ -51,9 +51,27 @@ TARGETS = {
     "chat": "onnx-transformer-tiny-chat",
     "m1-step": "onnx-transformer-tiny-m1-step",
     "prefill": "onnx-transformer-tiny",
+    "conversation-4k": "onnx-transformer-tiny-conversation-4k",
+    "chat-4k": "onnx-transformer-tiny-chat-4k",
 }
-# tests/boundary/tinyllama_real_onnx.py writes the M=1 step sidecars for the
-# example's default Context Capacity only.
+# The default `build --targets`: every target at the build's --capacity.
+DEFAULT_TARGETS = ("conversation", "chat", "m1-step", "prefill")
+# The -4k targets (conversation_host_4k.c) have a fixed Context Capacity of
+# their own, independent of --capacity, and their own oracles.
+CONTEXT_4K = 4096
+CONTEXT_4K_TARGETS = ("conversation-4k", "chat-4k")
+# The oracle every target is checked against: "real" and "chat" at the
+# build's capacity (the M=1 step sidecars of tests/boundary/
+# tinyllama_real_onnx.py exist for the example's default capacity only), and
+# their -4k counterparts at CONTEXT_4K.
+TARGET_ORACLES = {
+    "conversation": "real",
+    "chat": "chat",
+    "m1-step": "real",
+    "prefill": "real",
+    "conversation-4k": "real-4k",
+    "chat-4k": "chat-4k",
+}
 ORACLE_CAPACITY = 512
 # The pinned two-turn chat oracle (TINYLLAMA_AOT_CONVERSATION_PLAN.md 6.11).
 CHAT_USER = "What is your name?"
@@ -151,6 +169,15 @@ def parse_targets(text: str) -> list[str]:
         )
     # Deterministic order regardless of the command line.
     return [name for name in TARGETS if name in names]
+
+
+def target_family(name: str) -> str:
+    """The target a -4k target is a variant of (the gate fixtures are shared)."""
+    return name[: -len("-4k")] if name in CONTEXT_4K_TARGETS else name
+
+
+def target_capacity(name: str, capacity: int) -> int:
+    return CONTEXT_4K if name in CONTEXT_4K_TARGETS else capacity
 
 
 def validate_build(targets: list[str], capacity: int):
@@ -436,6 +463,7 @@ def example_configure_command(
     model: Path,
     tokenizer: Path,
     capacity: int,
+    context_4k: bool = False,
 ) -> list[str]:
     suffix = ".exe" if os.name == "nt" else ""
     return [
@@ -455,7 +483,16 @@ def example_configure_command(
         f"-DUDONCL_TINYLLAMA_ONNX_MODEL={model}",
         f"-DUDONCL_TINYLLAMA_TOKENIZER_DIRECTORY={tokenizer}",
         f"-DUDONCL_TINYLLAMA_CONTEXT_CAPACITY={capacity}",
+        f"-DUDONCL_TINYLLAMA_CONTEXT_4K={'ON' if context_4k else 'OFF'}",
     ]
+
+
+def example_context_4k(example: Path) -> bool:
+    """Whether a configured example build has the -4k targets."""
+    try:
+        return cmake_cache_value(example, "UDONCL_TINYLLAMA_CONTEXT_4K") == "ON"
+    except (GateError, OSError):
+        return False
 
 
 def last_line(command, *, cwd, env) -> str:
@@ -564,12 +601,18 @@ def build_main(args) -> int:
                 ],
                 cwd=source, env=environment,
             )
-            if not (example / "CMakeCache.txt").is_file():
+            # The -4k targets cost a second ONNX Host compile at configure
+            # time; they are configured once a build asks for one of them.
+            configured = (example / "CMakeCache.txt").is_file()
+            want_4k = any(name in CONTEXT_4K_TARGETS for name in targets)
+            has_4k = configured and example_context_4k(example)
+            if not configured or (want_4k and not has_4k):
                 run_logged(
                     example_configure_command(
                         source, example, sdk, llvm,
                         cmake_cache_value(compiler, "CMAKE_MAKE_PROGRAM"),
                         Path(model), Path(tokenizer), args.capacity,
+                        want_4k or has_4k,
                     ),
                     logs / "example-configure.log", cwd=source, env=environment,
                     timeout=BUILD_STEP_TIMEOUT,
@@ -588,6 +631,7 @@ def build_main(args) -> int:
                 manifest["targets"][name] = {
                     "artifact": artifact.relative_to(out).as_posix(),
                     "seconds": round(time.monotonic() - started, 1),
+                    "capacity": target_capacity(name, args.capacity),
                 }
                 write_manifest(out, {**manifest, "state": "building"})
                 log(f"artifact target={name} path={artifact}")
@@ -613,6 +657,32 @@ def build_main(args) -> int:
                         timeout=ORACLE_TIMEOUT,
                     )
                 manifest["oracles"]["chat"] = "oracle/chat/chat-oracle.json"
+            if "conversation-4k" in targets:
+                real = oracles / "real-4k"
+                if not (real / "m1-oracle.json").is_file():
+                    run_logged(
+                        [
+                            sys.executable, source / "tests/boundary/tinyllama_real_onnx.py",
+                            source, real, "--capacity", str(CONTEXT_4K),
+                            "--skip-step-sidecars",
+                        ],
+                        logs / "oracle-real-4k.log", cwd=source, env=environment,
+                        timeout=ORACLE_TIMEOUT,
+                    )
+                manifest["oracles"]["real-4k"] = "oracle/real-4k"
+            if "chat-4k" in targets:
+                chat = oracles / "chat-4k"
+                if not (chat / "chat-oracle.json").is_file():
+                    run_logged(
+                        [
+                            sys.executable, source / "tests/boundary/tinyllama_chat_oracle.py",
+                            source, chat, "--user", CHAT_USER, "--next-user", CHAT_NEXT_USER,
+                            "--capacity", str(CONTEXT_4K),
+                        ],
+                        logs / "oracle-chat-4k.log", cwd=source, env=environment,
+                        timeout=ORACLE_TIMEOUT,
+                    )
+                manifest["oracles"]["chat-4k"] = "oracle/chat-4k/chat-oracle.json"
             write_manifest(out, {**manifest, "state": "built", "finished": now()})
         except BaseException:
             write_manifest(out, {**manifest, "state": "failed", "finished": now()})
@@ -700,9 +770,18 @@ GATES = {
         "PublicTinyLlamaMultiTurnChatLifecycleTests.GeneratedUSharpBindingContinuesChatAcrossTurns",
     ),
 }
+# The 4096-token artifacts expose the same U# binding, so their gates run the
+# same fixtures against the -4k artifacts and oracles.
+GATES.update(
+    {
+        f"{gate}-4k": (f"{target}-4k", label, assembly, test)
+        for gate, (target, label, assembly, test) in list(GATES.items())
+        if f"{target}-4k" in TARGETS
+    }
+)
 # Gates whose fixture drives a binding with asynchronous exports, the only
 # ones UdonclFixtureTiming applies the UDONCL_FIXTURE_FRAME_* overrides to.
-PACED_GATES = ("conv", "chat", "multiturn")
+PACED_GATES = ("conv", "chat", "multiturn", "conv-4k", "chat-4k", "multiturn-4k")
 FIXTURE_VARIABLES = (
     "UDONCL_FIXTURE_TARGET_FRAME_RATE",
     "UDONCL_FIXTURE_FRAME_BUDGET_US",
@@ -808,10 +887,11 @@ def session_artifacts(build: Path, manifest: dict, gates: list[str]) -> dict[str
         raise GateError(f"{build} has no {target} artifact; build it with --targets {target}")
     artifact = build / built["artifact"]
     oracles = manifest.get("oracles", {})
-    oracle_name = "chat" if target == "chat" else "real"
+    oracle_name = TARGET_ORACLES[target]
     if oracle_name not in oracles:
         raise GateError(f"{build} has no {oracle_name} oracle")
     oracle = build / oracles[oracle_name]
+    target = target_family(target)
     if target == "prefill":
         result = {"tinyllama_prefill_artifact": artifact, "tinyllama_prefill_oracle": oracle}
         required = oracle / "oracle.json"
@@ -1996,10 +2076,18 @@ def parser() -> argparse.ArgumentParser:
     build.add_argument("--out", type=Path, required=True)
     build.add_argument(
         "--targets",
-        default=",".join(TARGETS),
-        help=f"comma-separated subset of {','.join(TARGETS)} (default: all)",
+        default=",".join(DEFAULT_TARGETS),
+        help=(
+            f"comma-separated subset of {','.join(TARGETS)} "
+            f"(default: {','.join(DEFAULT_TARGETS)})"
+        ),
     )
-    build.add_argument("--capacity", type=int, default=ORACLE_CAPACITY)
+    build.add_argument(
+        "--capacity",
+        type=int,
+        default=ORACLE_CAPACITY,
+        help=f"Context Capacity of the targets without -4k (those use {CONTEXT_4K})",
+    )
     build.add_argument("--min-free-gb", type=float)
     build.set_defaults(main=build_main)
 
