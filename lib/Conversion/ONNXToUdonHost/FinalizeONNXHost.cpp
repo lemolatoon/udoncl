@@ -5,6 +5,7 @@
 #include "ONNXHostIRBuilder.h"
 #include "ONNXHostMaterialization.h"
 #include "ONNXHostPlan.h"
+#include "ONNXHostSequenceExtents.h"
 #include "ONNXHostSymbols.h"
 #include "VRC/Conversion/Passes.h"
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
@@ -24,6 +25,7 @@
 #include <algorithm>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <numeric>
 #include <optional>
 
@@ -51,6 +53,10 @@ constexpr StringRef sequenceStatePoisonedSymbol =
     onnxHostSequenceStatePoisonedSymbol;
 constexpr StringRef sequenceStateZeroSymbol = onnxHostSequenceStateZeroSymbol;
 constexpr StringRef sequenceStateBankSymbol = onnxHostSequenceStateBankSymbol;
+constexpr StringRef sequenceStateFillAgeSymbol =
+    onnxHostSequenceStateFillAgeSymbol;
+constexpr StringRef sequenceStateExposedSymbol =
+    onnxHostSequenceStateExposedSymbol;
 constexpr StringRef hasRunSymbol = onnxHostHasRunSymbol;
 constexpr int32_t bindingStateStorageBytes = onnxHostBindingStateStorageBytes;
 constexpr int32_t bindingTensorStorageBytes = onnxHostBindingTensorStorageBytes;
@@ -1498,6 +1504,19 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
       store(builder, location, constant(0),
             addressOf(builder, location, sequenceStateBankSymbol));
   };
+  // The fill age (ONNXHostSequenceExtents.h): advances since the binding
+  // zero-filled the past inputs, plus one, or 0 when it cannot vouch for
+  // their contents. Only a graph whose runs skip zero rows keeps it.
+  bool fillAge = deviceSequenceExtents(graph).used();
+  auto storeFillAge = [&](Value value) {
+    if (fillAge)
+      store(builder, location, value,
+            addressOf(builder, location, sequenceStateFillAgeSymbol));
+  };
+  auto loadFillAge = [&]() {
+    return loadI32(builder, location,
+                   addressOf(builder, location, sequenceStateFillAgeSymbol));
+  };
   auto state = [&]() -> Value {
     return addressOf(builder, location, bindingStateSymbol);
   };
@@ -1593,6 +1612,11 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
     store(builder, location, constant(0),
           addressOf(builder, location, sequenceStatePoisonedSymbol));
     resetBank();
+    // New buffers: nothing is filled, and no caller holds a past input.
+    storeFillAge(constant(0));
+    if (fillAge)
+      store(builder, location, constant(0),
+            addressOf(builder, location, sequenceStateExposedSymbol));
   }
   func::ReturnOp::create(builder, location, constant(0));
 
@@ -1657,6 +1681,9 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
                                     loadI32(builder, location, bank)),
             bank);
     }
+    if (fillAge)
+      storeFillAge(arith::SelectOp::create(builder, location, invalidate,
+                                           constant(0), loadFillAge()));
   }
   func::ReturnOp::create(builder, location, bindCall.getResult(0));
 
@@ -1730,13 +1757,14 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
     store(builder, location, constant(0),
           addressOf(builder, location, sequenceStatePendingSymbol));
     resetBank();
+    storeFillAge(constant(0));
   }
   auto completedStaticBind = func::CallOp::create(
       builder, location, "udononnxBindingStateCompleteStaticBind",
       TypeRange{i32}, ValueRange{state(), constant(0)});
   func::ReturnOp::create(builder, location, completedStaticBind.getResult(0));
 
-  auto createResolve = [&](StringRef name, StringRef callee) {
+  auto createResolve = [&](StringRef name, StringRef callee, bool input) {
     builder.setInsertionPointToEnd(module.getBody());
     auto resolve = func::FuncOp::create(
         builder, location, name,
@@ -1745,6 +1773,24 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
     markExport(resolve);
     Block *resolveEntry = resolve.addEntryBlock();
     builder.setInsertionPointToEnd(resolveEntry);
+    if (input && fillAge) {
+      // A caller holding a past input may write it whenever it likes, so the
+      // binding stops vouching for any fill from now on.
+      Value exposed = addressOf(builder, location, sequenceStateExposedSymbol);
+      Value pastInput = arith::ConstantIntOp::create(builder, location, 0, 1);
+      for (const SequenceStateRecord &sequence : graph.sequenceStates)
+        pastInput = arith::OrIOp::create(
+            builder, location, pastInput,
+            arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
+                                  resolveEntry->getArgument(0),
+                                  constant(sequence.inputIndex)));
+      store(builder, location,
+            arith::SelectOp::create(builder, location, pastInput, constant(1),
+                                    loadI32(builder, location, exposed)),
+            exposed);
+      storeFillAge(arith::SelectOp::create(builder, location, pastInput,
+                                           constant(0), loadFillAge()));
+    }
     auto resolved = func::CallOp::create(
         builder, location, callee, TypeRange{i32},
         ValueRange{state(), resolveEntry->getArgument(0),
@@ -1753,9 +1799,9 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
     func::ReturnOp::create(builder, location, resolved.getResult(0));
   };
   createResolve("udon_onnx_binding_resolve_input",
-                "udononnxBindingStateResolveInput");
+                "udononnxBindingStateResolveInput", true);
   createResolve("udon_onnx_binding_resolve_output",
-                "udononnxBindingStateResolveOutput");
+                "udononnxBindingStateResolveOutput", false);
 
   auto createEnqueue = [&](StringRef name, StringRef callee, bool run) {
     builder.setInsertionPointToEnd(module.getBody());
@@ -1884,6 +1930,18 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
   markExport(copyOutputToInput);
   Block *copyEntry = copyOutputToInput.addEntryBlock();
   builder.setInsertionPointToEnd(copyEntry);
+  if (fillAge) {
+    // A copy into a past input replaces its fill.
+    Value pastInput = arith::ConstantIntOp::create(builder, location, 0, 1);
+    for (const SequenceStateRecord &sequence : graph.sequenceStates)
+      pastInput = arith::OrIOp::create(
+          builder, location, pastInput,
+          arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
+                                copyEntry->getArgument(1),
+                                constant(sequence.inputIndex)));
+    storeFillAge(arith::SelectOp::create(builder, location, pastInput,
+                                         constant(0), loadFillAge()));
+  }
   auto copyReturnIfNonzero = [&](Value status, int64_t failureStatus = -1) {
     Block *next = copyOutputToInput.addBlock();
     Block *failure = copyOutputToInput.addBlock();
@@ -2038,6 +2096,16 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
     store(builder, location, constant(0),
           addressOf(builder, location, sequenceStatePoisonedSymbol));
     resetBank();
+    // Every past input now holds zeros, unless a caller holds one.
+    if (fillAge)
+      storeFillAge(arith::SelectOp::create(
+          builder, location,
+          arith::CmpIOp::create(
+              builder, location, arith::CmpIPredicate::eq,
+              loadI32(builder, location,
+                      addressOf(builder, location, sequenceStateExposedSymbol)),
+              constant(0)),
+          constant(1), constant(0)));
     func::ReturnOp::create(builder, location, constant(0));
 
     builder.setInsertionPointToEnd(module.getBody());
@@ -2186,6 +2254,21 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
                                     constant(1)),
             bank);
     }
+    if (fillAge) {
+      // One more advance since the fill. Past the limit no state has zero
+      // rows left, so the count stops there and never overflows.
+      Value age = loadFillAge();
+      Value counting = arith::AndIOp::create(
+          builder, location,
+          arith::CmpIOp::create(builder, location, arith::CmpIPredicate::ne,
+                                age, constant(0)),
+          arith::CmpIOp::create(builder, location, arith::CmpIPredicate::slt,
+                                age,
+                                constant(sequenceStateFillAgeLimit(graph))));
+      storeFillAge(arith::SelectOp::create(
+          builder, location, counting,
+          arith::AddIOp::create(builder, location, age, constant(1)), age));
+    }
     store(builder, location, constant(0),
           addressOf(builder, location, sequenceStatePendingSymbol));
     func::ReturnOp::create(builder, location, constant(0));
@@ -2314,6 +2397,7 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
     store(builder, location, constant(0),
           addressOf(builder, location, sequenceStatePoisonedSymbol));
     resetBank();
+    storeFillAge(constant(0));
   }
   for (size_t index = 0; index != graph.inputs.size() + graph.outputs.size();
        ++index) {
@@ -2864,6 +2948,55 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
       bankValue =
           loadI32(builder, location,
                   addressOf(builder, location, sequenceStateBankSymbol));
+    // The zero rows of every state this run skips
+    // (ONNXHostSequenceExtents.h), read once from the fill age:
+    // max(0, carried - (age - 1) * step) when the age is known, else 0.
+    DeviceSequenceExtents extents = deviceSequenceExtents(graph);
+    SmallVector<Value> zeroRows(graph.sequenceStates.size());
+    if (extents.used()) {
+      Value age =
+          loadI32(builder, location,
+                  addressOf(builder, location, sequenceStateFillAgeSymbol));
+      Value advances =
+          arith::SubIOp::create(builder, location, age, constant(1));
+      Value known = arith::CmpIOp::create(
+          builder, location, arith::CmpIPredicate::ne, age, constant(0));
+      SmallVector<bool> used(graph.sequenceStates.size(), false);
+      for (const auto &state : extents.skippedRows)
+        if (state)
+          used[*state] = true;
+      for (const auto &prefix : extents.constantPrefix)
+        if (prefix)
+          used[prefix->prefix.state] = true;
+      // States of one carried length and step share the value.
+      std::map<std::pair<int64_t, int64_t>, Value> shared;
+      for (auto [stateIndex, sequence] :
+           llvm::enumerate(graph.sequenceStates)) {
+        if (!used[stateIndex])
+          continue;
+        Value &sharedRows = shared[{sequence.capacity, sequence.step}];
+        if (sharedRows) {
+          zeroRows[stateIndex] = sharedRows;
+          continue;
+        }
+        Value rows = arith::SubIOp::create(
+            builder, location, constant(sequence.capacity - sequence.step),
+            arith::MulIOp::create(builder, location, advances,
+                                  constant(sequence.step)));
+        Value positive = arith::CmpIOp::create(
+            builder, location, arith::CmpIPredicate::sgt, rows, constant(0));
+        zeroRows[stateIndex] = arith::SelectOp::create(
+            builder, location,
+            arith::AndIOp::create(builder, location, known, positive), rows,
+            constant(0));
+        sharedRows = zeroRows[stateIndex];
+      }
+    }
+    auto constantPrefix =
+        [&](unsigned nodeIndex) -> const DeviceConstantPrefix * {
+      const auto &prefix = extents.constantPrefix[nodeIndex];
+      return prefix ? &*prefix : nullptr;
+    };
     auto emitNodeDispatch = [&](const NodeRecord &node,
                                 unsigned nodeIndex) -> LogicalResult {
       Value output = buffer(node.output);
@@ -2878,8 +3011,9 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
               activeBank == 1 ? buffers[bank->present] : buffers[bank->past];
           Value next =
               activeBank == 1 ? buffers[bank->past] : buffers[bank->present];
+          const DeviceConstantPrefix *prefix = constantPrefix(nodeIndex);
           FailureOr<DeviceFusionDispatch> viewed =
-              fusedKernels.dispatch(nodeIndex, bank->view);
+              fusedKernels.dispatch(nodeIndex, bank->view, prefix);
           if (failed(viewed))
             return failure();
           SmallVector<Value> arguments;
@@ -2890,6 +3024,8 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                      << "Device ONNX fusion operand lacks physical storage";
           }
           arguments.push_back(next);
+          if (prefix)
+            arguments.push_back(zeroRows[prefix->prefix.state]);
           dispatch(viewed->callee, arguments);
           return success();
         }
@@ -2901,8 +3037,9 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
       if (fusion.isRoot(nodeIndex) ||
           deviceSoftmaxSchedule(graph, node).chunks ||
           isSynthesizedDeviceNode(graph, node)) {
+        const DeviceConstantPrefix *prefix = constantPrefix(nodeIndex);
         FailureOr<DeviceFusionDispatch> fused =
-            fusedKernels.dispatch(nodeIndex);
+            fusedKernels.dispatch(nodeIndex, prefix);
         if (failed(fused))
           return failure();
         SmallVector<Value> arguments;
@@ -2922,6 +3059,8 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
           dispatch(fused->statisticsCallee, arguments);
         }
         arguments.push_back(output);
+        if (prefix)
+          arguments.push_back(zeroRows[prefix->prefix.state]);
         dispatch(fused->callee, arguments);
         return success();
       }
@@ -3345,7 +3484,10 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
         // kernel with one batch instead of wrapping its indices.
         bool smallOperands = shape->m * shape->k <= deviceSgemmOperandWords &&
                              shape->k * shape->n <= deviceSgemmOperandWords;
-        if (shape->outputBatches == 1 && smallOperands) {
+        // The first K terms the product skips (ONNXHostSequenceExtents.h);
+        // only the strided-batched kernels take them.
+        std::optional<unsigned> skipped = extents.skippedRows[nodeIndex];
+        if (shape->outputBatches == 1 && smallOperands && !skipped) {
           dispatch("__vrc_opencl_dispatch_udonblas_arena_sgemm",
                    ValueRange{buffer(node.inputs[0]), buffer(node.inputs[1]),
                               output, constant(shape->m), constant(shape->n),
@@ -3366,7 +3508,8 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                   constant(shape->leftBatches == 1 ? 0 : shape->m * shape->k),
                   constant(shape->rightBatches == 1 ? 0 : shape->k * shape->n),
                   constant(shape->m * shape->n), constant(shape->outputBatches),
-                  constant(0), constant(0), floating(1.0f)});
+                  constant(0), constant(0), floating(1.0f),
+                  skipped ? zeroRows[*skipped] : constant(0)});
         }
         return success();
       }
@@ -3402,7 +3545,7 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                               constant(left[1]), constant(0), constant(0),
                               constant(left[0] * right[1]), constant(1),
                               constant(transA), constant(transB),
-                              floating(alpha)});
+                              floating(alpha), constant(0)});
         if (hasBias) {
           SmallVector<int64_t, 4> a = tensor4d(graph.tensors[node.output].type);
           SmallVector<int64_t, 4> b =
@@ -3529,11 +3672,11 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                          {i32, i32, i32, i32, i32, i32, i32, i32, f32}, {i32});
     declarations.require(
         "__vrc_opencl_dispatch_udonblas_arena_sgemm_strided_batched",
-        {i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, f32},
+        {i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, f32, i32},
         {i32});
     declarations.require(
         "__vrc_opencl_dispatch_udonblas_arena_sgemm_strided_batched_large",
-        {i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, f32},
+        {i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, f32, i32},
         {i32});
     declarations.require("__vrc_opencl_dispatch_udononnx_unary_f32",
                          {i32, i32, i32, i32}, {i32});

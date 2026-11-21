@@ -129,12 +129,14 @@ module attributes {udoncl.onnx_sequence_states = [
 // CHECK: %[[RUN_BANK_ADDRESS:.*]] = udonhl.address_of @__udon_onnx_sequence_state_bank
 // CHECK: %[[RUN_BANK:.*]] = "udonhl.load"(%[[RUN_BANK_ADDRESS]])
 // CHECK: arith.cmpi eq, %[[RUN_BANK]], %c1_i32 : i32
-// CHECK: call @__vrc_opencl_dispatch_udononnx_fused_0(%[[KEY_PRESENT:[^,]*]], %[[TOKEN:[^,]*]], %[[KEY_PAST:[^)]*]])
+// The Concats also take the zero rows of the states
+// (finalize-onnx-host-sequence-zero-rows.mlir).
+// CHECK: call @__vrc_opencl_dispatch_udononnx_fused_0(%[[KEY_PRESENT:[^,]*]], %[[TOKEN:[^,]*]], %[[KEY_PAST:[^,]*]], %[[ZERO_ROWS:[^)]*]])
 // CHECK: arith.cmpi eq, %[[RUN_BANK]], %c2_i32 : i32
-// CHECK: call @__vrc_opencl_dispatch_udononnx_fused_0(%[[KEY_PAST]], %[[TOKEN]], %[[KEY_PRESENT]])
-// CHECK: call @__vrc_opencl_dispatch_udononnx_fused_1(%[[KEY_PAST]], %[[TOKEN]], %[[KEY_PRESENT]])
-// CHECK: call @__vrc_opencl_dispatch_udononnx_fused_2(%[[VALUE_PRESENT:[^,]*]], %[[TOKEN]], %[[VALUE_PAST:[^)]*]])
-// CHECK: call @__vrc_opencl_dispatch_udononnx_fused_2(%[[VALUE_PAST]], %[[TOKEN]], %[[VALUE_PRESENT]])
+// CHECK: call @__vrc_opencl_dispatch_udononnx_fused_0(%[[KEY_PAST]], %[[TOKEN]], %[[KEY_PRESENT]], %[[ZERO_ROWS]])
+// CHECK: call @__vrc_opencl_dispatch_udononnx_fused_1(%[[KEY_PAST]], %[[TOKEN]], %[[KEY_PRESENT]], %[[ZERO_ROWS]])
+// CHECK: call @__vrc_opencl_dispatch_udononnx_fused_2(%[[VALUE_PRESENT:[^,]*]], %[[TOKEN]], %[[VALUE_PAST:[^,]*]], %[[ZERO_ROWS]])
+// CHECK: call @__vrc_opencl_dispatch_udononnx_fused_2(%[[VALUE_PAST]], %[[TOKEN]], %[[VALUE_PRESENT]], %[[ZERO_ROWS]])
 // CHECK: call @__vrc_opencl_dispatch_udononnx_concat2_f32(%[[VALUE_PAST]], %[[TOKEN]], %[[VALUE_PRESENT]],
 // CHECK: call @__vrc_opencl_dispatch_udondnn_large_op_tensor(%[[KEY_PAST]],
 // CHECK: call @__vrc_opencl_dispatch_udondnn_large_op_tensor(%[[KEY_PRESENT]],
@@ -146,7 +148,7 @@ module attributes {udoncl.onnx_sequence_states = [
 // The view kernel of the key: the carried row r of head h is row r + 1 of
 // head h in a bank that holds a whole present.
 // CHECK-LABEL: gpu.module @udononnx_fused_kernels
-// CHECK: gpu.func @udononnx_fused_0(%[[BANK_BUFFER:.*]]: memref<64xf32>, %[[NEW:.*]]: memref<16xf32>, %{{.*}}: memref<8192xf32>)
+// CHECK: gpu.func @udononnx_fused_0(%[[BANK_BUFFER:.*]]: memref<64xf32>, %[[NEW:.*]]: memref<16xf32>, %{{.*}}: memref<8192xf32>, %{{.*}}: i32)
 // CHECK:   %[[HEAD:.*]] = arith.divui %{{.*}}, %c32_i32 : i32
 // CHECK:   %[[ROW:.*]] = arith.remui %{{.*}}, %c4_i32 : i32
 // CHECK:   %[[COLUMN:.*]] = arith.remui %{{.*}}, %c8_i32 : i32
@@ -164,8 +166,8 @@ module attributes {udoncl.onnx_sequence_states = [
 // CHECK:     %[[NEW_VALUE:.*]] = memref.load %[[NEW]][%{{.*}}] : memref<16xf32>
 // CHECK:     arith.negf %[[NEW_VALUE]] : f32
 // The fused kernel of bank 0 reads the 48-element past tensor itself.
-// CHECK: gpu.func @udononnx_fused_1(%{{.*}}: memref<48xf32>, %{{.*}}: memref<16xf32>, %{{.*}}: memref<8192xf32>)
-// CHECK: gpu.func @udononnx_fused_2(%{{.*}}: memref<64xf32>, %{{.*}}: memref<16xf32>, %{{.*}}: memref<8192xf32>)
+// CHECK: gpu.func @udononnx_fused_1(%{{.*}}: memref<48xf32>, %{{.*}}: memref<16xf32>, %{{.*}}: memref<8192xf32>, %{{.*}}: i32)
+// CHECK: gpu.func @udononnx_fused_2(%{{.*}}: memref<64xf32>, %{{.*}}: memref<16xf32>, %{{.*}}: memref<8192xf32>, %{{.*}}: i32)
 // CHECK-NOT: gpu.func
 
 // PROVEN: gpu.module @device_gpu_4096 {

@@ -10,7 +10,13 @@ capacity 512". The cheaper RGBA8 decode and the unrolled short loops are
 implemented and measured; see "Gate16 probe and the RGBA8 decode". Word
 texels (M7, four words per RGBA32 texel, four outputs per fragment) are
 implemented and checked on WARP and in the emulator; their Unity probe is
-pending; see "Word texels (M7)".
+pending; see "Word texels (M7)". Attention, the K/V Concats and the
+scaled keys skip the rows of the sequence state that still hold the
+reset's zero fill; see "Zero rows of sequence states" (Unity measurement
+pending). The binding's default frame budget no longer caps the
+continuations of a frame, which stopped 4096-token decode windows after
+about 4 ms; see "Frame budget: the continuation count" (Unity measurement
+pending).
 The GPU cost model below is static (fragment-level Load/statement counts)
 and is calibrated against one Unity trace. The per-kernel times still need
 a Unity measurement (see "Measuring in Unity").
@@ -343,6 +349,10 @@ at most the 0.56 ms the PV SGEMM takes, against 22 more Blits and about
 
 ### Bounding attention by the live length: not generic
 
+Superseded: a basis that needs neither the mask nor the data's range is in
+"Zero rows of sequence states" below. The analysis here still holds for the
+mask.
+
 Every position past the conversation is still computed. Restricting the
 work needs a run-time extent per run, and there is no clean generic way to
 derive it:
@@ -511,6 +521,137 @@ batched SGEMM 140 s instead of 57 s, the Q4 partial 7 s instead of 2 s), and
 a partial transfer is two Blits. The split-K schedules are unchanged; they
 were chosen for one output per fragment, and with four outputs per fragment
 the gate/up partial has a quarter of the fragments.
+
+## Zero rows of sequence states
+
+At 4096 tokens every attention dispatch covered all 4096 positions
+whatever the conversation length. A basis for skipping the unused ones
+that needs neither the attention mask nor the data's range: after the
+binding's reset fills every past input with zeros, each run concatenates
+its past with `step` new rows and each advance drops the first `step`
+rows, so before the run that follows n advances the first
+`carried - n * step` rows of every past and present still hold +0. The
+binding counts the advances since its own fill and never vouches for a
+past a caller could have written (resolved, bound, copied into); each run
+passes the zero rows Z to the dispatches that can skip them
+(`ONNXHostSequenceExtents.h`, `docs/architecture/operator-ownership.md`,
+"Zero rows of a sequence state"):
+
+- the K and V Concats write their first Z rows as +0 instead of copying
+  them, and the scaled transposed keys their first Z columns as `+0 * c`;
+- the value product passes Z as the SGEMM's `k_begin`: a Softmax row is
+  NaN everywhere or finite everywhere, so the skipped terms are signed
+  zeros added to the +0 the sum starts from, or the result is NaN anyway;
+- the Softmax elementwise pass writes its first Z columns as +0, because
+  the value product, its only reader, skips them.
+
+Every result bit except NaN payloads is unchanged. Unlike ONNX Runtime's
+`GroupQueryAttention`, whose `seqlens_k` its optimizer derives from the
+mask on the assumption that it is a padding mask, nothing reads the mask.
+
+Emulator (Host protocol, scripted tokens) and static model of the decode
+run after the second generated token of the conversation Artifact (prompt
+`[1, 450, 4996, 17354]`, so 6 of the positions are filled); the gen1 and
+gen2 tokens are `[1701, 29916, 432, 17204]` before and after:
+
+| per decode step | 512 master | 512 zero rows | 4096 master | 4096 zero rows |
+|---|---:|---:|---:|---:|
+| Blits | 529 | 529 | 529 | 529 |
+| Udon instructions | 97.8 K | 99.6 K | 100.7 K | 102.4 K |
+| Udon events (budget slices) | 17 | 17 | 32 | 32 |
+| texel Loads (static model) | 224 M | 179 M | 843 M | 397 M |
+| serial statements | 1.04 M | 0.66 M | 4.08 M | 0.86 M |
+| modelled ms, latency x2.98 middle | 10.2 | 8.1 | 26.8 | 9.8 |
+
+Per kernel, texel Loads per step (largest Loads per fragment):
+
+| kernel | 512 master | 512 zero rows | 4096 master | 4096 zero rows |
+|---|---:|---:|---:|---:|
+| QK^T + PV SGEMMs | 57.7 M (2560) | 29.2 M (320) | 461 M (20480) | 231 M (320) |
+| Softmax elementwise pass | 12.4 M | 0.19 M | 182 M | 0.35 M |
+| scaled transposed keys | 2.9 M | 0.05 M | 23.1 M | 0.05 M |
+| K and V Concats | 1.45 M | 0.03 M | 11.6 M | 0.03 M |
+| Softmax statistics pass | 2.4 M | 2.4 M | 18.0 M | 18.0 M |
+
+The model is the static one of "Where the GPU time goes", with the word
+texel HLSL translated to C++ (a four-lane version of `hlsl2cpp.py`); it
+over-weights serial chains and is not a measurement. The value product's
+serial chain of 5 Loads per position is gone, which is most of the
+4096-token difference.
+
+What still follows the capacity:
+
+- The score product reads every key column; the dead columns are zeros
+  the key kernel wrote. Computing them as products with +0 without reading
+  the keys (a private `zero_columns` argument, exact for any query) took
+  the SGEMMs at 4096 from 231 M to 47 M Loads, but its second loop body
+  made the word-texel SGEMM shader half again as long (word-texel-execution
+  took 621 s on its own, against 318 s inside the full suite before) and
+  the boundary
+  fragments run both bodies, so the model showed no gain (9.8 to 9.6 ms at
+  4096, 8.1 to 8.3 ms at 512). It was not kept.
+- The Softmax statistics pass reads every score and mask element; its
+  chunk chain is now the largest serial term after Q4 at 4096 (0.23 M of
+  0.86 M serial statements).
+- Every Blit still shades the whole capacity-sized surface, and the static
+  device cost model, which closes the budget slices, still charges every
+  dispatch its full extent, so a 4096-token step keeps 32 Udon events.
+
+## Frame budget: the continuation count
+
+With the zero rows the probe replays a decode run in 6.1 ms at capacity
+512 and 8.3 ms at 4096 (RTX 4070 Ti), less than a 90 Hz frame, yet the
+pump traces at 90 Hz (master edca3277; default budget 8 ms and 32
+continuations) show more than one frame per step at 4096, with the Udon
+events of a busy frame well under the budget:
+
+| gate | steps | continuations per step | windows stopped on count / time / idle | Udon ms per busy frame | frames per step |
+|---|---:|---:|---|---:|---:|
+| chat (512) | 27 | 16.0 | 9 / 5 / 8 | 5.4 | 1.44 |
+| multi-turn (512) | 54 | 16.0 | 20 / 5 / 14 | 5.1 | 0.98 |
+| chat-4k | 27 | 31.7 | 19 / 6 / 8 | 3.8 to 4.2 | 1.52 |
+| multi-turn-4k | 54 | 31.7 | 45 / 5 / 14 | 3.7 | 1.24 |
+
+A decode step at 4096 is about 32 Host slices (the static device cost
+charges every dispatch its full extent), at 0.12 to 0.15 ms each. The
+decode loop of the conversation Host keeps one step in flight: after the
+callback of token t's read it selects and reads token t+1 and enqueues run
+t+2, then waits. The read requested in frame F returns in frame F+1 at the
+earliest, so one frame per step is the floor, and the Host reaches it only
+if a whole step's slices fit the frame. With 32 continuations they do not:
+the window stops on the count after about 4 ms with the step's last slices
+and its next read left for the following frame.
+
+Why the count exists: the loop in `DriveAsyncCommands` is iterative, and a
+Host completion event never nests (an export started from one only
+requests a pump), so the count guards no Udon stack depth or instruction
+limit. `SendCustomEventDelayedFrames(…, 1)` is only how a stopped window
+resumes. The count was a backstop for the time budget, sized from a trace
+in which a continuation took 0.8 ms (32 x 0.8 ms > 8 ms); slices are now 4
+to 6 times cheaper, so it ends the window first. Any fixed count goes stale
+the same way, so the default is now the setting maximum (1,000,000) and the
+time budget alone ends a busy frame. A library or the fixture
+(`--continuations`) can still set a smaller count. This is a binding
+default, independent of the model.
+
+Expected effect (a prediction from these traces, not a measurement): at
+4096 a step's 32 slices (about 4 to 5 ms) fit one window, so decode should
+approach one frame per step (1.24 to 1.52 now). At 512 a step already fits;
+only windows that issue the prompt's runs back to back get longer there.
+The windows that issue prompt runs can now enqueue about two 4096-token runs
+(about 16 ms of GPU time) per frame instead of one, so those frames may get
+longer than 11.1 ms and the first read waits for the backlog; the total
+time is GPU-bound either way. The same check can be run on any existing
+artifact with the fixture override (`--continuations 1000000`).
+
+The other candidates were ranked lower for decode frames: once a step
+fits a frame and the GPU run (6 to 8 ms) is under a frame, the read's
+one-frame latency and not GPU time bounds a step, so the split-K retune,
+the zero key columns of QK^T, the Softmax statistics pass and the
+full-surface Blits shorten GPU time without removing frames; and
+coarser device-cost slices save only the per-event overhead once the
+count no longer quantizes it (the 32 events of a 4096-token step take about
+4 ms of Udon time, the 16 events of a 512-token step about 3.7 ms).
 
 ## Measuring in Unity
 

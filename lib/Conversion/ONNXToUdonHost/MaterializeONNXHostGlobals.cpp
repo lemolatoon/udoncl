@@ -2,6 +2,7 @@
 #include "ONNXHostGraph.h"
 #include "ONNXHostMaterialization.h"
 #include "ONNXHostPlan.h"
+#include "ONNXHostSequenceExtents.h"
 #include "VRC/Conversion/Passes.h"
 #include "VRC/Dialect/UdonHL/UdonHLDialect.h"
 #include "udoncl/udon_abi_layout.h"
@@ -271,6 +272,10 @@ LogicalResult preflightGlobalSymbols(ModuleOp module, const GraphRecord &graph,
   if (!plan.sequenceStateBanks.empty() &&
       failed(reserve(onnxHostSequenceStateBankSymbol)))
     return failure();
+  if (deviceSequenceExtents(graph).used() &&
+      (failed(reserve(onnxHostSequenceStateFillAgeSymbol)) ||
+       failed(reserve(onnxHostSequenceStateExposedSymbol))))
+    return failure();
 
   for (const auto &entry : symbols)
     if (Operation *existing =
@@ -354,6 +359,10 @@ struct MaterializeONNXHostGlobalsPass
     }
     if (!plan->sequenceStateBanks.empty())
       createI32Global(module, onnxHostSequenceStateBankSymbol);
+    if (deviceSequenceExtents(*graph).used()) {
+      createI32Global(module, onnxHostSequenceStateFillAgeSymbol);
+      createI32Global(module, onnxHostSequenceStateExposedSymbol);
+    }
     module->setAttr(onnxHostGlobalsMaterializedAttr,
                     UnitAttr::get(module.getContext()));
   }

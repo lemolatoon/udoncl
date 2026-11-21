@@ -771,7 +771,8 @@ private:
 } // namespace
 
 FailureOr<DeviceFusionDispatch>
-DeviceFusionKernels::dispatch(unsigned rootNode) {
+DeviceFusionKernels::dispatch(unsigned rootNode,
+                              const DeviceConstantPrefix *prefix) {
   const GraphRecord &graph = fusion.graph;
   // A node outside every group is a group of its own when its library kernel
   // cannot run it: a Softmax that runs in two passes, or a node beyond the
@@ -789,13 +790,14 @@ DeviceFusionKernels::dispatch(unsigned rootNode) {
            << "ONNX Device fusion group of node " << rootNode
            << " is outside the fused kernel contract";
   if (!schedule.chunks)
-    return synthesize(rootNode, nullptr, nullptr, FusedKernelRole::Whole);
-  FailureOr<DeviceFusionDispatch> statistics =
-      synthesize(rootNode, nullptr, &schedule, FusedKernelRole::RowStatistics);
+    return synthesize(rootNode, nullptr, nullptr, FusedKernelRole::Whole,
+                      prefix);
+  FailureOr<DeviceFusionDispatch> statistics = synthesize(
+      rootNode, nullptr, &schedule, FusedKernelRole::RowStatistics, nullptr);
   if (failed(statistics))
     return failure();
   FailureOr<DeviceFusionDispatch> elementwise = synthesize(
-      rootNode, nullptr, &schedule, FusedKernelRole::FromRowStatistics);
+      rootNode, nullptr, &schedule, FusedKernelRole::FromRowStatistics, prefix);
   if (failed(elementwise))
     return failure();
   elementwise->statisticsCallee = statistics->callee;
@@ -807,7 +809,8 @@ DeviceFusionKernels::dispatch(unsigned rootNode) {
 
 FailureOr<DeviceFusionDispatch>
 DeviceFusionKernels::dispatch(unsigned rootNode,
-                              const DeviceFusionLeafView &view) {
+                              const DeviceFusionLeafView &view,
+                              const DeviceConstantPrefix *prefix) {
   const GraphRecord &graph = fusion.graph;
   std::optional<DeviceFusionKind> kind =
       deviceFusionKind(graph, graph.nodes[rootNode]);
@@ -826,12 +829,15 @@ DeviceFusionKernels::dispatch(unsigned rootNode,
              << "ONNX Device view of tensor " << view.tensor
              << " does not fit its buffer";
   }
-  return synthesize(rootNode, &view, nullptr, FusedKernelRole::Whole);
+  return synthesize(rootNode, &view, nullptr, FusedKernelRole::Whole, prefix);
 }
 
 FailureOr<DeviceFusionDispatch> DeviceFusionKernels::synthesize(
     unsigned rootNode, const DeviceFusionLeafView *view,
-    const DeviceRowReduction *schedule, FusedKernelRole role) {
+    const DeviceRowReduction *schedule, FusedKernelRole role,
+    const DeviceConstantPrefix *prefix) {
+  if (role == FusedKernelRole::RowStatistics)
+    prefix = nullptr;
   const GraphRecord &graph = fusion.graph;
   Location location = module.getLoc();
   DeviceFusionDispatch result;
@@ -876,6 +882,14 @@ FailureOr<DeviceFusionDispatch> DeviceFusionKernels::synthesize(
     keyStream << (role == FusedKernelRole::RowStatistics ? "|statistics"
                                                          : "|from-statistics")
               << schedule->chunks << 'x' << schedule->chunkLength;
+  ArrayRef<int64_t> rootShape = shapeOf(graph, graph.nodes[rootNode].output);
+  if (prefix) {
+    if (prefix->prefix.axis < 0 ||
+        prefix->prefix.axis >= static_cast<int64_t>(rootShape.size()))
+      return emitError(location) << "ONNX Device constant prefix of node "
+                                 << rootNode << " is outside its result";
+    keyStream << "|prefix@" << prefix->prefix.axis << '=' << prefix->bits;
+  }
   auto [entry, inserted] = callees.try_emplace(key);
   if (!inserted) {
     result.callee = entry->second;
@@ -916,6 +930,10 @@ FailureOr<DeviceFusionDispatch> DeviceFusionKernels::synthesize(
   int64_t surfaceHeight = (elements + surfaceWidth - 1) / surfaceWidth;
   int64_t surfaceWords = surfaceWidth * surfaceHeight;
   arguments.push_back(MemRefType::get({surfaceWords}, f32));
+  unsigned bufferArguments = arguments.size();
+  // The zero-row extent of the constant prefix follows the buffers.
+  if (prefix)
+    arguments.push_back(i32);
   builder.setInsertionPointToEnd(cast<gpu::GPUModuleOp>(carrier).getBody());
   auto kernel = gpu::GPUFuncOp::create(
       builder, location, kernelName,
@@ -950,7 +968,38 @@ FailureOr<DeviceFusionDispatch> DeviceFusionKernels::synthesize(
   auto guard = scf::IfOp::create(builder, location, TypeRange{f32}, live,
                                  /*addThenBlock=*/true, /*addElseBlock=*/true);
   builder.setInsertionPointToStart(guard.thenBlock());
-  SmallVector<BlockArgument> buffers(body.getArguments());
+  SmallVector<BlockArgument> buffers(
+      body.getArguments().take_front(bufferArguments));
+  // An element of the constant prefix is the prefix's value; its expression
+  // is evaluated, and its operands loaded, only outside the prefix. The
+  // condition depends on the element's coordinate and the run-time extent,
+  // never on a Load, so the Load bounds are the same in both branches.
+  scf::IfOp prefixBranch;
+  if (prefix) {
+    int64_t axis = prefix->prefix.axis;
+    int64_t inner = elementCount(rootShape.drop_front(axis + 1));
+    Value coordinate = linear;
+    if (inner != 1)
+      coordinate = arith::DivUIOp::create(
+          builder, location, coordinate,
+          arith::ConstantIntOp::create(builder, location, inner, 32));
+    if (axis != 0)
+      coordinate = arith::RemUIOp::create(
+          builder, location, coordinate,
+          arith::ConstantIntOp::create(builder, location, rootShape[axis], 32));
+    Value inPrefix =
+        arith::CmpIOp::create(builder, location, arith::CmpIPredicate::ult,
+                              coordinate, body.getArgument(bufferArguments));
+    prefixBranch = scf::IfOp::create(builder, location, TypeRange{f32},
+                                     inPrefix, /*addThenBlock=*/true,
+                                     /*addElseBlock=*/true);
+    builder.setInsertionPointToStart(prefixBranch.thenBlock());
+    scf::YieldOp::create(builder, location,
+                         Value(arith::ConstantFloatOp::create(
+                             builder, location, builder.getF32Type(),
+                             APFloat(llvm::bit_cast<float>(prefix->bits)))));
+    builder.setInsertionPointToStart(prefixBranch.elseBlock());
+  }
   ExpressionEmitter emitter(
       builder, location, fusion, result.leaves,
       ArrayRef<BlockArgument>(buffers).take_front(result.leaves.size()), view);
@@ -964,6 +1013,11 @@ FailureOr<DeviceFusionDispatch> DeviceFusionKernels::synthesize(
     value = role == FusedKernelRole::RowStatistics
                 ? emitter.emitSoftmaxStatistics(rootNode, linear, statistics)
                 : emitter.emitRoot(rootNode, linear, &statistics);
+  }
+  if (prefixBranch) {
+    scf::YieldOp::create(builder, location, value.value);
+    builder.setInsertionPointAfter(prefixBranch);
+    value.value = prefixBranch.getResult(0);
   }
   scf::YieldOp::create(builder, location, value.value);
   builder.setInsertionPointToStart(guard.elseBlock());

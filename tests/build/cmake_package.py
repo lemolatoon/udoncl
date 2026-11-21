@@ -997,7 +997,12 @@ def main():
     assert 'public const int AsyncFrameBudgetMicroseconds = 8000;' in (
         mnist_binding
     )
-    assert 'public const int AsyncFrameContinuationLimit = 32;' in mnist_binding
+    # The default count is the setting maximum, so only the time budget ends
+    # a busy frame.
+    assert (
+        'public const int AsyncFrameContinuationLimit = 1000000;'
+        in mnist_binding
+    )
     # The manifest limits are only defaults: U# changes them at run time
     # within the manifest's range, and the loop reads the run-time values.
     assert 'public const int AsyncFrameSettingMaximum = 1000000;' in (
@@ -1982,12 +1987,13 @@ def main():
     assert 'CompleteAsyncCommandReadback(request);' in udonblas_binding
     assert 'VRCWrapperGenerator' not in udonblas_binding
 
-    # The frame budget defaults to 8 ms and 32 continuations, so the time
-    # budget rather than the count ends a busy frame, and is a per-library
-    # device_work_budget setting; zero keeps one continuation per frame.
+    # The frame budget defaults to 8 ms and the setting maximum of
+    # continuations, so the time budget rather than the count ends a busy
+    # frame, and is a per-library device_work_budget setting; zero keeps one
+    # continuation per frame.
     udonblas_commands = udonblas_manifest['program']['async_commands']
     assert udonblas_commands['frame_budget_microseconds'] == 8000
-    assert udonblas_commands['frame_continuation_limit'] == 32
+    assert udonblas_commands['frame_continuation_limit'] == 1000000
     udonblas_config = json.loads(
         (udonblas_source / 'unity-library.json').read_text(encoding='utf-8')
     )

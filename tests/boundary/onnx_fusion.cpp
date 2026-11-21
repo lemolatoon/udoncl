@@ -194,9 +194,10 @@ int main(int argc, char **argv) {
           1, 2},
          {fusedId + 4, rowWords, 0, "udononnx_fused_4", argv[9], surfaceWidth,
           1, 2},
-         {fusedId + 5, rowWords, 0, "banked_udononnx_fused_0", argv[10],
+         // The banked Concat kernels take the zero rows of the state.
+         {fusedId + 5, rowWords, 1, "banked_udononnx_fused_0", argv[10],
           surfaceWidth, 1, 2},
-         {fusedId + 6, rowWords, 0, "banked_udononnx_fused_1", argv[11],
+         {fusedId + 6, rowWords, 1, "banked_udononnx_fused_1", argv[11],
           surfaceWidth, 1, 2},
          // The renderer binds every input as a texture of the draw surface,
          // so the one-row statistics kernel draws two rows to see all of x;
@@ -388,8 +389,11 @@ int main(int argc, char **argv) {
                 line < carried
                     ? pastReference[(head * carried + line) * width + column]
                     : negatedToken[head * width + column];
-      Buffer present = draw(session, step == 0 ? fusedId + 6 : fusedId + 5,
-                            rowWords, {&bank, &token}, nullptr, 0);
+      // The binding does not vouch for this past: no zero rows.
+      int32_t unknownRows = 0;
+      Buffer present =
+          draw(session, step == 0 ? fusedId + 6 : fusedId + 5, rowWords,
+               {&bank, &token}, &unknownRows, sizeof unknownRows);
       Comparison stepResult = compare(("step" + std::to_string(step)).c_str(),
                                       present, presentReference, presentWords);
       passed &= stepResult.exact == presentWords && stepResult.tailZero &&
@@ -400,6 +404,55 @@ int main(int argc, char **argv) {
             pastReference[(head * carried + line) * width + column] =
                 presentReference[(head * capacity + line + 1) * width + column];
       bank = present;
+    }
+    // After the binding's reset every past row is +0, and a run passes the
+    // zero rows Z = carried - advances (ONNXHostSequenceExtents.h). Both
+    // kernels write the rows below Z as +0 without reading them, which must
+    // equal the present that copies the fill. The buffers the kernels read
+    // hold NaN there instead, so a kernel that read them would differ.
+    std::fill(pastReference.begin(), pastReference.end(), 0.0f);
+    bank = pastReference;
+    for (uint32_t step = 0; step < 4; ++step) {
+      int32_t zeroRows = static_cast<int32_t>(carried - step);
+      Buffer poisoned = bank;
+      uint32_t bankRows = step == 0 ? carried : capacity;
+      for (uint32_t head = 0; head < heads; ++head)
+        for (uint32_t line = 0; line < bankRows; ++line)
+          for (uint32_t column = 0; column < width; ++column) {
+            // The carried row r of a bank is row r + 1 of the previous
+            // present; the past input of step 0 holds row r itself.
+            uint32_t carriedRow = step == 0 ? line : line - 1;
+            if (line >= (step == 0 ? 0u : 1u) &&
+                carriedRow < static_cast<uint32_t>(zeroRows))
+              poisoned[(head * bankRows + line) * width + column] =
+                  fromBits(0x7fc00001u);
+          }
+      Buffer token(surfaceWords, 0.0f);
+      for (uint32_t index = 0; index < heads * width; ++index)
+        token[index] = uniform(20.0f);
+      token[step] = -0.0f;
+      token[width + step] = step % 2 ? -infinity : infinity;
+      Buffer negatedToken = unary(session, token, 3, heads * width);
+      Buffer presentReference(surfaceWords, 0.0f);
+      for (uint32_t head = 0; head < heads; ++head)
+        for (uint32_t line = 0; line < capacity; ++line)
+          for (uint32_t column = 0; column < width; ++column)
+            presentReference[(head * capacity + line) * width + column] =
+                line < carried
+                    ? pastReference[(head * carried + line) * width + column]
+                    : negatedToken[head * width + column];
+      Buffer present =
+          draw(session, step == 0 ? fusedId + 6 : fusedId + 5, rowWords,
+               {&poisoned, &token}, &zeroRows, sizeof zeroRows);
+      Comparison zeroResult = compare(("zero" + std::to_string(step)).c_str(),
+                                      present, presentReference, presentWords);
+      passed &= zeroResult.exact == presentWords && zeroResult.tailZero;
+      for (uint32_t head = 0; head < heads; ++head)
+        for (uint32_t line = 0; line < carried; ++line)
+          for (uint32_t column = 0; column < width; ++column)
+            pastReference[(head * carried + line) * width + column] =
+                presentReference[(head * capacity + line + 1) * width + column];
+      bank = presentReference;
     }
     // long = softmax(x + mask) over rows of 512, in two passes: the
     // statistics kernel writes chunk maxima and sums that the elementwise

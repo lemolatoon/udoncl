@@ -319,6 +319,11 @@ for name, count, counters in [
 for step in range(4):
     assert f"step{step}_bitexact=128/128" in result.stdout, result.stdout
     assert f"step{step}_tail_zero=1" in result.stdout, result.stdout
+# The same steps after a reset with the zero rows passed: the rows below
+# them are written as +0 without being read, and equal the copied fill.
+for step in range(4):
+    assert f"zero{step}_bitexact=128/128" in result.stdout, result.stdout
+    assert f"zero{step}_tail_zero=1" in result.stdout, result.stdout
 # The two-pass Softmax is within a few rounding errors of the library kernel
 # (the chunk sums are rescaled to the row maximum), NaN exactly where the
 # library is, and deterministic: a second run is bit-identical.
@@ -328,4 +333,4 @@ assert "long_deterministic=1" in result.stdout, result.stdout
 for counter in ["nan", "zero", "nonzero"]:
     found = re.search(rf"long_{counter}=(\d+)", result.stdout)
     assert int(found.group(1)) > 0, (counter, result.stdout)
-assert "draws=36" in result.stdout, result.stdout
+assert "draws=44" in result.stdout, result.stdout

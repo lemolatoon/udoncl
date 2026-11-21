@@ -3221,17 +3221,25 @@ attachDeviceFragmentCosts(ModuleOp module,
   return success();
 }
 
+/// The largest frame budget setting, in microseconds or continuations. The
+/// generated binding accepts the same range at run time.
+constexpr int64_t kDeviceWorkFrameSettingMaximum = 1000000;
+
 /// How much the generated binding resumes within one frame: a continuation
 /// that is ready in the same Udon event (a Device work slice or a
 /// synchronously completed command) runs at once while both limits allow.
 /// Every Host slice of a frame is charged, the first one included, and a
 /// zero limit resumes one slice per frame. The binding can change both at
 /// run time; these are its defaults: 8 ms of a 90 Hz frame's 11.1 ms, and
-/// enough continuations that the time budget, not the count, ends a frame
-/// whose slices take the measured 0.8 ms on average (32 x 0.8 ms > 8 ms).
+/// no practical continuation count. A count is only a proxy for time, and
+/// any fixed one stops a frame early once slices get cheaper than the budget
+/// divided by the count (32 did once slices took 0.12 to 0.25 ms), so the
+/// default is the setting maximum: reaching it within 8 ms would take 8 ns
+/// slices, so the time budget alone ends a busy frame. A library can still
+/// set a smaller count, for example for deterministic pacing.
 struct DeviceWorkFrameBudget {
   int64_t microseconds = 8000;
-  int64_t continuations = 32;
+  int64_t continuations = kDeviceWorkFrameSettingMaximum;
 };
 
 /// Reads the optional per-library slice and frame budgets:
@@ -3263,9 +3271,10 @@ readDeviceWorkBudget(const json::Object &config,
     else if (key == "fragment_weight")
       out.fragmentWeight = *number;
     else if (key == "frame_microseconds" || key == "frame_continuations") {
-      if (*number < 0 || *number > 1000000) {
+      if (*number < 0 || *number > kDeviceWorkFrameSettingMaximum) {
         errs() << "device_work_budget." << key.str()
-               << " must be between 0 and 1000000\n";
+               << " must be between 0 and " << kDeviceWorkFrameSettingMaximum
+               << "\n";
         return failure();
       }
       (key == "frame_microseconds" ? frame.microseconds : frame.continuations) =

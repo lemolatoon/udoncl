@@ -1298,6 +1298,19 @@ the occupied positions (run-time extents in the SGEMM, Softmax and fused
 kernels) and a split-K PV SGEMM are the follow-ups that would make the cost
 follow the conversation length instead of the capacity.
 
+The first of them is now generic: the binding counts the advances since its
+reset filled the past inputs with zeros, and each run passes the zero rows
+left in every state to the K and V Concats, the scaled keys, the Softmax
+elementwise pass and the value product, which skip them without changing
+a result bit (`docs/architecture/operator-ownership.md`, "Zero rows of a
+sequence state"). The value product then runs over the filled positions
+only, so the split-K PV SGEMM is not needed. Per decode step the Blits and
+Udon events are unchanged (Udon instructions +1.7 K); the static model of
+the second decode run of the conversation goes from 26.8 to 9.8 ms at 4096
+and from 10.2 to 8.1 ms at 512
+(`docs/investigations/2026-11-21-tinyllama-decode-gpu-bound.md`, "Zero rows
+of sequence states"); the frames per step need a Unity measurement.
+
 TinyLlama-1.1B-Chat was trained on sequences of 2048 positions
 (`max_position_embeddings` 2048 in its Hugging Face configuration; the
 repository pins only the ONNX export and the tokenizer). The exported graph
@@ -1309,7 +1322,8 @@ Those frame estimates charge one frame per continuation, which on a 90 Hz
 client is the dominant cost of the remaining budget slices. The generated
 binding now resumes ready continuations in the same Udon event under a
 per-frame wall-clock budget (`device_work_budget.frame_microseconds`, default
-8 ms, and `frame_continuations`, default 32; see the device work scheduling
+8 ms, and `frame_continuations`, now by default no practical limit; see the
+device work scheduling
 section of `docs/architecture/refactor-baseline-and-mlir-pipeline.md`). A
 frame therefore runs as many slices as fit the budget, and a synchronously
 completed upload no longer costs a frame; only readbacks still wait. The
@@ -1355,6 +1369,14 @@ then-default limit of 8 continuations (30 of 46 conversation windows, 63 of
 74 chat windows) after about 6.4 ms, not on the time budget. The default
 `frame_continuations` is now 32, so the 8 ms budget ends a busy frame again;
 the frames per step at the new default need a new Unity measurement.
+
+The count went stale again once a continuation took 0.12 to 0.15 ms (word
+texels, zero rows): at 90 Hz the 4096-token chat and multi-turn chat stopped
+19 of 33 and 45 of 64 windows on 32 continuations after 3.7 to 4.2 ms of
+Udon events, while a decode step needs about 32 slices. The default count
+is now the setting maximum (1,000,000), so only the time budget ends a busy
+frame; see "Frame budget: the continuation count" in
+`docs/investigations/2026-11-21-tinyllama-decode-gpu-bound.md`.
 
 ### 7.3 Required execution
 

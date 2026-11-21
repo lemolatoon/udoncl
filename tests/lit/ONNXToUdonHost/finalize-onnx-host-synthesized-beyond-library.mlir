@@ -103,10 +103,12 @@ module attributes {udoncl.onnx_sequence_states = [
 // CHECK: call @__vrc_opencl_dispatch_udononnx_fused_2(
 // CHECK: call @__vrc_opencl_dispatch_udononnx_fused_4(%[[SCORES]], %[[MASK]], %[[SCRATCH]], %{{[^)]*}})
 // CHECK-LABEL: gpu.module @udononnx_fused_kernels
-// CHECK: gpu.func @udononnx_fused_0(%{{.*}}: memref<1048576xf32>, %{{.*}}: memref<256xf32>, %{{.*}}: memref<1048576xf32>)
+// The Concat and the scaled keys also take the zero rows of the state
+// (finalize-onnx-host-sequence-zero-rows.mlir).
+// CHECK: gpu.func @udononnx_fused_0(%{{.*}}: memref<1048576xf32>, %{{.*}}: memref<256xf32>, %{{.*}}: memref<1048576xf32>, %{{.*}}: i32)
 // CHECK-SAME: known_grid_size = array<i32: 8192, 128, 1>
 // CHECK-SAME: vrc.words = 1048576
-// CHECK: gpu.func @udononnx_fused_2(%{{.*}}: memref<1048576xf32>, %{{.*}}: memref<1048576xf32>)
+// CHECK: gpu.func @udononnx_fused_2(%{{.*}}: memref<1048576xf32>, %{{.*}}: memref<1048576xf32>, %{{.*}}: i32)
 // CHECK-SAME: known_grid_size = array<i32: 8192, 128, 1>
 // CHECK: gpu.func @udononnx_fused_4(%{{.*}}: memref<131072xf32>, %{{.*}}: memref<4096xf32>, %{{.*}}: memref<8192xf32>, %{{.*}}: memref<131072xf32>)
 // CHECK-SAME: known_grid_size = array<i32: 8192, 16, 1>

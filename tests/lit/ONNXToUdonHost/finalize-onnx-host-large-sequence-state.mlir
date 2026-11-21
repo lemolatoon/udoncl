@@ -36,13 +36,13 @@ module attributes {udoncl.onnx_sequence_states = [
 // CHECK-NOT: call @__vrc_opencl_
 // CHECK: return
 // CHECK-LABEL: func.func @udononnxGeneratedEnqueueRun
-// CHECK: call @__vrc_opencl_dispatch_udononnx_fused_0(%[[PRESENT:[^,]*]], %[[TOKEN:[^,]*]], %[[PAST:[^)]*]])
-// CHECK: call @__vrc_opencl_dispatch_udononnx_fused_0(%[[PAST]], %[[TOKEN]], %[[PRESENT]])
-// CHECK: call @__vrc_opencl_dispatch_udononnx_fused_1(%[[PAST]], %[[TOKEN]], %[[PRESENT]])
+// CHECK: call @__vrc_opencl_dispatch_udononnx_fused_0(%[[PRESENT:[^,]*]], %[[TOKEN:[^,]*]], %[[PAST:[^,]*]], %[[ZERO_ROWS:[^)]*]])
+// CHECK: call @__vrc_opencl_dispatch_udononnx_fused_0(%[[PAST]], %[[TOKEN]], %[[PRESENT]], %[[ZERO_ROWS]])
+// CHECK: call @__vrc_opencl_dispatch_udononnx_fused_1(%[[PAST]], %[[TOKEN]], %[[PRESENT]], %[[ZERO_ROWS]])
 // CHECK-NOT: call @__vrc_opencl_dispatch_
-// CHECK: gpu.func @udononnx_fused_0(%{{.*}}: memref<32768xf32>, %{{.*}}: memref<256xf32>, %{{.*}}: memref<32768xf32>)
+// CHECK: gpu.func @udononnx_fused_0(%{{.*}}: memref<32768xf32>, %{{.*}}: memref<256xf32>, %{{.*}}: memref<32768xf32>, %{{.*}}: i32)
 // CHECK-SAME: known_grid_size = array<i32: 8192, 4, 1>
-// CHECK: gpu.func @udononnx_fused_1(%{{.*}}: memref<32512xf32>, %{{.*}}: memref<256xf32>, %{{.*}}: memref<32768xf32>)
+// CHECK: gpu.func @udononnx_fused_1(%{{.*}}: memref<32512xf32>, %{{.*}}: memref<256xf32>, %{{.*}}: memref<32768xf32>, %{{.*}}: i32)
 
 // PROVEN: gpu.func @udononnx_fused_0({{.*}}vrc.gather_proven
 // PROVEN: gpu.func @udononnx_fused_1({{.*}}vrc.gather_proven

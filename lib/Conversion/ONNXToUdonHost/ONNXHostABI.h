@@ -91,6 +91,16 @@ inline constexpr llvm::StringLiteral onnxHostSequenceStateZeroSymbol =
 /// past input, each as the rows after the step of the previous present.
 inline constexpr llvm::StringLiteral onnxHostSequenceStateBankSymbol =
     "__udon_onnx_sequence_state_bank";
+/// How many advances ago the binding filled every past input with zeros,
+/// plus one; 0 when the binding cannot vouch for the past inputs' contents.
+/// A run derives the zero rows of each state from it
+/// (ONNXHostSequenceExtents.h).
+inline constexpr llvm::StringLiteral onnxHostSequenceStateFillAgeSymbol =
+    "__udon_onnx_sequence_state_fill_age";
+/// 1 once a caller has resolved a past input, through which it may write the
+/// input at any time; the fill age then stays unknown.
+inline constexpr llvm::StringLiteral onnxHostSequenceStateExposedSymbol =
+    "__udon_onnx_sequence_state_exposed";
 inline constexpr llvm::StringLiteral onnxHostHasRunSymbol =
     "__udon_onnx_has_run";
 

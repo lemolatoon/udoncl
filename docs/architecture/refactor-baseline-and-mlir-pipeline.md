@@ -765,12 +765,19 @@ schedules `_ContinueAsyncCommand` for the next frame:
 
 Both limits are `device_work_budget` settings of the Unity library JSON
 (`"frame_microseconds": N, "frame_continuations": N`, each 0 to 1,000,000,
-defaults 8,000 and 32: 8 ms leaves about 3 ms of a 90 Hz frame's 11.1 ms to
-the rest of the world, and 32 continuations keep the time budget the limit
-that ends a busy frame. With the earlier default of 8, a Unity trace of the
-TinyLlama conversation and chat at 8 ms stopped most busy frames on the
-continuation limit (30 of 46 and 63 of 74 windows) at a mean continuation of
-about 0.8 ms, about 6.4 ms of the 8 ms budget). They are recorded in the
+defaults 8,000 and 1,000,000: 8 ms leaves about 3 ms of a 90 Hz frame's
+11.1 ms to the rest of the world, and the default count is the setting
+maximum, so only the time budget ends a busy frame. The Udon event never
+nests, so the count protects no stack or instruction limit; it is only a
+proxy for time, and every fixed default went stale as Host slices got
+cheaper. With a default of 8, a Unity trace of the TinyLlama conversation
+and chat at 8 ms stopped most busy frames on the count (30 of 46 and 63 of
+74 windows) at a mean continuation of about 0.8 ms, about 6.4 ms of the
+8 ms budget. With 32, once a continuation took 0.12 to 0.15 ms, the 4096-token
+chat and multi-turn chat stopped 19 of 33 and 45 of 64 windows on the count
+after a mean of 3.7 to 4.2 ms of Udon events, and a decode step of 32 slices
+took more than one frame. A library may still set a smaller count, for
+example for deterministic pacing). They are recorded in the
 manifest as
 `program.async_commands.frame_budget_microseconds` and
 `frame_continuation_limit` and emitted as the binding constants

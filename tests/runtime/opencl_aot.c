@@ -221,7 +221,8 @@ cl_int __vrc_opencl_dispatch_udonblas_arena_sgemm(
 cl_int __vrc_opencl_dispatch_udonblas_arena_sgemm_strided_batched(
     cl_uint a_token, cl_uint b_token, cl_uint output_token, cl_int m, cl_int n,
     cl_int k, cl_int stride_a, cl_int stride_b, cl_int stride_c,
-    cl_int batch_count, cl_int transa, cl_int transb, cl_float alpha) {
+    cl_int batch_count, cl_int transa, cl_int transb, cl_float alpha,
+    cl_int k_begin) {
   (void)m;
   (void)n;
   (void)k;
@@ -229,6 +230,9 @@ cl_int __vrc_opencl_dispatch_udonblas_arena_sgemm_strided_batched(
   (void)transa;
   (void)transb;
   (void)alpha;
+  /* The public entry point accumulates every term. */
+  if (k_begin != 0)
+    return CL_INVALID_VALUE;
   dispatched_arena_a_token = a_token;
   dispatched_arena_b_token = b_token;
   dispatched_arena_output_token = output_token;

@@ -220,6 +220,45 @@ codes instead of a different contract: ranges are word-aligned
 `CL_INVALID_OPERATION`; one Host transfer is outstanding at a time, so a
 second transfer first waits for the previous one.
 
+## Zero rows of a sequence state
+
+Like the banks, this is a binding mechanism, not an operator: it adds no
+public API and changes no operator contract or result
+(`ONNXHostSequenceExtents.h`). The reset fills every past input with zeros,
+and every advance drops the first `step` rows, so before the run that
+follows `n` advances the first `max(0, carried - n * step)` rows of a past
+and of its present still hold that fill. The binding counts the advances
+since the fill (`__udon_onnx_sequence_state_fill_age`; create, bind-all, a
+binding of a state tensor and a copy into a past input make it unknown),
+and it never vouches for the fill once a caller has resolved a past input,
+through which it could write the input at any time. A caller must not write
+a present output, which the banks already assume. Each run turns the count
+into the zero rows `Z` of each state and passes them to dispatches that may
+skip work because of them:
+
+- A synthesized kernel writes the elements of its result whose coordinate
+  on the state axis is below `Z` as a constant instead of evaluating them,
+  where that constant is their value in every run (the Concat of the past,
+  and a Transpose, Expand, metadata alias or Mul by a finite scalar constant
+  of it) or where no reader reads them (a Softmax result whose only readers
+  are products that skip those rows).
+- `udonblas_arena_sgemm_strided_batched(_large)` takes a private trailing
+  `k_begin` (0 for the public `udonblasSgemmStridedBatched` call) and does
+  not accumulate the terms below it. ONNX Host finalization passes `Z` only
+  for a MatMul whose right operand has zero rows along its K axis and whose
+  left operand is a Softmax result normalized along that axis. Each skipped
+  term is then a signed zero added to the +0 the sum starts from, unless the
+  Softmax row is NaN, and a Softmax row is either NaN everywhere or finite
+  everywhere, so every result bit except NaN payloads is unchanged.
+  `udonblas-arena-sgemm-kernel` checks this bit for bit, and
+  `onnx-fusion-execution` checks on the native renderer that the banked
+  Concat kernels write the fill without reading it.
+
+ONNX Runtime's `GroupQueryAttention` takes the occupied length as an input
+(`seqlens_k`) and its optimizer derives it from the attention mask, which
+assumes a padding mask; nothing here reads the mask, so a run skips only
+what it can prove does not change the result.
+
 # Synthesized Device kernels
 
 A Device kernel that the compiler synthesizes, for example by fusing a chain

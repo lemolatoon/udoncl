@@ -60,7 +60,8 @@ extern cl_int __vrc_opencl_dispatch_udonblas_arena_sgemm(
 extern cl_int __vrc_opencl_dispatch_udonblas_arena_sgemm_strided_batched(
     cl_uint a_token, cl_uint b_token, cl_uint output_token, cl_int m, cl_int n,
     cl_int k, cl_int stride_a, cl_int stride_b, cl_int stride_c,
-    cl_int batch_count, cl_int transa, cl_int transb, cl_float alpha);
+    cl_int batch_count, cl_int transa, cl_int transb, cl_float alpha,
+    cl_int k_begin);
 extern cl_int __vrc_opencl_dispatch_udonblas_sgemv(
     cl_uint input_token, cl_uint output_token, cl_int trans, cl_int m, cl_int n,
     cl_int lda, cl_int incx, cl_int incy, cl_float alpha, cl_float beta);
@@ -2460,7 +2461,7 @@ cl_int __vrc_enqueue_udonblas_arena_sgemm_strided_batched_device_args(
   pending = __vrc_opencl_dispatch_udonblas_arena_sgemm_strided_batched(
       udoncl_mem_physical_token(a), udoncl_mem_physical_token(b),
       udoncl_mem_physical_token(output), m, n, k, stride_a, stride_b, stride_c,
-      batch_count, transa, transb, alpha);
+      batch_count, transa, transb, alpha, 0);
   return udoncl_finish_enqueue(queue, CL_COMMAND_NDRANGE_KERNEL, pending,
                                CL_FALSE, event);
 }
