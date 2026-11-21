@@ -387,6 +387,34 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "program identity"):
                 VALIDATOR.validate_artifact(artifact, "conversation", 128)
 
+    def test_accepts_chat_profile_of_several_rows_per_run(self):
+        # UDONCL_TINYLLAMA_SEQUENCE_ROWS = 4: four input, position and
+        # logits rows and an attention window of capacity + 3 on the same
+        # past of capacity - 1 rows.
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = self.make_chat_artifact(Path(directory), 128)
+            manifest_path = artifact / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            inputs = manifest["onnx_binding"]["inputs"]
+            outputs = manifest["onnx_binding"]["outputs"]
+            for item in (inputs[0], inputs[2]):
+                item.update(dimensions=[1, 4], logical_bytes=32, capacity_bytes=32)
+            inputs[1].update(dimensions=[1, 131], logical_bytes=8 * 131,
+                             capacity_bytes=8 * 131)
+            outputs[0].update(dimensions=[1, 4, 32000], logical_bytes=512000,
+                              capacity_bytes=512000)
+            for item in outputs[1:]:
+                size = 4 * 4 * 131 * 64
+                item.update(dimensions=[1, 4, 131, 64], logical_bytes=size,
+                            capacity_bytes=size)
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            summary = VALIDATOR.validate_artifact(artifact, "chat", 128, 4)
+            self.assertEqual(summary["outputs"], 45)
+            with self.assertRaisesRegex(ValueError, "input_ids"):
+                VALIDATOR.validate_artifact(artifact, "chat", 128)
+            with self.assertRaisesRegex(ValueError, "attention_mask"):
+                VALIDATOR.validate_artifact(artifact, "chat", 127, 4)
+
     def test_chat_profile_requires_the_multi_turn_api(self):
         with tempfile.TemporaryDirectory() as directory:
             artifact = self.make_chat_artifact(Path(directory), 64)

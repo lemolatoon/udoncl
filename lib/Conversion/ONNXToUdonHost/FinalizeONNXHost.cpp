@@ -53,6 +53,8 @@ constexpr StringRef sequenceStatePoisonedSymbol =
     onnxHostSequenceStatePoisonedSymbol;
 constexpr StringRef sequenceStateZeroSymbol = onnxHostSequenceStateZeroSymbol;
 constexpr StringRef sequenceStateBankSymbol = onnxHostSequenceStateBankSymbol;
+constexpr StringRef sequenceStateAdvancedRowsSymbol =
+    onnxHostSequenceStateAdvancedRowsSymbol;
 constexpr StringRef sequenceStateFillAgeSymbol =
     onnxHostSequenceStateFillAgeSymbol;
 constexpr StringRef sequenceStateExposedSymbol =
@@ -2108,170 +2110,245 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
           constant(1), constant(0)));
     func::ReturnOp::create(builder, location, constant(0));
 
-    builder.setInsertionPointToEnd(module.getBody());
-    auto advance = func::FuncOp::create(
-        builder, location, "udon_onnx_binding_enqueue_advance_sequence_state",
-        FunctionType::get(module.getContext(), {}, {i32}));
-    markExport(advance);
-    // An advance that only flips banks issues no Device command and never
-    // suspends; the Udon async lowering supports no coroutine without a
-    // suspension point.
-    if (plan.sequenceStateBanks.size() != graph.sequenceStates.size())
-      advance->setAttr("vrc.async_effect",
-                       builder.getStringAttr("may_suspend"));
-    Block *advanceEntry = advance.addEntryBlock();
-    builder.setInsertionPointToEnd(advanceEntry);
-    Block *advanceReady = advance.addBlock();
-    Block *advanceBusy = advance.addBlock();
-    Block *advanceInvalid = advance.addBlock();
-    Value active = loadI32(builder, location,
-                           addressOf(builder, location, bindingEventSymbol));
-    Value idle = arith::CmpIOp::create(
-        builder, location, arith::CmpIPredicate::eq, active, constant(0));
-    Value owned =
-        loadI32(builder, location,
-                addressOf(builder, location, sequenceStateOwnedSymbol));
-    Value pending =
-        loadI32(builder, location,
-                addressOf(builder, location, sequenceStatePendingSymbol));
-    Value poisoned =
-        loadI32(builder, location,
-                addressOf(builder, location, sequenceStatePoisonedSymbol));
-    Value valid = arith::AndIOp::create(
-        builder, location,
-        arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
-                              owned, constant(1)),
-        arith::AndIOp::create(
-            builder, location,
-            arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
-                                  pending, constant(1)),
-            arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
-                                  poisoned, constant(0))));
-    Block *checkState = advance.addBlock();
-    cf::CondBranchOp::create(builder, location, idle, checkState, ValueRange{},
-                             advanceBusy, ValueRange{});
-    builder.setInsertionPointToEnd(advanceBusy);
-    func::ReturnOp::create(builder, location, constant(7));
-    builder.setInsertionPointToEnd(checkState);
-    cf::CondBranchOp::create(builder, location, valid, advanceReady,
-                             ValueRange{}, advanceInvalid, ValueRange{});
-    builder.setInsertionPointToEnd(advanceInvalid);
-    func::ReturnOp::create(builder, location, constant(12));
-    builder.setInsertionPointToEnd(advanceReady);
-    auto advanceReturnIfNonzero = [&](Value status,
-                                      int64_t failureStatus = -1) {
-      Block *next = advance.addBlock();
-      Block *failure = advance.addBlock();
-      Value succeeded = arith::CmpIOp::create(
-          builder, location, arith::CmpIPredicate::eq, status, constant(0));
-      cf::CondBranchOp::create(builder, location, succeeded, next, ValueRange{},
-                               failure, ValueRange{});
-      builder.setInsertionPointToEnd(failure);
-      if (failureStatus == 5)
-        store(builder, location, constant(1),
-              addressOf(builder, location, sequenceStatePoisonedSymbol));
-      func::ReturnOp::create(builder, location,
-                             failureStatus < 0 ? status
-                                               : constant(failureStatus));
-      builder.setInsertionPointToEnd(next);
-    };
-    Value sessionSlot = allocaI32(builder, location);
-    auto gotSession = func::CallOp::create(
-        builder, location, "udononnxBindingStateGetSession", TypeRange{i32},
-        ValueRange{state(), sessionSlot});
-    advanceReturnIfNonzero(gotSession.getResult(0));
-    auto physicalBuffer = [&](size_t logicalId, int64_t bytes) -> Value {
-      return func::CallOp::create(
-                 builder, location, "__vrc_opencl_buffer_alloc", TypeRange{i32},
-                 ValueRange{constant(logicalId), constant(bytes)})
-          .getResult(0);
-    };
-    auto packUnsigned = [](ArrayRef<int64_t> values, int64_t first,
-                           int64_t fallback) {
-      int64_t low = first < static_cast<int64_t>(values.size()) ? values[first]
-                                                                : fallback;
-      int64_t high = first + 1 < static_cast<int64_t>(values.size())
-                         ? values[first + 1]
-                         : fallback;
-      return (low & 65535) | ((high & 65535) << 16);
-    };
-    for (auto [stateIndex, sequence] : llvm::enumerate(graph.sequenceStates)) {
-      // A banked state moves nothing: the bank flip below makes the rows the
-      // last run wrote the carried rows of the next run.
-      if (isBankedSequenceState(plan, stateIndex))
-        continue;
-      unsigned inputTensorIndex = graph.inputs[sequence.inputIndex];
-      unsigned outputTensorIndex = graph.outputs[sequence.outputIndex];
-      const TensorRecord &input = graph.tensors[inputTensorIndex];
-      const TensorRecord &output = graph.tensors[outputTensorIndex];
-      // The copying advance is one udononnx_slice_f32 dispatch, which
-      // addresses at most 16384 words; a banked state has no such limit.
-      if (input.type.getNumElements() > 16384 ||
-          output.type.getNumElements() > 16384)
-        return emitError(location)
-               << "ONNX sequence state that is not banked exceeds the 16384 "
-                  "elements of its copying advance";
-      Value source =
-          physicalBuffer(graph.inputs.size() + sequence.outputIndex + 1,
-                         deviceAllocationBytes(graph, outputTensorIndex));
-      Value destination =
-          physicalBuffer(sequence.inputIndex + 1,
-                         deviceAllocationBytes(graph, inputTensorIndex));
-      SmallVector<int64_t> starts(input.type.getRank(), 0);
-      SmallVector<int64_t> steps(input.type.getRank(), 1);
-      starts[sequence.axis] = sequence.step;
-      auto dispatched = func::CallOp::create(
-          builder, location, "__vrc_opencl_dispatch_udononnx_slice_f32",
-          TypeRange{i32},
-          ValueRange{source, destination, constant(input.type.getNumElements()),
-                     constant(input.type.getRank()),
-                     constant(packUnsigned(output.type.getShape(), 0, 1)),
-                     constant(packUnsigned(output.type.getShape(), 2, 1)),
-                     constant(packUnsigned(output.type.getShape(), 4, 1)),
-                     constant(packUnsigned(input.type.getShape(), 0, 1)),
-                     constant(packUnsigned(input.type.getShape(), 2, 1)),
-                     constant(packUnsigned(input.type.getShape(), 4, 1)),
-                     constant(packUnsigned(starts, 0, 0)),
-                     constant(packUnsigned(starts, 2, 0)),
-                     constant(packUnsigned(starts, 4, 0)),
-                     constant(packUnsigned(steps, 0, 1)),
-                     constant(packUnsigned(steps, 2, 1)),
-                     constant(packUnsigned(steps, 4, 1))});
-      auto awaited =
-          func::CallOp::create(builder, location, "__vrc_opencl_await",
-                               TypeRange{i32}, dispatched.getResult(0));
-      advanceReturnIfNonzero(awaited.getResult(0), 5);
-    }
-    if (banked) {
-      // The pending run wrote the present into the past input from bank 1
-      // and into the present output otherwise.
-      Value bank = addressOf(builder, location, sequenceStateBankSymbol);
-      Value fromInput =
-          arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
-                                loadI32(builder, location, bank), constant(1));
-      store(builder, location,
-            arith::SelectOp::create(builder, location, fromInput, constant(2),
-                                    constant(1)),
-            bank);
-    }
-    if (fillAge) {
-      // One more advance since the fill. Past the limit no state has zero
-      // rows left, so the count stops there and never overflows.
-      Value age = loadFillAge();
-      Value counting = arith::AndIOp::create(
+    // The advance commits the rows the pending run appended. The plain
+    // advance commits all of them; with a `rows` argument
+    // (sequenceStatePartialAdvanceStep) only the first `rows`, and the rows
+    // after them, which the run computed from padding, are never carried:
+    // the next run's carried rows start `rows` rows into the previous
+    // present instead of a whole step.
+    int64_t partialStep = sequenceStatePartialAdvanceStep(graph);
+    auto emitAdvance = [&](StringRef name, bool rowsArgument) -> LogicalResult {
+      builder.setInsertionPointToEnd(module.getBody());
+      SmallVector<Type> parameters;
+      if (rowsArgument)
+        parameters.push_back(i32);
+      auto advance = func::FuncOp::create(
+          builder, location, name,
+          FunctionType::get(module.getContext(), parameters, {i32}));
+      // Only a C Host that runs part of a sequence calls the partial
+      // advance, so like materialization it is not a Udon export.
+      if (!rowsArgument)
+        markExport(advance);
+      // An advance that only flips banks issues no Device command and never
+      // suspends; the Udon async lowering supports no coroutine without a
+      // suspension point.
+      if (plan.sequenceStateBanks.size() != graph.sequenceStates.size())
+        advance->setAttr("vrc.async_effect",
+                         builder.getStringAttr("may_suspend"));
+      Block *advanceEntry = advance.addEntryBlock();
+      builder.setInsertionPointToEnd(advanceEntry);
+      Block *advanceReady = advance.addBlock();
+      Block *advanceBusy = advance.addBlock();
+      Block *advanceInvalid = advance.addBlock();
+      Value active = loadI32(builder, location,
+                             addressOf(builder, location, bindingEventSymbol));
+      Value idle = arith::CmpIOp::create(
+          builder, location, arith::CmpIPredicate::eq, active, constant(0));
+      Value owned =
+          loadI32(builder, location,
+                  addressOf(builder, location, sequenceStateOwnedSymbol));
+      Value pending =
+          loadI32(builder, location,
+                  addressOf(builder, location, sequenceStatePendingSymbol));
+      Value poisoned =
+          loadI32(builder, location,
+                  addressOf(builder, location, sequenceStatePoisonedSymbol));
+      Value valid = arith::AndIOp::create(
           builder, location,
-          arith::CmpIOp::create(builder, location, arith::CmpIPredicate::ne,
-                                age, constant(0)),
-          arith::CmpIOp::create(builder, location, arith::CmpIPredicate::slt,
-                                age,
-                                constant(sequenceStateFillAgeLimit(graph))));
-      storeFillAge(arith::SelectOp::create(
-          builder, location, counting,
-          arith::AddIOp::create(builder, location, age, constant(1)), age));
-    }
-    store(builder, location, constant(0),
-          addressOf(builder, location, sequenceStatePendingSymbol));
-    func::ReturnOp::create(builder, location, constant(0));
+          arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
+                                owned, constant(1)),
+          arith::AndIOp::create(
+              builder, location,
+              arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
+                                    pending, constant(1)),
+              arith::CmpIOp::create(builder, location, arith::CmpIPredicate::eq,
+                                    poisoned, constant(0))));
+      Block *checkState = advance.addBlock();
+      cf::CondBranchOp::create(builder, location, idle, checkState,
+                               ValueRange{}, advanceBusy, ValueRange{});
+      builder.setInsertionPointToEnd(advanceBusy);
+      func::ReturnOp::create(builder, location, constant(7));
+      builder.setInsertionPointToEnd(checkState);
+      cf::CondBranchOp::create(builder, location, valid, advanceReady,
+                               ValueRange{}, advanceInvalid, ValueRange{});
+      builder.setInsertionPointToEnd(advanceInvalid);
+      func::ReturnOp::create(builder, location, constant(12));
+      builder.setInsertionPointToEnd(advanceReady);
+      // The rows this advance commits of every state: a whole step unless
+      // the caller passes fewer.
+      Value rows;
+      if (rowsArgument) {
+        rows = advanceEntry->getArgument(0);
+        Block *rowsValid = advance.addBlock();
+        Block *rowsInvalid = advance.addBlock();
+        cf::CondBranchOp::create(
+            builder, location,
+            arith::CmpIOp::create(builder, location, arith::CmpIPredicate::ule,
+                                  rows, constant(partialStep)),
+            rowsValid, ValueRange{}, rowsInvalid, ValueRange{});
+        builder.setInsertionPointToEnd(rowsInvalid);
+        func::ReturnOp::create(builder, location, constant(1));
+        builder.setInsertionPointToEnd(rowsValid);
+      } else if (partialStep) {
+        rows = constant(partialStep);
+      }
+      auto advanceReturnIfNonzero = [&](Value status,
+                                        int64_t failureStatus = -1) {
+        Block *next = advance.addBlock();
+        Block *failure = advance.addBlock();
+        Value succeeded = arith::CmpIOp::create(
+            builder, location, arith::CmpIPredicate::eq, status, constant(0));
+        cf::CondBranchOp::create(builder, location, succeeded, next,
+                                 ValueRange{}, failure, ValueRange{});
+        builder.setInsertionPointToEnd(failure);
+        if (failureStatus == 5)
+          store(builder, location, constant(1),
+                addressOf(builder, location, sequenceStatePoisonedSymbol));
+        func::ReturnOp::create(builder, location,
+                               failureStatus < 0 ? status
+                                                 : constant(failureStatus));
+        builder.setInsertionPointToEnd(next);
+      };
+      Value sessionSlot = allocaI32(builder, location);
+      auto gotSession = func::CallOp::create(
+          builder, location, "udononnxBindingStateGetSession", TypeRange{i32},
+          ValueRange{state(), sessionSlot});
+      advanceReturnIfNonzero(gotSession.getResult(0));
+      auto physicalBuffer = [&](size_t logicalId, int64_t bytes) -> Value {
+        return func::CallOp::create(
+                   builder, location, "__vrc_opencl_buffer_alloc",
+                   TypeRange{i32},
+                   ValueRange{constant(logicalId), constant(bytes)})
+            .getResult(0);
+      };
+      auto packUnsigned = [](ArrayRef<int64_t> values, int64_t first,
+                             int64_t fallback) {
+        int64_t low = first < static_cast<int64_t>(values.size())
+                          ? values[first]
+                          : fallback;
+        int64_t high = first + 1 < static_cast<int64_t>(values.size())
+                           ? values[first + 1]
+                           : fallback;
+        return (low & 65535) | ((high & 65535) << 16);
+      };
+      for (auto [stateIndex, sequence] :
+           llvm::enumerate(graph.sequenceStates)) {
+        // A banked state moves nothing: the bank flip below makes the rows
+        // the last run wrote the carried rows of the next run.
+        if (isBankedSequenceState(plan, stateIndex))
+          continue;
+        unsigned inputTensorIndex = graph.inputs[sequence.inputIndex];
+        unsigned outputTensorIndex = graph.outputs[sequence.outputIndex];
+        const TensorRecord &input = graph.tensors[inputTensorIndex];
+        const TensorRecord &output = graph.tensors[outputTensorIndex];
+        // The copying advance is one udononnx_slice_f32 dispatch, which
+        // addresses at most 16384 words; a banked state has no such limit.
+        if (input.type.getNumElements() > 16384 ||
+            output.type.getNumElements() > 16384)
+          return emitError(location)
+                 << "ONNX sequence state that is not banked exceeds the "
+                    "16384 elements of its copying advance";
+        Value source =
+            physicalBuffer(graph.inputs.size() + sequence.outputIndex + 1,
+                           deviceAllocationBytes(graph, outputTensorIndex));
+        Value destination =
+            physicalBuffer(sequence.inputIndex + 1,
+                           deviceAllocationBytes(graph, inputTensorIndex));
+        SmallVector<int64_t> starts(input.type.getRank(), 0);
+        SmallVector<int64_t> steps(input.type.getRank(), 1);
+        starts[sequence.axis] = rowsArgument ? 0 : sequence.step;
+        SmallVector<Value> packedStarts{constant(packUnsigned(starts, 0, 0)),
+                                        constant(packUnsigned(starts, 2, 0)),
+                                        constant(packUnsigned(starts, 4, 0))};
+        // The slice starts `rows` rows into the present: the axis's half of
+        // its packed start word is filled in at run time.
+        if (rowsArgument) {
+          Value &word = packedStarts[sequence.axis / 2];
+          Value shifted = sequence.axis % 2
+                              ? Value(arith::ShLIOp::create(builder, location,
+                                                            rows, constant(16)))
+                              : rows;
+          word = arith::OrIOp::create(builder, location, word, shifted);
+        }
+        auto dispatched = func::CallOp::create(
+            builder, location, "__vrc_opencl_dispatch_udononnx_slice_f32",
+            TypeRange{i32},
+            ValueRange{source, destination,
+                       constant(input.type.getNumElements()),
+                       constant(input.type.getRank()),
+                       constant(packUnsigned(output.type.getShape(), 0, 1)),
+                       constant(packUnsigned(output.type.getShape(), 2, 1)),
+                       constant(packUnsigned(output.type.getShape(), 4, 1)),
+                       constant(packUnsigned(input.type.getShape(), 0, 1)),
+                       constant(packUnsigned(input.type.getShape(), 2, 1)),
+                       constant(packUnsigned(input.type.getShape(), 4, 1)),
+                       packedStarts[0], packedStarts[1], packedStarts[2],
+                       constant(packUnsigned(steps, 0, 1)),
+                       constant(packUnsigned(steps, 2, 1)),
+                       constant(packUnsigned(steps, 4, 1))});
+        auto awaited =
+            func::CallOp::create(builder, location, "__vrc_opencl_await",
+                                 TypeRange{i32}, dispatched.getResult(0));
+        advanceReturnIfNonzero(awaited.getResult(0), 5);
+      }
+      if (banked) {
+        // The pending run wrote the present into the past input from bank 1
+        // and into the present output otherwise.
+        Value bank = addressOf(builder, location, sequenceStateBankSymbol);
+        Value fromInput = arith::CmpIOp::create(
+            builder, location, arith::CmpIPredicate::eq,
+            loadI32(builder, location, bank), constant(1));
+        store(builder, location,
+              arith::SelectOp::create(builder, location, fromInput, constant(2),
+                                      constant(1)),
+              bank);
+        // The next run reads its carried rows this many rows into that
+        // present.
+        if (partialStep)
+          store(builder, location, rows,
+                addressOf(builder, location, sequenceStateAdvancedRowsSymbol));
+      }
+      if (fillAge && partialStep) {
+        // The age counts committed rows (sequenceStateFillAgeRows). Past
+        // the limit no state has zero rows left, so it stays there and
+        // never overflows.
+        Value age = loadFillAge();
+        Value known = arith::CmpIOp::create(
+            builder, location, arith::CmpIPredicate::ne, age, constant(0));
+        Value counted = arith::MinUIOp::create(
+            builder, location,
+            arith::AddIOp::create(builder, location, age, rows),
+            constant(sequenceStateFillAgeLimit(graph)));
+        storeFillAge(
+            arith::SelectOp::create(builder, location, known, counted, age));
+      } else if (fillAge) {
+        // One more advance since the fill. Past the limit no state has zero
+        // rows left, so the count stops there and never overflows.
+        Value age = loadFillAge();
+        Value counting = arith::AndIOp::create(
+            builder, location,
+            arith::CmpIOp::create(builder, location, arith::CmpIPredicate::ne,
+                                  age, constant(0)),
+            arith::CmpIOp::create(builder, location, arith::CmpIPredicate::slt,
+                                  age,
+                                  constant(sequenceStateFillAgeLimit(graph))));
+        storeFillAge(arith::SelectOp::create(
+            builder, location, counting,
+            arith::AddIOp::create(builder, location, age, constant(1)), age));
+      }
+      store(builder, location, constant(0),
+            addressOf(builder, location, sequenceStatePendingSymbol));
+      func::ReturnOp::create(builder, location, constant(0));
+      return success();
+    };
+    if (failed(emitAdvance("udon_onnx_binding_enqueue_advance_sequence_state",
+                           /*rowsArgument=*/false)))
+      return failure();
+    if (partialStep &&
+        failed(
+            emitAdvance("udon_onnx_binding_enqueue_advance_sequence_state_rows",
+                        /*rowsArgument=*/true)))
+      return failure();
   }
 
   if (banked) {
@@ -2901,6 +2978,10 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
       DeviceFusionLeafView view;
     };
     SmallVector<BankedState> bankedStates;
+    // A binding that may commit part of a run reads the carried rows as many
+    // rows into the previous present as the last advance committed
+    // (sequenceStatePartialAdvanceStep), at most a whole step.
+    bool partialAdvance = sequenceStatePartialAdvanceStep(graph) != 0;
     for (unsigned stateIndex : plan.sequenceStateBanks) {
       const SequenceStateRecord &sequence = graph.sequenceStates[stateIndex];
       unsigned past = graph.inputs[sequence.inputIndex];
@@ -2919,7 +3000,7 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
            present,
            static_cast<unsigned>(concat - graph.nodes.begin()),
            {past, SmallVector<int64_t>(presentShape), sequence.axis,
-            sequence.step}});
+            sequence.step, partialAdvance}});
     }
     auto bankedConcat = [&](unsigned nodeIndex) -> const BankedState * {
       for (const BankedState &bank : bankedStates)
@@ -2943,14 +3024,19 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
         });
       });
     };
-    Value bankValue;
+    Value bankValue, advancedRows;
     if (!bankedStates.empty())
       bankValue =
           loadI32(builder, location,
                   addressOf(builder, location, sequenceStateBankSymbol));
+    if (!bankedStates.empty() && partialAdvance)
+      advancedRows = loadI32(
+          builder, location,
+          addressOf(builder, location, sequenceStateAdvancedRowsSymbol));
     // The zero rows of every state this run skips
     // (ONNXHostSequenceExtents.h), read once from the fill age:
-    // max(0, carried - (age - 1) * step) when the age is known, else 0.
+    // max(0, carried - (age - 1) * rows per unit) when the age is known,
+    // else 0.
     DeviceSequenceExtents extents = deviceSequenceExtents(graph);
     SmallVector<Value> zeroRows(graph.sequenceStates.size());
     if (extents.used()) {
@@ -2981,8 +3067,9 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
         }
         Value rows = arith::SubIOp::create(
             builder, location, constant(sequence.capacity - sequence.step),
-            arith::MulIOp::create(builder, location, advances,
-                                  constant(sequence.step)));
+            arith::MulIOp::create(
+                builder, location, advances,
+                constant(sequenceStateFillAgeRows(graph, stateIndex))));
         Value positive = arith::CmpIOp::create(
             builder, location, arith::CmpIPredicate::sgt, rows, constant(0));
         zeroRows[stateIndex] = arith::SelectOp::create(
@@ -3026,6 +3113,8 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
           arguments.push_back(next);
           if (prefix)
             arguments.push_back(zeroRows[prefix->prefix.state]);
+          if (bank->view.dynamicOffset)
+            arguments.push_back(advancedRows);
           dispatch(viewed->callee, arguments);
           return success();
         }

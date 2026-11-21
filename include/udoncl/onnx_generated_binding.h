@@ -29,6 +29,16 @@ udononnxStatus_t
 udon_onnx_binding_enqueue_copy_output_to_input(uint32_t output_index,
                                                uint32_t input_index);
 udononnxStatus_t udon_onnx_binding_enqueue_advance_sequence_state(void);
+/* Generated only when every sequence state appends the same number of rows,
+ * more than one, per run (a graph specialized to a sequence of k > 1
+ * positions): advances every state by only the first `rows` (at most k) rows
+ * the pending run appended, as if the run had appended those alone. The rows
+ * after them, which a run computes for padded positions, are never carried:
+ * the next run's past starts `rows` rows into the pending run's present.
+ * rows == k is the plain advance; rows > k is UDONONNX_STATUS_INVALID_VALUE.
+ * Like the plain advance it needs a pending run and leaves none. */
+udononnxStatus_t
+udon_onnx_binding_enqueue_advance_sequence_state_rows(uint32_t rows);
 /* Generated only when a sequence state is banked: copies the present of
  * every banked state into its present output when the last run left it in
  * the past input buffer. Call it before reading a present output; run,

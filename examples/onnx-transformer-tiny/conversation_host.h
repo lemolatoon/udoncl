@@ -13,6 +13,17 @@
 #ifndef TINYLLAMA_GENERATED_CAPACITY
 #define TINYLLAMA_GENERATED_CAPACITY 32u
 #endif
+/* The positions one model run covers: the graph is specialized to
+ * sequence_length = TINYLLAMA_SEQUENCE_ROWS on top of the same past, and an
+ * attention mask of capacity + rows - 1 (see conversation_host.c). 1 runs
+ * every position on its own. */
+#ifndef TINYLLAMA_SEQUENCE_ROWS
+#define TINYLLAMA_SEQUENCE_ROWS 1u
+#endif
+#if TINYLLAMA_SEQUENCE_ROWS < 1u ||                                            \
+    TINYLLAMA_SEQUENCE_ROWS > TINYLLAMA_CONTEXT_CAPACITY
+#error "TINYLLAMA_SEQUENCE_ROWS must be between 1 and the Context Capacity"
+#endif
 
 #ifdef __cplusplus
 extern "C" {

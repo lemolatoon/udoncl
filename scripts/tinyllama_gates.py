@@ -180,9 +180,13 @@ def target_capacity(name: str, capacity: int) -> int:
     return CONTEXT_4K if name in CONTEXT_4K_TARGETS else capacity
 
 
-def validate_build(targets: list[str], capacity: int):
+def validate_build(targets: list[str], capacity: int, sequence_rows: int = 1):
     if capacity < 16:
         raise GateError(f"--capacity must be at least 16: {capacity}")
+    if not 1 <= sequence_rows <= capacity:
+        raise GateError(
+            f"--sequence-rows must be between 1 and the capacity: {sequence_rows}"
+        )
     if "m1-step" in targets and capacity != ORACLE_CAPACITY:
         raise GateError(
             f"the M=1 step oracle sidecars exist only for capacity {ORACLE_CAPACITY}"
@@ -464,6 +468,7 @@ def example_configure_command(
     tokenizer: Path,
     capacity: int,
     context_4k: bool = False,
+    sequence_rows: int = 1,
 ) -> list[str]:
     suffix = ".exe" if os.name == "nt" else ""
     return [
@@ -484,6 +489,7 @@ def example_configure_command(
         f"-DUDONCL_TINYLLAMA_TOKENIZER_DIRECTORY={tokenizer}",
         f"-DUDONCL_TINYLLAMA_CONTEXT_CAPACITY={capacity}",
         f"-DUDONCL_TINYLLAMA_CONTEXT_4K={'ON' if context_4k else 'OFF'}",
+        f"-DUDONCL_TINYLLAMA_SEQUENCE_ROWS={sequence_rows}",
     ]
 
 
@@ -513,7 +519,7 @@ def build_main(args) -> int:
     root = ROOT
     out = args.out.resolve()
     targets = parse_targets(args.targets)
-    validate_build(targets, args.capacity)
+    validate_build(targets, args.capacity, args.sequence_rows)
     template = environment_value("UDONCL_UNITY_TEST_PROJECT")
     check_out_directory(
         out,
@@ -534,11 +540,16 @@ def build_main(args) -> int:
             raise GateError(f"{out} already holds {previous.get('kind')} output for another commit")
         if previous.get("capacity") != args.capacity:
             raise GateError(f"{out} was built at capacity {previous.get('capacity')}")
+        if previous.get("sequence_rows", 1) != args.sequence_rows:
+            raise GateError(
+                f"{out} was built with {previous.get('sequence_rows', 1)} sequence rows"
+            )
     hooks = git_hooks_path(root)
     manifest = {
         "kind": "build",
         "commit": commit,
         "capacity": args.capacity,
+        "sequence_rows": args.sequence_rows,
         "source": "src",
         "compiler": "cb",
         "sdk": "sdk",
@@ -612,7 +623,7 @@ def build_main(args) -> int:
                         source, example, sdk, llvm,
                         cmake_cache_value(compiler, "CMAKE_MAKE_PROGRAM"),
                         Path(model), Path(tokenizer), args.capacity,
-                        want_4k or has_4k,
+                        want_4k or has_4k, args.sequence_rows,
                     ),
                     logs / "example-configure.log", cwd=source, env=environment,
                     timeout=BUILD_STEP_TIMEOUT,
@@ -652,6 +663,7 @@ def build_main(args) -> int:
                             sys.executable, source / "tests/boundary/tinyllama_chat_oracle.py",
                             source, chat, "--user", CHAT_USER, "--next-user", CHAT_NEXT_USER,
                             "--capacity", str(args.capacity),
+                            "--sequence-rows", str(args.sequence_rows),
                         ],
                         logs / "oracle-chat.log", cwd=source, env=environment,
                         timeout=ORACLE_TIMEOUT,
@@ -678,6 +690,7 @@ def build_main(args) -> int:
                             sys.executable, source / "tests/boundary/tinyllama_chat_oracle.py",
                             source, chat, "--user", CHAT_USER, "--next-user", CHAT_NEXT_USER,
                             "--capacity", str(CONTEXT_4K),
+                            "--sequence-rows", str(args.sequence_rows),
                         ],
                         logs / "oracle-chat-4k.log", cwd=source, env=environment,
                         timeout=ORACLE_TIMEOUT,
@@ -2087,6 +2100,16 @@ def parser() -> argparse.ArgumentParser:
         type=int,
         default=ORACLE_CAPACITY,
         help=f"Context Capacity of the targets without -4k (those use {CONTEXT_4K})",
+    )
+    build.add_argument(
+        "--sequence-rows",
+        type=int,
+        default=1,
+        help=(
+            "positions one Conversation/Chat model run covers "
+            "(UDONCL_TINYLLAMA_SEQUENCE_ROWS): prompts run in chunks of it; "
+            "m1-step and prefill keep their graphs (default 1)"
+        ),
     )
     build.add_argument("--min-free-gb", type=float)
     build.set_defaults(main=build_main)

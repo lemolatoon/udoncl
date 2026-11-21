@@ -220,6 +220,43 @@ codes instead of a different contract: ranges are word-aligned
 `CL_INVALID_OPERATION`; one Host transfer is outstanding at a time, so a
 second transfer first waits for the previous one.
 
+## Partial sequence-state advance
+
+Also a binding mechanism of this section, not an operator. A graph
+specialized to a sequence of k > 1 positions (every state appends the same k
+rows per run; `sequenceStatePartialAdvanceStep` in
+`ONNXHostSequenceExtents.h`) lets a Host run fewer than k real positions in
+one run: it fills the rest with padding, and
+`udon_onnx_binding_enqueue_advance_sequence_state_rows(rows)` commits only
+the first `rows` rows of the pending run, as if the run had appended those
+alone. The next run's carried rows then start `rows` rows into the previous
+present instead of k, so the padded rows are never carried; the dropped
+leading rows are the ones the plain advance would have dropped had the run
+been `rows` long. Every result of every run is still the ONNX Concat of its
+past and its new rows.
+
+The owner of this contract is the KV-cache handling of the runtimes that
+drive decoder ONNX models, not an operator library: Hugging Face
+`transformers` `DynamicCache.crop` (`src/transformers/cache_utils.py`), used to
+discard rejected speculative tokens, and ONNX Runtime GenAI's
+`Generator::RewindTo` both keep the first rows of a cache and drop the rest.
+Here only the rows of the pending run can be dropped, which is all a Host
+that pads a run needs, and no copy happens: a banked state reads its carried
+rows through a view whose offset is now a run-time value (the
+`DeviceFusionLeafView` of the banked Concat kernel takes the committed rows,
+bounded by k, as a trailing argument), and a copying advance passes the rows
+as the Slice start. The binding records the committed rows
+(`__udon_onnx_sequence_state_advanced_rows`), and its fill age counts rows
+rather than advances, so the zero rows of the section below stay exact.
+`onnx-fusion-execution` runs runs of two rows whose advances commit one, two,
+none and one of them against a reference that carries exactly the committed
+rows, bit for bit, and `finalize-onnx-host-sequence-state-partial-advance.mlir`
+checks the binding.
+
+The function is generated only for such a graph and is not a Udon export;
+like materialization, a C Host calls it. A graph of one row per run (every
+M=1 decode graph) is generated exactly as before.
+
 ## Zero rows of a sequence state
 
 Like the banks, this is a binding mechanism, not an operator: it adds no
@@ -227,7 +264,8 @@ public API and changes no operator contract or result
 (`ONNXHostSequenceExtents.h`). The reset fills every past input with zeros,
 and every advance drops the first `step` rows, so before the run that
 follows `n` advances the first `max(0, carried - n * step)` rows of a past
-and of its present still hold that fill. The binding counts the advances
+and of its present still hold that fill (with the partial advance above,
+`max(0, carried - rows committed since the fill)`). The binding counts the advances
 since the fill (`__udon_onnx_sequence_state_fill_age`; create, bind-all, a
 binding of a state tensor and a copy into a past input make it unknown),
 and it never vouches for the fill once a caller has resolved a past input,

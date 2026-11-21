@@ -91,6 +91,12 @@ inline constexpr llvm::StringLiteral onnxHostSequenceStateZeroSymbol =
 /// past input, each as the rows after the step of the previous present.
 inline constexpr llvm::StringLiteral onnxHostSequenceStateBankSymbol =
     "__udon_onnx_sequence_state_bank";
+/// The rows the last advance committed of the run it advanced, when the
+/// binding may commit part of a run (sequenceStatePartialAdvanceStep): in
+/// banks 1 and 2 the carried rows start this many rows into the previous
+/// present, not a whole step.
+inline constexpr llvm::StringLiteral onnxHostSequenceStateAdvancedRowsSymbol =
+    "__udon_onnx_sequence_state_advanced_rows";
 /// How many advances ago the binding filled every past input with zeros,
 /// plus one; 0 when the binding cannot vouch for the past inputs' contents.
 /// A run derives the zero rows of each state from it

@@ -272,6 +272,10 @@ LogicalResult preflightGlobalSymbols(ModuleOp module, const GraphRecord &graph,
   if (!plan.sequenceStateBanks.empty() &&
       failed(reserve(onnxHostSequenceStateBankSymbol)))
     return failure();
+  if (!plan.sequenceStateBanks.empty() &&
+      sequenceStatePartialAdvanceStep(graph) &&
+      failed(reserve(onnxHostSequenceStateAdvancedRowsSymbol)))
+    return failure();
   if (deviceSequenceExtents(graph).used() &&
       (failed(reserve(onnxHostSequenceStateFillAgeSymbol)) ||
        failed(reserve(onnxHostSequenceStateExposedSymbol))))
@@ -359,6 +363,9 @@ struct MaterializeONNXHostGlobalsPass
     }
     if (!plan->sequenceStateBanks.empty())
       createI32Global(module, onnxHostSequenceStateBankSymbol);
+    if (!plan->sequenceStateBanks.empty() &&
+        sequenceStatePartialAdvanceStep(*graph))
+      createI32Global(module, onnxHostSequenceStateAdvancedRowsSymbol);
     if (deviceSequenceExtents(*graph).used()) {
       createI32Global(module, onnxHostSequenceStateFillAgeSymbol);
       createI32Global(module, onnxHostSequenceStateExposedSymbol);

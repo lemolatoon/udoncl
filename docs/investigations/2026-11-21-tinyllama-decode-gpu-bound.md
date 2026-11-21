@@ -16,7 +16,9 @@ reset's zero fill; see "Zero rows of sequence states" (Unity measurement
 pending). The binding's default frame budget no longer caps the
 continuations of a frame, which stopped 4096-token decode windows after
 about 4 ms; see "Frame budget: the continuation count" (Unity measurement
-pending).
+pending). A prompt can run in chunks of several positions per run, with a
+partial sequence-state advance for padded runs; see "Prompt processing:
+several positions per run" (Unity measurement pending).
 The GPU cost model below is static (fragment-level Load/statement counts)
 and is calibrated against one Unity trace. The per-kernel times still need
 a Unity measurement (see "Measuring in Unity").
@@ -652,6 +654,189 @@ full-surface Blits shorten GPU time without removing frames; and
 coarser device-cost slices save only the per-event overhead once the
 count no longer quantizes it (the 32 events of a 4096-token step take about
 4 ms of Udon time, the 16 events of a 512-token step about 3.7 ms).
+
+## Prompt processing: several positions per run
+
+Decode reached one step per frame, so the prompt is now most of a turn.
+The conversation Host ran one model run per prompt position, and a run
+costs about the same Udon issue time and GPU time whatever it computes.
+
+### Where the frames of a turn go
+
+Pump traces at 90 Hz (master a7160f6a, RTX 4070 Ti, `dn5-u90` and
+`dn4-u90`; frames are Unity frames of the gate):
+
+| gate | prompt tokens | runs | issue frames | GPU-backlog frames | decode frames (tokens) |
+|---|---:|---:|---:|---:|---:|
+| chat (512), first turn | 22 | 22 | 14 (16-29) | 15 (30-44) | 5 (6) |
+| multi-turn (512), second turn | 23 | 23 | 9 (56-64) | 3 (65-67) | 5 (5) |
+| chat-4k, first turn | 22 | 22 | 14 (17-30) | 17 (31-47) | 6 (6) |
+| multi-turn-4k, second turn | 23 | 23 | 10 (63-72) | 7 (73-79) | 5 (5) |
+
+The first turn also pays the first use of every shader and texture, so the
+warm second turn is the better per-run measure: 23 runs in 12 frames, about
+5.8 ms each, matching the probe's 6.1 ms replay of one run at 512
+(8.3 ms at 4096). The issue frames are Udon: a run is 17 (512) or 32
+(4096) budget slices whatever the position. The prompt is 70-85% of the
+frames of a turn.
+
+### One run of k positions
+
+A graph specialized to k positions per run (`sequence_length = k` on the
+same past of capacity - 1 rows, an attention mask of capacity + k - 1)
+issues the same dispatches as the M=1 graph, so its Udon issue time is that
+of one run. Its GPU time grows only with the work that scales with k:
+
+- **Q4 MatMulNBits.** One fragment computes four outputs of one row, so k
+  rows are k times the fragments and Loads; the weights are not read once
+  per chunk on this backend (each row's fragments read them again, mostly
+  from cache). The kernel accepts at most 4 rows: its output and partial
+  surfaces hold 131072 words, and the LM head alone is 4 x 32000 of them.
+  That bounds k to 4 until a larger-surface or multi-row Q4 kernel exists.
+- **Attention.** QK^T, Softmax and PV scale with k times the window.
+- **Everything else** (RMSNorm, RoPE, elementwise, the Blits themselves) is
+  per-row or fixed.
+
+How much of the 6.1 ms is Q4 work rather than per-Blit cost is not known:
+the isolated probe configurations put Q4 at 72% of their sum, but they sum
+to 3.7 times the replay, and an instruction-issue bound of the Q4 kernel
+over all its fragments is about 0.3 ms per run. A 526-Blit run of mostly
+dependent dispatches at about 10 us each is about 5 ms of fixed cost.
+`ms per run` of the 4-row graph therefore lies between about 7 ms (fixed
+cost dominates) and about 19 ms (Q4 throughput dominates, x4); see
+the probe plan under "Predicted frames" below.
+
+Batching also needs no change of numerics that matters: ONNX Runtime runs
+the chat at capacity 512 with 4 and 8 positions per run to the same greedy
+tokens as M=1 ("My name is Sarah.", then "Sarah."), with every greedy
+margin within 4e-5 of the M=1 one (smallest margins 0.66 and 0.30), and
+the conversation prompt with 3 and 4 rows to `[1701, 29916, 432, 17204]`
+(last prompt logits within 7.9e-5).
+
+### Mechanism
+
+- **Partial sequence-state advance** (generic, binding-level; see
+  `docs/architecture/operator-ownership.md`, "Partial sequence-state
+  advance"). When every sequence state appends the same k > 1 rows per run,
+  the binding also generates
+  `udon_onnx_binding_enqueue_advance_sequence_state_rows(rows)`: it commits
+  only the first `rows` rows of the pending run, so the next run's past
+  starts `rows` rows into the previous present. The banked Concat reads its
+  carried rows through a view whose offset is a run-time argument bounded by
+  k (still gather-proven), a copying advance passes the rows as the Slice
+  start, and the fill age counts committed rows so the zero rows stay exact.
+  M=1 graphs are generated exactly as before.
+- **Conversation Host.** `UDONCL_TINYLLAMA_SEQUENCE_ROWS` (CMake, default 1)
+  specializes the Conversation and Chat graphs to k positions per run. The
+  Host runs a prompt in chunks of k and every decode step as a run of one
+  real row; a run of r < k real rows repeats its last token at its position
+  in the other rows, which the causal mask hides from the real rows and the
+  partial advance never commits. The token is selected from logits row
+  r - 1. The attention mask is "the last position + k slots", so a run only
+  writes the slots no earlier run set. The M=1 step artifact keeps its M=1
+  graph; artifacts with k > 1 also declare the large strided-batched SGEMM
+  their attention dispatches.
+- **Gate script.** `tinyllama_gates.py build --sequence-rows k` builds such
+  artifacts and their chat oracles.
+
+The decode steps of a k-row artifact are k-row runs too: decode pays the
+k-row GPU time per token. That is the cost of having one graph. If the
+4-row run is over about 9 ms, decode falls back from one frame per token to
+two, and the generic fix is a second specialization of the same model in
+the same artifact (see "Next steps").
+
+### Udon emulator, 4-row Conversation Artifact (capacity 512)
+
+The emulator (Host protocol, scripted tokens) drives the 4-row
+Conversation Artifact built from this change through gen1, Reset and gen2
+of the conversation prompt `[1, 450, 4996, 17354]`: both give
+`[1701, 29916, 432, 17204]`, and the prompt is one run instead of four.
+Every run, prompt chunk or decode step, is the same 4-row run:
+
+| per run | M=1 (master, zero rows) | 4 rows |
+|---|---:|---:|
+| Blits | 529 | 591 (594 per decode step with the ArgMax and token feed) |
+| Udon instructions per decode step | 99.6 K | 111-116 K |
+| Udon events (budget slices) | 17 | 39 |
+
+The run issues more slices because the static device cost that closes a
+slice charges every dispatch its full extent, which grows with the rows;
+the Udon instructions, which set the issue time, grow by about 12%. The
+artifact passes the conversation profile validator with
+`--sequence-rows 4` (47 inputs, 45 outputs, 109 Device buffers).
+
+### Predicted frames
+
+Issue time per run is about proportional to Udon instructions (the 512
+traces: about 4.7 ms for a 100 K-instruction run), so a 4-row run issues in
+about 5.3 ms. With g4 the GPU time of a 4-row run (unmeasured; 7 to 19 ms by
+the bounds above):
+
+| turn at capacity 512 | runs now / 4 rows | prompt frames now | prompt frames, 4 rows |
+|---|---:|---:|---:|
+| chat, first turn (22 tokens) | 22 / 6 | 29 (14 issue + 15 backlog, includes first use) | about 4 issue, 4 to 10 in all |
+| multi-turn, second turn (23 tokens) | 23 / 6 | 12 | about 4 to 10 |
+| conversation (4 tokens) | 4 / 1 | | 1 run |
+
+Decode stays at one frame per token only if g4 plus the read's one-frame
+latency fits the frame, about g4 <= 9 ms; with g4 near the upper bound,
+decode takes two frames per token. At 4096 tokens attention is a larger
+part of a run and grows with the rows too, so `--sequence-rows` above 1 is
+not recommended for the -4k artifacts before a probe.
+
+Measuring the 4-row run: the probe plan of one 4-row run of this artifact
+(591 Blits, 47 configurations) is
+`C:/t/pb-probe-plans/gpu-probe-plan-rows4-cap512.unity.json` on the build
+machine, made with the emulator tools of "Measuring in Unity"
+(`makeplan.py` skipping the transfer-snapshot Blits, whose destination is
+not a Device buffer). `tinyllama_gates.py probe --target conversation
+--plan <it>` on a `build --sequence-rows 4` reports its `ms_per_run`; the
+M=1 replay at 512 is 6.1 ms.
+
+### Measured in Unity (2f18071f, capacity 512, RTX 4070 Ti)
+
+- `--sequence-rows 4`: conv, chat and multiturn pass with matching tokens
+  in the unpaced run. At 90 Hz conv takes 3.00 frames per position against
+  2.79 for one row. The 4-row run is GPU-bound: in the conv trace the
+  decode runs (39 slices each) are issued at frames 15, 27 and 37, so a
+  decoded token takes about 10 frames instead of one. The probe of one
+  4-row run puts two Q4 configurations alone at 8.0 and 7.6 ms per run,
+  more than a whole M=1 run (6.1 ms). The 90 Hz chat and multiturn session
+  stopped on an MCP `resources/read` timeout and was not repeated.
+- Default (one row): prefill, step, conv, chat and multiturn pass; the 90 Hz
+  traces match a7160f6a (decode 17 slices and one token per frame; a first
+  prompt is 10 to 11 issue frames and about 22 backlog frames).
+
+So chunked prompts stay off by default (`UDONCL_TINYLLAMA_SEQUENCE_ROWS`
+1). The partial advance is the prerequisite for steps 2 and 3 below; until
+a chunk reads the weights once (step 3) and decode runs on an M=1 graph
+(step 2), a k-row run costs more GPU time than k single-row runs save.
+
+### Next steps
+
+1. Probe one 4-row run (plan above) and run the conv/chat/multiturn gates
+   with `--sequence-rows 4`.
+2. If the 4-row run costs more than about one frame, or for 4096 tokens,
+   where attention scales with k times the window: compile a second
+   specialization of the model (M=1) into the same Host module, sharing the
+   static weights (the same initializer symbols) and the sequence-state
+   banks, and run prompt chunks on the k-row graph and decode on the M=1
+   graph. The banks of both are the public past/present buffers sized for
+   the larger present (capacity + k - 1 rows); since the two presents have
+   different head strides, each graph's banked Concat reads the previous
+   present through a view of the shape of whichever graph wrote it (a
+   "last writer" next to the bank counter), at the run-time offset this
+   change introduced. The pieces still missing are one run function per
+   specialization over shared bindings in Host finalization, and the
+   artifact-level model registry entry of the second graph.
+   Alternatively, a run-time live-row extent (the query-side counterpart of
+   the zero rows) would let every row-wise dispatch of a k-row run skip the
+   padded rows; that needs the caller to declare the padding unread, which
+   the causal model provides but the graph does not prove.
+3. A Q4 kernel that computes several rows per fragment (one Load of a
+   weight texel serves all rows of the chunk) and accepts more than 4 rows:
+   this is what makes a chunk read the weights once, and what lets k grow
+   past 4.
 
 ## Measuring in Unity
 

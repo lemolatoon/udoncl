@@ -182,10 +182,24 @@ assert state_dispatches == [
     "udononnx_fused_0",
     "udononnx_fused_1",
 ], state_dispatches
+# The same cache with two rows per run: its view kernel also takes the rows
+# the last advance committed.
+partial_dispatches, partial_carrier, partial_kernels = finalize(
+    "onnx_fusion_partial_state_graph.mlir", "partial-state"
+)
+assert partial_dispatches == state_dispatches, partial_dispatches
+assert [name for name, _ in partial_kernels] == [
+    "udononnx_fused_0",
+    "udononnx_fused_1",
+]
+assert [
+    len(re.findall(r":\s*i32", arguments)) for _, arguments in partial_kernels
+] == [2, 1], partial_kernels
 
 # Leaf buffers of the five kernels: x, cos, sin; x, y; k; x, y; x, cos.
 # The view kernel reads a whole 128-word present bank, the bank-0 kernel the
-# 112-word past; both read the 16-word token.
+# 112-word past; both read the 16-word token. With two rows per run the past
+# is 96 words and the token 32.
 expected_inputs = [[256, 64, 64], [256, 256], [32], [256, 256], [256, 64]]
 assert [name for name, _ in kernels] == [f"udononnx_fused_{i}" for i in range(5)]
 assert [name for name, _ in state_kernels] == [
@@ -195,6 +209,7 @@ assert [name for name, _ in state_kernels] == [
 for index, (source, (name, arguments), inputs) in enumerate(
     [(carrier, kernel, inputs) for kernel, inputs in zip(kernels, expected_inputs)]
     + list(zip([state_carrier] * 2, state_kernels, [[128, 16], [112, 16]]))
+    + list(zip([partial_carrier] * 2, partial_kernels, [[128, 32], [96, 32]]))
 ):
     sizes = [int(size) for size in re.findall(r"memref<(\d+)xf32>", arguments)]
     assert sizes == inputs + [8192], (name, sizes)
@@ -324,6 +339,11 @@ for step in range(4):
 for step in range(4):
     assert f"zero{step}_bitexact=128/128" in result.stdout, result.stdout
     assert f"zero{step}_tail_zero=1" in result.stdout, result.stdout
+# Runs of two rows whose advances commit one, two, none and one of them: the
+# next run's carried rows start that many rows into the previous present.
+for step in range(5):
+    assert f"partial{step}_bitexact=128/128" in result.stdout, result.stdout
+    assert f"partial{step}_tail_zero=1" in result.stdout, result.stdout
 # The two-pass Softmax is within a few rounding errors of the library kernel
 # (the chunk sums are rescaled to the row maximum), NaN exactly where the
 # library is, and deterministic: a second run is bit-identical.
@@ -333,4 +353,4 @@ assert "long_deterministic=1" in result.stdout, result.stdout
 for counter in ["nan", "zero", "nonzero"]:
     found = re.search(rf"long_{counter}=(\d+)", result.stdout)
     assert int(found.group(1)) > 0, (counter, result.stdout)
-assert "draws=44" in result.stdout, result.stdout
+assert "draws=54" in result.stdout, result.stdout

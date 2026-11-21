@@ -156,12 +156,16 @@ struct DeviceRowStatistics {
 /// Emits the expression of one fusion group at the builder's insertion point.
 class ExpressionEmitter {
 public:
+  /// `viewOffset` is the bounded run-time offset of a view whose offset is
+  /// dynamic (DeviceFusionLeafView::dynamicOffset).
   ExpressionEmitter(OpBuilder &builder, Location location,
                     const DeviceFusion &fusion, ArrayRef<unsigned> leaves,
                     ArrayRef<BlockArgument> buffers,
-                    const DeviceFusionLeafView *view)
+                    const DeviceFusionLeafView *view,
+                    std::optional<Bounded> viewOffset = std::nullopt)
       : builder(builder), location(location), fusion(fusion),
-        graph(fusion.graph), leaves(leaves), buffers(buffers), view(view) {}
+        graph(fusion.graph), leaves(leaves), buffers(buffers), view(view),
+        viewOffset(viewOffset) {}
 
   Emitted emitRoot(unsigned rootNode, Value linear,
                    const DeviceRowStatistics *statistics) {
@@ -539,7 +543,7 @@ private:
       for (auto [axis, extent] : llvm::enumerate(view->shape)) {
         Bounded coordinate = coordinates[axis];
         if (static_cast<int64_t>(axis) == view->axis)
-          coordinate = add(coordinate, constant(view->offset));
+          coordinate = add(coordinate, viewOffsetOf());
         linear = add(multiply(linear, extent), coordinate);
       }
       capacity = elementCount(view->shape);
@@ -755,6 +759,12 @@ private:
     return result;
   }
 
+  /// The offset of the view on its axis: the constant, or the bounded
+  /// run-time value.
+  Bounded viewOffsetOf() {
+    return view->dynamicOffset ? *viewOffset : constant(view->offset);
+  }
+
   OpBuilder &builder;
   Location location;
   const DeviceFusion &fusion;
@@ -762,6 +772,7 @@ private:
   ArrayRef<unsigned> leaves;
   ArrayRef<BlockArgument> buffers;
   const DeviceFusionLeafView *view;
+  std::optional<Bounded> viewOffset;
   std::deque<IndexMap> maps;
   std::map<std::string, IndexMap *> derivedMaps;
   /// Value of a node (key 2 * node) or of a leaf Load (key 2 * tensor + 1)
@@ -876,7 +887,8 @@ FailureOr<DeviceFusionDispatch> DeviceFusionKernels::synthesize(
                   result.leaves.begin())
               << '[';
     llvm::interleave(view->shape, keyStream, "x");
-    keyStream << "]@" << view->axis << '+' << view->offset;
+    keyStream << "]@" << view->axis << (view->dynamicOffset ? "+<=" : "+")
+              << view->offset;
   }
   if (role != FusedKernelRole::Whole)
     keyStream << (role == FusedKernelRole::RowStatistics ? "|statistics"
@@ -931,8 +943,12 @@ FailureOr<DeviceFusionDispatch> DeviceFusionKernels::synthesize(
   int64_t surfaceWords = surfaceWidth * surfaceHeight;
   arguments.push_back(MemRefType::get({surfaceWords}, f32));
   unsigned bufferArguments = arguments.size();
-  // The zero-row extent of the constant prefix follows the buffers.
+  // The zero-row extent of the constant prefix follows the buffers, and the
+  // run-time offset of a view comes last.
   if (prefix)
+    arguments.push_back(i32);
+  bool dynamicView = view && view->dynamicOffset;
+  if (dynamicView)
     arguments.push_back(i32);
   builder.setInsertionPointToEnd(cast<gpu::GPUModuleOp>(carrier).getBody());
   auto kernel = gpu::GPUFuncOp::create(
@@ -955,6 +971,16 @@ FailureOr<DeviceFusionDispatch> DeviceFusionKernels::synthesize(
   // the guard, and their bounds follow from it rather than from the surface.
   Block &body = kernel.getBody().front();
   builder.setInsertionPointToEnd(&body);
+  // A run-time view offset is bounded once by the largest offset the view
+  // allows: a minui with a constant, which the gather prover derives an
+  // interval from, so every Load through the view stays proven in bounds.
+  std::optional<Bounded> viewOffset;
+  if (dynamicView)
+    viewOffset = Bounded{
+        arith::MinUIOp::create(
+            builder, location, body.getArguments().back(),
+            arith::ConstantIntOp::create(builder, location, view->offset, 32)),
+        view->offset, std::nullopt};
   Value x = gpu::GlobalIdOp::create(builder, location, gpu::Dimension::x);
   Value y = gpu::GlobalIdOp::create(builder, location, gpu::Dimension::y);
   Value row = arith::MulIOp::create(
@@ -1002,7 +1028,8 @@ FailureOr<DeviceFusionDispatch> DeviceFusionKernels::synthesize(
   }
   ExpressionEmitter emitter(
       builder, location, fusion, result.leaves,
-      ArrayRef<BlockArgument>(buffers).take_front(result.leaves.size()), view);
+      ArrayRef<BlockArgument>(buffers).take_front(result.leaves.size()), view,
+      viewOffset);
   Emitted value;
   if (role == FusedKernelRole::Whole) {
     value = emitter.emitRoot(rootNode, linear, nullptr);

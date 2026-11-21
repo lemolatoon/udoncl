@@ -30,6 +30,15 @@ extern udononnxStatus_t tinyllamaConversationCommitTurn(uint32_t);
 extern udononnxStatus_t tinyllamaConversationPrompt(const int32_t **,
                                                     uint32_t *);
 
+#ifndef TINYLLAMA_SEQUENCE_ROWS
+#define TINYLLAMA_SEQUENCE_ROWS 1u
+#endif
+/* The mock binding's shapes, as the generated binding of a graph of
+ * TINYLLAMA_SEQUENCE_ROWS rows and the default Context Capacity of 64 would
+ * resolve them (conversation_host.h). */
+#define ROWS ((int)TINYLLAMA_SEQUENCE_ROWS)
+#define WINDOW (64 + ROWS - 1)
+
 static cl_context binding_context;
 static cl_command_queue binding_queue;
 static cl_mem input[3], output;
@@ -46,11 +55,22 @@ static int fail_advance_call = -1, fail_finalize_call = -1;
 static uint32_t progress_counts[32], progress_serials[32];
 static int32_t progress_last_token[32];
 static int progress_valid = 1;
+/* The sequence state the advances built since the last reset: every row a
+ * run uploaded and an advance committed, in order. A run's rows stay pending
+ * until the next advance commits all of them or, with the partial advance,
+ * only the first ones. */
+static int64_t committed_tokens[256], committed_positions[256];
+static int committed_count;
+static int64_t pending_tokens[ROWS], pending_positions[ROWS];
+static int64_t seen_row_tokens[128][ROWS], seen_row_positions[128][ROWS];
+static int partial_advances, partial_rows[64];
+static int reduce_offsets[64];
 
 static void record(char operation) { trace[trace_size++] = operation; }
 
 static void clear_trace(void) {
   runs = advances = reduce_calls = finalize_calls = trace_size = 0;
+  partial_advances = 0;
   mask_valid = 1;
   fail_advance_call = fail_finalize_call = -1;
 }
@@ -96,10 +116,10 @@ udononnxStatus_t udon_onnx_binding_create(cl_context c, cl_command_queue q) {
   cl_int e;
   binding_context = c;
   binding_queue = q;
-  input[0] = clCreateBuffer(c, CL_MEM_READ_WRITE, 24, 0, &e);
-  input[1] = clCreateBuffer(c, CL_MEM_READ_WRITE, 528, 0, &e);
-  input[2] = clCreateBuffer(c, CL_MEM_READ_WRITE, 24, 0, &e);
-  output = clCreateBuffer(c, CL_MEM_READ_WRITE, 131088, 0, &e);
+  input[0] = clCreateBuffer(c, CL_MEM_READ_WRITE, 16 + 8 * ROWS, 0, &e);
+  input[1] = clCreateBuffer(c, CL_MEM_READ_WRITE, 16 + 8 * WINDOW, 0, &e);
+  input[2] = clCreateBuffer(c, CL_MEM_READ_WRITE, 16 + 8 * ROWS, 0, &e);
+  output = clCreateBuffer(c, CL_MEM_READ_WRITE, 16 + 128000 * ROWS + 72, 0, &e);
   return input[0] && input[1] && input[2] && output
              ? UDONONNX_STATUS_SUCCESS
              : UDONONNX_STATUS_OPENCL_ERROR;
@@ -108,7 +128,7 @@ udononnxStatus_t udon_onnx_binding_enqueue_initialize(void) { return 0; }
 udononnxStatus_t udon_onnx_binding_bind_all(void) { return 0; }
 udononnxStatus_t udon_onnx_binding_resolve_input(uint32_t i, cl_mem *m,
                                                  size_t *o, size_t *n) {
-  static const size_t lengths[] = {8, 512, 8};
+  static const size_t lengths[] = {8 * ROWS, 8 * WINDOW, 8 * ROWS};
   if (i >= 3)
     return UDONONNX_STATUS_INVALID_VALUE;
   *m = input[i];
@@ -122,13 +142,21 @@ udononnxStatus_t udon_onnx_binding_resolve_output(uint32_t i, cl_mem *m,
     return UDONONNX_STATUS_INVALID_VALUE;
   *m = output;
   *o = 16;
-  *n = 128000;
+  *n = 128000 * ROWS;
   return 0;
 }
 udononnxStatus_t udon_onnx_binding_enqueue_reset_sequence_state(void) {
   ++resets;
   pending = 0;
+  committed_count = 0;
   return 0;
+}
+static void commit_rows(int rows) {
+  int row;
+  for (row = 0; row < rows; ++row) {
+    committed_tokens[committed_count] = pending_tokens[row];
+    committed_positions[committed_count++] = pending_positions[row];
+  }
 }
 udononnxStatus_t udon_onnx_binding_enqueue_advance_sequence_state(void) {
   record('A');
@@ -137,24 +165,50 @@ udononnxStatus_t udon_onnx_binding_enqueue_advance_sequence_state(void) {
   if (pending != 1)
     protocol_valid = 0;
   pending = 0;
+  commit_rows(ROWS);
   ++advances;
   return 0;
 }
+#if TINYLLAMA_SEQUENCE_ROWS > 1u
+udononnxStatus_t
+udon_onnx_binding_enqueue_advance_sequence_state_rows(uint32_t rows) {
+  record('P');
+  if (advances == fail_advance_call)
+    return UDONONNX_STATUS_EXECUTION_FAILURE;
+  /* A whole run takes the plain advance; a partial one commits at least the
+   * row it was run for. */
+  if (pending != 1 || rows == 0 || rows >= (uint32_t)ROWS)
+    protocol_valid = 0;
+  pending = 0;
+  commit_rows((int)rows);
+  partial_rows[partial_advances++] = (int)rows;
+  ++advances;
+  return 0;
+}
+#endif
 udononnxStatus_t udon_onnx_binding_enqueue_run(void) {
-  int64_t mask[64];
+  int64_t mask[WINDOW];
   int index;
   record('R');
   if (pending != 0)
     protocol_valid = 0;
   pending = 1;
-  clEnqueueReadBuffer(binding_queue, input[0], CL_TRUE, 8, 8,
-                      &seen_tokens[runs], 0, 0, 0);
-  clEnqueueReadBuffer(binding_queue, input[2], CL_TRUE, 8, 8,
-                      &seen_positions[runs], 0, 0, 0);
+  clEnqueueReadBuffer(binding_queue, input[0], CL_TRUE, 8, 8 * ROWS,
+                      pending_tokens, 0, 0, 0);
+  clEnqueueReadBuffer(binding_queue, input[2], CL_TRUE, 8, 8 * ROWS,
+                      pending_positions, 0, 0, 0);
+  seen_tokens[runs] = pending_tokens[0];
+  seen_positions[runs] = pending_positions[0];
+  for (index = 0; index < ROWS; ++index) {
+    seen_row_tokens[runs][index] = pending_tokens[index];
+    seen_row_positions[runs][index] = pending_positions[index];
+  }
+  /* The window ends with the run's rows, after the positions before it:
+   * the last position + rows slots hold 1. */
   clEnqueueReadBuffer(binding_queue, input[1], CL_TRUE, 8, sizeof(mask), mask,
                       0, 0, 0);
-  for (index = 0; index < 64; ++index) {
-    int64_t expected = index + seen_positions[runs] >= 63 ? 1 : 0;
+  for (index = 0; index < WINDOW; ++index) {
+    int64_t expected = index + seen_positions[runs] >= WINDOW - ROWS ? 1 : 0;
     if (mask[index] != expected)
       mask_valid = 0;
   }
@@ -179,8 +233,12 @@ cl_int __vrc_enqueue_udonaten_argmax_reduce_device_args(
   (void)l;
   (void)e;
   record('D');
-  ++reduce_calls;
-  return a == output && o == 4 && w == 32000 ? CL_SUCCESS : CL_INVALID_VALUE;
+  reduce_offsets[reduce_calls++] = o;
+  /* The logits of the last real row of the pending run. */
+  return a == output && o >= 4 && (o - 4) % 32000 == 0 &&
+                 (o - 4) / 32000 < ROWS && w == 32000
+             ? CL_SUCCESS
+             : CL_INVALID_VALUE;
 }
 cl_int __vrc_enqueue_udonaten_argmax_finalize_device_args(
     cl_command_queue q, cl_mem a, cl_mem p, cl_mem r, cl_int o, cl_int w,
@@ -237,6 +295,7 @@ static int commit_turn(uint32_t count, uint32_t expected_closing,
   return 0;
 }
 
+#if TINYLLAMA_SEQUENCE_ROWS == 1u
 /* Multi-turn: every turn continues the sequence state at the position where
  * the previous reply ended, closing a reply cut off by the token limit. */
 static int test_turns(void) {
@@ -533,3 +592,137 @@ int main(void) {
   EXPECT(tinyllama_initialize() == UDONONNX_STATUS_DISPOSED);
   return 0;
 }
+
+#else
+/* A graph of several rows per run (TINYLLAMA_SEQUENCE_ROWS = 4 here): the
+ * prompt runs in chunks of four positions, every decode step is a run of one
+ * real row, and a run that fills fewer rows commits only those with the
+ * partial advance. The rows the advances committed must be exactly the
+ * conversation's tokens at positions 0, 1, ...: no padding is ever carried. */
+static int expect_committed(const int64_t *tokens, int count) {
+  int i;
+  EXPECT(committed_count == count);
+  for (i = 0; i < count; ++i)
+    EXPECT(committed_tokens[i] == tokens[i] && committed_positions[i] == i);
+  return 0;
+}
+
+int main(void) {
+  static const uint32_t expected_tokens[] = {1701, 29916, 432, 17204};
+  static const int64_t whole_context[] = {1, 450, 4996, 17354, 1701, 29916};
+  static const int64_t partial_context[] = {1, 450, 4996, 17354, 9,   10, 1701,
+                                            2, 100, 101,  102,   103, 104};
+  int32_t prompt_data[] = {1, 450, 4996, 17354, 9, 10};
+  int32_t long_prompt_data[64], result_data[32] = {0};
+  udon_int32_array_native_t prompt = {prompt_data, 6},
+                            result = {result_data, 32},
+                            long_prompt = {long_prompt_data, 64};
+  int i, failure;
+  for (i = 0; i < 64; ++i)
+    long_prompt_data[i] = i;
+  EXPECT(ROWS == 4);
+  EXPECT(tinyllama_initialize() == UDONONNX_STATUS_SUCCESS);
+
+  /* A prompt of one whole chunk is one run. The first token comes from the
+   * last row of its logits, every later one from the first row of a decode
+   * run, whose padding the partial advance leaves behind. */
+  clear_trace();
+  protocol_valid = 1;
+  for (i = 0; i < 4; ++i)
+    scheduled_tokens[i] = expected_tokens[i];
+  EXPECT(tinyllama_set_prompt_tokens(&prompt, 4) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(tinyllama_generate(4) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(trace_size == 15 && !memcmp(trace, "RDFARDFPRDFPRDF", 15));
+  EXPECT(runs == 4 && mask_valid && protocol_valid);
+  for (i = 0; i < 4; ++i)
+    EXPECT(seen_row_tokens[0][i] == prompt_data[i] &&
+           seen_row_positions[0][i] == i);
+  EXPECT(reduce_offsets[0] == 4 + 3 * 32000);
+  for (i = 1; i < 4; ++i)
+    EXPECT(reduce_offsets[i] == 4);
+  for (i = 0; i < 3; ++i)
+    EXPECT(seen_tokens[i + 1] == (int64_t)expected_tokens[i] &&
+           seen_positions[i + 1] == 4 + i);
+  EXPECT(partial_advances == 2 && partial_rows[0] == 1 && partial_rows[1] == 1);
+  /* The run of the third token is still pending. */
+  if ((failure = expect_committed(whole_context, 6)) != 0)
+    return failure;
+  EXPECT(tinyllama_generated_token_count() == 4);
+  EXPECT(tinyllama_read_generated_tokens(&result) == UDONONNX_STATUS_SUCCESS);
+  for (i = 0; i < 4; ++i)
+    EXPECT(result_data[i] == (int32_t)expected_tokens[i]);
+
+  /* A prompt that ends in a partial chunk: the rows past it repeat its last
+   * token at its position, and the next advance commits the real ones. */
+  EXPECT(tinyllama_reset() == UDONONNX_STATUS_SUCCESS);
+  clear_trace();
+  scheduled_tokens[0] = 1701;
+  scheduled_tokens[1] = 2;
+  EXPECT(tinyllama_set_prompt_tokens(&prompt, 6) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(tinyllama_generate(3) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(tinyllama_generated_token_count() == 2);
+  EXPECT(trace_size == 11 && !memcmp(trace, "RARDFPRDFPR", 11));
+  EXPECT(runs == 4 && mask_valid && protocol_valid);
+  for (i = 0; i < 4; ++i)
+    EXPECT(seen_row_tokens[1][i] == (i ? 10 : 9) &&
+           seen_row_positions[1][i] == (i ? 5 : 4));
+  EXPECT(reduce_offsets[0] == 4 + 32000 && reduce_offsets[1] == 4);
+  EXPECT(partial_advances == 2 && partial_rows[0] == 2 && partial_rows[1] == 1);
+  EXPECT(seen_tokens[2] == 1701 && seen_positions[2] == 6);
+  EXPECT(seen_tokens[3] == 2 && seen_positions[3] == 7);
+
+  /* The next turn first commits the run of the EOS that ended the reply,
+   * then runs its five tokens as a whole chunk and a chunk of one row. */
+  if ((failure = commit_turn(5, 0, 56)) != 0)
+    return failure;
+  clear_trace();
+  scheduled_tokens[0] = 555;
+  scheduled_tokens[1] = 2;
+  EXPECT(tinyllama_generate(2) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(trace_size == 10 && !memcmp(trace, "PRARDFPRDF", 10));
+  EXPECT(runs == 3 && mask_valid && protocol_valid);
+  for (i = 0; i < 4; ++i)
+    EXPECT(seen_row_tokens[0][i] == 100 + i &&
+           seen_row_positions[0][i] == 8 + i && seen_row_tokens[1][i] == 104 &&
+           seen_row_positions[1][i] == 12);
+  EXPECT(reduce_offsets[0] == 4 && reduce_offsets[1] == 4);
+  EXPECT(seen_tokens[2] == 555 && seen_positions[2] == 13);
+  if ((failure = expect_committed(partial_context, 13)) != 0)
+    return failure;
+
+  /* A prompt of the whole Context Capacity is sixteen whole chunks; the last
+   * one runs at the final positions. */
+  EXPECT(tinyllama_reset() == UDONONNX_STATUS_SUCCESS);
+  clear_trace();
+  scheduled_tokens[0] = 2;
+  EXPECT(tinyllama_set_prompt_tokens(&long_prompt, 64) ==
+         UDONONNX_STATUS_SUCCESS);
+  EXPECT(tinyllama_generate(2) == UDONONNX_STATUS_CAPACITY_EXCEEDED);
+  EXPECT(tinyllama_generate(1) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(runs == 16 && advances == 15 && partial_advances == 0);
+  EXPECT(seen_positions[15] == 60 && seen_row_positions[15][3] == 63);
+  EXPECT(reduce_offsets[0] == 4 + 3 * 32000);
+  EXPECT(mask_valid && protocol_valid);
+
+  /* 63 tokens: fifteen whole chunks and one of three rows, then one decode
+   * step at the last position. */
+  EXPECT(tinyllama_reset() == UDONONNX_STATUS_SUCCESS);
+  long_prompt.length = 63;
+  clear_trace();
+  scheduled_tokens[0] = 5;
+  scheduled_tokens[1] = 6;
+  EXPECT(tinyllama_set_prompt_tokens(&long_prompt, 63) ==
+         UDONONNX_STATUS_SUCCESS);
+  EXPECT(tinyllama_generate(2) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(tinyllama_generated_token_count() == 2);
+  EXPECT(runs == 17 && partial_advances == 1 && partial_rows[0] == 3);
+  EXPECT(seen_positions[16] == 63 && seen_tokens[16] == 5);
+  EXPECT(reduce_offsets[0] == 4 + 2 * 32000 && reduce_offsets[1] == 4);
+  EXPECT(committed_count == 63 && mask_valid && protocol_valid);
+  for (i = 0; i < 63; ++i)
+    EXPECT(committed_tokens[i] == i && committed_positions[i] == i);
+
+  EXPECT(tinyllama_dispose() == UDONONNX_STATUS_SUCCESS);
+  return 0;
+}
+#endif

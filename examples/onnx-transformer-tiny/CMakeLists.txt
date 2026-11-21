@@ -69,6 +69,20 @@ if(UDONCL_TINYLLAMA_ONNX_MODEL)
       "UDONCL_TINYLLAMA_MAX_NEW_TOKENS must be a positive integer no larger "
       "than the Context Capacity")
   endif()
+  # Positions one model run of the Conversation and Chat Artifacts covers.
+  # The graph is specialized to sequence_length = rows on top of the same
+  # past, so a prompt runs in chunks of this many positions; a run that fills
+  # fewer rows (the last chunk, and every decode step) pads the rest and
+  # commits only its real rows (udon_onnx_binding_enqueue_advance_sequence_state_rows).
+  # 1 runs every position on its own.
+  set(UDONCL_TINYLLAMA_SEQUENCE_ROWS 1 CACHE STRING
+    "Positions one TinyLlama Conversation/Chat model run covers")
+  if(NOT UDONCL_TINYLLAMA_SEQUENCE_ROWS MATCHES "^[1-9][0-9]*$" OR
+     UDONCL_TINYLLAMA_SEQUENCE_ROWS GREATER UDONCL_TINYLLAMA_CONTEXT_CAPACITY)
+    message(FATAL_ERROR
+      "UDONCL_TINYLLAMA_SEQUENCE_ROWS must be a positive integer no larger "
+      "than the Context Capacity")
+  endif()
   set(conversation_unity_config_json "${real_unity_config}")
   string(JSON conversation_unity_config_json SET
     "${conversation_unity_config_json}" program
@@ -184,28 +198,40 @@ target_include_directories(transformer_host INTERFACE
 udoncl_add_host_library(transformer_user_host host.c)
 target_include_directories(transformer_user_host INTERFACE
   "${UdonONNXRuntime_INCLUDE_DIRS}")
-# The Conversation Host libraries of one Context Capacity, named with
-# `suffix`: the M=1 graph specialized to past_sequence_length = capacity - 1
-# and a capacity-long attention mask, the token-array C Host `host` and, with
-# a tokenizer, the chat text layer, all compiled with the same capacity.
-function(tinyllama_add_conversation_libraries suffix capacity host)
+# The graph of `rows` positions per run on a past of capacity - 1 rows
+# (past_sequence_length = capacity - 1, an attention mask of
+# capacity + rows - 1), as the ONNX Host library `target`.
+function(tinyllama_add_model_library target capacity rows)
   math(EXPR past_length "${capacity} - 1")
-  udoncl_add_onnx_host_library(transformer_conversation_model_host${suffix}
+  math(EXPR window "${capacity} + ${rows} - 1")
+  udoncl_add_onnx_host_library(${target}
     MODEL "${model}"
     DIMENSION_BOUNDS
       batch_size=1
-      sequence_length=1
+      sequence_length=${rows}
       past_sequence_length=${past_length}
     INPUT_SHAPES
-      attention_mask=1,${capacity})
-  target_include_directories(transformer_conversation_model_host${suffix}
+      attention_mask=1,${window})
+  target_include_directories(${target}
     INTERFACE
       "${UdonBLAS_INCLUDE_DIRS}"
       "${UdonDNN_INCLUDE_DIRS}"
       "${UdonATen_INCLUDE_DIRS}")
+endfunction()
+
+# The Conversation Host libraries of one Context Capacity, named with
+# `suffix`: the graph of UDONCL_TINYLLAMA_SEQUENCE_ROWS positions per run
+# (the M=1 graph by default) specialized to past_sequence_length =
+# capacity - 1, the token-array C Host `host` and, with a tokenizer, the chat
+# text layer, all compiled with the same capacity and rows.
+function(tinyllama_add_conversation_libraries suffix capacity host)
+  set(rows ${UDONCL_TINYLLAMA_SEQUENCE_ROWS})
+  tinyllama_add_model_library(transformer_conversation_model_host${suffix}
+    ${capacity} ${rows})
   set(definitions
     TINYLLAMA_CONTEXT_CAPACITY=${capacity}u
-    TINYLLAMA_GENERATED_CAPACITY=${UDONCL_TINYLLAMA_MAX_NEW_TOKENS}u)
+    TINYLLAMA_GENERATED_CAPACITY=${UDONCL_TINYLLAMA_MAX_NEW_TOKENS}u
+    TINYLLAMA_SEQUENCE_ROWS=${rows}u)
   udoncl_add_host_library(transformer_conversation_user_host${suffix} ${host})
   target_include_directories(transformer_conversation_user_host${suffix}
     INTERFACE "${UdonONNXRuntime_INCLUDE_DIRS}")
@@ -317,15 +343,29 @@ udoncl_add_unity_library(onnx-transformer-tiny
     UdonBLAS::UdonBLAS)
 
 if(UDONCL_TINYLLAMA_ONNX_MODEL)
-  tinyllama_add_conversation_artifacts("" "")
+  if(UDONCL_TINYLLAMA_SEQUENCE_ROWS EQUAL 1)
+    tinyllama_add_conversation_artifacts("" "")
+  else()
+    # The attention products of several rows per run take the large
+    # strided-batched SGEMM, which the 4096-token artifacts declare too.
+    tinyllama_add_conversation_artifacts("" "" unity-library-4k-kernels.json)
+  endif()
   if(UDONCL_TINYLLAMA_CONTEXT_4K)
     tinyllama_add_conversation_artifacts(_4k -4k unity-library-4k-kernels.json)
+  endif()
+  # The M=1 step validation artifact keeps the M=1 graph of the Context
+  # Capacity whatever rows the Conversation Artifacts run.
+  set(step_model_host transformer_conversation_model_host)
+  if(NOT UDONCL_TINYLLAMA_SEQUENCE_ROWS EQUAL 1)
+    set(step_model_host transformer_step_model_host)
+    tinyllama_add_model_library(${step_model_host}
+      ${UDONCL_TINYLLAMA_CONTEXT_CAPACITY} 1)
   endif()
   udoncl_add_unity_library(onnx-transformer-tiny-m1-step
     CONFIG "${step_unity_config}"
     OMIT_INTERMEDIATE_IR
     HOST_LIBRARIES
-      transformer_conversation_model_host
+      ${step_model_host}
       transformer_user_host
       UdonONNXRuntime::UdonONNXRuntime
     LIBRARIES

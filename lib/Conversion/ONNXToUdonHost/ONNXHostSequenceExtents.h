@@ -9,7 +9,9 @@
 // past, and so of the present, are still the fill: every element there is
 // +0. The binding counts the advances (sequenceStateFillAge), so a run knows
 // this extent Z_s; it is 0 whenever the binding cannot vouch for the
-// contents of a past input.
+// contents of a past input. A partial advance
+// (sequenceStatePartialAdvanceStep) of r rows drops the first r rows
+// instead, so such a binding counts committed rows rather than advances.
 //
 // This file derives, at compile time, which tensors have such a prefix and
 // what it lets a dispatch skip, without changing any result:
@@ -80,14 +82,32 @@ struct DeviceSequenceExtents {
 /// and has sequence states.
 DeviceSequenceExtents deviceSequenceExtents(const GraphRecord &graph);
 
-/// Rows of state `stateIndex` that a run counts as zero fill after
-/// `advances` advances since the fill: max(0, carried - advances * step).
-int64_t sequenceStateZeroRows(const GraphRecord &graph, unsigned stateIndex,
-                              int64_t advances);
+/// The rows every sequence state appends in one run when the binding may
+/// commit only some of them
+/// (udon_onnx_binding_enqueue_advance_sequence_state_rows): all states of the
+/// graph append the same number of rows, and more than one. 0 otherwise.
+///
+/// A graph specialized to a sequence of k rows runs a chunk of up to k new
+/// positions at once; a run that fills only the first r of them commits those
+/// r rows, and the next run reads its carried rows r rows further into the
+/// previous present instead of k. The rows after r, which the run computed
+/// from padding, are never carried.
+int64_t sequenceStatePartialAdvanceStep(const GraphRecord &graph);
 
-/// The largest value the binding's fill age (advances since the fill plus
-/// one; 0 when unknown) needs: one more advance leaves no zero row in any
-/// state, so the binding stops counting there.
+/// The rows of state `stateIndex` that one unit of the binding's fill age
+/// stands for: the state's step when every advance commits a whole run, and
+/// 1 when the binding may commit part of one
+/// (sequenceStatePartialAdvanceStep), so that the age counts committed rows.
+int64_t sequenceStateFillAgeRows(const GraphRecord &graph, unsigned stateIndex);
+
+/// Rows of state `stateIndex` that a run counts as zero fill after `units`
+/// fill-age units since the fill: max(0, carried - units * fill-age rows).
+int64_t sequenceStateZeroRows(const GraphRecord &graph, unsigned stateIndex,
+                              int64_t units);
+
+/// The largest value the binding's fill age (units since the fill plus one;
+/// 0 when unknown) needs: one more unit leaves no zero row in any state, so
+/// the binding stops counting there.
 int64_t sequenceStateFillAgeLimit(const GraphRecord &graph);
 } // namespace vrc
 

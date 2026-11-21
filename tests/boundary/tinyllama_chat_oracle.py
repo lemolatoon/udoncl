@@ -7,6 +7,11 @@ ONNX Runtime with the same fixed-capacity, left-padded ``M=1`` profile as the
 Conversation Artifact and stops at EOS or the requested limit. The decoded
 reply uses ``skip_special_tokens=True``.
 
+``--sequence-rows k`` runs the profile of a Conversation Artifact of k
+positions per run instead: the prompt in chunks of k, every decode step as a
+run of one real row, and only the real rows of a run carried into the next
+past. Greedy tokens must not depend on it.
+
 Multi-turn (``--next-user``, repeatable): each later user message continues
 the same sequence state, as the Chat Artifact does. A reply stays in the
 context as its generated tokens: its last token, which no generation step
@@ -90,7 +95,15 @@ def main() -> None:
     )
     parser.add_argument("--capacity", type=int, default=512)
     parser.add_argument("--max-new-tokens", type=int, default=32)
+    parser.add_argument(
+        "--sequence-rows",
+        type=int,
+        default=1,
+        help="positions one run covers, as UDONCL_TINYLLAMA_SEQUENCE_ROWS",
+    )
     args = parser.parse_args()
+    if not 1 <= args.sequence_rows <= args.capacity:
+        raise SystemExit("--sequence-rows must be between 1 and the capacity")
     root = args.root.resolve()
     output = args.output.resolve()
 
@@ -126,25 +139,43 @@ def main() -> None:
     rolling_past = [
         np.zeros((1, 4, capacity - 1, 64), dtype=np.float32) for _ in past_inputs
     ]
+    # The profile of a Conversation Artifact of `rows` positions per run
+    # (examples/onnx-transformer-tiny/conversation_host.c): the past keeps
+    # capacity - 1 rows, a run appends `rows` rows to it, and the attention
+    # mask covers the window of capacity + rows - 1. A run of fewer real rows
+    # repeats its last token at its position in the rest, and only the real
+    # rows are carried into the next past.
+    rows = args.sequence_rows
+    window = capacity + rows - 1
 
-    def step(token: int, position: int) -> np.ndarray:
+    def run_rows(tokens: list[int], position: int) -> np.ndarray:
         nonlocal rolling_past
-        valid = position + 1
-        mask = np.zeros((1, capacity), dtype=np.int64)
-        mask[:, capacity - valid :] = 1
+        real = len(tokens)
+        assert 0 < real <= rows
+        padded = tokens + [tokens[-1]] * (rows - real)
+        positions = [position + index for index in range(real)]
+        positions += [positions[-1]] * (rows - real)
+        mask = np.zeros((1, window), dtype=np.int64)
+        mask[:, window - position - rows :] = 1
         feed = {
-            "input_ids": np.array([[token]], dtype=np.int64),
+            "input_ids": np.array([padded], dtype=np.int64),
             "attention_mask": mask,
-            "position_ids": np.array([[position]], dtype=np.int64),
+            "position_ids": np.array([positions], dtype=np.int64),
         }
         for item, value in zip(past_inputs, rolling_past):
             feed[item.name] = value
         results = session.run(None, feed)
-        rolling_past = [value[:, :, 1:, :].copy() for value in results[1:]]
-        logits = results[0][0, 0]
+        rolling_past = [
+            value[:, :, real : real + capacity - 1, :].copy()
+            for value in results[1:]
+        ]
+        logits = results[0][0, real - 1]
         if not np.isfinite(logits).all():
             raise SystemExit(f"non-finite logits at position {position}")
         return logits
+
+    def step(token: int, position: int) -> np.ndarray:
+        return run_rows([token], position)
 
     def select(logits: np.ndarray) -> tuple[int, float]:
         # Lowest index wins exact ties, matching the C Host's Device ArgMax.
@@ -156,11 +187,14 @@ def main() -> None:
 
     def feed(tokens: list[int]) -> np.ndarray:
         nonlocal position
-        for token in tokens:
-            if position >= capacity:
-                raise SystemExit(f"position {position} reaches capacity {capacity}")
-            logits = step(token, position)
-            position += 1
+        for start in range(0, len(tokens), rows):
+            chunk = tokens[start : start + rows]
+            if position + len(chunk) > capacity:
+                raise SystemExit(
+                    f"position {position + len(chunk) - 1} reaches capacity {capacity}"
+                )
+            logits = run_rows(chunk, position)
+            position += len(chunk)
         return logits
 
     def generate(logits: np.ndarray, max_new_tokens: int) -> dict:
@@ -239,6 +273,7 @@ def main() -> None:
         "model_sha256": fetch_model.MODEL_SHA256,
         "tokenizer_bundle": bundle.name,
         "capacity": capacity,
+        "sequence_rows": rows,
         "max_new_tokens": args.max_new_tokens,
         "system_text": args.system,
         "user_text": args.user,

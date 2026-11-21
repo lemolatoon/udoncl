@@ -57,20 +57,40 @@ bool DeviceSequenceExtents::used() const {
                       [](const auto &prefix) { return prefix.has_value(); });
 }
 
+int64_t sequenceStatePartialAdvanceStep(const GraphRecord &graph) {
+  if (graph.sequenceStates.empty())
+    return 0;
+  int64_t step = graph.sequenceStates.front().step;
+  for (const SequenceStateRecord &state : graph.sequenceStates)
+    if (state.step != step)
+      return 0;
+  return step > 1 ? step : 0;
+}
+
+int64_t sequenceStateFillAgeRows(const GraphRecord &graph,
+                                 unsigned stateIndex) {
+  return sequenceStatePartialAdvanceStep(graph)
+             ? 1
+             : graph.sequenceStates[stateIndex].step;
+}
+
 int64_t sequenceStateZeroRows(const GraphRecord &graph, unsigned stateIndex,
-                              int64_t advances) {
-  const SequenceStateRecord &state = graph.sequenceStates[stateIndex];
-  return std::max<int64_t>(0, carriedRows(graph, stateIndex) -
-                                  advances * state.step);
+                              int64_t units) {
+  return std::max<int64_t>(
+      0, carriedRows(graph, stateIndex) -
+             units * sequenceStateFillAgeRows(graph, stateIndex));
 }
 
 int64_t sequenceStateFillAgeLimit(const GraphRecord &graph) {
-  int64_t advances = 0;
-  for (auto [stateIndex, state] : llvm::enumerate(graph.sequenceStates))
-    advances = std::max<int64_t>(
-        advances, (carriedRows(graph, stateIndex) + state.step - 1) /
-                      std::max<int64_t>(state.step, 1));
-  return advances + 1;
+  int64_t units = 0;
+  for (unsigned stateIndex = 0; stateIndex < graph.sequenceStates.size();
+       ++stateIndex) {
+    int64_t rows =
+        std::max<int64_t>(sequenceStateFillAgeRows(graph, stateIndex), 1);
+    units = std::max<int64_t>(
+        units, (carriedRows(graph, stateIndex) + rows - 1) / rows);
+  }
+  return units + 1;
 }
 
 DeviceSequenceExtents deviceSequenceExtents(const GraphRecord &graph) {

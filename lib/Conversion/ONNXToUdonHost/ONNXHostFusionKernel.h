@@ -19,7 +19,8 @@ struct DeviceRowReduction;
 /// buffer token of every tensor of `leaves`, in order, then the token of the
 /// root's result. Every shape is static, so the kernel takes no scalar but
 /// the zero-row extent of a constant result prefix (see dispatch()), which
-/// follows the result token.
+/// follows the result token, and the offset of a view with a run-time offset
+/// (DeviceFusionLeafView), which comes last.
 ///
 /// A two-pass row reduction (deviceSoftmaxSchedule) first calls
 /// `statisticsCallee` with the leaf tokens and then a scratch buffer of at
@@ -36,11 +37,18 @@ struct DeviceFusionDispatch {
 /// coordinates c of the leaf tensor is the element at c, with `offset` added
 /// on `axis`, of a row-major tensor of `shape`. A banked sequence state reads
 /// its carried rows this way from the previous present.
+///
+/// With `dynamicOffset` the offset is a run-time value instead: the kernel
+/// takes it as an i32 after its other scalars and reads with
+/// min(value, offset), so `offset` is the largest one a run may pass. A
+/// banked state that may commit part of a run
+/// (sequenceStatePartialAdvanceStep) reads its carried rows this way.
 struct DeviceFusionLeafView {
   unsigned tensor;
   llvm::SmallVector<int64_t> shape;
   int64_t axis;
   int64_t offset;
+  bool dynamicOffset = false;
 };
 
 /// The synthesized kernels of one Host module. They live in one carrier

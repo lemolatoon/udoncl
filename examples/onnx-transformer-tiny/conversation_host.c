@@ -26,18 +26,36 @@ cl_int __vrc_enqueue_udonaten_argmax_finalize_device_args(
 #define TINYLLAMA_ATTENTION_MASK 1u
 #define TINYLLAMA_POSITION_IDS 2u
 #define TINYLLAMA_LOGITS 0u
-#define TINYLLAMA_ATTENTION_MASK_BYTES                                         \
-  (TINYLLAMA_CONTEXT_CAPACITY * sizeof(int64_t))
+/* One model run covers TINYLLAMA_SEQUENCE_ROWS positions (k): the graph is
+ * specialized to a sequence of k rows on top of a past of capacity - 1 rows,
+ * so its attention window, the attention mask and every present hold
+ * capacity + k - 1 rows. A prompt runs in chunks of k positions; a run that
+ * fills only its first r rows (the last chunk of a prompt, and every decode
+ * step) pads the rest and commits just those r rows with the binding's
+ * partial advance, so the padded rows are never carried. With k = 1 every run
+ * is one position and the plain advance commits it. */
+#define TINYLLAMA_WINDOW                                                       \
+  (TINYLLAMA_CONTEXT_CAPACITY + TINYLLAMA_SEQUENCE_ROWS - 1u)
+#define TINYLLAMA_ROW_BYTES (TINYLLAMA_SEQUENCE_ROWS * sizeof(int64_t))
+#define TINYLLAMA_ATTENTION_MASK_BYTES (TINYLLAMA_WINDOW * sizeof(int64_t))
 
 static cl_context context;
 static cl_command_queue queue;
 static cl_mem partials, result;
 static int32_t prompt[TINYLLAMA_CONTEXT_CAPACITY];
 static int32_t generated[TINYLLAMA_GENERATED_CAPACITY];
-static int64_t staged_tokens[TINYLLAMA_CONTEXT_CAPACITY];
-static int64_t staged_positions[TINYLLAMA_CONTEXT_CAPACITY];
+/* Host sources of the non-blocking row uploads, indexed by position: a run
+ * at position p uploads rows [p, p + k), so an upload's source stays intact
+ * until the queue has consumed it. The rows a later run overwrites are only
+ * the padding of an earlier one. */
+static int64_t staged_tokens[TINYLLAMA_WINDOW];
+static int64_t staged_positions[TINYLLAMA_WINDOW];
+static int64_t ones[TINYLLAMA_SEQUENCE_ROWS];
 static const uint32_t zero_word;
-static const int64_t one = 1;
+/* The trailing attention-mask slots that hold 1 since the mask was cleared. */
+static uint32_t mask_rows;
+/* The rows of the pending run, the one the next run advances past. */
+static uint32_t pending_rows;
 /* Destination and event of the one outstanding selected-token read. */
 static uint32_t selected_token;
 static cl_event selected_event;
@@ -109,7 +127,9 @@ static udononnxStatus_t resolve_logits(cl_mem *memory, size_t *offset) {
       TINYLLAMA_LOGITS, memory, offset, &length);
   if (status != UDONONNX_STATUS_SUCCESS)
     return status;
-  return *memory && length == TINYLLAMA_LOGIT_WORDS * sizeof(float) &&
+  return *memory &&
+                 length == TINYLLAMA_SEQUENCE_ROWS * TINYLLAMA_LOGIT_WORDS *
+                               sizeof(float) &&
                  *offset % sizeof(float) == 0
              ? UDONONNX_STATUS_SUCCESS
              : UDONONNX_STATUS_TYPE_MISMATCH;
@@ -119,12 +139,12 @@ static udononnxStatus_t resolve_buffers(void) {
   cl_mem memory = 0;
   size_t offset = 0;
   udononnxStatus_t status =
-      resolve_input(TINYLLAMA_INPUT_IDS, sizeof(int64_t), &memory, &offset);
+      resolve_input(TINYLLAMA_INPUT_IDS, TINYLLAMA_ROW_BYTES, &memory, &offset);
   if (status == UDONONNX_STATUS_SUCCESS)
     status = resolve_input(TINYLLAMA_ATTENTION_MASK,
                            TINYLLAMA_ATTENTION_MASK_BYTES, &memory, &offset);
   if (status == UDONONNX_STATUS_SUCCESS)
-    status = resolve_input(TINYLLAMA_POSITION_IDS, sizeof(int64_t), &memory,
+    status = resolve_input(TINYLLAMA_POSITION_IDS, TINYLLAMA_ROW_BYTES, &memory,
                            &offset);
   if (status == UDONONNX_STATUS_SUCCESS)
     status = resolve_logits(&memory, &offset);
@@ -144,6 +164,7 @@ static udononnxStatus_t enqueue_clear_sequence_state(void) {
                           mask_offset, TINYLLAMA_ATTENTION_MASK_BYTES, 0, 0,
                           0) != CL_SUCCESS)
     return UDONONNX_STATUS_OPENCL_ERROR;
+  mask_rows = pending_rows = 0;
   return UDONONNX_STATUS_SUCCESS;
 }
 
@@ -152,10 +173,13 @@ UDONCL_EXPORT udononnxStatus_t tinyllama_initialize(void) {
   cl_device_id device = 0;
   cl_int error = CL_SUCCESS;
   udononnxStatus_t status;
+  uint32_t row;
   if (disposed)
     return UDONONNX_STATUS_DISPOSED;
   if (initialized)
     return UDONONNX_STATUS_INVALID_STATE;
+  for (row = 0; row < TINYLLAMA_SEQUENCE_ROWS; ++row)
+    ones[row] = 1;
   if (clGetPlatformIDs(1, &platform, 0) != CL_SUCCESS ||
       clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &device, 0) != CL_SUCCESS)
     return UDONONNX_STATUS_OPENCL_ERROR;
@@ -389,56 +413,118 @@ tinyllamaConversationGenerationProgress(const int32_t **tokens,
   return UDONONNX_STATUS_SUCCESS;
 }
 
-/* The attention mask and the position of a step depend only on the step
- * index, so the Host patches them on the Device before the token is known. */
-static udononnxStatus_t enqueue_step_position(uint32_t position) {
-  size_t mask;
-  cl_mem attention, positions;
-  size_t attention_offset = 0, positions_offset = 0;
+/* The attention mask of a run at `position`: its window ends with the k rows
+ * of the run, and the past before them holds the `position` rows already in
+ * the conversation, so the last position + k slots hold 1. The mask only
+ * grows during a conversation, so a run writes just the slots no earlier run
+ * set. The padded rows of a run are marked as well: the causal mask keeps
+ * every real row from attending to the rows after it, and the partial advance
+ * never carries a padded row. */
+static udononnxStatus_t enqueue_mask(uint32_t position) {
+  cl_mem attention;
+  size_t attention_offset = 0;
+  uint32_t target, count;
   udononnxStatus_t status;
-  /* The mask has one word per position; generate() never gets here with a
-   * position past the Context Capacity, and this keeps it that way. */
+  /* generate() never gets here with a position past the Context Capacity,
+   * and this keeps it that way. */
   if (position >= TINYLLAMA_CONTEXT_CAPACITY)
     return UDONONNX_STATUS_CAPACITY_EXCEEDED;
-  mask = TINYLLAMA_CONTEXT_CAPACITY - position - 1u;
+  target = position + TINYLLAMA_SEQUENCE_ROWS;
+  if (target <= mask_rows)
+    return UDONONNX_STATUS_SUCCESS;
   status =
       resolve_input(TINYLLAMA_ATTENTION_MASK, TINYLLAMA_ATTENTION_MASK_BYTES,
                     &attention, &attention_offset);
+  if (status != UDONONNX_STATUS_SUCCESS)
+    return status;
+  while (mask_rows < target) {
+    count = target - mask_rows;
+    if (count > TINYLLAMA_SEQUENCE_ROWS)
+      count = TINYLLAMA_SEQUENCE_ROWS;
+    if (clEnqueueWriteBuffer(
+            queue, attention, CL_FALSE,
+            attention_offset +
+                (TINYLLAMA_WINDOW - mask_rows - count) * sizeof(int64_t),
+            count * sizeof(int64_t), ones, 0, 0, 0) != CL_SUCCESS)
+      return UDONONNX_STATUS_OPENCL_ERROR;
+    mask_rows += count;
+  }
+  return UDONONNX_STATUS_SUCCESS;
+}
+
+/* The attention mask and the position of a decode step depend only on the
+ * step index, so the Host patches them on the Device before the token is
+ * known. A decode step fills the first row of a run; its other rows keep the
+ * padding an earlier upload left, which no real row reads. */
+static udononnxStatus_t enqueue_step_position(uint32_t position) {
+  cl_mem positions;
+  size_t positions_offset = 0;
+  udononnxStatus_t status = enqueue_mask(position);
   if (status == UDONONNX_STATUS_SUCCESS)
-    status = resolve_input(TINYLLAMA_POSITION_IDS, sizeof(int64_t), &positions,
-                           &positions_offset);
+    status = resolve_input(TINYLLAMA_POSITION_IDS, TINYLLAMA_ROW_BYTES,
+                           &positions, &positions_offset);
   if (status != UDONONNX_STATUS_SUCCESS)
     return status;
   staged_positions[position] = position;
-  if (clEnqueueWriteBuffer(queue, attention, CL_FALSE,
-                           attention_offset + mask * sizeof(int64_t),
-                           sizeof(one), &one, 0, 0, 0) != CL_SUCCESS ||
-      clEnqueueWriteBuffer(queue, positions, CL_FALSE, positions_offset,
+  if (clEnqueueWriteBuffer(queue, positions, CL_FALSE, positions_offset,
                            sizeof(staged_positions[position]),
                            &staged_positions[position], 0, 0, 0) != CL_SUCCESS)
     return UDONONNX_STATUS_OPENCL_ERROR;
   return UDONONNX_STATUS_SUCCESS;
 }
 
-/* A prompt step uploads its Host token. */
-static udononnxStatus_t enqueue_step(int32_t token, uint32_t position) {
-  cl_mem ids;
-  size_t ids_offset = 0;
-  udononnxStatus_t status =
-      resolve_input(TINYLLAMA_INPUT_IDS, sizeof(int64_t), &ids, &ids_offset);
+/* A prompt chunk uploads the tokens of positions [position, position + rows)
+ * into the first `rows` rows of a run and runs it. The other rows repeat the
+ * last token at its position: padding whose results no real row reads and
+ * whose sequence-state rows the next advance does not commit. */
+static udononnxStatus_t enqueue_chunk(const int32_t *tokens, uint32_t rows,
+                                      uint32_t position) {
+  cl_mem ids, positions;
+  size_t ids_offset = 0, positions_offset = 0;
+  uint32_t row, source;
+  udononnxStatus_t status = resolve_input(
+      TINYLLAMA_INPUT_IDS, TINYLLAMA_ROW_BYTES, &ids, &ids_offset);
+  if (status == UDONONNX_STATUS_SUCCESS)
+    status = resolve_input(TINYLLAMA_POSITION_IDS, TINYLLAMA_ROW_BYTES,
+                           &positions, &positions_offset);
   if (status != UDONONNX_STATUS_SUCCESS)
     return status;
-  staged_tokens[position] = token;
+  if (!rows || rows > TINYLLAMA_SEQUENCE_ROWS ||
+      position >= TINYLLAMA_CONTEXT_CAPACITY)
+    return UDONONNX_STATUS_INVALID_VALUE;
+  for (row = 0; row < TINYLLAMA_SEQUENCE_ROWS; ++row) {
+    source = row < rows ? row : rows - 1u;
+    staged_tokens[position + row] = tokens[source];
+    staged_positions[position + row] = position + source;
+  }
   if (clEnqueueWriteBuffer(queue, ids, CL_FALSE, ids_offset,
-                           sizeof(staged_tokens[position]),
-                           &staged_tokens[position], 0, 0, 0) != CL_SUCCESS)
+                           TINYLLAMA_ROW_BYTES, &staged_tokens[position], 0, 0,
+                           0) != CL_SUCCESS)
     return UDONONNX_STATUS_OPENCL_ERROR;
-  status = enqueue_step_position(position);
-  return status == UDONONNX_STATUS_SUCCESS ? udon_onnx_binding_enqueue_run()
-                                           : status;
+  status = enqueue_mask(position);
+  if (status != UDONONNX_STATUS_SUCCESS)
+    return status;
+  if (clEnqueueWriteBuffer(queue, positions, CL_FALSE, positions_offset,
+                           TINYLLAMA_ROW_BYTES, &staged_positions[position], 0,
+                           0, 0) != CL_SUCCESS)
+    return UDONONNX_STATUS_OPENCL_ERROR;
+  return udon_onnx_binding_enqueue_run();
 }
 
-/* Greedy ArgMax of the current logits into the Device result word. */
+/* Advances the sequence state past the pending run, committing only its real
+ * rows: a run that filled fewer than k rows leaves its padded rows behind. */
+static udononnxStatus_t enqueue_advance(void) {
+  if (pending_rows == TINYLLAMA_SEQUENCE_ROWS)
+    return udon_onnx_binding_enqueue_advance_sequence_state();
+#if TINYLLAMA_SEQUENCE_ROWS > 1u
+  return udon_onnx_binding_enqueue_advance_sequence_state_rows(pending_rows);
+#else
+  return UDONONNX_STATUS_INVALID_STATE;
+#endif
+}
+
+/* Greedy ArgMax of the logits of the last real row of the pending run into
+ * the Device result word. */
 static udononnxStatus_t enqueue_select_token(void) {
   cl_mem logits;
   size_t logits_offset = 0;
@@ -446,7 +532,10 @@ static udononnxStatus_t enqueue_select_token(void) {
   udononnxStatus_t status = resolve_logits(&logits, &logits_offset);
   if (status != UDONONNX_STATUS_SUCCESS)
     return status;
-  offset = (cl_int)(logits_offset / sizeof(float));
+  if (!pending_rows || pending_rows > TINYLLAMA_SEQUENCE_ROWS)
+    return UDONONNX_STATUS_INVALID_STATE;
+  offset = (cl_int)(logits_offset / sizeof(float) +
+                    (pending_rows - 1u) * TINYLLAMA_LOGIT_WORDS);
   if (__vrc_enqueue_udonaten_argmax_reduce_device_args(
           queue, logits, partials, offset, TINYLLAMA_LOGIT_WORDS, 0, 0, 0) !=
           CL_SUCCESS ||
@@ -456,15 +545,14 @@ static udononnxStatus_t enqueue_select_token(void) {
     return UDONONNX_STATUS_OPENCL_ERROR;
   return UDONONNX_STATUS_SUCCESS;
 }
-
 /* The selected token feeds the next step on the Device: the result word is
- * copied into the low word of input_ids, whose high word every prompt
- * upload left zero. No Host round trip separates two decode steps. */
+ * copied into the low word of the first input_ids row, whose high word every
+ * prompt upload left zero. No Host round trip separates two decode steps. */
 static udononnxStatus_t enqueue_feed_selected_token(void) {
   cl_mem ids;
   size_t ids_offset = 0;
-  udononnxStatus_t status =
-      resolve_input(TINYLLAMA_INPUT_IDS, sizeof(int64_t), &ids, &ids_offset);
+  udononnxStatus_t status = resolve_input(
+      TINYLLAMA_INPUT_IDS, TINYLLAMA_ROW_BYTES, &ids, &ids_offset);
   if (status != UDONONNX_STATUS_SUCCESS)
     return status;
   return clEnqueueCopyBuffer(queue, result, ids, 0, ids_offset,
@@ -499,14 +587,14 @@ static udononnxStatus_t wait_selected_token(uint32_t *token) {
  * step is enqueued from the Device-resident token before the Host reads it.
  * When the token turns out to be EOS that speculative step already ran the
  * EOS that ends the reply; its logits are unused, and a next turn continues
- * after it. */
+ * after it. A decode step is a run of one real row. */
 static udononnxStatus_t decode_token(uint32_t position, int last,
                                      uint32_t *token) {
   udononnxStatus_t status = enqueue_select_token(), waited;
   if (status != UDONONNX_STATUS_SUCCESS)
     return status;
   if (!last) {
-    status = udon_onnx_binding_enqueue_advance_sequence_state();
+    status = enqueue_advance();
     if (status == UDONONNX_STATUS_SUCCESS)
       status = enqueue_feed_selected_token();
     if (status == UDONONNX_STATUS_SUCCESS)
@@ -517,14 +605,16 @@ static udononnxStatus_t decode_token(uint32_t position, int last,
   status = enqueue_read_selected_token();
   if (status != UDONONNX_STATUS_SUCCESS)
     return status;
-  if (!last)
+  if (!last) {
     status = udon_onnx_binding_enqueue_run();
+    pending_rows = 1u;
+  }
   waited = wait_selected_token(token);
   return status == UDONONNX_STATUS_SUCCESS ? waited : status;
 }
 
 UDONCL_EXPORT udononnxStatus_t tinyllama_generate(uint32_t max_new_tokens) {
-  uint32_t index, output_index, token = 0, prompt_tokens, base;
+  uint32_t index, output_index, token = 0, prompt_tokens, base, rows = 1u;
   udononnxStatus_t status = UDONONNX_STATUS_SUCCESS;
   if (disposed)
     return UDONONNX_STATUS_DISPOSED;
@@ -552,17 +642,22 @@ UDONCL_EXPORT udononnxStatus_t tinyllama_generate(uint32_t max_new_tokens) {
   continuing = turn_prepared = 0;
   generated_count = 0;
   ++generation_serial;
-  /* Each run leaves one pending sequence-state entry that the next step
-   * advances first; only the first step of a conversation has none. */
-  for (index = 0; index < prompt_tokens; ++index) {
-    if (index || base) {
-      status = udon_onnx_binding_enqueue_advance_sequence_state();
+  /* Each run leaves one pending sequence-state entry that the next run
+   * advances first; only the first run of a conversation has none. The
+   * prompt runs in chunks of up to k positions. */
+  for (index = 0; index < prompt_tokens; index += rows) {
+    rows = prompt_tokens - index;
+    if (rows > TINYLLAMA_SEQUENCE_ROWS)
+      rows = TINYLLAMA_SEQUENCE_ROWS;
+    if (pending_rows) {
+      status = enqueue_advance();
       if (status != UDONONNX_STATUS_SUCCESS)
         break;
     }
-    status = enqueue_step(prompt[index], base + index);
+    status = enqueue_chunk(prompt + index, rows, base + index);
     if (status != UDONONNX_STATUS_SUCCESS)
       break;
+    pending_rows = rows;
   }
   for (output_index = 0; output_index < max_new_tokens; ++output_index) {
     if (status != UDONONNX_STATUS_SUCCESS)
