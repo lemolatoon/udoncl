@@ -1009,6 +1009,20 @@ if(VRC_ENABLE_NATIVE_FRAGMENT_TESTS)
       $<TARGET_FILE:raw-word-texel-kernel>
       "${PROJECT_BINARY_DIR}/tests/raw-word-texel")
   set_tests_properties(raw-word-texel-execution PROPERTIES TIMEOUT 600)
+  # Four-word RGBA32 signed-integer texels; the D3D11 renderer supports them.
+  if(WIN32)
+    add_executable(word-texel-kernel boundary/word_texel.cpp)
+    target_compile_features(word-texel-kernel PRIVATE cxx_std_20)
+    set_target_properties(word-texel-kernel PROPERTIES CXX_EXTENSIONS OFF)
+    target_link_libraries(word-texel-kernel PRIVATE VRCNativeOpenCLRuntime)
+    add_test(NAME word-texel-execution
+      COMMAND Python3::Interpreter
+        "${CMAKE_CURRENT_SOURCE_DIR}/boundary/word_texel.py"
+        $<TARGET_FILE:vrccl> "${VRC_TEST_CLANG}"
+        $<TARGET_FILE:word-texel-kernel>
+        "${PROJECT_BINARY_DIR}/tests/word-texel")
+    set_tests_properties(word-texel-execution PROPERTIES TIMEOUT 1800)
+  endif()
   add_executable(onnx-fusion-kernels boundary/onnx_fusion.cpp)
   target_compile_features(onnx-fusion-kernels PRIVATE cxx_std_20)
   set_target_properties(onnx-fusion-kernels PROPERTIES CXX_EXTENSIONS OFF)

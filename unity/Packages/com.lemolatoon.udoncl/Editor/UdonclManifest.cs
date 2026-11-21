@@ -83,6 +83,22 @@ namespace Lemolatoon.Udoncl.Editor
         public string binding_namespace;
         public string binding_class;
         public AsyncCommandInfo async_commands;
+        public string texel_format;
+        public TransferScratchInfo transfer_scratch;
+    }
+
+    /// <summary>
+    /// The texture a word-texel program's partial transfers snapshot their
+    /// destination into (see the generated buffer-copy shader).
+    /// </summary>
+    [Serializable]
+    internal sealed class TransferScratchInfo
+    {
+        public string slot;
+        public int width;
+        public int height;
+        public string format;
+        public bool program_slot;
     }
 
     [Serializable]

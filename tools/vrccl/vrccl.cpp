@@ -513,6 +513,27 @@ std::string onnxPublicBufferName(StringRef name, bool output, int64_t index,
   return result;
 }
 
+/// The texel format a config requests for its Device buffers (key `key`):
+/// `rgba8_unorm` (the default, one word per texel) or `rgba32_float`.
+FailureOr<std::string> configTexelFormat(const json::Object &config,
+                                         StringRef key) {
+  const json::Value *value = config.get(key);
+  if (!value)
+    return std::string("rgba8_unorm");
+  auto format = value->getAsString();
+  if (!format || !::vrc::vrcgpu::isGatherTexelFormat(*format)) {
+    errs() << key << " must be \"rgba8_unorm\" or \"rgba32_float\"\n";
+    return failure();
+  }
+  return format->str();
+}
+
+void setModuleTexelFormat(ModuleOp module, StringRef format) {
+  if (format != "rgba8_unorm")
+    module->setAttr("vrc.texel_format",
+                    StringAttr::get(module.getContext(), format));
+}
+
 struct UnityBuffer {
   int64_t id;
   int64_t allocationBytes;
@@ -594,6 +615,12 @@ parseUnityBuffers(const json::Object &config) {
     int64_t height = explicitHeight ? *explicitHeight
                      : shapeFits    ? dispatchShape->second
                                     : (pixels + width - 1) / width;
+    // Word texels: a one-row buffer is padded to whole texels, as its
+    // kernels' one-row targets are.
+    if (auto format = config.getString("device_texel_format");
+        format && height == 1 && !explicitWidth)
+      if (unsigned texelWords = ::vrc::vrcgpu::gatherTexelWords(*format))
+        width = llvm::alignTo(width, texelWords);
     result.push_back({*id, *bytes, logicalBytes.value_or(*bytes), width, height,
                       name->str(), "__udoncl_buffer_" + std::to_string(*id),
                       elementType ? elementType->str() : "",
@@ -1472,8 +1499,13 @@ LogicalResult appendUnityDispatchMaterialManifest(ModuleOp module,
   return success();
 }
 
-json::Array unityBufferManifest(ArrayRef<UnityBuffer> buffers) {
+/// The Device buffers' textures. `width` and `height` are the texture extent
+/// in texels; a texel holds `gatherTexelWords(format)` words, so a row of
+/// `width` texels holds width * words-per-texel consecutive words.
+json::Array unityBufferManifest(ArrayRef<UnityBuffer> buffers,
+                                StringRef texelFormat) {
   json::Array result;
+  int64_t texelWords = ::vrc::vrcgpu::gatherTexelWords(texelFormat);
   for (const UnityBuffer &buffer : buffers) {
     json::Object entry{
         {"id", buffer.id},
@@ -1481,9 +1513,9 @@ json::Array unityBufferManifest(ArrayRef<UnityBuffer> buffers) {
         {"heap_slot", buffer.heapSlot},
         {"logical_bytes", buffer.logicalBytes},
         {"capacity_bytes", buffer.allocationBytes},
-        {"width", buffer.width},
+        {"width", buffer.width / texelWords},
         {"height", buffer.height},
-        {"format", "rgba8_unorm"},
+        {"format", texelFormat.str()},
         {"srgb", false},
         {"mipmaps", false},
         {"filter", "point"},
@@ -3490,6 +3522,155 @@ std::string unityLibraryBufferCopyShader(StringRef program) {
 /// of compiler-synthesized gather kernels. A synthesized kernel carries its
 /// own launch contract, so the config must agree with it and only assigns the
 /// kernel id. A native bundle holds one kernel; the others are dropped.
+/// The transfer shader of a program whose buffers hold four words per
+/// RGBA32 float texel, read and written as bits. It has the RGBA8 shader's
+/// modes and properties (Width counts destination texels per row) and three
+/// passes, chosen by the caller:
+///  - pass 0 writes word texels from an RGBA8 word source (one word per
+///    texel, a binding's upload staging texture);
+///  - pass 1 writes word texels from a word-texel source (Device copies,
+///    fills, and the snapshot of a destination);
+///  - pass 2 writes RGBA8 words from a word-texel source, whole surface
+///    (a binding's readback staging texture).
+/// Modes 1 and 2 write a texel only if some of its words are in
+/// [First, First + Count); its other words come from _VRC_TransferPrevious,
+/// a snapshot of the destination the caller made with pass 1 mode 0.
+std::string unityLibraryWordTexelCopyShader(StringRef program) {
+  std::string words, properties;
+  raw_string_ostream wordList(words), propertyList(properties);
+  for (int index = 0; index < 32; ++index) {
+    propertyList << "    _VRC_TransferWord" << index << " (\"Word " << index
+                 << "\", Integer) = 0\n";
+    wordList << (index ? ", " : "") << "asuint(_VRC_TransferWord" << index
+             << ")";
+  }
+  std::string declarations;
+  raw_string_ostream declarationList(declarations);
+  for (StringRef name : {"Mode", "Width", "First", "Count", "Period", "Delta"})
+    declarationList << "    int _VRC_Transfer" << name << ";\n";
+  for (int index = 0; index < 32; ++index)
+    declarationList << "    int _VRC_TransferWord" << index << ";\n";
+  std::string common =
+      "    #pragma target 5.0\n"
+      "    #pragma vertex vert_img\n"
+      "    #pragma fragment frag\n"
+      "    #include \"UnityCG.cginc\"\n" +
+      declarations +
+      "    uint TransferLane(uint4 t, uint c) {\n"
+      "      return c < 2u ? (c == 0u ? t.x : t.y) : (c == 2u ? t.z : t.w);\n"
+      "    }\n";
+  // Writes word texels; `SourceWord(word)` and `SourceTexel(position)` read
+  // the source.
+  std::string writeTexels =
+      "    Texture2D<float4> _VRC_TransferPrevious;\n"
+      "    float4 frag(v2f_img input) : SV_Target {\n"
+      "      uint2 position = uint2(input.pos.xy);\n"
+      "      if (_VRC_TransferMode == 0)\n"
+      "        return asfloat(SourceTexel(position));\n"
+      "      uint4 previous = asuint(_VRC_TransferPrevious.Load(int3(position, "
+      "0)));\n"
+      "      uint first = position.y * uint(_VRC_TransferWidth) * 4u + "
+      "position.x * 4u;\n"
+      "      uint words[32] = { " +
+      words +
+      " };\n"
+      "      uint4 result = previous;\n"
+      "      bool written = false;\n"
+      "      [unroll] for (uint lane = 0u; lane < 4u; ++lane) {\n"
+      "        uint index = first + lane;\n"
+      "        uint offset = index - uint(_VRC_TransferFirst);\n"
+      "        if (index >= uint(_VRC_TransferFirst) && "
+      "offset < uint(_VRC_TransferCount)) {\n"
+      "          uint word = _VRC_TransferMode == 2\n"
+      "              ? words[offset % uint(max(_VRC_TransferPeriod, 1))]\n"
+      "              : SourceWord(index + uint(_VRC_TransferDelta));\n"
+      "          result = lane == 0u ? uint4(word, result.yzw)\n"
+      "                 : lane == 1u ? uint4(result.x, word, result.zw)\n"
+      "                 : lane == 2u ? uint4(result.xy, word, result.w)\n"
+      "                              : uint4(result.xyz, word);\n"
+      "          written = true;\n"
+      "        }\n"
+      "      }\n"
+      "      if (!written)\n"
+      "        discard;\n"
+      "      return asfloat(result);\n"
+      "    }\n";
+  std::string fromBytes =
+      "    Texture2D<float4> _MainTex;\n"
+      "    uint SourceWordAt(uint2 p) {\n"
+      "      float4 t = _MainTex.Load(int3(p, 0));\n"
+      "      uint2 halves = uint2(t.yw * 65280.0 + t.xz * 255.0 + 0.5);\n"
+      "      return halves.x | (halves.y << 16u);\n"
+      "    }\n"
+      "    uint SourceWord(uint word) {\n"
+      "      uint width, height;\n"
+      "      _MainTex.GetDimensions(width, height);\n"
+      "      return SourceWordAt(uint2(word % width, word / width));\n"
+      "    }\n"
+      "    uint4 SourceTexel(uint2 position) {\n"
+      "      uint width, height;\n"
+      "      _MainTex.GetDimensions(width, height);\n"
+      "      uint4 texel = (uint4)0;\n"
+      "      [unroll] for (uint lane = 0u; lane < 4u; ++lane) {\n"
+      "        uint2 p = min(uint2(position.x * 4u + lane, position.y), "
+      "uint2(width - 1u, height - 1u));\n"
+      "        uint word = SourceWordAt(p);\n"
+      "        texel = lane == 0u ? uint4(word, texel.yzw)\n"
+      "              : lane == 1u ? uint4(texel.x, word, texel.zw)\n"
+      "              : lane == 2u ? uint4(texel.xy, word, texel.w)\n"
+      "                           : uint4(texel.xyz, word);\n"
+      "      }\n"
+      "      return texel;\n"
+      "    }\n";
+  std::string fromWords =
+      "    Texture2D<float4> _MainTex;\n"
+      "    uint SourceWord(uint word) {\n"
+      "      uint width, height;\n"
+      "      _MainTex.GetDimensions(width, height);\n"
+      "      uint row = width * 4u, column = word % row;\n"
+      "      return TransferLane(asuint(_MainTex.Load(int3(column >> 2u, "
+      "word / row, 0))), column & 3u);\n"
+      "    }\n"
+      "    uint4 SourceTexel(uint2 position) {\n"
+      "      uint width, height;\n"
+      "      _MainTex.GetDimensions(width, height);\n"
+      "      uint2 p = min(position, uint2(width - 1u, height - 1u));\n"
+      "      return asuint(_MainTex.Load(int3(p, 0)));\n"
+      "    }\n";
+  std::string toBytes =
+      "    Texture2D<float4> _MainTex;\n"
+      "    float4 frag(v2f_img input) : SV_Target {\n"
+      "      uint width, height;\n"
+      "      _MainTex.GetDimensions(width, height);\n"
+      "      uint2 p = min(uint2(input.pos.xy), uint2(width * 4u - 1u, "
+      "height - 1u));\n"
+      "      uint word = TransferLane(asuint(_MainTex.Load(int3(p.x >> 2u, "
+      "p.y, 0))), p.x & 3u);\n"
+      "      return float4(word & 255u, (word >> 8u) & 255u, (word >> 16u) & "
+      "255u, word >> 24u) / 255.0;\n"
+      "    }\n";
+  auto pass = [&](StringRef body) {
+    return ("  Pass { ZTest Always Cull Off ZWrite Off Blend Off\n"
+            "    HLSLPROGRAM\n" +
+            common + body.str() + "  ENDHLSL }\n");
+  };
+  return (Twine("Shader \"Hidden/UdonCL/") + program +
+          "/BufferCopy\" {\n"
+          "  Properties {\n"
+          "    _MainTex (\"Source\", 2D) = \"black\" {}\n"
+          "    _VRC_TransferPrevious (\"Destination snapshot\", 2D) = "
+          "\"black\" {}\n"
+          "    _VRC_TransferMode (\"Mode\", Integer) = 0\n"
+          "    _VRC_TransferWidth (\"Destination width\", Integer) = 1\n"
+          "    _VRC_TransferFirst (\"First word\", Integer) = 0\n"
+          "    _VRC_TransferCount (\"Word count\", Integer) = 0\n"
+          "    _VRC_TransferPeriod (\"Pattern words\", Integer) = 1\n"
+          "    _VRC_TransferDelta (\"Source word delta\", Integer) = 0\n" +
+          properties + "  }\n  SubShader {\n" + pass(fromBytes + writeTexels) +
+          pass(fromWords + writeTexels) + pass(toBytes) + "  }\n}\n")
+      .str();
+}
+
 OwningOpRef<ModuleOp> importSynthesizedDeviceKernel(StringRef filename,
                                                     const json::Object &config,
                                                     MLIRContext &context) {
@@ -3755,6 +3936,9 @@ int main(int argc, char **argv) {
   SmallVector<SynthesizedUnityKernel> unitySynthesizedKernels;
   SmallVector<UnityBuffer> unityBuffers;
   bool unityUsesBufferCopy = false;
+  // The texel format of every Device buffer and immutable tensor texture of
+  // a Unity library (`device_texel_format`).
+  std::string unityTexelFormat = "rgba8_unorm";
   std::set<std::string> annotatedHostExports;
   if (emitUnityLibrary) {
     phase("unity-prepare");
@@ -3778,6 +3962,10 @@ int main(int argc, char **argv) {
     unityConfig = *object;
     if (unityConfig->getBoolean("omit_intermediate_ir").value_or(false))
       omitIntermediateIR = true;
+    auto texelFormat = configTexelFormat(*unityConfig, "device_texel_format");
+    if (failed(texelFormat))
+      return 1;
+    unityTexelFormat = *texelFormat;
     auto parsedDeviceConfigs = parseUnityDeviceKernels(*unityConfig);
     if (failed(parsedDeviceConfigs))
       return 1;
@@ -3937,6 +4125,7 @@ int main(int argc, char **argv) {
       for (const SynthesizedUnityKernel &kernel : unitySynthesizedKernels)
         kernel.module->moveBefore(unityDeviceModule->getBody(),
                                   unityDeviceModule->getBody()->end());
+      setModuleTexelFormat(*unityDeviceModule, unityTexelFormat);
       if (failed(verify(*unityDeviceModule)))
         return 1;
     }
@@ -4119,6 +4308,17 @@ int main(int argc, char **argv) {
     if (failed(generatedBuffers))
       return 1;
     unityBuffers = std::move(*generatedBuffers);
+    if (unityTexelFormat != "rgba8_unorm") {
+      int64_t texelWords = ::vrc::vrcgpu::gatherTexelWords(unityTexelFormat);
+      for (const UnityBuffer &buffer : unityBuffers)
+        if (buffer.width % texelWords != 0) {
+          errs() << "Device buffer " << buffer.name << " is " << buffer.width
+                 << " words wide; " << unityTexelFormat
+                 << " texels need a multiple of " << texelWords << "\n";
+          return 1;
+        }
+      setModuleTexelFormat(*module, unityTexelFormat);
+    }
     if (!omitIntermediateIR) {
       raw_string_ostream recovered(files["frontend.recovered.mlir"]);
       module->print(recovered);
@@ -4140,10 +4340,15 @@ int main(int argc, char **argv) {
       return 1;
     }
     gatherProfile = true;
+    auto texelFormat =
+        configTexelFormat(*config->getAsObject(), "texel_format");
+    if (failed(texelFormat))
+      return 1;
     module = importSynthesizedDeviceKernel(deviceMLIR, *config->getAsObject(),
                                            context);
     if (!module || failed(verify(*module)))
       return 1;
+    setModuleTexelFormat(*module, *texelFormat);
     raw_string_ostream imported(files["frontend.imported.mlir"]);
     module->print(imported);
     imported << "\n";
@@ -4174,11 +4379,16 @@ int main(int argc, char **argv) {
       return 1;
     }
     gatherProfile = config->getAsObject()->getString("profile") == "gather-f32";
+    auto texelFormat =
+        configTexelFormat(*config->getAsObject(), "texel_format");
+    if (failed(texelFormat))
+      return 1;
     module = ::vrc::importCBoundary(
         emitNativeDevice ? StringRef() : StringRef(hostLLVM), deviceLLVM,
         *config->getAsObject(), context);
     if (!module || failed(verify(*module)))
       return 1;
+    setModuleTexelFormat(*module, *texelFormat);
     raw_string_ostream imported(files["frontend.imported.mlir"]);
     module->print(imported);
     imported << "\n";
@@ -4410,7 +4620,27 @@ int main(int argc, char **argv) {
       errs() << "Unity library manifest is missing its Device section\n";
       return 1;
     }
-    (*device)["buffers"] = unityBufferManifest(unityBuffers);
+    (*device)["buffers"] = unityBufferManifest(unityBuffers, unityTexelFormat);
+    if (unityTexelFormat != "rgba8_unorm") {
+      // Word-texel buffers: a transfer that writes part of a texel first
+      // copies the destination to the scratch texture and keeps the words
+      // outside its range from it; see `unityLibraryBufferCopyShader`.
+      auto *programManifest = manifest["program"].getAsObject();
+      (*programManifest)["texel_format"] = unityTexelFormat;
+      if (!unityBuffers.empty()) {
+        int64_t texelWords = ::vrc::vrcgpu::gatherTexelWords(unityTexelFormat);
+        int64_t width = 0, height = 0;
+        for (const UnityBuffer &buffer : unityBuffers) {
+          width = std::max(width, buffer.width / texelWords);
+          height = std::max(height, buffer.height);
+        }
+        (*programManifest)["transfer_scratch"] =
+            json::Object{{"slot", "__udoncl_transfer_scratch"},
+                         {"width", width},
+                         {"height", height},
+                         {"format", unityTexelFormat}};
+      }
+    }
     if (!unityBuffers.empty())
       (*manifest["program"].getAsObject())["buffer_pool_slot"] =
           "__udoncl_buffer_pool";
@@ -4601,9 +4831,13 @@ int main(int argc, char **argv) {
           externalFiles[path] = std::move(externalPath);
         else
           files[path] = std::move(*inlineBytes);
+        // Words fill rows of 8192 (a shorter tensor is one row); a texel
+        // holds `texelWords` consecutive words of its row.
         int64_t pixels = llvm::divideCeil(byteLength.getInt(), int64_t{4});
-        int64_t width = std::min<int64_t>(pixels, 8192);
-        int64_t height = llvm::divideCeil(pixels, width);
+        int64_t rowWords = std::min<int64_t>(pixels, 8192);
+        int64_t height = llvm::divideCeil(pixels, rowWords);
+        int64_t texelWords = ::vrc::vrcgpu::gatherTexelWords(unityTexelFormat);
+        int64_t width = llvm::divideCeil(rowWords, texelWords);
         if (height > 8192) {
           errs() << "immutable static tensor " << tensorId
                  << " exceeds one 8192x8192 RGBA32 texture\n";
@@ -4626,13 +4860,16 @@ int main(int argc, char **argv) {
             {"byte_strides", std::move(strides)},
             {"byte_length", byteLength.getInt()},
             {"sha256", sha256.getValue().str()},
-            {"texture", json::Object{{"abi", "udoncl-static-rgba32-v1"},
-                                     {"width", width},
-                                     {"height", height},
-                                     {"format", "rgba32"},
-                                     {"srgb", false},
-                                     {"mipmaps", false},
-                                     {"filter", "point"}}},
+            {"texture",
+             json::Object{{"abi", texelWords == 1 ? "udoncl-static-rgba32-v1"
+                                                  : "udoncl-static-words-v1"},
+                          {"width", width},
+                          {"height", height},
+                          {"format", texelWords == 1 ? std::string("rgba32")
+                                                     : unityTexelFormat},
+                          {"srgb", false},
+                          {"mipmaps", false},
+                          {"filter", "point"}}},
         });
         resources->push_back(json::Object{
             {"name", resourceName},
@@ -4672,6 +4909,18 @@ int main(int argc, char **argv) {
       appendUnityCopyMaterialSlot(physicalModule);
     if (failed(appendUnityDispatchMaterialManifest(physicalModule, manifest)))
       return 1;
+    // The Host program declares the transfer scratch slot only when it
+    // lowered a partial transfer; the finalizer binds it then.
+    if (auto *scratch = (*manifest["program"].getAsObject())
+                            .getObject("transfer_scratch")) {
+      bool declared = false;
+      if (auto data = physicalModule->getAttrOfType<ArrayAttr>("udonasm.data"))
+        for (mlir::Attribute attribute : data)
+          if (auto entry = dyn_cast<DictionaryAttr>(attribute))
+            if (auto name = entry.getAs<StringAttr>("name"))
+              declared |= name.getValue() == "__udoncl_transfer_scratch";
+      (*scratch)["program_slot"] = declared;
+    }
     phase("emit-udon-assembly");
     std::string assembly;
     raw_string_ostream assemblyOut(assembly);
@@ -4680,7 +4929,10 @@ int main(int argc, char **argv) {
     files["host.uasm"] = std::move(assembly);
     files["display.shader"] = unityLibraryDisplayShader(*program);
     if (unityUsesBufferCopy || !unityBuffers.empty())
-      files["buffer-copy.shader"] = unityLibraryBufferCopyShader(*program);
+      files["buffer-copy.shader"] =
+          unityTexelFormat == "rgba8_unorm"
+              ? unityLibraryBufferCopyShader(*program)
+              : unityLibraryWordTexelCopyShader(*program);
     if (!omitIntermediateIR) {
       raw_string_ostream lowered(files["host.udonasm.mlir"]);
       physicalModule.print(lowered);

@@ -129,6 +129,17 @@ same scalar, computed once per key instead of once per repeat, and the fold
 then applies. The Mul stays an UdonATen operator and the Transpose an
 UdonONNXOperators re-indexing node.
 
+`udonblas_arena_sgemm_strided_batched_large` is a second private backend of
+the same `udonblasSgemmStridedBatched` contract, not an API: the same kernel
+body, operand by operand and K in the same ascending order, with operands up
+to a whole Device buffer texture (8192 x 8192 words) instead of 131072 words
+and a launch surface of 8192 x 16 words instead of 8192 x 2. ONNX Host
+finalization selects it only for a product beyond the smaller kernel (the
+attention scores and values of a 4096-token context), so every other
+dispatch keeps the smaller surface and its cost. `udonblas-arena-sgemm-kernel`
+checks it against a double-precision product and bit for bit against the
+smaller kernel where both apply.
+
 The general ONNX MNIST path follows the same boundary: arena convolution and
 pooling are private backends of `udondnnConvolutionForward` and
 `udondnnPoolingForward`, while coordinate-aware broadcast Add remains an

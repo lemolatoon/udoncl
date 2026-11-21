@@ -12,9 +12,9 @@ using namespace mlir;
 
 namespace vrc {
 namespace {
-/// Words of the largest surface a gather kernel writes or reads as a Device
-/// buffer: 8192 x 16.
-constexpr int64_t fusionSurfaceWords = 131072;
+/// Words of the largest tensor a fused kernel writes or reads as a Device
+/// buffer.
+constexpr int64_t fusionSurfaceWords = deviceSynthesizedSurfaceWords;
 
 bool isStaticF32(const GraphRecord &graph, int64_t tensorIndex) {
   if (tensorIndex < 0 ||
@@ -77,7 +77,8 @@ std::optional<DeviceFusionKind> deviceFusionKind(const GraphRecord &graph,
     if (node.operation == operation)
       kind = candidate;
   // supportsDeviceNode checks the provider and the limits of the library
-  // kernel, which a fused kernel replaces element for element.
+  // kernel, which a fused kernel replaces element for element, or of a
+  // synthesized kernel beyond them.
   if (!kind || !supportsDeviceNode(graph, node) ||
       !isStaticF32(graph, node.output))
     return std::nullopt;

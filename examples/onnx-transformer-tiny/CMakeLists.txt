@@ -27,6 +27,14 @@ if(UDONCL_TINYLLAMA_ONNX_MODEL)
     INPUT_SHAPES
       attention_mask=1,4)
   file(READ "${CMAKE_CURRENT_SOURCE_DIR}/unity-library.json" real_unity_config)
+  # The real model stores its Device buffers and weights as four words per
+  # RGBA32 float texel (see docs/architecture/
+  # udon-vrchat-shader-constraints.md); rgba8_unorm restores one word per
+  # RGBA8 texel. The synthetic fixture keeps the default.
+  set(UDONCL_TINYLLAMA_DEVICE_TEXEL_FORMAT "rgba32_float" CACHE STRING
+    "Device texel format of the real TinyLlama artifacts")
+  string(JSON real_unity_config SET "${real_unity_config}"
+    device_texel_format "\"${UDONCL_TINYLLAMA_DEVICE_TEXEL_FORMAT}\"")
   string(JSON real_unity_config SET "${real_unity_config}"
     program "\"tinyllama_real_prefill\"")
   string(JSON real_unity_config SET "${real_unity_config}"

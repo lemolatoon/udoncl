@@ -204,6 +204,59 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         }
 
         [Test]
+        public void ValidateAcceptsWordTexelBuffersWithTransferScratch()
+        {
+            string manifestPath = Path.Combine(_directory, "manifest.json");
+            string buffers =
+                "\"device\":{\"buffers\":[{\"id\":7,\"name\":\"words\","
+                + "\"heap_slot\":\"__udoncl_buffer_7\",\"logical_bytes\":64,"
+                + "\"width\":4,\"height\":1,\"format\":\"rgba32_float\","
+                + "\"srgb\":false,\"mipmaps\":false,\"filter\":\"point\"}],"
+                + "\"kernels\"";
+            string program =
+                "\"display_shader\":\"display.shader\",\"texel_format\":\"rgba32_float\","
+                + "\"transfer_scratch\":{\"slot\":\"__udoncl_transfer_scratch\","
+                + "\"width\":4,\"height\":1,\"format\":\"rgba32_float\",\"program_slot\":true}";
+            string original = File.ReadAllText(manifestPath);
+            string json = original
+                .Replace("\"device\":{\"kernels\"", buffers)
+                .Replace("\"display_shader\":\"display.shader\"", program);
+            File.WriteAllText(manifestPath, json, new UTF8Encoding(false));
+
+            // Four words per texel: 4 texels hold the 64 bytes.
+            ValidatedArtifact artifact = ArtifactManifestValidator.Validate(_directory);
+            Assert.AreEqual("rgba32_float", artifact.TexelFormat);
+            Assert.AreEqual("rgba32_float", artifact.DeviceBuffers[0].Format);
+            Assert.IsNotNull(artifact.TransferScratch);
+            Assert.IsTrue(artifact.TransferScratch.ProgramSlot);
+
+            // A word-texel program needs its transfer scratch texture.
+            File.WriteAllText(
+                manifestPath,
+                original
+                    .Replace("\"device\":{\"kernels\"", buffers)
+                    .Replace(
+                        "\"display_shader\":\"display.shader\"",
+                        "\"display_shader\":\"display.shader\",\"texel_format\":\"rgba32_float\""
+                    ),
+                new UTF8Encoding(false)
+            );
+            Assert.Throws<InvalidDataException>(() =>
+                ArtifactManifestValidator.Validate(_directory)
+            );
+
+            // Every buffer uses the program's texel format.
+            File.WriteAllText(
+                manifestPath,
+                original.Replace("\"device\":{\"kernels\"", buffers),
+                new UTF8Encoding(false)
+            );
+            Assert.Throws<InvalidDataException>(() =>
+                ArtifactManifestValidator.Validate(_directory)
+            );
+        }
+
+        [Test]
         public void ValidateRejectsMissingBufferCopyShader()
         {
             string manifestPath = Path.Combine(_directory, "manifest.json");

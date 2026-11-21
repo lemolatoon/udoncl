@@ -158,20 +158,44 @@ namespace Lemolatoon.Udoncl.Editor
                             programRoot,
                             DeviceBufferFileName(buffer.Id, buffer.Name),
                             buffer.Width,
-                            buffer.Height
+                            buffer.Height,
+                            DeviceRenderTextureFormat(buffer.Format)
+                        );
+                    // A word-texel program snapshots the destination of a
+                    // partial transfer into this texture.
+                    if (artifacts.TransferScratch != null)
+                        CreateOrUpdateRgbaRenderTexture(
+                            transaction,
+                            programRoot,
+                            TransferScratchFileName,
+                            artifacts.TransferScratch.Width,
+                            artifacts.TransferScratch.Height,
+                            DeviceRenderTextureFormat(artifacts.TransferScratch.Format)
                         );
                     foreach (ValidatedStaticTensor tensor in artifacts.StaticTensors)
                     {
                         byte[] bytes = File.ReadAllBytes(tensor.AbsolutePath);
-                        Array.Resize(ref bytes, tensor.Width * tensor.Height * 4);
-                        CreateOrUpdateByteTexture(
-                            transaction,
-                            programRoot,
-                            StaticTensorFileName(tensor.Id, tensor.Name),
-                            tensor.Width,
-                            tensor.Height,
-                            bytes
-                        );
+                        // Rows of texels hold consecutive words, so a word
+                        // texture's bytes are the tensor's bytes padded.
+                        Array.Resize(ref bytes, tensor.Width * tensor.Height * tensor.TexelBytes);
+                        if (tensor.Format == "rgba32_float")
+                            CreateOrUpdateWordTexture(
+                                transaction,
+                                programRoot,
+                                StaticTensorFileName(tensor.Id, tensor.Name),
+                                tensor.Width,
+                                tensor.Height,
+                                bytes
+                            );
+                        else
+                            CreateOrUpdateByteTexture(
+                                transaction,
+                                programRoot,
+                                StaticTensorFileName(tensor.Id, tensor.Name),
+                                tensor.Width,
+                                tensor.Height,
+                                bytes
+                            );
                     }
                     ImportOnnxRuntimeResources(
                         transaction,
@@ -2430,12 +2454,88 @@ namespace Lemolatoon.Udoncl.Editor
             return texture;
         }
 
+        internal const string TransferScratchFileName = "udoncl_transfer_scratch.asset";
+
+        /// <summary>
+        /// The RenderTexture format of a Device buffer texel format: four
+        /// words per RGBA32 float texel, or one word per RGBA8 texel.
+        /// </summary>
+        private static RenderTextureFormat DeviceRenderTextureFormat(string format)
+        {
+            return format == "rgba32_float"
+                ? RenderTextureFormat.ARGBFloat
+                : RenderTextureFormat.ARGB32;
+        }
+
+        /// <summary>
+        /// An immutable word texture: four little-endian words per RGBA32
+        /// float texel, loaded bit for bit (raw data, no conversion).
+        /// </summary>
+        private static Texture2D CreateOrUpdateWordTexture(
+            AssetImportTransaction transaction,
+            string programRoot,
+            string fileName,
+            int width,
+            int height,
+            byte[] bytes
+        )
+        {
+            if (bytes.Length != width * height * 16)
+                throw new InvalidDataException(
+                    "Word texture resource has "
+                        + bytes.Length
+                        + " bytes; expected "
+                        + (width * height * 16)
+                        + "."
+                );
+            string textureDirectory = programRoot + "/Textures";
+            EnsureFolders(textureDirectory);
+            string texturePath = textureDirectory + "/" + fileName;
+            transaction.Track(texturePath);
+            Texture2D texture = AssetDatabase.LoadAssetAtPath<Texture2D>(texturePath);
+            if (texture == null)
+            {
+                texture = new Texture2D(width, height, TextureFormat.RGBAFloat, false, true);
+                AssetDatabase.CreateAsset(texture, texturePath);
+            }
+            else if (!texture.Reinitialize(width, height, TextureFormat.RGBAFloat, false))
+            {
+                throw new InvalidOperationException("Could not resize texture " + texturePath);
+            }
+            texture.filterMode = FilterMode.Point;
+            texture.wrapMode = TextureWrapMode.Clamp;
+            texture.anisoLevel = 0;
+            texture.LoadRawTextureData(bytes);
+            texture.Apply(false, false);
+            EditorUtility.SetDirty(texture);
+            return texture;
+        }
+
         private static RenderTexture CreateOrUpdateRgbaRenderTexture(
             AssetImportTransaction transaction,
             string programRoot,
             string fileName,
             int width,
             int height
+        )
+        {
+            return CreateOrUpdateRgbaRenderTexture(
+                transaction,
+                programRoot,
+                fileName,
+                width,
+                height,
+                RenderTextureFormat.ARGB32
+            );
+        }
+
+        private static RenderTexture CreateOrUpdateRgbaRenderTexture(
+            AssetImportTransaction transaction,
+            string programRoot,
+            string fileName,
+            int width,
+            int height,
+            RenderTextureFormat format
         )
         {
             string textureDirectory = programRoot + "/RenderTextures";
@@ -2449,7 +2549,7 @@ namespace Lemolatoon.Udoncl.Editor
                     width,
                     height,
                     0,
-                    RenderTextureFormat.ARGB32,
+                    format,
                     RenderTextureReadWrite.Linear
                 );
                 AssetDatabase.CreateAsset(texture, texturePath);
@@ -2460,7 +2560,7 @@ namespace Lemolatoon.Udoncl.Editor
                 texture.width = width;
                 texture.height = height;
                 texture.depth = 0;
-                texture.format = RenderTextureFormat.ARGB32;
+                texture.format = format;
             }
             texture.useMipMap = false;
             texture.autoGenerateMips = false;

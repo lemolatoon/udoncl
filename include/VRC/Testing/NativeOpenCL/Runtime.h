@@ -9,6 +9,9 @@ struct GatherBinding {
   std::string name, fragment;
   uint32_t width = 0, height = 0, inputCount = 1;
   uint32_t globalWidth = 0, globalHeight = 0;
+  // Words per texel of every texture of the kernel (1: RGBA8, 4: RGBA32
+  // signed-integer texels); `width` still counts words.
+  uint32_t texelWords = 1;
 };
 class Session {
 public:

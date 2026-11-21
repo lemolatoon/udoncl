@@ -132,8 +132,8 @@ public:
            uint32_t x = 0, uint32_t y = 1, uint32_t inputsRequested = 1)
       : width(x ? x : 1), height(y), inputCount(x ? inputsRequested : 0),
         gather(x != 0) {
-    if (!height || uint64_t(width) * height > 131072 || inputCount > 13 ||
-        (gather && !inputCount))
+    if (!height || uint64_t(width) * height > vrc::vrcgpu::gatherMaxWords ||
+        inputCount > 13 || (gather && !inputCount))
       throw std::runtime_error("gather extent exceeds supported profile");
     auto application =
         info<VkApplicationInfo>(VK_STRUCTURE_TYPE_APPLICATION_INFO);
@@ -538,8 +538,11 @@ createFragmentRenderer(const std::string &shader, const std::string &vertex) {
 
 std::unique_ptr<FragmentRenderer>
 createGatherRenderer(const std::string &shader, const std::string &vertex,
-                     uint32_t width, uint32_t height, uint32_t inputCount) {
+                     uint32_t width, uint32_t height, uint32_t inputCount,
+                     uint32_t texelWords) {
   if (!width || !height || uint64_t(width) * height < 1 || !inputCount)
     throw std::runtime_error("invalid gather extent");
+  if (texelWords != 1)
+    throw std::runtime_error("the Vulkan renderer supports RGBA8 word texels");
   return std::make_unique<Renderer>(shader, vertex, width, height, inputCount);
 }

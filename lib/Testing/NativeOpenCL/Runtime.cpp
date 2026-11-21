@@ -42,8 +42,9 @@ Session::Session(const std::string &text, std::vector<GatherBinding> kernels,
     uint32_t globalWidth = binding.globalWidth ? binding.globalWidth : width;
     uint32_t globalHeight =
         binding.globalHeight ? binding.globalHeight : height;
-    if (!binding.id || binding.words < 1 || binding.words > 131072 ||
-        !binding.inputCount || binding.inputCount > 13 ||
+    if (!binding.id || binding.words < 1 ||
+        binding.words > vrc::vrcgpu::gatherMaxWords || !binding.inputCount ||
+        binding.inputCount > 13 ||
         binding.scalarCount > 15 - binding.inputCount || !width || !height ||
         uint64_t(width) * height < binding.words || !globalWidth ||
         !globalHeight || uint64_t(globalWidth) * globalHeight != binding.words)
@@ -52,8 +53,9 @@ Session::Session(const std::string &text, std::vector<GatherBinding> kernels,
       if (&other != &binding &&
           (other.id == binding.id || other.name == binding.name))
         throw std::runtime_error("duplicate gather binding");
-    gatherRenderers.push_back(createGatherRenderer(
-        binding.fragment, vertex, width, height, binding.inputCount));
+    gatherRenderers.push_back(
+        createGatherRenderer(binding.fragment, vertex, width, height,
+                             binding.inputCount, binding.texelWords));
   }
   active = this;
 }

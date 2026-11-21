@@ -58,3 +58,24 @@ def VRCGPU_RawUnpackOp : Op<VRCGPU_Dialect, "raw_unpack", [Pure]> {
   let results = (outs AnyType:$value);
   let hasVerifier = 1;
 }
+
+// Word-texel formats that hold several words per texel (rgba32_float: four
+// little-endian words, word w in channel w % 4 of texel w / 4 of its row).
+// The pass body keeps one-word semantics: `fragment_coord` names the word the
+// body computes, `word_load` reads one word of an input by its linear word
+// index, and `output_word` is that word. The HLSL emitter computes the words
+// of one texel together.
+def VRCGPU_WordLoadOp : Op<VRCGPU_Dialect, "word_load", [Pure]> {
+  let summary = "Point-load one f32/i32 word of a proven read-only input";
+  let arguments = (ins FlatSymbolRefAttr:$resource, I32:$index,
+    I32Attr:$element_count, I32Attr:$row_pitch);
+  let results = (outs AnyType:$value);
+  let assemblyFormat = "$resource `[` $index `]` attr-dict `:` type($value)";
+  let hasVerifier = 1;
+}
+def VRCGPU_OutputWordOp : Op<VRCGPU_Dialect, "output_word", [Terminator, HasParent<"PassOp">]> {
+  let summary = "Write the word of the sole word-texel render target";
+  let arguments = (ins AnyType:$value);
+  let assemblyFormat = "$value attr-dict `:` type($value)";
+  let hasVerifier = 1;
+}

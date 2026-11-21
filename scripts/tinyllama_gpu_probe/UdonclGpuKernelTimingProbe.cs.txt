@@ -16,6 +16,10 @@
 // Blit is the slope (T(N2) - T(N1)) / (N2 - N1), which cancels the fence and
 // readback latency. Texture contents are irrelevant to the kernels' control
 // flow (loop bounds are uniform arguments), so textures are left uninitialized.
+// A plan whose texelFormat is "rgba32_float" (four words per RGBA32
+// float texel, read as bits) gives texture extents in texels; the probe then
+// creates ARGBFloat RenderTextures and RGBAFloat static textures, fences
+// through a one-texel RGBA8 target, and Blits the transfer material's word pass (1).
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -50,18 +54,22 @@ public class UdonclGpuKernelTimingProbe
         public int[] sequence; public int[] sequenceStatic;
         public int[] staticIds; public int[] staticWidth; public int[] staticHeight;
         public Config[] configs;
+        public string texelFormat;
     }
 
     private const string ShaderFolder = "Assets/UdonclGpuProbe/Shaders";
     private readonly Dictionary<int, RenderTexture> buffers = new Dictionary<int, RenderTexture>();
     private readonly Dictionary<int, Texture2D> statics = new Dictionary<int, Texture2D>();
     private readonly List<UnityEngine.Object> owned = new List<UnityEngine.Object>();
+    private bool wordTexels;
+    private RenderTexture fenceTarget;
 
     private RenderTexture Buffer(int id, int width, int height)
     {
         if (buffers.TryGetValue(id, out RenderTexture existing))
             return existing;
-        var rt = new RenderTexture(width, height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear)
+        var format = wordTexels ? RenderTextureFormat.ARGBFloat : RenderTextureFormat.ARGB32;
+        var rt = new RenderTexture(width, height, 0, format, RenderTextureReadWrite.Linear)
         {
             filterMode = FilterMode.Point, wrapMode = TextureWrapMode.Clamp,
             useMipMap = false, autoGenerateMips = false, antiAliasing = 1,
@@ -76,18 +84,26 @@ public class UdonclGpuKernelTimingProbe
     {
         if (statics.TryGetValue(id, out Texture2D existing))
             return existing;
-        var texture = new Texture2D(width, height, TextureFormat.RGBA32, false, true)
-        {
-            filterMode = FilterMode.Point, wrapMode = TextureWrapMode.Clamp,
-        };
+        var texture = wordTexels
+            ? new Texture2D(width, height, TextureFormat.RGBAFloat, false, true)
+            : new Texture2D(width, height, TextureFormat.RGBA32, false, true);
+        texture.filterMode = FilterMode.Point;
+        texture.wrapMode = TextureWrapMode.Clamp;
         texture.Apply(false, true);
         statics[id] = texture;
         owned.Add(texture);
         return texture;
     }
 
-    private static void Fence(RenderTexture target)
+    private void Fence(RenderTexture target)
     {
+        // Word texels: a one-texel RGBA8 Blit queued after the work is the
+        // fence, so the readback never converts an integer format.
+        if (wordTexels)
+        {
+            Graphics.Blit(Texture2D.blackTexture, fenceTarget);
+            target = fenceTarget;
+        }
         AsyncGPUReadbackRequest request = AsyncGPUReadback.Request(target, 0, 0, 1, 0, 1, 0, 1);
         request.WaitForCompletion();
         Assert.IsFalse(request.hasError, "fence readback failed");
@@ -99,7 +115,7 @@ public class UdonclGpuKernelTimingProbe
         return value.ToString(format, CultureInfo.InvariantCulture);
     }
 
-    private static double Timed(Action issue, int repetitions, RenderTexture fence)
+    private double Timed(Action issue, int repetitions, RenderTexture fence)
     {
         Fence(fence);
         Stopwatch watch = Stopwatch.StartNew();
@@ -109,7 +125,7 @@ public class UdonclGpuKernelTimingProbe
         return watch.Elapsed.TotalMilliseconds;
     }
 
-    private static double Slope(Action issue, int low, int high, RenderTexture fence)
+    private double Slope(Action issue, int low, int high, RenderTexture fence)
     {
         var samples = new List<double>();
         for (int trial = 0; trial < 5; ++trial)
@@ -130,6 +146,13 @@ public class UdonclGpuKernelTimingProbe
         if (string.IsNullOrEmpty(planPath) || string.IsNullOrEmpty(artifact))
             Assert.Ignore("UDONCL_GPU_PROBE_PLAN / UDONCL_GPU_PROBE_ARTIFACT not set");
         Plan plan = JsonUtility.FromJson<Plan>(File.ReadAllText(planPath));
+        wordTexels = plan.texelFormat == "rgba32_float";
+        if (wordTexels)
+        {
+            fenceTarget = new RenderTexture(1, 1, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            fenceTarget.Create();
+            owned.Add(fenceTarget);
+        }
 
         Directory.CreateDirectory(ShaderFolder);
         foreach (string source in Directory.GetFiles(Path.Combine(artifact, "kernels"), "*.shader")
@@ -144,6 +167,9 @@ public class UdonclGpuKernelTimingProbe
             staticDims[plan.staticIds[i]] = (plan.staticWidth[i], plan.staticHeight[i]);
 
         var materials = new Material[plan.configs.Length];
+        // The word-texel transfer shader has three passes; Device transfers
+        // use pass 1. Every kernel shader has one pass.
+        var passes = new int[plan.configs.Length];
         foreach (Config c in plan.configs)
         {
             Shader shader = Shader.Find(c.shader);
@@ -161,6 +187,7 @@ public class UdonclGpuKernelTimingProbe
                     : Buffer(c.inputIndex[i], c.inputWidth[i], c.inputHeight[i]));
             Buffer(c.dstBuffer, c.dstWidth, c.dstHeight);
             materials[c.id] = material;
+            passes[c.id] = wordTexels && c.shader.EndsWith("/BufferCopy") ? 1 : -1;
         }
         // Every static tensor the run reads, so the replay streams each
         // layer's own weights as the real run does.
@@ -169,7 +196,7 @@ public class UdonclGpuKernelTimingProbe
 
         // Warm up every configuration once (shader variant compile/upload).
         foreach (Config c in plan.configs)
-            Graphics.Blit(null, buffers[c.dstBuffer], materials[c.id]);
+            Graphics.Blit(null, buffers[c.dstBuffer], materials[c.id], passes[c.id]);
         Fence(buffers[plan.configs[0].dstBuffer]);
 
         var report = new StringBuilder();
@@ -180,7 +207,8 @@ public class UdonclGpuKernelTimingProbe
         {
             Material material = materials[c.id];
             RenderTexture dst = buffers[c.dstBuffer];
-            double ms = Slope(() => Graphics.Blit(null, dst, material), 2, 18, dst);
+            int pass = passes[c.id];
+            double ms = Slope(() => Graphics.Blit(null, dst, material, pass), 2, 18, dst);
             predicted += ms * c.count;
             string line = $"udoncl gpu_probe config id={c.id} kernel={c.kernel} count={c.count} " +
                           $"dst={c.dstWidth}x{c.dstHeight} ms_per_blit={Number(ms, "F4")} " +
@@ -214,7 +242,7 @@ public class UdonclGpuKernelTimingProbe
                     if (id >= 0)
                         material.SetTexture(c.inputNames[i], Static(id, staticDims[id].Item1, staticDims[id].Item2));
                 }
-                Graphics.Blit(null, buffers[c.dstBuffer], material);
+                Graphics.Blit(null, buffers[c.dstBuffer], material, passes[c.id]);
             }
         };
         double single = Timed(run, 1, last);

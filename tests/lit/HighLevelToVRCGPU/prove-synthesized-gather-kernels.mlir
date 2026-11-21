@@ -128,4 +128,19 @@ gpu.module @kernels {
     memref.store %value, %out[%x] : memref<4xf32>
     gpu.return
   }
+
+  // A launch surface may be taller than 16 rows: up to a whole Device buffer
+  // texture of 8192 x 8192 words. This copy writes 8192 x 128 words.
+  // CHECK-LABEL: gpu.func @tall_surface
+  // CHECK-SAME: vrc.gather_proven
+  gpu.func @tall_surface(%in: memref<1048576xf32>, %out: memref<1048576xf32>) kernel attributes {known_block_size = array<i32: 1, 1, 1>, known_grid_size = array<i32: 8192, 128, 1>, vrc.profile = "gather-f32", vrc.synthesized_kernel, vrc.words = 1048576 : i32} {
+    %x = gpu.global_id x
+    %y = gpu.global_id y
+    %width = arith.constant 8192 : index
+    %offset = arith.muli %y, %width : index
+    %linear = arith.addi %x, %offset : index
+    %value = memref.load %in[%linear] : memref<1048576xf32>
+    memref.store %value, %out[%linear] : memref<1048576xf32>
+    gpu.return
+  }
 }

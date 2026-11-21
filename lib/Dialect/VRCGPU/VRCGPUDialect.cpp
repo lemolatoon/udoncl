@@ -33,6 +33,16 @@ static bool gather(KernelOp kernel) {
 static bool scalar(Type t) {
   return t.isF32() || t.isInteger(32) || t.isInteger(1) || t.isIndex();
 }
+bool isGatherTexelFormat(StringRef format) {
+  return gatherTexelWords(format) != 0;
+}
+unsigned gatherTexelWords(StringRef format) {
+  return format == "rgba8_unorm" ? 1 : format == "rgba32_float" ? 4 : 0;
+}
+static StringRef kernelTexelFormat(KernelOp kernel) {
+  auto format = kernel->getAttrOfType<StringAttr>("vrc.texel_format");
+  return format ? format.getValue() : StringRef("rgba8_unorm");
+}
 bool isGatherLegalArithmetic(Operation *op) {
   return llvm::is_contained(
              ArrayRef<StringRef>{
@@ -65,7 +75,7 @@ LogicalResult KernelOp::verify() {
         (*this)->getAttrOfType<DenseI32ArrayAttr>("vrc.texture_shape");
     auto textureRowPitch =
         (*this)->getAttrOfType<IntegerAttr>("vrc.texture_row_pitch");
-    if (!words || words.getInt() < 1 || words.getInt() > 131072 ||
+    if (!words || words.getInt() < 1 || words.getInt() > gatherMaxWords ||
         getKernelId() <= 0 || getArgumentKinds().size() < 2 ||
         getArgumentKinds().size() > 16 || global.size() != 3 ||
         global[0] <= 0 || global[1] <= 0 || global[2] != 1 ||
@@ -83,6 +93,14 @@ LogicalResult KernelOp::verify() {
         (textureRowPitch.getInt() <= 0 || textureRowPitch.getInt() > 8192 ||
          (textureShape && textureRowPitch.getInt() != textureShape[0])))
       return emitOpError("invalid physical texture row pitch");
+    // A word-texel target holds whole texels per row: its word row pitch is a
+    // multiple of the words per texel.
+    auto texelFormat = (*this)->getAttr("vrc.texel_format");
+    unsigned texelWords = gatherTexelWords(kernelTexelFormat(*this));
+    if ((texelFormat && !isa<StringAttr>(texelFormat)) || !texelWords ||
+        (texelWords > 1 &&
+         (!textureShape || textureShape[0] % int32_t(texelWords) != 0)))
+      return emitOpError("invalid gather texel format or texel row width");
     unsigned bufferCount = 0;
     bool sawScalar = false;
     for (auto kind : getArgumentKinds().getValue()) {
@@ -165,9 +183,10 @@ LogicalResult ResourceOp::verify() {
       return emitOpError("invalid gather argument binding");
     auto argumentKind = kernel.getArgumentKinds()[i];
     if (argumentKind == StringAttr::get(getContext(), "buffer")) {
+      // Every buffer of one gather kernel shares one texel format.
       if ((!getValueType().isF32() && !getValueType().isInteger(32)) ||
           (getKind() != "texture" && getKind() != "target") || !getFormat() ||
-          *getFormat() != "rgba8_unorm")
+          *getFormat() != kernelTexelFormat(kernel))
         return emitOpError("invalid input/target format");
     } else if (getKind() != "uniform" || getFormat() ||
                (getValueType().isF32()
@@ -222,10 +241,14 @@ LogicalResult PassOp::verify() {
         return emitOpError(
             "input versions must name every bound read-only resource");
     bool invalid = false;
+    bool words = gatherTexelWords(kernelTexelFormat(kernel)) > 1;
     getBody().walk([&](Operation *op) {
-      if (isa<FragmentCoordOp, TextureLoadOp, RawUnpackOp, RawPackOp,
-              UniformLoadOp, OutputOp, scf::IfOp, scf::WhileOp, scf::YieldOp,
-              scf::ConditionOp, scf::ExecuteRegionOp>(op) ||
+      bool texelOperation =
+          words ? isa<WordLoadOp, OutputWordOp>(op)
+                : isa<TextureLoadOp, RawUnpackOp, RawPackOp, OutputOp>(op);
+      if (texelOperation ||
+          isa<FragmentCoordOp, UniformLoadOp, scf::IfOp, scf::WhileOp,
+              scf::YieldOp, scf::ConditionOp, scf::ExecuteRegionOp>(op) ||
           isGatherLegalArithmetic(op)) {
         if (auto flags =
                 op->getAttrOfType<arith::FastMathFlagsAttr>("fastmath"))
@@ -238,6 +261,12 @@ LogicalResult PassOp::verify() {
       }
     });
     auto &body = getBody().front();
+    if (words) {
+      if (invalid || body.empty() || !isa<OutputWordOp>(body.back()))
+        return emitOpError(
+            "gather region contains an operation not proven fragment-safe");
+      return success();
+    }
     auto output = body.empty() ? OutputOp() : dyn_cast<OutputOp>(body.back());
     if (invalid || !output || !output.getValue().getDefiningOp<RawPackOp>())
       return emitOpError(
@@ -343,6 +372,33 @@ LogicalResult TextureLoadOp::verify() {
       targetWidth * targetHeight < words.getInt() || expectedWidth <= 0 ||
       widthValue.getInt() != expectedWidth)
     return emitOpError("load must address the read-only 2D input extent");
+  return success();
+}
+LogicalResult WordLoadOp::verify() {
+  auto k = (*this)->getParentOfType<KernelOp>();
+  auto r = SymbolTable::lookupNearestSymbolFrom<ResourceOp>(*this,
+                                                            getResourceAttr());
+  int64_t elements = getElementCount(), pitch = getRowPitch();
+  unsigned texelWords = k ? gatherTexelWords(kernelTexelFormat(k)) : 0;
+  // A row holds whole texels unless the input is one row.
+  if (!k || !gather(k) || texelWords < 2 || !r || r.getKind() != "texture" ||
+      !(*this)->getParentOfType<PassOp>() || elements <= 0 ||
+      elements > int64_t{8192} * 8192 || pitch <= 0 || pitch > 8192 ||
+      (pitch % texelWords != 0 && elements > pitch) ||
+      (!getValue().getType().isF32() && !getValue().getType().isInteger(32)) ||
+      r.getValueType() != getValue().getType())
+    return emitOpError("load must address the read-only word-texel input");
+  return success();
+}
+LogicalResult OutputWordOp::verify() {
+  auto k = (*this)->getParentOfType<KernelOp>();
+  auto pass = (*this)->getParentOfType<PassOp>();
+  auto target = pass ? SymbolTable::lookupNearestSymbolFrom<ResourceOp>(
+                           pass, pass.getOutputAttr())
+                     : ResourceOp();
+  if (!k || !gather(k) || gatherTexelWords(kernelTexelFormat(k)) < 2 ||
+      !target || target.getValueType() != getValue().getType())
+    return emitOpError("word output must match the word-texel target");
   return success();
 }
 LogicalResult RawUnpackOp::verify() {

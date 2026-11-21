@@ -1,4 +1,5 @@
 #include "VRC/Conversion/Passes.h"
+#include "VRC/Dialect/VRCGPU/GatherLimits.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
@@ -48,7 +49,7 @@ struct Proof {
          cmp.getPredicate() != LLVM::ICmpPredicate::slt))
       return std::nullopt;
     auto bound = constant(cmp.getRhs());
-    if (!bound || *bound < 1 || *bound > 131072 ||
+    if (!bound || *bound < 1 || *bound > vrcgpu::gatherMaxTripCount ||
         (at && !dominance.dominates(branch.getTrueDest(), at->getBlock())))
       return std::nullopt;
     int edges = 0;
@@ -239,8 +240,9 @@ struct RaiseGatherDevicePass
       module.emitError() << "gather proof: " << message;
       signalPassFailure();
     };
-    if (!wordsAttr || wordsAttr.getInt() < 1 || wordsAttr.getInt() > 131072 ||
-        !source || source.isExternal() ||
+    if (!wordsAttr || wordsAttr.getInt() < 1 ||
+        wordsAttr.getInt() > vrcgpu::gatherMaxWords || !source ||
+        source.isExternal() ||
         source.getCConv() != LLVM::cconv::CConv::SPIR_KERNEL ||
         source.getNumArguments() < 2 || source.getNumArguments() > 16 ||
         source.isVarArg()) {

@@ -1,5 +1,9 @@
 """Check that the RGBA8 word texel decode and encode are exact for every word.
 
+On Windows the same copies also run with four words per RGBA32 float texel
+(`texel_format: rgba32_float`), which must move every bit pattern unchanged
+through a point Load and a render-target write.
+
 Two OpenCL C copy kernels (uint32 and float32 words) go through the gather
 lowering; the native fragment renderer runs them over a full surface whose
 words cover every byte value in every position, NaN payloads, infinities,
@@ -35,7 +39,7 @@ def run(command):
     return result
 
 
-def kernel(name, kernel_id, element):
+def kernel(name, kernel_id, element, texel_format=None):
     source = output / f"{name}.cl"
     source.write_text(
         f"__kernel void {name}(__global const {element} *input, "
@@ -79,16 +83,21 @@ def kernel(name, kernel_id, element):
                 "global_offset": [0, 0, 0],
                 "kernel": name,
                 "kernel_id": kernel_id,
+                **({"texel_format": texel_format} if texel_format else {}),
             }
         ),
         encoding="utf-8",
     )
-    bundle = output / f"{name}-bundle"
+    bundle = output / f"{name}-{texel_format or 'rgba8'}-bundle"
     if bundle.exists():
         shutil.rmtree(bundle)
     run([compiler, "--emit-native-device-bundle", config, "--device-llvm", ir, "-o", bundle])
     hlsl = bundle / f"kernels/kernel_{kernel_id}.hlsl"
     text = hlsl.read_text(encoding="utf-8")
+    if texel_format:
+        # Words are bits: read with asuint, written with asfloat.
+        assert "Texture2D<float4>" in text and "asfloat(_vrc_out)" in text, text
+        return hlsl
     # Two exact 16-bit halves, not four rounded bytes.
     assert "round(" not in text and "uint2 bytes" in text, text
     return hlsl
@@ -112,8 +121,16 @@ if sys.platform != "win32":
         compiled.append(binary)
     *fragments, vertex = compiled
 
+if sys.platform == "win32":
+    fragments += [
+        kernel("copy_words", 42, "uint", "rgba32_float"),
+        kernel("copy_floats", 43, "float", "rgba32_float"),
+    ]
 result = run([runner, *fragments, vertex])
+if sys.platform == "win32":
+    assert "word_uint_exact=131072/131072" in result.stdout, result.stdout
+    assert "word_float_exact=131072/131072" in result.stdout, result.stdout
 assert "uint_exact=131072/131072" in result.stdout, result.stdout
 assert "float_exact=131072/131072" in result.stdout, result.stdout
-assert "draws=2" in result.stdout, result.stdout
+assert f"draws={len(fragments)}" in result.stdout, result.stdout
 print(result.stdout, end="")

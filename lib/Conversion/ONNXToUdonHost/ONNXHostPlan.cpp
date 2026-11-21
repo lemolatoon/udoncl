@@ -121,8 +121,18 @@ staticI64Values(const TensorRecord &tensor) {
   return result;
 }
 
+namespace {
+/// Elements a kernel of `limits` reads or writes per operand when its library
+/// kernel holds `library`.
+int64_t elementLimit(DeviceKernelLimits limits, int64_t library) {
+  return limits == DeviceKernelLimits::Library ? library
+                                               : deviceSynthesizedSurfaceWords;
+}
+} // namespace
+
 std::optional<DeviceSliceShape> deviceSliceShape(const GraphRecord &graph,
-                                                 const NodeRecord &node) {
+                                                 const NodeRecord &node,
+                                                 DeviceKernelLimits limits) {
   if (node.operation != "Slice" || node.provider != "udononnxSlice" ||
       node.inputs.size() < 3 || node.inputs[0] < 0 || node.inputs[1] < 0 ||
       node.inputs[2] < 0)
@@ -133,8 +143,9 @@ std::optional<DeviceSliceShape> deviceSliceShape(const GraphRecord &graph,
   if (!input.type.getElementType().isF32() ||
       !output.type.getElementType().isF32() || rank < 1 || rank > 5 ||
       output.type.getRank() != rank || input.type.getNumElements() < 1 ||
-      input.type.getNumElements() > 16384 || output.type.getNumElements() < 1 ||
-      output.type.getNumElements() > 16384)
+      input.type.getNumElements() > elementLimit(limits, 16384) ||
+      output.type.getNumElements() < 1 ||
+      output.type.getNumElements() > elementLimit(limits, 16384))
     return std::nullopt;
   auto starts = staticI64Values(graph.tensors[node.inputs[1]]);
   auto ends = staticI64Values(graph.tensors[node.inputs[2]]);
@@ -205,7 +216,8 @@ std::optional<DeviceSliceShape> deviceSliceShape(const GraphRecord &graph,
   return result;
 }
 
-bool isDeviceExpandNode(const GraphRecord &graph, const NodeRecord &node) {
+bool isDeviceExpandNode(const GraphRecord &graph, const NodeRecord &node,
+                        DeviceKernelLimits limits) {
   if (node.operation != "Expand" || node.provider != "udononnxExpand" ||
       node.inputs.empty() || node.inputs[0] < 0)
     return false;
@@ -216,8 +228,10 @@ bool isDeviceExpandNode(const GraphRecord &graph, const NodeRecord &node) {
   if (!input.type.getElementType().isF32() ||
       !output.type.getElementType().isF32() || inputRank < 0 || inputRank > 5 ||
       outputRank < std::max<int64_t>(inputRank, 1) || outputRank > 5 ||
-      input.type.getNumElements() < 1 || input.type.getNumElements() > 16384 ||
-      output.type.getNumElements() < 1 || output.type.getNumElements() > 131072)
+      input.type.getNumElements() < 1 ||
+      input.type.getNumElements() > elementLimit(limits, 16384) ||
+      output.type.getNumElements() < 1 ||
+      output.type.getNumElements() > elementLimit(limits, 131072))
     return false;
   int64_t rankOffset = outputRank - inputRank;
   for (int64_t outputAxis = 0; outputAxis < outputRank; ++outputAxis) {
@@ -237,8 +251,8 @@ bool isDeviceExpandNode(const GraphRecord &graph, const NodeRecord &node) {
 
 namespace {
 /// The two-input Concat contract with the element limit of the kernel that
-/// runs it: the 16384 words udononnx_concat2_f32 addresses, or the 131072
-/// words of a synthesized gather kernel.
+/// runs it: the 16384 words udononnx_concat2_f32 addresses, or the surface of
+/// a synthesized gather kernel.
 std::optional<DeviceConcatShape> concatShapeWithin(const GraphRecord &graph,
                                                    const NodeRecord &node,
                                                    int64_t maximumElements) {
@@ -283,13 +297,9 @@ std::optional<DeviceConcatShape> concatShapeWithin(const GraphRecord &graph,
 } // namespace
 
 std::optional<DeviceConcatShape> deviceConcatShape(const GraphRecord &graph,
-                                                   const NodeRecord &node) {
-  return concatShapeWithin(graph, node, 16384);
-}
-
-bool isSynthesizedConcatNode(const GraphRecord &graph, const NodeRecord &node) {
-  return !deviceConcatShape(graph, node) &&
-         concatShapeWithin(graph, node, 131072).has_value();
+                                                   const NodeRecord &node,
+                                                   DeviceKernelLimits limits) {
+  return concatShapeWithin(graph, node, elementLimit(limits, 16384));
 }
 
 std::optional<DeviceGatherShape> deviceGatherShape(const GraphRecord &graph,
@@ -476,7 +486,8 @@ static bool hasDeviceRmsNorm(const GraphRecord &graph) {
   });
 }
 
-bool isDeviceSoftmaxNode(const GraphRecord &graph, const NodeRecord &node) {
+bool isDeviceSoftmaxNode(const GraphRecord &graph, const NodeRecord &node,
+                         DeviceKernelLimits limits) {
   if (node.operation != "Softmax" || node.provider != "udondnnSoftmaxForward" ||
       node.inputs.size() != 1 || node.inputs[0] < 0)
     return false;
@@ -488,12 +499,16 @@ bool isDeviceSoftmaxNode(const GraphRecord &graph, const NodeRecord &node) {
     axis += rank;
   return input.type.getElementType().isF32() && input.type == output.type &&
          axis >= 0 && axis < rank && input.type.getNumElements() >= 1 &&
-         input.type.getNumElements() <= 16384 &&
-         input.type.getDimSize(axis) >= 1 && input.type.getDimSize(axis) <= 512;
+         input.type.getNumElements() <= elementLimit(limits, 16384) &&
+         input.type.getDimSize(axis) >= 1 &&
+         input.type.getDimSize(axis) <= (limits == DeviceKernelLimits::Library
+                                             ? 512
+                                             : deviceSynthesizedMaxReduction);
 }
 
 std::optional<SmallVector<int64_t>>
-deviceTransposePermutation(const GraphRecord &graph, const NodeRecord &node) {
+deviceTransposePermutation(const GraphRecord &graph, const NodeRecord &node,
+                           DeviceKernelLimits limits) {
   if (node.operation != "Transpose" || node.provider != "udononnxTranspose" ||
       node.inputs.size() != 1 || node.inputs[0] < 0)
     return std::nullopt;
@@ -502,7 +517,7 @@ deviceTransposePermutation(const GraphRecord &graph, const NodeRecord &node) {
   int64_t rank = input.type.getRank();
   if (!input.type.getElementType().isF32() || rank < 1 || rank > 5 ||
       output.type.getRank() != rank || input.type.getNumElements() < 1 ||
-      input.type.getNumElements() > 131072 ||
+      input.type.getNumElements() > elementLimit(limits, 131072) ||
       input.type.getNumElements() != output.type.getNumElements())
     return std::nullopt;
   SmallVector<int64_t> permutation = integerArrayAttribute(node, "perm", {});
@@ -545,9 +560,9 @@ std::optional<DeviceMatMulShape> deviceMatMulShape(const GraphRecord &graph,
   int64_t n = right.back();
   if (m < 1 || n < 1 || k < 1 || k > deviceSgemmMaxK ||
       output[output.size() - 2] != m || output.back() != n ||
-      leftTensor.type.getNumElements() > 131072 ||
-      rightTensor.type.getNumElements() > 131072 ||
-      outputTensor.type.getNumElements() > 16384)
+      leftTensor.type.getNumElements() > deviceLargeSgemmOperandWords ||
+      rightTensor.type.getNumElements() > deviceLargeSgemmOperandWords ||
+      outputTensor.type.getNumElements() > deviceLargeSgemmOutputWords)
     return std::nullopt;
   int64_t leftBatches = leftTensor.type.getNumElements() / (m * k);
   int64_t rightBatches = rightTensor.type.getNumElements() / (k * n);
@@ -556,6 +571,17 @@ std::optional<DeviceMatMulShape> deviceMatMulShape(const GraphRecord &graph,
       (rightBatches != 1 && rightBatches != outputBatches))
     return std::nullopt;
   return DeviceMatMulShape{m, n, k, leftBatches, rightBatches, outputBatches};
+}
+
+bool needsLargeBatchedSgemm(const DeviceMatMulShape &shape) {
+  // The words each operand spans over all batches; a broadcast operand
+  // (one batch) spans one matrix.
+  int64_t left = shape.leftBatches * shape.m * shape.k;
+  int64_t right = shape.rightBatches * shape.k * shape.n;
+  return left > deviceBatchedSgemmOperandWords ||
+         right > deviceBatchedSgemmOperandWords ||
+         shape.outputBatches * shape.m * shape.n >
+             deviceBatchedSgemmOutputWords;
 }
 
 bool isDeviceQ4Node(const GraphRecord &graph, const NodeRecord &node) {
@@ -781,7 +807,7 @@ chooseDeviceRowReduction(const DeviceRowReductionProblem &problem) {
 
 std::optional<DeviceSoftmaxRows> deviceSoftmaxRows(const GraphRecord &graph,
                                                    const NodeRecord &node) {
-  if (!isDeviceSoftmaxNode(graph, node))
+  if (!isDeviceSoftmaxNode(graph, node, DeviceKernelLimits::Synthesized))
     return std::nullopt;
   RankedTensorType type = graph.tensors[node.inputs[0]].type;
   int64_t axis = integerAttribute(node, "axis", -1);
@@ -887,7 +913,28 @@ SmallVector<unsigned> sequenceStateBanks(const GraphRecord &graph) {
   return banks;
 }
 
-bool supportsDeviceNode(const GraphRecord &graph, const NodeRecord &node) {
+namespace {
+/// NumPy broadcasting of `input` to `output` on the real shapes, as a
+/// synthesized kernel evaluates it.
+bool broadcastsTo(RankedTensorType input, RankedTensorType output) {
+  int64_t offset = output.getRank() - input.getRank();
+  if (offset < 0)
+    return false;
+  for (int64_t axis = 0; axis < input.getRank(); ++axis) {
+    int64_t extent = input.getDimSize(axis);
+    if (extent != 1 && extent != output.getDimSize(axis + offset))
+      return false;
+  }
+  return true;
+}
+
+/// supportsDeviceNode within the element limits of `limits`. Only the
+/// per-element, re-indexing and Softmax nodes a synthesized kernel can
+/// evaluate have synthesized limits; every other node needs its library
+/// kernel.
+bool supportsDeviceNodeWithin(const GraphRecord &graph, const NodeRecord &node,
+                              DeviceKernelLimits limits) {
+  bool synthesized = limits == DeviceKernelLimits::Synthesized;
   auto isF32 = [&](int64_t index) {
     return index >= 0 && static_cast<size_t>(index) < graph.tensors.size() &&
            graph.tensors[static_cast<unsigned>(index)]
@@ -903,6 +950,18 @@ bool supportsDeviceNode(const GraphRecord &graph, const NodeRecord &node) {
   auto supportsLargePointwise = [&]() {
     if (!hasF32InputsAndOutput(2))
       return false;
+    if (synthesized) {
+      RankedTensorType output = graph.tensors[node.output].type;
+      return output.getNumElements() >= 1 &&
+             output.getNumElements() <= deviceSynthesizedSurfaceWords &&
+             llvm::all_of(ArrayRef<int64_t>(node.inputs).take_front(2),
+                          [&](int64_t input) {
+                            RankedTensorType type = graph.tensors[input].type;
+                            return type.hasStaticShape() &&
+                                   type.getNumElements() >= 1 &&
+                                   broadcastsTo(type, output);
+                          });
+    }
     SmallVector<int64_t, 4> output =
         broadcastTensor4d(graph.tensors[node.output].type);
     if (graph.tensors[node.output].type.getNumElements() > 131072)
@@ -921,52 +980,53 @@ bool supportsDeviceNode(const GraphRecord &graph, const NodeRecord &node) {
       return dimension > 0 && dimension <= 65535;
     });
   };
-  auto supportsLargeActivation = [&]() {
+  auto supportsLargeActivation = [&](int64_t libraryWords) {
     if (!hasF32InputsAndOutput(1))
       return false;
     const TensorRecord &input = graph.tensors[node.inputs[0]];
     const TensorRecord &output = graph.tensors[node.output];
     return input.type.getNumElements() == output.type.getNumElements() &&
            output.type.getNumElements() > 0 &&
-           output.type.getNumElements() <= 32768;
+           output.type.getNumElements() <= elementLimit(limits, libraryWords);
   };
   if (isMetadataOnlyAlias(node))
-    return isDeviceAlias(graph, node);
+    return !synthesized && isDeviceAlias(graph, node);
   if (node.operation == "Conv")
-    return node.provider == "udondnnConvolutionForward" &&
+    return !synthesized && node.provider == "udondnnConvolutionForward" &&
            hasF32InputsAndOutput(2);
   if (node.operation == "Add")
     return node.provider == "udonatenAdd" && supportsLargePointwise();
   if (node.operation == "Mul")
     return node.provider == "udonatenMul" && supportsLargePointwise();
   if (node.operation == "Relu")
-    return node.provider == "udonatenRelu" && supportsLargeActivation();
+    return node.provider == "udonatenRelu" && supportsLargeActivation(32768);
   if (node.operation == "Sigmoid")
-    return node.provider == "udonatenSigmoid" && supportsLargeActivation();
+    return node.provider == "udonatenSigmoid" && supportsLargeActivation(32768);
   if (node.operation == "Tanh")
-    return node.provider == "udonatenTanh" && supportsLargeActivation();
+    return node.provider == "udonatenTanh" && supportsLargeActivation(32768);
   if (node.operation == "AveragePool")
-    return node.provider == "udondnnPoolingForward" && hasF32InputsAndOutput(1);
+    return !synthesized && node.provider == "udondnnPoolingForward" &&
+           hasF32InputsAndOutput(1);
   if (node.operation == "Cos" || node.operation == "Sin" ||
       node.operation == "Neg")
     return node.provider == "udononnx" + node.operation &&
-           supportsLargeActivation() &&
-           graph.tensors[node.output].type.getNumElements() <= 16384;
+           supportsLargeActivation(16384);
+  if (node.operation == "Softmax")
+    return isDeviceSoftmaxNode(graph, node, limits);
+  if (node.operation == "Transpose")
+    return deviceTransposePermutation(graph, node, limits).has_value();
+  if (node.operation == "Slice")
+    return deviceSliceShape(graph, node, limits).has_value();
+  if (node.operation == "Expand")
+    return isDeviceExpandNode(graph, node, limits);
+  if (node.operation == "Concat")
+    return deviceConcatShape(graph, node, limits).has_value();
+  if (synthesized)
+    return false;
   if (node.operation == "MatMulNBits")
     return isDeviceQ4Node(graph, node);
   if (node.operation == "RmsNorm")
     return isDeviceRmsNormNode(graph, node);
-  if (node.operation == "Softmax")
-    return isDeviceSoftmaxNode(graph, node);
-  if (node.operation == "Transpose")
-    return deviceTransposePermutation(graph, node).has_value();
-  if (node.operation == "Slice")
-    return deviceSliceShape(graph, node).has_value();
-  if (node.operation == "Expand")
-    return isDeviceExpandNode(graph, node);
-  if (node.operation == "Concat")
-    return deviceConcatShape(graph, node).has_value() ||
-           isSynthesizedConcatNode(graph, node);
   if (node.operation == "Gather")
     return deviceGatherShape(graph, node).has_value();
   if (node.operation == "Cast")
@@ -995,6 +1055,17 @@ bool supportsDeviceNode(const GraphRecord &graph, const NodeRecord &node) {
            output.type.getNumElements() <= 16384;
   }
   return false;
+}
+} // namespace
+
+bool supportsDeviceNode(const GraphRecord &graph, const NodeRecord &node) {
+  return supportsDeviceNodeWithin(graph, node, DeviceKernelLimits::Library) ||
+         isSynthesizedDeviceNode(graph, node);
+}
+
+bool isSynthesizedDeviceNode(const GraphRecord &graph, const NodeRecord &node) {
+  return !supportsDeviceNodeWithin(graph, node, DeviceKernelLimits::Library) &&
+         supportsDeviceNodeWithin(graph, node, DeviceKernelLimits::Synthesized);
 }
 
 bool supportsDeviceGraph(const GraphRecord &graph) {

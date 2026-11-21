@@ -4,7 +4,9 @@
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Transforms/CSE.h"
 #include <algorithm>
 using namespace mlir;
 namespace vrc {
@@ -41,6 +43,15 @@ struct LowerGatherDevicePass
     if (textureRowPitch &&
         (textureRowPitch.getInt() <= 0 || textureRowPitch.getInt() > 8192)) {
       root.emitError("invalid physical texture row pitch");
+      signalPassFailure();
+      return;
+    }
+    // The texel format every Device buffer of the program uses (see
+    // `fragment::gatherTexelWords`); a kernel may name its own.
+    auto rootTexelFormat = root->getAttrOfType<StringAttr>("vrc.texel_format");
+    if (rootTexelFormat &&
+        !fragment::isGatherTexelFormat(rootTexelFormat.getValue())) {
+      root.emitError("unsupported Device texel format");
       signalPassFailure();
       return;
     }
@@ -115,6 +126,31 @@ struct LowerGatherDevicePass
           physicalHeight = static_cast<int32_t>(
               llvm::divideCeil(wordCount, int64_t{physicalWidth}));
         }
+        StringRef texelFormat = "rgba8_unorm";
+        if (rootTexelFormat)
+          texelFormat = rootTexelFormat.getValue();
+        if (auto own = source->getAttrOfType<StringAttr>("vrc.texel_format"))
+          texelFormat = own.getValue();
+        unsigned texelWords = fragment::gatherTexelWords(texelFormat);
+        if (!texelWords) {
+          source.emitError("unsupported Device texel format ") << texelFormat;
+          signalPassFailure();
+          return;
+        }
+        // A one-row target holds whole texels once its row is padded; the
+        // padding words lie past every logical extent.
+        if (texelWords > 1 && physicalHeight == 1 && !textureShape &&
+            !textureRowPitch)
+          physicalWidth =
+              static_cast<int32_t>(llvm::alignTo(physicalWidth, texelWords));
+        if (texelWords > 1 && physicalWidth % int32_t(texelWords) != 0) {
+          source.emitError("Device texel format ")
+              << texelFormat << " requires a texture row of whole texels, not "
+              << physicalWidth << " words";
+          signalPassFailure();
+          return;
+        }
+        bool wordTexels = texelWords > 1;
         b.setInsertionPoint(module);
         auto loc = source.getLoc();
         SmallVector<Attribute> kinds;
@@ -145,6 +181,9 @@ struct LowerGatherDevicePass
           kernelAttrs.push_back(
               b.getNamedAttr("vrc.texture_row_pitch",
                              b.getI32IntegerAttr(textureRowPitch.getInt())));
+        if (wordTexels)
+          kernelAttrs.push_back(
+              b.getNamedAttr("vrc.texel_format", b.getStringAttr(texelFormat)));
         if (auto bounds = source->getAttr("vrc.argument_bounds"))
           kernelAttrs.push_back(b.getNamedAttr("vrc.argument_bounds", bounds));
         auto *kernel = make(b, loc, fragment::KernelOp::getOperationName(), {},
@@ -176,7 +215,7 @@ struct LowerGatherDevicePass
                              : source.getArgument(i).getType()))};
           if (buffer)
             attrs.push_back(
-                b.getNamedAttr("format", b.getStringAttr("rgba8_unorm")));
+                b.getNamedAttr("format", b.getStringAttr(texelFormat)));
           make(b, loc, fragment::ResourceOp::getOperationName(), {}, {}, attrs);
         }
         auto *pass =
@@ -262,6 +301,29 @@ struct LowerGatherDevicePass
                   ? physicalWidth
                   : static_cast<int32_t>(
                         std::min<int64_t>(inputElements, int64_t{8192}));
+          if (wordTexels) {
+            // The emitter derives the texel and channel from the word index.
+            auto *word = make(
+                b, op.getLoc(), fragment::WordLoadOp::getOperationName(),
+                TypeRange{cast<MemRefType>(op.getMemref().getType())
+                              .getElementType()},
+                ValueRange{x},
+                {b.getNamedAttr("resource",
+                                FlatSymbolRefAttr::get(
+                                    &getContext(),
+                                    "arg" + std::to_string(*inputArgument))),
+                 b.getNamedAttr("element_count",
+                                b.getI32IntegerAttr(inputElements)),
+                 b.getNamedAttr("row_pitch", b.getI32IntegerAttr(inputWidth))});
+            SmallVector<Value> keys;
+            for (const auto &entry : mapping.getValueMap())
+              if (entry.second == op.getResult())
+                keys.push_back(entry.first);
+            for (auto key : keys)
+              mapping.map(key, word->getResult(0));
+            b.replaceOp(op, word->getResults());
+            continue;
+          }
           auto width =
               arith::ConstantIntOp::create(b, op.getLoc(), inputWidth, 32);
           Value y = arith::DivUIOp::create(b, op.getLoc(), x, width);
@@ -291,6 +353,17 @@ struct LowerGatherDevicePass
           b.replaceOp(op, value->getResults());
         }
         b.setInsertionPointToEnd(block);
+        if (wordTexels) {
+          make(b, store.getLoc(), fragment::OutputWordOp::getOperationName(),
+               {}, ValueRange{mapping.lookup(store.getValue())}, {});
+          // Equal index expressions become one value, so the emitter sees
+          // the Loads that share texels (the Device sources recompute
+          // offsets per access). Only pure operations merge, so every value
+          // is unchanged.
+          DominanceInfo dominance;
+          eliminateCommonSubExpressions(b, dominance, pass);
+          continue;
+        }
         auto *packed =
             make(b, store.getLoc(), fragment::RawPackOp::getOperationName(),
                  TypeRange{VectorType::get({4}, b.getF32Type())},

@@ -3,6 +3,8 @@
 
 #include "ONNXHostGraph.h"
 
+#include "VRC/Dialect/VRCGPU/GatherLimits.h"
+
 #include "mlir/IR/Types.h"
 #include "mlir/Support/LLVM.h"
 
@@ -57,6 +59,18 @@ struct ONNXHostDeviceMatMulShape {
   int64_t outputBatches;
 };
 
+/// Whose element limits a Device node must meet. A library kernel addresses a
+/// fixed number of words per operand and launches a fixed surface; a
+/// synthesized kernel (ONNXHostFusionKernel.h) launches the rows its result
+/// needs, so only the gather surface bounds it.
+enum class DeviceKernelLimits { Library, Synthesized };
+/// Words of the largest tensor a synthesized kernel reads or writes as a
+/// whole Device buffer.
+inline constexpr int64_t deviceSynthesizedSurfaceWords = vrcgpu::gatherMaxWords;
+/// Elements of the longest axis a synthesized reduction loops over.
+inline constexpr int64_t deviceSynthesizedMaxReduction =
+    vrcgpu::gatherMaxTripCount;
+
 using HostPlanRecord = ONNXHostPlan;
 using DeviceSliceShape = ONNXHostDeviceSliceShape;
 using DeviceConcatShape = ONNXHostDeviceConcatShape;
@@ -79,15 +93,17 @@ bool isDeviceAlias(const GraphRecord &graph, const NodeRecord &node);
 std::optional<float> scalarF32(const TensorRecord &tensor);
 std::optional<llvm::SmallVector<int64_t>>
 staticI64Values(const TensorRecord &tensor);
-std::optional<DeviceSliceShape> deviceSliceShape(const GraphRecord &graph,
-                                                 const NodeRecord &node);
-bool isDeviceExpandNode(const GraphRecord &graph, const NodeRecord &node);
-std::optional<DeviceConcatShape> deviceConcatShape(const GraphRecord &graph,
-                                                   const NodeRecord &node);
-/// A two-input Concat beyond the 16384 words of udononnx_concat2_f32 but
-/// within the 131072 words of a synthesized gather kernel, which then runs it
-/// even when it is not part of a fusion group.
-bool isSynthesizedConcatNode(const GraphRecord &graph, const NodeRecord &node);
+// The shape contracts below accept the node within the element limits of
+// `limits`; the library kernel's by default.
+std::optional<DeviceSliceShape>
+deviceSliceShape(const GraphRecord &graph, const NodeRecord &node,
+                 DeviceKernelLimits limits = DeviceKernelLimits::Library);
+bool isDeviceExpandNode(
+    const GraphRecord &graph, const NodeRecord &node,
+    DeviceKernelLimits limits = DeviceKernelLimits::Library);
+std::optional<DeviceConcatShape>
+deviceConcatShape(const GraphRecord &graph, const NodeRecord &node,
+                  DeviceKernelLimits limits = DeviceKernelLimits::Library);
 std::optional<DeviceGatherShape> deviceGatherShape(const GraphRecord &graph,
                                                    const NodeRecord &node);
 bool isDeviceCastI64F32Node(const GraphRecord &graph, const NodeRecord &node);
@@ -96,16 +112,30 @@ bool isDeviceWhereNode(const GraphRecord &graph, const NodeRecord &node);
 std::optional<DeviceScatterNDShape>
 deviceScatterNDShape(const GraphRecord &graph, const NodeRecord &node);
 bool isDeviceRmsNormNode(const GraphRecord &graph, const NodeRecord &node);
-bool isDeviceSoftmaxNode(const GraphRecord &graph, const NodeRecord &node);
-std::optional<llvm::SmallVector<int64_t>>
-deviceTransposePermutation(const GraphRecord &graph, const NodeRecord &node);
+bool isDeviceSoftmaxNode(
+    const GraphRecord &graph, const NodeRecord &node,
+    DeviceKernelLimits limits = DeviceKernelLimits::Library);
+std::optional<llvm::SmallVector<int64_t>> deviceTransposePermutation(
+    const GraphRecord &graph, const NodeRecord &node,
+    DeviceKernelLimits limits = DeviceKernelLimits::Library);
 /// K bound of the udonblas_arena_sgemm kernels (32 guarded chunks of 256).
 inline constexpr int64_t deviceSgemmMaxK = 8192;
 /// Operand words the non-batched udonblas_arena_sgemm kernel addresses; a
 /// larger operand goes through the strided-batched kernel with one batch.
 inline constexpr int64_t deviceSgemmOperandWords = 16384;
+/// Operand and output words of udonblas_arena_sgemm_strided_batched. A
+/// product beyond either runs udonblas_arena_sgemm_strided_batched_large,
+/// whose operands may be whole Device buffer textures and whose launch
+/// surface is 8192 x 16 words.
+inline constexpr int64_t deviceBatchedSgemmOperandWords = 131072;
+inline constexpr int64_t deviceBatchedSgemmOutputWords = 16384;
+inline constexpr int64_t deviceLargeSgemmOperandWords = vrcgpu::gatherMaxWords;
+inline constexpr int64_t deviceLargeSgemmOutputWords = 131072;
 std::optional<DeviceMatMulShape> deviceMatMulShape(const GraphRecord &graph,
                                                    const NodeRecord &node);
+/// True if the strided-batched SGEMM of `shape` exceeds the operand or output
+/// words of udonblas_arena_sgemm_strided_batched.
+bool needsLargeBatchedSgemm(const DeviceMatMulShape &shape);
 bool isDeviceQ4Node(const GraphRecord &graph, const NodeRecord &node);
 /// K blocks of 32 that one udononnx_matmul_nbits_q4 fragment accumulates. It
 /// must equal UDONONNX_Q4_DISPATCH_BLOCKS in
@@ -178,7 +208,8 @@ inline constexpr int64_t deviceRowReductionMaxChunks = 64;
 /// Words of the operator scratch a statistics pass may write: two rows of
 /// the 8192-word surface, so its whole launch surface fits.
 inline constexpr int64_t deviceRowStatisticsWords = 16384;
-/// Shape of the rows a Device Softmax node (isDeviceSoftmaxNode) normalizes:
+/// Shape of the rows a Device Softmax node (isDeviceSoftmaxNode within
+/// synthesized limits) normalizes:
 /// `outer` x `extent` x `inner`, reducing the middle axis.
 struct DeviceSoftmaxRows {
   int64_t outer;
@@ -207,7 +238,14 @@ int64_t deviceAllocationBytes(const GraphRecord &graph, unsigned tensorIndex);
 /// can evaluate, and nothing but that Concat's first operand reads the past.
 llvm::SmallVector<unsigned> sequenceStateBanks(const GraphRecord &graph);
 int64_t bindingCapacityBytes(const GraphRecord &graph, unsigned tensorIndex);
+/// True if the Device runs `node`: a library kernel holds it, or it is a node
+/// a synthesized kernel evaluates (isSynthesizedDeviceNode).
 bool supportsDeviceNode(const GraphRecord &graph, const NodeRecord &node);
+/// True if `node` is beyond the limits of its library kernel but a per-element,
+/// re-indexing or Softmax node a synthesized kernel evaluates within the gather
+/// surface. It runs inside its fusion group or, outside every group, as a
+/// synthesized kernel of its own.
+bool isSynthesizedDeviceNode(const GraphRecord &graph, const NodeRecord &node);
 bool supportsDeviceGraph(const GraphRecord &graph);
 /// Assigns every tensor the tensor whose Device buffer holds it.
 /// `fusionRoots` maps every node to the node whose dispatch computes it: the

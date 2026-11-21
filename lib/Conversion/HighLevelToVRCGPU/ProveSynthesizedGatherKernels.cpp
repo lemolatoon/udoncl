@@ -22,12 +22,12 @@ namespace vrc {
 namespace {
 // Limits of the gather-f32 profile, shared with the vrcgpu.kernel verifier
 // and the native and Unity runtimes.
-constexpr int64_t maxWords = 131072;
-constexpr int64_t maxExtent = 8192;
+constexpr int64_t maxWords = vrcgpu::gatherMaxWords;
+constexpr int64_t maxExtent = vrcgpu::gatherSurfaceExtent;
 constexpr int64_t maxInputElements = maxExtent * maxExtent;
 constexpr unsigned maxInputs = 13;
 constexpr unsigned maxArguments = 16;
-constexpr int64_t maxTripCount = 131072;
+constexpr int64_t maxTripCount = vrcgpu::gatherMaxTripCount;
 constexpr int64_t maxValue = INT32_MAX;
 
 /// Closed interval of a 32-bit value. Only values that read the same signed

@@ -371,10 +371,18 @@ The rule is generic: it names node kinds, never a model, a node or a shape.
   of one fragment (a Concat executes one side) and 64 expression nodes,
   counted on the expression as a tree. A producer that would exceed a cap
   stays materialized. A node on its own keeps its library kernel, and a group
-  that would only absorb aliases is not formed. A two-input Concat beyond
-  the 16384 words of `udononnx_concat2_f32` (up to the 131072 words of a
-  fused surface) has no library kernel; on its own it dispatches a
-  synthesized kernel of just itself.
+  that would only absorb aliases is not formed.
+- **Beyond the library kernels** (`isSynthesizedDeviceNode`). A fusible node
+  beyond the element limits of its library kernel (16384 words of
+  `udononnx_concat2_f32` or `udononnx_slice_f32`, 131072 of the large
+  pointwise, Transpose and Expand kernels, a Softmax beyond 16384 elements or
+  rows of 512) is still a Device node when a synthesized kernel can evaluate
+  it: its tensors fit the gather surface (`vrcgpu::gatherMaxWords`, a whole
+  8192 x 8192-word buffer texture) and a reduced axis the 131072-iteration
+  loop bound. It fuses like any other node; on its own it dispatches a
+  synthesized kernel of just itself (a Softmax through its row-reduction
+  schedule). The shape helpers take `DeviceKernelLimits` to check either
+  set of limits.
 - **Plan.** `udoncl.onnx_host_plan` carries `device_fusion_roots`, the node
   whose dispatch computes each node. Storage planning keeps every leaf live
   until the root's dispatch and gives interior results no buffer, so a fused
@@ -433,8 +441,8 @@ past leaf at row r + step of the other bank. The advance only maps the bank
 to 2 after a run from bank 1 and to 1 otherwise; it copies nothing.
 `udon_onnx_binding_enqueue_materialize_sequence_state` copies a present left
 in the past input into its output for a caller that reads it. A banked state
-is bounded by its view kernel (131072 words per present), not by the 16384
-words of the Slice that a copying advance still uses.
+is bounded by its view kernel (a gather surface per present), not by the
+16384 words of the Slice that a copying advance still uses.
 
 Representative output:
 
@@ -900,6 +908,21 @@ vrcgpu.kernel ... {
 
 `lib/Target/HLSL/Emitter.cpp` emits fragment HLSL and ShaderLab for each
 `vrcgpu.kernel`.
+
+With `"device_texel_format": "rgba32_float"` in the Unity library config
+(`vrc.texel_format` on the Device module) every buffer holds four words per
+texel. The gather lowering then emits `vrcgpu.word_load @argN[%word]` (the
+linear word index, its row pitch and capacity) and `vrcgpu.output_word`; the
+pass still describes one word. `lib/Target/HLSL/WordTexelEmitter.cpp` emits
+one fragment per output texel that computes its four words. The lowering
+merges equal index expressions (CSE), and the emitter shares texels: an index
+equal in all lanes is one Load for the four lanes, four consecutive lanes'
+words are one texel (two and a funnel shift if the alignment is unknown), and
+constant-offset Loads from one root read each texel of their run once. The manifest records the
+format per buffer, kernel argument, target and immutable tensor (extents in
+texels), and `program.texel_format` and `program.transfer_scratch` for the
+importer, the finalizer and the generated binding (see
+`udon-vrchat-shader-constraints.md`).
 
 #### Generated kernel channel
 

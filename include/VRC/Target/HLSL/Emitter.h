@@ -5,6 +5,10 @@
 namespace vrc {
 mlir::LogicalResult emitGatherFragmentHLSL(::vrc::vrcgpu::KernelOp kernel,
                                            llvm::raw_ostream &out);
+/// A gather kernel whose buffers hold several words per texel: each fragment
+/// computes the words of one output texel together.
+mlir::LogicalResult emitWordTexelFragmentHLSL(::vrc::vrcgpu::KernelOp kernel,
+                                              llvm::raw_ostream &out);
 mlir::LogicalResult emitFragmentHLSL(::vrc::vrcgpu::KernelOp kernel,
                                      llvm::raw_ostream &out);
 mlir::LogicalResult emitShaderLab(::vrc::vrcgpu::KernelOp kernel,

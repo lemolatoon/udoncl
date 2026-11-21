@@ -1,4 +1,5 @@
 #include "VRC/Target/HLSL/Emitter.h"
+#include "GatherLoops.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -7,60 +8,10 @@
 using namespace mlir;
 namespace vrc {
 namespace fragment = ::vrc::vrcgpu;
+using namespace ::vrc::hlsl;
 namespace {
 std::string textureName(unsigned argument) {
   return argument == 0 ? "_VRC_Input" : "_VRC_Input" + std::to_string(argument);
-}
-
-// A counted loop is unrolled when its trip count times its body size stays
-// within this many operations, so the shader stays small.
-constexpr uint64_t unrollMaxTrips = 64, unrollMaxOperations = 4096;
-
-std::optional<uint64_t> constantInteger(Value value) {
-  if (auto constant = value.getDefiningOp<arith::ConstantOp>())
-    if (auto integer = dyn_cast<IntegerAttr>(constant.getValue()))
-      if (integer.getValue().getActiveBits() <= 31)
-        return integer.getValue().getZExtValue();
-  return std::nullopt;
-}
-
-/* The trip count of a loop the lowering emits for a constant-bound counter:
- * the before region only compares the counter (initially a constant) with a
- * constant, unsigned or signed less-than, and passes its arguments through;
- * the after region yields the counter plus a positive constant. The bounds
- * are below 2^31, so the counter never wraps and both compares agree. */
-std::optional<uint64_t> countedTrips(scf::WhileOp loop) {
-  auto &before = loop.getBefore().front(), &after = loop.getAfter().front();
-  auto condition = cast<scf::ConditionOp>(before.getTerminator());
-  auto compare = condition.getCondition().getDefiningOp<arith::CmpIOp>();
-  if (condition.getArgs().size() != before.getNumArguments() ||
-      !llvm::equal(condition.getArgs(), before.getArguments()) ||
-      llvm::any_of(before.without_terminator(), [&](Operation &op) {
-        return &op != compare.getOperation() && !isa<arith::ConstantOp>(op);
-      }))
-    return std::nullopt;
-  if (!compare || (compare.getPredicate() != arith::CmpIPredicate::ult &&
-                   compare.getPredicate() != arith::CmpIPredicate::slt))
-    return std::nullopt;
-  auto counter = dyn_cast<BlockArgument>(compare.getLhs());
-  auto bound = constantInteger(compare.getRhs());
-  if (!counter || counter.getOwner() != &before || !bound)
-    return std::nullopt;
-  unsigned index = counter.getArgNumber();
-  auto first = constantInteger(loop.getInits()[index]);
-  auto yield = cast<scf::YieldOp>(after.getTerminator());
-  auto increment = yield.getOperand(index).getDefiningOp<arith::AddIOp>();
-  if (!first || !increment || increment.getLhs() != after.getArgument(index))
-    return std::nullopt;
-  auto step = constantInteger(increment.getRhs());
-  if (!step || *step == 0)
-    return std::nullopt;
-  return *first >= *bound ? 0 : (*bound - *first + *step - 1) / *step;
-}
-
-bool containsLoop(Region &region) {
-  return region.walk([](scf::WhileOp) { return WalkResult::interrupt(); })
-      .wasInterrupted();
 }
 
 struct Emitter {
@@ -398,6 +349,9 @@ struct Emitter {
 } // namespace
 LogicalResult emitGatherFragmentHLSL(fragment::KernelOp kernel,
                                      llvm::raw_ostream &out) {
+  if (auto format = kernel->getAttrOfType<StringAttr>("vrc.texel_format"))
+    if (fragment::gatherTexelWords(format.getValue()) > 1)
+      return emitWordTexelFragmentHLSL(kernel, out);
   unsigned textureBinding = 0;
   for (auto resource : kernel.getBody().front().getOps<fragment::ResourceOp>())
     if (resource.getKind() == "texture")

@@ -7,7 +7,10 @@ Date: 2026-11-21
 Fix 1 (split-K for Q4 MatMulNBits) is implemented; see "Split-K results".
 The two-pass Softmax for long rows is implemented; see "Attention at
 capacity 512". The cheaper RGBA8 decode and the unrolled short loops are
-implemented and measured; see "Gate16 probe and the RGBA8 decode".
+implemented and measured; see "Gate16 probe and the RGBA8 decode". Word
+texels (M7, four words per RGBA32 texel, four outputs per fragment) are
+implemented and checked on WARP and in the emulator; their Unity probe is
+pending; see "Word texels (M7)".
 The GPU cost model below is static (fragment-level Load/statement counts)
 and is calibrated against one Unity trace. The per-kernel times still need
 a Unity measurement (see "Measuring in Unity").
@@ -468,6 +471,46 @@ Q4 is then Load-bound (37 RGBA8 Loads per block). The next step for it is
 typed textures (M7): RGBA32F activations would need 8 Loads per block
 instead of 32, but every Device buffer is `rgba8_unorm` throughout the
 compiler, the importer and the transfer paths.
+
+## Word texels (M7)
+
+Every Device buffer and weight of the real TinyLlama artifacts is now an
+RGBA32 float texture holding four words per texel as raw bits
+(`device_texel_format`, see `docs/architecture/udon-vrchat-shader-constraints.md`);
+the synthetic fixture keeps RGBA8. The format has to be one per program: a
+kernel argument receives a Device buffer or a weight texture by token at run
+time, and an SRV whose type differs from the shader's declaration is
+undefined on D3D11. An integer format would be the natural carrier for bits,
+but Unity 2022.3 cannot create an `R32G32B32A32_SInt` Texture2D on D3D11
+(unsupported for Sample usage), so the weights could not be imported; float
+texels are read with `asuint` and written with `asfloat`, and WARP moves
+every bit pattern (NaN payloads, denormals such as token ids) unchanged.
+
+One fragment computes the four words of an output texel, which is what lets
+four outputs share the Loads of a row they all read. The per-lane emitter
+proves which values are equal in the four lanes (a quotient by a run-time
+uniform is checked in the shader, with a per-lane fallback body), and Loads
+share texels. Per 32-element Q4 block:
+
+| | Loads | Loads per output |
+|---|---:|---:|
+| RGBA8 (one output per fragment) | 37 | 37 |
+| word texels, one Load per lane word (stage 2) | 52 for 4 outputs | 13 |
+| word texels, shared texels (stage 3) | 17 for 4 outputs (4 scales, 4 packed-weight texels, 9 activation texels) | 4.25 |
+
+The decode type conversions are gone too: a word texel needs no byte decode.
+Every library kernel the transformer dispatches is bit-identical to RGBA8 on
+WARP (`word-texel-execution`, real dispatch scalars and shapes that are not
+multiples of four). The emulator (Host protocol, scripted tokens) gives
+`[1701, 29916, 432, 17204]` for gen1 and gen2 of the capacity-512
+conversation recompiled from the gate18 inputs; a decode step has 529 Blits
+(526 plus one destination snapshot for each partial transfer).
+
+Costs: FXC compiles the larger word-texel shaders more slowly (the strided
+batched SGEMM 140 s instead of 57 s, the Q4 partial 7 s instead of 2 s), and
+a partial transfer is two Blits. The split-K schedules are unchanged; they
+were chosen for one output per fragment, and with four outputs per fragment
+the gate/up partial has a quarter of the fragments.
 
 ## Measuring in Unity
 

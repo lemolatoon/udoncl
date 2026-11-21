@@ -365,15 +365,27 @@ llvm::json::Object buildBoundaryManifest(ModuleOp module) {
     for (auto resource :
          kernel.getBody().front().getOps<fragment::ResourceOp>())
       resources[resource.getArgIndex()] = resource;
-    kernel.walk([&](fragment::TextureLoadOp load) {
+    auto noteWords = [&](FlatSymbolRefAttr symbol, Operation *load,
+                         int64_t elements) {
       auto resource =
-          SymbolTable::lookupNearestSymbolFrom<fragment::ResourceOp>(
-              load, load.getResourceAttr());
+          SymbolTable::lookupNearestSymbolFrom<fragment::ResourceOp>(load,
+                                                                     symbol);
       if (resource)
-        resourceWords[resource.getArgIndex()] =
-            std::max<int64_t>(resourceWords.lookup(resource.getArgIndex()),
-                              load.getElementCount());
+        resourceWords[resource.getArgIndex()] = std::max<int64_t>(
+            resourceWords.lookup(resource.getArgIndex()), elements);
+    };
+    kernel.walk([&](fragment::TextureLoadOp load) {
+      noteWords(load.getResourceAttr(), load, load.getElementCount());
     });
+    kernel.walk([&](fragment::WordLoadOp load) {
+      noteWords(load.getResourceAttr(), load, load.getElementCount());
+    });
+    // Every buffer of the kernel shares one texel format.
+    auto texelFormatAttr =
+        kernel->getAttrOfType<StringAttr>("vrc.texel_format");
+    std::string texelFormat =
+        texelFormatAttr ? texelFormatAttr.getValue().str() : "rgba8_unorm";
+    int64_t texelWords = fragment::gatherTexelWords(texelFormat);
     llvm::json::Array resourceOrder, reads, writes;
     std::optional<unsigned> outputArgument;
     unsigned scalarOffset = 0;
@@ -405,6 +417,8 @@ llvm::json::Object buildBoundaryManifest(ModuleOp module) {
             {"required_bytes", requiredWords * 4},
             {"alignment", 4},
             {"binding", std::move(binding)}});
+        if (texelWords > 1)
+          (*args.back().getAsObject())["format"] = texelFormat;
         resourceOrder.push_back(i);
         if (output) {
           outputArgument = i;
@@ -438,10 +452,12 @@ llvm::json::Object buildBoundaryManifest(ModuleOp module) {
         {"argument_copy_policy", "required_at_clSetKernelArg"}};
     auto textureShape =
         kernel->getAttrOfType<DenseI32ArrayAttr>("vrc.texture_shape");
+    // The target texture's extent in texels; its rows hold whole texels.
     (*entry.getObject("target_texture"))["width"] =
-        textureShape ? textureShape.asArrayRef()[0] : global[0];
+        (textureShape ? textureShape.asArrayRef()[0] : global[0]) / texelWords;
     (*entry.getObject("target_texture"))["height"] =
         textureShape ? textureShape.asArrayRef()[1] : global[1];
+    (*entry.getObject("target_texture"))["format"] = texelFormat;
     entry["passes"] =
         llvm::json::Array{llvm::json::Object{{"id", 0},
                                              {"output_arg", *outputArgument},

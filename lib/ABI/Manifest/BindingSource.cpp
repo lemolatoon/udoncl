@@ -151,6 +151,105 @@ Expected<AsyncCommands> parseAsyncCommands(const json::Object &manifest) {
                        frameContinuations};
 }
 
+/// Adapts the generated transfers to Device buffers of four words per RGBA32
+/// float texel (bits, not values). Host words still travel as one word per
+/// RGBA8 texel: an upload stages them in an RGBA8 texture four times as wide as
+/// the buffer, which the transfer material's pass 0 packs into word texels;
+/// a partial upload keeps the destination's other words from a snapshot in
+/// `transferScratch` (pass 1, mode 0); a readback reads an RGBA8 copy made
+/// by pass 2.
+Expected<std::string> adaptWordTexelTransfers(std::string source) {
+  struct Replacement {
+    StringRef from, to;
+    bool all;
+  };
+  const Replacement replacements[] = {
+      {"        private Texture2D[] uploadTextures;\n",
+       "        private Texture2D[] uploadTextures;\n"
+       "        [SerializeField] private RenderTexture transferScratch;\n"
+       "        private RenderTexture[] readbackStaging;\n"
+       "\n"
+       "        // An RGBA8 copy of a word-texel Device buffer, one word per "
+       "texel.\n"
+       "        private RenderTexture ReadbackSource(int index)\n"
+       "        {\n"
+       "            RenderTexture source = deviceBuffers[index];\n"
+       "            if (readbackStaging == null)\n"
+       "                readbackStaging = new "
+       "RenderTexture[deviceBuffers.Length];\n"
+       "            RenderTexture staging = readbackStaging[index];\n"
+       "            if (staging == null)\n"
+       "            {\n"
+       "                staging = VRCRenderTexture.GetTemporary(source.width * "
+       "4, source.height, 0, RenderTextureFormat.ARGB32, "
+       "RenderTextureReadWrite.Linear, 1, RenderTextureMemoryless.None, "
+       "VRTextureUsage.None, false);\n"
+       "                readbackStaging[index] = staging;\n"
+       "            }\n"
+       "            VRCGraphics.Blit(source, staging, bufferCopyMaterial, 2);\n"
+       "            return staging;\n"
+       "        }\n",
+       false},
+      {"new Texture2D(destination.width, destination.height, "
+       "TextureFormat.RGBA32, false, true)",
+       "new Texture2D(destination.width * 4, destination.height, "
+       "TextureFormat.RGBA32, false, true)",
+       true},
+      {"            VRCGraphics.Blit(staging, deviceBuffers[index], "
+       "bufferCopyMaterial);\n",
+       "            VRCGraphics.Blit(staging, deviceBuffers[index], "
+       "bufferCopyMaterial, 0);\n",
+       false},
+      {"            bufferCopyMaterial.SetInteger(\"_VRC_TransferMode\", 1);\n",
+       "            if (transferScratch == null)\n"
+       "                return StatusNotInitialized;\n"
+       "            VRCGraphics.Blit(destination, transferScratch, "
+       "bufferCopyMaterial, 1);\n"
+       "            bufferCopyMaterial.SetTexture(\"_VRC_TransferPrevious\", "
+       "transferScratch);\n"
+       "            bufferCopyMaterial.SetInteger(\"_VRC_TransferMode\", 1);\n",
+       false},
+      {"            VRCGraphics.Blit(staging, destination, "
+       "bufferCopyMaterial);\n",
+       "            VRCGraphics.Blit(staging, destination, bufferCopyMaterial, "
+       "0);\n"
+       "            bufferCopyMaterial.SetTexture(\"_VRC_TransferPrevious\", "
+       "null);\n",
+       false},
+      {"Color32[deviceBuffers[index].width * deviceBuffers[index].height]",
+       "Color32[deviceBuffers[index].width * 4 * deviceBuffers[index].height]",
+       true},
+      {"VRCAsyncGPUReadback.Request(deviceBuffers[index], 0, "
+       "TextureFormat.RGBA32, this);",
+       "VRCAsyncGPUReadback.Request(ReadbackSource(index), 0, "
+       "TextureFormat.RGBA32, this);",
+       true},
+      {"Color32[texture.width * texture.height]",
+       "Color32[texture.width * 4 * texture.height]", true},
+      {"Color32[source.width * source.height]",
+       "Color32[source.width * 4 * source.height]", true},
+  };
+  for (const Replacement &replacement : replacements) {
+    size_t position = source.find(replacement.from.str());
+    if (position == std::string::npos) {
+      // Pieces of optional features (public buffers, async commands).
+      if (replacement.all)
+        continue;
+      if (replacement.from.contains("uploadTextures"))
+        return invalid("word-texel binding requires Device buffers");
+      continue;
+    }
+    while (position != std::string::npos) {
+      source.replace(position, replacement.from.size(), replacement.to.str());
+      if (!replacement.all)
+        break;
+      position =
+          source.find(replacement.from.str(), position + replacement.to.size());
+    }
+  }
+  return source;
+}
+
 } // namespace
 
 Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
@@ -1383,7 +1482,14 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
   }
   output << "    }\n}\n";
   output.flush();
-  return source;
+  const json::Object *program = manifest.getObject("program");
+  auto texelFormat =
+      program ? program->getString("texel_format") : std::nullopt;
+  if (!texelFormat || *texelFormat == "rgba8_unorm")
+    return source;
+  if (*texelFormat != "rgba32_float")
+    return invalid("binding source requires a supported Device texel format");
+  return adaptWordTexelTransfers(std::move(source));
 }
 
 } // namespace vrc

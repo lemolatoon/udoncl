@@ -3902,13 +3902,8 @@ private:
                                   source, destination, sourceOffset,
                                   destinationOffset, size);
           } else {
-            emitPush(copy.getLoc(), source);
-            emitPush(copy.getLoc(), destination);
-            emitPush(copy.getLoc(), materialSlot.getValue());
-            emitExtern(
-                copy.getLoc(),
-                "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_"
-                "UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid");
+            emitTransferBlit(copy.getLoc(), source, destination,
+                             materialSlot.getValue());
           }
           std::string event = valueSlots.lookup(copy.getEvent());
           if (event.empty())
@@ -6816,6 +6811,66 @@ private:
     return rejected;
   }
 
+  /// True when the program's Device buffers hold four words per texel; its
+  /// transfer material then has passes (see the word-texel transfer shader).
+  bool wordTexels() const {
+    auto format = module->getAttrOfType<StringAttr>("vrc.texel_format");
+    return format && format.getValue() != "rgba8_unorm";
+  }
+
+  /// Blits with the transfer material; word-texel programs select the pass
+  /// that reads and writes word texels.
+  void emitTransferBlit(Location location, StringRef source,
+                        StringRef destination, StringRef material) {
+    emitPush(location, source);
+    emitPush(location, destination);
+    emitPush(location, material);
+    if (!wordTexels()) {
+      emitExtern(location,
+                 "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_"
+                 "UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid");
+      return;
+    }
+    emitPush(location, immutableSlot("SystemInt32", "1"));
+    emitExtern(location, "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_"
+                         "UnityEngineRenderTexture_UnityEngineMaterial_"
+                         "SystemInt32__SystemVoid");
+  }
+
+  /// A word-texel transfer of a word range writes whole texels: it first
+  /// copies the destination (mode 0, the material default) to the program's
+  /// scratch texture, from which the words outside the range are kept.
+  void emitTransferSnapshot(Location location, StringRef material,
+                            StringRef destination) {
+    if (!wordTexels())
+      return;
+    constexpr StringLiteral scratch = "__udoncl_transfer_scratch";
+    constexpr StringLiteral property = "__udoncl_transfer_property_Previous";
+    addSlot(scratch, "UnityEngineRenderTexture", "null", true);
+    addSlot(property, "SystemString", "\"_VRC_TransferPrevious\"", false);
+    emitTransferBlit(location, destination, scratch, material);
+    emitPush(location, material);
+    emitPush(location, property);
+    emitPush(location, scratch);
+    emitExtern(location, "UnityEngineMaterial.__SetTexture__SystemString_"
+                         "UnityEngineTexture__SystemVoid");
+  }
+
+  /// Unbinds the snapshot once its transfer is issued: the next snapshot
+  /// Blits into the scratch texture, and a Blit target bound as an input of
+  /// its own material is undefined.
+  void emitTransferRelease(Location location, StringRef material) {
+    if (!wordTexels())
+      return;
+    constexpr StringLiteral property = "__udoncl_transfer_property_Previous";
+    addSlot("__udoncl_null_texture", "UnityEngineTexture", "null", false);
+    emitPush(location, material);
+    emitPush(location, property);
+    emitPush(location, "__udoncl_null_texture");
+    emitExtern(location, "UnityEngineMaterial.__SetTexture__SystemString_"
+                         "UnityEngineTexture__SystemVoid");
+  }
+
   /// Blits a word fill of the RenderTexture in `destination`: Device words
   /// [offset / 4, (offset + size) / 4) take pattern word
   /// ((word - offset / 4) mod (patternBytes / 4)), read from the raw heap at
@@ -6835,6 +6890,7 @@ private:
     constexpr StringLiteral word = "__udoncl_transfer_word";
     for (StringRef slot : {width, first, count, period, base, index, word})
       addSlot(slot, "SystemInt32", "0", false);
+    emitTransferSnapshot(location, material, destination);
     emitPush(location, destination);
     emitPush(location, width);
     emitExtern(location, "UnityEngineRenderTexture.__get_width__SystemInt32");
@@ -6876,12 +6932,8 @@ private:
       branch->setAttr("target",
                       builder.getI64IntegerAttr(static_cast<int64_t>(address)));
     addSlot("__udoncl_null_texture", "UnityEngineTexture", "null", false);
-    emitPush(location, "__udoncl_null_texture");
-    emitPush(location, destination);
-    emitPush(location, material);
-    emitExtern(location,
-               "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_"
-               "UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid");
+    emitTransferBlit(location, "__udoncl_null_texture", destination, material);
+    emitTransferRelease(location, material);
     // The material is shared with whole-buffer copies and the generated
     // binding's uploads, which expect the default whole-surface copy mode.
     emitSetTransferInteger(location, material, "Mode",
@@ -6903,6 +6955,7 @@ private:
     constexpr StringLiteral delta = "__udoncl_transfer_delta";
     for (StringRef slot : {width, first, count, delta})
       addSlot(slot, "SystemInt32", "0", false);
+    emitTransferSnapshot(location, material, destination);
     emitPush(location, destination);
     emitPush(location, width);
     emitExtern(location, "UnityEngineRenderTexture.__get_width__SystemInt32");
@@ -6923,12 +6976,8 @@ private:
     emitSetTransferInteger(location, material, "First", first);
     emitSetTransferInteger(location, material, "Count", count);
     emitSetTransferInteger(location, material, "Delta", delta);
-    emitPush(location, source);
-    emitPush(location, destination);
-    emitPush(location, material);
-    emitExtern(location,
-               "VRCSDKBaseVRCGraphics.__Blit__UnityEngineTexture_"
-               "UnityEngineRenderTexture_UnityEngineMaterial__SystemVoid");
+    emitTransferBlit(location, source, destination, material);
+    emitTransferRelease(location, material);
     // The material is shared with whole-buffer copies and the generated
     // binding's uploads, which expect the default whole-surface copy mode.
     emitSetTransferInteger(location, material, "Mode",

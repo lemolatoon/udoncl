@@ -3,6 +3,8 @@
 // equal its input word. The input covers every byte value in every byte
 // position, NaN payloads, infinities, signed zeros, denormals and random
 // words, so the RGBA8 texel decode and encode must be exact for all of them.
+// Two more fragments, if given, copy through RGBA32 float texels holding four
+// words each, which must not change any bit pattern either.
 #include "VRC/Testing/NativeOpenCL/Runtime.h"
 #include <cstdint>
 #include <cstring>
@@ -14,7 +16,7 @@
 namespace {
 constexpr uint32_t surfaceWidth = 8192, surfaceHeight = 16;
 constexpr uint32_t surfaceWords = surfaceWidth * surfaceHeight;
-constexpr uint32_t uintId = 40, floatId = 41;
+constexpr uint32_t uintId = 40, floatId = 41, wordUintId = 42, wordFloatId = 43;
 
 std::vector<uint32_t> patterns() {
   std::vector<uint32_t> words;
@@ -63,28 +65,53 @@ uint32_t check(native_opencl::Session &session, uint32_t id,
 } // namespace
 
 int main(int argc, char **argv) {
-  if (argc != 4) {
+  if (argc != 4 && argc != 6) {
     std::cerr << "usage: raw-word-texel-kernel <uint fragment> <float "
-                 "fragment> <vertex>\n";
+                 "fragment> [<uint word-texel fragment> <float word-texel "
+                 "fragment>] <vertex>\n";
     return 2;
   }
   try {
-    native_opencl::Session session("",
-                                   {{uintId, surfaceWords, 0, "copy_words",
-                                     argv[1], surfaceWidth, surfaceHeight, 1},
-                                    {floatId, surfaceWords, 0, "copy_floats",
-                                     argv[2], surfaceWidth, surfaceHeight, 1}},
-                                   argv[3]);
+    std::vector<native_opencl::GatherBinding> bindings{
+        {uintId, surfaceWords, 0, "copy_words", argv[1], surfaceWidth,
+         surfaceHeight, 1},
+        {floatId, surfaceWords, 0, "copy_floats", argv[2], surfaceWidth,
+         surfaceHeight, 1}};
+    if (argc == 6) {
+      native_opencl::GatherBinding words{
+          wordUintId,   surfaceWords,  0, "copy_word_texels", argv[3],
+          surfaceWidth, surfaceHeight, 1};
+      words.texelWords = 4;
+      native_opencl::GatherBinding floats = words;
+      floats.id = wordFloatId;
+      floats.name = "copy_float_texels";
+      floats.fragment = argv[4];
+      bindings.push_back(words);
+      bindings.push_back(floats);
+    }
+    native_opencl::Session session("", bindings, argv[argc - 1]);
     auto input = patterns();
     uint32_t words = check(session, uintId, input);
     // A float move must not canonicalize NaNs or flush denormals either:
     // the decode is a bit cast, never arithmetic on the value.
     uint32_t floats = check(session, floatId, input);
+    uint32_t wordTexelWords = surfaceWords, wordTexelFloats = surfaceWords;
+    if (argc == 6) {
+      wordTexelWords = check(session, wordUintId, input);
+      wordTexelFloats = check(session, wordFloatId, input);
+      std::cout << "word_uint_exact=" << wordTexelWords << "/" << surfaceWords
+                << " word_float_exact=" << wordTexelFloats << "/"
+                << surfaceWords << " ";
+    }
     std::cout << "uint_exact=" << words << "/" << surfaceWords
               << " float_exact=" << floats << "/" << surfaceWords
               << " draws=" << session.drawCount() << " device=\""
               << session.deviceName() << "\"\n";
-    return words == surfaceWords && floats == surfaceWords ? 0 : 1;
+    return words == surfaceWords && floats == surfaceWords &&
+                   wordTexelWords == surfaceWords &&
+                   wordTexelFloats == surfaceWords
+               ? 0
+               : 1;
   } catch (const std::exception &failure) {
     std::cerr << failure.what() << "\n";
     return 1;

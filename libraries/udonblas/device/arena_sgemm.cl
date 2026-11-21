@@ -50,36 +50,50 @@ __kernel void udonblas_arena_sgemm(__global const float *a,
 }
 
 /* Device-resident counterpart of udonblasSgemmStridedBatched. A zero input
- * stride broadcasts one matrix across every batch, matching the public API. */
-__kernel void udonblas_arena_sgemm_strided_batched(
-    __global const float *a, __global const float *b, __global float *output,
-    int m, int n, int k, int stride_a, int stride_b, int stride_c,
-    int batch_count, int transa, int transb, float alpha) {
-  size_t gid = UDONBLAS_ARENA_Y() * UDONBLAS_ARENA_WIDTH + UDONBLAS_ARENA_X();
-  size_t matrix_words = (size_t)m * (size_t)n;
-  size_t words = (size_t)batch_count * matrix_words;
-  float value = 0.0f;
-  if (gid < words) {
-    size_t batch = gid / matrix_words;
-    size_t within = gid % matrix_words;
-    int row = (int)(within / (size_t)n);
-    int column = (int)(within % (size_t)n);
-    size_t a_base = stride_a ? batch * (size_t)stride_a : 0u;
-    size_t b_base = stride_b ? batch * (size_t)stride_b : 0u;
-    (void)stride_c;
-    float sum = 0.0f;
-    for (int chunk = 0; chunk < UDONBLAS_ARENA_K_CHUNKS; ++chunk)
-      if (chunk * UDONBLAS_ARENA_K_CHUNK < k)
-        for (int lane = 0; lane < UDONBLAS_ARENA_K_CHUNK; ++lane) {
-          int inner = chunk * UDONBLAS_ARENA_K_CHUNK + lane;
-          if (inner < k) {
-            int a_index = transa ? inner * m + row : row * k + inner;
-            int b_index = transb ? column * k + inner : inner * n + column;
-            sum += a[(a_base + (size_t)a_index) & 131071u] *
-                   b[(b_base + (size_t)b_index) & 131071u];
-          }
-        }
-    value = alpha * sum;
+ * stride broadcasts one matrix across every batch, matching the public API.
+ * OPERAND_MASK bounds every operand address for the gather proof: one less
+ * than a power of two that holds the largest operand the kernel admits. */
+#define UDONBLAS_ARENA_SGEMM_STRIDED_BATCHED(NAME, OPERAND_MASK)               \
+  __kernel void NAME(__global const float *a, __global const float *b,         \
+                     __global float *output, int m, int n, int k,              \
+                     int stride_a, int stride_b, int stride_c,                 \
+                     int batch_count, int transa, int transb, float alpha) {   \
+    size_t gid =                                                               \
+        UDONBLAS_ARENA_Y() * UDONBLAS_ARENA_WIDTH + UDONBLAS_ARENA_X();        \
+    size_t matrix_words = (size_t)m * (size_t)n;                               \
+    size_t words = (size_t)batch_count * matrix_words;                         \
+    float value = 0.0f;                                                        \
+    if (gid < words) {                                                         \
+      size_t batch = gid / matrix_words;                                       \
+      size_t within = gid % matrix_words;                                      \
+      int row = (int)(within / (size_t)n);                                     \
+      int column = (int)(within % (size_t)n);                                  \
+      size_t a_base = stride_a ? batch * (size_t)stride_a : 0u;                \
+      size_t b_base = stride_b ? batch * (size_t)stride_b : 0u;                \
+      (void)stride_c;                                                          \
+      float sum = 0.0f;                                                        \
+      for (int chunk = 0; chunk < UDONBLAS_ARENA_K_CHUNKS; ++chunk)            \
+        if (chunk * UDONBLAS_ARENA_K_CHUNK < k)                                \
+          for (int lane = 0; lane < UDONBLAS_ARENA_K_CHUNK; ++lane) {          \
+            int inner = chunk * UDONBLAS_ARENA_K_CHUNK + lane;                 \
+            if (inner < k) {                                                   \
+              int a_index = transa ? inner * m + row : row * k + inner;        \
+              int b_index = transb ? column * k + inner : inner * n + column;  \
+              sum += a[(a_base + (size_t)a_index) & OPERAND_MASK] *            \
+                     b[(b_base + (size_t)b_index) & OPERAND_MASK];             \
+            }                                                                  \
+          }                                                                    \
+      value = alpha * sum;                                                     \
+    }                                                                          \
+    output[gid] = value;                                                       \
   }
-  output[gid] = value;
-}
+
+/* Operands of up to 131072 words and a launch surface of 8192 x 2 words. */
+UDONBLAS_ARENA_SGEMM_STRIDED_BATCHED(udonblas_arena_sgemm_strided_batched,
+                                     131071u)
+/* The same product for operands up to a whole Device buffer texture
+ * (8192 x 8192 words) and a launch surface of 8192 x 16 words, for shapes the
+ * kernel above cannot hold. Its taller surface charges every dispatch more
+ * fragments, so the smaller kernel stays the default. */
+UDONBLAS_ARENA_SGEMM_STRIDED_BATCHED(udonblas_arena_sgemm_strided_batched_large,
+                                     67108863u)

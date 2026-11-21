@@ -2894,10 +2894,13 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
           return success();
         }
       }
-      // A Softmax runs as a fused kernel also outside every group when its
-      // schedule has two passes (deviceSoftmaxSchedule).
+      // A node runs a fused kernel also outside every group when its library
+      // kernel cannot run it: a Softmax whose schedule has two passes
+      // (deviceSoftmaxSchedule), or a node beyond the limits of its library
+      // kernel (isSynthesizedDeviceNode).
       if (fusion.isRoot(nodeIndex) ||
-          deviceSoftmaxSchedule(graph, node).chunks) {
+          deviceSoftmaxSchedule(graph, node).chunks ||
+          isSynthesizedDeviceNode(graph, node)) {
         FailureOr<DeviceFusionDispatch> fused =
             fusedKernels.dispatch(nodeIndex);
         if (failed(fused))
@@ -3136,24 +3139,6 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
         return success();
       }
       if (node.operation == "Concat") {
-        // A Concat beyond the library kernel runs a synthesized kernel of
-        // its own.
-        if (isSynthesizedConcatNode(graph, node)) {
-          FailureOr<DeviceFusionDispatch> alone =
-              fusedKernels.dispatchAlone(nodeIndex);
-          if (failed(alone))
-            return failure();
-          SmallVector<Value> arguments;
-          for (unsigned leaf : alone->leaves) {
-            arguments.push_back(buffer(leaf));
-            if (!arguments.back())
-              return emitError(location)
-                     << "Device ONNX Concat operand lacks physical storage";
-          }
-          arguments.push_back(output);
-          dispatch(alone->callee, arguments);
-          return success();
-        }
         std::optional<DeviceConcatShape> shape = deviceConcatShape(graph, node);
         if (!shape)
           return emitError(location)
@@ -3367,8 +3352,14 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                               constant(shape->k), constant(0), constant(0),
                               floating(1.0f)});
         } else {
+          // A product beyond the operand or output words of the
+          // strided-batched kernel runs its taller variant.
           dispatch(
-              "__vrc_opencl_dispatch_udonblas_arena_sgemm_strided_batched",
+              needsLargeBatchedSgemm(*shape)
+                  ? "__vrc_opencl_dispatch_udonblas_arena_sgemm_strided_"
+                    "batched_large"
+                  : "__vrc_opencl_dispatch_udonblas_arena_sgemm_strided_"
+                    "batched",
               ValueRange{
                   buffer(node.inputs[0]), buffer(node.inputs[1]), output,
                   constant(shape->m), constant(shape->n), constant(shape->k),
@@ -3538,6 +3529,10 @@ LogicalResult createRuntimeDispatchers(ModuleOp module,
                          {i32, i32, i32, i32, i32, i32, i32, i32, f32}, {i32});
     declarations.require(
         "__vrc_opencl_dispatch_udonblas_arena_sgemm_strided_batched",
+        {i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, f32},
+        {i32});
+    declarations.require(
+        "__vrc_opencl_dispatch_udonblas_arena_sgemm_strided_batched_large",
         {i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, f32},
         {i32});
     declarations.require("__vrc_opencl_dispatch_udononnx_unary_f32",

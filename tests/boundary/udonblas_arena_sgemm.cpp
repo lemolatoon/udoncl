@@ -137,7 +137,64 @@ static int runRepeatedOperandCase(int groups, int repeats, int m, int n,
   return mismatches;
 }
 
+/* The large strided-batched kernel at attention shapes beyond the small
+ * kernel: operands of 4 x 4096 x 64 words and 32 x 4096 scores. Its
+ * accumulation order is the small kernel's, so a shape both kernels hold
+ * must give bit-identical words. */
+static float runLargeCase(int batches, int m, int n, int k, int &mismatches) {
+  constexpr int surfaceWords = 131072;
+  std::vector<float> a(batches * m * k);
+  std::vector<float> b(batches * k * n);
+  for (int index = 0; index < static_cast<int>(a.size()); ++index)
+    a[index] = value(index, 9);
+  for (int index = 0; index < static_cast<int>(b.size()); ++index)
+    b[index] = value(index, 10);
+  std::vector<float> output(surfaceWords, -37.0f);
+  for (udonblas_arena_sgemm_cpu_gid_y = 0; udonblas_arena_sgemm_cpu_gid_y < 16;
+       ++udonblas_arena_sgemm_cpu_gid_y)
+    for (udonblas_arena_sgemm_cpu_gid_x = 0;
+         udonblas_arena_sgemm_cpu_gid_x < 8192;
+         ++udonblas_arena_sgemm_cpu_gid_x)
+      udonblas_arena_sgemm_strided_batched_large(
+          a.data(), b.data(), output.data(), m, n, k, m * k, k * n, m * n,
+          batches, 0, 0, 1.0f);
+  int words = batches * m * n;
+  double maximumError = 0.0;
+  for (int batch = 0; batch < batches; ++batch)
+    for (int row = 0; row < m; ++row)
+      for (int column = 0; column < n; ++column) {
+        double sum = 0.0, magnitude = 0.0;
+        for (int inner = 0; inner < k; ++inner) {
+          double term = static_cast<double>(a[(batch * m + row) * k + inner]) *
+                        b[(batch * k + inner) * n + column];
+          sum += term;
+          magnitude += std::abs(term);
+        }
+        int index = (batch * m + row) * n + column;
+        maximumError = std::max(maximumError, std::abs(output[index] - sum) /
+                                                  (1.0 + magnitude));
+      }
+  for (int index = words; index < surfaceWords; ++index)
+    if (output[index] != 0.0f)
+      return INFINITY;
+  if (batches * m * n <= 16384 && batches * m * k <= 131072 &&
+      batches * k * n <= 131072) {
+    std::vector<float> small = runBatched(a, b, batches, m, n, k);
+    for (int index = 0; index < words; ++index)
+      mismatches +=
+          std::memcmp(&small[index], &output[index], sizeof(float)) != 0;
+  }
+  return static_cast<float>(maximumError);
+}
+
 int main() {
+  int largeMismatches = 0;
+  float largeError = std::max({runLargeCase(4, 8, 4096, 64, largeMismatches),
+                               runLargeCase(4, 8, 64, 4096, largeMismatches),
+                               runLargeCase(4, 8, 512, 64, largeMismatches),
+                               runLargeCase(4, 8, 64, 512, largeMismatches)});
+  std::cout << "arena_sgemm_large_max_error=" << largeError
+            << " small_mismatches=" << largeMismatches << '\n';
   int repeatedMismatches = runRepeatedOperandCase(4, 8, 1, 64, 64) +
                            runRepeatedOperandCase(2, 3, 2, 5, 300);
   float attentionError = runCase(32, 4, 64, 4, false);
@@ -155,7 +212,8 @@ int main() {
   std::cout << "arena_sgemm_max_error="
             << std::max({attentionError, m1AttentionError, broadcastError})
             << '\n';
-  return repeatedMismatches == 0 && attentionError < 0.0001f &&
+  return repeatedMismatches == 0 && largeMismatches == 0 &&
+                 largeError < 0.0001f && attentionError < 0.0001f &&
                  m1AttentionError < 0.0001f && broadcastError < 0.0001f &&
                  longKBatchedError < 0.001f && longKError < 0.0001f
              ? 0

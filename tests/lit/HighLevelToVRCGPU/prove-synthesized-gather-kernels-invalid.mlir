@@ -288,7 +288,7 @@ gpu.module @kernels {
 // -----
 
 gpu.module @kernels {
-  // expected-error @below {{synthesized gather kernel: vrc.words must equal width * height and be at most 131072}}
+  // expected-error @below {{synthesized gather kernel: vrc.words must equal width * height and be at most 67108864}}
   gpu.func @words_mismatch(%in: memref<16xf32>, %out: memref<16xf32>) kernel attributes {known_block_size = array<i32: 1, 1, 1>, known_grid_size = array<i32: 16, 2, 1>, vrc.profile = "gather-f32", vrc.synthesized_kernel, vrc.words = 16 : i32} {
     %x = gpu.global_id x
     %value = memref.load %in[%x] : memref<16xf32>

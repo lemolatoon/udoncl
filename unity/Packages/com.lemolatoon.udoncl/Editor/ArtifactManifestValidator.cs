@@ -75,6 +75,19 @@ namespace Lemolatoon.Udoncl.Editor
         /// </summary>
         public IList<ValidatedDispatchMaterial> DispatchMaterials { get; private set; }
         public IList<ValidatedDeviceBuffer> DeviceBuffers { get; private set; }
+
+        /// <summary>
+        /// The Device texel format of every buffer and immutable tensor:
+        /// "rgba8_unorm" (one word per RGBA8 texel) or "rgba32_float" (four
+        /// words per RGBA32 float texel).
+        /// </summary>
+        public string TexelFormat { get; internal set; }
+
+        /// <summary>
+        /// The scratch texture a word-texel program's partial transfers
+        /// snapshot their destination into, or null.
+        /// </summary>
+        public ValidatedTransferScratch TransferScratch { get; internal set; }
         public IList<ValidatedResource> Resources { get; private set; }
         public IList<ValidatedStaticTensor> StaticTensors { get; private set; }
         public IList<ValidatedOnnxStaticInput> OnnxStaticInputs { get; private set; }
@@ -96,7 +109,8 @@ namespace Lemolatoon.Udoncl.Editor
             int byteLength,
             string sha256,
             int width,
-            int height
+            int height,
+            string format = "rgba32"
         )
         {
             Id = id;
@@ -110,6 +124,18 @@ namespace Lemolatoon.Udoncl.Editor
             Sha256 = sha256;
             Width = width;
             Height = height;
+            Format = format;
+        }
+
+        /// <summary>
+        /// "rgba32" (one word per RGBA8 texel) or "rgba32_float" (four words
+        /// per RGBA32 float texel).
+        /// </summary>
+        public string Format { get; private set; }
+
+        public int TexelBytes
+        {
+            get { return Format == "rgba32_float" ? 16 : 4; }
         }
 
         public int Id { get; private set; }
@@ -267,6 +293,30 @@ namespace Lemolatoon.Udoncl.Editor
         }
     }
 
+    public sealed class ValidatedTransferScratch
+    {
+        internal ValidatedTransferScratch(
+            string slot,
+            int width,
+            int height,
+            string format,
+            bool programSlot
+        )
+        {
+            Slot = slot;
+            Width = width;
+            Height = height;
+            Format = format;
+            ProgramSlot = programSlot;
+        }
+
+        public string Slot { get; private set; }
+        public int Width { get; private set; }
+        public int Height { get; private set; }
+        public string Format { get; private set; }
+        public bool ProgramSlot { get; private set; }
+    }
+
     public sealed class ValidatedDeviceBuffer
     {
         internal ValidatedDeviceBuffer(
@@ -277,7 +327,8 @@ namespace Lemolatoon.Udoncl.Editor
             int width,
             int height,
             string elementType,
-            string publicAccess
+            string publicAccess,
+            string format = "rgba8_unorm"
         )
         {
             Id = id;
@@ -288,7 +339,14 @@ namespace Lemolatoon.Udoncl.Editor
             Height = height;
             ElementType = elementType;
             PublicAccess = publicAccess;
+            Format = format;
         }
+
+        /// <summary>
+        /// The texel format: "rgba8_unorm" (one word per texel) or
+        /// "rgba32_float" (four words per texel; Width counts texels).
+        /// </summary>
+        public string Format { get; private set; }
 
         public int Id { get; private set; }
         public string Name { get; private set; }
@@ -608,7 +666,56 @@ namespace Lemolatoon.Udoncl.Editor
                     "Unity ONNX models require public inputs, outputs, and a buffer copy shader."
                 );
 
-            return new ValidatedArtifact(
+            string texelFormat = string.IsNullOrEmpty(manifest.program.texel_format)
+                ? "rgba8_unorm"
+                : manifest.program.texel_format;
+            if (DeviceTexelBytes(texelFormat) == 0)
+                throw new InvalidDataException("Unsupported Device texel format: " + texelFormat);
+            foreach (ValidatedDeviceBuffer buffer in deviceBuffers)
+                if (buffer.Format != texelFormat)
+                    throw new InvalidDataException(
+                        "Device buffer " + buffer.Name + " does not use the program texel format."
+                    );
+            foreach (ValidatedStaticTensor tensor in staticTensors)
+                if ((tensor.Format == "rgba32_float") != (texelFormat == "rgba32_float"))
+                    throw new InvalidDataException(
+                        "Static tensor " + tensor.Name + " does not use the program texel format."
+                    );
+            ValidatedTransferScratch transferScratch = null;
+            TransferScratchInfo scratch = manifest.program.transfer_scratch;
+            bool hasScratch = scratch != null && !string.IsNullOrEmpty(scratch.slot);
+            if (hasScratch != (texelFormat == "rgba32_float" && deviceBuffers.Count != 0))
+                throw new InvalidDataException(
+                    "A word-texel program with Device buffers requires exactly one transfer scratch texture."
+                );
+            if (hasScratch)
+            {
+                if (
+                    scratch.slot != "__udoncl_transfer_scratch"
+                    || scratch.format != texelFormat
+                    || scratch.width <= 0
+                    || scratch.width > 8192
+                    || scratch.height <= 0
+                    || scratch.height > 8192
+                )
+                    throw new InvalidDataException("Transfer scratch texture metadata is invalid.");
+                foreach (ValidatedDeviceBuffer buffer in deviceBuffers)
+                    if (buffer.Width > scratch.width || buffer.Height > scratch.height)
+                        throw new InvalidDataException(
+                            "Transfer scratch texture is smaller than Device buffer "
+                                + buffer.Name
+                                + "."
+                        );
+                transferScratch = new ValidatedTransferScratch(
+                    scratch.slot,
+                    scratch.width,
+                    scratch.height,
+                    scratch.format,
+                    scratch.program_slot
+                );
+            }
+
+            ValidatedArtifact artifact = new ValidatedArtifact(
                 root,
                 manifestPath,
                 assemblyPath,
@@ -630,6 +737,9 @@ namespace Lemolatoon.Udoncl.Editor
                 onnxInputs,
                 onnxOutputs
             );
+            artifact.TexelFormat = texelFormat;
+            artifact.TransferScratch = transferScratch;
+            return artifact;
         }
 
         private static readonly Regex DispatchMaterialSlot = new Regex(
@@ -733,7 +843,8 @@ namespace Lemolatoon.Udoncl.Editor
             {
                 if (buffer == null)
                     throw new InvalidDataException("Device buffer entry is null.");
-                long textureBytes = (long)buffer.width * buffer.height * 4;
+                int texelBytes = DeviceTexelBytes(buffer.format);
+                long textureBytes = (long)buffer.width * buffer.height * texelBytes;
                 bool hasPublicBinding =
                     !string.IsNullOrEmpty(buffer.element_type)
                     || !string.IsNullOrEmpty(buffer.public_access);
@@ -760,14 +871,16 @@ namespace Lemolatoon.Udoncl.Editor
                     || buffer.height <= 0
                     || buffer.height > 8192
                     || textureBytes < buffer.logical_bytes
-                    || buffer.format != "rgba8_unorm"
+                    || texelBytes == 0
+                    || buffers[0] == null
+                    || buffer.format != buffers[0].format
                     || buffer.srgb
                     || buffer.mipmaps
                     || buffer.filter != "point"
                     || !validPublicBinding
                 )
                     throw new InvalidDataException(
-                        "Device buffers require unique ids/names/slots and a bounded RGBA8 layout with sufficient capacity."
+                        "Device buffers require unique ids/names/slots and a bounded RGBA8 or RGBA32 float layout of one format with sufficient capacity."
                     );
                 validated.Add(
                     new ValidatedDeviceBuffer(
@@ -778,11 +891,20 @@ namespace Lemolatoon.Udoncl.Editor
                         buffer.width,
                         buffer.height,
                         buffer.element_type,
-                        buffer.public_access
+                        buffer.public_access,
+                        buffer.format
                     )
                 );
             }
             return validated;
+        }
+
+        /// <summary>Bytes per texel of a Device buffer texel format, 0 if unsupported.</summary>
+        internal static int DeviceTexelBytes(string format)
+        {
+            return format == "rgba8_unorm" ? 4
+                : format == "rgba32_float" ? 16
+                : 0;
         }
 
         private static List<ValidatedOnnxInt4Call> ValidateOnnxInt4Calls(
@@ -1025,12 +1147,17 @@ namespace Lemolatoon.Udoncl.Editor
                     || tensor.byte_length <= 0
                     || !IsSha256(tensor.sha256)
                     || texture == null
-                    || texture.abi != "udoncl-static-rgba32-v1"
+                    || !(
+                        (texture.abi == "udoncl-static-rgba32-v1" && texture.format == "rgba32")
+                        || (
+                            texture.abi == "udoncl-static-words-v1"
+                            && texture.format == "rgba32_float"
+                        )
+                    )
                     || texture.width <= 0
                     || texture.width > 8192
                     || texture.height <= 0
                     || texture.height > 8192
-                    || texture.format != "rgba32"
                     || texture.srgb
                     || texture.mipmaps
                     || texture.filter != "point"
@@ -1054,15 +1181,20 @@ namespace Lemolatoon.Udoncl.Editor
                     expectedStride *= size;
                     elements *= size;
                 }
+                // Words fill rows of up to 8192; a texel holds texelWords
+                // consecutive words of its row.
+                int texelWords = texture.format == "rgba32_float" ? 4 : 1;
+                long texelBytes = 4L * texelWords;
                 long pixels = (tensor.byte_length + 3L) / 4;
-                int expectedWidth = (int)Math.Min(pixels, 8192L);
-                int expectedHeight = (int)((pixels + expectedWidth - 1) / expectedWidth);
+                long rowWords = Math.Min(pixels, 8192L);
+                int expectedWidth = (int)((rowWords + texelWords - 1) / texelWords);
+                int expectedHeight = (int)((pixels + rowWords - 1) / rowWords);
                 if (
                     texture.width != expectedWidth
                     || texture.height != expectedHeight
-                    || (long)texture.width * texture.height * 4 < tensor.byte_length
-                    || (long)texture.width * texture.height * 4 - tensor.byte_length
-                        >= (long)texture.width * 4
+                    || (long)texture.width * texture.height * texelBytes < tensor.byte_length
+                    || (long)texture.width * texture.height * texelBytes - tensor.byte_length
+                        >= (long)texture.width * texelBytes
                     || elements > long.MaxValue / elementBytes
                     || elements * elementBytes != tensor.byte_length
                     || new FileInfo(resource.AbsolutePath).Length != tensor.byte_length
@@ -1087,7 +1219,8 @@ namespace Lemolatoon.Udoncl.Editor
                         tensor.byte_length,
                         tensor.sha256,
                         texture.width,
-                        texture.height
+                        texture.height,
+                        texture.format
                     )
                 );
             }

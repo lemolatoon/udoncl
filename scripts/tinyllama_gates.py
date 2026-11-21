@@ -1720,6 +1720,11 @@ def validate_plan(plan: Path, artifact: Path) -> dict:
     # Shader names repeat across builds; the device buffer and static tensor
     # shapes tie a plan to the artifact (capacity, layout) it was made from.
     manifest = json.loads((artifact / "manifest.json").read_text(encoding="utf-8"))
+    # Shapes are texels; the probe creates the textures in the artifact's
+    # texel format.
+    texel_format = (manifest.get("program") or {}).get("texel_format") or "rgba8_unorm"
+    if (data.get("texelFormat") or "rgba8_unorm") != texel_format:
+        raise GateError(f"{plan} texelFormat does not match {artifact} ({texel_format})")
     buffers = {
         item.get("id"): (item.get("width"), item.get("height"))
         for item in (manifest.get("device") or {}).get("buffers", [])

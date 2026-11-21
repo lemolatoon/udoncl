@@ -1,5 +1,6 @@
 #ifndef UDONCL_NATIVE_TEST_RENDERER_H
 #define UDONCL_NATIVE_TEST_RENDERER_H
+#include "VRC/Dialect/VRCGPU/GatherLimits.h"
 #include <array>
 #include <cstdint>
 #include <memory>
@@ -18,8 +19,10 @@ public:
 };
 std::unique_ptr<FragmentRenderer>
 createFragmentRenderer(const std::string &shader, const std::string &vertex);
+// `width` counts words; with `texelWords` 4 every texture is
+// R32G32B32A32_FLOAT with width / 4 texels per row (the same bytes).
 std::unique_ptr<FragmentRenderer>
 createGatherRenderer(const std::string &shader, const std::string &vertex,
                      uint32_t width, uint32_t height = 1,
-                     uint32_t inputCount = 1);
+                     uint32_t inputCount = 1, uint32_t texelWords = 1);
 #endif

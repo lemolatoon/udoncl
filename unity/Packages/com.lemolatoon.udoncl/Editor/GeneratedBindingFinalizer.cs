@@ -315,6 +315,40 @@ namespace Lemolatoon.Udoncl.Editor
                             "Generated Device buffer transfer material is missing: " + materialPath
                         );
                 }
+                // A word-texel program snapshots the destination of a partial
+                // transfer into its scratch texture, in the Host program and
+                // in the binding's uploads.
+                RenderTexture transferScratch = null;
+                if (
+                    manifest.program != null
+                    && manifest.program.transfer_scratch != null
+                    && !string.IsNullOrEmpty(manifest.program.transfer_scratch.slot)
+                )
+                {
+                    string scratchPath =
+                        programRoot
+                        + "/RenderTextures/"
+                        + UdonclArtifactImporter.TransferScratchFileName;
+                    transferScratch = AssetDatabase.LoadAssetAtPath<RenderTexture>(scratchPath);
+                    if (transferScratch == null)
+                        throw new InvalidDataException(
+                            "Generated transfer scratch texture is missing: " + scratchPath
+                        );
+                    if (manifest.program.transfer_scratch.program_slot)
+                        SetPublicVariable(
+                            program,
+                            manifest.program.transfer_scratch.slot,
+                            transferScratch
+                        );
+                    SerializedProperty scratchProperty = serializedWrapper.FindProperty(
+                        "transferScratch"
+                    );
+                    if (scratchProperty == null)
+                        throw new InvalidDataException(
+                            "Generated wrapper does not contain its transfer scratch binding."
+                        );
+                    scratchProperty.objectReferenceValue = transferScratch;
+                }
                 if (manifest.static_tensors != null && manifest.static_tensors.Length != 0)
                 {
                     staticTensorTextures = new Texture2D[manifest.static_tensors.Length];
@@ -371,6 +405,8 @@ namespace Lemolatoon.Udoncl.Editor
                     SetPublicVariable(wrapperBacking, "deviceBuffers", bufferTextures);
                     SetPublicVariable(wrapperBacking, "bufferCopyMaterial", bufferCopyMaterial);
                 }
+                if (transferScratch != null)
+                    SetPublicVariable(wrapperBacking, "transferScratch", transferScratch);
 
                 if (exampleType != null)
                 {

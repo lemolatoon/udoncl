@@ -136,6 +136,8 @@ struct LowerOpenCLAOTIntrinsicsPass
           name == "__vrc_opencl_dispatch_udonblas_arena_sgemm" ||
           name ==
               "__vrc_opencl_dispatch_udonblas_arena_sgemm_strided_batched" ||
+          name == "__vrc_opencl_dispatch_udonblas_arena_sgemm_strided_"
+                  "batched_large" ||
           name == "__vrc_opencl_dispatch_udonblas_sgemv" ||
           name == "__vrc_opencl_dispatch_udondnn_large_convolution" ||
           name == "__vrc_opencl_dispatch_udondnn_large_activation" ||
@@ -202,8 +204,10 @@ struct LowerOpenCLAOTIntrinsicsPass
                      i32, i32, i32, i32, f32, f32};
       else if (name == "__vrc_opencl_dispatch_udonblas_arena_sgemm")
         arguments = {i32, i32, i32, i32, i32, i32, i32, i32, f32};
-      else if (name ==
-               "__vrc_opencl_dispatch_udonblas_arena_sgemm_strided_batched")
+      else if (name == "__vrc_opencl_dispatch_udonblas_arena_sgemm_strided_"
+                       "batched" ||
+               name == "__vrc_opencl_dispatch_udonblas_arena_sgemm_strided_"
+                       "batched_large")
         arguments = {i32, i32, i32, i32, i32, i32, i32,
                      i32, i32, i32, i32, i32, f32};
       else if (name == "__vrc_opencl_dispatch_udonblas_sgemv")
@@ -482,6 +486,9 @@ struct LowerOpenCLAOTIntrinsicsPass
         bool arenaBatchedSgemm =
             name ==
             "__vrc_opencl_dispatch_udonblas_arena_sgemm_strided_batched";
+        bool arenaBatchedSgemmLarge =
+            name == "__vrc_opencl_dispatch_udonblas_arena_sgemm_strided_"
+                    "batched_large";
         bool sgemv = name == "__vrc_opencl_dispatch_udonblas_sgemv";
         bool largeConvolution =
             name == "__vrc_opencl_dispatch_udondnn_large_convolution";
@@ -524,7 +531,8 @@ struct LowerOpenCLAOTIntrinsicsPass
                                : whereF32 || scatterNDF32          ? 4
                                : largeConvolution || largeOpTensor ? 4
                                : argmaxFinalize                    ? 3
-                               : arenaSgemm || arenaBatchedSgemm || concat ||
+                               : arenaSgemm || arenaBatchedSgemm ||
+                                       arenaBatchedSgemmLarge || concat ||
                                        axis0Gather || equalF32
                                    ? 3
                                : largeActivation || largePooling ? 3
@@ -532,6 +540,7 @@ struct LowerOpenCLAOTIntrinsicsPass
         int32_t kernelId = sgemm                                        ? 1
                            : arenaSgemm                                 ? 221
                            : arenaBatchedSgemm                          ? 237
+                           : arenaBatchedSgemmLarge                     ? 249
                            : sgemv                                      ? 2
                            : largeConvolution                           ? 232
                            : largeActivation                            ? 233
@@ -560,7 +569,7 @@ struct LowerOpenCLAOTIntrinsicsPass
                            : name == "__vrc_opencl_dispatch_mnist_pool" ? 21
                                                                         : 22;
         SmallVector<Attribute> scalarKinds;
-        if (arenaBatchedSgemm) {
+        if (arenaBatchedSgemm || arenaBatchedSgemmLarge) {
           scalarKinds.append(9, rewriter.getStringAttr("i32"));
           scalarKinds.push_back(rewriter.getStringAttr("f32"));
         } else if (arenaSgemm) {
@@ -641,7 +650,8 @@ struct LowerOpenCLAOTIntrinsicsPass
           globalSize = rewriter.getDenseI32ArrayAttr({1024, 1, 1});
         else if (embedding)
           globalSize = rewriter.getDenseI32ArrayAttr({1536, 1, 1});
-        else if (matmulNBitsQ4 || largeOpTensor || transpose || expand)
+        else if (matmulNBitsQ4 || largeOpTensor || transpose || expand ||
+                 arenaBatchedSgemmLarge)
           globalSize = rewriter.getDenseI32ArrayAttr({8192, 16, 1});
         else if (matmulNBits || unary || slice || concat || axis0Gather ||
                  castI64F32 || equalF32 || whereF32 || scatterNDF32)

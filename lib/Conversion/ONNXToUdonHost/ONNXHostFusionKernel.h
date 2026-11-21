@@ -49,8 +49,10 @@ public:
       : module(module), fusion(fusion) {}
 
   /// Returns the dispatch of the group rooted at `rootNode`, synthesizing its
-  /// kernel unless an identical one exists. `rootNode` may also be a Softmax
-  /// outside every group whose schedule has two passes.
+  /// kernel unless an identical one exists. `rootNode` may also be a node
+  /// outside every group that its library kernel cannot run: a Softmax whose
+  /// schedule has two passes, or a node beyond the limits of its library
+  /// kernel (isSynthesizedDeviceNode), which the kernel evaluates on its own.
   mlir::FailureOr<DeviceFusionDispatch> dispatch(unsigned rootNode);
 
   /// The dispatch of the expression of `rootNode` with the leaf `view.tensor`
@@ -59,10 +61,6 @@ public:
   /// evaluates on its own.
   mlir::FailureOr<DeviceFusionDispatch>
   dispatch(unsigned rootNode, const DeviceFusionLeafView &view);
-
-  /// The dispatch of `node`, outside every group, as a kernel of its own:
-  /// for a re-indexing node beyond the limits of its library kernel.
-  mlir::FailureOr<DeviceFusionDispatch> dispatchAlone(unsigned node);
 
 private:
   enum class FusedKernelRole {

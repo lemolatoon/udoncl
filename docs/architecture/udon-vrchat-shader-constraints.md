@@ -118,6 +118,67 @@ stay in the investigation section.
   tolerance. A visually plausible texture is not evidence of numerical
   correctness.
 
+### Word texels hold four words in one RGBA32 float texel
+
+- Status: exactness is confirmed on the native D3D11 WARP renderer
+  (`raw-word-texel-execution` copies every byte value in every position, NaN
+  payloads and denormals through RGBA32 float texels too); the Unity Editor
+  import and D3D11 runs are confirmed only by the Unity gates that exercise a
+  word-texel artifact, and the VRChat client is unverified.
+- A Unity library may set `"device_texel_format": "rgba32_float"`. Every
+  Device buffer is then an `ARGBFloat` RenderTexture (D3D11
+  `R32G32B32A32_FLOAT`) and every immutable tensor an `RGBAFloat` Texture2D
+  loaded with its raw bytes: word `w` of a row of `P` words is channel `w % 4`
+  of texel `(w % P) / 4`, so the bytes of a row are the words in order and a
+  Load returns four words. The words are bits, not values: shaders declare
+  `Texture2D<float4>` and `float4 SV_Target`, read with `asuint` and write
+  with `asfloat`, so no arithmetic touches a stored word (a point Load and a
+  render-target write without blending move the 32 bits; integer words such
+  as token ids are denormal patterns and must survive).
+- Unity 2022.3 on D3D11 cannot create an integer Texture2D
+  (`R32G32B32A32_SInt` is unsupported for Sample usage), and an SRV whose
+  format type differs from the declared return type is undefined on D3D11.
+  Every texture a kernel argument can receive (Device buffers and immutable
+  tensors alike, chosen by token at run time) therefore has the same float
+  format; the format is one per program.
+- A word-texel fragment computes the four words of its texel. The lowering
+  keeps one-word pass semantics; the emitter classifies each value as equal in
+  all lanes, `base + lane`, or per lane, branches on `any`/`all` of a lane
+  condition and selects per lane, and runs a loop whose condition differs
+  while any lane is active with the carried values of finished lanes frozen.
+  A quotient or remainder of a lane-affine value by a run-time uniform is
+  computed once when the four lanes do not straddle a multiple of the divisor;
+  the shader checks that and recomputes the texel per lane where it fails, so
+  results never depend on it. Results are bit-identical to RGBA8:
+  `word-texel-execution` runs every library kernel the ONNX transformer
+  dispatches in both formats on WARP, including shapes that are not
+  multiples of four.
+- Loads share texels. A lane-affine index whose base is a known multiple of
+  four is one Load for the four lanes; an unknown base is two Loads and a
+  funnel shift (`_VRC_Funnel`, by the base modulo 4). Loads of one block whose
+  indices differ only by a constant from the same uniform root (after CSE of
+  the index expressions) read each texel of the run once, funnelled when the
+  root's alignment is unknown; a varying root that is a known multiple of four
+  reads one texel per lane. The Q4 MatMulNBits partial therefore reads one
+  32-element block for four outputs with 17 Loads (4 scales, 4 packed-weight
+  texels, 9 activation texels) instead of 4 x 37.
+- A one-row target is padded to whole texels; a multi-row texture must be a
+  multiple of four words wide.
+- Transfers keep one word per RGBA8 texel on the Host side. The transfer
+  shader has three passes, so every Blit names one: 0 packs an RGBA8 word
+  source (binding uploads), 1 copies word texels (Device copies, fills, small
+  uploads), 2 unpacks word texels into an RGBA8 target (binding readbacks
+  read that copy through `VRCRenderTexture.GetTemporary`, so
+  AsyncGPUReadback never converts a float format). A transfer that writes part of a texel
+  (mode 1 or 2) first copies the destination into the program's
+  `__udoncl_transfer_scratch` texture with pass 1 mode 0 and keeps the other
+  words from it, because a Blit cannot read its own target and a blend
+  would treat the words as values. The snapshot is bound as
+  `_VRC_TransferPrevious` only for that one transfer and unbound right
+  after it: the material is shared, and the next snapshot Blits into the
+  scratch texture, which Unity reports as undefined ("uses dest texture as
+  input") while it is still bound (gate m7s3).
+
 ### Short counted loops are unrolled with flattened guards
 
 - A `[loop]` iteration whose Loads feed its accumulation waits one full Load

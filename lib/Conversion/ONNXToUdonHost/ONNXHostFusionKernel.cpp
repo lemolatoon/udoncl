@@ -21,14 +21,13 @@ using namespace mlir;
 
 namespace vrc {
 namespace {
-// The surface of the UdonDNN large pointwise kernels: a Device buffer is a
-// texture of this width, and the fragment at (x, y) writes word
-// x + y * surfaceWidth. A fused kernel launches over the rows that hold the
-// elements of its root, so it fits every buffer that holds that tensor; a
-// bundle whose buffers are smaller than the 16 rows of the library kernels
-// still accepts it.
-constexpr int64_t surfaceWidth = 8192;
-constexpr int64_t maximumSurfaceWords = surfaceWidth * 16;
+// The gather surface: a Device buffer is a texture of this width, and the
+// fragment at (x, y) writes word x + y * surfaceWidth. A fused kernel launches
+// over the rows that hold the elements of its root, so it fits every buffer
+// that holds that tensor, also one smaller than the 16 rows of the library
+// kernels or taller than them.
+constexpr int64_t surfaceWidth = vrcgpu::gatherSurfaceExtent;
+constexpr int64_t maximumSurfaceWords = deviceSynthesizedSurfaceWords;
 
 constexpr StringLiteral carrierName = "udononnx_fused_kernels";
 
@@ -73,7 +72,8 @@ void structureKey(const DeviceFusion &fusion, ArrayRef<unsigned> leaves,
   llvm::interleave(shapeOf(graph, node.output), os, "x");
   os << ']';
   if (kind == DeviceFusionKind::Slice) {
-    DeviceSliceShape slice = *deviceSliceShape(graph, node);
+    DeviceSliceShape slice =
+        *deviceSliceShape(graph, node, DeviceKernelLimits::Synthesized);
     os << '{';
     llvm::interleaveComma(slice.starts, os);
     os << ';';
@@ -81,7 +81,9 @@ void structureKey(const DeviceFusion &fusion, ArrayRef<unsigned> leaves,
     os << '}';
   } else if (kind == DeviceFusionKind::Transpose) {
     os << '{';
-    llvm::interleaveComma(*deviceTransposePermutation(graph, node), os);
+    llvm::interleaveComma(*deviceTransposePermutation(
+                              graph, node, DeviceKernelLimits::Synthesized),
+                          os);
     os << '}';
   } else if (kind == DeviceFusionKind::Concat) {
     os << '{' << concatAxis(graph, node) << '}';
@@ -707,7 +709,8 @@ private:
       result = emitOperand(nodeIndex, 0, broadcast(map, input));
       break;
     case DeviceFusionKind::Slice: {
-      DeviceSliceShape slice = *deviceSliceShape(graph, node);
+      DeviceSliceShape slice =
+          *deviceSliceShape(graph, node, DeviceKernelLimits::Synthesized);
       std::string tag;
       llvm::raw_string_ostream os(tag);
       os << "slice";
@@ -726,8 +729,8 @@ private:
       break;
     }
     case DeviceFusionKind::Transpose: {
-      SmallVector<int64_t> permutation =
-          *deviceTransposePermutation(graph, node);
+      SmallVector<int64_t> permutation = *deviceTransposePermutation(
+          graph, node, DeviceKernelLimits::Synthesized);
       std::string tag;
       llvm::raw_string_ostream os(tag);
       os << "transpose";
@@ -770,12 +773,18 @@ private:
 FailureOr<DeviceFusionDispatch>
 DeviceFusionKernels::dispatch(unsigned rootNode) {
   const GraphRecord &graph = fusion.graph;
-  // A Softmax outside every group is a group of its own when it runs in two
-  // passes, which its library kernel cannot.
+  // A node outside every group is a group of its own when its library kernel
+  // cannot run it: a Softmax that runs in two passes, or a node beyond the
+  // limits of its library kernel.
   DeviceRowReduction schedule{0, 0};
   if (!fusion.isInterior(rootNode))
     schedule = deviceSoftmaxSchedule(graph, graph.nodes[rootNode]);
-  if (!fusion.isRoot(rootNode) && !schedule.chunks)
+  std::optional<DeviceFusionKind> kind =
+      deviceFusionKind(graph, graph.nodes[rootNode]);
+  if (fusion.isInterior(rootNode) || !kind ||
+      *kind == DeviceFusionKind::Alias ||
+      (!fusion.isRoot(rootNode) && !schedule.chunks &&
+       !isSynthesizedDeviceNode(graph, graph.nodes[rootNode])))
     return emitError(module.getLoc())
            << "ONNX Device fusion group of node " << rootNode
            << " is outside the fused kernel contract";
@@ -794,19 +803,6 @@ DeviceFusionKernels::dispatch(unsigned rootNode) {
       2 * deviceSoftmaxRows(graph, graph.nodes[rootNode])->rows() *
       schedule.chunks);
   return elementwise;
-}
-
-FailureOr<DeviceFusionDispatch>
-DeviceFusionKernels::dispatchAlone(unsigned node) {
-  const GraphRecord &graph = fusion.graph;
-  std::optional<DeviceFusionKind> kind =
-      deviceFusionKind(graph, graph.nodes[node]);
-  if (fusion.isRoot(node) || fusion.isInterior(node) || !kind ||
-      *kind == DeviceFusionKind::Alias || isDeviceFusionReduction(*kind))
-    return emitError(module.getLoc())
-           << "ONNX Device node " << node
-           << " is outside the fused kernel contract";
-  return synthesize(node, nullptr, nullptr, FusedKernelRole::Whole);
 }
 
 FailureOr<DeviceFusionDispatch>

@@ -36,7 +36,7 @@ class Renderer final : public FragmentRenderer {
   ComPtr<ID3D11Texture2D> target, staging;
   std::vector<ComPtr<ID3D11Texture2D>> inputs;
   std::vector<ComPtr<ID3D11ShaderResourceView>> inputViews;
-  uint32_t width = 1, height = 1, inputCount = 0;
+  uint32_t width = 1, height = 1, inputCount = 0, texelWords = 1;
   bool gather = false;
   ComPtr<ID3D11RenderTargetView> view;
   ComPtr<ID3D11Buffer> uniform;
@@ -44,11 +44,12 @@ class Renderer final : public FragmentRenderer {
 
 public:
   explicit Renderer(const std::string &path, uint32_t x = 0, uint32_t y = 1,
-                    uint32_t inputsRequested = 1)
+                    uint32_t inputsRequested = 1, uint32_t wordsPerTexel = 1)
       : width(x ? x : 1), height(y), inputCount(x ? inputsRequested : 0),
-        gather(x != 0) {
-    if (!height || uint64_t(width) * height > 131072 || inputCount > 13 ||
-        (gather && !inputCount))
+        texelWords(wordsPerTexel), gather(x != 0) {
+    if (!height || uint64_t(width) * height > vrc::vrcgpu::gatherMaxWords ||
+        inputCount > 13 || (gather && !inputCount) ||
+        (texelWords != 1 && texelWords != 4) || width % texelWords != 0)
       throw std::runtime_error("gather extent exceeds supported profile");
     D3D_FEATURE_LEVEL requested = D3D_FEATURE_LEVEL_11_0, actual;
     check(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0,
@@ -69,10 +70,11 @@ public:
                                      triangle->GetBufferSize(), nullptr,
                                      &vertex));
     D3D11_TEXTURE2D_DESC texture{};
-    texture.Width = width;
+    texture.Width = width / texelWords;
     texture.Height = height;
     texture.MipLevels = texture.ArraySize = 1;
-    texture.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    texture.Format = texelWords == 4 ? DXGI_FORMAT_R32G32B32A32_FLOAT
+                                     : DXGI_FORMAT_R8G8B8A8_UNORM;
     texture.SampleDesc.Count = 1;
     texture.BindFlags = D3D11_BIND_RENDER_TARGET;
     check(device->CreateTexture2D(&texture, nullptr, &target));
@@ -135,11 +137,13 @@ public:
       context->PSSetShaderResources(0, inputCount, views);
     }
     float clear[4]{1, 0, 1, 1};
-    context->ClearRenderTargetView(view.Get(), clear);
+    if (texelWords == 1)
+      context->ClearRenderTargetView(view.Get(), clear);
     ID3D11RenderTargetView *rt = view.Get();
     context->OMSetRenderTargets(1, &rt, nullptr);
     context->OMSetBlendState(nullptr, nullptr, 0xffffffff);
-    D3D11_VIEWPORT viewport{0, 0, float(width), float(height), 0, 1};
+    D3D11_VIEWPORT viewport{0, 0, float(width / texelWords), float(height),
+                            0, 1};
     context->RSSetViewports(1, &viewport);
     context->RSSetState(raster.Get());
     context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -169,8 +173,10 @@ createFragmentRenderer(const std::string &shader, const std::string &) {
 
 std::unique_ptr<FragmentRenderer>
 createGatherRenderer(const std::string &shader, const std::string &,
-                     uint32_t width, uint32_t height, uint32_t inputCount) {
+                     uint32_t width, uint32_t height, uint32_t inputCount,
+                     uint32_t texelWords) {
   if (!width || !height || uint64_t(width) * height < 1 || !inputCount)
     throw std::runtime_error("invalid gather extent");
-  return std::make_unique<Renderer>(shader, width, height, inputCount);
+  return std::make_unique<Renderer>(shader, width, height, inputCount,
+                                    texelWords);
 }
