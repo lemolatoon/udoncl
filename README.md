@@ -769,9 +769,11 @@ its `buffers` array (see below):
   them out of your U# API; otherwise each would become a public method named
   after its C symbol. Copy the list unchanged.
 
-The example's config also has a `buffers` array that lists the input, the
-output and the internal `onnx_device_buffer_*` entries; these entries are
-currently still required in the example's config but are being removed.
+You do not list buffers: the compiler derives every Device buffer of an ONNX
+Host from the model. The example's config keeps a `buffers` array with the
+two public buffers, `image` and `logits`, as a checked record of its U# API.
+If you list entries in your own config, each must match the derived buffer,
+or the build fails and names the derived value.
 
 #### 2. Build
 
@@ -1220,9 +1222,9 @@ with `string(JSON ...)`. Its keys are:
   `udon_onnx_binding_enqueue_advance_sequence_state` and
   `udon_onnx_binding_enqueue_reset_sequence_state`.
 
-The base config also has a `buffers` array with internal
-`onnx_device_buffer_*` entries; these are currently still required in the
-example's config but are being removed.
+The base config's `buffers` array lists the public buffers of the synthetic
+fixture; CMake drops it for the real model, whose buffers the compiler
+derives.
 
 #### 2. Build
 

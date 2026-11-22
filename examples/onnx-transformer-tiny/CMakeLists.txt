@@ -27,6 +27,10 @@ if(UDONCL_TINYLLAMA_ONNX_MODEL)
     INPUT_SHAPES
       attention_mask=1,4)
   file(READ "${CMAKE_CURRENT_SOURCE_DIR}/unity-library.json" real_unity_config)
+  # unity-library.json lists the public buffers of the synthetic fixture.
+  # The real model has other inputs and outputs; udonclc derives its
+  # buffers from the ONNX Host as it does for the fixture.
+  string(JSON real_unity_config REMOVE "${real_unity_config}" buffers)
   # The real model stores its Device buffers and weights as four words per
   # RGBA32 float texel (see docs/architecture/
   # udon-vrchat-shader-constraints.md); rgba8_unorm restores one word per

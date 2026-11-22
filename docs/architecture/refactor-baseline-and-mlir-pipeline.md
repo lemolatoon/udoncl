@@ -967,6 +967,47 @@ derives these entries; the Unity library config does not have to list them.
   Gather table shape that is not constant). Hand-written entries keep their
   config order ahead of the derived ones, which follow in id order.
 
+#### ONNX Host buffers
+
+A Unity library whose Host is an ONNX Host (`udoncl_add_onnx_host_library`,
+a Host module with `udoncl.onnx_binding`) does not list its Device buffers
+either: `udonclc --emit-unity-library-bundle` derives every `buffers` entry
+from the ONNX execution plan (`tools/vrccl/UnityOnnxBuffers.cpp`).
+
+- **When.** Right after the Device kernel entries and before the Device
+  libraries are imported, so the texture shape and row-pitch decisions of
+  the Device import see the buffers the artifact has.
+- **Ids and capacities.** Buffer id N is mutable handle N of the Host, with
+  the capacity `udoncl-plan-onnx-host-graph` planned for it
+  (`udoncl.mutable_handle_capacity`, `udoncl.mutable_buffer_bytes`); the
+  Host buffer plan of the user C Host (`--host-buffer-plan`) appends the
+  buffers that C allocates itself.
+- **Public buffers.** With `generate_onnx_public_buffers`, the ONNX inputs
+  and then the outputs, in graph order, are buffers 1 to P. Each takes its
+  name (the ONNX name with every character outside `[A-Za-z0-9_]` replaced
+  by `_`), element type, logical size, access and index from
+  `udoncl.onnx_binding`, and the generated U# transfer methods are named
+  after it (`TryWriteImage` and `StartReadLogits` for the MNIST example).
+  A public id therefore depends only on the graph's input and output order,
+  never on the internal buffers. Every other buffer is private and named
+  `private_<id>`; without the flag (the TinyLlama Conversation and Chat
+  Artifacts) every buffer is private. When the static Unity lowering
+  applies, the canonical layout it plans keeps these ids.
+- **Hand-written entries.** A config may still list buffers, but an entry
+  replaces nothing: it must name a buffer of the plan and agree with the
+  derived one in every field it sets (`byte_size`; for a public buffer also
+  `name`, `element_type`, `public_access`, `public_index`,
+  `logical_byte_size`). The name of a private buffer is not checked, since
+  the artifact calls it `private_<id>`. An id the plan does not have, a
+  different value, a public field on a private buffer, or a `width` or
+  `height` fails the build, naming the entry and the derived value, for
+  example `Unity library buffer 3 (onnx_device_buffer_3) declares byte_size
+  131072, but the ONNX execution plan derives 65536 for it; correct or
+  delete the entry`. The ONNX examples list only their public buffers, as a
+  checked record of their U# surface; the real TinyLlama configurations
+  drop the synthetic fixture's list, since that model has other inputs and
+  outputs.
+
 #### User OpenCL C kernels
 
 A Host C may also launch OpenCL C kernels of its own Device libraries

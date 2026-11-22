@@ -14,6 +14,7 @@
 #include "HostBufferPlan.h"
 #include "OpenCLUserKernels.h"
 #include "UnityDeviceKernels.h"
+#include "UnityOnnxBuffers.h"
 #include "mlir/Conversion/ControlFlowToSCF/ControlFlowToSCF.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Async/IR/Async.h"
@@ -526,25 +527,6 @@ bool hasAsyncExports(const json::Object &manifest) {
          });
 }
 
-std::string onnxPublicBufferName(StringRef name, bool output, int64_t index,
-                                 std::set<std::string> &used) {
-  std::string result;
-  result.reserve(name.size());
-  for (char character : name) {
-    bool valid = isAlnum(character) || character == '_';
-    result.push_back(valid ? character : '_');
-  }
-  if (result.empty() || !(isAlpha(result.front()) || result.front() == '_'))
-    result = "tensor_" + result;
-  if (used.insert(result).second)
-    return result;
-  result += output ? "_output_" : "_input_";
-  result += std::to_string(index);
-  if (!used.insert(result).second)
-    return {};
-  return result;
-}
-
 /// The texel format a config requests for its Device buffers (key `key`):
 /// `rgba8_unorm` (the default, one word per texel) or `rgba32_float`.
 FailureOr<std::string> configTexelFormat(const json::Object &config,
@@ -659,109 +641,6 @@ parseUnityBuffers(const json::Object &config) {
                       publicAccess ? publicAccess->str() : "", publicIndex});
   }
   return result;
-}
-
-LogicalResult generateOnnxPublicBufferConfig(ModuleOp module,
-                                             json::Object &config) {
-  bool exposePublicIo =
-      config.getBoolean("generate_onnx_public_buffers").value_or(false);
-  auto binding = module->getAttrOfType<DictionaryAttr>("udoncl.onnx_binding");
-  if (!binding) {
-    if (exposePublicIo)
-      module.emitError(
-          "generate_onnx_public_buffers requires ONNX binding metadata");
-    return exposePublicIo ? failure() : success();
-  }
-  auto inputs = binding ? binding.getAs<ArrayAttr>("inputs") : ArrayAttr();
-  auto outputs = binding ? binding.getAs<ArrayAttr>("outputs") : ArrayAttr();
-  if (!inputs || !outputs) {
-    module.emitError("ONNX binding has no input/output metadata");
-    return failure();
-  }
-
-  json::Array generated;
-  std::set<std::string> names;
-  std::map<int64_t, int64_t> publicBytes;
-  int64_t nextId = 1;
-  auto append = [&](ArrayAttr values, bool output) -> LogicalResult {
-    for (mlir::Attribute value : values) {
-      auto entry = dyn_cast<DictionaryAttr>(value);
-      auto index = entry ? entry.getAs<IntegerAttr>("index") : IntegerAttr();
-      auto name = entry ? entry.getAs<StringAttr>("name") : StringAttr();
-      auto dataType =
-          entry ? entry.getAs<StringAttr>("data_type") : StringAttr();
-      auto logicalBytes =
-          entry ? entry.getAs<IntegerAttr>("logical_bytes") : IntegerAttr();
-      auto capacityBytes =
-          entry ? entry.getAs<IntegerAttr>("capacity_bytes") : IntegerAttr();
-      if (!index || !name || !dataType || !logicalBytes || !capacityBytes ||
-          logicalBytes.getInt() < 0 || capacityBytes.getInt() <= 0 ||
-          logicalBytes.getInt() > capacityBytes.getInt() ||
-          (dataType.getValue() != "float32" && dataType.getValue() != "int32" &&
-           dataType.getValue() != "int64")) {
-        module.emitError("ONNX public tensor has an unsupported binding ABI");
-        return failure();
-      }
-      std::string bufferName =
-          onnxPublicBufferName(name.getValue(), output, index.getInt(), names);
-      if (bufferName.empty()) {
-        module.emitError("ONNX public tensor names are not uniquely mappable");
-        return failure();
-      }
-      int64_t id = nextId++;
-      publicBytes[id] = capacityBytes.getInt();
-      generated.push_back(json::Object{
-          {"id", id},
-          {"name", std::move(bufferName)},
-          {"byte_size", capacityBytes.getInt()},
-          {"logical_byte_size", logicalBytes.getInt()},
-          {"element_type", dataType.getValue()},
-          {"public_access", output ? "output" : "input"},
-          {"public_index", index.getInt()},
-      });
-    }
-    return success();
-  };
-  if (exposePublicIo)
-    if (failed(append(inputs, false)) || failed(append(outputs, true)))
-      return failure();
-
-  auto handleCapacity =
-      module->getAttrOfType<IntegerAttr>("udoncl.mutable_handle_capacity");
-  auto mutableBufferBytes =
-      module->getAttrOfType<DenseI64ArrayAttr>("udoncl.mutable_buffer_bytes");
-  if (!handleCapacity || !mutableBufferBytes ||
-      handleCapacity.getInt() !=
-          static_cast<int64_t>(mutableBufferBytes.size()) ||
-      handleCapacity.getInt() < nextId - 1) {
-    module.emitError("ONNX mutable handle capacity is inconsistent with I/O");
-    return failure();
-  }
-  for (int64_t id = 1; id <= handleCapacity.getInt(); ++id) {
-    int64_t allocationBytes = mutableBufferBytes.asArrayRef()[id - 1];
-    if (allocationBytes <= 0) {
-      module.emitError("generated ONNX buffer has a non-positive capacity");
-      return failure();
-    }
-    auto publicBuffer = publicBytes.find(id);
-    if (publicBuffer != publicBytes.end()) {
-      if (publicBuffer->second != allocationBytes) {
-        module.emitError() << "generated ONNX public buffer " << id
-                           << " has inconsistent physical capacity";
-        return failure();
-      }
-      continue;
-    }
-    std::string name = "private_" + std::to_string(id);
-    if (!names.insert(name).second) {
-      module.emitError("generated ONNX private buffer name collision");
-      return failure();
-    }
-    generated.push_back(json::Object{
-        {"id", id}, {"name", std::move(name)}, {"byte_size", allocationBytes}});
-  }
-  config["buffers"] = std::move(generated);
-  return success();
 }
 
 LogicalResult reconcileStaticUnityBuffers(OwningOpRef<ModuleOp> &ownedModule,
@@ -943,8 +822,8 @@ LogicalResult materializeCanonicalUnityBufferConfig(ModuleOp module,
         module.emitError("invalid public canonical Unity buffer layout entry");
         return failure();
       }
-      name = onnxPublicBufferName(publicName.getValue(), access == "output",
-                                  index.getInt(), names);
+      name = udoncl::onnxPublicBufferName(
+          publicName.getValue(), access == "output", index.getInt(), names);
       if (name.empty()) {
         module.emitError(
             "canonical Unity buffer names are not uniquely mappable");
@@ -3323,6 +3202,16 @@ int main(int argc, char **argv) {
         return 1;
       }
     }
+    // The Device buffers of an ONNX Host come from its execution plan and
+    // binding (UnityOnnxBuffers.h); the config's own entries are only checked
+    // against them. The Device import below takes its texture shape and row
+    // pitch decisions from these buffers.
+    phase("unity-buffers");
+    if (!hostBufferPlan.empty() &&
+        failed(udoncl::applyHostBufferPlan(*module, hostBufferPlan)))
+      return 1;
+    if (failed(udoncl::deriveOnnxUnityBuffers(*module, *unityConfig, errs())))
+      return 1;
     auto parsedBuffers = parseUnityBuffers(*unityConfig);
     if (failed(parsedBuffers))
       return 1;
@@ -3472,19 +3361,11 @@ int main(int argc, char **argv) {
       if (failed(kernelBindings.run(*module)) || failed(verify(*module)))
         return 1;
     }
-    if (!hostBufferPlan.empty() &&
-        failed(udoncl::applyHostBufferPlan(*module, hostBufferPlan)))
-      return 1;
-    if (failed(generateOnnxPublicBufferConfig(*module, *unityConfig)))
-      return 1;
-    auto generatedBuffers = parseUnityBuffers(*unityConfig);
-    if (failed(generatedBuffers))
-      return 1;
-    if (failed(reconcileStaticUnityBuffers(module, *generatedBuffers)))
+    if (failed(reconcileStaticUnityBuffers(module, unityBuffers)))
       return 1;
     if (failed(materializeCanonicalUnityBufferConfig(*module, *unityConfig)))
       return 1;
-    generatedBuffers = parseUnityBuffers(*unityConfig);
+    auto generatedBuffers = parseUnityBuffers(*unityConfig);
     if (failed(generatedBuffers))
       return 1;
     unityBuffers = std::move(*generatedBuffers);

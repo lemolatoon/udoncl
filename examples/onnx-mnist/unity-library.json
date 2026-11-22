@@ -23,22 +23,7 @@
     "udon_onnx_binding_dispose"
   ],
   "buffers": [
-    {"id": 1, "name": "input", "byte_size": 3136, "element_type": "float32", "public_access": "input"},
-    {"id": 2, "name": "output", "byte_size": 40, "element_type": "float32", "public_access": "output"},
-    {"id": 3, "name": "onnx_device_buffer_3", "byte_size": 65536},
-    {"id": 4, "name": "onnx_device_buffer_4", "byte_size": 65536},
-    {"id": 5, "name": "onnx_device_buffer_5", "byte_size": 65536},
-    {"id": 6, "name": "onnx_device_buffer_6", "byte_size": 65536},
-    {"id": 7, "name": "onnx_device_buffer_7", "byte_size": 65536},
-    {"id": 8, "name": "onnx_device_buffer_8", "byte_size": 65536},
-    {"id": 9, "name": "onnx_device_buffer_9", "byte_size": 65536},
-    {"id": 10, "name": "onnx_device_buffer_10", "byte_size": 65536},
-    {"id": 11, "name": "onnx_device_buffer_11", "byte_size": 65536},
-    {"id": 12, "name": "onnx_device_buffer_12", "byte_size": 65536},
-    {"id": 13, "name": "onnx_device_buffer_13", "byte_size": 65536},
-    {"id": 14, "name": "onnx_device_buffer_14", "byte_size": 65536},
-    {"id": 15, "name": "onnx_device_buffer_15", "byte_size": 65536},
-    {"id": 16, "name": "onnx_device_buffer_16", "byte_size": 65536},
-    {"id": 17, "name": "onnx_device_buffer_17", "byte_size": 65536}
+    {"id": 1, "name": "image", "byte_size": 3136, "element_type": "float32", "public_access": "input"},
+    {"id": 2, "name": "logits", "byte_size": 40, "element_type": "float32", "public_access": "output"}
   ]
 }

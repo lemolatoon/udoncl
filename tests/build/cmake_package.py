@@ -504,14 +504,6 @@ def main():
             'parameters': [],
         },
     ]
-    probe['buffers'] = [
-        {
-            'id': index,
-            'name': f'onnx_device_buffer_{index}',
-            'byte_size': 65536,
-        }
-        for index in range(1, 16)
-    ]
     (onnx_source / 'probe.json').write_text(
         json.dumps(probe, indent=2) + '\n', encoding='utf-8')
     (onnx_source / 'CMakeLists.txt').write_text(
@@ -623,7 +615,12 @@ def main():
     configured_mnist = json.loads(
         (onnx_mnist_source / 'unity-library.json').read_text(encoding='utf-8')
     )
-    assert len(configured_mnist['buffers']) == 17
+    # The config lists only the public buffers; udonclc derives the
+    # internal ones from the ONNX execution plan.
+    assert [
+        (buffer['id'], buffer['name'], buffer['public_access'])
+        for buffer in configured_mnist['buffers']
+    ] == [(1, 'image', 'input'), (2, 'logits', 'output')]
     run([
         args.cmake,
         '-S', onnx_mnist_source,
@@ -1204,7 +1201,11 @@ def main():
             encoding='utf-8'
         )
     )
-    assert len(configured_transformer['buffers']) == 37
+    assert [
+        buffer['id'] for buffer in configured_transformer['buffers']
+        if 'public_access' in buffer
+    ] == list(range(1, 7))
+    assert len(configured_transformer['buffers']) == 6
     run([
         args.cmake,
         '-S', onnx_transformer_source,

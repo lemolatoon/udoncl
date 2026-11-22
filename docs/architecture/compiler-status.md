@@ -40,7 +40,10 @@ Gates and evidence are recorded in [validation.md](../validation.md).
   UdonONNXOperators kernels, and from the `clEnqueueNDRangeKernel` launches
   for the user OpenCL C kernels the linked runtime numbers from 1024. A
   hand-written entry replaces the derived one of its `kernel_id`. The
-  `examples/saxpy` Host C launches its OpenCL C kernel this way.
+  `examples/saxpy` Host C launches its OpenCL C kernel this way. For an ONNX
+  Host the config does not declare the Device buffers either: udonclc derives
+  them from the ONNX execution plan and binding, and checks any `buffers`
+  entry a config still lists against them.
 - ONNX models compile through the C++ ONNX-dialect path.
   `udoncl_add_onnx_host_library` runs `scripts/compile_onnx_mlir.py` with the
   repository ONNX frontend on the pinned ONNX-MLIR SDK, specializes the model
