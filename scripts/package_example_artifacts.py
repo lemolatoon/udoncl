@@ -19,6 +19,13 @@ DEFAULT_SAXPY = (
     ROOT
     / "build/udoncl/tests/cmake-package/saxpy-consumer/udoncl/saxpy-unity-library/artifact"
 )
+DEFAULT_MNIST = (
+    ROOT / "build/udoncl/tests/cmake-package/onnx-mnist-consumer/udoncl/onnx-mnist/artifact"
+)
+# Intermediate MLIR is a compiler diagnostic, not an input of the Unity
+# importer. Packaged examples drop it exactly like OMIT_INTERMEDIATE_IR does:
+# the top-level .mlir files and the program keys that name them.
+INTERMEDIATE_IR_PROGRAM_KEYS = ("ir", "async_ir", "udon_async_ir")
 
 
 def require_artifact(source: Path) -> None:
@@ -39,10 +46,14 @@ def archive_bytes(source: Path, program_name: str) -> bytes:
             if path.is_symlink():
                 raise SystemExit(f"example artifact contains a symlink: {path}")
             relative = path.relative_to(source).as_posix()
+            if "/" not in relative and relative.endswith(".mlir"):
+                continue
             data = path.read_bytes()
             if relative == "manifest.json":
                 manifest = json.loads(data.decode("utf-8"))
                 manifest["program"]["name"] = program_name
+                for key in INTERMEDIATE_IR_PROGRAM_KEYS:
+                    manifest["program"].pop(key, None)
                 data = (json.dumps(manifest, indent=2) + "\n").encode("utf-8")
             info = zipfile.ZipInfo(relative, date_time=(1980, 1, 1, 0, 0, 0))
             info.compress_type = zipfile.ZIP_STORED
@@ -70,6 +81,7 @@ def main() -> None:
     parser.add_argument("--arena", type=Path, default=DEFAULT_ARENA)
     parser.add_argument("--tiny", type=Path, default=DEFAULT_TINY)
     parser.add_argument("--saxpy", type=Path, default=DEFAULT_SAXPY)
+    parser.add_argument("--mnist", type=Path, default=DEFAULT_MNIST)
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args()
     publish(
@@ -88,6 +100,12 @@ def main() -> None:
         args.saxpy,
         PACKAGE_EXAMPLES / "saxpy.zip.bytes",
         "saxpy_demo",
+        args.check,
+    )
+    publish(
+        args.mnist,
+        PACKAGE_EXAMPLES / "onnx-mnist.zip.bytes",
+        "generic_onnx_mnist",
         args.check,
     )
     print("package_examples=valid" if args.check else "package_examples=updated")

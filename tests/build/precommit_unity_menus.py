@@ -22,4 +22,11 @@ assert standard.count(scene) == 1, standard
 source = (ROOT / "unity/Packages/com.lemolatoon.udoncl/Editor/"
           "UdonclPackagedExampleImporter.cs").read_text(encoding="utf-8")
 assert f'[MenuItem("{scene}")]' in source
+for menu in standard:
+    assert f'[MenuItem("{menu}")]' in source, menu
+# Package Samples compile against the bindings of the imported examples.
+samples = "Tools/udoncl/Internal/Prepare Package Sample Validation"
+assert standard.index(samples) > standard.index(
+    "Tools/udoncl/Internal/Prepare Packaged Example Validation"
+), standard
 print("precommit_unity_menus=passed")

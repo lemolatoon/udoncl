@@ -15,6 +15,12 @@ All notable changes to this package are recorded here.
 - One-click Editor import for the packaged C/OpenCL SAXPY artifact,
   including its generated typed U# binding and a ready-to-run U# controller
   attached to its binding prefab.
+- One-click Editor import for the packaged ONNX MNIST artifact built from
+  `examples/onnx-mnist`, with a U# controller that classifies a hand-drawn
+  digit through the generated binding.
+- C and OpenCL SAXPY, ONNX MNIST and TinyLlama Chat Package Samples whose U#
+  uses only the public generated bindings; the Editor gate compiles each one
+  to an Udon program.
 - Manifest-validated public buffer semantics and generated named typed U#
   WriteBuffer/ReadBuffer methods that do not expose physical buffer IDs.
 - Deferred scene placement for C/OpenCL binding prefabs after their generated

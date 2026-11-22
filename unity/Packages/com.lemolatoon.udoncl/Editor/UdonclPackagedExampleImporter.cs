@@ -10,6 +10,7 @@ namespace Lemolatoon.Udoncl.Editor
     internal static class UdonclPackagedExampleImporter
     {
         private const string ArenaArchive = "onnx-arena-add.zip.bytes";
+        private const string MnistArchive = "onnx-mnist.zip.bytes";
         private const string SaxpyArchive = "saxpy.zip.bytes";
         private const string TinyArchive = "onnx-tiny-llama.zip.bytes";
         private const string MnistControllerTemplate = "generic-onnx-mnist-test-controller.cs.txt";
@@ -32,11 +33,20 @@ namespace Lemolatoon.Udoncl.Editor
             "tinyllama-multi-turn-chat-test-controller.cs.txt";
         private const string MultiTurnChatLifecycleTestTemplate =
             "tinyllama-multi-turn-chat-lifecycle-test.cs.txt";
+        private const string SampleValidationRoot = "Assets/UdonclSampleValidation";
+        private const string TinyLlamaChatSample = "TinyLlama Chat";
+        private const string TinyLlamaChatBindingStub = "tinyllama-chat-binding.cs.txt";
 
         [MenuItem("Tools/udoncl/Examples/Import C and OpenCL SAXPY")]
         private static void ImportSaxpy()
         {
             Import(SaxpyArchive);
+        }
+
+        [MenuItem("Tools/udoncl/Examples/Import ONNX MNIST")]
+        private static void ImportMnist()
+        {
+            Import(MnistArchive);
         }
 
         [MenuItem("Tools/udoncl/Examples/Import ONNX Arena Add")]
@@ -59,6 +69,22 @@ namespace Lemolatoon.Udoncl.Editor
                     "Packaged example validation setup is batchmode-only."
                 );
             PrepareValidationExample(SaxpyArchive, "saxpy_demo");
+            // Prepare Public MNIST Validation already imported the CMake
+            // artifact the MNIST archive is packaged from (scripts/precommit.py
+            // checks that the archive is current), so only its controller is
+            // added there; a fresh project imports the archive itself.
+            const string mnistRoot = "Assets/udoncl-generated/generic_onnx_mnist";
+            if (AssetDatabase.IsValidFolder(mnistRoot))
+            {
+                if (string.IsNullOrEmpty(InstallUsageExample(mnistRoot)))
+                    throw new InvalidOperationException(
+                        "Packaged example did not generate its U# controller: generic_onnx_mnist"
+                    );
+            }
+            else
+            {
+                PrepareValidationExample(MnistArchive, "generic_onnx_mnist");
+            }
             EnsureValidationSceneSaved();
             AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
         }
@@ -357,6 +383,9 @@ namespace Lemolatoon.Udoncl.Editor
                 editorRoot + "/PublicTinyLlamaMultiTurnChatLifecycleTests.cs",
                 true
             );
+            // The TinyLlama Chat Package Sample compiles against the binding
+            // generated for this artifact.
+            CopyPackageSamples(package.resolvedPath, TinyLlamaChatSample, validationRoot);
             File.WriteAllText(
                 editorRoot + "/Udoncl.TinyLlama.Chat.Focused.Tests.asmdef",
                 "{\n"
@@ -519,6 +548,76 @@ namespace Lemolatoon.Udoncl.Editor
             UnityEditor.Compilation.CompilationPipeline.RequestScriptCompilation();
         }
 
+        [MenuItem("Tools/udoncl/Internal/Prepare Package Sample Validation")]
+        public static void PreparePackageSampleValidation()
+        {
+            if (!Application.isBatchMode)
+                throw new InvalidOperationException(
+                    "Package sample validation setup is batchmode-only."
+                );
+            UnityEditor.PackageManager.PackageInfo package =
+                UnityEditor.PackageManager.PackageInfo.FindForAssembly(
+                    typeof(UdonclPackagedExampleImporter).Assembly
+                );
+            if (package == null || string.IsNullOrEmpty(package.resolvedPath))
+                throw new InvalidOperationException(
+                    "Could not resolve the installed UdonCL package."
+                );
+            // Samples use the bindings of imported artifacts, so they are
+            // copied after Prepare Public MNIST Validation and Prepare
+            // Packaged Example Validation imported MNIST and SAXPY.
+            CopyPackageSamples(package.resolvedPath, null, SampleValidationRoot);
+            // The TinyLlama Chat Artifact needs the real model. Without it,
+            // the sample compiles against the public API of its binding.
+            if (!AssetDatabase.IsValidFolder("Assets/udoncl-generated/tinyllama_real_chat"))
+                File.Copy(
+                    Path.Combine(
+                        package.resolvedPath,
+                        "Tests",
+                        "Editor",
+                        "Fixtures",
+                        TinyLlamaChatBindingStub
+                    ),
+                    SampleValidationRoot + "/UdonclTinyLlamaChatBinding.cs",
+                    true
+                );
+            AssetDatabase.ImportAsset(
+                SampleValidationRoot,
+                ImportAssetOptions.ForceSynchronousImport | ImportAssetOptions.ForceUpdate
+            );
+            AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+            UnityEditor.Compilation.CompilationPipeline.RequestScriptCompilation();
+        }
+
+        // Copies the U# scripts of one Package Sample, or of all of them when
+        // sampleName is null, flat into destination.
+        private static void CopyPackageSamples(
+            string packageRoot,
+            string sampleName,
+            string destination
+        )
+        {
+            string samples = Path.Combine(packageRoot, "Samples~");
+            if (sampleName != null)
+                samples = Path.Combine(samples, sampleName);
+            string[] sources = Directory.GetFiles(samples, "*.cs", SearchOption.AllDirectories);
+            if (sources.Length == 0)
+                throw new InvalidDataException(
+                    "The UdonCL package sample has no scripts: " + samples
+                );
+            Array.Sort(sources, StringComparer.Ordinal);
+            Directory.CreateDirectory(destination);
+            foreach (string source in sources)
+            {
+                string target = destination + "/" + Path.GetFileName(source);
+                if (File.Exists(target))
+                    throw new InvalidDataException(
+                        "Duplicate UdonCL package sample script name: " + Path.GetFileName(source)
+                    );
+                File.Copy(source, target);
+            }
+        }
+
         [MenuItem("Tools/udoncl/Internal/Prepare Public MNIST Controller Validation")]
         public static void PreparePublicMnistControllerValidation()
         {
@@ -572,6 +671,7 @@ namespace Lemolatoon.Udoncl.Editor
         {
             if (
                 archiveName != ArenaArchive
+                && archiveName != MnistArchive
                 && archiveName != SaxpyArchive
                 && archiveName != TinyArchive
             )

@@ -18,6 +18,21 @@
   },
   "samples": [
     {
+      "displayName": "C and OpenCL SAXPY",
+      "description": "Call a Host C export that launches an OpenCL C kernel, then read its result back from U#.",
+      "path": "Samples~/C and OpenCL SAXPY"
+    },
+    {
+      "displayName": "ONNX MNIST",
+      "description": "Classify a hand-drawn digit with the MNIST CNN ONNX model through its generated U# binding.",
+      "path": "Samples~/ONNX MNIST"
+    },
+    {
+      "displayName": "TinyLlama Chat",
+      "description": "Chat with TinyLlama-1.1B through a user-built 4096-token Chat Artifact and stream its replies.",
+      "path": "Samples~/TinyLlama Chat"
+    },
+    {
       "displayName": "ONNX Arena Add",
       "description": "Generate, import, and call a standard ONNX Add graph from U#.",
       "path": "Samples~/ONNX Arena Add"

@@ -61,6 +61,7 @@ def validate(package: Path) -> dict:
         "LICENSE.md",
         "Editor/Udoncl.Editor.asmdef",
         "Editor/Examples/onnx-arena-add.zip.bytes",
+        "Editor/Examples/onnx-mnist.zip.bytes",
         "Editor/Examples/onnx-tiny-llama.zip.bytes",
         "Editor/Examples/saxpy.zip.bytes",
         "Runtime/Udoncl.Runtime.asmdef",
@@ -75,6 +76,19 @@ def validate(package: Path) -> dict:
         and "guid: 36e72c97d34c4a489d882db18bbdf480" in runtime_usharp,
         "Runtime assembly is not registered as an UdonSharp assembly",
     )
+    samples = {sample.get("path") for sample in manifest.get("samples", [])}
+    for sample, script in (
+        ("C and OpenCL SAXPY", "SaxpyCaller.cs"),
+        ("ONNX MNIST", "MnistClassifier.cs"),
+        ("TinyLlama Chat", "TinyLlamaChat.cs"),
+    ):
+        relative = f"Samples~/{sample}"
+        require(relative in samples, f"package.json does not declare the {sample} sample")
+        require((package / relative / script).is_file(), f"sample script is missing: {script}")
+        require(
+            (package / relative / "README.md").is_file(),
+            f"sample README is missing: {relative}",
+        )
     for relative in (
         "Samples~/ONNX Arena Add/UdonOnnxArenaAddExample.cs",
         "Samples~/ONNX Tiny Llama/UdonOnnxTinyLlamaExample.cs",

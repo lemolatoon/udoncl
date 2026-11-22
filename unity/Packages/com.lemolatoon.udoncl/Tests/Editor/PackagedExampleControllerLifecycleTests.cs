@@ -12,6 +12,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
     public sealed class PackagedExampleControllerLifecycleTests
     {
         private const string SaxpyRoot = "Assets/udoncl-generated/saxpy_demo";
+        private const string MnistRoot = "Assets/udoncl-generated/generic_onnx_mnist";
         private const string UdonBlasRoot = "Assets/udoncl-generated/udonblas_sgemm_m1n10k144";
         private const string GeneratedNamespace = "Lemolatoon.Udoncl.Generated.";
 
@@ -21,8 +22,14 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             if (Environment.GetEnvironmentVariable("UDONCL_PACKAGED_EXAMPLE_VALIDATION") != "1")
                 return;
             EnsureCompiledPrograms(SaxpyRoot, "UdonclSaxpyDemoBinding", "UdonclSaxpyDemoExample");
+            EnsureCompiledPrograms(
+                MnistRoot,
+                "UdonclGenericOnnxMnistBinding",
+                "UdonclGenericOnnxMnistExample"
+            );
             GeneratedBindingFinalizer.FinalizeAvailableBindings();
             Assert.NotNull(LoadPrefab(SaxpyRoot, "UdonclSaxpyDemoBinding"));
+            Assert.NotNull(LoadPrefab(MnistRoot, "UdonclGenericOnnxMnistBinding"));
         }
 
         [OneTimeSetUp]
@@ -48,6 +55,11 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 LoadPrefab(SaxpyRoot, "UdonclSaxpyDemoBinding"),
                 "UdonclSaxpyDemoBinding",
                 "UdonclSaxpyDemoExample"
+            );
+            AssertControllerBinding(
+                LoadPrefab(MnistRoot, "UdonclGenericOnnxMnistBinding"),
+                "UdonclGenericOnnxMnistBinding",
+                "UdonclGenericOnnxMnistExample"
             );
         }
 
@@ -107,6 +119,59 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             );
             Assert.AreEqual(0, saxpyStatus);
             Assert.AreEqual(102.0f, saxpyResult, 0.0001f);
+        }
+
+        [UnityTest]
+        public IEnumerator ImportedMnistControllerClassifiesThroughPublicApi()
+        {
+            if (Environment.GetEnvironmentVariable("UDONCL_PACKAGED_EXAMPLE_VALIDATION") != "1")
+                yield break;
+
+            yield return new EnterPlayMode();
+            GameObject instance = UnityEngine.Object.Instantiate(
+                LoadPrefab(MnistRoot, "UdonclGenericOnnxMnistBinding")
+            );
+            UdonclArtifactImporter.InitializeUdonBehaviours(instance);
+            yield return null;
+
+            UdonBehaviour controller = UdonclArtifactImporter.FindUdonSharpBacking(
+                instance,
+                GeneratedNamespace + "UdonclGenericOnnxMnistExample"
+            );
+            Assert.NotNull(controller);
+            AssertRuntimeBinding(instance, controller, "UdonclGenericOnnxMnistBinding");
+
+            // The packaged controller classifies its hand-drawn seven: it
+            // initializes the session, uploads the image, runs the model and
+            // reads the logits back through the generated binding.
+            const int timeoutFrames = 1200;
+            UdonclArtifactImporter.SendUdonCustomEvent(controller, "Run");
+            int frame = 0;
+            int predicted = -1;
+            int status = 0;
+            while (frame < timeoutFrames && predicted < 0 && status == 0)
+            {
+                ++frame;
+                yield return null;
+                predicted = (int)
+                    UdonclArtifactImporter.GetUdonProgramVariable(controller, "predictedDigit");
+                status = (int)UdonclArtifactImporter.GetUdonProgramVariable(controller, "status");
+            }
+            int libraryStatus = (int)
+                UdonclArtifactImporter.GetUdonProgramVariable(controller, "libraryStatus");
+            yield return new ExitPlayMode();
+
+            Assert.Less(
+                frame,
+                timeoutFrames,
+                "MNIST classification timed out; status="
+                    + status
+                    + "; libraryStatus="
+                    + libraryStatus
+            );
+            Assert.AreEqual(0, status);
+            Assert.AreEqual(0, libraryStatus);
+            Assert.AreEqual(7, predicted);
         }
 
         [UnityTest]

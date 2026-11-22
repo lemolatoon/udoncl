@@ -682,6 +682,8 @@ STANDARD_FIXTURE_MENUS = (
     "Tools/udoncl/Internal/Prepare Public Tokenizer Validation",
     "Tools/udoncl/Internal/Prepare Public MNIST Controller Validation",
     "Tools/udoncl/Internal/Prepare Packaged Example Validation",
+    # After the packaged examples: Package Samples use their bindings.
+    "Tools/udoncl/Internal/Prepare Package Sample Validation",
 )
 ENSURE_VALIDATION_SCENE_MENU = "Tools/udoncl/Internal/Ensure Validation Scene Saved"
 
@@ -751,6 +753,8 @@ def run_unity_mcp_gate(
             "--saxpy",
             build
             / "tests/cmake-package/saxpy-consumer/udoncl/saxpy-unity-library/artifact",
+            "--mnist",
+            build / "tests/cmake-package/onnx-mnist-consumer/udoncl/onnx-mnist/artifact",
             "--check",
             ],
             cwd=root,
@@ -923,20 +927,6 @@ def run_unity_mcp_gate(
     passed = 0
     failure = None
     try:
-        if prepare_standard_fixtures:
-            sample_validation.mkdir()
-            sample_sources = sorted(
-                (
-                    root / "unity/Packages/com.lemolatoon.udoncl/Samples~"
-                ).rglob("*.cs")
-            )
-            if not sample_sources:
-                raise RuntimeError("Unity package contains no sample scripts")
-            for source in sample_sources:
-                destination = sample_validation / source.name
-                if destination.exists():
-                    raise RuntimeError(f"duplicate Unity sample script name: {source.name}")
-                shutil.copy2(source, destination)
         unity_command = [
             unity,
             "-batchmode",

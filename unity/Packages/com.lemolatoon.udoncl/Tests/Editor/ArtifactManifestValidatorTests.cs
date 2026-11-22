@@ -481,6 +481,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         }
 
         [TestCase("saxpy.zip.bytes", "saxpy_demo", "unity-udoncl-library", 1)]
+        [TestCase("onnx-mnist.zip.bytes", "generic_onnx_mnist", "unity-udoncl-library", 5)]
         [TestCase("onnx-arena-add.zip.bytes", "onnx_arena_add_example", "unity-udon-onnx-model", 1)]
         [TestCase(
             "onnx-tiny-llama.zip.bytes",
@@ -529,6 +530,43 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             StringAssert.Contains("binding.GetRunSaxpyStatus()", usage.Source);
             StringAssert.Contains("binding.TryGetRunSaxpyResult(out openclStatus)", usage.Source);
             StringAssert.Contains("binding.StartReadResult(result", usage.Source);
+            StringAssert.DoesNotContain("SetProgramVariable", usage.Source);
+        }
+
+        [Test]
+        public void PackagedMnistArchiveOmitsIntermediateIr()
+        {
+            string extracted = UdonclPackagedExampleImporter.Extract("onnx-mnist.zip.bytes");
+            try
+            {
+                Assert.IsEmpty(Directory.GetFiles(extracted, "*.mlir"));
+                Assert.IsTrue(File.Exists(Path.Combine(extracted, "binding.cs")));
+                string manifest = File.ReadAllText(Path.Combine(extracted, "manifest.json"));
+                StringAssert.DoesNotContain(".mlir", manifest);
+            }
+            finally
+            {
+                Directory.Delete(extracted, true);
+            }
+        }
+
+        [Test]
+        public void PackagedMnistUsageClassifiesThroughGeneratedBinding()
+        {
+            PackagedExampleUsage usage = PackagedExampleUsageGenerator.ForProgram(
+                "generic_onnx_mnist"
+            );
+            Assert.NotNull(usage);
+            Assert.AreEqual("UdonclGenericOnnxMnistExample", usage.ClassName);
+            StringAssert.Contains("binding.StartInitialize(this", usage.Source);
+            StringAssert.Contains(
+                "binding.TryGetInitializeResult(out libraryStatus)",
+                usage.Source
+            );
+            StringAssert.Contains("binding.TryWriteImage(image)", usage.Source);
+            StringAssert.Contains("binding.StartRun(this", usage.Source);
+            StringAssert.Contains("binding.TryGetRunResult(out libraryStatus)", usage.Source);
+            StringAssert.Contains("binding.StartReadLogits(logits, this", usage.Source);
             StringAssert.DoesNotContain("SetProgramVariable", usage.Source);
         }
 

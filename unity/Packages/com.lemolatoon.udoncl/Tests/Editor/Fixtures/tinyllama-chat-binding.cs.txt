@@ -1,0 +1,245 @@
+// Compile-only stand-in for the U# binding that udonclc generates for the
+// TinyLlama Chat Artifact (program tinyllama_real_chat, the 512- and
+// 4096-token targets of examples/onnx-transformer-tiny). The Editor gate
+// compiles the TinyLlama Chat Package Sample against this public API
+// without the real model; the real-TinyLlama gate compiles the sample
+// against the generated binding itself. Every call reports
+// StatusNotInitialized.
+using UdonSharp;
+using UnityEngine;
+using VRC.Udon;
+
+namespace Lemolatoon.Udoncl.Generated
+{
+    public sealed class UdonclTinyLlamaChatBinding : UdonSharpBehaviour
+    {
+        public const int StatusSuccess = 0;
+        public const int StatusNotInitialized = -1;
+        public const int StatusBusy = -2;
+        public const int StatusInvalidArgument = -3;
+        public const int StatusAbiMismatch = -4;
+        public const int StatusExecutionFailure = -5;
+        public const int StatusDisposed = -6;
+        public const int AsyncDiagnosticNone = 0;
+        public const int AsyncDiagnosticMissingCommandState = 1;
+        public const int AsyncDiagnosticInconsistentIdleState = 2;
+        public const int AsyncDiagnosticMissingCommandPayload = 3;
+        public const int AsyncDiagnosticUnknownCommandKind = 4;
+        public const int AsyncDiagnosticMissingExportStatus = 5;
+        public const int AsyncDiagnosticMissingExportResult = 6;
+        public const int AsyncDiagnosticUnknownExport = 7;
+        public const int AsyncFrameBudgetMicroseconds = 8000;
+        public const int AsyncFrameContinuationLimit = 1000000;
+        public const int AsyncFrameSettingMaximum = 1000000;
+
+        public int TryBindProgram(UdonBehaviour value)
+        {
+            return StatusNotInitialized;
+        }
+
+        public bool IsInitialized()
+        {
+            return false;
+        }
+
+        public int TryDispose()
+        {
+            return StatusNotInitialized;
+        }
+
+        public int TryShutdown(out int result)
+        {
+            result = 0;
+            return StatusNotInitialized;
+        }
+
+        public int StartGenerate(int maxNewTokens, UdonSharpBehaviour receiver, string completionEvent)
+        {
+            return StatusNotInitialized;
+        }
+
+        public int GetGenerateStatus()
+        {
+            return StatusNotInitialized;
+        }
+
+        public int TryGetGenerateResult(out int result)
+        {
+            result = 0;
+            return StatusNotInitialized;
+        }
+
+        public int TryContinueChatTurn(string userText, int maxWork, out int result)
+        {
+            result = 0;
+            return StatusNotInitialized;
+        }
+
+        public int TryLastTokenizerStatus(out int result)
+        {
+            result = 0;
+            return StatusNotInitialized;
+        }
+
+        public int TryPromptTokenCount(out int result)
+        {
+            result = 0;
+            return StatusNotInitialized;
+        }
+
+        public int TryReadStreamedText(int[] destination, int offset, int count, out int result)
+        {
+            result = 0;
+            return StatusNotInitialized;
+        }
+
+        public int TrySetChatPrompt(string systemText, string userText, out int result)
+        {
+            result = 0;
+            return StatusNotInitialized;
+        }
+
+        public int StartInitialize(UdonSharpBehaviour receiver, string completionEvent)
+        {
+            return StatusNotInitialized;
+        }
+
+        public int GetInitializeStatus()
+        {
+            return StatusNotInitialized;
+        }
+
+        public int TryGetInitializeResult(out int result)
+        {
+            result = 0;
+            return StatusNotInitialized;
+        }
+
+        public int TryBeginChatPrompt(out int result)
+        {
+            result = 0;
+            return StatusNotInitialized;
+        }
+
+        public int TryBeginChatTurn(out int result)
+        {
+            result = 0;
+            return StatusNotInitialized;
+        }
+
+        public int TryStreamedTextLength(out int result)
+        {
+            result = 0;
+            return StatusNotInitialized;
+        }
+
+        public int TryGeneratedTextLength(out int result)
+        {
+            result = 0;
+            return StatusNotInitialized;
+        }
+
+        public int TryReadGeneratedTokens(int[] destination, out int result)
+        {
+            result = 0;
+            return StatusNotInitialized;
+        }
+
+        public int TryReadGeneratedText(int[] destination, out int result)
+        {
+            result = 0;
+            return StatusNotInitialized;
+        }
+
+        public int StartResetChat(UdonSharpBehaviour receiver, string completionEvent)
+        {
+            return StatusNotInitialized;
+        }
+
+        public int GetResetChatStatus()
+        {
+            return StatusNotInitialized;
+        }
+
+        public int TryGetResetChatResult(out int result)
+        {
+            result = 0;
+            return StatusNotInitialized;
+        }
+
+        public int TryReadPromptTokens(int[] destination, out int result)
+        {
+            result = 0;
+            return StatusNotInitialized;
+        }
+
+        public int TryGeneratedTokenCount(out int result)
+        {
+            result = 0;
+            return StatusNotInitialized;
+        }
+
+        public int StartReset(UdonSharpBehaviour receiver, string completionEvent)
+        {
+            return StatusNotInitialized;
+        }
+
+        public int GetResetStatus()
+        {
+            return StatusNotInitialized;
+        }
+
+        public int TryGetResetResult(out int result)
+        {
+            result = 0;
+            return StatusNotInitialized;
+        }
+
+        public int TryChatPromptPending(out int result)
+        {
+            result = 0;
+            return StatusNotInitialized;
+        }
+
+        public int TryContinueChatPrompt(string systemText, string userText, int maxWork, out int result)
+        {
+            result = 0;
+            return StatusNotInitialized;
+        }
+
+        public int TrySetPromptTokens(int[] tokenIds, int tokenCount, out int result)
+        {
+            result = 0;
+            return StatusNotInitialized;
+        }
+
+        public int TrySetAsyncFrameBudget(int microseconds, int continuations)
+        {
+            return StatusNotInitialized;
+        }
+
+        public int GetAsyncFrameBudgetMicroseconds()
+        {
+            return StatusNotInitialized;
+        }
+
+        public int GetAsyncFrameContinuationLimit()
+        {
+            return StatusNotInitialized;
+        }
+
+        public void SetAsyncFrameAdaptive(bool enabled)
+        {
+        }
+
+        public bool IsAsyncFrameAdaptive()
+        {
+            return false;
+        }
+
+        public int GetLastAsyncDiagnostic()
+        {
+            return StatusNotInitialized;
+        }
+    }
+}
