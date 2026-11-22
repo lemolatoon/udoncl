@@ -98,7 +98,6 @@ install(FILES
   include/udoncl/array.h
   include/udoncl/string.h
   include/udoncl/udon_abi_layout.h
-  include/udoncl/unity_buffer.h
   include/udoncl/device_memory.h
   include/udoncl/onnx_binding_abi.h
   include/udoncl/onnx_generated_binding.h

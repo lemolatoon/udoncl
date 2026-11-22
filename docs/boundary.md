@@ -1,8 +1,7 @@
 # Small Host/Device boundary prototype
 
-The example in `examples/host-device-boundary/` implements both compiler paths
-against one shared contract. That original example uses prepared high-level MLIR. The
-[real C/OpenCL C example](../examples/c-boundary/README.md) now connects the
+The [C/OpenCL C boundary example](../examples/c-boundary/README.md)
+implements both compiler paths against one shared contract. It connects the
 restricted direct-output-pointer pattern through LLVM import and recovery.
 General OpenCL builtin/pointer raising remains pending.
 
@@ -21,11 +20,9 @@ accepts a restricted single-block scalar subset and rejects recursion/suspension
 
 Run the commands in
 [architecture/compiler-status.md](architecture/compiler-status.md#hostdevice-boundary-bundle)
-to emit a bundle. The equivalent MLIR pipeline is:
-
-```text
-build/udoncl/tools/vrc-opt/udoncl-opt --pass-pipeline="builtin.module(vrc-lower-host-to-udonhl,vrc-substitute-runtime-intrinsics,vrc-lower-device-single-invocation,vrc-verify-host-device)" --verify-each examples/host-device-boundary/probe.mlir -o build/boundary-lowered.mlir
-```
+to emit a bundle. After recovery, the compiler lowers the linked modules with
+`vrc-lower-host-to-udonhl`, `vrc-substitute-runtime-intrinsics`,
+`vrc-lower-device-single-invocation`, and `vrc-verify-host-device`.
 
 `vrc-verify-host-device` requires all three preceding stages. It checks kernel
 IDs, argument kinds, resource count/order and global/local/offset dimensions.
@@ -57,11 +54,11 @@ directory, then renames it into place. Identical bundles can be reused. Existing
 different output is refused. Files use UTF-8/LF; Windows paths in request checks
 are handled explicitly. Windows compilation/execution still requires CI evidence.
 
-Tests cover stage ordering, symbol verification, parse/print stability, paired
-contract mismatches, request mutations, deterministic output and refusal to
-clobber existing assets. If glslangValidator and spirv-val are installed, two
-standalone HLSL fragments are compiled and validated. This does not validate
-Unity ShaderLab import or demonstrate GPU execution.
+The `c-boundary-example` test covers recovery, source and contract
+rejections, request validation and deterministic output. If glslangValidator
+and spirv-val are installed, the standalone HLSL fragments are compiled and
+validated. This does not validate Unity ShaderLab import or demonstrate GPU
+execution.
 
 Next, connect the public Host ABI and `.uasm` emission to the same manifest,
 then implement the smallest runtime descriptor/upload/dispatch/readback path.
@@ -71,6 +68,5 @@ proofs and wider launches follow that working path.
 
 An ordinary [OpenCL Host C example](../examples/opencl-host/README.md) is now the
 default `make example`. It links a C OpenCL API runtime to the native renderer.
-The original boundary probe and its restricted production-shaped lowering remain
-available separately; the native OpenCL call adapter preserves native LLVM memory
-semantics and does not complete the pending Udon byte-memory recovery.
+The native OpenCL call adapter preserves native LLVM memory semantics and does
+not complete the pending Udon byte-memory recovery.

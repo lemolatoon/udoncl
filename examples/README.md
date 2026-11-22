@@ -22,10 +22,9 @@ are imported with **Tools → udoncl → Import Artifacts...**.
 
 | Example | User path | Result | Current boundary |
 | --- | --- | --- | --- |
-| [`hello-kernel`](hello-kernel/README.md) | User CMake Host C + OpenCL C | Generated U# binding and importable scalar/Device artifacts | Fixed AOT dispatch and buffer-copy subsets |
+| [`hello-kernel`](hello-kernel/README.md) | User CMake Host C + OpenCL C | Generated U# binding, importable scalar and tokenizer libraries, Device boundary artifact | Scalar Host exports; the Device kernel is not launched from Unity |
 | [`saxpy`](saxpy/README.md) | Standard OpenCL Host API + OpenCL C kernel on `UdonCL::OpenCLRuntime` | Asynchronous `UDONCL_EXPORT` method, two input vectors, GPU output, public Write/Read API | Fixed buffers; constant NDRange derived from the Host C |
 | [`onnx-arena-add`](onnx-arena-add/README.md) | Standard ONNX `Add` | General ONNX runtime prefab plus importable U# Package Sample | One non-Pooling pointwise pass |
-| [`average-pooling`](average-pooling/README.md) | OpenCL C AveragePool | Public CMake package and generated U# binding | Ordinary 1D UdonCL kernel, independent of ONNX |
 | [`tiny-llama`](tiny-llama/README.md) | Standard ONNX small decoder | Importable 18-pass general-runtime artifact and U# Package Sample | CI-sized model, not pretrained 8B weights |
 | [`llama-8b-onnx`](llama-8b-onnx/README.md) | Licensed checkpoint + external Q4 weights | 546-operator plan and optional multi-gigabyte Unity artifact | Full materialization requires user-owned weights |
 | [`mnist-cnn`](mnist-cnn/README.md) | Trained CNN | Native and Device reference execution | General Unity ONNX Pooling path remains disabled |
@@ -39,9 +38,9 @@ caller component.
 
 To regenerate the artifact yourself instead, use the source workflow below.
 
-The same menu also provides **Import C and OpenCL Hello Dispatch** and **Import
-C and OpenCL SAXPY**. These exercise the public CMake/compiler artifact shape
-and generate typed U# binding prefabs after Unity reloads the imported wrapper.
+The same menu also provides **Import C and OpenCL SAXPY**. It exercises the
+public CMake/compiler artifact shape and generates a typed U# binding prefab
+after Unity reloads the imported wrapper.
 
 Generate the non-Pooling ONNX artifact:
 
@@ -59,20 +58,18 @@ Write/Run/asynchronous Read methods.
 ## C and OpenCL C consumer example
 
 Configure `hello-kernel` as an independent user project and build its
-importable Device dispatch artifact:
+importable scalar Host library:
 
 ```powershell
 cmake -S examples/hello-kernel -B build/hello-kernel-cmake -G Ninja `
   -DUdonCL_DIR="$PWD/cmake"
-cmake --build build/hello-kernel-cmake `
-  --target hello-dispatch-unity-library
+cmake --build build/hello-kernel-cmake --target hello-unity-library
 ```
 
-Import
-`build/hello-kernel-cmake/udoncl/hello-dispatch-unity-library/artifact`.
-The importer creates the Udon program, shader, material, fixed Device buffer,
-prefab, and typed U# binding. See the example README for scalar, integer,
-buffer-copy, and individual CLI variants.
+Import `build/hello-kernel-cmake/udoncl/hello-unity-library/artifact`. The
+importer creates the Udon program and the typed U# binding. See the example
+README for the individual CLI steps, and [`saxpy`](saxpy/README.md) for a Host
+C that launches an OpenCL C kernel.
 
 ## Native and compiler-development examples
 

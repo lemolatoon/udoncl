@@ -1,14 +1,7 @@
 # Hello kernel: build an artifact by hand
 
-For a package-only first run, choose **Tools → udoncl → Examples → Import C
-and OpenCL Hello Dispatch**. Unity imports the same artifact shape described
-below and generates `UdonclHelloDispatchBinding.prefab` after script reload.
-Choose **Add after Compile** to place a linked instance in the active scene.
-The source workflow remains the reproducible way to edit the Host C and OpenCL
-C inputs yourself.
-
-The Device kernel computes
-`x * x + 1` and writes the result to its one-element output buffer. `host.c`
+The Device kernel computes `x * x + 1` and writes the result to its
+one-element output buffer. `host.c`
 contains both a matching scalar Host export and the restricted Host-to-Device
 dispatch request, so both halves of the current compiler boundary are visible.
 
@@ -25,8 +18,6 @@ cmake -S examples/hello-kernel -B build/hello-kernel-cmake -G Ninja `
   -DUdonCL_DIR="$PWD/cmake"
 cmake --build build/hello-kernel-cmake --target hello-artifact
 cmake --build build/hello-kernel-cmake --target hello-unity-library
-cmake --build build/hello-kernel-cmake --target hello-dispatch-unity-library
-cmake --build build/hello-kernel-cmake --target hello-int-dispatch-unity-library
 ```
 
 The bundle is generated under
@@ -38,34 +29,6 @@ library is under
 directory in **Tools → udoncl → Import Artifacts...**. Unity generates
 `UdonclHelloKernelBinding`, whose `SquarePlusOne(float value)` method calls the
 compiler-emitted Udon Assembly.
-
-The `hello-dispatch-unity-library` target compiles `dispatch.c` through the
-public Host C path and the normal multi-file `hello_device` targets named in
-`DEVICE_LIBRARIES`. It packages `square_plus_one` as
-`kernels/kernel_1.shader` and `.hlsl`, and exports `DispatchSquare(float)`.
-Import
-`build/hello-kernel-cmake/udoncl/hello-dispatch-unity-library/artifact` to call
-the generated Device kernel from the generated U# binding. The repository
-validation calls `DispatchSquare(3.0f)` through SDK IUdonVM and expects the
-one-float GPU output to be exactly `10.0f` after both import and reimport.
-The generated binding reads that public output with the named
-`StartReadOutput(float[], receiver, completionEvent)` method; the generic
-buffer-ID read methods remain available as a low-level escape hatch.
-
-This is deliberately a small AOT OpenCL 1.2 subset: one platform, one GPU
-device, one context and in-order queue, one fixed four-byte output buffer, a
-statically known program/kernel, buffer argument 0, copied f32 argument 1, and
-a one-work-item 1D enqueue. The calls must be direct and straight-line and
-must match `dispatch-library.json`. Runtime source compilation, dynamic
-NDRange sizes, other argument layouts, readback, and general handle lifetime
-remain compile errors rather than implicit fallbacks.
-
-`hello-int-dispatch-unity-library` exercises the same public path with an i32
-scalar and `square_plus_one_i32`. Its generated wrapper exports
-`DispatchSquareInt(int)`, the Udon program uses `Material.SetInteger`, and the
-HLSL/ShaderLab uniform is emitted as `int`/`Integer`. The output is still raw
-four-byte RGBA8 storage; i32 support does not imply a broader buffer or NDRange
-contract.
 
 A packaged compiler installation finds its tools beside the CMake package. The source-tree package
 also discovers the built `udonclc` and pinned `.deps/llvm23` tools. Explicit
@@ -79,29 +42,11 @@ and binds Point-filtered RenderTextures in the generated prefab. Helper calls mu
 continuation, or GPU-dispatch exports fail compilation instead of publishing a
 partly runnable Unity artifact.
 
-The second Unity target exercises the initial explicit Device-memory subset
-from C source:
-
-```powershell
-cmake --build build/hello-kernel-cmake --target hello-buffer-copy-unity-library
-```
-
-`buffer_copy.c` includes the installed `<CL/cl.h>`, creates one OpenCL 1.2
-platform/device/context/in-order queue sequence, allocates three fixed
-32,772-byte (8192×2 texel) buffers with `clCreateBuffer`, and copies source to
-intermediate and then intermediate to destination with
-`clEnqueueCopyBuffer`. The generated
-artifact is under
-`build/hello-kernel-cmake/udoncl/hello-buffer-copy-unity-library/artifact`.
-This restricted AOT bridge accepts direct context/queue/buffer flow in a
-straight-line setup function. Status-dependent cleanup/control flow, general
-`cl_mem` lifetime, release/reuse, upload/readback, and partial copy remain
-pending and are rejected rather than approximated.
-
 The compiler package installs the pinned Khronos OpenCL headers, so Host
-targets can include `<CL/cl.h>` without adding an include directory. The Unity
-lowering accepts the restricted sequence above; this is not general OpenCL Host
-API coverage.
+targets can include `<CL/cl.h>` without adding an include directory. A Host C
+that calls the OpenCL API links `UdonCL::OpenCLRuntime`, which launches its own
+OpenCL C kernels as well as the library kernels; see
+[`examples/saxpy`](../saxpy/README.md).
 
 ## Build by invoking each CLI
 
@@ -243,5 +188,6 @@ The command prints `Descriptor contract valid; no GPU dispatch executed`.
 
 This lower-level procedure produces Device and linked Host/Device boundary
 artifacts whose manifests have `ready_for_unity: false`; they remain useful for
-inspecting recovery. Use the CMake `hello-dispatch-unity-library` target above
-to run the same kernel through the restricted executable Unity path.
+inspecting recovery. To launch an OpenCL C kernel from Host C in Unity, write
+the Host against the standard OpenCL API and link `UdonCL::OpenCLRuntime`, as
+[`examples/saxpy`](../saxpy/README.md) does.

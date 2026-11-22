@@ -706,10 +706,10 @@ add_test(NAME llvm-memory-diagnostics
   COMMAND vrc-opt --vrc-raise-llvm-memory --split-input-file --verify-diagnostics
     "${CMAKE_CURRENT_SOURCE_DIR}/recovery/memory-invalid.mlir"
 )
-add_test(NAME host-device-boundary
-  COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/boundary/check.py"
+add_test(NAME host-runtime-lowering
+  COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/boundary/host_runtime.py"
     $<TARGET_FILE:vrc-opt> $<TARGET_FILE:vrccl>
-    "${PROJECT_BINARY_DIR}/tests/boundary"
+    "${PROJECT_BINARY_DIR}/tests/host-runtime"
 )
 add_test(NAME host-device-boundary-diagnostics
   COMMAND vrc-opt --split-input-file --verify-diagnostics

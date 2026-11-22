@@ -11,9 +11,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
 {
     public sealed class PackagedExampleControllerLifecycleTests
     {
-        private const string HelloRoot = "Assets/udoncl-generated/hello_dispatch";
         private const string SaxpyRoot = "Assets/udoncl-generated/saxpy_demo";
-        private const string PoolingRoot = "Assets/udoncl-generated/average_pooling";
         private const string UdonBlasRoot = "Assets/udoncl-generated/udonblas_sgemm_m1n10k144";
         private const string GeneratedNamespace = "Lemolatoon.Udoncl.Generated.";
 
@@ -22,21 +20,9 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         {
             if (Environment.GetEnvironmentVariable("UDONCL_PACKAGED_EXAMPLE_VALIDATION") != "1")
                 return;
-            EnsureCompiledPrograms(
-                HelloRoot,
-                "UdonclHelloDispatchBinding",
-                "UdonclHelloDispatchExample"
-            );
             EnsureCompiledPrograms(SaxpyRoot, "UdonclSaxpyDemoBinding", "UdonclSaxpyDemoExample");
-            EnsureCompiledPrograms(
-                PoolingRoot,
-                "UdonclAveragePoolingBinding",
-                "UdonclAveragePoolingExample"
-            );
             GeneratedBindingFinalizer.FinalizeAvailableBindings();
-            Assert.NotNull(LoadPrefab(HelloRoot, "UdonclHelloDispatchBinding"));
             Assert.NotNull(LoadPrefab(SaxpyRoot, "UdonclSaxpyDemoBinding"));
-            Assert.NotNull(LoadPrefab(PoolingRoot, "UdonclAveragePoolingBinding"));
         }
 
         [OneTimeSetUp]
@@ -59,19 +45,9 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             if (Environment.GetEnvironmentVariable("UDONCL_PACKAGED_EXAMPLE_VALIDATION") != "1")
                 return;
             AssertControllerBinding(
-                LoadPrefab(HelloRoot, "UdonclHelloDispatchBinding"),
-                "UdonclHelloDispatchBinding",
-                "UdonclHelloDispatchExample"
-            );
-            AssertControllerBinding(
                 LoadPrefab(SaxpyRoot, "UdonclSaxpyDemoBinding"),
                 "UdonclSaxpyDemoBinding",
                 "UdonclSaxpyDemoExample"
-            );
-            AssertControllerBinding(
-                LoadPrefab(PoolingRoot, "UdonclAveragePoolingBinding"),
-                "UdonclAveragePoolingBinding",
-                "UdonclAveragePoolingExample"
             );
         }
 
@@ -94,53 +70,22 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 yield break;
 
             yield return new EnterPlayMode();
-            GameObject hello = UnityEngine.Object.Instantiate(
-                LoadPrefab(HelloRoot, "UdonclHelloDispatchBinding")
-            );
             GameObject saxpy = UnityEngine.Object.Instantiate(
                 LoadPrefab(SaxpyRoot, "UdonclSaxpyDemoBinding")
             );
-            GameObject pooling = UnityEngine.Object.Instantiate(
-                LoadPrefab(PoolingRoot, "UdonclAveragePoolingBinding")
-            );
-            UdonclArtifactImporter.InitializeUdonBehaviours(hello);
             UdonclArtifactImporter.InitializeUdonBehaviours(saxpy);
-            UdonclArtifactImporter.InitializeUdonBehaviours(pooling);
             yield return null;
 
-            UdonBehaviour helloController = UdonclArtifactImporter.FindUdonSharpBacking(
-                hello,
-                GeneratedNamespace + "UdonclHelloDispatchExample"
-            );
             UdonBehaviour saxpyController = UdonclArtifactImporter.FindUdonSharpBacking(
                 saxpy,
                 GeneratedNamespace + "UdonclSaxpyDemoExample"
             );
-            UdonBehaviour poolingController = UdonclArtifactImporter.FindUdonSharpBacking(
-                pooling,
-                GeneratedNamespace + "UdonclAveragePoolingExample"
-            );
-            Assert.NotNull(helloController);
             Assert.NotNull(saxpyController);
-            Assert.NotNull(poolingController);
-            AssertRuntimeBinding(hello, helloController, "UdonclHelloDispatchBinding");
             AssertRuntimeBinding(saxpy, saxpyController, "UdonclSaxpyDemoBinding");
-            AssertRuntimeBinding(pooling, poolingController, "UdonclAveragePoolingBinding");
 
             // RunSaxpy is an asynchronous export of a Host that includes the
             // OpenCL runtime, so it spans frames like the UdonBLAS example.
             const int timeoutFrames = 900;
-            UdonclArtifactImporter.SendUdonCustomEvent(helloController, "Run");
-            int helloFrame = 0;
-            float helloResult = 0.0f;
-            while (helloFrame < timeoutFrames && Math.Abs(helloResult - 10.0f) > 0.0001f)
-            {
-                ++helloFrame;
-                yield return null;
-                helloResult = (float)
-                    UdonclArtifactImporter.GetUdonProgramVariable(helloController, "result");
-            }
-
             UdonclArtifactImporter.SendUdonCustomEvent(saxpyController, "Run");
             int saxpyFrame = 0;
             float saxpyResult = 0.0f;
@@ -151,49 +96,17 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 saxpyResult = (float)
                     UdonclArtifactImporter.GetUdonProgramVariable(saxpyController, "firstResult");
             }
-
-            UdonclArtifactImporter.SendUdonCustomEvent(poolingController, "Run");
-            int poolingFrame = 0;
-            float poolingResult = 0.0f;
-            while (poolingFrame < timeoutFrames && Math.Abs(poolingResult - 87.5f) > 0.0001f)
-            {
-                ++poolingFrame;
-                yield return null;
-                poolingResult = (float)
-                    UdonclArtifactImporter.GetUdonProgramVariable(poolingController, "firstResult");
-            }
-            int helloStatus = (int)
-                UdonclArtifactImporter.GetUdonProgramVariable(helloController, "status");
             int saxpyStatus = (int)
                 UdonclArtifactImporter.GetUdonProgramVariable(saxpyController, "status");
-            int poolingStatus = (int)
-                UdonclArtifactImporter.GetUdonProgramVariable(poolingController, "status");
             yield return new ExitPlayMode();
 
-            Assert.Less(
-                helloFrame,
-                timeoutFrames,
-                "Hello readback timed out; status=" + helloStatus + "; result=" + helloResult
-            );
             Assert.Less(
                 saxpyFrame,
                 timeoutFrames,
                 "SAXPY readback timed out; status=" + saxpyStatus + "; result=" + saxpyResult
             );
-            Assert.Less(
-                poolingFrame,
-                timeoutFrames,
-                "Average pooling readback timed out; status="
-                    + poolingStatus
-                    + "; result="
-                    + poolingResult
-            );
-            Assert.AreEqual(0, helloStatus);
             Assert.AreEqual(0, saxpyStatus);
-            Assert.AreEqual(0, poolingStatus);
-            Assert.AreEqual(10.0f, helloResult, 0.0001f);
             Assert.AreEqual(102.0f, saxpyResult, 0.0001f);
-            Assert.AreEqual(87.5f, poolingResult, 0.0001f);
         }
 
         [UnityTest]

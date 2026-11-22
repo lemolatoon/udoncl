@@ -94,18 +94,18 @@ ONNX Pooling path.
 Use **Tools → udoncl → Import Artifacts...** and select a compiler output directory containing `manifest.json`, its host `.uasm`, and any referenced generated `.shader` files. The importer checks schema v1, the runtime ABI and target, Worlds SDK version, names, extensions, UTF-8 content, referenced files, and relative paths before writing any assets.
 
 To try the runtime without first building the compiler repository, open
-**Tools → udoncl → Examples**. The menu contains C/OpenCL Hello Dispatch,
-SAXPY, ONNX Arena Add, and ONNX Tiny Llama. The package contains deterministic
-archives of all four examples; the two ONNX examples do not use Pooling. The
+**Tools → udoncl → Examples**. The menu contains C/OpenCL SAXPY, ONNX Arena
+Add, and ONNX Tiny Llama. The package contains deterministic archives of all
+three examples; the two ONNX examples do not use Pooling. The
 Editor extracts an archive to a temporary directory, applies the same manifest
 validation and transaction-safe importer, and removes the temporary files
 after import. C/OpenCL imports generate their typed U# binding and finish the
-binding prefab after Unity's script reload. The packaged Hello and SAXPY
-imports also generate a small U# controller, attach it to the prefab, and bind
+binding prefab after Unity's script reload. The packaged SAXPY import also
+generates a small U# controller, attaches it to the prefab, and binds
 the controller to the typed wrapper. Interact with the placed prefab to run the
-complete dispatch and asynchronous readback without writing raw event/slot
-code. Public buffer semantics generate
-named typed methods such as `TryWriteInput` and `StartReadOutput`; the physical
+complete upload, asynchronous run and readback without writing raw
+event/slot code. Public buffer semantics generate
+named typed methods such as `TryWriteX` and `StartReadResult`; the physical
 buffer-ID methods remain available only as the lower-level interface. Choose
 **Add after Compile** to place that binding prefab in the active scene
 automatically after the script reload.

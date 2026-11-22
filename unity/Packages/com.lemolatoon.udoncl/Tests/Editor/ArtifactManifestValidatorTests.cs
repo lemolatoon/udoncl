@@ -480,9 +480,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             );
         }
 
-        [TestCase("hello-dispatch.zip.bytes", "hello_dispatch", "unity-udoncl-library", 1)]
         [TestCase("saxpy.zip.bytes", "saxpy_demo", "unity-udoncl-library", 1)]
-        [TestCase("average-pooling.zip.bytes", "average_pooling", "unity-udoncl-library", 1)]
         [TestCase("onnx-arena-add.zip.bytes", "onnx_arena_add_example", "unity-udon-onnx-model", 1)]
         [TestCase(
             "onnx-tiny-llama.zip.bytes",
@@ -520,18 +518,6 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         }
 
         [Test]
-        public void PackagedHelloUsageCallsGeneratedTypedBinding()
-        {
-            PackagedExampleUsage usage = PackagedExampleUsageGenerator.ForProgram("hello_dispatch");
-            Assert.NotNull(usage);
-            Assert.AreEqual("UdonclHelloDispatchExample", usage.ClassName);
-            StringAssert.Contains("UdonclHelloDispatchBinding binding", usage.Source);
-            StringAssert.Contains("binding.TryDispatchSquare(input)", usage.Source);
-            StringAssert.Contains("binding.StartReadOutput(output", usage.Source);
-            StringAssert.DoesNotContain("SendCustomEvent", usage.Source);
-        }
-
-        [Test]
         public void PackagedSaxpyUsageWritesRunsAndReadsGeneratedBinding()
         {
             PackagedExampleUsage usage = PackagedExampleUsageGenerator.ForProgram("saxpy_demo");
@@ -543,20 +529,6 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             StringAssert.Contains("binding.GetRunSaxpyStatus()", usage.Source);
             StringAssert.Contains("binding.TryGetRunSaxpyResult(out openclStatus)", usage.Source);
             StringAssert.Contains("binding.StartReadResult(result", usage.Source);
-            StringAssert.DoesNotContain("SetProgramVariable", usage.Source);
-        }
-
-        [Test]
-        public void PackagedPoolingUsageWritesRunsAndReadsGeneratedBinding()
-        {
-            PackagedExampleUsage usage = PackagedExampleUsageGenerator.ForProgram(
-                "average_pooling"
-            );
-            Assert.NotNull(usage);
-            Assert.AreEqual("UdonclAveragePoolingExample", usage.ClassName);
-            StringAssert.Contains("binding.TryWriteInput(input)", usage.Source);
-            StringAssert.Contains("binding.TryRunAveragePool(72)", usage.Source);
-            StringAssert.Contains("binding.StartReadOutput(output", usage.Source);
             StringAssert.DoesNotContain("SetProgramVariable", usage.Source);
         }
 

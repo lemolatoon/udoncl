@@ -21,26 +21,22 @@ Gates and evidence are recorded in [validation.md](../validation.md).
   zero offsets, equal texture shapes, and distinct source/destination buffers;
   partial, dynamic, or self copies are compile errors rather than approximated.
   `udonclc --host-mlir` remains available for typed compiler validation.
-- Normal Host C can use a restricted straight-line OpenCL 1.2 setup sequence:
-  one platform and GPU device, one context and in-order queue, constant-sized
-  `clCreateBuffer` allocations, full `clEnqueueCopyBuffer` commands, and their
-  release calls. The compiler validates context/queue/opaque-handle flow and
-  recovers typed buffer IR. A second fixed subset accepts ordered read-only
-  inputs plus one write-only output, copied f32/i32 scalar arguments, and a
-  statically configured `clEnqueueNDRangeKernel`, lowering it to generated
-  texture/scalar material bindings and `VRCGraphics.Blit`. The standalone
-  `examples/saxpy` consumer exercises two buffers and mixed i32/f32 scalars.
-  Status-dependent control flow, uploads/readbacks, dynamic NDRange sizes,
-  other argument layouts, partial copies, and general OpenCL lifetime semantics
-  remain explicit compile errors in the C Host lowering. Generated U# bindings
-  separately expose byte-exact whole-buffer upload and asynchronous readback;
-  direct lowering of blocking C read/write calls to Host continuations remains
-  pending. `<udoncl/unity_buffer.h>` remains a temporary
-  compatibility input, not the preferred public example.
+- Host C calls the OpenCL 1.2 API through the linked OpenCL AOT runtime
+  (`UdonCL::OpenCLRuntime`): buffers, writes, reads, copies, and the launches
+  of library kernels and of the OpenCL C kernels of its own Device libraries,
+  with ordinary status checks. udonclc derives each user kernel launch from the
+  Host C; buffer arguments precede `int`/`uint`/`float` scalars, and the
+  global work size is one constant unless a `device_kernels` entry gives it.
+  The standalone `examples/saxpy` consumer launches a three-buffer kernel with
+  mixed i32/f32 scalars. A Host without the runtime may not call the OpenCL
+  API: the build names the calls and asks for `UdonCL::OpenCLRuntime`.
+  Generated U# bindings separately expose byte-exact whole-buffer upload and
+  asynchronous readback.
 - `udoncl_add_unity_library` accepts ordinary `DEVICE_LIBRARIES` targets and
   packages the selected AOT kernel's ShaderLab/HLSL plus manifest metadata in
-  the Unity artifact. The `hello-dispatch-unity-library` example connects its
-  restricted standard OpenCL Host sequence to the generated kernel material.
+  the Unity artifact. The `examples/saxpy` Host C launches its OpenCL C kernel
+  through the linked OpenCL runtime, which binds it to the generated kernel
+  material.
 - The `mnist-dense` ONNX profile lowers its Host graph to `func`/`cf`/`arith`
   plus the raw `!udonhl.ptr<0>` UdonBLAS ABI. `udoncl_add_unity_library` links
   that Host MLIR against the recovered UdonBLAS/OpenCL AOT library module and
@@ -115,11 +111,12 @@ The IR and reports retained by the corresponding CTests are listed under
 
 ## Host/Device boundary bundle
 
-Host/Device boundary example (prepared high-level MLIR input):
+Host/Device boundary example (C and OpenCL C input; compile `host.ll` and
+`device.ll` as in [examples/c-boundary](../../examples/c-boundary/README.md)):
 
 ```text
-build/udoncl/tools/vrccl/udonclc --emit-boundary-bundle examples/host-device-boundary/probe.mlir -o build/boundary-example
-build/udoncl/tools/vrccl/udonclc --check-boundary-request build/boundary-example/manifest.json --request examples/host-device-boundary/request.json
+build/udoncl/tools/vrccl/udonclc --emit-llvm-boundary-bundle examples/c-boundary/boundary.json --host-llvm build/c-boundary/host.ll --device-llvm build/c-boundary/device.ll -o build/boundary-example
+build/udoncl/tools/vrccl/udonclc --check-boundary-request build/boundary-example/manifest.json --request examples/c-boundary/request.json
 ```
 
 The Host path lowers `func.call` through `udonhl.call`, then substitutes the
@@ -128,6 +125,6 @@ single-invocation f32 store through `vrcgpu` to a fragment shader. Both sides mu
 agree on kernel ID, argument/resource order and NDRange before assets are emitted.
 The bundle includes `host-device.mlir`, `manifest.json` and `kernels/*.shader` /
 `*.hlsl`. Reusing identical output is allowed; differing existing output is refused.
-This prepared boundary example does not yet execute its GPU request from Udon.
+This boundary example does not yet execute its GPU request from Udon.
 Scalar/CFG `.uasm` emission is tested separately. See
 [boundary.md](../boundary.md) for the supported pattern and next steps.

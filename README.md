@@ -27,9 +27,9 @@ the compiler:
 3. In Unity, choose **Tools → udoncl → Examples** and one of:
    - **Import ONNX Arena Add**, then **Add to Scene**. Import the **ONNX Arena
      Add** Package Sample for its U# caller component.
-   - **Import C and OpenCL Hello Dispatch** or **Import C and OpenCL SAXPY**.
-     These generate typed U# binding prefabs after Unity reloads the imported
-     wrapper; choose **Add after Compile** to place one in the active scene.
+   - **Import C and OpenCL SAXPY**. This generates a typed U# binding prefab
+     after Unity reloads the imported wrapper; choose **Add after Compile** to
+     place it in the active scene.
 
 See [examples/README.md](examples/README.md#fastest-importable-example) for
 details.
@@ -37,9 +37,9 @@ details.
 ## What works today
 
 - **Host C and OpenCL C:** fixed AOT subsets. Scalar Host C exports become typed
-  U# methods, and a restricted straight-line OpenCL 1.2 Host sequence
-  (constant-sized buffers, copied f32/i32 arguments, one statically configured
-  NDRange) dispatches an OpenCL C kernel as a fragment shader.
+  U# methods, and Host C on the OpenCL 1.2 API, linked with
+  `UdonCL::OpenCLRuntime`, launches OpenCL C kernels as fragment shaders
+  (constant-sized buffers, copied f32/i32 arguments, a constant NDRange).
 - **Buffers:** fixed-size Device buffers with whole-buffer upload and
   asynchronous readback through the generated U# binding.
 - **ONNX:** standard ONNX models compile to Unity artifacts, from a single

@@ -12,9 +12,9 @@ All notable changes to this package are recorded here.
   allocate exact Manifest-defined buffers instead of assuming a tensor size.
 - One-click Editor imports for packaged, non-Pooling ONNX Arena Add and Tiny
   Llama example artifacts.
-- One-click Editor imports for packaged C/OpenCL Hello Dispatch and SAXPY
-  artifacts, including generated typed U# bindings and ready-to-run U#
-  controllers attached to their binding prefabs.
+- One-click Editor import for the packaged C/OpenCL SAXPY artifact,
+  including its generated typed U# binding and a ready-to-run U# controller
+  attached to its binding prefab.
 - Manifest-validated public buffer semantics and generated named typed U#
   WriteBuffer/ReadBuffer methods that do not expose physical buffer IDs.
 - Deferred scene placement for C/OpenCL binding prefabs after their generated

@@ -10,8 +10,6 @@ udoncl_add_host_library(hello_host
   include/hello_host.h)
 target_include_directories(hello_host INTERFACE include)
 udoncl_add_host_library(hello_host_extra host_extra.c)
-udoncl_add_host_library(hello_buffer_copy_host buffer_copy.c)
-udoncl_add_host_library(hello_dispatch_host dispatch.c)
 udoncl_add_host_library(hello_tokenizer_host tokenizer.c)
 target_include_directories(hello_tokenizer_host INTERFACE
   "${UdonTokenizers_INCLUDE_DIRS}")
@@ -24,7 +22,6 @@ udoncl_add_device_library(hello_device
   include/hello_device.h)
 target_include_directories(hello_device INTERFACE include)
 udoncl_add_device_library(hello_device_extra kernel_extra.cl)
-udoncl_add_device_library(hello_device_int kernel_int.cl)
 
 udoncl_add_artifact(hello-artifact
   CONFIG kernel.json
@@ -53,17 +50,3 @@ if(UDONCL_TINYLLAMA_TOKENIZER_DIRECTORY)
     CONFIG tinyllama-tokenizer-library.json
     HOST_LIBRARIES tinyllama_tokenizer_model UdonTokenizers::UdonTokenizers)
 endif()
-
-udoncl_add_unity_library(hello-buffer-copy-unity-library
-  CONFIG buffer-copy-library.json
-  HOST_LIBRARIES hello_buffer_copy_host)
-
-udoncl_add_unity_library(hello-dispatch-unity-library
-  CONFIG dispatch-library.json
-  HOST_LIBRARIES hello_dispatch_host
-  DEVICE_LIBRARIES hello_device hello_device_extra)
-
-udoncl_add_unity_library(hello-int-dispatch-unity-library
-  CONFIG dispatch-int-library.json
-  HOST_LIBRARIES hello_dispatch_host
-  DEVICE_LIBRARIES hello_device_int)

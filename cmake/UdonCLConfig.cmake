@@ -4,7 +4,7 @@ include(CMakeParseArguments)
 get_filename_component(_UDONCL_CONFIG_DIR "${CMAKE_CURRENT_LIST_FILE}" DIRECTORY)
 get_filename_component(_UDONCL_INSTALL_PREFIX "${_UDONCL_CONFIG_DIR}/../../.." ABSOLUTE)
 get_filename_component(_UDONCL_SOURCE_HINT "${_UDONCL_CONFIG_DIR}/.." ABSOLUTE)
-if(EXISTS "${_UDONCL_INSTALL_PREFIX}/include/udoncl/unity_buffer.h")
+if(EXISTS "${_UDONCL_INSTALL_PREFIX}/include/udoncl/export.h")
   set(_UDONCL_INCLUDE_DIR "${_UDONCL_INSTALL_PREFIX}/include")
   set(_UDONCL_OPENCL_INCLUDE_DIR "${_UDONCL_INSTALL_PREFIX}/include")
   set(_UDONCL_RUNTIME_DIR
