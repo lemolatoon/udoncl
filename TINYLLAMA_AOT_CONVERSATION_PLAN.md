@@ -1265,7 +1265,8 @@ capacity, and the capacity-512 artifacts keep their kernels and dispatches:
 The 4096-token Conversation Artifact compiles to 37 kernels and 107 Device
 buffers of 358 MB (capacity 512: 36 kernels, 46 MB); each of the 44 K/V
 states holds 1,048,576 words in each of its two banks. Only the -4k
-artifacts declare the large SGEMM kernel (`unity-library-4k-kernels.json`),
+artifacts declare the large SGEMM kernel (`unity-library-4k-kernels.json`,
+removed in 1148089e when udonclc began deriving kernel entries),
 so the capacity-512 Conversation and Chat Artifacts built from this change
 equal those of 8cb9ac9 file for file except for the embedded Host source
 path. ONNX Runtime with

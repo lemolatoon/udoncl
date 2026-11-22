@@ -1,8 +1,11 @@
 # UdonCL examples
 
 The examples are ordered from the smallest supported user workflow to the
-largest ONNX plan. They use public CMake, compiler, artifact, VPM, and Unity
-importer interfaces; test-only fixture commands are not required.
+largest ONNX model. They use public CMake, compiler, artifact, VPM, and Unity
+importer interfaces; test-only fixture commands are not required. The
+[README tutorials](../README.md#tutorials) walk through `saxpy`, `onnx-mnist`,
+and the TinyLlama chat of `onnx-transformer-tiny` step by step, including the
+U# code that calls them.
 
 ## Common setup
 
@@ -22,25 +25,45 @@ are imported with **Tools → udoncl → Import Artifacts...**.
 
 | Example | User path | Result | Current boundary |
 | --- | --- | --- | --- |
-| [`hello-kernel`](hello-kernel/README.md) | User CMake Host C + OpenCL C | Generated U# binding, importable scalar and tokenizer libraries, Device boundary artifact | Scalar Host exports; the Device kernel is not launched from Unity |
-| [`saxpy`](saxpy/README.md) | Standard OpenCL Host API + OpenCL C kernel on `UdonCL::OpenCLRuntime` | Asynchronous `UDONCL_EXPORT` method, two input vectors, GPU output, public Write/Read API | Fixed buffers; constant NDRange derived from the Host C |
-| `onnx-mnist` | Standard ONNX MNIST CNN + C Host on `UdonONNXRuntime` | Generated U# binding, importable as **Import ONNX MNIST** and the **ONNX MNIST** Package Sample | Fixed batch of one image |
+| [`hello-kernel`](hello-kernel/README.md) | User CMake Host C + OpenCL C | Generated U# bindings for the importable scalar and tokenizer libraries; a Host/Device boundary artifact for inspection | Scalar Host exports; the boundary artifact is not importable |
+| [`saxpy`](saxpy/README.md) | Standard OpenCL Host API + OpenCL C kernel on `UdonCL::OpenCLRuntime` | Asynchronous `UDONCL_EXPORT` method, buffers `x`, `y` and `result`, public Write/Read API; **Import C and OpenCL SAXPY** and the **C and OpenCL SAXPY** Package Sample | Fixed buffers; constant NDRange derived from the Host C |
+| [`udonblas-sgemm`](udonblas-sgemm/README.md) | Host C calling the cuBLAS-shaped UdonBLAS API | Asynchronous `RunUdonBlasSgemm` export and per-column result getter | MNIST Dense dimensions (`m=1, n=10, k=144`) |
+| [`onnx-mnist`](../README.md#compile-your-own-onnx-model-with-host-c-mnist) | Standard ONNX MNIST CNN + C Host on `UdonONNXRuntime` | Generated U# binding; **Import ONNX MNIST** and the **ONNX MNIST** Package Sample | Fixed batch of one image |
 | [`onnx-transformer-tiny`](onnx-transformer-tiny/README.md) | Synthetic transformer, or the real TinyLlama-1.1B with its tokenizer | Generated U# bindings; the 4096-token Chat Artifact backs the **TinyLlama Chat** Package Sample | The real model is built from user-downloaded files |
 | [`mnist-cnn`](mnist-cnn/README.md) | Trained CNN | Native C reference and the ONNX model of `onnx-mnist` | Reference only |
+
+`onnx-q4-component`, `onnx-rms-component`, and `onnx-transpose-component` are
+not tutorials: each compiles one TinyLlama-sized ONNX operator (Q4
+`MatMulNBits`, `RMSNormalization`, `Transpose`) into a Unity library for the
+focused operator tests under `tests/build`.
 
 ## Fastest importable example
 
 After installing the VPM package, the shortest user path needs no compiler
-checkout: choose **Tools → udoncl → Examples → Import C and OpenCL SAXPY** or
-**Import ONNX MNIST**. Each import generates a typed U# binding prefab, with an
-example controller attached, after Unity reloads the imported wrapper. The
-**C and OpenCL SAXPY** and **ONNX MNIST** Package Samples (Package Manager →
-**UdonCL Runtime and ONNX Importer** → **Samples**) call the same bindings from
-a U# component of your own.
+checkout. The package bundles two prebuilt artifacts under
+**Tools → udoncl → Examples**:
 
-To build the artifacts yourself instead, configure `examples/saxpy` or
-`examples/onnx-mnist` as a CMake project and import its `artifact` directory
-with **Tools → udoncl → Import Artifacts...**.
+- **Import C and OpenCL SAXPY**: the `saxpy` artifact.
+- **Import ONNX MNIST**: the `onnx-mnist` artifact.
+
+Each import generates a typed U# binding prefab after Unity reloads the
+imported wrapper, and attaches a generated example controller to it. Choose
+**Add after Compile** in the import dialog to place the prefab in the active
+scene, then interact with it in Play Mode to run the example.
+
+The package also ships three Package Samples (Package Manager → **UdonCL
+Runtime and ONNX Importer** → **Samples**), each a U# component of your own
+that calls a generated binding:
+
+- **C and OpenCL SAXPY** (`SaxpyCaller`) and **ONNX MNIST**
+  (`MnistClassifier`) work with the two bundled imports above.
+- **TinyLlama Chat** (`TinyLlamaChat`) needs a 4096-token Chat Artifact that
+  you build from the downloaded model; the model is too large to bundle.
+
+To build the artifacts yourself instead, follow the
+[README tutorials](../README.md#tutorials): configure the example as a CMake
+project and import its `artifact` directory with
+**Tools → udoncl → Import Artifacts...**.
 
 ## C and OpenCL C consumer example
 

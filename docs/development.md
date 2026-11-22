@@ -184,6 +184,35 @@ available for automation that needs an explicit process-aware parallel job
 count. The CMake build preset has no fixed job limit, so direct Ninja builds use
 its native parallelism.
 
+## Host/Device boundary bundles
+
+Besides `udoncl_add_unity_library`, the CMake package provides
+`udoncl_add_artifact` for compiler development. It compiles every translation
+unit of its Host and Device source libraries, links one Host and one Device
+LLVM module, and runs `udonclc --emit-llvm-boundary-bundle` with a kernel
+config:
+
+```cmake
+find_package(UdonCL 0.1 REQUIRED CONFIG)
+udoncl_add_host_library(my_host host.c host_helpers.c)
+udoncl_add_device_library(my_device kernel.cl device_helpers.cl)
+udoncl_add_artifact(my_artifact
+  CONFIG kernel.json
+  HOST_LIBRARIES my_host
+  DEVICE_LIBRARIES my_device)
+```
+
+Building `my_artifact` writes an immutable boundary bundle to
+`<build>/udoncl/my_artifact/artifact`: `host-device.mlir`, `manifest.json`, and
+the generated `kernels/*.hlsl` / `*.shader`. Its manifest has
+`ready_for_unity: false`; the bundle is a debug artifact for inspecting the
+recovered Host/Device boundary and cannot be imported into Unity. Use
+`udoncl_add_unity_library` for importable artifacts. The `hello-artifact`
+target of [examples/hello-kernel](../examples/hello-kernel/README.md) is a
+complete example; the bundle contents are described in
+[architecture/compiler-status.md](architecture/compiler-status.md#hostdevice-boundary-bundle)
+and [boundary.md](boundary.md).
+
 ## Test artifacts
 
 `ctest --preset udoncl` also runs the Clang OpenCL import matrix and native

@@ -1,5 +1,14 @@
 # Validation status
 
+This is a dated log; entries describe the state on their date. Since then the
+Python ONNX execution-plan path (its planner, examples, Unity runtime,
+`UdonOnnxRuntimeBehaviour` and the Arena Add / Tiny Llama samples) was removed
+in 343bd31a, ce4c1ad7, edb10b4e, 450e4305 and 43eabad6, and the legacy OpenCL
+recovery of Hosts without a linked runtime, with the Hello Dispatch libraries
+and `<udoncl/unity_buffer.h>`, in 2f8e2bc1, 80d3bd30 and 38d03881. Current
+Unity validation runs through the commit validation service described in
+[validation/unity-ci.md](validation/unity-ci.md).
+
 ## Public ONNX Package Sample lifecycle (2026-11-03)
 
 Unity 2022.3.22f1 with Worlds SDK 3.10.5 passed all 85 Editor tests. The

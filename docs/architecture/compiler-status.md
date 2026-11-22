@@ -33,32 +33,33 @@ Gates and evidence are recorded in [validation.md](../validation.md).
   Generated U# bindings separately expose byte-exact whole-buffer upload and
   asynchronous readback.
 - `udoncl_add_unity_library` accepts ordinary `DEVICE_LIBRARIES` targets and
-  packages the selected AOT kernel's ShaderLab/HLSL plus manifest metadata in
-  the Unity artifact. The `examples/saxpy` Host C launches its OpenCL C kernel
-  through the linked OpenCL runtime, which binds it to the generated kernel
-  material.
-- The `mnist-dense` ONNX profile lowers its Host graph to `func`/`cf`/`arith`
-  plus the raw `!udonhl.ptr<0>` UdonBLAS ABI. `udoncl_add_unity_library` links
-  that Host MLIR against the recovered UdonBLAS/OpenCL AOT library module and
-  emits the final Unity artifact without using the generated Host C as input.
-  Host C remains a numerical oracle and temporary compatibility output.
-- The full MNIST profile also emits a verified candidate Host MLIR call graph
-  using the public UdonDNN convolution, op-tensor, activation, and pooling APIs
-  followed by UdonBLAS SGEMM. It is not selected as the executable artifact yet:
-  public `udondnnConvolutionForward` and `udondnnPoolingForward` now have
-  generic 16,384-word Device backends covering the model's 5x5 convolution,
-  channel-bias Add, ReLU, and 8x8 AveragePool. The full graph is not selected
-  as the executable artifact until its multi-kernel Host continuation is
-  numerically validated. The compiler does not silently substitute an
-  ONNX-specific arena scheduler.
-- The typed Unity backend can lower a fixed AOT `vrc.dispatch` with ordered
-  input/output buffers and a copied f32/i32 descriptor to typed material
-  property updates and one `VRCGraphics.Blit`; the Importer binds the generated
-  kernel material through its manifest dispatch site. The standard OpenCL Host
-  bridge validates the straight-line object and argument provenance before
-  recovering that dispatch. Multiple kernels, dynamic layouts/NDRange, C-side
-  upload/readback lowering, and asynchronous Host continuation remain pending.
-  Generated bindings already provide explicit fixed-buffer transfers.
+  packages the ShaderLab/HLSL of every kernel the Host launches, with its
+  manifest metadata, in the Unity artifact. The config does not declare those
+  kernels: udonclc derives each `device_kernels` entry from the Host's dispatch
+  sites, from the library kernel contract for UdonBLAS, UdonDNN, UdonATen and
+  UdonONNXOperators kernels, and from the `clEnqueueNDRangeKernel` launches
+  for the user OpenCL C kernels the linked runtime numbers from 1024. A
+  hand-written entry replaces the derived one of its `kernel_id`. The
+  `examples/saxpy` Host C launches its OpenCL C kernel this way.
+- ONNX models compile through the C++ ONNX-dialect path.
+  `udoncl_add_onnx_host_library` runs `scripts/compile_onnx_mlir.py` with the
+  repository ONNX frontend on the pinned ONNX-MLIR SDK, specializes the model
+  to its `DIMENSION_BOUNDS` and `INPUT_SHAPES`, and lowers it to Host MLIR that
+  calls UdonBLAS, UdonDNN, UdonATen and UdonONNXOperators. A user C Host
+  drives that model through `UdonONNXRuntime` (sessions of
+  `<udononnxruntime.h>` or the generated `udon_onnx_binding_*` functions) and
+  is linked into an ordinary Unity library with a generated U# binding.
+  `examples/onnx-mnist` and `examples/onnx-transformer-tiny`, up to the real
+  TinyLlama-1.1B with 512- and 4096-token contexts, use this path. The Python
+  execution-plan planner and its Unity runtime were removed (43eabad6,
+  450e4305); no execution-plan JSON is generated or interpreted.
+- The typed Unity backend lowers each fixed AOT `vrc.dispatch` with ordered
+  input/output buffers and copied f32/i32 arguments to typed material property
+  updates and one `VRCGraphics.Blit`; the Importer binds the generated kernel
+  material through its manifest dispatch site. Hosts that launch many kernels
+  and exports whose Device work spans frames use the same lowering, and
+  generated bindings provide explicit whole-buffer transfers. Dynamic buffer
+  layouts and NDRange sizes remain pending.
 - `udoncl-opt`: MLIR parser/printer with operation verification, rejects unknown ops by default.
 - `VRCLLVMToHighLevelMLIR`: independent import/metadata, local-memory and scalar/CFG recovery library for host/device development.
 - `udoncl-translate --import-llvm input.ll`: LLVM dialect import with preserved frontend metadata and optional JSON sidecar.
