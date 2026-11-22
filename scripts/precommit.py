@@ -686,6 +686,12 @@ STANDARD_FIXTURE_MENUS = (
     "Tools/udoncl/Internal/Prepare Package Sample Validation",
 )
 ENSURE_VALIDATION_SCENE_MENU = "Tools/udoncl/Internal/Ensure Validation Scene Saved"
+# The bindings Prepare Packaged Example Validation imports; the Package
+# Samples compile against them.
+PACKAGED_EXAMPLE_BINDINGS = (
+    "Assets/udoncl-generated/saxpy_demo/Bindings/UdonclSaxpyDemoBinding.cs",
+    "Assets/udoncl-generated/generic_onnx_mnist/Bindings/UdonclGenericOnnxMnistBinding.cs",
+)
 
 
 def final_preparation_menus(prepare_standard_fixtures):
@@ -1035,6 +1041,20 @@ def run_unity_mcp_gate(
                 )
         for menu in final_preparation_menus(prepare_standard_fixtures):
             execute_menu_after_reload(client, menu)
+        if prepare_standard_fixtures:
+            # A menu that throws only logs the exception, and recompiling
+            # clears it from the console; report a failed import here
+            # instead of the compile errors of the samples that use it.
+            missing = [
+                path
+                for path in PACKAGED_EXAMPLE_BINDINGS
+                if not (Path(project) / path).is_file()
+            ]
+            if missing:
+                raise RuntimeError(
+                    "packaged example import did not install its binding "
+                    f"(see {unity_log}): " + ", ".join(missing)
+                )
         wait_for_editor(client)
         for attempt in range(4):
             started = start_unity_tests(client, test_names, test_assemblies)

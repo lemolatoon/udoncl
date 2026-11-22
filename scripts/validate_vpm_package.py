@@ -6,6 +6,7 @@ import argparse
 import json
 from pathlib import Path
 import re
+import zipfile
 
 
 SEMVER = re.compile(
@@ -21,6 +22,76 @@ FORBIDDEN_NAMES = {".git", ".DS_Store", "Library", "Logs", "Obj", "Temp"}
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise SystemExit(f"VPM package validation failed: {message}")
+
+
+def archived_binding(archive_name: str):
+    """The binding a bundled example archive installs on import."""
+
+    def load(package: Path) -> tuple[str, str, str]:
+        archive = package / "Editor/Examples" / archive_name
+        require(archive.is_file(), f"packaged example is missing: {archive_name}")
+        with zipfile.ZipFile(archive) as bundle:
+            program = json.loads(bundle.read("manifest.json").decode("utf-8"))["program"]
+            source_name = program.get("binding_source")
+            # Without a generated source the importer falls back to its own
+            # U# generator, which does not implement the async command ABI.
+            require(
+                bool(source_name) and source_name in bundle.namelist(),
+                f"{archive_name} ships no generated binding source",
+            )
+            source = bundle.read(source_name).decode("utf-8")
+        return program.get("binding_namespace", ""), program.get("binding_class", ""), source
+
+    return load
+
+
+def fixture_binding(fixture_name: str):
+    """The compile-only stand-in a Package Sample uses without its artifact."""
+
+    def load(package: Path) -> tuple[str, str, str]:
+        fixture = package / "Tests/Editor/Fixtures" / fixture_name
+        require(fixture.is_file(), f"sample binding fixture is missing: {fixture_name}")
+        source = fixture.read_text(encoding="utf-8")
+        namespace = re.search(r"^namespace ([\w.]+)", source, re.MULTILINE)
+        declared = re.search(r"public sealed class (\w+)", source)
+        require(
+            namespace is not None and declared is not None,
+            f"{fixture_name} declares no binding class",
+        )
+        return namespace.group(1), declared.group(1), source
+
+    return load
+
+
+# Each Package Sample, its U# script, and the binding it compiles against in
+# the Editor gate: the one the bundled example imports, or the stand-in for
+# the TinyLlama Chat Artifact, which is too large to bundle.
+SAMPLES = (
+    ("C and OpenCL SAXPY", "SaxpyCaller.cs", archived_binding("saxpy.zip.bytes")),
+    ("ONNX MNIST", "MnistClassifier.cs", archived_binding("onnx-mnist.zip.bytes")),
+    ("TinyLlama Chat", "TinyLlamaChat.cs", fixture_binding("tinyllama-chat-binding.cs.txt")),
+)
+
+
+def require_sample_binding(script: Path, namespace: str, class_name: str, source: str) -> None:
+    """Require that a sample references the binding class its source declares."""
+    text = script.read_text(encoding="utf-8")
+    fields = set(re.findall(r"^\s*private (\w+) binding;", text, re.MULTILINE))
+    require(len(fields) == 1, f"{script.name} must declare one binding field")
+    (field,) = fields
+    require(
+        field == class_name,
+        f"{script.name} uses {field}, but its binding is {namespace}.{class_name}",
+    )
+    require(
+        f"using {namespace};" in text,
+        f"{script.name} does not import the binding namespace {namespace}",
+    )
+    require(
+        re.search(rf"^namespace {re.escape(namespace)}\b", source, re.MULTILINE) is not None
+        and f"public sealed class {class_name} " in source,
+        f"the binding source does not declare {namespace}.{class_name}",
+    )
 
 
 def validate(package: Path) -> dict:
@@ -65,17 +136,16 @@ def validate(package: Path) -> dict:
     ):
         require((package / relative).is_file(), f"required file is missing: {relative}")
     samples = {sample.get("path") for sample in manifest.get("samples", [])}
-    for sample, script in (
-        ("C and OpenCL SAXPY", "SaxpyCaller.cs"),
-        ("ONNX MNIST", "MnistClassifier.cs"),
-        ("TinyLlama Chat", "TinyLlamaChat.cs"),
-    ):
+    for sample, script, binding_source in SAMPLES:
         relative = f"Samples~/{sample}"
         require(relative in samples, f"package.json does not declare the {sample} sample")
         require((package / relative / script).is_file(), f"sample script is missing: {script}")
         require(
             (package / relative / "README.md").is_file(),
             f"sample README is missing: {relative}",
+        )
+        require_sample_binding(
+            package / relative / script, *binding_source(package)
         )
     license_text = (package / "LICENSE.md").read_text(encoding="utf-8")
     require(

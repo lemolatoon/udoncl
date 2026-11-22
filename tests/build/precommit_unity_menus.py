@@ -29,4 +29,16 @@ samples = "Tools/udoncl/Internal/Prepare Package Sample Validation"
 assert standard.index(samples) > standard.index(
     "Tools/udoncl/Internal/Prepare Packaged Example Validation"
 ), standard
+# The gate checks that the imported examples installed the bindings the
+# SAXPY and MNIST Package Samples use.
+sample_sources = [
+    path.read_text(encoding="utf-8")
+    for path in (ROOT / "unity/Packages/com.lemolatoon.udoncl/Samples~").rglob("*.cs")
+]
+for path in precommit.PACKAGED_EXAMPLE_BINDINGS:
+    binding = Path(path)
+    assert binding.parent.name == "Bindings", path
+    assert any(
+        f"private {binding.stem} binding;" in source for source in sample_sources
+    ), path
 print("precommit_unity_menus=passed")
