@@ -41,6 +41,11 @@ ZERO_OID = "0" * 40
 PRECHECK_BASELINE_FILE = ".precheck-baseline"
 REMOVE_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.4, 0.8, 1.6, 3.2)
 SLOT_RECOVERY_COOLDOWN_SECONDS = 5.0
+# metadata keys: the durable `set-workers` value, which overrides `--jobs`,
+# and the `--jobs` value the running coordinator started with.
+WORKER_COUNT_KEY = "worker_count"
+STARTUP_WORKER_COUNT_KEY = "startup_worker_count"
+MAX_WORKERS = 32
 
 
 if os.name == "nt":
@@ -523,6 +528,48 @@ class ValidationDatabase:
         ).fetchone()
         return bool(row and row["value"] == token)
 
+    def _worker_count_value(self, key: str) -> int | None:
+        row = self.connection.execute(
+            "SELECT value FROM metadata WHERE key=?", (key,)
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            value = int(row["value"])
+        except ValueError:
+            return None
+        return value if 0 <= value <= MAX_WORKERS else None
+
+    def _store_worker_count(self, key: str, count: int):
+        if not 0 <= count <= MAX_WORKERS:
+            raise ValueError(f"worker count must be between 0 and {MAX_WORKERS}")
+        with self.immediate():
+            self.connection.execute(
+                "INSERT OR REPLACE INTO metadata(key, value) VALUES(?, ?)",
+                (key, str(count)),
+            )
+
+    def set_worker_count(self, count: int):
+        """Persist the worker count a running coordinator applies next loop."""
+        self._store_worker_count(WORKER_COUNT_KEY, count)
+
+    def record_startup_worker_count(self, count: int):
+        self._store_worker_count(STARTUP_WORKER_COUNT_KEY, count)
+
+    def worker_count(self, startup: int) -> int:
+        """The current worker limit: `set-workers` if persisted, else startup."""
+        configured = self._worker_count_value(WORKER_COUNT_KEY)
+        return startup if configured is None else configured
+
+    def worker_setting(self) -> tuple[int | None, str]:
+        configured = self._worker_count_value(WORKER_COUNT_KEY)
+        if configured is not None:
+            return configured, "set-workers"
+        startup = self._worker_count_value(STARTUP_WORKER_COUNT_KEY)
+        if startup is not None and self.service_row() is not None:
+            return startup, "startup"
+        return None, "unset"
+
     def enqueue(self, root: Path, commit: str) -> tuple[str, bool]:
         commit_sha = git(root, "rev-parse", "--verify", f"{commit}^{{commit}}")
         tree_sha = git(root, "show", "-s", "--format=%T", commit_sha)
@@ -535,11 +582,28 @@ class ValidationDatabase:
             ).rowcount
         return commit_sha, bool(inserted)
 
+    def retry(self, commit: str) -> bool:
+        """Requeue a finished job as if it had just been enqueued."""
+        with self.immediate():
+            return self.connection.execute(
+                """UPDATE jobs SET state='queued', enqueued_at=?, slot=NULL,
+                     worker_token=NULL, worker_pid=NULL, started_at=NULL,
+                     heartbeat_at=NULL, finished_at=NULL, exit_code=NULL,
+                     error_summary=NULL, notified_at=NULL
+                   WHERE commit_sha=? AND state IN (
+                     'passed','failed','infrastructure_failed','cancelled')""",
+                (now(), commit),
+            ).rowcount == 1
+
     def claim(self, slot: int, worker_token: str):
+        # Newest first: the most recently enqueued commit is usually the one a
+        # developer is waiting on. The commit SHA breaks timestamp ties so the
+        # order is deterministic. Jobs requeued by recovery keep their original
+        # enqueue time and therefore their original position.
         with self.immediate():
             row = self.connection.execute(
                 """SELECT * FROM jobs WHERE state='queued'
-                   ORDER BY enqueued_at, commit_sha LIMIT 1"""
+                   ORDER BY enqueued_at DESC, commit_sha DESC LIMIT 1"""
             ).fetchone()
             if row is None:
                 return None
@@ -1306,6 +1370,7 @@ def _coordinator_locked(root: Path, cache_root: Path, jobs: int, once: bool):
     database = ValidationDatabase(cache_root / "queue.sqlite3")
     token = uuid.uuid4().hex
     database.acquire_service(token)
+    database.record_startup_worker_count(jobs)
     stopping = threading.Event()
     ownership_lost = threading.Event()
 
@@ -1366,7 +1431,16 @@ def _coordinator_locked(root: Path, cache_root: Path, jobs: int, once: bool):
                         },
                         [],
                     )
-            for slot in range(jobs):
+            # Re-read the limit every loop so `set-workers` applies without a
+            # restart. Lowering it never interrupts running workers; it only
+            # stops new claims until fewer than `limit` remain. Slots at or
+            # above a lowered limit finish normally and are not reused, and
+            # every slot keeps its own w/<slot> worktree, build, output, and
+            # Unity project, so raising the limit never shares mutable state.
+            limit = database.worker_count(jobs)
+            for slot in range(limit):
+                if len(active) >= limit:
+                    break
                 if slot in active:
                     continue
                 worker_token = uuid.uuid4().hex
@@ -1405,7 +1479,7 @@ def _coordinator_locked(root: Path, cache_root: Path, jobs: int, once: bool):
             queued = database.connection.execute(
                 "SELECT count(*) FROM jobs WHERE state='queued'"
             ).fetchone()[0]
-            if once and not active and not queued:
+            if once and not active and (not queued or limit == 0):
                 break
             time.sleep(0.5)
     finally:
@@ -1490,7 +1564,14 @@ def require_ready(root: Path, cache_root: Path):
     if not database.service_healthy():
         database.close()
         raise SystemExit("precheck coordinator is not running or its heartbeat is stale")
+    workers, _ = database.worker_setting()
     database.close()
+    if workers == 0:
+        print(
+            "warning: precheck workers are paused (set-workers 0); "
+            "new commits stay queued",
+            file=sys.stderr,
+        )
     hooks = git(root, "config", "--local", "--get", "core.hooksPath")
     if Path(hooks).as_posix().rstrip("/") != ".githooks":
         raise SystemExit("repository hooks are not installed; run precheck_service.py install")
@@ -1942,6 +2023,13 @@ def status_main(argv=None):
         raise SystemExit(1)
 
 
+def worker_summary(cache_root: Path) -> str:
+    database = ValidationDatabase(cache_root / "queue.sqlite3")
+    workers, source = database.worker_setting()
+    database.close()
+    return f"workers={'unknown' if workers is None else workers} workers_source={source}"
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1955,13 +2043,23 @@ def main(argv=None):
         "require-ready",
         "enqueue",
         "retry",
+        "set-workers",
     ):
         command = subparsers.add_parser(name)
         command.add_argument("--repo", type=Path, default=Path.cwd())
         command.add_argument("--cache-root", type=Path)
         if name in {"run", "start", "install"}:
             command.add_argument(
-                "--jobs", type=int, default=int(os.environ.get("UDONCL_PRECHECK_JOBS", "2"))
+                "--jobs",
+                type=int,
+                default=int(os.environ.get("UDONCL_PRECHECK_JOBS", "2")),
+                help="initial worker count; a persisted set-workers value wins",
+            )
+        if name == "set-workers":
+            command.add_argument(
+                "count",
+                type=int,
+                help=f"concurrent validation workers (0 pauses, max {MAX_WORKERS})",
             )
         if name == "run":
             command.add_argument("--once", action="store_true")
@@ -1989,13 +2087,29 @@ def main(argv=None):
         return
     root = repository_root(args.repo)
     cache_root = (args.cache_root or default_cache_root(root)).resolve()
+    if args.command in {"run", "start", "install"} and not (
+        1 <= args.jobs <= MAX_WORKERS
+    ):
+        parser.error(f"--jobs must be between 1 and {MAX_WORKERS}")
     if args.command == "run":
-        if args.jobs < 1:
-            parser.error("--jobs must be positive")
         coordinator(root, cache_root, args.jobs, args.once)
     elif args.command == "start":
         start_background(root, cache_root, args.jobs)
-        print(f"precheck_service=ready jobs={args.jobs} database={cache_root / 'queue.sqlite3'}")
+        print(
+            f"precheck_service=ready {worker_summary(cache_root)} "
+            f"database={cache_root / 'queue.sqlite3'}"
+        )
+    elif args.command == "set-workers":
+        if not 0 <= args.count <= MAX_WORKERS:
+            parser.error(f"count must be between 0 and {MAX_WORKERS}")
+        database = ValidationDatabase(cache_root / "queue.sqlite3")
+        database.set_worker_count(args.count)
+        healthy = database.service_healthy()
+        database.close()
+        print(
+            f"precheck_workers={args.count} "
+            f"precheck_service={'ready' if healthy else 'stopped'}"
+        )
     elif args.command == "stop":
         stop_service(cache_root)
         print("precheck_service=stopped")
@@ -2011,6 +2125,7 @@ def main(argv=None):
             f"precheck_service={'ready' if healthy else 'stopped'}"
             + (f" pid={service['pid']}" if service else "")
         )
+        print(worker_summary(cache_root))
         for count in counts:
             print(f"jobs_{count['state']}={count['count']}")
     elif args.command == "install":
@@ -2020,7 +2135,7 @@ def main(argv=None):
         else:
             install_system_service(root, cache_root, args.jobs)
             wait_for_service(cache_root)
-        print(f"precheck_service=installed jobs={args.jobs}")
+        print(f"precheck_service=installed {worker_summary(cache_root)}")
     elif args.command == "require-ready":
         require_ready(root, cache_root)
         print("precheck_service=ready")
@@ -2032,18 +2147,9 @@ def main(argv=None):
     elif args.command == "retry":
         commit = git(root, "rev-parse", "--verify", f"{args.commit}^{{commit}}")
         database = ValidationDatabase(cache_root / "queue.sqlite3")
-        with database.immediate():
-            changed = database.connection.execute(
-                """UPDATE jobs SET state='queued', slot=NULL,
-                     worker_token=NULL, worker_pid=NULL, started_at=NULL,
-                     heartbeat_at=NULL, finished_at=NULL, exit_code=NULL,
-                     error_summary=NULL, notified_at=NULL
-                   WHERE commit_sha=? AND state IN (
-                     'passed','failed','infrastructure_failed','cancelled')""",
-                (commit,),
-            ).rowcount
+        changed = database.retry(commit)
         database.close()
-        if changed != 1:
+        if not changed:
             raise SystemExit(f"commit is not retryable: {commit}")
         print(f"precheck_retried={commit}")
     elif args.command == "uninstall":

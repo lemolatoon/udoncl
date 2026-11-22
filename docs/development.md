@@ -223,11 +223,11 @@ python scripts/precheck_service.py status
 ```
 
 If a worker has no LLVM or ONNX-MLIR dependency prefix, it runs the locked
-repository installers before validation. Each worker has its own persistent Git
-worktree and Unity project, while each commit receives a separate build/output
-directory, so multiple commits can be tested concurrently without sharing
-mutable build or Unity state. On Linux the Unity gate uses Vulkan; Windows uses
-D3D11.
+repository installers before validation. Each worker slot has its own
+persistent Git worktree, Unity project and build/output directories, which are
+reset for every commit, so multiple commits can be tested concurrently without
+sharing mutable build or Unity state. On Linux the Unity gate uses Vulkan;
+Windows uses D3D11.
 
 The pre-commit hook requires a healthy coordinator and performs only the fast
 format and whitespace checks. The post-commit hook writes the new SHA to the
@@ -238,6 +238,12 @@ git add <paths>
 git commit -m "describe the change"
 python scripts/precheck_status.py --commit HEAD --require-enqueued
 ```
+
+Idle workers claim the most recently enqueued commit first, so the commit a
+developer just created is validated ahead of an older backlog; equal enqueue
+times are ordered by descending commit SHA. `retry` counts as a new enqueue and
+moves the commit to the front, while jobs requeued after a worker or
+coordinator crash keep their original position.
 
 Successful background jobs are silent. Failed jobs produce a desktop
 notification and remain visible in the database:
@@ -260,17 +266,28 @@ Service administration is cross-platform:
 
 ```text
 python scripts/precheck_service.py start --jobs 2
+python scripts/precheck_service.py set-workers 3
 python scripts/precheck_service.py stop
 python scripts/precheck_service.py status
 python scripts/precheck_service.py uninstall
 ```
 
-`UDONCL_PRECHECK_CACHE_ROOT` overrides the per-user state directory and
-`UDONCL_PRECHECK_JOBS` sets the default worker count. Queue state and structured
-results live in SQLite; large Unity/MCP/native logs remain content-hashed files
-referenced by the database. `scripts/precommit.py` remains the authoritative
-full native and Unity gate used internally by commit-snapshot workers; do not
-run it synchronously for routine commits.
+`--jobs` (default `UDONCL_PRECHECK_JOBS`, else 2) is the number of concurrent
+validation workers the coordinator starts with; build parallelism inside a job
+is chosen by `scripts/precommit.py`. `set-workers N` stores a worker count in
+the queue database that overrides `--jobs`, survives restarts, and is applied
+by a running coordinator within a second. Lowering it never interrupts running
+jobs: the coordinator stops claiming until fewer than `N` workers remain.
+`set-workers 0` pauses claiming, which lets running jobs drain before a
+`stop`. `status` reports the effective count as `workers=N` with
+`workers_source=set-workers` or `startup`. Raising the count adds worker slots
+that are isolated exactly like the existing ones.
+
+`UDONCL_PRECHECK_CACHE_ROOT` overrides the per-user state directory. Queue
+state and structured results live in SQLite; large Unity/MCP/native logs remain
+content-hashed files referenced by the database. `scripts/precommit.py` remains
+the authoritative full native and Unity gate used internally by commit-snapshot
+workers; do not run it synchronously for routine commits.
 
 ## Formatting
 

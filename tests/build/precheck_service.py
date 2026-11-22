@@ -4,12 +4,14 @@ import subprocess
 import stat
 import sys
 import tempfile
+import time
 
 
 ROOT = Path(sys.argv[1]).resolve()
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from precheck_service import (  # noqa: E402
+    MAX_WORKERS,
     ValidationDatabase,
     coordinator,
     clone_dependency_prefixes,
@@ -19,6 +21,7 @@ from precheck_service import (  # noqa: E402
     prepare_worktree,
     recover_orphan_workers,
     remove_owned,
+    stop_service,
     validation_fingerprint,
 )
 
@@ -181,6 +184,43 @@ with tempfile.TemporaryDirectory(prefix="udoncl precheck ") as temporary:
     new_branch = [f"refs/heads/topic {commits[2]} refs/heads/topic {'0' * 40}"]
     assert outgoing_commits(repository, new_branch, "origin") == sorted(commits[1:])
 
+    # Queued jobs are claimed newest first; equal enqueue times fall back to
+    # the descending commit SHA, and a retry counts as a fresh enqueue.
+    lifo_database = ValidationDatabase(temporary / "lifo state" / "queue.sqlite3")
+    enqueue_times = {
+        commits[0]: "2026-01-01T00:00:01+00:00",
+        commits[1]: "2026-01-01T00:00:03+00:00",
+        commits[2]: "2026-01-01T00:00:03+00:00",
+    }
+    with lifo_database.immediate():
+        for commit, enqueued_at in enqueue_times.items():
+            lifo_database.connection.execute(
+                """INSERT INTO jobs(commit_sha, tree_sha, state, enqueued_at)
+                   VALUES(?, 'tree', 'queued', ?)""",
+                (commit, enqueued_at),
+            )
+    tied = sorted(commits[1:], reverse=True)
+    claim_order = [lifo_database.claim(slot, f"lifo-{slot}") for slot in range(3)]
+    assert claim_order == [*tied, commits[0]], claim_order
+    assert lifo_database.claim(3, "lifo-empty") is None
+    assert not lifo_database.retry(commits[0])
+    with lifo_database.immediate():
+        lifo_database.connection.execute(
+            "UPDATE jobs SET state='failed', finished_at=?",
+            ("2026-01-01T00:00:04+00:00",),
+        )
+    assert lifo_database.retry(commits[0])
+    assert lifo_database.retry(tied[0])
+    retried = lifo_database.connection.execute(
+        "SELECT enqueued_at, finished_at FROM jobs WHERE commit_sha=?",
+        (commits[0],),
+    ).fetchone()
+    assert retried["enqueued_at"] > enqueue_times[commits[0]]
+    assert retried["finished_at"] is None
+    assert lifo_database.claim(0, "lifo-retry") == tied[0]
+    assert lifo_database.claim(1, "lifo-retry") == commits[0]
+    lifo_database.close()
+
     window_repository = temporary / "push window repository"
     window_cache = temporary / "push window state"
     window_repository.mkdir()
@@ -316,6 +356,173 @@ with tempfile.TemporaryDirectory(prefix="udoncl precheck ") as temporary:
         repository, cache, commits[2], unity, second_template
     )
     database.close()
+
+    # `set-workers` changes the worker limit of a running coordinator. Every
+    # transition below is decided by the limit alone, never by elapsed time:
+    # a lowered limit lets running workers finish and only withholds claims.
+    workers_repository = temporary / "workers repository"
+    workers_cache = temporary / "workers state"
+    workers_repository.mkdir()
+    run(["git", "init"], workers_repository)
+    run(["git", "config", "user.email", "precheck@example.invalid"], workers_repository)
+    run(["git", "config", "user.name", "Precheck Test"], workers_repository)
+    (workers_repository / "cmake").mkdir()
+    for name in ("llvm-lock.json", "onnx-mlir-lock.json"):
+        (workers_repository / "cmake" / name).write_text("{}\n", encoding="utf-8")
+    worker_commits = []
+    for index in range(4):
+        (workers_repository / "value.txt").write_text(str(index), encoding="utf-8")
+        run(["git", "add", "."], workers_repository)
+        run(["git", "commit", "-m", f"worker commit {index}"], workers_repository)
+        worker_commits.append(run(["git", "rev-parse", "HEAD"], workers_repository))
+    newest_first = worker_commits[::-1]
+
+    def service_command(*arguments):
+        return run(
+            [
+                sys.executable,
+                ROOT / "scripts/precheck_service.py",
+                *arguments,
+                "--repo",
+                workers_repository,
+                "--cache-root",
+                workers_cache,
+            ],
+            workers_repository,
+        )
+
+    def job_states():
+        states_database = ValidationDatabase(workers_cache / "queue.sqlite3")
+        try:
+            return {
+                row["commit_sha"]: row["state"]
+                for row in states_database.connection.execute(
+                    "SELECT commit_sha, state FROM jobs"
+                )
+            }
+        finally:
+            states_database.close()
+
+    def wait_for_states(predicate, ceiling, timeout=120):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            states = job_states()
+            running = sum(state == "running" for state in states.values())
+            assert running <= ceiling, (running, ceiling, states)
+            if predicate(states):
+                return states
+            time.sleep(0.05)
+        raise AssertionError(f"job states did not settle: {job_states()}")
+
+    workers_database = ValidationDatabase(workers_cache / "queue.sqlite3")
+    assert workers_database.worker_setting() == (None, "unset")
+    for invalid in (-1, MAX_WORKERS + 1):
+        try:
+            workers_database.set_worker_count(invalid)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"accepted worker count {invalid}")
+    for index, commit in enumerate(worker_commits):
+        workers_database.enqueue(workers_repository, commit)
+        with workers_database.immediate():
+            workers_database.connection.execute(
+                "UPDATE jobs SET enqueued_at=? WHERE commit_sha=?",
+                (f"2026-01-02T00:00:0{index}+00:00", commit),
+            )
+    workers_database.close()
+    assert service_command("set-workers", "0").startswith("precheck_workers=0 ")
+    # A persisted count overrides --jobs, and a paused --once run returns.
+    coordinator(workers_repository, workers_cache, 1, True)
+    assert set(job_states().values()) == {"queued"}
+
+    os.environ["UDONCL_PRECHECK_TEST_DELAY"] = "3"
+    os.environ["UDONCL_PRECHECK_TEST_RESULT"] = "passed"
+    coordinator_log = (temporary / "workers coordinator.log").open("w")
+    workers_coordinator = subprocess.Popen(
+        [
+            sys.executable,
+            ROOT / "scripts/precheck_service.py",
+            "run",
+            "--repo",
+            workers_repository,
+            "--cache-root",
+            workers_cache,
+            "--jobs",
+            "3",
+        ],
+        stdout=coordinator_log,
+        stderr=subprocess.STDOUT,
+    )
+    try:
+        wait_for_states(
+            lambda _: "precheck_service=ready" in service_command("status"), 0
+        )
+        status = service_command("status")
+        assert "workers=0 workers_source=set-workers" in status, status
+        assert service_command("set-workers", "2").startswith("precheck_workers=2 ")
+        states = wait_for_states(
+            lambda states: sum(state == "running" for state in states.values()) == 2,
+            2,
+        )
+        # Pause in-process right away; both workers are still inside their
+        # fake gate, so neither has finished and nothing else was claimed.
+        workers_database = ValidationDatabase(workers_cache / "queue.sqlite3")
+        workers_database.set_worker_count(0)
+        workers_database.close()
+        assert [states[commit] for commit in newest_first] == [
+            "running",
+            "running",
+            "queued",
+            "queued",
+        ], states
+        states = wait_for_states(
+            lambda states: "running" not in states.values(), 2
+        )
+        assert [states[commit] for commit in newest_first] == [
+            "passed",
+            "passed",
+            "queued",
+            "queued",
+        ], states
+        assert service_command("set-workers", "1").startswith("precheck_workers=1 ")
+        wait_for_states(
+            lambda states: set(states.values()) == {"passed"}, 1
+        )
+        status = service_command("status")
+        assert "workers=1 workers_source=set-workers" in status, status
+        stop_service(workers_cache)
+        workers_coordinator.wait(timeout=60)
+    finally:
+        if workers_coordinator.poll() is None:
+            workers_coordinator.kill()
+            workers_coordinator.wait(timeout=10)
+        coordinator_log.close()
+    workers_database = ValidationDatabase(workers_cache / "queue.sqlite3")
+    rows = {
+        row["commit_sha"]: row
+        for row in workers_database.connection.execute("SELECT * FROM jobs")
+    }
+    intervals = {}
+    for (commit, log_path) in workers_database.connection.execute(
+        "SELECT commit_sha, path FROM artifacts WHERE kind='precheck_log'"
+    ).fetchall():
+        stamps = dict(
+            line.split("=", 1)
+            for line in Path(log_path).read_text(encoding="utf-8").splitlines()
+            if "=" in line
+        )
+        intervals[commit] = (
+            float(stamps["test_gate_started"]),
+            float(stamps["test_gate_finished"]),
+        )
+    workers_database.close()
+    started = [rows[commit]["started_at"] for commit in newest_first]
+    assert started == sorted(started), started
+    assert all(rows[commit]["attempt"] == 1 for commit in worker_commits)
+    # The two oldest commits ran under a limit of one, one after the other.
+    assert intervals[newest_first[2]][1] <= intervals[newest_first[3]][0], intervals
+    assert {rows[commit]["slot"] for commit in newest_first[2:]} == {0}
 
     if previous_testing is None:
         os.environ.pop("UDONCL_PRECHECK_TESTING", None)
