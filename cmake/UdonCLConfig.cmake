@@ -697,42 +697,6 @@ function(udoncl_add_unity_library target)
       list(APPEND _host_modules "${_library_module}")
     endif()
   endforeach()
-  set(_host_buffer_plan)
-  if(_runtime_sources)
-    list(REMOVE_DUPLICATES _runtime_sources)
-    list(REMOVE_DUPLICATES _runtime_dependencies)
-    list(REMOVE_DUPLICATES _runtime_flags)
-    if(_mutable_handle_capacity AND _host_modules)
-      _udoncl_link_module_set("${target}-buffer-plan" HOST "${_host_modules}"
-                              _host_plan_module)
-      set(_host_buffer_plan
-          "${CMAKE_CURRENT_BINARY_DIR}/udoncl/${target}/host-buffer-plan.json")
-      set(_capacity_header
-          "${CMAKE_CURRENT_BINARY_DIR}/udoncl/${target}/host-buffer-capacity.h")
-      add_custom_command(
-        OUTPUT "${_host_buffer_plan}" "${_capacity_header}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory
-                "${CMAKE_CURRENT_BINARY_DIR}/udoncl/${target}"
-        COMMAND "${UDONCLC_EXECUTABLE}" --plan-host-buffer-capacity
-                "${_host_plan_module}"
-                --base-mutable-handle-capacity "${_mutable_handle_capacity}"
-                --capacity-header "${_capacity_header}"
-                -o "${_host_buffer_plan}"
-        DEPENDS "${UDONCLC_EXECUTABLE}" "${_host_plan_module}"
-        COMMENT "Planning final Host cl_mem capacity for ${target}"
-        VERBATIM)
-      list(APPEND _runtime_dependencies "${_capacity_header}")
-      list(APPEND _runtime_flags -include "${_capacity_header}")
-    elseif(_mutable_handle_capacity)
-      list(APPEND _runtime_flags
-        "-DUDONCL_AOT_BUFFER_CAPACITY=${_mutable_handle_capacity}"
-        "-DUDONCL_DEVICE_BUFFER_CAPACITY=${_mutable_handle_capacity}")
-    endif()
-    _udoncl_compile_source_target("${target}" HOST "capacity-runtime"
-                                  "${_runtime_sources}"
-                                  "${_runtime_dependencies}"
-                                  "${_runtime_flags}" _runtime_module)
-  endif()
   set(_host_module)
   if(_host_modules)
     _udoncl_link_module_set("${target}" HOST "${_host_modules}" _host_module)
@@ -764,6 +728,63 @@ function(udoncl_add_unity_library target)
     endforeach()
     _udoncl_link_module_set("${target}" DEVICE "${_device_modules}"
                             _device_module)
+  endif()
+
+  set(_host_buffer_plan)
+  if(_runtime_sources)
+    list(REMOVE_DUPLICATES _runtime_sources)
+    list(REMOVE_DUPLICATES _runtime_dependencies)
+    list(REMOVE_DUPLICATES _runtime_flags)
+    if(_mutable_handle_capacity AND _host_modules)
+      _udoncl_link_module_set("${target}-buffer-plan" HOST "${_host_modules}"
+                              _host_plan_module)
+      set(_host_buffer_plan
+          "${CMAKE_CURRENT_BINARY_DIR}/udoncl/${target}/host-buffer-plan.json")
+      set(_capacity_header
+          "${CMAKE_CURRENT_BINARY_DIR}/udoncl/${target}/host-buffer-capacity.h")
+      add_custom_command(
+        OUTPUT "${_host_buffer_plan}" "${_capacity_header}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory
+                "${CMAKE_CURRENT_BINARY_DIR}/udoncl/${target}"
+        COMMAND "${UDONCLC_EXECUTABLE}" --plan-host-buffer-capacity
+                "${_host_plan_module}"
+                --base-mutable-handle-capacity "${_mutable_handle_capacity}"
+                --capacity-header "${_capacity_header}"
+                -o "${_host_buffer_plan}"
+        DEPENDS "${UDONCLC_EXECUTABLE}" "${_host_plan_module}"
+        COMMENT "Planning final Host cl_mem capacity for ${target}"
+        VERBATIM)
+      list(APPEND _runtime_dependencies "${_capacity_header}")
+      list(APPEND _runtime_flags -include "${_capacity_header}")
+    elseif(_mutable_handle_capacity)
+      list(APPEND _runtime_flags
+        "-DUDONCL_AOT_BUFFER_CAPACITY=${_mutable_handle_capacity}"
+        "-DUDONCL_DEVICE_BUFFER_CAPACITY=${_mutable_handle_capacity}")
+    endif()
+    # The OpenCL C kernels of the Device libraries that the Host creates by
+    # name and no UdonCL library provides: the runtime dispatches them
+    # through the declarations udonclc writes (an empty header without any).
+    if(_host_module AND _device_module)
+      set(_user_kernel_directory
+          "${CMAKE_CURRENT_BINARY_DIR}/udoncl/${target}/opencl-user-kernels")
+      set(_user_kernel_header
+          "${_user_kernel_directory}/udoncl_aot_user_kernels.h")
+      add_custom_command(
+        OUTPUT "${_user_kernel_header}"
+               "${_user_kernel_directory}/udoncl_aot_user_dispatch.h"
+        COMMAND "${UDONCLC_EXECUTABLE}" --emit-opencl-user-kernels
+                "${_host_module}" --device-llvm "${_device_module}"
+                -o "${_user_kernel_directory}"
+        DEPENDS "${UDONCLC_EXECUTABLE}" "${_host_module}" "${_device_module}"
+        COMMENT "Declaring the OpenCL user kernels of ${target}"
+        VERBATIM)
+      list(APPEND _runtime_dependencies "${_user_kernel_header}")
+      list(APPEND _runtime_flags -include "${_user_kernel_header}")
+    endif()
+    _udoncl_compile_source_target("${target}" HOST "capacity-runtime"
+                                  "${_runtime_sources}"
+                                  "${_runtime_dependencies}"
+                                  "${_runtime_flags}" _runtime_module)
   endif()
 
   if(ARG_OUTPUT_DIRECTORY)

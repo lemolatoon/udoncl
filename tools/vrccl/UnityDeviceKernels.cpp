@@ -271,6 +271,7 @@ struct KernelSites {
 FailureOr<json::Array>
 deriveUnityDeviceKernels(ModuleOp host, ArrayRef<int64_t> explicitKernelIds,
                          ArrayRef<int64_t> synthesizedKernelIds,
+                         const std::map<int64_t, std::string> &userKernels,
                          llvm::raw_ostream &diagnostics) {
   std::map<int64_t, KernelSites> sites;
   host.walk([&](runtime::DispatchOp dispatch) {
@@ -286,6 +287,15 @@ deriveUnityDeviceKernels(ModuleOp host, ArrayRef<int64_t> explicitKernelIds,
     const KernelSites &kernelSites = item.second;
     runtime::DispatchOp first = kernelSites.dispatches.front();
     const LibraryKernelContract *contract = findContract(id);
+    // A user OpenCL C kernel has no access contract beyond its launch: the
+    // gather proof bounds every input by the output words.
+    auto user = userKernels.find(id);
+    std::optional<LibraryKernelContract> userContract;
+    if (!contract && user != userKernels.end()) {
+      userContract = LibraryKernelContract{
+          static_cast<int32_t>(id), user->second.c_str(), {}, {}, std::nullopt};
+      contract = &*userContract;
+    }
     if (!contract) {
       diagnostics << "the Unity Host dispatches Device kernel id " << id
                   << ", which is not a UdonCL Device library kernel; describe "
@@ -361,6 +371,15 @@ deriveUnityDeviceKernels(ModuleOp host, ArrayRef<int64_t> explicitKernelIds,
         {"local_size", integers(first.getLocalSize())},
         {"global_offset", integers(first.getGlobalOffset())},
     };
+    // A user kernel that reads no buffer is one invocation writing its
+    // output, not a gather of its inputs.
+    if (userContract &&
+        llvm::count_if(first.getArgumentKinds(), [](Attribute kind) {
+          return cast<StringAttr>(kind).getValue() == "buffer";
+        }) < 2) {
+      entry.erase("profile");
+      entry.erase("words");
+    }
     if (!inputWords.empty())
       entry["input_words"] = integers(inputWords);
     if (!bounds.empty()) {

@@ -739,6 +739,12 @@ add_test(NAME unity-device-kernel-derivation
     $<TARGET_FILE:vrccl> "${VRC_TEST_CLANG}"
     "${PROJECT_BINARY_DIR}/tests/unity-device-kernel-derivation"
 )
+add_test(NAME opencl-user-kernel-declarations
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/boundary/opencl_user_kernels.py"
+    $<TARGET_FILE:vrccl> "${VRC_TEST_CLANG}"
+    "${PROJECT_BINARY_DIR}/tests/opencl-user-kernel-declarations"
+)
 add_test(NAME large-gather-device-lowering
   COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/boundary/large_gather.py"
     $<TARGET_FILE:vrccl> "${VRC_TEST_CLANG}"

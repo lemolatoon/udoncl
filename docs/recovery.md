@@ -10,8 +10,9 @@ errors for unimplemented semantics; it is not the completed recovery pipeline.
 SAXPY and one work-group reduction stage are compiled as OpenCL C 1.2 to
 `spir-unknown-unknown` (32-bit SPIR). This is a device import experiment, not the
 final host C target definition. No native OpenCL device, Unity or VRChat client
-was used. The reduction example still needs iterative inter-group dispatches
-and final GPU readback to satisfy the MVP.
+was used. The fixtures are `tests/frontend/saxpy.cl` and
+`tests/frontend/reduction.cl`; the reduction still needs iterative
+inter-group dispatches and final GPU readback to satisfy the MVP.
 
 The test matrix compares `-O0 -g`, `-O0 -g -Xclang -disable-O0-optnone`, and the
 latter followed by LLVM `-passes=mem2reg`. All six inputs import and verify.

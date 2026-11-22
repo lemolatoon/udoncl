@@ -30,7 +30,7 @@ for name, kernel, spaces, types in [
     ('saxpy', 'saxpy', [0, 1, 1, 0], ['float', 'float*', 'float*', 'uint']),
     ('reduction', 'sum_reduce', [1, 1, 3, 0], ['float*', 'float*', 'float*', 'uint']),
 ]:
-    source = root / 'examples' / name / (name + '.cl')
+    source = root / 'tests/frontend' / (name + '.cl')
     for variant in ['O0', 'no-optnone', 'mem2reg']:
         prefix = output / f'{name}-{variant}'
         llvm_ir = prefix.with_suffix('.ll')

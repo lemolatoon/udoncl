@@ -967,6 +967,42 @@ derives these entries; the Unity library config does not have to list them.
   Gather table shape that is not constant). Hand-written entries keep their
   config order ahead of the derived ones, which follow in id order.
 
+#### User OpenCL C kernels
+
+A Host C may also launch OpenCL C kernels of its own Device libraries
+through the linked OpenCL AOT runtime (`UdonCL::OpenCLRuntime`) with the
+standard `clCreateKernel`, `clSetKernelArg` and `clEnqueueNDRangeKernel`:
+
+- **Declarations.** `udoncl_add_unity_library` runs `udonclc
+  --emit-opencl-user-kernels host.bc --device-llvm device.bc` before it
+  compiles the runtime. Every kernel the Host creates by a constant name
+  that the Device libraries define and no UdonCL library provides gets an
+  id from 1024 in name order, a dispatch intrinsic
+  `__vrc_opencl_dispatch_user_<id>_<buffers>_<name>` and an enqueue entry
+  point `__vrc_enqueue_user_<id>_<buffers>_<name>` that checks its buffers
+  like a library `__vrc_enqueue_*_device_args` function. OpenCLAOT.c is
+  compiled with the generated header (`-include`), which is empty, and so
+  changes nothing, for a Host that creates only library kernels; with user
+  kernels it leaves out the dispatch paths of the UdonCL libraries the Device
+  libraries define no kernel of. A kernel's arguments must be its `__global`
+  buffers (inputs, then the output) followed by int, uint or float scalars.
+- **Launch binding.** Before the Host C is raised, every
+  `clEnqueueNDRangeKernel` of a user kernel becomes a call of its entry
+  point with the values the last dominating `clSetKernelArg` of each
+  argument set, so the static Device resource analysis sees the buffers of
+  the launch; a `cl_mem` passed by address must live in a Host global or a
+  singleton local cell. A launch that may run more than one kernel, a global
+  work offset, or an argument without a dominating four-byte
+  `clSetKernelArg` fails the build with the kernel and function.
+- **Entry.** The NDRange is the constant global work size every
+  `clEnqueueNDRangeKernel` of the kernel passes; `vrc.device_dispatch` on
+  the dispatch intrinsic hands it to `LowerOpenCLAOTIntrinsics`, and the
+  derived `device_kernels` entry has the gather profile when the kernel
+  reads a buffer (otherwise one invocation) and no further access contract.
+  A run-time or disagreeing global work size fails the build, naming the
+  hand-written entry (`kernel`, the assigned `kernel_id`, `global_size`) that
+  replaces the derived one.
+
 #### Generated kernel channel
 
 Library kernels are hand-written OpenCL C with a fixed id, dispatched through

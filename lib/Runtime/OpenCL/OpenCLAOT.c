@@ -400,6 +400,14 @@ static int udoncl_string_equal(const char *left, const char *right) {
   return *left == *right;
 }
 
+/* User OpenCL C kernels: udoncl_add_unity_library force-includes the
+ * declarations `udonclc --emit-opencl-user-kernels` generates for the Device
+ * library kernels the Host creates by name that no UdonCL library provides.
+ * With none, the header is empty and this runtime is unchanged. */
+#ifdef UDONCL_AOT_USER_KERNEL_COUNT
+static cl_uint udoncl_user_kernel_id(const char *name);
+#endif
+
 static cl_uint udoncl_kernel_id(const char *name) {
 #if UDONCL_AOT_ENABLE_BLAS
   if (udoncl_string_equal(name, "udonblas_sgemm"))
@@ -491,7 +499,11 @@ static cl_uint udoncl_kernel_id(const char *name) {
   if (udoncl_string_equal(name, "udononnx_scatter_nd_f32"))
     return 246;
 #endif
+#ifdef UDONCL_AOT_USER_KERNEL_COUNT
+  return udoncl_user_kernel_id(name);
+#else
   return 0;
+#endif
 }
 
 static void udoncl_error(cl_int *output, cl_int value) {
@@ -2706,6 +2718,15 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueCopyBuffer(
   return udoncl_finish_enqueue(queue, CL_COMMAND_COPY_BUFFER, pending, CL_FALSE,
                                event);
 }
+
+#ifdef UDONCL_AOT_USER_KERNEL_COUNT
+/* udoncl_user_kernel_id, and one `__vrc_enqueue_user_*` entry point per user
+ * kernel that dispatches it like a library kernel's device-argument entry
+ * point. udonclc binds every clEnqueueNDRangeKernel of a user kernel to it
+ * with the arguments clSetKernelArg set, so clEnqueueNDRangeKernel itself
+ * never launches one. */
+#include UDONCL_AOT_USER_KERNEL_DISPATCH
+#endif
 
 CL_API_ENTRY cl_int CL_API_CALL clEnqueueNDRangeKernel(
     cl_command_queue queue, cl_kernel kernel, cl_uint work_dim,

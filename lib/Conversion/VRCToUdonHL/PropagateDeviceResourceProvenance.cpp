@@ -911,6 +911,12 @@ bool isExactCellAccess(OpOperand &use, Value cell) {
     return use.getOperandNumber() == 1 && store.getPointer() == cell &&
            isHandleType(store.getValue().getType()) && hasAlignment(store, 4) &&
            !store->hasAttr("volatile") && !store->hasAttr("volatile_");
+  // clSetKernelArg(kernel, index, sizeof(cl_mem), &cell) copies the handle
+  // the cell holds into the kernel arguments; it neither keeps the address
+  // nor writes the cell.
+  if (auto call = dyn_cast<func::CallOp>(operation))
+    return call.getCallee() == "clSetKernelArg" &&
+           use.getOperandNumber() == 3 && call.getNumOperands() == 4;
   return false;
 }
 

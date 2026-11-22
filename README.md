@@ -148,6 +148,11 @@ kernel's `device_kernels` entry from its dispatch sites and the library
 kernel contract, and a hand-written entry replaces the derived one of its
 `kernel_id` (see "Library kernel entries" in
 [docs/architecture/refactor-baseline-and-mlir-pipeline.md](docs/architecture/refactor-baseline-and-mlir-pipeline.md)).
+The same holds for OpenCL C kernels of your own `DEVICE_LIBRARIES` that a
+Host C launches with `clCreateKernel`, `clSetKernelArg` and a constant-size
+`clEnqueueNDRangeKernel` through the linked runtime
+(`HOST_LIBRARIES ... UdonCL::OpenCLRuntime`); see "User OpenCL C kernels"
+in the same document.
 Its artifact contains `manifest.json`,
 compiler-emitted `host.uasm`, and a valid display shader; import it with
 **Tools → udoncl → Import Artifacts...**. CMake preset support and the future

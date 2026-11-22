@@ -1,0 +1,26 @@
+{
+  "schema_version": 2,
+  "program": "opencl_user_kernel",
+  "binding": {
+    "namespace": "Lemolatoon.Udoncl.Generated",
+    "class_name": "UdonclOpenclUserKernelBinding"
+  },
+  "export_overrides": [
+    {
+      "symbol": "run_user_kernels",
+      "public_name": "RunUserKernels",
+      "parameters": ["n", "alpha", "factor"]
+    },
+    {
+      "symbol": "user_kernel_result",
+      "public_name": "UserKernelResult",
+      "parameters": ["index"]
+    }
+  ],
+  "buffers": [
+    {"id": 1, "name": "x", "byte_size": 128},
+    {"id": 2, "name": "y", "byte_size": 128},
+    {"id": 3, "name": "sum", "byte_size": 128},
+    {"id": 4, "name": "scaled", "byte_size": 128}
+  ]
+}

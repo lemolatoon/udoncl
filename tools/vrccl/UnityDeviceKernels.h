@@ -6,6 +6,8 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/JSON.h"
 #include <cstdint>
+#include <map>
+#include <string>
 
 namespace llvm {
 class raw_ostream;
@@ -33,10 +35,16 @@ namespace udoncl {
 /// outside the argument bounds of the contract, or when a site-derived
 /// contract meets a scalar that is not a compile-time constant. The result is
 /// ordered by kernel id.
+///
+/// `userKernels` names the user OpenCL C kernels the linked OpenCL AOT
+/// runtime dispatches (OpenCLUserKernels.h) by id. Their entries hold only
+/// the launch: the gather profile when they read a buffer, otherwise one
+/// invocation.
 mlir::FailureOr<llvm::json::Array>
 deriveUnityDeviceKernels(mlir::ModuleOp host,
                          llvm::ArrayRef<int64_t> explicitKernelIds,
                          llvm::ArrayRef<int64_t> synthesizedKernelIds,
+                         const std::map<int64_t, std::string> &userKernels,
                          llvm::raw_ostream &diagnostics);
 
 } // namespace udoncl

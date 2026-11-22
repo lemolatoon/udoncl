@@ -262,6 +262,7 @@ def main():
     saxpy_consumer = output / 'saxpy-consumer'
     pooling_consumer = output / 'average-pooling-consumer'
     udonblas_consumer = output / 'udonblas-consumer'
+    user_kernel_consumer = output / 'opencl-user-kernel-consumer'
     onnx_consumer = output / 'onnx-consumer'
     onnx_runtime_consumer = output / 'onnx-runtime-consumer'
     onnx_mnist_consumer = output / 'onnx-mnist-consumer'
@@ -1735,6 +1736,121 @@ def main():
         '--target', 'hello-int-dispatch-unity-library',
     ])
 
+    # A Host C on the standard OpenCL API with OpenCL C kernels of its own:
+    # the config names the exports and buffers, and the linked runtime
+    # dispatches the kernels through entry points udonclc declares.
+    user_kernel_source = Path(__file__).resolve().parent / 'opencl_user_kernel'
+    run([
+        args.cmake,
+        '-S', str(user_kernel_source),
+        '-B', str(user_kernel_consumer),
+        '-G', args.generator,
+        f'-DCMAKE_MAKE_PROGRAM={args.make_program}',
+        f'-DUdonCL_DIR={package}',
+        f'-DUDONCL_CLANG_EXECUTABLE={Path(args.clang).resolve()}',
+        f'-DUDONCL_LLVM_LINK_EXECUTABLE={Path(args.llvm_link).resolve()}',
+    ])
+    run([
+        args.cmake, '--build', str(user_kernel_consumer), '--target',
+        'opencl-user-kernel',
+    ])
+    user_kernel_root = user_kernel_consumer / 'udoncl/opencl-user-kernel'
+    user_kernel_declarations = (
+        user_kernel_root / 'opencl-user-kernels/udoncl_aot_user_dispatch.h'
+    ).read_text(encoding='utf-8')
+    for entry_point in [
+        'cl_int __vrc_enqueue_user_1024_3_user_saxpy(cl_command_queue queue, '
+        'cl_mem buffer0, cl_mem buffer1, cl_mem buffer2, cl_int scalar3, '
+        'cl_float scalar4,',
+        'cl_int __vrc_enqueue_user_1025_2_user_scale(cl_command_queue queue, '
+        'cl_mem buffer0, cl_mem buffer1, cl_float scalar2,',
+    ]:
+        assert entry_point in user_kernel_declarations, user_kernel_declarations
+    # Without a BLAS, DNN, ONNX or MNIST Device library the runtime leaves
+    # their dispatch paths out.
+    assert '#define UDONCL_AOT_ENABLE_BLAS 0' in (
+        user_kernel_root / 'opencl-user-kernels/udoncl_aot_user_kernels.h'
+    ).read_text(encoding='utf-8')
+    user_kernel_manifest = json.loads(
+        (user_kernel_root / 'artifact/manifest.json').read_text(encoding='utf-8')
+    )
+    assert [
+        (kernel['id'], kernel['name'], kernel['global_size'],
+         [argument['kind'] for argument in kernel['args']])
+        for kernel in user_kernel_manifest['device']['kernels']
+    ] == [
+        (1024, 'user_saxpy', [32, 1, 1],
+         ['buffer', 'buffer', 'buffer', 'i32', 'f32']),
+        (1025, 'user_scale', [32, 1, 1], ['buffer', 'buffer', 'f32']),
+    ], user_kernel_manifest['device']['kernels']
+    assert [
+        (site['kernel_id'], site['resources'])
+        for site in user_kernel_manifest['dispatch_sites']
+    ] == [(1024, 3), (1025, 2)], user_kernel_manifest['dispatch_sites']
+    for kernel_id in [1024, 1025]:
+        assert (
+            user_kernel_root / f'artifact/kernels/kernel_{kernel_id}.shader'
+        ).is_file()
+    # The strings of the UDONCL_EXPORT annotations, among them the path of
+    # the Host C source, do not reach the Host raw heap.
+    user_kernel_heap = (user_kernel_root / 'artifact/raw-heap.bytes').read_bytes()
+    assert b'host.c' not in user_kernel_heap
+    assert b'udoncl.export' not in user_kernel_heap
+    # A run-time global work size cannot be derived: the build names the
+    # entry to write, and a hand-written entry builds the same Host.
+    dynamic_build = subprocess.run(
+        [args.cmake, '--build', str(user_kernel_consumer), '--target',
+         'opencl-user-kernel-dynamic'],
+        text=True, capture_output=True)
+    assert dynamic_build.returncode != 0, dynamic_build.stdout
+    dynamic_diagnostic = ' '.join((dynamic_build.stdout + dynamic_build.stderr).split())
+    assert (
+        'cannot derive the NDRange of OpenCL kernel user_scale: the '
+        'clEnqueueNDRangeKernel in run_dynamic_scale passes a work dimension '
+        'or global work size that is not a compile-time constant; declare '
+        'its device_kernels entry (kernel "user_scale", kernel_id 1024, '
+        'global_size) by hand'
+    ) in dynamic_diagnostic, dynamic_diagnostic
+    dynamic_root = user_kernel_consumer / 'udoncl/opencl-user-kernel-dynamic'
+    dynamic_config = json.loads(
+        (user_kernel_source / 'dynamic-library.json').read_text(encoding='utf-8')
+    )
+    dynamic_entry = {
+        'schema_version': 1, 'profile': 'gather-f32', 'words': 32,
+        'kernel': 'user_scale', 'kernel_id': 1024,
+        'argument_kinds': ['buffer', 'buffer', 'f32'],
+        'global_size': [32, 1, 1], 'local_size': [1, 1, 1],
+        'global_offset': [0, 0, 0],
+    }
+
+    def dynamic_command(name, entry):
+        config = output / f'opencl-user-kernel-{name}.json'
+        config.write_text(
+            json.dumps({**dynamic_config, 'device_kernels': [entry]}),
+            encoding='utf-8')
+        return [
+            installed_compiler, '--emit-unity-library-bundle', config,
+            '--host-llvm', dynamic_root / 'host.bc',
+            '--host-library-llvm',
+            dynamic_root / 'modules/host/capacity_runtime.bc',
+            '--device-llvm', dynamic_root / 'device.bc',
+            '-o', output / f'opencl-user-kernel-{name}-artifact',
+        ]
+
+    run(dynamic_command('explicit', dynamic_entry))
+    explicit_kernels = json.loads(
+        (output / 'opencl-user-kernel-explicit-artifact/manifest.json')
+        .read_text(encoding='utf-8')
+    )['device']['kernels']
+    assert [(kernel['id'], kernel['global_size']) for kernel in explicit_kernels] == [
+        (1024, [32, 1, 1])
+    ], explicit_kernels
+    run_failure(
+        dynamic_command('wrong-id', {**dynamic_entry, 'kernel_id': 7}),
+        'the device_kernels entry of OpenCL kernel user_scale must declare '
+        'kernel_id 1024, the id its Host dispatches it with',
+    )
+
     udonblas_source = args.source.resolve().parents[1] / 'examples/udonblas-sgemm'
     run([
         args.cmake,
@@ -1765,6 +1881,11 @@ def main():
     ])
     runtime_module = udonblas_root / 'modules/host/capacity_runtime.bc'
     assert runtime_module.is_file()
+    # Only library kernels: the user kernel declarations leave the runtime
+    # unchanged.
+    assert 'UDONCL_AOT_USER_KERNEL_COUNT' not in (
+        udonblas_root / 'opencl-user-kernels/udoncl_aot_user_kernels.h'
+    ).read_text(encoding='utf-8')
     assert len(
         list((udonblas_root / 'objects/host/capacity_runtime').glob('*.bc'))
     ) == 2
@@ -2261,7 +2382,10 @@ def main():
     assert 'typed_global_arrays' in storage_report
     assert storage_report['fixed_named_slots']
     assert storage_report['scalar_registers']
-    assert storage_report['raw_objects']
+    # The UDONCL_EXPORT annotation strings are not Host data, and this Host
+    # keeps nothing else in raw memory.
+    assert storage_report['raw_objects'] == []
+    assert storage_report['raw_heap_bytes'] == 0
     assert any(
         resource['name'] == 'host_storage_report'
         and resource['path'] == 'storage-report.json'

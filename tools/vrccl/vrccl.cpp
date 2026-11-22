@@ -12,6 +12,7 @@
 #include "VRC/Target/HLSL/Emitter.h"
 #include "VRC/Target/UdonAssembly/Emitter.h"
 #include "HostBufferPlan.h"
+#include "OpenCLUserKernels.h"
 #include "UnityDeviceKernels.h"
 #include "mlir/Conversion/ControlFlowToSCF/ControlFlowToSCF.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -311,6 +312,11 @@ cl::opt<bool> emitNativeDevice(
 cl::opt<bool> emitUnityLibrary(
     "emit-unity-library-bundle",
     cl::desc("Compile scalar Host C exports into an importable Unity bundle"));
+cl::opt<bool> emitOpenCLUserKernels(
+    "emit-opencl-user-kernels",
+    cl::desc("Write the OpenCL AOT runtime declarations of the user OpenCL C "
+             "kernels the Host LLVM input creates (--device-llvm, -o "
+             "directory)"));
 cl::opt<bool> planHostBufferCapacity(
     "plan-host-buffer-capacity",
     cl::desc("Plan constant C Host cl_mem allocations before runtime linking"));
@@ -1684,6 +1690,16 @@ collectUdonCLAnnotatedExports(llvm::Module &module) {
   // ordinary llvm.mlir.global, which is not Host memory and must not reach raw
   // memory recovery.
   annotations->eraseFromParent();
+  // So are the annotation and source file name strings it referenced: left in
+  // place they would become Host raw memory, and the artifact would depend on
+  // the path of the Host C source.
+  for (GlobalVariable &global : llvm::make_early_inc_range(module.globals())) {
+    if (global.getSection() != "llvm.metadata" || !global.hasLocalLinkage())
+      continue;
+    global.removeDeadConstantUsers();
+    if (global.use_empty())
+      global.eraseFromParent();
+  }
   return exports;
 }
 
@@ -3067,6 +3083,19 @@ FailureOr<OwningOpRef<ModuleOp>> recoverUnityHostLLVM(StringRef filename,
     return failure();
   bool hasRuntime =
       inputModule->getFunction("__vrc_opencl_buffer_alloc") != nullptr;
+  // The user OpenCL C kernels the Host C launches through the runtime.
+  if (!linkedRuntime && !hasRuntime && !deviceLLVM.empty()) {
+    auto deviceModule = parseIRFile(deviceLLVM, diagnostic, llvmContext);
+    if (!deviceModule) {
+      diagnostic.print("udonclc", errs());
+      return failure();
+    }
+    auto kernels =
+        udoncl::discoverOpenCLUserKernels(*inputModule, *deviceModule, errs());
+    if (failed(kernels) || failed(udoncl::bindOpenCLUserKernelLaunches(
+                               *inputModule, kernels->kernels, errs())))
+      return failure();
+  }
   if (linkedRuntime && !hasRuntime) {
     errs() << "--host-library-llvm requires the linked OpenCL AOT runtime\n";
     return failure();
@@ -3323,15 +3352,25 @@ void attachDeviceResourceOperandContracts(ModuleOp module) {
     StringRef name = function.getSymName();
     auto contract = llvm::find_if(
         known, [&](const Contract &entry) { return entry.name == name; });
-    if (!function.isExternal() || contract == std::end(known) ||
-        function.getNumArguments() <= contract->buffers)
+    // The entry point of a user OpenCL C kernel names its buffer count:
+    // __vrc_enqueue_user_<id>_<buffers>_<kernel> (OpenCLUserKernels.h).
+    unsigned buffers = contract == std::end(known) ? 0 : contract->buffers;
+    StringRef user = name;
+    if (contract == std::end(known) &&
+        user.consume_front("__vrc_enqueue_user_")) {
+      StringRef count = user.split('_').second.split('_').first;
+      if (count.getAsInteger(10, buffers))
+        buffers = 0;
+    }
+    if (!function.isExternal() || buffers == 0 ||
+        function.getNumArguments() <= buffers)
       continue;
     SmallVector<mlir::Attribute> entries;
-    for (unsigned index = 1; index <= contract->buffers; ++index)
+    for (unsigned index = 1; index <= buffers; ++index)
       entries.push_back(builder.getDictionaryAttr({
           builder.getNamedAttr(
-              "access", builder.getStringAttr(
-                            index == contract->buffers ? "write" : "read")),
+              "access",
+              builder.getStringAttr(index == buffers ? "write" : "read")),
           builder.getNamedAttr("capture", builder.getStringAttr("none")),
           builder.getNamedAttr("index", builder.getI32IntegerAttr(index)),
       }));
@@ -3861,7 +3900,7 @@ int main(int argc, char **argv) {
   };
   if (int(emitBundle) + int(emitLLVMBundle) + int(checkRequest) +
           int(emitNativeDevice) + int(emitUnityLibrary) +
-          int(planHostBufferCapacity) !=
+          int(planHostBufferCapacity) + int(emitOpenCLUserKernels) !=
       1) {
     errs() << "select exactly one boundary mode\n";
     return 1;
@@ -3875,6 +3914,31 @@ int main(int argc, char **argv) {
     errs() << "--runtime-validation and --no-runtime-validation are mutually "
               "exclusive\n";
     return 1;
+  }
+  if (emitOpenCLUserKernels) {
+    if (outputDirectory.empty() || deviceLLVM.empty()) {
+      errs() << "OpenCL user kernel declarations require a Host LLVM input, "
+                "--device-llvm and -o directory\n";
+      return 1;
+    }
+    LLVMContext llvmContext;
+    SMDiagnostic diagnostic;
+    auto hostModule = parseIRFile(inputFilename, diagnostic, llvmContext);
+    if (!hostModule) {
+      diagnostic.print(argv[0], errs());
+      return 1;
+    }
+    auto deviceModule = parseIRFile(deviceLLVM, diagnostic, llvmContext);
+    if (!deviceModule) {
+      diagnostic.print(argv[0], errs());
+      return 1;
+    }
+    auto kernels =
+        udoncl::discoverOpenCLUserKernels(*hostModule, *deviceModule, errs());
+    return failed(kernels) || failed(udoncl::writeOpenCLUserKernelHeaders(
+                                  *kernels, outputDirectory, errs()))
+               ? 1
+               : 0;
   }
   if (planHostBufferCapacity) {
     if (outputDirectory.empty() || capacityHeader.empty()) {
@@ -3947,6 +4011,8 @@ int main(int argc, char **argv) {
   OwningOpRef<ModuleOp> synthesizedDeviceModule;
   SmallVector<const json::Object *> unityDeviceConfigs;
   SmallVector<SynthesizedUnityKernel> unitySynthesizedKernels;
+  // The user OpenCL C kernels the linked OpenCL AOT runtime dispatches, by id.
+  std::map<int64_t, std::string> unityUserKernels;
   SmallVector<UnityBuffer> unityBuffers;
   bool unityUsesBufferCopy = false;
   // The texel format of every Device buffer and immutable tensor texture of
@@ -4047,6 +4113,13 @@ int main(int argc, char **argv) {
           return 1;
       }
       {
+        auto described = udoncl::describeOpenCLUserDispatches(
+            *module, hostLLVM, unityDeviceConfigs, errs());
+        if (failed(described))
+          return 1;
+        unityUserKernels = std::move(*described);
+      }
+      {
         PassManager linkedHostRecovery(&context);
         linkedHostRecovery.enableVerifier(false);
         linkedHostRecovery.addPass(::vrc::createLowerOpenCLAOTIntrinsicsPass());
@@ -4074,6 +4147,13 @@ int main(int argc, char **argv) {
       auto library = recoverLinkedUnityHostLibrary(hostLibraryLLVM, context);
       if (failed(library) || failed(linkUnityHostLibrary(*module, **library)))
         return 1;
+      {
+        auto described = udoncl::describeOpenCLUserDispatches(
+            *module, hostLLVM, unityDeviceConfigs, errs());
+        if (failed(described))
+          return 1;
+        unityUserKernels = std::move(*described);
+      }
       {
         PassManager linkedHostRecovery(&context);
         linkedHostRecovery.enableVerifier(false);
@@ -4174,7 +4254,8 @@ int main(int argc, char **argv) {
       for (const SynthesizedUnityKernel &kernel : unitySynthesizedKernels)
         synthesizedKernelIds.push_back(kernel.id);
       auto derived = udoncl::deriveUnityDeviceKernels(
-          *module, explicitKernelIds, synthesizedKernelIds, errs());
+          *module, explicitKernelIds, synthesizedKernelIds, unityUserKernels,
+          errs());
       if (failed(derived))
         return 1;
       if (!derived->empty() && deviceLLVM.empty()) {
