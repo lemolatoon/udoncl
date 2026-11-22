@@ -135,7 +135,7 @@ agreement (`max_cpu_gpu_error=0`). Its phase cycle measured
 `validation/2026-10-31-md-phase.json`. This is the native oracle; it does not by
 itself prove Unity/Udon execution.
 
-Reproduce host verification with README.md commands. Logs under
+Reproduce host verification with the commands in [development.md](development.md). Logs under
 `docs/validation/` record actual executed commands and results when available.
 
 Actual host execution: [2026-10-30-host.txt](validation/2026-10-30-host.txt).

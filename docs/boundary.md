@@ -19,7 +19,9 @@ barriers, atomics, multiple stores, fastmath and broader launch shapes are
 rejected. Pure f32 constants/add/sub/mul are supported on Device. Host currently
 accepts a restricted single-block scalar subset and rejects recursion/suspension.
 
-Run the commands in the README to emit a bundle. The equivalent MLIR pipeline is:
+Run the commands in
+[architecture/compiler-status.md](architecture/compiler-status.md#hostdevice-boundary-bundle)
+to emit a bundle. The equivalent MLIR pipeline is:
 
 ```text
 build/udoncl/tools/vrc-opt/udoncl-opt --pass-pipeline="builtin.module(vrc-lower-host-to-udonhl,vrc-substitute-runtime-intrinsics,vrc-lower-device-single-invocation,vrc-verify-host-device)" --verify-each examples/host-device-boundary/probe.mlir -o build/boundary-lowered.mlir
