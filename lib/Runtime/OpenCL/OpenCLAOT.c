@@ -18,9 +18,6 @@
 #ifndef UDONCL_AOT_ENABLE_BLAS
 #define UDONCL_AOT_ENABLE_BLAS 1
 #endif
-#ifndef UDONCL_AOT_ENABLE_MNIST
-#define UDONCL_AOT_ENABLE_MNIST 0
-#endif
 #ifndef UDONCL_AOT_ENABLE_DNN
 #define UDONCL_AOT_ENABLE_DNN 0
 #endif
@@ -162,14 +159,6 @@ extern cl_int __vrc_opencl_dispatch_udononnx_scatter_nd_f32(
     cl_uint output_token, cl_int words, cl_int rank, cl_int shape01,
     cl_int shape23, cl_int tuple_rank, cl_int update_count, cl_int slice_words,
     cl_int index_words);
-#endif
-#if UDONCL_AOT_ENABLE_MNIST
-extern cl_int __vrc_opencl_dispatch_mnist_conv(cl_uint input_token,
-                                               cl_uint output_token);
-extern cl_int __vrc_opencl_dispatch_mnist_pool(cl_uint input_token,
-                                               cl_uint output_token);
-extern cl_int __vrc_opencl_dispatch_mnist_dense(cl_uint input_token,
-                                                cl_uint output_token);
 #endif
 extern cl_int __vrc_opencl_await(cl_int event);
 /* Submits the published transfer command without waiting for it. */
@@ -420,14 +409,6 @@ static cl_uint udoncl_kernel_id(const char *name) {
     return 4;
   if (udoncl_string_equal(name, "udonblas_sdot_reduce"))
     return 5;
-#endif
-#if UDONCL_AOT_ENABLE_MNIST
-  if (udoncl_string_equal(name, "mnist_conv"))
-    return 20;
-  if (udoncl_string_equal(name, "mnist_pool"))
-    return 21;
-  if (udoncl_string_equal(name, "mnist_dense"))
-    return 22;
 #endif
 #if UDONCL_AOT_ENABLE_DNN
   if (udoncl_string_equal(name, "udondnn_convolution_forward"))
@@ -1226,35 +1207,6 @@ static void udoncl_dispatch_unary(cl_kernel kernel, cl_uint work_dim,
   udoncl_dispatch_event = __vrc_opencl_dispatch_udononnx_unary_f32(
       udoncl_mem_physical_token(input), udoncl_mem_physical_token(output),
       operation, words);
-}
-#endif
-
-#if UDONCL_AOT_ENABLE_MNIST
-static void udoncl_dispatch_mnist(cl_kernel kernel, cl_uint work_dim,
-                                  const size_t *global_offset) {
-  cl_mem input, output;
-  if (work_dim != 1) {
-    udoncl_dispatch_status = CL_INVALID_WORK_DIMENSION;
-    return;
-  }
-  if (global_offset) {
-    udoncl_dispatch_status = CL_INVALID_GLOBAL_OFFSET;
-    return;
-  }
-  if (udoncl_mem_argument(kernel, 0, &input) != CL_SUCCESS ||
-      udoncl_mem_argument(kernel, 1, &output) != CL_SUCCESS) {
-    udoncl_dispatch_status = CL_INVALID_MEM_OBJECT;
-    return;
-  }
-  if (kernel->id == 20)
-    udoncl_dispatch_event = __vrc_opencl_dispatch_mnist_conv(
-        udoncl_mem_physical_token(input), udoncl_mem_physical_token(output));
-  else if (kernel->id == 21)
-    udoncl_dispatch_event = __vrc_opencl_dispatch_mnist_pool(
-        udoncl_mem_physical_token(input), udoncl_mem_physical_token(output));
-  else
-    udoncl_dispatch_event = __vrc_opencl_dispatch_mnist_dense(
-        udoncl_mem_physical_token(input), udoncl_mem_physical_token(output));
 }
 #endif
 
@@ -2799,13 +2751,6 @@ CL_API_ENTRY cl_int CL_API_CALL clEnqueueNDRangeKernel(
   if (kernel->id == 222) {
     udoncl_dispatch_status = CL_SUCCESS;
     udoncl_dispatch_unary(kernel, work_dim, global_offset);
-    return udoncl_finish_dispatch(queue, event);
-  }
-#endif
-#if UDONCL_AOT_ENABLE_MNIST
-  if (kernel->id >= 20 && kernel->id <= 22) {
-    udoncl_dispatch_status = CL_SUCCESS;
-    udoncl_dispatch_mnist(kernel, work_dim, global_offset);
     return udoncl_finish_dispatch(queue, event);
   }
 #endif

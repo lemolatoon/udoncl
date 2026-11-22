@@ -9,8 +9,6 @@ if(EXISTS "${_UDONCL_INSTALL_PREFIX}/include/udoncl/export.h")
   set(_UDONCL_OPENCL_INCLUDE_DIR "${_UDONCL_INSTALL_PREFIX}/include")
   set(_UDONCL_RUNTIME_DIR
       "${_UDONCL_INSTALL_PREFIX}/share/udoncl/runtime")
-  set(_UDONCL_ONNX_COMPILER
-      "${_UDONCL_INSTALL_PREFIX}/share/udoncl/onnx/udon_onnx.py")
   set(_UDONCL_ONNX_MLIR_COMPILER
       "${_UDONCL_INSTALL_PREFIX}/share/udoncl/onnx/compile_onnx_mlir.py")
 else()
@@ -18,8 +16,6 @@ else()
   set(_UDONCL_OPENCL_INCLUDE_DIR
       "${_UDONCL_SOURCE_HINT}/third_party/OpenCL-Headers")
   set(_UDONCL_RUNTIME_DIR "${_UDONCL_SOURCE_HINT}/lib/Runtime/OpenCL")
-  set(_UDONCL_ONNX_COMPILER
-      "${_UDONCL_SOURCE_HINT}/runtime/onnx/udon_onnx.py")
   set(_UDONCL_ONNX_MLIR_COMPILER
       "${_UDONCL_SOURCE_HINT}/scripts/compile_onnx_mlir.py")
 endif()
@@ -297,18 +293,6 @@ if(NOT TARGET udoncl_opencl_runtime)
 endif()
 if(NOT TARGET UdonCL::OpenCLRuntime)
   add_library(UdonCL::OpenCLRuntime ALIAS udoncl_opencl_runtime)
-endif()
-if(NOT TARGET udoncl_opencl_mnist_runtime)
-  udoncl_add_host_library(udoncl_opencl_mnist_runtime
-    "${_UDONCL_RUNTIME_DIR}/OpenCLAOT.c"
-    "${_UDONCL_RUNTIME_DIR}/DeviceMemory.c")
-  target_compile_definitions(udoncl_opencl_mnist_runtime INTERFACE
-    CL_TARGET_OPENCL_VERSION=120
-    UDONCL_AOT_ENABLE_BLAS=0
-    UDONCL_AOT_ENABLE_MNIST=1)
-endif()
-if(NOT TARGET UdonCL::OpenCLMnistRuntime)
-  add_library(UdonCL::OpenCLMnistRuntime ALIAS udoncl_opencl_mnist_runtime)
 endif()
 
 function(_udoncl_append_target_usage target expected_kind sources_var

@@ -22,11 +22,6 @@ namespace Lemolatoon.Udoncl.Editor
         public ValidationInfo validation;
         public ArtifactResourceInfo[] resources;
         public StaticTensorInfo[] static_tensors;
-        public UdonOnnxStaticInputInfo[] static_inputs;
-        public UdonOnnxCallArtifactInfo[] call_artifacts;
-        public UdonOnnxTextureArenaInfo texture_arena;
-        public UdonOnnxIoInfo[] model_inputs;
-        public UdonOnnxIoInfo[] model_outputs;
         public UdonOnnxBindingInfo onnx_binding;
     }
 
@@ -231,125 +226,6 @@ namespace Lemolatoon.Udoncl.Editor
         public bool srgb;
         public bool mipmaps;
         public string filter;
-    }
-
-    [Serializable]
-    internal sealed class UdonOnnxCallArtifactInfo
-    {
-        public int call_index;
-        public string path;
-    }
-
-    [Serializable]
-    internal sealed class UdonOnnxInt4CallManifest
-    {
-        public int schema_version;
-        public string artifact_stage;
-        public int call_index;
-        public string function;
-        public string assembly;
-        public UdonOnnxTextureLayout result_layout;
-        public ArtifactResourceInfo[] resources;
-    }
-
-    [Serializable]
-    internal sealed class UdonOnnxTextureLayout
-    {
-        public int width;
-        public int height;
-    }
-
-    [Serializable]
-    internal sealed class UdonOnnxExecutionPlan
-    {
-        public int schema_version;
-        public string runtime;
-        public string profile;
-        public string execution_provider;
-        public UdonOnnxPassInfo[] passes;
-        public UdonOnnxTextureArenaInfo texture_arena;
-    }
-
-    [Serializable]
-    internal sealed class UdonOnnxPassInfo
-    {
-        public int id;
-        public string kernel;
-        public string shader;
-        public string[] providers;
-        public int fragments;
-        public UdonOnnxIntMaterialBinding[] material_int_bindings;
-        public UdonOnnxFloatMaterialBinding[] material_float_bindings;
-        public UdonOnnxPassStaticInput[] static_inputs;
-        public bool has_host_material_index;
-        public int host_material_index;
-    }
-
-    [Serializable]
-    internal sealed class UdonOnnxIntMaterialBinding
-    {
-        public string property;
-        public int value;
-    }
-
-    [Serializable]
-    internal sealed class UdonOnnxFloatMaterialBinding
-    {
-        public string property;
-        public float value;
-    }
-
-    [Serializable]
-    internal sealed class UdonOnnxPassStaticInput
-    {
-        public string property;
-        public string initializer;
-    }
-
-    [Serializable]
-    internal sealed class UdonOnnxStaticInputInfo
-    {
-        public string name;
-        public string resource;
-        public UdonOnnxStaticTextureInfo texture;
-    }
-
-    [Serializable]
-    internal sealed class UdonOnnxStaticTextureInfo
-    {
-        public string abi;
-        public int words;
-        public int width;
-        public int height;
-    }
-
-    [Serializable]
-    internal sealed class UdonOnnxTextureArenaInfo
-    {
-        public string abi;
-        public int slot_count;
-        public int total_words;
-        public int total_bytes;
-        public UdonOnnxTextureSlotInfo[] slots;
-    }
-
-    [Serializable]
-    internal sealed class UdonOnnxTextureSlotInfo
-    {
-        public int index;
-        public int capacity_words;
-        public int width;
-        public int height;
-    }
-
-    [Serializable]
-    internal sealed class UdonOnnxIoInfo
-    {
-        public int index;
-        public string name;
-        public string data_type;
-        public int words;
-        public int slot;
     }
 
     [Serializable]

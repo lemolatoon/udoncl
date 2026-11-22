@@ -25,8 +25,9 @@ the compiler:
    beta versions, then add **UdonCL Runtime and ONNX Importer** to a Worlds
    project.
 3. In Unity, choose **Tools → udoncl → Examples** and one of:
-   - **Import ONNX Arena Add**, then **Add to Scene**. Import the **ONNX Arena
-     Add** Package Sample for its U# caller component.
+   - **Import ONNX MNIST**. This imports the MNIST CNN compiled from
+     `examples/onnx-mnist` with its typed U# binding and an example
+     controller. Import the **ONNX MNIST** Package Sample for a U# caller.
    - **Import C and OpenCL SAXPY**. This generates a typed U# binding prefab
      after Unity reloads the imported wrapper; choose **Add after Compile** to
      place it in the active scene.

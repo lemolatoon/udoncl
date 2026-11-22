@@ -113,9 +113,6 @@ install(FILES
   DESTINATION "${CMAKE_INSTALL_DATADIR}/udoncl/runtime"
   COMPONENT UdonCLCompiler)
 install(FILES
-  runtime/onnx/udon_onnx.py
-  runtime/onnx/udon_pages.py
-  runtime/onnx/udon_weights.py
   scripts/compile_onnx_mlir.py
   DESTINATION "${CMAKE_INSTALL_DATADIR}/udoncl/onnx"
   COMPONENT UdonCLCompiler)

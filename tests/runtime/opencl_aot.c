@@ -83,7 +83,6 @@ static cl_int dispatched_arena_batch_count;
 static cl_int dispatched_m;
 static cl_float dispatched_alpha;
 static cl_int dispatched_sgemv_trans;
-static cl_int dispatched_mnist_kernel;
 static cl_int dispatched_nbits_tile_n;
 static cl_int dispatched_nbits_finalize;
 static cl_int dispatched_q4_block_count;
@@ -519,30 +518,6 @@ cl_int __vrc_opencl_dispatch_udonblas_sgemv(cl_uint input_token,
   dispatched_sgemv_trans = trans;
   dispatched_alpha = alpha;
   return 11;
-}
-
-cl_int __vrc_opencl_dispatch_mnist_conv(cl_uint input_token,
-                                        cl_uint output_token) {
-  dispatched_input_token = input_token;
-  dispatched_output_token = output_token;
-  dispatched_mnist_kernel = 20;
-  return 12;
-}
-
-cl_int __vrc_opencl_dispatch_mnist_pool(cl_uint input_token,
-                                        cl_uint output_token) {
-  dispatched_input_token = input_token;
-  dispatched_output_token = output_token;
-  dispatched_mnist_kernel = 21;
-  return 13;
-}
-
-cl_int __vrc_opencl_dispatch_mnist_dense(cl_uint input_token,
-                                         cl_uint output_token) {
-  dispatched_input_token = input_token;
-  dispatched_output_token = output_token;
-  dispatched_mnist_kernel = 22;
-  return 14;
 }
 
 cl_int __vrc_opencl_dispatch_udononnx_matmul_nbits(cl_uint input_token,
@@ -2017,34 +1992,6 @@ int main(void) {
          CL_SUCCESS);
   EXPECT(dispatched_input_token == 102 && dispatched_output_token == 101);
   EXPECT(dispatched_sgemv_trans == 2 && dispatched_alpha == 2.5f);
-
-  EXPECT(clReleaseKernel(kernel) == CL_SUCCESS);
-  kernel = clCreateKernel(program, "mnist_conv", &error);
-  EXPECT(kernel && error == CL_SUCCESS);
-  EXPECT(clSetKernelArg(kernel, 0, sizeof(first), &first) == CL_SUCCESS);
-  EXPECT(clSetKernelArg(kernel, 1, sizeof(second), &second) == CL_SUCCESS);
-  EXPECT(clEnqueueNDRangeKernel(queue, kernel, 1, 0, global, local, 0, 0, 0) ==
-         CL_SUCCESS);
-  EXPECT(dispatched_mnist_kernel == 20 && dispatched_input_token == 102 &&
-         dispatched_output_token == 101);
-
-  EXPECT(clReleaseKernel(kernel) == CL_SUCCESS);
-  kernel = clCreateKernel(program, "mnist_pool", &error);
-  EXPECT(kernel && error == CL_SUCCESS);
-  EXPECT(clSetKernelArg(kernel, 0, sizeof(first), &first) == CL_SUCCESS);
-  EXPECT(clSetKernelArg(kernel, 1, sizeof(second), &second) == CL_SUCCESS);
-  EXPECT(clEnqueueNDRangeKernel(queue, kernel, 1, 0, global, local, 0, 0, 0) ==
-         CL_SUCCESS);
-  EXPECT(dispatched_mnist_kernel == 21);
-
-  EXPECT(clReleaseKernel(kernel) == CL_SUCCESS);
-  kernel = clCreateKernel(program, "mnist_dense", &error);
-  EXPECT(kernel && error == CL_SUCCESS);
-  EXPECT(clSetKernelArg(kernel, 0, sizeof(first), &first) == CL_SUCCESS);
-  EXPECT(clSetKernelArg(kernel, 1, sizeof(second), &second) == CL_SUCCESS);
-  EXPECT(clEnqueueNDRangeKernel(queue, kernel, 1, 0, global, local, 0, 0, 0) ==
-         CL_SUCCESS);
-  EXPECT(dispatched_mnist_kernel == 22);
 
   EXPECT(clReleaseKernel(kernel) == CL_SUCCESS);
   EXPECT(clReleaseProgram(program) == CL_SUCCESS);

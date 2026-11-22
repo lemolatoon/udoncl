@@ -746,10 +746,6 @@ def run_unity_mcp_gate(
             [
             sys.executable,
             root / "scripts/package_example_artifacts.py",
-            "--arena",
-            output / "onnx-aot/unity-arena-add-model-bundle",
-            "--tiny",
-            output / "onnx-aot/unity-tiny-llama-standard-model-bundle",
             "--saxpy",
             build
             / "tests/cmake-package/saxpy-consumer/udoncl/saxpy-unity-library/artifact",
@@ -801,53 +797,11 @@ def run_unity_mcp_gate(
                     / "tests/cmake-package/consumer/udoncl/tinyllama-tokenizer-unity-library/artifact"
                 ).resolve()
             ),
-            "UDONCL_ONNX_AOT_UASM": str(
-                (output / "onnx-aot/generic-host.uasm").resolve()
-            ),
-            "UDONCL_ONNX_ARENA_UNITY_BUNDLE": str(
-                (output / "onnx-aot/unity-arena-add-model-bundle").resolve()
-            ),
-            "UDONCL_ONNX_MNIST_UNITY_BUNDLE": str(
-                (output / "onnx-aot/unity-mnist-model-bundle").resolve()
-            ),
             "UDONCL_ONNX_MNIST_INPUT": str(
-                (output / "onnx-aot/unity-mnist-input.bytes").resolve()
+                (output / "mnist-reference/unity-mnist-input.bytes").resolve()
             ),
             "UDONCL_ONNX_MNIST_REFERENCE": str(
-                (output / "onnx-aot/unity-mnist-reference.bytes").resolve()
-            ),
-            "UDONCL_ONNX_RL_UNITY_BUNDLE": str(
-                (output / "onnx-aot/unity-rl-policy-model-bundle").resolve()
-            ),
-            "UDONCL_ONNX_SGEMM_SHADER": str(
-                (
-                    build
-                    / "tests/udondnn-device/udonblas-arena-sgemm-bundle/kernels/kernel_221.shader"
-                ).resolve()
-            ),
-            "UDONCL_ONNX_TILED_AOT_UASM": str(
-                (output / "onnx-aot/tiled-gemm-host.uasm").resolve()
-            ),
-            "UDONCL_ONNX_RL_OPERATOR_AOT_UASM": str(
-                (output / "onnx-aot/rl-policy-host.uasm").resolve()
-            ),
-            "UDONCL_ONNX_TINY_LLAMA_OPERATOR_AOT_UASM": str(
-                (output / "onnx-aot/tiny-llama-standard-host.uasm").resolve()
-            ),
-            "UDONCL_ONNX_LLAMA_8B_MODEL_UASM": str(
-                (output / "llama-8b-onnx/model-host.uasm").resolve()
-            ),
-            "UDONCL_ONNX_TINY_STANDARD_UNITY_BUNDLE": str(
-                (
-                    output
-                    / "onnx-aot/unity-tiny-llama-standard-model-bundle"
-                ).resolve()
-            ),
-            "UDONCL_ONNX_TINY_STANDARD_REFERENCE": str(
-                (
-                    output
-                    / "onnx-aot/unity-tiny-llama-standard-reference.bytes"
-                ).resolve()
+                (output / "mnist-reference/unity-mnist-reference.bytes").resolve()
             ),
             "UDONCL_PACKAGED_EXAMPLE_VALIDATION": "1",
             }

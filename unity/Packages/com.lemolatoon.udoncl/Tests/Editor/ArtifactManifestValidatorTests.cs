@@ -305,47 +305,6 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         }
 
         [Test]
-        public void ValidateAcceptsGenericOnnxModelAndExecutionPlanPair()
-        {
-            File.WriteAllBytes(Path.Combine(_directory, "model.onnx.bytes"), new byte[] { 8, 1 });
-            File.WriteAllText(
-                Path.Combine(_directory, "plan.bytes"),
-                "{\"schema_version\":1,\"runtime\":\"udon-onnx\",\"execution_provider\":\"FixtureProvider\",\"passes\":[{\"id\":7,\"kernel\":\"fixture_kernel\",\"providers\":[\"udonblasSgemm\"],\"fragments\":16}]}"
-            );
-            AddResources(
-                "[{\"name\":\"onnx_model\",\"kind\":\"bytes\",\"path\":\"model.onnx.bytes\"},{\"name\":\"onnx_execution_plan\",\"kind\":\"bytes\",\"path\":\"plan.bytes\"}]"
-            );
-            ValidatedArtifact artifact = ArtifactManifestValidator.Validate(_directory);
-            Assert.AreEqual(2, artifact.Resources.Count);
-        }
-
-        [Test]
-        public void ValidateRejectsUnpairedOnnxResource()
-        {
-            File.WriteAllBytes(Path.Combine(_directory, "model.onnx.bytes"), new byte[] { 8, 1 });
-            AddResources(
-                "[{\"name\":\"onnx_model\",\"kind\":\"bytes\",\"path\":\"model.onnx.bytes\"}]"
-            );
-            Assert.Throws<InvalidDataException>(() =>
-                ArtifactManifestValidator.Validate(_directory)
-            );
-        }
-
-        [Test]
-        public void ValidateAcceptsOnnxStaticInputTexture()
-        {
-            File.WriteAllBytes(Path.Combine(_directory, "scale.bytes"), new byte[8192 * 4]);
-            AddManifestProperty(
-                "\"static_inputs\":[{\"name\":\"model.scale\",\"resource\":\"scale.bytes\","
-                    + "\"texture\":{\"abi\":\"linear-rgba32-words\",\"words\":2,\"width\":8192,\"height\":1}}]"
-            );
-            ValidatedArtifact artifact = ArtifactManifestValidator.Validate(_directory);
-            Assert.AreEqual(1, artifact.OnnxStaticInputs.Count);
-            Assert.AreEqual("model.scale", artifact.OnnxStaticInputs[0].Name);
-            Assert.AreEqual(8192, artifact.OnnxStaticInputs[0].Width);
-        }
-
-        [Test]
         public void ValidateAcceptsImmutableStaticTensor()
         {
             File.WriteAllBytes(Path.Combine(_directory, "weight.bytes"), new byte[] { 1, 0, 0, 0 });
@@ -440,55 +399,8 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             );
         }
 
-        [Test]
-        public void ValidateAcceptsOnnxInt4ChildCall()
-        {
-            string child = Path.Combine(_directory, "calls", "call-0003");
-            Directory.CreateDirectory(Path.Combine(child, "atlases"));
-            File.WriteAllText(
-                Path.Combine(child, "host.uasm"),
-                ".data_start\n.data_end\n.code_start\n.code_end\n"
-            );
-            File.WriteAllBytes(Path.Combine(child, "atlases", "atlas-0000.rgba"), new byte[5120]);
-            File.WriteAllText(
-                Path.Combine(child, "manifest.json"),
-                "{\"schema_version\":1,\"artifact_stage\":\"udon-onnx-int4-call\","
-                    + "\"call_index\":3,\"function\":\"udonatenWeightInt4packMm\","
-                    + "\"result_layout\":{\"width\":70,\"height\":1},"
-                    + "\"assembly\":\"host.uasm\",\"resources\":[{\"name\":\"pageAtlas0\","
-                    + "\"kind\":\"bytes\",\"path\":\"atlases/atlas-0000.rgba\","
-                    + "\"encoding\":\"q4-bf16-row80-rgba32\",\"width\":1280,"
-                    + "\"height\":1,\"bytes\":5120}]}"
-            );
-            AddManifestProperty(
-                "\"call_artifacts\":[{\"call_index\":3,\"path\":\"calls/call-0003\"}]"
-            );
-            ValidatedArtifact artifact = ArtifactManifestValidator.Validate(_directory);
-            Assert.AreEqual(1, artifact.OnnxInt4Calls.Count);
-            Assert.AreEqual(3, artifact.OnnxInt4Calls[0].CallIndex);
-            Assert.AreEqual(1, artifact.OnnxInt4Calls[0].Atlases.Count);
-            Assert.AreEqual(70, artifact.OnnxInt4Calls[0].ResultWidth);
-            Assert.AreEqual(1280, artifact.OnnxInt4Calls[0].Atlases[0].Width);
-        }
-
-        [Test]
-        public void ValidateRejectsOnnxInt4ChildTraversal()
-        {
-            AddManifestProperty("\"call_artifacts\":[{\"call_index\":0,\"path\":\"../outside\"}]");
-            Assert.Throws<InvalidDataException>(() =>
-                ArtifactManifestValidator.Validate(_directory)
-            );
-        }
-
         [TestCase("saxpy.zip.bytes", "saxpy_demo", "unity-udoncl-library", 1)]
         [TestCase("onnx-mnist.zip.bytes", "generic_onnx_mnist", "unity-udoncl-library", 5)]
-        [TestCase("onnx-arena-add.zip.bytes", "onnx_arena_add_example", "unity-udon-onnx-model", 1)]
-        [TestCase(
-            "onnx-tiny-llama.zip.bytes",
-            "onnx_tiny_llama_example",
-            "unity-udon-onnx-model",
-            5
-        )]
         public void PackagedExampleExtractsAndValidates(
             string archiveName,
             string programName,
@@ -504,13 +416,6 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 Assert.AreEqual(artifactStage, artifact.ArtifactStage);
                 Assert.AreEqual(kernelCount, artifact.Kernels.Count);
                 Assert.IsTrue(File.Exists(Path.Combine(extracted, "host.uasm")));
-                if (artifactStage == "unity-udon-onnx-model")
-                {
-                    Assert.IsTrue(File.Exists(Path.Combine(extracted, "model.onnx.bytes")));
-                    Assert.IsTrue(
-                        File.Exists(Path.Combine(extracted, "execution-plan.json.bytes"))
-                    );
-                }
             }
             finally
             {

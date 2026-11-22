@@ -21,86 +21,30 @@ vpm check package unity/Packages/com.lemolatoon.udoncl
 vpm add package unity/Packages/com.lemolatoon.udoncl -p path/to/WorldProject
 ```
 
-## Udon ONNX Runtime
+## ONNX models
 
-Any artifact can expose the paired `onnx_model` and `onnx_execution_plan`
-resources. The importer validates both through the normal transaction-safe
-manifest path and installs them as `Models/model.onnx.bytes` and
-`Models/execution-plan.json.bytes`; this is not tied to MNIST or Llama demo
-stages. It also creates a public `UdonOnnxModelAsset` containing those two
-assets, the provider/profile identity, and the ordered Material for every
-Device pass. The asset also exposes the generated Udon Host program, so other
-Unity tooling can bind the executable program and ordered Device materials
-without knowing the demo's artifact stage. Execution providers are registered in the host-side
-ONNX compiler and lower their graph or fusion into reusable UdonDNN/UdonBLAS
-Device passes.
+ONNX models compile into ordinary UdonCL libraries: a C Host built with
+`udoncl_add_onnx_host_library` and `UdonONNXRuntime` runs the model's
+operators as fragment-shader kernels, and its `UDONCL_EXPORT` functions become
+methods of a generated U# binding like any other library. See
+`examples/onnx-mnist` and `examples/onnx-transformer-tiny`. The package
+imports these artifacts through **Tools → udoncl → Import Artifacts...**.
 
-Standard-operator plans also carry a liveness-colored linear texture arena.
-The Llama 8B plan reuses five RGBA32 textures for every activation, zero-copy
-view, and RMSNorm scratch value instead of allocating one RenderTexture per
-graph value.
-
-Use `udon-onnx-page ... --model --unity-template-directory ... --model-path
-...` to publish a general Unity artifact. The generated arena-aware Host binds
-each direct pass to its liveness-planned inputs and output, and the importer
-creates the ordered materials and RenderTextures. Publication fails when a
-physical pass has no assigned public UdonBLAS/UdonDNN/UdonATen Device shader,
-so a plan-only lowering is not mislabeled as an executable Unity model.
-
-General ONNX imports automatically bind the package's
-`UdonOnnxRuntimeBehaviour` onto `Prefabs/UdonOnnxModel.prefab`. Use
-`FindInput`/`FindOutput`, the typed `TryWriteInputFloat`/`TryWriteInputInt`
-methods, `TryRun()`, and asynchronous
-`StartReadOutputFloat`/`StartReadOutputInt`. Uploads use byte-exact
-whole-buffer RGBA8 packing; the completion event can inspect
-`GetLastReadbackStatus()`. Input/output names, types, word counts, and internal
-arena slots are available on `UdonOnnxModelAsset`, while physical slots remain
-an importer-owned detail. The stable package component avoids a C# compile and
-domain reload for every imported model.
-
-Use `GetInputWordCount()` and `GetOutputWordCount()` when allocating arrays for
-the runtime API. Writes and reads are whole-buffer operations in this version,
-so arrays with guessed or partial lengths are rejected instead of being padded
-or truncated.
-
-The included Tiny Llama lifecycle fixture numerically executes the public
-Llama provider's seven-pass plan through SDK IUdonVM. The Llama 3.1 8B profile
-uses the same provider with 32 layers, Q4 ONNX external weights, KV-cache-aware
-one-token input, and 162 planned passes. Licensed pretrained weights are not
-part of the Unity package.
-
-Import the **ONNX Llama 3.1 8B Host** Package Sample for a typed U# caller of a
-user-materialized artifact. The component accepts the model's post-embedding
-`hidden_state`, uses the general Write/Run/async Read API, and exposes the
-logit argmax after completion. It deliberately does not pretend that a token ID
-is an embedding; tokenization and embedding remain application responsibilities.
-
-For a user-built, non-Pooling graph, follow
-`examples/onnx-arena-add/README.md`. It generates a standard ONNX `Add` model,
-materializes the Unity artifact, imports the runtime prefab, and drives the
-typed Write/Run/async Read API from a small U# component. Import the **ONNX
-Arena Add** sample from this package's Samples tab instead of copying the
-component source manually.
-
-For a multi-operator path, `examples/tiny-llama/build_onnx.py` generates a
-standard ONNX decoder using Gather, RMSNormalization, Gemm, Add, Sigmoid, Mul,
-and Reshape, then publishes an 18-pass general-runtime artifact. Import the
-**ONNX Tiny Llama** Package Sample to upload an int32 token and read 16 logits
-asynchronously. This model intentionally does not use the disabled general
-ONNX Pooling path.
+The **ONNX MNIST** Package Sample classifies a hand-drawn digit with the
+MNIST binding; the **TinyLlama Chat** Package Sample chats through the binding
+of a user-built 4096-token TinyLlama Chat Artifact.
 
 ## Import
 
 Use **Tools → udoncl → Import Artifacts...** and select a compiler output directory containing `manifest.json`, its host `.uasm`, and any referenced generated `.shader` files. The importer checks schema v1, the runtime ABI and target, Worlds SDK version, names, extensions, UTF-8 content, referenced files, and relative paths before writing any assets.
 
 To try the runtime without first building the compiler repository, open
-**Tools → udoncl → Examples**. The menu contains C/OpenCL SAXPY, ONNX Arena
-Add, and ONNX Tiny Llama. The package contains deterministic archives of all
-three examples; the two ONNX examples do not use Pooling. The
+**Tools → udoncl → Examples**. The menu contains C/OpenCL SAXPY and ONNX
+MNIST. The package contains deterministic archives of both examples. The
 Editor extracts an archive to a temporary directory, applies the same manifest
 validation and transaction-safe importer, and removes the temporary files
-after import. C/OpenCL imports generate their typed U# binding and finish the
-binding prefab after Unity's script reload. The packaged SAXPY import also
+after import. The imports generate their typed U# binding and finish the
+binding prefab after Unity's script reload. Each packaged import also
 generates a small U# controller, attaches it to the prefab, and binds
 the controller to the typed wrapper. Interact with the placed prefab to run the
 complete upload, asynchronous run and readback without writing raw
@@ -109,13 +53,6 @@ named typed methods such as `TryWriteX` and `StartReadResult`; the physical
 buffer-ID methods remain available only as the lower-level interface. Choose
 **Add after Compile** to place that binding prefab in the active scene
 automatically after the script reload.
-
-After a general ONNX import, choose **Add to Scene** in the completion dialog.
-The same action is available as **Add Runtime to Active Scene** on the generated
-`Models/UdonOnnxModel.asset` Inspector. Unity instantiates the generated runtime
-as a linked prefab instance, selects it, and registers the operation with Undo;
-sample components must reference this scene instance rather than the prefab
-asset itself.
 
 It copies the manifest, `.uasm`, and shaders to stable asset paths, creates or updates one Material per device kernel, and creates an initial 256×1 linear RGBA32 particle texture plus two point-filtered, linear 256×1 RenderTextures. Each of 32 FCC particles occupies eight aligned float32 words: x, y, z, reserved, vx, vy, vz, reserved. The initial 2×2×2 conventional FCC cell has zero total momentum.
 

@@ -27,12 +27,9 @@ python libraries/udondnn/run_device.py --build-dir build/udoncl
 ```
 
 The validation compares five convolution shapes and eight activation modes and
-policies against independent CPU references. It also compiles the standard-ONNX
-reinforcement-learning actor through `UdonOperatorExecutionProvider`, compiles
-the generated C Host, and executes its ten UdonBLAS/UdonDNN/UdonATen calls on
-the fragment backend. It covers descriptor lifetimes, stale descriptor
-rejection, output shape calculation, zero-workspace planning, invalid shapes,
-NaN behavior, numerical actor probabilities, and OpenCL object cleanup.
+policies against independent CPU references. It covers descriptor lifetimes,
+stale descriptor rejection, output shape calculation, zero-workspace planning,
+invalid shapes, NaN behavior, and OpenCL object cleanup.
 
 The same command emits `unity-bundle`, containing a reusable 3D prefab, host
 Udon assembly, generated convolution shader, packed fixture tensor, and

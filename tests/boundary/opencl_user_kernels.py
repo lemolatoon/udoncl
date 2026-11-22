@@ -103,7 +103,7 @@ assert "#define UDONCL_AOT_USER_KERNEL_COUNT 2" in declarations, declarations
 # The Device libraries define a UdonBLAS kernel, so the BLAS dispatch path
 # stays; the other libraries' paths are left out.
 assert "UDONCL_AOT_ENABLE_BLAS" not in declarations, declarations
-for disabled in ["DNN", "ONNX", "MNIST"]:
+for disabled in ["DNN", "ONNX"]:
     assert f"#define UDONCL_AOT_ENABLE_{disabled} 0" in declarations, declarations
 for expected in [
     'if (udoncl_string_equal(name, "user_copy"))\n    return 1024;',

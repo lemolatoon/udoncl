@@ -161,10 +161,7 @@ struct LowerOpenCLAOTIntrinsicsPass
           name == "__vrc_opencl_dispatch_udononnx_cast_i64_f32" ||
           name == "__vrc_opencl_dispatch_udononnx_equal_f32" ||
           name == "__vrc_opencl_dispatch_udononnx_where_f32" ||
-          name == "__vrc_opencl_dispatch_udononnx_scatter_nd_f32" ||
-          name == "__vrc_opencl_dispatch_mnist_conv" ||
-          name == "__vrc_opencl_dispatch_mnist_pool" ||
-          name == "__vrc_opencl_dispatch_mnist_dense";
+          name == "__vrc_opencl_dispatch_udononnx_scatter_nd_f32";
       if (!known)
         continue;
       SmallVector<Type> arguments;
@@ -537,37 +534,34 @@ struct LowerOpenCLAOTIntrinsicsPass
                                    ? 3
                                : largeActivation || largePooling ? 3
                                                                  : 2;
-        int32_t kernelId = sgemm                                        ? 1
-                           : arenaSgemm                                 ? 221
-                           : arenaBatchedSgemm                          ? 237
-                           : arenaBatchedSgemmLarge                     ? 249
-                           : sgemv                                      ? 2
-                           : largeConvolution                           ? 232
-                           : largeActivation                            ? 233
-                           : largePooling                               ? 231
-                           : largeOpTensor                              ? 234
-                           : embedding                                  ? 207
-                           : rmsReduce                                  ? 217
-                           : rmsFinalize                                ? 218
-                           : argmaxReduce                               ? 247
-                           : argmaxFinalize                             ? 248
-                           : arenaSoftmax                               ? 236
-                           : matmulNBits                                ? 219
-                           : matmulNBitsQ4                              ? 235
-                           : gather                                     ? 220
-                           : unary                                      ? 222
-                           : transpose                                  ? 238
-                           : slice                                      ? 239
-                           : expand                                     ? 240
-                           : concat                                     ? 241
-                           : axis0Gather                                ? 242
-                           : castI64F32                                 ? 243
-                           : equalF32                                   ? 244
-                           : whereF32                                   ? 245
-                           : scatterNDF32                               ? 246
-                           : name == "__vrc_opencl_dispatch_mnist_conv" ? 20
-                           : name == "__vrc_opencl_dispatch_mnist_pool" ? 21
-                                                                        : 22;
+        int32_t kernelId = sgemm                    ? 1
+                           : arenaSgemm             ? 221
+                           : arenaBatchedSgemm      ? 237
+                           : arenaBatchedSgemmLarge ? 249
+                           : sgemv                  ? 2
+                           : largeConvolution       ? 232
+                           : largeActivation        ? 233
+                           : largePooling           ? 231
+                           : largeOpTensor          ? 234
+                           : embedding              ? 207
+                           : rmsReduce              ? 217
+                           : rmsFinalize            ? 218
+                           : argmaxReduce           ? 247
+                           : argmaxFinalize         ? 248
+                           : arenaSoftmax           ? 236
+                           : matmulNBits            ? 219
+                           : matmulNBitsQ4          ? 235
+                           : gather                 ? 220
+                           : unary                  ? 222
+                           : transpose              ? 238
+                           : slice                  ? 239
+                           : expand                 ? 240
+                           : concat                 ? 241
+                           : axis0Gather            ? 242
+                           : castI64F32             ? 243
+                           : equalF32               ? 244
+                           : whereF32               ? 245
+                                                    : 246;
         SmallVector<Attribute> scalarKinds;
         if (arenaBatchedSgemm || arenaBatchedSgemmLarge) {
           scalarKinds.append(9, rewriter.getStringAttr("i32"));

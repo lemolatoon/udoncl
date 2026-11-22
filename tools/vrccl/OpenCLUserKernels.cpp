@@ -45,9 +45,6 @@ bool isLibraryKernel(llvm::StringRef name) {
       "udonblas_arena_sgemm",
       "udonblas_arena_sgemm_strided_batched",
       "udonblas_arena_sgemm_strided_batched_large",
-      "mnist_conv",
-      "mnist_pool",
-      "mnist_dense",
       "udondnn_convolution_forward",
       "udondnn_activation_forward",
       "udondnn_pooling_forward",
@@ -429,8 +426,7 @@ LogicalResult writeOpenCLUserKernelHeaders(const OpenCLUserKernelSet &set,
            {std::pair<const char *, std::vector<llvm::StringRef>>{
                 "UDONCL_AOT_ENABLE_BLAS", {"udonblas_"}},
             {"UDONCL_AOT_ENABLE_DNN", {"udondnn_", "udonaten_"}},
-            {"UDONCL_AOT_ENABLE_ONNX", {"udononnx_"}},
-            {"UDONCL_AOT_ENABLE_MNIST", {"mnist_"}}})
+            {"UDONCL_AOT_ENABLE_ONNX", {"udononnx_"}}})
         if (llvm::none_of(libraryKernels, [&](const std::string &name) {
               return llvm::any_of(prefixes, [&](llvm::StringRef prefix) {
                 return llvm::StringRef(name).starts_with(prefix);

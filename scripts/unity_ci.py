@@ -7,10 +7,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
-import tempfile
 import xml.etree.ElementTree as ET
 
 
@@ -107,14 +105,6 @@ def prepare_fixtures(root: Path, build: Path, output: Path):
             root / "libraries/udondnn/run_device.py",
             root / "build/udondnn-device-run",
         ),
-        (
-            root / "examples/mnist-cnn/run_device.py",
-            root / "build/mnist-cnn-device-run",
-        ),
-        (
-            root / "examples/tiny-llama/run_device.py",
-            root / "build/tiny-llama-device-run",
-        ),
     ]
     for generator, artifact_output in artifact_commands:
         run(
@@ -128,57 +118,12 @@ def prepare_fixtures(root: Path, build: Path, output: Path):
             ],
             timeout=1200,
         )
-    template = output / "onnx-unity-template"
-    shader_bundles = {
-        "kernel_215.shader": "aten-arena-pointwise-bundle",
-        "kernel_216.shader": "aten-arena-tile-bundle",
-        "kernel_217.shader": "aten-arena-rms-reduce-bundle",
-        "kernel_218.shader": "aten-arena-rms-finalize-bundle",
-        "kernel_221.shader": "udonblas-arena-sgemm-bundle",
-        "kernel_222.shader": "udondnn-arena-softmax-bundle",
-        "kernel_223.shader": "udonaten-arena-broadcast-pointwise-bundle",
-        "kernel_224.shader": "udondnn-arena-convolution-bundle",
-        "kernel_225.shader": "udondnn-arena-pooling-bundle",
-        "kernel_226.shader": "udonaten-arena-embedding-bundle",
-        "kernel_227.shader": "udonblas-arena-sgemv-product-bundle",
-        "kernel_228.shader": "udonblas-arena-sgemv-reduce-bundle",
-        "kernel_229.shader": "udonblas-arena-sgemv-finalize-bundle",
-    }
-    with tempfile.TemporaryDirectory(prefix="onnx-unity-template-", dir=output) as staging:
-        staged = Path(staging) / "template"
-        kernels = staged / "kernels"
-        kernels.mkdir(parents=True)
-        shutil.copy2(
-            root / "libraries/udondnn/unity/display.shader",
-            staged / "display.shader",
-        )
-        device_output = root / "build/udondnn-device-run"
-        for shader, bundle in shader_bundles.items():
-            source = device_output / bundle / "kernels" / shader
-            if not source.is_file():
-                raise RuntimeError(f"ONNX Unity template shader is missing: {source}")
-            shutil.copy2(source, kernels / shader)
-        if template.exists():
-            shutil.rmtree(template)
-        shutil.copytree(staged, template)
-    onnx_environment = dict(os.environ)
-    onnx_environment["UDONCL_ONNX_UNITY_TEMPLATE"] = str(template)
     run(
         [
             sys.executable,
-            root / "tests/boundary/onnx_runtime.py",
+            root / "tests/boundary/mnist_reference.py",
             root,
-            output / "onnx-aot",
-        ],
-        timeout=120,
-        env=onnx_environment,
-    )
-    run(
-        [
-            sys.executable,
-            root / "tests/boundary/llama_8b_onnx.py",
-            root,
-            output / "llama-8b-onnx",
+            output / "mnist-reference",
         ],
         timeout=120,
     )
@@ -298,18 +243,6 @@ def main():
         (output / "lowering/continuation.uasm").resolve()
     )
     environment["UDONCL_UNITY_LIBRARY_ARTIFACT"] = str(unity_library)
-    environment["UDONCL_ONNX_AOT_UASM"] = str(
-        (output / "onnx-aot/generic-host.uasm").resolve()
-    )
-    environment["UDONCL_ONNX_TILED_AOT_UASM"] = str(
-        (output / "onnx-aot/tiled-gemm-host.uasm").resolve()
-    )
-    environment["UDONCL_ONNX_RL_OPERATOR_AOT_UASM"] = str(
-        (output / "onnx-aot/rl-policy-host.uasm").resolve()
-    )
-    environment["UDONCL_ONNX_TINY_LLAMA_OPERATOR_AOT_UASM"] = str(
-        (output / "onnx-aot/tiny-llama-standard-host.uasm").resolve()
-    )
     try:
         run(
             [

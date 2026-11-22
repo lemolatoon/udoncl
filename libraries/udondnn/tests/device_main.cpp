@@ -12,10 +12,6 @@
 
 #include "Bindings.h"
 
-extern "C" {
-#include "rl_host.h"
-}
-
 extern "C" size_t udondnn_cpu_gid;
 size_t udondnn_cpu_gid;
 extern "C" size_t udondnn_activation_cpu_gid;
@@ -1600,81 +1596,6 @@ int main(int argc, char **argv) {
             "destroy incompatible broadcast C");
     require(udondnnDestroy(handle), UDONDNN_STATUS_SUCCESS, "udondnnDestroy");
 
-    std::array<float, 4> rlObservation{{-0.75f, 0.25f, 1.5f, -0.5f}};
-    std::array<float, 32> rlHiddenWeight{};
-    std::array<float, 8> rlHiddenBias{};
-    std::array<float, 24> rlPolicyWeight{};
-    std::array<float, 3> rlPolicyBias{{0.1f, -0.05f, 0.025f}};
-    std::array<float, 3> rlPolicyBaseline{{0.02f, 0.02f, 0.02f}};
-    std::array<float, 1> rlPolicyTemperature{{0.75f}};
-    for (int index = 0; index < int(rlHiddenWeight.size()); ++index)
-      rlHiddenWeight[index] = float(index % 9 - 4) / 16.0f;
-    for (int index = 0; index < int(rlHiddenBias.size()); ++index)
-      rlHiddenBias[index] = 0.05f * float(index - 3);
-    for (int index = 0; index < int(rlPolicyWeight.size()); ++index)
-      rlPolicyWeight[index] = float(index % 7 - 3) / 12.0f;
-
-    std::array<float, 8> rlHiddenLinear{}, rlHiddenPreact{}, rlHiddenTanh{},
-        rlHiddenGate{}, rlHidden{};
-    std::array<float, 3> rlPolicyLinear{}, rlPolicyBiased{}, rlPolicyCentered{},
-        rlPolicyScaled{}, rlProbabilities{}, rlExpected{};
-    for (int output = 0; output < 8; ++output) {
-      for (int input = 0; input < 4; ++input)
-        rlHiddenLinear[output] +=
-            rlObservation[input] * rlHiddenWeight[input * 8 + output];
-      rlHiddenPreact[output] = rlHiddenLinear[output] + rlHiddenBias[output];
-      rlHiddenTanh[output] = std::tanh(rlHiddenPreact[output]);
-      rlHiddenGate[output] = 1.0f / (1.0f + std::exp(-rlHiddenPreact[output]));
-      rlHidden[output] = rlHiddenTanh[output] * rlHiddenGate[output];
-    }
-    float rlMaximum = -std::numeric_limits<float>::infinity();
-    for (int output = 0; output < 3; ++output) {
-      for (int input = 0; input < 8; ++input)
-        rlPolicyLinear[output] +=
-            rlHidden[input] * rlPolicyWeight[input * 3 + output];
-      rlPolicyBiased[output] = rlPolicyLinear[output] + rlPolicyBias[output];
-      rlPolicyCentered[output] =
-          rlPolicyBiased[output] - rlPolicyBaseline[output];
-      rlPolicyScaled[output] =
-          rlPolicyCentered[output] * rlPolicyTemperature[0];
-      rlMaximum = std::max(rlMaximum, rlPolicyScaled[output]);
-    }
-    float rlDenominator = 0.0f;
-    for (int output = 0; output < 3; ++output)
-      rlDenominator += std::exp(rlPolicyScaled[output] - rlMaximum);
-    for (int output = 0; output < 3; ++output)
-      rlExpected[output] =
-          std::exp(rlPolicyScaled[output] - rlMaximum) / rlDenominator;
-
-    udon_onnx_buffers_t rlBuffers{};
-    rlBuffers.v0_action_probabilities = rlProbabilities.data();
-    rlBuffers.v1_hidden = rlHidden.data();
-    rlBuffers.v2_hidden_bias = rlHiddenBias.data();
-    rlBuffers.v3_hidden_gate = rlHiddenGate.data();
-    rlBuffers.v4_hidden_linear = rlHiddenLinear.data();
-    rlBuffers.v5_hidden_preact = rlHiddenPreact.data();
-    rlBuffers.v6_hidden_tanh = rlHiddenTanh.data();
-    rlBuffers.v7_hidden_weight = rlHiddenWeight.data();
-    rlBuffers.v8_observation = rlObservation.data();
-    rlBuffers.v9_policy_baseline = rlPolicyBaseline.data();
-    rlBuffers.v10_policy_bias = rlPolicyBias.data();
-    rlBuffers.v11_policy_biased = rlPolicyBiased.data();
-    rlBuffers.v12_policy_centered = rlPolicyCentered.data();
-    rlBuffers.v13_policy_linear = rlPolicyLinear.data();
-    rlBuffers.v14_policy_scaled = rlPolicyScaled.data();
-    rlBuffers.v15_policy_temperature = rlPolicyTemperature.data();
-    rlBuffers.v16_policy_weight = rlPolicyWeight.data();
-    int rlStatus = udon_onnx_run(&rlBuffers);
-    if (rlStatus)
-      throw std::runtime_error("generated RL ONNX Host execution failed with " +
-                               std::to_string(rlStatus));
-    float rlMaximumError = 0.0f;
-    for (int output = 0; output < 3; ++output)
-      rlMaximumError =
-          std::max(rlMaximumError,
-                   std::abs(rlProbabilities[output] - rlExpected[output]));
-    if (rlMaximumError > 0.0005f)
-      throw std::runtime_error("generated RL ONNX Host results diverged");
     if (udoncl_cl_live_objects())
       throw std::runtime_error("OpenCL object leak");
     std::cout << "udondnn_convolution_outputs=" << outputs
@@ -1707,8 +1628,6 @@ int main(int argc, char **argv) {
               << " arena_tile_max_error=" << arenaTileMaximumError
               << " arena_pointwise_outputs=" << atenLargeWords * 6
               << " arena_pointwise_max_error=" << arenaPointwiseMaximumError
-              << " rl_outputs=" << rlProbabilities.size()
-              << " rl_max_error=" << rlMaximumError
               << " renderer=" << session.deviceName()
               << " draws=" << session.drawCount() << "\n";
     return 0;

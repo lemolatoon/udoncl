@@ -6,12 +6,6 @@ All notable changes to this package are recorded here.
 
 ### Added
 
-- UdonSharp assembly registration and main-thread cache warmup for the package
-  runtime so ONNX behaviours compile in fresh VPM and local-package projects.
-- Public ONNX input/output type and word-count queries; package samples now
-  allocate exact Manifest-defined buffers instead of assuming a tensor size.
-- One-click Editor imports for packaged, non-Pooling ONNX Arena Add and Tiny
-  Llama example artifacts.
 - One-click Editor import for the packaged C/OpenCL SAXPY artifact,
   including its generated typed U# binding and a ready-to-run U# controller
   attached to its binding prefab.
@@ -27,16 +21,19 @@ All notable changes to this package are recorded here.
   U# wrapper finishes compiling.
 - Initial VPM prerelease packaging for the UdonCL Unity runtime and artifact
   importer.
-- Public Unity assets for UdonBLAS, UdonDNN, UdonATen, and AOT ONNX execution
-  plans.
+- Public Unity assets for UdonBLAS, UdonDNN and UdonATen.
 - Transaction-safe artifact import with generated Udon programs, shaders,
   materials, textures, and prefabs.
 - Generated U# library-instance lifecycle checks for initialization,
   reentrant-call rejection, and explicit disposal.
-- Importable ONNX Arena Add sample using the public typed Write/Run/async Read
-  runtime API.
-- Importable standard-operator Tiny Llama sample with typed token upload,
-  shader-backed Gather/RMSNorm/Gemm/pointwise execution, and async logits
-  readback.
-- ONNX model Inspector and import-completion actions that instantiate the
-  generated runtime prefab into the active scene with Undo support.
+
+### Removed
+
+- The ONNX Arena Add, ONNX Tiny Llama and ONNX Llama 3.1 8B Host Package
+  Samples and the packaged ONNX Arena Add and Tiny Llama example imports,
+  which ran on the legacy Python execution-plan runtime. The ONNX MNIST
+  example and the TinyLlama Chat sample use the compiled ONNX path instead.
+- The execution-plan ONNX runtime: `UdonOnnxRuntimeBehaviour`,
+  `UdonOnnxModelAsset` and its Inspector, the package runtime assembly, and the
+  import of `onnx_model` / `onnx_execution_plan` artifacts. ONNX models are
+  compiled into ordinary UdonCL libraries with generated U# bindings.

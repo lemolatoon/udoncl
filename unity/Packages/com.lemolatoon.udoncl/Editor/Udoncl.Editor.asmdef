@@ -2,7 +2,6 @@
   "name": "Udoncl.Editor",
   "rootNamespace": "Lemolatoon.Udoncl.Editor",
   "references": [
-    "Udoncl.Runtime",
     "VRC.Udon",
     "VRC.Udon.Editor",
     "UdonSharp.Runtime",

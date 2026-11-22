@@ -60,22 +60,10 @@ def validate(package: Path) -> dict:
         "CHANGELOG.md",
         "LICENSE.md",
         "Editor/Udoncl.Editor.asmdef",
-        "Editor/Examples/onnx-arena-add.zip.bytes",
         "Editor/Examples/onnx-mnist.zip.bytes",
-        "Editor/Examples/onnx-tiny-llama.zip.bytes",
         "Editor/Examples/saxpy.zip.bytes",
-        "Runtime/Udoncl.Runtime.asmdef",
-        "Runtime/Udoncl.Runtime.asset",
     ):
         require((package / relative).is_file(), f"required file is missing: {relative}")
-    runtime_usharp = (package / "Runtime/Udoncl.Runtime.asset").read_text(
-        encoding="utf-8"
-    )
-    require(
-        "guid: 5136146375e9a0a498a72a0091b40cc1" in runtime_usharp
-        and "guid: 36e72c97d34c4a489d882db18bbdf480" in runtime_usharp,
-        "Runtime assembly is not registered as an UdonSharp assembly",
-    )
     samples = {sample.get("path") for sample in manifest.get("samples", [])}
     for sample, script in (
         ("C and OpenCL SAXPY", "SaxpyCaller.cs"),
@@ -88,15 +76,6 @@ def validate(package: Path) -> dict:
         require(
             (package / relative / "README.md").is_file(),
             f"sample README is missing: {relative}",
-        )
-    for relative in (
-        "Samples~/ONNX Arena Add/UdonOnnxArenaAddExample.cs",
-        "Samples~/ONNX Tiny Llama/UdonOnnxTinyLlamaExample.cs",
-    ):
-        sample = (package / relative).read_text(encoding="utf-8")
-        require(
-            "GetInputWordCount" in sample and "GetOutputWordCount" in sample,
-            f"ONNX sample does not allocate Manifest-defined tensor sizes: {relative}",
         )
     license_text = (package / "LICENSE.md").read_text(encoding="utf-8")
     require(

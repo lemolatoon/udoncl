@@ -197,7 +197,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             float[] input = ReadFloats(
                 ResolvePath(
                     "UDONCL_ONNX_MNIST_INPUT",
-                    Path.Combine("build", "precommit", "onnx-aot", "unity-mnist-input.bytes")
+                    Path.Combine("build", "precommit", "mnist-reference", "unity-mnist-input.bytes")
                 )
             );
             Assert.AreEqual(28 * 28, input.Length);
@@ -253,7 +253,12 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             float[] expected = ReadFloats(
                 ResolvePath(
                     "UDONCL_ONNX_MNIST_REFERENCE",
-                    Path.Combine("build", "precommit", "onnx-aot", "unity-mnist-reference.bytes")
+                    Path.Combine(
+                        "build",
+                        "precommit",
+                        "mnist-reference",
+                        "unity-mnist-reference.bytes"
+                    )
                 )
             );
             Assert.AreEqual(actual.Length, expected.Length);
@@ -285,13 +290,18 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             float[] input = ReadFloats(
                 ResolvePath(
                     "UDONCL_ONNX_MNIST_INPUT",
-                    Path.Combine("build", "precommit", "onnx-aot", "unity-mnist-input.bytes")
+                    Path.Combine("build", "precommit", "mnist-reference", "unity-mnist-input.bytes")
                 )
             );
             float[] expected = ReadFloats(
                 ResolvePath(
                     "UDONCL_ONNX_MNIST_REFERENCE",
-                    Path.Combine("build", "precommit", "onnx-aot", "unity-mnist-reference.bytes")
+                    Path.Combine(
+                        "build",
+                        "precommit",
+                        "mnist-reference",
+                        "unity-mnist-reference.bytes"
+                    )
                 )
             );
             Assert.AreEqual(28 * 28, input.Length);

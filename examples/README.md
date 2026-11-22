@@ -24,36 +24,23 @@ are imported with **Tools → udoncl → Import Artifacts...**.
 | --- | --- | --- | --- |
 | [`hello-kernel`](hello-kernel/README.md) | User CMake Host C + OpenCL C | Generated U# binding, importable scalar and tokenizer libraries, Device boundary artifact | Scalar Host exports; the Device kernel is not launched from Unity |
 | [`saxpy`](saxpy/README.md) | Standard OpenCL Host API + OpenCL C kernel on `UdonCL::OpenCLRuntime` | Asynchronous `UDONCL_EXPORT` method, two input vectors, GPU output, public Write/Read API | Fixed buffers; constant NDRange derived from the Host C |
-| [`onnx-arena-add`](onnx-arena-add/README.md) | Standard ONNX `Add` | General ONNX runtime prefab plus importable U# Package Sample | One non-Pooling pointwise pass |
-| [`tiny-llama`](tiny-llama/README.md) | Standard ONNX small decoder | Importable 18-pass general-runtime artifact and U# Package Sample | CI-sized model, not pretrained 8B weights |
-| [`llama-8b-onnx`](llama-8b-onnx/README.md) | Licensed checkpoint + external Q4 weights | 546-operator plan and optional multi-gigabyte Unity artifact | Full materialization requires user-owned weights |
-| [`mnist-cnn`](mnist-cnn/README.md) | Trained CNN | Native and Device reference execution | General Unity ONNX Pooling path remains disabled |
+| `onnx-mnist` | Standard ONNX MNIST CNN + C Host on `UdonONNXRuntime` | Generated U# binding, importable as **Import ONNX MNIST** and the **ONNX MNIST** Package Sample | Fixed batch of one image |
+| [`onnx-transformer-tiny`](onnx-transformer-tiny/README.md) | Synthetic transformer, or the real TinyLlama-1.1B with its tokenizer | Generated U# bindings; the 4096-token Chat Artifact backs the **TinyLlama Chat** Package Sample | The real model is built from user-downloaded files |
+| [`mnist-cnn`](mnist-cnn/README.md) | Trained CNN | Native C reference and the ONNX model of `onnx-mnist` | Reference only |
 
 ## Fastest importable example
 
 After installing the VPM package, the shortest user path needs no compiler
-checkout: choose **Tools → udoncl → Examples → Import ONNX Arena Add**, then
-choose **Add to Scene**. Import the **ONNX Arena Add** Package Sample for its U#
-caller component.
+checkout: choose **Tools → udoncl → Examples → Import C and OpenCL SAXPY** or
+**Import ONNX MNIST**. Each import generates a typed U# binding prefab, with an
+example controller attached, after Unity reloads the imported wrapper. The
+**C and OpenCL SAXPY** and **ONNX MNIST** Package Samples (Package Manager →
+**UdonCL Runtime and ONNX Importer** → **Samples**) call the same bindings from
+a U# component of your own.
 
-To regenerate the artifact yourself instead, use the source workflow below.
-
-The same menu also provides **Import C and OpenCL SAXPY**. It exercises the
-public CMake/compiler artifact shape and generates a typed U# binding prefab
-after Unity reloads the imported wrapper.
-
-Generate the non-Pooling ONNX artifact:
-
-```powershell
-python examples/onnx-arena-add/build.py `
-  --output build/onnx-arena-add
-```
-
-Import `build/onnx-arena-add/unity-artifact` in Unity. In Package Manager,
-select **UdonCL Runtime and ONNX Importer**, open **Samples**, and import
-**ONNX Arena Add**. Choose **Add to Scene** in the import completion dialog;
-the sample component calls that runtime instance through typed
-Write/Run/asynchronous Read methods.
+To build the artifacts yourself instead, configure `examples/saxpy` or
+`examples/onnx-mnist` as a CMake project and import its `artifact` directory
+with **Tools → udoncl → Import Artifacts...**.
 
 ## C and OpenCL C consumer example
 
@@ -177,9 +164,9 @@ the Host/Device paths, dependencies, and controls.
 
 The [MNIST CNN reference](mnist-cnn/README.md) lives in `examples/mnist-cnn`. Its compact
 conv/ReLU/pooling/dense model reaches 95.49% on the MNIST test set. The C oracle
-is executed directly and after a native UdonHL round trip by `mnist-cnn-native`;
-`mnist-cnn-device-execution` compiles the same model from OpenCL C through the
-Device fragment backend and compares real GPU logits and predictions.
+is executed directly and after a native UdonHL round trip by `mnist-cnn-native`.
+Its `generate_onnx.py` writes the same trained model as ONNX for
+`examples/onnx-mnist`.
 
 ## Verification
 

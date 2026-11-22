@@ -282,8 +282,10 @@ def main():
     assert (install / 'include/CL/cl_version.h').is_file()
     assert (install / 'include/VRC/Runtime/OpenCL/Backend.h').is_file()
     assert (install / 'share/udoncl/runtime/OpenCLAOT.c').is_file()
-    installed_onnx_compiler = install / 'share/udoncl/onnx/udon_onnx.py'
-    assert installed_onnx_compiler.is_file()
+    # The ONNX-MLIR pipeline is the only installed ONNX compiler; the
+    # Python execution-plan planner was removed.
+    assert (install / 'share/udoncl/onnx/compile_onnx_mlir.py').is_file()
+    assert not (install / 'share/udoncl/onnx/udon_onnx.py').exists()
     assert (install / 'share/licenses/UdonCL/OpenCL-Headers.LICENSE').is_file()
     package = install / 'lib/cmake/UdonCL'
     udonblas_package = install / 'lib/cmake/UdonBLAS'
@@ -1755,7 +1757,7 @@ def main():
         'cl_mem buffer0, cl_mem buffer1, cl_float scalar2,',
     ]:
         assert entry_point in user_kernel_declarations, user_kernel_declarations
-    # Without a BLAS, DNN, ONNX or MNIST Device library the runtime leaves
+    # Without a BLAS, DNN or ONNX Device library the runtime leaves
     # their dispatch paths out.
     assert '#define UDONCL_AOT_ENABLE_BLAS 0' in (
         user_kernel_root / 'opencl-user-kernels/udoncl_aot_user_kernels.h'

@@ -11,10 +11,6 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_EXAMPLES = ROOT / "unity/Packages/com.lemolatoon.udoncl/Editor/Examples"
-DEFAULT_ARENA = ROOT / "build/precommit/onnx-aot/unity-arena-add-model-bundle"
-DEFAULT_TINY = (
-    ROOT / "build/precommit/onnx-aot/unity-tiny-llama-standard-model-bundle"
-)
 DEFAULT_SAXPY = (
     ROOT
     / "build/udoncl/tests/cmake-package/saxpy-consumer/udoncl/saxpy-unity-library/artifact"
@@ -78,24 +74,10 @@ def publish(source: Path, destination: Path, program_name: str, check: bool) -> 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--arena", type=Path, default=DEFAULT_ARENA)
-    parser.add_argument("--tiny", type=Path, default=DEFAULT_TINY)
     parser.add_argument("--saxpy", type=Path, default=DEFAULT_SAXPY)
     parser.add_argument("--mnist", type=Path, default=DEFAULT_MNIST)
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args()
-    publish(
-        args.arena,
-        PACKAGE_EXAMPLES / "onnx-arena-add.zip.bytes",
-        "onnx_arena_add_example",
-        args.check,
-    )
-    publish(
-        args.tiny,
-        PACKAGE_EXAMPLES / "onnx-tiny-llama.zip.bytes",
-        "onnx_tiny_llama_example",
-        args.check,
-    )
     publish(
         args.saxpy,
         PACKAGE_EXAMPLES / "saxpy.zip.bytes",

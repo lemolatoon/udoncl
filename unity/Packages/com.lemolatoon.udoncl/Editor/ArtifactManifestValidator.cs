@@ -27,11 +27,7 @@ namespace Lemolatoon.Udoncl.Editor
             IList<ValidatedDispatchMaterial> dispatchMaterials,
             IList<ValidatedDeviceBuffer> deviceBuffers,
             IList<ValidatedResource> resources,
-            IList<ValidatedStaticTensor> staticTensors,
-            IList<ValidatedOnnxStaticInput> onnxStaticInputs,
-            IList<ValidatedOnnxInt4Call> onnxInt4Calls,
-            IList<ValidatedOnnxIo> onnxInputs,
-            IList<ValidatedOnnxIo> onnxOutputs
+            IList<ValidatedStaticTensor> staticTensors
         )
         {
             RootDirectory = root;
@@ -50,10 +46,6 @@ namespace Lemolatoon.Udoncl.Editor
             DeviceBuffers = deviceBuffers;
             Resources = resources;
             StaticTensors = staticTensors;
-            OnnxStaticInputs = onnxStaticInputs;
-            OnnxInt4Calls = onnxInt4Calls;
-            OnnxInputs = onnxInputs;
-            OnnxOutputs = onnxOutputs;
         }
 
         public string RootDirectory { get; private set; }
@@ -90,10 +82,6 @@ namespace Lemolatoon.Udoncl.Editor
         public ValidatedTransferScratch TransferScratch { get; internal set; }
         public IList<ValidatedResource> Resources { get; private set; }
         public IList<ValidatedStaticTensor> StaticTensors { get; private set; }
-        public IList<ValidatedOnnxStaticInput> OnnxStaticInputs { get; private set; }
-        public IList<ValidatedOnnxInt4Call> OnnxInt4Calls { get; private set; }
-        public IList<ValidatedOnnxIo> OnnxInputs { get; private set; }
-        public IList<ValidatedOnnxIo> OnnxOutputs { get; private set; }
     }
 
     public sealed class ValidatedStaticTensor
@@ -147,88 +135,6 @@ namespace Lemolatoon.Udoncl.Editor
         public long[] ByteStrides { get; private set; }
         public int ByteLength { get; private set; }
         public string Sha256 { get; private set; }
-        public int Width { get; private set; }
-        public int Height { get; private set; }
-    }
-
-    public sealed class ValidatedOnnxIo
-    {
-        internal ValidatedOnnxIo(int index, string name, string dataType, int words, int slot)
-        {
-            Index = index;
-            Name = name;
-            DataType = dataType;
-            Words = words;
-            Slot = slot;
-        }
-
-        public int Index { get; private set; }
-        public string Name { get; private set; }
-        public string DataType { get; private set; }
-        public int Words { get; private set; }
-        public int Slot { get; private set; }
-    }
-
-    public sealed class ValidatedOnnxInt4Atlas
-    {
-        internal ValidatedOnnxInt4Atlas(string name, string absolutePath, int width, int height)
-        {
-            Name = name;
-            AbsolutePath = absolutePath;
-            Width = width;
-            Height = height;
-        }
-
-        public string Name { get; private set; }
-        public string AbsolutePath { get; private set; }
-        public int Width { get; private set; }
-        public int Height { get; private set; }
-    }
-
-    public sealed class ValidatedOnnxInt4Call
-    {
-        internal ValidatedOnnxInt4Call(
-            int callIndex,
-            string assemblyAbsolutePath,
-            int resultWidth,
-            int resultHeight,
-            IList<ValidatedOnnxInt4Atlas> atlases
-        )
-        {
-            CallIndex = callIndex;
-            AssemblyAbsolutePath = assemblyAbsolutePath;
-            ResultWidth = resultWidth;
-            ResultHeight = resultHeight;
-            Atlases = atlases;
-        }
-
-        public int CallIndex { get; private set; }
-        public string AssemblyAbsolutePath { get; private set; }
-        public int ResultWidth { get; private set; }
-        public int ResultHeight { get; private set; }
-        public IList<ValidatedOnnxInt4Atlas> Atlases { get; private set; }
-    }
-
-    public sealed class ValidatedOnnxStaticInput
-    {
-        internal ValidatedOnnxStaticInput(
-            string name,
-            string absolutePath,
-            int words,
-            int width,
-            int height
-        )
-        {
-            Name = name;
-            AbsolutePath = absolutePath;
-            Words = words;
-            Width = width;
-            Height = height;
-        }
-
-        public string Name { get; private set; }
-        public string AbsolutePath { get; private set; }
-        public int Words { get; private set; }
         public int Width { get; private set; }
         public int Height { get; private set; }
     }
@@ -401,9 +307,7 @@ namespace Lemolatoon.Udoncl.Editor
                 throw new InvalidDataException(
                     "Unsupported or missing manifest schema_version; expected 1."
                 );
-            bool requiresValidationAudit =
-                manifest.artifact_stage == "unity-udoncl-library"
-                || manifest.artifact_stage == "unity-udon-onnx-model";
+            bool requiresValidationAudit = manifest.artifact_stage == "unity-udoncl-library";
             if (
                 requiresValidationAudit
                 && (
@@ -621,7 +525,6 @@ namespace Lemolatoon.Udoncl.Editor
                         "Raw heap initializer metadata and byte resource must match."
                     );
             }
-            ValidateOnnxResources(resources);
             List<ValidatedStaticTensor> staticTensors = ValidateStaticTensors(
                 manifest.static_tensors,
                 resources
@@ -636,36 +539,6 @@ namespace Lemolatoon.Udoncl.Editor
                 throw new InvalidDataException(
                     "Static tensor table slot requires static tensors and a safe Udon symbol."
                 );
-            List<ValidatedOnnxStaticInput> onnxStaticInputs = ValidateOnnxStaticInputs(
-                root,
-                manifest.static_inputs
-            );
-            List<ValidatedOnnxInt4Call> onnxInt4Calls = ValidateOnnxInt4Calls(
-                root,
-                manifest.call_artifacts
-            );
-            List<ValidatedOnnxIo> onnxInputs = ValidateOnnxIo(
-                manifest.model_inputs,
-                manifest.texture_arena,
-                "input"
-            );
-            List<ValidatedOnnxIo> onnxOutputs = ValidateOnnxIo(
-                manifest.model_outputs,
-                manifest.texture_arena,
-                "output"
-            );
-            if (
-                manifest.artifact_stage == "unity-udon-onnx-model"
-                && (
-                    onnxInputs.Count == 0
-                    || onnxOutputs.Count == 0
-                    || string.IsNullOrEmpty(manifest.program.buffer_copy_shader)
-                )
-            )
-                throw new InvalidDataException(
-                    "Unity ONNX models require public inputs, outputs, and a buffer copy shader."
-                );
-
             string texelFormat = string.IsNullOrEmpty(manifest.program.texel_format)
                 ? "rgba8_unorm"
                 : manifest.program.texel_format;
@@ -731,11 +604,7 @@ namespace Lemolatoon.Udoncl.Editor
                 dispatchMaterials,
                 deviceBuffers,
                 resources,
-                staticTensors,
-                onnxStaticInputs,
-                onnxInt4Calls,
-                onnxInputs,
-                onnxOutputs
+                staticTensors
             );
             artifact.TexelFormat = texelFormat;
             artifact.TransferScratch = transferScratch;
@@ -792,45 +661,6 @@ namespace Lemolatoon.Udoncl.Editor
                 return false;
             string[] components = value.Split('.');
             return Array.TrueForAll(components, IsCSharpIdentifier);
-        }
-
-        private static List<ValidatedOnnxIo> ValidateOnnxIo(
-            UdonOnnxIoInfo[] entries,
-            UdonOnnxTextureArenaInfo arena,
-            string kind
-        )
-        {
-            List<ValidatedOnnxIo> validated = new List<ValidatedOnnxIo>();
-            HashSet<string> names = new HashSet<string>(StringComparer.Ordinal);
-            UdonOnnxTextureSlotInfo[] slots = arena?.slots;
-            foreach (UdonOnnxIoInfo entry in entries ?? Array.Empty<UdonOnnxIoInfo>())
-            {
-                if (
-                    entry == null
-                    || entry.index != validated.Count
-                    || string.IsNullOrWhiteSpace(entry.name)
-                    || !names.Add(entry.name)
-                    || (entry.data_type != "float32" && entry.data_type != "int32")
-                    || entry.words <= 0
-                    || slots == null
-                    || entry.slot < 0
-                    || entry.slot >= slots.Length
-                    || slots[entry.slot] == null
-                    || slots[entry.slot].index != entry.slot
-                    || entry.words > slots[entry.slot].capacity_words
-                )
-                    throw new InvalidDataException("ONNX model " + kind + " binding is invalid.");
-                validated.Add(
-                    new ValidatedOnnxIo(
-                        entry.index,
-                        entry.name,
-                        entry.data_type,
-                        entry.words,
-                        entry.slot
-                    )
-                );
-            }
-            return validated;
         }
 
         private static List<ValidatedDeviceBuffer> ValidateDeviceBuffers(DeviceBufferInfo[] buffers)
@@ -905,209 +735,6 @@ namespace Lemolatoon.Udoncl.Editor
             return format == "rgba8_unorm" ? 4
                 : format == "rgba32_float" ? 16
                 : 0;
-        }
-
-        private static List<ValidatedOnnxInt4Call> ValidateOnnxInt4Calls(
-            string root,
-            UdonOnnxCallArtifactInfo[] calls
-        )
-        {
-            List<ValidatedOnnxInt4Call> validated = new List<ValidatedOnnxInt4Call>();
-            HashSet<int> callIndexes = new HashSet<int>();
-            foreach (
-                UdonOnnxCallArtifactInfo call in calls ?? Array.Empty<UdonOnnxCallArtifactInfo>()
-            )
-            {
-                if (call == null || call.call_index < 0 || !callIndexes.Add(call.call_index))
-                    throw new InvalidDataException(
-                        "ONNX INT4 call index is invalid or duplicated."
-                    );
-                string manifestRelativePath = ValidateRelativeFilePath(
-                    call.path + "/manifest.json",
-                    ".json"
-                );
-                string manifestPath = ResolveExistingFile(root, manifestRelativePath);
-                UdonOnnxInt4CallManifest child;
-                try
-                {
-                    child = JsonUtility.FromJson<UdonOnnxInt4CallManifest>(ReadUtf8(manifestPath));
-                }
-                catch (Exception ex)
-                {
-                    throw new InvalidDataException("ONNX INT4 child manifest is invalid JSON.", ex);
-                }
-                if (
-                    child == null
-                    || child.schema_version != 1
-                    || child.artifact_stage != "udon-onnx-int4-call"
-                    || child.call_index != call.call_index
-                    || child.function != "udonatenWeightInt4packMm"
-                    || child.result_layout == null
-                    || child.result_layout.width <= 0
-                    || child.result_layout.width > 8192
-                    || child.result_layout.height <= 0
-                )
-                    throw new InvalidDataException("ONNX INT4 child manifest contract is invalid.");
-                string childRoot = Path.GetDirectoryName(manifestPath);
-                string assemblyRelativePath = ValidateRelativeFilePath(child.assembly, ".uasm");
-                string assemblyPath = ResolveExistingFile(childRoot, assemblyRelativePath);
-                ReadUtf8(assemblyPath);
-                List<ValidatedOnnxInt4Atlas> atlases = new List<ValidatedOnnxInt4Atlas>();
-                HashSet<string> atlasNames = new HashSet<string>(StringComparer.Ordinal);
-                foreach (
-                    ArtifactResourceInfo resource in child.resources
-                        ?? Array.Empty<ArtifactResourceInfo>()
-                )
-                {
-                    if (
-                        resource == null
-                        || !IsSafeIdentifier(resource.name)
-                        || !atlasNames.Add(resource.name)
-                        || resource.kind != "bytes"
-                        || resource.encoding != "q4-bf16-row80-rgba32"
-                        || resource.width != 1280
-                        || resource.height <= 0
-                        || resource.height > 8192
-                    )
-                        throw new InvalidDataException("ONNX INT4 atlas contract is invalid.");
-                    string relativePath = ValidateRelativeFilePath(resource.path, ".rgba");
-                    string absolutePath = ResolveExistingFile(childRoot, relativePath);
-                    long expectedBytes = (long)resource.width * resource.height * 4;
-                    if (
-                        resource.bytes != expectedBytes
-                        || new FileInfo(absolutePath).Length != expectedBytes
-                    )
-                        throw new InvalidDataException("ONNX INT4 atlas byte size is invalid.");
-                    atlases.Add(
-                        new ValidatedOnnxInt4Atlas(
-                            resource.name,
-                            absolutePath,
-                            resource.width,
-                            resource.height
-                        )
-                    );
-                }
-                if (atlases.Count == 0)
-                    throw new InvalidDataException("ONNX INT4 child has no weight atlas.");
-                validated.Add(
-                    new ValidatedOnnxInt4Call(
-                        call.call_index,
-                        assemblyPath,
-                        child.result_layout.width,
-                        child.result_layout.height,
-                        atlases
-                    )
-                );
-            }
-            validated.Sort((left, right) => left.CallIndex.CompareTo(right.CallIndex));
-            return validated;
-        }
-
-        private static List<ValidatedOnnxStaticInput> ValidateOnnxStaticInputs(
-            string root,
-            UdonOnnxStaticInputInfo[] inputs
-        )
-        {
-            List<ValidatedOnnxStaticInput> validated = new List<ValidatedOnnxStaticInput>();
-            HashSet<string> names = new HashSet<string>(StringComparer.Ordinal);
-            foreach (
-                UdonOnnxStaticInputInfo input in inputs ?? Array.Empty<UdonOnnxStaticInputInfo>()
-            )
-            {
-                UdonOnnxStaticTextureInfo texture = input?.texture;
-                if (
-                    input == null
-                    || string.IsNullOrWhiteSpace(input.name)
-                    || !names.Add(input.name)
-                    || texture == null
-                    || texture.abi != "linear-rgba32-words"
-                    || texture.words <= 0
-                    || texture.width != 8192
-                    || texture.height != (texture.words + 8191) / 8192
-                )
-                    throw new InvalidDataException(
-                        "ONNX static input texture contract is invalid."
-                    );
-                string relativePath = ValidateRelativeFilePath(input.resource, ".bytes");
-                string absolutePath = ResolveExistingFile(root, relativePath);
-                long expectedBytes = (long)texture.width * texture.height * 4;
-                if (new FileInfo(absolutePath).Length != expectedBytes)
-                    throw new InvalidDataException(
-                        "ONNX static input byte size does not match its texture dimensions."
-                    );
-                validated.Add(
-                    new ValidatedOnnxStaticInput(
-                        input.name,
-                        absolutePath,
-                        texture.words,
-                        texture.width,
-                        texture.height
-                    )
-                );
-            }
-            return validated;
-        }
-
-        private static void ValidateOnnxResources(IList<ValidatedResource> resources)
-        {
-            ValidatedResource model = null;
-            ValidatedResource planResource = null;
-            foreach (ValidatedResource resource in resources)
-            {
-                if (resource.Name == "onnx_model" && resource.Kind == "bytes")
-                    model = resource;
-                else if (resource.Name == "onnx_execution_plan" && resource.Kind == "bytes")
-                    planResource = resource;
-            }
-            if (model == null && planResource == null)
-                return;
-            if (model == null || planResource == null)
-                throw new InvalidDataException(
-                    "ONNX artifacts require paired onnx_model and onnx_execution_plan byte resources."
-                );
-            UdonOnnxExecutionPlan plan;
-            try
-            {
-                plan = JsonUtility.FromJson<UdonOnnxExecutionPlan>(
-                    ReadUtf8(planResource.AbsolutePath)
-                );
-            }
-            catch (Exception ex)
-            {
-                throw new InvalidDataException("ONNX execution plan is invalid JSON.", ex);
-            }
-            if (
-                plan == null
-                || plan.schema_version != 1
-                || plan.runtime != "udon-onnx"
-                || !IsSafeIdentifier(plan.execution_provider)
-                || plan.passes == null
-                || plan.passes.Length == 0
-            )
-                throw new InvalidDataException(
-                    "ONNX execution plan requires schema 1, runtime udon-onnx, a safe execution provider, and Device passes."
-                );
-            HashSet<int> passIds = new HashSet<int>();
-            foreach (UdonOnnxPassInfo pass in plan.passes)
-            {
-                if (
-                    pass == null
-                    || pass.id < 0
-                    || !passIds.Add(pass.id)
-                    || !IsSafeIdentifier(pass.kernel)
-                    || pass.fragments <= 0
-                    || pass.providers == null
-                    || pass.providers.Length == 0
-                )
-                    throw new InvalidDataException(
-                        "Every ONNX Device pass needs a unique id, safe kernel, providers, and positive fragment count."
-                    );
-                foreach (string provider in pass.providers)
-                    if (!IsSafeIdentifier(provider))
-                        throw new InvalidDataException(
-                            "ONNX Device pass provider names must be safe identifiers."
-                        );
-            }
         }
 
         private static List<ValidatedStaticTensor> ValidateStaticTensors(

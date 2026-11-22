@@ -1336,6 +1336,14 @@ central importer or model-specific UI code.
 Exit criterion: MNIST and real TinyLlama pass U# numerical tests without an
 `execution-plan.json` runtime.
 
+Status: done. The Python planner (`udon_onnx.py`, `udon_pages.py`,
+`udon_weights.py`), its examples and tests, `UdonOnnxRuntimeBehaviour`,
+`UdonOnnxModelAsset`, the execution-plan import, the MNIST and Tiny Llama
+Device prototypes and the MNIST-specific OpenCLAOT dispatch were removed. The
+dependency-free protobuf builders the model generators need live in
+`runtime/onnx/onnx_builder.py`. File references earlier in this document
+describe the baseline before the removal.
+
 ## Refactor safety rules
 
 - Do not change MLIR pipeline behavior and artifact serialization in one step.

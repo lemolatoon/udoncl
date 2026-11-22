@@ -2,7 +2,7 @@
   "name": "com.lemolatoon.udoncl",
   "displayName": "UdonCL Runtime and ONNX Importer",
   "version": "0.1.0-beta.1",
-  "description": "Transaction-safe Unity import for udoncl programs, Device kernels, UdonDNN/UdonBLAS, and ONNX execution plans.",
+  "description": "Transaction-safe Unity import for udoncl programs, Device kernels, UdonDNN/UdonBLAS, and compiled ONNX models with generated U# bindings.",
   "unity": "2022.3",
   "license": "GPL-3.0-only",
   "licensesUrl": "https://github.com/lemolatoon/udoncl/blob/master/LICENSE",
@@ -31,21 +31,6 @@
       "displayName": "TinyLlama Chat",
       "description": "Chat with TinyLlama-1.1B through a user-built 4096-token Chat Artifact and stream its replies.",
       "path": "Samples~/TinyLlama Chat"
-    },
-    {
-      "displayName": "ONNX Arena Add",
-      "description": "Generate, import, and call a standard ONNX Add graph from U#.",
-      "path": "Samples~/ONNX Arena Add"
-    },
-    {
-      "displayName": "ONNX Tiny Llama",
-      "description": "Run a multi-operator Tiny Llama graph with typed token upload and asynchronous logits readback.",
-      "path": "Samples~/ONNX Tiny Llama"
-    },
-    {
-      "displayName": "ONNX Llama 3.1 8B Host",
-      "description": "Drive a user-materialized Llama 3.1 8B artifact from U# without redistributing licensed weights.",
-      "path": "Samples~/ONNX Llama 3.1 8B Host"
     }
   ]
 }

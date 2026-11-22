@@ -1976,50 +1976,6 @@ def main():
             shutil.rmtree(unity_tile_bundle)
         publish_bundle(staged, unity_tile_bundle)
 
-    rl_model = output / "rl-policy.onnx"
-    run(
-        [
-            sys.executable,
-            root / "examples/reinforcement-learning/generate_onnx.py",
-            "-o",
-            rl_model,
-        ]
-    )
-    sys.path.insert(0, str(root / "runtime/onnx"))
-    from udon_onnx import compile_operators, emit_c_host, parse_model
-
-    rl_plan = compile_operators(parse_model(rl_model.read_bytes()))
-    expected_rl_calls = [
-        "udonblasSgemv",
-        "udonatenAdd",
-        "udonatenTanh",
-        "udonatenSigmoid",
-        "udonatenMul",
-        "udonblasSgemv",
-        "udonatenAdd",
-        "udonatenSub",
-        "udonatenMul",
-        "udondnnSoftmaxForward",
-    ]
-    if (
-        rl_plan["execution_provider"] != "UdonOperatorExecutionProvider"
-        or [call["function"] for call in rl_plan["aot"]["calls"]]
-        != expected_rl_calls
-    ):
-        raise RuntimeError("RL policy did not use the generic ONNX operator provider")
-    (output / "rl-plan.json").write_text(
-        json.dumps(rl_plan, indent=2), encoding="utf-8"
-    )
-    rl_host_text = emit_c_host(rl_plan)
-    rl_host_source = output / "rl-host.c"
-    rl_host_source.write_text(rl_host_text, encoding="utf-8")
-    rl_declarations = rl_host_text.split("int udon_onnx_run", 1)[0]
-    (output / "rl_host.h").write_text(
-        rl_declarations
-        + "int udon_onnx_run(udon_onnx_buffers_t *buffers);\n",
-        encoding="utf-8",
-    )
-
     host_ir = output / "host.ll"
     imported = output / "host.imported.mlir"
     udonhl = output / "host.udonhl.mlir"
@@ -2106,7 +2062,6 @@ def main():
     )
     run([mlir_translate, "--mlir-to-llvmir", blas_lowered, "-o", blas_native_ir])
     blas_host_object = output / ("blas-host" + object_suffix)
-    rl_host_object = output / ("rl-host" + object_suffix)
     udonaten_object = output / ("udonaten" + object_suffix)
     device_object = output / ("convolution-device" + object_suffix)
     activation_object = output / ("activation-device" + object_suffix)
@@ -2126,23 +2081,6 @@ def main():
     arena_rms_object = output / ("arena-rms-device" + object_suffix)
     run([clang, *runtime_flags, "-c", native_ir, "-o", host_object])
     run([clang, *runtime_flags, "-c", blas_native_ir, "-o", blas_host_object])
-    run(
-        [
-            clang,
-            *runtime_flags,
-            "-std=c11",
-            "-I",
-            source / "include",
-            "-I",
-            root / "libraries/udonaten/include",
-            "-I",
-            root / "libraries/udonblas/include",
-            "-c",
-            rl_host_source,
-            "-o",
-            rl_host_object,
-        ]
-    )
     run(
         [
             clang,
@@ -2444,7 +2382,6 @@ def main():
             "-DCMAKE_BUILD_TYPE=Release",
             "-DUDONDNN_HOST_OBJECT=" + host_object.as_posix(),
             "-DUDONBLAS_HOST_OBJECT=" + blas_host_object.as_posix(),
-            "-DUDON_ONNX_RL_HOST_OBJECT=" + rl_host_object.as_posix(),
             "-DUDONATEN_OBJECT=" + udonaten_object.as_posix(),
             "-DUDONDNN_DEVICE_OBJECT=" + device_object.as_posix(),
             "-DUDONDNN_ACTIVATION_OBJECT=" + activation_object.as_posix(),

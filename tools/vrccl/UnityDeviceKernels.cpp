@@ -63,9 +63,6 @@ const std::vector<LibraryKernelContract> &libraryKernelContracts() {
   static const std::vector<LibraryKernelContract> contracts = {
       {1, "udonblas_sgemm", {}, {}, std::nullopt},
       {2, "udonblas_sgemv", {}, {}, std::nullopt},
-      {20, "mnist_conv", {}, {}, std::nullopt},
-      {21, "mnist_pool", {}, {}, std::nullopt},
-      {22, "mnist_dense", {}, {}, std::nullopt},
       {207, "udonaten_embedding", {}, {}, std::nullopt},
       {217,
        "udonaten_arena_rms_norm_reduce",

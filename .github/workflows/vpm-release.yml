@@ -40,7 +40,7 @@ jobs:
         run: |
           unzip -Z1 "${{ steps.package.outputs.archive }}" > archive-files.txt
           grep -Fxq package.json archive-files.txt
-          grep -Fxq Runtime/Udoncl.Runtime.asmdef archive-files.txt
+          grep -Fxq Editor/Udoncl.Editor.asmdef archive-files.txt
           if grep -Eq "^$PACKAGE_NAME/" archive-files.txt; then
             echo "Package archive has an extra top-level directory." >&2
             exit 1

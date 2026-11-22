@@ -22,29 +22,13 @@ the native UdonHL adapter with:
 
 ```text
 python examples/mnist-cnn/run.py --build-dir build/udoncl
-python examples/mnist-cnn/run_device.py --build-dir build/udoncl
 ```
 
-The Device run compiles `device.cl` through LLVM/MLIR, the proven gather
-lowering, `vrcgpu`, and HLSL. The CUDA-style pipeline assigns one fragment to
-each output and uses three ordered passes: 9,216 convolution activations, 144
-pooled features, and 10 class logits. It renders all three fragment kernels and
-checks ten predictions and logits against the independent CPU implementation.
-
-Before compiling those passes, the run generates and imports a real ONNX model
-without depending on the Python `onnx` or protobuf packages. The initial Udon
-ONNX execution provider validates and shape-infers
-`Conv → Add → Relu → AveragePool → Flatten → Gemm → Add`, assigns the nodes to
-`udondnnConvolutionForward`, `udonatenAdd`, `udonatenRelu`,
-`udondnnPoolingForward`, and `udonblasSgemm`, then
-fuses them into the three Device passes. The emitted Unity bundle contains both
-`model.onnx` and the checked execution plan.
-
-The same run publishes `unity-bundle`. Its Udon Assembly Host packs the 28x28
-input and static weights, issues the convolution/pool/dense `VRCGraphics.Blit`
-sequence, and binds the packed logits to the display material. The Unity MCP
-lifecycle test imports this bundle, executes the Host on the SDK `IUdonVM`, and
-removes all generated assets in teardown.
+`generate_onnx.py` writes the same trained network as a standard ONNX model
+(`Conv → Add → Relu → AveragePool → Flatten → Gemm → Add`) without depending
+on the Python `onnx` or protobuf packages. `examples/onnx-mnist` compiles that
+model into an importable Unity library. `device.cl` keeps the OpenCL C kernels
+of the network for the large-gather lowering test.
 
 The native adapter intentionally retains LLVM memory operations. Subsequent
 milestones replace typed-array access, scalar loops, and the CNN call graph with

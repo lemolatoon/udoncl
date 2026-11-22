@@ -9,10 +9,8 @@ namespace Lemolatoon.Udoncl.Editor
 {
     internal static class UdonclPackagedExampleImporter
     {
-        private const string ArenaArchive = "onnx-arena-add.zip.bytes";
         private const string MnistArchive = "onnx-mnist.zip.bytes";
         private const string SaxpyArchive = "saxpy.zip.bytes";
-        private const string TinyArchive = "onnx-tiny-llama.zip.bytes";
         private const string MnistControllerTemplate = "generic-onnx-mnist-test-controller.cs.txt";
         private const string TransformerControllerTemplate =
             "generic-onnx-transformer-test-controller.cs.txt";
@@ -47,18 +45,6 @@ namespace Lemolatoon.Udoncl.Editor
         private static void ImportMnist()
         {
             Import(MnistArchive);
-        }
-
-        [MenuItem("Tools/udoncl/Examples/Import ONNX Arena Add")]
-        private static void ImportArenaAdd()
-        {
-            Import(ArenaArchive);
-        }
-
-        [MenuItem("Tools/udoncl/Examples/Import ONNX Tiny Llama")]
-        private static void ImportTinyLlama()
-        {
-            Import(TinyArchive);
         }
 
         [MenuItem("Tools/udoncl/Internal/Prepare Packaged Example Validation")]
@@ -302,7 +288,7 @@ namespace Lemolatoon.Udoncl.Editor
                 editorRoot + "/Udoncl.TinyLlama.Focused.Tests.asmdef",
                 "{\n"
                     + "  \"name\": \"Udoncl.TinyLlama.Focused.Tests\",\n"
-                    + "  \"references\": [\"Udoncl.Runtime\", \"Udoncl.Editor\", "
+                    + "  \"references\": [\"Udoncl.Editor\", "
                     + "\"VRC.Udon\", \"VRC.Udon.Editor\", \"UdonSharp.Runtime\"],\n"
                     + "  \"includePlatforms\": [\"Editor\"],\n"
                     + "  \"overrideReferences\": true,\n"
@@ -390,7 +376,7 @@ namespace Lemolatoon.Udoncl.Editor
                 editorRoot + "/Udoncl.TinyLlama.Chat.Focused.Tests.asmdef",
                 "{\n"
                     + "  \"name\": \"Udoncl.TinyLlama.Chat.Focused.Tests\",\n"
-                    + "  \"references\": [\"Udoncl.Runtime\", \"Udoncl.Editor\", "
+                    + "  \"references\": [\"Udoncl.Editor\", "
                     + "\"VRC.Udon\", \"VRC.Udon.Editor\", \"UdonSharp.Runtime\"],\n"
                     + "  \"includePlatforms\": [\"Editor\"],\n"
                     + "  \"overrideReferences\": true,\n"
@@ -460,7 +446,7 @@ namespace Lemolatoon.Udoncl.Editor
                 editorRoot + "/Udoncl.TinyLlama.Prefill.Focused.Tests.asmdef",
                 "{\n"
                     + "  \"name\": \"Udoncl.TinyLlama.Prefill.Focused.Tests\",\n"
-                    + "  \"references\": [\"Udoncl.Runtime\", \"Udoncl.Editor\", "
+                    + "  \"references\": [\"Udoncl.Editor\", "
                     + "\"VRC.Udon\", \"VRC.Udon.Editor\", \"UdonSharp.Runtime\"],\n"
                     + "  \"includePlatforms\": [\"Editor\"],\n"
                     + "  \"overrideReferences\": true,\n"
@@ -530,7 +516,7 @@ namespace Lemolatoon.Udoncl.Editor
                 editorRoot + "/Udoncl.TinyLlama.Step.Focused.Tests.asmdef",
                 "{\n"
                     + "  \"name\": \"Udoncl.TinyLlama.Step.Focused.Tests\",\n"
-                    + "  \"references\": [\"Udoncl.Runtime\", \"Udoncl.Editor\", "
+                    + "  \"references\": [\"Udoncl.Editor\", "
                     + "\"VRC.Udon\", \"VRC.Udon.Editor\", \"UdonSharp.Runtime\"],\n"
                     + "  \"includePlatforms\": [\"Editor\"],\n"
                     + "  \"overrideReferences\": true,\n"
@@ -669,12 +655,7 @@ namespace Lemolatoon.Udoncl.Editor
 
         internal static string Extract(string archiveName)
         {
-            if (
-                archiveName != ArenaArchive
-                && archiveName != MnistArchive
-                && archiveName != SaxpyArchive
-                && archiveName != TinyArchive
-            )
+            if (archiveName != MnistArchive && archiveName != SaxpyArchive)
                 throw new ArgumentException(
                     "Unknown packaged example archive.",
                     nameof(archiveName)

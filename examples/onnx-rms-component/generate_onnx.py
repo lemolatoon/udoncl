@@ -8,7 +8,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "runtime" / "onnx"))
 
-from udon_onnx import (  # noqa: E402
+from onnx_builder import (  # noqa: E402
     graph_proto,
     model_proto,
     node_proto,

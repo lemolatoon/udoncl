@@ -88,7 +88,6 @@ target_compile_definitions(opencl-aot-runtime PRIVATE
   UDONDNN_DEVICE_POINTERS=1
   UDONCL_AOT_RUNTIME_VALIDATION=1
   UDONCL_AOT_ENABLE_DNN=1
-  UDONCL_AOT_ENABLE_MNIST=1
   UDONCL_AOT_ENABLE_ONNX=1)
 add_test(NAME opencl-aot-runtime COMMAND opencl-aot-runtime)
 add_executable(udontokenizers-runtime
@@ -772,10 +771,6 @@ add_test(NAME mnist-cnn-native
   COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/boundary/mnist_cnn.py"
     "${PROJECT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/tests/mnist-cnn"
 )
-add_test(NAME tiny-llama-native
-  COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/boundary/tiny_llama.py"
-    "${PROJECT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/tests/tiny-llama"
-)
 add_test(NAME tinyllama-real-onnx-oracle
   COMMAND Python3::Interpreter
     "${CMAKE_CURRENT_SOURCE_DIR}/boundary/tinyllama_real_onnx.py"
@@ -801,26 +796,12 @@ add_test(NAME tinyllama-real-onnx-frontend
     $<TARGET_FILE:udoncl-onnx-frontend>
 )
 set_tests_properties(tinyllama-real-onnx-frontend PROPERTIES TIMEOUT 600)
-add_test(NAME onnx-runtime-mnist
-  COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/boundary/onnx_runtime.py"
-    "${PROJECT_SOURCE_DIR}" "${PROJECT_BINARY_DIR}/tests/onnx-runtime-mnist"
+add_test(NAME mnist-unity-reference
+  COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/boundary/mnist_reference.py"
+    "${PROJECT_SOURCE_DIR}" "${PROJECT_BINARY_DIR}/tests/mnist-unity-reference"
 )
-add_test(NAME onnx-runtime-llama-8b
-  COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/boundary/llama_8b_onnx.py"
-    "${PROJECT_SOURCE_DIR}" "${PROJECT_BINARY_DIR}/tests/onnx-runtime-llama-8b"
-)
-add_test(NAME onnx-arena-add-example
-  COMMAND Python3::Interpreter "${PROJECT_SOURCE_DIR}/examples/onnx-arena-add/build.py"
-    --output "${PROJECT_BINARY_DIR}/tests/onnx-arena-add-example" --plan-only
-)
-add_test(NAME onnx-tiny-llama-example
-  COMMAND Python3::Interpreter "${PROJECT_SOURCE_DIR}/examples/tiny-llama/build_onnx.py"
-    --output "${PROJECT_BINARY_DIR}/tests/onnx-tiny-llama-example" --plan-only
-)
-add_test(NAME onnx-weight-packer
-  COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/boundary/onnx_weights.py"
-    "${PROJECT_SOURCE_DIR}" "${PROJECT_BINARY_DIR}/tests/onnx-weight-packer"
-)
+set_tests_properties(mnist-unity-reference PROPERTIES
+  PASS_REGULAR_EXPRESSION "mnist_reference=written predicted=8 ")
 add_test(NAME prebuilt-sdk-installer
   COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/build/install_llvm.py"
 )
@@ -996,14 +977,6 @@ if(VRC_ENABLE_NATIVE_FRAGMENT_TESTS)
     COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/boundary/md_crystal.py"
       "${PROJECT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/tests/md-crystal")
   set_tests_properties(md-crystal-execution PROPERTIES TIMEOUT 600)
-  add_test(NAME mnist-cnn-device-execution
-    COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/boundary/mnist_cnn_device.py"
-      "${PROJECT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/tests/mnist-cnn-device")
-  set_tests_properties(mnist-cnn-device-execution PROPERTIES TIMEOUT 600)
-  add_test(NAME tiny-llama-device-execution
-    COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/boundary/tiny_llama_device.py"
-      "${PROJECT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/tests/tiny-llama-device")
-  set_tests_properties(tiny-llama-device-execution PROPERTIES TIMEOUT 600)
   add_test(NAME udonblas-device-execution
     COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/boundary/udonblas_device.py"
       "${PROJECT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/tests/udonblas-device")
