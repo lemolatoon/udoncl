@@ -111,9 +111,15 @@ def main():
     assert [item['kernel_id'] for item in manifest['dispatch_sites']] == [
         235, 235,
     ]
+    # The kernel entry is derived from the dispatches: its inputs hold the
+    # library contract of the kernel (M <= 4, N <= 32000, K <= 5632), not
+    # just this component's 33 x 2048 weight.
     kernel = next(item for item in manifest['device']['kernels'] if item['id'] == 235)
     assert [item['required_bytes'] for item in kernel['args'][:5]] == [
-        32768, 33792, 8448, 524288, 524288,
+        4 * 5632 * 4, 32000 * 176 * 4 * 4, 32000 * 176 * 4, 524288, 524288,
+    ]
+    assert [item.get('maximum') for item in kernel['args'][5:]] == [
+        4, 32000, 5632, 176, 64, 64,
     ]
     assert kernel['global_size'] == [8192, 16, 1]
     print('onnx_q4_component=passed assigned_buffers=4 dispatch_sites=2 k=2048')

@@ -733,6 +733,12 @@ add_test(NAME unity-synthesized-kernel-bundle
     $<TARGET_FILE:vrccl> "${VRC_TEST_CLANG}"
     "${PROJECT_BINARY_DIR}/tests/unity-synthesized-kernel"
 )
+add_test(NAME unity-device-kernel-derivation
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/boundary/unity_device_kernel_derivation.py"
+    $<TARGET_FILE:vrccl> "${VRC_TEST_CLANG}"
+    "${PROJECT_BINARY_DIR}/tests/unity-device-kernel-derivation"
+)
 add_test(NAME large-gather-device-lowering
   COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/boundary/large_gather.py"
     $<TARGET_FILE:vrccl> "${VRC_TEST_CLANG}"

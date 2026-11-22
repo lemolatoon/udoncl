@@ -188,8 +188,10 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                     dispatch.Slot,
                     Load<Material>("Materials/Dispatch/" + dispatch.AssetName + ".mat")
                 );
-            // 4096 is the synthesized kernel of the fused bias Add and Relu.
-            CollectionAssert.AreEquivalent(new[] { 221, 231, 232, 233, 234, 4096 }, materials.Keys);
+            // The library kernels the Host dispatches, whose entries udonclc
+            // derives; 4096 is the synthesized kernel of the fused bias Add and
+            // Relu.
+            CollectionAssert.AreEquivalent(new[] { 221, 231, 232, 234, 4096 }, materials.Keys);
             Material copyMaterial = Load<Material>("Materials/buffer-copy.mat");
 
             float[] input = ReadFloats(

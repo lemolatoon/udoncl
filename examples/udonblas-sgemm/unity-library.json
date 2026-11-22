@@ -5,29 +5,6 @@
     "namespace": "Lemolatoon.Udoncl.Generated",
     "class_name": "UdonBlasSgemmBinding"
   },
-  "device_kernels": [
-    {
-      "schema_version": 1,
-      "profile": "gather-f32",
-      "words": 16384,
-      "kernel": "udonblas_arena_sgemm",
-      "kernel_id": 221,
-      "argument_kinds": [
-        "buffer",
-        "buffer",
-        "buffer",
-        "i32",
-        "i32",
-        "i32",
-        "i32",
-        "i32",
-        "f32"
-      ],
-      "global_size": [8192, 2, 1],
-      "local_size": [1, 1, 1],
-      "global_offset": [0, 0, 0]
-    }
-  ],
   "exports": [
     {
       "symbol": "run_udonblas_sgemm",

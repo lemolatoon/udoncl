@@ -111,8 +111,8 @@ def compile_opencl(source):
 pointwise = compile_opencl(root / "libraries/udondnn/device/large_pointwise.cl")
 unary = compile_opencl(root / "libraries/udononnxoperators/device/unary.cl")
 softmax = compile_opencl(root / "libraries/udondnn/device/arena_softmax.cl")
-# The arena Softmax as examples/onnx-transformer-tiny/unity-library.json
-# declares it.
+# The arena Softmax as udonclc derives it from its library contract
+# (tools/vrccl/UnityDeviceKernels.cpp).
 SOFTMAX = {"words": 16384, "global_size": [8192, 2, 1]}
 SOFTMAX_BOUNDS = {
     "argument_bounds": [

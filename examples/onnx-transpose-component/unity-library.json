@@ -6,26 +6,6 @@
     "namespace": "Lemolatoon.Udoncl.Generated",
     "class_name": "UdonclOnnxTransposeComponentBinding"
   },
-  "device_kernels": [
-    {
-      "schema_version": 1,
-      "profile": "gather-f32",
-      "words": 131072,
-      "kernel": "udononnx_transpose_f32",
-      "kernel_id": 238,
-      "input_words": [131072],
-      "argument_bounds": [
-        {"index": 2, "min": 1, "max": 131072},
-        {"index": 3, "min": 1, "max": 5}
-      ],
-      "argument_kinds": [
-        "buffer", "buffer", "i32", "i32", "i32", "i32", "i32", "i32"
-      ],
-      "global_size": [8192, 16, 1],
-      "local_size": [1, 1, 1],
-      "global_offset": [0, 0, 0]
-    }
-  ],
   "export_overrides": [
     {"symbol": "transpose_component_initialize", "public_name": "Initialize", "parameters": []},
     {"symbol": "transpose_component_run", "public_name": "Run", "parameters": []},

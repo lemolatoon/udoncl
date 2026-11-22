@@ -141,7 +141,14 @@ and `target_compile_options` usage requirements on those source targets. Build
 the selected AOT kernel in the Unity artifact. The Unity-library config assigns
 stable export IDs, public U# names and parameter names. Optional explicit
 `buffers` entries become canonical linear RGBA8 RenderTexture assets bound to
-compiler-emitted Udon heap slots. Its artifact contains `manifest.json`,
+compiler-emitted Udon heap slots. The config does not list the UdonCL Device
+library kernels a Host dispatches (an ONNX Host library, or C through
+UdonBLAS, UdonDNN, UdonATen or UdonONNXOperators): `udonclc` derives each
+kernel's `device_kernels` entry from its dispatch sites and the library
+kernel contract, and a hand-written entry replaces the derived one of its
+`kernel_id` (see "Library kernel entries" in
+[docs/architecture/refactor-baseline-and-mlir-pipeline.md](docs/architecture/refactor-baseline-and-mlir-pipeline.md)).
+Its artifact contains `manifest.json`,
 compiler-emitted `host.uasm`, and a valid display shader; import it with
 **Tools → udoncl → Import Artifacts...**. CMake preset support and the future
 Unity directory-picker UI are deliberately separate.

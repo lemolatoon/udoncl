@@ -810,12 +810,14 @@ def main():
         assert texture['filter'] == 'point'
         assert texture['width'] * texture['height'] * 4 >= tensor['byte_length']
         assert texture['width'] * texture['height'] * 4 - tensor['byte_length'] < 4
+    # The config lists no Device kernel: udonclc derives one entry, in id
+    # order, for every library kernel the Host dispatches, and the fused
+    # kernel follows them.
     assert [item['name'] for item in onnx_mnist_manifest['device']['kernels']] == [
+        'udonblas_arena_sgemm',
+        'udondnn_large_pooling_forward',
         'udondnn_large_convolution_forward',
         'udondnn_large_op_tensor',
-        'udondnn_large_activation_forward',
-        'udondnn_large_pooling_forward',
-        'udonblas_arena_sgemm',
         'udononnx_fused_0',
     ]
     mnist_dispatch_ids = [
@@ -1162,10 +1164,12 @@ def main():
     ] == [3136, 40]
     # 4096 is the synthesized kernel of the fused bias Add and Relu: 9216
     # elements, which the 8192x2 buffer textures of this bundle hold.
-    for kernel_id in [221, 231, 232, 233, 234, 4096]:
+    for kernel_id in [221, 231, 232, 234, 4096]:
         assert (
             onnx_mnist_artifact / f'kernels/kernel_{kernel_id}.shader'
         ).is_file()
+    # No site dispatches the large activation kernel, so it is not compiled.
+    assert not (onnx_mnist_artifact / 'kernels/kernel_233.shader').exists()
     mnist_fused_kernel = next(
         kernel for kernel in onnx_mnist_manifest['device']['kernels']
         if kernel['id'] == 4096
@@ -1540,13 +1544,11 @@ def main():
     assert {
         item['kernel_id'] for item in transformer_manifest['dispatch_sites']
     } == {221, 234, 235, 242, 4096}
+    # Exactly the dispatched kernels are compiled: their entries are derived
+    # from the dispatch sites.
     assert {
         item['id'] for item in transformer_manifest['device']['kernels']
-    } == {
-        1, 2, 207, 217, 218, 219, 220, 221, 222, 231, 232, 233, 234, 235,
-        236, 237, 238, 239, 240, 241, 242, 243, 244, 245, 246, 247, 248,
-        4096,
-    }
+    } == {221, 234, 235, 242, 4096}
     sgemm_kernel = next(
         item for item in transformer_manifest['device']['kernels']
         if item['id'] == 221
@@ -1554,12 +1556,6 @@ def main():
     assert sgemm_kernel['global_size'] == [8192, 2, 1]
     assert sgemm_kernel['target_texture']['width'] == 8192
     assert sgemm_kernel['target_texture']['height'] == 2
-    matmul_nbits_kernel = next(
-        item for item in transformer_manifest['device']['kernels']
-        if item['id'] == 219
-    )
-    assert matmul_nbits_kernel['target_texture']['width'] == 8192
-    assert matmul_nbits_kernel['target_texture']['height'] == 2
     q4_kernel = next(
         item for item in transformer_manifest['device']['kernels']
         if item['id'] == 235

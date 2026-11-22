@@ -145,35 +145,14 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             CollectionAssert.AreEquivalent(
                 new[]
                 {
-                    1,
-                    2,
-                    207,
-                    217,
-                    218,
-                    219,
-                    220,
+                    // The library kernels the Host dispatches, whose entries
+                    // udonclc derives from the dispatch sites.
                     221,
-                    222,
-                    231,
-                    232,
-                    233,
                     234,
                     235,
-                    236,
-                    237,
-                    238,
-                    239,
-                    240,
-                    241,
                     242,
-                    243,
-                    244,
-                    245,
-                    246,
-                    247,
-                    248,
                     // The synthesized kernel of the fused residual Add and
-                    // activation; 233 stays in the table without a dispatch.
+                    // activation.
                     4096,
                 },
                 materials.Keys

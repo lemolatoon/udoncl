@@ -27,10 +27,10 @@ if output.exists():
     shutil.rmtree(output)
 output.mkdir(parents=True)
 root = Path(__file__).resolve().parents[2]
+# The entries udonclc derives for these kernels when the TinyLlama artifacts
+# dispatch them (tools/vrccl/UnityDeviceKernels.cpp).
 library = json.loads(
-    (root / "examples/onnx-transformer-tiny/unity-library.json").read_text(
-        encoding="utf-8"
-    )
+    (root / "tests/boundary/word_texel_kernels.json").read_text(encoding="utf-8")
 )
 configs = {entry["kernel"]: entry for entry in library["device_kernels"]}
 SURFACE = 131072

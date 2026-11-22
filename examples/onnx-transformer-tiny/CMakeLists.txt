@@ -251,30 +251,11 @@ endfunction()
 
 # The Conversation Artifact, and with a tokenizer the Chat Artifact, of the
 # libraries named with `suffix`; the artifact targets end in `target_suffix`.
-# An optional JSON file of further `device_kernels` adds the library kernels
-# only that capacity dispatches: a declared kernel is compiled into the
-# artifact whether or not it runs.
+# udonclc compiles the library kernels the Host of that capacity dispatches,
+# such as the large strided-batched SGEMM of the 4096-token attention.
 function(tinyllama_add_conversation_artifacts suffix target_suffix)
   set(conversation_config "${conversation_unity_config}")
   set(chat_config "${chat_unity_config}")
-  if(ARGC GREATER 2)
-    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/${ARGV2}" extra_json)
-    string(JSON extra_count LENGTH "${extra_json}" device_kernels)
-    math(EXPR extra_last "${extra_count} - 1")
-    foreach(kind IN ITEMS conversation chat)
-      set(config_json "${${kind}_unity_config_json}")
-      string(JSON kernel_count LENGTH "${config_json}" device_kernels)
-      foreach(extra RANGE ${extra_last})
-        string(JSON kernel GET "${extra_json}" device_kernels ${extra})
-        string(JSON config_json SET "${config_json}" device_kernels
-          ${kernel_count} "${kernel}")
-        math(EXPR kernel_count "${kernel_count} + 1")
-      endforeach()
-      set(${kind}_config
-        "${CMAKE_CURRENT_BINARY_DIR}/unity-library-${kind}${target_suffix}.json")
-      file(WRITE "${${kind}_config}" "${config_json}\n")
-    endforeach()
-  endif()
   udoncl_add_unity_library(onnx-transformer-tiny-conversation${target_suffix}
     CONFIG "${conversation_config}"
     OMIT_INTERMEDIATE_IR
@@ -343,15 +324,9 @@ udoncl_add_unity_library(onnx-transformer-tiny
     UdonBLAS::UdonBLAS)
 
 if(UDONCL_TINYLLAMA_ONNX_MODEL)
-  if(UDONCL_TINYLLAMA_SEQUENCE_ROWS EQUAL 1)
-    tinyllama_add_conversation_artifacts("" "")
-  else()
-    # The attention products of several rows per run take the large
-    # strided-batched SGEMM, which the 4096-token artifacts declare too.
-    tinyllama_add_conversation_artifacts("" "" unity-library-4k-kernels.json)
-  endif()
+  tinyllama_add_conversation_artifacts("" "")
   if(UDONCL_TINYLLAMA_CONTEXT_4K)
-    tinyllama_add_conversation_artifacts(_4k -4k unity-library-4k-kernels.json)
+    tinyllama_add_conversation_artifacts(_4k -4k)
   endif()
   # The M=1 step validation artifact keeps the M=1 graph of the Context
   # Capacity whatever rows the Conversation Artifacts run.

@@ -671,8 +671,9 @@ globals:
 
 - Device cost in texel-load units: `fragment-weight` (default 16) per
   launched fragment for raster, output write and Blit overhead, plus one per
-  texel load. A kernel may declare `fragment_cost` next to its
-  `argument_bounds` in the Unity library JSON: fixed `loads` per fragment,
+  texel load. A kernel's `device_kernels` entry (derived from its library
+  contract, see "Library kernel entries", or hand-written) may declare
+  `fragment_cost` next to its `argument_bounds`: fixed `loads` per fragment,
   `per_argument` loads per unit of a scalar argument (a loop trip count such
   as the Q4 `block_count` or the SGEMM `k`), and `active` arguments whose
   product bounds the fragments doing that work (such as `m * n`). The values
@@ -931,11 +932,46 @@ texels), and `program.texel_format` and `program.transfer_scratch` for the
 importer, the finalizer and the generated binding (see
 `udon-vrchat-shader-constraints.md`).
 
+#### Library kernel entries
+
+A Unity library compiles every Device kernel its Host dispatches from one
+`device_kernels` entry each: kernel name and id, the `gather-f32` profile,
+output `words`, `argument_kinds`, NDRange, and the access contract the gather
+proof and the Device work schedule rely on (`input_words`,
+`argument_bounds`, `fragment_cost`). `udonclc --emit-unity-library-bundle`
+derives these entries; the Unity library config does not have to list them.
+
+- **When.** After the Host is recovered and its exports are final (ONNX Host
+  MLIR, C Host LLVM and the linked OpenCL AOT runtime alike), so only the
+  kernels a reachable `vrc.dispatch` launches are compiled. Device library
+  import, the buffer texture shape and the row-pitch decisions follow.
+- **Launch.** The dispatch sites of a kernel id, which
+  `LowerOpenCLAOTIntrinsics` gives the fixed id, argument kinds and NDRange
+  of their intrinsic, supply `argument_kinds`, `global_size`, `local_size`,
+  `global_offset` and `words` (the product of the global size). Sites that
+  disagree fail the build.
+- **Contract.** `tools/vrccl/UnityDeviceKernels.cpp` maps each id of a UdonCL
+  Device library kernel to its name and access contract: the element limits
+  the ONNX Host planner (`ONNXHostPlan.h`) and the OpenCL AOT runtime check
+  before they dispatch it, such as K <= 8192 for the arena SGEMM or
+  N <= 32000 and K <= 5632 for the Q4 MatMulNBits. The axis-0 Gather table
+  bounds grow to the largest constant table shape of its sites. A constant
+  site argument outside the contract fails the build with the kernel,
+  argument and bounds, as does a dispatched id with no contract or a missing
+  Device library.
+- **Hand-written entries.** An entry in the config (`device_kernel` or
+  `device_kernels`, with the fields above) replaces the derived entry of its
+  `kernel_id` unchanged and is compiled even when no site dispatches it. It
+  is the way to describe a kernel outside the UdonCL libraries, a site
+  beyond the library contract, or a contract the sites cannot derive (a
+  Gather table shape that is not constant). Hand-written entries keep their
+  config order ahead of the derived ones, which follow in id order.
+
 #### Generated kernel channel
 
-Library kernels are hand-written OpenCL C, configured by name and fixed id in
-the bundle JSON and dispatched through intrinsics that
-`LowerOpenCLAOTIntrinsics` knows by name. A kernel the compiler synthesizes
+Library kernels are hand-written OpenCL C with a fixed id, dispatched through
+intrinsics that `LowerOpenCLAOTIntrinsics` knows by name and described by
+derived or hand-written `device_kernels` entries. A kernel the compiler synthesizes
 has none of these, so a Host MLIR module can carry it and dispatch it with
 nothing keyed on its name:
 
@@ -976,7 +1012,8 @@ func.func private @__vrc_opencl_dispatch_fused(i32, i32, i32) -> i32
   fails the build.
 - **Unity bundle.** `udonclc --emit-unity-library-bundle` runs id assignment
   and the proof right after it parses `--host-mlir`, with ids starting at
-  4096 and the JSON `device_kernels` ids reserved. It moves each
+  4096 and the hand-written `device_kernels` ids reserved (derived library
+  kernel ids are all below 4096). It moves each
   `@device_gpu_<id>` module out of the Host into the Device module next to
   the library kernels, so gather lowering, shader emission
   (`kernels/kernel_<id>.shader`), the manifest `device.kernels` entry, the
