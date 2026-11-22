@@ -23,7 +23,7 @@ are imported with **Tools → udoncl → Import Artifacts...**.
 | Example | User path | Result | Current boundary |
 | --- | --- | --- | --- |
 | [`hello-kernel`](hello-kernel/README.md) | User CMake Host C + OpenCL C | Generated U# binding and importable scalar/Device artifacts | Fixed AOT dispatch and buffer-copy subsets |
-| [`saxpy`](saxpy/README.md) | Standard OpenCL Host API + kernel | Two input vectors, copied i32/f32 arguments, GPU output, public Write/Read API | Fixed buffers and NDRange |
+| [`saxpy`](saxpy/README.md) | Standard OpenCL Host API + OpenCL C kernel on `UdonCL::OpenCLRuntime` | Asynchronous `UDONCL_EXPORT` method, two input vectors, GPU output, public Write/Read API | Fixed buffers; constant NDRange derived from the Host C |
 | [`onnx-arena-add`](onnx-arena-add/README.md) | Standard ONNX `Add` | General ONNX runtime prefab plus importable U# Package Sample | One non-Pooling pointwise pass |
 | [`average-pooling`](average-pooling/README.md) | OpenCL C AveragePool | Public CMake package and generated U# binding | Ordinary 1D UdonCL kernel, independent of ONNX |
 | [`tiny-llama`](tiny-llama/README.md) | Standard ONNX small decoder | Importable 18-pass general-runtime artifact and U# Package Sample | CI-sized model, not pretrained 8B weights |

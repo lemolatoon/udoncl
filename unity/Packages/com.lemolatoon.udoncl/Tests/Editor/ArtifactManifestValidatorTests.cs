@@ -537,9 +537,12 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             PackagedExampleUsage usage = PackagedExampleUsageGenerator.ForProgram("saxpy_demo");
             Assert.NotNull(usage);
             Assert.AreEqual("UdonclSaxpyDemoExample", usage.ClassName);
-            StringAssert.Contains("binding.TryWriteInput(input)", usage.Source);
-            StringAssert.Contains("binding.TryRunSaxpy(count, alpha)", usage.Source);
-            StringAssert.Contains("binding.StartReadOutput(output", usage.Source);
+            StringAssert.Contains("binding.TryWriteX(x)", usage.Source);
+            StringAssert.Contains("binding.TryWriteY(y)", usage.Source);
+            StringAssert.Contains("binding.StartRunSaxpy(count, alpha, this", usage.Source);
+            StringAssert.Contains("binding.GetRunSaxpyStatus()", usage.Source);
+            StringAssert.Contains("binding.TryGetRunSaxpyResult(out openclStatus)", usage.Source);
+            StringAssert.Contains("binding.StartReadResult(result", usage.Source);
             StringAssert.DoesNotContain("SetProgramVariable", usage.Source);
         }
 

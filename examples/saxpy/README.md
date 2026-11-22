@@ -7,10 +7,16 @@ instance in the active scene automatically. The source workflow below lets
 users modify and rebuild the ordinary Host C and OpenCL C inputs.
 
 This example is a standalone consumer of `find_package(UdonCL CONFIG)`. Its
-ordinary OpenCL 1.2 Host C creates explicit input and output buffers, copies an
-`int n` and `float alpha` with `clSetKernelArg`, and enqueues the OpenCL C
-Device kernel. The compiler recovers that fixed AOT call sequence into a typed
-Unity dispatch.
+Host C ([`host.c`](host.c)) uses the standard OpenCL 1.2 API: it creates the
+`x`, `y` and `result` buffers, creates the `saxpy` kernel of
+[`saxpy.cl`](saxpy.cl) with `clCreateKernel`, sets its arguments with
+`clSetKernelArg`, launches it with `clEnqueueNDRangeKernel` and waits with
+`clFinish`. `run_saxpy` is marked `UDONCL_EXPORT` and returns the OpenCL
+status. The linked `UdonCL::OpenCLRuntime` implements the API; the kernel is
+compiled ahead of time from the Device library, and `udoncl_add_unity_library`
+derives its launch from the Host C, so
+[`unity-library.json`](unity-library.json) lists only the public names and
+buffers.
 
 From the repository root, build the compiler and then the consumer project:
 
@@ -28,21 +34,18 @@ Import this directory with **Tools -> udoncl -> Import Artifacts...**:
 build/saxpy-cmake/udoncl/saxpy-unity-library/artifact
 ```
 
-The Importer generates a typed `RunSaxpy(int n, float alpha)` U# binding, two
-128-byte linear RGBA8 RenderTextures, and the kernel material. The first 16
-input words are `x`, the next 16 are `y`; `RunSaxpy(16, 2.0f)` writes
-`2 * x[i] + y[i]` to the first 16 output words.
+The Importer generates a typed U# binding with an asynchronous
+`StartRunSaxpy(int n, float alpha, receiver, completionEvent)`, three 128-byte
+linear RGBA8 RenderTextures, and the kernel material. U# writes the 32-word
+inputs with `TryWriteX(float[])` and `TryWriteY(float[])`, starts
+`RunSaxpy(16, 2.0f)`, reads `GetRunSaxpyStatus()` and the returned OpenCL
+status with `TryGetRunSaxpyResult(out int)` in the completion event, and then
+reads `result` with `StartReadResult(float[], receiver, completionEvent)`. The
+first 16 result words hold `2 * x[i] + y[i]`; the others hold `y[i]`.
 
-This is still a deliberately fixed subset. Buffers must precede copied i32/f32
-scalars, use constant sizes matching `unity-library.json`, and contain exactly
-one write-only output. The NDRange and kernel are AOT constants. The generated
-U# binding exposes the preferred named transfers `TryWriteInput(float[])` and
-`StartReadOutput(float[], receiver, completionEvent)`. It also retains the
-lower-level byte-exact whole-buffer transfers:
-`TryWriteFloatBuffer` / `TryWriteIntBuffer` upload data, while
-`StartReadFloatBuffer` / `StartReadIntBuffer` send a completion event to the
-supplied `UdonSharpBehaviour`. Pass the `input` or `output` buffer ID from
-`manifest.json` only when using that low-level API. Partial transfers and
-direct lowering of blocking OpenCL
-write/read calls to Udon continuations remain outside this public transfer
-path.
+The launch is derived from the Host C, so it must stay within what the build
+can see: every buffer argument precedes the `int`/`uint`/`float` scalars, each
+argument has a dominating `clSetKernelArg`, the kernel object comes from one
+`clCreateKernel` of a constant name, and the global work size is one
+constant. A buffer whose address is passed to the runtime lives in a Host
+global. The build fails with a diagnostic naming the kernel otherwise.

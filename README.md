@@ -196,63 +196,73 @@ A UdonCL project has four inputs: an OpenCL C kernel, Host C that launches it,
 a `CMakeLists.txt`, and a `unity-library.json` that describes the public U#
 API.
 
-**The OpenCL C kernel** ([`unity_saxpy.cl`](examples/saxpy/unity_saxpy.cl)).
-The current Device profile, `gather-f32`, runs one work item per word of the
-output buffer, and every work item writes exactly its own word
-`output[gid]`. The input buffer holds `x` in words 0–15 and `y` in words
-16–31; the output buffer has the same 32-word size, so its upper half simply
-copies `y`:
+**The OpenCL C kernel** ([`saxpy.cl`](examples/saxpy/saxpy.cl)). The current
+Device profile, `gather-f32`, runs one work item per word of the output
+buffer, and every work item writes exactly its own word `result[i]`. All three
+buffers hold 32 words; the words at or beyond `n` keep `y`:
 
 ```c
-#define SAXPY_WORDS 32u
-#define SAXPY_VECTOR_WORDS 16u
-
-__kernel void saxpy_demo(__global const float *input, __global float *output,
-                         int n, float alpha) {
-  uint gid = (uint)get_global_id(0);
-  float value = input[gid];
-  if (gid < (uint)n && gid < SAXPY_VECTOR_WORDS)
-    value = alpha * input[gid] +
-            input[SAXPY_VECTOR_WORDS + (gid & (SAXPY_VECTOR_WORDS - 1u))];
-  output[gid] = value;
+__kernel void saxpy(__global const float *x, __global const float *y,
+                    __global float *result, int n, float alpha) {
+  uint i = (uint)get_global_id(0);
+  float value = y[i];
+  if (i < (uint)n)
+    value = alpha * x[i] + value;
+  result[i] = value;
 }
 ```
 
 **The Host C** ([`host.c`](examples/saxpy/host.c)). Host code uses the
-ordinary Khronos OpenCL 1.2 API. The exported function `run_saxpy` performs
-one complete, straight-line setup, dispatch, and release sequence; the
-compiler recovers it into a typed Unity dispatch. The essential part is:
+ordinary Khronos OpenCL 1.2 API, and `UDONCL_EXPORT` makes `run_saxpy` a U#
+method. It creates the buffers and the kernel, sets the kernel arguments,
+launches it and waits for it, and returns the OpenCL status. The essential
+part is:
 
 ```c
-void run_saxpy(int n, float alpha) {
+static cl_mem x;
+static cl_mem y;
+static cl_mem result;
+
+UDONCL_EXPORT int run_saxpy(int n, float alpha) {
   /* ... clGetPlatformIDs, clGetDeviceIDs, clCreateContext,
-     clCreateCommandQueue ... */
-  input = clCreateBuffer(context, CL_MEM_READ_ONLY, 32 * sizeof(float), 0, 0);
-  output = clCreateBuffer(context, CL_MEM_WRITE_ONLY, 32 * sizeof(float), 0, 0);
-  program = clCreateProgramWithSource(context, 1, &source, 0, 0);
-  (void)clBuildProgram(program, 0, 0, 0, 0, 0);
-  kernel = clCreateKernel(program, "saxpy_demo", 0);
-  (void)clSetKernelArg(kernel, 0, sizeof(input), &input);
-  (void)clSetKernelArg(kernel, 1, sizeof(output), &output);
-  (void)clSetKernelArg(kernel, 2, sizeof(n), &n);
-  (void)clSetKernelArg(kernel, 3, sizeof(alpha), &alpha);
-  (void)clEnqueueNDRangeKernel(queue, kernel, 1, 0, &global, &local, 0, 0, 0);
+     clCreateCommandQueue, each followed by a status check ... */
+  x = clCreateBuffer(context, CL_MEM_READ_ONLY, SAXPY_WORDS * sizeof(float), 0,
+                     &status);
+  /* ... y (CL_MEM_READ_ONLY) and result (CL_MEM_WRITE_ONLY) likewise ... */
+  program = clCreateProgramWithSource(context, 1, &source, 0, &status);
+  status = clBuildProgram(program, 0, 0, 0, 0, 0);
+  kernel = clCreateKernel(program, "saxpy", &status);
+  if ((status = clSetKernelArg(kernel, 0, sizeof(x), &x)) != CL_SUCCESS ||
+      (status = clSetKernelArg(kernel, 1, sizeof(y), &y)) != CL_SUCCESS ||
+      (status = clSetKernelArg(kernel, 2, sizeof(result), &result)) !=
+          CL_SUCCESS ||
+      (status = clSetKernelArg(kernel, 3, sizeof(n), &n)) != CL_SUCCESS ||
+      (status = clSetKernelArg(kernel, 4, sizeof(alpha), &alpha)) != CL_SUCCESS)
+    goto cleanup;
+  status =
+      clEnqueueNDRangeKernel(queue, kernel, 1, 0, &global, &local, 0, 0, 0);
+  if (status != CL_SUCCESS)
+    goto cleanup;
+  status = clFinish(queue);
+cleanup:
   /* ... release the kernel, program, buffers, queue, and context ... */
+  return status;
 }
 ```
 
-This is a deliberately fixed AOT subset. The calls must appear in exactly this
-order with no status-dependent control flow: one platform, one GPU device, one
-context and in-order queue, read-only input buffers and exactly one write-only
-output buffer, `clSetKernelArg` calls in argument order (buffers before
-f32/i32 scalars), one 1D enqueue with a constant global size and a local size
-of 1, and the matching release calls. Kernels are not compiled at run time:
-the kernel body comes from the Device library in `CMakeLists.txt`, and the
-name passed to `clCreateKernel` must match `kernel` in `unity-library.json`.
-Unsupported patterns are compile errors rather than approximations.
+Kernels are not compiled at run time: the kernel body comes from the Device
+library in `CMakeLists.txt`, and the build derives the launch from the Host
+C. That works within limits: every buffer argument precedes the
+`int`/`uint`/`float` scalars, each argument has a dominating
+`clSetKernelArg`, the kernel object comes from one `clCreateKernel` of a
+constant name, and the global work size is one constant. A buffer whose
+address is passed to the runtime lives in a Host global. Unsupported patterns
+are compile errors rather than approximations.
 
 **The CMake project** ([`CMakeLists.txt`](examples/saxpy/CMakeLists.txt)) is
-an ordinary consumer of the UdonCL package:
+an ordinary consumer of the UdonCL package. `UdonCL::OpenCLRuntime` is the
+OpenCL implementation the Host C runs on, and `OMIT_INTERMEDIATE_IR` leaves
+the intermediate MLIR, which Unity does not import, out of the artifact:
 
 ```cmake
 cmake_minimum_required(VERSION 3.30...4.2)
@@ -261,11 +271,12 @@ project(udoncl_saxpy LANGUAGES NONE)
 find_package(UdonCL 0.1 REQUIRED CONFIG)
 
 udoncl_add_host_library(saxpy_host host.c)
-udoncl_add_device_library(saxpy_device unity_saxpy.cl)
+udoncl_add_device_library(saxpy_device saxpy.cl)
 
 udoncl_add_unity_library(saxpy-unity-library
   CONFIG unity-library.json
-  HOST_LIBRARIES saxpy_host
+  OMIT_INTERMEDIATE_IR
+  HOST_LIBRARIES saxpy_host UdonCL::OpenCLRuntime
   DEVICE_LIBRARIES saxpy_device)
 ```
 
@@ -273,32 +284,22 @@ udoncl_add_unity_library(saxpy-unity-library
 ([`unity-library.json`](examples/saxpy/unity-library.json)). Each key you
 write:
 
-- `schema_version`: `1`.
+- `schema_version`: `2`.
 - `program`: the program name, `saxpy_demo`. Unity imports the artifact under
   `Assets/udoncl-generated/saxpy_demo` and names the generated U# class
   `UdonclSaxpyDemoBinding` (`Udoncl` + the PascalCase program name +
   `Binding`) in the namespace `Lemolatoon.Udoncl.Generated`. An optional
   `binding` object with `namespace` and `class_name` overrides both.
-- `device_kernel`: the AOT launch contract of the kernel.
-  - `schema_version`: `1`; `profile`: `"gather-f32"`.
-  - `words`: the number of 32-bit words in each buffer (32), at most 32,768.
-  - `kernel`: the OpenCL C kernel name (`saxpy_demo`); `kernel_id`: a positive
-    integer that identifies it in the artifact manifest (10).
-  - `argument_kinds`: the kernel arguments in order, `"buffer"` entries first,
-    then `"i32"` / `"f32"` scalars: `["buffer", "buffer", "i32", "f32"]`.
-  - `global_size`: the NDRange; its element product must equal `words`
-    (`[32, 1, 1]`). `local_size` must be `[1, 1, 1]` and `global_offset`
-    `[0, 0, 0]`.
-- `exports`: the C functions that become U# methods. `symbol` is the C name
-  (`run_saxpy`), `public_name` the U# name (`RunSaxpy`), `id` a stable export
-  ID, and `parameters` the U# parameter names (`n`, `alpha`). The parameter
-  types come from the C signature and must match the scalar `argument_kinds`.
+- `export_overrides`: optional names for the `UDONCL_EXPORT` functions.
+  `symbol` is the C name (`run_saxpy`), `public_name` the U# name
+  (`RunSaxpy`), and `parameters` the U# parameter names (`n`, `alpha`). The
+  parameter and result types come from the C signature.
 - `buffers`: one entry per OpenCL buffer, in `clCreateBuffer` order. `id` is
   the buffer ID, `name` produces the U# transfer method names
-  (`input` → `TryWriteInput`, `output` → `StartReadOutput`), `byte_size` must
-  equal both `words * 4` and the `clCreateBuffer` size (128),
-  `element_type` is `"float32"`, and `public_access` is `"input"` for a
-  `CL_MEM_READ_ONLY` buffer or `"output"` for the `CL_MEM_WRITE_ONLY` buffer.
+  (`x` → `TryWriteX`, `result` → `StartReadResult`), `byte_size` is the
+  `clCreateBuffer` size (128), `element_type` is `"float32"`, and
+  `public_access` is `"input"` for a buffer U# writes or `"output"` for one it
+  reads.
 
 #### 2. Build
 
@@ -336,7 +337,7 @@ build/saxpy-cmake/udoncl/saxpy-unity-library/artifact
    `Assets/udoncl-generated/saxpy_demo/Prefabs/UdonclSaxpyDemoBinding.prefab`
    and places an instance in the active scene. With **Import Only**, drag that
    prefab into the scene yourself. The importer also creates the Udon program,
-   the kernel material, and two 128-byte linear RGBA8 RenderTextures for the
+   the kernel material, and three 128-byte linear RGBA8 RenderTextures for the
    buffers; the generated binding source is
    `Assets/udoncl-generated/saxpy_demo/Bindings/UdonclSaxpyDemoBinding.cs`.
 
@@ -358,15 +359,21 @@ build/saxpy-cmake/udoncl/saxpy-unity-library/artifact
 
 The generated binding exposes:
 
-- `int TryWriteInput(float[] source)`: uploads the whole `input` buffer. The
-  array length must equal the buffer size in words (32).
-- `int TryRunSaxpy(int n, float alpha)`: runs the `RunSaxpy` export.
-  Synchronous exports get a `Try` prefix and return a status code.
-- `int StartReadOutput(float[] destination, UdonSharpBehaviour receiver, string completionEvent)`:
-  starts an asynchronous GPU readback of the whole `output` buffer into
-  `destination` (again exactly 32 words). When it finishes, the binding calls
+- `int TryWriteX(float[] source)` and `int TryWriteY(float[] source)`: upload
+  the whole `x` or `y` buffer. The array length must equal the buffer size in
+  words (32).
+- `int StartRunSaxpy(int n, float alpha, UdonSharpBehaviour receiver, string completionEvent)`:
+  starts the `RunSaxpy` export. An export that launches Device work runs
+  asynchronously: when it finishes, the binding calls
   `receiver.SendCustomEvent(completionEvent)`, so the event method must be
   `public`.
+- `int GetRunSaxpyStatus()`: the status of the finished export, and
+  `int TryGetRunSaxpyResult(out int result)`: the value `run_saxpy` returned,
+  here the OpenCL status (`0` is `CL_SUCCESS`).
+- `int StartReadResult(float[] destination, UdonSharpBehaviour receiver, string completionEvent)`:
+  starts an asynchronous GPU readback of the whole `result` buffer into
+  `destination` (again exactly 32 words) and calls the completion event like
+  `StartRunSaxpy`.
 - `int GetLastReadbackStatus()`: the status of the completed readback.
 - Status constants `StatusSuccess` (0), `StatusNotInitialized` (-1),
   `StatusBusy` (-2), `StatusInvalidArgument` (-3, for example a wrong array
@@ -385,8 +392,9 @@ public class SaxpyCaller : UdonSharpBehaviour
 {
     [SerializeField] private UdonclSaxpyDemoBinding binding;
 
-    private float[] input;
-    private float[] output;
+    private float[] x;
+    private float[] y;
+    private float[] result;
 
     private void Start()
     {
@@ -402,32 +410,45 @@ public class SaxpyCaller : UdonSharpBehaviour
             return;
         }
 
-        // The input buffer holds 32 words: x in [0, 16) and y in [16, 32).
-        input = new float[32];
-        output = new float[32];
-        for (int i = 0; i < 16; i++)
+        x = new float[32];
+        y = new float[32];
+        result = new float[32];
+        for (int i = 0; i < 32; i++)
         {
-            input[i] = i + 1;        // x[i]
-            input[16 + i] = 100 + i; // y[i]
+            x[i] = i + 1;
+            y[i] = 100 + i;
         }
 
-        int status = binding.TryWriteInput(input);
+        int status = binding.TryWriteX(x);
+        if (status == UdonclSaxpyDemoBinding.StatusSuccess)
+            status = binding.TryWriteY(y);
         if (status != UdonclSaxpyDemoBinding.StatusSuccess)
         {
-            Debug.LogError("SAXPY: TryWriteInput failed with status " + status);
+            Debug.LogError("SAXPY: writing the inputs failed with status " + status);
             return;
         }
 
-        status = binding.TryRunSaxpy(16, 2.0f);
+        status = binding.StartRunSaxpy(16, 2.0f, this, "OnSaxpyComplete");
         if (status != UdonclSaxpyDemoBinding.StatusSuccess)
+            Debug.LogError("SAXPY: StartRunSaxpy failed with status " + status);
+    }
+
+    public void OnSaxpyComplete()
+    {
+        int openclStatus = 0;
+        int status = binding.GetRunSaxpyStatus();
+        if (status == UdonclSaxpyDemoBinding.StatusSuccess)
+            status = binding.TryGetRunSaxpyResult(out openclStatus);
+        if (status != UdonclSaxpyDemoBinding.StatusSuccess || openclStatus != 0)
         {
-            Debug.LogError("SAXPY: TryRunSaxpy failed with status " + status);
+            Debug.LogError("SAXPY: RunSaxpy failed with status " + status
+                + " and OpenCL status " + openclStatus);
             return;
         }
 
-        status = binding.StartReadOutput(output, this, "OnSaxpyReadback");
+        status = binding.StartReadResult(result, this, "OnSaxpyReadback");
         if (status != UdonclSaxpyDemoBinding.StatusSuccess)
-            Debug.LogError("SAXPY: StartReadOutput failed with status " + status);
+            Debug.LogError("SAXPY: StartReadResult failed with status " + status);
     }
 
     public void OnSaxpyReadback()
@@ -441,8 +462,8 @@ public class SaxpyCaller : UdonSharpBehaviour
 
         for (int i = 0; i < 16; i++)
         {
-            float expected = 2.0f * input[i] + input[16 + i];
-            Debug.Log("SAXPY: z[" + i + "] = " + output[i] + " (expected " + expected + ")");
+            float expected = 2.0f * x[i] + y[i];
+            Debug.Log("SAXPY: result[" + i + "] = " + result[i] + " (expected " + expected + ")");
         }
     }
 }
@@ -450,18 +471,17 @@ public class SaxpyCaller : UdonSharpBehaviour
 
 #### 5. Expected result
 
-Each Console line shows `z[i] = 2 * x[i] + y[i]`. With the inputs above,
-`x[i] = i + 1` and `y[i] = 100 + i`, so `z[i] = 3 * i + 102`: `z[0] = 102`,
-`z[1] = 105`, ..., `z[15] = 147`, each equal to its `expected` value. Output
-words 16–31 (not logged) hold a copy of `y`. With a smaller `n`, elements at
-or beyond `n` contain `x[i]` instead.
+Each Console line shows `result[i] = 2 * x[i] + y[i]`. With the inputs above,
+`x[i] = i + 1` and `y[i] = 100 + i`, so `result[i] = 3 * i + 102`:
+`result[0] = 102`, `result[1] = 105`, ..., `result[15] = 147`, each equal to
+its `expected` value. Result words 16–31 (not logged) hold a copy of `y`, as
+do the words at or beyond a smaller `n`.
 
 > **Screenshot (pending):** Unity Console in Play Mode showing the sixteen SAXPY result lines — docs/images/getting-started/saxpy-console-output.png
 
 The generic buffer-ID methods `TryWriteFloatBuffer` / `TryWriteIntBuffer` and
 `StartReadFloatBuffer` / `StartReadIntBuffer` remain available as a low-level
-alternative to the named transfers; see
-[examples/saxpy/README.md](examples/saxpy/README.md).
+alternative to the named transfers.
 
 ### More tutorials
 

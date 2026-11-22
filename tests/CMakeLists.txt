@@ -1025,6 +1025,25 @@ if(VRC_ENABLE_NATIVE_FRAGMENT_TESTS)
       $<TARGET_FILE:synthesized-gather-kernel>
       "${PROJECT_BINARY_DIR}/tests/synthesized-gather")
   set_tests_properties(synthesized-gather-execution PROPERTIES TIMEOUT 600)
+  add_executable(opencl-user-kernel-runner
+    boundary/opencl_user_kernel_execution.cpp)
+  target_compile_features(opencl-user-kernel-runner PRIVATE cxx_std_20)
+  set_target_properties(opencl-user-kernel-runner PROPERTIES
+    CXX_EXTENSIONS OFF)
+  target_link_libraries(opencl-user-kernel-runner PRIVATE
+    VRCNativeOpenCLRuntime)
+  add_test(NAME opencl-user-kernel-execution
+    COMMAND Python3::Interpreter
+      "${CMAKE_CURRENT_SOURCE_DIR}/boundary/opencl_user_kernel_execution.py"
+      --cmake "${CMAKE_COMMAND}"
+      --generator "${CMAKE_GENERATOR}"
+      --make-program "${CMAKE_MAKE_PROGRAM}"
+      --compiler $<TARGET_FILE:vrccl>
+      --clang "${VRC_TEST_CLANG}"
+      --llvm-link "${VRC_TEST_LLVM_LINK}"
+      --runner $<TARGET_FILE:opencl-user-kernel-runner>
+      --output "${PROJECT_BINARY_DIR}/tests/opencl-user-kernel-execution")
+  set_tests_properties(opencl-user-kernel-execution PROPERTIES TIMEOUT 600)
   add_executable(raw-word-texel-kernel boundary/raw_word_texel.cpp)
   target_compile_features(raw-word-texel-kernel PRIVATE cxx_std_20)
   set_target_properties(raw-word-texel-kernel PROPERTIES CXX_EXTENSIONS OFF)

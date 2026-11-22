@@ -3,10 +3,15 @@ project(udoncl_saxpy LANGUAGES NONE)
 
 find_package(UdonCL 0.1 REQUIRED CONFIG)
 
+# The Host C runs the OpenCL C kernel of saxpy.cl through the standard OpenCL
+# API, which the linked UdonCL OpenCL runtime implements.
 udoncl_add_host_library(saxpy_host host.c)
-udoncl_add_device_library(saxpy_device unity_saxpy.cl)
+udoncl_add_device_library(saxpy_device saxpy.cl)
 
+# Unity imports only the Udon Assembly, the manifest and the shaders; leaving
+# out the intermediate MLIR keeps the artifact small.
 udoncl_add_unity_library(saxpy-unity-library
   CONFIG unity-library.json
-  HOST_LIBRARIES saxpy_host
+  OMIT_INTERMEDIATE_IR
+  HOST_LIBRARIES saxpy_host UdonCL::OpenCLRuntime
   DEVICE_LIBRARIES saxpy_device)

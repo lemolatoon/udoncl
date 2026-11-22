@@ -127,7 +127,9 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             AssertRuntimeBinding(saxpy, saxpyController, "UdonclSaxpyDemoBinding");
             AssertRuntimeBinding(pooling, poolingController, "UdonclAveragePoolingBinding");
 
-            const int timeoutFrames = 300;
+            // RunSaxpy is an asynchronous export of a Host that includes the
+            // OpenCL runtime, so it spans frames like the UdonBLAS example.
+            const int timeoutFrames = 900;
             UdonclArtifactImporter.SendUdonCustomEvent(helloController, "Run");
             int helloFrame = 0;
             float helloResult = 0.0f;

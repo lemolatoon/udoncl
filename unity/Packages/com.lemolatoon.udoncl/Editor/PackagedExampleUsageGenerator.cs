@@ -104,8 +104,10 @@ namespace Lemolatoon.Udoncl.Generated
         [SerializeField] private float alpha = 2.0f;
         [SerializeField] private float firstResult;
         [SerializeField] private int status;
-        private float[] input;
-        private float[] output;
+        [SerializeField] private int openclStatus;
+        private float[] x;
+        private float[] y;
+        private float[] result;
 
         public override void Interact()
         {
@@ -119,27 +121,39 @@ namespace Lemolatoon.Udoncl.Generated
                 status = UdonclSaxpyDemoBinding.StatusNotInitialized;
                 return;
             }
-            input = new float[32];
-            output = new float[32];
-            for (int index = 0; index < 16; ++index)
+            x = new float[32];
+            y = new float[32];
+            result = new float[32];
+            for (int index = 0; index < 32; ++index)
             {
-                input[index] = index + 1;
-                input[index + 16] = 100 + index;
+                x[index] = index + 1;
+                y[index] = 100 + index;
             }
-            status = binding.TryWriteInput(input);
+            status = binding.TryWriteX(x);
             if (status != UdonclSaxpyDemoBinding.StatusSuccess)
                 return;
-            status = binding.TryRunSaxpy(count, alpha);
+            status = binding.TryWriteY(y);
             if (status != UdonclSaxpyDemoBinding.StatusSuccess)
                 return;
-            status = binding.StartReadOutput(output, this, ""OnReadbackComplete"");
+            status = binding.StartRunSaxpy(count, alpha, this, ""OnSaxpyComplete"");
+        }
+
+        public void OnSaxpyComplete()
+        {
+            status = binding.GetRunSaxpyStatus();
+            if (status != UdonclSaxpyDemoBinding.StatusSuccess)
+                return;
+            status = binding.TryGetRunSaxpyResult(out openclStatus);
+            if (status != UdonclSaxpyDemoBinding.StatusSuccess || openclStatus != 0)
+                return;
+            status = binding.StartReadResult(result, this, ""OnReadbackComplete"");
         }
 
         public void OnReadbackComplete()
         {
             status = binding.GetLastReadbackStatus();
             if (status == UdonclSaxpyDemoBinding.StatusSuccess)
-                firstResult = output[0];
+                firstResult = result[0];
         }
     }
 }

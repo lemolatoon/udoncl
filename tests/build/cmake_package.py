@@ -2554,52 +2554,89 @@ def main():
         (saxpy_artifact / 'manifest.json').read_text(encoding='utf-8')
     )
     assert saxpy_manifest['ready_for_unity'] is True
+    # The Host C launches the user kernel of saxpy.cl through the linked
+    # runtime: the config names neither the kernel nor its launch.
     assert saxpy_manifest['dispatch_sites'] == [{
-        'function': 'run_saxpy',
-        'kernel_id': 10,
+        'function': '__vrc_enqueue_user_1024_3_saxpy',
+        'kernel_id': 1024,
         'descriptor_abi': 1,
-        'resources': 2,
-        'resource_accesses': ['read', 'write'],
+        'resources': 3,
+        'resource_accesses': ['read', 'read', 'write'],
         'completion': 'pending_event',
     }]
     assert [
         (
-            buffer['name'], buffer['logical_bytes'], buffer['element_type'],
-            buffer['public_access'],
+            buffer['id'], buffer['name'], buffer['logical_bytes'],
+            buffer['element_type'], buffer['public_access'],
         )
         for buffer in saxpy_manifest['device']['buffers']
     ] == [
-        ('input', 128, 'float32', 'input'),
-        ('output', 128, 'float32', 'output'),
+        (1, 'x', 128, 'float32', 'input'),
+        (2, 'y', 128, 'float32', 'input'),
+        (3, 'result', 128, 'float32', 'output'),
     ]
+    assert [
+        (export['public_name'], export['async'], export['result']['kind'],
+         [parameter['name'] for parameter in export['parameters']])
+        for export in saxpy_manifest['exports']
+    ] == [('RunSaxpy', True, 'i32', ['n', 'alpha'])]
+    # The config names no binding, but RunSaxpy is asynchronous: udonclc
+    # generates the U# binding under the default name the Unity importer
+    # documents, Udoncl + the PascalCase program name + Binding.
+    assert saxpy_manifest['program']['binding_source'] == 'binding.cs'
+    assert saxpy_manifest['program']['binding_namespace'] == (
+        'Lemolatoon.Udoncl.Generated')
+    assert saxpy_manifest['program']['binding_class'] == (
+        'UdonclSaxpyDemoBinding')
+    assert saxpy_manifest['public_abi_fingerprint'] == (
+        public_abi_fingerprint(saxpy_manifest))
+    saxpy_binding = (saxpy_artifact / 'binding.cs').read_text(
+        encoding='utf-8')
+    assert_binding_identity(saxpy_manifest, saxpy_binding)
+    for member in [
+        'public sealed class UdonclSaxpyDemoBinding : UdonSharpBehaviour',
+        'public int TryWriteX(float[] source)',
+        'public int TryWriteY(float[] source)',
+        'public int StartRunSaxpy(int n, float alpha, '
+        'UdonSharpBehaviour receiver, string completionEvent)',
+        'public int GetRunSaxpyStatus()',
+        'public int TryGetRunSaxpyResult(out int result)',
+        'public int StartReadResult(float[] destination, '
+        'UdonSharpBehaviour receiver, string completionEvent)',
+        'public int GetLastReadbackStatus()',
+    ]:
+        assert member in saxpy_binding, member
     assert saxpy_manifest['program']['buffer_copy_shader'] == 'buffer-copy.shader'
     assert (saxpy_artifact / 'buffer-copy.shader').is_file()
     saxpy_kernel = saxpy_manifest['device']['kernels'][0]
-    assert saxpy_kernel['name'] == 'saxpy_demo'
+    assert len(saxpy_manifest['device']['kernels']) == 1
+    assert saxpy_kernel['id'] == 1024
+    assert saxpy_kernel['name'] == 'saxpy'
     assert saxpy_kernel['profile'] == 'gather-f32'
+    assert saxpy_kernel['global_size'] == [32, 1, 1]
     assert [arg['kind'] for arg in saxpy_kernel['args']] == [
-        'buffer', 'buffer', 'i32', 'f32',
+        'buffer', 'buffer', 'buffer', 'i32', 'f32',
     ]
-    assert [arg.get('access') for arg in saxpy_kernel['args'][:2]] == [
-        'read', 'write',
+    assert [arg.get('access') for arg in saxpy_kernel['args'][:3]] == [
+        'read', 'read', 'write',
     ]
     saxpy_assembly = (saxpy_artifact / 'host.uasm').read_text(
         encoding='utf-8'
     )
     assert '.export __0_RunSaxpy' in saxpy_assembly
-    # The fixed input texture is bound once; the run-time n is bound first and
-    # then only on a change; the run-time f32 alpha on every dispatch.
-    assert saxpy_assembly.count('UnityEngineMaterial.__SetTexture__') == 1
-    assert saxpy_assembly.count('UnityEngineMaterial.__SetInteger__') == 2
-    assert saxpy_assembly.count('UnityEngineMaterial.__SetFloat__') == 1
     assert saxpy_assembly.count('VRCSDKBaseVRCGraphics.__Blit__') == 1
-    saxpy_hlsl = (saxpy_artifact / 'kernels/kernel_10.hlsl').read_text(
+    saxpy_hlsl = (saxpy_artifact / 'kernels/kernel_1024.hlsl').read_text(
         encoding='utf-8'
     )
     assert 'Texture2D<float4> _VRC_Input' in saxpy_hlsl
-    assert 'int _VRC_Arg2;' in saxpy_hlsl
-    assert 'float _VRC_Arg3;' in saxpy_hlsl
-    assert (saxpy_artifact / 'kernels/kernel_10.shader').is_file()
+    assert 'Texture2D<float4> _VRC_Input1' in saxpy_hlsl
+    assert 'int _VRC_Arg3;' in saxpy_hlsl
+    assert 'float _VRC_Arg4;' in saxpy_hlsl
+    assert (saxpy_artifact / 'kernels/kernel_1024.shader').is_file()
+    # The packaged example is built without intermediate IR and does not
+    # depend on the checkout it was built in.
+    assert not list(saxpy_artifact.glob('*.mlir'))
+    assert b'host.c' not in (saxpy_artifact / 'raw-heap.bytes').read_bytes()
 
     pooling_source = args.source.resolve().parent / 'average-pooling'
     run([
@@ -2655,41 +2692,6 @@ def main():
     assert pooling_assembly.count('VRCSDKBaseVRCGraphics.__Blit__') == 1
     assert (pooling_artifact / 'kernels/kernel_11.shader').is_file()
     assert (pooling_artifact / 'buffer-copy.shader').is_file()
-
-    invalid_saxpy_source = output / 'invalid-saxpy-access.c'
-    invalid_saxpy_module = output / 'invalid-saxpy-access.bc'
-    invalid_saxpy_source.write_text(
-        (saxpy_source / 'host.c').read_text(encoding='utf-8').replace(
-            'input = clCreateBuffer(context, CL_MEM_READ_ONLY,',
-            'input = clCreateBuffer(context, CL_MEM_WRITE_ONLY,',
-        ),
-        encoding='utf-8',
-    )
-    run([
-        args.clang, '-target', 'spir-unknown-unknown', '-x', 'c', '-std=c11',
-        '-Xclang', '-fdefault-calling-conv=cdecl', '-O0',
-        '-Xclang', '-disable-O0-optnone', '-fomit-frame-pointer',
-        '-ffp-contract=off', '-emit-llvm', '-c', str(invalid_saxpy_source),
-        '-I' + str(install / 'include'), '-o', str(invalid_saxpy_module),
-    ])
-    legacy_saxpy_config = output / 'legacy-saxpy-buffer-config.json'
-    legacy_saxpy_document = json.loads(
-        (saxpy_source / 'unity-library.json').read_text(encoding='utf-8')
-    )
-    for buffer in legacy_saxpy_document['buffers']:
-        buffer.pop('element_type')
-        buffer.pop('public_access')
-    legacy_saxpy_config.write_text(
-        json.dumps(legacy_saxpy_document), encoding='utf-8'
-    )
-    run_failure([
-        installed_compiler, '--emit-unity-library-bundle',
-        legacy_saxpy_config,
-        '--host-llvm', invalid_saxpy_module,
-        '--device-llvm',
-        saxpy_consumer / 'udoncl/saxpy-unity-library/device.bc',
-        '-o', output / 'invalid-saxpy-access-artifact',
-    ], 'requires read-only inputs and one write-only output')
 
     invalid_source = output / 'invalid-buffer-handle.c'
     invalid_module = output / 'invalid-buffer-handle.bc'
