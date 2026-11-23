@@ -88,38 +88,32 @@ ACTIVATION = {
     "local_size": [1, 1, 1],
     "global_offset": [0, 0, 0],
 }
-config = {
-    "schema_version": 1,
-    "program": "derived_device_kernels",
-    "exports": [{"symbol": "scale", "public_name": "Scale", "id": 1, "parameters": []}],
-    "buffers": [
-        {"id": identifier, "name": f"tensor{identifier}", "byte_size": WORDS * 4}
-        for identifier in range(1, 5)
-    ],
-}
 
 
 def host(dispatches, declarations=""):
+    # The Host names its program and export in the module and its four
+    # Device buffers are compiler-assigned textures, whose OpenCL tokens the
+    # dispatches take; no config lists them.
+    buffers = "".join(
+        f'  %{name}_buffer = "vrc.assigned_buffer"() <{{capacity_bytes = '
+        f"{WORDS * 4} : i64, format = \"rgba8_unorm\", resource_id = {index} : "
+        f"i32, texture_id = {index + 1} : i32}}> : () -> !vrc.buffer\n"
+        f"  %{name} = builtin.unrealized_conversion_cast %{name}_buffer : "
+        "!vrc.buffer to i32\n"
+        for index, name in enumerate(["a", "b", "c", "x"])
+    )
     return f"""
-func.func private @__vrc_opencl_buffer_alloc(i32, i32) -> i32
+module attributes {{udoncl.program = "derived_device_kernels"}} {{
 {declarations}
-func.func @scale() {{
-  %bytes = arith.constant {WORDS * 4} : i32
-  %id1 = arith.constant 1 : i32
-  %id2 = arith.constant 2 : i32
-  %id3 = arith.constant 3 : i32
-  %id4 = arith.constant 4 : i32
-  %a = func.call @__vrc_opencl_buffer_alloc(%id1, %bytes) : (i32, i32) -> i32
-  %b = func.call @__vrc_opencl_buffer_alloc(%id2, %bytes) : (i32, i32) -> i32
-  %c = func.call @__vrc_opencl_buffer_alloc(%id3, %bytes) : (i32, i32) -> i32
-  %x = func.call @__vrc_opencl_buffer_alloc(%id4, %bytes) : (i32, i32) -> i32
-  %zero = arith.constant 0 : i32
+func.func @scale() attributes {{udoncl.export}} {{
+{buffers}  %zero = arith.constant 0 : i32
   %one = arith.constant 1 : i32
   %count = arith.constant 256 : i32
   %alpha = arith.constant 1.0 : f32
   %beta = arith.constant 0.0 : f32
 {dispatches}
   return
+}}
 }}
 """
 
@@ -140,11 +134,14 @@ op_tensor_host = host(OP_TENSOR_CALL, OP_TENSOR_DECLARATION)
 
 
 def build(name, kernels=None, host_source=op_tensor_host, device=pointwise, expected=0):
-    variant = dict(config)
+    config = []
     if kernels is not None:
-        variant["device_kernels"] = kernels
-    config_path = output / f"{name}.json"
-    config_path.write_text(json.dumps(variant), encoding="utf-8")
+        config_path = output / f"{name}.json"
+        config_path.write_text(
+            json.dumps({"schema_version": 2, "device_kernels": kernels}),
+            encoding="utf-8",
+        )
+        config = [config_path]
     host_path = output / f"{name}.mlir"
     host_path.write_text(host_source, encoding="utf-8", newline="\n")
     bundle = output / name
@@ -152,7 +149,7 @@ def build(name, kernels=None, host_source=op_tensor_host, device=pointwise, expe
         [
             compiler,
             "--emit-unity-library-bundle",
-            config_path,
+            *config,
             "--host-mlir",
             host_path,
             *(["--device-llvm", device] if device else []),

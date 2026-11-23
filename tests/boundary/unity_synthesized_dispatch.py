@@ -1,12 +1,15 @@
 """Build a Unity library bundle whose Host module carries a synthesized kernel.
 
 The Host MLIR holds the hand-written rotary gather kernel next to a dispatch
-declaration that names it, and also dispatches the configured UdonDNN large
-OpTensor library kernel. The compiler must assign the synthesized kernel an id
-of its own, prove it, emit its shader and manifest entry like a library
-kernel, and bind its dispatch site to that kernel's material without anything
-being keyed on its name. A declaration that disagrees with the kernel and a
-kernel that cannot be proven must fail the build.
+declaration that names it, and also dispatches the UdonDNN large OpTensor
+library kernel, whose entry udonclc derives from the dispatch site. The Host
+names its program and export in the module and its Device buffers are
+compiler-assigned textures, so no config is needed. The compiler must assign
+the synthesized kernel an id of its own, prove it, emit its shader and
+manifest entry like a library kernel, and bind its dispatch site to that
+kernel's material without anything being keyed on its name. A declaration
+that disagrees with the kernel and a kernel that cannot be proven must fail
+the build.
 """
 
 import json
@@ -60,35 +63,6 @@ run(
     ]
 )
 
-config = {
-    "schema_version": 1,
-    "program": "synthesized_dispatch",
-    "exports": [
-        {"symbol": "rotate", "public_name": "Rotate", "id": 1, "parameters": []}
-    ],
-    "buffers": [
-        {
-            "id": identifier,
-            "name": f"tensor{identifier}",
-            "byte_size": WORDS * 4,
-            "width": GRID[0],
-            "height": GRID[1],
-        }
-        for identifier in range(1, 8)
-    ],
-    "device_kernels": [
-        {
-            "schema_version": 1,
-            "profile": "gather-f32",
-            "words": WORDS,
-            "kernel": "udondnn_large_op_tensor",
-            "kernel_id": LIBRARY_ID,
-            "global_size": GRID,
-            "local_size": [1, 1, 1],
-            "global_offset": [0, 0, 0],
-        }
-    ],
-}
 kernel_source = (root / "tests/boundary/synthesized_rotary.mlir").read_text(
     encoding="utf-8"
 )
@@ -101,17 +75,18 @@ def build(
     name,
     kernel=kernel_source,
     host=host_source,
-    buffers=None,
     library=True,
     expected=0,
 ):
-    variant = {**config, **({"buffers": buffers} if buffers else {})}
-    if not library:
-        del variant["device_kernels"]
-    config_path = output / f"{name}.json"
-    config_path.write_text(json.dumps(variant), encoding="utf-8")
     host_path = output / f"{name}.mlir"
-    host_path.write_text(kernel + host, encoding="utf-8", newline="\n")
+    host_path.write_text(
+        'module attributes {udoncl.program = "synthesized_dispatch"} {\n'
+        + kernel
+        + host
+        + "}\n",
+        encoding="utf-8",
+        newline="\n",
+    )
     bundle = output / name
     if bundle.exists():
         shutil.rmtree(bundle)
@@ -119,7 +94,6 @@ def build(
         [
             compiler,
             "--emit-unity-library-bundle",
-            config_path,
             "--host-mlir",
             host_path,
             *(["--device-llvm", device_ir] if library else []),
@@ -252,13 +226,16 @@ _, dangling = build(
 )
 assert "does not name a synthesized kernel" in dangling.stderr, dangling.stderr
 
-# The textures the buffers share must hold the kernel's output.
+# The textures the buffers share must hold the kernel's output. (A library
+# kernel's launch shapes the textures; a Host without one keeps them as small
+# as its buffers.)
+assert host_source.count("capacity_bytes = 524288 : i64") == 7
 _, small = build(
     "small",
-    buffers=[
-        {**buffer, "height": 8, "byte_size": WORDS * 2}
-        for buffer in config["buffers"]
-    ],
+    host=re.sub(r".*udondnn_large_op_tensor.*", "", host_source).replace(
+        "capacity_bytes = 524288 : i64", f"capacity_bytes = {WORDS * 2} : i64"
+    ),
+    library=False,
     expected=1,
 )
 assert (
@@ -275,7 +252,7 @@ manifest = json.loads((uncalled / "manifest.json").read_text(encoding="utf-8"))
 assert [kernel["id"] for kernel in manifest["device"]["kernels"]] == [LIBRARY_ID]
 assert not (uncalled / f"kernels/kernel_{synthesized_id}.shader").exists()
 
-# A Host may bring every kernel itself: no library config, no Device bitcode.
+# A Host may bring every kernel itself: no Device bitcode.
 alone, _ = build(
     "alone",
     host=re.sub(r".*udondnn_large_op_tensor.*", "", host_source),
