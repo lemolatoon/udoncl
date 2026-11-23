@@ -323,6 +323,10 @@ UDONCL_EXPORT int run(void) { return 0; }
         'config-file', {'schema_version': 2, 'program': 'declared_program'},
         'a Unity library takes no config file', '--host-llvm', declared)
     harness.rejected(
+        'onnx-public-without-onnx', None,
+        '--onnx-public-tensor-buffers (ONNX_PUBLIC_TENSOR_BUFFERS) requires '
+        'an ONNX Host', '--host-llvm', declared, '--onnx-public-tensor-buffers')
+    harness.rejected(
         'budget-malformed', None,
         '--device-work-budget entry must be key=integer: device_cost',
         '--host-llvm', declared, '--device-work-budget=device_cost')

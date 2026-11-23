@@ -135,8 +135,9 @@ LogicalResult deriveOnnxUnityBuffers(ModuleOp host, json::Object &config,
   auto binding = host->getAttrOfType<DictionaryAttr>("udoncl.onnx_binding");
   if (!binding) {
     if (exposePublicIo)
-      host.emitError(
-          "generate_onnx_public_buffers requires ONNX binding metadata");
+      host.emitError("--onnx-public-tensor-buffers "
+                     "(ONNX_PUBLIC_TENSOR_BUFFERS) requires an "
+                     "ONNX Host");
     return exposePublicIo ? failure() : success();
   }
   auto derived = derivePlanBuffers(host, binding, exposePublicIo);
