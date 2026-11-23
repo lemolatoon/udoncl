@@ -339,7 +339,9 @@ def main():
     runtime_source.mkdir()
     (runtime_source / 'probe.c').write_text(
         '#include <stdint.h>\n'
+        '#include <udoncl/export.h>\n'
         '#include <udononnxruntime.h>\n'
+        'UDONCL_PROGRAM("onnx_runtime_contract");\n'
         'static const int64_t dimensions[1] = {1};\n'
         'static udononnxSession_t session;\n'
         'static udononnxTensor_t input_bindings[1];\n'
@@ -374,7 +376,7 @@ def main():
         '  (void)graph_id; (void)value;\n'
         '  return UDONONNX_STATUS_SUCCESS;\n'
         '}\n'
-        'int onnx_runtime_contract_probe(int context_value) {\n'
+        'UDONCL_EXPORT int contract_probe(int context_value) {\n'
         '  const udononnxModel_t *model = 0;\n'
         '  inputs[0].name = "input";\n'
         '  inputs[0].data_type = UDONCL_DATA_FLOAT32;\n'
@@ -401,19 +403,6 @@ def main():
         '}\n',
         encoding='utf-8',
     )
-    (runtime_source / 'unity-library.json').write_text(
-        json.dumps({
-            'schema_version': 1,
-            'program': 'onnx_runtime_contract',
-            'exports': [{
-                'symbol': 'onnx_runtime_contract_probe',
-                'public_name': 'Probe',
-                'id': 1,
-                'parameters': ['context_value'],
-            }],
-        }, indent=2) + '\n',
-        encoding='utf-8',
-    )
     (runtime_source / 'CMakeLists.txt').write_text(
         'cmake_minimum_required(VERSION 3.30)\n'
         'project(udononnx_runtime_consumer LANGUAGES NONE)\n'
@@ -422,8 +411,12 @@ def main():
         'udoncl_add_host_library(runtime_probe_host probe.c)\n'
         'target_include_directories(runtime_probe_host INTERFACE\n'
         '  "${UdonONNXRuntime_INCLUDE_DIRS}")\n'
+        # No config file: UDONCL_PROGRAM names the program, and the
+        # binding and budget settings are arguments.
         'udoncl_add_unity_library(runtime-probe\n'
-        '  CONFIG unity-library.json\n'
+        '  BINDING_NAMESPACE Probe.Bindings\n'
+        '  BINDING_CLASS ContractProbeBinding\n'
+        '  DEVICE_WORK_BUDGET frame_microseconds=2500 frame_continuations=3\n'
         '  HOST_LIBRARIES runtime_probe_host\n'
         '    UdonONNXRuntime::UdonONNXRuntime UdonCL::OpenCLRuntime)\n',
         encoding='utf-8',
@@ -452,7 +445,16 @@ def main():
     runtime_manifest = json.loads(
         (runtime_artifact / 'manifest.json').read_text(encoding='utf-8')
     )
-    assert runtime_manifest['exports'][0]['public_name'] == 'Probe'
+    assert runtime_manifest['exports'][0]['public_name'] == 'ContractProbe'
+    assert runtime_manifest['exports'][0]['parameters'][0]['name'] == (
+        'context_value'
+    )
+    assert runtime_manifest['program']['name'] == 'onnx_runtime_contract'
+    assert runtime_manifest['program']['binding_namespace'] == 'Probe.Bindings'
+    assert runtime_manifest['program']['binding_class'] == (
+        'ContractProbeBinding'
+    )
+    assert (runtime_artifact / 'binding.cs').is_file()
     assert not list(onnx_runtime_consumer.rglob('execution-plan.json'))
 
     onnx_source = output / 'onnx-source'

@@ -595,27 +595,42 @@ function(udoncl_add_artifact target)
                UDONCL_ARTIFACT_DIRECTORY "${_artifact_directory}")
 endfunction()
 
+# The Host C source names the program (UDONCL_PROGRAM in <udoncl/export.h>).
+# BINDING_NAMESPACE and BINDING_CLASS override the names of the generated U#
+# binding (Lemolatoon.Udoncl.Generated.Udoncl<Program>Binding by default);
+# DEVICE_TEXEL_FORMAT selects rgba8_unorm (default) or rgba32_float Device
+# textures; DEVICE_WORK_BUDGET takes key=value budgets (device_cost,
+# host_cost, fragment_weight, frame_microseconds, frame_continuations).
+# ONNX_PUBLIC_TENSOR_BUFFERS is transitional: it exposes the inputs and
+# outputs of an ONNX Host as public Device buffers. CONFIG names a legacy
+# unity-library.json; a setting may not be given both ways.
 function(udoncl_add_unity_library target)
-  set(_options OMIT_INTERMEDIATE_IR)
-  set(_one_value CONFIG OUTPUT_DIRECTORY RUNTIME_VALIDATION)
-  set(_multi_value LIBRARIES HOST_LIBRARIES DEVICE_LIBRARIES)
+  set(_options OMIT_INTERMEDIATE_IR ONNX_PUBLIC_TENSOR_BUFFERS)
+  set(_one_value CONFIG OUTPUT_DIRECTORY RUNTIME_VALIDATION BINDING_NAMESPACE
+      BINDING_CLASS DEVICE_TEXEL_FORMAT)
+  set(_multi_value LIBRARIES HOST_LIBRARIES DEVICE_LIBRARIES DEVICE_WORK_BUDGET)
   cmake_parse_arguments(PARSE_ARGV 1 ARG "${_options}" "${_one_value}" "${_multi_value}")
   list(APPEND ARG_HOST_LIBRARIES ${ARG_LIBRARIES})
   list(APPEND ARG_DEVICE_LIBRARIES ${ARG_LIBRARIES})
-  if(ARG_UNPARSED_ARGUMENTS OR NOT ARG_CONFIG OR NOT ARG_HOST_LIBRARIES)
-    message(FATAL_ERROR
-      "udoncl_add_unity_library requires CONFIG and HOST_LIBRARIES")
+  if(ARG_UNPARSED_ARGUMENTS OR NOT ARG_HOST_LIBRARIES)
+    message(FATAL_ERROR "udoncl_add_unity_library requires HOST_LIBRARIES")
   endif()
   if(TARGET "${target}")
     message(FATAL_ERROR "UdonCL Unity library target '${target}' already exists")
   endif()
   _udoncl_resolve_runtime_validation("${ARG_RUNTIME_VALIDATION}"
                                      _runtime_validation)
-  cmake_path(ABSOLUTE_PATH ARG_CONFIG BASE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-             NORMALIZE OUTPUT_VARIABLE _config)
-  if(NOT EXISTS "${_config}")
-    message(FATAL_ERROR "UdonCL Unity library config does not exist: ${_config}")
+  set(_config)
+  if(ARG_CONFIG)
+    cmake_path(ABSOLUTE_PATH ARG_CONFIG
+               BASE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+               NORMALIZE OUTPUT_VARIABLE _config)
+    if(NOT EXISTS "${_config}")
+      message(FATAL_ERROR
+        "UdonCL Unity library config does not exist: ${_config}")
+    endif()
   endif()
+  list(JOIN ARG_DEVICE_WORK_BUDGET "," _device_work_budget)
 
   set(_host_modules)
   set(_host_seen_sources)
@@ -804,9 +819,14 @@ function(udoncl_add_unity_library target)
             "-DUDONCL_BUILD_ROOT=${CMAKE_BINARY_DIR}"
             "-DUDONCL_RUNTIME_VALIDATION=${_runtime_validation}"
             "-DUDONCL_OMIT_INTERMEDIATE_IR=${ARG_OMIT_INTERMEDIATE_IR}"
+            "-DUDONCL_BINDING_NAMESPACE=${ARG_BINDING_NAMESPACE}"
+            "-DUDONCL_BINDING_CLASS=${ARG_BINDING_CLASS}"
+            "-DUDONCL_DEVICE_TEXEL_FORMAT=${ARG_DEVICE_TEXEL_FORMAT}"
+            "-DUDONCL_DEVICE_WORK_BUDGET=${_device_work_budget}"
+            "-DUDONCL_ONNX_PUBLIC_TENSOR_BUFFERS=${ARG_ONNX_PUBLIC_TENSOR_BUFFERS}"
             -P "${_UDONCL_CONFIG_DIR}/UdonCLCompileUnityLibrary.cmake"
     COMMAND "${CMAKE_COMMAND}" -E touch "${_stamp}"
-    DEPENDS "${UDONCLC_EXECUTABLE}" "${_config}" ${_host_module}
+    DEPENDS "${UDONCLC_EXECUTABLE}" ${_config} ${_host_module}
             ${_runtime_module}
             ${_host_mlir} ${_host_buffer_plan} ${_static_tensor_directory}
             ${_device_module}
