@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "export": "host_square_plus_one",
+  "export": "square_plus_one",
   "export_id": 1,
   "request": "request_square_plus_one",
   "intrinsic": "__udoncl_dispatch",

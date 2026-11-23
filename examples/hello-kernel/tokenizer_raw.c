@@ -6,7 +6,9 @@ static const uint32_t scalar_values[] = {0x0061};
 static const int32_t scalar_tokens[] = {7};
 static const int32_t byte_tokens[256] = {0};
 
-UDONCL_EXPORT int32_t tokenizer_raw_first(udon_string_t text) {
+UDONCL_PROGRAM("hello_tokenizer_raw");
+
+UDONCL_EXPORT int32_t tokenize_first(udon_string_t text) {
   udontokenizers_model_t model;
   int32_t token_ids[4];
   int32_t workspace[UDONTOKENIZERS_ENCODER_WORKSPACE_WORDS(16)];

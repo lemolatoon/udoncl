@@ -21,14 +21,8 @@ namespace Lemolatoon.Udoncl.Editor.Tests
             ValidatedArtifact artifact = ArtifactManifestValidator.Validate(artifactDirectory);
             Assert.AreEqual("unity-udoncl-library", artifact.ArtifactStage);
             Assert.AreEqual("hello_kernel", artifact.ProgramName);
-            Assert.AreEqual(1, artifact.DeviceBuffers.Count);
-            ValidatedDeviceBuffer buffer = artifact.DeviceBuffers[0];
-            Assert.AreEqual(1, buffer.Id);
-            Assert.AreEqual("scratch", buffer.Name);
-            Assert.AreEqual("__udoncl_buffer_1", buffer.HeapSlot);
-            Assert.AreEqual(4, buffer.LogicalBytes);
-            Assert.AreEqual(1, buffer.Width);
-            Assert.AreEqual(1, buffer.Height);
+            // The scalar library launches no Device work and has no buffer.
+            Assert.AreEqual(0, artifact.DeviceBuffers.Count);
 
             string assemblyPath = Path.Combine(artifact.RootDirectory, "host.uasm");
             Assert.That(File.Exists(assemblyPath), "Compiler output is missing host.uasm.");
@@ -51,7 +45,7 @@ namespace Lemolatoon.Udoncl.Editor.Tests
                 File.ReadAllText(Path.Combine(artifact.RootDirectory, "manifest.json"))
             );
             Assert.NotNull(manifest);
-            Assert.AreEqual("__udoncl_buffer_pool", manifest.program.buffer_pool_slot);
+            Assert.IsTrue(string.IsNullOrEmpty(manifest.program.buffer_pool_slot));
             ExportInfo export = Array.Find(
                 manifest.exports,
                 candidate => candidate.public_name == "SquarePlusOne"

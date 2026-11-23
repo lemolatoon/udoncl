@@ -35,10 +35,11 @@ also discovers the built `udonclc` and pinned `.deps/llvm23` tools. Explicit
 `UDONCLC_EXECUTABLE`, `UDONCL_CLANG_EXECUTABLE`, and
 `UDONCL_LLVM_LINK_EXECUTABLE` cache paths override discovery.
 
-`unity-library.json` is the stable public ABI description for the scalar Host
-library. Its `buffers` array reserves explicit linear RGBA8 Device backing;
-the compiler exports the corresponding Udon heap slots and the Importer creates
-and binds Point-filtered RenderTextures in the generated prefab. Helper calls must currently be inlined; unsupported pointer,
+The Host sources describe the public ABI of the Unity libraries:
+`UDONCL_PROGRAM("hello_kernel")` names the scalar library, and every
+`UDONCL_EXPORT` function becomes a U# method named after the PascalCase of its
+C name (`square_plus_one` becomes `SquarePlusOne`) with the C parameter names.
+The tokenizer libraries name their programs the same way. Unsupported pointer,
 continuation, or GPU-dispatch exports fail compilation instead of publishing a
 partly runnable Unity artifact.
 
@@ -164,7 +165,7 @@ Inspect the linked boundary:
 
 ```powershell
 Select-String -Path "$out/host-device-artifact/host-device.mlir" `
-  -Pattern 'host_square_plus_one|request_square_plus_one|vrc.dispatch|vrcgpu.kernel'
+  -Pattern 'square_plus_one|request_square_plus_one|vrc.dispatch|vrcgpu.kernel'
 ```
 
 The Host export has `vrc.export_id = 1`; the internal request uses typed

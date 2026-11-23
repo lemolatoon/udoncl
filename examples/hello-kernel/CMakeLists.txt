@@ -28,17 +28,16 @@ udoncl_add_artifact(hello-artifact
   HOST_LIBRARIES hello_host hello_host_extra
   DEVICE_LIBRARIES hello_device hello_device_extra)
 
+# The Unity libraries take their program and exports from the Host sources
+# (UDONCL_PROGRAM, UDONCL_EXPORT). The scalar library launches no Device
+# work, so it links no Device library.
 udoncl_add_unity_library(hello-unity-library
-  CONFIG unity-library.json
-  HOST_LIBRARIES hello_host hello_host_extra
-  DEVICE_LIBRARIES hello_device hello_device_extra)
+  HOST_LIBRARIES hello_host hello_host_extra)
 
 udoncl_add_unity_library(hello-tokenizer-unity-library
-  CONFIG tokenizer-library.json
   HOST_LIBRARIES hello_tokenizer_host UdonTokenizers::UdonTokenizers)
 
 udoncl_add_unity_library(hello-tokenizer-raw-unity-library
-  CONFIG tokenizer-raw-library.json
   HOST_LIBRARIES hello_tokenizer_raw_host UdonTokenizers::UdonTokenizers)
 
 if(UDONCL_TINYLLAMA_TOKENIZER_DIRECTORY)
@@ -47,6 +46,6 @@ if(UDONCL_TINYLLAMA_TOKENIZER_DIRECTORY)
     SYMBOL tinyllama_tokenizer
     SOURCES tinyllama_tokenizer.c)
   udoncl_add_unity_library(tinyllama-tokenizer-unity-library
-    CONFIG tinyllama-tokenizer-library.json
+    BINDING_CLASS UdonclTinyLlamaTokenizerBinding
     HOST_LIBRARIES tinyllama_tokenizer_model UdonTokenizers::UdonTokenizers)
 endif()

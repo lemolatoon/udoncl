@@ -4,16 +4,20 @@
 #include <udoncl/export.h>
 #include <udoncl/string.h>
 
+/* The Unity library of these exports is the program hello_kernel; U# calls
+ * them as SquarePlusOne and EchoString. */
+UDONCL_PROGRAM("hello_kernel");
+
 UDONCL_EXPORT
-float host_square_plus_one(float x) {
+float square_plus_one(float value) {
   float square = 1.0f;
   for (int factor = 0; factor < 2; ++factor)
-    square *= x;
+    square *= value;
   return hello_host_identity(square) + 1.0f;
 }
 
 UDONCL_EXPORT
-udon_string_t host_echo_string(udon_string_t value) { return value; }
+udon_string_t echo_string(udon_string_t value) { return value; }
 
 // The current AOT boundary represents runtime-owned objects as uint32 handles;
 // they are not C pointers. The request must forward them without arithmetic.

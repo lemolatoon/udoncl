@@ -15,8 +15,10 @@ static const int32_t byte_tokens[256] = {
     [0xf0] = 1240,
 };
 
-UDONCL_EXPORT int32_t tokenizer_encode(udon_string_t text,
-                                       udon_int32_array_t token_ids) {
+UDONCL_PROGRAM("hello_tokenizer");
+
+UDONCL_EXPORT int32_t tokenize(udon_string_t text,
+                               udon_int32_array_t token_ids) {
   udontokenizers_model_t model;
   int32_t workspace[UDONTOKENIZERS_ENCODER_WORKSPACE_WORDS(64)];
   int32_t count = 0;

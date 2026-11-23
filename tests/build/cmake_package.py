@@ -2205,7 +2205,7 @@ def main():
     manifest = json.loads((artifact / 'manifest.json').read_text(encoding='utf-8'))
     assert manifest['artifact_stage'] == 'boundary-prototype', manifest
     assert manifest['validation']['read_write_alias'] is False
-    assert manifest['exports'][0]['c_symbol'] == 'host_square_plus_one', manifest
+    assert manifest['exports'][0]['c_symbol'] == 'square_plus_one', manifest
     assert len(list((build_root / 'objects/host').rglob('*.bc'))) == 3
     assert len(list((build_root / 'objects/device').rglob('*.bc'))) == 3
     assert (build_root / 'host.bc').is_file()
@@ -2228,7 +2228,19 @@ def main():
         'UdonclHelloKernelBinding')
     assert unity_manifest['program']['storage_report'] == (
         'storage-report.json')
+    # The Host source names the program and the exports: square_plus_one is
+    # SquarePlusOne with the C parameter name, and no config file remains.
+    assert unity_manifest['program']['name'] == 'hello_kernel'
+    for config in ['unity-library.json', 'tokenizer-library.json',
+                   'tokenizer-raw-library.json',
+                   'tinyllama-tokenizer-library.json']:
+        assert not (args.source.resolve() / config).exists(), config
     assert unity_manifest['exports'][0]['public_name'] == 'SquarePlusOne'
+    assert unity_manifest['exports'][0]['c_symbol'] == 'square_plus_one'
+    assert [
+        parameter['name']
+        for parameter in unity_manifest['exports'][0]['parameters']
+    ] == ['value']
     assert unity_manifest['exports'][0]['id'] == 975981362
     echo_export = next(
         item for item in unity_manifest['exports']
@@ -2240,25 +2252,9 @@ def main():
         'ownership': 'immutable-reference',
     }
     assert echo_export['result']['kind'] == 'string'
-    assert [kernel['name'] for kernel in unity_manifest['device']['kernels']] == [
-        'square_plus_one'
-    ]
-    assert unity_manifest['device']['kernels'][0]['shader'] == (
-        'kernels/kernel_1.shader'
-    )
-    assert unity_manifest['device']['buffers'] == [{
-        'id': 1,
-        'name': 'scratch',
-        'heap_slot': '__udoncl_buffer_1',
-        'logical_bytes': 4,
-        'capacity_bytes': 4,
-        'width': 1,
-        'height': 1,
-        'format': 'rgba8_unorm',
-        'srgb': False,
-        'mipmaps': False,
-        'filter': 'point',
-    }]
+    # The scalar library launches no Device work: it has neither a kernel
+    # nor a Device buffer.
+    assert unity_manifest['device'] == {'buffers': [], 'kernels': []}
     binding_source = (unity_artifact / 'binding.cs').read_text(encoding='utf-8')
     assert_binding_identity(unity_manifest, binding_source)
     assert 'public sealed class UdonclHelloKernelBinding' in binding_source
@@ -2284,6 +2280,9 @@ def main():
         (tokenizer_artifact / 'manifest.json').read_text(encoding='utf-8')
     )
     tokenizer_export = tokenizer_manifest['exports'][0]
+    assert tokenizer_manifest['program']['name'] == 'hello_tokenizer'
+    assert tokenizer_manifest['program']['binding_class'] == (
+        'UdonclHelloTokenizerBinding')
     assert tokenizer_export['public_name'] == 'Tokenize'
     assert [item['kind'] for item in tokenizer_export['parameters']] == [
         'string', 'i32_array']
@@ -2299,7 +2298,7 @@ def main():
     tokenizer_binding = (tokenizer_artifact / 'binding.cs').read_text(
         encoding='utf-8')
     assert (
-        'public int TryTokenize(string text, int[] tokenIds, out int result)'
+        'public int TryTokenize(string text, int[] token_ids, out int result)'
         in tokenizer_binding)
     tokenizer_assembly = (tokenizer_artifact / 'host.uasm').read_text(
         encoding='utf-8')
@@ -2316,6 +2315,7 @@ def main():
     raw_tokenizer_manifest = json.loads(
         (raw_tokenizer_artifact / 'manifest.json').read_text(encoding='utf-8')
     )
+    assert raw_tokenizer_manifest['program']['name'] == 'hello_tokenizer_raw'
     assert [item['public_name'] for item in raw_tokenizer_manifest['exports']] == [
         'TokenizeFirst'
     ]
@@ -2331,7 +2331,7 @@ def main():
     assert any(
         item['kind'] == 'alloca'
         and item['bytes'] == 16
-        and item['name'].startswith('tokenizer_raw_first:')
+        and item['name'].startswith('tokenize_first:')
         for item in raw_tokenizer_storage['raw_objects']
     )
 
@@ -2343,6 +2343,8 @@ def main():
             encoding='utf-8'
         )
     )
+    assert tinyllama_tokenizer_manifest['program']['name'] == (
+        'tinyllama_tokenizer')
     assert tinyllama_tokenizer_manifest['program']['binding_class'] == (
         'UdonclTinyLlamaTokenizerBinding'
     )
@@ -2352,7 +2354,7 @@ def main():
     tinyllama_tokenizer_binding = (
         tinyllama_tokenizer_artifact / 'binding.cs'
     ).read_text(encoding='utf-8')
-    assert 'public int TryTokenize(string text, int[] tokenIds, out int result)' in (
+    assert 'public int TryTokenize(string text, int[] token_ids, out int result)' in (
         tinyllama_tokenizer_binding
     )
     generated_tokenizer_manifest = json.loads(
@@ -2366,9 +2368,7 @@ def main():
     assert (
         'SystemInt32Array.__Set__SystemInt32_SystemInt32__SystemVoid'
         in tokenizer_assembly)
-    assert '.export __udoncl_buffer_pool' in assembly
-    assert '__udoncl_buffer_pool: %UnityEngineRenderTextureArray, null' in assembly
-    assert unity_manifest['program']['buffer_pool_slot'] == '__udoncl_buffer_pool'
+    assert 'buffer_pool_slot' not in unity_manifest['program']
     # This helper is synchronous, so selective Host inlining removes its
     # generic indirect-return protocol. May-suspend helpers remain separate.
     assert 'JUMP_INDIRECT, __vrc_internal_bank_0_return' not in assembly
@@ -2400,11 +2400,21 @@ def main():
         for resource in unity_manifest['resources']
     )
     assert (unity_artifact / 'display.shader').is_file()
-    assert (unity_artifact / 'kernels/kernel_1.shader').is_file()
-    assert (unity_artifact / 'kernels/kernel_1.hlsl').is_file()
+    assert not (unity_artifact / 'kernels').exists()
+    # The legacy device_kernel config key, until the config is removed,
+    # still needs the Device module it names a kernel of.
+    legacy_device_kernel = output / 'legacy-device-kernel.json'
+    legacy_device_kernel.write_text(json.dumps({
+        'schema_version': 2,
+        'device_kernel': {
+            'schema_version': 1, 'kernel': 'square_plus_one', 'kernel_id': 1,
+            'global_size': [1, 1, 1], 'local_size': [1, 1, 1],
+            'global_offset': [0, 0, 0],
+        },
+    }), encoding='utf-8')
     run_failure([
         installed_compiler, '--emit-unity-library-bundle',
-        args.source.resolve() / 'unity-library.json',
+        legacy_device_kernel,
         '--host-llvm', consumer / 'udoncl/hello-unity-library/host.bc',
         '-o', output / 'missing-device-artifact',
     ], 'Device kernel config and --device-llvm must be provided together')
@@ -2415,7 +2425,7 @@ def main():
         / 'tests/boundary/unity_dispatch.json',
         '--host-mlir', args.source.resolve().parents[1]
         / 'tests/boundary/unity_dispatch.mlir',
-        '--device-llvm', consumer / 'udoncl/hello-unity-library/device.bc',
+        '--device-llvm', consumer / 'udoncl/hello-artifact/device.bc',
         '--runtime-validation',
         '-o', dispatch_artifact,
     ])
@@ -2446,7 +2456,7 @@ def main():
         / 'tests/boundary/unity_dispatch.json',
         '--host-mlir', args.source.resolve().parents[1]
         / 'tests/boundary/unity_dispatch.mlir',
-        '--device-llvm', consumer / 'udoncl/hello-unity-library/device.bc',
+        '--device-llvm', consumer / 'udoncl/hello-artifact/device.bc',
         '--runtime-validation', '--no-runtime-validation',
         '-o', output / 'conflicting-runtime-validation-artifact',
     ], '--runtime-validation and --no-runtime-validation are mutually exclusive')

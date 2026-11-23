@@ -10,8 +10,10 @@
 static int32_t workspace[UDONTOKENIZERS_ENCODER_WORKSPACE_WORDS(
     TOKENIZER_SYMBOL_CAPACITY)];
 
-UDONCL_EXPORT int32_t tinyllama_tokenizer_encode(udon_string_t text,
-                                                 udon_int32_array_t token_ids) {
+UDONCL_PROGRAM("tinyllama_tokenizer");
+
+UDONCL_EXPORT int32_t tokenize(udon_string_t text,
+                               udon_int32_array_t token_ids) {
   udontokenizers_model_t model;
   int32_t count = 0;
   tinyllama_tokenizerInitializeModel(&model);
