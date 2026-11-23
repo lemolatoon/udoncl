@@ -34,9 +34,23 @@ module {
 
 // -----
 
-// CHECK-LABEL: module attributes {vrc.static_unity_resource_lowering_readiness = {applied = true, pool_replacement_ready = true, schema_version = 1 : i32}} {
-// CHECK-NOT: vrc.static_unity_buffer_layout_plan
-module attributes {vrc.static_unity_resource_lowering_readiness = {applied = true, pool_replacement_ready = true, schema_version = 1 : i32}} {
+// CHECK-LABEL: module attributes {vrc.static_unity_buffer_layout_plan = {buffers = [{buffer_id = 7 : i32}], ready = true, schema_version = 1 : i32}, vrc.static_unity_resource_lowering_readiness = {applied = true, pool_replacement_ready = true, schema_version = 1 : i32}} {
+module attributes {vrc.static_unity_buffer_layout_plan = {buffers = [{buffer_id = 7 : i32}], ready = true, schema_version = 1 : i32}, vrc.static_unity_resource_lowering_readiness = {applied = true, pool_replacement_ready = true, schema_version = 1 : i32}} {
+  func.func @run() {
+    %assigned = "vrc.assigned_buffer"() <{capacity_bytes = 4 : i64, format = "rgba8_unorm", resource_id = 0 : i32, texture_id = 1 : i32}> : () -> !vrc.buffer
+    return
+  }
+}
+
+// -----
+
+// A static Device resource lowering that applied without any allocation to
+// lay out (the Host only names assigned buffers) leaves them to this pass.
+
+// CHECK-LABEL: module attributes
+// CHECK-SAME: vrc.static_unity_buffer_layout_plan = {buffers = [{buffer_id = 1 : i32, capacity_bytes = 4 : i64, format = "rgba8_unorm", heap_slot = "__udoncl_buffer_1", persistent = true, public = false, resource_id = 0 : i32, texture_id = 1 : i32}], ready = true, schema_version = 1 : i32}
+// CHECK-SAME: vrc.static_unity_resource_lowering_readiness = {applied = true, pool_replacement_ready = true, schema_version = 1 : i32}
+module attributes {vrc.static_unity_buffer_layout_plan = {blocker_count = 0 : i32, buffers = [], ready = true, schema_version = 1 : i32}, vrc.static_unity_resource_lowering_readiness = {applied = true, pool_replacement_ready = true, schema_version = 1 : i32}} {
   func.func @run() {
     %assigned = "vrc.assigned_buffer"() <{capacity_bytes = 4 : i64, format = "rgba8_unorm", resource_id = 0 : i32, texture_id = 1 : i32}> : () -> !vrc.buffer
     return

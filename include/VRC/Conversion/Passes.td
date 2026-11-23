@@ -229,7 +229,8 @@ def PlanAssignedUnityBufferLayoutPass : Pass<"vrc-plan-assigned-unity-buffer-lay
     has no allocation to assess), that allocates no Device buffer and that
     names its buffers with `vrc.assigned_buffer` (for
     example hand-written Host MLIR), records the textures those operations
-    name as an applied static lowering: `vrc.static_unity_buffer_layout_plan`
+    name as an applied static lowering (a lowering that applied with no
+    buffer to lay out counts as not applied): `vrc.static_unity_buffer_layout_plan`
     lists one private persistent buffer per texture, and the readiness is
     applied. The textures must be numbered densely from 1 and rgba8_unorm,
     and each must have one resource, capacity and format.

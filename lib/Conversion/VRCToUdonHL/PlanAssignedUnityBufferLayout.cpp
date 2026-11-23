@@ -33,11 +33,14 @@ struct PlanAssignedUnityBufferLayoutPass
           PlanAssignedUnityBufferLayoutPass> {
   void runOnOperation() override {
     ModuleOp module = getOperation();
-    // The static Device resource analysis already applied its own layout.
+    // The static Device resource analysis already applied its own layout,
+    // unless it found no allocation to lay out.
     if (auto readiness =
             module->getAttrOfType<DictionaryAttr>(readinessAttribute)) {
       auto applied = readiness.getAs<BoolAttr>("applied");
-      if (applied && applied.getValue())
+      auto layout = module->getAttrOfType<DictionaryAttr>(layoutAttribute);
+      auto planned = layout ? layout.getAs<ArrayAttr>("buffers") : nullptr;
+      if (applied && applied.getValue() && (!planned || !planned.empty()))
         return;
     }
     // A Host that still allocates Device buffers is not assigned yet.

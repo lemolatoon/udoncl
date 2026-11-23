@@ -217,6 +217,15 @@ resolveDispatchResource(::vrc::vrc::DispatchOp dispatch, Value value,
                                builder.getI32IntegerAttr(logicalId.value())),
       }));
     }
+    // A buffer the compiler already assigned is the allocation it names.
+    if (auto assigned = value.getDefiningOp<::vrc::vrc::AssignedBufferOp>())
+      return std::optional<DictionaryAttr>(builder.getDictionaryAttr({
+          builder.getNamedAttr("access", access),
+          builder.getNamedAttr("kind", builder.getStringAttr("allocation")),
+          builder.getNamedAttr("operand_index",
+                               builder.getI32IntegerAttr(operandIndex)),
+          builder.getNamedAttr("resource_id", assigned.getResourceIdAttr()),
+      }));
     if (auto staticBuffer = value.getDefiningOp<::vrc::vrc::StaticBufferOp>())
       return std::optional<DictionaryAttr>(builder.getDictionaryAttr({
           builder.getNamedAttr("access", access),

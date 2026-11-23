@@ -29,6 +29,17 @@ struct ResourcePlan {
   StringAttr format;
 };
 
+/// The `vrc.assigned_buffer` that defines `value` through single-operand
+/// casts, if any.
+::vrc::vrc::AssignedBufferOp assignedBuffer(Value value) {
+  while (auto cast = value.getDefiningOp<UnrealizedConversionCastOp>()) {
+    if (cast.getInputs().size() != 1)
+      return {};
+    value = cast.getInputs().front();
+  }
+  return value.getDefiningOp<::vrc::vrc::AssignedBufferOp>();
+}
+
 bool hasSchemaVersion(DictionaryAttr attribute) {
   auto version =
       attribute ? attribute.getAs<IntegerAttr>("schema_version") : nullptr;
@@ -185,6 +196,15 @@ struct MaterializeStaticDispatchResourcesPass
           return;
         }
         int32_t resourceId = static_cast<int32_t>(id.getInt());
+        // An operand the compiler already assigned keeps its buffer.
+        if (auto assigned =
+                assignedBuffer(dispatch.getResources()[index.getInt()]);
+            assigned && assigned.getResourceId() == resourceId) {
+          dispatch->setOperand(static_cast<unsigned>(index.getInt() + 1),
+                               assigned.getResult());
+          ++materialized;
+          continue;
+        }
         auto plan = plans->find(resourceId);
         if (plan == plans->end()) {
           dispatch.emitError(
