@@ -3060,20 +3060,18 @@ int main(int argc, char **argv) {
     unityBuffers = std::move(*generatedBuffers);
     // The texture shape the Unity buffers share must hold the output of a
     // synthesized kernel.
-    if (!unityBuffers.empty() &&
-        llvm::all_of(unityBuffers, [&](const UnityBuffer &buffer) {
-          return buffer.width == unityBuffers.front().width &&
-                 buffer.height == unityBuffers.front().height;
-        }))
-      for (const SynthesizedUnityKernel &kernel : unitySynthesizedKernels)
-        if (unityBuffers.front().width * unityBuffers.front().height <
-            kernel.words) {
-          errs() << "synthesized kernel @" << kernel.name << " writes "
-                 << kernel.words << " words but the Unity buffers are "
-                 << unityBuffers.front().width << "x"
-                 << unityBuffers.front().height << " textures\n";
-          return 1;
-        }
+    if (unityDeviceModule) {
+      ::vrc::CheckSynthesizedKernelTextureCapacityPassOptions capacity;
+      for (const UnityBuffer &buffer : unityBuffers) {
+        capacity.bufferWidths.push_back(buffer.width);
+        capacity.bufferHeights.push_back(buffer.height);
+      }
+      PassManager textureCapacity(&context);
+      textureCapacity.addPass(
+          ::vrc::createCheckSynthesizedKernelTextureCapacityPass(capacity));
+      if (failed(textureCapacity.run(*unityDeviceModule)))
+        return 1;
+    }
     if (unityTexelFormat != "rgba8_unorm") {
       int64_t texelWords = ::vrc::vrcgpu::gatherTexelWords(unityTexelFormat);
       for (const UnityBuffer &buffer : unityBuffers)
