@@ -69,6 +69,10 @@ mlir::FailureOr<HostAnnotations> readHostAnnotations(const llvm::Module &module,
       return mlir::failure();
     }
     annotations.exports.push_back(function->getName().str());
+    std::vector<std::string> &names =
+        annotations.parameterNames[function->getName().str()];
+    for (const Argument &argument : function->args())
+      names.push_back(argument.getName().str());
   }
   // UDONCL_EXPORT_WHILE_BUSY expands to both annotations; one written by hand
   // without the export is not an export.

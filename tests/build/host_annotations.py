@@ -155,6 +155,32 @@ __attribute__((annotate("udoncl.export_while_busy"))) int phase(void) {
         }, 'UDONCL_EXPORT_WHILE_BUSY export may suspend: copy_and_wait',
         '--host-mlir', suspending)
 
+    # U# export parameters are named after the C parameters; a configured
+    # override still wins.
+    def parameter_names(entry):
+        return [parameter['name'] for parameter in entry['parameters']]
+
+    assert parameter_names(exports['add_values']) == ['left', 'right']
+    overridden = exports_by_symbol(harness.manifest('parameter-override', {
+        **program,
+        'export_overrides': [{
+            'symbol': 'add_values', 'public_name': 'add_values',
+            'parameters': ['a', 'b'],
+        }],
+    }, '--host-llvm', host))
+    assert parameter_names(overridden['add_values']) == ['a', 'b']
+    # A C parameter name U# cannot use is an error, not a silent rename.
+    for name, source in [
+        ('keyword', 'UDONCL_EXPORT int scale(int object) { return object; }'),
+        ('result', 'UDONCL_EXPORT int scale(int result) { return result; }'),
+    ]:
+        module = harness.host(f'parameter-{name}',
+                              f'#include <udoncl/export.h>\n{source}\n')
+        harness.rejected(
+            f'parameter-{name}', program,
+            'of UDONCL_EXPORT scale cannot name a U# parameter; rename the C '
+            'parameter', '--host-llvm', module)
+
     print(f'host_annotations=passed exports={len(exports)}')
 
 

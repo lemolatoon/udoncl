@@ -2,6 +2,7 @@
 #define UDONCL_TOOLS_VRCCL_HOSTANNOTATIONS_H
 
 #include "mlir/Support/LogicalResult.h"
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -27,6 +28,9 @@ struct HostAnnotations {
   /// in priority order.
   std::vector<std::string> constructors;
   std::vector<std::string> destructors;
+  /// The C parameter names of each export, as the LLVM arguments carry them
+  /// (empty for an unnamed argument).
+  std::map<std::string, std::vector<std::string>> parameterNames;
 };
 
 /// Reads the UdonCL annotations of `module` without changing it. An

@@ -1,5 +1,6 @@
 #include "VRC/ABI/Manifest/Boundary.h"
 #include "VRC/ABI/Manifest/BindingSource.h"
+#include "VRC/ABI/Manifest/UdonSharpABI.h"
 #include "VRC/Conversion/BoundaryFrontend/Frontend.h"
 #include "VRC/Conversion/HostStoragePipeline.h"
 #include "VRC/Conversion/LLVMToHighLevel/Import.h"
@@ -1572,7 +1573,66 @@ markRecoveredHostAnnotations(ModuleOp module,
     function->setAttr("udoncl.export_while_busy",
                       UnitAttr::get(module.getContext()));
   }
+  // The C parameter names name the U# parameters. Recovery keeps the
+  // argument list of an export; one it reshaped keeps the default names.
+  Builder builder(module.getContext());
+  for (const auto &[symbol, names] : annotations.parameterNames) {
+    auto function = module.lookupSymbol<func::FuncOp>(symbol);
+    if (!function || function.getNumArguments() != names.size())
+      continue;
+    SmallVector<StringRef> attributes(names.begin(), names.end());
+    function->setAttr("udoncl.parameter_names",
+                      builder.getStrArrayAttr(attributes));
+  }
   return success();
+}
+
+/// C# keywords: valid C identifiers that cannot name a U# parameter.
+bool isCSharpKeyword(StringRef name) {
+  static const llvm::StringSet<> keywords = {
+      "abstract", "as",       "base",       "bool",      "break",
+      "byte",     "case",     "catch",      "char",      "checked",
+      "class",    "const",    "continue",   "decimal",   "default",
+      "delegate", "do",       "double",     "else",      "enum",
+      "event",    "explicit", "extern",     "false",     "finally",
+      "fixed",    "float",    "for",        "foreach",   "goto",
+      "if",       "implicit", "in",         "int",       "interface",
+      "internal", "is",       "lock",       "long",      "namespace",
+      "new",      "null",     "object",     "operator",  "out",
+      "override", "params",   "private",    "protected", "public",
+      "readonly", "ref",      "return",     "sbyte",     "sealed",
+      "short",    "sizeof",   "stackalloc", "static",    "string",
+      "struct",   "switch",   "this",       "throw",     "true",
+      "try",      "typeof",   "uint",       "ulong",     "unchecked",
+      "unsafe",   "ushort",   "using",      "virtual",   "void",
+      "volatile", "while"};
+  return keywords.contains(name);
+}
+
+/// The U# parameter names of an export without configured names: the C
+/// parameter names recovered from the Host, or arg<i> where there is none.
+FailureOr<SmallVector<std::string>>
+defaultParameterNames(func::FuncOp function) {
+  auto recovered = function->getAttrOfType<ArrayAttr>("udoncl.parameter_names");
+  SmallVector<std::string> names;
+  for (unsigned index = 0; index < function.getNumArguments(); ++index) {
+    StringRef name =
+        recovered ? cast<StringAttr>(recovered[index]).getValue() : "";
+    if (!identifier(name)) {
+      names.push_back(::vrc::defaultUdonSharpParameterName(index));
+      continue;
+    }
+    // The generated binding returns an export's result through `result`.
+    if (isCSharpKeyword(name) ||
+        (name == "result" && function.getNumResults() != 0)) {
+      errs() << "parameter '" << name << "' of UDONCL_EXPORT "
+             << function.getSymName()
+             << " cannot name a U# parameter; rename the C parameter\n";
+      return failure();
+    }
+    names.push_back(name.str());
+  }
+  return names;
 }
 
 int32_t stableExportId(StringRef publicName, mlir::FunctionType type) {
@@ -1632,20 +1692,21 @@ bool configureUnityExports(ModuleOp module, const json::Object &config,
       return false;
     }
     SmallVector<mlir::Attribute> names;
-    for (unsigned index = 0; index < function.getNumArguments(); ++index) {
-      StringRef name;
-      if (parameters) {
-        auto configured = (*parameters)[index].getAsString();
+    if (parameters) {
+      for (const json::Value &parameter : *parameters) {
+        auto configured = parameter.getAsString();
         if (!configured || !identifier(*configured)) {
           errs() << "invalid Unity library parameter name\n";
           return false;
         }
-        name = *configured;
-      } else {
-        names.push_back(builder.getStringAttr("arg" + std::to_string(index)));
-        continue;
+        names.push_back(builder.getStringAttr(*configured));
       }
-      names.push_back(builder.getStringAttr(name));
+    } else {
+      auto recovered = defaultParameterNames(function);
+      if (failed(recovered))
+        return false;
+      for (const std::string &name : *recovered)
+        names.push_back(builder.getStringAttr(name));
     }
     function->setAttr("vrc.export_id", builder.getI32IntegerAttr(id));
     function->setAttr("vrc.public_name", builder.getStringAttr(publicName));
