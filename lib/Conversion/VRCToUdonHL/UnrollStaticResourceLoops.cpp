@@ -8,6 +8,7 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
@@ -27,14 +28,17 @@ bool isAllocationPrimitive(StringRef name) {
          name == "udonclDeviceBufferCreate";
 }
 
-/// A natural CFG loop with one latch whose exit is decided by a constant
-/// induction variable:
+/// A natural CFG loop with one latch whose exit an induction variable with a
+/// constant start and step eventually decides:
 ///
 ///   ^pred: cf.br ^header(%c0, ...)
 ///   ^header(%i: i32, ...): ...
 ///   ^latch: %next = arith.addi %i, %c1
 ///           %more = arith.cmpi slt, %next, %c3
 ///           cf.cond_br %more, ^header(%next, ...), ^exit(...)
+///
+/// The exit condition may also combine data with the induction comparison,
+/// as clang merges an early `return` of the body into the latch.
 struct Loop {
   Block *header = nullptr;
   Block *latch = nullptr;
@@ -44,6 +48,10 @@ struct Loop {
   bool continueOnTrue = true;
   unsigned induction = 0;
   SmallVector<APInt> values;
+  /// The one block every exit edge leaves to when values of the loop are
+  /// used after it, and those values.
+  Block *exit = nullptr;
+  SmallVector<Value> escaping;
 };
 
 std::optional<APInt> constantInteger(Value value) {
@@ -53,16 +61,70 @@ std::optional<APInt> constantInteger(Value value) {
   return std::nullopt;
 }
 
-/// The value `value` takes in an iteration whose induction variable is
-/// `current` and whose stepped induction variable is `next`.
-std::optional<APInt> evaluate(Value value, Value induction, Value stepped,
-                              const APInt &current, const APInt &next) {
-  if (value == induction)
-    return current;
-  if (stepped && value == stepped)
-    return next;
-  return constantInteger(value);
-}
+/// Evaluates the integer and i1 values of one iteration whose induction
+/// variable is `current` and whose stepped induction variable is `next`; a
+/// value that depends on data is std::nullopt.
+struct Evaluator {
+  Value induction;
+  Value stepped;
+  APInt current;
+  APInt next;
+
+  std::optional<APInt> integer(Value value) const {
+    if (value == induction)
+      return current;
+    if (value == stepped)
+      return next;
+    return constantInteger(value);
+  }
+
+  std::optional<bool> boolean(Value value, unsigned depth = 0) const {
+    if (depth > 16 || !value.getType().isInteger(1))
+      return std::nullopt;
+    if (std::optional<APInt> constant = constantInteger(value))
+      return !constant->isZero();
+    Operation *definition = value.getDefiningOp();
+    if (auto compare = dyn_cast_or_null<arith::CmpIOp>(definition)) {
+      std::optional<APInt> lhs = integer(compare.getLhs());
+      std::optional<APInt> rhs = integer(compare.getRhs());
+      if (!lhs || !rhs)
+        return std::nullopt;
+      return arith::applyCmpPredicate(compare.getPredicate(), *lhs, *rhs);
+    }
+    if (auto select = dyn_cast_or_null<arith::SelectOp>(definition)) {
+      std::optional<bool> condition = boolean(select.getCondition(), depth + 1);
+      if (condition)
+        return boolean(*condition ? select.getTrueValue()
+                                  : select.getFalseValue(),
+                       depth + 1);
+      std::optional<bool> whenTrue = boolean(select.getTrueValue(), depth + 1);
+      std::optional<bool> whenFalse =
+          boolean(select.getFalseValue(), depth + 1);
+      if (whenTrue && whenFalse && *whenTrue == *whenFalse)
+        return whenTrue;
+      return std::nullopt;
+    }
+    if (!isa_and_nonnull<arith::OrIOp, arith::AndIOp, arith::XOrIOp>(
+            definition))
+      return std::nullopt;
+    std::optional<bool> lhs = boolean(definition->getOperand(0), depth + 1);
+    std::optional<bool> rhs = boolean(definition->getOperand(1), depth + 1);
+    if (isa<arith::OrIOp>(definition)) {
+      if ((lhs && *lhs) || (rhs && *rhs))
+        return true;
+      if (lhs && rhs)
+        return false;
+    } else if (isa<arith::AndIOp>(definition)) {
+      if ((lhs && !*lhs) || (rhs && !*rhs))
+        return false;
+      if (lhs && rhs)
+        return true;
+    } else if (lhs && rhs) {
+      return *lhs != *rhs;
+    }
+    return std::nullopt;
+  }
+};
 
 /// The step of `next` from `induction`: `induction + c`, `c + induction` or
 /// `induction - c`.
@@ -80,28 +142,49 @@ std::optional<APInt> stepOf(Value next, Value induction) {
   return std::nullopt;
 }
 
+/// The operands the terminator of `from` passes to `to`, if every edge
+/// between them passes the same ones.
+std::optional<SmallVector<Value>> edgeOperands(Block *from, Block *to) {
+  auto branch = dyn_cast<BranchOpInterface>(from->getTerminator());
+  if (!branch)
+    return std::nullopt;
+  std::optional<SmallVector<Value>> result;
+  for (unsigned index = 0; index < branch->getNumSuccessors(); ++index) {
+    if (branch->getSuccessor(index) != to)
+      continue;
+    SuccessorOperands operands = branch.getSuccessorOperands(index);
+    if (operands.getProducedOperandCount() != 0)
+      return std::nullopt;
+    SmallVector<Value> forwarded(operands.getForwardedOperands());
+    if (result && *result != forwarded)
+      return std::nullopt;
+    result = std::move(forwarded);
+  }
+  return result;
+}
+
 /// Matches the loop of `header` and computes its induction values, or fails
-/// when it is not a single-latch loop with a constant trip count of at most
-/// `maximumTrips`.
+/// when it is not a single-latch loop that certainly exits after at most
+/// `maximumTrips` iterations.
 std::optional<Loop> matchLoop(Block *header, DominanceInfo &dominance,
                               int64_t maximumTrips) {
   Loop loop;
   loop.header = header;
   SmallVector<Block *> latches;
-  SmallVector<Block *> outside;
+  llvm::SetVector<Block *> outside;
   for (Block *predecessor : header->getPredecessors()) {
     if (dominance.dominates(header, predecessor))
       latches.push_back(predecessor);
     else
-      outside.push_back(predecessor);
+      outside.insert(predecessor);
   }
   if (latches.size() != 1 || outside.size() != 1)
     return std::nullopt;
   loop.latch = latches.front();
   loop.preheader = outside.front();
-  // The preheader reaches the header through one unconditional edge.
-  auto entry = dyn_cast<cf::BranchOp>(loop.preheader->getTerminator());
-  if (!entry || entry.getDest() != header)
+  std::optional<SmallVector<Value>> entry =
+      edgeOperands(loop.preheader, header);
+  if (!entry)
     return std::nullopt;
 
   // The natural loop: the header and every block that reaches the latch
@@ -133,55 +216,64 @@ std::optional<Loop> matchLoop(Block *header, DominanceInfo &dominance,
   OperandRange backOperands = trueBack ? loop.branch.getTrueDestOperands()
                                        : loop.branch.getFalseDestOperands();
 
-  // No value of the loop may be used outside it except as an operand of an
-  // edge that leaves it: the unrolled copies define it once per iteration.
+  // A value of the loop used after it must reach its uses through the one
+  // block all exits leave to, which then receives it as an argument from
+  // each unrolled copy.
+  llvm::SetVector<Block *> exits;
+  for (Block *block : loop.blocks)
+    for (Block *successor : block->getSuccessors())
+      if (!loop.blocks.contains(successor))
+        exits.insert(successor);
   for (Block *block : loop.blocks) {
-    auto escapes = [&](Value value) {
-      return llvm::any_of(value.getUsers(), [&](Operation *user) {
-        return !loop.blocks.contains(user->getBlock());
-      });
+    auto record = [&](Value value) {
+      if (llvm::any_of(value.getUsers(), [&](Operation *user) {
+            return !loop.blocks.contains(user->getBlock());
+          }))
+        loop.escaping.push_back(value);
     };
     for (BlockArgument argument : block->getArguments())
-      if (escapes(argument))
-        return std::nullopt;
+      record(argument);
     for (Operation &operation : *block)
       for (Value result : operation.getResults())
-        if (escapes(result))
+        record(result);
+  }
+  if (!loop.escaping.empty()) {
+    if (exits.size() != 1)
+      return std::nullopt;
+    loop.exit = exits.front();
+    if (!llvm::all_of(loop.exit->getPredecessors(), [&](Block *predecessor) {
+          return loop.blocks.contains(predecessor);
+        }))
+      return std::nullopt;
+    for (Value value : loop.escaping)
+      for (Operation *user : value.getUsers())
+        if (!loop.blocks.contains(user->getBlock()) &&
+            !dominance.dominates(loop.exit, user->getBlock()))
           return std::nullopt;
   }
 
-  auto comparison = loop.branch.getCondition().getDefiningOp<arith::CmpIOp>();
-  if (!comparison)
-    return std::nullopt;
   for (auto [index, argument] : llvm::enumerate(header->getArguments())) {
     if (!argument.getType().isSignlessInteger())
       continue;
-    std::optional<APInt> initial =
-        constantInteger(entry.getDestOperands()[index]);
+    std::optional<APInt> initial = constantInteger((*entry)[index]);
     Value next = backOperands[index];
     std::optional<APInt> step = stepOf(next, argument);
     if (!initial || !step || step->isZero())
       continue;
-    // The comparison reads only this induction variable and constants.
-    APInt current = *initial;
+    // Iterate until the condition certainly leaves; an iteration whose exit
+    // depends on data keeps its exit edge.
+    Evaluator evaluator{argument, next, *initial, *initial};
     SmallVector<APInt> values;
     bool resolved = false;
     while (static_cast<int64_t>(values.size()) < maximumTrips) {
-      values.push_back(current);
-      APInt stepped = current + *step;
-      std::optional<APInt> lhs =
-          evaluate(comparison.getLhs(), argument, next, current, stepped);
-      std::optional<APInt> rhs =
-          evaluate(comparison.getRhs(), argument, next, current, stepped);
-      if (!lhs || !rhs)
-        break;
-      bool taken =
-          arith::applyCmpPredicate(comparison.getPredicate(), *lhs, *rhs);
-      if (taken != loop.continueOnTrue) {
+      values.push_back(evaluator.current);
+      evaluator.next = evaluator.current + *step;
+      std::optional<bool> taken = evaluator.boolean(loop.branch.getCondition());
+      if (taken && *taken != loop.continueOnTrue) {
         resolved = true;
         break;
       }
-      current = stepped;
+      evaluator.current = evaluator.next;
     }
     if (!resolved)
       continue;
@@ -197,10 +289,20 @@ std::optional<Loop> matchLoop(Block *header, DominanceInfo &dominance,
 void unroll(Loop &loop) {
   Region &region = *loop.header->getParent();
   OpBuilder builder(loop.header->getParentOp()->getContext());
+  // The values used after the loop reach their uses as arguments of its
+  // exit block.
+  for (Value value : loop.escaping) {
+    BlockArgument argument =
+        loop.exit->addArgument(value.getType(), value.getLoc());
+    value.replaceUsesWithIf(argument, [&](OpOperand &use) {
+      return !loop.blocks.contains(use.getOwner()->getBlock());
+    });
+  }
+
   SmallVector<IRMapping> copies(loop.values.size());
   SmallVector<Block *> headers;
   Block *insertBefore = loop.blocks.back()->getNextNode();
-  for (auto [iteration, mapping] : llvm::enumerate(copies)) {
+  for (IRMapping &mapping : copies) {
     for (Block *block : loop.blocks) {
       Block *copy = new Block();
       region.getBlocks().insert(
@@ -227,32 +329,47 @@ void unroll(Loop &loop) {
         builder, induction.getLoc(),
         builder.getIntegerAttr(induction.getType(), loop.values[iteration]));
     induction.replaceAllUsesWith(constant);
-    // The copied latch continues into the next copy or leaves the loop.
+    // The copied latch continues into the next copy, or leaves the loop
+    // after the last one.
     auto branch =
         cast<cf::CondBranchOp>(mapping.lookup(loop.latch)->getTerminator());
-    builder.setInsertionPoint(branch);
-    bool last = iteration + 1 == copies.size();
     bool backOnTrue = loop.continueOnTrue;
-    if (last)
+    if (iteration + 1 == copies.size()) {
+      builder.setInsertionPoint(branch);
       cf::BranchOp::create(builder, branch.getLoc(),
                            backOnTrue ? branch.getFalseDest()
                                       : branch.getTrueDest(),
                            backOnTrue ? branch.getFalseDestOperands()
                                       : branch.getTrueDestOperands());
-    else
-      cf::BranchOp::create(builder, branch.getLoc(), headers[iteration + 1],
-                           backOnTrue ? branch.getTrueDestOperands()
-                                      : branch.getFalseDestOperands());
-    branch.erase();
+      branch.erase();
+    } else {
+      branch->setSuccessor(headers[iteration + 1], backOnTrue ? 0 : 1);
+    }
+    // Every edge of the copy that leaves to the exit block passes the
+    // values of the copy.
+    if (!loop.exit)
+      continue;
+    SmallVector<Value> values;
+    for (Value value : loop.escaping)
+      values.push_back(mapping.lookup(value));
+    for (Block *block : loop.blocks) {
+      auto terminator =
+          cast<BranchOpInterface>(mapping.lookup(block)->getTerminator());
+      for (unsigned index = 0; index < terminator->getNumSuccessors(); ++index)
+        if (terminator->getSuccessor(index) == loop.exit)
+          terminator.getSuccessorOperands(index).append(values);
+    }
   }
   // The preheader enters the first copy; the original loop is dead.
-  auto entry = cast<cf::BranchOp>(loop.preheader->getTerminator());
-  entry.setDest(headers.front());
-  for (Block *block : loop.blocks)
-    block->dropAllDefinedValueUses();
+  Operation *entry = loop.preheader->getTerminator();
+  for (unsigned index = 0; index < entry->getNumSuccessors(); ++index)
+    if (entry->getSuccessor(index) == loop.header)
+      entry->setSuccessor(headers.front(), index);
   for (Block *block : loop.blocks)
     for (Operation &operation : *block)
       operation.dropAllReferences();
+  for (Block *block : loop.blocks)
+    block->dropAllDefinedValueUses();
   for (Block *block : loop.blocks)
     block->erase();
 }

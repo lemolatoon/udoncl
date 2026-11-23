@@ -119,3 +119,38 @@ module {
     return
   }
 }
+
+// -----
+
+// clang merges an early return of the body into the latch condition, enters
+// the loop from a conditional branch and uses the last status after it: the
+// data exit stays on each copy, the induction exit decides the last copy,
+// and the exit block receives the status of the copy that left.
+// CHECK-LABEL: func.func @Initialize
+// CHECK-COUNT-3: call @clCreateBuffer
+// CHECK-NOT: call @clCreateBuffer
+// CHECK: ^bb{{[0-9]+}}(%[[STATUS:.*]]: i32):
+// CHECK: return %[[STATUS]] : i32
+module {
+  func.func private @clCreateBuffer(i32) -> !udonhl.ptr<0>
+  func.func private @status() -> i32
+  func.func @Initialize(%ready: i1) -> i32 attributes {udoncl.export} {
+    %c0 = arith.constant 0 : i32
+    %c9 = arith.constant 9 : i32
+    cf.cond_br %ready, ^loop(%c0 : i32), ^failed(%c9 : i32)
+  ^loop(%i: i32):
+    %buffer = func.call @clCreateBuffer(%i) : (i32) -> !udonhl.ptr<0>
+    %status = func.call @status() : () -> i32
+    %failed = arith.cmpi ne, %status, %c0 : i32
+    %c1 = arith.constant 1 : i32
+    %next = arith.addi %i, %c1 : i32
+    %last = arith.cmpi ugt, %i, %c1 : i32
+    %true = arith.constant true
+    %leave = arith.select %failed, %true, %last : i1
+    cf.cond_br %leave, ^done, ^loop(%next : i32)
+  ^done:
+    return %status : i32
+  ^failed(%code: i32):
+    return %code : i32
+  }
+}
