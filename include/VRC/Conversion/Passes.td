@@ -716,6 +716,25 @@ def AssignSynthesizedKernelIdsPass : Pass<"vrc-assign-synthesized-kernel-ids", "
                "Kernel ids that belong to other kernels and are skipped">
   ];
 }
+def CheckSynthesizedKernelTextureCapacityPass : Pass<"vrc-check-synthesized-kernel-texture-capacity", "mlir::ModuleOp"> {
+  let summary = "Check that the texture shape the Unity buffers share holds the output of every synthesized kernel";
+  let description = [{
+    The Device buffers of a Unity library are textures; buffer `i` is
+    `buffer-widths[i]` x `buffer-heights[i]` words. When every buffer has the
+    same shape, a `gpu.func` marked `vrc.synthesized_kernel` must write at
+    most that many words (`vrc.words`), or the module is rejected with an
+    error on the kernel. Buffers of different shapes, no buffers, library
+    kernels and kernels without `vrc.words` are not checked. The module is
+    not changed.
+  }];
+  let dependentDialects = ["mlir::gpu::GPUDialect"];
+  let options = [
+    ListOption<"bufferWidths", "buffer-widths", "int64_t",
+               "Texture width of each Unity buffer, in words">,
+    ListOption<"bufferHeights", "buffer-heights", "int64_t",
+               "Texture height of each Unity buffer, in words">
+  ];
+}
 def LowerGatherDevicePass : Pass<"vrc-lower-gather-device", "mlir::ModuleOp"> {
   let summary = "Lower proven gather kernels with scalar loops to fragment-safe resources and passes";
   let dependentDialects = ["::vrc::vrcgpu::VRCGPUDialect", "mlir::arith::ArithDialect"];
