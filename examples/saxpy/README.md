@@ -14,9 +14,11 @@ Host C ([`host.c`](host.c)) uses the standard OpenCL 1.2 API: it creates the
 `clFinish`. `run_saxpy` is marked `UDONCL_EXPORT` and returns the OpenCL
 status. The linked `UdonCL::OpenCLRuntime` implements the API; the kernel is
 compiled ahead of time from the Device library, and `udoncl_add_unity_library`
-derives its launch from the Host C, so
-[`unity-library.json`](unity-library.json) lists only the public names and
-buffers.
+derives its launch from the Host C. The Host C also describes the public U#
+API: `UDONCL_PROGRAM("saxpy_demo")` names the program, and
+`UDONCL_PUBLIC(float) cl_mem x, y, result;` makes the three buffers public,
+named after the variables, in the direction of their `clCreateBuffer` flags.
+No configuration file is needed.
 
 From the repository root, build the compiler and then the consumer project:
 

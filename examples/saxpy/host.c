@@ -4,15 +4,19 @@
 
 #define SAXPY_WORDS 32
 
+/* Unity imports the library under Assets/udoncl-generated/saxpy_demo and
+ * names its U# binding UdonclSaxpyDemoBinding. */
+UDONCL_PROGRAM("saxpy_demo");
+
 /* The kernel is compiled ahead of time from saxpy.cl, the Device library of
  * this example, so the program source is only a placeholder. */
 static const char kernel_source[] = "saxpy.cl";
 
-/* Device buffers whose address is passed to the OpenCL runtime live in Host
- * globals. U# writes x and y before RunSaxpy and reads result after it. */
-static cl_mem x;
-static cl_mem y;
-static cl_mem result;
+/* The public Device buffers of the library, named after the variables: U#
+ * writes x and y (CL_MEM_READ_ONLY) with TryWriteX and TryWriteY before
+ * RunSaxpy and reads result (CL_MEM_WRITE_ONLY) with StartReadResult after
+ * it. Each holds 32 floats. */
+UDONCL_PUBLIC(float) cl_mem x, y, result;
 
 /* result = alpha * x + y over the first n words. Returns CL_SUCCESS or the
  * first OpenCL error. */

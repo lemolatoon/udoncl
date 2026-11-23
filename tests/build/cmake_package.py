@@ -2427,8 +2427,10 @@ def main():
         (saxpy_artifact / 'manifest.json').read_text(encoding='utf-8')
     )
     assert saxpy_manifest['ready_for_unity'] is True
-    # The Host C launches the user kernel of saxpy.cl through the linked
-    # runtime: the config names neither the kernel nor its launch.
+    assert not (saxpy_source / 'unity-library.json').exists()
+    # The Host C names the program, its exports and its UDONCL_PUBLIC
+    # buffers, and launches the user kernel of saxpy.cl through the linked
+    # runtime: no config names the kernel, its launch or the buffers.
     assert saxpy_manifest['dispatch_sites'] == [{
         'function': '__vrc_enqueue_user_1024_3_saxpy',
         'kernel_id': 1024,
@@ -2448,14 +2450,30 @@ def main():
         (2, 'y', 128, 'float32', 'input'),
         (3, 'result', 128, 'float32', 'output'),
     ]
+    # Every Device buffer resolves at compile time to its Unity Texture.
+    saxpy_root = saxpy_consumer / 'udoncl/saxpy-unity-library'
+    saxpy_report = subprocess.run([
+        str(installed_compiler), '--emit-unity-library-bundle',
+        '--host-llvm', str(saxpy_root / 'host.bc'),
+        '--host-library-llvm',
+        str(saxpy_root / 'modules/host/capacity_runtime.bc'),
+        '--device-llvm', str(saxpy_root / 'device.bc'),
+        '--report-static-resources',
+        '-o', str(output / 'saxpy-static-resources-artifact'),
+    ], text=True, capture_output=True)
+    assert saxpy_report.returncode == 0, saxpy_report.stderr
+    assert ('udonclc-static-resources: static Unity resource lowering '
+            'applied') in saxpy_report.stderr, saxpy_report.stderr
+    assert 'blocker' not in saxpy_report.stderr, saxpy_report.stderr
     assert [
         (export['public_name'], export['async'], export['result']['kind'],
          [parameter['name'] for parameter in export['parameters']])
         for export in saxpy_manifest['exports']
     ] == [('RunSaxpy', True, 'i32', ['n', 'alpha'])]
-    # The config names no binding, but RunSaxpy is asynchronous: udonclc
-    # generates the U# binding under the default name the Unity importer
-    # documents, Udoncl + the PascalCase program name + Binding.
+    # RunSaxpy is the PascalCase of run_saxpy, and its parameters keep their
+    # C names. No binding is named: udonclc generates the U# binding under the
+    # default name the Unity importer documents, Udoncl + the PascalCase
+    # program name + Binding.
     assert saxpy_manifest['program']['binding_source'] == 'binding.cs'
     assert saxpy_manifest['program']['binding_namespace'] == (
         'Lemolatoon.Udoncl.Generated')
@@ -2532,7 +2550,6 @@ def main():
     ])
     run_failure([
         installed_compiler, '--emit-unity-library-bundle',
-        saxpy_source / 'unity-library.json',
         '--host-llvm', unlinked_module,
         '--device-llvm',
         saxpy_consumer / 'udoncl/saxpy-unity-library/device.bc',
@@ -2551,6 +2568,7 @@ def main():
     unity_buffer_source.write_text(
         '#include <stdint.h>\n'
         '#include <udoncl/export.h>\n'
+        'UDONCL_PROGRAM("removed_unity_buffer");\n'
         'uint32_t __udoncl_buffer_alloc(uint32_t logical_id, uint32_t bytes);\n'
         'int32_t __udoncl_buffer_copy(uint32_t source, uint32_t destination,\n'
         '                             uint32_t source_offset,\n'
@@ -2573,7 +2591,6 @@ def main():
     ])
     run_failure([
         installed_compiler, '--emit-unity-library-bundle',
-        saxpy_source / 'unity-library.json',
         '--host-llvm', unity_buffer_module,
         '-o', output / 'removed-unity-buffer-artifact',
     ], 'the Unity Host calls __udoncl_buffer_alloc, __udoncl_buffer_copy of '

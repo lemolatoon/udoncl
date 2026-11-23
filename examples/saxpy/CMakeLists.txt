@@ -8,10 +8,11 @@ find_package(UdonCL 0.1 REQUIRED CONFIG)
 udoncl_add_host_library(saxpy_host host.c)
 udoncl_add_device_library(saxpy_device saxpy.cl)
 
-# Unity imports only the Udon Assembly, the manifest and the shaders; leaving
-# out the intermediate MLIR keeps the artifact small.
+# The Host C names the program (UDONCL_PROGRAM), its exports (UDONCL_EXPORT)
+# and its public buffers (UDONCL_PUBLIC). Unity imports only the Udon
+# Assembly, the manifest and the shaders; leaving out the intermediate MLIR
+# keeps the artifact small.
 udoncl_add_unity_library(saxpy-unity-library
-  CONFIG unity-library.json
   OMIT_INTERMEDIATE_IR
   HOST_LIBRARIES saxpy_host UdonCL::OpenCLRuntime
   DEVICE_LIBRARIES saxpy_device)

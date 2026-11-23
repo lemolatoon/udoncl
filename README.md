@@ -234,9 +234,8 @@ elements on the GPU. Build the compiler first as described in
 
 #### 1. The files you write
 
-A UdonCL project has four inputs: an OpenCL C kernel, Host C that launches it,
-a `CMakeLists.txt`, and a `unity-library.json` that describes the public U#
-API.
+A UdonCL project has three inputs: an OpenCL C kernel, Host C that launches
+it and describes the public U# API, and a `CMakeLists.txt`.
 
 **The OpenCL C kernel** ([`saxpy.cl`](examples/saxpy/saxpy.cl)). The current
 Device profile, `gather-f32`, runs one work item per word of the output
@@ -255,15 +254,15 @@ __kernel void saxpy(__global const float *x, __global const float *y,
 ```
 
 **The Host C** ([`host.c`](examples/saxpy/host.c)). Host code uses the
-ordinary Khronos OpenCL 1.2 API, and `UDONCL_EXPORT` makes `run_saxpy` a U#
-method. It creates the buffers and the kernel, sets the kernel arguments,
-launches it and waits for it, and returns the OpenCL status. The essential
-part is:
+ordinary Khronos OpenCL 1.2 API. It creates the buffers and the kernel, sets
+the kernel arguments, launches it and waits for it, and returns the OpenCL
+status. Three macros of `<udoncl/export.h>` describe the public U# API. The
+essential part is:
 
 ```c
-static cl_mem x;
-static cl_mem y;
-static cl_mem result;
+UDONCL_PROGRAM("saxpy_demo");
+
+UDONCL_PUBLIC(float) cl_mem x, y, result;
 
 UDONCL_EXPORT int run_saxpy(int n, float alpha) {
   /* ... clGetPlatformIDs, clGetDeviceIDs, clCreateContext,
@@ -301,6 +300,24 @@ constant name, and the global work size is one constant. A buffer whose
 address is passed to the runtime lives in a Host global. Unsupported patterns
 are compile errors rather than approximations.
 
+The three macros replace a separate API description:
+
+- `UDONCL_PROGRAM("saxpy_demo")` names the program. Unity imports the
+  artifact under `Assets/udoncl-generated/saxpy_demo` and names the generated
+  U# class `UdonclSaxpyDemoBinding` (`Udoncl` + the PascalCase program name +
+  `Binding`) in the namespace `Lemolatoon.Udoncl.Generated`. The optional
+  `BINDING_CLASS` and `BINDING_NAMESPACE` arguments of
+  `udoncl_add_unity_library` override both.
+- `UDONCL_EXPORT` makes a function a U# method named after the PascalCase of
+  its C name (`run_saxpy` → `RunSaxpy`), with the C parameter names (`n`,
+  `alpha`). The parameter and result types come from the C signature.
+- `UDONCL_PUBLIC(float)` makes a file-scope `cl_mem` variable a public Device
+  buffer of `float` elements, named after the variable: `x` → `TryWriteX`,
+  `result` → `StartReadResult`. Its `clCreateBuffer` flags give its
+  direction (`CL_MEM_READ_ONLY` for a buffer U# writes, `CL_MEM_WRITE_ONLY`
+  for one it reads) and size (128 bytes). The variable must hold the buffer of
+  exactly one `clCreateBuffer`; the build resolves it to its Unity texture.
+
 **The CMake project** ([`CMakeLists.txt`](examples/saxpy/CMakeLists.txt)) is
 an ordinary consumer of the UdonCL package. `UdonCL::OpenCLRuntime` is the
 OpenCL implementation the Host C runs on, and `OMIT_INTERMEDIATE_IR` leaves
@@ -316,70 +333,10 @@ udoncl_add_host_library(saxpy_host host.c)
 udoncl_add_device_library(saxpy_device saxpy.cl)
 
 udoncl_add_unity_library(saxpy-unity-library
-  CONFIG unity-library.json
   OMIT_INTERMEDIATE_IR
   HOST_LIBRARIES saxpy_host UdonCL::OpenCLRuntime
   DEVICE_LIBRARIES saxpy_device)
 ```
-
-**The public API description**
-([`unity-library.json`](examples/saxpy/unity-library.json)):
-
-```json
-{
-  "schema_version": 2,
-  "program": "saxpy_demo",
-  "export_overrides": [
-    {
-      "symbol": "run_saxpy",
-      "public_name": "RunSaxpy",
-      "parameters": ["n", "alpha"]
-    }
-  ],
-  "buffers": [
-    {
-      "id": 1,
-      "name": "x",
-      "byte_size": 128,
-      "element_type": "float32",
-      "public_access": "input"
-    },
-    {
-      "id": 2,
-      "name": "y",
-      "byte_size": 128,
-      "element_type": "float32",
-      "public_access": "input"
-    },
-    {
-      "id": 3,
-      "name": "result",
-      "byte_size": 128,
-      "element_type": "float32",
-      "public_access": "output"
-    }
-  ]
-}
-```
-
-Each key you write:
-
-- `schema_version`: `2`.
-- `program`: the program name, `saxpy_demo`. Unity imports the artifact under
-  `Assets/udoncl-generated/saxpy_demo` and names the generated U# class
-  `UdonclSaxpyDemoBinding` (`Udoncl` + the PascalCase program name +
-  `Binding`) in the namespace `Lemolatoon.Udoncl.Generated`. An optional
-  `binding` object with `namespace` and `class_name` overrides both.
-- `export_overrides`: optional names for the `UDONCL_EXPORT` functions.
-  `symbol` is the C name (`run_saxpy`), `public_name` the U# name
-  (`RunSaxpy`), and `parameters` the U# parameter names (`n`, `alpha`). The
-  parameter and result types come from the C signature.
-- `buffers`: one entry per OpenCL buffer, in `clCreateBuffer` order. `id` is
-  the buffer ID, `name` produces the U# transfer method names
-  (`x` → `TryWriteX`, `result` → `StartReadResult`), `byte_size` is the
-  `clCreateBuffer` size (128), `element_type` is `"float32"`, and
-  `public_access` is `"input"` for a buffer U# writes or `"output"` for one it
-  reads.
 
 There is no kernel entry: the build derives the `saxpy` kernel's launch (its
 buffers, its `int` and `float` arguments, and the global size of 32) from the
