@@ -153,12 +153,30 @@ def main():
         assert result.returncode != 0, (name, result.stderr)
         assert diagnostic in result.stderr, (name, diagnostic, result.stderr)
 
-    # A public buffer U# both writes and reads is not supported yet.
-    rejected(
+    # A CL_MEM_READ_WRITE public buffer is one U# both writes and reads: its
+    # access is inout, and the binding has both transfer methods.
+    read_write = compile_variant(
         'read-write',
         host.replace('result = create(CL_MEM_WRITE_ONLY',
-                     'result = create(CL_MEM_READ_WRITE'),
-        'UDONCL_PUBLIC variable result is a CL_MEM_READ_WRITE buffer')
+                     'result = create(CL_MEM_READ_WRITE'))
+    assert read_write.returncode == 0, read_write.stderr
+    read_write_artifact = output / 'read-write-artifact'
+    read_write_manifest = json.loads(
+        (read_write_artifact / 'manifest.json').read_text(encoding='utf-8'))
+    assert [(buffer['name'], buffer['public_access'])
+            for buffer in read_write_manifest['device']['buffers']] == [
+        ('x', 'input'), ('y', 'input'), ('result', 'inout')
+    ], read_write_manifest
+    read_write_binding = (read_write_artifact / 'binding.cs').read_text(
+        encoding='utf-8')
+    for method in ['public int TryWriteResult(float[] source)',
+                   'public int StartReadResult(float[] destination, '
+                   'UdonSharpBehaviour receiver, string completionEvent)']:
+        assert ('        /// Device buffer of the Host variable <c>result</c> '
+                '(UDONCL_PUBLIC): 32 float elements (float32).\n'
+                '        /// U# writes and reads it; so does the Device.\n'
+                '        /// </summary>\n'
+                f'        {method}') in read_write_binding, read_write_binding
     # A variable must hold the buffer of exactly one clCreateBuffer.
     rejected(
         'two-sites',

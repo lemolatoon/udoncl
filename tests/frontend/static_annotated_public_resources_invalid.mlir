@@ -42,11 +42,11 @@ module {
 // -----
 
 module {
-  // expected-error@+1 {{UDONCL_PUBLIC variable image is a CL_MEM_READ_WRITE buffer; public read-write buffers are not supported yet}}
+  // expected-error@+1 {{UDONCL_PUBLIC variable image is both CL_MEM_READ_ONLY and CL_MEM_WRITE_ONLY; a Device buffer has one access}}
   "udonhl.global"() <{address_space = 0 : i32, alignment = 4 : i64, initial_value = 0 : i32, linkage = "internal", storage_type = !udonhl.ptr<0>, sym_name = "image"}> {udoncl.public = "float32"} : () -> ()
   func.func private @clCreateBuffer(!udonhl.ptr<0>, i64, i32, !udonhl.ptr<0>, !udonhl.ptr<0>) -> !udonhl.ptr<0>
   func.func @Initialize(%context: !udonhl.ptr<0>) attributes {udoncl.export} {
-    %flags = arith.constant 1 : i64
+    %flags = arith.constant 6 : i64
     %bytes = arith.constant 64 : i32
     %zero = arith.constant 0 : i32
     %null = "udonhl.inttoptr"(%zero) : (i32) -> !udonhl.ptr<0>

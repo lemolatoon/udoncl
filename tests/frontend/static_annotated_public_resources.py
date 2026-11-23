@@ -34,22 +34,23 @@ bindings = header.split("vrc.static_device_resource_public_bindings = ")[1]
 bindings = bindings.split("schema_version")[0]
 # Each UDONCL_PUBLIC variable is the one allocation context it holds, with
 # the element type of its annotation; CL_MEM_READ_ONLY is an input U# writes,
-# CL_MEM_WRITE_ONLY an output U# reads, indexed per direction in declaration
-# order.
+# CL_MEM_WRITE_ONLY an output U# reads and CL_MEM_READ_WRITE an inout U# both
+# writes and reads, indexed per direction in declaration order.
 expected = [
     '{capacity_bytes = 128 : i64, data_type = "float32", logical_bytes = 128 : i64, name = "x", public_access = "input", public_index = 0 : i32, resource_id = 0 : i32, resource_kind = "allocation"}',
     '{capacity_bytes = 128 : i64, data_type = "float32", logical_bytes = 128 : i64, name = "y", public_access = "input", public_index = 1 : i32, resource_id = 1 : i32, resource_kind = "allocation"}',
     '{capacity_bytes = 128 : i64, data_type = "int32", logical_bytes = 128 : i64, name = "result", public_access = "output", public_index = 0 : i32, resource_id = 2 : i32, resource_kind = "allocation"}',
+    '{capacity_bytes = 128 : i64, data_type = "float32", logical_bytes = 128 : i64, name = "state", public_access = "inout", public_index = 0 : i32, resource_id = 3 : i32, resource_kind = "allocation"}',
 ]
 for entry in expected:
     assert entry in bindings, bindings
-assert bindings.count("resource_kind") == 3, bindings
+assert bindings.count("resource_kind") == 4, bindings
 assert (
     "vrc.static_declared_public_resources = "
-    "{resource_ids = array<i32: 0, 1, 2>"
+    "{resource_ids = array<i32: 0, 1, 2, 3>"
 ) in header
 # The inventory marks them public and the private scratch buffer not.
 inventory = header.split("vrc.static_device_resource_inventory = ")[1]
-assert inventory.count("public = true") == 3, inventory
-assert "public = false, resource_id = 3 : i32" in inventory, inventory
-print("static_annotated_public_resources=passed public=3")
+assert inventory.count("public = true") == 4, inventory
+assert "public = false, resource_id = 4 : i32" in inventory, inventory
+print("static_annotated_public_resources=passed public=4")

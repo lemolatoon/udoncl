@@ -2,6 +2,7 @@ module {
   "udonhl.global"() <{address_space = 0 : i32, alignment = 4 : i64, initial_value = 0 : i32, linkage = "internal", storage_type = !udonhl.ptr<0>, sym_name = "x"}> {udoncl.public = "float32"} : () -> ()
   "udonhl.global"() <{address_space = 0 : i32, alignment = 4 : i64, initial_value = 0 : i32, linkage = "internal", storage_type = !udonhl.ptr<0>, sym_name = "result"}> {udoncl.public = "int32"} : () -> ()
   "udonhl.global"() <{address_space = 0 : i32, alignment = 4 : i64, initial_value = 0 : i32, linkage = "internal", storage_type = !udonhl.ptr<0>, sym_name = "y"}> {udoncl.public = "float32"} : () -> ()
+  "udonhl.global"() <{address_space = 0 : i32, alignment = 4 : i64, initial_value = 0 : i32, linkage = "internal", storage_type = !udonhl.ptr<0>, sym_name = "state"}> {udoncl.public = "float32"} : () -> ()
   "udonhl.global"() <{address_space = 0 : i32, alignment = 4 : i64, initial_value = 0 : i32, linkage = "internal", storage_type = !udonhl.ptr<0>, sym_name = "scratch"}> : () -> ()
   func.func private @clCreateBuffer(!udonhl.ptr<0>, i64, i32, !udonhl.ptr<0>, !udonhl.ptr<0>) -> !udonhl.ptr<0>
   func.func private @clReleaseMemObject(!udonhl.ptr<0>) -> i32
@@ -30,6 +31,10 @@ module {
     %result = func.call @create(%context, %write_only, %bytes) : (!udonhl.ptr<0>, i64, i32) -> !udonhl.ptr<0>
     %result_address = udonhl.address_of @result : !udonhl.ptr<0>
     "udonhl.store"(%result, %result_address) <{alignment = 4 : i64}> : (!udonhl.ptr<0>, !udonhl.ptr<0>) -> ()
+    // A CL_MEM_READ_WRITE public buffer is one U# both writes and reads.
+    %state = func.call @create(%context, %read_write, %bytes) : (!udonhl.ptr<0>, i64, i32) -> !udonhl.ptr<0>
+    %state_address = udonhl.address_of @state : !udonhl.ptr<0>
+    "udonhl.store"(%state, %state_address) <{alignment = 4 : i64}> : (!udonhl.ptr<0>, !udonhl.ptr<0>) -> ()
     // A private buffer stays private, whatever its flags.
     %scratch = func.call @create(%context, %read_write, %scratch_bytes) : (!udonhl.ptr<0>, i64, i32) -> !udonhl.ptr<0>
     %scratch_address = udonhl.address_of @scratch : !udonhl.ptr<0>

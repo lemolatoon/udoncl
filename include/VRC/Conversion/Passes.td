@@ -258,12 +258,13 @@ def ClassifyAnnotatedPublicDeviceResourcesPass : Pass<"vrc-classify-annotated-pu
     variable) at compile time to the one allocation context it holds,
     from `vrc.static_device_global_cell_provenance`; the variable may also be
     null. Its clCreateBuffer flags give its direction: CL_MEM_READ_ONLY is an
-    input U# writes, CL_MEM_WRITE_ONLY an output U# reads, and the public
-    index is the ordinal of the variable among those of its direction in
-    declaration order. A variable that holds no tracked buffer, one of
-    unknown origin, the buffers of several allocation contexts or the buffer
-    of another public variable, and a CL_MEM_READ_WRITE buffer (not
-    supported yet), are errors. The bindings are appended to
+    input U# writes, CL_MEM_WRITE_ONLY an output U# reads, CL_MEM_READ_WRITE
+    an inout U# both writes and reads, and the public index is the ordinal
+    of the variable among those of its direction in declaration order. A
+    variable that holds no tracked buffer, one of unknown origin, the
+    buffers of several allocation contexts or the buffer of another public
+    variable, and a buffer both CL_MEM_READ_ONLY and CL_MEM_WRITE_ONLY, are
+    errors. The bindings are appended to
     `vrc.static_device_resource_public_bindings`, and their resources listed
     in `vrc.static_declared_public_resources`: they need no configured Unity
     buffer.

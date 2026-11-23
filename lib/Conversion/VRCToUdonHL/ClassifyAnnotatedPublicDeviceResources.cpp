@@ -174,16 +174,16 @@ struct ClassifyAnnotatedPublicDeviceResourcesPass
       int64_t flags = requirement->second.memoryFlags;
       bool readOnly = flags & memReadOnly;
       bool writeOnly = flags & memWriteOnly;
-      if (readOnly == writeOnly) {
+      if (readOnly && writeOnly) {
         global.emitError("UDONCL_PUBLIC variable ")
             << name
-            << " is a CL_MEM_READ_WRITE buffer; public read-write buffers are "
-               "not supported yet (use CL_MEM_READ_ONLY for a buffer U# "
-               "writes or CL_MEM_WRITE_ONLY for one U# reads)";
+            << " is both CL_MEM_READ_ONLY and CL_MEM_WRITE_ONLY; a Device "
+               "buffer has one access";
         invalid = true;
         continue;
       }
-      StringRef access = readOnly ? "input" : "output";
+      // A CL_MEM_READ_WRITE buffer is one U# both writes and reads.
+      StringRef access = readOnly ? "input" : writeOnly ? "output" : "inout";
       int32_t index = nextIndex[access.str()]++;
       int64_t capacity = requirement->second.capacityBytes;
       bindings.push_back(builder.getDictionaryAttr({
