@@ -719,10 +719,9 @@ LogicalResult checkPublicKernelArgumentTypes(
   return success();
 }
 
-FailureOr<std::map<int64_t, std::string>> describeOpenCLUserDispatches(
-    ModuleOp host, llvm::StringRef hostLLVMPath,
-    ArrayRef<const llvm::json::Object *> explicitKernels,
-    llvm::raw_ostream &diagnostics) {
+FailureOr<std::map<int64_t, std::string>>
+describeOpenCLUserDispatches(ModuleOp host, llvm::StringRef hostLLVMPath,
+                             llvm::raw_ostream &diagnostics) {
   std::map<int64_t, std::string> names;
   SmallVector<std::pair<func::FuncOp, ParsedDispatch>> declarations;
   for (func::FuncOp function : host.getOps<func::FuncOp>())
@@ -800,22 +799,7 @@ FailureOr<std::map<int64_t, std::string>> describeOpenCLUserDispatches(
   for (auto &[function, parsed] : declarations) {
     names[parsed.id] = parsed.kernel;
     std::optional<std::vector<int64_t>> global;
-    for (const llvm::json::Object *config : explicitKernels) {
-      if (config->getString("kernel") != parsed.kernel)
-        continue;
-      if (config->getInteger("kernel_id") != parsed.id) {
-        diagnostics << "the device_kernels entry of OpenCL kernel "
-                    << parsed.kernel << " must declare kernel_id " << parsed.id
-                    << ", the id its Host dispatches it with\n";
-        return failure();
-      }
-      const llvm::json::Array *sizes = config->getArray("global_size");
-      global.emplace();
-      for (const llvm::json::Value &value :
-           sizes ? *sizes : llvm::json::Array())
-        global->push_back(value.getAsInteger().value_or(0));
-    }
-    if (!global) {
+    {
       auto reason = unresolved.find(parsed.kernel);
       auto found = globalSizes.find(parsed.kernel);
       if (reason != unresolved.end() || found == globalSizes.end()) {

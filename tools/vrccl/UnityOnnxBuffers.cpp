@@ -2,7 +2,6 @@
 
 #include "mlir/IR/BuiltinAttributes.h"
 #include "llvm/ADT/StringExtras.h"
-#include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <map>
@@ -127,82 +126,6 @@ derivePlanBuffers(ModuleOp module, DictionaryAttr binding,
   return derived;
 }
 
-/// Checks the `buffers` entries of `config` against the derived buffers.
-LogicalResult
-checkConfiguredBuffers(const json::Object &config,
-                       const std::map<int64_t, json::Object> &derived,
-                       bool exposePublicIo, llvm::raw_ostream &diagnostics) {
-  const json::Array *configured = config.getArray("buffers");
-  if (!configured)
-    return success();
-  std::set<int64_t> seen;
-  for (const json::Value &value : *configured) {
-    const json::Object *entry = value.getAsObject();
-    std::optional<int64_t> id = entry ? entry->getInteger("id") : std::nullopt;
-    if (!id) {
-      diagnostics << "Unity library buffers entries must be objects with an "
-                     "integer id\n";
-      return failure();
-    }
-    std::string label = "Unity library buffer " + std::to_string(*id);
-    if (auto name = entry->getString("name"))
-      label += " (" + name->str() + ")";
-    if (!seen.insert(*id).second) {
-      diagnostics << label << " is listed twice\n";
-      return failure();
-    }
-    auto found = derived.find(*id);
-    if (found == derived.end()) {
-      diagnostics << label
-                  << " is not a Device buffer of the ONNX Host, whose "
-                     "execution plan has buffers 1 to "
-                  << derived.size()
-                  << "; udonclc derives the ONNX Host buffers, so delete the "
-                     "entry\n";
-      return failure();
-    }
-    const json::Object &buffer = found->second;
-    bool isPublic = buffer.get("public_access") != nullptr;
-    if (entry->get("width") || entry->get("height")) {
-      diagnostics << label
-                  << " sets a texture shape (width, height), but udonclc "
-                     "derives the texture shape of an ONNX Host buffer; "
-                     "delete them\n";
-      return failure();
-    }
-    for (llvm::StringRef field :
-         {"byte_size", "name", "element_type", "public_access", "public_index",
-          "logical_byte_size"}) {
-      const json::Value *declared = entry->get(field);
-      if (!declared)
-        continue;
-      // A private buffer is named private_<id> in the artifact, whatever the
-      // config calls it.
-      if (field == "name" && !isPublic)
-        continue;
-      const json::Value *expected = buffer.get(field);
-      if (!expected) {
-        diagnostics << label << " declares " << field << " "
-                    << llvm::formatv("{0}", *declared)
-                    << ", but the ONNX Host keeps buffer " << *id << " private";
-        if (!exposePublicIo)
-          diagnostics << " (ONNX_PUBLIC_TENSOR_BUFFERS is not set)";
-        diagnostics << "; delete the entry\n";
-        return failure();
-      }
-      if (*declared != *expected) {
-        diagnostics << label << " declares " << field << " "
-                    << llvm::formatv("{0}", *declared)
-                    << ", but the ONNX execution plan derives "
-                    << llvm::formatv("{0}", *expected)
-                    << " for it; correct or delete the entry\n";
-        return failure();
-      }
-    }
-  }
-  return success();
-}
-
 } // namespace
 
 LogicalResult deriveOnnxUnityBuffers(ModuleOp host, json::Object &config,
@@ -217,8 +140,7 @@ LogicalResult deriveOnnxUnityBuffers(ModuleOp host, json::Object &config,
     return exposePublicIo ? failure() : success();
   }
   auto derived = derivePlanBuffers(host, binding, exposePublicIo);
-  if (failed(derived) || failed(checkConfiguredBuffers(
-                             config, *derived, exposePublicIo, diagnostics)))
+  if (failed(derived))
     return failure();
   json::Array buffers;
   for (auto &[id, buffer] : *derived)

@@ -1787,46 +1787,6 @@ def main():
         'or global work size that is not a compile-time constant; launch it '
         'with a constant work dimension and global work size'
     ) in dynamic_diagnostic, dynamic_diagnostic
-    # Until the Unity library config is removed, a hand-written
-    # device_kernels entry still builds the same Host.
-    dynamic_root = user_kernel_consumer / 'udoncl/opencl-user-kernel-dynamic'
-    dynamic_config = {'schema_version': 2}
-    dynamic_entry = {
-        'schema_version': 1, 'profile': 'gather-f32', 'words': 32,
-        'kernel': 'user_scale', 'kernel_id': 1024,
-        'argument_kinds': ['buffer', 'buffer', 'f32'],
-        'global_size': [32, 1, 1], 'local_size': [1, 1, 1],
-        'global_offset': [0, 0, 0],
-    }
-
-    def dynamic_command(name, entry):
-        config = output / f'opencl-user-kernel-{name}.json'
-        config.write_text(
-            json.dumps({**dynamic_config, 'device_kernels': [entry]}),
-            encoding='utf-8')
-        return [
-            installed_compiler, '--emit-unity-library-bundle', config,
-            '--host-llvm', dynamic_root / 'host.bc',
-            '--host-library-llvm',
-            dynamic_root / 'modules/host/capacity_runtime.bc',
-            '--device-llvm', dynamic_root / 'device.bc',
-            '-o', output / f'opencl-user-kernel-{name}-artifact',
-        ]
-
-    run(dynamic_command('explicit', dynamic_entry))
-    explicit_kernels = json.loads(
-        (output / 'opencl-user-kernel-explicit-artifact/manifest.json')
-        .read_text(encoding='utf-8')
-    )['device']['kernels']
-    assert [(kernel['id'], kernel['global_size']) for kernel in explicit_kernels] == [
-        (1024, [32, 1, 1])
-    ], explicit_kernels
-    run_failure(
-        dynamic_command('wrong-id', {**dynamic_entry, 'kernel_id': 7}),
-        'the device_kernels entry of OpenCL kernel user_scale must declare '
-        'kernel_id 1024, the id its Host dispatches it with',
-    )
-
     udonblas_source = args.source.resolve().parents[1] / 'examples/udonblas-sgemm'
     run([
         args.cmake,
@@ -2161,21 +2121,6 @@ def main():
     assert 'public const int AsyncFrameContinuationLimit = 3;' in (
         custom_budget_binding
     )
-    # The device_work_budget config key sets the same budgets as
-    # --device-work-budget until the config is removed.
-    budget_config = output / 'udonblas-frame-budget-config.json'
-    budget_config.write_text(json.dumps({
-        'schema_version': 2,
-        'device_work_budget': {
-            'frame_microseconds': 2500, 'frame_continuations': 3,
-        },
-    }), encoding='utf-8')
-    config_budget_command = udonblas_frame_budget_command('option', None)
-    config_budget_command.insert(2, budget_config)
-    run(config_budget_command)
-    assert (
-        output / 'udonblas-frame-budget-option-artifact/binding.cs'
-    ).read_text(encoding='utf-8') == custom_budget_binding
     assert (
         'private int asyncFrameBudgetMicroseconds = '
         'AsyncFrameBudgetMicroseconds;' in custom_budget_binding
@@ -2424,23 +2369,16 @@ def main():
     )
     assert (unity_artifact / 'display.shader').is_file()
     assert not (unity_artifact / 'kernels').exists()
-    # The legacy device_kernel config key, until the config is removed,
-    # still needs the Device module it names a kernel of.
-    legacy_device_kernel = output / 'legacy-device-kernel.json'
-    legacy_device_kernel.write_text(json.dumps({
-        'schema_version': 2,
-        'device_kernel': {
-            'schema_version': 1, 'kernel': 'square_plus_one', 'kernel_id': 1,
-            'global_size': [1, 1, 1], 'local_size': [1, 1, 1],
-            'global_offset': [0, 0, 0],
-        },
+    # The Unity library config file is removed: udonclc rejects one.
+    removed_config = output / 'unity-library.json'
+    removed_config.write_text(json.dumps({
+        'schema_version': 2, 'program': 'hello_kernel',
     }), encoding='utf-8')
     run_failure([
-        installed_compiler, '--emit-unity-library-bundle',
-        legacy_device_kernel,
+        installed_compiler, '--emit-unity-library-bundle', removed_config,
         '--host-llvm', consumer / 'udoncl/hello-unity-library/host.bc',
-        '-o', output / 'missing-device-artifact',
-    ], 'Device kernel config and --device-llvm must be provided together')
+        '-o', output / 'removed-config-artifact',
+    ], 'a Unity library takes no config file')
     saxpy_source = args.source.resolve().parent / 'saxpy'
     run([
         args.cmake,

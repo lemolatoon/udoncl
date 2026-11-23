@@ -931,20 +931,6 @@ add_test(NAME onnx-rms-assigned-buffer-component
     --onnx-frontend $<TARGET_FILE:udoncl-onnx-frontend>
 )
 set_tests_properties(onnx-rms-assigned-buffer-component PROPERTIES TIMEOUT 120)
-add_test(NAME onnx-unity-buffer-derivation
-  COMMAND Python3::Interpreter
-    "${CMAKE_CURRENT_SOURCE_DIR}/build/onnx_unity_buffers.py"
-    --root "${PROJECT_SOURCE_DIR}"
-    --project-build "${PROJECT_BINARY_DIR}"
-    --output "${PROJECT_BINARY_DIR}/tests/onnx-unity-buffers"
-    --cmake "${CMAKE_COMMAND}"
-    --generator "${CMAKE_GENERATOR}"
-    --make-program "${CMAKE_MAKE_PROGRAM}"
-    --clang "${VRC_TEST_CLANG}"
-    --llvm-link "${VRC_TEST_LLVM_LINK}"
-    --onnx-frontend $<TARGET_FILE:udoncl-onnx-frontend>
-)
-set_tests_properties(onnx-unity-buffer-derivation PROPERTIES TIMEOUT 300)
 add_test(NAME onnx-transpose-assigned-buffer-component
   COMMAND Python3::Interpreter
     "${CMAKE_CURRENT_SOURCE_DIR}/build/onnx_transpose_component.py"

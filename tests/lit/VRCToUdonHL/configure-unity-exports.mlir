@@ -1,13 +1,12 @@
 // RUN: %vrc-opt --split-input-file --vrc-configure-unity-exports %s | %FileCheck %s
 // RUN: %vrc-opt --split-input-file --vrc-configure-unity-exports="finalize-reachability=false" %s | %FileCheck %s --check-prefix=PRELIMINARY
 
-// Schema 2 publishes every UDONCL_EXPORT under the PascalCase of its symbol
-// with its C parameter names; an override wins. Helpers become private and
+// Every UDONCL_EXPORT is a U# export named after the PascalCase of its
+// symbol, with its C parameter names. Helpers become private and
 // unreachable functions are erased.
-module attributes {udoncl.unity_library_config = {
-    schema_version = 2 : i64, program = "probe",
-    binding = {namespace = "Lemolatoon.Udoncl.Generated", class_name = "ProbeBinding"},
-    export_overrides = [{symbol = "run_probe", public_name = "Run", parameters = ["count"]}]}} {
+module attributes {udoncl.program = "probe",
+    udoncl.unity_library_config = {
+      binding = {namespace = "Lemolatoon.Udoncl.Generated", class_name = "ProbeBinding"}}} {
   func.func @read_streamed_text(%a: i32, %b: i32) -> i32 attributes {
       udoncl.export, udoncl.export_while_busy,
       udoncl.parameter_names = ["offset", "length"]} {
@@ -32,6 +31,7 @@ module attributes {udoncl.unity_library_config = {
 // CHECK-LABEL: module attributes
 // CHECK-SAME: vrc.binding_class = "ProbeBinding"
 // CHECK-SAME: vrc.binding_namespace = "Lemolatoon.Udoncl.Generated"
+// CHECK-SAME: vrc.program = "probe"
 // CHECK-SAME: vrc.target = "vrc-pc"
 // CHECK-NOT: udoncl.unity_library_config
 // CHECK: func.func @read_streamed_text
@@ -40,8 +40,9 @@ module attributes {udoncl.unity_library_config = {
 // CHECK-SAME: vrc.parameter_names = ["offset", "length"]
 // CHECK-SAME: vrc.public_name = "ReadStreamedText"
 // CHECK: func.func @run_probe
-// CHECK-SAME: vrc.parameter_names = ["count"]
-// CHECK-SAME: vrc.public_name = "Run"
+// CHECK-NOT: vrc.allowed_while_busy
+// CHECK-SAME: vrc.parameter_names = ["n"]
+// CHECK-SAME: vrc.public_name = "RunProbe"
 // CHECK: func.func @no_names
 // CHECK-SAME: vrc.parameter_names = ["arg0"]
 // CHECK-SAME: vrc.public_name = "NoNames"
@@ -57,9 +58,8 @@ module attributes {udoncl.unity_library_config = {
 // -----
 
 // A generated binding function is reachable from an export but never one.
-module attributes {udoncl.unity_library_config = {
-    schema_version = 2 : i64, program = "onnx_probe",
-    internal_exports = ["ignored"]}} {
+module attributes {udoncl.program = "onnx_probe",
+    udoncl.unity_library_config = {}} {
   func.func @component_run() -> i32 attributes {udoncl.export} {
     %status = func.call @udon_onnx_binding_enqueue_run() : () -> i32
     return %status : i32
@@ -85,50 +85,10 @@ module attributes {udoncl.unity_library_config = {
 
 // -----
 
-// Schema 1 lists every export with its id.
-module attributes {udoncl.unity_library_config = {
-    schema_version = 1 : i64, program = "listed",
-    exports = [{symbol = "listed_run", public_name = "Run", id = 7 : i64, parameters = ["value"], allowed_while_busy = true}]}} {
-  func.func @listed_run(%a: f32) {
-    return
-  }
-}
-
-// CHECK-LABEL: module attributes
-// CHECK: func.func @listed_run
-// CHECK-SAME: vrc.allowed_while_busy
-// CHECK-SAME: vrc.export_id = 7 : i32
-// CHECK-SAME: vrc.parameter_names = ["value"]
-// CHECK-SAME: vrc.public_name = "Run"
-
-// -----
-
-// Static initialization records the constructor and the omitted exports.
-module attributes {udoncl.unity_library_config = {
-    schema_version = 2 : i64, program = "static_probe",
-    static_initialization = {constructor = "probe_initialize", omit_exports = ["probe_dispose"]}}} {
-  func.func @probe_initialize() -> i32 attributes {udoncl.export} {
-    %zero = arith.constant 0 : i32
-    return %zero : i32
-  }
-  func.func @probe_dispose() attributes {udoncl.export} {
-    return
-  }
-}
-
-// CHECK-LABEL: module attributes
-// CHECK-SAME: vrc.static_initialization = {constructor = "probe_initialize", omitted_exports = ["probe_dispose"]}
-// CHECK: func.func @probe_initialize
-// CHECK-SAME: vrc.public_name = "ProbeInitialize"
-// CHECK-SAME: vrc.static_constructor
-// CHECK-NOT: @probe_dispose
-
-// -----
-
 // A C constructor that is not an export is configured as one, so that the
 // Host analyses see it as a root, and marked internal.
-module attributes {udoncl.unity_library_config = {
-    schema_version = 2 : i64, program = "constructor_probe"}} {
+module attributes {udoncl.program = "constructor_probe",
+    udoncl.unity_library_config = {}} {
   func.func private @initialize() -> i32 attributes {udoncl.static_constructor} {
     %zero = arith.constant 0 : i32
     return %zero : i32
@@ -150,8 +110,8 @@ module attributes {udoncl.unity_library_config = {
 
 // An export that is a C destructor is omitted: the artifact is never
 // unloaded.
-module attributes {udoncl.unity_library_config = {
-    schema_version = 2 : i64, program = "destructor_probe"}} {
+module attributes {udoncl.program = "destructor_probe",
+    udoncl.unity_library_config = {}} {
   func.func @initialize() attributes {udoncl.export, udoncl.static_constructor} {
     return
   }
@@ -167,10 +127,9 @@ module attributes {udoncl.unity_library_config = {
 
 // -----
 
-// UDONCL_PROGRAM names the program when the configuration does not, and
-// the binding has the default names.
+// Without binding names the binding has the default names.
 module attributes {udoncl.program = "declared_probe",
-    udoncl.unity_library_config = {schema_version = 2 : i64}} {
+    udoncl.unity_library_config = {}} {
   func.func @run() attributes {udoncl.export} {
     return
   }
@@ -184,10 +143,9 @@ module attributes {udoncl.program = "declared_probe",
 
 // -----
 
-// A configured binding class keeps the default namespace.
+// A binding class (--binding-class) keeps the default namespace.
 module attributes {udoncl.program = "class_only",
-    udoncl.unity_library_config = {schema_version = 2 : i64,
-                                   binding = {class_name = "CustomBinding"}}} {
+    udoncl.unity_library_config = {binding = {class_name = "CustomBinding"}}} {
   func.func @run() attributes {udoncl.export} {
     return
   }

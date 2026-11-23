@@ -2,6 +2,8 @@
 #include <CL/cl.h>
 #include <udoncl/export.h>
 
+UDONCL_PROGRAM("public_buffers");
+
 #define SAXPY_WORDS 32
 
 /* The kernel is compiled ahead of time from saxpy.cl. */

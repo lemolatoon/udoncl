@@ -377,12 +377,12 @@ cl::opt<std::string>
 cl::opt<std::string>
     inputFilename(cl::Positional,
                   cl::desc("<boundary MLIR, config.json or manifest.json>; "
-                           "optional for a Unity library"));
+                           "none for a Unity library"));
 cl::opt<std::string> outputDirectory("o",
                                      cl::desc("New output bundle directory"));
 
-// Unity library settings. Each replaces the configuration key of the same
-// meaning; a library that sets both is rejected.
+// Unity library settings. The Host source names the program, exports and
+// public buffers; these options set the rest.
 cl::opt<std::string> bindingNamespace(
     "binding-namespace",
     cl::desc("Namespace of the generated U# binding of a Unity library "
@@ -406,19 +406,10 @@ cl::opt<bool> onnxPublicTensorBuffers(
     cl::desc("Transitional: expose the ONNX graph inputs and outputs of an "
              "ONNX Host as public Device buffers"));
 
-/// Folds the Unity library command-line settings into `config` under the
-/// configuration keys they replace. Setting one both ways is an error.
+/// Folds the Unity library command-line settings into `config`, the
+/// internal record of the library settings the compiler passes on.
 LogicalResult applyUnityLibraryOptions(json::Object &config) {
-  auto conflict = [](StringRef option, StringRef key) {
-    errs() << "--" << option << " cannot be combined with the Unity library "
-           << "config key " << key << "\n";
-    return failure();
-  };
   if (!bindingNamespace.empty() || !bindingClass.empty()) {
-    if (config.get("binding"))
-      return conflict(bindingNamespace.empty() ? "binding-class"
-                                               : "binding-namespace",
-                      "binding");
     json::Object binding;
     if (!bindingNamespace.empty())
       binding["namespace"] = bindingNamespace;
@@ -426,14 +417,9 @@ LogicalResult applyUnityLibraryOptions(json::Object &config) {
       binding["class_name"] = bindingClass;
     config["binding"] = std::move(binding);
   }
-  if (!deviceTexelFormat.empty()) {
-    if (config.get("device_texel_format"))
-      return conflict("device-texel-format", "device_texel_format");
+  if (!deviceTexelFormat.empty())
     config["device_texel_format"] = deviceTexelFormat;
-  }
   if (!deviceWorkBudget.empty()) {
-    if (config.get("device_work_budget"))
-      return conflict("device-work-budget", "device_work_budget");
     json::Object budget;
     SmallVector<StringRef> entries;
     StringRef(deviceWorkBudget).split(entries, ',', -1, false);
@@ -453,12 +439,8 @@ LogicalResult applyUnityLibraryOptions(json::Object &config) {
     }
     config["device_work_budget"] = std::move(budget);
   }
-  if (onnxPublicTensorBuffers) {
-    if (config.get("generate_onnx_public_buffers"))
-      return conflict("onnx-public-tensor-buffers",
-                      "generate_onnx_public_buffers");
+  if (onnxPublicTensorBuffers)
     config["generate_onnx_public_buffers"] = true;
-  }
   return success();
 }
 
@@ -631,11 +613,10 @@ parseUnityBuffers(const json::Object &config) {
   if (!buffers)
     return result;
   std::optional<std::pair<int64_t, int64_t>> dispatchShape;
-  const json::Object *shapeKernel = config.getObject("device_kernel");
-  if (!shapeKernel)
-    if (auto *kernels = config.getArray("device_kernels");
-        kernels && !kernels->empty())
-      shapeKernel = (*kernels)[0].getAsObject();
+  const json::Object *shapeKernel = nullptr;
+  if (auto *kernels = config.getArray("device_kernels");
+      kernels && !kernels->empty())
+    shapeKernel = (*kernels)[0].getAsObject();
   if (auto *kernel = shapeKernel)
     if (auto *global = kernel->getArray("global_size");
         global && global->size() == 3) {
@@ -655,8 +636,6 @@ parseUnityBuffers(const json::Object &config) {
     auto bytes = entry ? entry->getInteger("byte_size") : std::nullopt;
     auto logicalBytes =
         entry ? entry->getInteger("logical_byte_size") : std::nullopt;
-    auto explicitWidth = entry ? entry->getInteger("width") : std::nullopt;
-    auto explicitHeight = entry ? entry->getInteger("height") : std::nullopt;
     auto elementType = entry ? entry->getString("element_type") : std::nullopt;
     auto publicAccess =
         entry ? entry->getString("public_access") : std::nullopt;
@@ -670,7 +649,6 @@ parseUnityBuffers(const json::Object &config) {
     if (!id || *id <= 0 || *id > INT32_MAX || !name || !identifier(*name) ||
         !bytes || *bytes <= 0 || *bytes > maximumBytes ||
         (logicalBytes && (*logicalBytes < 0 || *logicalBytes > *bytes)) ||
-        (explicitWidth.has_value() != explicitHeight.has_value()) ||
         !ids.insert(*id).second || !names.insert(name->str()).second ||
         ((elementType || publicAccess || publicIndex) && !semanticBinding) ||
         (publicIndex && *publicIndex < 0)) {
@@ -678,24 +656,16 @@ parseUnityBuffers(const json::Object &config) {
       return failure();
     }
     int64_t pixels = (*bytes + 3) / 4;
-    if (explicitWidth &&
-        (*explicitWidth <= 0 || *explicitWidth > 8192 || *explicitHeight <= 0 ||
-         *explicitHeight > 8192 || *explicitWidth * *explicitHeight < pixels)) {
-      errs() << "invalid Unity Device buffer texture dimensions\n";
-      return failure();
-    }
     bool shapeFits =
         dispatchShape && dispatchShape->first * dispatchShape->second >= pixels;
-    int64_t width = explicitWidth ? *explicitWidth
-                    : shapeFits   ? dispatchShape->first
-                                  : std::min<int64_t>(pixels, 8192);
-    int64_t height = explicitHeight ? *explicitHeight
-                     : shapeFits    ? dispatchShape->second
-                                    : (pixels + width - 1) / width;
+    int64_t width =
+        shapeFits ? dispatchShape->first : std::min<int64_t>(pixels, 8192);
+    int64_t height =
+        shapeFits ? dispatchShape->second : (pixels + width - 1) / width;
     // Word texels: a one-row buffer is padded to whole texels, as its
     // kernels' one-row targets are.
     if (auto format = config.getString("device_texel_format");
-        format && height == 1 && !explicitWidth)
+        format && height == 1)
       if (unsigned texelWords = ::vrc::vrcgpu::gatherTexelWords(*format))
         width = llvm::alignTo(width, texelWords);
     result.push_back({*id, *bytes, logicalBytes.value_or(*bytes), width, height,
@@ -911,21 +881,8 @@ LogicalResult materializeCanonicalUnityBufferConfig(ModuleOp module,
 FailureOr<SmallVector<const json::Object *>>
 parseUnityDeviceKernels(const json::Object &config) {
   SmallVector<const json::Object *> result;
-  auto *single = config.getObject("device_kernel");
-  auto *multiple = config.getArray("device_kernels");
-  if (single && multiple) {
-    errs() << "Unity library config cannot contain both device_kernel and "
-              "device_kernels\n";
-    return failure();
-  }
-  if (single)
-    result.push_back(single);
-  if (multiple) {
-    if (multiple->empty()) {
-      errs() << "Unity library device_kernels must not be empty\n";
-      return failure();
-    }
-    for (const json::Value &value : *multiple) {
+  if (auto *kernels = config.getArray("device_kernels"))
+    for (const json::Value &value : *kernels) {
       auto *kernel = value.getAsObject();
       if (!kernel) {
         errs() << "Unity library device_kernels entries must be objects\n";
@@ -933,7 +890,6 @@ parseUnityDeviceKernels(const json::Object &config) {
       }
       result.push_back(kernel);
     }
-  }
   std::set<int64_t> ids;
   std::set<std::string> names;
   for (const json::Object *kernel : result) {
@@ -2728,46 +2684,28 @@ int main(int argc, char **argv) {
                 "linked OpenCL AOT runtime\n";
       return 1;
     }
-    // The JSON config is optional: without one, the Host source and the
-    // command-line settings describe the library.
-    unityConfig = json::Object{{"schema_version", 2}};
+    // The Host source and the command-line settings describe the library;
+    // the Unity library config file is removed.
     if (!inputFilename.empty()) {
-      auto input = MemoryBuffer::getFile(inputFilename);
-      if (!input) {
-        errs() << "cannot read Unity library config " << inputFilename << "\n";
-        return 1;
-      }
-      auto parsed = json::parse((*input)->getBuffer());
-      if (!parsed) {
-        errs() << toString(parsed.takeError()) << "\n";
-        return 1;
-      }
-      auto *object = parsed->getAsObject();
-      if (!object) {
-        errs() << "config must be a JSON object\n";
-        return 1;
-      }
-      unityConfig = *object;
+      errs()
+          << "a Unity library takes no config file (" << inputFilename
+          << "): name the program with UDONCL_PROGRAM(\"name\"), the "
+             "exports with UDONCL_EXPORT and the public buffers with "
+             "UDONCL_PUBLIC in the Host source, and pass the binding, "
+             "texel format and Device work budget as udoncl_add_unity_library "
+             "arguments (--binding-namespace, --binding-class, "
+             "--device-texel-format, --device-work-budget)\n";
+      return 1;
     }
+    unityConfig = json::Object{};
     if (failed(applyUnityLibraryOptions(*unityConfig)))
       return 1;
-    if (unityConfig->getBoolean("omit_intermediate_ir").value_or(false))
-      omitIntermediateIR = true;
     auto texelFormat = configTexelFormat(*unityConfig, "device_texel_format");
     if (failed(texelFormat))
       return 1;
     unityTexelFormat = *texelFormat;
-    auto parsedDeviceConfigs = parseUnityDeviceKernels(*unityConfig);
-    if (failed(parsedDeviceConfigs))
-      return 1;
-    unityDeviceConfigs = std::move(*parsedDeviceConfigs);
-    // Without hand-written entries, the kernels are derived from the Host's
-    // dispatches once it is recovered.
-    if (!unityDeviceConfigs.empty() && deviceLLVM.empty()) {
-      errs() << "Unity library Device kernel config and --device-llvm must be "
-                "provided together\n";
-      return 1;
-    }
+    // The Device kernels are derived from the Host's dispatches once it is
+    // recovered.
     // The Host MLIR may carry synthesized Device kernels; they leave it here
     // and join the configured library kernels.
     if (!hostMLIR.empty()) {
@@ -2783,25 +2721,6 @@ int main(int argc, char **argv) {
         return 1;
     }
     if (!hostMLIR.empty()) {
-      if (unityConfig->getBoolean("require_device_graph").value_or(false)) {
-        auto deviceGraph =
-            (*module)->getAttrOfType<BoolAttr>("udoncl.onnx_device_graph");
-        if (!deviceGraph || !deviceGraph.getValue()) {
-          errs() << "Unity library config requires a fully device-resident "
-                    "ONNX graph";
-          if (auto unsupported = (*module)->getAttrOfType<ArrayAttr>(
-                  "udoncl.onnx_device_unsupported"))
-            for (mlir::Attribute attribute : unsupported) {
-              auto entry = cast<DictionaryAttr>(attribute);
-              errs() << "\n  "
-                     << entry.getAs<StringAttr>("operation").getValue() << "@"
-                     << entry.getAs<StringAttr>("provider").getValue() << ": "
-                     << entry.getAs<IntegerAttr>("count").getInt();
-            }
-          errs() << "\n";
-          return 1;
-        }
-      }
       if (!hostLLVM.empty()) {
         auto program = recoverRuntimeFreeUnityHost(hostLLVM, context);
         if (failed(program) || failed(linkUnityHostLibrary(*module, **program)))
@@ -2824,8 +2743,8 @@ int main(int argc, char **argv) {
           return 1;
       }
       {
-        auto described = udoncl::describeOpenCLUserDispatches(
-            *module, hostLLVM, unityDeviceConfigs, errs());
+        auto described =
+            udoncl::describeOpenCLUserDispatches(*module, hostLLVM, errs());
         if (failed(described))
           return 1;
         unityUserKernels = std::move(*described);
@@ -2853,8 +2772,8 @@ int main(int argc, char **argv) {
       if (failed(library) || failed(linkUnityHostLibrary(*module, **library)))
         return 1;
       {
-        auto described = udoncl::describeOpenCLUserDispatches(
-            *module, hostLLVM, unityDeviceConfigs, errs());
+        auto described =
+            udoncl::describeOpenCLUserDispatches(*module, hostLLVM, errs());
         if (failed(described))
           return 1;
         unityUserKernels = std::move(*described);
@@ -2932,14 +2851,11 @@ int main(int argc, char **argv) {
     // from their dispatch sites (UnityDeviceKernels.h).
     phase("unity-device-kernels");
     {
-      SmallVector<int64_t> explicitKernelIds, synthesizedKernelIds;
-      for (const json::Object *config : unityDeviceConfigs)
-        explicitKernelIds.push_back(*config->getInteger("kernel_id"));
+      SmallVector<int64_t> synthesizedKernelIds;
       for (const SynthesizedUnityKernel &kernel : unitySynthesizedKernels)
         synthesizedKernelIds.push_back(kernel.id);
       auto derived = udoncl::deriveUnityDeviceKernels(
-          *module, explicitKernelIds, synthesizedKernelIds, unityUserKernels,
-          errs());
+          *module, synthesizedKernelIds, unityUserKernels, errs());
       if (failed(derived))
         return 1;
       if (!derived->empty() && deviceLLVM.empty()) {
@@ -2952,11 +2868,8 @@ int main(int argc, char **argv) {
       }
       if (!derived->empty()) {
         json::Array kernels;
-        for (const json::Object *config : unityDeviceConfigs)
-          kernels.push_back(json::Object(*config));
         for (json::Value &kernel : *derived)
           kernels.push_back(std::move(kernel));
-        unityConfig->erase("device_kernel");
         (*unityConfig)["device_kernels"] = std::move(kernels);
         auto merged = parseUnityDeviceKernels(*unityConfig);
         if (failed(merged))
@@ -2964,16 +2877,14 @@ int main(int argc, char **argv) {
         unityDeviceConfigs = std::move(*merged);
       }
       if (!deviceLLVM.empty() && unityDeviceConfigs.empty()) {
-        errs() << "Unity library Device kernel config and --device-llvm must "
-                  "be provided together: the Host dispatches no Device "
-                  "library kernel and the config declares none\n";
+        errs() << "--device-llvm is given but the Unity Host dispatches no "
+                  "Device kernel\n";
         return 1;
       }
     }
     // The Device buffers of an ONNX Host come from its execution plan and
-    // binding (UnityOnnxBuffers.h); the config's own entries are only checked
-    // against them. The Device import below takes its texture shape and row
-    // pitch decisions from these buffers.
+    // binding (UnityOnnxBuffers.h). The Device import below takes its texture
+    // shape and row pitch decisions from these buffers.
     phase("unity-buffers");
     if (!hostBufferPlan.empty() &&
         failed(udoncl::applyHostBufferPlan(*module, hostBufferPlan)))

@@ -9,6 +9,8 @@
 #include <udoncl/export.h>
 #include <udoncl/onnx_generated_binding.h>
 
+UDONCL_PROGRAM("static_initialization");
+
 #if defined(UDONCL_TEST_HIDDEN_CONSTRUCTOR)
 #define TEST_INITIALIZE static __attribute__((constructor))
 #define TEST_SHUTDOWN UDONCL_EXPORT __attribute__((destructor))

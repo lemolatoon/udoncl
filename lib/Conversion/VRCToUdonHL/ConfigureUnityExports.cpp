@@ -1,14 +1,13 @@
 // Configure the U# exports of a Unity library Host.
 //
-// The recovered Host marks its UDONCL_EXPORT definitions `udoncl.export`.
-// The Unity library configuration, attached by udonclc as the
-// `udoncl.unity_library_config` dictionary, decides which of them are U#
-// exports and under which names: schema 1 lists every export, schema 2
-// publishes every annotated definition with optional overrides. Each U#
-// export receives its `vrc.export_id`, `vrc.public_name` and
-// `vrc.parameter_names`; the module receives the binding names and the
-// static initialization record. With `finalize-reachability`, every function
-// no export reaches is erased and every reached helper becomes private.
+// The recovered Host marks its UDONCL_EXPORT definitions `udoncl.export`,
+// and every one of them is a U# export named after the PascalCase of its
+// symbol. Each U# export receives its `vrc.export_id`, `vrc.public_name` and
+// `vrc.parameter_names`; the module receives the program, the binding names
+// (from the `binding` entry of the `udoncl.unity_library_config` settings
+// udonclc attaches) and the static initialization record. With
+// `finalize-reachability`, every function no export reaches is erased and every
+// reached helper becomes private.
 #include "VRC/ABI/Manifest/UdonSharpABI.h"
 #include "VRC/Conversion/Passes.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -35,17 +34,6 @@ std::optional<StringRef> getString(DictionaryAttr object, StringRef key) {
   if (auto value = object ? object.getAs<StringAttr>(key) : StringAttr())
     return value.getValue();
   return std::nullopt;
-}
-
-std::optional<int64_t> getInteger(DictionaryAttr object, StringRef key) {
-  if (auto value = object ? object.getAs<IntegerAttr>(key) : IntegerAttr())
-    return value.getInt();
-  return std::nullopt;
-}
-
-bool getFlag(DictionaryAttr object, StringRef key) {
-  auto value = object ? object.getAs<BoolAttr>(key) : BoolAttr();
-  return value && value.getValue();
 }
 
 bool dottedIdentifier(StringRef value) {
@@ -136,9 +124,8 @@ private:
   FailureOr<SmallVector<std::string>>
   defaultParameterNames(func::FuncOp function);
   LogicalResult configureExport(StringRef symbol, StringRef publicName,
-                                int64_t id, ArrayAttr parameters,
-                                bool allowedWhileBusy);
-  LogicalResult configureSchema2(ArrayAttr overridesConfig);
+                                int64_t id);
+  LogicalResult configureExports();
   LogicalResult finalize();
 
   ModuleOp module;
@@ -177,100 +164,40 @@ ExportConfiguration::defaultParameterNames(func::FuncOp function) {
 
 LogicalResult ExportConfiguration::configureExport(StringRef symbol,
                                                    StringRef publicName,
-                                                   int64_t id,
-                                                   ArrayAttr parameters,
-                                                   bool allowedWhileBusy) {
+                                                   int64_t id) {
   if (!isUdonSharpIdentifier(symbol) || !isUdonSharpIdentifier(publicName) ||
       id <= 0 || id > INT32_MAX || !selected.insert(symbol.str()).second ||
       !publicNames.insert(publicName.str()).second || !ids.insert(id).second)
     return error() << "invalid or duplicate Unity library export";
   auto function = module.lookupSymbol<func::FuncOp>(symbol);
-  if (!function || function.isExternal() || function.isPrivate() ||
-      (parameters && parameters.size() != function.getNumArguments()))
+  if (!function || function.isExternal() || function.isPrivate())
     return error()
            << "Unity library export does not resolve to a public definition: "
            << symbol;
   SmallVector<Attribute> names;
-  if (parameters) {
-    for (Attribute parameter : parameters) {
-      auto configured = dyn_cast<StringAttr>(parameter);
-      if (!configured || !isUdonSharpIdentifier(configured.getValue()))
-        return error() << "invalid Unity library parameter name";
-      names.push_back(configured);
-    }
-  } else {
-    auto recovered = defaultParameterNames(function);
-    if (failed(recovered))
-      return failure();
-    for (const std::string &name : *recovered)
-      names.push_back(builder.getStringAttr(name));
-  }
+  auto recovered = defaultParameterNames(function);
+  if (failed(recovered))
+    return failure();
+  for (const std::string &name : *recovered)
+    names.push_back(builder.getStringAttr(name));
   function->setAttr("vrc.export_id", builder.getI32IntegerAttr(id));
   function->setAttr("vrc.public_name", builder.getStringAttr(publicName));
   function->setAttr("vrc.parameter_names", builder.getArrayAttr(names));
-  // "allowed_while_busy" or UDONCL_EXPORT_WHILE_BUSY: the generated binding
-  // does not reject this synchronous export while an async export is
-  // suspended.
-  if (allowedWhileBusy || function->hasAttr("udoncl.export_while_busy"))
+  // UDONCL_EXPORT_WHILE_BUSY: the generated binding does not reject this
+  // synchronous export while an async export is suspended.
+  if (function->hasAttr("udoncl.export_while_busy"))
     function->setAttr("vrc.allowed_while_busy", builder.getUnitAttr());
   return success();
 }
 
-LogicalResult ExportConfiguration::configureSchema2(ArrayAttr overridesConfig) {
-  std::map<std::string, DictionaryAttr> overrides;
-  std::set<std::string> internalExports;
-  if (overridesConfig)
-    for (Attribute value : overridesConfig) {
-      auto entry = dyn_cast<DictionaryAttr>(value);
-      auto symbol = getString(entry, "symbol");
-      if (!symbol || !isUdonSharpIdentifier(*symbol) ||
-          !overrides.emplace(symbol->str(), entry).second ||
-          !annotatedExports.count(symbol->str()))
-        return error() << "schema 2 export override must name one annotated "
-                          "Host definition";
-    }
+LogicalResult ExportConfiguration::configureExports() {
   // The functions of a generated ONNX binding are roots of the Host, never
-  // U# exports (udoncl.internal_export). The internal_exports key that used
-  // to list them is accepted and ignored.
+  // U# exports (udoncl.internal_export).
+  std::set<std::string> internalExports;
   for (const std::string &symbol : annotatedExports) {
     auto function = module.lookupSymbol<func::FuncOp>(symbol);
-    if (!function || !function->hasAttr("udoncl.internal_export"))
-      continue;
-    if (overrides.count(symbol))
-      return error() << "schema 2 export override names the generated "
-                        "internal export "
-                     << symbol;
-    internalExports.insert(symbol);
-  }
-  // A static-initialization artifact is a closed world: the constructor has
-  // run before any other export, and an omitted export (a destructor) is
-  // not part of the artifact at all. Unlike an internal export, an omitted
-  // one may keep its override so one configuration serves both modes.
-  std::set<std::string> omittedExports;
-  std::string staticConstructor;
-  if (Attribute value = config.get("static_initialization")) {
-    auto initialization = dyn_cast<DictionaryAttr>(value);
-    auto constructor = getString(initialization, "constructor");
-    if (!constructor || !annotatedExports.count(constructor->str()) ||
-        internalExports.count(constructor->str()))
-      return error() << "static_initialization requires a constructor naming "
-                        "one exported annotated Host definition";
-    staticConstructor = constructor->str();
-    if (Attribute omitted = initialization.get("omit_exports")) {
-      auto symbols = dyn_cast<ArrayAttr>(omitted);
-      if (!symbols)
-        return error() << "static_initialization omit_exports must be an array";
-      for (Attribute entry : symbols) {
-        auto symbol = dyn_cast<StringAttr>(entry);
-        if (!symbol || !annotatedExports.count(symbol.str()) ||
-            internalExports.count(symbol.str()) ||
-            symbol.getValue() == staticConstructor ||
-            !omittedExports.insert(symbol.str()).second)
-          return error() << "static_initialization omit_exports must name "
-                            "distinct exported annotated Host definitions "
-                            "other than the constructor";
-      }
-    }
+    if (function && function->hasAttr("udoncl.internal_export"))
+      internalExports.insert(symbol);
   }
   // A C __attribute__((constructor)) function runs as static
   // initialization. One that is not also an export is configured like one,
@@ -283,17 +210,13 @@ LogicalResult ExportConfiguration::configureSchema2(ArrayAttr overridesConfig) {
       constructors.push_back(function);
   std::vector<std::string> published(annotatedExports.begin(),
                                      annotatedExports.end());
-  std::string internalConstructor;
+  std::string staticConstructor, internalConstructor;
   if (!constructors.empty()) {
     StringRef symbol = constructors.front().getSymName();
     if (constructors.size() > 1)
       return error() << "a Unity library Host defines at most one "
                         "__attribute__((constructor)) function: "
                      << symbol << ", " << constructors[1].getSymName();
-    if (config.get("static_initialization"))
-      return error() << "static_initialization cannot be combined with the "
-                        "__attribute__((constructor)) function "
-                     << symbol;
     if (internalExports.count(symbol.str()))
       return error() << "a generated internal export cannot be a constructor: "
                      << symbol;
@@ -304,9 +227,10 @@ LogicalResult ExportConfiguration::configureSchema2(ArrayAttr overridesConfig) {
       published.push_back(internalConstructor);
     }
   }
-  // A C __attribute__((destructor)) function is never a U# export: the
-  // artifact is never unloaded. Like an omitted export, it may keep its
-  // override.
+  // A static-initialization artifact is a closed world: the constructor has
+  // run before any other export. A C __attribute__((destructor)) function is
+  // never a U# export: the artifact is never unloaded.
+  std::set<std::string> omittedExports;
   for (func::FuncOp function : module.getOps<func::FuncOp>()) {
     std::string symbol = function.getSymName().str();
     if (!function->hasAttr("udoncl.static_destructor") ||
@@ -324,34 +248,28 @@ LogicalResult ExportConfiguration::configureSchema2(ArrayAttr overridesConfig) {
     if (!function || function.isExternal() || function.isPrivate())
       return error() << "UDONCL_EXPORT does not resolve after Host recovery: "
                      << symbol;
-    DictionaryAttr entry =
-        overrides.count(symbol) ? overrides.at(symbol) : DictionaryAttr();
-    auto publicName = getString(entry, "public_name");
-    std::string resolvedName =
-        publicName ? publicName->str() : pascalCaseExportName(symbol);
+    std::string resolvedName = pascalCaseExportName(symbol);
     if (!isUdonSharpIdentifier(resolvedName))
       return error() << "UDONCL_EXPORT " << symbol << " has no valid U# name";
     if (auto [named, inserted] = namedExports.emplace(resolvedName, symbol);
         !inserted)
       return error() << "UDONCL_EXPORT " << named->second << " and " << symbol
                      << " both name the U# export " << resolvedName;
-    auto parameters = entry ? entry.getAs<ArrayAttr>("parameters") : nullptr;
     if (failed(configureExport(
             symbol, resolvedName,
-            stableExportId(resolvedName, function.getFunctionType()),
-            parameters, getFlag(entry, "allowed_while_busy"))))
+            stableExportId(resolvedName, function.getFunctionType()))))
       return failure();
   }
   if (selected.empty())
-    return error() << "Unity library schema 2 cannot hide every UDONCL_EXPORT "
-                      "definition";
+    return error() << "a Unity library Host requires at least one "
+                      "UDONCL_EXPORT definition that is not a destructor";
   if (!staticConstructor.empty()) {
     auto constructor = module.lookupSymbol<func::FuncOp>(staticConstructor);
     if (constructor.getNumArguments() != 0 || constructor.getNumResults() > 1 ||
         (constructor.getNumResults() == 1 &&
          !constructor.getResultTypes().front().isInteger(32)))
-      return error() << "static_initialization constructor must take no "
-                        "parameters and return void or a 32-bit status: "
+      return error() << "the __attribute__((constructor)) function must take "
+                        "no parameters and return void or a 32-bit status: "
                      << staticConstructor;
     constructor->setAttr("vrc.static_constructor", builder.getUnitAttr());
     if (!internalConstructor.empty())
@@ -410,59 +328,26 @@ LogicalResult ExportConfiguration::configure(bool finalizeReachability) {
   for (func::FuncOp function : module.getOps<func::FuncOp>())
     if (function->hasAttr("udoncl.export"))
       annotatedExports.insert(function.getSymName().str());
-  // The program is named in the Host source (UDONCL_PROGRAM), or by the
-  // configuration until the configuration file is retired; never both.
-  auto program = getString(config, "program");
-  if (auto declared = module->getAttrOfType<StringAttr>("udoncl.program")) {
-    if (program)
-      return error() << "the Unity library config key program cannot be "
-                        "combined with UDONCL_PROGRAM(\""
-                     << declared.getValue() << "\")";
-    program = declared.getValue();
-  }
-  if (!program)
+  // The program is named in the Host source (UDONCL_PROGRAM).
+  auto declared = module->getAttrOfType<StringAttr>("udoncl.program");
+  if (!declared)
     return error() << "a Unity library Host requires UDONCL_PROGRAM(\"name\")";
-  if (!isUdonSharpIdentifier(*program))
+  StringRef program = declared.getValue();
+  if (!isUdonSharpIdentifier(program))
     return error() << "Unity library program name must be a C identifier: "
-                   << *program;
-  auto schema = getInteger(config, "schema_version");
-  if (!schema || (*schema != 1 && *schema != 2))
-    return error() << "Unity library config requires schema_version 1 or 2";
-  module->setAttr("vrc.program", builder.getStringAttr(*program));
-  auto exports =
-      config.getAs<ArrayAttr>(*schema == 1 ? "exports" : "export_overrides");
-  if (*schema == 1 && (!exports || exports.empty()))
-    return error() << "Unity library schema 1 requires non-empty exports";
-  if (*schema == 2 && annotatedExports.empty())
-    return error() << "Unity library schema 2 requires at least one "
-                      "UDONCL_EXPORT Host definition";
-  if (*schema == 1 &&
-      (config.get("static_initialization") ||
-       llvm::any_of(module.getOps<func::FuncOp>(), [](func::FuncOp function) {
-         return function->hasAttr("udoncl.static_constructor");
-       })))
-    return error() << "static_initialization requires Unity library schema 2";
-  if (*schema == 1) {
-    for (Attribute value : exports) {
-      auto entry = dyn_cast<DictionaryAttr>(value);
-      auto symbol = getString(entry, "symbol");
-      auto publicName = getString(entry, "public_name");
-      auto id = getInteger(entry, "id");
-      auto parameters = entry ? entry.getAs<ArrayAttr>("parameters") : nullptr;
-      if (!symbol || !publicName || !id || !parameters)
-        return error() << "invalid or duplicate Unity library export";
-      if (failed(configureExport(*symbol, *publicName, *id, parameters,
-                                 getFlag(entry, "allowed_while_busy"))))
-        return failure();
-    }
-  } else if (failed(configureSchema2(exports))) {
+                   << program;
+  module->setAttr("vrc.program", builder.getStringAttr(program));
+  if (annotatedExports.empty())
+    return error() << "a Unity library Host requires at least one "
+                      "UDONCL_EXPORT definition";
+  if (failed(configureExports()))
     return failure();
-  }
   // Every Unity library ships the U# binding generated for it, named
   // Lemolatoon.Udoncl.Generated.Udoncl<Program>Binding unless `binding`
-  // overrides the namespace or the class.
+  // (--binding-namespace, --binding-class) overrides the namespace or the
+  // class.
   std::string nameSpace = "Lemolatoon.Udoncl.Generated";
-  std::string className = defaultBindingClassName(*program);
+  std::string className = defaultBindingClassName(program);
   if (Attribute value = config.get("binding")) {
     auto binding = dyn_cast<DictionaryAttr>(value);
     auto configuredNamespace = getString(binding, "namespace");

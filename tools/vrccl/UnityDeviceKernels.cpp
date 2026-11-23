@@ -266,15 +266,13 @@ struct KernelSites {
 } // namespace
 
 FailureOr<json::Array>
-deriveUnityDeviceKernels(ModuleOp host, ArrayRef<int64_t> explicitKernelIds,
-                         ArrayRef<int64_t> synthesizedKernelIds,
+deriveUnityDeviceKernels(ModuleOp host, ArrayRef<int64_t> synthesizedKernelIds,
                          const std::map<int64_t, std::string> &userKernels,
                          llvm::raw_ostream &diagnostics) {
   std::map<int64_t, KernelSites> sites;
   host.walk([&](runtime::DispatchOp dispatch) {
     int64_t id = dispatch.getKernelId();
-    if (llvm::is_contained(explicitKernelIds, id) ||
-        llvm::is_contained(synthesizedKernelIds, id))
+    if (llvm::is_contained(synthesizedKernelIds, id))
       return;
     sites[id].dispatches.push_back(dispatch);
   });
@@ -295,11 +293,8 @@ deriveUnityDeviceKernels(ModuleOp host, ArrayRef<int64_t> explicitKernelIds,
     }
     if (!contract) {
       diagnostics << "the Unity Host dispatches Device kernel id " << id
-                  << ", which is not a UdonCL Device library kernel; describe "
-                     "it with a device_kernels entry (kernel, kernel_id, "
-                     "profile, words, argument_kinds, global_size, "
-                     "local_size, global_offset) in the Unity library "
-                     "config\n";
+                  << ", which is neither a UdonCL Device library kernel nor "
+                     "an OpenCL C kernel of the Host's Device libraries\n";
       return failure();
     }
     for (runtime::DispatchOp dispatch : kernelSites.dispatches)
@@ -309,8 +304,7 @@ deriveUnityDeviceKernels(ModuleOp host, ArrayRef<int64_t> explicitKernelIds,
           dispatch.getGlobalOffsetAttr() != first.getGlobalOffsetAttr()) {
         diagnostics << "the dispatches of Device kernel " << contract->kernel
                     << " (id " << id
-                    << ") disagree on its argument kinds or NDRange; declare "
-                       "its device_kernels entry by hand\n";
+                    << ") disagree on its argument kinds or NDRange\n";
         return failure();
       }
     std::vector<int64_t> inputWords = contract->inputWords;
@@ -327,8 +321,7 @@ deriveUnityDeviceKernels(ModuleOp host, ArrayRef<int64_t> explicitKernelIds,
                       << ") reads a table whose shape (arguments 4 and 5) "
                          "is not a compile-time constant at every dispatch "
                          "site, so its input_words and argument_bounds "
-                         "cannot be derived; declare its device_kernels "
-                         "entry by hand\n";
+                         "cannot be derived\n";
           return failure();
         }
         inner = std::max(inner, *siteInner);
@@ -346,8 +339,7 @@ deriveUnityDeviceKernels(ModuleOp host, ArrayRef<int64_t> explicitKernelIds,
                       << " (id " << id << ") passes " << *value
                       << " as argument " << bound.index
                       << ", outside its library contract [" << bound.minimum
-                      << ", " << bound.maximum
-                      << "]; declare its device_kernels entry by hand\n";
+                      << ", " << bound.maximum << "]\n";
           return failure();
         }
       }

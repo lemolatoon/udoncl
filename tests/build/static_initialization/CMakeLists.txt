@@ -37,7 +37,7 @@ target_compile_definitions(hidden_host INTERFACE
   UDONCL_TEST_HIDDEN_CONSTRUCTOR)
 foreach(variant IN ITEMS dynamic static hidden)
   udoncl_add_unity_library(${variant}
-    CONFIG "${CMAKE_CURRENT_SOURCE_DIR}/unity-library.json"
+    ONNX_PUBLIC_TENSOR_BUFFERS
     HOST_LIBRARIES model_host ${variant}_host UdonONNXRuntime::UdonONNXRuntime
     LIBRARIES UdonONNXOperators::UdonONNXOperators)
 endforeach()

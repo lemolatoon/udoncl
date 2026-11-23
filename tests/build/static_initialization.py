@@ -54,46 +54,12 @@ def main():
     run([args.cmake, '--build', consumer, '--target', 'dynamic', 'static',
          'hidden'])
 
-    suffix = '.exe' if sys.platform == 'win32' else ''
-    compiler = install / 'bin' / f'udonclc{suffix}'
-    model = consumer / 'udoncl-onnx/model_host'
-    program = json.loads(
-        (source / 'unity-library.json').read_text(encoding='utf-8'))
-
     def manifest_of(artifact):
         return json.loads(
             (artifact / 'manifest.json').read_text(encoding='utf-8'))
 
     def exports_of(manifest):
         return {item['public_name']: item for item in manifest['exports']}
-
-    def compile_artifact(name, variant, initialization):
-        """Compiles the inputs of a variant again with a static_initialization
-        configuration entry."""
-        target = consumer / 'udoncl' / variant
-        config = dict(program)
-        config['static_initialization'] = initialization
-        config_path = output / f'{name}.json'
-        config_path.write_text(json.dumps(config, indent=2) + '\n',
-                               encoding='utf-8')
-        artifact = output / name
-        result = subprocess.run([
-            str(compiler), '--emit-unity-library-bundle', str(config_path),
-            '--host-mlir', str(model / 'host.mlir'),
-            '--host-llvm', str(target / 'host.bc'),
-            '--host-library-llvm',
-            str(target / 'modules/host/capacity_runtime.bc'),
-            '--device-llvm', str(target / 'device.bc'),
-            '--static-tensor-directory', str(model / 'static-tensors'),
-            '--host-buffer-plan', str(target / 'host-buffer-plan.json'),
-            '--no-runtime-validation', '-o', str(artifact),
-        ], text=True, capture_output=True)
-        return artifact, result
-
-    def rejected(name, initialization, diagnostic, variant='dynamic'):
-        _, result = compile_artifact(name, variant, initialization)
-        assert result.returncode != 0, (name, result.stdout, result.stderr)
-        assert diagnostic in result.stderr, (name, diagnostic, result.stderr)
 
     def defines(module, symbol):
         return re.search(
@@ -178,47 +144,10 @@ def main():
         encoding='utf-8')
     assert '.export Initialize' not in assembly
 
-    # The static_initialization configuration key still names a constructor
-    # among the exports and omits others.
-    configured, result = compile_artifact('configured', 'dynamic', {
-        'constructor': 'initialize',
-        'omit_exports': ['shutdown'],
-    })
-    assert result.returncode == 0, (result.stdout, result.stderr)
-    configured_manifest = manifest_of(configured)
-    assert configured_manifest['static_initialization']['omitted_exports'] == [
-        'shutdown']
-    assert set(exports_of(configured_manifest)) == {'Initialize', 'Run'}
-    configured_assembly = (configured / 'host.uasm').read_text(
-        encoding='utf-8')
-    assert '.export Shutdown' not in configured_assembly
-    assert '.export Shutdown' in dynamic_assembly
-    assert instructions(configured_assembly) * 2 < instructions(
-        dynamic_assembly)
-
-    # A constructor that fails is a build error: run before initialize
-    # reports NOT_INITIALIZED.
-    rejected('failing-constructor', {'constructor': 'run'},
-             'static constructor fails at build time with status')
-    rejected('missing-constructor', {'omit_exports': ['shutdown']},
-             'static_initialization requires a constructor')
-    rejected('unknown-constructor', {'constructor': 'not_an_export'},
-             'static_initialization requires a constructor')
-    rejected('internal-constructor',
-             {'constructor': 'udon_onnx_binding_create'},
-             'static_initialization requires a constructor')
-    rejected('omitted-constructor',
-             {'constructor': 'initialize', 'omit_exports': ['initialize']},
-             'static_initialization omit_exports must name distinct')
-    rejected('duplicate-omission',
-             {'constructor': 'initialize',
-              'omit_exports': ['shutdown', 'shutdown']},
-             'static_initialization omit_exports must name distinct')
-    # The configuration key and a C constructor do not combine.
-    rejected('constructor-and-configuration', {'constructor': 'initialize'},
-             'static_initialization cannot be combined with the '
-             '__attribute__((constructor)) function initialize',
-             variant='static')
+    # The static_initialization config key that named a constructor and
+    # omitted exports is removed with the config file; a constructor that
+    # fails at build time is rejected by vrc-evaluate-host-constructors
+    # (tests/lit/VRCToUdonHL/evaluate-host-constructors-invalid.mlir).
     print('static_initialization=passed variants=3')
 
 

@@ -57,7 +57,7 @@ def main():
     manifest = json.loads(
         (artifact / 'manifest.json').read_text(encoding='utf-8'))
 
-    # The configuration lists no buffer: the three variables are the public
+    # No config lists a buffer: the three variables are the public
     # buffers, named after them, with their annotated element type and the
     # direction of their clCreateBuffer flags. Every Device buffer resolves at
     # compile time to its own Unity Texture.
@@ -95,7 +95,6 @@ def main():
              '-DCL_TARGET_OPENCL_VERSION=120', '-o', module])
         return subprocess.run([
             str(compiler), '--emit-unity-library-bundle',
-            str(source / 'unity-library.json'),
             '--host-llvm', str(module),
             '--host-library-llvm',
             str(target / 'modules/host/capacity_runtime.bc'),

@@ -35,17 +35,9 @@ std::string onnxPublicBufferName(llvm::StringRef name, bool output,
 /// logical size, access and index from the ONNX binding. Every other buffer
 /// is private and named `private_<id>`.
 ///
-/// Entries the config lists itself are not needed, but they are still
-/// accepted: each must name a buffer of the plan and agree with the derived
-/// one in every field it sets (`byte_size`; for a public buffer also `name`,
-/// `element_type`, `public_access`, `public_index`, `logical_byte_size`). A
-/// private buffer's name never reaches the artifact and is not checked; a
-/// private buffer cannot be declared public, and the texture shape
-/// (`width`, `height`) is never written by hand. A mismatch fails, printing
-/// the entry and the derived value to `diagnostics`.
-///
 /// Leaves `config` unchanged for a Host without ONNX binding metadata, and
-/// fails when the config asks for `generate_onnx_public_buffers` there.
+/// fails when `generate_onnx_public_buffers` (--onnx-public-tensor-buffers)
+/// is set there.
 mlir::LogicalResult deriveOnnxUnityBuffers(mlir::ModuleOp host,
                                            llvm::json::Object &config,
                                            llvm::raw_ostream &diagnostics);

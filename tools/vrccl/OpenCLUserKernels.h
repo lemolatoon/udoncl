@@ -88,14 +88,12 @@ mlir::LogicalResult checkPublicKernelArgumentTypes(
 
 /// Describes every user kernel dispatch intrinsic of the linked Unity Host
 /// `host` with `vrc.device_dispatch`, so LowerOpenCLAOTIntrinsics lowers it
-/// like a library kernel. The NDRange is the `global_size` of a hand-written
-/// `device_kernels` entry of that kernel or, without one, the constant
-/// global work size every `clEnqueueNDRangeKernel` of the kernel in the Host C
-/// module `hostLLVMPath` passes. Returns the user kernel names by id.
-mlir::FailureOr<std::map<int64_t, std::string>> describeOpenCLUserDispatches(
-    mlir::ModuleOp host, llvm::StringRef hostLLVMPath,
-    llvm::ArrayRef<const llvm::json::Object *> explicitKernels,
-    llvm::raw_ostream &diagnostics);
+/// like a library kernel. The NDRange is the constant global work size
+/// every `clEnqueueNDRangeKernel` of the kernel in the Host C module
+/// `hostLLVMPath` passes. Returns the user kernel names by id.
+mlir::FailureOr<std::map<int64_t, std::string>>
+describeOpenCLUserDispatches(mlir::ModuleOp host, llvm::StringRef hostLLVMPath,
+                             llvm::raw_ostream &diagnostics);
 
 } // namespace udoncl
 

@@ -16,6 +16,8 @@ HOST_FLAGS = [
 HOST = '''\
 #include <udoncl/export.h>
 
+UDONCL_PROGRAM("host_annotations");
+
 static int calls;
 
 UDONCL_EXPORT int add_values(int left, int right) {
@@ -135,10 +137,12 @@ def main():
         shutil.rmtree(harness.output)
     harness.output.mkdir(parents=True)
 
-    program = {'schema_version': 2, 'program': 'host_annotations'}
+    # The Host source names the program, the exports and the public buffers;
+    # a library takes no config file.
+    program = 'UDONCL_PROGRAM("host_annotations");\n'
     host = harness.host('host', HOST)
     exports = exports_by_symbol(
-        harness.manifest('host', program, '--host-llvm', host))
+        harness.manifest('host', None, '--host-llvm', host))
     assert set(exports) == {'add_values', 'call_count'}, exports
     # A U# export is named after the PascalCase of its C symbol.
     assert exports['add_values']['public_name'] == 'AddValues'
@@ -151,13 +155,14 @@ def main():
     # The while-busy annotation is only meaningful on an export.
     unexported = harness.host('while-busy-unexported', '''\
 #include <udoncl/export.h>
+UDONCL_PROGRAM("host_annotations");
 UDONCL_EXPORT int run(void) { return 0; }
 __attribute__((annotate("udoncl.export_while_busy"))) int phase(void) {
   return 1;
 }
 ''')
     harness.rejected(
-        'while-busy-unexported', program,
+        'while-busy-unexported', None,
         'UDONCL_EXPORT_WHILE_BUSY requires an exported Host definition: phase',
         '--host-llvm', unexported)
     # An export allowed while busy runs inside another export's suspension
@@ -179,48 +184,31 @@ __attribute__((annotate("udoncl.export_while_busy"))) int phase(void) {
         'applied: 2 dynamic Device allocation(s); 2 transfer operand(s) '
         'without an assigned buffer', '--host-mlir', pooled)
 
-    # U# export parameters are named after the C parameters; a configured
-    # override still wins.
+    # U# export parameters are named after the C parameters.
     def parameter_names(entry):
         return [parameter['name'] for parameter in entry['parameters']]
 
     assert parameter_names(exports['add_values']) == ['left', 'right']
-    overridden = exports_by_symbol(harness.manifest('parameter-override', {
-        **program,
-        'export_overrides': [{
-            'symbol': 'add_values', 'public_name': 'add_values',
-            'parameters': ['a', 'b'],
-        }],
-    }, '--host-llvm', host))
-    assert parameter_names(overridden['add_values']) == ['a', 'b']
-    assert overridden['add_values']['public_name'] == 'add_values'
-    # Two symbols with one PascalCase name are an error, as is a symbol
-    # without one.
+    # Two symbols with one PascalCase name are an error.
     colliding = harness.host('name-collision', '''\
 #include <udoncl/export.h>
+UDONCL_PROGRAM("host_annotations");
 UDONCL_EXPORT int read_text(void) { return 0; }
 UDONCL_EXPORT int read__text(void) { return 1; }
 ''')
     harness.rejected(
-        'name-collision', program,
+        'name-collision', None,
         'UDONCL_EXPORT read__text and read_text both name the U# export '
         'ReadText', '--host-llvm', colliding)
-    harness.rejected('override-collision', {
-        **program,
-        'export_overrides': [{
-            'symbol': 'call_count', 'public_name': 'AddValues',
-            'parameters': [],
-        }],
-    }, 'both name the U# export AddValues', '--host-llvm', host)
     # A C parameter name U# cannot use is an error, not a silent rename.
     for name, source in [
         ('keyword', 'UDONCL_EXPORT int scale(int object) { return object; }'),
         ('result', 'UDONCL_EXPORT int scale(int result) { return result; }'),
     ]:
         module = harness.host(f'parameter-{name}',
-                              f'#include <udoncl/export.h>\n{source}\n')
+                              f'#include <udoncl/export.h>\n{program}{source}\n')
         harness.rejected(
-            f'parameter-{name}', program,
+            f'parameter-{name}', None,
             'of UDONCL_EXPORT scale cannot name a U# parameter; rename the C '
             'parameter', '--host-llvm', module)
 
@@ -228,6 +216,7 @@ UDONCL_EXPORT int read__text(void) { return 1; }
     # Device buffer whose elements have that type.
     public = harness.host('public', '''\
 #include <udoncl/export.h>
+UDONCL_PROGRAM("host_annotations");
 typedef struct _cl_mem *cl_mem;
 UDONCL_PUBLIC(float) cl_mem image;
 UDONCL_PUBLIC(long) cl_mem tokens;
@@ -240,7 +229,7 @@ UDONCL_EXPORT int clear(void) {
     # Only the static Device resource analysis of a Host linked with the
     # OpenCL runtime resolves the variables (tests/build/public_buffers.py).
     harness.rejected(
-        'public', program,
+        'public', None,
         'UDONCL_PUBLIC requires the static Device resource analysis of a '
         'Unity Host linked with the UdonCL OpenCL runtime',
         '--host-llvm', public)
@@ -263,9 +252,9 @@ UDONCL_EXPORT int clear(void) { image = 0; return 0; }
 ''', 'UDONCL_PUBLIC element type must be float, int or long: image has '
          'double'),
     ]:
-        module = harness.host(name, '#include <udoncl/export.h>\n'
+        module = harness.host(name, '#include <udoncl/export.h>\n' + program +
                               'typedef struct _cl_mem *cl_mem;\n' + source)
-        harness.rejected(name, program, diagnostic, '--host-llvm', module)
+        harness.rejected(name, None, diagnostic, '--host-llvm', module)
 
     # UDONCL_PROGRAM names the program in the Host source. The name is not
     # Host memory.
@@ -274,8 +263,7 @@ UDONCL_EXPORT int clear(void) { image = 0; return 0; }
 UDONCL_PROGRAM("declared_program");
 UDONCL_EXPORT int run(void) { return 0; }
 ''')
-    unnamed = {'schema_version': 2}
-    artifact, result = harness.compile('declared', unnamed, '--host-llvm',
+    artifact, result = harness.compile('declared', None, '--host-llvm',
                                        declared)
     assert result.returncode == 0, (result.stdout, result.stderr)
     manifest = json.loads((artifact / 'manifest.json').read_text(
@@ -288,14 +276,14 @@ UDONCL_EXPORT int run(void) { return 0; }
         'Lemolatoon.Udoncl.Generated'), manifest
     assert (artifact / manifest['program']['binding_source']).is_file()
     assert b'declared_program' not in (artifact / 'host.uasm').read_bytes()
+    undeclared = harness.host('undeclared', '''\
+#include <udoncl/export.h>
+UDONCL_EXPORT int run(void) { return 0; }
+''')
     harness.rejected(
-        'declared-and-configured', program,
-        'the Unity library config key program cannot be combined with '
-        'UDONCL_PROGRAM("declared_program")', '--host-llvm', declared)
-    harness.rejected(
-        'undeclared', unnamed,
+        'undeclared', None,
         'a Unity library Host requires UDONCL_PROGRAM("name")',
-        '--host-llvm', host)
+        '--host-llvm', undeclared)
     twice = harness.host('declared-twice', '''\
 #include <udoncl/export.h>
 UDONCL_PROGRAM("first");
@@ -304,7 +292,7 @@ static const char second[] __attribute__((annotate("udoncl.program"), used)) =
 UDONCL_EXPORT int run(void) { return 0; }
 ''')
     harness.rejected(
-        'declared-twice', unnamed,
+        'declared-twice', None,
         'a Unity library Host declares exactly one UDONCL_PROGRAM; found '
         '"first" and "second"', '--host-llvm', twice)
     misnamed = harness.host('misnamed', '''\
@@ -313,12 +301,12 @@ UDONCL_PROGRAM("not a name");
 UDONCL_EXPORT int run(void) { return 0; }
 ''')
     harness.rejected(
-        'misnamed', unnamed,
+        'misnamed', None,
         'Unity library program name must be a C identifier: not a name',
         '--host-llvm', misnamed)
 
-    # The settings the config keys held are udonclc options; a library needs
-    # no config file at all, and may not set one both ways.
+    # The binding names and the texel format are udonclc options (CMake
+    # arguments); the config file that held them is removed.
     options = harness.manifest(
         'options', None, '--host-llvm', declared,
         '--binding-namespace=Custom.Bindings', '--binding-class=RunBinding',
@@ -331,20 +319,9 @@ UDONCL_EXPORT int run(void) { return 0; }
                                   declared, '--binding-class=RunBinding')
     assert class_only['program']['binding_namespace'] == (
         'Lemolatoon.Udoncl.Generated')
-    for name, key, value, option in [
-        ('binding-both', 'binding', {'class_name': 'Configured'},
-         '--binding-class=RunBinding'),
-        ('texel-both', 'device_texel_format', 'rgba8_unorm',
-         '--device-texel-format=rgba32_float'),
-        ('budget-both', 'device_work_budget', {'device_cost': 1},
-         '--device-work-budget=device_cost=2'),
-        ('onnx-both', 'generate_onnx_public_buffers', False,
-         '--onnx-public-tensor-buffers'),
-    ]:
-        harness.rejected(
-            name, {**unnamed, key: value},
-            f'--{option[2:].split("=")[0]} cannot be combined with the Unity '
-            f'library config key {key}', '--host-llvm', declared, option)
+    harness.rejected(
+        'config-file', {'schema_version': 2, 'program': 'declared_program'},
+        'a Unity library takes no config file', '--host-llvm', declared)
     harness.rejected(
         'budget-malformed', None,
         '--device-work-budget entry must be key=integer: device_cost',
@@ -355,7 +332,7 @@ UDONCL_EXPORT int run(void) { return 0; }
 
     # --report-static-resources says whether static Unity resource lowering
     # applies; a Host without Device resources is never assessed.
-    _, report = harness.compile('report', program, '--host-llvm', host,
+    _, report = harness.compile('report', None, '--host-llvm', host,
                                 '--report-static-resources')
     assert report.returncode == 0, (report.stdout, report.stderr)
     assert ('udonclc-static-resources: static Unity resource lowering was '

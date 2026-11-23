@@ -1,5 +1,0 @@
-{
-  "schema_version": 2,
-  "program": "static_initialization",
-  "generate_onnx_public_buffers": true
-}

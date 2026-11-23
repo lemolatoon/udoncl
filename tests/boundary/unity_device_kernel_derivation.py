@@ -1,12 +1,10 @@
 """Derive the device_kernels of a Unity library from its Host dispatches.
 
 A Unity Host that dispatches UdonCL Device library kernels through the OpenCL
-AOT intrinsics needs no hand-written device_kernels entry: udonclc takes the
+AOT intrinsics describes them by its dispatch sites alone: udonclc takes the
 launch of each kernel from its dispatch sites and the access contract from
-the library kernel contract. The derived bundle must equal the one built from
-the equivalent hand-written entry, a hand-written entry must still win over
-the derived one and keep a kernel the Host does not dispatch, and every case
-the compiler cannot derive must say which entry to write by hand.
+the library kernel contract. Every case the compiler cannot derive is an
+error that says why.
 """
 
 import json
@@ -65,29 +63,6 @@ sgemm = device_ir("arena-sgemm", "libraries/udonblas/device/arena_sgemm.cl")
 
 WORDS = 131072
 GRID = [8192, 16, 1]
-OP_TENSOR = {
-    "schema_version": 1,
-    "profile": "gather-f32",
-    "words": WORDS,
-    "kernel": "udondnn_large_op_tensor",
-    "kernel_id": 234,
-    "input_words": [WORDS, WORDS, WORDS],
-    "argument_kinds": ["buffer"] * 4 + ["i32"] * 8 + ["f32"] * 3,
-    "global_size": GRID,
-    "local_size": [1, 1, 1],
-    "global_offset": [0, 0, 0],
-}
-ACTIVATION = {
-    "schema_version": 1,
-    "profile": "gather-f32",
-    "words": 32768,
-    "kernel": "udondnn_large_activation_forward",
-    "kernel_id": 233,
-    "argument_kinds": ["buffer"] * 3 + ["i32"] * 3 + ["f32"] * 3,
-    "global_size": [8192, 4, 1],
-    "local_size": [1, 1, 1],
-    "global_offset": [0, 0, 0],
-}
 
 
 def host(dispatches, declarations=""):
@@ -133,15 +108,7 @@ OP_TENSOR_CALL = (
 op_tensor_host = host(OP_TENSOR_CALL, OP_TENSOR_DECLARATION)
 
 
-def build(name, kernels=None, host_source=op_tensor_host, device=pointwise, expected=0):
-    config = []
-    if kernels is not None:
-        config_path = output / f"{name}.json"
-        config_path.write_text(
-            json.dumps({"schema_version": 2, "device_kernels": kernels}),
-            encoding="utf-8",
-        )
-        config = [config_path]
+def build(name, host_source=op_tensor_host, device=pointwise, expected=0):
     host_path = output / f"{name}.mlir"
     host_path.write_text(host_source, encoding="utf-8", newline="\n")
     bundle = output / name
@@ -149,7 +116,6 @@ def build(name, kernels=None, host_source=op_tensor_host, device=pointwise, expe
         [
             compiler,
             "--emit-unity-library-bundle",
-            *config,
             "--host-mlir",
             host_path,
             *(["--device-llvm", device] if device else []),
@@ -165,34 +131,16 @@ def manifest(bundle):
     return json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
 
 
-# A hand-written entry and the derived one build the same bundle.
-explicit, _ = build("explicit", [OP_TENSOR])
+# The OpTensor kernel is derived from its dispatch site.
 derived, _ = build("derived")
-for path in sorted(explicit.rglob("*")):
-    if path.is_file():
-        relative = path.relative_to(explicit)
-        assert (derived / relative).read_bytes() == path.read_bytes(), relative
-assert sorted(p.relative_to(derived) for p in derived.rglob("*")) == sorted(
-    p.relative_to(explicit) for p in explicit.rglob("*")
-)
 kernels = manifest(derived)["device"]["kernels"]
 assert [(kernel["id"], kernel["name"]) for kernel in kernels] == [
     (234, "udondnn_large_op_tensor")
 ], kernels
 assert kernels[0]["global_size"] == GRID, kernels[0]
+assert (derived / "kernels/kernel_234.shader").is_file()
 
-# A hand-written entry is kept even when the Host does not dispatch it, and
-# the kernels it does dispatch without an entry are still derived.
-mixed, _ = build("mixed", [ACTIVATION])
-assert sorted(kernel["id"] for kernel in manifest(mixed)["device"]["kernels"]) == [
-    233,
-    234,
-]
-assert (mixed / "kernels/kernel_234.shader").read_bytes() == (
-    explicit / "kernels/kernel_234.shader"
-).read_bytes()
-
-# A kernel that is no UdonCL library kernel needs its entry.
+# A kernel that is no UdonCL library kernel cannot be derived.
 custom = host(
     "  %custom = func.call @dispatch_custom(%a, %x, %count) : (i32, i32, i32) -> i32",
     "func.func private @dispatch_custom(i32, i32, i32) -> i32 attributes {"
@@ -201,8 +149,9 @@ custom = host(
 )
 _, unknown = build("unknown", host_source=custom, expected=1)
 assert (
-    "the Unity Host dispatches Device kernel id 77, which is not a UdonCL "
-    "Device library kernel; describe it with a device_kernels entry"
+    "the Unity Host dispatches Device kernel id 77, which is neither a "
+    "UdonCL Device library kernel nor an OpenCL C kernel of the Host's Device "
+    "libraries"
 ) in unknown.stderr, unknown.stderr
 
 # A site outside the library contract the kernel is compiled against cannot
@@ -236,29 +185,8 @@ _, outside = build(
 )
 assert (
     "a dispatch of Device kernel udonblas_arena_sgemm (id 221) passes 8193 as "
-    "argument 5, outside its library contract [1, 8192]; declare its "
-    "device_kernels entry by hand"
+    "argument 5, outside its library contract [1, 8192]"
 ) in outside.stderr, outside.stderr
-# The hand-written entry is the way out: it replaces the contract.
-build(
-    "sgemm-explicit",
-    [
-        {
-            "schema_version": 1,
-            "profile": "gather-f32",
-            "words": 16384,
-            "kernel": "udonblas_arena_sgemm",
-            "kernel_id": 221,
-            "argument_kinds": ["buffer"] * 3 + ["i32"] * 5 + ["f32"],
-            "global_size": [8192, 2, 1],
-            "local_size": [1, 1, 1],
-            "global_offset": [0, 0, 0],
-        }
-    ],
-    host_source=host(sgemm_call(8193), SGEMM_DECLARATION),
-    device=sgemm,
-)
-
 # Derived library kernels need their Device library.
 _, missing = build("missing-device", device=None, expected=1)
 assert (

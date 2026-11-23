@@ -393,31 +393,26 @@ def InsertUdonCooperativeCheckpointsPass : Pass<"vrc-insert-udon-cooperative-che
 def ConfigureUnityExportsPass : Pass<"vrc-configure-unity-exports", "mlir::ModuleOp"> {
   let summary = "Select and name the U# exports of a Unity library Host";
   let description = [{
-    Consumes the Unity library configuration that udonclc attaches as the
-    `udoncl.unity_library_config` module dictionary (the JSON configuration
-    file converted key by key). The program is named by the `udoncl.program`
-    module attribute (UDONCL_PROGRAM) or the configuration's `program` key,
-    exactly one of the two, and recorded as `vrc.program`. Schema 1 lists
-    every export with its id,
-    public name and parameter names. Schema 2 publishes every function marked
-    `udoncl.export` under the PascalCase of its symbol, with parameters named
-    after `udoncl.parameter_names` (arg<i> without one), unless an
-    `export_overrides` entry names it. A function also marked
-    `udoncl.internal_export` (the generated ONNX binding) is a root of the
-    Host but never a U# export.
+    The program is named by the `udoncl.program` module attribute
+    (UDONCL_PROGRAM) and recorded as `vrc.program`. Every function marked
+    `udoncl.export` is a U# export named after the PascalCase of its symbol,
+    with parameters named after `udoncl.parameter_names` (arg<i> without
+    one). A function also marked `udoncl.internal_export` (the generated ONNX
+    binding) is a root of the Host but never a U# export.
 
     The C `__attribute__((constructor))` function (`udoncl.static_constructor`,
     at most one) becomes the static constructor; one that is not also an
     export is configured as one marked `vrc.internal_static_constructor`, so
     the analyses see it as a root. An export that is a C
     `__attribute__((destructor))` function (`udoncl.static_destructor`) is
-    omitted. The `static_initialization` configuration key names a
-    constructor and omitted exports instead; the two do not combine.
+    omitted.
 
     Each U# export receives `vrc.export_id`, `vrc.public_name`,
-    `vrc.parameter_names` and, when allowed while busy,
+    `vrc.parameter_names` and, when marked `udoncl.export_while_busy`,
     `vrc.allowed_while_busy`; the module receives `vrc.binding_namespace`
-    and `vrc.binding_class` (the configured `binding` names, by default
+    and `vrc.binding_class` (the `binding` names of the
+    `udoncl.unity_library_config` settings udonclc attaches from
+    --binding-namespace and --binding-class, by default
     `Lemolatoon.Udoncl.Generated` and `Udoncl<PascalCase program>Binding`)
     and `vrc.static_initialization`. With
     `finalize-reachability`, functions no export reaches are erased, reached
