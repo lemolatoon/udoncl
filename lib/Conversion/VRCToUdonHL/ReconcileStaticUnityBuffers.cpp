@@ -21,6 +21,8 @@ constexpr StringLiteral inventoryAttribute =
 constexpr StringLiteral aliasesAttribute = "vrc.static_public_resource_aliases";
 constexpr StringLiteral reconciliationAttribute =
     "vrc.static_unity_buffer_reconciliation";
+constexpr StringLiteral declaredAttribute =
+    "vrc.static_declared_public_resources";
 
 using Endpoint = std::pair<std::string, int32_t>;
 
@@ -80,6 +82,21 @@ struct ReconcileStaticUnityBuffersPass
         return;
       }
       capacityByResource[static_cast<int32_t>(id.getInt())] = capacity.getInt();
+    }
+
+    // Resources the Host source declares public (UDONCL_PUBLIC) define their
+    // Unity buffer themselves; a configured buffer may name them, but need
+    // not.
+    std::set<int32_t> declared;
+    if (auto attribute =
+            module->getAttrOfType<DictionaryAttr>(declaredAttribute)) {
+      auto ids = attribute.getAs<DenseI32ArrayAttr>("resource_ids");
+      if (!hasSchemaVersion(attribute) || !ids) {
+        module.emitError("invalid declared public resources");
+        signalPassFailure();
+        return;
+      }
+      declared.insert(ids.asArrayRef().begin(), ids.asArrayRef().end());
     }
 
     std::map<Endpoint, Alias> aliasByEndpoint;
@@ -217,28 +234,34 @@ struct ReconcileStaticUnityBuffersPass
       output.push_back(builder.getDictionaryAttr(fields));
     }
 
-    module->setAttr(
-        reconciliationAttribute,
-        builder.getDictionaryAttr({
-            builder.getNamedAttr("buffers", builder.getArrayAttr(output)),
-            builder.getNamedAttr("configured_count",
-                                 builder.getI32IntegerAttr(
-                                     static_cast<int32_t>(buffers.size()))),
-            builder.getNamedAttr("resolved_alias_count",
-                                 builder.getI32IntegerAttr(resolvedCount)),
-            builder.getNamedAttr("schema_version",
-                                 builder.getI32IntegerAttr(1)),
-            builder.getNamedAttr(
-                "unresolved_private_count",
-                builder.getI32IntegerAttr(unresolvedPrivateCount)),
-            builder.getNamedAttr(
-                "unresolved_public_count",
-                builder.getI32IntegerAttr(unresolvedPublicCount)),
-            builder.getNamedAttr(
-                "unused_alias_count",
-                builder.getI32IntegerAttr(static_cast<int32_t>(
-                    aliasByEndpoint.size() - usedAliases.size()))),
-        }));
+    int32_t declaredAliases = 0;
+    int32_t unusedAliases = 0;
+    for (const auto &[endpoint, alias] : aliasByEndpoint)
+      if (!usedAliases.count(endpoint))
+        ++(declared.count(alias.resourceId) ? declaredAliases : unusedAliases);
+
+    SmallVector<NamedAttribute> summary{
+        builder.getNamedAttr("buffers", builder.getArrayAttr(output)),
+        builder.getNamedAttr(
+            "configured_count",
+            builder.getI32IntegerAttr(static_cast<int32_t>(buffers.size()))),
+        builder.getNamedAttr("resolved_alias_count",
+                             builder.getI32IntegerAttr(resolvedCount)),
+        builder.getNamedAttr("schema_version", builder.getI32IntegerAttr(1)),
+        builder.getNamedAttr("unresolved_private_count",
+                             builder.getI32IntegerAttr(unresolvedPrivateCount)),
+        builder.getNamedAttr("unresolved_public_count",
+                             builder.getI32IntegerAttr(unresolvedPublicCount)),
+        builder.getNamedAttr("unused_alias_count",
+                             builder.getI32IntegerAttr(unusedAliases)),
+    };
+    // Present only with declared public resources, so a Host without them
+    // keeps its reconciliation unchanged.
+    if (declaredAliases > 0)
+      summary.push_back(builder.getNamedAttr(
+          "declared_alias_count", builder.getI32IntegerAttr(declaredAliases)));
+    module->setAttr(reconciliationAttribute,
+                    builder.getDictionaryAttr(summary));
   }
 };
 

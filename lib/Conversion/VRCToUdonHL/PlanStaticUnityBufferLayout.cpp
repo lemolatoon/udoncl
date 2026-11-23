@@ -89,6 +89,10 @@ struct PlanStaticUnityBufferLayoutPass
     auto unusedAliasCount =
         reconciliation ? reconciliation.getAs<IntegerAttr>("unused_alias_count")
                        : nullptr;
+    auto declaredAliasCount =
+        reconciliation
+            ? reconciliation.getAs<IntegerAttr>("declared_alias_count")
+            : nullptr;
     if (!schemaV1(inventory) || !resources || !schemaV1(assignments) ||
         !textures || !schemaV1(aliases) || !publicAliases ||
         !schemaV1(reconciliation) || !legacyBuffers || !configuredCount ||
@@ -299,8 +303,14 @@ struct PlanStaticUnityBufferLayoutPass
         static_cast<int32_t>(unresolvedPublicCount.getInt());
     int32_t unusedAliases = static_cast<int32_t>(unusedAliasCount.getInt());
     int32_t resolvedAliases = static_cast<int32_t>(resolvedAliasCount.getInt());
-    if (resolvedAliases + unusedAliases !=
-        static_cast<int32_t>(publicAliases.size())) {
+    // An alias of a declared (UDONCL_PUBLIC) resource needs no configured
+    // buffer.
+    int32_t declaredAliases =
+        declaredAliasCount ? static_cast<int32_t>(declaredAliasCount.getInt())
+                           : 0;
+    if (declaredAliases < 0 ||
+        resolvedAliases + unusedAliases + declaredAliases !=
+            static_cast<int32_t>(publicAliases.size())) {
       module.emitError("public alias reconciliation count is inconsistent");
       signalPassFailure();
       return;

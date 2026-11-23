@@ -53,3 +53,15 @@ module attributes {
 // expected-remark@+1 {{static Unity resource lowering was not assessed}}
 module {
 }
+
+// -----
+
+// A declared (UDONCL_PUBLIC) resource needs no configured buffer.
+// expected-remark@+1 {{static Unity resource lowering applied}}
+module attributes {
+    vrc.static_declared_public_resources = {resource_ids = array<i32: 0>, schema_version = 1 : i32},
+    vrc.static_public_resource_aliases = {schema_version = 1 : i32, aliases = [
+      {resource_id = 0 : i32, resource_kind = "allocation", public_access = "input", public_index = 0 : i32}]},
+    vrc.static_unity_buffer_reconciliation = {schema_version = 1 : i32, buffers = []},
+    vrc.static_unity_resource_lowering_readiness = {applied = true, pool_replacement_ready = true, schema_version = 1 : i32}} {
+}

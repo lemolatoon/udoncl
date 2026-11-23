@@ -119,11 +119,16 @@ struct ReportStaticUnityResourceLoweringPass
                   endpoint(buffer) + ") resolves to no static public resource");
         }
       }
+    std::set<int64_t> declared;
+    if (auto attribute = module->getAttrOfType<DictionaryAttr>(
+            "vrc.static_declared_public_resources"))
+      if (auto ids = attribute.getAs<DenseI32ArrayAttr>("resource_ids"))
+        declared.insert(ids.asArrayRef().begin(), ids.asArrayRef().end());
     if (aliasEntries && reconciliation)
       for (Attribute attribute : aliasEntries) {
         auto alias = dyn_cast<DictionaryAttr>(attribute);
         auto id = alias ? alias.getAs<IntegerAttr>("resource_id") : nullptr;
-        if (!id || resolved.count(id.getInt()))
+        if (!id || resolved.count(id.getInt()) || declared.count(id.getInt()))
           continue;
         blocker("static public resource " + Twine(id.getInt()) + " (" +
                 endpoint(alias) + ") has no configured buffer");
