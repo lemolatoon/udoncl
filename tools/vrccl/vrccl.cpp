@@ -1933,6 +1933,19 @@ LogicalResult propagateUnityHostAsyncEffects(ModuleOp module) {
       changed = true;
     }
   } while (changed);
+  // The binding runs an export allowed while busy in the middle of another
+  // export's suspension; it has no frame to suspend in itself.
+  for (func::FuncOp function : module.getOps<func::FuncOp>()) {
+    auto effect = function->getAttrOfType<StringAttr>("vrc.async_effect");
+    if (function->hasAttr("vrc.allowed_while_busy") && effect &&
+        effect.getValue() == "may_suspend") {
+      errs() << "UDONCL_EXPORT_WHILE_BUSY export may suspend: "
+             << function.getSymName()
+             << "; an export allowed while busy must not wait for Device "
+                "work\n";
+      return failure();
+    }
+  }
   return success();
 }
 

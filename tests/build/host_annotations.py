@@ -26,6 +26,35 @@ UDONCL_EXPORT int add_values(int left, int right) {
 UDONCL_EXPORT_WHILE_BUSY int call_count(void) { return calls; }
 '''
 
+# A Host that waits for the Device copy it issues.
+SUSPENDING_HOST = '''\
+module {
+  func.func private @allocate(i32, i32) -> (!vrc.buffer, i32) attributes {
+    vrc.format = "rgba8_unorm",
+    vrc.intrinsic = "buffer_alloc",
+    vrc.usage = "storage"
+  }
+  func.func private @copy(!vrc.buffer, !vrc.buffer, i32, i32, i32) -> !vrc.event attributes {
+    vrc.intrinsic = "buffer_copy"
+  }
+  func.func private @await(!vrc.event) -> i32 attributes {
+    vrc.async_effect = "may_suspend",
+    vrc.intrinsic = "await"
+  }
+  func.func @copy_and_wait() -> i32 {
+    %bytes = arith.constant 4 : i32
+    %zero = arith.constant 0 : i32
+    %source_id = arith.constant 1 : i32
+    %destination_id = arith.constant 2 : i32
+    %source, %source_status = func.call @allocate(%source_id, %bytes) : (i32, i32) -> (!vrc.buffer, i32)
+    %destination, %destination_status = func.call @allocate(%destination_id, %bytes) : (i32, i32) -> (!vrc.buffer, i32)
+    %event = func.call @copy(%source, %destination, %zero, %zero, %bytes) : (!vrc.buffer, !vrc.buffer, i32, i32, i32) -> !vrc.event
+    %status = func.call @await(%event) : (!vrc.event) -> i32
+    return %status : i32
+  }
+}
+'''
+
 
 class Harness:
     def __init__(self, args):
@@ -108,6 +137,23 @@ __attribute__((annotate("udoncl.export_while_busy"))) int phase(void) {
         'while-busy-unexported', program,
         'UDONCL_EXPORT_WHILE_BUSY requires an exported Host definition: phase',
         '--host-llvm', unexported)
+    # An export allowed while busy runs inside another export's suspension
+    # and must not suspend itself, whichever way it was allowed.
+    suspending = harness.output / 'while-busy-suspends.mlir'
+    suspending.write_text(SUSPENDING_HOST, encoding='utf-8')
+    harness.rejected(
+        'while-busy-suspends', {
+            'schema_version': 1, 'program': 'while_busy_suspends',
+            'exports': [{
+                'symbol': 'copy_and_wait', 'public_name': 'CopyAndWait',
+                'id': 1, 'parameters': [], 'allowed_while_busy': True,
+            }],
+            'buffers': [
+                {'id': 1, 'name': 'source', 'byte_size': 4},
+                {'id': 2, 'name': 'destination', 'byte_size': 4},
+            ],
+        }, 'UDONCL_EXPORT_WHILE_BUSY export may suspend: copy_and_wait',
+        '--host-mlir', suspending)
 
     print(f'host_annotations=passed exports={len(exports)}')
 
