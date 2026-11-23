@@ -602,8 +602,8 @@ endfunction()
 # textures; DEVICE_WORK_BUDGET takes key=value budgets (device_cost,
 # host_cost, fragment_weight, frame_microseconds, frame_continuations).
 # ONNX_PUBLIC_TENSOR_BUFFERS is transitional: it exposes the inputs and
-# outputs of an ONNX Host as public Device buffers. CONFIG names a legacy
-# unity-library.json; a setting may not be given both ways.
+# outputs of an ONNX Host as public Device buffers. The Unity library config
+# file (CONFIG) is removed.
 function(udoncl_add_unity_library target)
   set(_options OMIT_INTERMEDIATE_IR ONNX_PUBLIC_TENSOR_BUFFERS)
   set(_one_value CONFIG OUTPUT_DIRECTORY RUNTIME_VALIDATION BINDING_NAMESPACE
@@ -618,18 +618,19 @@ function(udoncl_add_unity_library target)
   if(TARGET "${target}")
     message(FATAL_ERROR "UdonCL Unity library target '${target}' already exists")
   endif()
+  if(ARG_CONFIG OR "CONFIG" IN_LIST ARG_KEYWORDS_MISSING_VALUES)
+    message(FATAL_ERROR
+      "udoncl_add_unity_library no longer takes a CONFIG file "
+      "(unity-library.json). Name the program with UDONCL_PROGRAM(\"name\"), "
+      "the exports with UDONCL_EXPORT (UDONCL_EXPORT_WHILE_BUSY) and the "
+      "public buffers with UDONCL_PUBLIC(type) cl_mem in the Host source "
+      "(<udoncl/export.h>), run static initialization in an "
+      "__attribute__((constructor)) function, and pass the other settings "
+      "as arguments: BINDING_NAMESPACE, BINDING_CLASS, DEVICE_TEXEL_FORMAT, "
+      "DEVICE_WORK_BUDGET and OMIT_INTERMEDIATE_IR.")
+  endif()
   _udoncl_resolve_runtime_validation("${ARG_RUNTIME_VALIDATION}"
                                      _runtime_validation)
-  set(_config)
-  if(ARG_CONFIG)
-    cmake_path(ABSOLUTE_PATH ARG_CONFIG
-               BASE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-               NORMALIZE OUTPUT_VARIABLE _config)
-    if(NOT EXISTS "${_config}")
-      message(FATAL_ERROR
-        "UdonCL Unity library config does not exist: ${_config}")
-    endif()
-  endif()
   list(JOIN ARG_DEVICE_WORK_BUDGET "," _device_work_budget)
 
   set(_host_modules)
@@ -808,7 +809,6 @@ function(udoncl_add_unity_library target)
     OUTPUT "${_stamp}"
     COMMAND "${CMAKE_COMMAND}"
             "-DUDONCL_COMPILER=${UDONCLC_EXECUTABLE}"
-            "-DUDONCL_CONFIG=${_config}"
             "-DUDONCL_HOST_MODULE=${_host_module}"
             "-DUDONCL_HOST_RUNTIME_MODULE=${_runtime_module}"
             "-DUDONCL_HOST_MLIR=${_host_mlir}"
@@ -826,7 +826,7 @@ function(udoncl_add_unity_library target)
             "-DUDONCL_ONNX_PUBLIC_TENSOR_BUFFERS=${ARG_ONNX_PUBLIC_TENSOR_BUFFERS}"
             -P "${_UDONCL_CONFIG_DIR}/UdonCLCompileUnityLibrary.cmake"
     COMMAND "${CMAKE_COMMAND}" -E touch "${_stamp}"
-    DEPENDS "${UDONCLC_EXECUTABLE}" ${_config} ${_host_module}
+    DEPENDS "${UDONCLC_EXECUTABLE}" ${_host_module}
             ${_runtime_module}
             ${_host_mlir} ${_host_buffer_plan} ${_static_tensor_directory}
             ${_device_module}

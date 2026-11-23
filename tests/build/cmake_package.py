@@ -2369,7 +2369,8 @@ def main():
     )
     assert (unity_artifact / 'display.shader').is_file()
     assert not (unity_artifact / 'kernels').exists()
-    # The Unity library config file is removed: udonclc rejects one.
+    # The Unity library config file is removed: udonclc rejects one, and
+    # udoncl_add_unity_library rejects CONFIG with the way to migrate.
     removed_config = output / 'unity-library.json'
     removed_config.write_text(json.dumps({
         'schema_version': 2, 'program': 'hello_kernel',
@@ -2379,6 +2380,35 @@ def main():
         '--host-llvm', consumer / 'udoncl/hello-unity-library/host.bc',
         '-o', output / 'removed-config-artifact',
     ], 'a Unity library takes no config file')
+    config_project = output / 'removed-config-project'
+    config_project.mkdir(parents=True, exist_ok=True)
+    (config_project / 'CMakeLists.txt').write_text(
+        'cmake_minimum_required(VERSION 3.24)\n'
+        'project(removed_config LANGUAGES NONE)\n'
+        'find_package(UdonCL 0.1 REQUIRED CONFIG)\n'
+        'udoncl_add_host_library(removed_host host.c)\n'
+        'udoncl_add_unity_library(removed CONFIG unity-library.json\n'
+        '  HOST_LIBRARIES removed_host)\n',
+        encoding='utf-8')
+    (config_project / 'host.c').write_text(
+        '#include <udoncl/export.h>\n'
+        'UDONCL_PROGRAM("removed");\n'
+        'UDONCL_EXPORT int run(void) { return 0; }\n', encoding='utf-8')
+    removed_configure = subprocess.run([
+        args.cmake, '-S', str(config_project),
+        '-B', str(output / 'removed-config-build'), '-G', args.generator,
+        f'-DCMAKE_MAKE_PROGRAM={args.make_program}',
+        f'-DUdonCL_DIR={package}',
+        f'-DUDONCL_CLANG_EXECUTABLE={Path(args.clang).resolve()}',
+        f'-DUDONCL_LLVM_LINK_EXECUTABLE={Path(args.llvm_link).resolve()}',
+    ], text=True, capture_output=True)
+    assert removed_configure.returncode != 0, removed_configure.stdout
+    removed_diagnostic = ' '.join(
+        (removed_configure.stdout + removed_configure.stderr).split())
+    assert (
+        'udoncl_add_unity_library no longer takes a CONFIG file '
+        '(unity-library.json). Name the program with UDONCL_PROGRAM("name")'
+    ) in removed_diagnostic, removed_diagnostic
     saxpy_source = args.source.resolve().parent / 'saxpy'
     run([
         args.cmake,

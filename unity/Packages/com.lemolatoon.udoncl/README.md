@@ -66,7 +66,6 @@ The recommended user path starts from a CMake target:
 find_package(UdonCL 0.1 REQUIRED CONFIG)
 udoncl_add_host_library(my_host host.c)
 udoncl_add_unity_library(my_unity_library
-  CONFIG unity-library.json
   HOST_LIBRARIES my_host)
 ```
 

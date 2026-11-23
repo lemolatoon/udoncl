@@ -19,10 +19,6 @@ set(_intermediate_ir_argument)
 if(UDONCL_OMIT_INTERMEDIATE_IR)
   set(_intermediate_ir_argument --omit-intermediate-ir)
 endif()
-set(_config_argument)
-if(DEFINED UDONCL_CONFIG AND NOT "${UDONCL_CONFIG}" STREQUAL "")
-  set(_config_argument "${UDONCL_CONFIG}")
-endif()
 set(_library_arguments)
 foreach(_setting IN ITEMS BINDING_NAMESPACE BINDING_CLASS DEVICE_TEXEL_FORMAT
                           DEVICE_WORK_BUDGET)
@@ -74,7 +70,7 @@ if(DEFINED UDONCL_HOST_RUNTIME_MODULE AND
 endif()
 file(REMOVE_RECURSE "${UDONCL_OUTPUT_DIRECTORY}")
 execute_process(
-  COMMAND "${UDONCL_COMPILER}" --emit-unity-library-bundle ${_config_argument}
+  COMMAND "${UDONCL_COMPILER}" --emit-unity-library-bundle
           ${_library_arguments} ${_host_arguments} ${_device_argument} ${_static_tensor_argument}
           ${_host_buffer_plan_argument}
           ${_runtime_validation_argument} ${_intermediate_ir_argument}

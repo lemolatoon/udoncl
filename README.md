@@ -144,7 +144,6 @@ udoncl_add_host_library(my_host host.c host_helpers.c)
 udoncl_add_device_library(my_device kernel.cl device_helpers.cl)
 
 udoncl_add_unity_library(my_unity_library
-  CONFIG unity-library.json
   OMIT_INTERMEDIATE_IR
   HOST_LIBRARIES my_host UdonCL::OpenCLRuntime
   DEVICE_LIBRARIES my_device)
@@ -165,15 +164,19 @@ udoncl_add_unity_library(my_unity_library
   example `UdonBLAS::UdonBLAS` after `find_package(UdonBLAS 0.1 REQUIRED
   CONFIG)`. `OMIT_INTERMEDIATE_IR` leaves the intermediate MLIR, which Unity
   does not import, out of the artifact.
-- The Unity-library config (`unity-library.json`) names the program, the
-  public U# methods and their parameters, and the public Device buffers; the
-  tutorials below explain each key. It does not list the kernels the Host
-  launches: `udonclc` derives each kernel's `device_kernels` entry from the
-  Host's dispatch sites, both for UdonCL library kernels and for your own
-  OpenCL C kernels launched with `clCreateKernel`, `clSetKernelArg`, and a
-  constant-size `clEnqueueNDRangeKernel`. A hand-written entry replaces the
-  derived one of its `kernel_id` (see "Library kernel entries" and "User
-  OpenCL C kernels" in
+- The Host C source describes the library with the macros of
+  `<udoncl/export.h>`: `UDONCL_PROGRAM("name")` names the program,
+  `UDONCL_EXPORT` (or `UDONCL_EXPORT_WHILE_BUSY`) marks each public U# method,
+  and `UDONCL_PUBLIC(float|int|long) cl_mem name;` declares each public
+  Device buffer; the tutorials below explain each one. There is no config
+  file. `BINDING_NAMESPACE`, `BINDING_CLASS`, `DEVICE_TEXEL_FORMAT` and
+  `DEVICE_WORK_BUDGET` arguments set the rest. Every Device buffer must
+  resolve at compile time to one Unity Texture; `udonclc` reports what
+  prevents it otherwise. The kernels the Host launches are derived from its
+  dispatch sites, both for UdonCL library kernels and for your own OpenCL C
+  kernels launched with `clCreateKernel`, `clSetKernelArg`, and a
+  constant-size `clEnqueueNDRangeKernel` (see "Library kernel entries" and
+  "User OpenCL C kernels" in
   [docs/architecture/refactor-baseline-and-mlir-pipeline.md](docs/architecture/refactor-baseline-and-mlir-pipeline.md)).
 - An ONNX model becomes a Host library with
   `udoncl_add_onnx_host_library(<target> MODEL <model.onnx> DIMENSION_BOUNDS
@@ -201,7 +204,6 @@ udontokenizers_add_huggingface_model(my_tokenizer
   SYMBOL my_tokenizer
   SOURCES tokenizer_host.c)
 udoncl_add_unity_library(my-tokenizer-unity-library
-  CONFIG tokenizer-library.json
   HOST_LIBRARIES my_tokenizer UdonTokenizers::UdonTokenizers)
 ```
 
@@ -1090,7 +1092,8 @@ udontokenizers_add_huggingface_model(transformer_chat_tokenizer_4k
   SOURCES conversation_text.c)
 
 udoncl_add_unity_library(onnx-transformer-tiny-chat-4k
-  CONFIG "${chat_unity_config}"
+  BINDING_CLASS UdonclTinyLlamaChatBinding
+  DEVICE_TEXEL_FORMAT rgba32_float
   OMIT_INTERMEDIATE_IR
   HOST_LIBRARIES
     transformer_conversation_model_host_4k
