@@ -11,6 +11,7 @@
 #include "VRC/Dialect/VRCGPU/VRCGPUDialect.h"
 #include "VRC/Target/HLSL/Emitter.h"
 #include "VRC/Target/UdonAssembly/Emitter.h"
+#include "HostAnnotations.h"
 #include "HostBufferPlan.h"
 #include "OpenCLUserKernels.h"
 #include "UnityDeviceKernels.h"
@@ -1545,66 +1546,15 @@ std::optional<json::Object> unityOnnxBindingManifest(ModuleOp module) {
                       {"physical", std::move(physicalJson)}};
 }
 
-FailureOr<std::set<std::string>>
-collectUdonCLAnnotatedExports(llvm::Module &module) {
-  std::set<std::string> exports;
-  GlobalVariable *annotations =
-      module.getNamedGlobal("llvm.global.annotations");
-  if (!annotations)
-    return exports;
-  auto *entries =
-      dyn_cast_or_null<ConstantArray>(annotations->getInitializer());
-  if (!entries) {
-    errs() << "llvm.global.annotations has an unsupported initializer\n";
+/// Reads the UdonCL annotations of a linked Host LLVM module and erases their
+/// metadata before the module is imported.
+FailureOr<udoncl::HostAnnotations>
+collectUdonCLHostAnnotations(llvm::Module &module) {
+  auto annotations = udoncl::readHostAnnotations(module, errs());
+  if (failed(annotations))
     return failure();
-  }
-  for (Use &use : entries->operands()) {
-    auto *entry = dyn_cast<ConstantStruct>(use.get());
-    if (!entry || entry->getNumOperands() < 2) {
-      errs() << "llvm.global.annotations has a malformed entry\n";
-      return failure();
-    }
-    auto *function =
-        dyn_cast<Function>(entry->getOperand(0)->stripPointerCasts());
-    auto *annotationGlobal = dyn_cast<GlobalVariable>(
-        getUnderlyingObject(entry->getOperand(1), /*MaxLookup=*/6));
-    auto *annotation = annotationGlobal
-                           ? dyn_cast_or_null<ConstantDataArray>(
-                                 annotationGlobal->getInitializer())
-                           : nullptr;
-    if (!function || !annotation || !annotation->isCString()) {
-      errs() << "llvm.global.annotations entry is not a function annotation\n";
-      return failure();
-    }
-    if (annotation->getAsCString() != "udoncl.export")
-      continue;
-    if (function->isDeclaration()) {
-      errs() << "UDONCL_EXPORT requires a linked Host definition: "
-             << function->getName() << "\n";
-      return failure();
-    }
-    if (!exports.insert(function->getName().str()).second) {
-      errs() << "duplicate UDONCL_EXPORT annotation: " << function->getName()
-             << "\n";
-      return failure();
-    }
-  }
-  // The annotation has been converted to compiler-owned export metadata.  The
-  // MLIR LLVM importer otherwise preserves the appending metadata global as an
-  // ordinary llvm.mlir.global, which is not Host memory and must not reach raw
-  // memory recovery.
-  annotations->eraseFromParent();
-  // So are the annotation and source file name strings it referenced: left in
-  // place they would become Host raw memory, and the artifact would depend on
-  // the path of the Host C source.
-  for (GlobalVariable &global : llvm::make_early_inc_range(module.globals())) {
-    if (global.getSection() != "llvm.metadata" || !global.hasLocalLinkage())
-      continue;
-    global.removeDeadConstantUsers();
-    if (global.use_empty())
-      global.eraseFromParent();
-  }
-  return exports;
+  udoncl::eraseHostAnnotations(module);
+  return annotations;
 }
 
 int32_t stableExportId(StringRef publicName, mlir::FunctionType type) {
@@ -2019,8 +1969,8 @@ FailureOr<OwningOpRef<ModuleOp>> recoverUnityHostLLVM(StringRef filename,
     return failure();
   }
   normalizeUnityHostCallingConventions(*inputModule);
-  auto annotatedExports = collectUdonCLAnnotatedExports(*inputModule);
-  if (failed(annotatedExports))
+  auto annotations = collectUdonCLHostAnnotations(*inputModule);
+  if (failed(annotations))
     return failure();
   bool hasRuntime =
       inputModule->getFunction("__vrc_opencl_buffer_alloc") != nullptr;
@@ -2049,7 +1999,7 @@ FailureOr<OwningOpRef<ModuleOp>> recoverUnityHostLLVM(StringRef filename,
   auto library = ::vrc::importLLVM(std::move(inputModule), context);
   if (!library || failed(verify(*library)))
     return failure();
-  for (const std::string &symbol : *annotatedExports) {
+  for (const std::string &symbol : annotations->exports) {
     auto function = library->lookupSymbol<LLVM::LLVMFuncOp>(symbol);
     if (!function) {
       errs() << "UDONCL_EXPORT definition was lost while importing Host "
@@ -2078,7 +2028,7 @@ FailureOr<OwningOpRef<ModuleOp>> recoverUnityHostLLVM(StringRef filename,
     recovery.addPass(::vrc::createLowerOpenCLAOTIntrinsicsPass());
   if (failed(recovery.run(*library)) || failed(verify(*library)))
     return failure();
-  for (const std::string &symbol : *annotatedExports) {
+  for (const std::string &symbol : annotations->exports) {
     auto function = library->lookupSymbol<func::FuncOp>(symbol);
     if (!function) {
       errs() << "UDONCL_EXPORT definition was lost while recovering Host "
@@ -3117,10 +3067,11 @@ int main(int argc, char **argv) {
         return 1;
       }
       normalizeUnityHostCallingConventions(*inputModule);
-      auto discoveredExports = collectUdonCLAnnotatedExports(*inputModule);
-      if (failed(discoveredExports))
+      auto annotations = collectUdonCLHostAnnotations(*inputModule);
+      if (failed(annotations))
         return 1;
-      annotatedHostExports = std::move(*discoveredExports);
+      annotatedHostExports.insert(annotations->exports.begin(),
+                                  annotations->exports.end());
       if (inputModule->getTargetTriple().str() != "spir-unknown-unknown" ||
           !inputModule->getDataLayout().isLittleEndian() ||
           inputModule->getDataLayout().getPointerSizeInBits() != 32) {

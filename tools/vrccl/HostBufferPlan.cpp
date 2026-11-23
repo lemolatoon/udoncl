@@ -1,4 +1,5 @@
 #include "HostBufferPlan.h"
+#include "HostAnnotations.h"
 
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Builders.h"
@@ -160,33 +161,12 @@ FailureOr<HostBufferPlan> planHostBuffers(llvm::Module &module,
   }
   HostBufferPlan plan;
   plan.baseCapacity = baseCapacity;
-  SmallVector<llvm::Function *> roots;
-  auto *annotations = module.getNamedGlobal("llvm.global.annotations");
-  auto *entries =
-      annotations
-          ? dyn_cast_or_null<ConstantArray>(annotations->getInitializer())
-          : nullptr;
-  if (annotations && !entries) {
-    diagnostics << "llvm.global.annotations has an unsupported initializer\n";
+  auto annotations = readHostAnnotations(module, diagnostics);
+  if (failed(annotations))
     return failure();
-  }
-  if (entries)
-    for (Use &use : entries->operands()) {
-      auto *entry = dyn_cast<ConstantStruct>(use.get());
-      if (!entry || entry->getNumOperands() < 2)
-        continue;
-      auto *function =
-          dyn_cast<llvm::Function>(entry->getOperand(0)->stripPointerCasts());
-      auto *annotationGlobal = dyn_cast<GlobalVariable>(
-          getUnderlyingObject(entry->getOperand(1), /*MaxLookup=*/6));
-      auto *annotation = annotationGlobal
-                             ? dyn_cast_or_null<ConstantDataArray>(
-                                   annotationGlobal->getInitializer())
-                             : nullptr;
-      if (function && annotation && annotation->isCString() &&
-          annotation->getAsCString() == "udoncl.export")
-        roots.push_back(function);
-    }
+  SmallVector<llvm::Function *> roots;
+  for (const std::string &symbol : annotations->exports)
+    roots.push_back(module.getFunction(symbol));
   if (roots.empty()) {
     // A generated ONNX Host can be used without a user C export layer. Its
     // complete allocation plan is already represented by baseCapacity.

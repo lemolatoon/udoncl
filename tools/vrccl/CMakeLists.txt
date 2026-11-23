@@ -1,4 +1,4 @@
-add_llvm_executable(vrccl vrccl.cpp HostBufferPlan.cpp UnityDeviceKernels.cpp
+add_llvm_executable(vrccl vrccl.cpp HostAnnotations.cpp HostBufferPlan.cpp UnityDeviceKernels.cpp
   UnityOnnxBuffers.cpp OpenCLUserKernels.cpp)
 set_target_properties(vrccl PROPERTIES OUTPUT_NAME udonclc)
 llvm_update_compile_flags(vrccl)
