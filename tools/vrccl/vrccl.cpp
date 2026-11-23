@@ -3137,6 +3137,12 @@ int main(int argc, char **argv) {
       if (failed(reporting.run(*module)))
         return 1;
     }
+    {
+      PassManager required(&context);
+      required.addPass(::vrc::createRequireStaticUnityResourceLoweringPass());
+      if (failed(required.run(*module)))
+        return 1;
+    }
     auto generatedBuffers = parseUnityBuffers(*unityConfig);
     if (failed(generatedBuffers))
       return 1;

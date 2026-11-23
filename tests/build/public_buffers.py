@@ -184,6 +184,23 @@ UDONCL_EXPORT int shutdown(void) {'''),
                      'UDONCL_PUBLIC(int) cl_mem result;'),
         'UDONCL_PUBLIC(int) variable result is passed to argument 2 of '
         'OpenCL kernel saxpy, a float buffer')
+    # Every Device buffer, private ones too, must resolve at compile time to
+    # one assigned buffer: a buffer of a run-time size cannot, and the static
+    # Device resource analysis rejects it.
+    rejected(
+        'dynamic-size',
+        host.replace('UDONCL_EXPORT int shutdown(void) {', '''\
+UDONCL_EXPORT int scratch(int bytes) {
+  cl_int status;
+  cl_mem buffer =
+      clCreateBuffer(context, CL_MEM_READ_WRITE, (size_t)bytes, 0, &status);
+  if (buffer)
+    clReleaseMemObject(buffer);
+  return status;
+}
+
+UDONCL_EXPORT int shutdown(void) {'''),
+        'static allocation flags and capacity must be constant and valid')
     print(f'public_buffers=passed buffers={len(buffers)}')
 
 

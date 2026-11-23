@@ -28,7 +28,31 @@ UDONCL_EXPORT_WHILE_BUSY int call_count(void) { return calls; }
 
 # A Host that waits for the Device copy it issues.
 SUSPENDING_HOST = '''\
-module {
+module attributes {udoncl.program = "while_busy_suspends"} {
+  func.func private @copy(!vrc.buffer, !vrc.buffer, i32, i32, i32) -> !vrc.event attributes {
+    vrc.intrinsic = "buffer_copy"
+  }
+  func.func private @await(!vrc.event) -> i32 attributes {
+    vrc.async_effect = "may_suspend",
+    vrc.intrinsic = "await"
+  }
+  func.func @copy_and_wait() -> i32 attributes {udoncl.export, udoncl.export_while_busy} {
+    %bytes = arith.constant 4 : i32
+    %zero = arith.constant 0 : i32
+    %source = "vrc.assigned_buffer"() <{capacity_bytes = 4 : i64, format = "rgba8_unorm", resource_id = 0 : i32, texture_id = 1 : i32}> : () -> !vrc.buffer
+    %destination = "vrc.assigned_buffer"() <{capacity_bytes = 4 : i64, format = "rgba8_unorm", resource_id = 1 : i32, texture_id = 2 : i32}> : () -> !vrc.buffer
+    %event = func.call @copy(%source, %destination, %zero, %zero, %bytes) : (!vrc.buffer, !vrc.buffer, i32, i32, i32) -> !vrc.event
+    %status = func.call @await(%event) : (!vrc.event) -> i32
+    return %status : i32
+  }
+}
+'''
+
+
+# A Host that allocates its Device buffers by run-time logical id: no
+# allocation resolves to a compiler-assigned buffer.
+POOLED_HOST = '''\
+module attributes {udoncl.program = "pooled_buffers"} {
   func.func private @allocate(i32, i32) -> (!vrc.buffer, i32) attributes {
     vrc.format = "rgba8_unorm",
     vrc.intrinsic = "buffer_alloc",
@@ -37,11 +61,7 @@ module {
   func.func private @copy(!vrc.buffer, !vrc.buffer, i32, i32, i32) -> !vrc.event attributes {
     vrc.intrinsic = "buffer_copy"
   }
-  func.func private @await(!vrc.event) -> i32 attributes {
-    vrc.async_effect = "may_suspend",
-    vrc.intrinsic = "await"
-  }
-  func.func @copy_and_wait() -> i32 {
+  func.func @copy_buffers() -> i32 attributes {udoncl.export} {
     %bytes = arith.constant 4 : i32
     %zero = arith.constant 0 : i32
     %source_id = arith.constant 1 : i32
@@ -49,12 +69,10 @@ module {
     %source, %source_status = func.call @allocate(%source_id, %bytes) : (i32, i32) -> (!vrc.buffer, i32)
     %destination, %destination_status = func.call @allocate(%destination_id, %bytes) : (i32, i32) -> (!vrc.buffer, i32)
     %event = func.call @copy(%source, %destination, %zero, %zero, %bytes) : (!vrc.buffer, !vrc.buffer, i32, i32, i32) -> !vrc.event
-    %status = func.call @await(%event) : (!vrc.event) -> i32
-    return %status : i32
+    return %zero : i32
   }
 }
 '''
-
 
 class Harness:
     def __init__(self, args):
@@ -147,18 +165,19 @@ __attribute__((annotate("udoncl.export_while_busy"))) int phase(void) {
     suspending = harness.output / 'while-busy-suspends.mlir'
     suspending.write_text(SUSPENDING_HOST, encoding='utf-8')
     harness.rejected(
-        'while-busy-suspends', {
-            'schema_version': 1, 'program': 'while_busy_suspends',
-            'exports': [{
-                'symbol': 'copy_and_wait', 'public_name': 'CopyAndWait',
-                'id': 1, 'parameters': [], 'allowed_while_busy': True,
-            }],
-            'buffers': [
-                {'id': 1, 'name': 'source', 'byte_size': 4},
-                {'id': 2, 'name': 'destination', 'byte_size': 4},
-            ],
-        }, 'UDONCL_EXPORT_WHILE_BUSY export may suspend: copy_and_wait',
+        'while-busy-suspends', None,
+        'UDONCL_EXPORT_WHILE_BUSY export may suspend: copy_and_wait',
         '--host-mlir', suspending)
+    # Every Unity Device buffer must resolve at compile time to one assigned
+    # buffer; a run-time buffer pool is an error that lists the blockers.
+    pooled = harness.output / 'pooled-buffers.mlir'
+    pooled.write_text(POOLED_HOST, encoding='utf-8')
+    harness.rejected(
+        'pooled-buffers', None,
+        'every Unity Device buffer must resolve at compile time to one '
+        'assigned buffer, but the static Unity resource lowering is not '
+        'applied: 2 dynamic Device allocation(s); 2 transfer operand(s) '
+        'without an assigned buffer', '--host-mlir', pooled)
 
     # U# export parameters are named after the C parameters; a configured
     # override still wins.
