@@ -591,7 +591,10 @@ namespace Lemolatoon.Udoncl.Editor
             CopyPackageSamples(package.resolvedPath, null, SampleValidationRoot);
             // The TinyLlama Chat Artifact needs the real model. Without it,
             // the sample compiles against the public API of its binding.
-            if (!AssetDatabase.IsValidFolder("Assets/udoncl-generated/tinyllama_real_chat"))
+            if (
+                !AssetDatabase.IsValidFolder("Assets/udoncl-generated/tinyllama_real_chat")
+                && !AssetDatabase.IsValidFolder("Assets/udoncl-generated/tinyllama_real_chat_4k")
+            )
                 File.Copy(
                     Path.Combine(
                         package.resolvedPath,
