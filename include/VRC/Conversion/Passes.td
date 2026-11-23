@@ -362,6 +362,22 @@ def ReportStaticUnityResourceLoweringPass : Pass<"vrc-report-static-unity-resour
     resolve, transfer or unresolved Device operand. The module is unchanged.
   }];
 }
+def RequireStaticUnityResourceLoweringPass : Pass<"vrc-require-static-unity-resource-lowering", "mlir::ModuleOp"> {
+  let summary = "Require every Unity Device buffer to resolve to one assigned buffer";
+  let description = [{
+    Fails a module whose static Unity resource lowering
+    (`vrc.static_unity_resource_lowering_readiness`) is not applied, or that
+    still allocates a Device buffer without having been assessed, with an
+    error that lists the blockers vrc-report-static-unity-resource-lowering
+    would report. A module without Device buffers (no allocation in the IR and
+    none in `vrc.static_device_resource_inventory`) passes.
+
+    Transitional exception (stage 1, removed with the ONNX sequence-state
+    banking in stage 3): a module whose generated ONNX binding banks
+    sequence state (`udoncl.onnx_binding` names an
+    `enqueue_advance_sequence_state_symbol`) keeps the run-time buffer pool.
+  }];
+}
 def LowerAwaitToContinuationsPass : Pass<"vrc-lower-await-to-continuations", "mlir::ModuleOp"> {
   let summary = "Split a single typed await into explicit UdonHL frame, suspend and resume blocks";
   let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "::vrc::vrc::VRCDialect"];
