@@ -109,9 +109,11 @@ struct ReconcileStaticUnityBuffersPass
       auto resourceId =
           alias ? alias.getAs<IntegerAttr>("resource_id") : nullptr;
       auto textureId = alias ? alias.getAs<IntegerAttr>("texture_id") : nullptr;
-      if (!access || (access != "input" && access != "output") || !index ||
-          index.getInt() < 0 || !kind || kind != "allocation" || !resourceId ||
-          resourceId.getInt() < 0 || !textureId || textureId.getInt() <= 0) {
+      if (!access ||
+          (access != "input" && access != "output" && access != "inout") ||
+          !index || index.getInt() < 0 || !kind || kind != "allocation" ||
+          !resourceId || resourceId.getInt() < 0 || !textureId ||
+          textureId.getInt() <= 0) {
         module.emitError("invalid static public resource alias");
         signalPassFailure();
         return;
@@ -153,7 +155,8 @@ struct ReconcileStaticUnityBuffersPass
       auto access =
           buffer ? buffer.getAs<StringAttr>("public_access") : nullptr;
       auto index = buffer ? buffer.getAs<IntegerAttr>("public_index") : nullptr;
-      bool validAccess = !access || access == "input" || access == "output";
+      bool validAccess = !access || access == "input" || access == "output" ||
+                         access == "inout";
       if (!id || id.getInt() <= 0 || !heapSlot || heapSlot.empty() ||
           !capacity || capacity.getInt() <= 0 || !validAccess ||
           (index && (!access || index.getInt() < 0)) ||

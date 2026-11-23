@@ -94,10 +94,10 @@ FailureOr<Binding> readBinding(Operation *operation, DictionaryAttr binding,
   auto logical = binding.getAs<IntegerAttr>("logical_bytes");
   auto capacity = binding.getAs<IntegerAttr>("capacity_bytes");
   if (!schemaV1(binding) || !access ||
-      (access != "input" && access != "output") || !index ||
-      index.getInt() < 0 || !source || !name || name.empty() || !dataType ||
-      dataType.empty() || !logical || logical.getInt() < 0 || !capacity ||
-      capacity.getInt() < logical.getInt())
+      (access != "input" && access != "output" && access != "inout") ||
+      !index || index.getInt() < 0 || !source || !name || name.empty() ||
+      !dataType || dataType.empty() || !logical || logical.getInt() < 0 ||
+      !capacity || capacity.getInt() < logical.getInt())
     return operation->emitError("invalid static public resource binding");
   FailureOr<int32_t> resource = failure();
   if (source == "call_allocation") {

@@ -48,9 +48,10 @@ struct DescribeCanonicalUnityBuffersPass
                                    builder.getStringAttr("host_variable")),
               builder.getNamedAttr("symbol", name),
           });
+    // An ONNX graph tensor is an input or an output, never both.
     auto binding = module->getAttrOfType<DictionaryAttr>("udoncl.onnx_binding");
     auto tensors =
-        binding
+        binding && access != "inout"
             ? binding.getAs<ArrayAttr>(access == "input" ? "inputs" : "outputs")
             : ArrayAttr();
     if (!tensors)
@@ -139,14 +140,14 @@ struct DescribeCanonicalUnityBuffersPass
              dataType != "int64") ||
             !logicalBytes || logicalBytes.getInt() < 0 ||
             logicalBytes.getInt() > capacity.getInt() || !access ||
-            (access != "input" && access != "output") || !index ||
-            index.getInt() < 0 ||
+            (access != "input" && access != "output" && access != "inout") ||
+            !index || index.getInt() < 0 ||
             !publicEndpoints.insert({access.getValue().str(), index.getInt()})
                  .second)
           return module.emitError(
               "invalid public canonical Unity buffer layout entry");
-        name = onnxPublicBufferName(publicName.getValue(), access == "output",
-                                    index.getInt(), names);
+        name = publicUnityBufferName(publicName.getValue(), access.getValue(),
+                                     index.getInt(), names);
         if (name.empty())
           return module.emitError(
               "canonical Unity buffer names are not uniquely mappable");

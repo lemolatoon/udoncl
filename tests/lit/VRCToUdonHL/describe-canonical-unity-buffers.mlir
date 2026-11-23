@@ -51,3 +51,21 @@ module attributes {
   vrc.static_unity_resource_lowering_readiness = {applied = true, pool_replacement_ready = true, schema_version = 1 : i32}
 } {
 }
+
+// -----
+
+// A public buffer U# both writes and reads has the access inout; a taken name
+// gets the inout suffix. An ONNX tensor is never inout, so the ONNX binding
+// gives it no source.
+
+// CHECK-LABEL: module attributes
+// CHECK-SAME: vrc.canonical_unity_buffers = [{byte_size = 4 : i64, element_type = "float32", id = 1 : i64, logical_byte_size = 4 : i64, name = "state", public_access = "input", public_index = 0 : i64, source = {kind = "onnx_tensor", tensor = "state"}}, {byte_size = 4 : i64, element_type = "float32", id = 2 : i64, logical_byte_size = 4 : i64, name = "state_inout_0", public_access = "inout", public_index = 0 : i64}]
+module attributes {
+  udoncl.onnx_binding = {inputs = [{index = 0 : i32, name = "state"}], outputs = [{index = 0 : i32, name = "state"}]},
+  vrc.static_unity_buffer_layout_plan = {buffers = [
+    {buffer_id = 1 : i32, capacity_bytes = 4 : i64, data_type = "float32", format = "rgba8_unorm", heap_slot = "__udoncl_buffer_1", logical_bytes = 4 : i64, name = "state", persistent = true, public = true, public_access = "input", public_index = 0 : i32, resource_id = 0 : i32, texture_id = 1 : i32},
+    {buffer_id = 2 : i32, capacity_bytes = 4 : i64, data_type = "float32", format = "rgba8_unorm", heap_slot = "__udoncl_buffer_2", logical_bytes = 4 : i64, name = "state", persistent = true, public = true, public_access = "inout", public_index = 0 : i32, resource_id = 1 : i32, texture_id = 2 : i32}
+  ], ready = true, schema_version = 1 : i32},
+  vrc.static_unity_resource_lowering_readiness = {applied = true, pool_replacement_ready = true, schema_version = 1 : i32}
+} {
+}

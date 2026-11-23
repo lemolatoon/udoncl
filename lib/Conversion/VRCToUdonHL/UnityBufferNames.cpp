@@ -3,8 +3,8 @@
 
 namespace vrc {
 
-std::string onnxPublicBufferName(llvm::StringRef name, bool output,
-                                 int64_t index, std::set<std::string> &used) {
+std::string publicUnityBufferName(llvm::StringRef name, llvm::StringRef access,
+                                  int64_t index, std::set<std::string> &used) {
   std::string result;
   result.reserve(name.size());
   for (char character : name) {
@@ -16,11 +16,15 @@ std::string onnxPublicBufferName(llvm::StringRef name, bool output,
     result = "tensor_" + result;
   if (used.insert(result).second)
     return result;
-  result += output ? "_output_" : "_input_";
-  result += std::to_string(index);
+  result += "_" + access.str() + "_" + std::to_string(index);
   if (!used.insert(result).second)
     return {};
   return result;
+}
+
+std::string onnxPublicBufferName(llvm::StringRef name, bool output,
+                                 int64_t index, std::set<std::string> &used) {
+  return publicUnityBufferName(name, output ? "output" : "input", index, used);
 }
 
 } // namespace vrc

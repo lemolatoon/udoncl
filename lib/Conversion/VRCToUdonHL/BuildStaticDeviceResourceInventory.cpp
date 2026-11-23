@@ -157,8 +157,8 @@ struct BuildStaticDeviceResourceInventoryPass
             resource ? resource.getAs<IntegerAttr>("capacity_bytes") : nullptr;
         if (failed(id) || !contextIds.contains(*id) ||
             publicById.contains(*id) || !access ||
-            (access != "input" && access != "output") || !index ||
-            index.getInt() < 0 || !name || name.getValue().empty() ||
+            (access != "input" && access != "output" && access != "inout") ||
+            !index || index.getInt() < 0 || !name || name.getValue().empty() ||
             !dataType || dataType.getValue().empty() || !logical ||
             logical.getInt() < 0 || !capacity ||
             capacity.getInt() < logical.getInt()) {

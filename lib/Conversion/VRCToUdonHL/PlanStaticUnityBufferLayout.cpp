@@ -143,7 +143,8 @@ struct PlanStaticUnityBufferLayoutPass
       if (!capacity || capacity.getInt() <= 0 || !format ||
           format != "rgba8_unorm" || !isPublic || !persistent ||
           (isPublic.getValue() &&
-           (!access || (access != "input" && access != "output"))) ||
+           (!access ||
+            (access != "input" && access != "output" && access != "inout"))) ||
           (!isPublic.getValue() &&
            (access || name || dataType || logicalBytes)) ||
           !validPublicMetadata) {
@@ -235,8 +236,8 @@ struct PlanStaticUnityBufferLayoutPass
              : textureByResource.end();
       if (!kind || kind != "allocation" || !id || id.getInt() < 0 ||
           !textureId || textureId.getInt() <= 0 || !access ||
-          (access != "input" && access != "output") || !index ||
-          index.getInt() < 0 || found == inventoryById.end() ||
+          (access != "input" && access != "output" && access != "inout") ||
+          !index || index.getInt() < 0 || found == inventoryById.end() ||
           assigned == textureByResource.end() ||
           assigned->second != textureId.getInt() ||
           !found->second.isPublic.getValue() ||

@@ -83,7 +83,8 @@ struct ResolveStaticPublicResourceAliasesPass
           format != "rgba8_unorm" || !isPublic ||
           (isPublic.getValue() &&
            (!publicAccess ||
-            (publicAccess != "input" && publicAccess != "output"))) ||
+            (publicAccess != "input" && publicAccess != "output" &&
+             publicAccess != "inout"))) ||
           (!isPublic.getValue() && publicAccess) ||
           assignmentByResource.contains(static_cast<int32_t>(id.getInt())) ||
           !textureIds.insert(static_cast<int32_t>(textureId.getInt())).second) {
@@ -122,8 +123,9 @@ struct ResolveStaticPublicResourceAliasesPass
       auto access = resource.getAs<StringAttr>("public_access");
       auto index = resource.getAs<IntegerAttr>("public_index");
       int32_t resourceId = static_cast<int32_t>(id.getInt());
-      if (!access || (access != "input" && access != "output") || !index ||
-          index.getInt() < 0) {
+      if (!access ||
+          (access != "input" && access != "output" && access != "inout") ||
+          !index || index.getInt() < 0) {
         module.emitError(
             "invalid public endpoint in static resource inventory");
         signalPassFailure();

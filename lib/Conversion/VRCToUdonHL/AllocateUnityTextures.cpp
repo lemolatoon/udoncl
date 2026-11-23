@@ -104,7 +104,8 @@ struct AllocateUnityTexturesPass
           format != "rgba8_unorm" || !isPublic || !persistent ||
           (isPublic.getValue() &&
            (!publicAccess ||
-            (publicAccess != "input" && publicAccess != "output"))) ||
+            (publicAccess != "input" && publicAccess != "output" &&
+             publicAccess != "inout"))) ||
           (!isPublic.getValue() && publicAccess)) {
         module.emitError("invalid allocation Texture requirements");
         signalPassFailure();

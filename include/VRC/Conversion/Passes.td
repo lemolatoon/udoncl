@@ -371,12 +371,12 @@ def DescribeCanonicalUnityBuffersPass : Pass<"vrc-describe-canonical-unity-buffe
     the library in `vrc.canonical_unity_buffers`, in layout order: one
     dictionary per assigned Unity Texture with its `id` (the texture id),
     `name` and `byte_size` (the capacity). A public buffer also carries
-    `logical_byte_size`, `element_type`, `public_access` and `public_index`,
-    and is named after its public name, made a C# identifier (characters
-    outside `[A-Za-z0-9_]` become `_`, a leading non-letter gets the prefix
-    `tensor_`, and a taken name the suffix `_input_<index>` or
-    `_output_<index>`); a private buffer is `private_<id>`. Texture ids must
-    be dense from one, and names and public endpoints unique.
+    `logical_byte_size`, `element_type`, `public_access` (`input`, `output`
+    or `inout`) and `public_index`, and is named after its public name, made
+    a C# identifier (characters outside `[A-Za-z0-9_]` become `_`, a leading
+    non-letter gets the prefix `tensor_`, and a taken name the suffix
+    `_<access>_<index>`); a private buffer is `private_<id>`. Texture ids
+    must be dense from one, and names and public endpoints unique.
 
     A public buffer whose origin the module states also carries `source`:
     `{kind = "host_variable", symbol}` for the resource of a UDONCL_PUBLIC
