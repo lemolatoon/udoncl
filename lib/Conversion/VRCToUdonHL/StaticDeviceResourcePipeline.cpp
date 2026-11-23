@@ -42,6 +42,7 @@ void registerStaticDeviceResourceDiscoveryPipeline() {
 void buildStaticUnityResourceReadinessPipeline(OpPassManager &manager) {
   manager.addPass(createMaterializeStaticLogicalBuffersPass());
   manager.addPass(createMaterializeStaticDispatchResourcesPass());
+  manager.addPass(createMaterializeStaticTransferResourcesPass());
   manager.addPass(createPlanStaticPhysicalAllocationSpecializationPass());
   manager.addPass(createSpecializeStaticPhysicalAllocationPathsPass());
   manager.addPass(createMaterializeStaticPhysicalAllocationsPass());

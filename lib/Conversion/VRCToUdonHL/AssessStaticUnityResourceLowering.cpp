@@ -117,6 +117,9 @@ struct AssessStaticUnityResourceLoweringPass
       return;
     }
     int32_t transferCalls = 0;
+    // Transfer calls specialized to their assigned Textures; their typed
+    // transfers are checked below like any other.
+    int32_t specializedTransferCalls = 0;
     int32_t dynamicResolveCount = 0;
     int32_t typedAllocationCalls = 0;
     int32_t typedReleaseCalls = 0;
@@ -130,6 +133,8 @@ struct AssessStaticUnityResourceLoweringPass
       dynamicResolveCount += call.getCallee() == "udonclResolvePhysicalBuffer";
       auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
           call, call.getCalleeAttr());
+      specializedTransferCalls +=
+          callee && callee->hasAttr("vrc.static_transfer_specialization");
       auto intrinsic = callee
                            ? callee->getAttrOfType<StringAttr>("vrc.intrinsic")
                            : StringAttr();
@@ -169,10 +174,11 @@ struct AssessStaticUnityResourceLoweringPass
     auto transferUnresolved = integer(transfers, "unresolved_count");
     auto transferSpecialization =
         integer(transfers, "requires_context_specialization_count");
-    if (transferCalls > 0 &&
+    if (transferCalls + specializedTransferCalls > 0 &&
         (!schemaV1(transfers) || !transferCandidates || !transferResolved ||
          !transferUnresolved || !transferSpecialization ||
-         transferCandidates.getInt() != transferCalls)) {
+         transferCandidates.getInt() !=
+             transferCalls + specializedTransferCalls)) {
       module.emitError(
           "static transfer readiness metadata does not match the IR");
       signalPassFailure();
