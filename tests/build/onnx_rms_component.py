@@ -84,6 +84,12 @@ def main():
     for item in public.values():
         assert item['source'] == {
             'kind': 'onnx_tensor', 'tensor': item['name']}, item
+    # The binding documents the tensor each public buffer method transfers.
+    binding = (artifact / manifest['program']['binding_source']).read_text(
+        encoding='utf-8')
+    for item in public.values():
+        assert (f"/// Device buffer of the ONNX tensor <c>{item['name']}</c>: "
+                '8192 float elements (float32).') in binding, binding
     static_tensors = manifest['static_tensors']
     assert [item['name'] for item in static_tensors] == ['scale', 'epsilon']
     assert static_tensors[0]['shape'] == [2048]

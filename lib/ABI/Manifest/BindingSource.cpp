@@ -85,7 +85,28 @@ struct PublicBufferBinding {
   std::string suffix;
   std::string elementType;
   std::string access;
+  /// What the buffer holds, as XML documentation text.
+  std::string origin;
 };
+
+/// `value` as XML documentation text: markup characters are escaped and
+/// control characters replaced.
+std::string xmlDocumentationText(StringRef value) {
+  std::string result;
+  for (char character : value) {
+    if (character == '&')
+      result += "&amp;";
+    else if (character == '<')
+      result += "&lt;";
+    else if (character == '>')
+      result += "&gt;";
+    else if (static_cast<unsigned char>(character) < 0x20)
+      result += '?';
+    else
+      result.push_back(character);
+  }
+  return result;
+}
 
 std::string publicIoName(StringRef name, unsigned index) {
   std::string result;
@@ -308,9 +329,28 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
           (*bytes % elementBytes) != 0 ||
           (*access != "input" && *access != "output"))
         return invalid("Device buffer has an unsupported public transfer ABI");
+      // The optional source says what the buffer holds; it is not part of
+      // the public ABI fingerprint.
+      std::string origin =
+          "the public Device buffer <c>" + xmlDocumentationText(*name) + "</c>";
+      if (const json::Value *sourceValue = buffer->get("source")) {
+        const json::Object *source = sourceValue->getAsObject();
+        auto kind = source ? source->getString("kind") : std::nullopt;
+        auto symbol = source ? source->getString("symbol") : std::nullopt;
+        auto tensor = source ? source->getString("tensor") : std::nullopt;
+        if (kind && *kind == "host_variable" && symbol)
+          origin = "the Host variable <c>" + xmlDocumentationText(*symbol) +
+                   "</c> (UDONCL_PUBLIC)";
+        else if (kind && *kind == "onnx_tensor" && tensor)
+          origin =
+              "the ONNX tensor <c>" + xmlDocumentationText(*tensor) + "</c>";
+        else
+          return invalid("Device buffer has an invalid source");
+      }
       publicBuffers.push_back({*id, *bytes / 4, *bytes / elementBytes,
                                publicIoName(*name, indexed.index()),
-                               elementType->str(), access->str()});
+                               elementType->str(), access->str(),
+                               std::move(origin)});
       hasPublicInput |= *access == "input";
       hasPublicOutput |= *access == "output";
     }
@@ -711,6 +751,18 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
             .str();
     if (!methods.insert(method).second)
       return invalid(Twine("generated U# method collision: ") + method);
+    StringRef elementName = buffer.elementType == "float32" ? "float"
+                            : buffer.elementType == "int64" ? "long"
+                                                            : "int";
+    output << "\n        /// <summary>\n"
+              "        /// Device buffer of "
+           << buffer.origin << ": " << buffer.elements << ' ' << elementName
+           << " element" << (buffer.elements == 1 ? "" : "s") << " ("
+           << buffer.elementType << ").\n"
+           << (buffer.access == "input"
+                   ? "        /// U# writes it; the Device reads it.\n"
+                   : "        /// The Device writes it; U# reads it.\n")
+           << "        /// </summary>";
     if (buffer.access == "input")
       output << "\n        public int " << method << '('
              << (buffer.elementType == "float32" ? "float[]"

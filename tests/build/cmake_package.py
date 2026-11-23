@@ -2548,6 +2548,22 @@ def main():
         'public int GetLastReadbackStatus()',
     ]:
         assert member in saxpy_binding, member
+    # Each public buffer method documents the variable it transfers, the
+    # element type and count, and the direction.
+    for method, name, direction in [
+        ('TryWriteX(float[] source)', 'x',
+         'U# writes it; the Device reads it.'),
+        ('StartReadResult(float[] destination', 'result',
+         'The Device writes it; U# reads it.'),
+    ]:
+        documentation = (
+            '        /// <summary>\n'
+            f'        /// Device buffer of the Host variable <c>{name}</c> '
+            '(UDONCL_PUBLIC): 32 float elements (float32).\n'
+            f'        /// {direction}\n'
+            '        /// </summary>\n'
+            f'        public int {method}')
+        assert documentation in saxpy_binding, (documentation, saxpy_binding)
     assert saxpy_manifest['program']['buffer_copy_shader'] == 'buffer-copy.shader'
     assert (saxpy_artifact / 'buffer-copy.shader').is_file()
     saxpy_kernel = saxpy_manifest['device']['kernels'][0]
