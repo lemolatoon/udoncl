@@ -327,7 +327,7 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
           (*elementType != "float32" && *elementType != "int32" &&
            *elementType != "int64") ||
           (*bytes % elementBytes) != 0 ||
-          (*access != "input" && *access != "output"))
+          (*access != "input" && *access != "output" && *access != "inout"))
         return invalid("Device buffer has an unsupported public transfer ABI");
       // The optional source says what the buffer holds; it is not part of
       // the public ABI fingerprint.
@@ -351,8 +351,8 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
                                publicIoName(*name, indexed.index()),
                                elementType->str(), access->str(),
                                std::move(origin)});
-      hasPublicInput |= *access == "input";
-      hasPublicOutput |= *access == "output";
+      hasPublicInput |= *access != "output";
+      hasPublicOutput |= *access != "input";
     }
   bool hasPublicBuffers = !publicBuffers.empty();
 
@@ -745,53 +745,53 @@ Expected<std::string> buildUdonSharpBindingSource(const json::Object &manifest,
 )";
   }
   for (const PublicBufferBinding &buffer : publicBuffers) {
-    std::string method =
-        (Twine(buffer.access == "input" ? "TryWrite" : "StartRead") +
-         buffer.suffix)
-            .str();
-    if (!methods.insert(method).second)
-      return invalid(Twine("generated U# method collision: ") + method);
     StringRef elementName = buffer.elementType == "float32" ? "float"
                             : buffer.elementType == "int64" ? "long"
                                                             : "int";
-    output << "\n        /// <summary>\n"
-              "        /// Device buffer of "
-           << buffer.origin << ": " << buffer.elements << ' ' << elementName
-           << " element" << (buffer.elements == 1 ? "" : "s") << " ("
-           << buffer.elementType << ").\n"
-           << (buffer.access == "input"
-                   ? "        /// U# writes it; the Device reads it.\n"
-                   : "        /// The Device writes it; U# reads it.\n")
-           << "        /// </summary>";
-    if (buffer.access == "input")
-      output << "\n        public int " << method << '('
-             << (buffer.elementType == "float32" ? "float[]"
-                 : buffer.elementType == "int64" ? "long[]"
-                                                 : "int[]")
-             << " source)\n"
-                "        {\n"
-                "            return "
-             << (buffer.elementType == "float32" ? "TryWriteFloatBuffer("
-                 : buffer.elementType == "int64" ? "TryWriteLongBuffer("
-                                                 : "TryWriteIntBuffer(")
-             << buffer.id
-             << ", source);\n"
-                "        }\n";
-    else
-      output << "\n        public int " << method << '('
-             << (buffer.elementType == "float32" ? "float[]"
-                 : buffer.elementType == "int64" ? "long[]"
-                                                 : "int[]")
-             << " destination, UdonSharpBehaviour receiver, string "
-                "completionEvent)\n"
-                "        {\n"
-                "            return "
-             << (buffer.elementType == "float32" ? "StartReadFloatBuffer("
-                 : buffer.elementType == "int64" ? "StartReadLongBuffer("
-                                                 : "StartReadIntBuffer(")
-             << buffer.id
-             << ", destination, receiver, completionEvent);\n"
-                "        }\n";
+    StringRef arrayType = buffer.elementType == "float32" ? "float[]"
+                          : buffer.elementType == "int64" ? "long[]"
+                                                          : "int[]";
+    StringRef suffix = buffer.elementType == "float32" ? "FloatBuffer("
+                       : buffer.elementType == "int64" ? "LongBuffer("
+                                                       : "IntBuffer(";
+    StringRef direction = buffer.access == "input"
+                              ? "U# writes it; the Device reads it."
+                          : buffer.access == "output"
+                              ? "The Device writes it; U# reads it."
+                              : "U# writes and reads it; so does the Device.";
+    // An inout buffer has both methods.
+    for (bool write : {true, false}) {
+      if (buffer.access == (write ? "output" : "input"))
+        continue;
+      std::string method =
+          (Twine(write ? "TryWrite" : "StartRead") + buffer.suffix).str();
+      if (!methods.insert(method).second)
+        return invalid(Twine("generated U# method collision: ") + method);
+      output << "\n        /// <summary>\n"
+                "        /// Device buffer of "
+             << buffer.origin << ": " << buffer.elements << ' ' << elementName
+             << " element" << (buffer.elements == 1 ? "" : "s") << " ("
+             << buffer.elementType << ").\n"
+             << "        /// " << direction << "\n"
+             << "        /// </summary>";
+      if (write)
+        output << "\n        public int " << method << '(' << arrayType
+               << " source)\n"
+                  "        {\n"
+                  "            return TryWrite"
+               << suffix << buffer.id
+               << ", source);\n"
+                  "        }\n";
+      else
+        output << "\n        public int " << method << '(' << arrayType
+               << " destination, UdonSharpBehaviour receiver, string "
+                  "completionEvent)\n"
+                  "        {\n"
+                  "            return StartRead"
+               << suffix << buffer.id
+               << ", destination, receiver, completionEvent);\n"
+                  "        }\n";
+    }
   }
   SmallVector<AsyncExportBinding> asyncExports;
   for (const json::Value &value : *exports) {

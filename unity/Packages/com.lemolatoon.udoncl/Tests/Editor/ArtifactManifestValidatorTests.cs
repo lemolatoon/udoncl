@@ -204,6 +204,39 @@ namespace Lemolatoon.Udoncl.Editor.Tests
         }
 
         [Test]
+        public void ValidateAcceptsInoutPublicBufferAndRejectsUnknownAccess()
+        {
+            // A CL_MEM_READ_WRITE UDONCL_PUBLIC variable is a buffer U# both
+            // writes and reads.
+            string manifestPath = Path.Combine(_directory, "manifest.json");
+            string json = File.ReadAllText(manifestPath)
+                .Replace(
+                    "\"device\":{\"kernels\"",
+                    "\"device\":{\"buffers\":[{\"id\":7,\"name\":\"state\","
+                        + "\"heap_slot\":\"__udoncl_buffer_7\",\"logical_bytes\":16,"
+                        + "\"width\":4,\"height\":1,\"format\":\"rgba8_unorm\","
+                        + "\"srgb\":false,\"mipmaps\":false,\"filter\":\"point\","
+                        + "\"element_type\":\"float32\",\"public_access\":\"inout\","
+                        + "\"source\":{\"kind\":\"host_variable\",\"symbol\":\"state\"}}],"
+                        + "\"kernels\""
+                );
+            File.WriteAllText(manifestPath, json, new UTF8Encoding(false));
+
+            ValidatedArtifact artifact = ArtifactManifestValidator.Validate(_directory);
+            Assert.AreEqual(1, artifact.DeviceBuffers.Count);
+            Assert.AreEqual("inout", artifact.DeviceBuffers[0].PublicAccess);
+
+            File.WriteAllText(
+                manifestPath,
+                json.Replace("\"public_access\":\"inout\"", "\"public_access\":\"both\""),
+                new UTF8Encoding(false)
+            );
+            Assert.Throws<InvalidDataException>(() =>
+                ArtifactManifestValidator.Validate(_directory)
+            );
+        }
+
+        [Test]
         public void ValidateAcceptsWordTexelBuffersWithTransferScratch()
         {
             string manifestPath = Path.Combine(_directory, "manifest.json");

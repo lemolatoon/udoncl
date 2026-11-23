@@ -685,7 +685,12 @@ namespace Lemolatoon.Udoncl.Editor
                             buffer.element_type == "float32"
                             || buffer.element_type == "int32"
                             || buffer.element_type == "int64"
-                        ) && (buffer.public_access == "input" || buffer.public_access == "output")
+                        )
+                        && (
+                            buffer.public_access == "input"
+                            || buffer.public_access == "output"
+                            || buffer.public_access == "inout"
+                        )
                     );
                 if (
                     buffer.id <= 0
