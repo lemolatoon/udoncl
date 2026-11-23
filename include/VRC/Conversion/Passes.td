@@ -378,6 +378,13 @@ def DescribeCanonicalUnityBuffersPass : Pass<"vrc-describe-canonical-unity-buffe
     `_output_<index>`); a private buffer is `private_<id>`. Texture ids must
     be dense from one, and names and public endpoints unique.
 
+    A public buffer whose origin the module states also carries `source`:
+    `{kind = "host_variable", symbol}` for the resource of a UDONCL_PUBLIC
+    Host variable (`vrc.static_declared_public_resources`), or
+    `{kind = "onnx_tensor", tensor}` for the graph input or output of the
+    ONNX binding (`udoncl.onnx_binding`) with the buffer's public name,
+    access and index.
+
     A module whose lowering is not applied gets no description. A
     description from an earlier run is replaced.
   }];

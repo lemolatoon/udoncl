@@ -8,6 +8,7 @@
 #include "VRC/Conversion/UnityBufferNames.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "llvm/ADT/STLExtras.h"
 #include <set>
 #include <string>
 using namespace mlir;
@@ -28,6 +29,46 @@ struct DescribeCanonicalUnityBuffersPass
     module->removeAttr(descriptionAttribute);
     if (failed(describe(module)))
       signalPassFailure();
+  }
+
+  /// Where the public buffer `name` comes from, when the module says: the
+  /// UDONCL_PUBLIC Host variable `name` when the Host source declares the
+  /// resource public, or the ONNX tensor `name` when the ONNX binding has a
+  /// graph input or output of that name at this access and index.
+  DictionaryAttr describeSource(ModuleOp module, IntegerAttr resourceId,
+                                StringAttr name, StringAttr access,
+                                IntegerAttr index) {
+    Builder builder(module.getContext());
+    if (auto declared = module->getAttrOfType<DictionaryAttr>(
+            "vrc.static_declared_public_resources"))
+      if (auto ids = declared.getAs<DenseI32ArrayAttr>("resource_ids"))
+        if (llvm::is_contained(ids.asArrayRef(), resourceId.getInt()))
+          return builder.getDictionaryAttr({
+              builder.getNamedAttr("kind",
+                                   builder.getStringAttr("host_variable")),
+              builder.getNamedAttr("symbol", name),
+          });
+    auto binding = module->getAttrOfType<DictionaryAttr>("udoncl.onnx_binding");
+    auto tensors =
+        binding
+            ? binding.getAs<ArrayAttr>(access == "input" ? "inputs" : "outputs")
+            : ArrayAttr();
+    if (!tensors)
+      return {};
+    for (Attribute attribute : tensors) {
+      auto tensor = dyn_cast<DictionaryAttr>(attribute);
+      auto tensorIndex =
+          tensor ? tensor.getAs<IntegerAttr>("index") : IntegerAttr();
+      auto tensorName =
+          tensor ? tensor.getAs<StringAttr>("name") : StringAttr();
+      if (tensorIndex && tensorIndex.getInt() == index.getInt() &&
+          tensorName == name)
+        return builder.getDictionaryAttr({
+            builder.getNamedAttr("kind", builder.getStringAttr("onnx_tensor")),
+            builder.getNamedAttr("tensor", name),
+        });
+    }
+    return {};
   }
 
   LogicalResult describe(ModuleOp module) {
@@ -117,6 +158,9 @@ struct DescribeCanonicalUnityBuffersPass
         fields.push_back(builder.getNamedAttr("public_access", access));
         fields.push_back(builder.getNamedAttr(
             "public_index", builder.getI64IntegerAttr(index.getInt())));
+        if (DictionaryAttr source =
+                describeSource(module, resourceId, publicName, access, index))
+          fields.push_back(builder.getNamedAttr("source", source));
       } else if (entry.get("name") || entry.get("data_type") ||
                  entry.get("logical_bytes") || entry.get("public_access") ||
                  entry.get("public_index")) {

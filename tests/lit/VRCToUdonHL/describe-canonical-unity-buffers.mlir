@@ -31,3 +31,23 @@ module attributes {
   vrc.static_unity_resource_lowering_readiness = {applied = false, pool_replacement_ready = false, schema_version = 1 : i32}
 } {
 }
+
+// -----
+
+// A public buffer of a UDONCL_PUBLIC Host variable comes from that variable;
+// one the ONNX binding names as a graph input or output comes from that
+// tensor. A name the ONNX binding has at another index states no source.
+
+// CHECK-LABEL: module attributes
+// CHECK-SAME: vrc.canonical_unity_buffers = [{byte_size = 4 : i64, element_type = "float32", id = 1 : i64, logical_byte_size = 4 : i64, name = "image", public_access = "input", public_index = 0 : i64, source = {kind = "host_variable", symbol = "image"}}, {byte_size = 4 : i64, element_type = "float32", id = 2 : i64, logical_byte_size = 4 : i64, name = "logits", public_access = "output", public_index = 0 : i64, source = {kind = "onnx_tensor", tensor = "logits"}}, {byte_size = 4 : i64, element_type = "float32", id = 3 : i64, logical_byte_size = 4 : i64, name = "hidden", public_access = "output", public_index = 1 : i64}]
+module attributes {
+  udoncl.onnx_binding = {inputs = [{index = 0 : i32, name = "input"}], outputs = [{index = 0 : i32, name = "logits"}, {index = 2 : i32, name = "hidden"}]},
+  vrc.static_declared_public_resources = {resource_ids = array<i32: 4>, schema_version = 1 : i32},
+  vrc.static_unity_buffer_layout_plan = {buffers = [
+    {buffer_id = 1 : i32, capacity_bytes = 4 : i64, data_type = "float32", format = "rgba8_unorm", heap_slot = "__udoncl_buffer_1", logical_bytes = 4 : i64, name = "image", persistent = true, public = true, public_access = "input", public_index = 0 : i32, resource_id = 4 : i32, texture_id = 1 : i32},
+    {buffer_id = 2 : i32, capacity_bytes = 4 : i64, data_type = "float32", format = "rgba8_unorm", heap_slot = "__udoncl_buffer_2", logical_bytes = 4 : i64, name = "logits", persistent = true, public = true, public_access = "output", public_index = 0 : i32, resource_id = 5 : i32, texture_id = 2 : i32},
+    {buffer_id = 3 : i32, capacity_bytes = 4 : i64, data_type = "float32", format = "rgba8_unorm", heap_slot = "__udoncl_buffer_3", logical_bytes = 4 : i64, name = "hidden", persistent = true, public = true, public_access = "output", public_index = 1 : i32, resource_id = 6 : i32, texture_id = 3 : i32}
+  ], ready = true, schema_version = 1 : i32},
+  vrc.static_unity_resource_lowering_readiness = {applied = true, pool_replacement_ready = true, schema_version = 1 : i32}
+} {
+}
