@@ -240,6 +240,17 @@ def EliminateDeadPhysicalAllocationFallbacksPass : Pass<"vrc-eliminate-dead-phys
 def AssessStaticUnityResourceLoweringPass : Pass<"vrc-assess-static-unity-resource-lowering", "mlir::ModuleOp"> {
   let summary = "Assess static resource operands separately from canonical Unity pool replacement";
 }
+def ReportStaticUnityResourceLoweringPass : Pass<"vrc-report-static-unity-resource-lowering", "mlir::ModuleOp"> {
+  let summary = "Report why static Unity resource lowering is or is not applied";
+  let description = [{
+    Emits a remark with the state of the static Unity resource lowering
+    (`vrc.static_unity_resource_lowering_readiness`) and one remark per
+    blocker: a public allocation without a public alias, a configured public
+    buffer no static public resource resolves, a static public resource no
+    configured buffer uses, and every remaining dynamic allocation, release,
+    resolve, transfer or unresolved Device operand. The module is unchanged.
+  }];
+}
 def LowerAwaitToContinuationsPass : Pass<"vrc-lower-await-to-continuations", "mlir::ModuleOp"> {
   let summary = "Split a single typed await into explicit UdonHL frame, suspend and resume blocks";
   let dependentDialects = ["::vrc::udonhl::UdonHLDialect", "::vrc::vrc::VRCDialect"];

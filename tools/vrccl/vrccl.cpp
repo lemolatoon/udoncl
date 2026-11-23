@@ -329,6 +329,10 @@ cl::opt<bool> omitIntermediateIR(
 cl::opt<bool> debugCompilerPhases(
     "debug-compiler-phases",
     cl::desc("Print coarse compiler phase boundaries for diagnostics"));
+cl::opt<bool> reportStaticResources(
+    "report-static-resources",
+    cl::desc("Print whether static Unity resource lowering is applied to a "
+             "Unity library and what blocks it"));
 cl::opt<bool> runtimeValidation(
     "runtime-validation",
     cl::desc("Record that read/write physical-resource alias validation is "
@@ -3143,6 +3147,18 @@ int main(int argc, char **argv) {
       return 1;
     if (failed(materializeCanonicalUnityBufferConfig(*module, *unityConfig)))
       return 1;
+    if (reportStaticResources) {
+      ScopedDiagnosticHandler report(&context, [](Diagnostic &diagnostic) {
+        if (diagnostic.getSeverity() != mlir::DiagnosticSeverity::Remark)
+          return failure();
+        errs() << "udonclc-static-resources: " << diagnostic << '\n';
+        return success();
+      });
+      PassManager reporting(&context);
+      reporting.addPass(::vrc::createReportStaticUnityResourceLoweringPass());
+      if (failed(reporting.run(*module)))
+        return 1;
+    }
     auto generatedBuffers = parseUnityBuffers(*unityConfig);
     if (failed(generatedBuffers))
       return 1;

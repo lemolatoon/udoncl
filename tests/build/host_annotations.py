@@ -203,6 +203,14 @@ UDONCL_EXPORT int read__text(void) { return 1; }
             'of UDONCL_EXPORT scale cannot name a U# parameter; rename the C '
             'parameter', '--host-llvm', module)
 
+    # --report-static-resources says whether static Unity resource lowering
+    # applies; a Host without Device resources is never assessed.
+    _, report = harness.compile('report', program, '--host-llvm', host,
+                                '--report-static-resources')
+    assert report.returncode == 0, (report.stdout, report.stderr)
+    assert ('udonclc-static-resources: static Unity resource lowering was '
+            'not assessed') in report.stderr, report.stderr
+
     print(f'host_annotations=passed exports={len(exports)}')
 
 
