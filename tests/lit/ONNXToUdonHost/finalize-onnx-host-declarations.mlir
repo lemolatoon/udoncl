@@ -20,3 +20,13 @@ func.func @main_graph(
 }
 
 // CHECK-COUNT-1: func.func private @clEnqueueMarkerWithWaitList
+
+// Every binding function is a root of the Host but never a U# export.
+// CHECK-LABEL: func.func @udon_onnx_binding_create(
+// CHECK-SAME: attributes {udoncl.export, udoncl.internal_export}
+// CHECK-LABEL: func.func @udon_onnx_binding_bind_all()
+// CHECK-SAME: attributes {udoncl.export, udoncl.internal_export}
+// CHECK-LABEL: func.func @udon_onnx_binding_enqueue_run()
+// CHECK-SAME: attributes {udoncl.export, udoncl.internal_export,
+// CHECK-LABEL: func.func @udon_onnx_binding_dispose()
+// CHECK-SAME: attributes {udoncl.export, udoncl.internal_export}

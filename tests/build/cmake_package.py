@@ -463,49 +463,6 @@ def main():
         args.source.resolve().parents[1] / 'examples/mnist-cnn/generate_onnx.py',
         '-o', onnx_model,
     ])
-    probe = json.loads((
-        args.source.resolve().parents[1] / 'examples/onnx-mnist/unity-library.json'
-    ).read_text(encoding='utf-8'))
-    probe['schema_version'] = 2
-    probe['program'] = 'generic_onnx_mnist'
-    probe['generate_onnx_public_buffers'] = True
-    probe.pop('exports', None)
-    probe.pop('internal_exports', None)
-    probe['internal_exports'] = [
-        'udon_onnx_binding_create',
-        'udon_onnx_binding_bind_tensor',
-        'udon_onnx_binding_resolve_input',
-        'udon_onnx_binding_resolve_output',
-    ]
-    probe['export_overrides'] = [
-        {
-            'symbol': 'udon_onnx_binding_bind_all',
-            'public_name': 'BindAllOnnxTensors',
-            'parameters': [],
-        },
-        {
-            'symbol': 'udon_onnx_binding_enqueue_initialize',
-            'public_name': 'EnqueueOnnxInitialize',
-            'parameters': [],
-        },
-        {
-            'symbol': 'udon_onnx_binding_enqueue_run',
-            'public_name': 'EnqueueOnnxRun',
-            'parameters': [],
-        },
-        {
-            'symbol': 'udon_onnx_binding_enqueue_copy_output_to_input',
-            'public_name': 'EnqueueCopyOnnxOutputToInput',
-            'parameters': ['output_index', 'input_index'],
-        },
-        {
-            'symbol': 'udon_onnx_binding_dispose',
-            'public_name': 'DisposeOnnxBinding',
-            'parameters': [],
-        },
-    ]
-    (onnx_source / 'probe.json').write_text(
-        json.dumps(probe, indent=2) + '\n', encoding='utf-8')
     (onnx_source / 'CMakeLists.txt').write_text(
         'cmake_minimum_required(VERSION 3.30)\n'
         'project(udoncl_onnx_consumer LANGUAGES NONE)\n'
@@ -558,6 +515,8 @@ def main():
         install / 'bin' / f'udoncl-opt{suffix}', generated_onnx_host,
     ])
     assert generated_onnx_host_text.count('udoncl.export') == 9
+    # Every binding function is a root of the Host, never a U# export.
+    assert generated_onnx_host_text.count('udoncl.internal_export') == 9
     for symbol in [
         'udon_onnx_binding_create',
         'udon_onnx_binding_bind_tensor',

@@ -111,17 +111,6 @@ if(UDONCL_TINYLLAMA_ONNX_MODEL)
       "${conversation_unity_config_json}" export_overrides ${export}
       "${export_json}")
   endforeach()
-  string(JSON internal_export_count LENGTH
-    "${conversation_unity_config_json}" internal_exports)
-  string(JSON conversation_unity_config_json SET
-    "${conversation_unity_config_json}" internal_exports
-    ${internal_export_count}
-    "\"udon_onnx_binding_enqueue_advance_sequence_state\"")
-  math(EXPR internal_export_count "${internal_export_count} + 1")
-  string(JSON conversation_unity_config_json SET
-    "${conversation_unity_config_json}" internal_exports
-    ${internal_export_count}
-    "\"udon_onnx_binding_enqueue_reset_sequence_state\"")
   set(conversation_unity_config
     "${CMAKE_CURRENT_BINARY_DIR}/unity-library-conversation.json")
   file(WRITE "${conversation_unity_config}"

@@ -212,16 +212,19 @@ LogicalResult ExportConfiguration::configureSchema2(ArrayAttr overridesConfig) {
         return error() << "schema 2 export override must name one annotated "
                           "Host definition";
     }
-  if (auto internal = config.getAs<ArrayAttr>("internal_exports"))
-    for (Attribute value : internal) {
-      auto symbol = dyn_cast<StringAttr>(value);
-      if (!symbol || !isUdonSharpIdentifier(symbol.getValue()) ||
-          !internalExports.insert(symbol.str()).second ||
-          !annotatedExports.count(symbol.str()) ||
-          overrides.count(symbol.str()))
-        return error() << "schema 2 internal export must name one "
-                          "non-overridden annotated Host definition";
-    }
+  // The functions of a generated ONNX binding are roots of the Host, never
+  // U# exports (udoncl.internal_export). The internal_exports key that used
+  // to list them is accepted and ignored.
+  for (const std::string &symbol : annotatedExports) {
+    auto function = module.lookupSymbol<func::FuncOp>(symbol);
+    if (!function || !function->hasAttr("udoncl.internal_export"))
+      continue;
+    if (overrides.count(symbol))
+      return error() << "schema 2 export override names the generated "
+                        "internal export "
+                     << symbol;
+    internalExports.insert(symbol);
+  }
   // A static-initialization artifact is a closed world: the constructor has
   // run before any other export, and an omitted export (a destructor) is
   // not part of the artifact at all. Unlike an internal export, an omitted

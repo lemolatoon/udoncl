@@ -25,6 +25,15 @@ module attributes {udoncl.unity_library_config = {schema_version = 2 : i64, prog
 
 // -----
 
+// expected-error@below {{schema 2 export override names the generated internal export udon_onnx_binding_run}}
+module attributes {udoncl.unity_library_config = {schema_version = 2 : i64, program = "internal",
+    export_overrides = [{symbol = "udon_onnx_binding_run", public_name = "Run"}]}} {
+  func.func @udon_onnx_binding_run() attributes {udoncl.export, udoncl.internal_export} { return }
+  func.func @user_run() attributes {udoncl.export} { return }
+}
+
+// -----
+
 // expected-error@below {{Unity library schema 2 requires at least one UDONCL_EXPORT Host definition}}
 module attributes {udoncl.unity_library_config = {schema_version = 2 : i64, program = "empty"}} {
   func.func @plain() { return }

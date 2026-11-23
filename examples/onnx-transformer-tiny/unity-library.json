@@ -12,17 +12,6 @@
     {"symbol": "transformer_commit_kv", "public_name": "CommitKv", "parameters": []},
     {"symbol": "transformer_dispose", "public_name": "Shutdown", "parameters": []}
   ],
-  "internal_exports": [
-    "udon_onnx_binding_create",
-    "udon_onnx_binding_bind_tensor",
-    "udon_onnx_binding_bind_all",
-    "udon_onnx_binding_resolve_input",
-    "udon_onnx_binding_resolve_output",
-    "udon_onnx_binding_enqueue_initialize",
-    "udon_onnx_binding_enqueue_run",
-    "udon_onnx_binding_enqueue_copy_output_to_input",
-    "udon_onnx_binding_dispose"
-  ],
   "buffers": [
     {"id": 1, "name": "input_ids", "byte_size": 32, "element_type": "int64", "public_access": "input"},
     {"id": 2, "name": "past_key", "byte_size": 128, "element_type": "float32", "public_access": "input"},

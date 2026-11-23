@@ -261,8 +261,10 @@ def ConfigureUnityExportsPass : Pass<"vrc-configure-unity-exports", "mlir::Modul
     public name and parameter names. Schema 2 publishes every function marked
     `udoncl.export` under the PascalCase of its symbol, with parameters named
     after `udoncl.parameter_names` (arg<i> without one), unless an
-    `export_overrides` entry names it; `internal_exports` hides definitions
-    and `static_initialization` names a constructor and omitted exports.
+    `export_overrides` entry names it. A function also marked
+    `udoncl.internal_export` (the generated ONNX binding) is a root of the
+    Host but never a U# export; `static_initialization` names a constructor
+    and omitted exports.
 
     Each U# export receives `vrc.export_id`, `vrc.public_name`,
     `vrc.parameter_names` and, when allowed while busy,

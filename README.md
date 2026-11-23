@@ -737,17 +737,6 @@ its `buffers` array (see below):
     {"symbol": "mnist_initialize", "public_name": "Initialize", "parameters": []},
     {"symbol": "mnist_run", "public_name": "Run", "parameters": []},
     {"symbol": "mnist_dispose", "public_name": "Shutdown", "parameters": []}
-  ],
-  "internal_exports": [
-    "udon_onnx_binding_create",
-    "udon_onnx_binding_bind_tensor",
-    "udon_onnx_binding_bind_all",
-    "udon_onnx_binding_resolve_input",
-    "udon_onnx_binding_resolve_output",
-    "udon_onnx_binding_enqueue_initialize",
-    "udon_onnx_binding_enqueue_run",
-    "udon_onnx_binding_enqueue_copy_output_to_input",
-    "udon_onnx_binding_dispose"
   ]
 }
 ```
@@ -764,10 +753,9 @@ its `buffers` array (see below):
 - `export_overrides`: U# names for the three `UDONCL_EXPORT` functions:
   `mnist_initialize` → `Initialize`, `mnist_run` → `Run`, and
   `mnist_dispose` → `Shutdown`, none with parameters.
-- `internal_exports`: the generated ONNX Host library also defines
-  `UDONCL_EXPORT` helper functions (`udon_onnx_binding_*`). Listing them keeps
-  them out of your U# API; otherwise each would become a public method named
-  after its C symbol. Copy the list unchanged.
+- The generated ONNX Host library also defines helper functions
+  (`udon_onnx_binding_*`) that your Host calls. They are never part of your
+  U# API, and you do not list them.
 
 You do not list buffers: the compiler derives every Device buffer of an ONNX
 Host from the model. The example's config keeps a `buffers` array with the
@@ -1217,10 +1205,6 @@ with `string(JSON ...)`. Its keys are:
   `{"symbol": "tinyllama_continue_chat_prompt", "public_name": "ContinueChatPrompt", "parameters": ["systemText", "userText", "maxWork"]}`.
   `StreamedTextLength` and `ReadStreamedText` also set
   `"allowed_while_busy": true`, so U# can poll them while `Generate` runs.
-- `internal_exports`: the `udon_onnx_binding_*` helpers of the generated ONNX
-  binding, as in the MNIST tutorial, plus
-  `udon_onnx_binding_enqueue_advance_sequence_state` and
-  `udon_onnx_binding_enqueue_reset_sequence_state`.
 
 The base config's `buffers` array lists the public buffers of the synthetic
 fixture; CMake drops it for the real model, whose buffers the compiler

@@ -1522,8 +1522,12 @@ LogicalResult createPhysicalBindingExports(ModuleOp module,
   auto state = [&]() -> Value {
     return addressOf(builder, location, bindingStateSymbol);
   };
+  // The binding functions are roots of the Host the user C calls into, never
+  // U# exports of their own: udoncl.internal_export keeps them out of the
+  // generated binding.
   auto markExport = [&](func::FuncOp function) {
     function->setAttr("udoncl.export", builder.getUnitAttr());
+    function->setAttr("udoncl.internal_export", builder.getUnitAttr());
   };
   auto publicResourceBinding = [&](bool output, size_t index,
                                    size_t tensorIndex) {

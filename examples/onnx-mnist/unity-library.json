@@ -11,17 +11,6 @@
     {"symbol": "mnist_run", "public_name": "Run", "parameters": []},
     {"symbol": "mnist_dispose", "public_name": "Shutdown", "parameters": []}
   ],
-  "internal_exports": [
-    "udon_onnx_binding_create",
-    "udon_onnx_binding_bind_tensor",
-    "udon_onnx_binding_bind_all",
-    "udon_onnx_binding_resolve_input",
-    "udon_onnx_binding_resolve_output",
-    "udon_onnx_binding_enqueue_initialize",
-    "udon_onnx_binding_enqueue_run",
-    "udon_onnx_binding_enqueue_copy_output_to_input",
-    "udon_onnx_binding_dispose"
-  ],
   "buffers": [
     {"id": 1, "name": "image", "byte_size": 3136, "element_type": "float32", "public_access": "input"},
     {"id": 2, "name": "logits", "byte_size": 40, "element_type": "float32", "public_access": "output"}

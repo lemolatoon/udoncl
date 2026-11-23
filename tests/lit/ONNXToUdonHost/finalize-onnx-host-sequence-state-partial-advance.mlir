@@ -88,7 +88,7 @@ module attributes {udoncl.onnx_sequence_states = [
 // the previous present, and the fill age, which counts committed rows, grows
 // by two up to its limit carried + 1 = 3.
 // CHECK-LABEL: func.func @udon_onnx_binding_enqueue_advance_sequence_state()
-// CHECK-SAME: attributes {udoncl.export}
+// CHECK-SAME: attributes {udoncl.export, udoncl.internal_export}
 // CHECK: udonhl.address_of @__udon_onnx_sequence_state_bank
 // CHECK: %[[ROWS_ADDRESS:.*]] = udonhl.address_of @__udon_onnx_sequence_state_advanced_rows
 // CHECK-NEXT: "udonhl.store"(%c2_i32, %[[ROWS_ADDRESS]])

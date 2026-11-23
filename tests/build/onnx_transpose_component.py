@@ -67,6 +67,10 @@ def main():
     assert [item['access'] for item in kernel['args'][:2]] == ['read', 'write']
     assert [item['required_bytes'] for item in kernel['args'][:2]] == [524288, 524288]
     assert kernel['global_size'] == [8192, 16, 1]
+    # The functions of the generated ONNX binding are not U# exports; only
+    # the component's own C exports are.
+    assert sorted(item['public_name'] for item in manifest['exports']) == [
+        'Initialize', 'Run', 'Shutdown']
     print('onnx_transpose_component=passed assigned_buffers=2 words=8192')
 
 

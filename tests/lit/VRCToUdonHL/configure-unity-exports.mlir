@@ -56,8 +56,36 @@ module attributes {udoncl.unity_library_config = {
 
 // -----
 
-// Schema 1 lists every export with its id; static initialization records the
-// constructor and the omitted exports.
+// A generated binding function is reachable from an export but never one.
+module attributes {udoncl.unity_library_config = {
+    schema_version = 2 : i64, program = "onnx_probe",
+    internal_exports = ["ignored"]}} {
+  func.func @component_run() -> i32 attributes {udoncl.export} {
+    %status = func.call @udon_onnx_binding_enqueue_run() : () -> i32
+    return %status : i32
+  }
+  func.func @udon_onnx_binding_enqueue_run() -> i32 attributes {
+      udoncl.export, udoncl.internal_export} {
+    %zero = arith.constant 0 : i32
+    return %zero : i32
+  }
+  func.func @udon_onnx_binding_dispose() -> i32 attributes {
+      udoncl.export, udoncl.internal_export} {
+    %zero = arith.constant 0 : i32
+    return %zero : i32
+  }
+}
+
+// CHECK-LABEL: module attributes
+// CHECK: func.func @component_run
+// CHECK-SAME: vrc.public_name = "ComponentRun"
+// CHECK: func.func private @udon_onnx_binding_enqueue_run
+// CHECK-NOT: vrc.export_id
+// CHECK-NOT: @udon_onnx_binding_dispose
+
+// -----
+
+// Schema 1 lists every export with its id.
 module attributes {udoncl.unity_library_config = {
     schema_version = 1 : i64, program = "listed",
     exports = [{symbol = "listed_run", public_name = "Run", id = 7 : i64, parameters = ["value"], allowed_while_busy = true}]}} {
@@ -75,6 +103,7 @@ module attributes {udoncl.unity_library_config = {
 
 // -----
 
+// Static initialization records the constructor and the omitted exports.
 module attributes {udoncl.unity_library_config = {
     schema_version = 2 : i64, program = "static_probe",
     static_initialization = {constructor = "probe_initialize", omit_exports = ["probe_dispose"]}}} {
