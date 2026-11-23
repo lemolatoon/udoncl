@@ -2834,6 +2834,13 @@ int main(int argc, char **argv) {
           failed(lowerUnityHostObjectIntrinsics(*module, context)) ||
           !configureUnityExports(*module, *unityConfig))
         return 1;
+      // Without the static Device resource analysis nothing resolves a
+      // UDONCL_PUBLIC variable; the pass rejects one.
+      PassManager publicResources(&context);
+      publicResources.addPass(
+          ::vrc::createClassifyAnnotatedPublicDeviceResourcesPass());
+      if (failed(publicResources.run(*module)))
+        return 1;
     }
     // Every Device kernel the Host dispatches is known once the Host has
     // reached its exported form: hand-written device_kernels entries come

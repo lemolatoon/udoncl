@@ -973,6 +973,19 @@ add_test(NAME static-initialization-artifact
     --onnx-frontend $<TARGET_FILE:udoncl-onnx-frontend>
 )
 set_tests_properties(static-initialization-artifact PROPERTIES TIMEOUT 180)
+add_test(NAME public-buffers
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/build/public_buffers.py"
+    --root "${PROJECT_SOURCE_DIR}"
+    --project-build "${PROJECT_BINARY_DIR}"
+    --output "${PROJECT_BINARY_DIR}/tests/public-buffers"
+    --cmake "${CMAKE_COMMAND}"
+    --generator "${CMAKE_GENERATOR}"
+    --make-program "${CMAKE_MAKE_PROGRAM}"
+    --clang "${VRC_TEST_CLANG}"
+    --llvm-link "${VRC_TEST_LLVM_LINK}"
+)
+set_tests_properties(public-buffers PROPERTIES TIMEOUT 300)
 add_test(NAME host-annotations
   COMMAND Python3::Interpreter
     "${CMAKE_CURRENT_SOURCE_DIR}/build/host_annotations.py"

@@ -17,6 +17,9 @@ void buildStaticDeviceResourceDiscoveryPipeline(OpPassManager &manager) {
   manager.addPass(createPlanStaticDeviceResourceContextSpecializationPass());
   manager.addPass(createInferStaticDeviceResourceRequirementsPass());
   manager.addPass(createPropagateDeviceResourceProvenancePass());
+  // UDONCL_PUBLIC variables resolve to the allocation their global cell
+  // holds.
+  manager.addPass(createClassifyAnnotatedPublicDeviceResourcesPass());
   manager.addPass(createResolveStaticTransferBindingsPass());
   manager.addPass(createClassifyStaticPublicDeviceResourcesPass());
   manager.addPass(createAnalyzeStaticDeviceResourcePersistencePass());

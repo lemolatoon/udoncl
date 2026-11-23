@@ -216,15 +216,13 @@ UDONCL_EXPORT int clear(void) {
   return 0;
 }
 ''')
-    public_artifact, public_result = harness.compile(
-        'public', program, '--host-llvm', public)
-    assert public_result.returncode == 0, public_result.stderr
-    recovered = (public_artifact / 'frontend.recovered.mlir').read_text(
-        encoding='utf-8')
-    for symbol, element_type in [('image', 'float32'), ('tokens', 'int64')]:
-        line = next(line for line in recovered.splitlines()
-                    if f'sym_name = "{symbol}"' in line)
-        assert f'udoncl.public = "{element_type}"' in line, line
+    # Only the static Device resource analysis of a Host linked with the
+    # OpenCL runtime resolves the variables (tests/build/public_buffers.py).
+    harness.rejected(
+        'public', program,
+        'UDONCL_PUBLIC requires the static Device resource analysis of a '
+        'Unity Host linked with the UdonCL OpenCL runtime',
+        '--host-llvm', public)
     for name, source, diagnostic in [
         ('public-static', '''\
 static UDONCL_PUBLIC(float) cl_mem image;
