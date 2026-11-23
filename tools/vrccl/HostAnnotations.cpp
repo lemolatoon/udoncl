@@ -12,6 +12,7 @@ using namespace llvm;
 namespace udoncl {
 
 constexpr StringLiteral kExportAnnotation = "udoncl.export";
+constexpr StringLiteral kWhileBusyAnnotation = "udoncl.export_while_busy";
 
 mlir::FailureOr<HostAnnotations> readHostAnnotations(const llvm::Module &module,
                                                      raw_ostream &diagnostics) {
@@ -44,12 +45,23 @@ mlir::FailureOr<HostAnnotations> readHostAnnotations(const llvm::Module &module,
           << "llvm.global.annotations entry is not a function annotation\n";
       return mlir::failure();
     }
-    if (annotation->getAsCString() != kExportAnnotation)
+    StringRef kind = annotation->getAsCString();
+    if (kind != kExportAnnotation && kind != kWhileBusyAnnotation)
       continue;
+    StringRef macro = kind == kExportAnnotation ? "UDONCL_EXPORT"
+                                                : "UDONCL_EXPORT_WHILE_BUSY";
     if (function->isDeclaration()) {
-      diagnostics << "UDONCL_EXPORT requires a linked Host definition: "
+      diagnostics << macro << " requires a linked Host definition: "
                   << function->getName() << "\n";
       return mlir::failure();
+    }
+    if (kind == kWhileBusyAnnotation) {
+      if (!annotations.whileBusy.insert(function->getName().str()).second) {
+        diagnostics << "duplicate UDONCL_EXPORT_WHILE_BUSY annotation: "
+                    << function->getName() << "\n";
+        return mlir::failure();
+      }
+      continue;
     }
     if (is_contained(annotations.exports, function->getName())) {
       diagnostics << "duplicate UDONCL_EXPORT annotation: "
@@ -58,6 +70,15 @@ mlir::FailureOr<HostAnnotations> readHostAnnotations(const llvm::Module &module,
     }
     annotations.exports.push_back(function->getName().str());
   }
+  // UDONCL_EXPORT_WHILE_BUSY expands to both annotations; one written by hand
+  // without the export is not an export.
+  for (const std::string &symbol : annotations.whileBusy)
+    if (!is_contained(annotations.exports, symbol)) {
+      diagnostics << "UDONCL_EXPORT_WHILE_BUSY requires an exported Host "
+                     "definition: "
+                  << symbol << "\n";
+      return mlir::failure();
+    }
   return annotations;
 }
 

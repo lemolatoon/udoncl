@@ -959,6 +959,15 @@ add_test(NAME static-initialization-artifact
     --onnx-frontend $<TARGET_FILE:udoncl-onnx-frontend>
 )
 set_tests_properties(static-initialization-artifact PROPERTIES TIMEOUT 180)
+add_test(NAME host-annotations
+  COMMAND Python3::Interpreter
+    "${CMAKE_CURRENT_SOURCE_DIR}/build/host_annotations.py"
+    --compiler $<TARGET_FILE:vrccl>
+    --clang "${VRC_TEST_CLANG}"
+    --include "${PROJECT_SOURCE_DIR}/include"
+    --output "${PROJECT_BINARY_DIR}/tests/host-annotations"
+)
+set_tests_properties(host-annotations PROPERTIES TIMEOUT 120)
 add_test(NAME cmake-package-consumer
   COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/build/cmake_package.py"
     --source "${PROJECT_SOURCE_DIR}/examples/hello-kernel"

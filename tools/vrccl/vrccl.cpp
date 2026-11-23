@@ -1557,6 +1557,24 @@ collectUdonCLHostAnnotations(llvm::Module &module) {
   return annotations;
 }
 
+/// Re-attaches the per-function UdonCL annotations to the recovered Host.
+LogicalResult
+markRecoveredHostAnnotations(ModuleOp module,
+                             const udoncl::HostAnnotations &annotations) {
+  for (const std::string &symbol : annotations.whileBusy) {
+    auto function = module.lookupSymbol<func::FuncOp>(symbol);
+    if (!function) {
+      errs() << "UDONCL_EXPORT_WHILE_BUSY definition was lost while "
+                "recovering the Host: "
+             << symbol << "\n";
+      return failure();
+    }
+    function->setAttr("udoncl.export_while_busy",
+                      UnitAttr::get(module.getContext()));
+  }
+  return success();
+}
+
 int32_t stableExportId(StringRef publicName, mlir::FunctionType type) {
   std::string canonical;
   raw_string_ostream stream(canonical);
@@ -1632,9 +1650,10 @@ bool configureUnityExports(ModuleOp module, const json::Object &config,
     function->setAttr("vrc.export_id", builder.getI32IntegerAttr(id));
     function->setAttr("vrc.public_name", builder.getStringAttr(publicName));
     function->setAttr("vrc.parameter_names", builder.getArrayAttr(names));
-    // "allowed_while_busy": the generated binding does not reject this
-    // synchronous export while an async export is suspended.
-    if (allowedWhileBusy)
+    // "allowed_while_busy" or UDONCL_EXPORT_WHILE_BUSY: the generated binding
+    // does not reject this synchronous export while an async export is
+    // suspended.
+    if (allowedWhileBusy || function->hasAttr("udoncl.export_while_busy"))
       function->setAttr("vrc.allowed_while_busy", builder.getUnitAttr());
     return true;
   };
@@ -2038,6 +2057,8 @@ FailureOr<OwningOpRef<ModuleOp>> recoverUnityHostLLVM(StringRef filename,
     }
     function->setAttr("udoncl.export", UnitAttr::get(&context));
   }
+  if (failed(markRecoveredHostAnnotations(*library, *annotations)))
+    return failure();
   return library;
 }
 
@@ -3105,6 +3126,7 @@ int main(int argc, char **argv) {
       if (linkedOpenCLAOT)
         recovery.addPass(::vrc::createLowerOpenCLAOTIntrinsicsPass());
       if (failed(recovery.run(*module)) ||
+          failed(markRecoveredHostAnnotations(*module, *annotations)) ||
           failed(lowerUnityHostObjectIntrinsics(*module, context)) ||
           !configureUnityExports(*module, *unityConfig, annotatedHostExports))
         return 1;
