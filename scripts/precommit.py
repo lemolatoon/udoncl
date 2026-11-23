@@ -180,6 +180,13 @@ def run(command, **kwargs):
     return subprocess.run([str(item) for item in command], check=True, **kwargs)
 
 
+def artifact_program(artifact) -> str:
+    """The program name of an artifact, which names its imported folder."""
+    manifest = json.loads(
+        (Path(artifact) / "manifest.json").read_text(encoding="utf-8"))
+    return manifest["program"]["name"]
+
+
 def tinyllama_chat_oracle_turns(oracle: Path) -> int:
     """Number of later turns in a chat oracle written by
     tests/boundary/tinyllama_chat_oracle.py."""
@@ -994,8 +1001,9 @@ def run_unity_mcp_gate(
             )
             imported_program = (
                 Path(project)
-                / "Assets/udoncl-generated/tinyllama_real_conversation/Programs/"
-                "host_program.asset"
+                / "Assets/udoncl-generated"
+                / artifact_program(tinyllama_conversation_artifact)
+                / "Programs/host_program.asset"
             )
             missing = [
                 str(path)
@@ -1026,8 +1034,9 @@ def run_unity_mcp_gate(
             )
             imported_program = (
                 Path(project)
-                / "Assets/udoncl-generated/tinyllama_real_chat/Programs/"
-                "host_program.asset"
+                / "Assets/udoncl-generated"
+                / artifact_program(tinyllama_chat_artifact)
+                / "Programs/host_program.asset"
             )
             missing = [
                 str(path)

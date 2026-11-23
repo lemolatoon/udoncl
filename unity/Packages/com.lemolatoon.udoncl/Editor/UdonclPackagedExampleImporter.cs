@@ -231,6 +231,37 @@ namespace Lemolatoon.Udoncl.Editor
             UnityEditor.Compilation.CompilationPipeline.RequestScriptCompilation();
         }
 
+        // The program of a TinyLlama validation artifact: `baseName`, or
+        // `baseName`_4k for the 4096-token artifact of the same API.
+        private static string TinyLlamaProgram(string artifact, string baseName)
+        {
+            UdonclManifest manifest = JsonUtility.FromJson<UdonclManifest>(
+                File.ReadAllText(Path.Combine(artifact, "manifest.json"))
+            );
+            string program =
+                manifest != null && manifest.program != null ? manifest.program.name : null;
+            if (program != baseName && program != baseName + "_4k")
+                throw new InvalidDataException(
+                    "TinyLlama validation artifact has an unexpected program: " + program
+                );
+            return program;
+        }
+
+        // Copies a TinyLlama lifecycle test written for `baseName` and points
+        // it at the imported `program`.
+        private static void CopyTinyLlamaTestTemplate(
+            string template,
+            string destination,
+            string baseName,
+            string program
+        )
+        {
+            File.WriteAllText(
+                destination,
+                File.ReadAllText(template).Replace(baseName + "\"", program + "\"")
+            );
+        }
+
         [MenuItem("Tools/udoncl/Internal/Prepare Public TinyLlama Conversation Validation")]
         public static void PreparePublicTinyLlamaConversationValidation()
         {
@@ -247,7 +278,8 @@ namespace Lemolatoon.Udoncl.Editor
                     "The TinyLlama conversation validation artifact is missing.",
                     artifact
                 );
-            const string root = "Assets/udoncl-generated/tinyllama_real_conversation";
+            string program = TinyLlamaProgram(artifact, "tinyllama_real_conversation");
+            string root = "Assets/udoncl-generated/" + program;
             AssetDatabase.DeleteAsset(root);
             if (UdonclArtifactImporter.Import(artifact) != root)
                 throw new InvalidDataException(
@@ -274,7 +306,7 @@ namespace Lemolatoon.Udoncl.Editor
                 validationRoot + "/UdonclTinyLlamaConversationTestController.cs",
                 true
             );
-            File.Copy(
+            CopyTinyLlamaTestTemplate(
                 Path.Combine(
                     package.resolvedPath,
                     "Editor",
@@ -282,7 +314,8 @@ namespace Lemolatoon.Udoncl.Editor
                     ConversationLifecycleTestTemplate
                 ),
                 editorRoot + "/PublicTinyLlamaConversationLifecycleTests.cs",
-                true
+                "tinyllama_real_conversation",
+                program
             );
             File.WriteAllText(
                 editorRoot + "/Udoncl.TinyLlama.Focused.Tests.asmdef",
@@ -322,7 +355,8 @@ namespace Lemolatoon.Udoncl.Editor
                     "The TinyLlama chat validation artifact is missing.",
                     artifact
                 );
-            const string root = "Assets/udoncl-generated/tinyllama_real_chat";
+            string program = TinyLlamaProgram(artifact, "tinyllama_real_chat");
+            string root = "Assets/udoncl-generated/" + program;
             AssetDatabase.DeleteAsset(root);
             if (UdonclArtifactImporter.Import(artifact) != root)
                 throw new InvalidDataException(
@@ -344,10 +378,11 @@ namespace Lemolatoon.Udoncl.Editor
                 validationRoot + "/UdonclTinyLlamaChatTestController.cs",
                 true
             );
-            File.Copy(
+            CopyTinyLlamaTestTemplate(
                 Path.Combine(package.resolvedPath, "Editor", "Examples", ChatLifecycleTestTemplate),
                 editorRoot + "/PublicTinyLlamaChatLifecycleTests.cs",
-                true
+                "tinyllama_real_chat",
+                program
             );
             File.Copy(
                 Path.Combine(
@@ -359,7 +394,7 @@ namespace Lemolatoon.Udoncl.Editor
                 validationRoot + "/UdonclTinyLlamaMultiTurnChatTestController.cs",
                 true
             );
-            File.Copy(
+            CopyTinyLlamaTestTemplate(
                 Path.Combine(
                     package.resolvedPath,
                     "Editor",
@@ -367,7 +402,8 @@ namespace Lemolatoon.Udoncl.Editor
                     MultiTurnChatLifecycleTestTemplate
                 ),
                 editorRoot + "/PublicTinyLlamaMultiTurnChatLifecycleTests.cs",
-                true
+                "tinyllama_real_chat",
+                program
             );
             // The TinyLlama Chat Package Sample compiles against the binding
             // generated for this artifact.

@@ -209,16 +209,16 @@ class TinyLlamaConversationArtifactValidatorTests(unittest.TestCase):
                                       16 * CAPACITY * 64))
         manifest = {
             "exports": [
-                export("Initialize", "tinyllama_initialize", is_async=True),
-                export("Reset", "tinyllama_reset", is_async=True),
-                export("SetPromptTokens", "tinyllama_set_prompt_tokens",
+                export("Initialize", "initialize", is_async=True),
+                export("Reset", "reset", is_async=True),
+                export("SetPromptTokens", "set_prompt_tokens",
                        ("i32_array", "i32")),
-                export("Generate", "tinyllama_generate", ("i32",), True),
+                export("Generate", "generate", ("i32",), True),
                 export("GeneratedTokenCount",
-                       "tinyllama_generated_token_count"),
+                       "generated_token_count"),
                 export("ReadGeneratedTokens",
-                       "tinyllama_read_generated_tokens", ("i32_array",)),
-                export("Shutdown", "tinyllama_dispose"),
+                       "read_generated_tokens", ("i32_array",)),
+                export("Shutdown", "shutdown"),
             ],
             "onnx_binding": {
                 "inputs": inputs,

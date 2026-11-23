@@ -1035,12 +1035,12 @@ It owns the OpenCL context and queue, drives the model through the generated
 ONNX binding of `<udoncl/onnx_generated_binding.h>` (`udon_onnx_binding_*`),
 keeps the key/value cache on the GPU between positions, and selects each next
 token with an argmax on the GPU (greedy decoding). Its exports are
-`tinyllama_initialize`, `tinyllama_reset`, `tinyllama_set_prompt_tokens`,
-`tinyllama_generate`, `tinyllama_generated_token_count`,
-`tinyllama_read_generated_tokens`, and `tinyllama_dispose`:
+`initialize`, `reset`, `set_prompt_tokens`,
+`generate`, `generated_token_count`,
+`read_generated_tokens`, and `shutdown`:
 
 ```c
-UDONCL_EXPORT udononnxStatus_t tinyllama_initialize(void) {
+UDONCL_EXPORT udononnxStatus_t initialize(void) {
   /* ... clGetPlatformIDs, clGetDeviceIDs, clCreateContext,
      clCreateCommandQueue ... */
   status = udon_onnx_binding_create(context, queue);
@@ -1052,7 +1052,7 @@ UDONCL_EXPORT udononnxStatus_t tinyllama_initialize(void) {
      buffers, create the argmax buffers, clear the sequence state ... */
 }
 
-UDONCL_EXPORT udononnxStatus_t tinyllama_generate(uint32_t max_new_tokens) {
+UDONCL_EXPORT udononnxStatus_t generate(uint32_t max_new_tokens) {
   /* ... check the state and the Context Capacity ... */
   /* Run the prompt, then decode one token per model run until EOS or
      max_new_tokens. */
@@ -1097,25 +1097,25 @@ fit in one Udon event, and decoded text is returned as UTF-16 code units, one
 per `int`:
 
 ```c
-/* Starts a conversation; tinyllama_begin_chat_turn appends the next user
+/* Starts a conversation; begin_chat_turn appends the next user
    message after a completed reply. */
-UDONCL_EXPORT udononnxStatus_t tinyllama_begin_chat_prompt(void);
+UDONCL_EXPORT udononnxStatus_t begin_chat_prompt(void);
 
 /* Does at most max_work units of prompt work (about one UTF-16 code unit
    each); the prompt is committed by the call that leaves nothing pending. */
-UDONCL_EXPORT udononnxStatus_t tinyllama_continue_chat_prompt(
+UDONCL_EXPORT udononnxStatus_t continue_chat_prompt(
     udon_string_t system_text, udon_string_t user_text, uint32_t max_work);
 
 /* 1 while a begun chat prompt or turn still has work pending, else 0. */
-UDONCL_EXPORT uint32_t tinyllama_chat_prompt_pending(void);
+UDONCL_EXPORT uint32_t chat_prompt_pending(void);
 
 /* The number of UTF-16 code units of the reply that are final so far, valid
    while the generation is still running. */
-UDONCL_EXPORT uint32_t tinyllama_streamed_text_length(void);
+UDONCL_EXPORT_WHILE_BUSY uint32_t streamed_text_length(void);
 
 /* Copies the final code units [offset, offset + count) of the reply to the
    start of destination. */
-UDONCL_EXPORT udononnxStatus_t tinyllama_read_streamed_text(
+UDONCL_EXPORT_WHILE_BUSY udononnxStatus_t read_streamed_text(
     udon_int32_array_t destination, uint32_t offset, uint32_t count);
 ```
 
@@ -1175,8 +1175,10 @@ definitions on the tokenizer target. These cache variables control the build:
   Artifacts are configured.
 - `UDONCL_TINYLLAMA_CONTEXT_4K` (default `ON`): also configure the 4096-token
   `-4k` targets next to the 512-token ones
-  (`UDONCL_TINYLLAMA_CONTEXT_CAPACITY`, default 512). Both variants have the
-  same program, binding and U# API, so a project imports one of the two.
+  (`UDONCL_TINYLLAMA_CONTEXT_CAPACITY`, default 512). The 4096-token
+  programs are `tinyllama_real_conversation_4k` and `tinyllama_real_chat_4k`;
+  both variants have the same binding class and U# API, so a project imports
+  one of the two.
 - `UDONCL_TINYLLAMA_MAX_NEW_TOKENS` (default 32): the most tokens one
   generation may request.
 
@@ -1186,8 +1188,6 @@ definitions on the tokenizer target. These cache variables control the build:
 with `string(JSON ...)`. Its keys are:
 
 - `schema_version`: `2`.
-- `program`: `tinyllama_real_chat`; Unity imports the artifact under
-  `Assets/udoncl-generated/tinyllama_real_chat`.
 - `binding`: the class `UdonclTinyLlamaChatBinding` in
   `Lemolatoon.Udoncl.Generated`.
 - `device_texel_format`: `"rgba32_float"`, which stores four words per
@@ -1195,11 +1195,15 @@ with `string(JSON ...)`. Its keys are:
   variable `UDONCL_TINYLLAMA_DEVICE_TEXEL_FORMAT`).
 - `generate_onnx_public_buffers`: `false`. No tensor is public; text goes in
   as U# strings and comes out through `int[]` arrays of the exports.
-- `export_overrides`: the U# names of the 21 Conversation and text-layer
-  exports, for example
-  `{"symbol": "tinyllama_continue_chat_prompt", "public_name": "ContinueChatPrompt", "parameters": ["systemText", "userText", "maxWork"]}`.
-  `StreamedTextLength` and `ReadStreamedText` also set
-  `"allowed_while_busy": true`, so U# can poll them while `Generate` runs.
+
+The Host C source names the rest. `UDONCL_PROGRAM("tinyllama_real_chat")`
+in [`chat_host.c`](examples/onnx-transformer-tiny/chat_host.c) names the
+program; Unity imports the artifact under
+`Assets/udoncl-generated/tinyllama_real_chat`. The 21 Conversation and
+text-layer exports are U# methods named after the PascalCase of their C
+names (`continue_chat_prompt` -> `ContinueChatPrompt`), with the C parameter
+names. `streamed_text_length` and `read_streamed_text` are
+`UDONCL_EXPORT_WHILE_BUSY`, so U# can poll them while `Generate` runs.
 
 The base config's `buffers` array lists the public buffers of the synthetic
 fixture; CMake drops it for the real model, whose buffers the compiler

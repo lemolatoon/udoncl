@@ -18,5 +18,9 @@
 #if TINYLLAMA_CONTEXT_CAPACITY != 4096u
 #error "conversation_host_4k.c is the Host of a 4096-token Context Capacity"
 #endif
+/* Its own program, so that Unity imports it next to the 512-token one. */
+#ifndef TINYLLAMA_PROGRAM
+#define TINYLLAMA_PROGRAM "tinyllama_real_conversation_4k"
+#endif
 
 #include "conversation_host.c"

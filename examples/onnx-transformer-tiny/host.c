@@ -32,7 +32,7 @@ static udononnxStatus_t cleanup_after_failure(udononnxStatus_t status) {
   return opencl_cleanup == UDONONNX_STATUS_SUCCESS ? status : opencl_cleanup;
 }
 
-UDONCL_EXPORT udononnxStatus_t transformer_initialize(void) {
+UDONCL_EXPORT udononnxStatus_t initialize(void) {
   cl_platform_id platform = 0;
   cl_device_id device = 0;
   cl_int error = CL_SUCCESS;
@@ -64,13 +64,13 @@ UDONCL_EXPORT udononnxStatus_t transformer_initialize(void) {
   return UDONONNX_STATUS_SUCCESS;
 }
 
-UDONCL_EXPORT udononnxStatus_t transformer_run(void) {
+UDONCL_EXPORT udononnxStatus_t run(void) {
   if (!transformer_initialized)
     return UDONONNX_STATUS_NOT_INITIALIZED;
   return udon_onnx_binding_enqueue_run();
 }
 
-UDONCL_EXPORT udononnxStatus_t transformer_commit_kv(void) {
+UDONCL_EXPORT udononnxStatus_t commit_kv(void) {
   udononnxStatus_t status;
   if (!transformer_initialized)
     return UDONONNX_STATUS_NOT_INITIALIZED;
@@ -80,7 +80,7 @@ UDONCL_EXPORT udononnxStatus_t transformer_commit_kv(void) {
   return udon_onnx_binding_enqueue_copy_output_to_input(2, 2);
 }
 
-UDONCL_EXPORT udononnxStatus_t transformer_dispose(void) {
+UDONCL_EXPORT udononnxStatus_t shutdown(void) {
   udononnxStatus_t status, opencl_status;
   if (!transformer_initialized)
     return UDONONNX_STATUS_NOT_INITIALIZED;

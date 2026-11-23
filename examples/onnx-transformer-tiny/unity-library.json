@@ -6,12 +6,6 @@
     "namespace": "Lemolatoon.Udoncl.Generated",
     "class_name": "UdonclGenericOnnxTransformerTinyBinding"
   },
-  "export_overrides": [
-    {"symbol": "transformer_initialize", "public_name": "Initialize", "parameters": []},
-    {"symbol": "transformer_run", "public_name": "Run", "parameters": []},
-    {"symbol": "transformer_commit_kv", "public_name": "CommitKv", "parameters": []},
-    {"symbol": "transformer_dispose", "public_name": "Shutdown", "parameters": []}
-  ],
   "buffers": [
     {"id": 1, "name": "input_ids", "byte_size": 32, "element_type": "int64", "public_access": "input"},
     {"id": 2, "name": "past_key", "byte_size": 128, "element_type": "float32", "public_access": "input"},

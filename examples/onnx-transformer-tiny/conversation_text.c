@@ -65,10 +65,10 @@ static uint32_t stream_tokens;
 static int32_t stream_started;
 static int32_t stream_finished;
 
-static int32_t last_tokenizer_status;
+static int32_t tokenizer_status;
 
 static udononnxStatus_t map_tokenizer_status(udontokenizersStatus_t status) {
-  last_tokenizer_status = (int32_t)status;
+  tokenizer_status = (int32_t)status;
   switch (status) {
   case UDONTOKENIZERS_STATUS_SUCCESS:
     return UDONONNX_STATUS_SUCCESS;
@@ -88,7 +88,7 @@ static udononnxStatus_t map_tokenizer_status(udontokenizersStatus_t status) {
 static udononnxStatus_t begin_text(udononnxStatus_t host, int32_t is_turn) {
   udontokenizers_model_t model;
   prompt_stage = PROMPT_IDLE;
-  last_tokenizer_status = UDONTOKENIZERS_STATUS_SUCCESS;
+  tokenizer_status = UDONTOKENIZERS_STATUS_SUCCESS;
   if (host != UDONONNX_STATUS_SUCCESS)
     return host;
   tinyllama_tokenizerInitializeModel(&model);
@@ -105,7 +105,7 @@ static udononnxStatus_t begin_text(udononnxStatus_t host, int32_t is_turn) {
   return UDONONNX_STATUS_SUCCESS;
 }
 
-UDONCL_EXPORT udononnxStatus_t tinyllama_begin_chat_prompt(void) {
+UDONCL_EXPORT udononnxStatus_t begin_chat_prompt(void) {
   int32_t *tokens = 0;
   return begin_text(tinyllamaConversationPreparePrompt(&tokens), 0);
 }
@@ -114,7 +114,7 @@ UDONCL_EXPORT udononnxStatus_t tinyllama_begin_chat_prompt(void) {
  * completed reply: the reply's end-of-turn text, the user message and the
  * generation prompt. A turn that was committed but not generated yet is
  * replaced. */
-UDONCL_EXPORT udononnxStatus_t tinyllama_begin_chat_turn(void) {
+UDONCL_EXPORT udononnxStatus_t begin_chat_turn(void) {
   int32_t *tokens = 0;
   uint32_t capacity = 0;
   return begin_text(tinyllamaConversationPrepareTurn(&tokens, &capacity), 1);
@@ -204,8 +204,9 @@ static udononnxStatus_t continue_text(udon_string_t system_text,
  * work. The caller passes the same texts on every call of one prompt. The
  * prompt is committed by the call that leaves no work pending; any failure
  * abandons it. */
-UDONCL_EXPORT udononnxStatus_t tinyllama_continue_chat_prompt(
-    udon_string_t system_text, udon_string_t user_text, uint32_t max_work) {
+UDONCL_EXPORT udononnxStatus_t continue_chat_prompt(udon_string_t system_text,
+                                                    udon_string_t user_text,
+                                                    uint32_t max_work) {
   if (prompt_stage == PROMPT_IDLE || prompt_is_turn)
     return UDONONNX_STATUS_INVALID_STATE;
   return continue_text(system_text, user_text, max_work);
@@ -215,8 +216,8 @@ UDONCL_EXPORT udononnxStatus_t tinyllama_continue_chat_prompt(
  * committed by the call that leaves no work pending. A turn that does not
  * fit the Context Capacity fails with CAPACITY_EXCEEDED and leaves the
  * conversation unchanged. */
-UDONCL_EXPORT udononnxStatus_t
-tinyllama_continue_chat_turn(udon_string_t user_text, uint32_t max_work) {
+UDONCL_EXPORT udononnxStatus_t continue_chat_turn(udon_string_t user_text,
+                                                  uint32_t max_work) {
   if (prompt_stage == PROMPT_IDLE || !prompt_is_turn)
     return UDONONNX_STATUS_INVALID_STATE;
   return continue_text(user_text, user_text, max_work);
@@ -224,32 +225,31 @@ tinyllama_continue_chat_turn(udon_string_t user_text, uint32_t max_work) {
 
 /* Discards the conversation, including a prompt or turn being built, and
  * starts a new one; the Host Reset. */
-UDONCL_EXPORT udononnxStatus_t tinyllama_reset_chat(void) {
+UDONCL_EXPORT udononnxStatus_t reset_chat(void) {
   udononnxStatus_t status = tinyllamaConversationReset();
   if (status == UDONONNX_STATUS_SUCCESS) {
     prompt_stage = PROMPT_IDLE;
     prompt_is_turn = 0;
-    last_tokenizer_status = UDONTOKENIZERS_STATUS_SUCCESS;
+    tokenizer_status = UDONTOKENIZERS_STATUS_SUCCESS;
   }
   return status;
 }
 
 /* 1 while a begun chat prompt or turn still has work pending, else 0. */
-UDONCL_EXPORT uint32_t tinyllama_chat_prompt_pending(void) {
+UDONCL_EXPORT uint32_t chat_prompt_pending(void) {
   return prompt_stage != PROMPT_IDLE;
 }
 
 /* Replaces the prompt in one call. */
-UDONCL_EXPORT udononnxStatus_t
-tinyllama_set_chat_prompt(udon_string_t system_text, udon_string_t user_text) {
-  udononnxStatus_t status = tinyllama_begin_chat_prompt();
+UDONCL_EXPORT udononnxStatus_t set_chat_prompt(udon_string_t system_text,
+                                               udon_string_t user_text) {
+  udononnxStatus_t status = begin_chat_prompt();
   if (status != UDONONNX_STATUS_SUCCESS)
     return status;
-  return tinyllama_continue_chat_prompt(system_text, user_text,
-                                        TINYLLAMA_UNBOUNDED_WORK);
+  return continue_chat_prompt(system_text, user_text, TINYLLAMA_UNBOUNDED_WORK);
 }
 
-UDONCL_EXPORT uint32_t tinyllama_prompt_token_count(void) {
+UDONCL_EXPORT uint32_t prompt_token_count(void) {
   const int32_t *tokens = 0;
   uint32_t count = 0;
   if (tinyllamaConversationPrompt(&tokens, &count) != UDONONNX_STATUS_SUCCESS)
@@ -258,7 +258,7 @@ UDONCL_EXPORT uint32_t tinyllama_prompt_token_count(void) {
 }
 
 UDONCL_EXPORT udononnxStatus_t
-tinyllama_read_prompt_tokens(udon_int32_array_t destination) {
+read_prompt_tokens(udon_int32_array_t destination) {
   const int32_t *tokens = 0;
   uint32_t count = 0;
   uint32_t index;
@@ -313,7 +313,7 @@ static udononnxStatus_t advance_stream(int32_t *is_completed) {
 /* The number of UTF-16 code units of the reply that are final so far. It
  * never decreases during one generation and is valid while the generation
  * is still running; incomplete characters are not counted. */
-UDONCL_EXPORT uint32_t tinyllama_streamed_text_length(void) {
+UDONCL_EXPORT_WHILE_BUSY uint32_t streamed_text_length(void) {
   int32_t is_completed = 0;
   udononnxStatus_t status = advance_stream(&is_completed);
   if (status == UDONONNX_STATUS_DISPOSED ||
@@ -324,7 +324,7 @@ UDONCL_EXPORT uint32_t tinyllama_streamed_text_length(void) {
 
 /* Copies the final code units [offset, offset + count) of the reply to the
  * start of `destination`. */
-UDONCL_EXPORT udononnxStatus_t tinyllama_read_streamed_text(
+UDONCL_EXPORT_WHILE_BUSY udononnxStatus_t read_streamed_text(
     udon_int32_array_t destination, uint32_t offset, uint32_t count) {
   int32_t is_completed = 0;
   uint32_t index;
@@ -341,7 +341,7 @@ UDONCL_EXPORT udononnxStatus_t tinyllama_read_streamed_text(
 }
 
 /* The length of the whole reply; zero until the generation completed. */
-UDONCL_EXPORT uint32_t tinyllama_generated_text_length(void) {
+UDONCL_EXPORT uint32_t generated_text_length(void) {
   int32_t is_completed = 0;
   if (advance_stream(&is_completed) != UDONONNX_STATUS_SUCCESS || !is_completed)
     return 0;
@@ -350,13 +350,13 @@ UDONCL_EXPORT uint32_t tinyllama_generated_text_length(void) {
 
 /* Copies the whole reply; requires a completed generation. */
 UDONCL_EXPORT udononnxStatus_t
-tinyllama_read_generated_text(udon_int32_array_t destination) {
+read_generated_text(udon_int32_array_t destination) {
   const int32_t *tokens = 0;
   uint32_t count = 0;
   int32_t is_completed = 0;
   int32_t index;
   udononnxStatus_t status = tinyllamaConversationGenerated(&tokens, &count);
-  last_tokenizer_status = UDONTOKENIZERS_STATUS_SUCCESS;
+  tokenizer_status = UDONTOKENIZERS_STATUS_SUCCESS;
   if (status == UDONONNX_STATUS_SUCCESS)
     status = advance_stream(&is_completed);
   if (status != UDONONNX_STATUS_SUCCESS)
@@ -371,6 +371,4 @@ tinyllama_read_generated_text(udon_int32_array_t destination) {
 }
 
 /* The UdonTokenizers status of the last text operation, for diagnostics. */
-UDONCL_EXPORT int32_t tinyllama_last_tokenizer_status(void) {
-  return last_tokenizer_status;
-}
+UDONCL_EXPORT int32_t last_tokenizer_status(void) { return tokenizer_status; }

@@ -6,6 +6,15 @@
 #include <udoncl/onnx_generated_binding.h>
 
 #include "conversation_host.h"
+
+/* The program of the Conversation Artifact. A wrapper that includes this
+ * file for another artifact (conversation_host_4k.c, chat_host.c) defines
+ * its own TINYLLAMA_PROGRAM first. */
+#ifndef TINYLLAMA_PROGRAM
+#define TINYLLAMA_PROGRAM "tinyllama_real_conversation"
+#endif
+UDONCL_PROGRAM(TINYLLAMA_PROGRAM);
+
 #define TINYLLAMA_LOGIT_WORDS 32000
 #define TINYLLAMA_ARGMAX_PARTIAL_WORDS 512u
 #define TINYLLAMA_ARGMAX_FAILURE 0xffffffffu
@@ -168,7 +177,7 @@ static udononnxStatus_t enqueue_clear_sequence_state(void) {
   return UDONONNX_STATUS_SUCCESS;
 }
 
-UDONCL_EXPORT udononnxStatus_t tinyllama_initialize(void) {
+UDONCL_EXPORT udononnxStatus_t initialize(void) {
   cl_platform_id platform = 0;
   cl_device_id device = 0;
   cl_int error = CL_SUCCESS;
@@ -218,7 +227,7 @@ UDONCL_EXPORT udononnxStatus_t tinyllama_initialize(void) {
   return UDONONNX_STATUS_SUCCESS;
 }
 
-UDONCL_EXPORT udononnxStatus_t tinyllama_reset(void) {
+UDONCL_EXPORT udononnxStatus_t reset(void) {
   return tinyllamaConversationReset();
 }
 
@@ -256,8 +265,8 @@ static udononnxStatus_t prompt_replacement_state(void) {
   return UDONONNX_STATUS_SUCCESS;
 }
 
-UDONCL_EXPORT udononnxStatus_t tinyllama_set_prompt_tokens(
-    udon_int32_array_t token_ids, uint32_t token_count) {
+UDONCL_EXPORT udononnxStatus_t set_prompt_tokens(udon_int32_array_t token_ids,
+                                                 uint32_t token_count) {
   uint32_t index;
   udononnxStatus_t status = prompt_replacement_state();
   if (status != UDONONNX_STATUS_SUCCESS)
@@ -613,7 +622,7 @@ static udononnxStatus_t decode_token(uint32_t position, int last,
   return status == UDONONNX_STATUS_SUCCESS ? waited : status;
 }
 
-UDONCL_EXPORT udononnxStatus_t tinyllama_generate(uint32_t max_new_tokens) {
+UDONCL_EXPORT udononnxStatus_t generate(uint32_t max_new_tokens) {
   uint32_t index, output_index, token = 0, prompt_tokens, base, rows = 1u;
   udononnxStatus_t status = UDONONNX_STATUS_SUCCESS;
   if (disposed)
@@ -686,12 +695,10 @@ UDONCL_EXPORT udononnxStatus_t tinyllama_generate(uint32_t max_new_tokens) {
   return status;
 }
 
-UDONCL_EXPORT uint32_t tinyllama_generated_token_count(void) {
-  return generated_count;
-}
+UDONCL_EXPORT uint32_t generated_token_count(void) { return generated_count; }
 
 UDONCL_EXPORT udononnxStatus_t
-tinyllama_read_generated_tokens(udon_int32_array_t destination) {
+read_generated_tokens(udon_int32_array_t destination) {
   uint32_t index, token_count;
   if (disposed)
     return UDONONNX_STATUS_DISPOSED;
@@ -714,7 +721,7 @@ tinyllama_read_generated_tokens(udon_int32_array_t destination) {
   return UDONONNX_STATUS_SUCCESS;
 }
 
-UDONCL_EXPORT udononnxStatus_t tinyllama_dispose(void) {
+UDONCL_EXPORT udononnxStatus_t shutdown(void) {
   udononnxStatus_t status, opencl;
   if (disposed)
     return UDONONNX_STATUS_DISPOSED;

@@ -52,10 +52,11 @@ if(UDONCL_TINYLLAMA_ONNX_MODEL)
   # file, decide whether a capacity compiles.
   set(UDONCL_TINYLLAMA_CONTEXT_CAPACITY 512 CACHE STRING
     "TinyLlama conversation Context Capacity in tokens")
-  # The 4096-token Conversation and Chat Artifacts (the -4k targets) have a
-  # Host file of their own, conversation_host_4k.c, and are configured next
-  # to the ones above. Their U# API, program and binding names are the same,
-  # so a project imports one of the two.
+  # The 4096-token Conversation and Chat Artifacts (the -4k targets) have
+  # Host files of their own, conversation_host_4k.c and chat_host_4k.c, and
+  # are configured next to the ones above. Their programs end in _4k; their
+  # U# API and binding names are the same, so a project imports one of the
+  # two.
   option(UDONCL_TINYLLAMA_CONTEXT_4K
     "Also configure the 4096-token TinyLlama Conversation and Chat Artifacts"
     ON)
@@ -87,30 +88,16 @@ if(UDONCL_TINYLLAMA_ONNX_MODEL)
       "UDONCL_TINYLLAMA_SEQUENCE_ROWS must be a positive integer no larger "
       "than the Context Capacity")
   endif()
+  # The Conversation and Chat Hosts name their programs (UDONCL_PROGRAM) and
+  # U# exports themselves.
   set(conversation_unity_config_json "${real_unity_config}")
-  string(JSON conversation_unity_config_json SET
-    "${conversation_unity_config_json}" program
-    "\"tinyllama_real_conversation\"")
+  string(JSON conversation_unity_config_json REMOVE
+    "${conversation_unity_config_json}" program)
   string(JSON conversation_unity_config_json SET
     "${conversation_unity_config_json}" binding class_name
     "\"UdonclTinyLlamaConversationBinding\"")
   string(JSON conversation_unity_config_json SET
     "${conversation_unity_config_json}" generate_onnx_public_buffers false)
-  set(conversation_exports
-    [[{"symbol":"tinyllama_initialize","public_name":"Initialize","parameters":[]}]]
-    [[{"symbol":"tinyllama_reset","public_name":"Reset","parameters":[]}]]
-    [[{"symbol":"tinyllama_set_prompt_tokens","public_name":"SetPromptTokens","parameters":["tokenIds","tokenCount"]}]]
-    [[{"symbol":"tinyllama_generate","public_name":"Generate","parameters":["maxNewTokens"]}]]
-    [[{"symbol":"tinyllama_generated_token_count","public_name":"GeneratedTokenCount","parameters":[]}]]
-    [[{"symbol":"tinyllama_read_generated_tokens","public_name":"ReadGeneratedTokens","parameters":["destination"]}]]
-    [[{"symbol":"tinyllama_dispose","public_name":"Shutdown","parameters":[]}]]
-  )
-  foreach(export RANGE 0 6)
-    list(GET conversation_exports ${export} export_json)
-    string(JSON conversation_unity_config_json SET
-      "${conversation_unity_config_json}" export_overrides ${export}
-      "${export_json}")
-  endforeach()
   set(conversation_unity_config
     "${CMAKE_CURRENT_BINARY_DIR}/unity-library-conversation.json")
   file(WRITE "${conversation_unity_config}"
@@ -126,32 +113,7 @@ if(UDONCL_TINYLLAMA_ONNX_MODEL)
   # same conversation and ResetChat starts a new one.
   set(chat_unity_config_json "${conversation_unity_config_json}")
   string(JSON chat_unity_config_json SET "${chat_unity_config_json}"
-    program "\"tinyllama_real_chat\"")
-  string(JSON chat_unity_config_json SET "${chat_unity_config_json}"
     binding class_name "\"UdonclTinyLlamaChatBinding\"")
-  set(chat_exports
-    [[{"symbol":"tinyllama_set_chat_prompt","public_name":"SetChatPrompt","parameters":["systemText","userText"]}]]
-    [[{"symbol":"tinyllama_begin_chat_prompt","public_name":"BeginChatPrompt","parameters":[]}]]
-    [[{"symbol":"tinyllama_continue_chat_prompt","public_name":"ContinueChatPrompt","parameters":["systemText","userText","maxWork"]}]]
-    [[{"symbol":"tinyllama_chat_prompt_pending","public_name":"ChatPromptPending","parameters":[]}]]
-    [[{"symbol":"tinyllama_begin_chat_turn","public_name":"BeginChatTurn","parameters":[]}]]
-    [[{"symbol":"tinyllama_continue_chat_turn","public_name":"ContinueChatTurn","parameters":["userText","maxWork"]}]]
-    [[{"symbol":"tinyllama_reset_chat","public_name":"ResetChat","parameters":[]}]]
-    [[{"symbol":"tinyllama_prompt_token_count","public_name":"PromptTokenCount","parameters":[]}]]
-    [[{"symbol":"tinyllama_read_prompt_tokens","public_name":"ReadPromptTokens","parameters":["destination"]}]]
-    [[{"symbol":"tinyllama_generated_text_length","public_name":"GeneratedTextLength","parameters":[]}]]
-    [[{"symbol":"tinyllama_read_generated_text","public_name":"ReadGeneratedText","parameters":["destination"]}]]
-    [[{"symbol":"tinyllama_streamed_text_length","public_name":"StreamedTextLength","parameters":[],"allowed_while_busy":true}]]
-    [[{"symbol":"tinyllama_read_streamed_text","public_name":"ReadStreamedText","parameters":["destination","offset","count"],"allowed_while_busy":true}]]
-    [[{"symbol":"tinyllama_last_tokenizer_status","public_name":"LastTokenizerStatus","parameters":[]}]]
-  )
-  string(JSON chat_export_count LENGTH "${chat_unity_config_json}"
-    export_overrides)
-  foreach(export_json IN LISTS chat_exports)
-    string(JSON chat_unity_config_json SET "${chat_unity_config_json}"
-      export_overrides ${chat_export_count} "${export_json}")
-    math(EXPR chat_export_count "${chat_export_count} + 1")
-  endforeach()
   set(chat_unity_config "${CMAKE_CURRENT_BINARY_DIR}/unity-library-chat.json")
   file(WRITE "${chat_unity_config}" "${chat_unity_config_json}\n")
 
@@ -215,9 +177,10 @@ endfunction()
 # The Conversation Host libraries of one Context Capacity, named with
 # `suffix`: the graph of UDONCL_TINYLLAMA_SEQUENCE_ROWS positions per run
 # (the M=1 graph by default) specialized to past_sequence_length =
-# capacity - 1, the token-array C Host `host` and, with a tokenizer, the chat
-# text layer, all compiled with the same capacity and rows.
-function(tinyllama_add_conversation_libraries suffix capacity host)
+# capacity - 1, the token-array C Host `host` and, with a tokenizer, the same
+# Host under the Chat program (`chat_host`) and the chat text layer, all
+# compiled with the same capacity and rows.
+function(tinyllama_add_conversation_libraries suffix capacity host chat_host)
   set(rows ${UDONCL_TINYLLAMA_SEQUENCE_ROWS})
   tinyllama_add_model_library(transformer_conversation_model_host${suffix}
     ${capacity} ${rows})
@@ -231,6 +194,11 @@ function(tinyllama_add_conversation_libraries suffix capacity host)
   target_compile_definitions(transformer_conversation_user_host${suffix}
     INTERFACE ${definitions})
   if(UDONCL_TINYLLAMA_TOKENIZER_DIRECTORY)
+    udoncl_add_host_library(transformer_chat_user_host${suffix} ${chat_host})
+    target_include_directories(transformer_chat_user_host${suffix}
+      INTERFACE "${UdonONNXRuntime_INCLUDE_DIRS}")
+    target_compile_definitions(transformer_chat_user_host${suffix}
+      INTERFACE ${definitions})
     udontokenizers_add_huggingface_model(transformer_chat_tokenizer${suffix}
       TOKENIZER_DIRECTORY "${UDONCL_TINYLLAMA_TOKENIZER_DIRECTORY}"
       SYMBOL tinyllama_tokenizer
@@ -266,7 +234,7 @@ function(tinyllama_add_conversation_artifacts suffix target_suffix)
       OMIT_INTERMEDIATE_IR
       HOST_LIBRARIES
         transformer_conversation_model_host${suffix}
-        transformer_conversation_user_host${suffix}
+        transformer_chat_user_host${suffix}
         transformer_chat_tokenizer${suffix}
         UdonONNXRuntime::UdonONNXRuntime
         UdonTokenizers::UdonTokenizers
@@ -282,10 +250,10 @@ if(UDONCL_TINYLLAMA_ONNX_MODEL AND UDONCL_TINYLLAMA_TOKENIZER_DIRECTORY)
 endif()
 if(UDONCL_TINYLLAMA_ONNX_MODEL)
   tinyllama_add_conversation_libraries(""
-    ${UDONCL_TINYLLAMA_CONTEXT_CAPACITY} conversation_host.c)
+    ${UDONCL_TINYLLAMA_CONTEXT_CAPACITY} conversation_host.c chat_host.c)
   if(UDONCL_TINYLLAMA_CONTEXT_4K)
     tinyllama_add_conversation_libraries(_4k ${tinyllama_context_4k}
-      conversation_host_4k.c)
+      conversation_host_4k.c chat_host_4k.c)
   endif()
 endif()
 if(UDONCL_TINYLLAMA_TOKENIZER_DIRECTORY)

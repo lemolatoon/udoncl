@@ -1379,10 +1379,10 @@ def main():
         item['c_symbol']: item['public_name']
         for item in transformer_manifest['exports']
     } == {
-        'transformer_initialize': 'Initialize',
-        'transformer_run': 'Run',
-        'transformer_commit_kv': 'CommitKv',
-        'transformer_dispose': 'Shutdown',
+        'initialize': 'Initialize',
+        'run': 'Run',
+        'commit_kv': 'CommitKv',
+        'shutdown': 'Shutdown',
     }
     assert [
         (item['name'], item.get('logical_bytes'),

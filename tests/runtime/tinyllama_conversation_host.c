@@ -11,14 +11,13 @@
       return __LINE__;                                                         \
   } while (0)
 
-extern udononnxStatus_t tinyllama_initialize(void);
-extern udononnxStatus_t tinyllama_reset(void);
-extern udononnxStatus_t tinyllama_set_prompt_tokens(udon_int32_array_t,
-                                                    uint32_t);
-extern udononnxStatus_t tinyllama_generate(uint32_t);
-extern uint32_t tinyllama_generated_token_count(void);
-extern udononnxStatus_t tinyllama_read_generated_tokens(udon_int32_array_t);
-extern udononnxStatus_t tinyllama_dispose(void);
+extern udononnxStatus_t initialize(void);
+extern udononnxStatus_t reset(void);
+extern udononnxStatus_t set_prompt_tokens(udon_int32_array_t, uint32_t);
+extern udononnxStatus_t generate(uint32_t);
+extern uint32_t generated_token_count(void);
+extern udononnxStatus_t read_generated_tokens(udon_int32_array_t);
+extern udononnxStatus_t shutdown(void);
 extern udononnxStatus_t
 tinyllamaConversationGenerationProgress(const int32_t **tokens,
                                         uint32_t *token_count, uint32_t *serial,
@@ -308,7 +307,7 @@ static int test_turns(void) {
   int32_t is_completed = 0;
   int i, failure;
 
-  EXPECT(tinyllama_reset() == UDONONNX_STATUS_SUCCESS);
+  EXPECT(reset() == UDONONNX_STATUS_SUCCESS);
   protocol_valid = 1;
   /* No reply to continue yet. */
   EXPECT(tinyllamaConversationPrepareTurn(&workspace, &capacity) ==
@@ -317,14 +316,13 @@ static int test_turns(void) {
   clear_trace();
   scheduled_tokens[0] = 1701;
   scheduled_tokens[1] = 2;
-  EXPECT(tinyllama_set_prompt_tokens(&prompt, 4) == UDONONNX_STATUS_SUCCESS);
-  EXPECT(tinyllama_generate(5) == UDONONNX_STATUS_SUCCESS);
-  EXPECT(tinyllama_generated_token_count() == 2);
+  EXPECT(set_prompt_tokens(&prompt, 4) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(generate(5) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(generated_token_count() == 2);
   /* Positions 0..5 hold the prompt, 1701 and the EOS that ended the reply. */
   EXPECT(seen_tokens[5] == 2 && seen_positions[5] == 5);
-  EXPECT(tinyllama_generate(1) == UDONONNX_STATUS_INVALID_STATE);
-  EXPECT(tinyllama_set_prompt_tokens(&prompt, 4) ==
-         UDONONNX_STATUS_INVALID_STATE);
+  EXPECT(generate(1) == UDONONNX_STATUS_INVALID_STATE);
+  EXPECT(set_prompt_tokens(&prompt, 4) == UDONONNX_STATUS_INVALID_STATE);
   EXPECT(tinyllamaConversationPreparePrompt(&workspace) ==
          UDONONNX_STATUS_INVALID_STATE);
   EXPECT(tinyllamaConversationGenerationProgress(
@@ -337,11 +335,11 @@ static int test_turns(void) {
     return failure;
   if ((failure = commit_turn(3, 0, 58)) != 0)
     return failure;
-  EXPECT(tinyllama_generated_token_count() == 2);
+  EXPECT(generated_token_count() == 2);
   clear_trace();
   scheduled_tokens[0] = 555;
   scheduled_tokens[1] = 2;
-  EXPECT(tinyllama_generate(4) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(generate(4) == UDONONNX_STATUS_SUCCESS);
   EXPECT(trace_size == 14 &&
          !memcmp(trace, "ARARARDFARDFAR", (size_t)trace_size));
   for (i = 0; i < 3; ++i)
@@ -350,8 +348,8 @@ static int test_turns(void) {
   EXPECT(seen_tokens[4] == 2 && seen_positions[4] == 10);
   EXPECT(mask_valid && protocol_valid);
   /* Each turn is its own generation with its own tokens. */
-  EXPECT(tinyllama_generated_token_count() == 2);
-  EXPECT(tinyllama_read_generated_tokens(&result) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(generated_token_count() == 2);
+  EXPECT(read_generated_tokens(&result) == UDONONNX_STATUS_SUCCESS);
   EXPECT(result_data[0] == 555 && result_data[1] == 2);
   EXPECT(tinyllamaConversationGenerationProgress(&tokens, &count, &serial,
                                                  &is_completed) ==
@@ -364,7 +362,7 @@ static int test_turns(void) {
   clear_trace();
   scheduled_tokens[0] = 777;
   scheduled_tokens[1] = 778;
-  EXPECT(tinyllama_generate(2) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(generate(2) == UDONONNX_STATUS_SUCCESS);
   EXPECT(trace_size == 8 && !memcmp(trace, "ARDFARDF", (size_t)trace_size));
   EXPECT(seen_tokens[0] == 100 && seen_positions[0] == 11);
   EXPECT(seen_tokens[1] == 777 && seen_positions[1] == 12);
@@ -376,7 +374,7 @@ static int test_turns(void) {
   EXPECT(count == 3 && tokens[0] == 778 && tokens[1] == 2 && tokens[2] == 100);
   clear_trace();
   scheduled_tokens[0] = 2;
-  EXPECT(tinyllama_generate(1) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(generate(1) == UDONONNX_STATUS_SUCCESS);
   EXPECT(trace_size == 8 && !memcmp(trace, "ARARARDF", (size_t)trace_size));
   EXPECT(seen_tokens[0] == 778 && seen_positions[0] == 13);
   EXPECT(seen_tokens[1] == 2 && seen_positions[1] == 14);
@@ -396,14 +394,14 @@ static int test_turns(void) {
   EXPECT(capacity == 47);
   EXPECT(tinyllamaConversationCommitTurn(48) ==
          UDONONNX_STATUS_CAPACITY_EXCEEDED);
-  EXPECT(tinyllama_generate(1) == UDONONNX_STATUS_INVALID_STATE);
+  EXPECT(generate(1) == UDONONNX_STATUS_INVALID_STATE);
   if ((failure = commit_turn(47, 1, 47)) != 0)
     return failure;
   clear_trace();
-  EXPECT(tinyllama_generate(2) == UDONONNX_STATUS_CAPACITY_EXCEEDED);
+  EXPECT(generate(2) == UDONONNX_STATUS_CAPACITY_EXCEEDED);
   EXPECT(trace_size == 0);
   scheduled_tokens[0] = 2;
-  EXPECT(tinyllama_generate(1) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(generate(1) == UDONONNX_STATUS_SUCCESS);
   /* The last prompt step runs at the final position of the capacity. */
   EXPECT(runs == 48 && seen_positions[0] == 16 && seen_positions[47] == 63);
   EXPECT(mask_valid && protocol_valid);
@@ -411,14 +409,14 @@ static int test_turns(void) {
          UDONONNX_STATUS_CAPACITY_EXCEEDED);
 
   /* Reset starts a new conversation at position 0. */
-  EXPECT(tinyllama_reset() == UDONONNX_STATUS_SUCCESS);
+  EXPECT(reset() == UDONONNX_STATUS_SUCCESS);
   EXPECT(tinyllamaConversationPrepareTurn(&workspace, &capacity) ==
          UDONONNX_STATUS_INVALID_STATE);
   clear_trace();
   scheduled_tokens[0] = 1701;
   scheduled_tokens[1] = 1702;
-  EXPECT(tinyllama_set_prompt_tokens(&prompt, 4) == UDONONNX_STATUS_SUCCESS);
-  EXPECT(tinyllama_generate(2) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(set_prompt_tokens(&prompt, 4) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(generate(2) == UDONONNX_STATUS_SUCCESS);
   EXPECT(seen_positions[0] == 0 && trace[0] == 'R');
   EXPECT(mask_valid && protocol_valid);
 
@@ -427,10 +425,10 @@ static int test_turns(void) {
     return failure;
   clear_trace();
   fail_finalize_call = 0;
-  EXPECT(tinyllama_generate(1) == UDONONNX_STATUS_OPENCL_ERROR);
+  EXPECT(generate(1) == UDONONNX_STATUS_OPENCL_ERROR);
   EXPECT(tinyllamaConversationPrepareTurn(&workspace, &capacity) ==
          UDONONNX_STATUS_INVALID_STATE);
-  EXPECT(tinyllama_reset() == UDONONNX_STATUS_SUCCESS);
+  EXPECT(reset() == UDONONNX_STATUS_SUCCESS);
   return 0;
 }
 
@@ -450,7 +448,7 @@ int main(void) {
   EXPECT(tinyllamaConversationGenerationProgress(
              &progress_tokens, &progress_count, &serial, &is_completed) ==
          UDONONNX_STATUS_NOT_INITIALIZED);
-  EXPECT(tinyllama_initialize() == UDONONNX_STATUS_SUCCESS);
+  EXPECT(initialize() == UDONONNX_STATUS_SUCCESS);
   EXPECT(tinyllamaConversationGenerationProgress(
              &progress_tokens, &progress_count, &serial, &is_completed) ==
          UDONONNX_STATUS_SUCCESS);
@@ -461,14 +459,12 @@ int main(void) {
   for (i = 0; i < 4; ++i)
     scheduled_tokens[i] = expected_tokens[i];
   prompt_data[0] = -1;
-  EXPECT(tinyllama_set_prompt_tokens(&prompt, 4) ==
-         UDONONNX_STATUS_INVALID_VALUE);
+  EXPECT(set_prompt_tokens(&prompt, 4) == UDONONNX_STATUS_INVALID_VALUE);
   prompt_data[0] = 32000;
-  EXPECT(tinyllama_set_prompt_tokens(&prompt, 4) ==
-         UDONONNX_STATUS_INVALID_VALUE);
+  EXPECT(set_prompt_tokens(&prompt, 4) == UDONONNX_STATUS_INVALID_VALUE);
   prompt_data[0] = 1;
-  EXPECT(tinyllama_set_prompt_tokens(&prompt, 4) == UDONONNX_STATUS_SUCCESS);
-  EXPECT(tinyllama_generate(4) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(set_prompt_tokens(&prompt, 4) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(generate(4) == UDONONNX_STATUS_SUCCESS);
   EXPECT(runs == 7 && advances == 6 && reduce_calls == 4 &&
          finalize_calls == 4 && mask_valid);
   EXPECT(trace_size == 21 &&
@@ -478,11 +474,11 @@ int main(void) {
   for (i = 0; i < 3; ++i)
     EXPECT(seen_tokens[i + 4] == (int64_t)expected_tokens[i] &&
            seen_positions[i + 4] == i + 4);
-  EXPECT(tinyllama_generated_token_count() == 4);
-  EXPECT(tinyllama_read_generated_tokens(&result) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(generated_token_count() == 4);
+  EXPECT(read_generated_tokens(&result) == UDONONNX_STATUS_SUCCESS);
   for (i = 0; i < 4; ++i)
     EXPECT(result_data[i] == (int32_t)expected_tokens[i]);
-  EXPECT(tinyllama_generate(1) == UDONONNX_STATUS_INVALID_STATE);
+  EXPECT(generate(1) == UDONONNX_STATUS_INVALID_STATE);
   /* While token i was being selected, exactly the i earlier tokens of this
    * generation were visible, and the generation was not completed. */
   EXPECT(progress_valid);
@@ -501,7 +497,7 @@ int main(void) {
     EXPECT(progress_tokens[i] == (int32_t)expected_tokens[i]);
   previous_serial = serial;
 
-  EXPECT(tinyllama_reset() == UDONONNX_STATUS_SUCCESS);
+  EXPECT(reset() == UDONONNX_STATUS_SUCCESS);
   EXPECT(tinyllamaConversationGenerationProgress(
              &progress_tokens, &progress_count, &serial, &is_completed) ==
          UDONONNX_STATUS_SUCCESS);
@@ -511,10 +507,10 @@ int main(void) {
   scheduled_tokens[0] = 1701;
   scheduled_tokens[1] = 2;
   scheduled_tokens[2] = 999;
-  EXPECT(tinyllama_set_prompt_tokens(&prompt, 4) == UDONONNX_STATUS_SUCCESS);
-  EXPECT(tinyllama_generate(3) == UDONONNX_STATUS_SUCCESS);
-  EXPECT(tinyllama_generated_token_count() == 2);
-  EXPECT(tinyllama_read_generated_tokens(&result) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(set_prompt_tokens(&prompt, 4) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(generate(3) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(generated_token_count() == 2);
+  EXPECT(read_generated_tokens(&result) == UDONONNX_STATUS_SUCCESS);
   EXPECT(result_data[0] == 1701 && result_data[1] == 2);
   /* Each decode step is enqueued from the Device-resident token before the
    * Host reads it, so the step fed by EOS has already been issued; it is
@@ -525,71 +521,66 @@ int main(void) {
   EXPECT(seen_tokens[4] == 1701 && seen_tokens[5] == 2 &&
          seen_positions[5] == 5);
 
-  EXPECT(tinyllama_reset() == UDONONNX_STATUS_SUCCESS);
+  EXPECT(reset() == UDONONNX_STATUS_SUCCESS);
   clear_trace();
   scheduled_tokens[0] = 2;
-  EXPECT(tinyllama_set_prompt_tokens(&long_prompt, 64) ==
-         UDONONNX_STATUS_SUCCESS);
-  EXPECT(tinyllama_generate(2) == UDONONNX_STATUS_CAPACITY_EXCEEDED);
-  EXPECT(tinyllama_generate(33) == UDONONNX_STATUS_CAPACITY_EXCEEDED);
-  EXPECT(tinyllama_generate(1) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(set_prompt_tokens(&long_prompt, 64) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(generate(2) == UDONONNX_STATUS_CAPACITY_EXCEEDED);
+  EXPECT(generate(33) == UDONONNX_STATUS_CAPACITY_EXCEEDED);
+  EXPECT(generate(1) == UDONONNX_STATUS_SUCCESS);
   EXPECT(runs == 64 && advances == 63 && mask_valid);
 
-  EXPECT(tinyllama_reset() == UDONONNX_STATUS_SUCCESS);
+  EXPECT(reset() == UDONONNX_STATUS_SUCCESS);
   long_prompt.length = 33;
   clear_trace();
   scheduled_tokens[0] = 2;
-  EXPECT(tinyllama_set_prompt_tokens(&long_prompt, 33) ==
-         UDONONNX_STATUS_SUCCESS);
-  EXPECT(tinyllama_generate(32) == UDONONNX_STATUS_SUCCESS);
-  EXPECT(tinyllama_reset() == UDONONNX_STATUS_SUCCESS);
+  EXPECT(set_prompt_tokens(&long_prompt, 33) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(generate(32) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(reset() == UDONONNX_STATUS_SUCCESS);
   long_prompt.length = 34;
-  EXPECT(tinyllama_set_prompt_tokens(&long_prompt, 34) ==
-         UDONONNX_STATUS_SUCCESS);
-  EXPECT(tinyllama_generate(32) == UDONONNX_STATUS_CAPACITY_EXCEEDED);
+  EXPECT(set_prompt_tokens(&long_prompt, 34) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(generate(32) == UDONONNX_STATUS_CAPACITY_EXCEEDED);
 
-  EXPECT(tinyllama_reset() == UDONONNX_STATUS_SUCCESS);
+  EXPECT(reset() == UDONONNX_STATUS_SUCCESS);
   clear_trace();
   scheduled_tokens[0] = 1701;
   fail_finalize_call = 0;
-  EXPECT(tinyllama_set_prompt_tokens(&prompt, 4) == UDONONNX_STATUS_SUCCESS);
-  EXPECT(tinyllama_generate(2) == UDONONNX_STATUS_OPENCL_ERROR);
-  EXPECT(tinyllama_generated_token_count() == 0);
+  EXPECT(set_prompt_tokens(&prompt, 4) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(generate(2) == UDONONNX_STATUS_OPENCL_ERROR);
+  EXPECT(generated_token_count() == 0);
   EXPECT(tinyllamaConversationGenerationProgress(
              &progress_tokens, &progress_count, &serial, &is_completed) ==
          UDONONNX_STATUS_SUCCESS);
   EXPECT(progress_count == 0 && !is_completed);
-  EXPECT(tinyllama_read_generated_tokens(&result) ==
-         UDONONNX_STATUS_INVALID_STATE);
-  EXPECT(tinyllama_generate(1) == UDONONNX_STATUS_INVALID_STATE);
-  EXPECT(tinyllama_set_prompt_tokens(&prompt, 4) ==
-         UDONONNX_STATUS_INVALID_STATE);
-  EXPECT(tinyllama_reset() == UDONONNX_STATUS_SUCCESS);
+  EXPECT(read_generated_tokens(&result) == UDONONNX_STATUS_INVALID_STATE);
+  EXPECT(generate(1) == UDONONNX_STATUS_INVALID_STATE);
+  EXPECT(set_prompt_tokens(&prompt, 4) == UDONONNX_STATUS_INVALID_STATE);
+  EXPECT(reset() == UDONONNX_STATUS_SUCCESS);
 
   clear_trace();
   scheduled_tokens[0] = 1701;
   fail_advance_call = 3;
-  EXPECT(tinyllama_set_prompt_tokens(&prompt, 4) == UDONONNX_STATUS_SUCCESS);
-  EXPECT(tinyllama_generate(2) == UDONONNX_STATUS_EXECUTION_FAILURE);
-  EXPECT(tinyllama_generated_token_count() == 0);
-  EXPECT(tinyllama_generate(1) == UDONONNX_STATUS_INVALID_STATE);
-  EXPECT(tinyllama_reset() == UDONONNX_STATUS_SUCCESS);
+  EXPECT(set_prompt_tokens(&prompt, 4) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(generate(2) == UDONONNX_STATUS_EXECUTION_FAILURE);
+  EXPECT(generated_token_count() == 0);
+  EXPECT(generate(1) == UDONONNX_STATUS_INVALID_STATE);
+  EXPECT(reset() == UDONONNX_STATUS_SUCCESS);
 
   clear_trace();
   scheduled_tokens[0] = 2;
-  EXPECT(tinyllama_set_prompt_tokens(&prompt, 4) == UDONONNX_STATUS_SUCCESS);
-  EXPECT(tinyllama_generate(1) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(set_prompt_tokens(&prompt, 4) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(generate(1) == UDONONNX_STATUS_SUCCESS);
   EXPECT(protocol_valid);
 
   i = test_turns();
   if (i)
     return i;
 
-  EXPECT(tinyllama_dispose() == UDONONNX_STATUS_SUCCESS);
+  EXPECT(shutdown() == UDONONNX_STATUS_SUCCESS);
   EXPECT(tinyllamaConversationGenerationProgress(
              &progress_tokens, &progress_count, &serial, &is_completed) ==
          UDONONNX_STATUS_DISPOSED);
-  EXPECT(tinyllama_initialize() == UDONONNX_STATUS_DISPOSED);
+  EXPECT(initialize() == UDONONNX_STATUS_DISPOSED);
   return 0;
 }
 
@@ -621,7 +612,7 @@ int main(void) {
   for (i = 0; i < 64; ++i)
     long_prompt_data[i] = i;
   EXPECT(ROWS == 4);
-  EXPECT(tinyllama_initialize() == UDONONNX_STATUS_SUCCESS);
+  EXPECT(initialize() == UDONONNX_STATUS_SUCCESS);
 
   /* A prompt of one whole chunk is one run. The first token comes from the
    * last row of its logits, every later one from the first row of a decode
@@ -630,8 +621,8 @@ int main(void) {
   protocol_valid = 1;
   for (i = 0; i < 4; ++i)
     scheduled_tokens[i] = expected_tokens[i];
-  EXPECT(tinyllama_set_prompt_tokens(&prompt, 4) == UDONONNX_STATUS_SUCCESS);
-  EXPECT(tinyllama_generate(4) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(set_prompt_tokens(&prompt, 4) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(generate(4) == UDONONNX_STATUS_SUCCESS);
   EXPECT(trace_size == 15 && !memcmp(trace, "RDFARDFPRDFPRDF", 15));
   EXPECT(runs == 4 && mask_valid && protocol_valid);
   for (i = 0; i < 4; ++i)
@@ -647,20 +638,20 @@ int main(void) {
   /* The run of the third token is still pending. */
   if ((failure = expect_committed(whole_context, 6)) != 0)
     return failure;
-  EXPECT(tinyllama_generated_token_count() == 4);
-  EXPECT(tinyllama_read_generated_tokens(&result) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(generated_token_count() == 4);
+  EXPECT(read_generated_tokens(&result) == UDONONNX_STATUS_SUCCESS);
   for (i = 0; i < 4; ++i)
     EXPECT(result_data[i] == (int32_t)expected_tokens[i]);
 
   /* A prompt that ends in a partial chunk: the rows past it repeat its last
    * token at its position, and the next advance commits the real ones. */
-  EXPECT(tinyllama_reset() == UDONONNX_STATUS_SUCCESS);
+  EXPECT(reset() == UDONONNX_STATUS_SUCCESS);
   clear_trace();
   scheduled_tokens[0] = 1701;
   scheduled_tokens[1] = 2;
-  EXPECT(tinyllama_set_prompt_tokens(&prompt, 6) == UDONONNX_STATUS_SUCCESS);
-  EXPECT(tinyllama_generate(3) == UDONONNX_STATUS_SUCCESS);
-  EXPECT(tinyllama_generated_token_count() == 2);
+  EXPECT(set_prompt_tokens(&prompt, 6) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(generate(3) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(generated_token_count() == 2);
   EXPECT(trace_size == 11 && !memcmp(trace, "RARDFPRDFPR", 11));
   EXPECT(runs == 4 && mask_valid && protocol_valid);
   for (i = 0; i < 4; ++i)
@@ -678,7 +669,7 @@ int main(void) {
   clear_trace();
   scheduled_tokens[0] = 555;
   scheduled_tokens[1] = 2;
-  EXPECT(tinyllama_generate(2) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(generate(2) == UDONONNX_STATUS_SUCCESS);
   EXPECT(trace_size == 10 && !memcmp(trace, "PRARDFPRDF", 10));
   EXPECT(runs == 3 && mask_valid && protocol_valid);
   for (i = 0; i < 4; ++i)
@@ -692,13 +683,12 @@ int main(void) {
 
   /* A prompt of the whole Context Capacity is sixteen whole chunks; the last
    * one runs at the final positions. */
-  EXPECT(tinyllama_reset() == UDONONNX_STATUS_SUCCESS);
+  EXPECT(reset() == UDONONNX_STATUS_SUCCESS);
   clear_trace();
   scheduled_tokens[0] = 2;
-  EXPECT(tinyllama_set_prompt_tokens(&long_prompt, 64) ==
-         UDONONNX_STATUS_SUCCESS);
-  EXPECT(tinyllama_generate(2) == UDONONNX_STATUS_CAPACITY_EXCEEDED);
-  EXPECT(tinyllama_generate(1) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(set_prompt_tokens(&long_prompt, 64) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(generate(2) == UDONONNX_STATUS_CAPACITY_EXCEEDED);
+  EXPECT(generate(1) == UDONONNX_STATUS_SUCCESS);
   EXPECT(runs == 16 && advances == 15 && partial_advances == 0);
   EXPECT(seen_positions[15] == 60 && seen_row_positions[15][3] == 63);
   EXPECT(reduce_offsets[0] == 4 + 3 * 32000);
@@ -706,15 +696,14 @@ int main(void) {
 
   /* 63 tokens: fifteen whole chunks and one of three rows, then one decode
    * step at the last position. */
-  EXPECT(tinyllama_reset() == UDONONNX_STATUS_SUCCESS);
+  EXPECT(reset() == UDONONNX_STATUS_SUCCESS);
   long_prompt.length = 63;
   clear_trace();
   scheduled_tokens[0] = 5;
   scheduled_tokens[1] = 6;
-  EXPECT(tinyllama_set_prompt_tokens(&long_prompt, 63) ==
-         UDONONNX_STATUS_SUCCESS);
-  EXPECT(tinyllama_generate(2) == UDONONNX_STATUS_SUCCESS);
-  EXPECT(tinyllama_generated_token_count() == 2);
+  EXPECT(set_prompt_tokens(&long_prompt, 63) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(generate(2) == UDONONNX_STATUS_SUCCESS);
+  EXPECT(generated_token_count() == 2);
   EXPECT(runs == 17 && partial_advances == 1 && partial_rows[0] == 3);
   EXPECT(seen_positions[16] == 63 && seen_tokens[16] == 5);
   EXPECT(reduce_offsets[0] == 4 + 2 * 32000 && reduce_offsets[1] == 4);
@@ -722,7 +711,7 @@ int main(void) {
   for (i = 0; i < 63; ++i)
     EXPECT(committed_tokens[i] == i && committed_positions[i] == i);
 
-  EXPECT(tinyllama_dispose() == UDONONNX_STATUS_SUCCESS);
+  EXPECT(shutdown() == UDONONNX_STATUS_SUCCESS);
   return 0;
 }
 #endif

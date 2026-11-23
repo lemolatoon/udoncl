@@ -41,23 +41,23 @@ def validate_tensor(
 
 
 CHAT_EXPORTS = {
-    "SetChatPrompt": ("tinyllama_set_chat_prompt", ["string", "string"], False),
-    "BeginChatPrompt": ("tinyllama_begin_chat_prompt", [], False),
+    "SetChatPrompt": ("set_chat_prompt", ["string", "string"], False),
+    "BeginChatPrompt": ("begin_chat_prompt", [], False),
     "ContinueChatPrompt": (
-        "tinyllama_continue_chat_prompt", ["string", "string", "i32"], False),
-    "ChatPromptPending": ("tinyllama_chat_prompt_pending", [], False),
-    "BeginChatTurn": ("tinyllama_begin_chat_turn", [], False),
+        "continue_chat_prompt", ["string", "string", "i32"], False),
+    "ChatPromptPending": ("chat_prompt_pending", [], False),
+    "BeginChatTurn": ("begin_chat_turn", [], False),
     "ContinueChatTurn": (
-        "tinyllama_continue_chat_turn", ["string", "i32"], False),
-    "ResetChat": ("tinyllama_reset_chat", [], True),
-    "PromptTokenCount": ("tinyllama_prompt_token_count", [], False),
-    "ReadPromptTokens": ("tinyllama_read_prompt_tokens", ["i32_array"], False),
-    "GeneratedTextLength": ("tinyllama_generated_text_length", [], False),
-    "ReadGeneratedText": ("tinyllama_read_generated_text", ["i32_array"], False),
-    "StreamedTextLength": ("tinyllama_streamed_text_length", [], False),
+        "continue_chat_turn", ["string", "i32"], False),
+    "ResetChat": ("reset_chat", [], True),
+    "PromptTokenCount": ("prompt_token_count", [], False),
+    "ReadPromptTokens": ("read_prompt_tokens", ["i32_array"], False),
+    "GeneratedTextLength": ("generated_text_length", [], False),
+    "ReadGeneratedText": ("read_generated_text", ["i32_array"], False),
+    "StreamedTextLength": ("streamed_text_length", [], False),
     "ReadStreamedText": (
-        "tinyllama_read_streamed_text", ["i32_array", "i32", "i32"], False),
-    "LastTokenizerStatus": ("tinyllama_last_tokenizer_status", [], False),
+        "read_streamed_text", ["i32_array", "i32", "i32"], False),
+    "LastTokenizerStatus": ("last_tokenizer_status", [], False),
 }
 POLLED_WHILE_GENERATING = ("StreamedTextLength", "ReadStreamedText")
 PROFILES = {
@@ -68,17 +68,17 @@ PROFILES = {
 
 def validate_exports(manifest: dict, profile: str = "conversation") -> None:
     expected = {
-        "Initialize": ("tinyllama_initialize", [], True),
-        "Reset": ("tinyllama_reset", [], True),
+        "Initialize": ("initialize", [], True),
+        "Reset": ("reset", [], True),
         "SetPromptTokens": (
-            "tinyllama_set_prompt_tokens", ["i32_array", "i32"], False,
+            "set_prompt_tokens", ["i32_array", "i32"], False,
         ),
-        "Generate": ("tinyllama_generate", ["i32"], True),
-        "GeneratedTokenCount": ("tinyllama_generated_token_count", [], False),
+        "Generate": ("generate", ["i32"], True),
+        "GeneratedTokenCount": ("generated_token_count", [], False),
         "ReadGeneratedTokens": (
-            "tinyllama_read_generated_tokens", ["i32_array"], False,
+            "read_generated_tokens", ["i32_array"], False,
         ),
-        "Shutdown": ("tinyllama_dispose", [], False),
+        "Shutdown": ("shutdown", [], False),
     }
     if profile == "chat":
         expected.update(CHAT_EXPORTS)
@@ -119,7 +119,8 @@ def validate_artifact(
     require(manifest_path.is_file(), f"artifact has no manifest: {manifest_path}")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     program = manifest.get("program", {})
-    require(program.get("name") == program_name,
+    # The 4096-token artifacts (-4k targets) have programs of their own.
+    require(program.get("name") in (program_name, program_name + "_4k"),
             "artifact has an unexpected program identity")
     require(program.get("binding_class") == binding_class,
             "artifact has an unexpected generated U# binding class")
